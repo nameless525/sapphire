@@ -125,8 +125,8 @@
                 RightUpperArm: (y: 10, z: 38),
             }),
 
-            // Still, head fallen to one side and one knee soft.
-            (tick: 56, ease: Smooth, hips: (0, -0.80, -0.58), pose: {
+            // Still, head fallen to one side and one knee soft, the eyes shut.
+            (tick: 56, ease: Smooth, hips: (0, -0.80, -0.58), morphs: { "Face_Blendshape.Fcl_EYE_Close": 1.0 }, pose: {
                 Hips: (x: -88),
                 Spine: (x: 0),
                 Head: (x: 4, y: 28),

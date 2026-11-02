@@ -120,7 +120,7 @@ pub(crate) struct Options {
     /// `--probes`: the courtyard with its arcade, lit by the ambient probe grid baked for both
     /// (M1 W5). Implies `--environment`.
     pub probes: bool,
-    /// `--look-dev wide|hero|sky|street|face|enemy|body|full`: the look-dev town (M1 X1) with the VRM
+    /// `--look-dev wide|hero|sky|street|face|enemy|body|full|down`: the look-dev town (M1 X1) with the VRM
     /// character standing in it, seen from that shot; `enemy` adds the enemy (M2 O4). A scene of its own rather
     /// than a `--stage` layout: it replaces the character and the ground the other scenes put under
     /// it, so it excludes `--stage`,
@@ -130,7 +130,7 @@ pub(crate) struct Options {
     /// `--hud fixed|live`, `--hud-insets` and `--hud-scale`: the combat HUD over the scene (M2 I2).
     pub hud: Option<HudOptions>,
     /// `--clip <name>`: plays that clip on the look-dev character instead of holding it (M2 N2).
-    /// Needs `--look-dev`.
+    /// Needs `--look-dev` or `--arena`, where it plays in place, since the simulation owns the root.
     pub clip: Option<lookdev::ClipName>,
     /// `--clip-in-place`: leaves the clip's root motion out, so the character stays where a close
     /// shot framed it. Needs `--clip`.
@@ -149,8 +149,8 @@ pub(crate) struct Options {
     /// `--graph`: the animation graph on the look-dev character, from this script (M2 N3).
     pub graph: Option<GraphScript>,
     /// `--ik on|off` (off by default), `--ik-ground flat|step|slope`, `--ik-look x,y,z|orbit`: solves IK
-    /// over the clip (M2 N4, [`crate::ik`]), the character standing on that ground and looking there.
-    /// Needs `--clip`.
+    /// over the clip or the graph (M2 N4, [`crate::ik`]), the character standing on that ground and
+    /// looking there. Needs `--clip` or `--graph`. On `--arena` its ground is the arena's colliders.
     pub ik: Option<crate::ik::IkOptions>,
     /// `--cloud-cover <0..1>`: both cloud layers' coverage instead of time of day's; 0 is a
     /// clear sky.
@@ -925,8 +925,8 @@ impl Options {
             ));
         }
         options.cue = cue.map(|id| CueOption { id, repeat: cue_repeat });
-        if options.clip.is_some() && options.look_dev.is_none() {
-            return Err("--clip plays on the look-dev character: it needs --look-dev".to_owned());
+        if options.clip.is_some() && options.look_dev.is_none() && !arena_flag {
+            return Err("--clip plays on the look-dev character: it needs --look-dev or --arena".to_owned());
         }
         if options.clip_in_place && options.clip.is_none() {
             return Err("--clip-in-place needs --clip".to_owned());
@@ -962,8 +962,11 @@ impl Options {
         if options.springs.is_some() && options.clip.is_none() && options.graph.is_none() {
             return Err("--springs runs under a clip or a graph: it needs --clip or --graph".to_owned());
         }
-        if ik && options.clip.is_none() {
-            return Err("--ik solves over a clip: it needs --clip".to_owned());
+        if ik && options.clip.is_none() && options.graph.is_none() {
+            return Err("--ik solves over a clip or a graph: it needs --clip or --graph".to_owned());
+        }
+        if ik_ground.is_some() && options.arena.is_some() {
+            return Err("--ik-ground is the look-dev stage's test bed: the arena has its own".to_owned());
         }
         if !ik && (ik_ground.is_some() || ik_look.is_some()) {
             return Err("--ik-ground and --ik-look need --ik on".to_owned());
@@ -1421,6 +1424,10 @@ mod tests {
         );
         assert!(parse(&["--look-dev", "hero", "--clip", "wave"]).unwrap_err().contains("strike"));
         assert!(parse(&["--clip", "strike"]).unwrap_err().contains("--look-dev"));
+        assert_eq!(
+            parse(&["--arena", "--clip", "idle"]).unwrap().0.clip,
+            lookdev::ClipName::from_name("idle")
+        );
         let solving = ["--look-dev", "hero", "--clip", "strike", "--ik", "on"];
         assert_eq!(parse(&solving).unwrap().0.ik, Some(crate::ik::IkOptions::default()));
         assert_eq!(parse(&["--look-dev", "hero", "--clip", "strike", "--ik", "off"]).unwrap().0.ik, None);
@@ -1445,6 +1452,18 @@ mod tests {
             })
         );
         assert!(parse(&["--look-dev", "hero", "--ik", "on"]).unwrap_err().contains("--clip"));
+        // Over a graph, as over a clip.
+        let on_a_graph = ["--look-dev", "hero", "--graph", "walk", "--ik", "on"];
+        assert_eq!(parse(&on_a_graph).unwrap().0.ik, Some(crate::ik::IkOptions::default()));
+        // On the arena's own colliders, which have no test bed to choose.
+        let in_the_arena = ["--arena", "--clip", "idle", "--ik", "on"];
+        assert_eq!(parse(&in_the_arena).unwrap().0.ik, Some(crate::ik::IkOptions::default()));
+        assert!(
+            parse(&["--arena", "--clip", "idle", "--ik", "on", "--ik-ground", "step"])
+                .unwrap_err()
+                .contains("the arena has its own")
+        );
+        assert!(parse(&["--arena", "--ik", "on"]).unwrap_err().contains("--clip"));
         assert!(parse(&["--look-dev", "hero", "--clip", "strike", "--ik", "maybe"]).is_err());
         assert!(
             parse(&["--look-dev", "hero", "--clip", "strike", "--ik-ground", "step"])

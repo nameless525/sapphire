@@ -14,6 +14,11 @@
 //!   the arm agree (`a_pose_and_a_hit_volume_read_the_same_tick`).
 //! - **Locomotion reads the controller** ([`locomotion_of`]): its velocity against the actor's facing,
 //!   and whether it's on the ground. A frozen clock leaves its state alone, so that holds too.
+//! - **A defeat reads the fighter** ([`GraphInput::defeated`], from `Fighter::is_defeated`): its reaction
+//!   arrives as any move does, and when the move ends the graph keeps the character down, with no more
+//!   to do. A script has no fighter to fell, so [`GraphScript::Defeat`] says so itself.
+//! - **IK** (`--ik on`, [`crate::ik`]) runs between the graph and [`GraphPlayer::finish`], feet off in
+//!   the air, and its time comes from the same frame ([`GraphDriver::pose_frame`]).
 //! - **Spring bones** run beside the pose as they do under a clip (`--springs`, [`GraphDriver`]), after
 //!   the graph has finished it, and start over when the player reports a teleport.
 //! - **A graph's replacement** arrives from hot reload or live link through
@@ -46,6 +51,7 @@ use sapphire_world::light_rig::CharacterLightRig;
 
 use crate::animate::SpringView;
 use crate::extract::{RenderPose, RenderTransform};
+use crate::ik::{IkControls, IkDriver};
 use crate::lookdev::FigureJoints;
 use crate::scene::Figure;
 
@@ -55,6 +61,7 @@ const SHOW_MOVES: &str = include_str!("../../../content/lookdev/character/show.m
 const STRIKE: Name = Name::new("strike");
 const DODGE: Name = Name::new("dodge");
 const DODGE_BACK: Name = Name::new("dodge_back");
+const DEFEAT: Name = Name::new("defeat");
 
 /// How far the show's floor reaches each way from the origin, in metres: five minutes' run.
 const FLOOR_REACH: f32 = 2_000.0;
@@ -83,10 +90,13 @@ pub(crate) enum GraphScript {
     Flinch,
     /// A strike at tick 10 and a cut at tick 20: no decay, and a teleport for secondary motion.
     Cut,
+    /// Felled at tick 20: `defeat` forced as a defeat's reaction is, lasting 120 ticks, and the
+    /// character still down when it's over.
+    Defeat,
 }
 
 impl GraphScript {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Stand,
         Self::Walk,
         Self::Run,
@@ -97,6 +107,7 @@ impl GraphScript {
         Self::Hitstop,
         Self::Flinch,
         Self::Cut,
+        Self::Defeat,
     ];
 
     pub fn name(self) -> &'static str {
@@ -111,6 +122,7 @@ impl GraphScript {
             Self::Hitstop => "hitstop",
             Self::Flinch => "flinch",
             Self::Cut => "cut",
+            Self::Defeat => "defeat",
         }
     }
 
@@ -162,7 +174,16 @@ impl GraphScript {
 
     /// The move forced at `tick`.
     fn forced(self, tick: u32) -> Option<Name> {
-        (self == Self::Hitstop && tick == 34).then_some(DODGE_BACK)
+        match (self, tick) {
+            (Self::Hitstop, 34) => Some(DODGE_BACK),
+            (Self::Defeat, 20) => Some(DEFEAT),
+            _ => None,
+        }
+    }
+
+    /// Whether the character's been felled, with `tick` steps taken.
+    fn felled(self, tick: u32) -> bool {
+        self == Self::Defeat && tick > 20
     }
 
     /// How many reactions it's asked for by `tick`.
@@ -291,13 +312,15 @@ pub(crate) struct GraphDriver {
     springs: Option<SpringBones>,
     /// False for `--springs off`, which a new version of the character keeps to.
     springs_on: bool,
-    /// The player's teleports its springs have started over for.
+    /// The player's teleports its springs and IK have started over for.
     teleports: u32,
+    /// Its feet, look and hands: `None` without `--ik on`.
+    ik: Option<IkDriver>,
 }
 
 impl GraphDriver {
     pub fn new(player: GraphPlayer, joints: FigureJoints) -> Self {
-        Self { player, joints, base: Mat4::IDENTITY, springs: None, springs_on: true, teleports: 0 }
+        Self { player, joints, base: Mat4::IDENTITY, springs: None, springs_on: true, teleports: 0, ik: None }
     }
 
     /// This driver, simulating `springs` beside its pose.
@@ -310,6 +333,22 @@ impl GraphDriver {
     #[must_use]
     pub fn with_springs_on(self, on: bool) -> Self {
         Self { springs_on: on, springs: self.springs.filter(|_| on), ..self }
+    }
+
+    /// This driver, solving `ik` over what the graph makes.
+    #[must_use]
+    pub fn with_ik(self, ik: IkDriver) -> Self {
+        Self { ik: Some(ik), ..self }
+    }
+
+    /// Its IK, for whatever drives it.
+    pub fn ik_mut(&mut self) -> Option<&mut IkDriver> {
+        self.ik.as_mut()
+    }
+
+    /// Whether it solves IK.
+    pub fn has_ik(&self) -> bool {
+        self.ik.is_some()
     }
 
     /// Stands the character at `base` when its actor is at the origin.
@@ -361,6 +400,40 @@ impl GraphDriver {
     pub fn springs_run(&mut self, view: &SpringView, transform: &RenderTransform, figure: &Figure) -> bool {
         self.springs.as_mut().is_some_and(|springs| view.decide(springs, transform, figure))
     }
+
+    /// The frame's pose, with the character standing at `place` as the ground sees it: the graph, then
+    /// IK over what it made, then the rig's constraints and the model pose. Says whether the pose moved.
+    ///
+    /// When it didn't, the pose already in the character is solved, so nothing's solved again: that
+    /// would be a solve over a solve. So a grip moved under a frozen graph waits for the thaw, where
+    /// under a clip it shows at once (`IkDriver::wants_evaluation`, which resamples). A freeze is a
+    /// few frames, nothing changes grip inside one yet, and hands aren't what a hit's freeze shows.
+    /// A game that needs it can ask the player to hand over again. Allocates nothing.
+    pub fn pose_frame(&mut self, input: &GraphInput, clips: &ClipTable<'_>, place: Mat4) -> bool {
+        if let Some(ik) = &mut self.ik {
+            ik.take_time(input.ticks);
+            let feet = if input.locomotion.grounded { 1.0 } else { 0.0 };
+            ik.set_controls(IkControls { feet, ..ik.controls() });
+        }
+        let evaluated = self.player.evaluate(input, clips, clips.version());
+        let teleports = self.player.teleports();
+        if teleports != self.teleports {
+            self.teleports = teleports;
+            if let Some(springs) = &mut self.springs {
+                springs.reset();
+            }
+            if let Some(ik) = &mut self.ik {
+                ik.reset();
+            }
+        }
+        if evaluated {
+            if let Some(ik) = &mut self.ik {
+                ik.solve(self.player.pose_mut(), place);
+            }
+            self.player.finish();
+        }
+        evaluated
+    }
 }
 
 /// One character's frame: its driver and everything that follows the skeleton.
@@ -372,6 +445,8 @@ pub(crate) struct GraphEvaluation<'a> {
     pub input: GraphInput,
     /// Where the character is this frame.
     pub world_from_model: Affine3A,
+    /// Where it stands as the ground sees it: on a treadmill, what's drawn rather than how far it's run.
+    pub place: Mat4,
     /// Whether its springs run this frame ([`GraphDriver::springs_run`]).
     pub springs_run: bool,
     pub evaluated: bool,
@@ -383,19 +458,13 @@ impl GraphEvaluation<'_> {
     /// Evaluates the graph, runs the springs and hands over what changed. Allocates nothing.
     pub fn run(&mut self, clips: &ClipTable<'_>) {
         let driver = &mut *self.driver;
-        self.evaluated = driver.player.evaluate(&self.input, clips, clips.version());
+        self.evaluated = driver.pose_frame(&self.input, clips, self.place);
         if self.evaluated {
-            driver.player.finish();
             let figure = driver.joints.moving(driver.player.pose());
             *self.figure = figure;
             self.rig.head = figure.head;
         }
         if let Some(springs) = &mut driver.springs {
-            let teleports = driver.player.teleports();
-            if teleports != driver.teleports {
-                driver.teleports = teleports;
-                springs.reset();
-            }
             let started = Stopwatch::start();
             let frame = SpringFrame {
                 world_from_model: self.world_from_model,
@@ -492,6 +561,7 @@ impl GraphShow {
             combat: combat_input(&self.current, behind),
             reaction: ReactionInput { name: Name::new("flinch"), count: self.script.reactions(self.tick) },
             cut: std::mem::take(&mut self.cut),
+            defeated: self.current.fighter.is_defeated() || self.script.felled(self.tick),
         }
     }
 
@@ -670,8 +740,61 @@ mod tests {
             assert!(set.find(Name::new(name)).is_some(), "{name} isn't in the show's moves");
             assert!(graph.combat.moves.iter().any(|entry| entry.name == name), "{name} isn't in the graph");
         }
-        // Not the floor's: a body on it leaves the character's bounds, so a death waits for posed bounds.
-        assert!(!graph.combat.moves.iter().any(|entry| entry.name.contains("death")));
+    }
+
+    /// Everything the combat slice's character plays and everything a hit forces has a row, so nothing
+    /// that reaches the graph through `CombatInput` plays on as locomotion (`unmapped_moves`). The
+    /// slice's fighter reacts with its own names, the enemy's document with G3's, and O3's moves will
+    /// bring their own.
+    #[test]
+    fn the_characters_graph_has_a_row_for_all_a_fight_plays() {
+        let text = include_str!("../../../content/lookdev/character/character.animgraph.ron");
+        let graph = AnimGraph::from_document(text).expect("a good document");
+        let has_row = |name: &str| graph.combat.moves.iter().any(|entry| entry.name == name);
+        let slice = include_str!("../../../crates/sapphire_moves/test_content/slice.moves.ron");
+        let slice = MoveSetDocument::parse(slice).expect("it parses");
+        assert!(slice.moves.len() >= 14, "{}", slice.moves.len());
+        for entry in &slice.moves {
+            assert!(has_row(&entry.name), "the slice's {} has no row", entry.name);
+        }
+        let enemy = include_str!("../../../content/combat/enemy/warrior.moves.ron");
+        let enemy = MoveSetDocument::parse(enemy).expect("it parses");
+        let reactions = enemy.fighter.as_ref().expect("a fighter").reactions.clone();
+        let forced =
+            [reactions.light, reactions.medium, reactions.heavy, reactions.poise_break, reactions.defeat];
+        for name in forced.iter().flatten().map(String::as_str).chain(["recover"]) {
+            assert!(has_row(name), "the enemy's {name} has no row");
+        }
+        // A defeat plays a death, which stays where it ends.
+        let row = |name: &str| graph.combat.moves.iter().find(|entry| entry.name == name).expect(name);
+        assert_eq!(row("defeat").clip, "death_back");
+        assert_eq!(row("death").clip, "death_forward");
+    }
+
+    /// A defeat's move ends and the graph hears that it's still down: `combat` goes and `defeated` stays.
+    #[test]
+    fn a_felled_character_stays_felled_when_its_move_ends() {
+        let mut show = GraphShow::new(GraphScript::Defeat);
+        for _ in 0..=20 {
+            assert!(!show.frame(1.0).defeated);
+            show.step();
+        }
+        let falling = show.frame(1.0);
+        assert!(falling.defeated);
+        assert_eq!(falling.combat.expect("the move").name, DEFEAT);
+        for _ in 0..125 {
+            show.step();
+        }
+        let down = show.frame(1.0);
+        assert!(down.defeated);
+        assert_eq!(down.combat, None, "120 ticks on, the move is over");
+    }
+
+    /// The seam for a game's fight: a real defeat reads the same.
+    #[test]
+    fn a_fighter_at_rest_is_not_defeated() {
+        let show = GraphShow::new(GraphScript::Stand);
+        assert!(!show.view().fighter.is_defeated());
     }
 
     /// A frozen clock: locomotion holds, and the frame's input repeats exactly, at any alpha.

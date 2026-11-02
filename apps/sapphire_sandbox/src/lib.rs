@@ -134,7 +134,7 @@
 //!   along it), lit by the ambient probe grid the cooker baked for both (M1 W5) in place of the
 //!   ambient hemisphere, seen through a longer lens turned to the arcade. Implies
 //!   `--environment`.
-//! - `--look-dev wide|hero|sky|street|face|body|full`: the look-dev town (M1 X1, `lookdev.rs`): pixiv's
+//! - `--look-dev wide|hero|sky|street|face|body|full|down`: the look-dev town (M1 X1, `lookdev.rs`): pixiv's
 //!   VRM sample in place of the mannequin, held standing in a Jinzhou-style town square of the
 //!   assembly's parametric buildings in the environment family, with its fog cards and lamps,
 //!   every landed feature on, seen from an authored shot: `wide` across the square, `hero` a
@@ -155,7 +155,7 @@
 //!   the window's safe area: to try a notch on a frame that has none.
 //! - `--hud-scale <scale>`: pixels per point in an offscreen frame (3 for a phone's capture), the
 //!   player's UI scale on top of the display's in a window. 1 without it.
-//! - `--clip <name>` (with `--look-dev`): plays that clip on the character instead of holding it,
+//! - `--clip <name>` (with `--look-dev` or `--arena`): plays that clip on the character instead of holding it,
 //!   looping (M2 N2, `animate.rs`). A name is a clip `lookdev::ClipName` lists (M2 O2), or any clip's
 //!   asset ID. Each `--capture-ticks` is a fixed point of it, and `--bench` measures it.
 //!   `--clip-in-place` leaves its root motion out, for a shot that frames the character close. The
@@ -183,12 +183,12 @@
 //!   character from a scripted input (M2 N3, `anim_graph.rs`): `stand`, `walk`, `run`, `strafe`, `back`,
 //!   `jump`, `cancel`, `hitstop`, `flinch` or `cut`, at fixed ticks, with a controller and a simulation
 //!   beside it. The golden scenes `lookdev-graph-*` show it.
-//! - `--ik on|off` (with `--clip`; off by default): solves IK over the clip (M2 N4, `ik.rs`): feet
-//!   on the ground under them, by casts through `sapphire_physics`, and a look. `--ik-ground
-//!   flat|step|slope` stands the character on a test bed of stone blocks, where the controller's
-//!   capsule would rest. `--ik-look <x>,<y>,<z>|orbit` is where it looks: a place in the world, up
-//!   from where it stands, or something circling it, crossing behind. The golden scenes
-//!   `lookdev-ik-*` show them.
+//! - `--ik on|off` (with `--clip` or `--graph`; off by default): solves IK over what plays (M2 N4,
+//!   `ik.rs`): feet on the ground under them, by casts through `sapphire_physics`, and a look.
+//!   `--ik-ground flat|step|slope` stands the character on a test bed of stone blocks, where the
+//!   controller's capsule would rest; `--arena --clip <name> --ik on` stands it on the arena's own
+//!   colliders. `--ik-look <x>,<y>,<z>|orbit` is where it looks: a place in the world, up from where it
+//!   stands, or something circling it, crossing behind. The golden scenes `lookdev-ik-*` show them.
 //! - `--outline-row`: place more of the character behind it, from 4 m to 90 m further back, past
 //!   the outline cutoff, showing the outline width's distance curve (M1 C4).
 //! - `--hard-edges`: show the hard-edged outline sample instead of the character: flat-shaded

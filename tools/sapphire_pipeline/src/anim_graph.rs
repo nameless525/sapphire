@@ -83,13 +83,14 @@ pub fn cook(bytes: &[u8]) -> Result<Vec<u8>, AnimGraphCookError> {
     Ok(cooked.into_vec())
 }
 
-/// What the character's bounds promise, for the tests that hold the graph's clips to it. The renderer's
-/// character map, outline culling and object light lists all read one sphere, around the bind pose's
-/// box (`Sphere::around` in `sapphire_render::bounds`), and no pose moves it. A clip that takes skin
-/// past it can vanish from a light's list, lose its outline or fall out of the character map while
-/// on screen, so a graph that plays one needs posed bounds first.
+/// What keeps walking inside the character's cooked bounds, for the tests that hold locomotion to them.
+/// Any clip may leave: `posed_bounds` in `sapphire_render::bounds` grows the sphere where a pose does,
+/// so a death's shadow, outline and lights hold. What's left of N3's rule is what that growth costs:
+/// inside the sphere a frame has the cooked bounds exactly, and past it each new pose re-reads the
+/// character's light lists and widens what it casts into. A move can pay that for a moment. Locomotion
+/// is most of a character's frames, so it stays inside.
 #[cfg(test)]
-pub(crate) struct BoundsGate {
+pub(crate) struct LocomotionBounds {
     center: sapphire_math::Vec3,
     pub radius: f32,
     positions: Vec<sapphire_math::Vec3>,
@@ -98,7 +99,7 @@ pub(crate) struct BoundsGate {
 }
 
 #[cfg(test)]
-impl BoundsGate {
+impl LocomotionBounds {
     /// The look-dev character, as its VRM imports.
     pub fn of_the_character() -> Self {
         use sapphire_math::{Affine3A, Mat4, Vec3};
@@ -149,10 +150,24 @@ impl BoundsGate {
         farthest.sqrt()
     }
 
-    /// What the look-dev character's graph plays.
+    /// What the look-dev character's locomotion plays: its states' clips and its blend space's samples.
     pub fn clips() -> Vec<GraphClip> {
+        use sapphire_assets::graph::StateMotion;
+
         let text = include_str!("../../../content/lookdev/character/character.animgraph.ron");
-        read(text.as_bytes()).expect("it reads").clips
+        let graph = read(text.as_bytes()).expect("it reads");
+        let named: Vec<&str> = graph
+            .locomotion
+            .states
+            .iter()
+            .flat_map(|state| match &state.plays {
+                StateMotion::Clip { clip, .. } => vec![clip.as_str()],
+                StateMotion::Blend(space) => {
+                    space.samples.iter().map(|sample| sample.clip.as_str()).collect()
+                }
+            })
+            .collect();
+        graph.clips.iter().filter(|clip| named.contains(&clip.name.as_str())).cloned().collect()
     }
 }
 

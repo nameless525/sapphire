@@ -42,14 +42,19 @@
 //!   `Buttons` start them; the script `arena-walk` (`replay/script.rs`) presses only jump. Hits ask the
 //!   simulation's `PhysicsWorld`, in `CombatSet::Hits`.
 //! - **Animation (N2, in; the graph, N3):** the two `RenderPose`s [`crate::scene::Scene::spawn_arena`]
-//!   writes once. A `crate::animate::ClipPlayer` with its root motion off could write them each frame,
-//!   with [`ArenaActors::present`] keeping the transform. What plays reads `ActorView::moves`.
+//!   writes once. `--clip` plays a `crate::animate::ClipPlayer` on the character with its root motion
+//!   off, and [`ArenaActors::present`] keeps the transform. A graph plugs in the same way, and what
+//!   it plays reads `ActorView::moves`.
+//! - **IK (N4, in):** `--clip <name> --ik on` casts for the character's feet in this world
+//!   ([`ArenaGround::share`]), the same `Arc` the camera reads. A `crate::anim_graph::GraphDriver`
+//!   takes the same `crate::ik::IkDriver`.
 //! - **The enemy (O4, in; G6):** its stand-in's mesh, in `spawn_arena`, where `crate::enemy`'s can go,
 //!   and its brain in the scenario.
 //! - **Effects (E2, `--vfx`) and the HUD (I2, `--hud`):** both draw over whatever scene is up, and
 //!   read positions from [`ArenaActors`], which has what they need.
 
 use std::f32::consts::FRAC_PI_2;
+use std::sync::Arc;
 
 use sapphire_assets::AssetId;
 use sapphire_camera::{CameraDirector, CameraFrame, CameraTuning, Rig, Subject};
@@ -171,7 +176,7 @@ pub(crate) enum ArenaError {
 /// The arena's collision as the stage loaded it: the statics a replay's simulation has too, for the
 /// camera to read, and for `--debug-draw colliders` to draw while no fight has them.
 pub(crate) struct ArenaGround {
-    world: PhysicsWorld,
+    world: Arc<PhysicsWorld>,
 }
 
 impl ArenaGround {
@@ -187,7 +192,12 @@ impl ArenaGround {
         if own.statics_digest() != world.statics_digest() {
             return Err(ArenaError::StaleCook);
         }
-        Ok(Self { world })
+        Ok(Self { world: Arc::new(world) })
+    }
+
+    /// The world, for what else reads it: IK's casts for a character's feet ([`crate::ik::IkDriver`]).
+    pub fn share(&self) -> Arc<PhysicsWorld> {
+        Arc::clone(&self.world)
     }
 
     /// Draws the spawn points, each a character's capsule and an arrow for which way it faces, and with

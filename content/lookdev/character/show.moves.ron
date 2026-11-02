@@ -44,6 +44,13 @@
                 ),
                 invulnerable: [(from: 1, to: 16)],
             ),
+            (
+                // What a defeat forces, as the combat slice's: 2 s, and the fight's over for this one.
+                name: "defeat",
+                startup: 0,
+                active: 30,
+                recovery: 90,
+            ),
         ],
     ),
 )

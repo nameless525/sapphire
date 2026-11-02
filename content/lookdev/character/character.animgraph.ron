@@ -23,6 +23,9 @@
             (name: "idle", source: "0853fc78-9a5d-4f9d-bcfe-1c8a485a0db4"),
             (name: "strike", source: "15af86bb-67b3-4208-bc54-1618aabf450b"),
             (name: "breathing", source: "5d9c1f6e-3a47-4b28-9e0d-7c21a4f8b6d3"),
+            (name: "idle_combat", source: "5fa1f634-6e77-4485-9f50-577be76b7323"),
+            (name: "death_back", source: "bcd18896-4e3d-4a31-8075-848494beee4a"),
+            (name: "death_forward", source: "7a20f0b9-eae3-48cf-b715-9b937731fe6b"),
         ],
         masks: [
             // From the spine up: what a flinch moves, with the legs left to what they're doing.
@@ -79,10 +82,23 @@
                 (move: "dodge", clip: "dodge_back", decay: 3),
                 (move: "dash_attack", clip: "dodge_forward", decay: 3),
                 (move: "skill", clip: "strike"),
-                // What a hit forces, by G3's names. A knockdown and a death wait for posed bounds: a body
-                // on the floor leaves the character's sphere.
+                (move: "heavy", clip: "strike"),
+                (move: "spin", clip: "strike"),
+                (move: "dodge_counter", clip: "dodge_forward", decay: 3),
+                // What a hit forces: the combat slice's fighter's names, then the enemy document's. A
+                // body on the floor leaves the character's sphere and the renderer's posed bounds follow
+                // it. `GraphInput::defeated` keeps a death down when its move ends; a knockdown ends
+                // with the move, and the character has no clip of getting up, so locomotion or
+                // `recover`'s ready stance takes it back up by a decay alone.
+                (move: "flinch", clip: "hit_a", decay: 3),
+                (move: "stagger", clip: "hit_b", decay: 3),
+                (move: "dazed", clip: "hit_b", decay: 3),
+                (move: "knockdown", clip: "death_back", decay: 3),
+                (move: "defeat", clip: "death_back", decay: 3),
                 (move: "stagger_light", clip: "hit_a", decay: 3),
                 (move: "stagger_heavy", clip: "hit_b", decay: 3),
+                (move: "recover", clip: "idle_combat", decay: 12),
+                (move: "death", clip: "death_forward", decay: 5),
             ],
         ),
         additive: [

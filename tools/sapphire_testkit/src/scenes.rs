@@ -2515,6 +2515,34 @@ pub fn scenes() -> [Scene; 136] {
             ],
             thresholds: Thresholds::default(),
         },
+        // A defeat (M2 N4) through the graph, after its move has ended: the character is on its back
+        // where `death_back` has left it, eyes shut, and nothing's breathing. Its whole body is past the
+        // cooked sphere, so this is posed bounds' frame: under a low sun its shadow is one piece on the
+        // paving and its outline is whole, by the pose's own bounds. The first frame is inside the move.
+        Scene {
+            name: "lookdev-death-back",
+            args: &[
+                "--springs",
+                "off",
+                "--capture-ticks",
+                "150",
+                "--look-dev",
+                "down",
+                "--graph",
+                "defeat",
+                "--time-of-day",
+                "17",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--capture-frames",
+                "15",
+                "--capture-step",
+                "1",
+            ],
+            thresholds: Thresholds::default(),
+        },
         // Spring bones under the strike (M2 N5): at its mark, the head turned and the body gone ahead,
         // the long hair trails the head, the bangs lag its turn and the hem and sleeves lift. Lines
         // stay on all of it, as hulls read the same palette.

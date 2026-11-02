@@ -222,14 +222,22 @@ impl App for SandboxApp {
                     .with_root_motion(!options.clip_in_place)
                     .with_springs_on(options.springs != Some(false));
                 if let (Some(ik), Some(block)) = (&options.ik, renderer.ik_block) {
-                    player = scene.start_ik(ik, block, &content, player).map_err(AppInitError::msg)?;
+                    let solver =
+                        scene.start_ik(ik, block, &content, player.pose()).map_err(AppInitError::msg)?;
+                    player = player.with_ik(solver);
                 }
                 scene.play_clip(player);
                 scene.set_spring_quality(crate::animate::spring_quality(quality.active().id));
             }
             if let Some(script) = options.graph {
                 content.load_graph(lookdev::GRAPH, &mut renderer.renderer, &device.gpu)?;
-                let driver = lookdev::graph_driver(&content).map_err(AppInitError::msg)?;
+                let mut driver = lookdev::graph_driver(&content).map_err(AppInitError::msg)?;
+                if let (Some(ik), Some(block)) = (&options.ik, renderer.ik_block) {
+                    let solver = scene
+                        .start_ik(ik, block, &content, driver.player.pose())
+                        .map_err(AppInitError::msg)?;
+                    driver = driver.with_ik(solver);
+                }
                 scene.play_graph(
                     driver.with_springs_on(options.springs != Some(false)),
                     crate::anim_graph::GraphShow::new(script),
@@ -243,8 +251,24 @@ impl App for SandboxApp {
         if let (Some(shot), Some(town)) = (options.arena, renderer.town) {
             let (pose, figure) = lookdev::hold(&mut content, &mut renderer.renderer, &device.gpu)?;
             let ground = content.arena_ground(&mut renderer.renderer, &device.gpu)?;
+            let world = ground.share();
             let look = LookDev { town, fog_cards: renderer.fog_cards, pose, figure };
             scene.spawn_arena(Arena { shot, look, ground });
+            if let Some(clip) = options.clip {
+                content.load_clip(clip.id(), &mut renderer.renderer, &device.gpu)?;
+                let mut player = lookdev::player(&content)
+                    .map_err(AppInitError::msg)?
+                    .with_root_motion(false)
+                    .with_springs_on(options.springs != Some(false));
+                if let Some(ik) = &options.ik {
+                    let look = ik.look.map(|look| (look, 0.0));
+                    let solver =
+                        scene.ik_on(world, look, &content, player.pose()).map_err(AppInitError::msg)?;
+                    player = player.with_ik(solver);
+                }
+                scene.play_clip(player);
+                scene.set_spring_quality(crate::animate::spring_quality(quality.active().id));
+            }
         }
         if let Some(sword) = renderer.sword {
             scene.spawn_blade(sword, lookdev::held_hand(&content).map_err(AppInitError::msg)?);
@@ -1219,7 +1243,12 @@ pub(crate) fn create_renderer(
             }
             None => None,
         };
-        let ik_block = options.ik.as_ref().map(|_| stage::upload_block(&mut renderer)).transpose()?;
+        let ik_block = options
+            .ik
+            .as_ref()
+            .filter(|_| options.arena.is_none())
+            .map(|_| stage::upload_block(&mut renderer))
+            .transpose()?;
         let sky = content.sky_material(&mut renderer, gpu)?;
         let meshes = SceneMeshes {
             stalk,

@@ -12,8 +12,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use sapphire_anim::{
-    AnimGraph, ArchivedClip, ArchivedSkeleton, CharacterPose, Clip, CombatInput, FeetInput, FootGround, Grip,
-    GraphBinding, GraphInput, GraphPlayer, GroundHit, Hand, HeldWeapon, IkInput, Joint, JointMask,
+    AnimGraph, ArchivedClip, ArchivedSkeleton, CharacterPose, Clip, CombatInput, FeetInput, FootGround,
+    GraphBinding, GraphInput, GraphPlayer, Grip, GroundHit, Hand, HeldWeapon, IkInput, Joint, JointMask,
     JointTransform, LocomotionInput, LookInput, PackedRotation, RotationTrack, Skeleton, Transform,
     VectorRange, VectorTrack, WeaponPlace, add, blend, make_delta, sample,
 };

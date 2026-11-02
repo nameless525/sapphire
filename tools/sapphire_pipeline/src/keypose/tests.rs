@@ -11,7 +11,7 @@ use sapphire_math::det;
 use sapphire_serialize::cooked::AlignedVec;
 
 use super::*;
-use crate::anim_graph::BoundsGate;
+use crate::anim_graph::LocomotionBounds;
 use crate::clip::tests::{angle_between, model_of, root_of, sample_pose};
 use crate::clip::{ClipTarget, cook};
 use crate::import::vrm;
@@ -617,15 +617,14 @@ fn on_the_character(name: &str) -> (KeyPoseClip, Cooked, Skeleton, CharacterRig)
     (document, cooked, skeleton, rig)
 }
 
-/// N3 takes no posed bounds, because nothing its graph plays needs them: every document it names
-/// keeps the skin inside the sphere the bind pose's bounds make. A clip that doesn't fails here, and
-/// needs posed bounds before a graph can play it (`BoundsGate`).
+/// Standing pays nothing for posed bounds: the documents locomotion plays keep the skin inside the
+/// sphere the bind pose's bounds make (`LocomotionBounds`).
 #[test]
-fn the_graphs_documents_stay_inside_the_characters_bounds() {
-    let gate = BoundsGate::of_the_character();
+fn locomotions_documents_stay_inside_the_characters_bounds() {
+    let gate = LocomotionBounds::of_the_character();
     let folder = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/lookdev/character");
     let mut named = 0;
-    for clip in BoundsGate::clips().iter().filter(|clip| clip.clip.is_none()) {
+    for clip in LocomotionBounds::clips().iter().filter(|clip| clip.clip.is_none()) {
         let document = fs::read_dir(&folder)
             .expect("the folder")
             .filter_map(|entry| entry.ok())
@@ -644,14 +643,14 @@ fn the_graphs_documents_stay_inside_the_characters_bounds() {
         assert!(reach <= gate.radius, "{name}: the skin reaches {reach} of {}", gate.radius);
         named += 1;
     }
-    assert!(named >= 3, "{named}");
+    assert!(named >= 1, "{named}");
 }
 
-/// The gate above bites: a death's whole body leaves the sphere, so O2's deaths stay out of the graph
-/// until there are posed bounds.
+/// What posed bounds are for: a death's whole body leaves the sphere (the renderer's
+/// `a_body_lying_down_is_held_and_it_grows_from_the_cooked_bounds_with_no_jump`).
 #[test]
 fn a_death_leaves_the_characters_bounds() {
-    let gate = BoundsGate::of_the_character();
+    let gate = LocomotionBounds::of_the_character();
     let (_, cooked, _, _) = on_the_character("death_back");
     let reach = (0..=80).step_by(4).map(|tick| gate.reach(&cooked.model(tick as f32))).fold(0.0, f32::max);
     assert!(reach > gate.radius, "the skin reaches {reach} of {}", gate.radius);

@@ -204,7 +204,7 @@ pub(crate) enum Plant {
 }
 
 impl Plant {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::GreenTree,
         Self::BlossomTree,
         Self::AutumnTree,
@@ -448,11 +448,23 @@ pub(crate) enum Shot {
     Body,
     /// The whole character, head to feet, close enough to read where its feet stand (M2 N4).
     Full,
+    /// The character lying where a fall on its back has left it, from above and to its side (M2 N4).
+    Down,
 }
 
 impl Shot {
-    pub const ALL: [Self; 8] =
-        [Self::Wide, Self::Hero, Self::Sky, Self::Street, Self::Face, Self::Enemy, Self::Body, Self::Full];
+    pub const ALL: [Self; 9] =
+        [
+            Self::Wide,
+            Self::Hero,
+            Self::Sky,
+            Self::Street,
+            Self::Face,
+            Self::Enemy,
+            Self::Body,
+            Self::Full,
+            Self::Down,
+        ];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -464,6 +476,7 @@ impl Shot {
             Self::Enemy => "enemy",
             Self::Body => "body",
             Self::Full => "full",
+            Self::Down => "down",
         }
     }
 
@@ -471,7 +484,9 @@ impl Shot {
     /// lamps and cards) moved by the opposite, so the character stays at the world's origin.
     pub fn stand(self) -> Vec3 {
         match self {
-            Self::Wide | Self::Hero | Self::Sky | Self::Face | Self::Enemy | Self::Body | Self::Full => Vec3::ZERO,
+            Self::Wide | Self::Hero | Self::Sky | Self::Face | Self::Enemy | Self::Body | Self::Full | Self::Down => {
+                Vec3::ZERO
+            }
             Self::Street => STREET,
         }
     }
@@ -492,6 +507,7 @@ impl Shot {
             Self::Enemy => (Vec3::new(-0.95, 0.98, 0.1), 14.0, 5.0, 5.6, 36.0),
             Self::Body => (Vec3::new(0.0, 0.85, 0.0), 30.0, 4.0, 3.8, 32.0),
             Self::Full => (Vec3::new(0.0, 0.82, 0.0), -18.0, 6.0, 3.6, 32.0),
+            Self::Down => (Vec3::new(0.0, 0.15, -0.7), 62.0, 26.0, 3.6, 32.0),
         };
         OrbitCamera::shot(target, yaw.to_radians(), pitch.to_radians(), distance, fov.to_radians())
     }

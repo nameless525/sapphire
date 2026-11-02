@@ -1114,8 +1114,8 @@ impl Scene {
         options: &IkOptions,
         block: MeshHandle,
         content: &Content,
-        player: ClipPlayer,
-    ) -> Result<ClipPlayer, String> {
+        pose: &sapphire_anim::CharacterPose,
+    ) -> Result<IkDriver, String> {
         let ground = Arc::new(options.ground.world());
         let height = IkGround::stand(&ground, 0.0, 0.0);
         let world = self.ecs.world_mut();
@@ -1129,11 +1129,23 @@ impl Scene {
             transform.0 = Mat4::from_translation(Vec3::new(0.0, height, 0.0)) * transform.0;
         }
         world.resource_mut::<OrbitCamera>().raise_target(height);
-        let driver =
-            IkDriver::new(lookdev::ik_rig(content, player.pose())?, ground.clone(), IkControls::default());
+        self.ik_on(ground, options.look.map(|look| (look, height)), content, pose)
+    }
+
+    /// IK for the character, with `pose` a pose of it, casting in `ground`, looking at `look` for a
+    /// character standing at its height: what [`Self::start_ik`] does, for a stage with a ground of its
+    /// own. Give it to what plays the character.
+    pub fn ik_on(
+        &mut self,
+        ground: Arc<PhysicsWorld>,
+        look: Option<(IkLook, f32)>,
+        content: &Content,
+        pose: &sapphire_anim::CharacterPose,
+    ) -> Result<IkDriver, String> {
+        let driver = IkDriver::new(lookdev::ik_rig(content, pose)?, ground.clone(), IkControls::default());
         self.ik_ground = Some(ground);
-        self.ik_look = options.look.map(|look| (look, height));
-        Ok(player.with_ik(driver))
+        self.ik_look = look;
+        Ok(driver)
     }
 
     /// Sets the mesh the IK ground's blocks draw again: after GPU device loss.
@@ -1197,11 +1209,21 @@ impl Scene {
             tracing::warn!(target: LOG_TARGET, %error, "the character's graph lost a clip");
         }
         let character = self.character;
+        let ground = self.ik_ground.clone();
         let Some(mut playing) = self.ecs.world_mut().get_mut::<GraphDriver>(character) else { return };
         if character_changed {
             match lookdev::graph_driver(content) {
                 Ok(mut driver) => {
                     driver.continue_from(&playing);
+                    if let (Some(ground), Some(controls)) = (ground, playing.ik_mut().map(|ik| ik.controls()))
+                    {
+                        match lookdev::ik_rig(content, driver.player.pose()) {
+                            Ok(rig) => driver = driver.with_ik(IkDriver::new(rig, ground, controls)),
+                            Err(error) => {
+                                tracing::warn!(target: LOG_TARGET, error, "the look-dev character's new rig has no IK");
+                            }
+                        }
+                    }
                     *playing = driver;
                 }
                 Err(error) => {
@@ -1253,6 +1275,10 @@ impl Scene {
             stats.characters = 1;
             transform.set_if_neq(RenderTransform(driver.base() * place));
             if driver.fits(&render) {
+                if let (Some(ik), Some((look, height))) = (driver.ik_mut(), self.ik_look) {
+                    let target = Some(look.at(input.ticks, height));
+                    ik.set_controls(IkControls { look_target: target, ..ik.controls() });
+                }
                 let springs_run = driver.springs_run(&view, &transform, &figure);
                 let mut job = GraphEvaluation {
                     driver,
@@ -1261,6 +1287,7 @@ impl Scene {
                     rig,
                     input,
                     world_from_model: Affine3A::from_translation(travel) * Affine3A::from_mat4(transform.0),
+                    place: transform.0,
                     springs_run,
                     evaluated: false,
                     spring_work: SpringWork::default(),
@@ -1271,6 +1298,7 @@ impl Scene {
                 if job.evaluated {
                     stats.evaluated = 1;
                     stats.joints = job.driver.player.pose().joint_count() as u32;
+                    stats.ik = u32::from(job.driver.has_ik());
                 }
                 stats.springs = u32::from(job.spring_work.wrote_pose);
                 stats.spring_substeps = job.spring_work.substeps;

@@ -802,12 +802,7 @@ impl GraphPlayer {
     /// Whether a defeated character has nothing left to move: a whole-body move has played to the end
     /// of its clip, and nothing's decaying or waiting. Its clock runs on, but no frame of it can change
     /// a bit, so it costs what a frozen clock costs.
-    fn lies_still(
-        &self,
-        input: &GraphInput,
-        clips: &(impl ClipSource + ?Sized),
-        clips_version: u32,
-    ) -> bool {
+    fn lies_still(&self, input: &GraphInput, clips: &(impl ClipSource + ?Sized), clips_version: u32) -> bool {
         let Some(playing) = self.layers.combat else { return false };
         let entry = self.graph.moves[usize::from(playing.entry)];
         input.defeated

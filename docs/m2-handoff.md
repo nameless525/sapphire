@@ -123,7 +123,6 @@ All on this Mac's Apple M5 with release builds, which is none of §3's reference
 ### Toolchain and dependencies
 
 - **wgpu 31:** pinned to 30 through M1, to be upgraded at the M1→M2 boundary (plan §3, "Pins"; §6). `bevy_ecs` and `bevy_reflect` 0.20 and egui 0.37 also move only between milestones (spec §5.6).
-- **ctt's git patch:** `ctt` comes from an upstream commit with zstd 0.14 (for RustSec advisories). Drop the patch and `deny.toml`'s `allow-git` once a release newer than 0.6.0 carries it ([Cargo.toml](../Cargo.toml), `[patch.crates-io]`).
 - **SDL 3.4.18, pinned exactly:** any upgrade must re-read SDL's main-callback internals against `ios_loop.rs` and `android_loop.rs` ([ADR 0003](adr/0003-ios-frame-pacing.md), [ADR 0004](adr/0004-android-frame-pacing.md)).
 - **WESL and `encase`:** the spec's shader design names WESL imports (`wesl`) and `encase`, but the code uses neither. Shaders are WGSL files joined in order, and GPU structs are hand-written `bytemuck` types (spec §5.12, "Materials, shaders and PSOs"; `sapphire_render::shaders`). WESL imports are listed as later work in the renderer's crate docs.
 
@@ -212,7 +211,7 @@ All on this Mac's Apple M5 with release builds, which is none of §3's reference
   - its fragment stage binds all 16 sampled textures and its 4 storage buffers (W5, C2).
   - So a new feature is a uniform branch, shares a texture slot, or joins `CharacterData`.
 - **The look-dev town doesn't scale as built:** one mesh, drawn whole wherever it shows, which also puts nearly all of it in every shadow cascade (X1 parts 2b and 2d; the performance hunt below).
-- **Pinned dependencies** (wgpu 30, SDL 3.4.18, ctt from git) each need a deliberate upgrade (above).
+- **Pinned dependencies** (wgpu 30, SDL 3.4.18) each need a deliberate upgrade (above).
 - **M2 is the go/no-go gate.** If tuning still feels slow, the off-ramp moves gameplay and tools to Godot with gdext and keeps the Rust systems (spec §10).
 - **Small limits the M1 reviews left.** None shows in today's content, and each is cheap to pick up when its feature arrives:
   - **`alpha` means two things (WA-3):** transforms draw up to a tick behind the latest step, while clocks (time of day, cutscenes, screen effects, `FramePacket::time_seconds`) run up to a tick ahead. So screen effects lead the pose they accent by up to a tick, and shown time steps back on entering pause or slow motion. Making clocks interpolate moves time-dependent goldens for little visible gain, so it waits for M2's animation, its first real consumer.

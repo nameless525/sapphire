@@ -88,7 +88,7 @@ use crate::import::image::{
 /// output the cook embeds, and a test keeps it in step with `Cargo.lock`: every `ctt*` crate
 /// (the encoders are separate crates on caret ranges, so `cargo update` can move them alone)
 /// and `ktx2`, whose generated descriptors the reader compares byte for byte.
-pub const COOKER: Stage = Stage { name: "ktx2 (ktx2 0.5.0, ctt 0.6.0)", version: 2 };
+pub const COOKER: Stage = Stage { name: "ktx2 (ktx2 0.5.0, ctt 0.6.1)", version: 2 };
 
 /// The largest finite half float, the top of BC6H's and RGBA16F's range.
 const HALF_MAX: f32 = 65504.0;

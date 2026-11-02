@@ -112,12 +112,12 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = ["s
 # Pinned per milestone and re-exported through sapphire_ecs. Its `bevy_reflect` feature
 # (ReflectComponent) waits for the inspector (M1 F5), and `backtrace` stays off (error backtraces
 # are captured by sapphire_crash instead).
-bevy_ecs = { version = "0.20.0", default-features = false, features = ["std", "multi_threaded", "async_executor"] }
+bevy_ecs = { version = "0.20.1", default-features = false, features = ["std", "multi_threaded", "async_executor"] }
 
 # --- Reflection and serialization (spec §5.8, §5.9) ---
 # Pinned with bevy_ecs. Automatic registration (`inventory`) is off: types are registered
 # explicitly.
-bevy_reflect = { version = "0.20.0", default-features = false, features = ["std", "glam"] }
+bevy_reflect = { version = "0.20.1", default-features = false, features = ["std", "glam"] }
 serde = { version = "1.0", features = ["derive"] }
 ron = "0.12.2"
 # Cooked data: little-endian, aligned, 32-bit relative pointers (rkyv's defaults), validated
@@ -203,7 +203,7 @@ ufbx = "0.11.5"
 # Intel's ISPC kernels (prebuilt, so no ISPC toolchain is needed) for BC4, BC5 and BC6H, and
 # astcenc for ASTC. No `rayon`: every surface encodes serially, so output never depends on the
 # thread count.
-ctt = { version = "0.6.0", default-features = false, features = ["encoder-bc7enc", "encoder-intel", "encoder-astcenc", "ispc-prebuilt"] }
+ctt = { version = "0.6.1", default-features = false, features = ["encoder-bc7enc", "encoder-intel", "encoder-astcenc", "ispc-prebuilt"] }
 # PNG, TGA and EXR decoding for the texture importer, and JPEG for the images VRM files embed
 # (M1 A6: decoded for outline-width masks, and written out as PNG sources by extract-materials).
 # No `rayon`, no other formats.
@@ -263,11 +263,3 @@ codegen-units = 1
 panic = "abort"
 debug = "full"
 split-debuginfo = "packed"
-
-# ctt 0.6.0 pins zstd 0.13, which RUSTSEC-2026-0391, -0398 and -0403 cover; its main branch
-# moved to zstd 0.14 on 2026-10-02 but no release carries it yet. Until one does, ctt comes from
-# that commit, pinned by rev (deny.toml allows this one git source). It is 0.6.0 plus dependency
-# updates and an etcpak fix. Remove this patch, and the git source, when ctt publishes a release
-# with zstd 0.14.3 or newer.
-[patch.crates-io]
-ctt = { git = "https://github.com/cwfitzgerald/ctt", rev = "252a361183e5bbdf458ca6fa442324259cec4723" }

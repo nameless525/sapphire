@@ -1,0 +1,19 @@
+// A solid blow landing: a medium hit's.
+(
+    type: "sapphire::assets::Cue",
+    version: 1,
+    data: (
+        sounds: [
+            "777260c4-e322-4f49-9a56-69565c28b7a0", // kenney_impact_sounds: impactPunch_heavy_000
+            "0e14a582-77a5-4b7d-802a-02fd9e44ce69", // impactPunch_heavy_001
+            "8278ada5-1bc2-4c18-ae9f-31f93beb36ff", // impactPunch_heavy_002
+            "71cef129-9401-413f-a80a-e352056d300f", // impactPunch_heavy_003
+            "888ae611-e1d1-4760-913e-3ae13212c0b3", // impactPunch_heavy_004
+        ],
+        volume_db: (-5.0, -2.0),
+        pitch: (1.0, 1.1),
+        attenuation: Some((near: 1.0, far: 40.0, curve: Inverse)),
+        bus: Sfx,
+        hitstop: Ignore,
+    ),
+)

@@ -1,0 +1,20 @@
+// A quick cut landing: a light hit's. Heard from where it lands, and it rings on through the
+// hitstop it starts.
+(
+    type: "sapphire::assets::Cue",
+    version: 1,
+    data: (
+        sounds: [
+            "050c7d4c-0c6f-49d1-b977-8741fa916335", // kenney_impact_sounds: impactPunch_medium_000
+            "05be4dff-d970-42ad-b417-ebdc762c59e4", // impactPunch_medium_001
+            "6eed52da-1f33-47f3-bc86-5150a2ff3d82", // impactPunch_medium_002
+            "5c14d5d3-6654-4e08-a6d0-9cb2feafd43d", // impactPunch_medium_003
+            "fde4093a-174e-4f83-bd32-c7266c4b5a82", // impactPunch_medium_004
+        ],
+        volume_db: (-7.0, -4.0),
+        pitch: (0.98, 1.12),
+        attenuation: Some((near: 1.0, far: 40.0, curve: Inverse)),
+        bus: Sfx,
+        hitstop: Ignore,
+    ),
+)

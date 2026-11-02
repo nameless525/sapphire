@@ -1,0 +1,19 @@
+// A body or a heavy swing meeting the ground.
+(
+    type: "sapphire::assets::Cue",
+    version: 1,
+    data: (
+        sounds: [
+            "c809c414-06c1-427c-9e02-eefbb416362f", // kenney_impact_sounds: impactSoft_heavy_000
+            "c43cb1f9-8221-404f-a627-bfd883d9921a", // impactSoft_heavy_001
+            "cc5659e7-9b0b-4681-a62e-3b8f4e96e3da", // impactSoft_heavy_002
+            "a08af5a0-b008-4429-a6ce-37a14a41f27a", // impactSoft_heavy_003
+            "2676b21b-4b59-4e77-a249-c8932609924f", // impactSoft_heavy_004
+        ],
+        volume_db: (-6.0, -3.0),
+        pitch: (0.88, 1.02),
+        attenuation: Some((near: 1.0, far: 30.0, curve: Inverse)),
+        bus: Sfx,
+        hitstop: Ignore,
+    ),
+)

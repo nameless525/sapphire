@@ -1,0 +1,39 @@
+[package]
+name = "sapphire_cues"
+description = "What a gameplay cue fires: a table from the simulation's cues to effects, sound, camera shake, screen effects and rumble, and the dispatcher that fires them in one frame. Presentation only, so nothing here reaches the simulation."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+# The table document derives `TypePath`, whose derive finds the crate by this name.
+bevy_reflect.workspace = true
+profiling.workspace = true
+sapphire_assets.workspace = true
+sapphire_audio.workspace = true
+sapphire_camera.workspace = true
+sapphire_core.workspace = true
+sapphire_ecs.workspace = true
+sapphire_gameplay.workspace = true
+sapphire_math.workspace = true
+sapphire_moves.workspace = true
+sapphire_reflect.workspace = true
+sapphire_render.workspace = true
+sapphire_serialize.workspace = true
+sapphire_vfx.workspace = true
+sapphire_world.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+# The look's plain frame, which the pillar test reads effects from.
+sapphire_look.workspace = true
+# An empty world for the camera the pillar test moves.
+sapphire_physics.workspace = true
+# The bench's clock and the pillar test's clocks: rule R2 keeps this crate itself off the OS's.
+sapphire_time.workspace = true
+
+[lints]
+workspace = true

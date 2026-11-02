@@ -1,0 +1,145 @@
+// Sapphire's cue table (M2 E3), compiled into `sapphire_cues`: what each of the simulation's cues
+// fires, `CueTable::default_table`. A row is a cue's name, as a move or resolve publishes it, and
+// optionally a hit's weight; a row with the weight wins over one without. A cue with no row fires
+// nothing and is counted, so a row that fires nothing says so on purpose.
+//
+// - `effects`: `sapphire_vfx`'s effects, `default_effects.ron`. `at: Hit` (the default) is the hit's
+//   point with the effect's +Y out of the surface, `Feet` where its subject stands. `clock: World`
+//   (the default) burns through hitstop; `Subject` and `Actor` freeze with one of the fighters.
+// - `sounds`: `Cue` documents by their sidecars' IDs, in `content/audio/`.
+// - `shake`: a preset of `default_camera.ron`, and a `strength` on top of it.
+// - `screen`: a preset of `default_screen_effects.ron`. `center: Hit` (the default) centers it on the
+//   hit's point on screen.
+// - `rumble`: `low` and `high` motors from 0 to 1 and a length in real seconds. A flat pulse, so nobody
+//   here can feel it: every number is a guess for someone with a pad.
+//
+// Every number is a starting point for T2's tuning, and nobody here can hear or feel the last two.
+(
+    type: "sapphire::cues::CueTable",
+    version: 1,
+    data: (
+        rows: [
+            // A hit, by its weight: the cue a move's attack publishes unless it names its own.
+            (
+                cue: "hit_landed",
+                weight: Some(Light),
+                effects: [(effect: "hit_spark")],
+                sounds: ["98d07b04-6a90-4fe5-a5c1-81415c71242d"], // hit_light
+                shake: Some((preset: "hit_light")),
+                screen: Some((preset: "light_hit")),
+                rumble: Some((low: 0.12, high: 0.4, seconds: 0.07)),
+            ),
+            (
+                cue: "hit_landed",
+                weight: Some(Medium),
+                effects: [(effect: "hit_spark")],
+                sounds: ["f330373e-0979-47c3-bef2-3d150fd62eff"], // hit_medium
+                shake: Some((preset: "hit_light", strength: 1.8)),
+                screen: Some((preset: "medium_hit")),
+                rumble: Some((low: 0.35, high: 0.5, seconds: 0.11)),
+            ),
+            (
+                cue: "hit_landed",
+                weight: Some(Heavy),
+                effects: [(effect: "heavy_spark")],
+                sounds: [
+                    "9aff2070-6b20-4a57-acc4-0bdeaad19cf3", // hit_heavy
+                    "16e787b3-260f-4873-a443-40c8c52ef5c2", // hit
+                ],
+                shake: Some((preset: "hit_heavy")),
+                screen: Some((preset: "heavy_hit")),
+                rumble: Some((low: 0.75, high: 0.5, seconds: 0.16)),
+            ),
+            // The moves that name their own cue.
+            (
+                cue: "hit_heavy",
+                effects: [(effect: "heavy_spark")],
+                sounds: [
+                    "9aff2070-6b20-4a57-acc4-0bdeaad19cf3", // hit_heavy
+                    "16e787b3-260f-4873-a443-40c8c52ef5c2", // hit
+                ],
+                shake: Some((preset: "hit_heavy")),
+                screen: Some((preset: "heavy_hit")),
+                rumble: Some((low: 0.75, high: 0.5, seconds: 0.16)),
+            ),
+            (
+                cue: "hit_spin",
+                effects: [(effect: "hit_spark")],
+                sounds: ["98d07b04-6a90-4fe5-a5c1-81415c71242d"], // hit_light
+                shake: Some((preset: "hit_light", strength: 0.7)),
+                rumble: Some((low: 0.1, high: 0.3, seconds: 0.05)),
+            ),
+            // What a hit broke or ended, on top of the hit's own row: both fire, in that order. Their
+            // screen effects stack, and the later one shows over the earlier.
+            (
+                cue: "poise_broken",
+                effects: [(effect: "heavy_spark"), (effect: "dust_puff", at: Feet)],
+                sounds: ["88ffc1b9-2961-4f2a-91c3-dd22c453310d"], // poise_break
+                shake: Some((preset: "hit_heavy", strength: 1.3)),
+                screen: Some((preset: "poise_break")),
+                rumble: Some((low: 0.85, high: 0.65, seconds: 0.22)),
+            ),
+            (
+                cue: "defeated",
+                effects: [(effect: "finish_burst"), (effect: "dust_puff", at: Feet)],
+                sounds: ["b6bef59d-261b-4a26-aaf8-72a05ee24133"], // finish
+                shake: Some((preset: "finish")),
+                screen: Some((preset: "finish")),
+                rumble: Some((low: 1.0, high: 0.8, seconds: 0.45)),
+            ),
+            // M2 G4 publishes this one, with slow motion of its own on the simulation's side.
+            (
+                cue: "perfect_dodge",
+                sounds: ["7c4b1877-4c0e-4c33-8464-e902aa20c871"], // perfect_dodge
+                screen: Some((preset: "perfect_dodge", center: Preset)),
+                rumble: Some((low: 0.0, high: 0.35, seconds: 0.06)),
+            ),
+            // A blade through the air: follows the swinger, and freezes with it in hitstop.
+            (cue: "swing", sounds: ["e595fa42-bdd3-4e6e-845c-52684b76f8ed"]), // swing
+            // Bodies and heavy swings meeting the ground, on the test moves and the enemy's.
+            (
+                cue: "finisher_land",
+                effects: [(effect: "dust_puff", at: Feet)],
+                sounds: ["1f0dcb93-8aa6-4159-8008-200561bf0872"], // body_fall
+                shake: Some((preset: "hit_light")),
+            ),
+            (
+                cue: "knocked_down",
+                effects: [(effect: "dust_puff", at: Feet)],
+                sounds: ["1f0dcb93-8aa6-4159-8008-200561bf0872"], // body_fall
+                shake: Some((preset: "hit_light")),
+                rumble: Some((low: 0.3, high: 0.0, seconds: 0.1)),
+            ),
+            (
+                cue: "body_land",
+                effects: [(effect: "dust_puff", at: Feet)],
+                sounds: ["1f0dcb93-8aa6-4159-8008-200561bf0872"], // body_fall
+            ),
+            (
+                cue: "heavy_land",
+                effects: [(effect: "dust_puff", at: Feet)],
+                sounds: ["1f0dcb93-8aa6-4159-8008-200561bf0872"], // body_fall
+                shake: Some((preset: "hit_light")),
+            ),
+            (
+                cue: "lunge_land",
+                effects: [(effect: "dust_puff", at: Feet)],
+                sounds: ["1f0dcb93-8aa6-4159-8008-200561bf0872"], // body_fall
+            ),
+            // On purpose, nothing yet: their moves' animation will say enough, or T2 will add to them.
+            (cue: "swing_windup"),
+            (cue: "reaction"),
+            (cue: "falls"),
+            (cue: "dodge_start"),
+            (cue: "skill_flash"),
+            (cue: "skill_hit"),
+            (cue: "telegraph"),
+            (cue: "stagger"),
+            (cue: "stagger_heavy"),
+            (cue: "knockdown"),
+            (cue: "recover"),
+            (cue: "death"),
+            (cue: "death_fade"),
+        ],
+    ),
+)

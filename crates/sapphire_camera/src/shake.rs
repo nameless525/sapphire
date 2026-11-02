@@ -119,9 +119,10 @@ impl Layer {
     }
 }
 
-/// The shakes playing now. Fixed size, so firing and playing allocate nothing.
+/// The shakes playing now. Fixed size, so firing and playing allocate nothing. The director holds one;
+/// a view that isn't the director's can hold its own and add [`Self::sample`] to its pose.
 #[derive(Clone, Debug)]
-pub(crate) struct ShakeStack {
+pub struct ShakeStack {
     layers: [Layer; MAX_SHAKES],
     count: usize,
     rng: Pcg32,
@@ -133,7 +134,8 @@ impl ShakeStack {
     /// seeded from one number.
     const STREAM: u64 = 0x63616d657261; // "camera"
 
-    pub(crate) fn new(seed: u64) -> Self {
+    #[must_use]
+    pub fn new(seed: u64) -> Self {
         Self {
             layers: [Layer::EMPTY; MAX_SHAKES],
             count: 0,
@@ -142,7 +144,8 @@ impl ShakeStack {
         }
     }
 
-    pub(crate) fn set_setting(&mut self, setting: f32) {
+    /// The player's shake setting, 0 (none, for accessibility) to 1 (as authored).
+    pub fn set_setting(&mut self, setting: f32) {
         self.setting = if setting.is_finite() { setting.clamp(0.0, 1.0) } else { 0.0 };
     }
 
@@ -152,7 +155,7 @@ impl ShakeStack {
     }
 
     /// Starts a shake, and says if another had to make way for it.
-    pub(crate) fn fire(&mut self, shake: Shake, strength: f32) -> bool {
+    pub fn fire(&mut self, shake: Shake, strength: f32) -> bool {
         let mut phases = [0.0; PHASES];
         for phase in &mut phases {
             *phase = self.rng.unit_f32() * std::f32::consts::TAU;
@@ -177,7 +180,7 @@ impl ShakeStack {
     }
 
     /// Ages every shake, and drops those that ended.
-    pub(crate) fn advance(&mut self, dt: f32) {
+    pub fn advance(&mut self, dt: f32) {
         let mut kept = 0;
         for index in 0..self.count {
             let mut layer = self.layers[index];
@@ -192,7 +195,8 @@ impl ShakeStack {
 
     /// The sum of everything playing, scaled by the player's setting and held to the tuning's limits:
     /// radians about local x, y and z, then metres along right, up and forward.
-    pub(crate) fn sample(&self, tuning: &ShakeTuning) -> (Vec3, Vec3) {
+    #[must_use]
+    pub fn sample(&self, tuning: &ShakeTuning) -> (Vec3, Vec3) {
         if self.count == 0 || self.setting <= 0.0 {
             return (Vec3::ZERO, Vec3::ZERO);
         }

@@ -1,7 +1,8 @@
 // Sapphire's sample screen effect presets (M1 P3), compiled into `sapphire_world`:
 // `EffectLibrary::default_effects`, whose module docs (`screen_effects`) say how a preset plays.
-// One per effect, and `impact_frame`, all of them at once as a heavy hit lands. M2 authors the
-// effects real combat uses; packs (A4) will carry presets as content.
+// One per effect, and `impact_frame`, all of them at once as a heavy hit lands; then combat's own
+// (M2 E3), which `sapphire_cues`' table pushes: `light_hit`, `medium_hit`, `heavy_hit`, `poise_break`,
+// `finish` and `perfect_dodge`. Packs (A4) will carry presets as content.
 //
 // - A layer sets exactly one effect: `radial_blur`, `chromatic_aberration`, `inversion`,
 //   `duotone` or `speed_lines`. Fields it leaves out take the effect's defaults.
@@ -125,6 +126,203 @@
                     (
                         chromatic_aberration: (center: (0.5, 0.5), strength: 0.04),
                         envelope: Pulse(hold: 0.1, release: 0.3),
+                    ),
+                ],
+            ),
+            // Combat's (M2 E3), each pushed by `sapphire_cues` at the hit's point on screen, which
+            // takes the place of the centers here. A step up in weight adds a kind of effect, so the
+            // eye learns the grammar: a light hit shudders; a medium one pulls in as well; a heavy
+            // one takes the world to ink for its first frames; a poise break flashes as well; a
+            // finish holds. Impact frames are on `Real`, in frames (1/60 s), and everything fading
+            // after them is on the world's clock, so slow motion stretches a fade.
+            (
+                // Barely there, so a string of them doesn't tire: a split a few frames long.
+                name: "light_hit",
+                layers: [
+                    (
+                        chromatic_aberration: (center: (0.5, 0.5), strength: 0.018),
+                        envelope: Pulse(hold: 0.033, release: 0.1),
+                    ),
+                    (
+                        radial_blur: (center: (0.5, 0.5), strength: 0.018),
+                        envelope: Pulse(hold: 0.017, release: 0.08),
+                    ),
+                ],
+            ),
+            (
+                // A pull toward the hit, and a heavier split.
+                name: "medium_hit",
+                layers: [
+                    (
+                        chromatic_aberration: (center: (0.5, 0.5), strength: 0.03),
+                        envelope: Pulse(hold: 0.05, release: 0.16),
+                    ),
+                    (
+                        radial_blur: (center: (0.5, 0.5), strength: 0.045),
+                        envelope: Pulse(hold: 0.033, release: 0.14),
+                    ),
+                ],
+            ),
+            (
+                // Three frames of ink behind characters kept in their colors, then ink lines
+                // and a blur fading through the rest of its hitstop.
+                name: "heavy_hit",
+                layers: [
+                    (
+                        duotone: (
+                            dark: (0.012, 0.012, 0.03),
+                            light: (0.95, 0.9, 0.82),
+                            threshold: 0.42,
+                            softness: 0.05,
+                            mask: World,
+                        ),
+                        envelope: Keys([(0.0, 1.0), (0.05, 1.0)]),
+                        clock: Real,
+                    ),
+                    (
+                        speed_lines: (
+                            opacity: 0.8,
+                            count: 110,
+                            width: 0.35,
+                            inner_radius: 0.34,
+                            spread: 0.28,
+                            color: (0.012, 0.012, 0.03),
+                            rate: 20.0,
+                            mask: World,
+                        ),
+                        envelope: Pulse(hold: 0.1, release: 0.14),
+                    ),
+                    (
+                        radial_blur: (center: (0.5, 0.5), strength: 0.07),
+                        envelope: Pulse(hold: 0.05, release: 0.22),
+                    ),
+                    (
+                        chromatic_aberration: (center: (0.5, 0.5), strength: 0.035),
+                        envelope: Pulse(hold: 0.067, release: 0.2),
+                    ),
+                ],
+            ),
+            (
+                // A guard giving way: one frame of negative, then ink lit warm, and white lines
+                // bursting from the point of the break.
+                name: "poise_break",
+                layers: [
+                    (
+                        duotone: (
+                            dark: (0.03, 0.008, 0.012),
+                            light: (1.0, 0.72, 0.42),
+                            threshold: 0.4,
+                            softness: 0.06,
+                            mask: World,
+                        ),
+                        envelope: Keys([(0.0, 1.0), (0.1, 1.0)]),
+                        clock: Real,
+                    ),
+                    (
+                        inversion: (amount: 1.0, mask: World),
+                        envelope: Keys([(0.0, 1.0), (0.033, 1.0)]),
+                        clock: Real,
+                    ),
+                    (
+                        speed_lines: (
+                            opacity: 0.9,
+                            count: 130,
+                            width: 0.4,
+                            inner_radius: 0.28,
+                            spread: 0.3,
+                            color: (1.0, 0.94, 0.82),
+                            rate: 20.0,
+                            mask: World,
+                        ),
+                        envelope: Pulse(hold: 0.13, release: 0.18),
+                    ),
+                    (
+                        radial_blur: (center: (0.5, 0.5), strength: 0.09),
+                        envelope: Pulse(hold: 0.07, release: 0.28),
+                    ),
+                    (
+                        chromatic_aberration: (center: (0.5, 0.5), strength: 0.045),
+                        envelope: Pulse(hold: 0.08, release: 0.25),
+                    ),
+                ],
+            ),
+            (
+                // The last blow: the world in ink and paper for as long as a freeze lasts, ink lines
+                // redrawn across it, and a slow fall back into color.
+                name: "finish",
+                layers: [
+                    (
+                        duotone: (
+                            dark: (0.008, 0.006, 0.016),
+                            light: (0.98, 0.93, 0.84),
+                            threshold: 0.46,
+                            softness: 0.03,
+                            mask: World,
+                        ),
+                        envelope: Keys([(0.0, 1.0), (0.3, 1.0), (0.3, 0.75), (0.65, 0.0)]),
+                        clock: Real,
+                    ),
+                    (
+                        speed_lines: (
+                            opacity: 1.0,
+                            count: 150,
+                            width: 0.45,
+                            inner_radius: 0.26,
+                            spread: 0.32,
+                            color: (0.008, 0.006, 0.016),
+                            rate: 15.0,
+                            mask: World,
+                        ),
+                        envelope: Pulse(hold: 0.3, release: 0.35),
+                        clock: Real,
+                    ),
+                    (
+                        radial_blur: (center: (0.5, 0.5), strength: 0.12),
+                        envelope: Pulse(hold: 0.1, release: 0.5),
+                        clock: Real,
+                    ),
+                    (
+                        chromatic_aberration: (center: (0.5, 0.5), strength: 0.05),
+                        envelope: Pulse(hold: 0.13, release: 0.45),
+                        clock: Real,
+                    ),
+                ],
+            ),
+            (
+                // Time drawn out: the world cooled and pale behind characters in color, with thin
+                // lines rushing past, held on real time as long as slow motion usually runs.
+                name: "perfect_dodge",
+                layers: [
+                    (
+                        duotone: (
+                            amount: 0.65,
+                            dark: (0.015, 0.03, 0.07),
+                            light: (0.62, 0.78, 0.95),
+                            threshold: 0.35,
+                            softness: 0.75,
+                            mask: World,
+                        ),
+                        envelope: Pulse(attack: 0.05, hold: 0.45, release: 0.25),
+                        clock: Real,
+                    ),
+                    (
+                        speed_lines: (
+                            opacity: 0.4,
+                            count: 90,
+                            width: 0.22,
+                            inner_radius: 0.38,
+                            spread: 0.3,
+                            color: (0.85, 0.95, 1.0),
+                            rate: 12.0,
+                            mask: World,
+                        ),
+                        envelope: Pulse(attack: 0.03, hold: 0.4, release: 0.2),
+                        clock: Real,
+                    ),
+                    (
+                        radial_blur: (center: (0.5, 0.5), strength: 0.06),
+                        envelope: Pulse(hold: 0.03, release: 0.25),
+                        clock: Real,
                     ),
                 ],
             ),

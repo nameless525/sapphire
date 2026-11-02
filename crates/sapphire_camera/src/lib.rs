@@ -125,7 +125,7 @@ mod tuning;
 
 pub use director::{CameraDirector, CameraFrame, CameraPose, CameraStats};
 pub use rigs::{Rig, Subject};
-pub use shake::{MAX_SHAKES, NamedShake, Shake, ShakeId};
+pub use shake::{MAX_SHAKES, NamedShake, Shake, ShakeId, ShakeStack};
 pub use tuning::{
     CameraTuning, CameraTuningError, CollisionTuning, CombatTuning, ExploreTuning, FramingTuning,
     LockOnTuning, LookTuning, ShakeTuning, TakeoverTuning,

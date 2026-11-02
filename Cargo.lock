@@ -3000,6 +3000,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "sapphire_cues"
+version = "0.1.0"
+dependencies = [
+ "bevy_reflect",
+ "profiling",
+ "sapphire_assets",
+ "sapphire_audio",
+ "sapphire_camera",
+ "sapphire_core",
+ "sapphire_ecs",
+ "sapphire_gameplay",
+ "sapphire_look",
+ "sapphire_math",
+ "sapphire_moves",
+ "sapphire_physics",
+ "sapphire_reflect",
+ "sapphire_render",
+ "sapphire_serialize",
+ "sapphire_time",
+ "sapphire_vfx",
+ "sapphire_world",
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "sapphire_debug"
 version = "0.1.0"
 dependencies = [

@@ -61,13 +61,16 @@ pub(crate) struct Serving {
     lengths: FrameLengths,
     /// A fight's sound, with `--cues`.
     audio: Option<OfflineAudio>,
+    /// Since the first frame, and when on it the next is due. A sleep overshoots by a millisecond or
+    /// more, which at 30 frames a second came to 25 when each frame slept for what was left of its own.
+    clock: Stopwatch,
+    due: Duration,
 }
 
 /// Frames drawn over a window of about [`REPORT_INTERVAL`], for the frame stats line.
-#[derive(Default)]
 struct FrameLengths {
-    /// Their lengths, slept out to the tier's frame, summed.
-    window: Duration,
+    /// Since the window started.
+    window: Stopwatch,
     /// The time they took to draw, summed.
     drawn: Duration,
     frames: u32,
@@ -79,24 +82,29 @@ struct FrameLengths {
 
 impl FrameLengths {
     fn new() -> Self {
-        Self { allocations: sapphire_core::alloc::stats().total_allocations, ..Self::default() }
+        Self {
+            window: Stopwatch::start(),
+            drawn: Duration::ZERO,
+            frames: 0,
+            longest: Duration::ZERO,
+            allocations: sapphire_core::alloc::stats().total_allocations,
+        }
     }
 
-    /// Counts a frame that took `drawn` to draw, of a tier whose frame is `frame` long, and logs the
-    /// window's once it is long enough.
-    fn record(&mut self, drawn: Duration, frame: Duration) {
-        self.window += drawn.max(frame);
+    /// Counts a frame that took `drawn` to draw, and logs the window's once it is long enough.
+    fn record(&mut self, drawn: Duration) {
         self.drawn += drawn;
         self.frames += 1;
         self.longest = self.longest.max(drawn);
-        if self.window < REPORT_INTERVAL {
+        let window = self.window.elapsed();
+        if window < REPORT_INTERVAL {
             return;
         }
         let heap = sapphire_core::alloc::stats();
         tracing::info!(
             target: LOG_TARGET,
             frames = self.frames,
-            fps = format_args!("{:.1}", f64::from(self.frames) / self.window.as_secs_f64()),
+            fps = format_args!("{:.1}", f64::from(self.frames) / window.as_secs_f64()),
             mean_ms = format_args!("{:.2}", self.drawn.as_secs_f64() * 1e3 / f64::from(self.frames)),
             longest_ms = format_args!("{:.2}", self.longest.as_secs_f64() * 1e3),
             allocs_per_frame = (heap.total_allocations - self.allocations) / u64::from(self.frames),
@@ -131,6 +139,8 @@ impl Serving {
             remaining: frame_limit,
             lengths,
             audio,
+            clock: Stopwatch::start(),
+            due: Duration::ZERO,
         })
     }
 
@@ -156,10 +166,11 @@ impl Serving {
             return AppControl::Fail;
         }
         self.remaining = self.remaining.map(|remaining| remaining - 1);
-        let drawn = stopwatch.elapsed();
+        self.lengths.record(stopwatch.elapsed());
+        // A frame after the last was due, or now if this one ran late.
         let frame = frame_length(self.stage.quality.frame_rate().map_or(TICK_HZ, NonZero::get));
-        self.lengths.record(drawn, frame);
-        if let Some(rest) = frame.checked_sub(drawn) {
+        self.due = (self.due + frame).max(self.clock.elapsed());
+        if let Some(rest) = self.due.checked_sub(self.clock.elapsed()) {
             std::thread::sleep(rest);
         }
         AppControl::Continue

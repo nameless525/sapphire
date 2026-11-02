@@ -37,6 +37,12 @@ const TEST_MOVES: &str = include_str!("../../../sapphire_moves/test_content/slic
 /// That document, from the repository's root.
 const TEST_MOVES_PATH: &str = "crates/sapphire_moves/test_content/slice.moves.ron";
 
+/// The enemy's document (M2 O4), brain and all, as this build holds it: a replay needs no assets.
+const WARRIOR_MOVES: &str = include_str!("../../../../content/combat/enemy/warrior.moves.ron");
+
+/// That document, from the repository's root.
+const WARRIOR_MOVES_PATH: &str = "content/combat/enemy/warrior.moves.ron";
+
 /// Why a scenario couldn't set its world up, as with a replay that asks for too small a pool.
 #[derive(Debug, thiserror::Error)]
 pub enum ScenarioError {
@@ -136,6 +142,19 @@ pub const SCENARIOS: &[Scenario] = &[
         documents: &[TEST_MOVES_PATH],
         setup: arena,
     },
+    Scenario {
+        name: "arena-fight",
+        about: "the arena's player on the test moves, aiming warps at the real warrior: O4's moves and fighter, \
+                driven by its own brain, so input drives only the player",
+        config: SimConfig {
+            seed: 7,
+            max_actors: 8,
+            step_budget: BUDGET_DESKTOP_LOW,
+            physics_budget: PHYSICS_BUDGET_DESKTOP_LOW,
+        },
+        documents: &[TEST_MOVES_PATH, WARRIOR_MOVES_PATH],
+        setup: arena_fight,
+    },
 ];
 
 /// The scenario named `name`, among `scenarios`.
@@ -147,6 +166,11 @@ pub fn find_scenario<'a>(scenarios: &'a [Scenario], name: &str) -> Option<&'a Sc
 /// The test content's moves: a three-hit string, a dash attack, a dodge and a skill.
 pub fn test_moves() -> Result<MoveSet, MoveSetError> {
     MoveSetDocument::parse(TEST_MOVES)?.compile()
+}
+
+/// The real enemy's moves, fighter and brain: `content/combat/enemy/warrior.moves.ron`.
+pub fn warrior_moves() -> Result<MoveSet, MoveSetError> {
+    MoveSetDocument::parse(WARRIOR_MOVES)?.compile()
 }
 
 /// Steps a [`Buttons::ULTIMATE`] press slows the world for, in [`melee`], and to how many thousandths.
@@ -270,6 +294,36 @@ pub fn arena(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
     }
     aim_round(sim, &cast);
     Ok(cast)
+}
+
+/// A fight: the arena's square, the player at its spawn point on the test moves, and the warrior at
+/// its, on its own document, with a brain that fights the player. The cast is both, the player first, for
+/// presentation to stand where they are; input reaches only the player, since the brain overrides the
+/// warrior's stick and none of its intents has a button.
+pub fn arena_fight(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
+    let cooked = crate::arena::cooked_colliders()?;
+    let set = ColliderSet::read(&cooked)?;
+    sim.set_physics_world(PhysicsWorld::from_cooked(set, sim.body_capacity())?)?;
+    let controller = Some(sim.add_controller_profile(&crate::arena::profile())?);
+    let player_moves = Some(sim.add_move_set(test_moves()?));
+    let warrior = Some(sim.add_move_set(warrior_moves()?));
+    let spawns = crate::arena::spawns();
+    let player = sim.spawn(ActorSpawn {
+        position: spawns.player.position(),
+        yaw: spawns.player.yaw(),
+        moves: player_moves,
+        controller,
+    })?;
+    let enemy = sim.spawn(ActorSpawn {
+        position: spawns.enemy.position(),
+        yaw: spawns.enemy.yaw(),
+        moves: warrior,
+        controller,
+    })?;
+    sim.set_warp_target(player, WarpTarget::Actor(enemy));
+    let thinking = sim.give_brain(enemy, player);
+    debug_assert!(thinking, "the warrior's document has a brain");
+    Ok(vec![player, enemy])
 }
 
 #[cfg(test)]

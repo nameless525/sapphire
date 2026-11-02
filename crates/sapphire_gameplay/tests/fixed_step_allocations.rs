@@ -558,6 +558,32 @@ fn perfect_dodges_and_counters_allocate_nothing_from_the_first_step() {
     assert!(sim.hits().stats().dodge_touches >= 3);
 }
 
+/// A brain from its first thought to its target's fall and past it: it walks, circles, draws, presses,
+/// reacts, gets up and stands, and nothing it does allocates (rule R6).
+#[test]
+fn a_brain_allocates_nothing_from_the_first_step() {
+    if !PER_THREAD_COUNTS {
+        return;
+    }
+    let scenario = find_scenario(SCENARIOS, "arena-fight").expect("listed");
+    let (mut sim, cast) = scenario.start(scenario.config).expect("sets up");
+    let script = find_script("fight-back").expect("listed");
+    let scripted: Vec<TickActions> =
+        (0..u64::from(script.ticks)).map(|tick| (script.actions)(tick, &cast)).collect();
+
+    let ((), counts) = alloc::count_in_scope(|| {
+        for actions in &scripted {
+            sim.step(actions);
+        }
+    });
+    assert_eq!(counts.allocations, 0);
+    let stats = sim.stats();
+    assert_eq!(stats.allocations, 0);
+    assert!(stats.moves_started > 20, "{stats:?}");
+    assert!(stats.reactions_forced > 5, "{stats:?}");
+    assert_eq!(stats.defeats, 1, "that wasn't a whole fight: {stats:?}");
+}
+
 /// A fight's worth of the test content's moves in real steps, from the first: hurtboxes placed, sweeps
 /// and hits, reactions forced through whatever's running, hitstop, pushes, a poise break, a defeat with a
 /// finish freeze, slow motion, cues, and a despawn with its records and bodies. Everyone's in reach, and

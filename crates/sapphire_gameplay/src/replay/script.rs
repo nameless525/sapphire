@@ -92,6 +92,13 @@ pub const SCRIPTS: &[Script] = &[
         actions: attempts,
     },
     Script {
+        name: "fight-back",
+        about: "the arena's player against the warrior, with no eyes for it: a dodge and a dash attack, over \
+                and over, which the dash's warp aims at whatever's in reach",
+        ticks: 2100,
+        actions: fight_back,
+    },
+    Script {
         name: "idle",
         about: "nobody touches anything: the smallest a replay can be",
         ticks: 3600,
@@ -372,6 +379,25 @@ fn facing_off(
         let buttons = on_schedule(tick, u64::MAX, schedule);
         actions.set(actor, ActorActions { buttons, stick }).expect("two actors fit a tick");
     }
+    actions
+}
+
+/// One round of [`fight_back`]: a dodge from nothing, and a light press into its window, which plays
+/// the dash attack, whose warp finds the warrior. Its i-frames take most of what comes.
+const FIGHT_BACK: [(u64, Buttons); 2] = [(0, Buttons::DODGE), (12, Buttons::LIGHT)];
+
+/// Ticks of [`fight_back`]'s round.
+const FIGHT_BACK_ROUND: u64 = 64;
+
+/// [`SCRIPTS`]' `fight-back`: a script reads a tick and nothing else, so it can't aim its stick at
+/// anyone. This one doesn't need to: dash attacks warp. Whatever the warrior does, this makes it through
+/// its health with the player's left.
+#[must_use]
+pub fn fight_back(tick: u64, cast: &[ActorId]) -> TickActions {
+    let mut actions = TickActions::NEUTRAL;
+    let Some(&player) = cast.first() else { return actions };
+    let buttons = on_schedule(tick, FIGHT_BACK_ROUND, &FIGHT_BACK);
+    actions.set(player, ActorActions { buttons, stick: Stick::CENTER }).expect("one actor fits a tick");
     actions
 }
 

@@ -2499,6 +2499,8 @@ pub fn scenes() -> [Scene; 122] {
         Scene {
             name: "lookdev-clip-idle",
             args: &[
+                "--springs",
+                "off",
                 "--capture-ticks",
                 "70",
                 "--look-dev",
@@ -2521,6 +2523,8 @@ pub fn scenes() -> [Scene; 122] {
         Scene {
             name: "lookdev-clip-run",
             args: &[
+                "--springs",
+                "off",
                 "--capture-ticks",
                 "31",
                 "--look-dev",
@@ -2543,6 +2547,8 @@ pub fn scenes() -> [Scene; 122] {
         Scene {
             name: "lookdev-clip-hit",
             args: &[
+                "--springs",
+                "off",
                 "--capture-ticks",
                 "15",
                 "--look-dev",

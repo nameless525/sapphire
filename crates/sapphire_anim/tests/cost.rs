@@ -4,6 +4,9 @@
 //! graph with more layers would cost. Run it in release, on an idle machine if the numbers matter:
 //! `cargo test --release -p sapphire_anim --test cost -- --ignored --nocapture`.
 
+#![allow(clippy::print_stdout, reason = "this test's output is what it's for")]
+#![allow(clippy::disallowed_methods, reason = "a timing test reads the OS clock, and reads nothing else")]
+
 use std::hint::black_box;
 use std::time::Instant;
 

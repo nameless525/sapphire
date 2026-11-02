@@ -18,6 +18,12 @@ are the project's own (MIT):
   bone, which the importers bind rigidly to it. Blender's FBX exporter writes normals for the mesh
   as its shape keys currently mix, where its glTF exporter resets them first, so the only key
   with a weight (0.25, "Rise") moves every vertex alike, which turns no normal.
+- **animated_clips**: a tube skinned to five bones, each with a roll of its own, under an armature,
+  with two actions a clip import must tell apart: Stride moves the hips (translation), turns the
+  spine and the arm and stretches the arm (scale), and Spin turns the hips a half turn about the
+  vertical. Both are sampled on every frame by both exporters, so their keys agree. Its tests compare
+  the two files' clips, so it holds no shape key: Blender 5.2's actions and its glTF exporter's merge
+  rules make those another fixture's problem, and hand-written ASCII tests blend weights.
 - **textured** (FBX only, as `textured_external.fbx` naming `textures/checker.png` and
   `textures/bumps.png` beside it, and `textured_embedded.fbx` embedding them): a box whose
   material samples a base color texture and a normal map, for `extract-materials`.
@@ -35,7 +41,8 @@ write:
 - glTF with the active color attribute (`export_vertex_color='ACTIVE'`; by default it writes
   only colors a material reads), through a workaround for Blender 5.2's exporter, which writes
   them for a mesh's first material only (`keep_every_materials_vertex_colors`).
-- FBX without leaf bones and animation; glTF without animation.
+- FBX without leaf bones and animation; glTF without animation, but for **animated_clips**, which
+  each writes with every action, sampled on every frame (`export_animated`).
 
 Every run writes the same bytes, wherever the checkout is (`reproducible_fbx`): the FBX exporter's
 time stamp is fixed, its object IDs hash their keys without Python's per-process salt, and images
@@ -258,6 +265,103 @@ def skinned_morph():
     cap.rotation_euler = (math.radians(-90.0), 0.0, 0.0)
 
 
+def animated_clips():
+    """A tube on five bones with two actions; see the module docs."""
+    scene = empty_scene()
+    collection = scene.collection
+    scene.render.fps = 30
+    armature_data = bpy.data.armatures.new("Rig")
+    armature = bpy.data.objects.new("Rig", armature_data)
+    collection.objects.link(armature)
+    bpy.context.view_layer.objects.active = armature
+    bpy.ops.object.mode_set(mode="EDIT")
+    bones = (
+        # name, parent, head, tail, roll in degrees
+        ("Hips", None, (0.0, 0.0, 1.0), (0.0, 0.0, 1.2), 0.0),
+        ("Spine", "Hips", (0.0, 0.0, 1.2), (0.0, 0.05, 1.7), 15.0),
+        ("Head", "Spine", (0.0, 0.05, 1.7), (0.0, 0.05, 2.0), 0.0),
+        ("Arm", "Spine", (0.2, 0.0, 1.6), (0.7, 0.0, 1.6), 30.0),
+        ("Leg", "Hips", (0.1, 0.0, 1.0), (0.1, 0.0, 0.1), -20.0),
+    )
+    for name, parent, head, tail, roll in bones:
+        bone = armature_data.edit_bones.new(name)
+        bone.head, bone.tail = head, tail
+        bone.roll = math.radians(roll)
+        if parent is not None:
+            bone.parent = armature_data.edit_bones[parent]
+    bpy.ops.object.mode_set(mode="OBJECT")
+
+    vertices, triangles, _ = prism(8, 0.25, 2.0)
+    body = mesh_object("Body", vertices, triangles, ["Cloth"], [0] * len(triangles), collection)
+    body.parent = armature
+    modifier = body.modifiers.new("Armature", "ARMATURE")
+    modifier.object = armature
+    group = body.vertex_groups.new(name="Hips")
+    group.add(list(range(len(vertices))), 1.0, "REPLACE")
+
+    # Each action on an NLA track of its own, where both exporters find it. Rotations in quaternions,
+    # keyed on the frames given and sampled on every frame by the exporters.
+    armature.animation_data_create()
+    pose = armature.pose.bones
+    for bone in pose:
+        bone.rotation_mode = "QUATERNION"
+
+    def key(frame, name, data_path, value):
+        bone = pose[name]
+        setattr(bone, data_path, value)
+        bone.keyframe_insert(data_path=data_path, frame=frame)
+
+    def turn(axis, degrees):
+        half = math.radians(degrees) / 2.0
+        sine = math.sin(half)
+        return (math.cos(half), axis[0] * sine, axis[1] * sine, axis[2] * sine)
+
+    def action(name, keys):
+        created = bpy.data.actions.new(name)
+        armature.animation_data.action = created
+        for bone in pose:
+            bone.location = (0.0, 0.0, 0.0)
+            bone.rotation_quaternion = (1.0, 0.0, 0.0, 0.0)
+            bone.scale = (1.0, 1.0, 1.0)
+        for arguments in keys:
+            key(*arguments)
+        armature.animation_data.action = None
+        track = armature.animation_data.nla_tracks.new()
+        track.name = name
+        strip = track.strips.new(name, 1, created)
+        strip.name = name
+
+    action(
+        "Stride",
+        [
+            (1, "Hips", "location", (0.0, 0.0, 0.0)),
+            (16, "Hips", "location", (0.0, 0.3, -0.05)),
+            (31, "Hips", "location", (0.0, 0.6, 0.0)),
+            (1, "Spine", "rotation_quaternion", turn((1.0, 0.0, 0.0), 0.0)),
+            (16, "Spine", "rotation_quaternion", turn((1.0, 0.0, 0.0), 25.0)),
+            (31, "Spine", "rotation_quaternion", turn((1.0, 0.0, 0.0), 0.0)),
+            (1, "Arm", "rotation_quaternion", turn((0.0, 0.0, 1.0), -30.0)),
+            (31, "Arm", "rotation_quaternion", turn((0.0, 0.0, 1.0), 40.0)),
+            (1, "Arm", "scale", (1.0, 1.0, 1.0)),
+            (16, "Arm", "scale", (1.0, 1.4, 1.0)),
+            (31, "Arm", "scale", (1.0, 1.0, 1.0)),
+        ],
+    )
+    action(
+        "Spin",
+        [
+            (1, "Hips", "rotation_quaternion", turn((0.0, 1.0, 0.0), 0.0)),
+            (8, "Hips", "rotation_quaternion", turn((0.0, 1.0, 0.0), 90.0)),
+            (16, "Hips", "rotation_quaternion", turn((0.0, 1.0, 0.0), 180.0)),
+        ],
+    )
+    for bone in pose:
+        bone.location = (0.0, 0.0, 0.0)
+        bone.rotation_quaternion = (1.0, 0.0, 0.0, 0.0)
+        bone.scale = (1.0, 1.0, 1.0)
+    scene.frame_set(1)
+
+
 def image(name, out, pixel):
     """A 4 × 4 PNG made from `pixel(x, y)` (RGBA bytes), saved as `<out>/textures/<name>.png`."""
     created = bpy.data.images.new(name, 4, 4, alpha=True)
@@ -415,6 +519,38 @@ def export(out, name):
     print(f"wrote {fbx} and {glb}")
 
 
+def export_animated(out, name):
+    """As `export`, with every action written: an FBX stack and a glTF animation each."""
+    fbx = os.path.join(out, f"{name}.fbx")
+    glb = os.path.join(out, f"{name}.glb")
+    bpy.ops.export_scene.fbx(
+        filepath=fbx,
+        object_types={"ARMATURE", "MESH"},
+        colors_type="LINEAR",
+        add_leaf_bones=False,
+        bake_anim=True,
+        bake_anim_use_all_actions=False,
+        bake_anim_use_nla_strips=True,
+        bake_anim_use_all_bones=True,
+        bake_anim_force_startend_keying=True,
+        bake_anim_step=1.0,
+        bake_anim_simplify_factor=0.0,
+        use_metadata=False,
+    )
+    bpy.ops.export_scene.gltf(
+        filepath=glb,
+        export_format="GLB",
+        export_vertex_color="ACTIVE",
+        export_animations=True,
+        export_animation_mode="NLA_TRACKS",
+        export_force_sampling=True,
+        export_frame_step=1,
+        export_optimize_animation_size=False,
+        export_materials="EXPORT",
+    )
+    print(f"wrote {fbx} and {glb}")
+
+
 def main():
     arguments = parse_arguments()
     os.makedirs(arguments.out, exist_ok=True)
@@ -427,6 +563,8 @@ def main():
     export_textured(arguments.out)
     textured_shared(arguments.out)
     export_textured(arguments.out, "textured_shared")
+    animated_clips()
+    export_animated(arguments.out, "animated_clips")
 
 
 if __name__ == "__main__":

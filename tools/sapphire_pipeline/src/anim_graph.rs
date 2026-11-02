@@ -8,14 +8,12 @@
 
 use std::path::{Path, PathBuf};
 
-use sapphire_assets::AssetId;
 pub use sapphire_assets::graph::clip_id;
 use sapphire_assets::graph::{AnimGraph, GraphError};
 use sapphire_serialize::cooked::CookedError;
 use serde::{Deserialize, Serialize};
 
 use crate::cache::Stage;
-use crate::meta;
 
 /// Reading the document, as cache keys know it. Bump the version whenever its output changes for the
 /// same file.
@@ -142,7 +140,7 @@ impl LocomotionBounds {
     }
 
     /// What the look-dev character's locomotion plays: its states' clips and its blend space's samples.
-    pub fn clips() -> Vec<GraphClip> {
+    pub fn clips() -> Vec<sapphire_assets::graph::GraphClip> {
         use sapphire_assets::graph::StateMotion;
 
         let text = include_str!("../../../content/lookdev/character/character.animgraph.ron");
@@ -166,8 +164,12 @@ impl LocomotionBounds {
 mod tests {
     use std::fs;
 
+    use sapphire_assets::AssetId;
+    use sapphire_assets::graph::GraphClip;
+
     use super::*;
     use crate::cook::{Cook, CookError, CookOptions, CookStatus, cook_dir};
+    use crate::meta;
     use crate::test_util::TempDir;
 
     /// The character's own graph, as the look-dev stage plays it.

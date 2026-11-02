@@ -1033,6 +1033,24 @@ fn every_clip_on_the_rig_retargets_but_the_two_that_start_at_no_size() {
 
 // The enemy's derived warrior (M2 O4): this rig's joints and rest rotations, at other lengths.
 
+/// The joints the sidecars' `follow` names: no humanoid bone stands for them.
+const HAND_BLOCKS: [&str; 4] = ["hand.l", "hand.r", "handslot.l", "handslot.r"];
+
+fn joint_named(skeleton: &Skeleton, name: &str) -> usize {
+    skeleton.names.iter().position(|candidate| candidate == name).expect(name)
+}
+
+/// What a sidecar's entry asks of a retarget, as the cook reads it.
+fn options_of(entry: &RetargetSettings) -> RetargetOptions {
+    RetargetOptions {
+        scale: entry.scale,
+        ground: entry.ground,
+        adjust: entry.adjust.clone(),
+        gain: entry.gain.clone(),
+        follow: entry.follow.clone(),
+    }
+}
+
 /// The enemy's model as its sidecar has it, with the sidecar's ID and map.
 fn warrior() -> (AssetId, Skeleton, HumanMap) {
     let path = third_party().join("../combat/enemy/warrior.glb");
@@ -1047,9 +1065,9 @@ fn warrior() -> (AssetId, Skeleton, HumanMap) {
 /// are the rig's stretched 2.1 times, and so is the travel, so the lowest foot reaches the floor and
 /// lifts only as far as the clip does (the bound is the measured value and a little), and its rests
 /// are the rig's, so each mapped bone turns exactly as the source's. `hand.l`, `hand.r` and the hand
-/// slots under them have no bone, so they stay at rest under the wrists and a held blade doesn't
-/// follow the source's grip: `Melee_1H_Attack_*`'s is up to 90 degrees off, and only eyes can judge
-/// that. Nothing here holds the blade (M2 O2 or N3).
+/// slots under them have no bone, so the sidecars name them under `follow`, and they turn exactly as
+/// the source's too: a blade held at `handslot.r` stays in the clip's grip. Left at rest they'd miss
+/// it by 67 to 94 degrees, depending on the clip, which is what the option is for.
 #[test]
 fn the_rigs_clips_reach_the_warrior_at_its_own_lengths() {
     let (id, skeleton, map) = warrior();
@@ -1086,16 +1104,20 @@ fn the_rigs_clips_reach_the_warrior_at_its_own_lengths() {
     let mut failures = Vec::new();
     for file in FILES {
         let kaykit = Kaykit::open(file);
-        let entries = kaykit.settings.retarget.iter().filter(|entry| entry.target == id);
-        let named: Vec<&str> = entries.flat_map(|entry| &entry.names).map(String::as_str).collect();
+        let entries = || kaykit.settings.retarget.iter().filter(|entry| entry.target == id);
+        let named: Vec<&str> = entries().flat_map(|entry| &entry.names).map(String::as_str).collect();
         let expected: Vec<&str> = rows.iter().filter(|row| row.0 == file).map(|row| row.1).collect();
         assert_eq!(named, expected, "{file}'s sidecar");
         for &(_, name, flight) in rows.iter().filter(|row| row.0 == file) {
             let sampled = kaykit.sampled(name);
             let target = Rig { skeleton: &skeleton, map: &map };
-            let out = retarget(&sampled, kaykit.rig(), target, &RetargetOptions::default()).unwrap();
+            let entry = entries().find(|entry| entry.names.iter().any(|n| n == name)).unwrap();
+            let out = retarget(&sampled, kaykit.rig(), target, &options_of(entry)).unwrap();
+            let unfollowed = RetargetOptions { follow: Vec::new(), ..options_of(entry) };
+            let at_rest = retarget(&sampled, kaykit.rig(), target, &unfollowed).unwrap();
             let source_rest = rotations(&still(0), &kaykit.skeleton, 0);
             let (mut floor, mut lift, mut turned_apart) = (f32::MAX, f32::MIN, 0.0f32);
+            let (mut grip, mut grip_at_rest) = (0.0f32, 0.0f32);
             for tick in 0..=usize::from(out.ticks) {
                 let (lower, _) = feet(&pose(&out, &skeleton, tick), &map, &rest);
                 floor = floor.min(lower);
@@ -1110,6 +1132,19 @@ fn the_rigs_clips_reach_the_warrior_at_its_own_lengths() {
                     let (a, b) = (delta(&from, &source_rest, source), delta(&to, &target_rest, joint));
                     turned_apart = turned_apart.max(angle_between(a, b));
                 }
+                let plain = rotations(&at_rest, &skeleton, tick);
+                for block in HAND_BLOCKS {
+                    let (source, joint) =
+                        (joint_named(&kaykit.skeleton, block), joint_named(&skeleton, block));
+                    grip = grip.max(angle_between(from[source], to[joint]));
+                    grip_at_rest = grip_at_rest.max(angle_between(from[source], plain[joint]));
+                }
+            }
+            if grip > 0.001 {
+                failures.push(format!("{name}: a hand block misses the clip's grip by {grip} rad"));
+            }
+            if grip_at_rest < 1.0 {
+                failures.push(format!("{name}: at rest they'd only miss by {grip_at_rest} rad"));
             }
             if floor.abs() > 0.001 {
                 failures.push(format!("{name}: the lowest foot only reaches {floor} from the floor"));
@@ -1131,16 +1166,11 @@ fn the_rigs_clips_reach_the_warrior_at_its_own_lengths() {
 /// A clip on the character as the sidecars cook it, with their adjustments and gains.
 fn as_cooked(kaykit: &Kaykit, name: &str) -> SampledClip {
     let (skeleton, map) = character();
-    let entry = kaykit.settings.retarget.iter().find(|entry| entry.names.iter().any(|n| n == name));
+    let the_character = AssetId::from_text("6f8a81b6-29c4-485f-b161-847b001d561f");
+    let mut entries = kaykit.settings.retarget.iter().filter(|entry| entry.target == the_character);
+    let entry = entries.find(|entry| entry.names.iter().any(|n| n == name));
     let entry = entry.unwrap_or_else(|| panic!("{name} doesn't cook for the character"));
-    let options = RetargetOptions {
-        scale: entry.scale,
-        ground: entry.ground,
-        adjust: entry.adjust.clone(),
-        gain: entry.gain.clone(),
-        follow: entry.follow.clone(),
-    };
-    retarget(&kaykit.sampled(name), kaykit.rig(), Rig { skeleton, map }, &options).unwrap()
+    retarget(&kaykit.sampled(name), kaykit.rig(), Rig { skeleton, map }, &options_of(entry)).unwrap()
 }
 
 /// What the sheets judged, held as numbers, by each clip's measured value and a little: M2 O2's
@@ -1215,15 +1245,13 @@ fn as_cooked_the_run_covers_the_ground_the_controller_does() {
 }
 
 /// `follow`, on a real clip: the rig retargeted onto itself, its hand blocks and slots named, takes
-/// each block's local rotation as the clip has it, the grip a held blade hangs from (M2 O4: up to 90°
-/// off without it).
+/// each block's local rotation as the clip has it, the grip a held blade hangs from.
 #[test]
 fn a_followed_hand_block_keeps_the_clips_grip() {
-    const BLOCKS: [&str; 4] = ["hand.l", "hand.r", "handslot.l", "handslot.r"];
     let kaykit = Kaykit::open("CombatMelee");
     let sampled = kaykit.sampled("Melee_1H_Attack_Chop");
     let options = RetargetOptions {
-        follow: BLOCKS.iter().map(|name| (*name).to_owned()).collect(),
+        follow: HAND_BLOCKS.iter().map(|name| (*name).to_owned()).collect(),
         ..RetargetOptions::default()
     };
     let out = retarget(&sampled, kaykit.rig(), kaykit.rig(), &options).unwrap();
@@ -1231,7 +1259,7 @@ fn a_followed_hand_block_keeps_the_clips_grip() {
     let joint_of =
         |name: &str| kaykit.skeleton.names.iter().position(|candidate| candidate == name).expect(name) as u16;
     let (mut moved, mut without) = (0.0_f32, 0.0_f32);
-    for name in BLOCKS {
+    for name in HAND_BLOCKS {
         let joint = joint_of(name);
         let Some(source) = track(&sampled.rotations, joint) else { continue };
         let rest = Quat::from_array(kaykit.skeleton.rest[usize::from(joint)].rotation).normalize();

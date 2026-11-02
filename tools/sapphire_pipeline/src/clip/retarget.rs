@@ -348,6 +348,67 @@ fn lowest(soles: &[Foot], model: &[Affine3A]) -> f32 {
     soles.iter().map(|foot| model[foot.joint].translation.y - foot.rest_height).fold(f32::INFINITY, f32::min)
 }
 
+/// Points `driver_of` at the source joints `follow` names, for the target joints of those names.
+fn follow_by_name(
+    follow: &[String],
+    source: Rig<'_>,
+    target: Rig<'_>,
+    bone_of: &[Option<HumanBone>],
+    driver_of: &mut [Option<usize>],
+) -> Result<(), RetargetError> {
+    for name in follow {
+        let joint = |rig: Rig<'_>, which| {
+            let found = rig.skeleton.names.iter().position(|candidate| candidate == name);
+            found.ok_or_else(|| RetargetError::UnknownJoint { which, name: name.clone() })
+        };
+        let (from, joint) = (joint(source, "the source")?, joint(target, "the target")?);
+        if let Some(bone) = bone_of[joint] {
+            return Err(RetargetError::FollowedBone { name: name.clone(), bone: bone.name() });
+        }
+        driver_of[joint] = Some(from);
+    }
+    Ok(())
+}
+
+/// A setting by bone, as one by the target's joints. A rig without the bone skips it.
+fn by_target_joint<T, U: Copy>(
+    target: Rig<'_>,
+    settings: &BTreeMap<HumanBone, T>,
+    value: impl Fn(&T) -> U,
+) -> Vec<Option<U>> {
+    let mut by_joint = vec![None; target.skeleton.parents.len()];
+    for (bone, setting) in settings {
+        if let Some(joint) = target.map.joint(*bone) {
+            by_joint[usize::from(joint)] = Some(value(setting));
+        }
+    }
+    by_joint
+}
+
+/// What a gain takes off a bone's own turn, `parent_delta⁻¹ · delta`, as a turn before it.
+fn gain_loss(gain: f32, delta: Quat, parent_delta: Quat) -> Quat {
+    let own = parent_delta.inverse() * delta;
+    Quat::IDENTITY.slerp(own, gain) * own.inverse()
+}
+
+/// What a joint changes about its own motion, in its parent's frame at rest: `turn`, its adjustment,
+/// and `gain`, its gain with its `delta`. `None` when it changes nothing.
+fn own_change(turn: Option<Quat>, gain: Option<(f32, Quat)>, parent_delta: Quat) -> Option<Quat> {
+    if turn.is_none() && gain.is_none() {
+        return None;
+    }
+    let lost = gain.map_or(Quat::IDENTITY, |(gain, delta)| gain_loss(gain, delta, parent_delta));
+    Some(turn.unwrap_or(Quat::IDENTITY) * lost)
+}
+
+/// What a joint's `delta` is corrected by: the correction `above` it, then its `change`, moved with
+/// the body above it by `parent_delta`.
+fn correction_with(above: Option<Quat>, change: Option<Quat>, parent_delta: Quat) -> Option<Quat> {
+    change.map_or(above, |change| {
+        Some(above.unwrap_or(Quat::IDENTITY) * parent_delta * change * parent_delta.inverse())
+    })
+}
+
 /// `sampled`, for `target`: see the [module docs](self). Its root motion should already be lifted,
 /// and its tracks index `source`'s joints. Morph weights aren't carried: targets have their own.
 pub fn retarget(
@@ -375,29 +436,9 @@ pub fn retarget(
         bone_of[joint] = Some(bone);
         driver_of[joint] = source.map.joint(bone).map(usize::from);
     }
-    for name in &options.follow {
-        let joint = |rig: Rig<'_>, which| {
-            let found = rig.skeleton.names.iter().position(|candidate| candidate == name);
-            found.ok_or_else(|| RetargetError::UnknownJoint { which, name: name.clone() })
-        };
-        let (from, joint) = (joint(source, "the source")?, joint(target, "the target")?);
-        if let Some(bone) = bone_of[joint] {
-            return Err(RetargetError::FollowedBone { name: name.clone(), bone: bone.name() });
-        }
-        driver_of[joint] = Some(from);
-    }
-    let mut adjust_of: Vec<Option<Quat>> = vec![None; target_joints];
-    for (bone, turn) in &options.adjust {
-        if let Some(joint) = target.map.joint(*bone) {
-            adjust_of[usize::from(joint)] = Some(turn.quat());
-        }
-    }
-    let mut gain_of: Vec<Option<f32>> = vec![None; target_joints];
-    for (bone, gain) in &options.gain {
-        if let Some(joint) = target.map.joint(*bone) {
-            gain_of[usize::from(joint)] = Some(*gain);
-        }
-    }
+    follow_by_name(&options.follow, source, target, &bone_of, &mut driver_of)?;
+    let adjust_of = by_target_joint(target, &options.adjust, |turn| turn.quat());
+    let gain_of = by_target_joint(target, &options.gain, |gain| *gain);
     let source_rest_rotation = rest_rotations(source.skeleton);
     let target_rest_rotation = rest_rotations(target.skeleton);
     let source_rest = rest_model(source.skeleton);
@@ -488,21 +529,8 @@ pub fn retarget(
             let delta =
                 driver_of[joint].map(|from| source_rotation[from] * source_rest_rotation[from].inverse());
             delta_of[joint] = delta.unwrap_or(parent_delta);
-            // What this joint changes about its own motion, in its parent's frame at rest.
-            let own_change = match (adjust_of[joint], gain_of[joint].zip(delta)) {
-                (None, None) => None,
-                (turn, gain) => {
-                    let lost = gain.map_or(Quat::IDENTITY, |(gain, delta)| {
-                        let own = parent_delta.inverse() * delta;
-                        Quat::IDENTITY.slerp(own, gain) * own.inverse()
-                    });
-                    Some(turn.unwrap_or(Quat::IDENTITY) * lost)
-                }
-            };
-            let correction = own_change.map_or(parent_correction, |change| {
-                let above = parent_correction.unwrap_or(Quat::IDENTITY);
-                Some(above * parent_delta * change * parent_delta.inverse())
-            });
+            let change = own_change(adjust_of[joint], gain_of[joint].zip(delta), parent_delta);
+            let correction = correction_with(parent_correction, change, parent_delta);
             correction_of[joint] = correction;
             let local = if delta.is_some() || adjust_of[joint].is_some() {
                 let delta = delta_of[joint];

@@ -8,7 +8,7 @@ use crate::{
 /// Scale-stack capacity of an entity clock (spec §4.5).
 const LOCAL_SCALE_CAPACITY: usize = 4;
 
-/// One entity's clock. A plain struct for now; it becomes an ECS component in M1.
+/// One entity's clock: a plain struct, which `sapphire_ecs`'s `EntityClock` holds as a component.
 ///
 /// Created by [`ScaledClock::new_local_clock`], which gives it a [`ClockId`] in that world.
 ///

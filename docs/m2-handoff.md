@@ -5,7 +5,7 @@ What M2 inherits from M1, for whoever starts M2; [m2-plan.md](m2-plan.md) is wha
 - the M1 plan, [m1-plan.md](m1-plan.md), by package ID (each package's row carries its "As built" notes);
 - or the code, where its crate docs keep a "Later milestones" section.
 
-Written at M1's close (X2, 2026-10-27), on `main` at 9f4fce5 (the A8 follow-up 2, PR #77, its last package).
+Written at M1's close (X2, 2026-10-27), on `main` at 9f4fce5 (the A8 follow-up 2, PR #77, its last package). Counts are as of then. A line about what M2 has since built says so; the plan's rows have the detail.
 
 ## Where M1 stands
 
@@ -50,7 +50,7 @@ None of these blocks M2's code, but M2's exit test needs a phone.
 
 - **Sources:** glTF and VRM 1.0 (A5, A6), FBX meshes (A10), PNG, TGA and EXR (A2), and RON documents: materials, ramps, ILM and face maps, layer masks, assemblies and time of day.
 - **The cook:** per platform (BC on desktop, ASTC on mobile), through a blake3 content cache, into packs (A1 to A4; spec §5.10, §5.27).
-- **Cooked formats** are Material 10, Mesh 13, pack 1 and probe grid 1. A changed layout bumps its version and the asset recooks; cooked data has no upgrades (spec §5.9).
+- **Cooked formats** were Material 10, Mesh 13, pack 1 and probe grid 1 at M1's close; each type's `VERSION` says what it is now. A changed layout bumps its version and the asset recooks; cooked data has no upgrades (spec §5.9).
 - **The runtime** loads through an IO thread, decode jobs and a per-frame upload budget, behind handles. Hot reload remounts a pack and swaps what changed behind the same handles (A4, A8; spec §5.10).
 - **The VRM's rig** (spring bones, colliders, constraints) is kept as data for `sapphire_anim` (A6; spec §5.10).
 
@@ -77,10 +77,10 @@ None of these blocks M2's code, but M2's exit test needs a phone.
 
 - **The scene:** `--look-dev wide|hero|sky|street|face` (X1) stands the VRM character in a Jinzhou-style town. The stage has its own day, sky, light rigs and plants (`content/lookdev/`, X1 parts 1 to 2f, C8's adoption).
 - **The town** is one assembly mesh of 232k triangles in the desktop cook and 153k in the mobile cook, built from parametric shapes (spec §5.27; X1 part 2f). Around it stand 48 far-mountain sectors (part 2d) and 40 plants, each its own mesh (part 2b).
-- **Its uses:** it has seven golden scenes (`lookdev-*`). It is the scene exit test 2 measures and the scene of the exit run ([m1-exit-run.md](m1-exit-run.md)).
+- **Its uses:** it had seven golden scenes (`lookdev-*`) at M1's close. It is the scene exit test 2 measures and the scene of the exit run ([m1-exit-run.md](m1-exit-run.md)).
 - **Its gaps:**
   - Its goldens and benches keep W5's AO off, and the town has no probe grid (X1 part 1 left both to part 2, which kept them off).
-  - The town is drawn whole, with nothing culled by view.
+  - The town is one mesh, so it's drawn whole wherever any of it shows. Since #96 what's wholly out of view skips the main pass, which helps the far mountains and the plants, not the town.
   - The character's eyes keep the model's rounder shape and lash line, and the blue hour's lit skin reads gray-mauve (X1 part 2c).
 
 ### Iteration: hot reload and live link
@@ -92,7 +92,7 @@ None of these blocks M2's code, but M2's exit test needs a phone.
 
 ### Golden images
 
-- **95 scenes** in [scenes.rs](../tools/sapphire_testkit/src/scenes.rs), each with a golden per backend family in `tests/golden/`: Metal, lavapipe (Mesa 26.1.3) and WARP 1.0.21 (F6; spec §9, Q6). The README's "Golden images" section says how to run and update them.
+- **95 scenes at M1's close** in [scenes.rs](../tools/sapphire_testkit/src/scenes.rs), each with a golden per backend family in `tests/golden/`: Metal, lavapipe (Mesa 26.1.3) and WARP 1.0.21 (F6; spec §9, Q6). The README's "Golden images" section says how to run and update them.
 - **Gates:** a FLIP mean of 0.01, a 99th percentile of 0.12 and a worst 16 × 16 tile of 0.15, by default (spec §9 has the noise they sit above). Existing goldens stay byte-identical when a feature lands: older scenes pin new features off (`--plain-post`, `--fog off`, `--ao off`, …).
 - **CI** runs every scene on every pull request ([ci.yml](../.github/workflows/ci.yml)). Lavapipe runs in two shards, WARP in six and Metal in one job, all required (Q6).
   - At 87 scenes each shard took 11 to 14 minutes with its build (run 40493256145).
@@ -129,20 +129,20 @@ All on this Mac's Apple M5 with release builds, which is none of §3's reference
 ### Animation, M2's core
 
 - **`sapphire_anim` and Q7:** `ozz-animation-rs` has no offline tools and needs nightly Rust (`portable_simd`), which the stable toolchain rules out. [m2-plan.md](m2-plan.md) §3 decides on our own runtime and cooker (spec §5.13, §11 Q7).
-- **Clips:** FBX animation isn't imported yet (A10; spec §5.27, FBX's "Not imported").
-- **Skeletons as assets:** skinned meshes embed their skeleton until animation cooks skeletons of their own, and the VRM's rig moves next to them (spec §5.10).
-- **Spring bones and constraints** are cooked, but nothing simulates them (A6; spec §5.10). The look-dev character holds one standing pose (X1 part 1).
+- **Clips:** built in M2 N1, from glTF, FBX, VRMA and key-pose documents (spec §5.13, §5.27).
+- **Skeletons as assets:** built in M2 N1: a skinned mesh names a cooked skeleton, with the VRM's rig beside it (spec §5.10, §5.13).
+- **Spring bones and constraints** run: `sapphire_anim`'s `SpringBones` (M2 N5) and `Constraints` (N2) (spec §5.13). The look-dev character holds one standing pose until something plays it (`--clip`, `--graph`).
 - **Lip-sync curves** come later (spec §5.13).
 
 ### Gameplay, world and tools
 
-- **The combat slice:** the combat core, party, camera director, one enemy AI, audio (Q8: `kira`, plan §3) and touch controls (spec §10; §5.15, §5.22).
+- **The combat slice:** the combat core, party, camera director, one enemy AI, audio (Q8: `kira`, plan §3) and touch controls. All are M2's packages, built or building: the plan's rows say which (spec §10; §5.15, §5.22).
 - **Hit-stop:** it freezes the combatants' clocks, and M2 pushes a hit's screen effect preset in the step that applies it. G3 settled the finish freeze: it stops every actor's clock and leaves the world's running, so effects need no clock of their own (spec §5.22).
-- **Spawning in the fixed step** allocates, so gameplay spawns need pre-sized pools (spec §5.6, rule R6).
+- **Spawning in the fixed step** allocates, so the simulation's actors come from a pool sized when it's made (M2 D1; spec §5.6, rule R6).
 - **Zones** (M3) are to place the look-dev town as culled instances instead of one mesh (spec §5.21; §5.27, X1 part 1's "Later milestones").
 - **Wind and weather per zone and hour:** `FramePacket::wind` and `weather` are plumbed, but nothing resolves them per zone and no shader reads the weather (spec §4.6).
-- **Debug tools:** the debug-draw API, an entity inspector, hitbox and intent-buffer views and the replay recorder (spec §5.20).
-- **CI:** combat replays, nightly cooks and device runs aren't in it yet (spec §8; §9 gates 2 and 4).
+- **Debug tools:** the entity inspector. The debug-draw API, hitbox and intent-buffer views and the replay recorder came with M2 T1 (spec §5.20).
+- **CI:** combat replays run on every pull request since M2 D2. Nightly cooks and device runs aren't in it yet (spec §8; §9 gates 2 and 4).
 - **Latency:** end-to-end input latency is to be measured in M2 (spec §4.2).
 
 ### Renderer

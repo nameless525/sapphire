@@ -85,7 +85,7 @@ deny = [
     { crate = "bincode", reason = "3.0.0 is a compile_error! tombstone; use rkyv or postcard" },
     { crate = "optick", reason = "abandoned profiler; use tracy-client through profiling" },
     { crate = "rustybuzz", reason = "archived; text shaping goes through parley" },
-    { crate = "bevy_cobweb_ui", reason = "dead end for UI; en_ui is taffy + parley" },
+    { crate = "bevy_cobweb_ui", reason = "dead end for UI; sapphire_ui plans on taffy + parley" },
     { crate = "distill", reason = "abandoned asset pipeline" },
     { crate = "physx-rs", reason = "archived; physics is parry with Jolt as the escape hatch" },
     { crate = "specs", reason = "dead ECS; use bevy_ecs" },

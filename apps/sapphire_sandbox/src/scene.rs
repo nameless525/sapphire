@@ -395,7 +395,6 @@ pub(crate) struct Scene {
     arena: Option<ArenaActors>,
     /// The camera jumped since the last view: the next one says so, for temporal AA and the shadows.
     view_cut: bool,
-    /// What poses them.
     /// Whether the arena's fighters play graphs ([`Self::play_fighters`]).
     fighters_posed: bool,
     /// Which party member the character draws as, with `--party`.

@@ -32,8 +32,8 @@ use crate::resolve::SlowMotion;
 use crate::simulation::{CombatSet, SimConfig, SimRng, Simulation};
 use crate::stats::{BUDGET_DESKTOP_LOW, PHYSICS_BUDGET_DESKTOP_LOW};
 
-/// The test content's document: see that file for its numbers. M2 O3 replaces the content, and the
-/// suite is re-recorded then.
+/// The test content's document: see that file for its numbers. The real moves came beside it (M2 O3,
+/// `arena-fight`), and the older scenarios stay on it, so tuning those moves moves none of their replays.
 const TEST_MOVES: &str = include_str!("../../../sapphire_moves/test_content/slice.moves.ron");
 
 /// That document, from the repository's root.

@@ -12,7 +12,7 @@
 //! - [`Timer`] and [`Cooldown`]: deadlines read against any [`Clock`].
 //!
 //! Does not own: the frame loop (the app drives [`FixedStepDriver::advance`] and runs the steps)
-//! or ECS integration (`LocalClock` becomes a component in M1).
+//! or ECS integration (`sapphire_ecs`'s `WorldClock` and `EntityClock` hold these clocks as ECS data).
 //!
 //! # Time model
 //!

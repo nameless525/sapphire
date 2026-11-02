@@ -123,7 +123,6 @@ pub struct Scene {
 /// material layer scenes pin; the shadow hue scenes (`--shade-hue`) light the face rig at golden
 /// hour, with and without the hue, and pin what the face scenes pin; the folded rim scenes light
 /// the rim scenes' figures from behind through the gameplay rig's limits (`--rim-rig folded`),
-/// with and without a camera rim (`--camera-rim`), and pin what the rim scenes pin.
 /// with and without a camera rim (`--camera-rim`), and pin what the rim scenes pin; the soft
 /// bangs' shadow scene softens the face rig's faces (`--hair-shadow-softness`) under the hair
 /// scene's keys and pins what it pins; the back-lit hair scenes light the face rig from behind

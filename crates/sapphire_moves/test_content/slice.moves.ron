@@ -1,8 +1,8 @@
 // The combat slice's moves for tests: frame data plausible for Zenless Zone Zero's rhythm, in 60 Hz
-// ticks, with motion keyed by hand until real clips bake (M2 O3 replaces this content, not its
-// format). A press reaches a moving frame the tick after it lands; attacks commit for a third of a
-// second; a dodge's i-frames last nearly a quarter of a second, the first 100 ms of them perfect, and a
-// swing dodged in those slows the world and opens a counter.
+// ticks, with motion keyed by hand. The real moves are in content/combat/ (M2 O3, O4), and the older
+// scenarios stay on these. A press reaches a moving frame the tick after it lands; attacks commit for
+// a third of a second; a dodge's i-frames last nearly a quarter of a second, the first 100 ms of them
+// perfect, and a swing dodged in those slows the world and opens a counter.
 // A light hit freezes both fighters for 50 ms and a heavy one for 167; a poise meter takes about seven
 // light hits or two heavy ones to break, and its break is a second and a half to punish.
 (

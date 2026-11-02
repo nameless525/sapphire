@@ -11,8 +11,10 @@
 //! strings, dodge cancels and dash attacks with a warp target and its ring in use, with its neighbours
 //! in reach and a capsule on a floor, so hits land, reactions cut moves off, and hurtboxes and capsules
 //! move, which is more than most of a real fight's actors do at once. Nobody falls: they're given health
-//! for it, so the last steps cost what the first do. It reads the steps through `Simulation::stats`, as the overlay would, and adds its checksum
-//! cost, which a replay pays per tick only when asked.
+//! for it, so the last steps cost what the first do. Dodges go through swings, so perfect dodges fire and
+//! counters start, with their slowdown taken out: a slowed world does a fifth of the work a step, which
+//! would flatter every number here. It reads the steps through `Simulation::stats`, as the overlay would,
+//! and adds its checksum cost, which a replay pays per tick only when asked.
 
 #![allow(clippy::print_stdout, reason = "a bench's output is what it's for")]
 
@@ -30,7 +32,9 @@ use sapphire_time::Stopwatch;
 const SLICE: &str = include_str!("../../sapphire_moves/test_content/slice.moves.ron");
 
 fn slice() -> MoveSet {
-    let lasting = SLICE.replacen("health: 300,", "health: 4000000000,", 1);
+    let lasting = SLICE
+        .replacen("health: 300,", "health: 4000000000,", 1)
+        .replacen("slow_motion: (per_mille: 200, steps: 30),", "", 1);
     MoveSetDocument::parse(&lasting).expect("parses").compile().expect("compiles")
 }
 
@@ -82,8 +86,9 @@ struct Round {
     p999: Duration,
     worst: Duration,
     checksum: Duration,
-    /// Moves started, cancels fired, cues published and hits applied, to show the steps did the work.
-    work: (u64, u64, u64, u64),
+    /// Moves started, cancels fired, cues published, hits applied, perfect dodges fired and counters
+    /// started, to show the steps did the work.
+    work: (u64, u64, u64, u64, u64, u64),
 }
 
 fn round(actors: u32, steps: u64) -> Round {
@@ -109,12 +114,24 @@ fn round(actors: u32, steps: u64) -> Round {
     assert_eq!(stats.steps, steps);
     assert_eq!((stats.allocations, stats.cues_dropped, stats.volumes_dropped), (0, 0, 0));
     assert!(stats.hits_applied > steps / 100, "a load that stops landing hits stops measuring: {stats:?}");
+    // A duel's two dodge on a rhythm that misses each other's swings, and the crowds' don't.
+    if actors > 2 {
+        assert!(stats.perfect_dodges > steps / 1000, "or firing perfect dodges: {stats:?}");
+        assert!(stats.counters_fired > 0, "or starting counters: {stats:?}");
+    }
     Round {
         median: times[times.len() / 2],
         p999: times[times.len() * 999 / 1000],
         worst: stats.longest_step,
         checksum: checksum_time,
-        work: (stats.moves_started, stats.cancels_fired, stats.cues_published, stats.hits_applied),
+        work: (
+            stats.moves_started,
+            stats.cancels_fired,
+            stats.cues_published,
+            stats.hits_applied,
+            stats.perfect_dodges,
+            stats.counters_fired,
+        ),
     }
 }
 
@@ -147,11 +164,13 @@ fn main() {
 
     println!("creating a simulation with 128 pooled actors: {:.0} µs", creation.as_secs_f64() * 1e6);
     println!("{steps} steps, {ROUNDS} rounds, minimums across rounds");
-    println!("actors  median step  99.9% step  worst step  checksum  moves  cancels   cues   hits");
+    println!(
+        "actors  median step  99.9% step  worst step  checksum  moves  cancels   cues   hits  perfect  counters"
+    );
     for (size, best) in SIZES.iter().zip(&best) {
         let best = best.as_ref().expect("every size ran");
         println!(
-            "{size:6}  {:9.2} µs  {:7.2} µs  {:7.2} µs  {:5.2} µs  {:5}  {:7}  {:5}  {:5}",
+            "{size:6}  {:9.2} µs  {:7.2} µs  {:7.2} µs  {:5.2} µs  {:5}  {:7}  {:5}  {:5}  {:7}  {:8}",
             best.median.as_secs_f64() * 1e6,
             best.p999.as_secs_f64() * 1e6,
             best.worst.as_secs_f64() * 1e6,
@@ -160,6 +179,8 @@ fn main() {
             best.work.1,
             best.work.2,
             best.work.3,
+            best.work.4,
+            best.work.5,
         );
     }
     println!("budget: 1000 µs on Desktop-Low, 1500 µs on Mobile-Low");

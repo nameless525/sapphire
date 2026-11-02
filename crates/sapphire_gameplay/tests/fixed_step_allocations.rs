@@ -10,8 +10,8 @@ use sapphire_core::Name;
 use sapphire_core::alloc::{self, CountingAllocator, PER_THREAD_COUNTS};
 use sapphire_ecs::prelude::*;
 use sapphire_gameplay::replay::{
-    Player, Recording, Replay, SCENARIOS, Scenario, ScenarioError, StepAllocated, find_script, melee,
-    melee_buttons,
+    Player, Recording, Replay, SCENARIOS, Scenario, ScenarioError, StepAllocated, find_scenario, find_script,
+    melee, melee_buttons,
 };
 use sapphire_gameplay::{
     ActorActions, ActorId, ActorSpawn, ActorTransform, Buttons, CombatSet, HitQuery, HurtboxId,
@@ -494,6 +494,33 @@ fn a_simulations_hit_state_hashes_without_allocating() {
     let (checksum, counts) = alloc::count_in_scope(|| sim.checksum());
     assert_ne!(checksum, 0);
     assert_eq!(counts.allocations, 0);
+}
+
+/// The replay suite's perfect dodges in real steps, from the first: a volume placed, found by a sweep and
+/// taken out again, the slowdown and its counter-scale pushed and replaced and popped, the cue, a counter
+/// window read, opened, fired from and let lapse, and what the counter lands.
+#[test]
+fn perfect_dodges_and_counters_allocate_nothing_from_the_first_step() {
+    if !PER_THREAD_COUNTS {
+        return;
+    }
+    let scenario = find_scenario(SCENARIOS, "duel").expect("listed");
+    let script = find_script("dodge-counter").expect("listed");
+    let (mut sim, cast) = scenario.start(scenario.config).expect("sets up");
+    let scripted: Vec<TickActions> =
+        (0..u64::from(script.ticks)).map(|tick| (script.actions)(tick, &cast)).collect();
+
+    let ((), counts) = alloc::count_in_scope(|| {
+        for actions in &scripted {
+            sim.step(actions);
+        }
+    });
+    assert_eq!(counts.allocations, 0);
+    let stats = sim.stats();
+    assert_eq!(stats.allocations, 0);
+    assert_eq!(stats.perfect_dodges, 3, "or that wasn't tested: {stats:?}");
+    assert_eq!(stats.counters_fired, 2, "or that wasn't tested: {stats:?}");
+    assert!(sim.hits().stats().dodge_touches >= 3);
 }
 
 /// A fight's worth of the test content's moves in real steps, from the first: hurtboxes placed, sweeps

@@ -356,6 +356,15 @@ fn the_tables_hash_changes_with_the_move_data_and_nothing_else() {
         ("a cue", |d| d.moves[0].cues[0].at += 1),
         ("invulnerability", |d| d.moves[3].invulnerable[0].to -= 1),
         ("a perfect-dodge window", |d| d.moves[3].perfect_dodge[0].to -= 1),
+        ("a perfect-dodge volume", |d| {
+            d.moves[3].perfect_dodge[0].volume.as_mut().unwrap().offset[1] += 0.25;
+        }),
+        ("a slowdown's speed", |d| d.moves[3].perfect_dodge[0].slow_motion.as_mut().unwrap().per_mille = 250),
+        ("a slowdown's length", |d| d.moves[3].perfect_dodge[0].slow_motion.as_mut().unwrap().steps += 1),
+        ("a counter window", |d| d.moves[3].perfect_dodge[0].counter.as_mut().unwrap().ticks += 1),
+        ("what a counter starts", |d| {
+            d.moves[3].perfect_dodge[0].counter.as_mut().unwrap().allow[0].target = "dash_attack".to_owned();
+        }),
         ("a hurtbox", |d| d.moves[3].hurtboxes[0].to -= 1),
         ("a warp's limit", |d| d.moves[4].warps[0].max_distance += 0.25),
         ("a parry window", |d| d.moves[5].parry[0].to -= 1),

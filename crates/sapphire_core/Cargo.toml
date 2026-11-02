@@ -12,6 +12,8 @@ license.workspace = true
 mimalloc = ["dep:mimalloc"]
 
 [dependencies]
+# Debug draw's API takes world positions in the engine's math types.
+glam.workspace = true
 mimalloc = { workspace = true, optional = true }
 thiserror.workspace = true
 tracing.workspace = true

@@ -90,7 +90,8 @@ Run a `dev` build with a fight in it, and save. `crates/sapphire_moves/test_cont
 
 - A move in progress finishes on what it started with, and the next start reads the edit. The log says `the next attempt plays the new moves`, and `cargo xtask link status` shows each fighter's revision and windows.
 - A bad document changes nothing, and its issues name the move and the track. The next good one works.
-- A move that names a clip takes new windows and phases with no cook. Its length is its clip's, and a change to the `clip` block needs `cargo xtask content`, then hot reload's remount or `cargo xtask link push`.
+- A move that names a clip takes new windows and phases with no cook. Its length is its clip's, and a change to the `clip` block needs `cargo xtask content`, then hot reload's remount or `cargo xtask link push`. A cook reads a document when it starts, so where the app has the file, one that started before your last save leaves that save playing, over the cook's tables.
+- Of the graphs, only the character's takes edits, on the graph show's character or a fight's player. The enemy's, `warrior.animgraph.ron`, comes through a cook, and a push of it is refused by name.
 - A recording ends its file at the first edit that changes something, and the fight goes on: a replay can only answer for what it recorded. A fight started afterwards starts from the edit, and its file says so through its hash.
 - A fight with no file takes edits too, and starts over from them.
 - To try it with no window: `--offscreen --record <file> --scenario duel --script attempts`, which presses LIGHT every half second, or on the real moves `--offscreen --arena --fight --script attempts`.

@@ -175,6 +175,7 @@ pub(crate) const COOKED_EXTENSIONS: &[&str] = &[
     PROBE_GRID_EXTENSION,
     SKELETON_EXTENSION,
     CLIP_EXTENSION,
+    COLLIDERS_EXTENSION,
 ];
 
 /// What a source's skeleton's ID is derived from.
@@ -2208,6 +2209,23 @@ mod tests {
         let report = scratch.cook();
         assert_eq!(statuses(&report), [CookStatus::Cooked]);
         assert_eq!(report.assets[0].id, id);
+    }
+
+    #[test]
+    fn a_removed_collider_documents_output_is_pruned() {
+        let scratch = Scratch::new("cook_colliders_pruned");
+        let source = scratch.source().join("arena.colliders.ron");
+        fs::create_dir_all(scratch.source()).unwrap();
+        fs::write(&source, collider_document("ground", 5.0)).unwrap();
+        scratch.cook();
+        let output = scratch.out().join("arena.scol");
+        assert!(output.exists());
+
+        fs::remove_file(&source).unwrap();
+        fs::remove_file(sidecar_path(&source)).unwrap();
+        let report = scratch.cook();
+        assert!(!output.exists());
+        assert!(report.removed.contains(&output), "{:?}", report.removed);
     }
 
     #[test]

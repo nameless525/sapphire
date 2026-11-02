@@ -20,9 +20,8 @@ use xxhash_rust::xxh3::Xxh3;
 /// arm64: an Apple M5, in both the test and release profiles. CI's macOS runners must agree.
 const CHECKSUM_AARCH64: u64 = 0xdea2_9485_3ead_a2e1;
 
-/// x86-64: Linux and Windows must both reach this one value. **Not pinned yet:** the first CI run
-/// fails, printing the value to put here.
-const CHECKSUM_X86_64: Option<u64> = None;
+/// x86-64: Linux and Windows both reach this one value, read from both in CI.
+const CHECKSUM_X86_64: Option<u64> = Some(0x29ef_22bb_e704_f520);
 
 const EXPECTED: Option<u64> = if cfg!(target_arch = "aarch64") {
     Some(CHECKSUM_AARCH64)

@@ -155,6 +155,86 @@ Each figure is wall time on the critical path.
 | Draw calls | 2,500 | 700 |
 | Zone texture pool | 2.5 GB | 600 MB (WuWa's mobile pool is reportedly 400 MB) |
 
+### 3.5 Measured in combat (M2 Z1)
+
+**This is a Mac. It doesn't answer exit test 4.** Exit test 4 is Mobile-Low holding 30 fps thermally throttled after 15 minutes of combat on a phone. No number here was taken on a phone or at throttled clocks, and §3's budgets stay proposals until one is. What these numbers do say: the fight's work is all there, nothing grows, and how much a phone may lose before a row is over.
+
+- **Hardware and code:** Apple M5 (4 performance and 6 efficiency cores, 10-core GPU, 24 GB), macOS 27.0.1, on AC power, Metal. M2 through G6 and T3, with Z1's fixes, in release builds. A tier at its own size and cook: 2560×1440, 1920×1080 and the desktop cook; 1600×740, 1280×590 and the mobile cook.
+- **The load:** `--bench 1 --tier <tier> --arena --replay tests/replays/arena-fight-won.sreplay --cues --hud live --blade on --time-of-day 10`, the whole 1,700-tick fight: real moves on both fighters, IK, springs, the sword's trail, the director's camera, every cue through the real mixer with no device, the live HUD. Mobile-Low takes 2 fixed steps a frame. Docs: `apps/sapphire_sandbox/src/fight_bench.rs`; `--bench-trace <csv>` writes every frame.
+- **How it was read:** five rounds alternating tiers after a discarded run, load average 4.3 to 7.6. Each figure is the least across rounds. **Peak** is the highest tick after taking each tick's least across rounds, so it repeats and has a name; a one-off stall can't make it. On Metal only the GPU frame is exact, since passes overlap: a pass's figure can read 0 and its p99 can be another's time. CPU rows can all move together by about ×2.6 from one run to the next on identical code (a p50 of 929 µs against 357 at load 6), which is why the least across rounds is the figure.
+
+ms, p50 / p99 / peak @ tick, with the budget in brackets (§3.1 to §3.3; §3.2 and §3.3 have budgets on Desktop-Low and Mobile-Low only). **Bold is over.**
+
+| Row | Desktop-High | Desktop-Low | Mobile-High | Mobile-Low |
+|---|---|---|---|---|
+| CPU frame | 0.363 / 0.614 / 0.578 @ 964 [8] | 0.348 / 0.408 / 0.400 @ 161 [12] | 0.273 / 0.405 / 0.367 @ 87 [12] | 0.241 / 0.279 / 0.290 @ 494 [22] |
+| Game side | 0.044 / 0.101 / 0.093 @ 964 | 0.042 / 0.056 / 0.056 @ 397 [6] | 0.032 / 0.051 / 0.050 @ 1533 | 0.042 / 0.055 / 0.060 @ 86 [13.6] |
+| Simulation, a frame's steps | 0.006 / 0.024 / 0.022 @ 24 | 0.006 / 0.011 / 0.011 @ 1210 [1] | 0.005 / 0.010 / 0.010 @ 1210 | 0.008 / 0.012 / 0.016 @ 1210 [3] |
+| Physics, inside it | 0.002 / 0.006 / 0.005 @ 1214 | 0.002 / 0.004 / 0.005 @ 1215 [0.7] | 0.002 / 0.004 / 0.005 @ 1215 | 0.003 / 0.007 / 0.009 @ 1216 [2.4] |
+| Animation + IK | 0.009 / 0.019 / 0.022 @ 971 | 0.008 / 0.017 / 0.018 @ 33 [1.5] | 0.007 / 0.017 / 0.018 @ 1201 | 0.007 / 0.016 / 0.018 @ 86 [3] |
+| Secondary motion | 0.016 / 0.021 / 0.025 @ 1019 | 0.016 / 0.020 / 0.021 @ 1439 [0.5] | 0.009 / 0.012 / 0.013 @ 260 | 0.016 / 0.020 / 0.022 @ 260 [1] |
+| VFX simulation | 0.001 / 0.004 / 0.006 @ 1253 | 0.001 / 0.003 / 0.006 @ 1253 [0.3] | 0.001 / 0.003 / 0.006 @ 1253 | 0.001 / 0.003 / 0.006 @ 1254 [0.6] |
+| Audio update | 0.000 / 0.004 / 0.006 @ 352 | 0.000 / 0.003 / 0.005 @ 352 [0.2] | 0.000 / 0.003 / 0.005 @ 352 | 0.000 / 0.003 / 0.004 @ 50 [0.3] |
+| Extract | 0.005 / 0.016 / 0.016 @ 964 | 0.005 / 0.007 / 0.006 @ 831 [0.7] | 0.004 / 0.008 / 0.007 @ 1532 | 0.004 / 0.005 / 0.006 @ 86 [1.2] |
+| Render prepare + record | 0.319 / 0.514 / 0.486 @ 964 | 0.307 / 0.359 / 0.352 @ 320 [4] | 0.241 / 0.359 / 0.326 @ 87 | 0.201 / 0.233 / 0.241 @ 494 [8] |
+| GPU frame | 6.901 / **8.339** / 7.981 @ 657 [8–12] | 4.226 / 5.058 / 4.669 @ 50 [14] | 2.091 / 2.853 / 2.390 @ 59 [13] | 1.354 / 2.370 / 1.672 @ 814 [26] |
+| Main pass | 2.800 / 3.514 / 2.949 @ 205 | 1.661 / 2.325 / 1.723 @ 243 [4.9] | 1.047 / 1.637 / 1.162 @ 3 | 0.885 / 1.812 / 1.093 @ 276 [11.5] |
+| Prepasses | 0.000 / 0.464 / 0.418 @ 57 | 0.016 / 0.457 / 0.459 @ 19 [1.5] | 0.194 / 0.338 / 0.336 @ 214 | 0.000 / 0.000 / 0.000 [1.5] |
+| Shadows | 0.870 / 1.538 / 1.163 @ 50 | 0.429 / 0.904 / 0.645 @ 56 [2] | 0.171 / 0.374 / 0.237 @ 95 | 0.169 / 0.293 / 0.286 @ 1262 [3] |
+| Clustering, AO | 0.837 / 1.475 / 0.887 @ 1284 | 0.517 / 0.641 / 0.548 @ 1252 [1.5] | 0.248 / 0.868 / 0.274 @ 1590 | none |
+| Particles | 0.156 / 0.199 / 0.205 @ 448 | 0.088 / 0.113 / 0.116 @ 1631 [1.2] | in the main pass | in the main pass [3] |
+| TAA | 1.039 / 1.657 / 1.076 @ 745 | 0.601 / **1.207** / 0.615 @ 752 [0.8] | none | none [1] |
+| Bloom, tonemap, LUT, screen effects | 0.779 / 1.654 / 1.678 @ 57 | 0.452 / **1.051** / **0.786** @ 660 [0.7] | 0.268 / 0.422 / 0.421 @ 617 | 0.234 / 0.372 / 0.372 @ 1262 [2.5] |
+| UI | 0.013 / 0.015 / 0.016 @ 182 | 0.014 / 0.015 / 0.015 @ 188 [0.3] | 0.013 / 0.015 / 0.015 @ 913 | 0.014 / 0.020 / 0.019 @ 706 [1] |
+
+- **What's over:**
+  - **Post on Desktop-Low, with a screen effect up.** 0.45 ms without one, 0.78 ms with a variant that fuses a lens or colour effect, on 153 of the fight's 1,699 ticks, against a row that names only bloom, tonemap and LUT. It's a real cost, the fused composite's own, and it isn't cheap to remove without changing the look: the row needs a screen effects share. At native output on phones post grows but stays inside its row (below).
+  - **TAA's p99 on Desktop-Low** isn't a repeatable cost: its peak is 0.615 ms and no tick's least passes the row. The frames that read high are at different ticks each round, with a longer GPU frame; another process's GPU work or overlap, unresolved.
+  - **Desktop-High's GPU p99** passes the low end of §3.1's 8–12 ms, so this M5 doesn't hold 120 fps through a fight at 1440p; it holds 60 with room.
+  - **One-off frames, at no repeatable tick:** the CPU frame's worst any round saw was 10.5 ms on Desktop-Low, 10.0 on Desktop-High (over 8), 8.0 on Mobile-Low. Under heavier load they cluster near 10 and 20 ms, which looks like a thread losing its core to the OS, though nothing here proves it. Every frame over 2 ms, but one in `prepare`, is in `record`, and they come more often the busier the machine: with the load at 3, Mobile-Low's worst was 1.0 ms, though the desktop tiers still saw some. Recording on one encoder changes their shape without ending them: at Mobile-Low `record`'s p50 rose from 197 to 230 µs, its worst fell from 20.5 to 13.2 ms, and more frames passed 1 ms while fewer passed 3. Left as it is until a phone can judge it.
+- **Rows with no figure here:** §3.2's script and streaming rows have nothing to run yet. The platform row's events and input aren't in a bench with no window; `sapphire_controls`' own bench reads 0.38 µs a frame with no input and 2.38 µs with five inputs and a step. Mixing happens outside the CPU frame, on the audio callback: 0.031–0.060 ms a frame in this fight, and 1.17% of real time at 32 voices (`sapphire_audio`'s `costs`).
+- **Allocations a frame:** 799.5 on Desktop-High (worst 865, 461 KiB), 799.3 on Desktop-Low, 658.5 on Mobile-High, 483.0 on Mobile-Low (worst 550, 263 KiB). None in a fixed step, by rule R6's count, and none in animation, the packet or prepare. On Desktop-Low 277 are on the frame's thread in `record`, and the rest on recording's workers: wgpu's.
+
+**The worst moments.** ms, CPU peak and GPU mean / peak, on each tick's least across rounds. Screen layers are at their most in the finish freeze (8), as are effects' sprites (107). Against the fight's median frame the costliest moments' means add 8–13% to the GPU frame, and their peaks at most 27% (Mobile-Low), where the frame is smallest.
+
+| Moment | Desktop-High | Desktop-Low | Mobile-High | Mobile-Low |
+|---|---|---|---|---|
+| Quiet, the string's wind-up (2–45) | 0.551, 6.79 / 6.99 | 0.379, 4.19 / 4.22 | 0.330, 2.21 / 2.26 | 0.271, 1.20 / 1.30 |
+| A heavy hit and its flinch (50–66) | 0.449, 7.42 / 7.93 | 0.399, 4.45 / 4.67 | 0.314, 2.28 / 2.39 | 0.265, 1.25 / 1.35 |
+| A knockdown (180–200) | 0.384, 7.31 / 7.85 | 0.361, 4.39 / 4.55 | 0.294, 2.24 / 2.34 | 0.259, 1.22 / 1.33 |
+| A poise break (311–327) | 0.404, 7.57 / 7.87 | 0.396, 4.51 / 4.61 | 0.311, 2.30 / 2.37 | 0.264, 1.32 / 1.42 |
+| A perfect dodge's slow motion (390–419) | 0.418, 7.53 / 7.79 | 0.396, 4.51 / 4.60 | 0.309, 2.30 / 2.37 | 0.275, 1.40 / 1.52 |
+| Two swings trading hits (909–925) | 0.397, 6.87 / 7.39 | 0.384, 4.16 / 4.21 | 0.282, 2.00 / 2.07 | 0.259, 1.31 / 1.40 |
+| The finish freeze (1253–1270) | 0.361, 7.43 / 7.50 | 0.358, 4.35 / 4.40 | 0.282, 2.04 / 2.09 | 0.267, 1.48 / 1.55 |
+| The warrior's fall (1271–1400) | 0.464, 6.76 / 7.53 | 0.363, 4.06 / 4.39 | 0.292, 1.89 / 2.10 | 0.267, 1.35 / 1.57 |
+
+- **First use:** post built nothing in a frame on any tier (`PostStats::first_use_builds` 0), and no pipeline appeared during a fight: 68 at the start on the desktop tiers, 64 on Mobile-High and 61 on Mobile-Low, with six more in the first frame (five of the sky's variants and the HUD's pipeline) and none after. That first frame took 4.6–9.5 ms with Metal's cache warm; a phone's first launch is colder (below). The first fight's mean frame is 1–4% above the next fight's, and the only ticks where it's reliably slower are its first few, by under 0.45 ms.
+- **Starting over:** a fight's whole frame with `Combat::restart` takes 5.1–8.1 ms, of which the restart takes 4.3–6.5 ms and about 6,000 allocations, because each start compiles its move documents and collision world. It's a sandbox path, and it's over no frame's budget here, but on a phone it's a frame to watch; a game would hold its tables. A replay's new `Combat` costs the same (3.6–6.8 ms).
+- **The time of day:** night (23:00) and dusk (19:45) cost more than the bench's morning, in the main pass, and pass no budget: the GPU wait rises by 0.15 ms on Mobile-Low (1.29 to 1.44), 0.2 on Mobile-High, 0.14–0.17 on Desktop-Low and 0.26 on Desktop-High. 34 more allocations a frame on the desktop tiers.
+- **Native output:** Mobile-Low at 2532×1170 and Mobile-High at 2556×1179 draw the same scene and composite at native size. Post's p50 goes from 0.234 to 0.414 ms and from 0.268 to 0.470, with peaks of 0.80 and 0.87.
+
+**Memory.** `/usr/bin/footprint`'s `phys_footprint`, sampled through a fight and read last, more than 5 s after it settled. Memory on a Mac isn't a phone's: it says what the engine asks for, not what iOS or Android will allow.
+
+| | Desktop-High | Desktop-Low | Mobile-High | Mobile-Low |
+|---|---|---|---|---|
+| Process footprint (MB) | 754 | 563 | 411 | 350 |
+| Graphics-tagged share (MB) | 655 | 472 | 342 | 286 |
+| The OS's peak (MB) | 767 | 575 | 427 | 367 |
+| Budget | 10 GB RAM, 6 GB VRAM | 6 GB RAM, 3 GB VRAM | 2.8 GB | 1.6 GB |
+
+- **Cooked content** (this slice: the town and two fighters): `shared.spack` 23.22 MB on the desktop cook and 18.22 MB on the mobile cook, `audio.spack` 2.78 MB on each. Unpacked, the mobile cook is 65.3 MB, of which textures are 43.96 MB and meshes 17.95 MB.
+- **Against §3.4:** the character's `Body_00` and `Body_00_nml` stay 2048 × 2048 in the mobile cook (5.59 MB each), and `Tops_01` 1024 × 2048, where the mobile row says 1K a part, because sidecars have no per-cook size. It also has 11 opaque materials against a limit of 4. Draws peak at 162 against 700, and sprites at 107 against 8,000.
+
+**The soak.** 17.8 minutes of repeated fights at a true 30 fps, at Mobile-Low's size and cook: `--offscreen --tier mobile-low --arena --fight --script fight-back --cues --hud live`, load 2.2 to 9.7, median 4.0. 32,413 frames and 43 whole fights, every one ending on one checksum, with no allocation in a step. **Nothing grows.** From minute 2 to the end the footprint stays at 324–326 MB (+0.05 MB a minute; 330 MB at the start), graphics at 273 MB, and the live heap goes from 22.12 to 22.13 MiB. Frame times are flat: each three minutes' mean is 5.6–6.8 ms with no trend, no two-second window fell below 30 fps, and one frame in the run passed 33.3 ms (37.8). A paced frame's 5.6–6.8 ms against the unpaced bench's 1.6 ms is the GPU's and CPU's clocks falling while they idle. This shows there's no leak; a load this light says nothing about a phone's thermal limit.
+
+**What a phone must still answer:**
+- Exit test 4 itself: Mobile-Low holding 30 fps thermally throttled after 15 minutes of combat, on an iPhone 12 and a Snapdragon 865-class phone. The route is ready: `cargo xtask run --platform ios|android --release -- --arena --fight --script fight-back --tier mobile-low` fights on its own and logs `frame stats`. On the Android emulator with no window it played whole fights on the desktop's checksum with no allocation in a step, which proves the route and times nothing.
+- Every row above on those phones. On the Mac, the p99s leave ×79 on the CPU and ×11 on the GPU at Mobile-Low, and ×30 and ×4.6 at Mobile-High; only a phone says how much of that a throttled A14 uses.
+- Parallel recording's stalls, on a phone's own core mix: whether one encoder is the better choice there.
+- Whether memory stays out of the OS's way on a 4 GB phone, with a texture cook held to §3.4.
+- Present, vsync and the frame pacer under load, the composite at native output on a real tile GPU, the audio callback at real-time priority, and touch.
+- A first launch's cold pipeline caches, which every run here had warm.
+
 ---
 
 ## 4. Architecture

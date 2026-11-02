@@ -21,8 +21,8 @@ use crate::set::{
     Allow, ArmourWindow, Attack, Button, CancelMode, CancelWindow, CounterWindow, Cue, DodgeVolume,
     FighterDef, FighterHurtbox, HIT_LANDED, Hitbox, HurtboxChange, HurtboxState, IntentDef, Knockback,
     MAX_BUFFER_TICKS, MAX_HITSTOP_TICKS, MAX_HURTBOXES, MAX_INTENTS, MAX_MOVE_REACH, MAX_MOVE_TICKS,
-    MAX_SLOW_MOTION_STEPS, MoveParts, MoveSet, MoveSetError, PerfectDodgeWindow, Reactions, Shape, Span,
-    WarpWindow, Weight, WorldSlowMotion,
+    MAX_SLOW_MOTION_STEPS, MIN_SHAPE_EXTENT, MoveParts, MoveSet, MoveSetError, PerfectDodgeWindow, Reactions,
+    Shape, Span, WarpWindow, Weight, WorldSlowMotion,
 };
 use crate::{BakedPath, BakedTables, PathSample, RootSample};
 
@@ -528,7 +528,10 @@ impl Checker {
 
     fn shape(&mut self, track: &'static str, name: &str, shape: Shape) {
         if !shape.is_valid() {
-            self.add(track, format!("`{name}` has a shape with no size or a size that isn't finite"));
+            self.add(
+                track,
+                format!("`{name}` has a shape thinner than {MIN_SHAPE_EXTENT} m or a size that isn't finite"),
+            );
         }
     }
 
@@ -1880,7 +1883,7 @@ mod tests {
             (
                 "a perfect-dodge volume with no size",
                 |d| volume(d).shape = Shape::Sphere { radius: 0.0 },
-                &["dodge", "perfect_dodge", "its volume", "no size"],
+                &["dodge", "perfect_dodge", "its volume", "thinner than"],
             ),
             (
                 "a perfect-dodge volume somewhere that isn't",
@@ -2677,5 +2680,11 @@ mod tests {
         assert!(!Shape::Capsule { radius: 0.0, length: 1.0 }.is_valid());
         assert!(Shape::Box { half_extents: [0.1; 3] }.is_valid());
         assert!(!Shape::Box { half_extents: [0.1, 0.0, 0.1] }.is_valid());
+
+        // Thinner than the physics world takes.
+        assert!(Shape::Sphere { radius: MIN_SHAPE_EXTENT }.is_valid());
+        assert!(!Shape::Sphere { radius: 0.0005 }.is_valid());
+        assert!(!Shape::Capsule { radius: 0.0005, length: 1.0 }.is_valid());
+        assert!(!Shape::Box { half_extents: [0.1, 0.0005, 0.1] }.is_valid());
     }
 }

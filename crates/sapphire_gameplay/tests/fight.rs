@@ -531,6 +531,28 @@ fn a_volume_with_no_attack_is_an_event_and_nothing_more() {
     assert_eq!(playing(&sim, target), None);
 }
 
+/// The thinnest shape a document can name is one the world takes, or a fighter would compile that nobody
+/// could hit.
+#[test]
+fn a_documents_thinnest_shapes_are_in_the_world() {
+    let thin = sapphire_moves::MIN_SHAPE_EXTENT;
+    assert_eq!(thin, sapphire_colliders::document::MIN_EXTENT);
+    for shape in [
+        sapphire_moves::Shape::Sphere { radius: thin },
+        sapphire_moves::Shape::Capsule { radius: thin, length: 0.0 },
+        sapphire_moves::Shape::Capsule { radius: thin, length: thin },
+        sapphire_moves::Shape::Box { half_extents: [thin; 3] },
+    ] {
+        assert!(shape.is_valid(), "{shape:?}");
+        assert!(sapphire_gameplay::hit_shape(shape).is_valid(), "{shape:?}");
+    }
+    let (mut sim, spawn) = world_of(moves_with("Sphere(radius: 0.25)", "Sphere(radius: 0.001)"));
+    let actor = sim.spawn(spawn).unwrap();
+    idle(&mut sim, 1);
+    assert!(sim.physics().body_shape(HurtboxId::new(actor, 0).unwrap().body()).is_some());
+    assert_eq!(sim.stats().hurtboxes_refused, 0);
+}
+
 #[test]
 fn a_set_with_no_fighter_cant_be_hit_and_has_no_bodies() {
     let mut document = MoveSetDocument::parse(FIGHT).unwrap();

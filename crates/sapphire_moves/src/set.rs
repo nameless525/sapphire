@@ -31,6 +31,10 @@ pub const MAX_MOVE_TICKS: u32 = 3600;
 /// past this it's a typo, and past about 1e19 the character controller's own arithmetic runs out.
 pub const MAX_MOVE_REACH: f32 = 1000.0;
 
+/// The thinnest size a hit volume or a hurtbox may have, in metres. The physics world refuses anything
+/// thinner, which would leave a fighter nobody can hit, with nothing to say so but a counter.
+pub const MIN_SHAPE_EXTENT: f32 = 0.001;
+
 /// Most hurtboxes one fighter has: `sapphire_gameplay`'s hurtbox IDs hold four bits of index.
 pub const MAX_HURTBOXES: usize = 16;
 
@@ -111,18 +115,15 @@ pub enum Shape {
 }
 
 impl Shape {
-    /// Whether it encloses anything: every number finite, and each size above zero (a capsule's
-    /// length may be zero: that's a sphere).
+    /// Whether the world can hold it: every number finite, and each size at least [`MIN_SHAPE_EXTENT`] (a
+    /// capsule's length may be anything from zero: too short to be one, it's a sphere).
     #[must_use]
     pub fn is_valid(self) -> bool {
+        let extent = |size: f32| size.is_finite() && size >= MIN_SHAPE_EXTENT;
         match self {
-            Self::Sphere { radius } => radius.is_finite() && radius > 0.0,
-            Self::Capsule { radius, length } => {
-                radius.is_finite() && radius > 0.0 && length.is_finite() && length >= 0.0
-            }
-            Self::Box { half_extents } => {
-                half_extents.iter().all(|&extent| extent.is_finite() && extent > 0.0)
-            }
+            Self::Sphere { radius } => extent(radius),
+            Self::Capsule { radius, length } => extent(radius) && length.is_finite() && length >= 0.0,
+            Self::Box { half_extents } => half_extents.into_iter().all(extent),
         }
     }
 }

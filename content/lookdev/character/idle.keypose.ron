@@ -1,0 +1,117 @@
+// The character at rest, in a four-second loop (M2 O2): a relaxed stand with the weight on the right
+// leg and the left knee soft, which a retarget of KayKit's idles can't reach, since a chibi's stand
+// is a wide, square brace. Hips over the right foot, pelvis and shoulders tilted against each other,
+// fingers curled. Feet stay where they are: when the hips sway, the leg turns make up for it.
+// Ticks are 60 a second. Turns are degrees in the character's rest space, about each bone's own
+// joint, X then Y then Z. The character faces +Z, with its left arm along +X at rest.
+(
+    type: "sapphire::pipeline::KeyPoseClip",
+    version: 1,
+    data: (
+        ticks: 240,
+        keys: [
+            // Settled, breath out.
+            (tick: 0, hips: (-0.024, -0.004, 0), pose: {
+                Hips: (z: -3),
+                Spine: (x: 1, z: 2.5),
+                Chest: (z: 1.5),
+                UpperChest: (x: -1, z: 1),
+                Head: (x: 3, y: -8, z: -2),
+
+                RightUpperLeg: (x: -1.5, z: 5),
+                RightLowerLeg: (x: 3),
+                RightFoot: (x: -1.5, z: -2),
+                LeftUpperLeg: (x: -9, y: 6, z: 6),
+                LeftLowerLeg: (x: 15),
+                LeftFoot: (x: -6, z: -3),
+
+                LeftUpperArm: (y: -6, z: -74),
+                LeftLowerArm: (y: -16),
+                LeftHand: (x: 10, z: -4),
+                RightUpperArm: (y: 4, z: 76),
+                RightLowerArm: (y: 12),
+                RightHand: (x: 10, z: 4),
+
+                LeftThumbProximal: (y: -12, z: -6),
+                LeftThumbDistal: (y: -14),
+                LeftIndexProximal: (z: -18),
+                LeftIndexIntermediate: (z: -24),
+                LeftIndexDistal: (z: -12),
+                LeftMiddleProximal: (z: -24),
+                LeftMiddleIntermediate: (z: -28),
+                LeftMiddleDistal: (z: -14),
+                LeftRingProximal: (z: -28),
+                LeftRingIntermediate: (z: -32),
+                LeftRingDistal: (z: -16),
+                LeftLittleProximal: (z: -32),
+                LeftLittleIntermediate: (z: -34),
+                LeftLittleDistal: (z: -16),
+                RightThumbProximal: (y: 12, z: 6),
+                RightThumbDistal: (y: 14),
+                RightIndexProximal: (z: 18),
+                RightIndexIntermediate: (z: 24),
+                RightIndexDistal: (z: 12),
+                RightMiddleProximal: (z: 24),
+                RightMiddleIntermediate: (z: 28),
+                RightMiddleDistal: (z: 14),
+                RightRingProximal: (z: 28),
+                RightRingIntermediate: (z: 32),
+                RightRingDistal: (z: 16),
+                RightLittleProximal: (z: 32),
+                RightLittleIntermediate: (z: 34),
+                RightLittleDistal: (z: 16),
+            }),
+
+            // Breath in: the chest lifts, the shoulders open and the hands drift out a little.
+            (tick: 70, hips: (-0.026, -0.002, 0), pose: {
+                Spine: (x: 0.5, z: 2.6),
+                UpperChest: (x: -2.6, z: 1),
+                Head: (x: 2.2, y: -7, z: -2.2),
+                RightUpperLeg: (x: -1.3, z: 5.2),
+                LeftUpperArm: (y: -6, z: -72.5),
+                RightUpperArm: (y: 4, z: 74.5),
+                LeftLowerArm: (y: -14),
+                RightLowerArm: (y: 10),
+            }),
+
+            // Breath out, the weight sinking a touch further onto the right leg.
+            (tick: 140, hips: (-0.030, -0.006, 0), pose: {
+                Spine: (x: 1.2, z: 3),
+                UpperChest: (x: -0.6, z: 1),
+                Head: (x: 3.4, y: -9.5, z: -1.6),
+                RightUpperLeg: (x: -1.6, z: 5.7),
+                LeftUpperLeg: (x: -9, y: 6, z: 6.6),
+                LeftUpperArm: (y: -6, z: -74.5),
+                RightUpperArm: (y: 4, z: 76.5),
+                LeftLowerArm: (y: -17),
+                RightLowerArm: (y: 13),
+            }),
+
+            // A smaller breath, looking back toward the middle.
+            (tick: 190, hips: (-0.027, -0.003, 0), pose: {
+                Spine: (x: 0.7, z: 2.7),
+                UpperChest: (x: -2, z: 1),
+                Head: (x: 2.6, y: -6, z: -2),
+                RightUpperLeg: (x: -1.4, z: 5.3),
+                LeftUpperLeg: (x: -9, y: 6, z: 6.2),
+                LeftUpperArm: (y: -6, z: -73.2),
+                RightUpperArm: (y: 4, z: 75.2),
+                LeftLowerArm: (y: -15),
+                RightLowerArm: (y: 11),
+            }),
+
+            // Back to where it started.
+            (tick: 240, hips: (-0.024, -0.004, 0), pose: {
+                Spine: (x: 1, z: 2.5),
+                UpperChest: (x: -1, z: 1),
+                Head: (x: 3, y: -8, z: -2),
+                RightUpperLeg: (x: -1.5, z: 5),
+                LeftUpperLeg: (x: -9, y: 6, z: 6),
+                LeftUpperArm: (y: -6, z: -74),
+                RightUpperArm: (y: 4, z: 76),
+                LeftLowerArm: (y: -16),
+                RightLowerArm: (y: 12),
+            }),
+        ],
+    ),
+)

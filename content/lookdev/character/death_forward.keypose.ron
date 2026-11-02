@@ -1,0 +1,165 @@
+// A slow collapse onto the front (M2 O2), in place of KayKit's `Death_B`, which ends in a plank with
+// the hips 0.34 m up: staggered by the hit, the knees give, the character kneels, tips and lands on
+// its front with the head turned. The clip holds its last key. Ticks are 60 a second. Turns are degrees
+// in the character's rest space, about each bone's own joint, X then Y then Z. The character faces +Z,
+// with its left arm along +X at rest. `hips` moves the hips from rest, in meters: the rig stands at a
+// hips height of 0.908.
+(
+    type: "sapphire::pipeline::KeyPoseClip",
+    version: 1,
+    data: (
+        ticks: 130,
+        keys: [
+            // Standing, as the look-dev stage holds the character.
+            (tick: 0, pose: {
+                LeftUpperArm: (y: -4, z: -76),
+                RightUpperArm: (y: 4, z: 76),
+                LeftLowerArm: (y: -10),
+                RightLowerArm: (y: 10),
+                LeftHand: (x: 10),
+                RightHand: (x: 10),
+                Head: (x: 4, y: -10),
+
+                LeftThumbProximal: (y: -12, z: -6),
+                LeftThumbDistal: (y: -14),
+                LeftIndexProximal: (z: -18),
+                LeftIndexIntermediate: (z: -24),
+                LeftMiddleProximal: (z: -24),
+                LeftMiddleIntermediate: (z: -28),
+                LeftRingProximal: (z: -28),
+                LeftRingIntermediate: (z: -32),
+                LeftLittleProximal: (z: -32),
+                LeftLittleIntermediate: (z: -34),
+                RightThumbProximal: (y: 12, z: 6),
+                RightThumbDistal: (y: 14),
+                RightIndexProximal: (z: 18),
+                RightIndexIntermediate: (z: 24),
+                RightMiddleProximal: (z: 24),
+                RightMiddleIntermediate: (z: 28),
+                RightRingProximal: (z: 28),
+                RightRingIntermediate: (z: 32),
+                RightLittleProximal: (z: 32),
+                RightLittleIntermediate: (z: 34),
+            }),
+
+            // The hit: the chest arches back, arms lagging.
+            (tick: 6, ease: Out, hips: (0, -0.01, -0.03), pose: {
+                Spine: (x: -8),
+                Chest: (x: -6),
+                Head: (x: -12, y: -6),
+                LeftUpperArm: (y: -16, z: -68),
+                RightUpperArm: (y: 16, z: 68),
+                LeftLowerArm: (y: -22),
+                RightLowerArm: (y: 22),
+            }),
+
+            // It catches itself for a moment, knees bending.
+            (tick: 22, hips: (0, -0.03, 0), pose: {
+                Spine: (x: 12),
+                Chest: (x: 6),
+                Head: (x: 14, y: -4),
+                LeftUpperLeg: (x: -15),
+                RightUpperLeg: (x: -15),
+                LeftLowerLeg: (x: 30),
+                RightLowerLeg: (x: 30),
+                LeftFoot: (x: -15),
+                RightFoot: (x: -15),
+                LeftUpperArm: (y: -12, z: -78),
+                RightUpperArm: (y: 12, z: 78),
+                LeftLowerArm: (y: -14),
+                RightLowerArm: (y: 14),
+            }),
+
+            // The knees give.
+            (tick: 40, ease: In, hips: (0, -0.19, 0.03), pose: {
+                Spine: (x: 22),
+                Chest: (x: 10),
+                Head: (x: 22, y: 0),
+                LeftUpperLeg: (x: -40),
+                RightUpperLeg: (x: -40),
+                LeftLowerLeg: (x: 80),
+                RightLowerLeg: (x: 80),
+                LeftFoot: (x: -40),
+                RightFoot: (x: -40),
+                LeftUpperArm: (y: -10, z: -82),
+                RightUpperArm: (y: 10, z: 82),
+            }),
+
+            // On its knees, the body slumping over them.
+            (tick: 52, ease: In, hips: (0, -0.47, 0.10), pose: {
+                Spine: (x: 30),
+                Chest: (x: 12),
+                Head: (x: 24, y: 4),
+                LeftUpperLeg: (x: -14),
+                RightUpperLeg: (x: -14),
+                LeftLowerLeg: (x: 102),
+                RightLowerLeg: (x: 102),
+                LeftFoot: (x: 66),
+                RightFoot: (x: 66),
+            }),
+
+            // A breath there.
+            (tick: 66, ease: Out, hips: (0, -0.45, 0.10), pose: {
+                Spine: (x: 22),
+                Chest: (x: 10),
+                Head: (x: 16, y: 6),
+            }),
+
+            // It tips forward over the knees.
+            (tick: 88, ease: In, hips: (0, -0.56, 0.26), pose: {
+                Hips: (x: 42),
+                Spine: (x: 24),
+                Chest: (x: 12),
+                Head: (x: 8, y: 10),
+                LeftUpperLeg: (x: -56),
+                RightUpperLeg: (x: -56),
+                LeftLowerLeg: (x: 104),
+                RightLowerLeg: (x: 104),
+                LeftFoot: (x: 62),
+                RightFoot: (x: 62),
+                LeftUpperArm: (y: -40, z: -62),
+                RightUpperArm: (y: 40, z: 62),
+                LeftLowerArm: (y: -24),
+                RightLowerArm: (y: 24),
+            }),
+
+            // Down: the front lands, legs sliding out behind.
+            (tick: 100, ease: In, hips: (0, -0.80, 0.44), pose: {
+                Hips: (x: 87),
+                Spine: (x: 2),
+                Chest: (x: 2),
+                Head: (x: -16, y: 34),
+                LeftUpperLeg: (x: -6),
+                RightUpperLeg: (x: -6),
+                LeftLowerLeg: (x: 10),
+                RightLowerLeg: (x: 12),
+                LeftFoot: (x: 70),
+                RightFoot: (x: 70),
+                LeftUpperArm: (y: -8, z: -46),
+                RightUpperArm: (y: 8, z: 52),
+                LeftLowerArm: (y: -6),
+                RightLowerArm: (y: 6),
+            }),
+
+            // The rebound.
+            (tick: 106, ease: Out, hips: (0, -0.775, 0.44), pose: {
+                Head: (x: -8, y: 44),
+                LeftLowerLeg: (x: 18),
+                RightLowerLeg: (x: 22),
+            }),
+
+            // Still, one knee drawn up a little and the head turned to the side.
+            (tick: 120, hips: (0, -0.80, 0.44), pose: {
+                Head: (x: -14, y: 62),
+                LeftUpperLeg: (x: -14, y: 12, z: 10),
+                RightUpperLeg: (x: -3, y: -4, z: -2),
+                LeftLowerLeg: (x: 16),
+                RightLowerLeg: (x: 4),
+                LeftFoot: (x: 72),
+                RightFoot: (x: 74),
+                LeftUpperArm: (y: 4, z: -38),
+                RightUpperArm: (y: -2, z: 62),
+            }),
+        ],
+    ),
+)

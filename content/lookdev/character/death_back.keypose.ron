@@ -1,0 +1,146 @@
+// Knocked down for good, onto the back (M2 O2), in place of KayKit's `Death_A`, which lies 0.48 m up
+// on the character: a chibi's thick torso and short legs put a flat body there at the same angles.
+// A hit in the chest folds the character, throws the feet out and lands flat on the floor with a small
+// rebound. The clip holds its last key. Ticks are 60 a second. Turns are degrees in the character's
+// rest space, about each bone's own joint, X then Y then Z. The character faces +Z, with its left arm
+// along +X at rest. `hips` moves the hips from rest, in meters: the rig stands at a hips height of 0.908.
+(
+    type: "sapphire::pipeline::KeyPoseClip",
+    version: 1,
+    data: (
+        ticks: 80,
+        keys: [
+            // Standing, as the look-dev stage holds the character.
+            (tick: 0, pose: {
+                LeftUpperArm: (y: -4, z: -76),
+                RightUpperArm: (y: 4, z: 76),
+                LeftLowerArm: (y: -10),
+                RightLowerArm: (y: 10),
+                LeftHand: (x: 10),
+                RightHand: (x: 10),
+                Head: (x: 4, y: -10),
+
+                LeftThumbProximal: (y: -12, z: -6),
+                LeftThumbDistal: (y: -14),
+                LeftIndexProximal: (z: -18),
+                LeftIndexIntermediate: (z: -24),
+                LeftMiddleProximal: (z: -24),
+                LeftMiddleIntermediate: (z: -28),
+                LeftRingProximal: (z: -28),
+                LeftRingIntermediate: (z: -32),
+                LeftLittleProximal: (z: -32),
+                LeftLittleIntermediate: (z: -34),
+                RightThumbProximal: (y: 12, z: 6),
+                RightThumbDistal: (y: 14),
+                RightIndexProximal: (z: 18),
+                RightIndexIntermediate: (z: 24),
+                RightMiddleProximal: (z: 24),
+                RightMiddleIntermediate: (z: 28),
+                RightRingProximal: (z: 28),
+                RightRingIntermediate: (z: 32),
+                RightLittleProximal: (z: 32),
+                RightLittleIntermediate: (z: 34),
+            }),
+
+            // The hit: hips thrown back, the body folding round it, arms flung forward.
+            (tick: 5, ease: Out, hips: (0, -0.03, -0.09), pose: {
+                Hips: (x: 7),
+                Spine: (x: 10),
+                Chest: (x: 6),
+                Head: (x: 16, y: -6),
+                LeftUpperLeg: (x: -14),
+                RightUpperLeg: (x: -14),
+                LeftLowerLeg: (x: 14),
+                RightLowerLeg: (x: 14),
+                LeftFoot: (x: -7),
+                RightFoot: (x: -7),
+                LeftUpperArm: (y: -42, z: -62),
+                RightUpperArm: (y: 42, z: 62),
+                LeftLowerArm: (y: -36),
+                RightLowerArm: (y: 36),
+            }),
+
+            // Off its feet, tipping backward, chin down and arms trailing.
+            (tick: 14, ease: Smooth, hips: (0, -0.05, -0.30), pose: {
+                Hips: (x: -26),
+                Spine: (x: -3),
+                Chest: (x: 0),
+                Head: (x: 16, y: -4),
+                LeftUpperLeg: (x: -6),
+                RightUpperLeg: (x: -14),
+                LeftLowerLeg: (x: 18),
+                RightLowerLeg: (x: 26),
+                LeftFoot: (x: 8),
+                RightFoot: (x: 8),
+                LeftUpperArm: (y: -68, z: -36),
+                RightUpperArm: (y: 68, z: 36),
+                LeftLowerArm: (y: -26),
+                RightLowerArm: (y: 26),
+            }),
+
+            // Falling.
+            (tick: 26, ease: In, hips: (0, -0.47, -0.50), pose: {
+                Hips: (x: -64),
+                Spine: (x: -3),
+                Head: (x: 22, y: 2),
+                LeftUpperLeg: (x: -8),
+                RightUpperLeg: (x: -18),
+                LeftLowerLeg: (x: 16),
+                RightLowerLeg: (x: 32),
+                LeftFoot: (x: 12),
+                RightFoot: (x: 14),
+                LeftUpperArm: (y: -70, z: 2),
+                RightUpperArm: (y: 70, z: -2),
+                LeftLowerArm: (y: -18),
+                RightLowerArm: (y: 18),
+            }),
+
+            // On the floor: the back lands first, the head comes down after it.
+            (tick: 34, ease: In, hips: (0, -0.80, -0.56), pose: {
+                Hips: (x: -88),
+                Spine: (x: 0),
+                Head: (x: 26, y: 4),
+                LeftUpperLeg: (x: -4),
+                RightUpperLeg: (x: -14),
+                LeftLowerLeg: (x: 8),
+                RightLowerLeg: (x: 24),
+                LeftFoot: (x: 22, y: 10),
+                RightFoot: (x: 20, y: -10),
+                LeftUpperArm: (y: -18, z: -30),
+                RightUpperArm: (y: 18, z: 30),
+                LeftLowerArm: (y: -8),
+                RightLowerArm: (y: 8),
+            }),
+
+            // The rebound: a few centimeters, knees and arms lifting.
+            (tick: 41, ease: Out, hips: (0, -0.77, -0.58), pose: {
+                Hips: (x: -84),
+                Spine: (x: 2),
+                Head: (x: 18, y: 8),
+                LeftUpperLeg: (x: -12),
+                RightUpperLeg: (x: -20),
+                LeftLowerLeg: (x: 20),
+                RightLowerLeg: (x: 34),
+                LeftUpperArm: (y: -10, z: -38),
+                RightUpperArm: (y: 10, z: 38),
+            }),
+
+            // Still, head fallen to one side and one knee soft.
+            (tick: 56, ease: Smooth, hips: (0, -0.80, -0.58), pose: {
+                Hips: (x: -88),
+                Spine: (x: 0),
+                Head: (x: 4, y: 28),
+                LeftUpperLeg: (x: -4, y: 8, z: 4),
+                RightUpperLeg: (x: -20, y: -10, z: -2),
+                LeftLowerLeg: (x: 6),
+                RightLowerLeg: (x: 40),
+                LeftFoot: (x: 26, y: 14),
+                RightFoot: (x: 14, y: -12),
+                LeftUpperArm: (y: -8, z: -48),
+                RightUpperArm: (y: 8, z: 58),
+                LeftLowerArm: (y: -14),
+                RightLowerArm: (y: 8),
+            }),
+        ],
+    ),
+)

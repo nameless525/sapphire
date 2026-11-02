@@ -1,0 +1,99 @@
+// Ready to fight, in a two-second loop (M2 O2): left foot forward, knees bent, weight low and hands up
+// a little, what the character falls back to between moves. Nothing licensed has this, and a chibi's
+// square brace can't be retargeted into it. The legs bend with the bob, so the feet stay down. Ticks
+// are 60 a second. Turns are degrees in the character's rest space, about each bone's own joint, X then
+// Y then Z. The character faces +Z, with its left arm along +X at rest.
+(
+    type: "sapphire::pipeline::KeyPoseClip",
+    version: 1,
+    data: (
+        ticks: 120,
+        keys: [
+            // Settled.
+            (tick: 0, hips: (0.012, -0.056, -0.012), pose: {
+                Hips: (x: 4, y: -20),
+                Spine: (x: 2, y: 6),
+                Chest: (x: 2, y: 6),
+                UpperChest: (y: 3),
+                Head: (x: -1, y: 6, z: 1),
+
+                LeftUpperLeg: (x: -32, y: 12, z: 6),
+                LeftLowerLeg: (x: 44),
+                LeftFoot: (x: -16, y: 10, z: -3),
+                RightUpperLeg: (x: -14, y: -8, z: -7),
+                RightLowerLeg: (x: 38),
+                RightFoot: (x: -24, y: 22, z: 3),
+
+                LeftUpperArm: (y: -34, z: -62),
+                LeftLowerArm: (y: -62),
+                LeftHand: (x: 8, z: -6),
+                RightUpperArm: (y: 18, z: 66),
+                RightLowerArm: (y: 74),
+                RightHand: (x: 8, z: 6),
+
+                LeftThumbProximal: (y: -12, z: -6),
+                LeftThumbDistal: (y: -14),
+                LeftIndexProximal: (z: -30),
+                LeftIndexIntermediate: (z: -36),
+                LeftIndexDistal: (z: -18),
+                LeftMiddleProximal: (z: -36),
+                LeftMiddleIntermediate: (z: -40),
+                LeftMiddleDistal: (z: -20),
+                LeftRingProximal: (z: -40),
+                LeftRingIntermediate: (z: -44),
+                LeftRingDistal: (z: -22),
+                LeftLittleProximal: (z: -44),
+                LeftLittleIntermediate: (z: -46),
+                LeftLittleDistal: (z: -22),
+                RightThumbProximal: (y: 12, z: 6),
+                RightThumbDistal: (y: 14),
+                RightIndexProximal: (z: 30),
+                RightIndexIntermediate: (z: 36),
+                RightIndexDistal: (z: 18),
+                RightMiddleProximal: (z: 36),
+                RightMiddleIntermediate: (z: 40),
+                RightMiddleDistal: (z: 20),
+                RightRingProximal: (z: 40),
+                RightRingIntermediate: (z: 44),
+                RightRingDistal: (z: 22),
+                RightLittleProximal: (z: 44),
+                RightLittleIntermediate: (z: 46),
+                RightLittleDistal: (z: 22),
+            }),
+
+            // Sinking a touch, the chest closing and the hands dropping with it.
+            (tick: 60, hips: (0.014, -0.068, -0.012), pose: {
+                Spine: (x: 3, y: 6),
+                UpperChest: (x: 1.4, y: 3),
+                Head: (x: 0.4, y: 7, z: 1),
+                LeftUpperLeg: (x: -34.5, y: 12, z: 6),
+                LeftLowerLeg: (x: 48),
+                LeftFoot: (x: -18, y: 10, z: -3),
+                RightUpperLeg: (x: -16.5, y: -8, z: -7),
+                RightLowerLeg: (x: 42),
+                RightFoot: (x: -25.5, y: 22, z: 3),
+                LeftUpperArm: (y: -33, z: -64),
+                RightUpperArm: (y: 17, z: 68),
+                LeftLowerArm: (y: -60),
+                RightLowerArm: (y: 71),
+            }),
+
+            // Back up.
+            (tick: 120, hips: (0.012, -0.056, -0.012), pose: {
+                Spine: (x: 2, y: 6),
+                UpperChest: (y: 3),
+                Head: (x: -1, y: 6, z: 1),
+                LeftUpperLeg: (x: -32, y: 12, z: 6),
+                LeftLowerLeg: (x: 44),
+                LeftFoot: (x: -16, y: 10, z: -3),
+                RightUpperLeg: (x: -14, y: -8, z: -7),
+                RightLowerLeg: (x: 38),
+                RightFoot: (x: -24, y: 22, z: 3),
+                LeftUpperArm: (y: -34, z: -62),
+                RightUpperArm: (y: 18, z: 66),
+                LeftLowerArm: (y: -62),
+                RightLowerArm: (y: 74),
+            }),
+        ],
+    ),
+)

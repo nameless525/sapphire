@@ -600,3 +600,94 @@ fn the_committed_document_poses_the_character() {
     let reach = (windup as u16..=strike as u16).map(|tick| forward(f32::from(tick))).fold(f32::MIN, f32::max);
     assert!(reach > forward(strike) + 0.01, "past the mark: {reach} against {}", forward(strike));
 }
+
+/// A committed document of the character's, as it would cook.
+fn on_the_character(name: &str) -> (KeyPoseClip, Cooked, Skeleton, CharacterRig) {
+    let content = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
+    let text = fs::read(content.join(format!("lookdev/character/{name}.keypose.ron"))).expect("the document");
+    let document = read(&text).expect("it reads");
+    let vrm_bytes =
+        fs::read(content.join("third_party/vrm1_constraint_twist_sample/VRM1_Constraint_Twist_Sample.vrm"))
+            .expect("the character");
+    let rig = vrm::import_rig(&vrm_bytes, None).expect("the rig");
+    let imported = vrm::import(&vrm_bytes, None).expect("the character");
+    let skeleton = Skeleton::new(&imported.mesh.skin.as_ref().expect("skinned").joints);
+    let cooked = Cooked::new(&document, &skeleton, &rig);
+    (document, cooked, skeleton, rig)
+}
+
+/// A sole's height above the floor, as the lower of the ankle and the toes against their rests.
+fn sole_height(cooked: &Cooked, rig: &CharacterRig, position: f32, foot: HumanBone, toes: HumanBone) -> f32 {
+    let model = cooked.model(position);
+    let height = |bone: HumanBone, rest: f32| {
+        model[usize::from(rig.human_joint(bone).expect("the character has it"))].translation.y - rest
+    };
+    height(foot, ANKLE_REST).min(height(toes, TOES_REST))
+}
+
+/// The character's ankle and toes at rest, in meters above the floor.
+const ANKLE_REST: f32 = 0.1007;
+const TOES_REST: f32 = 0.0376;
+
+/// The idles: they loop on their own first pose, and their feet stay down and still, since nothing
+/// plants them at run time. The bounds are the measured value and a little.
+#[test]
+fn the_idles_loop_with_their_feet_down() {
+    use HumanBone::{LeftFoot, LeftToes, RightFoot, RightToes};
+    for (name, lift, slide) in [("idle", 0.012, 0.012), ("idle_combat", 0.03, 0.012)] {
+        let (document, cooked, _, rig) = on_the_character(name);
+        let ticks = f32::from(document.ticks.expect("it says its length"));
+        let (start, end) = (cooked.model(0.0), cooked.model(ticks));
+        for (joint, (start, end)) in start.iter().zip(&end).enumerate() {
+            let apart = Vec3::from(start.translation).distance(Vec3::from(end.translation));
+            assert!(apart < 2e-3, "{name}: joint {joint} ends {apart} m from where it starts");
+        }
+        let joint = |bone| usize::from(rig.human_joint(bone).expect("the character has it"));
+        let (first_left, first_right) =
+            (cooked.position(joint(LeftFoot), 0.0), cooked.position(joint(RightFoot), 0.0));
+        let (mut highest, mut lowest, mut moved) = (f32::MIN, f32::MAX, 0.0_f32);
+        for tick in 0..=u16::try_from(ticks as u32).unwrap() {
+            let at = f32::from(tick);
+            for (foot, toes, first) in [(LeftFoot, LeftToes, first_left), (RightFoot, RightToes, first_right)]
+            {
+                let sole = sole_height(&cooked, &rig, at, foot, toes);
+                highest = highest.max(sole);
+                lowest = lowest.min(sole);
+                let now = cooked.position(joint(foot), at);
+                moved = moved.max(Vec3::new(now.x - first.x, 0.0, now.z - first.z).length());
+            }
+        }
+        assert!(highest < lift && lowest > -0.006, "{name}: soles {lowest} to {highest} m");
+        assert!(moved < slide, "{name}: a foot moved {moved} m");
+    }
+}
+
+/// The deaths end lying on the floor: the hips within a body's depth of it, and nothing under it.
+/// KayKit's, retargeted, lie 0.34 to 0.48 m up, which is why these exist.
+#[test]
+fn the_deaths_end_lying_on_the_floor() {
+    for name in ["death_back", "death_forward"] {
+        let (document, cooked, skeleton, rig) = on_the_character(name);
+        let end = f32::from(document.ticks.expect("it says its length"));
+        let model = cooked.model(end);
+        let hips = usize::from(rig.human_joint(HumanBone::Hips).expect("the character has it"));
+        assert!(model[hips].translation.y < 0.15, "{name}: hips at {}", model[hips].translation.y);
+        // Every joint of the body proper; hair and other helpers bend with their springs at run time.
+        let (mut lowest, mut low_bone) = (f32::MAX, None);
+        for entry in rig.humanoid.iter() {
+            let height = model[usize::from(entry.joint)].translation.y;
+            if height < lowest {
+                (lowest, low_bone) = (height, Some(entry.bone));
+            }
+        }
+        assert!(lowest > 0.0, "{name}: {low_bone:?} is under the floor, at {lowest}");
+        let highest = rig.humanoid.iter().map(|entry| model[usize::from(entry.joint)].translation.y);
+        let highest = highest.fold(f32::MIN, f32::max);
+        assert!(highest < 0.42, "{name}: something still stands {highest} m up");
+        assert_eq!(skeleton.parents.len(), model.len());
+        // It starts from the held pose, as every move does.
+        let start = cooked.model(0.0);
+        let hand = usize::from(rig.human_joint(HumanBone::LeftHand).expect("the character has it"));
+        assert!(start[hand].translation.y > 0.7, "{name}: it starts on its feet");
+    }
+}

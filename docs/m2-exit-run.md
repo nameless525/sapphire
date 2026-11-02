@@ -213,7 +213,7 @@ Each review should end with its session kept: Z2 asks for them, because a sessio
    cargo xtask run --platform desktop --incremental --features dev -- --arena --record target/review-3.sreplay --scenario arena-fight
    ```
 
-   One fight, and it doesn't start over; quitting writes it. A name already there is refused. **A recording ends its file at the first live edit** and the fight goes on, because a replay can only answer for what it recorded. So tune first, commit, then record. A session recorded with edits you haven't rewritten into the simulation's copy won't replay (`MovesChanged`).
+   One fight, and it doesn't start over; quitting writes it. A name already there is refused. **A recording ends its file at the first live edit** and the fight goes on, because a replay can only answer for what it recorded. So tune first, commit, then record. That means undoing the dummy too: a session on its numbers replays only while they're in the tree, so CI refuses it. A session recorded with edits you haven't rewritten into the simulation's copy won't replay (`MovesChanged`).
 2. **Check it:** the log's `recorded a replay … checksum=<x>` must equal what a headless run reaches:
 
    ```bash
@@ -222,7 +222,7 @@ Each review should end with its session kept: Z2 asks for them, because a sessio
    target/release/sapphire_replay check --update --dir /tmp/session --out /tmp/session/out
    ```
 
-   It prints `ends at <x>`. A difference is a determinism bug and the most important thing the session can find, so keep the file and the log.
+   It prints `ends at <x>`. A difference is a determinism bug and the most important thing the session can find, so keep the file and the log. The exception is a line first saying `stamped the new move data's hash`: the moves changed after the recording, `--update` went on with today's, and the two can't agree. Rewrite the simulation's copy (above) and record again.
 3. **Add it:** copy it to `tests/replays/<name>.sreplay`, run `cargo xtask replay --update`, and commit both. CI then fails on Linux and Windows until x86-64's checksums are filled in (above).
 
 ## A touch fight on a phone
@@ -265,7 +265,7 @@ cargo build --release -p sapphire_replay
 target/release/sapphire_replay check --update --dir /tmp/fight --out /tmp/fight/out
 ```
 
-On an iPhone, take it from the app's container with `xcrun devicectl device copy from`, under `Library/Caches/Sapphire/Sapphire Sandbox/` (not tried: there's been no iPhone to try it on). The app logs `recorded a replay … checksum=<x>` at a clean quit and `kept the recording so far … checksum=<x>` in the background, and the checker prints `ends at <x>`: they must be the same. A difference is a determinism bug, and the most important thing the session can find, so keep the file and the log.
+On an iPhone, take it from the app's container with `xcrun devicectl device copy from`, under `Library/Caches/Sapphire/Sapphire Sandbox/` (not tried: there's been no iPhone to try it on). The app logs `recorded a replay … checksum=<x>` at a clean quit and `kept the recording so far … checksum=<x>` in the background, and the checker prints `ends at <x>`: they must be the same. A difference is a determinism bug, and the most important thing the session can find, so keep the file and the log, unless the checker first says `stamped the new move data's hash` ("A recorded session joins the replay suite" says what that means).
 
 ### What to look for
 

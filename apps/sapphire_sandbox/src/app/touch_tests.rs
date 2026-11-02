@@ -14,7 +14,7 @@ use sapphire_platform::{
 use sapphire_render::MeshHandle;
 use sapphire_ui::{HudLayout, Insets, UiMetrics};
 
-use super::{PointerState, game_event};
+use super::{PointerState, focus_lost, game_event};
 use crate::combat::Combat;
 use crate::hud::{HudMode, HudOptions, SandboxHud};
 use crate::input::{PLAYER, SandboxInput};
@@ -76,6 +76,31 @@ impl Rig {
     fn desktop_fight() -> Self {
         let fight = CombatOption::Fight { script: None, party: false };
         Self::desktop(Combat::new(&fight).expect("the scenario starts"))
+    }
+
+    /// The window loses the keyboard's focus, as `App::event` takes it.
+    fn lose_focus(&mut self) {
+        let event = WindowEvent::FocusLost;
+        self.event(&Event::Window { timestamp: ms(self.now + 1), window: WindowId::from_raw(1), event });
+        focus_lost(&mut self.input, Some(&self.combat));
+    }
+
+    fn left_button(&mut self, down: bool) {
+        self.event(&Event::MouseButton(sapphire_platform::MouseButtonEvent {
+            timestamp: ms(self.now + 1),
+            window: WindowId::from_raw(1),
+            button: sapphire_platform::MouseButton::Left,
+            down,
+            clicks: 1,
+            x: 10.0,
+            y: 10.0,
+        }));
+    }
+
+    /// A key pressed and let go in this frame.
+    fn tap_key(&mut self, scancode: Scancode) {
+        self.key(1, scancode, true);
+        self.key(2, scancode, false);
     }
 
     /// Whether the fight holds the pointer in a focused window with no overlay up.
@@ -299,18 +324,77 @@ fn the_keyboard_and_the_mouse_play_a_fight_under_the_huds_zones() {
 fn a_played_fight_holds_a_desktops_pointer_outside_the_pause() {
     let mut rig = Rig::desktop_fight();
     assert!(rig.holds_pointer());
-    rig.key(1, Scancode::ESCAPE, true);
-    rig.key(2, Scancode::ESCAPE, false);
+    rig.tap_key(Scancode::ESCAPE);
     rig.frame();
     assert!(rig.input.is_paused());
     assert!(!rig.holds_pointer());
-    rig.key(1, Scancode::ESCAPE, true);
-    rig.key(2, Scancode::ESCAPE, false);
+    rig.tap_key(Scancode::ESCAPE);
     rig.frame();
     // Steps start again at the update after the one that read the key.
     rig.frame();
     assert!(!rig.input.is_paused());
     assert!(rig.holds_pointer());
+}
+
+/// Going elsewhere pauses a desktop's fight with the pointer free, and coming back with a click ends
+/// nothing and swings nothing. Only the pause's own keys end it, and a button still held as they do isn't
+/// a press until it lets go.
+#[test]
+fn losing_focus_pauses_a_desktops_fight_and_the_click_that_returns_doesnt_swing() {
+    let mut rig = Rig::desktop_fight();
+    rig.lose_focus();
+    rig.frame();
+    assert!(rig.input.is_paused(), "it waits");
+    assert!(!rig.holds_pointer());
+
+    rig.event(&Event::Window {
+        timestamp: ms(rig.now + 1),
+        window: WindowId::from_raw(1),
+        event: WindowEvent::FocusGained,
+    });
+    rig.left_button(true);
+    rig.frame();
+    assert!(rig.input.is_paused(), "the click that brought it back ends nothing");
+    assert!(!rig.holds_pointer(), "the pointer stays free for as long as it waits");
+    rig.left_button(false);
+    rig.frame();
+    assert!(rig.input.is_paused());
+    let mut driver = sapphire_time::FixedStepDriver::new(sapphire_time::FixedStepConfig::default());
+    let long = std::time::Duration::from_millis(100);
+    assert_eq!(rig.input.advance(&mut driver, long).count, 0, "no steps");
+
+    rig.left_button(true);
+    rig.frame();
+    rig.tap_key(Scancode::ESCAPE);
+    rig.frame();
+    rig.frame();
+    assert!(!rig.input.is_paused());
+    assert!(rig.holds_pointer());
+    rig.step();
+    assert_eq!(rig.running(), None, "the button held as the pause ended isn't a press");
+
+    rig.left_button(false);
+    rig.frame();
+    rig.step();
+    rig.left_button(true);
+    rig.frame();
+    rig.step();
+    assert_eq!(rig.running(), Some(sapphire_core::Name::new("light_1")), "the next one is");
+}
+
+/// A phone comes back through its own road, and a script has nobody to come back.
+#[test]
+fn losing_focus_leaves_a_phone_and_a_script_running() {
+    let mut phone = Rig::fight();
+    phone.lose_focus();
+    phone.frame();
+    assert!(!phone.input.is_paused());
+
+    let script = CombatOption::Fight { script: Some("idle".to_owned()), party: false };
+    let mut scripted = Rig::desktop(Combat::new(&script).expect("the scenario starts"));
+    scripted.lose_focus();
+    scripted.frame();
+    assert!(!scripted.input.is_paused());
 }
 
 /// A phone has no pointer and a script has no use for one.

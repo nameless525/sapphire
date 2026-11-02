@@ -419,6 +419,7 @@ impl App for SandboxApp {
                 WindowEvent::FocusLost => {
                     let pad = self.input.active_gamepad();
                     self.scene.stop_rumble(&mut PadRumble { platform, pad });
+                    focus_lost(&mut self.input, self.combat.as_ref());
                 }
                 _ => {}
             },
@@ -552,6 +553,16 @@ fn game_event(scene: &mut Scene, input: &mut SandboxInput, event: &Event) {
         && matches!(event, Event::Touch(touch) if touch.phase == sapphire_platform::TouchPhase::Down);
     if pauses_landing || !scene.hud_event(event) {
         input.handle_event(event);
+    }
+}
+
+/// A fight someone's playing in a desktop's window waits for them when they go elsewhere, and they end
+/// the pause as any other, so a click that brings the window back doesn't also swing. A phone has its own
+/// road back from the background, and a script or a file has nobody to come back, so its steps go on and
+/// its checksums hold.
+fn focus_lost(input: &mut SandboxInput, combat: Option<&Combat>) {
+    if input.desktop() && combat.is_some_and(Combat::is_played) {
+        input.pause();
     }
 }
 

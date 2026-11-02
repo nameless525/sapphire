@@ -181,6 +181,11 @@ impl SandboxInput {
         system.state(self.actions.quit).fired() || self.controls.wants_to_leave()
     }
 
+    /// Stops the steps where no binding asked to, until the player ends the pause as any other.
+    pub fn pause(&mut self) {
+        self.controls.set_paused(true);
+    }
+
     /// The pad in the player's hands, which rumble goes to.
     pub fn active_gamepad(&self) -> Option<sapphire_platform::GamepadId> {
         self.controls.input().active_gamepad()

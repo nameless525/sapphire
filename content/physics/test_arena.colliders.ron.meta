@@ -1,0 +1,8 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "9b631975-6ee2-4ac5-8d16-0bfe05238148",
+        importer: Colliders(()),
+    ),
+)

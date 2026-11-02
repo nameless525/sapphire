@@ -292,7 +292,8 @@ pub fn extract_materials(source: &Path, options: &ExtractOptions) -> Result<Extr
         | ImportSettings::Material(_)
         | ImportSettings::ProbeGrid(_)
         | ImportSettings::KeyPose(_)
-        | ImportSettings::Assembly(_) => {
+        | ImportSettings::Assembly(_)
+        | ImportSettings::Colliders(_) => {
             return Err(ExtractError::NotAMesh(source.to_owned()));
         }
     };

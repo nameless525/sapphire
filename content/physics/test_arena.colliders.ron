@@ -1,0 +1,33 @@
+// A small arena, for `sapphire_physics`' tests and as an example of the document: ground, walls
+// around it, a crate turned about Y, a pillar and a ball, and a ramp as a triangle mesh.
+(
+    type: "sapphire::colliders::ColliderDocument",
+    version: 1,
+    data: (
+        colliders: [
+            (name: "ground", shape: Box(half_extents: (12.0, 0.5, 12.0)), position: (0.0, -0.5, 0.0)),
+            // These keep characters in, without blocking the camera or hits.
+            (name: "edge_north", shape: Box(half_extents: (12.0, 2.0, 0.25)), position: (0.0, 2.0, 12.25), groups: [CharacterBlocker]),
+            (name: "edge_south", shape: Box(half_extents: (12.0, 2.0, 0.25)), position: (0.0, 2.0, -12.25), groups: [CharacterBlocker]),
+            (name: "edge_east", shape: Box(half_extents: (0.25, 2.0, 12.0)), position: (12.25, 2.0, 0.0), groups: [CharacterBlocker]),
+            (name: "edge_west", shape: Box(half_extents: (0.25, 2.0, 12.0)), position: (-12.25, 2.0, 0.0), groups: [CharacterBlocker]),
+            (
+                name: "crate",
+                shape: Box(half_extents: (0.5, 0.5, 0.5)),
+                position: (3.0, 0.5, 2.0),
+                rotation: AxisAngle(axis: (0.0, 1.0, 0.0), degrees: 30.0),
+            ),
+            (name: "pillar", shape: Capsule(half_height: 1.5, radius: 0.4), position: (-4.0, 1.9, 0.0)),
+            (name: "ball", shape: Sphere(radius: 0.75), position: (0.0, 0.75, -5.0)),
+            // Rises from y = 0 at x = 5 to y = 1 at x = 9, 2 m wide: a slope of 1 in 4.
+            (
+                name: "ramp",
+                shape: Mesh(
+                    vertices: [(5.0, 0.0, -7.0), (9.0, 1.0, -7.0), (9.0, 1.0, -5.0), (5.0, 0.0, -5.0)],
+                    indices: [(0, 2, 1), (0, 3, 2)],
+                ),
+                position: (0.0, 0.0, 0.0),
+            ),
+        ],
+    ),
+)

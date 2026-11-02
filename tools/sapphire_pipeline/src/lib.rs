@@ -38,6 +38,8 @@
 //! - [`probes`]: ambient probe grid documents (`.probes.ron`) baked to
 //!   [`ProbeGrid`](sapphire_assets::probes::ProbeGrid)s (M1 W5): sky visibility and bounce light
 //!   per time-of-day key, ray traced on the CPU over the meshes they name.
+//! - [`colliders`]: collider documents (`.colliders.ron`) cooked to
+//!   [`ColliderSet`](sapphire_colliders::ColliderSet)s (M2 D3): a zone's static collision.
 //! - [`cook`]: import, bake, optimize or compress, and validate for a target cook, written to
 //!   disk through the content cache; a source can cook to sub-assets beside its own (a VRM's
 //!   rig).
@@ -97,6 +99,7 @@ pub mod bake;
 pub mod cache;
 pub mod character_maps;
 pub mod clip;
+pub mod colliders;
 mod color;
 pub mod cook;
 pub mod extract;

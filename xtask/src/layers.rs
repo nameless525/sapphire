@@ -27,6 +27,9 @@
 //!   replay job builds quickly and runs with no window or GPU (M2 D1). Each has a `clippy.toml`
 //!   banning what breaks determinism: the same file in all of them, and holding every ban in
 //!   the workspace's, since clippy reads the nearest file instead of adding them up.
+//! - No crate in `[cooker]` reaches a `forbidden` crate through normal dependencies: the renderer
+//!   and the world would cost a cook after every shader edit (M1 A8's follow-up), and a collision
+//!   library has no business there (M2 D3).
 //!
 //! Dev-dependencies are exempt throughout: tests never ship, and test-support tool
 //! crates (`en_testkit` in the spec) exist to be dev-depended on. The resolve graph is
@@ -133,6 +136,8 @@ pub struct Config {
     dev_only_dependencies: DevOnlyDependencies,
     #[serde(default)]
     simulation: Simulation,
+    #[serde(default)]
+    cooker: Cooker,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -161,6 +166,16 @@ struct DevOnlyDependencies {
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Simulation {
+    #[serde(default)]
+    crates: Vec<String>,
+    #[serde(default)]
+    forbidden: Vec<String>,
+}
+
+/// `[cooker]`: the content tool, and what it must never link.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Cooker {
     #[serde(default)]
     crates: Vec<String>,
     #[serde(default)]
@@ -309,6 +324,11 @@ pub enum Violation {
         krate: String,
         problem: String,
     },
+    CookerReachable {
+        krate: String,
+        dependency: String,
+        path: Vec<String>,
+    },
 }
 
 // Sorting violations groups them by kind, then by crate.
@@ -386,6 +406,11 @@ impl fmt::Display for Violation {
             Self::SimulationClippy { krate, problem } => {
                 write!(f, "`{krate}`'s clippy.toml {problem}")
             }
+            Self::CookerReachable { krate, dependency, path } => write!(
+                f,
+                "`{dependency}` is in the dependency tree of the content tool `{krate}`: {}",
+                path.join(" -> ")
+            ),
         }
     }
 }
@@ -544,6 +569,7 @@ pub fn check(config: &Config, metadata: &Metadata) -> anyhow::Result<Vec<Violati
 
     let simulation_forbidden: BTreeSet<&str> =
         config.simulation.forbidden.iter().map(String::as_str).collect();
+    let cooker_forbidden: BTreeSet<&str> = config.cooker.forbidden.iter().map(String::as_str).collect();
     let tool_only: BTreeSet<&str> = config.tool_only_dependencies.crates.iter().map(String::as_str).collect();
     let dev_only: BTreeSet<&str> = config.dev_only_dependencies.crates.iter().map(String::as_str).collect();
     for package in &local {
@@ -575,6 +601,11 @@ pub fn check(config: &Config, metadata: &Metadata) -> anyhow::Result<Vec<Violati
                     dependency,
                     path,
                 });
+            }
+        }
+        if config.cooker.crates.contains(&package.name) {
+            for (dependency, path) in graph.reachable_named(&package.id, &cooker_forbidden) {
+                violations.push(Violation::CookerReachable { krate: package.name.clone(), dependency, path });
             }
         }
         if from_placement.ships() {
@@ -942,6 +973,10 @@ mod tests {
             [simulation]
             crates = ["sapphire_math"]
             forbidden = ["sapphire_render", "wgpu"]
+
+            [cooker]
+            crates = ["sapphire_pipeline"]
+            forbidden = ["parry3d", "sapphire_render"]
             "#,
         )
         .unwrap()
@@ -1290,6 +1325,33 @@ mod tests {
         );
         // Another crate may reach it.
         assert_eq!(check_with(&[("sapphire_render", "wgpu", Normal)]), []);
+    }
+
+    #[test]
+    fn the_cooker_links_nothing_forbidden() {
+        // Tools may depend on anything by layer rules, so only this rule can catch these. A dev
+        // dependency isn't in what a cook links.
+        assert_eq!(check_with(&[("sapphire_pipeline", "parry3d", Dev)]), []);
+        let violations = check_with(&[("sapphire_pipeline", "tiny", Normal), ("tiny", "parry3d", Normal)]);
+        assert_eq!(
+            violations,
+            [Violation::CookerReachable {
+                krate: "sapphire_pipeline".into(),
+                dependency: "parry3d".into(),
+                path: vec!["sapphire_pipeline".into(), "tiny".into(), "parry3d".into()],
+            }]
+        );
+        let violations = check_with(&[("sapphire_pipeline", "sapphire_render", Normal)]);
+        assert_eq!(
+            violations,
+            [Violation::CookerReachable {
+                krate: "sapphire_pipeline".into(),
+                dependency: "sapphire_render".into(),
+                path: vec!["sapphire_pipeline".into(), "sapphire_render".into()],
+            }]
+        );
+        // Another crate may reach it.
+        assert_eq!(check_with(&[("sapphire_render", "parry3d", Normal)]), []);
     }
 
     #[test]

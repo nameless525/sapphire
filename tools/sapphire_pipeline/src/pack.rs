@@ -60,6 +60,7 @@ use sapphire_assets::rig::RIG_EXTENSION;
 use sapphire_assets::skeleton::SKELETON_EXTENSION;
 use sapphire_assets::texture::TEXTURE_EXTENSION;
 use sapphire_assets::{AssetError, AssetId, AssetKind};
+use sapphire_colliders::COLLIDERS_EXTENSION;
 use sapphire_serialize::cooked::AlignedVec;
 use sapphire_serialize::postcard;
 
@@ -100,6 +101,7 @@ pub fn kind(output: &Path) -> Option<AssetKind> {
         PROBE_GRID_EXTENSION => Some(AssetKind::ProbeGrid),
         SKELETON_EXTENSION => Some(AssetKind::Skeleton),
         CLIP_EXTENSION => Some(AssetKind::Clip),
+        COLLIDERS_EXTENSION => Some(AssetKind::Colliders),
         _ => None,
     }
 }

@@ -13,6 +13,8 @@ path = "src/main.rs"
 
 [dependencies]
 sapphire_assets.workspace = true
+# Collider documents' checks and cooked format. Plain data: the tool links no collision library.
+sapphire_colliders.workspace = true
 # The probe bake lights the sky as the renderer relights it (`sky::sky_radiance`), under time of
 # day's keys (M1 W5). Neither crate embeds a shader or the default day, so editing those rebuilds
 # nothing here: the bake reads the default day's file itself (`probes::default_day_path`).

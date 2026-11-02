@@ -119,6 +119,14 @@ forbidden = [
     "wgpu-hal",
 ]
 
+# The content tool, and what it must never link through normal dependencies. The renderer and the
+# world compile in the shaders and documents edited during look-dev, which made the first cook after
+# such an edit take a minute (M1 A8's follow-up). A collision library has no place in a cook either:
+# a cooked collider set is plain data, and the world builds from it at load (M2 D3).
+[cooker]
+crates = ["sapphire_pipeline"]
+forbidden = ["parry3d", "rapier3d", "sapphire_physics", "sapphire_render", "sapphire_world"]
+
 # Third-party crates that must never reach a runtime, app or dev-only crate's dependency
 # tree.
 [tool_only_dependencies]

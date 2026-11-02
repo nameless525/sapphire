@@ -58,6 +58,8 @@
 //! - **Key-pose documents** cook `.keypose.ron` → `.sclip` (M2 N1, [`keypose`]), for the character
 //!   their sidecar names. They read that character's cooked skeleton and rig, so they cook after
 //!   every other asset but materials and probe grids; their keys depend on those assets' keys.
+//! - **Collider documents** cook `.colliders.ron` → `.scol` (M2 D3, [`colliders`]): a zone's static
+//!   collision, checked entry by entry, reading nothing besides themselves.
 //!
 //! A source may cook to more than one asset: its own, and sub-assets, each with its own recipe,
 //! output beside the source's (`alicia.smesh`, `alicia.sskel`, `alicia.srig`) and an ID derived
@@ -85,6 +87,7 @@ use sapphire_assets::probes::{PROBE_GRID_EXTENSION, ProbeGrid};
 use sapphire_assets::rig::{CharacterRig, RIG_EXTENSION, RigError};
 use sapphire_assets::skeleton::{SKELETON_EXTENSION, Skeleton};
 use sapphire_assets::texture::{TEXTURE_EXTENSION, TEXTURE_VERSION};
+use sapphire_colliders::{COLLIDERS_EXTENSION, ColliderSet};
 use sapphire_reflect::Versioned;
 
 use crate::assembly::{self, AssemblyError};
@@ -92,6 +95,7 @@ use crate::bake::foliage::FoliageError;
 use crate::cache::{Cache, CacheError, CacheKey, Dependency, KeyInputs, Stage};
 use crate::character_maps::{self, MapError, MapKind};
 use crate::clip::{self, ClipCookError, ClipSettings, ClipTarget};
+use crate::colliders::{self, ColliderCookError};
 use crate::import::fbx::{self, FbxImportError};
 use crate::import::gltf::{self, GltfImportError};
 use crate::import::image;
@@ -247,6 +251,12 @@ impl Recipe {
                 format: Clip::VERSION,
                 extension: CLIP_EXTENSION,
             },
+            ImportSettings::Colliders(_) => Self {
+                importer: colliders::IMPORTER,
+                cooker: colliders::COOKER,
+                format: ColliderSet::VERSION,
+                extension: COLLIDERS_EXTENSION,
+            },
         }
     }
 
@@ -273,7 +283,7 @@ impl Recipe {
     /// Where a source at `relative` cooks to, relative to the output root: its path with the
     /// cooked extension in place of the source's (`samples/mannequin.glb` →
     /// `samples/mannequin.smesh`, `skin.material.ron` → `skin.smat`, `courtyard.probes.ron` →
-    /// `courtyard.sprobe`).
+    /// `courtyard.sprobe`, `arena.colliders.ron` → `arena.scol`).
     pub fn output_path(&self, relative: &Path) -> PathBuf {
         if material::is_source(relative) {
             material::output_path(relative, self.extension)
@@ -283,6 +293,8 @@ impl Recipe {
             assembly::output_path(relative, self.extension)
         } else if keypose::is_source(relative) {
             keypose::output_path(relative, self.extension)
+        } else if colliders::is_source(relative) {
+            colliders::output_path(relative, self.extension)
         } else {
             relative.with_extension(self.extension)
         }
@@ -375,6 +387,13 @@ pub enum CookError {
         /// Boxed, as material errors are.
         #[source]
         source: Box<ProbeCookError>,
+    },
+    #[error("failed to cook collider document {}", path.display())]
+    Colliders {
+        path: PathBuf,
+        /// Boxed, as material errors are.
+        #[source]
+        source: Box<ColliderCookError>,
     },
     #[error("failed to resolve the material slots of {}", path.display())]
     MaterialSlot {
@@ -675,7 +694,8 @@ fn sub_assets(asset: &SourceAsset) -> Result<Vec<PlannedPart>, CookError> {
         | ImportSettings::CharacterMap(_)
         | ImportSettings::Material(_)
         | ImportSettings::ProbeGrid(_)
-        | ImportSettings::KeyPose(_) => Ok(Vec::new()),
+        | ImportSettings::KeyPose(_)
+        | ImportSettings::Colliders(_) => Ok(Vec::new()),
     }
 }
 
@@ -959,6 +979,8 @@ fn cook_source(
             };
             cook_clip().map_err(clip_error)
         }
+        ImportSettings::Colliders(_) => colliders::cook(bytes)
+            .map_err(|source| CookError::Colliders { path: path.to_owned(), source: Box::new(source) }),
     }
 }
 
@@ -1112,8 +1134,8 @@ fn dependencies(
                 })
                 .collect()
         }
-        // Images are self-contained.
-        ImportSettings::Texture(_) => Ok(Vec::new()),
+        // Images and collider documents are self-contained.
+        ImportSettings::Texture(_) | ImportSettings::Colliders(_) => Ok(Vec::new()),
         ImportSettings::CharacterMap(settings) => {
             let inputs = character_maps::inputs(settings.kind(), bytes).map_err(map_error(path))?;
             inputs
@@ -1225,7 +1247,8 @@ fn imported_mesh(
         | ImportSettings::CharacterMap(_)
         | ImportSettings::Material(_)
         | ImportSettings::ProbeGrid(_)
-        | ImportSettings::KeyPose(_) => Err(CookError::UnsupportedSource { path: path.to_owned() }),
+        | ImportSettings::KeyPose(_)
+        | ImportSettings::Colliders(_) => Err(CookError::UnsupportedSource { path: path.to_owned() }),
     }
 }
 
@@ -2147,6 +2170,84 @@ mod tests {
         fs::write(&sidecar, sapphire_serialize::to_ron(&bound).unwrap()).unwrap();
         let error = scratch_error(&scratch);
         assert!(matches!(&error, CookError::NotAMaterial { slot, .. } if slot == "Hair"), "{error:?}");
+    }
+
+    /// A collider document with one box, named `name`, reaching `half_extent` along x each way.
+    fn collider_document(name: &str, half_extent: f32) -> String {
+        format!(
+            r#"(
+                type: "sapphire::colliders::ColliderDocument",
+                version: 1,
+                data: (colliders: [
+                    (name: "{name}", shape: Box(half_extents: ({half_extent}, 0.5, 5.0)), position: (0.0, -0.5, 0.0)),
+                ]),
+            )"#
+        )
+    }
+
+    #[test]
+    fn collider_documents_cook_and_pack() {
+        let scratch = Scratch::new("cook_colliders");
+        let source = scratch.source().join("zones/arena.colliders.ron");
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        fs::write(&source, collider_document("ground", 5.0)).unwrap();
+
+        let report = scratch.cook();
+        assert_eq!(report.created_sidecars, [sidecar_path(&source)]);
+        assert!(fs::read_to_string(sidecar_path(&source)).unwrap().contains("Colliders"));
+        let output = scratch.out().join("zones/arena.scol");
+        assert_eq!(asset(&report, &source).output, output);
+        let cooked = read_aligned(&output);
+        assert_eq!(ColliderSet::read(&cooked).unwrap().id_of("ground"), Some(0));
+        assert_eq!(crate::pack::kind(&output), Some(sapphire_assets::AssetKind::Colliders));
+
+        // Unchanged, it comes from the cache; changed, it cooks again under the same ID.
+        assert_eq!(statuses(&scratch.cook()), [CookStatus::UpToDate]);
+        let id = report.assets[0].id;
+        fs::write(&source, collider_document("ground", 6.0)).unwrap();
+        let report = scratch.cook();
+        assert_eq!(statuses(&report), [CookStatus::Cooked]);
+        assert_eq!(report.assets[0].id, id);
+    }
+
+    #[test]
+    fn a_locked_cook_needs_a_collider_documents_sidecar() {
+        let scratch = Scratch::new("cook_colliders_locked");
+        let source = scratch.source().join("arena.colliders.ron");
+        fs::create_dir_all(scratch.source()).unwrap();
+        fs::write(&source, collider_document("ground", 5.0)).unwrap();
+        let locked = CookOptions { cook: Cook::Desktop, cache: None, locked: true };
+        let error = cook_dir(&scratch.source(), &scratch.out(), &locked).unwrap_err();
+        assert!(
+            matches!(&error, CookError::Meta(MetaError::Missing { sources }) if *sources == [source.clone()])
+        );
+        assert!(!sidecar_path(&source).exists());
+
+        // With its sidecar written, the locked cook runs.
+        scratch.cook();
+        assert!(cook_dir(&scratch.source(), &scratch.out(), &locked).is_ok());
+    }
+
+    #[test]
+    fn a_malformed_collider_document_names_its_file_and_its_entry() {
+        let scratch = Scratch::new("cook_colliders_malformed");
+        let source = scratch.source().join("arena.colliders.ron");
+        fs::create_dir_all(scratch.source()).unwrap();
+        fs::write(&source, collider_document("the_bad_wall", -1.0)).unwrap();
+        let error = scratch_error(&scratch);
+        assert!(matches!(&error, CookError::Colliders { path, .. } if *path == source), "{error:?}");
+        let message = format!("{:#}", anyhow::Error::from(error));
+        assert!(message.contains("arena.colliders.ron"), "{message}");
+        assert!(message.contains("collider `the_bad_wall`: half extent -1"), "{message}");
+
+        // Syntax too, with where it went wrong.
+        fs::write(
+            &source,
+            "(type: \"sapphire::colliders::ColliderDocument\", version: 1, data: (colliders: [(",
+        )
+        .unwrap();
+        let message = format!("{:#}", anyhow::Error::from(scratch_error(&scratch)));
+        assert!(message.contains("arena.colliders.ron") && message.contains("1:"), "{message}");
     }
 
     /// The names in `dir`, sorted.

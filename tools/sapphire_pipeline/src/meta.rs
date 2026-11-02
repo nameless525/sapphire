@@ -123,6 +123,7 @@ use crate::bake::OutlineSettings;
 use crate::bake::foliage::FoliageSettings;
 use crate::character_maps::{MapKind, MapSettings};
 use crate::clip::ClipSettings;
+use crate::colliders::{self, ColliderSettings};
 use crate::import::vrm::{self, VrmSettings};
 use crate::keypose::{self, KeyPoseSettings};
 use crate::material::{self, MaterialSettings};
@@ -192,6 +193,8 @@ pub enum ImportSettings {
     /// A key-pose document (`.keypose.ron`): motion authored as poses at ticks, cooked to a clip
     /// for the character its sidecar names (M2 N1).
     KeyPose(KeyPoseSettings),
+    /// A collider document (`.colliders.ron`): a zone's static collision (M2 D3).
+    Colliders(ColliderSettings),
 }
 
 impl ImportSettings {
@@ -214,6 +217,9 @@ impl ImportSettings {
         }
         if keypose::is_source(source) {
             return Some(Self::KeyPose(KeyPoseSettings::default()));
+        }
+        if colliders::is_source(source) {
+            return Some(Self::Colliders(ColliderSettings::default()));
         }
         let extension = source.extension()?.to_str()?.to_ascii_lowercase();
         match extension.as_str() {
@@ -249,7 +255,8 @@ impl ImportSettings {
             | Self::CharacterMap(_)
             | Self::Material(_)
             | Self::ProbeGrid(_)
-            | Self::KeyPose(_) => None,
+            | Self::KeyPose(_)
+            | Self::Colliders(_) => None,
         }
     }
 
@@ -262,7 +269,8 @@ impl ImportSettings {
             | Self::CharacterMap(_)
             | Self::Material(_)
             | Self::ProbeGrid(_)
-            | Self::KeyPose(_) => None,
+            | Self::KeyPose(_)
+            | Self::Colliders(_) => None,
         }
     }
 }

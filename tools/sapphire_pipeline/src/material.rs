@@ -104,7 +104,8 @@ impl TextureKind {
             | ImportSettings::Assembly(_)
             | ImportSettings::Material(_)
             | ImportSettings::ProbeGrid(_)
-            | ImportSettings::KeyPose(_) => return None,
+            | ImportSettings::KeyPose(_)
+            | ImportSettings::Colliders(_) => return None,
         })
     }
 

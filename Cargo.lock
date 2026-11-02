@@ -2750,6 +2750,7 @@ dependencies = [
  "image",
  "meshopt",
  "sapphire_assets",
+ "sapphire_colliders",
  "sapphire_look",
  "sapphire_math",
  "sapphire_reflect",

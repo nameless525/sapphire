@@ -762,6 +762,20 @@ impl Options {
         }
         Ok(())
     }
+
+    /// An error if the windowed app was given an offscreen mode, which only happens on Android:
+    /// `main` picks the app from the process's arguments, and Android enters through `SDL_main`,
+    /// which runs the windowed app with its arguments from the launching intent. It would draw
+    /// until stopped, and never take the capture or the bench it was asked for.
+    pub fn refuse_offscreen(&self) -> Result<(), String> {
+        if self.offscreen.is_some() {
+            return Err(format!(
+                "{CAPTURE_FLAG}, {BENCH_FLAG} and {OFFSCREEN_FLAG} don't run on Android; \
+                 a device's capture is `cargo xtask link capture`"
+            ));
+        }
+        Ok(())
+    }
 }
 
 fn number<T: std::str::FromStr>(raw: &str, name: &str) -> Result<T, String> {
@@ -1276,6 +1290,16 @@ mod tests {
         let (options, unknown) = parse(&["-NSDocumentRevisionsDebugMode", "YES"]).unwrap();
         assert_eq!(options, Options::default());
         assert_eq!(unknown, ["-NSDocumentRevisionsDebugMode", "YES"]);
+    }
+
+    #[test]
+    fn the_windowed_app_refuses_offscreen_modes() {
+        for args in [&["--capture", "x.png"][..], &["--bench", "10"][..]] {
+            let (options, _) = parse(args).unwrap();
+            assert!(options.refuse_offscreen().unwrap_err().contains("Android"), "{args:?}");
+        }
+        let (options, _) = parse(&["--look-dev", "wide"]).unwrap();
+        assert_eq!(options.refuse_offscreen(), Ok(()));
     }
 
     #[test]

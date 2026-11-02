@@ -112,6 +112,16 @@ const CLIP_DOCUMENTS: [(&str, AssetId); 5] = [
     ("death_forward", AssetId::from_text("7a20f0b9-eae3-48cf-b715-9b937731fe6b")),
 ];
 
+/// The player's moves (M2 O3, `content/combat/player/`), also key-pose documents.
+const PLAYER_DOCUMENTS: [(&str, AssetId); 6] = [
+    ("light_1", AssetId::from_text("6d321a52-1aed-4279-bc32-a177b8fd81d4")),
+    ("light_2", AssetId::from_text("0c4be2d4-4149-4852-80c5-109683aad3e1")),
+    ("light_3", AssetId::from_text("5fe300c9-a4a3-4339-a556-7bc112f2bb59")),
+    ("dash_attack", AssetId::from_text("997ddfa0-e2bf-4887-94dd-e8f51cb6e958")),
+    ("dodge", AssetId::from_text("9b5f353a-2c97-45c7-a70f-bcab216de811")),
+    ("skill", AssetId::from_text("9491f5d1-0c11-45c9-8139-8f54918b25f6")),
+];
+
 /// The clips of KayKit's retargeted onto the character, by the file they come from: the names the
 /// sidecars under `content/third_party/kaykit_character_animations/Rig_Medium/` list for it.
 const CLIP_SOURCES: [(AssetId, &[&str]); 3] = [
@@ -137,7 +147,8 @@ const CLIP_SOURCES: [(AssetId, &[&str]); 3] = [
 impl ClipName {
     /// Every clip with a name, documents first.
     pub fn all() -> impl Iterator<Item = Self> {
-        let documents = CLIP_DOCUMENTS.into_iter().map(|(name, id)| Self::Document(name, id));
+        let documents =
+            CLIP_DOCUMENTS.into_iter().chain(PLAYER_DOCUMENTS).map(|(name, id)| Self::Document(name, id));
         documents.chain(
             CLIP_SOURCES
                 .into_iter()
@@ -804,6 +815,19 @@ mod tests {
     use sapphire_world::light_rig::LightRig;
 
     use super::*;
+
+    /// `--clip` names a move by its document, whose sidecar says the same ID and rig.
+    #[test]
+    fn the_players_clips_are_the_ones_their_sidecars_cook() {
+        let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/combat/player");
+        for (name, id) in PLAYER_DOCUMENTS {
+            let sidecar = std::fs::read_to_string(folder.join(format!("{name}.keypose.ron.meta")))
+                .unwrap_or_else(|error| panic!("{name}: {error}"));
+            assert!(sidecar.contains(&format!("id: \"{id}\"")), "{name}");
+            assert!(sidecar.contains(&format!("rig: \"{CHARACTER}\"")), "{name}");
+            assert_eq!(ClipName::from_name(name), Some(ClipName::Document(name, id)));
+        }
+    }
 
     /// The look-dev day is a complete base timeline with keys on the golden scenes' hours, so their
     /// frames don't move when the keys around them are retuned.

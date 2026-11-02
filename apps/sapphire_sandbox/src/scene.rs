@@ -2615,6 +2615,26 @@ mod tests {
         assert!(swapping.simulation().party().swaps() > 0, "it swapped");
     }
 
+    /// A shake's roll, which `OrbitCamera::set_view` can't take, reaches the frame's view: everything
+    /// sums on the director's pose, so the roll is read back off it.
+    #[test]
+    fn a_directors_shake_rolls_the_view_the_frame_draws() {
+        let (mut scene, _) = arena_stage(ArenaShot::Director);
+        // How far the view's right has left level, from a frame `dt` seconds on.
+        let tilt = |scene: &mut Scene, dt: f32| {
+            assert!(scene.drive_arena_camera(dt, sapphire_math::Vec2::ZERO, 0.0));
+            let view = scene.frame_packet(1.0, Some((16, 9))).main_view().expect("a view").camera.view;
+            scene.end_frame();
+            view.inverse().x_axis.y.abs()
+        };
+        assert!(tilt(&mut scene, 1.0 / 60.0) < 1e-5, "level with no shake");
+        let director = scene.arena.as_mut().expect("built").director().expect("this shot has one");
+        let finish = director.tuning().shake_id("finish").expect("a shipped preset");
+        director.fire_shake(finish, 1.0);
+        let most = (0..30).map(|_| tilt(&mut scene, 1.0 / 60.0)).fold(0.0_f32, f32::max);
+        assert!(most > 1e-3, "it rolls: {most}");
+    }
+
     /// The arena stands its two actors where the simulation has them, and no turntable moves them:
     /// at their spawn points before a replay moves them, then each step's position, and the camera
     /// follows the player. Moved or not, its town is the look-dev stage's, on its day.

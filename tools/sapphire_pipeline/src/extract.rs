@@ -296,7 +296,10 @@ pub fn extract_materials(source: &Path, options: &ExtractOptions) -> Result<Extr
         | ImportSettings::Assembly(_)
         | ImportSettings::Colliders(_)
         | ImportSettings::Sound(_)
-        | ImportSettings::Cue(_) => {
+        | ImportSettings::Cue(_)
+        | ImportSettings::GltfClips(_)
+        | ImportSettings::FbxClips(_)
+        | ImportSettings::Vrma(_) => {
             return Err(ExtractError::NotAMesh(source.to_owned()));
         }
     };

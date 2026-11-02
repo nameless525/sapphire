@@ -45,11 +45,17 @@
 //!
 //! FBX files (`.fbx`, M1 A10) have `importer: Fbx((…))`, the same mesh settings.
 //!
-//! glTF meshes whose animations should cook (M2 N1) add `clips: (root_motion: (bone: "Hips"))`
-//! ([`ClipSettings`]), written out only when set.
+//! glTF and FBX meshes whose animations should cook (M2 N1) add `clips: (root_motion: (bone:
+//! "Hips"))` ([`ClipSettings`]), written out only when set. A mesh that plays another source's
+//! skeleton adds `skeleton: Some("<id>")`.
+//!
+//! Sources wanted for their animations alone (M2 N1) have `importer: GltfClips((…))` or
+//! `FbxClips((…))` whatever mesh they also hold, and VRMA files (`.vrma`) `Vrma((…))`, all with
+//! [`ClipSettings`]. They cook no asset of their own: only clips and, unless they share another
+//! source's rig, a skeleton.
 //!
 //! Key-pose documents (`swing.keypose.ron`, M2 N1) have `importer: KeyPose((rig: "<id>"))`, naming
-//! the character source they cook for.
+//! the source with a skeleton and a humanoid map they cook for.
 //!
 //! Ogg Vorbis sounds (`.ogg`, M2 E1) have `importer: Sound(())` and cue documents (`hit.cue.ron`)
 //! `importer: Cue(())`.
@@ -206,6 +212,14 @@ pub enum ImportSettings {
     Cue(CueSettings),
     /// A move set document (`.moves.ron`): frame data and tables the simulation reads (M2 G2).
     MoveSet(MoveSetSettings),
+    /// A glTF wanted for its animations alone: clips and a skeleton, and no mesh (M2 N1), whatever
+    /// the file holds. No extension picks this: its sidecar does.
+    GltfClips(ClipSettings),
+    /// [`Self::GltfClips`], for an FBX's animation stacks (M2 N1).
+    FbxClips(ClipSettings),
+    /// A VRMA (`.vrma`, `VRMC_vrm_animation`): a glTF whose animations name humanoid bones, cooked
+    /// to clips (M2 N1). Its map is the file's.
+    Vrma(ClipSettings),
 }
 
 impl ImportSettings {
@@ -244,6 +258,7 @@ impl ImportSettings {
             "fbx" => Some(Self::Fbx(MeshSettings::default())),
             "vrm" => Some(Self::Vrm(VrmSettings::default())),
             "ogg" => Some(Self::Sound(SoundSettings::default())),
+            "vrma" => Some(Self::Vrma(ClipSettings::default())),
             // Integer images are colors until their sidecar says otherwise; float images are HDR.
             "png" | "tga" => Some(Self::Texture(TextureSettings::default())),
             "exr" => {
@@ -277,7 +292,10 @@ impl ImportSettings {
             | Self::Colliders(_)
             | Self::Sound(_)
             | Self::Cue(_)
-            | Self::MoveSet(_) => None,
+            | Self::MoveSet(_)
+            | Self::GltfClips(_)
+            | Self::FbxClips(_)
+            | Self::Vrma(_) => None,
         }
     }
 
@@ -294,7 +312,32 @@ impl ImportSettings {
             | Self::Colliders(_)
             | Self::Sound(_)
             | Self::Cue(_)
-            | Self::MoveSet(_) => None,
+            | Self::MoveSet(_)
+            | Self::GltfClips(_)
+            | Self::FbxClips(_)
+            | Self::Vrma(_) => None,
+        }
+    }
+
+    /// How a source's animations cook, if they do: a mesh's `clips`, or an animation source's whole
+    /// settings.
+    pub fn clips(&self) -> Option<&ClipSettings> {
+        match self {
+            Self::GltfClips(settings) | Self::FbxClips(settings) | Self::Vrma(settings) => Some(settings),
+            _ => self.mesh().and_then(|mesh| mesh.clips.as_ref()),
+        }
+    }
+
+    /// Whether the source's animations are all it cooks: it has no asset under its own ID.
+    pub fn is_animation_only(&self) -> bool {
+        matches!(self, Self::GltfClips(_) | Self::FbxClips(_) | Self::Vrma(_))
+    }
+
+    /// The source whose skeleton this one shares instead of cooking its own, if any.
+    pub fn shared_rig(&self) -> Option<AssetId> {
+        match self {
+            Self::GltfClips(settings) | Self::FbxClips(settings) | Self::Vrma(settings) => settings.rig,
+            _ => self.mesh().and_then(|mesh| mesh.skeleton),
         }
     }
 }
@@ -320,11 +363,15 @@ pub struct MeshSettings {
     /// they were.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub foliage: Option<FoliageSettings>,
-    /// Animation clips (M2 N1), for glTF sources: every animation in the file cooks to a clip, a
-    /// sub-asset beside the mesh, and every node they move joins the skeleton. Sources without it
+    /// Animation clips (M2 N1), for glTF and FBX sources: the file's animations cook to clips,
+    /// sub-assets beside the mesh, and every node they move joins the skeleton. Sources without it
     /// ignore their animations; written out only when set, so other sidecars stay as they were.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub clips: Option<ClipSettings>,
+    /// The source whose skeleton this mesh plays on instead of cooking its own (M2 N1): its joints
+    /// match by name, parent and rest, in any order. Written out only when set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skeleton: Option<AssetId>,
 }
 
 /// The sidecar of `source`: its whole file name with `.meta` appended.

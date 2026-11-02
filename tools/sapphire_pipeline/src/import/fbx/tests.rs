@@ -317,7 +317,7 @@ fn the_importer_names_the_locked_ufbx_version() {
 
 /// A minimal ASCII FBX 7.4 document: `axes` are `GlobalSettings`' up, front and coord axes, each
 /// with its sign, `unit_cm` its centimeters a unit, `objects` and `connections` the scene.
-fn ascii_fbx(axes: [i32; 6], unit_cm: f64, objects: &str, connections: &str) -> Vec<u8> {
+pub(crate) fn ascii_fbx(axes: [i32; 6], unit_cm: f64, objects: &str, connections: &str) -> Vec<u8> {
     let names = ["UpAxis", "UpAxisSign", "FrontAxis", "FrontAxisSign", "CoordAxis", "CoordAxisSign"];
     let mut properties: String = names
         .iter()
@@ -336,7 +336,7 @@ fn ascii_fbx(axes: [i32; 6], unit_cm: f64, objects: &str, connections: &str) -> 
 }
 
 /// Y up, Z toward the viewer, X right: the engine's own axes.
-const Y_UP: [i32; 6] = [1, 1, 2, 1, 0, 1];
+pub(crate) const Y_UP: [i32; 6] = [1, 1, 2, 1, 0, 1];
 
 /// A mesh node `name` (ID `id`, its geometry `id + 1`) at the scene's root, with `vertices` and
 /// `polygons` (FBX's indices: each polygon's last as `-(index + 1)`): its objects and

@@ -31,7 +31,7 @@
 //!
 //! **Dropped:** `meta` (licensing lives in `content/third_party/<name>/SOURCE.md`, M1 plan §3),
 //! `firstPerson`'s mesh annotations (first-person views are out of scope), animations
-//! (`VRMC_vrm_animation`, M2), `VRMC_springBone_extended_collider`, and what the MToon mapping
+//! (`VRMC_vrm_animation` is a `.vrma` file's, [`vrma`](super::vrma)), `VRMC_springBone_extended_collider`, and what the MToon mapping
 //! lists.
 //!
 //! # The sidecar

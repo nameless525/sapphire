@@ -52,12 +52,17 @@
 //!   placed into one mesh in slots of the document's own (M1 X1, [`assembly`]). The pieces'
 //!   files are dependencies of the key.
 //! - **Skeletons** cook beside every skinned mesh → `.sskel` (M2 N1): the import's joints, which
-//!   the mesh's skin names by a derived ID, as a clip does.
-//! - **Clips** cook a glTF's animations → `.sclip` when its sidecar asks (M2 N1, [`clip`]), one per
-//!   animation (`run.glb` → `run.Walk.sclip`).
-//! - **Key-pose documents** cook `.keypose.ron` → `.sclip` (M2 N1, [`keypose`]), for the character
-//!   their sidecar names. They read that character's cooked skeleton and rig, so they cook after
-//!   every other asset but materials and probe grids; their keys depend on those assets' keys.
+//!   the mesh's skin names by a derived ID, as a clip does. A mesh or an animation source may share
+//!   another source's instead (`skeleton:`, `rig:`).
+//! - **Clips** cook a glTF's or an FBX's animations and a VRMA's → `.sclip` when its sidecar asks
+//!   (M2 N1, [`clip`]), one per animation chosen (`run.glb` → `run.Walk.sclip`) and one more per rig
+//!   it retargets to, its target's ID in the file name (`run.Walk.6f8a81b6.sclip`). Sources wanted
+//!   for their animations alone cook no asset of their own.
+//! - **Key-pose documents** cook `.keypose.ron` → `.sclip` (M2 N1, [`keypose`]), for the rigs
+//!   their sidecar names.
+//! - Key-pose documents, every clip and a mesh sharing a skeleton read skeletons and rigs that
+//!   other sources cook, so they cook after every other asset but materials and probe grids; their
+//!   keys depend on those assets' keys.
 //! - **Collider documents** cook `.colliders.ron` → `.scol` (M2 D3, [`colliders`]): a zone's static
 //!   collision, checked entry by entry, reading nothing besides themselves.
 //! - **Sounds and cues** cook `.ogg` → `.ssound` and `.cue.ron` documents → `.scue` (M2 E1,
@@ -69,14 +74,14 @@
 //! A source may cook to more than one asset: its own, and sub-assets, each with its own recipe,
 //! output beside the source's (`alicia.smesh`, `alicia.sskel`, `alicia.srig`) and an ID derived
 //! from the source's ([`meta::sub_asset_id`]). Each is planned, keyed and cached as an asset of its
-//! own, so a report lists it and a pack (A4) can address it; each imports the source itself. Which
-//! ones a glTF or an FBX has depends on the file (is it skinned? what animations?), so planning
-//! reads those two.
+//! own, so a report lists it and a pack (A4) can address it; each imports the source itself, but
+//! for clips, which share one import (`clip::source`). Which ones a glTF or an FBX has depends on
+//! the file (is it skinned? what animations?), so planning reads those.
 //!
 //! Assets cook one after another. Cooking in parallel (rayon) waits for content that makes it
 //! worth it.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::fs;
 use std::io;
@@ -90,8 +95,8 @@ use sapphire_assets::cue::{CUE_EXTENSION, Cue};
 use sapphire_assets::material::{MATERIAL_EXTENSION, Material};
 use sapphire_assets::mesh::{MESH_EXTENSION, Mesh, MeshError};
 use sapphire_assets::probes::{PROBE_GRID_EXTENSION, ProbeGrid};
-use sapphire_assets::rig::{CharacterRig, RIG_EXTENSION, RigError};
-use sapphire_assets::skeleton::{SKELETON_EXTENSION, Skeleton};
+use sapphire_assets::rig::{CharacterRig, HumanBone, RIG_EXTENSION, RigError};
+use sapphire_assets::skeleton::{Joint, SKELETON_EXTENSION, Skeleton};
 use sapphire_assets::sound::{SOUND_EXTENSION, Sound};
 use sapphire_assets::texture::{TEXTURE_EXTENSION, TEXTURE_VERSION};
 use sapphire_colliders::{COLLIDERS_EXTENSION, ColliderSet};
@@ -103,12 +108,15 @@ use crate::audio::{self, AudioCookError};
 use crate::bake::foliage::FoliageError;
 use crate::cache::{Cache, CacheError, CacheKey, Dependency, KeyInputs, Stage};
 use crate::character_maps::{self, MapError, MapKind};
+use crate::clip::retarget::{self, HumanMap, RetargetOptions, Rig};
+use crate::clip::source::{ClipSource, ClipSources, joint_remap, remap_tracks};
 use crate::clip::{self, ClipCookError, ClipSettings, ClipTarget};
 use crate::colliders::{self, ColliderCookError};
 use crate::import::fbx::{self, FbxImportError};
 use crate::import::gltf::{self, GltfImportError};
 use crate::import::image;
 use crate::import::vrm::{self, VrmImportError, VrmSettings};
+use crate::import::vrma;
 use crate::keypose::{self, KeyPoseError};
 use crate::material::{self, MaterialCookError, Referenced, TextureKind};
 use crate::mesh::ImportedMesh;
@@ -289,6 +297,9 @@ impl Recipe {
                 format: MoveSet::VERSION,
                 extension: MOVE_SET_EXTENSION,
             },
+            ImportSettings::GltfClips(_) => Self::gltf_clip(),
+            ImportSettings::FbxClips(_) => Self::fbx_clip(),
+            ImportSettings::Vrma(_) => Self { importer: vrma::IMPORTER, ..Self::gltf_clip() },
         }
     }
 
@@ -310,6 +321,16 @@ impl Recipe {
             format: Clip::VERSION,
             extension: CLIP_EXTENSION,
         }
+    }
+
+    /// The recipe of a clip from an FBX's animation stack.
+    fn fbx_clip() -> Self {
+        Self { importer: fbx::clips::IMPORTER, ..Self::gltf_clip() }
+    }
+
+    /// This recipe of a clip, retargeted onto another rig.
+    fn retargeted(self) -> Self {
+        Self { cooker: retarget::COOKER, ..self }
     }
 
     /// Where a source at `relative` cooks to, relative to the output root: its path with the
@@ -578,34 +599,48 @@ pub fn cook_dir(
     let relative_of = |asset: &SourceAsset| -> PathBuf {
         asset.path.strip_prefix(source_root).expect("scanned under the source root").to_owned()
     };
-    // Every source's own output first, so a collision says so before any file is read.
+    // Every source's own output first, so a collision says so before any file is read. A source
+    // wanted for its animations has none.
     let mut own_outputs = Vec::with_capacity(cooked_assets.len());
     for asset in &cooked_assets {
         let recipe = Recipe::for_settings(&asset.meta.importer);
-        own_outputs.push(claim(&asset.path, &recipe.output_path(&relative_of(asset)))?);
+        own_outputs.push(if asset.meta.importer.is_animation_only() {
+            None
+        } else {
+            Some(claim(&asset.path, &recipe.output_path(&relative_of(asset)))?)
+        });
     }
     let mut plan = Vec::with_capacity(cooked_assets.len());
     for (asset, output) in cooked_assets.into_iter().zip(own_outputs) {
         // Which sub-assets there are may take reading the file, which could panic in a crate.
         let parts = guarded(&asset.path, || sub_assets(&asset))?;
-        let skeleton = parts
-            .iter()
-            .any(|sub| sub.part == Part::Skeleton)
-            .then(|| meta::sub_asset_id(asset.meta.id, SKELETON));
+        let skeleton =
+            asset.meta.importer.shared_rig().map(|owner| meta::sub_asset_id(owner, SKELETON)).or_else(|| {
+                parts
+                    .iter()
+                    .any(|sub| sub.part == Part::Skeleton)
+                    .then(|| meta::sub_asset_id(asset.meta.id, SKELETON))
+            });
         let recipe = Recipe::for_settings(&asset.meta.importer);
         let source_relative = relative_of(&asset);
-        plan.push(Planned {
-            asset: asset.clone(),
-            id: asset.meta.id,
-            part: Part::Own,
-            skeleton,
-            recipe,
-            output,
-        });
+        if let Some(output) = output {
+            plan.push(Planned {
+                asset: asset.clone(),
+                id: asset.meta.id,
+                part: Part::Own,
+                skeleton,
+                recipe,
+                output,
+            });
+        }
         for PlannedPart { id, part, recipe } in parts {
             let relative = match &part {
                 Part::Clip { file, .. } => {
                     let file = format!("{}.{file}.{}", file_stem(&source_relative), recipe.extension);
+                    source_relative.with_file_name(file)
+                }
+                Part::KeyPose { file, .. } => {
+                    let file = format!("{}.{file}.{}", keypose::stem(&source_relative), recipe.extension);
                     source_relative.with_file_name(file)
                 }
                 Part::Own | Part::Rig | Part::Skeleton => recipe.output_path(&source_relative),
@@ -631,18 +666,29 @@ pub fn cook_dir(
             }));
         }
     }
-    // Materials read the cooked textures they reference, so everything else cooks first; key-pose
-    // documents read the skeleton and rig they cook for, so those go before them; probe grids read
-    // cooked meshes and their materials, so they cook last.
+    // Materials read the cooked textures they reference, so everything else cooks first; clips,
+    // key-pose documents and meshes sharing a skeleton read skeletons and rigs, so those go before
+    // them; probe grids read cooked meshes and their materials, so they cook last.
     let (probe_grids, rest): (Vec<usize>, Vec<usize>) =
         (0..plan.len()).partition(|&index| plan[index].is_probe_grid());
     let (materials, rest): (Vec<usize>, Vec<usize>) =
         rest.into_iter().partition(|&index| plan[index].is_material());
-    let (key_poses, others): (Vec<usize>, Vec<usize>) =
-        rest.into_iter().partition(|&index| plan[index].is_key_pose());
+    let (rig_readers, others): (Vec<usize>, Vec<usize>) =
+        rest.into_iter().partition(|&index| plan[index].reads_rigs());
+    let mut sources: HashMap<AssetId, &SourceAsset> = HashMap::new();
+    for planned in &plan {
+        sources.entry(planned.asset.meta.id).or_insert(&planned.asset);
+    }
+    let clip_sources = ClipSources::default();
     let mut cooked: Vec<Option<CookedAsset>> = vec![None; plan.len()];
-    for index in others.into_iter().chain(key_poses).chain(materials).chain(probe_grids) {
-        let assets = Assets { plan: &plan, by_id: &by_id, cooked: &cooked };
+    for index in others.into_iter().chain(rig_readers).chain(materials).chain(probe_grids) {
+        let assets = Assets {
+            plan: &plan,
+            by_id: &by_id,
+            cooked: &cooked,
+            sources: &sources,
+            clip_sources: &clip_sources,
+        };
         let asset = guarded(&plan[index].asset.path, || {
             cook_asset(&plan[index], &assets, cache.as_ref(), options.cook)
         })?;
@@ -667,9 +713,13 @@ enum Part {
     Rig,
     /// A skinned source's skeleton.
     Skeleton,
-    /// A glTF's animation: its index in the document, its clip's unique name, and the part of its
-    /// output's file name that stands for that name.
-    Clip { index: usize, name: String, file: String },
+    /// A source's animation: its index in the file, its clip's unique name, the part of its output's
+    /// file name that stands for that name, and the entry of the sidecar's `retarget` it's for,
+    /// `None` for the source's own rig.
+    Clip { index: usize, name: String, file: String, target: Option<usize> },
+    /// A key-pose document, for a further rig its sidecar names, and what stands for it in the
+    /// output's file name.
+    KeyPose { rig: AssetId, file: String },
 }
 
 /// A part of a source, its ID and its recipe.
@@ -685,6 +735,7 @@ fn sub_assets(asset: &SourceAsset) -> Result<Vec<PlannedPart>, CookError> {
     let SourceAsset { path, meta } = asset;
     let clip_error = |source: ClipCookError| CookError::Clip { path: path.clone(), source: Box::new(source) };
     let unsupported = |importer| clip_error(ClipCookError::ClipsUnsupported { importer });
+    let import_error = |source: gltf::clips::ClipImportError| clip_error(source.into());
     let read = || fs::read(path).map_err(|source| CookError::Read { path: path.clone(), source });
     let skeleton = |recipe: Recipe| PlannedPart {
         id: meta::sub_asset_id(meta.id, SKELETON),
@@ -694,7 +745,7 @@ fn sub_assets(asset: &SourceAsset) -> Result<Vec<PlannedPart>, CookError> {
     let own = Recipe::for_settings(&meta.importer);
     match &meta.importer {
         ImportSettings::Vrm(settings) => {
-            if settings.mesh.clips.is_some() {
+            if settings.mesh.clips.is_some() || settings.mesh.skeleton.is_some() {
                 return Err(unsupported("VRM"));
             }
             let rig = PlannedPart {
@@ -709,49 +760,166 @@ fn sub_assets(asset: &SourceAsset) -> Result<Vec<PlannedPart>, CookError> {
             let skinned = gltf::has_skeleton(&bytes, settings.clips.is_some())
                 .map_err(|source| CookError::Import { path: path.clone(), source })?;
             let mut parts = Vec::new();
-            if skinned {
+            if skinned && settings.skeleton.is_none() {
                 parts.push(skeleton(own));
             }
             if let Some(clips) = &settings.clips {
-                if !clips.is_valid() {
-                    return Err(clip_error(ClipCookError::Settings));
-                }
-                let names = gltf::clips::names(&bytes).map_err(|source| clip_error(source.into()))?;
-                let files = clip_files(&names);
-                for (index, (name, file)) in names.into_iter().zip(files).enumerate() {
-                    parts.push(PlannedPart {
-                        id: meta::sub_asset_id(meta.id, &format!("clip/{name}")),
-                        part: Part::Clip { index, name, file },
-                        recipe: Recipe::gltf_clip(),
-                    });
-                }
+                let (names, joints) = gltf::clips::plan(&bytes, |_| Ok(Vec::new())).map_err(import_error)?;
+                parts.extend(
+                    clip_parts(meta.id, clips, true, &names, &joints, Recipe::gltf_clip())
+                        .map_err(clip_error)?,
+                );
             }
             Ok(parts)
         }
         ImportSettings::Fbx(settings) => {
-            if settings.clips.is_some() {
-                return Err(unsupported("FBX"));
-            }
-            let skinned = fbx::has_skeleton(&read()?)
+            let bytes = read()?;
+            let skinned = fbx::has_skeleton(&bytes, settings.clips.is_some())
                 .map_err(|source| CookError::Fbx { path: path.clone(), source: Box::new(source) })?;
-            Ok(if skinned { vec![skeleton(own)] } else { Vec::new() })
+            let mut parts = Vec::new();
+            if skinned && settings.skeleton.is_none() {
+                parts.push(skeleton(own));
+            }
+            if let Some(clips) = &settings.clips {
+                let (names, joints) = fbx::clips::plan(&bytes).map_err(import_error)?;
+                parts.extend(
+                    clip_parts(meta.id, clips, true, &names, &joints, Recipe::fbx_clip())
+                        .map_err(clip_error)?,
+                );
+            }
+            Ok(parts)
+        }
+        ImportSettings::GltfClips(settings) | ImportSettings::Vrma(settings) => {
+            let is_vrma = matches!(meta.importer, ImportSettings::Vrma(_));
+            if is_vrma && !settings.humanoid.is_empty() {
+                return Err(clip_error(ClipCookError::VrmaHumanoid));
+            }
+            let (names, joints) = gltf::clips::plan(&read()?, |document| {
+                if is_vrma { vrma::humanoid_nodes(document) } else { Ok(Vec::new()) }
+            })
+            .map_err(import_error)?;
+            animation_parts(meta.id, settings, &names, &joints, own, skeleton(own)).map_err(clip_error)
+        }
+        ImportSettings::FbxClips(settings) => {
+            let (names, joints) = fbx::clips::plan(&read()?).map_err(import_error)?;
+            animation_parts(meta.id, settings, &names, &joints, own, skeleton(own)).map_err(clip_error)
         }
         ImportSettings::Assembly(settings) => {
-            if settings.clips.is_some() {
+            if settings.clips.is_some() || settings.skeleton.is_some() {
                 return Err(unsupported("assembly"));
             }
             Ok(Vec::new())
         }
+        ImportSettings::KeyPose(settings) => Ok(settings
+            .also
+            .iter()
+            .map(|&rig| PlannedPart {
+                id: meta::sub_asset_id(meta.id, &format!("rig/{rig}")),
+                part: Part::KeyPose { rig, file: short_id(rig) },
+                recipe: own,
+            })
+            .collect()),
         ImportSettings::Texture(_)
         | ImportSettings::CharacterMap(_)
         | ImportSettings::Material(_)
         | ImportSettings::ProbeGrid(_)
-        | ImportSettings::KeyPose(_)
         | ImportSettings::Colliders(_)
         | ImportSettings::Sound(_)
         | ImportSettings::Cue(_)
         | ImportSettings::MoveSet(_) => Ok(Vec::new()),
     }
+}
+
+/// What stands for an asset in a file name: the start of its ID.
+fn short_id(id: AssetId) -> String {
+    id.to_string().chars().take(8).collect()
+}
+
+/// An animation source's parts: its skeleton, unless it shares a rig, and its clips.
+fn animation_parts(
+    id: AssetId,
+    settings: &ClipSettings,
+    names: &[String],
+    joints: &[Joint],
+    recipe: Recipe,
+    skeleton: PlannedPart,
+) -> Result<Vec<PlannedPart>, ClipCookError> {
+    if joints.is_empty() {
+        return Err(ClipCookError::NoSkeleton);
+    }
+    let mut parts = Vec::new();
+    if settings.rig.is_none() {
+        parts.push(skeleton);
+    }
+    parts.extend(clip_parts(id, settings, false, names, joints, recipe)?);
+    Ok(parts)
+}
+
+/// The clips a source's sidecar asks for. Checks its settings against the file, before anything
+/// cooks: a name or joint it doesn't have is the sidecar's error, and names it.
+fn clip_parts(
+    id: AssetId,
+    settings: &ClipSettings,
+    on_mesh: bool,
+    names: &[String],
+    joints: &[Joint],
+    recipe: Recipe,
+) -> Result<Vec<PlannedPart>, ClipCookError> {
+    if !settings.is_valid() {
+        return Err(ClipCookError::Settings);
+    }
+    if on_mesh && settings.rig.is_some() {
+        return Err(ClipCookError::RigOnMesh);
+    }
+    if !settings.humanoid.is_empty() {
+        if settings.rig.is_some() {
+            return Err(ClipCookError::RigAndHumanoid);
+        }
+        HumanMap::from_names(&settings.humanoid, &Skeleton::new(joints))?;
+    }
+    let files = clip_files(names);
+    let index_of = |name: &str| {
+        names
+            .iter()
+            .position(|candidate| candidate == name)
+            .ok_or_else(|| ClipCookError::UnknownClip { name: name.to_owned() })
+    };
+    let mut seen = HashSet::new();
+    let mut parts = Vec::new();
+    let own: Vec<usize> = match &settings.names {
+        None => (0..names.len()).collect(),
+        Some(list) => list.iter().map(|name| index_of(name)).collect::<Result<_, _>>()?,
+    };
+    for index in own {
+        let name = names[index].clone();
+        if !seen.insert((index, None)) {
+            return Err(ClipCookError::DuplicateClip { name });
+        }
+        parts.push(PlannedPart {
+            id: meta::sub_asset_id(id, &format!("clip/{name}")),
+            part: Part::Clip { index, name, file: files[index].clone(), target: None },
+            recipe,
+        });
+    }
+    for (entry, retarget) in settings.retarget.iter().enumerate() {
+        for name in &retarget.names {
+            let index = index_of(name)?;
+            if !seen.insert((index, Some(retarget.target))) {
+                return Err(ClipCookError::DuplicateClip { name: name.clone() });
+            }
+            parts.push(PlannedPart {
+                id: meta::sub_asset_id(id, &format!("clip/{name}@{}", retarget.target)),
+                part: Part::Clip {
+                    index,
+                    name: name.clone(),
+                    file: format!("{}.{}", files[index], short_id(retarget.target)),
+                    target: Some(entry),
+                },
+                recipe: recipe.retargeted(),
+            });
+        }
+    }
+    Ok(parts)
 }
 
 /// What stands for each clip name in its output's file name: the name, with anything a file system
@@ -805,8 +973,12 @@ impl Planned {
         matches!(self.asset.meta.importer, ImportSettings::ProbeGrid(_))
     }
 
-    fn is_key_pose(&self) -> bool {
-        matches!(self.asset.meta.importer, ImportSettings::KeyPose(_))
+    /// Whether its cook reads skeletons or rigs that other assets cook.
+    fn reads_rigs(&self) -> bool {
+        let importer = &self.asset.meta.importer;
+        matches!(self.part, Part::Clip { .. } | Part::KeyPose { .. })
+            || matches!(importer, ImportSettings::KeyPose(_))
+            || (self.part == Part::Own && importer.shared_rig().is_some())
     }
 
     fn is_sound(&self) -> bool {
@@ -819,6 +991,69 @@ struct Assets<'a> {
     plan: &'a [Planned],
     by_id: &'a HashMap<AssetId, usize>,
     cooked: &'a [Option<CookedAsset>],
+    /// Sources by their sidecars' IDs, whether they have an asset of that ID or not.
+    sources: &'a HashMap<AssetId, &'a SourceAsset>,
+    clip_sources: &'a ClipSources,
+}
+
+/// A source's rig as other assets read it: its cooked skeleton and where its humanoid map comes
+/// from. A mesh that shares a skeleton stands for its owner's.
+#[derive(Clone, Copy)]
+struct RigSource<'a> {
+    skeleton_id: AssetId,
+    skeleton: &'a CookedAsset,
+    /// A VRM's.
+    rig: Option<&'a CookedAsset>,
+    /// A sidecar's.
+    names: Option<&'a BTreeMap<HumanBone, String>>,
+    /// The source's own mesh, whose morph targets a key-pose document names.
+    mesh: Option<&'a CookedAsset>,
+}
+
+impl RigSource<'_> {
+    fn has_map(&self) -> bool {
+        self.rig.is_some() || self.names.is_some()
+    }
+
+    /// Its humanoid map, on its cooked `skeleton`.
+    fn map(&self, skeleton: &Skeleton) -> Result<Option<HumanMap>, ClipCookError> {
+        if let Some(rig) = self.rig {
+            let bytes = read_cooked(rig).map_err(KeyPoseError::Read)?;
+            let rig = CharacterRig::from_cooked(&bytes).map_err(KeyPoseError::Rig)?;
+            return Ok(Some(HumanMap::from_rig(&rig)));
+        }
+        self.names.map(|names| HumanMap::from_names(names, skeleton)).transpose().map_err(Into::into)
+    }
+
+    /// Its cooked skeleton.
+    fn read_skeleton(&self) -> Result<Skeleton, ClipCookError> {
+        let bytes = read_cooked(self.skeleton).map_err(KeyPoseError::Read)?;
+        Ok(Skeleton::from_cooked(&bytes).map_err(KeyPoseError::Skeleton)?)
+    }
+
+    /// What keys its map, for an asset cooked through it.
+    fn dependencies(&self, name: &str) -> Vec<Dependency> {
+        let asset = |asset: &CookedAsset| Dependency::Asset { id: asset.id, key: asset.key };
+        let mut dependencies = vec![asset(self.skeleton)];
+        dependencies.extend(self.rig.map(asset));
+        if let Some(names) = self.names {
+            let text: String =
+                names.iter().map(|(bone, joint)| format!("{}={joint};", bone.name())).collect();
+            dependencies.push(Dependency::File {
+                path: format!("#humanoid {name}"),
+                hash: blake3::hash(text.as_bytes()),
+            });
+        }
+        dependencies
+    }
+}
+
+/// An asset's cooked file, aligned as its readers need it.
+fn read_cooked(asset: &CookedAsset) -> Result<sapphire_serialize::cooked::AlignedVec<16>, io::Error> {
+    let bytes = fs::read(&asset.output)?;
+    let mut aligned = sapphire_serialize::cooked::AlignedVec::<16>::with_capacity(bytes.len());
+    aligned.extend_from_slice(&bytes);
+    Ok(aligned)
 }
 
 impl<'a> Assets<'a> {
@@ -853,11 +1088,33 @@ impl<'a> Assets<'a> {
         self.cooked[*self.by_id.get(&id)?].as_ref()
     }
 
-    /// The cooked rig and skeleton of the character source `rig` names, for a key-pose document.
-    fn character(&self, rig: Option<AssetId>) -> Result<(&'a CookedAsset, &'a CookedAsset), KeyPoseError> {
-        let id = rig.ok_or(KeyPoseError::NoRig)?;
-        let cooked = |sub| self.cooked(meta::sub_asset_id(id, sub));
-        cooked(vrm::RIG.name).zip(cooked(SKELETON)).ok_or(KeyPoseError::UnknownRig { id })
+    /// The rig of source `id`: its own, or the one it shares.
+    fn rig_source(&self, id: AssetId) -> Option<RigSource<'a>> {
+        let source = self.sources.get(&id)?;
+        let owner = source.meta.importer.shared_rig().unwrap_or(id);
+        let owner_source = self.sources.get(&owner)?;
+        if owner_source.meta.importer.shared_rig().is_some() {
+            return None;
+        }
+        let skeleton_id = meta::sub_asset_id(owner, SKELETON);
+        Some(RigSource {
+            skeleton_id,
+            skeleton: self.cooked(skeleton_id)?,
+            rig: self.cooked(meta::sub_asset_id(owner, vrm::RIG.name)),
+            names: owner_source
+                .meta
+                .importer
+                .clips()
+                .map(|clips| &clips.humanoid)
+                .filter(|names| !names.is_empty()),
+            mesh: source.meta.importer.mesh().and_then(|_| self.cooked(id)),
+        })
+    }
+
+    /// The rig a key-pose document cooks for: `id`, which the sidecar must name, must have a map.
+    fn key_pose_rig(&self, id: Option<AssetId>) -> Result<RigSource<'a>, KeyPoseError> {
+        let id = id.ok_or(KeyPoseError::NoRig)?;
+        self.rig_source(id).filter(RigSource::has_map).ok_or(KeyPoseError::UnknownRig { id })
     }
 }
 
@@ -881,7 +1138,7 @@ fn cook_asset(
 ) -> Result<CookedAsset, CookError> {
     let Planned { asset: SourceAsset { path, meta }, id, part, skeleton, recipe, output } = planned;
     let bytes = fs::read(path).map_err(|source| CookError::Read { path: path.clone(), source })?;
-    let mut dependencies = dependencies(path, &bytes, &meta.importer, assets)?;
+    let mut dependencies = dependencies(path, &bytes, &meta.importer, part, assets)?;
     dependencies.extend(part_dependencies(path, part, *skeleton, &meta.importer));
     let key = CacheKey::new(&KeyInputs {
         source: blake3::hash(&bytes),
@@ -942,8 +1199,11 @@ fn part_dependencies(
     {
         dependencies.push(marker(format!("#skeleton {id}")));
     }
-    if let Part::Clip { name, .. } = part {
+    if let Part::Clip { name, target, .. } = part {
         dependencies.push(marker(format!("#clip {name}")));
+        if let (Some(entry), Some(clips)) = (target, settings.clips()) {
+            dependencies.push(marker(format!("#target {}", clips.retarget[*entry].target)));
+        }
     }
     // A key-pose clip takes its name from its file, which a key doesn't otherwise hold.
     if matches!(settings, ImportSettings::KeyPose(_)) {
@@ -965,20 +1225,23 @@ fn cook_source(
     let clip_error =
         |source: ClipCookError| CookError::Clip { path: path.to_owned(), source: Box::new(source) };
     match part {
-        Part::Own => {}
-        Part::Rig => {}
+        Part::Own | Part::Rig | Part::KeyPose { .. } => {}
         Part::Skeleton => {
-            let mesh = imported_mesh(path, bytes, settings, cook)?;
-            let skin = mesh.skin.ok_or_else(|| clip_error(ClipCookError::NoSkeleton))?;
-            let cooked = Skeleton::new(&skin.joints).to_cooked().map_err(|error| clip_error(error.into()))?;
+            let joints = if settings.is_animation_only() {
+                assets.clip_sources.get(path, bytes, settings).map_err(clip_error)?.joints.clone()
+            } else {
+                let mesh = imported_mesh(path, bytes, settings, cook)?;
+                mesh.skin.ok_or_else(|| clip_error(ClipCookError::NoSkeleton))?.joints
+            };
+            let cooked = Skeleton::new(&joints).to_cooked().map_err(|error| clip_error(error.into()))?;
             // The runtime's checks, so a cook never writes a skeleton animation would refuse.
             Skeleton::read(&cooked).map_err(|error| clip_error(error.into()))?;
             return Ok(cooked.into_vec());
         }
-        Part::Clip { index, .. } => {
-            let clips = settings.mesh().and_then(|mesh| mesh.clips.as_ref());
-            let clips = clips.expect("clips are planned from these settings");
-            return cook_gltf_clip(path, bytes, *index, clips, skeleton).map_err(clip_error);
+        Part::Clip { index, target, .. } => {
+            let clips = settings.clips().expect("clips are planned from these settings");
+            let input = ClipInput { path, bytes, importer: settings, clips, index: *index, skeleton };
+            return cook_clip(&input, target.map(|entry| &clips.retarget[entry]), assets).map_err(clip_error);
         }
     }
     match settings {
@@ -988,7 +1251,8 @@ fn cook_source(
         | ImportSettings::Assembly(_)
             if *part == Part::Own =>
         {
-            let mut mesh = import_mesh(path, bytes, settings, cook)?;
+            let shared = shared_skeleton(settings, assets).map_err(clip_error)?;
+            let mut mesh = import_mesh(path, bytes, settings, cook, shared.as_ref())?;
             if let Some(skin) = &mut mesh.skin {
                 skin.skeleton = skeleton;
             }
@@ -1006,6 +1270,9 @@ fn cook_source(
         ImportSettings::Gltf(_) | ImportSettings::Fbx(_) | ImportSettings::Assembly(_) => {
             unreachable!("rigs are VRM sources' alone")
         }
+        ImportSettings::GltfClips(_) | ImportSettings::FbxClips(_) | ImportSettings::Vrma(_) => {
+            unreachable!("animation sources have their clips and skeleton, and nothing of their own")
+        }
         ImportSettings::Texture(settings) => texture::cook_source(path, bytes, settings, cook)
             .map_err(|source| CookError::Texture { path: path.to_owned(), source: Box::new(source) }),
         ImportSettings::CharacterMap(settings) => {
@@ -1018,25 +1285,8 @@ fn cook_source(
             .and_then(|document| probes::cook(&document, cook, |id| assets.probe_input(id)))
             .map_err(probe_error(path)),
         ImportSettings::KeyPose(settings) => {
-            let cook_clip = || -> Result<Vec<u8>, ClipCookError> {
-                let document = keypose::read(bytes)?;
-                let (rig, skeleton) = assets.character(settings.rig)?;
-                let read = |asset: &CookedAsset| {
-                    let bytes = fs::read(&asset.output).map_err(KeyPoseError::Read)?;
-                    let mut aligned =
-                        sapphire_serialize::cooked::AlignedVec::<16>::with_capacity(bytes.len());
-                    aligned.extend_from_slice(&bytes);
-                    Ok::<_, KeyPoseError>(aligned)
-                };
-                let rig = CharacterRig::from_cooked(&read(rig)?).map_err(KeyPoseError::Rig)?;
-                let skeleton_id = settings.rig.map(|id| meta::sub_asset_id(id, SKELETON));
-                let joints = Skeleton::from_cooked(&read(skeleton)?).map_err(KeyPoseError::Skeleton)?;
-                let sampled = keypose::sample(&document, &keypose::stem(path), &joints, &rig)?;
-                let target =
-                    ClipTarget { skeleton: skeleton_id.map(|id| (id, &joints)), morph_defaults: &[] };
-                written_clip(&clip::cook(&sampled, &target, &settings.error))
-            };
-            cook_clip().map_err(clip_error)
+            let rig = if let Part::KeyPose { rig, .. } = part { Some(*rig) } else { settings.rig };
+            cook_key_pose(path, bytes, settings, rig, assets).map_err(clip_error)
         }
         ImportSettings::Colliders(_) => colliders::cook(bytes)
             .map_err(|source| CookError::Colliders { path: path.to_owned(), source: Box::new(source) }),
@@ -1047,6 +1297,56 @@ fn cook_source(
     }
 }
 
+/// Cooks the document in `bytes` for the rig of source `rig`.
+fn cook_key_pose(
+    path: &Path,
+    bytes: &[u8],
+    settings: &keypose::KeyPoseSettings,
+    rig: Option<AssetId>,
+    assets: &Assets<'_>,
+) -> Result<Vec<u8>, ClipCookError> {
+    let document = keypose::read(bytes)?;
+    let source = assets.key_pose_rig(rig)?;
+    let joints = source.read_skeleton()?;
+    let map = source.map(&joints)?.ok_or(KeyPoseError::NotHumanoid)?;
+    let targets = morph_targets_of(&document, source.mesh)?;
+    let sampled = keypose::sample(&document, &keypose::stem(path), &joints, &map, &targets)?;
+    let defaults: Vec<f32> = targets.iter().map(|target| target.default_weight).collect();
+    let target = ClipTarget { skeleton: Some((source.skeleton_id, &joints)), morph_defaults: &defaults };
+    written_clip(&clip::cook(&sampled, &target, &settings.error))
+}
+
+/// The morph targets a document's weights name on `mesh`: none if it names no weights or there is
+/// no mesh, which leaves them out of a rig without targets, as a bone it lacks is. Reading a cooked
+/// mesh takes it whole, so only a document that needs it does.
+fn morph_targets_of(
+    document: &keypose::KeyPoseClip,
+    mesh: Option<&CookedAsset>,
+) -> Result<Vec<keypose::MorphTarget>, ClipCookError> {
+    let Some(mesh) = mesh.filter(|_| document.names_morphs()) else { return Ok(Vec::new()) };
+    let bytes = read_cooked(mesh).map_err(KeyPoseError::Read)?;
+    let mesh = Mesh::read(&bytes).map_err(KeyPoseError::Mesh)?;
+    Ok(mesh
+        .morph_targets
+        .iter()
+        .map(|target| keypose::MorphTarget {
+            name: target.name.as_str().to_owned(),
+            default_weight: target.default_weight.to_native(),
+        })
+        .collect())
+}
+
+/// The skeleton a mesh source's sidecar says it shares, cooked.
+fn shared_skeleton(
+    settings: &ImportSettings,
+    assets: &Assets<'_>,
+) -> Result<Option<Skeleton>, ClipCookError> {
+    settings
+        .shared_rig()
+        .map(|id| assets.rig_source(id).ok_or(ClipCookError::UnknownRig { id })?.read_skeleton())
+        .transpose()
+}
+
 /// `clip` as cooked bytes, read back through the runtime's checks ([`Clip::read`]), so a cook never
 /// writes a clip the runtime would refuse.
 fn written_clip(clip: &Clip) -> Result<Vec<u8>, ClipCookError> {
@@ -1055,21 +1355,82 @@ fn written_clip(clip: &Clip) -> Result<Vec<u8>, ClipCookError> {
     Ok(cooked.into_vec())
 }
 
-/// Cooks animation `index` of the glTF in `bytes`. A skeleton's ID comes from the plan, since the
-/// tracks index the joints it cooks.
-fn cook_gltf_clip(
-    path: &Path,
-    bytes: &[u8],
+/// One clip of a source, as its cook reads it.
+struct ClipInput<'a> {
+    path: &'a Path,
+    bytes: &'a [u8],
+    importer: &'a ImportSettings,
+    clips: &'a ClipSettings,
+    /// The animation in the file.
     index: usize,
-    settings: &ClipSettings,
+    /// What the plan says the source's clips name: its skeleton's ID, or the one it shares.
     skeleton: Option<AssetId>,
+}
+
+/// Cooks animation `input.index` for the source's own rig, or for `retarget`'s. The file imports
+/// once for all its clips ([`ClipSources`]).
+fn cook_clip(
+    input: &ClipInput<'_>,
+    retarget: Option<&retarget::RetargetSettings>,
+    assets: &Assets<'_>,
 ) -> Result<Vec<u8>, ClipCookError> {
-    let (document, buffers, scene) = gltf::clips::import_scene(bytes, path.parent())?;
-    let sampled = gltf::clips::sample(&document, &buffers, &scene, index, settings)?;
-    let joints = scene.mesh.skin.as_ref().map(|skin| Skeleton::new(&skin.joints));
-    let defaults: Vec<f32> = scene.mesh.morph_targets.iter().map(|target| target.default_weight).collect();
-    let target = ClipTarget { skeleton: skeleton.zip(joints.as_ref()), morph_defaults: &defaults };
-    written_clip(&clip::cook(&sampled, &target, &settings.error))
+    let source = assets.clip_sources.get(input.path, input.bytes, input.importer)?;
+    let sampled = source.sample(input.index, input.clips)?;
+    let joints = (!source.joints.is_empty()).then(|| Skeleton::new(&source.joints));
+    let Some(retarget) = retarget else {
+        return match input.importer.shared_rig() {
+            Some(id) => {
+                let shared = assets.rig_source(id).ok_or(ClipCookError::UnknownRig { id })?;
+                let skeleton = shared.read_skeleton()?;
+                let remap = joint_remap(&source.joints, &skeleton)?;
+                let target = ClipTarget {
+                    skeleton: Some((shared.skeleton_id, &skeleton)),
+                    morph_defaults: &source.morph_defaults,
+                };
+                written_clip(&clip::cook(&remap_tracks(sampled, &remap), &target, &input.clips.error))
+            }
+            None => {
+                let target = ClipTarget {
+                    skeleton: input.skeleton.zip(joints.as_ref()),
+                    morph_defaults: &source.morph_defaults,
+                };
+                written_clip(&clip::cook(&sampled, &target, &input.clips.error))
+            }
+        };
+    };
+    let joints = joints.ok_or(ClipCookError::NoSkeleton)?;
+    let map = source_map(input, &source, &joints, assets)?;
+    let id = retarget.target;
+    let target_rig =
+        assets.rig_source(id).filter(RigSource::has_map).ok_or(ClipCookError::UnknownTarget { id })?;
+    let target_joints = target_rig.read_skeleton()?;
+    let target_map = target_rig.map(&target_joints)?.ok_or(ClipCookError::UnknownTarget { id })?;
+    let retargeted = retarget::retarget(
+        &sampled,
+        Rig { skeleton: &joints, map: &map },
+        Rig { skeleton: &target_joints, map: &target_map },
+        &RetargetOptions { scale: retarget.scale, ground: retarget.ground },
+    )?;
+    let target = ClipTarget { skeleton: Some((target_rig.skeleton_id, &target_joints)), morph_defaults: &[] };
+    written_clip(&clip::cook(&retargeted, &target, &input.clips.error))
+}
+
+/// The humanoid map a source retargets from, on its own joints: a VRMA's, its sidecar's, or the
+/// sidecar's of the source whose rig it shares.
+fn source_map(
+    input: &ClipInput<'_>,
+    source: &ClipSource,
+    joints: &Skeleton,
+    assets: &Assets<'_>,
+) -> Result<HumanMap, ClipCookError> {
+    if let Some(map) = &source.map {
+        return Ok(map.clone());
+    }
+    let names = match input.importer.shared_rig() {
+        Some(id) => assets.rig_source(id).ok_or(ClipCookError::UnknownRig { id })?.names,
+        None => Some(&input.clips.humanoid).filter(|names| !names.is_empty()),
+    };
+    Ok(HumanMap::from_names(names.ok_or(ClipCookError::NoHumanoid)?, joints)?)
 }
 
 /// Wraps a sound or cue error as the cook error for the source at `path`.
@@ -1168,6 +1529,43 @@ fn dependencies(
     path: &Path,
     bytes: &[u8],
     settings: &ImportSettings,
+    part: &Part,
+    assets: &Assets<'_>,
+) -> Result<Vec<Dependency>, CookError> {
+    let mut rigs = rig_dependencies(settings, part, assets)
+        .map_err(|source| CookError::Clip { path: path.to_owned(), source: Box::new(source) })?;
+    rigs.extend(source_dependencies(path, bytes, settings, part, assets)?);
+    Ok(rigs)
+}
+
+/// The cooked skeletons and rigs a part of a source reads: the skeleton it shares, the map it reads
+/// through another source's sidecar, and what a retarget targets.
+fn rig_dependencies(
+    settings: &ImportSettings,
+    part: &Part,
+    assets: &Assets<'_>,
+) -> Result<Vec<Dependency>, ClipCookError> {
+    let mut dependencies = Vec::new();
+    let reads_shared =
+        matches!(part, Part::Own | Part::Clip { .. }) && !matches!(settings, ImportSettings::KeyPose(_));
+    if let Some(id) = settings.shared_rig().filter(|_| reads_shared) {
+        let rig = assets.rig_source(id).ok_or(ClipCookError::UnknownRig { id })?;
+        dependencies.extend(rig.dependencies("shared"));
+    }
+    if let (Part::Clip { target: Some(entry), .. }, Some(clips)) = (part, settings.clips()) {
+        let id = clips.retarget[*entry].target;
+        let rig = assets.rig_source(id).filter(RigSource::has_map);
+        dependencies.extend(rig.ok_or(ClipCookError::UnknownTarget { id })?.dependencies("target"));
+    }
+    Ok(dependencies)
+}
+
+/// What cooking a source reads besides its own bytes and the rigs of [`rig_dependencies`].
+fn source_dependencies(
+    path: &Path,
+    bytes: &[u8],
+    settings: &ImportSettings,
+    part: &Part,
     assets: &Assets<'_>,
 ) -> Result<Vec<Dependency>, CookError> {
     match settings {
@@ -1225,11 +1623,19 @@ fn dependencies(
             .and_then(|document| probes::dependencies(&document, |id| assets.probe_input(id)))
             .map_err(probe_error(path)),
         ImportSettings::KeyPose(settings) => {
-            let (rig, skeleton) = assets.character(settings.rig).map_err(|source| CookError::Clip {
-                path: path.to_owned(),
-                source: Box::new(source.into()),
-            })?;
-            Ok([rig, skeleton].map(|asset| Dependency::Asset { id: asset.id, key: asset.key }).to_vec())
+            let clip_error =
+                |source: ClipCookError| CookError::Clip { path: path.to_owned(), source: Box::new(source) };
+            let id = if let Part::KeyPose { rig, .. } = part { Some(*rig) } else { settings.rig };
+            let rig = assets.key_pose_rig(id).map_err(|source| clip_error(source.into()))?;
+            let document = keypose::read(bytes).map_err(|source| clip_error(source.into()))?;
+            let mut dependencies = rig.dependencies("key pose");
+            // Only a document that names morph weights reads the mesh.
+            if document.names_morphs()
+                && let Some(mesh) = rig.mesh
+            {
+                dependencies.push(Dependency::Asset { id: mesh.id, key: mesh.key });
+            }
+            Ok(dependencies)
         }
         // A sound is the one file it reads.
         ImportSettings::Sound(_) => Ok(Vec::new()),
@@ -1242,6 +1648,17 @@ fn dependencies(
             }
             Ok(Vec::new())
         }
+        ImportSettings::GltfClips(_) | ImportSettings::Vrma(_) => gltf::external_files(bytes)
+            .map_err(|source| CookError::Import { path: path.to_owned(), source })?
+            .into_iter()
+            .map(|file| {
+                let full = path.parent().unwrap_or(Path::new("")).join(&file);
+                let bytes = fs::read(&full).map_err(|source| CookError::Read { path: full, source })?;
+                Ok(Dependency::File { path: file, hash: blake3::hash(&bytes) })
+            })
+            .collect(),
+        // The importer never opens the files an FBX names.
+        ImportSettings::FbxClips(_) => Ok(Vec::new()),
     }
 }
 
@@ -1280,8 +1697,25 @@ fn assembly_detail(cook: Cook) -> assembly::Detail {
 
 /// Imports, bakes, optimizes and packs one mesh source read from `path` with `importer` (glTF,
 /// FBX, VRM or an assembly), for `cook`.
-fn import_mesh(path: &Path, bytes: &[u8], importer: &ImportSettings, cook: Cook) -> Result<Mesh, CookError> {
+///
+/// With a `shared` skeleton the mesh is built on its own joints, and its palette then follows the
+/// same joints in `shared`'s order.
+fn import_mesh(
+    path: &Path,
+    bytes: &[u8],
+    importer: &ImportSettings,
+    cook: Cook,
+    shared: Option<&Skeleton>,
+) -> Result<Mesh, CookError> {
     let mut mesh = imported_mesh(path, bytes, importer, cook)?;
+    let clip_error =
+        |source: ClipCookError| CookError::Clip { path: path.to_owned(), source: Box::new(source) };
+    let remap = shared
+        .map(|shared| {
+            let skin = mesh.skin.as_ref().ok_or_else(|| clip_error(ClipCookError::NoSkeleton))?;
+            joint_remap(&skin.joints, shared).map_err(|source| clip_error(source.into()))
+        })
+        .transpose()?;
     let settings = importer.mesh().expect("only mesh importers import a mesh");
     // Packing would quantize a NaN to a corner of the bounds. glTF's importer says which primitive;
     // this holds for the others.
@@ -1297,8 +1731,16 @@ fn import_mesh(path: &Path, bytes: &[u8], importer: &ImportSettings, cook: Cook)
             .map_err(|source| CookError::Foliage { path: path.to_owned(), source })?;
     }
     optimize::optimize(&mut mesh, &settings.lods, settings.outline.weld_tolerance(), cook);
-    mesh.pack(settings.position_format, &settings.materials)
-        .map_err(|source| CookError::MaterialSlot { path: path.to_owned(), source })
+    let mut packed = mesh
+        .pack(settings.position_format, &settings.materials)
+        .map_err(|source| CookError::MaterialSlot { path: path.to_owned(), source })?;
+    if let (Some(remap), Some(shared), Some(skin)) = (remap, shared, &mut packed.skin) {
+        skin.joint_count = shared.parents.len() as u32;
+        for bind in &mut skin.binds {
+            bind.joint = remap[usize::from(bind.joint)];
+        }
+    }
+    Ok(packed)
 }
 
 /// The mesh a mesh importer reads from `bytes`, before anything derived from it. A glTF that cooks
@@ -1318,6 +1760,8 @@ fn imported_mesh(
         }
         ImportSettings::Gltf(_) => gltf::import_slice(bytes, path.parent())
             .map_err(|source| CookError::Import { path: path.to_owned(), source }),
+        ImportSettings::Fbx(settings) if settings.clips.is_some() => fbx::clips::import_mesh(bytes)
+            .map_err(|source| CookError::Fbx { path: path.to_owned(), source: Box::new(source) }),
         ImportSettings::Fbx(_) => fbx::import_slice(bytes)
             .map_err(|source| CookError::Fbx { path: path.to_owned(), source: Box::new(source) }),
         ImportSettings::Vrm(settings) => {
@@ -1333,7 +1777,10 @@ fn imported_mesh(
         | ImportSettings::Colliders(_)
         | ImportSettings::Sound(_)
         | ImportSettings::Cue(_)
-        | ImportSettings::MoveSet(_) => Err(CookError::UnsupportedSource { path: path.to_owned() }),
+        | ImportSettings::MoveSet(_)
+        | ImportSettings::GltfClips(_)
+        | ImportSettings::FbxClips(_)
+        | ImportSettings::Vrma(_) => Err(CookError::UnsupportedSource { path: path.to_owned() }),
     }
 }
 
@@ -1380,7 +1827,7 @@ fn cook_mesh_with_bytes(
         _ => return Err(CookError::UnsupportedSource { path: source.to_owned() }),
     };
     let bytes = fs::read(source).map_err(|e| CookError::Read { path: source.to_owned(), source: e })?;
-    let mesh = guarded(source, || import_mesh(source, &bytes, &importer, cook))?;
+    let mesh = guarded(source, || import_mesh(source, &bytes, &importer, cook, None))?;
     let cooked = cooked_bytes(source, &mesh)?;
     Ok((mesh, cooked))
 }
@@ -2498,3 +2945,6 @@ mod tests {
 
 #[cfg(test)]
 mod clip_tests;
+
+#[cfg(test)]
+mod animation_tests;

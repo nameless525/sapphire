@@ -421,6 +421,23 @@ fn import_scene_within(
     Ok(SceneImport { mesh: builder.finish()?, joint_of_node, slot_of_material, targets_of_morph })
 }
 
+/// A scene's joints, parents first, and the joint of each node that is one.
+pub(crate) type SceneJoints = (Vec<Joint>, HashMap<usize, u16>);
+
+/// The skeleton [`import_scene`] would make, without its mesh, so a file's geometry can be left
+/// unread (or be absent): the joints, parents first, and the joint of each node that is one.
+/// `None` if nothing is skinned and `extra_joints` holds no node of the scene.
+pub(crate) fn scene_joints(
+    document: &Document,
+    extra_joints: &[usize],
+) -> Result<Option<SceneJoints>, GltfImportError> {
+    let scene =
+        document.default_scene().or_else(|| document.scenes().next()).ok_or(GltfImportError::NoScene)?;
+    let nodes = flatten(document, &scene)?;
+    let skeleton = Skeleton::joints(document, &nodes, extra_joints)?;
+    Ok(skeleton.map(|(skeleton, _)| (skeleton.joints, skeleton.joint_of)))
+}
+
 /// One visit of a node in the scene's depth-first walk: its only one, since the nodes are trees.
 struct SceneNode {
     node: usize,
@@ -488,6 +505,29 @@ impl Skeleton {
         buffers: &[Vec<u8>],
         extra_joints: &[usize],
     ) -> Result<Option<Self>, GltfImportError> {
+        let Some((mut skeleton, skins)) = Self::joints(document, nodes, extra_joints)? else {
+            return Ok(None);
+        };
+        for skin in &skins {
+            let joints: Vec<usize> = skin.joints().map(|joint| joint.index()).collect();
+            let matrices = inverse_bind_matrices(skin, joints.len(), buffers)?;
+            let binds = joints
+                .iter()
+                .zip(matrices)
+                .map(|(node, matrix)| skeleton.bind(skeleton.joint_of[node], matrix))
+                .collect::<Result<_, _>>()?;
+            skeleton.skin_binds.insert(skin.index(), binds);
+        }
+        Ok(Some(skeleton))
+    }
+
+    /// [`Self::build`]'s joints, reading no buffer, with the skins that use them. A source wanted
+    /// for its animations stops here.
+    fn joints<'a>(
+        document: &'a Document,
+        nodes: &[SceneNode],
+        extra_joints: &[usize],
+    ) -> Result<Option<(Self, Vec<::gltf::Skin<'a>>)>, GltfImportError> {
         let gltf_node = |index: usize| document.nodes().nth(index).expect("flattened from this document");
         let mut skins: Vec<::gltf::Skin<'_>> = Vec::new();
         for scene_node in nodes {
@@ -555,17 +595,7 @@ impl Skeleton {
             skeleton.rest_world.push(scene_node.world);
             skeleton.joint_of.insert(scene_node.node, index);
         }
-        for skin in &skins {
-            let joints: Vec<usize> = skin.joints().map(|joint| joint.index()).collect();
-            let matrices = inverse_bind_matrices(skin, joints.len(), buffers)?;
-            let binds = joints
-                .iter()
-                .zip(matrices)
-                .map(|(node, matrix)| skeleton.bind(skeleton.joint_of[node], matrix))
-                .collect::<Result<_, _>>()?;
-            skeleton.skin_binds.insert(skin.index(), binds);
-        }
-        Ok(Some(skeleton))
+        Ok(Some((skeleton, skins)))
     }
 
     /// The palette entry for `joint` with `inverse_bind_matrix`, added if new.

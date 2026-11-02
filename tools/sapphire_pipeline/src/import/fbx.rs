@@ -77,9 +77,9 @@
 //! vertex does, which glTF's per-corner deltas don't. Vertices a target moves by less than
 //! [`MORPH_POSITION_EPSILON`] and turns by less than [`MORPH_NORMAL_EPSILON`] are left out.
 //!
-//! Not imported: animation (clips are M2's, cooked to ozz from FBX through ufbx too), cameras,
-//! lights, NURBS, LOD groups, constraints and visibility. The importer reads the file alone,
-//! never the files it names, so its bytes are its whole cache key.
+//! Not imported here: animation, which [`clips`] samples from the same scene when a sidecar asks,
+//! cameras, lights, NURBS, LOD groups, constraints and visibility. The importer reads the file
+//! alone, never the files it names, so its bytes are its whole cache key.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -98,8 +98,9 @@ use crate::mesh::{
     ImportedDelta, ImportedMaterial, ImportedMesh, ImportedMorphTarget, ImportedSkin, SkinWeights,
 };
 
+pub mod clips;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 /// This importer, as cache keys know it. The name carries ufbx's version, which a test keeps in
 /// step with `Cargo.lock`: a ufbx upgrade can change what a file imports to. Bump the version
@@ -145,19 +146,25 @@ pub fn import(path: &Path) -> Result<ImportedMesh, FbxImportError> {
 
 /// Imports FBX bytes, binary or ASCII.
 pub fn import_slice(bytes: &[u8]) -> Result<ImportedMesh, FbxImportError> {
-    let scene = load(bytes, false)?;
+    let scene = load(bytes, false, false)?;
     import_scene(&scene).map(|import| import.mesh)
 }
 
 /// Whether the mesh of `bytes` is skinned, so its cook writes a skeleton too: the importer's
-/// skeleton exists exactly when a mesh instance has a skin with a cluster.
-pub fn has_skeleton(bytes: &[u8]) -> Result<bool, FbxImportError> {
-    let scene = load(bytes, false)?;
+/// skeleton exists exactly when a mesh instance has a skin with a cluster or, for a source that
+/// cooks clips, a stack moves a node.
+pub fn has_skeleton(bytes: &[u8], clips: bool) -> Result<bool, FbxImportError> {
+    let scene = load(bytes, false, clips)?;
     let nodes = flatten(&scene);
-    Ok(nodes
+    let skinned = nodes
         .iter()
         .filter_map(|visit| visit.node.mesh.as_deref().and_then(skin_of))
-        .any(|skin| !skin.clusters.is_empty()))
+        .any(|skin| !skin.clusters.is_empty());
+    let moved = || {
+        let animated = clips::animated_nodes(&scene);
+        nodes.iter().any(|visit| animated.binary_search(&visit.node.element.typed_id).is_ok())
+    };
+    Ok(skinned || (clips && moved()))
 }
 
 /// An FBX file as imported, with the textures each material slot's source material references:
@@ -191,15 +198,16 @@ pub(crate) struct FbxTexture {
 
 /// Imports FBX bytes with the textures their materials reference, embedded images included.
 pub(crate) fn import_with_textures(bytes: &[u8]) -> Result<FbxImport, FbxImportError> {
-    let scene = load(bytes, true)?;
+    let scene = load(bytes, true, false)?;
     import_scene(&scene)
 }
 
-/// Loads and converts a scene (see the [module docs](self)); embedded images only when asked.
-fn load(bytes: &[u8], embedded: bool) -> Result<ufbx::SceneRoot, FbxImportError> {
+/// Loads and converts a scene (see the [module docs](self)); embedded images and animation only
+/// when asked.
+fn load(bytes: &[u8], embedded: bool, animation: bool) -> Result<ufbx::SceneRoot, FbxImportError> {
     let options = ufbx::LoadOpts {
-        // Animation is M2's; external files (textures, geometry caches) aren't part of the mesh.
-        ignore_animation: true,
+        // External files (textures, geometry caches) aren't part of the mesh.
+        ignore_animation: !animation,
         ignore_embedded: !embedded,
         load_external_files: false,
         target_axes: ufbx::CoordinateAxes {
@@ -219,8 +227,14 @@ fn load(bytes: &[u8], embedded: bool) -> Result<ufbx::SceneRoot, FbxImportError>
 
 /// Imports a loaded scene.
 fn import_scene(scene: &ufbx::Scene) -> Result<FbxImport, FbxImportError> {
+    import_scene_with(scene, &[])
+}
+
+/// [`import_scene`], with the nodes in `extra_joints`, by ufbx's typed ID, among the skeleton's
+/// joints whether a skin uses them or not.
+fn import_scene_with(scene: &ufbx::Scene, extra_joints: &[u32]) -> Result<FbxImport, FbxImportError> {
     let nodes = flatten(scene);
-    let skeleton = Skeleton::build(&nodes)?;
+    let skeleton = Skeleton::build(&nodes, extra_joints)?;
     let names: Vec<Option<&str>> = scene
         .materials
         .iter()
@@ -275,8 +289,9 @@ struct Skeleton {
 }
 
 impl Skeleton {
-    /// The skeleton of every skin a mesh instance uses, or `None` if no mesh is skinned.
-    fn build(nodes: &[SceneNode<'_>]) -> Result<Option<Self>, FbxImportError> {
+    /// The skeleton of every skin a mesh instance uses and of `extra_joints` (by ufbx's typed ID,
+    /// those in the scene), or `None` if no mesh is skinned and there are no extra joints.
+    fn build(nodes: &[SceneNode<'_>], extra_joints: &[u32]) -> Result<Option<Self>, FbxImportError> {
         let visit_of: HashMap<u32, usize> = nodes
             .iter()
             .enumerate()
@@ -291,13 +306,13 @@ impl Skeleton {
                 let bone = cluster.bone_node.as_deref().expect("ufbx lists only clusters with a bone");
                 // A bone outside the root's tree (not possible without `allow_nodes_out_of_root`)
                 // would have no visit.
-                let mut visit = visit_of.get(&bone.element.typed_id).copied();
-                while let Some(current) = visit {
-                    if std::mem::replace(&mut included[current], true) {
-                        break;
-                    }
-                    visit = nodes[current].parent;
-                }
+                include_with_ancestors(&mut included, nodes, visit_of.get(&bone.element.typed_id).copied());
+            }
+        }
+        for node in extra_joints {
+            if let Some(&visit) = visit_of.get(node) {
+                skinned = true;
+                include_with_ancestors(&mut included, nodes, Some(visit));
             }
         }
         if !skinned {
@@ -368,6 +383,16 @@ impl Skeleton {
             return Err(FbxImportError::DegenerateTransform { node });
         }
         self.bind(joint, inverse)
+    }
+}
+
+/// Marks `visit` and its ancestors, stopping at the first already marked.
+fn include_with_ancestors(included: &mut [bool], nodes: &[SceneNode<'_>], mut visit: Option<usize>) {
+    while let Some(current) = visit {
+        if std::mem::replace(&mut included[current], true) {
+            break;
+        }
+        visit = nodes[current].parent;
     }
 }
 

@@ -3,30 +3,33 @@
     version: 1,
     data: (
         id: "2bb6b794-55db-42cf-921a-c0638eed48ca",
-        importer: Gltf((
-            outline: (
-                weld_tolerance: 0.0001,
+        importer: GltfClips((
+            root_motion: (
+                bone: "root",
             ),
-            lods: (
-                levels: [
-                    (
-                        triangle_ratio: 0.5,
-                        max_error: 0.002,
-                    ),
-                    (
-                        triangle_ratio: 0.25,
-                        max_error: 0.01,
-                    ),
-                    (
-                        triangle_ratio: 0.125,
-                        max_error: 0.03,
-                    ),
-                ],
-                mobile_skip: 1,
-            ),
-            position_format: Unorm16,
-            materials: {},
+            rig: "9a29e8c0-f131-4ea4-98b9-04879740413d",
+            // The enemy, on this rig as authored.
+            names: [
+                "Running_A",
+            ],
+            retarget: [
+                // The character.
+                (
+                    target: "6f8a81b6-29c4-485f-b161-847b001d561f",
+                    names: [
+                        "Walking_A",
+                        "Walking_B",
+                        "Walking_C",
+                        "Running_A",
+                        "Running_B",
+                        "Jump_Start",
+                        "Jump_Idle",
+                        "Jump_Land",
+                        "Jump_Full_Short",
+                        "Jump_Full_Long",
+                    ],
+                ),
+            ],
         )),
-        cook: false,
     ),
 )

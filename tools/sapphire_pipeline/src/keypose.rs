@@ -41,26 +41,37 @@
 //!   bone blends along the short way, so a move past 180° in one segment needs a key on the way.
 //! - **`hips`** moves the hips from rest, in model space: a crouch, a bob. **`root`** is root motion:
 //!   where the character has travelled since tick 0, in model space (facing +Z). So the first key's
-//!   root, if it names one, is zero.
+//!   root, if it names one, is zero. **`root_turn`** is the rest of root motion: how far it has
+//!   turned about +Y since tick 0, in degrees, zero at the first key too. It blends as an angle, not
+//!   a rotation, so one segment can spin a full turn and more.
+//! - **`morphs`** sets morph targets' weights by name, as the mesh names them: a first key's unnamed
+//!   targets are at their defaults. A rig with no morph targets (no mesh of its own) skips them, as
+//!   it does a bone it lacks; a target its mesh doesn't have is an error.
 //! - **`ease`** shapes the segment arriving at its key ([`KeyEase`]), `Smooth` if unnamed.
 //!   Anticipation and overshoot are weights past 0 to 1: a segment can do them on its own, or a key
 //!   of their own can pose them, as the example does.
 //!
 //! # The cook
 //!
-//! Which character it is for is the sidecar's to say, not the document's: `importer: KeyPose((rig:
-//! "<the character source's ID>"))`. Its rig maps bones to joints and its skeleton gives their rest
-//! frames, both by their keys in the document's cache key. Every bone named anywhere is sampled at
-//! every tick and goes through the same reduction as a glTF's channels ([`crate::clip`]).
+//! Which rig it is for is the sidecar's to say, not the document's: `importer: KeyPose((rig:
+//! "<a source's ID>", also: ["<another's>"]))`, each a clip of its own. A source's [humanoid
+//! map](crate::clip::retarget::HumanMap) says which bone is which joint, a VRM's from its rig and any
+//! other's from its sidecar, and its skeleton gives their rest frames, all by their keys in the
+//! document's cache key. Every bone named anywhere is sampled at every tick and goes through the same
+//! reduction as a glTF's channels ([`crate::clip`]).
 //!
 //! The rig's constraints aren't in the clip: twist helpers follow at run time, as the held pose's
 //! do. Easing is polynomial and blends go through [`sapphire_math::det`], so a cook's samples don't
 //! depend on a platform's libm.
 //!
+//! **Between architectures,** root motion and morph weights sample through scalars alone, and bone
+//! turns and hips offsets don't yet ([the clip module](crate::clip)'s "Byte identity"): they go
+//! through `Quat` and `Affine3A`, so a move's baked tables can't read them as they are.
+//!
 //! # Later
 //!
-//! Hot reload (T2) and a timeline editor (T3) read these documents as they are. Morph weights in a
-//! key, root turns, and per-bone timing within a segment wait for a move that needs them.
+//! Hot reload (T2) and a timeline editor (T3) read these documents as they are. Per-bone timing
+//! within a segment waits for a move that needs it.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -69,7 +80,7 @@ use bevy_reflect::TypePath;
 use glam::{Quat, Vec3};
 use sapphire_assets::AssetId;
 use sapphire_assets::clip::{DEFAULT_RATE, MAX_TICKS};
-use sapphire_assets::rig::{CharacterRig, HumanBone};
+use sapphire_assets::rig::HumanBone;
 use sapphire_assets::skeleton::{NO_PARENT, Skeleton};
 use sapphire_math::{Ease, det};
 use sapphire_reflect::Versioned;
@@ -77,6 +88,7 @@ use sapphire_serialize::DocumentError;
 use serde::{Deserialize, Serialize};
 
 use crate::cache::Stage;
+use crate::clip::retarget::HumanMap;
 use crate::clip::{self, ReductionError, SampledClip, SampledRoot};
 
 /// Reads documents, as cache keys know it. Bump the version whenever sampling changes output for
@@ -108,14 +120,18 @@ pub fn output_path(relative: &Path, extension: &str) -> PathBuf {
 }
 
 /// A key-pose document's sidecar settings.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct KeyPoseSettings {
-    /// The character source this document cooks for: the sidecar ID of a source that cooks a rig
-    /// and a skeleton, as a VRM does. A sidecar created by a cook has none, and its next cook says
-    /// to name one.
+    /// The source this document cooks for: the sidecar ID of a source with a skeleton and a
+    /// humanoid map, as a VRM has and an animation source's sidecar can. A sidecar created by a
+    /// cook has none, and its next cook says to name one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rig: Option<AssetId>,
+    /// Further sources it cooks for, each a clip of its own with an ID derived from `rig/<id>`, and
+    /// the start of that ID in its file name (`swing.6f8a81b6.sclip`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub also: Vec<AssetId>,
     pub error: ReductionError,
 }
 
@@ -147,12 +163,32 @@ pub struct PoseKey {
     /// Where the character has travelled since tick 0, in meters.
     #[serde(default)]
     pub root: Option<[f32; 3]>,
+    /// How far the character has turned about +Y since tick 0, in degrees.
+    #[serde(default)]
+    pub root_turn: Option<f32>,
     /// The hips' offset from rest, in meters, in model space.
     #[serde(default)]
     pub hips: Option<[f32; 3]>,
     /// The bones this key turns.
     #[serde(default)]
     pub pose: BTreeMap<HumanBone, Turn>,
+    /// The morph targets this key sets, by the mesh's names for them.
+    #[serde(default)]
+    pub morphs: BTreeMap<String, f32>,
+}
+
+impl KeyPoseClip {
+    /// Whether any key sets a morph target, so a cook needs the mesh's names for them.
+    pub fn names_morphs(&self) -> bool {
+        self.keys.iter().any(|key| !key.morphs.is_empty())
+    }
+}
+
+/// A morph target of the mesh a document cooks for.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MorphTarget {
+    pub name: String,
+    pub default_weight: f32,
 }
 
 /// A bone's rotation in the model's rest space, about its joint: degrees, X first, then Y, then Z.
@@ -276,8 +312,12 @@ pub enum KeyPoseError {
     Document(#[source] Box<DocumentError>),
     #[error("the sidecar names no `rig`: which character does this cook for?")]
     NoRig,
-    #[error("the sidecar's `rig` {id} isn't a source of this content tree that cooks a rig and a skeleton")]
+    #[error(
+        "the sidecar's `rig` {id} isn't a source of this content tree with a skeleton and a humanoid map"
+    )]
     UnknownRig { id: AssetId },
+    #[error("the rig's cooked mesh is invalid")]
+    Mesh(#[source] sapphire_assets::mesh::MeshError),
     #[error("failed to read the rig's cooked output")]
     Read(#[source] std::io::Error),
     #[error("the rig's cooked rig is invalid")]
@@ -300,6 +340,10 @@ pub enum KeyPoseError {
     Ease { key: usize },
     #[error("the first key's root is {0:?}: root motion starts at the identity")]
     RootStartsAway([f32; 3]),
+    #[error("the first key's root turn is {0}: root motion starts at the identity")]
+    TurnStartsAway(f32),
+    #[error("a key sets morph target {name:?}, which the mesh doesn't have")]
+    UnknownMorph { name: String },
 }
 
 /// Reads a document.
@@ -332,6 +376,10 @@ fn validate(document: &KeyPoseClip) -> Result<u16, KeyPoseError> {
         };
         finite("root", pose.root.as_ref().map_or(&[], |root| root.as_slice()))?;
         finite("hips", pose.hips.as_ref().map_or(&[], |hips| hips.as_slice()))?;
+        finite("root_turn", pose.root_turn.as_slice())?;
+        for (morph, weight) in &pose.morphs {
+            finite(morph, &[*weight])?;
+        }
         for (bone, turn) in &pose.pose {
             finite(bone.name(), &[turn.x, turn.y, turn.z])?;
         }
@@ -340,6 +388,11 @@ fn validate(document: &KeyPoseClip) -> Result<u16, KeyPoseError> {
         && root != [0.0; 3]
     {
         return Err(KeyPoseError::RootStartsAway(root));
+    }
+    if let Some(turn) = document.keys[0].root_turn
+        && turn != 0.0
+    {
+        return Err(KeyPoseError::TurnStartsAway(turn));
     }
     let last = document.keys[document.keys.len() - 1].tick;
     let ticks = document.ticks.unwrap_or(last);
@@ -396,10 +449,11 @@ pub fn sample(
     document: &KeyPoseClip,
     name: &str,
     skeleton: &Skeleton,
-    rig: &CharacterRig,
+    rig: &HumanMap,
+    targets: &[MorphTarget],
 ) -> Result<SampledClip, KeyPoseError> {
     let ticks = validate(document)?;
-    let hips = rig.human_joint(HumanBone::Hips).ok_or(KeyPoseError::NotHumanoid)?;
+    let hips = rig.joint(HumanBone::Hips).ok_or(KeyPoseError::NotHumanoid)?;
     let keys = &document.keys;
     let moments = timeline(keys, ticks);
     let model = clip::rest_model(skeleton);
@@ -424,7 +478,7 @@ pub fn sample(
     let mut rotations: Vec<(u16, Vec<Quat>)> = Vec::with_capacity(bones.len());
     for bone in bones {
         // A bone the rig doesn't have is skipped, so one document fits more rigs.
-        let Some(joint) = rig.human_joint(bone) else { continue };
+        let Some(joint) = rig.joint(bone) else { continue };
         let index = usize::from(joint);
         let held = held(keys, Quat::IDENTITY, |key| key.pose.get(&bone).map(|turn| turn.quat()));
         let local_rest = Quat::from_array(skeleton.rest[index].rotation).normalize();
@@ -456,14 +510,39 @@ pub fn sample(
             .collect();
         translations.push((hips, samples));
     }
-    let root = keys.iter().any(|key| key.root.is_some()).then(|| {
+    let root = keys.iter().any(|key| key.root.is_some() || key.root_turn.is_some()).then(|| {
         let positions = held(keys, [0.0; 3], |key| key.root);
+        let turns = held(keys, 0.0, |key| key.root_turn);
+        let turn = |moment: &Moment| {
+            let (from, to) = (turns[moment.from], turns[moment.to]);
+            det::quat_from_axis_angle(Vec3::Y, (from + (to - from) * moment.weight).to_radians())
+        };
         SampledRoot {
             joint: hips,
             translation: moments.iter().map(|moment| blended(&positions, moment)).collect(),
-            rotation: vec![Quat::IDENTITY; moments.len()],
+            rotation: moments.iter().map(turn).collect(),
         }
     });
+    let mut weights: Vec<(u16, Vec<f32>)> = Vec::new();
+    if !targets.is_empty() {
+        let names: std::collections::BTreeSet<&String> =
+            keys.iter().flat_map(|key| key.morphs.keys()).collect();
+        for name in names {
+            let index = targets.iter().position(|target| target.name == *name);
+            let unknown = || KeyPoseError::UnknownMorph { name: name.clone() };
+            let index = index.ok_or_else(unknown)?;
+            let values = held(keys, targets[index].default_weight, |key| key.morphs.get(name).copied());
+            let samples = moments
+                .iter()
+                .map(|moment| {
+                    let (from, to) = (values[moment.from], values[moment.to]);
+                    from + (to - from) * moment.weight
+                })
+                .collect();
+            weights.push((u16::try_from(index).map_err(|_| unknown())?, samples));
+        }
+        weights.sort_by_key(|(target, _)| *target);
+    }
     Ok(SampledClip {
         name: name.to_owned(),
         rate: DEFAULT_RATE,
@@ -471,7 +550,7 @@ pub fn sample(
         rotations,
         translations,
         scales: Vec::new(),
-        weights: Vec::new(),
+        weights,
         root,
     })
 }

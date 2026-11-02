@@ -90,7 +90,7 @@ struct Cooked {
 impl Cooked {
     fn new(bytes: &[u8], index: usize, settings: &ClipSettings) -> Self {
         let (document, buffers, scene) = import_scene(bytes, None).unwrap();
-        let sampled = sample(&document, &buffers, &scene, index, settings).unwrap();
+        let sampled = sample(&document, &buffers, scene.clip_scene(), index, settings).unwrap();
         let skeleton = scene.mesh.skin.as_ref().map(|skin| Skeleton::new(&skin.joints));
         let defaults: Vec<f32> =
             scene.mesh.morph_targets.iter().map(|target| target.default_weight).collect();
@@ -562,7 +562,7 @@ fn root_motion_comes_from_the_named_bone() {
         ..exact()
     };
     let (document, buffers, scene) = import_scene(&writer.to_glb(), None).unwrap();
-    let error = sample(&document, &buffers, &scene, 0, &settings).unwrap_err();
+    let error = sample(&document, &buffers, scene.clip_scene(), 0, &settings).unwrap_err();
     assert!(error.to_string().contains("Tail"), "{error}");
 }
 
@@ -583,8 +583,9 @@ fn budgets_hold_before_data_is_read() {
     let bytes = writer.to_glb();
     let (document, buffers, scene) = import_scene(&bytes, None).unwrap();
     let settings = ClipSettings::default();
-    let within =
-        |budget| sample_within(&document, &buffers, &scene, 0, &settings, budget).map(|clip| clip.ticks);
+    let within = |budget| {
+        sample_within(&document, &buffers, scene.clip_scene(), 0, &settings, budget).map(|clip| clip.ticks)
+    };
     let roomy = CLIP_BUDGET;
     assert_eq!(within(roomy).unwrap(), 585, "39 × 0.25 s");
     let error = within(ClipBudget { keys: 39, ..roomy }).unwrap_err();
@@ -613,8 +614,9 @@ fn the_values_budget_counts_every_channel_of_an_animation() {
     animate(&mut writer, None, &[track(HIPS), track(ARM)]);
     let (document, buffers, scene) = import_scene(&writer.to_glb(), None).unwrap();
     let settings = ClipSettings::default();
-    let within =
-        |budget| sample_within(&document, &buffers, &scene, 0, &settings, budget).map(|clip| clip.ticks);
+    let within = |budget| {
+        sample_within(&document, &buffers, scene.clip_scene(), 0, &settings, budget).map(|clip| clip.ticks)
+    };
     // Each channel is 2 times and 2 values of 3.
     let error = within(ClipBudget { values: 15, ..CLIP_BUDGET }).unwrap_err();
     let ClipImportError::OverBudget { at, found: 16, .. } = error else { panic!("{error}") };
@@ -650,7 +652,8 @@ fn the_samples_budget_counts_every_morph_target() {
     let (document, buffers, scene) = import_scene(&writer.to_glb(), None).unwrap();
     let settings = ClipSettings::default();
     let within = |budget| {
-        sample_within(&document, &buffers, &scene, 0, &settings, budget).map(|clip| clip.weights.len())
+        sample_within(&document, &buffers, scene.clip_scene(), 0, &settings, budget)
+            .map(|clip| clip.weights.len())
     };
     // 61 ticks of the channel's 3, and of the 3 targets they go to.
     let error = within(ClipBudget { samples: 365, ..CLIP_BUDGET }).unwrap_err();
@@ -701,7 +704,7 @@ fn a_root_bone_under_a_scale_of_zero_is_an_error() {
         ..ClipSettings::default()
     };
     let (document, buffers, scene) = import_scene(&writer.to_glb(), None).unwrap();
-    let error = sample(&document, &buffers, &scene, 0, &settings).unwrap_err();
+    let error = sample(&document, &buffers, scene.clip_scene(), 0, &settings).unwrap_err();
     assert!(error.to_string().contains("\"Hips\"") && error.to_string().contains("scale of zero"), "{error}");
 }
 
@@ -721,6 +724,6 @@ fn a_clip_too_long_for_a_u16_of_ticks_is_refused() {
         }],
     );
     let (document, buffers, scene) = import_scene(&writer.to_glb(), None).unwrap();
-    let error = sample(&document, &buffers, &scene, 0, &ClipSettings::default()).unwrap_err();
+    let error = sample(&document, &buffers, scene.clip_scene(), 0, &ClipSettings::default()).unwrap_err();
     assert!(matches!(error, ClipImportError::TooLong { .. }), "{error}");
 }

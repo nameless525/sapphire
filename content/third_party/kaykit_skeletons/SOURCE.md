@@ -28,5 +28,5 @@ Not committed: the Mage, Minion and Rogue, the other weapons and accessories, th
 
 ## The model
 
-- **The Warrior:** 5,934 triangles in 10 meshes (arms, body, cloak, eyes, head, helmet, jaw, legs), one embedded palette image, and the same 23 joints as the clips' rig, so every `Rig_Medium` clip plays on it as it is.
+- **The Warrior:** 5,934 triangles in 10 meshes (arms, body, cloak, eyes, head, helmet, jaw, legs), one embedded palette image, and the same 23 joints as the clips' rig at the same rests, in an order of its own, so every `Rig_Medium` clip plays on it by joint name.
 - **The Blade:** an unskinned mesh for the rig's `handslot` joints. It references `skeleton_texture.png` and `Skeleton_Blade.bin` beside it.

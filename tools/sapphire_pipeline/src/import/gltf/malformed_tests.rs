@@ -773,7 +773,7 @@ fn sample_clips(bytes: &[u8]) -> Result<usize, clips::ClipImportError> {
     let (document, buffers, scene) = clips::import_scene(bytes, None)?;
     let settings = crate::clip::ClipSettings::default();
     for index in 0..document.animations().len() {
-        clips::sample(&document, &buffers, &scene, index, &settings)?;
+        clips::sample(&document, &buffers, scene.clip_scene(), index, &settings)?;
     }
     Ok(document.animations().len())
 }
@@ -1001,6 +1001,88 @@ fn a_channel_outside_the_scene_is_still_checked() {
     file.input(TRANSLATION)["count"] = HUGE.into();
     let error = sample_clips(&file.bytes()).unwrap_err();
     assert!(error.to_string().contains("budget"), "{error}");
+}
+
+/// Plans and imports `bytes` as a source of animations alone, and samples every clip.
+fn sample_animation_source(bytes: &[u8]) -> Result<usize, crate::clip::ClipCookError> {
+    use crate::clip::{ClipSettings, source::ClipSource};
+    let (names, _) = clips::plan(bytes, |_| Ok(Vec::new()))?;
+    let settings = crate::meta::ImportSettings::GltfClips(ClipSettings::default());
+    let source = ClipSource::import(Path::new("bad.gltf"), bytes, &settings)?;
+    for index in 0..names.len() {
+        source.sample(index, &ClipSettings::default())?;
+    }
+    Ok(names.len())
+}
+
+/// A source of animations reads no mesh and no skin's matrices. It reads what's left the same way:
+/// the walk of the nodes, and every channel, with nothing unchecked on the way.
+#[test]
+fn an_animation_source_reads_no_geometry_and_no_less_of_the_rest() {
+    let position = |file: &File| -> usize {
+        let attributes = &file.doc["meshes"][0]["primitives"][0]["attributes"];
+        attributes["POSITION"].as_u64().expect("a position accessor") as usize
+    };
+    let mut broken_mesh = File::animated();
+    let accessor = position(&broken_mesh);
+    broken_mesh.doc["accessors"][accessor]["count"] = HUGE.into();
+    assert_eq!(sample_animation_source(&broken_mesh.bytes()).expect("the mesh is no concern"), 1);
+
+    type Craft = fn(&mut File);
+    let rows: &[(&str, Craft, &str)] = &[
+        (
+            "two_nodes_in_a_loop",
+            |f| {
+                f.doc["nodes"][0]["children"] = json!([1]);
+                f.doc["nodes"][1]["children"] = json!([0]);
+            },
+            "reached twice",
+        ),
+        ("a_node_its_own_child", |f| f.doc["nodes"][0]["children"] = json!([0]), "reached twice"),
+        ("a_child_past_the_nodes", |f| f.doc["nodes"][0]["children"] = json!([999]), "not a valid glTF"),
+        (
+            "no_scene",
+            |f| {
+                f.doc["scenes"] = json!([]);
+                f.doc.as_object_mut().expect("an object").remove("scene");
+            },
+            "scene",
+        ),
+        ("a_channel_past_the_samplers", |f| f.channel(ROTATION)["sampler"] = 99.into(), "not a valid glTF"),
+        ("a_huge_key_count", |f| f.input(TRANSLATION)["count"] = HUGE.into(), "budget"),
+        ("a_nan_in_a_track", |f| f.poison(|f| f.output(TRANSLATION), 3, f32::NAN), "isn't finite"),
+        (
+            "a_rotation_of_no_length",
+            |f| {
+                for at in 4..8 {
+                    f.poison(|f| f.output(ROTATION), at, 0.0);
+                }
+            },
+            "no length",
+        ),
+    ];
+    let mut wrong = Vec::new();
+    for (name, craft, says) in rows {
+        let mut file = File::animated();
+        craft(&mut file);
+        let bytes = file.bytes();
+        match panic::catch_unwind(AssertUnwindSafe(|| sample_animation_source(&bytes))) {
+            Err(payload) => wrong.push(format!("{name}: panicked: {}", panic_text(&*payload))),
+            Ok(Ok(count)) => wrong.push(format!("{name}: sampled {count} clips")),
+            Ok(Err(error)) => {
+                let mut text = error.to_string();
+                let mut cause = std::error::Error::source(&error);
+                while let Some(source) = cause {
+                    text += &format!(": {source}");
+                    cause = source.source();
+                }
+                if !text.contains(says) {
+                    wrong.push(format!("{name}: said {text:?}, which doesn't mention {says:?}"));
+                }
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{} of {} rows:\n{}", wrong.len(), rows.len(), wrong.join("\n"));
 }
 
 /// Through the cook, the error names the file, as every failure must.

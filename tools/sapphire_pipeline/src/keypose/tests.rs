@@ -5,8 +5,9 @@ use std::fs;
 
 use glam::{Affine3A, Quat, Vec3};
 use sapphire_assets::clip::Clip;
-use sapphire_assets::rig::{HumanBone, HumanoidJoint};
+use sapphire_assets::rig::{CharacterRig, HumanBone, HumanoidJoint};
 use sapphire_assets::skeleton::{Joint, JointTransform};
+use sapphire_math::det;
 use sapphire_serialize::cooked::AlignedVec;
 
 use super::*;
@@ -21,6 +22,16 @@ const LEFT_LOWER_ARM: usize = 4;
 const LEFT_HAND: usize = 5;
 const RIGHT_UPPER_ARM: usize = 6;
 const RIGHT_LOWER_ARM: usize = 7;
+
+/// [`super::sample`], on a rig's map and with no morph targets.
+fn sample(
+    document: &KeyPoseClip,
+    name: &str,
+    skeleton: &Skeleton,
+    rig: &CharacterRig,
+) -> Result<SampledClip, KeyPoseError> {
+    super::sample(document, name, skeleton, &HumanMap::from_rig(rig), &[])
+}
 
 /// A figure in a T-pose, facing +Z: arms along ±X. The left arm's joints have axes of their own (+Y
 /// down the bone, as some armatures do), to show a turn doesn't read them.
@@ -333,6 +344,95 @@ fn root_is_root_motion_in_a_track_of_its_own() {
     assert!(near(cooked.position(HIPS, 12.0), Vec3::new(0.0, 0.9, 0.0), 1e-3), "the pose stays where it was");
 }
 
+/// A turn is an angle, not a rotation: in one segment it may go on past a half turn, the way it was
+/// going, where blending two rotations would go the short way back.
+#[test]
+fn a_root_turn_is_an_angle_that_may_pass_a_half_turn_in_one_segment() {
+    let (skeleton, rig) = figure();
+    let spin = document("keys: [(tick: 0), (tick: 30, ease: Linear, root_turn: 270)]");
+    let cooked = Cooked::new(&spin, &skeleton, &rig);
+    let clip = Clip::read(&cooked.clip).unwrap();
+    for tick in 0..=30 {
+        let (_, turn, _) = root_of(clip, tick as f32).to_scale_rotation_translation();
+        let expected = Quat::from_rotation_y((tick as f32 * 9.0).to_radians());
+        assert!(
+            angle_between(turn, expected) < 1.5f32.to_radians(),
+            "tick {tick}: {turn} against {expected}"
+        );
+    }
+    let root = clip.root.as_ref().expect("root motion");
+    assert_eq!(root.translation.count.to_native(), 1, "no travel");
+    // A key that doesn't name it keeps it, as with `root`, and an ease shapes it.
+    let held = document(
+        "keys: [(tick: 0), (tick: 10, ease: Hold, root_turn: 90), (tick: 20, pose: { Spine: (x: 1) })]",
+    );
+    let sampled = sample(&held, "test", &skeleton, &rig).unwrap();
+    let turns = sampled.root.expect("root motion").rotation;
+    let quarter = Quat::from_rotation_y(FRAC_PI_2);
+    assert!(angle_between(turns[9], Quat::IDENTITY) < 1e-5, "{}", turns[9]);
+    assert!(angle_between(turns[10], quarter) < 1e-5, "{}", turns[10]);
+    assert!(angle_between(turns[20], quarter) < 1e-5, "{}", turns[20]);
+}
+
+#[test]
+fn a_keys_morph_weights_start_from_the_meshs_and_go_where_keys_take_them() {
+    let (skeleton, rig) = figure();
+    let targets = [
+        MorphTarget { name: "unnamed".into(), default_weight: 1.0 },
+        MorphTarget { name: "blink".into(), default_weight: 0.25 },
+        MorphTarget { name: "smile".into(), default_weight: 0.0 },
+    ];
+    let map = HumanMap::from_rig(&rig);
+    let keyed = document(
+        "keys: [
+            (tick: 0),
+            (tick: 10, ease: Linear, morphs: { \"smile\": 1.0 }),
+            (tick: 20, ease: Linear, morphs: { \"blink\": 1.0 }),
+        ]",
+    );
+    let sampled = super::sample(&keyed, "test", &skeleton, &map, &targets).unwrap();
+    let (blink, smile) = (&sampled.weights[0], &sampled.weights[1]);
+    assert_eq!(sampled.weights.len(), 2, "a target no key names has no track");
+    assert_eq!((blink.0, smile.0), (1, 2));
+    assert_eq!((blink.1[0], blink.1[10], blink.1[15], blink.1[20]), (0.25, 0.25, 0.625, 1.0));
+    assert_eq!((smile.1[0], smile.1[5], smile.1[10], smile.1[20]), (0.0, 0.5, 1.0, 1.0));
+
+    // A mesh that hasn't one: the document's error, naming it. No mesh at all: as a bone it lacks.
+    let wrong = document("keys: [(tick: 0, morphs: { \"frown\": 1.0 })]");
+    let error = super::sample(&wrong, "test", &skeleton, &map, &targets).unwrap_err();
+    assert!(matches!(&error, KeyPoseError::UnknownMorph { name } if name == "frown"), "{error}");
+    assert!(error.to_string().contains("\"frown\""), "{error}");
+    let sampled = super::sample(&wrong, "test", &skeleton, &map, &[]).unwrap();
+    assert!(sampled.weights.is_empty());
+}
+
+/// Root motion and weights are the part of a document that's the same bytes on every architecture
+/// already, for a move's tables to read: scalars and `det`, no `Quat` arithmetic. So they equal a
+/// formula of scalars bit for bit, which any `Quat` operator on their way would miss on one
+/// architecture or the other.
+#[test]
+fn a_documents_turn_and_weights_come_through_scalars_alone() {
+    let (skeleton, rig) = figure();
+    let targets = [MorphTarget { name: "blink".into(), default_weight: 0.25 }];
+    let keyed = document(
+        "keys: [
+            (tick: 0),
+            (tick: 30, ease: Linear, root_turn: 270, morphs: { \"blink\": 1.0 }),
+        ]",
+    );
+    let sampled = super::sample(&keyed, "test", &skeleton, &HumanMap::from_rig(&rig), &targets).unwrap();
+    let turns = &sampled.root.as_ref().expect("root motion").rotation;
+    let weights = &sampled.weights[0].1;
+    for tick in 0..=30u16 {
+        let at = usize::from(tick);
+        let progress = f32::from(tick) / 30.0;
+        let (sine, cosine) = det::sin_cos((270.0 * progress).to_radians() * 0.5);
+        let expected = [0.0 * sine, 1.0 * sine, 0.0 * sine, cosine];
+        assert_eq!(turns[at].to_array().map(f32::to_bits), expected.map(f32::to_bits), "tick {tick}");
+        assert_eq!(weights[at].to_bits(), (0.25 + 0.75 * progress).to_bits(), "tick {tick}");
+    }
+}
+
 /// One document fits more rigs: what a rig lacks is skipped.
 #[test]
 fn a_bone_the_rig_doesnt_have_is_skipped() {
@@ -367,6 +467,9 @@ fn bad_documents_say_whats_wrong() {
         ("an_infinite_root", "keys: [(tick: 0), (tick: 1, root: (0.0, inf, 0.0))]", "root isn't finite"),
         ("a_nan_hips", "keys: [(tick: 0, hips: (NaN, 0.0, 0.0))]", "hips isn't finite"),
         ("a_root_away", "keys: [(tick: 0, root: (1.0, 0.0, 0.0))]", "root motion starts at the identity"),
+        ("a_nan_root_turn", "keys: [(tick: 0), (tick: 1, root_turn: NaN)]", "root_turn isn't finite"),
+        ("a_turn_away", "keys: [(tick: 0, root_turn: 10.0)]", "root motion starts at the identity"),
+        ("a_nan_weight", "keys: [(tick: 0, morphs: { \"blink\": NaN })]", "blink isn't finite"),
         ("a_huge_share", "keys: [(tick: 0), (tick: 1, ease: Overshoot(9.0))]", "ease is out of range"),
         ("a_negative_share", "keys: [(tick: 0), (tick: 1, ease: Anticipate(-0.1))]", "ease is out of range"),
         ("a_nan_share", "keys: [(tick: 0), (tick: 1, ease: Anticipate(NaN))]", "ease is out of range"),

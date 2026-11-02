@@ -26,6 +26,8 @@
             ),
             position_format: Unorm16,
             materials: {},
+            // The clips' rig: the same joints in another order, so it plays on their skeleton.
+            skeleton: "9a29e8c0-f131-4ea4-98b9-04879740413d",
         )),
         cook: false,
     ),

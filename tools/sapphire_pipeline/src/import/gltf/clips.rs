@@ -1,9 +1,11 @@
 //! glTF animations, sampled for the clip cook ([`crate::clip`]).
 //!
-//! A sidecar's `clips: (…)` turns this on for a source. Then every animation of the document
-//! becomes a clip, named as a material slot is (`#<index>` unnamed, `<name>#<index>` when two
-//! share a name), and every node a translation, rotation or scale channel animates joins the
-//! skeleton (`animated_nodes`), so a rigid part animated on its own node moves too.
+//! A sidecar's `clips: (…)` on a mesh, or an `importer: GltfClips((…))` of its own, turns this on
+//! for a source. Then the document's animations can become clips, named as a material slot is
+//! (`#<index>` unnamed, `<name>#<index>` when two share a name), and every node a translation,
+//! rotation or scale channel animates joins the skeleton (`animated_nodes`), so a rigid part
+//! animated on its own node moves too. An animation source needs no geometry and reads none
+//! (`import_rig`); a file's mesh is left where it lies.
 //!
 //! **Channels.** Translation, rotation and scale go to the node's joint, morph weights to the
 //! targets its mesh's weights merged into. A channel on a node outside the imported scene moves
@@ -24,8 +26,8 @@
 //! few bytes can claim years of keys. Key times must be finite, at least 0 and strictly increasing,
 //! as glTF requires, and values finite, and a rotation's key must have a length.
 
-use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 
 use ::gltf::animation::util::ReadOutputs;
@@ -33,11 +35,13 @@ use ::gltf::animation::{Channel, Interpolation, Property};
 use ::gltf::{Accessor, Document, Gltf};
 use glam::{Quat, Vec3, Vec4};
 use sapphire_assets::clip::MAX_TICKS;
+use sapphire_assets::skeleton::{Joint, Skeleton};
 
 use super::{GltfImportError, SceneImport, accessors, load_buffers, parse};
 use crate::cache::Stage;
 use crate::clip::{self, ClipSettings, SampledClip};
 use crate::import;
+use crate::import::fbx::FbxImportError;
 
 /// This importer, as cache keys know it. Bump the version whenever sampling changes output for the
 /// same file.
@@ -119,6 +123,22 @@ pub enum ClipImportError {
     RootLift { bone: String, source: clip::RootLiftError },
     #[error("root motion needs a skeleton, and animation {animation:?}'s source has none")]
     NoSkeleton { animation: String },
+    #[error(transparent)]
+    Fbx(#[from] Box<FbxImportError>),
+    #[error("animation {animation:?} has a time range from {begin} to {end} s, which no clip can hold")]
+    TimeRange { animation: String, begin: f64, end: f64 },
+    #[error("animation {animation:?}: joint {joint:?} isn't finite at tick {tick}")]
+    NonFiniteSample { animation: String, joint: String, tick: usize },
+    #[error("the VRMC_vrm_animation extension is invalid")]
+    VrmaExtension(#[source] serde_json::Error),
+    #[error("not a VRMA file: it has no VRMC_vrm_animation extension")]
+    NotVrma,
+    #[error("VRMC_vrm_animation version {0:?} is not supported; Sapphire reads 1.0")]
+    VrmaVersion(String),
+    #[error("humanoid bone {bone}: {problem}")]
+    VrmaBone { bone: String, problem: String },
+    #[error("the VRMA's humanoid map has no hips")]
+    VrmaNoHips,
 }
 
 /// The clip names of `bytes`' animations, in document order: unique, and what each sub-asset's ID
@@ -152,7 +172,7 @@ pub(crate) fn animated_nodes(document: &Document) -> Vec<usize> {
 }
 
 /// A source's skeleton, the targets' default weights and every clip's samples come from one
-/// import: this is the scene [`sample`] reads, for a source that cooks clips.
+/// import: this is the scene [`sample`] reads, for a mesh source that cooks clips.
 pub(crate) fn import_scene(
     bytes: &[u8],
     base_dir: Option<&std::path::Path>,
@@ -161,6 +181,72 @@ pub(crate) fn import_scene(
     let buffers = load_buffers(&document, base_dir, blob)?;
     let scene = super::import_scene(&document, &buffers, &animated_nodes(&document))?;
     Ok((document, buffers, scene))
+}
+
+/// What [`sample`] reads of an imported document: the joints, and where the importer put its nodes
+/// and morph targets.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ClipScene<'a> {
+    pub joints: &'a [Joint],
+    pub joint_of_node: &'a HashMap<usize, u16>,
+    pub targets_of_morph: &'a HashMap<(usize, usize), Vec<u32>>,
+}
+
+#[cfg(test)]
+impl SceneImport {
+    /// The scene as [`sample`] reads it.
+    pub(crate) fn clip_scene(&self) -> ClipScene<'_> {
+        ClipScene {
+            joints: self.mesh.skin.as_ref().map_or(&[], |skin| skin.joints.as_slice()),
+            joint_of_node: &self.joint_of_node,
+            targets_of_morph: &self.targets_of_morph,
+        }
+    }
+}
+
+/// A document imported for its animations alone: its joints, the skeleton its clips index, and no
+/// mesh, whatever the file holds. It has no targets, so morph channels drive nothing.
+pub(crate) struct RigImport {
+    pub document: Document,
+    pub buffers: Vec<Vec<u8>>,
+    pub joints: Vec<Joint>,
+    pub joint_of_node: HashMap<usize, u16>,
+}
+
+/// Imports the animated rig of `bytes`, with every node `extra_joints` finds in the parsed document
+/// (a VRMA's humanoid) among its joints.
+pub(crate) fn import_rig(
+    bytes: &[u8],
+    base_dir: Option<&std::path::Path>,
+    extra_joints: impl FnOnce(&Document) -> Result<Vec<usize>, ClipImportError>,
+) -> Result<RigImport, ClipImportError> {
+    let Gltf { document, blob } = parse(bytes).map_err(ClipImportError::Parse)?;
+    let buffers = load_buffers(&document, base_dir, blob)?;
+    let mut extra = extra_joints(&document)?;
+    extra.extend(animated_nodes(&document));
+    extra.sort_unstable();
+    extra.dedup();
+    let (joints, joint_of_node) = super::scene_joints(&document, &extra)?.unwrap_or_default();
+    Ok(RigImport { document, buffers, joints, joint_of_node })
+}
+
+/// What planning a cook needs from an animation source: its clips' names, and the joints of its
+/// rig, with every node `extra_joints` finds among them. Reads no buffer.
+pub(crate) fn plan(
+    bytes: &[u8],
+    extra_joints: impl FnOnce(&Document) -> Result<Vec<usize>, ClipImportError>,
+) -> Result<(Vec<String>, Vec<Joint>), ClipImportError> {
+    let Gltf { document, .. } = parse(bytes).map_err(ClipImportError::Parse)?;
+    let found = document.animations().len();
+    if found > CLIP_BUDGET.animations {
+        return Err(ClipImportError::TooManyAnimations { found, budget: CLIP_BUDGET.animations });
+    }
+    let mut extra = extra_joints(&document)?;
+    extra.extend(animated_nodes(&document));
+    extra.sort_unstable();
+    extra.dedup();
+    let joints = super::scene_joints(&document, &extra)?;
+    Ok((names_of(&document), joints.map(|(joints, _)| joints).unwrap_or_default()))
 }
 
 /// One channel's keys as read: `width` values a key, three times that for cubic segments.
@@ -260,7 +346,7 @@ enum Driven {
 pub(crate) fn sample(
     document: &Document,
     buffers: &[Vec<u8>],
-    scene: &SceneImport,
+    scene: ClipScene<'_>,
     index: usize,
     settings: &ClipSettings,
 ) -> Result<SampledClip, ClipImportError> {
@@ -271,7 +357,7 @@ pub(crate) fn sample(
 fn sample_within(
     document: &Document,
     buffers: &[Vec<u8>],
-    scene: &SceneImport,
+    scene: ClipScene<'_>,
     index: usize,
     settings: &ClipSettings,
     budget: ClipBudget,
@@ -392,20 +478,27 @@ fn sample_within(
         weights: weights.into_iter().collect(),
         root: None,
     };
-    if let Some(root) = &settings.root_motion {
-        let Some(skeleton) =
-            scene.mesh.skin.as_ref().map(|skin| sapphire_assets::skeleton::Skeleton::new(&skin.joints))
-        else {
-            return Err(ClipImportError::NoSkeleton { animation: clip.name });
-        };
-        let joint = skeleton.names.iter().position(|joint| *joint == root.bone);
-        let Some(joint) = joint else {
-            return Err(ClipImportError::UnknownRootBone { bone: root.bone.clone() });
-        };
-        clip::lift_root(&mut clip, &skeleton, joint as u16, root.translation, root.rotation)
-            .map_err(|source| ClipImportError::RootLift { bone: root.bone.clone(), source })?;
-    }
+    lift_settings_root(&mut clip, scene.joints, settings)?;
     Ok(clip)
+}
+
+/// Lifts root motion out of `clip`, if `settings` ask for it.
+pub(crate) fn lift_settings_root(
+    clip: &mut SampledClip,
+    joints: &[Joint],
+    settings: &ClipSettings,
+) -> Result<(), ClipImportError> {
+    let Some(root) = &settings.root_motion else { return Ok(()) };
+    if joints.is_empty() {
+        return Err(ClipImportError::NoSkeleton { animation: clip.name.clone() });
+    }
+    let skeleton = Skeleton::new(joints);
+    let joint = skeleton.names.iter().position(|joint| *joint == root.bone);
+    let Some(joint) = joint else {
+        return Err(ClipImportError::UnknownRootBone { bone: root.bone.clone() });
+    };
+    clip::lift_root(clip, &skeleton, joint as u16, root.translation, root.rotation)
+        .map_err(|source| ClipImportError::RootLift { bone: root.bone.clone(), source })
 }
 
 fn property_name(property: &Property) -> &'static str {

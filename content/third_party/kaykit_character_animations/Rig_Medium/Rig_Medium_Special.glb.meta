@@ -3,30 +3,22 @@
     version: 1,
     data: (
         id: "a4910192-fe9f-4080-9f5d-0a7fee35b33c",
-        importer: Gltf((
-            outline: (
-                weld_tolerance: 0.0001,
+        importer: GltfClips((
+            root_motion: (
+                bone: "root",
             ),
-            lods: (
-                levels: [
-                    (
-                        triangle_ratio: 0.5,
-                        max_error: 0.002,
-                    ),
-                    (
-                        triangle_ratio: 0.25,
-                        max_error: 0.01,
-                    ),
-                    (
-                        triangle_ratio: 0.125,
-                        max_error: 0.03,
-                    ),
-                ],
-                mobile_skip: 1,
-            ),
-            position_format: Unorm16,
-            materials: {},
+            rig: "9a29e8c0-f131-4ea4-98b9-04879740413d",
+            // The enemy, on this rig as authored. These clips pull the skeleton apart and back, so
+            // they don't retarget.
+            names: [
+                "Skeletons_Idle",
+                "Skeletons_Walking",
+                "Skeletons_Taunt",
+                "Skeletons_Death",
+                "Skeletons_Death_Pose",
+                "Skeletons_Spawn_Ground",
+                "Skeletons_Awaken_Standing",
+            ],
         )),
-        cook: false,
     ),
 )

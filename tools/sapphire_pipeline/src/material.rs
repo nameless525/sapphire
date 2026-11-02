@@ -108,7 +108,10 @@ impl TextureKind {
             | ImportSettings::Colliders(_)
             | ImportSettings::Sound(_)
             | ImportSettings::Cue(_)
-            | ImportSettings::MoveSet(_) => return None,
+            | ImportSettings::MoveSet(_)
+            | ImportSettings::GltfClips(_)
+            | ImportSettings::FbxClips(_)
+            | ImportSettings::Vrma(_) => return None,
         })
     }
 

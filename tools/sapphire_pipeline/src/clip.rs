@@ -2,9 +2,32 @@
 //! animated channel sampled once a tick ([`SampledClip`]), root motion lifted out, then key
 //! reduction and packing into a [`Clip`].
 //!
-//! Two sources feed this ([`gltf::clips`](crate::import::gltf::clips) and [`keypose`]). Each samples
-//! its own curves (glTF's step, linear and cubic segments, a document's eases) at every tick, so
-//! what follows, and the runtime's one interpolation between keys, needn't know either.
+//! Four sources feed this: [`gltf::clips`](crate::import::gltf::clips), [`fbx::clips`](crate::import::fbx::clips),
+//! [`vrma`](crate::import::vrma) and [`keypose`]. Each samples its own curves (glTF's step, linear
+//! and cubic segments, FBX's curves, a document's eases) at every tick, so what follows, and the
+//! runtime's one interpolation between keys, needn't know any of them. [`retarget`] carries what a
+//! source sampled onto another rig before it reduces.
+//!
+//! # Byte identity
+//!
+//! A cook is byte-identical run to run on one machine, not between architectures. `glam`'s `Quat`,
+//! `Vec4`, `Vec3A` and `Affine3A` round differently on NEON and SSE2 (`Quat::normalize` multiplies by
+//! a reciprocal on one and divides on the other), and `ufbx` calls its platform's libm. A clip's
+//! cooked bytes are read on the machine that cooked them, and only poses read them, which the
+//! simulation never does, so that's enough for a clip.
+//!
+//! **It isn't enough for anything in a replay's `tables_hash`,** which holds across architectures.
+//! So what a move's baked tables read has to come through scalars and `sapphire_math::det`, from its
+//! source on. Which side each step is on:
+//!
+//! - **Scalars only:** [`keypose`]'s root motion (`root`, `root_turn`) and morph weights in its
+//!   [`SampledClip`], and `clip::source`, which only renumbers.
+//! - **Not, and so no table may read them as they are:** [`keypose`]'s bone turns and hips offsets,
+//!   [`retarget`], `rest_model`, [`lift_root`], [`cook`] (so anything in a cooked [`Clip`]), the glTF
+//!   and VRMA samplers' slerp, and FBX's evaluation.
+//!
+//! No table reads any of this today. Baking one from a clip (N1's third part) takes those steps of
+//! its path onto scalars first, with a stage version bump.
 //!
 //! # Key reduction ([`cook`])
 //!
@@ -46,16 +69,21 @@
 //! travel.) That holds exactly under uniform scale along the bone's chain, which is what armatures
 //! have; a shear the bone's own transform can't hold is lost from it.
 
+use std::collections::BTreeMap;
+
 use glam::{Affine3A, Quat, Vec3, Vec4};
 use sapphire_assets::AssetId;
 use sapphire_assets::clip::{
     Clip, DEFAULT_RATE, MAX_RATE, PackedRotation, RootMotion, RotationTrack, VectorRange, VectorTrack,
     WeightRange, WeightTrack, lerp3, nlerp,
 };
+use sapphire_assets::rig::HumanBone;
 use sapphire_assets::skeleton::{NO_PARENT, Skeleton};
 use sapphire_math::det;
 use serde::{Deserialize, Serialize};
 
+use self::retarget::{HumanMapError, RetargetError, RetargetSettings};
+use self::source::RigMismatch;
 use crate::cache::Stage;
 use crate::import::gltf::clips as gltf_clips;
 use crate::keypose;
@@ -102,8 +130,21 @@ impl ReductionError {
     }
 }
 
-/// How a mesh source's animations cook: `clips: (root_motion: (bone: "Hips"))` in its sidecar. Each
-/// animation becomes a [`Clip`], a sub-asset with an ID derived from its name.
+/// How a source's animations cook: `clips: (root_motion: (bone: "Hips"))` on a mesh's sidecar, or
+/// the whole settings of an animation source (`importer: GltfClips((…))`). Each animation chosen
+/// becomes a [`Clip`], a sub-asset with an ID derived from its name.
+///
+/// ```ron
+/// importer: GltfClips((
+///     root_motion: (bone: "root"),
+///     humanoid: { Hips: "hips", Spine: "spine", /* … */ RightHand: "wrist.r" },
+///     names: ["Hit_A", "Hit_B"],
+///     retarget: [(target: "<a character's source ID>", names: ["Idle_A", "Hit_A"])],
+/// )),
+/// ```
+///
+/// Those clips cook twice: `Hit_A` for the file's own skeleton, with the ID derived from
+/// `clip/Hit_A`, and retargeted for the character, from `clip/Hit_A@<target's ID>`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ClipSettings {
@@ -114,18 +155,44 @@ pub struct ClipSettings {
     /// Lifts this bone's motion into a track of its own, for every animation of the source.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub root_motion: Option<RootMotionSettings>,
+    /// Which animations cook for the source's own rig, by name: every one if unset, and none for an
+    /// empty list. A name the file doesn't have is an error.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub names: Option<Vec<String>>,
+    /// Which joint is which humanoid bone, by joint name: what retargets and key-pose documents
+    /// read this rig through ([`retarget::HumanMap`]). Needs every required bone. A VRM's and a
+    /// VRMA's come from the file, and a source sharing a rig reads its owner's.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub humanoid: BTreeMap<HumanBone, String>,
+    /// An animation source with the same rig as this file: its clips name that source's skeleton
+    /// rather than cooking one more, matching joints by name, parent and rest, in any order.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rig: Option<AssetId>,
+    /// Clips to carry onto other rigs, each entry one target: see [`retarget`].
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub retarget: Vec<RetargetSettings>,
 }
 
 impl Default for ClipSettings {
     fn default() -> Self {
-        Self { rate: DEFAULT_RATE, error: ReductionError::default(), root_motion: None }
+        Self {
+            rate: DEFAULT_RATE,
+            error: ReductionError::default(),
+            root_motion: None,
+            names: None,
+            humanoid: BTreeMap::new(),
+            rig: None,
+            retarget: Vec::new(),
+        }
     }
 }
 
 impl ClipSettings {
-    /// Whether the rate and the error bounds are ones a cook can honor.
+    /// Whether the rate, the error bounds and the retargets' scales are ones a cook can honor.
     pub fn is_valid(&self) -> bool {
-        (1..=MAX_RATE).contains(&self.rate) && self.error.is_valid()
+        (1..=MAX_RATE).contains(&self.rate)
+            && self.error.is_valid()
+            && self.retarget.iter().all(RetargetSettings::is_valid)
     }
 }
 
@@ -187,9 +254,15 @@ pub struct SampledRoot {
 #[derive(Debug, thiserror::Error)]
 pub enum ClipCookError {
     #[error(transparent)]
-    Gltf(#[from] gltf_clips::ClipImportError),
+    Import(#[from] gltf_clips::ClipImportError),
     #[error(transparent)]
     KeyPose(#[from] keypose::KeyPoseError),
+    #[error(transparent)]
+    Retarget(#[from] RetargetError),
+    #[error(transparent)]
+    Humanoid(#[from] HumanMapError),
+    #[error(transparent)]
+    RigMismatch(#[from] RigMismatch),
     #[error("the cooked clip is invalid")]
     Invalid(#[from] sapphire_assets::clip::ClipError),
     #[error("the cooked skeleton is invalid")]
@@ -198,12 +271,33 @@ pub enum ClipCookError {
     Cooked(#[from] sapphire_serialize::cooked::CookedError),
     #[error("the source has no skeleton to cook")]
     NoSkeleton,
-    #[error("the sidecar's `clips` settings are for glTF meshes; {importer} sources don't cook clips yet")]
+    #[error("the sidecar's `clips` settings are for glTF and FBX; {importer} sources don't cook clips")]
     ClipsUnsupported { importer: &'static str },
     #[error(
-        "the sidecar's `clips` settings are out of range: a rate from 1 to {MAX_RATE}, errors at least 0"
+        "the sidecar's `clips` settings are out of range: a rate from 1 to {MAX_RATE}, errors at least 0, \
+         a retarget's scale above 0"
     )]
     Settings,
+    #[error("the sidecar says `rig` on a mesh source: a mesh names a shared rig with `skeleton`")]
+    RigOnMesh,
+    #[error("the sidecar has both `rig` and `humanoid`: a source sharing a rig reads its map")]
+    RigAndHumanoid,
+    #[error("the sidecar names a `humanoid` map, but a VRMA's is the file's")]
+    VrmaHumanoid,
+    #[error("the sidecar names clip {name:?}, which the file doesn't have")]
+    UnknownClip { name: String },
+    #[error("the sidecar names clip {name:?} twice for one rig")]
+    DuplicateClip { name: String },
+    #[error(
+        "the sidecar's `rig` or `skeleton` {id} isn't a source of this content tree with a skeleton of its own"
+    )]
+    UnknownRig { id: AssetId },
+    #[error(
+        "the sidecar's `retarget` target {id} isn't a source of this content tree with a skeleton and a humanoid map"
+    )]
+    UnknownTarget { id: AssetId },
+    #[error("the source has no humanoid map to retarget from: add `humanoid` to its sidecar")]
+    NoHumanoid,
 }
 
 /// What a clip's tracks index: the skeleton (and its ID), for a clip that animates joints, and the
@@ -587,6 +681,9 @@ pub fn cook(sampled: &SampledClip, target: &ClipTarget<'_>, error: &ReductionErr
         weight_keys: keys.weight_keys,
     }
 }
+
+pub mod retarget;
+pub(crate) mod source;
 
 #[cfg(test)]
 pub(crate) mod tests;

@@ -18,6 +18,7 @@ pub mod fbx;
 pub mod gltf;
 pub mod image;
 pub mod vrm;
+pub mod vrma;
 
 /// The material slot of faces without a material: glTF's default material, or an FBX mesh with
 /// none.

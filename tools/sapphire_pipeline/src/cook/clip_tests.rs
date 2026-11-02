@@ -23,42 +23,42 @@ use crate::pack::{SHARED, pack_cooked};
 use crate::test_util::{TempDir, read_aligned};
 
 /// A content tree beside its outputs and cache.
-struct Tree {
-    dir: TempDir,
+pub(super) struct Tree {
+    pub(super) dir: TempDir,
 }
 
 impl Tree {
-    fn new(name: &str) -> Self {
+    pub(super) fn new(name: &str) -> Self {
         Self { dir: TempDir::new(name) }
     }
 
-    fn content(&self) -> PathBuf {
+    pub(super) fn content(&self) -> PathBuf {
         self.dir.path().join("content")
     }
 
-    fn out(&self) -> PathBuf {
+    pub(super) fn out(&self) -> PathBuf {
         self.dir.path().join("out")
     }
 
-    fn write(&self, relative: &str, bytes: &[u8]) -> PathBuf {
+    pub(super) fn write(&self, relative: &str, bytes: &[u8]) -> PathBuf {
         let path = self.content().join(relative);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, bytes).unwrap();
         path
     }
 
-    fn sidecar(&self, source: &Path, id: AssetId, importer: ImportSettings) {
+    pub(super) fn sidecar(&self, source: &Path, id: AssetId, importer: ImportSettings) {
         let meta = AssetMeta::new(id, importer);
         fs::write(sidecar_path(source), sapphire_serialize::to_ron::<AssetMeta>(&meta).unwrap()).unwrap();
     }
 
-    fn try_cook(&self, locked: bool) -> Result<CookReport, CookError> {
+    pub(super) fn try_cook(&self, locked: bool) -> Result<CookReport, CookError> {
         let cache = self.dir.path().join("cache");
         let options = CookOptions { cook: Cook::Desktop, cache: Some(&cache), locked };
         cook_dir(&self.content(), &self.out(), &options)
     }
 
-    fn cook(&self) -> CookReport {
+    pub(super) fn cook(&self) -> CookReport {
         self.try_cook(false).unwrap()
     }
 }
@@ -67,7 +67,7 @@ fn id_of(source: &Path) -> AssetId {
     meta::read(&sidecar_path(source)).unwrap().id
 }
 
-fn by_id(report: &CookReport, id: AssetId) -> &CookedAsset {
+pub(super) fn by_id(report: &CookReport, id: AssetId) -> &CookedAsset {
     report.assets.iter().find(|asset| asset.id == id).unwrap_or_else(|| panic!("{id} wasn't cooked"))
 }
 
@@ -76,7 +76,7 @@ fn statuses_of<'a>(report: &'a CookReport, source: &Path) -> Vec<(&'a Path, Cook
     assets.map(|asset| (asset.output.as_path(), asset.status)).collect()
 }
 
-fn move_hips<'a>() -> Track<'a> {
+pub(super) fn move_hips<'a>() -> Track<'a> {
     Track {
         node: HIPS,
         path: "translation",
@@ -86,7 +86,7 @@ fn move_hips<'a>() -> Track<'a> {
     }
 }
 
-fn turn_arm<'a>() -> Track<'a> {
+pub(super) fn turn_arm<'a>() -> Track<'a> {
     Track {
         node: ARM,
         path: "rotation",
@@ -304,7 +304,7 @@ fn skeletons_and_clips_pack_and_load_by_their_ids() {
 }
 
 #[test]
-fn only_gltf_cooks_clips_so_far_and_says_so() {
+fn a_vrm_cooks_no_clips_and_says_so() {
     let tree = Tree::new("cook_clips_refused");
     let source = tree.write("sample.vrm", &samples::vrm1().to_glb());
     let mut vrm = VrmSettings::default();
@@ -312,18 +312,6 @@ fn only_gltf_cooks_clips_so_far_and_says_so() {
     tree.sidecar(&source, AssetId::from_bytes([0x55; 16]), ImportSettings::Vrm(vrm));
     let error = tree.try_cook(false).unwrap_err();
     assert!(error.to_string().contains("sample.vrm"), "{error}");
-    assert!(
-        std::error::Error::source(&error).unwrap().to_string().contains("sources don't cook clips"),
-        "{error:?}"
-    );
-    fs::remove_file(&source).unwrap();
-    fs::remove_file(sidecar_path(&source)).unwrap();
-
-    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/fbx/skinned_morph.fbx");
-    let source = tree.write("skinned.fbx", &fs::read(fixture).unwrap());
-    let fbx = MeshSettings { clips: Some(ClipSettings::default()), ..MeshSettings::default() };
-    tree.sidecar(&source, AssetId::from_bytes([0x56; 16]), ImportSettings::Fbx(fbx));
-    let error = tree.try_cook(false).unwrap_err();
     assert!(
         std::error::Error::source(&error).unwrap().to_string().contains("sources don't cook clips"),
         "{error:?}"
@@ -470,6 +458,7 @@ fn a_cook_is_byte_identical_run_to_run() {
         let (tree, _, _, _, _) = key_pose_tree(name);
         let source = tree.write("figure.glb", &animated_figure());
         tree.sidecar(&source, AssetId::from_bytes([0x88; 16]), clips_on(ClipSettings::default()));
+        animation_tests::add_every_kind_of_animation_source(&tree);
         let options = CookOptions { cook: Cook::Desktop, cache: None, locked: true };
         let report = cook_dir(&tree.content(), &tree.out(), &options).unwrap();
         let packs = tree.dir.path().join("packs");
@@ -481,7 +470,7 @@ fn a_cook_is_byte_identical_run_to_run() {
     };
     let (first, first_pack) = cook_all("cook_identical_first");
     let (second, second_pack) = cook_all("cook_identical_second");
-    assert!(first.len() >= 7, "{}", first.len());
+    assert!(first.len() >= 15, "{}", first.len());
     assert_eq!(first.len(), second.len());
     for ((id, a), (other, b)) in first.iter().zip(&second) {
         assert_eq!(id, other);

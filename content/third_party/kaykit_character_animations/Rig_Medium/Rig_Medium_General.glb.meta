@@ -3,30 +3,55 @@
     version: 1,
     data: (
         id: "9a29e8c0-f131-4ea4-98b9-04879740413d",
-        importer: Gltf((
-            outline: (
-                weld_tolerance: 0.0001,
+        // The rig's owner: the other four files name this source as their `rig`, the enemy's mesh as
+        // its `skeleton`, and they all read this file's skeleton and map.
+        importer: GltfClips((
+            root_motion: (
+                bone: "root",
             ),
-            lods: (
-                levels: [
-                    (
-                        triangle_ratio: 0.5,
-                        max_error: 0.002,
-                    ),
-                    (
-                        triangle_ratio: 0.25,
-                        max_error: 0.01,
-                    ),
-                    (
-                        triangle_ratio: 0.125,
-                        max_error: 0.03,
-                    ),
-                ],
-                mobile_skip: 1,
-            ),
-            position_format: Unorm16,
-            materials: {},
+            // `wrist` is VRM's hand: `hand` is the block of palm and fingers past it, which curls
+            // 40 to 130 degrees in most clips. No neck, upper chest, shoulders, fingers, eyes or jaw.
+            humanoid: {
+                Hips: "hips",
+                Spine: "spine",
+                Chest: "chest",
+                Head: "head",
+                LeftUpperLeg: "upperleg.l",
+                LeftLowerLeg: "lowerleg.l",
+                LeftFoot: "foot.l",
+                LeftToes: "toes.l",
+                RightUpperLeg: "upperleg.r",
+                RightLowerLeg: "lowerleg.r",
+                RightFoot: "foot.r",
+                RightToes: "toes.r",
+                LeftUpperArm: "upperarm.l",
+                LeftLowerArm: "lowerarm.l",
+                LeftHand: "wrist.l",
+                RightUpperArm: "upperarm.r",
+                RightLowerArm: "lowerarm.r",
+                RightHand: "wrist.r",
+            },
+            // The enemy, on this rig as authored.
+            names: [
+                "Hit_A",
+                "Hit_B",
+            ],
+            retarget: [
+                // The character.
+                (
+                    target: "6f8a81b6-29c4-485f-b161-847b001d561f",
+                    names: [
+                        "Idle_A",
+                        "Idle_B",
+                        "Hit_A",
+                        "Hit_B",
+                        "Death_A",
+                        "Death_A_Pose",
+                        "Death_B",
+                        "Death_B_Pose",
+                    ],
+                ),
+            ],
         )),
-        cook: false,
     ),
 )

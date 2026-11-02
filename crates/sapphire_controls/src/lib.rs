@@ -20,8 +20,9 @@
 //! - The camera. [`CombatControls::look`], [`CombatControls::camera_zoom`] and
 //!   [`CombatControls::raw_stick`] are presentation, for the app to apply, and aren't in a tick. The
 //!   mapping takes the camera's yaw as a plain number.
-//! - Touch zones (`sapphire_ui`, which hands its values to [`CombatControls::set_on_screen`]), a
-//!   pause menu's visuals, and rumble.
+//! - Touch zones: `sapphire_ui` says what the fingers did, and [`CombatControls::read_touch`] takes it.
+//!   Which verb a button presses is here ([`TOUCH_BUTTONS`]), and the rest is the bindings'.
+//! - A pause menu's visuals, and rumble.
 //!
 //! # No press is lost or doubled
 //!
@@ -93,5 +94,6 @@ mod latch;
 
 pub use controls::{
     BUTTON_ACTIONS, COMBAT_CONTEXT, COMBAT_PRIORITY, CombatControls, ControlsError, ControlsSource,
-    ControlsStats, DEFAULT_BINDINGS, MOVE_ACTION, PAUSE_CONTEXT, PAUSE_PRIORITY, default_bindings,
+    ControlsStats, DEFAULT_BINDINGS, MOVE_ACTION, PAUSE_CONTEXT, PAUSE_PRIORITY, TOUCH_BUTTONS,
+    default_bindings,
 };

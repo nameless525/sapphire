@@ -1,4 +1,4 @@
-//! Steady-state frames allocate nothing: presses, steps, pauses and on-screen values. It runs on the
+//! Steady-state frames allocate nothing: presses, steps, pauses, on-screen values and fingers. It runs on the
 //! same frames as the fixed step, whose rule R6 the mapping's half must not break. Installs
 //! `CountingAllocator` as this test binary's global allocator.
 
@@ -10,15 +10,44 @@ use sapphire_gameplay::replay::ActionSource;
 use sapphire_gameplay::{ActorId, Buttons};
 use sapphire_input::{PadAxis, PadButton, RawInput, Timestamp};
 use sapphire_math::Vec2;
-use sapphire_platform::{GamepadType, Scancode};
+use sapphire_platform::{FingerId, GamepadType, Scancode, TouchDeviceId, TouchPhase};
 use sapphire_time::FixedStepDriver;
+use sapphire_ui::{HudLayout, Insets, TouchControls, UiMetrics};
 
 #[global_allocator]
 static GLOBAL: CountingAllocator<System> = CountingAllocator::new(System);
 
+/// A finger on the attack button and a thumb on the stick, on and off, as the app's frame reads them.
+fn fingers(zones: &mut TouchControls, controls: &mut CombatControls, frame: u64) {
+    let t = |offset: u64| Timestamp::from_nanos((frame * 16 + offset) * 1_000_000);
+    let finger = |id: u64| FingerId::new(TouchDeviceId::from_raw(1), id);
+    let layout = *zones.layout();
+    match frame % 16 {
+        0 => {
+            zones.touch(t(8), finger(1), TouchPhase::Down, layout.attack.center);
+            zones.touch(t(9), finger(2), TouchPhase::Down, layout.stick.rest);
+        }
+        4 => {
+            let pushed = layout.stick.rest + Vec2::new(layout.stick.radius, 0.0);
+            zones.touch(t(8), finger(2), TouchPhase::Moved, pushed);
+        }
+        8 => {
+            zones.touch(t(8), finger(1), TouchPhase::Up, layout.attack.center);
+            zones.touch(t(9), finger(2), TouchPhase::Canceled, layout.stick.rest);
+        }
+        _ => {}
+    }
+    controls.read_touch(zones.update(t(10)), t(10));
+}
+
 /// One 16 ms frame starting at `frame`'s time, with input from every device and a pause now and
 /// then.
-fn frame(controls: &mut CombatControls, driver: &mut FixedStepDriver, frame: u64) -> u64 {
+fn frame(
+    controls: &mut CombatControls,
+    zones: &mut TouchControls,
+    driver: &mut FixedStepDriver,
+    frame: u64,
+) -> u64 {
     let t = |offset: u64| Timestamp::from_nanos((frame * 16 + offset) * 1_000_000);
     let down = frame % 4 < 2;
     let input = controls.input_mut();
@@ -32,6 +61,7 @@ fn frame(controls: &mut CombatControls, driver: &mut FixedStepDriver, frame: u64
     input.push(t(6), RawInput::Key { scancode: Scancode::ESCAPE, down: frame.is_multiple_of(100) });
     let buttons = if frame % 8 < 4 { Buttons::DODGE } else { Buttons::NONE };
     controls.set_on_screen(t(7), buttons, Vec2::new(stick, 0.0));
+    fingers(zones, controls, frame);
     controls.update(t(16));
     let mut seen = 0;
     let steps = controls.advance(driver, std::time::Duration::from_millis(33));
@@ -59,16 +89,18 @@ fn steady_state_frames_do_not_allocate() {
     }
     let mut controls = CombatControls::with_default_bindings().expect("the default bindings");
     let mut driver = FixedStepDriver::default();
+    let layout = HudLayout::new(UiMetrics::new(Vec2::new(900.0, 400.0), Insets::default()));
+    let mut zones = TouchControls::new(layout);
     let pad = RawInput::GamepadAdded { pad: 0, kind: GamepadType::XboxOne };
     controls.input_mut().push(Timestamp::default(), pad);
     for n in 0..120 {
-        frame(&mut controls, &mut driver, n);
+        frame(&mut controls, &mut zones, &mut driver, n);
     }
 
     let mut seen = 0;
     let ((), counts) = alloc::count_in_scope(|| {
         for n in 120..1120 {
-            seen += frame(&mut controls, &mut driver, n);
+            seen += frame(&mut controls, &mut zones, &mut driver, n);
         }
     });
     assert!(alloc::is_installed());

@@ -20,8 +20,9 @@
 //! - **Drawing.** It writes a [`UiDrawList`], which the frame packet
 //!   carries and the renderer draws. There is no edge to the renderer or to wgpu either way (rule
 //!   R4): the list's types are `sapphire_look`'s, beneath both.
-//! - **What a press means.** [`TouchActions`] are values and edges: the app turns them into intents,
-//!   directly or through `sapphire_input`'s `Virtual` sources. No gameplay here.
+//! - **What a press means.** [`TouchActions`] are values and edges: an app turns them into intents,
+//!   directly or through `sapphire_input`'s `Virtual` sources, as `sapphire_controls`' `read_touch` does
+//!   for combat. No gameplay here.
 //! - **Where the numbers come from:** health and poise (G3) and the projection of a hit to the screen
 //!   reach it as plain values.
 //! - **The OS clock** (rule R2): the app passes [`Platform::now`](sapphire_platform::Platform::now).

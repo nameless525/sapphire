@@ -712,3 +712,27 @@ fn every_landing_inside_the_safe_area_goes_somewhere_sensible() {
         }
     }
 }
+
+/// What else counts fingers (the debug overlay's two-finger hold) asks this, so a thumb playing the game
+/// is never a thumb holding still.
+#[test]
+fn a_finger_holds_a_control_from_its_landing_to_its_lift() {
+    let spots = spots();
+    let mut controls = TouchControls::new(layout());
+    let (stick, button, camera, spare) = (finger(1), finger(2), finger(3), finger(4));
+    controls.touch(ms(1), stick, TouchPhase::Down, spots.stick);
+    controls.touch(ms(2), button, TouchPhase::Down, spots.attack);
+    controls.touch(ms(3), camera, TouchPhase::Down, spots.open);
+    controls.touch(ms(4), spare, TouchPhase::Down, spots.open);
+    assert!(controls.holds_control(stick));
+    assert!(controls.holds_control(button));
+    assert!(!controls.holds_control(camera));
+    assert!(!controls.holds_control(spare));
+    assert!(!controls.holds_control(finger(9)));
+
+    // A thumb that slides off keeps what it landed on, and lifting lets it go.
+    controls.touch(ms(5), button, TouchPhase::Moved, spots.open);
+    assert!(controls.holds_control(button));
+    controls.touch(ms(6), button, TouchPhase::Up, spots.open);
+    assert!(!controls.holds_control(button));
+}

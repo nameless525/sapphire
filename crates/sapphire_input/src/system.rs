@@ -395,6 +395,13 @@ impl InputSystem {
         self.push(timestamp, RawInput::Virtual { control, value });
     }
 
+    /// Lets an on-screen control go at `timestamp` because the OS took its finger back: it reads
+    /// zero from the next update on, and nothing a release would fire fires. A
+    /// [`Self::inject`] of zero is a player letting go, which a `Tap` binding takes for a tap.
+    pub fn cancel_virtual(&mut self, control: VirtualControl, timestamp: Timestamp) {
+        self.push(timestamp, RawInput::VirtualCanceled { control });
+    }
+
     /// Releases everything held at `timestamp`, firing nothing a release would, and cancels
     /// sequences in progress: a double tap waiting for its second press goes idle then. As
     /// when [`handle_event`](Self::handle_event) sees focus go, the fingers down now are
@@ -462,7 +469,8 @@ impl InputSystem {
         self.adapter.pad(self.devices.active_pad()?)
     }
 
-    /// Gamepads connected now; on-screen controls hide while there is one (spec §6.6).
+    /// Gamepads connected now. Connected says little of who's playing, since a simulator can report
+    /// one nobody holds: on-screen controls follow [`Self::active_gamepad`] (spec §6.6).
     pub fn gamepads(&self) -> usize {
         self.devices.gamepads()
     }
@@ -601,8 +609,17 @@ impl InputSystem {
                 }
             }
             RawInput::Virtual { control, value } => {
+                // An on-screen control in use is a finger on the screen, whatever else is connected.
+                if value != Vec2::ZERO {
+                    self.devices.used(DeviceKind::Touch);
+                }
                 if self.devices.set_virtual(control.index(), value) {
                     self.evaluate(now, MotionPass::Keep, Abort::No);
+                }
+            }
+            RawInput::VirtualCanceled { control } => {
+                if self.devices.set_virtual(control.index(), Vec2::ZERO) {
+                    self.evaluate(now, MotionPass::Keep, Abort::Release);
                 }
             }
             RawInput::ReleaseAll => {

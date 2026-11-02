@@ -15,6 +15,8 @@ sapphire_math.workspace = true
 sapphire_platform.workspace = true
 sapphire_serialize.workspace = true
 sapphire_time.workspace = true
+# For `TouchActions`, the plain values `read_touch` takes: the bindings stay the one place verbs live.
+sapphire_ui.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

@@ -299,6 +299,8 @@ pub struct CombatHud {
     enemy_trail: Trail,
     /// How far each button's press has eased in, 0 to 1.
     press: [f32; Button::ALL.len()],
+    /// The stick and buttons draw. A finger still works where they're hidden.
+    controls_shown: bool,
     /// When the skill last came off cooldown.
     ready_at: Option<Timestamp>,
     damage: [Option<DamageNumber>; MAX_DAMAGE_NUMBERS],
@@ -328,10 +330,17 @@ impl CombatHud {
             player_trail: Trail::default(),
             enemy_trail: Trail::default(),
             press: [0.0; Button::ALL.len()],
+            controls_shown: true,
             ready_at: None,
             damage: [None; MAX_DAMAGE_NUMBERS],
             next_damage: 0,
         }
+    }
+
+    /// Whether the stick and buttons draw, where a pad has taken over or there's no touch to speak of
+    /// (spec §6.6). They draw until told otherwise. The bars and numbers always do.
+    pub fn show_controls(&mut self, shown: bool) {
+        self.controls_shown = shown;
     }
 
     /// The atlas the HUD draws from.
@@ -406,25 +415,27 @@ impl CombatHud {
         if let Some(enemy) = &self.values.enemy {
             self.draw_fighter(&mut painter, &layout.enemy, enemy, &self.enemy_trail, ROSE, layout.scale);
         }
-        draw_stick(&mut painter, layout, &actions.stick);
-        let sprites = painter.sprites();
         let scale = layout.scale;
-        let icons = [sprites.sword, sprites.chevrons, sprites.spark];
-        for ((button, icon), &press) in Button::ALL.into_iter().zip(icons).zip(&self.press) {
-            // A skill cooling down gives its middle to the seconds.
-            let cooling = button == Button::Skill && self.values.skill.cooldown > 0.0;
-            let icon_share = if cooling { COOLING_ICON } else { 1.0 };
-            draw_button(
-                &mut painter,
-                layout.button(button),
-                actions.button(button),
-                press,
-                icon,
-                icon_share,
-                scale,
-            );
+        if self.controls_shown {
+            draw_stick(&mut painter, layout, &actions.stick);
+            let sprites = painter.sprites();
+            let icons = [sprites.sword, sprites.chevrons, sprites.spark];
+            for ((button, icon), &press) in Button::ALL.into_iter().zip(icons).zip(&self.press) {
+                // A skill cooling down gives its middle to the seconds.
+                let cooling = button == Button::Skill && self.values.skill.cooldown > 0.0;
+                let icon_share = if cooling { COOLING_ICON } else { 1.0 };
+                draw_button(
+                    &mut painter,
+                    layout.button(button),
+                    actions.button(button),
+                    press,
+                    icon,
+                    icon_share,
+                    scale,
+                );
+            }
+            self.draw_skill_state(&mut painter, &layout.skill, scale);
         }
-        self.draw_skill_state(&mut painter, &layout.skill, scale);
         let mut numbers = 0;
         for number in self.damage.iter().flatten() {
             numbers += u32::from(self.draw_damage(&mut painter, number, scale));

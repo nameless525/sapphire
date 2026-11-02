@@ -316,6 +316,15 @@ impl TouchControls {
         self.touches.iter().flatten().count()
     }
 
+    /// Whether this finger holds the stick or a button, for whatever else counts fingers: the camera's
+    /// finger and one that took nothing are free to mean something else.
+    pub fn holds_control(&self, finger: FingerId) -> bool {
+        self.touches
+            .iter()
+            .flatten()
+            .any(|touch| touch.finger == finger && matches!(touch.owner, Owner::Stick | Owner::Button(_)))
+    }
+
     fn owned(&self, owner: Owner) -> bool {
         self.touches.iter().flatten().any(|touch| touch.owner == owner)
     }

@@ -67,6 +67,11 @@ pub enum RawInput {
         control: VirtualControl,
         value: Vec2,
     },
+    /// An on-screen control lets go with nothing a release would fire: the OS took back the finger
+    /// on it. Other devices' sequences carry on, as with a pad that disconnects.
+    VirtualCanceled {
+        control: VirtualControl,
+    },
     /// Every held key, button, axis, finger and on-screen control lets go, firing nothing a
     /// release would: the window lost focus or the app left the foreground, so the real
     /// releases may never arrive. Sequences in progress are canceled too: a double tap waiting

@@ -10,6 +10,7 @@ use sapphire_input::{
 use sapphire_math::{Vec2, Vec3, det};
 use sapphire_platform::{Event, Timestamp};
 use sapphire_time::{FixedStepDriver, FixedSteps};
+use sapphire_ui::{Button, ButtonEventKind, TouchActions};
 
 use crate::latch::PressLatch;
 
@@ -41,6 +42,12 @@ pub const BUTTON_ACTIONS: [(Buttons, &str); 8] = [
 
 /// The action that drives the stick, and the on-screen control that drives it too.
 pub const MOVE_ACTION: &str = "move";
+
+/// Each on-screen button and the verb it presses, through the
+/// [`Source::Virtual`](sapphire_input::Source::Virtual) of that name. The attack's hold is the
+/// button's own business: nothing in a tick follows it until a fighter has a move for it.
+pub const TOUCH_BUTTONS: [(Button, &str); Button::ALL.len()] =
+    [(Button::Attack, "light"), (Button::Dodge, "dodge"), (Button::Skill, "skill")];
 
 const LOOK_ACTION: &str = "look";
 const ZOOM_ACTION: &str = "camera_zoom";
@@ -249,6 +256,33 @@ impl CombatControls {
         }
         if let Some(control) = self.input.map().virtual_control(MOVE_ACTION) {
             self.input.inject(control, stick, timestamp);
+        }
+    }
+
+    /// Takes what the touch zones read since their last update, before [`Self::update`], at `now`
+    /// on the same clock: the same road as a pad, under the same rules (see the crate docs). Each
+    /// button's edges go in at their own instants, so a tap that came and went inside a frame is
+    /// still one press, and a thumb the OS took back fires nothing a release would. The stick and
+    /// the camera's drag are this update's values. A finger that lands and lifts on the stick inside
+    /// one update has no level to read, and moves nothing.
+    pub fn read_touch(&mut self, touch: &TouchActions, now: Timestamp) {
+        let input = &mut self.input;
+        for event in &touch.events {
+            let name =
+                TOUCH_BUTTONS.iter().find(|(button, _)| *button == event.button).map(|(_, name)| *name);
+            let Some(control) = name.and_then(|name| input.map().virtual_control(name)) else { continue };
+            match event.kind {
+                ButtonEventKind::Pressed => input.inject(control, Vec2::X, event.at),
+                ButtonEventKind::Released => input.inject(control, Vec2::ZERO, event.at),
+                ButtonEventKind::Canceled => input.cancel_virtual(control, event.at),
+                ButtonEventKind::Held => {}
+            }
+        }
+        if let Some(control) = input.map().virtual_control(MOVE_ACTION) {
+            input.inject(control, touch.stick.value, now);
+        }
+        if let Some(control) = input.map().virtual_control(LOOK_ACTION) {
+            input.inject(control, touch.camera_delta, now);
         }
     }
 

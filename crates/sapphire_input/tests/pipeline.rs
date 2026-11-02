@@ -619,6 +619,45 @@ fn the_last_used_device_follows_the_player() {
     assert_eq!(rig.input.last_device(), Some(DeviceKind::KeyboardMouse));
 }
 
+/// A finger on an on-screen control never reaches the input system as a touch, and is still who's
+/// playing: rumble and the controls themselves ask this. Reading zero, as an idle HUD does each frame,
+/// is nobody's use.
+#[test]
+fn an_on_screen_control_in_use_takes_over_from_the_pad() {
+    use sapphire_platform::{Event, GamepadButton, GamepadEvent, GamepadId};
+
+    let map = map(
+        r#"(name: "stick", kind: Axis2D)"#,
+        r#"(name: "main", bindings: [(action: "stick", source: Virtual("stick"))])"#,
+    );
+    let mut rig = Rig::new(map, &["main"]);
+    let stick = rig.input.map().virtual_control("stick").expect("bound");
+    let pad = GamepadId::from_raw(8);
+    let send = |rig: &mut Rig, t: u64, event| {
+        rig.input.handle_event(&Event::Gamepad { timestamp: ms(t), gamepad: pad, event });
+    };
+    let button = |down| GamepadEvent::Button { button: GamepadButton::South, down };
+    send(&mut rig, 1, GamepadEvent::Added { kind: GamepadType::XboxOne });
+    send(&mut rig, 2, button(true));
+    rig.update(10);
+    assert_eq!(rig.input.active_gamepad(), Some(pad), "the pad's in use");
+
+    rig.input.inject(stick, Vec2::ZERO, ms(11));
+    rig.update(20);
+    assert_eq!(rig.input.active_gamepad(), Some(pad), "a control at rest says nothing");
+
+    rig.input.inject(stick, Vec2::X, ms(21));
+    rig.update(30);
+    assert_eq!(rig.input.last_device(), Some(DeviceKind::Touch));
+    assert_eq!(rig.input.active_gamepad(), None, "a pad on the desk stays still");
+
+    rig.input.inject(stick, Vec2::ZERO, ms(31));
+    send(&mut rig, 32, button(false));
+    send(&mut rig, 33, button(true));
+    rig.update(40);
+    assert_eq!(rig.input.active_gamepad(), Some(pad), "and it comes back with the next press");
+}
+
 /// Rumble goes to the pad in the player's hands, so one left on the desk stays still.
 #[test]
 fn the_active_gamepad_is_the_pad_in_use() {
@@ -672,6 +711,43 @@ fn on_screen_controls_inject_through_their_bindings() {
         [ev("dodge", Started, 10), ev("dodge", Triggered, 10), ev("dodge", Completed, 10)]
     );
     assert_eq!(rig.value("move"), Vec2::new(0.0, 1.0));
+}
+
+/// A finger the OS took back, as a pad that disconnects: nothing a release would fire fires, and other
+/// devices' sequences carry on.
+#[test]
+fn an_on_screen_control_canceled_fires_nothing_a_release_would() {
+    let map = map(
+        r#"(name: "tap", kind: Button), (name: "twice", kind: Button)"#,
+        r#"(name: "main", bindings: [
+            (action: "tap", source: Virtual("tap"), trigger: Tap(seconds: 0.2)),
+            (action: "twice", source: Key(J), trigger: DoubleTap(seconds: 0.5)),
+        ])"#,
+    );
+    let mut rig = Rig::new(map, &["main"]);
+    let tap = rig.input.map().virtual_control("tap").expect("tap");
+
+    rig.input.inject(tap, Vec2::X, ms(10));
+    rig.input.inject(tap, Vec2::ZERO, ms(20));
+    let fired = rig.update_for(30, "tap");
+    assert!(fired.contains(&ev("tap", Triggered, 20)), "lifted, it's a tap: {fired:?}");
+
+    rig.key(40, Scancode::J, true);
+    rig.key(45, Scancode::J, false);
+    rig.update(50);
+    rig.input.inject(tap, Vec2::X, ms(60));
+    rig.input.cancel_virtual(tap, ms(70));
+    let fired = rig.update_for(80, "tap");
+    assert!(!fired.iter().any(|(_, kind, _)| *kind == Triggered), "taken back, it's nothing: {fired:?}");
+    assert_eq!(rig.value("tap"), Vec2::ZERO);
+
+    rig.key(90, Scancode::J, true);
+    let fired = rig.update_for(100, "twice");
+    assert!(fired.contains(&ev("twice", Triggered, 90)), "the key's first tap is still armed: {fired:?}");
+
+    // Canceling what's already let go does nothing at all.
+    rig.input.cancel_virtual(tap, ms(110));
+    assert_eq!(rig.update_for(120, "tap"), []);
 }
 
 #[test]

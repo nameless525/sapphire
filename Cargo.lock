@@ -3004,6 +3004,7 @@ dependencies = [
  "sapphire_platform",
  "sapphire_serialize",
  "sapphire_time",
+ "sapphire_ui",
  "thiserror 2.0.21",
 ]
 

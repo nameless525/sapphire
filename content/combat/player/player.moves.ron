@@ -17,8 +17,9 @@
     version: 1,
     data: (
         intents: [
-            // A dodge beats a skill beats an attack when two could fire at one instant.
-            (name: "light", button: Light, buffer: 12, priority: 1),
+            // A dodge beats a skill beats an attack when two could fire at one instant. A press of
+            // `light` lasts long enough to carry from anywhere in a cut into the next.
+            (name: "light", button: Light, buffer: 14, priority: 1),
             (name: "skill", button: Skill, buffer: 10, priority: 2),
             (name: "dodge", button: Dodge, buffer: 8, priority: 3),
         ],

@@ -1,17 +1,22 @@
 //! Evaluating a pose allocates nothing once it is made: sampling, blending, additive layers,
-//! constraints, local-to-model and the palette all run every frame for every character. Installs
+//! constraints, local-to-model, the palette and spring bones all run every frame for every character.
+//! Installs
 //! `CountingAllocator` as this test binary's global allocator.
 
 use std::alloc::System;
 
 use sapphire_anim::{
     CharacterPose, Clip, Joint, JointMask, JointTransform, PackedRotation, RotationTrack, Skeleton,
-    VectorRange, VectorTrack, add, blend, local_to_model, make_delta, root_motion, sample,
+    SpringBones, SpringFrame, Substeps, VectorRange, VectorTrack, add, blend, local_to_model, make_delta,
+    root_motion, sample,
 };
 use sapphire_assets::AssetId;
 use sapphire_assets::clip::{DEFAULT_RATE, RootMotion};
 use sapphire_assets::mesh::SkinBind;
-use sapphire_assets::rig::{AimAxis, Axis, Constraint, ConstraintKind};
+use sapphire_assets::rig::{
+    AimAxis, Axis, CharacterRig, Collider as RigCollider, ColliderGroup, ColliderShape, Constraint,
+    ConstraintKind, Spring, SpringJoint, SpringTip,
+};
 use sapphire_core::alloc::{self, CountingAllocator, PER_THREAD_COUNTS};
 use sapphire_math::{Affine3A, Mat4, Quat, Vec3};
 
@@ -128,4 +133,79 @@ fn evaluating_a_pose_allocates_nothing_once_it_is_made() {
         assert_eq!(counts.allocations, 0, "{counts:?}");
     }
     assert_eq!(pose.locals().len(), JOINTS);
+}
+
+/// Spring bones allocate nothing once made, through everything a frame can ask of them: sub-steps on
+/// both sub-step counts that ship, colliders, a reset, sleeping and waking.
+#[test]
+fn updating_springs_allocates_nothing_once_they_are_made() {
+    let skeleton_bytes = skeleton().to_cooked().expect("cooked");
+    let cooked = Skeleton::read(&skeleton_bytes).expect("a valid skeleton");
+    let clip_bytes = clip().to_cooked().expect("cooked");
+    let clip = Clip::read(&clip_bytes).expect("a valid clip");
+    let joint = |joint: u16| SpringJoint {
+        joint,
+        hit_radius: 0.02,
+        stiffness: 0.5,
+        gravity_power: 0.1,
+        gravity_dir: [0.0, -1.0, 0.0],
+        drag_force: 0.4,
+    };
+    let chain = |first: u16, center: Option<u16>| Spring {
+        name: "chain".into(),
+        joints: (first..first + 6).map(joint).collect(),
+        tip: SpringTip::Joint,
+        collider_groups: vec![0],
+        center,
+    };
+    let rig = CharacterRig {
+        joint_count: JOINTS as u32,
+        springs: vec![chain(10, None), chain(20, Some(2)), chain(30, None)],
+        colliders: vec![
+            RigCollider { joint: 2, shape: ColliderShape::Sphere { offset: [0.0; 3], radius: 0.1 } },
+            RigCollider {
+                joint: 4,
+                shape: ColliderShape::Capsule { offset: [0.0; 3], radius: 0.05, tail: [0.1, 0.0, 0.0] },
+            },
+        ],
+        collider_groups: vec![ColliderGroup { name: "body".into(), colliders: vec![0, 1] }],
+        ..CharacterRig::default()
+    };
+    let rig_bytes = rig.to_cooked().expect("cooked");
+    let rig = CharacterRig::read(&rig_bytes).expect("a valid rig");
+    let mut pose = CharacterPose::new(cooked, &[], &[], Vec::new());
+    let mut springs = SpringBones::new(rig, &pose).expect("it has springs");
+
+    let (sum, counts) = alloc::count_in_scope(|| {
+        let mut sum = 0.0;
+        for frame in 0..1_200_u32 {
+            if frame % 300 == 100 {
+                springs.reset();
+            }
+            if frame == 600 {
+                springs.set_substeps(Substeps::One);
+            }
+            let moved = frame % 400 < 300;
+            if moved {
+                pose.sample(clip, (frame % 60) as f32);
+                pose.finish();
+            }
+            let world = Affine3A::from_translation(Vec3::new(
+                f64::from(frame).sin() as f32,
+                0.0,
+                frame as f32 * 0.03,
+            ));
+            let active = frame % 200 < 150;
+            let work = springs.update(
+                &mut pose,
+                &SpringFrame { world_from_model: world, ticks: f64::from(frame), pose_moved: moved, active },
+            );
+            sum += work.substeps as f32 + pose.model()[15].translation.y;
+        }
+        sum
+    });
+    assert!(sum.is_finite());
+    if PER_THREAD_COUNTS {
+        assert_eq!(counts.allocations, 0, "{counts:?}");
+    }
 }

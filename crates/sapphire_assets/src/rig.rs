@@ -1,6 +1,7 @@
 //! Character rigs (`.srig`, M1 A6): what a character source says about its skeleton and face
 //! beyond the mesh, kept for animation (`sapphire_anim`) to read. Its constraints run after every
-//! pose since M2 N2; nothing simulates its springs or applies its expressions and look-at yet.
+//! pose since M2 N2, and its springs simulate beside it since M2 N5; nothing applies its expressions
+//! and look-at yet.
 //!
 //! A [`CharacterRig`] holds, in VRM 1.0's model (the pipeline migrates VRM 0.x into it):
 //!
@@ -393,7 +394,7 @@ pub struct Spring {
     /// Indices into [`CharacterRig::collider_groups`].
     pub collider_groups: Vec<u32>,
     /// The joint whose space the simulation runs in, so moving it (a vehicle, a warp) doesn't
-    /// swing the chain; model space when `None`.
+    /// swing the chain; the world when `None`.
     pub center: Option<u16>,
 }
 
@@ -408,7 +409,7 @@ pub struct SpringJoint {
     pub stiffness: f32,
     /// Gravity's acceleration on the tail.
     pub gravity_power: f32,
-    /// A unit vector in model space (wind is a sideways gravity).
+    /// A unit vector in the world (wind is a sideways gravity).
     pub gravity_dir: [f32; 3],
     /// Velocity lost per step, 0 to 1.
     pub drag_force: f32,

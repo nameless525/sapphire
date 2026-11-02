@@ -171,6 +171,13 @@ pub struct AnimStats {
     pub evaluated: u32,
     /// Joints in the poses evaluated.
     pub joints: u32,
+    /// Characters whose spring bones wrote their pose ([`SpringBones`](crate::SpringBones)).
+    pub springs: u32,
+    /// Spring sub-steps run, all characters together.
+    pub spring_substeps: u32,
+    /// The time spring bones took, all characters together, including finishing their poses again.
+    /// Within [`Self::time`], unless jobs ran side by side.
+    pub spring_time: Duration,
     /// Wall time of the whole of it, the jobs and handing their results over.
     pub time: Duration,
 }

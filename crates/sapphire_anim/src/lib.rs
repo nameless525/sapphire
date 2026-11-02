@@ -18,6 +18,8 @@
 //! - **[`Constraints`]:** the rig's twist and aim helpers, which run after the pose.
 //! - **[`CharacterPose`]:** one character's frame of it, from sampling to its palette, with
 //!   [`evaluate_all`] giving each character a job of its own.
+//! - **[`SpringBones`]:** the rig's spring chains and colliders, simulated on the owner's clock beside
+//!   a pose (M2 N5).
 //!
 //! # Does not own
 //!
@@ -38,13 +40,14 @@
 //!
 //! # Later in M2
 //!
-//! - N3: the animation graph and inertialization. N4: IK. N5: spring bones.
+//! - N3: the animation graph and inertialization. N4: IK.
 
 mod blend;
 mod character;
 mod constraints;
 mod model;
 mod sample;
+mod springs;
 
 pub use blend::{JointMask, add, blend, make_delta};
 pub use character::{AnimStats, CharacterPose, evaluate_all};
@@ -52,6 +55,10 @@ pub use constraints::Constraints;
 pub use model::{Bind, local_to_model, palette};
 pub use sample::{overlay, overlay_weights, rest_pose, root_motion, sample};
 pub use sapphire_math::Transform;
+pub use springs::{
+    DEFAULT_ROOT_INERTIA, SPRING_TICK_HZ, SpringBones, SpringCollider, SpringFrame, SpringQuality,
+    SpringTail, SpringWork, Substeps,
+};
 
 pub use sapphire_assets::clip::{
     ArchivedClip, ArchivedRootMotion, ArchivedRotationTrack, ArchivedVectorRange, ArchivedVectorTrack,

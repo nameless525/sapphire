@@ -51,5 +51,9 @@ thiserror.workspace = true
 ufbx.workspace = true
 vrm-spec.workspace = true
 
+[dev-dependencies]
+# Spring bones on the character itself, with no GPU and no cook (`tests/character_springs.rs`).
+sapphire_anim.workspace = true
+
 [lints]
 workspace = true

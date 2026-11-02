@@ -29,7 +29,8 @@ def oid(ref, kind="commit"):
 
 
 EMAIL = re.compile(rb"[A-Za-z0-9_.+%~-]{1,64}@[A-Za-z0-9.-]{1,190}\.[A-Za-z]{2,24}")
-HOME = re.compile(rb"(?:/Users/|/home/|[A-Za-z]:[\\/]+Users[\\/]+)([A-Za-z0-9_.@\x80-\xff-]+)", re.I)
+HOME = re.compile(rb"(?:/Users/|/home/|%2FUsers%2F|%2Fhome%2F|[A-Za-z]:[\\/]+(?:Users|Documents and Settings)[\\/]+"
+                  rb"|\\\\[^\\/\s]+\\[^\\/\s]+\\(?:Users|home)\\)([A-Za-z0-9_.@\x80-\xff-]+)", re.I)
 # Claude Code names its directories after a working directory, with slashes and dots as dashes.
 ENCODED_HOME = re.compile(rb"-(?:Users|home)-([A-Za-z0-9_.]+)", re.I)
 # Such a name opens with the root's own dash or a drive's `C--`. `my-home-page` and `--home-dir` don't.
@@ -135,10 +136,11 @@ def forbidden_path(path):
     return (
         any(p in {b".ssh", b".aws", b".gnupg"} for p in parts)
         or name in {b".ds_store", b".netrc", b"_netrc", b".git-credentials", b"id_rsa", b"id_ed25519",
-                    b"id_ecdsa", b"id_dsa", b"credentials", b"local.properties", b"key.properties"}
+                    b"id_ecdsa", b"id_dsa", b"credentials", b"local.properties", b"key.properties", b".npmrc",
+                    b".pypirc", b"google-services.json", b"googleservice-info.plist"}
         or name == b".env" or (name.startswith(b".env.") and name not in {b".env.example", b".env.sample"})
         or name.endswith((b".pem", b".key", b".p8", b".p12", b".pfx", b".asc", b".gpg", b".jks", b".keystore",
-                          b".mobileprovision"))
+                          b".mobileprovision", b".provisionprofile", b".cer"))
         or path.lower() == b"claude.md"
         or path.lower().startswith((b".claude/tools/", b".claude/hooks/", b".claude/worktrees/"))
         or path.lower() == b".claude/settings.local.json"

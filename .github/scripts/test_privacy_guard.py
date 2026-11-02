@@ -36,6 +36,10 @@ class ContentTests(unittest.TestCase):
     def test_paths_emails_and_keys(self):
         cases = [(HOME, "personal-home-path"),
                  ("C:" + "\\Users\\real-person\\work", "personal-home-path"),
+                 ("C:" + "\\Documents and Settings\\real-person\\work", "personal-home-path"),
+                 ("\\\\" + "server\\share\\Users\\real-person\\work", "personal-home-path"),
+                 ("\\\\" + "wsl$\\Ubuntu\\home\\real-person", "personal-home-path"),
+                 ("file://" + "%2FUs" + "ers%2Freal-person%2Fwork", "personal-home-path"),
                  ("/ho" + "me/\u00e9lodie/work", "personal-home-path"),
                  (PRIVATE, "non-public-email"), (TOKEN, "access-token"),
                  ("-----BEGIN " + "OPENSSH PRIVATE KEY-----", "private-key"),
@@ -250,7 +254,9 @@ class ContentTests(unittest.TestCase):
 
     def test_private_key_and_signing_file_names(self):
         for path in (b"_netrc", b".git-credentials", b"secret.asc", b"foo.gpg", b"AuthKey_ABC.p8", b"id_ecdsa",
-                     b"id_dsa", b"android/local.properties", b"android/key.properties"):
+                     b"id_dsa", b"android/local.properties", b"android/key.properties", b".npmrc", b"tools/.pypirc",
+                     b"android/app/google-services.json", b"ios/GoogleService-Info.plist",
+                     b"signing/dev.provisionprofile", b"signing/apple.cer"):
             self.assertTrue(pg.forbidden_path(path), path)
         for path in (b"notes.p8.txt", b"src/netrc.rs", b"local_properties.rs", b"gradle.properties", b"foo.gpg.md"):
             self.assertFalse(pg.forbidden_path(path), path)

@@ -14,7 +14,7 @@ same `CARGO_TARGET_DIR`.
 - Full CPU coverage: `cargo test --workspace --locked --no-fail-fast`, including doctests. CI keeps this gate.
 - Renderer GPU fixtures: `cargo test -p sapphire_render --test gpu --locked -- --ignored --test-threads=1`.
 - One renderer fixture family: `cargo test -p sapphire_render --test gpu ambient:: --locked -- --ignored --test-threads=1`.
-- All runtime GPU tests: `cargo test -p sapphire_render -p sapphire_rhi -p sapphire_world --tests --locked -- --ignored --test-threads=1`.
+- All runtime GPU tests: `cargo test -p sapphire_render -p sapphire_rhi -p sapphire_world -p sapphire_debug --tests --locked -- --ignored --test-threads=1`.
 
 The renderer's integration tests live in `crates/sapphire_render/tests/gpu/`, with one module per
 fixture family. One integration executable links the renderer once instead of once per family.

@@ -328,8 +328,7 @@ jobs:
   golden-metal:
     name: Golden images (metal 1/1)
     runs-on: macos-26
-    # Keep Metal's existing informational gate; one shard needs no artifact fanout.
-    continue-on-error: true
+    # One shard needs no artifact fanout.
     timeout-minutes: 45
     env:
       SAPPHIRE_GPU_BACKEND: metal
@@ -379,11 +378,12 @@ jobs:
 
   # The GPU tests, `#[ignore]`d in the Test job because it has no GPU: the renderer's invariants
   # that the goldens' final frames don't show, such as the pipelines a shader edit rebuilds,
-  # prepass masks, history resets and off-thread shader builds, and the dev sandbox's shader push
-  # across a hot reload (review BC-001). They were written on Metal; here they run one at a time
-  # on the golden jobs' pinned CPU rasterizers, with the same environment. A test that a CPU
-  # rasterizer can't run skips itself, naming the adapter and why (spec §9 lists them); none is
-  # skipped for failing. `--tests` leaves the doctests to the Test job.
+  # prepass masks, history resets and off-thread shader builds, the debug overlay's gestures
+  # (review DV-10), and the dev sandbox's shader push across a hot reload (review BC-001). They were
+  # written on Metal; here they run one at a time on the golden jobs' pinned CPU rasterizers, with
+  # the same environment. A test that a CPU rasterizer can't run skips itself, naming the adapter
+  # and why (spec §9 lists them); none is skipped for failing. `--tests` leaves the doctests to the
+  # Test job.
   #
   # The job then runs a development build headless and drives it over live link (review BC-002),
   # as the M1 exit run's desktop leg does: no other job starts a `dev` app.
@@ -431,10 +431,10 @@ jobs:
       - name: Build the GPU tests
         shell: bash
         run: |
-          cargo test --package sapphire_render --package sapphire_rhi --package sapphire_world --locked --tests --no-run
+          cargo test --package sapphire_render --package sapphire_rhi --package sapphire_world --package sapphire_debug --locked --tests --no-run
           cargo test --package sapphire_sandbox --features dev --locked --lib --no-run
-      - name: GPU tests (render, RHI, world)
-        run: cargo test --package sapphire_render --package sapphire_rhi --package sapphire_world --locked --tests --no-fail-fast -- --ignored --test-threads=1
+      - name: GPU tests (render, RHI, world, debug overlay)
+        run: cargo test --package sapphire_render --package sapphire_rhi --package sapphire_world --package sapphire_debug --locked --tests --no-fail-fast -- --ignored --test-threads=1
       - name: GPU tests (sandbox, dev)
         run: cargo test --package sapphire_sandbox --features dev --locked --lib -- --ignored --test-threads=1
       - name: Cook the desktop content

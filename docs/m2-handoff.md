@@ -92,8 +92,8 @@ None of these blocks M2's code, but M2's exit test needs a phone.
 ### Golden images
 
 - **95 scenes** in [scenes.rs](../tools/sapphire_testkit/src/scenes.rs), each with a golden per backend family in `tests/golden/`: Metal, lavapipe (Mesa 26.1.3) and WARP 1.0.21 (F6; spec §9, Q6). The README's "Golden images" section says how to run and update them.
-- **Gates:** a FLIP mean of 0.01 and a 99th percentile of 0.3, by default. Existing goldens stay byte-identical when a feature lands: older scenes pin new features off (`--plain-post`, `--fog off`, `--ao off`, …).
-- **CI** runs every scene on every pull request ([ci.yml](../.github/workflows/ci.yml)). Lavapipe runs in two shards and WARP in four, both required. Metal runs in one job, informational until it has run clean for two weeks (Q6).
+- **Gates:** a FLIP mean of 0.01, a 99th percentile of 0.12 and a worst 16 × 16 tile of 0.15, by default (spec §9 has the noise they sit above). Existing goldens stay byte-identical when a feature lands: older scenes pin new features off (`--plain-post`, `--fog off`, `--ao off`, …).
+- **CI** runs every scene on every pull request ([ci.yml](../.github/workflows/ci.yml)). Lavapipe runs in two shards, WARP in six and Metal in one job, all required (Q6).
   - At 87 scenes each shard took 11 to 14 minutes with its build (run 40493256145).
   - Each scene is a fresh process, and lavapipe and WARP compile and draw on the CPU, so work done with a feature off shows up as job time. Add shards as scenes grow.
 

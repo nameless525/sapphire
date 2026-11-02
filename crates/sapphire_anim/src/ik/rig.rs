@@ -27,6 +27,8 @@ pub struct IkRig {
     pub(crate) look: Option<LookBones>,
     pub(crate) arms: Option<[ArmBones; 2]>,
     pub(crate) floor: f32,
+    /// How high over the floor the hips stand at rest.
+    pub(crate) standing: f32,
     pub(crate) reads: Vec<u16>,
 }
 
@@ -105,7 +107,8 @@ impl IkRig {
         }
         reads.sort_unstable();
         reads.dedup();
-        Self { hips, legs, look, arms, floor, reads }
+        let standing = hips.map_or(0.0, |hips| rest[usize::from(hips)].translation.y - floor);
+        Self { hips, legs, look, arms, floor, standing, reads }
     }
 
     /// A rig as its cooked data says, standing on `floor` in the model's space.

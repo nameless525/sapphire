@@ -32,6 +32,13 @@
 //! target moves, since nothing would change, but should evaluate when a [`Grip`] moves: a grip isn't
 //! smoothed, so it takes effect at once ([`IkInput::frozen_key`]).
 //!
+//! # A body lying down
+//!
+//! Feet and a look are what a standing body does. As the hips fall from half their rest height over
+//! the floor to three tenths of it, both fade to nothing, whoever's asking, so a death or a knockdown
+//! needs no controls of its own, and a heel on the floor isn't planted as a sole. A clip with its hips
+//! above that is left exactly as it was.
+//!
 //! # What it costs
 //!
 //! Each stage visits only the joints it names, so its cost doesn't grow with a skeleton's hair and
@@ -49,6 +56,7 @@ pub use look::{EyeDrive, EyeRig, LookAt, LookBones, LookSettings, RangeMap};
 pub use rig::IkRig;
 pub use solve::{AimGoal, SolvePose, TwoBone, TwoBoneGoal, aim, two_bone};
 
+use sapphire_math::ease::smoothstep;
 use sapphire_math::{Affine3A, Vec3};
 
 use crate::character::CharacterPose;
@@ -83,9 +91,16 @@ impl IkInput {
     }
 }
 
+/// The share of their rest height over the floor at which the hips stop being a standing body's.
+const STANDING: f32 = 0.5;
+/// The share at which they're a body lying down.
+const LYING: f32 = 0.3;
+
 /// One character's IK. See the `ik` module's docs.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CharacterIk {
+    /// The hips, the floor under them and how high they stand on it at rest.
+    stance: Option<(u16, f32, f32)>,
     reads: Vec<u16>,
     feet: Option<FootPlacement>,
     look: Option<LookAt>,
@@ -97,6 +112,7 @@ impl CharacterIk {
     #[must_use]
     pub fn new(rig: IkRig, feet: FootSettings, look: LookSettings) -> Self {
         Self {
+            stance: rig.hips.filter(|_| rig.standing > 0.0).map(|hips| (hips, rig.floor, rig.standing)),
             feet: rig.legs.zip(rig.hips).map(|(legs, hips)| FootPlacement::new(legs, hips, rig.floor, feet)),
             look: rig.look.map(|bones| LookAt::new(bones, look)),
             arms: rig.arms,
@@ -154,13 +170,18 @@ impl CharacterIk {
     /// [`CharacterPose::finish`] comes after. Allocates nothing.
     pub fn solve(&mut self, pose: &mut CharacterPose, input: &IkInput) {
         let (mut solving, morphs) = pose.solving_with_weights();
+        let upright = self.stance.map_or(1.0, |(hips, floor, standing)| {
+            let height = (solving.position(usize::from(hips)).y - floor) / standing;
+            smoothstep(LYING, STANDING, height)
+        });
         if let Some(feet) = &mut self.feet {
-            feet.solve(&mut solving, &self.reads, &input.feet, &input.world_from_model, input.dt);
+            let wanted = FeetInput { weight: input.feet.weight * upright, ..input.feet };
+            feet.solve(&mut solving, &self.reads, &wanted, &input.world_from_model, input.dt);
         }
         if let Some(look) = &mut self.look {
             let target =
                 input.look.target.map(|target| input.world_from_model.inverse().transform_point3(target));
-            look.solve(&mut solving, morphs, target, input.look.weight, input.dt);
+            look.solve(&mut solving, morphs, target, input.look.weight * upright, input.dt);
             if look.fade() > 0.0 && input.weapon.is_some() {
                 solving.refresh(&self.reads);
             }

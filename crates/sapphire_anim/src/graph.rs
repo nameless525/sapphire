@@ -156,6 +156,11 @@ pub struct GraphInput {
     /// The character jumped, so this frame's pose stands alone: no decay from what was drawn, and
     /// secondary motion starts over. For a frame: a respawn, a camera cut.
     pub cut: bool,
+    /// The character is out of the fight for good (`Fighter::is_defeated` in `sapphire_gameplay`).
+    /// Nothing more will start, so the move it last played goes on to the end of its clip and stays
+    /// there rather than locomotion taking over when the move ends, and the breathing and the blink
+    /// stop. Back to false, for a new round, and locomotion takes over as it does after any move.
+    pub defeated: bool,
 }
 
 impl GraphInput {
@@ -571,6 +576,8 @@ struct Layers {
     combat: Option<Playing>,
     reaction: Option<Reacting>,
     reaction_count: u32,
+    /// [`GraphInput::defeated`], as of the last frame: no breathing and no blink.
+    defeated: bool,
 }
 
 /// Where in time a target is wanted.
@@ -671,6 +678,7 @@ impl GraphPlayer {
             combat: None,
             reaction: None,
             reaction_count: 0,
+            defeated: false,
         };
         Self {
             inertia: Inertia::new(joints, frame.weights.len()),
@@ -709,6 +717,11 @@ impl GraphPlayer {
         if self.key == Some(key) {
             return false;
         }
+        if self.lies_still(&input, clips, clips_version) {
+            self.drawn = Some(input.ticks);
+            self.key = Some(key);
+            return false;
+        }
         let now = input.ticks;
         let Some(drawn) = self.drawn.filter(|&drawn| !input.cut && now >= drawn) else {
             let jumped = self.drawn.is_some();
@@ -725,7 +738,7 @@ impl GraphPlayer {
         let speed = self.layers.velocity.length();
         let rate = self.layers.phase_rate(&self.graph, speed, clips);
         self.layers.phase = (phase_then + rate * dt).rem_euclid(1.0);
-        let combat = input.combat.map_or(0.0, |combat| combat.position);
+        let combat = self.layers.combat.map_or(0.0, |playing| playing.position);
         let now_moment = Moment { ticks: now, phase: self.layers.phase, combat };
         let missing = self.layers.write_target(
             &self.graph,
@@ -786,6 +799,29 @@ impl GraphPlayer {
         true
     }
 
+    /// Whether a defeated character has nothing left to move: a whole-body move has played to the end
+    /// of its clip, and nothing's decaying or waiting. Its clock runs on, but no frame of it can change
+    /// a bit, so it costs what a frozen clock costs.
+    fn lies_still(
+        &self,
+        input: &GraphInput,
+        clips: &(impl ClipSource + ?Sized),
+        clips_version: u32,
+    ) -> bool {
+        let Some(playing) = self.layers.combat else { return false };
+        let entry = self.graph.moves[usize::from(playing.entry)];
+        input.defeated
+            && self.layers.defeated
+            && input.combat.is_none()
+            && !input.cut
+            && entry.mask.is_none()
+            && self.layers.reaction.is_none()
+            && self.replacement.is_none()
+            && !self.is_decaying()
+            && self.key.is_some_and(|key| key.clips == clips_version)
+            && self.graph.clip(clips, entry.clip).is_some_and(|clip| playing.position >= clip_ticks(clip))
+    }
+
     /// This frame stands alone: the layers take what `input` says at once, with nothing decaying.
     fn start_over(&mut self, input: &GraphInput, clips: &(impl ClipSource + ?Sized)) {
         self.adopt_replacement();
@@ -795,12 +831,18 @@ impl GraphPlayer {
         self.layers.started = now;
         self.layers.reaction = None;
         self.layers.reaction_count = input.reaction.count;
-        self.layers.combat = input.combat.and_then(|combat| {
-            let entry = self.graph.move_entry(combat.name)?;
-            Some(Playing { entry, serial: combat.serial, position: combat.position })
-        });
+        // A cut changes where it's seen from: it doesn't get a defeated character up.
+        let lying = self.layers.combat.filter(|_| input.defeated && input.combat.is_none());
+        self.layers.combat = input
+            .combat
+            .and_then(|combat| {
+                let entry = self.graph.move_entry(combat.name)?;
+                Some(Playing { entry, serial: combat.serial, position: combat.position })
+            })
+            .or(lying);
+        self.layers.defeated = input.defeated;
         self.layers.update_blend(&self.graph);
-        let combat = input.combat.map_or(0.0, |combat| combat.position);
+        let combat = self.layers.combat.map_or(0.0, |playing| playing.position);
         let moment = Moment { ticks: now, phase: self.layers.phase, combat };
         self.layers.write_target(
             &self.graph,
@@ -822,6 +864,7 @@ impl GraphPlayer {
         let mut decay: Option<f32> = None;
         let shortest =
             |decay: &mut Option<f32>, new: f32| *decay = Some(decay.map_or(new, |old| old.min(new)));
+        self.layers.defeated = input.defeated;
         // Combat first: a move's start or end is where a replaced graph comes in.
         let serial = self.layers.combat.map(|playing| playing.serial);
         let wanted = input.combat.filter(|combat| self.graph.move_entry(combat.name).is_some());
@@ -850,6 +893,13 @@ impl GraphPlayer {
                             shortest(&mut decay, self.graph.combat_exit);
                         }
                     }
+                }
+            }
+            // The last move of a defeated character: it goes on to its clip's end, and stays.
+            (Some(_), None) if input.defeated && input.combat.is_none() => {
+                self.adopt_replacement();
+                if let Some(playing) = &mut self.layers.combat {
+                    playing.position += input.ticks - drawn;
                 }
             }
             (Some(_), None) => {
@@ -930,7 +980,7 @@ impl GraphPlayer {
         self.pose.locals_mut().copy_from_slice(&self.output.joints);
         let weights = self.pose.weights_mut();
         weights.copy_from_slice(&self.output.weights);
-        if let Some(blink) = &self.graph.blink {
+        if let Some(blink) = self.graph.blink.as_ref().filter(|_| !self.layers.defeated) {
             let amount = blink.amount(now, self.seed);
             if amount > 0.0 {
                 for &(target, share) in &blink.targets {
@@ -1179,7 +1229,7 @@ impl Layers {
                 }
             }
         }
-        for layer in &graph.additive {
+        for layer in graph.additive.iter().filter(|_| !self.defeated) {
             match graph.clip(clips, layer.clip) {
                 Some(clip) => {
                     let position = looped_position(clip, moment.ticks);

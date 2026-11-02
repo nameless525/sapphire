@@ -1168,3 +1168,98 @@ fn binding_names_what_it_cant_find() {
         GraphBinding::new(&wink, skeleton, Some(rig), 3, source.as_slice()).expect_err("no expression");
     assert!(matches!(error, GraphBindError::NoSuchExpression(name) if name == "wink"));
 }
+
+/// A jab the character stays down in, with breathing and a blink it would otherwise have.
+fn a_body_that_falls() -> String {
+    document(
+        r#"
+        locomotion: (start: "ground", states: [(name: "ground", plays: Clip(clip: "idle", looping: true))]),
+        combat: (decay: 0, exit: 12, moves: [(move: "jab", clip: "jab")]),
+        additive: [(name: "breathing", clip: "breath", weight: 1.0)],
+        blink: Some((expression: "blink", every: (20, 30), close: 3, hold: 1, open: 7)),
+        "#,
+    )
+}
+
+fn defeated(ticks: f64, combat: Option<CombatInput>) -> GraphInput {
+    GraphInput { ticks, combat, defeated: true, ..GraphInput::default() }
+}
+
+/// A defeated character's move ends in the simulation and its pose doesn't: it plays on to the end of
+/// its clip and stays there, with nothing breathing, and from then on it costs what a frozen clock does.
+#[test]
+fn a_defeated_character_stays_down_when_its_move_ends() {
+    let fixture = fixture();
+    let source = fixture.source();
+    let mut player = fixture.player(&a_body_that_falls());
+    let ended = 20.0;
+    for tick in 0..=20 {
+        let at = f64::from(tick);
+        let combat = Some(CombatInput { name: JAB, serial: 1, position: at });
+        assert!(player.evaluate(&defeated(at, combat), source.as_slice(), 0));
+        assert_eq!(player.pose().weights()[BLINK_TARGET], 0.0, "no blink at {tick}");
+    }
+    // The move is over at 20, a third of the way through its clip of 60, and the clip plays on.
+    let after = |ticks: f64| defeated(ended + ticks, None);
+    assert!(player.evaluate(&after(1.0), source.as_slice(), 0));
+    let early = turn_of(&player, ARM);
+    for tick in 2..=40 {
+        assert!(player.evaluate(&after(f64::from(tick)), source.as_slice(), 0));
+        assert_eq!(player.pose().weights()[BLINK_TARGET], 0.0, "no blink at {tick}");
+    }
+    assert_ne!(turn_of(&player, ARM), early, "the clip goes on");
+    // Past the clip's end it's the clip's last keys, under no breathing.
+    let mut expected = fixture.pose().rest().to_vec();
+    overlay(fixture.clip("jab"), 60.0, &mut expected);
+    assert_eq!(bits(player.pose().locals()), bits(&expected));
+
+    // Its clock runs on and nothing's left to do.
+    let held = bits(player.pose().locals());
+    for tick in 41..400 {
+        assert!(!player.evaluate(&after(f64::from(tick)), source.as_slice(), 0), "tick {tick}");
+        assert_eq!(bits(player.pose().locals()), held);
+    }
+    // A new version of a clip still shows, and a cut doesn't get it up.
+    assert!(player.evaluate(&after(400.0), source.as_slice(), 1));
+    let cut = GraphInput { cut: true, ..after(401.0) };
+    assert!(player.evaluate(&cut, source.as_slice(), 1));
+    assert_eq!(bits(player.pose().locals()), held);
+    assert_eq!(player.stats().unmapped_moves, 0);
+}
+
+/// A new round: locomotion takes over as it does after any move.
+#[test]
+fn a_character_no_longer_defeated_gets_up() {
+    let fixture = fixture();
+    let source = fixture.source();
+    let mut player = fixture.player(&a_body_that_falls());
+    let combat = Some(CombatInput { name: JAB, serial: 1, position: 0.0 });
+    assert!(player.evaluate(&defeated(0.0, combat), source.as_slice(), 0));
+    assert!(player.evaluate(&defeated(100.0, None), source.as_slice(), 0));
+    let down = turn_of(&player, ARM);
+    assert!(player.evaluate(&idle(101.0), source.as_slice(), 0));
+    assert!(player.is_decaying(), "a decay, not a jump");
+    assert!(player.evaluate(&idle(200.0), source.as_slice(), 0));
+    assert_ne!(turn_of(&player, ARM), down);
+    assert_eq!(turn_of(&player, ARM), fixture.pose().rest()[usize::from(ARM)].rotation);
+}
+
+/// Without a row for what felled it there's nothing to stay down in: what was playing doesn't freeze,
+/// and the count says what's missing.
+#[test]
+fn a_defeat_with_no_row_is_counted_and_keeps_no_other_move() {
+    let fixture = fixture();
+    let source = fixture.source();
+    let mut player = fixture.player(&a_body_that_falls());
+    let jab = GraphInput {
+        ticks: 0.0,
+        combat: Some(CombatInput { name: JAB, serial: 1, position: 0.0 }),
+        ..GraphInput::default()
+    };
+    assert!(player.evaluate(&jab, source.as_slice(), 0));
+    let unknown = Some(CombatInput { name: Name::new("fall"), serial: 2, position: 0.0 });
+    assert!(player.evaluate(&defeated(1.0, unknown), source.as_slice(), 0));
+    assert_eq!(player.stats().unmapped_moves, 1);
+    assert!(player.evaluate(&defeated(100.0, None), source.as_slice(), 0));
+    assert_eq!(turn_of(&player, ARM), fixture.pose().rest()[usize::from(ARM)].rotation);
+}

@@ -905,3 +905,45 @@ fn ik_edge_cases_snapshot() {
     record("dead behind", &pose);
     insta::assert_snapshot!(lines.join("\n"));
 }
+
+/// A body on the floor has no feet to plant and nothing to look at, and it needs no controls to say
+/// so: both fade with the hips, whatever a caller asks for.
+#[test]
+fn a_body_lying_down_plants_no_feet_and_looks_at_nothing() {
+    let (mut pose, mut ik) = character();
+    let world = Affine3A::IDENTITY;
+    let raised = |probe: Vec3| Some(on_plane(probe, Vec3::new(0.0, 0.1, 0.0), Vec3::Y));
+    let solve = |pose: &mut CharacterPose, ik: &mut CharacterIk, hips: f32| {
+        pose.reset();
+        pose.locals_mut()[HIPS].translation.y = hips;
+        ik.prepare(pose);
+        let mut asked = input();
+        asked.dt = 1.0 / 60.0;
+        asked.look = LookInput { target: Some(Vec3::new(3.0, 1.0, 0.5)), weight: 1.0 };
+        asked.feet.weight = 1.0;
+        if let Some(probes) = ik.foot_probes(pose, &world) {
+            for (ground, probe) in asked.feet.ground.iter_mut().zip(probes) {
+                *ground = FootGround { ankle: raised(probe.ankle), ball: probe.ball.and_then(raised) };
+            }
+        }
+        ik.solve(pose, &asked);
+        pose.finish();
+    };
+    // Lying down, for long enough that any fade has run its course.
+    for _ in 0..240 {
+        solve(&mut pose, &mut ik, 0.1);
+    }
+    let lying = bits(&pose);
+    pose.reset();
+    pose.locals_mut()[HIPS].translation.y = 0.1;
+    pose.finish();
+    assert_eq!(lying, bits(&pose), "as the clip has it, to the bit");
+
+    // Stood up, the same ask moves the feet and turns the head again.
+    for _ in 0..240 {
+        solve(&mut pose, &mut ik, 0.9);
+    }
+    let foot = world_position(&pose, world, LEFT_FOOT).y;
+    assert!(foot > ANKLE + 0.05, "the foot stands on the raised ground: {foot}");
+    assert!(head_forward(&pose).x > 0.1, "and the head looks: {}", head_forward(&pose));
+}

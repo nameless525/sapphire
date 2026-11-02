@@ -157,6 +157,9 @@ impl Editor {
         };
         if let Some(path) = options.file {
             editor.open(&path);
+        } else {
+            // With no file named, the list is the only way to one.
+            editor.documents = std::env::current_dir().map_or_else(|_| Vec::new(), |dir| documents_around(&dir));
         }
         editor
     }
@@ -1512,15 +1515,23 @@ fn find_documents(document: &Path) -> Vec<PathBuf> {
     } else {
         std::env::current_dir().map_or_else(|_| document.to_owned(), |dir| dir.join(document))
     };
-    let root = start.ancestors().find(|dir| dir.join("Cargo.toml").is_file() && dir.join("content").is_dir());
-    let mut found = vec![start.clone()];
+    let mut found = documents_around(&start);
+    found.push(start);
+    found.sort();
+    found.dedup();
+    found
+}
+
+/// Every `.moves.ron` under the repository `place` is in, if it's in one.
+fn documents_around(place: &Path) -> Vec<PathBuf> {
+    let root = place.ancestors().find(|dir| dir.join("Cargo.toml").is_file() && dir.join("content").is_dir());
+    let mut found = Vec::new();
     if let Some(root) = root {
         for folder in ["content", "crates"] {
             walk(&root.join(folder), &mut found);
         }
     }
     found.sort();
-    found.dedup();
     found
 }
 

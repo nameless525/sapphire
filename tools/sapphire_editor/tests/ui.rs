@@ -725,6 +725,28 @@ fn a_move_longer_than_any_can_be_draws_only_what_shows() {
     }
 }
 
+/// `sapphire_editor` with no file, as its usage allows and `cargo xtask editor` says, still has something
+/// to open: the list holds what's under the repository it was started in.
+#[test]
+fn with_no_file_named_the_list_offers_the_repositorys_documents() {
+    let dir = TestDir::new("no_file");
+    let options = Options {
+        file: None,
+        content: Some(dir.0.join("no cook here")),
+        link: Some("127.0.0.1:9".parse().expect("an address")),
+    };
+    let mut harness = Harness::builder()
+        .with_size((1400.0, 900.0))
+        .with_accessibility_check(false)
+        .build_ui_state(|ui, editor: &mut Editor| editor.ui(ui), Editor::new(options));
+    harness.run_steps(2);
+    harness.get_by_value("no file").click();
+    harness.run_steps(2);
+    harness.get_by_label("warrior.moves.ron").click();
+    harness.run_steps(3);
+    assert_eq!(harness.state().file().expect("a file").file_name(), "warrior.moves.ron");
+}
+
 /// `Cmd+S` saves and pushes in one gesture, against a device of the test's own speaking live link's real
 /// protocol over a real socket: what it replaced is shown, what it refused is shown by move and track with
 /// the edit kept, and the attempts on the device show up too. `tests/sandbox_push.rs` does the same with a

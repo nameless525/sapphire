@@ -78,10 +78,12 @@ pub enum ShaderFile {
     DebugView,
     /// Debug draw's lines over the frame (M2 T1).
     DebugDraw,
+    /// The frame's effects: instanced sprites and ribbons (M2 E2).
+    Vfx,
 }
 
 impl ShaderFile {
-    pub const ALL: [Self; 20] = [
+    pub const ALL: [Self; 21] = [
         Self::Frame,
         Self::Materials,
         Self::Lights,
@@ -102,6 +104,7 @@ impl ShaderFile {
         Self::Occlusion,
         Self::DebugView,
         Self::DebugDraw,
+        Self::Vfx,
     ];
 
     /// Its name in the renderer's shader directory, which errors name it by too.
@@ -127,6 +130,7 @@ impl ShaderFile {
             Self::Occlusion => "occlusion.wgsl",
             Self::DebugView => "debug_view.wgsl",
             Self::DebugDraw => "debug_draw.wgsl",
+            Self::Vfx => "vfx.wgsl",
         }
     }
 
@@ -158,6 +162,7 @@ impl ShaderFile {
             Self::Occlusion => include_str!("../shaders/occlusion.wgsl"),
             Self::DebugView => include_str!("../shaders/debug_view.wgsl"),
             Self::DebugDraw => include_str!("../shaders/debug_draw.wgsl"),
+            Self::Vfx => include_str!("../shaders/vfx.wgsl"),
         }
     }
 
@@ -194,10 +199,12 @@ pub(crate) enum Program {
     DebugView,
     /// Debug draw's lines over the frame (M2 T1), which stand alone.
     DebugDraw,
+    /// The frame's effects (M2 E2).
+    Vfx,
 }
 
 impl Program {
-    pub(crate) const ALL: [Self; 15] = [
+    pub(crate) const ALL: [Self; 16] = [
         Self::Sky,
         Self::AnimeCharacter,
         Self::Environment,
@@ -213,6 +220,7 @@ impl Program {
         Self::Ambient,
         Self::DebugView,
         Self::DebugDraw,
+        Self::Vfx,
     ];
 
     /// Its files, in order.
@@ -234,6 +242,7 @@ impl Program {
             Self::Ambient => &[F::Frame, F::Materials, F::Ambient, F::Probes, F::Occlusion],
             Self::DebugView => &[F::Frame, F::Materials, F::Lights, F::DebugView],
             Self::DebugDraw => &[F::DebugDraw],
+            Self::Vfx => &[F::Frame, F::Materials, F::Vfx],
         }
     }
 
@@ -255,6 +264,7 @@ impl Program {
             Self::Ambient => "ambient",
             Self::DebugView => "debug view",
             Self::DebugDraw => "debug draw",
+            Self::Vfx => "vfx",
         }
     }
 
@@ -568,11 +578,12 @@ mod tests {
         DRAW_ATTRIBUTES, FOLIAGE_ATTRIBUTES, MeshPass, SHADING_ATTRIBUTES, SURFACE_ATTRIBUTES,
         position_attributes, previous_position_attributes,
     };
+    use crate::vfx::{GpuVfxRibbonPoint, GpuVfxSprite, GpuVfxUniforms};
     use crate::post::PostUniforms;
     use crate::shadows::{GpuCapsule, GpuCascade, GpuCharacterMap, ShadowUniforms};
     use crate::temporal::TemporalUniforms;
 
-    const PASSES: [(Program, &[&str]); 15] = [
+    const PASSES: [(Program, &[&str]); 16] = [
         (Program::Sky, &["vs_sky", "fs_sky"]),
         (
             Program::AnimeCharacter,
@@ -667,6 +678,7 @@ mod tests {
             ],
         ),
         (Program::DebugDraw, &["vs_debug_line", "fs_debug_line"]),
+        (Program::Vfx, &["vs_vfx", "fs_vfx", "fs_vfx_mask"]),
     ];
 
     /// Every mesh pass's vertex entry point and the pipeline layout it is built with.
@@ -1026,6 +1038,11 @@ mod tests {
             (Program::DebugView, "FrameUniforms", size_of::<FrameUniforms>()),
             (Program::DebugView, "ViewUniforms", size_of::<ViewUniforms>()),
             (Program::DebugDraw, "DebugDrawUniforms", size_of::<crate::debug_draw::DebugDrawUniforms>()),
+            (Program::Vfx, "FrameUniforms", size_of::<FrameUniforms>()),
+            (Program::Vfx, "ViewUniforms", size_of::<ViewUniforms>()),
+            (Program::Vfx, "VfxSprite", size_of::<GpuVfxSprite>()),
+            (Program::Vfx, "VfxRibbonPoint", size_of::<GpuVfxRibbonPoint>()),
+            (Program::Vfx, "VfxUniforms", size_of::<GpuVfxUniforms>()),
         ];
         for (program, name, rust_size) in expected {
             let module = validate(program);

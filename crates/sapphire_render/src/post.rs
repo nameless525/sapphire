@@ -838,6 +838,12 @@ impl PostProcess {
         self.uniforms.composite[0]
     }
 
+    /// Whether the frame just prepared reads scene color's alpha, the character mask: its bloom's
+    /// prefilter, or a screen effect that covers characters and the world differently.
+    pub(crate) fn reads_character_mask(&self) -> bool {
+        self.variant.characters || self.stats.effects.character_mask
+    }
+
     /// Grading LUTs baked since creation.
     pub(crate) fn bakes(&self) -> u32 {
         self.bakes

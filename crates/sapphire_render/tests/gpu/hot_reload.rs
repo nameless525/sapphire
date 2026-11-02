@@ -299,7 +299,7 @@ fn a_shader_edit_rebuilds_the_pipelines_built_from_it() {
     let mut commented = swapped.clone();
     commented.set(ShaderFile::Frame, format!("{}\n// edited\n", swapped.get(ShaderFile::Frame)));
     let update = frames.renderer.set_shader_sources(&commented).expect("a valid edit");
-    assert_eq!(update, ShaderUpdate { programs: 11, pipelines: 14 });
+    assert_eq!(update, ShaderUpdate { programs: 12, pipelines: 14 });
     assert_eq!(frames.render(&gpu), pixels, "a comment changes nothing drawn");
     assert_eq!(frames.renderer.set_shader_sources(&commented).unwrap(), ShaderUpdate::default());
 
@@ -536,7 +536,7 @@ fn every_variant_built_is_rebuilt_on_the_layouts_it_had() {
     // none shows, M1 F5).
     let frame = comment(&outline, ShaderFile::Frame);
     let update = frames.renderer.set_shader_sources(&frame).unwrap();
-    assert_eq!(update, ShaderUpdate { programs: 11, pipelines: 22 });
+    assert_eq!(update, ShaderUpdate { programs: 12, pipelines: 22 });
     assert_eq!(frames.render(&gpu), before);
     assert_eq!(frames.renderer.stats().character_pipelines, 10, "the same set, rebuilt");
 }

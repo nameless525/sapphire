@@ -42,7 +42,7 @@ use glam::{Affine3A, Mat4, Quat, Vec3};
 use sapphire_core::debug_draw::DebugDrawList;
 use sapphire_look::{
     AmbientLight, Celestial, CharacterLight, CharacterLighting, DirectionalLight, Fog, PostParams,
-    SkyGradient, SkyLayers,
+    SkyGradient, SkyLayers, VfxFrame,
 };
 
 use crate::{MaterialHandle, MeshHandle, ProbeKeys};
@@ -54,9 +54,8 @@ const RING_SIZE: usize = 3;
 ///
 /// # Later milestones
 ///
-/// The packet grows with the systems that feed it (spec §4.6): VFX spawns and emitter
-/// parameters and the UI draw list. Shadow cascades (R4) and UI 3D insets add views after the main
-/// camera.
+/// The packet grows with the systems that feed it (spec §4.6): the UI draw list. Shadow cascades
+/// (R4) and UI 3D insets add views after the main camera.
 ///
 /// One scene constant is carried for the package that will read it and drawn from nothing yet:
 /// [`Self::weather`] (the wet surface model). Each type's docs name its readers.
@@ -157,6 +156,10 @@ pub struct FramePacket {
     /// labels as plain data, rewritten whole every frame, and empty in a build that never enables
     /// drawing (spec §5.20).
     pub debug: DebugDrawList,
+    /// This frame's effects (M2 E2): the sprites and ribbon points `sapphire_vfx` resolved, plain
+    /// values the renderer draws without knowing an emitter, a curve or an owner's clock (rule
+    /// R4). Empty, the default, costs nothing: see the [`vfx`](crate::vfx) module.
+    pub vfx: VfxFrame,
 }
 
 impl FramePacket {
@@ -217,6 +220,7 @@ impl FramePacket {
             palettes,
             morph_weights,
             debug,
+            vfx,
         } = self;
         *number = frame;
         views.clear();
@@ -244,6 +248,7 @@ impl FramePacket {
         palettes.clear();
         morph_weights.clear();
         debug.clear();
+        vfx.clear();
     }
 }
 
@@ -277,6 +282,7 @@ impl Default for FramePacket {
             palettes: Vec::new(),
             morph_weights: Vec::new(),
             debug: DebugDrawList::default(),
+            vfx: VfxFrame::default(),
         }
     }
 }

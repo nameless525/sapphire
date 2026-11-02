@@ -104,6 +104,7 @@ use crate::shaders::{self, Program, ShaderError, ShaderSources};
 use crate::shadows::ShadowPipelines;
 use crate::sky::SkyPipelines;
 use crate::temporal::TemporalPipelines;
+use crate::vfx::VfxPipelines;
 
 /// One owner's pipelines built again from new sources: a closure that owns what it builds them
 /// from, so a worker can run it while the frame thread draws with the old ones. It checks
@@ -179,6 +180,7 @@ pub(crate) struct Built {
     pub debug_views: Option<u32>,
     /// Debug draw's pipeline, once a frame had lines.
     pub debug_draw: bool,
+    pub vfx: u32,
 }
 
 /// A build: the sources, the programs that changed, and each changed program's owners' steps
@@ -199,6 +201,7 @@ pub(crate) struct Job {
     pub ambient: Option<Step<AmbientPipelines>>,
     pub debug_views: Option<Step<RebuiltViews>>,
     pub debug_draw: Option<Step<wgpu::RenderPipeline>>,
+    pub vfx: Option<Step<VfxPipelines>>,
 }
 
 /// What a build built, for `Renderer::swap_pipelines`.
@@ -213,6 +216,7 @@ pub(crate) struct Rebuilt {
     pub ambient: Option<AmbientPipelines>,
     pub debug_views: Option<RebuiltViews>,
     pub debug_draw: Option<wgpu::RenderPipeline>,
+    pub vfx: Option<VfxPipelines>,
     pub update: ShaderUpdate,
 }
 
@@ -247,6 +251,7 @@ impl Job {
             ambient,
             debug_views,
             debug_draw,
+            vfx,
         } = self;
         for &program in &changed {
             if cancel.is_set() {
@@ -269,6 +274,7 @@ impl Job {
         let ambient = run(ambient, &sources, cancel);
         let debug_views = run(debug_views, &sources, cancel);
         let debug_draw = run(debug_draw, &sources, cancel);
+        let vfx = run(vfx, &sources, cancel);
         if cancel.is_set() {
             return None;
         }
@@ -284,7 +290,8 @@ impl Job {
             + shadows.as_ref().map_or(0, ShadowPipelines::count)
             + ambient.as_ref().map_or(0, AmbientPipelines::count)
             + debug_views.as_ref().map_or(0, RebuiltViews::count)
-            + u32::from(debug_draw.is_some());
+            + u32::from(debug_draw.is_some())
+            + vfx.as_ref().map_or(0, VfxPipelines::count);
         Some(Ok(Rebuilt {
             mesh: mesh.map(|(mesh, _)| mesh),
             sky,
@@ -296,6 +303,7 @@ impl Job {
             ambient,
             debug_views,
             debug_draw,
+            vfx,
             update: ShaderUpdate { programs: changed.len() as u32, pipelines },
         }))
     }

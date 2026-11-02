@@ -27,4 +27,5 @@ mod rim_hair;
 mod shadows;
 mod temporal;
 mod texture;
+mod vfx;
 mod view_culling;

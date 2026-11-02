@@ -864,6 +864,7 @@ mod skinning;
 mod sky;
 pub mod temporal;
 pub mod texture;
+pub mod vfx;
 mod view_cull;
 
 pub use ambient::{
@@ -897,7 +898,8 @@ pub use renderer::{
 };
 pub use sapphire_look::{
     AmbientLight, CameraRim, Celestial, CharacterGi, CharacterLight, CharacterLighting, CharacterShade,
-    CloudLight, DirectionalLight, Fog, FogLayer, HeightFog, Nebula, SkyDisc, SkyGradient, SkyLayers,
+    CloudLight, DirectionalLight, Fog, FogLayer, HeightFog, Nebula, SkyDisc, SkyGradient, SkyLayers, VfxFrame,
+    VfxLight, VfxRibbonPoint, VfxShape, VfxSprite, VfxStats,
 };
 pub use shader_builds::{ShaderBuildStats, ShaderOutcome, ShaderRequest};
 pub use shaders::{ShaderError, ShaderFile, ShaderSources};
@@ -905,6 +907,7 @@ pub use shadows::{ShadowFilter, ShadowSettings, ShadowStats};
 pub use skinning::SkinningStats;
 pub use sky::{SkySettings, SkyStats};
 pub use temporal::{HistoryReset, TemporalStats};
+pub use vfx::VfxRenderStats;
 pub use view_cull::ViewCullingStats;
 
 /// Log target for this crate.

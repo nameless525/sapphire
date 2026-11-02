@@ -51,6 +51,7 @@ use crate::skinning::{Skinning, SkinningStats};
 use crate::sky::{self, Sky, SkySettings, SkyStats, cube_face_camera};
 use crate::temporal::{self, Temporal, TemporalInputs, TemporalMasks, TemporalStats};
 use crate::texture::GpuTexture;
+use crate::vfx::{self, AfterResolveTargets, Vfx, VfxRenderStats};
 use crate::view_cull::{self, Frustum, ViewCull, ViewCullingStats};
 use crate::{CameraData, FramePacket, LOG_TARGET, MeshHandle, Wind};
 
@@ -377,6 +378,8 @@ pub struct RenderStats {
     pub debug_view: DebugViewStats,
     /// The frame's debug draws (M2 T1, [`FramePacket::debug`]).
     pub debug_draw: DebugDrawPassStats,
+    /// The frame's effects (M2 E2), and what the simulation that made them reported.
+    pub vfx: VfxRenderStats,
 }
 
 /// What new shader sources rebuilt ([`Renderer::request_shader_sources`],
@@ -508,6 +511,8 @@ pub struct Renderer {
     view_cull: ViewCull,
     /// Fog cards' depth and their order each frame.
     fog_cards: FogCards,
+    /// The frame's effects: nothing until a frame has some.
+    vfx: Vfx,
     /// Group 2 per [`MESH_FAMILIES`] entry: the instances and that family's materials.
     scene_bind_groups: [wgpu::BindGroup; MESH_FAMILIES.len()],
     /// Skinned and morphed instances' outputs and the pass that writes them.
@@ -703,6 +708,8 @@ impl Renderer {
         let post = post?;
         let (materials, sky, mut ambient) = sky_and_ambient?;
         let fog_cards = FogCards::new(&device, settings.temporal);
+        let vfx =
+            Vfx::new(gpu, &layouts.frame, &layouts.view, settings.msaa.sample_count(), settings.temporal);
         // Every view at a stride of `min_uniform_buffer_offset_alignment`, each bound by offset:
         // the main camera, then the sky cube's faces, then the shadow cascades and character
         // maps (M1 R4).
@@ -811,6 +818,7 @@ impl Renderer {
             outlines: OutlineCull::default(),
             view_cull: ViewCull::default(),
             fog_cards,
+            vfx,
             scene_bind_groups,
             skinning,
             post,
@@ -1267,6 +1275,8 @@ impl Renderer {
             debug_draw: has(Program::DebugDraw)
                 .then(|| self.debug_draw.as_ref().map(|draw| draw.rebuild()))
                 .flatten(),
+            // Only those built so far: none before the first effect.
+            vfx: has(Program::Vfx).then(|| self.vfx.rebuild()).flatten(),
             changed,
         }
     }
@@ -1284,6 +1294,7 @@ impl Renderer {
             ambient: self.ambient.pipelines_built(),
             debug_views: self.debug_views.as_ref().map(|views| views.pipelines_built()),
             debug_draw: self.debug_draw.is_some(),
+            vfx: self.vfx.pipelines_built(),
         }
     }
 
@@ -1354,6 +1365,7 @@ impl Renderer {
             ambient,
             debug_views,
             debug_draw,
+            vfx,
             update,
         } = rebuilt;
         if let Some(mesh) = mesh {
@@ -1386,6 +1398,9 @@ impl Renderer {
         if let (Some(pipeline), Some(draw)) = (debug_draw, self.debug_draw.as_mut()) {
             draw.set_pipeline(pipeline);
         }
+        if let Some(vfx) = vfx {
+            self.vfx.set_pipelines(vfx);
+        }
         self.edited_shaders = !sources.is_compiled_in();
         self.shaders = sources;
         self.stats.shader_rebuilds += 1;
@@ -1416,6 +1431,17 @@ impl Renderer {
             }
         }
         result
+    }
+
+    /// Builds what the first effect draws through, ahead: its pipelines, its map and its buffers. A
+    /// game calls it at load when it has effects to play, so its first hit doesn't compile a
+    /// pipeline on the frame it lands. A frame with effects that wasn't prewarmed builds them
+    /// itself; a renderer that's never given any makes none of this (see the [`vfx`] module).
+    pub fn prewarm_vfx(&mut self) {
+        self.checked_build(|renderer| {
+            let on = BuildOn::sources(renderer.edited_shaders);
+            renderer.vfx.build(&renderer.shaders, true, on);
+        });
     }
 
     /// The shader sources the pipelines in use were built from, which pipelines built later
@@ -1539,6 +1565,13 @@ impl Renderer {
         let camera = packet.main_view().map(|view| view.camera);
         let sun = camera.zip(self.sky.sun_disc()).and_then(|(camera, disc)| SunOnScreen::new(&camera, disc));
         self.checked_build(|renderer| renderer.post.prepare(queue, &packet.post, camera.as_ref(), sun));
+        // Effects, at the exposure post just settled, which build what the first one draws through.
+        let eye = camera.as_ref().map(|camera| camera.position);
+        self.checked_build(|renderer| {
+            let on = BuildOn::sources(renderer.edited_shaders);
+            let (exposure, mask) = (renderer.post.exposure(), renderer.post.reads_character_mask());
+            renderer.vfx.prepare(&packet.vfx, eye, exposure, mask, &renderer.shaders, on);
+        });
         let counts = self.scene.draw_counts();
         let draws = |include: fn(SurfaceVariant) -> bool| -> u32 {
             SurfaceVariant::ALL
@@ -1805,6 +1838,7 @@ impl Renderer {
             ref outlines,
             ref view_cull,
             ref mut fog_cards,
+            ref mut vfx,
             ref scene_bind_groups,
             ref layouts,
             ref device,
@@ -1871,6 +1905,9 @@ impl Renderer {
         });
         let view =
             ViewUniforms::new(&camera, size, previous_clip_from_world, jitter).with_fade_turn(fade_turn);
+        // The frame's effects, if any: a frame with none adds nothing to the graph below.
+        let (vfx_upload, vfx_draw) = vfx.split_for_record(output).unzip();
+        let (vfx_main, vfx_after) = vfx_draw.map(|draw| (draw.main, draw.after)).unzip();
         // A debug view draws through the main view without temporal AA's jitter or the fade's
         // turn, so it holds still (M1 F5). Boxed, so the uploads' pass doesn't grow by a view
         // while none shows.
@@ -1913,6 +1950,9 @@ impl Renderer {
             }
             if let Some((draw, uniforms)) = &debug_draw_upload {
                 draw.upload(uploads, ctx.encoder, uniforms);
+            }
+            if let Some(vfx_upload) = &vfx_upload {
+                vfx_upload.write(uploads, ctx.encoder);
             }
             uploads.finish_and_recall_on_submit(ctx.encoder);
         });
@@ -2173,6 +2213,10 @@ impl Renderer {
             let cards = Some((card_group, card_draws));
             let sky = |pass: &mut wgpu::RenderPass<'_>| sky_draw.draw(pass);
             draw_main_pass(&mut pass, &pipeline, &view_draws, scene_bind_groups, Some(&sky), cards, |_| true);
+            // Effects after everything: their mask, and without temporal AA their light.
+            if let Some(vfx_main) = &vfx_main {
+                vfx_main.draw(&mut pass);
+            }
         });
 
         // Temporal AA resolves the HDR scene into the target's size before bloom and grading.
@@ -2190,6 +2234,19 @@ impl Renderer {
                 temporal_targets.output
             }
             _ => scene_color,
+        };
+        // Under temporal AA effects draw over a copy of the resolved frame, so the history never
+        // holds them (see the `vfx` module), and post reads the copy.
+        let resolved = match vfx_after.flatten() {
+            Some(after) => {
+                let composed = graph.create_texture("vfx color", vfx::composed_desc(graph.size(resolved)));
+                let pass = AfterResolveTargets { resolved, composed, depth: targets.depth };
+                graph.add_pass(vfx::PASS).read(resolved).read(targets.depth).write(composed).record(
+                    move |ctx| after.record(ctx, pass, frame_bind_group, view_bind_group, labels),
+                );
+                composed
+            }
+            None => resolved,
         };
         post.record(graph, resolved, scene_color, target, labels);
         // The debug view over the finished frame (M1 F5).
@@ -2294,6 +2351,7 @@ impl Renderer {
             sky: self.sky.stats(),
             fog: FogStats { card_pipelines: self.pipelines.built(MaterialFamily::FogCard), ..self.stats.fog },
             ambient: self.ambient.stats(),
+            vfx: self.vfx.stats(),
             ..self.stats
         }
     }

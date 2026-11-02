@@ -123,6 +123,17 @@ impl LocalClock {
         self.last_delta
     }
 
+    /// Feeds this clock's whole state to `sink` as little-endian bytes, the same on every target
+    /// whatever the struct's layout: the scales and the fractional carry included, which nothing
+    /// else shows. For state checksums (spec §9, gate 2).
+    pub fn write_canonical(&self, sink: &mut impl FnMut(&[u8])) {
+        self.scales.write_canonical(sink);
+        sink(&self.hitstop_ticks.to_le_bytes());
+        sink(&self.now.as_subticks().to_le_bytes());
+        sink(&self.last_delta.as_subticks().to_le_bytes());
+        sink(&self.remainder.to_le_bytes());
+    }
+
     fn factor(&self, world: &ScaledClock) -> u128 {
         scale::combine(world.factor(), self.scales.factor())
     }
@@ -162,6 +173,45 @@ mod tests {
         local.tick(&world);
         local.tick(&world);
         assert_eq!(local.effective_scale(&world), 1.0);
+    }
+
+    /// The bytes are the contract a recorded checksum depends on, so they're pinned here.
+    #[test]
+    fn canonical_state_is_pinned_and_complete() {
+        let bytes = |clock: &LocalClock| {
+            let mut bytes = Vec::new();
+            clock.write_canonical(&mut |chunk| bytes.extend_from_slice(chunk));
+            bytes
+        };
+        let mut world = ScaledClock::new();
+        let mut local = world.new_local_clock();
+        local.push_scale(ScaleSource::Gameplay, 333).expect("room");
+        local.tick(&world);
+        local.apply_hitstop(2);
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&1u32.to_le_bytes()); // owner
+        expected.extend_from_slice(&1u32.to_le_bytes()); // next serial
+        expected.extend_from_slice(&1u32.to_le_bytes()); // scales
+        expected.extend_from_slice(&0u32.to_le_bytes()); // the scale's serial
+        expected.push(3); // Gameplay
+        expected.extend_from_slice(&333u32.to_le_bytes());
+        expected.extend_from_slice(&2u16.to_le_bytes()); // hitstop
+        expected.extend_from_slice(&333u64.to_le_bytes()); // now
+        expected.extend_from_slice(&333u64.to_le_bytes()); // last delta
+        expected.extend_from_slice(&0u64.to_le_bytes()); // carry
+        assert_eq!(bytes(&local), expected);
+
+        // Two clocks that read alike but carry a different fraction aren't in the same state.
+        let mut a = world.new_local_clock();
+        let mut b = world.new_local_clock();
+        let (id_a, id_b) = (bytes(&a), bytes(&b));
+        assert_ne!(id_a, id_b, "the id counts");
+        a.push_scale(ScaleSource::Debug, 100).expect("room");
+        b.push_scale(ScaleSource::Debug, 100).expect("room");
+        let scale = a.scales.factor();
+        assert_eq!(scale, b.scales.factor());
+        a.remainder = 1;
+        assert_ne!(bytes(&a)[4..], bytes(&b)[4..], "the carry counts");
     }
 
     #[test]

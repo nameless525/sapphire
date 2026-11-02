@@ -27,6 +27,21 @@ pub enum ScaleSource {
     Debug,
 }
 
+impl ScaleSource {
+    /// This source's number in canonical state ([`crate::LocalClock::write_canonical`]). Recorded
+    /// checksums depend on these, so they are written out rather than taken from the declaration
+    /// order, and a source that goes away leaves its number unused.
+    const fn canonical_code(self) -> u8 {
+        match self {
+            Self::Pause => 0,
+            Self::PerfectDodge => 1,
+            Self::Cinematic => 2,
+            Self::Gameplay => 3,
+            Self::Debug => 4,
+        }
+    }
+}
+
 /// One entry in a scale stack.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct TimeScale {
@@ -146,6 +161,18 @@ impl<const N: usize> ScaleStack<N> {
     /// The product of every scale, as a fixed-point factor of [`FACTOR_ONE`].
     pub(crate) fn factor(&self) -> u128 {
         self.factor
+    }
+
+    /// Everything here but the product, which follows from the entries, as little-endian bytes.
+    pub(crate) fn write_canonical(&self, sink: &mut impl FnMut(&[u8])) {
+        sink(&self.owner.0.to_le_bytes());
+        sink(&self.next_serial.to_le_bytes());
+        sink(&(self.len as u32).to_le_bytes());
+        for (handle, scale) in self.entries[..self.len].iter().flatten() {
+            sink(&handle.serial.to_le_bytes());
+            sink(&[scale.source.canonical_code()]);
+            sink(&scale.per_mille.to_le_bytes());
+        }
     }
 
     fn remove_at(&mut self, index: usize) -> (ScaleHandle, TimeScale) {

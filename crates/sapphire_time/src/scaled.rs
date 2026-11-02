@@ -121,6 +121,17 @@ impl ScaledClock {
         self.ticks
     }
 
+    /// Feeds this clock's whole state to `sink` as little-endian bytes, as
+    /// [`LocalClock::write_canonical`] does: the next entity clock's id included.
+    pub fn write_canonical(&self, sink: &mut impl FnMut(&[u8])) {
+        self.scales.write_canonical(sink);
+        sink(&self.now.as_subticks().to_le_bytes());
+        sink(&self.last_delta.as_subticks().to_le_bytes());
+        sink(&self.remainder.to_le_bytes());
+        sink(&self.ticks.to_le_bytes());
+        sink(&self.next_local_id.to_le_bytes());
+    }
+
     pub(crate) fn factor(&self) -> u128 {
         self.scales.factor()
     }
@@ -160,6 +171,29 @@ mod tests {
         clock.pop_scale(pause);
         assert!(!clock.is_stopped());
         assert_eq!(clock.tick(), SimDuration::from_ticks(1));
+    }
+
+    #[test]
+    fn canonical_state_is_pinned() {
+        let mut clock = ScaledClock::new();
+        clock.push_scale(ScaleSource::PerfectDodge, 200).expect("room");
+        clock.tick();
+        let _ = clock.new_local_clock();
+        let mut bytes = Vec::new();
+        clock.write_canonical(&mut |chunk| bytes.extend_from_slice(chunk));
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&0u32.to_le_bytes()); // owner: the world
+        expected.extend_from_slice(&1u32.to_le_bytes()); // next serial
+        expected.extend_from_slice(&1u32.to_le_bytes()); // scales
+        expected.extend_from_slice(&0u32.to_le_bytes()); // the scale's serial
+        expected.push(1); // PerfectDodge
+        expected.extend_from_slice(&200u32.to_le_bytes());
+        expected.extend_from_slice(&200u64.to_le_bytes()); // now
+        expected.extend_from_slice(&200u64.to_le_bytes()); // last delta
+        expected.extend_from_slice(&0u64.to_le_bytes()); // carry
+        expected.extend_from_slice(&1u64.to_le_bytes()); // ticks
+        expected.extend_from_slice(&2u32.to_le_bytes()); // next entity clock's id
+        assert_eq!(bytes, expected);
     }
 
     #[test]

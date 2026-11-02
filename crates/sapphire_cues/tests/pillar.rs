@@ -144,7 +144,9 @@ fn every_cue_a_shipped_move_set_can_publish_has_a_row() {
 
 #[test]
 fn every_cue_the_recordings_publish_has_a_row() {
-    for name in ["fight", "string", "dodge-dash", "melee-play", "melee-sweep"] {
+    for name in
+        ["fight", "string", "dodge-dash", "dodge-counter", "cancel-windows", "melee-play", "melee-sweep"]
+    {
         let mut fight = Fight::new(name);
         let mut unmatched = Vec::new();
         while fight.step().is_some() {

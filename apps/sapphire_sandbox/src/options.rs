@@ -401,7 +401,8 @@ impl Options {
     }
 
     /// Parses `args`, which includes the program name first. Unknown arguments are returned
-    /// so the caller can warn about them; SDL and the OS may pass their own.
+    /// so the caller can warn about them; SDL and the OS may pass their own. A scripted run
+    /// refuses them instead: see [`Options::refuse_unknown`].
     pub fn parse(args: &[String]) -> Result<(Self, Vec<String>), String> {
         let mut options = Self::default();
         let mut unknown = Vec::new();
@@ -744,6 +745,22 @@ impl Options {
             None => None,
         };
         Ok((options, unknown))
+    }
+
+    /// An error if a `--capture` or `--bench` run was given arguments it doesn't know. Scripts
+    /// start these, so no argument of the OS's or SDL's is among them, and a misspelled pin would
+    /// otherwise render another picture, which a golden bootstrapped from it would then hold
+    /// forever (review DV-9). The windowed app and `--offscreen` only warn.
+    pub fn refuse_unknown(&self, unknown: &[String]) -> Result<(), String> {
+        let scripted = self.offscreen.as_ref().is_some_and(|offscreen| {
+            matches!(offscreen.mode, OffscreenMode::Capture { .. } | OffscreenMode::Bench { .. })
+        });
+        if scripted && !unknown.is_empty() {
+            return Err(format!(
+                "{CAPTURE_FLAG} and {BENCH_FLAG} refuse arguments they don't know: {unknown:?}"
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -1259,6 +1276,30 @@ mod tests {
         let (options, unknown) = parse(&["-NSDocumentRevisionsDebugMode", "YES"]).unwrap();
         assert_eq!(options, Options::default());
         assert_eq!(unknown, ["-NSDocumentRevisionsDebugMode", "YES"]);
+    }
+
+    #[test]
+    fn scripted_runs_refuse_unknown_arguments() {
+        for args in [
+            &["--capture", "x.png", "--plain-psot", "--shadow", "off"][..],
+            &["--plain-psot", "--bench", "10", "--shadow", "off"][..],
+        ] {
+            let (options, unknown) = parse(args).unwrap();
+            assert_eq!(unknown, ["--plain-psot", "--shadow", "off"]);
+            let error = options.refuse_unknown(&unknown).unwrap_err();
+            assert!(error.contains("--plain-psot") && error.contains("--shadow"), "{error}");
+        }
+        let (options, unknown) = parse(&["--capture", "x.png", "--plain-post", "--shadows", "off"]).unwrap();
+        assert_eq!(options.refuse_unknown(&unknown), Ok(()));
+    }
+
+    #[test]
+    fn other_runs_keep_the_warning_for_unknown_arguments() {
+        for args in [&["-NSDocumentRevisionsDebugMode", "YES"][..], &["--offscreen", "--plain-psot"][..]] {
+            let (options, unknown) = parse(args).unwrap();
+            assert!(!unknown.is_empty());
+            assert_eq!(options.refuse_unknown(&unknown), Ok(()));
+        }
     }
 
     #[test]

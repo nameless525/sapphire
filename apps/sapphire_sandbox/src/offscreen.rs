@@ -37,6 +37,7 @@ impl App for OffscreenApp {
 
     fn init(platform: &mut Platform) -> Result<Self, AppInitError> {
         let (options, unknown) = Options::parse(platform.args()).map_err(AppInitError::msg)?;
+        options.refuse_unknown(&unknown).map_err(AppInitError::msg)?;
         if !unknown.is_empty() {
             tracing::warn!(target: LOG_TARGET, ?unknown, "ignoring unknown arguments");
         }

@@ -210,6 +210,9 @@
 //!     it, logging each at debug level: a GPU crash or device loss then names its pass in the
 //!     log, even on drivers that report nothing. Slow; for debugging.
 //!
+//!   `--capture` and `--bench` exit with an error on an argument they don't know, so a misspelled
+//!   pin can't render another picture; the windowed app and `--offscreen` log a warning.
+//!
 //! Desktop runs need cooked content: `cargo xtask run --platform macos` cooks and launches.
 //!
 //! # The sky

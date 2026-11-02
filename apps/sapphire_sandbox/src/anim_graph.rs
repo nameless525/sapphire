@@ -238,7 +238,7 @@ pub(crate) fn locomotion_of(view: &ActorView) -> LocomotionInput {
 
 /// The moves a script plays: a document of the character's, read here since the simulation holds a
 /// compiled set and the asset server hands out a view of a cooked one. Live tuning reaches them through
-/// [`GraphShow::tune`].
+/// `GraphShow::tune`.
 fn show_moves() -> sapphire_moves::MoveSet {
     MoveSetDocument::parse(SHOW_MOVES)
         .and_then(|document| document.compile())

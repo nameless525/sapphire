@@ -121,7 +121,7 @@ pub const ATTEMPT_EVERY: u64 = 30;
 pub fn attempts(tick: u64, cast: &[ActorId]) -> TickActions {
     let mut actions = TickActions::NEUTRAL;
     let Some(&player) = cast.first() else { return actions };
-    let buttons = if tick % ATTEMPT_EVERY == 0 { Buttons::LIGHT } else { Buttons::NONE };
+    let buttons = if tick.is_multiple_of(ATTEMPT_EVERY) { Buttons::LIGHT } else { Buttons::NONE };
     actions.set(player, ActorActions { buttons, stick: Stick::CENTER }).expect("one actor fits a tick");
     actions
 }

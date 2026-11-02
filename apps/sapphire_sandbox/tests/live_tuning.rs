@@ -13,13 +13,14 @@ use std::fs;
 use std::net::{SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use sapphire_camera::CameraTuning;
 use sapphire_gameplay::replay::{Player, Replay, SCENARIOS};
 use sapphire_livelink::protocol::{DeviceStatus, MoveAttempt};
 use sapphire_livelink::{Client, LinkError};
 use sapphire_moves::MoveSetDocument;
+use sapphire_time::Stopwatch;
 
 const SLICE: &str = include_str!("../../../crates/sapphire_moves/test_content/slice.moves.ron");
 const SLICE_FILE: &str = "slice.moves.ron";
@@ -91,7 +92,7 @@ impl App {
 
     /// A connection, once it answers.
     fn connect(&mut self) -> Client {
-        let started = Instant::now();
+        let started = Stopwatch::start();
         loop {
             if let Ok(mut client) = Client::connect(self.address)
                 && client.status().is_ok()
@@ -117,7 +118,7 @@ impl App {
         what: &str,
         mut done: impl FnMut(&DeviceStatus) -> Option<T>,
     ) -> T {
-        let started = Instant::now();
+        let started = Stopwatch::start();
         loop {
             let status = client.status().expect("a status");
             if let Some(found) = done(&status) {
@@ -131,7 +132,7 @@ impl App {
 
     /// Waits for `line` in its log.
     fn until_logged(&mut self, line: &str) {
-        let started = Instant::now();
+        let started = Stopwatch::start();
         while !self.log().contains(line) {
             self.assert_running();
             assert!(started.elapsed() < PATIENCE, "it never logged {line:?}:\n{}", self.log());

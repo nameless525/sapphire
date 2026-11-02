@@ -411,7 +411,7 @@ impl SessionRecorder {
         self.start_tuned(combat, scenario, &LiveMoves::default());
     }
 
-    /// [`Self::start`], from `live`'s edits of the scenario's documents (M2 T2): a fight started after a
+    /// Starts `scenario` over from `live`'s edits of its documents (M2 T2): a fight started after a
     /// save plays what was saved, and its file's hash says so.
     pub fn start_tuned(&mut self, combat: &mut Option<Combat>, scenario: &str, live: &LiveMoves) {
         if combat.is_some() {

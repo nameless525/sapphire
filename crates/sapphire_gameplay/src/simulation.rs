@@ -214,7 +214,7 @@ impl Simulation {
     /// ID this simulation never gave. Moves already running finish on what they started with; the
     /// next move to start reads this (M2 T2). So do hurtboxes and reactions, from the next step. A
     /// fighter takes the new numbers at once, each meter keeping what it's lost
-    /// ([`Fighter`](crate::Fighter)). See the `moves` module.
+    /// ([`Fighter`]). See the `moves` module.
     pub fn replace_move_set(&mut self, id: MoveSetId, set: MoveSet) -> Option<u32> {
         let world = self.ecs.world_mut();
         let in_use: Vec<u32> = world

@@ -92,6 +92,20 @@ impl AssetId {
         Self(bytes)
     }
 
+    /// The ID of sub-asset `name` of the source with this ID: blake3 of both, laid out as a version
+    /// 8 (custom) UUID (RFC 9562 §5.8), so it never collides with a random version 4 one. The same
+    /// parent and name always give the same ID.
+    pub fn sub_asset(self, name: &str) -> Self {
+        let hash = blake3::Hasher::new_derive_key("sapphire_pipeline 2026-10-25 sub-asset id")
+            .update(&self.to_bytes())
+            .update(name.as_bytes())
+            .finalize();
+        let mut bytes: [u8; 16] = hash.as_bytes()[..16].try_into().expect("blake3 hashes are 32 bytes");
+        bytes[6] = 0x80 | (bytes[6] & 0x0f);
+        bytes[8] = 0x80 | (bytes[8] & 0x3f);
+        Self::from_bytes(bytes)
+    }
+
     /// The text form, as ASCII.
     fn to_text(self) -> [u8; TEXT_LEN] {
         const DIGITS: &[u8; 16] = b"0123456789abcdef";

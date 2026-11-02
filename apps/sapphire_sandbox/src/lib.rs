@@ -155,11 +155,15 @@
 //! - `--hud-scale <scale>`: pixels per point in an offscreen frame (3 for a phone's capture), the
 //!   player's UI scale on top of the display's in a window. 1 without it.
 //! - `--clip <name>` (with `--look-dev`): plays that clip on the character instead of holding it,
-//!   looping (M2 N2, `animate.rs`). `strike` is the only one yet. Each `--capture-ticks` is a fixed
-//!   point of it, and `--bench` measures it. `--clip-in-place` leaves its root motion out, for a
-//!   shot that frames the character close. The golden scenes `lookdev-strike-*` show it.
+//!   looping (M2 N2, `animate.rs`). A name is a clip `lookdev::ClipName` lists (M2 O2), or any clip's
+//!   asset ID. Each `--capture-ticks` is a fixed point of it, and `--bench` measures it.
+//!   `--clip-in-place` leaves its root motion out, for a shot that frames the character close. The
+//!   golden scenes `lookdev-strike-*` and `lookdev-clip-*` show it.
 //! - `--springs on|off` (with `--clip`): runs the character's spring bones or not, on by default
 //!   (M2 N5). The strike scenes from before them pin them off; `lookdev-strike-springs-*` show them.
+//! - `--contact-sheet <clip> <png>`: the clip at evenly spaced ticks, from the front and the side, as
+//!   one image (M2 O2, `contact_sheet.rs`). A mode of its own, like `--capture`. `--sheet-cells <n>`
+//!   and `--size <cell>` set the grid, and `--zoom <factor>` pulls back for a clip that travels.
 //! - `--arena`: the combat stage (M2 O5, `arena.rs`): the look-dev town's square on its own day,
 //!   as a place to fight: the character at the player's spawn point and a stand-in at the enemy's,
 //!   on the cooked colliders of `content/arena/square.colliders.ron`, seen by `sapphire_camera`'s
@@ -290,6 +294,7 @@ mod combat;
 #[cfg(feature = "dev")]
 mod combat_panel;
 mod combat_views;
+mod contact_sheet;
 mod content;
 mod cvars;
 mod debug_shapes;

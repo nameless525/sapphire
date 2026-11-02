@@ -25,16 +25,17 @@ use crate::vfx::VfxShow;
 pub(crate) const CAPTURE_FLAG: &str = "--capture";
 pub(crate) const BENCH_FLAG: &str = "--bench";
 pub(crate) const OFFSCREEN_FLAG: &str = "--offscreen";
+pub(crate) const CONTACT_SHEET_FLAG: &str = "--contact-sheet";
 /// Shows the debug overlay from the start (`dev` builds), with its default panels or those
 /// listed: `--debug-overlay=stats,graph`.
 const DEBUG_OVERLAY_FLAG: &str = "--debug-overlay";
 
-/// Whether `arg` selects an offscreen mode, as `--capture`, `--bench`, `--offscreen` or their
-/// `--flag=value` forms. `main` checks this before SDL starts, so the windowed app never opens
+/// Whether `arg` selects an offscreen mode, as `--capture`, `--bench`, `--offscreen`,
+/// `--contact-sheet` or their `--flag=value` forms. `main` checks this before SDL starts, so the windowed app never opens
 /// for one.
 pub(crate) fn is_offscreen_flag(arg: &str) -> bool {
     let name = arg.split_once('=').map_or(arg, |(name, _)| name);
-    name == CAPTURE_FLAG || name == BENCH_FLAG || name == OFFSCREEN_FLAG
+    name == CAPTURE_FLAG || name == BENCH_FLAG || name == OFFSCREEN_FLAG || name == CONTACT_SHEET_FLAG
 }
 
 /// Options parsed from the process arguments. The default is no options: everything from the
@@ -273,6 +274,10 @@ pub(crate) enum OffscreenMode {
     Capture { path: PathBuf, ticks: u32, frames: CaptureFrames },
     /// `--bench <frames>`: run the per-frame CPU path `frames` times and log its cost.
     Bench { frames: u32 },
+    /// `--contact-sheet <clip> <png> [--sheet-cells N] [--size <cell>]`: the clip on the look-dev
+    /// character at evenly spaced ticks, seen from the front and the side, as one image (see
+    /// [`crate::contact_sheet`]).
+    ContactSheet { path: PathBuf, cells: u32 },
     /// `--offscreen` (`dev` builds): draw the scene at up to 60 frames a second, one fixed step
     /// each, until the process is stopped or `--frames` have been drawn, applying hot reload's
     /// changes and live link's pushes, and answering live link's captures. The desktop's way to
@@ -314,6 +319,14 @@ pub(crate) enum Antialiasing {
     Msaa,
     /// Temporal AA alone (the desktop tiers').
     Taa,
+}
+
+/// The clip `raw` names, for the flag `flag`.
+fn clip_name(raw: &str, flag: &str) -> Result<lookdev::ClipName, String> {
+    lookdev::ClipName::from_name(raw).ok_or_else(|| {
+        let names: Vec<&str> = lookdev::ClipName::all().map(lookdev::ClipName::name).collect();
+        format!("{flag} expects an asset ID or one of {}, got {raw:?}", names.join(", "))
+    })
 }
 
 impl Options {
@@ -463,6 +476,7 @@ impl Options {
         let (mut replay, mut record, mut scenario, mut script) = (None, None, None, None);
         let (mut hud_mode, mut hud_insets, mut hud_scale) = (None, None, None);
         let (mut arena_flag, mut arena_shot) = (false, None);
+        let (mut sheet, mut sheet_cells) = (None, None);
         let mut args = args.iter().skip(1);
         while let Some(arg) = args.next() {
             // `--name=value` or `--name value`.
@@ -639,14 +653,7 @@ impl Options {
                         format!("--look-dev expects one of {}, got {raw:?}", names.join(", "))
                     })?);
                 }
-                "--clip" => {
-                    let raw = value("--clip")?;
-                    options.clip = Some(lookdev::ClipName::from_name(&raw).ok_or_else(|| {
-                        let names: Vec<&str> =
-                            lookdev::ClipName::ALL.iter().map(|clip| clip.name()).collect();
-                        format!("--clip expects one of {}, got {raw:?}", names.join(", "))
-                    })?);
-                }
+                "--clip" => options.clip = Some(clip_name(&value("--clip")?, "--clip")?),
                 "--clip-in-place" => options.clip_in_place = true,
                 "--arena" => arena_flag = true,
                 "--arena-shot" => {
@@ -773,6 +780,17 @@ impl Options {
                 CAPTURE_FLAG => capture = Some(PathBuf::from(value(CAPTURE_FLAG)?)),
                 BENCH_FLAG => bench = Some(number(&value(BENCH_FLAG)?, BENCH_FLAG)?),
                 OFFSCREEN_FLAG => serve = true,
+                CONTACT_SHEET_FLAG => {
+                    options.clip = Some(clip_name(&value(CONTACT_SHEET_FLAG)?, CONTACT_SHEET_FLAG)?);
+                    sheet = Some(PathBuf::from(value(CONTACT_SHEET_FLAG)?));
+                }
+                "--sheet-cells" => {
+                    let cells: u32 = number(&value("--sheet-cells")?, "--sheet-cells")?;
+                    if !(1..=64).contains(&cells) {
+                        return Err(format!("--sheet-cells expects 1 to 64, got {cells}"));
+                    }
+                    sheet_cells = Some(cells);
+                }
                 "--capture-ticks" => {
                     capture_ticks = Some(number(&value("--capture-ticks")?, "--capture-ticks")?)
                 }
@@ -812,6 +830,20 @@ impl Options {
         }
         if options.faces.is_some() && options.rim_rig.is_some() {
             return Err("--faces and --rim-rig are exclusive: each frames the camera on its rig".to_owned());
+        }
+        if sheet_cells.is_some() && sheet.is_none() {
+            return Err(format!("--sheet-cells needs {CONTACT_SHEET_FLAG}"));
+        }
+        if sheet.is_some() {
+            if capture.is_some() || bench.is_some() || serve {
+                return Err(format!(
+                    "{CONTACT_SHEET_FLAG} is a mode of its own: drop {CAPTURE_FLAG}, {BENCH_FLAG} and {OFFSCREEN_FLAG}"
+                ));
+            }
+            if options.look_dev.is_some() || options.view.is_some() {
+                return Err(format!("{CONTACT_SHEET_FLAG} has its own cameras: drop --look-dev and --view"));
+            }
+            crate::contact_sheet::pin_defaults(&mut options);
         }
         if options.look_dev.is_some()
             && (options.stage.is_some()
@@ -871,6 +903,10 @@ impl Options {
         }
         let mode = match (capture, bench) {
             _ if serve => Some(OffscreenMode::Serve),
+            _ if sheet.is_some() => sheet.map(|path| OffscreenMode::ContactSheet {
+                path,
+                cells: sheet_cells.unwrap_or(crate::contact_sheet::DEFAULT_CELLS),
+            }),
             (Some(path), _) => {
                 let ticks = capture_ticks.unwrap_or(90);
                 // A capture of a replay's end can't be checked until the replay is read.
@@ -937,7 +973,11 @@ impl Options {
         }
         options.offscreen = match mode {
             Some(mode) => {
-                let (width, height) = size.unwrap_or((1920, 1080));
+                let default_size = match mode {
+                    OffscreenMode::ContactSheet { .. } => crate::contact_sheet::DEFAULT_CELL,
+                    _ => (1920, 1080),
+                };
+                let (width, height) = size.unwrap_or(default_size);
                 Some(Offscreen { mode, width, height })
             }
             None if size.is_some() => {
@@ -954,7 +994,12 @@ impl Options {
     /// forever (review DV-9). The windowed app and `--offscreen` only warn.
     pub fn refuse_unknown(&self, unknown: &[String]) -> Result<(), String> {
         let scripted = self.offscreen.as_ref().is_some_and(|offscreen| {
-            matches!(offscreen.mode, OffscreenMode::Capture { .. } | OffscreenMode::Bench { .. })
+            matches!(
+                offscreen.mode,
+                OffscreenMode::Capture { .. }
+                    | OffscreenMode::Bench { .. }
+                    | OffscreenMode::ContactSheet { .. }
+            )
         });
         if scripted && !unknown.is_empty() {
             return Err(format!(
@@ -1153,6 +1198,59 @@ mod tests {
     }
 
     #[test]
+    fn a_contact_sheet_names_its_clip_and_pins_what_it_implies() {
+        let (options, _) = parse(&["--contact-sheet", "Hit_A", "sheet.png"]).unwrap();
+        assert_eq!(options.clip, lookdev::ClipName::from_name("Hit_A"));
+        assert_eq!(options.look_dev, Some(Shot::Hero));
+        assert_eq!(options.aa, Some(Antialiasing::Msaa), "a cell has no history for temporal AA");
+        assert!(options.fog_off);
+        assert_eq!(options.time_of_day, Some(12.0));
+        let offscreen = options.offscreen.expect("a mode of its own");
+        assert_eq!((offscreen.width, offscreen.height), crate::contact_sheet::DEFAULT_CELL);
+        let OffscreenMode::ContactSheet { path, cells } = offscreen.mode else { panic!("a sheet") };
+        assert_eq!((path, cells), (PathBuf::from("sheet.png"), crate::contact_sheet::DEFAULT_CELLS));
+
+        // Told otherwise, it does as it's told.
+        let (options, _) = parse(&[
+            "--contact-sheet",
+            "idle",
+            "sheet.png",
+            "--sheet-cells",
+            "3",
+            "--size",
+            "400x500",
+            "--time-of-day",
+            "18",
+            "--aa",
+            "taa",
+        ])
+        .unwrap();
+        assert_eq!((options.time_of_day, options.aa), (Some(18.0), Some(Antialiasing::Taa)));
+        let offscreen = options.offscreen.expect("a mode of its own");
+        assert_eq!((offscreen.width, offscreen.height), (400, 500));
+        assert!(matches!(offscreen.mode, OffscreenMode::ContactSheet { cells: 3, .. }));
+
+        // Any clip by its ID, which is how a new document's first sheet needs no table.
+        let id = "15af86bb-67b3-4208-bc54-1618aabf450b";
+        assert!(parse(&["--contact-sheet", id, "sheet.png"]).is_ok());
+
+        let refused = |args: &[&str], says: &str| {
+            let error = parse(args).unwrap_err();
+            assert!(error.contains(says), "{args:?}: {error}");
+        };
+        refused(&["--contact-sheet", "Waving", "sheet.png"], "Hit_A");
+        refused(&["--contact-sheet", "Hit_A"], "--contact-sheet");
+        refused(&["--contact-sheet", "Hit_A", "a.png", "--capture", "b.png"], "--capture");
+        refused(&["--contact-sheet", "Hit_A", "a.png", "--look-dev", "hero"], "--look-dev");
+        refused(&["--contact-sheet", "Hit_A", "a.png", "--sheet-cells", "0"], "--sheet-cells");
+        refused(&["--sheet-cells", "4"], "--contact-sheet");
+
+        let (options, unknown) = parse(&["--contact-sheet", "Hit_A", "a.png", "--zoon", "2"]).unwrap();
+        assert!(options.refuse_unknown(&unknown).is_err(), "a script's typo draws no other picture");
+        assert!(is_offscreen_flag("--contact-sheet"), "never opens the window");
+    }
+
+    #[test]
     fn time_of_day_options_set_the_hour_and_the_cycle() {
         let (options, _) = parse(&["--time-of-day", "18.5", "--day-length=1440"]).unwrap();
         assert_eq!((options.time_of_day, options.day_length), (Some(18.5), Some(1440.0)));
@@ -1191,7 +1289,7 @@ mod tests {
         assert_eq!(parse(&["--look-dev", "hero"]).unwrap().0.clip, None);
         assert_eq!(
             parse(&["--look-dev", "hero", "--clip", "strike"]).unwrap().0.clip,
-            Some(lookdev::ClipName::Strike)
+            lookdev::ClipName::from_name("strike")
         );
         assert!(parse(&["--look-dev", "hero", "--clip", "wave"]).unwrap_err().contains("strike"));
         assert!(parse(&["--clip", "strike"]).unwrap_err().contains("--look-dev"));

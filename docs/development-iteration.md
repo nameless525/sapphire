@@ -29,6 +29,17 @@ For example, the former `--test ambient` selection is now `--test gpu ambient::`
 A deterministic channel handshake replaces one 200 ms delay in the live-link shutdown regression.
 Timeout and rate-limit tests retain the timing behavior they are intended to check.
 
+## Contact sheets
+
+To read a clip's motion, render it as one image:
+
+```
+cargo xtask content
+SAPPHIRE_CONTENT_DIR=<abs>/target/content/desktop/ target/debug/sapphire_sandbox --contact-sheet <clip> sheet.png
+```
+
+`<clip>` is a name `lookdev::ClipName` lists or any cooked clip's asset ID, so a new key-pose document's first sheet takes only its sidecar's ID and a cook, with no sandbox build. A sheet takes about half a second and opens no window. The top row is the front and the bottom row the character's left side, each cell labelled with the clip's tick, over a red ground line with a mark every half meter. The camera holds still, so root motion shows as travel: `--zoom 1.6` keeps a dodge in frame and `--clip-in-place` leaves it out. For a close look at a few ticks, `--sheet-cells 3 --size 400x500`. Eight 192-pixel cells across fit what an image reader shows whole.
+
 ## Replays
 
 `tests/replays/` holds the combat regression suite (spec §9, gates 2 and 4): `<name>.sreplay` files of per-tick actions, and one `checksums.<architecture>.txt` per architecture (`aarch64`, `x86_64`) of what each must reach. CI's `Replays` job plays them on Linux, Windows and macOS with no GPU.

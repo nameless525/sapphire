@@ -82,29 +82,77 @@ pub(crate) const CHARACTER: AssetId = AssetId::from_text("6f8a81b6-29c4-485f-b16
 /// The character's rig: the VRM's `rig` sub-asset, whose ID the pipeline derives from the VRM's
 /// (`sapphire_pipeline::meta::sub_asset_id`; its look-dev tests pin this value).
 pub(crate) const RIG: AssetId = AssetId::from_text("4b4073fd-44c5-8437-a712-1cccad486da3");
-/// The clips the character can play (`--clip`), by their sidecars' IDs.
+/// A clip the character can play (`--clip`, `--contact-sheet`): a key-pose document by its sidecar's
+/// ID, a clip retargeted at cook time by its source's, or any clip the character's skeleton fits by
+/// its ID.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ClipName {
-    /// A small swing of the right arm (`content/lookdev/character/strike.keypose.ron`).
-    Strike,
+    /// A key-pose document, by its name and its sidecar's ID.
+    Document(&'static str, AssetId),
+    /// A clip of KayKit's, retargeted onto the character: its name, and its source's sidecar ID.
+    Retargeted(&'static str, AssetId),
+    /// Whatever cooked with this ID, for a clip no table here names yet.
+    Id(AssetId),
 }
 
+/// The key-pose documents the character plays (`content/lookdev/character/`).
+const CLIP_DOCUMENTS: [(&str, AssetId); 5] = [
+    ("strike", AssetId::from_text("15af86bb-67b3-4208-bc54-1618aabf450b")),
+    ("idle", AssetId::from_text("0853fc78-9a5d-4f9d-bcfe-1c8a485a0db4")),
+    ("idle_combat", AssetId::from_text("5fa1f634-6e77-4485-9f50-577be76b7323")),
+    ("death_back", AssetId::from_text("bcd18896-4e3d-4a31-8075-848494beee4a")),
+    ("death_forward", AssetId::from_text("7a20f0b9-eae3-48cf-b715-9b937731fe6b")),
+];
+
+/// The clips of KayKit's retargeted onto the character, by the file they come from: the names the
+/// sidecars under `content/third_party/kaykit_character_animations/Rig_Medium/` list for it.
+const CLIP_SOURCES: [(AssetId, &[&str]); 3] = [
+    (AssetId::from_text("9a29e8c0-f131-4ea4-98b9-04879740413d"), &["Hit_A", "Hit_B"]),
+    (
+        AssetId::from_text("2bb6b794-55db-42cf-921a-c0638eed48ca"),
+        &["Walking_B", "Running_B", "Jump_Start", "Jump_Idle", "Jump_Land"],
+    ),
+    (
+        AssetId::from_text("c7c4200c-d939-494a-8851-0fbc2f8a7a35"),
+        &[
+            "Walking_Backwards",
+            "Running_Strafe_Left",
+            "Running_Strafe_Right",
+            "Dodge_Forward",
+            "Dodge_Backward",
+            "Dodge_Left",
+            "Dodge_Right",
+        ],
+    ),
+];
+
 impl ClipName {
-    pub const ALL: [Self; 1] = [Self::Strike];
+    /// Every clip with a name, documents first.
+    pub fn all() -> impl Iterator<Item = Self> {
+        let documents = CLIP_DOCUMENTS.into_iter().map(|(name, id)| Self::Document(name, id));
+        documents.chain(
+            CLIP_SOURCES
+                .into_iter()
+                .flat_map(|(source, names)| names.iter().map(move |name| Self::Retargeted(name, source))),
+        )
+    }
+
+    /// The clip called `name`, or with that asset ID.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::all().find(|clip| clip.name() == name).or_else(|| name.parse().ok().map(Self::Id))
+    }
 
     pub fn name(self) -> &'static str {
         match self {
-            Self::Strike => "strike",
+            Self::Document(name, _) | Self::Retargeted(name, _) => name,
+            Self::Id(_) => "(by ID)",
         }
-    }
-
-    pub fn from_name(name: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|clip| clip.name() == name)
     }
 
     pub fn id(self) -> AssetId {
         match self {
-            Self::Strike => AssetId::from_text("15af86bb-67b3-4208-bc54-1618aabf450b"),
+            Self::Document(_, id) | Self::Id(id) => id,
+            Self::Retargeted(name, source) => source.sub_asset(&format!("clip/{name}@{CHARACTER}")),
         }
     }
 }
@@ -684,6 +732,42 @@ fn check_counts(rig: &ArchivedCharacterRig, skeleton: &ArchivedSkeleton, mesh: &
 
 #[cfg(test)]
 mod tests {
+    /// What `--clip` can name is what the sidecars cook: the file each clip's table entry says, and
+    /// a document's ID.
+    #[test]
+    fn clips_by_name_are_the_ones_their_sidecars_cook() {
+        let content = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
+        let read = |path: String| std::fs::read_to_string(content.join(path)).expect("a sidecar");
+        for (name, id) in CLIP_DOCUMENTS {
+            let sidecar = read(format!("lookdev/character/{name}.keypose.ron.meta"));
+            assert!(sidecar.contains(&format!("id: \"{id}\"")), "{name}");
+            assert!(sidecar.contains(&format!("rig: \"{CHARACTER}\"")), "{name}");
+        }
+        for (file, (source, names)) in
+            ["General", "MovementBasic", "MovementAdvanced"].iter().zip(CLIP_SOURCES)
+        {
+            let sidecar = read(format!(
+                "third_party/kaykit_character_animations/Rig_Medium/Rig_Medium_{file}.glb.meta"
+            ));
+            assert!(sidecar.contains(&format!("id: \"{source}\"")), "{file}");
+            // Each entry of its `retarget` begins at a `target`: only the character's count here.
+            let (_, retargets) = sidecar.split_once("retarget: [").expect("it retargets");
+            let on_the_character = retargets
+                .split("target: \"")
+                .filter(|entry| entry.starts_with(CHARACTER.to_string().as_str()))
+                .collect::<Vec<_>>()
+                .join("");
+            for name in names {
+                let listed = format!("\"{name}\",");
+                assert!(on_the_character.contains(&listed), "{file} doesn't retarget {name}");
+            }
+            // And the other way: nothing cooks for the character that `--clip` can't name.
+            let (_, after_names) = on_the_character.split_once("names: [").expect("names");
+            let cooked = on_the_character.matches("                        \"").count();
+            assert_eq!(cooked, names.len(), "{file}: {after_names}");
+        }
+    }
+
     use sapphire_world::light_rig::LightRig;
 
     use super::*;

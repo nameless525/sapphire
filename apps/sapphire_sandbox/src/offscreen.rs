@@ -1,4 +1,4 @@
-//! Offscreen modes: `--capture`, `--bench` and, in `dev` builds, `--offscreen`.
+//! Offscreen modes: `--capture`, `--bench`, `--contact-sheet` and, in `dev` builds, `--offscreen`.
 //!
 //! They render the sandbox scene into an offscreen target instead of a window. `main` runs them
 //! through `sapphire_platform::run_with` with `RunOptions { background: true }`, so the process
@@ -65,6 +65,11 @@ impl App for OffscreenApp {
             }
             OffscreenMode::Bench { frames } => {
                 crate::bench::run(platform, &options, combat, *frames, width, height)?;
+            }
+            OffscreenMode::ContactSheet { path, cells } => {
+                let mut stage = Stage::new(platform, &options)?;
+                let framing = crate::contact_sheet::Framing::new(width, height, options.zoom);
+                crate::contact_sheet::run(&mut stage, path, *cells, framing)?;
             }
             #[cfg(feature = "dev")]
             OffscreenMode::Serve => {

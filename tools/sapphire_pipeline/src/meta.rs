@@ -400,18 +400,9 @@ pub fn new_id() -> Result<AssetId, getrandom::Error> {
     Ok(AssetId::from_bytes(bytes))
 }
 
-/// The ID of sub-asset `name` of the source whose ID is `parent`: blake3 of both, laid out as a
-/// version 8 (custom) UUID (RFC 9562 §5.8), so it never collides with a random version 4 one.
-/// The same parent and name always give the same ID.
+/// The ID of sub-asset `name` of the source whose ID is `parent`: [`AssetId::sub_asset`].
 pub fn sub_asset_id(parent: AssetId, name: &str) -> AssetId {
-    let hash = blake3::Hasher::new_derive_key("sapphire_pipeline 2026-10-25 sub-asset id")
-        .update(&parent.to_bytes())
-        .update(name.as_bytes())
-        .finalize();
-    let mut bytes: [u8; 16] = hash.as_bytes()[..16].try_into().expect("blake3 hashes are 32 bytes");
-    bytes[6] = 0x80 | (bytes[6] & 0x0f);
-    bytes[8] = 0x80 | (bytes[8] & 0x3f);
-    AssetId::from_bytes(bytes)
+    parent.sub_asset(name)
 }
 
 /// Sidecars that can't be read, written or trusted.

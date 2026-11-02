@@ -179,7 +179,7 @@ fn write_adapter_info(path: &Path, adapter: &wgpu::AdapterInfo) -> Result<(), Ap
         .map_err(|error| AppInitError::msg(format!("{}: {error}", info_path.display())))
 }
 
-fn write_png(path: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<(), AppInitError> {
+pub(crate) fn write_png(path: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<(), AppInitError> {
     let file =
         File::create(path).map_err(|error| AppInitError::msg(format!("{}: {error}", path.display())))?;
     encode_png(BufWriter::new(file), width, height, rgba).map_err(AppInitError::msg)

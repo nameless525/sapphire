@@ -1,5 +1,5 @@
-//! A clip playing on a character (M2 N2): the sandbox's way of driving `sapphire_anim` until the
-//! animation graph (N3) takes over the choice of clip.
+//! A clip playing on a character (M2 N2): `--clip`, one clip with nothing choosing, which contact
+//! sheets and benches want. A game's characters play a graph (N3, [`crate::anim_graph`]).
 //!
 //! - **[`ClipPlayer`]** is a component: a character's [`CharacterPose`], where the clip started on
 //!   its [`EntityClock`], and which joints its [`Figure`] follows. A character without one holds
@@ -80,6 +80,22 @@ impl SpringView {
         Self { frustum, eye: camera.position, quality }
     }
 
+    /// Whether `springs` run this frame, for a character standing as `transform` and `figure` say, at the
+    /// tier's substeps. Those that don't go to sleep at once, at no further cost.
+    pub(crate) fn decide(
+        &self,
+        springs: &mut SpringBones,
+        transform: &RenderTransform,
+        figure: &Figure,
+    ) -> bool {
+        springs.set_substeps(self.substeps());
+        let runs = self.sees(transform, figure, springs.is_running());
+        if !runs {
+            springs.sleep();
+        }
+        runs
+    }
+
     /// Whether the springs of a character standing as `transform` and `figure` say should run, given
     /// whether they ran last frame.
     fn sees(&self, transform: &RenderTransform, figure: &Figure, running: bool) -> bool {
@@ -112,6 +128,8 @@ pub(crate) struct ClipPlayer {
     springs: Option<SpringBones>,
     /// False for `--springs off`, which a new version of the character keeps to.
     springs_on: bool,
+    /// Loops whose first frame jumped the character back ([`Self::teleports`]).
+    teleports: u32,
 }
 
 impl ClipPlayer {
@@ -127,6 +145,7 @@ impl ClipPlayer {
             lap: 0,
             springs: None,
             springs_on: true,
+            teleports: 0,
         }
     }
 
@@ -169,6 +188,14 @@ impl ClipPlayer {
             (springs, _) if !other.springs_on => *springs = None,
             _ => {}
         }
+        self.teleports = other.teleports;
+    }
+
+    /// How many times the character has jumped rather than moved: a loop of a clip with root motion
+    /// on whose lap really moves its root, which starts its motion over and resets its springs.
+    /// [`GraphPlayer::teleports`](sapphire_anim::GraphPlayer::teleports) says the same of a graph.
+    pub fn teleports(&self) -> u32 {
+        self.teleports
     }
 
     /// How many joints its pose has.
@@ -211,11 +238,11 @@ impl ClipPlayer {
         let (position, lap) = self.position(clip, ticks);
         if lap != self.lap {
             self.lap = lap;
-            if self.root_motion
-                && loop_teleports(clip)
-                && let Some(springs) = &mut self.springs
-            {
-                springs.reset();
+            if self.root_motion && loop_teleports(clip) {
+                self.teleports += 1;
+                if let Some(springs) = &mut self.springs {
+                    springs.reset();
+                }
             }
         }
         let drawing = Some((position.to_bits(), version));
@@ -226,16 +253,9 @@ impl ClipPlayer {
         Some(position)
     }
 
-    /// Whether its springs run this frame, for a character `view` sees or doesn't, at the tier's
-    /// `substeps`. Those that don't go to sleep at once, at no further cost.
+    /// Whether its springs run this frame, for a character `view` sees or doesn't.
     pub fn springs_run(&mut self, view: &SpringView, transform: &RenderTransform, figure: &Figure) -> bool {
-        let Some(springs) = &mut self.springs else { return false };
-        springs.set_substeps(view.substeps());
-        let runs = view.sees(transform, figure, springs.is_running());
-        if !runs {
-            springs.sleep();
-        }
-        runs
+        self.springs.as_mut().is_some_and(|springs| view.decide(springs, transform, figure))
     }
 
     /// Whether running springs have anything to do at `ticks` on a frame whose pose didn't move.

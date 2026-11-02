@@ -159,7 +159,7 @@
 //!   asset ID. Each `--capture-ticks` is a fixed point of it, and `--bench` measures it.
 //!   `--clip-in-place` leaves its root motion out, for a shot that frames the character close. The
 //!   golden scenes `lookdev-strike-*` and `lookdev-clip-*` show it.
-//! - `--springs on|off` (with `--clip`): runs the character's spring bones or not, on by default
+//! - `--springs on|off` (with `--clip` or `--graph`): runs the character's spring bones or not, on by default
 //!   (M2 N5). Scenes that don't show them pin them off; `lookdev-strike-springs-*` and
 //!   `lookdev-clip-run-springs` do.
 //! - `--contact-sheet <clip> <png>`: the clip at evenly spaced ticks, from the front and the side, as
@@ -174,6 +174,10 @@
 //!   --scenario arena` plays one by the bindings, in a window. It's a scene of its own: it can't join
 //!   `--look-dev` or anything that can't. The golden scenes `arena-day`, `arena-golden` and
 //!   `arena-replay` show it.
+//! - `--graph <script>` (with `--look-dev`, without `--clip`): plays the animation graph on the
+//!   character from a scripted input (M2 N3, `anim_graph.rs`): `stand`, `walk`, `run`, `strafe`, `back`,
+//!   `jump`, `cancel`, `hitstop`, `flinch` or `cut`, at fixed ticks, with a controller and a simulation
+//!   beside it. The golden scenes `lookdev-graph-*` show it.
 //! - `--outline-row`: place more of the character behind it, from 4 m to 90 m further back, past
 //!   the outline cutoff, showing the outline width's distance curve (M1 C4).
 //! - `--hard-edges`: show the hard-edged outline sample instead of the character: flat-shaded
@@ -285,6 +289,7 @@
 //! card clouds on the horizon, cirrus, the sun and moon with their glows, stars and the Milky Way
 //! (spec §5.12, "Sky").
 
+mod anim_graph;
 mod animate;
 mod app;
 mod arena;

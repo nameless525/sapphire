@@ -1,0 +1,49 @@
+// The graph show's moves (M2 N3, `--graph`): a strike with `strike.keypose.ron`'s frame data and root
+// motion, and a dodge with KayKit's `Dodge_Backward`'s, so the simulation moves the character as those
+// clips were authored and their poses and tables agree tick for tick. A press takes effect on the tick
+// it lands, and the dodge cancels the strike from its 12th tick on.
+(
+    type: "sapphire::moves::MoveSetDocument",
+    version: 1,
+    data: (
+        intents: [
+            (name: "strike", buffer: 12, priority: 1),
+            (name: "dodge", buffer: 8, priority: 2),
+        ],
+        neutral: [
+            (intent: "strike", move: "strike"),
+            (intent: "dodge", move: "dodge_back"),
+        ],
+        moves: [
+            (
+                name: "strike",
+                startup: 14,
+                active: 14,
+                recovery: 32,
+                motion: (
+                    root: [
+                        (at: 14, offset: (0.0, 0.0, 0.0)),
+                        (at: 20, offset: (0.0, 0.0, 0.35)),
+                        (at: 28, offset: (0.0, 0.0, 0.38)),
+                        (at: 52, offset: (0.0, 0.0, 0.42)),
+                    ],
+                ),
+                cancels: [
+                    (from: 12, to: 60, allow: [(intent: "dodge", move: "dodge_back")]),
+                ],
+            ),
+            (
+                name: "dodge_back",
+                startup: 1,
+                active: 15,
+                recovery: 8,
+                motion: (
+                    root: [
+                        (at: 16, offset: (0.0, 0.0, -1.33)),
+                    ],
+                ),
+                invulnerable: [(from: 1, to: 16)],
+            ),
+        ],
+    ),
+)

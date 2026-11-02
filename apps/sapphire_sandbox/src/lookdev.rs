@@ -55,7 +55,9 @@
 //! The town's lanterns are placed in its assembly; [`LAMPS`] repeats their places, and a test
 //! here checks the two against each other.
 
-use sapphire_anim::{ArchivedSkeleton, CharacterPose, SpringBones};
+use std::sync::Arc;
+
+use sapphire_anim::{ArchivedSkeleton, CharacterPose, GraphBinding, GraphPlayer, SpringBones};
 use sapphire_assets::AssetId;
 use sapphire_assets::mesh::Mesh;
 use sapphire_assets::rig::{ArchivedCharacterRig, HumanBone};
@@ -66,6 +68,7 @@ use sapphire_rhi::GpuContext;
 use sapphire_world::light_rig::LightRigLibrary;
 use sapphire_world::tod::TodTimeline;
 
+use crate::anim_graph::GraphDriver;
 use crate::animate::ClipPlayer;
 use crate::content::Content;
 use crate::environment::{CardPlace, HAZE, MIST};
@@ -82,6 +85,11 @@ pub(crate) const CHARACTER: AssetId = AssetId::from_text("6f8a81b6-29c4-485f-b16
 /// The character's rig: the VRM's `rig` sub-asset, whose ID the pipeline derives from the VRM's
 /// (`sapphire_pipeline::meta::sub_asset_id`; its look-dev tests pin this value).
 pub(crate) const RIG: AssetId = AssetId::from_text("4b4073fd-44c5-8437-a712-1cccad486da3");
+/// How the character's clips play (`--graph`), by its sidecar's ID
+/// (`content/lookdev/character/character.animgraph.ron.meta`).
+pub(crate) const GRAPH: AssetId = AssetId::from_text("b7f2c9a4-6e13-4d8a-a5c0-1e94d7b23f68");
+/// What sets the character's blinks apart from another's. Any number: a golden pins this one's.
+const GRAPH_SEED: u32 = 1;
 /// A clip the character can play (`--clip`, `--contact-sheet`): a key-pose document by its sidecar's
 /// ID, a clip retargeted at cook time by its source's, or any clip the character's skeleton fits by
 /// its ID.
@@ -621,6 +629,30 @@ pub(crate) fn player(content: &Content) -> Result<ClipPlayer, String> {
     let (pose, joints) = character_pose(mesh, rig, skeleton)?;
     let springs = SpringBones::new(rig, &pose);
     Ok(ClipPlayer::new(pose, joints).with_springs(springs))
+}
+
+/// The graph as `content` has it now, bound to the character as `content` has it now. Fails where
+/// [`held`] does, or if the graph isn't loaded or doesn't fit the character.
+pub(crate) fn graph_binding(content: &Content) -> Result<GraphBinding, String> {
+    let mesh = content.character_mesh().ok_or("the look-dev character isn't loaded")?;
+    let rig = content.rig().ok_or("the look-dev character's rig isn't loaded")?;
+    let skeleton = content.skeleton().ok_or("the look-dev character's skeleton isn't loaded")?;
+    let graph = content.graph().ok_or("the character's graph isn't loaded")?;
+    let graph = graph.to_owned_graph().map_err(|error| error.to_string())?;
+    GraphBinding::new(&graph, skeleton, Some(rig), mesh.morph_targets.len(), &content.graph_clips())
+        .map_err(|error| error.to_string())
+}
+
+/// A graph driver for the character as `content` has it now, over its rest pose and its soft
+/// expression. Fails where [`graph_binding`] does.
+pub(crate) fn graph_driver(content: &Content) -> Result<GraphDriver, String> {
+    let binding = graph_binding(content)?;
+    let mesh = content.character_mesh().ok_or("the look-dev character isn't loaded")?;
+    let rig = content.rig().ok_or("the look-dev character's rig isn't loaded")?;
+    let skeleton = content.skeleton().ok_or("the look-dev character's skeleton isn't loaded")?;
+    let (pose, joints) = character_pose(mesh, rig, skeleton)?;
+    let springs = SpringBones::new(rig, &pose);
+    Ok(GraphDriver::new(GraphPlayer::new(Arc::new(binding), pose, GRAPH_SEED), joints).with_springs(springs))
 }
 
 /// The character's pose at rest with its soft expression, and where its figure finds its parts.

@@ -100,6 +100,7 @@
 //! Queued input is applied by [`Scene::apply`] just before a frame's fixed steps, outside them:
 //! it logs, and logging allocates, which the fixed step must not (rule R6).
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use sapphire_anim::{AnimStats, ArchivedClip, SpringQuality, SpringWork, evaluate_all};
@@ -107,7 +108,7 @@ use sapphire_assets::mesh::ArchivedMesh;
 use sapphire_core::debug_draw::{self, Collector};
 use sapphire_ecs::bevy_ecs::system::SystemState;
 use sapphire_ecs::prelude::*;
-use sapphire_math::{Mat4, Quat, Vec3};
+use sapphire_math::{Affine3A, Mat4, Quat, Vec3};
 use sapphire_render::{
     CharacterBody, CharacterFace, CharacterInstance, FaceExpression, Fog, FramePacket, HeadBasis, LightKind,
     LocalLight, MaterialHandle, MeshHandle, PostVariants, Renderer, SkyLayers, ViewData, Wind,
@@ -122,6 +123,7 @@ use sapphire_world::screen_effects::{EffectLibrary, EffectStack, tick_screen_eff
 use sapphire_world::tod::{self, TimeOfDay, tick_time_of_day};
 
 use crate::LOG_TARGET;
+use crate::anim_graph::{ClipTable, GraphDriver, GraphEvaluation, GraphShow};
 use crate::animate::{ClipPlayer, Evaluation, SpringView};
 use crate::arena::{ArenaActors, ArenaGround, ArenaShot};
 use crate::audio::SceneSound;
@@ -175,6 +177,15 @@ type Characters = QueryState<
 type Players = QueryState<(
     &'static mut ClipPlayer,
     &'static EntityClock,
+    &'static mut RenderPose,
+    &'static mut Figure,
+    &'static mut CharacterLightRig,
+    &'static mut RenderTransform,
+)>;
+
+/// The characters playing a graph, with everything that follows their skeletons.
+type GraphPlayers = QueryState<(
+    &'static mut GraphDriver,
     &'static mut RenderPose,
     &'static mut Figure,
     &'static mut CharacterLightRig,
@@ -370,6 +381,11 @@ pub(crate) struct Scene {
     animating: bool,
     /// Made once, like the others.
     players: Players,
+    /// The simulation a graph plays from (`--graph`, [`Self::play_graph`]). A scene without one does
+    /// no graph work at all, not even a query.
+    graph_show: Option<GraphShow>,
+    /// Made once, like the others.
+    graph_players: GraphPlayers,
     /// What animation did in the last frame (rule R9).
     anim_stats: AnimStats,
     /// How the tier runs spring bones ([`Self::set_spring_quality`]).
@@ -459,6 +475,7 @@ impl Scene {
         let screen_effects = SystemState::new(ecs.world_mut());
         let lamps = ecs.world_mut().query();
         let players = ecs.world_mut().query();
+        let graph_players = ecs.world_mut().query();
         Self {
             ecs,
             character,
@@ -488,6 +505,8 @@ impl Scene {
             figure,
             animating: false,
             players,
+            graph_show: None,
+            graph_players,
             anim_stats: AnimStats::default(),
             spring_quality: SpringQuality::DESKTOP,
             aspect: 16.0 / 9.0,
@@ -1011,6 +1030,10 @@ impl Scene {
         if self.animating && (character_changed || clip_changed) {
             self.replace_player(content);
         }
+        let graph_changed = content.take_graph_changed();
+        if self.graph_show.is_some() && (character_changed || graph_changed) {
+            self.replace_graph(content, character_changed);
+        }
     }
 
     /// Plays a clip on the character from now on, instead of holding it still: from its transform
@@ -1051,6 +1074,55 @@ impl Scene {
         }
     }
 
+    /// Plays a graph on the character from now on, instead of holding it still, from what `show`'s
+    /// simulation says ([`crate::anim_graph`]): from its transform as it stands, with its turntable gone,
+    /// since its actor places it now.
+    pub fn play_graph(&mut self, driver: GraphDriver, show: GraphShow) {
+        let figure = self.figure;
+        let character = self.character;
+        let world = self.ecs.world_mut();
+        let mut character = world.entity_mut(character);
+        let base = character.get::<RenderTransform>().map_or(Mat4::IDENTITY, |transform| transform.0);
+        let driver = driver.at(base);
+        let pose = driver.render_pose();
+        character.remove::<Turntable>();
+        character.insert((driver, pose, figure));
+        self.graph_show = Some(show);
+        self.extract_poses();
+    }
+
+    /// Takes in a new version of the character, the graph or a clip it names. A new character can't wait,
+    /// since its joints are others: its driver starts now from where the old one was. A new graph or
+    /// clip binds now and takes effect at the next state's start ([`GraphPlayer::replace`]). What
+    /// doesn't bind leaves what's playing alone until something else lands.
+    ///
+    /// [`GraphPlayer::replace`]: sapphire_anim::GraphPlayer::replace
+    fn replace_graph(&mut self, content: &mut Content, character_changed: bool) {
+        if let Err(error) = content.hold_graph_clips() {
+            tracing::warn!(target: LOG_TARGET, %error, "the character's graph lost a clip");
+        }
+        let character = self.character;
+        let Some(mut playing) = self.ecs.world_mut().get_mut::<GraphDriver>(character) else { return };
+        if character_changed {
+            match lookdev::graph_driver(content) {
+                Ok(mut driver) => {
+                    driver.continue_from(&playing);
+                    *playing = driver;
+                }
+                Err(error) => {
+                    tracing::warn!(target: LOG_TARGET, error, "the character keeps its graph's pose")
+                }
+            }
+        } else {
+            match lookdev::graph_binding(content) {
+                Ok(binding) => playing.player.replace(Arc::new(binding)),
+                Err(error) => {
+                    tracing::warn!(target: LOG_TARGET, error, "the character keeps the graph it has")
+                }
+            }
+        }
+    }
+
     /// Evaluates every character playing a clip, one job each, for a frame `alpha` of the way from
     /// the last fixed step to the next: at the position their own clock's presented time gives, so
     /// a clock that stands still costs nothing and holds the pose. Results reach this frame's packet
@@ -1062,6 +1134,56 @@ impl Scene {
         if self.animating {
             self.animate_clip(content.clip(), alpha);
         }
+        if self.graph_show.is_some() {
+            self.animate_graph(&content.graph_clips(), alpha);
+        }
+    }
+
+    /// Plays the show's frame on the character. Allocates nothing: the show has one character, so
+    /// this frame has no list of jobs to make.
+    fn animate_graph(&mut self, clips: &ClipTable<'_>, alpha: f32) {
+        profiling::scope!("animate graph");
+        let started = Stopwatch::start();
+        let mut stats = AnimStats::default();
+        let Some(show) = &mut self.graph_show else { return };
+        let input = show.frame(alpha);
+        let place = show.transform(alpha);
+        let travel = show.travel(alpha);
+        let world = self.ecs.world_mut();
+        let camera = world.resource::<OrbitCamera>().camera_data(self.aspect);
+        let view = SpringView::new(&camera, self.spring_quality);
+        if let Ok((mut driver, render, figure, rig, mut transform)) =
+            self.graph_players.get_mut(world, self.character)
+        {
+            stats.characters = 1;
+            transform.set_if_neq(RenderTransform(driver.base() * place));
+            if driver.fits(&render) {
+                let springs_run = driver.springs_run(&view, &transform, &figure);
+                let mut job = GraphEvaluation {
+                    driver,
+                    render,
+                    figure,
+                    rig,
+                    input,
+                    world_from_model: Affine3A::from_translation(travel) * Affine3A::from_mat4(transform.0),
+                    springs_run,
+                    evaluated: false,
+                    spring_work: SpringWork::default(),
+                    spring_time: Duration::ZERO,
+                };
+                job.run(clips);
+                stats.teleports = job.driver.player.teleports();
+                if job.evaluated {
+                    stats.evaluated = 1;
+                    stats.joints = job.driver.player.pose().joint_count() as u32;
+                }
+                stats.springs = u32::from(job.spring_work.wrote_pose);
+                stats.spring_substeps = job.spring_work.substeps;
+                stats.spring_time = job.spring_time;
+            }
+        }
+        stats.time = started.elapsed();
+        self.anim_stats = stats;
     }
 
     /// [`Self::animate`], given the clip.
@@ -1084,6 +1206,7 @@ impl Scene {
             let view = SpringView::new(&camera, self.spring_quality);
             for (mut player, clock, render, figure, rig, transform) in self.players.iter_mut(world) {
                 stats.characters += 1;
+                stats.teleports += player.teleports();
                 if !player.fits(clip, &render) {
                     continue;
                 }
@@ -1119,6 +1242,12 @@ impl Scene {
         }
         stats.time = started.elapsed();
         self.anim_stats = stats;
+    }
+
+    /// The character's graph player, for hot reload's tests.
+    #[cfg(all(test, feature = "dev"))]
+    pub fn graph_player(&self) -> Option<&sapphire_anim::GraphPlayer> {
+        self.ecs.world().get::<GraphDriver>(self.character).map(|driver| &driver.player)
     }
 
     /// What animation did in the last frame.
@@ -1381,6 +1510,9 @@ impl Scene {
         }
         if self.vfx.is_some() {
             self.step_vfx();
+        }
+        if let Some(show) = &mut self.graph_show {
+            show.step();
         }
         debug_draw::end_step();
     }
@@ -2040,8 +2172,7 @@ mod tests {
             plants: [MeshHandle::from_raw(2); 8],
             mountains: [MeshHandle::from_raw(3); lookdev::MOUNTAINS.len()],
         };
-        let pose =
-            RenderPose { palette: vec![sapphire_math::Affine3A::IDENTITY; 2], morph_weights: Vec::new() };
+        let pose = RenderPose { palette: vec![Affine3A::IDENTITY; 2], morph_weights: Vec::new() };
         scene.spawn_look_dev(Shot::Enemy, LookDev { town, fog_cards: None, pose: pose.clone(), figure });
         let warrior_figure = Figure {
             head: Vec3::new(0.0, 2.0, 0.0),
@@ -2095,7 +2226,7 @@ mod tests {
     #[test]
     fn the_look_dev_stage_holds_the_pose_and_lights_its_lamps_by_night() {
         let mut scene = Scene::with_character(MeshHandle::from_raw(0), BOUNDS, false);
-        let lifted = sapphire_math::Affine3A::from_translation(Vec3::Y);
+        let lifted = Affine3A::from_translation(Vec3::Y);
         let pose = RenderPose { palette: vec![lifted; 2], morph_weights: vec![0.5] };
         let figure = Figure {
             head: Vec3::new(0.0, 1.45, 0.0),
@@ -2140,7 +2271,7 @@ mod tests {
     #[test]
     fn a_character_held_anew_sends_a_new_pose_once_and_takes_its_figure() {
         let mut scene = Scene::with_character(MeshHandle::from_raw(0), BOUNDS, false);
-        let lifted = sapphire_math::Affine3A::from_translation(Vec3::Y);
+        let lifted = Affine3A::from_translation(Vec3::Y);
         let pose = RenderPose { palette: vec![lifted; 2], morph_weights: vec![0.5] };
         let figure = Figure {
             head: Vec3::new(0.0, 1.45, 0.0),
@@ -2187,17 +2318,19 @@ mod tests {
     /// A small humanoid for clips: hips, a spine, a head, and two feet, each a joint of the palette.
     mod clips {
         use sapphire_anim::{
-            CharacterPose, Clip, Joint, JointTransform, PackedRotation, RotationTrack, Skeleton, VectorRange,
-            VectorTrack,
+            CharacterPose, Clip, Joint, JointTransform, PackedRotation, RotationTrack, Skeleton, SpringBones,
+            VectorRange, VectorTrack,
         };
         use sapphire_assets::AssetId;
         use sapphire_assets::clip::{DEFAULT_RATE, RootMotion, WeightRange, WeightTrack};
         use sapphire_assets::mesh::SkinBind;
+        use sapphire_assets::rig::{CharacterRig, Spring, SpringJoint, SpringTip};
         use sapphire_math::{Affine3A, Mat4, Quat, Vec3};
         use sapphire_render::{InstanceId, MeshHandle};
         use sapphire_world::light_rig::{CharacterLightRig, LightRigId};
 
         use super::*;
+        use crate::anim_graph::GraphScript;
         use crate::animate::ClipPlayer;
         use crate::extract::{RenderMesh, RenderPose};
         use crate::lookdev::FigureJoints;
@@ -2315,6 +2448,13 @@ mod tests {
 
         fn frame(scene: &mut Scene, clip: &ArchivedClip, alpha: f32, id: InstanceId) -> Drawn {
             scene.animate_clip(Some((clip, 0)), alpha);
+            let drawn = drawn(scene, alpha, id);
+            scene.end_frame();
+            drawn
+        }
+
+        /// What this frame's packet says of `id`.
+        fn drawn(scene: &mut Scene, alpha: f32, id: InstanceId) -> Drawn {
             let packet = scene.frame_packet(alpha, Some((1920, 1080)));
             let posed = packet.skinned.iter().find(|skinned| skinned.id == id);
             let palette = posed.map(|skinned| {
@@ -2328,7 +2468,7 @@ mod tests {
                 .find(|instance| instance.id == id)
                 .map(|instance| instance.transform.transform_point3(Vec3::ZERO));
             let entry = packet.characters.iter().find(|character| character.id == id);
-            let drawn = Drawn {
+            Drawn {
                 palette,
                 weights,
                 moved_to,
@@ -2336,9 +2476,222 @@ mod tests {
                 forward: entry.map_or(Vec3::ZERO, |entry| entry.face.head.forward),
                 body: entry.map_or(CharacterBody::default(), |entry| entry.body),
                 removed: packet.instances.removed.contains(&id),
-            };
+            }
+        }
+
+        /// A graph with `clip()` for its only clip, playing it standing and for the show's moves.
+        fn graph() -> sapphire_anim::AnimGraph {
+            let mut graph = sapphire_anim::AnimGraph::from_document(
+                r#"(type: "sapphire::assets::AnimGraph", version: 1, data: (
+                    clips: [(name: "turn", source: "15af86bb-67b3-4208-bc54-1618aabf450b")],
+                    locomotion: (
+                        start: "ground",
+                        states: [(name: "ground", plays: Clip(clip: "turn", looping: true))],
+                    ),
+                    combat: (decay: 5, exit: 5, moves: [
+                        (move: "strike", clip: "turn"),
+                        (move: "dodge_back", clip: "turn"),
+                    ]),
+                ))"#,
+            )
+            .expect("a good document");
+            graph.resolve(|_| GRAPH_CLIP);
+            graph
+        }
+
+        const GRAPH_CLIP: AssetId = AssetId::from_bytes([8; 16]);
+
+        fn driver(table: &ClipTable<'_>) -> GraphDriver {
+            let bytes = skeleton().to_cooked().expect("cooked");
+            let skeleton = Skeleton::read(&bytes).expect("a valid skeleton");
+            let binds: Vec<SkinBind> = (0..5)
+                .map(|joint| SkinBind { joint, inverse_bind_matrix: Mat4::IDENTITY.to_cols_array_2d() })
+                .collect();
+            let binding =
+                sapphire_anim::GraphBinding::new(&graph(), skeleton, None, 2, table).expect("it binds");
+            let pose = CharacterPose::new(skeleton, &binds, &[], vec![0.25, 0.0]);
+            let player = sapphire_anim::GraphPlayer::new(Arc::new(binding), pose, 1);
+            GraphDriver::new(player, FigureJoints::for_test(&skeleton_pose_rest(), 2, 0.0, [3, 4]))
+        }
+
+        fn graph_frame(scene: &mut Scene, table: &ClipTable<'_>, alpha: f32, id: InstanceId) -> Drawn {
+            scene.animate_graph(table, alpha);
+            let drawn = drawn(scene, alpha, id);
             scene.end_frame();
             drawn
+        }
+
+        /// The graph writes what a clip does, and its actor places the character: the first frame
+        /// is posed, and a move's root motion comes from the simulation, with no clip's in it.
+        #[test]
+        fn a_graph_poses_the_character_and_its_actor_places_it() {
+            let bytes = clip().to_cooked().expect("cooked");
+            let cooked = Clip::read(&bytes).expect("a valid clip");
+            let table = ClipTable::new([(GRAPH_CLIP, Some(cooked), 0)].into_iter());
+            let mut scene = stage();
+            scene.play_graph(driver(&table), GraphShow::new(GraphScript::Cancel));
+            let id = extract::instance_id(scene.character);
+
+            let first = graph_frame(&mut scene, &table, 1.0, id);
+            let palette = first.palette.clone().expect("posed at once");
+            assert_eq!(palette.len(), 5);
+            assert_eq!(scene.anim_stats().characters, 1);
+            assert_eq!(scene.anim_stats().evaluated, 1);
+            assert_eq!(scene.anim_stats().joints, 5);
+
+            // The clip's own root motion is 3 m over its 60 ticks: none of it shows. The strike's root
+            // has it 0.35 m forward by tick 20 of the move, and then the dodge takes it 1.33 m back.
+            let mut farthest = 0.0_f32;
+            for _ in 0..50 {
+                scene.step();
+                let drawn = graph_frame(&mut scene, &table, 1.0, id);
+                assert_ne!(drawn.palette.clone().expect("every tick"), palette, "the pose moved");
+                if let Some(moved) = drawn.moved_to {
+                    farthest = farthest.min(moved.z);
+                    assert!(moved.z.abs() < 1.5, "the simulation's, not the clip's: {moved}");
+                }
+            }
+            assert!(farthest < -0.5, "the dodge's travel: {farthest}");
+        }
+
+        /// A stopped clock sends the renderer nothing: no skin, no move, and nothing evaluated.
+        #[test]
+        fn a_stopped_clock_costs_a_graph_nothing() {
+            let bytes = clip().to_cooked().expect("cooked");
+            let cooked = Clip::read(&bytes).expect("a valid clip");
+            let table = ClipTable::new([(GRAPH_CLIP, Some(cooked), 0)].into_iter());
+            let mut scene = stage();
+            scene.play_graph(driver(&table), GraphShow::new(GraphScript::Hitstop));
+            let id = extract::instance_id(scene.character);
+            for _ in 0..31 {
+                scene.step();
+                graph_frame(&mut scene, &table, 1.0, id);
+            }
+            scene.step();
+            for alpha in [1.0, 0.25, 0.5, 1.0] {
+                let drawn = graph_frame(&mut scene, &table, alpha, id);
+                assert_eq!(drawn.palette, None, "nothing to skin");
+                assert_eq!(drawn.weights, None);
+                assert_eq!(drawn.moved_to, None, "nothing moved");
+                assert_eq!(scene.anim_stats().characters, 1);
+                assert_eq!(scene.anim_stats().evaluated, 0);
+            }
+        }
+
+        /// A scene with no graph does no graph work, and a graph's frame allocates nothing once it's
+        /// made: every step and frame of a script, a cancel's transition among them.
+        #[test]
+        fn a_graph_costs_nothing_unasked_and_allocates_nothing_when_it_plays() {
+            let bytes = clip().to_cooked().expect("cooked");
+            let cooked = Clip::read(&bytes).expect("a valid clip");
+            let table = ClipTable::new([(GRAPH_CLIP, Some(cooked), 0)].into_iter());
+
+            let mut unasked = stage();
+            unasked.animate_graph(&table, 1.0);
+            assert_eq!(unasked.anim_stats(), AnimStats::default());
+
+            let mut scene = stage();
+            scene.play_graph(driver(&table), GraphShow::new(GraphScript::Cancel));
+            scene.step();
+            scene.animate_graph(&table, 1.0);
+            let ((), counts) = sapphire_core::alloc::count_in_scope(|| {
+                for _ in 0..70 {
+                    scene.step();
+                    scene.animate_graph(&ClipTable::new([(GRAPH_CLIP, Some(cooked), 0)].into_iter()), 0.5);
+                }
+            });
+            if sapphire_core::alloc::PER_THREAD_COUNTS {
+                assert_eq!(counts.allocations, 0, "{counts:?}");
+            }
+        }
+
+        /// Springs under a graph: they run while the clock does and write the pose, a stopped clock
+        /// runs none and sends nothing, `--springs off` leaves them out, and a cut starts them over.
+        #[test]
+        fn a_graphs_springs_run_on_its_clock() {
+            let bytes = clip().to_cooked().expect("cooked");
+            let cooked = Clip::read(&bytes).expect("a valid clip");
+            let table = ClipTable::new([(GRAPH_CLIP, Some(cooked), 0)].into_iter());
+            let rig = CharacterRig {
+                joint_count: 5,
+                springs: vec![Spring {
+                    name: "strand".into(),
+                    joints: [1, 2]
+                        .map(|joint| SpringJoint {
+                            joint,
+                            hit_radius: 0.01,
+                            stiffness: 0.5,
+                            gravity_power: 0.1,
+                            gravity_dir: [0.0, -1.0, 0.0],
+                            drag_force: 0.4,
+                        })
+                        .into(),
+                    tip: SpringTip::Joint,
+                    collider_groups: Vec::new(),
+                    center: None,
+                }],
+                ..CharacterRig::default()
+            };
+            let rig_bytes = rig.to_cooked().expect("cooked");
+            let rig = CharacterRig::read(&rig_bytes).expect("a valid rig");
+            let sprung = || {
+                let driver = driver(&table);
+                let springs = SpringBones::new(rig, driver.player.pose());
+                assert!(springs.is_some(), "the rig has a chain");
+                driver.with_springs(springs)
+            };
+
+            let mut scene = stage();
+            scene.play_graph(sprung(), GraphShow::new(GraphScript::Hitstop));
+            let id = extract::instance_id(scene.character);
+            for frame in 0..31 {
+                scene.step();
+                graph_frame(&mut scene, &table, 1.0, id);
+                // Their first frame only takes up where the pose is.
+                assert_eq!(scene.anim_stats().spring_substeps > 0, frame > 0, "{:?}", scene.anim_stats());
+                assert_eq!(scene.anim_stats().springs, 1, "they write the pose");
+            }
+            scene.step();
+            let drawn = graph_frame(&mut scene, &table, 1.0, id);
+            assert_eq!(scene.anim_stats().spring_substeps, 0, "the clock's stopped");
+            assert_eq!(drawn.palette, None, "and nothing's sent");
+
+            let mut off = stage();
+            off.play_graph(sprung().with_springs_on(false), GraphShow::new(GraphScript::Stand));
+            for _ in 0..3 {
+                off.step();
+                off.animate_graph(&table, 1.0);
+                assert_eq!(off.anim_stats().spring_substeps, 0);
+            }
+
+            let mut cut = stage();
+            cut.play_graph(sprung(), GraphShow::new(GraphScript::Cut));
+            for _ in 0..30 {
+                cut.step();
+                cut.animate_graph(&table, 1.0);
+            }
+            assert_eq!(cut.anim_stats().teleports, 1, "the script's cut");
+            let character = cut.character;
+            let driver = cut.ecs.world_mut().get::<GraphDriver>(character).expect("playing");
+            assert_eq!(driver.springs_saw(), 1, "the springs started over for it");
+        }
+
+        /// A loop of a clip with root motion jumps the character back, and says so; one without has
+        /// nothing to jump.
+        #[test]
+        fn a_clips_loop_is_a_teleport_only_with_root_motion() {
+            let bytes = clip().to_cooked().expect("cooked");
+            let cooked = Clip::read(&bytes).expect("a valid clip");
+            for (root_motion, teleports) in [(true, 2), (false, 0)] {
+                let mut scene = stage();
+                scene.play_clip(player().with_root_motion(root_motion));
+                let id = extract::instance_id(scene.character);
+                for _ in 0..150 {
+                    scene.step();
+                    frame(&mut scene, cooked, 1.0, id);
+                }
+                assert_eq!(scene.anim_stats().teleports, teleports, "root motion: {root_motion}");
+            }
         }
 
         #[test]

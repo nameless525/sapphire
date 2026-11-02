@@ -154,7 +154,7 @@ pub struct Scene {
 /// and the plain camera (`--arena-shot follow`), so tuning the camera director moves none of them.
 /// They alone run `--arena`, so no earlier scene sees its stage, and `arena-replay` alone plays a
 /// replay on it.
-pub fn scenes() -> [Scene; 123] {
+pub fn scenes() -> [Scene; 125] {
     [
         Scene {
             name: "turntable-start",
@@ -2587,6 +2587,55 @@ pub fn scenes() -> [Scene; 123] {
                 "off",
                 "--capture-frames",
                 "15",
+                "--capture-step",
+                "1",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The animation graph (M2 N3) half a second into the controller's run, every frame drawn: the
+        // blend space past its walk and on its run with breathing added, the simulation placing the
+        // character, a treadmill keeping it in shot, and the hair lagging the run it still feels.
+        Scene {
+            name: "lookdev-graph-run",
+            args: &[
+                "--capture-ticks",
+                "30",
+                "--look-dev",
+                "hero",
+                "--graph",
+                "run",
+                "--time-of-day",
+                "10",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--capture-frames",
+                "30",
+                "--capture-step",
+                "1",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The frame after a strike cancels into a dodge: its first frame back on the new move's clip
+        // and most of the way there, with the arm's swing carried into it rather than faded in.
+        Scene {
+            name: "lookdev-graph-cancel",
+            args: &[
+                "--capture-ticks",
+                "28",
+                "--look-dev",
+                "hero",
+                "--graph",
+                "cancel",
+                "--time-of-day",
+                "10",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--capture-frames",
+                "16",
                 "--capture-step",
                 "1",
             ],

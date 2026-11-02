@@ -87,7 +87,7 @@ pub(crate) fn run(
     let (mut hud_total, mut hud_max) = (Duration::ZERO, Duration::ZERO);
     // Animation's per-frame time (M2 N2, `--clip`), sorted below, and the poses it evaluated.
     let mut anim = Vec::with_capacity(cpu.capacity());
-    let (mut anim_evaluated, mut anim_joints) = (0_u64, 0_u64);
+    let (mut anim_evaluated, mut anim_joints, mut anim_teleports) = (0_u64, 0_u64, 0_u32);
     // And spring bones' within it, and the sub-steps they ran.
     let mut springs = Vec::with_capacity(cpu.capacity());
     let mut spring_substeps = 0_u64;
@@ -127,6 +127,7 @@ pub(crate) fn run(
             anim_joints += u64::from(stats.joints);
             springs.push(stats.spring_time);
             spring_substeps += u64::from(stats.spring_substeps);
+            anim_teleports = stats.teleports;
             if let Some(timings) = stage.graph.gpu_timings()
                 && timings.frame > timed_frame.max(u64::from(WARMUP_FRAMES))
             {
@@ -191,6 +192,7 @@ pub(crate) fn run(
         hud_us_mean = format_args!("{:.2}", micros(hud_total / frames)),
         hud_us_max = format_args!("{:.2}", micros(hud_max)),
         clip = ?options.clip,
+        anim_graph = ?options.graph,
         anim_us_p50 = format_args!("{:.2}", micros(anim_percentile(50))),
         anim_us_p99 = format_args!("{:.2}", micros(anim_percentile(99))),
         anim_us_max = format_args!("{:.2}", micros(anim_percentile(100))),
@@ -201,6 +203,7 @@ pub(crate) fn run(
         spring_us_p99 = format_args!("{:.2}", micros(spring_percentile(99))),
         spring_us_max = format_args!("{:.2}", micros(spring_percentile(100))),
         spring_substeps_per_frame = format_args!("{:.2}", spring_substeps as f64 / f64::from(frames)),
+        anim_teleports,
         alloc_bytes_per_frame = bytes / u64::from(frames),
         startup_ms = format_args!("{:.1}", startup.as_secs_f64() * 1e3),
         graph = ?stage.graph.stats(),

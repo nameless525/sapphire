@@ -215,6 +215,15 @@ impl Stage {
                 );
                 scene.set_spring_quality(crate::animate::spring_quality(quality.active().id));
             }
+            if let Some(script) = options.graph {
+                content.load_graph(crate::lookdev::GRAPH, &mut renderer, &gpu)?;
+                let driver = crate::lookdev::graph_driver(&content).map_err(AppInitError::msg)?;
+                scene.play_graph(
+                    driver.with_springs_on(options.springs != Some(false)),
+                    crate::anim_graph::GraphShow::new(script),
+                );
+                scene.set_spring_quality(crate::animate::spring_quality(quality.active().id));
+            }
             if shot == crate::lookdev::Shot::Enemy {
                 let meshes = content.enemy(&mut renderer, &gpu)?;
                 scene.spawn_enemy(meshes, content.held_enemy()?);

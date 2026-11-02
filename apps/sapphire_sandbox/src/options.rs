@@ -8,6 +8,7 @@ use sapphire_render::{DebugView, LightPath, MIN_RENDER_SCALE, Msaa, PostVariants
 use sapphire_ui::Insets;
 use sapphire_world::tod::CharacterShadeKey;
 
+use crate::anim_graph::GraphScript;
 use crate::arena::ArenaShot;
 use crate::audio::CueOption;
 use crate::combat_views::CombatViews;
@@ -134,13 +135,15 @@ pub(crate) struct Options {
     /// `--clip-in-place`: leaves the clip's root motion out, so the character stays where a close
     /// shot framed it. Needs `--clip`.
     pub clip_in_place: bool,
-    /// `--springs on|off`: whether the character's spring bones run under its clip (M2 N5). On unless
-    /// it says off, and a character holding still has none. Needs `--clip`.
+    /// `--springs on|off`: whether the character's spring bones run under its clip or graph (M2 N5). On
+    /// unless it says off, and a character holding still has none. Needs `--clip` or `--graph`.
     pub springs: Option<bool>,
     /// `--arena`: the combat stage (M2 O5, [`crate::arena`]), the look-dev town's square as a place
     /// to fight, framed by this shot (`--arena-shot`). A scene of its own, as `--look-dev` is: it
     /// excludes what that excludes, and `--look-dev` too.
     pub arena: Option<ArenaShot>,
+    /// `--graph`: the animation graph on the look-dev character, from this script (M2 N3).
+    pub graph: Option<GraphScript>,
     /// `--cloud-cover <0..1>`: both cloud layers' coverage instead of time of day's; 0 is a
     /// clear sky.
     pub cloud_cover: Option<f32>,
@@ -670,6 +673,13 @@ impl Options {
                         other => return Err(format!("--springs expects on or off, got {other:?}")),
                     });
                 }
+                "--graph" => {
+                    let raw = value("--graph")?;
+                    options.graph = Some(GraphScript::from_name(&raw).ok_or_else(|| {
+                        let names: Vec<&str> = GraphScript::ALL.iter().map(|script| script.name()).collect();
+                        format!("--graph expects one of {}, got {raw:?}", names.join(", "))
+                    })?);
+                }
                 "--cloud-cover" => {
                     let cover: f32 = number(&value("--cloud-cover")?, "--cloud-cover")?;
                     if !(0.0..=1.0).contains(&cover) {
@@ -875,6 +885,12 @@ impl Options {
         if options.clip_in_place && options.clip.is_none() {
             return Err("--clip-in-place needs --clip".to_owned());
         }
+        if options.graph.is_some() && options.look_dev.is_none() {
+            return Err("--graph plays on the look-dev character: it needs --look-dev".to_owned());
+        }
+        if options.graph.is_some() && options.clip.is_some() {
+            return Err("--graph and --clip are exclusive: the graph chooses what plays".to_owned());
+        }
         options.arena = match (arena_flag, arena_shot) {
             (true, shot) => Some(shot.unwrap_or_default()),
             (false, Some(_)) => return Err("--arena-shot needs --arena".to_owned()),
@@ -894,8 +910,8 @@ impl Options {
                  --foliage, --outline-row, --faces, --rim-rig and --hard-edges"
                 .to_owned());
         }
-        if options.springs.is_some() && options.clip.is_none() {
-            return Err("--springs runs under a clip: it needs --clip".to_owned());
+        if options.springs.is_some() && options.clip.is_none() && options.graph.is_none() {
+            return Err("--springs runs under a clip or a graph: it needs --clip or --graph".to_owned());
         }
         let frames = CaptureFrames { count: capture_frames.unwrap_or(1), step: capture_step.unwrap_or(0) };
         if usize::from(capture.is_some()) + usize::from(bench.is_some()) + usize::from(serve) > 1 {
@@ -1161,6 +1177,19 @@ mod tests {
         let (per_object, _) = parse(&["--light-path=per-object"]).unwrap();
         assert_eq!(per_object.render_settings(RenderSettings::default()).light_path, LightPath::PerObject);
         assert!(parse(&["--light-path", "deferred"]).is_err());
+    }
+
+    #[test]
+    fn a_graph_plays_on_the_look_dev_character_alone() {
+        assert_eq!(parse(&["--look-dev", "hero"]).unwrap().0.graph, None);
+        let (options, _) = parse(&["--look-dev", "hero", "--graph", "cancel"]).unwrap();
+        assert_eq!(options.graph, Some(GraphScript::Cancel));
+        let error = parse(&["--graph", "cancel"]).unwrap_err();
+        assert!(error.contains("--look-dev"), "{error}");
+        let error = parse(&["--look-dev", "hero", "--graph", "dance"]).unwrap_err();
+        assert!(error.contains("cancel") && error.contains("dance"), "{error}");
+        let error = parse(&["--look-dev", "hero", "--graph", "run", "--clip", "strike"]).unwrap_err();
+        assert!(error.contains("exclusive"), "{error}");
     }
 
     #[test]

@@ -76,7 +76,7 @@ use std::io;
 #[cfg(feature = "dev")]
 use std::sync::Arc;
 
-use sapphire_anim::{ArchivedClip, ArchivedSkeleton, Clip, Skeleton};
+use sapphire_anim::{AnimGraph, ArchivedAnimGraph, ArchivedClip, ArchivedSkeleton, Clip, Skeleton};
 use sapphire_assets::cue::Cue;
 use sapphire_assets::material::Material;
 use sapphire_assets::mesh::Mesh;
@@ -85,8 +85,8 @@ use sapphire_assets::probes::ProbeGrid;
 use sapphire_assets::rig::{ArchivedCharacterRig, CharacterRig};
 use sapphire_assets::sound::{AUDIO_PACK, DecodedSound, Sound};
 use sapphire_assets::{
-    AssetBudgets, AssetId, AssetServer, AssetSlot, AssetStats, Handle, LoadPriority, PackFile, PackSource,
-    ReadDone, TextureAsset, Unloaded, Upload, UploadError,
+    AssetBudgets, AssetId, AssetServer, AssetSlot, AssetStats, Handle, LoadError, LoadPriority, PackFile,
+    PackSource, ReadDone, TextureAsset, Unloaded, Upload, UploadError,
 };
 #[cfg(feature = "dev")]
 use sapphire_assets::{AssetChange, MountError, RemountReport};
@@ -102,6 +102,7 @@ use sapphire_rhi::GpuContext;
 use sapphire_time::Stopwatch;
 
 use crate::LOG_TARGET;
+use crate::anim_graph::ClipTable;
 use crate::arena;
 use crate::enemy::{self, EnemyMeshes};
 use crate::environment;
@@ -362,6 +363,11 @@ pub(crate) struct Content {
     /// knew of ([`Self::take_clip_changed`]).
     clip: Option<Handle<Clip>>,
     clip_version: u32,
+    /// The graph the character plays, once asked for (`--graph`), the clips it names, and the versions
+    /// the scene last knew of ([`Self::take_graph_changed`]).
+    graph: Option<Handle<AnimGraph>>,
+    graph_clips: Vec<(AssetId, Handle<Clip>)>,
+    graph_version: u32,
     /// The sky material the scene draws: [`SKY`] unless the scene wants another.
     sky_id: AssetId,
     /// The sky material, once asked for.
@@ -421,6 +427,9 @@ impl Content {
             character_versions: None,
             clip: None,
             clip_version: 0,
+            graph: None,
+            graph_clips: Vec::new(),
+            graph_version: 0,
             sky_id: sky,
             sky: None,
             server,
@@ -926,6 +935,67 @@ impl Content {
         std::mem::replace(&mut self.clip_version, version) != version
     }
 
+    /// Loads the graph `id` until it and the clips it names are resident: CPU data, which nothing
+    /// uploads ([`Self::graph`] and [`Self::graph_clips`] read them). They stay loaded from then on.
+    pub fn load_graph(
+        &mut self,
+        id: AssetId,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+    ) -> Result<(), AppInitError> {
+        let graph = self.server.load_with(id, LoadPriority::Critical).map_err(AppInitError::msg)?;
+        let assets = &mut self.gpu;
+        let loaded = self.server.finish(&graph, |upload| assets.upload(upload, renderer, gpu));
+        self.graph = Some(graph);
+        for unloaded in self.server.take_unloaded() {
+            self.gpu.unload(unloaded);
+        }
+        loaded.map_err(|error| AppInitError::msg(format!("the graph didn't load: {error}")))?;
+        self.hold_graph_clips().map_err(AppInitError::msg)?;
+        self.graph_version = self.graph_versions();
+        Ok(())
+    }
+
+    /// Takes handles on the clips the graph names now, which it keeps loaded as its dependencies: a new
+    /// version may name others. Allocates, so only when [`Self::take_graph_changed`] says so.
+    pub fn hold_graph_clips(&mut self) -> Result<(), LoadError> {
+        let Some(graph) = self.graph() else { return Ok(()) };
+        let ids: Vec<AssetId> = graph.clip_ids().collect();
+        let clips = ids.into_iter().map(|id| Ok((id, self.server.load_with(id, LoadPriority::Critical)?)));
+        self.graph_clips = clips.collect::<Result<_, LoadError>>()?;
+        Ok(())
+    }
+
+    /// The graph [`Self::load_graph`] loaded.
+    pub fn graph(&self) -> Option<&ArchivedAnimGraph> {
+        self.graph.as_ref().and_then(|graph| self.server.get(graph))
+    }
+
+    /// The clips the graph names, as a frame's evaluation reads them. Allocates nothing.
+    pub fn graph_clips(&self) -> ClipTable<'_> {
+        ClipTable::new(
+            self.graph_clips
+                .iter()
+                .map(|(id, clip)| (*id, self.server.get(clip), self.server.generation(clip))),
+        )
+    }
+
+    /// A number that moves with any new version of the graph or its clips.
+    fn graph_versions(&self) -> u32 {
+        let graph = self.graph.as_ref().map_or(0, |graph| self.server.generation(graph));
+        self.graph_clips
+            .iter()
+            .fold(graph, |versions, (_, clip)| versions.wrapping_add(self.server.generation(clip)))
+    }
+
+    /// Whether the graph or a clip it names has a new version since the last call or since
+    /// [`Self::load_graph`], which a character's graph has to be bound again for. Always false without a
+    /// graph, and it allocates nothing.
+    pub fn take_graph_changed(&mut self) -> bool {
+        let version = self.graph_versions();
+        std::mem::replace(&mut self.graph_version, version) != version
+    }
+
     /// The rig [`Self::load_rig`] loaded.
     pub fn rig(&self) -> Option<&ArchivedCharacterRig> {
         self.rig.as_ref().and_then(|rig| self.server.get(rig))
@@ -1050,6 +1120,7 @@ mod tests {
     use sapphire_rhi::{GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 
     use super::*;
+    use crate::anim_graph::{GraphScript, GraphShow};
     use crate::lookdev::Shot;
     use crate::scene::{LookDev, Scene};
 
@@ -1092,10 +1163,16 @@ mod tests {
     /// A clip for the character: its root swings 1.5 m from one side to the other over [`SWING_TICKS`].
     const SWING: AssetId = AssetId::from_bytes([0x5f; 16]);
     const SWING_TICKS: u16 = 30;
+    /// A graph for the character that plays [`SWING`].
+    const GRAPH: AssetId = AssetId::from_bytes([0x60; 16]);
 
     /// A pack with the look-dev character, its first vertex at `x`, its rig and its skeleton: every
     /// required humanoid bone a joint of its own under the root, and `extra` joints more.
     fn pack(x: f32, extra: usize) -> Vec<u8> {
+        pack_with_decay(x, extra, 5)
+    }
+
+    fn pack_with_decay(x: f32, extra: usize, decay: u32) -> Vec<u8> {
         let count = HumanBone::REQUIRED.len() + extra;
         let at = |joint: usize| [joint as f32 * 0.1, 1.0, 0.0];
         let joints: Vec<Joint> = (0..count)
@@ -1144,8 +1221,31 @@ mod tests {
             packed(lookdev::RIG, AssetKind::Rig, &rig.to_cooked().expect("cooked")),
             packed(SKELETON, AssetKind::Skeleton, &Skeleton::new(&joints).to_cooked().expect("cooked")),
             packed_with(SWING, AssetKind::Clip, &swing(count).to_cooked().expect("cooked"), vec![SKELETON]),
+            packed_with(
+                GRAPH,
+                AssetKind::AnimGraph,
+                &swing_graph(decay).to_cooked().expect("cooked"),
+                vec![SWING],
+            ),
         ])
         .expect("a pack")
+    }
+
+    /// The swing, looping. Its decay is all that tells one version from another.
+    fn swing_graph(decay: u32) -> AnimGraph {
+        let text = format!(
+            r#"(type: "sapphire::assets::AnimGraph", version: 1, data: (
+                clips: [(name: "swing", source: "15af86bb-67b3-4208-bc54-1618aabf450b")],
+                locomotion: (
+                    start: "ground",
+                    states: [(name: "ground", plays: Clip(clip: "swing", looping: true))],
+                ),
+                combat: (decay: {decay}, exit: {decay}, moves: []),
+            ))"#
+        );
+        let mut graph = AnimGraph::from_document(&text).expect("a good document");
+        graph.resolve(|_| SWING);
+        graph
     }
 
     /// The root from 0.75 m to the character's right to 0.75 m to its left, a clip for `joints` joints.
@@ -1209,6 +1309,9 @@ mod tests {
                 character_versions: None,
                 clip: None,
                 clip_version: 0,
+                graph: None,
+                graph_clips: Vec::new(),
+                graph_version: 0,
                 sky_id: SKY,
                 sky: None,
                 server,
@@ -1267,6 +1370,14 @@ mod tests {
         fn play_swing(&mut self) {
             self.content.load_clip(SWING, &mut self.renderer, &self.gpu).expect("the clip");
             self.scene.play_clip(lookdev::player(&self.content).expect("a player"));
+            self.frame_on_character();
+        }
+
+        /// Plays the graph on the character, from a script that stands still.
+        fn play_graph(&mut self) {
+            self.content.load_graph(GRAPH, &mut self.renderer, &self.gpu).expect("the graph");
+            let driver = lookdev::graph_driver(&self.content).expect("a driver");
+            self.scene.play_graph(driver, GraphShow::new(GraphScript::Stand));
             self.frame_on_character();
         }
 
@@ -1365,6 +1476,59 @@ mod tests {
         assert_eq!(settled.ignored_poses, 0, "{settled:?}");
         assert_eq!(settled.palette_bytes, (joints + 1) * per_joint, "her new palette: {settled:?}");
         assert_eq!(stage.frame().palette_bytes, 0, "held again");
+    }
+
+    /// A new graph binds at once and takes effect at the next state's start (T2's seam), with the
+    /// character drawn on every frame between. A state's start here is the swing's own: nothing in the
+    /// script changes state, so the new graph waits.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_new_graph_waits_for_the_next_states_start() {
+        let mut stage = Stage::new();
+        stage.play_graph();
+        for _ in 0..3 {
+            stage.frame();
+        }
+        assert!(!stage.content.take_graph_changed(), "nothing's new");
+
+        stage.source.insert(PACK, pack_with_decay(0.0, 0, 9));
+        stage.content.remount(PACK).expect("the new pack");
+        let mut waiting = false;
+        for _ in 0..1000 {
+            stage.frame();
+            waiting = stage.scene.graph_player().expect("playing").has_replacement();
+            if waiting {
+                break;
+            }
+        }
+        assert!(waiting, "the new version reached the character");
+        let stats = stage.frame();
+        assert_eq!(stats.ignored_poses, 0, "{stats:?}");
+    }
+
+    /// A new version of the character under a graph: the graph plays on, on the new joints, posed on the
+    /// first frame that draws them.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_new_skeleton_under_a_graph_plays_on() {
+        let mut stage = Stage::new();
+        stage.play_graph();
+        let joints = HumanBone::REQUIRED.len() as u32;
+        let per_joint = stage.frame().palette_bytes / joints;
+        assert!(per_joint > 0);
+        stage.frame();
+
+        // The clip gets the new joint too: until it lands, the old one's tracks still fit.
+        stage.recook(0.0, 1);
+        let settled = stage.until((1, 1, 1));
+        assert_eq!(settled.ignored_poses, 0, "{settled:?}");
+        let mut palette = settled.palette_bytes;
+        for _ in 0..4 {
+            let stats = stage.frame();
+            assert_eq!(stats.ignored_poses, 0, "{stats:?}");
+            palette = stats.palette_bytes;
+        }
+        assert_eq!(palette, (joints + 1) * per_joint, "posed on its new palette, every frame");
     }
 
     /// The pixels of `a` and `b` that differ by more than a little, and their center along x.

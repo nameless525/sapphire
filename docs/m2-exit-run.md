@@ -231,6 +231,8 @@ What follows was rehearsed on a headless Android emulator and an iOS simulator (
 
 ### Android
 
+`cargo xtask` finds `adb` itself, but this page's own `adb` lines need it on your `PATH`, and it wasn't on this Mac's: `export PATH="$PATH:$HOME/Library/Android/sdk/platform-tools"`.
+
 With the phone in developer mode, plugged in, and `adb devices` listing it:
 
 ```bash
@@ -240,19 +242,19 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home \
 
 That cooks, builds, installs and launches it, and streams the app's log until it ends. The fight starts over 4 s after someone falls. For a session that's kept and can be checked afterwards, end the command with `-- --arena --record fight.sreplay --scenario arena-fight` instead: a recording is a single fight, so it doesn't start over, and quitting ends it.
 
-Two traps. A recording's name is refused if it's already there: the app opens, logs `it exists; delete it first to replace it` and closes, looking like a crash. So name each session (`fight-2.sreplay`), or `adb shell run-as dev.sapphire.sandbox rm cache/fight.sreplay`. And the launcher's icon starts the app with no arguments, so that's the sandbox's own scene and not a fight: rerun the command, or start it again with `adb shell am start` and its `sapphire.args` as [m1-exit-run.md](m1-exit-run.md) does.
+Two traps. A recording's name is refused if it's already there: the app opens, logs `it exists; delete it first to replace it` and closes, looking like a crash. So name each session (`fight-2.sreplay`), or `adb shell run-as dev.sapphire.sandbox rm cache/fight.sreplay`. And the launcher's icon starts the app with no arguments, so that's the sandbox's own scene and not a fight: rerun the command. Adding `--dry-run` to it prints the `adb shell am start … --es sapphire.args <base64>` line that starts the fight with no install.
 
 Back opens the pause: a tap ends it, and Back again leaves. A pause shows a veil and a two-bar mark here as on a desktop.
 
 ### iPhone
 
 ```bash
-cargo xtask run --platform ios --release --features dev --identity <identity> --profile <mobileprovision> -- --arena --fight
+cargo xtask run --platform ios --release --features dev --identity <identity> --profile <mobileprovision> --device <device> -- --arena --fight
 ```
 
 The same `--arena --record fight.sreplay --scenario arena-fight` records here.
 
-[m1-exit-run.md](m1-exit-run.md)'s "iPhone" section has the signing. An iPhone has no Back, so there's no pause by touch and no way out but the system's: go home and swipe the app away. A recording is kept each time the app goes to the background, because iOS never tells an app it was killed there.
+`xcrun devicectl list devices` names the device, and [m1-exit-run.md](m1-exit-run.md)'s "iPhone" section has the signing and where `iproxy` comes from. An iPhone has no Back, so there's no pause by touch and no way out but the system's: go home and swipe the app away. A recording is kept each time the app goes to the background, because iOS never tells an app it was killed there.
 
 ### Fetching and checking a recording
 
@@ -350,7 +352,7 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home \
 ```
 
 ```bash
-cargo xtask run --platform ios --release --features dev --identity <identity> --profile <mobileprovision> -- \
+cargo xtask run --platform ios --release --features dev --identity <identity> --profile <mobileprovision> --device <device> -- \
   --arena --fight --script attempts --tier mobile-low
 ```
 
@@ -415,7 +417,7 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home \
 
 ```bash
 mkdir -p target
-cargo xtask run --platform ios --release --identity <identity> --profile <mobileprovision> -- \
+cargo xtask run --platform ios --release --identity <identity> --profile <mobileprovision> --device <device> -- \
   --arena --fight --script fight-back --tier mobile-low 2>&1 | tee target/soak.log
 ```
 

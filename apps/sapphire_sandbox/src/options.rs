@@ -116,9 +116,10 @@ pub(crate) struct Options {
     /// `--probes`: the courtyard with its arcade, lit by the ambient probe grid baked for both
     /// (M1 W5). Implies `--environment`.
     pub probes: bool,
-    /// `--look-dev wide|hero|sky|street|face`: the look-dev town (M1 X1) with the VRM character standing in
-    /// it, seen from that shot. A scene of its own rather than a `--stage` layout: it replaces the
-    /// character and the ground the other scenes put under it, so it excludes `--stage`,
+    /// `--look-dev wide|hero|sky|street|face|enemy`: the look-dev town (M1 X1) with the VRM character
+    /// standing in it, seen from that shot; `enemy` adds the enemy (M2 O4). A scene of its own rather
+    /// than a `--stage` layout: it replaces the character and the ground the other scenes put under
+    /// it, so it excludes `--stage`,
     /// `--environment` (and `--probes`, which implies it) and `--foliage`, and the scenes that
     /// frame more of the mannequin (`--outline-row`, `--faces`, `--rim-rig`, `--hard-edges`).
     pub look_dev: Option<Shot>,
@@ -1135,6 +1136,7 @@ mod tests {
         assert!(options.keeps_character_mesh());
         assert_eq!(parse(&["--look-dev=wide"]).unwrap().0.look_dev, Some(Shot::Wide));
         assert_eq!(parse(&["--look-dev", "face"]).unwrap().0.look_dev, Some(Shot::Face));
+        assert_eq!(parse(&["--look-dev", "enemy"]).unwrap().0.look_dev, Some(Shot::Enemy));
         assert!(parse(&["--look-dev", "close"]).unwrap_err().contains("wide, hero, sky"));
         assert_eq!(parse(&["--look-dev", "hero"]).unwrap().0.clip, None);
         assert_eq!(

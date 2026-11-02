@@ -149,7 +149,7 @@ pub struct Scene {
 /// The moving character's scenes (M2 N2) play a clip on the look-dev character (`--clip`; no earlier
 /// scene plays one, and a character without a clip is never sampled) and pin what the look-dev
 /// scenes pin.
-pub fn scenes() -> [Scene; 112] {
+pub fn scenes() -> [Scene; 114] {
     [
         Scene {
             name: "turntable-start",
@@ -2361,6 +2361,47 @@ pub fn scenes() -> [Scene; 112] {
                 "16",
                 "--capture-step",
                 "1",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The enemy (M2 O4) squaring up to the character in the square at midday, pinned as the other
+        // look-dev scenes are: bone in its lavender shade, dark plate with a painted sheen, a wine
+        // mantle, a raised blade and red eyes that bloom.
+        Scene {
+            name: "lookdev-enemy",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--look-dev",
+                "enemy",
+                "--time-of-day",
+                "13",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--capture-frames",
+                "32",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The same at night, where the threat is the glow: the eyes and the mantle's hem against the
+        // blue night, as the world's light.
+        Scene {
+            name: "lookdev-enemy-night",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--look-dev",
+                "enemy",
+                "--time-of-day",
+                "22",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--capture-frames",
+                "32",
             ],
             thresholds: Thresholds::default(),
         },

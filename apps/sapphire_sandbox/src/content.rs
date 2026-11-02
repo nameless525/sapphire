@@ -39,6 +39,9 @@
 //! of: a new version replaces it there, and the scene takes its key hours ([`Content::probes`],
 //! [`Content::probe_hours`]).
 //!
+//! `--look-dev enemy` also loads the enemy ([`enemy::WARRIOR`], [`enemy::BLADE`], [`Content::enemy`]),
+//! its mesh copied as it uploads, since its held pose derives from it ([`Content::held_enemy`]).
+//!
 //! With `--look-dev` it loads the look-dev town ([`lookdev::TOWN`]), whose slots its sidecar
 //! binds to the town's environment materials, the town's plants ([`lookdev::Plant`]), whose
 //! sidecars bind theirs to the look-dev foliage materials, and its far mountains
@@ -98,6 +101,7 @@ use sapphire_rhi::GpuContext;
 use sapphire_time::Stopwatch;
 
 use crate::LOG_TARGET;
+use crate::enemy::{self, EnemyMeshes};
 use crate::environment;
 use crate::faces::{self, MaterialOverrides};
 use crate::foliage::{self, FoliageMeshes};
@@ -180,6 +184,9 @@ struct GpuAssets {
     /// A copy of the character's mesh as last uploaded, while one is wanted.
     character_mesh: Option<Mesh>,
     keep_character: bool,
+    /// A copy of the enemy's mesh as last uploaded, which its held pose is derived from: the server
+    /// keeps no bytes of what it has uploaded.
+    warrior_mesh: Option<Mesh>,
     /// A mesh was replaced in place since [`Content::take_meshes_replaced`] last asked.
     meshes_replaced: bool,
     /// What the materials it uploads change (`--hair-shadow-softness`, `--hair-transmission`).
@@ -198,6 +205,7 @@ impl GpuAssets {
             character,
             character_mesh: None,
             keep_character,
+            warrior_mesh: None,
             meshes_replaced: false,
             overrides: MaterialOverrides::default(),
             probe_grid: None,
@@ -250,6 +258,9 @@ impl GpuAssets {
             }
         } else if let Some(mesh) = upload.get::<Mesh>() {
             let copy = (id == self.character && self.keep_character).then(|| mesh.to_mesh()).transpose()?;
+            if id == enemy::WARRIOR {
+                self.warrior_mesh = Some(mesh.to_mesh()?);
+            }
             let materials = &self.materials;
             let resolve = |material| materials.get(&material).map(|held| held.object);
             let bounds = scene::mesh_bounds(mesh);
@@ -332,6 +343,10 @@ pub(crate) struct Content {
     probes: Option<(Handle<Mesh>, Handle<ProbeGrid>)>,
     /// The look-dev town, its plants and its mountains, once asked for (`--look-dev`).
     town: Vec<Handle<Mesh>>,
+    /// The enemy's model and its blade, once asked for (`--look-dev enemy`).
+    enemy: Vec<Handle<Mesh>>,
+    /// The enemy's skeleton, with those.
+    enemy_skeleton: Option<Handle<Skeleton>>,
     /// A character rig, once asked for (`--look-dev`'s).
     rig: Option<Handle<CharacterRig>>,
     /// The skeleton of the character's mesh, with the rig.
@@ -394,6 +409,8 @@ impl Content {
             hard_edges: None,
             probes: None,
             town: Vec::new(),
+            enemy: Vec::new(),
+            enemy_skeleton: None,
             rig: None,
             skeleton: None,
             character_versions: None,
@@ -728,6 +745,51 @@ impl Content {
             plants: Plant::ALL.map(|plant| mesh(plant.id())),
             mountains: lookdev::MOUNTAINS.map(mesh),
         })
+    }
+
+    /// Loads until the enemy and its blade are on `renderer`, with their materials and the maps
+    /// they name, and the warrior's skeleton is resident, and returns their meshes: the load screen
+    /// of `--look-dev enemy`. They stay loaded from then on.
+    pub fn enemy(&mut self, renderer: &mut Renderer, gpu: &GpuContext) -> Result<EnemyMeshes, AppInitError> {
+        // Asking again tries what failed before, as the character does.
+        let warrior: Handle<Mesh> =
+            self.server.load_with(enemy::WARRIOR, LoadPriority::Critical).map_err(AppInitError::msg)?;
+        let blade = self.server.load_with(enemy::BLADE, LoadPriority::Critical).map_err(AppInitError::msg)?;
+        let assets = &mut self.gpu;
+        let loaded = self
+            .server
+            .finish(&warrior, |upload| assets.upload(upload, renderer, gpu))
+            .and_then(|()| self.server.finish(&blade, |upload| assets.upload(upload, renderer, gpu)));
+        let id = self.gpu.warrior_mesh.as_ref().and_then(|mesh| mesh.skin.as_ref()?.skeleton);
+        let skeleton = id.map(|id| self.server.load_with(id, LoadPriority::Critical)).transpose();
+        let skeleton = skeleton.map_err(AppInitError::msg)?;
+        let skeleton_loaded = match &skeleton {
+            Some(skeleton) => {
+                let assets = &mut self.gpu;
+                self.server.finish(skeleton, |upload| assets.upload(upload, renderer, gpu))
+            }
+            None => Ok(()),
+        };
+        self.enemy = vec![warrior, blade];
+        self.enemy_skeleton = skeleton;
+        for unloaded in self.server.take_unloaded() {
+            self.gpu.unload(unloaded);
+        }
+        loaded
+            .and(skeleton_loaded)
+            .map_err(|error| AppInitError::msg(format!("the enemy didn't load: {error}")))?;
+        let mesh = |id| self.gpu.meshes.get(&id).expect("a ready mesh was uploaded here").object.handle;
+        Ok(EnemyMeshes { warrior: mesh(enemy::WARRIOR), blade: mesh(enemy::BLADE) })
+    }
+
+    /// The enemy's held pose, from what [`Self::enemy`] loaded.
+    pub fn held_enemy(&self) -> Result<enemy::Held, AppInitError> {
+        let skin = self.gpu.warrior_mesh.as_ref().and_then(|mesh| mesh.skin.as_ref());
+        let skeleton = self.enemy_skeleton.as_ref().and_then(|skeleton| self.server.get(skeleton));
+        let (Some(skin), Some(skeleton)) = (skin, skeleton) else {
+            return Err(AppInitError::msg("the enemy isn't loaded"));
+        };
+        enemy::held(skin, skeleton).map_err(AppInitError::msg)
     }
 
     /// Loads the character rig `id` until it is resident, and the skeleton the character's kept
@@ -1108,6 +1170,8 @@ mod tests {
                 hard_edges: None,
                 probes: None,
                 town: Vec::new(),
+                enemy: Vec::new(),
+                enemy_skeleton: None,
                 rig: None,
                 skeleton: None,
                 character_versions: None,

@@ -282,6 +282,7 @@ mod cvars;
 mod debug_shapes;
 #[cfg(feature = "dev")]
 mod dev;
+mod enemy;
 mod environment;
 mod extract;
 mod faces;

@@ -58,6 +58,8 @@
 //!   `--clip` plays a clip on the character instead (M2 N2, [`Scene::play_clip`],
 //!   [`crate::animate`]): a [`ClipPlayer`] rewrites its pose and [`Figure`] each frame its clock
 //!   has moved.
+//!   `--look-dev enemy` stands the enemy beside the character, a character with a [`Figure`] of its
+//!   own, and its blade ([`Scene::spawn_enemy`], [`crate::enemy`]).
 //! - **The HUD** (`--hud`, M2 I2): not ECS data: [`SandboxHud`] draws into each packet's interface
 //!   list as [`Scene::frame_packet`] ends, and survives a new renderer with the scene.
 //! - **Systems:** time of day and the screen effects tick in `FixedFirst`, after the clocks;
@@ -118,6 +120,7 @@ use crate::animate::{ClipPlayer, Evaluation};
 use crate::audio::SceneSound;
 use crate::content::Content;
 use crate::debug_shapes::DebugDrawDemo;
+use crate::enemy::{self, EnemyMeshes};
 use crate::environment;
 use crate::extract::{self, RenderExtract, RenderLight, RenderMesh, RenderPose, RenderTransform};
 use crate::faces::{self, FaceLayout, FaceRig};
@@ -184,7 +187,8 @@ type ScreenEffects = SystemState<(ResMut<'static, EffectStack>, Res<'static, Eff
 struct SlowMotion(Option<ScaleHandle>);
 
 /// Where the character's light rig finds its head and body, in the character's own space. A
-/// component on a character whose pose moves, which follows its skeleton every frame (M2 N2).
+/// component on a character whose pose moves, which follows its skeleton every frame (M2 N2), and on
+/// one of another shape than the scene's character (M2 O4).
 #[derive(Component, Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Figure {
     /// The middle of the head: face and hair GI turn toward a sphere around it, and the light
@@ -339,6 +343,8 @@ pub(crate) struct Scene {
     town: Option<Entity>,
     town_plants: Vec<(Entity, lookdev::Plant)>,
     town_mountains: Vec<Entity>,
+    /// The enemy and its blade, with `--look-dev enemy`.
+    enemy: Option<(Entity, Entity)>,
     /// Where the character's light rig finds its head and body, for a character without a
     /// [`Figure`] of its own.
     figure: Figure,
@@ -456,6 +462,7 @@ impl Scene {
             town: None,
             town_plants: Vec::new(),
             town_mountains: Vec::new(),
+            enemy: None,
             figure,
             animating: false,
             players,
@@ -1159,6 +1166,43 @@ impl Scene {
         }
     }
 
+    /// Stands the enemy on the look-dev stage (`--look-dev enemy`, [`crate::enemy`]): the warrior
+    /// held in its pose beside the character, and its blade at its hand. Neither moves, so they are
+    /// extracted once. Call after [`Self::spawn_look_dev`], whose light rigs they take.
+    pub fn spawn_enemy(&mut self, meshes: EnemyMeshes, held: enemy::Held) {
+        self.extract_poses();
+        let place = enemy::place();
+        let rig = LightRigId::DEFAULT;
+        let blade_figure = enemy::blade_figure(&held);
+        let world = self.ecs.world_mut();
+        let warrior = world
+            .spawn((
+                RenderMesh(meshes.warrior),
+                RenderTransform(place),
+                CharacterLightRig { rig, head: held.figure.head },
+                held.figure,
+                held.pose,
+            ))
+            .id();
+        let blade = world
+            .spawn((
+                RenderMesh(meshes.blade),
+                RenderTransform(place * held.blade),
+                CharacterLightRig { rig, head: blade_figure.head },
+                blade_figure,
+            ))
+            .id();
+        self.enemy = Some((warrior, blade));
+    }
+
+    /// Sets the meshes the enemy draws again: after GPU device loss.
+    pub fn set_enemy_meshes(&mut self, meshes: EnemyMeshes) {
+        if let Some((warrior, blade)) = self.enemy {
+            self.ecs.world_mut().entity_mut(warrior).insert(RenderMesh(meshes.warrior));
+            self.ecs.world_mut().entity_mut(blade).insert(RenderMesh(meshes.blade));
+        }
+    }
+
     /// Places the outline row (`--outline-row`) behind the character, drawing `mesh` (the
     /// character's), each a character lit by the default light rig, and lowers the camera to
     /// see them all. They never move, so they are extracted once.
@@ -1762,6 +1806,76 @@ mod tests {
             assert!(direction.normalize().dot(to_floor.normalize()) > 0.999, "aimed in front of the feet");
             scene.end_frame();
         }
+    }
+
+    /// The enemy stands beside the character in a shape of its own, and its blade lights as it does
+    /// but casts no capsule, so it adds nothing to shadows or occlusion. Each keeps its pose and
+    /// transform through a device loss's new meshes.
+    #[test]
+    fn the_enemy_stands_beside_the_character_in_a_shape_of_its_own() {
+        let mut scene = Scene::with_character(MeshHandle::from_raw(0), BOUNDS, false);
+        let figure = Figure {
+            head: Vec3::new(0.0, 1.45, 0.0),
+            feet: Vec3::ZERO,
+            body_radius: 0.16,
+            face: Quat::IDENTITY,
+            expression: FaceExpression::default(),
+        };
+        let town = TownMeshes {
+            town: MeshHandle::from_raw(1),
+            plants: [MeshHandle::from_raw(2); 8],
+            mountains: [MeshHandle::from_raw(3); lookdev::MOUNTAINS.len()],
+        };
+        let pose =
+            RenderPose { palette: vec![sapphire_math::Affine3A::IDENTITY; 2], morph_weights: Vec::new() };
+        scene.spawn_look_dev(Shot::Enemy, LookDev { town, fog_cards: None, pose: pose.clone(), figure });
+        let warrior_figure = Figure {
+            head: Vec3::new(0.0, 2.0, 0.0),
+            feet: Vec3::ZERO,
+            body_radius: 0.3,
+            face: Quat::IDENTITY,
+            expression: FaceExpression::default(),
+        };
+        let held = enemy::Held {
+            pose,
+            figure: warrior_figure,
+            blade: Mat4::from_translation(Vec3::new(-0.8, 1.2, 0.0)),
+        };
+        let meshes = EnemyMeshes { warrior: MeshHandle::from_raw(4), blade: MeshHandle::from_raw(5) };
+        scene.spawn_enemy(meshes, held);
+        scene.step();
+        let (warrior, blade) = scene.enemy.expect("it stands there");
+        let (warrior, blade) = (InstanceId(warrior.to_bits()), InstanceId(blade.to_bits()));
+        let character = InstanceId(scene.character.to_bits());
+        let packet = scene.frame_packet(1.0, Some((1920, 1080)));
+        assert_eq!(packet.characters.len(), 3, "the character, the warrior and its blade");
+        assert_eq!(
+            packet.skinned.iter().filter(|skinned| skinned.id == warrior).count(),
+            1,
+            "the pose is sent"
+        );
+        let listed = |id| packet.characters.iter().find(|character| character.id == id).expect("listed");
+        let scale = enemy::SCALE;
+        assert!(
+            (listed(warrior).body.radius - warrior_figure.body_radius * scale).abs() < 1e-4,
+            "its own body, placed: {:?}",
+            listed(warrior).body
+        );
+        assert!((listed(character).body.radius - figure.body_radius).abs() < 1e-5, "the character's own");
+        assert!(!listed(blade).body.casts(), "the blade adds no capsule");
+        let (warrior_key, blade_key) = (listed(warrior).lighting.key, listed(blade).lighting.key);
+        assert!(warrior_key.direction.abs_diff_eq(blade_key.direction, 1e-4), "the two are lit alike");
+        scene.end_frame();
+        scene.set_enemy_meshes(EnemyMeshes {
+            warrior: MeshHandle::from_raw(6),
+            blade: MeshHandle::from_raw(7),
+        });
+        let packet = scene.frame_packet(1.0, Some((1920, 1080)));
+        let drawn: Vec<MeshHandle> = packet.instances.changed.iter().map(|instance| instance.mesh).collect();
+        assert!(
+            drawn.contains(&MeshHandle::from_raw(6)) && drawn.contains(&MeshHandle::from_raw(7)),
+            "{drawn:?}"
+        );
     }
 
     #[test]

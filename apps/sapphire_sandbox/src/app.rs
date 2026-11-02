@@ -28,10 +28,11 @@ use crate::combat::Combat;
 use crate::content::Content;
 #[cfg(feature = "dev")]
 use crate::dev::{DevTools, FrameState};
+use crate::enemy::EnemyMeshes;
 use crate::environment::FOG_CARDS;
 use crate::foliage::FoliageMeshes;
 use crate::input::{PLAYER, SandboxInput};
-use crate::lookdev::TownMeshes;
+use crate::lookdev::{Shot, TownMeshes};
 use crate::options::Options;
 use crate::rims::RimRigMeshes;
 use crate::scene::{LookDev, Scene};
@@ -214,6 +215,9 @@ impl App for SandboxApp {
                 content.load_clip(clip.id(), &mut renderer.renderer, &device.gpu)?;
                 let player = lookdev::player(&content).map_err(AppInitError::msg)?;
                 scene.play_clip(player.with_root_motion(!options.clip_in_place));
+            }
+            if let Some(meshes) = renderer.enemy {
+                scene.spawn_enemy(meshes, content.held_enemy()?);
             }
         }
         // The day, the sky options, the starting view and the turntable's speed, last so `--view`
@@ -996,6 +1000,8 @@ pub(crate) struct SceneRenderer {
     hard_edges: Option<MeshHandle>,
     /// The look-dev town and its plants, with `--look-dev`.
     town: Option<TownMeshes>,
+    /// The enemy, with `--look-dev enemy`.
+    enemy: Option<EnemyMeshes>,
     /// The stage's floor and pillar, with `--stage`.
     stage: Option<StageMeshes>,
     /// The zone's sky material.
@@ -1047,6 +1053,9 @@ impl Scene {
         if let Some(town) = renderer.town {
             self.set_town_mesh(town);
         }
+        if let Some(meshes) = renderer.enemy {
+            self.set_enemy_meshes(meshes);
+        }
     }
 }
 
@@ -1085,6 +1094,7 @@ struct SceneMeshes {
     arcade: Option<MeshHandle>,
     hard_edges: Option<MeshHandle>,
     town: Option<TownMeshes>,
+    enemy: Option<EnemyMeshes>,
     stage: Option<StageMeshes>,
 }
 
@@ -1131,6 +1141,8 @@ pub(crate) fn create_renderer(
         let arcade = options.probes.then(|| content.probes(&mut renderer, gpu)).transpose()?;
         let hard_edges = options.hard_edges.then(|| content.hard_edges(&mut renderer, gpu)).transpose()?;
         let town = options.look_dev.map(|_| content.town(&mut renderer, gpu)).transpose()?;
+        let enemy =
+            (options.look_dev == Some(Shot::Enemy)).then(|| content.enemy(&mut renderer, gpu)).transpose()?;
         let stage = match options.stage {
             Some(_) => {
                 let figure = content
@@ -1154,6 +1166,7 @@ pub(crate) fn create_renderer(
             arcade,
             hard_edges,
             town,
+            enemy,
             stage,
         };
         Ok((character, character_bounds, meshes, sky))
@@ -1180,6 +1193,7 @@ pub(crate) fn create_renderer(
                 arcade,
                 hard_edges,
                 town,
+                enemy,
                 stage,
             } = meshes;
             Ok(SceneRenderer {
@@ -1198,6 +1212,7 @@ pub(crate) fn create_renderer(
                 arcade,
                 hard_edges,
                 town,
+                enemy,
                 stage,
                 sky,
             })

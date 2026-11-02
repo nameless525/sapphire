@@ -202,6 +202,10 @@ impl Stage {
                 let player = crate::lookdev::player(&content).map_err(AppInitError::msg)?;
                 scene.play_clip(player.with_root_motion(!options.clip_in_place));
             }
+            if shot == crate::lookdev::Shot::Enemy {
+                let meshes = content.enemy(&mut renderer, &gpu)?;
+                scene.spawn_enemy(meshes, content.held_enemy()?);
+            }
         }
         // The day, the sky options, the starting view and the turntable's speed, last so `--view`
         // holds whatever framing the scene chose.

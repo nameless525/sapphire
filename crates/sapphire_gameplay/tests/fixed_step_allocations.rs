@@ -368,6 +368,41 @@ fn an_overfull_step_counts_what_it_drops_without_allocating() {
     assert_eq!(counts.allocations, 0);
 }
 
+/// A live edit (M2 T2) is made between steps, and allocates there. The steps around it don't, however
+/// many hurtboxes the new revision puts back and whatever is running through it: the frame of a reload
+/// holds rule R6 like any other.
+#[test]
+fn steps_do_not_allocate_across_a_live_edit() {
+    if !PER_THREAD_COUNTS {
+        return;
+    }
+    let (mut sim, actors) = world(1);
+    let moves = sim.actor(actors[0]).expect("alive").moves.set.expect("a set");
+    let ticks: Vec<TickActions> = (0..400).map(|tick| script(tick, &actors)).collect();
+    let (before, after) = ticks.split_at(200);
+    let ((), counts) = alloc::count_in_scope(|| {
+        for actions in before {
+            sim.step(actions);
+        }
+    });
+    assert_eq!(counts.allocations, 0);
+
+    let mut document = MoveSetDocument::parse(SLICE).expect("parses");
+    document.moves[0].recovery += 2;
+    if let Some(fighter) = &mut document.fighter {
+        fighter.health += 50;
+    }
+    assert!(sim.replace_move_set(moves, document.compile().expect("compiles")).is_some());
+
+    let ((), counts) = alloc::count_in_scope(|| {
+        for actions in after {
+            sim.step(actions);
+        }
+    });
+    assert_eq!(counts.allocations, 0, "{} allocations after the edit", counts.allocations);
+    assert_eq!(sim.stats().allocations, 0, "and the stat agrees");
+}
+
 /// Hit queries, counted from the very first sweep, on everything a sweep can do: turning, stopping at
 /// a wall, re-arming, freezing, hurtboxes moving, coming and going, and every limit past full. Plain
 /// inputs, so this needs no move system.

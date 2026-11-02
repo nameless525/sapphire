@@ -156,7 +156,7 @@ pub use intents::{INTENT_RING_LEN, Intent, IntentRing};
 pub use movement::{ActorTransform, RootDelta};
 pub use moves::{
     ActiveHurtbox, ActiveVolume, CurrentMove, LiveWindows, MAX_ACTIVE_HURTBOXES, MAX_ACTIVE_VOLUMES,
-    MoveLibrary, MoveOutput, MoveRead, MoveRef, MoveRunner, MoveSetId, Published, WarpTarget,
+    MoveLibrary, MoveOutput, MoveRead, MoveRef, MoveRunner, MoveSetId, Published, Tuned, WarpTarget,
 };
 pub use resolve::{Fighter, HitOutcome, SlowMotion};
 pub use simulation::{CombatSet, SimConfig, SimRng, Simulation};

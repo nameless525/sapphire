@@ -85,6 +85,13 @@ pub const SCRIPTS: &[Script] = &[
         actions: cancel_windows,
     },
     Script {
+        name: "attempts",
+        about: "the player presses light twice a second and does nothing else: the next attempts of someone \
+                tuning the move it starts",
+        ticks: 600,
+        actions: attempts,
+    },
+    Script {
         name: "idle",
         about: "nobody touches anything: the smallest a replay can be",
         ticks: 3600,
@@ -103,6 +110,20 @@ pub const SCRIPTS: &[Script] = &[
 #[must_use]
 pub fn find_script(name: &str) -> Option<&'static Script> {
     SCRIPTS.iter().find(|script| script.name == name)
+}
+
+/// How often [`attempts`] presses, in ticks.
+pub const ATTEMPT_EVERY: u64 = 30;
+
+/// [`SCRIPTS`]' `attempts`: the player's light attack on a fixed beat, with nothing else going on, which
+/// is how live tuning's tests and its measurement find the next attempt.
+#[must_use]
+pub fn attempts(tick: u64, cast: &[ActorId]) -> TickActions {
+    let mut actions = TickActions::NEUTRAL;
+    let Some(&player) = cast.first() else { return actions };
+    let buttons = if tick % ATTEMPT_EVERY == 0 { Buttons::LIGHT } else { Buttons::NONE };
+    actions.set(player, ActorActions { buttons, stick: Stick::CENTER }).expect("one actor fits a tick");
+    actions
 }
 
 /// [`SCRIPTS`]' `melee-sweep`: every button on its own period, and sticks that sweep through their

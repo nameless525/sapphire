@@ -25,7 +25,7 @@ use crate::actions::{Buttons, Controls};
 use crate::actors::{ActorId, ActorRequests, ActorSpawn, ActorTable, SpawnError};
 use crate::controller::{ControllerProfile, PhysicsWorldError, ProfileError, ProfileId};
 use crate::movement::ActorTransform;
-use crate::moves::{MoveRunner, WarpTarget};
+use crate::moves::{MoveRunner, MoveSetId, WarpTarget};
 use crate::resolve::SlowMotion;
 use crate::simulation::{CombatSet, SimConfig, SimRng, Simulation};
 use crate::stats::{BUDGET_DESKTOP_LOW, PHYSICS_BUDGET_DESKTOP_LOW};
@@ -33,6 +33,9 @@ use crate::stats::{BUDGET_DESKTOP_LOW, PHYSICS_BUDGET_DESKTOP_LOW};
 /// The test content's document: see that file for its numbers. M2 O3 replaces the content, and the
 /// suite is re-recorded then.
 const TEST_MOVES: &str = include_str!("../../../sapphire_moves/test_content/slice.moves.ron");
+
+/// That document, from the repository's root.
+const TEST_MOVES_PATH: &str = "crates/sapphire_moves/test_content/slice.moves.ron";
 
 /// Why a scenario couldn't set its world up, as with a replay that asks for too small a pool.
 #[derive(Debug, thiserror::Error)]
@@ -61,6 +64,10 @@ pub struct Scenario {
     /// What a new recording starts from. A replay keeps its own copy, so changing this moves
     /// nothing recorded.
     pub config: SimConfig,
+    /// The documents its move sets come from, from the repository's root, in the order its setup adds
+    /// them: what live tuning goes by (M2 T2), and what `link watch` watches. A test holds them to
+    /// what the setup loads.
+    pub documents: &'static [&'static str],
     /// Loads the move sets and spawns the actors, and returns the actors input drives, the player
     /// first, for an [`ActionSource`](super::ActionSource).
     pub setup: fn(&mut Simulation) -> Result<Vec<ActorId>, ScenarioError>,
@@ -73,6 +80,19 @@ impl Scenario {
         let cast = (self.setup)(&mut sim)?;
         Ok((sim, cast))
     }
+
+    /// The set that plays the document with this file name, in this scenario's simulations.
+    #[must_use]
+    pub fn set_of(&self, file_name: &str) -> Option<MoveSetId> {
+        let index = self.documents.iter().position(|path| document_file_name(path) == file_name)?;
+        Some(MoveSetId(u32::try_from(index).ok()?))
+    }
+}
+
+/// A document's file name, from its path from the repository's root: what a push names it by.
+#[must_use]
+pub fn document_file_name(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
 }
 
 /// Every scenario.
@@ -87,6 +107,7 @@ pub const SCENARIOS: &[Scenario] = &[
             step_budget: BUDGET_DESKTOP_LOW,
             physics_budget: PHYSICS_BUDGET_DESKTOP_LOW,
         },
+        documents: &[TEST_MOVES_PATH],
         setup: melee,
     },
     Scenario {
@@ -99,6 +120,7 @@ pub const SCENARIOS: &[Scenario] = &[
             step_budget: BUDGET_DESKTOP_LOW,
             physics_budget: PHYSICS_BUDGET_DESKTOP_LOW,
         },
+        documents: &[TEST_MOVES_PATH],
         setup: duel,
     },
     Scenario {
@@ -111,6 +133,7 @@ pub const SCENARIOS: &[Scenario] = &[
             step_budget: BUDGET_DESKTOP_LOW,
             physics_budget: PHYSICS_BUDGET_DESKTOP_LOW,
         },
+        documents: &[TEST_MOVES_PATH],
         setup: arena,
     },
 ];
@@ -213,8 +236,13 @@ pub fn melee(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
 /// A player at the origin and an opponent 4 m ahead of it, facing it: the string, its cancels and the
 /// dash attack as a fight has them.
 pub fn duel(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
+    duel_on(sim, test_moves()?)
+}
+
+/// [`duel`], with `set` for the test moves.
+pub(super) fn duel_on(sim: &mut Simulation, set: MoveSet) -> Result<Vec<ActorId>, ScenarioError> {
     let controller = Some(flat_ground(sim)?);
-    let moves = sim.add_move_set(test_moves()?);
+    let moves = sim.add_move_set(set);
     let player = sim.spawn(ActorSpawn { position: Vec3::ZERO, yaw: 0.0, moves: Some(moves), controller })?;
     let opponent = sim.spawn(ActorSpawn {
         position: Vec3::new(0.0, 0.0, 4.0),

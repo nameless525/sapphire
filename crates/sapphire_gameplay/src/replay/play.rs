@@ -1,12 +1,16 @@
 //! Running a replay ([`Player`]) and making one ([`Recording`]), a step at a time, so an app can step
 //! either beside its renderer: a headless runner and an app go through this same code.
 
+use sapphire_moves::MoveSet;
+
 use super::checksums::Trail;
 use super::file::{Cursor, MAX_TICKS, Recorder, Replay, ReplayError};
 use super::scenario::{Scenario, ScenarioError, find_scenario};
 use super::script::ActionSource;
+use super::tuning::LiveMoves;
 use crate::actions::TickActions;
 use crate::actors::ActorId;
+use crate::moves::{MoveSetId, Tuned};
 use crate::simulation::{SimConfig, Simulation};
 use crate::stats::SimStats;
 
@@ -80,6 +84,15 @@ impl Tracked {
             self.first_allocating_tick = Some(self.sim.tick());
         }
         self.trail.push(self.sim.checksum());
+    }
+
+    /// A step past what's kept: rule R6 still holds, and no checksum goes in the trail.
+    fn step_unkept(&mut self, actions: &TickActions) {
+        let before = self.sim.stats().allocations;
+        self.sim.step(actions);
+        if self.sim.stats().allocations > before && self.first_allocating_tick.is_none() {
+            self.first_allocating_tick = Some(self.sim.tick());
+        }
     }
 
     fn finish(self) -> Played {
@@ -163,22 +176,61 @@ impl Player {
 }
 
 /// Makes a [`Replay`] by running a scenario on actions from an [`ActionSource`].
+///
+/// **A live edit ends the file, not the fight.** A replay is one [`Replay::tables_hash`] and every tick's
+/// actions, so it can only say what a run on one set of tables did. When a live edit replaces a set
+/// ([`Self::tune_move_set`]), the file stops at the last tick played on what it recorded, and the run goes
+/// on, unrecorded: what's written still plays back to what happened, up to there, and it never claims
+/// more. Writing each revision into the file would hold the rest too, but at the cost of a new format,
+/// its bytes in every file and a player that replaces sets, for sessions nobody can reproduce once the
+/// documents move on, so that waits for someone who needs them.
 pub struct Recording {
     tracked: Tracked,
     recorder: Recorder,
     cast: Vec<ActorId>,
+    /// Where a live edit ended the file.
+    edited_at: Option<u32>,
 }
 
 impl Recording {
     /// Sets up `scenario`'s world with `config`.
     pub fn new(scenario: &Scenario, config: SimConfig) -> Result<Self, PlayError> {
+        Self::tuned(scenario, config, &LiveMoves::default())
+    }
+
+    /// Sets up `scenario`'s world with `config`, from `live`'s edits of its documents, as
+    /// [`LiveMoves::start`] does. The file's hash is theirs, so it plays back only on a build that has
+    /// those edits in its documents: until then a [`Player`] says the move data changed, which it did.
+    pub fn tuned(scenario: &Scenario, config: SimConfig, live: &LiveMoves) -> Result<Self, PlayError> {
         // Before the world, so a pool too big for a file is refused before it's built.
         let mut recorder = Recorder::new(scenario.name, config, 0)?;
-        let (sim, cast) = scenario
-            .start(config)
+        let (sim, cast) = live
+            .start(scenario, config)
             .map_err(|source| PlayError::Setup { name: scenario.name.to_owned(), source })?;
         recorder.set_tables_hash(sim.tables_hash());
-        Ok(Self { tracked: Tracked::new(sim, MAX_TICKS), recorder, cast })
+        Ok(Self { tracked: Tracked::new(sim, MAX_TICKS), recorder, cast, edited_at: None })
+    }
+
+    /// Replaces a set live, between steps, and ends the file if that changed anything: see the
+    /// [type's docs](Self). `None` for an ID the simulation never gave.
+    pub fn tune_move_set(&mut self, id: MoveSetId, set: MoveSet) -> Option<Tuned> {
+        let tuned = self.tracked.sim.tune_move_set(id, set)?;
+        if matches!(tuned, Tuned::Replaced { .. }) && self.edited_at.is_none() {
+            self.edited_at = Some(self.recorder.ticks());
+        }
+        Some(tuned)
+    }
+
+    /// The tick a live edit ended the file at, if one did: it holds this many ticks.
+    #[must_use]
+    pub const fn edited_at(&self) -> Option<u32> {
+        self.edited_at
+    }
+
+    /// How many ticks the file holds so far.
+    #[must_use]
+    pub fn recorded_ticks(&self) -> u32 {
+        self.recorder.ticks()
     }
 
     /// The actors the scenario's input drives, the player first: who presentation stands where.
@@ -188,9 +240,14 @@ impl Recording {
     }
 
     /// Asks `source` for the next tick's actions, records them and steps. Refuses at the file's limit
-    /// on a run's length, with the recording still good up to there, and no step taken.
+    /// on a run's length, with the recording still good up to there, and no step taken. Past a live
+    /// edit it steps and records nothing: see the [type's docs](Self).
     pub fn step(&mut self, source: &mut dyn ActionSource) -> Result<(), ReplayError> {
         let actions = source.actions(self.tracked.sim.tick(), &self.cast);
+        if self.edited_at.is_some() {
+            self.tracked.step_unkept(&actions);
+            return Ok(());
+        }
         self.recorder.push(&actions)?;
         self.tracked.step(&actions);
         Ok(())

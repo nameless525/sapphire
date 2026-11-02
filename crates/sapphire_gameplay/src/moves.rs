@@ -37,7 +37,8 @@
 //!
 //! [`MoveLibrary`] keeps a set's revisions. A move that's running goes on reading the revision it
 //! started in, and the next move to start reads the newest, by name if a window of an older revision
-//! is what started it. A name that's gone just doesn't fire.
+//! is what started it. A name that's gone just doesn't fire. That's live tuning's whole rule for
+//! moves (M2 T2): a saved document plays on the next attempt, and never changes the one in progress.
 
 use sapphire_core::Name;
 use sapphire_ecs::prelude::*;
@@ -82,6 +83,25 @@ impl MoveSetId {
     #[must_use]
     pub const fn raw(self) -> u32 {
         self.0
+    }
+}
+
+/// What became of a set given to [`crate::Simulation::tune_move_set`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tuned {
+    /// It's the current revision now.
+    Replaced { revision: u32 },
+    /// It's the same bytes as the current revision, which stays.
+    Unchanged { revision: u32 },
+}
+
+impl Tuned {
+    /// The set's current revision.
+    #[must_use]
+    pub const fn revision(self) -> u32 {
+        match self {
+            Self::Replaced { revision } | Self::Unchanged { revision } => revision,
+        }
     }
 }
 
@@ -167,6 +187,27 @@ impl MoveLibrary {
     #[must_use]
     pub fn get(&self, at: MoveRef) -> Option<&Move> {
         self.revision(at.set, at.revision)?.move_at(at.index)
+    }
+
+    /// Whether `set` is byte for byte the set's current revision: a saved document that changed
+    /// nothing makes no new one.
+    #[must_use]
+    pub fn is_current(&self, id: MoveSetId, set: &MoveSet) -> bool {
+        let cooked = set.to_cooked().expect("a set that compiled writes");
+        self.revisions(id).last().is_some_and(|current| current.hash == xxh3_64(&cooked))
+    }
+
+    /// Starts a set over from `set`, as if that were what was added: revision 0, for a simulation that
+    /// hasn't stepped. Returns `None` for an ID this library never gave.
+    pub(crate) fn start_over(&mut self, id: MoveSetId, set: MoveSet) -> Option<()> {
+        *self.sets.get_mut(id.0 as usize)? = vec![revision(0, set)];
+        Some(())
+    }
+
+    /// How many sets are loaded: IDs count up from 0.
+    #[must_use]
+    pub fn set_count(&self) -> usize {
+        self.sets.len()
     }
 
     /// The hash of each set's current revision, in ID order.

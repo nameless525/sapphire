@@ -1568,12 +1568,52 @@ fn replacing_a_set_changes_hurtboxes_on_the_next_step() {
     assert_eq!(sim.physics().body_count(), 1);
     assert_eq!(fighter(&sim, actor).health(), 100);
 
-    // Its numbers wait for the next spawn.
+    // Its numbers reach it at once, and the next spawn too.
     assert!(sim.replace_move_set(id, moves_with("health: 100,", "health: 700,")).is_some());
     idle(&mut sim, 1);
-    assert_eq!(fighter(&sim, actor).max_health(), 100);
+    assert_eq!((fighter(&sim, actor).health(), fighter(&sim, actor).max_health()), (700, 700));
     let next = sim.spawn(ActorSpawn { moves: Some(id), ..ActorSpawn::default() }).unwrap();
     assert_eq!(fighter(&sim, next).max_health(), 700);
+}
+
+/// A fighter's numbers in a live edit (M2 T2): the next hit reads them, and an edit neither heals
+/// what a hit took nor does a hit's work itself.
+#[test]
+fn a_live_edit_gives_a_fighter_its_numbers_and_keeps_what_it_lost() {
+    let (mut sim, attacker, target) = duel();
+    let set = sim.actor(target).unwrap().moves.set.unwrap();
+    land(&mut sim, attacker, Buttons::LIGHT);
+    assert_eq!((fighter(&sim, target).health(), fighter(&sim, target).poise()), (90, 25));
+
+    let bigger = moves_with("health: 100,", "health: 700,");
+    assert!(sim.replace_move_set(set, bigger).is_some());
+    assert_eq!((fighter(&sim, target).health(), fighter(&sim, target).max_health()), (690, 700));
+    assert_eq!(fighter(&sim, attacker).health(), 700, "and everyone else on the set");
+
+    // Smaller than what it's lost: nearly gone, and a hit has to finish it.
+    let tiny = moves_with("health: 100,", "health: 5,");
+    assert!(sim.replace_move_set(set, moves_with("poise: 30,", "poise: 4,")).is_some());
+    assert_eq!((fighter(&sim, target).poise(), fighter(&sim, target).max_poise()), (1, 4));
+    assert!(sim.replace_move_set(set, tiny).is_some());
+    assert_eq!((fighter(&sim, target).health(), fighter(&sim, target).max_health()), (1, 5));
+    assert!(!fighter(&sim, target).is_defeated());
+
+    // A meter it never had starts full, and the defeated stay so.
+    let (mut sim, attacker, target) = duel_of(moves_with("health: 100,", "health: 10,"));
+    let set = sim.actor(target).unwrap().moves.set.unwrap();
+    land(&mut sim, attacker, Buttons::LIGHT);
+    assert!(fighter(&sim, target).is_defeated());
+    assert!(sim.replace_move_set(set, moves()).is_some());
+    assert!(fighter(&sim, target).is_defeated());
+    assert_eq!((fighter(&sim, target).health(), fighter(&sim, target).max_health()), (0, 100));
+
+    // A set with no fighter leaves nothing to land on.
+    let mut document = MoveSetDocument::parse(FIGHT).unwrap();
+    document.fighter = None;
+    assert!(sim.replace_move_set(set, document.compile().unwrap()).is_some());
+    assert!(!fighter(&sim, attacker).is_fighter());
+    idle(&mut sim, 1);
+    assert_eq!(sim.physics().body_count(), 0);
 }
 
 // The world around a fight.

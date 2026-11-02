@@ -25,7 +25,9 @@ use crate::cues::{CueEvent, CueQueue};
 use crate::hits::{self, HitQuery, remove_hurtboxes};
 use crate::intents::{self, IntentRing};
 use crate::movement::{self, ActorTransform};
-use crate::moves::{self, MoveLibrary, MoveOutput, MoveRead, MoveRunner, MoveSetId, MoveStats, WarpTarget};
+use crate::moves::{
+    self, MoveLibrary, MoveOutput, MoveRead, MoveRunner, MoveSetId, MoveStats, Tuned, WarpTarget,
+};
 use crate::resolve::{self, AppliedHits, Fighter, ResolveStats, SlowMotion};
 use crate::stats::{BUDGET_DESKTOP_LOW, PHYSICS_BUDGET_DESKTOP_LOW, SimStats};
 
@@ -211,7 +213,8 @@ impl Simulation {
     /// Replaces a loaded set, between steps, and returns the new revision's number, or `None` for an
     /// ID this simulation never gave. Moves already running finish on what they started with; the
     /// next move to start reads this (M2 T2). So do hurtboxes and reactions, from the next step. A
-    /// fighter's numbers are copied at its spawn, so the next spawn reads those. See the `moves` module.
+    /// fighter takes the new numbers at once, each meter keeping what it's lost
+    /// ([`Fighter`](crate::Fighter)). See the `moves` module.
     pub fn replace_move_set(&mut self, id: MoveSetId, set: MoveSet) -> Option<u32> {
         let world = self.ecs.world_mut();
         let in_use: Vec<u32> = world
@@ -231,10 +234,38 @@ impl Simulation {
             world.resource_mut::<MoveLibrary>().replace(id, set, |revision| in_use.contains(&revision))?;
         // The next step puts back what the new revision lists, under its numbers.
         let mut characters = world.resource_mut::<CharacterWorld>();
-        for actor in playing {
+        for &actor in &playing {
             remove_hurtboxes(characters.physics_mut(), actor);
         }
+        let def = world.resource::<MoveLibrary>().current(id).and_then(MoveSet::fighter).cloned();
+        for actor in playing {
+            let entity = world.resource::<ActorTable>().entity(actor);
+            if let Some(mut fighter) = entity.and_then(|entity| world.get_mut::<Fighter>(entity)) {
+                fighter.refit(def.as_ref());
+            }
+        }
         Some(replaced)
+    }
+
+    /// [`Self::replace_move_set`], for a document someone saved: bytes the same as the current
+    /// revision's replace nothing, so saving a file again is no edit, and no recording ends over it.
+    /// `None` for an ID this simulation never gave.
+    pub fn tune_move_set(&mut self, id: MoveSetId, set: MoveSet) -> Option<Tuned> {
+        let library = self.move_library();
+        let revision = library.current_revision(id)?;
+        if library.is_current(id, &set) {
+            return Some(Tuned::Unchanged { revision });
+        }
+        self.replace_move_set(id, set).map(|revision| Tuned::Replaced { revision })
+    }
+
+    /// Makes `set` what a set started from, before the first step: revision 0, with everything spawned
+    /// so far taking its numbers, as if the scenario had loaded it (see
+    /// [`LiveMoves`](crate::replay::LiveMoves)). `None` for an ID this simulation never gave.
+    pub(crate) fn start_move_set_from(&mut self, id: MoveSetId, set: MoveSet) -> Option<()> {
+        debug_assert_eq!(self.tick(), 0, "only a simulation that hasn't stepped can start over");
+        self.replace_move_set(id, set.clone())?;
+        self.ecs.world_mut().resource_mut::<MoveLibrary>().start_over(id, set)
     }
 
     /// The hash of the move data, controller profiles and collision world this simulation runs on,

@@ -49,7 +49,7 @@ impl Slide {
 
 /// What makes an actor something a hit can land on: its numbers now. Every pooled actor has one, and
 /// one whose set has no [`FighterDef`] is left empty ([`Self::is_fighter`]). Its numbers are copied at
-/// spawn, so replacing a set changes the next spawn's.
+/// spawn, and a replaced set's reach it at once, each meter keeping what it's lost (M2 T2).
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq)]
 pub struct Fighter {
     pub(crate) health: u32,
@@ -74,6 +74,28 @@ impl Fighter {
             poise_refill: def.refill(),
             ..Self::default()
         }
+    }
+
+    /// Takes a new revision's numbers (M2 T2): someone tuning a fight wants the next hit to read them,
+    /// and no fight in the app starts over for a saved document. A meter keeps what it's lost, and an edit
+    /// can't empty one: hits do that, and they say what it came to. The defeated stay defeated. A set
+    /// with no [`FighterDef`] any more leaves an actor nothing can land on.
+    pub(crate) fn refit(&mut self, def: Option<&FighterDef>) {
+        let Some(def) = def else {
+            *self = Self { slide: self.slide, ..Self::default() };
+            return;
+        };
+        if self.defeated {
+            self.max_health = def.health;
+        } else {
+            let lost = self.max_health.saturating_sub(self.health);
+            self.health = def.health.saturating_sub(lost).max(1);
+            self.max_health = def.health;
+        }
+        let lost = self.max_poise.saturating_sub(self.poise);
+        self.poise = if def.poise == 0 { 0 } else { def.poise.saturating_sub(lost).max(1) };
+        self.max_poise = def.poise;
+        self.poise_refill = def.refill();
     }
 
     /// Whether hits can land on it at all: its set has a [`FighterDef`].

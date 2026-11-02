@@ -36,6 +36,7 @@ mod file;
 mod play;
 mod scenario;
 mod script;
+mod tuning;
 
 pub use checksums::{
     ARCHITECTURE, CHECKPOINT_EVERY, ChecksumFile, ChecksumsError, Divergence, RecordedTrail, Trail,
@@ -46,8 +47,11 @@ pub use file::{
 };
 pub use play::{PlayError, Played, Player, Recording, StepAllocated};
 pub use scenario::{
-    SCENARIOS, Scenario, ScenarioError, arena, duel, find_scenario, melee, melee_buttons, test_moves,
+    SCENARIOS, Scenario, ScenarioError, arena, document_file_name, duel, find_scenario, melee, melee_buttons,
+    test_moves,
 };
 pub use script::{
-    ARENA_WALK_JUMP, ARENA_WALK_LEGS, ActionSource, SCRIPTS, Script, arena_walk, find_script, melee_sweep,
+    ARENA_WALK_JUMP, ARENA_WALK_LEGS, ATTEMPT_EVERY, ActionSource, SCRIPTS, Script, arena_walk, attempts,
+    find_script, melee_sweep,
 };
+pub use tuning::{LiveMoves, compile_document};

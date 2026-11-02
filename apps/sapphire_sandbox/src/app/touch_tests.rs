@@ -234,6 +234,28 @@ fn touch_walks_the_player_where_the_view_looks_and_starts_a_move() {
     assert_eq!(rig.player().moves.current.expect("running").serial, serial, "one press, held");
 }
 
+/// A thumb on the zones says a thumb is playing, for what chooses a target by that, until another device
+/// is used. Frames with nobody playing say nothing, and zeros from the zones count as nobody.
+#[test]
+fn the_zones_say_a_thumb_is_playing_until_another_device_is_used() {
+    let mut rig = Rig::fight();
+    for _ in 0..3 {
+        rig.frame();
+    }
+    assert!(!rig.input.played_on_touch(), "nobody's playing yet");
+    rig.push_stick(THUMB, Vec2::new(0.0, 1.0));
+    rig.frame();
+    assert!(rig.input.played_on_touch());
+    rig.touch(1, THUMB, TouchPhase::Up, rig.layout.stick.rest);
+    for _ in 0..3 {
+        rig.frame();
+    }
+    assert!(rig.input.played_on_touch(), "it lasts with the thumb off the screen");
+    rig.tap_key(Scancode::J);
+    rig.frame();
+    assert!(!rig.input.played_on_touch(), "a key takes it back");
+}
+
 /// What a desktop's window has in its player's hands: the keyboard and the mouse, under the live HUD's
 /// zones, whose stick and drag go in as zeros every frame nobody touches them.
 #[test]

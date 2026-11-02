@@ -232,6 +232,12 @@ impl SandboxInput {
         std::mem::take(&mut self.queued)
     }
 
+    /// Whether a thumb is what's been playing: the device used last was the screen. It stays so until
+    /// another's used, and it's false with nobody playing, as a replay's or a script's frames have.
+    pub fn played_on_touch(&self) -> bool {
+        self.controls.input().last_device() == Some(sapphire_input::DeviceKind::Touch)
+    }
+
     #[cfg(feature = "dev")]
     pub fn last_device(&self) -> Option<sapphire_input::DeviceKind> {
         self.controls.input().last_device()

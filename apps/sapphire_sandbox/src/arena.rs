@@ -428,6 +428,8 @@ pub(crate) struct ArenaActors {
     enemy_id: ActorId,
     /// Who the soft lock has now.
     target: Option<ActorId>,
+    /// What the soft lock weighs ([`Self::set_played_on_touch`]).
+    weights: TargetingWeights,
     /// Whether the player's lock-on is on.
     locked_on: bool,
     /// The simulation's tick when it last stepped: going back, it's a new fight.
@@ -454,6 +456,7 @@ impl ArenaActors {
             signals: [FighterSignals::default(); 2],
             enemy_id: ENEMY_ID,
             target: None,
+            weights: TargetingWeights::SOFT_LOCK,
             locked_on: false,
             tick: 0,
             follows: shot == ArenaShot::Follow,
@@ -597,6 +600,15 @@ impl ArenaActors {
         came_in
     }
 
+    /// Says whether a thumb is what's playing this fight (`InputSystem::last_device`), so the soft lock
+    /// weighs [`TargetingWeights::TOUCH`] rather than a pad's aim (pillar 7). Only the camera reads the
+    /// choice: nothing in a step does, since a move warps to the target its scenario gave it. So this
+    /// moves no checksum, and a replay, with no device, always frames as a pad would. Whatever comes to
+    /// read the choice in a step has to take these weights from the recording too.
+    pub fn set_played_on_touch(&mut self, touch: bool) {
+        self.weights = if touch { TargetingWeights::TOUCH } else { TargetingWeights::SOFT_LOCK };
+    }
+
     /// Who the player's soft lock has at this frame: [`choose_target`], from where the player stands and
     /// points, among those still standing.
     fn choose_target(&mut self, alpha: f32) -> Option<Vec3> {
@@ -610,7 +622,7 @@ impl ArenaActors {
             current: self.target,
             candidates: candidates.as_slice(),
         };
-        self.target = choose_target(&query, &TargetingWeights::SOFT_LOCK);
+        self.target = choose_target(&query, &self.weights);
         self.target.map(|_| enemy.position)
     }
 
@@ -1019,6 +1031,33 @@ mod tests {
         assert_eq!(stand_at(&mut actors, away(17.0)), None);
         assert_eq!(stand_at(&mut actors, away(15.0)), None, "not chosen again yet");
         assert_eq!(stand_at(&mut actors, away(11.0)), Some(cast[1]));
+    }
+
+    /// A thumb doesn't aim, so a fight played on touch chooses by `TOUCH`, whose reach is longer, even
+    /// with one enemy to choose from. A pad's or a key's press goes back to the soft lock's.
+    #[test]
+    fn a_thumb_chooses_with_touchs_weights_and_anything_else_with_the_soft_locks() {
+        let (mut actors, _, _, cast) = fight();
+        let mut world = World::new();
+        world.insert_resource(ArenaShot::Director.camera(spawns().player.position()));
+        let enemy = spawns().enemy.position();
+        let away = |metres: f32| enemy + Vec3::new(metres, 0.0, 0.0);
+        let mut stand_at = |actors: &mut ArenaActors, metres| {
+            actors.player.1 = Root::standing(away(metres), 0.0);
+            actors.present(&mut world, 1.0, None);
+            actors.target
+        };
+
+        assert_eq!(stand_at(&mut actors, 17.0), None, "past the soft lock's keep range");
+        assert_eq!(stand_at(&mut actors, 13.0), None, "and not within its reach");
+
+        actors.set_played_on_touch(true);
+        assert_eq!(stand_at(&mut actors, 13.0), Some(cast[1]), "within a thumb's reach");
+        assert_eq!(stand_at(&mut actors, 17.0), Some(cast[1]), "and kept further");
+        assert_eq!(stand_at(&mut actors, 19.0), None, "past a thumb's keep range");
+
+        actors.set_played_on_touch(false);
+        assert_eq!(stand_at(&mut actors, 13.0), None, "a pad's reach again");
     }
 
     /// Nobody stands to frame once the enemy's fallen, and a new fight stands it up again.

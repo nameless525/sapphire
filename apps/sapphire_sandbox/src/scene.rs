@@ -2241,6 +2241,14 @@ impl Scene {
         self.hud.as_ref().is_some_and(|hud| hud.holds_control(finger))
     }
 
+    /// Says whether a thumb is what's playing, for who a fight's soft lock chooses
+    /// ([`crate::arena::ArenaActors::set_played_on_touch`]).
+    pub fn set_played_on_touch(&mut self, touch: bool) {
+        if let Some(arena) = &mut self.arena {
+            arena.set_played_on_touch(touch);
+        }
+    }
+
     /// The HUD's frame on the real clock, where a window has its metrics: what its touch zones read
     /// goes to `input`, before that judges the frame.
     pub fn update_hud(

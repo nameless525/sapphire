@@ -17,11 +17,11 @@ pub enum PlayError {
     UnknownScenario { name: String, known: String },
     #[error("scenario `{name}` can't set up its world: {source}")]
     Setup { name: String, source: ScenarioError },
-    /// The move data or controller tuning isn't what the replay was recorded against, so its actions
-    /// mean something else.
+    /// The move data, controller tuning or collision world isn't what the replay was recorded against,
+    /// so its actions mean something else.
     #[error(
-        "the move data or controller tuning changed since this replay was recorded (hash {recorded:016x}, \
-         now {current:016x}), \
+        "the move data, controller tuning or collision world changed since this replay was recorded (hash \
+         {recorded:016x}, now {current:016x}), \
          so it would run a different fight: re-record it with `cargo xtask replay --update`, then review \
          what moved"
     )]
@@ -96,6 +96,7 @@ pub struct Player {
     tracked: Tracked,
     replay: Replay,
     cursor: Cursor,
+    cast: Vec<ActorId>,
 }
 
 impl Player {
@@ -108,14 +109,20 @@ impl Player {
             let names: Vec<&str> = scenarios.iter().map(|scenario| scenario.name).collect();
             return Err(PlayError::UnknownScenario { name: name.to_owned(), known: names.join(", ") });
         };
-        let (sim, _cast) = scenario
+        let (sim, cast) = scenario
             .start(replay.config())
             .map_err(|source| PlayError::Setup { name: name.to_owned(), source })?;
         let current = sim.tables_hash();
         if current != replay.tables_hash() {
             return Err(PlayError::MovesChanged { recorded: replay.tables_hash(), current });
         }
-        Ok(Self { tracked: Tracked::new(sim, replay.ticks()), replay, cursor: Cursor::START })
+        Ok(Self { tracked: Tracked::new(sim, replay.ticks()), replay, cursor: Cursor::START, cast })
+    }
+
+    /// The actors the scenario's input drives, the player first: who presentation stands where.
+    #[must_use]
+    pub fn cast(&self) -> &[ActorId] {
+        &self.cast
     }
 
     /// Plays one tick. Returns `false`, and does nothing, once the replay has ended.
@@ -172,6 +179,12 @@ impl Recording {
             .map_err(|source| PlayError::Setup { name: scenario.name.to_owned(), source })?;
         recorder.set_tables_hash(sim.tables_hash());
         Ok(Self { tracked: Tracked::new(sim, MAX_TICKS), recorder, cast })
+    }
+
+    /// The actors the scenario's input drives, the player first: who presentation stands where.
+    #[must_use]
+    pub fn cast(&self) -> &[ActorId] {
+        &self.cast
     }
 
     /// Asks `source` for the next tick's actions, records them and steps. Refuses at the file's limit

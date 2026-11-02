@@ -1,0 +1,16 @@
+// Where a duel in the arena starts (M2 O5): plain data beside its colliders
+// (`square.colliders.ron`), in the town's space. The `arena` scenario spawns these, and the stage
+// stands its characters on them. Yaw is degrees about +Y; 0 faces +Z, and the player faces the
+// enemy across 6 m, on the line through the street's moon gate, so the frame looks up the street.
+//
+// Compiled in (`sapphire_gameplay::arena`), so a replay can't run from other spawn points than its
+// build's. Moving one moves the `arena` replays' checksums (`cargo xtask replay --update`), and
+// `crates/sapphire_gameplay/tests/arena.rs` holds each to the ground and clear of the colliders.
+(
+    type: "sapphire::gameplay::ArenaSpawns",
+    version: 1,
+    data: (
+        player: (position: (3.2, 0.0, 5.0), yaw_degrees: 180.0),
+        enemy: (position: (3.2, 0.0, -1.0), yaw_degrees: 0.0),
+    ),
+)

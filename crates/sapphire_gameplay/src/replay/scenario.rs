@@ -8,14 +8,16 @@
 //! scenario's move sets must come out byte for byte the same on every architecture: from a document,
 //! as [`test_moves`] does, or from committed cooked bytes, and in scalars and `sapphire_math::det` if
 //! a setup computes anything, never through glam's SIMD types. Anything else a run depends on belongs
-//! in that hash too.
+//! in that hash too. Its collision world is already there: [`arena`]'s comes from a compiled-in
+//! document, whose cook goes through `det` for that reason, and the hash takes its statics' digest.
 
+use sapphire_colliders::ColliderError;
 use sapphire_core::Name;
 use sapphire_ecs::prelude::*;
 use sapphire_math::Vec3;
 use sapphire_moves::{MoveSet, MoveSetDocument, MoveSetError};
 use sapphire_physics::{
-    ColliderId, Group, PhysicsWorld, Pose, Shape, StaticCollider, StaticShape, WorldError,
+    ColliderId, ColliderSet, Group, PhysicsWorld, Pose, Shape, StaticCollider, StaticShape, WorldError,
 };
 use sapphire_time::ScaleSource;
 
@@ -40,6 +42,8 @@ pub enum ScenarioError {
     Moves(#[from] MoveSetError),
     #[error(transparent)]
     Colliders(#[from] WorldError),
+    #[error(transparent)]
+    ColliderDocument(#[from] ColliderError),
     #[error(transparent)]
     World(#[from] PhysicsWorldError),
     #[error(transparent)]
@@ -95,6 +99,18 @@ pub const SCENARIOS: &[Scenario] = &[
             physics_budget: PHYSICS_BUDGET_DESKTOP_LOW,
         },
         setup: duel,
+    },
+    Scenario {
+        name: "arena",
+        about: "a player and an opponent at the look-dev town's spawn points, on its square's colliders, with \
+                the test moves and each aiming warps at the other",
+        config: SimConfig {
+            seed: 7,
+            max_actors: 8,
+            step_budget: BUDGET_DESKTOP_LOW,
+            physics_budget: PHYSICS_BUDGET_DESKTOP_LOW,
+        },
+        setup: arena,
     },
 ];
 
@@ -213,6 +229,23 @@ pub fn duel(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
     Ok(cast)
 }
 
+/// The arena (`crate::arena`): the town's square from its collider document, and a player and an
+/// opponent at the document's spawn points. Input drives both, the player first.
+pub fn arena(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
+    let cooked = crate::arena::cooked_colliders()?;
+    let set = ColliderSet::read(&cooked)?;
+    sim.set_physics_world(PhysicsWorld::from_cooked(set, sim.body_capacity())?)?;
+    let controller = Some(sim.add_controller_profile(&crate::arena::profile())?);
+    let moves = Some(sim.add_move_set(test_moves()?));
+    let spawns = crate::arena::spawns();
+    let mut cast = Vec::with_capacity(2);
+    for spot in [spawns.player, spawns.enemy] {
+        cast.push(sim.spawn(ActorSpawn { position: spot.position(), yaw: spot.yaw(), moves, controller })?);
+    }
+    aim_round(sim, &cast);
+    Ok(cast)
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::is_valid_name;
@@ -245,6 +278,41 @@ mod tests {
                 assert_eq!(view.position.y, 0.0, "{}", scenario.name);
             }
         }
+    }
+
+    /// The arena's cast stands where the document says, the player first, each facing the other.
+    #[test]
+    fn the_arena_spawns_its_two_actors_where_the_document_says() {
+        let scenario = find_scenario(SCENARIOS, "arena").expect("listed");
+        let (mut sim, cast) = scenario.start(scenario.config).expect("sets up");
+        let spawns = crate::arena::spawns();
+        assert_eq!(cast.len(), 2);
+        sim.step(&crate::actions::TickActions::NEUTRAL);
+        for (actor, spot) in cast.iter().zip([spawns.player, spawns.enemy]) {
+            let view = sim.actor(*actor).expect("alive");
+            assert_eq!(view.position, spot.position());
+            assert_eq!(view.yaw, spot.yaw());
+        }
+    }
+
+    /// One collision world is told from another by a replay's hash: moving a collider says so, rather
+    /// than playing on and diverging at the first tick.
+    #[test]
+    fn the_tables_hash_holds_the_collision_world() {
+        let hash_on = |top: f32| {
+            let mut sim = Simulation::new(SimConfig::default());
+            let floor = StaticCollider {
+                id: ColliderId(0),
+                shape: StaticShape::Convex(Shape::Box { half_extents: Vec3::new(200.0, 0.5, 200.0) }),
+                pose: Pose::at(Vec3::new(0.0, top - 0.5, 0.0)),
+                memberships: Group::World.mask(),
+            };
+            sim.set_physics_world(PhysicsWorld::new(vec![floor], sim.body_capacity()).expect("builds"))
+                .expect("room");
+            sim.tables_hash()
+        };
+        assert_eq!(hash_on(0.0), hash_on(0.0));
+        assert_ne!(hash_on(0.0), hash_on(0.25));
     }
 
     #[test]

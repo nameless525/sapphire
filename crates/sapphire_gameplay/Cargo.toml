@@ -10,14 +10,20 @@ license.workspace = true
 [dependencies]
 # Bevy's derive macros find the crate by this name (see sapphire_ecs).
 bevy_ecs.workspace = true
+# Documents derive `TypePath`, whose derive finds the crate by this name: the arena's spawn points.
+bevy_reflect.workspace = true
 profiling.workspace = true
 # The allocation counter in the simulation's stats (rule R6).
 sapphire_core.workspace = true
 sapphire_ecs.workspace = true
 sapphire_math.workspace = true
 sapphire_moves.workspace = true
+# The arena's collider document, which its scenario cooks.
+sapphire_colliders.workspace = true
 # The collision world characters move in, and that hit queries sweep through.
 sapphire_physics.workspace = true
+sapphire_reflect.workspace = true
+sapphire_serialize.workspace = true
 sapphire_time.workspace = true
 # Controller profiles as document data.
 serde.workspace = true
@@ -26,11 +32,8 @@ thiserror.workspace = true
 xxhash-rust.workspace = true
 
 [dev-dependencies]
-# A profile read from a document, and the committed arena.
+# A profile read from a document.
 ron.workspace = true
-sapphire_colliders.workspace = true
-# The cooked bytes tests load, as a game would.
-sapphire_serialize.workspace = true
 
 [lints]
 workspace = true

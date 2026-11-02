@@ -205,8 +205,9 @@ impl Simulation {
         world.resource_mut::<MoveLibrary>().replace(id, set, |revision| in_use.contains(&revision))
     }
 
-    /// The hash of the move data and controller profiles this simulation runs on, tables included, in
-    /// ID order: what a replay records of them, to tell changed moves or tuning from a broken simulation.
+    /// The hash of the move data, controller profiles and collision world this simulation runs on,
+    /// tables included, in ID order: what a replay records of them, to tell changed moves, tuning or
+    /// colliders from a broken simulation.
     #[must_use]
     pub fn tables_hash(&self) -> u64 {
         let world = self.ecs.world();

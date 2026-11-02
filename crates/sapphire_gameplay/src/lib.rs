@@ -23,6 +23,8 @@
 //!   move's root motion reaches it in [`CombatSet::Movement`] and collides as the stick's does.
 //! - [`HitQuery`], which sweeps moves' hit volumes against hurtboxes, over plain inputs that
 //!   [`HitQuery::sweep_published`] and [`published_hurtbox`] make from what moves publish.
+//! - [`arena`]: the look-dev town's square as a place to fight: its collision, from a committed
+//!   document, and where a duel starts.
 //!
 //! The system that runs hit queries arrives with M2 G3, in [`CombatSet::Hits`]. Until then hit volumes
 //! are published for it to sweep.
@@ -117,6 +119,7 @@ extern crate self as sapphire_gameplay;
 
 mod actions;
 mod actors;
+pub mod arena;
 mod checksum;
 mod controller;
 mod cues;

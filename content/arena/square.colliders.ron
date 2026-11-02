@@ -1,0 +1,136 @@
+// The arena's static collision (M2 O5): what a character or a camera can hit in the look-dev town's
+// square. World space is the town's: meters, +Y up, the square's open side toward +Z. The stage is
+// `apps/sapphire_sandbox/src/arena.rs`; the spawn points are beside this file, in
+// `square.spawns.ron`.
+//
+// The space is the square's paving between its three rows: the rows' fronts bound it on the left
+// (x -17.04), the right (x 17.04) and the back (z about -17.5), and the end of the paving bounds
+// it where nothing was built (x +-18.6 past the rows' ends, z 20.3). Inside it, boxes stand where
+// the town draws something a body would hit.
+//
+// Every number here comes from the town's own geometry, at a character's height. Two tests hold it
+// there: `tools/sapphire_pipeline/tests/arena.rs` assembles each placement of
+// `lookdev/town/town.assembly.ron` near the square and fails if something drawn at a character's
+// height is in no collider, or a collider stands where nothing is drawn, so moving a building fails
+// a test instead of leaving an invisible wall. `apps/sapphire_sandbox/src/arena.rs`'s tests hold the
+// trees to the stage's plantings, which aren't in the assembly.
+//
+// The simulation compiles this file in (`sapphire_gameplay::arena`), so moving anything here re-records
+// the `arena` replays: `cargo xtask replay --update`. Look at it over the town:
+//
+//     sapphire_sandbox --arena --arena-shot over --debug-draw colliders --capture <png>
+(
+    type: "sapphire::colliders::ColliderDocument",
+    version: 1,
+    data: (
+        colliders: [
+            // The paving's top is y 0. It reaches past the town's edges, for cameras: the lawn
+            // beyond the paving is drawn 3 cm under this.
+            (name: "ground", shape: Box(half_extents: (60.0, 0.5, 60.0)), position: (0.0, -0.5, 0.0)),
+
+            // ---- The back row, fronts at z about -17.5.
+            (name: "hall_back", shape: Box(half_extents: (5.27, 4.26, 3.67)), position: (-12.2, 4.26, -21.1)),
+            (name: "shop3_back", shape: Box(half_extents: (4.06, 6.17, 3.06)), position: (12.6, 6.17, -20.5)),
+            // The gate wall, 13.5 m long and open at its two moon gates: its three stretches, and
+            // what's over each gate. A moon gate narrows toward its foot, which the characters' side
+            // of it never reaches, since the blockers below close it in the wall's front plane.
+            (name: "gate_wall_west", shape: Box(half_extents: (1.025, 2.095, 0.25)), position: (-5.625, 2.095, -18.0)),
+            (name: "gate_wall_middle", shape: Box(half_extents: (2.05, 2.095, 0.25)), position: (-0.55, 2.095, -18.0)),
+            (name: "gate_wall_east", shape: Box(half_extents: (0.975, 2.095, 0.25)), position: (5.875, 2.095, -18.0)),
+            (name: "gate_wall_over_street", shape: Box(half_extents: (1.7, 0.545, 0.25)), position: (3.2, 3.645, -18.0)),
+            (name: "gate_wall_over_courtyard", shape: Box(half_extents: (1.0, 1.12, 0.25)), position: (-3.6, 3.07, -18.0)),
+
+            // ---- The left row, fronts at x -17.04.
+            (name: "shop_left", shape: Box(half_extents: (3.06, 4.89, 4.06)), position: (-20.1, 4.89, -10.4)),
+            (name: "flats_left", shape: Box(half_extents: (3.06, 3.6, 3.66)), position: (-20.1, 3.6, -0.9)),
+            (name: "house_left", shape: Box(half_extents: (2.56, 2.965, 3.26)), position: (-19.6, 2.965, 7.4)),
+
+            // ---- The right row, fronts at x 17.04.
+            (name: "house_right_back", shape: Box(half_extents: (2.56, 2.965, 3.26)), position: (19.6, 2.965, -12.0)),
+            (name: "shop_right", shape: Box(half_extents: (3.06, 4.89, 4.06)), position: (20.1, 4.89, -2.8)),
+            (name: "house_right_front", shape: Box(half_extents: (2.56, 2.965, 3.26)), position: (19.6, 2.965, 6.4)),
+
+            // ---- The pavilion, 3.8 m square under a roof 5.3 m across, turned 30°: a column at each
+            // corner, a seat and its rail round three sides, and a short return either side of its
+            // 2.2 m opening at the front. Its floor inside is open: a body can step in.
+            (name: "pavilion_column_front_right", shape: Box(half_extents: (0.15, 1.6, 0.15)), position: (-2.246, 1.6, -6.396), rotation: AxisAngle(axis: (0.0, 1.0, 0.0), degrees: 30.0)),
+            (name: "pavilion_column_front_left", shape: Box(half_extents: (0.15, 1.6, 0.15)), position: (-5.104, 1.6, -4.746), rotation: AxisAngle(axis: (0.0, 1.0, 0.0), degrees: 30.0)),
+            (name: "pavilion_column_back_right", shape: Box(half_extents: (0.15, 1.6, 0.15)), position: (-3.896, 1.6, -9.254), rotation: AxisAngle(axis: (0.0, 1.0, 0.0), degrees: 30.0)),
+            (name: "pavilion_column_back_left", shape: Box(half_extents: (0.15, 1.6, 0.15)), position: (-6.754, 1.6, -7.604), rotation: AxisAngle(axis: (0.0, 1.0, 0.0), degrees: 30.0)),
+            (name: "pavilion_bench_back", shape: Box(half_extents: (1.707, 0.57, 0.341)), position: (-5.276, 0.57, -8.3441), rotation: AxisAngle(axis: (0.0, 1.0, 0.0), degrees: 30.0)),
+            (name: "pavilion_bench_left", shape: Box(half_extents: (0.341, 0.57, 1.707)), position: (-5.8441, 0.57, -6.224), rotation: AxisAngle(axis: (0.0, 1.0, 0.0), degrees: 30.0)),
+            (name: "pavilion_bench_right", shape: Box(half_extents: (0.341, 0.57, 1.707)), position: (-3.1559, 0.57, -7.776), rotation: AxisAngle(axis: (0.0, 1.0, 0.0), degrees: 30.0)),
+            (name: "pavilion_return_left", shape: Box(half_extents: (0.3415, 0.54, 0.059)), position: (-4.9164, 0.54, -4.8544), rotation: AxisAngle(axis: (0.0, 1.0, 0.0), degrees: 30.0)),
+            (name: "pavilion_return_right", shape: Box(half_extents: (0.3415, 0.54, 0.059)), position: (-2.4336, 0.54, -6.2879), rotation: AxisAngle(axis: (0.0, 1.0, 0.0), degrees: 30.0)),
+            (name: "pavilion_roof", shape: Box(half_extents: (2.64, 1.05, 2.64)), position: (-4.5, 4.3, -7.0), rotation: AxisAngle(axis: (0.0, 1.0, 0.0), degrees: 30.0)),
+
+            // ---- The market: each stall's frame, whole, from the ground to its roof's top, and the
+            // goods standing on the ground before or behind it.
+            (name: "stall_greens", shape: Box(half_extents: (1.3, 1.865, 0.8)), position: (6.4, 1.865, -9.2), rotation: AxisAngle(axis: (0.0, 1.0, 0.0), degrees: 15.0)),
+            (name: "stall_greens_goods", shape: Box(half_extents: (0.685, 0.12, 0.23)), position: (6.383, 0.12, -8.0463), rotation: AxisAngle(axis: (0.0, 1.0, 0.0), degrees: 15.0)),
+            (name: "stall_cloth", shape: Box(half_extents: (1.2, 1.41, 0.776)), position: (9.9955, 1.41, -10.9744), rotation: AxisAngle(axis: (0.0, 1.0, 0.0), degrees: -10.0)),
+            (name: "stall_pots", shape: Box(half_extents: (1.4, 1.91, 0.85)), position: (12.5, 1.91, -6.2), rotation: AxisAngle(axis: (0.0, 1.0, 0.0), degrees: -60.0)),
+            (name: "stall_pots_jars_front", shape: Box(half_extents: (0.545, 0.35, 0.25)), position: (11.2016, 0.35, -6.1489), rotation: AxisAngle(axis: (0.0, 1.0, 0.0), degrees: -60.0)),
+            (name: "stall_pots_jar_back", shape: Box(half_extents: (0.225, 0.235, 0.225)), position: (14.0825, 0.235, -5.959), rotation: AxisAngle(axis: (0.0, 1.0, 0.0), degrees: -60.0)),
+            (name: "stall_fruit", shape: Box(half_extents: (1.2, 1.53, 0.75)), position: (-8.6, 1.53, 0.4), rotation: AxisAngle(axis: (0.0, 1.0, 0.0), degrees: 30.0)),
+            (name: "stall_fruit_goods", shape: Box(half_extents: (0.575, 0.11, 0.22)), position: (-8.1619, 0.11, 1.4288), rotation: AxisAngle(axis: (0.0, 1.0, 0.0), degrees: 30.0)),
+            (name: "cart", shape: Box(half_extents: (0.725, 0.45, 1.3)), position: (-11.3897, 0.45, -13.375), rotation: AxisAngle(axis: (0.0, 1.0, 0.0), degrees: -60.0)),
+            (name: "bench_west", shape: Box(half_extents: (0.8, 0.23, 0.18)), position: (-9.0, 0.23, -5.0), rotation: AxisAngle(axis: (0.0, 1.0, 0.0), degrees: 70.0)),
+            (name: "bench_middle", shape: Box(half_extents: (0.8, 0.23, 0.18)), position: (0.4, 0.23, -9.5), rotation: AxisAngle(axis: (0.0, 1.0, 0.0), degrees: -20.0)),
+
+            // ---- Lanterns on posts: post and paper as one box, as wide as the paper.
+            (name: "lantern_west", shape: Box(half_extents: (0.19, 0.975, 0.19)), position: (-8.0, 0.975, -2.0)),
+            (name: "lantern_back", shape: Box(half_extents: (0.19, 0.975, 0.19)), position: (-1.0, 0.975, -13.0)),
+            (name: "lantern_east", shape: Box(half_extents: (0.19, 0.975, 0.19)), position: (8.0, 0.975, -2.5)),
+            (name: "lantern_back_west", shape: Box(half_extents: (0.19, 0.975, 0.19)), position: (-14.0, 0.975, -10.0)),
+            (name: "lantern_back_east", shape: Box(half_extents: (0.19, 0.975, 0.19)), position: (14.5, 0.975, -14.0)),
+
+            // ---- Planters and pots, to their soil. What grows in them bends out of the way.
+            (name: "planter_front", shape: Box(half_extents: (1.7, 0.2, 1.7)), position: (-3.0, 0.2, 5.2)),
+            (name: "planter_back_east", shape: Box(half_extents: (2.3, 0.2, 0.85)), position: (10.2, 0.2, -14.6)),
+            (name: "planter_back_west", shape: Box(half_extents: (2.5, 0.2, 0.95)), position: (-8.0, 0.2, -15.2)),
+            (name: "planter_west", shape: Box(half_extents: (1.1, 0.2, 3.0)), position: (-12.6, 0.2, -4.0)),
+            (name: "pot_hall", shape: Box(half_extents: (0.35, 0.28, 0.35)), position: (-12.8, 0.28, -16.5)),
+            (name: "pot_gate", shape: Box(half_extents: (0.35, 0.28, 0.35)), position: (-1.6, 0.28, -16.6)),
+            (name: "pot_shop", shape: Box(half_extents: (0.35, 0.28, 0.35)), position: (9.6, 0.28, -16.5)),
+            (name: "pot_shop_east", shape: Box(half_extents: (0.35, 0.28, 0.35)), position: (12.8, 0.28, -16.9)),
+            (name: "pot_market", shape: Box(half_extents: (0.35, 0.28, 0.35)), position: (4.4, 0.28, -9.6)),
+            (name: "pot_east", shape: Box(half_extents: (0.35, 0.28, 0.35)), position: (15.2, 0.28, -8.4)),
+
+            // ---- Trunks. The stage plants these (`lookdev::PLANTINGS`), so they aren't in the
+            // assembly, and a test in the stage holds them to its plantings. Capsules whose cylinders
+            // start at the root, to where the leaves start; leaves don't stop a body.
+            (name: "tree_green_corner", shape: Capsule(half_height: 1.4, radius: 0.28), position: (-15.6, 1.4, -15.4)),
+            (name: "tree_blossom_corner", shape: Capsule(half_height: 1.4, radius: 0.28), position: (15.6, 1.4, -15.6)),
+            (name: "tree_kit", shape: Capsule(half_height: 0.7, radius: 0.38), position: (13.0, 0.7, 5.0)),
+            (name: "tree_kit_round", shape: Capsule(half_height: 1.9, radius: 0.38), position: (11.5, 1.9, 1.5)),
+            (name: "tree_autumn_planter", shape: Capsule(half_height: 1.2, radius: 0.25), position: (-3.0, 1.6, 5.2)),
+            // The one canopy solid enough and low enough to matter: from under a character's chin to
+            // 7.4 m. A camera backing into it would see the inside of a lump.
+            (name: "camera_tree_kit", shape: Box(half_extents: (1.53, 3.0, 1.53)), position: (13.0, 4.4, 5.0), groups: [CameraBlocker]),
+
+            // ---- What keeps characters in, without stopping cameras or hits. Where the town leaves
+            // a way out, a blocker stands in the plane of what's beside it, 6 m tall, well over any
+            // jump from what can be climbed.
+            //
+            // The moon gates: the street and the courtyard stay closed until M3's zones.
+            (name: "block_gate_street", shape: Box(half_extents: (1.7, 3.0, 0.25)), position: (3.2, 3.0, -18.0), groups: [CharacterBlocker]),
+            (name: "block_gate_courtyard", shape: Box(half_extents: (1.0, 3.0, 0.25)), position: (-3.6, 3.0, -18.0), groups: [CharacterBlocker]),
+            // Between the back row's buildings.
+            (name: "block_back_west", shape: Box(half_extents: (0.14, 3.0, 0.41)), position: (-6.79, 3.0, -17.84), groups: [CharacterBlocker]),
+            (name: "block_back_east", shape: Box(half_extents: (0.845, 3.0, 0.25)), position: (7.695, 3.0, -18.0), groups: [CharacterBlocker]),
+            // Between the rows' buildings, and at the back corners.
+            (name: "block_west_corner", shape: Box(half_extents: (0.25, 3.0, 1.485)), position: (-17.29, 3.0, -15.945), groups: [CharacterBlocker]),
+            (name: "block_west_alley_back", shape: Box(half_extents: (0.25, 3.0, 0.89)), position: (-17.29, 3.0, -5.45), groups: [CharacterBlocker]),
+            (name: "block_west_alley_front", shape: Box(half_extents: (0.25, 3.0, 0.69)), position: (-17.29, 3.0, 3.45), groups: [CharacterBlocker]),
+            (name: "block_east_corner", shape: Box(half_extents: (0.25, 3.0, 1.34)), position: (17.29, 3.0, -16.6), groups: [CharacterBlocker]),
+            (name: "block_east_corner_back", shape: Box(half_extents: (0.44, 3.0, 0.25)), position: (17.1, 3.0, -17.69), groups: [CharacterBlocker]),
+            (name: "block_east_alley_back", shape: Box(half_extents: (0.25, 3.0, 0.94)), position: (17.29, 3.0, -7.8), groups: [CharacterBlocker]),
+            (name: "block_east_alley_front", shape: Box(half_extents: (0.25, 3.0, 0.94)), position: (17.29, 3.0, 2.2), groups: [CharacterBlocker]),
+            // The paving's end, past the rows.
+            (name: "block_edge_west", shape: Box(half_extents: (0.25, 3.0, 4.82)), position: (-18.85, 3.0, 15.48), groups: [CharacterBlocker]),
+            (name: "block_edge_east", shape: Box(half_extents: (0.25, 3.0, 5.32)), position: (18.85, 3.0, 14.98), groups: [CharacterBlocker]),
+            (name: "block_edge_front", shape: Box(half_extents: (19.1, 3.0, 0.25)), position: (0.0, 3.0, 20.55), groups: [CharacterBlocker]),
+        ],
+    ),
+)

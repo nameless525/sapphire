@@ -295,9 +295,10 @@ pub(crate) fn state_checksum(world: &World) -> u64 {
     hasher.finish()
 }
 
-/// The hash of loaded move data, for a replay to check it runs against what it recorded: each set's
-/// current revision, whole, with its tables, in ID order. It hashes a set's cooked bytes, so no field
-/// can be forgotten here, and those are the same on every target.
+/// The hash of what a run depends on, for a replay to check it runs against what it recorded: each
+/// move set's current revision, whole, with its tables, in ID order, the controller profiles and the
+/// collision world's statics. It hashes a set's cooked bytes, so no field can be forgotten here, and
+/// those are the same on every target, as the statics' digest is: authored numbers, by their bits.
 pub(crate) fn tables_hash(library: &MoveLibrary, characters: &CharacterWorld) -> u64 {
     let mut hasher = StateHasher::new();
     let hashes = library.current_hashes();
@@ -306,6 +307,7 @@ pub(crate) fn tables_hash(library: &MoveLibrary, characters: &CharacterWorld) ->
         hasher.u64(hash);
     }
     hasher.u64(characters.profiles_hash());
+    hasher.u64(characters.physics().statics_digest());
     hasher.finish()
 }
 

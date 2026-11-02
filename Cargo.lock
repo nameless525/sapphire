@@ -3033,6 +3033,7 @@ name = "sapphire_gameplay"
 version = "0.1.0"
 dependencies = [
  "bevy_ecs",
+ "bevy_reflect",
  "profiling",
  "ron",
  "sapphire_colliders",
@@ -3041,6 +3042,7 @@ dependencies = [
  "sapphire_math",
  "sapphire_moves",
  "sapphire_physics",
+ "sapphire_reflect",
  "sapphire_serialize",
  "sapphire_time",
  "serde",
@@ -3272,6 +3274,8 @@ dependencies = [
  "sapphire_anim",
  "sapphire_assets",
  "sapphire_audio",
+ "sapphire_camera",
+ "sapphire_colliders",
  "sapphire_controls",
  "sapphire_core",
  "sapphire_crash",
@@ -3293,6 +3297,7 @@ dependencies = [
  "sapphire_ui",
  "sapphire_vfx",
  "sapphire_world",
+ "thiserror 2.0.21",
  "tracing",
 ]
 

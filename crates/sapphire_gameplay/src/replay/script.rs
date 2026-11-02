@@ -69,6 +69,13 @@ pub const SCRIPTS: &[Script] = &[
         ticks: 3600,
         actions: idle,
     },
+    Script {
+        name: "arena-walk",
+        about: "the arena's player walks and runs its clear floor, into a lantern post, jumps there, and comes \
+                back, by the stick alone",
+        ticks: ARENA_WALK_TICKS,
+        actions: arena_walk,
+    },
 ];
 
 /// The script named `name`.
@@ -210,6 +217,53 @@ pub fn dodge_dash(tick: u64, cast: &[ActorId]) -> TickActions {
 #[must_use]
 pub fn idle(_tick: u64, _cast: &[ActorId]) -> TickActions {
     TickActions::NEUTRAL
+}
+
+/// [`arena_walk`]'s legs: a stick held for so many ticks, in the world's axes (x along +X, y along
+/// +Z). The second number's 127 is a run, 6 m/s by the default profile, and 64 a walk, 2 m/s. From the
+/// player's spawn point (3.2, 5):
+///
+/// 1. A walk 2 m toward +X, past the line the enemy stands on.
+/// 2. A run 7.3 m toward −Z, to level with the post of the lantern at (8, −2.5).
+/// 3. A run toward +X, into that post, held after it stops the capsule. [`ARENA_WALK_JUMP`] jumps here,
+///    still pushing.
+/// 4. A run back 7.3 m toward +Z, with the post behind it.
+/// 5. A run toward −X, to about where it started.
+pub const ARENA_WALK_LEGS: [(i8, i8, u32); 5] =
+    [(64, 0, 60), (0, -127, 73), (127, 0, 90), (0, 127, 73), (-127, 0, 42)];
+
+/// The tick [`arena_walk`] presses jump, late in its third leg: at the post, in time to land.
+pub const ARENA_WALK_JUMP: u64 = 165;
+
+/// [`arena_walk`]'s length: its legs, and a second to stop.
+const ARENA_WALK_TICKS: u32 = {
+    let mut ticks = 60;
+    let mut leg = 0;
+    while leg < ARENA_WALK_LEGS.len() {
+        ticks += ARENA_WALK_LEGS[leg].2;
+        leg += 1;
+    }
+    ticks
+};
+
+/// [`SCRIPTS`]' `arena-walk`: the arena's player by the stick alone, and its opponent standing, for the
+/// golden frame of a character the controller moved and for what its collision does on the way.
+#[must_use]
+pub fn arena_walk(tick: u64, cast: &[ActorId]) -> TickActions {
+    let mut actions = TickActions::NEUTRAL;
+    let Some(&player) = cast.first() else { return actions };
+    let mut left = tick;
+    let mut stick = Stick::CENTER;
+    for (x, y, ticks) in ARENA_WALK_LEGS {
+        if left < u64::from(ticks) {
+            stick = Stick::new(x, y);
+            break;
+        }
+        left -= u64::from(ticks);
+    }
+    let buttons = if tick == ARENA_WALK_JUMP { Buttons::JUMP } else { Buttons::NONE };
+    actions.set(player, ActorActions { buttons, stick }).expect("one actor fits a tick");
+    actions
 }
 
 #[cfg(test)]

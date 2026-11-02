@@ -32,6 +32,10 @@ path = "src/main.rs"
 sapphire_anim.workspace = true
 sapphire_assets.workspace = true
 sapphire_audio.workspace = true
+# `--arena`: the camera a player sees it through (M2 O5).
+sapphire_camera.workspace = true
+# `--arena`: the arena's cooked colliders (M2 O5).
+sapphire_colliders.workspace = true
 sapphire_controls.workspace = true
 sapphire_core = { workspace = true, features = ["mimalloc"] }
 sapphire_crash.workspace = true
@@ -58,6 +62,7 @@ sapphire_vfx.workspace = true
 sapphire_world.workspace = true
 png.workspace = true
 profiling.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
 # Dev-only (rule R8): linked only by the `dev` feature.
 sapphire_debug = { workspace = true, optional = true }

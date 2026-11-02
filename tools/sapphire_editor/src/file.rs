@@ -276,6 +276,7 @@ impl MovesFile {
             let before = self.text.text().to_owned();
             self.text.set_text(on_disk.clone());
             self.disk = on_disk;
+            self.conflict = None;
             self.record(&before, "the file changed on disk");
         }
     }
@@ -418,6 +419,26 @@ mod tests {
             assert_eq!(fs::read(&path).expect("reads"), source.as_bytes(), "{name}");
             assert_eq!(fs::read_dir(dir.path()).expect("lists").count(), 1, "{name} left nothing beside it");
         }
+    }
+
+    /// A conflict settled by undoing the edits here is settled: the file's text is taken, and the next
+    /// save has nothing to refuse.
+    #[test]
+    fn undoing_back_to_the_file_settles_a_conflict() {
+        let dir = TestDir::new("conflict_undone");
+        let path = dir.write("moves.ron", PLAYER);
+        let mut file = MovesFile::open(&path).expect("opens");
+        file.edit("move a cue", |text| text.set_instant(cue(0), 3)).expect("the edit");
+        let elsewhere = PLAYER.replacen("name:", "name :", 1);
+        fs::write(&path, &elsewhere).expect("someone else's save");
+        file.poll_disk();
+        assert!(file.conflict().is_some());
+        assert!(file.undo());
+        assert!(!file.is_dirty());
+        file.poll_disk();
+        assert_eq!(file.text(), elsewhere);
+        assert!(file.conflict().is_none(), "nothing's in conflict");
+        file.save().expect("nothing to refuse");
     }
 
     #[test]

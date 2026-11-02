@@ -1082,7 +1082,7 @@ impl Scene {
     /// joints, and a new version of them or of the clip gives the clip a new pose to play on. While
     /// only some have landed the character may not fit: it keeps the pose it has, which the renderer
     /// ignores if the new mesh's palette is another length, until the others land. The enemy's mesh and
-    /// skeleton do the same for it ([`Self::replace_enemy`]). Allocates nothing while nothing changed.
+    /// skeleton do the same for it (`Self::replace_enemy`). Allocates nothing while nothing changed.
     pub fn follow_content(&mut self, content: &mut Content) {
         self.set_probe_hours(content.probe_hours());
         if content.take_meshes_replaced() {

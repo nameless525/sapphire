@@ -539,6 +539,14 @@ pub struct TouchEvent {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GamepadId(pub(crate) u32);
 
+impl GamepadId {
+    /// An ID as SDL numbers them. Only events make real ones: this is for tests of what reads them.
+    #[must_use]
+    pub const fn from_raw(raw: u32) -> Self {
+        Self(raw)
+    }
+}
+
 /// Gamepad state changes.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum GamepadEvent {

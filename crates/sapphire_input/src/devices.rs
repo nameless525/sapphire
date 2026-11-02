@@ -85,6 +85,8 @@ pub(crate) struct Devices {
     swipes: [bool; crate::source::SwipeDirection::COUNT],
     virtuals: Vec<Vec2>,
     last: Option<DeviceKind>,
+    /// The slot of the pad used last, whatever's been used since.
+    last_pad: Option<usize>,
 }
 
 impl Devices {
@@ -98,6 +100,7 @@ impl Devices {
             swipes: [false; crate::source::SwipeDirection::COUNT],
             virtuals: vec![Vec2::ZERO; virtuals],
             last: None,
+            last_pad: None,
         }
     }
 
@@ -107,6 +110,17 @@ impl Devices {
 
     pub fn used(&mut self, kind: DeviceKind) {
         self.last = Some(kind);
+    }
+
+    /// The slot of the pad in the player's hands: the device used last, if it was a pad.
+    pub fn active_pad(&self) -> Option<usize> {
+        matches!(self.last, Some(DeviceKind::Gamepad(_))).then_some(self.last_pad).flatten()
+    }
+
+    fn used_pad(&mut self, pad: usize) {
+        let family = self.pads[pad].family.unwrap_or(GamepadFamily::Generic);
+        self.last = Some(DeviceKind::Gamepad(family));
+        self.last_pad = Some(pad);
     }
 
     pub fn gamepads(&self) -> usize {
@@ -137,6 +151,9 @@ impl Devices {
         let Some(slot) = self.pads.get_mut(pad) else { return false };
         let held = slot.buttons != 0 || slot.axes.iter().any(|&a| a != 0.0);
         *slot = Pad::default();
+        if self.last_pad == Some(pad) {
+            self.last_pad = None;
+        }
         held
     }
 
@@ -144,7 +161,7 @@ impl Devices {
         let Some(slot) = self.pads.get_mut(pad).filter(|slot| slot.connected) else { return false };
         let changed = set_bit(&mut slot.buttons, button.bit(), down);
         if down {
-            self.last = Some(DeviceKind::Gamepad(slot.family.unwrap_or(GamepadFamily::Generic)));
+            self.used_pad(pad);
         }
         changed
     }
@@ -154,7 +171,7 @@ impl Devices {
         let value = if value.is_finite() { value.clamp(-1.0, 1.0) } else { 0.0 };
         let old = std::mem::replace(&mut slot.axes[axis.index()], value);
         if value.abs() >= PAD_ACTIVITY {
-            self.last = Some(DeviceKind::Gamepad(slot.family.unwrap_or(GamepadFamily::Generic)));
+            self.used_pad(pad);
         }
         old != value
     }

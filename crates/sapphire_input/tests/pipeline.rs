@@ -619,6 +619,39 @@ fn the_last_used_device_follows_the_player() {
     assert_eq!(rig.input.last_device(), Some(DeviceKind::KeyboardMouse));
 }
 
+/// Rumble goes to the pad in the player's hands, so one left on the desk stays still.
+#[test]
+fn the_active_gamepad_is_the_pad_in_use() {
+    use sapphire_platform::{Event, GamepadButton, GamepadEvent, GamepadId};
+
+    let map = map(r#"(name: "a", kind: Button)"#, r#"(name: "main", bindings: [])"#);
+    let mut rig = Rig::new(map, &["main"]);
+    let (first, second) = (GamepadId::from_raw(8), GamepadId::from_raw(9));
+    let added = GamepadEvent::Added { kind: GamepadType::XboxOne };
+    let press = GamepadEvent::Button { button: GamepadButton::South, down: true };
+    let mut send = |rig: &mut Rig, t: u64, gamepad, event| {
+        rig.input.handle_event(&Event::Gamepad { timestamp: ms(t), gamepad, event });
+    };
+    send(&mut rig, 1, first, added);
+    send(&mut rig, 2, second, added);
+    rig.update(10);
+    assert_eq!(rig.input.active_gamepad(), None, "connected, and nobody's used either");
+
+    send(&mut rig, 11, second, press);
+    rig.update(20);
+    assert_eq!(rig.input.active_gamepad(), Some(second));
+    rig.key(21, Scancode::A, true);
+    rig.update(30);
+    assert_eq!(rig.input.active_gamepad(), None, "the keyboard has no motors");
+
+    send(&mut rig, 31, first, press);
+    rig.update(40);
+    assert_eq!(rig.input.active_gamepad(), Some(first));
+    send(&mut rig, 41, first, GamepadEvent::Removed);
+    rig.update(50);
+    assert_eq!(rig.input.active_gamepad(), None, "it's gone");
+}
+
 #[test]
 fn on_screen_controls_inject_through_their_bindings() {
     let map = map(

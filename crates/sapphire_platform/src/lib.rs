@@ -24,6 +24,7 @@
 //!   through it; decoding happens on the job system's workers, not here.
 //! - **The OS's side of sound** (M2 E1): iOS's audio session and interruptions and Android's context
 //!   under SDL's entry ([`Platform::prepare_audio`], [`Platform::audio_interrupted`]).
+//! - **A gamepad's rumble** (M2 E3, [`Platform::rumble_gamepad`]), since it holds the open pads.
 //! - **Device facts** ([`SystemInfo`]) and a native log sink ([`sdl_log`]) for mobile.
 //! - **Frame pacing** (M1 F7, F8): when [`App::iterate`] runs, at the rate the app sets with
 //!   [`Platform::set_frame_rate`], and how evenly frames come ([`FramePacing`]). See below.
@@ -33,7 +34,7 @@
 //! GPU devices and swapchains (`sapphire_rhi`), mixing and streams (`sapphire_audio`), logging setup
 //! (the app wires `tracing` to [`sdl_log`]), packs and what is in them (`sapphire_assets`), and,
 //! until their milestones, IME composition text (shown while composing; committed text already
-//! arrives), haptics, clipboard, and thermal state (M4).
+//! arrives), a phone's haptics, clipboard, and thermal state (M4).
 //!
 //! # Later milestones
 //!

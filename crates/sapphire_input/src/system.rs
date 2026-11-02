@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use sapphire_math::Vec2;
-use sapphire_platform::{Event, Timestamp, TouchPhase};
+use sapphire_platform::{Event, GamepadId, Timestamp, TouchPhase};
 
 use crate::bindings::{ActionKind, InputBindings};
 use crate::devices::{DeviceKind, Devices};
@@ -454,6 +454,12 @@ impl InputSystem {
     /// The kind of device the player used last: for prompt glyphs.
     pub fn last_device(&self) -> Option<DeviceKind> {
         self.devices.last()
+    }
+
+    /// The gamepad in the player's hands: the device used last, if it was a pad. What rumble goes to, so
+    /// a pad left on the desk stays still. `None` on the keyboard or on touch, which have no motors.
+    pub fn active_gamepad(&self) -> Option<GamepadId> {
+        self.adapter.pad(self.devices.active_pad()?)
     }
 
     /// Gamepads connected now; on-screen controls hide while there is one (spec §6.6).

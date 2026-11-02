@@ -79,7 +79,8 @@
 //!
 //! # Later milestones
 //!
-//! - Rumble and trigger rumble as cues (M2, with `sapphire_audio`'s cue system); DualSense LEDs
+//! - Trigger rumble (a pad's rumble is M2 E3's: which pad is [`InputSystem::active_gamepad`], SDL's call
+//!   is `sapphire_platform`'s, and what fires it is `sapphire_cues`'); DualSense LEDs
 //!   and gyro, and gamepad touchpads.
 //! - Persisted rebinds and accessibility options, such as hold-to-toggle (spec §6.8), with user
 //!   settings (M3); glyph tables with the UI (M3).

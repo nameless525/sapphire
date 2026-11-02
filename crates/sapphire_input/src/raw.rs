@@ -91,6 +91,11 @@ pub(crate) struct PlatformAdapter {
 }
 
 impl PlatformAdapter {
+    /// The pad in a slot.
+    pub fn pad(&self, slot: usize) -> Option<GamepadId> {
+        self.pads.get(slot).copied().flatten()
+    }
+
     pub fn translate(&mut self, event: &Event) -> Option<(Timestamp, RawInput)> {
         Some(match *event {
             Event::Key(key) if !key.repeat => {

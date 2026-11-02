@@ -9,7 +9,9 @@ use std::time::Duration;
 
 use sdl3_sys::events::SDL_Event;
 use sdl3_sys::filesystem::SDL_GetBasePath;
-use sdl3_sys::gamepad::{SDL_CloseGamepad, SDL_Gamepad, SDL_GetGamepadType, SDL_OpenGamepad};
+use sdl3_sys::gamepad::{
+    SDL_CloseGamepad, SDL_Gamepad, SDL_GetGamepadType, SDL_OpenGamepad, SDL_RumbleGamepad,
+};
 use sdl3_sys::hints::{
     SDL_HINT_IOS_HIDE_HOME_INDICATOR, SDL_HINT_MAC_BACKGROUND_APP, SDL_HINT_MOUSE_TOUCH_EVENTS,
     SDL_HINT_ORIENTATIONS, SDL_HINT_PEN_MOUSE_EVENTS, SDL_HINT_PEN_TOUCH_EVENTS, SDL_HINT_TOUCH_MOUSE_EVENTS,
@@ -258,6 +260,21 @@ impl Platform {
             && self.last_background_transition.replace(transition) == Some(transition)
     }
 
+    /// Runs `gamepad`'s two motors, each at a strength from 0 to 1, for `duration` or until the next call,
+    /// which replaces this one: zeros stop them. `low` is the heavy motor and `high` the sharp one. Returns
+    /// whether it could: a pad with no motors, or one that's gone, says no, and neither is an error.
+    ///
+    /// SDL may write to the device here, so call it from a frame, never a fixed step, and only when
+    /// something changes. It keeps a run going on its own, and stops it when `duration` is up.
+    pub fn rumble_gamepad(&mut self, gamepad: GamepadId, low: f32, high: f32, duration: Duration) -> bool {
+        let Some(&(_, pad)) = self.gamepads.iter().find(|&&(open, _)| open == gamepad) else {
+            return false;
+        };
+        let (low, high, milliseconds) = rumble_arguments(low, high, duration);
+        // SAFETY: every gamepad in the list is open until its removal closes it.
+        unsafe { SDL_RumbleGamepad(pad.as_ptr(), low, high, milliseconds) }
+    }
+
     /// Opens the gamepad, once, and returns its type; `None` if it can't be opened.
     fn open_gamepad(&mut self, id: GamepadId) -> Option<GamepadType> {
         let gamepad = match self.gamepads.iter().find(|&&(open, _)| open == id) {
@@ -344,4 +361,41 @@ pub(crate) unsafe fn collect_args(argc: i32, argv: *mut *mut c_char) -> Vec<Stri
             unsafe { sdl::borrowed_string(*argv.add(i)) }
         })
         .collect()
+}
+
+/// SDL's arguments for a rumble: each motor's speed, and its length in milliseconds. A strength that
+/// isn't a number is off. A run that's short of a millisecond is 1, since SDL reads 0 as no end.
+fn rumble_arguments(low: f32, high: f32, duration: Duration) -> (u16, u16, u32) {
+    let speed = |strength: f32| {
+        let strength = if strength.is_finite() { strength.clamp(0.0, 1.0) } else { 0.0 };
+        (strength * f32::from(u16::MAX)).round() as u16
+    };
+    let (low, high) = (speed(low), speed(high));
+    let milliseconds = duration.as_nanos().div_ceil(1_000_000).min(u128::from(u32::MAX)) as u32;
+    let running = low != 0 || high != 0;
+    (low, high, if running { milliseconds.max(1) } else { 0 })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rumble_arguments_hold_to_what_sdl_takes() {
+        let second = Duration::from_secs(1);
+        assert_eq!(rumble_arguments(1.0, 0.0, second), (u16::MAX, 0, 1000));
+        assert_eq!(rumble_arguments(0.0, 0.5, second), (0, 32768, 1000));
+        assert_eq!(rumble_arguments(2.0, -1.0, second), (u16::MAX, 0, 1000), "held to the range");
+        assert_eq!(rumble_arguments(f32::NAN, f32::INFINITY, second), (0, 0, 0), "nonsense is off");
+    }
+
+    /// SDL reads a length of 0 on a running motor as no end, so nothing short rounds down to it.
+    #[test]
+    fn a_rumble_always_has_an_end() {
+        assert_eq!(rumble_arguments(0.5, 0.5, Duration::ZERO).2, 1);
+        assert_eq!(rumble_arguments(0.5, 0.5, Duration::from_nanos(1)).2, 1);
+        assert_eq!(rumble_arguments(0.5, 0.5, Duration::from_micros(1500)).2, 2);
+        assert_eq!(rumble_arguments(0.0, 0.0, Duration::ZERO), (0, 0, 0), "a stop");
+        assert_eq!(rumble_arguments(0.5, 0.0, Duration::MAX).2, u32::MAX);
+    }
 }

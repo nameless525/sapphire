@@ -157,9 +157,10 @@ pub(crate) struct FogCards {
     depth_fade: bool,
     /// A 1×1 depth texture the family's scene group binds where cards read no depth.
     stand_in: wgpu::TextureView,
-    /// The scene groups with the prepass's depth, the two used last (under temporal AA with MSAA
-    /// the prepass's depth is the history pair's, alternating frame by frame), made again only
-    /// when the depth texture or the buffers they bind change, which steady frames never do.
+    /// The scene groups with the prepass's depth, the two used last (cards read it only under
+    /// temporal AA, where the prepass's depth is the history pair's, alternating frame by frame),
+    /// made again only when the depth texture or the buffers they bind change, which steady frames
+    /// never do. Since the depth alternates, a new size or buffer replaces both within two frames.
     depth_groups: [Option<DepthGroup>; 2],
     /// Which of `depth_groups` the last frame bound.
     last_group: usize,

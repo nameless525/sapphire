@@ -270,21 +270,26 @@ struct Harness {
     next_id: u64,
 }
 
+/// The harness's target.
+fn target_descriptor() -> wgpu::TextureDescriptor<'static> {
+    wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d { width: SIDE, height: SIDE, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    }
+}
+
 impl Harness {
     fn new(settings: RenderSettings) -> Self {
         let instance = GpuInstance::new(&GpuInstanceDesc::default()).expect("instance");
         let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), None).expect("device");
         let renderer = Renderer::new(&gpu, FORMAT, settings).expect("renderer");
-        let target = gpu.device().create_texture(&wgpu::TextureDescriptor {
-            label: None,
-            size: wgpu::Extent3d { width: SIDE, height: SIDE, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
+        let target = gpu.device().create_texture(&target_descriptor());
         Self {
             gpu,
             renderer,
@@ -348,6 +353,12 @@ impl Harness {
 
     /// Draws one frame and reads the target back. Fails on any validation error.
     fn render(&mut self) -> Frame {
+        self.draw(&self.target.clone());
+        Frame { pixels: self.read_back(), camera: self.camera }
+    }
+
+    /// Draws one frame into `target`. Fails on any validation error.
+    fn draw(&mut self, target: &wgpu::Texture) {
         let packet = self.packets.begin();
         packet.views.push(ViewData::new(self.camera));
         packet.sun = self.sun;
@@ -359,14 +370,13 @@ impl Harness {
         packet.instances.changed.append(&mut self.added);
         let scope = self.gpu.device().push_error_scope(wgpu::ErrorFilter::Validation);
         self.renderer.prepare(&self.gpu, self.packets.current());
-        let view = self.target.create_view(&Default::default());
+        let view = target.create_view(&Default::default());
         let mut graph = FrameGraph::new();
         let target = graph.import_texture("target", &view);
         self.renderer.record(&mut graph, target).expect("a view and a target");
         self.graph.execute(&self.gpu, graph).expect("a valid graph");
         let error = pollster::block_on(scope.pop());
         assert!(error.is_none(), "{error:?}");
-        Frame { pixels: self.read_back(), camera: self.camera }
     }
 
     fn read_back(&self) -> Vec<[u8; 4]> {
@@ -747,6 +757,57 @@ fn fog_cards_soften_where_they_meet_geometry_under_temporal_aa() {
     let (close, clear) = draw(false);
     assert!((close - horizon).abs().max_element() < TOLERANCE, "{close}");
     assert!((clear - horizon).abs().max_element() < TOLERANCE, "{clear}");
+}
+
+/// Review RC-3: the transient pool promises that a size left behind doesn't stay resident past its
+/// eviction, which only holds if nothing else keeps those textures. Every bind group cache here
+/// keeps views, and a view keeps its texture: post's and temporal AA's, and the cards' depth
+/// groups, which is why this scene has a card.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_size_left_behind_stays_resident_no_longer_than_the_pool_keeps_it() {
+    let mut harness =
+        Harness::new(RenderSettings { msaa: Msaa::Off, temporal: true, ..RenderSettings::default() });
+    let black = harness.material(&glowing(Vec3::ZERO));
+    let wall = Rect {
+        center: Vec3::new(0.0, 0.0, -10.0),
+        normal: Vec3::Z,
+        across: Vec3::X,
+        width: 40.0,
+        height: 40.0,
+    };
+    // Fading where it meets the wall, so the family binds the prepass's depth.
+    let soft =
+        harness.material(&FogCardMaterial { depth_fade: 2.0, ..card(Vec3::ONE, 1.0, CardFacing::World) });
+    let close = Rect { center: Vec3::new(0.0, 0.0, -9.5), width: 2.0, height: 3.0, ..wall };
+    let world = harness.mesh(&mesh(vec![wall.part(), close.part()]), &[black, soft]);
+    harness.add(world, Mat4::IDENTITY);
+    harness.camera = CameraData::look_at(Vec3::ZERO, Vec3::NEG_Z, Vec3::Y, 0.8, 1.0, 0.05);
+
+    let small = harness.target.clone();
+    let large = harness.gpu.device().create_texture(&wgpu::TextureDescriptor {
+        size: wgpu::Extent3d { width: SIDE * 4, height: SIDE * 4, depth_or_array_layers: 1 },
+        ..target_descriptor()
+    });
+    let held = |harness: &Harness| {
+        let report = harness.gpu.instance().raw().generate_report().expect("a wgpu-core backend");
+        (report.hub.textures.num_kept_from_user, report.hub.texture_views.num_kept_from_user)
+    };
+    // Each time for longer than the pool keeps a texture nothing used.
+    let past_eviction = sapphire_rhi::EVICT_AFTER_FRAMES + 8;
+    for _ in 0..past_eviction {
+        harness.draw(&small);
+    }
+    let settled = held(&harness);
+    for _ in 0..8 {
+        harness.draw(&large);
+    }
+    assert!(held(&harness) > settled, "the larger size's own textures: {:?}", held(&harness));
+    // The size holding is what lets this bite: a third size would replace the entries kept.
+    for _ in 0..past_eviction {
+        harness.draw(&small);
+    }
+    assert_eq!(held(&harness), settled, "textures and views held, against the first time at this size");
 }
 
 #[test]

@@ -1,5 +1,5 @@
 // The finisher (M2 O3): a two-handed chop on a long bound of the left foot, the heavy end of the
-// string. Hit on ticks 14 to 18. It starts where `light_2` settles, gathers low, rises and arches with
+// string. Hit on ticks 16 to 19. It starts where `light_2` settles, gathers low, rises and arches with
 // the blade over its head, and lands with the tip by the ground, holding there a beat.
 //
 // Turns are degrees in the character's rest space, about each bone's own joint, X then Y then Z.

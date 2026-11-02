@@ -146,7 +146,8 @@ fn player() -> &'static Player {
             let document = keypose::read(&bytes).unwrap_or_else(|error| panic!("{mv}: {error:?}"));
             let sampled = keypose::sample(&document, mv, &skeleton, &map, &[])
                 .unwrap_or_else(|error| panic!("{mv}: {error:?}"));
-            let model = (0..=usize::from(sampled.ticks)).map(|tick| model_of(&sampled, &skeleton, tick)).collect();
+            let model =
+                (0..=usize::from(sampled.ticks)).map(|tick| model_of(&sampled, &skeleton, tick)).collect();
             let id = meta::read(&meta::sidecar_path(&path)).expect("its sidecar").id;
             clips.insert(mv, Clip { document, sampled, model, id });
         }
@@ -215,7 +216,9 @@ fn a_press_moves_the_character_within_three_ticks() {
     for mv in MOVES {
         let clip = player.clip(mv);
         let moved = (0..player.skeleton.rest.len())
-            .map(|joint| clip.in_world(2, clip.joint(2, joint)).distance(clip.in_world(0, clip.joint(0, joint))))
+            .map(|joint| {
+                clip.in_world(2, clip.joint(2, joint)).distance(clip.in_world(0, clip.joint(0, joint)))
+            })
             .fold(0.0, f32::max);
         assert!(moved > 0.08, "{mv}: moved {moved} m by tick 2");
     }
@@ -242,7 +245,10 @@ fn the_blade_is_fastest_on_the_hit() {
             .collect();
         let fastest = (0..speed.len()).max_by(|a, b| speed[*a].total_cmp(&speed[*b])).expect("ticks");
         let (first, last) = (found.startup as usize, (found.startup + found.active) as usize);
-        assert!((first..last).contains(&fastest), "{mv}: fastest at {fastest}, hits on {first}..{last}: {speed:?}");
+        assert!(
+            (first..last).contains(&fastest),
+            "{mv}: fastest at {fastest}, hits on {first}..{last}: {speed:?}"
+        );
         for hit in found.hitboxes.iter() {
             let (from, to) = (hit.span.from as usize, hit.span.to as usize);
             let fastest = speed[from..to].iter().copied().fold(0.0, f32::max);
@@ -413,7 +419,16 @@ fn each_hit_starts_where_the_last_settles() {
     use HumanBone::*;
     let player = player();
     let bones = [
-        Hips, Chest, Head, LeftHand, RightHand, LeftLowerArm, RightLowerArm, LeftFoot, RightFoot, LeftLowerLeg,
+        Hips,
+        Chest,
+        Head,
+        LeftHand,
+        RightHand,
+        LeftLowerArm,
+        RightLowerArm,
+        LeftFoot,
+        RightFoot,
+        LeftLowerLeg,
         RightLowerLeg,
     ];
     for (mv, next, settled, window) in [("light_1", "light_2", 22, 14), ("light_2", "light_3", 22, 14)] {
@@ -432,7 +447,8 @@ fn each_hit_starts_where_the_last_settles() {
 
 fn lone() -> (Simulation, ActorId) {
     let mut sim = Simulation::new(SimConfig::default());
-    let moves = sim.add_move_set(MoveSet::from_cooked(&player().set.to_cooked().expect("cooks")).expect("reads"));
+    let moves =
+        sim.add_move_set(MoveSet::from_cooked(&player().set.to_cooked().expect("cooks")).expect("reads"));
     let actor = sim.spawn(ActorSpawn { moves: Some(moves), ..ActorSpawn::default() }).expect("room");
     (sim, actor)
 }
@@ -486,7 +502,8 @@ fn mashing_runs_the_string() {
     assert_eq!(names, [name("light_1"), name("light_2"), name("light_3"), name("light_1")], "{started:?}");
     // A press from neutral reads its tick 1 on the step it lands; a cancel starts at the instant the
     // window opens. Either way the next hit starts as soon as it's allowed to.
-    let window = |mv: &str| player().mv(mv).cancels.iter().map(|window| window.span.from).max().expect("a window");
+    let window =
+        |mv: &str| player().mv(mv).cancels.iter().map(|window| window.span.from).max().expect("a window");
     assert_eq!(started[1].1 - started[0].1, window("light_1") - 1, "{started:?}");
     assert_eq!(started[2].1 - started[1].1, window("light_2"), "{started:?}");
     assert_eq!(started[3].1 - started[2].1, window("light_3"), "{started:?}");
@@ -570,7 +587,7 @@ fn a_dodge_leaves_on_time_and_leads_to_the_dash_attack() {
     assert!((end.z + 2.4).abs() < 0.02, "2.4 m back: {end}");
 
     let (mut sim, actor) = lone();
-    assert!(sim.set_warp_target(actor, WarpTarget::Point(Vec3::new(0.0, 0.0, 4.0).into())));
+    assert!(sim.set_warp_target(actor, WarpTarget::Point(Vec3::new(0.0, 0.0, 4.0))));
     press(&mut sim, actor, "dodge");
     run_to(&mut sim, actor, "dodge", 9);
     let leaving = sim.actor(actor).expect("alive").position;

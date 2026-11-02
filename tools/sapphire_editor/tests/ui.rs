@@ -651,6 +651,48 @@ fn opening_a_document_with_unsaved_edits_asks_first() {
     assert_eq!(name_of(&harness), "player.moves.ron", "nothing to lose, so nothing to ask");
 }
 
+/// What the preview says with no cook, `cargo xtask content`, works: the first cook reaches an editor
+/// already open, wherever it found none, and a pack that doesn't read isn't the last word.
+#[test]
+fn a_first_cook_reaches_an_editor_already_open() {
+    let empty_pack = sapphire_assets::pack::write_pack(Vec::new()).expect("an empty pack");
+
+    let dir = TestDir::new("late_cook_named");
+    let path = dir.write("slice.moves.ron", SLICE);
+    let mut harness = harness(&path);
+    harness.run_steps(6);
+    assert!(!harness.state().has_cook());
+    let cook = path.with_file_name("no cook here");
+    fs::create_dir_all(&cook).expect("the cook's folder");
+    fs::write(cook.join("shared.spack"), &empty_pack[..4]).expect("half a pack");
+    harness.run_steps(6);
+    assert!(!harness.state().has_cook());
+    fs::write(cook.join("shared.spack"), &empty_pack).expect("a pack");
+    // A file's time can be as coarse as a second, and the same time isn't a new cook.
+    let later = std::time::SystemTime::now() + Duration::from_secs(5);
+    fs::File::options()
+        .write(true)
+        .open(cook.join("shared.spack"))
+        .and_then(|file| file.set_modified(later))
+        .expect("a new time");
+    until(&mut harness, "the cook", Editor::has_cook);
+
+    let dir = TestDir::new("late_cook_found");
+    let path = dir.write("slice.moves.ron", SLICE);
+    let options =
+        Options { file: Some(path), content: None, link: Some("127.0.0.1:9".parse().expect("an address")) };
+    let mut harness = Harness::builder()
+        .with_size((1400.0, 900.0))
+        .with_accessibility_check(false)
+        .build_ui_state(|ui, editor: &mut Editor| editor.ui(ui), Editor::new(options));
+    harness.run_steps(6);
+    assert!(!harness.state().has_cook());
+    let cook = dir.0.join("target/content/desktop");
+    fs::create_dir_all(&cook).expect("the cook's folder");
+    fs::write(cook.join("shared.spack"), &empty_pack).expect("a pack");
+    until(&mut harness, "the cook", Editor::has_cook);
+}
+
 /// `Cmd+S` saves and pushes in one gesture, against a device of the test's own speaking live link's real
 /// protocol over a real socket: what it replaced is shown, what it refused is shown by move and track with
 /// the edit kept, and the attempts on the device show up too. `tests/sandbox_push.rs` does the same with a

@@ -3,6 +3,7 @@
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use egui::{Color32, Key, Modifiers, RichText, Sense, TextEdit, Ui, Vec2};
 use sapphire_assets::AssetId;
@@ -10,7 +11,7 @@ use sapphire_core::Name;
 use sapphire_livelink::protocol::MoveAttempt;
 use sapphire_moves::{MoveDocument, MoveSet, MoveSetDocument, RootSample};
 
-use crate::cooked::Cook;
+use crate::cooked::{self, Cook};
 use crate::edits::{EditError, EntryRef, EntryValue, MovesText, Track};
 use crate::figure::{Casting, Figure, Figures};
 use crate::file::{FileError, MovesFile, Verdict, judge};
@@ -62,6 +63,8 @@ struct CookState {
     casting: Option<Casting>,
     /// Goes up when the cook changes, for what's cached from it.
     generation: u64,
+    /// The newest pack when this was read, so a cook that didn't read is tried again only when another comes.
+    tried: Option<SystemTime>,
 }
 
 /// The whole editor.
@@ -203,6 +206,7 @@ impl Editor {
             self.cook.why_none = Some("no cook found: `cargo xtask content` makes one".to_owned());
             return;
         };
+        self.cook.tried = cooked::newest_pack(&dir);
         match Cook::open(&dir) {
             Ok(cook) => {
                 if let Some(file) = &self.file {
@@ -257,6 +261,12 @@ impl Editor {
     #[must_use]
     pub fn notice(&self) -> Option<&Notice> {
         self.notice.as_ref()
+    }
+
+    /// Whether a cook has been read: what previews moves that name clips.
+    #[must_use]
+    pub fn has_cook(&self) -> bool {
+        self.cook.cook.is_some()
     }
 
     #[must_use]
@@ -695,11 +705,24 @@ impl Editor {
         if let Some(file) = &mut self.file {
             file.poll_disk();
         }
-        if self.cook.cook.as_ref().is_some_and(Cook::is_stale) {
+        if self.cook_changed() {
             self.load_cook();
         }
         self.refresh();
         self.check_selection();
+    }
+
+    /// Whether there's a cook to read that the last look didn't see: a newer one, or a first one, or
+    /// another after one that didn't read.
+    fn cook_changed(&mut self) -> bool {
+        if let Some(cook) = &self.cook.cook {
+            return cook.is_stale();
+        }
+        if self.content.is_none() {
+            self.content = self.file.as_ref().and_then(|file| find_cook(file.path()));
+        }
+        let newest = self.content.as_deref().and_then(cooked::newest_pack);
+        newest.is_some() && newest != self.cook.tried
     }
 
     /// The whole interface.

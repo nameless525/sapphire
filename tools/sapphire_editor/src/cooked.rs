@@ -61,13 +61,13 @@ impl Cook {
             return Err(format!("{} holds no packs", dir.display()));
         }
         packs.sort_by(|a, b| a.path.cmp(&b.path));
-        Ok(Self { dir: dir.to_owned(), packs, stamp: stamp_of(dir) })
+        Ok(Self { dir: dir.to_owned(), packs, stamp: newest_pack(dir) })
     }
 
     /// Whether the packs on disk are newer than these.
     #[must_use]
     pub fn is_stale(&self) -> bool {
-        stamp_of(&self.dir) != self.stamp
+        newest_pack(&self.dir) != self.stamp
     }
 
     /// Asset `id`, decoded, from whichever pack holds it. `None` if none does.
@@ -122,7 +122,9 @@ fn read_toc(path: &Path) -> Result<Toc, String> {
     Toc::read(header, &toc, file_len).map_err(|error| error.to_string())
 }
 
-fn stamp_of(dir: &Path) -> Option<SystemTime> {
+/// When the newest pack in `dir` was written, if it holds any.
+#[must_use]
+pub fn newest_pack(dir: &Path) -> Option<SystemTime> {
     std::fs::read_dir(dir)
         .ok()?
         .flatten()

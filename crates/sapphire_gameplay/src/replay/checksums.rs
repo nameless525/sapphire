@@ -188,7 +188,7 @@ pub struct ChecksumsError {
 /// # comments
 /// architecture aarch64
 ///
-/// replay drill-sweep 1200
+/// replay melee-sweep 1200
 /// 0 d1e8a770c2add49f
 /// 60 6319e4723dd39429 a1b2c3d4…
 /// …

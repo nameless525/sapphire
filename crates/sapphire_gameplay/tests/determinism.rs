@@ -5,42 +5,46 @@ mod support;
 use std::io::Write as _;
 use std::process::Command;
 
+use sapphire_ecs::prelude::*;
+use sapphire_gameplay::replay;
 use sapphire_gameplay::{
-    ActorActions, ActorId, ActorSpawn, Buttons, DRILL_HITSTOP_TICKS, SimConfig, Simulation, Stick,
-    TickActions,
+    ActorActions, ActorId, ActorSpawn, Buttons, CombatSet, SimConfig, SimRng, Simulation, Stick, TickActions,
 };
 use sapphire_math::Vec3;
-use sapphire_moves::{BakedTables, RootSample};
-use sapphire_time::SimDuration;
-use support::{curve, run, script, world};
+use sapphire_moves::{MoveSet, MoveSetDocument};
+use support::{press, run, script, slice, slice_cooked, world};
 
-/// Long enough for every button in the script to fire, and transient actors to come and go.
+/// Long enough for every button in the script to fire, and spawned actors to come and go.
 const TICKS: u64 = 1200;
-
-fn press(actor: ActorId, buttons: Buttons) -> TickActions {
-    let mut actions = TickActions::NEUTRAL;
-    actions.set(actor, ActorActions { buttons, stick: Stick::CENTER }).expect("room");
-    actions
-}
 
 #[test]
 fn the_script_exercises_what_it_claims_to() {
     let (mut sim, actors) = world(1);
-    let mut followed = false;
+    let mut playing = false;
     let mut frozen = false;
     let mut extra_actors = false;
+    let mut hit_volumes = false;
     for tick in 0..TICKS {
         sim.step(&script(tick, &actors));
-        followed |= sim.actors().any(|view| view.root_motion.table().is_some());
-        frozen |= sim.actors().any(|view| view.hitstop_ticks > 0);
+        playing |= sim.actors().any(|view| view.moves.current.is_some());
+        frozen |= sim.actors().any(|view| view.hitstop_ticks == replay::MELEE_HITSTOP_TICKS - 1);
         extra_actors |= sim.actors().len() > actors.len();
+        hit_volumes |= sim.actors().any(|view| !view.moves.volumes.is_empty());
     }
-    assert!(followed && frozen && extra_actors, "{followed} {frozen} {extra_actors}");
+    assert!(
+        playing && frozen && extra_actors && hit_volumes,
+        "{playing} {frozen} {extra_actors} {hit_volumes}"
+    );
     let stats = sim.stats();
     assert_eq!(stats.steps, TICKS);
     assert_eq!(sim.tick(), TICKS);
     assert!(stats.peak_actors > actors.len() as u32);
     assert_eq!(stats.spawns_refused, 0, "the pool has room for the script");
+    assert!(stats.cancels_fired > 10, "{stats:?}");
+    assert!(stats.cues_published > 10, "{stats:?}");
+    assert!(stats.intents_expired > 0, "{stats:?}");
+    assert!(stats.intents_pressed > stats.moves_started / 2, "{stats:?}");
+    assert_eq!(stats.cues_dropped + stats.volumes_dropped + stats.intents_overwritten, 0, "{stats:?}");
 }
 
 /// Every tick's checksum agrees, not only the last: a difference shows where it began.
@@ -115,11 +119,12 @@ fn a_different_seed_changes_the_checksum_once_a_number_is_drawn() {
 }
 
 #[test]
-fn any_difference_in_input_changes_the_checksum_at_that_tick() {
+fn any_difference_in_input_changes_the_checksum_from_that_tick() {
     let (mut plain, actors) = world(3);
     let baseline = run(&mut plain, &actors, 100);
 
-    // One step of one stick's axis, on one tick.
+    // One step of one stick's axis, on one tick, which nothing acts on yet: the state holds it as
+    // this tick's input and then last tick's, and has nothing else to tell them apart after that.
     let (mut nudged, _) = world(3);
     for tick in 0..100 {
         let mut actions = script(tick, &actors);
@@ -129,40 +134,37 @@ fn any_difference_in_input_changes_the_checksum_at_that_tick() {
             actions.set(actors[1], ActorActions { stick, ..was }).expect("room");
         }
         nudged.step(&actions);
-        assert_eq!(nudged.checksum() == baseline[tick as usize], tick < 40, "tick {tick}");
+        let differs = (40..=41).contains(&tick);
+        assert_eq!(nudged.checksum() != baseline[tick as usize], differs, "tick {tick}");
     }
 
-    // One button on one tick, which nothing acts on yet: the state holds it as this tick's input and
-    // then last tick's, and has nothing else to tell them apart after that.
+    // A press of a button that starts something: everything differs from then on.
     let (mut pressed, _) = world(3);
+    let actor = actors[1];
     for tick in 0..100 {
         let mut actions = script(tick, &actors);
         if tick == 40 {
-            let was = actions.get(actors[1]);
-            actions
-                .set(actors[1], ActorActions { buttons: was.buttons | Buttons::JUMP, ..was })
-                .expect("room");
+            let was = actions.get(actor);
+            assert!(!was.buttons.contains(Buttons::SKILL), "the script doesn't press it here");
+            actions.set(actor, ActorActions { buttons: was.buttons | Buttons::SKILL, ..was }).expect("room");
         }
         pressed.step(&actions);
-        let differs = (40..=41).contains(&tick);
-        assert_eq!(pressed.checksum() != baseline[tick as usize], differs, "tick {tick}");
+        assert_eq!(pressed.checksum() != baseline[tick as usize], tick >= 40, "tick {tick}");
     }
 }
 
 /// The same IDs, with different entities behind them: the histories free the pool's entities in
 /// opposite orders, so the actors spawned next take them the other way round. Every actor stands
-/// somewhere of its own and presses at once, and each transient actor takes the next random yaw and
+/// somewhere of its own and presses at once, and each spawned actor takes the next random yaw and
 /// its parent's position, so a parent's turn shows. Going through a bare query instead fails this.
 #[test]
 fn the_order_of_creation_doesnt_leak_through_iteration_order() {
     fn history(reverse_despawns: bool) -> (Vec<ActorId>, Vec<u64>) {
         let mut sim = Simulation::new(SimConfig { seed: 11, max_actors: 32, ..SimConfig::default() });
-        let table = sim.add_tables(curve(30));
-        let at = |x: u32| ActorSpawn {
-            position: Vec3::new(x as f32, 0.0, 0.0),
-            table: Some(table),
-            ..ActorSpawn::default()
-        };
+        let moves = sim.add_move_set(slice());
+        sim.add_combat_system(CombatSet::Resolve, replay::melee_buttons);
+        let at =
+            |x: u32| ActorSpawn { position: Vec3::new(x as f32, 0.0, 0.0), moves: Some(moves), yaw: 0.0 };
         let mut ids: Vec<ActorId> = (0..6).map(|x| sim.spawn(at(x)).expect("room")).collect();
         let mut gone = [ids[1], ids[2], ids[4]];
         if reverse_despawns {
@@ -180,7 +182,7 @@ fn the_order_of_creation_doesnt_leak_through_iteration_order() {
             if tick % 20 == 0 {
                 for &id in ids.iter().take(TickActions::CAPACITY) {
                     let actor =
-                        ActorActions { buttons: Buttons::SKILL | Buttons::LIGHT, stick: Stick::CENTER };
+                        ActorActions { buttons: Buttons::JUMP | Buttons::LIGHT, stick: Stick::CENTER };
                     actions.set(id, actor).expect("room");
                 }
             }
@@ -193,6 +195,49 @@ fn the_order_of_creation_doesnt_leak_through_iteration_order() {
     let (second_ids, second) = history(true);
     assert_eq!(first_ids, second_ids);
     assert_eq!(first, second);
+}
+
+/// The creation-order test above has teeth: these two histories put the same IDs in different
+/// entities, so a system that draws numbers in a bare query's order, as the crate's rules forbid,
+/// gives them different checksums, where ID order agrees.
+#[test]
+fn a_bare_querys_order_would_leak_into_the_checksum() {
+    fn leaky(
+        mut rng: ResMut<'_, SimRng>,
+        mut transforms: Query<'_, '_, &mut sapphire_gameplay::ActorTransform>,
+    ) {
+        for mut transform in &mut transforms {
+            transform.yaw += rng.0.unit_f32();
+        }
+    }
+    fn history(reverse: bool, leak: bool) -> u64 {
+        let mut sim = Simulation::new(SimConfig { max_actors: 8, ..SimConfig::default() });
+        let moves = sim.add_move_set(slice());
+        let spawn = ActorSpawn { moves: Some(moves), ..ActorSpawn::default() };
+        let actors: Vec<ActorId> = (0..4).map(|_| sim.spawn(spawn).unwrap()).collect();
+        let (a, b) = if reverse { (actors[2], actors[0]) } else { (actors[0], actors[2]) };
+        assert!(sim.despawn(a));
+        assert!(sim.despawn(b));
+        for _ in 0..2 {
+            sim.spawn(spawn).unwrap();
+        }
+        if leak {
+            sim.add_combat_system(CombatSet::Moves, leaky);
+        }
+        for _ in 0..8 {
+            sim.step(&TickActions::NEUTRAL);
+        }
+        sim.checksum()
+    }
+    assert_eq!(history(false, false), history(true, false), "ID order hides the entities' order");
+    assert_ne!(history(false, true), history(true, true), "the two histories really differ");
+}
+
+/// The app may keep a simulation on any thread, and a replay job may run several.
+#[test]
+fn a_simulation_can_move_between_threads() {
+    fn assert_send<T: Send>() {}
+    assert_send::<Simulation>();
 }
 
 #[test]
@@ -230,102 +275,6 @@ fn actions_for_an_actor_that_is_gone_change_nothing() {
     assert_eq!(a.checksum(), b.checksum());
 }
 
-/// A transient actor's whole table moves it by the table's last sample, turned by its starting yaw,
-/// however a press froze or slowed it. The readings telescope, give or take float rounding.
-#[test]
-fn a_table_moves_an_actor_by_its_last_sample() {
-    let mut sim = Simulation::new(SimConfig { seed: 1, ..SimConfig::default() });
-    let table = curve(30);
-    let last = *table.root_samples().last().expect("samples");
-    let id = sim.add_tables(table);
-    let yaw = 0.75;
-    let actor = sim.spawn(ActorSpawn { yaw, table: Some(id), ..ActorSpawn::default() }).expect("room");
-
-    sim.step(&press(actor, Buttons::LIGHT));
-    let mut held = false;
-    for tick in 0..80 {
-        // Freeze it, then halve it, partway through.
-        let actions = match tick {
-            5 => press(actor, Buttons::HEAVY),
-            15 => press(actor, Buttons::DODGE),
-            _ => TickActions::NEUTRAL,
-        };
-        sim.step(&actions);
-        held |= sim.actor(actor).expect("alive").hitstop_ticks == DRILL_HITSTOP_TICKS - 1;
-    }
-    assert!(held, "the freeze happened");
-
-    let view = sim.actor(actor).expect("alive");
-    assert_eq!(view.root_motion.table(), None, "the table has ended");
-    let expected = sapphire_math::det::rotate_y(last.offset(), yaw);
-    assert!(view.position.abs_diff_eq(expected, 1e-4), "{} against {expected}", view.position);
-    assert!((view.yaw - (yaw + last.yaw)).abs() < 1e-5, "{}", view.yaw);
-}
-
-/// Hitstop and a time scale arrive at the table as exact whole sub-ticks, and the reading is the
-/// table's own at that time, bit for bit.
-#[test]
-fn hitstop_and_time_scale_reach_the_tables_reading_exactly() {
-    let mut sim = Simulation::new(SimConfig::default());
-    let table = curve(60);
-    let id = sim.add_tables(table.clone());
-    let actor = sim.spawn(ActorSpawn { table: Some(id), ..ActorSpawn::default() }).expect("room");
-    let reads = |sim: &Simulation, subticks: u64| {
-        let motion = sim.actor(actor).expect("alive").root_motion;
-        assert_eq!(motion.elapsed().as_subticks(), subticks, "tick {}", sim.tick());
-        let expected = table.root_at(SimDuration::from_subticks(subticks));
-        let actual = motion.reading();
-        assert_eq!(actual.translation.map(f32::to_bits), expected.translation.map(f32::to_bits));
-        assert_eq!(actual.yaw.to_bits(), expected.yaw.to_bits());
-    };
-
-    // The press reads the table's zero in its own step.
-    sim.step(&press(actor, Buttons::LIGHT));
-    reads(&sim, 0);
-    assert_eq!(sim.actor(actor).expect("alive").root_motion.reading(), RootSample::ZERO);
-
-    // Normal speed: a whole tick each step, reading exactly the table's samples.
-    sim.step(&TickActions::NEUTRAL);
-    reads(&sim, 1000);
-    sim.step(&TickActions::NEUTRAL);
-    reads(&sim, 2000);
-
-    // Hitstop freezes the next six ticks exactly, the press's own step having already moved.
-    sim.step(&press(actor, Buttons::HEAVY));
-    reads(&sim, 3000);
-    for _ in 0..DRILL_HITSTOP_TICKS {
-        sim.step(&TickActions::NEUTRAL);
-        reads(&sim, 3000);
-    }
-    sim.step(&TickActions::NEUTRAL);
-    reads(&sim, 4000);
-
-    // Half speed: half a tick each step, from the step after the press.
-    sim.step(&press(actor, Buttons::DODGE));
-    reads(&sim, 5000);
-    sim.step(&TickActions::NEUTRAL);
-    reads(&sim, 5500);
-    let (a, b) = (table.root_samples()[5], table.root_samples()[6]);
-    let halfway = sim.actor(actor).expect("alive").root_motion.reading();
-    assert_eq!(halfway.translation[2], a.translation[2] + (b.translation[2] - a.translation[2]) * 0.5);
-    sim.step(&TickActions::NEUTRAL);
-    reads(&sim, 6000);
-
-    // The world at a fifth as well: a tenth of a tick each step.
-    sim.step(&press(actor, Buttons::ULTIMATE));
-    reads(&sim, 6500);
-    for step in 1..=10 {
-        sim.step(&TickActions::NEUTRAL);
-        reads(&sim, 6500 + step * 100);
-    }
-
-    // And back: another press of each, and a whole tick again from the next step.
-    sim.step(&press(actor, Buttons::DODGE | Buttons::ULTIMATE));
-    reads(&sim, 7600);
-    sim.step(&TickActions::NEUTRAL);
-    reads(&sim, 8600);
-}
-
 #[test]
 fn stats_count_steps_against_the_budget() {
     let mut sim =
@@ -343,35 +292,65 @@ fn stats_count_steps_against_the_budget() {
     assert!(stats.mean_step() <= stats.longest_step);
 }
 
+fn tweaked(edit: impl FnOnce(&mut MoveSetDocument)) -> MoveSet {
+    let mut document = MoveSetDocument::parse(support::SLICE).expect("parses");
+    edit(&mut document);
+    document.compile().expect("compiles")
+}
+
+/// A move's data is part of the hash in every way a designer can change it: one edit per track.
 #[test]
 fn the_tables_hash_changes_with_the_move_data_and_nothing_else() {
-    let hash_of = |tables: Vec<BakedTables>| {
+    let hash_of = |sets: Vec<MoveSet>| {
         let mut sim = Simulation::new(SimConfig::default());
-        for table in tables {
-            sim.add_tables(table);
+        for set in sets {
+            sim.add_move_set(set);
         }
         sim.step(&TickActions::NEUTRAL);
         sim.tables_hash()
     };
-    let base = hash_of(vec![curve(20), curve(30)]);
-    assert_eq!(base, hash_of(vec![curve(20), curve(30)]));
-    assert_ne!(base, hash_of(vec![curve(30), curve(20)]), "order is in the IDs");
-    assert_ne!(base, hash_of(vec![curve(20), curve(31)]));
-    assert_ne!(base, hash_of(vec![curve(20)]));
+    let base = hash_of(vec![slice()]);
+    assert_eq!(base, hash_of(vec![slice()]));
+    assert_ne!(base, hash_of(vec![]));
+    assert_ne!(base, hash_of(vec![slice(), slice()]));
+
+    type Edit = fn(&mut MoveSetDocument);
+    let edits: &[(&str, Edit)] = &[
+        ("an intent's buffer", |d| d.intents[0].buffer += 1),
+        ("an intent's priority", |d| d.intents[0].priority += 1),
+        ("a neutral start", |d| d.neutral[0].target = "skill".to_owned()),
+        ("a phase", |d| d.moves[0].recovery += 1),
+        ("the root motion", |d| d.moves[0].motion.root[0].offset[2] += 0.25),
+        ("a path", |d| d.moves[0].motion.paths[0].keys[0].offset[0] += 0.25),
+        ("a hitbox's window", |d| d.moves[0].hitboxes[0].to -= 1),
+        ("a hitbox's shape", |d| {
+            d.moves[0].hitboxes[0].shape = sapphire_moves::Shape::Sphere { radius: 0.125 };
+        }),
+        ("a cancel window", |d| d.moves[0].cancels[0].from += 1),
+        ("a cancel's mode", |d| d.moves[0].cancels[0].allow[0].when = sapphire_moves::CancelMode::Instant),
+        ("a cue", |d| d.moves[0].cues[0].at += 1),
+        ("invulnerability", |d| d.moves[3].invulnerable[0].to -= 1),
+        ("a perfect-dodge window", |d| d.moves[3].perfect_dodge[0].to -= 1),
+        ("a hurtbox", |d| d.moves[3].hurtboxes[0].to -= 1),
+        ("a warp's limit", |d| d.moves[4].warps[0].max_distance += 0.25),
+        ("a parry window", |d| d.moves[5].parry[0].to -= 1),
+    ];
+    for (what, edit) in edits {
+        assert_ne!(base, hash_of(vec![tweaked(edit)]), "{what}");
+    }
 }
 
 #[test]
-fn cooked_tables_load_and_bad_ones_are_refused() {
-    let table = curve(20);
-    let cooked = table.to_cooked().expect("cooks");
+fn cooked_sets_load_and_bad_ones_are_refused() {
+    let cooked = slice_cooked();
     let mut sim = Simulation::new(SimConfig::default());
-    let id = sim.add_cooked_tables(&cooked).expect("loads");
+    let id = sim.add_cooked_move_set(&cooked).expect("loads");
     let mut plain = Simulation::new(SimConfig::default());
-    plain.add_tables(table);
+    plain.add_move_set(slice());
     assert_eq!(sim.tables_hash(), plain.tables_hash());
     assert_eq!(id.raw(), 0);
 
     let mut stale = cooked.clone();
     stale[16] += 1;
-    assert!(sim.add_cooked_tables(&stale).is_err());
+    assert!(sim.add_cooked_move_set(&stale).is_err());
 }

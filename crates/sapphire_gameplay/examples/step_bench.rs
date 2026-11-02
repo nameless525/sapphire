@@ -4,58 +4,55 @@
 //! cargo run --release -p sapphire_gameplay --example step_bench [steps]
 //! ```
 //!
-//! Runs the drill at a duel's size, a busy fight's, and a full pool's, every actor following long
-//! tables with a path and pressing a button every few ticks, in alternating rounds, and reports each
-//! size's minimum median and worst step across rounds. It reads the steps through
-//! `Simulation::stats`, as the overlay would, and adds its checksum cost, which a replay pays per
-//! tick only when asked.
+//! Runs the test content's moves at a duel's size, a busy fight's and a full pool's, in alternating
+//! rounds, and reports each size's minimum median and worst step across rounds. Every actor plays
+//! strings, dodge cancels and dash attacks with a warp target and its ring in use, which is more than
+//! most of a real fight's actors do at once. It reads the steps through `Simulation::stats`, as the
+//! overlay would, and adds its checksum cost, which a replay pays per tick only when asked.
 
 #![allow(clippy::print_stdout, reason = "a bench's output is what it's for")]
 
 use std::time::Duration;
 
-use sapphire_core::Name;
 use sapphire_gameplay::{
-    ActorActions, ActorId, ActorSpawn, Buttons, SimConfig, Simulation, Stick, TickActions,
+    ActorActions, ActorId, ActorSpawn, Buttons, SimConfig, Simulation, Stick, TickActions, WarpTarget,
 };
-use sapphire_moves::{BakedPath, BakedTables, PathSample, RootSample};
+use sapphire_math::Vec3;
+use sapphire_moves::{MoveSet, MoveSetDocument};
 use sapphire_time::Stopwatch;
 
-/// 2 seconds of move at 60 Hz with one path, a typical swing's size.
-fn tables() -> BakedTables {
-    let root = (0..=120)
-        .map(|tick| {
-            let t = tick as f32;
-            RootSample { translation: [0.0, 0.0, t * 0.05], yaw: t * 0.01 }
-        })
-        .collect();
-    let blade = (0..=120)
-        .map(|tick| {
-            let t = tick as f32 * 0.02;
-            PathSample { translation: [t, 1.0, 0.5], rotation: [0.0, 0.0, 0.0, 1.0] }
-        })
-        .collect();
-    BakedTables::new(root, vec![BakedPath::new(Name::new("blade"), blade)]).expect("a good table")
+const SLICE: &str = include_str!("../../sapphire_moves/test_content/slice.moves.ron");
+
+fn slice() -> MoveSet {
+    MoveSetDocument::parse(SLICE).expect("parses").compile().expect("compiles")
 }
 
 fn world(actors: u32) -> (Simulation, Vec<ActorId>) {
-    // Room for every actor and the transient ones they spawn.
-    let mut sim = Simulation::new(SimConfig { seed: 1, max_actors: actors * 2, ..SimConfig::default() });
-    let table = sim.add_tables(tables());
-    let ids = (0..actors)
-        .map(|_| sim.spawn(ActorSpawn { table: Some(table), ..ActorSpawn::default() }).expect("room"))
+    let mut sim = Simulation::new(SimConfig { seed: 1, max_actors: actors, ..SimConfig::default() });
+    let moves = sim.add_move_set(slice());
+    let ids: Vec<ActorId> = (0..actors)
+        .map(|index| {
+            let position = Vec3::new(index as f32, 0.0, 0.0);
+            sim.spawn(ActorSpawn { position, moves: Some(moves), ..ActorSpawn::default() }).expect("room")
+        })
         .collect();
+    // Each aims at the next, so warp windows do their work against moving targets.
+    for (index, &id) in ids.iter().enumerate() {
+        let next = ids[(index + 1) % ids.len()];
+        sim.set_warp_target(id, WarpTarget::Actor(next));
+    }
     (sim, ids)
 }
 
-/// One tick: the first actors a tick can hold press something on their own rhythm.
+/// One tick: the first actors a tick can hold press on their own rhythm, a string with a dodge and a
+/// dash attack. Actors past those a tick holds would be a brain's, so they're left to play a force.
 fn actions(tick: u64, ids: &[ActorId]) -> TickActions {
     let mut actions = TickActions::NEUTRAL;
     for (index, &id) in ids.iter().take(TickActions::CAPACITY).enumerate() {
-        let buttons = match (tick + index as u64 * 7) % 40 {
-            0 => Buttons::LIGHT,
-            13 => Buttons::HEAVY,
-            27 => Buttons::SKILL,
+        let buttons = match (tick + index as u64 * 7) % 96 {
+            0 | 8 | 22 | 60 | 70 => Buttons::LIGHT,
+            40 | 66 => Buttons::DODGE,
+            88 => Buttons::SKILL,
             _ => Buttons::NONE,
         };
         let stick = Stick::new((tick % 127) as i8, 0);
@@ -68,6 +65,8 @@ struct Round {
     median: Duration,
     worst: Duration,
     checksum: Duration,
+    /// Moves started, cancels fired and cues published, to show the steps did the work.
+    work: (u64, u64, u64),
 }
 
 fn round(actors: u32, steps: u64) -> Round {
@@ -75,6 +74,12 @@ fn round(actors: u32, steps: u64) -> Round {
     let mut times = Vec::with_capacity(steps as usize);
     for tick in 0..steps {
         let input = actions(tick, &ids);
+        // Everyone past the tick's few plays what the first does, as a brain would have them.
+        if tick % 48 == 0 {
+            for &id in ids.iter().skip(TickActions::CAPACITY) {
+                sim.force_move(id, sapphire_core::Name::new("dash_attack"));
+            }
+        }
         sim.step(&input);
         times.push(sim.stats().last_step);
     }
@@ -83,8 +88,15 @@ fn round(actors: u32, steps: u64) -> Round {
     let checksum = sim.checksum();
     let checksum_time = stopwatch.elapsed();
     assert_ne!(checksum, 0);
-    assert_eq!(sim.stats().steps, steps);
-    Round { median: times[times.len() / 2], worst: sim.stats().longest_step, checksum: checksum_time }
+    let stats = sim.stats();
+    assert_eq!(stats.steps, steps);
+    assert_eq!((stats.allocations, stats.cues_dropped, stats.volumes_dropped), (0, 0, 0));
+    Round {
+        median: times[times.len() / 2],
+        worst: stats.longest_step,
+        checksum: checksum_time,
+        work: (stats.moves_started, stats.cancels_fired, stats.cues_published),
+    }
 }
 
 fn main() {
@@ -102,6 +114,7 @@ fn main() {
                     median: other.median.min(this.median),
                     worst: other.worst.min(this.worst),
                     checksum: other.checksum.min(this.checksum),
+                    work: this.work,
                 },
             });
         }
@@ -114,14 +127,17 @@ fn main() {
 
     println!("creating a simulation with 128 pooled actors: {:.0} µs", creation.as_secs_f64() * 1e6);
     println!("{steps} steps, {ROUNDS} rounds, minimums across rounds");
-    println!("actors  median step  worst step  checksum");
+    println!("actors  median step  worst step  checksum  moves  cancels   cues");
     for (size, best) in SIZES.iter().zip(&best) {
         let best = best.as_ref().expect("every size ran");
         println!(
-            "{size:6}  {:9.2} µs  {:7.2} µs  {:5.2} µs",
+            "{size:6}  {:9.2} µs  {:7.2} µs  {:5.2} µs  {:5}  {:7}  {:5}",
             best.median.as_secs_f64() * 1e6,
             best.worst.as_secs_f64() * 1e6,
             best.checksum.as_secs_f64() * 1e6,
+            best.work.0,
+            best.work.1,
+            best.work.2,
         );
     }
     println!("budget: 1000 µs on Desktop-Low, 1500 µs on Mobile-Low");

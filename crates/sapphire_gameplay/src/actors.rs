@@ -20,8 +20,9 @@ use sapphire_math::Vec3;
 use sapphire_time::SimTime;
 
 use crate::actions::Controls;
-use crate::drill::Drill;
-use crate::motion::{ActorTransform, RootMotion, TableId};
+use crate::intents::IntentRing;
+use crate::movement::ActorTransform;
+use crate::moves::{MoveOutput, MoveRead, MoveRunner, MoveSetId, WarpTarget};
 
 /// An actor's stable identity (the explicit ID review RS-005 left for M2). Handed out in spawn order
 /// from 1, and never reused within a run, so a replay's actions and a kept reference can't land
@@ -52,10 +53,8 @@ pub struct ActorSpawn {
     pub position: Vec3,
     /// Radians about +Y; 0 faces +Z.
     pub yaw: f32,
-    /// The table the drill follows when this actor is told to.
-    pub table: Option<TableId>,
-    /// Follows [`Self::table`] from its first step, and despawns at its end.
-    pub transient: bool,
+    /// The set of moves it plays. With none, it stands where it is.
+    pub moves: Option<MoveSetId>,
 }
 
 /// A spawn that couldn't be done. Reaching one is deterministic, so it replays too.
@@ -196,8 +195,10 @@ struct ActorBundle {
     clock: EntityClock,
     controls: Controls,
     transform: ActorTransform,
-    motion: RootMotion,
-    drill: Drill,
+    runner: MoveRunner,
+    ring: IntentRing,
+    output: MoveOutput,
+    target: WarpTarget,
 }
 
 /// Spawns the pool and creates the actor resources, before the world's first step.
@@ -209,8 +210,10 @@ pub(crate) fn create_pool(world: &mut World, capacity: u32) {
             clock,
             controls: Controls::default(),
             transform: ActorTransform::default(),
-            motion: RootMotion::default(),
-            drill: Drill::default(),
+            runner: MoveRunner::default(),
+            ring: IntentRing::default(),
+            output: MoveOutput::default(),
+            target: WarpTarget::default(),
         });
         pool.push(entity.id());
     }
@@ -219,12 +222,26 @@ pub(crate) fn create_pool(world: &mut World, capacity: u32) {
 }
 
 /// The components [`reset_actor`] writes.
-pub(crate) type ActorState<'w> =
-    (&'w mut EntityClock, &'w mut Controls, &'w mut ActorTransform, &'w mut RootMotion, &'w mut Drill);
+pub(crate) type ActorState<'w> = (
+    &'w mut EntityClock,
+    &'w mut Controls,
+    &'w mut ActorTransform,
+    &'w mut MoveRunner,
+    &'w mut IntentRing,
+    &'w mut MoveOutput,
+    &'w mut WarpTarget,
+);
 
 /// What a query for [`ActorState`] hands over.
-type ActorStateItem<'w> =
-    (Mut<'w, EntityClock>, Mut<'w, Controls>, Mut<'w, ActorTransform>, Mut<'w, RootMotion>, Mut<'w, Drill>);
+type ActorStateItem<'w> = (
+    Mut<'w, EntityClock>,
+    Mut<'w, Controls>,
+    Mut<'w, ActorTransform>,
+    Mut<'w, MoveRunner>,
+    Mut<'w, IntentRing>,
+    Mut<'w, MoveOutput>,
+    Mut<'w, WarpTarget>,
+);
 
 /// `FixedPost`, and straight after a spawn or despawn between steps: resolves everything queued, in
 /// the order it was asked for.
@@ -252,20 +269,19 @@ pub(crate) fn resolve_actor_requests(
 /// Makes a pooled entity a new actor. Clock IDs come from the world clock in spawn order, so a replay
 /// gets the same ones (and a reused entity's old scale handles can't touch its new clock).
 fn reset_actor(
-    (mut clock, mut controls, mut transform, mut motion, mut drill): ActorStateItem<'_>,
+    (mut clock, mut controls, mut transform, mut runner, mut ring, mut output, mut target): ActorStateItem<
+        '_,
+    >,
     spawn: ActorSpawn,
     world_clock: &mut WorldClock,
 ) {
     *clock = world_clock.new_entity_clock();
     *controls = Controls::default();
     *transform = ActorTransform { position: spawn.position, yaw: spawn.yaw };
-    *motion = RootMotion::default();
-    if spawn.transient
-        && let Some(table) = spawn.table
-    {
-        motion.start(table, clock.0.now(), spawn.yaw);
-    }
-    *drill = Drill { table: spawn.table, transient: spawn.transient };
+    *runner = MoveRunner::new(spawn.moves);
+    ring.reset();
+    *output = MoveOutput::default();
+    *target = WarpTarget::None;
 }
 
 /// A live actor's public state, read between steps. Presentation interpolates between two of
@@ -280,6 +296,6 @@ pub struct ActorView {
     pub clock_now: SimTime,
     /// Frozen ticks still to come.
     pub hitstop_ticks: u16,
-    /// What it last read of a baked table.
-    pub root_motion: RootMotion,
+    /// What its moves are doing: the move, its phase and local time, and what counts this step.
+    pub moves: MoveRead,
 }

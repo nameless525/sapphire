@@ -196,18 +196,17 @@ impl Recording {
 
 #[cfg(test)]
 mod tests {
-    use super::super::script::{SCRIPTS, drill_sweep};
+    use super::super::script::{SCRIPTS, melee_sweep};
     use super::super::{MAX_ACTORS, SCENARIOS};
     use super::*;
     use crate::actions::{ActorActions, Buttons};
-    use sapphire_moves::{BakedTables, RootSample};
 
-    fn drill() -> &'static Scenario {
+    fn melee() -> &'static Scenario {
         &SCENARIOS[0]
     }
 
     fn record(ticks: u32, mut source: impl ActionSource) -> (Replay, Played) {
-        let mut recording = Recording::new(drill(), drill().config).unwrap();
+        let mut recording = Recording::new(melee(), melee().config).unwrap();
         for _ in 0..ticks {
             recording.step(&mut source).unwrap();
         }
@@ -216,7 +215,7 @@ mod tests {
 
     #[test]
     fn a_recording_plays_back_to_the_same_trail() {
-        let (replay, recorded) = record(300, drill_sweep);
+        let (replay, recorded) = record(300, melee_sweep);
         assert_eq!(replay.ticks(), 300);
         assert_eq!(recorded.trail.ticks(), 300);
 
@@ -247,20 +246,20 @@ mod tests {
 
     #[test]
     fn a_scenario_this_build_lacks_is_named() {
-        let scenario = Scenario { name: "gone", ..*drill() };
-        let mut recording = Recording::new(&scenario, drill().config).unwrap();
+        let scenario = Scenario { name: "gone", ..*melee() };
+        let mut recording = Recording::new(&scenario, melee().config).unwrap();
         recording.step(&mut super::super::script::idle).unwrap();
         let (replay, _) = recording.finish();
         let error = Player::new(replay, SCENARIOS).err().expect("refused");
         assert!(matches!(&error, PlayError::UnknownScenario { name, .. } if name == "gone"));
-        assert!(error.to_string().contains("drill"), "it lists what there is: {error}");
+        assert!(error.to_string().contains("melee"), "it lists what there is: {error}");
     }
 
     #[test]
     fn too_big_a_pool_is_refused_before_anything_is_built() {
-        let config = SimConfig { max_actors: MAX_ACTORS + 1, ..drill().config };
+        let config = SimConfig { max_actors: MAX_ACTORS + 1, ..melee().config };
         assert!(matches!(
-            Recording::new(drill(), config),
+            Recording::new(melee(), config),
             Err(PlayError::File(ReplayError::TooManyActors { .. }))
         ));
     }
@@ -270,12 +269,12 @@ mod tests {
     #[test]
     fn a_mismatched_move_hash_refuses_and_says_re_record() {
         fn moved(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
-            let cast = crate::replay::scenario::drill(sim)?;
-            sim.add_tables(BakedTables::new(vec![RootSample::ZERO], vec![])?);
+            let cast = crate::replay::scenario::melee(sim)?;
+            sim.add_move_set(crate::replay::scenario::test_moves()?);
             Ok(cast)
         }
-        let (mut replay, played) = record(30, drill_sweep);
-        let scenarios = [Scenario { setup: moved, ..*drill() }];
+        let (mut replay, played) = record(30, melee_sweep);
+        let scenarios = [Scenario { setup: moved, ..*melee() }];
 
         let error = Player::new(replay.clone(), &scenarios).err().expect("refused");
         let PlayError::MovesChanged { recorded, current } = error else { panic!("{error}") };
@@ -299,12 +298,12 @@ mod tests {
     #[test]
     fn a_tick_changed_in_the_actions_is_named_by_the_recorded_trail() {
         use super::super::checksums::RecordedTrail;
-        let (_, played) = record(200, drill_sweep);
+        let (_, played) = record(200, melee_sweep);
         let recorded = RecordedTrail::from_trail(&played.trail);
         let actor = ActorId::from_raw(2).unwrap();
         for changed in [0_u64, 1, 59, 60, 61, 120, 199] {
             let (other, _) = record(200, move |tick: u64, cast: &[ActorId]| {
-                let mut actions = drill_sweep(tick, cast);
+                let mut actions = melee_sweep(tick, cast);
                 if tick == changed {
                     let was = actions.get(actor);
                     let pressed = ActorActions { buttons: was.buttons | Buttons::JUMP, ..was };

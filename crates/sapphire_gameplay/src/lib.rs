@@ -15,10 +15,13 @@
 //!   reach, a tick at a time, for a headless runner and an app alike (spec §9, gates 2 and 4).
 //! - [`targeting`]: who a soft lock picks, as a pure function, since it decides where a move warps. The
 //!   camera that frames the choice is `sapphire_camera`, presentation, with no edge to this crate.
+//! - The move system (M2 G2): [`IntentRing`], the intents waiting on an actor's own clock; the `moves`
+//!   module's cancels and moves, on [`sapphire_moves::MoveSet`]s from [`MoveLibrary`]; what a move
+//!   publishes ([`MoveOutput`], [`MoveRead`]); and [`CueQueue`], presentation's events.
 //!
-//! The controller, moves, hits and cameras arrive with M2's G packages. Until then the crate's
-//! systems are a drill (`drill`) that exercises the rest: a button makes an actor follow a baked
-//! table on its own clock, others freeze it, slow it or spawn another actor.
+//! The controller and hits arrive with M2's other G packages, each in its [`CombatSet`]. Until
+//! then [`CombatSet::Movement`] applies a move's root motion directly (the `movement` module, which
+//! G1 takes over), and hit volumes are published for something to test.
 //!
 //! Doesn't own, and may never link: the renderer, the world (`sapphire_world`), animation, the
 //! platform layer, input bindings, SDL or wgpu. `cargo xtask check-layers` holds its dependency
@@ -67,20 +70,36 @@
 //!
 //! ```
 //! use sapphire_gameplay::{ActorActions, ActorSpawn, Buttons, SimConfig, Simulation, Stick, TickActions};
-//! use sapphire_moves::{BakedTables, RootSample};
+//! use sapphire_moves::MoveSetDocument;
 //!
 //! let mut sim = Simulation::new(SimConfig { seed: 7, ..SimConfig::default() });
 //!
-//! // One tick's walk forward, as a cook would bake it.
-//! let step = RootSample { translation: [0.0, 0.0, 0.05], yaw: 0.0 };
-//! let walk = sim.add_tables(BakedTables::new(vec![RootSample::ZERO, step], vec![]).unwrap());
-//! let player = sim.spawn(ActorSpawn { table: Some(walk), ..ActorSpawn::default() }).unwrap();
+//! // One move, as a cook would make it: a step forward on a button.
+//! let document = MoveSetDocument::parse(r#"(
+//!     type: "sapphire::moves::MoveSetDocument",
+//!     version: 1,
+//!     data: (
+//!         intents: [(name: "light", button: Light, buffer: 12)],
+//!         neutral: [(intent: "light", move: "step")],
+//!         moves: [(
+//!             name: "step",
+//!             startup: 2,
+//!             active: 2,
+//!             recovery: 6,
+//!             motion: (root: [(at: 4, offset: (0.0, 0.0, 0.2))]),
+//!         )],
+//!     ),
+//! )"#).unwrap();
+//! let moves = sim.add_move_set(document.compile().unwrap());
+//! let player = sim.spawn(ActorSpawn { moves: Some(moves), ..ActorSpawn::default() }).unwrap();
 //!
 //! let mut actions = TickActions::NEUTRAL;
 //! actions
 //!     .set(player, ActorActions { buttons: Buttons::LIGHT, stick: Stick::CENTER })
 //!     .unwrap();
 //! sim.step(&actions);
+//! // The press lands on its own step, at the move's first tick.
+//! assert_eq!(sim.actor(player).unwrap().moves.current.unwrap().tick(), 0);
 //! sim.step(&TickActions::NEUTRAL);
 //!
 //! assert_eq!(sim.tick(), 2);
@@ -91,8 +110,10 @@
 mod actions;
 mod actors;
 mod checksum;
-mod drill;
-mod motion;
+mod cues;
+mod intents;
+mod movement;
+mod moves;
 pub mod replay;
 mod simulation;
 mod stats;
@@ -101,7 +122,12 @@ pub mod targeting;
 pub use actions::{ActionsError, ActorActions, Buttons, Controls, Stick, TickActions, TickActionsFull};
 pub use actors::{ActorId, ActorRequests, ActorSpawn, ActorTable, ActorView, SpawnError};
 pub use checksum::StateHasher;
-pub use drill::{DRILL_HITSTOP_TICKS, DRILL_LOCAL_SCALE, DRILL_WALK_SPEED, DRILL_WORLD_SCALE};
-pub use motion::{ActorTransform, RootMotion, TableId, TableLibrary};
+pub use cues::{CUE_QUEUE_LEN, CueEvent, CueQueue};
+pub use intents::{INTENT_RING_LEN, Intent, IntentRing};
+pub use movement::{ActorTransform, RootDelta};
+pub use moves::{
+    ActiveHurtbox, ActiveVolume, CurrentMove, LiveWindows, MAX_ACTIVE_HURTBOXES, MAX_ACTIVE_VOLUMES,
+    MoveLibrary, MoveOutput, MoveRead, MoveRef, MoveRunner, MoveSetId, Published, WarpTarget,
+};
 pub use simulation::{CombatSet, SimConfig, SimRng, Simulation};
 pub use stats::{BUDGET_DESKTOP_LOW, BUDGET_MOBILE_LOW, SimStats};

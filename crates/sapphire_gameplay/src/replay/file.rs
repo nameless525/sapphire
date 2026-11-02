@@ -435,7 +435,7 @@ mod tests {
 
     #[test]
     fn names_are_short_and_plain() {
-        assert!(is_valid_name("drill-sweep_2"));
+        assert!(is_valid_name("melee-sweep_2"));
         assert!(is_valid_name(&"a".repeat(MAX_NAME_LEN)));
         for name in ["", "Drill", "a b", "a/b", "..", "\u{1b}[31m", "é"] {
             assert!(!is_valid_name(name), "{name:?}");

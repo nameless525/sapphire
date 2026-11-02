@@ -50,11 +50,11 @@ impl Suite {
         self.run("check", args)
     }
 
-    /// Records a replay of the drill.
+    /// Records a replay of the melee scenario.
     fn record(&self, name: &str, script: &str, ticks: u32) {
         let ticks = ticks.to_string();
         let output =
-            self.run("record", &[name, "--scenario", "drill", "--script", script, "--ticks", &ticks]);
+            self.run("record", &[name, "--scenario", "melee", "--script", script, "--ticks", &ticks]);
         assert!(output.status.success(), "{}", log(&output));
     }
 }
@@ -110,7 +110,7 @@ const OTHER: &str = "checksums.another_architecture.txt";
 #[test]
 fn update_touches_only_this_architectures_file() {
     let suite = Suite::new("update");
-    suite.record("duel", "drill-play", 300);
+    suite.record("duel", "melee-play", 300);
     let good = fs::read_to_string(suite.this_architecture()).expect("written");
     let replay = fs::read(suite.file("duel.sreplay")).expect("written");
     let other =
@@ -145,7 +145,7 @@ fn update_touches_only_this_architectures_file() {
 #[test]
 fn a_failure_names_the_first_tick_that_differs() {
     let suite = Suite::new("divergence");
-    suite.record("duel", "drill-sweep", 200);
+    suite.record("duel", "melee-sweep", 200);
     let path = suite.file("duel.sreplay");
     let original = Replay::decode(&fs::read(&path).expect("written")).expect("reads");
     for changed in [0_usize, 30, 59, 60, 119, 199] {
@@ -169,7 +169,7 @@ fn a_failure_names_the_first_tick_that_differs() {
 #[test]
 fn a_missing_file_fails_with_the_values_and_they_bootstrap_it() {
     let suite = Suite::new("bootstrap");
-    suite.record("duel", "drill-play", 90);
+    suite.record("duel", "melee-play", 90);
     suite.record("spar", "idle", 90);
     let good = fs::read_to_string(suite.this_architecture()).expect("written");
     fs::remove_file(suite.this_architecture()).expect("removes");
@@ -200,7 +200,7 @@ fn a_missing_file_fails_with_the_values_and_they_bootstrap_it() {
 #[test]
 fn a_changed_move_hash_refuses_until_update_stamps_it() {
     let suite = Suite::new("moves");
-    suite.record("duel", "drill-play", 90);
+    suite.record("duel", "melee-play", 90);
     let path = suite.file("duel.sreplay");
     let good = fs::read(&path).expect("written");
     let mut replay = Replay::decode(&good).expect("reads");
@@ -274,7 +274,7 @@ fn a_checksum_file_for_another_architecture_or_that_doesnt_read_fails() {
 fn one_replay_can_be_run_or_updated_alone() {
     let suite = Suite::new("only");
     suite.record("first", "idle", 30);
-    suite.record("second", "drill-play", 30);
+    suite.record("second", "melee-play", 30);
     let good = fs::read_to_string(suite.this_architecture()).expect("written");
     // Spoil both ends; the second replay is listed after the first, by name.
     edit_line(&suite.this_architecture(), 30, |line| flip_hex(line, 4));
@@ -303,7 +303,7 @@ fn an_empty_suite_fails_rather_than_passing_nothing() {
 fn recording_into_a_checksum_file_that_doesnt_read_is_refused() {
     let suite = Suite::new("spoiled");
     fs::write(suite.this_architecture(), "not checksums\n").expect("writes");
-    let args = ["new", "--scenario", "drill", "--script", "idle", "--ticks", "30"];
+    let args = ["new", "--scenario", "melee", "--script", "idle", "--ticks", "30"];
     assert_fails_saying(&suite.run("record", &args), &["line 1"]);
     assert_eq!(fs::read_to_string(suite.this_architecture()).expect("there"), "not checksums\n");
     assert!(!suite.file("new.sreplay").exists());
@@ -317,13 +317,13 @@ fn recording_refuses_what_it_cant_do() {
     let record = |name: &str, scenario: &str, script: &str, ticks: &str| {
         suite.run("record", &[name, "--scenario", scenario, "--script", script, "--ticks", ticks])
     };
-    assert_fails_saying(&record("taken", "drill", "idle", "30"), &["exists", "delete it first"]);
+    assert_fails_saying(&record("taken", "melee", "idle", "30"), &["exists", "delete it first"]);
     assert_eq!(fs::read(suite.file("taken.sreplay")).expect("there"), replay);
-    assert_fails_saying(&record("../up", "drill", "idle", "30"), &["can't name a replay"]);
-    assert_fails_saying(&record("new", "none", "idle", "30"), &["no scenario `none`", "drill"]);
-    assert_fails_saying(&record("new", "drill", "none", "30"), &["no script `none`", "drill-sweep"]);
-    assert_fails_saying(&record("new", "drill", "idle", "0"), &["at least one tick"]);
-    assert_fails_saying(&record("new", "drill", "idle", "many"), &["--ticks expects a number"]);
+    assert_fails_saying(&record("../up", "melee", "idle", "30"), &["can't name a replay"]);
+    assert_fails_saying(&record("new", "none", "idle", "30"), &["no scenario `none`", "melee"]);
+    assert_fails_saying(&record("new", "melee", "none", "30"), &["no script `none`", "melee-sweep"]);
+    assert_fails_saying(&record("new", "melee", "idle", "0"), &["at least one tick"]);
+    assert_fails_saying(&record("new", "melee", "idle", "many"), &["--ticks expects a number"]);
     assert!(!suite.file("new.sreplay").exists());
 }
 
@@ -331,7 +331,7 @@ fn recording_refuses_what_it_cant_do() {
 fn a_seed_goes_in_the_file_and_moves_the_checksums() {
     let suite = Suite::new("seed");
     let record = |name: &str, seed: &str| {
-        let args = [name, "--scenario", "drill", "--script", "drill-sweep", "--ticks", "60", "--seed", seed];
+        let args = [name, "--scenario", "melee", "--script", "melee-sweep", "--ticks", "60", "--seed", seed];
         assert_passes(&suite.run("record", &args));
     };
     record("one", "1");
@@ -356,7 +356,7 @@ fn it_lists_what_there_is() {
     assert_passes(&output);
     let said = log(&output);
     for part in
-        ["drill:", "drill-sweep (1200 ticks)", "duel: 30 ticks of `drill`", "bad: this isn't a replay"]
+        ["melee:", "melee-sweep (1200 ticks)", "duel: 30 ticks of `melee`", "bad: this isn't a replay"]
     {
         assert!(said.contains(part), "{part:?}:\n{said}");
     }

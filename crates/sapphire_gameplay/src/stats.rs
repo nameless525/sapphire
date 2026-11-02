@@ -36,6 +36,24 @@ pub struct SimStats {
     pub peak_actors: u32,
     /// Spawns refused so far, because the pool was full.
     pub spawns_refused: u64,
+    /// Presses of intents from buttons so far. Those a brain makes itself aren't counted.
+    pub intents_pressed: u64,
+    /// Presses whose buffer ran out with no window taking them so far.
+    pub intents_expired: u64,
+    /// Presses given up because a full ring needed room, so far.
+    pub intents_overwritten: u64,
+    /// Moves started so far, all told.
+    pub moves_started: u64,
+    /// Of those, the ones that cancelled another.
+    pub cancels_fired: u64,
+    /// Cues published so far.
+    pub cues_published: u64,
+    /// Cues dropped so far, for want of room in a step's queue.
+    pub cues_dropped: u64,
+    /// Hit volumes and hurtbox changes not published so far, for want of room in an actor's step.
+    pub volumes_dropped: u64,
+    /// Steps on which an actor hit the limit on moves started in one step.
+    pub transition_limit_steps: u64,
 }
 
 impl SimStats {

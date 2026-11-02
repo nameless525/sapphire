@@ -106,10 +106,10 @@ mod tests {
         );
         assert_eq!(parse("--list").unwrap(), Command::List);
         assert_eq!(
-            parse("--record duel --scenario drill --script idle --ticks 60 --seed 3").unwrap(),
+            parse("--record duel --scenario melee --script idle --ticks 60 --seed 3").unwrap(),
             Command::Record {
                 name: "duel".into(),
-                scenario: "drill".into(),
+                scenario: "melee".into(),
                 script: "idle".into(),
                 ticks: Some(60),
                 seed: Some(3),
@@ -121,10 +121,10 @@ mod tests {
     fn it_refuses_what_it_cant_mean() {
         for line in [
             "--record duel",
-            "--record duel --scenario drill",
+            "--record duel --scenario melee",
             "--record duel --script idle",
-            "--record duel --scenario drill --script idle --update",
-            "--scenario drill",
+            "--record duel --scenario melee --script idle --update",
+            "--scenario melee",
             "--ticks 60",
             "--list --update",
             "--updaet",

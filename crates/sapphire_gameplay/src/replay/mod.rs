@@ -17,7 +17,7 @@
 //! // Record two seconds of a script from a scenario.
 //! let scenario = &SCENARIOS[0];
 //! let mut recording = Recording::new(scenario, scenario.config).unwrap();
-//! let mut source = find_script("drill-play").unwrap().actions;
+//! let mut source = find_script("melee-play").unwrap().actions;
 //! for _ in 0..120 {
 //!     recording.step(&mut source).unwrap();
 //! }
@@ -45,5 +45,8 @@ pub use file::{
     FORMAT_VERSION, MAX_ACTORS, MAX_NAME_LEN, MAX_TICKS, Recorder, Replay, ReplayError, is_valid_name,
 };
 pub use play::{PlayError, Played, Player, Recording, StepAllocated};
-pub use scenario::{SCENARIOS, Scenario, ScenarioError, drill, drill_curve, find_scenario};
-pub use script::{ActionSource, SCRIPTS, Script, drill_sweep, find_script};
+pub use scenario::{
+    MELEE_HITSTOP_TICKS, SCENARIOS, Scenario, ScenarioError, duel, find_scenario, melee, melee_buttons,
+    test_moves,
+};
+pub use script::{ActionSource, SCRIPTS, Script, find_script, melee_sweep};

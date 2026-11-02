@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use sapphire_core::alloc::CountingAllocator;
 use sapphire_ecs::prelude::*;
-use sapphire_gameplay::replay::{ARCHITECTURE, SCENARIOS, Scenario, ScenarioError, drill};
+use sapphire_gameplay::replay::{ARCHITECTURE, SCENARIOS, Scenario, ScenarioError, melee};
 use sapphire_gameplay::{ActorId, CombatSet, Simulation};
 use sapphire_replay::{Record, Suite, check, record};
 
@@ -23,7 +23,7 @@ fn allocates_late(mut runs: Local<'_, u32>) {
 }
 
 fn allocating(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
-    let cast = drill(sim)?;
+    let cast = melee(sim)?;
     sim.add_combat_system(CombatSet::Resolve, allocates_late);
     Ok(cast)
 }
@@ -45,8 +45,8 @@ fn a_step_that_allocates_fails_the_suite() {
         dir: &dir,
         out: &out,
         name: "duel",
-        scenario: "drill",
-        script: "drill-sweep",
+        scenario: "melee",
+        script: "melee-sweep",
         ticks: Some(100),
         seed: None,
         scenarios: SCENARIOS,

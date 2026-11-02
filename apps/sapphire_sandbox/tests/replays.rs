@@ -13,7 +13,7 @@ use std::process::{Command, Output};
 
 use sapphire_gameplay::replay::{
     ARCHITECTURE, ChecksumFile, Played, Player, RecordedTrail, Recording, Replay, SCENARIOS,
-    checksums_file_name, drill_sweep,
+    checksums_file_name, melee_sweep,
 };
 use sapphire_gameplay::{ActorActions, ActorId, Buttons, TickActions};
 
@@ -60,7 +60,7 @@ fn log_of(output: &Output) -> String {
     format!("{}{}", String::from_utf8_lossy(&output.stderr), String::from_utf8_lossy(&output.stdout))
 }
 
-/// The drill's scenario on the sweep script, as a headless recording does it.
+/// The melee scenario on the sweep script, as a headless recording does it.
 fn record(ticks: u32, source: impl Fn(u64, &[ActorId]) -> TickActions) -> (Replay, Played) {
     let scenario = &SCENARIOS[0];
     let mut recording = Recording::new(scenario, scenario.config).expect("sets up");
@@ -122,7 +122,7 @@ fn a_replay_that_cant_run_is_refused_before_any_gpu_work() {
     assert_refused(&run(&["--replay", &temp.text("garbage.sreplay")]), &capture, &["isn't a replay file"]);
 
     // A later format: the version is read before anything that may have moved.
-    let (replay, played) = record(30, drill_sweep);
+    let (replay, played) = record(30, melee_sweep);
     let bytes = suite_of(&temp, "good", &replay, &played);
     let later = temp.path("later.sreplay");
     let mut newer = bytes.clone();
@@ -154,15 +154,15 @@ fn a_replay_that_cant_run_is_refused_before_any_gpu_work() {
     // What a recording can get wrong.
     let out = temp.text("recorded.sreplay");
     let bad_scenario = run(&["--record", &out, "--scenario", "none", "--script", "idle"]);
-    assert_refused(&bad_scenario, &capture, &["no scenario `none`", "drill"]);
-    let bad_script = run(&["--record", &out, "--scenario", "drill", "--script", "none"]);
-    assert_refused(&bad_script, &capture, &["no script `none`", "drill-sweep"]);
+    assert_refused(&bad_scenario, &capture, &["no scenario `none`", "melee"]);
+    let bad_script = run(&["--record", &out, "--scenario", "melee", "--script", "none"]);
+    assert_refused(&bad_script, &capture, &["no script `none`", "melee-sweep"]);
     assert!(!temp.path("recorded.sreplay").exists());
-    let taken = run(&["--record", &good, "--scenario", "drill", "--script", "idle"]);
+    let taken = run(&["--record", &good, "--scenario", "melee", "--script", "idle"]);
     assert_refused(&taken, &capture, &["exists", "delete it first"]);
     assert_eq!(fs::read(temp.path("good.sreplay")).expect("there"), bytes);
     let nowhere = temp.text("no-such-directory/recorded.sreplay");
-    let unwritable = run(&["--record", &nowhere, "--scenario", "drill", "--script", "idle"]);
+    let unwritable = run(&["--record", &nowhere, "--scenario", "melee", "--script", "idle"]);
     assert_refused(&unwritable, &capture, &["directory doesn't exist"]);
 }
 
@@ -209,7 +209,7 @@ fn assert_reached(output: &Output, ticks: u32, end: u64) {
 #[ignore = "needs a GPU and cooked content (`cargo xtask content`)"]
 fn a_capture_beside_the_renderer_reaches_the_headless_checksums() {
     let temp = Temp::new("capture");
-    let (replay, _) = record(120, drill_sweep);
+    let (replay, _) = record(120, melee_sweep);
     let played = headless(&replay.encode());
     suite_of(&temp, "duel", &replay, &played);
 
@@ -233,7 +233,7 @@ fn a_capture_beside_the_renderer_reaches_the_headless_checksums() {
 #[ignore = "needs a GPU and cooked content (`cargo xtask content`)"]
 fn a_bench_beside_the_renderer_reaches_the_headless_checksums() {
     let temp = Temp::new("bench");
-    let (replay, _) = record(120, drill_sweep);
+    let (replay, _) = record(120, melee_sweep);
     let played = headless(&replay.encode());
     suite_of(&temp, "duel", &replay, &played);
 
@@ -248,9 +248,9 @@ fn a_bench_beside_the_renderer_reaches_the_headless_checksums() {
 #[ignore = "needs a GPU and cooked content (`cargo xtask content`)"]
 fn a_run_that_leaves_its_checksums_fails_naming_the_tick_and_draws_nothing() {
     let temp = Temp::new("diverged");
-    let (replay, _) = record(120, drill_sweep);
+    let (replay, _) = record(120, melee_sweep);
     let (_, other) = record(120, |tick: u64, cast: &[ActorId]| {
-        let mut actions = drill_sweep(tick, cast);
+        let mut actions = melee_sweep(tick, cast);
         if tick == 49 {
             let was = actions.get(cast[1]);
             let pressed = ActorActions { buttons: was.buttons | Buttons::JUMP, ..was };
@@ -275,7 +275,7 @@ fn a_run_that_leaves_its_checksums_fails_naming_the_tick_and_draws_nothing() {
 #[ignore = "needs a GPU and cooked content (`cargo xtask content`)"]
 fn a_capture_part_way_is_held_to_as_far_as_it_got() {
     let temp = Temp::new("partway");
-    let (replay, played) = record(120, drill_sweep);
+    let (replay, played) = record(120, melee_sweep);
     suite_of(&temp, "duel", &replay, &played);
     let capture = temp.path("drawn.png");
     let capture = capture.to_str().expect("UTF-8");
@@ -308,15 +308,15 @@ fn a_recording_in_the_app_is_a_headless_recording() {
         "--record",
         &temp.text("recorded.sreplay"),
         "--scenario",
-        "drill",
+        "melee",
         "--script",
-        "drill-sweep",
+        "melee-sweep",
     ]);
     let log = log_of(&output);
     assert!(output.status.success(), "{log}");
     assert!(log.contains("recorded a replay"), "{log}");
     let written = fs::read(temp.path("recorded.sreplay")).expect("written");
-    let (replay, played) = record(90, drill_sweep);
+    let (replay, played) = record(90, melee_sweep);
     assert_eq!(written, replay.encode());
     assert_eq!(headless(&written).trail, played.trail);
 }
@@ -326,7 +326,7 @@ fn a_recording_in_the_app_is_a_headless_recording() {
 #[ignore = "needs a GPU and cooked content (`cargo xtask content`)"]
 fn the_committed_suite_runs_in_the_app() {
     let dir = workspace().join("tests").join("replays");
-    let replay = dir.join("drill-sweep.sreplay");
+    let replay = dir.join("melee-sweep.sreplay");
     let played = headless(&fs::read(&replay).expect("committed"));
     let temp = Temp::new("committed");
     let capture = temp.path("drawn.png");

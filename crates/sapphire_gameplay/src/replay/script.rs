@@ -39,16 +39,29 @@ pub struct Script {
 /// Every script.
 pub const SCRIPTS: &[Script] = &[
     Script {
-        name: "drill-sweep",
+        name: "melee-sweep",
         about: "every actor presses every button on its own rhythm while its stick sweeps: no tick repeats",
         ticks: 1200,
-        actions: drill_sweep,
+        actions: melee_sweep,
     },
     Script {
-        name: "drill-play",
+        name: "melee-play",
         about: "the first actor walks in legs and attacks in bursts, as a person would, the rest stand",
         ticks: 3600,
-        actions: drill_play,
+        actions: melee_play,
+    },
+    Script {
+        name: "string",
+        about: "the three-hit string, each hit buffered ahead of its cancel window, over and over",
+        ticks: 600,
+        actions: string,
+    },
+    Script {
+        name: "dodge-dash",
+        about: "a string cut by a dodge, dash attacks out of dodges, an instant dodge and a skill, at an \
+                opponent that moves",
+        ticks: 720,
+        actions: dodge_dash,
     },
     Script {
         name: "idle",
@@ -64,27 +77,33 @@ pub fn find_script(name: &str) -> Option<&'static Script> {
     SCRIPTS.iter().find(|script| script.name == name)
 }
 
-/// [`SCRIPTS`]' `drill-sweep`: every button on its own period, and sticks that sweep through their
-/// whole range, for everything the drill can do on a fixed schedule. The largest a replay gets per
-/// actor, since no tick repeats.
+/// [`SCRIPTS`]' `melee-sweep`: every button on its own period, and sticks that sweep through their
+/// whole range, for everything the melee scenario can do on a fixed schedule. The largest a replay
+/// gets per actor, since no tick repeats.
 #[must_use]
-pub fn drill_sweep(tick: u64, cast: &[ActorId]) -> TickActions {
+pub fn melee_sweep(tick: u64, cast: &[ActorId]) -> TickActions {
     let mut actions = TickActions::NEUTRAL;
     for (index, &actor) in cast.iter().enumerate() {
         let shifted = tick + index as u64 * 13;
         let every = |period: u64, offset: u64| shifted % period == offset;
         let mut buttons = Buttons::NONE;
-        if every(53, 3) {
+        if every(19, 3) {
             buttons = buttons | Buttons::LIGHT;
         }
         if every(71, 9) {
             buttons = buttons | Buttons::HEAVY;
         }
-        if every(97, 21) {
+        if every(47, 21) {
             buttons = buttons | Buttons::DODGE;
         }
         if every(131, 33) {
             buttons = buttons | Buttons::SKILL;
+        }
+        if every(97, 12) {
+            buttons = buttons | Buttons::SWAP;
+        }
+        if every(173, 40) {
+            buttons = buttons | Buttons::JUMP;
         }
         if index == 0 && every(211, 77) {
             buttons = buttons | Buttons::ULTIMATE;
@@ -95,14 +114,14 @@ pub fn drill_sweep(tick: u64, cast: &[ActorId]) -> TickActions {
     actions
 }
 
-/// Ticks a leg of [`drill_play`]'s walk takes.
+/// Ticks a leg of [`melee_play`]'s walk takes.
 const LEG: u64 = 90;
 
-/// [`SCRIPTS`]' `drill-play`: one actor walks a leg, easing the stick round over its first ticks and
+/// [`SCRIPTS`]' `melee-play`: one actor walks a leg, easing the stick round over its first ticks and
 /// letting go near its end, and presses in bursts that last a few ticks, as a thumb does. The stick
 /// moves on about a quarter of the ticks, and the other actors stand: most ticks repeat.
 #[must_use]
-pub fn drill_play(tick: u64, cast: &[ActorId]) -> TickActions {
+pub fn melee_play(tick: u64, cast: &[ActorId]) -> TickActions {
     const HEADINGS: [(i8, i8); 4] = [(127, 0), (40, 120), (-127, 10), (-30, -120)];
     let mut actions = TickActions::NEUTRAL;
     let Some(&player) = cast.first() else { return actions };
@@ -132,6 +151,58 @@ pub fn drill_play(tick: u64, cast: &[ActorId]) -> TickActions {
         buttons = buttons | Buttons::SKILL;
     }
     actions.set(player, ActorActions { buttons, stick }).expect("one actor fits a tick");
+    actions
+}
+
+/// What's pressed on `tick` of a schedule that repeats every `period` ticks.
+fn on_schedule(tick: u64, period: u64, schedule: &[(u64, Buttons)]) -> Buttons {
+    let at = tick % period;
+    schedule.iter().find(|(pressed, _)| *pressed == at).map_or(Buttons::NONE, |(_, buttons)| *buttons)
+}
+
+/// Ticks of [`string`]'s schedule: `light_1` from nothing at 0, then each hit pressed ahead of the next
+/// one's window, so `light_2` fires at 10 as its window opens, and `light_3` at 22 the same way.
+const STRING: [(u64, Buttons); 3] = [(0, Buttons::LIGHT), (6, Buttons::LIGHT), (16, Buttons::LIGHT)];
+
+/// [`SCRIPTS`]' `string`: the player's three-hit string by buffered cancels, with room to finish it.
+#[must_use]
+pub fn string(tick: u64, cast: &[ActorId]) -> TickActions {
+    let mut actions = TickActions::NEUTRAL;
+    let Some(&player) = cast.first() else { return actions };
+    let buttons = on_schedule(tick, 96, &STRING);
+    actions.set(player, ActorActions { buttons, stick: Stick::CENTER }).expect("one actor fits a tick");
+    actions
+}
+
+/// Ticks of [`dodge_dash`]'s schedule for the player, by what the test content's moves allow.
+const DODGE_DASH: [(u64, Buttons); 10] = [
+    (0, Buttons::LIGHT),
+    (6, Buttons::LIGHT),   // Buffered: light_2 at 10.
+    (22, Buttons::LIGHT),  // Inside its window: light_3 at once.
+    (30, Buttons::DODGE),  // A dodge cancel out of light_3, at once.
+    (38, Buttons::LIGHT),  // Buffered a tick ahead of the dodge's window: dash attack at 39.
+    (44, Buttons::DODGE),  // A dodge cancel out of the dash attack, at once.
+    (50, Buttons::LIGHT),  // Buffered ahead of that dodge's window: dash attack at 53.
+    (120, Buttons::DODGE), // The second half: a dodge from nothing,
+    (138, Buttons::DODGE), // an instant dodge inside its own last ticks,
+    (170, Buttons::SKILL), // and a skill from nothing.
+];
+
+/// Ticks of [`dodge_dash`]'s schedule for the opponent: it moves, so warps have something to track.
+const OPPONENT: [(u64, Buttons); 2] = [(30, Buttons::SKILL), (90, Buttons::DODGE)];
+
+/// [`SCRIPTS`]' `dodge-dash`: dodge cancels and dash attacks with their warps, at a moving opponent.
+#[must_use]
+pub fn dodge_dash(tick: u64, cast: &[ActorId]) -> TickActions {
+    let mut actions = TickActions::NEUTRAL;
+    let mut press = |actor: Option<&ActorId>, buttons: Buttons| {
+        if let Some(&actor) = actor {
+            let actor_actions = ActorActions { buttons, stick: Stick::CENTER };
+            actions.set(actor, actor_actions).expect("two actors fit a tick");
+        }
+    };
+    press(cast.first(), on_schedule(tick, 240, &DODGE_DASH));
+    press(cast.get(1), on_schedule(tick, 120, &OPPONENT));
     actions
 }
 

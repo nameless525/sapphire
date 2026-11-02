@@ -4,20 +4,23 @@
 //! break a replay at once: the checksum only sees the difference when it reaches a field that's
 //! written here, and later than it could.
 
+use sapphire_core::Name;
 use sapphire_ecs::prelude::*;
 use sapphire_math::Vec3;
-use sapphire_moves::{BakedTables, RootSample};
+use sapphire_moves::{HurtboxState, PathSample, RootSample, Shape};
 use xxhash_rust::xxh3::Xxh3;
 
 use crate::actions::{ActorActions, Controls};
 use crate::actors::{ActorRequests, ActorTable};
-use crate::drill::Drill;
-use crate::motion::{ActorTransform, RootMotion, TableId, TableLibrary};
+use crate::cues::CueQueue;
+use crate::intents::IntentRing;
+use crate::movement::ActorTransform;
+use crate::moves::{MoveLibrary, MoveOutput, MoveRef, MoveRunner, Running, WarpTarget};
 use crate::simulation::SimRng;
 
 /// Goes up when [`state_checksum`] starts writing something different, so a recorded checksum can't
-/// match by accident. Recorded replays re-record then (`docs/m2-plan.md` §3).
-const CHECKSUM_LAYOUT: u32 = 1;
+/// match by accident. Recorded replays re-record then (`docs/m2-plan.md` §3). 2: M2 G2's moves.
+const CHECKSUM_LAYOUT: u32 = 2;
 
 /// A hasher over canonical bytes: XXH3-64, a published, frozen algorithm, unlike `DefaultHasher`,
 /// so a recorded checksum stays good.
@@ -96,9 +99,147 @@ fn write_root_sample(hasher: &mut StateHasher, sample: RootSample) {
     hasher.f32(sample.yaw);
 }
 
-/// An optional table, with `u32::MAX` standing for none, which [`TableId`] never reaches.
-fn write_table_id(hasher: &mut StateHasher, table: Option<TableId>) {
-    hasher.u32(table.map_or(u32::MAX, TableId::raw));
+fn write_name(hasher: &mut StateHasher, name: Name) {
+    hasher.u64(name.as_u64());
+}
+
+fn write_move_ref(hasher: &mut StateHasher, at: MoveRef) {
+    hasher.u32(at.set.raw());
+    hasher.u32(at.revision);
+    hasher.u32(at.index);
+}
+
+fn write_shape(hasher: &mut StateHasher, shape: Shape) {
+    match shape {
+        Shape::Sphere { radius } => {
+            hasher.u8(0);
+            hasher.f32(radius);
+        }
+        Shape::Capsule { radius, length } => {
+            hasher.u8(1);
+            hasher.f32s(&[radius, length]);
+        }
+        Shape::Box { half_extents } => {
+            hasher.u8(2);
+            hasher.f32s(&half_extents);
+        }
+    }
+}
+
+fn write_path_sample(hasher: &mut StateHasher, sample: PathSample) {
+    hasher.f32s(&sample.translation);
+    hasher.f32s(&sample.rotation);
+}
+
+fn write_ring(hasher: &mut StateHasher, ring: &IntentRing) {
+    hasher.u16(ring.held());
+    hasher.u32(ring.len() as u32);
+    for press in ring.iter() {
+        write_name(hasher, press.name);
+        hasher.u8(press.priority);
+        hasher.u64(press.pressed_at.as_subticks());
+        hasher.u64(press.step_start.as_subticks());
+        hasher.u64(press.expires_at.as_subticks());
+    }
+}
+
+fn write_running(hasher: &mut StateHasher, running: &Running) {
+    write_move_ref(hasher, running.at);
+    hasher.u64(running.started_at.as_subticks());
+    hasher.u32(running.serial);
+    hasher.u8(u8::from(running.fresh));
+    hasher.f32(running.frame_yaw);
+    write_root_sample(hasher, running.reading);
+    // `u32::MAX` stands for none, which no window's index reaches.
+    hasher.u32(running.warp_window.unwrap_or(u32::MAX));
+    hasher.f32(running.warp_distance);
+    hasher.f32(running.warp_turn);
+}
+
+fn write_runner(hasher: &mut StateHasher, runner: &MoveRunner) {
+    // `u32::MAX` stands for none, which no set's ID reaches.
+    hasher.u32(runner.set.map_or(u32::MAX, |set| set.raw()));
+    hasher.u64(runner.cursor.as_subticks());
+    hasher.u32(runner.started);
+    match &runner.forced {
+        Some(name) => {
+            hasher.u8(1);
+            write_name(hasher, *name);
+        }
+        None => hasher.u8(0),
+    }
+    match &runner.running {
+        Some(running) => {
+            hasher.u8(1);
+            write_running(hasher, running);
+        }
+        None => hasher.u8(0),
+    }
+}
+
+fn write_output(hasher: &mut StateHasher, output: &MoveOutput) {
+    hasher.vec3(output.root_delta.translation);
+    hasher.f32(output.root_delta.yaw);
+    hasher.vec3(output.previous.position);
+    hasher.f32(output.previous.yaw);
+    let windows = output.windows;
+    hasher.u8(u8::from(windows.invulnerable));
+    hasher.u8(u8::from(windows.perfect_dodge));
+    hasher.u8(u8::from(windows.parry));
+    hasher.u8(u8::from(windows.cancel));
+    hasher.u8(u8::from(windows.warp));
+    hasher.u32(output.volumes.len() as u32);
+    for volume in output.volumes.iter() {
+        write_move_ref(hasher, volume.at);
+        hasher.u32(volume.serial);
+        write_name(hasher, volume.name);
+        write_name(hasher, volume.path);
+        write_shape(hasher, volume.shape);
+        hasher.u64(volume.from.as_subticks());
+        hasher.u64(volume.to.as_subticks());
+        write_path_sample(hasher, volume.start);
+        write_path_sample(hasher, volume.end);
+    }
+    hasher.u32(output.hurtboxes.len() as u32);
+    for hurtbox in output.hurtboxes.iter() {
+        write_name(hasher, hurtbox.name);
+        match hurtbox.state {
+            HurtboxState::Off => hasher.u8(0),
+            HurtboxState::Shape(shape) => {
+                hasher.u8(1);
+                write_shape(hasher, shape);
+            }
+        }
+    }
+}
+
+fn write_target(hasher: &mut StateHasher, target: WarpTarget) {
+    match target {
+        WarpTarget::None => hasher.u8(0),
+        WarpTarget::Point(point) => {
+            hasher.u8(1);
+            hasher.vec3(point);
+        }
+        WarpTarget::Actor(id) => {
+            hasher.u8(2);
+            hasher.u32(id.raw());
+        }
+    }
+}
+
+fn write_cues(hasher: &mut StateHasher, cues: &CueQueue) {
+    // Nothing simulated reads these, but a cue that goes missing or arrives twice is a break in a
+    // replay that only here shows: what a player sees and hears (pillar 3).
+    hasher.u32(cues.len() as u32);
+    for event in cues.iter() {
+        hasher.u32(event.actor.raw());
+        write_name(hasher, event.cue);
+        hasher.u64(event.tick);
+        hasher.u64(event.local_time.as_subticks());
+        hasher.u64(event.move_time.as_subticks());
+    }
+    hasher.u64(cues.published());
+    hasher.u64(cues.dropped());
 }
 
 /// The checksum of a simulation's whole state.
@@ -129,43 +270,260 @@ pub(crate) fn state_checksum(world: &World) -> u64 {
             hasher.vec3(transform.position);
             hasher.f32(transform.yaw);
         }
-        if let Some(motion) = actor.get::<RootMotion>() {
-            write_table_id(&mut hasher, motion.table());
-            hasher.u64(motion.started_at().as_subticks());
-            hasher.f32(motion.start_yaw());
-            hasher.u64(motion.elapsed().as_subticks());
-            write_root_sample(&mut hasher, motion.reading());
+        if let Some(runner) = actor.get::<MoveRunner>() {
+            write_runner(&mut hasher, runner);
         }
-        if let Some(drill) = actor.get::<Drill>() {
-            write_table_id(&mut hasher, drill.table);
-            hasher.u8(u8::from(drill.transient));
+        if let Some(ring) = actor.get::<IntentRing>() {
+            write_ring(&mut hasher, ring);
+        }
+        if let Some(output) = actor.get::<MoveOutput>() {
+            write_output(&mut hasher, output);
+        }
+        if let Some(target) = actor.get::<WarpTarget>() {
+            write_target(&mut hasher, *target);
         }
     }
+    write_cues(&mut hasher, world.resource::<CueQueue>());
     hasher.finish()
 }
 
-/// The hash of loaded move data, for a replay to check it runs against what it recorded.
-pub(crate) fn tables_hash(library: &TableLibrary) -> u64 {
+/// The hash of loaded move data, for a replay to check it runs against what it recorded: each set's
+/// current revision, whole, with its tables, in ID order. It hashes a set's cooked bytes, so no field
+/// can be forgotten here, and those are the same on every target.
+pub(crate) fn tables_hash(library: &MoveLibrary) -> u64 {
     let mut hasher = StateHasher::new();
-    hasher.u32(library.iter().len() as u32);
-    for tables in library.iter() {
-        write_tables(&mut hasher, tables);
+    let hashes = library.current_hashes();
+    hasher.u32(hashes.len() as u32);
+    for hash in hashes {
+        hasher.u64(hash);
     }
     hasher.finish()
 }
 
-fn write_tables(hasher: &mut StateHasher, tables: &BakedTables) {
-    hasher.u32(tables.ticks());
-    for &sample in tables.root_samples() {
-        write_root_sample(hasher, sample);
-    }
-    hasher.u32(tables.paths().len() as u32);
-    for path in tables.paths() {
-        hasher.u64(path.name().as_u64());
-        for sample in path.samples() {
-            hasher.f32s(&sample.translation);
-            hasher.f32s(&sample.rotation);
+#[cfg(test)]
+mod sensitivity_tests {
+    //! Flip each piece of move state, one at a time, and watch the checksum change: a state left out of
+    //! the checksum is a replay bug waiting, and only shows much later, if ever.
+
+    use sapphire_moves::MoveSetDocument;
+    use sapphire_time::{SimDuration, SimTime};
+
+    use super::*;
+    use crate::actions::{ActorActions, Buttons, Stick, TickActions};
+    use crate::actors::{ActorId, ActorSpawn};
+    use crate::moves::ActiveHurtbox;
+    use crate::simulation::{SimConfig, Simulation};
+
+    const SLICE: &str = include_str!("../../sapphire_moves/test_content/slice.moves.ron");
+
+    /// A world where every piece of move state is in use: one actor mid-swing with a volume live, a
+    /// warp target, a warp under way and a press buffered, and another mid-dodge with a hurtbox off.
+    fn world() -> (Simulation, ActorId, ActorId) {
+        let set = MoveSetDocument::parse(SLICE).unwrap().compile().unwrap();
+        let mut sim = Simulation::new(SimConfig::default());
+        let moves = sim.add_move_set(set);
+        let spawn = ActorSpawn { moves: Some(moves), ..ActorSpawn::default() };
+        let (swinging, dodging) = (sim.spawn(spawn).unwrap(), sim.spawn(spawn).unwrap());
+        sim.set_warp_target(swinging, WarpTarget::Point(Vec3::new(1.0, 0.0, 9.0)));
+        sim.force_move(swinging, Name::new("dash_attack"));
+        let press = |actor, buttons| {
+            let mut actions = TickActions::NEUTRAL;
+            actions.set(actor, ActorActions { buttons, stick: Stick::CENTER }).unwrap();
+            actions
+        };
+        sim.step(&press(dodging, Buttons::DODGE));
+        for _ in 0..3 {
+            sim.step(&TickActions::NEUTRAL);
         }
+        // Into the hit volume's window, and with a held press the dash attack's windows don't take.
+        sim.step(&press(swinging, Buttons::SKILL));
+        (sim, swinging, dodging)
+    }
+
+    /// Runs `edit` on `actor`'s `C`, and checks the checksum saw it.
+    fn flips<C: Component<Mutability = bevy_ecs::component::Mutable> + Copy>(
+        sim: &mut Simulation,
+        actor: ActorId,
+        what: &str,
+        edit: impl FnOnce(&mut C),
+    ) {
+        let before = sim.checksum();
+        let world = sim.ecs_mut().world_mut();
+        let entity = world.resource::<ActorTable>().entity(actor).unwrap();
+        let kept = *world.get::<C>(entity).unwrap();
+        edit(&mut *world.get_mut::<C>(entity).unwrap());
+        assert_ne!(sim.checksum(), before, "{what} isn't in the checksum");
+        let world = sim.ecs_mut().world_mut();
+        *world.get_mut::<C>(entity).unwrap() = kept;
+        assert_eq!(sim.checksum(), before, "restoring {what} didn't restore the checksum");
+    }
+
+    fn running(runner: &mut MoveRunner) -> &mut Running {
+        runner.running.as_mut().expect("a move is playing")
+    }
+
+    #[test]
+    fn every_field_of_the_runner_is_in_the_checksum() {
+        type Edit = fn(&mut MoveRunner);
+        let edits: &[(&str, Edit)] = &[
+            ("the set", |r| r.set = None),
+            ("the cursor", |r| r.cursor = SimTime::from_subticks(r.cursor.as_subticks() + 1)),
+            ("started", |r| r.started += 1),
+            ("forced", |r| r.forced = Some(Name::new("x"))),
+            ("running", |r| r.running = None),
+            ("the move's index", |r| running(r).at.index += 1),
+            ("the move's revision", |r| running(r).at.revision += 1),
+            ("the move's set", |r| running(r).at.set = crate::moves::MoveSetId(7)),
+            ("started_at", |r| {
+                let at = running(r).started_at;
+                running(r).started_at = SimTime::from_subticks(at.as_subticks() + 1);
+            }),
+            ("serial", |r| running(r).serial += 1),
+            ("fresh", |r| running(r).fresh = !running(r).fresh),
+            ("frame_yaw", |r| running(r).frame_yaw += 0.125),
+            ("the reading's translation", |r| running(r).reading.translation[2] += 0.125),
+            ("the reading's yaw", |r| running(r).reading.yaw += 0.125),
+            ("the warp window", |r| running(r).warp_window = Some(9)),
+            ("warp_distance", |r| running(r).warp_distance += 0.125),
+            ("warp_turn", |r| running(r).warp_turn += 0.125),
+        ];
+        let (mut sim, swinging, _) = world();
+        for (what, edit) in edits {
+            flips::<MoveRunner>(&mut sim, swinging, what, edit);
+        }
+    }
+
+    #[test]
+    fn every_field_of_the_ring_is_in_the_checksum() {
+        let (mut sim, swinging, _) = world();
+        let (intent, clock) = {
+            let world = sim.ecs_mut().world_mut();
+            let entity = world.resource::<ActorTable>().entity(swinging).unwrap();
+            let set = world.get::<MoveRunner>(entity).unwrap().set().unwrap();
+            let intent = world.resource::<MoveLibrary>().current(set).unwrap().intents()[0].clone();
+            (intent, world.get::<EntityClock>(entity).unwrap().0.clone())
+        };
+        flips::<IntentRing>(&mut sim, swinging, "the holds", |ring| ring.set_held(ring.held() ^ 4));
+        flips::<IntentRing>(&mut sim, swinging, "a press", |ring| {
+            ring.press(&intent, &clock);
+        });
+        type Edit = fn(&mut crate::intents::Intent);
+        let edits: &[(&str, Edit)] = &[
+            ("a press's name", |press| press.name = Name::new("x")),
+            ("a press's priority", |press| press.priority += 1),
+            ("when it was pressed", |press| press.pressed_at = SimTime::from_subticks(1)),
+            ("its step's start", |press| press.step_start = SimTime::from_subticks(1)),
+            ("its expiry", |press| press.expires_at = SimTime::from_subticks(1)),
+        ];
+        for (what, edit) in edits {
+            flips::<IntentRing>(&mut sim, swinging, what, |ring| edit(&mut ring.entries_mut()[0]));
+        }
+    }
+
+    #[test]
+    fn every_field_of_the_output_is_in_the_checksum() {
+        let (mut sim, swinging, dodging) = world();
+        type Edit = fn(&mut MoveOutput);
+        let edits: &[(&str, Edit)] = &[
+            ("the root's translation", |o| o.root_delta.translation.x += 0.125),
+            ("the root's yaw", |o| o.root_delta.yaw += 0.125),
+            ("the previous position", |o| o.previous.position.x += 0.125),
+            ("the previous yaw", |o| o.previous.yaw += 0.125),
+            ("invulnerable", |o| o.windows.invulnerable = !o.windows.invulnerable),
+            ("perfect_dodge", |o| o.windows.perfect_dodge = !o.windows.perfect_dodge),
+            ("parry", |o| o.windows.parry = !o.windows.parry),
+            ("cancel", |o| o.windows.cancel = !o.windows.cancel),
+            ("warp", |o| o.windows.warp = !o.windows.warp),
+        ];
+        for (what, edit) in edits {
+            flips::<MoveOutput>(&mut sim, swinging, what, edit);
+        }
+
+        type VolumeEdit = fn(&mut crate::moves::ActiveVolume);
+        let volume_edits: &[(&str, VolumeEdit)] = &[
+            ("a volume's move", |v| v.at.index += 1),
+            ("a volume's serial", |v| v.serial += 1),
+            ("a volume's name", |v| v.name = Name::new("x")),
+            ("a volume's path", |v| v.path = Name::new("x")),
+            ("a volume's shape", |v| v.shape = Shape::Sphere { radius: 9.0 }),
+            ("a volume's start", |v| v.from = SimDuration::from_subticks(1)),
+            ("a volume's end", |v| v.to = SimDuration::from_subticks(1)),
+            ("a volume's first sample", |v| v.start.translation[0] += 0.125),
+            ("a volume's first rotation", |v| v.start.rotation[0] += 0.125),
+            ("a volume's last sample", |v| v.end.translation[0] += 0.125),
+            ("a volume's last rotation", |v| v.end.rotation[0] += 0.125),
+        ];
+        for (what, edit) in volume_edits {
+            flips::<MoveOutput>(&mut sim, swinging, what, |output| edit(output.volumes.first_mut().unwrap()));
+        }
+        flips::<MoveOutput>(&mut sim, swinging, "the volume count", |output| output.volumes.clear());
+
+        type HurtboxEdit = fn(&mut ActiveHurtbox);
+        let hurtbox_edits: &[(&str, HurtboxEdit)] = &[
+            ("a hurtbox's name", |h| h.name = Name::new("x")),
+            ("a hurtbox's state", |h| h.state = HurtboxState::Shape(Shape::Sphere { radius: 1.0 })),
+        ];
+        for (what, edit) in hurtbox_edits {
+            flips::<MoveOutput>(&mut sim, dodging, what, |output| {
+                edit(output.hurtboxes.first_mut().unwrap())
+            });
+        }
+        flips::<MoveOutput>(&mut sim, dodging, "the hurtbox count", |output| output.hurtboxes.clear());
+    }
+
+    #[test]
+    fn the_warp_target_is_in_the_checksum() {
+        let (mut sim, swinging, dodging) = world();
+        flips::<WarpTarget>(&mut sim, swinging, "no target", |target| *target = WarpTarget::None);
+        flips::<WarpTarget>(&mut sim, swinging, "another point", |target| {
+            *target = WarpTarget::Point(Vec3::new(2.0, 0.0, 9.0));
+        });
+        flips::<WarpTarget>(&mut sim, swinging, "another actor", |target| {
+            *target = WarpTarget::Actor(dodging)
+        });
+        flips::<WarpTarget>(&mut sim, dodging, "a first target", |target| {
+            *target = WarpTarget::Actor(swinging)
+        });
+    }
+
+    /// Nothing reads the cue queue, so its effect on a run never shows except here.
+    #[test]
+    fn the_cues_are_in_the_checksum() {
+        let (mut sim, swinging, _) = world();
+        let event = crate::cues::CueEvent {
+            actor: swinging,
+            cue: Name::new("x"),
+            tick: 0,
+            local_time: SimTime::ZERO,
+            move_time: SimDuration::ZERO,
+        };
+        let before = sim.checksum();
+        sim.ecs_mut().world_mut().resource_mut::<CueQueue>().push(event);
+        let published = sim.checksum();
+        assert_ne!(published, before);
+        // Each field of an event, in a queue of one.
+        for (what, other) in [
+            ("its actor", crate::cues::CueEvent { actor: ActorId::from_raw(99).unwrap(), ..event }),
+            ("its name", crate::cues::CueEvent { cue: Name::new("y"), ..event }),
+            ("its tick", crate::cues::CueEvent { tick: 1, ..event }),
+            ("its local time", crate::cues::CueEvent { local_time: SimTime::from_subticks(1), ..event }),
+            ("its move time", crate::cues::CueEvent { move_time: SimDuration::from_subticks(1), ..event }),
+        ] {
+            let mut world_cues = sim.ecs_mut().world_mut().resource_mut::<CueQueue>();
+            world_cues.clear();
+            world_cues.push(other);
+            assert_ne!(sim.checksum(), published, "{what}");
+        }
+    }
+
+    /// The test above changes an actor; these say so for everyone: a second actor's moves count too.
+    #[test]
+    fn identical_actors_in_different_states_differ() {
+        let (sim, _, _) = world();
+        let (mut other, _, dodging) = world();
+        assert_eq!(sim.checksum(), other.checksum());
+        other.despawn(dodging);
+        assert_ne!(sim.checksum(), other.checksum());
     }
 }
 

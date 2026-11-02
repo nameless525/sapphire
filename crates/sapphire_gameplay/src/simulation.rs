@@ -5,10 +5,11 @@ use std::time::Duration;
 use bevy_ecs::schedule::{IntoScheduleConfigs, SystemSet};
 use bevy_ecs::system::ScheduleSystem;
 use bevy_ecs::system::SystemState;
+use sapphire_core::Name;
 use sapphire_core::alloc::AllocScope;
 use sapphire_ecs::prelude::*;
 use sapphire_math::Pcg32;
-use sapphire_moves::{BakedTables, TablesError};
+use sapphire_moves::{MoveSet, MoveSetError};
 use sapphire_time::Stopwatch;
 
 use crate::actions::{CurrentActions, TickActions, read_actions};
@@ -16,8 +17,10 @@ use crate::actors::{
     self, ActorId, ActorRequests, ActorSpawn, ActorState, ActorTable, ActorView, SpawnError,
 };
 use crate::checksum;
-use crate::drill;
-use crate::motion::{self, ActorTransform, RootMotion, TableId, TableLibrary};
+use crate::cues::{CueEvent, CueQueue};
+use crate::intents::{self, IntentRing};
+use crate::movement::{self, ActorTransform};
+use crate::moves::{self, MoveLibrary, MoveOutput, MoveRead, MoveRunner, MoveSetId, MoveStats, WarpTarget};
 use crate::stats::{BUDGET_DESKTOP_LOW, SimStats};
 
 /// [`Pcg32`]'s sequence for combat's numbers (spec §5.4: seeded per subsystem). A subsystem that
@@ -100,7 +103,9 @@ impl Simulation {
         let world = ecs.world_mut();
         world.insert_resource(SimRng(Pcg32::new(config.seed, COMBAT_STREAM)));
         world.insert_resource(CurrentActions::default());
-        world.insert_resource(TableLibrary::default());
+        world.insert_resource(MoveLibrary::default());
+        world.insert_resource(MoveStats::default());
+        world.insert_resource(CueQueue::default());
         actors::create_pool(world, config.max_actors);
 
         world.schedule_scope(FixedCombat, |_, schedule| {
@@ -119,11 +124,10 @@ impl Simulation {
             );
         });
         ecs.add_systems(FixedFirst, read_actions.in_set(SimSet::Input))
-            .add_systems(FixedCombat, drill::apply_presses.in_set(CombatSet::Intents))
-            .add_systems(
-                FixedCombat,
-                (drill::walk, motion::follow_root_motion).chain().in_set(CombatSet::Movement),
-            )
+            .add_systems(FixedCombat, intents::press_intents.in_set(CombatSet::Intents))
+            .add_systems(FixedCombat, moves::settle_cancels.in_set(CombatSet::Cancels))
+            .add_systems(FixedCombat, moves::advance_moves.in_set(CombatSet::Moves))
+            .add_systems(FixedCombat, movement::apply_root_motion.in_set(CombatSet::Movement))
             .add_systems(FixedPost, actors::resolve_actor_requests);
         ecs.startup();
 
@@ -148,22 +152,43 @@ impl Simulation {
         });
     }
 
-    /// Loads baked tables for actors to follow, between steps. IDs count up from the first table
-    /// added: a replay adds the same tables in the same order.
-    pub fn add_tables(&mut self, tables: BakedTables) -> TableId {
-        self.ecs.world_mut().resource_mut::<TableLibrary>().add(tables)
+    /// Loads a set of moves, between steps. IDs count up from the first set added: a replay adds the
+    /// same sets in the same order.
+    pub fn add_move_set(&mut self, set: MoveSet) -> MoveSetId {
+        self.ecs.world_mut().resource_mut::<MoveLibrary>().add(set)
     }
 
-    /// [`Self::add_tables`], from a cook's bytes, which must start 16-byte aligned.
-    pub fn add_cooked_tables(&mut self, cooked: &[u8]) -> Result<TableId, TablesError> {
-        Ok(self.add_tables(BakedTables::from_cooked(cooked)?))
+    /// [`Self::add_move_set`], from a cook's bytes, which must start 16-byte aligned.
+    pub fn add_cooked_move_set(&mut self, cooked: &[u8]) -> Result<MoveSetId, MoveSetError> {
+        Ok(self.add_move_set(MoveSet::from_cooked(cooked)?))
     }
 
-    /// The hash of every loaded table, in ID order: what a replay records of the move data, to tell
-    /// a changed move from a broken simulation.
+    /// Replaces a loaded set, between steps, and returns the new revision's number, or `None` for an
+    /// ID this simulation never gave. Moves already running finish on what they started with; the
+    /// next move to start reads this (M2 T2). See the `moves` module.
+    pub fn replace_move_set(&mut self, id: MoveSetId, set: MoveSet) -> Option<u32> {
+        let world = self.ecs.world_mut();
+        let in_use: Vec<u32> = world
+            .resource::<ActorTable>()
+            .iter()
+            .filter_map(|(_, entity)| world.get::<MoveRunner>(entity)?.running)
+            .filter(|running| running.at.set == id)
+            .map(|running| running.at.revision)
+            .collect();
+        world.resource_mut::<MoveLibrary>().replace(id, set, |revision| in_use.contains(&revision))
+    }
+
+    /// The hash of the move data this simulation runs on, tables included, in ID order: what a replay
+    /// records of it, to tell a changed move from a broken simulation.
     #[must_use]
     pub fn tables_hash(&self) -> u64 {
-        checksum::tables_hash(self.ecs.world().resource::<TableLibrary>())
+        checksum::tables_hash(self.ecs.world().resource::<MoveLibrary>())
+    }
+
+    /// The loaded sets of moves.
+    #[must_use]
+    pub fn move_library(&self) -> &MoveLibrary {
+        self.ecs.world().resource::<MoveLibrary>()
     }
 
     /// Spawns an actor between steps, at once. Inside a step, systems queue spawns on
@@ -197,7 +222,9 @@ impl Simulation {
         let stopwatch = Stopwatch::start();
         let allocations = AllocScope::begin();
 
-        self.ecs.world_mut().resource_mut::<CurrentActions>().0 = *actions;
+        let world = self.ecs.world_mut();
+        world.resource_mut::<CurrentActions>().0 = *actions;
+        world.resource_mut::<CueQueue>().clear();
         self.ecs.fixed_step();
 
         let allocated = allocations.counts().allocations;
@@ -218,6 +245,17 @@ impl Simulation {
         stats.actors = actors;
         stats.peak_actors = stats.peak_actors.max(actors);
         stats.spawns_refused = world.resource::<ActorRequests>().refused();
+        let moves = world.resource::<MoveStats>();
+        stats.intents_pressed = moves.intents_pressed;
+        stats.intents_expired = moves.intents_expired;
+        stats.intents_overwritten = moves.intents_overwritten;
+        stats.moves_started = moves.moves_started;
+        stats.cancels_fired = moves.cancels_fired;
+        stats.volumes_dropped = moves.volumes_dropped;
+        stats.transition_limit_steps = moves.transition_limit;
+        let cues = world.resource::<CueQueue>();
+        stats.cues_published = cues.published();
+        stats.cues_dropped = cues.dropped();
     }
 
     /// The checksum of all simulated state: the same inputs give the same one on every run for an
@@ -248,6 +286,71 @@ impl Simulation {
         world.resource::<ActorTable>().iter().map(|(id, entity)| view(world, id, entity))
     }
 
+    /// What the latest step's moves published for presentation. E3 drains these after each step.
+    pub fn cues(&self) -> impl ExactSizeIterator<Item = CueEvent> + '_ {
+        self.ecs.world().resource::<CueQueue>().iter()
+    }
+
+    /// A live actor's buffered intents, as T1's view draws them.
+    #[must_use]
+    pub fn intents(&self, id: ActorId) -> Option<&IntentRing> {
+        let world = self.ecs.world();
+        world.get::<IntentRing>(world.resource::<ActorTable>().entity(id)?)
+    }
+
+    /// Presses an intent on a live actor without a button, between steps, as a test or a tool would.
+    /// Returns whether the actor's set has it. A brain does the same from inside a step, in
+    /// [`CombatSet::Intents`], with [`IntentRing::press`].
+    pub fn press_intent(&mut self, id: ActorId, intent: Name) -> bool {
+        let world = self.ecs.world_mut();
+        let Some(entity) = world.resource::<ActorTable>().entity(id) else { return false };
+        let Some(set) = world.get::<MoveRunner>(entity).and_then(MoveRunner::set) else { return false };
+        let Some(intent) = world
+            .resource::<MoveLibrary>()
+            .current(set)
+            .and_then(|set| set.intent(intent).map(|(_, intent)| intent.clone()))
+        else {
+            return false;
+        };
+        let clock = world.get::<EntityClock>(entity).expect("every pooled entity has a clock").0.clone();
+        let mut ring = world.get_mut::<IntentRing>(entity).expect("every pooled entity has a ring");
+        let overwrote = ring.press(&intent, &clock);
+        let mut stats = world.resource_mut::<MoveStats>();
+        stats.intents_pressed += 1;
+        stats.intents_overwritten += u64::from(overwrote);
+        true
+    }
+
+    /// Starts a move on a live actor on the next step, whatever it's doing: [`MoveRunner::force`].
+    pub fn force_move(&mut self, id: ActorId, name: Name) -> bool {
+        let world = self.ecs.world_mut();
+        let Some(entity) = world.resource::<ActorTable>().entity(id) else { return false };
+        world.get_mut::<MoveRunner>(entity).expect("every pooled entity has a runner").force(name);
+        true
+    }
+
+    /// Gives a live actor something for warp windows to bend toward, between steps. Whoever does
+    /// targeting writes the [`WarpTarget`] component from inside a step instead.
+    pub fn set_warp_target(&mut self, id: ActorId, target: WarpTarget) -> bool {
+        let world = self.ecs.world_mut();
+        let Some(entity) = world.resource::<ActorTable>().entity(id) else { return false };
+        *world.get_mut::<WarpTarget>(entity).expect("every pooled entity has a target") = target;
+        true
+    }
+
+    /// A live actor's clock, between steps: hitstop and time scales from outside the simulation, as
+    /// in a test. [`CombatSet::Resolve`] does this itself (M2 G3).
+    pub fn clock_mut(&mut self, id: ActorId) -> Option<Mut<'_, EntityClock>> {
+        let world = self.ecs.world_mut();
+        let entity = world.resource::<ActorTable>().entity(id)?;
+        world.get_mut::<EntityClock>(entity)
+    }
+
+    /// The world's clock, between steps: the same for time scales on everything.
+    pub fn world_clock_mut(&mut self) -> Mut<'_, WorldClock> {
+        self.ecs.world_mut().resource_mut::<WorldClock>()
+    }
+
     /// The simulation's counters (rule R9).
     #[must_use]
     pub fn stats(&self) -> SimStats {
@@ -259,154 +362,26 @@ impl Simulation {
     pub fn world(&self) -> &World {
         self.ecs.world()
     }
+
+    /// The engine's schedules and world, for this crate's own tests.
+    #[cfg(test)]
+    pub(crate) fn ecs_mut(&mut self) -> &mut Ecs {
+        &mut self.ecs
+    }
 }
 
 fn view(world: &World, id: ActorId, entity: Entity) -> ActorView {
     let actor = world.entity(entity);
     let transform = *actor.get::<ActorTransform>().expect("every pooled entity has a transform");
     let clock = actor.get::<EntityClock>().expect("every pooled entity has a clock");
+    let runner = actor.get::<MoveRunner>().expect("every pooled entity has a runner");
+    let output = actor.get::<MoveOutput>().expect("every pooled entity has an output");
     ActorView {
         id,
         position: transform.position,
         yaw: transform.yaw,
         clock_now: clock.0.now(),
         hitstop_ticks: clock.0.hitstop_ticks(),
-        root_motion: *actor.get::<RootMotion>().expect("every pooled entity has root motion"),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use sapphire_moves::RootSample;
-    use sapphire_time::{ScaleSource, SimDuration};
-
-    use super::*;
-    use crate::actions::{ActorActions, Buttons, Stick};
-
-    fn press(buttons: Buttons) -> ActorActions {
-        ActorActions { buttons, stick: Stick::CENTER }
-    }
-
-    /// A table with no two readings alike: x by the tick, z by its square, and a slow turn.
-    fn curve(ticks: u32) -> BakedTables {
-        let root = (0..=ticks)
-            .map(|tick| {
-                let t = tick as f32;
-                RootSample { translation: [t * 0.25, 0.0, t * t * 0.01], yaw: t * 0.02 }
-            })
-            .collect();
-        BakedTables::new(root, vec![]).unwrap()
-    }
-
-    fn tick_with(actor: ActorId, buttons: Buttons) -> TickActions {
-        let mut actions = TickActions::NEUTRAL;
-        actions.set(actor, press(buttons)).unwrap();
-        actions
-    }
-
-    /// The bits of the table's reading at `subticks` against what the actor last read.
-    fn assert_reads(sim: &Simulation, id: ActorId, table: &BakedTables, subticks: u64) {
-        let view = sim.actor(id).unwrap();
-        let expected = table.root_at(SimDuration::from_subticks(subticks));
-        assert_eq!(view.root_motion.elapsed().as_subticks(), subticks, "tick {}", sim.tick());
-        assert_eq!(
-            view.root_motion.reading().translation.map(f32::to_bits),
-            expected.translation.map(f32::to_bits)
-        );
-        assert_eq!(view.root_motion.reading().yaw.to_bits(), expected.yaw.to_bits());
-    }
-
-    /// A scale that isn't a whole number of sub-ticks a tick, so only the clock's carry keeps the
-    /// reading exact.
-    #[test]
-    fn a_fractional_time_scale_reaches_the_table_through_its_carry() {
-        let mut sim = Simulation::new(SimConfig::default());
-        let table = curve(600);
-        let id_table = sim.add_tables(table.clone());
-        let id = sim.spawn(ActorSpawn { table: Some(id_table), ..ActorSpawn::default() }).unwrap();
-
-        sim.step(&tick_with(id, Buttons::LIGHT));
-        // World 200‰ × local 333‰ is 66.6 sub-ticks a tick.
-        let world = sim.ecs.world_mut();
-        let entity = world.resource::<ActorTable>().entity(id).unwrap();
-        world.resource_mut::<WorldClock>().0.push_scale(ScaleSource::PerfectDodge, 200).unwrap();
-        world.get_mut::<EntityClock>(entity).unwrap().0.push_scale(ScaleSource::Gameplay, 333).unwrap();
-
-        for n in 1..=1000_u64 {
-            sim.step(&TickActions::NEUTRAL);
-            // Whole sub-ticks by the floor of the exact product, which a float can't drift from.
-            assert_reads(&sim, id, &table, n * 666 / 10);
-        }
-    }
-
-    /// Hitstop counts real ticks, so under slow motion it still lasts its six steps, and the reading
-    /// holds its exact bits while it does.
-    #[test]
-    fn hitstop_holds_under_a_time_scale() {
-        let mut sim = Simulation::new(SimConfig::default());
-        let table = curve(60);
-        let id_table = sim.add_tables(table.clone());
-        let id = sim.spawn(ActorSpawn { table: Some(id_table), ..ActorSpawn::default() }).unwrap();
-
-        sim.step(&tick_with(id, Buttons::LIGHT));
-        sim.step(&TickActions::NEUTRAL);
-        assert_reads(&sim, id, &table, 1000);
-
-        // Slow the world to 200‰, the drill's own way: 200 sub-ticks a tick from the next step.
-        sim.step(&tick_with(id, Buttons::ULTIMATE));
-        assert_reads(&sim, id, &table, 2000);
-        sim.step(&TickActions::NEUTRAL);
-        assert_reads(&sim, id, &table, 2200);
-
-        sim.step(&tick_with(id, Buttons::HEAVY));
-        assert_reads(&sim, id, &table, 2400);
-        for frozen in (0..crate::DRILL_HITSTOP_TICKS).rev() {
-            sim.step(&TickActions::NEUTRAL);
-            assert_reads(&sim, id, &table, 2400);
-            assert_eq!(sim.actor(id).unwrap().hitstop_ticks, frozen);
-        }
-        sim.step(&TickActions::NEUTRAL);
-        assert_reads(&sim, id, &table, 2600);
-    }
-
-    /// The app may keep a simulation on any thread, and a replay job may run several.
-    #[test]
-    fn a_simulation_can_move_between_threads() {
-        fn assert_send<T: Send>() {}
-        assert_send::<Simulation>();
-    }
-
-    /// The creation-order test in `tests/determinism.rs` has teeth: these two histories put the same
-    /// IDs in different entities, so a system that draws numbers in a bare query's order, as the
-    /// crate's rules forbid, gives them different checksums, where the ID-ordered drill agrees.
-    #[test]
-    fn a_bare_querys_order_would_leak_into_the_checksum() {
-        fn leaky(mut rng: ResMut<'_, SimRng>, mut transforms: Query<'_, '_, &mut ActorTransform>) {
-            for mut transform in &mut transforms {
-                transform.yaw += rng.0.unit_f32();
-            }
-        }
-        fn history(reverse: bool, leak: bool) -> u64 {
-            let mut sim = Simulation::new(SimConfig { max_actors: 8, ..SimConfig::default() });
-            let table = sim.add_tables(curve(30));
-            let actors: Vec<ActorId> = (0..4)
-                .map(|_| sim.spawn(ActorSpawn { table: Some(table), ..ActorSpawn::default() }).unwrap())
-                .collect();
-            let (a, b) = if reverse { (actors[2], actors[0]) } else { (actors[0], actors[2]) };
-            assert!(sim.despawn(a));
-            assert!(sim.despawn(b));
-            for _ in 0..2 {
-                sim.spawn(ActorSpawn { table: Some(table), ..ActorSpawn::default() }).unwrap();
-            }
-            if leak {
-                sim.ecs.add_systems(FixedCombat, leaky);
-            }
-            for _ in 0..8 {
-                sim.step(&TickActions::NEUTRAL);
-            }
-            sim.checksum()
-        }
-        assert_eq!(history(false, false), history(true, false), "ID order hides the entities' order");
-        assert_ne!(history(false, true), history(true, true), "the two histories really differ");
+        moves: MoveRead::of(runner, output, world.resource::<MoveLibrary>()),
     }
 }

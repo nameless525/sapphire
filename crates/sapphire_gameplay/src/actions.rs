@@ -55,13 +55,19 @@ impl Buttons {
     pub const fn minus(self, other: Self) -> Self {
         Self(self.0 & !other.0)
     }
+
+    /// The buttons in either set.
+    #[must_use]
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
 }
 
 impl std::ops::BitOr for Buttons {
     type Output = Self;
 
     fn bitor(self, rhs: Self) -> Self {
-        Self(self.0 | rhs.0)
+        self.union(rhs)
     }
 }
 
@@ -346,6 +352,8 @@ pub(crate) fn read_actions(
 
 #[cfg(test)]
 mod tests {
+    use sapphire_moves::Button;
+
     use super::*;
 
     fn id(raw: u32) -> ActorId {
@@ -381,6 +389,30 @@ mod tests {
             ]
             .map(Buttons::bits),
             [1, 2, 4, 8, 16, 32, 64, 128]
+        );
+        // And a document names them by the same bits.
+        assert_eq!(
+            [
+                Button::Light,
+                Button::Heavy,
+                Button::Dodge,
+                Button::Skill,
+                Button::Ultimate,
+                Button::Swap,
+                Button::LockOn,
+                Button::Jump,
+            ]
+            .map(Buttons::from),
+            [
+                Buttons::LIGHT,
+                Buttons::HEAVY,
+                Buttons::DODGE,
+                Buttons::SKILL,
+                Buttons::ULTIMATE,
+                Buttons::SWAP,
+                Buttons::LOCK_ON,
+                Buttons::JUMP,
+            ]
         );
     }
 

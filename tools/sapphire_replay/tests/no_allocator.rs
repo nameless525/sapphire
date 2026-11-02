@@ -22,7 +22,7 @@ fn the_suite_refuses_to_run_blind() {
         dir: &dir,
         out: &dir,
         name: "duel",
-        scenario: "drill",
+        scenario: "melee",
         script: "idle",
         ticks: None,
         seed: None,

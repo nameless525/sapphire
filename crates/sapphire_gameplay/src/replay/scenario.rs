@@ -2,14 +2,29 @@
 //!
 //! A replay records the name of one, and running it means setting up the same world. **To add one,**
 //! write its setup and add a row to [`SCENARIOS`]. A setup does the same things in the same order
-//! every run: tables first, then spawns.
+//! every run: move sets first, then spawns.
+//!
+//! One replay file holds one [`tables_hash`](Simulation::tables_hash) for every architecture, so a
+//! scenario's move sets must come out byte for byte the same on every OS: from a document, as
+//! [`test_moves`] does, or from committed cooked bytes, and through pinned math if a setup computes
+//! anything. Anything else a run depends on belongs in that hash too.
 
-use sapphire_math::{Vec3, det};
-use sapphire_moves::{BakedTables, RootSample, TablesError};
+use sapphire_core::Name;
+use sapphire_ecs::prelude::*;
+use sapphire_math::Vec3;
+use sapphire_moves::{MoveSet, MoveSetDocument, MoveSetError};
+use sapphire_time::ScaleSource;
 
-use crate::actors::{ActorId, ActorSpawn, SpawnError};
-use crate::simulation::{SimConfig, Simulation};
+use crate::actions::{Buttons, Controls};
+use crate::actors::{ActorId, ActorRequests, ActorSpawn, ActorTable, SpawnError};
+use crate::movement::ActorTransform;
+use crate::moves::{MoveRunner, WarpTarget};
+use crate::simulation::{CombatSet, SimConfig, SimRng, Simulation};
 use crate::stats::BUDGET_DESKTOP_LOW;
+
+/// The test content's document: see that file for its numbers. M2 O3 replaces the content, and the
+/// suite is re-recorded then.
+const TEST_MOVES: &str = include_str!("../../../sapphire_moves/test_content/slice.moves.ron");
 
 /// Why a scenario couldn't set its world up, as with a replay that asks for too small a pool.
 #[derive(Debug, thiserror::Error)]
@@ -17,7 +32,7 @@ pub enum ScenarioError {
     #[error(transparent)]
     Spawn(#[from] SpawnError),
     #[error(transparent)]
-    Tables(#[from] TablesError),
+    Moves(#[from] MoveSetError),
 }
 
 /// A named starting world.
@@ -30,7 +45,7 @@ pub struct Scenario {
     /// What a new recording starts from. A replay keeps its own copy, so changing this moves
     /// nothing recorded.
     pub config: SimConfig,
-    /// Loads the tables and spawns the actors, and returns the actors input drives, the player
+    /// Loads the move sets and spawns the actors, and returns the actors input drives, the player
     /// first, for an [`ActionSource`](super::ActionSource).
     pub setup: fn(&mut Simulation) -> Result<Vec<ActorId>, ScenarioError>,
 }
@@ -44,13 +59,22 @@ impl Scenario {
     }
 }
 
-/// Every scenario. G2 and G3 add the fights the replay suite exists for here.
-pub const SCENARIOS: &[Scenario] = &[Scenario {
-    name: "drill",
-    about: "three actors on two of D1's drill tables: the drill's buttons, clocks and spawns",
-    config: SimConfig { seed: 7, max_actors: 16, step_budget: BUDGET_DESKTOP_LOW },
-    setup: drill,
-}];
+/// Every scenario. G3 adds the fights with hits in them here.
+pub const SCENARIOS: &[Scenario] = &[
+    Scenario {
+        name: "melee",
+        about: "three actors on the test moves, warps aimed round the ring, and buttons that freeze and slow \
+                clocks and spawn actors",
+        config: SimConfig { seed: 7, max_actors: 16, step_budget: BUDGET_DESKTOP_LOW },
+        setup: melee,
+    },
+    Scenario {
+        name: "duel",
+        about: "a player and an opponent on the test moves, 4 m apart and facing, each aiming warps at the other",
+        config: SimConfig { seed: 7, max_actors: 2, step_budget: BUDGET_DESKTOP_LOW },
+        setup: duel,
+    },
+];
 
 /// The scenario named `name`, among `scenarios`.
 #[must_use]
@@ -58,39 +82,92 @@ pub fn find_scenario<'a>(scenarios: &'a [Scenario], name: &str) -> Option<&'a Sc
     scenarios.iter().find(|scenario| scenario.name == name)
 }
 
-/// A table with no two readings alike: forward by the tick, sideways by its square, turning slowly,
-/// with a pinned sine in it, so the reading depends on `libm`.
-///
-/// # Panics
-///
-/// Never for a tick count that fits a table: the samples are finite and start at zero.
-#[must_use]
-pub fn drill_curve(ticks: u32) -> BakedTables {
-    let root = (0..=ticks)
-        .map(|tick| {
-            let t = tick as f32;
-            RootSample {
-                translation: [t * t * 0.01, det::sin(t * 0.3) - det::sin(0.0), t * 0.25],
-                yaw: t * 0.02,
-            }
-        })
-        .collect();
-    BakedTables::new(root, vec![]).expect("the samples are finite and start at zero")
+/// The test content's moves: a three-hit string, a dash attack, a dodge and a skill.
+pub fn test_moves() -> Result<MoveSet, MoveSetError> {
+    MoveSetDocument::parse(TEST_MOVES)?.compile()
 }
 
-/// Three actors that stand apart and follow tables of two lengths, so none can stand in for another.
-pub fn drill(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
-    let short = sim.add_tables(drill_curve(20));
-    let long = sim.add_tables(drill_curve(90));
+/// Ticks a [`Buttons::HEAVY`] press freezes its own actor's clock, in [`melee`].
+pub const MELEE_HITSTOP_TICKS: u16 = 6;
+
+/// The first three actors' buttons that do to clocks and the pool what hits will, until M2 G3:
+/// [`Buttons::HEAVY`] freezes the actor, [`Buttons::SWAP`] toggles slowing it, [`Buttons::ULTIMATE`]
+/// toggles slowing the world, and [`Buttons::JUMP`] spawns another actor at a random yaw, which plays
+/// a skill and leaves. None of these buttons has an intent in the test content.
+pub fn melee_buttons(
+    table: Res<'_, ActorTable>,
+    mut requests: ResMut<'_, ActorRequests>,
+    mut rng: ResMut<'_, SimRng>,
+    mut world_clock: ResMut<'_, WorldClock>,
+    mut actors: Query<'_, '_, (&Controls, &mut EntityClock, &mut MoveRunner, &ActorTransform)>,
+) {
+    for (id, entity) in table.iter() {
+        let Ok((controls, mut clock, mut runner, transform)) = actors.get_mut(entity) else { continue };
+        // Actors past the first three are the ones spawned here.
+        if id.raw() > 3 {
+            if runner.started() == 0 {
+                runner.force(Name::new("skill"));
+            } else if !runner.is_running() {
+                requests.despawn(id, &table);
+            }
+            continue;
+        }
+        let pressed = controls.pressed();
+        if pressed.contains(Buttons::HEAVY) {
+            clock.0.apply_hitstop(MELEE_HITSTOP_TICKS);
+        }
+        if pressed.contains(Buttons::SWAP) && clock.0.remove_source(ScaleSource::Gameplay) == 0 {
+            // Toggled, so the stack never fills.
+            let _ = clock.0.push_scale(ScaleSource::Gameplay, 500);
+        }
+        if pressed.contains(Buttons::ULTIMATE) && world_clock.0.remove_source(ScaleSource::PerfectDodge) == 0
+        {
+            let _ = world_clock.0.push_scale(ScaleSource::PerfectDodge, 200);
+        }
+        if pressed.contains(Buttons::JUMP) {
+            let yaw = rng.0.unit_f32() * std::f32::consts::TAU;
+            // A full pool refuses and counts it.
+            let _ = requests.spawn(ActorSpawn { position: transform.position, yaw, moves: runner.set() });
+        }
+    }
+}
+
+/// Each of `cast` aims its warps at the next, round the ring.
+fn aim_round(sim: &mut Simulation, cast: &[ActorId]) {
+    for (index, &actor) in cast.iter().enumerate() {
+        sim.set_warp_target(actor, WarpTarget::Actor(cast[(index + 1) % cast.len()]));
+    }
+}
+
+/// Three actors that stand apart and turned differently, with [`melee_buttons`]: everything a step
+/// can do to a move, on one world.
+pub fn melee(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
+    let moves = sim.add_move_set(test_moves()?);
+    sim.add_combat_system(CombatSet::Resolve, melee_buttons);
     let mut cast = Vec::with_capacity(3);
-    for (table, x) in [(short, -2.0), (long, 0.0), (short, 2.0)] {
+    for x in [-2.0, 0.0, 2.0] {
         cast.push(sim.spawn(ActorSpawn {
             position: Vec3::new(x, 0.0, 0.0),
             yaw: x * 0.5,
-            table: Some(table),
-            transient: false,
+            moves: Some(moves),
         })?);
     }
+    aim_round(sim, &cast);
+    Ok(cast)
+}
+
+/// A player at the origin and an opponent 4 m ahead of it, facing it: the string, its cancels and the
+/// dash attack as a fight has them.
+pub fn duel(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
+    let moves = sim.add_move_set(test_moves()?);
+    let player = sim.spawn(ActorSpawn { position: Vec3::ZERO, yaw: 0.0, moves: Some(moves) })?;
+    let opponent = sim.spawn(ActorSpawn {
+        position: Vec3::new(0.0, 0.0, 4.0),
+        yaw: std::f32::consts::PI,
+        moves: Some(moves),
+    })?;
+    let cast = vec![player, opponent];
+    aim_round(sim, &cast);
     Ok(cast)
 }
 

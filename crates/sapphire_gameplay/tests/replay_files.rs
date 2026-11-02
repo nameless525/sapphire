@@ -122,10 +122,10 @@ fn a_minute_of_play_costs_little() {
         }
         recording.finish().0.encode().len()
     }
-    let sweep = bytes_per_minute(find_script("drill-sweep").expect("listed"));
-    let play = bytes_per_minute(find_script("drill-play").expect("listed"));
+    let sweep = bytes_per_minute(find_script("melee-sweep").expect("listed"));
+    let play = bytes_per_minute(find_script("melee-play").expect("listed"));
     let idle = bytes_per_minute(find_script("idle").expect("listed"));
-    eprintln!("bytes per minute of play: idle {idle}, drill-play {play}, drill-sweep {sweep}");
+    eprintln!("bytes per minute of play: idle {idle}, melee-play {play}, melee-sweep {sweep}");
     assert!(idle < 100, "{idle}: a run of ticks is a few bytes, whatever its length");
     assert!(play < 16 * 1024, "{play}");
     // No tick repeats: three actors at 8 bytes each, a count and a run length. The worst a duel gets.
@@ -152,7 +152,7 @@ impl Crafted {
             layout: TickActions::LAYOUT_VERSION,
             max_actors: 8,
             ticks: 3,
-            name: b"drill".to_vec(),
+            name: b"melee".to_vec(),
             body: vec![2, 0, 1, 1, 1, 0, 0, 0, 1, 0, 0, 0],
         }
     }
@@ -297,7 +297,7 @@ fn crafted_files_fail_cleanly() {
         ("the longest name and more", with(|c| c.name = vec![b'a'; 255]), |e| {
             matches!(e, ReplayError::BadName { .. })
         }),
-        ("a name with a path in it", with(|c| c.name = b"../drill".to_vec()), |e| {
+        ("a name with a path in it", with(|c| c.name = b"../melee".to_vec()), |e| {
             matches!(e, ReplayError::BadName { .. })
         }),
         ("a name with a terminal escape", with(|c| c.name = b"\x1b[31m".to_vec()), |e| {

@@ -45,7 +45,12 @@ fn skeleton() -> Skeleton {
 
 /// Over 60 ticks: the head turning a quarter about Y and 3 m of root motion.
 fn clip() -> Clip {
-    let root = VectorRange::enclosing([[0.0; 3], [0.0, 0.0, 3.0]]);
+    clip_travelling(3.0)
+}
+
+/// Over 60 ticks: the head turning a quarter about Y and `travel` meters of root motion.
+fn clip_travelling(travel: f32) -> Clip {
+    let root = VectorRange::enclosing([[0.0; 3], [0.0, 0.0, travel]]);
     Clip {
         name: "turn".into(),
         skeleton: Some(AssetId::from_bytes([9; 16])),
@@ -66,7 +71,7 @@ fn clip() -> Clip {
             PackedRotation::encode([0.0, 0.0, 0.0, 1.0]),
         ],
         vector_ticks: vec![0, 60],
-        vector_keys: vec![root.encode([0.0; 3]), root.encode([0.0, 0.0, 3.0])],
+        vector_keys: vec![root.encode([0.0; 3]), root.encode([0.0, 0.0, travel])],
         ..Clip::default()
     }
 }
@@ -409,6 +414,20 @@ fn the_loops_teleport_resets_them() {
         tick(&mut in_place, clip);
         if tick_at > 0 {
             assert_eq!(in_place.anim_stats().spring_substeps, 2, "at {tick_at}");
+        }
+    }
+}
+
+/// A clip that runs in place has no teleport at its loop, root motion on or not: the hair swings through.
+#[test]
+fn a_loop_in_place_keeps_its_swing() {
+    let bytes = clip_travelling(0.001).to_cooked().expect("cooked");
+    let clip = Clip::read(&bytes).expect("a valid clip");
+    let mut scene = stage(true);
+    for tick_at in 0..=60 {
+        tick(&mut scene, clip);
+        if tick_at > 0 {
+            assert_eq!(scene.anim_stats().spring_substeps, 2, "at {tick_at}");
         }
     }
 }

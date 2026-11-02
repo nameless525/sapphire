@@ -55,6 +55,18 @@ pub(crate) fn spring_quality(tier: TierId) -> SpringQuality {
     }
 }
 
+/// Whether a new lap of `clip` jumps the character: a run in place, as KayKit's are, doesn't, so its hair
+/// swings on through the loop.
+fn loop_teleports(clip: &ArchivedClip) -> bool {
+    /// How far counts as a jump, in meters and radians.
+    const JUMP: f32 = 0.01;
+    let end = f32::from(clip.ticks.to_native());
+    root_motion(clip, 0.0).zip(root_motion(clip, end)).is_some_and(|(start, end)| {
+        start.translation.distance(end.translation) > JUMP
+            || start.rotation.angle_between(end.rotation) > JUMP
+    })
+}
+
 /// What decides whose springs run this frame: the view and the tier's distance.
 pub(crate) struct SpringView {
     frustum: Frustum,
@@ -200,6 +212,7 @@ impl ClipPlayer {
         if lap != self.lap {
             self.lap = lap;
             if self.root_motion
+                && loop_teleports(clip)
                 && let Some(springs) = &mut self.springs
             {
                 springs.reset();

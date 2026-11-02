@@ -305,8 +305,8 @@ impl VfxWorld {
         let at = |place: u16| start + usize::from((ring.oldest + place) % ring.capacity);
         if ring.len > 0 {
             let newest = self.samples[at(ring.len - 1)];
-            let unmoved = newest.base.distance_squared(base) < MIN_MOVE
-                && newest.tip.distance_squared(tip) < MIN_MOVE;
+            let unmoved =
+                newest.base.distance_squared(base) < MIN_MOVE && newest.tip.distance_squared(tip) < MIN_MOVE;
             if time < newest.time || unmoved {
                 return;
             }
@@ -381,7 +381,8 @@ impl VfxWorld {
                 ring.oldest = next;
                 ring.len -= 1;
             }
-            if ring.len == 1 && slot.age - self.samples[start + usize::from(ring.oldest)].time >= desc.lifetime
+            if ring.len == 1
+                && slot.age - self.samples[start + usize::from(ring.oldest)].time >= desc.lifetime
             {
                 ring.len = 0;
             }
@@ -589,7 +590,9 @@ fn sprite(particle: &Particle, emitter: &EmitterDesc) -> VfxSprite {
     let half_width = emitter.size.sample(t) * particle.size;
     let (axis, half_length) = match emitter.facing {
         Facing::Camera { .. } => (Vec3::ZERO, half_width),
-        Facing::Velocity { stretch } => (particle.velocity, half_width + particle.velocity.length() * stretch),
+        Facing::Velocity { stretch } => {
+            (particle.velocity, half_width + particle.velocity.length() * stretch)
+        }
     };
     VfxSprite {
         position: particle.position,
@@ -638,13 +641,19 @@ fn write_ribbon(
     let core_half_width = desc.core.half_width;
     let point = |base: Vec3, tip: Vec3, time: f32, ends: bool| {
         let t = ((age - time) / desc.lifetime).clamp(0.0, 1.0);
-        let width = desc.width.sample(t);
+        let start = if desc.start_fade > 0.0 {
+            let share = (time / desc.start_fade).clamp(0.0, 1.0);
+            share * share * (3.0 - 2.0 * share)
+        } else {
+            1.0
+        };
+        let width = desc.width.sample(t) * start;
         let anchor = base.lerp(tip, desc.anchor);
         VfxRibbonPoint {
             base: anchor + (base - anchor) * width,
             tip: anchor + (tip - anchor) * width,
             color: desc.color.sample_vec3(t),
-            alpha: desc.alpha.sample(t),
+            alpha: desc.alpha.sample(t) * start,
             core: desc.core.color.sample_vec3(t),
             core_position: desc.core.position,
             core_half_width,

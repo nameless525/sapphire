@@ -292,8 +292,9 @@ fn a_shader_edit_rebuilds_the_pipelines_built_from_it() {
     // A shared file: every program that includes it (the environment's, fog cards' and foliage's
     // too, with no pipeline built from them yet, the shadow passes', M1 R4, which build nothing
     // with shadows off, the ambient pass's, M1 W5, which builds nothing without a grid, GTAO or
-    // a reflective character, M1 C7, and the debug views', M1 F5, which build nothing while none
-    // shows), and every pipeline built from them (the sky's six, surface, outline, scene prepass,
+    // a reflective character, M1 C7, the debug views', M1 F5, which build nothing while none
+    // shows, and the effects', M2 E2, which build nothing before the first effect), and every
+    // pipeline built from them (the sky's six, surface, outline, scene prepass,
     // outline prepass, the character prepass's two (hair's writes one ID, M1 C6), and the light
     // clusters' two: view-space lights and binning).
     let mut commented = swapped.clone();
@@ -532,8 +533,8 @@ fn every_variant_built_is_rebuilt_on_the_layouts_it_had() {
     // prepasses' four (the character prepass's two, the scene prepass's and the outline hulls',
     // M1 C7) and the light clusters' two (and the environment's, fog cards' and foliage's
     // programs, which built no pipeline, the shadow passes', unbuilt with shadows off, the
-    // ambient pass's, unbuilt without a grid or GTAO, M1 W5, and the debug views', unbuilt while
-    // none shows, M1 F5).
+    // ambient pass's, unbuilt without a grid or GTAO, M1 W5, the debug views', unbuilt while
+    // none shows, M1 F5, and the effects', unbuilt before the first effect, M2 E2).
     let frame = comment(&outline, ShaderFile::Frame);
     let update = frames.renderer.set_shader_sources(&frame).unwrap();
     assert_eq!(update, ShaderUpdate { programs: 12, pipelines: 22 });

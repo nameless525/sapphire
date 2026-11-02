@@ -2237,17 +2237,19 @@ impl Renderer {
         };
         // Under temporal AA effects draw over a copy of the resolved frame, so the history never
         // holds them (see the `vfx` module), and post reads the copy.
-        let resolved = match vfx_after.flatten() {
-            Some(after) => {
-                let composed = graph.create_texture("vfx color", vfx::composed_desc(graph.size(resolved)));
-                let pass = AfterResolveTargets { resolved, composed, depth: targets.depth };
-                graph.add_pass(vfx::PASS).read(resolved).read(targets.depth).write(composed).record(
-                    move |ctx| after.record(ctx, pass, frame_bind_group, view_bind_group, labels),
-                );
-                composed
-            }
-            None => resolved,
-        };
+        let resolved =
+            match vfx_after.flatten() {
+                Some(after) => {
+                    let composed =
+                        graph.create_texture("vfx color", vfx::composed_desc(graph.size(resolved)));
+                    let pass = AfterResolveTargets { resolved, composed, depth: targets.depth };
+                    graph.add_pass(vfx::PASS).read(resolved).read(targets.depth).write(composed).record(
+                        move |ctx| after.record(ctx, pass, frame_bind_group, view_bind_group, labels),
+                    );
+                    composed
+                }
+                None => resolved,
+            };
         post.record(graph, resolved, scene_color, target, labels);
         // The debug view over the finished frame (M1 F5).
         if let Some(views) = debug_view {

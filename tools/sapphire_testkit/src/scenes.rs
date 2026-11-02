@@ -132,7 +132,11 @@ pub struct Scene {
 /// The debug draw scene (M2 T1) alone turns debug draw on (`--debug-draw`; nothing else in these
 /// builds draws any, so no earlier scene changes) and pins what the material layer scenes pin, with
 /// plain post and a plain sky, so the frame under its lines changes only with what they show.
-pub fn scenes() -> [Scene; 96] {
+///
+/// The effects scenes (M2 E2) play `--vfx`'s shows at fixed ticks, whose simulation is seeded: the
+/// sword arc at noon and at night, a hit at sunset and a duel's worst moment, on the look-dev stage
+/// under temporal AA and at Mobile-Low, then alone with everything else pinned off.
+pub fn scenes() -> [Scene; 102] {
     [
         Scene {
             name: "turntable-start",
@@ -2380,6 +2384,145 @@ pub fn scenes() -> [Scene; 96] {
                 "backlit",
                 "--hair-transmission",
                 "1",
+                "--plain-post",
+                "--plain-sky",
+                "--aa",
+                "msaa",
+                "--shadows",
+                "off",
+                "--fog",
+                "off",
+                "--ao",
+                "off",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // A sword arc down across the look-dev character (M2 E2), mid-swing: the crisp core and its
+        // soft glow over noon's bright walls, then over night's dark ones, where exposure lifts the
+        // world and must not wash the core out.
+        Scene {
+            name: "vfx-arc-noon",
+            args: &[
+                "--capture-ticks",
+                "66",
+                "--look-dev",
+                "hero",
+                "--time-of-day",
+                "12",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--capture-frames",
+                "16",
+                "--capture-step",
+                "1",
+                "--vfx",
+                "arc",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        Scene {
+            name: "vfx-arc-night",
+            args: &[
+                "--capture-ticks",
+                "66",
+                "--look-dev",
+                "hero",
+                "--time-of-day",
+                "23",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--capture-frames",
+                "16",
+                "--capture-step",
+                "1",
+                "--vfx",
+                "arc",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The arc's blade landing: frozen on the character's clock by its hitstop two ticks in, its
+        // spark's flash at its height and its trail still whole, with the world's dust moving on.
+        Scene {
+            name: "vfx-hit-sunset",
+            args: &[
+                "--capture-ticks",
+                "74",
+                "--look-dev",
+                "hero",
+                "--time-of-day",
+                "18",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--capture-frames",
+                "16",
+                "--capture-step",
+                "1",
+                "--vfx",
+                "hit",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // A duel's worst moment, the bench's load: two trails, sparks and dust, over the character.
+        Scene {
+            name: "vfx-duel-noon",
+            args: &[
+                "--capture-ticks",
+                "120",
+                "--look-dev",
+                "hero",
+                "--time-of-day",
+                "12",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--capture-frames",
+                "16",
+                "--capture-step",
+                "1",
+                "--vfx",
+                "duel",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The same on the phones' path, at night: drawn in the main pass, against its depth, without
+        // soft fades, and with fewer points to a trail.
+        Scene {
+            name: "vfx-duel-mobile-low",
+            args: &[
+                "--capture-ticks",
+                "120",
+                "--look-dev",
+                "hero",
+                "--time-of-day",
+                "23",
+                "--tier",
+                "mobile-low",
+                "--ao",
+                "off",
+                "--capture-frames",
+                "16",
+                "--capture-step",
+                "1",
+                "--vfx",
+                "duel",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // Effects with nothing else on, and neither post's bloom nor its tone curve over them.
+        Scene {
+            name: "vfx-plain",
+            args: &[
+                "--capture-ticks",
+                "120",
+                "--vfx",
+                "duel",
                 "--plain-post",
                 "--plain-sky",
                 "--aa",

@@ -50,7 +50,12 @@ fn stepping_spawning_and_resolving_allocate_nothing_once_warmed() {
                     let angle = (tick * 4 + sub) as f32 * 0.02;
                     let ago = TICK * (3 - sub) as f32 / 4.0;
                     let (sin, cos) = angle.sin_cos();
-                    world.sample_trail(blade, Vec3::new(cos, sin, 0.0) * 0.3, Vec3::new(cos, sin, 0.0) * 1.2, ago);
+                    world.sample_trail(
+                        blade,
+                        Vec3::new(cos, sin, 0.0) * 0.3,
+                        Vec3::new(cos, sin, 0.0) * 1.2,
+                        ago,
+                    );
                 }
             }
             if moment == 40

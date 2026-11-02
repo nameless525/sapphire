@@ -21,8 +21,8 @@ use sapphire_render::{
     BloomParams, CameraData, CharacterBloom, CharacterBody, CharacterFace, CharacterInstance,
     CharacterLighting, ColorGrade, DirectionalLight, Fog, FogLayer, FramePacket, FramePacketRing, HeightFog,
     InstanceId, MaterialHandle, MeshHandle, MeshInstance, Msaa, PostParams, RenderSettings, Renderer,
-    ShaderFile, ShaderSources, ShaderUpdate, SkyGradient, ToneCurve, ViewData, Vignette, VfxLight,
-    VfxRibbonPoint, VfxShape, VfxSprite,
+    ShaderFile, ShaderSources, ShaderUpdate, SkyGradient, ToneCurve, VfxLight, VfxRibbonPoint, VfxShape,
+    VfxSprite, ViewData, Vignette,
 };
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 
@@ -209,7 +209,8 @@ impl Harness {
         let packet = self.packets.begin();
         packet.views.push(ViewData::new(camera()));
         packet.sun = DirectionalLight { direction: Vec3::NEG_Z, color: Vec3::ONE, intensity: 0.0 };
-        packet.sky = SkyGradient { zenith: Vec3::splat(GREY), horizon: Vec3::splat(GREY), ground: Vec3::splat(GREY) };
+        packet.sky =
+            SkyGradient { zenith: Vec3::splat(GREY), horizon: Vec3::splat(GREY), ground: Vec3::splat(GREY) };
         packet.post = passthrough();
         packet.instances.changed.append(&mut self.added);
         fill(packet);
@@ -399,9 +400,7 @@ fn the_fog_covers_a_particle_at_distance() {
         let ray = fog.ray(Vec3::ZERO, Vec3::NEG_Z, distance, 1.0, horizon, Vec3::NEG_Z);
         assert!((0.2..0.8).contains(&ray.transmittance), "the test's fog: {}", ray.transmittance);
         let color = Vec3::new(0.7, 0.4, 0.2);
-        let sky = |harness: &mut Harness| {
-            harness.render(|packet| packet.fog = fog).middle()
-        };
+        let sky = |harness: &mut Harness| harness.render(|packet| packet.fog = fog).middle();
         let behind = sky(&mut harness);
 
         // Light: what's behind, plus the color through the fog.
@@ -488,8 +487,10 @@ fn additive_adds_to_whats_behind_and_zero_covers_it() {
 fn covering_sprites_draw_back_to_front() {
     for (path, settings) in paths() {
         let mut harness = Harness::new(settings);
-        let near = VfxSprite { additive: 0.0, ..dot(Vec3::new(0.0, 0.0, -2.0), 1.5, Vec3::new(0.7, 0.1, 0.1)) };
-        let far = VfxSprite { additive: 0.0, ..dot(Vec3::new(0.0, 0.0, -4.0), 3.0, Vec3::new(0.1, 0.1, 0.7)) };
+        let near =
+            VfxSprite { additive: 0.0, ..dot(Vec3::new(0.0, 0.0, -2.0), 1.5, Vec3::new(0.7, 0.1, 0.1)) };
+        let far =
+            VfxSprite { additive: 0.0, ..dot(Vec3::new(0.0, 0.0, -4.0), 3.0, Vec3::new(0.1, 0.1, 0.7)) };
         for list in [[near, far], [far, near]] {
             let frame = harness.render(|packet| packet.vfx.sprites.extend(list));
             assert_near(frame.middle(), near.color, path);
@@ -582,7 +583,13 @@ fn a_ribbon_has_a_crisp_core_and_a_soft_glow() {
         // A glow that falls away from the core: its reach is half the strip's width, toward the
         // base rail, and whatever's left of the strip, toward the tip.
         let height = |t: f32| (across(t) - Vec3::splat(GREY)).z;
-        assert!(height(0.6) > height(0.5) && height(0.5) > height(0.4), "{path}: {} {} {}", height(0.6), height(0.5), height(0.4));
+        assert!(
+            height(0.6) > height(0.5) && height(0.5) > height(0.4),
+            "{path}: {} {} {}",
+            height(0.6),
+            height(0.5),
+            height(0.4)
+        );
         assert!(height(0.4) > 0.0 && height(0.2) < 0.005, "{path}: {} {}", height(0.4), height(0.2));
         assert!(height(0.97) < height(0.85), "{path}");
         // Crisp: 0.05 of the 1 m strip at 2 m is about 3 pixels, from the core's full light to the
@@ -764,7 +771,11 @@ fn character_wall(harness: &mut Harness, z: f32) -> InstanceId {
 #[ignore = "needs a GPU"]
 fn a_spark_over_a_character_blooms_as_it_does_over_the_world() {
     let bloom = BloomParams { intensity: 1.0, threshold: 0.5, ..BloomParams::default() };
-    let post = PostParams { bloom, character_bloom: CharacterBloom { threshold: 10.0, strength: 0.0 }, ..passthrough() };
+    let post = PostParams {
+        bloom,
+        character_bloom: CharacterBloom { threshold: 10.0, strength: 0.0 },
+        ..passthrough()
+    };
     for (path, settings) in paths() {
         let mut harness = Harness::new(settings);
         let id = character_wall(&mut harness, -5.0);

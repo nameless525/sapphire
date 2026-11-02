@@ -95,6 +95,16 @@ impl BudgetTier {
         }
     }
 
+    /// VFX simulation (§3.2's row), part of the game side: the effects' steps and frame write.
+    pub fn vfx_simulation(self) -> Duration {
+        self.pick(0.3, 0.6)
+    }
+
+    /// Particles and distortion (§3.3's row): the effects' pass under temporal AA.
+    pub fn particles(self) -> Duration {
+        self.pick(1.2, 3.0)
+    }
+
     /// §3.2's game-side total: every simulation stage, most of which arrive in M2.
     pub fn game_side(self) -> Duration {
         self.pick(6.0, 13.6)

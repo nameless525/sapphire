@@ -237,6 +237,11 @@ pub struct TrailDesc {
     /// As an emitter's.
     #[serde(default = "default_soft")]
     pub soft: f32,
+    /// Seconds from the effect's start over which the strip grows from nothing, in width and
+    /// opacity, so a swing's first stretch ends in a point, not the blade's straight edge, while
+    /// its age hasn't faded it yet. 0 starts it whole.
+    #[serde(default)]
+    pub start_fade: f32,
 }
 
 /// A named effect: what a spawn plays.
@@ -490,6 +495,7 @@ impl TrailDesc {
         curve_ok(&self.core.color, "core.color")?;
         require(self.core.color.never_negative(), "core.color", "can't be negative")?;
         require(self.glow_reach.is_finite() && self.glow_reach > 0.0, "glow_reach", "must be above 0")?;
+        require(self.start_fade.is_finite() && self.start_fade >= 0.0, "start_fade", "must be 0 or more")?;
         require(share_ok(self.additive), "additive", "must be 0 to 1")?;
         require(self.soft.is_finite() && self.soft > 0.0, "soft", "must be above 0")?;
         Ok(())
@@ -530,6 +536,7 @@ mod tests {
             alpha: Curve(vec![(0.0, 1.0), (1.0, 0.0)]),
             core: TrailCore { position: 0.9, half_width: 0.05, color: Curve(vec![(0.0, [4.0, 4.0, 4.0])]) },
             glow_reach: 0.8,
+            start_fade: 0.0,
             additive: 0.8,
             soft: 0.02,
         }
@@ -630,6 +637,7 @@ mod tests {
         assert_eq!(trail_error(|t| t.core.half_width = 2.0), "core.half_width");
         assert_eq!(trail_error(|t| t.core.color = Curve(vec![(0.0, [-1.0; 3])])), "core.color");
         assert_eq!(trail_error(|t| t.glow_reach = 0.0), "glow_reach");
+        assert_eq!(trail_error(|t| t.start_fade = -1.0), "start_fade");
         assert_eq!(trail_error(|t| t.additive = -0.1), "additive");
         assert_eq!(trail_error(|t| t.soft = f32::NAN), "soft");
     }

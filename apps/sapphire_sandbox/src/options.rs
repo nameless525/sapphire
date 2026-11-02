@@ -16,6 +16,7 @@ use crate::lookdev::{self, Shot};
 use crate::rims::RimLayout;
 use crate::scene::{self, Fade, Scene};
 use crate::stage::StageLayout;
+use crate::vfx::VfxShow;
 
 /// The flags that select an offscreen mode; see [`Offscreen`].
 pub(crate) const CAPTURE_FLAG: &str = "--capture";
@@ -140,6 +141,8 @@ pub(crate) struct Options {
     /// (M1 P3), each playing from its start, or held that many seconds into it (for captures and
     /// benches). The scene checks the names against its presets.
     pub post_effects: Vec<(String, Option<f32>)>,
+    /// `--vfx arc|hit|dust|duel`: plays effects at fixed ticks (M2 E2).
+    pub vfx: Option<VfxShow>,
     /// `--view <yaw>,<pitch>`: the orbit camera's starting angles in degrees instead of the
     /// framing's (yaw orbits right from in front of the character; negative pitch looks up).
     pub view: Option<(f32, f32)>,
@@ -674,6 +677,13 @@ impl Options {
                         ));
                     }
                     cue_repeat = Some(seconds);
+                }
+                "--vfx" => {
+                    let raw = value("--vfx")?;
+                    options.vfx = Some(VfxShow::from_name(&raw).ok_or_else(|| {
+                        let names: Vec<&str> = VfxShow::ALL.iter().map(|show| show.name()).collect();
+                        format!("--vfx expects one of {}, got {raw:?}", names.join(", "))
+                    })?);
                 }
                 "--no-hot-reload" => options.no_hot_reload = true,
                 "--serial-passes" => options.serial_passes = true,
@@ -1513,6 +1523,15 @@ mod tests {
         assert!(parse(&["--capture", "a.png", "--bench", "10"]).is_err(), "exclusive");
         assert!(parse(&["--capture", "a.png", "--size", "0x10"]).is_err());
         assert!(parse(&["--bench", "10", "--size", "wide"]).is_err());
+    }
+
+    #[test]
+    fn vfx_takes_a_show() {
+        assert_eq!(parse(&["--vfx", "duel"]).unwrap().0.vfx, Some(VfxShow::Duel));
+        assert_eq!(parse(&["--vfx=arc"]).unwrap().0.vfx, Some(VfxShow::Arc));
+        assert_eq!(parse(&[]).unwrap().0.vfx, None);
+        let error = parse(&["--vfx", "fireworks"]).unwrap_err();
+        assert!(error.contains("arc, hit, dust, duel"), "{error}");
     }
 
     #[test]

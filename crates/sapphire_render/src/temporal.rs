@@ -90,8 +90,9 @@
 //!   which is exact for that sphere alone) it would keep its history and change 2.0 times as
 //!   much. Nothing in the frame gives a silhouette's exact motion; a closer estimate than the
 //!   outline prepass's extrapolation would let moving lines keep some history.
-//! - **Transparent surfaces and particles** write the responsive mask (or FSR's
-//!   transparency-and-composition mask) as they draw, since they write no velocity.
+//! - **Transparent surfaces** write the responsive mask (or FSR's transparency-and-composition
+//!   mask) as they draw, since they write no velocity. The frame's effects don't need it: they
+//!   draw after the resolve, so the history never holds them ([`vfx`](crate::vfx), M2 E2).
 //! - **The character mask through the resolve:** post (M1 P2) and the effect stack (M1 P3) read
 //!   the character mask, scene color's alpha, from the scene color before the resolve, at the
 //!   scene's size and jittered, since the history's alpha holds the accumulation weight: right

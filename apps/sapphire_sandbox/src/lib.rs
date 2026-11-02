@@ -62,6 +62,11 @@
 //!   tier's, or the desktop tiers' on Mobile-Low), and `off`, which the golden scenes from before
 //!   W5 pin, compiles the environment shader as it was before ambient occlusion.
 //! - `--spin <radians per second>`: the turntable's speed (default 0.35), for edges in motion.
+//! - `--vfx arc|hit|dust|duel`: plays `sapphire_vfx`'s shipped effects at fixed ticks around the
+//!   character (M2 E2; the `vfx` module): a sword arc each second, one that strikes with a spark
+//!   and a hitstop, dust on the ground, or a duel's worst moment held still, as the bench's load.
+//!   They play around the world's origin, where every stage but `--look-dev street` stands its
+//!   character.
 //! - `--lights`: place three colored local lights around the character.
 //! - `--skinned`: place a procedural skinned and morphed stalk, swaying, beside the character
 //!   (compute skinning, M1 R2).
@@ -274,6 +279,7 @@ mod stage;
 mod stats;
 mod swatches;
 mod turntable;
+mod vfx;
 
 use std::cell::RefCell;
 use std::fmt::Write as _;

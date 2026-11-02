@@ -206,8 +206,12 @@ impl App for SandboxApp {
         // The day, the sky options, the starting view and the turntable's speed, last so `--view`
         // holds whatever framing the scene chose.
         options.apply_to(&mut scene).map_err(AppInitError::msg)?;
-        // The screen effects it may push, `--post-effect`'s among them, show on their first frame.
-        renderer.renderer.prewarm_post(scene.effect_variants());
+        if let Some(show) = options.vfx {
+            scene.play_vfx(show, crate::vfx::budget(quality.active().id));
+        }
+        // The screen effects it may push, `--post-effect`'s among them, and the effects it plays,
+        // show on their first frame.
+        scene.prewarm(&mut renderer.renderer);
         // The stage after the hour, which places its pillars.
         if let (Some(layout), Some(meshes)) = (options.stage, renderer.stage) {
             scene.spawn_stage(layout, meshes);
@@ -645,7 +649,7 @@ impl SandboxApp {
                 self.renderer = renderer.renderer;
                 #[cfg(feature = "dev")]
                 self.dev.renderer_created(&mut self.renderer);
-                self.renderer.prewarm_post(self.scene.effect_variants());
+                self.scene.prewarm(&mut self.renderer);
                 self.graph = GraphExecutor::new();
                 self.gpu = device.gpu;
                 self.format = device.format;
@@ -685,7 +689,7 @@ impl SandboxApp {
                 self.renderer = renderer.renderer;
                 #[cfg(feature = "dev")]
                 self.dev.renderer_created(&mut self.renderer);
-                self.renderer.prewarm_post(self.scene.effect_variants());
+                self.scene.prewarm(&mut self.renderer);
                 // The new renderer's scene starts empty.
                 self.scene.resend_instances();
                 tracing::info!(target: LOG_TARGET, tier = %self.quality.active().id, "renderer rebuilt for the quality tier");

@@ -33,7 +33,7 @@
 //! anywhere does, not by skin's higher threshold and lower strength, so wherever an effect covers a
 //! pixel it raises the world's share by its coverage. Blending premultiplied light needs alpha for
 //! itself, so the mask is a draw of its own, writing alpha alone, at the end of the main pass on
-//! every tier ([`VfxGpu::mask`]), only where post reads the mask; under temporal AA that's the
+//! every tier (`VfxGpu`'s mask pipeline), only where post reads the mask; under temporal AA that's the
 //! scene color post reads the mask from, and on phones the color draw leaves alpha alone.
 //!
 //! # Light
@@ -59,7 +59,7 @@
 use bytemuck::{Pod, Zeroable};
 use glam::Vec3;
 use sapphire_look::{VfxFrame, VfxLight, VfxRibbonPoint, VfxShape, VfxSprite, VfxStats};
-use sapphire_rhi::wgpu;
+use sapphire_rhi::{TransientDesc, wgpu};
 
 use crate::bind_cache::CachedBindGroup;
 use crate::buffer::{self, GrowableBuffer};
@@ -67,7 +67,6 @@ use crate::graph::{PassContext, TextureId};
 use crate::pipelines::{DEPTH_FORMAT, SCENE_COLOR_FORMAT};
 use crate::shader_builds::Step;
 use crate::shaders::{self, BuildOn, Program, ShaderSources};
-use sapphire_rhi::TransientDesc;
 
 /// The frame graph's pass under temporal AA, whose time is effects' GPU cost, against spec §3.3's
 /// "Particles, distortion" (1.2 ms on Desktop-Low). Elsewhere they draw inside the main pass, and
@@ -510,7 +509,7 @@ impl VfxGpu {
         pipelines: VfxPipelines,
         layouts: Layouts,
     ) -> Self {
-        let limit = u64::from(device.limits().max_storage_buffer_binding_size);
+        let limit = device.limits().max_storage_buffer_binding_size;
         let storage = |label, item: usize| {
             let capacity = INITIAL_ITEMS * item as u64;
             GrowableBuffer::new(device, label, wgpu::BufferUsages::STORAGE, capacity, limit)

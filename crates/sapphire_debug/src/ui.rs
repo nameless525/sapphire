@@ -17,6 +17,7 @@ use sapphire_render::graph::{GraphReport, TextureReport};
 use sapphire_render::quality::{ResolutionSignal, TierSource};
 use sapphire_render::{
     DebugDrawPassStats, DebugView, DebugViewStats, MAIN_PASS, PREPASSES, ambient, post, shadows, temporal,
+    vfx,
 };
 use sapphire_time::{NORMAL_SPEED, ScaledClock};
 
@@ -286,6 +287,10 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
             budget_row(ui, &name, stages.get(stage), tier.stage(stage, stages.fixed_steps));
         }
         budget_row(ui, "Game side (of §3.2's total)", stages.game_side(), tier.game_side());
+        // What the effects' steps and frame write took this frame (M2 E2), where any played.
+        if frame.render.vfx.sprites > 0 || frame.render.vfx.ribbon_points > 0 {
+            budget_row(ui, "  VFX simulation", frame.render.vfx.simulation.simulation, tier.vfx_simulation());
+        }
         budget_row(ui, "CPU critical path", stages.total(), tier.cpu_critical_path());
         let gpu = frame.graph.gpu_timings();
         match gpu {
@@ -331,6 +336,11 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
                         Some(budget) => budget_row(ui, "  Light clustering, AO", used, budget),
                         None => unbudgeted_row(ui, "  Light clustering, AO", used),
                     }
+                }
+                // The effects' own pass under temporal AA (M2 E2): on phones they're in the main
+                // pass, whose row has them.
+                if let Some(effects) = timings.get(vfx::PASS) {
+                    budget_row(ui, "  Particles", effects.exclusive, tier.particles());
                 }
                 // A debug view's replay and its pass over the frame (M1 F5): what showing it
                 // adds, which the frame without it doesn't have.
@@ -433,6 +443,7 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
         row(ui, "Post layers", post_text(&render.post));
         row(ui, "Screen effects", effects_text(&render.post.effects, view.frame.screen_effects));
         row(ui, "Fog", fog_text(&render.fog));
+        row(ui, "Effects", vfx_text(&render.vfx));
         let taa = &render.temporal;
         let taa = if taa.enabled {
             let ((input_w, input_h), (output_w, output_h)) = (taa.input_size, taa.output_size);
@@ -755,6 +766,27 @@ fn pacing(ui: &mut Ui, frame: &OverlayFrame<'_>) {
 
 /// The sky's layers drawn this frame and its cube (M1 W2).
 /// The shadows' counters (M1 R4) on one line.
+/// What the frame's effects drew, against the cost §3.2 budgets, and what the caps cost them.
+fn vfx_text(vfx: &sapphire_render::VfxRenderStats) -> String {
+    let simulation = &vfx.simulation;
+    if vfx.sprites == 0 && vfx.ribbon_points == 0 {
+        return "none".to_owned();
+    }
+    let dropped = simulation.dropped_particles
+        + simulation.dropped_ribbon_points
+        + simulation.dropped_effects
+        + simulation.dropped_trails;
+    format!(
+        "{} effects: {} sprites, {} ribbons of {} points, {} a frame, {:.0} µs to simulate, {dropped} dropped",
+        simulation.effects,
+        vfx.sprites,
+        simulation.ribbons,
+        vfx.ribbon_points,
+        format_bytes(vfx.bytes),
+        simulation.simulation.as_secs_f64() * 1e6,
+    )
+}
+
 fn shadow_text(shadows: &sapphire_render::ShadowStats) -> String {
     if !shadows.enabled {
         return "off".to_owned();

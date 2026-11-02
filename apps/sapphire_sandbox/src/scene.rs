@@ -95,9 +95,10 @@ use sapphire_ecs::prelude::*;
 use sapphire_math::{Mat4, Quat, Vec3};
 use sapphire_render::{
     CharacterBody, CharacterFace, CharacterInstance, FaceExpression, Fog, FramePacket, HeadBasis, LightKind,
-    LocalLight, MaterialHandle, MeshHandle, PostVariants, SkyLayers, ViewData, Wind,
+    LocalLight, MaterialHandle, MeshHandle, PostVariants, Renderer, SkyLayers, ViewData, Wind,
 };
 use sapphire_time::{ScaleHandle, ScaleSource};
+use sapphire_vfx::VfxBudget;
 use sapphire_world::fade::ProximityFade;
 use sapphire_world::light_rig::{
     CharacterLightRig, LightRig, LightRigId, LightRigLibrary, LightRigRim, NamedLightRig,
@@ -124,6 +125,7 @@ use crate::skinned::{self, Sway};
 use crate::stage::{self, Piece, StageLayout, StageMeshes, Subject};
 use crate::swatches::{self, SWATCHES};
 use crate::turntable::{self, Turntable};
+use crate::vfx::{VfxPlayer, VfxShow};
 
 /// World slow motion while toggled, in per-mille (perfect-dodge style, spec §4.5).
 const SLOW_MOTION: u32 = 200;
@@ -345,6 +347,8 @@ pub(crate) struct Scene {
     fade: Fade,
     /// The post variants of the presets [`Self::push_effect`] pushed (`--post-effect`).
     pushed_effects: PostVariants,
+    /// The effects `--vfx` plays (M2 E2).
+    vfx: Option<VfxPlayer>,
 }
 
 impl Scene {
@@ -432,6 +436,7 @@ impl Scene {
             sharpening: None,
             fade: Fade::Off,
             pushed_effects: PostVariants::NONE,
+            vfx: None,
         }
     }
 
@@ -1083,6 +1088,9 @@ impl Scene {
         if let Some(demo) = self.debug_draw_demo {
             demo.draw_in_step();
         }
+        if self.vfx.is_some() {
+            self.step_vfx();
+        }
         debug_draw::end_step();
     }
 
@@ -1091,6 +1099,37 @@ impl Scene {
         debug_draw::set_enabled(true);
         self.debug_draw_demo = Some(demo);
         demo.draw_once();
+    }
+
+    /// Plays `show` within `budget` from now on (`--vfx`, M2 E2).
+    pub fn play_vfx(&mut self, show: VfxShow, budget: VfxBudget) {
+        self.vfx = Some(VfxPlayer::new(show, budget));
+    }
+
+    /// One step of the effects, by the clocks' last steps: the world's, and the character's for the
+    /// attacker's and the victim's, which stops through its hitstop. A hit starts one on it.
+    fn step_vfx(&mut self) {
+        let world = self.ecs.world();
+        let world_step = world.resource::<WorldClock>().0.last_delta().as_secs_f32();
+        let clock = world.get::<EntityClock>(self.character);
+        let character_step = clock.map_or(world_step, |clock| clock.0.last_delta().as_secs_f32());
+        let Some(player) = self.vfx.as_mut() else { return };
+        let hitstop = player.step(world_step, character_step);
+        if let Some(ticks) = hitstop
+            && let Some(mut clock) = self.ecs.world_mut().get_mut::<EntityClock>(self.character)
+        {
+            clock.0.apply_hitstop(ticks);
+        }
+    }
+
+    /// Readies `renderer` for what this scene may draw: the post variants of its screen effects,
+    /// and, if it plays effects, their pipelines, so neither compiles on the frame it first shows.
+    /// The app calls it whenever it makes a renderer.
+    pub fn prewarm(&self, renderer: &mut Renderer) {
+        renderer.prewarm_post(self.effect_variants());
+        if self.vfx.is_some() {
+            renderer.prewarm_vfx();
+        }
     }
 
     /// Runs presentation and extraction, then returns this frame's packet, with the main view
@@ -1109,8 +1148,12 @@ impl Scene {
         let fog = self.fog;
         let (plain_post, sharpening, wind) = (self.plain_post, self.sharpening, self.wind);
         let probe_hours = &self.probe_hours;
+        let vfx = &mut self.vfx;
         self.ecs.world_mut().resource_scope(|world, mut extract: Mut<'_, RenderExtract>| {
             let packet = extract.begin();
+            if let Some(vfx) = vfx {
+                vfx.write(&mut packet.vfx);
+            }
             let camera = world.resource::<OrbitCamera>();
             if let Some(aspect) = drawable_aspect(target_size) {
                 packet.views.push(ViewData::new(camera.camera_data(aspect)));
@@ -1400,6 +1443,51 @@ mod tests {
             scene.step();
         }
         assert!((angle(&scene) - 0.35 * 0.2).abs() < 1e-4, "one second at 0.2× is 0.2 s of spin");
+    }
+
+    /// A show's hit stops the character's clock, as a game's would: its turntable and its effects
+    /// hold through the hitstop, and only that long.
+    #[test]
+    fn a_shows_hit_holds_the_character_and_its_effects() {
+        let mut scene = scene();
+        scene.play_vfx(VfxShow::Hit, VfxBudget::DESKTOP_LOW);
+        let hit = 6;
+        for _ in 0..=hit {
+            scene.step();
+        }
+        let before = scene.frame_packet(0.5, Some((1, 1))).vfx.clone();
+        scene.end_frame();
+        assert!(!before.ribbon_points.is_empty() && !before.sprites.is_empty(), "the trail and the spark");
+        let spun = angle(&scene);
+        // Five of its six ticks, which the world's dust goes on through.
+        for _ in 0..5 {
+            scene.step();
+        }
+        let held = scene.frame_packet(0.5, Some((1, 1))).vfx.clone();
+        scene.end_frame();
+        assert_eq!(angle(&scene), spun, "the turntable");
+        assert_eq!(held.ribbon_points, before.ribbon_points, "the trail");
+        assert_ne!(held.sprites, before.sprites, "the dust moves on");
+        for _ in 0..3 {
+            scene.step();
+        }
+        assert!(angle(&scene) > spun, "and it moves on after them");
+        let after = scene.frame_packet(0.5, Some((1, 1))).vfx.clone();
+        assert_ne!(after.ribbon_points, before.ribbon_points);
+    }
+
+    #[test]
+    fn a_shows_steps_do_not_allocate_from_the_first() {
+        for show in VfxShow::ALL {
+            let mut scene = scene();
+            scene.play_vfx(show, VfxBudget::DESKTOP_LOW);
+            let ((), steps) = sapphire_core::alloc::count_in_scope(|| {
+                for _ in 0..240 {
+                    scene.step();
+                }
+            });
+            assert_eq!(steps.allocations, 0, "rule R6: {show:?}");
+        }
     }
 
     #[test]

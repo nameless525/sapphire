@@ -126,7 +126,7 @@ impl Serving {
                 stage.scene.set_meshes(&renderer);
                 stage.renderer = renderer.renderer;
                 stage.dev.renderer_created(&mut stage.renderer);
-                stage.renderer.prewarm_post(stage.scene.effect_variants());
+                stage.scene.prewarm(&mut stage.renderer);
                 // The new renderer's scene starts empty.
                 stage.scene.resend_instances();
                 tracing::info!(target: LOG_TARGET, tier = %stage.quality.active().id, "renderer rebuilt for the quality tier");

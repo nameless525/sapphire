@@ -63,7 +63,8 @@ impl VfxShape {
                 let center = (1.0 - (r / 0.45).powi(2)).max(0.0);
                 body.max(center * center) * (1.0 - smoothstep(0.92, 1.0, r))
             }
-            Self::Ring => smoothstep(0.45, 0.86, r) * (1.0 - smoothstep(0.86, 0.94, r)),
+            // A crisp outer edge, and a short fall inside it.
+            Self::Ring => smoothstep(0.66, 0.9, r) * (1.0 - smoothstep(0.9, 0.95, r)),
         }
     }
 }

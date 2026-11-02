@@ -6,7 +6,8 @@
 //! `post.wgsl`, and compute skinning has `skinning.wgsl`, temporal AA `temporal.wgsl` and debug
 //! draw `debug_draw.wgsl`; all four stand alone. The shadow passes' `shadows.wgsl` follows `frame.wgsl` and `materials.wgsl` like
 //! a scene pass. The ambient passes (M1 W5) join `ambient.wgsl`, which the environment and
-//! foliage shaders share, with their own `probes.wgsl` and `occlusion.wgsl` in one program.
+//! foliage shaders share, with their own `probes.wgsl` and `occlusion.wgsl` in one program. The
+//! frame's effects (M2 E2) are `frame.wgsl`, `materials.wgsl` and their own `vfx.wgsl`.
 //!
 //! # Replacing sources (hot reload, M1 A8)
 //!
@@ -28,7 +29,7 @@
 //! from [`ShaderSources`], to hand a rebuild of what it has built to `Renderer::shader_job` as
 //! an owned step a worker runs (`shader_builds::Step`), and to count what it has built in
 //! `Renderer::built`, as the mesh pipelines, the sky, post, temporal AA, the light clusters,
-//! skinning, the shadows, the ambient passes, the debug views and debug draw do.
+//! skinning, the shadows, the ambient passes, the debug views, debug draw and the effects do.
 
 use std::borrow::Cow;
 use std::fmt;
@@ -578,10 +579,10 @@ mod tests {
         DRAW_ATTRIBUTES, FOLIAGE_ATTRIBUTES, MeshPass, SHADING_ATTRIBUTES, SURFACE_ATTRIBUTES,
         position_attributes, previous_position_attributes,
     };
-    use crate::vfx::{GpuVfxRibbonPoint, GpuVfxSprite, GpuVfxUniforms};
     use crate::post::PostUniforms;
     use crate::shadows::{GpuCapsule, GpuCascade, GpuCharacterMap, ShadowUniforms};
     use crate::temporal::TemporalUniforms;
+    use crate::vfx::{GpuVfxRibbonPoint, GpuVfxSprite, GpuVfxUniforms};
 
     const PASSES: [(Program, &[&str]); 16] = [
         (Program::Sky, &["vs_sky", "fs_sky"]),

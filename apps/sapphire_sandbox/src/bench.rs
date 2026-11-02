@@ -25,7 +25,8 @@
 //! maps and the face pass, against spec §3.3's 2 ms on desktop and 3 ms on phones), the light
 //! clusters, the ambient pass (the probe grid's sky, prefilter, relight and characters, and GTAO;
 //! with the clusters against §3.3's "Light clustering, AO", 1.5 ms on Desktop-Low), a debug
-//! view's passes (`--debug-view`, M1 F5), debug draw's pass (`--debug-draw`, M2 T1) and the whole
+//! view's passes (`--debug-view`, M1 F5), debug draw's pass (`--debug-draw`, M2 T1), the effects'
+//! pass under temporal AA (`--vfx`, M2 E2, against §3.3's 1.2 ms on Desktop-Low) and the whole
 //! frame.
 //! Timing comes last so it doesn't touch the CPU and allocation numbers, which stay comparable
 //! with builds that have none.
@@ -35,7 +36,7 @@ use std::time::Duration;
 use sapphire_core::alloc;
 use sapphire_platform::{AppInitError, Platform};
 use sapphire_render::{
-    CHARACTER_PREPASS, MAIN_PASS, PREPASSES, ambient, debug_draw, debug_view, post, shadows, temporal,
+    CHARACTER_PREPASS, MAIN_PASS, PREPASSES, ambient, debug_draw, debug_view, post, shadows, temporal, vfx,
 };
 use sapphire_rhi::wgpu;
 use sapphire_time::Stopwatch;
@@ -76,6 +77,9 @@ pub(crate) fn run(
     let (mut allocations, mut bytes) = (0, 0);
     // Time of day's resolve, per measured frame: its total and its slowest.
     let (mut tod_total, mut tod_max) = (Duration::ZERO, Duration::ZERO);
+    // The effects' simulation and frame write per measured frame (`--vfx`), and what they held.
+    let (mut vfx_total, mut vfx_max) = (Duration::ZERO, Duration::ZERO);
+    let (mut vfx_particles, mut vfx_points) = (0_u64, 0_u64);
     // GPU pass spans of the measured frames that came back: (newest frame, total, count).
     let (mut timed_frame, mut gpu_span, mut timed) = (0, Duration::ZERO, 0_u32);
     for frame in 0..WARMUP_FRAMES + frames {
@@ -96,6 +100,11 @@ pub(crate) fn run(
             let tod = stage.scene.time_of_day().stats().resolve_time;
             tod_total += tod;
             tod_max = tod_max.max(tod);
+            let effects = stage.renderer.stats().vfx;
+            vfx_total += effects.simulation.simulation;
+            vfx_max = vfx_max.max(effects.simulation.simulation);
+            vfx_particles += u64::from(effects.sprites);
+            vfx_points += u64::from(effects.ribbon_points);
             if let Some(timings) = stage.graph.gpu_timings()
                 && timings.frame > timed_frame.max(u64::from(WARMUP_FRAMES))
             {
@@ -147,6 +156,11 @@ pub(crate) fn run(
         allocs_per_frame = format_args!("{:.1}", allocations as f64 / f64::from(frames)),
         tod_us_mean = format_args!("{:.2}", micros(tod_total / frames)),
         tod_us_max = format_args!("{:.2}", micros(tod_max)),
+        vfx_show = ?options.vfx,
+        vfx_sim_us_mean = format_args!("{:.2}", micros(vfx_total / frames)),
+        vfx_sim_us_max = format_args!("{:.2}", micros(vfx_max)),
+        vfx_sprites_mean = vfx_particles / u64::from(frames),
+        vfx_ribbon_points_mean = vfx_points / u64::from(frames),
         alloc_bytes_per_frame = bytes / u64::from(frames),
         startup_ms = format_args!("{:.1}", startup.as_secs_f64() * 1e3),
         graph = ?stage.graph.stats(),
@@ -176,6 +190,7 @@ fn gpu_times(stage: &mut Stage, view: &wgpu::TextureView, bloom_levels: u32) -> 
         (zero, zero, zero, zero, zero, zero);
     let (mut character_prepass, mut clusters, mut ambient_pass, mut views) = (zero, zero, zero, zero);
     let mut debug_draws = zero;
+    let mut effects = zero;
     // Post's passes are summed only over frames whose timings hold every one of them and the
     // main pass before them: on Apple GPUs some frames come back with some passes' timestamps
     // invalid, and a missing pass leaves its time in the next one's exclusive time.
@@ -197,7 +212,7 @@ fn gpu_times(stage: &mut Stage, view: &wgpu::TextureView, bloom_levels: u32) -> 
         // and with its bloom chain is §3.3's "Bloom + tonemap + LUT".
         // The ambient pass (M1 W5): the grid's work and GTAO. A debug view's replay and its pass
         // over the frame (M1 F5): what showing it costs.
-        let groups: [(&[&str], &mut Sums); 11] = [
+        let groups: [(&[&str], &mut Sums); 12] = [
             (&["skinning"], &mut skinning),
             (&["sky cube"], &mut sky_cube),
             (&[MAIN_PASS], &mut main),
@@ -209,6 +224,7 @@ fn gpu_times(stage: &mut Stage, view: &wgpu::TextureView, bloom_levels: u32) -> 
             (&ambient::PASSES, &mut ambient_pass),
             (&debug_view::PASSES, &mut views),
             (&[debug_draw::PASS], &mut debug_draws),
+            (&[vfx::PASS], &mut effects),
         ];
         for (names, sums) in groups {
             let mut ran = false;
@@ -277,6 +293,9 @@ fn gpu_times(stage: &mut Stage, view: &wgpu::TextureView, bloom_levels: u32) -> 
         gpu_debug_draw_duration_us = format_args!("{:.1}", micros(debug_draws.1, debug_draws.2)),
         debug_draw_lines = stage.renderer.stats().debug_draw.drawn,
         debug_draw_frames = debug_draws.2,
+        gpu_vfx_us = format_args!("{:.1}", micros(effects.0, effects.2)),
+        gpu_vfx_duration_us = format_args!("{:.1}", micros(effects.1, effects.2)),
+        vfx_frames = effects.2,
         "bench gpu",
     );
     Ok(())

@@ -5,8 +5,8 @@ use sapphire_look::{VfxFrame, VfxShape, VfxSprite};
 
 use crate::curve::Curve;
 use crate::{
-    Effect, EffectId, EffectLibrary, EmitterDesc, Facing, Light, Motion, OwnerId, OwnerSteps, Placement, Shape,
-    Source, Spawn, TrailCore, TrailDesc, VfxBudget, VfxWorld,
+    Effect, EffectId, EffectLibrary, EmitterDesc, Facing, Light, Motion, OwnerId, OwnerSteps, Placement,
+    Shape, Source, Spawn, TrailCore, TrailDesc, VfxBudget, VfxWorld,
 };
 
 const TICK: f32 = 1.0 / 60.0;
@@ -48,6 +48,7 @@ fn trail(max_samples: u32) -> Effect {
             alpha: Curve(vec![(0.0, 1.0), (1.0, 0.0)]),
             core: TrailCore { position: 0.9, half_width: 0.05, color: Curve(vec![(0.0, [4.0; 3])]) },
             glow_reach: 0.8,
+            start_fade: 0.0,
             additive: 0.8,
             soft: 0.02,
         }),
@@ -69,6 +70,29 @@ const ALL_RUN: OwnerSteps<'static> = OwnerSteps { world: TICK, owners: &[] };
 
 /// The frozen-owner test: hitstop freezes one owner's effects while another's, and the world's,
 /// keep running.
+#[test]
+fn a_trails_start_grows_from_nothing() {
+    let mut effect = trail(48);
+    effect.trail.as_mut().unwrap().start_fade = 0.1;
+    let mut world = world_of(vec![effect], VfxBudget::DESKTOP_HIGH);
+    let id = world.library().find("trail").unwrap();
+    let handle = world.spawn(id, OwnerId::WORLD, Placement::default()).unwrap();
+    for tick in 0..12 {
+        world.advance(&OwnerSteps { world: 0.02, owners: &[] });
+        let x = tick as f32 * 0.1;
+        world.sample_trail(handle, Vec3::new(x, 0.0, 0.0), Vec3::new(x, 1.0, 0.0), 0.0);
+    }
+    let frame = frame_of(&mut world);
+    let width = |point: &sapphire_look::VfxRibbonPoint| point.tip.distance(point.base);
+    let first = frame.ribbon_points.first().unwrap();
+    let last = frame.ribbon_points.last().unwrap();
+    assert!(width(first) < 0.15, "{}", width(first));
+    assert!(first.alpha < 0.15, "{}", first.alpha);
+    // Further than the fade's reach, the curves alone say what it is.
+    assert!(width(last) > 0.9, "{}", width(last));
+    assert!(last.alpha > 0.9, "{}", last.alpha);
+}
+
 #[test]
 fn a_frozen_owner_holds_its_effects_while_others_run() {
     let library = vec![burst(4), trail(32)];
@@ -130,9 +154,8 @@ fn a_smaller_step_is_slow_motion() {
     world.advance(&steps);
     world.advance(&steps);
     let frame = frame_of(&mut world);
-    let climb = |x: f32| {
-        frame.sprites.iter().find(|sprite| sprite.position.x == x).expect("its particle").position.y
-    };
+    let climb =
+        |x: f32| frame.sprites.iter().find(|sprite| sprite.position.x == x).expect("its particle").position.y;
     assert!((climb(1.0) - 2.0 * TICK).abs() < 1e-5, "{}", climb(1.0));
     assert!((climb(-1.0) - 0.5 * TICK).abs() < 1e-5, "{}", climb(-1.0));
 }
@@ -302,7 +325,8 @@ fn particles_follow_their_curves_and_die_at_their_lifetime() {
 #[test]
 fn velocity_facing_lies_along_its_motion_and_stretches_with_speed() {
     let mut effect = burst(1);
-    effect.emitters[0].motion = Motion { speed: (10.0, 10.0), direction: [1.0, 0.0, 0.0], ..Motion::default() };
+    effect.emitters[0].motion =
+        Motion { speed: (10.0, 10.0), direction: [1.0, 0.0, 0.0], ..Motion::default() };
     effect.emitters[0].facing = Facing::Velocity { stretch: 0.01 };
     effect.emitters[0].size = Curve(vec![(0.0, 0.1)]);
     let mut world = world_of(vec![effect], VfxBudget::DESKTOP_LOW);
@@ -319,10 +343,8 @@ fn a_placements_rotation_turns_its_emitters() {
     let mut effect = burst(1);
     effect.emitters[0].motion = Motion { speed: (1.0, 1.0), direction: [0.0, 1.0, 0.0], ..Motion::default() };
     let mut world = world_of(vec![effect], VfxBudget::DESKTOP_LOW);
-    let placement = Placement {
-        position: Vec3::ZERO,
-        rotation: Quat::from_rotation_z(-std::f32::consts::FRAC_PI_2),
-    };
+    let placement =
+        Placement { position: Vec3::ZERO, rotation: Quat::from_rotation_z(-std::f32::consts::FRAC_PI_2) };
     world.spawn(EffectId(0), OwnerId(1), placement).expect("spawned");
     world.advance(&ALL_RUN);
     world.advance(&ALL_RUN);
@@ -552,12 +574,9 @@ fn clearing_frees_everything() {
 /// and 50 dust particles.
 #[test]
 fn a_duels_worst_moment_fits_every_tier() {
-    for budget in [
-        VfxBudget::DESKTOP_HIGH,
-        VfxBudget::DESKTOP_LOW,
-        VfxBudget::MOBILE_HIGH,
-        VfxBudget::MOBILE_LOW,
-    ] {
+    for budget in
+        [VfxBudget::DESKTOP_HIGH, VfxBudget::DESKTOP_LOW, VfxBudget::MOBILE_HIGH, VfxBudget::MOBILE_LOW]
+    {
         let library = EffectLibrary::default_effects();
         let (spark, sword, dust) = (
             library.find("hit_spark").expect("an effect"),

@@ -98,21 +98,14 @@ fn vfx_clip(world: vec3<f32>) -> vec4<f32> {
     return view.clip_from_world * vec4<f32>(world, 1.0);
 }
 
-// What the varyings need of the fog over the way from `world` to the camera: the emissive color's
-// `color` and the core's `core` seen through it, as `fogged` sees them, its own light apart.
+// What the varyings need of `fogged` over the way from `world` to the camera, its two parts apart:
+// what comes through it, and its own light. A quad's light adds to what's behind, which has its
+// fog already, so only the share of it that covers what's behind brings the fog's own light.
 fn vfx_fogged(out: ptr<function, VfxVaryings>, world: vec3<f32>, color: vec3<f32>, core: vec3<f32>, additive: f32) {
-    var transmittance = 1.0;
-    var air = vec3<f32>(0.0);
-    if fog_on() {
-        let offset = world - view.position.xyz;
-        let distance = length(offset);
-        let ray = fog_ray(view.position.xyz, offset / max(distance, 1e-6), distance, 1.0);
-        transmittance = ray.transmittance;
-        air = apply_fog(vec3<f32>(0.0), ray);
-    }
-    (*out).color = vec4<f32>(color * transmittance, (*out).color.a);
-    (*out).core = vec4<f32>(core * transmittance, 1.0 - additive);
-    // Light adds to what's behind, which has its fog already; only what covers it brings fog's own.
+    let air = fogged(vec3<f32>(0.0), world, 1.0);
+    let through = fogged(vec3<f32>(1.0), world, 1.0) - air;
+    (*out).color = vec4<f32>(color * through, (*out).color.a);
+    (*out).core = vec4<f32>(core * through, 1.0 - additive);
     (*out).air = vec4<f32>(air * (1.0 - additive), (*out).air.a);
 }
 
@@ -197,13 +190,16 @@ fn vfx_ribbon_shape(across: f32, aa: f32, section: vec3<f32>) -> VfxShape {
     return VfxShape(glow, band, max(glow, band));
 }
 
+// One exit, and no early return under the varyings' `layer`: WARP's compiler crashes on one.
 fn vfx_shape(in: VfxVaryings, dx: vec2<f32>, dy: vec2<f32>) -> VfxShape {
+    var shape: VfxShape;
     if in.layer == VFX_RIBBON {
-        let aa = max(abs(dx.y) + abs(dy.y), 1e-4);
-        return vfx_ribbon_shape(in.uv.y, aa, in.cross_section);
+        shape = vfx_ribbon_shape(in.uv.y, max(abs(dx.y) + abs(dy.y), 1e-4), in.cross_section);
+    } else {
+        let coverage = textureSampleGrad(vfx_map, vfx_sampler, in.uv, in.layer, dx, dy).r;
+        shape = VfxShape(coverage, 0.0, coverage);
     }
-    let coverage = textureSampleGrad(vfx_map, vfx_sampler, in.uv, in.layer, dx, dy).r;
-    return VfxShape(coverage, 0.0, coverage);
+    return shape;
 }
 
 // How much of it shows past the scene's surfaces, over temporal AA's frame: by the view depth to
@@ -212,14 +208,15 @@ fn vfx_shape(in: VfxVaryings, dx: vec2<f32>, dy: vec2<f32>) -> VfxShape {
 // with an infinite far plane: view depth is near / depth, and a pixel nothing covered (depth 0) is
 // as far as the sky.
 fn vfx_scene_fade(in: VfxVaryings) -> f32 {
-    if !VFX_AFTER_RESOLVE {
-        return 1.0;
+    var fade = 1.0;
+    if VFX_AFTER_RESOLVE {
+        let depths = textureGather(vfx_scene_depth, character_sampler, in.clip_position.xy * vfx.target_size.zw);
+        let near = view.clip_from_view[3][2];
+        let own = near / in.clip_position.z;
+        let scene = near / max(depths, vec4<f32>(1e-9));
+        fade = dot(saturate((scene - vec4<f32>(own)) / max(in.air.a, 1e-4)), vec4<f32>(0.25));
     }
-    let depths = textureGather(vfx_scene_depth, character_sampler, in.clip_position.xy * vfx.target_size.zw);
-    let near = view.clip_from_view[3][2];
-    let own = near / in.clip_position.z;
-    let scene = near / max(depths, vec4<f32>(1e-9));
-    return dot(saturate((scene - vec4<f32>(own)) / max(in.air.a, 1e-4)), vec4<f32>(0.25));
+    return fade;
 }
 
 @fragment

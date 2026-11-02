@@ -112,6 +112,11 @@
 //! - Debug draw ([`debug_draw`], M2 T1): the packet's lines as thick screen-space lines over the
 //!   frame, depth-tested in the shader against the scene prepass's depth or on top. A frame with
 //!   none builds and draws nothing.
+//! - The frame's effects ([`vfx`], M2 E2): `FramePacket::vfx`'s quads and ribbons, simulated by
+//!   `sapphire_vfx`, which this crate doesn't depend on, drawn instanced with their own fog, after
+//!   every transparent surface: over temporal AA's resolved frame, which its history never sees, or
+//!   at the end of the main pass without it. A frame with none builds and draws nothing, and a
+//!   game prewarms their pipelines at load ([`Renderer::prewarm_vfx`]).
 //!
 //! # Does not own
 //!
@@ -320,6 +325,10 @@
 //! | 0 | storage | deformable meshes' streams, influences and regrouped morph deltas | mesh upload |
 //! | 1 | storage | this frame's jobs, palettes (three rows each) and morph weights | `record`, through the staging belt |
 //! | 2 | storage, read-write | every deformed instance's outputs: positions twice and normals | the skinning pass |
+//!
+//! The effects' pass (`shaders/vfx.wgsl`) binds the frame and view groups, then its own two, 2 for
+//! the vertex stage's two storage buffers, its uniforms and sampler, and 3 for the shapes' map
+//! and the scene's depth; its fragment stage binds no storage buffer of its own.
 //!
 //! Post passes bind their own two groups (`shaders/post.wgsl`): 0 holds the post constants
 //! and a sampler, 1 the textures the pass reads (at most five: the fused pass's input, bloom,
@@ -898,8 +907,8 @@ pub use renderer::{
 };
 pub use sapphire_look::{
     AmbientLight, CameraRim, Celestial, CharacterGi, CharacterLight, CharacterLighting, CharacterShade,
-    CloudLight, DirectionalLight, Fog, FogLayer, HeightFog, Nebula, SkyDisc, SkyGradient, SkyLayers, VfxFrame,
-    VfxLight, VfxRibbonPoint, VfxShape, VfxSprite, VfxStats,
+    CloudLight, DirectionalLight, Fog, FogLayer, HeightFog, Nebula, SkyDisc, SkyGradient, SkyLayers,
+    VfxFrame, VfxLight, VfxRibbonPoint, VfxShape, VfxSprite, VfxStats,
 };
 pub use shader_builds::{ShaderBuildStats, ShaderOutcome, ShaderRequest};
 pub use shaders::{ShaderError, ShaderFile, ShaderSources};

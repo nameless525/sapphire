@@ -502,12 +502,12 @@ pub struct Renderer {
     /// The wind foliage sways in, this frame's and the last drawn one's.
     wind: FoliageWind,
     /// The ambient probe grid, the reflection cube, GTAO and their passes (M1 W5).
-    ambient: Ambient,
+    ambient: Box<Ambient>,
     meshes: MeshPool,
     /// Every family's parameter buffer and each material's group 3.
     materials: Materials,
     /// Instances, draw records and the draw list, persistent across frames.
-    scene: GpuScene,
+    scene: Box<GpuScene>,
     /// Which draws' outline hulls the frame draws, by their LOD cutoff.
     outlines: OutlineCull,
     /// Which instances the main view culls, from each recorded frame's frustum (review RA-O01).
@@ -524,7 +524,7 @@ pub struct Renderer {
     /// The on-screen interface over the finished frame (M2 I2).
     ui: Ui,
     /// Temporal AA's history and passes, with [`RenderSettings::temporal`].
-    temporal: Option<Temporal>,
+    temporal: Option<Box<Temporal>>,
     uploads: wgpu::util::StagingBelt,
     /// What the last `prepare` computed for `record` to upload and draw.
     prepared: Option<PreparedFrame>,
@@ -671,7 +671,7 @@ impl Renderer {
                                     || {
                                         settings
                                             .temporal
-                                            .then(|| Temporal::new(device_ref, cache, shaders_ref))
+                                            .then(|| Box::new(Temporal::new(device_ref, cache, shaders_ref)))
                                     },
                                     || -> Result<_, RenderError> {
                                         let mut materials = Materials::new(device_ref, gpu.queue());
@@ -701,7 +701,7 @@ impl Renderer {
                                             cache,
                                             shaders_ref,
                                         );
-                                        Ok((materials, sky, ambient))
+                                        Ok((materials, sky, Box::new(ambient)))
                                     },
                                 )
                             },
@@ -760,7 +760,7 @@ impl Renderer {
                 ambient: &ambient,
             },
         );
-        let scene = GpuScene::new(&device);
+        let scene = Box::new(GpuScene::new(&device));
         let wind = FoliageWind::new(&device);
         let scene_bind_groups =
             create_scene_bind_groups(&device, &layouts, &scene, &materials, &fog_cards, &wind);
@@ -1267,7 +1267,9 @@ impl Renderer {
             sky: has(Program::Sky).then(|| self.sky.rebuild()),
             // Only those built so far: the variants built ahead and those frames drew.
             post: has(Program::Post).then(|| self.post.rebuild()),
-            temporal: has(Program::Temporal).then(|| self.temporal.as_ref().map(Temporal::rebuild)).flatten(),
+            temporal: has(Program::Temporal)
+                .then(|| self.temporal.as_deref().map(Temporal::rebuild))
+                .flatten(),
             clusters: has(Program::Clusters).then(|| self.lights.rebuild_clusters(device)).flatten(),
             skinning: has(Program::Skinning).then(|| self.skinning.rebuild(device, cache)).flatten(),
             shadows: has(Program::Shadows).then(|| self.shadows.rebuild(device)).flatten(),
@@ -1875,7 +1877,7 @@ impl Renderer {
         // Temporal AA keeps the scene prepass's depth, outline hulls included (M1 C4), for the
         // next frame's disocclusion test: the scene prepass draws into one of a persistent pair
         // it imports along with its history. The main pass's depth stays in tile memory.
-        let temporal = temporal.as_mut().map(Temporal::split_for_record);
+        let temporal = temporal.as_deref_mut().map(Temporal::split_for_record);
         let temporal_targets = temporal.as_ref().map(|(textures, _)| textures.import(graph, temporal_reset));
         let depth = graph.create_texture("depth", depth_desc);
         let (character_depth, character_ids) = character_prepass.import(graph);
@@ -2479,7 +2481,7 @@ impl Renderer {
     /// Temporal AA's state, for tests that read its history back.
     #[cfg(test)]
     pub(crate) fn temporal(&self) -> Option<&Temporal> {
-        self.temporal.as_ref()
+        self.temporal.as_deref()
     }
 
     /// The materials, for tests that read their buffers back.
@@ -2868,6 +2870,16 @@ fn create_scene_bind_groups(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A renderer moves by value through `Result`s and its holders while the app starts, so each of
+    /// those frames near `main` holds copies of it, and iOS gives that thread 1 MiB. At 45 KiB, a
+    /// plain capture had used about 500 KiB before it reached the first pipeline. The fields that
+    /// took most of it are boxed: box the next one rather than raise this.
+    #[test]
+    fn a_renderer_is_small_enough_to_move_on_the_main_thread() {
+        let size = size_of::<Renderer>();
+        assert!(size <= 24 * 1024, "a renderer takes {size} bytes");
+    }
 
     #[test]
     fn scaled_sizes_round_per_side_and_stay_in_the_target() {

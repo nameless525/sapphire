@@ -460,7 +460,7 @@ pub(crate) struct PostProcess {
     /// Bake output, kept so a bake doesn't allocate it.
     texels: Vec<u32>,
     bloom_levels: u32,
-    bind_groups: BindGroups,
+    bind_groups: Box<BindGroups>,
     /// What the last `prepare` decided.
     uniforms: PostUniforms,
     variant: Variant,
@@ -693,7 +693,7 @@ impl PostProcess {
             slots: LutSlots::default(),
             texels: vec![0; LUT_TEXELS],
             bloom_levels,
-            bind_groups: BindGroups::default(),
+            bind_groups: Box::default(),
             uniforms: PostUniforms::default(),
             variant: Variant::default(),
             bound: [0, 0],
@@ -881,7 +881,7 @@ impl PostProcess {
             ..
         } = *self;
         let Builder { ref device, ref layouts, bloom_format, .. } = *builder;
-        let BindGroups { ref mut composite, ref mut prefilter, ref mut down, ref mut up } = *bind_groups;
+        let BindGroups { ref mut composite, ref mut prefilter, ref mut down, ref mut up } = **bind_groups;
         let pass = |pipeline, layout, cache| Fullscreen { device, labels, pipeline, shared, layout, cache };
         let pipeline = |slot| pipelines.get(slot).expect("prepare builds every pipeline its frame draws");
 

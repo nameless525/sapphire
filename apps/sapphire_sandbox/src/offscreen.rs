@@ -213,6 +213,11 @@ impl Stage {
                 content.character_mesh().ok_or_else(|| AppInitError::msg("the character isn't loaded"))?;
             scene.spawn_stage(layout, crate::stage::upload_stage(&mut renderer, character)?);
         }
+        // Offscreen there are no touches: the HUD is its fixed frame, in either mode.
+        if let Some(hud) = options.hud {
+            let hud = crate::hud::HudOptions { mode: crate::hud::HudMode::Fixed, ..hud };
+            scene.set_hud(crate::hud::SandboxHud::new(hud));
+        }
         #[cfg(feature = "dev")]
         let dev = crate::dev::DevTools::new(&gpu, FORMAT, options, platform, &content)?;
         #[cfg(not(feature = "dev"))]

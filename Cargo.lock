@@ -3232,6 +3232,7 @@ dependencies = [
  "sapphire_render",
  "sapphire_rhi",
  "sapphire_time",
+ "sapphire_ui",
  "sapphire_vfx",
  "sapphire_world",
  "tracing",

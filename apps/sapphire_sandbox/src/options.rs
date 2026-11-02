@@ -5,13 +5,14 @@ use std::path::PathBuf;
 
 use sapphire_render::quality::{OcclusionSetting, QualitySettings, Switch, TierId};
 use sapphire_render::{DebugView, LightPath, MIN_RENDER_SCALE, Msaa, PostVariants, RenderSettings, Wind};
-
-use crate::debug_shapes::DebugDrawDemo;
+use sapphire_ui::Insets;
 use sapphire_world::tod::CharacterShadeKey;
 
 use crate::audio::CueOption;
+use crate::debug_shapes::DebugDrawDemo;
 use crate::faces::{FaceLayout, MaterialOverrides};
 use crate::foliage::{DEFAULT_WIND, FoliageView};
+use crate::hud::{HudMode, HudOptions};
 use crate::lookdev::{self, Shot};
 use crate::rims::RimLayout;
 use crate::scene::{self, Fade, Scene};
@@ -121,6 +122,8 @@ pub(crate) struct Options {
     /// `--environment` (and `--probes`, which implies it) and `--foliage`, and the scenes that
     /// frame more of the mannequin (`--outline-row`, `--faces`, `--rim-rig`, `--hard-edges`).
     pub look_dev: Option<Shot>,
+    /// `--hud fixed|live`, `--hud-insets` and `--hud-scale`: the combat HUD over the scene (M2 I2).
+    pub hud: Option<HudOptions>,
     /// `--cloud-cover <0..1>`: both cloud layers' coverage instead of time of day's; 0 is a
     /// clear sky.
     pub cloud_cover: Option<f32>,
@@ -442,6 +445,7 @@ impl Options {
         let (mut capture_frames, mut capture_step) = (None, None);
         let (mut faces, mut face_layout) = (false, None);
         let (mut replay, mut record, mut scenario, mut script) = (None, None, None, None);
+        let (mut hud_mode, mut hud_insets, mut hud_scale) = (None, None, None);
         let mut args = args.iter().skip(1);
         while let Some(arg) = args.next() {
             // `--name=value` or `--name value`.
@@ -595,6 +599,22 @@ impl Options {
                     options.wind = Some(strength);
                 }
                 "--probes" => (options.probes, options.environment) = (true, true),
+                "--hud" => {
+                    let mode = match value("--hud")?.as_str() {
+                        "fixed" => HudMode::Fixed,
+                        "live" => HudMode::Live,
+                        other => return Err(format!("--hud expects fixed or live, got {other:?}")),
+                    };
+                    hud_mode = Some(mode);
+                }
+                "--hud-insets" => hud_insets = Some(parse_insets(&value("--hud-insets")?)?),
+                "--hud-scale" => {
+                    let scale: f32 = number(&value("--hud-scale")?, "--hud-scale")?;
+                    if !(scale.is_finite() && scale > 0.0) {
+                        return Err(format!("--hud-scale expects a positive scale, got {scale}"));
+                    }
+                    hud_scale = Some(scale);
+                }
                 "--look-dev" => {
                     let raw = value("--look-dev")?;
                     options.look_dev = Some(Shot::from_name(&raw).ok_or_else(|| {
@@ -730,6 +750,11 @@ impl Options {
                 _ => unknown.push(arg.clone()),
             }
         }
+        options.hud = match (hud_mode, hud_insets, hud_scale) {
+            (None, None, None) => None,
+            (None, ..) => return Err("--hud-insets and --hud-scale need --hud".to_owned()),
+            (Some(mode), insets, scale) => Some(HudOptions { mode, insets, scale: scale.unwrap_or(1.0) }),
+        };
         options.faces = match (faces, face_layout) {
             (true, layout) => Some(layout.unwrap_or_default()),
             (false, Some(_)) => return Err("--face-layout needs --faces".to_owned()),
@@ -864,6 +889,18 @@ impl Options {
 
 fn number<T: std::str::FromStr>(raw: &str, name: &str) -> Result<T, String> {
     raw.parse().map_err(|_| format!("{name} expects a number, got {raw:?}"))
+}
+
+/// `<left>,<top>,<right>,<bottom>` in points, none negative.
+fn parse_insets(raw: &str) -> Result<Insets, String> {
+    let invalid = || format!("--hud-insets expects LEFT,TOP,RIGHT,BOTTOM, none negative, got {raw:?}");
+    let values: Vec<f32> =
+        raw.split(',').map(|value| value.trim().parse().map_err(|_| invalid())).collect::<Result<_, _>>()?;
+    let [left, top, right, bottom] = values[..] else { return Err(invalid()) };
+    if ![left, top, right, bottom].iter().all(|value| value.is_finite() && *value >= 0.0) {
+        return Err(invalid());
+    }
+    Ok(Insets { left, top, right, bottom })
 }
 
 /// `<r>,<g>,<b>,<share>`: a hue that isn't black and a share within 0 to 1.
@@ -1153,6 +1190,26 @@ mod tests {
         assert_eq!(Options::default().camera_rim, None);
         for wrong in ["1.5", "-0.1", "NaN", "behind"] {
             assert!(parse(&["--camera-rim", wrong]).is_err(), "{wrong}");
+        }
+    }
+
+    #[test]
+    fn the_hud_takes_a_mode_and_its_companions_need_it() {
+        assert_eq!(Options::default().hud, None);
+        let (options, _) = parse(&["--hud", "fixed"]).unwrap();
+        assert_eq!(options.hud, Some(HudOptions::default()));
+        let (options, _) = parse(&["--hud-scale", "3", "--hud=live", "--hud-insets", "62, 0,62,21"]).unwrap();
+        let insets = Insets { left: 62.0, top: 0.0, right: 62.0, bottom: 21.0 };
+        assert_eq!(options.hud, Some(HudOptions { mode: HudMode::Live, insets: Some(insets), scale: 3.0 }));
+        for wrong in [
+            &["--hud", "maybe"][..],
+            &["--hud-insets", "1,2,3,4"],
+            &["--hud-scale", "2"],
+            &["--hud", "fixed", "--hud-insets", "1,2,3"],
+            &["--hud", "fixed", "--hud-insets", "1,2,3,-4"],
+            &["--hud", "fixed", "--hud-scale", "0"],
+        ] {
+            assert!(parse(wrong).is_err(), "{wrong:?}");
         }
     }
 

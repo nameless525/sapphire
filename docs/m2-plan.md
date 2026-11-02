@@ -107,7 +107,7 @@ The usual rules carry over: existing goldens stay byte-identical unless a row sa
 | ID | Package | Size | Depends on | Notes |
 |---|---|---|---|---|
 | I1 | **Combat bindings:** contexts for gamepad and keyboard on `sapphire_input`, rebindable, with pause. Decides what Android Back does (review PN-3). | S | D1 | |
-| I2 | **`sapphire_ui`'s first slice:** a quad list after post with a generated atlas: virtual stick, buttons, HP and poise bars, digits, safe areas. Touch zones feed actions. | M | I1, G3 | New pipeline built on first draw. Plain data in `FramePacket` (R4). |
+| I2 | **`sapphire_ui`'s first slice:** a quad list after post with a generated atlas: virtual stick, buttons, HP and poise bars, digits, safe areas. Touch zones feed actions. | M | I1, G3 | New pipeline built on first draw. Plain data in `FramePacket` (R4). **As built:** `sapphire_ui` (L3) writes a `UiDrawList` (plain data in `sapphire_look`, carried by `FramePacket::ui`) and the renderer's `ui` pass draws it after post, its one pipeline built on the first frame with quads; a frame without any builds and adds nothing, and older goldens stay exact. `TouchControls` turns fingers into plain `TouchActions` (stick, button edges, camera delta) with ownership from press to release, and `CombatHud` draws from plain `HudValues` on the real clock. Atlas: 320 × 216, 69,120 bytes, about 0.85 ms to paint. Fixed frame: 41 quads, 2.3 µs of CPU, about 0.1 ms of GPU at 2622 × 1206 on an M5. Goldens `hud-wide`, `hud-tablet`, `hud-ultrawide`, `hud-notch`. Numbers and what wasn't exercised: spec §5.17. Wiring real health and intents is G3's and I1's. |
 
 ### Track T: tools
 

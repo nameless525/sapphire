@@ -138,6 +138,14 @@
 //!   day; `--view`, `--fov` and `--zoom` adjust the shot. The golden scenes
 //!   `lookdev-town-day`, `-hero`, `-golden`, `-blue` and `-night`, `lookdev-street-night` and
 //!   `lookdev-face` show it.
+//! - `--hud fixed|live`: the combat HUD (`hud.rs`, M2 I2) over whatever the scene draws. `fixed` is
+//!   one frozen frame on a made-up clock, a hit landing with both thumbs down, as the `hud-*` golden
+//!   scenes capture it; `live` runs the touch zones on real touches, with a stand-in for gameplay,
+//!   and logs what they do.
+//! - `--hud-insets <left>,<top>,<right>,<bottom>`: what the device covers, in points, in place of
+//!   the window's safe area: to try a notch on a frame that has none.
+//! - `--hud-scale <scale>`: pixels per point in an offscreen frame (3 for a phone's capture), the
+//!   player's UI scale on top of the display's in a window. 1 without it.
 //! - `--outline-row`: place more of the character behind it, from 4 m to 90 m further back, past
 //!   the outline cutoff, showing the outline width's distance curve (M1 C4).
 //! - `--hard-edges`: show the hard-edged outline sample instead of the character: flat-shaded
@@ -256,6 +264,7 @@ mod extract;
 mod faces;
 mod foliage;
 mod garments;
+mod hud;
 mod input;
 mod layers;
 #[cfg(feature = "dev")]

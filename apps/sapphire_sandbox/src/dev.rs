@@ -165,21 +165,21 @@ impl DevTools {
         self.shaders.renderer_created(renderer);
     }
 
-    /// The overlay sees each event first; the game's input gets what it doesn't use.
-    pub fn handle_event(&mut self, event: &Event, input: &mut SandboxInput) {
+    /// The overlay sees each event first; the game gets what it doesn't use.
+    pub fn handle_event(&mut self, event: &Event, game: &mut dyn FnMut(&Event)) {
         match event {
             Event::Window { event: WindowEvent::FocusGained, .. } => self.focused = true,
             Event::Window { event: WindowEvent::FocusLost, .. } => self.focused = false,
             _ => {}
         }
-        self.overlay.handle_event(event, &mut |event| input.handle_event(event));
+        self.overlay.handle_event(event, &mut |event| game(event));
     }
 
     /// Starts the frame at `now` on the platform clock: the overlay's time-driven toggle
     /// gesture, before the input update.
-    pub fn poll(&mut self, now: Timestamp, input: &mut SandboxInput) {
+    pub fn poll(&mut self, now: Timestamp, game: &mut dyn FnMut(&Event)) {
         self.now = now;
-        self.overlay.poll_gestures(now, &mut |event| input.handle_event(event));
+        self.overlay.poll_gestures(now, &mut |event| game(event));
     }
 
     /// Advances the overlay's clock without a platform: offscreen frames are `frame` long.

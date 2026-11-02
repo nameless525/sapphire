@@ -55,6 +55,8 @@
 //!   [`Figure`] it makes, where the light rig finds the character's head, body and face
 //!   ([`Scene::spawn_look_dev`], [`crate::lookdev`]). A new version of her mesh or rig under a
 //!   running app holds her anew ([`Scene::follow_content`]).
+//! - **The HUD** (`--hud`, M2 I2): not ECS data: [`SandboxHud`] draws into each packet's interface
+//!   list as [`Scene::frame_packet`] ends, and survives a new renderer with the scene.
 //! - **Systems:** time of day and the screen effects tick in `FixedFirst`, after the clocks;
 //!   turntables spin, and
 //!   stalks sway, in `FixedCombat`. `Extract` poses them,
@@ -115,6 +117,7 @@ use crate::extract::{self, RenderExtract, RenderLight, RenderMesh, RenderPose, R
 use crate::faces::{self, FaceLayout, FaceRig};
 use crate::foliage::{self, FoliageMeshes, FoliageView, Plant};
 use crate::garments;
+use crate::hud::SandboxHud;
 use crate::input::SimActions;
 use crate::layers::{self, SAMPLES};
 use crate::lookdev::{self, Shot, TownMeshes};
@@ -333,6 +336,8 @@ pub(crate) struct Scene {
     cloud_cover: Option<f32>,
     /// The sky's gradient alone (`--plain-sky`).
     plain_sky: bool,
+    /// The combat HUD over the scene (`--hud`, M2 I2).
+    hud: Option<SandboxHud>,
     /// Time of day's fog, unless `--fog off` (M1 W3).
     fog: bool,
     /// Post without its compositing layers (`--plain-post`).
@@ -429,6 +434,7 @@ impl Scene {
             sky_material: None,
             cloud_cover: None,
             plain_sky: false,
+            hud: None,
             fog: true,
             plain_post: false,
             debug_draw: Collector::new(),
@@ -1252,6 +1258,10 @@ impl Scene {
                 });
             }
         });
+        if let (Some(hud), Some(size)) = (&mut self.hud, target_size) {
+            let mut extract = self.ecs.world_mut().resource_mut::<RenderExtract>();
+            hud.draw(size, &mut extract.packet_mut().ui);
+        }
         // Debug draws, from every thread (M2 T1). Timed ones run on the world clock, which pausing
         // and single-stepping the world holds, so what they mark stays to be looked at.
         profiling::scope!("debug draw");
@@ -1262,6 +1272,31 @@ impl Scene {
         let mut extract = self.ecs.world_mut().resource_mut::<RenderExtract>();
         self.debug_draw.collect(now, &mut extract.packet_mut().debug);
         self.ecs.world().resource::<RenderExtract>().packet()
+    }
+
+    /// Shows the combat HUD over the scene (`--hud`, M2 I2).
+    pub fn set_hud(&mut self, hud: SandboxHud) {
+        self.hud = Some(hud);
+    }
+
+    /// The HUD, if the scene shows one.
+    pub fn hud(&self) -> Option<&SandboxHud> {
+        self.hud.as_ref()
+    }
+
+    /// A platform event for the HUD's touch zones: whether they took it.
+    pub fn hud_event(&mut self, event: &sapphire_platform::Event) -> bool {
+        self.hud.as_mut().is_some_and(|hud| hud.handle_event(event))
+    }
+
+    /// The HUD's frame on the real clock, where a window has its metrics: the camera follows its
+    /// drag.
+    pub fn update_hud(&mut self, now: sapphire_platform::Timestamp, window: &sapphire_platform::Window) {
+        let Some(hud) = &mut self.hud else { return };
+        let orbit = hud.update(now, window);
+        if orbit != sapphire_math::Vec2::ZERO {
+            self.camera_mut().rotate(orbit.x, orbit.y);
+        }
     }
 
     /// Makes the next packet add every instance again, changed or not, for a renderer that

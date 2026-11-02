@@ -36,7 +36,8 @@ use std::time::Duration;
 use sapphire_core::alloc;
 use sapphire_platform::{AppInitError, Platform};
 use sapphire_render::{
-    CHARACTER_PREPASS, MAIN_PASS, PREPASSES, ambient, debug_draw, debug_view, post, shadows, temporal, vfx,
+    CHARACTER_PREPASS, MAIN_PASS, PREPASSES, UI_PASS, ambient, debug_draw, debug_view, post, shadows,
+    temporal, vfx,
 };
 use sapphire_rhi::wgpu;
 use sapphire_time::Stopwatch;
@@ -80,6 +81,8 @@ pub(crate) fn run(
     // The effects' simulation and frame write per measured frame (`--vfx`), and what they held.
     let (mut vfx_total, mut vfx_max) = (Duration::ZERO, Duration::ZERO);
     let (mut vfx_particles, mut vfx_points) = (0_u64, 0_u64);
+    // The HUD's update and draw, with `--hud`: its total and its slowest.
+    let (mut hud_total, mut hud_max) = (Duration::ZERO, Duration::ZERO);
     // GPU pass spans of the measured frames that came back: (newest frame, total, count).
     let (mut timed_frame, mut gpu_span, mut timed) = (0, Duration::ZERO, 0_u32);
     for frame in 0..WARMUP_FRAMES + frames {
@@ -105,6 +108,11 @@ pub(crate) fn run(
             vfx_max = vfx_max.max(effects.simulation.simulation);
             vfx_particles += u64::from(effects.sprites);
             vfx_points += u64::from(effects.ribbon_points);
+            if let Some(hud) = stage.scene.hud() {
+                let (_, cost) = hud.last_frame();
+                hud_total += cost;
+                hud_max = hud_max.max(cost);
+            }
             if let Some(timings) = stage.graph.gpu_timings()
                 && timings.frame > timed_frame.max(u64::from(WARMUP_FRAMES))
             {
@@ -161,6 +169,8 @@ pub(crate) fn run(
         vfx_sim_us_max = format_args!("{:.2}", micros(vfx_max)),
         vfx_sprites_mean = vfx_particles / u64::from(frames),
         vfx_ribbon_points_mean = vfx_points / u64::from(frames),
+        hud_us_mean = format_args!("{:.2}", micros(hud_total / frames)),
+        hud_us_max = format_args!("{:.2}", micros(hud_max)),
         alloc_bytes_per_frame = bytes / u64::from(frames),
         startup_ms = format_args!("{:.1}", startup.as_secs_f64() * 1e3),
         graph = ?stage.graph.stats(),
@@ -191,6 +201,7 @@ fn gpu_times(stage: &mut Stage, view: &wgpu::TextureView, bloom_levels: u32) -> 
     let (mut character_prepass, mut clusters, mut ambient_pass, mut views) = (zero, zero, zero, zero);
     let mut debug_draws = zero;
     let mut effects = zero;
+    let mut ui = zero;
     // Post's passes are summed only over frames whose timings hold every one of them and the
     // main pass before them: on Apple GPUs some frames come back with some passes' timestamps
     // invalid, and a missing pass leaves its time in the next one's exclusive time.
@@ -212,7 +223,7 @@ fn gpu_times(stage: &mut Stage, view: &wgpu::TextureView, bloom_levels: u32) -> 
         // and with its bloom chain is §3.3's "Bloom + tonemap + LUT".
         // The ambient pass (M1 W5): the grid's work and GTAO. A debug view's replay and its pass
         // over the frame (M1 F5): what showing it costs.
-        let groups: [(&[&str], &mut Sums); 12] = [
+        let groups: [(&[&str], &mut Sums); 13] = [
             (&["skinning"], &mut skinning),
             (&["sky cube"], &mut sky_cube),
             (&[MAIN_PASS], &mut main),
@@ -225,6 +236,7 @@ fn gpu_times(stage: &mut Stage, view: &wgpu::TextureView, bloom_levels: u32) -> 
             (&debug_view::PASSES, &mut views),
             (&[debug_draw::PASS], &mut debug_draws),
             (&[vfx::PASS], &mut effects),
+            (&[UI_PASS], &mut ui),
         ];
         for (names, sums) in groups {
             let mut ran = false;
@@ -296,6 +308,9 @@ fn gpu_times(stage: &mut Stage, view: &wgpu::TextureView, bloom_levels: u32) -> 
         gpu_vfx_us = format_args!("{:.1}", micros(effects.0, effects.2)),
         gpu_vfx_duration_us = format_args!("{:.1}", micros(effects.1, effects.2)),
         vfx_frames = effects.2,
+        gpu_ui_us = format_args!("{:.1}", micros(ui.0, ui.2)),
+        gpu_ui_duration_us = format_args!("{:.1}", micros(ui.1, ui.2)),
+        ui_frames = ui.2,
         "bench gpu",
     );
     Ok(())

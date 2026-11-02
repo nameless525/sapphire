@@ -136,7 +136,13 @@ pub struct Scene {
 /// The effects scenes (M2 E2) play `--vfx`'s shows at fixed ticks, whose simulation is seeded: the
 /// sword arc at noon and at night, a hit at sunset and a duel's worst moment, on the look-dev stage
 /// under temporal AA and at Mobile-Low, then alone with everything else pinned off.
-pub fn scenes() -> [Scene; 102] {
+///
+/// The combat HUD scenes (M2 I2) alone draw the on-screen interface (`--hud fixed`, one frozen frame
+/// on a made-up clock; no other scene has any, and a frame with no quads builds and draws nothing,
+/// so nothing earlier needs pinning), over the look-dev stage, pinned as its scenes are but with 4×
+/// MSAA in place of temporal AA, which needs no warm-up frames: the backdrop is a backdrop. Their
+/// `--size`, after the runner's, sets each one's aspect ratio.
+pub fn scenes() -> [Scene; 106] {
     [
         Scene {
             name: "turntable-start",
@@ -2536,6 +2542,99 @@ pub fn scenes() -> [Scene; 102] {
             ],
             thresholds: Thresholds::default(),
         },
+        // The combat HUD's fixed frame (M2 I2) at the aspect ratios spec §5.17 names, each a phone-
+        // sized frame in points: bright midday behind it at 16:9 and with a notch, golden hour at
+        // 4:3 and the lantern-lit street at 21:9, so its inks and digits read over all three.
+        Scene {
+            name: "hud-wide",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--look-dev",
+                "wide",
+                "--time-of-day",
+                "13",
+                "--tier",
+                "desktop-high",
+                "--aa",
+                "msaa",
+                "--ao",
+                "off",
+                "--hud",
+                "fixed",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        Scene {
+            name: "hud-tablet",
+            args: &[
+                "--size",
+                "480x360",
+                "--capture-ticks",
+                "90",
+                "--look-dev",
+                "hero",
+                "--time-of-day",
+                "18",
+                "--tier",
+                "desktop-high",
+                "--aa",
+                "msaa",
+                "--ao",
+                "off",
+                "--hud",
+                "fixed",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        Scene {
+            name: "hud-ultrawide",
+            args: &[
+                "--size",
+                "840x360",
+                "--capture-ticks",
+                "90",
+                "--look-dev",
+                "street",
+                "--time-of-day",
+                "21",
+                "--tier",
+                "desktop-high",
+                "--aa",
+                "msaa",
+                "--ao",
+                "off",
+                "--hud",
+                "fixed",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // An iPhone's frame in points with its insets: the left and right notch bands and the home
+        // indicator's strip stay clear, the controls just inside them.
+        Scene {
+            name: "hud-notch",
+            args: &[
+                "--size",
+                "874x402",
+                "--capture-ticks",
+                "90",
+                "--look-dev",
+                "wide",
+                "--time-of-day",
+                "13",
+                "--tier",
+                "desktop-high",
+                "--aa",
+                "msaa",
+                "--ao",
+                "off",
+                "--hud",
+                "fixed",
+                "--hud-insets",
+                "62,0,62,21",
+            ],
+            thresholds: Thresholds::default(),
+        },
     ]
 }
 
@@ -3155,6 +3254,25 @@ mod tests {
                 assert!(pinned("--ao", "off"), "{}", scene.name);
                 assert!(!scene.args.contains(&"--probes"), "{}", scene.name);
             }
+        }
+    }
+
+    #[test]
+    fn only_the_hud_scenes_draw_the_interface_and_they_cover_spec_5_17_s_aspect_ratios() {
+        let mut sizes = Vec::new();
+        for scene in scenes() {
+            let hud = scene.args.contains(&"--hud");
+            assert_eq!(hud, scene.name.starts_with("hud-"), "{}", scene.name);
+            if hud {
+                let size =
+                    scene.args.windows(2).find(|pair| pair[0] == "--size").map_or(SIZE, |pair| pair[1]);
+                sizes.push(size);
+            } else {
+                assert!(!scene.args.iter().any(|arg| arg.starts_with("--size")), "{}", scene.name);
+            }
+        }
+        for (ratio, size) in [("4:3", "480x360"), ("16:9", "640x360"), ("21:9", "840x360")] {
+            assert!(sizes.contains(&size), "no HUD scene at {ratio}");
         }
     }
 

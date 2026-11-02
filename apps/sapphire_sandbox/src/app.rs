@@ -220,6 +220,9 @@ impl App for SandboxApp {
             Some(cue) => SandboxAudio::new(cue, platform, &mut content, &mut renderer.renderer, &device.gpu)?,
             None => None,
         };
+        if let Some(hud) = options.hud {
+            scene.set_hud(crate::hud::SandboxHud::new(hud));
+        }
         #[cfg(feature = "dev")]
         let dev = DevTools::new(&device.gpu, device.format, &options, platform, &content)?;
         #[cfg(not(feature = "dev"))]
@@ -261,10 +264,11 @@ impl App for SandboxApp {
         // Input queues for the next frame. Losing focus or the foreground releases everything
         // held, since the releases may never arrive. With the debug overlay, it sees each event
         // first and passes on what it doesn't use.
+        let (scene, input) = (&mut self.scene, &mut self.input);
         #[cfg(feature = "dev")]
-        self.dev.handle_event(event, &mut self.input);
+        self.dev.handle_event(event, &mut |event| game_event(scene, input, event));
         #[cfg(not(feature = "dev"))]
-        self.input.handle_event(event);
+        game_event(scene, input, event);
         match event {
             Event::Quit { .. } => return AppControl::Exit,
             Event::Window { event, .. } => match *event {
@@ -299,7 +303,10 @@ impl App for SandboxApp {
         let mut stopwatch = Stopwatch::start();
         // On the clock event timestamps use, so every trigger is judged on one timeline.
         #[cfg(feature = "dev")]
-        self.dev.poll(platform.now(), &mut self.input);
+        {
+            let (scene, input) = (&mut self.scene, &mut self.input);
+            self.dev.poll(platform.now(), &mut |event| game_event(scene, input, event));
+        }
         if self.input.update(platform.now()) {
             return AppControl::Exit;
         }
@@ -334,6 +341,8 @@ impl App for SandboxApp {
         self.stages.simulation = stopwatch.lap();
         self.stages.fixed_steps = steps.count;
 
+        // The HUD's touch zones and animation are on the real clock too.
+        self.scene.update_hud(platform.now(), &self.window);
         // Presentation runs on the real clock, so the camera stays responsive in slow motion.
         let dt = frame_time.min(MAX_PRESENTATION_DT).as_secs_f32();
         let mut camera = self.scene.camera_mut();
@@ -374,6 +383,14 @@ impl App for SandboxApp {
     fn quit(&mut self, _platform: &mut Platform) {
         self.save_pipeline_cache();
         tracing::info!(target: LOG_TARGET, presented = self.presented_frames, "quit");
+    }
+}
+
+/// An event for the game: the HUD's touch zones take what lands on them, and the game's input gets
+/// the rest. Losing focus or the foreground reaches both.
+fn game_event(scene: &mut Scene, input: &mut SandboxInput, event: &Event) {
+    if !scene.hud_event(event) {
+        input.handle_event(event);
     }
 }
 

@@ -83,7 +83,7 @@ pub enum Push {
     /// answers once its reloads land.
     Pack { pack: PushedPack, reply: Responder },
     /// A frame to capture: the app reads back the next frame it draws and answers with
-    /// [`ReplyBody::Captured`].
+    /// [`ReplyBody::Captured`], or refuses a frame with no pixels ([`capture_refusal`]).
     Capture { reply: Responder },
 }
 
@@ -131,6 +131,14 @@ impl Responder {
     pub fn refuse(self, message: impl Into<String>) {
         self.reply(ReplyBody::Error(message.into()));
     }
+}
+
+/// Why a frame of `size` can't be captured, if it can't, for the app to refuse the capture with.
+/// A minimized window's surface is parked at 0×0, and a texture with a side of 0 is a GPU
+/// validation error, which is fatal in debug builds.
+pub fn capture_refusal((width, height): (u32, u32)) -> Option<String> {
+    (width == 0 || height == 0)
+        .then(|| format!("the window is {width}×{height}, so there is no frame to capture: is it minimized?"))
 }
 
 /// Sets cvar `name` from `value`, as the dev console does, and says how: its new value, or why it
@@ -730,6 +738,16 @@ mod tests {
         // Shorter ones go whole.
         let short = replied(|reply| reply.refuse("no"));
         assert_eq!(short.body, ReplyBody::Error("no".into()));
+    }
+
+    #[test]
+    fn a_frame_with_no_pixels_cant_be_captured() {
+        for size in [(0, 0), (0, 720), (1280, 0)] {
+            let refusal = capture_refusal(size).expect("a refusal");
+            assert!(refusal.contains("minimized"), "{size:?}: {refusal}");
+        }
+        assert_eq!(capture_refusal((1280, 720)), None);
+        assert_eq!(capture_refusal((1, 1)), None);
     }
 
     #[test]

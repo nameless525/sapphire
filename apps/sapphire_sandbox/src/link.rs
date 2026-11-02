@@ -16,7 +16,8 @@
 //! - a capture is answered with the next frame the app draws ([`FrameCapture`]): the windowed
 //!   app draws that frame into a texture it reads back instead of its surface, and the offscreen
 //!   `--offscreen` mode into one beside its own target. The PNG is compressed on a thread of its
-//!   own.
+//!   own. A minimized window has no frame to capture, so the capture is refused
+//!   ([`CaptureRequest::start`]).
 //!
 //! Whatever is refused (a document that doesn't parse, shaders that don't compile, a pack the
 //! asset server won't mount) keeps what it had; the tool hears why, and the overlay's stats panel
@@ -33,7 +34,9 @@ use sapphire_assets::AssetChange;
 use sapphire_core::cvar::CvarRegistry;
 use sapphire_debug::LiveLinkStatus;
 use sapphire_livelink::protocol::{Capture, DeviceStatus, MAX_CAPTURE, ReplyBody, SourceFile};
-use sapphire_livelink::{LinkMode, LiveLink, LivePacks, Push, ReloadTracker, Responder, set_cvar};
+use sapphire_livelink::{
+    LinkMode, LiveLink, LivePacks, Push, ReloadTracker, Responder, capture_refusal, set_cvar,
+};
 use sapphire_platform::{App as _, DeviceClass, Os, SystemInfo};
 use sapphire_render::graph::{FrameGraph, TextureId};
 use sapphire_render::{Renderer, ShaderFile};
@@ -292,6 +295,26 @@ pub(crate) struct CaptureRequest {
     replies: Vec<Responder>,
 }
 
+impl CaptureRequest {
+    /// Starts drawing the captures into a `size` frame in `format`. A frame with no pixels (a
+    /// minimized window's) has nothing to capture: they are all refused, and there is `None`.
+    pub fn start(
+        self,
+        gpu: &GpuContext,
+        size: (u32, u32),
+        format: wgpu::TextureFormat,
+    ) -> Option<FrameCapture> {
+        let Some(error) = capture_refusal(size) else {
+            return Some(FrameCapture::new(gpu, size, format, self));
+        };
+        tracing::warn!(target: LOG_TARGET, error, "live link refused a capture");
+        for reply in self.replies {
+            reply.refuse(error.clone());
+        }
+        None
+    }
+}
+
 /// A frame drawn for [`CaptureRequest`]s: into a texture of its own, the size and format of
 /// the frame the app would otherwise draw, which is read back once the frame has run.
 pub(crate) struct FrameCapture {
@@ -303,8 +326,8 @@ pub(crate) struct FrameCapture {
 }
 
 impl FrameCapture {
-    /// A `size` frame in `format`, an 8-bit RGBA or BGRA format as surfaces and offscreen
-    /// targets are.
+    /// A `size` frame, with no side of 0, in `format`, an 8-bit RGBA or BGRA format as surfaces
+    /// and offscreen targets are.
     pub fn new(
         gpu: &GpuContext,
         size: (u32, u32),
@@ -386,6 +409,50 @@ impl FrameCapture {
         // The captures, dropped unanswered, time out on the tool's side.
         if let Err(error) = spawned {
             tracing::warn!(target: LOG_TARGET, %error, "live link couldn't compress a capture");
+        }
+    }
+}
+
+/// They need a GPU: run them with
+/// `cargo test -p sapphire_sandbox --features dev --lib -- --ignored link::`.
+#[cfg(test)]
+mod gpu_tests {
+    use std::net::SocketAddr;
+
+    use sapphire_assets::MemoryPackSource;
+    use sapphire_livelink::{Client, LinkError};
+    use sapphire_rhi::{GpuContextDesc, GpuInstance, GpuInstanceDesc};
+
+    use super::*;
+
+    /// What a tool hears when the app takes its capture request and starts it at `size`.
+    fn capture_at(gpu: &GpuContext, size: (u32, u32)) -> Result<(), LinkError> {
+        let packs = Arc::new(LivePacks::new(MemoryPackSource::new()));
+        let link =
+            LiveLink::start(LinkMode::Listen(SocketAddr::from(([127, 0, 0, 1], 0))), packs).expect("a link");
+        let address = link.address();
+        let tool = std::thread::spawn(move || Client::connect(address).expect("a device").capture());
+        let reply = loop {
+            if let Some(Push::Capture { reply }) = link.poll() {
+                break reply;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        let request = CaptureRequest { replies: vec![reply] };
+        assert!(request.start(gpu, size, wgpu::TextureFormat::Rgba8UnormSrgb).is_none());
+        tool.join().expect("the tool's thread").map(|_| ())
+    }
+
+    /// A capture of a minimized window (review PN-2): a zero-size texture would be a validation
+    /// error, which panics in debug builds, rather than the refusal the tool hears.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_capture_with_no_pixels_is_refused() {
+        let instance = GpuInstance::new(&GpuInstanceDesc::default()).expect("instance");
+        let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), None).expect("device");
+        for size in [(0, 0), (0, 720)] {
+            let error = capture_at(&gpu, size).expect_err("a refusal").to_string();
+            assert!(error.contains("minimized"), "{size:?}: {error}");
         }
     }
 }

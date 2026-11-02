@@ -31,7 +31,8 @@
 //! # Does not own
 //!
 //! - Drawing captures: the app draws the frame a capture asks for into a texture it reads back,
-//!   and compresses it ([`protocol::Capture`]).
+//!   and compresses it ([`protocol::Capture`]), or refuses a frame with no pixels
+//!   ([`capture_refusal`]).
 //! - Applying documents and shaders: the app hands a document to the owner of the type its
 //!   envelope names (time of day's `TimeOfDay::set_timeline`, the character light rig presets'
 //!   library, the screen effect presets' library), and shader sources to
@@ -110,7 +111,9 @@ pub mod packs;
 pub mod protocol;
 
 pub use client::Client;
-pub use device::{LinkCounters, LinkMode, LiveLink, Push, ReloadTracker, Responder, set_cvar};
+pub use device::{
+    LinkCounters, LinkMode, LiveLink, Push, ReloadTracker, Responder, capture_refusal, set_cvar,
+};
 pub use packs::{LivePacks, PushLimits, PushedPack};
 pub use protocol::{DEFAULT_PORT, LinkError, PROTOCOL_VERSION};
 

@@ -27,8 +27,6 @@ use crate::dev::{DevTools, FrameState};
 use crate::environment::FOG_CARDS;
 use crate::foliage::FoliageMeshes;
 use crate::input::SandboxInput;
-#[cfg(feature = "dev")]
-use crate::link::FrameCapture;
 use crate::lookdev::TownMeshes;
 use crate::options::Options;
 use crate::rims::RimRigMeshes;
@@ -408,10 +406,9 @@ impl SandboxApp {
         // of the surface's image: the display shows the frame before for one more refresh.
         #[cfg(feature = "dev")]
         let capture = match self.surface.as_ref().and_then(RenderSurface::size) {
-            Some(size) => self
-                .dev
-                .take_capture()
-                .map(|request| FrameCapture::new(&self.gpu, size, self.format, request)),
+            Some(size) => {
+                self.dev.take_capture().and_then(|request| request.start(&self.gpu, size, self.format))
+            }
             None => None,
         };
         #[cfg(feature = "dev")]

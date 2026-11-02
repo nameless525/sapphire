@@ -1,0 +1,8 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "5da6ea45-70b9-4762-be22-e5a756a1b7d3",
+        importer: Material(()),
+    ),
+)

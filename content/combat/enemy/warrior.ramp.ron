@@ -1,0 +1,105 @@
+// The warrior's shadow ramps (M2 O4): every row multiplies the albedo on the shadow side, from the
+// deepest shadow (0) to the terminator (1), in the part order of `sapphire_pipeline::combat::Part`.
+// Bone falls into a cold lavender, well away from the character's warm skin shade, so it reads as
+// bone rather than as pale skin; metal and leather go a cool blue; the cloak keeps its wine. Night
+// rows, which time of day blends in from dusk, lean further blue.
+(
+    type: "sapphire::pipeline::RampMap",
+    version: 1,
+    data: (
+        interpolation: OkLab,
+        materials: [
+            (
+                name: "bone",
+                day: (
+                    stops: [
+                        (at: 0.0, color: "#7e80ac"),
+                        (at: 0.7, color: "#9a9abe"),
+                        (at: 1.0, color: "#b0aec8"),
+                    ],
+                ),
+                night: Some((
+                    stops: [
+                        (at: 0.0, color: "#6e74a8"),
+                        (at: 1.0, color: "#9498c4"),
+                    ],
+                )),
+            ),
+            (
+                name: "armour",
+                day: (
+                    stops: [
+                        (at: 0.0, color: "#5a6490"),
+                        (at: 1.0, color: "#7a84ac"),
+                    ],
+                ),
+                night: Some((
+                    stops: [
+                        (at: 0.0, color: "#505a90"),
+                        (at: 1.0, color: "#7078ac"),
+                    ],
+                )),
+            ),
+            (
+                name: "steel",
+                day: (
+                    stops: [
+                        (at: 0.0, color: "#6a7498"),
+                        (at: 1.0, color: "#8e98b4"),
+                    ],
+                ),
+                night: Some((
+                    stops: [
+                        (at: 0.0, color: "#5a66a0"),
+                        (at: 1.0, color: "#808ab8"),
+                    ],
+                )),
+            ),
+            (
+                name: "cloak",
+                day: (
+                    stops: [
+                        (at: 0.0, color: "#6a3c68"),
+                        (at: 1.0, color: "#8c5478"),
+                    ],
+                ),
+                night: Some((
+                    stops: [
+                        (at: 0.0, color: "#583c78"),
+                        (at: 1.0, color: "#7a5490"),
+                    ],
+                )),
+            ),
+            (
+                name: "leather",
+                day: (
+                    stops: [
+                        (at: 0.0, color: "#645878"),
+                        (at: 1.0, color: "#847890"),
+                    ],
+                ),
+                night: Some((
+                    stops: [
+                        (at: 0.0, color: "#565088"),
+                        (at: 1.0, color: "#7670a0"),
+                    ],
+                )),
+            ),
+            (
+                name: "trim",
+                day: (
+                    stops: [
+                        (at: 0.0, color: "#505474"),
+                        (at: 1.0, color: "#6a6e8c"),
+                    ],
+                ),
+                night: Some((
+                    stops: [
+                        (at: 0.0, color: "#484c7c"),
+                        (at: 1.0, color: "#626694"),
+                    ],
+                )),
+            ),
+        ],
+    ),
+)

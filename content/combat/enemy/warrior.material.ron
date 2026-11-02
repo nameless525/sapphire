@@ -1,0 +1,109 @@
+// The warrior (M2 O4), everything but its eyes, in place of KayKit's palette material. It binds to
+// the model's and the blade's `skeleton` slot through their sidecars. One material with a region per
+// part, which the control map's material ID picks per pixel (`sapphire_pipeline::combat::Part`):
+// 0 bone, 1 armour, 2 steel, 3 cloak, 4 leather, 5 trim.
+(
+    type: "sapphire::render::AnimeCharacterMaterial",
+    version: 2,
+    data: (
+        surface: Body,
+        base_color: (1.0, 1.0, 1.0, 1.0),
+        base_color_map: Some("6f6639f1-8102-40c5-afd3-dd3a115627ce"),
+        alpha: Opaque,
+        control_map: Some("9e43778e-4c2f-4fdd-a083-558c4225e626"),
+        light_split: (
+            threshold: 0.2,
+            softness: 0.015,
+        ),
+        diffuse: Ramp((
+            map: "77443d70-609b-4a27-9c5d-3e43fc6d34b7",
+            mix: 1.0,
+        )),
+        regions: [
+            (
+                // Bone: a cold shadow, a thin warm-dark line, a hard small highlight on its crown.
+                specular_color: (0.28, 0.27, 0.26),
+                specular_size: 30.0,
+                rim_color: (1.0, 0.96, 0.92),
+                outline_color: (0.055, 0.04, 0.07),
+                matcap: (channel: Off),
+            ),
+            (
+                // Armour: dark plate, read through its painted sheen and a crisp highlight.
+                specular_color: (0.7, 0.78, 0.95),
+                specular_size: 48.0,
+                rim_color: (0.72, 0.8, 1.0),
+                outline_color: (0.012, 0.012, 0.024),
+                matcap: (channel: Rgb, blend: Add, color: (1.0, 1.0, 1.0)),
+            ),
+            (
+                // Steel: the blade, brighter, its edge catching the sky.
+                specular_color: (1.0, 1.0, 1.0),
+                specular_size: 72.0,
+                rim_color: (0.9, 0.94, 1.0),
+                outline_color: (0.02, 0.022, 0.04),
+                matcap: (channel: Rgb, blend: Add, color: (1.2, 1.2, 1.2)),
+            ),
+            (
+                // Cloak: wine cloth with a hem that smoulders.
+                rim_color: (1.0, 0.45, 0.42),
+                rim_strength: 0.8,
+                outline_color: (0.04, 0.006, 0.02),
+                matcap: (channel: Off),
+                emission: (6.0, 1.0, 0.36),
+            ),
+            (
+                // Leather: straps and wrappings, a soft sheen.
+                specular_color: (0.3, 0.26, 0.26),
+                specular_size: 18.0,
+                rim_strength: 0.6,
+                outline_color: (0.02, 0.012, 0.02),
+                matcap: (channel: Rgb, blend: Add, color: (0.5, 0.42, 0.42)),
+            ),
+            (
+                // Trim: near-black inlays.
+                rim_strength: 0.4,
+                outline_color: (0.008, 0.008, 0.014),
+                matcap: (channel: Off),
+            ),
+        ],
+        rim: (
+            width: 3.0,
+            strength: 0.6,
+            threshold: 0.1,
+            fresnel: 0.45,
+            light_gate: 0.7,
+            back_light: 0.6,
+        ),
+        specular: (
+            model: Blinn,
+            softness: 0.04,
+            albedo: 0.35,
+        ),
+        matcap: Some((
+            map: "1da6125d-05fc-4333-80ac-f6216155806a",
+            strength: 1.0,
+            shadow_strength: 0.55,
+        )),
+        outline: (
+            width: 1.6,
+            z_offset: 0.0,
+            curve: (
+                near: (0.5, 1.4),
+                mid: 3.0,
+                far: (20.0, 0.5),
+                cutoff: 80.0,
+            ),
+            model_scale: 1.0,
+            flatten: 0.1,
+            albedo: 0.0,
+            lighting: 1.0,
+        ),
+        layer_mask: Some("52a83d47-c768-42e1-9864-10d11257e2bf"),
+        emission: (
+            period: 2.6,
+            depth: 0.3,
+            bloom: 1.0,
+        ),
+    ),
+)

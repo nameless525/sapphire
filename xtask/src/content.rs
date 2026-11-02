@@ -193,6 +193,17 @@ const LOOKDEV_SOURCES: &[&str] = &[
     "lookdev/mountains/mountains.png",
 ];
 
+/// Generated combat sources (M2 O4), relative to [`SOURCE_DIR`]: the enemy's model, palette and
+/// masks.
+/// `gen-combat` writes those that are missing, as `gen-samples` does.
+const COMBAT_SOURCES: &[&str] = &[
+    "combat/enemy/warrior.glb",
+    "combat/enemy/warrior_palette.png",
+    "combat/enemy/warrior_control.png",
+    "combat/enemy/warrior_layers.png",
+    "combat/enemy/warrior_matcap.png",
+];
+
 /// A pipeline command that generates sources, the directory it writes (relative to
 /// [`SOURCE_DIR`]) and the files it writes there (relative to [`SOURCE_DIR`] too).
 #[derive(Clone, Copy, Debug)]
@@ -203,9 +214,10 @@ struct Generator {
 }
 
 /// The generators `cook` runs when one of their files is missing.
-const GENERATORS: [Generator; 2] = [
+const GENERATORS: [Generator; 3] = [
     Generator { command: "gen-samples", dir: "samples", sources: SAMPLE_SOURCES },
     Generator { command: "gen-lookdev", dir: "lookdev", sources: LOOKDEV_SOURCES },
+    Generator { command: "gen-combat", dir: "combat", sources: COMBAT_SOURCES },
 ];
 
 /// A target cook (spec §2): `desktop` for macOS, Windows and Linux, `mobile` for iOS and

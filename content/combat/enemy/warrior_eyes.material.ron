@@ -1,0 +1,38 @@
+// The warrior's eyes (M2 O4), bound to the model's `Glow` slot: two points of hot red in the skull,
+// unlit and blooming as the world's light does, breathing faster than a calm thing would. They are
+// the part of it that reads as the threat at combat distance, by day and by night.
+(
+    type: "sapphire::render::AnimeCharacterMaterial",
+    version: 2,
+    data: (
+        surface: Body,
+        base_color: (0.02, 0.0, 0.0, 1.0),
+        alpha: Opaque,
+        light_split: (
+            threshold: 0.0,
+            softness: 0.02,
+        ),
+        diffuse: Bands((
+            deep_threshold: None,
+        )),
+        regions: [
+            (
+                shade_color: (1.0, 1.0, 1.0),
+                rim_strength: 0.0,
+                outline_width: 0.0,
+                emission: (9.0, 0.7, 0.4),
+            ),
+        ],
+        rim: (
+            strength: 0.0,
+        ),
+        outline: (
+            width: 0.0,
+        ),
+        emission: (
+            period: 1.8,
+            depth: 0.25,
+            bloom: 1.0,
+        ),
+    ),
+)

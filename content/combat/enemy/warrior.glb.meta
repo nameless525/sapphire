@@ -1,0 +1,59 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "322aa57e-957d-45f1-8d51-0c1d80f5d1d6",
+        importer: Gltf((
+            outline: (
+                weld_tolerance: 0.0001,
+            ),
+            lods: (
+                levels: [
+                    (
+                        triangle_ratio: 0.5,
+                        max_error: 0.002,
+                    ),
+                    (
+                        triangle_ratio: 0.25,
+                        max_error: 0.01,
+                    ),
+                    (
+                        triangle_ratio: 0.125,
+                        max_error: 0.03,
+                    ),
+                ],
+                mobile_skip: 1,
+            ),
+            position_format: Unorm16,
+            materials: {
+                "Glow": "d9ccb165-ab6d-4fe4-9e67-e5576d4d1ad8",
+                "skeleton": "5da6ea45-70b9-4762-be22-e5a756a1b7d3",
+            },
+            // The pack's joint names on its own lengths: clips reach it by retarget, from the pack's
+            // sidecars, and nothing cooks from this file.
+            clips: (
+                names: [],
+                humanoid: {
+                    Hips: "hips",
+                    Spine: "spine",
+                    Chest: "chest",
+                    Head: "head",
+                    LeftUpperLeg: "upperleg.l",
+                    LeftLowerLeg: "lowerleg.l",
+                    LeftFoot: "foot.l",
+                    LeftToes: "toes.l",
+                    RightUpperLeg: "upperleg.r",
+                    RightLowerLeg: "lowerleg.r",
+                    RightFoot: "foot.r",
+                    RightToes: "toes.r",
+                    LeftUpperArm: "upperarm.l",
+                    LeftLowerArm: "lowerarm.l",
+                    LeftHand: "wrist.l",
+                    RightUpperArm: "upperarm.r",
+                    RightLowerArm: "lowerarm.r",
+                    RightHand: "wrist.r",
+                },
+            ),
+        )),
+    ),
+)

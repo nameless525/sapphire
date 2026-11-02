@@ -1,0 +1,26 @@
+// The warrior's control map (M2 O4): what `gen-combat` paints on the KayKit palette's layout
+// (`warrior_control.png`, `sapphire_pipeline::combat::control_png`). Each part of the model is a
+// cell of the palette, so a cell's material ID picks its ramp row, highlight, outline and rim; the
+// bottom of the bone's cell, its sockets and rib gaps, stays in shadow whatever the light.
+(
+    type: "sapphire::pipeline::IlmMap",
+    version: 1,
+    data: (
+        specular_mask: Image(
+            path: "warrior_control.png",
+            channel: R,
+        ),
+        shadow_bias: Image(
+            path: "warrior_control.png",
+            channel: G,
+        ),
+        specular_threshold: Image(
+            path: "warrior_control.png",
+            channel: B,
+        ),
+        material_id: Image(
+            path: "warrior_control.png",
+            channel: A,
+        ),
+    ),
+)

@@ -25,8 +25,9 @@
                 mobile_skip: 1,
             ),
             position_format: Unorm16,
-            materials: {},
+            materials: {
+                "skeleton": "5da6ea45-70b9-4762-be22-e5a756a1b7d3",
+            },
         )),
-        cook: false,
     ),
 )

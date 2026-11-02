@@ -49,6 +49,8 @@
 //!   local store of cooked outputs and pack encodings by key.
 //! - [`lookdev`]: the look-dev scene's generated sources (M1 X1): the town's painted maps and
 //!   the character's hair mask.
+//! - [`combat`]: the combat slice's generated sources (M2 O4): the enemy's model, palette and
+//!   masks.
 //! - [`samples`]: procedurally generated source assets used to bring up the renderer: the
 //!   mannequin, the shader swatches' maps and materials, the face test head with its face
 //!   maps and material, the sky's maps and material, the environment's courtyard with its
@@ -102,6 +104,7 @@ pub mod character_maps;
 pub mod clip;
 pub mod colliders;
 mod color;
+pub mod combat;
 pub mod cook;
 pub mod extract;
 mod gltf_writer;

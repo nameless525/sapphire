@@ -436,6 +436,9 @@ pub(crate) struct Content {
     /// knew of ([`Self::take_clip_changed`]).
     clip: Option<Handle<Clip>>,
     clip_version: u32,
+    /// The versions of the enemy's mesh and skeleton the scene last knew of
+    /// ([`Self::take_enemy_changed`]), once there's an enemy.
+    enemy_versions: Option<(u32, u32)>,
     /// The graph the character plays, once asked for (`--graph`, `--arena`), and the versions
     /// the scene last knew of ([`Self::take_graph_changed`]).
     graph: Option<HeldGraph>,
@@ -525,6 +528,7 @@ impl Content {
             enemy: Vec::new(),
             sword: None,
             enemy_skeleton: None,
+            enemy_versions: None,
             arena_colliders: None,
             rig: None,
             skeleton: None,
@@ -903,6 +907,7 @@ impl Content {
         };
         self.enemy = vec![warrior, blade];
         self.enemy_skeleton = skeleton;
+        self.enemy_versions = self.current_enemy_versions();
         for unloaded in self.server.take_unloaded() {
             self.gpu.unload(unloaded);
         }
@@ -927,6 +932,21 @@ impl Content {
         }
         loaded.map_err(|error| AppInitError::msg(format!("the sword didn't load: {error}")))?;
         Ok(self.gpu.meshes.get(&blade::SWORD).expect("a ready mesh was uploaded here").object.handle)
+    }
+
+    /// Whether the enemy's mesh or skeleton has a new version since the last call or since [`Self::enemy`],
+    /// whichever way it came; they may land frames apart. Always false with no enemy, and it allocates
+    /// nothing.
+    pub fn take_enemy_changed(&mut self) -> bool {
+        let versions = self.current_enemy_versions();
+        std::mem::replace(&mut self.enemy_versions, versions) != versions
+    }
+
+    /// The versions the enemy's mesh and skeleton are at, if there's an enemy.
+    fn current_enemy_versions(&self) -> Option<(u32, u32)> {
+        let warrior = self.enemy.first()?;
+        let skeleton = self.enemy_skeleton.as_ref().map_or(0, |skeleton| self.server.generation(skeleton));
+        Some((self.server.generation(warrior), skeleton))
     }
 
     /// The enemy's held pose, from what [`Self::enemy`] loaded.
@@ -1467,7 +1487,9 @@ mod tests {
     use sapphire_assets::rig::{HumanBone, HumanoidJoint};
     use sapphire_assets::texture::Swizzle;
     use sapphire_assets::{AssetKind, MemoryPackSource};
-    use sapphire_math::{Mat4, Vec3};
+    use sapphire_gameplay::replay::{SCENARIOS, find_scenario};
+    use sapphire_gameplay::{ActorId, Simulation};
+    use sapphire_math::{Affine3A, Mat4, Vec3};
     use sapphire_render::graph::{FrameGraph, GraphExecutor};
     use sapphire_render::{RenderSettings, SkinningStats};
     use sapphire_rhi::{GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
@@ -1522,6 +1544,10 @@ mod tests {
     const MOVES: AssetId = AssetId::from_bytes([0x61; 16]);
     /// A second clip, as [`SWING`], that a new version of the graph can play instead.
     const OTHER_SWING: AssetId = AssetId::from_bytes([0x62; 16]);
+    /// The test enemy's skeleton, on the names its rig needs.
+    const ENEMY_SKELETON: AssetId = AssetId::from_bytes([0x63; 16]);
+    /// [`SWING`], for the enemy.
+    const ENEMY_SWING: AssetId = AssetId::from_bytes([0x64; 16]);
 
     /// A pack with the look-dev character, its first vertex at `x`, its rig and its skeleton: every
     /// required humanoid bone a joint of its own under the root, and `extra` joints more.
@@ -1545,6 +1571,11 @@ mod tests {
 
     /// The first pack, with `graph` naming `clip`.
     fn pack_of_graph(x: f32, extra: usize, graph: AnimGraph, clip: AssetId, recovery: u32) -> Vec<u8> {
+        write_pack(pack_assets(x, extra, graph, clip, recovery)).expect("a pack")
+    }
+
+    /// What [`pack_of_graph`] packs.
+    fn pack_assets(x: f32, extra: usize, graph: AnimGraph, clip: AssetId, recovery: u32) -> Vec<PackAsset> {
         let count = HumanBone::REQUIRED.len() + extra;
         let at = |joint: usize| [joint as f32 * 0.1, 1.0, 0.0];
         let joints: Vec<Joint> = (0..count)
@@ -1571,6 +1602,31 @@ mod tests {
             binds,
             influences: Influences::pack(&[held; 3], count),
         });
+        // The enemy's own: its rig's names in a chain, and `extra` joints more.
+        let names = enemy::joint_names();
+        let enemy_count = names.len() + extra;
+        let enemy_joints: Vec<Joint> = (0..enemy_count)
+            .map(|joint| Joint {
+                name: names.get(joint).map_or_else(|| format!("joint {joint}"), |name| (*name).to_owned()),
+                parent: joint.checked_sub(1).map(|parent| parent as u16),
+                rest: JointTransform { translation: [0.0, 0.1, 0.0], ..JointTransform::IDENTITY },
+            })
+            .collect();
+        let mut warrior = triangle(x);
+        warrior.skin = Some(Skin {
+            skeleton: Some(ENEMY_SKELETON),
+            joint_count: enemy_count as u32,
+            binds: (0..enemy_count)
+                .map(|joint| SkinBind {
+                    joint: joint as u16,
+                    inverse_bind_matrix: Mat4::IDENTITY.to_cols_array_2d(),
+                })
+                .collect(),
+            influences: Influences::pack(&[held; 3], enemy_count),
+        });
+        let enemy_swing = Clip { skeleton: Some(ENEMY_SKELETON), ..swing(enemy_count) };
+        let mut enemy_graph = graph.clone();
+        enemy_graph.resolve(|_| ENEMY_SWING);
         let mut humanoid: Vec<_> = HumanBone::REQUIRED
             .iter()
             .enumerate()
@@ -1583,7 +1639,7 @@ mod tests {
             humanoid,
             ..CharacterRig::default()
         };
-        write_pack(vec![
+        vec![
             packed_with(
                 lookdev::CHARACTER,
                 AssetKind::Mesh,
@@ -1601,12 +1657,32 @@ mod tests {
             ),
             packed_with(GRAPH, AssetKind::AnimGraph, &graph.to_cooked().expect("cooked"), vec![clip]),
             packed(MOVES, AssetKind::MoveSet, &show_moves(recovery).to_cooked().expect("cooked")),
-            // The enemy, on the same skeleton and clips, for what a fight loads.
-            packed_with(enemy::WARRIOR, AssetKind::Mesh, &mesh.to_cooked().expect("cooked"), vec![SKELETON]),
+            // The enemy, as a fight loads it.
+            packed_with(
+                enemy::WARRIOR,
+                AssetKind::Mesh,
+                &warrior.to_cooked().expect("cooked"),
+                vec![ENEMY_SKELETON],
+            ),
             packed(enemy::BLADE, AssetKind::Mesh, &triangle(x).to_cooked().expect("cooked")),
-            packed_with(enemy::GRAPH, AssetKind::AnimGraph, &graph.to_cooked().expect("cooked"), vec![clip]),
-        ])
-        .expect("a pack")
+            packed(
+                ENEMY_SKELETON,
+                AssetKind::Skeleton,
+                &Skeleton::new(&enemy_joints).to_cooked().expect("cooked"),
+            ),
+            packed_with(
+                ENEMY_SWING,
+                AssetKind::Clip,
+                &enemy_swing.to_cooked().expect("cooked"),
+                vec![ENEMY_SKELETON],
+            ),
+            packed_with(
+                enemy::GRAPH,
+                AssetKind::AnimGraph,
+                &enemy_graph.to_cooked().expect("cooked"),
+                vec![ENEMY_SWING],
+            ),
+        ]
     }
 
     /// The graph show's moves as a cook makes them, with `strike` so many ticks longer.
@@ -1759,17 +1835,36 @@ mod tests {
                 plants: Plant::ALL.map(|_| plain),
                 mountains: lookdev::MOUNTAINS.map(|_| plain),
             };
-            let held = enemy::Held { pose: pose.clone(), figure, blade: Mat4::IDENTITY, hand: 0 };
+            let held = self.content.held_enemy().expect("the enemy's pose");
             let cooked = sapphire_gameplay::arena::cooked_colliders().expect("it cooks");
             let set = ColliderSet::read(&cooked).expect("it reads");
             let ground = arena::ArenaGround::new(set).expect("the stage stands on it");
+            let world = ground.share();
             let shot = arena::ArenaShot::Follow;
             let look = LookDev { town, fog_cards: None, pose, figure };
             let mut scene = Scene::with_character(mesh, bounds, false);
             scene.spawn_arena(Arena { enemy, held, shot, look, ground });
-            let driver = || lookdev::graph_driver(&self.content).expect("a driver");
-            scene.play_fighters(driver(), driver());
+            scene.play_fighters(
+                lookdev::graph_driver(&self.content).expect("the player's driver"),
+                self.content.enemy_driver(world).expect("the enemy's driver"),
+            );
             self.scene = scene;
+        }
+
+        /// A fight of the arena's scenario, its first step told to the scene.
+        fn start_fight(&mut self) -> (Simulation, Vec<ActorId>) {
+            let scenario = find_scenario(SCENARIOS, arena::FIGHT_SCENARIO).expect("listed");
+            let (sim, cast) = scenario.start(scenario.config).expect("it starts");
+            let mut fight = (sim, cast);
+            self.step_fight(&mut fight);
+            fight
+        }
+
+        /// A step of `fight`, told to the scene, and a frame.
+        fn step_fight(&mut self, (sim, cast): &mut (Simulation, Vec<ActorId>)) -> SkinningStats {
+            sim.step(&sapphire_gameplay::TickActions::NEUTRAL);
+            self.scene.follow_simulation(sim, cast);
+            self.frame()
         }
 
         /// Frames the character from the front, close enough for its triangle to fill much of the target.
@@ -1958,6 +2053,97 @@ mod tests {
             }
         }
         assert!(waiting, "the enemy's new graph reached it");
+    }
+
+    /// A new version of the enemy with a joint more, as a re-export of its model makes: it plays on, on the
+    /// new joints, and nothing draws it in its bind pose for want of a palette that fits.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_new_skeleton_under_the_enemy_plays_on() {
+        let mut stage = Stage::new();
+        stage.play_fighters();
+        let mut fight = stage.start_fight();
+        let joints = stage.scene.enemy_graph_player().expect("playing").pose().joint_count();
+        assert_eq!(joints, enemy::joint_names().len());
+
+        stage.recook(0.0, 1);
+        for _ in 0..1000 {
+            stage.step_fight(&mut fight);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            if stage.scene.enemy_graph_player().expect("playing").pose().joint_count() != joints {
+                break;
+            }
+        }
+        let count = stage.scene.enemy_graph_player().expect("playing").pose().joint_count();
+        assert_eq!(count, joints + 1, "the enemy's driver is on the new skeleton");
+        for _ in 0..30 {
+            let stats = stage.step_fight(&mut fight);
+            assert_eq!(stats.ignored_poses, 0, "{stats:?}");
+        }
+        let hand = stage.scene.arena_mut().expect("an arena").blade_hand();
+        assert_eq!(enemy::joint_names()[hand], enemy::HAND_SLOT);
+    }
+
+    /// A skeleton, a clip and a graph with a joint more, and the mesh still to come, as a cook's pack lands
+    /// in parts: the enemy keeps what it has, and a binding to the new joints doesn't reach its old pose.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn an_enemy_waits_for_the_rest_of_a_new_version_to_land() {
+        let mut stage = Stage::new();
+        stage.play_fighters();
+        let mut fight = stage.start_fight();
+        let joints = stage.scene.enemy_graph_player().expect("playing").pose().joint_count();
+
+        let is_mesh = |asset: &PackAsset| asset.id == enemy::WARRIOR;
+        let old = pack_assets(0.0, 0, swing_graph(5), SWING, 0).into_iter().find(is_mesh).expect("a mesh");
+        let mut assets = pack_assets(0.0, 1, swing_graph(7), SWING, 0);
+        assets.retain(|asset| !is_mesh(asset));
+        assets.push(old);
+        stage.source.insert(PACK, write_pack(assets).expect("a pack"));
+        stage.content.remount(PACK).expect("the new pack");
+        for _ in 0..200 {
+            stage.step_fight(&mut fight);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let waiting = stage.scene.enemy_graph_player().expect("playing");
+        assert_eq!(waiting.pose().joint_count(), joints, "it keeps what it has");
+        assert!(!waiting.has_replacement(), "a graph bound to other joints waits with it");
+
+        stage.source.insert(PACK, pack_with_decay(0.0, 1, 7));
+        stage.content.remount(PACK).expect("the rest of it");
+        for _ in 0..1000 {
+            stage.step_fight(&mut fight);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            if stage.scene.enemy_graph_player().expect("playing").pose().joint_count() != joints {
+                break;
+            }
+        }
+        let landed = stage.scene.enemy_graph_player().expect("playing");
+        assert_eq!(landed.pose().joint_count(), joints + 1, "the rest landed, and so did it");
+    }
+
+    /// A fighter whose pose doesn't fit its driver for a moment plays nothing, and what its graph had yet
+    /// to hear waits for the frame it plays.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_cut_waits_for_a_frame_the_fighter_plays() {
+        let mut stage = Stage::new();
+        stage.play_fighters();
+        let _fight = stage.start_fight();
+        let fits = stage.scene.enemy_graph_player().expect("playing").pose().palette_len();
+        let pose = |joints: usize| crate::extract::RenderPose {
+            palette: vec![Affine3A::IDENTITY; joints],
+            morph_weights: Vec::new(),
+        };
+
+        stage.scene.set_enemy_pose(pose(fits + 1));
+        stage.scene.arena_mut().expect("an arena").cut_next(1);
+        stage.frame();
+        assert!(stage.scene.arena_mut().expect("an arena").has_cut_waiting(1), "it played nothing");
+
+        stage.scene.set_enemy_pose(pose(fits));
+        stage.frame();
+        assert!(!stage.scene.arena_mut().expect("an arena").has_cut_waiting(1), "it's heard");
     }
 
     /// An edited graph over live link (M2 T2): it binds at once and waits for the next state's start like

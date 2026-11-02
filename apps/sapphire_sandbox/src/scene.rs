@@ -397,6 +397,8 @@ pub(crate) struct Scene {
     fight_slow_motion: Option<(u32, ScaleHandle)>,
     /// Whether the arena's fighters play graphs ([`Self::play_fighters`]).
     fighters_posed: bool,
+    /// A new version of the enemy landed that its other parts don't fit yet ([`Self::replace_enemy`]).
+    enemy_waits: bool,
     /// Which party member the character draws as, with `--party`.
     party_looks: Option<Drawn>,
     /// Where the character's light rig finds its head and body, for a character without a
@@ -543,6 +545,7 @@ impl Scene {
             view_cut: false,
             fight_slow_motion: None,
             fighters_posed: false,
+            enemy_waits: false,
             party_looks: None,
             figure,
             animating: false,
@@ -1076,8 +1079,8 @@ impl Scene {
     /// look-dev character's mesh, rig or skeleton holds it anew, since its palette indexes their
     /// joints, and a new version of them or of the clip gives the clip a new pose to play on. While
     /// only some have landed the character may not fit: it keeps the pose it has, which the renderer
-    /// ignores if the new mesh's palette is another length, until the others land. Allocates nothing
-    /// while nothing changed.
+    /// ignores if the new mesh's palette is another length, until the others land. The enemy's mesh and
+    /// skeleton do the same for it ([`Self::replace_enemy`]). Allocates nothing while nothing changed.
     pub fn follow_content(&mut self, content: &mut Content) {
         self.set_probe_hours(content.probe_hours());
         if content.take_meshes_replaced() {
@@ -1097,6 +1100,9 @@ impl Scene {
             self.replace_player(content);
         }
         let graph_changed = content.take_graph_changed();
+        if content.take_enemy_changed() || (self.enemy_waits && graph_changed) {
+            self.replace_enemy(content);
+        }
         if (self.graph_show.is_some() || self.fighters_posed) && (character_changed || graph_changed) {
             self.replace_graph(content, character_changed, graph_changed);
         }
@@ -1330,8 +1336,9 @@ impl Scene {
                 }
             }
         }
-        // A new character is the player's alone, and may have come in the same frame as a new graph.
-        if !self.fighters_posed || !graph_changed {
+        // A new character is the player's alone, and may have come in the same frame as a new graph. An
+        // enemy waiting for the rest of it has the joints it had, which a new binding's aren't.
+        if !self.fighters_posed || !graph_changed || self.enemy_waits {
             return;
         }
         let Some(enemy) = self.enemy.map(|(warrior, _)| warrior) else { return };
@@ -1339,6 +1346,52 @@ impl Scene {
         match content.enemy_binding() {
             Ok(binding) => playing.player.replace(Arc::new(binding)),
             Err(error) => tracing::warn!(target: LOG_TARGET, %error, "the enemy keeps the graph it has"),
+        }
+    }
+
+    /// Takes in a new version of the enemy's mesh or skeleton, whose joints may be others: the pose it
+    /// holds, the hand its blade follows, what lights them, and in a fight a driver that starts now from
+    /// where the old one was, as the character's does ([`Self::replace_graph`]). Those can land frames
+    /// apart and its clips later still, so until all of it fits it keeps everything it has, and tries again
+    /// as each part lands.
+    fn replace_enemy(&mut self, content: &mut Content) {
+        let Some((warrior, blade)) = self.enemy else { return };
+        if let Err(error) = content.hold_graph_clips() {
+            tracing::warn!(target: LOG_TARGET, %error, "the enemy's graph lost a clip");
+        }
+        let ground = self.arena.as_ref().filter(|_| self.fighters_posed).map(|arena| arena.ground());
+        let fitted = content.held_enemy().and_then(|held| {
+            let driver = ground.map(|ground| content.enemy_driver(ground)).transpose()?;
+            Ok((held, driver))
+        });
+        let (held, driver) = match fitted {
+            Ok(fitted) => fitted,
+            Err(error) => {
+                self.enemy_waits = true;
+                tracing::warn!(target: LOG_TARGET, %error, "the enemy keeps its pose until the rest of it lands");
+                return;
+            }
+        };
+        self.enemy_waits = false;
+        let carried = enemy::blade_figure(&held);
+        let world = self.ecs.world_mut();
+        let place = world.get::<RenderTransform>(warrior).map_or(Mat4::IDENTITY, |transform| transform.0);
+        let mut character = world.entity_mut(warrior);
+        if let (Some(mut playing), Some(mut driver)) = (character.get_mut::<GraphDriver>(), driver) {
+            driver.continue_from(&playing);
+            *playing = driver;
+        }
+        if let Some(mut rig) = character.get_mut::<CharacterLightRig>() {
+            rig.head = held.figure.head;
+        }
+        character.insert((held.pose, held.figure));
+        let mut item = world.entity_mut(blade);
+        if let Some(mut rig) = item.get_mut::<CharacterLightRig>() {
+            rig.head = carried.head;
+        }
+        item.insert((carried, RenderTransform(place * held.blade)));
+        if let Some(arena) = &mut self.arena {
+            arena.follow_new_enemy(held.hand, held.blade);
         }
     }
 
@@ -1376,14 +1429,15 @@ impl Scene {
         let view = SpringView::new(&camera, self.spring_quality);
         let entities = [arena.fighters()[0].0, arena.fighters()[1].0];
         for (index, (entity, clips)) in entities.into_iter().zip([player, enemy]).enumerate() {
-            let Some(input) = arena.graph_input(index, alpha) else { continue };
             let Ok((mut driver, render, figure, rig, _)) = self.graph_players.get_mut(world, entity) else {
                 continue;
             };
-            stats.characters += 1;
             if !driver.fits(&render) {
                 continue;
             }
+            // After that, since it spends a cut and a landing, which wait for a frame the graph plays.
+            let Some(input) = arena.graph_input(index, alpha) else { continue };
+            stats.characters += 1;
             let place = arena.drawn(index, alpha);
             if let Some(ik) = driver.ik_mut() {
                 let look_target = arena.look_target(index, alpha);
@@ -1542,6 +1596,19 @@ impl Scene {
     #[cfg(all(test, feature = "dev"))]
     pub fn graph_player(&self) -> Option<&sapphire_anim::GraphPlayer> {
         self.ecs.world().get::<GraphDriver>(self.character).map(|driver| &driver.player)
+    }
+
+    /// The arena's actors, for hot reload's tests.
+    #[cfg(all(test, feature = "dev"))]
+    pub fn arena_mut(&mut self) -> Option<&mut ArenaActors> {
+        self.arena.as_deref_mut()
+    }
+
+    /// Draws the enemy with this pose, for hot reload's tests: as a mesh that landed before its driver.
+    #[cfg(all(test, feature = "dev"))]
+    pub fn set_enemy_pose(&mut self, pose: RenderPose) {
+        let (warrior, _) = self.enemy.expect("an enemy");
+        self.ecs.world_mut().entity_mut(warrior).insert(pose);
     }
 
     /// The enemy's graph player, for hot reload's tests.

@@ -166,6 +166,7 @@ pub(crate) fn place() -> Mat4 {
 /// The warrior's held pose and what it makes, from its cooked skin and skeleton. Fails if the rig
 /// lacks a joint the pose needs.
 pub(crate) fn held(skin: &Skin, skeleton: &ArchivedSkeleton) -> Result<Held, String> {
+    check_counts(skin, skeleton)?;
     let hand_slot =
         skeleton.find(HAND_SLOT).ok_or_else(|| format!("the warrior's rig has no {HAND_SLOT:?}"))?;
     let joints = rig_joints(skeleton)?;
@@ -194,12 +195,23 @@ pub(crate) fn driver(
     binding: Arc<GraphBinding>,
     ground: Arc<PhysicsWorld>,
 ) -> Result<GraphDriver, String> {
+    check_counts(skin, skeleton)?;
     let joints = rig_joints(skeleton)?;
     let head = joints.joint(HumanBone::Head).ok_or("the warrior's rig has no head")?;
     let pose = CharacterPose::new(skeleton, &skin.binds, joints.constraints(), Vec::new());
     let figure = FigureJoints::new(&pose, &joints, head, 0.0, SHAPE);
     let ik = IkDriver::new(ik_rig(skeleton, &pose)?, ground, IkControls::default());
     Ok(GraphDriver::new(GraphPlayer::new(binding, pose, GRAPH_SEED), figure).with_ik(ik))
+}
+
+/// Fails if `skin` wasn't cooked for `skeleton`, as for a moment when a new version of one lands before
+/// the other: a pose of one on binds of the other reads past its joints.
+fn check_counts(skin: &Skin, skeleton: &ArchivedSkeleton) -> Result<(), String> {
+    let (binds, joints) = (skin.joint_count as usize, skeleton.len());
+    if binds == joints {
+        return Ok(());
+    }
+    Err(format!("the warrior's mesh is for {binds} joints, and its skeleton has {joints}"))
 }
 
 /// What IK reads of `skeleton`, over `pose`, in the model's space with its soles at 0. No eyes and no
@@ -220,6 +232,12 @@ fn rig_joints(skeleton: &ArchivedSkeleton) -> Result<RigJoints, String> {
     let bones =
         BONES.iter().map(|&(name, bone)| Ok((bone, find(name)?))).collect::<Result<Vec<_>, String>>()?;
     Ok(RigJoints::of_bones(bones))
+}
+
+/// Every joint name the warrior's rig needs, the hand slot last: for test rigs.
+#[cfg(test)]
+pub(crate) fn joint_names() -> Vec<&'static str> {
+    BONES.iter().chain(&LEG_BONES).map(|&(name, _)| name).chain([HAND_SLOT]).collect()
 }
 
 /// The figure the blade draws as, in its own space: no body, so it adds no capsule to the character's
@@ -283,6 +301,15 @@ mod tests {
         assert!(error.contains("no \"spine\""), "{error}");
         let error = held(&skin_over(1), skeleton).expect_err("no joints");
         assert!(error.contains("no \"handslot.r\""), "{error}");
+    }
+
+    /// A new version of the mesh or the skeleton can land before the other.
+    #[test]
+    fn a_mesh_for_other_joints_says_so() {
+        let bytes = sapphire_anim::Skeleton::new(&rig()).to_cooked().expect("cooked");
+        let skeleton = sapphire_anim::Skeleton::read(&bytes).expect("a valid skeleton");
+        let error = held(&skin_over(skeleton.len() + 1), skeleton).expect_err("one joint too many");
+        assert!(error.contains("joints"), "{error}");
     }
 
     /// A head taller than the character, and standing within the reach of its quick cut.

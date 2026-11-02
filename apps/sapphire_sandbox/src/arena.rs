@@ -521,6 +521,29 @@ impl ArenaActors {
         self.hand
     }
 
+    /// A new version of the enemy: the joint that holds its blade, and where that is in its held pose.
+    pub fn follow_new_enemy(&mut self, hand: usize, blade_in_model: Mat4) {
+        self.hand = hand;
+        self.blade.1 = blade_in_model;
+    }
+
+    /// What the fighters stand on, for whatever casts for their feet.
+    pub fn ground(&self) -> Arc<PhysicsWorld> {
+        self.ground.share()
+    }
+
+    /// Tells `fighter`'s graph to cut, for tests of when it hears.
+    #[cfg(test)]
+    pub fn cut_next(&mut self, fighter: usize) {
+        self.signals[fighter].cut = true;
+    }
+
+    /// Whether `fighter`'s graph has yet to hear of a cut.
+    #[cfg(test)]
+    pub fn has_cut_waiting(&self, fighter: usize) -> bool {
+        self.signals[fighter].cut
+    }
+
     /// Where the enemy's pose has the hand that holds its blade, in its model space: from a pose that
     /// moves, each frame. [`Self::present`] draws the blade there.
     pub fn hold_blade(&mut self, blade_in_model: Mat4) {

@@ -111,8 +111,8 @@ From the bottom up. Spec §5.13–§5.18 and §5.22 are the reference, and each 
 
 To the player, on a clip of its own:
 
-1. **Pose it:** a function in [tools/motion/moves.py](../tools/motion/moves.py), and read a sheet with `sheet.py`. `--write` writes `<name>.keypose.ron`. A new key-pose document needs its sidecar by hand, naming `rig`.
-2. **Frame it:** a row in [player.moves.ron](../content/combat/player/player.moves.ron), last in `moves`, so no other move's place in the set changes. Startup, active and recovery must add up to the clip's length. Name its intent, cancels, hit volumes on path `blade`, warps and cues. `frames.py` has the same numbers for a first draft; once tuned, the file owns them.
+1. **Pose it:** a function in [tools/motion/moves.py](../tools/motion/moves.py), added to its `MOVES`, and an ID of its own in `frames.py`'s `IDS`. `--write` writes `<name>.keypose.ron` and its sidecar, naming `rig`. Read a sheet with `sheet.py`, by that ID until `PLAYER_DOCUMENTS` in [lookdev.rs](../apps/sapphire_sandbox/src/lookdev.rs) gives it a name.
+2. **Frame it:** a row in [player.moves.ron](../content/combat/player/player.moves.ron), last in `moves`, so no other move's place in the set changes. Startup, active and recovery must add up to the clip's length. Name its intent, cancels, hit volumes on path `blade`, warps and cues. `frames.py` has the same numbers for a first draft; once tuned, the file owns them. Add it to `MOVES` in [player_moves.rs](../tools/sapphire_pipeline/tests/player_moves.rs), or `each_move_plays_the_clip_of_its_name` fails.
 3. **Give it a row in the graph:** [character.animgraph.ron](../content/lookdev/character/character.animgraph.ron), `clips` and `combat.moves`. `every_move_a_fighter_has_is_in_its_graph` fails without it.
 4. **Give any new cue a row:** [default_cues.ron](../crates/sapphire_cues/default_cues.ron). `every_cue_the_recordings_publish_has_a_row` fails without it.
 5. **Cook and rewrite the simulation's copy:** `cargo xtask content`, `SAPPHIRE_BAKE_MOVES=1 cargo test -p sapphire_pipeline --test player_moves the_simulations_copy`, `cargo xtask replay --update`.
@@ -124,7 +124,7 @@ A new `Fighter` or actor field goes in several places, and tests hold them toget
 
 Follow [content/combat/enemy/](../content/combat/enemy/) and [enemy.rs](../apps/sapphire_sandbox/src/enemy.rs):
 
-1. **A mesh with its own skeleton,** in the anime character family. The warrior is generated (`sapphire_pipeline gen-combat`) because the pack's chibi figure couldn't read as a threat under any material (O4).
+1. **A mesh with its own skeleton,** in the anime character family. The warrior is generated (`sapphire_pipeline gen-combat`, and a new generated file goes in xtask's `COMBAT_SOURCES`) because the pack's chibi figure couldn't read as a threat under any material (O4).
 2. **Clips, through N1's retarget:** add the mesh's ID as a `retarget:` target in the pack's sidecars. Sidecars only, no code.
 3. **`<name>.moves.ron`:** `intents` with no buttons, `fighter`, `brain`, `moves`. The warrior's hit volumes are hand-keyed and reach further than its clips' hands, so they want retuning against the pose.
 4. **`<name>.animgraph.ron`:** a row for every move and every reaction.
@@ -137,7 +137,8 @@ The arena is the one example ([arena.rs](../apps/sapphire_sandbox/src/arena.rs),
 1. **The look:** an assembly (`.assembly.ron`), a day and light rigs. The town stays one mesh until zones.
 2. **Colliders:** `<stage>.colliders.ron` with a sidecar. A `block_` prefix is a character blocker and `camera_` a camera blocker, held by a test. Moving a collider means updating `ARENA_WORLD_DIGEST`, `cargo xtask replay --update`, then `cargo xtask content`.
 3. **Spawn points:** `<stage>.spawns.ron`, compiled in with `include_str!`, so a replay can't run from another build's points.
-4. **A scenario row** naming it, and goldens through `--arena-shot follow` so a camera edit moves none.
+4. **A scenario row,** and goldens through `--arena-shot follow` so a camera edit moves none.
+5. **Code, today:** everything above is compiled in for one stage. `sapphire_gameplay::arena` holds the two documents, each arena scenario's setup reads them there, and the sandbox draws `lookdev::TOWN` on `lookdev::day()` and loads its `arena::COLLIDERS`. A second stage needs a second of each.
 
 Zones replace most of this: a stage can't yet be chosen by data.
 
@@ -203,7 +204,6 @@ XPBD cloth, ragdolls, Luau, navigation, decals, GPU particles, music, lip-sync, 
   - [scenario.rs](../crates/sapphire_gameplay/src/replay/scenario.rs)'s `arena_fight` compiles documents at every start: a fight's restart takes 4.3–6.5 ms and about 6,000 allocations (§3.5). A game would hold its tables.
   - `gpu-tests-warp.yml` doesn't run the app's replay tests.
   - `__pycache__` isn't ignored for `tools/motion`; its tests are written to run with `python3 -B`.
-- **`scenes/costs.rs`** wants refreshing from three CI runs on the tree with WA-3 and the review in it (the orchestrator has that).
 
 ### Carried from M2's handoff, unchanged
 

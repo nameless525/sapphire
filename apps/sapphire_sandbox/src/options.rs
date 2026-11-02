@@ -1808,7 +1808,10 @@ mod tests {
         };
         let (unattended, unknown) = parse(&["--arena", "--fight", "--script", "fight-back"]).unwrap();
         assert!(unknown.is_empty());
-        assert_eq!(unattended.combat, Some(CombatOption::Fight { script: Some("fight-back".to_owned()) }));
+        assert_eq!(
+            unattended.combat,
+            Some(CombatOption::Fight { script: Some("fight-back".to_owned()), party: false })
+        );
         assert!(unattended.offscreen.is_none());
         assert!(unattended.cues, "the whole load");
         assert_eq!(unattended.hud.map(|hud| hud.mode), Some(HudMode::Live));

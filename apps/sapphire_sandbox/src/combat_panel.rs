@@ -20,6 +20,7 @@ use crate::combat_views::{BodyState, palette};
 /// Colours for what only the panel shows, so a cancel isn't taken for a state of the hurtbox.
 const CANCEL: Color = Color::BLUE;
 const WARP: Color = Color::ORANGE;
+const ARMOUR: Color = Color::rgb(90, 200, 200);
 const CUE: Color = Color::WHITE;
 
 /// The fight as it stands, and the recorder. `can_record` says whether someone's there to play.
@@ -114,13 +115,14 @@ const fn body_text(state: BodyState) -> &'static str {
 }
 
 fn windows_of(windows: LiveWindows) -> Vec<(&'static str, Color)> {
-    let LiveWindows { invulnerable, perfect_dodge, parry, cancel, warp } = windows;
+    let LiveWindows { invulnerable, perfect_dodge, parry, cancel, warp, armour } = windows;
     [
         (invulnerable, "invulnerable", palette::OFF),
         (perfect_dodge, "perfect dodge", palette::PERFECT_DODGE),
         (parry, "parry", palette::PARRY),
         (cancel, "cancel", CANCEL),
         (warp, "warp", WARP),
+        (armour > 0, "armour", ARMOUR),
     ]
     .into_iter()
     .filter(|(live, ..)| *live)

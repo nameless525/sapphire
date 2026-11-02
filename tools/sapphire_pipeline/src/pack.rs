@@ -69,6 +69,7 @@ use sapphire_assets::sound::SOUND_EXTENSION;
 use sapphire_assets::texture::TEXTURE_EXTENSION;
 use sapphire_assets::{AssetError, AssetId, AssetKind};
 use sapphire_colliders::COLLIDERS_EXTENSION;
+use sapphire_moves::MOVE_SET_EXTENSION;
 use sapphire_serialize::cooked::AlignedVec;
 use sapphire_serialize::postcard;
 
@@ -108,7 +109,8 @@ pub fn codec(kind: AssetKind) -> Codec {
         | AssetKind::Skeleton
         | AssetKind::Clip
         | AssetKind::Colliders
-        | AssetKind::Cue => Codec::Lz4,
+        | AssetKind::Cue
+        | AssetKind::MoveSet => Codec::Lz4,
         AssetKind::Sound => Codec::None,
     }
 }
@@ -126,6 +128,7 @@ pub fn kind(output: &Path) -> Option<AssetKind> {
         COLLIDERS_EXTENSION => Some(AssetKind::Colliders),
         SOUND_EXTENSION => Some(AssetKind::Sound),
         CUE_EXTENSION => Some(AssetKind::Cue),
+        MOVE_SET_EXTENSION => Some(AssetKind::MoveSet),
         _ => None,
     }
 }

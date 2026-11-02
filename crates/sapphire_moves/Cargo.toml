@@ -1,6 +1,6 @@
 [package]
 name = "sapphire_moves"
-description = "Moves' cooked plain data: the per-tick baked root motion and hit-volume paths the simulation reads."
+description = "Moves as data: the documents a person writes and the cooked frame data and per-tick tables the simulation reads."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -16,6 +16,7 @@ sapphire_math.workspace = true
 sapphire_reflect.workspace = true
 sapphire_serialize.workspace = true
 sapphire_time.workspace = true
+serde.workspace = true
 thiserror.workspace = true
 
 [lints]

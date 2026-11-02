@@ -21,5 +21,9 @@ thiserror.workspace = true
 # The state checksum.
 xxhash-rust.workspace = true
 
+[dev-dependencies]
+# The cooked bytes tests load, as a game would.
+sapphire_serialize.workspace = true
+
 [lints]
 workspace = true

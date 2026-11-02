@@ -111,6 +111,7 @@ pub mod lookdev;
 pub mod material;
 pub mod mesh;
 pub mod meta;
+pub mod moves;
 pub mod optimize;
 pub mod pack;
 pub mod probes;

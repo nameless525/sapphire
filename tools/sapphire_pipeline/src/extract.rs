@@ -292,6 +292,7 @@ pub fn extract_materials(source: &Path, options: &ExtractOptions) -> Result<Extr
         | ImportSettings::Material(_)
         | ImportSettings::ProbeGrid(_)
         | ImportSettings::KeyPose(_)
+        | ImportSettings::MoveSet(_)
         | ImportSettings::Assembly(_)
         | ImportSettings::Colliders(_)
         | ImportSettings::Sound(_)

@@ -26,6 +26,8 @@ sapphire_colliders.workspace = true
 sapphire_core.workspace = true
 # Decode jobs run on the engine's task pool.
 sapphire_jobs.workspace = true
+# Move sets are cooked assets, checked as the simulation reads them.
+sapphire_moves.workspace = true
 sapphire_reflect.workspace = true
 sapphire_serialize.workspace = true
 serde.workspace = true

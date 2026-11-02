@@ -6,6 +6,7 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use sapphire_colliders::{ArchivedColliderSet, ColliderSet};
+use sapphire_moves::{ArchivedMoveSet, MoveSet};
 use sapphire_serialize::cooked::access_unchecked;
 
 use crate::clip::{ArchivedClip, Clip};
@@ -26,7 +27,8 @@ slotmap::new_key_type! {
 }
 
 /// A kind of asset handles can be typed with: [`Mesh`], [`TextureAsset`], [`Material`],
-/// [`CharacterRig`], [`ProbeGrid`], [`Skeleton`], [`Clip`], [`ColliderSet`], [`Sound`], [`Cue`].
+/// [`CharacterRig`], [`ProbeGrid`], [`Skeleton`], [`Clip`], [`ColliderSet`], [`Sound`], [`Cue`],
+/// [`MoveSet`].
 pub trait Asset: sealed::Sealed + 'static {
     const KIND: AssetKind;
     /// How a loaded asset of this kind is read: in place, borrowing its bytes.
@@ -54,6 +56,7 @@ mod sealed {
     impl Sealed for sapphire_colliders::ColliderSet {}
     impl Sealed for crate::sound::Sound {}
     impl Sealed for crate::cue::Cue {}
+    impl Sealed for sapphire_moves::MoveSet {}
     impl Sealed for super::TextureAsset {}
 }
 
@@ -130,6 +133,17 @@ impl Asset for Cue {
     unsafe fn view(bytes: &[u8]) -> &ArchivedCue {
         // SAFETY: as for meshes: `Cue::read` accepted these bytes, unchanged since.
         unsafe { access_unchecked::<Cue>(bytes) }.expect("the envelope was checked when the cue was decoded")
+    }
+}
+
+impl Asset for MoveSet {
+    const KIND: AssetKind = AssetKind::MoveSet;
+    type View<'a> = &'a ArchivedMoveSet;
+
+    unsafe fn view(bytes: &[u8]) -> &ArchivedMoveSet {
+        // SAFETY: as for meshes: `MoveSet::from_cooked` accepted these bytes, unchanged since.
+        unsafe { access_unchecked::<MoveSet>(bytes) }
+            .expect("the envelope was checked when the move set was decoded")
     }
 }
 

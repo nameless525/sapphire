@@ -122,6 +122,7 @@ impl Gpu {
             AssetKind::ProbeGrid => unreachable!("these assets include no probe grid"),
             AssetKind::Colliders => unreachable!("colliders never go to the uploader"),
             AssetKind::Sound | AssetKind::Cue => unreachable!("sounds and cues never go to the uploader"),
+            AssetKind::MoveSet => unreachable!("move sets never go to the uploader"),
         }
         let held = self.0.insert(upload.slot(), upload.generation());
         assert!(held.is_none_or(|held| held <= upload.generation()), "an older version was sent");
@@ -219,7 +220,7 @@ fn hot_reload_leaks_no_handles_or_memory() {
     // Tight budgets, so residency evicts all the time.
     let budgets = AssetBudgets {
         upload_per_frame: 32 << 10,
-        resident: [400, 30_000, 2_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000],
+        resident: [400, 30_000, 2_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000],
     };
     let mut server = AssetServer::new(source.clone(), budgets);
     server.mount("shared").unwrap();

@@ -1,15 +1,87 @@
-//! Moves' cooked plain data (spec §5.0, `docs/m2-plan.md` §3): what the
-//! simulation reads of a move instead of a pose.
+//! Moves as data (spec §5.0, §5.22, `docs/m2-plan.md` §3): what the simulation reads of a move
+//! instead of a pose, and the documents a person writes it in.
 //!
 //! A move's root motion and its hit volumes' paths are sampled once at cook time into per-tick
-//! tables, so the fixed step reads plain numbers and the animation graph stays presentation only.
+//! tables, and its frame data is authored in ticks, so the fixed step reads plain numbers and the
+//! animation graph stays presentation only.
 //!
-//! Owns [`BakedTables`], its cooked form and how to read it at any sub-tick. Plain data with no
-//! renderer, world or ECS behind it, so the cooker and a replay job can both link it.
+//! Owns:
 //!
-//! Doesn't own: sampling a clip into these tables (the pipeline's clip cook, M2 N1), frame data and
-//! cancel windows (M2 G2), or hit shapes and what they hit (M2 D4). The shapes that ride these paths
-//! are authored with the move.
+//! - [`MoveSetDocument`], the RON a person or the timeline editor writes, checked with messages
+//!   naming the move and track ([`Issue`]);
+//! - [`MoveSet`], what it compiles to and cooks as: intents, what starts what, and each [`Move`]'s
+//!   tracks and tables;
+//! - [`BakedTables`], its cooked form and how to read it at any sub-tick;
+//! - how a track meets a clock ([`Stretch`], [`Span::live`], [`Span::sweep`]), as pure functions.
+//!
+//! Plain data with no renderer, world or ECS behind it, so the cooker and a replay job can both link
+//! it.
+//!
+//! Doesn't own: running moves (`sapphire_gameplay`), sampling a clip into these tables (the
+//! pipeline's clip cook, M2 N1), or testing hit volumes against anything (M2 D4).
+//!
+//! # The document
+//!
+//! A `.moves.ron` file. Everything is in ticks of 60 Hz and by name:
+//!
+//! ```
+//! use sapphire_moves::MoveSetDocument;
+//!
+//! let document = MoveSetDocument::parse(r#"(
+//!     type: "sapphire::moves::MoveSetDocument",
+//!     version: 1,
+//!     data: (
+//!         intents: [
+//!             // Pressed by a button, usable for 12 ticks. Higher priority wins a tie.
+//!             (name: "light", button: Light, buffer: 12, priority: 1),
+//!             // Pressed by a brain, say: it needs no button.
+//!             (name: "lunge", buffer: 8),
+//!         ],
+//!         // What starts a move when no move is running.
+//!         neutral: [(intent: "light", move: "jab")],
+//!         moves: [(
+//!             name: "jab",
+//!             // The move lasts their sum: 20 ticks.
+//!             startup: 4,
+//!             active: 2,
+//!             recovery: 14,
+//!             // Hand-keyed tables. A cook from clips leaves this out.
+//!             motion: (
+//!                 root: [(at: 6, offset: (0.0, 0.0, 0.5))],
+//!                 paths: [(name: "fist", keys: [(at: 0, offset: (0.2, 1.2, 0.5))])],
+//!             ),
+//!             // Every window is `from` up to but not including `to`.
+//!             hitboxes: [(name: "jab_hit", from: 4, to: 6, path: "fist", shape: Sphere(radius: 0.3))],
+//!             invulnerable: [(from: 0, to: 2)],
+//!             cancels: [(from: 10, to: 18, allow: [
+//!                 (intent: "light", move: "jab"),
+//!                 (intent: "lunge", move: "jab", when: Instant),
+//!             ])],
+//!             warps: [(from: 0, to: 6, max_distance: 1.0, max_turn: 0.5, keep: 0.8)],
+//!             cues: [(name: "jab_swing", at: 4)],
+//!         )],
+//!     ),
+//! )"#)
+//! .unwrap();
+//!
+//! let set = document.compile().unwrap();
+//! let cooked = set.to_cooked().unwrap();
+//! let set = sapphire_moves::MoveSet::from_cooked(&cooked).unwrap();
+//! assert_eq!(set.moves()[0].ticks(), 20);
+//! ```
+//!
+//! # How a track meets a clock
+//!
+//! Frame data is in ticks, and an owner's clock runs in whole sub-ticks at any speed, frozen or many
+//! ticks a step. Each step's reading of a move is one [`Stretch`] of the move's time, so:
+//!
+//! - **An instant** (a cue) lies in exactly one stretch, however the clock moved.
+//! - **A window** counts on every step whose reading lies in it, and on the step that passed it if
+//!   none did ([`Span::live`]). A frozen clock stays in the windows it's in and reaches no new ones.
+//! - **A hit volume's arc** runs from its window's first tick to its last, and steps cover it end to
+//!   end at any speed ([`Span::sweep`]).
+//!
+//! At a steady 1×, then, a window `5..8` counts on exactly the steps that read ticks 5, 6 and 7.
 //!
 //! # What the tables mean
 //!
@@ -57,6 +129,20 @@
 //! assert_eq!(reading.yaw, 0.125);
 //! assert!(tables.path(blade).is_some());
 //! ```
+
+mod document;
+mod set;
+
+pub use document::{
+    AllowDocument, CancelDocument, CueDocument, HitboxDocument, HurtboxDocument, IntentDocument, Issue,
+    MotionDocument, MoveDocument, MoveSetDocument, PathDocument, PathKey, RootKey, SpanDocument,
+    WarpDocument,
+};
+pub use set::{
+    Allow, ArchivedMoveSet, Button, CancelMode, CancelWindow, Cue, Hitbox, HurtboxChange, HurtboxState,
+    IntentDef, MAX_BUFFER_TICKS, MAX_INTENTS, MAX_MOVE_TICKS, MOVE_SET_EXTENSION, Move, MoveSet,
+    MoveSetError, Phase, Shape, Span, Stretch, WarpWindow,
+};
 
 use bevy_reflect::TypePath;
 use sapphire_core::Name;
@@ -239,7 +325,7 @@ impl BakedTables {
         Ok(cooked::to_cooked(self)?)
     }
 
-    fn check(&self) -> Result<(), TablesError> {
+    pub(crate) fn check(&self) -> Result<(), TablesError> {
         let first = self.root.first().ok_or(TablesError::Empty)?;
         if first.translation != RootSample::ZERO.translation || first.yaw != RootSample::ZERO.yaw {
             return Err(TablesError::RootNotAtOrigin);

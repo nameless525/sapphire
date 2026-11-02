@@ -2887,6 +2887,7 @@ dependencies = [
  "sapphire_colliders",
  "sapphire_core",
  "sapphire_jobs",
+ "sapphire_moves",
  "sapphire_reflect",
  "sapphire_serialize",
  "serde",
@@ -3007,6 +3008,7 @@ dependencies = [
  "sapphire_ecs",
  "sapphire_math",
  "sapphire_moves",
+ "sapphire_serialize",
  "sapphire_time",
  "thiserror 2.0.21",
  "xxhash-rust",
@@ -3095,6 +3097,7 @@ dependencies = [
  "sapphire_reflect",
  "sapphire_serialize",
  "sapphire_time",
+ "serde",
  "thiserror 2.0.21",
 ]
 
@@ -3132,6 +3135,7 @@ dependencies = [
  "sapphire_colliders",
  "sapphire_look",
  "sapphire_math",
+ "sapphire_moves",
  "sapphire_reflect",
  "sapphire_serialize",
  "sapphire_tod",

@@ -1,0 +1,237 @@
+// The combat slice's moves for tests: frame data plausible for Zenless Zone Zero's rhythm, in 60 Hz
+// ticks, with motion keyed by hand until real clips bake (M2 O3 replaces this content, not its
+// format). A press reaches a moving frame the tick after it lands; attacks commit for a third of a
+// second; a dodge's i-frames last nearly a quarter of a second, the first 100 ms of them perfect.
+(
+    type: "sapphire::moves::MoveSetDocument",
+    version: 1,
+    data: (
+        intents: [
+            // A dodge beats a skill beats an attack when two could fire at one instant.
+            (name: "light", button: Light, buffer: 12, priority: 1),
+            (name: "skill", button: Skill, buffer: 10, priority: 2),
+            (name: "dodge", button: Dodge, buffer: 8, priority: 3),
+        ],
+        neutral: [
+            (intent: "light", move: "light_1"),
+            (intent: "skill", move: "skill"),
+            (intent: "dodge", move: "dodge"),
+        ],
+        moves: [
+            (
+                // 433 ms. Quick to come out and quick to chain.
+                name: "light_1",
+                startup: 5,
+                active: 3,
+                recovery: 18,
+                motion: (
+                    root: [
+                        (at: 5, offset: (0.0, 0.0, 0.18)),
+                        (at: 8, offset: (0.0, 0.0, 0.62)),
+                        (at: 14, offset: (0.0, 0.0, 0.7)),
+                    ],
+                    paths: [
+                        (
+                            name: "blade",
+                            keys: [
+                                (at: 0, offset: (0.5, 1.1, 0.2)),
+                                (at: 5, offset: (0.7, 1.35, 0.5), rotation: (0.0, 0.3826834, 0.0, 0.9238795)),
+                                (at: 8, offset: (-0.6, 1.0, 0.9), rotation: (0.0, -0.3826834, 0.0, 0.9238795)),
+                                (at: 26, offset: (0.2, 0.9, 0.3)),
+                            ],
+                        ),
+                    ],
+                ),
+                hitboxes: [
+                    (name: "light_1_hit", from: 5, to: 8, path: "blade", shape: Capsule(radius: 0.25, length: 0.9)),
+                ],
+                cancels: [
+                    (from: 2, to: 26, allow: [(intent: "dodge", move: "dodge")]),
+                    (from: 10, to: 24, allow: [
+                        (intent: "light", move: "light_2"),
+                        (intent: "skill", move: "skill"),
+                    ]),
+                ],
+                cues: [
+                    (name: "swing_windup", at: 0),
+                    (name: "swing", at: 5),
+                ],
+            ),
+            (
+                // 500 ms.
+                name: "light_2",
+                startup: 6,
+                active: 4,
+                recovery: 20,
+                motion: (
+                    root: [
+                        (at: 6, offset: (0.0, 0.0, 0.2)),
+                        (at: 10, offset: (0.0, 0.0, 0.85)),
+                        (at: 16, offset: (0.0, 0.0, 0.95)),
+                    ],
+                    paths: [
+                        (
+                            name: "blade",
+                            keys: [
+                                (at: 0, offset: (-0.5, 1.0, 0.4)),
+                                (at: 6, offset: (-0.8, 1.4, 0.6)),
+                                (at: 10, offset: (0.7, 0.9, 1.0)),
+                                (at: 30, offset: (0.3, 0.9, 0.3)),
+                            ],
+                        ),
+                    ],
+                ),
+                hitboxes: [
+                    (name: "light_2_hit", from: 6, to: 10, path: "blade", shape: Capsule(radius: 0.28, length: 0.9)),
+                ],
+                cancels: [
+                    (from: 2, to: 30, allow: [(intent: "dodge", move: "dodge")]),
+                    (from: 12, to: 27, allow: [
+                        (intent: "light", move: "light_3"),
+                        (intent: "skill", move: "skill"),
+                    ]),
+                ],
+                cues: [(name: "swing", at: 6)],
+            ),
+            (
+                // 700 ms. The finisher commits: a longer wind-up and a long recovery, with only a dodge
+                // to get out early.
+                name: "light_3",
+                startup: 9,
+                active: 5,
+                recovery: 28,
+                motion: (
+                    root: [
+                        (at: 9, offset: (0.0, 0.0, 0.3)),
+                        (at: 14, offset: (0.0, 0.0, 1.4)),
+                        (at: 22, offset: (0.0, 0.0, 1.55)),
+                    ],
+                    paths: [
+                        (
+                            name: "blade",
+                            keys: [
+                                (at: 0, offset: (0.2, 1.5, 0.2)),
+                                (at: 9, offset: (0.0, 1.9, 0.3)),
+                                (at: 14, offset: (0.0, 0.2, 1.2)),
+                                (at: 42, offset: (0.3, 0.9, 0.3)),
+                            ],
+                        ),
+                    ],
+                ),
+                hitboxes: [
+                    (name: "light_3_hit", from: 9, to: 14, path: "blade", shape: Sphere(radius: 0.5)),
+                ],
+                cancels: [
+                    (from: 4, to: 42, allow: [(intent: "dodge", move: "dodge")]),
+                    (from: 34, to: 42, allow: [(intent: "light", move: "light_1")]),
+                ],
+                cues: [
+                    (name: "swing", at: 9),
+                    (name: "finisher_land", at: 13),
+                ],
+            ),
+            (
+                // 367 ms, of which 217 ms invulnerable and the first 100 ms of those perfect.
+                name: "dodge",
+                startup: 1,
+                active: 13,
+                recovery: 8,
+                motion: (
+                    root: [
+                        (at: 1, offset: (0.0, 0.0, -0.3)),
+                        (at: 14, offset: (0.0, 0.0, -2.4)),
+                    ],
+                ),
+                hurtboxes: [
+                    (name: "body", from: 1, to: 14, state: Off),
+                ],
+                invulnerable: [(from: 1, to: 14)],
+                perfect_dodge: [(from: 1, to: 7)],
+                cancels: [
+                    (from: 9, to: 22, allow: [(intent: "light", move: "dash_attack")]),
+                    (from: 16, to: 22, allow: [(intent: "dodge", move: "dodge", when: Instant)]),
+                ],
+                cues: [(name: "dodge_start", at: 0)],
+            ),
+            (
+                // 467 ms: it comes out of a dodge's end fast, and homes in on what it's aimed at.
+                name: "dash_attack",
+                startup: 4,
+                active: 4,
+                recovery: 20,
+                motion: (
+                    root: [
+                        (at: 4, offset: (0.0, 0.0, 1.6)),
+                        (at: 8, offset: (0.0, 0.0, 2.6)),
+                        (at: 12, offset: (0.0, 0.0, 2.7)),
+                    ],
+                    paths: [
+                        (
+                            name: "blade",
+                            keys: [
+                                (at: 0, offset: (0.6, 1.2, -0.2)),
+                                (at: 4, offset: (0.3, 1.1, 0.9)),
+                                (at: 8, offset: (-0.5, 1.0, 0.8)),
+                                (at: 28, offset: (0.2, 0.9, 0.3)),
+                            ],
+                        ),
+                    ],
+                ),
+                hitboxes: [
+                    (name: "dash_hit", from: 4, to: 8, path: "blade", shape: Capsule(radius: 0.3, length: 1.0)),
+                ],
+                cancels: [
+                    (from: 2, to: 28, allow: [(intent: "dodge", move: "dodge")]),
+                    (from: 18, to: 28, allow: [(intent: "light", move: "light_1")]),
+                ],
+                warps: [
+                    (from: 0, to: 8, max_distance: 2.0, max_turn: 1.2, keep: 1.1),
+                ],
+                cues: [(name: "swing", at: 4)],
+            ),
+            (
+                // 700 ms: a burst with two hits, safe to start and open to punishment after.
+                name: "skill",
+                startup: 8,
+                active: 12,
+                recovery: 22,
+                motion: (
+                    root: [
+                        (at: 8, offset: (0.0, 0.0, 0.1)),
+                        (at: 20, offset: (0.0, 0.0, 1.1), yaw: 0.4),
+                    ],
+                    paths: [
+                        (
+                            name: "fist",
+                            keys: [
+                                (at: 0, offset: (0.3, 1.2, 0.2)),
+                                (at: 8, offset: (0.1, 1.3, 0.9)),
+                                (at: 12, offset: (-0.4, 1.1, 1.0)),
+                                (at: 15, offset: (0.5, 1.4, 0.8)),
+                                (at: 20, offset: (0.0, 1.5, 1.2)),
+                                (at: 42, offset: (0.3, 1.0, 0.2)),
+                            ],
+                        ),
+                    ],
+                ),
+                hitboxes: [
+                    (name: "skill_hit_1", from: 8, to: 12, path: "fist", shape: Sphere(radius: 0.4)),
+                    (name: "skill_hit_2", from: 15, to: 20, path: "fist", shape: Box(half_extents: (0.4, 0.4, 0.7))),
+                ],
+                invulnerable: [(from: 0, to: 8)],
+                parry: [(from: 2, to: 6)],
+                cancels: [
+                    (from: 30, to: 42, allow: [
+                        (intent: "dodge", move: "dodge"),
+                        (intent: "light", move: "light_1"),
+                    ]),
+                ],
+                cues: [
+                    (name: "skill_flash", at: 0),
+                    (name: "skill_hit", at: 8),
+                    (name: "skill_hit", at: 15),
+                ],
+            ),
+        ],
+    ),
+)

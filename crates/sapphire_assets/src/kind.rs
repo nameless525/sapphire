@@ -4,6 +4,7 @@
 use std::fmt;
 
 use sapphire_colliders::{ColliderError, ColliderSet};
+use sapphire_moves::{MoveSet, MoveSetError};
 use serde::{Deserialize, Serialize};
 
 use crate::AssetId;
@@ -43,11 +44,14 @@ pub enum AssetKind {
     Sound = 9,
     /// A cue (`.scue`, M2 E1): [`Cue`], naming the sounds it picks from.
     Cue = 10,
+    /// A character's moves (`.smoves`, M2 G2): [`MoveSet`], which the simulation reads and which
+    /// never goes near a GPU.
+    MoveSet = 11,
 }
 
 impl AssetKind {
     /// Every kind, in a stable order.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Mesh,
         Self::Texture,
         Self::Material,
@@ -58,6 +62,7 @@ impl AssetKind {
         Self::Colliders,
         Self::Sound,
         Self::Cue,
+        Self::MoveSet,
     ];
 
     /// The kind's position in [`Self::ALL`].
@@ -78,20 +83,31 @@ impl AssetKind {
             Self::Colliders => "colliders",
             Self::Sound => "sound",
             Self::Cue => "cue",
+            Self::MoveSet => "move set",
         }
     }
 
     /// Whether assets of this kind go to the GPU, through the asset server's upload queue. A rig,
-    /// a skeleton, a clip, a collider set, a sound or a cue is ready once it and its dependencies
-    /// are decoded.
+    /// a skeleton, a clip, a collider set, a sound, a cue or a move set is ready once it and its
+    /// dependencies are decoded.
     pub const fn uploads(self) -> bool {
-        !matches!(self, Self::Rig | Self::Skeleton | Self::Clip | Self::Colliders | Self::Sound | Self::Cue)
+        !matches!(
+            self,
+            Self::Rig
+                | Self::Skeleton
+                | Self::Clip
+                | Self::Colliders
+                | Self::Sound
+                | Self::Cue
+                | Self::MoveSet
+        )
     }
 
     /// Whether the asset server keeps an asset's decoded bytes once it is ready. Meshes,
     /// textures and probe grids are GPU data, so their bytes go once uploaded (a new renderer
     /// has them read again). Materials are small and CPU code reads them (live link, the editor), and
-    /// rigs, skeletons, clips, collider sets, sounds and cues are read on the CPU only, so they stay.
+    /// rigs, skeletons, clips, collider sets, sounds, cues and move sets are read on the CPU only,
+    /// so they stay.
     pub const fn keeps_bytes(self) -> bool {
         matches!(
             self,
@@ -102,6 +118,7 @@ impl AssetKind {
                 | Self::Colliders
                 | Self::Sound
                 | Self::Cue
+                | Self::MoveSet
         )
     }
 
@@ -115,9 +132,9 @@ impl AssetKind {
 
     /// Whether an asset of this kind may depend on one of `kind`: meshes on materials and
     /// skeletons, materials on textures, clips on skeletons, cues on sounds, and textures, rigs,
-    /// probe grids, skeletons, collider sets and sounds on nothing. The allowed pairs form no loop,
-    /// so chains are at most three long and cycles can't exist, whatever a pack claims. A new kind
-    /// takes its place in this order.
+    /// probe grids, skeletons, collider sets, sounds and move sets on nothing. The allowed pairs
+    /// form no loop, so chains are at most three long and cycles can't exist, whatever a pack
+    /// claims. A new kind takes its place in this order.
     pub const fn may_depend_on(self, kind: AssetKind) -> bool {
         matches!(
             (self, kind),
@@ -141,17 +158,18 @@ impl AssetKind {
             8 => Some(Self::Colliders),
             9 => Some(Self::Sound),
             10 => Some(Self::Cue),
+            11 => Some(Self::MoveSet),
             _ => None,
         }
     }
 
     /// Checks cooked bytes of this kind exactly as the runtime reads them (`Mesh::read`,
     /// `Texture::from_ktx2`, `Material::read`, `CharacterRig::read`, `ProbeGrid::read`,
-    /// `Skeleton::read`, `Clip::read`, `ColliderSet::read`, `Sound::read`, `Cue::read`), and returns
-    /// the assets they reference, sorted and without repeats: a mesh's material slots bound to
-    /// material assets and its skeleton, a material's textures, a clip's skeleton, a cue's sounds. The
-    /// packer records these as the asset's dependencies, and decode jobs check that a decoded asset
-    /// references exactly what its pack says it does.
+    /// `Skeleton::read`, `Clip::read`, `ColliderSet::read`, `Sound::read`, `Cue::read`,
+    /// `MoveSet::from_cooked`), and returns the assets they reference, sorted and without repeats: a
+    /// mesh's material slots bound to material assets and its skeleton, a material's textures, a
+    /// clip's skeleton, a cue's sounds. The packer records these as the asset's dependencies, and
+    /// decode jobs check that a decoded asset references exactly what its pack says it does.
     ///
     /// Everything but textures must start 16-byte aligned, as decoded assets do.
     pub fn references(self, bytes: &[u8]) -> Result<Vec<AssetId>, AssetError> {
@@ -197,6 +215,11 @@ impl AssetKind {
                 Vec::new()
             }
             Self::Cue => Cue::read(bytes)?.sounds.iter().copied().collect(),
+            // A move set's tables are baked into it, and it refers to nothing else.
+            Self::MoveSet => {
+                MoveSet::from_cooked(bytes)?;
+                Vec::new()
+            }
         };
         references.sort_unstable();
         references.dedup();
@@ -243,4 +266,6 @@ pub enum AssetError {
     Sound(#[from] SoundError),
     #[error("invalid cue")]
     Cue(#[from] CueError),
+    #[error("invalid move set")]
+    MoveSet(#[from] MoveSetError),
 }

@@ -63,6 +63,8 @@
 //! - **Sounds and cues** cook `.ogg` → `.ssound` and `.cue.ron` documents → `.scue` (M2 E1,
 //!   [`audio`]). A cue holds its sounds' IDs, so it reads none of their contents, but they must be
 //!   sounds of the tree.
+//! - **Move sets** cook `.moves.ron` documents → `.smoves` (M2 G2, [`moves`]): frame data and tables
+//!   the simulation reads, checked by move and track. Self-contained.
 //!
 //! A source may cook to more than one asset: its own, and sub-assets, each with its own recipe,
 //! output beside the source's (`alicia.smesh`, `alicia.sskel`, `alicia.srig`) and an ID derived
@@ -93,6 +95,7 @@ use sapphire_assets::skeleton::{SKELETON_EXTENSION, Skeleton};
 use sapphire_assets::sound::{SOUND_EXTENSION, Sound};
 use sapphire_assets::texture::{TEXTURE_EXTENSION, TEXTURE_VERSION};
 use sapphire_colliders::{COLLIDERS_EXTENSION, ColliderSet};
+use sapphire_moves::{MOVE_SET_EXTENSION, MoveSet};
 use sapphire_reflect::Versioned;
 
 use crate::assembly::{self, AssemblyError};
@@ -111,6 +114,7 @@ use crate::material::{self, MaterialCookError, Referenced, TextureKind};
 use crate::mesh::ImportedMesh;
 use crate::mesh::MaterialSlotError;
 use crate::meta::{self, ImportSettings, MeshSettings, MetaError, SourceAsset, SourceTree};
+use crate::moves::{self, MoveSetCookError};
 use crate::probes::{self, ProbeCookError, ProbeInput};
 use crate::texture::{self, TextureError};
 use crate::{bake, optimize};
@@ -184,6 +188,7 @@ pub(crate) const COOKED_EXTENSIONS: &[&str] = &[
     COLLIDERS_EXTENSION,
     SOUND_EXTENSION,
     CUE_EXTENSION,
+    MOVE_SET_EXTENSION,
 ];
 
 /// What a source's skeleton's ID is derived from.
@@ -278,6 +283,12 @@ impl Recipe {
                 format: Cue::VERSION,
                 extension: CUE_EXTENSION,
             },
+            ImportSettings::MoveSet(_) => Self {
+                importer: moves::IMPORTER,
+                cooker: moves::COOKER,
+                format: MoveSet::VERSION,
+                extension: MOVE_SET_EXTENSION,
+            },
         }
     }
 
@@ -304,7 +315,7 @@ impl Recipe {
     /// Where a source at `relative` cooks to, relative to the output root: its path with the
     /// cooked extension in place of the source's (`samples/mannequin.glb` →
     /// `samples/mannequin.smesh`, `skin.material.ron` → `skin.smat`, `courtyard.probes.ron` →
-    /// `courtyard.sprobe`, `arena.colliders.ron` → `arena.scol`).
+    /// `courtyard.sprobe`, `arena.colliders.ron` → `arena.scol`, `fighter.moves.ron` → `fighter.smoves`).
     pub fn output_path(&self, relative: &Path) -> PathBuf {
         if material::is_source(relative) {
             material::output_path(relative, self.extension)
@@ -318,6 +329,8 @@ impl Recipe {
             colliders::output_path(relative, self.extension)
         } else if audio::is_cue_source(relative) {
             audio::cue_output_path(relative, self.extension)
+        } else if moves::is_source(relative) {
+            moves::output_path(relative, self.extension)
         } else {
             relative.with_extension(self.extension)
         }
@@ -427,6 +440,13 @@ pub enum CookError {
     },
     #[error("cue {} names {id}, which is not a sound of this content tree that cooks", path.display())]
     NotASound { path: PathBuf, id: AssetId },
+    #[error("failed to cook move set {}", path.display())]
+    MoveSet {
+        path: PathBuf,
+        /// Boxed, as material errors are.
+        #[source]
+        source: Box<MoveSetCookError>,
+    },
     #[error("failed to resolve the material slots of {}", path.display())]
     MaterialSlot {
         path: PathBuf,
@@ -729,7 +749,8 @@ fn sub_assets(asset: &SourceAsset) -> Result<Vec<PlannedPart>, CookError> {
         | ImportSettings::KeyPose(_)
         | ImportSettings::Colliders(_)
         | ImportSettings::Sound(_)
-        | ImportSettings::Cue(_) => Ok(Vec::new()),
+        | ImportSettings::Cue(_)
+        | ImportSettings::MoveSet(_) => Ok(Vec::new()),
     }
 }
 
@@ -1021,6 +1042,8 @@ fn cook_source(
             .map_err(|source| CookError::Colliders { path: path.to_owned(), source: Box::new(source) }),
         ImportSettings::Sound(_) => audio::cook_sound(bytes).map_err(audio_error(path)),
         ImportSettings::Cue(_) => audio::cook_cue(bytes).map_err(audio_error(path)),
+        ImportSettings::MoveSet(_) => moves::cook(bytes)
+            .map_err(|source| CookError::MoveSet { path: path.to_owned(), source: Box::new(source) }),
     }
 }
 
@@ -1179,8 +1202,11 @@ fn dependencies(
                 })
                 .collect()
         }
-        // Images and collider documents are self-contained.
-        ImportSettings::Texture(_) | ImportSettings::Colliders(_) => Ok(Vec::new()),
+        // Images, collider documents and move sets are self-contained: a move set's tables are in its
+        // document.
+        ImportSettings::Texture(_) | ImportSettings::Colliders(_) | ImportSettings::MoveSet(_) => {
+            Ok(Vec::new())
+        }
         ImportSettings::CharacterMap(settings) => {
             let inputs = character_maps::inputs(settings.kind(), bytes).map_err(map_error(path))?;
             inputs
@@ -1306,7 +1332,8 @@ fn imported_mesh(
         | ImportSettings::KeyPose(_)
         | ImportSettings::Colliders(_)
         | ImportSettings::Sound(_)
-        | ImportSettings::Cue(_) => Err(CookError::UnsupportedSource { path: path.to_owned() }),
+        | ImportSettings::Cue(_)
+        | ImportSettings::MoveSet(_) => Err(CookError::UnsupportedSource { path: path.to_owned() }),
     }
 }
 

@@ -131,6 +131,7 @@ use crate::colliders::{self, ColliderSettings};
 use crate::import::vrm::{self, VrmSettings};
 use crate::keypose::{self, KeyPoseSettings};
 use crate::material::{self, MaterialSettings};
+use crate::moves::{self, MoveSetSettings};
 use crate::optimize::LodSettings;
 use crate::probes::{self, ProbeGridSettings};
 use crate::texture::{HdrSettings, TextureClass, TextureSettings};
@@ -203,6 +204,8 @@ pub enum ImportSettings {
     Sound(SoundSettings),
     /// A cue document (`.cue.ron`), naming sounds and how they play (M2 E1).
     Cue(CueSettings),
+    /// A move set document (`.moves.ron`): frame data and tables the simulation reads (M2 G2).
+    MoveSet(MoveSetSettings),
 }
 
 impl ImportSettings {
@@ -231,6 +234,9 @@ impl ImportSettings {
         }
         if audio::is_cue_source(source) {
             return Some(Self::Cue(CueSettings::default()));
+        }
+        if moves::is_source(source) {
+            return Some(Self::MoveSet(MoveSetSettings::default()));
         }
         let extension = source.extension()?.to_str()?.to_ascii_lowercase();
         match extension.as_str() {
@@ -270,7 +276,8 @@ impl ImportSettings {
             | Self::KeyPose(_)
             | Self::Colliders(_)
             | Self::Sound(_)
-            | Self::Cue(_) => None,
+            | Self::Cue(_)
+            | Self::MoveSet(_) => None,
         }
     }
 
@@ -286,7 +293,8 @@ impl ImportSettings {
             | Self::KeyPose(_)
             | Self::Colliders(_)
             | Self::Sound(_)
-            | Self::Cue(_) => None,
+            | Self::Cue(_)
+            | Self::MoveSet(_) => None,
         }
     }
 }

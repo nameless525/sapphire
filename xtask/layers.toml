@@ -101,6 +101,8 @@ edges = [
     # envelope, named and versioned through sapphire_reflect.
     ["sapphire_assets", "sapphire_serialize"],
     ["sapphire_assets", "sapphire_reflect"],
+    # Packs hold move sets, checked as the simulation reads them.
+    ["sapphire_assets", "sapphire_moves"],
     # Baked tables are cooked the same way.
     ["sapphire_moves", "sapphire_serialize"],
     ["sapphire_moves", "sapphire_reflect"],

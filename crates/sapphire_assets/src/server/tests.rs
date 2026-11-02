@@ -160,6 +160,7 @@ fn uploads_are_plain_cooked_data() {
                 }
                 AssetKind::ProbeGrid => unreachable!("these assets include no probe grid"),
                 AssetKind::Colliders => unreachable!("colliders never go to the uploader"),
+                AssetKind::MoveSet => unreachable!("move sets never go to the uploader"),
             }
             Ok(())
         })

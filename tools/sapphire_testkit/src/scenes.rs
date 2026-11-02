@@ -9,6 +9,8 @@
 //!   map) in the output directory, which CI uploads.
 //! - A scene with no golden for this family fails in CI (`CI` is set) and is skipped locally.
 //!   Its capture is kept as `.actual.png`, ready to commit.
+//! - A golden or capture that can't be read or compared (another size, a capture cut short) fails
+//!   its scene as an error, naming it and keeping the capture, and the run goes on (review DV-8).
 //! - [`Mode::Update`] writes this family's goldens from the captures instead of comparing.
 //!
 //! Each scene's sandbox writes its output to `<scene>.log` in the output directory and has a
@@ -44,6 +46,13 @@ const SIZE: &str = "640x360";
 /// slowest scene on a CPU rasterizer (WARP's `foliage-ground`, about 130 s in CI), since a slow
 /// runner must not fail a scene that isn't hung.
 pub const DEFAULT_SCENE_TIMEOUT: Duration = Duration::from_secs(900);
+/// The highest mean error `turntable-taa` and `turntable-taa-upsampled` allow, where the default
+/// allows 0.01 (review DV-2). They differ only in `--render-scale 0.667`, which the second exists to
+/// show, and read as each other they stay inside every default gate on every family: mean 0.0085
+/// to 0.0095, p99 0.066, worst tile 0.063. Their own noise leaves room for this one gate: at most
+/// 0.0046 on lavapipe, 0.0005 on Metal and none on WARP. The mean separates them best: 0.0046 from
+/// 0.0085, where the p99 and the worst tile have 0.044 from 0.062.
+const TAA_RENDER_SCALE_MEAN: f32 = 0.0065;
 /// How many of a failed scene's last log lines its failure quotes.
 const LOG_TAIL_LINES: usize = 40;
 /// Waiting on a sandbox polls with exponential backoff from [`FIRST_POLL`] to [`MAX_POLL`]: quick
@@ -426,7 +435,7 @@ pub fn scenes() -> [Scene; 95] {
                 "--ao",
                 "off",
             ],
-            thresholds: Thresholds::default(),
+            thresholds: Thresholds { mean: TAA_RENDER_SCALE_MEAN, ..Thresholds::default() },
         },
         // The turntable spinning at 3 rad/s, about 8 times its usual speed, for the 32 frames up
         // to the capture: outlines and two-tone edges must follow without ghost trails or smears.
@@ -476,7 +485,7 @@ pub fn scenes() -> [Scene; 95] {
                 "--ao",
                 "off",
             ],
-            thresholds: Thresholds::default(),
+            thresholds: Thresholds { mean: TAA_RENDER_SCALE_MEAN, ..Thresholds::default() },
         },
         // The environment shader (M1 W4) by day: the character in the courtyard, under the morning
         // sun from the front left. Painted ground, a colonnade receding into rolling hills, a
@@ -2522,7 +2531,8 @@ enum Status {
     NoGolden,
     /// Outside its gates.
     Failed,
-    /// The sandbox failed or left no adapter record.
+    /// The sandbox failed or left no adapter record, or its capture or golden can't be read or
+    /// compared.
     Error,
     /// Killed at its deadline.
     TimedOut,
@@ -2667,11 +2677,25 @@ fn run_scene(
         return Ok(outcome(Status::NoGolden, in_ci.then_some(message)));
     }
 
-    let golden = Image::read_png(&golden_path).map_err(|e| e.to_string())?;
-    let actual = Image::read_png(&capture).map_err(|e| e.to_string())?;
-    let comparison = golden::compare(&golden, &actual, &scene.thresholds).map_err(|e| e.to_string())?;
+    let compared = Image::read_png(&golden_path).and_then(|golden| {
+        let actual = Image::read_png(&capture)?;
+        golden::compare(&golden, &actual, &scene.thresholds)
+    });
+    let comparison = match compared {
+        Ok(comparison) => comparison,
+        // This scene's failure, not the run's: a golden of another size, a capture cut short.
+        Err(why) => {
+            let what = if capture.is_file() {
+                keep()?;
+                format!("{why}; the capture is at {}", kept.display())
+            } else {
+                why.to_string()
+            };
+            return Ok(error(Status::Error, Some(family.clone()), what));
+        }
+    };
     let summary = format!(
-        "{} [{family}] {:.1} s: mean {:.4} (≤ {}), p{} {:.4} (≤ {}), max {:.3}",
+        "{} [{family}] {:.1} s: mean {:.4} (≤ {}), p{} {:.4} (≤ {}), worst tile {:.4} (≤ {}), max {:.3}",
         scene.name,
         seconds(),
         comparison.mean,
@@ -2679,6 +2703,8 @@ fn run_scene(
         comparison.percentile,
         comparison.percentile_value,
         scene.thresholds.percentile_max,
+        comparison.worst_tile,
+        scene.thresholds.tile_max,
         comparison.max,
     );
     if comparison.passes(&scene.thresholds) {
@@ -2966,6 +2992,93 @@ mod tests {
     }
 
     #[test]
+    fn only_the_taa_render_scale_pair_has_gates_of_its_own() {
+        for scene in scenes() {
+            let expected = match scene.name {
+                "turntable-taa" | "turntable-taa-upsampled" => {
+                    Thresholds { mean: TAA_RENDER_SCALE_MEAN, ..Thresholds::default() }
+                }
+                _ => Thresholds::default(),
+            };
+            assert_eq!(scene.thresholds, expected, "{}", scene.name);
+        }
+    }
+
+    /// The families with committed goldens.
+    const GOLDEN_FAMILIES: [&str; 3] = ["metal", "vulkan-lavapipe", "dx12-warp"];
+
+    /// A committed golden, from `tests/golden`.
+    fn committed(scene: &str, family: &str) -> Image {
+        let name = format!("{scene}.{family}.png");
+        Image::read_png(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/golden").join(name)).unwrap()
+    }
+
+    #[test]
+    fn a_capture_that_lost_its_scene_s_feature_fails_the_golden() {
+        // Review DV-2. Each pair's arguments differ in one thing a scene exists to show: the bangs'
+        // soft shadow, MSAA, the render scale; so each golden read as the other is that feature
+        // gone wrong. The tier pairs aren't here: `eyes-front` and `eyes-mobile`, and `hair-shadow`
+        // and `hair-shadow-mobile`, stay within the gates (mean 0.0096, p99 0.054, worst tile 0.057
+        // at most), moving a little everywhere and no more locally than lavapipe's noise.
+        let scenes = scenes();
+        let thresholds = |name: &str| scenes.iter().find(|scene| scene.name == name).unwrap().thresholds;
+        for family in GOLDEN_FAMILIES {
+            for (first, second) in [
+                ("hair-shadow-soft", "hair-shadow"),
+                ("turntable", "turntable-msaa-off"),
+                ("turntable", "turntable-render-scale"),
+                ("turntable-taa", "turntable-taa-upsampled"),
+            ] {
+                for (golden, actual) in [(first, second), (second, first)] {
+                    let thresholds = thresholds(golden);
+                    let comparison =
+                        golden::compare(&committed(golden, family), &committed(actual, family), &thresholds)
+                            .unwrap();
+                    assert!(
+                        !comparison.passes(&thresholds),
+                        "{actual} passes as {golden} on {family}: mean {}, p{} {}, worst tile {}",
+                        comparison.mean,
+                        comparison.percentile,
+                        comparison.percentile_value,
+                        comparison.worst_tile,
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_small_wrong_patch_fails_the_golden() {
+        // Review DV-2: before the tile gate a centered 40 px patch passed these scenes; on
+        // `lookdev-face` an eye is about 30 px wide, so a whole eye could go wrong.
+        const SIDE: usize = 6;
+        let scenes = scenes();
+        for family in GOLDEN_FAMILIES {
+            for name in ["eyes-front", "lookdev-face", "hair-shadow", "turntable", "lookdev-town-hero"] {
+                let golden = committed(name, family);
+                let mut actual = golden.clone();
+                let (width, height) = (actual.width as usize, actual.height as usize);
+                for y in (height - SIDE) / 2..(height + SIDE) / 2 {
+                    for x in (width - SIDE) / 2..(width + SIDE) / 2 {
+                        let start = (y * width + x) * 4;
+                        actual.rgba[start..start + 3].fill(128);
+                    }
+                }
+                let thresholds = scenes.iter().find(|scene| scene.name == name).unwrap().thresholds;
+                let comparison = golden::compare(&golden, &actual, &thresholds).unwrap();
+                assert!(
+                    !comparison.passes(&thresholds),
+                    "a {SIDE} px patch passes {name} on {family}: mean {}, p{} {}, worst tile {}",
+                    comparison.mean,
+                    comparison.percentile,
+                    comparison.percentile_value,
+                    comparison.worst_tile,
+                );
+            }
+        }
+    }
+
+    #[test]
     fn reads_the_backend_family_from_the_adapter_record() {
         let dir = std::env::temp_dir().join(format!("sapphire_testkit_scenes_{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
@@ -2988,6 +3101,13 @@ mod tests {
         let run = |selection| run(&paths, Mode::Compare, selection, DEFAULT_SCENE_TIMEOUT).unwrap_err();
         assert!(run(Selection::Scene("no-such-scene")).contains("turntable"));
         assert!(run(Selection::Shard(Shard { index: 999, count: 999 })).contains("holds none"));
+    }
+
+    /// The side of a fake sandbox's capture.
+    const FAKE_SIDE: u32 = 8;
+
+    fn fake_image(side: u32) -> Image {
+        Image { width: side, height: side, rgba: [40, 80, 120, 255].repeat((side * side) as usize) }
     }
 
     /// In a fake sandbox's environment: what it does (see [`fake_sandbox`]).
@@ -3049,9 +3169,15 @@ mod tests {
                 monitor.wait().expect("the fake monitor's exit");
                 std::process::exit(42);
             }
-            "chatty" => {
-                chatter(2000);
-                fs::write(&capture, "unread by --update").expect("the capture");
+            "chatty" | "wrong-size-golden" | "corrupt-golden" | "truncated" => {
+                if behaviour == "chatty" {
+                    chatter(2000);
+                }
+                fake_image(FAKE_SIDE).write_png(&capture).expect("the capture");
+                if behaviour == "truncated" {
+                    let bytes = fs::read(&capture).expect("the capture");
+                    fs::write(&capture, &bytes[..bytes.len() / 2]).expect("half the capture");
+                }
                 let record = "backend=vulkan\nadapter=llvmpipe (fake)\n";
                 fs::write(capture.with_extension("adapter.txt"), record).expect("the adapter record");
                 // A clean exit closes the lifeline, as the real sandbox's does, and waits.
@@ -3072,10 +3198,12 @@ mod tests {
         // process-lifecycle cases wait concurrently; each must continue to a successful capture.
         std::thread::scope(|scope| {
             let hang = scope.spawn(|| {
-                check_fake_run("deadline-hang", &[("fake-hang", "timed-out"), ("fake-chatty", "updated")]);
+                let expected = [("fake-hang", "timed-out"), ("fake-chatty", "updated")];
+                check_fake_run("deadline-hang", Mode::Update, &expected);
             });
             let stall = scope.spawn(|| {
-                check_fake_run("deadline-stall", &[("fake-stall", "timed-out"), ("fake-chatty", "updated")]);
+                let expected = [("fake-stall", "timed-out"), ("fake-chatty", "updated")];
+                check_fake_run("deadline-stall", Mode::Update, &expected);
             });
             hang.join().unwrap();
             stall.join().unwrap();
@@ -3088,11 +3216,27 @@ mod tests {
         // two deadlines serially. Each child really exits unsuccessfully and reaps its monitor.
         check_fake_run(
             "failures",
+            Mode::Update,
             &[("fake-fail-one", "error"), ("fake-fail-two", "error"), ("fake-chatty", "updated")],
         );
     }
 
-    fn check_fake_run(group: &str, expected: &[(&'static str, &'static str)]) {
+    #[test]
+    fn a_golden_or_capture_that_can_t_be_compared_fails_its_scene_and_the_run_goes_on() {
+        // Review DV-8: each of these stopped the whole run, naming no scene.
+        check_fake_run(
+            "unreadable",
+            Mode::Compare,
+            &[
+                ("fake-wrong-size-golden", "error"),
+                ("fake-corrupt-golden", "error"),
+                ("fake-truncated", "error"),
+                ("fake-chatty", "ok"),
+            ],
+        );
+    }
+
+    fn check_fake_run(group: &str, mode: Mode, expected: &[(&'static str, &'static str)]) {
         let dir = std::env::temp_dir().join(format!("sapphire_testkit_{group}_{}", std::process::id()));
         let paths = Paths {
             sandbox: PathBuf::from("unused"),
@@ -3106,13 +3250,42 @@ mod tests {
             .collect();
         let selected: Vec<&Scene> = scenes.iter().collect();
         let timeout = Duration::from_secs(3);
+        let golden_of = |name: &str| paths.goldens.join(format!("{name}.vulkan-lavapipe.png"));
+        if mode == Mode::Compare {
+            fs::create_dir_all(&paths.goldens).unwrap();
+            for &(name, _) in expected {
+                match name {
+                    "fake-wrong-size-golden" => {
+                        fake_image(FAKE_SIDE * 2).write_png(&golden_of(name)).unwrap()
+                    }
+                    "fake-corrupt-golden" => fs::write(golden_of(name), "not a PNG").unwrap(),
+                    _ => fake_image(FAKE_SIDE).write_png(&golden_of(name)).unwrap(),
+                }
+            }
+        }
         let sandbox = |scene: &Scene| fake(scene.name.strip_prefix("fake-").expect("a fake"));
-        let failures = run_scenes(&selected, &paths, Mode::Update, timeout, &sandbox).unwrap();
-        let expected_failures: Vec<_> = expected.iter().filter(|(_, status)| *status != "updated").collect();
+        let failures = run_scenes(&selected, &paths, mode, timeout, &sandbox).unwrap();
+        let expected_failures: Vec<_> =
+            expected.iter().filter(|(_, status)| !matches!(*status, "updated" | "ok")).collect();
         assert_eq!(failures.len(), expected_failures.len(), "{failures:#?}");
         for (failure, &&(name, status)) in failures.iter().zip(&expected_failures) {
+            let unreadable = match name {
+                "fake-wrong-size-golden" => Some("size mismatch: the golden is (16, 16), the capture (8, 8)"),
+                "fake-corrupt-golden" => Some("not a PNG this harness reads"),
+                "fake-truncated" => Some("not a PNG this harness reads"),
+                _ => None,
+            };
             if status == "timed-out" {
                 assert!(failure.starts_with(&format!("{name}: timed out after 3 s")), "{failure}");
+            } else if let Some(why) = unreadable {
+                assert!(failure.starts_with(&format!("{name}: ")) && failure.contains(why), "{failure}");
+                // The capture is kept, bytes as the sandbox wrote them, and the failure says where.
+                let kept = paths.out.join(format!("{name}.vulkan-lavapipe.actual.png"));
+                assert!(failure.contains(&kept.display().to_string()), "{failure}");
+                assert_eq!(
+                    fs::read(&kept).unwrap(),
+                    fs::read(paths.out.join(format!("{name}.png"))).unwrap()
+                );
             } else {
                 assert!(failure.starts_with(&format!("{name}: the sandbox failed")), "{failure}");
                 assert!(failure.contains("failing now"), "{failure}");

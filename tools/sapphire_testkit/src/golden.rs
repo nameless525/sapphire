@@ -3,9 +3,9 @@
 //! A capture is compared with the reference image for its **backend family** ([`backend_key`]):
 //! CPU rasterizers and GPUs disagree in the last bit, so each family keeps its own goldens.
 //! Comparison uses NVIDIA's FLIP, a perceptual per-pixel error in [0, 1], through `nv-flip`
-//! (as wgpu's own tests do), and gates on the mean and a high percentile rather than the
-//! maximum: two-tone shading's hard terminators and outlines turn tiny precision differences into
-//! whole-pixel flips along edges, which a max would always fail on.
+//! (as wgpu's own tests do), and gates on the mean, a high percentile and the worst small tile
+//! rather than the maximum: two-tone shading's hard terminators and outlines turn tiny precision
+//! differences into whole-pixel flips along edges, which a max would always fail on.
 
 use std::fs::File;
 use std::io::BufWriter;
@@ -103,6 +103,9 @@ pub fn backend_key(backend: &str, adapter: &str) -> String {
     }
 }
 
+/// The side in pixels of the block [`Comparison::worst_tile`] averages over.
+pub const TILE: usize = 16;
+
 /// When a capture still matches its golden.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Thresholds {
@@ -112,15 +115,21 @@ pub struct Thresholds {
     /// Edge flips stay above it; broken shading doesn't.
     pub percentile: f32,
     pub percentile_max: f32,
+    /// The highest allowed mean error of any [`TILE`] × [`TILE`] block of pixels.
+    pub tile_max: f32,
 }
 
 impl Default for Thresholds {
-    /// A backend family renders its own golden again nearly exactly, so the mean gate is
-    /// tight. FLIP spreads each pixel's error over its neighbors (it models what the eye
-    /// sees), so a handful of flipped edge pixels lifts p99 to about 0.2; 0.3 still fails a
-    /// shifted shading band or a one-pixel change in outline width.
+    /// A backend family renders its own golden again nearly exactly, so each gate sits just above
+    /// what CI's captures measure (spec §9 has the runs): the worst mean is 0.0088, the worst p99
+    /// 0.084 and the worst tile 0.122, all on CI's Metal `foliage-ground`, whose capture is the
+    /// same on every run; lavapipe's worst are 0.0059, 0.057 and 0.060, and WARP's 0.0015, 0.018
+    /// and 0.038. A p99 of 0.12 fails MSAA lost, a render scale of 0.7 or the bangs' soft shadow
+    /// lost (they read 0.135 to 0.155). The whole-image gates can't see a small defect: a
+    /// 40 px patch of wrong pixels stays under both. The tile gate fails one of 5 px, and
+    /// scattered edge flips stay under it.
     fn default() -> Self {
-        Self { mean: 0.01, percentile: 99.0, percentile_max: 0.3 }
+        Self { mean: 0.01, percentile: 99.0, percentile_max: 0.12, tile_max: 0.15 }
     }
 }
 
@@ -131,6 +140,8 @@ pub struct Comparison {
     /// The [`Thresholds::percentile`] value it was compared at.
     pub percentile: f32,
     pub percentile_value: f32,
+    /// The highest mean error of any [`TILE`] × [`TILE`] block of pixels, wherever it lies.
+    pub worst_tile: f32,
     pub max: f32,
     /// Per-pixel FLIP error, colored with the magma map (black: identical).
     pub error_map: Image,
@@ -138,7 +149,9 @@ pub struct Comparison {
 
 impl Comparison {
     pub fn passes(&self, thresholds: &Thresholds) -> bool {
-        self.mean <= thresholds.mean && self.percentile_value <= thresholds.percentile_max
+        self.mean <= thresholds.mean
+            && self.percentile_value <= thresholds.percentile_max
+            && self.worst_tile <= thresholds.tile_max
     }
 }
 
@@ -167,6 +180,7 @@ pub fn compare(golden: &Image, actual: &Image, thresholds: &Thresholds) -> Resul
         mean: pool.mean(),
         percentile: thresholds.percentile,
         percentile_value: pool.get_percentile(thresholds.percentile / 100.0, false),
+        worst_tile: worst_tile(&errors.to_vec(), width as usize, height as usize),
         max: pool.max_value(),
         error_map: Image {
             width,
@@ -174,6 +188,37 @@ pub fn compare(golden: &Image, actual: &Image, thresholds: &Thresholds) -> Resul
             rgba: colored.as_chunks::<3>().0.iter().flat_map(|&[r, g, b]| [r, g, b, 255]).collect(),
         },
     })
+}
+
+/// The highest mean of `errors` (`width` × `height`, rows in order) over every [`TILE`] × [`TILE`]
+/// block at every position, or over the whole image where it is smaller: a sliding window, so a
+/// defect reads the same wherever it lands, where a fixed grid could split it across four tiles.
+fn worst_tile(errors: &[f32], width: usize, height: usize) -> f32 {
+    let (tile_width, tile_height) = (TILE.min(width), TILE.min(height));
+    if tile_width == 0 || tile_height == 0 {
+        return 0.0;
+    }
+    // Each column's sum over the last `tile_height` rows, then a run of `tile_width` of them.
+    let mut columns = vec![0.0_f64; width];
+    let mut worst = 0.0_f64;
+    for y in 0..height {
+        for (x, column) in columns.iter_mut().enumerate() {
+            *column += f64::from(errors[y * width + x]);
+            if y >= tile_height {
+                *column -= f64::from(errors[(y - tile_height) * width + x]);
+            }
+        }
+        if y + 1 < tile_height {
+            continue;
+        }
+        let mut sum: f64 = columns[..tile_width].iter().sum();
+        worst = worst.max(sum);
+        for x in tile_width..width {
+            sum += columns[x] - columns[x - tile_width];
+            worst = worst.max(sum);
+        }
+    }
+    (worst / (tile_width * tile_height) as f64) as f32
 }
 
 /// Compare only complete, nonempty images: public `Image` fields can also describe malformed
@@ -211,6 +256,7 @@ mod tests {
         let same = compare(&golden, &golden.clone(), &Thresholds::default()).unwrap();
         assert_eq!(same.mean, 0.0);
         assert!(same.max <= f32::MIN_POSITIVE, "FLIP's pool reports the smallest positive float for none");
+        assert_eq!(same.worst_tile, 0.0);
         assert!(same.passes(&Thresholds::default()));
         assert_eq!((same.error_map.width, same.error_map.rgba.len()), (64, 64 * 48 * 4));
 
@@ -251,6 +297,8 @@ mod tests {
                         comparison.percentile_value.to_bits(),
                         pool.get_percentile(percentile / 100.0, false).to_bits(),
                     );
+                    assert_eq!(comparison.worst_tile, 0.0);
+                    assert!(errors.to_vec().iter().all(|&error| error == 0.0));
                     assert_eq!(comparison.error_map.rgba, expected);
                 }
             }
@@ -283,19 +331,89 @@ mod tests {
         assert!(!same_rgb(&empty, &empty));
     }
 
-    #[test]
-    fn a_few_edge_pixels_pass_the_percentile_gate() {
+    /// `checker(200, 200, 20, 0)` with the pixels right of the first cell edge on `rows` flipped.
+    fn with_flipped_edge(rows: impl Iterator<Item = usize>) -> (Image, Image) {
         let (size, cell) = (200, 20);
         let golden = checker(size, size, cell, 0);
         let mut actual = golden.clone();
-        // Flip 20 pixels along one cell edge (0.05%), as precision differences do on terminators.
-        for y in 0..20usize {
+        for y in rows {
             let edge = y * size as usize + cell as usize;
             actual.rgba[edge * 4..edge * 4 + 4].copy_from_slice(&golden.rgba[(edge - 1) * 4..edge * 4]);
         }
-        let comparison = compare(&golden, &actual, &Thresholds::default()).unwrap();
-        assert!(comparison.max > 0.3, "the flipped pixels are clearly different");
-        assert!(comparison.passes(&Thresholds::default()), "{comparison:?}");
+        (golden, actual)
+    }
+
+    #[test]
+    fn scattered_edge_flips_pass_and_a_run_of_them_fails() {
+        let thresholds = Thresholds::default();
+        // 20 pixels (0.05%) spread down an edge, as precision differences flip pixels along terminators
+        // and outlines: on CI's noisiest such tile, Metal's `debug-wireframe`, two flips of about 190
+        // code values read 0.098. A max gate would always fail on them.
+        let (golden, actual) = with_flipped_edge((0..200).step_by(10));
+        let scattered = compare(&golden, &actual, &thresholds).unwrap();
+        assert!(scattered.max > 0.3, "the flipped pixels are clearly different: {}", scattered.max);
+        assert!(scattered.passes(&thresholds), "{}, {}", scattered.percentile_value, scattered.worst_tile);
+
+        // A run of them is a line that moved: it stays under the whole-image gates.
+        let (golden, actual) = with_flipped_edge(0..20);
+        let run = compare(&golden, &actual, &thresholds).unwrap();
+        assert!(run.mean <= thresholds.mean && run.percentile_value <= thresholds.percentile_max);
+        assert!(run.worst_tile > thresholds.tile_max, "{}", run.worst_tile);
+        assert!(!run.passes(&thresholds));
+    }
+
+    #[test]
+    fn a_small_patch_fails_only_the_tile_gate() {
+        let thresholds = Thresholds::default();
+        let golden = Image { width: 200, height: 200, rgba: [90, 110, 160, 255].repeat(200 * 200) };
+        let mut actual = golden.clone();
+        for y in 100..106 {
+            actual.rgba[(y * 200 + 100) * 4..(y * 200 + 106) * 4]
+                .copy_from_slice(&[200, 200, 200, 255].repeat(6));
+        }
+        let comparison = compare(&golden, &actual, &thresholds).unwrap();
+        assert!(
+            comparison.mean <= thresholds.mean && comparison.percentile_value <= thresholds.percentile_max
+        );
+        assert!(comparison.worst_tile > thresholds.tile_max, "{}", comparison.worst_tile);
+        assert!(!comparison.passes(&thresholds));
+    }
+
+    #[test]
+    fn the_worst_tile_reads_a_block_the_same_wherever_it_lies() {
+        let (width, height) = (64, 48);
+        // Aligned with a 16 px grid, across its lines, and in the image's corners.
+        for (left, top) in [(0, 0), (14, 14), (16, 16), (30, 18), (60, 0), (0, 44), (60, 44)] {
+            let mut errors = vec![0.0; width * height];
+            for y in top..top + 4 {
+                errors[y * width + left..y * width + left + 4].fill(1.0);
+            }
+            assert_eq!(worst_tile(&errors, width, height), 16.0 / 256.0, "at ({left}, {top})");
+        }
+    }
+
+    #[test]
+    fn the_worst_tile_averages_only_inside_its_window() {
+        let (width, height) = (64, 48);
+        let mut errors = vec![0.25; width * height];
+        // A strip one pixel short of a window's height, and a pixel over it at its other end: no
+        // window holds both.
+        for y in 8..23 {
+            errors[y * width + 30] = 1.0;
+        }
+        errors[23 * width + 30 + 16] = 1.0;
+        let expected = (15.0 + 241.0 * 0.25) / 256.0;
+        assert!((worst_tile(&errors, width, height) - expected).abs() < 1e-6);
+    }
+
+    #[test]
+    fn an_image_smaller_than_a_tile_averages_over_what_it_has() {
+        assert_eq!(worst_tile(&[1.0, 0.0, 0.0, 1.0], 2, 2), 0.5);
+        // Wider than a tile but shorter: the worst run of 16 columns, over its one row.
+        let mut row = vec![0.0; 32];
+        row[20..24].fill(1.0);
+        assert_eq!(worst_tile(&row, 32, 1), 4.0 / 16.0);
+        assert_eq!(worst_tile(&[], 0, 0), 0.0);
     }
 
     #[test]

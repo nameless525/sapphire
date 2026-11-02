@@ -20,7 +20,7 @@
 //!   when both feet want up, and drop further if a leg still can't reach. Their height eases in the
 //!   model's space, but a root that jumps ([`FootSettings::pop_speed`]) is taken back out of it, so
 //!   a step-up shows on screen as the feet alone. Then two-bone solves
-//!   ([`two_bone`](crate::two_bone)) keep each knee's plane from the clip.
+//!   ([`two_bone`]) keep each knee's plane from the clip.
 //! - **A weight fades it all,** [`FeetInput::weight`]: a state or move says 0 in the air or while it
 //!   wants its feet as animated, and it eases off over [`FootSettings::fade`]. With no ground under a
 //!   foot, that foot alone eases back to its animation.
@@ -119,7 +119,7 @@ pub struct FootGround {
 /// What foot placement takes each frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct FeetInput {
-    /// 0 lets the feet go as animated, 1 grounds them. See the [module docs](self).
+    /// 0 lets the feet go as animated, 1 grounds them. See the `feet` module's docs.
     pub weight: f32,
     /// Left, then right.
     pub ground: [FootGround; 2],
@@ -168,7 +168,7 @@ struct FootState {
 
 const FLAT: Plane = Plane { normal: Vec3::Y, offset: 0.0 };
 
-/// One character's foot placement. See the [module docs](self).
+/// One character's foot placement. See the `feet` module's docs.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FootPlacement {
     legs: [LegBones; 2],

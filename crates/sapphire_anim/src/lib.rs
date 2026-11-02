@@ -24,6 +24,10 @@
 //!   [document](sapphire_assets::graph): locomotion's blend space, a combat layer the simulation's
 //!   moves drive through plain input, additive layers and a blink, with [inertialized](inertia)
 //!   transitions.
+//! - **IK:** [`two_bone`] and [`aim`] over a [`SolvePose`], a pose's locals and the model transforms
+//!   of the joints in use, and [`CharacterIk`], one character's foot placement ([`FootPlacement`]),
+//!   look-at ([`LookAt`]) and hands on a weapon ([`HeldWeapon`]), between sampling and
+//!   [`CharacterPose::finish`]. Ground comes in as data: it casts nothing itself.
 //!
 //! # Does not own
 //!
@@ -42,10 +46,6 @@
 //!   this crate:** a table is one set of bytes on every architecture, and these functions' `Quat` and
 //!   `Affine3A` round differently on NEON and SSE2, so the pipeline bakes through scalars and a test
 //!   there holds a table to the pose this crate draws (spec §5.27).
-//!
-//! # Later in M2
-//!
-//! - N4: IK.
 
 mod blend;
 mod blend_space;

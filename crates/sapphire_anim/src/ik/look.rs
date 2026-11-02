@@ -76,7 +76,7 @@ impl RangeMap {
     }
 }
 
-/// What the rig moves for its eyes. See the [module docs](self).
+/// What the rig moves for its eyes. See the `look` module's docs.
 #[derive(Clone, Debug, PartialEq)]
 pub enum EyeDrive {
     /// Eye joints, each with its parent's rest rotation in the model's space: the eye's turns are in
@@ -114,7 +114,7 @@ pub struct LookBones {
     pub(crate) eyes: Option<EyeRig>,
 }
 
-/// One character's look-at state. See the [module docs](self).
+/// One character's look-at state. See the `look` module's docs.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LookAt {
     bones: LookBones,

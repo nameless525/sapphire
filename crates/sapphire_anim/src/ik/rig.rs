@@ -19,7 +19,7 @@ const LOOK_SHARES: [(&[HumanBone], f32); 3] = [
     (&[HumanBone::Head], 0.55),
 ];
 
-/// A rig's bones as IK reads them. See the [module docs](self).
+/// A rig's bones as IK reads them. See the `rig` module's docs.
 #[derive(Clone, Debug, PartialEq)]
 pub struct IkRig {
     pub(crate) hips: Option<u16>,

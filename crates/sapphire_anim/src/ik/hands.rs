@@ -54,7 +54,7 @@ pub struct Grip {
     pub weight: f32,
 }
 
-/// What the hands hold. See the [module docs](self).
+/// What the hands hold. See the `hands` module's docs.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HeldWeapon {
     pub place: WeaponPlace,

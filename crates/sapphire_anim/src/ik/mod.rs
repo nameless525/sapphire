@@ -65,7 +65,7 @@ pub struct LookInput {
 /// What IK takes each frame, all plain data.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct IkInput {
-    /// Seconds of the owner's clock since the last solve. See the [module docs](self).
+    /// Seconds of the owner's clock since the last solve. See the `ik` module's docs.
     pub dt: f32,
     /// The character's transform: upright, with a uniform scale.
     pub world_from_model: Affine3A,
@@ -76,14 +76,14 @@ pub struct IkInput {
 
 impl IkInput {
     /// What must be compared to know whether a pose under a frozen clock has to be solved again: what
-    /// takes effect with no time passing. See the [module docs](self).
+    /// takes effect with no time passing. See the `ik` module's docs.
     #[must_use]
     pub fn frozen_key(&self) -> Option<HeldWeapon> {
         self.weapon
     }
 }
 
-/// One character's IK. See the [module docs](self).
+/// One character's IK. See the `ik` module's docs.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CharacterIk {
     reads: Vec<u16>,

@@ -845,7 +845,7 @@ fn a_turned_and_moved_character_stands_on_the_world_s_ground_and_looks_at_the_wo
         ik.prepare(pose);
         let probes = ik.foot_probes(pose, &world).expect("it has feet");
         let foot =
-            |probe: &FootProbe| FootGround { ankle: ground(probe.ankle), ball: probe.ball.and_then(&ground) };
+            |probe: &FootProbe| FootGround { ankle: ground(probe.ankle), ball: probe.ball.and_then(ground) };
         let mut request = input();
         request.world_from_model = world;
         request.feet = FeetInput { weight: 1.0, ground: [foot(&probes[0]), foot(&probes[1])] };

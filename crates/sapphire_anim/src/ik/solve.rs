@@ -21,7 +21,7 @@ const TINY: f32 = 1e-6;
 /// short of there the hinge never flips.
 const STRAIGHT: f32 = 0.34;
 
-/// A pose as solvers see it. See the [module docs](self).
+/// A pose as solvers see it. See the `solve` module's docs.
 #[derive(Debug)]
 pub struct SolvePose<'a> {
     parents: &'a [u16],

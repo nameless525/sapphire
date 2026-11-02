@@ -28,10 +28,10 @@ use crate::quality::{TierId, TierTable};
 use crate::shaders::evaluate_on_gpu;
 use crate::{
     AmbientLight, BloomParams, CameraData, CharacterBloom, CharacterBody, CharacterFace, CharacterInstance,
-    CharacterLighting, ColorGrade, Diffusion, DirectionalLight, FramePacket, FramePacketRing, GradientBlend,
-    GradientLayer, GradientShape, InstanceId, Inversion, LensFlare, MAX_GRADIENT_LAYERS, MeshHandle,
-    MeshInstance, Msaa, PostEffects, PostParams, RenderSettings, Renderer, ShaderFile, ShaderSources,
-    SkyDisc, SkyGradient, ToneCurve, ViewData, Vignette,
+    CharacterLighting, ChromaticAberration, ColorGrade, Diffusion, DirectionalLight, FramePacket,
+    FramePacketRing, GradientBlend, GradientLayer, GradientShape, InstanceId, Inversion, LensFlare,
+    MAX_GRADIENT_LAYERS, MeshHandle, MeshInstance, Msaa, PostEffects, PostParams, RadialBlur, RenderSettings,
+    Renderer, ShaderFile, ShaderSources, SkyDisc, SkyGradient, ToneCurve, ViewData, Vignette,
 };
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -477,6 +477,42 @@ fn sharpening_stays_finite_on_infinite_scene_color() {
 
 #[test]
 #[ignore = "needs a GPU"]
+fn radial_taps_stay_finite_on_infinite_scene_color() {
+    // Chromatic aberration's split moves each channel's tent along the radial blur's ray, so a tap
+    // can lie outside one: its weight is 0, and infinity × 0 is NaN (own review RS2-6). Through a
+    // buffer, as above: without the guard Metal returns NaN in exactly the channels weighing 0.
+    let sources = ShaderSources::compiled_in();
+    let wgsl = sources.get(ShaderFile::Post);
+    // A ray as `radial_blur` sets one up: strength 0.05, split 0.1, 12 taps.
+    let ray = "RadialRay(vec2<f32>(0.5), vec2<f32>(0.0), 1.1, 0.0208, 0.0, 0.1, 0.975, 0.0458)";
+    // `COLOR_MAX`, f16's largest.
+    let ceiling = 65504.0;
+    // Taps that only blue's, green's and red's tent reaches.
+    let inputs: Vec<[f32; 4]> = [1.075, 0.975, 0.875]
+        .into_iter()
+        .flat_map(|scale| {
+            [[f32::INFINITY, f32::INFINITY, f32::INFINITY, scale], [ceiling, ceiling, ceiling, scale]]
+        })
+        .collect();
+    let evaluate = |field: &str| {
+        let expression = format!("vec4<f32>(radial_weighted({ray}, input.a, input.rgb).{field}, 0.0)");
+        evaluate_on_gpu(wgsl, None, &expression, &inputs)
+    };
+    let (colors, weights) = (evaluate("color"), evaluate("weight"));
+    for ((color, weight), input) in colors.iter().zip(&weights).zip(&inputs) {
+        let reached = weight[..3].iter().filter(|w| **w > 0.0).count();
+        assert_eq!(reached, 1, "one channel's tent reaches the tap at {}: {weight:?}", input[3]);
+        let finite = color.iter().all(|c| c.is_finite());
+        assert!(finite, "{input:?} under weights {weight:?} gives {color:?}");
+    }
+    for pair in colors.chunks(2) {
+        let same = pair[0].iter().zip(pair[1]).all(|(a, b)| (a - b).abs() <= 1e-4 * b.abs());
+        assert!(same, "infinity is the ceiling: {pair:?}");
+    }
+}
+
+#[test]
+#[ignore = "needs a GPU"]
 fn infinite_scene_color_blooms_without_a_black_block() {
     // A NaN in bloom's first level spreads down its chain and back up, and the composite's shaper
     // shows it as black: without the guard, one such sphere blacked out the whole frame on Metal.
@@ -490,11 +526,19 @@ fn infinite_scene_color_blooms_without_a_black_block() {
         ("no AA", RenderSettings { msaa: Msaa::Off, ..RenderSettings::default() }),
     ];
     let emissions = [(1e6, 1.0), (f32::MAX, 2.0)];
-    // The prefilter's two variants, and the composite's sharpening variant (own review RS2-5).
+    let lens = PostEffects {
+        radial_blur: RadialBlur { center: Vec2::splat(0.5), strength: 0.05 },
+        chromatic_aberration: ChromaticAberration { center: Vec2::splat(0.5), strength: 0.05 },
+        ..PostEffects::NONE
+    };
+    // The prefilter's two variants, and the composite's sharpening (own review RS2-5) and lens
+    // effects (RS2-6) variants.
+    let neutral = CharacterBloom::NEUTRAL;
     let variants = [
-        (CharacterBloom::NEUTRAL, 0.0),
-        (CharacterBloom { threshold: 1.5, strength: 0.3 }, 0.0),
-        (CharacterBloom::NEUTRAL, 0.5),
+        ("plain", neutral, 0.0, PostEffects::NONE),
+        ("the character mask", CharacterBloom { threshold: 1.5, strength: 0.3 }, 0.0, PostEffects::NONE),
+        ("sharpening", neutral, 0.5, PostEffects::NONE),
+        ("the lens effects", neutral, 0.0, lens),
     ];
     for (path, settings) in paths {
         for (emission, scale) in emissions {
@@ -508,11 +552,12 @@ fn infinite_scene_color_blooms_without_a_black_block() {
                 let plain = PostParams { exposure, ..passthrough() };
                 let image = harness.render_frames(1, plain, |packet| packet.emission_scale = scale);
                 let floor = image[0];
-                for (character_bloom, sharpening) in variants {
+                for (variant, character_bloom, sharpening, effects) in variants {
                     let post = PostParams {
                         bloom: BloomParams { threshold: 1.0, knee: 0.5, intensity: 0.5, scatter: 0.7 },
                         character_bloom,
                         sharpening,
+                        effects,
                         ..plain
                     };
                     let image = harness.render_frames(1, post, |packet| packet.emission_scale = scale);
@@ -520,8 +565,8 @@ fn infinite_scene_color_blooms_without_a_black_block() {
                     assert_eq!(
                         dark.count(),
                         0,
-                        "{path}, emission {emission} × {scale}, {exposure} EV, {character_bloom:?}, \
-                         sharpening {sharpening}: pixels darker than the sky {floor:?}"
+                        "{path}, emission {emission} × {scale}, {exposure} EV, {variant}: \
+                         pixels darker than the sky {floor:?}"
                     );
                 }
             }

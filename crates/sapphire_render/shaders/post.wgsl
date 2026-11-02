@@ -642,12 +642,18 @@ struct RadialSum {
     weight: vec3<f32>,
 }
 
+// A tap's `color` at `scale`, under each channel's tent. Infinities take the largest finite color
+// first: a tap outside a tent weighs 0, and infinity × 0 is NaN.
+fn radial_weighted(ray: RadialRay, scale: f32, color: vec3<f32>) -> RadialSum {
+    let from_middle = vec3<f32>(scale) - (ray.middle + vec3<f32>(-ray.split, 0.0, ray.split));
+    let weight = saturate(1.0 - abs(from_middle) / ray.half_width);
+    return RadialSum(min(color, vec3<f32>(COLOR_MAX)) * weight, weight);
+}
+
 fn radial_tap(ray: RadialRay, index: f32) -> RadialSum {
     let scale = ray.near - ray.step * (index + ray.jitter);
     let color = textureSampleLevel(texture0, linear_clamp, ray.center + ray.offset * scale, 0.0).rgb;
-    let from_middle = vec3<f32>(scale) - (ray.middle + vec3<f32>(-ray.split, 0.0, ray.split));
-    let weight = saturate(1.0 - abs(from_middle) / ray.half_width);
-    return RadialSum(color * weight, weight);
+    return radial_weighted(ray, scale, color);
 }
 
 // Four taps from tap `first`, unrolled: wgpu bounds every WGSL loop with a counter, which keeps

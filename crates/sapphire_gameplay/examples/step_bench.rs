@@ -11,10 +11,11 @@
 //! strings, dodge cancels and dash attacks with a warp target and its ring in use, with its neighbours
 //! in reach and a capsule on a floor, so hits land, reactions cut moves off, and hurtboxes and capsules
 //! move, which is more than most of a real fight's actors do at once. Nobody falls: they're given health
-//! for it, so the last steps cost what the first do. Dodges go through swings, so perfect dodges fire and
-//! counters start, with their slowdown taken out: a slowed world does a fifth of the work a step, which
-//! would flatter every number here. It reads the steps through `Simulation::stats`, as the overlay would,
-//! and adds its checksum cost, which a replay pays per tick only when asked.
+//! for it, so the last steps cost what the first do. In the crowds, dodges go through swings, so perfect
+//! dodges fire and counters start, and the world spends about half the run slowed. That costs more, not
+//! less: a slowed swing stays live five times as many steps, and each of those sweeps. It reads the steps
+//! through `Simulation::stats`, as the overlay would, and adds its checksum cost, which a replay pays per
+//! tick only when asked.
 
 #![allow(clippy::print_stdout, reason = "a bench's output is what it's for")]
 
@@ -32,9 +33,7 @@ use sapphire_time::Stopwatch;
 const SLICE: &str = include_str!("../../sapphire_moves/test_content/slice.moves.ron");
 
 fn slice() -> MoveSet {
-    let lasting = SLICE
-        .replacen("health: 300,", "health: 4000000000,", 1)
-        .replacen("slow_motion: (per_mille: 200, steps: 30),", "", 1);
+    let lasting = SLICE.replacen("health: 300,", "health: 4000000000,", 1);
     MoveSetDocument::parse(&lasting).expect("parses").compile().expect("compiles")
 }
 

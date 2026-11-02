@@ -29,7 +29,7 @@ fn busy_query() -> HitQuery {
     target.set(&mut world, Some(Shape::Sphere { radius: 0.2 }), ActorTransform::default(), local).unwrap();
     let dodging = PathSample { translation: [1.5, 1.0, 0.0], ..PathSample::IDENTITY };
     let volume = Some((Shape::Sphere { radius: 0.2 }, dodging));
-    hurtbox::set_dodge_volume(&mut world, actor(3), volume, ActorTransform::default()).unwrap();
+    set_dodge_volume(&mut world, actor(3), volume, ActorTransform::default()).unwrap();
 
     let samples = [0.0, 4.0].map(|x| PathSample { translation: [x, 1.0, 0.0], ..PathSample::IDENTITY });
     let path = BakedPath::new(Name::new("blade"), samples.to_vec());

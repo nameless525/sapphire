@@ -12,8 +12,8 @@ use sapphire_core::Name;
 use sapphire_gameplay::{
     ActorActions, ActorId, ActorSpawn, ActorTable, ActorTransform, Buttons, HitEvent, HitQuery, HurtboxId,
     MAX_CAST_RESULTS, MAX_CONTACTS, MAX_HIT_EVENTS, MAX_HIT_RECORDS, MAX_HURTBOXES, MAX_SAG, MAX_SUB_STEPS,
-    MoveOutput, OwnerStep, SimConfig, Simulation, Stick, SubStep, TickActions, VolumeSweep, hit_shape,
-    dodge_body, dodger_of, published_hurtbox, remove_hurtboxes, volume_pose,
+    MoveOutput, OwnerStep, SimConfig, Simulation, Stick, SubStep, TickActions, VolumeSweep, dodge_body,
+    dodger_of, hit_shape, published_hurtbox, remove_hurtboxes, volume_pose,
 };
 use sapphire_math::{Vec3, det};
 use sapphire_moves::{BakedPath, MoveSet, MoveSetDocument, PathSample, Span, Stretch};

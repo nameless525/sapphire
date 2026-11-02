@@ -148,9 +148,9 @@ pub use controller::{
 pub use cues::{CUE_QUEUE_LEN, CueEvent, CueQueue, DEFEATED, HitCue, PERFECT_DODGE, POISE_BROKEN};
 pub use hits::{
     DodgedSwing, HitEvent, HitQuery, HitStats, HurtboxId, MAX_CAST_RESULTS, MAX_CONTACTS, MAX_DODGED_SWINGS,
-    MAX_HIT_EVENTS, MAX_HIT_RECORDS, MAX_HURTBOXES, MAX_SAG, MAX_STOPPED_VOLUMES, MAX_SUB_STEPS, MIN_TURN_STEP,
-    OwnerStep, PublishedMoves, SubStep, VolumeSweep, dodge_body, dodger_of, hit_shape, published_hurtbox,
-    remove_hurtboxes, volume_pose,
+    MAX_HIT_EVENTS, MAX_HIT_RECORDS, MAX_HURTBOXES, MAX_SAG, MAX_STOPPED_VOLUMES, MAX_SUB_STEPS,
+    MIN_TURN_STEP, OwnerStep, PublishedMoves, SubStep, VolumeSweep, dodge_body, dodger_of, hit_shape,
+    published_hurtbox, remove_hurtboxes, volume_pose,
 };
 pub use intents::{INTENT_RING_LEN, Intent, IntentRing};
 pub use movement::{ActorTransform, RootDelta};

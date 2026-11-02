@@ -638,10 +638,16 @@ impl Checker {
         let span = self.span(TRACK, from, to, ticks);
         let volume = window.volume.map(|volume| {
             if known.fighter.is_none() {
-                self.add(TRACK, format!("window {from}..{to} has a volume, in a set with no fighter to dodge"));
+                self.add(
+                    TRACK,
+                    format!("window {from}..{to} has a volume, in a set with no fighter to dodge"),
+                );
             }
             if !(from..to).all(|tick| invulnerable.iter().any(|span| span.from <= tick && tick < span.to)) {
-                self.add(TRACK, format!("window {from}..{to} has a volume, and isn't invulnerable throughout"));
+                self.add(
+                    TRACK,
+                    format!("window {from}..{to} has a volume, and isn't invulnerable throughout"),
+                );
             }
             self.shape(TRACK, "its volume", volume.shape);
             if !volume.offset.iter().chain(&volume.rotation).all(|value| value.is_finite()) {
@@ -655,12 +661,15 @@ impl Checker {
             DodgeVolume { local, shape: volume.shape }
         });
         if volume.is_none() && (window.slow_motion.is_some() || window.counter.is_some()) {
-            self.add(TRACK, format!("window {from}..{to} says what it does when it fires, with no volume to fire it"));
+            self.add(
+                TRACK,
+                format!("window {from}..{to} says what it does when it fires, with no volume to fire it"),
+            );
         }
         let slow_motion = window.slow_motion.map(|slow| {
             let SlowMotionDocument { per_mille, steps } = slow;
             let inverse = NORMAL_SPEED * NORMAL_SPEED;
-            if per_mille == 0 || per_mille >= NORMAL_SPEED || inverse % per_mille != 0 {
+            if per_mille == 0 || per_mille >= NORMAL_SPEED || !inverse.is_multiple_of(per_mille) {
                 self.add(
                     TRACK,
                     format!(
@@ -1621,7 +1630,8 @@ mod tests {
             (
                 "a perfect-dodge window with a gap in its invulnerability",
                 |d| {
-                    dodge(d).invulnerable = vec![SpanDocument { from: 1, to: 3 }, SpanDocument { from: 4, to: 14 }];
+                    dodge(d).invulnerable =
+                        vec![SpanDocument { from: 1, to: 3 }, SpanDocument { from: 4, to: 14 }];
                 },
                 &["dodge", "perfect_dodge", "isn't invulnerable throughout"],
             ),
@@ -1879,7 +1889,12 @@ mod tests {
             let set = {
                 let mut moves = good.moves().to_vec();
                 perfect(&mut moves).slow_motion = Some(slowed);
-                MoveSet::from_parts(good.intents().to_vec(), good.neutral().to_vec(), good.fighter().cloned(), moves)
+                MoveSet::from_parts(
+                    good.intents().to_vec(),
+                    good.neutral().to_vec(),
+                    good.fighter().cloned(),
+                    moves,
+                )
             };
             let slow = MoveSet::from_cooked(&set.to_cooked().unwrap());
             assert!(matches!(slow, Err(MoveSetError::Damaged(text)) if text.contains("slow")), "{per_mille}");
@@ -1925,7 +1940,8 @@ mod tests {
 
         let sorted = compiled("(from: 9, to: 10), (from: 2, to: 3)");
         assert_eq!(sorted[0].span.from, 2, "windows sort by when they open");
-        let divisors = [800, 625, 500, 400, 320, 250, 200, 160, 125, 100, 80, 50, 40, 25, 20, 10, 8, 5, 4, 2, 1];
+        let divisors =
+            [800, 625, 500, 400, 320, 250, 200, 160, 125, 100, 80, 50, 40, 25, 20, 10, 8, 5, 4, 2, 1];
         for per_mille in divisors {
             let text = format!(
                 "(from: 1, to: 7, volume: (shape: Sphere(radius: 0.5)), \

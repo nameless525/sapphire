@@ -383,8 +383,9 @@ pub struct MoveOutput {
     pub volumes: Published<ActiveVolume, MAX_ACTIVE_VOLUMES>,
     pub hurtboxes: Published<ActiveHurtbox, MAX_ACTIVE_HURTBOXES>,
     /// Which of the running move's perfect-dodge windows can fire this step: one with a volume that this
-    /// step's reading counts in, while the clock moved, the actor is invulnerable and the playing hasn't
-    /// fired one yet. So a hit and a perfect dodge never land on an actor in one step.
+    /// step's reading counts in, while the clock moved and the playing hasn't fired one yet. A document
+    /// can't give a volume a tick without i-frames, so a hit and a perfect dodge never land on an actor in
+    /// one step.
     pub perfect_window: Option<u32>,
 }
 
@@ -857,7 +858,7 @@ pub(crate) fn advance_moves(
         } else {
             let stretch = Stretch::read(previous, elapsed);
             read_stretch(&mut stage, mv, &mut running, stretch);
-            if !running.dodged && clock.0.last_delta() != SimDuration::ZERO && stage.output.windows.invulnerable {
+            if !running.dodged && clock.0.last_delta() != SimDuration::ZERO {
                 let open = |window: &PerfectDodgeWindow| window.volume.is_some() && window.span.live(stretch);
                 stage.output.perfect_window = mv.perfect_dodge.iter().position(open).map(|at| at as u32);
             }

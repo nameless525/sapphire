@@ -13,7 +13,7 @@ use crate::checksum::StateHasher;
 /// as long as authored under this.
 ///
 /// It uses the `PerfectDodge` scale source. An actor's clock with that source on it is scaled back up,
-/// and [`apply_time`] keeps the two matched: whatever slows the world, such a clock runs at its own speed
+/// and `apply_time` keeps the two matched: whatever slows the world, such a clock runs at its own speed
 /// until the slowdown ends. Anything else that wants the world slower for a while asks here.
 #[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SlowMotion {
@@ -118,16 +118,15 @@ pub(crate) fn apply_time(
     if slow.settle(&mut world_clock.0) {
         let world = &world_clock.0;
         let slowed = world.scales().find(|scale| scale.source == ScaleSource::PerfectDodge);
-        let mut refused = 0;
         for (_, entity) in table.iter() {
             let Ok(mut clock) = clocks.get_mut(entity) else { continue };
             if clock.0.remove_source(ScaleSource::PerfectDodge) > 0
                 && let Some(slowed) = slowed
             {
+                // It has just taken one out, so there's room.
                 let pushed = clock.0.push_scale(ScaleSource::PerfectDodge, counter_scale(slowed.per_mille));
-                refused += u64::from(pushed.is_err());
+                debug_assert!(pushed.is_ok());
             }
         }
-        slow.refused += refused;
     }
 }

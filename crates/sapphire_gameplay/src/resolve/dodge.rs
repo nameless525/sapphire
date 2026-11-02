@@ -29,8 +29,7 @@ pub(crate) fn fire_perfect_dodges(
         let Some(entity) = table.entity(swing.dodger) else { continue };
         let Ok((mut clock, mut runner, output)) = actors.get_mut(entity) else { continue };
         let (Some(index), Some(mut running)) = (output.perfect_window, runner.running) else { continue };
-        let Some(window) = library.get(running.at).and_then(|mv| mv.perfect_dodge.get(index as usize))
-        else {
+        let Some(window) = library.get(running.at).and_then(|mv| mv.perfect_dodge.get(index as usize)) else {
             continue;
         };
 

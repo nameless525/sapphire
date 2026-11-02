@@ -542,6 +542,45 @@ fn the_volume_is_there_only_while_the_window_can_fire() {
 
 // What can't fire one.
 
+/// A plain window that overlaps one with a volume doesn't hide it: what can fire is the first with a volume.
+#[test]
+fn a_window_with_no_volume_doesnt_hide_one_that_has_one() {
+    let plain_first = moves_with(
+        "perfect_dodge: [(\n                    from: 1,",
+        "perfect_dodge: [(from: 1, to: 3), (\n                    from: 1,",
+    );
+    let (mut sim, attacker, dodger) = duel_of(plain_first);
+    let schedule = [(20, attacker, Buttons::LIGHT), (21, dodger, Buttons::DODGE)];
+    run(&mut sim, &schedule, 0, 24);
+    assert_eq!(perfect(&sim), 1, "its tick 2, inside both");
+    assert_eq!(world_scale(&mut sim), [200], "and the second's what it read");
+}
+
+/// A defeated actor has no volume, whatever its `defeat` reaction authors. A `tap` from step 0 defeats it
+/// on step 3, and `roll` as that reaction reads tick 1 on step 4, so its window would count on steps 4 to
+/// 9, with a second attacker's `sweep` from step 2 live from step 5.
+#[test]
+fn a_defeated_actor_cant_fire_it() {
+    let text = DODGES.replacen("health: 100", "health: 10", 1).replacen(
+        "reactions: (light: \"flinch\")",
+        "reactions: (light: \"flinch\", defeat: \"roll\")",
+        1,
+    );
+    let mut sim = Simulation::new(SimConfig::default());
+    let moves = Some(sim.add_move_set(MoveSetDocument::parse(&text).unwrap().compile().unwrap()));
+    let spawn = ActorSpawn { moves, ..ActorSpawn::default() };
+    let (first, second) = (sim.spawn(spawn).unwrap(), sim.spawn(spawn).unwrap());
+    let at = Vec3::new(0.0, 0.0, 1.0);
+    let target = sim.spawn(ActorSpawn { position: at, yaw: PI, ..spawn }).unwrap();
+    let schedule = [(0, first, Buttons::LIGHT), (2, second, Buttons::HEAVY)];
+    run(&mut sim, &schedule, 0, 5);
+    assert!(sim.actor(target).unwrap().fighter.is_defeated());
+    assert_eq!(playing(&sim, target), Some(name("roll")));
+    run(&mut sim, &schedule, 5, 10);
+    assert_eq!(perfect(&sim), 0);
+    assert!(!sensing(&sim, target));
+}
+
 /// A blade that isn't live can't, however close it stands. `tap` from step 0 is live on step 3 alone, and
 /// goes through `quiet`'s i-frames from step 0. A roll pressed on step 6 cancels those, with its window on
 /// steps 7 to 12, and the blade right there, in its recovery. For a swing not live yet, see the first and
@@ -589,11 +628,7 @@ fn an_actors_own_swing_cant_fire_it() {
 #[test]
 fn a_frozen_attackers_volume_cant_fire_it() {
     let (mut sim, attacker, dodger) = duel();
-    let schedule = [
-        (0, attacker, Buttons::HEAVY),
-        (0, dodger, Buttons::SKILL),
-        (6, dodger, Buttons::DODGE),
-    ];
+    let schedule = [(0, attacker, Buttons::HEAVY), (0, dodger, Buttons::SKILL), (6, dodger, Buttons::DODGE)];
     run(&mut sim, &schedule, 0, 5);
     sim.clock_mut(attacker).unwrap().0.apply_hitstop(40);
     let skipped = sim.hits().stats().frozen_skips;
@@ -701,6 +736,79 @@ fn two_swings_on_one_step_fire_it_once() {
     assert_eq!(sim.hits().dodged()[0].attacker, first, "both start touching, so the first swept");
 }
 
+/// The credit goes by how far each swing's blade had come. `thrust` from step 0 reads its tick 3 on step 3,
+/// with the blade at z = 0, and sweeps to z = 2 on step 4, where a radius of 0.1 meets the volume's near
+/// side at z = 0.75 from z = 0.65: 0.65 m along, a share of 0.325 of the tick. `tap` pressed on step 1, from
+/// the other side, is live on step 4 alone, and touches at once. So `tap` has the credit, whichever is swept
+/// first, and the record says when and how far.
+#[test]
+fn the_nearer_swing_has_the_credit_and_the_record_says_where_it_touched() {
+    let swap = "(intent: \"sense\", move: \"sense\")";
+    let moved = |thrust_first: bool| {
+        let mut sim = Simulation::new(SimConfig::default());
+        let set = moves_with(swap, "(intent: \"sense\", move: \"thrust\")");
+        let moves = Some(sim.add_move_set(set));
+        let from_here = ActorSpawn { moves, ..ActorSpawn::default() };
+        let from_there = ActorSpawn { position: Vec3::new(0.0, 0.0, 2.0), yaw: PI, ..from_here };
+        let (thrust, tap) = if thrust_first {
+            let thrust = sim.spawn(from_here).unwrap();
+            (thrust, sim.spawn(from_there).unwrap())
+        } else {
+            let tap = sim.spawn(from_there).unwrap();
+            (sim.spawn(from_here).unwrap(), tap)
+        };
+        let at = Vec3::new(0.0, 0.0, 1.0);
+        let dodger = sim.spawn(ActorSpawn { position: at, yaw: PI, ..from_here }).unwrap();
+        let schedule = [(0, thrust, Buttons::SWAP), (1, tap, Buttons::LIGHT), (2, dodger, Buttons::DODGE)];
+        run(&mut sim, &schedule, 0, 5);
+        assert_eq!(perfect(&sim), 1);
+        assert_eq!(sim.hits().stats().dodge_touches, 2);
+        assert_eq!(sim.hits().dodged()[0].attacker, tap, "thrust first: {thrust_first}");
+        assert_eq!(sim.hits().dodged()[0].travel, 0.0);
+    };
+    moved(true);
+    moved(false);
+
+    // With the `thrust` alone.
+    let (mut sim, attacker, dodger) = duel_of(moves_with(swap, "(intent: \"sense\", move: \"thrust\")"));
+    let schedule = [(0, attacker, Buttons::SWAP), (2, dodger, Buttons::DODGE)];
+    run(&mut sim, &schedule, 0, 5);
+    assert_eq!(perfect(&sim), 1);
+    let swing = sim.hits().dodged()[0];
+    assert!((swing.travel - 0.65).abs() < 1e-3, "{swing:?}");
+    let reached = swing.at.as_subticks();
+    assert!((3320..=3330).contains(&reached), "{swing:?}");
+}
+
+/// Sweeps go by attacker, and what they find goes by dodger. The first attacker's dodger has the larger ID,
+/// so the two touches come out of ID order, and go in as cues in order.
+#[test]
+fn what_the_sweeps_find_goes_by_dodger() {
+    let mut sim = Simulation::new(SimConfig::default());
+    let moves = Some(sim.add_move_set(moves()));
+    let spawn = ActorSpawn { moves, ..ActorSpawn::default() };
+    let aside = Vec3::new(10.0, 0.0, 0.0);
+    let first = sim.spawn(spawn).unwrap();
+    let second = sim.spawn(ActorSpawn { position: aside, ..spawn }).unwrap();
+    let second_dodger =
+        sim.spawn(ActorSpawn { position: aside + Vec3::new(0.0, 0.0, 1.0), yaw: PI, ..spawn }).unwrap();
+    let first_dodger =
+        sim.spawn(ActorSpawn { position: Vec3::new(0.0, 0.0, 1.0), yaw: PI, ..spawn }).unwrap();
+    assert!(second_dodger < first_dodger);
+    let schedule = [
+        (0, first, Buttons::LIGHT),
+        (0, second, Buttons::LIGHT),
+        (2, first_dodger, Buttons::DODGE),
+        (2, second_dodger, Buttons::DODGE),
+    ];
+    run(&mut sim, &schedule, 0, 4);
+    let who: Vec<ActorId> = sim.hits().dodged().iter().map(|swing| swing.dodger).collect();
+    assert_eq!(who, [second_dodger, first_dodger]);
+    assert_eq!(sim.hits().dodged()[0].attacker, second);
+    let cues: Vec<ActorId> = cue_of(&sim, PERFECT_DODGE).iter().map(|cue| cue.actor).collect();
+    assert_eq!(cues, [second_dodger, first_dodger]);
+}
+
 /// Two dodgers on one step each fire theirs, in ID order, both running at speed in the world that slows.
 #[test]
 fn two_dodgers_on_one_step_each_fire_and_both_run_at_speed() {
@@ -726,6 +834,38 @@ fn two_dodgers_on_one_step_each_fire_and_both_run_at_speed() {
     assert_eq!(run_at(&sim, dodgers[0]), run_at(&sim, dodgers[1]));
     assert_eq!(run_at(&sim, dodgers[0]), SimTime::from_subticks(5000));
     assert_eq!(run_at(&sim, attacker), SimTime::from_subticks(4200));
+}
+
+/// The list of a step's swings holds 64 dodgers, and past that they're counted and don't fire. Three
+/// attackers on islands of their own, with 22 dodgers each, are 66 touches, in ID order. Forced between
+/// steps 1 and 2, because a tick's input doesn't hold that many, each roll reads tick 2 on step 3.
+#[test]
+fn more_swings_than_the_list_holds_are_counted() {
+    let mut sim = Simulation::new(SimConfig { max_actors: 69, ..SimConfig::default() });
+    let moves = Some(sim.add_move_set(moves()));
+    let spawn = ActorSpawn { moves, ..ActorSpawn::default() };
+    let mut attackers = Vec::new();
+    let mut dodgers = Vec::new();
+    for island in 0..3 {
+        let aside = Vec3::new(island as f32 * 10.0, 0.0, 0.0);
+        attackers.push(sim.spawn(ActorSpawn { position: aside, ..spawn }).unwrap());
+        for _ in 0..22 {
+            let position = aside + Vec3::new(0.0, 0.0, 1.0);
+            dodgers.push(sim.spawn(ActorSpawn { position, yaw: PI, ..spawn }).unwrap());
+        }
+    }
+    let schedule: Vec<_> = attackers.iter().map(|&attacker| (0, attacker, Buttons::LIGHT)).collect();
+    run(&mut sim, &schedule, 0, 2);
+    for &dodger in &dodgers {
+        sim.force_move(dodger, name("roll"));
+    }
+    idle(&mut sim, 2);
+    assert_eq!(sim.hits().stats().swings_dropped, 2);
+    assert_eq!(sim.hits().dodged().len(), 64);
+    assert_eq!(perfect(&sim), 64);
+    assert_eq!(sim.stats().allocations, 0);
+    assert!(!sim.actor(dodgers[65]).unwrap().moves.current.unwrap().dodged, "the last didn't fire");
+    assert_eq!(health(&sim, dodgers[65]), 100, "and its i-frames still hold");
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -771,8 +911,7 @@ fn the_slowdown_runs_for_its_authored_time_with_the_dodger_at_speed_and_ends() {
 /// A window with no slow motion leaves every clock alone, and the rest of what it does still happens.
 #[test]
 fn slow_motion_is_optional() {
-    let (mut sim, attacker, dodger) =
-        duel_of(moves_with("slow_motion: (per_mille: 200, steps: 30),", ""));
+    let (mut sim, attacker, dodger) = duel_of(moves_with("slow_motion: (per_mille: 200, steps: 30),", ""));
     let schedule = [(20, attacker, Buttons::LIGHT), (22, dodger, Buttons::DODGE)];
     run(&mut sim, &schedule, 0, 24);
     assert_eq!(perfect(&sim), 1);
@@ -820,6 +959,7 @@ fn a_later_request_replaces_it_and_the_dodger_follows() {
 /// second attacker presses on step 8, under that slowdown from the start, so at a fifth of a tick a
 /// step its reading comes to tick 3 on step 23, and is past it on step 28. An instant roll from the first
 /// roll's tick 16, step 18, has its window on steps 19 to 24, so it fires on step 23, for steps 24 to 53.
+/// With three more scales on its clock, the stack holds no room for a second, and none is needed.
 #[test]
 fn a_second_perfect_dodge_starts_the_slowdown_again() {
     let mut sim = Simulation::new(SimConfig::default());
@@ -828,6 +968,9 @@ fn a_second_perfect_dodge_starts_the_slowdown_again() {
     let (first, second) = (sim.spawn(spawn).unwrap(), sim.spawn(spawn).unwrap());
     let at = Vec3::new(0.0, 0.0, 1.0);
     let dodger = sim.spawn(ActorSpawn { position: at, yaw: PI, ..spawn }).unwrap();
+    for _ in 0..3 {
+        sim.clock_mut(dodger).unwrap().0.push_scale(ScaleSource::Gameplay, 1000).unwrap();
+    }
     let schedule = [
         (0, first, Buttons::LIGHT),
         (2, dodger, Buttons::DODGE),
@@ -840,6 +983,7 @@ fn a_second_perfect_dodge_starts_the_slowdown_again() {
     assert_eq!(perfect(&sim), 2);
     assert_eq!(sim.hits().dodged()[0].attacker, second);
     assert_eq!(scaled_back(&mut sim, dodger), [5000], "and one scale, not two");
+    assert_eq!(sim.slow_motion().refused(), 0);
     assert_eq!(world_scale(&mut sim), [200]);
     // Past where the first would have ended, on step 33, and on to the 30th step of the second, step 53.
     idle(&mut sim, 29);
@@ -896,11 +1040,8 @@ fn hitstop_lasts_its_real_steps_through_slow_motion() {
         "attack: (damage: 20, weight: Light, hitstop: 5)",
     ));
     // Perfect on step 3, the answer on step 4, its volume live from its tick 1, on step 5.
-    let schedule = [
-        (0, attacker, Buttons::LIGHT),
-        (2, dodger, Buttons::DODGE),
-        (4, dodger, Buttons::ULTIMATE),
-    ];
+    let schedule =
+        [(0, attacker, Buttons::LIGHT), (2, dodger, Buttons::DODGE), (4, dodger, Buttons::ULTIMATE)];
     run(&mut sim, &schedule, 0, 6);
     assert_eq!(health(&sim, attacker), 80);
     let (a_at, d_at) = (clock(&sim, attacker), clock(&sim, dodger));
@@ -933,11 +1074,8 @@ fn counters_land_only_inside_their_window() {
     ];
     for (at, fires, reads) in table {
         let (mut sim, attacker, dodger) = duel();
-        let schedule = [
-            (20, attacker, Buttons::LIGHT),
-            (21, dodger, Buttons::DODGE),
-            (at, dodger, Buttons::ULTIMATE),
-        ];
+        let schedule =
+            [(20, attacker, Buttons::LIGHT), (21, dodger, Buttons::DODGE), (at, dodger, Buttons::ULTIMATE)];
         run(&mut sim, &schedule, 0, 24);
         assert_eq!(perfect(&sim), 1);
         run(&mut sim, &schedule, 24, at + 1);
@@ -963,11 +1101,8 @@ fn counters_land_only_inside_their_window() {
 fn a_press_buffered_ahead_of_the_window_fires_as_it_opens() {
     for (at, fires) in [(15, false), (16, true), (22, true), (23, true)] {
         let (mut sim, attacker, dodger) = duel();
-        let schedule = [
-            (20, attacker, Buttons::LIGHT),
-            (21, dodger, Buttons::DODGE),
-            (at, dodger, Buttons::ULTIMATE),
-        ];
+        let schedule =
+            [(20, attacker, Buttons::LIGHT), (21, dodger, Buttons::DODGE), (at, dodger, Buttons::ULTIMATE)];
         run(&mut sim, &schedule, 0, 24);
         assert_eq!(perfect(&sim), 1, "pressed on step {at}");
         assert_eq!(playing(&sim, dodger), Some(name("roll")), "the window opened after this step's cancels");
@@ -987,11 +1122,8 @@ fn an_instant_counter_takes_only_a_press_inside_its_window() {
     let instant = "counter: (ticks: 20, allow: [(intent: \"answer\", move: \"riposte\", when: Instant)])";
     for (at, fires) in [(22, false), (23, true), (24, true)] {
         let (mut sim, attacker, dodger) = duel_of(moves_with(ROLL_WINDOW, instant));
-        let schedule = [
-            (20, attacker, Buttons::LIGHT),
-            (21, dodger, Buttons::DODGE),
-            (at, dodger, Buttons::ULTIMATE),
-        ];
+        let schedule =
+            [(20, attacker, Buttons::LIGHT), (21, dodger, Buttons::DODGE), (at, dodger, Buttons::ULTIMATE)];
         run(&mut sim, &schedule, 0, 25);
         assert_eq!(playing(&sim, dodger) == Some(name("riposte")), fires, "pressed on step {at}");
     }
@@ -1003,7 +1135,8 @@ fn an_instant_counter_takes_only_a_press_inside_its_window() {
 #[test]
 fn a_counter_beats_what_else_the_same_press_could_start() {
     let start = |window_ticks: u32, at: u32| {
-        let window = format!("counter: (ticks: {window_ticks}, allow: [(intent: \"tap\", move: \"riposte\")])");
+        let window =
+            format!("counter: (ticks: {window_ticks}, allow: [(intent: \"tap\", move: \"riposte\")])");
         let (mut sim, attacker, dodger) = duel_of(moves_with(ROLL_WINDOW, &window));
         let schedule =
             [(20, attacker, Buttons::LIGHT), (21, dodger, Buttons::DODGE), (at, dodger, Buttons::LIGHT)];
@@ -1025,7 +1158,8 @@ fn a_counter_beats_what_else_the_same_press_could_start() {
     // step 18, which ends on step 40.
     let window = "counter: (ticks: 20, allow: [(intent: \"tap\", move: \"riposte\")])";
     let (mut sim, attacker, dodger) = duel_of(moves_with(ROLL_WINDOW, window));
-    let schedule = [(20, attacker, Buttons::LIGHT), (18, dodger, Buttons::DODGE), (41, dodger, Buttons::LIGHT)];
+    let schedule =
+        [(20, attacker, Buttons::LIGHT), (18, dodger, Buttons::DODGE), (41, dodger, Buttons::LIGHT)];
     run(&mut sim, &schedule, 0, 41);
     assert_eq!(playing(&sim, dodger), None, "ended on step 40");
     assert!(sim.actor(dodger).unwrap().moves.counter_closes_at.is_some(), "and the window's still open");
@@ -1049,7 +1183,11 @@ fn a_counter_never_reads_a_dodge_past_its_end() {
     run(&mut sim, &schedule, 0, 41);
     assert_eq!(playing(&sim, dodger), Some(name("riposte")));
     assert_eq!(elapsed(&sim, dodger), ticks(0));
-    assert_eq!(sim.stats().cancels_fired, 1, "its press lands exactly on the roll's end, which is still a cut");
+    assert_eq!(
+        sim.stats().cancels_fired,
+        1,
+        "its press lands exactly on the roll's end, which is still a cut"
+    );
     assert_eq!(sim.actor(dodger).unwrap().moves.current.unwrap().started_at, SimTime::from_subticks(41_000));
 
     let longer = "counter: (ticks: 40, allow: [(intent: \"answer\", move: \"riposte\")])";
@@ -1123,11 +1261,8 @@ fn a_counter_window_waits_through_a_freeze() {
 #[test]
 fn a_counter_lands() {
     let (mut sim, attacker, dodger) = duel();
-    let schedule = [
-        (20, attacker, Buttons::LIGHT),
-        (21, dodger, Buttons::DODGE),
-        (24, dodger, Buttons::ULTIMATE),
-    ];
+    let schedule =
+        [(20, attacker, Buttons::LIGHT), (21, dodger, Buttons::DODGE), (24, dodger, Buttons::ULTIMATE)];
     run(&mut sim, &schedule, 0, 25);
     assert_eq!(elapsed(&sim, dodger), ticks(0));
     assert_eq!(health(&sim, attacker), 100);
@@ -1145,11 +1280,8 @@ fn a_counter_lands() {
 #[test]
 fn a_slowed_swing_stays_live_so_a_counter_needs_i_frames() {
     let (mut sim, attacker, dodger) = duel_of(moves_with("invulnerable: [(from: 0, to: 3)],", ""));
-    let schedule = [
-        (20, attacker, Buttons::LIGHT),
-        (21, dodger, Buttons::DODGE),
-        (24, dodger, Buttons::ULTIMATE),
-    ];
+    let schedule =
+        [(20, attacker, Buttons::LIGHT), (21, dodger, Buttons::DODGE), (24, dodger, Buttons::ULTIMATE)];
     run(&mut sim, &schedule, 0, 25);
     assert_eq!(sim.actor(attacker).unwrap().moves.volumes.len(), 1, "still live, a step after it fired");
     assert_eq!(health(&sim, dodger), 90);
@@ -1163,15 +1295,16 @@ fn a_slowed_swing_stays_live_so_a_counter_needs_i_frames() {
 fn a_window_reads_the_revision_it_opened_in() {
     // Reload while the roll plays: its revision stays, and the counter starts the newest `riposte`.
     let (mut sim, attacker, dodger) = duel();
-    let schedule = [
-        (20, attacker, Buttons::LIGHT),
-        (21, dodger, Buttons::DODGE),
-        (26, dodger, Buttons::ULTIMATE),
-    ];
+    let schedule =
+        [(20, attacker, Buttons::LIGHT), (21, dodger, Buttons::DODGE), (26, dodger, Buttons::ULTIMATE)];
     run(&mut sim, &schedule, 0, 25);
     let id = sim.actor(dodger).unwrap().moves.set.unwrap();
-    let longer = moves_with("name: \"riposte\",\n                startup: 1,", "name: \"riposte\",\n                startup: 2,");
-    assert_eq!(sim.replace_move_set(id, longer), Some(1));
+    // A move ahead of the others, so what an index meant has moved.
+    let shifted = moves_with(
+        "moves: [\n            (\n                // Live on tick 3 alone.",
+        "moves: [\n            (name: \"ahead\", startup: 1, active: 1, recovery: 1),\n            (\n                // Live on tick 3 alone.",
+    );
+    assert_eq!(sim.replace_move_set(id, shifted), Some(1));
     run(&mut sim, &schedule, 25, 27);
     let current = sim.actor(dodger).unwrap().moves.current.unwrap();
     assert_eq!(current.name, name("riposte"));
@@ -1326,17 +1459,21 @@ fn every_authored_window_of_the_test_content_is_covered_by_a_replay() {
                     let into = now.started_at.since(before.started_at);
                     for window in mv.cancels.iter().filter(|window| window.span.contains(into)) {
                         if window.allow.iter().any(|allow| allow.target_name() == now.name) {
-                            cancels.remove(&(mv.label().to_owned(), window.span.from, target.label().to_owned()));
+                            cancels.remove(&(
+                                mv.label().to_owned(),
+                                window.span.from,
+                                target.label().to_owned(),
+                            ));
                         }
                     }
                 }
-                if let (Some(&dodge), Some(now)) = (opened.get(&view.id), now) {
-                    if last.get(&view.id).is_none_or(|before| before.serial != now.serial) {
-                        let (_, mv) = set.find(dodge).expect("in the set");
-                        let (_, target) = set.find(now.name).expect("in the set");
-                        counters.remove(&(mv.label().to_owned(), target.label().to_owned()));
-                        opened.remove(&view.id);
-                    }
+                if let (Some(&dodge), Some(now)) = (opened.get(&view.id), now)
+                    && last.get(&view.id).is_none_or(|before| before.serial != now.serial)
+                {
+                    let (_, mv) = set.find(dodge).expect("in the set");
+                    let (_, target) = set.find(now.name).expect("in the set");
+                    counters.remove(&(mv.label().to_owned(), target.label().to_owned()));
+                    opened.remove(&view.id);
                 }
                 match now {
                     Some(now) => {

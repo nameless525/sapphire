@@ -15,6 +15,7 @@ M2 ends when its four exit tests are answered ([m2-plan.md](m2-plan.md) §1): on
 ## Exit test 1: a fight on a gamepad
 
 ```bash
+mkdir -p target
 cargo xtask run --platform desktop --incremental --features dev -- --arena --fight 2>&1 | tee target/review.log
 ```
 
@@ -407,11 +408,13 @@ The test: Mobile-Low holds 30 fps while thermally throttled, after 15 minutes of
 Battery charged, screen brightness at maximum, plugged in over USB, which is what the log needs and which adds heat, on a table with no case. Note the room's temperature.
 
 ```bash
+mkdir -p target
 JAVA_HOME=/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home \
   cargo xtask run --platform android --release -- --arena --fight --script fight-back --tier mobile-low 2>&1 | tee target/soak.log
 ```
 
 ```bash
+mkdir -p target
 cargo xtask run --platform ios --release --identity <identity> --profile <mobileprovision> -- \
   --arena --fight --script fight-back --tier mobile-low 2>&1 | tee target/soak.log
 ```

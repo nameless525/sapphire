@@ -401,6 +401,9 @@ pub(crate) struct Scene {
     fighters_posed: bool,
     /// A new version of the enemy landed that its other parts don't fit yet ([`Self::replace_enemy`]).
     enemy_waits: bool,
+    /// A new version of the character landed that its other parts or its graph's clips don't fit yet
+    /// ([`Self::replace_graph`]).
+    character_waits: bool,
     /// Which party member the character draws as, with `--party`.
     party_looks: Option<Drawn>,
     /// Where the character's light rig finds its head and body, for a character without a
@@ -548,6 +551,7 @@ impl Scene {
             fight_slow_motion: None,
             fighters_posed: false,
             enemy_waits: false,
+            character_waits: false,
             party_looks: None,
             figure,
             animating: false,
@@ -1271,7 +1275,8 @@ impl Scene {
 
     /// Takes an edited graph (M2 T2): its clips loaded, bound against `owner`, and from then on what binds
     /// it, until a pack brings another. It takes effect at the next state's start
-    /// ([`GraphPlayer::replace`]). What fails leaves what's playing alone.
+    /// ([`GraphPlayer::replace`]). What fails leaves what's playing alone, and so does an edit that comes
+    /// while a new version of `owner` is still landing, whose pose has joints a binding may not.
     ///
     /// [`GraphPlayer::replace`]: sapphire_anim::GraphPlayer::replace
     #[cfg(feature = "dev")]
@@ -1283,21 +1288,26 @@ impl Scene {
         renderer: &mut Renderer,
         gpu: &sapphire_rhi::GpuContext,
     ) -> Result<(), String> {
-        let (entity, posed, none) = match owner {
+        let (entity, posed, waits, none) = match owner {
             GraphOwner::Character => (
                 Some(self.character),
                 self.graph_show.is_some() || self.fighters_posed,
+                self.character_waits,
                 "no character here plays a graph: `--look-dev <shot> --graph <script>` and `--arena --fight` \
                  have one",
             ),
             GraphOwner::Enemy => (
                 self.enemy.map(|(warrior, _)| warrior),
-                self.fighters_posed && !self.enemy_waits,
+                self.fighters_posed,
+                self.enemy_waits,
                 "no enemy here plays a graph: `--arena --fight` has one",
             ),
         };
         let playing = entity.filter(|&entity| posed && self.ecs.world().get::<GraphDriver>(entity).is_some());
         let Some(entity) = playing else { return Err(none.to_owned()) };
+        if waits {
+            return Err("a new version of this character is still landing: push again once it has".to_owned());
+        }
         content.hold_clips_of(owner, &graph, renderer, gpu)?;
         let binding = match owner {
             GraphOwner::Character => lookdev::graph_binding_of(content, &graph)?,
@@ -1310,10 +1320,12 @@ impl Scene {
         Ok(())
     }
 
-    /// Takes in a new version of the character, the graph or a clip it names. A new character can't wait,
-    /// since its joints are others: its driver starts now from where the old one was. A new graph or
-    /// clip binds now and takes effect at the next state's start ([`GraphPlayer::replace`]). What
-    /// doesn't bind leaves what's playing alone until something else lands.
+    /// Takes in a new version of the character, the graph or a clip it names. A new character's joints
+    /// are others, so its driver starts from where the old one was, once it can: its parts and its clips
+    /// can land frames apart, so until all of them fit it keeps what it has, tries again as each lands,
+    /// and hands its old pose no binding to other joints. Otherwise a new graph or clip binds now and
+    /// takes effect at the next state's start ([`GraphPlayer::replace`]). What doesn't bind leaves
+    /// what's playing alone until something else lands.
     ///
     /// [`GraphPlayer::replace`]: sapphire_anim::GraphPlayer::replace
     fn replace_graph(&mut self, content: &mut Content, character_changed: bool, graph_changed: bool) {
@@ -1322,10 +1334,12 @@ impl Scene {
         }
         let character = self.character;
         let ground = self.ik_ground.clone();
+        let start_over = character_changed || self.character_waits;
         let Some(mut playing) = self.ecs.world_mut().get_mut::<GraphDriver>(character) else { return };
-        if character_changed {
+        if start_over {
             match lookdev::graph_driver(content) {
                 Ok(mut driver) => {
+                    self.character_waits = false;
                     driver.continue_from(&playing);
                     if let (Some(ground), Some(controls)) = (ground, playing.ik_mut().map(|ik| ik.controls()))
                     {
@@ -1339,7 +1353,8 @@ impl Scene {
                     *playing = driver;
                 }
                 Err(error) => {
-                    tracing::warn!(target: LOG_TARGET, error, "the character keeps its graph's pose")
+                    self.character_waits = true;
+                    tracing::warn!(target: LOG_TARGET, error, "the character keeps its pose until the rest of it lands");
                 }
             }
         } else {

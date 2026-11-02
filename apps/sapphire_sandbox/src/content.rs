@@ -1940,6 +1940,40 @@ mod tests {
             self.content.remount(PACK).expect("the new pack");
         }
 
+        /// The pack re-cooked with `extra` joints more and a graph of `decay`, with `late` still as the
+        /// first pack has them, as a cook's pack lands in parts. Bytes that don't change make no new
+        /// version, so what's late lands when a later pack brings it.
+        fn recook_all_but(&mut self, late: &[AssetId], extra: usize, decay: u32) {
+            let first = pack_assets(0.0, 0, swing_graph(5), SWING, 0);
+            let mut assets = pack_assets(0.0, extra, swing_graph(decay), SWING, 0);
+            assets.retain(|asset| !late.contains(&asset.id));
+            assets.extend(first.into_iter().filter(|asset| late.contains(&asset.id)));
+            self.source.insert(PACK, write_pack(assets).expect("a pack"));
+            self.content.remount(PACK).expect("the new pack");
+        }
+
+        /// Frames until `landed` says so.
+        fn frames_until(&mut self, landed: impl Fn(&Self) -> bool) {
+            for _ in 0..10_000 {
+                self.frame();
+                if landed(self) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            panic!("it never landed");
+        }
+
+        /// How many joints the pose the character's graph plays has.
+        fn joints(&self) -> usize {
+            self.scene.graph_player().expect("playing").pose().joint_count()
+        }
+
+        /// How many joints the pose the enemy's graph plays has.
+        fn enemy_joints(&self) -> usize {
+            self.scene.enemy_graph_player().expect("playing").pose().joint_count()
+        }
+
         /// The versions the character's mesh, rig and skeleton are at.
         fn versions(&self) -> (u32, u32, u32) {
             self.content.current_character_versions().expect("a rig")
@@ -2096,19 +2130,13 @@ mod tests {
         let mut stage = Stage::new();
         stage.play_fighters();
         let mut fight = stage.start_fight();
-        let joints = stage.scene.enemy_graph_player().expect("playing").pose().joint_count();
+        let joints = stage.enemy_joints();
         assert_eq!(joints, enemy::joint_names().len());
 
+        // The character's in the pack too, and while part of it has landed its pose may not fit.
         stage.recook(0.0, 1);
-        for _ in 0..1000 {
-            stage.step_fight(&mut fight);
-            std::thread::sleep(std::time::Duration::from_millis(1));
-            if stage.scene.enemy_graph_player().expect("playing").pose().joint_count() != joints {
-                break;
-            }
-        }
-        let count = stage.scene.enemy_graph_player().expect("playing").pose().joint_count();
-        assert_eq!(count, joints + 1, "the enemy's driver is on the new skeleton");
+        stage.frames_until(|stage| stage.enemy_joints() != joints && stage.versions() == (1, 1, 1));
+        assert_eq!(stage.enemy_joints(), joints + 1, "the enemy's driver is on the new skeleton");
         for _ in 0..30 {
             let stats = stage.step_fight(&mut fight);
             assert_eq!(stats.ignored_poses, 0, "{stats:?}");
@@ -2117,42 +2145,40 @@ mod tests {
         assert_eq!(enemy::joint_names()[hand], enemy::HAND_SLOT);
     }
 
-    /// A skeleton, a clip and a graph with a joint more, and the mesh still to come, as a cook's pack lands
-    /// in parts: the enemy keeps what it has, and a binding to the new joints doesn't reach its old pose.
+    /// A skeleton with a joint more, then a clip and a graph for it, with the mesh still to come, as a cook's
+    /// pack lands in parts: the enemy keeps what it has, and neither their landing nor an edit hands its old
+    /// pose a binding to the new joints. What names the skeleton lands after it here, since what lands
+    /// before it binds the old joints, as it may, which `has_replacement` can't tell apart.
     #[test]
     #[ignore = "needs a GPU"]
     fn an_enemy_waits_for_the_rest_of_a_new_version_to_land() {
         let mut stage = Stage::new();
         stage.play_fighters();
-        let mut fight = stage.start_fight();
-        let joints = stage.scene.enemy_graph_player().expect("playing").pose().joint_count();
+        let _fight = stage.start_fight();
+        let joints = stage.enemy_joints();
 
-        let is_mesh = |asset: &PackAsset| asset.id == enemy::WARRIOR;
-        let old = pack_assets(0.0, 0, swing_graph(5), SWING, 0).into_iter().find(is_mesh).expect("a mesh");
-        let mut assets = pack_assets(0.0, 1, swing_graph(7), SWING, 0);
-        assets.retain(|asset| !is_mesh(asset));
-        assets.push(old);
-        stage.source.insert(PACK, write_pack(assets).expect("a pack"));
-        stage.content.remount(PACK).expect("the new pack");
-        for _ in 0..200 {
-            stage.step_fight(&mut fight);
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
+        stage.recook_all_but(&[enemy::WARRIOR, SWING, OTHER_SWING, GRAPH, ENEMY_SWING, enemy::GRAPH], 1, 7);
+        stage.frames_until(|stage| stage.content.current_enemy_versions() == Some((0, 1)));
+        let versions = stage.content.graph_versions();
+        stage.recook_all_but(&[enemy::WARRIOR], 1, 7);
+        // Each graph and the clip it names.
+        stage.frames_until(|stage| stage.content.graph_versions() >= versions + 4);
+        assert_eq!(stage.enemy_joints(), joints, "it keeps what it has");
         let waiting = stage.scene.enemy_graph_player().expect("playing");
-        assert_eq!(waiting.pose().joint_count(), joints, "it keeps what it has");
         assert!(!waiting.has_replacement(), "a graph bound to other joints waits with it");
+
+        let mut edited = swing_graph(4);
+        edited.resolve(|_| ENEMY_SWING);
+        let Stage { scene, content, renderer, gpu, .. } = &mut stage;
+        let error = scene
+            .replace_graph_document(GraphOwner::Enemy, edited, content, renderer, gpu)
+            .expect_err("an edit waits with it");
+        assert!(error.contains("still landing"), "{error}");
 
         stage.source.insert(PACK, pack_with_decay(0.0, 1, 7));
         stage.content.remount(PACK).expect("the rest of it");
-        for _ in 0..1000 {
-            stage.step_fight(&mut fight);
-            std::thread::sleep(std::time::Duration::from_millis(1));
-            if stage.scene.enemy_graph_player().expect("playing").pose().joint_count() != joints {
-                break;
-            }
-        }
-        let landed = stage.scene.enemy_graph_player().expect("playing");
-        assert_eq!(landed.pose().joint_count(), joints + 1, "the rest landed, and so did it");
+        stage.frames_until(|stage| stage.enemy_joints() != joints);
+        assert_eq!(stage.enemy_joints(), joints + 1, "the rest landed, and so did it");
     }
 
     /// A fighter whose pose doesn't fit its driver for a moment plays nothing, and what its graph had yet
@@ -2398,10 +2424,11 @@ mod tests {
         assert!(per_joint > 0);
         stage.frame();
 
-        // The clip gets the new joint too: until it lands, the old one's tracks still fit.
+        // The clip gets the new joint too, and the graph can't bind without it: it may land after the rest.
         stage.recook(0.0, 1);
         let settled = stage.until((1, 1, 1));
         assert_eq!(settled.ignored_poses, 0, "{settled:?}");
+        stage.frames_until(|stage| stage.joints() == joints as usize + 1);
         let mut palette = settled.palette_bytes;
         for _ in 0..4 {
             let stats = stage.frame();
@@ -2409,6 +2436,108 @@ mod tests {
             palette = stats.palette_bytes;
         }
         assert_eq!(palette, (joints + 1) * per_joint, "posed on its new palette, every frame");
+    }
+
+    /// A new version of the character whose clips land after the rest of it, as a cook's pack can: the
+    /// graph can't bind to the new skeleton until they do, so it keeps its pose, and the clips' landing
+    /// starts its driver on the new joints rather than handing a binding to the old ones.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_graph_waits_for_clips_that_land_after_the_new_character() {
+        let mut stage = Stage::new();
+        stage.play_graph();
+        let joints = HumanBone::REQUIRED.len();
+        let per_joint = stage.frame().palette_bytes as usize / joints;
+        assert!(per_joint > 0);
+        stage.frame();
+
+        stage.recook_all_but(&[SWING, OTHER_SWING], 1, 5);
+        stage.until((1, 1, 1));
+        for _ in 0..20 {
+            stage.frame();
+        }
+        assert_eq!(stage.joints(), joints, "it keeps what it has");
+        let waiting = stage.scene.graph_player().expect("playing");
+        assert!(!waiting.has_replacement(), "nothing bound to the new joints yet");
+
+        stage.recook(0.0, 1);
+        stage.frames_until(|stage| stage.joints() != joints);
+        assert_eq!(stage.joints(), joints + 1, "the clips landed, and it's on the new joints");
+        for _ in 0..4 {
+            let stats = stage.frame();
+            assert_eq!(stats.ignored_poses, 0, "{stats:?}");
+            assert_eq!(stats.palette_bytes as usize, (joints + 1) * per_joint, "and it plays");
+        }
+    }
+
+    /// A rig and a skeleton with a joint more, then clips for them, with the mesh still to come: the clips
+    /// bind to the new skeleton, but the character keeps the pose of the mesh it has, and neither their
+    /// landing nor an edit hands that pose a binding to other joints.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_character_waits_for_the_rest_of_a_new_version_to_land() {
+        let mut stage = Stage::new();
+        stage.play_graph();
+        stage.frame();
+        let joints = stage.joints();
+
+        stage.recook_all_but(&[lookdev::CHARACTER, SWING, OTHER_SWING], 1, 5);
+        stage.until((0, 1, 1));
+        let versions = stage.content.graph_versions();
+        stage.recook_all_but(&[lookdev::CHARACTER], 1, 5);
+        stage.frames_until(|stage| stage.content.graph_versions() != versions);
+        assert_eq!(stage.joints(), joints, "it keeps what it has");
+        let waiting = stage.scene.graph_player().expect("playing");
+        assert!(!waiting.has_replacement(), "a graph bound to other joints waits with it");
+
+        let Stage { scene, content, renderer, gpu, .. } = &mut stage;
+        let error = scene
+            .replace_graph_document(GraphOwner::Character, swing_graph(4), content, renderer, gpu)
+            .expect_err("an edit waits with it");
+        assert!(error.contains("still landing"), "{error}");
+        assert!(!scene.graph_player().expect("playing").has_replacement());
+
+        stage.recook(0.0, 1);
+        stage.frames_until(|stage| stage.joints() != joints);
+        assert_eq!(stage.joints(), joints + 1, "the rest landed, and so did it");
+
+        // It's over: an edit takes as it did before.
+        let Stage { scene, content, renderer, gpu, .. } = &mut stage;
+        scene
+            .replace_graph_document(GraphOwner::Character, swing_graph(4), content, renderer, gpu)
+            .expect("nothing's landing");
+        assert!(scene.graph_player().expect("playing").has_replacement());
+    }
+
+    /// The same in a fight, where either fighter's clip landing retries both: the enemy's makes it whole
+    /// and leaves the player waiting for its own, and the player's starts its driver on the new joints.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_fighter_waits_for_clips_that_land_after_the_new_character() {
+        let mut stage = Stage::new();
+        stage.play_fighters();
+        let mut fight = stage.start_fight();
+        let (joints, enemy_joints) = (stage.joints(), stage.enemy_joints());
+
+        stage.recook_all_but(&[SWING, OTHER_SWING, ENEMY_SWING], 1, 5);
+        stage.frames_until(|stage| {
+            stage.versions() == (1, 1, 1) && stage.content.current_enemy_versions() == Some((1, 1))
+        });
+        let versions = stage.content.graph_versions();
+        stage.recook_all_but(&[SWING, OTHER_SWING], 1, 5);
+        stage.frames_until(|stage| stage.content.graph_versions() != versions);
+        assert_eq!(stage.joints(), joints, "it keeps what it has");
+        let waiting = stage.scene.graph_player().expect("playing");
+        assert!(!waiting.has_replacement(), "nothing bound to the new joints yet");
+        assert_eq!(stage.enemy_joints(), enemy_joints + 1, "the enemy's whole");
+
+        stage.recook(0.0, 1);
+        stage.frames_until(|stage| stage.joints() != joints);
+        assert_eq!(stage.joints(), joints + 1, "the clips landed, and it's on the new joints");
+        for _ in 0..30 {
+            let stats = stage.step_fight(&mut fight);
+            assert_eq!(stats.ignored_poses, 0, "{stats:?}");
+        }
     }
 
     /// The pixels of `a` and `b` that differ by more than a little, and their center along x.

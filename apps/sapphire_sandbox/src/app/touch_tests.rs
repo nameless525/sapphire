@@ -57,7 +57,9 @@ impl Rig {
     }
 
     fn fight() -> Self {
-        Self::new(Combat::new(&CombatOption::Fight { script: None }).expect("the scenario starts"))
+        Self::new(
+            Combat::new(&CombatOption::Fight { script: None, party: false }).expect("the scenario starts"),
+        )
     }
 
     /// Turns the view by this much, settled: the stick must follow it.

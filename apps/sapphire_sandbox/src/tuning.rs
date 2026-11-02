@@ -4,8 +4,9 @@
 //! - **Moves and fighters** (`.moves.ron`): the document compiles on the device, its issues naming the
 //!   move and the track, and replaces its set in whichever simulation plays it, by file name. A running
 //!   move keeps the revision it started with, the next start reads the new one, and a fighter takes its
-//!   numbers at once. There are no clips to bake from here, so a move that names one reads the tables its
-//!   last cook gave it, and a move's windows change with no cook. Its length is its clip's, and an edit of
+//!   numbers at once, the next step moving by its `movement`. There are no clips to bake from here, so a
+//!   move that names one reads the tables its last cook gave it, and a move's windows change with no cook.
+//!   Its length is its clip's, and an edit of
 //!   its clip is a cook's to bring, through a pack ([`LiveTuning::follow_packs`]), by asset ID, with
 //!   `cargo xtask content` and hot reload's remount or `cargo xtask link push`. The reply says so. A cook
 //!   older than the newest save leaves the save playing, over the cook's tables.
@@ -29,7 +30,9 @@
 //! so through its hash. `--arena --fight` has no file to end, and starts over from its edits.
 //!
 //! **Knowing it worked.** The first frame a new revision's move plays logs `the next attempt plays the new
-//! moves`, and live link's status lists what each fighter is playing, with its revision and windows.
+//! moves`, and live link's status lists what each fighter is playing, with its revision and windows. A
+//! `movement` that changed logs `the next step moves by the new numbers` after that step, and the reply says
+//! so too, since no press has to come.
 //!
 //! **For the timeline editor (M2 T3):** save the document, then `sapphire_livelink::Client::push_document`
 //! with its file name and text: `Ok` says what it replaced, and `LinkError::Refused` carries the issues.
@@ -45,7 +48,7 @@ use sapphire_gameplay::replay::{LiveMoves, SCENARIOS, compile_document, document
 use sapphire_gameplay::{ActorId, MoveSetId, Simulation, Tuned};
 use sapphire_hot_reload::sources;
 use sapphire_livelink::protocol::{LiveDocument, MoveAttempt, TickWindow};
-use sapphire_moves::{MoveSet, Span};
+use sapphire_moves::{ControllerProfile, MoveSet, Span};
 use sapphire_render::Renderer;
 use sapphire_rhi::GpuContext;
 use sapphire_time::Stopwatch;
@@ -96,6 +99,15 @@ struct Waiting {
     stopwatch: Stopwatch,
 }
 
+/// A set's newest `movement`, which no step has moved by yet.
+struct Moving {
+    document: String,
+    set: MoveSetId,
+    /// The simulation's tick as the edit landed: a step after this reads it.
+    tick: u64,
+    stopwatch: Stopwatch,
+}
+
 /// A cooked set held so a new version of it is told of.
 struct CookedSet {
     document: &'static str,
@@ -107,6 +119,7 @@ pub(crate) struct LiveTuning {
     moves: LiveMoves,
     sources: Vec<Source>,
     waiting: Vec<Waiting>,
+    moving: Vec<Moving>,
     cooked: Vec<CookedSet>,
     /// The files hot reload reads this app's documents from, on a machine that has them.
     files: Vec<PathBuf>,
@@ -136,7 +149,7 @@ impl LiveTuning {
             files.extend(sources.iter().map(|source| sources::repository_file(&source.path)));
             files.extend(options.watch_documents.iter().cloned());
         }
-        Self { moves: LiveMoves::default(), sources, waiting: Vec::new(), cooked, files }
+        Self { moves: LiveMoves::default(), sources, waiting: Vec::new(), moving: Vec::new(), cooked, files }
     }
 
     /// The documents `options` runs can take.
@@ -183,6 +196,7 @@ impl LiveTuning {
             moves: LiveMoves::default(),
             sources: vec![source],
             waiting: Vec::new(),
+            moving: Vec::new(),
             cooked,
             files: Vec::new(),
         }
@@ -252,12 +266,22 @@ impl LiveTuning {
         self.check_takes(document)?;
         let Fight { combat, scene } = fight;
         let mut played = None;
+        let mut moved_by = None;
+        let mut tick = 0;
         if let Some(combat) = combat.filter(|combat| combat.plays(document).is_some()) {
+            moved_by = current_movement(combat.simulation(), combat.plays(document));
             played = combat.tune(document, set.clone())?;
+            tick = combat.simulation().tick();
+        }
+        let show_set = scene.graph_show().and_then(|show| show.plays(document));
+        if let Some(show) = scene.graph_show().filter(|_| show_set.is_some()) {
+            moved_by = current_movement(show.simulation(), show_set);
         }
         if let Some(show) = scene.tune_show(document, set.clone()) {
             played = Some(show);
+            tick = scene.graph_show().map_or(tick, |show| show.simulation().tick());
         }
+        let moves_differently = moved_by != set.movement().copied();
         let unchanged = matches!(played, Some((_, Tuned::Unchanged { .. })));
         if !unchanged {
             self.moves.remember(document, set);
@@ -267,7 +291,17 @@ impl LiveTuning {
             Some((set, Tuned::Replaced { revision })) => {
                 self.waiting.retain(|waiting| waiting.document != document);
                 let (document, stopwatch) = (document.to_owned(), Stopwatch::start());
-                let reply = format!("moves of {document}, as revision {revision}");
+                let mut reply = format!("moves of {document}, as revision {revision}");
+                if moves_differently {
+                    reply.push_str("; the next step moves by its new numbers");
+                    self.moving.retain(|moving| moving.document != document);
+                    self.moving.push(Moving {
+                        document: document.clone(),
+                        set,
+                        tick,
+                        stopwatch: Stopwatch::start(),
+                    });
+                }
                 self.waiting.push(Waiting { document, set, stopwatch });
                 reply
             }
@@ -394,14 +428,38 @@ impl LiveTuning {
         compile_document(&text, Some(&cooked)).map_or(cooked, |live| live.set)
     }
 
-    /// Once a frame, after its fixed steps and before it draws: says when an attempt first plays what an
-    /// edit made. Allocates nothing while no edit waits.
+    /// Once a frame, after its fixed steps and before it draws: says when a step first moves by what an edit
+    /// made, and when an attempt first plays it. Allocates nothing while no edit waits.
     pub fn after_steps(&mut self, combat: Option<&Combat>, scene: &Scene) {
-        if self.waiting.is_empty() {
+        if self.waiting.is_empty() && self.moving.is_empty() {
             return;
         }
         let combat = combat.map(|combat| (combat.simulation(), combat.cast()));
         let show = scene.graph_show().map(|show| (show.simulation(), show.cast()));
+        self.moving.retain(|moving| {
+            let stepped = [combat, show].into_iter().flatten().find_map(|(sim, cast)| {
+                let actor = cast
+                    .iter()
+                    .map(|actor| sim.party().on_field(*actor))
+                    .find(|actor| sim.actor(*actor).is_some_and(|view| view.moves.set == Some(moving.set)))?;
+                (sim.tick() > moving.tick).then_some((sim, actor))
+            });
+            let Some((sim, actor)) = stepped else { return true };
+            let movement = sim.movement_of(actor).map(|movement| *movement.authored());
+            let velocity =
+                sim.actor(actor).map_or(sapphire_math::Vec3::ZERO, |view| view.controller.state.velocity);
+            tracing::info!(
+                target: LOG_TARGET,
+                document = moving.document,
+                actor = actor.raw(),
+                tick = sim.tick(),
+                run_speed = movement.map_or(0.0, |movement| movement.run_speed),
+                speed = format_args!("{:.3}", (velocity.x * velocity.x + velocity.z * velocity.z).sqrt()),
+                since_ms = format_args!("{:.1}", moving.stopwatch.elapsed().as_secs_f64() * 1e3),
+                "the next step moves by the new numbers"
+            );
+            false
+        });
         self.waiting.retain(|waiting| {
             let playing = [combat, show].into_iter().flatten().find_map(|(sim, cast)| {
                 cast.iter().find_map(|actor| {
@@ -460,6 +518,11 @@ impl LiveTuning {
             source.edits += 1;
         }
     }
+}
+
+/// What a set's document says its actors move by, where that's a set this simulation plays.
+fn current_movement(sim: &Simulation, set: Option<MoveSetId>) -> Option<ControllerProfile> {
+    sim.move_library().current(set?)?.movement().copied()
 }
 
 /// What `cast` is playing, for live link's status.
@@ -558,6 +621,7 @@ mod tests {
                 edits: 0,
             }],
             waiting: Vec::new(),
+            moving: Vec::new(),
             cooked: Vec::new(),
             files: Vec::new(),
         }
@@ -637,6 +701,50 @@ mod tests {
         let light = playing.iter().find(|attempt| attempt.name == "light_1").expect("the player's");
         assert_eq!((light.revision, light.newest_revision, light.startup), (2, 2, 7));
         assert!(!light.hit_windows.is_empty());
+    }
+
+    /// How a character moves, through the app's own path: the reply says the next step reads it, and the
+    /// first frame past that step says it did. A number past its limit keeps what's playing, naming both the
+    /// section and the number, and saving what's there again says nothing of new numbers.
+    #[test]
+    #[ignore = "runs with CI's dev tests, which take --ignored"]
+    fn a_saved_movement_reaches_the_next_step_and_a_bad_one_is_refused_by_name() {
+        let scratch = Scratch::new("movement");
+        let mut combat = recording(&scratch.0);
+        let mut scene = scene();
+        let mut tuning = tuning();
+        let mut take = |tuning: &mut LiveTuning, combat: &mut Combat, text: &str| {
+            tuning.moves_document(SLICE_FILE, text, None, Fight { combat: Some(combat), scene: &mut scene })
+        };
+        let with =
+            |numbers: &str| SLICE.replacen("fighter: (", &format!("fighter: (\nmovement: ({numbers}),"), 1);
+
+        let reply = take(&mut tuning, &mut combat, &with("run_speed: 8.0")).expect("a good document");
+        assert!(reply.contains("the next step moves by its new numbers"), "{reply}");
+        assert_eq!(tuning.moving.len(), 1);
+        tuning.after_steps(Some(&combat), &self::scene());
+        assert_eq!(tuning.moving.len(), 1, "no step has read it yet");
+        combat.step(&mut no_bindings);
+        tuning.after_steps(Some(&combat), &self::scene());
+        assert!(tuning.moving.is_empty(), "a step has");
+        let player = combat.cast()[0];
+        let movement = combat.simulation().movement_of(player).expect("it has one");
+        assert_eq!(movement.authored().run_speed, 8.0);
+
+        let reply = take(&mut tuning, &mut combat, &with("run_speed: 8.0")).expect("the same document");
+        assert!(reply.contains("still revision 1") && !reply.contains("new numbers"), "{reply}");
+
+        let error = take(&mut tuning, &mut combat, &with("run_speed: 600.0")).expect_err("past its limit");
+        assert!(error.contains("`movement`") && error.contains("`run_speed` is 600"), "{error}");
+        let movement = combat.simulation().movement_of(player).expect("it has one");
+        assert_eq!(movement.authored().run_speed, 8.0, "and what's playing stays");
+
+        // An edit that doesn't touch how anyone moves doesn't claim to.
+        let text = with("run_speed: 8.0");
+        assert!(text.contains("health: 300,"), "the edit below is one");
+        let reply = take(&mut tuning, &mut combat, &text.replacen("health: 300,", "health: 280,", 1));
+        let reply = reply.expect("a good document");
+        assert!(reply.contains("as revision 2") && !reply.contains("new numbers"), "{reply}");
     }
 
     /// A replay plays what it recorded, so an edit is refused, and says why.

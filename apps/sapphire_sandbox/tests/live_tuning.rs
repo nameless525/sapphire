@@ -309,6 +309,51 @@ fn a_saved_move_plays_on_the_next_attempt() {
     assert_eq!(again.startup, 9);
 }
 
+/// The likeliest thing to tune, on the moves a player fights with: a saved `run_speed` reaches a running
+/// fight with no cook and no restart, and the next step reads it, with no press to wait for. A number past
+/// its limit, saved or pushed, names the file and the number, and keeps what's playing.
+#[test]
+#[ignore = "needs a dev build, a GPU and cooked content"]
+fn a_saved_run_speed_moves_the_next_step_of_a_real_fight() {
+    let temp = Temp::new("movement");
+    let document = temp.path(PLAYER_FILE);
+    fs::write(&document, PLAYER).expect("writes");
+    let watched = temp.text(PLAYER_FILE);
+    let args = [
+        "--arena",
+        "--fight",
+        "--script",
+        "attempts",
+        "--tier",
+        "desktop-low",
+        "--ao",
+        "off",
+        "--watch-document",
+        &watched,
+    ];
+    let mut app = App::start(&temp, &args);
+    let mut client = app.connect();
+    app.until(&mut client, "an attempt", |status| light_at(status, 0));
+    assert!(PLAYER.contains("run_speed: 6.0,"), "the document writes the number out");
+
+    let quicker = PLAYER.replacen("run_speed: 6.0,", "run_speed: 8.5,", 1);
+    fs::write(&document, &quicker).expect("writes");
+    const STEPPED: &str = "the next step moves by the new numbers";
+    app.until_logged(STEPPED);
+    let log = app.log();
+    let line = log.lines().find(|line| line.contains(STEPPED)).expect("just logged");
+    assert!(line.contains("run_speed=8.5") && line.contains(PLAYER_FILE), "{line}");
+
+    let refused = client
+        .push_document(PLAYER_FILE, PLAYER.replacen("run_speed: 6.0,", "run_speed: 600.0,", 1))
+        .expect_err("past its limit");
+    let LinkError::Refused(text) = &refused else { panic!("{refused}") };
+    assert!(text.contains(PLAYER_FILE) && text.contains("`run_speed` is 600"), "{text}");
+    let reply = client.push_document(PLAYER_FILE, quicker).expect("what's playing, again");
+    assert!(reply.contains("still revision 1") && !reply.contains("new numbers"), "{reply}");
+    app.quit();
+}
+
 /// Exit test 2 on the moves a player fights with: `--arena --fight`, whose simulation runs on its cooked
 /// copy of `player.moves.ron`, takes a saved timing with no cook, and a following attempt plays it. The
 /// document as it stands is no edit, so the copy, the pack and the document agree about what's running. A

@@ -92,6 +92,13 @@ pub const SCRIPTS: &[Script] = &[
         actions: attempts,
     },
     Script {
+        name: "laps",
+        about: "the player runs up and down the square and does nothing else: the next steps of someone \
+                tuning how it moves",
+        ticks: 600,
+        actions: laps,
+    },
+    Script {
         name: "fight-back",
         about: "the arena's player against the warrior, with no eyes for it: the string, a dodge and a dash \
                 attack, over and over, which the warps aim at whatever's in reach",
@@ -138,6 +145,22 @@ pub fn attempts(tick: u64, cast: &[ActorId]) -> TickActions {
     let Some(&player) = cast.first() else { return actions };
     let buttons = if tick.is_multiple_of(ATTEMPT_EVERY) { Buttons::LIGHT } else { Buttons::NONE };
     actions.set(player, ActorActions { buttons, stick: Stick::CENTER }).expect("one actor fits a tick");
+    actions
+}
+
+/// How long `laps` runs each way: 12 m at today's 6 m/s.
+const LAP_TICKS: u64 = 120;
+
+/// [`SCRIPTS`]' `laps`: the player at full tilt, turning back on a fixed beat, which is how a measurement
+/// finds someone running when a saved `movement` arrives.
+#[must_use]
+pub fn laps(tick: u64, cast: &[ActorId]) -> TickActions {
+    let mut actions = TickActions::NEUTRAL;
+    let Some(&player) = cast.first() else { return actions };
+    let y = if (tick / LAP_TICKS).is_multiple_of(2) { -127 } else { 127 };
+    actions
+        .set(player, ActorActions { buttons: Buttons::NONE, stick: Stick::new(0, y) })
+        .expect("one actor fits a tick");
     actions
 }
 

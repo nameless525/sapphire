@@ -595,6 +595,12 @@ impl GraphShow {
         Some((self.moves, self.simulation.tune_move_set(self.moves, set)?))
     }
 
+    /// The set that plays the document with this file name, if it plays that.
+    #[cfg(feature = "dev")]
+    pub fn plays(&self, document: &str) -> Option<sapphire_gameplay::MoveSetId> {
+        (document == sapphire_gameplay::replay::document_file_name(SHOW_MOVES_PATH)).then_some(self.moves)
+    }
+
     /// The simulation it runs, for live link's status and live tuning's report.
     #[cfg(feature = "dev")]
     pub fn simulation(&self) -> &Simulation {

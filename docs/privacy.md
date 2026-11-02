@@ -20,8 +20,10 @@ private staged version. It scans staged additions/modifications, avoiding unchan
 assets on each commit, and checks the effective author and committer identity.
 The second checks the full proposed tree plus identities, messages and changed
 blobs in **every new commit**, including content subsequently removed or reverted.
-Omit `--base` to scan all reachable history. Shallow clones fail closed; fetch the
-full history before checking. Untracked and ignored files are not read.
+Omit `--base` to scan all reachable history. `--head` may name a tag: the tag's
+own tagger, header and message are read too, and any tag it points at. Shallow
+clones fail closed; fetch the full history before checking. Untracked and ignored
+files are not read.
 
 To enable the included pre-commit, commit-msg and pre-push hooks in a standalone
 clone:
@@ -51,20 +53,46 @@ locally with Git; do not paste its contents into public CI, PRs or issues.
 
 - Author and committer use GitHub noreply addresses and public handles matching
   those addresses; the owner's verified public profile alias is scoped to its
-  exact noreply identity for synthetic GitHub PR merges. GitHub and Anthropic's
-  noreply bot addresses are accepted.
+  exact noreply identity for synthetic GitHub PR merges. Bot addresses take one
+  exact name each: `GitHub` on noreply@github.com, `Claude` on noreply@anthropic.com
+  and `dependabot[bot]` on support@github.com.
+- Every other header of a commit or tag is scanned as content, and a `mergetag`
+  header as the tag it records, tagger included. Only the base64 lines of an armored
+  `gpgsig` block are skipped; its armor headers still count.
 - Text files, commit messages and filenames reject non-public emails, except
-  explicit example domains and `.invalid` fixtures. Binary email scanning is
-  limited to common personal-email providers to avoid accidental byte matches.
-- Personal Unix/macOS/Windows home paths, recognizable private keys, common
-  GitHub/AWS/Google/OpenAI/Slack tokens and credential-bearing URLs are rejected.
+  explicit example domains, their subdomains and `.invalid` fixtures, `git@host:path`
+  remotes, scaled image names (`AppIcon@2x.png`) and package archives
+  (`foo@latest.tgz`, `foo@1.2.3.tgz`). A file is text unless it holds a NUL, so
+  Latin-1 counts. UTF-16 counts with a BOM, or without one when at least half of it
+  is ASCII and it has no control characters. Binary email scanning is limited to
+  common personal-email providers and their subdomains to avoid accidental byte
+  matches.
+- Personal Unix/macOS/Windows home paths, recognizable private keys of any armored
+  kind, common GitHub/AWS/Google/OpenAI/Slack tokens and credential-bearing URLs are
+  rejected. So are Claude Code's encoded home paths: it names directories after a
+  working directory, as in `-Users-<name>-work-engine` or `-home-<name>-work-engine`.
   Raw binary and UTF-16 strings are also inspected; this is not an archive decoder.
+- A lowercase `/home/` or `/users/` right after a public URL's host, or after an
+  `api` or `api/v2` root, is a site's own page and passes. Every other prefix stays
+  a home path: `file://`, a local host such as `localhost:8000`, `/mnt/c`, a
+  capitalized `/Users/`.
 - Known private files are rejected even if force-added: environment files (apart
-  from example/sample files), credential directories, private agent configuration
-  and signing/key files. `.gitignore` additionally prevents ordinary accidental adds.
+  from example/sample files), credential directories and netrc or git-credentials
+  files, private agent configuration, signing/key files (`.p8`, `.asc` and `.gpg`
+  included) and Android's `local.properties` and `key.properties`. `.gitignore`
+  additionally prevents ordinary accidental adds.
 - Existing cache-directory tests have an exception for their exact fixture user
-  only in their exact source path. GitHub-hosted runner and generic OS home names
-  are accepted. A duplicate blob at another path does not inherit the exception.
+  only in their exact source path. GitHub-hosted runner, generic OS home names and
+  the placeholders `user` and `you` are accepted. A duplicate blob at another path
+  does not inherit the exception.
+- Third-party licences may name their authors, and third-party files stay byte
+  for byte as shipped. So `LICENSE*` (any case) and `SOURCE.md`, in a source's folder
+  under `content/third_party/`, may hold an email address. Only the address rule is
+  off there: every other rule still applies to them, their filenames are still
+  checked, and the same blob at any other path still fails. **The guard doesn't judge
+  those addresses, so people do:** only maintainers add sources, with the repository
+  owner's say-so, and the maintainer adding one reads both files and confirms each
+  address is the third party's published contact, never a contributor's.
 - Submodules fail closed because the guard cannot inspect their contents here.
 
 Use synthetic example values in tests. If a legitimate public attribution or
@@ -81,9 +109,11 @@ repository's secret scanning and secret push protection enabled too.
 
 The independent **Privacy guard** CI job runs without Rust compilation. On PRs it
 checks both the actual head and GitHub's generated merge commit. On main pushes it
-checks the published range. Manual runs scan the entire reachable history. The
-job has read-only repository permissions and no persisted checkout credential.
-Its tests require Python 3.11+, as do the existing CI helper tests.
+checks the published range. On a pushed tag it fetches the tag object back, because
+checkout rewrites an annotated tag to its commit, then scans the tag and everything
+it reaches. Manual runs scan the entire reachable history. The job has read-only
+repository permissions and no persisted checkout credential. Its tests require
+Python 3.11+, as do the existing CI helper tests.
 
 CI runs **after upload**, so it cannot prevent the initial disclosure. Hooks are
 opt-in and can be bypassed, and branch protection only applies if separately
@@ -94,9 +124,10 @@ supported secrets before publication; it does not detect arbitrary personal data
 
 These checks reduce accidental leaks; they cannot identify every real name,
 telephone number or address, OCR screenshots, recursively decode all compressed
-assets, or recognize every credential format. They do not audit GitHub PR bodies,
-issue comments, Actions artifacts or account settings. Review screenshots and logs
-before attaching them. Local analysis packages may contain machine-specific paths.
+assets, or recognize every credential format. A company address inside a binary
+file passes, and a signature's base64 is not decoded. They do not audit GitHub PR
+bodies, issue comments, Actions artifacts or account settings. Review screenshots and
+logs before attaching them. Local analysis packages may contain machine-specific paths.
 
 If something escapes, stop propagating it and handle the evidence privately.
 Rotate an exposed credential. Removing a file or reverting a commit does not erase

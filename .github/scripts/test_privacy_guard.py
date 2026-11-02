@@ -20,6 +20,13 @@ PUBLIC = "123+developer@users.noreply.github.com"
 PRIVATE = "person" + "@" + "personal.test"
 HOME = "/Us" + "ers/real-person/work/project"
 TOKEN = "ghp_" + "A" * 36
+AT = "@"
+USERS = "/Us" + "ers/"
+HOMES = "/ho" + "me/"
+LOWER_USERS = "/us" + "ers/"
+ENCODED_USERS = "-Us" + "ers-"
+ENCODED_HOME = "-ho" + "me-"
+CONTACT = "licensing" + AT + "author-mail.test"
 
 
 class ContentTests(unittest.TestCase):
@@ -63,6 +70,189 @@ class ContentTests(unittest.TestCase):
                      b"CLAUDE.md", b".claude/tools/run.sh", b".claude/settings.local.json"):
             self.assertTrue(pg.forbidden_path(path), path)
         for path in (b".env.example", b".env.sample", b"crates/sapphire_tod/src/key.rs"):
+            self.assertFalse(pg.forbidden_path(path), path)
+
+    def assert_all(self, rule, values, metadata=False):
+        for value in values:
+            with self.subTest(value=value):
+                found = {r for r, _ in pg.content_findings(value.encode(), b"", metadata)}
+                self.assertIn(rule, found)
+
+    def assert_none(self, values, metadata=False):
+        for value in values:
+            with self.subTest(value=value):
+                self.assertEqual(pg.content_findings(value.encode(), b"", metadata), [])
+
+    # DV-3: Claude Code names its directories after a working directory, slashes as dashes.
+
+    def test_encoded_home_paths_are_home_paths(self):
+        leaks = ["/private/tmp/claude-501/" + ENCODED_USERS + "jane-work-engine/abc/x.md",
+                 "~/.claude/projects/" + ENCODED_HOME + "jane-work-engine/memory",
+                 "~/.claude/projects/" + ENCODED_USERS + "jane/memory",
+                 ENCODED_USERS + "jane-work-engine",
+                 "see " + ENCODED_HOME + "jane-work, then",
+                 "C-" + ENCODED_USERS + "jane-work-engine",
+                 "-private-tmp-claude-501-" + ENCODED_USERS + "jane-work-engine",
+                 "-mnt-c" + ENCODED_USERS + "jane-work-engine",
+                 "agent" + ENCODED_USERS + "jane-work-engine"]
+        self.assert_all("personal-home-path", leaks)
+        self.assert_all("personal-home-path", leaks, metadata=True)
+        for value in leaks[:2]:
+            self.assertIn("personal-home-path", self.rules(value.encode("utf-16")))
+            self.assertIn("personal-home-path", self.rules(b"\xff\0" + value.encode("utf-16-le")))
+
+    def test_ordinary_dashed_names_are_not_encoded_homes(self):
+        lower_users = "-us" + "ers-"
+        self.assert_none(["my" + ENCODED_HOME + "page-link", "docs/plan.md#how" + lower_users + "see-it",
+                          "a" + ENCODED_HOME + "b-c", "-" + ENCODED_HOME + "dir-name",
+                          "--foo" + ENCODED_HOME + "dir", "-" + lower_users + "file-path"])
+
+    def test_generic_names_are_exempt_in_the_encoded_form_too(self):
+        self.assert_none([ENCODED_HOME + "runner-work-sapphire", ENCODED_USERS + "runner-work-sapphire",
+                          ENCODED_HOME + "user-project", ENCODED_USERS + "you-work"])
+        self.assert_all("personal-home-path", [ENCODED_HOME + "userreal-work", ENCODED_USERS + "your-work"])
+
+    # DV-5: ordinary content, each with the nearest real leak beside it.
+
+    def test_git_remotes_are_ordinary_but_other_addresses_on_their_hosts_are_not(self):
+        self.assert_none(["git" + AT + "github.com:nameless525/sapphire.git",
+                          "ssh://git" + AT + "github.com/nameless525/sapphire.git"])
+        self.assert_all("non-public-email", ["person" + AT + "github.com:nameless525/sapphire.git",
+                                             "git.person" + AT + "github.com:nameless525/sapphire.git",
+                                             "git" + AT + "personal.test",
+                                             "git" + AT + "personal.test: see this",
+                                             "git" + AT + "gmail.com:person/repo.git",
+                                             "ssh://git" + AT + "mail.gmail.com/person/repo.git",
+                                             "ssh://person" + AT + "github.com/nameless525/sapphire.git"])
+
+    def test_scaled_asset_names_are_ordinary_but_address_shaped_names_are_not(self):
+        names = ["AppIcon" + AT + "2x.png", "AppIcon-60" + AT + "3x.png", "hero" + AT + "2x.jpg"]
+        self.assert_none(names)
+        self.assert_none(names, metadata=True)
+        self.assert_all("non-public-email", ["person" + AT + "2x.test", "person" + AT + "2xmail.com",
+                                             "person" + AT + "2x.png.test", "person" + AT + "2x.com",
+                                             PRIVATE + ".png"], metadata=True)
+
+    def test_package_archives_are_ordinary_but_address_shaped_names_are_not(self):
+        self.assert_none(["foo" + AT + "latest.tgz", "foo" + AT + "1.2.3.tgz"])
+        self.assert_all("non-public-email", ["person" + AT + "latest.dev", PRIVATE + ".tgz",
+                                             "person" + AT + "latest.tgz.personal.test"])
+
+    def test_subdomains_of_example_domains_are_fixtures_but_look_alikes_are_not(self):
+        self.assert_none(["a" + AT + "mail.example.com", "a" + AT + "example.org", "a" + AT + "x.y.example.net"])
+        self.assert_all("non-public-email", ["a" + AT + "example.com.personal.test", "a" + AT + "notexample.com",
+                                             "a" + AT + "my-example.org", "a" + AT + "example.community"])
+
+    def test_site_paths_are_ordinary(self):
+        self.assert_none(["GET /api" + LOWER_USERS + "42/profile", "api" + LOWER_USERS + "42/profile",
+                          "https://example.org/api/v2" + LOWER_USERS + "42",
+                          "https://github.com" + LOWER_USERS + "nameless525/projects/1",
+                          "https://example.com" + HOMES + "index.html",
+                          "https://example.com:8443" + HOMES + "index.html"])
+
+    def test_paths_near_site_paths_are_still_homes(self):
+        self.assert_all("personal-home-path", [
+            USERS + "real-person/work", LOWER_USERS + "real-person/work", HOMES + "real-person/work",
+            "/mnt/c" + USERS + "real-person/work", "/mnt/c" + LOWER_USERS + "real-person/work",
+            "/c" + USERS + "real-person/work", "/cygdrive/c" + USERS + "real-person/work",
+            "/System/Volumes/Data" + USERS + "real-person/work", "/var" + HOMES + "real-person/work",
+            "backup" + USERS + "real-person/work", "backup" + HOMES + "real-person/work",
+            "file://" + USERS + "real-person/work", "file://" + HOMES + "real-person/work",
+            "file://localhost" + HOMES + "real-person/work", "http://localhost:8000" + HOMES + "real-person/work",
+            "http://127.0.0.1" + HOMES + "real-person/work", "http://[::1]:8000" + HOMES + "real-person/work",
+            "http://builder" + HOMES + "real-person/work", "http://builder.local" + HOMES + "real-person/work",
+            "http://host.docker.internal" + HOMES + "real-person/work",
+            "https://example.com" + USERS + "real-person/work",
+            "https://example.com/docs" + HOMES + "real-person/work",
+            "example.com" + HOMES + "real-person/work", "ssh://example.com" + HOMES + "real-person/work",
+            "builder:" + HOMES + "real-person/repo.git", HOMES + "real-person/api" + LOWER_USERS + "42",
+            "/myapi" + LOWER_USERS + "real-person", "/api2" + LOWER_USERS + "real-person",
+            "/api" + USERS + "real-person"])
+
+    def test_placeholder_homes_are_ordinary_but_names_near_them_are_not(self):
+        self.assert_none([HOMES + "user/project", USERS + "you/work"])
+        self.assert_all("personal-home-path", [HOMES + "userreal/x", HOMES + "user-real/x", USERS + "your/x",
+                                               USERS + "you.real/x", HOMES + "users/x"])
+
+    # DV-5's reviewed exemption: the address rule alone, at exact paths.
+
+    NOTICES = (b"content/third_party/pack/LICENSE", b"content/third_party/pack/LICENSE.md",
+               b"content/third_party/pack/License.txt", b"content/third_party/pack/LICENSE-MIT",
+               b"content/third_party/pack/SOURCE.md", b"content/third_party/pack/sub/dir/LICENSE")
+
+    def test_third_party_notices_may_hold_a_contact_address(self):
+        for path in self.NOTICES:
+            with self.subTest(path=path):
+                self.assertEqual(pg.content_findings(CONTACT.encode(), path), [])
+                self.assertEqual(pg.content_findings(("person" + AT + "gmail.com").encode(), path), [])
+
+    def test_address_next_to_a_third_party_notice_is_still_rejected(self):
+        for path in (b"content/third_party/pack/MODIFIED.md", b"content/third_party/pack/notes.txt",
+                     b"content/third_party/pack/model.gltf", b"content/third_party/README.md",
+                     b"content/third_party/LICENSE", b"content/third_party/SOURCE.md",
+                     b"LICENSE", b"SOURCE.md", b"docs/LICENSE", b"content/LICENSE",
+                     b"vendor/content/third_party/pack/LICENSE", b"content/third_party_more/pack/LICENSE",
+                     b"Content/third_party/pack/LICENSE", b"content/third_party/pack/SOURCE.md.bak",
+                     b"content/third_party/pack/source.md", b"content/third_party/pack/MY_LICENSE",
+                     b"content/third_party/../secrets/LICENSE", b"content/third_party/pack/LICENSE/notes.txt"):
+            with self.subTest(path=path):
+                self.assertIn("non-public-email", self.rules(CONTACT.encode(), path))
+
+    def test_every_other_rule_still_applies_to_third_party_notices(self):
+        cases = [(HOME, "personal-home-path"), ("~/.claude/projects/" + ENCODED_USERS + "jane-work", "personal-home-path"),
+                 (TOKEN, "access-token"), ("-----BEGIN " + "PGP PRIVATE KEY BLOCK-----", "private-key"),
+                 ("https://" + "user:password" + AT + "host.test", "credential-url")]
+        for path in self.NOTICES:
+            for value, rule in cases:
+                with self.subTest(path=path, rule=rule):
+                    self.assertIn(rule, self.rules(CONTACT.encode() + b"\n" + value.encode(), path))
+        self.assertTrue(pg.forbidden_path(b"content/third_party/pack/LICENSE.pem"))
+
+    # DV-6: smaller gaps.
+
+    def test_every_armored_private_key_is_caught(self):
+        self.assert_all("private-key", ["-----BEGIN " + "PGP PRIVATE KEY BLOCK-----", "-----BEGIN " + "PRIVATE KEY-----",
+                                        "-----BEGIN " + "RSA PRIVATE KEY-----", "-----BEGIN " + "ENCRYPTED PRIVATE KEY-----",
+                                        "-----BEGIN " + "ANY PRIVATE KEY-----", "---- BEGIN " + "SSH2 ENCRYPTED PRIVATE KEY ----"])
+        self.assert_none(["-----BEGIN " + "PGP PUBLIC KEY BLOCK-----", "-----BEGIN " + "PUBLIC KEY-----",
+                          "-----BEGIN " + "CERTIFICATE-----", "-----BEGIN " + "PGP SIGNATURE-----"])
+
+    def test_text_that_merely_fails_utf8_is_text(self):
+        company = "jane" + AT + "corp-mail.dev\n"
+        self.assertEqual(pg.content_findings(("caf\xe9 " + company).encode("latin-1")), [("non-public-email", 1)])
+        self.assertEqual(pg.content_findings(("one\n" + company).encode("utf-16-le")), [("non-public-email", 2)])
+        self.assertEqual(pg.content_findings(("one\n" + company).encode("utf-16-be")), [("non-public-email", 2)])
+
+    def test_bytes_that_merely_decode_as_utf16_stay_raw(self):
+        # Even length, a few NULs, no control characters when read as UTF-16: nonsense that hid this address.
+        data = b"\0\x01" + ("jane" + AT + "gmail.comABC").encode() + b"\0"
+        self.assertEqual(len(data) % 2, 0)
+        self.assertEqual(pg.utf16_as_utf8(data), data)
+        self.assertIn("non-public-email", self.rules(data))
+        # Half ASCII units, half anything else: still text, so any address counts.
+        mixed = ("漢字 " + "jane" + AT + "corp-mail.dev").encode("utf-16-le")
+        self.assertIn("non-public-email", self.rules(mixed))
+
+    def test_binary_payloads_still_check_personal_providers_only(self):
+        self.assertFalse(self.rules(b"\x89PNG\0\x01a" + AT.encode() + b"b.cd\0\x02"))
+        self.assertFalse(self.rules(b"\x01\0\x02\0a\0" + AT.encode() + b"\0b\0.\0c\0d\0"))
+
+    def test_personal_address_in_binary_by_domain_suffix(self):
+        for tail in ("gmail.comABC", "gmail.com\0", "mail.protonmail.com", "a.b.icloud.com.", "PROTON.ME"):
+            with self.subTest(tail=tail):
+                value = ("jane" + AT + tail).encode()
+                self.assertIn("non-public-email", self.rules(b"\x00\x01" + value + b"\x00"))
+        wide = ("jane" + AT + "mail.protonmail.com").encode("utf-16-le")
+        self.assertIn("non-public-email", self.rules(b"\xff\0\x01\0\0\0" + wide))
+        for tail in ("notgmail.com", "gmail.example.org", "proton.test"):
+            with self.subTest(tail=tail):
+                self.assertFalse(self.rules(b"\x00\x01" + ("jane" + AT + tail).encode() + b"\x00"))
+
+    def test_private_key_and_signing_file_names(self):
+        for path in (b"_netrc", b".git-credentials", b"secret.asc", b"foo.gpg", b"AuthKey_ABC.p8", b"id_ecdsa",
+                     b"id_dsa", b"android/local.properties", b"android/key.properties"):
+            self.assertTrue(pg.forbidden_path(path), path)
+        for path in (b"notes.p8.txt", b"src/netrc.rs", b"local_properties.rs", b"gradle.properties", b"foo.gpg.md"):
             self.assertFalse(pg.forbidden_path(path), path)
 
     def test_github_public_profile_alias_is_identity_scoped(self):
@@ -248,6 +438,194 @@ class RepositoryTests(unittest.TestCase):
         self.assertIn("tag", output)
         self.assertNotIn(PRIVATE, output)
 
+    # DV-4: every header and every tag object.
+
+    def raw_object(self, kind, body, literally=False):
+        flags = ["--literally"] if literally else []
+        return self.git("hash-object", "-t", kind, "-w", "--stdin", *flags, input=body)
+
+    def raw_commit(self, extra=b"", author=None, committer=None, message=b"crafted\n", literally=False):
+        ident = ("Developer <" + PUBLIC + "> 1700000000 +0000").encode()
+        body = b"tree " + self.git("rev-parse", "HEAD^{tree}").encode() + b"\nparent " + self.base.encode()
+        body += b"\nauthor " + (author or ident) + b"\ncommitter " + (committer or ident) + b"\n" + extra + b"\n" + message
+        return self.raw_object("commit", body, literally)
+
+    def mergetag(self, tagger):
+        return (b"mergetag object " + self.base.encode() + b"\n type commit\n tag v1\n tagger " + tagger
+                + b" 1700000000 +0000\n \n release\n -----BEGIN PGP SIGNATURE-----\n abc\n -----END PGP SIGNATURE-----\n")
+
+    def test_clean_crafted_commit_passes(self):
+        self.assertEqual(self.check("--head", self.raw_commit(), "--base", self.base)[0], 0)
+
+    def test_private_tagger_in_a_mergetag_header_is_rejected(self):
+        commit = self.raw_commit(self.mergetag(b"Jane Doe <" + PRIVATE.encode() + b">"))
+        code, output = self.check("--head", commit, "--base", self.base)
+        self.assertEqual(code, 1)
+        self.assertIn("mergetag", output)
+        self.assertNotIn(PRIVATE, output)
+        self.assertNotIn("Jane", output)
+
+    def test_real_name_on_a_noreply_tagger_in_a_mergetag_header_is_rejected(self):
+        commit = self.raw_commit(self.mergetag(b"Jane Doe <" + PUBLIC.encode() + b">"))
+        code, output = self.check("--head", commit, "--base", self.base)
+        self.assertEqual(code, 1)
+        self.assertIn("identity-name-must-use-public-handle", output)
+        clean = self.raw_commit(self.mergetag(b"developer <" + PUBLIC.encode() + b">"))
+        self.assertEqual(self.check("--head", clean, "--base", self.base)[0], 0)
+
+    def test_private_address_in_any_other_header_is_rejected(self):
+        commit = self.raw_commit(b"x-note " + PRIVATE.encode() + b"\n")
+        code, output = self.check("--head", commit, "--base", self.base)
+        self.assertEqual(code, 1)
+        self.assertIn("non-public-email", output)
+        self.assertNotIn(PRIVATE, output)
+        continued = self.raw_commit(b"x-note safe\n and " + HOME.encode() + b"\n")
+        code, output = self.check("--head", continued, "--base", self.base)
+        self.assertEqual(code, 1)
+        self.assertIn("personal-home-path", output)
+
+    def signed(self, armor_lines):
+        return self.raw_commit(b"gpgsig -----BEGIN PGP SIGNATURE-----\n" + armor_lines + b" -----END PGP SIGNATURE-----\n")
+
+    def test_armored_signature_body_is_skipped_and_nothing_else_in_it(self):
+        # Base64's alphabet holds slashes; a chance path inside one must not fail a signed commit.
+        body = b" \n " + HOMES.encode() + b"abcdefghij0123456789+=\n =AbCd\n"
+        self.assertEqual(self.check("--head", self.signed(body), "--base", self.base)[0], 0)
+        ssh = self.raw_commit(b"gpgsig-sha256 -----BEGIN SSH SIGNATURE-----\n " + USERS.encode() + b"abc=\n -----END SSH SIGNATURE-----\n")
+        self.assertEqual(self.check("--head", ssh, "--base", self.base)[0], 0)
+        for armor_header in (b" Comment: " + PRIVATE.encode() + b"\n \n abc=\n", b" Comment: " + HOME.encode() + b"\n \n abc=\n",
+                             b" -----BEGIN PGP " + b"PRIVATE KEY BLOCK-----\n"):
+            with self.subTest(armor_header=armor_header):
+                self.assertEqual(self.check("--head", self.signed(armor_header), "--base", self.base)[0], 1)
+
+    def test_every_author_line_is_an_identity(self):
+        second = b"author Jane Doe <" + PUBLIC.encode() + b"> 1700000000 +0000\n"
+        commit = self.raw_commit(second, literally=True)
+        code, output = self.check("--head", commit, "--base", self.base)
+        self.assertEqual(code, 1)
+        self.assertIn("identity-name-must-use-public-handle", output)
+        self.assertNotIn("Jane", output)
+
+    def test_missing_identity_is_rejected(self):
+        tree = self.git("rev-parse", "HEAD^{tree}").encode()
+        ident = b"Developer <" + PUBLIC.encode() + b"> 1700000000 +0000\n"
+        commit = self.raw_object("commit", b"tree " + tree + b"\ncommitter " + ident + b"\nmsg\n", literally=True)
+        code, output = self.check("--head", commit)
+        self.assertEqual(code, 1)
+        self.assertIn("non-noreply-identity", output)
+
+    def identity_result(self, name, address):
+        ident = name + b" <" + address + b"> 1700000000 +0000"
+        commit = self.raw_commit(author=ident, committer=ident)
+        return self.check("--head", commit, "--base", self.base)
+
+    def test_bot_addresses_take_only_their_exact_names(self):
+        for name, address in ((b"GitHub", b"noreply@github.com"), (b"Claude", b"noreply@anthropic.com"),
+                              (b"dependabot[bot]", b"support@github.com")):
+            with self.subTest(name=name):
+                self.assertEqual(self.identity_result(name, address)[0], 0)
+        for name, address in ((b"Jane Doe", b"noreply@github.com"), (b"Jane Doe", b"noreply@anthropic.com"),
+                              (b"Jane Doe", b"support@github.com"), (b"github", b"noreply@github.com"),
+                              (b"GitHub Jane", b"noreply@github.com"), (b"Claude", b"noreply@github.com")):
+            with self.subTest(name=name, address=address):
+                code, output = self.identity_result(name, address)
+                self.assertEqual(code, 1)
+                self.assertIn("identity-name-must-use-public-handle", output)
+                self.assertNotIn("Jane", output)
+
+    def private_tag(self, name="test"):
+        with patch.dict(os.environ, {"GIT_COMMITTER_EMAIL": PRIVATE}):
+            self.git("tag", "-a", name, "-m", "safe")
+        return self.git("rev-parse", name)
+
+    def test_head_naming_an_annotated_tag_reads_the_tag(self):
+        tag = self.private_tag()
+        for head in ("test", "refs/tags/test", tag):
+            with self.subTest(head=head):
+                code, output = self.check("--head", head)
+                self.assertEqual(code, 1)
+                self.assertIn("tag", output)
+                self.assertNotIn(PRIVATE, output)
+                self.assertEqual(self.check("--head", head, "--base", self.base)[0], 1)
+
+    def test_head_reads_a_tag_of_a_tag(self):
+        inner = self.private_tag("inner")
+        self.git("tag", "-a", "outer", "-m", "safe", inner)
+        self.git("tag", "-d", "inner")
+        self.assertEqual(self.check("--head", "outer")[0], 1)
+
+    def test_head_reads_a_tags_message_and_whole_header(self):
+        self.git("tag", "-a", "message", "-m", "contact " + PRIVATE)
+        self.assertEqual(self.check("--head", "message")[0], 1)
+        ident = ("developer <" + PUBLIC + "> 1700000000 +0000\n").encode()
+        body = b"object " + self.base.encode() + b"\ntype commit\ntag v1\ntagger " + ident
+        self.assertEqual(self.check("--head", self.raw_object("tag", body + b"\nmsg\n"))[0], 0)
+        noted = self.raw_object("tag", body + b"x-note " + PRIVATE.encode() + b"\n\nmsg\n", literally=True)
+        self.assertEqual(self.check("--head", noted)[0], 1)
+
+    def test_clean_tags_pass_and_are_counted(self):
+        self.git("tag", "-a", "clean", "-m", "Release")
+        self.git("tag", "light")
+        code, output = self.check("--head", "clean")
+        self.assertEqual(code, 0)
+        self.assertIn("1 tags", output)
+        self.assertEqual(self.check("--head", "light")[0], 0)
+
+    def test_head_naming_a_tag_with_a_private_name_is_rejected(self):
+        self.git("tag", PRIVATE)
+        code, output = self.check("--head", PRIVATE)
+        self.assertEqual(code, 1)
+        self.assertNotIn(PRIVATE, output)
+
+    def test_ci_fetch_restores_an_annotated_tag_that_checkout_rewrote(self):
+        self.private_tag()
+        remote = Path(self.temp.name) / "remote.git"
+        self.git("init", "--bare", "-q", str(remote))
+        self.git("remote", "add", "origin", str(remote))
+        self.git("push", "-q", "origin", "refs/tags/test")
+        self.git("tag", "-f", "test", "HEAD")
+        self.assertEqual(self.check("--head", "refs/tags/test")[0], 0)
+        self.git("fetch", "--no-tags", "--force", "origin", "+refs/tags/test:refs/tags/test")
+        self.assertEqual(self.check("--head", "refs/tags/test")[0], 1)
+
+    def test_tag_of_a_blob_fails_closed(self):
+        self.git("tag", "-a", "blob", "-m", "safe", self.git("rev-parse", "HEAD:safe.txt"))
+        self.assertEqual(self.check("--head", "blob")[0], 2)
+
+    # DV-5's exemption is bound to the path through the whole scan.
+
+    def test_third_party_notice_passes_at_its_own_path(self):
+        self.write("content/third_party/pack/LICENSE", CONTACT)
+        self.assertEqual(self.check("--staged")[0], 0)
+        self.commit()
+        self.assertEqual(self.check("--head", "HEAD")[0], 0)
+
+    def test_same_notice_blob_at_another_path_is_rejected_either_way(self):
+        for notes in ("a-notes.txt", "z-notes.txt"):
+            with self.subTest(notes=notes):
+                self.write("content/third_party/pack/LICENSE", CONTACT)
+                self.write(notes, CONTACT)
+                code, output = self.check("--staged")
+                self.assertEqual(code, 1)
+                self.assertNotIn(CONTACT, output)
+                self.git("rm", "-qf", "--", notes)
+
+    def test_notice_blob_copied_elsewhere_and_removed_again_is_rejected(self):
+        # The final tree holds only the notice, so its clean scan mustn't excuse the copy's commit.
+        self.write("content/third_party/pack/SOURCE.md", CONTACT)
+        self.commit()
+        self.write("docs/credits.md", CONTACT)
+        self.commit()
+        self.git("rm", "-q", "docs/credits.md")
+        self.commit()
+        self.assertEqual(self.check("--head", "HEAD")[0], 1)
+
+    def test_private_address_in_a_third_party_file_name_is_rejected(self):
+        self.write("content/third_party/pack/LICENSE-" + PRIVATE, "safe")
+        code, output = self.check("--staged")
+        self.assertEqual(code, 1)
+        self.assertNotIn(PRIVATE, output)
+
     def test_deletion_only_push_passes(self):
         with patch.object(sys, "stdin", io.StringIO(f"(delete) {'0' * 40} refs/heads/old {self.base}\n")):
             self.assertEqual(self.check("--pre-push")[0], 0)
@@ -312,6 +690,15 @@ class RepositoryTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "existing hooksPath"):
             install_privacy_hooks.install()
         self.assertEqual(self.git("config", "core.hooksPath"), "custom-hooks")
+
+
+class WorkflowTests(unittest.TestCase):
+    def test_ci_checks_pushed_tags_and_the_tag_itself(self):
+        workflow = (ROOT / ".github/workflows/privacy.yml").read_text()
+        self.assertIn("tags: ['**']", workflow)
+        self.assertIn('--head "$GITHUB_REF"', workflow)
+        # Checkout rewrites an annotated tag to its commit, so the real tag must be fetched back.
+        self.assertIn('git fetch --no-tags --force origin "+$GITHUB_REF:$GITHUB_REF"', workflow)
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ on:
   pull_request:
   push:
     branches: [main]
+    tags: ['**']
   workflow_dispatch:
 
 permissions:
@@ -12,6 +13,8 @@ permissions:
 jobs:
   privacy:
     name: Privacy guard
+    # A deleted tag publishes nothing, and has nothing to check out.
+    if: ${{ !github.event.deleted }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -21,13 +24,20 @@ jobs:
           persist-credentials: false
       - name: Test privacy guard and hooks
         run: python3 -m unittest discover -s .github/scripts -p 'test_privacy*.py' -v
+      - name: Fetch the pushed tag object
+        # Checkout rewrites an annotated tag to the commit it names, which would hide its tagger and message.
+        if: github.ref_type == 'tag'
+        run: git fetch --no-tags --force origin "+$GITHUB_REF:$GITHUB_REF"
       - name: Check proposed tree, new commit identities and historical content
         env:
           # Data enters through environment variables, never interpolated into shell code.
           PRIVACY_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
           PRIVACY_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
-          if [ -n "$PRIVACY_BASE" ]; then
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            # A tag can reach commits no branch has, and a moved tag's old object may be gone: read it all.
+            python3 .github/scripts/privacy_guard.py --head "$GITHUB_REF"
+          elif [ -n "$PRIVACY_BASE" ]; then
             python3 .github/scripts/privacy_guard.py --head "$PRIVACY_HEAD" --base "$PRIVACY_BASE"
           else
             python3 .github/scripts/privacy_guard.py --head "$PRIVACY_HEAD"

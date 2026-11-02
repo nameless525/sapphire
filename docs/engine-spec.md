@@ -2114,13 +2114,14 @@ At runtime, dynamic resolution adjusts the render scale from GPU timings and the
 **Combat core** (all inside the fixed step, in this order)
 
 1. **Intents:** a ring buffer 8–15 ticks deep, with expiry and priority per intent.
-2. **Cancels:** the move graph checks cancel windows. Buffered inputs fire when a window opens; instant inputs only fire if pressed inside it.
-3. **Advance moves:** each move advances on its local clock. Its frame-data timeline has tracks for startup, active and recovery, hitboxes, hurtboxes and invulnerability, perfect-dodge and parry windows, cancel windows, root motion and warp, and cues.
-4. **Movement:** apply root motion and the controller.
-5. **Hits:** run `HitQuery` and queue `HitEvent`s.
-6. **Resolve:** apply attributes, effects and tags. This step handles damage, poise and stagger (in the spirit of ZZZ's Daze meter) and hit reactions (stagger, launch, knockdown).
-7. **Hitstop and time scale.**
-8. **Cues:** VFX, SFX, camera shake, rumble and post effects. Cues are presentation-only, so the simulation runs headless.
+2. **Party (M2 G7):** a swap press or a defeat on the field changes who's on it, and starts the assist.
+3. **Cancels:** the move graph checks cancel windows. Buffered inputs fire when a window opens; instant inputs only fire if pressed inside it.
+4. **Advance moves:** each move advances on its local clock. Its frame-data timeline has tracks for startup, active and recovery, hitboxes, hurtboxes and invulnerability, perfect-dodge and parry windows, cancel windows, root motion and warp, and cues.
+5. **Movement:** apply root motion and the controller.
+6. **Hits:** run `HitQuery` and queue `HitEvent`s.
+7. **Resolve:** apply attributes, effects and tags. This step handles damage, poise and stagger (in the spirit of ZZZ's Daze meter) and hit reactions (stagger, launch, knockdown).
+8. **Hitstop and time scale.**
+9. **Cues:** VFX, SFX, camera shake, rumble and post effects. Cues are presentation-only, so the simulation runs headless.
 
 **Ability system (GAS-like)**
 
@@ -2134,6 +2135,15 @@ At runtime, dynamic resolution adjusts the render scale from GPU timings and the
 - Three slots. Swapping is an ability, and swap-in assists and chain attacks are moves.
 - Off-field characters keep ticking for cooldowns and energy.
 - The party's resources are pinned in `sapphire_assets`.
+- **As built (M2 G7, `sapphire_gameplay`'s `party` module):**
+  - **API:** `Simulation::form_party(&members, PartyTuning { swap_cooldown, rest })` before the fight, for one to three standing actors whose move sets have the intent `swap` and the move `swap_in`. `Simulation::party()` reads `active`, `active_slot`, `slots`, `on_field(id)`, `is_off_field(id)`, `is_down`, `swaps` and `forced_swaps`; `party_ready_in(slot)` is what a HUD's cooldown reads; `ActorView::off_field`.
+  - **A swap:** `CombatSet::Party` runs between `Intents` and `Cancels`. A press fires out of anything, on a clock that moves, once the one on the field has stayed `swap_cooldown` and someone standing has rested `rest`, each on its owner's clock, and goes to the next such slot. Who leaves stops whatever it's doing, and its capsule and hurtboxes go. Who comes in takes its place, yaw, controller state, `Controls` and `WarpTarget`, a perfect dodge's scale-back comes along, and everyone aiming at the one who left aims at this one. The assist is forced at this step's reading, so it's a move from tick 0: its volumes land, its armour absorbs, its i-frames work, its cancels take presses. `party_swap` goes out.
+  - **Defeat:** a defeat on the field plays out, then forces a swap to the next one standing, past both numbers. With nobody left `Party::is_down` and `party_defeated`, once. Despawning the one on the field does the same at once.
+  - **Off the field:** the clock runs and poise refills. There's no capsule or hurtbox in the world, input goes to whoever's on the field, nothing starts, and a finish freeze passes it by. A new system that walks actors and places bodies or starts moves must skip `Party::is_off_field`, and one that reads a cast's actor resolves it with `Party::on_field`.
+  - **The scenario:** `party` is `arena-fight` with the player a party: three members sharing `player.moves.ron`'s set, the first with `arena-fight`'s ID, the warrior with its own, and a brain that turns on whoever comes in. Sharing a set is what lets a live edit reach all three (T2's `documents` holds one document to one set). The document's `swap` intent and `swap_in` move come last in their lists, so no other's place moves, and with no party neither does anything: `arena-fight` and its replays are party-less. Members who differ, for determinism tests and `step_bench`, are `replay::party_document`, which no scenario plays.
+  - **Determinism:** `Party` is one resource, written after `SlowMotion`, its tuning in `tables_hash`; with no party it writes nothing to either, so the layout's number (8) is all that moved earlier replays. `party-swap` is 5,300 ticks of the real fight: a swap through a freeze, a press that runs out, one out of a knockdown, assists landing, three falls and the party going down, with zero allocations. `a_scripted_fight_does_what_its_comments_say` adds armour and every refusal on the members who differ.
+  - **Presentation:** `--arena --party` with a fight of the `party` scenario, or `--arena --fight --party`. `apps/sapphire_sandbox/src/party_looks.rs` multiplies five materials' `base_color` at load and draws whoever's on the field on one entity, whose graph cuts at a swap; goldens `arena-party-second` and `-third`. A live fight starts over when the party is down or the warrior falls. No HUD element yet.
+  - **Cost (R9):** `step_bench`'s party row on an M5, release, at a load average of about 14, three members and an opponent swapping every 1.5 s, minimums of 7 alternating rounds of 20,000 steps: a median of 2.54 µs, 99.9% 4.88, worst 15.29, against 1,000 µs.
 
 **Camera director**
 

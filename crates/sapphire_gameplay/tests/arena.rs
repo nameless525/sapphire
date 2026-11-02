@@ -38,7 +38,7 @@ const FLOOR_Z: [f32; 2] = [-7.0, 12.0];
 const HIGHEST_FEET: f32 = 2.5;
 
 fn resolved() -> ResolvedProfile {
-    profile().resolve().expect("the arena's profile is good")
+    ResolvedProfile::new(&profile()).expect("the arena's profile is good")
 }
 
 fn capsule() -> Shape {

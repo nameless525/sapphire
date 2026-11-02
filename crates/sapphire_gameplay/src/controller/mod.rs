@@ -64,7 +64,8 @@ use sapphire_math::{Vec2, Vec3};
 use sapphire_physics::{BodyId, PhysicsWorld};
 use sapphire_time::{SimDuration, Stopwatch};
 
-pub use profile::{ControllerProfile, ProfileError, ResolvedProfile};
+pub use profile::ResolvedProfile;
+pub use sapphire_moves::{ControllerProfile, ProfileError};
 pub use step::step_controller;
 
 use crate::actions::{Buttons, Controls};
@@ -72,6 +73,7 @@ use crate::actors::{ActorId, ActorTable};
 use crate::checksum::StateHasher;
 use crate::hits::remove_hurtboxes;
 use crate::movement::ActorTransform;
+use crate::moves::{MoveLibrary, MoveRunner};
 use crate::party::Party;
 
 /// Which [`ControllerProfile`] an actor runs on, handed out in the order they were added.
@@ -300,7 +302,8 @@ impl ControllerState {
 }
 
 /// An actor's character controller. Every pooled actor carries one, and one with no profile does
-/// nothing: its transform is someone else's to move.
+/// nothing: its transform is someone else's to move. What it moves by is its set's `movement` section,
+/// if its document has one, and otherwise the profile it spawned with.
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq)]
 pub struct CharacterController {
     profile: Option<ProfileId>,
@@ -362,7 +365,7 @@ impl CharacterWorld {
     }
 
     pub(crate) fn add_profile(&mut self, profile: &ControllerProfile) -> Result<ProfileId, ProfileError> {
-        let resolved = profile.resolve()?;
+        let resolved = ResolvedProfile::new(profile)?;
         let id = ProfileId(u32::try_from(self.profiles.len()).expect("fewer than 2³² profiles"));
         self.profiles.push(resolved);
         Ok(id)
@@ -379,7 +382,7 @@ impl CharacterWorld {
         let mut hasher = StateHasher::new();
         hasher.u32(self.profiles.len() as u32);
         for profile in &self.profiles {
-            profile.authored().write_canonical(&mut hasher);
+            profile::write_canonical(profile.authored(), &mut hasher);
         }
         hasher.finish()
     }
@@ -402,22 +405,43 @@ impl CharacterWorld {
     }
 
     /// Gives a newly spawned actor its capsule, or leaves it without a controller if it can't have
-    /// one, and counts that: a spawn inside a step has nowhere to report to.
+    /// one, and counts that: a spawn inside a step has nowhere to report to. `movement` is what its
+    /// document says it moves by, if it says.
     pub(crate) fn spawned(
         &mut self,
         id: ActorId,
         profile: Option<ProfileId>,
+        movement: Option<&ResolvedProfile>,
         transform: &ActorTransform,
     ) -> CharacterController {
         let Some(profile) = profile else { return CharacterController::default() };
-        let added = self
-            .profile(profile)
+        let added = movement
+            .or_else(|| self.profile(profile))
             .map(|resolved| resolved.body(actor_body(id), transform.position, transform.yaw));
         if !added.is_some_and(|body| self.physics.add_body(body).is_ok()) {
             self.refused += 1;
             return CharacterController::default();
         }
         CharacterController { profile: Some(profile), ..CharacterController::default() }
+    }
+
+    /// Fits an actor's capsule to what a live edit made of its numbers, around feet that stay exactly
+    /// where they are. Something it now overlaps pushes it out when it next moves, as a spawn inside a
+    /// wall does, by no more than it grew. One with no body, off the field, gets a new one as it comes on.
+    pub(crate) fn refit_body(
+        &mut self,
+        id: ActorId,
+        was: &ResolvedProfile,
+        now: &ResolvedProfile,
+        transform: &ActorTransform,
+    ) {
+        let body = actor_body(id);
+        if now.same_body(was) || !self.physics.remove_body(body) {
+            return;
+        }
+        // It has just made room, and a resolved profile's capsule is one the world takes.
+        let added = self.physics.add_body(now.body(body, transform.position, transform.yaw));
+        debug_assert!(added.is_ok(), "{added:?}");
     }
 
     /// Takes an actor's bodies out of the world: its capsule and any hurtboxes, whose IDs nothing will
@@ -443,18 +467,24 @@ pub enum PhysicsWorldError {
 pub(crate) fn move_characters(
     table: Res<'_, ActorTable>,
     party: Res<'_, Party>,
+    library: Res<'_, MoveLibrary>,
     mut characters: ResMut<'_, CharacterWorld>,
-    mut actors: Query<'_, '_, (&Controls, &EntityClock, &mut CharacterController, &mut ActorTransform)>,
+    mut actors: Query<
+        '_,
+        '_,
+        (&Controls, &EntityClock, &MoveRunner, &mut CharacterController, &mut ActorTransform),
+    >,
 ) {
     let stopwatch = Stopwatch::start();
     let characters = &mut *characters;
     for (id, entity) in table.iter().filter(|&(id, _)| !party.is_off_field(id)) {
-        let Ok((controls, clock, mut controller, mut transform)) = actors.get_mut(entity) else {
+        let Ok((controls, clock, runner, mut controller, mut transform)) = actors.get_mut(entity) else {
             continue;
         };
-        let Some(profile) = controller.profile.and_then(|id| characters.profiles.get(id.0 as usize)) else {
+        let Some(spawned) = controller.profile.and_then(|id| characters.profiles.get(id.0 as usize)) else {
             continue;
         };
+        let profile = runner.set().and_then(|set| library.movement(set)).unwrap_or(spawned);
         let controller = &mut *controller;
         let drive = std::mem::take(&mut controller.drive);
         let pressed_jump = drive.locomotion && controls.pressed().contains(Buttons::JUMP);

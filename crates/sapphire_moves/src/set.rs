@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::brain::{BrainDef, MAX_BRAIN_ATTACKS};
 use crate::document::Issue;
+use crate::movement::ControllerProfile;
 use crate::{BakedTables, PathSample, TablesError};
 
 /// Conventional file extension for cooked move sets.
@@ -867,6 +868,9 @@ pub struct FighterDef {
     /// At least one, at most [`MAX_HURTBOXES`].
     pub hurtboxes: Vec<FighterHurtbox>,
     pub reactions: Reactions,
+    /// How it moves, within [`MOVEMENT_LIMITS`](crate::MOVEMENT_LIMITS). `None` leaves its actors the
+    /// profile they spawned with, which is what a document with no such section means.
+    pub movement: Option<ControllerProfile>,
 }
 
 impl FighterDef {
@@ -894,8 +898,8 @@ pub struct MoveSet {
 
 impl Versioned for MoveSet {
     /// 1: M2 G2. 2: M2 G3's attacks, armour, re-arms, walls and fighter. 3: M2 G4's perfect dodges.
-    /// 4: M2 G6's brain.
-    const VERSION: u32 = 4;
+    /// 4: M2 G6's brain. 5: M2 T2's movement.
+    const VERSION: u32 = 5;
 }
 
 /// A move set that can't be built, read or written.
@@ -978,6 +982,12 @@ impl MoveSet {
         if self.fighter.as_ref().is_some_and(|fighter| fighter.hurtboxes.len() > MAX_HURTBOXES) {
             return damaged(format!("a fighter with more than {MAX_HURTBOXES} hurtboxes"));
         }
+        if let Some(movement) = self.movement() {
+            let issues = movement.document_issues();
+            if !issues.is_empty() {
+                return damaged(format!("a fighter's movement: {}", issues.join("; ")));
+            }
+        }
         if let Some(brain) = &self.brain {
             if brain.attacks.len() > MAX_BRAIN_ATTACKS {
                 return damaged(format!("a brain with more than {MAX_BRAIN_ATTACKS} attacks"));
@@ -1056,6 +1066,12 @@ impl MoveSet {
     #[must_use]
     pub const fn fighter(&self) -> Option<&FighterDef> {
         self.fighter.as_ref()
+    }
+
+    /// How its actors move, if it says: see [`FighterDef::movement`].
+    #[must_use]
+    pub fn movement(&self) -> Option<&ControllerProfile> {
+        self.fighter.as_ref()?.movement.as_ref()
     }
 
     /// How its actors fight on their own, if they can.

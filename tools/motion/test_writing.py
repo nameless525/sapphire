@@ -107,6 +107,85 @@ class WritingNumbers(Folder):
             frames.write_numbers(self.folder, clips(), self.stamp)
 
 
+class TheMovementSection(Folder):
+    """How a character moves is tuned in the file, and this tool has no say in it (M2 T2)."""
+
+    def setUp(self):
+        super().setUp()
+        frames.write_numbers(self.folder, clips(), self.stamp)
+        self.written = self.read()
+        self.assertIn('run_speed: 6.0', self.written)
+
+    def retune(self, old='run_speed: 6.0', new='run_speed: 7.5'):
+        text = self.read().replace(old, new)
+        self.assertNotEqual(text, self.read())
+        with open(self.numbers, 'w', newline='') as f:
+            f.write(text)
+        return text
+
+    def test_tuning_it_is_no_edit_of_what_the_tool_owns(self):
+        tuned = self.retune()
+        stamped = self.read(self.stamp)
+        self.assertFalse(frames.write_numbers(self.folder, clips(), self.stamp), 'nothing to write, and no refusal')
+        self.assertEqual((self.read(), self.read(self.stamp)), (tuned, stamped))
+
+    def test_write_says_nothing_of_it(self):
+        self.retune()
+        self.assertNotIn('--write-numbers', self.run_tool('--write'))
+
+    def test_its_own_numbers_change_around_it(self):
+        self.retune()
+        original = frames.MOVES[0]
+        frames.MOVES[0] = dict(original, cues=[('swing', 7)])
+        self.addCleanup(frames.MOVES.__setitem__, 0, original)
+        self.assertTrue(frames.write_numbers(self.folder, clips(), self.stamp), 'the rest was as it left it')
+        self.assertIn('run_speed: 7.5', self.read())
+        self.assertIn('(name: "swing", at: 7)', self.read())
+
+    def test_it_refuses_another_edit_and_keeps_the_section_through_force(self):
+        self.retune()
+        with open(self.numbers, 'a') as f:
+            f.write('light_1 hits harder\n')
+        tuned = self.read()
+        with self.assertRaises(SystemExit) as refused:
+            frames.write_numbers(self.folder, clips(), self.stamp)
+        self.assertNotIn('run_speed', str(refused.exception.code), "it isn't among what would be lost")
+        self.assertEqual(self.read(), tuned)
+        self.assertTrue(frames.write_numbers(self.folder, clips(), self.stamp, force=True))
+        self.assertEqual(self.read(), self.written.replace('run_speed: 6.0', 'run_speed: 7.5'))
+
+    def test_comments_and_layout_stay_word_for_word(self):
+        self.retune('movement: (', '// Fast, for review 1.\n            movement: (\n                // Quicker off the mark.')
+        tuned = self.read()
+        self.assertFalse(frames.write_numbers(self.folder, clips(), self.stamp))
+        self.assertEqual(self.read(), tuned)
+        self.assertFalse(frames.write_numbers(self.folder, clips(), self.stamp, force=True))
+        self.assertEqual(self.read(), tuned)
+
+    def test_a_short_section_on_one_line_is_kept_too(self):
+        section = frames._movement_span(self.written)
+        with open(self.numbers, 'w', newline='') as f:
+            f.write(self.written[:section[0]] + '            movement: (jump_speed: 5.0),\n' + self.written[section[1]:])
+        tuned = self.read()
+        self.assertFalse(frames.write_numbers(self.folder, clips(), self.stamp))
+        self.assertEqual(self.read(), tuned)
+
+    def test_a_file_without_one_gets_todays_numbers(self):
+        section = frames._movement_span(self.written)
+        with open(self.numbers, 'w', newline='') as f:
+            f.write(self.written[:section[0]] + self.written[section[1]:])
+        self.assertTrue(frames.write_numbers(self.folder, clips(), self.stamp), "the rest is the tool's own")
+        self.assertEqual(self.read(), self.written)
+
+    def test_only_the_fighters_section_counts(self):
+        # Nothing else in a document can be mistaken for it, in a comment or a string or further in.
+        text = '// movement: (no)\n(data: (fighter: (name: "movement: (no)", brain: (movement: 1), movement: (a: (b: 1)),\n), ), )'
+        start, end = frames._movement_span(text)
+        self.assertEqual(text[start:end], 'movement: (a: (b: 1)),')
+        self.assertIsNone(frames._movement_span('(data: (moves: [(movement: 1)]))'))
+        self.assertIsNone(frames._movement_span('// movement: (no)\n'))
+
+
 class TheTool(Folder):
     def test_write_leaves_the_numbers_alone_and_says_when_they_differ(self):
         tuned = self.tune()

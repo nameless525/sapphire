@@ -17,6 +17,7 @@ use crate::brain::{
     Against, BrainAttack, BrainDef, BrainPace, BrainRise, MAX_BRAIN_ATTACKS, Reach, Recent, Spacing,
     TickRange,
 };
+use crate::movement::ControllerProfile;
 use crate::set::{
     Allow, ArmourWindow, Attack, Button, CancelMode, CancelWindow, CounterWindow, Cue, DodgeVolume,
     FighterDef, FighterHurtbox, HIT_LANDED, Hitbox, HurtboxChange, HurtboxState, IntentDef, Knockback,
@@ -100,6 +101,11 @@ pub struct FighterDocument {
     pub hurtboxes: Vec<FighterHurtboxDocument>,
     #[serde(default)]
     pub reactions: ReactionsDocument,
+    /// How it moves: any of [`ControllerProfile`]'s numbers, the rest being its defaults, and each
+    /// within [`MOVEMENT_LIMITS`](crate::MOVEMENT_LIMITS). Left out, its actors move by the profile they
+    /// spawned with. A live edit reaches a running fight on its next step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub movement: Option<ControllerProfile>,
 }
 
 /// One of a fighter's own hurtboxes. See [`FighterHurtbox`].
@@ -690,12 +696,18 @@ impl Checker {
             reaction("poise break", &reactions.poise_break),
             reaction("defeat", &reactions.defeat),
         );
+        if let Some(movement) = &fighter.movement {
+            for issue in movement.document_issues() {
+                self.add("movement", issue);
+            }
+        }
         FighterDef {
             health: fighter.health,
             poise: fighter.poise,
             poise_refill: fighter.poise_refill,
             hurtboxes,
             reactions,
+            movement: fighter.movement,
         }
     }
 
@@ -1571,8 +1583,8 @@ mod tests {
         assert!(matches!(
             MoveSet::from_cooked(&stale),
             Err(MoveSetError::Cooked(sapphire_serialize::cooked::CookedError::Stale {
-                found: 5,
-                current: 4
+                found: 6,
+                current: 5
             }))
         ));
         let cut = &cooked[..cooked.len() - 8];

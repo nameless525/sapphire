@@ -12,7 +12,8 @@
 
 use sapphire_colliders::ColliderDocument;
 use sapphire_gameplay::{
-    ActorActions, ActorId, ActorSpawn, Buttons, ControllerProfile, GroundMode, SimConfig, Simulation, Stick,
+    ActorActions, ActorId, ActorSpawn, Buttons, ControllerProfile, GroundMode, ResolvedProfile, SimConfig,
+    Simulation, Stick,
     TickActions, actor_body,
 };
 use sapphire_math::{Vec2, Vec3};
@@ -45,7 +46,7 @@ impl Walker {
         let world = PhysicsWorld::from_cooked(set, sim.body_capacity()).expect("the world builds");
         sim.set_physics_world(world).expect("it has room");
         let profile = ControllerProfile::default();
-        let capsule = profile.resolve().expect("a good profile").capsule();
+        let capsule = ResolvedProfile::new(&profile).expect("a good profile").capsule();
         let profile = sim.add_controller_profile(&profile).expect("a good profile");
         let id = sim
             .spawn(ActorSpawn { position: feet, controller: Some(profile), ..ActorSpawn::default() })

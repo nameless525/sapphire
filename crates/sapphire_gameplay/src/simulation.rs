@@ -21,6 +21,7 @@ use crate::brain::{self, Brain};
 use crate::checksum;
 use crate::controller::{
     self, CharacterController, CharacterWorld, ControllerProfile, PhysicsWorldError, ProfileError, ProfileId,
+    ResolvedProfile,
 };
 use crate::cues::{CueEvent, CueQueue};
 use crate::hits::{self, HitQuery, remove_hurtboxes};
@@ -226,8 +227,13 @@ impl Simulation {
     /// next move to start reads this (M2 T2). So do hurtboxes and reactions, from the next step. A
     /// fighter takes the new numbers at once, each meter keeping what it's lost
     /// ([`Fighter`]). See the `moves` module.
+    ///
+    /// **Its `movement` is what the next step moves by.** Nothing moves now: position, velocity and
+    /// what it's doing carry over, so a character in a jump finishes that jump's arc under the new
+    /// gravity, and its new jump speed waits for its next jump. A new capsule stands on the same feet.
     pub fn replace_move_set(&mut self, id: MoveSetId, set: MoveSet) -> Option<u32> {
         let world = self.ecs.world_mut();
+        let moved_by = world.resource::<MoveLibrary>().movement(id).copied();
         let in_use: Vec<u32> = world
             .resource::<ActorTable>()
             .iter()
@@ -249,10 +255,18 @@ impl Simulation {
             remove_hurtboxes(characters.physics_mut(), actor);
         }
         let def = world.resource::<MoveLibrary>().current(id).and_then(MoveSet::fighter).cloned();
+        let moves_by = world.resource::<MoveLibrary>().movement(id).copied();
         for actor in playing {
-            let entity = world.resource::<ActorTable>().entity(actor);
-            if let Some(mut fighter) = entity.and_then(|entity| world.get_mut::<Fighter>(entity)) {
+            let Some(entity) = world.resource::<ActorTable>().entity(actor) else { continue };
+            if let Some(mut fighter) = world.get_mut::<Fighter>(entity) {
                 fighter.refit(def.as_ref());
+            }
+            let spawned = world.get::<CharacterController>(entity).and_then(CharacterController::profile);
+            let Some(transform) = world.get::<ActorTransform>(entity).copied() else { continue };
+            let mut characters = world.resource_mut::<CharacterWorld>();
+            let spawned = spawned.and_then(|profile| characters.profile(profile)).copied();
+            if let (Some(was), Some(now)) = (moved_by.or(spawned), moves_by.or(spawned)) {
+                characters.refit_body(actor, &was, &now, &transform);
             }
         }
         Some(replaced)
@@ -320,6 +334,18 @@ impl Simulation {
     /// replay adds the same ones in the same order.
     pub fn add_controller_profile(&mut self, profile: &ControllerProfile) -> Result<ProfileId, ProfileError> {
         self.ecs.world_mut().resource_mut::<CharacterWorld>().add_profile(profile)
+    }
+
+    /// What an actor moves by now: its set's `movement`, if its document has one, and otherwise the
+    /// profile it spawned with. `None` for an actor with no controller.
+    #[must_use]
+    pub fn movement_of(&self, actor: ActorId) -> Option<&ResolvedProfile> {
+        let world = self.ecs.world();
+        let entity = world.resource::<ActorTable>().entity(actor)?;
+        let spawned = world.get::<CharacterController>(entity)?.profile()?;
+        let set = world.get::<MoveRunner>(entity).and_then(MoveRunner::set);
+        set.and_then(|set| world.resource::<MoveLibrary>().movement(set))
+            .or_else(|| world.resource::<CharacterWorld>().profile(spawned))
     }
 
     /// The hash of every loaded controller profile, in ID order: with [`Self::tables_hash`], what a

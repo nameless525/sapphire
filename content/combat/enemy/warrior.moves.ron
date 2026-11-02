@@ -44,6 +44,35 @@
                 poise_break: "stagger_heavy",
                 defeat: "death",
             ),
+            // How this enemy moves. Save, and the next step moves by these, with no restart and no cook.
+            // Metres, seconds and degrees. A number left out is the controller's default, and
+            // sapphire_moves' `MOVEMENT_LIMITS` says what each may be. Its brain's `pace` below is how far it
+            // tilts the stick, so its speeds on the ground come from these two together.
+            movement: (
+                run_speed: 6.0,
+                walk_speed: 2.0,
+                run_stick: 0.9,
+                walk_stick: 0.5,
+                acceleration: 90.0,
+                deceleration: 60.0,
+                // Its brain's `pace` turns slower than this while it faces a target.
+                turn_rate_degrees: 1080.0,
+                jump_speed: 7.0,
+                gravity: 22.0,
+                air_acceleration: 18.0,
+                max_fall_speed: 30.0,
+                coyote_ticks: 5,
+                slope_limit_degrees: 50.0,
+                step_height: 0.3,
+                ground_snap: 0.3,
+                stance_radius: 0.15,
+                max_slide_speed: 8.0,
+                // The capsule, smaller than the warrior's crown at 1.87 m: its hurtbox above is what a hit
+                // reads, and this is only what it bumps into.
+                height: 1.6,
+                radius: 0.3,
+                skin: 0.01,
+            ),
         ),
         brain: (
             // A first guess at Zenless Zone Zero's common enemies, for Feel review 3 to move. It stands where

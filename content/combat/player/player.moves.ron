@@ -22,6 +22,8 @@
 //
 // The last is a party's swap-in assist (M2 G7), on the dash attack's clip, and `swap` is the press that
 // brings it. Only a party reads either: with no party, the button does nothing.
+//
+// `movement` is how the character moves. That tool never replaces it: it's tuned here, forced or not.
 (
     type: "sapphire::moves::MoveSetDocument",
     version: 1,
@@ -54,6 +56,39 @@
                 heavy: "knockdown",
                 poise_break: "dazed",
                 defeat: "defeat",
+            ),
+            // How this character moves. Save, and the next step moves by these, with no restart and no
+            // cook: a character mid-jump finishes that jump's arc under the new gravity, and its new jump
+            // speed waits for its next jump. Metres, seconds and degrees. A number left out is the
+            // controller's default, and sapphire_moves' `MOVEMENT_LIMITS` says what each may be.
+            movement: (
+                // Full speed from `run_stick` of the stick's tilt on, and `walk_speed` at `walk_stick`.
+                run_speed: 6.0,
+                walk_speed: 2.0,
+                run_stick: 0.9,
+                walk_stick: 0.5,
+                // m/s². At these a press is at full speed from tick 4, and a stop takes 6 ticks.
+                acceleration: 90.0,
+                deceleration: 60.0,
+                // How fast facing follows the stick. Motion doesn't wait for it.
+                turn_rate_degrees: 1080.0,
+                // A jump reaches jump_speed² / (2 × gravity), here 1.11 m, and may reach 2.5 m at most.
+                jump_speed: 7.0,
+                gravity: 22.0,
+                air_acceleration: 18.0,
+                max_fall_speed: 30.0,
+                // Ticks after walking off a ledge in which a jump still works.
+                coyote_ticks: 5,
+                // What the feet take: slopes, steps, and how far they follow ground that drops away.
+                slope_limit_degrees: 50.0,
+                step_height: 0.3,
+                ground_snap: 0.3,
+                stance_radius: 0.15,
+                max_slide_speed: 8.0,
+                // The capsule, around feet that stay where they stand when these change.
+                height: 1.6,
+                radius: 0.3,
+                skin: 0.01,
             ),
         ),
         moves: [

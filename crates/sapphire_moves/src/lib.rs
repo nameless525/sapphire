@@ -12,6 +12,8 @@
 //! - [`MoveSet`], what it compiles to and cooks as: intents, what starts what, a [`FighterDef`], a
 //!   [`BrainDef`] and each [`Move`]'s tracks and tables, among them what its hits do ([`Attack`]) and
 //!   what a dodge through one does ([`PerfectDodgeWindow`]);
+//! - [`ControllerProfile`], how a fighter moves, as numbers, and what a document may hold of them
+//!   ([`MOVEMENT_LIMITS`]);
 //! - [`BakedTables`], its cooked form and how to read it at any sub-tick;
 //! - how a track meets a clock ([`Stretch`], [`Span::live`], [`Span::sweep`]), as pure functions.
 //!
@@ -51,6 +53,9 @@
 //!             hurtboxes: [(name: "body", offset: (0.0, 0.9, 0.0), shape: Capsule(radius: 0.35, length: 1.0))],
 //!             // The moves reactions play, by a hit's weight: light, medium and heavy.
 //!             reactions: (light: "jab", poise_break: "jab", defeat: "jab"),
+//!             // How it moves: any number of `ControllerProfile`'s, the rest being its defaults. Left out,
+//!             // its actors move by the profile they spawned with. The next step reads a live edit.
+//!             movement: (run_speed: 6.5, turn_rate_degrees: 900.0),
 //!         ),
 //!         moves: [(
 //!             name: "jab",
@@ -229,6 +234,7 @@
 
 mod brain;
 mod document;
+mod movement;
 mod set;
 
 pub use brain::{
@@ -242,6 +248,7 @@ pub use document::{
     MotionDocument, MoveDocument, MoveSetDocument, PathDocument, PathKey, PerfectDodgeDocument,
     ReactionsDocument, RootKey, RootSource, SlowMotionDocument, SpanDocument, WarpDocument,
 };
+pub use movement::{ControllerProfile, MAX_JUMP_REACH, MOVEMENT_LIMITS, MovementLimit, ProfileError};
 pub use set::{
     Allow, ArchivedMoveSet, ArmourWindow, Attack, Button, CancelMode, CancelWindow, CounterWindow, Cue,
     DodgeVolume, FighterDef, FighterHurtbox, HIT_LANDED, Hitbox, HurtboxChange, HurtboxState, IntentDef,

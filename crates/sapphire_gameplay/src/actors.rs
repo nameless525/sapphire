@@ -325,7 +325,8 @@ fn reset_actor(
     ring.reset();
     *output = MoveOutput::default();
     *target = WarpTarget::None;
-    *controller = characters.spawned(id, spawn.controller, &transform);
+    let movement = spawn.moves.and_then(|set| library.movement(set));
+    *controller = characters.spawned(id, spawn.controller, movement, &transform);
     let def = spawn.moves.and_then(|set| library.current(set)).and_then(MoveSet::fighter);
     *fighter = def.map_or_else(Fighter::default, Fighter::new);
     *brain = Brain::default();

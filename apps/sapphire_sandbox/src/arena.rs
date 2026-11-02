@@ -275,7 +275,8 @@ fn check_spawn(
     spawn: SpawnPoint,
 ) -> Result<(), ArenaError> {
     let feet = spawn.position();
-    let profile = profile().resolve().expect("the arena's profile is checked by its own test");
+    let profile =
+        sapphire_gameplay::ResolvedProfile::new(&profile()).expect("the arena's profile is checked by its own test");
     let capsule = profile.capsule();
     let pose = Pose::at(feet + profile.feet_to_center());
     let everything = QueryFilter::new(Group::World.mask() | Group::CharacterBlocker.mask());

@@ -433,6 +433,7 @@ pub(crate) fn settle_swaps(
     table: Res<'_, ActorTable>,
     world_clock: Res<'_, WorldClock>,
     mut cues: ResMut<'_, CueQueue>,
+    library: Res<'_, MoveLibrary>,
     mut characters: ResMut<'_, CharacterWorld>,
     mut actors: Query<'_, '_, Member<'_>>,
     mut brains: Query<'_, '_, &mut Brain>,
@@ -474,7 +475,9 @@ pub(crate) fn settle_swaps(
     let (clock, _, transform, mut runner, _, _, mut controller, _) = member;
     let now = clock.0.now();
     let state = controller.state;
-    *controller = characters.spawned(coming.actor, controller.profile(), &transform);
+    // Its own capsule and numbers, wherever it's standing: only the place and the motion carry over.
+    let movement = runner.set().and_then(|set| library.movement(set));
+    *controller = characters.spawned(coming.actor, controller.profile(), movement, &transform);
     controller.state = state;
     // The assist starts at this step's reading: what's between that and the last one belongs to no move.
     runner.cursor = now;

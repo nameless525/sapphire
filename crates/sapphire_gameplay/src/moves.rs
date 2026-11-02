@@ -51,6 +51,7 @@ use sapphire_time::{SimDuration, SimTime};
 use xxhash_rust::xxh3::xxh3_64;
 
 use crate::actors::{ActorId, ActorTable};
+use crate::controller::ResolvedProfile;
 use crate::cues::{CueEvent, CueQueue};
 use crate::intents::{Intent, IntentRing};
 use crate::movement::{ActorTransform, RootDelta};
@@ -120,6 +121,8 @@ struct Revision {
     set: MoveSet,
     /// The hash of its cooked bytes, kept for [`crate::Simulation::tables_hash`].
     hash: u64,
+    /// What its `movement` section works out to, for a step to read.
+    movement: Option<ResolvedProfile>,
 }
 
 /// The sets a simulation has loaded. Added and replaced between steps, read in them. A move that's
@@ -134,7 +137,10 @@ pub struct MoveLibrary {
 
 fn revision(number: u32, set: MoveSet) -> Revision {
     let cooked = set.to_cooked().expect("a set that compiled writes");
-    Revision { number, hash: xxh3_64(&cooked), set }
+    // A set's movement is within limits tighter than this asks, whichever way it was made, so this only
+    // leaves an actor on the profile it spawned with for bytes a pack damaged after they were checked.
+    let movement = set.movement().and_then(|movement| ResolvedProfile::new(movement).ok());
+    Revision { number, hash: xxh3_64(&cooked), set, movement }
 }
 
 impl MoveLibrary {
@@ -174,6 +180,12 @@ impl MoveLibrary {
     #[must_use]
     pub fn current(&self, id: MoveSetId) -> Option<&MoveSet> {
         self.revisions(id).last().map(|revision| &revision.set)
+    }
+
+    /// What the set's current revision says its actors move by, if it says: a step reads this.
+    #[must_use]
+    pub fn movement(&self, id: MoveSetId) -> Option<&ResolvedProfile> {
+        self.revisions(id).last()?.movement.as_ref()
     }
 
     /// The number of the set's current revision: 0 until it's replaced.

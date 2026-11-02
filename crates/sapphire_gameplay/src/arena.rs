@@ -116,7 +116,7 @@ mod tests {
     fn the_capsule_is_the_characters_height() {
         let profile = profile();
         assert_eq!((profile.height, profile.radius), (1.6, 0.3));
-        assert!(profile.resolve().is_ok());
+        assert!(crate::ResolvedProfile::new(&profile).is_ok());
     }
 
     #[test]

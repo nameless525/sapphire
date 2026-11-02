@@ -2,6 +2,10 @@
 
 The file is theirs to change from there, in the timeline editor or by hand, so it's written only when asked,
 and an edited file is replaced only when forced. See the README.
+
+Its fighter's `movement` section isn't this tool's at all: it writes today's numbers into a file that has
+none, and otherwise carries over what's there, word for word, forced or not. Tuning how a character moves
+is no edit of what this owns.
 """
 import difflib
 import hashlib
@@ -59,6 +63,8 @@ HEADER = """// The player's moves (M2 O3): frame data in 60 Hz ticks, for a char
 //
 // The last is a party's swap-in assist (M2 G7), on the dash attack's clip, and `swap` is the press that
 // brings it. Only a party reads either: with no party, the button does nothing.
+//
+// `movement` is how the character moves. That tool never replaces it: it's tuned here, forced or not.
 (
     type: "sapphire::moves::MoveSetDocument",
     version: 1,
@@ -92,8 +98,43 @@ HEADER = """// The player's moves (M2 O3): frame data in 60 Hz ticks, for a char
                 poise_break: "dazed",
                 defeat: "defeat",
             ),
-        ),
+@MOVEMENT@        ),
         moves: [
+"""
+
+MOVEMENT = """            // How this character moves. Save, and the next step moves by these, with no restart and no
+            // cook: a character mid-jump finishes that jump's arc under the new gravity, and its new jump
+            // speed waits for its next jump. Metres, seconds and degrees. A number left out is the
+            // controller's default, and sapphire_moves' `MOVEMENT_LIMITS` says what each may be.
+            movement: (
+                // Full speed from `run_stick` of the stick's tilt on, and `walk_speed` at `walk_stick`.
+                run_speed: 6.0,
+                walk_speed: 2.0,
+                run_stick: 0.9,
+                walk_stick: 0.5,
+                // m/s². At these a press is at full speed from tick 4, and a stop takes 6 ticks.
+                acceleration: 90.0,
+                deceleration: 60.0,
+                // How fast facing follows the stick. Motion doesn't wait for it.
+                turn_rate_degrees: 1080.0,
+                // A jump reaches jump_speed² / (2 × gravity), here 1.11 m, and may reach 2.5 m at most.
+                jump_speed: 7.0,
+                gravity: 22.0,
+                air_acceleration: 18.0,
+                max_fall_speed: 30.0,
+                // Ticks after walking off a ledge in which a jump still works.
+                coyote_ticks: 5,
+                // What the feet take: slopes, steps, and how far they follow ground that drops away.
+                slope_limit_degrees: 50.0,
+                step_height: 0.3,
+                ground_snap: 0.3,
+                stance_radius: 0.15,
+                max_slide_speed: 8.0,
+                // The capsule, around feet that stay where they stand when these change.
+                height: 1.6,
+                radius: 0.3,
+                skin: 0.01,
+            ),
 """
 
 REACTIONS = """            (
@@ -283,8 +324,8 @@ def allow_text(allow):
     return f'(intent: "{intent}", move: "{target}"{extra})'
 
 
-def numbers_text(clips):
-    text = [HEADER.rstrip('\n')]
+def numbers_text(clips, movement=MOVEMENT):
+    text = [HEADER.replace('@MOVEMENT@', movement).rstrip('\n')]
     for d in MOVES:
         text.append(move_text(d, clips))
     text.append(REACTIONS.rstrip('\n'))
@@ -302,8 +343,76 @@ def _read(path):
         return None
 
 
+def _code(text):
+    """Each character of `text` outside its comments and strings, with where it is."""
+    at = 0
+    while at < len(text):
+        if text.startswith('//', at):
+            at = text.find('\n', at)
+            if at < 0:
+                return
+        elif text[at] == '"':
+            at += 1
+            while at < len(text) and text[at] != '"':
+                at += 2 if text[at] == '\\' else 1
+            at += 1
+        else:
+            yield at, text[at]
+            at += 1
+
+
+def _movement_span(text):
+    """Where the fighter's `movement` section sits, from the comments right above it through the end of
+    its line, whatever its layout: `(start, end)` by character, or None for a file with no such section.
+    It's the only field of that name three brackets in: the file's, `data`'s and `fighter`'s."""
+    depth = 0
+    opened = None
+    closed = None
+    for at, c in _code(text):
+        if c in '([{':
+            depth += 1
+        elif c in ')]}':
+            depth -= 1
+            if opened is not None and depth == 3:
+                closed = at + 1
+                break
+        elif opened is None and depth == 3 and text.startswith('movement', at) and not text[at - 1].isalnum() \
+                and text[at + len('movement'):].lstrip().startswith(':'):
+            opened = at
+    if closed is None:
+        return None
+    rest = len(text) - len(text[closed:].lstrip(' \t'))
+    if text[rest:rest + 1] == ',':
+        closed = rest + 1
+    line_end = text.find('\n', closed)
+    end = len(text) if line_end < 0 else line_end + 1
+    start = text.rfind('\n', 0, opened) + 1
+    if text[start:opened].strip():
+        return opened, closed
+    while start > 0:
+        above = text.rfind('\n', 0, start - 1) + 1
+        if not text[above:start].lstrip().startswith('//'):
+            break
+        start = above
+    return start, end
+
+
+def _without_movement(text):
+    span = _movement_span(text)
+    return text if span is None else text[:span[0]] + text[span[1]:]
+
+
+def _movement_of(held):
+    """What a file holds as its `movement` section, ready to write back; today's numbers if it has none."""
+    span = None if held is None else _movement_span(held)
+    if span is None:
+        return MOVEMENT
+    section = held[span[0]:span[1]]
+    return section if section.endswith('\n') else section + '\n'
+
+
 def _digest(text):
-    return hashlib.sha256(text.encode()).hexdigest()
+    return hashlib.sha256(_without_movement(text).encode()).hexdigest()
 
 
 def _last_written(stamp):
@@ -319,13 +428,14 @@ def _changes(held, text):
 
 def numbers_note(folder, clips):
     """What `--write` says of the file it leaves alone, once that isn't what `--write-numbers` would write."""
+    held = _read(os.path.join(folder, NUMBERS))
     try:
-        text = numbers_text(clips)
+        text = numbers_text(clips, _movement_of(held))
     except AssertionError as error:
         name, numbers, ticks = error.args[0]
         return (f'frames.py has {name} at {numbers} ticks and its clip at {ticks}. If {NUMBERS} does too, the cook '
                 'will refuse it: a move plays its clip tick for tick.')
-    if _read(os.path.join(folder, NUMBERS)) == text:
+    if held == text:
         return None
     return f'{NUMBERS} is not what frames.py would write. --write left it alone; --write-numbers writes it.'
 
@@ -333,10 +443,10 @@ def numbers_note(folder, clips):
 def write_numbers(folder, clips, stamp, force=False):
     """Writes `player.moves.ron`, unless something else has changed it since this last did: `stamp` holds
     the digest of what this last wrote, so tuning can't be thrown away by accident. Returns whether it
-    changed the file."""
+    changed the file. The digest leaves out the `movement` section, which stays whatever this does."""
     path = os.path.join(folder, NUMBERS)
-    text = numbers_text(clips)
     held = _read(path)
+    text = numbers_text(clips, _movement_of(held))
     edited = held is not None and held != text and _digest(held) != _last_written(stamp)
     if edited and not force:
         sys.exit(f'{path} has changed since this tool last wrote it, so nothing was written.\n'

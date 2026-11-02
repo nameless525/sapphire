@@ -94,7 +94,7 @@ impl Rig {
     }
 
     fn with_profile(statics: Vec<StaticCollider>, feet: Vec3, profile: ControllerProfile) -> Self {
-        let profile = profile.resolve().expect("a good profile");
+        let profile = ResolvedProfile::new(&profile).expect("a good profile");
         let mut world = PhysicsWorld::new(statics, 8).expect("the colliders build");
         world.add_body(profile.body(BODY, feet, 0.0)).expect("it fits");
         Self {
@@ -1514,7 +1514,7 @@ fn a_character_doesnt_stand_on_another() {
 #[test]
 fn a_profile_refuses_numbers_that_cant_work() {
     let good = ControllerProfile::default();
-    assert!(good.resolve().is_ok());
+    assert!(ResolvedProfile::new(&good).is_ok());
     let bad = [
         ("radius", ControllerProfile { radius: 0.0, ..good }),
         ("radius", ControllerProfile { radius: f32::NAN, ..good }),
@@ -1541,7 +1541,7 @@ fn a_profile_refuses_numbers_that_cant_work() {
         ("max_slide_speed", ControllerProfile { max_slide_speed: 0.0, ..good }),
     ];
     for (field, profile) in bad {
-        assert_eq!(profile.resolve().expect_err(field).field, field);
+        assert_eq!(ResolvedProfile::new(&profile).expect_err(field).field, field);
     }
 }
 

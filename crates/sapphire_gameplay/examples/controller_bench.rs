@@ -69,7 +69,7 @@ struct Character {
 
 /// `size` characters stepped directly: the figure for §3.2's line.
 fn direct_round(size: usize, steps: u64) -> (Figure, Tally) {
-    let profiles = mesh_arena::profiles().map(|profile| profile.resolve().expect("a good profile"));
+    let profiles = mesh_arena::profiles().map(|profile| ResolvedProfile::new(&profile).expect("a good profile"));
     let mut world = PhysicsWorld::new(mesh_arena::statics(), size).expect("the arena builds");
     let mut characters: Vec<Character> = (0..size)
         .map(|index| {

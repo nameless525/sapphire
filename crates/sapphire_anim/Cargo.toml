@@ -10,14 +10,17 @@ license.workspace = true
 [dependencies]
 # The cooked `Skeleton` and `Clip` formats, which the asset server checks by kind.
 sapphire_assets.workspace = true
+# Names: what a move and a state are called, compared by hash on a frame's path.
+sapphire_core.workspace = true
 # One job per character (spec §5.13).
 sapphire_jobs.workspace = true
 sapphire_math.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 # Pose snapshots (spec §5.13).
 insta.workspace = true
-sapphire_core.workspace = true
+sapphire_serialize.workspace = true
 
 [lints]
 workspace = true

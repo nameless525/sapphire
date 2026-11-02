@@ -8,16 +8,19 @@
 #![allow(clippy::disallowed_methods, reason = "a timing test reads the OS clock, and reads nothing else")]
 
 use std::hint::black_box;
+use std::sync::Arc;
 use std::time::Instant;
 
 use sapphire_anim::{
-    CharacterPose, Clip, Joint, JointMask, JointTransform, PackedRotation, RotationTrack, Skeleton,
+    AnimGraph, ArchivedClip, ArchivedSkeleton, CharacterPose, Clip, CombatInput, GraphBinding, GraphInput,
+    GraphPlayer, Joint, JointMask, JointTransform, LocomotionInput, PackedRotation, RotationTrack, Skeleton,
     Transform, VectorRange, VectorTrack, add, blend, make_delta, sample,
 };
 use sapphire_assets::AssetId;
 use sapphire_assets::clip::DEFAULT_RATE;
 use sapphire_assets::mesh::SkinBind;
 use sapphire_assets::rig::{AimAxis, Axis, Constraint, ConstraintKind};
+use sapphire_core::Name;
 use sapphire_math::{Affine3A, Mat4, Quat, Vec3};
 
 /// The look-dev VRM has about this many joints, hair and helpers among them.
@@ -67,6 +70,64 @@ fn clip() -> Clip {
         }
     }
     clip
+}
+
+/// The graph's own frames: returns what one takes, at a walk-to-run blend with breathing.
+fn graph_costs(skeleton: &ArchivedSkeleton, clip: &ArchivedClip) -> f64 {
+    let id = AssetId::from_bytes([4; 16]);
+    let text = r#"(
+        type: "sapphire::assets::AnimGraph",
+        version: 1,
+        data: (
+            clips: [(name: "c", source: "9a29e8c0-f131-4ea4-98b9-04879740413d")],
+            locomotion: (start: "ground", smoothing: 0.0, states: [(name: "ground", plays: Blend((samples: [
+                (clip: "c", at: (0.0, 0.0), sync: false),
+                (clip: "c", at: (0.0, 2.0)),
+                (clip: "c", at: (0.0, 6.0)),
+            ])))]),
+            combat: (decay: 5, exit: 12, moves: [(move: "a", clip: "c"), (move: "b", clip: "c")]),
+            additive: [(name: "breathing", clip: "c", weight: 0.5)],
+        ),
+    )"#;
+    let mut graph = AnimGraph::from_document(text).expect("a good document");
+    graph.resolve(|_| id);
+    let clips = [(id, clip)];
+    let source = clips.as_slice();
+    let binding = Arc::new(GraphBinding::new(&graph, skeleton, None, 8, source).expect("it binds"));
+    let mut player = GraphPlayer::new(binding, CharacterPose::new(skeleton, &[], &[], vec![0.0; 8]), 1);
+    let mut ticks = 0.0;
+    let walking = LocomotionInput { speed: 4.0, ..LocomotionInput::default() };
+    let frame = time("graph: a blend of two with an additive", |_| {
+        ticks += 1.0;
+        let input = GraphInput { ticks, locomotion: walking, ..GraphInput::default() };
+        player.evaluate(&input, source, 0);
+        player.finish();
+        black_box(player.pose());
+    });
+    time("graph: a frozen clock's frame", |_| {
+        let input = GraphInput { ticks, locomotion: walking, ..GraphInput::default() };
+        black_box(player.evaluate(&input, source, 0));
+    });
+    let mut serial = 0;
+    time("graph: a cancel's frame, every frame", |_| {
+        ticks += 1.0;
+        serial += 1;
+        let combat = CombatInput { name: Name::new("a"), serial, position: 0.0 };
+        let input = GraphInput { ticks, combat: Some(combat), ..GraphInput::default() };
+        player.evaluate(&input, source, 0);
+        player.finish();
+        black_box(player.pose());
+    });
+    // Every round inside the last cancel's five ticks.
+    time("graph: a frame under a decay", |_| {
+        ticks += 4.0 / f64::from(ROUNDS);
+        let combat = CombatInput { name: Name::new("a"), serial, position: 2.0 };
+        let input = GraphInput { ticks, combat: Some(combat), ..GraphInput::default() };
+        player.evaluate(&input, source, 0);
+        player.finish();
+        black_box(player.pose());
+    });
+    frame
 }
 
 /// `step`'s mean in µs over [`ROUNDS`] runs, at positions across the clip.
@@ -165,6 +226,11 @@ fn a_character_frame_step_by_step() {
         pose.write_palette(&mut palette);
         black_box(&palette);
     });
+    let graph_frame = graph_costs(cooked, clip);
+    println!(
+        "a graph's frame at a walk-to-run blend with breathing, by the player, {graph_frame:.1} µs, with every joint \
+         animated, which real clips don't"
+    );
     println!(
         "against one clip's sample {sampled:.1}, finish {finish:.1}, palette {write:.1}: a frame {frame:.1} µs, a heavy \
          graph's {layered:.1} µs; budgets 1,500 µs on Desktop-Low and 3,000 µs on Mobile-Low"

@@ -20,6 +20,10 @@
 //!   [`evaluate_all`] giving each character a job of its own.
 //! - **[`SpringBones`]:** the rig's spring chains and colliders, simulated on the owner's clock beside
 //!   a pose (M2 N5).
+//! - **The [animation graph](graph):** a layered state machine over those, from a
+//!   [document](sapphire_assets::graph): locomotion's blend space, a combat layer the simulation's
+//!   moves drive through plain input, additive layers and a blink, with [inertialized](inertia)
+//!   transitions.
 //!
 //! # Does not own
 //!
@@ -41,18 +45,26 @@
 //!
 //! # Later in M2
 //!
-//! - N3: the animation graph and inertialization. N4: IK.
+//! - N4: IK.
 
 mod blend;
+mod blend_space;
 mod character;
 mod constraints;
+pub mod graph;
+pub mod inertia;
 mod model;
 mod sample;
 mod springs;
 
 pub use blend::{JointMask, add, blend, make_delta};
+pub use blend_space::{BlendPoint, blend_weights};
 pub use character::{AnimStats, CharacterPose, evaluate_all};
 pub use constraints::Constraints;
+pub use graph::{
+    ClipSource, CombatInput, GraphBindError, GraphBinding, GraphInput, GraphPlayer, GraphStats,
+    LocomotionInput, ReactionInput,
+};
 pub use model::{Bind, local_to_model, palette};
 pub use sample::{overlay, overlay_weights, rest_pose, root_motion, sample};
 pub use sapphire_math::Transform;
@@ -67,6 +79,7 @@ pub use sapphire_assets::clip::{
     MAX_RATE, MAX_TICKS, PackedRotation, PackedVector, RootMotion, RotationTrack, VectorRange, VectorTrack,
     WeightRange, WeightTrack, key_span, lerp3, nlerp,
 };
+pub use sapphire_assets::graph::{AnimGraph, ArchivedAnimGraph, GRAPH_EXTENSION, GraphError, GraphIssue};
 pub use sapphire_assets::skeleton::{
     ArchivedJointTransform, ArchivedSkeleton, Joint, JointTransform, MAX_JOINTS, NO_PARENT,
     SKELETON_EXTENSION, Skeleton, SkeletonError,

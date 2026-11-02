@@ -2881,6 +2881,8 @@ dependencies = [
  "sapphire_core",
  "sapphire_jobs",
  "sapphire_math",
+ "sapphire_serialize",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

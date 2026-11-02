@@ -115,6 +115,12 @@ impl CharacterPose {
         sample::overlay_weights(clip, position, &mut self.weights);
     }
 
+    /// The morph weights it rests at.
+    #[must_use]
+    pub fn rest_weights(&self) -> &[f32] {
+        &self.rest_weights
+    }
+
     /// The local pose being made, for whatever blends or solves it before [`Self::finish`].
     #[must_use]
     pub fn locals(&self) -> &[Transform] {
@@ -178,6 +184,9 @@ pub struct AnimStats {
     /// The time spring bones took, all characters together, including finishing their poses again.
     /// Within [`Self::time`], unless jobs ran side by side.
     pub spring_time: Duration,
+    /// How many times these characters have jumped rather than moved, all told: what secondary motion
+    /// starts over for ([`GraphPlayer::teleports`](crate::GraphPlayer::teleports)).
+    pub teleports: u32,
     /// Wall time of the whole of it, the jobs and handing their results over.
     pub time: Duration,
 }

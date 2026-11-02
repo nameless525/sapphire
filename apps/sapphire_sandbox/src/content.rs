@@ -79,7 +79,7 @@ use sapphire_anim::{
     AnimGraph, ArchivedAnimGraph, ArchivedClip, ArchivedSkeleton, Clip, GraphBinding, Skeleton,
 };
 use sapphire_assets::cue::Cue;
-use sapphire_assets::material::Material;
+use sapphire_assets::material::{AlignedVec, ArchivedMaterial, Material};
 use sapphire_assets::mesh::Mesh;
 use sapphire_assets::pack;
 use sapphire_assets::probes::ProbeGrid;
@@ -223,6 +223,26 @@ impl GpuAssets {
         }
     }
 
+    /// Nothing uploaded, for a new renderer, which is told what this one was: the server sends it
+    /// every asset again, and a material changed by the command line has to be changed again.
+    fn for_new_renderer(&self) -> Self {
+        Self {
+            overrides: self.overrides,
+            party: self.party.as_ref().map(|_| PartyLooks::default()),
+            ..Self::new(self.character, self.keep_character)
+        }
+    }
+
+    /// A face or hair changed by `--hair-shadow-softness` or `--hair-transmission` (M1 C8), as a
+    /// copy, edited and read back. `None` for a material they leave as it is.
+    fn overridden(&self, material: &ArchivedMaterial) -> Result<Option<AlignedVec>, UploadError> {
+        if self.overrides.is_empty() {
+            return Ok(None);
+        }
+        let mut copy = material.to_material()?;
+        Ok(self.overrides.apply(&mut copy).then(|| copy.to_cooked()).transpose()?)
+    }
+
     /// Uploads one asset the server hands over, resolving its references through what is
     /// already uploaded (the server uploads dependencies first). An asset this renderer already
     /// holds for the same slot at the same generation is kept as it is: the server re-sends
@@ -242,14 +262,7 @@ impl GpuAssets {
             let object = GpuTexture::upload(gpu, &texture, "texture asset")?;
             self.textures.insert(id, Held { slot, generation, object });
         } else if let Some(material) = upload.get::<Material>() {
-            // A face or hair changed by `--hair-shadow-softness` or `--hair-transmission` (M1
-            // C8): a copy, edited and read back.
-            let overridden = if self.overrides.is_empty() {
-                None
-            } else {
-                let mut copy = material.to_material()?;
-                self.overrides.apply(&mut copy).then(|| copy.to_cooked()).transpose()?
-            };
+            let overridden = self.overridden(material)?;
             let material = match &overridden {
                 Some(bytes) => Material::read(bytes)?,
                 None => material,
@@ -463,7 +476,25 @@ impl Content {
         let character_id = character;
         let character = server.load_with(character_id, LoadPriority::Critical).map_err(AppInitError::msg)?;
         tracing::info!(target: LOG_TARGET, pack = PACK, elapsed = ?stopwatch.elapsed(), ?budgets, "content mounted");
-        Ok(Self {
+        Ok(Self::over_server(
+            server,
+            character_id,
+            character,
+            sky,
+            #[cfg(feature = "dev")]
+            live_packs,
+        ))
+    }
+
+    /// With nothing uploaded yet, over a `server` that's loading the character.
+    fn over_server(
+        server: AssetServer,
+        character_id: AssetId,
+        character: Handle<Mesh>,
+        sky_id: AssetId,
+        #[cfg(feature = "dev")] live_packs: Arc<LivePacks>,
+    ) -> Self {
+        Self {
             gpu: GpuAssets::new(character_id, false),
             character_id,
             character,
@@ -490,12 +521,12 @@ impl Content {
             graph_version: 0,
             #[cfg(feature = "dev")]
             live_graph: None,
-            sky_id: sky,
+            sky_id,
             sky: None,
             server,
             #[cfg(feature = "dev")]
             live_packs,
-        })
+        }
     }
 
     /// One frame of loading: applies finished reads and decodes, frees what the server unloaded,
@@ -1231,8 +1262,7 @@ impl Content {
     /// if the new renderer is given up.
     pub fn renderer_rebuilt(&mut self) -> RendererAssets {
         self.server.reupload_all();
-        let mut fresh = GpuAssets::new(self.gpu.character, self.gpu.keep_character);
-        fresh.party = self.gpu.party.as_ref().map(|_| PartyLooks::default());
+        let fresh = self.gpu.for_new_renderer();
         let previous = std::mem::replace(&mut self.gpu, fresh);
         RendererAssets(previous)
     }
@@ -1321,6 +1351,100 @@ impl Content {
 /// Review RC-1, through the asset server, the uploader and the scene: what a re-cook does to a
 /// posed character while the app runs. Hot reload and a live-link push land the same way, as a
 /// remount of the pack, and differ only in what tells the app to remount.
+#[cfg(test)]
+mod new_renderer_tests {
+    use sapphire_assets::material::{AnimeCharacterMaterial, CharacterSurface, HairShading};
+    use sapphire_assets::mesh::{
+        MaterialSlot, PositionFormat, Submesh, VERTEX_COLOR_NEUTRAL, Vertex, VertexFlags,
+    };
+    use sapphire_assets::pack::{Codec, PackAsset, write_pack};
+    use sapphire_assets::texture::Swizzle;
+    use sapphire_assets::{AssetKind, MemoryPackSource};
+
+    use super::*;
+
+    const CHARACTER: AssetId = AssetId::from_bytes([0x71; 16]);
+    const OVERRIDES: MaterialOverrides =
+        MaterialOverrides { hair_shadow_softness: None, hair_transmission: Some(0.8) };
+
+    /// A material as a cook makes it, with `surface`.
+    fn material(surface: CharacterSurface) -> Material {
+        let swizzles = [Swizzle::IDENTITY; AnimeCharacterMaterial::TEXTURE_SLOTS.len()];
+        let document = AnimeCharacterMaterial { surface, ..AnimeCharacterMaterial::default() };
+        Material::from_document(&document, &swizzles).expect("a valid material")
+    }
+
+    /// Content over a pack in memory, with no platform and no renderer: all that deciding what a
+    /// material uploads as takes.
+    fn content() -> Content {
+        let vertex = |position: [f32; 3]| Vertex {
+            position,
+            normal: [0.0, 0.0, 1.0],
+            outline_normal: [0.0, 0.0, 1.0],
+            uv: [0.0, 0.0],
+            color: VERTEX_COLOR_NEUTRAL,
+            flags: VertexFlags::NONE,
+        };
+        let mesh = Mesh::from_vertices(
+            &[vertex([0.0, 0.0, 0.0]), vertex([1.0, 0.0, 0.0]), vertex([0.0, 1.0, 0.0])],
+            vec![0, 1, 2],
+            vec![Submesh { first_index: 0, index_count: 3, material: 0 }],
+            vec![MaterialSlot::embedded("skin", material(CharacterSurface::Body))],
+            PositionFormat::Unorm16,
+        );
+        let bytes = mesh.to_cooked().expect("cooked");
+        let asset = PackAsset::encode(CHARACTER, AssetKind::Mesh, Codec::Lz4, &bytes, Vec::new(), 3);
+        let source = MemoryPackSource::new();
+        source.insert(PACK, write_pack(vec![asset.expect("encoded")]).expect("a pack"));
+        #[cfg(feature = "dev")]
+        let live_packs = Arc::new(LivePacks::new(source));
+        #[cfg(feature = "dev")]
+        let source = live_packs.clone();
+        let budgets = AssetBudgets { upload_per_frame: u64::MAX, resident: [u64::MAX; AssetKind::ALL.len()] };
+        let mut server = AssetServer::new(source, budgets);
+        server.mount(PACK).expect("the pack");
+        let character = server.load_with(CHARACTER, LoadPriority::Critical).expect("loading");
+        Content::over_server(
+            server,
+            CHARACTER,
+            character,
+            SKY,
+            #[cfg(feature = "dev")]
+            live_packs,
+        )
+    }
+
+    /// The hair transmission `content` would upload `hair` with.
+    fn transmission(content: &Content, hair: &Material) -> Option<f32> {
+        let bytes = hair.to_cooked().expect("cooked");
+        let cooked = Material::read(&bytes).expect("a valid material");
+        let edited = content.gpu.overridden(cooked).expect("reads")?;
+        let mut edited = Material::read(&edited).expect("a valid material").to_material().expect("reads");
+        let mut strength = None;
+        edited.edit_anime_character(|params| strength = Some(params.surface[3]));
+        strength
+    }
+
+    /// The windowed app sets the overrides and then makes its renderer, and a lost device or a new tier
+    /// makes another: every one of them starts with `renderer_rebuilt`, which had dropped the overrides,
+    /// so `--hair-transmission` and `--hair-shadow-softness` only ever reached a capture.
+    #[test]
+    fn a_new_renderer_uploads_what_the_command_line_changed() {
+        let hair = material(CharacterSurface::Hair(HairShading::default()));
+        let mut content = content();
+        assert_eq!(transmission(&content, &hair), None, "nothing's asked yet");
+        content.override_materials(OVERRIDES);
+        assert_eq!(transmission(&content, &hair), Some(0.8));
+
+        let previous = content.renderer_rebuilt();
+        assert_eq!(transmission(&content, &hair), Some(0.8), "the renderer the app starts with");
+        let _ = content.renderer_rebuilt();
+        assert_eq!(transmission(&content, &hair), Some(0.8), "and one after a device loss or a tier change");
+        content.keep_renderer(previous);
+        assert_eq!(transmission(&content, &hair), Some(0.8), "and going back to one that was kept");
+    }
+}
+
 #[cfg(all(test, feature = "dev"))]
 mod tests {
     use sapphire_anim::{Joint, JointTransform};
@@ -1528,38 +1652,8 @@ mod tests {
             let mut server = AssetServer::new(live_packs.clone(), budgets);
             server.mount(PACK).expect("the pack");
             let character = server.load_with(lookdev::CHARACTER, LoadPriority::Critical).expect("loading");
-            let mut content = Content {
-                gpu: GpuAssets::new(lookdev::CHARACTER, true),
-                character_id: lookdev::CHARACTER,
-                character,
-                swatches: Vec::new(),
-                layer_samples: Vec::new(),
-                face_head: None,
-                courtyard: None,
-                fog_cards: Vec::new(),
-                foliage: Vec::new(),
-                hard_edges: None,
-                probes: None,
-                town: Vec::new(),
-                enemy: Vec::new(),
-                sword: None,
-                enemy_skeleton: None,
-                arena_colliders: None,
-                rig: None,
-                skeleton: None,
-                character_versions: None,
-                clip: None,
-                clip_version: 0,
-                graph: None,
-                enemy_graph: None,
-                graph_version: 0,
-                #[cfg(feature = "dev")]
-                live_graph: None,
-                sky_id: SKY,
-                sky: None,
-                server,
-                live_packs,
-            };
+            let mut content = Content::over_server(server, lookdev::CHARACTER, character, SKY, live_packs);
+            content.keep_character_mesh();
             let instance = GpuInstance::new(&GpuInstanceDesc::default()).expect("instance");
             let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), None).expect("device");
             let mut renderer = Renderer::new(&gpu, FORMAT, RenderSettings::default()).expect("renderer");

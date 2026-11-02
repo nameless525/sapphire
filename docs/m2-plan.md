@@ -1,0 +1,187 @@
+# M2 plan: the combat slice
+
+- **Status:** under way (2026-11-01). The maintainer approved this plan with its defaults: `kira`, Zenless Zone Zero as the feel reference, and §3's content sources. §7 lists what's still needed from them.
+- **Milestone:** M2 (spec §10). It builds on M1 (`main` at b273f00), which is done, pending devices.
+- **Inputs:** the spec (§3.2 budgets, §4 architecture, §5.13–§5.16 and §5.22 module specs, §9 gates, §11 open questions), [m2-handoff.md](m2-handoff.md), and two research notes under [research_notes/Combat slice for M2/](../research_notes/Combat%20slice%20for%20M2/):
+  - [animation_runtime.md](../research_notes/Combat%20slice%20for%20M2/animation_runtime.md): `ozz-animation-rs` on a stable toolchain, and Rapier's determinism and allocation claims.
+  - [content_and_audio.md](../research_notes/Combat%20slice%20for%20M2/content_and_audio.md): which clips, enemies and sounds a public repository may hold, and FMOD's terms.
+
+## 1. What M2 is for
+
+M2 answers one question: **can this engine make combat that feels right, and tune it quickly enough?** It is the project's go/no-go gate. If tuning still feels slow at its end, the spec's off-ramp moves gameplay and tools to Godot with gdext and keeps the Rust systems.
+
+The slice is one anime character fighting one enemy in the look-dev town's square, on a gamepad and on touch. Everything else in this plan exists to make that fight possible, testable and quick to change.
+
+### Exit tests
+
+1. **Feel (from the spec):** one character against one enemy feels right with a gamepad on desktop and with touch on a phone. Only the maintainer can judge this (§2).
+2. **Iteration (new, so "tuning feels slow" can be measured):** a saved change to a move's timing plays on the next attempt with no restart: under 2 s from save on the desktop, and under 5 s on a phone over live link. M1's figures for a cook and a push (under 1 s and under 140 ms) make this realistic.
+3. **Determinism (from the spec):** every combat replay reproduces its recorded checksum for the runner's architecture on all three desktop OSes, with no heap allocation inside the fixed step (spec §9, gates 2 and 4). CI enforces both on every PR.
+4. **Budget (from the spec):** Mobile-Low holds 30 fps while thermally throttled, after 15 minutes of combat (spec §3).
+
+Tests 1 (touch) and 4 **need a physical phone**, and none exists yet. Without one, M2 can only close as "done, pending devices", and the go/no-go's mobile half stays open (§6, §7).
+
+## 2. What "feels right" means
+
+Ranked, like M1's look pillars. Each has a starting number that a replay or a bench can measure. The numbers exist to catch regressions, and the maintainer's reviews overrule them.
+
+| # | Pillar | Starting measure |
+|---|---|---|
+| 1 | **Responsive.** A press acts now. | A press to the character's first visibly moving frame in at most 3 ticks at 60 Hz. A cancel window never drops a buffered input. |
+| 2 | **Readable.** Attacks have clear anticipation, strike and recovery. | Authored in ticks in frame data; the debug view shows each phase. |
+| 3 | **Impact.** A hit lands everywhere at once. | Hitstop, screen effect, sound, shake and rumble fire from one cue in one tick. |
+| 4 | **Cancels and dodges.** The player feels in control of the rhythm. | Every authored cancel window and perfect-dodge window is covered by a replay. |
+| 5 | **Camera.** Both fighters stay framed, and it never clips or jerks. | No clip into the arena's colliders in the replay suite; spring-smoothed motion. |
+| 6 | **Alive.** Hair and ribbons follow, and the anime look holds in motion. | Spring bones on all tiers; outlines stable under TAA on moving characters, checked in goldens. |
+| 7 | **Touch.** The same fight at 30 fps with thumbs. | Auto-target on touch; the same replay suite passes at Mobile-Low's two steps a frame. |
+
+**Reference:** Zenless Zone Zero's dodge-and-counter rhythm and stagger meter, as spec §5.22 already implies, and as the maintainer confirmed. They may name another or supply clips (§7).
+
+## 3. Decisions this plan takes
+
+Each decision updates the spec in the same PR as this plan.
+
+| Topic | Decision | Why |
+|---|---|---|
+| **Q7: animation runtime** | **Our own, in `sapphire_anim`:** a scalar glam core for sampling, additive and masked blending, local-to-model, two-bone and aim IK, plus inertialization. Clips use our own rkyv format, written by our own cooker from glTF, FBX and VRMA, with no C++ in the pipeline. Where code follows ozz closely, port from the MIT-licensed C++ and keep its notice. Add SIMD (`wide`) only if N2's measurement asks for it. | `ozz-animation-rs` at HEAD still needs nightly and hard-codes `std::simd` with no fallback, and `portable_simd` has no stabilization date. Vendoring means rewriting about 5,500 of its 8,800 lines and staying MPL-2.0, its formats still need ozz's offline builder, and inertialization has to be written either way. The C++ jobs we need total about 1,750 lines. |
+| **The simulation reads baked tables, never poses** | A move's root motion and its hit volumes' paths are sampled once at cook time into per-tick, root-space tables. The fixed step reads those tables, and the animation graph is presentation only. Motion warp adjusts the simulated root; the visible character follows it. | It keeps the simulation headless, allocation-free and free of blend state, which gates 2 and 4 need, and makes hit frames plain data a test can read. **The cost:** during a blend the visible blade can differ slightly from its hit volume. Fighting games accept this, and T1's view shows it. |
+| **Determinism's scope** | Per architecture, as gate 2 says: one checksum for x86-64 (Linux and Windows) and one for arm64 (macOS). Integer ticks and sub-ticks, a seeded RNG, stable actor IDs, no `std` transcendentals in the simulation's crates, and physics single-threaded. | Cross-architecture equality would be nice but nothing needs it: Sapphire is single-player first. M1 already found that libm differs per OS. |
+| **Crate edges** | `sapphire_moves` (L2) holds plain cooked data, as `sapphire_look` does, so the cooker can link it. `sapphire_gameplay` (L4) has no edge to `sapphire_render`, `sapphire_world`, `sapphire_anim` or wgpu, so replays build and run with no GPU in the tree, and a test holds it to that. The app's scene carries results into `FramePacket`. | R3, R4 and #74's lesson: a cooker or replay job must not link the renderer. |
+| **Q8: audio** | **`kira` is primary**, behind the spec's `AudioBackend` trait, with a mock backend for CI. Cues are RON documents. FMOD stays possible later for a private game project, behind the same trait. Confirmed by the maintainer. | FMOD's terms bar distributing the SDK, its EULA says the engine isn't distributed as part of a game engine or tool set, and its download needs an account, so a public repo and its CI can't use it. Kira on phones is community-confirmed, not documented, so E1 tests it early. |
+| **VFX v1** | **CPU-simulated particles and ribbons, drawn instanced,** with tier caps. GPU particles stay in the spec for when counts demand them. | The iOS Simulator has no indirect execution (ADR 0002), and a duel's effects are few and tied to gameplay, which is what §5.16 says CPU particles are for. |
+| **Touch and HUD** | The first slice of `sapphire_ui`, a quad list after post with touch zones, moves up from M3. `taffy` and `parley` stay M3. | Touch controls are M2's and egui is dev-only (R8). |
+| **Physics** | `rapier3d` behind engine types as planned, after D3's spike. The slice has static colliders, kinematic capsules and queries; dynamic props wait. **If the spike finds allocation or feature trouble, the controller is written on `parry3d` directly.** | Rapier makes no claim of an allocation-free `step`, and whether `enhanced-determinism` changes glam's features process-wide (which would touch the renderer's layouts) is unverified. |
+| **Editor scope** | A narrow timeline tool: moves as RON, hot-reloaded into a running game. The document model with general undo, and play-in-editor, stay M3 as §10 says. | Exit test 2 needs a fast loop, not a whole editor. |
+| **Test content** | **Clips:** KayKit Character Animations (CC0) for locomotion, reactions and deaths. **Signature moves:** key-pose documents authored in RON and cooked to clips. **Enemy:** KayKit Skeletons (CC0), re-materialed in the anime character family. **Sound:** Kenney's Impact Sounds, RPG Audio and Interface Sounds (CC0). **Not used:** Mixamo (it needs an Adobe login, and community reports say raw files can't be redistributed; Adobe's own text couldn't be read), Bandai Namco's and LAFAN1 (non-commercial), Sonniss GDC (bars distribution), pixiv's VRMA pack (bars extraction), Mesh2Motion (mixes clips from Quaternius, whose terms now bar redistribution, and its other clips have no recorded authors). | Every file in a public repo needs a license allowing redistribution and modification. **Nothing licensed has anime-grade action,** so signature moves are authored here (§6). |
+| **Pins** | wgpu stays on 30: 31 isn't out, and upgrades happen between milestones, never during one. `ctt` left its git patch and bevy moved to 0.20.1 in #117. Reassess at M2→M3. | Spec §5.6. |
+
+**Not in M2:** XPBD cloth (skirts stay on spring bones), ragdolls, Luau, navigation (the one enemy steers directly), decals, GPU particles, music, lip-sync, a second enemy type, zones and saves. Spec §10 places most of these in M3.
+
+## 4. Work packages
+
+Each package is one pull request, or a few, into `main`. Size: **S** is a day or two, **M** under a week, **L** one to two weeks, at a person's pace. Each finished package gets an "As built" note in its row and its spec §5 section.
+
+The usual rules carry over: existing goldens stay byte-identical unless a row says otherwise, a feature builds its pipelines only when its work can run, and every system publishes a stat counter (R9) against its §3.2 budget.
+
+### Track D: determinism and the simulation's base
+
+| ID | Package | Size | Depends on | Notes |
+|---|---|---|---|---|
+| D1 | **The headless simulation:** new crates `sapphire_moves` and `sapphire_gameplay`. A world that ticks with no window or GPU, stable actor IDs (the explicit ID review RS-005 left for M2), a seeded RNG, pre-sized pools for fixed-step spawns, and a state checksum over canonical bytes (floats by `to_bits`, actors in ID order). `sapphire_math` gains pinned transcendentals, and clippy bans `std`'s in the simulation's crates. | M | — | R6 is asserted from the first tick. |
+| D2 | **Replays:** a versioned file of per-tick actions plus the move data's hash. `cargo xtask replay [--update]`, per-architecture checksums in `tests/replays/`, the sandbox's `--record` and `--replay <file>` (with `--capture` and `--bench`), and a required `Replays` CI job on all three desktop OSes. | M | D1 | Gates 2 and 4 go live. A changed move re-records like a golden: `--update`, then review. |
+| D3 | **`sapphire_physics`, after a spike.** The spike answers three questions: does `enhanced-determinism` change glam's features or versions for the whole process (renderer layouts, goldens, frame cost); does the kinematic controller or a query allocate once warmed, under the counting allocator; and do checksums agree across OSes. Then: engine-typed static colliders from a cooked document, kinematic capsules, ray, shape and overlap queries. | M | D1 | Budget 0.7 ms a step on Desktop-Low, 1.2 on Mobile-Low. The spike's result may switch the controller to `parry3d` (§3). |
+| D4 | **`HitQuery`:** spheres, capsules and oriented boxes from baked tables, swept tick to tick so fast swings can't tunnel, against hurtboxes in their own broadphase group, with hit-group dedupe. | S | D3, N1 | Spec §5.14. |
+
+### Track N: animation
+
+| ID | Package | Size | Depends on | Notes |
+|---|---|---|---|---|
+| N1 | **Skeletons and clips as assets:** the skeleton leaves the mesh. A clip importer for glTF, FBX (`ufbx`) and VRMA (`vrm-spec`), with root motion in its own track, morph weight tracks, key reduction and new cooked versions. Cook-time retargeting by humanoid bone map. Key-pose documents (`.keypose.ron`) cook to clips. Per-tick baked tables go into `sapphire_moves`. | L | D1 | The cooker must not link the renderer or world (#74). |
+| N2 | **The runtime core:** `sapphire_anim`'s sampling, blending, additive layers, masks and local-to-model, one job per character. Poses reach `FramePacket`, morphs reach `MorphWeights`, and `CharacterFace` and the body follow the head and skeleton every frame. Pose snapshot and same-bytes tests. **Fixes review WA-3 here:** clocks interpolate like transforms, re-baselining time-dependent goldens in its own PR. | M | N1 | **The first measure of a moving character:** skinning, outlines and TAA across tiers, none of which M1 measured in motion. Budget 1.5 ms on Desktop-Low and 3.0 on Mobile-Low, including IK. |
+| N3 | **The animation graph and inertialization:** a layered state machine, a locomotion blend space, a combat layer the move system drives, additive reactions and breathing, a procedural blink, all RON and hot-reloaded. | M | N2 | Cancels get the new pose at once, with the old pose's velocity decayed out. |
+| N4 | **IK:** two-bone and aim, foot placement from ground casts, head and eye look-at, hand on weapon. | M | N2, D3 | Foot placement and hands are on the cut list (§5). |
+| N5 | **Spring bones:** simulate the VRM's cooked springs and colliders on the owner clock with fixed sub-steps, reset on teleport or cut, fewer iterations on phones, off when off-screen. | M | N2 | Budget 0.5 ms on Desktop-Low and 1.0 on Mobile-Low. The anime look depends on this in motion. |
+
+### Track G: gameplay
+
+| ID | Package | Size | Depends on | Notes |
+|---|---|---|---|---|
+| G1 | **Character controller:** a kinematic capsule with grounded, air, slope, step-up and ledge handling, root motion integration, and a combat movement mode. | M | D3, N1 | Spec §5.22. |
+| G2 | **The move system:** an intent ring of 8–15 ticks with expiry and priority, cancel windows, frame-data tracks, local clocks, root motion and warp, and the cue queue. `MoveSet` documents cook through `sapphire_moves`. Budget 1.0 ms a step on Desktop-Low, 1.5 on Mobile-Low. | L | D1, N1 | The core of the slice. The fixed-step order is spec §5.22's. |
+| G3 | **Hits and resolve:** hit events, the smallest set of attributes, tags and effects the fight uses, damage, poise and stagger, reactions, hitstop and time scale. A hit pushes its screen effect in the step that applies it. Decides whether a finish freeze needs its own clock. | M | G2, D4 | Spec §5.21's P3 note. |
+| G4 | **Dodges and counters:** invulnerability, a perfect dodge with world-clock slow motion, a counter window and dodge cancels. | M | G3 | Pillar 4. |
+| G5 | **Camera director:** a follow rig, combat framing, lock-on, sphere-cast collision, critically damped springs, shakes as cues, its own clock; soft-lock targeting, with auto-target on touch. | M | D3 | Sequencer takeovers wait for M3. |
+| G6 | **One enemy:** a brain that outputs intents into the same move system, `statig` states and utility-scored attacks from the seeded RNG. | M | G3, O4 | Its moves are the same documents the player's are. |
+| G7 | **Party swap:** three slots, swapping as an ability, a swap-in assist as a move, off-field characters still ticking. | M | G3 | Spec §10 lists it, but the exit test doesn't need it, so it is **first on the cut list**. Needs a second character (§7). |
+
+### Track E: effects and audio
+
+| ID | Package | Size | Depends on | Notes |
+|---|---|---|---|---|
+| E1 | **`sapphire_audio`:** the `AudioBackend` trait, kira and mock backends, cue documents, 3D events on entities, a perfect-dodge snapshot on the world clock, hitstop ducking. Suspends on background and on iOS interruptions. Runs on the iOS Simulator and Android emulator early, including cpal's Android context under SDL's entry. | M | D1 | Budget 0.2 ms on Desktop-Low, 0.3 on Mobile-Low. |
+| E2 | **`sapphire_vfx` v1:** CPU particles and ribbons, drawn instanced in the renderer. Sword trails from sockets at sub-tick rate, effects on the owner's clock so hitstop freezes them, RON effects, textures generated in code, tier caps. Ends in `fogged`, and its pipelines are built on first use. | M | N2 | Budget 0.3 ms on Desktop-Low, 0.6 on Mobile-Low. New goldens pin everything else off. |
+| E3 | **Cues:** a table from gameplay cues to VFX, sound, shake, rumble (through SDL) and P3's post presets, so a hit lands in one tick. Authors the combat screen effects M1 left as hooks. | S | G3 | Uses placeholders until E1 and E2 land. |
+
+### Track I: input and HUD
+
+| ID | Package | Size | Depends on | Notes |
+|---|---|---|---|---|
+| I1 | **Combat bindings:** contexts for gamepad and keyboard on `sapphire_input`, rebindable, with pause. Decides what Android Back does (review PN-3). | S | D1 | |
+| I2 | **`sapphire_ui`'s first slice:** a quad list after post with a generated atlas: virtual stick, buttons, HP and poise bars, digits, safe areas. Touch zones feed actions. | M | I1, G3 | New pipeline built on first draw. Plain data in `FramePacket` (R4). |
+
+### Track T: tools
+
+| ID | Package | Size | Depends on | Notes |
+|---|---|---|---|---|
+| T1 | **Debug draw and combat views:** the spec's debug-draw API, hitbox and hurtbox views against the visible pose, an intent-buffer and move-state view, the replay recorder in the overlay. | M | D2 | Dev builds only. Early, because nothing can be tuned unseen. |
+| T2 | **Live tuning:** moves, cues, camera and graph documents through hot reload and live link, taking effect at the next move's start. Protocol 4, and `DeviceStatus` lists pushed packs. Measures save to next attempt. | M | G2, N3 | Exit test 2. |
+| T3 | **The timeline editor v1:** `sapphire_editor` (tools, desktop only): tracks for hitboxes, invulnerability, cancels, root motion, warp and cues; frame-accurate scrubbing with a preview character and dummy; "play from frame N". Saves RON and pushes through T2. | L | T2 | Agents test it headless with `egui_kittest` 0.37 and captures; only the maintainer launches its window. Gizmos are on the cut list. |
+
+### Track O: content
+
+The orchestrator adds sources, with the maintainer's approval, under `content/third_party/`'s rules.
+
+| ID | Package | Size | Depends on | Notes |
+|---|---|---|---|---|
+| O1 | **Sources:** the §3 sets with their licenses, `SOURCE.md` and `MODIFIED.md`. Checks what the research couldn't: KayKit's clip names, and whether its rig is humanoid-complete. | S | §7 | If the rig falls short, base clips become key-pose documents too. |
+| O2 | **Base clips:** retarget locomotion, reactions and deaths onto the VRM, and judge them in contact sheets rendered headless. | M | N1, O1 | KayKit's proportions are chibi, so expect tuning. |
+| O3 | **Signature moves:** a three-hit string, a dash attack, a dodge and a skill as key-pose documents with anticipation and overshoot, on the VRM's humanoid rig. | L | N2, T1 | Starts from `lookdev::turns`'s held pose, proven for one pose only. See §6. |
+| O4 | **The enemy:** re-materialed in the anime character family, with its own move documents. | M | O1, G2 | |
+| O5 | **The arena:** a sandbox `--arena` stage in the Jinzhou square, with a hand-authored collider document, spawn points and the look-dev day, plus golden scenes at fixed ticks through replays. | M | D3 | The town stays one mesh until M3's zones. |
+
+### Track Z: exit
+
+| ID | Package | Size | Depends on | Notes |
+|---|---|---|---|---|
+| Z1 | **Budgets in combat:** `--bench --replay` across tiers against §3.2, memory included, recorded in the spec. | M | most of G, E | Mac numbers until a phone exists. |
+| Z2 | **Feel reviews:** three sessions (§5). Each ends with the maintainer's notes, turned into data changes, and their recorded sessions, which join the replay suite. | S each | §5 | |
+| Z3 | **Exit run:** `docs/m2-exit-run.md`, touch on the Simulator and emulator, phones when available, the spec's M2 status, the go/no-go report and M3 handoff notes. | S | all | |
+
+## 5. Order
+
+The packages fall into five phases. Within a phase, packages that don't depend on each other can run as parallel PRs.
+
+1. **The bones:** D1, D2, D3, N1, T1, then N2. Nothing here shows much, but the replay gates and the first moving character arrive.
+2. **Walk:** G1, I1, G5, O1, O2, O5, N3, N5.
+   - **Feel review 1:** run around the square on a gamepad. Does moving and the camera feel good?
+3. **Swing:** D4, G2, G3, O3, T2, E3, N4.
+   - **Feel review 2:** attack strings against a dummy. Do timing and impact feel good? Is motion quality good enough to judge by?
+4. **Fight:** G4, O4, G6, E1, E2, T3.
+   - **Feel review 3, the real go/no-go check:** fight the enemy, and try tuning a move yourself. If it isn't working here, stop before spending anything on phase 5.
+5. **Finish:** I2, G7, Z1, Z3, and the device runs when a phone is available.
+
+**Critical path:** D1 → N1 → G2 → G3 → G6 → Feel review 3.
+
+**If time runs short, cut in this order:** G7; N4's foot placement and hands; T3's gizmos; E2's ribbons beyond sword trails. **Never cut** D1, D2, G2, G3, T2 or N5: the gate depends on them.
+
+## 6. Risks
+
+| Risk | Mitigation |
+|---|---|
+| **No phone.** The go/no-go's touch half and the throttled budget need one. | Develop on the Simulator and emulator, and call what remains open plainly. M2 can close as "done, pending devices", but that leaves the gate half-answered for a mobile-first game. A phone is needed by phase 5 (§7). |
+| **Motion without an animator.** Nothing licensed has anime-grade action, and authored key poses are proven for one held pose only. Weak motion could make the fight feel wrong for reasons that have nothing to do with the engine. | Feel review 2 asks this directly, before the fight is built on it. The fallback is a commissioned animator or a bought pack; a pack that bars redistribution would have to stay out of the public repo, so CI couldn't use it. |
+| **Only the maintainer can judge feel.** Agents can measure latency and windows, but not whether it's fun. | Three reviews, early enough to change direction. Proxies (§2) catch regressions between them. |
+| **Rapier:** allocation in the fixed step (R6), or `enhanced-determinism` changing glam for the whole process. | D3 is a spike first, with a written fallback onto `parry3d`. |
+| **Scalar animation may be too slow on phones.** No scalar-versus-SIMD number exists. | N2 measures against 3.0 ms on Mobile-Low settings. Add `wide` to the hot loops only if it asks. |
+| **The first moving character** may expose TAA, outline or skinning costs and artifacts M1 never saw. | N2 measures early, and goldens at fixed ticks pin the result. |
+| **Kira on phones** is community-confirmed only. | E1 tests the Simulator and emulator early. A real device is still owed. |
+| **Replays turn brittle** as moves change daily. | Replays hold actions, not results; `--update` re-records like a golden, and only the checksum of an intended change moves. |
+| **KayKit's rig** may not retarget well onto VRM proportions. | Limit it to locomotion and reactions. Key-pose documents replace whatever fails. |
+| **CI time:** new golden scenes and a replay job. | Each new scene counts as costliest until `scenes/costs.rs` is refreshed; add shards as M1 did. Replays need no GPU. |
+| **Scope:** M2 is large, and the spec's window is months for a small team. | The ordering puts the go/no-go check before the most expensive polish, and §5 names the cuts. |
+
+## 7. Needed from you
+
+1. **The go-ahead.**
+   - **Given** (2026-11-01), with the defaults below.
+2. **Approval to add these sources** (all CC0, O1): [KayKit Character Animations](https://kaylousberg.itch.io/kaykit-character-animations), [KayKit Skeletons](https://kaylousberg.itch.io/kaykit-skeletons), and Kenney's Impact Sounds, RPG Audio and Interface Sounds. Needed by phase 2.
+   - **Given** (2026-11-01). Each license is read again as it's added.
+   - **Still open** if G7 stays in: a second character, either VirtualCast's Seed-san (its VPL flags still need reading from the model) or a recolor of the current one.
+3. **Kira rather than FMOD.**
+   - **Confirmed** (2026-11-01). FMOD would need your account and a private build, and it couldn't run in this repo's CI.
+4. **Whose combat feel?**
+   - **Zenless Zone Zero,** as the default you confirmed (2026-11-01). A few reference clips or a written description would still help, as the look references did, kept outside the repo.
+5. **A gamepad on this Mac,** by Feel review 1. Tell me which one, so its bindings match.
+6. **Three feel reviews,** about half an hour each, at the ends of phases 2, 3 and 4. You launch the build, since it opens a window, and tell me what's wrong in your own words.
+7. **A physical phone,** by phase 5. An iPhone also needs a signing identity; [m1-exit-run.md](m1-exit-run.md) lists the setup. These also clear M1's owed device checks.
+8. **Optional:** a decision on animation quality if Feel review 2 finds authored motion isn't good enough. That is the moment to consider an animator or a bought pack.

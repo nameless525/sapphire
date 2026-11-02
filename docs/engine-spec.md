@@ -66,7 +66,7 @@ All five platforms are first-class from month 0. Bringing up a platform is cheap
 | **Upscaler** | DLSS (NVIDIA + Vulkan) or own spatial upscaler | MetalFX | Own spatial upscaler | MetalFX | Own spatial upscaler |
 | **Window / events** | SDL3 | SDL3 | SDL3 (Wayland + X11) | SDL3 (UIKit) | SDL3 (SDLActivity) |
 | **Input** | KB/M, gamepads | KB/M, gamepads | KB/M, gamepads, Steam Deck | Touch, MFi / Xbox / DualSense pads | Touch, gamepads |
-| **Audio** | FMOD (WASAPI) | FMOD (CoreAudio) | FMOD (PulseAudio / PipeWire) | FMOD + AVAudioSession | FMOD (AAudio) |
+| **Audio** | `kira` on `cpal` (WASAPI) | `kira` on `cpal` (CoreAudio) | `kira` on `cpal` (ALSA) | `kira` on `cpal` (CoreAudio) + AVAudioSession | `kira` on `cpal` (AAudio) |
 | **Read-only content** | Install directory | `.app/Contents/Resources` | Install directory | App bundle | Small boot pack in APK; main packs from CDN or Play Asset Delivery |
 | **Writable directories** | `SDL_GetPrefPath` | same | same | same, with downloaded packs excluded from iCloud backup | same (app-internal files directory) |
 | **Crash reporting** | crash-handler + minidumper → Sentry | same | same | sentry-cocoa (native SDK) | crash-handler → Sentry (**Verify** minidumper on Android; else Sentry's Android NDK SDK) |
@@ -196,7 +196,7 @@ Main thread │ SDL_AppIterate: pump events → input snapshot → kick jobs →
 Workers     │   fixed steps (sim N) → presentation (anim/cloth/VFX/camera) → extract(N)
 Workers     │ ◄─ prepare + record render(N-1) in parallel ─► submit(N-1)         │
 IO thread   │ positioned reads → decode jobs → GPU upload queue → activation    │
-FMOD        │ (FMOD-owned mixer threads)                                         │
+Audio       │ (the audio backend's own mixer callback)                           │
             └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -216,7 +216,7 @@ FMOD        │ (FMOD-owned mixer threads)                                      
 | Main | SDL main callbacks | Window and event APIs must run here on Apple platforms. It hosts the frame orchestrator. |
 | Workers | `sapphire_jobs` (one pool) | Size: desktop = physical cores − 1, capped at 16. Mobile = performance cores − 1 (iOS: `sysctl hw.perflevel0.physicalcpu`; Android: group cores by `cpuinfo_max_freq`). |
 | IO | `sapphire_platform::io` | One thread with a priority queue and positioned reads. Decompression happens on workers. |
-| Audio | FMOD | The engine calls the FMOD Studio API once per frame from the audio-update job. |
+| Audio | The backend's callback | `kira` mixes on `cpal`'s realtime callback. The engine sends it cues once per frame from the audio-update job, and never runs the callback on a job thread. |
 | Crash monitor | `sapphire_crash` | A separate process on desktop (minidumper). Android approach is open (Q12). |
 
 - **Decision: one task pool.** bevy_ecs's executor and all engine parallelism share `bevy_tasks`. Rayon is allowed only in tools and the cooker, because two pools oversubscribe the cores on phones.
@@ -357,11 +357,12 @@ pub struct FramePacket {
 | `sapphire_rhi` | L2 | wgpu device and feature tiers, uploads, pools, pipeline cache | `wgpu`, `wgpu-profiler` | M0 |
 | `sapphire_render` | L3 | Frame graph, anime character and environment renderers, sky, post, upscaling | `sapphire_rhi`, `wesl`, `naga`, `encase`, `bytemuck` | M1–M3 |
 | `sapphire_tod` | L3 | Time of day's model: keys, timelines, looks and how they blend | `serde`, `bevy_reflect` | M1 |
-| `sapphire_anim` | L3 | Skeletal runtime, anim graph, IK, spring bones, cloth | `ozz-animation-rs` (vendored) | M2 |
+| `sapphire_moves` | L2 | Moves' cooked plain data: frame data, baked root motion and hit-volume tables. The cooker can link it. | `rkyv` | M2 |
+| `sapphire_anim` | L3 | Skeletal runtime, anim graph, IK, spring bones (cloth later) | Our own, on `glam` | M2 |
 | `sapphire_physics` | L3 | Collision world, queries, character capsules, hit shapes | `rapier3d`, `parry3d` | M2 |
-| `sapphire_audio` | L3 | FMOD Studio integration and cue playback | FMOD (own bindings); `kira` as fallback | M2 |
-| `sapphire_vfx` | L3 | GPU particles, trails, decals, screen effects | `sapphire_render` | M2–M3 |
-| `sapphire_ui` | L3 | Retained game UI, text, touch controls | `taffy`, `parley` | M3 |
+| `sapphire_audio` | L3 | Audio backend and cue playback | `kira`, behind `AudioBackend` | M2 |
+| `sapphire_vfx` | L3 | Particles (CPU in M2, GPU later), trails, decals, screen effects | `sapphire_render` | M2–M3 |
+| `sapphire_ui` | L3 | Retained game UI and text (M3); touch controls and a quad HUD (M2) | `taffy`, `parley` (M3) | M2–M3 |
 | `sapphire_input` | L3 | Action mapping, contexts, rebinding, glyphs | `sapphire_platform`, `sapphire_serialize` | M1 |
 | `sapphire_nav` | L3 | Navmesh baking and runtime pathfinding | `rerecast`, `landmass` | M3 |
 | `sapphire_debug` | L3 | Debug draw, stats, dev console, inspector (dev only) | `egui`, `egui-wgpu` | M1 |
@@ -1569,12 +1570,13 @@ At runtime, dynamic resolution adjusts the render scale from GPU timings and the
 
 **How**
 
-- **Runtime:** `ozz-animation-rs` 0.11, vendored, with these jobs:
+- **Runtime (decided in [m2-plan.md](m2-plan.md) §3, closing Q7):** our own, with a scalar `glam` core. `ozz-animation-rs` needs nightly Rust and has no offline tools. Where code follows ozz closely, port from the MIT-licensed C++ and keep its notice. Add SIMD through `wide` only if measurement asks for it. Its jobs are:
   - Sampling, blending (including additive and per-bone masks).
   - Local-to-model conversion.
   - Two-bone and aim IK.
   - Each character evaluates in its own job, fully parallel.
-- **Cooking:** source clips come from glTF or FBX (`ufbx`). Root motion is extracted into its own track, and clips are written as ozz archives. **Verify** whether ozz-animation-rs covers the offline build. If not, run upstream ozz's `gltf2ozz` / `fbx2ozz` (C++) inside the cooker.
+- **Cooking:** source clips come from glTF, FBX (`ufbx`) or VRMA, or from key-pose documents authored in RON. Root motion is extracted into its own track, and clips are written in our own rkyv format, with no C++ in the pipeline. Retargeting happens at cook time, by humanoid bone map.
+- **Presentation only:** the simulation never reads a pose. A move's root motion and hit volumes' paths are baked at cook time into per-tick tables in `sapphire_moves` (§5.14, §5.22).
 - **Animation graph (engine-owned data asset), per character:**
   - A layered state machine.
   - A locomotion blend space (1D/2D).
@@ -1589,7 +1591,7 @@ At runtime, dynamic resolution adjusts the render scale from GPU timings and the
   - Hand IK for weapons.
 - **Secondary motion:**
   - Spring bones for hair, ribbons and accessories, ported from the VRM spring-bone spec. Use `bevy_vrm1` as a reference.
-  - An XPBD chain / cloth solver for skirts and coats, with capsule colliders on the legs and body.
+  - An XPBD chain / cloth solver for skirts and coats, with capsule colliders on the legs and body (after M2; skirts stay on spring bones until then).
   - Both run on the owner clock with fixed sub-steps, reset on teleport or camera cut, and use LOD: fewer iterations on mobile, off when off-screen.
 - **Faces:** blendshape weight tracks in clips, plus a procedural blink. Lip-sync curves come *later*.
 - **Output:** model-space matrices go to skinning palettes in extract, and blendshape weights go to `MorphWeights`.
@@ -1610,9 +1612,9 @@ At runtime, dynamic resolution adjusts the render scale from GPU timings and the
   - A few dynamic props.
   - Trigger sensors.
 - **Queries:** ray casts, shape casts and overlaps for the controller, camera and AI.
-- **Step:** fixed 60 Hz inside `FixedPhysics`, with the deterministic feature on.
+- **Step:** fixed 60 Hz inside `FixedPhysics`, with the deterministic feature on. M2's first package checks what that feature does to `glam` for the whole process, and whether a warmed controller allocates (R6). If either is trouble, the kinematic controller is written on `parry3d` directly ([m2-plan.md](m2-plan.md), D3).
 - **Hit detection is not rigid-body physics.** `HitQuery` uses `parry3d` 0.31 shapes:
-  - Hitboxes are spheres, capsules or oriented boxes attached to bones.
+  - Hitboxes are spheres, capsules or oriented boxes that follow bones through tables baked at cook time, so the simulation runs headless and never reads a pose. During a blend the visible bone can differ slightly from its volume, which the debug view shows.
   - Each tick, a hitbox is swept from its previous position to its current one, so a fast swing can't tunnel through a target between 60 Hz ticks.
   - It tests against the hurtbox set, with broadphase over a dedicated collision group.
   - Multi-hit attacks dedupe hits by hit-group ID.
@@ -1622,24 +1624,25 @@ At runtime, dynamic resolution adjusts the render scale from GPU timings and the
 
 **How**
 
-- **Decision: FMOD Studio** through your own `bindgen` layer (`sapphire_fmod_sys` plus a safe wrapper, modeled on `fmod-oxide`). **Verify** the license tier and cost.
-- **Designer workflow:** designers work in FMOD Studio, which builds a `.bank` per platform. The cooker copies the banks into packs.
-- **Cue playback:** gameplay cues map to event GUIDs. 3D events attach to entities, and the listener follows the camera.
+- **Decision ([m2-plan.md](m2-plan.md) §3, closing Q8): `kira` 0.12** behind an `AudioBackend` trait, with a mock backend for CI. FMOD's terms bar distributing the SDK, its EULA says the engine isn't distributed as part of a game engine or tool set, and its download needs an account, so a public repository and its CI can't use it. A private game project could still add it behind the same trait.
+- **Designer workflow:** cues are RON documents naming sounds and their parameters. The cooker copies the sounds into packs.
+- **Cue playback:** gameplay cues map to cue documents. 3D sounds attach to entities, and the listener follows the camera.
 - **Clock-aware audio:**
   - A perfect-dodge snapshot (pitch, low-pass) is driven by the world time scale.
   - Hitstop can duck or freeze attached events.
-- **Music:** parameterized by combat intensity and encounter phase.
-- **Voice-over:** played from FMOD audio tables, with the VO language set separately from the text language.
+- **Music (M3 on):** parameterized by combat intensity and encounter phase.
+- **Voice-over (M3 on):** played through cue documents, with the VO language set separately from the text language.
 - **Lifecycle:**
   - Suspend the mixer on background and on iOS audio interruptions (calls, Siri), and resume on foreground.
   - Set the iOS audio session category at boot.
-- **Fallback:** a `kira` 0.12 backend behind the same `AudioBackend` trait, in case FMOD licensing fails.
+- **Phones:** `kira` documents itself as mainly for desktop, and its phone support is community-confirmed, on `cpal`'s AAudio and CoreAudio backends. `cpal` needs the Android context set under SDL's entry. M2 tests both on the iOS Simulator and Android emulator early.
 
 ### 5.16 `sapphire_vfx` (L3)
 
 **How**
 
-- **GPU particles:** compute passes for spawning, updating and compaction write indirect draw arguments. Render modes:
+- **M2's v1 ([m2-plan.md](m2-plan.md) §3):** CPU-simulated particles and ribbons, drawn instanced, with tier caps, on every tier. A duel's effects are few and tied to gameplay, and the iOS Simulator has no indirect execution (ADR 0002).
+- **GPU particles (later):** compute passes for spawning, updating and compaction write indirect draw arguments. Render modes:
   - Sprites, flipbooks and mesh particles.
   - Soft particles.
   - Distortion, into a half-resolution distortion buffer.
@@ -2154,7 +2157,7 @@ At runtime, dynamic resolution adjusts the render scale from GPU timings and the
   - **FBX sources.** `.fbx` sidecars say `importer: Fbx((…))`, with glTF's mesh settings (outline weld, LODs, position format, material bindings, foliage). Files import through the `ufbx` crate 0.11.5 (MIT or Unlicense: the single-file C library ufbx 0.23.1, built with `cc`, tool-only) to the same `ImportedMesh` glTF's importer makes, so the outline and foliage bakes, LODs, optimization and packing are shared. The importer reads the file alone (`load_external_files` off), so its bytes are its whole cache key; its stage is `fbx (ufbx 0.11.5)` 1, which a test ties to `Cargo.lock`, so a ufbx upgrade recooks every FBX.
   - **Space.** ufbx converts each file on load to engine space (+Y up, meters, right-handed, facing +Z), folding the conversion into the top-level nodes' transforms, so the ×100 Blender puts on top-level objects cancels and skeletons come out in meters at unit scale. Left-handed files mirror in Z with their winding turned, geometric transforms join each mesh's geometry-to-world matrix, and Maya's segment scale compensation becomes plain inheritance. Every node with a mesh adds it in that space, as glTF's nodes do; ufbx triangulates polygons by ear clipping.
   - **What matches glTF.** Each material a node uses is a slot named as glTF's are (the shared `import::slot_names`), holding a generated anime character material: base color times factor, opacity as alpha (blended below 1). Corners merge into vertices where normal, first UV set (V flipped) and first color set (as stored: data) agree, and missing normals become flat ones. A skin is one per mesh: the skeleton holds the clusters' bones and their ancestors, depth-first. Each cluster's palette entry is `geometry_to_bone · G⁻¹` with `G` the mesh node's geometry-to-world matrix, so the mesh skins exactly as the file binds it, whatever pose it was bound in. The four heaviest weights are kept, and static parts bind rigidly to their nearest joint. Blend shape channels become morph targets named by channel and merged by name. Each keeps its full-weight shape, scaled by Blender's per-vertex shape weights, within glTF's epsilons; in-between shapes are dropped.
-  - **Not imported:** animation (M2 cooks clips to ozz through ufbx), authored outline normals and material IDs (FBX has neither: outlines are baked, IDs are 0), tangents, second UV and color sets, cameras, lights, NURBS and LOD groups.
+  - **Not imported:** animation (M2 cooks clips through ufbx), authored outline normals and material IDs (FBX has neither: outlines are baked, IDs are 0), tangents, second UV and color sets, cameras, lights, NURBS and LOD groups.
   - **Textures.** Generated materials reference none, as glTF's don't. `extract-materials` on an FBX writes each slot's material document and binds its base color and normal maps:
     - an external PNG, TGA or EXR the FBX names, relative to itself, is bound where it lies. A missing sidecar is created with the class of the image's use, and the cook's default color class is switched to normal for a normal map; a sidecar of any other class is kept and reported;
     - embedded images, and images in other formats, are written as `<stem>/textures/<name>.png` with sidecars;
@@ -2234,13 +2237,13 @@ At runtime, dynamic resolution adjusts the render scale from GPU timings and the
 | Color textures | PNG / TGA / EXR | `image`, `exr` | KTX2 (`ktx2` 0.5) BC7 via `ctt` 0.6 | KTX2 ASTC 4×4–8×8 per texture class, via `ctt` |
 | Normal maps / masks / HDR | same | same | BC5 / BC4, BC5 or BC7 by channel count / BC6H | ASTC; HDR as RGBA16F or RGB9E5 |
 | Ramps, ILM maps, SDF face maps | RON documents: color stops, and masks painted or baked in Blender | serde, `image` | Uncompressed RGBA8 (ramps), BC7 (ILM), R16/RG16 (SDF) | RGBA8, ASTC 4×4, R8/RG8 |
-| Animation | glTF / FBX | `ufbx` / `gltf` | ozz archives plus root-motion track and curves | Same, with stronger compression |
+| Animation | glTF / FBX / VRMA / key-pose RON | `ufbx` / `gltf` / `vrm-spec` | Own rkyv clips plus root-motion track, curves and per-tick baked tables | Same, with stronger compression |
 | Materials | `.material.ron` documents, one type per family | serde | rkyv `.smat`: the family's GPU block and texture references | Same, with the mobile textures' swizzles |
 | Move graphs, frame data, effects, UI, tiers | Editor documents (RON) | serde | rkyv | rkyv |
 | Zones | Blender glTF + custom-property extras, plus editor documents | `gltf` | Cells, instances, probes, navmesh tiles (`rerecast`) | Same, with lower density and fewer probes |
 | Ambient probe grids | `.probes.ron` documents naming the zone's meshes | serde | rkyv `.sprobe`: sparse bricks, L2 sky visibility, L1 bounce per time-of-day key | Same, at twice the spacing with L1 visibility |
 | Shaders | WGSL / WESL | `wesl`, `naga` | Validated WGSL plus permutation inventory | Same, with mobile tier flags |
-| Audio | FMOD Studio project | FMOD Studio build | `.bank` (desktop) | `.bank` (mobile codecs) |
+| Audio | WAV / OGG plus cue RON | Copied or transcoded by the cooker | OGG plus cues | OGG plus cues |
 | Fonts | TTF / OTF | `skrifa` | Subset font plus MSDF atlas for display text | Same |
 | Strings | `.ftl` | `fluent` | Binary tables | Same |
 
@@ -2421,7 +2424,7 @@ These concerns cut across modules. Each line names its owning module.
 On **background**:
 
 - Stop submitting GPU work. This is mandatory on iOS.
-- Suspend the FMOD mixer.
+- Suspend the audio mixer.
 - Flush saves.
 - Pause the simulation, using the world clock.
 - Keep sockets for at most a few seconds.
@@ -2483,7 +2486,7 @@ engine/
 ├─ crates/                  # en_* engine and tool crates (flat)
 ├─ game/                    # game_app (bin/cdylib/staticlib), game_combat, game_characters, game_ai, game_ui
 ├─ platform/
-│  ├─ android/              # Gradle project, GameActivity extends SDLActivity, manifest, FMOD jar
+│  ├─ android/              # Gradle project, GameActivity extends SDLActivity, manifest
 │  ├─ ios/                  # Xcode project, Info.plist, privacy manifest, entitlements, launch screen
 │  ├─ macos/                # bundle Info.plist, entitlements, icons
 │  ├─ windows/              # app manifest (DPI awareness), icon, installer config
@@ -2533,7 +2536,7 @@ split-debuginfo = "packed"    # PDB / dSYM / .dwp uploaded to Sentry, then strip
 |---|---|---|
 | macOS / Windows / Linux | `cargo build -p <app>` (bin) | `cargo xtask bundle --platform macos` gives an `.app` with `Contents/Resources/content`. Codesigning, notarization and Steam depots come in M4 |
 | iOS | `cargo build -p <app> --target aarch64-apple-ios[-sim]` (bin; SDL is statically linked) | `cargo xtask bundle --platform ios-sim` gives an ad-hoc-signed `.app`. Device signing, plus an Xcode project for sentry-cocoa, the privacy manifest and store archives, come in M4 |
-| Android | `cargo rustc -p <app> --lib --target aarch64-linux-android --crate-type cdylib`, with the NDK environment set by xtask | `cargo xtask bundle --platform android`: the Gradle project in `platform/android` takes the `.so` in `jniLibs/arm64-v8a`, SDL's Java glue (synced from `sdl3-src`) and cooked content in `assets/content`. `SandboxActivity extends SDLActivity`. FMOD's Java init is added in M2 |
+| Android | `cargo rustc -p <app> --lib --target aarch64-linux-android --crate-type cdylib`, with the NDK environment set by xtask | `cargo xtask bundle --platform android`: the Gradle project in `platform/android` takes the `.so` in `jniLibs/arm64-v8a`, SDL's Java glue (synced from `sdl3-src`) and cooked content in `assets/content`. `SandboxActivity extends SDLActivity`. `cpal`'s Android context is set in M2 (plan E1) |
 
 `.cargo/config.toml` fragment for Android 16 KB pages (**Verify** against NDK r28+ defaults):
 
@@ -2624,7 +2627,7 @@ These windows are rough estimates for a small, senior team. A solo developer sho
 |---|---|---|---|
 | **M0 Bring-up** | Months 0–2 | Workspace, layer rules and CI on 3 OSes. `sapphire_platform` (SDL3 main callbacks) and `sapphire_rhi` (Metal / Vulkan / DX12) on all 5 platforms. Skeletons of `sapphire_core`, `sapphire_math`, `sapphire_jobs` and `sapphire_time`. Tracy, `sapphire_crash`, and iOS Xcode / Android Gradle packaging. A glTF character with a basic two-tone character shader and hull outline. | **The same commit** runs the outlined two-tone character at target fps on Mac, Windows, Linux (including Steam Deck), an iPhone and an Android phone. Background → foreground survives on both phones, and a forced crash reaches Sentry from every platform. |
 | **M1 Data path** | Months 2–6 | ECS, reflection and serialization; the `sapphire_assets` runtime. `sapphire_pipeline`: glTF / FBX, `ctt` BC and ASTC, meshopt, packs, content-hash cache, hot reload. Renderer v1: frame graph, compute skinning, forward lighting, shadows, the anime character recipe (track C), the world look (time of day, sky, fog, ambient probes, stylized environment shader) and the post stack. VRM import and anime map tools, `sapphire_input`, `sapphire_debug`, live link, golden-image tests. The plan is [m1-plan.md](m1-plan.md). | Editing a ramp, material parameter or time-of-day key shows up on desktop *and* phone without a restart. The look-dev scene meets the tier budgets on all 5 platforms. Golden images pass on 3 backends. |
-| **M2 Combat slice** | Months 4–10 | `sapphire_anim` (ozz, inertialization, IK, spring bones), `sapphire_physics`, the combat core, party swap, camera director, one enemy AI, FMOD, VFX v1, touch controls, live link, and the timeline editor v1. | One character against one enemy **feels right** with a gamepad on desktop and with touch on a phone. Replays are deterministic in CI, and Mobile-Low holds 30 fps while thermally throttled. **This is the go/no-go gate.** If tuning still feels slow, take the off-ramp in the report: move gameplay and tools to Godot with gdext, and keep the Rust systems. |
+| **M2 Combat slice** | Months 4–10 | `sapphire_anim` (our own runtime, inertialization, IK, spring bones), `sapphire_physics`, the combat core, party swap, camera director, one enemy AI, audio (`kira`), VFX v1, touch controls, live tuning, and the timeline editor v1. The plan is [m2-plan.md](m2-plan.md). | One character against one enemy **feels right** with a gamepad on desktop and with touch on a phone. Replays are deterministic in CI, and Mobile-Low holds 30 fps while thermally throttled. **This is the go/no-go gate.** If tuning still feels slow, take the off-ramp in the report: move gameplay and tools to Godot with gdext, and keep the Rust systems. |
 | **M3 World and tools** | Months 8–18 | Zones and transitions, navigation, sequencer and dialogue, Luau, `sapphire_ui` with the HUD and menus, saves, localization, the editor document model with undo and play-in-editor, and the pipeline (PSO) inventory. | A zone with 3 encounters, a boss authored with no Rust changes, one cutscene, and a full HUD and menus in 2 languages, all on 5 platforms. |
 | **M4 Ship readiness** | Month 12 onward | PSO warm-up, signed chunk manifests and `sapphire_patch`, quality tiers with dynamic resolution and thermal handling, the symbol pipeline, accessibility, and store compliance. | Zero shader hitches in a scripted playthrough. Patches download only changed chunks. Builds pass TestFlight, Play internal testing and Steam review. |
 
@@ -2674,8 +2677,8 @@ These windows are rough estimates for a small, senior team. A solo developer sho
 | Q4 | Which Windows default backend, Vulkan or DX12, based on Intel / AMD / NVIDIA driver testing? | M1; still open at its close, for want of Windows hardware (§10, M1 status) |
 | Q5 | wgpu on mobile and Apple: on-tile MSAA / transient attachments, timestamp queries inside passes on Apple GPUs, Android pre-rotation, Metal binary archives. **Partly answered in M0:** MSAA and depth are transient attachments, and Apple GPUs report the memory saving; the M5 has no timestamps inside passes. The iOS simulator lacks base vertex / first instance, indirect execution, cube arrays and comparison samplers, so the CPU-driven draw path avoids them (ADR 0002). **M1 plan:** mobile AA is 4× MSAA kept in tile memory through `TRANSIENT_ATTACHMENT`, to be measured on Mali and Adreno; one-pass deferred stays impossible until wgpu gets input attachments (#10148). **M1 R7:** the phone tiers keep 4× MSAA as transient attachments, held there by a GPU test; the measurement on Mali, Adreno and Apple devices moves to M2. | M1; the device measurements are still open at its close (§10, M1 status) |
 | Q6 | ~~Do hosted CI runners expose a GPU for Metal golden images?~~ **Answered (M1 plan):** yes. GitHub's macOS arm64 runners expose Metal as "Apple Paravirtual device", and wgpu runs its image tests there on every PR (shader validation is broken there; 3 vCPU). Goldens run per PR on lavapipe, WARP and `macos-26` Metal. | M1 |
-| Q7 | Does ozz-animation-rs cover offline animation building, or is the C++ ozz tooling needed in the cooker? **Partly answered (M1 research):** it has no offline tools, so the cooker needs the C++ ozz tooling. It also needs **nightly Rust** (`portable_simd`), which conflicts with the pinned stable toolchain, so the runtime choice is open too. | Start of M2 |
-| Q8 | FMOD license tier and cost; if blocked, the `kira` backend becomes primary. | M2 |
+| Q7 | ~~Does ozz-animation-rs cover offline animation building?~~ **Answered ([m2-plan.md](m2-plan.md) §3):** it has no offline tools, still needs nightly Rust at HEAD and has no stable path, so `sapphire_anim` is our own runtime with our own cooker, with no C++ in the pipeline. | M2 |
+| Q8 | ~~FMOD license tier and cost; if blocked, the `kira` backend becomes primary.~~ **Answered ([m2-plan.md](m2-plan.md) §3):** blocked for a public repository, so `kira` is primary, as the maintainer confirmed. | M2 |
 | Q9 | Device floors (A14 / Snapdragon 865 / 6 GB), measured while thermally throttled. | M2 |
 | Q10 | iOS policy on downloadable scripts and content: legal and App Review guidance. | Before any live-service plan |
 | Q11 | Current App Store and Play size limits, which shape the install-time vs CDN content split. | M4 |
@@ -2712,10 +2715,8 @@ Pin these in `[workspace.dependencies]`. Versions were checked against crates.io
 | `wgpu-profiler` | 0.28 | `sapphire_rhi` | Not used (M1 F5): the frame graph times its passes itself, see §5.20 |
 | `dlss_wgpu` | 6.0 | `sapphire_render` (Windows / Linux) | NVIDIA + Vulkan only |
 | `objc2-metal-fx`, `objc2-foundation` | latest | `sapphire_render`, `sapphire_platform` (Apple) | |
-| `ozz-animation-rs` | 0.11 | `sapphire_anim` | **Vendor it.** MPL-2.0 (file-level copyleft); one maintainer |
 | `rapier3d`, `parry3d` | 0.36, 0.31 | `sapphire_physics` | Jolt via `joltc` as the escape hatch |
-| FMOD Studio API | vendor SDK | `sapphire_audio` | Commercial license; own bindgen bindings |
-| `kira` | 0.12 | `sapphire_audio` (fallback) | |
+| `kira` | 0.12 | `sapphire_audio` | MIT or Apache-2.0, on `cpal`. Phones are community-confirmed, so M2 tests them early |
 | `taffy`, `parley` | 0.15, 0.12 | `sapphire_ui` | `rustybuzz` is archived |
 | `rerecast`, `landmass` | 0.4, 0.9 | `sapphire_nav`, `sapphire_pipeline` | Vendor both (small maintainer base) |
 | `statig` | 0.4 | `sapphire_gameplay` | |

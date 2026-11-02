@@ -1,6 +1,6 @@
 # M2 handoff notes
 
-What M2 inherits from M1, for whoever starts M2. It is a map, not a copy. Each item gets a line or two and a pointer to where the detail lives:
+What M2 inherits from M1, for whoever starts M2; [m2-plan.md](m2-plan.md) is what M2 does with it. It is a map, not a copy. Each item gets a line or two and a pointer to where the detail lives:
 - the spec, [engine-spec.md](engine-spec.md), by section;
 - the M1 plan, [m1-plan.md](m1-plan.md), by package ID (each package's row carries its "As built" notes);
 - or the code, where its crate docs keep a "Later milestones" section.
@@ -128,7 +128,7 @@ All on this Mac's Apple M5 with release builds, which is none of §3's reference
 
 ### Animation, M2's core
 
-- **`sapphire_anim` and Q7:** `ozz-animation-rs` has no offline tools and needs nightly Rust (`portable_simd`), which the stable toolchain rules out. Decide the runtime at the start of M2, and use C++ ozz tools in the cooker (spec §5.13, §11 Q7; plan §3).
+- **`sapphire_anim` and Q7:** `ozz-animation-rs` has no offline tools and needs nightly Rust (`portable_simd`), which the stable toolchain rules out. [m2-plan.md](m2-plan.md) §3 decides on our own runtime and cooker (spec §5.13, §11 Q7).
 - **Clips:** FBX animation isn't imported yet (A10; spec §5.27, FBX's "Not imported").
 - **Skeletons as assets:** skinned meshes embed their skeleton until animation cooks skeletons of their own, and the VRM's rig moves next to them (spec §5.10).
 - **Spring bones and constraints** are cooked, but nothing simulates them (A6; spec §5.10). The look-dev character holds one standing pose (X1 part 1).
@@ -136,7 +136,7 @@ All on this Mac's Apple M5 with release builds, which is none of §3's reference
 
 ### Gameplay, world and tools
 
-- **The combat slice:** the combat core, party, camera director, one enemy AI, FMOD (Q8) and touch controls (spec §10; §5.15, §5.22).
+- **The combat slice:** the combat core, party, camera director, one enemy AI, audio (Q8: `kira`, plan §3) and touch controls (spec §10; §5.15, §5.22).
 - **Hit-stop:** it freezes the combatants' clocks, and M2 pushes a hit's screen effect preset in the step that applies it. A finish freeze decides whether effects then need a clock of their own (spec §5.21, P3's note).
 - **Spawning in the fixed step** allocates, so gameplay spawns need pre-sized pools (spec §5.6, rule R6).
 - **Zones** (M3) are to place the look-dev town as culled instances instead of one mesh (spec §5.21; §5.27, X1 part 1's "Later milestones").

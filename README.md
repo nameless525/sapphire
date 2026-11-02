@@ -23,6 +23,7 @@ It has been verified on macOS (Apple Silicon, Metal), on the iOS 26.3 Simulator 
 - [M1 plan](docs/m1-plan.md): M1's work packages, each with an "As built" note.
 - [M1 exit run](docs/m1-exit-run.md): how to run M1's exit tests on the desktop, simulators and phones.
 - [M2 handoff notes](docs/m2-handoff.md): what M2 inherits from M1.
+- [M2 plan](docs/m2-plan.md): the combat slice's decisions, work packages and order. M2 is under way.
 - [Research report](reports/Rust%20anime%20action%20game%20engine.md): why Rust, and why these libraries.
 - [Conventions](docs/conventions.md): how the code should read.
 - [Privacy safeguards](docs/privacy.md): safe commit identities, local hooks and the CI guard.
@@ -191,7 +192,7 @@ xtask/    build automation and the layer checker
 platform/ per-platform packaging (Info.plist templates, Android Gradle project)
 content/  source assets and their .meta sidecars, third-party content with its licenses
 tests/    golden images, one per scene and backend family
-docs/     spec, M1 plan and exit run, M2 handoff, conventions, ADRs
+docs/     spec, M1 plan and exit run, M2 handoff and plan, conventions, ADRs
 ```
 
 ## Troubleshooting

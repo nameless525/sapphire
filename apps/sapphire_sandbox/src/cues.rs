@@ -291,6 +291,24 @@ mod tests {
         assert!(!show.table().sound_cues().is_empty());
     }
 
+    /// A new table naming what the libraries lack is refused, and the one firing stays.
+    #[test]
+    fn a_reload_naming_what_is_not_there_is_refused() {
+        let presets = ScreenLibrary::default_effects();
+        let mut show = CueShow::new(VfxBudget::DESKTOP_LOW, &presets).expect("resolves");
+        let rows = show.table().rows().len();
+        let naming = CueTable::from_ron(
+            r#"(type: "sapphire::cues::CueTable", version: 1, data: (rows: [
+                (cue: "hit_landed", screen: Some((preset: "no_such_preset"))),
+            ]))"#,
+        )
+        .expect("valid on its own");
+        let error = show.take_table(naming, &presets).expect_err("no such preset");
+        assert!(matches!(error, CueTableError::UnknownPreset { .. }), "{error}");
+        assert_eq!(show.table().rows().len(), rows);
+        show.take_table(CueTable::default_table(), &presets).expect("the shipped one again");
+    }
+
     /// Presets that lose one the table pushes are refused, so what's firing keeps working.
     #[test]
     fn a_reload_that_loses_a_preset_is_refused() {

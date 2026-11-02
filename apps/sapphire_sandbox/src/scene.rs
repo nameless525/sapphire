@@ -3290,15 +3290,20 @@ mod tests {
         scene.end_frame();
     }
 
+    /// G3's recording, from its start.
+    fn recorded_fight() -> crate::combat::Combat {
+        let path =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/replays/fight.sreplay");
+        let option = crate::options::CombatOption::Replay { path, to_end: true };
+        crate::combat::Combat::new(&option).expect("a committed recording")
+    }
+
     /// A recorded fight fired as `--cues` does: the frame the first hit lands in draws its spark and its
     /// screen effect and shakes the camera, the frames before it draw none of them, and the simulation
     /// still reaches its recorded checksums.
     #[test]
     fn a_fights_first_hit_reaches_the_frame_it_lands_in() {
-        let path =
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/replays/fight.sreplay");
-        let option = crate::options::CombatOption::Replay { path, to_end: true };
-        let mut combat = crate::combat::Combat::new(&option).expect("a committed recording");
+        let mut combat = recorded_fight();
         let mut scene = scene();
         scene.play_cues(VfxBudget::DESKTOP_LOW).expect("the shipped table resolves");
         let view_at =
@@ -3328,13 +3333,36 @@ mod tests {
         combat.check().expect("a fight fired is the fight recorded");
     }
 
+    /// A step's firing allocates nothing once a whole fight has warmed it (rule R6). The simulation's
+    /// own steps are left out: a replay's trail of checksums grows.
+    #[test]
+    fn a_fights_cues_do_not_allocate_once_warmed() {
+        let mut scene = scene();
+        scene.play_cues(VfxBudget::DESKTOP_LOW).expect("the shipped table resolves");
+        let mut fight = || {
+            let mut combat = recorded_fight();
+            let mut allocations = 0;
+            for _ in 0..1500 {
+                scene.step();
+                combat.step(&mut crate::combat::no_bindings);
+                let ((), fired) = sapphire_core::alloc::count_in_scope(|| {
+                    scene.show_cues(combat.simulation());
+                    scene.end_cue_frame(1.0 / TICK_HZ as f32, &mut ());
+                });
+                allocations += fired.allocations;
+                let _ = scene.frame_packet(1.0, Some((640, 360)));
+                scene.end_frame();
+            }
+            allocations
+        };
+        let _ = fight();
+        assert_eq!(fight(), 0, "rule R6");
+    }
+
     /// Without `--cues`, a fight stepping beside the scene fires nothing, whatever it publishes.
     #[test]
     fn a_fight_without_the_flag_fires_nothing() {
-        let path =
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/replays/fight.sreplay");
-        let option = crate::options::CombatOption::Replay { path, to_end: true };
-        let mut combat = crate::combat::Combat::new(&option).expect("a committed recording");
+        let mut combat = recorded_fight();
         let mut scene = scene();
         for _ in 0..200 {
             scene.step();

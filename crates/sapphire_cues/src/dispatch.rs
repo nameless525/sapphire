@@ -121,10 +121,9 @@ impl Row {
             rumble: row.rumble,
         };
         for (slot, EffectFire { effect, at, clock }) in resolved.effects.iter_mut().zip(&row.effects) {
-            let found = effects.find(effect).ok_or_else(|| CueTableError::UnknownEffect {
-                row: row.label(),
-                name: effect.clone(),
-            })?;
+            let found = effects
+                .find(effect)
+                .ok_or_else(|| CueTableError::UnknownEffect { row: row.label(), name: effect.clone() })?;
             *slot = Some(RowEffect { effect: found, at: *at, clock: *clock });
         }
         for (slot, sound) in resolved.sounds.iter_mut().zip(&row.sounds) {
@@ -213,12 +212,7 @@ impl CueDispatcher {
     ///
     /// `tick` is `Simulation::tick`: the same tick read again fires nothing, as when a replay has run out
     /// and its last step's cues are still there to read.
-    pub fn read_step(
-        &mut self,
-        tick: u64,
-        cues: impl IntoIterator<Item = CueEvent>,
-        step: &mut CueStep<'_>,
-    ) {
+    pub fn read_step(&mut self, tick: u64, cues: impl IntoIterator<Item = CueEvent>, step: &mut CueStep<'_>) {
         profiling::scope!("CueDispatcher::read_step");
         if self.read_tick == Some(tick) {
             return;
@@ -346,15 +340,16 @@ impl CueDispatcher {
 /// A row with the weight wins over a row with none. Rows are few, and a frame's cues fewer.
 fn find_row(rows: &[Row], cue: Name, weight: Option<Weight>) -> Option<&Row> {
     let named = || rows.iter().filter(|row| row.cue == cue);
-    weight.and_then(|weight| named().find(|row| row.weight == Some(weight))).or_else(|| {
-        named().find(|row| row.weight.is_none())
-    })
+    weight
+        .and_then(|weight| named().find(|row| row.weight == Some(weight)))
+        .or_else(|| named().find(|row| row.weight.is_none()))
 }
 
 /// A hit's effect, at its point and with +Y out of the surface. A normal with no direction leaves it upright.
 fn along_normal(hit: &HitCue) -> Placement {
     let normal = hit.normal.normalize_or_zero();
-    let rotation = if normal == Vec3::ZERO { Quat::IDENTITY } else { Quat::from_rotation_arc(Vec3::Y, normal) };
+    let rotation =
+        if normal == Vec3::ZERO { Quat::IDENTITY } else { Quat::from_rotation_arc(Vec3::Y, normal) };
     Placement { position: hit.point, rotation }
 }
 
@@ -559,11 +554,7 @@ mod tests {
     fn sounds_play_at_a_hit_or_on_the_actor() {
         let mut dispatcher = dispatcher(vec![with_sound("hit"), with_sound("swing")]);
         let mut sinks = Sinks::new();
-        sinks.read(
-            &mut dispatcher,
-            1,
-            &[event("hit", Some(hit(Weight::Light))), event("swing", None)],
-        );
+        sinks.read(&mut dispatcher, 1, &[event("hit", Some(hit(Weight::Light))), event("swing", None)]);
         let targets: Vec<_> = dispatcher.sounds().iter().map(|request| request.target).collect();
         assert_eq!(targets, [CueTarget::At(hit(Weight::Light).point), CueTarget::On(emitter_of(ATTACKER))]);
     }
@@ -712,7 +703,9 @@ mod tests {
             }])
             .post_variants(&presets)
         };
-        let of = |name: &str| presets.preset(presets.find(name).expect("a preset")).expect("found").post_variants();
+        let of = |name: &str| {
+            presets.preset(presets.find(name).expect("a preset")).expect("found").post_variants()
+        };
         assert_eq!(pushing("radial_blur"), of("radial_blur"));
         assert_eq!(pushing("duotone"), of("duotone"));
         assert_eq!(dispatcher(vec![row("hit")]).post_variants(&presets), PostVariants::NONE);

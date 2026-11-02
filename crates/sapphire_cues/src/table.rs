@@ -313,9 +313,7 @@ mod tests {
     #[test]
     fn a_cue_may_have_a_row_per_weight_but_not_two_of_one() {
         let weighted = |weight| CueRow { weight: Some(weight), ..row("hit") };
-        assert!(
-            CueTable::new(vec![row("hit"), weighted(Weight::Light), weighted(Weight::Heavy)]).is_ok()
-        );
+        assert!(CueTable::new(vec![row("hit"), weighted(Weight::Light), weighted(Weight::Heavy)]).is_ok());
         assert_eq!(
             CueTable::new(vec![weighted(Weight::Light), weighted(Weight::Light)]),
             Err(CueTableError::Duplicate("hit (Light)".to_owned()))
@@ -340,10 +338,8 @@ mod tests {
         assert_eq!(field_of(rumble(0.0, -0.1, 0.1)), "rumble.high");
         assert_eq!(field_of(rumble(0.0, 0.0, 0.0)), "rumble.seconds");
         assert_eq!(field_of(rumble(0.0, 0.0, 3.0)), "rumble.seconds");
-        let shake = |strength| CueRow {
-            shake: Some(ShakeFire { preset: "a".to_owned(), strength }),
-            ..row("a")
-        };
+        let shake =
+            |strength| CueRow { shake: Some(ShakeFire { preset: "a".to_owned(), strength }), ..row("a") };
         assert_eq!(field_of(shake(0.0)), "shake.strength");
         assert_eq!(field_of(shake(f32::INFINITY)), "shake.strength");
         let spark = EffectFire { effect: "a".to_owned(), at: EffectPlace::Hit, clock: EffectOwner::World };
@@ -352,13 +348,13 @@ mod tests {
         let id = AssetId::from_text("11111111-2222-4333-8444-555555555555");
         assert_eq!(field_of(CueRow { sounds: vec![id; MAX_ROW_SOUNDS + 1], ..row("a") }), "sounds");
 
-        let text = |data: &str| {
-            format!(r#"(type: "sapphire::cues::CueTable", version: 1, data: (rows: [{data}]))"#)
-        };
+        let text =
+            |data: &str| format!(r#"(type: "sapphire::cues::CueTable", version: 1, data: (rows: [{data}]))"#);
         let error = CueTable::from_ron(&text(r#"(cue: "a", rumbel: None)"#)).expect_err("a misspelling");
         assert!(error.to_string().contains("rumbel"), "{error}");
-        let error = CueTable::from_ron(&text(r#"(cue: "a", rumble: Some((low: 2.0, high: 0.0, seconds: 0.1)))"#))
-            .expect_err("out of range");
+        let error =
+            CueTable::from_ron(&text(r#"(cue: "a", rumble: Some((low: 2.0, high: 0.0, seconds: 0.1)))"#))
+                .expect_err("out of range");
         assert!(error.to_string().contains("rumble.low"), "{error}");
     }
 }

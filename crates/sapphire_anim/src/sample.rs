@@ -2,8 +2,8 @@
 //!
 //! Plain functions over the cooked formats, with no state between calls: the same arguments give
 //! the same bits, and a jump costs what a step costs (the [`clip`](sapphire_assets::clip) module's
-//! docs say why there is no cursor). The cooker calls these too, to bake a move's per-tick tables
-//! (spec §5.13), so a table and the pose on screen read the same tracks the same way.
+//! docs say why there is no cursor). A move's per-tick tables don't come through here: see the
+//! [crate docs](crate).
 
 use sapphire_assets::clip::ArchivedClip;
 use sapphire_assets::skeleton::ArchivedSkeleton;

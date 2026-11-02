@@ -30,13 +30,14 @@
 //!   already was. This crate is where the runtime names them.
 //! - **Importing and key reduction:** the pipeline (tools), which links `sapphire_assets` only.
 //! - **The renderer and the world:** no edge to either (rules R3, R4). Poses reach the renderer as
-//!   finished palettes in `FramePacket`. The cooker links this crate to bake a move's tables from
-//!   the same sampler, so nothing here may `include_str!` a shader or a document edited during
-//!   look-dev (M1 A8's follow-up).
+//!   finished palettes in `FramePacket`.
 //! - **Whose clock:** callers turn their owner clock's presented time into a position. A clock that
 //!   stands still (hitstop, pause) gives the same position, and so the same pose.
 //! - **The simulation:** it never reads a pose. A move's root motion and hit volumes are baked at
-//!   cook time into per-tick tables in `sapphire_moves` (spec §5.14, §5.22).
+//!   cook time into per-tick tables in `sapphire_moves` (spec §5.14, §5.22). **The bake doesn't run
+//!   this crate:** a table is one set of bytes on every architecture, and these functions' `Quat` and
+//!   `Affine3A` round differently on NEON and SSE2, so the pipeline bakes through scalars and a test
+//!   there holds a table to the pose this crate draws (spec §5.27).
 //!
 //! # Later in M2
 //!

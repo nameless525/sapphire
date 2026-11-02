@@ -1,0 +1,30 @@
+[package]
+name = "sapphire_camera"
+description = "The camera director: rigs that frame the fighters, sphere-cast collision, critically damped smoothing on the camera's own clock, and shakes as cues. Presentation only, so nothing here reaches the simulation."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+# The tuning document derives `TypePath`, whose derive finds the crate by this name.
+bevy_reflect.workspace = true
+profiling.workspace = true
+sapphire_math.workspace = true
+sapphire_physics.workspace = true
+sapphire_reflect.workspace = true
+sapphire_serialize.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+# The arena the no-clip test walks, from its committed document.
+sapphire_colliders.workspace = true
+# Counts allocations under R6's frame test.
+sapphire_core.workspace = true
+# The bench's clock: rule R2 keeps this crate itself off the OS's.
+sapphire_time.workspace = true
+
+[lints]
+workspace = true

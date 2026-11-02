@@ -1,0 +1,345 @@
+//! The arm from the player to the eye, and the rule that the eye never enters a collider.
+//!
+//! Two things happen each frame, and it's the second that promises no clip:
+//!
+//! 1. **The arm decides where the eye should be.** A sphere cast along the line from the player's
+//!    chest to where the rig wants the eye says what's in the way, and a second cast along where that
+//!    line will be `lead_time` from now says what's coming, so the arm comes in *before* it arrives
+//!    and pulling in is a spring rather than a kink. Coming in is quick and going out is slow, after a
+//!    delay, so it doesn't pump.
+//! 2. **The eye moves there by sweeping** from last frame's eye, sliding along anything it meets. It
+//!    can't pass through what a sweep sees, so the arm's spring is free to lag, and a surface the arm
+//!    reaches late only gets slid along.
+//!
+//! **A thin pillar** is the case an arm alone can't do well. With the eye beyond a pillar, the line
+//! gets blocked all at once, and pulling in means crossing the pillar. So an occluder that's shallow
+//! along the line, with the eye's own spot clear beyond it, is passed behind: the arm stays out, and
+//! the player is hidden for the moment the line takes to pass. A second cast, back from the eye,
+//! measures how deep it is. Depth alone can't tell a pillar from a long thin wall, so only for
+//! `thin_patience` seconds, and the arm comes in front of whatever still hides the player after that.
+//!
+//! **When sliding can't get there,** as with the eye shut behind a thick wall, it counts as stuck: after
+//! `stuck_time` the eye hops to its place along the line, which is free by that line's cast. A hop
+//! jumps by design, is counted in [`CameraStats::hops`], and is the one exception to the jerk bound;
+//! leading and sliding make it rare.
+
+use sapphire_math::Vec3;
+use sapphire_physics::{Group, PhysicsWorld, Pose, QueryFilter, Shape};
+
+use crate::director::CameraStats;
+use crate::spring::Follow;
+use crate::tuning::CollisionTuning;
+
+/// How far the eye stays off a surface it stops at, in metres.
+const SKIN: f32 = 0.002;
+/// Sweeps a slide may take in a frame: enough for an inside corner.
+const SLIDE_BOUNCES: u32 = 3;
+/// Motion too small to sweep, in metres.
+const NO_MOVE: f32 = 1e-5;
+/// How far the line must move over the lead time before it's worth a second cast, in metres.
+const WORTH_LEADING: f32 = 0.01;
+
+/// What's along a line, from its start to its end.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Line {
+    Clear,
+    /// Shallow, with the line's end clear beyond it. `hit` is how far the line gets.
+    Thin {
+        hit: f32,
+    },
+    Blocked {
+        hit: f32,
+    },
+    /// The sphere overlaps something where the line starts.
+    StartsInside,
+}
+
+/// The eye's state from frame to frame.
+#[derive(Clone, Debug)]
+pub(crate) struct Arm {
+    sphere: Shape,
+    filter: QueryFilter,
+    /// Metres the eye sits nearer the player than the rig asked for.
+    pull: Follow<f32>,
+    /// Where the eye was left: free of every collider.
+    eye: Vec3,
+    /// How far the eye sits from where the arm wants it. Nothing while it moves freely. A surface opens this
+    /// up, and it closes on a spring when the eye can move again, rather than all at once.
+    gap: Follow<Vec3>,
+    last_proposed: Vec3,
+    last_start: Vec3,
+    last_goal: Vec3,
+    /// Seconds since the line last asked for this much pull or more.
+    since_pulled: f32,
+    /// Seconds a thin occluder has been on the line.
+    thin_for: f32,
+    /// Seconds the eye has been away from where the arm wants it.
+    stuck_for: f32,
+}
+
+impl Arm {
+    pub(crate) fn new(radius: f32) -> Self {
+        Self {
+            sphere: Shape::Sphere { radius },
+            filter: QueryFilter::new(Group::World.mask() | Group::CameraBlocker.mask()),
+            pull: Follow::new(0.0),
+            eye: Vec3::ZERO,
+            gap: Follow::new(Vec3::ZERO),
+            last_proposed: Vec3::ZERO,
+            last_start: Vec3::ZERO,
+            last_goal: Vec3::ZERO,
+            since_pulled: 0.0,
+            thin_for: 0.0,
+            stuck_for: 0.0,
+        }
+    }
+
+    /// A reload's new radius. The next frame's sweep starts from an overlap at worst, and leaves it.
+    pub(crate) fn set_radius(&mut self, radius: f32) {
+        self.sphere = Shape::Sphere { radius };
+    }
+
+    /// Where the eye goes this frame, given the rig's `goal` and the `anchor` it must keep in sight.
+    /// With `snap` it goes straight there, or to the nearest place the line reaches.
+    #[allow(clippy::too_many_arguments, reason = "one frame's inputs, at its one call")]
+    pub(crate) fn resolve(
+        &mut self,
+        world: &PhysicsWorld,
+        anchor: Vec3,
+        goal: Vec3,
+        tuning: &CollisionTuning,
+        dt: f32,
+        snap: bool,
+        stats: &mut CameraStats,
+    ) -> Vec3 {
+        let thin = tuning.thin_occluder;
+        let mut start = anchor;
+        let mut line = classify(world, &self.sphere, &self.filter, start, goal, thin, stats);
+        if line == Line::StartsInside {
+            // A character up against a wall can have a chest closer to it than the sphere's radius.
+            start = self.pushed_out(world, anchor, stats);
+            line = classify(world, &self.sphere, &self.filter, start, goal, thin, stats);
+        }
+        let offset = goal - start;
+        let length = offset.length();
+        if length < NO_MOVE {
+            self.eye = start;
+            return start;
+        }
+        let direction = offset / length;
+        let patient =
+            self.thin_for < tuning.thin_patience && self.stuck_for < tuning.stuck_time * 0.5 && !snap;
+
+        match line {
+            Line::Clear | Line::StartsInside => self.thin_for = 0.0,
+            Line::Thin { .. } => {
+                self.thin_for += dt;
+                stats.thin_frames += 1;
+            }
+            Line::Blocked { .. } => {}
+        }
+        let mut wanted = pull_for(line, length, patient);
+
+        if snap {
+            self.pull.reset(wanted);
+            self.since_pulled = 0.0;
+            self.thin_for = 0.0;
+            self.stuck_for = 0.0;
+            self.gap.reset(Vec3::ZERO);
+            self.eye = start + direction * (length - wanted);
+            self.last_proposed = self.eye;
+        } else {
+            if dt > 0.0 {
+                let (start_soon, goal_soon) = (
+                    start + (start - self.last_start) * (tuning.lead_time / dt),
+                    goal + (goal - self.last_goal) * (tuning.lead_time / dt),
+                );
+                let worth = start_soon.distance_squared(start) > WORTH_LEADING * WORTH_LEADING
+                    || goal_soon.distance_squared(goal) > WORTH_LEADING * WORTH_LEADING;
+                if worth {
+                    let soon =
+                        classify(world, &self.sphere, &self.filter, start_soon, goal_soon, thin, stats);
+                    // How far that line gets, as a pull on this one: only what's in the way counts, not
+                    // that the line's about to be longer.
+                    wanted = wanted.max(pull_for(soon, length, patient));
+                }
+            }
+            self.pull_toward(wanted.min(length), tuning, dt);
+
+            let proposed = start + direction * (length - self.pull.value);
+            let aim = proposed + self.closed_gap(tuning, dt);
+            let eye = self.slide(world, self.eye, aim, stats);
+            self.last_proposed = proposed;
+            self.stuck_for = if eye.distance_squared(proposed) > tuning.stuck_gap * tuning.stuck_gap {
+                self.stuck_for + dt
+            } else {
+                0.0
+            };
+            self.eye = eye;
+            if self.stuck_for >= tuning.stuck_time && dt > 0.0 {
+                // To the eye's place, short of the near side of whatever's on the line.
+                let reach = match line {
+                    Line::Thin { hit } | Line::Blocked { hit } => hit,
+                    Line::Clear | Line::StartsInside => length,
+                };
+                let arm = (length - self.pull.value).min(reach);
+                self.pull.reset(length - arm);
+                self.eye = start + direction * arm;
+                self.last_proposed = self.eye;
+                self.gap.reset(Vec3::ZERO);
+                self.stuck_for = 0.0;
+                self.thin_for = self.thin_for.max(tuning.thin_patience);
+                stats.hops += 1;
+            }
+        }
+
+        if self.pull.value > 0.0 {
+            stats.pulled_frames += 1;
+        }
+        self.last_start = start;
+        self.last_goal = goal;
+        self.eye
+    }
+
+    /// Moves the eye by a shake's offset, stopping short of anything in the way. The result isn't
+    /// kept: next frame's eye moves from where the arm left it.
+    pub(crate) fn offset_by(
+        &self,
+        world: &PhysicsWorld,
+        eye: Vec3,
+        offset: Vec3,
+        stats: &mut CameraStats,
+    ) -> Vec3 {
+        let length = offset.length();
+        if length < NO_MOVE {
+            return eye;
+        }
+        let direction = offset / length;
+        stats.casts += 1;
+        let reach = world
+            .cast_shape(&self.sphere, Pose::at(eye), direction, length, &self.filter)
+            .map_or(length, |hit| (hit.distance - SKIN).max(0.0));
+        eye + direction * reach
+    }
+
+    /// What's left of the eye's gap from its place after this step, closing no faster than the arm moves.
+    fn closed_gap(&mut self, tuning: &CollisionTuning, dt: f32) -> Vec3 {
+        let gap = self.eye - self.last_proposed;
+        if gap.length_squared() < NO_MOVE * NO_MOVE {
+            self.gap.reset(Vec3::ZERO);
+            return Vec3::ZERO;
+        }
+        self.gap.value = gap;
+        let next = self.gap.update(Vec3::ZERO, tuning.pull_in_half_life, dt);
+        let limit = tuning.max_pull_speed * dt;
+        let closed = (gap - next).clamp_length_max(limit);
+        self.gap.value = gap - closed;
+        self.gap.velocity = self.gap.velocity.clamp_length_max(tuning.max_pull_speed);
+        self.gap.value
+    }
+
+    /// Moves the pull toward `wanted`: quickly in, and slowly out once the line has stayed clear.
+    fn pull_toward(&mut self, wanted: f32, tuning: &CollisionTuning, dt: f32) {
+        let now = self.pull.value;
+        let coming_in = wanted >= now - 1e-3;
+        self.since_pulled = if coming_in { 0.0 } else { self.since_pulled + dt };
+        let (goal, half_life) = if coming_in {
+            (wanted, tuning.pull_in_half_life)
+        } else if self.since_pulled >= tuning.pull_out_delay {
+            (wanted, tuning.pull_out_half_life)
+        } else {
+            (now, tuning.pull_out_half_life)
+        };
+        self.pull.update(goal, half_life, dt);
+        let limit = tuning.max_pull_speed * dt;
+        self.pull.value = now + (self.pull.value - now).clamp(-limit, limit);
+        self.pull.velocity = self.pull.velocity.clamp(-tuning.max_pull_speed, tuning.max_pull_speed);
+        // A spring never quite arrives: below this, the arm is out.
+        if self.pull.value <= NO_MOVE * 100.0 && goal <= 0.0 {
+            self.pull.reset(0.0);
+        }
+    }
+
+    /// Sweeps the eye from `from` to `to`, sliding along what it meets. Starting and ending free of
+    /// every collider, whatever `to` is: this is what holds the no-clip promise.
+    fn slide(&self, world: &PhysicsWorld, from: Vec3, to: Vec3, stats: &mut CameraStats) -> Vec3 {
+        let mut at = from;
+        let mut goal = to;
+        for _ in 0..SLIDE_BOUNCES {
+            let along = goal - at;
+            let length = along.length();
+            if length < NO_MOVE {
+                break;
+            }
+            let direction = along / length;
+            stats.casts += 1;
+            let Some(hit) = world.cast_shape(&self.sphere, Pose::at(at), direction, length, &self.filter)
+            else {
+                at = goal;
+                break;
+            };
+            stats.contacts += 1;
+            if hit.started_overlapping {
+                at += hit.normal * SKIN;
+                at = self.pushed_out(world, at, stats);
+                continue;
+            }
+            at += direction * hit.distance + hit.normal * SKIN;
+            let rest = goal - at;
+            goal = at + rest - hit.normal * rest.dot(hit.normal);
+        }
+        // A sweep lets a grazing path go, so a path grazing a surface can end a whisker into it.
+        self.pushed_out(world, at, stats)
+    }
+
+    /// `at`, or out of what it overlaps by the shortest way.
+    fn pushed_out(&self, world: &PhysicsWorld, at: Vec3, stats: &mut CameraStats) -> Vec3 {
+        stats.casts += 1;
+        match world.penetration(&self.sphere, Pose::at(at), &self.filter) {
+            Some(deepest) => at + deepest.normal * (deepest.depth + SKIN),
+            None => at,
+        }
+    }
+}
+
+/// How much pull a line asks for. A thin occluder asks for none while there's patience left.
+fn pull_for(line: Line, length: f32, patient: bool) -> f32 {
+    match line {
+        Line::Clear | Line::StartsInside => 0.0,
+        Line::Thin { .. } if patient => 0.0,
+        Line::Thin { hit } | Line::Blocked { hit } => (length - hit).max(0.0),
+    }
+}
+
+/// What's on the line from `start` to `end`, for the sphere.
+fn classify(
+    world: &PhysicsWorld,
+    sphere: &Shape,
+    filter: &QueryFilter,
+    start: Vec3,
+    end: Vec3,
+    thin_occluder: f32,
+    stats: &mut CameraStats,
+) -> Line {
+    let offset = end - start;
+    let length = offset.length();
+    if length < NO_MOVE {
+        return Line::Clear;
+    }
+    let direction = offset / length;
+    stats.casts += 1;
+    let Some(front) = world.cast_shape(sphere, Pose::at(start), direction, length, filter) else {
+        return Line::Clear;
+    };
+    if front.started_overlapping {
+        return Line::StartsInside;
+    }
+    let hit = (front.distance - SKIN).max(0.0);
+    stats.casts += 1;
+    let reach = length - front.distance;
+    match world.cast_shape(sphere, Pose::at(end), -direction, reach, filter) {
+        Some(back) if back.started_overlapping => Line::Blocked { hit },
+        Some(back) if reach - back.distance > thin_occluder => Line::Blocked { hit },
+        _ => Line::Thin { hit },
+    }
+}

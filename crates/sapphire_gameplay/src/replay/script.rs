@@ -71,6 +71,13 @@ pub const SCRIPTS: &[Script] = &[
         actions: fight,
     },
     Script {
+        name: "dodge-counter",
+        about: "perfect dodges of an opponent's swings, answered, out of a dodge cancel and left unanswered, \
+                with a dodge too late and one through its i-frames alone",
+        ticks: 1000,
+        actions: dodge_counter,
+    },
+    Script {
         name: "idle",
         about: "nobody touches anything: the smallest a replay can be",
         ticks: 3600,
@@ -257,6 +264,51 @@ pub fn fight(tick: u64, cast: &[ActorId]) -> TickActions {
     };
     drive(cast.first(), on_schedule(tick, FIGHT_ROUND, &FIGHT_PLAYER), 127);
     drive(cast.get(1), on_schedule(tick, FIGHT_ROUND, &FIGHT_OPPONENT), -127);
+    actions
+}
+
+/// Ticks of one round of [`dodge_counter`]: long enough for whatever a round starts to finish, slow motion
+/// included, and for the two to walk back into each other, which is what every round starts from.
+const DODGE_COUNTER_ROUND: u64 = 200;
+
+/// Ticks of [`dodge_counter`] for the opponent: one `light_1` a round, whose blade is live on the 5th to
+/// 7th ticks after each press, and reaches the player from the 6th.
+const DODGE_COUNTER_OPPONENT: [(u64, Buttons); 5] = [
+    (50, Buttons::LIGHT),
+    (250, Buttons::LIGHT),
+    (450, Buttons::LIGHT),
+    (650, Buttons::LIGHT),
+    (850, Buttons::LIGHT),
+];
+
+/// Ticks of [`dodge_counter`] for the player, by what the test content's moves allow.
+const DODGE_COUNTER_PLAYER: [(u64, Buttons); 9] = [
+    (53, Buttons::DODGE),  // The blade reaches it on tick 56, the dodge's tick 3: perfect.
+    (58, Buttons::LIGHT),  // Inside the counter window: the counter at once.
+    (256, Buttons::DODGE), // Too late: tick 0 has no i-frames, and it lands.
+    (453, Buttons::DODGE), // Perfect again,
+    (501, Buttons::LIGHT), // with the answer a tick after its window closes: a plain attack.
+    (651, Buttons::LIGHT), // A swing of the player's own,
+    (653, Buttons::DODGE), // dodge-cancelled as its window opens, perfect on its tick 2,
+    (658, Buttons::LIGHT), // and answered.
+    (848, Buttons::DODGE), // Too early: the blade goes through its tick 7 and on, i-frames and nothing more.
+];
+
+/// [`SCRIPTS`]' `dodge-counter`: pillar 4's rhythm, on the two standing against each other. Both walk at
+/// each other at the start of each round, until their capsules meet, whatever the last round did to
+/// where they stand.
+#[must_use]
+pub fn dodge_counter(tick: u64, cast: &[ActorId]) -> TickActions {
+    let walking = tick % DODGE_COUNTER_ROUND <= 45;
+    let mut actions = TickActions::NEUTRAL;
+    let mut drive = |actor: Option<&ActorId>, buttons: Buttons, forward: i8| {
+        if let Some(&actor) = actor {
+            let stick = Stick::new(0, if walking { forward } else { 0 });
+            actions.set(actor, ActorActions { buttons, stick }).expect("two actors fit a tick");
+        }
+    };
+    drive(cast.first(), on_schedule(tick, u64::MAX, &DODGE_COUNTER_PLAYER), 127);
+    drive(cast.get(1), on_schedule(tick, u64::MAX, &DODGE_COUNTER_OPPONENT), -127);
     actions
 }
 

@@ -28,10 +28,10 @@ use crate::movement::ActorTransform;
 use crate::moves::{MoveLibrary, MoveOutput, MoveRead, MoveRunner, MoveSetId, WarpTarget};
 use crate::resolve::Fighter;
 
-/// How many bodies a pool of `max_actors` can put in a world: each actor's capsule and all its
-/// hurtboxes.
+/// How many bodies a pool of `max_actors` can put in a world: each actor's capsule, all its hurtboxes
+/// and its perfect-dodge volume.
 pub(crate) const fn body_capacity(max_actors: u32) -> usize {
-    max_actors as usize * (1 + MAX_HURTBOXES as usize)
+    max_actors as usize * (2 + MAX_HURTBOXES as usize)
 }
 
 /// An actor's stable identity (the explicit ID review RS-005 left for M2). Handed out in spawn order

@@ -14,7 +14,8 @@ fn actor(raw: u32) -> ActorId {
     ActorId::from_raw(raw).unwrap()
 }
 
-/// A query holding a record, a stopped volume and an event: its target at x = 1, a wall at x = 2.
+/// A query holding a record, a stopped volume, an event and a dodged swing: its target at x = 1, a
+/// dodger at x = 1.5, a wall at x = 2.
 fn busy_query() -> HitQuery {
     let wall = StaticCollider {
         id: ColliderId(0),
@@ -26,6 +27,9 @@ fn busy_query() -> HitQuery {
     let local = PathSample { translation: [1.0, 1.0, 0.0], ..PathSample::IDENTITY };
     let target = HurtboxId::new(actor(2), 1).unwrap();
     target.set(&mut world, Some(Shape::Sphere { radius: 0.2 }), ActorTransform::default(), local).unwrap();
+    let dodging = PathSample { translation: [1.5, 1.0, 0.0], ..PathSample::IDENTITY };
+    let volume = Some((Shape::Sphere { radius: 0.2 }, dodging));
+    hurtbox::set_dodge_volume(&mut world, actor(3), volume, ActorTransform::default()).unwrap();
 
     let samples = [0.0, 4.0].map(|x| PathSample { translation: [x, 1.0, 0.0], ..PathSample::IDENTITY });
     let path = BakedPath::new(Name::new("blade"), samples.to_vec());
@@ -42,6 +46,7 @@ fn busy_query() -> HitQuery {
             shape: Shape::Sphere { radius: 0.1 },
             path: &path,
             blocked_by: Group::World.mask(),
+            dodgeable: true,
             owner: OwnerStep {
                 delta: SimDuration::from_ticks(1),
                 reading: SimDuration::from_ticks(1),
@@ -56,6 +61,7 @@ fn busy_query() -> HitQuery {
     assert_eq!(hits.events.len(), 1);
     assert_eq!(hits.records.entries.len(), 1);
     assert_eq!(hits.stopped.entries.len(), 1);
+    assert_eq!(hits.dodged.len(), 1);
     hits
 }
 
@@ -99,6 +105,18 @@ fn every_field_of_a_querys_state_moves_the_hash() {
         ("a contact held over", |h| {
             let event = h.events[0];
             h.contacts.push(event);
+        }),
+        ("the dodged count", |h| h.dodged.clear()),
+        ("a dodger", |h| h.dodged[0].dodger = actor(9)),
+        ("a dodged attacker", |h| h.dodged[0].attacker = actor(9)),
+        ("a dodged instance", |h| h.dodged[0].instance += 1),
+        ("a dodged group", |h| h.dodged[0].group = Name::new("x")),
+        ("a dodged volume", |h| h.dodged[0].volume += 1),
+        ("a dodged time", |h| h.dodged[0].at = SimDuration::from_subticks(1)),
+        ("a dodged travel", |h| h.dodged[0].travel += 0.25),
+        ("a swing held over", |h| {
+            let swing = h.dodged[0];
+            h.swings.push(swing);
         }),
     ];
     for (what, edit) in edits {

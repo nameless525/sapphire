@@ -7,7 +7,7 @@ use sapphire_core::Name;
 use sapphire_reflect::Versioned;
 use sapphire_serialize::DocumentError;
 use sapphire_serialize::cooked::{self, AlignedVec, CookedError};
-use sapphire_time::SimDuration;
+use sapphire_time::{NORMAL_SPEED, SimDuration};
 use serde::{Deserialize, Serialize};
 
 use crate::document::Issue;
@@ -34,6 +34,10 @@ pub const MAX_HITSTOP_TICKS: u16 = 120;
 
 /// The cue a hit publishes when its [`Attack`] names none.
 pub const HIT_LANDED: Name = Name::new("hit_landed");
+
+/// Longest one perfect dodge may slow the world, in real fixed steps (ten seconds): past this it's a
+/// typo.
+pub const MAX_SLOW_MOTION_STEPS: u16 = 600;
 
 /// The move's frame data as far as a designer divides it: what the debug view shows and N3's combat
 /// layer can read. Nothing in the simulation depends on it; windows say what happens when.
@@ -539,6 +543,53 @@ pub struct ArmourWindow {
     pub threshold: u32,
 }
 
+/// What a live swing has to touch to count as dodged: a shape riding the root, the way a hurtbox does.
+#[derive(Clone, Copy, Debug, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub struct DodgeVolume {
+    /// Where it sits, in the root's space.
+    pub local: PathSample,
+    pub shape: Shape,
+}
+
+/// How a perfect dodge slows the world: a share of its speed, for an exact number of real fixed steps.
+/// The one who dodged runs at its own speed through it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub struct WorldSlowMotion {
+    /// Thousandths of the world's speed: below 1000, and a divisor of 1,000,000, so the scale that
+    /// brings the one who dodged back up is a whole number of thousandths and lands on exactly 1×.
+    pub per_mille: u32,
+    /// Real fixed steps, which hitstop and a slowed clock both leave alone.
+    pub steps: u16,
+}
+
+/// What a perfect dodge lets an intent do afterwards: for `ticks` of the dodger's own clock from the
+/// instant it fired, these start a move, as a cancel window's would, whether the dodge is still playing
+/// or has ended. Starting any move closes it.
+#[derive(Clone, Debug, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub struct CounterWindow {
+    pub ticks: u32,
+    pub allow: Vec<Allow>,
+}
+
+impl CounterWindow {
+    /// How long it stays open, on the dodger's clock.
+    #[must_use]
+    pub const fn duration(&self) -> SimDuration {
+        SimDuration::from_ticks(self.ticks as u64)
+    }
+}
+
+/// A perfect-dodge window: while it's open, a live swing touching [`Self::volume`] fires the dodge, once
+/// per playing. `sapphire_gameplay`'s `resolve` module says what that does.
+#[derive(Clone, Debug, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub struct PerfectDodgeWindow {
+    pub span: Span,
+    /// With none it's a window and nothing more, for a view to show: nothing can fire it.
+    pub volume: Option<DodgeVolume>,
+    pub slow_motion: Option<WorldSlowMotion>,
+    pub counter: Option<CounterWindow>,
+}
+
 /// A motion warp window: the move's own root motion bends toward a target within these limits.
 #[derive(Clone, Copy, Debug, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct WarpWindow {
@@ -595,7 +646,7 @@ pub struct Move {
     pub hitboxes: Vec<Hitbox>,
     pub hurtboxes: Vec<HurtboxChange>,
     pub invulnerable: Vec<Span>,
-    pub perfect_dodge: Vec<Span>,
+    pub perfect_dodge: Vec<PerfectDodgeWindow>,
     pub parry: Vec<Span>,
     pub armour: Vec<ArmourWindow>,
     pub cancels: Vec<CancelWindow>,
@@ -659,7 +710,7 @@ pub(crate) struct MoveParts {
     pub(crate) hitboxes: Vec<Hitbox>,
     pub(crate) hurtboxes: Vec<HurtboxChange>,
     pub(crate) invulnerable: Vec<Span>,
-    pub(crate) perfect_dodge: Vec<Span>,
+    pub(crate) perfect_dodge: Vec<PerfectDodgeWindow>,
     pub(crate) parry: Vec<Span>,
     pub(crate) armour: Vec<ArmourWindow>,
     pub(crate) cancels: Vec<CancelWindow>,
@@ -689,7 +740,7 @@ impl MoveParts {
         hitboxes.sort_by_key(|hitbox| hitbox.span.from);
         hurtboxes.sort_by_key(|change| change.span.from);
         invulnerable.sort_by_key(|span| span.from);
-        perfect_dodge.sort_by_key(|span| span.from);
+        perfect_dodge.sort_by_key(|window| window.span.from);
         parry.sort_by_key(|span| span.from);
         armour.sort_by_key(|window| window.span.from);
         cancels.sort_by_key(|window| window.span.from);
@@ -829,8 +880,8 @@ pub struct MoveSet {
 }
 
 impl Versioned for MoveSet {
-    /// 1: M2 G2. 2: M2 G3's attacks, armour, re-arms, walls and fighter.
-    const VERSION: u32 = 2;
+    /// 1: M2 G2. 2: M2 G3's attacks, armour, re-arms, walls and fighter. 3: M2 G4's perfect dodges.
+    const VERSION: u32 = 3;
 }
 
 /// A move set that can't be built, read or written.
@@ -914,7 +965,7 @@ impl MoveSet {
                 .map(|hitbox| &hitbox.span)
                 .chain(mv.hurtboxes.iter().map(|change| &change.span))
                 .chain(&mv.invulnerable)
-                .chain(&mv.perfect_dodge)
+                .chain(mv.perfect_dodge.iter().map(|window| &window.span))
                 .chain(&mv.parry)
                 .chain(mv.armour.iter().map(|window| &window.span))
                 .chain(mv.cancels.iter().map(|window| &window.span))
@@ -925,6 +976,14 @@ impl MoveSet {
             }
             if !mv.cancels.iter().all(|window| window.allow.iter().all(in_bounds)) {
                 return damaged(format!("a cancel window of move `{label}` names no move"));
+            }
+            for window in &mv.perfect_dodge {
+                if !window.counter.as_ref().is_none_or(|counter| counter.allow.iter().all(in_bounds)) {
+                    return damaged(format!("a counter window of move `{label}` names no move"));
+                }
+                if !window.slow_motion.is_none_or(|slow| (1..NORMAL_SPEED).contains(&slow.per_mille)) {
+                    return damaged(format!("a perfect dodge of move `{label}` doesn't slow the world"));
+                }
             }
             if !mv.hitboxes.iter().all(|hitbox| mv.tables.path(hitbox.path()).is_some()) {
                 return damaged(format!("a hitbox of move `{label}` names no path"));

@@ -24,8 +24,8 @@ use crate::simulation::SimRng;
 /// Goes up when [`state_checksum`] starts writing something different, so a recorded checksum can't
 /// match by accident. Recorded replays re-record then (`docs/m2-plan.md` §3). 2: M2 G2's moves. 3: M2
 /// D4's hit queries. 4: M2 G1's controllers and their world. 5: M2 G3's fighters, slow motion and hit
-/// cues.
-const CHECKSUM_LAYOUT: u32 = 5;
+/// cues. 6: M2 G4's perfect dodges and counter windows.
+const CHECKSUM_LAYOUT: u32 = 6;
 
 /// A hasher over canonical bytes: XXH3-64, a published, frozen algorithm, unlike `DefaultHasher`,
 /// so a recorded checksum stays good.
@@ -159,6 +159,7 @@ fn write_running(hasher: &mut StateHasher, running: &Running) {
     hasher.u32(running.warp_window.unwrap_or(u32::MAX));
     hasher.f32(running.warp_distance);
     hasher.f32(running.warp_turn);
+    hasher.u8(u8::from(running.dodged));
 }
 
 fn write_runner(hasher: &mut StateHasher, runner: &MoveRunner) {
@@ -180,6 +181,16 @@ fn write_runner(hasher: &mut StateHasher, runner: &MoveRunner) {
         }
         None => hasher.u8(0),
     }
+    match &runner.counter {
+        Some(counter) => {
+            hasher.u8(1);
+            write_move_ref(hasher, counter.at);
+            hasher.u32(counter.window);
+            hasher.u64(counter.opens.as_subticks());
+            hasher.u64(counter.closes.as_subticks());
+        }
+        None => hasher.u8(0),
+    }
 }
 
 fn write_output(hasher: &mut StateHasher, output: &MoveOutput) {
@@ -194,6 +205,8 @@ fn write_output(hasher: &mut StateHasher, output: &MoveOutput) {
     hasher.u8(u8::from(windows.cancel));
     hasher.u8(u8::from(windows.warp));
     hasher.u32(windows.armour);
+    // `u32::MAX` stands for none, which no window's index reaches.
+    hasher.u32(output.perfect_window.unwrap_or(u32::MAX));
     hasher.u32(output.volumes.len() as u32);
     for volume in output.volumes.iter() {
         write_move_ref(hasher, volume.at);
@@ -380,7 +393,7 @@ mod sensitivity_tests {
     use super::*;
     use crate::actions::{ActorActions, Buttons, Stick, TickActions};
     use crate::actors::{ActorId, ActorSpawn};
-    use crate::moves::ActiveHurtbox;
+    use crate::moves::{ActiveHurtbox, OpenCounter};
     use crate::simulation::{SimConfig, Simulation};
 
     const SLICE: &str = include_str!("../../sapphire_moves/test_content/slice.moves.ron");
@@ -431,6 +444,11 @@ mod sensitivity_tests {
         runner.running.as_mut().expect("a move is playing")
     }
 
+    fn counter() -> OpenCounter {
+        let at = MoveRef { set: crate::moves::MoveSetId(0), revision: 0, index: 3 };
+        OpenCounter { at, window: 0, opens: SimTime::from_subticks(100), closes: SimTime::from_subticks(200) }
+    }
+
     #[test]
     fn every_field_of_the_runner_is_in_the_checksum() {
         type Edit = fn(&mut MoveRunner);
@@ -455,10 +473,28 @@ mod sensitivity_tests {
             ("the warp window", |r| running(r).warp_window = Some(9)),
             ("warp_distance", |r| running(r).warp_distance += 0.125),
             ("warp_turn", |r| running(r).warp_turn += 0.125),
+            ("dodged", |r| running(r).dodged = !running(r).dodged),
+            ("a counter window", |r| r.counter = Some(counter())),
         ];
         let (mut sim, swinging, _) = world();
         for (what, edit) in edits {
             flips::<MoveRunner>(&mut sim, swinging, what, edit);
+        }
+
+        // And each field of one that's open, against the one that is.
+        let entity = sim.world().resource::<ActorTable>().entity(swinging).unwrap();
+        sim.ecs_mut().world_mut().get_mut::<MoveRunner>(entity).unwrap().counter = Some(counter());
+        type CounterEdit = fn(&mut OpenCounter);
+        let counter_edits: &[(&str, CounterEdit)] = &[
+            ("its dodge's index", |c| c.at.index += 1),
+            ("its dodge's revision", |c| c.at.revision += 1),
+            ("its dodge's set", |c| c.at.set = crate::moves::MoveSetId(7)),
+            ("its window", |c| c.window += 1),
+            ("when it opens", |c| c.opens = SimTime::from_subticks(c.opens.as_subticks() + 1)),
+            ("when it closes", |c| c.closes = SimTime::from_subticks(c.closes.as_subticks() + 1)),
+        ];
+        for (what, edit) in counter_edits {
+            flips::<MoveRunner>(&mut sim, swinging, what, |runner| edit(runner.counter.as_mut().unwrap()));
         }
     }
 
@@ -504,6 +540,7 @@ mod sensitivity_tests {
             ("cancel", |o| o.windows.cancel = !o.windows.cancel),
             ("warp", |o| o.windows.warp = !o.windows.warp),
             ("armour", |o| o.windows.armour += 1),
+            ("the perfect window", |o| o.perfect_window = Some(0)),
         ];
         for (what, edit) in edits {
             flips::<MoveOutput>(&mut sim, swinging, what, edit);

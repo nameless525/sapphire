@@ -1,10 +1,10 @@
 //! Hit queries (spec §5.14, §5.22's step 5, M2 D4): which hurtboxes a move's hit volumes touch this
 //! tick, swept so nothing tunnels, and deduped per hit group.
 //!
-//! Owns [`HitQuery`], its [`HitEvent`]s and its records, [`VolumeSweep`] and the sub-step rule
-//! ([`VolumeSweep::walk`]), and [`HurtboxId`]. It takes plain inputs and reads no ECS state, so a test
-//! can feed it as well as M2 G2's published moves, which [`HitQuery::sweep_published`] and
-//! [`published_hurtbox`] turn into those inputs. [`HitQuery`]'s docs say how it behaves.
+//! Owns [`HitQuery`], its [`HitEvent`]s and [`DodgedSwing`]s and its records, [`VolumeSweep`] and the
+//! sub-step rule ([`VolumeSweep::walk`]), and [`HurtboxId`]. It takes plain inputs and reads no ECS
+//! state, so a test can feed it as well as M2 G2's published moves, which [`HitQuery::sweep_published`]
+//! and [`published_hurtbox`] turn into those inputs. [`HitQuery`]'s docs say how it behaves.
 //!
 //! Doesn't own: which volumes are active on a tick, or a move's hurtbox track (M2 G2); damage, poise,
 //! reactions, hitstop or cues (the `resolve` module); debug views (M2 T1).
@@ -26,7 +26,8 @@ use sapphire_physics::{Group, GroupMask, HitTarget, PhysicsWorld, Pose, QueryFil
 use sapphire_time::SimDuration;
 
 use self::book::Book;
-pub use self::hurtbox::{HurtboxId, MAX_HURTBOXES, remove_hurtboxes};
+pub(crate) use self::hurtbox::set_dodge_volume;
+pub use self::hurtbox::{HurtboxId, MAX_HURTBOXES, dodge_body, dodger_of, remove_hurtboxes};
 pub(crate) use self::join::{place_hurtboxes, sweep_hits};
 pub use self::published::{PublishedMoves, hit_shape, published_hurtbox};
 pub use self::volume::{MAX_SAG, MAX_SUB_STEPS, MIN_TURN_STEP, OwnerStep, SubStep, VolumeSweep, volume_pose};
@@ -58,6 +59,10 @@ const STILL_CAST: f32 = 1e-4;
 /// A cast shorter than this holds still.
 const MIN_CAST: f32 = 1e-5;
 
+/// The most actors one step can note a swing through. More count in [`HitStats::swings_dropped`], and
+/// are noted next step if the swing still touches.
+pub const MAX_DODGED_SWINGS: usize = 64;
+
 /// A volume touching a target for the first time in a hit group: what G3 turns into damage, and T1's
 /// view draws. All in world space, except [`Self::at`].
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -85,6 +90,26 @@ pub struct HitEvent {
     pub travel: f32,
 }
 
+/// A swing going through an actor's open perfect-dodge window: a live volume that does something, in a
+/// volley that hasn't hit this actor yet, touching its perfect-dodge volume. It lands nothing and is
+/// written down nowhere, so the same swing can still hit when the actor's invulnerability ends.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DodgedSwing {
+    /// Who it went through.
+    pub dodger: ActorId,
+    pub attacker: ActorId,
+    /// Which playing of the attacker's move.
+    pub instance: u32,
+    /// The hit group it names.
+    pub group: Name,
+    /// The volume's place in what the attacker published this step.
+    pub volume: u16,
+    /// When it touched: time into the attacker's move, to the sub-tick.
+    pub at: SimDuration,
+    /// How far the volume had moved this step when it touched, in metres. The nearest gets the credit.
+    pub travel: f32,
+}
+
 /// What hit queries have done so far. Counts only, deterministic, and not in the checksum, since
 /// nothing reads them back; `sweeps_capped` and the `_dropped` and `_refused` counts are what to watch.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -99,8 +124,12 @@ pub struct HitStats {
     pub sweeps_capped: u64,
     /// Volumes refused for an invalid shape, an empty span or a non-finite root.
     pub invalid_volumes: u64,
-    /// Hurtboxes casts touched, before records and hit groups.
+    /// Hurtboxes and perfect-dodge volumes casts touched, before records and hit groups.
     pub touches: u64,
+    /// Of those, the perfect-dodge volumes.
+    pub dodge_touches: u64,
+    /// Swings through a perfect dodge past [`MAX_DODGED_SWINGS`], noted next step if they still touch.
+    pub swings_dropped: u64,
     /// Hits queued.
     pub events: u64,
     /// Volumes a collider stopped ([`VolumeSweep::blocked_by`]).
@@ -167,6 +196,16 @@ pub struct HitStats {
 /// its volley, so a contact counts if its volley is later than the target's last. Records go when a
 /// later instance of the same attacker sweeps, or with [`Self::forget_actor`].
 ///
+/// # Perfect dodges
+///
+/// An invulnerable actor has no hurtboxes to touch, so a dodge can't learn of a swing from hits. While
+/// its perfect-dodge window is open it has a perfect-dodge volume instead ([`dodge_body`]), a body in
+/// the same group, which the same casts find, so a swing's reach, a wall that stops it, a frozen owner
+/// and an attacker's own bodies all count as they do for a hit, at no extra cast. A touch notes a
+/// [`DodgedSwing`] ([`Self::dodged`]) if the volume could have landed: it does something
+/// ([`VolumeSweep::dodgeable`]), and its group's records don't already have this actor in this volley.
+/// It writes no record, so nothing is spent. The `resolve` module fires the dodge.
+///
 /// # Overflow
 ///
 /// Every limit counts in [`HitStats`] and carries on. A full event queue writes no record, so the hit
@@ -210,6 +249,7 @@ pub struct HitStats {
 ///         shape: Shape::Sphere { radius: 0.05 },
 ///         path: &fist,
 ///         blocked_by: GroupMask::NONE,
+///         dodgeable: true,
 ///         owner: OwnerStep { delta: tick, reading: tick, root_before: root, root_after: root },
 ///         from: SimDuration::ZERO,
 ///         to: tick,
@@ -234,6 +274,10 @@ pub struct HitQuery {
     contacts: Vec<HitEvent>,
     /// The latest step's hits, in order.
     events: Vec<HitEvent>,
+    /// This step's swings through a perfect dodge so far, one per dodger, the nearest.
+    swings: Vec<DodgedSwing>,
+    /// The latest step's, by dodger.
+    dodged: Vec<DodgedSwing>,
     /// A cast's out buffer. Only ever read back within one cast.
     results: Box<[ShapeHit; MAX_CAST_RESULTS]>,
     stats: HitStats,
@@ -254,6 +298,8 @@ impl HitQuery {
             stopped: Book::with_capacity(MAX_STOPPED_VOLUMES),
             contacts: Vec::with_capacity(MAX_CONTACTS),
             events: Vec::with_capacity(MAX_HIT_EVENTS),
+            swings: Vec::with_capacity(MAX_DODGED_SWINGS),
+            dodged: Vec::with_capacity(MAX_DODGED_SWINGS),
             results: Box::new([ShapeHit::NONE; MAX_CAST_RESULTS]),
             stats: HitStats::default(),
         }
@@ -341,6 +387,12 @@ impl HitQuery {
                 self.stats.unowned_touches += 1;
                 continue;
             };
+            if let Some(dodger) = dodger_of(body) {
+                self.stats.dodge_touches += 1;
+                let share = if still { 0.0 } else { (hit.distance / length).min(1.0) };
+                self.note_swing(volume, sub, dodger, share, travelled);
+                continue;
+            }
             let Some(hurtbox) = HurtboxId::from_body(body) else {
                 self.stats.unowned_touches += 1;
                 continue;
@@ -404,10 +456,52 @@ impl HitQuery {
         }
     }
 
+    /// Keeps a touch of a perfect-dodge volume if the swing could have landed, and only its dodger's
+    /// nearest.
+    fn note_swing(
+        &mut self,
+        volume: &VolumeSweep<'_>,
+        sub: &SubStep,
+        dodger: ActorId,
+        share: f32,
+        travelled: f32,
+    ) {
+        if !volume.dodgeable {
+            return;
+        }
+        let at = time_along(sub, share);
+        let last = self.records.volley_of(volume.attacker, volume.instance, (volume.group, dodger));
+        if last.is_some_and(|last| last >= volume.volley_at(at)) {
+            return;
+        }
+        let swing = DodgedSwing {
+            dodger,
+            attacker: volume.attacker,
+            instance: volume.instance,
+            group: volume.group,
+            volume: volume.volume,
+            at,
+            travel: travelled + sub.motion * share,
+        };
+        match self.swings.iter().position(|known| known.dodger == dodger) {
+            // Sweeps come in a fixed order, so among equals the first stays, whatever a sort would do.
+            Some(slot) => {
+                if swing.travel.total_cmp(&self.swings[slot].travel) == Ordering::Less {
+                    self.swings[slot] = swing;
+                }
+            }
+            None if self.swings.len() >= MAX_DODGED_SWINGS => self.stats.swings_dropped += 1,
+            None => self.swings.push(swing),
+        }
+    }
+
     /// Ends the step's sweeps: orders their contacts, applies the hit groups and replaces
-    /// [`Self::events`]. Call it every step.
+    /// [`Self::events`] and [`Self::dodged`]. Call it every step.
     pub fn finish_step(&mut self) {
         profiling::scope!("HitQuery::finish_step");
+        self.swings.sort_unstable_by_key(|swing| swing.dodger);
+        std::mem::swap(&mut self.swings, &mut self.dodged);
+        self.swings.clear();
         self.contacts.sort_unstable_by(order);
         self.events.clear();
         for contact in self.contacts.drain(..) {
@@ -433,6 +527,13 @@ impl HitQuery {
     #[must_use]
     pub fn events(&self) -> &[HitEvent] {
         &self.events
+    }
+
+    /// The latest step's swings through an open perfect-dodge window, by dodger: the
+    /// [type's docs](Self#perfect-dodges) say which count.
+    #[must_use]
+    pub fn dodged(&self) -> &[DodgedSwing] {
+        &self.dodged
     }
 
     /// Forgets everything about an actor, as attacker and as target, when it despawns. IDs are never
@@ -471,6 +572,11 @@ impl HitQuery {
             write_event(hasher, event);
         }
         hasher.u32(self.events.len() as u32);
+        hasher.u32(self.swings.len() as u32);
+        for swing in self.swings.iter().chain(&self.dodged) {
+            write_swing(hasher, swing);
+        }
+        hasher.u32(self.dodged.len() as u32);
     }
 }
 
@@ -486,6 +592,16 @@ fn write_event(hasher: &mut StateHasher, event: &HitEvent) {
     hasher.vec3(event.normal);
     hasher.u64(event.at.as_subticks());
     hasher.f32(event.travel);
+}
+
+fn write_swing(hasher: &mut StateHasher, swing: &DodgedSwing) {
+    hasher.u32(swing.dodger.raw());
+    hasher.u32(swing.attacker.raw());
+    hasher.u32(swing.instance);
+    hasher.u64(swing.group.as_u64());
+    hasher.u16(swing.volume);
+    hasher.u64(swing.at.as_subticks());
+    hasher.f32(swing.travel);
 }
 
 /// The time a share of the way through a sub-step, to the sub-tick.

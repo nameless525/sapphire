@@ -7,6 +7,7 @@ use sapphire_moves::MoveSet;
 
 use super::HitQuery;
 use super::hurtbox::HurtboxId;
+use super::set_dodge_volume;
 use super::published::{PublishedMoves, hit_shape, published_hurtbox};
 use crate::actors::ActorTable;
 use crate::controller::CharacterWorld;
@@ -17,7 +18,8 @@ use crate::resolve::{Fighter, ResolveStats};
 /// [`CombatSet::Movement`](crate::CombatSet::Movement), after every actor has moved: makes each
 /// fighter's hurtboxes what its moves say they are this tick, where its root now stands. A defeated
 /// actor's leave the world. Each actor's list is its set's current revision's, in order, so a hurtbox's
-/// number is its place there.
+/// number is its place there. A perfect-dodge window open this step ([`MoveOutput::perfect_window`])
+/// puts its volume in the world too, and only then, so nothing is spent on a dodge that can't fire.
 pub(crate) fn place_hurtboxes(
     table: Res<'_, ActorTable>,
     library: Res<'_, MoveLibrary>,
@@ -40,6 +42,13 @@ pub(crate) fn place_hurtboxes(
                 .is_some_and(|hurtbox| hurtbox.set(physics, shape, *root, own.local).is_ok());
             stats.hurtboxes_refused += u64::from(!placed);
         }
+        let volume = output.perfect_window.filter(|_| !fighter.is_defeated()).and_then(|window| {
+            let at = runner.running?.at;
+            let volume = library.get(at)?.perfect_dodge.get(window as usize)?.volume?;
+            Some((hit_shape(volume.shape), volume.local))
+        });
+        let placed = set_dodge_volume(physics, id, volume, *root).is_ok();
+        stats.hurtboxes_refused += u64::from(!placed);
     }
 }
 

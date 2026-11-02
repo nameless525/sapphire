@@ -10,13 +10,15 @@ use sapphire_colliders::{Group, GroupMask};
 use sapphire_core::Name;
 use sapphire_math::{Quat, det};
 use sapphire_reflect::Versioned;
+use sapphire_time::NORMAL_SPEED;
 use serde::{Deserialize, Serialize};
 
 use crate::set::{
-    Allow, ArmourWindow, Attack, Button, CancelMode, CancelWindow, Cue, FighterDef, FighterHurtbox,
-    HIT_LANDED, Hitbox, HurtboxChange, HurtboxState, IntentDef, Knockback, MAX_BUFFER_TICKS,
-    MAX_HITSTOP_TICKS, MAX_HURTBOXES, MAX_INTENTS, MAX_MOVE_TICKS, MoveParts, MoveSet, MoveSetError,
-    Reactions, Shape, Span, WarpWindow, Weight,
+    Allow, ArmourWindow, Attack, Button, CancelMode, CancelWindow, CounterWindow, Cue, DodgeVolume,
+    FighterDef, FighterHurtbox, HIT_LANDED, Hitbox, HurtboxChange, HurtboxState, IntentDef, Knockback,
+    MAX_BUFFER_TICKS, MAX_HITSTOP_TICKS, MAX_HURTBOXES, MAX_INTENTS, MAX_MOVE_TICKS, MAX_SLOW_MOTION_STEPS,
+    MoveParts, MoveSet, MoveSetError, PerfectDodgeWindow, Reactions, Shape, Span, WarpWindow, Weight,
+    WorldSlowMotion,
 };
 use crate::{BakedPath, BakedTables, PathSample, RootSample};
 
@@ -154,7 +156,7 @@ pub struct MoveDocument {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub invulnerable: Vec<SpanDocument>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub perfect_dodge: Vec<SpanDocument>,
+    pub perfect_dodge: Vec<PerfectDodgeDocument>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parry: Vec<SpanDocument>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -233,6 +235,57 @@ pub struct ArmourDocument {
     pub from: u32,
     pub to: u32,
     pub threshold: u32,
+}
+
+/// A perfect-dodge window. See [`PerfectDodgeWindow`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PerfectDodgeDocument {
+    pub from: u32,
+    pub to: u32,
+    /// What a live swing has to touch to fire it. Left out, it's a window and nothing more. With it,
+    /// the set needs a fighter, and every tick of the window has to be invulnerable: a dodge that can
+    /// be hit isn't one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume: Option<DodgeVolumeDocument>,
+    /// How it slows the world. Left out, it doesn't.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slow_motion: Option<SlowMotionDocument>,
+    /// What it lets an intent start. Left out, nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub counter: Option<CounterDocument>,
+}
+
+/// What a live swing has to touch. See [`DodgeVolume`].
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DodgeVolumeDocument {
+    /// Metres from the root, in the root's space.
+    #[serde(default)]
+    pub offset: [f32; 3],
+    /// A unit rotation from the root, as x, y, z, w.
+    #[serde(default = "identity")]
+    pub rotation: [f32; 4],
+    pub shape: Shape,
+}
+
+/// How a perfect dodge slows the world. See [`WorldSlowMotion`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SlowMotionDocument {
+    /// Thousandths of the world's speed, below 1000, and a divisor of 1,000,000: 500, 250, 200, 125, 100…
+    pub per_mille: u32,
+    /// Real fixed steps, from 1 to [`MAX_SLOW_MOTION_STEPS`].
+    pub steps: u16,
+}
+
+/// What a perfect dodge lets an intent start. See [`CounterWindow`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CounterDocument {
+    /// Ticks of the dodger's clock it stays open, from 1 to [`MAX_MOVE_TICKS`].
+    pub ticks: u32,
+    pub allow: Vec<AllowDocument>,
 }
 
 /// A cancel window. See [`CancelWindow`].
@@ -570,6 +623,75 @@ impl Checker {
             hurtboxes,
             reactions,
         }
+    }
+
+    /// Checks a perfect-dodge window and resolves what it names.
+    fn perfect_dodge(
+        &mut self,
+        window: &PerfectDodgeDocument,
+        ticks: u32,
+        invulnerable: &[Span],
+        known: &Known<'_>,
+    ) -> PerfectDodgeWindow {
+        const TRACK: &str = "perfect_dodge";
+        let (from, to) = (window.from, window.to);
+        let span = self.span(TRACK, from, to, ticks);
+        let volume = window.volume.map(|volume| {
+            if known.fighter.is_none() {
+                self.add(TRACK, format!("window {from}..{to} has a volume, in a set with no fighter to dodge"));
+            }
+            if !(from..to).all(|tick| invulnerable.iter().any(|span| span.from <= tick && tick < span.to)) {
+                self.add(TRACK, format!("window {from}..{to} has a volume, and isn't invulnerable throughout"));
+            }
+            self.shape(TRACK, "its volume", volume.shape);
+            if !volume.offset.iter().chain(&volume.rotation).all(|value| value.is_finite()) {
+                self.add(TRACK, format!("window {from}..{to}'s volume has a place that isn't finite"));
+            }
+            let length_squared: f32 = volume.rotation.iter().map(|value| value * value).sum();
+            if (length_squared - 1.0).abs() > UNIT_TOLERANCE {
+                self.add(TRACK, format!("window {from}..{to}'s volume doesn't have a unit rotation"));
+            }
+            let local = PathSample { translation: volume.offset, rotation: volume.rotation };
+            DodgeVolume { local, shape: volume.shape }
+        });
+        if volume.is_none() && (window.slow_motion.is_some() || window.counter.is_some()) {
+            self.add(TRACK, format!("window {from}..{to} says what it does when it fires, with no volume to fire it"));
+        }
+        let slow_motion = window.slow_motion.map(|slow| {
+            let SlowMotionDocument { per_mille, steps } = slow;
+            let inverse = NORMAL_SPEED * NORMAL_SPEED;
+            if per_mille == 0 || per_mille >= NORMAL_SPEED || inverse % per_mille != 0 {
+                self.add(
+                    TRACK,
+                    format!(
+                        "window {from}..{to} slows the world to {per_mille}‰, which has to be below \
+                         {NORMAL_SPEED} and divide {inverse}, so the one who dodged runs at exactly 1×"
+                    ),
+                );
+            }
+            if !(1..=MAX_SLOW_MOTION_STEPS).contains(&steps) {
+                self.add(
+                    TRACK,
+                    format!("window {from}..{to} slows the world for {steps} steps, not 1 to {MAX_SLOW_MOTION_STEPS}"),
+                );
+            }
+            WorldSlowMotion { per_mille, steps }
+        });
+        let counter = window.counter.as_ref().map(|counter| {
+            if !(1..=MAX_MOVE_TICKS).contains(&counter.ticks) {
+                let count = counter.ticks;
+                self.add(
+                    TRACK,
+                    format!("window {from}..{to}'s counter lasts {count} ticks, not 1 to {MAX_MOVE_TICKS}"),
+                );
+            }
+            if counter.allow.is_empty() {
+                self.add(TRACK, format!("window {from}..{to}'s counter allows nothing"));
+            }
+            let allow = self.allows(TRACK, &counter.allow, known.intents, known.moves);
+            CounterWindow { ticks: counter.ticks, allow }
+        });
+        PerfectDodgeWindow { span, volume, slow_motion, counter }
     }
 
     /// Checks hand-keyed motion and bakes it, or `None` if a key is wrong.
@@ -994,7 +1116,11 @@ fn compile_move(
         list.iter().map(|span| check.span(track, span.from, span.to, ticks)).collect()
     };
     let invulnerable = spans(check, "invulnerable", &mv.invulnerable);
-    let perfect_dodge = spans(check, "perfect_dodge", &mv.perfect_dodge);
+    let perfect_dodge = mv
+        .perfect_dodge
+        .iter()
+        .map(|window| check.perfect_dodge(window, ticks, &invulnerable, known))
+        .collect();
     let parry = spans(check, "parry", &mv.parry);
 
     let mut armour = Vec::with_capacity(mv.armour.len());
@@ -1114,7 +1240,14 @@ mod tests {
 
         let (_, dodge) = set.find(Name::new("dodge")).expect("a dodge");
         assert_eq!(dodge.invulnerable, [Span { from: 1, to: 14 }]);
-        assert_eq!(dodge.perfect_dodge, [Span { from: 1, to: 7 }]);
+        assert_eq!(dodge.perfect_dodge.len(), 1);
+        let perfect = &dodge.perfect_dodge[0];
+        assert_eq!(perfect.span, Span { from: 1, to: 7 });
+        assert!(perfect.volume.is_some());
+        assert_eq!(perfect.slow_motion, Some(WorldSlowMotion { per_mille: 200, steps: 30 }));
+        let counter = perfect.counter.as_ref().expect("a counter window");
+        assert_eq!(counter.duration(), SimDuration::from_ticks(45));
+        assert_eq!(counter.allow[0].target_name(), Name::new("dodge_counter"));
         let (_, dodge_intent) = set.intent(Name::new("dodge")).expect("declared");
         let (_, light_intent) = set.intent(Name::new("light")).expect("declared");
         assert!(dodge_intent.priority > light_intent.priority);
@@ -1148,8 +1281,8 @@ mod tests {
         assert!(matches!(
             MoveSet::from_cooked(&stale),
             Err(MoveSetError::Cooked(sapphire_serialize::cooked::CookedError::Stale {
-                found: 3,
-                current: 2
+                found: 4,
+                current: 3
             }))
         ));
         let cut = &cooked[..cooked.len() - 8];
@@ -1180,6 +1313,18 @@ mod tests {
         }
         fn fighter(document: &mut MoveSetDocument) -> &mut FighterDocument {
             document.fighter.as_mut().expect("in the content")
+        }
+        fn dodge(document: &mut MoveSetDocument) -> &mut MoveDocument {
+            document.moves.iter_mut().find(|mv| mv.name == "dodge").expect("in the content")
+        }
+        fn volume(document: &mut MoveSetDocument) -> &mut DodgeVolumeDocument {
+            dodge(document).perfect_dodge[0].volume.as_mut().expect("in the content")
+        }
+        fn slow(document: &mut MoveSetDocument) -> &mut SlowMotionDocument {
+            dodge(document).perfect_dodge[0].slow_motion.as_mut().expect("in the content")
+        }
+        fn counter(document: &mut MoveSetDocument) -> &mut CounterDocument {
+            dodge(document).perfect_dodge[0].counter.as_mut().expect("in the content")
         }
         let cases: &[(&str, Edit, &[&str])] = &[
             (
@@ -1464,6 +1609,112 @@ mod tests {
                 &["light_1", "motion", "past the move's end"],
             ),
             (
+                "a perfect-dodge window past the move's end",
+                |d| dodge(d).perfect_dodge[0].to = 99,
+                &["dodge", "perfect_dodge", "1..99", "past the move's end at tick 22"],
+            ),
+            (
+                "a perfect-dodge window that can be hit through",
+                |d| dodge(d).invulnerable[0].from = 2,
+                &["dodge", "perfect_dodge", "window 1..7", "isn't invulnerable throughout"],
+            ),
+            (
+                "a perfect-dodge window with a gap in its invulnerability",
+                |d| {
+                    dodge(d).invulnerable = vec![SpanDocument { from: 1, to: 3 }, SpanDocument { from: 4, to: 14 }];
+                },
+                &["dodge", "perfect_dodge", "isn't invulnerable throughout"],
+            ),
+            (
+                "a perfect-dodge volume in a set with no fighter",
+                |d| {
+                    d.fighter = None;
+                    dodge(d).hurtboxes.clear();
+                },
+                &["dodge", "perfect_dodge", "no fighter"],
+            ),
+            (
+                "a perfect-dodge volume with no size",
+                |d| volume(d).shape = Shape::Sphere { radius: 0.0 },
+                &["dodge", "perfect_dodge", "its volume", "no size"],
+            ),
+            (
+                "a perfect-dodge volume somewhere that isn't",
+                |d| volume(d).offset[1] = f32::NAN,
+                &["dodge", "perfect_dodge", "volume", "isn't finite"],
+            ),
+            (
+                "a perfect-dodge volume with a rotation that isn't unit",
+                |d| volume(d).rotation = [0.0, 0.0, 0.0, 2.0],
+                &["dodge", "perfect_dodge", "volume", "unit rotation"],
+            ),
+            (
+                "slow motion with nothing to fire it",
+                |d| {
+                    let window = &mut dodge(d).perfect_dodge[0];
+                    (window.volume, window.counter) = (None, None);
+                },
+                &["dodge", "perfect_dodge", "no volume to fire it"],
+            ),
+            (
+                "a counter with nothing to fire it",
+                |d| {
+                    let window = &mut dodge(d).perfect_dodge[0];
+                    (window.volume, window.slow_motion) = (None, None);
+                },
+                &["dodge", "perfect_dodge", "no volume to fire it"],
+            ),
+            (
+                "slow motion that stops the world",
+                |d| slow(d).per_mille = 0,
+                &["dodge", "perfect_dodge", "0‰", "below 1000"],
+            ),
+            (
+                "slow motion that doesn't slow it",
+                |d| slow(d).per_mille = 1000,
+                &["dodge", "perfect_dodge", "1000‰", "below 1000"],
+            ),
+            (
+                "slow motion a clock can't exactly undo",
+                |d| slow(d).per_mille = 300,
+                &["dodge", "perfect_dodge", "300‰", "exactly 1×"],
+            ),
+            (
+                "slow motion for no time",
+                |d| slow(d).steps = 0,
+                &["dodge", "perfect_dodge", "0 steps", "not 1 to 600"],
+            ),
+            (
+                "slow motion for too long",
+                |d| slow(d).steps = 601,
+                &["dodge", "perfect_dodge", "601 steps", "not 1 to 600"],
+            ),
+            (
+                "a counter window of no length",
+                |d| counter(d).ticks = 0,
+                &["dodge", "perfect_dodge", "counter lasts 0 ticks"],
+            ),
+            (
+                "a counter window past any move's length",
+                |d| counter(d).ticks = MAX_MOVE_TICKS + 1,
+                &["dodge", "perfect_dodge", "counter lasts 3601 ticks"],
+            ),
+            (
+                "a counter window that allows nothing",
+                |d| counter(d).allow.clear(),
+                &["dodge", "perfect_dodge", "counter allows nothing"],
+            ),
+            (
+                "a counter to a move that doesn't exist",
+                |d| counter(d).allow[0].target = "ghost".to_owned(),
+                &["dodge", "perfect_dodge", "`ghost`", "not a move"],
+            ),
+            (
+                "a counter on an undeclared intent",
+                |d| counter(d).allow[0].intent = "ghost".to_owned(),
+                &["dodge", "perfect_dodge", "`ghost`", "not an intent"],
+            ),
+            (
                 "a root that doesn't start at zero",
                 |d| light(d).motion.root.insert(0, RootKey { at: 0, offset: [1.0, 0.0, 0.0], yaw: 0.0 }),
                 &["light_1", "motion", "tick 0 must be zero"],
@@ -1557,8 +1808,12 @@ mod tests {
                 hitbox.attack = None;
             }
         }
+        for window in document.moves.iter_mut().flat_map(|mv| &mut mv.perfect_dodge) {
+            (window.volume, window.slow_motion, window.counter) = (None, None, None);
+        }
         let text = document.to_text().unwrap();
         assert!(!text.contains("fighter:") && !text.contains("attack:"), "{text}");
+        assert!(text.contains("perfect_dodge:") && !text.contains("volume:"), "a window and nothing more");
         let set = MoveSetDocument::parse(&text).unwrap().compile().unwrap();
         assert!(set.fighter().is_none());
         assert_eq!(set.moves()[0].hitboxes[0].attack, None);
@@ -1574,6 +1829,9 @@ mod tests {
         assert!(matches!(with("poise_refill:", "poise_refil:"), Err(MoveSetError::Document(_))));
         assert!(matches!(with("threshold:", "treshold:"), Err(MoveSetError::Document(_))));
         assert!(matches!(with("distance:", "distanse:"), Err(MoveSetError::Document(_))));
+        assert!(matches!(with("volume:", "volme:"), Err(MoveSetError::Document(_))));
+        assert!(matches!(with("per_mille:", "per_mile:"), Err(MoveSetError::Document(_))));
+        assert!(matches!(with("counter: (ticks:", "counter: (tick:"), Err(MoveSetError::Document(_))));
         assert!(matches!(
             with("heavy: \"knockdown\"", "hevy: \"knockdown\""),
             Err(MoveSetError::Document(_))
@@ -1604,6 +1862,77 @@ mod tests {
             moves[0].armour = vec![ArmourWindow { span: Span { from: 1, to: 999 }, threshold: 1 }];
         });
         assert!(matches!(armour, Err(MoveSetError::Damaged(text)) if text.contains("window")));
+
+        fn perfect(moves: &mut [Move]) -> &mut PerfectDodgeWindow {
+            let dodge = moves.iter_mut().find(|mv| mv.name() == Name::new("dodge")).unwrap();
+            &mut dodge.perfect_dodge[0]
+        }
+        let span = rebuilt(|moves, _| perfect(moves).span.to = 999);
+        assert!(matches!(span, Err(MoveSetError::Damaged(text)) if text.contains("window")));
+        let counter = rebuilt(|moves, _| {
+            let allow = Allow::new(Name::new("light"), 999, Name::new("x"), CancelMode::Buffered);
+            perfect(moves).counter = Some(CounterWindow { ticks: 1, allow: vec![allow] });
+        });
+        assert!(matches!(counter, Err(MoveSetError::Damaged(text)) if text.contains("counter")));
+        for per_mille in [0, 1000, 5000] {
+            let slowed = WorldSlowMotion { per_mille, steps: 1 };
+            let set = {
+                let mut moves = good.moves().to_vec();
+                perfect(&mut moves).slow_motion = Some(slowed);
+                MoveSet::from_parts(good.intents().to_vec(), good.neutral().to_vec(), good.fighter().cloned(), moves)
+            };
+            let slow = MoveSet::from_cooked(&set.to_cooked().unwrap());
+            assert!(matches!(slow, Err(MoveSetError::Damaged(text)) if text.contains("slow")), "{per_mille}");
+        }
+    }
+
+    /// Everything a perfect dodge adds is optional: a window can be just a window.
+    #[test]
+    fn a_perfect_dodge_window_is_a_window_and_what_it_adds_is_optional() {
+        let compiled = |windows: &str| {
+            let text = format!(
+                r#"(
+                    type: "sapphire::moves::MoveSetDocument",
+                    version: 1,
+                    data: (
+                        intents: [],
+                        fighter: (health: 1, hurtboxes: [(name: "body", shape: Sphere(radius: 0.1))]),
+                        moves: [(
+                            name: "dodge",
+                            startup: 0,
+                            active: 20,
+                            recovery: 0,
+                            invulnerable: [(from: 0, to: 20)],
+                            perfect_dodge: [{windows}],
+                        )],
+                    ),
+                )"#
+            );
+            let set = MoveSetDocument::parse(&text).unwrap().compile().unwrap();
+            let again = MoveSetDocument::parse(&text).unwrap().to_text().unwrap();
+            assert_eq!(MoveSetDocument::parse(&again).unwrap().compile().unwrap(), set, "{again}");
+            set.moves()[0].perfect_dodge.clone()
+        };
+        let plain = compiled("(from: 1, to: 7)");
+        assert_eq!(plain[0].span, Span { from: 1, to: 7 });
+        assert_eq!((plain[0].volume, plain[0].slow_motion, &plain[0].counter), (None, None, &None));
+
+        let sensed = compiled("(from: 2, to: 3, volume: (shape: Sphere(radius: 0.5)))");
+        let volume = sensed[0].volume.unwrap();
+        assert_eq!(volume.local, PathSample::IDENTITY, "at the root, unturned, unless it says");
+        assert_eq!(volume.shape, Shape::Sphere { radius: 0.5 });
+        assert_eq!((sensed[0].slow_motion, &sensed[0].counter), (None, &None));
+
+        let sorted = compiled("(from: 9, to: 10), (from: 2, to: 3)");
+        assert_eq!(sorted[0].span.from, 2, "windows sort by when they open");
+        let divisors = [800, 625, 500, 400, 320, 250, 200, 160, 125, 100, 80, 50, 40, 25, 20, 10, 8, 5, 4, 2, 1];
+        for per_mille in divisors {
+            let text = format!(
+                "(from: 1, to: 7, volume: (shape: Sphere(radius: 0.5)), \
+                 slow_motion: (per_mille: {per_mille}, steps: 1))"
+            );
+            assert_eq!(compiled(&text)[0].slow_motion.unwrap().per_mille, per_mille);
+        }
     }
 
     #[test]

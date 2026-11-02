@@ -1808,8 +1808,10 @@ fn an_actor_without_moves_ignores_intents() {
 }
 
 /// The replay suite's fights play what they're there to hold: `string` the buffered string, and
-/// `dodge-dash` the dodge cancels, the dash attacks with their warps and the instant dodge. A replay
-/// that passes on a script that had stopped doing these would hold nothing.
+/// `dodge-dash` the dodge cancels, the dash attacks with their warps and the instant dodge. Its second
+/// dodge goes through the opponent's swing, so the light press after it is a counter, ahead of the dash
+/// attack the same press would otherwise start on tick 53. A replay that passes on a script that had
+/// stopped doing these would hold nothing.
 #[test]
 fn the_replay_suites_scripts_play_what_they_say() {
     struct Played {
@@ -1860,7 +1862,7 @@ fn the_replay_suites_scripts_play_what_they_say() {
             (30, "dodge"),
             (39, "dash_attack"),
             (44, "dodge"),
-            (53, "dash_attack"),
+            (50, "dodge_counter"),
             (120, "dodge"),
             (138, "dodge"),
             (170, "skill"),

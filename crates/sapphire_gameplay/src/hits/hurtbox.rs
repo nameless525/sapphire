@@ -1,4 +1,5 @@
-//! Hurtboxes: bodies in the physics world whose IDs say who owns them.
+//! Hurtboxes, and the volumes a perfect dodge is sensed with: bodies in the physics world whose IDs say
+//! who owns them.
 
 use sapphire_moves::PathSample;
 use sapphire_physics::{
@@ -17,9 +18,12 @@ pub const MAX_HURTBOXES: u8 = {
 
 /// Marks a [`BodyId`] as a hurtbox's, above any ID a character's capsule uses.
 const HURTBOX_BIT: u32 = 1 << 31;
-const INDEX_BITS: u32 = 4;
+const INDEX_BITS: u32 = 5;
 const INDEX_MASK: u32 = (1 << INDEX_BITS) - 1;
 const LARGEST_ACTOR: u32 = (HURTBOX_BIT >> INDEX_BITS) - 1;
+/// The place after an actor's hurtboxes: its [`dodge_body`], in the same run of IDs, so what skips its
+/// hurtboxes skips that too.
+const DODGE_INDEX: u32 = MAX_HURTBOXES as u32;
 
 /// One hurtbox of one actor, by its place in that actor's list. Its [`BodyId`] holds both, so a
 /// query's result names its owner with no table to keep, an actor's hurtboxes are a run of IDs a
@@ -32,7 +36,7 @@ pub struct HurtboxId {
 
 impl HurtboxId {
     /// The hurtbox at `index` of `actor`, or `None` if the index is [`MAX_HURTBOXES`] or more, or the
-    /// run has spawned 2²⁷ actors, which an ID has no room for.
+    /// run has spawned 2²⁶ actors, which an ID has no room for.
     #[must_use]
     pub const fn new(actor: ActorId, index: u8) -> Option<Self> {
         if index >= MAX_HURTBOXES || actor.raw() > LARGEST_ACTOR {
@@ -68,17 +72,21 @@ impl HurtboxId {
         let Some(actor) = ActorId::from_raw((body.0 & !HURTBOX_BIT) >> INDEX_BITS) else {
             return None;
         };
-        Some(Self { actor, index: (body.0 & INDEX_MASK) as u8 })
+        let index = body.0 & INDEX_MASK;
+        if index >= DODGE_INDEX {
+            return None;
+        }
+        Some(Self { actor, index: index as u8 })
     }
 
-    /// The first and last bodies an actor's hurtboxes can be, for
+    /// The first and last bodies an actor's hurtboxes and its perfect-dodge volume can be, for
     /// [`QueryFilter::excluding_bodies`](sapphire_physics::QueryFilter::excluding_bodies).
     #[must_use]
     pub const fn bodies_of(actor: ActorId) -> Option<(BodyId, BodyId)> {
-        let (Some(first), Some(last)) = (Self::new(actor, 0), Self::new(actor, MAX_HURTBOXES - 1)) else {
+        let (Some(first), Some(last)) = (Self::new(actor, 0), dodge_body(actor)) else {
             return None;
         };
-        Some((first.body(), last.body()))
+        Some((first.body(), last))
     }
 
     /// Makes this hurtbox what it is this tick. `Some` puts it in the world in that shape, where its
@@ -100,38 +108,86 @@ impl HurtboxId {
         root: ActorTransform,
         local: PathSample,
     ) -> Result<(), WorldError> {
-        let id = self.body();
-        let Some(shape) = shape else {
-            world.remove_body(id);
-            return Ok(());
-        };
-        if !shape.is_valid() {
-            return Err(WorldError::InvalidBody(id));
-        }
-        let pose = volume_pose(root, local);
-        let groups = CollisionGroups::new(Group::Hurtbox.mask(), GroupMask::NONE);
-        match world.body_shape(id) {
-            Some(current) if current == shape => world.set_body_pose(id, pose),
-            Some(_) => {
-                // Bodies keep their shapes, so a new one is a new body. Moving the old one first is what
-                // checks the pose while there's still something to leave as it was.
-                world.set_body_pose(id, pose)?;
-                world.remove_body(id);
-                world.add_body(BodyDesc { id, shape, pose, groups })
-            }
-            None => world.add_body(BodyDesc { id, shape, pose, groups }),
-        }
+        place_body(world, self.body(), shape, root, local)
     }
 }
 
-/// Takes all of an actor's hurtboxes out of the world, for a despawn, and returns how many there
-/// were.
+/// Makes a body what it is this tick. See [`HurtboxId::set`].
+fn place_body(
+    world: &mut PhysicsWorld,
+    id: BodyId,
+    shape: Option<Shape>,
+    root: ActorTransform,
+    local: PathSample,
+) -> Result<(), WorldError> {
+    let Some(shape) = shape else {
+        world.remove_body(id);
+        return Ok(());
+    };
+    if !shape.is_valid() {
+        return Err(WorldError::InvalidBody(id));
+    }
+    let pose = volume_pose(root, local);
+    let groups = CollisionGroups::new(Group::Hurtbox.mask(), GroupMask::NONE);
+    match world.body_shape(id) {
+        Some(current) if current == shape => world.set_body_pose(id, pose),
+        Some(_) => {
+            // Bodies keep their shapes, so a new one is a new body. Moving the old one first is what
+            // checks the pose while there's still something to leave as it was.
+            world.set_body_pose(id, pose)?;
+            world.remove_body(id);
+            world.add_body(BodyDesc { id, shape, pose, groups })
+        }
+        None => world.add_body(BodyDesc { id, shape, pose, groups }),
+    }
+}
+
+/// The body an actor's perfect-dodge volume is while one's open, or `None` where a [`HurtboxId`] would
+/// have no room. It lies in [`Group::Hurtbox`], so a hit sweep's own casts find it, and its ID keeps it
+/// from ever being taken for a hurtbox: a touch notes a dodged swing, and lands nothing.
+#[must_use]
+pub const fn dodge_body(actor: ActorId) -> Option<BodyId> {
+    if actor.raw() > LARGEST_ACTOR {
+        return None;
+    }
+    Some(BodyId(HURTBOX_BIT | actor.raw() << INDEX_BITS | DODGE_INDEX))
+}
+
+/// Whose perfect-dodge volume a body is, or `None` for any other body.
+#[must_use]
+pub const fn dodger_of(body: BodyId) -> Option<ActorId> {
+    if body.0 & HURTBOX_BIT == 0 || body.0 & INDEX_MASK != DODGE_INDEX {
+        return None;
+    }
+    ActorId::from_raw((body.0 & !HURTBOX_BIT) >> INDEX_BITS)
+}
+
+/// Puts an actor's perfect-dodge volume in the world this tick, or with `None` takes it out, as
+/// [`HurtboxId::set`] does a hurtbox. An actor past [`dodge_body`]'s reach is refused.
+pub(crate) fn set_dodge_volume(
+    world: &mut PhysicsWorld,
+    actor: ActorId,
+    volume: Option<(Shape, PathSample)>,
+    root: ActorTransform,
+) -> Result<(), WorldError> {
+    let Some(id) = dodge_body(actor) else {
+        return Err(WorldError::InvalidBody(BodyId(actor.raw())));
+    };
+    let (shape, local) = volume.map_or((None, PathSample::IDENTITY), |(shape, local)| (Some(shape), local));
+    place_body(world, id, shape, root, local)
+}
+
+/// Takes all of an actor's hurtboxes and its perfect-dodge volume out of the world, for a despawn, and
+/// returns how many there were.
 pub fn remove_hurtboxes(world: &mut PhysicsWorld, actor: ActorId) -> u32 {
     let mut removed = 0;
     for index in 0..MAX_HURTBOXES {
         if let Some(id) = HurtboxId::new(actor, index) {
             removed += u32::from(world.remove_body(id.body()));
         }
+    }
+    if let Some(id) = dodge_body(actor) {
+        removed += u32::from(world.remove_body(id));
     }
     removed
 }

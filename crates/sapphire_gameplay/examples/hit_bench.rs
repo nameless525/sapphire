@@ -158,6 +158,7 @@ impl Scene {
                 self.hits.sweep(
                     &self.world,
                     &VolumeSweep {
+                        dodgeable: true,
                         attacker,
                         instance,
                         volume,

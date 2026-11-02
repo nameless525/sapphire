@@ -27,6 +27,10 @@ pub const POISE_BROKEN: Name = Name::new("poise_broken");
 /// Published after a hit's own cue, when it took the last of its target's health.
 pub const DEFEATED: Name = Name::new("defeated");
 
+/// Published when a perfect dodge fires, with the dodger for its actor. It's what E3 hangs a perfect
+/// dodge's flash and sound on, in the step the world starts to slow.
+pub const PERFECT_DODGE: Name = Name::new("perfect_dodge");
+
 /// What a hit's cues carry: everything it landed with, for what presentation hangs on it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HitCue {
@@ -49,7 +53,7 @@ pub struct HitCue {
 /// A presentation event, with exactly when it happened.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CueEvent {
-    /// Whose it is: the mover's, or a hit's attacker.
+    /// Whose it is: the mover's, a hit's attacker or a perfect dodge's dodger.
     pub actor: ActorId,
     /// What it is: E3's table says what that means.
     pub cue: Name,
@@ -64,8 +68,8 @@ pub struct CueEvent {
     pub hit: Option<HitCue>,
 }
 
-/// One step's cues: its moves' in the order they fired, each actor's in time order, then its hits' in
-/// the order they applied. Nothing in the simulation reads it back.
+/// One step's cues: its moves' in the order they fired, each actor's in time order, then its perfect
+/// dodges' by dodger, then its hits' in the order they applied. Nothing in the simulation reads it back.
 #[derive(Resource, Debug)]
 pub struct CueQueue {
     events: [Option<CueEvent>; CUE_QUEUE_LEN],

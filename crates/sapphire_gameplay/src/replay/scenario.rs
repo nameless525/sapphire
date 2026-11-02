@@ -131,8 +131,8 @@ const MELEE_SLOW_STEPS: u16 = 45;
 const MELEE_SLOW_PER_MILLE: u32 = 200;
 
 /// The first three actors' buttons that do what no move in the test content does yet: [`Buttons::SWAP`]
-/// toggles slowing the actor, [`Buttons::ULTIMATE`] slows the world for a while, as M2 G4's perfect dodge
-/// will, and [`Buttons::JUMP`] jumps and spawns another actor at a random yaw, which plays a skill and
+/// toggles slowing the actor, [`Buttons::ULTIMATE`] slows the world for a while, as a perfect dodge
+/// does, and [`Buttons::JUMP`] jumps and spawns another actor at a random yaw, which plays a skill and
 /// leaves, with no capsule, as what a fight spawns that isn't a body has none. Hits freeze clocks on
 /// their own.
 pub fn melee_buttons(

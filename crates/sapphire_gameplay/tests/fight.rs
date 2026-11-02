@@ -1633,7 +1633,7 @@ fn a_world_with_no_room_refuses_a_hurtbox_and_counts_it() {
 #[test]
 fn a_world_needs_room_for_every_hurtbox_and_comes_before_them() {
     let (mut sim, ..) = duel();
-    let needed = 64 * (1 + usize::from(MAX_HURTBOXES));
+    let needed = 64 * (2 + usize::from(MAX_HURTBOXES));
     let small = PhysicsWorld::new(Vec::new(), needed - 1).unwrap();
     assert!(sim.set_physics_world(small).is_err());
     assert!(sim.set_physics_world(PhysicsWorld::new(Vec::new(), needed).unwrap()).is_ok());

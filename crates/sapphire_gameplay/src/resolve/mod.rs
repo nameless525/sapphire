@@ -9,9 +9,11 @@
 //! ([`Attack`], [`sapphire_moves::FighterDef`], [`sapphire_moves::ArmourWindow`]) and what the `hits`
 //! module found.
 //!
-//! Doesn't own: which volumes touch what (the `hits` module), a perfect dodge or a parry (M2 G4), who's
-//! allowed to hit whom (everyone can hit everyone: M2 has one player and one enemy), or what a cue
-//! looks and sounds like (M2 E3).
+//! Also owns what a perfect dodge does when a swing goes through one ([`fire_perfect_dodges`], M2 G4).
+//!
+//! Doesn't own: which volumes touch what (the `hits` module), a parry (M2 has none), who's allowed to hit
+//! whom (everyone can hit everyone: M2 has one player and one enemy), or what a cue looks and sounds
+//! like (M2 E3).
 //!
 //! # A step
 //!
@@ -19,8 +21,10 @@
 //!    wants of its root, on its own clock, and the `hits` module sets its hurtboxes afterwards.
 //! 2. [`crate::CombatSet::Hits`]: `HitQuery` fills its events.
 //! 3. [`crate::CombatSet::Resolve`]: [`apply_hits`] applies them, nearest first in the order
-//!    `HitQuery::events` states, and forces reactions.
-//! 4. [`crate::CombatSet::TimeScale`]: [`apply_time`] freezes clocks and moves slow motion along.
+//!    `HitQuery::events` states, and forces reactions. [`fire_perfect_dodges`] then fires what
+//!    `HitQuery::dodged` found.
+//! 4. [`crate::CombatSet::TimeScale`]: [`apply_time`] freezes clocks and moves slow motion along, with
+//!    what a perfect dodge has scaled back up following it.
 //! 5. [`crate::CombatSet::Cues`]: [`publish_hit_cues`] tells presentation.
 //!
 //! So a hit lands everywhere in one step (pillar 3). Clocks tick at the start of a step, so a hit's
@@ -74,8 +78,42 @@
 //!
 //! # World-clock slow motion
 //!
-//! [`SlowMotion`] is M2 G4's: a request from any system before [`crate::CombatSet::TimeScale`] slows the
-//! world for an exact number of real steps. Nothing here asks for it yet.
+//! [`SlowMotion`]: a request from any system before [`crate::CombatSet::TimeScale`] slows the world for an
+//! exact number of real steps.
+//!
+//! # A perfect dodge
+//!
+//! Zenless Zone Zero's rhythm: a dodge just as a blow would land stops the fight's clock for everyone
+//! but the dodger, and the answer is one button away. A move's `perfect_dodge` window authors it
+//! ([`sapphire_moves::PerfectDodgeWindow`]). While one is open, invulnerable as a document has to make it,
+//! the actor has a volume in the world, and a sweep of anyone's live volume that touches it is a
+//! `DodgedSwing`, which lands nothing. What fires, in that step, once per playing of the dodge:
+//!
+//! - **Slow motion, if authored:** the world at its `per_mille` for its `steps` real steps from the next
+//!   step, the dodger's own clock scaled back up over exactly those steps, so it moves at normal speed
+//!   in a slowed world. A later request, from another dodge or anything else, replaces what's running, and
+//!   clocks already scaled back follow it until it ends.
+//! - **A counter window, if authored:** see the `moves` module. It's a cancel window on the dodger's own
+//!   clock, so a press goes through what any cancel does, with its buffer, its priority and its exact
+//!   instant, and a counter starts on its press's own step. A forced move would start a step later,
+//!   fire through a frozen clock and need all of that again by hand.
+//! - **[`crate::PERFECT_DODGE`],** the cue presentation hangs its flash and sound on.
+//!
+//! When things meet:
+//!
+//! - **Who can fire one:** the volume has to be live, so one not yet open or already closed can't, and it
+//!   has to do something ([`Attack`]) and be able to land, so a sensor can't, and nor can a swing
+//!   whose hit group already has the dodger in this volley, or that a wall has stopped. A frozen attacker
+//!   sweeps nothing, so it can't either.
+//! - **A frozen dodger** reads no new ticks and fires nothing: its window waits, and so does its counter
+//!   window, on its own clock, and a swing still touching when it thaws fires then.
+//! - **A hit on the tick the window opens:** the window wins. Hurtboxes leave the world in
+//!   [`crate::CombatSet::Movement`], before any sweep, on the step that first reads the window, so
+//!   on that step the swing touches the perfect-dodge volume, and fires it, and lands nothing. On the step
+//!   before, the window isn't open: a hit lands and its reaction replaces the dodge. A step never has
+//!   both, because the window only counts on a step the actor is invulnerable.
+//! - **After the window,** nothing was spent: a swing still live when the actor's invulnerability ends
+//!   lands as if it had just arrived, on whatever reaction that plays, which closes the counter window.
 //!
 //! # Determinism
 //!
@@ -83,6 +121,7 @@
 //! checksum. So do cues, where everything a hit decided shows, and [`AppliedHits`] doesn't: it's rebuilt
 //! every step and nothing reads it after the step ends.
 
+mod dodge;
 mod fighter;
 mod time;
 
@@ -92,6 +131,7 @@ use sapphire_math::{Vec3, det};
 use sapphire_moves::{Attack, MoveSet, Reactions, Weight};
 use sapphire_time::SimTime;
 
+pub(crate) use self::dodge::fire_perfect_dodges;
 pub(crate) use self::fighter::Slide;
 pub use self::fighter::{Fighter, HitOutcome};
 pub use self::time::SlowMotion;
@@ -115,6 +155,7 @@ pub(crate) struct ResolveStats {
     pub(crate) poise_breaks: u64,
     pub(crate) defeats: u64,
     pub(crate) hurtboxes_refused: u64,
+    pub(crate) perfect_dodges: u64,
 }
 
 /// A hit that did something this step.

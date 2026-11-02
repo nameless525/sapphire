@@ -443,6 +443,7 @@ fn hit_queries_do_not_allocate_from_the_first_sweep() {
                     hits.sweep(
                         &physics,
                         &VolumeSweep {
+                            dodgeable: true,
                             attacker: actor(1 + attacker),
                             instance: (tick / 40) as u32,
                             volume,

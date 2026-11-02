@@ -1,7 +1,8 @@
 // The combat slice's moves for tests: frame data plausible for Zenless Zone Zero's rhythm, in 60 Hz
 // ticks, with motion keyed by hand until real clips bake (M2 O3 replaces this content, not its
 // format). A press reaches a moving frame the tick after it lands; attacks commit for a third of a
-// second; a dodge's i-frames last nearly a quarter of a second, the first 100 ms of them perfect.
+// second; a dodge's i-frames last nearly a quarter of a second, the first 100 ms of them perfect, and a
+// swing dodged in those slows the world and opens a counter.
 // A light hit freezes both fighters for 50 ms and a heavy one for 167; a poise meter takes about seven
 // light hits or two heavy ones to break, and its break is a second and a half to punish.
 (
@@ -174,7 +175,9 @@
                 ],
             ),
             (
-                // 367 ms, of which 217 ms invulnerable and the first 100 ms of those perfect.
+                // 367 ms, of which 217 ms invulnerable and the first 100 ms of those perfect: a swing that
+                // comes within half a metre of the body then slows the world to a fifth for half a second,
+                // at full speed here, with three quarters of a second to answer it.
                 name: "dodge",
                 startup: 1,
                 active: 13,
@@ -189,7 +192,13 @@
                     (name: "body", from: 1, to: 14, state: Off),
                 ],
                 invulnerable: [(from: 1, to: 14)],
-                perfect_dodge: [(from: 1, to: 7)],
+                perfect_dodge: [(
+                    from: 1,
+                    to: 7,
+                    volume: (offset: (0.0, 0.9, 0.0), shape: Capsule(radius: 0.55, length: 1.0)),
+                    slow_motion: (per_mille: 200, steps: 30),
+                    counter: (ticks: 45, allow: [(intent: "light", move: "dodge_counter")]),
+                )],
                 cancels: [
                     (from: 9, to: 22, allow: [(intent: "light", move: "dash_attack")]),
                     (from: 16, to: 22, allow: [(intent: "dodge", move: "dodge", when: Instant)]),
@@ -426,6 +435,46 @@
                 active: 30,
                 recovery: 90,
                 cues: [(name: "falls", at: 0)],
+            ),
+            (
+                // 467 ms: a perfect dodge's answer. It comes out at once, untouchable until it has landed,
+                // and crosses the ground the dodge gave up to reach whoever swung.
+                name: "dodge_counter",
+                startup: 3,
+                active: 5,
+                recovery: 20,
+                motion: (
+                    root: [
+                        (at: 3, offset: (0.0, 0.0, 1.2)),
+                        (at: 8, offset: (0.0, 0.0, 2.8)),
+                        (at: 12, offset: (0.0, 0.0, 2.9)),
+                    ],
+                    paths: [
+                        (
+                            name: "blade",
+                            keys: [
+                                (at: 0, offset: (0.5, 1.2, 0.2)),
+                                (at: 3, offset: (0.4, 1.2, 0.9)),
+                                (at: 8, offset: (-0.6, 1.0, 0.9)),
+                                (at: 28, offset: (0.2, 0.9, 0.3)),
+                            ],
+                        ),
+                    ],
+                ),
+                hitboxes: [
+                    (
+                        name: "dodge_counter_hit",
+                        from: 3,
+                        to: 8,
+                        path: "blade",
+                        shape: Capsule(radius: 0.35, length: 1.2),
+                        attack: (damage: 24, poise: 22, weight: Medium, hitstop: 8, knockback: (distance: 0.6, ticks: 10), cue: "hit_counter"),
+                    ),
+                ],
+                invulnerable: [(from: 0, to: 8)],
+                warps: [(from: 0, to: 8, max_distance: 2.5, max_turn: 1.5, keep: 1.1)],
+                cancels: [(from: 14, to: 28, allow: [(intent: "dodge", move: "dodge")])],
+                cues: [(name: "counter_flash", at: 0), (name: "swing", at: 3)],
             ),
         ],
     ),

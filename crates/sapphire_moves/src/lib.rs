@@ -10,7 +10,8 @@
 //! - [`MoveSetDocument`], the RON a person or the timeline editor writes, checked with messages
 //!   naming the move and track ([`Issue`]);
 //! - [`MoveSet`], what it compiles to and cooks as: intents, what starts what, a [`FighterDef`] and each
-//!   [`Move`]'s tracks and tables, among them what its hits do ([`Attack`]);
+//!   [`Move`]'s tracks and tables, among them what its hits do ([`Attack`]) and what a dodge through
+//!   one does ([`PerfectDodgeWindow`]);
 //! - [`BakedTables`], its cooked form and how to read it at any sub-tick;
 //! - how a track meets a clock ([`Stretch`], [`Span::live`], [`Span::sweep`]), as pure functions.
 //!
@@ -80,6 +81,17 @@
 //!                 ),
 //!             )],
 //!             invulnerable: [(from: 0, to: 2)],
+//!             // A live swing touching `volume` in this window fires a perfect dodge, once a playing. It
+//!             // must lie inside `invulnerable`, and what it does is optional: slowing the world for a
+//!             // number of real steps, with this actor running at full speed, and opening a counter
+//!             // window for some ticks of its own clock.
+//!             perfect_dodge: [(
+//!                 from: 0,
+//!                 to: 2,
+//!                 volume: (offset: (0.0, 0.9, 0.0), shape: Sphere(radius: 0.5)),
+//!                 slow_motion: (per_mille: 200, steps: 30),
+//!                 counter: (ticks: 45, allow: [(intent: "light", move: "jab")]),
+//!             )],
 //!             // Below this much poise, a hit does its damage and no reaction plays.
 //!             armour: [(from: 0, to: 4, threshold: 10)],
 //!             cancels: [(from: 10, to: 18, allow: [
@@ -220,15 +232,17 @@ mod set;
 
 pub use document::{
     AllowDocument, ArmourDocument, AttackDocument, CancelDocument, ClipMotionDocument, ClipPathDocument,
-    CueDocument, FighterDocument, FighterHurtboxDocument, Follows, HitboxDocument, HurtboxDocument,
-    IntentDocument, Issue, MotionDocument, MoveDocument, MoveSetDocument, PathDocument, PathKey,
-    ReactionsDocument, RootKey, RootSource, SpanDocument, WarpDocument,
+    CounterDocument, CueDocument, DodgeVolumeDocument, FighterDocument, FighterHurtboxDocument, Follows,
+    HitboxDocument, HurtboxDocument, IntentDocument, Issue, MotionDocument, MoveDocument, MoveSetDocument,
+    PathDocument, PathKey, PerfectDodgeDocument, ReactionsDocument, RootKey, RootSource, SlowMotionDocument,
+    SpanDocument, WarpDocument,
 };
 pub use set::{
-    Allow, ArchivedMoveSet, ArmourWindow, Attack, Button, CancelMode, CancelWindow, Cue, FighterDef,
-    FighterHurtbox, HIT_LANDED, Hitbox, HurtboxChange, HurtboxState, IntentDef, Knockback, MAX_BUFFER_TICKS,
-    MAX_HITSTOP_TICKS, MAX_HURTBOXES, MAX_INTENTS, MAX_MOVE_TICKS, MOVE_SET_EXTENSION, Move, MoveSet,
-    MoveSetError, Phase, Reactions, Shape, Span, Stretch, WarpWindow, Weight,
+    Allow, ArchivedMoveSet, ArmourWindow, Attack, Button, CancelMode, CancelWindow, CounterWindow, Cue,
+    DodgeVolume, FighterDef, FighterHurtbox, HIT_LANDED, Hitbox, HurtboxChange, HurtboxState, IntentDef,
+    Knockback, MAX_BUFFER_TICKS, MAX_HITSTOP_TICKS, MAX_HURTBOXES, MAX_INTENTS, MAX_MOVE_TICKS,
+    MAX_SLOW_MOTION_STEPS, MOVE_SET_EXTENSION, Move, MoveSet, MoveSetError, PerfectDodgeWindow, Phase,
+    Reactions, Shape, Span, Stretch, WarpWindow, Weight, WorldSlowMotion,
 };
 
 use bevy_reflect::TypePath;

@@ -557,7 +557,7 @@ fn a_controller_that_cant_be_had_is_counted() {
 fn a_physics_world_must_fit() {
     let mut sim = Simulation::new(SimConfig { max_actors: 4, ..SimConfig::default() });
     let needed = sim.body_capacity();
-    assert_eq!(needed, 4 * (1 + MAX_HURTBOXES as usize));
+    assert_eq!(needed, 4 * (2 + MAX_HURTBOXES as usize));
     assert_eq!(sim.physics().body_capacity(), needed, "a new simulation's world has room too");
     let small = PhysicsWorld::new(vec![], needed - 1).unwrap();
     assert_eq!(
@@ -574,7 +574,7 @@ fn a_physics_world_must_fit() {
     );
 }
 
-/// The sum: a full pool of characters with every hurtbox set fills a world of [`Simulation::body_capacity`]
+/// The sum: a full pool of characters with every hurtbox and perfect-dodge volume set fills a world of [`Simulation::body_capacity`]
 /// exactly, refused by nothing, in a new simulation's world and a set one alike. The characters still
 /// step, and a despawn gives all of an actor's bodies back, because their IDs never come round again.
 #[test]
@@ -601,6 +601,8 @@ fn a_full_cast_with_every_hurtbox_is_refused_by_nothing() {
                 let hurtbox = HurtboxId::new(actor, index).unwrap();
                 hurtbox.set(characters.physics_mut(), Some(shape), root, PathSample::IDENTITY).unwrap();
             }
+            let volume = Some((shape, PathSample::IDENTITY));
+            crate::hits::set_dodge_volume(characters.physics_mut(), actor, volume, root).unwrap();
         }
         let full = sim.body_capacity();
         assert_eq!(sim.physics().body_count(), full, "world set: {set_a_world}");
@@ -614,7 +616,7 @@ fn a_full_cast_with_every_hurtbox_is_refused_by_nothing() {
 
         assert!(sim.despawn(cast[0]));
         sim.step(&TickActions::NEUTRAL);
-        assert_eq!(sim.physics().body_count(), full - (1 + MAX_HURTBOXES as usize));
+        assert_eq!(sim.physics().body_count(), full - (2 + MAX_HURTBOXES as usize));
     }
 }
 
@@ -674,7 +676,7 @@ fn a_stick_is_world_space() {
 mod mesh_arena;
 
 /// arm64: an Apple M5. CI's macOS runners must agree.
-const CHECKSUM_AARCH64: u64 = 0xef94_6904_a64c_c2ef;
+const CHECKSUM_AARCH64: u64 = 0x6a8c_3e56_872d_600a;
 
 /// x86-64: Linux and Windows must both reach this one value. **Not pinned yet:** the first CI run fails,
 /// printing the value to put here. Linux and Windows failing with different values is what this exists

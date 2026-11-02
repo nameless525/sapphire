@@ -17,6 +17,15 @@
 //! - **Each stretch is read once** ([`Stretch`]): cues fire and windows count exactly as
 //!   `sapphire_moves` defines, so a frozen step can't fire one twice and a big step can't skip one.
 //!
+//! # A counter window
+//!
+//! What a perfect dodge opens (the `resolve` module fires it) is a cancel window on the actor's own clock
+//! rather than on a move's: [`MoveRunner::counter`] goes through the same [`OpenWindow`], at the same exact
+//! instants, from the same ring, as what a move authors. It's scanned first, so at one instant a
+//! press it allows starts the counter, not what the dodge's windows or a neutral start would do with
+//! that press. It stays open past the dodge's end, and starting any move closes it: a counter, what a
+//! press starts instead and what a hit forces all end the chance.
+//!
 //! # Order
 //!
 //! [`crate::CombatSet::Cancels`] ([`settle_cancels`]) walks everything that happens to an actor's
@@ -34,8 +43,8 @@ use sapphire_core::Name;
 use sapphire_ecs::prelude::*;
 use sapphire_math::{Vec3, det};
 use sapphire_moves::{
-    Allow, BakedTables, CancelMode, Hitbox, HurtboxChange, Move, MoveSet, PathSample, Phase, RootSample,
-    Shape, Span, Stretch, WarpWindow,
+    Allow, BakedTables, CancelMode, Hitbox, HurtboxChange, Move, MoveSet, PathSample, PerfectDodgeWindow,
+    Phase, RootSample, Shape, Span, Stretch, WarpWindow,
 };
 use sapphire_time::{SimDuration, SimTime};
 use xxhash_rust::xxh3::xxh3_64;
@@ -177,6 +186,17 @@ pub enum WarpTarget {
     Actor(ActorId),
 }
 
+/// A window a perfect dodge left open, on the actor's own clock: see the [module docs](self).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct OpenCounter {
+    /// The dodge whose window says what it allows.
+    pub(crate) at: MoveRef,
+    /// Its place in that move's `perfect_dodge`.
+    pub(crate) window: u32,
+    pub(crate) opens: SimTime,
+    pub(crate) closes: SimTime,
+}
+
 /// A running move's state. See [`CurrentMove`] for the plain read of it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Running {
@@ -194,6 +214,8 @@ pub(crate) struct Running {
     pub(crate) warp_window: Option<u32>,
     pub(crate) warp_distance: f32,
     pub(crate) warp_turn: f32,
+    /// A perfect dodge has fired in this playing, so it won't again.
+    pub(crate) dodged: bool,
 }
 
 /// What an actor's moves are doing. Reset for each new actor, and in the checksum, every field.
@@ -206,6 +228,8 @@ pub struct MoveRunner {
     /// Moves it has started, all told.
     pub(crate) started: u32,
     pub(crate) forced: Option<Name>,
+    /// What a perfect dodge left open.
+    pub(crate) counter: Option<OpenCounter>,
 }
 
 impl MoveRunner {
@@ -335,9 +359,9 @@ pub struct ActiveHurtbox {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LiveWindows {
     pub invulnerable: bool,
-    /// Published for M2 G4, which decides what it does.
+    /// A perfect-dodge window counts: [`MoveOutput::perfect_window`] says whether it can fire.
     pub perfect_dodge: bool,
-    /// Published for M2 G4, which decides what it does.
+    /// Published, and nothing reads it: M2's fight has no parry.
     pub parry: bool,
     pub cancel: bool,
     pub warp: bool,
@@ -358,6 +382,10 @@ pub struct MoveOutput {
     pub windows: LiveWindows,
     pub volumes: Published<ActiveVolume, MAX_ACTIVE_VOLUMES>,
     pub hurtboxes: Published<ActiveHurtbox, MAX_ACTIVE_HURTBOXES>,
+    /// Which of the running move's perfect-dodge windows can fire this step: one with a volume that this
+    /// step's reading counts in, while the clock moved, the actor is invulnerable and the playing hasn't
+    /// fired one yet. So a hit and a perfect dodge never land on an actor in one step.
+    pub perfect_window: Option<u32>,
 }
 
 /// The move an actor is playing, as plain data: what N3's combat layer and T1's view read.
@@ -377,6 +405,8 @@ pub struct CurrentMove {
     pub reading: RootSample,
     /// The table's root space: the yaw it began at, plus what warp turned it.
     pub frame_yaw: f32,
+    /// Whether a perfect dodge has fired in this playing.
+    pub dodged: bool,
 }
 
 impl CurrentMove {
@@ -402,6 +432,8 @@ pub struct MoveRead {
     /// Where the root was before this step's motion. With [`ActorView`](crate::ActorView)'s position
     /// and yaw, what a hit sweep runs between.
     pub previous: ActorTransform,
+    /// When a window a perfect dodge left open closes, on the actor's clock, if one is open.
+    pub counter_closes_at: Option<SimTime>,
 }
 
 impl MoveRead {
@@ -419,6 +451,7 @@ impl MoveRead {
                 started_at: running.started_at,
                 reading: running.reading,
                 frame_yaw: running.frame_yaw,
+                dodged: running.dodged,
             })
         });
         Self {
@@ -430,6 +463,7 @@ impl MoveRead {
             hurtboxes: output.hurtboxes,
             root_delta: output.root_delta,
             previous: output.previous,
+            counter_closes_at: runner.counter.map(|counter| counter.closes),
         }
     }
 }
@@ -442,6 +476,7 @@ pub(crate) struct MoveStats {
     pub(crate) intents_overwritten: u64,
     pub(crate) moves_started: u64,
     pub(crate) cancels_fired: u64,
+    pub(crate) counters_fired: u64,
     pub(crate) volumes_dropped: u64,
     pub(crate) transition_limit: u64,
 }
@@ -515,6 +550,9 @@ pub(crate) fn settle_cancels(
         };
         let frozen = clock.0.last_delta() == SimDuration::ZERO;
         settle(stage, set, &mut runner, &mut ring, clock.0.now(), frozen);
+        if runner.counter.is_some_and(|counter| counter.closes <= clock.0.now()) {
+            runner.counter = None;
+        }
         stats.intents_expired += ring.expire(clock.0.now());
     }
 }
@@ -558,6 +596,7 @@ fn settle(
                     limit: now.as_subticks(),
                 };
                 let mut best = None;
+                scan_counter(runner, library, current, current_revision, &window, ring, &mut best);
                 window.scan(current.neutral(), true, current, ring, &mut best);
                 let Some(fire) = best else { return };
                 take(&mut stage, runner, ring, fire, reference(fire.target));
@@ -572,6 +611,10 @@ fn settle(
                 let reached = runner.cursor.as_subticks();
                 let unread = if running.fresh { reached } else { reached.saturating_add(1) };
                 let mut best = None;
+                // A counter window can outlast the move: what's past the move's end waits for that.
+                let limit = now.as_subticks().min(ends_at.as_subticks());
+                let bounds = OpenWindow { opens: 0, closes: 0, reached, unread, limit };
+                scan_counter(runner, library, current, current_revision, &bounds, ring, &mut best);
                 for cancel in &mv.cancels {
                     let window = OpenWindow {
                         opens: (running.started_at + cancel.span.start()).as_subticks(),
@@ -618,6 +661,8 @@ struct Fire {
     /// Where its press is in the ring, oldest first; `None` for a hold.
     slot: Option<usize>,
     target: u32,
+    /// Whether a counter window is what it fires from.
+    counter: bool,
 }
 
 impl Fire {
@@ -686,7 +731,7 @@ impl OpenWindow {
                 if ring.held() & (1 << bit) != 0
                     && let Some(at) = self.hold_time()
                 {
-                    consider(Fire { at, priority: intent.priority, slot: None, target });
+                    consider(Fire { at, priority: intent.priority, slot: None, target, counter: false });
                 }
                 continue;
             }
@@ -695,10 +740,37 @@ impl OpenWindow {
                     continue;
                 }
                 if let Some(at) = self.fire_time(allow.mode, press) {
-                    consider(Fire { at, priority: press.priority, slot: Some(slot), target });
+                    consider(Fire { at, priority: press.priority, slot: Some(slot), target, counter: false });
                 }
             }
         }
+    }
+}
+
+/// Considers what the actor's counter window lets the ring do, with `bounds` saying how far this step has
+/// been read and may reach. Goes first, so among equals a counter stands. See the [module docs](self).
+fn scan_counter(
+    runner: &MoveRunner,
+    library: &MoveLibrary,
+    current: &MoveSet,
+    current_revision: u32,
+    bounds: &OpenWindow,
+    ring: &IntentRing,
+    best: &mut Option<Fire>,
+) {
+    let Some(counter) = runner.counter else { return };
+    let window = library.get(counter.at).and_then(|mv| mv.perfect_dodge.get(counter.window as usize));
+    let Some(allow) = window.and_then(|window| window.counter.as_ref()) else { return };
+    let window = OpenWindow {
+        opens: counter.opens.as_subticks(),
+        closes: counter.closes.as_subticks(),
+        reached: bounds.reached,
+        unread: bounds.unread,
+        limit: bounds.limit,
+    };
+    window.scan(&allow.allow, counter.at.revision == current_revision, current, ring, best);
+    if let Some(fire) = best {
+        fire.counter = true;
     }
 }
 
@@ -708,6 +780,7 @@ fn take(stage: &mut Stage<'_>, runner: &mut MoveRunner, ring: &mut IntentRing, f
     if let Some(slot) = fire.slot {
         ring.remove(slot);
     }
+    stage.stats.counters_fired += u64::from(fire.counter);
     let at = SimTime::from_subticks(fire.at);
     end_running(stage, runner, at);
     start_move(stage, runner, target, at);
@@ -727,6 +800,7 @@ fn end_running(stage: &mut Stage<'_>, runner: &mut MoveRunner, at: SimTime) {
 fn start_move(stage: &mut Stage<'_>, runner: &mut MoveRunner, target: MoveRef, at: SimTime) {
     runner.started = runner.started.wrapping_add(1);
     runner.cursor = at;
+    runner.counter = None;
     runner.running = Some(Running {
         at: target,
         started_at: at,
@@ -737,6 +811,7 @@ fn start_move(stage: &mut Stage<'_>, runner: &mut MoveRunner, target: MoveRef, a
         warp_window: None,
         warp_distance: 0.0,
         warp_turn: 0.0,
+        dodged: false,
     });
     stage.stats.moves_started += 1;
 }
@@ -780,7 +855,12 @@ pub(crate) fn advance_moves(
             read_stretch(&mut stage, mv, &mut running, Stretch::cut(previous, mv.duration()));
             runner.running = None;
         } else {
-            read_stretch(&mut stage, mv, &mut running, Stretch::read(previous, elapsed));
+            let stretch = Stretch::read(previous, elapsed);
+            read_stretch(&mut stage, mv, &mut running, stretch);
+            if !running.dodged && clock.0.last_delta() != SimDuration::ZERO && stage.output.windows.invulnerable {
+                let open = |window: &PerfectDodgeWindow| window.volume.is_some() && window.span.live(stretch);
+                stage.output.perfect_window = mv.perfect_dodge.iter().position(open).map(|at| at as u32);
+            }
             running.fresh = false;
             runner.running = Some(running);
         }
@@ -806,7 +886,7 @@ fn read_stretch(stage: &mut Stage<'_>, mv: &Move, running: &mut Running, stretch
     let live = |spans: &[Span]| spans.iter().any(|span| span.live(stretch));
     let windows = &mut stage.output.windows;
     windows.invulnerable |= live(&mv.invulnerable);
-    windows.perfect_dodge |= live(&mv.perfect_dodge);
+    windows.perfect_dodge |= mv.perfect_dodge.iter().any(|window| window.span.live(stretch));
     windows.parry |= live(&mv.parry);
     windows.cancel |= mv.cancels.iter().any(|window| window.span.live(stretch));
     windows.warp |= mv.warps.iter().any(|window| window.span.live(stretch));

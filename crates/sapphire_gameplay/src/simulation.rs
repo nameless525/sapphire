@@ -167,7 +167,10 @@ impl Simulation {
                     .in_set(CombatSet::Movement),
             )
             .add_systems(FixedCombat, hits::sweep_hits.in_set(CombatSet::Hits))
-            .add_systems(FixedCombat, resolve::apply_hits.in_set(CombatSet::Resolve))
+            .add_systems(
+                FixedCombat,
+                (resolve::apply_hits, resolve::fire_perfect_dodges).chain().in_set(CombatSet::Resolve),
+            )
             .add_systems(FixedCombat, resolve::apply_time.in_set(CombatSet::TimeScale))
             .add_systems(FixedCombat, resolve::publish_hit_cues.in_set(CombatSet::Cues))
             .add_systems(FixedPost, actors::resolve_actor_requests);
@@ -343,6 +346,7 @@ impl Simulation {
         stats.intents_overwritten = moves.intents_overwritten;
         stats.moves_started = moves.moves_started;
         stats.cancels_fired = moves.cancels_fired;
+        stats.counters_fired = moves.counters_fired;
         stats.volumes_dropped = moves.volumes_dropped;
         stats.transition_limit_steps = moves.transition_limit;
         let cues = world.resource::<CueQueue>();
@@ -361,6 +365,7 @@ impl Simulation {
         stats.poise_breaks = resolved.poise_breaks;
         stats.defeats = resolved.defeats;
         stats.hurtboxes_refused = resolved.hurtboxes_refused;
+        stats.perfect_dodges = resolved.perfect_dodges;
     }
 
     /// The checksum of all simulated state: the same inputs give the same one on every run for an
@@ -447,6 +452,12 @@ impl Simulation {
     /// tool would. A system does the same with `ResMut<SlowMotion>`.
     pub fn request_slow_motion(&mut self, per_mille: u32, steps: u16) {
         self.ecs.world_mut().resource_mut::<SlowMotion>().request(per_mille, steps);
+    }
+
+    /// World-clock slow motion as it stands: whether it's running and what it has refused.
+    #[must_use]
+    pub fn slow_motion(&self) -> SlowMotion {
+        *self.ecs.world().resource::<SlowMotion>()
     }
 
     /// A live actor's clock, between steps: hitstop and time scales from outside the simulation, as

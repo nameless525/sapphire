@@ -89,6 +89,7 @@ impl HitQuery {
                     shape: hit_shape(volume.shape),
                     path,
                     blocked_by: hitbox.blocked_by(),
+                    dodgeable: hitbox.attack.is_some(),
                     owner: OwnerStep {
                         delta: moves.delta,
                         reading: move_reading(moves.runner, &volume),

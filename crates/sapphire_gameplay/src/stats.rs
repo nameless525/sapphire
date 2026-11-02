@@ -55,6 +55,8 @@ pub struct SimStats {
     pub moves_started: u64,
     /// Of those, the ones that cancelled another.
     pub cancels_fired: u64,
+    /// Of the moves started, the ones a counter window started, from a move or from none.
+    pub counters_fired: u64,
     /// Cues published so far.
     pub cues_published: u64,
     /// Cues dropped so far, for want of room in a step's queue.
@@ -85,8 +87,11 @@ pub struct SimStats {
     pub poise_breaks: u64,
     /// Actors defeated so far.
     pub defeats: u64,
-    /// Hurtboxes the physics world refused so far: non-zero means it's too small, or a pose went bad.
+    /// Hurtboxes and perfect-dodge volumes the physics world refused so far: non-zero means it's too
+    /// small, or a pose went bad.
     pub hurtboxes_refused: u64,
+    /// Perfect dodges fired so far. `Simulation::hits` has the swings behind the latest step's.
+    pub perfect_dodges: u64,
 }
 
 impl SimStats {

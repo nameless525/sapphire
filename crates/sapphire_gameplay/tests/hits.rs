@@ -13,7 +13,7 @@ use sapphire_gameplay::{
     ActorActions, ActorId, ActorSpawn, ActorTable, ActorTransform, Buttons, HitEvent, HitQuery, HurtboxId,
     MAX_CAST_RESULTS, MAX_CONTACTS, MAX_HIT_EVENTS, MAX_HIT_RECORDS, MAX_HURTBOXES, MAX_SAG, MAX_SUB_STEPS,
     MoveOutput, OwnerStep, SimConfig, Simulation, Stick, SubStep, TickActions, VolumeSweep, hit_shape,
-    published_hurtbox, remove_hurtboxes, volume_pose,
+    dodge_body, dodger_of, published_hurtbox, remove_hurtboxes, volume_pose,
 };
 use sapphire_math::{Vec3, det};
 use sapphire_moves::{BakedPath, MoveSet, MoveSetDocument, PathSample, Span, Stretch};
@@ -97,6 +97,7 @@ fn swing<'a>(path: &'a BakedPath, shape: Shape, from: SimDuration, to: SimDurati
         shape,
         path,
         blocked_by: GroupMask::NONE,
+        dodgeable: true,
         owner: OwnerStep {
             delta,
             reading: to,
@@ -1019,25 +1020,43 @@ fn a_volume_holding_still_on_a_moving_clock_is_still_live() {
 
 #[test]
 fn hurtbox_ids_say_who_owns_them() {
-    for (raw, index) in [(1_u32, 0_u8), (1, 15), (2, 0), (77, 9), ((1 << 27) - 1, 15)] {
+    for (raw, index) in [(1_u32, 0_u8), (1, 15), (2, 0), (77, 9), ((1 << 26) - 1, 15)] {
         let id = HurtboxId::new(actor(raw), index).unwrap();
         assert_eq!(id.actor(), actor(raw));
         assert_eq!(id.index(), index);
         assert_eq!(HurtboxId::from_body(id.body()), Some(id));
     }
     assert_eq!(HurtboxId::new(actor(1), MAX_HURTBOXES), None);
-    assert_eq!(HurtboxId::new(actor(1 << 27), 0), None, "past what an ID holds");
-    assert_eq!(HurtboxId::bodies_of(actor(1 << 27)), None);
+    assert_eq!(HurtboxId::new(actor(1 << 26), 0), None, "past what an ID holds");
+    assert_eq!(HurtboxId::bodies_of(actor(1 << 26)), None);
     // A character's capsule, whose body ID is its actor's, isn't one.
     assert_eq!(HurtboxId::from_body(sapphire_physics::BodyId(1)), None);
     assert_eq!(HurtboxId::from_body(sapphire_physics::BodyId(1 << 31)), None, "actor 0 isn't one");
 
-    // Actors' runs of IDs don't overlap, and each holds all of its own.
+    // Actors' runs of IDs don't overlap, and each holds all of its own, its perfect-dodge volume last.
     let (first, last) = HurtboxId::bodies_of(actor(5)).unwrap();
     assert_eq!(first, HurtboxId::new(actor(5), 0).unwrap().body());
-    assert_eq!(last, HurtboxId::new(actor(5), 15).unwrap().body());
-    assert!(HurtboxId::new(actor(4), 15).unwrap().body() < first);
+    assert!(HurtboxId::new(actor(5), 15).unwrap().body() < last);
+    assert_eq!(last, dodge_body(actor(5)).unwrap());
+    assert!(dodge_body(actor(4)).unwrap() < first);
     assert!(HurtboxId::new(actor(6), 0).unwrap().body() > last);
+}
+
+/// A perfect-dodge volume's body says whose it is, and is never taken for a hurtbox, or the reverse.
+#[test]
+fn a_perfect_dodge_volumes_id_says_whose_it_is() {
+    for raw in [1_u32, 2, 77, (1 << 26) - 1] {
+        let body = dodge_body(actor(raw)).unwrap();
+        assert_eq!(dodger_of(body), Some(actor(raw)));
+        assert_eq!(HurtboxId::from_body(body), None, "not a hurtbox");
+        for index in [0, 7, 15] {
+            assert_eq!(dodger_of(HurtboxId::new(actor(raw), index).unwrap().body()), None);
+        }
+    }
+    assert_eq!(dodge_body(actor(1 << 26)), None, "past what an ID holds");
+    assert_eq!(dodger_of(sapphire_physics::BodyId(1)), None, "a character's capsule");
+    assert_eq!(dodger_of(sapphire_physics::BodyId(16)), None, "a capsule whose number looks like one");
+    assert_eq!(dodger_of(sapphire_physics::BodyId((1 << 31) | 16)), None, "actor 0 isn't one");
 }
 
 #[test]

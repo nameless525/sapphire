@@ -26,8 +26,10 @@
 //! - [`arena`]: the look-dev town's square as a place to fight: its collision, from a committed
 //!   document, and where a duel starts.
 //! - Resolve (M2 G3): [`Fighter`], its health, poise and push, what a landed hit comes to
-//!   ([`HitOutcome`]), the reactions and hitstop it asks for, and [`SlowMotion`], the seam for
-//!   world-clock slow motion. The `resolve` module's docs say how a hit lands.
+//!   ([`HitOutcome`]), the reactions and hitstop it asks for, and [`SlowMotion`], world-clock slow
+//!   motion. The `resolve` module's docs say how a hit lands.
+//! - Perfect dodges and counters (M2 G4), through [`HitQuery::dodged`], the `resolve` module and the
+//!   `moves` module's counter window.
 //!
 //! The rest arrives with M2's other G packages, each in its [`CombatSet`].
 //!
@@ -143,11 +145,12 @@ pub use controller::{
     ControllerProfile, ControllerState, GroundMode, MovementMode, PhysicsWorldError, ProfileError, ProfileId,
     ResolvedProfile, actor_body, step_controller,
 };
-pub use cues::{CUE_QUEUE_LEN, CueEvent, CueQueue, DEFEATED, HitCue, POISE_BROKEN};
+pub use cues::{CUE_QUEUE_LEN, CueEvent, CueQueue, DEFEATED, HitCue, PERFECT_DODGE, POISE_BROKEN};
 pub use hits::{
-    HitEvent, HitQuery, HitStats, HurtboxId, MAX_CAST_RESULTS, MAX_CONTACTS, MAX_HIT_EVENTS, MAX_HIT_RECORDS,
-    MAX_HURTBOXES, MAX_SAG, MAX_STOPPED_VOLUMES, MAX_SUB_STEPS, MIN_TURN_STEP, OwnerStep, PublishedMoves,
-    SubStep, VolumeSweep, hit_shape, published_hurtbox, remove_hurtboxes, volume_pose,
+    DodgedSwing, HitEvent, HitQuery, HitStats, HurtboxId, MAX_CAST_RESULTS, MAX_CONTACTS, MAX_DODGED_SWINGS,
+    MAX_HIT_EVENTS, MAX_HIT_RECORDS, MAX_HURTBOXES, MAX_SAG, MAX_STOPPED_VOLUMES, MAX_SUB_STEPS, MIN_TURN_STEP,
+    OwnerStep, PublishedMoves, SubStep, VolumeSweep, dodge_body, dodger_of, hit_shape, published_hurtbox,
+    remove_hurtboxes, volume_pose,
 };
 pub use intents::{INTENT_RING_LEN, Intent, IntentRing};
 pub use movement::{ActorTransform, RootDelta};

@@ -121,6 +121,10 @@ pub struct VolumeSweep<'a> {
     /// wall. It counts wherever the volume goes, and the floor is `Group::World` too, so a volume
     /// that says so has to stay clear of it.
     pub blocked_by: GroupMask,
+    /// Whether it does anything when it lands, so that a perfect dodge has something to dodge
+    /// (`Hitbox::attack`). One that doesn't is an event and nothing more, and a touch of a perfect-dodge
+    /// volume means nothing.
+    pub dodgeable: bool,
     pub owner: OwnerStep,
     /// The first sub-tick of the move this step sweeps (`ActiveVolume::from`): never before the volume's
     /// window opens, and no earlier than where the last step's sweep stopped.

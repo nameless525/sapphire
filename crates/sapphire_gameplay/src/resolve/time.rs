@@ -2,19 +2,19 @@
 //! effect from the next step's clocks. See the [module docs](super).
 
 use sapphire_ecs::prelude::*;
-use sapphire_time::{ScaleSource, ScaledClock};
+use sapphire_time::{NORMAL_SPEED, ScaleSource, ScaledClock};
 
 use super::{AppliedHits, HitOutcome};
 use crate::actors::ActorTable;
 use crate::checksum::StateHasher;
 
-/// World-clock slow motion: the seam M2 G4's perfect dodge builds on. A request slows the world for an
-/// exact number of real fixed steps, ends by itself and is in the checksum. Hitstop counts real steps
-/// too, so it lasts as long as authored under this.
+/// World-clock slow motion, which a perfect dodge asks for. A request slows the world for an exact number
+/// of real fixed steps, ends by itself and is in the checksum. Hitstop counts real steps too, so it lasts
+/// as long as authored under this.
 ///
-/// It uses the `PerfectDodge` scale source, whose counter-scale on the player's own clock is G4's to
-/// push and pop ([`Self::is_running`] says when). Anything else that wants the world slower for a while
-/// asks here.
+/// It uses the `PerfectDodge` scale source. An actor's clock with that source on it is scaled back up,
+/// and [`apply_time`] keeps the two matched: whatever slows the world, such a clock runs at its own speed
+/// until the slowdown ends. Anything else that wants the world slower for a while asks here.
 #[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SlowMotion {
     /// `(per mille, steps)`, taken up by the next [`crate::CombatSet::TimeScale`].
@@ -45,8 +45,9 @@ impl SlowMotion {
         self.refused
     }
 
-    /// Moves it on by one real step, or takes up a request. A stopped world holds it, as it holds hitstop.
-    fn settle(&mut self, world: &mut ScaledClock) {
+    /// Moves it on by one real step, or takes up a request, and returns whether the world's scale may
+    /// have changed. A stopped world holds it, as it holds hitstop.
+    fn settle(&mut self, world: &mut ScaledClock) -> bool {
         if let Some((per_mille, steps)) = self.requested.take() {
             if self.left > 0 {
                 world.remove_source(ScaleSource::PerfectDodge);
@@ -58,11 +59,15 @@ impl SlowMotion {
                     Err(_) => self.refused += 1,
                 }
             }
+            true
         } else if self.left > 0 && !world.is_stopped() {
             self.left -= 1;
             if self.left == 0 {
                 world.remove_source(ScaleSource::PerfectDodge);
             }
+            self.left == 0
+        } else {
+            false
         }
     }
 
@@ -76,9 +81,16 @@ impl SlowMotion {
     }
 }
 
+/// What brings a clock back up to its own speed in a world slowed to `per_mille`: exactly 1× for what a
+/// document can author, and as near as a whole number of thousandths for anything else.
+pub(super) fn counter_scale(per_mille: u32) -> u32 {
+    (NORMAL_SPEED * NORMAL_SPEED).checked_div(per_mille).unwrap_or(NORMAL_SPEED)
+}
+
 /// The system. Each applied hit freezes its attacker and, unless armour took it, its target; a defeat
 /// with a finish freeze stops every actor. An actor's freeze is the longest asked of it, so the order
-/// of these changes nothing. See the [module docs](super#when-hits-overlap).
+/// of these changes nothing. See the [module docs](super#when-hits-overlap). Then slow motion moves on,
+/// and when it starts, changes or ends, each clock scaled back up follows it.
 pub(crate) fn apply_time(
     table: Res<'_, ActorTable>,
     applied: Res<'_, AppliedHits>,
@@ -103,5 +115,19 @@ pub(crate) fn apply_time(
             }
         }
     }
-    slow.settle(&mut world_clock.0);
+    if slow.settle(&mut world_clock.0) {
+        let world = &world_clock.0;
+        let slowed = world.scales().find(|scale| scale.source == ScaleSource::PerfectDodge);
+        let mut refused = 0;
+        for (_, entity) in table.iter() {
+            let Ok(mut clock) = clocks.get_mut(entity) else { continue };
+            if clock.0.remove_source(ScaleSource::PerfectDodge) > 0
+                && let Some(slowed) = slowed
+            {
+                let pushed = clock.0.push_scale(ScaleSource::PerfectDodge, counter_scale(slowed.per_mille));
+                refused += u64::from(pushed.is_err());
+            }
+        }
+        slow.refused += refused;
+    }
 }

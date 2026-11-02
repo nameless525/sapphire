@@ -17,8 +17,8 @@
 //! start past 0), and is a whole number of ticks long, the last rounded up, so it never ends
 //! before the source. Every channel is sampled at every tick by glTF's rules: held before its
 //! first key and after its last, `STEP` and `LINEAR` as named (rotations as a slerp along the
-//! short way, on [`sapphire_math::det`], so no platform's libm reaches a cook), `CUBICSPLINE` as a
-//! Hermite segment, renormalized for rotations.
+//! short way, on [`sapphire_math::det`], so no platform's libm or SIMD reaches a cook), `CUBICSPLINE`
+//! as a Hermite segment, renormalized for rotations.
 //!
 //! **Malformed files** are errors, as in [the importer](super) as a whole. Accessors go through
 //! the importer's checks before any reader sees them; counts against [`CLIP_BUDGET`] before data
@@ -33,9 +33,10 @@ use std::fmt;
 use ::gltf::animation::util::ReadOutputs;
 use ::gltf::animation::{Channel, Interpolation, Property};
 use ::gltf::{Accessor, Document, Gltf};
-use glam::{Quat, Vec3, Vec4};
+use glam::{Quat, Vec3};
 use sapphire_assets::clip::MAX_TICKS;
 use sapphire_assets::skeleton::{Joint, Skeleton};
+use sapphire_math::det;
 
 use super::{GltfImportError, SceneImport, accessors, load_buffers, parse};
 use crate::cache::Stage;
@@ -45,7 +46,9 @@ use crate::import::fbx::FbxImportError;
 
 /// This importer, as cache keys know it. Bump the version whenever sampling changes output for the
 /// same file.
-pub const IMPORTER: Stage = Stage { name: "gltf clips", version: 1 };
+///
+/// 2: normalizes in scalars, for one set of bytes on every architecture (M2 N1).
+pub const IMPORTER: Stage = Stage { name: "gltf clips", version: 2 };
 
 /// How much of an animation one source may bring into a cook, checked before data is read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -291,7 +294,7 @@ impl Keys {
         match self.interpolation {
             Interpolation::Step => out.copy_from_slice(self.value(key)),
             Interpolation::Linear if rotation => {
-                let turned = clip::slerp(quat(self.value(key)), quat(self.value(key + 1)), u);
+                let turned = det::quat_slerp(quat(self.value(key)), quat(self.value(key + 1)), u);
                 out.copy_from_slice(&turned.to_array());
             }
             Interpolation::Linear => {
@@ -311,13 +314,9 @@ impl Keys {
                         + (u3 - u2) * span * arriving[component];
                 }
                 if rotation {
-                    let blended = Vec4::from_slice(out);
                     // A segment through the origin has no direction there: hold the key before.
-                    let turned = if blended.length_squared() > 1e-12 {
-                        blended.normalize()
-                    } else {
-                        Vec4::from_slice(from)
-                    };
+                    let turned =
+                        if length_squared(out) > 1e-12 { det::quat_normalize(quat(out)) } else { quat(from) };
                     out.copy_from_slice(&turned.to_array());
                 }
             }
@@ -326,7 +325,12 @@ impl Keys {
 }
 
 fn quat(value: &[f32]) -> Quat {
-    Quat::from_vec4(Vec4::from_slice(value))
+    Quat::from_slice(value)
+}
+
+/// A rotation's four numbers' squared length, in one order on every architecture.
+fn length_squared(value: &[f32]) -> f32 {
+    value[0] * value[0] + value[1] * value[1] + value[2] * value[2] + value[3] * value[3]
 }
 
 /// What a channel drives.
@@ -595,11 +599,11 @@ fn read_keys(
                 Interpolation::CubicSpline => &mut chunk[4..8],
                 Interpolation::Linear | Interpolation::Step => &mut chunk[..4],
             };
-            let rotation = Vec4::from_slice(value);
-            if rotation.length_squared() < 1e-6 {
+            if length_squared(value) < 1e-6 {
                 return Err(ClipImportError::ZeroRotation { at: at.clone(), key });
             }
-            value.copy_from_slice(&rotation.normalize().to_array());
+            let rotation = det::quat_normalize(quat(value));
+            value.copy_from_slice(&rotation.to_array());
         }
     }
     Ok(Keys { times, values, width, interpolation })

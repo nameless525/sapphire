@@ -1,8 +1,8 @@
 //! Retargeting at cook time, by humanoid bone map: one rig's motion onto another's skeleton, with
 //! each bone's axes, proportions and bones of its own (spec §5.13).
 //!
-//! A retarget's clips are for poses: they aren't the same bytes on every architecture, so no move's
-//! baked tables may read them as they are (see [the clip module](super)'s "Byte identity").
+//! All of it in scalars and `det`, so a move's baked tables can start from what it makes (see [the
+//! clip module](super)'s "Byte identity").
 //!
 //! # A humanoid map
 //!
@@ -103,19 +103,22 @@
 
 use std::collections::BTreeMap;
 
-use glam::{Affine3A, Quat, Vec3};
+use glam::{Affine3, Quat, Vec3};
 use sapphire_assets::AssetId;
 use sapphire_assets::rig::{CharacterRig, HumanBone};
 use sapphire_assets::skeleton::{NO_PARENT, Skeleton};
+use sapphire_math::det;
 use serde::{Deserialize, Serialize};
 
-use super::{SampledClip, SampledRoot, rest_model};
+use super::{SampledClip, SampledRoot, rest_model, rest_rotation};
 use crate::cache::Stage;
 use crate::keypose::Turn;
 
 /// Retargeting and the `.sclip` writer, [`COOKER`](super::COOKER)'s version in the low 16 bits. Bump
 /// the high bits whenever retargeting changes output for the same samples and rigs.
-pub const COOKER: Stage = Stage { name: "sclip retarget", version: (1 << 16) | super::COOKER.version };
+///
+/// 2: in scalars, for one set of bytes on every architecture (M2 N1).
+pub const COOKER: Stage = Stage { name: "sclip retarget", version: (2 << 16) | super::COOKER.version };
 
 /// One entry of a sidecar's `retarget`: which clips of the source to carry onto which rig.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -270,8 +273,7 @@ impl Default for RetargetOptions {
 /// scale is the ratio of. A leg without a required bone counts as none.
 pub fn leg_length(rig: Rig<'_>) -> f32 {
     let model = rest_model(rig.skeleton);
-    let at =
-        |bone: HumanBone| rig.map.joint(bone).map(|joint| Vec3::from(model[usize::from(joint)].translation));
+    let at = |bone: HumanBone| rig.map.joint(bone).map(|joint| model[usize::from(joint)].translation);
     let leg = |upper, lower, foot| {
         let (upper, lower, foot) = (at(upper), at(lower), at(foot));
         upper
@@ -314,8 +316,8 @@ fn parent_of(skeleton: &Skeleton, joint: usize) -> Option<usize> {
 pub(crate) fn rest_rotations(skeleton: &Skeleton) -> Vec<Quat> {
     let mut model: Vec<Quat> = Vec::with_capacity(skeleton.rest.len());
     for joint in 0..skeleton.rest.len() {
-        let local = Quat::from_array(skeleton.rest[joint].rotation).normalize();
-        model.push(parent_of(skeleton, joint).map_or(local, |parent| model[parent] * local));
+        let local = rest_rotation(skeleton, joint);
+        model.push(parent_of(skeleton, joint).map_or(local, |parent| det::quat_mul(model[parent], local)));
     }
     model
 }
@@ -329,7 +331,7 @@ struct Foot {
 
 /// The joints whose heights say where a rig's feet are, and their heights at rest: each foot and,
 /// if `toes`, its toes where the rig has them.
-fn soles(rig: Rig<'_>, model: &[Affine3A], toes: bool) -> Vec<Foot> {
+fn soles(rig: Rig<'_>, model: &[Affine3], toes: bool) -> Vec<Foot> {
     let bones: &[HumanBone] = if toes {
         &[HumanBone::LeftFoot, HumanBone::RightFoot, HumanBone::LeftToes, HumanBone::RightToes]
     } else {
@@ -344,8 +346,12 @@ fn soles(rig: Rig<'_>, model: &[Affine3A], toes: bool) -> Vec<Foot> {
 }
 
 /// How high the lowest of `soles` is above where it rests.
-fn lowest(soles: &[Foot], model: &[Affine3A]) -> f32 {
-    soles.iter().map(|foot| model[foot.joint].translation.y - foot.rest_height).fold(f32::INFINITY, f32::min)
+fn lowest(soles: &[Foot], model: &[Affine3]) -> f32 {
+    let height = |foot: &Foot| model[foot.joint].translation.y - foot.rest_height;
+    soles
+        .iter()
+        .map(height)
+        .fold(f32::INFINITY, |lowest, height| if height < lowest { height } else { lowest })
 }
 
 /// Points `driver_of` at the source joints `follow` names, for the target joints of those names.
@@ -387,8 +393,8 @@ fn by_target_joint<T, U: Copy>(
 
 /// What a gain takes off a bone's own turn, `parent_delta⁻¹ · delta`, as a turn before it.
 fn gain_loss(gain: f32, delta: Quat, parent_delta: Quat) -> Quat {
-    let own = parent_delta.inverse() * delta;
-    Quat::IDENTITY.slerp(own, gain) * own.inverse()
+    let own = det::quat_mul(det::quat_conjugate(parent_delta), delta);
+    det::quat_mul(det::quat_slerp(Quat::IDENTITY, own, gain), det::quat_conjugate(own))
 }
 
 /// What a joint changes about its own motion, in its parent's frame at rest: `turn`, its adjustment,
@@ -398,14 +404,15 @@ fn own_change(turn: Option<Quat>, gain: Option<(f32, Quat)>, parent_delta: Quat)
         return None;
     }
     let lost = gain.map_or(Quat::IDENTITY, |(gain, delta)| gain_loss(gain, delta, parent_delta));
-    Some(turn.unwrap_or(Quat::IDENTITY) * lost)
+    Some(det::quat_mul(turn.unwrap_or(Quat::IDENTITY), lost))
 }
 
 /// What a joint's `delta` is corrected by: the correction `above` it, then its `change`, moved with
 /// the body above it by `parent_delta`.
 fn correction_with(above: Option<Quat>, change: Option<Quat>, parent_delta: Quat) -> Option<Quat> {
     change.map_or(above, |change| {
-        Some(above.unwrap_or(Quat::IDENTITY) * parent_delta * change * parent_delta.inverse())
+        let moved = det::quat_mul(det::quat_mul(above.unwrap_or(Quat::IDENTITY), parent_delta), change);
+        Some(det::quat_mul(moved, det::quat_conjugate(parent_delta)))
     })
 }
 
@@ -444,7 +451,7 @@ pub fn retarget(
     let source_rest = rest_model(source.skeleton);
     let target_rest = rest_model(target.skeleton);
     let local_rest: Vec<Quat> =
-        target.skeleton.rest.iter().map(|rest| Quat::from_array(rest.rotation).normalize()).collect();
+        (0..target_joints).map(|joint| rest_rotation(target.skeleton, joint)).collect();
 
     // Both rigs measure a foot by what both have.
     let has_toes = |rig: Rig<'_>| {
@@ -488,29 +495,32 @@ pub fn retarget(
     // above the hips do, since no bone maps them.
     let to_parent = target_hips
         .and_then(|hips| parent_of(target.skeleton, hips))
-        .map_or(Affine3A::IDENTITY, |parent| target_rest[parent].inverse());
+        .map_or(Affine3::IDENTITY, |parent| target_rest[parent].inverse());
 
     let count = usize::from(sampled.ticks) + 1;
     let mut rotations: BTreeMap<u16, Vec<Quat>> = BTreeMap::new();
     let mut hips_samples = Vec::with_capacity(count);
     let mut source_rotation = vec![Quat::IDENTITY; source_joints];
-    let mut source_model = vec![Affine3A::IDENTITY; source_joints];
+    let mut source_model = vec![Affine3::IDENTITY; source_joints];
     let mut target_rotation = vec![Quat::IDENTITY; target_joints];
-    let mut target_model = vec![Affine3A::IDENTITY; target_joints];
+    let mut target_model = vec![Affine3::IDENTITY; target_joints];
     // Each joint's `delta` this tick, and what its adjustments and those above it add to it.
     let mut delta_of = vec![Quat::IDENTITY; target_joints];
     let mut correction_of: Vec<Option<Quat>> = vec![None; target_joints];
     for tick in 0..count {
         for joint in 0..source_joints {
             let rest = &source.skeleton.rest[joint];
-            let local = rotation_of[joint]
-                .map_or(Quat::from_array(rest.rotation).normalize(), |samples| samples[tick].normalize());
+            let local = rotation_of[joint].map_or_else(
+                || rest_rotation(source.skeleton, joint),
+                |samples| det::quat_normalize(samples[tick]),
+            );
             let parent = parent_of(source.skeleton, joint);
-            source_rotation[joint] = parent.map_or(local, |parent| source_rotation[parent] * local);
+            source_rotation[joint] =
+                parent.map_or(local, |parent| det::quat_mul(source_rotation[parent], local));
             let vector = |tracks: &[(u16, Vec<Vec3>)], track: Option<usize>, or: [f32; 3]| {
                 track.map_or(Vec3::from(or), |track| tracks[track].1[tick])
             };
-            let affine = Affine3A::from_scale_rotation_translation(
+            let affine = Affine3::from_scale_rotation_translation(
                 vector(&sampled.scales, scale_of_joint[joint], rest.scale),
                 local,
                 vector(&sampled.translations, translation_of[joint], rest.translation),
@@ -520,30 +530,34 @@ pub fn retarget(
 
         let hips_rest = |hips: usize| Vec3::from(target.skeleton.rest[hips].translation);
         let mut offset = hips_pair.map_or(Vec3::ZERO, |(_, from)| {
-            (Vec3::from(source_model[from].translation) - Vec3::from(source_rest[from].translation)) * scale
+            (source_model[from].translation - source_rest[from].translation) * scale
         });
         for joint in (0..target_joints).filter(|&joint| needed[joint]) {
             let parent = parent_of(target.skeleton, joint);
             let (parent_delta, parent_correction) =
                 parent.map_or((Quat::IDENTITY, None), |parent| (delta_of[parent], correction_of[parent]));
-            let delta =
-                driver_of[joint].map(|from| source_rotation[from] * source_rest_rotation[from].inverse());
+            let delta = driver_of[joint].map(|from| {
+                det::quat_mul(source_rotation[from], det::quat_conjugate(source_rest_rotation[from]))
+            });
             delta_of[joint] = delta.unwrap_or(parent_delta);
             let change = own_change(adjust_of[joint], gain_of[joint].zip(delta), parent_delta);
             let correction = correction_with(parent_correction, change, parent_delta);
             correction_of[joint] = correction;
             let local = if delta.is_some() || adjust_of[joint].is_some() {
                 let delta = delta_of[joint];
-                let turned = correction.map_or(delta, |correction| correction * delta);
-                let model = (turned * target_rest_rotation[joint]).normalize();
+                let turned = correction.map_or(delta, |correction| det::quat_mul(correction, delta));
+                let model = det::quat_normalize(det::quat_mul(turned, target_rest_rotation[joint]));
                 target_rotation[joint] = model;
-                let local = parent.map_or(model, |parent| target_rotation[parent].inverse() * model);
-                let local = local.normalize();
+                let local = parent.map_or(model, |parent| {
+                    det::quat_mul(det::quat_conjugate(target_rotation[parent]), model)
+                });
+                let local = det::quat_normalize(local);
                 rotations.entry(joint as u16).or_default().push(local);
                 local
             } else {
                 let local = local_rest[joint];
-                target_rotation[joint] = parent.map_or(local, |parent| target_rotation[parent] * local);
+                target_rotation[joint] =
+                    parent.map_or(local, |parent| det::quat_mul(target_rotation[parent], local));
                 local
             };
             let translation = if Some(joint) == target_hips {
@@ -551,7 +565,7 @@ pub fn retarget(
             } else {
                 Vec3::from(target.skeleton.rest[joint].translation)
             };
-            let affine = Affine3A::from_scale_rotation_translation(
+            let affine = Affine3::from_scale_rotation_translation(
                 Vec3::from(target.skeleton.rest[joint].scale),
                 local,
                 translation,
@@ -562,7 +576,8 @@ pub fn retarget(
         // Everything below the hips only follows them, so moving them by the shortfall lands the
         // lowest foot where it should be.
         if options.ground && !target_soles.is_empty() && !source_soles.is_empty() {
-            let wanted = (lowest(&source_soles, &source_model) * scale).max(0.0);
+            let wanted = lowest(&source_soles, &source_model) * scale;
+            let wanted = if wanted > 0.0 { wanted } else { 0.0 };
             offset.y += wanted - lowest(&target_soles, &target_model);
         }
         if let Some(hips) = target_hips {
@@ -594,4 +609,4 @@ pub fn retarget(
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

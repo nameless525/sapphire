@@ -44,7 +44,9 @@ use crate::mesh::ImportedMesh;
 /// This importer, as cache keys know it, carrying ufbx's version as the [mesh importer](super)'s
 /// name does (a test keeps it in step with `Cargo.lock`). Bump the version whenever sampling changes
 /// output for the same file.
-pub const IMPORTER: Stage = Stage { name: "fbx clips (ufbx 0.11.5)", version: 1 };
+///
+/// 2: root motion lifts in scalars, which can move a lifted track's last bit (M2 N1).
+pub const IMPORTER: Stage = Stage { name: "fbx clips (ufbx 0.11.5)", version: 2 };
 
 /// The transform properties whose curves move a node.
 const TRANSFORM_PROPS: [&str; 3] = ["Lcl Translation", "Lcl Rotation", "Lcl Scaling"];

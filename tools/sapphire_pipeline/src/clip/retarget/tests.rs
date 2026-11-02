@@ -690,23 +690,34 @@ fn a_joint_with_no_bone_follows_by_name() {
 
 // KayKit's real clips, read through their real sidecars, on the character.
 
-fn third_party() -> PathBuf {
+pub(crate) fn third_party() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../content/third_party")
 }
 
-fn character() -> &'static (Skeleton, HumanMap) {
-    static CHARACTER: OnceLock<(Skeleton, HumanMap)> = OnceLock::new();
+/// The character's skeleton, map and rig.
+fn imported_character() -> &'static (Skeleton, HumanMap, CharacterRig) {
+    static CHARACTER: OnceLock<(Skeleton, HumanMap, CharacterRig)> = OnceLock::new();
     CHARACTER.get_or_init(|| {
         let path = third_party().join("vrm1_constraint_twist_sample/VRM1_Constraint_Twist_Sample.vrm");
         let import = vrm::import(&std::fs::read(path).unwrap(), None).unwrap();
-        (Skeleton::new(&import.mesh.skin.unwrap().joints), HumanMap::from_rig(&import.rig))
+        let map = HumanMap::from_rig(&import.rig);
+        (Skeleton::new(&import.mesh.skin.unwrap().joints), map, import.rig)
     })
+}
+
+pub(crate) fn character() -> (&'static Skeleton, &'static HumanMap) {
+    let (skeleton, map, _) = imported_character();
+    (skeleton, map)
+}
+
+pub(crate) fn character_rig() -> &'static CharacterRig {
+    &imported_character().2
 }
 
 const FILES: [&str; 5] = ["General", "MovementBasic", "MovementAdvanced", "CombatMelee", "Special"];
 
 /// One of KayKit's files as its sidecar has it, with the map its rig's owner's sidecar gives.
-struct Kaykit {
+pub(crate) struct Kaykit {
     skeleton: Skeleton,
     map: HumanMap,
     source: ClipSource,
@@ -715,7 +726,7 @@ struct Kaykit {
 }
 
 impl Kaykit {
-    fn open(file: &str) -> Self {
+    pub(crate) fn open(file: &str) -> Self {
         let sidecar_of = |file: &str| {
             let path =
                 third_party().join(format!("kaykit_character_animations/Rig_Medium/Rig_Medium_{file}.glb"));
@@ -732,17 +743,17 @@ impl Kaykit {
         Self { skeleton, map, source, settings, names: clips::names(&bytes).unwrap() }
     }
 
-    fn rig(&self) -> Rig<'_> {
+    pub(crate) fn rig(&self) -> Rig<'_> {
         Rig { skeleton: &self.skeleton, map: &self.map }
     }
 
-    fn sampled(&self, name: &str) -> SampledClip {
+    pub(crate) fn sampled(&self, name: &str) -> SampledClip {
         let index = self.names.iter().position(|candidate| candidate == name).expect(name);
         self.source.sample(index, &self.settings).unwrap()
     }
 
     /// `name` and what it becomes on the character, by default options.
-    fn on_character(&self, name: &str) -> (SampledClip, SampledClip) {
+    pub(crate) fn on_character(&self, name: &str) -> (SampledClip, SampledClip) {
         let (skeleton, map) = character();
         let sampled = self.sampled(name);
         let out = retarget(&sampled, self.rig(), Rig { skeleton, map }, &RetargetOptions::default()).unwrap();
@@ -1041,7 +1052,7 @@ fn joint_named(skeleton: &Skeleton, name: &str) -> usize {
 }
 
 /// What a sidecar's entry asks of a retarget, as the cook reads it.
-fn options_of(entry: &RetargetSettings) -> RetargetOptions {
+pub(crate) fn options_of(entry: &RetargetSettings) -> RetargetOptions {
     RetargetOptions {
         scale: entry.scale,
         ground: entry.ground,
@@ -1052,7 +1063,7 @@ fn options_of(entry: &RetargetSettings) -> RetargetOptions {
 }
 
 /// The enemy's model as its sidecar has it, with the sidecar's ID and map.
-fn warrior() -> (AssetId, Skeleton, HumanMap) {
+pub(crate) fn warrior() -> (AssetId, Skeleton, HumanMap) {
     let path = third_party().join("../combat/enemy/warrior.glb");
     let meta = meta::read(&sidecar_path(&path)).unwrap();
     let source = ClipSource::import(&path, &std::fs::read(&path).unwrap(), &meta.importer).unwrap();
@@ -1163,14 +1174,19 @@ fn the_rigs_clips_reach_the_warrior_at_its_own_lengths() {
     assert!((scale - 2.1).abs() < 1e-3, "the legs' stretch: {scale}");
 }
 
+/// What the sidecars ask of `name` on the rig `target`.
+pub(crate) fn sidecar_options(kaykit: &Kaykit, name: &str, target: AssetId) -> RetargetOptions {
+    let mut entries = kaykit.settings.retarget.iter().filter(|entry| entry.target == target);
+    let entry = entries.find(|entry| entry.names.iter().any(|n| n == name));
+    options_of(entry.unwrap_or_else(|| panic!("{name} doesn't cook for {target}")))
+}
+
 /// A clip on the character as the sidecars cook it, with their adjustments and gains.
-fn as_cooked(kaykit: &Kaykit, name: &str) -> SampledClip {
+pub(crate) fn as_cooked(kaykit: &Kaykit, name: &str) -> SampledClip {
     let (skeleton, map) = character();
     let the_character = AssetId::from_text("6f8a81b6-29c4-485f-b161-847b001d561f");
-    let mut entries = kaykit.settings.retarget.iter().filter(|entry| entry.target == the_character);
-    let entry = entries.find(|entry| entry.names.iter().any(|n| n == name));
-    let entry = entry.unwrap_or_else(|| panic!("{name} doesn't cook for the character"));
-    retarget(&kaykit.sampled(name), kaykit.rig(), Rig { skeleton, map }, &options_of(entry)).unwrap()
+    let options = sidecar_options(kaykit, name, the_character);
+    retarget(&kaykit.sampled(name), kaykit.rig(), Rig { skeleton, map }, &options).unwrap()
 }
 
 /// What the sheets judged, held as numbers, by each clip's measured value and a little: M2 O2's

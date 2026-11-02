@@ -61,12 +61,9 @@
 //! reduction as a glTF's channels ([`crate::clip`]).
 //!
 //! The rig's constraints aren't in the clip: twist helpers follow at run time, as the held pose's
-//! do. Easing is polynomial and blends go through [`sapphire_math::det`], so a cook's samples don't
-//! depend on a platform's libm.
-//!
-//! **Between architectures,** root motion and morph weights sample through scalars alone, and bone
-//! turns and hips offsets don't yet ([the clip module](crate::clip)'s "Byte identity"): they go
-//! through `Quat` and `Affine3A`, so a move's baked tables can't read them as they are.
+//! do. Easing is polynomial and everything goes through scalars and [`sapphire_math::det`], so a
+//! document samples to the same bits on every platform, which a move's baked tables need
+//! ([the clip module](crate::clip)'s "Byte identity").
 //!
 //! # Later
 //!
@@ -77,7 +74,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use bevy_reflect::TypePath;
-use glam::{Quat, Vec3};
+use glam::{Affine3, Quat, Vec3};
 use sapphire_assets::AssetId;
 use sapphire_assets::clip::{DEFAULT_RATE, MAX_TICKS};
 use sapphire_assets::rig::HumanBone;
@@ -93,7 +90,10 @@ use crate::clip::{self, ReductionError, SampledClip, SampledRoot};
 
 /// Reads documents, as cache keys know it. Bump the version whenever sampling changes output for
 /// the same document.
-pub const IMPORTER: Stage = Stage { name: "keypose", version: 1 };
+///
+/// 2: bone turns and hips offsets sample in scalars, for one set of bytes on every architecture (M2
+/// N1).
+pub const IMPORTER: Stage = Stage { name: "keypose", version: 2 };
 
 const SOURCE_SUFFIX: &str = ".keypose.ron";
 
@@ -204,7 +204,10 @@ impl Turn {
     /// The rotation.
     pub fn quat(self) -> Quat {
         let about = |axis: Vec3, degrees: f32| det::quat_from_axis_angle(axis, degrees.to_radians());
-        (about(Vec3::Z, self.z) * about(Vec3::Y, self.y) * about(Vec3::X, self.x)).normalize()
+        det::quat_normalize(det::quat_mul(
+            det::quat_mul(about(Vec3::Z, self.z), about(Vec3::Y, self.y)),
+            about(Vec3::X, self.x),
+        ))
     }
 }
 
@@ -461,13 +464,7 @@ pub fn sample(
         let parent = skeleton.parents[joint];
         (parent != NO_PARENT).then_some(usize::from(parent))
     };
-    // Model-space rest rotations, built as the held pose builds them (`sapphire_sandbox::pose`):
-    // from normalized local rotations, so a parent's scale doesn't reach a turn's frame.
-    let mut rest_world: Vec<Quat> = Vec::with_capacity(skeleton.rest.len());
-    for joint in 0..skeleton.rest.len() {
-        let local = Quat::from_array(skeleton.rest[joint].rotation).normalize();
-        rest_world.push(parent_of(joint).map_or(local, |parent| rest_world[parent] * local));
-    }
+    let rest_world = clip::retarget::rest_rotations(skeleton);
 
     let bones: Vec<HumanBone> = {
         let mut named: Vec<HumanBone> = keys.iter().flat_map(|key| key.pose.keys().copied()).collect();
@@ -481,14 +478,16 @@ pub fn sample(
         let Some(joint) = rig.joint(bone) else { continue };
         let index = usize::from(joint);
         let held = held(keys, Quat::IDENTITY, |key| key.pose.get(&bone).map(|turn| turn.quat()));
-        let local_rest = Quat::from_array(skeleton.rest[index].rotation).normalize();
+        let local_rest = clip::rest_rotation(skeleton, index);
         let parent = parent_of(index).map_or(Quat::IDENTITY, |parent| rest_world[parent]);
+        let to_parent = det::quat_conjugate(parent);
         // A turn in rest model space, seen from the joint's parent: `parentᵀ · turn · parent`.
         let samples = moments
             .iter()
             .map(|moment| {
-                let turn = clip::slerp(held[moment.from], held[moment.to], moment.weight);
-                (parent.inverse() * turn * parent * local_rest).normalize()
+                let turn = det::quat_slerp(held[moment.from], held[moment.to], moment.weight);
+                let seen = det::quat_mul(det::quat_mul(to_parent, turn), parent);
+                det::quat_normalize(det::quat_mul(seen, local_rest))
             })
             .collect();
         rotations.push((joint, samples));
@@ -503,7 +502,7 @@ pub fn sample(
         let offsets = held(keys, [0.0; 3], |key| key.hips);
         let rest = Vec3::from(skeleton.rest[usize::from(hips)].translation);
         let to_parent =
-            parent_of(usize::from(hips)).map_or(glam::Affine3A::IDENTITY, |parent| model[parent].inverse());
+            parent_of(usize::from(hips)).map_or(Affine3::IDENTITY, |parent| model[parent].inverse());
         let samples = moments
             .iter()
             .map(|moment| rest + to_parent.transform_vector3(blended(&offsets, moment)))

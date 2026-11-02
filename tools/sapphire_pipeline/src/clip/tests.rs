@@ -350,8 +350,10 @@ fn a_joints_reach_is_its_longest_chain_plus_the_skin() {
     assert!(close(reaches(&Skeleton::new(&joints))[0], 1.5 + SKIN_REACH));
 }
 
+/// What a key-pose document's ease leans on: anticipation and overshoot are weights past 0 to 1.
 #[test]
 fn slerp_is_exact_at_its_ends_and_can_leave_them() {
+    use sapphire_math::det::quat_slerp as slerp;
     let (a, b) = (Quat::from_rotation_z(0.2), Quat::from_rotation_z(1.2));
     assert!(angle_between(slerp(a, b, 0.0), a) < 1e-5);
     assert!(angle_between(slerp(a, b, 1.0), b) < 1e-5);

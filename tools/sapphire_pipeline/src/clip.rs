@@ -10,24 +10,23 @@
 //!
 //! # Byte identity
 //!
-//! A cook is byte-identical run to run on one machine, not between architectures. `glam`'s `Quat`,
-//! `Vec4`, `Vec3A` and `Affine3A` round differently on NEON and SSE2 (`Quat::normalize` multiplies by
-//! a reciprocal on one and divides on the other), and `ufbx` calls its platform's libm. A clip's
-//! cooked bytes are read on the machine that cooked them, and only poses read them, which the
-//! simulation never does, so that's enough for a clip.
+//! One source cooks to one set of bytes on every architecture, except an FBX's: a replay's
+//! `tables_hash` holds across them, and a move's tables ([`moves`](crate::moves)) start from the same
+//! [`SampledClip`]s as a clip does. So everything from a source to a [`SampledClip`], and on through
+//! [`cook`], goes through scalars and [`sapphire_math::det`]: never `Quat` arithmetic, `Vec4`,
+//! `Vec3A` or `Affine3A`, whose last bit differs between NEON and SSE2 (`Quat::normalize` multiplies by
+//! a reciprocal on one and divides on the other). `Quat` only carries values here; `Vec3`, `Mat3` and
+//! `Affine3` are plain scalars. Nor `f32::min` or `max` where a zero's sign could count, since NEON
+//! and SSE2 pick differently between 0 and −0.
 //!
-//! **It isn't enough for anything in a replay's `tables_hash`,** which holds across architectures.
-//! So what a move's baked tables read has to come through scalars and `sapphire_math::det`, from its
-//! source on. Which side each step is on:
+//! **FBX** is the exception. `ufbx` evaluates its curves in C through its platform's libm, so a clip
+//! from an FBX plays the same everywhere but isn't the same bytes, and no move's table may read one
+//! ([`moves::BakeError::FbxSource`](crate::moves::BakeError::FbxSource)).
 //!
-//! - **Scalars only:** [`keypose`]'s root motion (`root`, `root_turn`) and morph weights in its
-//!   [`SampledClip`], and `clip::source`, which only renumbers.
-//! - **Not, and so no table may read them as they are:** [`keypose`]'s bone turns and hips offsets,
-//!   [`retarget`], `rest_model`, [`lift_root`], [`cook`] (so anything in a cooked [`Clip`]), the glTF
-//!   and VRMA samplers' slerp, and FBX's evaluation.
-//!
-//! No table reads any of this today. Baking one from a clip (N1's third part) takes those steps of
-//! its path onto scalars first, with a stage version bump.
+//! `moves::tests::baked_tables_and_clips_hash_the_same_on_every_architecture` pins real clips' bytes
+//! and tables, so CI's three operating systems hold all of this. Nothing can ban `quat * vec` in this
+//! crate, whose importers use it where bytes stay on one machine, so that test is the guard. It reaches
+//! only what its clips use, which today is every retarget option: a new one needs a clip there too.
 //!
 //! # Key reduction ([`cook`])
 //!
@@ -71,7 +70,7 @@
 
 use std::collections::BTreeMap;
 
-use glam::{Affine3A, Quat, Vec3, Vec4};
+use glam::{Affine3, Quat, Vec3};
 use sapphire_assets::AssetId;
 use sapphire_assets::clip::{
     Clip, DEFAULT_RATE, MAX_RATE, PackedRotation, RootMotion, RotationTrack, VectorRange, VectorTrack,
@@ -90,7 +89,9 @@ use crate::keypose;
 
 /// Key reduction and the `.sclip` writer. Bump its version whenever they change output for the
 /// same samples.
-pub const COOKER: Stage = Stage { name: "sclip", version: 1 };
+///
+/// 2: normalizes and walks a skeleton in scalars, for one set of bytes on every architecture (M2 N1).
+pub const COOKER: Stage = Stage { name: "sclip", version: 2 };
 
 /// The `.sskel` writer. Bump its version whenever it changes output for the same import.
 pub const SKELETON_COOKER: Stage = Stage { name: "sskel", version: 1 };
@@ -318,43 +319,31 @@ pub fn reaches(skeleton: &Skeleton) -> Vec<f32> {
         let parent = skeleton.parents[joint];
         if parent != NO_PARENT {
             let parent = usize::from(parent);
-            let bone = Vec3::from(model[joint].translation).distance(Vec3::from(model[parent].translation));
+            let bone = model[joint].translation.distance(model[parent].translation);
             chain[parent] = chain[parent].max(chain[joint] + bone);
         }
     }
     chain.iter().map(|chain| chain + SKIN_REACH).collect()
 }
 
+/// A joint's rest rotation, normalized: a source writes it as it likes.
+pub(crate) fn rest_rotation(skeleton: &Skeleton, joint: usize) -> Quat {
+    det::quat_normalize(Quat::from_array(skeleton.rest[joint].rotation))
+}
+
 /// Each joint's model-space rest transform.
-pub(crate) fn rest_model(skeleton: &Skeleton) -> Vec<Affine3A> {
-    let mut model: Vec<Affine3A> = Vec::with_capacity(skeleton.parents.len());
+pub(crate) fn rest_model(skeleton: &Skeleton) -> Vec<Affine3> {
+    let mut model: Vec<Affine3> = Vec::with_capacity(skeleton.parents.len());
     for (joint, rest) in skeleton.rest.iter().enumerate() {
-        let local = Affine3A::from_scale_rotation_translation(
+        let local = Affine3::from_scale_rotation_translation(
             Vec3::from(rest.scale),
-            Quat::from_array(rest.rotation).normalize(),
+            rest_rotation(skeleton, joint),
             Vec3::from(rest.translation),
         );
         let parent = skeleton.parents[joint];
         model.push(if parent == NO_PARENT { local } else { model[usize::from(parent)] * local });
     }
     model
-}
-
-/// A slerp of unit quaternions along the short way, for `weight` outside 0 to 1 as well, which an
-/// ease's anticipation and overshoot reach. Built on [`det`], so a cook's output doesn't depend on
-/// the platform's libm (`Quat::slerp` does).
-pub(crate) fn slerp(a: Quat, b: Quat, weight: f32) -> Quat {
-    let (a, b) = (Vec4::from(a), Vec4::from(b));
-    let dot = a.dot(b);
-    let (b, dot) = if dot < 0.0 { (-b, -dot) } else { (b, dot) };
-    // Too close to divide by the angle's sine.
-    if dot > 0.9995 {
-        return Quat::from_vec4(a.lerp(b, weight)).normalize();
-    }
-    let angle = det::acos(dot.min(1.0));
-    let sine = det::sin(angle);
-    let (from, to) = (det::sin((1.0 - weight) * angle) / sine, det::sin(weight * angle) / sine);
-    Quat::from_vec4(a * from + b * to).normalize()
 }
 
 /// Why a root bone's motion can't be lifted.
@@ -381,23 +370,23 @@ pub fn lift_root(
         chain.push(parent);
     }
     chain.reverse();
-    let local = |sampled: &SampledClip, joint: usize, tick: usize| -> Affine3A {
+    let local = |sampled: &SampledClip, joint: usize, tick: usize| -> Affine3 {
         let rest = &skeleton.rest[joint];
         let id = joint as u16;
         let track = |list: &'_ [(u16, Vec<Vec3>)]| {
             list.iter().find(|(j, _)| *j == id).map(|(_, samples)| samples[tick])
         };
         let turned = sampled.rotations.iter().find(|(j, _)| *j == id).map(|(_, samples)| samples[tick]);
-        Affine3A::from_scale_rotation_translation(
+        Affine3::from_scale_rotation_translation(
             track(&sampled.scales).unwrap_or(Vec3::from(rest.scale)),
-            turned.unwrap_or(Quat::from_array(rest.rotation).normalize()),
+            turned.unwrap_or_else(|| rest_rotation(skeleton, joint)),
             track(&sampled.translations).unwrap_or(Vec3::from(rest.translation)),
         )
     };
     let mut parents = Vec::with_capacity(count);
     let mut models = Vec::with_capacity(count);
     for tick in 0..count {
-        let mut parent = Affine3A::IDENTITY;
+        let mut parent = Affine3::IDENTITY;
         for &ancestor in &chain[..chain.len() - 1] {
             parent *= local(sampled, ancestor, tick);
         }
@@ -413,17 +402,17 @@ pub fn lift_root(
     for tick in 0..count {
         let (_, model_rotation, position) = models[tick].to_scale_rotation_translation();
         let turn = match rotation {
-            RootRotation::Yaw => yaw_of(model_rotation * first_rotation.inverse()),
+            RootRotation::Yaw => yaw_of(det::quat_mul(model_rotation, det::quat_conjugate(first_rotation))),
             RootRotation::None => Quat::IDENTITY,
         };
         // What would stay where it was, turning with the root: the rest of the way is the
         // translation, so the bone keeps its first position across whatever is lifted.
-        let moved = position - turn * first_position;
+        let moved = position - det::quat_rotate(turn, first_position);
         let lifted = match translation {
             RootTranslation::Ground => Vec3::new(moved.x, 0.0, moved.z),
             RootTranslation::All => moved,
         };
-        let root = Affine3A::from_rotation_translation(turn, lifted);
+        let root = Affine3::from_rotation_translation(turn, lifted);
         let residual = parents[tick].inverse() * root.inverse() * models[tick];
         let (_, kept_rotation, kept_translation) = residual.to_scale_rotation_translation();
         root_translation.push(lifted);
@@ -449,8 +438,8 @@ fn parent_of(skeleton: &Skeleton, joint: usize) -> Option<usize> {
 
 /// `rotation`'s turn about +Y: its swing-twist decomposition's twist.
 fn yaw_of(rotation: Quat) -> Quat {
-    let twist = Vec4::new(0.0, rotation.y, 0.0, rotation.w);
-    if twist.length_squared() < 1e-12 { Quat::IDENTITY } else { Quat::from_vec4(twist).normalize() }
+    let [_, y, _, w] = rotation.to_array();
+    if y * y + w * w < 1e-12 { Quat::IDENTITY } else { det::quat_normalize(Quat::from_xyzw(0.0, y, 0.0, w)) }
 }
 
 /// Replaces `joint`'s track in `tracks`, keeping them in joint order.
@@ -527,7 +516,7 @@ impl KeyArrays {
         rest: Option<[f32; 4]>,
         tolerance: f32,
     ) -> Option<RotationTrack> {
-        let source: Vec<[f32; 4]> = samples.iter().map(|q| q.normalize().to_array()).collect();
+        let source: Vec<[f32; 4]> = samples.iter().map(|q| det::quat_normalize(*q).to_array()).collect();
         let tolerance = tolerance.max(ROTATION_KEY_ERROR);
         if let Some(rest) = rest
             && source.iter().all(|&sample| angle(sample, rest) <= tolerance)
@@ -623,7 +612,8 @@ pub fn cook(sampled: &SampledClip, target: &ClipTarget<'_>, error: &ReductionErr
         .rotations
         .iter()
         .filter_map(|(joint, samples)| {
-            let at_rest = rest(*joint).map(|rest| Quat::from_array(rest.rotation).normalize().to_array());
+            let at_rest =
+                rest(*joint).map(|rest| det::quat_normalize(Quat::from_array(rest.rotation)).to_array());
             keys.rotation(*joint, samples, at_rest, within(*joint))
         })
         .collect();

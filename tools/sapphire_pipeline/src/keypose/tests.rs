@@ -406,10 +406,9 @@ fn a_keys_morph_weights_start_from_the_meshs_and_go_where_keys_take_them() {
     assert!(sampled.weights.is_empty());
 }
 
-/// Root motion and weights are the part of a document that's the same bytes on every architecture
-/// already, for a move's tables to read: scalars and `det`, no `Quat` arithmetic. So they equal a
-/// formula of scalars bit for bit, which any `Quat` operator on their way would miss on one
-/// architecture or the other.
+/// A document's root turn and weights go through scalars and `det`, for a move's tables to read, with
+/// no `Quat` arithmetic. So they equal a formula of scalars bit for bit, which any `Quat` operator on
+/// their way would miss on one architecture or the other. `moves::tests` pins the rest of a document.
 #[test]
 fn a_documents_turn_and_weights_come_through_scalars_alone() {
     let (skeleton, rig) = figure();

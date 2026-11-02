@@ -163,7 +163,7 @@ impl Document {
                 tuning.moves_document(origin, text, cooked.as_ref(), Fight { combat, scene })
             }
             Self::Camera => tuning.camera_document(text, scene),
-            Self::Graph => tuning.graph_document(text, content, scene, renderer, gpu),
+            Self::Graph => tuning.graph_document(origin, text, content, scene, renderer, gpu),
         }
     }
 }

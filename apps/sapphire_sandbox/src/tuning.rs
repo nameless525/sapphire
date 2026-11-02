@@ -10,8 +10,9 @@
 //!   `cargo xtask content` and hot reload's remount or `cargo xtask link push`. The reply says so. A cook
 //!   older than the newest save leaves the save playing, over the cook's tables.
 //! - **The camera** (`default_camera.ron`): the director's tuning, whose goals ease to the new numbers.
-//! - **The animation graph** (`.animgraph.ron`): bound against what's loaded, it takes effect at the next
-//!   state's start ([`sapphire_anim::GraphPlayer::replace`]). Its pack's route was N3's, and still works.
+//! - **The animation graph** (`character.animgraph.ron`): bound against what's loaded, it takes effect at
+//!   the next state's start ([`sapphire_anim::GraphPlayer::replace`]), on the graph show's character or a
+//!   fight's player. Its pack's route was N3's, and still works, and is the enemy's graph's only one.
 //! - **The cue table** (`default_cues.ron`, M2 E3): what fires a fight's cues takes it if every name it holds
 //!   is there. Camera tuning can move a shake's ID, so a new tuning resolves the table's shakes again
 //!   ([`Scene::set_camera_tuning`]) and is refused if one has gone. **Colliders aren't tuned**, and a running
@@ -157,6 +158,9 @@ impl LiveTuning {
         }
         if options.graph.is_some() {
             add(SHOW_MOVES_PATH, Document::Moves);
+        }
+        // A fight's player plays the character's graph too (`Scene::play_fighters`).
+        if options.graph.is_some() || (options.arena.is_some() && options.combat.is_some()) {
             add(GRAPH_PATH, Document::Graph);
         }
         sources
@@ -322,12 +326,14 @@ impl LiveTuning {
     /// bound against this character. Everything before the swap can fail, and leaves what's playing.
     pub fn graph_document(
         &mut self,
+        origin: &str,
         text: &str,
         content: &mut Content,
         scene: &mut Scene,
         renderer: &mut Renderer,
         gpu: &GpuContext,
     ) -> Result<String, String> {
+        takes_graph(origin)?;
         let mut graph = AnimGraph::from_document(text).map_err(|error| error_chain(&error))?;
         graph.resolve(clip_id);
         scene.replace_graph_document(graph, content, renderer, gpu)?;
@@ -471,6 +477,16 @@ pub(crate) fn attempts(sim: &Simulation, cast: &[ActorId]) -> Vec<MoveAttempt> {
 }
 
 /// A document's kind from its file's name, for a path hot reload is told to watch.
+/// Says why a graph document with this name reaches nothing here, if it doesn't: all an edit can replace
+/// is the character's graph, and any other would bind to the wrong character or fail for its clips.
+fn takes_graph(origin: &str) -> Result<(), String> {
+    let (document, character) = (document_file_name(origin), document_file_name(GRAPH_PATH));
+    if document == character {
+        return Ok(());
+    }
+    Err(format!("only `{character}` takes edits, and a cook brings any other graph"))
+}
+
 pub(crate) fn kind_of_file(path: &Path) -> Option<Document> {
     let name = path.file_name()?.to_str()?;
     if name.ends_with(".moves.ron") {
@@ -876,6 +892,26 @@ mod tests {
         let cues = std::fs::read_to_string(sources::default_cues()).expect("the cue table's document");
         assert_eq!(CueTable::from_ron(&cues).expect("reads"), CueTable::default_table());
         assert!(sources::repository_file(CUES_PATH).ends_with("default_cues.ron"));
+    }
+
+    /// A real fight's player plays the character's graph, so a run of one watches it and lists it for
+    /// `link watch`, and a graph that isn't the character's never lands on it.
+    #[test]
+    #[ignore = "runs with CI's dev tests, which take --ignored"]
+    fn a_fight_takes_the_characters_graph_and_only_that() {
+        let graphs = |args: &[&str]| {
+            let args: Vec<String> = ["sandbox"].iter().chain(args).map(ToString::to_string).collect();
+            let (options, _) = Options::parse(&args).expect("good arguments");
+            let sources = LiveTuning::sources_of(&options);
+            let found = sources.iter().filter(|source| source.document == Document::Graph);
+            found.map(|source| source.path.clone()).collect::<Vec<_>>()
+        };
+        assert_eq!(graphs(&["--arena", "--fight"]), [GRAPH_PATH]);
+        assert_eq!(graphs(&["--look-dev", "hero", "--graph", "walk"]), [GRAPH_PATH]);
+        assert_eq!(graphs(&["--look-dev", "hero"]), Vec::<String>::new());
+        assert!(takes_graph("x/character.animgraph.ron").is_ok());
+        let refused = takes_graph("warrior.animgraph.ron").expect_err("it's the enemy's");
+        assert!(refused.contains("character.animgraph.ron"), "{refused}");
     }
 
     /// The cue table has one route: a watched file and a pushed one both go through its `Document` row, and

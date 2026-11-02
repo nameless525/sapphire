@@ -1993,6 +1993,21 @@ mod tests {
         std::fs::remove_dir_all(file.parent().expect("a folder")).expect("cleaned up");
     }
 
+    /// A fight's player plays a graph, so an edit of it takes as the graph show's does.
+    #[cfg(feature = "dev")]
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_fighters_graph_takes_an_edit() {
+        let mut stage = Stage::new();
+        stage.content.load_graph(GRAPH, &mut stage.renderer, &stage.gpu).expect("the graph");
+        let driver = lookdev::graph_driver(&stage.content).expect("a driver");
+        stage.scene.pose_as_fighter(driver);
+        let Stage { scene, content, renderer, gpu, .. } = &mut stage;
+        scene.replace_graph_document(swing_graph(4), content, renderer, gpu).expect("a fighter plays a graph");
+        assert!(scene.graph_player().expect("playing").has_replacement());
+        assert_eq!(content.graph_document().expect("a graph").combat.decay, 4);
+    }
+
     /// A new version of the character under a graph: the graph plays on, on the new joints, posed on the
     /// first frame that draws them.
     #[test]

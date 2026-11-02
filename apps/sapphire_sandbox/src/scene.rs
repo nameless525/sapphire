@@ -1275,10 +1275,11 @@ impl Scene {
         gpu: &sapphire_rhi::GpuContext,
     ) -> Result<(), String> {
         let character = self.character;
-        if self.graph_show.is_none() || self.ecs.world().get::<GraphDriver>(character).is_none() {
-            return Err(
-                "no character here plays a graph: `--look-dev <shot> --graph <script>` has one".to_owned()
-            );
+        let posed = self.graph_show.is_some() || self.fighters_posed;
+        if !posed || self.ecs.world().get::<GraphDriver>(character).is_none() {
+            return Err("no character here plays a graph: `--look-dev <shot> --graph <script>` and \
+                        `--arena --fight` have one"
+                .to_owned());
         }
         content.hold_clips_of(&graph, renderer, gpu)?;
         let binding = lookdev::graph_binding_of(content, &graph)?;
@@ -1618,6 +1619,14 @@ impl Scene {
         let world = self.ecs.world_mut();
         world.entity_mut(player_entity).insert((player, figure));
         world.entity_mut(enemy_entity).insert(enemy);
+        self.fighters_posed = true;
+    }
+
+    /// Poses the character as [`Self::play_fighters`] does, with no arena to fight in, for tests.
+    #[cfg(test)]
+    pub fn pose_as_fighter(&mut self, driver: GraphDriver) {
+        let figure = self.figure;
+        self.ecs.world_mut().entity_mut(self.character).insert((driver, figure));
         self.fighters_posed = true;
     }
 

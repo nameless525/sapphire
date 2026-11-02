@@ -19,7 +19,7 @@ use crate::app::SandboxApp;
 use crate::combat::Combat;
 use crate::content::Content;
 use crate::options::{OffscreenMode, Options};
-use crate::scene::{LookDev, Scene};
+use crate::scene::{Arena, LookDev, Scene};
 #[cfg(feature = "dev")]
 use crate::stats::Stages;
 
@@ -48,6 +48,9 @@ impl App for OffscreenApp {
         let (width, height) = (offscreen.width, offscreen.height);
         // Before any GPU work, so a bad replay file costs nothing and says why.
         let combat = options.combat.as_ref().map(Combat::new).transpose().map_err(AppInitError::msg)?;
+        if let (Some(_), Some(combat)) = (options.arena, &combat) {
+            crate::arena::check_scenario(combat).map_err(AppInitError::msg)?;
+        }
         match &offscreen.mode {
             OffscreenMode::Capture { path, ticks, frames } => {
                 let ticks = match (&combat, &options.combat) {
@@ -207,6 +210,14 @@ impl Stage {
                 scene.spawn_enemy(meshes, content.held_enemy()?);
             }
         }
+        if let Some(shot) = options.arena {
+            let town = content.town(&mut renderer, &gpu)?;
+            let fog_cards = (!options.fog_off).then(|| content.fog_cards(&mut renderer, &gpu)).transpose()?;
+            let (pose, figure) = crate::lookdev::hold(&mut content, &mut renderer, &gpu)?;
+            let ground = content.arena_ground(&mut renderer, &gpu)?;
+            let look = LookDev { town, fog_cards, pose, figure };
+            scene.spawn_arena(Arena { shot, look, ground });
+        }
         // The day, the sky options, the starting view and the turntable's speed, last so `--view`
         // holds whatever framing the scene chose.
         options.apply_to(&mut scene).map_err(AppInitError::msg)?;
@@ -260,8 +271,11 @@ impl Stage {
         #[cfg(feature = "dev")]
         self.dev.before_fixed_step(&mut self.scene);
         self.scene.step();
+        // No one's watching a clock here: a step of time is what a frame shows.
+        self.scene.drive_arena_camera(1.0 / sapphire_time::TICK_HZ as f32, sapphire_math::Vec2::ZERO, 0.0);
         if let Some(combat) = &mut self.combat {
             combat.step(&mut crate::combat::no_bindings);
+            self.scene.follow_simulation(combat.simulation(), combat.cast());
         }
     }
 

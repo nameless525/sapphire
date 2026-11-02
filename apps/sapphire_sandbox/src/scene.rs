@@ -62,6 +62,10 @@
 //!   own, and its blade ([`Scene::spawn_enemy`], [`crate::enemy`]).
 //! - **The HUD** (`--hud`, M2 I2): not ECS data: [`SandboxHud`] draws into each packet's interface
 //!   list as [`Scene::frame_packet`] ends, and survives a new renderer with the scene.
+//! - **The arena** (`--arena`): the same town, its lamps and its day, with the character at the
+//!   player's spawn point and a stand-in at the enemy's, each posed from where the simulation has
+//!   its actor rather than by a turntable, and the camera following the player
+//!   ([`Scene::spawn_arena`], [`Scene::follow_simulation`], [`crate::arena`]).
 //! - **Systems:** time of day and the screen effects tick in `FixedFirst`, after the clocks;
 //!   turntables spin, and
 //!   stalks sway, in `FixedCombat`. `Extract` poses them,
@@ -117,7 +121,9 @@ use sapphire_world::tod::{self, TimeOfDay, tick_time_of_day};
 
 use crate::LOG_TARGET;
 use crate::animate::{ClipPlayer, Evaluation};
+use crate::arena::{ArenaActors, ArenaGround, ArenaShot};
 use crate::audio::SceneSound;
+use crate::combat_views::{CombatViews, Facade};
 use crate::content::Content;
 use crate::debug_shapes::DebugDrawDemo;
 use crate::enemy::{self, EnemyMeshes};
@@ -236,6 +242,13 @@ pub(crate) struct LookDev {
     pub figure: Figure,
 }
 
+/// What the arena (`--arena`) stands on and how it's framed, around what the look-dev stage draws.
+pub(crate) struct Arena {
+    pub shot: ArenaShot,
+    pub look: LookDev,
+    pub ground: ArenaGround,
+}
+
 /// The day time of day runs on, by the document it comes from ([`Scene::day`]), for `dev`
 /// builds, which replace it from hot reload and live link. Both days are timelines
 /// (`TodTimeline`), so a timeline replaces the day only from the day's own file: the default
@@ -345,6 +358,8 @@ pub(crate) struct Scene {
     town_mountains: Vec<Entity>,
     /// The enemy and its blade, with `--look-dev enemy`.
     enemy: Option<(Entity, Entity)>,
+    /// The arena's actors, with `--arena`.
+    arena: Option<ArenaActors>,
     /// Where the character's light rig finds its head and body, for a character without a
     /// [`Figure`] of its own.
     figure: Figure,
@@ -463,6 +478,7 @@ impl Scene {
             town_plants: Vec::new(),
             town_mountains: Vec::new(),
             enemy: None,
+            arena: None,
             figure,
             animating: false,
             players,
@@ -1084,6 +1100,15 @@ impl Scene {
     /// one she has.
     fn hold_character(&mut self, pose: RenderPose, figure: Figure) {
         self.figure = figure;
+        if let Some(enemy) = self.arena.as_ref().map(ArenaActors::enemy_entity) {
+            let mut enemy = self.ecs.world_mut().entity_mut(enemy);
+            if let Some(mut held) = enemy.get_mut::<RenderPose>() {
+                held.set_if_neq(pose.clone());
+            }
+            if let Some(mut rig) = enemy.get_mut::<CharacterLightRig>() {
+                rig.head = figure.head;
+            }
+        }
         let mut character = self.ecs.world_mut().entity_mut(self.character);
         if let Some(mut held) = character.get_mut::<RenderPose>() {
             held.set_if_neq(pose);
@@ -1109,13 +1134,63 @@ impl Scene {
     /// ([`lookdev::light_rigs`], M1 C8) and the wind blows the stage's breeze. The town, its
     /// plants, mountains and cards never move, so they are extracted once.
     pub fn spawn_look_dev(&mut self, shot: Shot, look: LookDev) {
+        self.ecs.world_mut().insert_resource(shot.camera());
+        self.spawn_town(shot.stand(), look);
+    }
+
+    /// Builds the arena (`--arena`, [`crate::arena`]): the look-dev stage's town, day and light rigs
+    /// where the town stands, with the character at the player's spawn point and a stand-in in the
+    /// same pose at the enemy's. Unlike the look-dev stage, the town stays still and they move, so
+    /// neither has a turntable: [`Self::follow_simulation`] carries each actor's root here.
+    pub fn spawn_arena(&mut self, arena: Arena) {
+        let Arena { shot, look, ground } = arena;
+        let pose = look.pose.clone();
+        let figure = look.figure;
+        self.ecs
+            .world_mut()
+            .insert_resource(shot.camera(sapphire_gameplay::arena::spawns().player.position()));
+        self.spawn_town(Vec3::ZERO, look);
+        let world = self.ecs.world_mut();
+        world.entity_mut(self.character).remove::<Turntable>();
+        let mesh = *world.get::<RenderMesh>(self.character).expect("the scene's character draws");
+        let rig = CharacterLightRig { rig: LightRigId::DEFAULT, head: figure.head };
+        let enemy = world.spawn((mesh, RenderTransform::default(), rig, pose)).id();
+        self.arena = Some(ArenaActors::new(self.character, enemy, shot, ground));
+    }
+
+    /// Takes the arena's actors from `simulation`, after a step of it: nothing without `--arena`.
+    /// `cast` is its scenario's, the player first.
+    pub fn follow_simulation(
+        &mut self,
+        simulation: &sapphire_gameplay::Simulation,
+        cast: &[sapphire_gameplay::ActorId],
+    ) {
+        if let Some(arena) = &mut self.arena {
+            arena.follow(simulation, cast);
+        }
+    }
+
+    /// Gives the arena's camera director this much real time and input for its next frame, if one's
+    /// on, and says whether it took them.
+    pub fn drive_arena_camera(&mut self, dt: f32, look: sapphire_math::Vec2, zoom: f32) -> bool {
+        self.arena.as_mut().is_some_and(|arena| arena.drive_camera(dt, look, zoom))
+    }
+
+    /// Where the view looks across the ground, as an actor's yaw: what the next tick's stick turns by.
+    pub fn camera_heading(&self) -> f32 {
+        self.arena.as_ref().and_then(ArenaActors::heading).unwrap_or_else(|| self.camera().heading())
+    }
+
+    /// The town, its plants and its far mountains around the character, its fog cards and lamps, on
+    /// the stage's day under its light rigs, the character held in `look.pose`. It's drawn moved by
+    /// `-stand`, so the character, at the origin, stands at `stand` in it.
+    fn spawn_town(&mut self, stand: Vec3, look: LookDev) {
         self.figure = look.figure;
         self.extract_poses();
         self.time_of_day_mut().set_timeline(lookdev::day()).expect("the look-dev day sets every group");
         self.wind = lookdev::WIND;
         let world = self.ecs.world_mut();
         world.insert_resource(lookdev::light_rigs());
-        world.insert_resource(shot.camera());
         let mut character = world.entity_mut(self.character);
         character.insert(look.pose);
         if let Some(mut turntable) = character.get_mut::<Turntable>() {
@@ -1125,7 +1200,6 @@ impl Scene {
             rig.head = look.figure.head;
         }
         // The town moves so the character, at the origin, stands where the shot has her.
-        let stand = shot.stand();
         let town = Mat4::from_translation(-stand);
         self.town = Some(world.spawn((RenderMesh(look.town.town), RenderTransform(town))).id());
         self.town_plants = lookdev::plantings()
@@ -1326,6 +1400,9 @@ impl Scene {
     /// motion. See `docs/m2-handoff.md`.
     pub fn frame_packet(&mut self, alpha: f32, target_size: Option<(u32, u32)>) -> &FramePacket {
         self.ecs.presentation(alpha);
+        if let Some(arena) = &mut self.arena {
+            arena.present(self.ecs.world_mut(), alpha, drawable_aspect(target_size));
+        }
         let (sky_material, cloud_cover, plain_sky) = (self.sky_material, self.cloud_cover, self.plain_sky);
         let fog = self.fog;
         let (plain_post, sharpening, wind) = (self.plain_post, self.sharpening, self.wind);
@@ -1445,6 +1522,11 @@ impl Scene {
         if let Some(demo) = self.debug_draw_demo {
             demo.draw_in_frame();
         }
+        if let Some(arena) = &self.arena
+            && CombatViews::current().colliders
+        {
+            arena.draw_colliders(&mut Facade);
+        }
         let now = self.ecs.world().resource::<WorldClock>().0.now().as_secs_f64();
         let mut extract = self.ecs.world_mut().resource_mut::<RenderExtract>();
         self.debug_draw.collect(now, &mut extract.packet_mut().debug);
@@ -1471,7 +1553,7 @@ impl Scene {
     pub fn update_hud(&mut self, now: sapphire_platform::Timestamp, window: &sapphire_platform::Window) {
         let Some(hud) = &mut self.hud else { return };
         let orbit = hud.update(now, window);
-        if orbit != sapphire_math::Vec2::ZERO {
+        if orbit != sapphire_math::Vec2::ZERO && !self.drive_arena_camera(0.0, orbit, 0.0) {
             self.camera_mut().rotate(orbit.x, orbit.y);
         }
     }
@@ -1595,6 +1677,9 @@ impl Scene {
 
     /// Sets the mesh the character draws: at startup, and again after GPU device loss.
     pub fn set_character_mesh(&mut self, mesh: MeshHandle) {
+        if let Some(enemy) = self.arena.as_ref().map(ArenaActors::enemy_entity) {
+            self.ecs.world_mut().entity_mut(enemy).insert(RenderMesh(mesh));
+        }
         self.ecs.world_mut().entity_mut(self.character).insert(RenderMesh(mesh));
     }
 
@@ -1757,6 +1842,96 @@ mod tests {
         }
         assert_eq!(scene.with_screen_effects(|stack, _| stack.stats().pushed), layers, "the preset fired");
         assert_eq!(allocations, 0, "rule R6");
+    }
+
+    /// The arena stands its two actors where the simulation has them, and no turntable moves them:
+    /// at their spawn points before a replay moves them, then each step's position, and the camera
+    /// follows the player. Moved or not, its town is the look-dev stage's, on its day.
+    #[test]
+    fn the_arena_stands_its_actors_where_the_simulation_has_them() {
+        use sapphire_gameplay::arena::spawns;
+        use sapphire_gameplay::replay::{Recording, SCENARIOS, arena_walk, find_scenario};
+
+        let build = |shot: ArenaShot| {
+            let plain = MeshHandle::from_raw(1);
+            let town = TownMeshes {
+                town: plain,
+                plants: [plain; lookdev::Plant::ALL.len()],
+                mountains: [plain; lookdev::MOUNTAINS.len()],
+            };
+            let figure = Figure { head: Vec3::new(0.0, 1.45, 0.0), ..Figure::MANNEQUIN };
+            let pose = RenderPose { palette: vec![Default::default(); 2], morph_weights: vec![] };
+            let look = LookDev { town, fog_cards: None, pose, figure };
+            let cooked = sapphire_gameplay::arena::cooked_colliders().expect("it cooks");
+            let set = sapphire_colliders::ColliderSet::read(&cooked).expect("it reads");
+            let ground = ArenaGround::new(set).expect("the stage stands on it");
+            let mut scene = Scene::with_character(MeshHandle::from_raw(0), BOUNDS, false);
+            scene.spawn_arena(Arena { shot, look, ground });
+            (scene, figure)
+        };
+        let (mut scene, figure) = build(ArenaShot::Follow);
+        assert_eq!(scene.time_of_day().timeline(), &lookdev::day(), "the look-dev stage's day");
+        assert!(scene.ecs.world().get::<Turntable>(scene.character).is_none());
+
+        let spawns = spawns();
+        let (character, enemy) = (scene.character, scene.arena.as_ref().expect("built").enemy_entity());
+        let origin = |scene: &Scene, entity: Entity| {
+            scene.ecs.world().get::<RenderTransform>(entity).expect("placed").0.transform_point3(Vec3::ZERO)
+        };
+        let _ = scene.frame_packet(1.0, Some((16, 9)));
+        scene.end_frame();
+        assert_eq!(origin(&scene, character), spawns.player.position());
+        assert_eq!(origin(&scene, enemy), spawns.enemy.position());
+        assert_eq!(scene.figure, figure);
+        let packet = scene.ecs.world().resource::<RenderExtract>().packet();
+        assert_eq!(packet.characters.len(), 2, "both are lit as characters");
+
+        let scenario = find_scenario(SCENARIOS, crate::arena::SCENARIO).expect("listed");
+        let mut recording = Recording::new(scenario, scenario.config).expect("sets up");
+        let mut source = arena_walk;
+        let cast = recording.cast().to_vec();
+        for _ in 0..80 {
+            recording.step(&mut source).expect("short");
+            scene.follow_simulation(recording.simulation(), &cast);
+        }
+        let walked = recording.simulation().actor(cast[0]).expect("alive").position;
+        let view = scene.frame_packet(1.0, Some((16, 9))).main_view().expect("a view").camera;
+        let eye = view.position;
+        scene.end_frame();
+        assert_eq!(origin(&scene, character), walked);
+        assert_eq!(origin(&scene, enemy), spawns.enemy.position(), "the enemy stands");
+        assert!(walked.distance(spawns.player.position()) > 1.5, "it walked: {walked}");
+        let target = crate::arena::follow_target(walked);
+        assert!(
+            (eye.distance(target) - ArenaShot::Follow.camera(walked).eye().distance(target)).abs() < 1e-4
+        );
+        assert!(eye.z > walked.z, "the camera came with it: {eye}");
+
+        // The director's view is the frame's and the stick's, behind the player and framing both.
+        let (mut scene, _) = build(ArenaShot::Director);
+        let player = spawns.player.position();
+        let view = scene.frame_packet(1.0, Some((16, 9))).main_view().expect("a view").camera;
+        let eye = view.position;
+        scene.end_frame();
+        assert!(eye.z > player.z, "behind the player, who faces -Z: {eye}");
+        assert!(eye.distance(player) > 2.0, "{eye}");
+        assert!((scene.camera().eye() - eye).length() < 1e-3, "{eye}");
+        let heading = scene.camera_heading();
+        assert!(sapphire_math::det::cos(heading) < -0.8, "it looks along -Z: {heading}");
+        assert!(
+            (sapphire_math::det::sin(heading - scene.camera().heading())).abs() < 1e-3,
+            "the camera's and the director's headings agree: {heading}, {}",
+            scene.camera().heading()
+        );
+        // A look turns it, and nothing moves it without time.
+        assert!(scene.drive_arena_camera(1.0 / 60.0, sapphire_math::Vec2::new(0.2, 0.0), 0.0));
+        let _ = scene.frame_packet(1.0, Some((16, 9)));
+        scene.end_frame();
+        assert_ne!(scene.camera_heading(), heading);
+        // With another shot it takes nothing, and the plain camera's heading is the one.
+        let (mut scene, _) = build(ArenaShot::Follow);
+        assert!(!scene.drive_arena_camera(1.0, sapphire_math::Vec2::ZERO, 0.0));
+        assert_eq!(scene.camera_heading(), scene.camera().heading());
     }
 
     #[test]

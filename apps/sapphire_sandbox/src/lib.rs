@@ -158,6 +158,15 @@
 //!   looping (M2 N2, `animate.rs`). `strike` is the only one yet. Each `--capture-ticks` is a fixed
 //!   point of it, and `--bench` measures it. `--clip-in-place` leaves its root motion out, for a
 //!   shot that frames the character close. The golden scenes `lookdev-strike-*` show it.
+//! - `--arena`: the combat stage (M2 O5, `arena.rs`): the look-dev town's square on its own day,
+//!   as a place to fight: the character at the player's spawn point and a stand-in at the enemy's,
+//!   on the cooked colliders of `content/arena/square.colliders.ron`, seen by `sapphire_camera`'s
+//!   director. `--arena-shot follow` is a plain fixed follow instead, which the golden scenes pin,
+//!   and `over` looks straight down on the square. `--debug-draw colliders` draws the colliders over
+//!   it all. With `--replay <arena replay>` the actors follow the replay, and `--record <file>
+//!   --scenario arena` plays one by the bindings, in a window. It's a scene of its own: it can't join
+//!   `--look-dev` or anything that can't. The golden scenes `arena-day`, `arena-golden` and
+//!   `arena-replay` show it.
 //! - `--outline-row`: place more of the character behind it, from 4 m to 90 m further back, past
 //!   the outline cutoff, showing the outline width's distance curve (M1 C4).
 //! - `--hard-edges`: show the hard-edged outline sample instead of the character: flat-shaded
@@ -174,9 +183,10 @@
 //!   fixed set of shapes around the character, one of each kind and each way of lasting and facing
 //!   a surface (the golden scene `debugdraw-shapes`), or that many lines a frame, for benches; or,
 //!   with `--replay` or `--record`, the views of that fight (`combat_views.rs`): its hit and hurt
-//!   volumes (the golden scene `debugdraw-volumes`), its colliders, or both. `dev` builds have debug
-//!   draw on anyway (`debug.draw`), and the overlay's combat panel switches the views; other builds
-//!   only with this flag.
+//!   volumes (the golden scene `debugdraw-volumes`), its colliders, or both. `--arena` draws its
+//!   colliders and spawn points with no fight too. `dev` builds have debug draw on anyway
+//!   (`debug.draw`), and the overlay's combat panel switches the views; other builds only with this
+//!   flag.
 //! - `--fov <degrees>`: the camera's vertical field of view (default 43°), keeping the framing:
 //!   a narrow lens from farther away.
 //! - `--zoom <factor>`: start the orbit camera this factor of the framing's distance away.
@@ -270,6 +280,7 @@
 
 mod animate;
 mod app;
+mod arena;
 mod audio;
 mod bench;
 mod capture;

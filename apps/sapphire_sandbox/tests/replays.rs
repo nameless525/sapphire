@@ -151,6 +151,11 @@ fn a_replay_that_cant_run_is_refused_before_any_gpu_work() {
     fs::write(temp.path(&checksums_file_name(ARCHITECTURE)), "not checksums\n").expect("writes");
     assert_refused(&run(&["--replay", &good]), &capture, &["checksums.", "line 1"]);
 
+    // The arena plays only its own scenario's fights: another's actors aren't standing in the square.
+    fs::remove_file(temp.path(&checksums_file_name(ARCHITECTURE))).expect("there");
+    let elsewhere = run(&["--arena", "--replay", &good]);
+    assert_refused(&elsewhere, &capture, &["--arena", "`arena` scenario", "`melee`"]);
+
     // What a recording can get wrong.
     let out = temp.text("recorded.sreplay");
     let bad_scenario = run(&["--record", &out, "--scenario", "none", "--script", "idle"]);
@@ -253,6 +258,29 @@ fn the_combat_views_change_nothing_the_checksums_see() {
     ]);
     assert_reached(&output, 120, played.trail.end());
     assert!(capture.exists());
+}
+
+/// The arena's replay in the arena, as a golden scene plays it, from the committed file: the app stands
+/// its character on the actor and reaches the checksum the headless runner reaches.
+#[test]
+#[ignore = "needs a GPU and cooked content (`cargo xtask content`)"]
+fn the_arena_plays_its_committed_replay() {
+    let replay = workspace().join("tests").join("replays").join("arena-walk.sreplay");
+    let played = headless(&fs::read(&replay).expect("committed"));
+    let temp = Temp::new("arena");
+    let capture = temp.path("drawn.png");
+    let output = run_app(&[
+        "--capture",
+        capture.to_str().expect("UTF-8"),
+        "--arena",
+        "--replay",
+        replay.to_str().expect("UTF-8"),
+    ]);
+    let log = log_of(&output);
+    assert!(output.status.success(), "{log}");
+    assert!(log.contains(&format!("checksum={:016x}", played.trail.end())), "{log}");
+    assert!(log.contains("allocations=0"), "{log}");
+    assert!(capture.exists(), "{log}");
 }
 
 /// A bench steps in its frame path, with GPU timing on for the last of it, and goes on past the end.

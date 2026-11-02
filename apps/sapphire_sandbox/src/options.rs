@@ -8,7 +8,9 @@ use sapphire_render::{DebugView, LightPath, MIN_RENDER_SCALE, Msaa, PostVariants
 use sapphire_ui::Insets;
 use sapphire_world::tod::CharacterShadeKey;
 
+use crate::arena::ArenaShot;
 use crate::audio::CueOption;
+use crate::combat_views::CombatViews;
 use crate::debug_shapes::DebugDrawDemo;
 use crate::faces::{FaceLayout, MaterialOverrides};
 use crate::foliage::{DEFAULT_WIND, FoliageView};
@@ -131,6 +133,10 @@ pub(crate) struct Options {
     /// `--clip-in-place`: leaves the clip's root motion out, so the character stays where a close
     /// shot framed it. Needs `--clip`.
     pub clip_in_place: bool,
+    /// `--arena`: the combat stage (M2 O5, [`crate::arena`]), the look-dev town's square as a place
+    /// to fight, framed by this shot (`--arena-shot`). A scene of its own, as `--look-dev` is: it
+    /// excludes what that excludes, and `--look-dev` too.
+    pub arena: Option<ArenaShot>,
     /// `--cloud-cover <0..1>`: both cloud layers' coverage instead of time of day's; 0 is a
     /// clear sky.
     pub cloud_cover: Option<f32>,
@@ -377,29 +383,26 @@ impl Options {
             .then(|| Wind { strength: self.wind.unwrap_or(DEFAULT_WIND.strength), ..DEFAULT_WIND })
     }
 
-    /// The character the scene draws: the look-dev VRM with `--look-dev`, the mannequin
-    /// otherwise.
-    pub fn character(&self) -> sapphire_assets::AssetId {
-        match self.look_dev {
-            Some(_) => lookdev::CHARACTER,
-            None => crate::content::CHARACTER,
-        }
+    /// Whether the scene is the look-dev town: `--look-dev`, or `--arena`, which fights in it.
+    pub fn in_town(&self) -> bool {
+        self.look_dev.is_some() || self.arena.is_some()
     }
 
-    /// The sky material the scene draws: the look-dev town's with `--look-dev`, the sandbox's
-    /// otherwise.
+    /// The character the scene draws: the look-dev VRM in the town, the mannequin otherwise.
+    pub fn character(&self) -> sapphire_assets::AssetId {
+        if self.in_town() { lookdev::CHARACTER } else { crate::content::CHARACTER }
+    }
+
+    /// The sky material the scene draws: the look-dev town's in the town, the sandbox's otherwise.
     pub fn sky(&self) -> sapphire_assets::AssetId {
-        match self.look_dev {
-            Some(_) => lookdev::SKY,
-            None => crate::content::SKY,
-        }
+        if self.in_town() { lookdev::SKY } else { crate::content::SKY }
     }
 
     /// Whether the content keeps a copy of the character's mesh: the stage and the rim rig draw
     /// the character from it without its pedestal, and the look-dev stage derives its held pose
     /// from it.
     pub fn keeps_character_mesh(&self) -> bool {
-        self.stage.is_some() || self.rim_rig.is_some() || self.look_dev.is_some()
+        self.stage.is_some() || self.rim_rig.is_some() || self.in_town()
     }
 
     /// What `--hair-shadow-softness` and `--hair-transmission` change in the materials the
@@ -456,6 +459,7 @@ impl Options {
         let (mut faces, mut face_layout) = (false, None);
         let (mut replay, mut record, mut scenario, mut script) = (None, None, None, None);
         let (mut hud_mode, mut hud_insets, mut hud_scale) = (None, None, None);
+        let (mut arena_flag, mut arena_shot) = (false, None);
         let mut args = args.iter().skip(1);
         while let Some(arg) = args.next() {
             // `--name=value` or `--name value`.
@@ -641,6 +645,14 @@ impl Options {
                     })?);
                 }
                 "--clip-in-place" => options.clip_in_place = true,
+                "--arena" => arena_flag = true,
+                "--arena-shot" => {
+                    let raw = value("--arena-shot")?;
+                    arena_shot = Some(ArenaShot::from_name(&raw).ok_or_else(|| {
+                        let names: Vec<&str> = ArenaShot::ALL.iter().map(|shot| shot.name()).collect();
+                        format!("--arena-shot expects one of {}, got {raw:?}", names.join(", "))
+                    })?);
+                }
                 "--cloud-cover" => {
                     let cover: f32 = number(&value("--cloud-cover")?, "--cloud-cover")?;
                     if !(0.0..=1.0).contains(&cover) {
@@ -821,6 +833,25 @@ impl Options {
         if options.clip_in_place && options.clip.is_none() {
             return Err("--clip-in-place needs --clip".to_owned());
         }
+        options.arena = match (arena_flag, arena_shot) {
+            (true, shot) => Some(shot.unwrap_or_default()),
+            (false, Some(_)) => return Err("--arena-shot needs --arena".to_owned()),
+            (false, None) => None,
+        };
+        if options.arena.is_some()
+            && (options.look_dev.is_some()
+                || options.stage.is_some()
+                || options.environment
+                || options.foliage.is_some()
+                || options.outline_row
+                || options.faces.is_some()
+                || options.rim_rig.is_some()
+                || options.hard_edges)
+        {
+            return Err("--arena is a scene of its own: drop --look-dev, --stage, --environment, --probes, \
+                 --foliage, --outline-row, --faces, --rim-rig and --hard-edges"
+                .to_owned());
+        }
         let frames = CaptureFrames { count: capture_frames.unwrap_or(1), step: capture_step.unwrap_or(0) };
         if usize::from(capture.is_some()) + usize::from(bench.is_some()) + usize::from(serve) > 1 {
             return Err(format!("{CAPTURE_FLAG}, {BENCH_FLAG} and {OFFSCREEN_FLAG} are exclusive"));
@@ -855,7 +886,13 @@ impl Options {
             (None, Some(_), None, _) => return Err("--record needs --scenario".to_owned()),
             _ => return Err("--scenario and --script need --record".to_owned()),
         };
-        if matches!(options.debug_draw, Some(DebugDrawDemo::Combat(_))) && options.combat.is_none() {
+        // The arena has colliders to draw with no fight.
+        let arena_colliders = options.arena.is_some()
+            && options.debug_draw == Some(DebugDrawDemo::Combat(CombatViews::COLLIDERS));
+        if matches!(options.debug_draw, Some(DebugDrawDemo::Combat(_)))
+            && options.combat.is_none()
+            && !arena_colliders
+        {
             return Err("--debug-draw's views of a fight need --replay or --record".to_owned());
         }
         let drawn_alone = matches!(mode, Some(OffscreenMode::Capture { .. } | OffscreenMode::Bench { .. }));
@@ -1300,6 +1337,71 @@ mod tests {
         assert!(!culling(&["--view-culling", "off"]));
         assert!(culling(&["--view-culling=on"]));
         assert!(parse(&["--view-culling", "some"]).is_err());
+    }
+
+    #[test]
+    fn the_arena_takes_a_shot_and_the_town_s_character_and_sky() {
+        assert_eq!(Options::default().arena, None);
+        let (options, unknown) = parse(&["--arena"]).unwrap();
+        assert!(unknown.is_empty());
+        assert_eq!(options.arena, Some(ArenaShot::Director));
+        // A fight in a window takes a recording, played by the bindings.
+        let (live, unknown) =
+            parse(&["--arena", "--record", "fight.sreplay", "--scenario", "arena"]).unwrap();
+        assert!(unknown.is_empty());
+        assert!(live.combat.is_some() && live.arena.is_some());
+        assert_eq!(options.look_dev, None);
+        assert_eq!(options.character(), lookdev::CHARACTER);
+        assert_eq!(options.sky(), lookdev::SKY);
+        assert!(options.keeps_character_mesh());
+        assert_eq!(parse(&["--arena", "--arena-shot", "over"]).unwrap().0.arena, Some(ArenaShot::Over));
+        assert_eq!(parse(&["--arena-shot=follow", "--arena"]).unwrap().0.arena, Some(ArenaShot::Follow));
+    }
+
+    #[test]
+    fn the_arena_refuses_what_the_look_dev_stage_refuses() {
+        for excluded in [
+            &["--look-dev", "hero"][..],
+            &["--stage", "floor"],
+            &["--environment"],
+            &["--probes"],
+            &["--foliage", "grove"],
+            &["--outline-row"],
+            &["--faces"],
+            &["--rim-rig", "angles"],
+            &["--hard-edges"],
+        ] {
+            let args: Vec<&str> = ["--arena"].iter().chain(excluded).copied().collect();
+            let error = parse(&args).expect_err(&format!("{args:?} isn't a scene"));
+            assert!(error.contains("--arena is a scene of its own"), "{args:?}: {error}");
+            assert!(error.contains(excluded[0]), "{args:?}: {error}");
+        }
+    }
+
+    #[test]
+    fn the_arena_s_other_flags_need_it() {
+        let error = parse(&["--arena-shot", "over"]).expect_err("no arena");
+        assert!(error.contains("needs --arena"), "{error}");
+        let error = parse(&["--arena", "--arena-shot", "near"]).expect_err("no such shot");
+        assert!(error.contains("follow") && error.contains("over"), "{error}");
+    }
+
+    /// Only the arena's colliders draw with no fight: elsewhere there are none, and a volume is a fight's.
+    #[test]
+    fn the_arena_draws_its_colliders_with_no_fight() {
+        assert_eq!(
+            parse(&["--arena", "--debug-draw", "colliders"]).unwrap().0.debug_draw,
+            Some(DebugDrawDemo::Combat(CombatViews::COLLIDERS)),
+        );
+        let refused: [&[&str]; 3] = [
+            &["--debug-draw", "colliders"],
+            &["--arena", "--debug-draw", "volumes"],
+            &["--arena", "--debug-draw", "combat"],
+        ];
+        for args in refused {
+            let error = parse(args).expect_err("no fight");
+            assert!(error.contains("--replay or --record"), "{args:?}: {error}");
+        }
     }
 
     #[test]

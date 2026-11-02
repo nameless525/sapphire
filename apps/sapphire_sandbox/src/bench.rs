@@ -164,6 +164,7 @@ pub(crate) fn run(
         faces = ?options.faces,
         rim_rig = ?options.rim_rig,
         foliage = ?options.foliage,
+        arena = ?options.arena,
         cpu_us_mean = format_args!("{:.1}", micros(cpu.iter().sum::<Duration>() / frames)),
         cpu_us_p50 = format_args!("{:.1}", micros(percentile(50))),
         cpu_us_p99 = format_args!("{:.1}", micros(percentile(99))),

@@ -3,7 +3,8 @@
 //!
 //! `--debug-draw volumes|colliders|combat` turns them on, and in `dev` builds so do the cvars
 //! `combat.view_volumes` and `combat.view_colliders`, which the overlay's combat panel lists. Both are
-//! only ever read here, so off they cost two relaxed loads a frame, and only where a fight is running.
+//! only ever read here, so off they cost two relaxed loads a frame, and only where a fight is running
+//! or the arena stands.
 //!
 //! - **Hit and hurt volumes.** Each [`ActiveVolume`] as the shape it sweeps this step, along the casts
 //!   the hit query makes of it ([`VolumeSweep::walk`]). Each actor's hurtbox bodies, with its facing,
@@ -11,7 +12,8 @@
 //!   usually inside a character. An actor with no hurtbox in the world shows a stand-in: see below.
 //! - **Colliders.** The simulation's world: its static colliders, depth-tested, and its bodies, over
 //!   everything, with hurtboxes in those same colours. A character with no body in the world draws a
-//!   capsule of [`BODY_RADIUS`] and [`BODY_HEIGHT`] instead.
+//!   capsule of [`BODY_RADIUS`] and [`BODY_HEIGHT`] instead. With no fight, `--arena` draws its own
+//!   statics through [`statics`] ([`crate::arena::ArenaActors::draw_colliders`]).
 //!
 //! # Reading, and when
 //!
@@ -442,7 +444,7 @@ fn bodies(views: CombatViews, sim: &Simulation, canvas: &mut impl Canvas) {
 }
 
 /// Every static collider, tested against the scene they're usually part of.
-fn statics(world: &PhysicsWorld, canvas: &mut impl Canvas) {
+pub(crate) fn statics(world: &PhysicsWorld, canvas: &mut impl Canvas) {
     let fixed = Style::new(palette::STATIC);
     for collider in world.statics() {
         match collider.geometry {

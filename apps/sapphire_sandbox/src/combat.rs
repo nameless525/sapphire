@@ -1,12 +1,12 @@
 //! `--replay` and `--record`: a combat simulation stepping beside the scene, one tick per fixed step
 //! that isn't paused.
 //!
-//! Nothing skinned follows the simulation yet, and the combat views (`combat_views.rs`) are all that
-//! show it, so what this holds now is the property everything later leans on: a run inside the app,
-//! with the renderer beside it, reaches the same checksums as the headless runner, through the same
-//! `sapphire_gameplay::replay` code. `--replay` compares with the recorded checksums next to the file,
-//! where there are any, and fails the run if it differs, so a golden or a bench from a recorded fight
-//! can't come from another fight.
+//! What this holds is the property everything later leans on: a run inside the app, with the renderer
+//! beside it, reaches the same checksums as the headless runner, through the same
+//! `sapphire_gameplay::replay` code. The arena's actors follow [`Combat::simulation`] (`crate::arena`),
+//! and the combat views (`combat_views.rs`) draw what it holds; nothing else shows the fight. `--replay`
+//! compares with the recorded checksums next to the file, where there are any, and fails the run if it
+//! differs, so a golden or a bench from a recorded fight can't come from another fight.
 //!
 //! **Where a recording's actions come from:** [`action_source`], which returns an
 //! [`ActionSource`]: a named script, with `--capture` or `--bench`, or in the windowed app the
@@ -14,7 +14,7 @@
 //! holds what was played, with each stick turned by the camera it was played under, and it's written
 //! when the app quits. Everything before that is in memory, so a killed process leaves no file.
 //!
-//! `--replay` needs `--capture` or `--bench`: there's no fight to show in a window yet.
+//! `--replay` needs `--capture` or `--bench`, for now. `--arena --record` shows its fight in a window.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -61,8 +61,7 @@ enum Mode {
     },
     Recording {
         recording: Recording,
-        /// The scenario it started from, for the overlay.
-        #[cfg(any(feature = "dev", test))]
+        /// The scenario it runs.
         scenario: &'static str,
         /// The script it plays. With none, it records the bindings it's given.
         script: Option<ScriptActions>,
@@ -126,14 +125,24 @@ impl Combat {
             .transpose()?;
         let recording =
             Recording::new(scenario, scenario.config).map_err(|error| format!("--record: {error}"))?;
-        let mode = Mode::Recording {
-            recording,
-            #[cfg(any(feature = "dev", test))]
-            scenario: scenario.name,
-            script,
-            stopped: None,
-        };
+        let mode = Mode::Recording { recording, scenario: scenario.name, script, stopped: None };
         Ok(Self { path: path.to_owned(), mode, steps_past_end: 0 })
+    }
+
+    /// The scenario the run starts from.
+    pub fn scenario(&self) -> &str {
+        match &self.mode {
+            Mode::Replaying { player, .. } => player.replay().scenario(),
+            Mode::Recording { scenario, .. } => scenario,
+        }
+    }
+
+    /// The actors the scenario's input drives, the player first.
+    pub fn cast(&self) -> &[ActorId] {
+        match &self.mode {
+            Mode::Replaying { player, .. } => player.cast(),
+            Mode::Recording { recording, .. } => recording.cast(),
+        }
     }
 
     /// The tick a capture stops at: the replay's end unless `--capture-ticks` said otherwise, and

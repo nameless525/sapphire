@@ -90,6 +90,7 @@ use sapphire_assets::{
 };
 #[cfg(feature = "dev")]
 use sapphire_assets::{AssetChange, MountError, RemountReport};
+use sapphire_colliders::ColliderSet;
 #[cfg(feature = "dev")]
 use sapphire_livelink::protocol::PackOutcome;
 #[cfg(feature = "dev")]
@@ -101,6 +102,7 @@ use sapphire_rhi::GpuContext;
 use sapphire_time::Stopwatch;
 
 use crate::LOG_TARGET;
+use crate::arena;
 use crate::enemy::{self, EnemyMeshes};
 use crate::environment;
 use crate::faces::{self, MaterialOverrides};
@@ -347,6 +349,8 @@ pub(crate) struct Content {
     enemy: Vec<Handle<Mesh>>,
     /// The enemy's skeleton, with those.
     enemy_skeleton: Option<Handle<Skeleton>>,
+    /// The arena's colliders, once asked for (`--arena`'s).
+    arena_colliders: Option<Handle<ColliderSet>>,
     /// A character rig, once asked for (`--look-dev`'s).
     rig: Option<Handle<CharacterRig>>,
     /// The skeleton of the character's mesh, with the rig.
@@ -411,6 +415,7 @@ impl Content {
             town: Vec::new(),
             enemy: Vec::new(),
             enemy_skeleton: None,
+            arena_colliders: None,
             rig: None,
             skeleton: None,
             character_versions: None,
@@ -790,6 +795,32 @@ impl Content {
             return Err(AppInitError::msg("the enemy isn't loaded"));
         };
         enemy::held(skin, skeleton).map_err(AppInitError::msg)
+    }
+
+    /// Loads the arena's colliders until they're resident, and builds what the stage stands on from
+    /// them: CPU data, which nothing uploads. Fails if the cook's colliders leave a spawn point in
+    /// the air or in a wall ([`arena::ArenaGround::new`]).
+    pub fn arena_ground(
+        &mut self,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+    ) -> Result<arena::ArenaGround, AppInitError> {
+        // Asking again tries colliders that failed before, as the character does.
+        let handle =
+            self.server.load_with(arena::COLLIDERS, LoadPriority::Critical).map_err(AppInitError::msg)?;
+        let assets = &mut self.gpu;
+        let loaded = self.server.finish(&handle, |upload| assets.upload(upload, renderer, gpu));
+        self.arena_colliders = Some(handle);
+        for unloaded in self.server.take_unloaded() {
+            self.gpu.unload(unloaded);
+        }
+        loaded.map_err(|error| AppInitError::msg(format!("the arena's colliders didn't load: {error}")))?;
+        let set = self
+            .arena_colliders
+            .as_ref()
+            .and_then(|handle| self.server.get(handle))
+            .ok_or_else(|| AppInitError::msg("the arena's colliders aren't resident"))?;
+        arena::ArenaGround::new(set).map_err(AppInitError::msg)
     }
 
     /// Loads the character rig `id` until it is resident, and the skeleton the character's kept
@@ -1172,6 +1203,7 @@ mod tests {
                 town: Vec::new(),
                 enemy: Vec::new(),
                 enemy_skeleton: None,
+                arena_colliders: None,
                 rig: None,
                 skeleton: None,
                 character_versions: None,

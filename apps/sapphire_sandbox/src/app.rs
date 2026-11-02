@@ -35,7 +35,7 @@ use crate::input::{PLAYER, SandboxInput};
 use crate::lookdev::{Shot, TownMeshes};
 use crate::options::Options;
 use crate::rims::RimRigMeshes;
-use crate::scene::{LookDev, Scene};
+use crate::scene::{Arena, LookDev, Scene};
 use crate::stage::StageMeshes;
 use crate::stats::{FrameStats, Stages};
 use crate::swatches::SWATCHES;
@@ -164,6 +164,9 @@ impl App for SandboxApp {
         let input = SandboxInput::new(desktop, options.combat_input, window.size())?;
         // Before any GPU work, so a bad scenario or a file in the way costs nothing and says why.
         let combat = options.combat.as_ref().map(Combat::new).transpose().map_err(AppInitError::msg)?;
+        if let (Some(_), Some(combat)) = (options.arena, &combat) {
+            crate::arena::check_scenario(combat).map_err(AppInitError::msg)?;
+        }
         let mut scene = Scene::with_character(renderer.character, renderer.character_bounds, options.skinned);
         scene.set_sky_material(renderer.sky);
         if let Some(rig) = &options.character_rig {
@@ -219,6 +222,12 @@ impl App for SandboxApp {
             if let Some(meshes) = renderer.enemy {
                 scene.spawn_enemy(meshes, content.held_enemy()?);
             }
+        }
+        if let (Some(shot), Some(town)) = (options.arena, renderer.town) {
+            let (pose, figure) = lookdev::hold(&mut content, &mut renderer.renderer, &device.gpu)?;
+            let ground = content.arena_ground(&mut renderer.renderer, &device.gpu)?;
+            let look = LookDev { town, fog_cards: renderer.fog_cards, pose, figure };
+            scene.spawn_arena(Arena { shot, look, ground });
         }
         // The day, the sky options, the starting view and the turntable's speed, last so `--view`
         // holds whatever framing the scene chose.
@@ -366,6 +375,8 @@ impl App for SandboxApp {
         let mut camera = self.scene.camera_mut();
         self.input.drive_camera(&mut camera);
         camera.update(dt);
+        let (look, zoom) = self.input.camera_motion();
+        self.scene.drive_arena_camera(dt, look, zoom);
         let presentation = stopwatch.lap();
         if let Some(audio) = &mut self.audio {
             audio.update(dt, platform, self.scene.sound());
@@ -430,10 +441,13 @@ impl SandboxApp {
         self.scene.apply(self.input.take_actions());
         // The camera the player was looking at when they pushed. A tick carries the direction they
         // meant, so nothing past here reads a camera.
-        let camera_yaw = self.scene.camera().heading();
+        let camera_yaw = self.scene.camera_heading();
 
         for _ in 0..steps.count {
             self.read_combat_step(camera_yaw);
+            if let Some(combat) = &self.combat {
+                self.scene.follow_simulation(combat.simulation(), combat.cast());
+            }
 
             let scene = &mut self.scene;
             #[cfg(feature = "dev")]
@@ -1134,13 +1148,13 @@ pub(crate) fn create_renderer(
             None => None,
         };
         let courtyard = options.environment.then(|| content.courtyard(&mut renderer, gpu)).transpose()?;
-        let fog_cards = ((options.environment || options.look_dev.is_some()) && !options.fog_off)
+        let fog_cards = ((options.environment || options.in_town()) && !options.fog_off)
             .then(|| content.fog_cards(&mut renderer, gpu))
             .transpose()?;
         let foliage = options.foliage.map(|_| content.foliage(&mut renderer, gpu)).transpose()?;
         let arcade = options.probes.then(|| content.probes(&mut renderer, gpu)).transpose()?;
         let hard_edges = options.hard_edges.then(|| content.hard_edges(&mut renderer, gpu)).transpose()?;
-        let town = options.look_dev.map(|_| content.town(&mut renderer, gpu)).transpose()?;
+        let town = options.in_town().then(|| content.town(&mut renderer, gpu)).transpose()?;
         let enemy =
             (options.look_dev == Some(Shot::Enemy)).then(|| content.enemy(&mut renderer, gpu)).transpose()?;
         let stage = match options.stage {

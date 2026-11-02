@@ -145,15 +145,20 @@ impl SandboxInput {
         self.controls.source(camera_yaw)
     }
 
-    /// Applies this frame's orbit and zoom, the sandbox's own or combat's. Sources go to one or the
-    /// other, by context, so they add.
-    pub fn drive_camera(&self, camera: &mut OrbitCamera) {
+    /// This frame's orbit and zoom, the sandbox's own or combat's: radians of yaw and pitch, and the
+    /// log of a factor on the distance. Sources go to one or the other, by context, so they add.
+    pub fn camera_motion(&self) -> (Vec2, f32) {
         let system = self.controls.input();
         let orbit = system.state(self.actions.orbit).value() + self.controls.look();
+        (orbit, system.state(self.actions.zoom).axis() + self.controls.camera_zoom())
+    }
+
+    /// Applies this frame's orbit and zoom.
+    pub fn drive_camera(&self, camera: &mut OrbitCamera) {
+        let (orbit, zoom) = self.camera_motion();
         if orbit != Vec2::ZERO {
             camera.rotate(orbit.x, orbit.y);
         }
-        let zoom = system.state(self.actions.zoom).axis() + self.controls.camera_zoom();
         if zoom != 0.0 {
             camera.zoom(zoom.exp());
         }

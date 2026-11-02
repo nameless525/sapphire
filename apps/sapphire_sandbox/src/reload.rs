@@ -128,11 +128,10 @@ impl Document {
 /// look-dev day's with `--look-dev` (in the repository this build was compiled from, as `sources`
 /// finds the engine's own).
 pub(crate) fn day_source(options: &crate::options::Options) -> PathBuf {
-    match options.look_dev {
-        Some(_) => {
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/lookdev").join(Day::LookDev.file_name())
-        }
-        None => sources::default_day(),
+    if options.in_town() {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/lookdev").join(Day::LookDev.file_name())
+    } else {
+        sources::default_day()
     }
 }
 
@@ -140,11 +139,12 @@ pub(crate) fn day_source(options: &crate::options::Options) -> PathBuf {
 /// look-dev stage's own with `--look-dev` (M1 C8; in the repository this build was compiled from,
 /// as `sources` finds the engine's own).
 pub(crate) fn light_rigs_source(options: &crate::options::Options) -> PathBuf {
-    match options.look_dev {
-        Some(_) => Path::new(env!("CARGO_MANIFEST_DIR"))
+    if options.in_town() {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../content/lookdev")
-            .join(Day::LookDev.light_rigs_file_name()),
-        None => sources::default_light_rigs(),
+            .join(Day::LookDev.light_rigs_file_name())
+    } else {
+        sources::default_light_rigs()
     }
 }
 

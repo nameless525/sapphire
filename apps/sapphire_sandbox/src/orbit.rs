@@ -142,6 +142,29 @@ impl OrbitCamera {
         self.goal_distance = (self.goal_distance * factor).clamp(self.min_distance, self.max_distance);
     }
 
+    /// Aims at `target` from the same angles and distance: a camera that follows something.
+    pub fn set_target(&mut self, target: Vec3) {
+        self.target = target;
+    }
+
+    /// Takes a view something else worked out: `eye`, looking along `forward` through a lens `fov_y`
+    /// radians high, upright, at once. So everything that reads this camera (the frame, sound, what
+    /// the stick turns by) reads that view. `sapphire_camera`'s director comes through here in the
+    /// arena, and a shake's roll would need more than this.
+    pub fn set_view(&mut self, eye: Vec3, forward: Vec3, fov_y: f32) {
+        // Any distance gives the same view.
+        const DISTANCE: f32 = 4.0;
+        let forward = forward.normalize_or(Vec3::NEG_Z);
+        let yaw = (-forward.x).atan2(-forward.z);
+        let pitch = (-forward.y).asin();
+        self.target = eye + forward * DISTANCE;
+        self.fov_y = fov_y;
+        (self.goal_yaw, self.goal_pitch, self.goal_distance) = (yaw, pitch, DISTANCE);
+        self.yaw = SpringDamper::new(yaw, HALF_LIFE);
+        self.pitch = SpringDamper::new(pitch, HALF_LIFE);
+        self.distance = SpringDamper::new(DISTANCE, HALF_LIFE);
+    }
+
     /// Eases toward the goals over `dt` real seconds.
     pub fn update(&mut self, dt: f32) {
         self.yaw.update(self.goal_yaw, dt);

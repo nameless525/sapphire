@@ -28,6 +28,8 @@
 //!   because [`AssetKind::references`] checks each kind's bytes; `sapphire_anim` samples them.
 //! - Ambient probe grids ([`probes`], `.sprobe`, M1 W5): a zone's baked sky visibility and bounce
 //!   light per time-of-day key, in a sparse grid of bricks, which the renderer relights.
+//! - Where collider sets go (`.scol`, M2 D3): [`AssetKind::Colliders`] packs and loads them. Their
+//!   format and checks are `sapphire_colliders`', which has no reason to know about packs.
 //! - Packs ([`pack`], M1 A4): the `.spack` files content ships in, cooked assets by ID in
 //!   independently compressed 64 KB blocks (zstd or lz4) under blake3 hashes, with the reader,
 //!   its integrity checks and the writer the packer uses. Each asset's [`AssetKind`] says how it

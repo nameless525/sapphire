@@ -155,6 +155,7 @@ fn uploads_are_plain_cooked_data() {
                     unreachable!("animation's data never goes to the uploader")
                 }
                 AssetKind::ProbeGrid => unreachable!("these assets include no probe grid"),
+                AssetKind::Colliders => unreachable!("colliders never go to the uploader"),
             }
             Ok(())
         })

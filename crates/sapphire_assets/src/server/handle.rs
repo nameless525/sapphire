@@ -5,6 +5,7 @@ use std::fmt;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
+use sapphire_colliders::{ArchivedColliderSet, ColliderSet};
 use sapphire_serialize::cooked::access_unchecked;
 
 use crate::clip::{ArchivedClip, Clip};
@@ -23,7 +24,7 @@ slotmap::new_key_type! {
 }
 
 /// A kind of asset handles can be typed with: [`Mesh`], [`TextureAsset`], [`Material`],
-/// [`CharacterRig`], [`ProbeGrid`], [`Skeleton`], [`Clip`].
+/// [`CharacterRig`], [`ProbeGrid`], [`Skeleton`], [`Clip`], [`ColliderSet`].
 pub trait Asset: sealed::Sealed + 'static {
     const KIND: AssetKind;
     /// How a loaded asset of this kind is read: in place, borrowing its bytes.
@@ -48,6 +49,7 @@ mod sealed {
     impl Sealed for crate::probes::ProbeGrid {}
     impl Sealed for crate::skeleton::Skeleton {}
     impl Sealed for crate::clip::Clip {}
+    impl Sealed for sapphire_colliders::ColliderSet {}
     impl Sealed for super::TextureAsset {}
 }
 
@@ -92,6 +94,17 @@ impl Asset for ProbeGrid {
         // SAFETY: as for meshes: `ProbeGrid::read` accepted these bytes, unchanged since.
         unsafe { access_unchecked::<ProbeGrid>(bytes) }
             .expect("the envelope was checked when the probe grid was decoded")
+    }
+}
+
+impl Asset for ColliderSet {
+    const KIND: AssetKind = AssetKind::Colliders;
+    type View<'a> = &'a ArchivedColliderSet;
+
+    unsafe fn view(bytes: &[u8]) -> &ArchivedColliderSet {
+        // SAFETY: as for meshes: `ColliderSet::read` accepted these bytes, unchanged since.
+        unsafe { access_unchecked::<ColliderSet>(bytes) }
+            .expect("the envelope was checked when the collider set was decoded")
     }
 }
 

@@ -22,11 +22,13 @@ members = [
     "crates/sapphire_reflect",
     "crates/sapphire_rhi",
     "crates/sapphire_serialize",
+    "crates/sapphire_colliders",
     # L3 subsystems
     "crates/sapphire_anim",
     "crates/sapphire_input",
     "crates/sapphire_render",
     "crates/sapphire_tod",
+    "crates/sapphire_physics",
     # L4 framework
     "crates/sapphire_world",
     "crates/sapphire_gameplay",
@@ -69,6 +71,8 @@ sapphire_anim = { path = "crates/sapphire_anim" }
 sapphire_input = { path = "crates/sapphire_input" }
 sapphire_render = { path = "crates/sapphire_render" }
 sapphire_tod = { path = "crates/sapphire_tod" }
+sapphire_colliders = { path = "crates/sapphire_colliders" }
+sapphire_physics = { path = "crates/sapphire_physics" }
 sapphire_world = { path = "crates/sapphire_world" }
 sapphire_gameplay = { path = "crates/sapphire_gameplay" }
 sapphire_debug = { path = "crates/sapphire_debug" }
@@ -157,6 +161,13 @@ lz4_flex = { version = "0.14.0", default-features = false, features = ["std", "s
 # KTX2, the cooked texture container (M1 A2): sapphire_assets reads and writes it (the pipeline
 # writes through it). Its only dependency is bitflags; ctt uses the same version.
 ktx2 = "0.5.0"
+
+# --- Physics (spec §5.14) ---
+# Geometry only, and never with `enhanced-determinism`: that feature turns on glam's `scalar-math`
+# and `libm`, and Cargo unifies features on the workspace's one glam, so `Vec4`, `Quat` and `Mat4`
+# would lose their alignment and the renderer its goldens (M2 D3). These features leave glam's
+# behavior alone: `nostd-libm` does nothing beside `std`, and `approx` only adds trait impls.
+parry3d = { version = "0.31.1", default-features = false, features = ["required-features", "std", "alloc"] }
 
 # --- Jobs ---
 bevy_tasks = { version = "0.20.0", features = ["multi_threaded"] }

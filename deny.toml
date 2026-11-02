@@ -81,7 +81,7 @@ deny = [
     { crate = "rustybuzz", reason = "archived; text shaping goes through parley" },
     { crate = "bevy_cobweb_ui", reason = "dead end for UI; en_ui is taffy + parley" },
     { crate = "distill", reason = "abandoned asset pipeline" },
-    { crate = "physx-rs", reason = "archived; physics is rapier with Jolt as the escape hatch" },
+    { crate = "physx-rs", reason = "archived; physics is parry with Jolt as the escape hatch" },
     { crate = "specs", reason = "dead ECS; use bevy_ecs" },
     { crate = "legion", reason = "dead ECS; use bevy_ecs" },
     # TLS, for when networking arrives (crash upload, patching): rustls with the ring provider and

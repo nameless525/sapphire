@@ -3,6 +3,7 @@
 
 use std::fmt;
 
+use sapphire_colliders::{ColliderError, ColliderSet};
 use serde::{Deserialize, Serialize};
 
 use crate::AssetId;
@@ -34,12 +35,22 @@ pub enum AssetKind {
     Skeleton = 6,
     /// An animation clip (`.sclip`, M2 N1): [`Clip`]. Animation's CPU data, never uploaded.
     Clip = 7,
+    /// A zone's static colliders (`.scol`, M2 D3): [`ColliderSet`]. CPU data, never uploaded.
+    Colliders = 8,
 }
 
 impl AssetKind {
     /// Every kind, in a stable order.
-    pub const ALL: [Self; 7] =
-        [Self::Mesh, Self::Texture, Self::Material, Self::Rig, Self::ProbeGrid, Self::Skeleton, Self::Clip];
+    pub const ALL: [Self; 8] = [
+        Self::Mesh,
+        Self::Texture,
+        Self::Material,
+        Self::Rig,
+        Self::ProbeGrid,
+        Self::Skeleton,
+        Self::Clip,
+        Self::Colliders,
+    ];
 
     /// The kind's position in [`Self::ALL`].
     pub const fn index(self) -> usize {
@@ -56,21 +67,22 @@ impl AssetKind {
             Self::ProbeGrid => "probe grid",
             Self::Skeleton => "skeleton",
             Self::Clip => "clip",
+            Self::Colliders => "colliders",
         }
     }
 
     /// Whether assets of this kind go to the GPU, through the asset server's upload queue. A rig,
-    /// a skeleton or a clip is ready once it and its dependencies are decoded.
+    /// a skeleton, a clip or a collider set is ready once it and its dependencies are decoded.
     pub const fn uploads(self) -> bool {
-        !matches!(self, Self::Rig | Self::Skeleton | Self::Clip)
+        !matches!(self, Self::Rig | Self::Skeleton | Self::Clip | Self::Colliders)
     }
 
     /// Whether the asset server keeps an asset's decoded bytes once it is ready. Meshes,
     /// textures and probe grids are GPU data, so their bytes go once uploaded (a new renderer
     /// has them read again). Materials are small and CPU code reads them (live link, the editor), and
-    /// rigs, skeletons and clips are read on the CPU only, so they stay.
+    /// rigs, skeletons, clips and collider sets are read on the CPU only, so they stay.
     pub const fn keeps_bytes(self) -> bool {
-        matches!(self, Self::Material | Self::Rig | Self::Skeleton | Self::Clip)
+        matches!(self, Self::Material | Self::Rig | Self::Skeleton | Self::Clip | Self::Colliders)
     }
 
     /// Whether uploading an asset of this kind binds its dependencies' GPU objects, so it must be
@@ -82,9 +94,10 @@ impl AssetKind {
     }
 
     /// Whether an asset of this kind may depend on one of `kind`: meshes on materials and
-    /// skeletons, materials on textures, clips on skeletons, and textures, rigs, probe grids and
-    /// skeletons on nothing. The allowed pairs form no loop, so chains are at most three long and
-    /// cycles can't exist, whatever a pack claims. A new kind takes its place in this order.
+    /// skeletons, materials on textures, clips on skeletons, and textures, rigs, probe grids,
+    /// skeletons and collider sets on nothing. The allowed pairs form no loop, so chains are at most
+    /// three long and cycles can't exist, whatever a pack claims. A new kind takes its place in this
+    /// order.
     pub const fn may_depend_on(self, kind: AssetKind) -> bool {
         matches!(
             (self, kind),
@@ -104,16 +117,17 @@ impl AssetKind {
             5 => Some(Self::ProbeGrid),
             6 => Some(Self::Skeleton),
             7 => Some(Self::Clip),
+            8 => Some(Self::Colliders),
             _ => None,
         }
     }
 
     /// Checks cooked bytes of this kind exactly as the runtime reads them (`Mesh::read`,
     /// `Texture::from_ktx2`, `Material::read`, `CharacterRig::read`, `ProbeGrid::read`,
-    /// `Skeleton::read`, `Clip::read`), and returns the assets they reference, sorted and without
-    /// repeats: a mesh's material slots bound to material assets and its skeleton, a material's
-    /// textures, a clip's skeleton. The packer records these as the asset's dependencies, and
-    /// decode jobs check that a decoded asset references exactly what its pack says it does.
+    /// `Skeleton::read`, `Clip::read`, `ColliderSet::read`), and returns the assets they reference,
+    /// sorted and without repeats: a mesh's material slots bound to material assets and its skeleton,
+    /// a material's textures, a clip's skeleton. The packer records these as the asset's dependencies,
+    /// and decode jobs check that a decoded asset references exactly what its pack says it does.
     ///
     /// Everything but textures must start 16-byte aligned, as decoded assets do.
     pub fn references(self, bytes: &[u8]) -> Result<Vec<AssetId>, AssetError> {
@@ -149,6 +163,11 @@ impl AssetKind {
                 Vec::new()
             }
             Self::Clip => Clip::read(bytes)?.skeleton.as_ref().copied().into_iter().collect(),
+            // Colliders hold their geometry themselves.
+            Self::Colliders => {
+                ColliderSet::read(bytes)?;
+                Vec::new()
+            }
         };
         references.sort_unstable();
         references.dedup();
@@ -189,4 +208,6 @@ pub enum AssetError {
     Skeleton(#[from] SkeletonError),
     #[error("invalid clip")]
     Clip(#[from] ClipError),
+    #[error("invalid collider set")]
+    Colliders(#[from] ColliderError),
 }

@@ -1,0 +1,29 @@
+[package]
+name = "sapphire_physics"
+description = "The collision world: static colliders, kinematic bodies, move-and-collide and ray, shape and overlap queries, deterministic per architecture and free of heap allocation once built."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+glam.workspace = true
+# parry3d's own features, never `enhanced-determinism`: see the workspace manifest.
+parry3d.workspace = true
+profiling.workspace = true
+sapphire_colliders.workspace = true
+thiserror.workspace = true
+# The static colliders' digest: XXH3, frozen, as the simulation's own checksum is.
+xxhash-rust.workspace = true
+
+[dev-dependencies]
+# Counts allocations under R6's test.
+sapphire_core.workspace = true
+# The cooked form's buffer, for the tests that build a world from a document.
+sapphire_serialize.workspace = true
+# The bench's clock: rule R2 keeps this crate itself off the OS's.
+sapphire_time.workspace = true
+
+[lints]
+workspace = true

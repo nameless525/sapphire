@@ -82,7 +82,11 @@ pub const SHARED: &str = "shared";
 pub fn codec(kind: AssetKind) -> Codec {
     match kind {
         AssetKind::Mesh | AssetKind::Texture | AssetKind::ProbeGrid => Codec::Zstd,
-        AssetKind::Material | AssetKind::Rig | AssetKind::Skeleton | AssetKind::Clip => Codec::Lz4,
+        AssetKind::Material
+        | AssetKind::Rig
+        | AssetKind::Skeleton
+        | AssetKind::Clip
+        | AssetKind::Colliders => Codec::Lz4,
     }
 }
 

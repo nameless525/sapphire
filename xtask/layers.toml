@@ -39,6 +39,9 @@ sapphire_moves = { kind = "runtime", layer = 2 }
 sapphire_reflect = { kind = "runtime", layer = 2 }
 sapphire_rhi = { kind = "runtime", layer = 2 }
 sapphire_serialize = { kind = "runtime", layer = 2 }
+# Static collision as plain data: groups, the document and the cooked format, beneath the physics
+# crate and the asset server, so the cooker can read and check them without linking parry (M2 D3).
+sapphire_colliders = { kind = "runtime", layer = 2 }
 # L3 subsystems.
 # Animation: samples, blends and solves (M2). Its cooked formats sit below it, in sapphire_assets,
 # which checks every kind's bytes; it has no edge to the renderer or the world.
@@ -48,6 +51,9 @@ sapphire_render = { kind = "runtime", layer = 3 }
 # Time of day's model (keys, timelines, looks), beside the renderer rather than above it: the
 # world runs it, and tools such as the probe bake resolve its keys without the world or renderer.
 sapphire_tod = { kind = "runtime", layer = 3 }
+# The collision world (spec §5.14). Reaches no renderer, world, platform or GPU: gameplay depends
+# on it, and replays run with none of those in the tree.
+sapphire_physics = { kind = "runtime", layer = 3 }
 # L4 framework.
 sapphire_world = { kind = "runtime", layer = 4 }
 sapphire_gameplay = { kind = "runtime", layer = 4 }
@@ -82,6 +88,10 @@ edges = [
     # Baked tables are cooked the same way.
     ["sapphire_moves", "sapphire_serialize"],
     ["sapphire_moves", "sapphire_reflect"],
+    # Cooked collider sets are named and versioned the same way, and packs store them.
+    ["sapphire_colliders", "sapphire_serialize"],
+    ["sapphire_colliders", "sapphire_reflect"],
+    ["sapphire_assets", "sapphire_colliders"],
 ]
 
 # The simulation's crates: what a replay job links (m2-plan §3, "Crate edges"). None of `forbidden`
@@ -93,7 +103,7 @@ edges = [
 # (`wgpu-types?/std`), and `cargo metadata`'s graph keeps those though nothing builds it. `cargo tree
 # -p sapphire_gameplay -e normal --all-features --target all` shows it isn't there.
 [simulation]
-crates = ["sapphire_gameplay", "sapphire_moves"]
+crates = ["sapphire_colliders", "sapphire_gameplay", "sapphire_moves", "sapphire_physics"]
 forbidden = [
     "naga",
     "sapphire_anim",

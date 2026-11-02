@@ -40,17 +40,35 @@ pub struct AssetBudgets {
 impl AssetBudgets {
     /// Desktop (spec §5.10, §3.4): 16 MiB of uploads a frame; meshes 768 MiB, textures 2.5 GiB
     /// (the zone texture pool), materials 32 MiB, rigs 64 MiB, probe grids 64 MiB, skeletons 16 MiB,
-    /// clips 128 MiB. The numbers besides the texture pool's are proposals, to set by measuring
-    /// zones (M2, M3).
+    /// clips 128 MiB, collider sets 16 MiB. The numbers besides the texture pool's are proposals, to
+    /// set by measuring zones (M2, M3).
     pub const DESKTOP: Self = Self {
         upload_per_frame: 16 * MIB,
-        resident: Self::by_kind([768 * MIB, 2560 * MIB, 32 * MIB, 64 * MIB, 64 * MIB, 16 * MIB, 128 * MIB]),
+        resident: Self::by_kind([
+            768 * MIB,
+            2560 * MIB,
+            32 * MIB,
+            64 * MIB,
+            64 * MIB,
+            16 * MIB,
+            128 * MIB,
+            16 * MIB,
+        ]),
     };
     /// Mobile: 4 MiB of uploads a frame; meshes 192 MiB, textures 600 MiB, materials 8 MiB, rigs
-    /// 16 MiB, probe grids 16 MiB, skeletons 4 MiB, clips 32 MiB.
+    /// 16 MiB, probe grids 16 MiB, skeletons 4 MiB, clips 32 MiB, collider sets 4 MiB.
     pub const MOBILE: Self = Self {
         upload_per_frame: 4 * MIB,
-        resident: Self::by_kind([192 * MIB, 600 * MIB, 8 * MIB, 16 * MIB, 16 * MIB, 4 * MIB, 32 * MIB]),
+        resident: Self::by_kind([
+            192 * MIB,
+            600 * MIB,
+            8 * MIB,
+            16 * MIB,
+            16 * MIB,
+            4 * MIB,
+            32 * MIB,
+            4 * MIB,
+        ]),
     };
 
     /// The defaults for a form factor.
@@ -67,7 +85,7 @@ impl AssetBudgets {
     }
 
     /// Budgets in [`AssetKind::ALL`]'s order: meshes, textures, materials, rigs, probe grids,
-    /// skeletons, clips.
+    /// skeletons, clips, collider sets.
     const fn by_kind(budgets: [u64; AssetKind::ALL.len()]) -> [u64; AssetKind::ALL.len()] {
         budgets
     }

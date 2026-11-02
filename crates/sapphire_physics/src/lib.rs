@@ -81,6 +81,7 @@ const _: () = {
     assert!(align_of::<glam::Mat4>() == 16);
 };
 
+mod inspect;
 mod mover;
 mod narrow;
 mod query;
@@ -88,6 +89,7 @@ mod shape;
 mod stats;
 mod world;
 
+pub use inspect::{StaticGeometryView, StaticView};
 pub use mover::{MAX_MOVE_HITS, MoveHit, MoveOptions, MoveOutcome};
 pub use query::{Overlaps, Penetration, QueryFilter, RayHit, ShapeHit};
 pub use sapphire_colliders::{ColliderSet, CollisionGroups, Group, GroupMask};

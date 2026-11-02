@@ -2,13 +2,16 @@
 //! Mobile-Low).
 //!
 //! ```text
-//! cargo run --release -p sapphire_physics --example physics_bench [steps]
+//! cargo run --release -p sapphire_physics --example physics_bench [steps] [colliders.ron]
 //! ```
 //!
 //! Runs the scene R6's test and the checksum share (225 convex colliders and an 8,192-triangle mesh
 //! the capsules walk on; 2 moves and 20 queries a step, as M2 D3's spike ran them over Rapier) with
 //! a few sizes of hurtbox crowd, since bodies are scanned, in alternating rounds, and reports each
 //! size's minimum median, 99th percentile and worst step across rounds. Each round warms up first.
+//!
+//! Given a collider document, it runs the same moves and queries on that document's world instead:
+//! what a stage's own collider set costs (`content/arena/square.colliders.ron`, M2 O5).
 
 #![allow(clippy::print_stdout, reason = "a bench's output is what it's for")]
 
@@ -20,16 +23,28 @@ use std::time::Duration;
 
 use common::{Script, bodies, statics};
 use glam::Vec3;
+use sapphire_colliders::{ColliderDocument, ColliderSet};
 use sapphire_physics::{BodyDesc, BodyId, CollisionGroups, Group, GroupMask, PhysicsWorld, Pose, Shape};
 use sapphire_time::Stopwatch;
 
 const WARM_STEPS: u32 = 200;
 
+/// A collider document's world, or the scene's, with room for `capacity` bodies.
+fn statics_world(document: Option<&ColliderSet>, capacity: usize) -> PhysicsWorld {
+    match document {
+        Some(set) => {
+            let bytes = set.to_cooked().expect("it writes");
+            let set = ColliderSet::read(&bytes).expect("it reads");
+            PhysicsWorld::from_cooked(set, capacity).expect("the document builds")
+        }
+        None => PhysicsWorld::new(statics(), capacity).expect("the scene builds"),
+    }
+}
+
 /// Hurtboxes standing about besides the scene's own, spread over the arena's middle.
-fn world(extra_hurtboxes: u32) -> PhysicsWorld {
+fn world(document: Option<&ColliderSet>, extra_hurtboxes: u32) -> PhysicsWorld {
     let own = bodies();
-    let mut world =
-        PhysicsWorld::new(statics(), own.len() + extra_hurtboxes as usize).expect("the scene builds");
+    let mut world = statics_world(document, own.len() + extra_hurtboxes as usize);
     for body in own {
         world.add_body(body).expect("it fits");
     }
@@ -53,8 +68,8 @@ struct Round {
     worst: Duration,
 }
 
-fn round(extra_hurtboxes: u32, steps: u32) -> Round {
-    let mut world = world(extra_hurtboxes);
+fn round(document: Option<&ColliderSet>, extra_hurtboxes: u32, steps: u32) -> Round {
+    let mut world = world(document, extra_hurtboxes);
     let mut script = Script::default();
     let mut log = |bytes: &[u8]| {
         black_box(bytes);
@@ -82,18 +97,24 @@ fn micros(duration: Duration) -> f64 {
 
 fn main() {
     let steps = std::env::args().nth(1).and_then(|steps| steps.parse().ok()).unwrap_or(2_000);
+    let document = std::env::args().nth(2).map(|path| {
+        let text = std::fs::read_to_string(&path).expect("the collider document");
+        ColliderDocument::from_ron(&text).expect("it reads").cook().expect("it cooks")
+    });
+    let document = document.as_ref();
     const CROWDS: [u32; 3] = [0, 28, 124];
     const ROUNDS: usize = 7;
 
     let stopwatch = Stopwatch::start();
-    let built = world(0);
+    let built = world(document, 0);
     let build = stopwatch.elapsed();
+    let colliders = built.static_count();
     drop(built);
 
     let mut best: [Option<Round>; CROWDS.len()] = [None; CROWDS.len()];
     for _ in 0..ROUNDS {
         for (crowd, best) in CROWDS.iter().zip(&mut best) {
-            let this = round(*crowd, steps);
+            let this = round(document, *crowd, steps);
             *best = Some(match *best {
                 None => this,
                 Some(other) => Round {
@@ -105,7 +126,7 @@ fn main() {
         }
     }
 
-    println!("building the world: {:.0} µs", micros(build));
+    println!("building the world of {colliders} colliders: {:.0} µs", micros(build));
     println!("{steps} steps, {ROUNDS} rounds, minimums across rounds");
     println!("bodies  median step  99th percentile  worst step");
     for (crowd, best) in CROWDS.iter().zip(&best) {

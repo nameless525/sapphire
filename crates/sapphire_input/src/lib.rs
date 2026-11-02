@@ -61,8 +61,9 @@
 //! stays actuated from one such update to the next, so an edge trigger on motion fires once
 //! per run of consecutive updates with motion, not once per event: `Pressed` as the run
 //! begins, `Released` and `Tap` with the first update after it. Evaluations for other input
-//! never fire it again. Losing focus or the foreground ends a run with nothing fired: its action
-//! keeps what it took for that update, and the next run begins once the motion has stopped.
+//! never fire it again. Losing focus or the foreground ends a run with nothing fired, and so does
+//! the OS canceling a touch for that touch screen's drag and pinch: the action keeps what it took
+//! for that update, and the next run begins once the motion has stopped.
 //!
 //! # Allocation
 //!

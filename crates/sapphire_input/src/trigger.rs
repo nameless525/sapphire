@@ -126,7 +126,7 @@ pub(crate) struct Memory {
     actuated: bool,
     /// Actuated when the binding became active: edge triggers ignore it until it lets go, so a
     /// key pressed under one context doesn't fire as a fresh press in the next. Also motion still
-    /// reading actuated when everything let go ([`Abort::All`]).
+    /// reading actuated when its device let go for good ([`Abort::All`]).
     suppressed: bool,
     /// When the current actuation started.
     pressed_at: Timestamp,
@@ -165,7 +165,9 @@ pub(crate) enum Abort {
     /// fires, and sequences in progress end. A double tap waiting for its second press goes
     /// idle at once, so the first press after the player comes back starts a new one. Motion
     /// can't let go: it reads what it took this update, so its run ends here instead, and its
-    /// edge triggers ignore it until it stops, when it falls with no abort to say so.
+    /// edge triggers ignore it until it stops, when it falls with no abort to say so. Touch's motion
+    /// bindings alone also take this when the OS cancels a touch, whose other bindings and other
+    /// devices' take [`Self::Release`].
     All,
 }
 

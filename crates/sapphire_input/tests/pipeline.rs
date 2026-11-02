@@ -104,12 +104,17 @@ impl Rig {
     /// A platform touch at the middle of the window, as SDL reports one: by finger id, which
     /// the system maps to a slot.
     fn platform_touch(&mut self, t: u64, id: u64, phase: TouchPhase) {
+        self.platform_touch_at(t, id, phase, 0.5);
+    }
+
+    /// A platform touch `x` of the way across the window, along its middle.
+    fn platform_touch_at(&mut self, t: u64, id: u64, phase: TouchPhase, x: f32) {
         self.input.handle_event(&Event::Touch(TouchEvent {
             timestamp: ms(t),
             window: WindowId::from_raw(1),
             finger: FingerId::new(TouchDeviceId::from_raw(1), id),
             phase,
-            x: 0.5,
+            x,
             y: 0.5,
             pressure: 1.0,
         }));
@@ -1157,6 +1162,136 @@ fn losing_focus_fires_no_release_from_a_chorded_drag() {
     assert_eq!(rig.update_for(16, "flick"), [ev("flick", Started, 2), ev("flick", Canceled, 4)]);
     assert_eq!(rig.value("look"), Vec2::new(3.0, 0.0), "the motion while held, and only that");
     assert_eq!(rig.update_for(32, "flick"), []);
+}
+
+/// A rig binding `flick` to `source` with `trigger`, in a window touches are measured against.
+fn touch_rig(source: &str, trigger: &str) -> Rig {
+    let bindings =
+        format!(r#"(name: "main", bindings: [(action: "flick", source: {source}, trigger: {trigger})])"#);
+    let mut rig = Rig::new(map(r#"(name: "flick", kind: Button)"#, &bindings), &["main"]);
+    rig.input.set_window_size(1000.0, 500.0);
+    rig
+}
+
+#[test]
+fn a_canceled_touch_fires_no_release_from_its_motion() {
+    // Review WA-5: system gestures cancel touches routinely on phones. The motion before the cancel
+    // still read actuated, or fell in a later evaluation with no abort, so it fired as a release.
+    // One finger drags and a second makes it a pinch; the OS takes them all back.
+    let triggers = ["Released", "Tap(seconds: 0.2)", "DoubleTap(seconds: 0.2)", "Hold(seconds: 0.2)"];
+    let sources: [(&str, &[u64]); 2] = [("Touch(Drag)", &[1]), ("Touch(Pinch)", &[1, 2])];
+    for (source, fingers) in sources {
+        for trigger in triggers {
+            for same_update in [true, false] {
+                let case = format!("{trigger} on {source}, same update: {same_update}");
+                let mut rig = touch_rig(source, trigger);
+                for (at, &id) in fingers.iter().enumerate() {
+                    rig.platform_touch_at(10 + at as u64, id, TouchPhase::Down, 0.1 + 0.1 * at as f32);
+                }
+                let last = fingers[fingers.len() - 1];
+                rig.platform_touch_at(20, last, TouchPhase::Moved, 0.6);
+                let mut events = Vec::new();
+                if !same_update {
+                    events = rig.update(25);
+                }
+                for &id in fingers {
+                    rig.platform_touch_at(30, id, TouchPhase::Canceled, 0.6);
+                }
+                events.extend(rig.update(40));
+                events.extend(rig.update(50));
+                events.extend(rig.update(60));
+                assert_eq!(events, [ev("flick", Started, 20), ev("flick", Canceled, 30)], "{case}");
+            }
+        }
+    }
+
+    // The next touch's run is a run like any other.
+    let mut rig = touch_rig("Touch(Drag)", "Released");
+    rig.platform_touch_at(10, 1, TouchPhase::Down, 0.1);
+    rig.platform_touch_at(20, 1, TouchPhase::Moved, 0.6);
+    rig.platform_touch_at(30, 1, TouchPhase::Canceled, 0.6);
+    rig.update(40);
+    rig.update(50);
+    rig.platform_touch_at(60, 2, TouchPhase::Down, 0.1);
+    rig.platform_touch_at(70, 2, TouchPhase::Moved, 0.6);
+    assert_eq!(rig.update(80), [ev("flick", Started, 70)]);
+    assert_eq!(rig.update(90), [ev("flick", Triggered, 90), ev("flick", Completed, 90)]);
+
+    // `Down` reads the level: what the finger moved stays delivered for that update.
+    let mut rig = touch_rig("Touch(Drag)", "Down");
+    rig.platform_touch_at(10, 1, TouchPhase::Down, 0.1);
+    rig.platform_touch_at(20, 1, TouchPhase::Moved, 0.6);
+    rig.platform_touch_at(30, 1, TouchPhase::Canceled, 0.6);
+    assert_eq!(rig.update(40), [ev("flick", Started, 20), ev("flick", Triggered, 20)]);
+    assert_eq!(rig.update(50), [ev("flick", Completed, 50)]);
+}
+
+#[test]
+fn a_canceled_touch_leaves_other_devices_sequences_alone() {
+    // Only touch's own motion ends with the cancel. A double tap armed by a key, a key held for its
+    // release and the mouse's run of motion all carry on and fire.
+    let map = map(
+        r#"(name: "drag", kind: Button), (name: "flick", kind: Button), (name: "dash", kind: Button),
+           (name: "fire", kind: Button)"#,
+        r#"(name: "main", bindings: [
+            (action: "drag", source: Touch(Drag), trigger: Released),
+            (action: "flick", source: MouseMotion, trigger: Released),
+            (action: "dash", source: Key(K), trigger: DoubleTap(seconds: 0.3)),
+            (action: "fire", source: Key(F), trigger: Released),
+        ])"#,
+    );
+    let mut rig = Rig::new(map, &["main"]);
+    rig.input.set_window_size(1000.0, 500.0);
+    rig.key(1, Scancode::K, true);
+    rig.key(2, Scancode::K, false);
+    rig.key(3, Scancode::F, true);
+    rig.platform_touch_at(10, 1, TouchPhase::Down, 0.1);
+    rig.platform_touch_at(20, 1, TouchPhase::Moved, 0.6);
+    rig.mouse(21, 3.0);
+    rig.platform_touch_at(30, 1, TouchPhase::Canceled, 0.6);
+    assert_eq!(
+        rig.update(40),
+        [
+            ev("dash", Started, 1),
+            ev("fire", Started, 3),
+            ev("drag", Started, 20),
+            ev("flick", Started, 21),
+            ev("drag", Canceled, 30),
+        ]
+    );
+    assert_eq!(rig.update(50), [ev("flick", Triggered, 50), ev("flick", Completed, 50)], "its run ends");
+    rig.key(60, Scancode::K, true);
+    rig.key(61, Scancode::F, false);
+    assert_eq!(
+        rig.update(70),
+        [
+            ev("dash", Triggered, 60),
+            ev("dash", Completed, 60),
+            ev("fire", Triggered, 61),
+            ev("fire", Completed, 61),
+        ]
+    );
+}
+
+#[test]
+fn only_the_os_taking_a_finger_back_ends_touchs_motion() {
+    // A finger lifting is the player letting go, past the tap slop and all.
+    let mut rig = touch_rig("Touch(Drag)", "Released");
+    rig.platform_touch_at(10, 1, TouchPhase::Down, 0.1);
+    rig.platform_touch_at(20, 1, TouchPhase::Moved, 0.6);
+    rig.platform_touch_at(30, 1, TouchPhase::Up, 0.6);
+    assert_eq!(rig.update(40), [ev("flick", Started, 20)]);
+    assert_eq!(rig.update(50), [ev("flick", Triggered, 50), ev("flick", Completed, 50)]);
+
+    // A late cancel of a finger no longer down says nothing of the fingers that are, however it
+    // arrives: one with no slot is dropped, and a raw one finds no finger.
+    let mut rig = touch_rig("Touch(Drag)", "Released");
+    rig.platform_touch_at(10, 1, TouchPhase::Down, 0.1);
+    rig.platform_touch_at(20, 1, TouchPhase::Moved, 0.6);
+    rig.platform_touch_at(21, 99, TouchPhase::Canceled, 0.6);
+    rig.touch(22, 5, TouchPhase::Canceled, 0.0, 0.0);
+    assert_eq!(rig.update(40), [ev("flick", Started, 20)]);
+    assert_eq!(rig.update(50), [ev("flick", Triggered, 50), ev("flick", Completed, 50)]);
 }
 
 #[test]

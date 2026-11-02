@@ -45,6 +45,8 @@ pub(crate) struct GestureOutput {
     pub pinch: Option<f32>,
     pub press: Option<PressChange>,
     pub swipe: Option<SwipeDirection>,
+    /// The OS took back a finger that was down.
+    pub canceled: bool,
 }
 
 #[derive(Debug, Default)]
@@ -120,9 +122,8 @@ impl Gestures {
                 }
             }
             TouchPhase::Canceled => {
-                if self.fingers[finger].take().is_some()
-                    && self.stroke.take_if(|&mut s| s == finger).is_some()
-                {
+                out.canceled = self.fingers[finger].take().is_some();
+                if out.canceled && self.stroke.take_if(|&mut s| s == finger).is_some() {
                     out.press = self.cancel_press();
                 }
             }
@@ -276,6 +277,10 @@ mod tests {
         let mut t = Touches::new();
         t.touch(0, 0, TouchPhase::Down, 100.0, 100.0);
         let out = t.touch(50, 0, TouchPhase::Canceled, 300.0, 100.0);
-        assert_eq!(out, GestureOutput { press: Some(PressChange::Cancel), ..GestureOutput::default() });
+        assert_eq!(
+            out,
+            GestureOutput { press: Some(PressChange::Cancel), canceled: true, ..GestureOutput::default() }
+        );
+        assert_eq!(t.touch(60, 0, TouchPhase::Canceled, 300.0, 100.0), GestureOutput::default(), "gone");
     }
 }

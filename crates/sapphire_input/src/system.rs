@@ -203,6 +203,10 @@ enum MotionPass {
     Keep,
     Channel(Channel),
     All,
+    /// The OS took a finger back: touch's motion bindings are judged and their runs end there, as
+    /// under [`Abort::All`] (review WA-5). Other devices' motion bindings keep their last state,
+    /// and every binding that isn't motion is judged under the evaluation's own abort.
+    TouchCanceled,
 }
 
 impl MotionPass {
@@ -211,6 +215,7 @@ impl MotionPass {
             Self::Keep => false,
             Self::Channel(fresh) => channel == fresh,
             Self::All => true,
+            Self::TouchCanceled => matches!(channel, Channel::Drag | Channel::Pinch),
         }
     }
 }
@@ -572,6 +577,9 @@ impl InputSystem {
                     let abort = if change == PressChange::Cancel { Abort::Release } else { Abort::No };
                     self.evaluate(now, MotionPass::Keep, abort);
                 }
+                if out.canceled {
+                    self.evaluate(now, MotionPass::TouchCanceled, Abort::Release);
+                }
                 if let Some(drag) = out.drag {
                     self.add_motion(Channel::Drag, drag, now);
                 }
@@ -664,6 +672,10 @@ impl InputSystem {
                 };
                 let value = modifier::apply_all(map.modifiers(binding), raw, self.dt);
                 let actuated = is_actuated(value, binding.threshold);
+                // Motion can't let go, so a cancel ends its run. In this pass the only motion to get
+                // here is touch's, and another device's held key or armed double tap keeps `abort`.
+                let abort =
+                    if pass == MotionPass::TouchCanceled && channel.is_some() { Abort::All } else { abort };
                 let fire = trigger::evaluate(binding.trigger, &mut state.memory, actuated, now, abort);
                 // Motion met its gate as it arrived: what got through counts after the gate closes.
                 state.output = if gated && channel.is_none() {

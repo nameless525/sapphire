@@ -95,6 +95,9 @@ sapphire_livelink = { kind = "dev_only" }
 # `dev`: development builds, linking the dev-only crates (the debug overlay, spec §5.20).
 sapphire_sandbox = { kind = "app", features = ["tracy", "dev"] }
 # Tools.
+# The combat timeline editor (M2 T3): links the simulation and live link, and no renderer or world. It
+# draws its preview by itself, through egui, so nothing here needs a GPU but the editor's own window.
+sapphire_editor = { kind = "tool" }
 sapphire_pipeline = { kind = "tool" }
 # The headless replay runner (M2 D2): what `cargo xtask replay` and CI's Replays job build.
 sapphire_replay = { kind = "tool" }

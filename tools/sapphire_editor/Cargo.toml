@@ -1,0 +1,42 @@
+[package]
+name = "sapphire_editor"
+description = "The combat timeline editor: a `.moves.ron` on a timeline of 60 Hz ticks, scrubbed against the simulation, saved as text and pushed over live link. Desktop only, never shipped."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "sapphire_editor"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+egui.workspace = true
+egui-wgpu.workspace = true
+png.workspace = true
+pollster.workspace = true
+# The preview's pose: what the sandbox samples, read from the same cooked clips.
+sapphire_anim.workspace = true
+sapphire_assets.workspace = true
+sapphire_core.workspace = true
+# The preview is a real run of the simulation.
+sapphire_gameplay.workspace = true
+# Save and push.
+sapphire_livelink.workspace = true
+sapphire_math.workspace = true
+sapphire_moves.workspace = true
+sapphire_physics.workspace = true
+# The window, and only the window.
+sapphire_platform.workspace = true
+sapphire_rhi.workspace = true
+sapphire_serialize.workspace = true
+sapphire_time.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+egui_kittest.workspace = true
+
+[lints]
+workspace = true

@@ -47,6 +47,7 @@ members = [
     # Apps
     "apps/sapphire_sandbox",
     # Tools (never shipped)
+    "tools/sapphire_editor",
     "tools/sapphire_pipeline",
     "tools/sapphire_replay",
     "tools/sapphire_testkit",
@@ -238,6 +239,9 @@ notify = "8.2.0"
 # --- Tests ---
 # Pose snapshots (spec §5.13). No default features: its `colors` only colors a failing diff.
 insta = { version = "1.47", default-features = false }
+# Drives the timeline editor's interface with no window (M2 T3). No `wgpu` feature: it would turn on
+# wgpu's GLES backend for every test build of the workspace, and the editor rasterizes its own captures.
+egui_kittest = { version = "0.37.0", default-features = false }
 
 # --- Tools only (never in a runtime crate's dependency tree) ---
 sapphire_testkit = { path = "tools/sapphire_testkit" }

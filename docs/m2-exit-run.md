@@ -35,7 +35,7 @@ From [combat_bindings.ron](../crates/sapphire_controls/combat_bindings.ron), by 
 | Light | The three-hit string, and the dash attack out of a dodge | West (X, Square) | J, left button |
 | Dodge | A leap back. The first 100 ms are the perfect dodge | South (A, Cross) | Left Shift |
 | Skill | Two hits, safe to start | North (Y, Triangle) | E |
-| Lock-on | Hold the line to the enemy | Right stick press | L, middle button |
+| Lock-on | A press turns it on, and the next off. While on, the camera holds the line to the enemy | Right stick press | L, middle button |
 | Jump | The controller's jump | Left shoulder | Space |
 | Swap | With `--party` only. The HUD's health trail starts over for whoever comes in | Right shoulder | Tab |
 | Heavy | Bound, with no move on it yet | East (B, Circle) | K, right button |
@@ -79,7 +79,7 @@ A fight someone's playing in a desktop's window holds the pointer, so the mouse 
 
 M2's phases are all built, so **the three reviews can run in one sitting**, in this order, in about 90 minutes. The plan spaced them out so a bad answer could stop the work behind it. That's gone, because the work is done, so each still comes before the next only because its answer changes how to read the next. If there's time for only one, run review 3.
 
-Each uses the command above. Save edits as you go: `git diff` is the session's record, and `git checkout <file>` undoes one. A saved document is cooked by the next `cargo xtask run`, so it carries over a relaunch.
+Each uses the command above. Save edits as you go: `git diff` is the session's record, and `git checkout <file>` undoes one. A saved document carries over a relaunch: the next `cargo xtask run` cooks it, and rebuilds what compiles it in (the camera, the cues, the screen effects, the day and the warrior's moves).
 
 To fight something that hardly fights back, for reviews 1 and 2: in [warrior.moves.ron](../content/combat/enemy/warrior.moves.ron), set `patience: (min: 3600, max: 3600)` and `health: 5000`, and save. It stands off, takes hits and swings about once a minute (3,600 ticks is the most a document allows). Undo it with `git checkout` before review 3.
 
@@ -134,10 +134,10 @@ Every row below ran against a running offscreen fight on 2026-11-02, except wher
 | Route | What you do | Time to see it | What says it worked |
 |---|---|---|---|
 | **Save** | Save the file | About 0.13 s, plus waiting for the next attempt | The log's `… reloaded`, then `the next attempt plays the new moves` for a move |
-| **Push** (a phone) | `cargo xtask link push <file>` | The tool's `(in N ms)`, 6–25 ms here, plus the next attempt | The tool's reply |
+| **Push** (a phone) | `cargo xtask link push <file>` | The tool's `(in N ms)`, 6–26 ms here, plus the next attempt | The tool's reply |
 | **Cook** | Save, then `cargo xtask content` | 0.8–1.5 s for the cook, then about 0.15 s | The log's `asset swapped in` |
 | **Restart** | Stop, and run the command again, which cooks | 1.3–2.4 s to a fight with no window, plus a cook's 1–2 s if anything changed | A new fight |
-| **Rebuild** | Stop, and run the command again, which builds | 3.6–4.2 s for a one-line edit under `--incremental`, of which 1.4–5.5 s is the build. Under `--release` the build alone is 76–152 s | A new fight |
+| **Rebuild** | Stop, and run the command again, which builds | 3.6–4.2 s for a one-line `run_speed` edit under `--incremental`, of which 2.1 s is the build. That build is 1.4–5.5 s by what's edited. Under `--release` it's 76–152 s | A new fight |
 
 A move in progress finishes on what it started with. A bad document changes nothing, and the log, or `link push`'s non-zero exit, names the move and the track. That includes a misspelt field (`cancles:` is refused by name, and doesn't compile as a move with no such track), a root key or knockback past 1,000 m, and a shape under 1 mm. A cook that started before your last save doesn't undo it: where the app has the file, what lands is the file over the cook's tables. `cargo xtask link status` lists each document's edits and what each fighter is playing, with its revision and windows.
 
@@ -159,7 +159,7 @@ A move in progress finishes on what it started with. A bad document changes noth
 | What a hit does to someone | `fighter`'s `reactions`, and those moves' own numbers (`flinch`, `stagger`, `knockdown`, `dazed`; for the warrior `stagger_light`, `stagger_heavy`, `knockdown`) |
 | The enemy is too quick, or too slow to come | `brain`'s `patience`, `rest`, `recover`, `spacing`, `pace` |
 | It picks the wrong attack | `brain`'s `attacks`: `weight`, `reach`, `against`, `recent` |
-| It's easy to interrupt | `armour: (from, to, threshold)` on the move. The swipe has none, and that's why mashing wins |
+| It's easy to interrupt | `armour: [(from: 0, to: 24, threshold: 20)]` on the move. The swipe has none, and that's why mashing wins |
 
 ### Everything else
 
@@ -184,7 +184,7 @@ A move in progress finishes on what it started with. A bad document changes noth
 | Run speed, acceleration, turning, jump | [profile.rs](../crates/sapphire_gameplay/src/controller/profile.rs), `ControllerProfile::default()`: `run_speed`, `walk_speed`, `acceleration`, `deceleration`, `turn_rate_degrees`, `jump_speed`, `gravity`. **Code, not data,** and the likeliest complaint of review 1. Moves every replay's checksum, so finish with `cargo xtask replay --update` | Rebuild |
 | Stick dead zones, look speed, bindings | [combat_bindings.ron](../crates/sapphire_controls/combat_bindings.ron): `DeadZone`, `Scale`. Compiled in | Rebuild |
 | Hair's swing and limits | `SpringTuning::ACTION` in [springs.rs](../crates/sapphire_anim/src/springs.rs): `root_inertia`, `anchor_inertia`, `swing_limit`, `bend_limit` | Rebuild |
-| HUD layout, colours, damage numbers | Constants in [hud.rs](../crates/sapphire_ui/src/hud.rs). `--hud-scale <n>` and `--hud-insets l,t,r,b` on the command | Rebuild |
+| HUD layout, colours, damage numbers | Constants in [hud.rs](../crates/sapphire_ui/src/hud.rs). `--hud live --hud-scale <n>` and `--hud live --hud-insets l,t,r,b` on the command | Rebuild |
 | Touch layout, stick radius | [touch.rs](../crates/sapphire_ui/src/touch.rs), [hud.rs](../crates/sapphire_ui/src/hud.rs) | Rebuild |
 
 ### Keeping what you tuned
@@ -201,7 +201,7 @@ With a fight running in another terminal, on the default port:
 cargo xtask editor content/combat/player/player.moves.ron
 ```
 
-It opens a window, and **nobody has opened it**. Drag a window's ends or body, or a cue, tick by tick. Space plays from the frame you're on, with the real simulation and a dummy. Cmd+S saves and pushes, and the side panel shows what it replaced or what the device refused. [development-iteration.md](development-iteration.md), "The timeline editor", has every key and the list of what no test can show. With no file named, or one that won't open, its list holds the repository's documents, and picking from that list with edits open asks first. If it won't open, the text file and a save do the same job. With no window: `cargo run -p sapphire_editor -- <file> --capture <png> --move light_1 --tick 8 --content target/content/desktop`.
+Its first build takes about a minute. It opens a window, and **nobody has opened it**. Drag a window's ends or body, or a cue, tick by tick. Space plays from the frame you're on, with the real simulation and a dummy. Cmd+S saves and pushes, and the side panel shows what it replaced or what the device refused. [development-iteration.md](development-iteration.md), "The timeline editor", has every key and the list of what no test can show. With no file named, or one that won't open, its list holds the repository's documents, and picking from that list with edits open asks first. If it won't open, the text file and a save do the same job. With no window: `cargo run -p sapphire_editor -- <file> --capture <png> --move light_1 --tick 8 --content target/content/desktop`.
 
 ### A recorded session joins the replay suite
 
@@ -297,7 +297,7 @@ On a `dev` build, after `adb forward tcp:7811 tcp:7811` (`iproxy 7811:7811` for 
 An emulator's touches arrive as exact coordinates in perfect time, so none of these has been judged:
 
 - **The layout and its sizes.** Whether the stick and buttons fall under real thumbs on a real phone, whether attack can be mashed without missing, whether the buttons are too close to dodge without looking, and what they look like at arm's length. They're I2's numbers, unchanged here.
-- **The stick's feel:** its 60-point radius, a thumb's resting drift and how far a thumb actually travels, and the 2 m/s walk against the 6 m/s run a full push gives.
+- **The stick's feel:** its 52-point radius, a thumb's resting drift and how far a thumb actually travels, and the 2 m/s walk against the 6 m/s run a full push gives.
 - **Latency to a thumb:** a press to a swing on the screen, in a 30 fps fight. The emulator's frame timing says nothing about a phone.
 - **The view's drag rate:** 0.006 radians a point, I2's number. A drag up looks up while a pad's stick up looks down.
 - **The pause's tap on a dense screen:** `tap_slop` is 10 window points, and Android's are pixels, about 3.3 dp on a 3× phone, so a tap may read as a drag, leaving Back as the only way out of a pause. The review read this and couldn't make it fail with no phone.
@@ -384,7 +384,7 @@ The test: every combat replay reaches its recorded checksum for the runner's arc
 
 **CI enforces it.** The `Replays` job in [ci.yml](../.github/workflows/ci.yml) runs `cargo --locked xtask --locked replay` on `ubuntu-24.04`, `windows-2025` and `macos-26` on every pull request, and it's required. Linux and Windows compare against one x86-64 file, which is what proves they agree, and macOS against the arm64 file. `Lint` holds the simulation's tree free of SDL, wgpu and the banned math.
 
-By hand, in about a minute from cold and 20 ms once built:
+By hand, in about a minute from cold and under 0.2 s once built:
 
 ```bash
 cargo xtask replay
@@ -430,7 +430,7 @@ Don't touch it: a fight on a script is a slightly harder load than a person's, s
 From `target/soak.log`:
 
 - **`frame stats`, every 2 s:** `fps`, `worst_ms`, `pacing=… N on time, N missed, N doubled`, `thermal`, `live_bytes`, and the stages `sim_ms`, `extract_ms`, `render_ms`.
-- **`a fight ended …`:** `checksum` is the same every fight, and the same as a Mac's: `--offscreen --tier mobile-low --arena --fight --script fight-back` logs the line too.
+- **`a fight ended …`:** `checksum` is the same every fight, and the same as a Mac's: `--offscreen --tier mobile-low --arena --fight --script fight-back` on a `dev` build logs the line too. A line with `fell_at=None` is a fight a quit cut short, so its checksum is wherever that fight had got to.
 - **`quality tier`:** `mobile-low`.
 - **Memory:** Android, `adb shell dumpsys meminfo dev.sapphire.sandbox | grep -E 'TOTAL|Graphics'` at 5 and at 25 minutes. iPhone: Xcode's memory gauge, if it's attached (not tried). Budget 1.6 GB (spec §3.1). On the Mac it's 350 MB.
 - **A low-memory warning, an audio `xruns` count above 0, anything at `WARN`:** record them.

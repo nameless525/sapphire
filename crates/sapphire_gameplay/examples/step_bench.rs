@@ -16,14 +16,19 @@
 //! less: a slowed swing stays live five times as many steps, and each of those sweeps. It reads the steps
 //! through `Simulation::stats`, as the overlay would, and adds its checksum cost, which a replay pays per
 //! tick only when asked.
+//!
+//! Its last row is a party's (M2 G7): three members and an opponent, on the same rhythm, with the party
+//! swapping every second and a half, so every swap takes one member's capsule and hurtboxes out of the
+//! world and puts another's in. Its worst step is a swap's, or a swap under the rest of the step's work.
 
 #![allow(clippy::print_stdout, reason = "a bench's output is what it's for")]
 
 use std::time::Duration;
 
+use sapphire_gameplay::replay::{PARTY_TUNING, party_document};
 use sapphire_gameplay::{
-    ActorActions, ActorId, ActorSpawn, Buttons, ControllerProfile, SimConfig, Simulation, Stick, TickActions,
-    WarpTarget,
+    ActorActions, ActorId, ActorSpawn, Buttons, ControllerProfile, PARTY_SLOTS, SimConfig, Simulation, Stick,
+    TickActions, WarpTarget,
 };
 use sapphire_math::Vec3;
 use sapphire_moves::{MoveSet, MoveSetDocument};
@@ -37,7 +42,8 @@ fn slice() -> MoveSet {
     MoveSetDocument::parse(&lasting).expect("parses").compile().expect("compiles")
 }
 
-fn world(actors: u32) -> (Simulation, Vec<ActorId>) {
+/// A simulation of this size on a floor, with a profile for everyone on it.
+fn on_floor(actors: u32) -> (Simulation, Option<sapphire_gameplay::ProfileId>) {
     let mut sim = Simulation::new(SimConfig { seed: 1, max_actors: actors, ..SimConfig::default() });
     let floor = StaticCollider {
         id: ColliderId(0),
@@ -48,6 +54,11 @@ fn world(actors: u32) -> (Simulation, Vec<ActorId>) {
     let world = PhysicsWorld::new(vec![floor], sim.body_capacity()).expect("a good world");
     sim.set_physics_world(world).expect("before any spawn");
     let controller = Some(sim.add_controller_profile(&ControllerProfile::default()).expect("a good profile"));
+    (sim, controller)
+}
+
+fn world(actors: u32) -> (Simulation, Vec<ActorId>) {
+    let (mut sim, controller) = on_floor(actors);
     let moves = Some(sim.add_move_set(slice()));
     let ids: Vec<ActorId> = (0..actors)
         .map(|index| {
@@ -61,6 +72,30 @@ fn world(actors: u32) -> (Simulation, Vec<ActorId>) {
         sim.set_warp_target(id, WarpTarget::Actor(next));
     }
     (sim, ids)
+}
+
+/// A party of three, none of whom falls, and an opponent a metre and a bit ahead of them: the party's
+/// input and the opponent's are all a tick has, as in a real fight.
+fn party_world() -> (Simulation, Vec<ActorId>) {
+    let (mut sim, controller) = on_floor(PARTY_SLOTS as u32 + 1);
+    let members: Vec<ActorId> = (0..PARTY_SLOTS)
+        .map(|member| {
+            let mut document = party_document(member).expect("parses");
+            document.fighter.as_mut().expect("a fighter").health = 4_000_000_000;
+            let moves = Some(sim.add_move_set(document.compile().expect("compiles")));
+            sim.spawn(ActorSpawn { moves, controller, ..ActorSpawn::default() }).expect("room")
+        })
+        .collect();
+    let position = Vec3::new(0.0, 0.0, 1.2);
+    let moves = Some(sim.add_move_set(slice()));
+    let yaw = std::f32::consts::PI;
+    let opponent = sim.spawn(ActorSpawn { position, yaw, moves, controller }).expect("room");
+    sim.form_party(&members, PARTY_TUNING).expect("a good party");
+    for &member in &members {
+        sim.set_warp_target(member, WarpTarget::Actor(opponent));
+    }
+    sim.set_warp_target(opponent, WarpTarget::Actor(members[0]));
+    (sim, vec![members[0], opponent])
 }
 
 /// One tick: the first actors a tick can hold press on their own rhythm, a string with a dodge and a
@@ -90,11 +125,39 @@ struct Round {
     work: (u64, u64, u64, u64, u64, u64),
 }
 
+/// A party's tick: [`actions`], and a swap press every second and a half.
+fn party_actions(tick: u64, ids: &[ActorId]) -> TickActions {
+    let mut input = actions(tick, ids);
+    if tick % 90 == 45 {
+        let was = input.get(ids[0]);
+        let pressed = ActorActions { buttons: was.buttons | Buttons::SWAP, ..was };
+        input.set(ids[0], pressed).expect("room");
+    }
+    input
+}
+
 fn round(actors: u32, steps: u64) -> Round {
-    let (mut sim, ids) = world(actors);
+    let (sim, ids) = world(actors);
+    run(sim, &ids, steps, actions)
+}
+
+fn party_round(steps: u64) -> Round {
+    let (sim, ids) = party_world();
+    let round = run(sim, &ids, steps, party_actions);
+    assert!(round.work.0 > steps / 1000, "or starting moves: {:?}", round.work);
+    round
+}
+
+fn run(
+    mut sim: Simulation,
+    ids: &[ActorId],
+    steps: u64,
+    actions: fn(u64, &[ActorId]) -> TickActions,
+) -> Round {
+    let actors = ids.len();
     let mut times = Vec::with_capacity(steps as usize);
     for tick in 0..steps {
-        let input = actions(tick, &ids);
+        let input = actions(tick, ids);
         // Everyone past the tick's few plays what the first does, as a brain would have them.
         if tick % 48 == 0 {
             for &id in ids.iter().skip(TickActions::CAPACITY) {
@@ -114,7 +177,9 @@ fn round(actors: u32, steps: u64) -> Round {
     assert_eq!((stats.allocations, stats.cues_dropped, stats.volumes_dropped), (0, 0, 0));
     assert!(stats.hits_applied > steps / 100, "a load that stops landing hits stops measuring: {stats:?}");
     // A duel's two dodge on a rhythm that misses each other's swings, and the crowds' don't.
-    if actors > 2 {
+    if sim.party().is_formed() {
+        assert!(stats.swaps > (steps / 200) as u32, "or swapping: {stats:?}");
+    } else if actors > 2 {
         assert!(stats.perfect_dodges > steps / 1000, "or firing perfect dodges: {stats:?}");
         assert!(stats.counters_fired > 0, "or starting counters: {stats:?}");
     }
@@ -139,21 +204,25 @@ fn main() {
     const SIZES: [u32; 3] = [2, 16, 64];
     const ROUNDS: usize = 7;
 
+    let keep = |best: &mut Option<Round>, this: Round| {
+        *best = Some(match best.take() {
+            None => this,
+            Some(other) => Round {
+                median: other.median.min(this.median),
+                p999: other.p999.min(this.p999),
+                worst: other.worst.min(this.worst),
+                checksum: other.checksum.min(this.checksum),
+                work: this.work,
+            },
+        });
+    };
     let mut best: [Option<Round>; SIZES.len()] = [const { None }; SIZES.len()];
+    let mut party = None;
     for _ in 0..ROUNDS {
         for (size, best) in SIZES.iter().zip(&mut best) {
-            let this = round(*size, steps);
-            *best = Some(match best.take() {
-                None => this,
-                Some(other) => Round {
-                    median: other.median.min(this.median),
-                    p999: other.p999.min(this.p999),
-                    worst: other.worst.min(this.worst),
-                    checksum: other.checksum.min(this.checksum),
-                    work: this.work,
-                },
-            });
+            keep(best, round(*size, steps));
         }
+        keep(&mut party, party_round(steps));
     }
 
     let stopwatch = Stopwatch::start();
@@ -166,10 +235,12 @@ fn main() {
     println!(
         "actors  median step  99.9% step  worst step  checksum  moves  cancels   cues   hits  perfect  counters"
     );
-    for (size, best) in SIZES.iter().zip(&best) {
+    let rows = SIZES.iter().map(|size| format!("{size:6}")).zip(&best);
+    let party_row = std::iter::once(("party4".to_owned(), &party));
+    for (size, best) in rows.chain(party_row) {
         let best = best.as_ref().expect("every size ran");
         println!(
-            "{size:6}  {:9.2} µs  {:7.2} µs  {:7.2} µs  {:5.2} µs  {:5}  {:7}  {:5}  {:5}  {:7}  {:8}",
+            "{size}  {:9.2} µs  {:7.2} µs  {:7.2} µs  {:5.2} µs  {:5}  {:7}  {:5}  {:5}  {:7}  {:8}",
             best.median.as_secs_f64() * 1e6,
             best.p999.as_secs_f64() * 1e6,
             best.worst.as_secs_f64() * 1e6,

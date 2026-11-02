@@ -18,6 +18,9 @@
 //   look       Right stick             arrow keys   motion, and wheel to zoom
 //   pause      Start                   Esc, P
 //
+// Swap names no slot: `TickActions` has one swap button and no room for more, so a press means the next
+// party member who's standing and rested (`sapphire_gameplay`'s `party` module).
+//
 // Back, however it comes (Android's, the pad's, Backspace), opens the pause, and leaves from it:
 // docs/m2-handoff.md has why. While paused, what opened it closes it, and so do the pad's East and a
 // tap on a phone.

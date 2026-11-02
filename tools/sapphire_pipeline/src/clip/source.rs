@@ -1,6 +1,6 @@
 //! A source's animations, imported once for all its clips: a file of 15 clips would otherwise parse
 //! and read its buffers 15 times, and the cook visits a source's parts one after another
-//! ([`ClipSources`] keeps the last).
+//! (`ClipSources` keeps the last).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -22,7 +22,7 @@ use crate::meta::ImportSettings;
 const REST_TOLERANCE: f32 = 1e-4;
 
 /// One file's animations and the rig they move.
-pub(crate) struct ClipSource {
+pub struct ClipSource {
     /// The file's own joints, in its own order. Empty for a mesh of morph targets alone.
     pub joints: Vec<Joint>,
     /// The default weight of each of the mesh's morph targets.

@@ -132,7 +132,7 @@ impl Character {
         let mut springs = SpringBones::new(rig, &pose).expect("it has springs");
         springs.set_substeps(substeps);
         // VRM's own, and the most these tests can ask of them.
-        springs.set_root_inertia(1.0);
+        springs.set_tuning(SpringTuning::VRM);
         Self { pose, springs, world: Affine3A::IDENTITY }
     }
 
@@ -389,6 +389,98 @@ fn a_reset_settles_from_the_pose_with_no_whip() {
     assert!(most > 0.3, "without one it is flung right away: {most} m off");
 }
 
+/// A body that bobs a long way fast and sways as it does, as a run's does.
+fn a_bob(ticks: f64) -> Posed {
+    let phase = ticks as f32 * std::f32::consts::TAU / 24.0;
+    Posed { root: Vec3::new(phase.cos() * 0.1, phase.sin() * 0.15, 0.0), ..Posed::default() }
+}
+
+/// The worst any joint of the strand comes off the pose, which hangs it straight down, and bends from
+/// the joint above it.
+fn worst_shape(tuning: SpringTuning, substeps: Substeps, motion: Motion) -> (f32, f32) {
+    let mut character = Character::new(&hair(), substeps);
+    character.springs.set_tuning(tuning);
+    let (mut swing, mut bend) = (0.0_f32, 0.0_f32);
+    for tick in 0..240 {
+        character.frame(motion, f64::from(tick));
+        let mut above = None;
+        for pair in STRAND.windows(2) {
+            let ours = (character.world_of(usize::from(pair[1])) - character.world_of(usize::from(pair[0])))
+                .normalize();
+            swing = swing.max(ours.angle_between(Vec3::NEG_Y));
+            if let Some(above) = above {
+                bend = bend.max(ours.angle_between(above));
+            }
+            above = Some(ours);
+        }
+    }
+    (swing, bend)
+}
+
+/// VRM's step lets a joint go anywhere. Tuned, none leaves its cones at any sub-step count.
+#[test]
+fn the_limits_keep_a_strand_in_shape() {
+    let (free_swing, free_bend) = worst_shape(SpringTuning::VRM, Substeps::Two, a_bob);
+    assert!(free_swing > 1.5 && free_bend > 1.0, "VRM's step: {free_swing} and {free_bend} rad");
+    let tuning = SpringTuning { root_inertia: 1.0, anchor_inertia: 1.0, ..SpringTuning::ACTION };
+    for substeps in [Substeps::One, Substeps::Two, Substeps::Four] {
+        let (swing, bend) = worst_shape(tuning, substeps, a_bob);
+        assert!(swing <= tuning.swing_limit + 0.02, "{substeps:?}: {swing} rad off the pose");
+        assert!(bend <= tuning.bend_limit + 0.02, "{substeps:?}: bends {bend} rad");
+    }
+}
+
+/// The share of the motion of the joint a chain hangs from that its tails feel: with none it moves as
+/// a rigid part of that joint, with all of it as VRM has it, and between the two it swings between them.
+#[test]
+fn the_anchor_inertia_is_the_share_of_the_anchors_motion_chains_feel() {
+    fn chest_bob(ticks: f64) -> Posed {
+        let turn = (ticks as f32 * std::f32::consts::TAU / 24.0).sin() * 0.6;
+        Posed { chest: Quat::from_rotation_x(turn), ..Posed::default() }
+    }
+    let most = |share: f32| {
+        // No gravity, whose droop is off the pose whatever carries the chain.
+        let mut character = Character::new(&rig(vec![strand(0.5, 0.4, 0.0)]), Substeps::Two);
+        character.springs.set_tuning(SpringTuning { anchor_inertia: share, ..SpringTuning::VRM });
+        let mut most = 0.0_f32;
+        for tick in 0..120 {
+            character.frame(chest_bob, f64::from(tick));
+            most = most.max(character.world_of(TIP).distance(character.posed_tip()));
+        }
+        most
+    };
+    let (none, some, all) = (most(0.0), most(SpringTuning::ACTION.anchor_inertia), most(1.0));
+    assert!(none < 1e-3, "with none it is carried with the pose: {none} m off");
+    assert!(some > 0.03, "with some it swings: {some} m");
+    assert!(all > some * 1.2, "and with all it swings more: {all} m against {some}");
+}
+
+/// The tuned step holds what the clock promises: 30, 60 and 120 Hz draw about the same hair.
+#[test]
+fn the_tuning_keeps_to_the_rates() {
+    for (motion, at_30, at_60) in
+        [(sway as Motion, 0.0025, 0.001), (strike, 0.025, 0.008), (a_bob, 0.025, 0.01)]
+    {
+        let path = |hz| {
+            let mut character = Character::new(&hair(), Substeps::Two);
+            character.springs.set_tuning(SpringTuning::ACTION);
+            let mut path = Vec::new();
+            for frame in 0..=3 * hz {
+                let ticks = f64::from(frame) * f64::from(SPRING_TICK_HZ) / f64::from(hz);
+                character.frame(motion, ticks);
+                if frame % (hz / 30) == 0 {
+                    path.push(character.world_of(TIP));
+                }
+            }
+            path
+        };
+        let reference = path(120);
+        let (thirty, sixty) = (furthest_apart(&path(30), &reference), furthest_apart(&path(60), &reference));
+        assert!(thirty <= at_30, "30 Hz is {thirty} m from 120");
+        assert!(sixty <= at_60, "60 Hz is {sixty} m from 120");
+    }
+}
+
 /// The root inertia is the share of the character's own motion its chains feel. Told none, its travel
 /// and turning at any speed leave hair as the pose has it. Told all, as VRM has it, a lunge flings it.
 #[test]
@@ -404,7 +496,7 @@ fn the_root_inertia_is_the_share_of_the_characters_motion_chains_feel() {
     for motion in [lunge as Motion, turn] {
         let most = |share: f32| {
             let mut character = Character::new(&hair(), Substeps::Two);
-            character.springs.set_root_inertia(share);
+            character.springs.set_tuning(SpringTuning { root_inertia: share, ..SpringTuning::VRM });
             let mut most = 0.0_f32;
             for tick in 0..60 {
                 character.frame(motion, f64::from(tick));
@@ -412,7 +504,7 @@ fn the_root_inertia_is_the_share_of_the_characters_motion_chains_feel() {
             }
             most
         };
-        let (none, some, all) = (most(0.0), most(DEFAULT_ROOT_INERTIA), most(1.0));
+        let (none, some, all) = (most(0.0), most(SpringTuning::ACTION.root_inertia), most(1.0));
         assert!(none < 5e-4, "with none it hangs as the pose has it: {none} m off");
         assert!(some > 0.03, "with some it swings: {some} m");
         assert!(all > 2.0 * some, "and with all it swings much more: {all} m against {some}");
@@ -616,6 +708,39 @@ fn a_fast_pass_stays_out(shape: ColliderShape, reach: f32) {
             }
         }
         assert!(furthest > 0.05, "{quality:?}: pushed along, to {furthest} m at most");
+    }
+}
+
+/// The limits have the last word: an arm sweeping across a strand with no room left goes through it,
+/// rather than flinging it past its limit, and the strand comes back when the arm has gone.
+#[test]
+fn the_limits_have_the_last_word_over_a_collider() {
+    let rig = collided(ColliderShape::Sphere { offset: [0.0; 3], radius: 0.06 });
+    let tuning = SpringTuning { root_inertia: 1.0, anchor_inertia: 1.0, ..SpringTuning::ACTION };
+    for substeps in [Substeps::One, Substeps::Two, Substeps::Four] {
+        let mut character = Character::new(&rig, substeps);
+        character.springs.set_tuning(tuning);
+        let mut last = None;
+        for tick in 0..180 {
+            character.frame(fast_pass, f64::from(tick));
+            for pair in STRAND.windows(2).take(3) {
+                let bone =
+                    character.world_of(usize::from(pair[1])) - character.world_of(usize::from(pair[0]));
+                let swing = bone.normalize().angle_between(Vec3::NEG_Y);
+                assert!(
+                    swing <= tuning.swing_limit + 0.02,
+                    "{substeps:?} at {tick}: {swing} rad off the pose"
+                );
+            }
+            let tip = character.world_of(TIP);
+            if let Some(last) = last {
+                let moved: Vec3 = tip - last;
+                assert!(moved.length() < 0.2, "{substeps:?} at {tick}: thrown {} m", moved.length());
+            }
+            last = Some(tip);
+        }
+        let off = character.world_of(TIP).distance(character.posed_tip());
+        assert!(off < 0.05, "{substeps:?}: {off} m off the pose once the arm has gone");
     }
 }
 

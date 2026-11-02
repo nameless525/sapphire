@@ -37,15 +37,31 @@
 //! precision. A chain with a `center` joint is carried along with that joint instead, as VRM says,
 //! so moving that joint doesn't swing the chain.
 //!
-//! # The character's own motion
+//! # Tuning
 //!
-//! VRM's chains feel all of a character's travel through the world. Combat doesn't suit that: the
-//! strike's lunge covers 35 cm in six ticks, and at that share the character's long hair went up into
-//! curls round its head. With none, the character's travel leaves hair as it was, so only the pose
-//! swings it, and a lunge shows no lag at all. A chain feels
-//! [`DEFAULT_ROOT_INERTIA`] of the character's travel and turning, which reads as lag and a swing;
-//! [`SpringBones::set_root_inertia`] sets another, and 1 is what VRM says. What the pose does always
-//! counts whole, since that is the motion a clip's author drew.
+//! VRM's parameters are tuned on a model at rest and in gentle motion, and a character in a fight
+//! throws them far past that. On the run a head moves at up to 4.7 m/s, about 8 cm a tick, where a
+//! joint's stiffness of 0.5 pulls its tail 8 mm a tick. Each joint aims only relative to its parent,
+//! so what it doesn't make up carries down the chain, and nothing limits it: the character's six-joint
+//! strands came 174° off the pose, with 120° between one joint and the next, which reads as rope flung
+//! round the head. It isn't a resonance, which would grow, since it is there in full from the first
+//! stride, nor the sub-steps' rates, since each count does it. [`SpringTuning`] holds what answers it,
+//! and [`SpringTuning::VRM`] turns all of it off:
+//!
+//! - **`root_inertia`:** the share of the character's travel and turning through the world that chains
+//!   feel. At VRM's 1 the strike's 35 cm lunge sends the long hair into curls. At 0 a lunge shows no lag.
+//! - **`anchor_inertia`:** the same for the joint a chain hangs from: the rest of that joint's motion
+//!   carries the chain's tails along, as a `center` joint does. It takes the drive down without
+//!   taking the swing out.
+//! - **`swing_limit`:** the most a joint turns from where the animated pose points it, so a strand stays
+//!   near where the clip's author left it however hard it is driven.
+//! - **`bend_limit`:** the most a joint bends from where its parent's turn leaves it, so a strand turns
+//!   in a curve and never curls. These are plain cones, which take a square root only where a joint
+//!   leaves one, and hold at any sub-step count.
+//!
+//! [`SpringTuning::ACTION`] is the one a new [`SpringBones`] takes, tuned by eye on the character's
+//! run, walk, idle, hit, dodge and strike against the reference games, where hair lags and swings and
+//! keeps its shape.
 //!
 //! # What the parameters mean
 //!
@@ -74,10 +90,15 @@
 //!
 //! A chain tests its colliders deepest joint first, so the body comes last. A tail caught between two
 //! can't clear both, and the last wins: hair squeezed by an arm goes over the arm rather than into the
-//! chest. Alone against a collider a tail keeps out at any speed; between two the character's goes
-//! under 3 mm in, up to seven times the strike's speed, and under 4 cm with all the character's motion
-//! (the pipeline's `character_springs` tests, which run the real character). A later joint of a chain
-//! hangs from the one before it, so a collider coming between the two has no answer a bone can give.
+//! chest. A later joint of a chain hangs from the one before it, so a collider coming between the two
+//! has no answer a bone can give.
+//!
+//! The tuning's limits have the last word over colliders: a collider pushed tails 174° off the pose,
+//! and hair that keeps its shape reads better than hair that keeps out of an arm. So under them an arm
+//! can pass through a strand that has no more room to move, and the strand comes back when the arm has
+//! gone, without a jump across the collider's axis (`overrun_give`). With the limits off, a tail alone
+//! against a collider keeps out at any speed. The pipeline's `character_springs` tests hold both on the
+//! real character.
 //!
 //! # Teleports, cuts and sleeping
 //!
@@ -121,8 +142,6 @@ const MAX_SUBSTEPS_PER_FRAME: i64 = 16;
 /// standing at the limit doesn't flip between the two.
 const WAKE_MARGIN: f32 = 0.9;
 
-/// The share of a character's motion through the world its chains feel, unless told otherwise.
-pub const DEFAULT_ROOT_INERTIA: f32 = 0.25;
 /// How many times a tail is moved off a collider its bone won't let it leave directly.
 const CLEARING_PASSES: u32 = 4;
 /// Marks a [`Step`] that follows its parent without swinging, and a swing with no center joint.
@@ -176,6 +195,71 @@ impl SpringQuality {
     #[must_use]
     pub fn in_range(&self, distance: f32, running: bool) -> bool {
         distance <= if running { self.distance } else { self.distance * WAKE_MARGIN }
+    }
+}
+
+/// How a character's chains take a game's motion, on top of what VRM's parameters say. Off
+/// ([`Self::VRM`]) it is VRM's step exactly. See the `springs` module's docs.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SpringTuning {
+    /// The share of the character's travel and turning through the world its chains feel, 0 to 1.
+    pub root_inertia: f32,
+    /// The share of the motion of the joint a chain hangs from that its tails feel, 0 to 1. The rest
+    /// carries them along with that joint. A chain with a `center` joint follows that instead.
+    pub anchor_inertia: f32,
+    /// The most a joint turns from where the animated pose points it, in radians.
+    pub swing_limit: f32,
+    /// The most a joint bends from where its parent's turn leaves it, in radians: what keeps a chain
+    /// from curling.
+    pub bend_limit: f32,
+}
+
+impl SpringTuning {
+    /// VRM's step as it is written, with no limits.
+    pub const VRM: Self = Self {
+        root_inertia: 1.0,
+        anchor_inertia: 1.0,
+        swing_limit: std::f32::consts::PI,
+        bend_limit: std::f32::consts::PI,
+    };
+    /// For a character in a fight, whose hair lags and swings and keeps its shape.
+    pub const ACTION: Self = Self {
+        root_inertia: 0.25,
+        anchor_inertia: 0.4,
+        swing_limit: 50.0 * std::f32::consts::PI / 180.0,
+        bend_limit: 20.0 * std::f32::consts::PI / 180.0,
+    };
+}
+
+impl SpringTuning {
+    fn is_limited(&self) -> bool {
+        self.swing_limit < std::f32::consts::PI || self.bend_limit < std::f32::consts::PI
+    }
+}
+
+/// A cone around a direction, by its half angle's cosine and sine.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Cone {
+    cos: f32,
+    sin: f32,
+}
+
+impl Cone {
+    fn new(angle: f32) -> Self {
+        let (sin, cos) = angle.clamp(0.0, std::f32::consts::PI).sin_cos();
+        // At a half turn nothing is outside it, rounding included.
+        if angle >= std::f32::consts::PI { Self { cos: -2.0, sin } } else { Self { cos, sin } }
+    }
+
+    /// `aim` as it is, or the nearest direction in the cone around `center`: both unit vectors.
+    #[inline]
+    fn hold(self, aim: Vec3, center: Vec3) -> Vec3 {
+        let cos = aim.dot(center);
+        if cos >= self.cos {
+            return aim;
+        }
+        let side = (aim - center * cos).try_normalize().unwrap_or_else(|| center.any_orthonormal_vector());
+        center * self.cos + side * self.sin
     }
 }
 
@@ -301,8 +385,27 @@ struct Swing {
     drag: f32,
     /// Its chain's colliders in [`SpringBones::collider_lists`].
     colliders: (u32, u32),
-    /// Its chain's entry in [`SpringBones::centers`], or [`NONE`].
+    /// What carries it: its chain's entry in [`SpringBones::centers`].
     center: u16,
+}
+
+/// A joint that carries chains along.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Center {
+    /// Its slot.
+    slot: u16,
+    /// Whether it is a chain's `center`, which carries it whole, rather than what it hangs from.
+    whole: bool,
+    /// The share of its motion it carries them by.
+    carried: f32,
+}
+
+/// What a center's motion over a sub-step does to the tails it carries.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Carry {
+    turn: Quat,
+    from: Vec3,
+    to: Vec3,
 }
 
 /// What a joint's parameters come to at the current sub-step's length. See the module docs.
@@ -406,6 +509,15 @@ fn contact(from: Vec3, to: Vec3, was: &Placed, now: &Placed, hit_radius: f32) ->
     Some(nearest + out.try_normalize().or_else(|| side.try_normalize()).unwrap_or(Vec3::Y) * reach)
 }
 
+/// How hard a collider pushes a tail that began a sub-step `share` of the way out from its axis to its
+/// reach: fully near the surface, and not at all from half way in. A limit can leave a tail inside a
+/// collider, and the way out flips as the collider's axis crosses it, which would throw the tail across
+/// in a tick. So a collider that has overrun a tail lets it be, and takes it up again as it leaves.
+fn overrun_give(share: f32) -> f32 {
+    let along = ((share - 0.5) * 2.0).clamp(0.0, 1.0);
+    along * along * (3.0 - 2.0 * along)
+}
+
 /// The point `length` from `head` toward `out`, or, where `placed` covers that, the nearest such
 /// point that it doesn't: a bone can only clear a collider that has moved a long way by swinging
 /// around it, on `out`'s side. With `head` so deep in that no point clears it, the furthest out.
@@ -454,8 +566,8 @@ pub struct SpringBones {
     colliders: Vec<Collider>,
     /// Every chain's colliders, as indices into [`Self::colliders`].
     collider_lists: Vec<u16>,
-    /// The center joints' slots.
-    centers: Vec<u16>,
+    /// The joints that carry chains.
+    centers: Vec<Center>,
 
     substeps: Substeps,
     rates: Vec<Rate>,
@@ -472,15 +584,21 @@ pub struct SpringBones {
     anchors_now: Vec<Frame>,
     /// Every slot, at the sub-step running.
     slots: Vec<Frame>,
+    /// Each step's turn at the sub-step running, as the animated pose has it, with no swing above it.
+    posed: Vec<Quat>,
     colliders_was: Vec<Placed>,
     colliders_now: Vec<Placed>,
     /// Each center at the last sub-step.
     centers_was: Vec<Frame>,
     /// What a center's motion over this sub-step does to the tails carried with it.
-    center_turns: Vec<(Quat, Vec3, Vec3)>,
+    center_turns: Vec<Carry>,
 
-    /// The share of the character's own motion its chains feel ([`Self::set_root_inertia`]).
-    root_inertia: f32,
+    /// How its chains take the character's motion ([`Self::set_tuning`]).
+    tuning: SpringTuning,
+    swing_cone: Cone,
+    bend_cone: Cone,
+    /// Whether either cone can hold a joint back.
+    limited: bool,
     /// The world transform as of the last update.
     world: Affine3A,
     /// The world's rotation as of the last update.
@@ -515,8 +633,8 @@ impl SpringBones {
 
         let mut swings: Vec<Swing> = Vec::new();
         let mut collider_lists: Vec<u16> = Vec::new();
-        let mut centers: Vec<u16> = Vec::new();
-        let mut center_joints: Vec<u16> = Vec::new();
+        let mut centers: Vec<Center> = Vec::new();
+        let mut center_joints: Vec<(u16, bool)> = Vec::new();
         for spring in rig.springs.iter() {
             let first = collider_lists.len();
             for group in spring.collider_groups.iter() {
@@ -535,8 +653,8 @@ impl SpringBones {
             });
             let colliders = (first as u32, collider_lists.len() as u32);
             let center = spring.center.as_ref().map_or(NONE, |center| {
-                let center = center.to_native();
-                let index = center_joints.iter().position(|&joint| joint == center).unwrap_or_else(|| {
+                let center = (center.to_native(), true);
+                let index = center_joints.iter().position(|&known| known == center).unwrap_or_else(|| {
                     center_joints.push(center);
                     center_joints.len() - 1
                 });
@@ -606,6 +724,26 @@ impl SpringBones {
                 walked[parent] = true;
             }
         }
+        // A chain with no center of its own is carried by what it hangs from.
+        for swing in &mut swings {
+            if swing.center != NONE {
+                continue;
+            }
+            let mut joint = usize::from(swing.joint);
+            let hangs_from = loop {
+                match parent_of(joint) {
+                    Some(parent) if walked[parent] => joint = parent,
+                    Some(parent) => break parent as u16,
+                    None => break NO_PARENT,
+                }
+            };
+            let carrier = (hangs_from, false);
+            let index = center_joints.iter().position(|&known| known == carrier).unwrap_or_else(|| {
+                center_joints.push(carrier);
+                center_joints.len() - 1
+            });
+            swing.center = index as u16;
+        }
 
         let mut anchors: Vec<u16> = Vec::new();
         let anchor = |anchors: &mut Vec<u16>, joint: u16| -> u16 {
@@ -636,9 +774,10 @@ impl SpringBones {
                 }
             })
             .collect();
-        for joint in center_joints {
+        let tuning = SpringTuning::ACTION;
+        for (joint, whole) in center_joints {
             let slot = anchor(&mut anchors, joint);
-            centers.push(slot);
+            centers.push(Center { slot, whole, carried: carried(whole, &tuning) });
         }
         // The walk's own parents last, so a step's slot is the anchors' count and its place: an anchor
         // is a joint as the pose places it, so one that is also walked is read from the pose.
@@ -668,7 +807,8 @@ impl SpringBones {
         let substeps = SpringQuality::DESKTOP.substeps;
         let (swing_count, anchor_count, collider_count) = (swings.len(), anchors.len(), colliders.len());
         let center_count = centers.len();
-        let slot_count = anchor_count + steps.len();
+        let step_count = steps.len();
+        let slot_count = anchor_count + step_count;
         Some(Self {
             rates: swings.iter().map(|swing| Rate::new(swing.drag, substeps)).collect(),
             anchors,
@@ -685,11 +825,18 @@ impl SpringBones {
             anchors_was: vec![Frame::IDENTITY; anchor_count],
             anchors_now: vec![Frame::IDENTITY; anchor_count],
             slots: vec![Frame::IDENTITY; slot_count],
+            posed: vec![Quat::IDENTITY; step_count],
             colliders_was: vec![Placed::default(); collider_count],
             colliders_now: vec![Placed::default(); collider_count],
             centers_was: vec![Frame::IDENTITY; center_count],
-            center_turns: vec![(Quat::IDENTITY, Vec3::ZERO, Vec3::ZERO); center_count],
-            root_inertia: DEFAULT_ROOT_INERTIA,
+            center_turns: vec![
+                Carry { turn: Quat::IDENTITY, from: Vec3::ZERO, to: Vec3::ZERO };
+                center_count
+            ],
+            swing_cone: Cone::new(tuning.swing_limit),
+            bend_cone: Cone::new(tuning.bend_limit),
+            limited: tuning.is_limited(),
+            tuning,
             world: Affine3A::IDENTITY,
             world_rotation: Quat::IDENTITY,
             origin: Vec3::ZERO,
@@ -739,11 +886,20 @@ impl SpringBones {
         })
     }
 
-    /// Sets the share of the character's motion through the world, its travel and its turning, that its
-    /// chains feel, 0 to 1. 1 is VRM's meaning, and [`DEFAULT_ROOT_INERTIA`] the one combat reads well
-    /// at; the `springs` module's docs say why.
-    pub fn set_root_inertia(&mut self, share: f32) {
-        self.root_inertia = share.clamp(0.0, 1.0);
+    /// Takes `tuning` from now on. [`SpringTuning::VRM`] is VRM's step as it is written.
+    pub fn set_tuning(&mut self, tuning: SpringTuning) {
+        let tuning = SpringTuning {
+            root_inertia: tuning.root_inertia.clamp(0.0, 1.0),
+            anchor_inertia: tuning.anchor_inertia.clamp(0.0, 1.0),
+            ..tuning
+        };
+        self.tuning = tuning;
+        self.swing_cone = Cone::new(tuning.swing_limit);
+        self.bend_cone = Cone::new(tuning.bend_limit);
+        self.limited = tuning.is_limited();
+        for center in &mut self.centers {
+            center.carried = carried(center.whole, &tuning);
+        }
     }
 
     /// Runs `substeps` from now on. A tail's speed is kept across the change, and its place.
@@ -789,7 +945,7 @@ impl SpringBones {
         self.colliders_now.clone_from(&other.colliders_now);
         self.colliders_was.clone_from(&other.colliders_was);
         self.centers_was.clone_from(&other.centers_was);
-        self.root_inertia = other.root_inertia;
+        self.set_tuning(other.tuning);
         self.world = other.world;
         self.world_rotation = other.world_rotation;
         self.origin = other.origin;
@@ -893,12 +1049,12 @@ impl SpringBones {
         let world = Frame::of(&frame.world_from_model);
         if world_moved {
             // Everything from before keeps to the world, but for what the chains are carried with.
-            let shift = (world.position - self.origin) * self.root_inertia;
+            let shift = (world.position - self.origin) * self.tuning.root_inertia;
             let carried = if world.rotation == self.world_rotation {
                 Quat::IDENTITY
             } else {
                 let turn = world.rotation * self.world_rotation.inverse();
-                Quat::IDENTITY.lerp(turn, 1.0 - self.root_inertia)
+                Quat::IDENTITY.lerp(turn, 1.0 - self.tuning.root_inertia)
             };
             let carry = |point: Vec3| carried * (point - shift);
             for tail in &mut self.tails {
@@ -941,8 +1097,8 @@ impl SpringBones {
         self.slots[..anchors].copy_from_slice(&self.anchors_now);
         place_colliders(&self.colliders, &self.slots, &mut self.colliders_now);
         self.colliders_was.copy_from_slice(&self.colliders_now);
-        for (was, &slot) in self.centers_was.iter_mut().zip(&self.centers) {
-            *was = self.slots[usize::from(slot)];
+        for (was, center) in self.centers_was.iter_mut().zip(&self.centers) {
+            *was = self.slots[usize::from(center.slot)];
         }
         for (index, step) in self.steps.iter().enumerate() {
             let parent = self.slots[usize::from(step.parent)];
@@ -978,10 +1134,20 @@ impl SpringBones {
         }
         std::mem::swap(&mut self.colliders_was, &mut self.colliders_now);
         place_colliders(&self.colliders, &self.slots, &mut self.colliders_now);
-        for ((was, turn), &slot) in self.centers_was.iter_mut().zip(&mut self.center_turns).zip(&self.centers)
+        for ((was, carry), center) in
+            self.centers_was.iter_mut().zip(&mut self.center_turns).zip(&self.centers)
         {
-            let now = self.slots[usize::from(slot)];
-            *turn = ((now.rotation * was.rotation.inverse()).normalize(), was.position, now.position);
+            let now = self.slots[usize::from(center.slot)];
+            let turn = (now.rotation * was.rotation.inverse()).normalize();
+            *carry = if center.carried >= 1.0 {
+                Carry { turn, from: was.position, to: now.position }
+            } else {
+                Carry {
+                    turn: Quat::IDENTITY.lerp(turn, center.carried),
+                    from: was.position,
+                    to: was.position.lerp(now.position, center.carried),
+                }
+            };
             *was = now;
         }
 
@@ -992,20 +1158,27 @@ impl SpringBones {
             let local = &locals[usize::from(step.joint)];
             let position = parent.position + parent.rotation * (local.translation * parent.scale);
             let scale = parent.scale * local.scale.x;
+            let parent_slot = usize::from(step.parent);
+            let parent_posed =
+                if parent_slot < anchors { parent.rotation } else { self.posed[parent_slot - anchors] };
             let rotation = if step.swing == NONE {
+                self.posed[index] = parent_posed * local.rotation;
                 parent.rotation * local.rotation
             } else {
                 let at = usize::from(step.swing);
                 let swing = &self.swings[at];
                 let Rate { keep, force, carry } = self.rates[at];
                 let mut tail = self.tails[at];
-                if swing.center != NONE {
-                    let (turn, from, to) = self.center_turns[usize::from(swing.center)];
+                let center = usize::from(swing.center);
+                if self.centers[center].carried > 0.0 {
+                    let Carry { turn, from, to } = self.center_turns[center];
                     tail.now = to + turn * (tail.now - from);
                     tail.before = to + turn * (tail.before - from);
                 }
                 let pose_rotation = parent.rotation * self.targets[at];
                 let toward_pose = pose_rotation * swing.tail;
+                let posed = parent_posed * self.targets[at];
+                self.posed[index] = posed;
                 let length = swing.length * scale;
                 let moved = tail.now
                     + (tail.now - tail.before) * keep
@@ -1018,11 +1191,24 @@ impl SpringBones {
                     let now = &self.colliders_now[usize::from(collider)];
                     if let Some(out) = contact(tail.now, next, was, now, hit_radius) {
                         let reach = now.radius + hit_radius;
+                        let (out, reach) = if self.limited {
+                            // Likewise a bone whose own head it has overrun: nothing it can do reads.
+                            let began = tail.now.distance(was.nearest(tail.now));
+                            let head = position.distance(now.nearest(position));
+                            let give = overrun_give(began / reach) * overrun_give(head / reach);
+                            (next.lerp(out, give), began + (reach - began).max(0.0) * give)
+                        } else {
+                            (out, reach)
+                        };
                         next = clear_of(position, length, out, now, reach, toward_pose);
                     }
                 }
-                fastest = fastest.max((next - tail.now).length_squared());
+                // The limits have the last word: hair that keeps its shape reads better than hair that
+                // keeps out of an arm. The swing first and the bend last, since a curl is what shows most.
                 let aim = (next - position).try_normalize().unwrap_or(toward_pose);
+                let aim = self.bend_cone.hold(self.swing_cone.hold(aim, posed * swing.tail), toward_pose);
+                let next = position + aim * length;
+                fastest = fastest.max((next - tail.now).length_squared());
                 let rotation = Quat::from_rotation_arc(toward_pose, aim) * pose_rotation;
                 let turned = (parent.rotation.inverse() * rotation).normalize();
                 // What the bone and the colliders did counts toward its motion by this sub-step's share.
@@ -1063,6 +1249,11 @@ impl SpringBones {
         }
         pose.finish();
     }
+}
+
+/// The share of a center's motion the chains it carries take.
+fn carried(whole: bool, tuning: &SpringTuning) -> f32 {
+    if whole { 1.0 } else { 1.0 - tuning.anchor_inertia }
 }
 
 /// Places every collider at its joint's slot.

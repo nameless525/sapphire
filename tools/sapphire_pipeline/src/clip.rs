@@ -673,7 +673,7 @@ pub fn cook(sampled: &SampledClip, target: &ClipTarget<'_>, error: &ReductionErr
 }
 
 pub mod retarget;
-pub(crate) mod source;
+pub mod source;
 
 #[cfg(test)]
 pub(crate) mod tests;

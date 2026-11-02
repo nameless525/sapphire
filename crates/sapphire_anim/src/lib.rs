@@ -57,8 +57,8 @@ pub use model::{Bind, local_to_model, palette};
 pub use sample::{overlay, overlay_weights, rest_pose, root_motion, sample};
 pub use sapphire_math::Transform;
 pub use springs::{
-    DEFAULT_ROOT_INERTIA, SPRING_TICK_HZ, SpringBones, SpringCollider, SpringFrame, SpringQuality,
-    SpringTail, SpringWork, Substeps,
+    SPRING_TICK_HZ, SpringBones, SpringCollider, SpringFrame, SpringQuality, SpringTail, SpringTuning,
+    SpringWork, Substeps,
 };
 
 pub use sapphire_assets::clip::{

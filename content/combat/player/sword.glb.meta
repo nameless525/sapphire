@@ -1,0 +1,16 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "c4a07ad2-6d0e-4f3c-9b21-7e5a1f0c8d34",
+        importer: Gltf((
+            outline: (
+                weld_tolerance: 0.0001,
+            ),
+            position_format: Unorm16,
+            materials: {
+                "sword": "2f9b6e11-83c4-4a7d-b5e0-1d7c94ab6f02",
+            },
+        )),
+    ),
+)

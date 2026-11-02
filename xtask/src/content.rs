@@ -202,6 +202,10 @@ const COMBAT_SOURCES: &[&str] = &[
     "combat/enemy/warrior_control.png",
     "combat/enemy/warrior_layers.png",
     "combat/enemy/warrior_matcap.png",
+    "combat/player/sword.glb",
+    "combat/player/sword_palette.png",
+    "combat/player/sword_control.png",
+    "combat/player/sword_layers.png",
 ];
 
 /// A pipeline command that generates sources, the directory it writes (relative to

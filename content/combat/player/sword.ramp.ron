@@ -1,0 +1,73 @@
+// The sword's shadow ramps (M2 O3): every row multiplies the albedo on the shadow side, from the
+// deepest shadow (0) to the terminator (1), in the part order of
+// `sapphire_pipeline::combat::sword::Part`. Steel falls into a clear cool blue, so a blade in shade
+// stays pale against the shorts and the town; gold keeps its warmth. Night rows lean further blue.
+(
+    type: "sapphire::pipeline::RampMap",
+    version: 1,
+    data: (
+        interpolation: OkLab,
+        materials: [
+            (
+                name: "steel",
+                day: (
+                    stops: [
+                        (at: 0.0, color: "#7f90bc"),
+                        (at: 1.0, color: "#a8b4d4"),
+                    ],
+                ),
+                night: Some((
+                    stops: [
+                        (at: 0.0, color: "#6a7cb4"),
+                        (at: 1.0, color: "#94a2cc"),
+                    ],
+                )),
+            ),
+            (
+                name: "inlay",
+                day: (
+                    stops: [
+                        (at: 0.0, color: "#5a6aa0"),
+                        (at: 1.0, color: "#7c8ab8"),
+                    ],
+                ),
+                night: Some((
+                    stops: [
+                        (at: 0.0, color: "#5060a0"),
+                        (at: 1.0, color: "#7482b8"),
+                    ],
+                )),
+            ),
+            (
+                name: "gold",
+                day: (
+                    stops: [
+                        (at: 0.0, color: "#a06a58"),
+                        (at: 1.0, color: "#c49470"),
+                    ],
+                ),
+                night: Some((
+                    stops: [
+                        (at: 0.0, color: "#74608c"),
+                        (at: 1.0, color: "#9c84a0"),
+                    ],
+                )),
+            ),
+            (
+                name: "wrap",
+                day: (
+                    stops: [
+                        (at: 0.0, color: "#7c6490"),
+                        (at: 1.0, color: "#9c84a8"),
+                    ],
+                ),
+                night: Some((
+                    stops: [
+                        (at: 0.0, color: "#64609c"),
+                        (at: 1.0, color: "#847ab0"),
+                    ],
+                )),
+            ),
+        ],
+    ),
+)

@@ -16,8 +16,12 @@
 //! | `warrior_layers.png` | The body's layer mask ([`layers_png`]): where the matcap shows and where the cloak's hem burns |
 //! | `warrior_matcap.png` | Painted gunmetal ([`matcap_png`]), a spheremap for the armour and the blade |
 //!
+//! The player's sword is all this generator's own ([`sword`]): `player/sword.glb` and the maps
+//! `sword_palette.png`, `sword_control.png` and `sword_layers.png`.
+//!
 //! Colours are picked in 8-bit sRGB, as an artist would.
 
+pub mod sword;
 pub mod warrior;
 
 use std::io;
@@ -32,6 +36,9 @@ use crate::samples::{Existing, Generated, write_files};
 
 /// The enemy's directory, under the combat directory.
 pub const ENEMY_DIR: &str = "enemy";
+
+/// The player's directory, under the combat directory.
+pub const PLAYER_DIR: &str = "player";
 
 /// The pack's warrior, relative to the combat directory: [`warrior::warrior_glb`]'s input.
 pub const WARRIOR_SOURCE: &str = "../third_party/kaykit_skeletons/characters/Skeleton_Warrior.glb";
@@ -109,6 +116,10 @@ pub fn files() -> io::Result<Vec<(String, Vec<u8>)>> {
         (path("warrior_control.png"), control_png()?),
         (path("warrior_layers.png"), layers_png()?),
         (path("warrior_matcap.png"), matcap_png()?),
+        (format!("{PLAYER_DIR}/sword.glb"), sword::sword_glb()),
+        (format!("{PLAYER_DIR}/sword_palette.png"), sword::palette_png()?),
+        (format!("{PLAYER_DIR}/sword_control.png"), sword::control_png()?),
+        (format!("{PLAYER_DIR}/sword_layers.png"), sword::layers_png()?),
     ])
 }
 
@@ -363,7 +374,11 @@ mod tests {
         let combat = content_dir().join("combat");
         for (name, generated) in files().unwrap() {
             let committed = std::fs::read(combat.join(&name)).unwrap();
-            assert_png_matches(&name, &committed, &generated);
+            if name.ends_with(".glb") {
+                assert_glb_matches(&name, &committed, &generated, |_, a, b| (a - b).abs() <= 1e-5);
+            } else {
+                assert_png_matches(&name, &committed, &generated);
+            }
         }
         let source = std::fs::read(combat.join(WARRIOR_SOURCE)).unwrap();
         let generated = warrior::warrior_glb(&source).unwrap();

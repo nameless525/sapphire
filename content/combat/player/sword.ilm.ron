@@ -1,0 +1,25 @@
+// The sword's control map (M2 O3): what `gen-combat` paints (`sword_control.png`,
+// `sapphire_pipeline::combat::sword::control_png`). Each part is a swatch of the maps, so its material
+// ID picks its ramp row, highlight, outline and rim.
+(
+    type: "sapphire::pipeline::IlmMap",
+    version: 1,
+    data: (
+        specular_mask: Image(
+            path: "sword_control.png",
+            channel: R,
+        ),
+        shadow_bias: Image(
+            path: "sword_control.png",
+            channel: G,
+        ),
+        specular_threshold: Image(
+            path: "sword_control.png",
+            channel: B,
+        ),
+        material_id: Image(
+            path: "sword_control.png",
+            channel: A,
+        ),
+    ),
+)

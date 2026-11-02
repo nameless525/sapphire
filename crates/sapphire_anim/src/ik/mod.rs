@@ -158,7 +158,8 @@ impl CharacterIk {
             feet.solve(&mut solving, &self.reads, &input.feet, &input.world_from_model, input.dt);
         }
         if let Some(look) = &mut self.look {
-            let target = input.look.target.map(|target| input.world_from_model.inverse().transform_point3(target));
+            let target =
+                input.look.target.map(|target| input.world_from_model.inverse().transform_point3(target));
             look.solve(&mut solving, morphs, target, input.look.weight, input.dt);
             if look.fade() > 0.0 && input.weapon.is_some() {
                 solving.refresh(&self.reads);

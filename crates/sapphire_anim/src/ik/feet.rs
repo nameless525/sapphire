@@ -144,11 +144,7 @@ impl Plane {
 }
 
 /// The plane a foot stands on: see the [module docs](self).
-fn supporting(
-    ground: &FootGround,
-    probe: &FootProbe,
-    min_normal_y: f32,
-) -> Option<Plane> {
+fn supporting(ground: &FootGround, probe: &FootProbe, min_normal_y: f32) -> Option<Plane> {
     let usable = |hit: Option<GroundHit>| hit.filter(|hit| hit.normal.y >= min_normal_y).map(Plane::of);
     match (usable(ground.ankle), usable(ground.ball), probe.ball) {
         (Some(ankle), Some(ball), Some(place)) => {
@@ -246,9 +242,7 @@ impl FootPlacement {
     pub fn probes(&self, pose: &SolvePose<'_>, world_from_model: &Affine3A) -> [FootProbe; 2] {
         let probe = |leg: &LegBones| FootProbe {
             ankle: world_from_model.transform_point3(pose.position(leg.chain.end)),
-            ball: leg
-                .toes
-                .map(|toes| world_from_model.transform_point3(pose.position(usize::from(toes)))),
+            ball: leg.toes.map(|toes| world_from_model.transform_point3(pose.position(usize::from(toes)))),
         };
         [probe(&self.legs[0]), probe(&self.legs[1])]
     }
@@ -292,11 +286,8 @@ impl FootPlacement {
             let foot = &mut self.feet[side];
             foot.goal = supporting(&input.ground[side], &probes[side], self.settings.min_normal_y);
             if let Some(goal) = foot.goal {
-                foot.plane = if snap || foot.presence == 0.0 {
-                    goal
-                } else {
-                    ease_plane(foot.plane, goal, ease)
-                };
+                foot.plane =
+                    if snap || foot.presence == 0.0 { goal } else { ease_plane(foot.plane, goal, ease) };
                 foot.presence = if snap { 1.0 } else { ease_to(foot.presence, 1.0, ease) };
             } else {
                 foot.presence = if snap { 0.0 } else { ease_to(foot.presence, 0.0, ease) };
@@ -313,10 +304,8 @@ impl FootPlacement {
             let wanted = ground + leg.ankle_height + lift + leg.ankle_height * (1.0 / cosine - 1.0) * planted;
             let share = foot.presence * self.fade;
             moves[side] = (wanted - ankle.y) * share;
-            tilts[side] = weighted(
-                tilt_to(model_turn * foot.plane.normal, self.settings.max_tilt),
-                planted * share,
-            );
+            tilts[side] =
+                weighted(tilt_to(model_turn * foot.plane.normal, self.settings.max_tilt), planted * share);
         }
 
         // The hips go down with the lower foot, easing, and at once as far as a leg can't otherwise
@@ -433,11 +422,13 @@ mod tests {
         let probe = FootProbe { ankle: Vec3::ZERO, ball: Some(Vec3::new(0.0, 0.0, 0.2)) };
         let low = hit(Vec3::ZERO, Vec3::Y);
         let high = hit(Vec3::new(0.0, 0.15, 0.2), Vec3::Y);
-        let up_a_step =
-            supporting(&FootGround { ankle: low, ball: high }, &probe, 0.5).expect("ground");
+        let up_a_step = supporting(&FootGround { ankle: low, ball: high }, &probe, 0.5).expect("ground");
         assert!((up_a_step.height_at(probe.ankle) - 0.15).abs() < 1e-5, "{up_a_step:?}");
         let off_a_step = supporting(
-            &FootGround { ankle: hit(Vec3::new(0.0, 0.15, 0.0), Vec3::Y), ball: hit(Vec3::new(0.0, 0.0, 0.2), Vec3::Y) },
+            &FootGround {
+                ankle: hit(Vec3::new(0.0, 0.15, 0.0), Vec3::Y),
+                ball: hit(Vec3::new(0.0, 0.0, 0.2), Vec3::Y),
+            },
             &probe,
             0.5,
         )

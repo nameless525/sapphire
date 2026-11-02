@@ -44,7 +44,11 @@ impl IkRig {
     ) -> Self {
         let count = pose.joint_count();
         let bone = |bone: HumanBone| {
-            bones.iter().find(|(entry, _)| *entry == bone).map(|&(_, joint)| joint).filter(|&joint| joint < count)
+            bones
+                .iter()
+                .find(|(entry, _)| *entry == bone)
+                .map(|&(_, joint)| joint)
+                .filter(|&joint| joint < count)
         };
         let rest = rest_model(pose);
         let leg = |upper, lower, foot, toes| {
@@ -57,9 +61,15 @@ impl IkRig {
                 ankle_height: rest[chain.end].translation.y - floor,
             })
         };
-        let legs = leg(HumanBone::LeftUpperLeg, HumanBone::LeftLowerLeg, HumanBone::LeftFoot, HumanBone::LeftToes)
-            .zip(leg(HumanBone::RightUpperLeg, HumanBone::RightLowerLeg, HumanBone::RightFoot, HumanBone::RightToes))
-            .map(|(left, right)| [left, right]);
+        let legs =
+            leg(HumanBone::LeftUpperLeg, HumanBone::LeftLowerLeg, HumanBone::LeftFoot, HumanBone::LeftToes)
+                .zip(leg(
+                    HumanBone::RightUpperLeg,
+                    HumanBone::RightLowerLeg,
+                    HumanBone::RightFoot,
+                    HumanBone::RightToes,
+                ))
+                .map(|(left, right)| [left, right]);
         let arm = |upper, lower, hand| {
             let chain = TwoBone { root: bone(upper)?, mid: bone(lower)?, end: bone(hand)? };
             let frame = pose.parent(chain.root)?;
@@ -101,16 +111,13 @@ impl IkRig {
     /// A rig as its cooked data says, standing on `floor` in the model's space.
     #[must_use]
     pub fn from_cooked(pose: &CharacterPose, rig: &ArchivedCharacterRig, floor: f32) -> Self {
-        let bones: Vec<(HumanBone, usize)> = rig
-            .humanoid
-            .iter()
-            .map(|entry| (entry.bone, usize::from(entry.joint.to_native())))
-            .collect();
-        let bone = |wanted: HumanBone| {
-            bones.iter().find(|(entry, _)| *entry == wanted).map(|&(_, joint)| joint)
-        };
+        let bones: Vec<(HumanBone, usize)> =
+            rig.humanoid.iter().map(|entry| (entry.bone, usize::from(entry.joint.to_native()))).collect();
+        let bone =
+            |wanted: HumanBone| bones.iter().find(|(entry, _)| *entry == wanted).map(|&(_, joint)| joint);
         let look_at = rig.look_at.as_ref();
-        let origin = look_at.map_or(Vec3::ZERO, |look| Vec3::from_array(look.offset_from_head.map(|v| v.to_native())));
+        let origin =
+            look_at.map_or(Vec3::ZERO, |look| Vec3::from_array(look.offset_from_head.map(|v| v.to_native())));
         let eyes = look_at.and_then(|look| {
             let range = |range: &sapphire_assets::rig::ArchivedLookAtRange, scale: f32| RangeMap {
                 input_max: range.input_max_degrees.to_native().to_radians(),

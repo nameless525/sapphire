@@ -106,11 +106,8 @@ impl IkGround {
             pose,
             memberships: Group::World.mask(),
         };
-        let mut colliders = vec![collider(
-            0,
-            Vec3::new(60.0, 0.5, 60.0),
-            Pose::at(Vec3::new(0.0, -0.5, 0.0)),
-        )];
+        let mut colliders =
+            vec![collider(0, Vec3::new(60.0, 0.5, 60.0), Pose::at(Vec3::new(0.0, -0.5, 0.0)))];
         for (place, (half, middle, turn)) in self.boxes().into_iter().enumerate() {
             colliders.push(collider(place as u32 + 1, half, Pose::new(middle, turn)));
         }
@@ -262,7 +259,8 @@ impl IkDriver {
         let world_from_model = Affine3A::from_mat4(transform);
         self.ik.prepare(pose);
         let mut feet = FeetInput { weight: self.controls.feet, ..FeetInput::default() };
-        if let (Some(placement), Some(probes)) = (self.ik.feet(), self.ik.foot_probes(pose, &world_from_model))
+        if let (Some(placement), Some(probes)) =
+            (self.ik.feet(), self.ik.foot_probes(pose, &world_from_model))
             && (feet.weight > 0.0 || placement.fade() > 0.0)
         {
             let settings = placement.settings();
@@ -376,9 +374,8 @@ mod tests {
     /// The ground straight below `at` in `world`, however far.
     fn below(world: &PhysicsWorld, at: Vec3) -> (f32, Vec3) {
         let filter = QueryFilter::new(Group::World.mask());
-        let hit = world
-            .cast_ray(Vec3::new(at.x, 20.0, at.z), Vec3::NEG_Y, 40.0, &filter)
-            .expect("there's ground");
+        let hit =
+            world.cast_ray(Vec3::new(at.x, 20.0, at.z), Vec3::NEG_Y, 40.0, &filter).expect("there's ground");
         (hit.point.y, hit.normal)
     }
 

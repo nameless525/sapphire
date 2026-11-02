@@ -83,12 +83,7 @@ pub enum EyeDrive {
     /// rest model space.
     Bones { left: Option<(u16, Quat)>, right: Option<(u16, Quat)> },
     /// Morph targets and their weights at full look.
-    Expressions {
-        up: Vec<(u32, f32)>,
-        down: Vec<(u32, f32)>,
-        left: Vec<(u32, f32)>,
-        right: Vec<(u32, f32)>,
-    },
+    Expressions { up: Vec<(u32, f32)>, down: Vec<(u32, f32)>, left: Vec<(u32, f32)>, right: Vec<(u32, f32)> },
 }
 
 /// The eyes of a rig's look-at data.
@@ -384,7 +379,8 @@ mod tests {
 
     #[test]
     fn a_level_turn_gets_there_without_leaning() {
-        let direction = |yaw: f32, pitch: f32| Quat::from_rotation_y(yaw) * Quat::from_rotation_x(-pitch) * Vec3::Z;
+        let direction =
+            |yaw: f32, pitch: f32| Quat::from_rotation_y(yaw) * Quat::from_rotation_x(-pitch) * Vec3::Z;
         for (from, to) in [((0.0, 0.0), (0.9, 0.3)), ((0.2, -0.1), (-0.7, 0.4)), ((-0.5, 0.2), (-0.5, 0.2))] {
             let (start, end) = (direction(from.0, from.1), direction(to.0, to.1));
             let turn = level_turn(start, end);

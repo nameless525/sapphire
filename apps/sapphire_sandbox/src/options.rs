@@ -715,7 +715,8 @@ impl Options {
                 "--ik-ground" => {
                     let raw = value("--ik-ground")?;
                     ik_ground = Some(crate::ik::IkGround::from_name(&raw).ok_or_else(|| {
-                        let names: Vec<_> = crate::ik::IkGround::ALL.iter().map(|ground| ground.name()).collect();
+                        let names: Vec<_> =
+                            crate::ik::IkGround::ALL.iter().map(|ground| ground.name()).collect();
                         format!("--ik-ground expects one of {}, got {raw:?}", names.join(", "))
                     })?);
                 }
@@ -1425,7 +1426,16 @@ mod tests {
         assert_eq!(parse(&["--look-dev", "hero", "--clip", "strike", "--ik", "off"]).unwrap().0.ik, None);
         assert_eq!(parse(&["--look-dev", "hero", "--clip", "strike"]).unwrap().0.ik, None, "off by default");
         let on_a_slope = [
-            "--look-dev", "hero", "--clip", "strike", "--ik", "on", "--ik-ground", "slope", "--ik-look", "1,1.5,2",
+            "--look-dev",
+            "hero",
+            "--clip",
+            "strike",
+            "--ik",
+            "on",
+            "--ik-ground",
+            "slope",
+            "--ik-look",
+            "1,1.5,2",
         ];
         assert_eq!(
             parse(&on_a_slope).unwrap().0.ik,
@@ -1436,9 +1446,17 @@ mod tests {
         );
         assert!(parse(&["--look-dev", "hero", "--ik", "on"]).unwrap_err().contains("--clip"));
         assert!(parse(&["--look-dev", "hero", "--clip", "strike", "--ik", "maybe"]).is_err());
-        assert!(parse(&["--look-dev", "hero", "--clip", "strike", "--ik-ground", "step"]).unwrap_err().contains("--ik on"));
-        assert!(parse(&["--look-dev", "hero", "--clip", "strike", "--ik", "on", "--ik-ground", "hill"]).is_err());
-        assert!(parse(&["--look-dev", "hero", "--clip", "strike", "--ik", "on", "--ik-look", "1,2"]).is_err());
+        assert!(
+            parse(&["--look-dev", "hero", "--clip", "strike", "--ik-ground", "step"])
+                .unwrap_err()
+                .contains("--ik on")
+        );
+        assert!(
+            parse(&["--look-dev", "hero", "--clip", "strike", "--ik", "on", "--ik-ground", "hill"]).is_err()
+        );
+        assert!(
+            parse(&["--look-dev", "hero", "--clip", "strike", "--ik", "on", "--ik-look", "1,2"]).is_err()
+        );
         let orbit = ["--look-dev", "hero", "--clip", "strike", "--ik", "on", "--ik-look", "orbit"];
         assert_eq!(parse(&orbit).unwrap().0.ik.and_then(|ik| ik.look), Some(crate::ik::IkLook::Orbit));
         let in_place = ["--look-dev", "hero", "--clip", "strike", "--clip-in-place"];

@@ -161,11 +161,18 @@ fn on_plane(probe: Vec3, point: Vec3, normal: Vec3) -> GroundHit {
 }
 
 /// Hands over `ground` for what `ik`'s probes ask, and steps once.
-fn step(pose: &mut CharacterPose, ik: &mut CharacterIk, world_from_model: Affine3A, weight: f32, ground: &dyn Fn(Vec3) -> Option<GroundHit>) {
+fn step(
+    pose: &mut CharacterPose,
+    ik: &mut CharacterIk,
+    world_from_model: Affine3A,
+    weight: f32,
+    ground: &dyn Fn(Vec3) -> Option<GroundHit>,
+) {
     pose.reset();
     ik.prepare(pose);
     let probes = ik.foot_probes(pose, &world_from_model).expect("it has feet");
-    let foot = |probe: &FootProbe| FootGround { ankle: ground(probe.ankle), ball: probe.ball.and_then(ground) };
+    let foot =
+        |probe: &FootProbe| FootGround { ankle: ground(probe.ankle), ball: probe.ball.and_then(ground) };
     let mut input = input();
     input.world_from_model = world_from_model;
     input.feet = FeetInput { weight, ground: [foot(&probes[0]), foot(&probes[1])] };
@@ -259,7 +266,11 @@ fn one_foot_up_a_step_bends_that_knee_and_leaves_the_other_foot() {
     assert!((right.y - ANKLE).abs() < 1e-3, "{right}");
     assert_eq!(world_position(&pose, world, HIPS).y, 0.9, "both soles reach without the hips");
     // The raised knee goes forward, not back.
-    assert!(pose.model()[LEFT_LOWER_LEG].translation.z > 0.05, "{}", pose.model()[LEFT_LOWER_LEG].translation);
+    assert!(
+        pose.model()[LEFT_LOWER_LEG].translation.z > 0.05,
+        "{}",
+        pose.model()[LEFT_LOWER_LEG].translation
+    );
 }
 
 /// A foot whose toes are over a step's edge stands on the step, and one overhanging an edge stays up.
@@ -372,7 +383,11 @@ fn a_foot_over_nothing_lets_go_of_the_ground_alone() {
         step(&mut pose, &mut ik, world, 1.0, &ledge);
     }
     assert!((world_position(&pose, world, RIGHT_FOOT).y - (ANKLE + 0.1)).abs() < 2e-3);
-    assert!((world_position(&pose, world, LEFT_FOOT).y - ANKLE).abs() < 2e-3, "{}", world_position(&pose, world, LEFT_FOOT));
+    assert!(
+        (world_position(&pose, world, LEFT_FOOT).y - ANKLE).abs() < 2e-3,
+        "{}",
+        world_position(&pose, world, LEFT_FOOT)
+    );
 }
 
 /// A lifted foot keeps its lift over a raised floor and lets go of a slope's tilt.
@@ -415,7 +430,10 @@ fn a_lifted_foot_keeps_its_lift_and_does_not_tilt() {
     let under = ground(ankle).expect("ground").point.y;
     assert!((ankle.y - (under + ANKLE + lift)).abs() < 2e-3, "{ankle} over {under}");
     let foot = pose.model()[LEFT_FOOT].matrix3;
-    assert!(foot.abs_diff_eq(clip_foot, 1e-4), "its foot stays as the clip turned it: {foot} against {clip_foot}");
+    assert!(
+        foot.abs_diff_eq(clip_foot, 1e-4),
+        "its foot stays as the clip turned it: {foot} against {clip_foot}"
+    );
 }
 
 // Look-at.
@@ -496,7 +514,11 @@ fn a_target_crossing_behind_never_snaps() {
         looking(&mut pose, &mut ik, Some(target(angle)), 1.0, TICK);
         let now = head_forward(&pose);
         let turned = last.angle_between(now);
-        assert!(turned <= rate * TICK * 1.02, "step {step}: turned {turned} rad, the rate allows {}", rate * TICK);
+        assert!(
+            turned <= rate * TICK * 1.02,
+            "step {step}: turned {turned} rad, the rate allows {}",
+            rate * TICK
+        );
         last = now;
     }
     // And a target that jumps from one shoulder to the other: the same.
@@ -627,7 +649,8 @@ fn a_frozen_clock_moves_nothing_however_the_target_moves_and_thawing_never_snaps
         pose.reset();
         ik.prepare(pose);
         let probes = ik.foot_probes(pose, &world).expect("it has feet");
-        let foot = |probe: &FootProbe| FootGround { ankle: ground(probe.ankle), ball: probe.ball.and_then(&ground) };
+        let foot =
+            |probe: &FootProbe| FootGround { ankle: ground(probe.ankle), ball: probe.ball.and_then(&ground) };
         let mut request = input();
         request.dt = dt;
         request.feet = FeetInput { weight: 1.0, ground: [foot(&probes[0]), foot(&probes[1])] };
@@ -693,7 +716,10 @@ fn the_off_hand_goes_to_a_grip_on_what_the_main_hand_carries() {
     let shoulder = Vec3::from(pose.model()[LEFT_UPPER_ARM].translation);
     let reach = 0.5;
     if shoulder.distance(Vec3::from(wanted.translation)) < reach * 0.95 {
-        assert!(Vec3::from(got.translation).distance(Vec3::from(wanted.translation)) < 2e-3, "{got:?} against {wanted:?}");
+        assert!(
+            Vec3::from(got.translation).distance(Vec3::from(wanted.translation)) < 2e-3,
+            "{got:?} against {wanted:?}"
+        );
     }
     let (_, got_rotation, _) = got.to_scale_rotation_translation();
     let (_, wanted_rotation, _) = wanted.to_scale_rotation_translation();
@@ -724,7 +750,10 @@ fn both_hands_follow_a_placed_weapon_and_weight_zero_lets_go() {
         assert!(got.distance(wanted) < 3e-3, "{hand}: {got} against {wanted}");
     }
     let elbow = Vec3::from(pose.model()[LEFT_LOWER_ARM].translation);
-    let (shoulder, hand) = (Vec3::from(pose.model()[LEFT_UPPER_ARM].translation), Vec3::from(pose.model()[LEFT_HAND].translation));
+    let (shoulder, hand) = (
+        Vec3::from(pose.model()[LEFT_UPPER_ARM].translation),
+        Vec3::from(pose.model()[LEFT_HAND].translation),
+    );
     assert!(elbow.y < shoulder.lerp(hand, 0.5).y, "the pole takes the elbow down: {elbow}");
     // The rig's helper, which copies the forearm's turn from rest, follows the solve.
     let forearm = pose.locals()[LEFT_LOWER_ARM].rotation;
@@ -750,10 +779,7 @@ fn a_grip_moving_under_a_frozen_clock_has_its_own_key() {
     let request = |weapon| IkInput { dt: 0.0, weapon: Some(weapon), ..input() };
     assert_eq!(request(at(0.0)).frozen_key(), request(at(0.0)).frozen_key());
     assert_ne!(request(at(0.0)).frozen_key(), request(at(0.1)).frozen_key());
-    let moving_look = IkInput {
-        look: LookInput { target: Some(Vec3::X), weight: 1.0 },
-        ..request(at(0.0))
-    };
+    let moving_look = IkInput { look: LookInput { target: Some(Vec3::X), weight: 1.0 }, ..request(at(0.0)) };
     assert_eq!(request(at(0.0)).frozen_key(), moving_look.frozen_key(), "a look target isn't in it");
     let (mut pose, mut ik) = character();
     holding(&mut pose, &mut ik, at(0.0));
@@ -805,7 +831,11 @@ fn a_rig_without_some_bones_does_what_it_can() {
 #[test]
 fn a_turned_and_moved_character_stands_on_the_world_s_ground_and_looks_at_the_world_s_target() {
     let (mut pose, mut ik) = character();
-    let world = Affine3A::from_scale_rotation_translation(Vec3::splat(0.8), Quat::from_rotation_y(1.1), Vec3::new(4.0, 2.0, -3.0));
+    let world = Affine3A::from_scale_rotation_translation(
+        Vec3::splat(0.8),
+        Quat::from_rotation_y(1.1),
+        Vec3::new(4.0, 2.0, -3.0),
+    );
     let angle = 20f32.to_radians();
     let normal = Vec3::new(-angle.sin(), angle.cos(), 0.0);
     let ground = |probe: Vec3| Some(on_plane(probe, Vec3::new(4.0, 2.0, -3.0), normal));
@@ -814,7 +844,8 @@ fn a_turned_and_moved_character_stands_on_the_world_s_ground_and_looks_at_the_wo
         pose.reset();
         ik.prepare(pose);
         let probes = ik.foot_probes(pose, &world).expect("it has feet");
-        let foot = |probe: &FootProbe| FootGround { ankle: ground(probe.ankle), ball: probe.ball.and_then(&ground) };
+        let foot =
+            |probe: &FootProbe| FootGround { ankle: ground(probe.ankle), ball: probe.ball.and_then(&ground) };
         let mut request = input();
         request.world_from_model = world;
         request.feet = FeetInput { weight: 1.0, ground: [foot(&probes[0]), foot(&probes[1])] };

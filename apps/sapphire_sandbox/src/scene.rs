@@ -1119,8 +1119,12 @@ impl Scene {
         let ground = Arc::new(options.ground.world());
         let height = IkGround::stand(&ground, 0.0, 0.0);
         let world = self.ecs.world_mut();
-        self.ik_blocks =
-            options.ground.blocks().into_iter().map(|place| world.spawn((RenderMesh(block), RenderTransform(place))).id()).collect();
+        self.ik_blocks = options
+            .ground
+            .blocks()
+            .into_iter()
+            .map(|place| world.spawn((RenderMesh(block), RenderTransform(place))).id())
+            .collect();
         if let Some(mut transform) = world.get_mut::<RenderTransform>(self.character) {
             transform.0 = Mat4::from_translation(Vec3::new(0.0, height, 0.0)) * transform.0;
         }
@@ -3202,7 +3206,12 @@ mod tests {
             };
             let plain = run(player());
             let looking = run(looking_player(Vec3::new(3.0, 1.6, 1.0)));
-            assert!(looking.face.angle_between(plain.face) > 0.3, "{:?} against {:?}", looking.face, plain.face);
+            assert!(
+                looking.face.angle_between(plain.face) > 0.3,
+                "{:?} against {:?}",
+                looking.face,
+                plain.face
+            );
         }
 
         /// A clip's pose and the effects a character owns stop on the same steps: an effect's owner

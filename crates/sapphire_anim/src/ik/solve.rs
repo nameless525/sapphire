@@ -124,11 +124,8 @@ impl<'a> SolvePose<'a> {
     /// is kept up to date.
     pub fn translate(&mut self, joint: usize, by: Vec3) {
         let parent = self.parents[joint];
-        let local = if parent == NO_PARENT {
-            by
-        } else {
-            self.model[usize::from(parent)].matrix3.inverse() * by
-        };
+        let local =
+            if parent == NO_PARENT { by } else { self.model[usize::from(parent)].matrix3.inverse() * by };
         self.locals[joint].translation += local;
         self.model[joint] = model_of(self.parents[joint], &self.locals[joint], self.model);
     }

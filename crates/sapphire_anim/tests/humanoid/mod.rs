@@ -1,7 +1,9 @@
 //! A humanoid for the tests that time and count IK: the bones IK reads, then `extra` joints hanging
 //! from the head, as a character's hair and helpers do.
 
-use sapphire_anim::{CharacterIk, CharacterPose, FootSettings, IkRig, Joint, JointTransform, LookSettings, Skeleton};
+use sapphire_anim::{
+    CharacterIk, CharacterPose, FootSettings, IkRig, Joint, JointTransform, LookSettings, Skeleton,
+};
 use sapphire_assets::rig::HumanBone;
 use sapphire_math::Vec3;
 

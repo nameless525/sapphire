@@ -72,9 +72,12 @@ pub(crate) fn run(
             }
         }
     }
+    // Every step has run: a world that isn't the recorded one doesn't become a picture.
+    stage.check_combat()?;
     let pixels = render(stage, width, height)?;
     write_png(path, width, height, &pixels)?;
     write_adapter_info(path, &stage.gpu.caps().adapter)?;
+    stage.finish_combat()?;
     tracing::info!(
         target: LOG_TARGET,
         path = %path.display(),

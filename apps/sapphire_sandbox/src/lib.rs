@@ -210,6 +210,12 @@
 //!     each, until the process is told to quit (Ctrl-C, `kill`) or `--frames N` have been drawn,
 //!     with hot reload and live link on (`serve.rs`): what a device runs, without a window.
 //!     `cargo xtask link capture <png>` writes what it draws.
+//!   - `--replay <file>`, with `--capture` or `--bench`: play a recorded fight beside the scene,
+//!     one tick per fixed step, and fail if it leaves the recorded checksums beside the file
+//!     (`checksums.<architecture>.txt`) (M2 D2, `combat.rs`). A capture stops at the replay's end
+//!     unless `--capture-ticks` picks an earlier tick. A bench goes on past the end, and says so.
+//!   - `--record <file> --scenario <name> --script <name>`, with `--capture` or `--bench`: run a
+//!     scenario on a script's actions for as many ticks as the mode steps, and write the replay.
 //!   - `--serial-passes`: submit each frame graph pass on its own and wait for the GPU after
 //!     it, logging each at debug level: a GPU crash or device loss then names its pass in the
 //!     log, even on drivers that report nothing. Slow; for debugging.
@@ -229,6 +235,7 @@
 mod app;
 mod bench;
 mod capture;
+mod combat;
 mod content;
 mod cvars;
 mod debug_shapes;

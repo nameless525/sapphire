@@ -41,6 +41,7 @@ use sapphire_rhi::wgpu;
 use sapphire_time::Stopwatch;
 
 use crate::LOG_TARGET;
+use crate::combat::Combat;
 use crate::offscreen::Stage;
 use crate::options::Options;
 
@@ -55,6 +56,7 @@ const TIMED_FRAMES: u32 = 240;
 pub(crate) fn run(
     platform: &Platform,
     options: &Options,
+    combat: Option<Combat>,
     frames: u32,
     width: u32,
     height: u32,
@@ -64,6 +66,7 @@ pub(crate) fn run(
     }
     let startup = Stopwatch::start();
     let mut stage = Stage::new(platform, options)?;
+    stage.combat = combat;
     let startup = startup.elapsed();
 
     let target = stage.target(width, height, wgpu::TextureUsages::empty());
@@ -153,7 +156,8 @@ pub(crate) fn run(
     if !alloc::is_installed() {
         tracing::warn!(target: LOG_TARGET, "no counting allocator: allocation counts are zero");
     }
-    gpu_times(&mut stage, &view, settings.bloom_levels)
+    gpu_times(&mut stage, &view, settings.bloom_levels)?;
+    stage.finish_combat()
 }
 
 /// Runs [`TIMED_FRAMES`] frames with GPU timing on and logs the mean GPU times: each pass's

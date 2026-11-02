@@ -2852,6 +2852,7 @@ dependencies = [
  "sapphire_crash",
  "sapphire_debug",
  "sapphire_ecs",
+ "sapphire_gameplay",
  "sapphire_hot_reload",
  "sapphire_input",
  "sapphire_jobs",

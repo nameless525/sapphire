@@ -16,6 +16,7 @@ use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, Tra
 
 use crate::LOG_TARGET;
 use crate::app::SandboxApp;
+use crate::combat::Combat;
 use crate::content::Content;
 use crate::options::{OffscreenMode, Options};
 use crate::scene::{LookDev, Scene};
@@ -45,12 +46,23 @@ impl App for OffscreenApp {
             AppInitError::msg("OffscreenApp needs --capture <png>, --bench <frames> or --offscreen")
         })?;
         let (width, height) = (offscreen.width, offscreen.height);
+        // Before any GPU work, so a bad replay file costs nothing and says why.
+        let combat = options.combat.as_ref().map(Combat::new).transpose().map_err(AppInitError::msg)?;
         match &offscreen.mode {
             OffscreenMode::Capture { path, ticks, frames } => {
+                let ticks = match (&combat, &options.combat) {
+                    (Some(combat), Some(option)) => {
+                        combat.capture_ticks(option, *ticks, *frames).map_err(AppInitError::msg)?
+                    }
+                    _ => *ticks,
+                };
                 let mut stage = Stage::new(platform, &options)?;
-                crate::capture::run(&mut stage, path, *ticks, *frames, width, height)?;
+                stage.combat = combat;
+                crate::capture::run(&mut stage, path, ticks, *frames, width, height)?;
             }
-            OffscreenMode::Bench { frames } => crate::bench::run(platform, &options, *frames, width, height)?,
+            OffscreenMode::Bench { frames } => {
+                crate::bench::run(platform, &options, combat, *frames, width, height)?;
+            }
             #[cfg(feature = "dev")]
             OffscreenMode::Serve => {
                 let stage = Stage::new(platform, &options)?;
@@ -97,6 +109,8 @@ pub(crate) struct Stage {
     #[cfg(feature = "dev")]
     stages: Option<Stages>,
     pub renderer: Renderer,
+    /// `--replay` or `--record`: a simulation that takes a tick with each fixed step.
+    pub combat: Option<Combat>,
     /// The asset server and what it uploaded, driven every frame like the windowed app's.
     pub content: Content,
     pub graph: GraphExecutor,
@@ -204,6 +218,7 @@ impl Stage {
             #[cfg(feature = "dev")]
             stages: None,
             renderer,
+            combat: None,
             content,
             graph: {
                 let mut graph = GraphExecutor::new();
@@ -224,6 +239,19 @@ impl Stage {
         #[cfg(feature = "dev")]
         self.dev.before_fixed_step(&mut self.scene);
         self.scene.step();
+        if let Some(combat) = &mut self.combat {
+            combat.step();
+        }
+    }
+
+    /// An error if a replay has left its recorded checksums so far.
+    pub fn check_combat(&self) -> Result<(), AppInitError> {
+        self.combat.as_ref().map_or(Ok(()), Combat::check).map_err(AppInitError::msg)
+    }
+
+    /// Ends the replay or recording, if there is one: see [`Combat::finish`].
+    pub fn finish_combat(&mut self) -> Result<(), AppInitError> {
+        self.combat.take().map_or(Ok(()), Combat::finish).map_err(AppInitError::msg)
     }
 
     /// Whether the overlay draws over the frames (`--debug-overlay` in a `dev` build).

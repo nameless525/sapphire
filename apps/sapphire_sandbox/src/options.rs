@@ -163,6 +163,8 @@ pub(crate) struct Options {
     pub debug_draw: Option<DebugDrawDemo>,
     /// Render offscreen instead of opening a window.
     pub offscreen: Option<Offscreen>,
+    /// `--replay` or `--record`: a combat simulation beside the scene (M2 D2).
+    pub combat: Option<CombatOption>,
     /// `--serial-passes`: offscreen, submit each frame graph pass on its own and wait for the
     /// GPU after it, logging each at debug level, so a GPU crash, hang or device loss names its
     /// pass (`GraphExecutor::set_serial`). Slow; for debugging.
@@ -175,6 +177,21 @@ pub(crate) struct Options {
     /// `--live-link <mode>`: how live link takes connections, instead of listening on the
     /// loopback interface. Only `dev` builds have it.
     pub live_link: Option<LiveLinkOption>,
+}
+
+/// A combat simulation stepping beside the scene: see [`crate::combat`]. Needs `--capture` or
+/// `--bench`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum CombatOption {
+    /// `--replay <file>`: play it, and check it against the recorded checksums beside it.
+    Replay {
+        path: PathBuf,
+        /// A capture with no `--capture-ticks` stops at the replay's end, which isn't known yet.
+        to_end: bool,
+    },
+    /// `--record <file> --scenario <name> --script <name>`: run the scenario on the script's actions
+    /// and write the replay.
+    Record { path: PathBuf, scenario: String, script: String },
 }
 
 /// How live link takes connections (`--live-link`), in `dev` builds.
@@ -417,6 +434,7 @@ impl Options {
         let mut serve = false;
         let (mut capture_frames, mut capture_step) = (None, None);
         let (mut faces, mut face_layout) = (false, None);
+        let (mut replay, mut record, mut scenario, mut script) = (None, None, None, None);
         let mut args = args.iter().skip(1);
         while let Some(arg) = args.next() {
             // `--name=value` or `--name value`.
@@ -681,6 +699,10 @@ impl Options {
                 }
                 "--capture-step" => capture_step = Some(number(&value("--capture-step")?, "--capture-step")?),
                 "--size" => size = Some(parse_size(&value("--size")?)?),
+                "--replay" => replay = Some(PathBuf::from(value("--replay")?)),
+                "--record" => record = Some(PathBuf::from(value("--record")?)),
+                "--scenario" => scenario = Some(value("--scenario")?),
+                "--script" => script = Some(value("--script")?),
                 _ => unknown.push(arg.clone()),
             }
         }
@@ -723,7 +745,9 @@ impl Options {
             _ if serve => Some(OffscreenMode::Serve),
             (Some(path), _) => {
                 let ticks = capture_ticks.unwrap_or(90);
-                if frames.first_tick(ticks).is_none() {
+                // A capture of a replay's end can't be checked until the replay is read.
+                let at_replays_end = replay.is_some() && capture_ticks.is_none();
+                if !at_replays_end && frames.first_tick(ticks).is_none() {
                     return Err(format!(
                         "--capture-frames {} --capture-step {} start before tick 0 for --capture-ticks {ticks}",
                         frames.count, frames.step
@@ -735,6 +759,23 @@ impl Options {
             (None, None) => None,
         };
         let capturing = matches!(mode, Some(OffscreenMode::Capture { .. }));
+        options.combat = match (replay, record, scenario, script) {
+            (None, None, None, None) => None,
+            (Some(path), None, None, None) => {
+                Some(CombatOption::Replay { path, to_end: capture_ticks.is_none() })
+            }
+            (None, Some(path), Some(scenario), Some(script)) => {
+                Some(CombatOption::Record { path, scenario, script })
+            }
+            (Some(_), Some(_), ..) => return Err("--replay and --record are exclusive".to_owned()),
+            (None, Some(_), ..) => return Err("--record needs --scenario and --script".to_owned()),
+            _ => return Err("--scenario and --script need --record".to_owned()),
+        };
+        if options.combat.is_some()
+            && !matches!(mode, Some(OffscreenMode::Capture { .. } | OffscreenMode::Bench { .. }))
+        {
+            return Err(format!("--replay and --record need {CAPTURE_FLAG} or {BENCH_FLAG}"));
+        }
         for (given, flag) in [
             (capture_ticks.is_some(), "--capture-ticks"),
             (capture_frames.is_some(), "--capture-frames"),
@@ -1316,8 +1357,70 @@ mod tests {
     }
 
     #[test]
+    fn replays_and_recordings_go_with_a_capture_or_a_bench() {
+        let (options, _) = parse(&["--capture", "x.png", "--replay", "a.sreplay"]).unwrap();
+        let replay = |to_end| CombatOption::Replay { path: PathBuf::from("a.sreplay"), to_end };
+        assert_eq!(options.combat, Some(replay(true)));
+        let (options, _) =
+            parse(&["--capture", "x.png", "--replay=a.sreplay", "--capture-ticks", "30"]).unwrap();
+        assert_eq!(options.combat, Some(replay(false)));
+        let (options, _) = parse(&["--bench", "10", "--replay", "a.sreplay"]).unwrap();
+        assert_eq!(options.combat, Some(replay(true)));
+        let (options, _) =
+            parse(&["--bench", "10", "--record", "a.sreplay", "--scenario", "s", "--script", "p"]).unwrap();
+        assert_eq!(
+            options.combat,
+            Some(CombatOption::Record {
+                path: PathBuf::from("a.sreplay"),
+                scenario: "s".to_owned(),
+                script: "p".to_owned(),
+            })
+        );
+
+        let refused = |args: &[&str], part: &str| {
+            let error = parse(args).expect_err("refused");
+            assert!(error.contains(part), "{args:?}: {error}");
+        };
+        // A capture of its end draws as many frames as it likes: that's checked once it's read.
+        assert!(
+            parse(&["--capture", "x", "--replay", "a", "--capture-frames", "200", "--capture-step", "1"])
+                .is_ok()
+        );
+        refused(
+            &[
+                "--capture",
+                "x",
+                "--replay",
+                "a",
+                "--capture-ticks",
+                "90",
+                "--capture-frames",
+                "200",
+                "--capture-step",
+                "1",
+            ],
+            "before tick 0",
+        );
+        // The windowed app, Android's, is refused here, as it refuses `--capture` itself.
+        refused(&["--replay", "a.sreplay"], "--capture");
+        refused(&["--record", "a", "--scenario", "s", "--script", "p"], "--capture");
+        refused(&["--offscreen", "--replay", "a.sreplay"], "--capture");
+        refused(&["--capture", "x", "--record", "a"], "--scenario");
+        refused(&["--capture", "x", "--record", "a", "--scenario", "s"], "--scenario");
+        refused(&["--capture", "x", "--scenario", "s"], "--record");
+        refused(&["--capture", "x", "--replay", "a", "--scenario", "s"], "--record");
+        refused(&["--capture", "x", "--replay", "a", "--record", "b"], "exclusive");
+        refused(&["--capture", "x", "--replay"], "--replay needs a value");
+    }
+
+    #[test]
     fn the_windowed_app_refuses_offscreen_modes() {
-        for args in [&["--capture", "x.png"][..], &["--bench", "10"][..]] {
+        for args in [
+            &["--capture", "x.png"][..],
+            &["--bench", "10"][..],
+            &["--capture", "x.png", "--replay", "a.sreplay"][..],
+            &["--bench", "10", "--replay", "a.sreplay"][..],
+        ] {
             let (options, _) = parse(args).unwrap();
             assert!(options.refuse_offscreen().unwrap_err().contains("Android"), "{args:?}");
         }

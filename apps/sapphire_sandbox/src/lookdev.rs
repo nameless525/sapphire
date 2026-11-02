@@ -204,7 +204,7 @@ pub(crate) enum Plant {
 }
 
 impl Plant {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 8] = [
         Self::GreenTree,
         Self::BlossomTree,
         Self::AutumnTree,
@@ -453,18 +453,17 @@ pub(crate) enum Shot {
 }
 
 impl Shot {
-    pub const ALL: [Self; 9] =
-        [
-            Self::Wide,
-            Self::Hero,
-            Self::Sky,
-            Self::Street,
-            Self::Face,
-            Self::Enemy,
-            Self::Body,
-            Self::Full,
-            Self::Down,
-        ];
+    pub const ALL: [Self; 9] = [
+        Self::Wide,
+        Self::Hero,
+        Self::Sky,
+        Self::Street,
+        Self::Face,
+        Self::Enemy,
+        Self::Body,
+        Self::Full,
+        Self::Down,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -484,9 +483,14 @@ impl Shot {
     /// lamps and cards) moved by the opposite, so the character stays at the world's origin.
     pub fn stand(self) -> Vec3 {
         match self {
-            Self::Wide | Self::Hero | Self::Sky | Self::Face | Self::Enemy | Self::Body | Self::Full | Self::Down => {
-                Vec3::ZERO
-            }
+            Self::Wide
+            | Self::Hero
+            | Self::Sky
+            | Self::Face
+            | Self::Enemy
+            | Self::Body
+            | Self::Full
+            | Self::Down => Vec3::ZERO,
             Self::Street => STREET,
         }
     }

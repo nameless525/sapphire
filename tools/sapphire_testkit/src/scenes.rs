@@ -154,7 +154,7 @@ pub struct Scene {
 /// and the plain camera (`--arena-shot follow`), so tuning the camera director moves none of them.
 /// They alone run `--arena`, so no earlier scene sees its stage, and `arena-replay` alone plays a
 /// replay on it.
-pub fn scenes() -> [Scene; 136] {
+pub fn scenes() -> [Scene; 137] {
     [
         Scene {
             name: "turntable-start",

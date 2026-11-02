@@ -1,6 +1,6 @@
 [package]
 name = "sapphire_math"
-description = "Math types for Sapphire: transforms, bounds, frustums, cameras, springs, deterministic scalar functions."
+description = "Math types for Sapphire: transforms, bounds, frustums, cameras, springs, deterministic scalar functions, seeded random numbers."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

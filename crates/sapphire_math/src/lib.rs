@@ -1,6 +1,6 @@
 //! Math for Sapphire (spec §5.4): glam re-exports plus the engine's transforms, bounds, culling
-//! volumes, projection, springs, easing, color spaces, spherical harmonics and deterministic scalar
-//! functions.
+//! volumes, projection, springs, easing, color spaces, spherical harmonics, deterministic scalar
+//! functions and seeded random numbers.
 //!
 //! # Coordinate convention
 //!
@@ -33,10 +33,14 @@
 //! [`color`] holds the sRGB transfer functions and OkLab, shared by the runtime (time of day
 //! blends its colors in OkLab) and the pipeline (ramps), so both blend colors the same way.
 //!
+//! # Determinism
+//!
+//! [`det`] holds the transcendental functions and rotation helpers the simulation may use, and
+//! [`rng`] its seeded random numbers. Both give one result per input on every target.
+//!
 //! # Not here yet
 //!
-//! `Ray`, piecewise curves beyond keyed easing ([`ease`]), and the seeded simulation RNG (spec
-//! §5.4) arrive with their first consumers in M1–M2.
+//! `Ray` and piecewise curves beyond keyed easing ([`ease`]) arrive with their first consumers.
 
 pub mod bounds;
 pub mod color;
@@ -44,6 +48,7 @@ pub mod det;
 pub mod ease;
 pub mod frustum;
 pub mod projection;
+pub mod rng;
 pub mod sh;
 pub mod spring;
 pub mod transform;
@@ -54,6 +59,7 @@ pub use glam::{Affine2, Affine3A, EulerRot, Mat2, Mat3, Mat3A, Mat4, Quat, Vec2,
 pub use bounds::{Aabb, Sphere};
 pub use ease::Ease;
 pub use frustum::{Frustum, Plane};
+pub use rng::Pcg32;
 pub use spring::{SpringDamper, damp};
 pub use transform::Transform;
 

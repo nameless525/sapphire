@@ -13,6 +13,8 @@ same `CARGO_TARGET_DIR`.
 - Before handing off a change: `cargo test-fast --locked` runs workspace unit and integration tests.
 - Full CPU coverage: `cargo test --workspace --locked --no-fail-fast`, including doctests. CI keeps this gate.
 - The simulation's determinism and allocation tests: `cargo test -p sapphire_gameplay --locked`. They need no GPU. Its cost: `cargo run --release -p sapphire_gameplay --example step_bench`.
+- The recorded combat replays: `cargo xtask replay [--replay <name>]`. They need no GPU, and the suite itself takes about 20 ms. See [Replays](#replays).
+- The same replays beside the renderer: `cargo xtask content`, then `cargo test -p sapphire_sandbox --test replays -- --ignored --test-threads=1`.
 - Renderer GPU fixtures: `cargo test -p sapphire_render --test gpu --locked -- --ignored --test-threads=1`.
 - One renderer fixture family: `cargo test -p sapphire_render --test gpu ambient:: --locked -- --ignored --test-threads=1`.
 - All runtime GPU tests: `cargo test -p sapphire_render -p sapphire_rhi -p sapphire_world -p sapphire_debug --tests --locked -- --ignored --test-threads=1`.
@@ -24,6 +26,35 @@ For example, the former `--test ambient` selection is now `--test gpu ambient::`
 
 A deterministic channel handshake replaces one 200 ms delay in the live-link shutdown regression.
 Timeout and rate-limit tests retain the timing behavior they are intended to check.
+
+## Replays
+
+`tests/replays/` holds the combat regression suite (spec §9, gates 2 and 4): `<name>.sreplay` files of per-tick actions, and one `checksums.<architecture>.txt` per architecture (`aarch64`, `x86_64`) of what each must reach. CI's `Replays` job plays them on Linux, Windows and macOS with no GPU.
+
+- **Run them:** `cargo xtask replay`, or one with `--replay <name>`. A failure names the first tick that differs, counted as steps run, and a step that allocated fails its replay too.
+- **A change moved one on purpose:** `cargo xtask replay --update`, then read the diff, as with a golden. It rewrites this architecture's file alone and prints what moved from which tick. If move data changed, it also stamps the new hash into each replay; the actions stay.
+- **See what there is:** `cargo xtask replay --list`.
+
+### Adding a replay
+
+1. **A starting world**, if none fits: write a setup function and add a row to `SCENARIOS` in `crates/sapphire_gameplay/src/replay/scenario.rs`. It loads tables and then spawns, in a fixed order, and returns the actors input drives, the player first.
+2. **Its actions:** write a function of the tick and add a row to `SCRIPTS` in `crates/sapphire_gameplay/src/replay/script.rs`. A session someone plays comes from the app's `--record` instead (below).
+3. **Record it:** `cargo xtask replay --record <name> --scenario <scenario> --script <script> [--ticks <n>] [--seed <n>]`. This writes `tests/replays/<name>.sreplay`, and adds it to this architecture's checksums. It refuses a name that's taken: delete the file to replace it.
+4. **Commit both files.** The PR's first CI run fails `Replays` on Linux and Windows, because nothing is recorded for x86-64 yet. Fill that in as below.
+
+### Filling in x86-64's checksums
+
+No machine here runs x86-64, so its values come from CI, whenever a replay is added or a move changes:
+
+1. Find the failed run: `gh run list --branch <branch> --workflow CI`.
+2. Download what the Linux job uploaded: `gh run download <run> -n replay-checksums-ubuntu-24.04 -D <dir>`. It holds the whole file as it should be.
+3. Copy `<dir>/checksums.x86_64.txt` over `tests/replays/checksums.x86_64.txt`, and commit it.
+
+The next run's Linux and Windows jobs compare against that one file, which is what proves they agree. If Windows then fails, it names the first tick where it differs from Linux: that's a determinism bug to fix, not a value to update.
+
+### In the app
+
+`--replay <file>` and `--record <file> --scenario <name> --script <name>` go with `--capture` or `--bench`: the simulation takes a tick with each fixed step, beside the renderer. A replay is held to the recorded checksums beside its file, and a capture of one that has left them isn't written. A capture stops at the replay's end unless `--capture-ticks` picks an earlier tick. A bench goes on past the end, and says so, so give it a replay long enough for its frames (60 of warm-up, its own, and 240 timed).
 
 ## Build profiles and content
 

@@ -379,7 +379,8 @@ pub struct FramePacket {
 | `sapphire_pipeline` | Tools | Importers, cookers, cache, packer | `gltf`, `ufbx`, `ctt`, `ktx2`, `meshopt`, `rayon` | M1 |
 | `sapphire_editor` | Tools | Document-model editor, timeline editor, play-in-editor | `egui`, `egui_dock`, `transform-gizmo`, `egui-snarl` | M2–M3 |
 | `sapphire_livelink` | dev only, plus its tool | Live link: a dev build's socket the desktop pushes packs, documents, shaders and cvars to, and its desktop tool (dev only) | `postcard` | M1 |
-| `sapphire_testkit` | Tools | Headless world, replay runner, golden images | `insta`, `nv-flip` | M1 |
+| `sapphire_replay` | Tools | The headless replay runner: `cargo xtask replay` and CI's `Replays` job (§5.22) | None | M2 |
+| `sapphire_testkit` | Tools | Golden images | `insta`, `nv-flip` | M1 |
 
 Each module below follows the same template:
 
@@ -1955,8 +1956,18 @@ At runtime, dynamic resolution adjusts the render scale from GPU timings and the
 
 **Tests**
 
-- The headless `sapphire_testkit` world replays recorded input files and asserts outcomes: damage dealt, final positions, a checksum of the simulation state.
+- The headless `sapphire_replay` runner plays recorded input files and asserts a checksum of the simulation state; outcomes such as damage dealt and final positions are in it.
 - These replays run in CI on all three desktop OSes and are the combat regression suite.
+
+**As built (M2 D2, replays)**
+
+- **The file** (`sapphire_gameplay::replay`, `.sreplay`, format version 1), little-endian: magic, format version, `TickActions` layout version, seed, pool size, step budget, the move data's hash (`tables_hash`), tick count, scenario name; then runs of equal ticks (a LEB128 length and one tick in `TickActions`' layout); then XXH3-64 of all of it. It holds no results. One set of inputs has one encoding, and another format version is refused by name. **Size:** 65 bytes for any length of nobody touching anything; 11.8 KB per minute for one actor walking and attacking in bursts (`drill-play`); 94 KB for three actors that change every tick (`drill-sweep`). One stick moving on every tick costs 36 KB.
+- **Crafted files:** `Replay::decode` answers a table of 52 crafted files with a named error, never a panic, allocating at most the file's length and 1 KiB. `MAX_TICKS` (4 hours) and `MAX_ACTORS` (4,096) bound what a good-looking file can ask for.
+- **Moves:** `Player::new` refuses a replay whose `tables_hash` isn't the world's (`PlayError::MovesChanged`, which says to re-record). Whatever a run comes to depend on belongs in that hash.
+- **Checksums** (`tests/replays/checksums.<arch>.txt`, `ChecksumFile`), text, one file per `std::env::consts::ARCH`: each replay's whole checksum every 60 ticks (`CHECKPOINT_EVERY`) and at both ends, with the low 16 bits of each tick between, so a failure names the first tick that differs, about 260 bytes per second of play. x86-64's file is filled in from CI's artifact, so Linux and Windows both compare against values one of them wrote.
+- **Scenarios and scripts:** `SCENARIOS` and `SCRIPTS`, plain tables of named functions. The `ActionSource` trait is the seam a recording's actions come through: a script, or a live player's bindings.
+- **The runner** (`tools/sapphire_replay`, `[simulation]`'s `runners`): 108 crates, with no C build, SDL, wgpu or platform layer. It refuses to run without a counting allocator, since gate 4 would read zero. `--update` rewrites this architecture's file alone, and stamps a changed move's hash into the replays.
+- **In the app** (`--replay`, `--record`, with `--capture` or `--bench`; `combat.rs`): `Player` and `Recording` step in `Stage::step`, through the same code. A replay is held to the checksums beside it, and a capture that has left them isn't written. A test draws a frame on every tick, and the app reaches every tick's checksum from a headless run of the same file; a recording in the app is byte for byte a headless one. CI runs that on lavapipe, it has been run by hand on Metal, and WARP's turn comes with O5's golden scenes from replays.
 
 **As built (M2 D1, the headless simulation)**
 
@@ -2605,7 +2616,8 @@ rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
 | `cargo xtask cook --cook desktop\|mobile [--only <guid/zone>]` | Runs `sapphire_pipeline` with the content-hash cache |
 | `cargo xtask run --platform desktop\|ios-sim\|ios\|android` | Builds, cooks, deploys and launches, with live link enabled |
 | `cargo xtask package <platform> --profile shipping` | Produces store-ready artifacts and uploads symbols |
-| `cargo xtask replay <file\|dir>` | Runs headless combat replays |
+| `cargo xtask replay [--update] [--replay <name>]` | Runs the headless combat replays in `tests/replays/` against this architecture's checksums and the zero-allocation gate; `--update` takes new values for this architecture alone (§5.22) |
+| `cargo xtask replay --record <name> --scenario <name> --script <name> [--ticks <n>] [--seed <n>]`, `--list` | Records a new replay from a registered script; lists scenarios, scripts and replays |
 | `cargo xtask golden [--update] [--scene <name> \| --shard <i>/<n>] [--scene-timeout <s>]` | Runs golden-image render tests, each scene with a deadline; CI splits the CPU rasterizers' scenes across runners by their CI times with `--shard` (§9) |
 | `cargo xtask link status\|cvar\|push\|capture\|watch` | Live link's desktop tool (§5.29): reads a running dev build's state, sets cvars, pushes packs (only what changed), documents and WGSL sources, captures the next frame the device draws as a PNG, or watches and pushes them as they change; each command says how long the device took to answer |
 
@@ -2645,6 +2657,7 @@ A change can't merge if any of these fail:
 4. **Allocations:** the zero-allocation assertion (R6, simulation thread inside the fixed step) during the replay suite.
 5. **Budgets:** no budget in §3 regresses by more than 10% on the nightly device run without a recorded waiver.
 
+- **As built (M2 D2, gates 2 and 4):** CI's `Replays` job plays `tests/replays/` on Linux, Windows and macOS with no GPU: each reaches its architecture's checksums with `SimStats::allocations` at zero in every step (`cargo xtask replay`, §5.22). A test holds the gate to biting on a system that allocates, naming the first tick.
 - **As built (own review DV-2, the golden gates):**
   - **Three gates.** A capture passes when its FLIP mean is at most 0.01, its 99th percentile at most 0.12 and the mean over its worst 16 × 16 block of pixels at most 0.15 (`golden::Thresholds`). The block slides over every position, so a defect reads the same wherever it lands. The whole-image gates can't see a small defect: a flat 40 px patch passed them, and on `lookdev-face` an eye is about 30 px wide. The tile gate fails a 5 px patch on the five scenes tried (they read 0.17 to 0.24; 4 px reads 0.12 to 0.17), and scattered edge flips stay under it (two flips of about 190 code values read 0.098 on CI's noisiest such tile). The p99 gate, 0.3 until then, fails a capture that lost MSAA, the render scale or the bangs' soft shadow (their siblings read 0.135 to 0.155).
   - **Noise.** Every capture of the 111 green CI runs with artifacts left (32 on `main`, 2026-10-26 to 2026-11-02, 9,216 captures per family) against the golden committed at its run's commit, through the testkit's own comparison, and seven full runs on an Apple M5 under load:

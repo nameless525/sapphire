@@ -1,6 +1,6 @@
 [package]
 name = "sapphire_testkit"
-description = "Test infrastructure: golden-image comparison (FLIP); headless worlds and replays later. Never shipped."
+description = "Test infrastructure: golden-image comparison (FLIP). Never shipped."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

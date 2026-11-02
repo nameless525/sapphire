@@ -1,5 +1,5 @@
-# Per-PR checks (spec §8, quality gate 1 in §9). Nightly cooks, golden images, replays
-# and device runs join as those systems land.
+# Per-PR checks (spec §8, quality gates in §9). Nightly cooks and device runs join as those
+# systems land.
 #
 # The pinned version comes from rust-toolchain.toml. The local setup action installs
 # only the job's targets and exports RUSTUP_TOOLCHAIN so Cargo keeps that subset. It
@@ -135,6 +135,43 @@ jobs:
       # --no-fail-fast: one failing crate shouldn't hide the results of the rest.
       - name: Test
         run: cargo test --workspace --locked --no-fail-fast
+
+  # Spec §9's gates 2 and 4: every recorded combat replay reaches its checksums for the runner's
+  # architecture, with no heap allocation in the fixed step. Linux and Windows compare against one
+  # x86-64 file, which is what proves they agree, and macOS against the arm64 file.
+  #
+  # No SDL dependencies and no SDK: the runner links no C and no GPU (`[simulation]` in
+  # xtask/layers.toml), and a build that needed them would mean that had stopped being true.
+  #
+  # target/replays/ always holds this architecture's file as it should be. When a change moves a
+  # checksum, or a file is missing, that's the file to commit, from the artifact: x86-64 has no
+  # machine here to run `--update` on (docs/development-iteration.md).
+  replays:
+    name: Replays (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-26, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust (job targets)
+        uses: ./.github/actions/setup-rust
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          env-vars: ${{ env.RUST_CACHE_ENV_VARS }}
+          cache-on-failure: true
+      - name: Replays
+        run: cargo --locked xtask --locked replay
+      - name: Upload this architecture's checksums
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: replay-checksums-${{ matrix.os }}
+          path: target/replays/
+          if-no-files-found: ignore
+          retention-days: 7
 
   # Golden scenes retain their existing counts and check names. Linux and Windows build/cook
   # once per OS, then fan out immutable exact-commit inputs; no Cargo target crosses runners.
@@ -440,6 +477,11 @@ jobs:
       - name: Cook the desktop content
         if: runner.os == 'Linux'
         run: cargo --locked xtask --locked content
+      # The simulation beside the renderer must reach what it reaches alone (m2-plan D2). The app
+      # compares, tick by tick, with what a headless run in the test wrote.
+      - name: Replays in the app (dev sandbox, offscreen)
+        if: runner.os == 'Linux'
+        run: cargo test --package sapphire_sandbox --features dev --locked --test replays -- --ignored --test-threads=1
       # One feature graph reuses the dev sandbox's dependencies for the CLI too; building
       # the CLI separately compiled another renderer/hot-reload variant in this job.
       - name: Build the dev sandbox and the live-link tool

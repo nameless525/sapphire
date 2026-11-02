@@ -1508,6 +1508,62 @@ mod tests {
         assert_eq!(MOVE_SET_EXTENSION, "smoves");
     }
 
+    /// A fighter's `movement` is optional, names what it changes, and is checked with the rest: the issue
+    /// says the section and the number, and everything wrong is said at once.
+    #[test]
+    fn a_fighters_movement_reads_and_is_checked_with_the_rest() {
+        let with = |section: &str| {
+            MoveSetDocument::parse(&SLICE.replacen("fighter: (", &format!("fighter: (\n{section},"), 1))
+        };
+        let good =
+            with("movement: (run_speed: 7.5, coyote_ticks: 2)").expect("parses").compile().expect("compiles");
+        let wanted = ControllerProfile { run_speed: 7.5, coyote_ticks: 2, ..ControllerProfile::default() };
+        assert_eq!(good.movement(), Some(&wanted));
+        assert_eq!(slice().compile().unwrap().movement(), None, "left out, it says nothing");
+
+        let bad = with("movement: (run_speed: 600.0, gravity: -1.0)").expect("parses");
+        let Err(MoveSetError::Invalid(issues)) = bad.compile() else { panic!("it should be refused") };
+        let said: Vec<String> = issues.iter().map(ToString::to_string).collect();
+        assert!(
+            said.iter().any(|issue| issue.starts_with("`movement`: `run_speed` is 600"))
+                && said.iter().any(|issue| issue.starts_with("`movement`: `gravity` is -1")),
+            "{said:?}"
+        );
+        assert_eq!(bad.check().len(), issues.len(), "and a check says the same");
+
+        let error = with("movement: (run_sped: 7.5)").expect_err("a misspelt number");
+        assert!(error.to_string().contains("run_sped"), "{error}");
+        let error = with("movment: (run_speed: 7.5)").expect_err("a misspelt section");
+        assert!(error.to_string().contains("movment"), "{error}");
+    }
+
+    /// A running app's route takes the document's numbers, not what's running, and a set takes its bytes
+    /// with it through a cook, where bad numbers read as damage.
+    #[test]
+    fn movement_goes_through_a_compile_over_and_a_cook() {
+        let with = |number: f32| {
+            let text =
+                SLICE.replacen("fighter: (", &format!("fighter: (\nmovement: (run_speed: {number:?}),"), 1);
+            MoveSetDocument::parse(&text).unwrap()
+        };
+        let running = with(6.5).compile().unwrap();
+        let edited = with(7.5).compile_over(&running).unwrap();
+        assert_eq!(edited.movement().unwrap().run_speed, 7.5);
+        let back = MoveSet::from_cooked(&edited.to_cooked().unwrap()).unwrap();
+        assert_eq!(back, edited);
+        assert_ne!(*with(7.5).compile().unwrap().to_cooked().unwrap(), *running.to_cooked().unwrap());
+
+        // Well-formed bytes that no document could have made.
+        let mut bad = edited;
+        bad.fighter_mut().movement =
+            Some(ControllerProfile { run_speed: f32::NAN, ..ControllerProfile::default() });
+        let cooked = bad.to_cooked().unwrap();
+        let Err(MoveSetError::Damaged(said)) = MoveSet::from_cooked(&cooked) else {
+            panic!("it should be refused")
+        };
+        assert!(said.contains("run_speed"), "{said}");
+    }
+
     /// A misspelt track would otherwise read as no track at all: `cancles:` plays a move nothing can
     /// cancel out of and answers `as revision 2`, with nothing anywhere to say what went.
     #[test]

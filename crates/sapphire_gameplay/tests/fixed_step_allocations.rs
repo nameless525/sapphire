@@ -14,9 +14,9 @@ use sapphire_gameplay::replay::{
     melee, melee_buttons,
 };
 use sapphire_gameplay::{
-    ActorActions, ActorId, ActorSpawn, ActorTransform, Buttons, CombatSet, HitQuery, HurtboxId,
-    INTENT_RING_LEN, MAX_HIT_RECORDS, OwnerStep, SimConfig, Simulation, TickActions, VolumeSweep, WarpTarget,
-    remove_hurtboxes,
+    ActorActions, ActorId, ActorSpawn, ActorTransform, Buttons, CombatSet, ControllerProfile, HitQuery,
+    HurtboxId, INTENT_RING_LEN, MAX_HIT_RECORDS, OwnerStep, SimConfig, Simulation, TickActions, VolumeSweep,
+    WarpTarget, remove_hurtboxes,
 };
 use sapphire_math::{Vec3, det};
 use sapphire_moves::{BakedPath, MoveSet, MoveSetDocument, PathSample};
@@ -414,6 +414,13 @@ fn steps_do_not_allocate_across_a_live_edit() {
     document.moves[0].recovery += 2;
     if let Some(fighter) = &mut document.fighter {
         fighter.health += 50;
+        // How it moves, the capsule included, which comes out of the world and goes back in.
+        fighter.movement = Some(ControllerProfile {
+            run_speed: 8.0,
+            height: 1.9,
+            radius: 0.35,
+            ..ControllerProfile::default()
+        });
     }
     assert!(sim.replace_move_set(moves, document.compile().expect("compiles")).is_some());
 

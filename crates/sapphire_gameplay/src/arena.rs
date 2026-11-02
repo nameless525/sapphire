@@ -39,9 +39,10 @@ pub fn cooked_colliders() -> Result<AlignedVec, ColliderError> {
     ColliderDocument::from_ron(COLLIDERS)?.cook()?.to_cooked()
 }
 
-/// How everyone in the arena moves, and how big they are: a capsule 1.6 m tall, the look-dev character's
-/// height hair and all, and 0.3 m in radius, a little past the shoulders so an arm at rest stays out of
-/// a wall. Starting tuning, for a game's own to replace.
+/// How anyone in the arena moves whose document doesn't say, and how big they are: a capsule 1.6 m tall,
+/// the look-dev character's height hair and all, and 0.3 m in radius, a little past the shoulders so an
+/// arm at rest stays out of a wall. `player.moves.ron` and `warrior.moves.ron` write these numbers out, to
+/// be tuned there.
 #[must_use]
 pub fn profile() -> ControllerProfile {
     ControllerProfile::default()

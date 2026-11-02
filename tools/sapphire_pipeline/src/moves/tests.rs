@@ -51,6 +51,32 @@ fn sources_are_known_by_their_suffix() {
     );
 }
 
+/// A fighter's `movement` goes through a cook, and a number past its limit stops one, saying what.
+#[test]
+fn a_cook_takes_a_fighters_movement_and_refuses_a_number_past_its_limit() {
+    let cook = |name: &str, movement: &str| {
+        let root = temp_dir(name);
+        let (content, out) = (root.join("content"), root.join("out"));
+        fs::create_dir_all(&content).unwrap();
+        let text = SLICE.replacen("fighter: (", &format!("fighter: (\nmovement: ({movement}),"), 1);
+        fs::write(content.join("fighter.moves.ron"), text).unwrap();
+        let options = CookOptions { cook: Cook::Desktop, cache: None, locked: false };
+        let result = cook_dir(&content, &out, &options);
+        let bytes = fs::read(out.join("fighter.smoves")).ok();
+        let _ = fs::remove_dir_all(&root);
+        (result.map(|_| ()), bytes)
+    };
+    let (cooked, bytes) = cook("movement", "run_speed: 7.5");
+    cooked.expect("a good document");
+    let set = MoveSet::from_cooked(&aligned(&bytes.expect("its output"))).unwrap();
+    assert_eq!(set.movement().unwrap().run_speed, 7.5);
+
+    let (refused, _) = cook("movement_bad", "run_speed: 600.0");
+    let said = format!("{:?}", refused.expect_err("past its limit"));
+    assert!(said.contains("run_speed") && said.contains("600"), "{said}");
+    assert!(said.contains("fighter.moves.ron"), "it names the file: {said}");
+}
+
 /// Through the whole cook: a sidecar, an output by the source's name, the cache, and bytes the
 /// simulation reads, identical to compiling the document directly.
 #[test]

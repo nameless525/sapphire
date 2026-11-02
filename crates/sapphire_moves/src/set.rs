@@ -949,6 +949,12 @@ impl MoveSet {
         Self { intents, neutral, fighter, brain, moves }
     }
 
+    /// Its fighter, for a test to damage: what no document can make.
+    #[cfg(test)]
+    pub(crate) fn fighter_mut(&mut self) -> &mut FighterDef {
+        self.fighter.as_mut().expect("a test's set has a fighter")
+    }
+
     /// Reads a cooked set, whose bytes must start 16-byte aligned, after validating the archive and
     /// that its references hold. Copies it out, once, at load, so reading one is plain field access
     /// in the fixed step.

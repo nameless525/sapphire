@@ -428,6 +428,7 @@ impl Handover {
 }
 
 /// [`crate::CombatSet::Party`]: fires what's due. See the [module docs](self).
+#[allow(clippy::too_many_arguments, reason = "a system's parameters read as what it touches")]
 pub(crate) fn settle_swaps(
     mut party: ResMut<'_, Party>,
     table: Res<'_, ActorTable>,
@@ -477,8 +478,12 @@ pub(crate) fn settle_swaps(
     let state = controller.state;
     // Its own capsule and numbers, wherever it's standing: only the place and the motion carry over.
     let movement = runner.set().and_then(|set| library.movement(set));
-    *controller = characters.spawned(coming.actor, controller.profile(), movement, &transform);
+    let spawned = controller.profile();
+    *controller = characters.spawned(coming.actor, spawned, movement, &transform);
     controller.state = state;
+    if let Some(numbers) = movement.or_else(|| spawned.and_then(|profile| characters.profile(profile))) {
+        controller.state.velocity = numbers.carried(state.velocity);
+    }
     // The assist starts at this step's reading: what's between that and the last one belongs to no move.
     runner.cursor = now;
     runner.force(SWAP_IN_MOVE);

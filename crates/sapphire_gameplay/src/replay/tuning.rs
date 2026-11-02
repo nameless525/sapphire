@@ -93,6 +93,7 @@ mod tests {
     use super::super::script::{ATTEMPT_EVERY, attempts, fight};
     use super::super::{PlayError, Player, Recording, Replay};
     use super::*;
+    use crate::controller::ControllerProfile;
     use crate::moves::Tuned;
 
     const SLICE: &str = "slice.moves.ron";
@@ -186,6 +187,81 @@ mod tests {
 
         let mut player =
             Player::new(Replay::decode(&replay.encode()).expect("reads"), SCENARIOS).expect("starts");
+        player.run_to_end();
+        assert_eq!(player.finish().trail, played.trail);
+    }
+
+    fn moving_at(run_speed: f32) -> MoveSet {
+        let mut document = slower_document();
+        document.moves =
+            MoveSetDocument::parse(include_str!("../../../sapphire_moves/test_content/slice.moves.ron"))
+                .expect("parses")
+                .moves;
+        let movement = ControllerProfile { run_speed, ..ControllerProfile::default() };
+        document.fighter.as_mut().expect("in the content").movement = Some(movement);
+        document.compile().expect("compiles")
+    }
+
+    /// How a character moves is part of its document, under its rules: an edit ends a recording's file,
+    /// which plays back to there, and the same bytes again are no edit.
+    #[test]
+    fn an_edit_of_how_someone_moves_ends_the_file_as_an_edit_of_a_move_does() {
+        const EDIT_AT: u32 = 90;
+        let mut source = fight;
+        let mut recording = Recording::new(duel(), duel().config).expect("sets up");
+        for _ in 0..EDIT_AT {
+            recording.step(&mut source).expect("short");
+        }
+        let before = recording.simulation().tables_hash();
+        let id = duel().set_of(SLICE).expect("it plays this document");
+
+        assert_eq!(recording.tune_move_set(id, moving_at(9.0)), Some(Tuned::Replaced { revision: 1 }));
+        assert_eq!(recording.edited_at(), Some(EDIT_AT));
+        assert_ne!(recording.simulation().tables_hash(), before);
+        assert_eq!(recording.tune_move_set(id, moving_at(9.0)), Some(Tuned::Unchanged { revision: 1 }));
+        for _ in 0..30 {
+            recording.step(&mut source).expect("the fight goes on");
+        }
+        assert_eq!(recording.recorded_ticks(), EDIT_AT);
+
+        let (replay, played) = recording.finish();
+        assert_eq!(replay.tables_hash(), before, "what those ticks ran on");
+        let mut player =
+            Player::new(Replay::decode(&replay.encode()).expect("reads"), SCENARIOS).expect("starts");
+        player.run_to_end();
+        assert_eq!(player.finish().trail, played.trail);
+    }
+
+    /// A fight started after that edit runs on it, its file stamped with it: a build without the edit refuses
+    /// the file, and one with it in its document plays it to the same end.
+    #[test]
+    fn a_fight_started_after_an_edit_of_how_someone_moves_says_so_in_its_file() {
+        fn edited_duel(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
+            duel_on(sim, moving_at(9.0))
+        }
+        let mut live = LiveMoves::default();
+        live.remember(SLICE, moving_at(9.0));
+
+        let scenario = Scenario { setup: edited_duel, ..*duel() };
+        let mut tuned = Recording::tuned(&scenario, duel().config, &live).expect("sets up");
+        let mut source = attempts;
+        for _ in 0..200 {
+            tuned.step(&mut source).expect("short");
+        }
+        let (mut plain_sim, _) = duel().start(duel().config).expect("sets up");
+        assert_ne!(tuned.simulation().tables_hash(), plain_sim.tables_hash());
+        plain_sim.step(&crate::actions::TickActions::NEUTRAL);
+        let hash = tuned.simulation().tables_hash();
+        let (replay, played) = tuned.finish();
+        assert_eq!(replay.tables_hash(), hash);
+
+        let bytes = replay.encode();
+        let refused = Player::new(Replay::decode(&bytes).expect("reads"), SCENARIOS);
+        assert!(matches!(refused, Err(PlayError::MovesChanged { .. })), "a build without the edit");
+
+        let has_it = [scenario];
+        let mut player =
+            Player::new(Replay::decode(&bytes).expect("reads"), &has_it).expect("a build with it");
         player.run_to_end();
         assert_eq!(player.finish().trail, played.trail);
     }

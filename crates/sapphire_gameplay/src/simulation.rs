@@ -231,6 +231,7 @@ impl Simulation {
     /// **Its `movement` is what the next step moves by.** Nothing moves now: position, velocity and
     /// what it's doing carry over, so a character in a jump finishes that jump's arc under the new
     /// gravity, and its new jump speed waits for its next jump. A new capsule stands on the same feet.
+    /// Only a gravity too light for what someone's carrying cuts it ([`ResolvedProfile::carried`]).
     pub fn replace_move_set(&mut self, id: MoveSetId, set: MoveSet) -> Option<u32> {
         let world = self.ecs.world_mut();
         let moved_by = world.resource::<MoveLibrary>().movement(id).copied();
@@ -267,6 +268,11 @@ impl Simulation {
             let spawned = spawned.and_then(|profile| characters.profile(profile)).copied();
             if let (Some(was), Some(now)) = (moved_by.or(spawned), moves_by.or(spawned)) {
                 characters.refit_body(actor, &was, &now, &transform);
+                if was != now
+                    && let Some(mut controller) = world.get_mut::<CharacterController>(entity)
+                {
+                    controller.state.velocity = now.carried(controller.state.velocity);
+                }
             }
         }
         Some(replaced)

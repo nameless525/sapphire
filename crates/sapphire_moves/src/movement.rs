@@ -6,6 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::set::MIN_SHAPE_EXTENT;
+
 /// Everything about how a character moves that a game tunes, in metres, seconds and degrees. Every
 /// field has a default, so a document names only what it changes.
 ///
@@ -14,7 +16,9 @@ use serde::{Deserialize, Serialize};
 /// At a full stick a press moves the character 1.25 cm, 5 cm and 11.25 cm at ticks 1, 2 and 3, and
 /// it's at full speed from tick 4. The clips' run stride comes later (M2 N3), so nothing here assumes
 /// one.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 #[serde(default, deny_unknown_fields)]
 pub struct ControllerProfile {
     /// The capsule's whole height.
@@ -105,6 +109,12 @@ pub struct ProfileError {
 /// any jump from what can be climbed", and from the ground this reaches nothing taller than 3 m.
 pub const MAX_JUMP_REACH: f32 = 2.5;
 
+/// The highest a document's numbers may throw someone, in metres. An airborne character meeting a curb's
+/// edge slides up it: its velocity turns along the surface, so what it had going across can all end up
+/// going up. Two speeds together can't turn into more than `√(run² + jump²)`, which gravity then has to
+/// stop, and this keeps that clear of the arena's walls. Today's numbers come to 1.93 m.
+pub const MAX_THROW_REACH: f32 = 4.0;
+
 /// What one number of a document's `movement` may be: `min` to `max`, both good.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MovementLimit {
@@ -155,8 +165,13 @@ impl ControllerProfile {
         let positive = |field, value: f32| check(field, value, value > 0.0, "above 0");
         let not_negative = |field, value: f32| check(field, value, value >= 0.0, "at least 0");
 
-        positive("radius", self.radius)?;
-        check("height", self.height, self.height > 2.0 * self.radius, "above twice the radius")?;
+        check("radius", self.radius, self.radius >= MIN_SHAPE_EXTENT, "at least a millimetre")?;
+        check(
+            "height",
+            self.height,
+            self.cylinder() >= MIN_SHAPE_EXTENT,
+            "at least 2 mm above twice the radius",
+        )?;
         check(
             "skin",
             self.skin,
@@ -209,14 +224,17 @@ impl ControllerProfile {
             }
         }
         let Self { height, radius, skin, run_speed, walk_speed, run_stick, walk_stick, .. } = *self;
-        if height <= 2.0 * radius {
-            issues.push(format!("`height` is {height}: it must be above twice the radius, {radius}"));
+        if self.cylinder() < MIN_SHAPE_EXTENT {
+            issues.push(format!(
+                "`height` is {height}: it must be at least 2 mm above twice the radius, {radius}"
+            ));
         }
         if skin > radius / 4.0 {
             issues.push(format!("`skin` is {skin}: it must be at most a quarter of the radius, {radius}"));
         }
         if run_speed < walk_speed {
-            issues.push(format!("`run_speed` is {run_speed}: it must be at least `walk_speed`, {walk_speed}"));
+            issues
+                .push(format!("`run_speed` is {run_speed}: it must be at least `walk_speed`, {walk_speed}"));
         }
         if run_stick <= walk_stick {
             issues.push(format!("`run_stick` is {run_stick}: it must be above `walk_stick`, {walk_stick}"));
@@ -233,7 +251,20 @@ impl ControllerProfile {
                  {MAX_JUMP_REACH}"
             ));
         }
+        let throw = (run_speed * run_speed + speed * speed) / (2.0 * gravity);
+        if throw > MAX_THROW_REACH {
+            issues.push(format!(
+                "`run_speed` is {run_speed}: with a `jump_speed` of {speed} and a `gravity` of {gravity}, meeting a \
+                 curb in the air can throw someone {throw} m up, past the limit of {MAX_THROW_REACH}"
+            ));
+        }
         issues
+    }
+
+    /// The capsule's cylinder's half height, which the physics world holds to its smallest shape: a
+    /// capsule that's nearly a ball otherwise compiles, and then no world takes it.
+    fn cylinder(&self) -> f32 {
+        self.height / 2.0 - self.radius
     }
 
     /// Every number, in [`MOVEMENT_LIMITS`]' order: destructured, so a new field can't be forgotten.
@@ -349,20 +380,31 @@ mod tests {
             let bad: &[f32] = if limit.field == "coyote_ticks" {
                 &[limit.max + 1.0, 4e9]
             } else {
-                &[limit.max * 1.5, limit.max + 1.0, limit.min - 1.0, f32::INFINITY, f32::NEG_INFINITY, f32::NAN, 1e30]
+                &[
+                    limit.max * 1.5,
+                    limit.max + 1.0,
+                    limit.min - 1.0,
+                    f32::INFINITY,
+                    f32::NEG_INFINITY,
+                    f32::NAN,
+                    1e30,
+                ]
             };
             let named = format!("`{}`", limit.field);
             for &value in bad {
                 let issues = with(limit.field, value).document_issues();
-                assert!(issues.iter().any(|issue| issue.starts_with(&named)), "{named} at {value}: {issues:?}");
+                assert!(
+                    issues.iter().any(|issue| issue.starts_with(&named)),
+                    "{named} at {value}: {issues:?}"
+                );
             }
         }
     }
 
     #[test]
     fn what_a_number_must_be_is_said_with_its_unit() {
-        let issues = with("run_speed", 600.0).document_issues();
-        assert_eq!(issues, ["`run_speed` is 600: it must be 0.1 to 30 m/s"]);
+        let issues = with("deceleration", 6000.0).document_issues();
+        assert_eq!(issues, ["`deceleration` is 6000: it must be 1 to 2000 m/s²"]);
     }
 
     #[test]
@@ -370,7 +412,15 @@ mod tests {
         let good = ControllerProfile::default();
         for (profile, field) in [
             (ControllerProfile { height: 0.6, radius: 0.3, ..good }, "`height`"),
-            (ControllerProfile { skin: 0.05, radius: 0.1, height: 1.0, stance_radius: 0.05, ..good }, "`skin`"),
+            // The random attack's: a capsule that's nearly a ball, which no physics world takes.
+            (
+                ControllerProfile { height: 0.625_855_5, radius: 0.312_927_1, stance_radius: 0.0, ..good },
+                "`height`",
+            ),
+            (
+                ControllerProfile { skin: 0.05, radius: 0.1, height: 1.0, stance_radius: 0.05, ..good },
+                "`skin`",
+            ),
             (ControllerProfile { run_speed: 1.0, walk_speed: 2.0, ..good }, "`run_speed`"),
             (ControllerProfile { walk_stick: 0.9, run_stick: 0.5, ..good }, "`run_stick`"),
             (ControllerProfile { stance_radius: 0.5, radius: 0.3, ..good }, "`stance_radius`"),
@@ -384,12 +434,35 @@ mod tests {
     #[test]
     fn a_jump_can_only_reach_so_high() {
         let good = ControllerProfile::default();
-        let issues = ControllerProfile { gravity: 2.2, ..good }.document_issues();
-        assert!(issues.len() == 1 && issues[0].contains("`jump_speed`") && issues[0].contains("2.5"), "{issues:?}");
-        let highest = ControllerProfile { jump_speed: 10.0, gravity: 20.0, ..good };
+        let issues = ControllerProfile { gravity: 2.2, run_speed: 2.0, ..good }.document_issues();
+        assert!(
+            issues.iter().any(|issue| issue.starts_with("`jump_speed`") && issue.contains("2.5")),
+            "{issues:?}"
+        );
+        let highest = ControllerProfile { jump_speed: 10.0, gravity: 20.0, run_speed: 6.0, ..good };
         assert_eq!(highest.document_issues(), Vec::<String>::new(), "exactly the limit");
         let none = ControllerProfile { jump_speed: 0.0, ..good };
         assert_eq!(none.document_issues(), Vec::<String>::new(), "a character needn't jump");
+    }
+
+    /// The random attack found this one: at 13.5 m/s under a gravity of 2, a character with no jump at all
+    /// reached 6 m by running off a planter's edge in the air. It reads the three together, and leaves
+    /// room for what a person is likely to try at today's jump and gravity.
+    #[test]
+    fn what_a_curb_can_throw_someone_is_held_too() {
+        let good = ControllerProfile::default();
+        let thrown = ControllerProfile { run_speed: 13.5, gravity: 2.0, jump_speed: 0.0, ..good };
+        let issues = thrown.document_issues();
+        assert!(
+            issues.len() == 1 && issues[0].starts_with("`run_speed`") && issues[0].contains("`gravity`"),
+            "{issues:?}"
+        );
+        for run_speed in [8.0, 10.0, 11.0] {
+            let quick = ControllerProfile { run_speed, ..good };
+            assert_eq!(quick.document_issues(), Vec::<String>::new(), "{run_speed} m/s is a thing to try");
+        }
+        let heavy = ControllerProfile { run_speed: 30.0, gravity: 200.0, ..good };
+        assert_eq!(heavy.document_issues(), Vec::<String>::new());
     }
 
     /// The stricter level holds the other, at each end of each number and all at once.
@@ -410,8 +483,16 @@ mod tests {
         for corner in [
             ControllerProfile { height: 3.0, radius: 1.0, skin: 0.05, stance_radius: 1.0, ..good },
             ControllerProfile { height: 0.5, radius: 0.1, skin: 0.001, stance_radius: 0.0, ..good },
+            ControllerProfile { height: 0.603, radius: 0.3, ..good },
             ControllerProfile { walk_speed: 0.1, run_speed: 0.1, walk_stick: 0.05, run_stick: 0.1, ..good },
-            ControllerProfile { walk_speed: 15.0, run_speed: 30.0, walk_stick: 0.95, run_stick: 1.0, ..good },
+            ControllerProfile {
+                walk_speed: 15.0,
+                run_speed: 30.0,
+                walk_stick: 0.95,
+                run_stick: 1.0,
+                gravity: 200.0,
+                ..good
+            },
         ] {
             assert_eq!(corner.document_issues(), Vec::<String>::new());
             assert_eq!(corner.check(), Ok(()));

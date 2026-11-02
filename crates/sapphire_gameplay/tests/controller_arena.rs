@@ -13,8 +13,7 @@
 use sapphire_colliders::ColliderDocument;
 use sapphire_gameplay::{
     ActorActions, ActorId, ActorSpawn, Buttons, ControllerProfile, GroundMode, ResolvedProfile, SimConfig,
-    Simulation, Stick,
-    TickActions, actor_body,
+    Simulation, Stick, TickActions, actor_body,
 };
 use sapphire_math::{Vec2, Vec3};
 use sapphire_physics::{ColliderSet, Group, PhysicsWorld, Pose, QueryFilter, Shape};

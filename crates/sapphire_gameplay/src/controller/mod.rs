@@ -42,6 +42,17 @@
 //! frozen owner doesn't move and doesn't accumulate, and velocity integrates exactly, so a jump at half
 //! speed reaches the same height.
 //!
+//! # Where the numbers come from
+//!
+//! A fighter's document says how it moves, in its `movement` section, and [`MoveLibrary`] holds what its
+//! current revision works out to ([`ResolvedProfile`]). A step reads that first, and an actor whose
+//! document has no section reads the [`ProfileId`] it spawned with. So a save reaches the next step
+//! ([`crate::Simulation::tune_move_set`]): nothing about that actor's state changes for it, so a jump in
+//! the air finishes its arc under the new gravity, unless that's so light the arc would leave the world
+//! ([`ResolvedProfile::carried`]), and only the capsule is touched, around the same feet. An overlap that
+//! leaves it is what a spawn inside a wall gets, a push on its next move. Both real documents write out
+//! today's numbers. `sapphire_moves`' `MOVEMENT_LIMITS` says what a document may hold.
+//!
 //! # Who owns position
 //!
 //! For an actor with a controller the world's body is the truth, and [`ActorTransform::position`] is

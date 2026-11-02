@@ -694,6 +694,25 @@ mod tests {
         format!("{}{new}{}", &text[..at], &text[at + old.len()..])
     }
 
+    /// A fighter's `movement` is no row, so an edit of a move goes around it, byte for byte, and the file
+    /// still says what the parser reads of it.
+    #[test]
+    fn an_edit_leaves_a_fighters_movement_alone() {
+        const SECTION: &str = "movement: (";
+        let section = |text: &str| {
+            let start = text.find(SECTION).expect("the section");
+            text[start..start + text[start..].find("\n        ),").expect("its end")].to_owned()
+        };
+        let mut text = MovesText::new(PLAYER.to_owned());
+        assert_eq!(text.failure(), None);
+        let hit = entry(&text, "light_1", Track::Hitboxes, 0);
+        text.set_window(hit, 8, 12).expect("the edit");
+        assert_ne!(text.text(), PLAYER);
+        assert_eq!(section(text.text()), section(PLAYER));
+        let movement = text.document().expect("a document").fighter.as_ref().expect("a fighter").movement;
+        assert_eq!(movement, Some(sapphire_moves::ControllerProfile::default()));
+    }
+
     /// The tree finds every value the parser reads, in all the documents there are: this is what lets a
     /// real file be edited at all, and what would fail first on a layout nobody has written yet.
     #[test]

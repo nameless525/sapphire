@@ -67,7 +67,8 @@ pub struct ActorSpawn {
     /// The set of moves it plays. With none, it stands where it is.
     pub moves: Option<MoveSetId>,
     /// Gives the actor a character controller: a capsule in the world, standing at
-    /// [`Self::position`]. See [`crate::Simulation::add_controller_profile`].
+    /// [`Self::position`]. See [`crate::Simulation::add_controller_profile`]. The `movement` section of
+    /// its set's document, if there is one, is what it moves by instead.
     pub controller: Option<ProfileId>,
 }
 

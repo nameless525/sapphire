@@ -107,8 +107,8 @@ pub fn step_controller(
     tick.slide(state, motion, drive.mode == MovementMode::Free)?;
     tick.settle(state, &drive, start, fall_speed)?;
 
-    if want != Vec3::ZERO {
-        let target = det::yaw_of_direction(want);
+    let facing = drive.face.or_else(|| (want != Vec3::ZERO).then(|| det::yaw_of_direction(want)));
+    if let Some(target) = facing {
         transform.yaw = det::turn_towards(transform.yaw, target, profile.turn_rate() * dt);
     }
     let rotation = det::quat_from_rotation_y(transform.yaw);
@@ -124,7 +124,8 @@ pub fn step_controller(
 /// one bad table mustn't stop a whole step.
 fn sanitized(drive: &ControllerDrive) -> ControllerDrive {
     let root_motion = if drive.root_motion.is_finite() { drive.root_motion } else { Vec3::ZERO };
-    ControllerDrive { root_motion, ..*drive }
+    let face = drive.face.filter(|face| face.is_finite());
+    ControllerDrive { root_motion, face, ..*drive }
 }
 
 fn can_jump(state: &ControllerState) -> bool {

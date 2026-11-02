@@ -30,6 +30,8 @@
 //!   motion. The `resolve` module's docs say how a hit lands.
 //! - Perfect dodges and counters (M2 G4), through [`HitQuery::dodged`], the `resolve` module and the
 //!   `moves` module's counter window.
+//! - [`brain`] (M2 G6): what presses an enemy's intents and tilts its stick, on the same paths as a
+//!   player's, from a section of its move set's document.
 //!
 //! The rest arrives with M2's other G packages, each in its [`CombatSet`].
 //!
@@ -124,6 +126,7 @@ extern crate self as sapphire_gameplay;
 mod actions;
 mod actors;
 pub mod arena;
+pub mod brain;
 mod checksum;
 mod controller;
 mod cues;
@@ -139,6 +142,7 @@ pub mod targeting;
 
 pub use actions::{ActionsError, ActorActions, Buttons, Controls, Stick, TickActions, TickActionsFull};
 pub use actors::{ActorId, ActorRequests, ActorSpawn, ActorTable, ActorView, SpawnError};
+pub use brain::{Brain, BrainState};
 pub use checksum::StateHasher;
 pub use controller::{
     CharacterController, CharacterWorld, ControllerDrive, ControllerEvents, ControllerInput,

@@ -152,6 +152,9 @@ pub struct ControllerDrive {
     pub mode: MovementMode,
     /// Jump this tick if the character can, though no press came: how a buffered intent fires.
     pub jump: bool,
+    /// Turn toward this yaw this tick, at the profile's turn rate, instead of toward the stick: walking
+    /// one way while facing another, as an enemy circling its target does.
+    pub face: Option<f32>,
 }
 
 impl ControllerDrive {
@@ -162,27 +165,49 @@ impl ControllerDrive {
         gravity: true,
         mode: MovementMode::Free,
         jump: false,
+        face: None,
     };
 
     /// A strike on the ground: the table's motion alone, kept to the floor in the combat mode.
     #[must_use]
     pub const fn strike(root_motion: Vec3) -> Self {
-        Self { root_motion, locomotion: false, gravity: true, mode: MovementMode::Combat, jump: false }
+        Self {
+            root_motion,
+            locomotion: false,
+            gravity: true,
+            mode: MovementMode::Combat,
+            jump: false,
+            face: None,
+        }
     }
 
     /// A move that owns the character's height, such as a leap or an air attack.
     #[must_use]
     pub const fn flight(root_motion: Vec3) -> Self {
-        Self { root_motion, locomotion: false, gravity: false, mode: MovementMode::Combat, jump: false }
+        Self {
+            root_motion,
+            locomotion: false,
+            gravity: false,
+            mode: MovementMode::Combat,
+            jump: false,
+            face: None,
+        }
     }
 
     fn write_canonical(&self, hasher: &mut StateHasher) {
-        let Self { root_motion, locomotion, gravity, mode, jump } = *self;
+        let Self { root_motion, locomotion, gravity, mode, jump, face } = *self;
         hasher.vec3(root_motion);
         hasher.u8(u8::from(locomotion));
         hasher.u8(u8::from(gravity));
         hasher.u8(mode.code());
         hasher.u8(u8::from(jump));
+        match face {
+            Some(face) => {
+                hasher.u8(1);
+                hasher.f32(face);
+            }
+            None => hasher.u8(0),
+        }
     }
 }
 

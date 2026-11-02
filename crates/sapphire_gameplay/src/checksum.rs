@@ -12,6 +12,7 @@ use xxhash_rust::xxh3::Xxh3;
 
 use crate::actions::{ActorActions, Controls};
 use crate::actors::{ActorRequests, ActorTable};
+use crate::brain::{Brain, BrainState};
 use crate::controller::{CharacterController, CharacterWorld};
 use crate::cues::CueQueue;
 use crate::hits::HitQuery;
@@ -24,8 +25,8 @@ use crate::simulation::SimRng;
 /// Goes up when [`state_checksum`] starts writing something different, so a recorded checksum can't
 /// match by accident. Recorded replays re-record then (`docs/m2-plan.md` §3). 2: M2 G2's moves. 3: M2
 /// D4's hit queries. 4: M2 G1's controllers and their world. 5: M2 G3's fighters, slow motion and hit
-/// cues. 6: M2 G4's perfect dodges and counter windows.
-const CHECKSUM_LAYOUT: u32 = 6;
+/// cues. 6: M2 G4's perfect dodges and counter windows. 7: M2 G6's brains and a controller drive's facing.
+const CHECKSUM_LAYOUT: u32 = 7;
 
 /// A hasher over canonical bytes: XXH3-64, a published, frozen algorithm, unlike `DefaultHasher`,
 /// so a recorded checksum stays good.
@@ -273,6 +274,46 @@ fn write_fighter(hasher: &mut StateHasher, fighter: &Fighter) {
     write_slide(hasher, &fighter.slide);
 }
 
+fn write_time(hasher: &mut StateHasher, time: Option<sapphire_time::SimTime>) {
+    match time {
+        Some(time) => {
+            hasher.u8(1);
+            hasher.u64(time.as_subticks());
+        }
+        None => hasher.u8(0),
+    }
+}
+
+fn write_brain(hasher: &mut StateHasher, brain: &Brain) {
+    let Brain { target, state, patience_until, circle, stick, last_used } = *brain;
+    hasher.u32(target.map_or(0, |id| id.raw()));
+    match state {
+        BrainState::Pacing => hasher.u8(0),
+        BrainState::Attacking { serial } => {
+            hasher.u8(1);
+            hasher.u32(serial);
+        }
+        BrainState::Resting { until } => {
+            hasher.u8(2);
+            hasher.u64(until.as_subticks());
+        }
+        BrainState::Reacting { serial, rise_at } => {
+            hasher.u8(3);
+            hasher.u32(serial);
+            // `u32::MAX` stands for none, which no move's length reaches.
+            hasher.u32(rise_at.unwrap_or(u32::MAX));
+        }
+        BrainState::Defeated => hasher.u8(4),
+    }
+    hasher.u64(patience_until.as_subticks());
+    hasher.bytes(&circle.to_le_bytes());
+    hasher.bytes(&stick.x().to_le_bytes());
+    hasher.bytes(&stick.y().to_le_bytes());
+    for used in last_used {
+        write_time(hasher, used);
+    }
+}
+
 const fn outcome_code(outcome: HitOutcome) -> u8 {
     match outcome {
         HitOutcome::Flinched => 0,
@@ -360,6 +401,9 @@ pub(crate) fn state_checksum(world: &World) -> u64 {
         }
         if let Some(fighter) = actor.get::<Fighter>() {
             write_fighter(&mut hasher, fighter);
+        }
+        if let Some(brain) = actor.get::<Brain>() {
+            write_brain(&mut hasher, brain);
         }
     }
     write_cues(&mut hasher, world.resource::<CueQueue>());
@@ -626,6 +670,67 @@ mod sensitivity_tests {
         at(&mut world.get_mut::<Fighter>(entity).unwrap());
         flips::<Fighter>(&mut sim, swinging, "another refill time", |f| {
             f.poise_refills_at = Some(SimTime::from_subticks(8));
+        });
+    }
+
+    #[test]
+    fn every_field_of_a_brain_is_in_the_checksum() {
+        let at = |subticks| SimTime::from_subticks(subticks);
+        type Edit = fn(&mut Brain);
+        let edits: &[(&str, Edit)] = &[
+            ("its target", |b| b.target = ActorId::from_raw(99)),
+            ("when its patience runs out", |b| b.patience_until = SimTime::from_subticks(1)),
+            ("which way it circles", |b| b.circle = 1),
+            ("its stick's x", |b| b.stick = Stick::new(1, 0)),
+            ("its stick's y", |b| b.stick = Stick::new(0, 1)),
+            ("when it last used its first attack", |b| b.last_used[0] = Some(SimTime::from_subticks(1))),
+            ("when it last used its last attack", |b| {
+                b.last_used[sapphire_moves::MAX_BRAIN_ATTACKS - 1] = Some(SimTime::from_subticks(1));
+            }),
+        ];
+        let (mut sim, swinging, _) = world();
+        for (what, edit) in edits {
+            flips::<Brain>(&mut sim, swinging, what, edit);
+        }
+
+        // Each state from every other, and what each holds.
+        let states = [
+            BrainState::Pacing,
+            BrainState::Attacking { serial: 1 },
+            BrainState::Attacking { serial: 2 },
+            BrainState::Resting { until: at(1) },
+            BrainState::Resting { until: at(2) },
+            BrainState::Reacting { serial: 1, rise_at: None },
+            BrainState::Reacting { serial: 2, rise_at: None },
+            BrainState::Reacting { serial: 1, rise_at: Some(0) },
+            BrainState::Reacting { serial: 1, rise_at: Some(1) },
+            BrainState::Defeated,
+        ];
+        let sums: Vec<u64> = states
+            .iter()
+            .map(|&state| {
+                let world = sim.ecs_mut().world_mut();
+                let entity = world.resource::<ActorTable>().entity(swinging).unwrap();
+                world.get_mut::<Brain>(entity).unwrap().state = state;
+                sim.checksum()
+            })
+            .collect();
+        for (index, sum) in sums.iter().enumerate() {
+            assert!(!sums[..index].contains(sum), "{:?} looks like an earlier state", states[index]);
+        }
+    }
+
+    #[test]
+    fn a_drives_facing_is_in_the_checksum() {
+        let (mut sim, swinging, _) = world();
+        flips::<CharacterController>(&mut sim, swinging, "a drive's facing", |controller| {
+            controller.drive.face = Some(0.25);
+        });
+        let world = sim.ecs_mut().world_mut();
+        let entity = world.resource::<ActorTable>().entity(swinging).unwrap();
+        world.get_mut::<CharacterController>(entity).unwrap().drive.face = Some(0.25);
+        flips::<CharacterController>(&mut sim, swinging, "another facing", |controller| {
+            controller.drive.face = Some(0.5);
         });
     }
 

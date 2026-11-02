@@ -17,6 +17,7 @@ use crate::actions::{CurrentActions, TickActions, read_actions};
 use crate::actors::{
     self, ActorId, ActorRequests, ActorSpawn, ActorState, ActorTable, ActorView, SpawnError,
 };
+use crate::brain::{self, Brain};
 use crate::checksum;
 use crate::controller::{
     self, CharacterController, CharacterWorld, ControllerProfile, PhysicsWorldError, ProfileError, ProfileId,
@@ -154,7 +155,10 @@ impl Simulation {
             );
         });
         ecs.add_systems(FixedFirst, read_actions.in_set(SimSet::Input))
-            .add_systems(FixedCombat, intents::press_intents.in_set(CombatSet::Intents))
+            .add_systems(
+                FixedCombat,
+                (intents::press_intents, brain::think).chain().in_set(CombatSet::Intents),
+            )
             .add_systems(FixedCombat, moves::settle_cancels.in_set(CombatSet::Cancels))
             .add_systems(FixedCombat, moves::advance_moves.in_set(CombatSet::Moves))
             .add_systems(
@@ -479,6 +483,24 @@ impl Simulation {
         true
     }
 
+    /// Gives a live actor a brain that fights `target`, from its next step, between steps. Returns whether
+    /// the actor's set says how it fights ([`sapphire_moves::MoveSet::brain`]). See [`crate::brain`].
+    pub fn give_brain(&mut self, id: ActorId, target: ActorId) -> bool {
+        let world = self.ecs.world_mut();
+        let Some(entity) = world.resource::<ActorTable>().entity(id) else { return false };
+        let set = world.get::<MoveRunner>(entity).and_then(MoveRunner::set);
+        let library = world.resource::<MoveLibrary>();
+        let Some(def) = set.and_then(|set| library.current(set)).and_then(MoveSet::brain) else {
+            return false;
+        };
+        let now = world.get::<EntityClock>(entity).expect("every pooled entity has a clock").0.now();
+        let mut rng = world.resource::<SimRng>().0;
+        let brain = Brain::fighting(target, def, now, &mut rng);
+        world.resource_mut::<SimRng>().0 = rng;
+        *world.get_mut::<Brain>(entity).expect("every pooled entity has a brain") = brain;
+        true
+    }
+
     /// Slows the world for a number of steps, between steps: [`SlowMotion::request`], as a test or a
     /// tool would. A system does the same with `ResMut<SlowMotion>`.
     pub fn request_slow_motion(&mut self, per_mille: u32, steps: u16) {
@@ -536,6 +558,7 @@ fn view(world: &World, id: ActorId, entity: Entity) -> ActorView {
     let runner = actor.get::<MoveRunner>().expect("every pooled entity has a runner");
     let output = actor.get::<MoveOutput>().expect("every pooled entity has an output");
     let fighter = *actor.get::<Fighter>().expect("every pooled entity has a fighter");
+    let brain = *actor.get::<Brain>().expect("every pooled entity has a brain");
     ActorView {
         id,
         position: transform.position,
@@ -546,5 +569,6 @@ fn view(world: &World, id: ActorId, entity: Entity) -> ActorView {
         moves: MoveRead::of(runner, output, world.resource::<MoveLibrary>()),
         controller: *actor.get::<CharacterController>().expect("every pooled entity has a controller"),
         fighter,
+        brain,
     }
 }

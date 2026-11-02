@@ -257,6 +257,37 @@ fn facing_follows_the_stick_at_the_turn_rate() {
     near(rig.transform.yaw, std::f32::consts::FRAC_PI_2, 1e-5, "facing +X");
 }
 
+/// A drive's facing turns the body at the same rate, whatever the stick says, so a character can walk
+/// one way and look another, as a brain circling its target does, or stand and turn. A bad number turns
+/// nothing, and a drive lasts a tick.
+#[test]
+fn a_drives_facing_beats_the_sticks() {
+    let face = |yaw: f32, stick: Vec2| ControllerInput {
+        stick,
+        drive: ControllerDrive { face: Some(yaw), ..ControllerDrive::NONE },
+        ..ControllerInput::default()
+    };
+    let mut rig = Rig::new(vec![floor(1)], Vec3::ZERO).settled();
+    rig.input(face(0.0, RIGHT));
+    assert!(rig.feet().x > 0.0, "the stick still moves it");
+    assert_eq!(rig.transform.yaw, 0.0, "and doesn't turn it");
+
+    let quarter = std::f32::consts::FRAC_PI_2;
+    rig.input(face(quarter, Vec2::ZERO));
+    near(rig.transform.yaw, 18.0_f32.to_radians(), 1e-5, "one tick's turn, standing");
+    for _ in 0..4 {
+        rig.input(face(quarter, Vec2::ZERO));
+    }
+    near(rig.transform.yaw, quarter, 1e-5, "and it arrives");
+    let turned = rig.world.body_pose(BODY).expect("there").rotation;
+    assert_eq!(turned, det::quat_from_rotation_y(rig.transform.yaw), "the body turned with it");
+
+    rig.input(face(f32::NAN, Vec2::ZERO));
+    near(rig.transform.yaw, quarter, 1e-5, "a bad number turns nothing");
+    rig.stick(Vec2::new(0.0, 1.0));
+    assert!(rig.transform.yaw < quarter, "with no drive, the stick has it again");
+}
+
 // --- Jumps, gravity, landings ---
 
 /// y = v t − g t² / 2 at every tick, with the tick's average velocity making it exact. It would be

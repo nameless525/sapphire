@@ -21,6 +21,7 @@ use sapphire_moves::MoveSet;
 use sapphire_time::{SimDuration, SimTime};
 
 use crate::actions::Controls;
+use crate::brain::Brain;
 use crate::controller::{CharacterController, CharacterWorld, ProfileId};
 use crate::hits::{HitQuery, MAX_HURTBOXES};
 use crate::intents::IntentRing;
@@ -214,6 +215,7 @@ struct ActorBundle {
     target: WarpTarget,
     controller: CharacterController,
     fighter: Fighter,
+    brain: Brain,
 }
 
 /// Spawns the pool and creates the actor resources, before the world's first step.
@@ -231,6 +233,7 @@ pub(crate) fn create_pool(world: &mut World, capacity: u32) {
             target: WarpTarget::default(),
             controller: CharacterController::default(),
             fighter: Fighter::default(),
+            brain: Brain::default(),
         });
         pool.push(entity.id());
     }
@@ -249,6 +252,7 @@ pub(crate) type ActorState<'w> = (
     &'w mut WarpTarget,
     &'w mut CharacterController,
     &'w mut Fighter,
+    &'w mut Brain,
 );
 
 /// What a query for [`ActorState`] hands over.
@@ -262,6 +266,7 @@ type ActorStateItem<'w> = (
     Mut<'w, WarpTarget>,
     Mut<'w, CharacterController>,
     Mut<'w, Fighter>,
+    Mut<'w, Brain>,
 );
 
 /// `FixedPost`, and straight after a spawn or despawn between steps: resolves everything queued, in
@@ -305,6 +310,7 @@ fn reset_actor(
         mut target,
         mut controller,
         mut fighter,
+        mut brain,
     ): ActorStateItem<'_>,
     id: ActorId,
     spawn: ActorSpawn,
@@ -322,6 +328,7 @@ fn reset_actor(
     *controller = characters.spawned(id, spawn.controller, &transform);
     let def = spawn.moves.and_then(|set| library.current(set)).and_then(MoveSet::fighter);
     *fighter = def.map_or_else(Fighter::default, Fighter::new);
+    *brain = Brain::default();
 }
 
 /// A live actor's public state, read between steps. Presentation interpolates between two of
@@ -344,4 +351,6 @@ pub struct ActorView {
     pub controller: CharacterController,
     /// Its health and poise.
     pub fighter: Fighter,
+    /// What's thinking for it, if anything: see [`crate::Simulation::give_brain`].
+    pub brain: Brain,
 }

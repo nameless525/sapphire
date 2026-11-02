@@ -6,7 +6,7 @@
 //!   to it: what lands on an actor lands on the scene's character, wherever the fight has walked to, at
 //!   that place on its own surface. A fight with its actors drawn takes the simulation's places as they
 //!   are, and needs none of this.
-//! - **A camera that isn't the director's.** The scene frames its stage with [`OrbitCamera`], so a
+//! - **A camera that isn't the director's.** The scene frames its stage with `OrbitCamera`, so a
 //!   [`ShakeStack`] plays shakes on it, from the director's own tuning. A stage with a
 //!   `sapphire_camera::CameraDirector` hands that to the dispatcher instead, with no other change.
 //! - **Sound and rumble are the windowed app's.** A capture or a bench never mounts `audio.spack`

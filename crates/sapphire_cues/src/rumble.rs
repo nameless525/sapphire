@@ -52,7 +52,7 @@ struct Playing {
 }
 
 /// The rumbles playing, and what the sink was last told. Fixed size, so starting one and updating
-/// allocate nothing. See the [module docs](self).
+/// allocate nothing. Each motor reads the strongest still playing.
 #[derive(Clone, Debug)]
 pub struct RumbleMixer {
     playing: [Playing; MAX_RUMBLES],

@@ -72,9 +72,8 @@ fn a_frame_of_two_steps_loses_nothing() {
     while one.frame(1).is_some() {}
     let mut two = Fight::new("fight");
     let mut on_first_step = 0;
-    loop {
-        // By hand, to catch a hit on the first of the two.
-        let Some(first) = two.step() else { break };
+    // By hand, to catch a hit on the first of the two.
+    while let Some(first) = two.step() {
         let second = two.step().unwrap_or(0);
         if first > 0 && second == 0 {
             on_first_step += 1;

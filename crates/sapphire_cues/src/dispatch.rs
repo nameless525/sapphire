@@ -662,7 +662,7 @@ mod tests {
         let (effects, presets) = (VfxLibrary::default_effects(), ScreenLibrary::default_effects());
         let resolve = |row: CueRow| {
             let table = CueTable::new(vec![row]).expect("valid");
-            CueDispatcher::new(&table, &effects, &presets, &tuning).err().expect("refused")
+            CueDispatcher::new(&table, &effects, &presets, &tuning).expect_err("refused")
         };
         let effect = with_effect("a", EffectPlace::Hit, EffectOwner::World);
         let effect = CueRow {

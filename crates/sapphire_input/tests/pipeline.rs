@@ -629,7 +629,7 @@ fn the_active_gamepad_is_the_pad_in_use() {
     let (first, second) = (GamepadId::from_raw(8), GamepadId::from_raw(9));
     let added = GamepadEvent::Added { kind: GamepadType::XboxOne };
     let press = GamepadEvent::Button { button: GamepadButton::South, down: true };
-    let mut send = |rig: &mut Rig, t: u64, gamepad, event| {
+    let send = |rig: &mut Rig, t: u64, gamepad, event| {
         rig.input.handle_event(&Event::Gamepad { timestamp: ms(t), gamepad, event });
     };
     send(&mut rig, 1, first, added);

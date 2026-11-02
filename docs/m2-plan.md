@@ -183,5 +183,6 @@ The packages fall into five phases. Within a phase, packages that don't depend o
    - **Zenless Zone Zero,** as the default you confirmed (2026-11-01). A few reference clips or a written description would still help, as the look references did, kept outside the repo.
 5. **A gamepad on this Mac,** by Feel review 1. Tell me which one, so its bindings match.
 6. **Three feel reviews,** about half an hour each, at the ends of phases 2, 3 and 4. You launch the build, since it opens a window, and tell me what's wrong in your own words.
+   - **E3 leaves for the first one:** which sound plays for which hit (`content/audio/`, data), the rumble's strength and length (`crates/sapphire_cues/default_cues.ron`), and SDL's rumble on a real pad, which has only run through a fake sink.
 7. **A physical phone,** by phase 5. An iPhone also needs a signing identity; [m1-exit-run.md](m1-exit-run.md) lists the setup. These also clear M1's owed device checks.
 8. **Optional:** a decision on animation quality if Feel review 2 finds authored motion isn't good enough. That is the moment to consider an animator or a bought pack.

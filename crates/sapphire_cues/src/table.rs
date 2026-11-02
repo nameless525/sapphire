@@ -174,6 +174,8 @@ pub enum CueTableError {
     UnknownPreset { row: String, name: String },
     #[error("cue `{row}`: no camera shake preset `{name}`")]
     UnknownShake { row: String, name: String },
+    #[error("cue `{row}`: sound {sound} wasn't loaded when the app started, so it takes a restart")]
+    UnloadedSound { row: String, sound: AssetId },
 }
 
 /// What each gameplay cue fires (a `CueTable` document, schema 1): one row per cue, or per cue and hit
@@ -246,6 +248,17 @@ impl CueTable {
         &self.rows
     }
 
+    /// An error naming the first row playing a `sapphire_audio` cue outside `loaded`, which a mixer would
+    /// drop each time it fired. For whoever takes a new table into an app that has already loaded sounds.
+    pub fn check_sounds(&self, loaded: &[AssetId]) -> Result<(), CueTableError> {
+        for row in &self.rows {
+            if let Some(&sound) = row.sounds.iter().find(|sound| !loaded.contains(sound)) {
+                return Err(CueTableError::UnloadedSound { row: row.label(), sound });
+            }
+        }
+        Ok(())
+    }
+
     /// Every `sapphire_audio` cue the table plays, each once: what an app that plays sound loads and
     /// adds to its `AudioSystem`.
     #[must_use]
@@ -308,6 +321,20 @@ mod tests {
         let mut second = row("b");
         second.sounds = vec![id];
         assert_eq!(CueTable::new(vec![first, second]).expect("valid").sound_cues(), [id]);
+    }
+
+    #[test]
+    fn check_sounds_names_the_row_playing_what_is_not_loaded() {
+        let loaded = AssetId::from_text("11111111-2222-4333-8444-555555555555");
+        let other = AssetId::from_text("99999999-2222-4333-8444-555555555555");
+        let plain = CueRow { sounds: vec![loaded], ..row("a") };
+        let heavy = CueRow { weight: Some(Weight::Heavy), sounds: vec![loaded, other], ..row("b") };
+        assert_eq!(CueTable::new(vec![plain.clone()]).expect("valid").check_sounds(&[loaded]), Ok(()));
+        assert_eq!(CueTable::new(vec![row("a")]).expect("valid").check_sounds(&[]), Ok(()));
+        assert_eq!(
+            CueTable::new(vec![plain, heavy]).expect("valid").check_sounds(&[loaded]),
+            Err(CueTableError::UnloadedSound { row: "b (Heavy)".to_owned(), sound: other })
+        );
     }
 
     #[test]

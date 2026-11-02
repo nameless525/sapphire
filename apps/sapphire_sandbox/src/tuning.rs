@@ -14,9 +14,9 @@
 //!   the next state's start ([`sapphire_anim::GraphPlayer::replace`]), on the graph show's character or a
 //!   fight's player. Its pack's route was N3's, and still works, and is the enemy's graph's only one.
 //! - **The cue table** (`default_cues.ron`, M2 E3): what fires a fight's cues takes it if every name it holds
-//!   is there. Camera tuning can move a shake's ID, so a new tuning resolves the table's shakes again
-//!   ([`Scene::set_camera_tuning`]) and is refused if one has gone. **Colliders aren't tuned**, and a running
-//!   fight never changes under its feet.
+//!   is there and every sound it plays was loaded as the app started. Camera tuning can move a shake's ID, so
+//!   a new tuning resolves the table's shakes again ([`Scene::set_camera_tuning`]) and is refused if one has
+//!   gone. **Colliders aren't tuned**, and a running fight never changes under its feet.
 //!
 //! A document that doesn't parse or check keeps what's playing, and says why in the log, in the overlay's
 //! stats panel and, pushed, in `link push`'s non-zero exit. The next good one works.

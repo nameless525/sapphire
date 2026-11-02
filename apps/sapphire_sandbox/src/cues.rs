@@ -107,6 +107,9 @@ impl CueSounds<'_> {
 /// What's firing, and what it fires into that the scene doesn't hold itself.
 pub(crate) struct CueShow {
     table: CueTable,
+    /// The sounds of the table it started with: what an app loads for it, once.
+    #[cfg(any(test, feature = "dev"))]
+    loaded_sounds: Vec<sapphire_assets::AssetId>,
     dispatcher: CueDispatcher,
     world: VfxWorld,
     shakes: OrbitShakes,
@@ -135,6 +138,8 @@ impl CueShow {
         let tuning = CameraTuning::default_tuning();
         let dispatcher = CueDispatcher::new(&table, &effects, presets, &tuning)?;
         Ok(Self {
+            #[cfg(any(test, feature = "dev"))]
+            loaded_sounds: table.sound_cues(),
             table,
             dispatcher,
             world: VfxWorld::new(effects, budget, SEED),
@@ -249,9 +254,11 @@ impl CueShow {
         Ok(())
     }
 
-    /// Takes a new table, or says why not: it names what its libraries don't have.
+    /// Takes a new table, or says why not: it names what its libraries don't have, or a sound that wasn't
+    /// loaded as the app started, which would otherwise be dropped each time it fired.
     #[cfg(any(test, feature = "dev"))]
     pub fn take_table(&mut self, table: CueTable, presets: &ScreenLibrary) -> Result<(), CueTableError> {
+        table.check_sounds(&self.loaded_sounds)?;
         self.dispatcher.resolve(&table, self.world.library(), presets, &self.shakes.tuning)?;
         self.table = table;
         Ok(())
@@ -395,6 +402,35 @@ mod tests {
         assert!(matches!(error, CueTableError::UnknownPreset { .. }), "{error}");
         assert_eq!(show.table().rows().len(), rows);
         show.take_table(CueTable::default_table(), &presets).expect("the shipped one again");
+    }
+
+    /// Sounds load once, as the app starts, so a new table playing another would be silent while its
+    /// reply said it had been taken. One the app did load is fine, even after a table that dropped it.
+    #[test]
+    fn a_reload_playing_a_sound_nobody_loaded_is_refused() {
+        let presets = ScreenLibrary::default_effects();
+        let mut show = CueShow::new(VfxBudget::DESKTOP_LOW, &presets).expect("resolves");
+        let rows = show.table().rows().len();
+        let loaded = show.table().sound_cues()[0];
+        let playing = |sound: sapphire_assets::AssetId| {
+            CueTable::from_ron(&format!(
+                r#"(type: "sapphire::cues::CueTable", version: 1, data: (rows: [
+                    (cue: "hit_landed", sounds: ["{sound}"]),
+                ]))"#
+            ))
+            .expect("valid on its own")
+        };
+        let unloaded = sapphire_assets::AssetId::from_text("99999999-2222-4333-8444-555555555555");
+        let error = show.take_table(playing(unloaded), &presets).expect_err("nothing loaded it");
+        assert!(matches!(error, CueTableError::UnloadedSound { .. }), "{error}");
+        assert_eq!(show.table().rows().len(), rows);
+
+        let silent = CueTable::from_ron(
+            r#"(type: "sapphire::cues::CueTable", version: 1, data: (rows: [(cue: "hit_landed")]))"#,
+        )
+        .expect("valid on its own");
+        show.take_table(silent, &presets).expect("it plays nothing");
+        show.take_table(playing(loaded), &presets).expect("the app still holds this one");
     }
 
     /// What a fired row asks of a camera.

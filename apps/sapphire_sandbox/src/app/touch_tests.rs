@@ -188,6 +188,91 @@ fn touch_walks_the_player_where_the_view_looks_and_starts_a_move() {
     assert_eq!(rig.player().moves.current.expect("running").serial, serial, "one press, held");
 }
 
+/// What a desktop's window has in its player's hands: the keyboard and the mouse, under the live HUD's
+/// zones, whose stick and drag go in as zeros every frame nobody touches them.
+#[test]
+fn the_keyboard_and_the_mouse_play_a_fight_under_the_huds_zones() {
+    let mut rig = Rig::fight();
+    let size = sapphire_platform::Size { width: SIZE.x as u32, height: SIZE.y as u32 };
+    rig.input = SandboxInput::new(true, true, size).expect("the default bindings");
+    rig.input.listen_for_fight_restart().expect("the context");
+    rig.frame();
+    let window = WindowId::from_raw(1);
+
+    // W walks away from the view.
+    let view = rig.scene.camera().camera_data(1.0).view;
+    let forward = Vec3::new(-view.x_axis.z, 0.0, -view.z_axis.z).normalize();
+    let start = rig.player().position;
+    rig.key(1, Scancode::W, true);
+    for _ in 0..30 {
+        rig.frame();
+        rig.step();
+    }
+    let walked = rig.player().position - start;
+    assert!(walked.length() > 0.5, "it walked: {walked}");
+    assert!(walked.normalize().dot(forward) > 0.99, "away from the view: {walked}, the view's {forward}");
+    rig.key(1, Scancode::W, false);
+    assert_eq!(rig.running(), None, "no verb yet");
+
+    // The left button is the light attack, once.
+    let button = |at: u64, down| {
+        Event::MouseButton(sapphire_platform::MouseButtonEvent {
+            timestamp: ms(at),
+            window,
+            button: sapphire_platform::MouseButton::Left,
+            down,
+            clicks: 1,
+            x: 10.0,
+            y: 10.0,
+        })
+    };
+    rig.event(&button(rig.now + 1, true));
+    rig.frame();
+    rig.step();
+    assert_eq!(rig.running(), Some(sapphire_core::Name::new("light_1")));
+    rig.event(&button(rig.now + 1, false));
+    rig.frame();
+    rig.step();
+
+    // The mouse turns the view its way: right to the right, up to look up, the wheel away to come closer.
+    let motion = Event::MouseMotion(sapphire_platform::MouseMotionEvent {
+        timestamp: ms(rig.now + 1),
+        window,
+        x: 20.0,
+        y: 5.0,
+        dx: 10.0,
+        dy: -5.0,
+    });
+    rig.event(&motion);
+    rig.event(&Event::MouseWheel(sapphire_platform::MouseWheelEvent {
+        timestamp: ms(rig.now + 1),
+        window,
+        x: 0.0,
+        y: 1.0,
+    }));
+    rig.frame();
+    let (look, zoom) = rig.input.camera_motion();
+    assert!(look.x < 0.0, "yaw toward +X turns left, so right lowers it: {look}");
+    assert!(look.y < 0.0, "above zero looks down, so up lowers it: {look}");
+    assert!(zoom < 0.0, "away from the player moves closer: {zoom}");
+    rig.frame();
+    assert_eq!(rig.input.camera_motion().0, Vec2::ZERO, "motion is this frame's alone");
+
+    // Esc pauses and resumes, and R starts the fight over.
+    rig.key(1, Scancode::ESCAPE, true);
+    rig.key(2, Scancode::ESCAPE, false);
+    assert!(!rig.frame());
+    assert!(rig.input.is_paused());
+    rig.key(1, Scancode::ESCAPE, true);
+    rig.key(2, Scancode::ESCAPE, false);
+    assert!(!rig.frame());
+    rig.frame();
+    assert!(!rig.input.is_paused());
+    rig.key(1, Scancode::R, true);
+    rig.frame();
+    assert!(rig.input.take_actions().restart_fight);
+}
+
 #[test]
 fn a_tap_inside_a_frame_is_a_press_and_a_dodge_is_a_dodge() {
     let mut rig = Rig::fight();

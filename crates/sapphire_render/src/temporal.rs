@@ -59,7 +59,9 @@
 //! change), when the output's size changes, and on a camera cut
 //! ([`ViewData::cut`](crate::ViewData::cut)). A render-scale change keeps it: the history is at
 //! the output's size, so it stays valid while dynamic resolution moves the scene's, as FSR 2 and
-//! DLSS keep theirs (spec §5.12, "As built (M1 R7)").
+//! DLSS keep theirs (spec §5.12, "As built (M1 R7)"). A frame that never runs (its graph dropped
+//! or rejected) writes nothing to them, and takes nothing from the frames after: they read the
+//! history of the last frame that ran, at its place in the jitter (`Temporal::frame_lost`).
 //!
 //! `temporal.wgsl` is a program of its own ([`ShaderFile::Temporal`](crate::ShaderFile)): an
 //! edited one rebuilds the mask's and the resolve's pipelines on the layouts they had
@@ -482,6 +484,18 @@ pub(crate) struct Temporal {
     /// Frames begun since the renderer was created: the jitter's index.
     frames: u64,
     stats: TemporalStats,
+    /// What [`Self::begin`] last found, for [`Self::frame_lost`].
+    before: Before,
+}
+
+/// The state [`Temporal::begin`] moves on.
+#[derive(Clone, Copy, Debug, Default)]
+struct Before {
+    write: usize,
+    /// No more than the frame found: never for a frame that made new, empty histories.
+    previous: bool,
+    frames: u64,
+    stats: TemporalStats,
 }
 
 /// What [`Temporal::begin`] decided for a frame.
@@ -519,6 +533,7 @@ impl Temporal {
             passes: TemporalPasses::new(device, cache, sources),
             frames: 0,
             stats: TemporalStats { enabled: true, ..TemporalStats::default() },
+            before: Before::default(),
         }
     }
 
@@ -545,6 +560,7 @@ impl Temporal {
     ) -> TemporalFrame {
         let device = &self.passes.device;
         let textures = &mut self.textures;
+        let (write, frames, stats) = (textures.write, self.frames, self.stats);
         textures.write = 1 - textures.write;
         let resized =
             textures.history.iter().any(|history| history.as_ref().is_none_or(|h| h.size != output));
@@ -560,6 +576,7 @@ impl Temporal {
             *depth = Some(Persistent::new(device, "kept depth", input, DEPTH_FORMAT, usage));
         }
         let reset = history_reset(textures.previous, resized, cut);
+        self.before = Before { write, previous: textures.previous && !resized, frames, stats };
         textures.previous = true;
 
         let phases = jitter_phases(input.1, output.1);
@@ -602,6 +619,15 @@ impl Temporal {
             reset,
         };
         TemporalFrame { jitter, fade_turn, reset }
+    }
+
+    /// The frame [`Self::begin`] started never ran, so it wrote nothing: the frames after read the
+    /// history of the last one that did, at the jitter's place after it. Textures it made for a
+    /// new size stay, since sizes are checked again; they hold nothing to read.
+    pub(crate) fn frame_lost(&mut self) {
+        let Before { write, previous, frames, stats } = self.before;
+        (self.textures.write, self.textures.previous) = (write, previous);
+        (self.frames, self.stats) = (frames, stats);
     }
 
     /// The textures this frame imports, and the passes it records, borrowed apart.

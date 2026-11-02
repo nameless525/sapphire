@@ -321,7 +321,8 @@ pub struct ViewData {
     pub camera: CameraData,
     /// The camera cut to a new shot this frame, or jumped (a teleport, a respawn): nothing it
     /// drew before carries over. Temporal AA drops its history, and velocity counts the camera
-    /// as unmoved. Set it for the first frame of the new shot only.
+    /// as unmoved. Set it for the first frame of the new shot only: if that frame is lost before
+    /// its passes run, the cut applies to the next one that runs.
     pub cut: bool,
 }
 

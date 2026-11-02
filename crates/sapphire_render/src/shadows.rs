@@ -163,7 +163,6 @@ pub(crate) mod fit;
 mod plan;
 
 use std::num::NonZeroU64;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use bevy_reflect::Reflect;
 use bytemuck::{Pod, Zeroable};
@@ -461,11 +460,6 @@ pub(crate) struct Shadows {
     /// A face draws this frame: only faces read what the face pass writes.
     faces: bool,
     plan: ShadowPlan,
-    /// A cascade pass of the frame last planned ran. Passes record only while their graph
-    /// executes, so a frame never recorded, or recorded into a graph that was dropped, rejected
-    /// or sized to nothing, leaves it unset (M1 review RA-001). Atomic, since graphs record
-    /// their passes on several threads.
-    cascades_ran: AtomicBool,
 }
 
 /// What the shadow pipelines are built with besides their module: the casters' layout, the face
@@ -608,7 +602,6 @@ impl Shadows {
             entries: 0,
             faces: false,
             plan: ShadowPlan::default(),
-            cascades_ran: AtomicBool::new(false),
         };
         if settings.is_some() {
             let pipelines = shadows.builder.build_pipelines(device, sources, &[PositionFormat::Unorm16]);
@@ -711,10 +704,6 @@ impl Shadows {
         characters: CharacterTable<'_>,
     ) {
         let Some(settings) = self.settings else { return };
-        // What the last plan kept of the cascades it drew holds only if their passes ran.
-        if !self.cascades_ran.swap(false, Ordering::Relaxed) {
-            self.plan.not_drawn();
-        }
         self.entries = characters.count;
         let face = Shading::Character(Part::Face);
         self.faces =
@@ -729,6 +718,12 @@ impl Shadows {
             characters,
             self.textures.atlas_size,
         );
+    }
+
+    /// The last frame planned never ran (`Renderer::settle_last_frame`), which covers its cascade
+    /// passes (M1 review RA-001): what the plan kept of the cascades it drew doesn't hold.
+    pub(crate) fn frame_lost(&mut self) {
+        self.plan.not_drawn();
     }
 
     /// Counters from the last frame with a view.
@@ -803,7 +798,6 @@ impl Shadows {
             let layer = &self.textures.layers[index];
             let bit = 1u8 << index;
             graph.add_pass(CASCADE_PASSES[index]).side_effect().record(move |ctx| {
-                self.cascades_ran.store(true, Ordering::Relaxed);
                 let timestamps = ctx.timestamp_writes();
                 let mut pass =
                     begin_depth_pass(ctx.encoder, CASCADE_PASSES[index], layer, timestamps, labels);

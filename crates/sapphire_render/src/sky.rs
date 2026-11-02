@@ -462,6 +462,9 @@ struct SkyCube {
     /// The whole cube, for readers.
     view: wgpu::TextureView,
     schedule: FaceSchedule,
+    /// [`Self::schedule`] before the last recorded frame took its faces, and the counters of
+    /// [`SkyStats`] that followed, for [`Sky::frame_lost`].
+    before: (FaceSchedule, u64, Option<u8>),
 }
 
 /// Which cube faces each recorded frame draws: all six the first time, then one every
@@ -495,6 +498,14 @@ impl FaceSchedule {
         let face = self.next_face;
         self.next_face = (face + 1) % 6;
         face..face + 1
+    }
+
+    /// Goes back to `before`, as the last call to [`Self::faces_due`] found it, since the frame
+    /// it was for never ran, but keeps a fresh start since (new shaders: every face is due).
+    fn restore(&mut self, before: Self) {
+        let filled = self.filled;
+        *self = before;
+        self.filled &= filled;
     }
 }
 
@@ -785,6 +796,7 @@ impl Sky {
                 (p.uniforms, p.material, p.layers)
             });
         let material = &materials[material.index()].bind_group;
+        self.cube.before = (self.cube.schedule, self.stats.cube_faces, self.stats.last_face);
         let faces = self.cube.schedule.faces_due();
         self.stats.last_face = None;
         if !faces.is_empty() {
@@ -802,6 +814,13 @@ impl Sky {
             material,
         });
         (uniforms, &self.uniforms, draw, cube)
+    }
+
+    /// The frame [`Self::record`] took its cube faces for never ran: they are due again.
+    pub(crate) fn frame_lost(&mut self) {
+        let (schedule, cube_faces, last_face) = self.cube.before;
+        self.cube.schedule.restore(schedule);
+        (self.stats.cube_faces, self.stats.last_face) = (cube_faces, last_face);
     }
 
     /// The sun's disc as the prepared frame draws it, for post's lens flare: `None` before the
@@ -878,7 +897,8 @@ impl SkyCube {
             dimension: Some(wgpu::TextureViewDimension::Cube),
             ..Default::default()
         });
-        Self { texture, faces, view, schedule: FaceSchedule::new(settings.cube_interval) }
+        let schedule = FaceSchedule::new(settings.cube_interval);
+        Self { texture, faces, view, schedule, before: (schedule, 0, None) }
     }
 
     fn format(&self) -> wgpu::TextureFormat {
@@ -1207,6 +1227,27 @@ mod tests {
             Mat3::from_cols_array_2d(&uniforms.celestial.map(|column| [column[0], column[1], column[2]]));
         let star = Vec3::new(0.3, 0.5, 0.8).normalize();
         assert!((celestial * (packet.celestial.sphere * star)).abs_diff_eq(star, 1e-6));
+    }
+
+    #[test]
+    fn lost_frames_give_their_faces_back() {
+        let mut schedule = FaceSchedule::new(2);
+        let before = schedule;
+        assert_eq!(schedule.faces_due(), 0..6);
+        schedule.restore(before);
+        assert_eq!(schedule, FaceSchedule::new(2), "the first fill is due again");
+        assert_eq!(schedule.faces_due(), 0..6);
+        assert_eq!(schedule.faces_due(), 0..0);
+        let before = schedule;
+        assert_eq!(schedule.faces_due(), 0..1);
+        schedule.restore(before);
+        assert_eq!(schedule.faces_due(), 0..1, "the same face is due again");
+        // New shaders between the lost frame and the next: every face is due.
+        let before = schedule;
+        assert_eq!(schedule.faces_due(), 0..0);
+        schedule = FaceSchedule::new(2);
+        schedule.restore(before);
+        assert_eq!(schedule.faces_due(), 0..6);
     }
 
     #[test]

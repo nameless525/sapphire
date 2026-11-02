@@ -19,6 +19,9 @@ use sapphire_render::{
 };
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 
+mod lost_frames;
+mod sequences;
+
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
 fn gpu() -> GpuContext {
@@ -594,7 +597,11 @@ fn quantized_meshes_match_their_f32_reference() {
 /// A sphere skinned to two palette entries, the upper half bending with the second, and with one
 /// morph target that would move every vertex half a meter, at full default weight.
 fn skinned_sphere(material: AnimeCharacterMaterial) -> Mesh {
-    let mut mesh = sphere(material);
+    with_skin(sphere(material))
+}
+
+/// `mesh`, about a unit around the origin, with the skin and morph target [`skinned_sphere`] has.
+fn with_skin(mut mesh: Mesh) -> Mesh {
     let influences: Vec<VertexInfluence> = (0..mesh.streams.len())
         .map(|v| {
             let y = mesh.streams.vertex(v).expect("in range").position[1];

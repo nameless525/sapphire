@@ -4,7 +4,7 @@
 use sapphire_core::cvar::CvarRegistry;
 use sapphire_debug::{DebugOverlay, OverlayConfig, OverlayFrame, WindowMetrics};
 use sapphire_platform::{Event, FingerId, Timestamp, TouchDeviceId, TouchEvent, TouchPhase, WindowId};
-use sapphire_render::graph::GraphExecutor;
+use sapphire_render::graph::{FrameGraph, GraphExecutor};
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 use sapphire_time::ScaledClock;
 
@@ -136,4 +136,72 @@ fn a_pinch_never_toggles_a_hidden_overlay() {
         DebugOverlay::new(&app.gpu, wgpu::TextureFormat::Rgba8UnormSrgb, OverlayConfig::default());
     two_fingers(&mut app, &mut fresh, 0, landscape, 0.0);
     assert!(!fresh.is_visible(), "a hold from before the first frame toggled");
+}
+
+/// RC-2: egui's renderer panics when it can't get a staging buffer, and that's all a lost device
+/// gives: the overlay's frame is lost with the device, as the renderer's is.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_lost_device_loses_the_overlay_frame_alone() {
+    let mut app = App::new();
+    let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+    let mut overlay = DebugOverlay::new(&app.gpu, format, OverlayConfig::default());
+    overlay.set_visible(true);
+    let window = WindowMetrics::offscreen(800, 600, 1.0);
+    app.frame(&mut overlay, 0, window, &[]);
+    app.frame(&mut overlay, 100, window, &[]);
+    let texture = app.gpu.device().create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d { width: 800, height: 600, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&Default::default());
+    app.gpu.device().destroy();
+    let _ = app.gpu.device().poll(wgpu::PollType::wait_indefinitely());
+    assert!(app.gpu.is_lost());
+    let mut graph = FrameGraph::new();
+    let target = graph.import_texture("target", &view);
+    overlay.record(&mut graph, target);
+    app.graph.execute(&app.gpu, graph).expect("a valid graph, though nothing runs");
+}
+
+/// RC-2: a device lost while the graph records, as a shader build's worker can: the executor
+/// checked before the overlay's pass, which checks for itself.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_device_lost_while_recording_loses_the_overlay_frame_alone() {
+    let mut app = App::new();
+    let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+    let mut overlay = DebugOverlay::new(&app.gpu, format, OverlayConfig::default());
+    overlay.set_visible(true);
+    let window = WindowMetrics::offscreen(800, 600, 1.0);
+    app.frame(&mut overlay, 0, window, &[]);
+    app.frame(&mut overlay, 100, window, &[]);
+    let texture = app.gpu.device().create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d { width: 800, height: 600, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&Default::default());
+    let mut graph = FrameGraph::new();
+    let target = graph.import_texture("target", &view);
+    let device = app.gpu.device().clone();
+    // A graph of under four passes records in order, on this thread.
+    graph.add_pass("loses the device").write(target).record(move |_| {
+        device.destroy();
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+    });
+    overlay.record(&mut graph, target);
+    app.graph.execute(&app.gpu, graph).expect("a valid graph");
+    assert!(app.gpu.is_lost());
 }

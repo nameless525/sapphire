@@ -55,7 +55,8 @@
 //! 4. **The characters** (below).
 //! 5. **GTAO** (below, "Ambient occlusion").
 //!
-//! The pass's uniforms are one buffer, staged with one write in the frames they change
+//! The pass's uniforms are one buffer, staged with one write in the frames they change, or after
+//! a frame lost before it ran, whose work on the schedule is due again (`Ambient::frame_lost`)
 //! (`AmbientBlock`: the ambient uniforms, the relight's, GTAO's and the prefilter's per mip, each
 //! at a 256-byte boundary), and its bind groups are made once: when a grid arrives, and for
 //! GTAO's per view of the frame graph's pooled prepass textures, the last two seen (post's
@@ -667,6 +668,9 @@ pub(crate) struct Ambient {
     candidates: Vec<(f32, CharacterBody)>,
     frames: u64,
     stats: AmbientStats,
+    /// What [`Self::split_for_record`] last found, for [`Self::frame_lost`]: the schedule, the
+    /// frame count and [`AmbientStats::prefiltered_faces`].
+    before: (RelightSchedule, u64, u64),
 }
 
 /// 1-texel stand-ins for the frame group's ambient bindings while nothing real is bound: they
@@ -701,7 +705,7 @@ struct GpuGrid {
 /// what the relight reads (the sky's projection, or the keys' weights), a [`RELIGHT_SLICES`]th
 /// of the bricks a frame in turn until every slice has relit since the last change; and nothing
 /// while nothing changes.
-#[derive(Debug, Default)]
+#[derive(Clone, Copy, Debug, Default)]
 struct RelightSchedule {
     /// Every brick is due: a grid arrived.
     all: bool,
@@ -734,6 +738,15 @@ impl RelightSchedule {
     /// schedule says.
     fn reproject(&mut self) {
         self.reproject = true;
+    }
+
+    /// Goes back to `before`, as the last call to [`Self::frame`] found it, since the frame it was
+    /// for never ran, but keeps what was asked for since (a new grid: every brick is due).
+    fn restore(&mut self, before: Self) {
+        let (all, reproject) = (self.all, self.reproject);
+        *self = before;
+        self.all |= all;
+        self.reproject |= reproject;
     }
 
     /// The work of a frame of a grid of `kept` bricks whose sky cube drew `faces`, which blends
@@ -1401,6 +1414,7 @@ impl Ambient {
             keys: ProbeKeys::default(),
             sky: Vec3::ZERO,
             schedule: RelightSchedule::default(),
+            before: (RelightSchedule::default(), 0, 0),
             candidates: Vec::new(),
             frames: 0,
             stats,
@@ -1702,6 +1716,7 @@ impl Ambient {
     /// pass, for [`Renderer::record`](crate::Renderer::record); [`Self::fit`] first. The uniforms
     /// are staged only when they changed since they last were.
     pub(crate) fn split_for_record(&mut self, faces: Range<u32>) -> AmbientRecord<'_> {
+        self.before = (self.schedule, self.frames, self.stats.prefiltered_faces);
         self.frames += 1;
         let Self {
             ref device,
@@ -1814,6 +1829,15 @@ impl Ambient {
             upload: changed.then_some(AmbientUpload { block, buffer: uniform_buffer }),
             pass: (light.is_some() || occlusion.is_some()).then_some(AmbientPass { light, occlusion }),
         }
+    }
+
+    /// The frame [`Self::split_for_record`] split never ran: the uniforms it staged were never
+    /// written, and the work it took from the schedule is due again.
+    pub(crate) fn frame_lost(&mut self) {
+        let (schedule, frames, prefiltered_faces) = self.before;
+        self.staged = None;
+        self.schedule.restore(schedule);
+        (self.frames, self.stats.prefiltered_faces) = (frames, prefiltered_faces);
     }
 
     pub(crate) fn stats(&self) -> AmbientStats {
@@ -2542,6 +2566,28 @@ mod tests {
         schedule.reproject();
         assert_eq!(schedule.frame(10, 0..0, drift(0.1), sky * 1.21), work(true, 0..6, 3..6));
         assert_eq!(schedule.frame(0, 3..4, keys, sky), work(true, 3..4, 0..0), "no grid: faces alone");
+
+        // A lost frame's work is due again, in the slice it would have relit.
+        let mut schedule = RelightSchedule::all();
+        let before = schedule;
+        assert_eq!(schedule.frame(10, 0..6, keys, sky), work(true, 0..6, 0..10));
+        schedule.restore(before);
+        assert_eq!(schedule.frame(10, 0..6, keys, sky), work(true, 0..6, 0..10), "a grid's arrival");
+        let before = schedule;
+        assert_eq!(schedule.frame(10, 2..3, keys, sky), work(true, 2..3, 0..3));
+        schedule.restore(before);
+        assert_eq!(schedule.frame(10, 2..3, keys, sky), work(true, 2..3, 0..3), "the same slice");
+        // What was asked for since the lost frame stays asked for.
+        let before = schedule;
+        schedule.frame(10, 0..0, keys, sky);
+        schedule = RelightSchedule::all();
+        schedule.restore(before);
+        assert_eq!(schedule.frame(10, 0..0, keys, sky), work(true, 0..6, 0..10), "a new grid");
+        let before = schedule;
+        schedule.frame(10, 0..0, keys, sky);
+        schedule.reproject();
+        schedule.restore(before);
+        assert!(schedule.reproject, "a prefilter starting again");
         let entering = ProbeKeys { keys: [2, 3, 4, 0], ..drift(0.1) };
         assert!(keys_change(&drift(0.1), &entering) == 0.0);
         assert!((keys_change(&keys, &ProbeKeys::single(2)) - 1.0).abs() < 1e-6);

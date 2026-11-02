@@ -378,6 +378,11 @@ impl FoliageWind {
     pub(crate) fn record(&mut self, cut: bool) -> WindUniforms {
         self.history.record(cut)
     }
+
+    /// The recorded frame never ran ([`WindHistory::frame_lost`]).
+    pub(crate) fn frame_lost(&mut self) {
+        self.history.frame_lost();
+    }
 }
 
 /// The prepared frame's wind and the last recorded frame's, which velocity compares with.
@@ -385,6 +390,8 @@ impl FoliageWind {
 struct WindHistory {
     current: WindState,
     drawn: Option<WindState>,
+    /// [`Self::drawn`] before the last recorded frame.
+    before: Option<WindState>,
 }
 
 impl WindHistory {
@@ -392,11 +399,17 @@ impl WindHistory {
     /// velocity; the same after a `cut` (or with none before), when velocity counts the camera as
     /// unmoved too.
     fn record(&mut self, cut: bool) -> WindUniforms {
-        let previous = match self.drawn.replace(self.current) {
+        self.before = self.drawn.replace(self.current);
+        let previous = match self.before {
             Some(previous) if !cut => previous,
             _ => self.current,
         };
         WindUniforms { current: self.current, previous }
+    }
+
+    /// The recorded frame never ran, so velocity goes on comparing with the last that did.
+    fn frame_lost(&mut self) {
+        self.drawn = self.before;
     }
 }
 
@@ -406,6 +419,26 @@ mod tests {
 
     fn breeze() -> Wind {
         Wind { direction: Vec3::new(3.0, 5.0, 4.0), strength: 1.0, gustiness: 0.3 }
+    }
+
+    #[test]
+    fn velocity_compares_with_the_last_wind_that_ran() {
+        let at = |seconds| WindState::new(&breeze(), seconds);
+        let mut history = WindHistory::default();
+        let record = |history: &mut WindHistory, seconds, cut| {
+            history.current = at(seconds);
+            history.record(cut)
+        };
+        assert_eq!(record(&mut history, 1.0, false).previous, at(1.0), "none before");
+        record(&mut history, 2.0, false);
+        history.frame_lost();
+        assert_eq!(record(&mut history, 3.0, false).previous, at(1.0), "the lost frame's is gone");
+        history.frame_lost();
+        history = WindHistory { drawn: None, ..history };
+        assert_eq!(record(&mut history, 4.0, false).previous, at(4.0));
+        record(&mut history, 5.0, true);
+        history.frame_lost();
+        assert_eq!(record(&mut history, 6.0, false).previous, at(4.0), "a lost cut changes nothing");
     }
 
     const RESPONSE: [f32; 4] = [0.2, 0.15, 0.03, 2.3];

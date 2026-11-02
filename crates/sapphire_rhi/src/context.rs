@@ -126,7 +126,9 @@ impl GpuContext {
         self.lost.load(Ordering::Acquire)
     }
 
-    pub(crate) fn lost_flag(&self) -> Arc<AtomicBool> {
+    /// The flag behind [`Self::is_lost`], for what outlives a borrow of this context: a frame
+    /// graph pass, say, that must not touch a device lost since the pass was added.
+    pub fn lost_flag(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.lost)
     }
 

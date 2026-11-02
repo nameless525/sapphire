@@ -317,9 +317,8 @@ impl Harness {
         self.render_reading(&[])
     }
 
-    /// Draws one frame, also copying the prepass targets `reads` picks into their readbacks.
-    /// Fails on any validation error.
-    fn render_reading(&mut self, reads: &[Read<'_>]) -> Frame {
+    /// Prepares one frame of the scene.
+    fn prepare(&mut self) {
         let packet = self.packets.begin();
         packet.views.push(ViewData::new(self.camera));
         packet.time_seconds = self.time_seconds;
@@ -331,8 +330,14 @@ impl Harness {
         packet.shadow_tint = self.shadow_tint;
         packet.post = passthrough();
         packet.instances.changed.append(&mut self.added);
-        let scope = self.gpu.device().push_error_scope(wgpu::ErrorFilter::Validation);
         self.renderer.prepare(&self.gpu, self.packets.current());
+    }
+
+    /// Draws one frame, also copying the prepass targets `reads` picks into their readbacks.
+    /// Fails on any validation error.
+    fn render_reading(&mut self, reads: &[Read<'_>]) -> Frame {
+        let scope = self.gpu.device().push_error_scope(wgpu::ErrorFilter::Validation);
+        self.prepare();
         let view = self.target.create_view(&Default::default());
         let mut graph = FrameGraph::new();
         let target = graph.import_texture("target", &view);
@@ -439,6 +444,49 @@ fn depth(texel: &[u8]) -> f32 {
 /// A card map whose alpha is `alpha(u, v)`, white.
 fn card_map(gpu: &GpuContext, alpha: impl Fn(f32, f32) -> f32) -> GpuTexture {
     half_texture(gpu, 64, |u, v| [1.0, 1.0, 1.0, alpha(u, v)])
+}
+
+/// RC-4: a frame whose graph is lost isn't the last frame drawn, so velocity goes on comparing the
+/// wind with the last frame that ran.
+#[test]
+#[ignore = "needs a GPU"]
+fn velocity_compares_with_the_wind_of_the_last_frame_that_ran() {
+    let response = WindResponse { sway: 0.4, ..STILL };
+    let data = stored(FoliageVertex { sway: 1.0, bend: 0.0, flutter: 0.0, phase: 0.0, gradient: 1.0 });
+    let run = |lost: bool| {
+        let mut harness = Harness::exact();
+        harness.wind = Wind { direction: Vec3::X, strength: 1.0, gustiness: 0.0 };
+        harness.camera = CameraData::look_at(
+            Vec3::new(0.0, 4.5, 0.0),
+            Vec3::new(0.0, 2.0, 0.0),
+            Vec3::NEG_Z,
+            0.9,
+            1.0,
+            0.05,
+        );
+        let map = card_map(&harness.gpu, |_, _| 1.0);
+        let material = harness.material(&flat(0.5, 0.0, response), &[(CARD, &map)]);
+        let card = mesh(vec![square(Vec3::new(0.0, 2.0, 0.0), Vec3::Y, Vec3::X, 0.5)], Some(data));
+        let card = harness.mesh(&card, &[material]);
+        harness.add(card, Mat4::IDENTITY);
+        harness.time_seconds = 10.0;
+        harness.render();
+        harness.time_seconds = 10.4;
+        if lost {
+            harness.prepare();
+            let view = harness.target.create_view(&Default::default());
+            let mut graph = FrameGraph::new();
+            let target = graph.import_texture("target", &view);
+            harness.renderer.record(&mut graph, target).expect("a view and a target");
+        }
+        let velocities = Readback::new(&harness.gpu, (SIDE, SIDE), 4);
+        let reads: [Read<'_>; 1] = [(|t| t.velocity, &velocities)];
+        harness.render_reading(&reads);
+        velocities.texels(&harness.gpu)
+    };
+    let whole = run(false);
+    assert!(whole.iter().any(|texel| rg16f(texel) != [0.0, 0.0]), "the wind moved the card");
+    assert_eq!(run(true), whole);
 }
 
 #[test]

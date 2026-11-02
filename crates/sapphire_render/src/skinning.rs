@@ -11,8 +11,10 @@
 //!
 //! - A packet's [`SkinnedInstance`](crate::SkinnedInstance)s are new poses. `prepare` keeps each
 //!   instance's latest one, converted to the GPU layout (palette matrices as three rows of a 3×4
-//!   matrix, weights dense per target), until a frame is recorded; several packets prepared
-//!   before a record leave only the last pose.
+//!   matrix, weights dense per target), until a frame that runs takes it; several packets prepared
+//!   before a record leave only the last pose. A record takes the poses and which half each
+//!   instance draws from at once, since its passes draw from them, and a graph that never ran gives
+//!   them back ([`Skinning::frame_lost`]), so what the frame would have skinned the next one does.
 //! - A frame skins only the instances posed since the last recorded frame, plus new ones, which
 //!   start in their bind pose with every weight 0. An instance that holds still (hitstop,
 //!   pause) keeps its outputs and costs nothing.
@@ -175,6 +177,9 @@ struct Deformed {
     first: u32,
     /// Vertices its outputs hold: the whole mesh, so any LOD fits.
     vertex_count: u32,
+    /// Palette matrices and morph targets of its mesh, which its pending pose has room for.
+    palette_len: u32,
+    morph_targets: u32,
     /// Which half of its positions holds the current pose.
     current: u32,
     /// Its outputs hold a pose a frame was drawn with.
@@ -187,6 +192,17 @@ struct Deformed {
 }
 
 impl Deformed {
+    /// Its mesh's skinning data, if the mesh is still the shape its outputs and pending pose were
+    /// made for. `Renderer::update_mesh` between `prepare` and `record` changes a mesh's record
+    /// under a state only the next `prepare` starts over: until then the instance skins nothing,
+    /// so it neither finds no skinning data nor writes past its outputs, over a neighbour's.
+    fn source<'r>(&self, records: &'r [MeshRecord]) -> Option<&'r DeformSource> {
+        records[self.mesh.index()].deform().filter(|source| {
+            (source.vertex_count, source.palette_len(), source.morph_targets())
+                == (self.vertex_count, self.palette_len, self.morph_targets)
+        })
+    }
+
     fn outputs(&self) -> InstanceOutputs {
         let base = u64::from(self.first) * OUTPUT_VERTEX_BYTES;
         let half = u64::from(self.vertex_count) * 12;
@@ -203,6 +219,15 @@ enum Pending {
     /// A pose: its palette starts at `palette` of `Skinning::palettes`, its dense weights at
     /// `weights` of `Skinning::weights`, and `morphs` says whether any is non-zero.
     Pose { palette: u32, weights: u32, morphs: bool },
+}
+
+/// What a recorded frame took from an instance it skins, to give back if it never runs.
+#[derive(Clone, Copy, Debug)]
+struct Taken {
+    slot: u32,
+    pending: Pending,
+    /// [`Deformed::drawn`] before.
+    drawn: bool,
 }
 
 /// The deformed instances, their output buffer and the skinning pass.
@@ -233,6 +258,8 @@ pub(crate) struct Skinning {
     recorded: bool,
     /// The recorded frame's jobs, in dispatch order.
     jobs: Vec<Job>,
+    /// What each job took, in the same order.
+    taken: Vec<Taken>,
     workgroups: u32,
     outputs: GrowableBuffer,
     ranges: RangeAllocator,
@@ -270,6 +297,7 @@ impl Skinning {
             warned: false,
             recorded: false,
             jobs: Vec::new(),
+            taken: Vec::new(),
             workgroups: 0,
             // Written by the pass, drawn as vertex data, and bound whole as storage. Empty until
             // the first deformed instance.
@@ -368,7 +396,7 @@ impl Skinning {
             self.remove(slot);
             let mesh = slots.mesh(slot).expect("a slot just given a mesh is live");
             if let Some(source) = meshes.get(mesh.index()).and_then(MeshRecord::deform) {
-                self.add(device, queue, slot, mesh, source.vertex_count, false);
+                self.add(device, queue, slot, mesh, source, false);
             }
         }
         // Instances that didn't fit try again: others may have freed room. Rare, so the list is
@@ -376,7 +404,7 @@ impl Skinning {
         for slot in std::mem::take(&mut self.unplaced) {
             let mesh = slots.mesh(slot).expect("unplaced slots are live");
             let source = meshes[mesh.index()].deform().expect("unplaced instances have deformable meshes");
-            self.add(device, queue, slot, mesh, source.vertex_count, true);
+            self.add(device, queue, slot, mesh, source, true);
         }
         let mut ignored = 0;
         for skinned in &packet.skinned {
@@ -409,17 +437,18 @@ impl Skinning {
         };
     }
 
-    /// Gives the instance in `slot` output streams for `vertex_count` vertices, starting in its
-    /// bind pose, if they fit; otherwise lists it as unplaced (warning unless it is a `retry`).
+    /// Gives the instance in `slot` output streams for `source`'s vertices, starting in its bind
+    /// pose, if they fit; otherwise lists it as unplaced (warning unless it is a `retry`).
     fn add(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         slot: u32,
         mesh: MeshHandle,
-        vertex_count: u32,
+        source: &DeformSource,
         retry: bool,
     ) {
+        let vertex_count = source.vertex_count;
         // Outputs written so far are kept: they hold other instances' last drawn poses.
         let used = u64::from(self.ranges.end()) * OUTPUT_VERTEX_BYTES;
         let first = self.ranges.allocate(vertex_count);
@@ -446,6 +475,8 @@ impl Skinning {
             mesh,
             first,
             vertex_count,
+            palette_len: source.palette_len(),
+            morph_targets: source.morph_targets(),
             current: 0,
             drawn: false,
             moved: false,
@@ -520,6 +551,7 @@ impl Skinning {
         profiling::scope!("Skinning::begin_record");
         self.recorded = true;
         self.jobs.clear();
+        self.taken.clear();
         self.workgroups = 0;
         for &slot in &self.live {
             if let Some(state) = self.instances[slot as usize].as_mut() {
@@ -533,9 +565,9 @@ impl Skinning {
                 continue;
             };
             let Some(pending) = state.pending.take() else { continue };
-            let record = &records[state.mesh.index()];
-            let source = record.deform().expect("deformed instances have deformable meshes");
-            let vertex_count = record.lod_vertices[DRAWN_LOD];
+            let Some(source) = state.source(records) else { continue };
+            let vertex_count = records[state.mesh.index()].lod_vertices[DRAWN_LOD];
+            self.taken.push(Taken { slot, pending, drawn: state.drawn });
             // Write the half the last drawn pose isn't in.
             state.current ^= 1;
             state.moved = state.drawn;
@@ -579,6 +611,22 @@ impl Skinning {
         }
     }
 
+    /// The frame [`Self::begin_record`] took its skins for never ran, so what it took is back as
+    /// it was: the half each instance draws from, and the skins, first in line before the poses
+    /// the frame left waiting. Their palettes and weights are where those skins say: only a frame
+    /// that ran lets the next `prepare` drain them.
+    pub(crate) fn frame_lost(&mut self) {
+        self.recorded = false;
+        let Self { taken, instances, queued, .. } = self;
+        for taken in taken.iter() {
+            let state = instances[taken.slot as usize].as_mut().expect("only `prepare` removes instances");
+            state.current ^= 1;
+            state.drawn = taken.drawn;
+            state.pending = Some(taken.pending);
+        }
+        queued.splice(0..0, taken.drain(..).map(|taken| taken.slot));
+    }
+
     /// Decides which pending skins the recorded frame takes (review RA-004), leaving them in
     /// `queued` and the rest in `waiting`. The frame's header, jobs, palettes and weights are one
     /// storage buffer: when they fit its limit, as they always do in practice, every pending skin
@@ -610,8 +658,10 @@ impl Skinning {
         queued.retain(|&slot| {
             let Some(state) = instances[slot as usize].as_mut() else { return false };
             let Some(pending) = state.pending else { return false };
-            let source =
-                records[state.mesh.index()].deform().expect("deformed instances have deformable meshes");
+            let Some(source) = state.source(records) else {
+                state.pending = None;
+                return false;
+            };
             let (len, targets) = match pending {
                 Pending::Pose { .. } => (source.palette_len() as usize, source.morph_targets() as usize),
                 Pending::Rest => (0, 0),
@@ -977,6 +1027,8 @@ mod tests {
             mesh: MeshHandle::from_raw(0),
             first: 10,
             vertex_count: 100,
+            palette_len: 0,
+            morph_targets: 0,
             current: 0,
             drawn: false,
             moved: false,

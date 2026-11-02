@@ -6,6 +6,7 @@
 //! local lights and fog, then post-processing into the target.
 
 use std::num::NonZeroU64;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use bevy_reflect::Reflect;
 use glam::Mat4;
@@ -510,8 +511,20 @@ pub struct Renderer {
     uploads: wgpu::util::StagingBelt,
     /// What the last `prepare` computed for `record` to upload and draw.
     prepared: Option<PreparedFrame>,
-    /// The main view's unjittered `proj × view` in the last recorded frame, for velocity.
+    /// The main view's unjittered `proj × view` in the last frame recorded, for velocity.
     previous_clip_from_world: Option<Mat4>,
+    /// A camera cut that no frame that ran has applied yet. Prepared frames can be lost in many
+    /// ways before their passes run, and the cut applies to the next frame that runs.
+    pending_cut: bool,
+    /// Whether the last prepared frame ran. Passes record only while their graph executes, so its
+    /// uploads pass sets this, and a frame never recorded, or recorded into a graph that was
+    /// dropped, rejected, sized to nothing or skipped on a lost device, leaves it unset for the
+    /// next [`Self::prepare`] to find (own review RC-4, after M1 review RA-001). Atomic, since
+    /// graphs record their passes on several threads.
+    frame_ran: AtomicBool,
+    /// What the last [`Self::record`] took, if it built a graph, until the next [`Self::prepare`]
+    /// knows whether that graph ran.
+    recorded: Option<RecordedFrame>,
     /// Kept for the pipelines built when meshes arrive.
     pipeline_cache: Option<wgpu::PipelineCache>,
     /// The shader sources every pipeline in use is built from, and those built later.
@@ -530,11 +543,16 @@ pub struct Renderer {
 #[derive(Debug)]
 struct PreparedFrame {
     camera: CameraData,
-    /// The view cut in this frame, or in a prepared frame that was never recorded since.
-    cut: bool,
     constants: FrameUniforms,
     /// The packet's wind, which grows foliage's bounds for culling.
     wind: Wind,
+}
+
+/// The renderer's own share of what [`Renderer::record`] changes, to take back if the frame never
+/// runs (each of its owners keeps its own: see [`Renderer::settle_last_frame`]).
+#[derive(Debug)]
+struct RecordedFrame {
+    previous_clip_from_world: Option<Mat4>,
 }
 
 impl Renderer {
@@ -741,6 +759,9 @@ impl Renderer {
             uploads,
             prepared: None,
             previous_clip_from_world: None,
+            pending_cut: false,
+            frame_ran: AtomicBool::new(false),
+            recorded: None,
             pipeline_cache: gpu.pipeline_cache().cloned(),
             shaders,
             edited_shaders: false,
@@ -950,6 +971,10 @@ impl Renderer {
     /// given back. Fails, changing nothing, if the mesh or a material it embeds is invalid, a
     /// slot can't be resolved, or the mesh pool or a material buffer is too full: materials it
     /// uploaded for slots that needed new ones are taken back.
+    ///
+    /// Call it between frames, before [`Self::prepare`]. A frame prepared before the call still
+    /// holds the old mesh's draws: recorded after it, that frame leaves unskinned the instances
+    /// the new mesh no longer fits, which start over on it from the next frame.
     pub fn update_mesh(
         &mut self,
         handle: MeshHandle,
@@ -1345,6 +1370,7 @@ impl Renderer {
             "prepare() needs the GpuContext the renderer was created with"
         );
         let (device, queue) = (gpu.device(), gpu.queue());
+        self.settle_last_frame();
         self.device_lost = gpu.is_lost();
         // A finished shader build swaps in here, before anything reads a pipeline: the whole
         // frame draws with the old set or with the new.
@@ -1404,13 +1430,11 @@ impl Renderer {
             self.characters.table(),
         );
 
-        // Without a main view the frame has nothing to draw. A cut in a frame that was prepared
-        // but never recorded still applies to the next one recorded.
+        // Without a main view the frame has nothing to draw.
         let lights = self.lights.uniforms();
-        let unrecorded_cut = self.prepared.as_ref().is_some_and(|prepared| prepared.cut);
+        self.pending_cut |= packet.main_view().is_some_and(|view| view.cut);
         self.prepared = packet.main_view().map(|view| PreparedFrame {
             camera: view.camera,
-            cut: view.cut || unrecorded_cut,
             constants: FrameUniforms::new(packet, lights, self.outline_distance),
             wind: packet.wind,
         });
@@ -1490,6 +1514,33 @@ impl Renderer {
             self.debug_views.as_ref().map_or_else(DebugViewStats::default, |views| views.stats());
     }
 
+    /// Finds out whether the last prepared frame ran, before anything of this frame is prepared.
+    /// What it planned or recorded claims what persistent GPU contents hold, and is settled here,
+    /// not when planned or recorded (own review RC-4): if the frame never ran, each owner takes
+    /// back what it took from the frames to come, so the next frame that runs carries on from the
+    /// last one that did, as if this one was never recorded. A camera cut waits for a frame that
+    /// runs. The owners only copy a few words for this as they record, and do the rest here, on
+    /// the rare frame that needs it.
+    fn settle_last_frame(&mut self) {
+        let recorded = self.recorded.take();
+        if self.frame_ran.swap(false, Ordering::Relaxed) {
+            self.pending_cut = false;
+            return;
+        }
+        // The shadows' plan is made in `prepare`, so a frame never recorded leaves it unmet too.
+        self.shadows.frame_lost();
+        let Some(recorded) = recorded else { return };
+        self.previous_clip_from_world = recorded.previous_clip_from_world;
+        self.skinning.frame_lost();
+        self.ambient.frame_lost();
+        self.sky.frame_lost();
+        self.wind.frame_lost();
+        if let Some(temporal) = &mut self.temporal {
+            temporal.frame_lost();
+            self.stats.temporal = temporal.stats();
+        }
+    }
+
     /// Readies the debug view asked for in the frame just prepared, making the views' state
     /// with the first one shown and building what it needs that isn't built.
     fn prepare_debug_view(&mut self) {
@@ -1513,6 +1564,11 @@ impl Renderer {
     /// uploaded by the next recorded one. Returns `None`, adding nothing, without a prepared
     /// view, for an empty target, or once [`Self::prepare`] found the device lost.
     ///
+    /// A graph that is dropped, that the executor rejects or that it skips on a lost device loses
+    /// the frame alone: the next [`Self::prepare`] finds out, and the next frame that runs uploads
+    /// and skins all the lost one would have and carries on from the last frame that ran. A
+    /// [camera cut](crate::ViewData::cut) waits for a frame that runs too.
+    ///
     /// `target` must be a 2D texture in the format given to [`Self::new`]. The internal
     /// textures (HDR scene color, MSAA color, depth, the scene prepass's targets, the bloom
     /// chain) are transient graph textures sized from it at the render scale
@@ -1534,7 +1590,8 @@ impl Renderer {
     pub fn record<'f>(&'f mut self, graph: &mut FrameGraph<'f>, target: TextureId) -> Option<PrepassTargets> {
         profiling::scope!("Renderer::record");
         debug_assert!(self.prepared.is_some(), "record() needs a prepare() of a packet with a main view");
-        let PreparedFrame { camera, cut, constants, wind } = self.prepared.take()?;
+        let PreparedFrame { camera, constants, wind } = self.prepared.take()?;
+        let cut = self.pending_cut;
         let output = graph.size(target);
         // On a lost device the frame's work would do nothing, and the staging belt can't map the
         // buffers it would make for the uploads (wgpu panics on that).
@@ -1556,7 +1613,9 @@ impl Renderer {
         // Unjittered: velocity and reprojection compare the camera's motion alone. After a cut
         // the camera counts as unmoved.
         let clip_from_world = camera.proj * camera.view;
-        let previous_clip_from_world = match self.previous_clip_from_world.replace(clip_from_world) {
+        let before = self.previous_clip_from_world.replace(clip_from_world);
+        self.recorded = Some(RecordedFrame { previous_clip_from_world: before });
+        let previous_clip_from_world = match before {
             Some(previous) if !cut => previous,
             _ => clip_from_world,
         };
@@ -1648,6 +1707,7 @@ impl Renderer {
             ref mut temporal,
             ref mut uploads,
             ref debug_views,
+            ref frame_ran,
             ..
         } = *self;
         // Temporal AA keeps the scene prepass's depth, outline hulls included (M1 C4), for the
@@ -1715,6 +1775,7 @@ impl Renderer {
         // Buffers aren't graph resources (see the crate docs), so the uploads are a side effect
         // added first: the passes after read what they copy.
         graph.add_pass("uploads").side_effect().record(move |ctx| {
+            frame_ran.store(true, Ordering::Relaxed);
             upload(uploads, ctx.encoder, frame_uniforms, bytemuck::bytes_of(&constants));
             upload(uploads, ctx.encoder, view_uniforms, bytemuck::bytes_of(&view));
             upload(uploads, ctx.encoder, sky_buffer, bytemuck::bytes_of(&sky_uniforms));

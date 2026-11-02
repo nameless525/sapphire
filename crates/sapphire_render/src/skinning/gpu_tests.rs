@@ -583,9 +583,8 @@ impl Skinner {
         Self { gpu, renderer, packets: FramePacketRing::new(), executor: GraphExecutor::new(), view }
     }
 
-    /// Prepares and records a frame that adds `added` instances (ID, mesh) and poses `poses`
-    /// (ID, pose): the skinning stats its `prepare` gave, and the outputs' words once it ran.
-    fn frame(&mut self, added: &[(u64, MeshHandle)], poses: &[(u64, &Pose)]) -> (SkinningStats, Vec<u32>) {
+    /// Prepares a frame that adds `added` instances (ID, mesh) and poses `poses` (ID, pose).
+    fn prepare(&mut self, added: &[(u64, MeshHandle)], poses: &[(u64, &Pose)]) {
         let packet = self.packets.begin();
         packet.views.push(ViewData::new(camera(1.0)));
         for &(id, mesh) in added {
@@ -599,6 +598,25 @@ impl Skinner {
             packet.push_skinned(InstanceId(id), palette.iter().copied(), weights.iter().copied());
         }
         self.renderer.prepare(&self.gpu, self.packets.current());
+    }
+
+    /// Prepares a frame as [`Self::prepare`] does and records it into a graph that is dropped.
+    fn lost_frame(&mut self, added: &[(u64, MeshHandle)], poses: &[(u64, &Pose)]) {
+        self.prepare(added, poses);
+        let mut graph = FrameGraph::new();
+        let target_id = graph.import_texture("target", &self.view);
+        self.renderer.record(&mut graph, target_id);
+    }
+
+    /// Prepares and records a frame as [`Self::prepare`] does, and runs it: the skinning stats its
+    /// `prepare` gave, and the outputs' words once it ran.
+    fn frame(&mut self, added: &[(u64, MeshHandle)], poses: &[(u64, &Pose)]) -> (SkinningStats, Vec<u32>) {
+        self.prepare(added, poses);
+        self.run()
+    }
+
+    /// Records the frame prepared and runs it, as [`Self::frame`] does.
+    fn run(&mut self) -> (SkinningStats, Vec<u32>) {
         let stats = self.renderer.stats().skinning;
         let outputs = self.renderer.skinning().outputs().buffer().clone();
         let copy = readback(&self.gpu, outputs.size());
@@ -671,6 +689,68 @@ fn poses_past_the_frame_limit_wait_for_the_next_frame() {
             let error = skinner.error(&words, slot as u32, mesh, pose).expect("skinned");
             assert!(error < 2e-6, "limit {limit}, instance {slot}: {error}");
         }
+    }
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn a_lost_frame_gives_its_skins_back_and_poses_keep_their_turns() {
+    // Room for one pose a frame, as below: a lost frame takes none of them, whichever it took, and
+    // the instances' turns and poses are as they were.
+    const ONE: u64 = 2032;
+    let mut rng = Rng(41);
+    let mesh = random_mesh(&mut rng, 200, 40, PositionFormat::Unorm16);
+    let mut skinner = Skinner::new(ONE);
+    let handle = upload(&mut skinner.renderer, &mesh);
+    let added = [(0, handle), (1, handle)];
+    let first: Vec<Pose> = (0..2).map(|_| random_pose(&mut rng, &mesh)).collect();
+    let second = random_pose(&mut rng, &mesh);
+    let close = |error: Option<f32>| error.is_some_and(|error| error < 2e-6);
+
+    // Both posed, and the frame lost, which would have skinned the first. The first frame that
+    // runs skins it, its pose kept, and the second waits, with the pose it has since.
+    skinner.lost_frame(&added, &[(0, &first[0]), (1, &first[1])]);
+    let (stats, words) = skinner.frame(&[], &[(1, &second)]);
+    assert_eq!(stats.skinned, 2);
+    assert!(close(skinner.error(&words, 0, &mesh, &first[0])));
+    assert_eq!(skinner.error(&words, 1, &mesh, &second), None);
+    let held = skinner.renderer.skinning().outputs().get(0);
+    // The frame that would skin the second is lost too: it still waits, and the frame after skins
+    // it, the first drawing from the half it has.
+    skinner.lost_frame(&[], &[]);
+    let (stats, words) = skinner.frame(&[], &[]);
+    assert_eq!(stats.skinned, 1);
+    assert!(close(skinner.error(&words, 1, &mesh, &second)));
+    assert!(close(skinner.error(&words, 0, &mesh, &first[0])));
+    assert_eq!(skinner.renderer.skinning().outputs().get(0), held);
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn a_mesh_replaced_after_prepare_is_left_out_of_a_full_frame() {
+    // Past the frame's limit the record copies each pose's palette by its mesh's length (review
+    // RA-004): a mesh with more joints since `prepare` must not read past the last pose's, nor one
+    // with none panic.
+    const ONE: u64 = 2032;
+    let mut rng = Rng(43);
+    let mesh = random_mesh(&mut rng, 200, 40, PositionFormat::Unorm16);
+    let longer = random_mesh(&mut rng, 200, 41, PositionFormat::Unorm16);
+    let unskinned =
+        Mesh { skin: None, morph_targets: Vec::new(), morph_deltas: Vec::new(), ..longer.clone() };
+    for replacement in [&longer, &unskinned] {
+        let mut skinner = Skinner::new(ONE);
+        let (handle, other) = (upload(&mut skinner.renderer, &mesh), upload(&mut skinner.renderer, &mesh));
+        let poses: Vec<Pose> = (0..2).map(|_| random_pose(&mut rng, &mesh)).collect();
+        skinner.frame(&[(0, handle), (1, other)], &[]);
+        skinner.frame(&[], &[]);
+        skinner.frame(&[], &[]);
+        let bytes = replacement.to_cooked().expect("cook");
+        let replacement = Mesh::read(&bytes).expect("valid");
+        skinner.prepare(&[], &[(0, &poses[0]), (1, &poses[1])]);
+        skinner.renderer.update_mesh(other, replacement, |_| None).expect("the mesh fits");
+        let (_, words) = skinner.run();
+        assert!(skinner.error(&words, 0, &mesh, &poses[0]).is_some_and(|error| error < 2e-6));
+        skinner.frame(&[], &[]);
     }
 }
 

@@ -31,8 +31,8 @@ use sapphire_render::{
     AmbientLight, AmbientOcclusion, BloomParams, CameraData, CharacterBody, CharacterFace, CharacterGi,
     CharacterInstance, CharacterLighting, ColorGrade, DirectionalLight, EnvironmentSettings,
     EnvironmentSpecular, FramePacketRing, GtaoSettings, InstanceId, MaterialHandle, MeshHandle, MeshInstance,
-    Msaa, PostParams, ProbeKeys, ProbeLookup, RenderSettings, RenderStats, Renderer, SkyGradient, ToneCurve,
-    ViewData, Vignette,
+    Msaa, PostParams, ProbeKeys, ProbeLookup, RenderSettings, RenderStats, Renderer, SkyGradient,
+    SkySettings, ToneCurve, ViewData, Vignette,
 };
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 
@@ -459,6 +459,20 @@ impl Harness {
     /// Prepares, records and submits one frame and reads the target back. Fails on any
     /// validation error.
     fn render(&mut self) -> Frame {
+        let scope = self.gpu.device().push_error_scope(wgpu::ErrorFilter::Validation);
+        self.prepare();
+        let view = self.target.create_view(&Default::default());
+        let mut graph = FrameGraph::new();
+        let target = graph.import_texture("target", &view);
+        self.renderer.record(&mut graph, target).expect("a view and a target");
+        self.graph.execute(&self.gpu, graph).expect("a valid graph");
+        let error = pollster::block_on(scope.pop());
+        assert!(error.is_none(), "{error:?}");
+        Frame { pixels: self.read_back(), camera: self.camera, stats: self.renderer.stats() }
+    }
+
+    /// Prepares one frame of the scene.
+    fn prepare(&mut self) {
         let packet = self.packets.begin();
         packet.views.push(ViewData::new(self.camera));
         packet.sun = DirectionalLight { direction: Vec3::NEG_Y, color: Vec3::ONE, intensity: 0.0 };
@@ -468,16 +482,16 @@ impl Harness {
         packet.post = passthrough();
         packet.characters.extend_from_slice(&self.characters);
         packet.instances.changed.append(&mut self.added);
-        let scope = self.gpu.device().push_error_scope(wgpu::ErrorFilter::Validation);
         self.renderer.prepare(&self.gpu, self.packets.current());
+    }
+
+    /// Prepares and records one frame of the scene into a graph that is dropped unexecuted.
+    fn drop_a_frame(&mut self) {
+        self.prepare();
         let view = self.target.create_view(&Default::default());
         let mut graph = FrameGraph::new();
         let target = graph.import_texture("target", &view);
         self.renderer.record(&mut graph, target).expect("a view and a target");
-        self.graph.execute(&self.gpu, graph).expect("a valid graph");
-        let error = pollster::block_on(scope.pop());
-        assert!(error.is_none(), "{error:?}");
-        Frame { pixels: self.read_back(), camera: self.camera, stats: self.renderer.stats() }
     }
 
     /// Renders `frames` frames and returns the last.
@@ -1128,4 +1142,47 @@ fn gtao_sees_cards_as_the_prepass_cuts_them() {
     let foot = Vec3::new(0.3, 0.0, 0.1);
     let (open, darkened) = (bare.at(foot).x, solid.at(foot).x);
     assert!(darkened < 0.95 * open, "a solid card darkens its foot: {darkened} against {open}");
+}
+
+/// RC-4: uniforms staged in a frame whose graph was lost were never uploaded, and stayed that way
+/// while they didn't change: capsule AO, off in the buffer, went on showing nothing.
+#[test]
+#[ignore = "needs a GPU"]
+fn capsule_ao_survives_a_lost_graph() {
+    let body = CharacterBody::capsule(Vec3::new(0.0, 0.25, 0.0), Vec3::new(0.0, 1.5, 0.0), 0.25);
+    let run = |lost: bool| {
+        let mut harness = Harness::new(settings(AmbientOcclusion { capsules: true, gtao: None }));
+        harness.ground();
+        harness.ambient = AmbientLight { sky: Vec3::ONE, ground: Vec3::ZERO, intensity: 1.0 };
+        harness.character(InstanceId(100), body);
+        harness.camera = Harness::looking(Vec3::new(0.0, 4.0, 2.0), Vec3::new(0.8, 0.0, 0.0));
+        if lost {
+            harness.drop_a_frame();
+        }
+        harness.settle(4)
+    };
+    let (whole, lost) = (run(false), run(true));
+    assert!(whole.at(Vec3::ZERO).x < 0.25 * ALBEDO, "beneath the body: {}", whole.at(Vec3::ZERO));
+    assert_near(lost.at(Vec3::ZERO), whole.at(Vec3::ZERO), "capsule AO after a lost graph");
+}
+
+/// RC-4: a grid's first relight, lost with its frame, is the next frame's that runs, and a grid
+/// set between the lost frame and the next keeps its own.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_grid_relights_after_a_lost_graph() {
+    let (red, blue) = (Vec3::new(0.9, 0.1, 0.05), Vec3::new(0.05, 0.1, 0.9));
+    let point = Vec3::new(0.3, 0.0, 0.2);
+    // A face once a minute: nothing but the grid's arrival asks for a relight.
+    let sky = SkySettings { cube_interval: 60, ..SkySettings::default() };
+    let mut harness = Harness::new(RenderSettings { sky, ..settings(AmbientOcclusion::OFF) });
+    harness.ground();
+    harness.keys = ProbeKeys::single(0);
+    harness.set_grid(Some(&grid(&[6.0], 0.0, |_, _| red, open)));
+    harness.drop_a_frame();
+    assert_near(harness.render().at(point), ALBEDO * red, "the first frame that ran");
+
+    harness.drop_a_frame();
+    harness.set_grid(Some(&grid(&[6.0], 0.0, |_, _| blue, open)));
+    assert_near(harness.render().at(point), ALBEDO * blue, "the new grid's first frame");
 }

@@ -1,6 +1,9 @@
 //! Drawing the overlay: egui's meshes through `egui-wgpu`, as a frame graph pass over the
 //! finished frame.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use egui::epaint::{ClippedPrimitive, textures::TexturesDelta};
 use egui_wgpu::{Renderer as EguiRenderer, RendererOptions, ScreenDescriptor};
 use sapphire_render::graph::{FrameGraph, TextureId};
@@ -11,6 +14,8 @@ pub(crate) struct OverlayRenderer {
     renderer: EguiRenderer,
     device: wgpu::Device,
     queue: wgpu::Queue,
+    /// [`GpuContext::is_lost`].
+    device_lost: Arc<AtomicBool>,
     primitives: Vec<ClippedPrimitive>,
     /// Texture changes (the font atlas, mostly) for the next recorded frame.
     textures: TexturesDelta,
@@ -46,6 +51,7 @@ impl OverlayRenderer {
             renderer: EguiRenderer::new(gpu.device(), format, options),
             device: gpu.device().clone(),
             queue: gpu.queue().clone(),
+            device_lost: gpu.lost_flag(),
             primitives: Vec::new(),
             textures: TexturesDelta::default(),
             to_free: Vec::new(),
@@ -98,10 +104,16 @@ impl OverlayRenderer {
         }
         let (width, height) = graph.size(target);
         let pixels_per_point = self.pixels_per_point;
-        let Self { renderer, device, queue, primitives, .. } = self;
+        let Self { renderer, device, queue, device_lost, primitives, .. } = self;
         let primitives = &primitives[..];
         // Drawing over part of the target keeps the rest, so the pass reads it too.
         graph.add_pass("debug overlay").read(target).write(target).record(move |ctx| {
+            // egui-wgpu panics when it gets no staging buffer, which is all a lost device gives.
+            // The executor runs no pass on a device lost before it starts; this is the overlay's
+            // own check for one lost since, as a shader build's worker can.
+            if device_lost.load(Ordering::Acquire) {
+                return;
+            }
             let screen = ScreenDescriptor { size_in_pixels: [width, height], pixels_per_point };
             // egui-wgpu returns command buffers only for paint callbacks, which the overlay
             // doesn't use.

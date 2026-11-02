@@ -50,11 +50,18 @@ impl GraphExecutor {
     }
 
     /// Compiles `graph`, records its running passes and submits them. On an error nothing
-    /// is recorded or submitted.
+    /// is recorded or submitted, and on a lost device ([`GpuContext::is_lost`]) nothing is either,
+    /// without an error: the frame is lost with the device, which the app finds out and recovers
+    /// from as it does at any other time. Passes can't run there: wgpu's staging belt and
+    /// egui-wgpu's upload both panic when a lost device gives them no staging buffer. A device
+    /// lost while the passes record (a shader build's worker can lose it) isn't caught here.
     pub fn execute(&mut self, gpu: &GpuContext, graph: FrameGraph<'_>) -> Result<(), GraphError> {
         profiling::scope!("FrameGraph::execute");
         let FrameGraph { shape, imports, mut records } = graph;
         self.plan.compile(&shape)?;
+        if gpu.is_lost() {
+            return Ok(());
+        }
         self.frames += 1;
 
         self.pool.begin_frame();

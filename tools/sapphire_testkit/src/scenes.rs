@@ -154,7 +154,7 @@ pub struct Scene {
 /// and the plain camera (`--arena-shot follow`), so tuning the camera director moves none of them.
 /// They alone run `--arena`, so no earlier scene sees its stage, and `arena-replay` alone plays a
 /// replay on it.
-pub fn scenes() -> [Scene; 117] {
+pub fn scenes() -> [Scene; 119] {
     [
         Scene {
             name: "turntable-start",
@@ -2314,9 +2314,10 @@ pub fn scenes() -> [Scene; 117] {
             thresholds: Thresholds::default(),
         },
         // The first moving character (M2 N2): N1's key-pose clip on the look-dev character at the
-        // hero shot's dusk, every landed feature on, at fixed ticks through the swing, each drawn
-        // playing up to its tick so temporal AA's history is a player's. Here the anticipation's
-        // end: the character has sunk and drawn the right arm back, and turned at the spine.
+        // hero shot's dusk, every landed feature on but spring bones, which came later, at fixed ticks
+        // through the swing, each drawn playing up to its tick so temporal AA's history is a player's.
+        // Here the anticipation's end: the character has sunk and drawn the right arm back, and turned
+        // at the spine.
         Scene {
             name: "lookdev-strike-anticipation",
             args: &[
@@ -2326,6 +2327,8 @@ pub fn scenes() -> [Scene; 117] {
                 "hero",
                 "--clip",
                 "strike",
+                "--springs",
+                "off",
                 "--time-of-day",
                 "18",
                 "--tier",
@@ -2351,6 +2354,8 @@ pub fn scenes() -> [Scene; 117] {
                 "hero",
                 "--clip",
                 "strike",
+                "--springs",
+                "off",
                 "--time-of-day",
                 "18",
                 "--tier",
@@ -2374,6 +2379,8 @@ pub fn scenes() -> [Scene; 117] {
                 "hero",
                 "--clip",
                 "strike",
+                "--springs",
+                "off",
                 "--time-of-day",
                 "18",
                 "--tier",
@@ -2397,6 +2404,8 @@ pub fn scenes() -> [Scene; 117] {
                 "hero",
                 "--clip",
                 "strike",
+                "--springs",
+                "off",
                 "--time-of-day",
                 "18",
                 "--tier",
@@ -2423,8 +2432,59 @@ pub fn scenes() -> [Scene; 117] {
                 "--clip",
                 "strike",
                 "--clip-in-place",
+                "--springs",
+                "off",
                 "--time-of-day",
                 "13",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--capture-frames",
+                "16",
+                "--capture-step",
+                "1",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // Spring bones under the strike (M2 N5): at its mark, the head turned and the body gone ahead,
+        // the long hair trails the head, the bangs lag its turn and the hem and sleeves lift. Lines
+        // stay on all of it, as hulls read the same palette.
+        Scene {
+            name: "lookdev-strike-springs-mark",
+            args: &[
+                "--capture-ticks",
+                "20",
+                "--look-dev",
+                "hero",
+                "--clip",
+                "strike",
+                "--time-of-day",
+                "18",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--capture-frames",
+                "16",
+                "--capture-step",
+                "1",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // Six ticks on, with the arm held, what the strike set moving is still going: the hair swinging
+        // past the shoulder and the hem coming back.
+        Scene {
+            name: "lookdev-strike-springs-after",
+            args: &[
+                "--capture-ticks",
+                "26",
+                "--look-dev",
+                "hero",
+                "--clip",
+                "strike",
+                "--time-of-day",
+                "18",
                 "--tier",
                 "desktop-high",
                 "--ao",

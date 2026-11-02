@@ -53,14 +53,16 @@
         android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
 
         <!--
-          SDL can't survive the activity being recreated (it finishes it instead), so the
-          activity handles configuration changes itself. assetsPaths, on top of SDL's list,
-          covers runtime resource overlays changing, as they do shortly after boot.
+          SDL can't survive the activity being recreated: the new activity's onCreate exits the
+          process, with no crash report. So the activity handles every configuration change
+          itself: SDL's list, plus assetsPaths for runtime resource overlays changing, as they
+          do shortly after boot, and mcc, mnc, density, colorMode and touchscreen. xtask's tests
+          hold this list to the compile SDK's.
         -->
         <activity
             android:name=".SandboxActivity"
             android:alwaysRetainTaskState="true"
-            android:configChanges="layoutDirection|locale|grammaticalGender|fontScale|fontWeightAdjustment|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation|assetsPaths"
+            android:configChanges="mcc|mnc|layoutDirection|locale|grammaticalGender|fontScale|fontWeightAdjustment|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|density|colorMode|keyboard|keyboardHidden|navigation|touchscreen|assetsPaths"
             android:exported="true"
             android:launchMode="singleInstance"
             android:preferMinimalPostProcessing="true"

@@ -281,9 +281,10 @@ static CRASH_GUARD: Mutex<Option<CrashGuard>> = Mutex::new(None);
 /// logging, crash capture, then the job system (spec §5.2).
 ///
 /// Called from `main` on desktop and iOS (after `sapphire_crash::run_monitor_if_requested`),
-/// and from `SDL_main` on Android, where it must not panic. Android can start `SDL_main`
-/// again in the same process after the activity is recreated, so only the first call does
-/// anything.
+/// and from `SDL_main` on Android, where it must not panic. Each process runs `SDL_main` once:
+/// the app leaves `SDL_HINT_ANDROID_ALLOW_RECREATE_ACTIVITY` off, so SDL exits the process when
+/// the activity is recreated (which is why the manifest handles every configuration change).
+/// Only the first call does anything all the same.
 pub fn startup() {
     static STARTUP: Once = Once::new();
     STARTUP.call_once(|| {

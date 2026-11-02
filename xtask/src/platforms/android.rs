@@ -1084,4 +1084,81 @@ esac
         assert!(gradle.contains(&format!("namespace = \"{namespace}\"")));
         assert!(manifest.contains(&format!("android:name=\".{class}\"")));
     }
+
+    /// Every value of `android:configChanges`, as the compile SDK lists them, but
+    /// [`NOT_HANDLED_CONFIG_CHANGE`].
+    const CONFIG_CHANGES: [&str; 19] = [
+        "mcc",
+        "mnc",
+        "locale",
+        "touchscreen",
+        "keyboard",
+        "keyboardHidden",
+        "navigation",
+        "orientation",
+        "screenLayout",
+        "uiMode",
+        "screenSize",
+        "smallestScreenSize",
+        "density",
+        "layoutDirection",
+        "colorMode",
+        "grammaticalGender",
+        "fontScale",
+        "fontWeightAdjustment",
+        "assetsPaths",
+    ];
+    /// Says the activity uses no Android resources at all, and overrides every other value, so
+    /// it isn't one more change to handle.
+    const NOT_HANDLED_CONFIG_CHANGE: &str = "resourcesUnused";
+
+    /// SDL exits the process when its activity is recreated, so a change the manifest doesn't
+    /// list ends the run, with no crash report (review PN-1).
+    #[test]
+    fn the_activity_handles_every_configuration_change() {
+        let manifest = include_str!("../../../platform/android/app/src/main/AndroidManifest.xml");
+        let (_, rest) = manifest.split_once("android:configChanges=\"").expect("the activity lists them");
+        let (listed, _) = rest.split_once('"').expect("the attribute ends");
+        let listed: Vec<&str> = listed.split('|').collect();
+        let missing: Vec<&str> = CONFIG_CHANGES.into_iter().filter(|value| !listed.contains(value)).collect();
+        assert!(
+            missing.is_empty(),
+            "AndroidManifest.xml's configChanges leaves out {missing:?}: a change of one recreates the \
+             activity, and SDL then exits the process"
+        );
+        let unknown: Vec<&str> = listed.into_iter().filter(|value| !CONFIG_CHANGES.contains(value)).collect();
+        assert!(unknown.is_empty(), "add {unknown:?} to this test's list of configChanges values");
+    }
+
+    /// A value a new compile SDK adds fails here until it has been considered for the manifest.
+    /// Machines without that SDK platform can't tell, and pass.
+    #[test]
+    fn the_list_of_configuration_changes_is_the_compile_sdks() {
+        let gradle = include_str!("../../../platform/android/app/build.gradle.kts");
+        let compile_sdk = gradle
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("compileSdk = "))
+            .expect("build.gradle.kts sets compileSdk");
+        let Ok(sdk) = sdk_dir() else { return };
+        let path = sdk.join(format!("platforms/android-{compile_sdk}/data/res/values/attrs_manifest.xml"));
+        let Ok(attrs) = fs::read_to_string(&path) else { return };
+
+        let (_, rest) = attrs.split_once("<attr name=\"configChanges\">").expect("the attribute is declared");
+        let (flags, _) = rest.split_once("</attr>").expect("its declaration ends");
+        let mut flags: Vec<&str> = flags
+            .split("<flag name=\"")
+            .skip(1)
+            .map(|flag| flag.split_once('"').expect("the flag's name ends").0)
+            .collect();
+        flags.sort_unstable();
+        let mut expected = CONFIG_CHANGES.to_vec();
+        expected.push(NOT_HANDLED_CONFIG_CHANGE);
+        expected.sort_unstable();
+        assert_eq!(
+            flags,
+            expected,
+            "{} lists other values: consider each for AndroidManifest.xml's configChanges and this test's list",
+            path.display()
+        );
+    }
 }

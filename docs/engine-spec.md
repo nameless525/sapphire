@@ -2383,6 +2383,8 @@ On **foreground**:
 - Show a "tap to continue" overlay if the player was in combat.
 
 ### 6.6 Input (`sapphire_input`, `game_ui`)
+**Android configuration changes (review PN-1).** The activity handles all of them itself. SDL can't survive a recreate: with `SDL_HINT_ANDROID_ALLOW_RECREATE_ACTIVITY` off, as it is, the new activity's `onCreate` exits the process, with no crash report and no restart. So a change the manifest doesn't list ends the run. `android:configChanges` lists every value but `resourcesUnused`, which says an activity uses no Android resources. xtask's tests hold the list to the compile SDK's, so a value a new SDK adds fails until someone considers it. [m1-exit-run.md](m1-exit-run.md) has the `wm density` check.
+
 
 - **Default devices per platform:**
   - Desktop: KB/M plus gamepad, with glyphs following the last-used device.

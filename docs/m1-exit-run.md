@@ -94,6 +94,18 @@ The app dials the desktop through `adb reverse`, once a second until a tool list
 
 Spec §6.2's phone check has the full procedure (frames on glass with `dumpsys SurfaceFlinger --latency`, battery saver, a live tier change) and what a failure means. On the emulator (2026-10-27) Mobile-Low held 30.0 fps at exactly 33.33 ms; its display is 60 Hz only, so the 90 and 120 Hz cadences are covered by unit tests alone.
 
+**A display size change.** SDL can't survive its activity being recreated: the new activity's `onCreate` exits the process, with no crash report, and nothing restarts it. So the manifest handles every configuration change itself. With the app in the foreground, change the density (`adb shell wm density` prints the current one, so pick another):
+
+```bash
+adb shell pidof dev.sapphire.sandbox
+adb shell wm density 320
+adb shell pidof dev.sapphire.sandbox
+adb shell wm density reset
+adb shell pidof dev.sapphire.sandbox
+```
+
+All three must print the same pid, and `frame stats` lines must keep coming. A pid that goes away, with `activity finished` and `System.exit called` in logcat, means the manifest's `android:configChanges` lacks the value that changed.
+
 ## iPhone
 
 What the user provides, once:
@@ -141,7 +153,7 @@ Record per device: model, OS, the tier, the build's commit, and for each kind th
 ## Only a device can prove
 
 - **iPhone:** signing with a real identity and profile, and with a wildcard App ID's profile (`<prefix>.*`), whose application identifier and keychain group xtask signs as the app's own, `<prefix>.<bundle id>`, as Xcode does; `devicectl` installing and launching, the app receiving its arguments after `--` and its console reaching the terminal; `iproxy` reaching the app's loopback listener; a capture from an A-series GPU's surface (BGRA, as on the simulator); Wi-Fi's local network prompt, if any.
-- **Android phone:** a real Vulkan driver's (Adreno, Mali) pipeline compile times for a pushed shader; the surface's format, which captures convert from; `adb reverse` on a USB-connected phone rather than the emulator; a 90 or 120 Hz panel taking the refresh-rate hint, and the frame limiter's cadence on its vsyncs.
+- **Android phone:** a real Vulkan driver's (Adreno, Mali) pipeline compile times for a pushed shader; the surface's format, which captures convert from; `adb reverse` on a USB-connected phone rather than the emulator; a 90 or 120 Hz panel taking the refresh-rate hint, and the frame limiter's cadence on its vsyncs; the process surviving a colour-mode switch and, on a foldable, a move between displays of different density, which the manifest handles but only `wm density` has tested.
 - **Both:** real frame times and GPU pass timings against the Mobile tiers' budgets, the tier a real device's memory selects, and how long a pushed shader holds a frame.
 
 ## Rehearsal (2026-10-26, main at dd118d1 with the rehearsal's changes)

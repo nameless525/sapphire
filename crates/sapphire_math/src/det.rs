@@ -11,8 +11,7 @@
 //! Two things break cross-architecture equality today:
 //! - **glam's SIMD types.** `Vec3A`, `Vec4`, `Quat`, `Mat4` and `Affine3A` use NEON on aarch64
 //!   and SSE2 on x86_64, and the two backends sum horizontal products in a different order
-//!   (`Quat::dot` is `(x + y) + (z + w)` on NEON and `(x + z) + (y + w)` on SSE2), and the NEON
-//!   quaternion product uses fused multiply-adds where SSE2 rounds twice, and `normalize`
+//!   (`Quat::dot` is `(x + y) + (z + w)` on NEON and `(x + z) + (y + w)` on SSE2), and `normalize`
 //!   multiplies by the length's reciprocal on NEON where SSE2 divides by the length. The last bit of
 //!   a dot product, a normalization or a rotation then differs between architectures.
 //! - **The platform C math library.** `f32::sin` and friends call glibc, Apple's libm, Bionic or
@@ -41,10 +40,13 @@
 //!   glam's helpers that reach them, with this module named as the way out, and `cargo xtask
 //!   check-layers` holds those crates to that list (`[simulation]` in `xtask/layers.toml`).
 //! - **Anything that bakes into cooked data must match across architectures,** because one replay
-//!   file holds one hash of the move data for all of them: a cook uses scalar [`Vec3`] and `f32`
-//!   with this module, never `Vec3A`, `Vec4` or `Quat` arithmetic. The simulation's `clippy.toml` bans
-//!   the named methods that differ, and a test pins the test content's hash (M2 G2). It can't ban
-//!   `Quat`'s operators, so `quat * vec` in a bake is still caught only by that test.
+//!   file holds one hash of the move data for all of them: a cook uses scalar [`Vec3`], `f32`, `Mat3`
+//!   and `Affine3` (matrices of [`Vec3`]) with this module, never `Vec3A`, `Vec4`, `Affine3A` or `Quat`
+//!   arithmetic: [`quat_mul`], [`quat_conjugate`], [`quat_rotate`] and [`quat_normalize`] stand in for
+//!   `Quat`'s, which only carries values there. The simulation's `clippy.toml` bans the named methods
+//!   that differ, and tests pin the test content's hash (M2 G2) and tables baked from clips (M2 N1,
+//!   `sapphire_pipeline`'s `moves`). They can't ban `Quat`'s operators, so `quat * vec` in a bake is
+//!   still caught only by those tests.
 //! - Simulation state that will one day need to match across architectures (anything lockstep
 //!   netcode would exchange) should do the same. This is advice for now, not enforced. Everything
 //!   here works on scalars inside, so it agrees across architectures itself, and its [`Quat`]
@@ -222,6 +224,36 @@ pub fn quat_normalize(q: Quat) -> Quat {
     quat_unit(q.to_array())
 }
 
+/// `a` after `b`: what `a * b` means for rotations, with its sums in one order on every architecture.
+#[must_use]
+pub fn quat_mul(a: Quat, b: Quat) -> Quat {
+    let [ax, ay, az, aw] = a.to_array();
+    let [bx, by, bz, bw] = b.to_array();
+    Quat::from_xyzw(
+        (aw * bx + ax * bw) + (ay * bz - az * by),
+        (aw * by - ax * bz) + (ay * bw + az * bx),
+        (aw * bz + ax * by) + (az * bw - ay * bx),
+        (aw * bw - ax * bx) + (-(ay * by) - az * bz),
+    )
+}
+
+/// The rotation that undoes the unit rotation `q`.
+#[inline]
+#[must_use]
+pub fn quat_conjugate(q: Quat) -> Quat {
+    let [x, y, z, w] = q.to_array();
+    Quat::from_xyzw(-x, -y, -z, w)
+}
+
+/// `v` turned by the unit rotation `q`: what `q * v` means, on the plain [`Vec3`], which has no SIMD
+/// path.
+#[must_use]
+pub fn quat_rotate(q: Quat, v: Vec3) -> Vec3 {
+    let [x, y, z, w] = q.to_array();
+    let axis = Vec3::new(x, y, z);
+    v * (w * w - axis.length_squared()) + axis * (v.dot(axis) * 2.0) + axis.cross(v) * (w * 2.0)
+}
+
 /// `from` and `to` as arrays, with `to` flipped into `from`'s hemisphere, so a blend takes the
 /// shortest arc, and their dot product, which is then at least 0.
 #[inline]
@@ -241,8 +273,8 @@ pub fn quat_nlerp(from: Quat, to: Quat, t: f32) -> Quat {
 }
 
 /// The unit rotation `t` of the way from `from` to `to` along the shortest arc, at constant angular
-/// speed. Rotations less than about 3.6° apart blend as [`quat_nlerp`] does, where the arc is too
-/// short to divide by.
+/// speed, and past either end for a `t` outside 0 to 1. Rotations less than about 3.6° apart blend as
+/// [`quat_nlerp`] does, where the arc is too short to divide by.
 #[must_use]
 pub fn quat_slerp(from: Quat, to: Quat, t: f32) -> Quat {
     let (a, b, dot) = same_hemisphere(from, to);
@@ -731,6 +763,52 @@ mod tests {
             assert!(vec2_from_angle(angle).abs_diff_eq(Vec2::from_angle(angle), 1e-6), "vec2 {angle}");
         }
     }
+
+    /// glam's product is `(lw·r + lx·…) + (ly·… + lz·…)`, whose only fused multiplications are by ±1 on
+    /// NEON, so this grouping lands on its bits on both backends. Nothing depends on that but a cook's
+    /// bytes staying put when it moved here, and an upgrade may break it: then delete the bits half.
+    #[test]
+    fn products_and_turns_match_glams() {
+        let v = Vec3::new(0.4, -1.5, 2.2);
+        for a in rotations() {
+            for b in rotations() {
+                assert_eq!(quat_mul(a, b).to_array().map(f32::to_bits), (a * b).to_array().map(f32::to_bits));
+            }
+            assert!(quat_rotate(a, v).abs_diff_eq(a * v, 1e-5), "{a}");
+            assert!(same_rotation(quat_conjugate(a), a.inverse(), 0.0), "{a}");
+            assert!(quat_rotate(quat_conjugate(a), quat_rotate(a, v)).abs_diff_eq(v, 1e-5), "{a}");
+        }
+    }
+
+    /// The bits of what stands in for `Quat`'s arithmetic in a bake, on rotations with all four
+    /// components non-zero, where a sum's order can show (a yaw or an axis turn can't tell). These are
+    /// the same on every target, which CI's three operating systems hold.
+    #[test]
+    fn golden_bits_of_a_bakes_rotations() {
+        let q = Quat::from_array(GOLDEN_FOUR[0].map(f32::from_bits));
+        let r = Quat::from_array(GOLDEN_FOUR[1].map(f32::from_bits));
+        assert!(q.to_array().iter().chain(&r.to_array()).all(|component| component.abs() > 0.05));
+        let bits = |q: Quat| q.to_array().map(f32::to_bits);
+        assert_eq!(bits(quat_mul(q, r)), GOLDEN_FOUR[2], "{:#010x?}", bits(quat_mul(q, r)));
+        assert_eq!(bits(quat_mul(r, q)), GOLDEN_FOUR[3], "{:#010x?}", bits(quat_mul(r, q)));
+        let unit = quat_normalize(quat_mul(q, quat_conjugate(r)));
+        assert_eq!(bits(unit), GOLDEN_FOUR[4], "{:#010x?}", bits(unit));
+        let turned = quat_rotate(q, Vec3::new(0.25, -1.5, 0.75)).to_array().map(f32::to_bits);
+        assert_eq!(turned, GOLDEN_TURN, "{turned:#010x?}");
+    }
+
+    const GOLDEN_FOUR: [[u32; 4]; 5] = [
+        // Two rotations, as bits, so no parsing or construction stands between them and the sums.
+        [0x3ec2_8f5c, 0xbf0c_cccd, 0x3e4c_cccd, 0x3f3a_e148],
+        [0xbe99_999a, 0x3e19_999a, 0x3f33_3333, 0x3f26_6666],
+        // Worked out apart from this code too, by double rounding in Python, which IEEE single
+        // precision's operations survive exactly.
+        [0xbec6_24de, 0xbf12_f1aa, 0x3f08_72af, 0x3f07_ef9e],
+        [0x3ee2_d0e4, 0x3d9f_be7c, 0x3f3f_be76, 0x3f07_ef9e],
+        [0x3f5c_986b, 0xbe0d_3899, 0xbe88_b6ca, 0x3ed1_53e6],
+    ];
+
+    const GOLDEN_TURN: [u32; 3] = [0x3f29_1341, 0xbfcb_67a2, 0xbe2d_0136];
 
     #[test]
     fn slerp_matches_glams_along_the_short_arc() {

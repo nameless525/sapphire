@@ -348,6 +348,21 @@ impl GpuAssets {
 /// ([`Content::renderer_rebuilt`]).
 pub(crate) struct RendererAssets(GpuAssets);
 
+/// `named`, and those of `held` it doesn't name while there's room: a graph still playing reads them
+/// until its next state's start, and draws the rest pose without them.
+fn keeping_held(
+    mut named: Vec<(AssetId, Handle<Clip>)>,
+    held: &[(AssetId, Handle<Clip>)],
+) -> Vec<(AssetId, Handle<Clip>)> {
+    for old in held {
+        let room = named.len() < sapphire_assets::graph::MAX_GRAPH_CLIPS;
+        if room && !named.iter().any(|(id, _)| *id == old.0) {
+            named.push(old.clone());
+        }
+    }
+    named
+}
+
 /// A graph and the clips it names, kept resident.
 struct HeldGraph {
     graph: Handle<AnimGraph>,
@@ -355,12 +370,12 @@ struct HeldGraph {
 }
 
 impl HeldGraph {
-    /// Takes handles on the clips it names now.
+    /// Takes handles on the clips it names now, [keeping](keeping_held) those it held.
     fn hold_clips(&mut self, server: &mut AssetServer) -> Result<(), LoadError> {
         let Some(graph) = server.get(&self.graph) else { return Ok(()) };
         let ids: Vec<AssetId> = graph.clip_ids().collect();
         let clips = ids.into_iter().map(|id| Ok((id, server.load_with(id, LoadPriority::Critical)?)));
-        self.clips = clips.collect::<Result<_, LoadError>>()?;
+        self.clips = keeping_held(clips.collect::<Result<_, LoadError>>()?, &self.clips);
         Ok(())
     }
 
@@ -1129,7 +1144,7 @@ impl Content {
         if let Some(live) = &self.live_graph {
             let ids = live.graph.clips.iter().map(|clip| clip.id);
             let clips = ids.map(|id| Ok((id, self.server.load_with(id, LoadPriority::Critical)?)));
-            held.clips = clips.collect::<Result<_, LoadError>>()?;
+            held.clips = keeping_held(clips.collect::<Result<_, LoadError>>()?, &held.clips);
             return Ok(());
         }
         held.hold_clips(&mut self.server)?;
@@ -1175,12 +1190,7 @@ impl Content {
             loaded.map_err(|e| failed(&e))?;
             held.push((clip.id, handle));
         }
-        for old in current {
-            let room = held.len() < sapphire_assets::graph::MAX_GRAPH_CLIPS;
-            if room && !held.iter().any(|(id, _)| *id == old.0) {
-                held.push(old.clone());
-            }
-        }
+        let held = keeping_held(held, current);
         if let Some(current) = &mut self.graph {
             current.clips = held;
         }
@@ -1510,6 +1520,8 @@ mod tests {
     const GRAPH: AssetId = AssetId::from_bytes([0x60; 16]);
     /// A cooked set of moves, as the graph show plays.
     const MOVES: AssetId = AssetId::from_bytes([0x61; 16]);
+    /// A second clip, as [`SWING`], that a new version of the graph can play instead.
+    const OTHER_SWING: AssetId = AssetId::from_bytes([0x62; 16]);
 
     /// A pack with the look-dev character, its first vertex at `x`, its rig and its skeleton: every
     /// required humanoid bone a joint of its own under the root, and `extra` joints more.
@@ -1528,6 +1540,11 @@ mod tests {
     }
 
     fn pack_of(x: f32, extra: usize, decay: u32, recovery: u32) -> Vec<u8> {
+        pack_of_graph(x, extra, swing_graph(decay), SWING, recovery)
+    }
+
+    /// The first pack, with `graph` naming `clip`.
+    fn pack_of_graph(x: f32, extra: usize, graph: AnimGraph, clip: AssetId, recovery: u32) -> Vec<u8> {
         let count = HumanBone::REQUIRED.len() + extra;
         let at = |joint: usize| [joint as f32 * 0.1, 1.0, 0.0];
         let joints: Vec<Joint> = (0..count)
@@ -1577,11 +1594,12 @@ mod tests {
             packed(SKELETON, AssetKind::Skeleton, &Skeleton::new(&joints).to_cooked().expect("cooked")),
             packed_with(SWING, AssetKind::Clip, &swing(count).to_cooked().expect("cooked"), vec![SKELETON]),
             packed_with(
-                GRAPH,
-                AssetKind::AnimGraph,
-                &swing_graph(decay).to_cooked().expect("cooked"),
-                vec![SWING],
+                OTHER_SWING,
+                AssetKind::Clip,
+                &swing(count).to_cooked().expect("cooked"),
+                vec![SKELETON],
             ),
+            packed_with(GRAPH, AssetKind::AnimGraph, &graph.to_cooked().expect("cooked"), vec![clip]),
             packed(MOVES, AssetKind::MoveSet, &show_moves(recovery).to_cooked().expect("cooked")),
         ])
         .expect("a pack")
@@ -1842,6 +1860,44 @@ mod tests {
         assert!(waiting, "the new version reached the character");
         let stats = stage.frame();
         assert_eq!(stats.ignored_poses, 0, "{stats:?}");
+    }
+
+    /// A new graph that plays another clip takes effect at the next state's start, and a character
+    /// standing in its one state may not reach one for a long time. Until then the old graph goes on
+    /// playing, which needs the clip it names: without it, it draws the rest pose.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_new_graph_naming_another_clip_leaves_the_old_one_its_clip() {
+        let mut stage = Stage::new();
+        stage.play_graph();
+        for _ in 0..3 {
+            stage.frame();
+        }
+
+        let mut other = swing_graph(5);
+        other.resolve(|_| OTHER_SWING);
+        stage.source.insert(PACK, pack_of_graph(0.0, 0, other, OTHER_SWING, 0));
+        stage.content.remount(PACK).expect("the new pack");
+        let mut waiting = false;
+        for _ in 0..1000 {
+            stage.frame();
+            waiting = stage.scene.graph_player().expect("playing").has_replacement();
+            if waiting {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(waiting, "the new version reached the character");
+
+        // Its root swings from one side to the other, and stands at x 0 in the rest pose.
+        let mut furthest = 0.0f32;
+        for _ in 0..SWING_TICKS {
+            stage.frame();
+            let root = stage.scene.graph_player().expect("playing").pose().model()[0].translation;
+            furthest = furthest.max(root[0].abs());
+        }
+        assert!(stage.scene.graph_player().expect("playing").has_replacement(), "and it's still waiting");
+        assert!(furthest > 0.5, "the character went on swinging: {furthest} m at most");
     }
 
     /// An edited graph over live link (M2 T2): it binds at once and waits for the next state's start like

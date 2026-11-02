@@ -7,11 +7,11 @@
 //   caster's shape is the one the main pass draws.
 // - The face pass (`cs_face_shadow`): one thread per character entry samples the cascades over a
 //   sphere around the head (the entry's `shadow.probe`) and writes the key light's visibility
-//   there into the entry (`shadow.visibility`), which the face permutation takes as occlusion
-//   (anime_character.wgsl's `face_shadow`): an environment shadow reaches a face whole. Its group
-//   0 holds the shadow uniforms, the cascades and the comparison sampler at frame.wgsl's bindings;
-//   group 1 the character buffer, read-write, at binding 1 (binding 0 is the view's, which the
-//   face pass doesn't bind).
+//   there into the entry (`shadow.visibility`), which the face and eye permutations take as
+//   occlusion (anime_character.wgsl's `face_shadow`): an environment shadow reaches a head whole.
+//   It runs in frames where a face or an eye draws. Its group 0 holds the shadow uniforms, the
+//   cascades and the comparison sampler at frame.wgsl's bindings; group 1 the character buffer,
+//   read-write, at binding 1 (binding 0 is the view's, which the face pass doesn't bind).
 
 // Threads per workgroup of the face pass (`shadows::FACE_WORKGROUP`).
 const FACE_SHADOW_WORKGROUP: u32 = 64u;

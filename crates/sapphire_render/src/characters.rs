@@ -9,8 +9,9 @@
 //!   changes (while the hour runs, the camera moves for a rig whose key, GI or camera rim
 //!   depends on it, or a head, an expression, a body or an opacity changes, or the frame's
 //!   ambient light changes): 272 bytes a character. With shadows on, the face pass (M1 R4)
-//!   writes each entry's `shadow.visibility` on the GPU every frame, after the upload; with a
-//!   probe grid, the character ambient pass (M1 W5) writes its `ambient`.
+//!   writes each entry's `shadow.visibility` on the GPU, after the upload, in every frame where a
+//!   face or an eye draws; with a probe grid, the character ambient pass (M1 W5) writes its
+//!   `ambient`.
 //! - **Which entry an instance reads** is the `character` field of its instance data, which the
 //!   vertex stage passes on as a flat varying. Entries follow the packet's order, so a character
 //!   listed in the same place frame after frame keeps its entry and its instance data isn't

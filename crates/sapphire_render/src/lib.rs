@@ -442,9 +442,10 @@
 //! - **No cast shadow:** shadow maps are too coarse and unstable at face scale, so the face
 //!   permutation doesn't call `cast_shadow` and reads no shadow map. An environment shadow
 //!   reaches a face whole, per character (R4): the face pass samples the cascades over a sphere
-//!   around the head once a frame and writes the result into the character's entry
-//!   (`CharacterData::shadow`), which the face takes as occlusion of its split, with its
-//!   always-lit eyes and brows; never shadow-map texels on it.
+//!   around the head once a frame, in frames where a face or an eye draws, and writes the result
+//!   into the character's entry (`CharacterData::shadow`), which the face takes as occlusion of
+//!   its split, with its always-lit eyes and brows, and the eye permutation as its own; never
+//!   shadow-map texels on either.
 //!
 //! # Rim, hair and eyes through hair (M1 C5)
 //!

@@ -1,6 +1,6 @@
 //! Shadow tests that need a GPU (M1 R4): the cascades' stability and bias, who casts into what
-//! and who receives what, faces taking the environment's shadow whole, the characters' own maps
-//! and capsules, the environment shader's tinted shadows, stability under temporal AA, and the
+//! and who receives what, faces and eyes taking the environment's shadow whole, the characters' own
+//! maps and capsules, the environment shader's tinted shadows, stability under temporal AA, and the
 //! cascades of frames lost before their passes run (M1 review RA-001). Run with
 //! `cargo test -p sapphire_render --test gpu shadows:: -- --ignored`.
 //!
@@ -18,7 +18,7 @@ use half::f16;
 use sapphire_assets::AssetId;
 use sapphire_assets::material::{
     AnimeCharacterMaterial, CharacterRegion, CharacterSurface, DistanceStylization, EnvironmentMaterial,
-    FaceShading, LightSplit, Material, MaterialDocument, Outline, Rim, Terminator,
+    EyeShading, FaceShading, LightSplit, Material, MaterialDocument, Outline, Rim, Terminator,
 };
 use sapphire_assets::mesh::{
     MaterialSlot, Mesh, PositionFormat, Submesh, VERTEX_COLOR_NEUTRAL, Vertex, VertexFlags,
@@ -125,6 +125,12 @@ fn environment() -> EnvironmentMaterial {
 fn face_surface() -> AnimeCharacterMaterial {
     let face = FaceShading { softness: 0.0, highlight: 0.0, ..FaceShading::new(id(SDF)) };
     AnimeCharacterMaterial { surface: CharacterSurface::Face(face), ..surface(0.0) }
+}
+
+/// An eye, otherwise as [`surface`] split at 0: always lit, but for an environment shadow on its
+/// head.
+fn eye_surface() -> AnimeCharacterMaterial {
+    AnimeCharacterMaterial { surface: CharacterSurface::Eye(EyeShading::default()), ..surface(0.0) }
 }
 
 fn vertex(position: Vec3, normal: Vec3, uv: [f32; 2]) -> Vertex {
@@ -970,6 +976,108 @@ fn a_face_takes_the_environments_shadow_whole() {
     // The face is lit with its head in the light, shaded with it covered.
     assert!(is_lit(tone(-1.5, true).0), "uncovered: lit");
     assert!(is_shaded(tone(1.5, true).0), "covered: shade");
+}
+
+/// A renderer for a head at the origin, with a low sun and the camera both in front of it, so
+/// [`head_wall`] covers the head from the sun, out of the camera's sight.
+fn head_stage() -> Harness {
+    let mut harness = Harness::new(desktop());
+    harness.sun_toward(Vec3::new(0.0, 0.25, 1.0).normalize());
+    harness.camera = looking(Vec3::new(0.0, 0.0, 2.0), Vec3::ZERO);
+    harness
+}
+
+/// A wall between the [`head_stage`]'s sun and the head at the origin.
+fn head_wall(harness: &mut Harness) -> InstanceId {
+    harness.cuboid(Vec3::new(0.0, -1.0, 3.0), Vec3::new(5.0, 4.0, 0.2))
+}
+
+/// An eye square at the origin, half a meter to a side, listed as a character with its head there.
+fn add_eye(harness: &mut Harness, body: CharacterBody) -> InstanceId {
+    let eye = harness.add(&upright_square(), &eye_surface(), Mat4::from_scale(Vec3::splat(0.25)));
+    harness.character(eye, body, Some(Vec3::ZERO));
+    eye
+}
+
+/// A face square placed by `place`, listed as a character with its head at the origin.
+fn add_face(harness: &mut Harness, body: CharacterBody, place: Mat4) -> InstanceId {
+    let map = harness.lit_face_map();
+    let material = harness.material(&face_surface(), &[(SDF, &map)]);
+    let square = harness.mesh(&upright_square(), material);
+    let face = harness.add_mesh(square, place);
+    harness.character(face, body, Some(Vec3::ZERO));
+    face
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn eyes_take_the_environments_shadow_with_no_face_in_the_frame() {
+    // Eyes read what the face pass writes as a face does (own review RS2-1), so it runs for them
+    // alone: a character whose head is body-shaded under a helmet or a mask, or whose face mesh a
+    // game hides. Gated on faces, this eye stayed lit under the wall unless some other
+    // character's face happened to draw.
+    let tone = |covered: bool| {
+        let mut harness = head_stage();
+        add_eye(&mut harness, CharacterBody::default());
+        if covered {
+            head_wall(&mut harness);
+        }
+        let frame = harness.render();
+        frame.dump(&format!("eye-alone-{covered}"));
+        frame.at(Vec3::ZERO)
+    };
+    let (open, covered) = (tone(false), tone(true));
+    assert!(is_lit(open), "uncovered: lit: {open:?}");
+    assert!(is_shaded(covered), "covered: shade: {covered:?}");
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn eyes_follow_the_environments_shadow_after_their_face_stops_drawing() {
+    // A face and its eye draw together; then the face stops drawing, and the shadow on their head
+    // comes or goes. Entries upload only when they change, so what the face pass wrote last stays
+    // until something writes it again. As one character (a body that casts, so one entry) the eye
+    // would hold it for good if the pass stopped with the face. As two (the default body, an entry
+    // each) the face's leaving rewrites the entries, which would light the eye under the wall.
+    let body = |shared: bool| {
+        if shared { CharacterBody::capsule(Vec3::ZERO, Vec3::ZERO, 0.2) } else { CharacterBody::default() }
+    };
+    let behind = Mat4::from_scale_rotation_translation(Vec3::splat(0.5), Quat::IDENTITY, Vec3::NEG_Z * 0.1);
+    // Enough frames for any cached cascade to take the wall's change.
+    let settled = |harness: &mut Harness| {
+        for _ in 0..4 {
+            harness.render();
+        }
+        harness.render()
+    };
+    for shared in [true, false] {
+        let mut harness = head_stage();
+        let eye = add_eye(&mut harness, body(shared));
+        let face = add_face(&mut harness, body(shared), behind);
+        let wall = head_wall(&mut harness);
+        let tone = harness.render().at(Vec3::ZERO);
+        assert!(is_shaded(tone), "one character {shared}, the face draws under the wall: {tone:?}");
+        harness.removed.push(face);
+        harness.characters.retain(|character| character.id == eye);
+        let tone = harness.render().at(Vec3::ZERO);
+        assert!(is_shaded(tone), "one character {shared}, the face left: {tone:?}");
+        harness.removed.push(wall);
+        let tone = settled(&mut harness).at(Vec3::ZERO);
+        assert!(is_lit(tone), "one character {shared}, the wall left too: {tone:?}");
+
+        let mut harness = head_stage();
+        let eye = add_eye(&mut harness, body(shared));
+        let face = add_face(&mut harness, body(shared), behind);
+        let tone = harness.render().at(Vec3::ZERO);
+        assert!(is_lit(tone), "one character {shared}, the face draws in the open: {tone:?}");
+        harness.removed.push(face);
+        harness.characters.retain(|character| character.id == eye);
+        let tone = harness.render().at(Vec3::ZERO);
+        assert!(is_lit(tone), "one character {shared}, the face left: {tone:?}");
+        head_wall(&mut harness);
+        let tone = settled(&mut harness).at(Vec3::ZERO);
+        assert!(is_shaded(tone), "one character {shared}, a wall arrived: {tone:?}");
+    }
 }
 
 #[test]

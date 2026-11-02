@@ -29,11 +29,11 @@
 //!   instances: instances whose entries have equal bodies are one character, which draws one
 //!   map or casts one capsule. A body no instance's entry has (an instance listed again in
 //!   another state left it) casts nothing.
-//! - **Faces** never sample a shadow map (C3's contract). A small compute pass (`face shadows`)
-//!   samples the cascades over a sphere around each character's head once a frame, in frames
-//!   where a face draws, and writes the result into the character's entry
-//!   (`CharacterData::shadow`), which the face permutation takes as occlusion: an environment
-//!   shadow reaches a face whole.
+//! - **Faces and eyes** never sample a shadow map (C3's contract). A small compute pass
+//!   (`face shadows`) samples the cascades over a sphere around each character's head once a
+//!   frame, in frames where a face or an eye draws, and writes the result into the character's
+//!   entry (`CharacterData::shadow`), which the face and eye permutations take as occlusion: an
+//!   environment shadow reaches a head whole, even one that draws eyes and no face.
 //!
 //! # The cascades
 //!
@@ -125,8 +125,8 @@
 //! Side-effect passes before the main pass, since the maps are persistent textures outside the
 //! frame graph (as the sky cube is): `shadow cascade 0`… for each cascade drawn this frame,
 //! `character shadows` (the atlas, when a character draws a map) and `face shadows` (compute,
-//! when a face draws). Their GPU time is the shadow row of the stats overlay and of the bench
-//! ([`PASSES`]). Receivers read group 0: the
+//! when a face or an eye draws). Their GPU time is the shadow row of the stats overlay and of
+//! the bench ([`PASSES`]). Receivers read group 0: the
 //! `ShadowUniforms` at binding 4 (light space, every cascade's and map's area and depth transform,
 //! the capsules), the cascades at 5, the atlas at 6 and a comparison sampler at 7; no
 //! storage buffer is added. The caster pipelines bind the view group (each map's view at its own
@@ -457,8 +457,8 @@ pub(crate) struct Shadows {
     face_entries: Option<wgpu::BindGroup>,
     /// Character entries the face pass writes this frame; 0 skips it.
     entries: u32,
-    /// A face draws this frame: only faces read what the face pass writes.
-    faces: bool,
+    /// A face or an eye draws this frame: only they read what the face pass writes.
+    head_readers: bool,
     plan: ShadowPlan,
 }
 
@@ -600,7 +600,7 @@ impl Shadows {
             face_maps,
             face_entries: None,
             entries: 0,
-            faces: false,
+            head_readers: false,
             plan: ShadowPlan::default(),
         };
         if settings.is_some() {
@@ -705,9 +705,9 @@ impl Shadows {
     ) {
         let Some(settings) = self.settings else { return };
         self.entries = characters.count;
-        let face = Shading::Character(Part::Face);
-        self.faces =
-            SurfaceVariant::ALL.iter().any(|&variant| variant.shading == face && list.len(variant) > 0);
+        self.head_readers = SurfaceVariant::ALL.iter().any(|&variant| {
+            matches!(variant.shading, Shading::Character(Part::Face | Part::Eye)) && list.len(variant) > 0
+        });
         self.plan.update(
             &settings,
             packet,
@@ -826,7 +826,7 @@ impl Shadows {
                 }
             });
         }
-        if let Some(entries) = self.face_entries.as_ref().filter(|_| self.entries > 0 && self.faces) {
+        if let Some(entries) = self.face_entries.as_ref().filter(|_| self.entries > 0 && self.head_readers) {
             let workgroups = self.entries.div_ceil(FACE_WORKGROUP);
             let face = &pipelines.face;
             let maps = &self.face_maps;

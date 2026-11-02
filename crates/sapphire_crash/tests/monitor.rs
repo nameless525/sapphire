@@ -40,6 +40,8 @@ mod desktop {
 
     /// Panic dumps a run asks for, mirrored from the crate (`panic_hook::MAX_PANIC_DUMPS`).
     const MAX_PANIC_DUMPS: usize = 8;
+    /// Earlier runs whose reports `install` keeps, mirrored from the crate (`report::KEPT_RUNS`).
+    const KEPT_RUNS: usize = 8;
 
     pub fn main() {
         if let Some(scenario) = std::env::var_os(SCENARIO_ENV) {
@@ -47,6 +49,7 @@ mod desktop {
             match scenario.to_str() {
                 Some("panics-then-crash") => panics_then_crash(&dir),
                 Some("panic-cap") => panic_cap(&dir),
+                Some("prune") => prune(&dir),
                 #[cfg(unix)]
                 Some("monitor-gone") => monitor_gone(&dir),
                 other => panic!("unknown scenario {other:?}"),
@@ -63,6 +66,7 @@ mod desktop {
             );
         }
         panic_dumps_stop_at_the_cap();
+        install_prunes_old_runs();
         #[cfg(unix)]
         capture_reports_a_dead_monitor();
         println!("monitor: ok");
@@ -139,6 +143,25 @@ mod desktop {
         assert_eq!(count(ReportKind::Panic), MAX_PANIC_DUMPS + 1, "{reports:#?}");
         assert_eq!(count(ReportKind::Minidump), MAX_PANIC_DUMPS, "{reports:#?}");
         assert_no_partials(dir.path());
+    }
+
+    /// `install` deletes the reports of all but the newest earlier runs (review PN-4), which
+    /// `report.rs` tests in detail.
+    fn install_prunes_old_runs() {
+        let dir = ScratchDir::new("prune");
+        let report = |run: usize| dir.path().join(format!("{:013}-1.dmp", 1_000 + run));
+        for run in 0..KEPT_RUNS + 2 {
+            fs::write(report(run), b"an old run's report").expect("write a report");
+        }
+        let foreign = dir.path().join("notes.txt");
+        fs::write(&foreign, b"not a report").expect("write a file");
+
+        let run = run_child("prune", dir.path());
+        let context = run.describe();
+        assert!(run.status.success(), "{context}");
+        assert_eq!(pending_reports(dir.path()).expect("list reports").len(), KEPT_RUNS, "{context}");
+        assert!(!report(1).exists() && report(2).exists(), "the oldest go\n{context}");
+        assert!(foreign.exists(), "{context}");
     }
 
     /// When the monitor dies, `native_capture` says so, and a panic's dump request fails at once
@@ -293,6 +316,18 @@ mod desktop {
         }
         report("capture", &format!("{:?}", guard.native_capture()));
         assert_eq!(guard.native_capture(), NativeCapture::Minidump);
+        drop(guard);
+    }
+
+    fn prune(dir: &Path) {
+        let guard = install(dir);
+        // It runs on a thread of its own, so wait for it: up to a minute, well inside the timeout.
+        for _ in 0..6_000 {
+            if pending_reports(dir).expect("list reports").len() <= KEPT_RUNS {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
         drop(guard);
     }
 

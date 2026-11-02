@@ -29,7 +29,8 @@
 //!     There is no minidump on Android; see [Open question Q12](#open-question-q12-android).
 //!   - *iOS:* none yet: only the panic hook is installed. Native crash capture on iOS needs an
 //!     Apple-side reporter (for example sentry-cocoa) linked by the Xcode project (spec §5.2).
-//! - **Reading back** what previous runs left ([`pending_reports`]).
+//! - **Reading back** what previous runs left ([`pending_reports`]), and **pruning** it: nothing
+//!   consumes reports yet, so [`install`] keeps the newest 8 runs' and deletes the rest.
 //!
 //! # What it deliberately does not do
 //!
@@ -306,6 +307,11 @@ fn request_native_panic_dump() -> bool {
 /// Reports go to [`CrashConfig::dump_dir`], which is created if needed. Keep the returned guard
 /// alive for as long as crashes should be captured, normally until the end of `main`.
 ///
+/// It also starts deleting the reports of all but the newest 8 earlier runs in that directory, on
+/// a thread of its own: only files this crate wrote, never a `.partial` file, and what can't be
+/// deleted is logged and left for the next launch. So read [`pending_reports`] before calling
+/// this to see everything earlier runs left.
+///
 /// # Panic-monitor guard
 ///
 /// If this process was launched as a crash monitor (its environment carries the monitor's
@@ -360,6 +366,7 @@ fn install_inner(config: CrashConfig) -> Result<CrashGuard, CrashError> {
         run_id: run_id.clone(),
         dump_dir: config.dump_dir.clone(),
     });
+    report::prune_old_runs_in_background(&config.dump_dir, &run_id);
     let guard = CrashGuard { native: start_native(&config, &run_id), panic_hook: Some(panic_hook), run_id };
 
     tracing::info!(

@@ -16,11 +16,15 @@
 //! never see half a report. The writer holds an exclusive lock on its `.partial` file until the
 //! rename is done, which is how a later launch tells an abandoned partial from one that a live
 //! process (another sandbox, or a crashed app's monitor) is still writing.
+//!
+//! Each launch deletes the finished reports of all but the newest runs ([`KEPT_RUNS`]), since
+//! nothing consumes them yet.
 
 use std::fmt::Write as _;
 use std::fs::{self, File};
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
+use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::CrashError;
@@ -30,6 +34,15 @@ use crate::CrashError;
 /// moment between a writer creating its file and locking it, and filesystems without locks.
 const STALE_PARTIAL_AGE: Duration = Duration::from_secs(10 * 60);
 
+/// How many earlier runs keep their reports; [`install`](crate::install) deletes the rest.
+/// Nothing consumes reports while upload is deferred (spec §10, "M0 status"), and on a phone
+/// nobody clears them by hand, so a crash loop would pile them up without limit. Eight runs are
+/// enough to read what went wrong lately, and only runs that crashed count. An uploader will
+/// consume reports first, and then decides again whether this stays.
+const KEPT_RUNS: usize = 8;
+
+/// How many digits a run ID's start time is padded to, so names sort by it.
+const RUN_TIME_DIGITS: usize = 13;
 const PARTIAL_SUFFIX: &str = ".partial";
 const MINIDUMP_SUFFIX: &str = "dmp";
 const NATIVE_SUFFIX: &str = "native.txt";
@@ -144,11 +157,16 @@ fn parse_seq(digits: &str) -> Option<u32> {
 
 /// A run ID: start time in Unix milliseconds (zero-padded so names sort) and the process ID.
 pub(crate) fn new_run_id(unix_ms: u64, pid: u32) -> String {
-    format!("{unix_ms:013}-{pid}")
+    format!("{unix_ms:0RUN_TIME_DIGITS$}-{pid}")
 }
 
+/// Whether `run_id` has the shape [`new_run_id`] gives it, which is all that tells this crate's
+/// reports from other files with the same suffixes.
 pub(crate) fn is_valid_run_id(run_id: &str) -> bool {
-    !run_id.is_empty() && run_id.bytes().all(|b| b.is_ascii_digit() || b == b'-')
+    let digits = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+    run_id
+        .split_once('-')
+        .is_some_and(|(unix_ms, pid)| unix_ms.len() >= RUN_TIME_DIGITS && digits(unix_ms) && digits(pid))
 }
 
 /// The name of a run's `seq`-th minidump, counting from 0: `<run>.dmp`, then `<run>.<seq>.dmp`.
@@ -411,6 +429,58 @@ fn run_start(run_id: &str) -> Option<SystemTime> {
     UNIX_EPOCH.checked_add(Duration::from_millis(unix_ms.parse().ok()?))
 }
 
+/// Runs [`prune_old_runs`] on a thread of its own, so a slow disk never holds up startup. A
+/// process that ends meanwhile leaves the rest to its next launch.
+///
+/// Called from [`crate::install`].
+pub(crate) fn prune_old_runs_in_background(dir: &Path, current_run_id: &str) {
+    let (dir, current_run_id) = (dir.to_owned(), current_run_id.to_owned());
+    let spawned = thread::Builder::new()
+        .name("sapphire-crash-prune".to_owned())
+        .spawn(move || prune_old_runs(&dir, &current_run_id));
+    if let Err(error) = spawned {
+        tracing::warn!(target: "sapphire::crash", %error, "can't start deleting old crash reports");
+    }
+}
+
+/// Deletes the finished reports of all but the newest [`KEPT_RUNS`] earlier runs in `dir`.
+///
+/// It deletes only what [`pending_reports`] lists, this crate's finished reports by their names,
+/// so other files stay. `.partial` files aren't listed: whether a writer still needs one is for
+/// [`cleanup_stale_partials`] to judge. This run's reports neither go nor count, wherever its ID
+/// sorts: a clock set back can put it before the others.
+///
+/// A failure is logged and ignored, and the next launch tries again.
+fn prune_old_runs(dir: &Path, current_run_id: &str) {
+    let reports = match pending_reports(dir) {
+        Ok(reports) => reports,
+        Err(error) => {
+            tracing::warn!(target: "sapphire::crash", %error, "can't list old crash reports to delete");
+            return;
+        }
+    };
+    // Oldest first, as the reports are.
+    let mut runs: Vec<&str> =
+        reports.iter().map(PendingReport::run_id).filter(|run| *run != current_run_id).collect();
+    runs.dedup();
+    let old = &runs[..runs.len().saturating_sub(KEPT_RUNS)];
+    let mut deleted = 0_usize;
+    for report in reports.iter().filter(|report| old.contains(&report.run_id())) {
+        match fs::remove_file(report.path()) {
+            Ok(()) => deleted += 1,
+            // The app's other processes share the directory, and one got there first.
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => {
+                let path = report.path().display();
+                tracing::warn!(target: "sapphire::crash", %path, %error, "can't delete an old crash report");
+            }
+        }
+    }
+    if deleted > 0 {
+        tracing::info!(target: "sapphire::crash", deleted, runs = old.len(), "deleted old runs' crash reports");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -450,8 +520,15 @@ mod tests {
         assert_eq!(new_run_id(42, 7), "0000000000042-7");
         assert!(new_run_id(999, 1) < new_run_id(1000, 1));
         assert!(is_valid_run_id("0001761300000123-4242"));
+        assert!(is_valid_run_id(&new_run_id(42, 7)));
         assert!(!is_valid_run_id(""));
         assert!(!is_valid_run_id("../evil"));
+        // Digits and dashes alone aren't enough: other tools name files by dates and counters.
+        assert!(!is_valid_run_id("20261101"));
+        assert!(!is_valid_run_id("2026-11-01"));
+        assert!(!is_valid_run_id("123-4"));
+        assert!(!is_valid_run_id("1761300000123-"));
+        assert!(!is_valid_run_id("1761300000123-4-5"));
     }
 
     #[test]
@@ -660,7 +737,7 @@ mod tests {
         ] {
             fs::write(dir.path().join(name), b"x").expect("write");
         }
-        fs::create_dir(dir.path().join(minidump_file_name("123-4", 0))).expect("mkdir");
+        fs::create_dir(dir.path().join(minidump_file_name(&old_run, 5))).expect("mkdir");
 
         let reports = pending_reports(dir.path()).expect("list");
         let summary: Vec<_> = reports.iter().map(|r| (r.run_id(), r.kind(), r.seq)).collect();
@@ -686,5 +763,110 @@ mod tests {
         let dir = ScratchDir::new("missing");
         let missing = dir.path().join("does-not-exist");
         assert_eq!(pending_reports(missing).expect("missing is fine"), []);
+    }
+
+    /// Writes one of each kind of report for `run`, and returns their names.
+    fn reports_of(dir: &Path, run: &str) -> Vec<String> {
+        let names = vec![
+            minidump_file_name(run, 0),
+            minidump_file_name(run, 1),
+            panic_file_name(run, 0),
+            native_file_name(run),
+        ];
+        for name in &names {
+            fs::write(dir.join(name), b"x").expect("write");
+        }
+        names
+    }
+
+    /// `count` run IDs, oldest first, all older than [`CURRENT_START_MS`].
+    fn old_runs(count: usize) -> Vec<String> {
+        (0..count as u64).map(|n| new_run_id(WRITER_START_MS + n, 10)).collect()
+    }
+
+    #[test]
+    fn prune_deletes_the_reports_of_all_but_the_newest_runs() {
+        let dir = ScratchDir::new("prune");
+        let current_run = new_run_id(CURRENT_START_MS, 20);
+        let runs = old_runs(KEPT_RUNS + 2);
+        let mut kept = Vec::new();
+        for (index, run) in runs.iter().enumerate() {
+            let names = reports_of(dir.path(), run);
+            if index >= 2 {
+                kept.extend(names);
+            }
+        }
+        // Files this crate didn't write stay, however old their neighbours are.
+        for name in [
+            "notes.dmp",
+            "unrelated.txt",
+            "20261101.dmp",
+            "123-4.dmp",
+            "1761300000123.native.txt",
+            &format!("{}.log", runs[0]),
+            &format!("{}.panic-x.txt", runs[0]),
+        ] {
+            fs::write(dir.path().join(name), b"x").expect("write");
+            kept.push(name.to_owned());
+        }
+        // So does a directory named like a report.
+        let directory = minidump_file_name(&runs[0], 7);
+        fs::create_dir(dir.path().join(&directory)).expect("mkdir");
+        kept.push(directory);
+        // And the old runs' `.partial` files, which are the startup cleanup's to judge: a live
+        // writer's, and one whose writer is gone.
+        let live = partial_name(&minidump_file_name(&runs[0], 8));
+        let _writer = create_partial(&dir.path().join(&live)).expect("the writer's partial");
+        kept.push(live);
+        let abandoned = partial_name(&panic_file_name(&runs[1], 8));
+        fs::write(dir.path().join(&abandoned), b"x").expect("write");
+        kept.push(abandoned);
+
+        prune_old_runs(dir.path(), &current_run);
+        assert_eq!(names_in(dir.path()), sorted(kept));
+    }
+
+    #[test]
+    fn prune_never_takes_this_runs_reports_or_counts_them() {
+        let dir = ScratchDir::new("prune-current");
+        // A clock set back: this run's ID sorts before every other's.
+        let current_run = new_run_id(1, 20);
+        let mut kept = reports_of(dir.path(), &current_run);
+        for run in old_runs(KEPT_RUNS) {
+            kept.extend(reports_of(dir.path(), &run));
+        }
+
+        prune_old_runs(dir.path(), &current_run);
+        assert_eq!(names_in(dir.path()), sorted(kept));
+    }
+
+    #[test]
+    fn prune_without_a_dump_dir_does_nothing() {
+        let dir = ScratchDir::new("prune-missing");
+        prune_old_runs(&dir.path().join("does-not-exist"), &new_run_id(CURRENT_START_MS, 20));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prune_shrugs_off_a_failed_delete_and_the_next_launch_finishes() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = ScratchDir::new("prune-read-only");
+        let current_run = new_run_id(CURRENT_START_MS, 20);
+        let mut kept = Vec::new();
+        for (index, run) in old_runs(KEPT_RUNS + 2).iter().enumerate() {
+            let names = reports_of(dir.path(), run);
+            if index >= 2 {
+                kept.extend(names);
+            }
+        }
+
+        // Every delete fails in a directory that can't change (unless the tests run as root).
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o555)).expect("read-only");
+        prune_old_runs(dir.path(), &current_run);
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).expect("writable");
+
+        prune_old_runs(dir.path(), &current_run);
+        assert_eq!(names_in(dir.path()), sorted(kept));
     }
 }

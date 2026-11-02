@@ -457,12 +457,13 @@ Each module below follows the same template:
 - **Panics:** a panic hook logs the panic, adds breadcrumbs (current zone, frame number, last 64 log lines) and, in shipping builds, aborts so a minidump is produced.
 - **Symbols:** shipping builds use `split-debuginfo`. Upload PDBs, dSYMs and Breakpad symbols from CI.
 
-**As built (review PA-001, PA-002, PA-003, PA-006):**
+**As built (review PA-001, PA-002, PA-003, PA-006, PN-4):**
 
 - **Recovered panics keep native capture.** A panic the app recovers from (IO callbacks, decode workers, off-thread shader builds) asks the desktop monitor for a dump, at most 8 per run. The monitor numbers its dumps (`<run>.dmp`, then `<run>.<n>.dmp`) and serves until the app's lifeline closes, and the app reconnects after each panic dump, so a native crash later in the run still gets one. `CrashGuard::native_capture()` says `Minidump` only while the monitor is alive and connected. Under `panic = "abort"` the panic's dump stays the run's only one. `tests/monitor.rs` runs the real monitor (`harness = false`).
 - **The panic report is on disk before anything is symbolized.** The hook writes it with a placeholder backtrace, asks for the dump, then symbolizes and rewrites it. On Apple platforms the module table lists only the images the frames are in, found with `dladdr`: walking dyld's image list by index faulted while another thread unloaded a library.
 - **Startup cleanup never touches a live writer's file.** Writers hold a lock on their `.partial` until the rename. `install` removes one only if it is a crate report name from another run, went unmodified for 10 minutes before this run started, and its lock is free.
 - **Android publishes only complete records.** A signal record cut short by a full disk or an I/O error keeps its `.partial` name, which `pending_reports` never lists.
+- **Only the newest runs' reports stay.** Nothing consumes reports while upload is deferred (§10, "M0 status"), so on a phone they would pile up without limit. `install` starts a thread that deletes the finished reports of all but the newest 8 earlier runs that left any (`report::KEPT_RUNS`). It recognizes the crate's own names, which needs a whole run ID (at least 13 digits, a dash and the pid), so other files stay; it leaves `.partial` files to the startup cleanup and never touches this run's. A slow disk can't delay startup, and a failed delete is logged and tried again at the next launch. An uploader, when it returns, consumes reports first and decides again whether this stays. An app that wants to see everything earlier runs left calls `pending_reports` before `install`.
 
 ### 5.3 `sapphire_core` (L0)
 
@@ -2382,9 +2383,9 @@ On **foreground**:
 - Resume audio.
 - Show a "tap to continue" overlay if the player was in combat.
 
-### 6.6 Input (`sapphire_input`, `game_ui`)
 **Android configuration changes (review PN-1).** The activity handles all of them itself. SDL can't survive a recreate: with `SDL_HINT_ANDROID_ALLOW_RECREATE_ACTIVITY` off, as it is, the new activity's `onCreate` exits the process, with no crash report and no restart. So a change the manifest doesn't list ends the run. `android:configChanges` lists every value but `resourcesUnused`, which says an activity uses no Android resources. xtask's tests hold the list to the compile SDK's, so a value a new SDK adds fails until someone considers it. [m1-exit-run.md](m1-exit-run.md) has the `wm density` check.
 
+### 6.6 Input (`sapphire_input`, `game_ui`)
 
 - **Default devices per platform:**
   - Desktop: KB/M plus gamepad, with glyphs following the last-used device.
@@ -2566,7 +2567,7 @@ These windows are rough estimates for a small, senior team. A solo developer sho
 
 - **Done and verified on 3 of the 5 platforms.** The same code renders the outlined two-tone mannequin at 60 fps on macOS (Metal), the iOS 26.3 simulator (Metal) and the Android 16 emulator (Vulkan through MoltenVK). It survives background → foreground on Android, and a forced crash leaves a valid minidump on macOS.
 - **Since then (2026-10-24):** CI runs on GitHub, and Windows and Linux build and pass their tests there. Tracy is verified: a trace from the sandbox on the headless iOS Simulator records every engine zone and wgpu's. Release builds link on every Apple target (thin LTO used to drop a symbol SDL needs).
-- **Deferred by decision (2026-10-24):** crash upload. Nothing needs it yet, so the Sentry backend was removed from `sapphire_crash`, which halves its dependency tree. Minidumps are still captured and kept for the next launch, and the backend comes back from git history once there is a project to send reports to.
+- **Deferred by decision (2026-10-24):** crash upload. Nothing needs it yet, so the Sentry backend was removed from `sapphire_crash`, which halves its dependency tree. Minidumps are still captured and kept for the next launch (the newest 8 runs' reports, §5.2), and the backend comes back from git history once there is a project to send reports to.
 - **Still open for M0 exit:**
   - A run on Windows and Linux hardware.
   - A physical iPhone, which needs a signing identity.

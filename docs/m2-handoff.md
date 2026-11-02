@@ -184,7 +184,7 @@ All on this Mac's Apple M5 with release builds, which is none of §3's reference
 - **Live link:** a pairing token (spec §5.29, "Security"). The quality tier table and the bindings as hot-reloaded documents (`sapphire_hot_reload`'s crate docs).
 - **Store and signing work (M4):** device signing, an Xcode project, the local-network prompt's text and store compliance (spec §5.29, §6.7, §7.3).
 - **Frame pacing:** a desktop frame cap on F7's pacer, and timed presentation if a device check finds frames shown early (spec §6.2).
-- **Crash upload:** deferred by decision (spec §10, "M0 status").
+- **Crash upload:** deferred by decision (spec §10, "M0 status"). Until it returns, `install` keeps the newest 8 runs' reports and deletes the rest (spec §5.2); an uploader consumes them first and decides again whether that stays.
 
 ## Known limits and risks
 

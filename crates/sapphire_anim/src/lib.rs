@@ -53,6 +53,7 @@ mod character;
 mod constraints;
 pub mod graph;
 pub mod inertia;
+mod ik;
 mod model;
 mod sample;
 mod springs;
@@ -65,6 +66,7 @@ pub use graph::{
     ClipSource, CombatInput, GraphBindError, GraphBinding, GraphInput, GraphPlayer, GraphStats,
     LocomotionInput, ReactionInput,
 };
+pub use ik::{AimGoal, SolvePose, TwoBone, TwoBoneGoal, aim, two_bone};
 pub use model::{Bind, local_to_model, palette};
 pub use sample::{overlay, overlay_weights, rest_pose, root_motion, sample};
 pub use sapphire_math::Transform;

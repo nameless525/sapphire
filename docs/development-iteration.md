@@ -12,7 +12,7 @@ same `CARGO_TARGET_DIR`.
 - While editing one crate: `cargo test -p <crate> --lib --locked`.
 - Before handing off a change: `cargo test-fast --locked` runs workspace unit and integration tests.
 - Full CPU coverage: `cargo test --workspace --locked --no-fail-fast`, including doctests. CI keeps this gate.
-- The simulation's determinism and allocation tests: `cargo test -p sapphire_gameplay --locked`. They need no GPU. Its cost: `cargo run --release -p sapphire_gameplay --example step_bench`.
+- Moves, their documents and the simulation's determinism and allocation tests: `cargo test -p sapphire_moves -p sapphire_gameplay --locked`. They need no GPU. Its cost: `cargo run --release -p sapphire_gameplay --example step_bench`.
 - The recorded combat replays: `cargo xtask replay [--replay <name>]`. They need no GPU, and the suite itself takes about 20 ms. See [Replays](#replays).
 - The same replays beside the renderer: `cargo xtask content`, then `cargo test -p sapphire_sandbox --test replays -- --ignored --test-threads=1`.
 - Renderer GPU fixtures: `cargo test -p sapphire_render --test gpu --locked -- --ignored --test-threads=1`.
@@ -37,7 +37,7 @@ Timeout and rate-limit tests retain the timing behavior they are intended to che
 
 ### Adding a replay
 
-1. **A starting world**, if none fits: write a setup function and add a row to `SCENARIOS` in `crates/sapphire_gameplay/src/replay/scenario.rs`. It loads tables and then spawns, in a fixed order, and returns the actors input drives, the player first.
+1. **A starting world**, if none fits: write a setup function and add a row to `SCENARIOS` in `crates/sapphire_gameplay/src/replay/scenario.rs`. It loads move sets and then spawns, in a fixed order, and returns the actors input drives, the player first.
 2. **Its actions:** write a function of the tick and add a row to `SCRIPTS` in `crates/sapphire_gameplay/src/replay/script.rs`. A session someone plays comes from the app's `--record` instead (below).
 3. **Record it:** `cargo xtask replay --record <name> --scenario <scenario> --script <script> [--ticks <n>] [--seed <n>]`. This writes `tests/replays/<name>.sreplay`, and adds it to this architecture's checksums. It refuses a name that's taken: delete the file to replace it.
 4. **Commit both files.** The PR's first CI run fails `Replays` on Linux and Windows, because nothing is recorded for x86-64 yet. Fill that in as below.

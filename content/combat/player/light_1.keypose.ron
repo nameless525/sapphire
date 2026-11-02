@@ -81,9 +81,9 @@
                 RightToes: (x: -18),
                 LeftUpperArm: (x: -41.1, y: 20.8, z: -54.7),
                 LeftLowerArm: (y: -85.3),
-                RightUpperArm: (x: -53.3, y: 45, z: 7.2),
-                RightLowerArm: (y: 68),
-                RightHand: (x: -109.9, y: 4.3, z: 11.4),
+                RightUpperArm: (x: -37.5, y: 54.5, z: 6.3),
+                RightLowerArm: (y: 72.6),
+                RightHand: (x: -112, y: 4.9, z: 11.6),
             }),
 
             // The top of the wind-up: coiled to the right, low, blade up and back over the right shoulder.

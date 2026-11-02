@@ -91,8 +91,8 @@ pub struct HitEvent {
 }
 
 /// A swing going through an actor's open perfect-dodge window: a live volume that does something, in a
-/// volley that hasn't hit this actor yet, touching its perfect-dodge volume. It lands nothing and is
-/// written down nowhere, so the same swing can still hit when the actor's invulnerability ends.
+/// volley that hasn't hit this actor yet, touching its perfect-dodge volume. It lands nothing, and the
+/// dodge it fires spends it on this actor ([`HitQuery#perfect-dodges`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DodgedSwing {
     /// Who it went through.
@@ -102,6 +102,8 @@ pub struct DodgedSwing {
     pub instance: u32,
     /// The hit group it names.
     pub group: Name,
+    /// How many times the group had re-armed when it touched: the volley the dodge spends.
+    pub volley: u32,
     /// The volume's place in what the attacker published this step.
     pub volume: u16,
     /// When it touched: time into the attacker's move, to the sub-tick.
@@ -145,6 +147,8 @@ pub struct HitStats {
     pub events_dropped: u64,
     /// Hits refused because [`MAX_HIT_RECORDS`] is full.
     pub hits_refused: u64,
+    /// Swings a fired perfect dodge couldn't spend because [`MAX_HIT_RECORDS`] is full.
+    pub swings_unspent: u64,
     /// Stopped volumes past [`MAX_STOPPED_VOLUMES`], which sweep on from their next step.
     pub stops_dropped: u64,
 }
@@ -204,14 +208,21 @@ pub struct HitStats {
 /// and an attacker's own bodies all count as they do for a hit, at no extra cast. A touch notes a
 /// [`DodgedSwing`] ([`Self::dodged`]) if the volume could have landed: it does something
 /// ([`VolumeSweep::dodgeable`]), and its group's records don't already have this actor in this volley.
-/// It writes no record, so nothing is spent. The `resolve` module fires the dodge.
+/// The `resolve` module fires the dodge.
+///
+/// A fired dodge spends the swing it credits: its group has its dodger on record in that volley, as a
+/// landed hit would leave it, so it can't land on the dodger or fire another dodge until the group
+/// re-arms. A slowdown stretches a swing five times, and one the player perfectly dodged landing anyway
+/// would feel like a bug. Nothing else is spent. Plain i-frames write no record, so a swing that outlasts
+/// them lands. Nor does a touch that fires nothing, another group, or another attacker's swing on the
+/// same step, which didn't get the credit.
 ///
 /// # Overflow
 ///
 /// Every limit counts in [`HitStats`] and carries on. A full event queue writes no record, so the hit
 /// lands next tick if the volume still touches it. A full ledger refuses the hit, since a hit with no
-/// record would land again on every tick. Both are far above a fight's needs, so non-zero counts mean
-/// they should grow.
+/// record would land again on every tick, and leaves a dodged swing unspent, so it can land when the
+/// i-frames end. All of them are far above a fight's needs, so non-zero counts mean they should grow.
 ///
 /// # Example
 ///
@@ -470,8 +481,9 @@ impl HitQuery {
             return;
         }
         let at = time_along(sub, share);
+        let volley = volume.volley_at(at);
         let last = self.records.volley_of(volume.attacker, volume.instance, (volume.group, dodger));
-        if last.is_some_and(|last| last >= volume.volley_at(at)) {
+        if last.is_some_and(|last| last >= volley) {
             return;
         }
         let swing = DodgedSwing {
@@ -479,6 +491,7 @@ impl HitQuery {
             attacker: volume.attacker,
             instance: volume.instance,
             group: volume.group,
+            volley,
             volume: volume.volume,
             at,
             travel: travelled + sub.motion * share,
@@ -534,6 +547,14 @@ impl HitQuery {
     #[must_use]
     pub fn dodged(&self) -> &[DodgedSwing] {
         &self.dodged
+    }
+
+    /// Spends a swing a fired perfect dodge went through: see the [type's docs](Self#perfect-dodges).
+    pub(crate) fn spend_swing(&mut self, swing: &DodgedSwing) {
+        let key = (swing.group, swing.dodger);
+        if !self.records.write(swing.attacker, swing.instance, key, swing.volley) {
+            self.stats.swings_unspent += 1;
+        }
     }
 
     /// Forgets everything about an actor, as attacker and as target, when it despawns. IDs are never
@@ -599,6 +620,7 @@ fn write_swing(hasher: &mut StateHasher, swing: &DodgedSwing) {
     hasher.u32(swing.attacker.raw());
     hasher.u32(swing.instance);
     hasher.u64(swing.group.as_u64());
+    hasher.u32(swing.volley);
     hasher.u16(swing.volume);
     hasher.u64(swing.at.as_subticks());
     hasher.f32(swing.travel);

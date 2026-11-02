@@ -25,8 +25,8 @@ use sapphire_time::{ScaleSource, SimDuration, SimTime};
 /// `roll` has i-frames on ticks 1 to 13 and a perfect-dodge window on ticks 1 to 6. A perfect dodge slows
 /// the world to a fifth for 30 steps and opens a counter window of 20 ticks. `quiet` is the same dodge
 /// with a window that's only a window. Each attack hurts by 10, and freezes nobody unless a test edits
-/// it. `riposte` is untouchable until it has landed, which a counter has to be: see
-/// [`a_slowed_swing_stays_live_so_a_counter_needs_i_frames`].
+/// it. `riposte` is untouchable until it has landed, which a counter wants to be: see
+/// `a_counter_needs_i_frames_only_against_another_swing`.
 const DODGES: &str = r#"(
     type: "sapphire::moves::MoveSetDocument",
     version: 1,
@@ -478,8 +478,8 @@ fn a_swing_on_the_tick_the_window_opens_fires_it_and_lands_nothing() {
 }
 
 /// A long swing through the whole window fires it once, on the first step it touches. `sweep` from step 0
-/// is live from step 3, and `roll` from step 2 reads tick 1 there. A second playing is another matter:
-/// [`a_second_perfect_dodge_starts_the_slowdown_again`].
+/// is live from step 3, and `roll` from step 2 reads tick 1 there. A second playing can fire on another
+/// swing (`a_second_perfect_dodge_starts_the_slowdown_again`), and this one is spent.
 #[test]
 fn it_fires_once_per_dodge() {
     let (mut sim, attacker, dodger) = duel();
@@ -869,6 +869,149 @@ fn more_swings_than_the_list_holds_are_counted() {
 }
 
 // ------------------------------------------------------------------------------------------------
+// What a fired perfect dodge spends.
+// ------------------------------------------------------------------------------------------------
+
+/// A perfect dodge spends the swing it went through on its dodger. `sweep` from step 0 reads tick 3 on step
+/// 3, where a roll from step 2 fires, and it's slowed from there: tick 9 on step 33, then one a step, so
+/// it's live until its reading of 33 on step 57. The roll's i-frames end on step 16, its tick 14, with the
+/// blade still on its hurtbox. Nothing lands, and nor does that swing fire its next dodge: an instant roll
+/// from the first's tick 16, step 18, has its window open on steps 19 to 24.
+#[test]
+fn a_perfectly_dodged_swing_is_spent_on_that_dodger() {
+    let (mut sim, attacker, dodger) = duel();
+    let schedule = [(0, attacker, Buttons::HEAVY), (2, dodger, Buttons::DODGE), (18, dodger, Buttons::DODGE)];
+    run(&mut sim, &schedule, 0, 4);
+    assert_eq!(perfect(&sim), 1);
+    assert_eq!(sim.hits().record_count(), 1);
+    run(&mut sim, &schedule, 4, 16);
+    let touches = sim.hits().stats().touches;
+    run(&mut sim, &schedule, 16, 17);
+    assert_eq!(sim.hits().stats().touches, touches + 1, "the blade finds its hurtbox: the record stops it");
+    assert_eq!(health(&sim, dodger), 100);
+
+    run(&mut sim, &schedule, 17, 25);
+    assert_eq!(playing(&sim, dodger), Some(name("roll")));
+    assert!(sim.actor(dodger).unwrap().moves.current.unwrap().elapsed >= ticks(6), "a second playing");
+    assert!(!sim.actor(dodger).unwrap().moves.current.unwrap().dodged);
+    assert_eq!(perfect(&sim), 1, "the same swing, spent");
+
+    idle(&mut sim, 34);
+    assert!(sim.actor(attacker).unwrap().moves.volumes.is_empty(), "and it's over");
+    assert_eq!(health(&sim, dodger), 100);
+    assert_eq!(sim.hits().stats().swings_unspent, 0);
+}
+
+/// D4's rule holds for everything else: i-frames take hurtboxes out and write nothing, so a swing that
+/// outlasts them lands. `quiet` from step 2 has the same i-frames as a roll and no volume, and `sweep` from
+/// step 0 lands when they end on step 16. A roll whose window saw nothing is the same: `sweep` from step 6
+/// is live from step 9, the roll's tick 7, a tick past its window.
+#[test]
+fn a_swing_that_outlasts_i_frames_that_fired_nothing_lands() {
+    for (attack, dodge) in [(0, Buttons::SKILL), (6, Buttons::DODGE)] {
+        let (mut sim, attacker, dodger) = duel();
+        let schedule = [(attack, attacker, Buttons::HEAVY), (2, dodger, dodge)];
+        run(&mut sim, &schedule, 0, 16);
+        assert_eq!(health(&sim, dodger), 100, "{dodge:?}");
+        assert_eq!(sim.hits().record_count(), 0, "{dodge:?}");
+        run(&mut sim, &schedule, 16, 17);
+        assert_eq!(perfect(&sim), 0, "{dodge:?}");
+        assert_eq!(health(&sim, dodger), 90, "{dodge:?}");
+    }
+}
+
+/// Only the swing with the credit is spent, and only for its dodger. Two `sweep`s touch on step 3: the first
+/// swept has the credit, and the second lands when the i-frames end on step 16, and nothing more does. A
+/// bystander beside the dodger takes that first one on step 3 like anything else.
+#[test]
+fn only_the_swing_it_fired_on_is_spent_and_only_for_its_dodger() {
+    let mut sim = Simulation::new(SimConfig::default());
+    let moves = Some(sim.add_move_set(moves()));
+    let spawn = ActorSpawn { moves, ..ActorSpawn::default() };
+    let (first, second) = (sim.spawn(spawn).unwrap(), sim.spawn(spawn).unwrap());
+    let dodger = sim.spawn(ActorSpawn { position: Vec3::new(0.0, 0.0, 1.0), yaw: PI, ..spawn }).unwrap();
+    let schedule = [(0, first, Buttons::HEAVY), (0, second, Buttons::HEAVY), (2, dodger, Buttons::DODGE)];
+    run(&mut sim, &schedule, 0, 16);
+    assert_eq!(perfect(&sim), 1);
+    assert_eq!(health(&sim, dodger), 100);
+    run(&mut sim, &schedule, 16, 17);
+    assert_eq!(sim.hits().events()[0].attacker, second);
+    assert_eq!(health(&sim, dodger), 90);
+    idle(&mut sim, 45);
+    assert_eq!(health(&sim, dodger), 90);
+
+    let mut sim = Simulation::new(SimConfig::default());
+    let moves = Some(sim.add_move_set(self::moves()));
+    let spawn = ActorSpawn { moves, ..ActorSpawn::default() };
+    let attacker = sim.spawn(spawn).unwrap();
+    let dodger = sim.spawn(ActorSpawn { position: Vec3::new(0.0, 0.0, 1.0), yaw: PI, ..spawn }).unwrap();
+    let beside = Vec3::new(0.2, 0.0, 1.0);
+    let bystander = sim.spawn(ActorSpawn { position: beside, yaw: PI, ..spawn }).unwrap();
+    let schedule = [(0, attacker, Buttons::HEAVY), (2, dodger, Buttons::DODGE)];
+    run(&mut sim, &schedule, 0, 4);
+    assert_eq!(perfect(&sim), 1);
+    assert_eq!(health(&sim, bystander), 90);
+    assert_eq!(health(&sim, dodger), 100);
+}
+
+/// A record is a hit group's, so another group of the same move follows its own rules, and another volume
+/// of that group is spent with it, as a landed hit would leave them. `sweep` from step 0 gains a second
+/// volume, live from its tick 5, and the i-frames end on step 16 with both on the hurtbox.
+#[test]
+fn a_record_is_a_hit_groups_as_a_landed_hits_is() {
+    let second = |group: &str| {
+        let hit = "name: \"sweep_hit\",\n                    from: 3,\n                    to: 33,\n                    path: \"blade\",\n                    shape: Sphere(radius: 0.2),\n                    attack: (damage: 10, weight: Light),\n                )";
+        let both = format!(
+            "{hit}, (\n                    name: \"{group}\",\n                    from: 5,\n                    to: 33,\n                    path: \"blade\",\n                    shape: Sphere(radius: 0.2),\n                    attack: (damage: 10, weight: Light),\n                )"
+        );
+        let (mut sim, attacker, dodger) = duel_of(moves_with(hit, &both));
+        let schedule = [(0, attacker, Buttons::HEAVY), (2, dodger, Buttons::DODGE)];
+        run(&mut sim, &schedule, 0, 17);
+        assert_eq!(perfect(&sim), 1);
+        let on_step_16 = health(&sim, dodger);
+        idle(&mut sim, 45);
+        assert_eq!(health(&sim, dodger), on_step_16, "and nothing more");
+        on_step_16
+    };
+    assert_eq!(second("sweep_late"), 90, "another group");
+    assert_eq!(second("sweep_hit"), 100, "the same group");
+}
+
+/// A record covers the volley it went through, so a swing that re-arms comes back as a landed one does.
+/// `beats` from step 0 re-arms at its ticks 10 and 20. A roll from step 2 fires on step 3 in volley 0, and
+/// the swing's slowed through step 33, at tick 9, so step 34 ends on tick 10 and the sweep that starts
+/// there, on step 35, is volley 1, which lands. A roll pressed on step 33 has its window open then instead,
+/// so the same volley fires that one, and is spent in its turn: volley 2 is the next that lands, from the
+/// sweep starting at tick 20, once the second slowdown has let it get there.
+#[test]
+fn a_spent_swing_comes_back_when_it_re_arms() {
+    let (mut sim, attacker, dodger) = duel();
+    let schedule = [(0, attacker, Buttons::JUMP), (2, dodger, Buttons::DODGE)];
+    run(&mut sim, &schedule, 0, 35);
+    assert_eq!(perfect(&sim), 1);
+    assert_eq!(health(&sim, dodger), 100, "through the sweep that ends on tick 10");
+    run(&mut sim, &schedule, 35, 36);
+    assert_eq!(sim.hits().events()[0].volley, 1);
+    assert_eq!(health(&sim, dodger), 90, "volley 1");
+
+    let (mut sim, attacker, dodger) = duel();
+    let schedule = [(0, attacker, Buttons::JUMP), (2, dodger, Buttons::DODGE), (33, dodger, Buttons::DODGE)];
+    run(&mut sim, &schedule, 0, 35);
+    assert_eq!(perfect(&sim), 1);
+    run(&mut sim, &schedule, 35, 36);
+    assert_eq!(perfect(&sim), 2, "volley 1 fires the next dodge");
+    assert_eq!(sim.hits().dodged()[0].volley, 1);
+    assert_eq!(sim.hits().dodged()[0].at, ticks(10));
+    assert_eq!(health(&sim, dodger), 100);
+    // Tick 11 on step 35, slowed over steps 36 to 65 to tick 17, then one a step: tick 20 on step 68.
+    idle(&mut sim, 33);
+    assert_eq!(health(&sim, dodger), 100, "volley 1 is spent, through the sweep that ends on tick 20");
+    idle(&mut sim, 1);
+    assert_eq!(sim.hits().events()[0].volley, 2);
+    assert_eq!(health(&sim, dodger), 90, "volley 2");
+}
+
+// ------------------------------------------------------------------------------------------------
 // Slow motion.
 // ------------------------------------------------------------------------------------------------
 
@@ -1173,8 +1316,8 @@ fn a_counter_beats_what_else_the_same_press_could_start() {
 /// ends on step 40, and a press on that very step starts the counter there. At 3× a roll from step 20 reads
 /// tick 3 on step 21, where it fires, and tick 21 and tick 24 on steps 27 and 28, past its end at tick 22. A
 /// press on step 28 is past the roll, so the roll ends first, by itself, and the counter that follows
-/// cancels nothing. The attacker leaves as soon as it's fired, because at 3× the roll's i-frames end while
-/// the slowed swing is still live.
+/// cancels nothing. At 3× the roll's i-frames end while the slowed swing is still live, which it's spent
+/// against.
 #[test]
 fn a_counter_never_reads_a_dodge_past_its_end() {
     let (mut sim, attacker, dodger) = duel();
@@ -1195,10 +1338,8 @@ fn a_counter_never_reads_a_dodge_past_its_end() {
     sim.clock_mut(dodger).unwrap().0.push_scale(ScaleSource::Gameplay, 3000).unwrap();
     let schedule =
         [(18, attacker, Buttons::LIGHT), (20, dodger, Buttons::DODGE), (28, dodger, Buttons::ULTIMATE)];
-    run(&mut sim, &schedule, 0, 22);
+    run(&mut sim, &schedule, 0, 28);
     assert_eq!(perfect(&sim), 1);
-    assert!(sim.despawn(attacker));
-    run(&mut sim, &schedule, 22, 28);
     assert_eq!(elapsed(&sim, dodger), ticks(21));
     run(&mut sim, &schedule, 28, 29);
     assert_eq!(playing(&sim, dodger), Some(name("riposte")));
@@ -1274,19 +1415,43 @@ fn a_counter_lands() {
 }
 
 /// A swing's window runs on its owner's clock, so slow motion stretches it: `tap`'s one live tick lasts five
-/// steps at a fifth of the speed. A counter that isn't untouchable walks into the very swing it answers.
-/// Fired on step 23, slowed from step 24, `tap` is live through its reading of 3.8 ticks on step 27. An
-/// answer on step 24 with no i-frames takes that hit on its first step, and the reaction replaces it.
+/// steps at a fifth of the speed. Fired on step 23, slowed from step 24, `tap` is live through its reading
+/// of 3.8 ticks on step 27. An answer on step 24 with no i-frames has nothing to fear from it, because the
+/// dodge spent it. A second attacker's `sweep`, touching on step 23 too, wasn't the one with the credit, so
+/// the same answer takes that hit on its first step, and the reaction replaces it. With i-frames, it doesn't.
 #[test]
-fn a_slowed_swing_stays_live_so_a_counter_needs_i_frames() {
+fn a_counter_needs_i_frames_only_against_another_swing() {
     let (mut sim, attacker, dodger) = duel_of(moves_with("invulnerable: [(from: 0, to: 3)],", ""));
     let schedule =
         [(20, attacker, Buttons::LIGHT), (21, dodger, Buttons::DODGE), (24, dodger, Buttons::ULTIMATE)];
     run(&mut sim, &schedule, 0, 25);
     assert_eq!(sim.actor(attacker).unwrap().moves.volumes.len(), 1, "still live, a step after it fired");
-    assert_eq!(health(&sim, dodger), 90);
+    assert_eq!(playing(&sim, dodger), Some(name("riposte")));
     idle(&mut sim, 1);
-    assert_eq!(playing(&sim, dodger), Some(name("flinch")));
+    assert_eq!(health(&sim, dodger), 100);
+    assert_eq!(playing(&sim, dodger), Some(name("riposte")));
+
+    let answer = |set: MoveSet| {
+        let mut sim = Simulation::new(SimConfig::default());
+        let moves = Some(sim.add_move_set(set));
+        let spawn = ActorSpawn { moves, ..ActorSpawn::default() };
+        let (first, second) = (sim.spawn(spawn).unwrap(), sim.spawn(spawn).unwrap());
+        let at = Vec3::new(0.0, 0.0, 1.0);
+        let dodger = sim.spawn(ActorSpawn { position: at, yaw: PI, ..spawn }).unwrap();
+        let schedule = [
+            (20, second, Buttons::HEAVY),
+            (20, first, Buttons::LIGHT),
+            (21, dodger, Buttons::DODGE),
+            (24, dodger, Buttons::ULTIMATE),
+        ];
+        run(&mut sim, &schedule, 0, 24);
+        assert_eq!(perfect(&sim), 1);
+        assert_eq!(sim.hits().record_count(), 1, "the one with the credit, and no more");
+        run(&mut sim, &schedule, 24, 25);
+        (health(&sim, dodger), playing(&sim, dodger))
+    };
+    assert_eq!(answer(moves_with("invulnerable: [(from: 0, to: 3)],", "")), (90, Some(name("riposte"))));
+    assert_eq!(answer(moves()), (100, Some(name("riposte"))));
 }
 
 /// A new revision of the set is what the counter starts from, by name, like any window of an older one,

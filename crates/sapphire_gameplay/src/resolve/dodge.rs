@@ -13,10 +13,10 @@ use crate::moves::{MoveLibrary, MoveOutput, MoveRunner, OpenCounter};
 
 /// [`crate::CombatSet::Resolve`], after hits: fires each dodge a swing went through this step. A volume
 /// is in the world only on a step its window can fire, so the swing's dodger has that window published,
-/// and firing marks the playing, so it can't fire again.
+/// and firing marks the playing, so it can't fire again, and spends the swing on its dodger.
 #[allow(clippy::too_many_arguments, reason = "a system's parameters read as what it touches")]
 pub(crate) fn fire_perfect_dodges(
-    hits: Res<'_, HitQuery>,
+    mut hits: ResMut<'_, HitQuery>,
     table: Res<'_, ActorTable>,
     library: Res<'_, MoveLibrary>,
     world_clock: Res<'_, WorldClock>,
@@ -25,7 +25,8 @@ pub(crate) fn fire_perfect_dodges(
     mut stats: ResMut<'_, ResolveStats>,
     mut actors: Query<'_, '_, (&mut EntityClock, &mut MoveRunner, &MoveOutput)>,
 ) {
-    for swing in hits.dodged() {
+    for index in 0..hits.dodged().len() {
+        let swing = hits.dodged()[index];
         let Some(entity) = table.entity(swing.dodger) else { continue };
         let Ok((mut clock, mut runner, output)) = actors.get_mut(entity) else { continue };
         let (Some(index), Some(mut running)) = (output.perfect_window, runner.running) else { continue };
@@ -36,6 +37,7 @@ pub(crate) fn fire_perfect_dodges(
         let now = clock.0.now();
         running.dodged = true;
         runner.running = Some(running);
+        hits.spend_swing(&swing);
         if let Some(counter) = &window.counter {
             runner.counter = Some(OpenCounter {
                 at: running.at,

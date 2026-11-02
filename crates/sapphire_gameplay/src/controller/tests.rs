@@ -681,7 +681,7 @@ const CHECKSUM_AARCH64: u64 = 0x6a8c_3e56_872d_600a;
 /// x86-64: Linux and Windows must both reach this one value. **Not pinned yet:** the first CI run fails,
 /// printing the value to put here. Linux and Windows failing with different values is what this exists
 /// to find: something on that path reaches a platform's C math library.
-const CHECKSUM_X86_64: Option<u64> = Some(0xef94_6904_a64c_c2ef);
+const CHECKSUM_X86_64: Option<u64> = None;
 
 const EXPECTED: Option<u64> = if cfg!(target_arch = "aarch64") {
     Some(CHECKSUM_AARCH64)

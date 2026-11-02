@@ -110,6 +110,7 @@ fn every_field_of_a_querys_state_moves_the_hash() {
         ("a dodger", |h| h.dodged[0].dodger = actor(9)),
         ("a dodged attacker", |h| h.dodged[0].attacker = actor(9)),
         ("a dodged instance", |h| h.dodged[0].instance += 1),
+        ("a dodged volley", |h| h.dodged[0].volley += 1),
         ("a dodged group", |h| h.dodged[0].group = Name::new("x")),
         ("a dodged volume", |h| h.dodged[0].volume += 1),
         ("a dodged time", |h| h.dodged[0].at = SimDuration::from_subticks(1)),
@@ -211,4 +212,31 @@ fn only_the_running_moves_volumes_read_the_clock() {
     // And with nothing left running.
     let idle = crate::MoveRunner::default();
     assert_eq!(published::move_reading(&idle, &volume(current.serial)), SimDuration::from_ticks(2));
+}
+
+/// A swing a fired perfect dodge can't write down stays unspent, and says so. A swing already on record
+/// needs no room of its own, so a full ledger still takes its next volley.
+#[test]
+fn a_full_ledger_leaves_a_dodged_swing_unspent() {
+    let mut hits = HitQuery::new();
+    for target in 0..MAX_HIT_RECORDS as u32 {
+        assert!(hits.records.write(actor(1), 1, (Name::new("swing"), actor(target + 2)), 0));
+    }
+    let swing = DodgedSwing {
+        dodger: actor(1000),
+        attacker: actor(1),
+        instance: 1,
+        group: Name::new("swing"),
+        volley: 0,
+        volume: 0,
+        at: SimDuration::ZERO,
+        travel: 0.0,
+    };
+    hits.spend_swing(&swing);
+    assert_eq!(hits.stats().swings_unspent, 1);
+    assert_eq!(hits.record_count(), MAX_HIT_RECORDS);
+
+    hits.spend_swing(&DodgedSwing { dodger: actor(2), volley: 1, ..swing });
+    assert_eq!(hits.stats().swings_unspent, 1);
+    assert_eq!(hits.records.volley_of(actor(1), 1, (Name::new("swing"), actor(2))), Some(1));
 }

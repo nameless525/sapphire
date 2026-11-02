@@ -177,15 +177,14 @@ fn tracks_of(mv: &Move, elapsed: SimDuration) -> Vec<TrackSnapshot> {
     for change in &mv.hurtboxes {
         add(known_or(change.name(), "hurtbox"), change.span, palette::OFF);
     }
-    let spans: [(&str, &[Span], Color); 3] = [
-        ("invulnerable", &mv.invulnerable, palette::OFF),
-        ("perfect dodge", &mv.perfect_dodge, palette::PERFECT_DODGE),
-        ("parry", &mv.parry, palette::PARRY),
-    ];
-    for (name, spans, color) in spans {
-        for span in spans {
-            add(name.to_owned(), *span, color);
-        }
+    for span in &mv.invulnerable {
+        add("invulnerable".to_owned(), *span, palette::OFF);
+    }
+    for window in &mv.perfect_dodge {
+        add("perfect dodge".to_owned(), window.span, palette::PERFECT_DODGE);
+    }
+    for span in &mv.parry {
+        add("parry".to_owned(), *span, palette::PARRY);
     }
     for window in &mv.cancels {
         add("cancel".to_owned(), window.span, CANCEL);

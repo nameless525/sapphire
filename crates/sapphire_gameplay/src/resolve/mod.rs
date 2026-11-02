@@ -89,6 +89,10 @@
 //! the actor has a volume in the world, and a sweep of anyone's live volume that touches it is a
 //! `DodgedSwing`, which lands nothing. What fires, in that step, once per playing of the dodge:
 //!
+//! - **The swing is spent on the dodger:** its hit group has the dodger on record in that volley, as a
+//!   landed hit would leave it, so it can't land on the dodger, however long the slowdown stretches it,
+//!   or fire the dodger's next dodge. The fight's rhythm depends on trusting a perfect dodge, and a swing
+//!   that landed anyway at 0.2× would feel like a bug.
 //! - **Slow motion, if authored:** the world at its `per_mille` for its `steps` real steps from the next
 //!   step, the dodger's own clock scaled back up over exactly those steps, so it moves at normal speed
 //!   in a slowed world. A later request, from another dodge or anything else, replaces what's running, and
@@ -112,8 +116,13 @@
 //!   on that step the swing touches the perfect-dodge volume, and fires it, and lands nothing. On the step
 //!   before, the window isn't open: a hit lands and its reaction replaces the dodge. A step never has
 //!   both, because the window only counts on a step the actor is invulnerable.
-//! - **After the window,** nothing was spent: a swing still live when the actor's invulnerability ends
-//!   lands as if it had just arrived, on whatever reaction that plays, which closes the counter window.
+//! - **Plain i-frames spend nothing:** a swing still live when an actor's invulnerability ends lands as if
+//!   it had just arrived, whether the actor had no window or had one that fired nothing. Only a fired
+//!   perfect dodge spends, and only the swing it credits, for that dodger. A second attacker's swing on the
+//!   same step, or another hit group of the same move, lands when the i-frames end, on whatever reaction
+//!   that plays, which closes the counter window. So a counter still wants i-frames of its own.
+//! - **A swing that re-arms** comes back as a landed one does: the record covers the volley it went
+//!   through, so from the group's next re-arm it can land on the dodger, or fire its next dodge.
 //!
 //! # Determinism
 //!

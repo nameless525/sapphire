@@ -303,7 +303,7 @@ fn a_set_with_a_clip_cooks_to_one_set_of_bytes() {
     assert_eq!(blake3::hash(&bytes).to_hex().as_str(), COOKED_SET);
 }
 
-const COOKED_SET: &str = "785592ec8637b5ec9af0ebbfa430b831068d0cd58e037294310b6415f8020aaf";
+const COOKED_SET: &str = "2fd164cbeef1eb7d0711430036803f1b1305c1d889e694dc83a96b010cb1dcb6";
 
 /// A hit path through a joint a rig constraint drives, in a real cook: the sample character's twist
 /// helper follows its hand, which a table couldn't.

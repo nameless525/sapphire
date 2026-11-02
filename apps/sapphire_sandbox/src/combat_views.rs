@@ -230,6 +230,7 @@ fn sweep_of<'a>(
         shape: hit_shape(volume.shape),
         path: sim.move_library().get(volume.at)?.tables.path(volume.path)?,
         blocked_by: GroupMask::NONE,
+        dodgeable: false,
         owner: OwnerStep {
             delta: actor.clock_delta,
             reading,

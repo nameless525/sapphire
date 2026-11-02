@@ -78,6 +78,13 @@ pub const SCRIPTS: &[Script] = &[
         actions: dodge_counter,
     },
     Script {
+        name: "cancel-windows",
+        about: "the test content's cancel windows no other script reaches: a skill out of the second hit, a \
+                string started over from the third, a dodge out of a spin and out of a knockdown",
+        ticks: 900,
+        actions: cancel_windows,
+    },
+    Script {
         name: "idle",
         about: "nobody touches anything: the smallest a replay can be",
         ticks: 3600,
@@ -300,15 +307,50 @@ const DODGE_COUNTER_PLAYER: [(u64, Buttons); 9] = [
 #[must_use]
 pub fn dodge_counter(tick: u64, cast: &[ActorId]) -> TickActions {
     let walking = tick % DODGE_COUNTER_ROUND <= 45;
+    let sticks = if walking { [Stick::new(0, 127), Stick::new(0, -127)] } else { [Stick::new(0, 0); 2] };
+    facing_off(tick, cast, sticks, &DODGE_COUNTER_PLAYER, &DODGE_COUNTER_OPPONENT)
+}
+
+/// Ticks of [`cancel_windows`] for the player. A press ahead of a window a hit's hitstop has pushed back
+/// buffers until it opens, so each stays inside its window with the opponent in reach or not.
+const CANCEL_WINDOWS_PLAYER: [(u64, Buttons); 10] = [
+    (137, Buttons::DODGE), // `knockdown`, from the heavy's hit on tick 64, at its tick 62 after 10 of hitstop.
+    (300, Buttons::LIGHT),
+    (310, Buttons::LIGHT),
+    (323, Buttons::SKILL), // `light_2` from tick 310, by its tick 13.
+    (500, Buttons::LIGHT),
+    (510, Buttons::LIGHT),
+    (522, Buttons::LIGHT),
+    (558, Buttons::LIGHT), // `light_3` from about tick 522, by its tick 36.
+    (700, Buttons::ULTIMATE),
+    (724, Buttons::DODGE), // `spin` from tick 700, at its tick 24.
+];
+
+/// Ticks of [`cancel_windows`] for the opponent: the heavy that knocks the player down.
+const CANCEL_WINDOWS_OPPONENT: [(u64, Buttons); 1] = [(50, Buttons::HEAVY)];
+
+/// [`SCRIPTS`]' `cancel-windows`: the rest of pillar 4's cancel windows, held by `tests/dodges.rs`. The two
+/// walk into reach for the knockdown, and where the rest happen doesn't matter.
+#[must_use]
+pub fn cancel_windows(tick: u64, cast: &[ActorId]) -> TickActions {
+    let sticks = if tick <= 45 { [Stick::new(0, 127), Stick::new(0, -127)] } else { [Stick::new(0, 0); 2] };
+    facing_off(tick, cast, sticks, &CANCEL_WINDOWS_PLAYER, &CANCEL_WINDOWS_OPPONENT)
+}
+
+/// The two of a `duel` on their schedules, holding these sticks.
+fn facing_off(
+    tick: u64,
+    cast: &[ActorId],
+    sticks: [Stick; 2],
+    player: &[(u64, Buttons)],
+    opponent: &[(u64, Buttons)],
+) -> TickActions {
     let mut actions = TickActions::NEUTRAL;
-    let mut drive = |actor: Option<&ActorId>, buttons: Buttons, forward: i8| {
-        if let Some(&actor) = actor {
-            let stick = Stick::new(0, if walking { forward } else { 0 });
-            actions.set(actor, ActorActions { buttons, stick }).expect("two actors fit a tick");
-        }
-    };
-    drive(cast.first(), on_schedule(tick, u64::MAX, &DODGE_COUNTER_PLAYER), 127);
-    drive(cast.get(1), on_schedule(tick, u64::MAX, &DODGE_COUNTER_OPPONENT), -127);
+    let schedules = [player, opponent];
+    for ((&actor, stick), schedule) in cast.iter().zip(sticks).zip(schedules) {
+        let buttons = on_schedule(tick, u64::MAX, schedule);
+        actions.set(actor, ActorActions { buttons, stick }).expect("two actors fit a tick");
+    }
     actions
 }
 

@@ -142,8 +142,15 @@ impl SandboxInput {
     }
 
     /// Whether the steps are stopped.
+    #[cfg(test)]
     pub fn is_paused(&self) -> bool {
         self.controls.is_paused()
+    }
+
+    /// Whether a finger landing now is the pause's: paused and not on the way out, because the frame after
+    /// the tap that ends a pause plays under the fight's bindings, and there nothing's waiting for a tap.
+    pub fn pause_takes_landings(&self) -> bool {
+        self.controls.is_paused() && !self.controls.is_resuming()
     }
 
     /// Whether this device's player has more than a screen to touch.

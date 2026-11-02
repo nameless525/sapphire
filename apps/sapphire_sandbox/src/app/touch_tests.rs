@@ -275,6 +275,31 @@ fn a_tap_ends_the_pause_and_a_thumb_held_through_it_still_lifts() {
     assert!(rig.frame(), "the second Back leaves");
 }
 
+/// The frame after the tap that ended a pause, the steps are about to run and the combat context is back,
+/// so a thumb landing then is the fight's. The pause no longer wants it.
+#[test]
+fn a_thumb_landing_as_the_pause_ends_is_the_fights() {
+    let mut rig = Rig::fight();
+    rig.back();
+    assert!(!rig.frame());
+    assert!(rig.input.is_paused());
+
+    // The tap that ends it, in one frame.
+    let middle = SIZE * Vec2::new(0.5, 0.4);
+    rig.touch(1, OTHER_THUMB, TouchPhase::Down, middle);
+    rig.touch(2, OTHER_THUMB, TouchPhase::Up, middle);
+    assert!(!rig.frame());
+
+    // Between that frame and the next, one thumb on the stick and another on the attack.
+    rig.push_stick(THUMB, Vec2::new(0.0, 1.0));
+    rig.touch(3, OTHER_THUMB, TouchPhase::Down, rig.layout.attack.center);
+    assert!(!rig.frame());
+    assert!(!rig.input.is_paused());
+    let read = rig.read();
+    assert!(read.buttons.contains(sapphire_gameplay::Buttons::LIGHT), "the attack was lost: {read:?}");
+    assert_ne!(read.stick, Stick::CENTER, "the stick was lost: {read:?}");
+}
+
 /// While paused the zones' camera does nothing either: it isn't a fight's time, but it's the pause's.
 #[test]
 fn a_drag_turns_the_camera_through_the_bindings_and_not_in_the_pause() {

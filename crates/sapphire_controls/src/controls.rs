@@ -404,6 +404,12 @@ impl CombatControls {
         self.paused
     }
 
+    /// Whether the pause is on its way out: [`Self::is_paused`] still holds, until the next update plays
+    /// the frame's input under the combat context.
+    pub fn is_resuming(&self) -> bool {
+        self.resuming
+    }
+
     /// Stops the steps, or starts them again from the next update. The pause and resume actions do
     /// this themselves: this is for what isn't a binding, such as a pause menu's button.
     pub fn set_paused(&mut self, paused: bool) {

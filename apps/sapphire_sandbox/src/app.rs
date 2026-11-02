@@ -548,7 +548,7 @@ impl App for SandboxApp {
 /// a tap is how a phone gets out of it, and the zones keep only the fingers they already hold: a thumb
 /// that was on the stick when the pause came still has to lift.
 fn game_event(scene: &mut Scene, input: &mut SandboxInput, event: &Event) {
-    let pauses_landing = input.is_paused()
+    let pauses_landing = input.pause_takes_landings()
         && matches!(event, Event::Touch(touch) if touch.phase == sapphire_platform::TouchPhase::Down);
     if pauses_landing || !scene.hud_event(event) {
         input.handle_event(event);

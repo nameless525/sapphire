@@ -463,6 +463,8 @@ pub(crate) struct Scene {
     cues: Option<CueShow>,
     /// Width over height of the last frame drawn, which puts a hit's point on screen.
     view_aspect: f32,
+    /// How long the last frame's camera took: the arena's director or plain follow.
+    camera_time: Duration,
 }
 
 impl Scene {
@@ -572,6 +574,7 @@ impl Scene {
             vfx: None,
             cues: None,
             view_aspect: 16.0 / 9.0,
+            camera_time: Duration::ZERO,
         }
     }
 
@@ -1543,6 +1546,11 @@ impl Scene {
         self.anim_stats
     }
 
+    /// How long the last frame's camera took (rule R9): nothing without the arena.
+    pub fn camera_time(&self) -> Duration {
+        self.camera_time
+    }
+
     /// Runs spring bones as a quality tier does, from the next frame on.
     pub fn set_spring_quality(&mut self, quality: SpringQuality) {
         self.spring_quality = quality;
@@ -1992,7 +2000,9 @@ impl Scene {
         self.aspect = drawable_aspect(target_size).unwrap_or(self.aspect);
         self.ecs.presentation(alpha);
         if let Some(arena) = &mut self.arena {
+            let started = Stopwatch::start();
             arena.present(self.ecs.world_mut(), alpha, drawable_aspect(target_size));
+            self.camera_time = started.elapsed();
         }
         self.follow_hand();
         let (sky_material, cloud_cover, plain_sky) = (self.sky_material, self.cloud_cover, self.plain_sky);

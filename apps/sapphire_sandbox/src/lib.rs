@@ -339,6 +339,7 @@ mod enemy;
 mod environment;
 mod extract;
 mod faces;
+mod fight_bench;
 mod foliage;
 mod garments;
 mod hud;

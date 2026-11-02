@@ -7,12 +7,16 @@
 //! [`bench`](crate::bench) measures the per-frame CPU path, then each exits; `--offscreen`
 //! (`serve.rs`) keeps drawing for hot reload and live link until stopped.
 
+use std::time::Duration;
+
+use sapphire_core::alloc::{AllocCounts, AllocScope};
 use sapphire_platform::{App, AppControl, AppInitError, AppMetadata, DeviceClass, Event, Platform};
 use sapphire_render::debug_view::DebugView;
 use sapphire_render::graph::{FrameGraph, GraphExecutor, TextureId};
 use sapphire_render::quality::{DeviceProfile, FrameTiming, Quality, TierTable};
 use sapphire_render::{RenderSettings, Renderer};
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, TransientDesc, wgpu};
+use sapphire_time::Stopwatch;
 
 use crate::LOG_TARGET;
 use crate::app::SandboxApp;
@@ -25,6 +29,42 @@ use crate::stats::Stages;
 
 /// Offscreen targets are sRGB like the swapchain, so they match what the window shows.
 pub(crate) const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+
+/// Where a frame's CPU time went, as [`Stage`] measures it: what `crate::fight_bench` reads and resets
+/// each frame. Nothing else reads it, and two clock reads a stage cost nothing a frame can see.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct FrameLaps {
+    /// The scene's fixed-step systems.
+    pub scene_step: Duration,
+    /// The simulation's steps.
+    pub simulation: Duration,
+    /// Of those, the character controllers with the physics they ask for: `SimStats::controllers_last`.
+    pub physics: Duration,
+    /// The arena following the steps, and their cues fired: effects spawned and moved.
+    pub cues: Duration,
+    /// `Content::update` and `Scene::follow_content`.
+    pub content: Duration,
+    /// `Scene::animate`.
+    pub animation: Duration,
+    /// `Scene::frame_packet`: presentation, the camera, extraction and the HUD.
+    pub packet: Duration,
+    /// `Renderer::prepare`.
+    pub prepare: Duration,
+    /// `Renderer::record` and the frame graph's execution, its submit included.
+    pub record: Duration,
+    /// What each drew on the heap, on this thread: the workers that record passes count apart.
+    pub animation_allocations: AllocCounts,
+    pub packet_allocations: AllocCounts,
+    pub prepare_allocations: AllocCounts,
+    pub record_allocations: AllocCounts,
+}
+
+/// What's been allocated on this thread since `scope` began, and a scope from now on.
+fn next_scope(scope: &mut AllocScope) -> AllocCounts {
+    let counts = scope.counts();
+    *scope = AllocScope::begin();
+    counts
+}
 
 /// The offscreen "app". A capture or bench does all its work in `init`, and the first frame
 /// exits; `--offscreen` draws a frame each iteration until the process is told to quit.
@@ -79,7 +119,7 @@ impl App for OffscreenApp {
                 if let Some(combat) = &mut stage.combat {
                     stage.dev.start_fight_from_cooks(combat, &stage.content);
                 }
-                let serving = crate::serve::Serving::new(stage, options.clone(), width, height);
+                let serving = crate::serve::Serving::new(stage, options.clone(), width, height)?;
                 return Ok(Self { serving: Some(serving) });
             }
             #[cfg(not(feature = "dev"))]
@@ -142,6 +182,8 @@ pub(crate) struct Stage {
     pub measure_gpu: bool,
     /// Only TAA captures without instrumentation can discard their warmup's display output.
     history_only_capture: bool,
+    /// Where the frames' CPU time went since it was last reset.
+    pub laps: FrameLaps,
     pub gpu: GpuContext,
     _instance: GpuInstance,
 }
@@ -349,25 +391,38 @@ impl Stage {
             quality,
             measure_gpu: false,
             history_only_capture,
+            laps: FrameLaps::default(),
             gpu,
             _instance: instance,
         })
     }
 
-    /// One fixed step, under the overlay's time controls in `dev` builds.
+    /// One fixed step, under the overlay's time controls in `dev` builds, and the end of a cue frame:
+    /// each step here is a frame's worth, as it is on any tier that draws every tick.
     pub fn step(&mut self) {
+        self.fixed_step();
+        // No sound and no pad here: a frame's end is all that's left of them.
+        self.scene.end_cue_frame(1.0 / sapphire_time::TICK_HZ as f32, &mut ());
+    }
+
+    /// One fixed step and nothing of the frame's: for a frame that takes several, or asks what the steps
+    /// asked of the audio system before the cue frame ends.
+    pub fn fixed_step(&mut self) {
+        let mut stopwatch = Stopwatch::start();
         #[cfg(feature = "dev")]
         self.dev.before_fixed_step(&mut self.scene);
         self.scene.step();
         // No one's watching a clock here: a step of time is what a frame shows.
         self.scene.drive_arena_camera(1.0 / sapphire_time::TICK_HZ as f32, sapphire_math::Vec2::ZERO, 0.0);
+        self.laps.scene_step += stopwatch.lap();
         if let Some(combat) = &mut self.combat {
             combat.step(&mut crate::combat::no_bindings);
+            self.laps.simulation += stopwatch.lap();
+            self.laps.physics += combat.simulation().stats().controllers_last;
             self.scene.follow_simulation(combat.simulation(), combat.cast());
             self.scene.show_cues(combat.simulation());
+            self.laps.cues += stopwatch.lap();
         }
-        // No sound and no pad here: a frame's end is all that's left of them.
-        self.scene.end_cue_frame(1.0 / sapphire_time::TICK_HZ as f32, &mut ());
     }
 
     /// The latest step's hits as the HUD's numbers, for a fight an agent runs with no golden behind it:
@@ -448,6 +503,7 @@ impl Stage {
         alpha: f32,
         after: impl FnOnce(&mut FrameGraph<'f>, TextureId),
     ) -> Result<bool, AppInitError> {
+        let mut laps = Stopwatch::start();
         // Hot reload and loading run every frame, as in the windowed app, so the bench measures
         // them.
         #[cfg(feature = "dev")]
@@ -460,6 +516,7 @@ impl Stage {
         );
         self.content.update(&mut self.renderer, &self.gpu);
         self.scene.follow_content(&mut self.content);
+        self.laps.content += laps.lap();
         // Reload/live link can change debug CVars, so inspect them after applying it.
         let discard_output = discard_output
             && self.history_only_capture
@@ -487,20 +544,28 @@ impl Stage {
         // While the overlay shows, it gets the extract and render stages' times (the bench
         // measures its own way, and fixed steps are run outside this).
         #[cfg(feature = "dev")]
-        let mut stopwatch = self.dev.overlay_visible().then(sapphire_time::Stopwatch::start);
+        let mut stopwatch = self.dev.overlay_visible().then(Stopwatch::start);
         #[cfg(feature = "dev")]
         self.dev.after_steps(self.combat.as_ref(), &self.scene);
+        laps.lap();
+        let mut scope = AllocScope::begin();
         self.scene.animate(&self.content, alpha);
+        self.laps.animation += laps.lap();
+        self.laps.animation_allocations = next_scope(&mut scope);
         if let Some(combat) = &self.combat {
             combat.draw_views();
         }
         let packet = self.scene.frame_packet(alpha, Some((width, height)));
+        self.laps.packet += laps.lap();
+        self.laps.packet_allocations = next_scope(&mut scope);
         #[cfg(feature = "dev")]
-        let extract = stopwatch.as_mut().map(sapphire_time::Stopwatch::lap).unwrap_or_default();
+        let extract = stopwatch.as_mut().map(Stopwatch::lap).unwrap_or_default();
         // Before `prepare`, which culls hulls by it, and readies the debug view.
         self.renderer.set_outline_distance(self.quality.outline_distance());
         self.renderer.set_debug_view(sapphire_render::debug_view::DEBUG_VIEW.get());
         self.renderer.prepare(&self.gpu, packet);
+        self.laps.prepare += laps.lap();
+        self.laps.prepare_allocations = next_scope(&mut scope);
         let timing = FrameTiming::new(&self.graph, OFFSCREEN_FRAME);
         self.renderer.set_render_scale(self.quality.render_scale((width, height), &timing));
         let gpu_timing = self.quality.wants_gpu_timing() || self.measure_gpu;
@@ -508,7 +573,8 @@ impl Stage {
         self.graph.set_gpu_timing(&self.gpu, gpu_timing);
         #[cfg(feature = "dev")]
         let overlay = {
-            let started = sapphire_time::Stopwatch::start();
+            laps.lap();
+            let started = Stopwatch::start();
             // Offscreen frames have no real length; the overlay is told each is a 60 Hz frame.
             // No display paces offscreen frames.
             self.dev.begin_frame(OFFSCREEN_FRAME, self.stages.as_ref(), None);
@@ -528,6 +594,8 @@ impl Stage {
                 combat: self.combat.as_ref(),
             };
             self.dev.update(state, &mut self.graph);
+            laps.lap();
+            scope = AllocScope::begin();
             started.elapsed()
         };
         self.renderer.record(&mut graph, target);
@@ -535,6 +603,8 @@ impl Stage {
         self.dev.record(&mut graph, target);
         after(&mut graph, target);
         self.graph.execute(&self.gpu, graph).map_err(AppInitError::msg)?;
+        self.laps.record += laps.lap();
+        self.laps.record_allocations = scope.counts();
         #[cfg(feature = "dev")]
         if let Some(mut stopwatch) = stopwatch {
             let render = stopwatch.lap().saturating_sub(overlay);
@@ -557,7 +627,7 @@ fn history_only_capture_allowed(options: &Options, settings: RenderSettings) -> 
 
 /// The length the overlay and dynamic resolution are told an offscreen frame takes: offscreen
 /// frames have no real length, so dynamic resolution follows GPU timings alone.
-const OFFSCREEN_FRAME: std::time::Duration = std::time::Duration::from_micros(16_667);
+const OFFSCREEN_FRAME: Duration = Duration::from_micros(16_667);
 
 #[cfg(test)]
 mod tests {

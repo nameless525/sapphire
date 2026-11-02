@@ -354,6 +354,17 @@ impl Combat {
         }
     }
 
+    /// How many ticks a replay has left: nothing for a fight or a recording, which have no end of their
+    /// own.
+    pub fn ticks_left(&self) -> Option<u64> {
+        match &self.mode {
+            Mode::Replaying { player, .. } => {
+                Some(u64::from(player.replay().ticks()).saturating_sub(player.simulation().tick()))
+            }
+            Mode::Recording { .. } | Mode::Fighting(_) => None,
+        }
+    }
+
     /// The tick a capture stops at: the replay's end unless `--capture-ticks` said otherwise, and
     /// never past it, since the frames after would show no fight.
     pub fn capture_ticks(

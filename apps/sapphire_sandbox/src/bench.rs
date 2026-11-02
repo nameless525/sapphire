@@ -32,6 +32,8 @@
 //! frame.
 //! Timing comes last so it doesn't touch the CPU and allocation numbers, which stay comparable
 //! with builds that have none.
+//!
+//! A fight is measured whole, by phases: `crate::fight_bench`.
 
 use std::time::Duration;
 
@@ -47,7 +49,7 @@ use sapphire_time::Stopwatch;
 use crate::LOG_TARGET;
 use crate::combat::Combat;
 use crate::offscreen::Stage;
-use crate::options::Options;
+use crate::options::{CombatOption, Options};
 
 /// Frames run before measuring: first-use pipeline work and buffer growth settle here.
 const WARMUP_FRAMES: u32 = 60;
@@ -72,6 +74,9 @@ pub(crate) fn run(
     let mut stage = Stage::new(platform, options)?;
     stage.combat = combat;
     let startup = startup.elapsed();
+    if let Some(fight @ (CombatOption::Replay { .. } | CombatOption::Fight { .. })) = &options.combat {
+        return crate::fight_bench::run(&mut stage, fight, options, (frames, width, height), startup);
+    }
 
     let target = stage.target(width, height, wgpu::TextureUsages::empty());
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());

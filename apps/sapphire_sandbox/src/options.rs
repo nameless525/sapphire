@@ -207,6 +207,8 @@ pub(crate) struct Options {
     pub combat: Option<CombatOption>,
     /// `--cues`: fire that simulation's cues, as a game does (M2 E3).
     pub cues: bool,
+    /// `--bench-trace <csv>`: a bench of a fight writes every frame here (M2 Z1, `fight_bench.rs`).
+    pub bench_trace: Option<PathBuf>,
     /// `--watch-document <path>` (`dev` builds, repeatable): hot reload watches this file as well, as the
     /// document of its file's name: a tuner's copy of a fight's moves, say (M2 T2).
     pub watch_documents: Vec<PathBuf>,
@@ -857,6 +859,7 @@ impl Options {
                 DEBUG_OVERLAY_FLAG => options.debug_overlay = Some(inline.take().unwrap_or_default()),
                 CAPTURE_FLAG => capture = Some(PathBuf::from(value(CAPTURE_FLAG)?)),
                 BENCH_FLAG => bench = Some(number(&value(BENCH_FLAG)?, BENCH_FLAG)?),
+                "--bench-trace" => options.bench_trace = Some(PathBuf::from(value("--bench-trace")?)),
                 OFFSCREEN_FLAG => serve = true,
                 CONTACT_SHEET_FLAG => {
                     options.clip = Some(clip_name(&value(CONTACT_SHEET_FLAG)?, CONTACT_SHEET_FLAG)?);
@@ -1084,6 +1087,14 @@ impl Options {
         }
         if options.cues && options.cue.is_some() {
             return Err("--cues and --cue are exclusive: both play the frame's sound".to_owned());
+        }
+        if options.bench_trace.is_some()
+            && !(matches!(mode, Some(OffscreenMode::Bench { .. }))
+                && matches!(options.combat, Some(CombatOption::Replay { .. } | CombatOption::Fight { .. })))
+        {
+            return Err(format!(
+                "--bench-trace needs {BENCH_FLAG} of a fight: --replay, or --fight with --script"
+            ));
         }
         let drawn_alone = matches!(mode, Some(OffscreenMode::Capture { .. } | OffscreenMode::Bench { .. }));
         match &options.combat {
@@ -2189,6 +2200,22 @@ mod tests {
         refused(&["--capture", "x", "--replay", "a", "--scenario", "s"], "--record");
         refused(&["--capture", "x", "--replay", "a", "--record", "b"], "exclusive");
         refused(&["--capture", "x", "--replay"], "--replay needs a value");
+    }
+
+    #[test]
+    fn a_bench_trace_goes_with_a_bench_of_a_fight() {
+        for fight in [&["--replay", "x"][..], &["--fight", "--arena", "--script", "idle"]] {
+            let args = [&["--bench", "1", "--bench-trace", "t.csv"], fight].concat();
+            let (options, _) = parse(&args).unwrap();
+            assert_eq!(options.bench_trace, Some(PathBuf::from("t.csv")));
+        }
+        for args in [
+            &["--bench", "1", "--bench-trace", "t.csv"][..],
+            &["--capture", "x.png", "--replay", "x", "--bench-trace", "t.csv"],
+            &["--bench", "1", "--record", "x", "--scenario", "y", "--script", "z", "--bench-trace", "t.csv"],
+        ] {
+            assert!(parse(args).unwrap_err().contains("--bench-trace"), "{args:?}");
+        }
     }
 
     #[test]

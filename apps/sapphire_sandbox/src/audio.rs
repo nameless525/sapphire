@@ -4,7 +4,8 @@
 //! Only those flags make a [`SandboxAudio`]. Without them the app mounts no audio pack, starts no audio
 //! thread and opens no device. The offscreen modes refuse `--cue` and never make one for `--cues`, and
 //! [`stayed_shut`] holds capture and bench to it at the end of every run, golden scenes included: CI's
-//! runners have no sound.
+//! runners have no sound. A bench of a fight with `--cues` measures the real mixer through
+//! [`OfflineAudio`], which has no device to open.
 //!
 //! A device that isn't there or goes away is a logged state of the mixer, never a failure, and so is
 //! an OS that won't set up its audio session: the app runs on in silence. A cue that can't load is
@@ -14,10 +15,14 @@
 //! both through the scene's own clocks ([`Scene::sound`](crate::scene::Scene::sound)). A sound
 //! recooked while the app runs isn't picked up: the mixer holds what was decoded at startup.
 
+use std::time::Duration;
+
 use sapphire_assets::AssetId;
+use sapphire_assets::cue::Cue;
+use sapphire_assets::sound::DecodedSound;
 use sapphire_audio::{
-    AudioFrame, AudioSystem, CpalOutput, CueRequest, CueRng, CueTarget, Emitter, EmitterId, KiraBackend,
-    Listener,
+    AudioFrame, AudioStats, AudioSystem, CpalOutput, CueRequest, CueRng, CueTarget, Emitter, EmitterId,
+    KiraBackend, Listener, OfflineOutput,
 };
 use sapphire_math::Vec3;
 use sapphire_platform::{AppInitError, Platform};
@@ -120,36 +125,14 @@ impl SandboxAudio {
         renderer: &mut Renderer,
         gpu: &GpuContext,
     ) -> Result<Option<Self>, AppInitError> {
-        let stopwatch = Stopwatch::start();
-        let mut loaded = Vec::with_capacity(cues.len());
-        for &id in cues {
-            let (cue, sounds) = content.load_cue(id, renderer, gpu)?;
-            loaded.push((id, cue, sounds));
-        }
-        let load_and_decode = stopwatch.elapsed();
+        let loaded = load_cues(cues, content, renderer, gpu)?;
         if let Err(error) = platform.prepare_audio() {
             tracing::warn!(target: LOG_TARGET, %error, "no audio this run");
             return Ok(None);
         }
         let Ok(backend) = KiraBackend::<CpalOutput>::new(());
         let mut system = AudioSystem::new(backend);
-        let (mut sound_count, mut frames) = (0, 0);
-        for (id, cue, sounds) in loaded {
-            system.add_cue(id, cue);
-            for (id, sound) in &sounds {
-                system.add_sound(*id, sound);
-                sound_count += 1;
-                frames += sound.frames();
-            }
-        }
-        tracing::info!(
-            target: LOG_TARGET,
-            cues = cues.len(),
-            sounds = sound_count,
-            frames,
-            ?load_and_decode,
-            "cues ready"
-        );
+        add_cues(&mut system, loaded);
         Ok(Some(Self {
             system,
             random: CueRng::new(CUE_SEED),
@@ -204,7 +187,7 @@ impl SandboxAudio {
 
     /// The counters, for the overlay.
     #[cfg(feature = "dev")]
-    pub fn stats(&self) -> sapphire_audio::AudioStats {
+    pub fn stats(&self) -> AudioStats {
         self.system.stats()
     }
 
@@ -233,6 +216,101 @@ impl SandboxAudio {
             mix_max_us = device.mix_nanos_max / 1_000,
             "audio stats"
         );
+    }
+}
+
+/// Loads `cues` and decodes their sounds: what a mixer holds from then on.
+fn load_cues(
+    cues: &[AssetId],
+    content: &mut Content,
+    renderer: &mut Renderer,
+    gpu: &GpuContext,
+) -> Result<Vec<LoadedCue>, AppInitError> {
+    let stopwatch = Stopwatch::start();
+    let loaded = cues
+        .iter()
+        .map(|&id| content.load_cue(id, renderer, gpu).map(|(cue, sounds)| (id, cue, sounds)))
+        .collect::<Result<Vec<_>, _>>()?;
+    let sounds = loaded.iter().map(|(_, _, sounds)| sounds.len()).sum::<usize>();
+    let frames =
+        loaded.iter().flat_map(|(_, _, sounds)| sounds).map(|(_, sound)| sound.frames()).sum::<usize>();
+    let load_and_decode = stopwatch.elapsed();
+    tracing::info!(target: LOG_TARGET, cues = cues.len(), sounds, frames, ?load_and_decode, "cues ready");
+    Ok(loaded)
+}
+
+/// Gives `system` what [`load_cues`] loaded.
+fn add_cues<B: sapphire_audio::AudioBackend>(system: &mut AudioSystem<B>, loaded: Vec<LoadedCue>) {
+    for (id, cue, sounds) in loaded {
+        system.add_cue(id, cue);
+        for (id, sound) in &sounds {
+            system.add_sound(*id, sound);
+        }
+    }
+}
+
+/// A cue and its sounds, decoded.
+type LoadedCue = (AssetId, Cue, Vec<(AssetId, DecodedSound)>);
+
+/// The rate [`OfflineAudio`] mixes at: a phone's and most devices' own.
+const OFFLINE_RATE: u32 = 48_000;
+
+/// A fight's sound through the real mixer and no device (`--bench` with `--cues`, M2 Z1): the update a
+/// frame pays, and the mix a phone pays on its callback, each measured where it happens, in a run that
+/// must open no device.
+pub(crate) struct OfflineAudio {
+    system: AudioSystem<KiraBackend<OfflineOutput>>,
+    random: CueRng,
+    emitters: Vec<Emitter>,
+    /// A frame's samples, interleaved, which nothing reads.
+    block: Vec<f32>,
+}
+
+impl OfflineAudio {
+    /// Loads `cues`, as the windowed app does for a fight.
+    pub fn for_cues(
+        cues: &[AssetId],
+        content: &mut Content,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+    ) -> Result<Self, AppInitError> {
+        let loaded = load_cues(cues, content, renderer, gpu)?;
+        let Ok(backend) = KiraBackend::<OfflineOutput>::new(OFFLINE_RATE);
+        let mut system = AudioSystem::new(backend);
+        add_cues(&mut system, loaded);
+        Ok(Self {
+            system,
+            random: CueRng::new(CUE_SEED),
+            emitters: Vec::with_capacity(8),
+            block: vec![0.0; OFFLINE_RATE as usize],
+        })
+    }
+
+    /// One frame, `dt` seconds after the last, as [`SandboxAudio::update`] plays a fight's.
+    pub fn update(&mut self, dt: f32, scene: SceneSound, fight: CueSounds<'_>) {
+        self.emitters.clear();
+        self.emitters.push(Emitter { id: CHARACTER, position: scene.character, hitstop: scene.hitstop });
+        self.emitters.extend_from_slice(fight.emitters);
+        let frame = AudioFrame {
+            dt,
+            listener: scene.listener,
+            world_time_scale: scene.world_time_scale.min(fight.world_time_scale),
+            emitters: &self.emitters,
+            cues: fight.requests,
+        };
+        self.system.update(&frame, &mut self.random);
+    }
+
+    /// Mixes `dt` seconds of sound, and says how long that took.
+    pub fn mix(&mut self, dt: f32) -> Duration {
+        let samples = ((dt * OFFLINE_RATE as f32) as usize * 2).min(self.block.len());
+        let stopwatch = Stopwatch::start();
+        self.system.backend_mut().output_mut().render_into(&mut self.block[..samples]);
+        stopwatch.elapsed()
+    }
+
+    pub fn stats(&self) -> AudioStats {
+        self.system.stats()
     }
 }
 

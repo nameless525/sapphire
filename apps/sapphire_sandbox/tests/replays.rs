@@ -358,6 +358,45 @@ fn a_fight_with_no_file_plays_beside_the_renderer_and_starts_over() {
     }
 }
 
+/// A long run on a tier that draws every other tick (M2 Z1's soak): `--offscreen` takes two ticks a frame
+/// on Mobile-Low, as a phone does, plays a fight's sound through the mixer with no device, and logs what
+/// a long run needs to say whether anything grows.
+#[cfg(feature = "dev")]
+#[test]
+#[ignore = "needs a GPU and cooked content (`cargo xtask content`)"]
+fn offscreen_runs_mobile_low_at_its_own_rate() {
+    let replay = workspace().join("tests").join("replays").join("arena-fight-still.sreplay");
+    let played = headless(&fs::read(&replay).expect("committed"));
+    let output = run_app(&[
+        "--offscreen",
+        "--frames",
+        "150",
+        "--size",
+        "320x180",
+        "--tier",
+        "mobile-low",
+        "--arena",
+        "--fight",
+        "--script",
+        "idle",
+        "--cues",
+        "--hud",
+        "live",
+        "--live-link",
+        "off",
+    ]);
+    let log = log_of(&output);
+    assert!(output.status.success(), "{log}");
+    let fights = fights_ended(&log);
+    assert_eq!(fights.len(), 1, "{log}");
+    assert_eq!(fights[0].ticks, 300, "two a frame: {}", fights[0].line);
+    assert_eq!(fights[0].checksum, played.trail.at(300).expect("within it"), "{}", fights[0].line);
+    let stats = log.lines().find(|line| line.contains("frame stats")).expect("a stats line");
+    for field in ["mean_ms=", "allocs_per_frame=", "live_bytes="] {
+        assert!(stats.contains(field), "{field}: {stats}");
+    }
+}
+
 /// The same with `--offscreen`, as an agent runs a fight, for as long as it's left running. Only `dev`
 /// builds have it.
 #[cfg(feature = "dev")]
@@ -375,18 +414,76 @@ fn an_agent_runs_a_fight_offscreen_by_its_script() {
     assert_eq!(fights[0].checksum, played.trail.at(300).expect("within it"), "{}", fights[0].line);
 }
 
-/// A bench steps in its frame path, with GPU timing on for the last of it, and goes on past the end.
+/// A bench of a fight plays it whole, three times, starting over between: first as it comes, then for
+/// CPU times, then with GPU timing on. Each reaches the headless checksums and none goes past the end.
+/// Its trace has a line a frame, each with the tick it fell on, and its fixed steps allocate nothing.
 #[test]
 #[ignore = "needs a GPU and cooked content (`cargo xtask content`)"]
-fn a_bench_beside_the_renderer_reaches_the_headless_checksums() {
+fn a_bench_of_a_fight_plays_it_whole_beside_the_renderer() {
     let temp = Temp::new("bench");
     let (replay, _) = record(120, melee_sweep);
     let played = headless(&replay.encode());
     suite_of(&temp, "duel", &replay, &played);
 
-    let output = run_app(&["--bench", "90", "--replay", &temp.text("duel.sreplay")]);
+    let trace = temp.path("trace.csv");
+    let output = run_app(&[
+        "--bench",
+        "1",
+        "--replay",
+        &temp.text("duel.sreplay"),
+        "--size",
+        "320x180",
+        "--bench-trace",
+        trace.to_str().expect("UTF-8"),
+    ]);
     assert_reached(&output, 120, played.trail.end());
-    assert!(log_of(&output).contains("the replay ended early"), "{}", log_of(&output));
+    let log = log_of(&output);
+    assert!(!log.contains("the replay ended early"), "{log}");
+    assert_eq!(log.matches("replay reached its recorded checksums").count(), 3, "{log}");
+    for row in ["row=\"cpu frame\"", "row=\"simulation\"", "row=\"animation and ik\"", "row=\"gpu frame\""] {
+        assert!(log.contains(row), "{row}: {log}");
+    }
+
+    let trace = fs::read_to_string(&trace).expect("written");
+    let mut lines = trace.lines();
+    let header: Vec<&str> = lines.next().expect("a header").split(',').collect();
+    let column = |name: &str| header.iter().position(|field| *field == name).expect(name);
+    let (phase, tick, step_allocations) = (column("phase"), column("tick"), column("step_allocations"));
+    let rows: Vec<Vec<&str>> = lines.map(|line| line.split(',').collect()).collect();
+    for name in ["first", "cpu", "gpu"] {
+        let ticks: Vec<&str> = rows.iter().filter(|row| row[phase] == name).map(|row| row[tick]).collect();
+        assert_eq!(ticks.first().copied(), Some("1"), "{name} starts at the fight's first tick");
+        assert_eq!(ticks.last().copied(), Some("120"), "{name} reaches its last");
+        assert_eq!(ticks.len(), 120, "{name}: a frame a tick on this tier");
+    }
+    for row in rows.iter().filter(|row| row[phase] != "first") {
+        assert_eq!(row[step_allocations], "0", "rule R6, at tick {}", row[tick]);
+    }
+}
+
+/// A fight with no file has no end of its own: a bench measures the frames it asked for in each phase,
+/// starting over between them, with the real mixer and no device, and the whole frame's rows.
+#[test]
+#[ignore = "needs a GPU and cooked content (`cargo xtask content`)"]
+fn a_bench_of_a_fight_with_no_file_starts_it_over_between_phases() {
+    let output = run_app(&[
+        "--bench",
+        "8",
+        "--size",
+        "160x90",
+        "--arena",
+        "--fight",
+        "--script",
+        "fight-back",
+        "--cues",
+        "--hud",
+        "live",
+    ]);
+    let log = log_of(&output);
+    assert!(output.status.success(), "{log}");
+    assert_eq!(log.matches("a fight ended").count(), 3, "two start-overs and the end: {log}");
+    assert!(log.contains("measured=[8, 8, 8]"), "{log}");
+    assert!(log.contains("row=\"audio update\""), "{log}");
 }
 
 /// The check has teeth, and a capture of another fight is never written: these checksums come from

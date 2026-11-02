@@ -792,7 +792,11 @@ mod tests {
                 let upward =
                     update == format!("{counter}++") || update.starts_with(&format!("{counter} += "));
                 let downward = update == format!("{counter} >>= 1u");
-                let bounded = (upward && condition.starts_with(&format!("{counter} <")))
+                // `<=` never ends at the type's largest value, so its bound must be a small literal.
+                let inclusive = condition.strip_prefix(&format!("{counter} <= "));
+                let small =
+                    inclusive.is_none_or(|bound| bound.trim_end_matches(['u', 'i']).parse::<i16>().is_ok());
+                let bounded = (upward && small && condition.starts_with(&format!("{counter} <")))
                     || (downward && condition.starts_with(&format!("{counter} > 0u")));
                 assert!(bounded, "{name}: `for ({init}; {condition}; {update})` may not end");
                 // The body runs to the brace that closes the one the header opens.

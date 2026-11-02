@@ -13,6 +13,13 @@ use super::library::EffectPreset;
 /// The most layers playing at once (see the module docs, "The stack"): four impact frames.
 pub const STACK_CAPACITY: usize = 16;
 
+/// The most fixed steps without a [`EffectStack::resolve`] that still count as one hitch, so that
+/// a layer that ended meanwhile waits for the frame it is owed: a second's, far more than any
+/// frame runs (`FixedStepConfig`'s defaults cap a frame at 4 steps, and its clamped time alone at
+/// 15). Beyond it, no frame is coming (a simulation without a renderer, a capture's warmup steps),
+/// and layers end when they end.
+pub(super) const MAX_FRAMELESS_STEPS: u32 = TICK_HZ;
+
 const SUBTICKS_PER_SECOND: f64 = (SUBTICKS_PER_TICK as u64 * TICK_HZ as u64) as f64;
 
 /// The layers one push started: release, stop or hold them together.
@@ -32,16 +39,24 @@ struct Instance {
     released: Option<f32>,
     /// Held at `time`: its clock doesn't move it.
     held: bool,
+    /// A frame has drawn it, or had nothing of it to draw.
+    shown: bool,
 }
 
 impl Instance {
-    /// Seconds left until it ends: infinite for a held or unreleased sustained one.
+    /// Seconds left until it ends: infinite for a held or unreleased sustained one, and for one
+    /// owed a frame, which a full stack keeps for that frame.
     fn remaining(&self) -> f32 {
-        if self.held { f32::INFINITY } else { self.layer.end(self.released) - self.time }
+        if self.held || self.overdue() { f32::INFINITY } else { self.layer.end(self.released) - self.time }
     }
 
     fn ended(&self) -> bool {
         !self.held && self.time >= self.layer.end(self.released)
+    }
+
+    /// Ended with no frame having drawn it: a frame's fixed steps ran past its whole envelope.
+    fn overdue(&self) -> bool {
+        self.ended() && !self.shown
     }
 }
 
@@ -65,8 +80,8 @@ pub struct PlayingEffect {
 pub struct EffectStackStats {
     /// Layers playing: the stack's depth.
     pub depth: u32,
-    /// Of those, the ones with a weight at the last resolve (not in their delay or past their
-    /// end).
+    /// Of those, the ones with a weight at the last resolve (not in their delay, and not past
+    /// their end unless that is the one frame [`EffectStack::resolve`] owes them).
     pub active: u32,
     /// Layers pushed since the stack was made.
     pub pushed: u64,
@@ -91,6 +106,8 @@ pub struct EffectStack {
     real_step: f32,
     /// Each playing layer's weight at the last resolve, by its place.
     weights: [f32; STACK_CAPACITY],
+    /// Fixed steps since the last resolve.
+    frameless_steps: u32,
     stats: EffectStackStats,
 }
 
@@ -106,6 +123,7 @@ impl EffectStack {
             world_step: 0.0,
             real_step: 0.0,
             weights: [0.0; STACK_CAPACITY],
+            frameless_steps: 0,
             stats: EffectStackStats::default(),
         }
     }
@@ -114,7 +132,8 @@ impl EffectStack {
     /// stack is full, each new layer takes the place of the layer with the least time left (the
     /// one closest to fading out by itself), or is itself dropped if it has less left than every
     /// layer playing: either way the drop is counted ([`EffectStackStats::dropped`]). Held and
-    /// sustained layers that weren't released have all the time in the world.
+    /// sustained layers that weren't released have all the time in the world, and so does a layer
+    /// still owed its frame ([`Self::resolve`]), which counts as a layer until then.
     pub fn push(&mut self, preset: &EffectPreset) -> EffectHandle {
         self.start(preset, None)
     }
@@ -134,7 +153,8 @@ impl EffectStack {
                 layer.effect = layer.effect.centered(center);
             }
             let seed = push.0.wrapping_mul(0x9e37_79b9) ^ index as u32;
-            let instance = Instance { layer, push, seed, time: -layer.delay, released: None, held: false };
+            let instance =
+                Instance { layer, push, seed, time: -layer.delay, released: None, held: false, shown: false };
             self.stats.pushed += 1;
             if self.len == STACK_CAPACITY {
                 self.stats.dropped += 1;
@@ -215,14 +235,17 @@ impl EffectStack {
         self.instances[..self.len].iter_mut().flatten().filter(move |instance| instance.push == handle)
     }
 
-    /// Advances one fixed step: each layer by its clock's time, then drops those that ended.
-    /// Allocates nothing (rule R6).
+    /// Advances one fixed step: each layer by its clock's time, then drops those that ended,
+    /// except for one still owed its frame ([`Self::resolve`]) while frames are drawing. Allocates
+    /// nothing (rule R6).
     pub fn tick(&mut self, world: &ScaledClock) {
         let scaled = self.clock.tick(world);
         self.world_step = seconds(scaled);
         // Real time counts fixed steps while the world runs, as hit-stop's countdown does.
         self.real_step = if world.is_stopped() { 0.0 } else { TICK_SECONDS };
         let (world_step, real_step) = (self.world_step, self.real_step);
+        self.frameless_steps = self.frameless_steps.saturating_add(1);
+        let drawing = self.frameless_steps <= MAX_FRAMELESS_STEPS;
         let mut at = 0;
         while at < self.len {
             let instance = self.instances[at].as_mut().expect("the first `len` places hold layers");
@@ -232,7 +255,7 @@ impl EffectStack {
                     EffectClock::Real => real_step,
                 };
             }
-            if instance.ended() {
+            if instance.ended() && (instance.shown || !drawing) {
                 self.remove(at);
             } else {
                 at += 1;
@@ -246,18 +269,32 @@ impl EffectStack {
     /// it, bottom to top, so the latest push shows over what was playing by its weight, kind by
     /// kind. [`PostEffects::NONE`] when nothing plays. Allocates nothing, and costs well under a
     /// microsecond for a full stack.
+    ///
+    /// Every push shows: a layer past its end by this frame's time that no frame has drawn (a frame
+    /// can run more fixed steps than an impact frame lasts) draws here, once, at its envelope's
+    /// peak, and the next step drops it. The tail of its fall would hide the hit as surely as
+    /// losing it would. Only a stack without frames skips this (see the module docs, "The stack").
     pub fn resolve(&mut self, alpha: f32) -> PostEffects {
         profiling::scope!("EffectStack::resolve");
+        self.frameless_steps = 0;
         let mut effects = PostEffects::NONE;
         let mut active = 0;
-        for (at, instance) in self.instances[..self.len].iter().flatten().enumerate() {
+        let (world_step, real_step) = (self.world_step, self.real_step);
+        for (at, instance) in self.instances[..self.len].iter_mut().flatten().enumerate() {
             let step = match instance.layer.clock {
-                EffectClock::World => self.world_step,
-                EffectClock::Real => self.real_step,
+                EffectClock::World => world_step,
+                EffectClock::Real => real_step,
             };
             let time =
                 if instance.held { instance.time } else { instance.time + alpha.clamp(0.0, 1.0) * step };
-            let weight = instance.layer.envelope.weight(time, instance.released);
+            let end = instance.layer.end(instance.released);
+            let overdue = !instance.held && !instance.shown && time >= end;
+            let weight = if overdue {
+                instance.layer.envelope.peak(instance.released)
+            } else {
+                instance.layer.envelope.weight(time, instance.released)
+            };
+            instance.shown |= overdue || weight > 0.0;
             self.weights[at] = weight;
             if weight > 0.0 {
                 active += 1;

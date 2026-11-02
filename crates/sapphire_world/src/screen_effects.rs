@@ -47,6 +47,18 @@
 //! first, and counts it. Nothing allocates: layers are `Copy` (an envelope's keys are a fixed
 //! array), pushing copies them in, and resolving writes a `Copy` value.
 //!
+//! **Every push shows, however short.** Impact frames are authored in frames, and a frame can run
+//! more fixed steps than one lasts (the sample inversion lasts three, a hitch runs four), so a
+//! layer can start and end between two frames. It then waits for the next
+//! [`EffectStack::resolve`], which draws it once at its envelope's peak, and the step after that
+//! drops it. Waiting, it counts as a layer, but a full stack keeps it for its frame rather than
+//! dropping it as the layer with the least time left. Only a hitch waits: after
+//! `MAX_FRAMELESS_STEPS` (a second's) without a resolve no frame is coming (a simulation without
+//! a renderer, a capture's warmup steps), so layers end when they end, and neither fill the stack
+//! nor flash together on the first frame there is. A layer drawn before it ended owes nothing,
+//! and `stop` and `clear` end a layer at once, drawn or not. The stack can't tell a resolve whose
+//! frame was never presented, so a frame the surface skips spends the layer's turn too.
+//!
 //! # Clocks, pause and hit-stop
 //!
 //! The stack's clock is a [`LocalClock`](sapphire_time::LocalClock) issued by the world clock

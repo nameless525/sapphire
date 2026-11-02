@@ -60,14 +60,21 @@ impl Envelope {
                     1.0 - smoothstep(attack + hold, attack + hold + release, time)
                 }
             }
-            Self::Sustain { attack, release } => {
-                let rise = |time: f32| if time < attack { smoothstep(0.0, attack, time) } else { 1.0 };
-                match released {
-                    Some(at) if time >= at => rise(at) * (1.0 - smoothstep(at, at + release, time)),
-                    _ => rise(time),
-                }
-            }
+            Self::Sustain { attack, release } => match released {
+                Some(at) if time >= at => rise(attack, at) * (1.0 - smoothstep(at, at + release, time)),
+                _ => rise(attack, time),
+            },
             Self::Keys(keys) => keys.weight(time),
+        }
+    }
+
+    /// The most weight it reaches, for an effect released at `released`, up to its end but not at
+    /// it: what the one frame shows of an effect that started and ended between two frames.
+    pub(crate) fn peak(&self, released: Option<f32>) -> f32 {
+        match *self {
+            Self::Pulse { .. } => 1.0,
+            Self::Sustain { attack, .. } => released.map_or(1.0, |at| rise(attack, at)),
+            Self::Keys(keys) => keys.keys().iter().fold(0.0, |peak: f32, &(_, weight)| peak.max(weight)),
         }
     }
 
@@ -103,6 +110,11 @@ impl Envelope {
         }
         Ok(())
     }
+}
+
+/// A sustained effect's weight on its rise, before any release.
+fn rise(attack: f32, time: f32) -> f32 {
+    if time < attack { smoothstep(0.0, attack, time) } else { 1.0 }
 }
 
 /// An [`Envelope::Keys`]'s keys: `(seconds, weight)`, at most [`MAX_ENVELOPE_KEYS`], in a fixed

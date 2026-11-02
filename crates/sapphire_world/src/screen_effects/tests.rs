@@ -3,6 +3,7 @@ use sapphire_render::{EffectCoverage, PostEffects, PostVariants};
 use sapphire_serialize::DocumentError;
 use sapphire_time::{ScaleSource, ScaledClock, TICK_HZ};
 
+use super::stack::MAX_FRAMELESS_STEPS;
 use super::*;
 
 fn pulse(attack: f32, hold: f32, release: f32) -> Envelope {
@@ -398,6 +399,192 @@ fn a_full_stack_drops_what_has_least_time_left() {
     stack.push(&preset(&[blur(0.1, [0.5, 0.5], pulse(0.0, 30.0, 0.0))]));
     assert_eq!(stack.stats().dropped, 3);
     assert!(ends(&stack).iter().all(|end| end.is_infinite()));
+}
+
+/// A frame that runs `steps` fixed steps, then resolves, and what it drew of the inversion.
+fn inversion_frame(world: &mut ScaledClock, stack: &mut EffectStack, steps: u32) -> f32 {
+    run(world, stack, steps);
+    stack.resolve(0.5).inversion.amount
+}
+
+#[test]
+fn an_effect_shorter_than_a_frame_still_draws_once() {
+    // Review WA-2: the sample inversion lasts three steps, and a frame can run four. It used to end
+    // inside the frame, so no frame ever drew it. Those that drew it before draw as they did.
+    let library = EffectLibrary::default_effects();
+    let inversion = library.preset(library.find("inversion").expect("shipped")).expect("there");
+    let frames = [
+        (1, [1.0, 1.0, 0.0, 0.0]),
+        (2, [1.0, 0.0, 0.0, 0.0]),
+        (3, [1.0, 0.0, 0.0, 0.0]),
+        (4, [1.0, 0.0, 0.0, 0.0]),
+    ];
+    for (steps, expected) in frames {
+        let (mut world, mut stack) = stack();
+        stack.push(inversion);
+        let drawn = [0; 4].map(|_| inversion_frame(&mut world, &mut stack, steps));
+        assert_eq!(drawn, expected, "{steps} steps a frame");
+        assert!(stack.is_empty(), "{steps} steps a frame");
+    }
+
+    // Pushed by a hit on the first of a frame's four steps.
+    let (mut world, mut stack) = stack();
+    run(&mut world, &mut stack, 1);
+    stack.push(inversion);
+    assert_eq!(inversion_frame(&mut world, &mut stack, 3), 1.0);
+    assert_eq!(stack.stats().active, 1);
+
+    // That frame was its one: the next step drops it, and a second frame before any step shows
+    // no more of it.
+    assert_eq!(stack.resolve(0.5).inversion.amount, 0.0, "one frame");
+    assert_eq!(stack.stats().active, 0);
+    assert_eq!(stack.len(), 1, "until the next step");
+    run(&mut world, &mut stack, 1);
+    assert!(stack.is_empty());
+    assert_eq!(stack.resolve(0.5), PostEffects::NONE);
+}
+
+#[test]
+fn an_undrawn_effect_shows_at_its_peak() {
+    // Its whole envelope went by unseen. The tail of a fall would hide the hit as surely as losing
+    // it, so the frame it is owed shows the most it would have shown.
+    let shown = |envelope: Envelope, delay: f32, released: bool| {
+        let (mut world, mut stack) = stack();
+        let handle = stack.push(&preset(&[EffectLayer { delay, ..blur(0.2, [0.5, 0.5], envelope) }]));
+        if released {
+            run(&mut world, &mut stack, 1);
+            stack.release(handle);
+        }
+        run(&mut world, &mut stack, 8);
+        let strength = stack.resolve(0.5).radial_blur.strength;
+        run(&mut world, &mut stack, 1);
+        assert!(stack.is_empty(), "{envelope:?}");
+        strength
+    };
+    assert!(close(shown(pulse(0.0, 0.0, 0.05), 0.0, false), 0.2), "only a fall");
+    assert!(close(shown(pulse(0.05, 0.0, 0.0), 0.0, false), 0.2), "only a rise");
+    assert!(close(shown(pulse(0.01, 0.01, 0.01), 0.0, false), 0.2), "the lot");
+    assert!(close(shown(pulse(0.0, 0.02, 0.0), 0.05, false), 0.2), "after a delay");
+    assert!(
+        close(shown(keys(&[(0.0, 0.25), (0.02, 0.5), (0.05, 0.1)]), 0.0, false), 0.1),
+        "its greatest key"
+    );
+    assert!(close(shown(keys(&[(0.0, 0.0), (0.05, 1.0)]), 0.0, false), 0.2), "a key at its very end");
+
+    // Released mid-rise, it never got further than that.
+    let sustain = Envelope::Sustain { attack: 0.1, release: 0.02 };
+    let rise = sustain.weight(1.0 / TICK_HZ as f32, None);
+    assert!(close(shown(sustain, 0.0, true), 0.2 * rise));
+
+    // Nothing to show, nothing drawn, and it still goes.
+    assert_eq!(shown(keys(&[(0.0, 0.0), (0.05, 0.0)]), 0.0, false), 0.0);
+
+    // Past its end only by the frame's own time, which reads ahead of the fixed step: this frame
+    // is its last chance, since the next step would end it having drawn nothing.
+    let (mut world, mut stack) = stack();
+    stack.push(&preset(&[blur(0.2, [0.5, 0.5], pulse(0.0, 0.02, 0.0))]));
+    run(&mut world, &mut stack, 1);
+    assert!(close(stack.resolve(0.5).radial_blur.strength, 0.2));
+    run(&mut world, &mut stack, 1);
+    assert!(stack.is_empty());
+}
+
+#[test]
+fn an_effect_drawn_before_it_ended_owes_no_frame() {
+    let (mut world, mut stack) = stack();
+    stack.push(&preset(&[blur(0.2, [0.5, 0.5], pulse(0.0, 0.05, 0.0))]));
+    run(&mut world, &mut stack, 1);
+    assert!(close(stack.resolve(0.0).radial_blur.strength, 0.2));
+    run(&mut world, &mut stack, 4);
+    assert!(stack.is_empty(), "gone with the step that ended it");
+    assert_eq!(stack.resolve(0.5), PostEffects::NONE);
+
+    // Stopped or cleared, it goes at once, drawn or not.
+    let hit = preset(&[blur(0.2, [0.5, 0.5], pulse(0.0, 0.01, 0.0))]);
+    let stopped = stack.push(&hit);
+    run(&mut world, &mut stack, 4);
+    assert_eq!(stack.len(), 1, "waiting for its frame");
+    stack.stop(stopped);
+    assert_eq!(stack.resolve(0.5), PostEffects::NONE);
+    stack.push(&hit);
+    run(&mut world, &mut stack, 4);
+    stack.clear();
+    assert_eq!(stack.resolve(0.5), PostEffects::NONE);
+}
+
+#[test]
+fn a_layer_waiting_for_its_frame_counts_and_stays_in_a_full_stack() {
+    // A hit that a hitch ran past, over fifteen layers that have been showing.
+    let flash = preset(&[EffectLayer {
+        effect: ScreenEffect::Inversion(InversionEffect::default()),
+        ..blur(0.0, [0.5, 0.5], pulse(0.0, 0.02, 0.0))
+    }]);
+    let long = |seconds: f32| preset(&[blur(0.1, [0.5, 0.5], pulse(0.0, seconds, 0.0))]);
+    let (mut world, mut stack) = stack();
+    for seconds in 0..STACK_CAPACITY - 1 {
+        stack.push(&long(5.0 + seconds as f32));
+    }
+    stack.resolve(0.5);
+    stack.push(&flash);
+    run(&mut world, &mut stack, 4);
+    assert_eq!((stack.len(), stack.stats().depth), (STACK_CAPACITY, STACK_CAPACITY as u32), "it counts");
+
+    // The stack is full. The next push takes the place of the layer with the least time left
+    // that isn't owed a frame, where otherwise the flash, with the least of all, would go.
+    stack.push(&long(30.0));
+    assert_eq!(stack.stats().dropped, 1);
+    assert_eq!(stack.len(), STACK_CAPACITY);
+    let ends: Vec<f32> = stack.playing().map(|effect| effect.end).collect();
+    assert_eq!(ends[0], 6.0, "the first long layer went");
+    assert_eq!(stack.resolve(0.5).inversion.amount, 1.0, "the flash shows");
+    run(&mut world, &mut stack, 1);
+    assert_eq!(stack.len(), STACK_CAPACITY - 1, "and goes");
+
+    // With nothing else to give up, a new layer is the one dropped, as among held layers.
+    let (mut world, mut stack) = self::stack();
+    for _ in 0..STACK_CAPACITY {
+        stack.push(&flash);
+    }
+    run(&mut world, &mut stack, 4);
+    stack.push(&long(30.0));
+    assert_eq!((stack.len(), stack.stats().dropped), (STACK_CAPACITY, 1));
+    stack.resolve(0.5);
+    run(&mut world, &mut stack, 1);
+    assert!(stack.is_empty(), "all drawn, all gone: the slots were only held for a frame");
+}
+
+#[test]
+fn without_frames_layers_end_as_they_always_did() {
+    // A stack nothing resolves (a simulation without a renderer, a capture's warmup steps) isn't
+    // in a hitch. Layers can't wait for a frame that isn't coming: they would fill the stack, and
+    // all flash at once at their peaks on the first frame there is.
+    let hit = preset(&[blur(0.2, [0.5, 0.5], pulse(0.0, 0.05, 0.0))]);
+    let (mut world, mut stack) = stack();
+    stack.push(&hit);
+    run(&mut world, &mut stack, MAX_FRAMELESS_STEPS);
+    assert_eq!(stack.len(), 1, "as long as a hitch could be");
+    assert!(close(stack.resolve(0.5).radial_blur.strength, 0.2));
+
+    let (mut world, mut stack) = self::stack();
+    stack.push(&hit);
+    run(&mut world, &mut stack, MAX_FRAMELESS_STEPS + 1);
+    assert!(stack.is_empty());
+    assert_eq!(stack.resolve(0.5), PostEffects::NONE);
+
+    // It goes on so for as long as no frame comes, for layers pushed along the way too.
+    run(&mut world, &mut stack, MAX_FRAMELESS_STEPS + 1);
+    for _ in 0..3 * STACK_CAPACITY {
+        stack.push(&hit);
+        run(&mut world, &mut stack, 4);
+    }
+    assert!(stack.is_empty());
+    assert_eq!(stack.stats().dropped, 0);
+
+    // And the first frame back starts the wait afresh.
+    assert_eq!(stack.resolve(0.5), PostEffects::NONE);
+    stack.push(&hit);
+    run(&mut world, &mut stack, MAX_FRAMELESS_STEPS);
+    assert!(close(stack.resolve(0.5).radial_blur.strength, 0.2));
 }
 
 #[test]

@@ -4,7 +4,8 @@
 // until O2's and N3's clips bake in its place; the timing and the volumes are what this document
 // owns. In root space +Z is forward and +X the warrior's left, and a blade's +Y runs grip to tip.
 //
-// A brain presses the attacks through `IntentRing::press` (M2 G6), so no intent has a button.
+// A brain presses the attacks through `IntentRing::press` (M2 G6), so no intent has a button. It's
+// the `brain` section here, so a replay's hash holds it and replacing the set replaces it.
 // M2 G3 forces the reactions through `MoveRunner::force`, by name, from any phase: `stagger_light`,
 // `stagger_heavy`, `knockdown`, `recover` and `death`. E3 hangs effects on the cues: `telegraph` opens
 // a long wind-up, on a move's first tick, and `swing` is the blade starting to cut.
@@ -42,6 +43,57 @@
                 poise_break: "stagger_heavy",
                 defeat: "death",
             ),
+        ),
+        brain: (
+            // A first guess at Zenless Zone Zero's common enemies, for Feel review 3 to move. It stands where
+            // a swipe just reaches and an overhead reaches well, and walks in from further: at the far
+            // edge it arrives with only the overhead in reach, and has to come closer for a swipe.
+            spacing: (near: 1.6, far: 2.6),
+            pace: (
+                // About 4.1 m/s on the arena's profile, under a player's 6 m/s run: it can be outrun, which
+                // is what the lunge is for.
+                approach: 0.7,
+                // A step back at 1.2 m/s, and a slow circle at 1.4 m/s.
+                retreat: 0.3,
+                circle: 0.35,
+                circle_share: 0.7,
+                // A third of the player's turn: a big thing, slow to come round.
+                turn_rate_degrees: 300.0,
+            ),
+            // 0.7 to 2.2 s of keeping its distance before it looks for an attack.
+            patience: (min: 40, max: 130),
+            // 0.4 to 1.25 s standing after an attack ends: the opening an attack's recovery started.
+            rest: (min: 24, max: 75),
+            // A beat after a reaction, before its stick moves. It keeps the patience it had, so being hit
+            // doesn't put off its next attack.
+            recover: (min: 8, max: 30),
+            attacks: [
+                (
+                    // Quick and short: its answer to someone standing close or just finished swinging.
+                    intent: "swipe",
+                    reach: (near: 0.0, best: 1.5, far: 2.7),
+                    against: (swinging: 0.7, opening: 1.6, reacting: 0.6, untouchable: 0.0),
+                    recent: (ticks: 200, floor: 0.35),
+                ),
+                (
+                    // The telegraphed heavy: rarely twice running, and best on someone already reeling.
+                    intent: "overhead",
+                    weight: 0.7,
+                    reach: (near: 1.0, best: 2.3, far: 3.2),
+                    against: (swinging: 0.4, reacting: 1.4, untouchable: 0.0),
+                    recent: (ticks: 360, floor: 0.2),
+                ),
+                (
+                    // The gap closer, from where nothing else reaches. Its warp gets it about 6.1 m on a
+                    // target standing still, and less on one walking away.
+                    intent: "lunge",
+                    reach: (near: 3.0, best: 4.6, far: 6.0),
+                    against: (swinging: 0.6, reacting: 0.7, untouchable: 0.0),
+                    recent: (ticks: 240, floor: 0.3),
+                ),
+            ],
+            // Up in the knockdown's last third, not always at its first moment.
+            rise: (intent: "rise", during: "knockdown", from: 58, to: 72),
         ),
         moves: [
             (

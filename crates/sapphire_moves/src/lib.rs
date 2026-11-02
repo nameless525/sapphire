@@ -9,9 +9,9 @@
 //!
 //! - [`MoveSetDocument`], the RON a person or the timeline editor writes, checked with messages
 //!   naming the move and track ([`Issue`]);
-//! - [`MoveSet`], what it compiles to and cooks as: intents, what starts what, a [`FighterDef`] and each
-//!   [`Move`]'s tracks and tables, among them what its hits do ([`Attack`]) and what a dodge through
-//!   one does ([`PerfectDodgeWindow`]);
+//! - [`MoveSet`], what it compiles to and cooks as: intents, what starts what, a [`FighterDef`], a
+//!   [`BrainDef`] and each [`Move`]'s tracks and tables, among them what its hits do ([`Attack`]) and
+//!   what a dodge through one does ([`PerfectDodgeWindow`]);
 //! - [`BakedTables`], its cooked form and how to read it at any sub-tick;
 //! - how a track meets a clock ([`Stretch`], [`Span::live`], [`Span::sweep`]), as pure functions.
 //!
@@ -227,15 +227,20 @@
 //! assert!(tables.path(blade).is_some());
 //! ```
 
+mod brain;
 mod document;
 mod set;
 
+pub use brain::{
+    Against, BrainAttack, BrainDef, BrainPace, BrainRise, MAX_BRAIN_ATTACKS, Reach, Recent, Spacing,
+    TargetDoing, TickRange,
+};
 pub use document::{
-    AllowDocument, ArmourDocument, AttackDocument, CancelDocument, ClipMotionDocument, ClipPathDocument,
-    CounterDocument, CueDocument, DodgeVolumeDocument, FighterDocument, FighterHurtboxDocument, Follows,
-    HitboxDocument, HurtboxDocument, IntentDocument, Issue, MotionDocument, MoveDocument, MoveSetDocument,
-    PathDocument, PathKey, PerfectDodgeDocument, ReactionsDocument, RootKey, RootSource, SlowMotionDocument,
-    SpanDocument, WarpDocument,
+    AllowDocument, ArmourDocument, AttackDocument, BrainAttackDocument, BrainDocument, BrainRiseDocument,
+    CancelDocument, ClipMotionDocument, ClipPathDocument, CounterDocument, CueDocument, DodgeVolumeDocument,
+    FighterDocument, FighterHurtboxDocument, Follows, HitboxDocument, HurtboxDocument, IntentDocument, Issue,
+    MotionDocument, MoveDocument, MoveSetDocument, PathDocument, PathKey, PerfectDodgeDocument,
+    ReactionsDocument, RootKey, RootSource, SlowMotionDocument, SpanDocument, WarpDocument,
 };
 pub use set::{
     Allow, ArchivedMoveSet, ArmourWindow, Attack, Button, CancelMode, CancelWindow, CounterWindow, Cue,

@@ -10,6 +10,7 @@ use sapphire_serialize::cooked::{self, AlignedVec, CookedError};
 use sapphire_time::{NORMAL_SPEED, SimDuration};
 use serde::{Deserialize, Serialize};
 
+use crate::brain::{BrainDef, MAX_BRAIN_ATTACKS};
 use crate::document::Issue;
 use crate::{BakedTables, PathSample, TablesError};
 
@@ -838,6 +839,12 @@ impl Reactions {
     pub fn defeat(&self) -> Option<Name> {
         self.defeat.map(Name::from_u64)
     }
+
+    /// Whether a move of this name is one of these reactions.
+    #[must_use]
+    pub fn contains(&self, name: Name) -> bool {
+        [self.light, self.medium, self.heavy, self.poise_break, self.defeat].contains(&Some(name.as_u64()))
+    }
 }
 
 /// What makes a character something a hit can land on. It lives in the move set because everything a
@@ -876,12 +883,14 @@ pub struct MoveSet {
     intents: Vec<IntentDef>,
     neutral: Vec<Allow>,
     fighter: Option<FighterDef>,
+    brain: Option<BrainDef>,
     moves: Vec<Move>,
 }
 
 impl Versioned for MoveSet {
     /// 1: M2 G2. 2: M2 G3's attacks, armour, re-arms, walls and fighter. 3: M2 G4's perfect dodges.
-    const VERSION: u32 = 3;
+    /// 4: M2 G6's brain.
+    const VERSION: u32 = 4;
 }
 
 /// A move set that can't be built, read or written.
@@ -925,9 +934,10 @@ impl MoveSet {
         intents: Vec<IntentDef>,
         neutral: Vec<Allow>,
         fighter: Option<FighterDef>,
+        brain: Option<BrainDef>,
         moves: Vec<Move>,
     ) -> Self {
-        Self { intents, neutral, fighter, moves }
+        Self { intents, neutral, fighter, brain, moves }
     }
 
     /// Reads a cooked set, whose bytes must start 16-byte aligned, after validating the archive and
@@ -962,6 +972,17 @@ impl MoveSet {
         }
         if self.fighter.as_ref().is_some_and(|fighter| fighter.hurtboxes.len() > MAX_HURTBOXES) {
             return damaged(format!("a fighter with more than {MAX_HURTBOXES} hurtboxes"));
+        }
+        if let Some(brain) = &self.brain {
+            if brain.attacks.len() > MAX_BRAIN_ATTACKS {
+                return damaged(format!("a brain with more than {MAX_BRAIN_ATTACKS} attacks"));
+            }
+            let intents = self.intents.len();
+            let rise = brain.rise.iter().map(|rise| rise.intent());
+            let named = brain.attacks.iter().map(|attack| attack.intent()).chain(rise);
+            if !named.into_iter().all(|at| (at as usize) < intents) {
+                return damaged("a brain names no intent".to_owned());
+            }
         }
         for mv in &self.moves {
             let label = mv.label();
@@ -1030,6 +1051,12 @@ impl MoveSet {
     #[must_use]
     pub const fn fighter(&self) -> Option<&FighterDef> {
         self.fighter.as_ref()
+    }
+
+    /// How its actors fight on their own, if they can.
+    #[must_use]
+    pub const fn brain(&self) -> Option<&BrainDef> {
+        self.brain.as_ref()
     }
 
     /// The moves, in document order: [`Allow::target`] indexes these.

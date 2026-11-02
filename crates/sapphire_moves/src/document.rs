@@ -13,6 +13,10 @@ use sapphire_reflect::Versioned;
 use sapphire_time::NORMAL_SPEED;
 use serde::{Deserialize, Serialize};
 
+use crate::brain::{
+    Against, BrainAttack, BrainDef, BrainPace, BrainRise, MAX_BRAIN_ATTACKS, Reach, Recent, Spacing,
+    TickRange,
+};
 use crate::set::{
     Allow, ArmourWindow, Attack, Button, CancelMode, CancelWindow, CounterWindow, Cue, DodgeVolume,
     FighterDef, FighterHurtbox, HIT_LANDED, Hitbox, HurtboxChange, HurtboxState, IntentDef, Knockback,
@@ -54,6 +58,9 @@ pub struct MoveSetDocument {
     /// nothing touches them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fighter: Option<FighterDocument>,
+    /// How this set's actors fight on their own. Without it, something else has to press their intents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brain: Option<BrainDocument>,
     pub moves: Vec<MoveDocument>,
 }
 
@@ -121,6 +128,49 @@ pub struct ReactionsDocument {
     pub poise_break: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub defeat: Option<String>,
+}
+
+/// How an enemy fights. See [`BrainDef`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrainDocument {
+    pub spacing: Spacing,
+    pub pace: BrainPace,
+    pub patience: TickRange,
+    pub rest: TickRange,
+    pub recover: TickRange,
+    pub attacks: Vec<BrainAttackDocument>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rise: Option<BrainRiseDocument>,
+}
+
+/// One attack a brain can choose. See [`BrainAttack`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrainAttackDocument {
+    pub intent: String,
+    /// How much it wants this attack over the others. Left out, 1.
+    #[serde(default = "one")]
+    pub weight: f32,
+    pub reach: Reach,
+    #[serde(default)]
+    pub against: Against,
+    #[serde(default)]
+    pub recent: Recent,
+}
+
+fn one() -> f32 {
+    1.0
+}
+
+/// When a brain gets up. See [`BrainRise`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrainRiseDocument {
+    pub intent: String,
+    pub during: String,
+    pub from: u32,
+    pub to: u32,
 }
 
 /// An intent starting a move. See [`Allow`].
@@ -703,6 +753,124 @@ impl Checker {
         PerfectDodgeWindow { span, volume, slow_motion, counter }
     }
 
+    /// Checks a brain and resolves its names: every number holds what [`BrainDef`] says of it, an attack's
+    /// intent starts something from neutral, and a rise presses inside a cancel window that gets up.
+    fn brain(&mut self, brain: &BrainDocument, document: &MoveSetDocument) -> BrainDef {
+        const TRACK: &str = "brain";
+        let intent_at = |name: &str| document.intents.iter().position(|intent| intent.name == name);
+        let index = |at: usize| u32::try_from(at).unwrap_or(u32::MAX);
+
+        let Spacing { near, far } = brain.spacing;
+        if !(near.is_finite() && far.is_finite() && 0.0 <= near && near < far) {
+            self.add(TRACK, format!("spacing {near}..{far} isn't a band of distances"));
+        }
+        let BrainPace { approach, retreat, circle, circle_share, turn_rate_degrees } = brain.pace;
+        for (what, tilt) in
+            [("approach", approach), ("retreat", retreat), ("circle", circle), ("circle_share", circle_share)]
+        {
+            if !(0.0..=1.0).contains(&tilt) {
+                self.add(TRACK, format!("{what} is {tilt}, not within 0 to 1"));
+            }
+        }
+        if !(turn_rate_degrees.is_finite() && turn_rate_degrees > 0.0) {
+            self.add(TRACK, format!("turn_rate_degrees is {turn_rate_degrees}, not above 0"));
+        }
+        for (what, range) in [("patience", brain.patience), ("rest", brain.rest), ("recover", brain.recover)]
+        {
+            if range.min > range.max || range.max > MAX_MOVE_TICKS {
+                let (min, max) = (range.min, range.max);
+                self.add(TRACK, format!("{what} is {min}..={max} ticks, not a range up to {MAX_MOVE_TICKS}"));
+            }
+        }
+
+        if brain.attacks.is_empty() {
+            self.add(TRACK, "a brain needs an attack".to_owned());
+        }
+        if brain.attacks.len() > MAX_BRAIN_ATTACKS {
+            let count = brain.attacks.len();
+            self.add(TRACK, format!("{count} attacks, past the limit of {MAX_BRAIN_ATTACKS}"));
+        }
+        let mut seen = BTreeSet::new();
+        let mut attacks = Vec::with_capacity(brain.attacks.len());
+        for attack in &brain.attacks {
+            let name = attack.intent.as_str();
+            if !seen.insert(name) {
+                self.add(TRACK, format!("attack `{name}` appears twice"));
+            }
+            let at = intent_at(name);
+            if at.is_none() {
+                self.add(TRACK, format!("attack `{name}` is not an intent this set declares"));
+            } else if !document.neutral.iter().any(|allow| allow.intent == name) {
+                self.add(
+                    TRACK,
+                    format!("attack `{name}` starts nothing from neutral, so pressing it does nothing"),
+                );
+            }
+            self.brain_attack(name, attack);
+            let built = BrainAttack::new(
+                index(at.unwrap_or(0)),
+                attack.weight,
+                attack.reach,
+                attack.against,
+                attack.recent,
+            );
+            attacks.push(built);
+        }
+        let rise = brain.rise.as_ref().map(|rise| {
+            let at = intent_at(&rise.intent);
+            if at.is_none() {
+                self.add(TRACK, format!("rise presses `{}`, not an intent this set declares", rise.intent));
+            }
+            let opens = document.moves.iter().find(|mv| mv.name == rise.during).map(|mv| {
+                mv.cancels.iter().any(|window| {
+                    window.from <= rise.from
+                        && rise.to <= window.to
+                        && window.allow.iter().any(|allow| allow.intent == rise.intent)
+                })
+            });
+            let (intent, during, from, to) = (&rise.intent, &rise.during, rise.from, rise.to);
+            match opens {
+                None => self.add(TRACK, format!("rise happens during `{during}`, not a move in this set")),
+                Some(false) => self.add(
+                    TRACK,
+                    format!("rise at {from}..{to} isn't inside a cancel window of `{during}` that takes `{intent}`"),
+                ),
+                Some(true) if from >= to => self.add(TRACK, format!("rise window {from}..{to} is empty")),
+                Some(true) => {}
+            }
+            BrainRise::new(index(at.unwrap_or(0)), Name::intern(during), from, to)
+        });
+        BrainDef {
+            spacing: brain.spacing,
+            pace: brain.pace,
+            patience: brain.patience,
+            rest: brain.rest,
+            recover: brain.recover,
+            attacks,
+            rise,
+        }
+    }
+
+    /// Checks the numbers of one of a brain's attacks.
+    fn brain_attack(&mut self, name: &str, attack: &BrainAttackDocument) {
+        const TRACK: &str = "brain";
+        if !(attack.weight.is_finite() && attack.weight >= 0.0) {
+            self.add(TRACK, format!("attack `{name}`'s weight is {}, not 0 or above", attack.weight));
+        }
+        let Reach { near, best, far } = attack.reach;
+        if !(near.is_finite() && far.is_finite() && near <= best && best <= far && near < far) {
+            self.add(TRACK, format!("attack `{name}`'s reach {near}, {best}, {far} isn't in order"));
+        }
+        let Against { free, swinging, opening, reacting, untouchable } = attack.against;
+        if ![free, swinging, opening, reacting, untouchable].iter().all(|at| at.is_finite() && *at >= 0.0) {
+            self.add(TRACK, format!("attack `{name}` has a multiplier below 0 or not finite"));
+        }
+        let Recent { ticks, floor } = attack.recent;
+        if !(0.0..=1.0).contains(&floor) && ticks > 0 {
+            self.add(TRACK, format!("attack `{name}`'s recent floor is {floor}, not within 0 to 1"));
+        }
+    }
+
     /// Checks hand-keyed motion and bakes it, or `None` if a key is wrong.
     fn motion(&mut self, motion: &MotionDocument, ticks: u32) -> Option<BakedTables> {
         let before = self.issues.len();
@@ -1027,6 +1195,7 @@ impl MoveSetDocument {
         }
         let neutral = check.allows("neutral", &self.neutral, &intent_names, &self.moves);
         let fighter = self.fighter.as_ref().map(|fighter| check.fighter(fighter, &self.moves));
+        let brain = self.brain.as_ref().map(|brain| check.brain(brain, self));
 
         let mut names = BTreeSet::new();
         let mut moves = Vec::with_capacity(self.moves.len());
@@ -1053,7 +1222,7 @@ impl MoveSetDocument {
         }
 
         if check.issues.is_empty() {
-            Ok(MoveSet::from_parts(intents, neutral, fighter, moves))
+            Ok(MoveSet::from_parts(intents, neutral, fighter, brain, moves))
         } else {
             Err(MoveSetError::Invalid(check.issues))
         }
@@ -1338,6 +1507,7 @@ mod tests {
             set.intents().to_vec(),
             vec![Allow::new(Name::new("light"), target, Name::new("x"), CancelMode::Buffered)],
             set.fighter().cloned(),
+            None,
             set.moves().to_vec(),
         );
         let bad = set.to_cooked().unwrap();
@@ -1350,6 +1520,11 @@ mod tests {
         type Edit = fn(&mut MoveSetDocument);
         fn light(document: &mut MoveSetDocument) -> &mut MoveDocument {
             document.moves.iter_mut().find(|mv| mv.name == "light_1").expect("in the content")
+        }
+        /// A good brain, on the test content's moves, for one thing to be wrong with: it gets up from
+        /// `light_1`, whose window 10..24 takes `light`.
+        fn brain(document: &mut MoveSetDocument) -> &mut BrainDocument {
+            document.brain.get_or_insert_with(good_brain)
         }
         fn attack(document: &mut MoveSetDocument) -> &mut AttackDocument {
             light(document).hitboxes[0].attack.as_mut().expect("in the content")
@@ -1773,6 +1948,113 @@ mod tests {
                 |d| light(d).motion.paths[0].keys.clear(),
                 &["light_1", "motion", "blade", "no keys"],
             ),
+            (
+                "a spacing the wrong way round",
+                |d| brain(d).spacing = Spacing { near: 3.0, far: 2.0 },
+                &["`brain`", "spacing 3..2"],
+            ),
+            (
+                "a spacing that isn't finite",
+                |d| brain(d).spacing = Spacing { near: 0.0, far: f32::INFINITY },
+                &["`brain`", "spacing"],
+            ),
+            ("a tilt past the stick", |d| brain(d).pace.approach = 1.5, &["`brain`", "approach is 1.5"]),
+            ("a tilt that's no number", |d| brain(d).pace.circle = f32::NAN, &["`brain`", "circle is NaN"]),
+            (
+                "a turn that goes nowhere",
+                |d| brain(d).pace.turn_rate_degrees = 0.0,
+                &["`brain`", "turn_rate_degrees"],
+            ),
+            (
+                "a patience the wrong way round",
+                |d| brain(d).patience = TickRange { min: 9, max: 3 },
+                &["`brain`", "patience is 9..=3"],
+            ),
+            (
+                "a rest too long",
+                |d| brain(d).rest = TickRange { min: 0, max: MAX_MOVE_TICKS + 1 },
+                &["`brain`", "rest is"],
+            ),
+            (
+                "a recover the wrong way round",
+                |d| brain(d).recover = TickRange { min: 2, max: 1 },
+                &["`brain`", "recover is"],
+            ),
+            ("a brain with no attacks", |d| brain(d).attacks.clear(), &["`brain`", "needs an attack"]),
+            (
+                "a brain with too many attacks",
+                |d| {
+                    let copy = brain(d).attacks[0].clone();
+                    brain(d).attacks = vec![copy; MAX_BRAIN_ATTACKS + 1];
+                },
+                &["`brain`", "9 attacks", "past the limit"],
+            ),
+            (
+                "an attack twice",
+                |d| {
+                    let copy = brain(d).attacks[0].clone();
+                    brain(d).attacks.push(copy);
+                },
+                &["`brain`", "`light`", "appears twice"],
+            ),
+            (
+                "an attack that's no intent",
+                |d| brain(d).attacks[0].intent = "ghost".to_owned(),
+                &["`brain`", "`ghost`", "not an intent"],
+            ),
+            (
+                "an attack that starts nothing",
+                |d| {
+                    brain(d);
+                    d.neutral.retain(|allow| allow.intent != "light");
+                },
+                &["`brain`", "`light`", "starts nothing from neutral"],
+            ),
+            (
+                "an attack's bad weight",
+                |d| brain(d).attacks[0].weight = -1.0,
+                &["`brain`", "`light`", "weight is -1"],
+            ),
+            (
+                "a reach out of order",
+                |d| brain(d).attacks[0].reach = Reach { near: 2.0, best: 1.0, far: 3.0 },
+                &["`brain`", "`light`", "reach 2, 1, 3"],
+            ),
+            (
+                "a reach with no width",
+                |d| brain(d).attacks[0].reach = Reach { near: 2.0, best: 2.0, far: 2.0 },
+                &["`brain`", "`light`", "reach"],
+            ),
+            (
+                "a multiplier below nothing",
+                |d| brain(d).attacks[0].against.opening = -1.0,
+                &["`brain`", "`light`", "multiplier"],
+            ),
+            (
+                "a recency floor past 1",
+                |d| brain(d).attacks[0].recent = Recent { ticks: 5, floor: 2.0 },
+                &["`brain`", "`light`", "floor is 2"],
+            ),
+            (
+                "a rise pressing no intent",
+                |d| brain(d).rise.as_mut().expect("in this one").intent = "ghost".to_owned(),
+                &["`brain`", "rise presses `ghost`"],
+            ),
+            (
+                "a rise from no move",
+                |d| brain(d).rise.as_mut().expect("in this one").during = "ghost".to_owned(),
+                &["`brain`", "rise happens during `ghost`"],
+            ),
+            (
+                "a rise past its window",
+                |d| brain(d).rise.as_mut().expect("in this one").to = 25,
+                &["`brain`", "rise at 12..25", "cancel window of `light_1`"],
+            ),
+            (
+                "a rise with no room",
+                |d| brain(d).rise.as_mut().expect("in this one").to = 12,
+                &["`brain`", "rise window 12..12 is empty"],
+            ),
         ];
         for (what, edit, expected) in cases {
             let mut document = slice();
@@ -1788,6 +2070,78 @@ mod tests {
         }
     }
 
+    fn good_brain() -> BrainDocument {
+        BrainDocument {
+            spacing: Spacing { near: 1.0, far: 2.0 },
+            pace: BrainPace {
+                approach: 0.7,
+                retreat: 0.3,
+                circle: 0.3,
+                circle_share: 0.5,
+                turn_rate_degrees: 300.0,
+            },
+            patience: TickRange { min: 10, max: 20 },
+            rest: TickRange { min: 10, max: 20 },
+            recover: TickRange { min: 5, max: 10 },
+            attacks: vec![BrainAttackDocument {
+                intent: "light".to_owned(),
+                weight: 1.0,
+                reach: Reach { near: 0.0, best: 1.0, far: 2.0 },
+                against: Against::default(),
+                recent: Recent::default(),
+            }],
+            rise: Some(BrainRiseDocument {
+                intent: "light".to_owned(),
+                during: "light_1".to_owned(),
+                from: 12,
+                to: 20,
+            }),
+        }
+    }
+
+    /// A brain's section compiles and cooks with the rest, and a replay's hash sees every number.
+    #[test]
+    fn a_brain_compiles_and_cooks_by_its_intents_places() {
+        let mut document = slice();
+        document.brain = Some(good_brain());
+        let set = document.compile().expect("a good brain");
+        let brain = set.brain().expect("it's there");
+        let (at, intent) = set.intent(Name::new("light")).expect("declared");
+        assert_eq!(intent.name(), Name::new("light"));
+        assert_eq!(brain.attacks[0].intent() as usize, at);
+        assert_eq!(brain.rise.expect("there").intent() as usize, at);
+        assert_eq!(brain.rise.expect("there").during(), Name::new("light_1"));
+        let cooked = set.to_cooked().expect("cooks");
+        assert_eq!(MoveSet::from_cooked(&cooked).expect("reads").brain(), set.brain());
+
+        // A number moving moves the bytes.
+        let mut tuned = document.clone();
+        tuned.brain.as_mut().expect("there").patience.max += 1;
+        let other = tuned.compile().expect("still good").to_cooked().expect("cooks");
+        assert_ne!(other.as_slice(), cooked.as_slice());
+        assert!(slice().compile().expect("compiles").brain().is_none(), "the test content has none");
+    }
+
+    /// Bytes from anywhere: a brain that points at no intent is damaged, as a move's window would be.
+    #[test]
+    fn a_cooked_brain_naming_no_intent_is_refused() {
+        let mut document = slice();
+        document.brain = Some(good_brain());
+        let set = document.compile().expect("good");
+        let mut brain = set.brain().expect("there").clone();
+        brain.attacks[0] =
+            BrainAttack::new(99, 1.0, brain.attacks[0].reach, Against::default(), Recent::default());
+        let bad = MoveSet::from_parts(
+            set.intents().to_vec(),
+            set.neutral().to_vec(),
+            set.fighter().cloned(),
+            Some(brain),
+            set.moves().to_vec(),
+        );
+        let bytes = bad.to_cooked().expect("cooks");
+        assert!(matches!(MoveSet::from_cooked(&bytes), Err(MoveSetError::Damaged(_))));
+    }
+
     #[test]
     fn every_issue_is_reported_at_once() {
         let mut document = slice();
@@ -1799,7 +2153,8 @@ mod tests {
 
     #[test]
     fn an_empty_set_is_refused() {
-        let document = MoveSetDocument { intents: vec![], neutral: vec![], fighter: None, moves: vec![] };
+        let document =
+            MoveSetDocument { intents: vec![], neutral: vec![], fighter: None, brain: None, moves: vec![] };
         assert!(document.check().iter().any(|issue| issue.message.contains("at least one move")));
     }
 
@@ -1890,7 +2245,8 @@ mod tests {
             let mut moves = good.moves().to_vec();
             let mut fighter = good.fighter().cloned();
             edit(&mut moves, &mut fighter);
-            let set = MoveSet::from_parts(good.intents().to_vec(), good.neutral().to_vec(), fighter, moves);
+            let set =
+                MoveSet::from_parts(good.intents().to_vec(), good.neutral().to_vec(), fighter, None, moves);
             MoveSet::from_cooked(&set.to_cooked().unwrap())
         };
         assert!(rebuilt(|_, _| {}).is_ok());

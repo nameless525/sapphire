@@ -18,7 +18,7 @@
 //!   sidecar) say which parts are face, hair and eyes, as MToon doesn't, so the character
 //!   prepass's IDs tell them apart.
 //! - **Shots** ([`Shot`]): a wide establishing shot across the square, a three-quarter hero shot
-//!   of the character, a low angle up past her toward the sky and the rooftops, and the street
+//!   of the character, a low angle up past it toward the sky and the rooftops, and the street
 //!   out of the square with the character standing in it, its face up close, and the enemy squaring
 //!   up to it ([`crate::enemy`]). `--view`, `--fov` and `--zoom` adjust them as they do the turntable's
 //!   framing. The character always stands at the world's origin: a shot
@@ -43,11 +43,11 @@
 //!   contract and keep the square clear of haze.
 //! - **Its own sky** ([`SKY`]): the sandbox sky's maps with a teal Milky Way and a larger sun.
 //! - **Its own light rigs** ([`light_rigs`], M1 C8): `content/lookdev/lookdev_light_rigs.ron`, the
-//!   shipped character light rig presets each with a camera rim held behind her and above,
-//!   replaces the shipped presets while the stage runs (`--camera-rim` still overrides it), so
-//!   every other scene keeps its rim. The day keys her shadow hue (`character_shade`), and her
-//!   materials draw two-sided where the VRM marks them, soften the bangs' shadow and let a back
-//!   light through her hair.
+//!   shipped character light rig presets each with a camera rim held behind the character and
+//!   above, replaces the shipped presets while the stage runs (`--camera-rim` still overrides
+//!   it), so every other scene keeps its rim. The day keys the character's shadow hue
+//!   (`character_shade`), and its materials draw two-sided where the VRM marks them, soften the
+//!   bangs' shadow and let a back light through its hair.
 //! - **Plants** ([`PLANTINGS`]): W6's foliage meshes, each its own mesh rooted at its origin so the
 //!   wind sways it about its root, set in the square's verges, in the town's planters and pots,
 //!   and beyond the rows; the stage blows a light breeze ([`WIND`]).
@@ -406,19 +406,19 @@ pub(crate) enum Shot {
     /// shops, the gate wall with the street's moon gate and the tower over the roofs, the
     /// character small in the middle ground.
     Wide,
-    /// The character in three-quarter view from her left at chest height on a long lens, looking
-    /// a little up: the pavilion behind her left shoulder, the gate wall and the street's moon
-    /// gate behind her right; at golden hour the low sun is behind the pavilion's roof, its glow
+    /// The character in three-quarter view from its left at chest height on a long lens, looking
+    /// a little up: the pavilion behind its left shoulder, the gate wall and the street's moon
+    /// gate behind its right; at golden hour the low sun is behind the pavilion's roof, its glow
     /// round it.
     Hero,
-    /// Low and in front of the character, looking up past her at the rooftops and the sky.
+    /// Low and in front of the character, looking up past it at the rooftops and the sky.
     Sky,
     /// The street out of the square, the character standing in it and the street running away
-    /// behind her: its houses, lanterns, gateway and the tower at its end.
+    /// behind the character: its houses, lanterns, gateway and the tower at its end.
     Street,
-    /// A close-up of her face, nearly frontal from a little to her right, head and shoulders on
-    /// a long lens (X1 part 2c): her face's SDF shadow, eyes, brows and lash line, the bangs and
-    /// their shadow, as the reference games' dialogue close-ups frame them.
+    /// A close-up of the character's face, nearly frontal from a little to its right, head and
+    /// shoulders on a long lens (X1 part 2c): the face's SDF shadow, eyes, brows and lash line, the
+    /// bangs and their shadow, as the reference games' dialogue close-ups frame them.
     Face,
     /// The enemy to the character's right, squaring up to it at the reach of its quick cut, seen as a fight's
     /// camera frames them: both whole, from a little above, the pavilion and the gate wall behind
@@ -441,7 +441,7 @@ impl Shot {
     }
 
     /// Where in the town the character stands for this shot: the stage draws the town (and its
-    /// lamps and cards) moved by the opposite, so she stays at the world's origin.
+    /// lamps and cards) moved by the opposite, so the character stays at the world's origin.
     pub fn stand(self) -> Vec3 {
         match self {
             Self::Wide | Self::Hero | Self::Sky | Self::Face | Self::Enemy => Vec3::ZERO,
@@ -537,8 +537,8 @@ pub(crate) const CARDS: [CardPlace; 21] = [
 ];
 
 /// The held pose's turns, in the model's rest space (VRM: facing +Z, the character's left
-/// toward +X): arms down at her sides and a little forward, elbows softly bent, the head turned a
-/// little toward the hero shot, on her right.
+/// toward +X): arms down at its sides and a little forward, elbows softly bent, the head turned a
+/// little toward the hero shot, on its right.
 fn turns() -> [(HumanBone, Quat); 7] {
     let degrees = f32::to_radians;
     [
@@ -561,11 +561,12 @@ fn turns() -> [(HumanBone, Quat); 7] {
 /// The expression the character holds, and its weight: a soft, relaxed face.
 const EXPRESSION: (&str, f32) = ("relaxed", 0.35);
 
-/// The weights of her face material's expression map (M1 C3; X1 part 2c): a faint blush over
-/// the cheeks and nose it paints, as the reference games' characters wear at rest, and no gloom.
+/// The weights of the character's face material's expression map (M1 C3; X1 part 2c): a faint
+/// blush over the cheeks and nose it paints, as the reference games' characters wear at rest, and
+/// no gloom.
 const FACE_EXPRESSION: FaceExpression = FaceExpression { blush: 0.3, gloom: 0.0 };
 
-/// The radius of the character's body capsule (M1 R4), from her feet to her head.
+/// The radius of the character's body capsule (M1 R4), from its feet to its head.
 const BODY_RADIUS: f32 = 0.16;
 /// From the head joint (the top of the neck) to the middle of the head, in meters.
 const HEAD_CENTER: Vec3 = Vec3::new(0.0, 0.09, 0.01);
@@ -886,8 +887,8 @@ mod tests {
         for shot in Shot::ALL {
             let camera = shot.camera();
             let eye = camera.eye();
-            assert!(eye.z > 0.0, "{shot:?} in front of her: {eye}");
-            assert!(eye.x.atan2(eye.z).abs() < std::f32::consts::FRAC_PI_2, "{shot:?} sees her face");
+            assert!(eye.z > 0.0, "{shot:?} in front of the character: {eye}");
+            assert!(eye.x.atan2(eye.z).abs() < std::f32::consts::FRAC_PI_2, "{shot:?} sees the face");
             assert_eq!(shot.stand() == Vec3::ZERO, shot != Shot::Street, "{shot:?} stands in the square");
         }
         // Back far enough for both of them whole, from the fight camera's height.
@@ -896,10 +897,10 @@ mod tests {
             (1.0..2.0).contains(&enemy.y) && enemy.length() > 4.0,
             "over the shoulder of a fight: {enemy}"
         );
-        assert!(Shot::Sky.camera().eye().y < 1.45, "below her chest, looking up");
+        assert!(Shot::Sky.camera().eye().y < 1.45, "below the character's chest, looking up");
         assert!(Shot::Wide.camera().eye().distance(Vec3::ZERO) > 10.0, "from across the square");
         let face = Shot::Face.camera().eye();
-        assert!((1.3..1.6).contains(&face.y) && face.x.hypot(face.z) < 1.0, "close to her face: {face}");
+        assert!((1.3..1.6).contains(&face.y) && face.x.hypot(face.z) < 1.0, "close to the face: {face}");
     }
 
     /// [`MOUNTAINS`] names every generated sector by its sidecar's ID, nearest range first and

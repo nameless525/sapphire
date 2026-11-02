@@ -53,8 +53,8 @@
 //!   day's night before extraction), around the VRM character held in a pose: a
 //!   [`RenderPose`] written once, which `Extract` sends while it is new, and the
 //!   [`Figure`] it makes, where the light rig finds the character's head, body and face
-//!   ([`Scene::spawn_look_dev`], [`crate::lookdev`]). A new version of her mesh or rig under a
-//!   running app holds her anew ([`Scene::follow_content`]).
+//!   ([`Scene::spawn_look_dev`], [`crate::lookdev`]). A new version of the character's mesh or
+//!   rig under a running app holds it anew ([`Scene::follow_content`]).
 //!   `--clip` plays a clip on the character instead (M2 N2, [`Scene::play_clip`],
 //!   [`crate::animate`]): a [`ClipPlayer`] rewrites its pose and [`Figure`] each frame its clock
 //!   has moved.
@@ -988,7 +988,7 @@ impl Scene {
     /// frame's packet: the probe grid's key hours; a mesh replaced in place, whose instances the
     /// renderer starts over in their bind pose, sends every pose again with this frame's packet,
     /// so the frame that first draws the new mesh already draws it posed; and a new version of the
-    /// look-dev character's mesh, rig or skeleton holds her anew, since her palette indexes their
+    /// look-dev character's mesh, rig or skeleton holds it anew, since its palette indexes their
     /// joints, and a new version of them or of the clip gives the clip a new pose to play on. While
     /// only some have landed the character may not fit: it keeps the pose it has, which the renderer
     /// ignores if the new mesh's palette is another length, until the others land. Allocates nothing
@@ -1004,7 +1004,7 @@ impl Scene {
             match lookdev::held(content) {
                 Ok((pose, figure)) => self.hold_character(pose, figure),
                 Err(error) => {
-                    tracing::warn!(target: LOG_TARGET, error, "the look-dev character keeps her pose");
+                    tracing::warn!(target: LOG_TARGET, error, "the look-dev character keeps its pose");
                 }
             }
         }
@@ -1132,7 +1132,7 @@ impl Scene {
     }
 
     /// Holds the character in `pose`, making `figure`: `Extract` sends it if it differs from the
-    /// one she has.
+    /// one the character has.
     fn hold_character(&mut self, pose: RenderPose, figure: Figure) {
         self.figure = figure;
         if let Some(enemy) = self.arena.as_ref().map(ArenaActors::enemy_entity) {
@@ -1234,7 +1234,7 @@ impl Scene {
         if let Some(mut rig) = character.get_mut::<CharacterLightRig>() {
             rig.head = look.figure.head;
         }
-        // The town moves so the character, at the origin, stands where the shot has her.
+        // The town moves so the character, at the origin, stands where the shot has it.
         let town = Mat4::from_translation(-stand);
         self.town = Some(world.spawn((RenderMesh(look.town.town), RenderTransform(town))).id());
         self.town_plants = lookdev::plantings()
@@ -2135,7 +2135,8 @@ mod tests {
         assert!(posed.is_empty(), "a held pose isn't sent again");
     }
 
-    /// Review RC-1: her palette indexes her mesh's joints, and her figure comes from them.
+    /// Review RC-1: the character's palette indexes its mesh's joints, and its figure comes from
+    /// them.
     #[test]
     fn a_character_held_anew_sends_a_new_pose_once_and_takes_its_figure() {
         let mut scene = Scene::with_character(MeshHandle::from_raw(0), BOUNDS, false);
@@ -2179,7 +2180,7 @@ mod tests {
         // Another skeleton's pose and figure go out in the next frame, once.
         let taller = Figure { head: Vec3::new(0.0, 1.6, 0.0), ..figure };
         scene.hold_character(RenderPose { palette: vec![lifted; 3], morph_weights: vec![0.5] }, taller);
-        assert_eq!(frame(&mut scene), (vec![3], Some(taller.head)), "the rig finds her new head");
+        assert_eq!(frame(&mut scene), (vec![3], Some(taller.head)), "the rig finds the new head");
         assert_eq!(frame(&mut scene).0, Vec::<usize>::new());
     }
 
@@ -2629,7 +2630,7 @@ mod tests {
         assert_eq!(rigs(&scene), lookdev::light_rigs());
         let shipped = LightRigLibrary::default_rigs();
         let error =
-            scene.replace_light_rigs("default_light_rigs.ron", shipped.clone()).expect_err("not hers");
+            scene.replace_light_rigs("default_light_rigs.ron", shipped.clone()).expect_err("not the stage's");
         assert!(error.contains("lookdev_light_rigs.ron"), "{error}");
         assert_eq!(rigs(&scene), lookdev::light_rigs(), "kept");
         let replaced = scene.replace_light_rigs("content/lookdev/lookdev_light_rigs.ron", shipped.clone());

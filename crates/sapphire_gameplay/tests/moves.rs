@@ -1295,7 +1295,9 @@ fn warp_tracks_another_actor() {
     let mut sim = Simulation::new(SimConfig::default());
     let moves = sim.add_move_set(slice());
     let enemy_at = Vec3::new(0.5, 0.0, 4.0);
-    let enemy = sim.spawn(ActorSpawn { position: enemy_at, moves: Some(moves), yaw: 0.0 }).expect("room");
+    let enemy = sim
+        .spawn(ActorSpawn { position: enemy_at, moves: Some(moves), ..ActorSpawn::default() })
+        .expect("room");
     let actor = sim.spawn(ActorSpawn { moves: Some(moves), ..ActorSpawn::default() }).expect("room");
     sim.set_warp_target(actor, WarpTarget::Actor(enemy));
     sim.force_move(actor, Name::new("dash_attack"));
@@ -1352,7 +1354,7 @@ fn a_move_runs_in_the_frame_of_the_root_it_started_from() {
     let mut sim = Simulation::new(SimConfig::default());
     let moves = sim.add_move_set(slice());
     let yaw = 0.75;
-    let actor = sim.spawn(ActorSpawn { yaw, moves: Some(moves), position: Vec3::ZERO }).expect("room");
+    let actor = sim.spawn(ActorSpawn { yaw, moves: Some(moves), ..ActorSpawn::default() }).expect("room");
     let table = slice().find(Name::new("skill")).expect("in the set").1.tables.clone();
     let last = table.root_at(ticks(42));
     sim.step(&press(actor, Buttons::SKILL));

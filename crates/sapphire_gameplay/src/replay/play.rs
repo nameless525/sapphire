@@ -17,9 +17,11 @@ pub enum PlayError {
     UnknownScenario { name: String, known: String },
     #[error("scenario `{name}` can't set up its world: {source}")]
     Setup { name: String, source: ScenarioError },
-    /// The move data isn't what the replay was recorded against, so its actions mean something else.
+    /// The move data or controller tuning isn't what the replay was recorded against, so its actions
+    /// mean something else.
     #[error(
-        "the move data changed since this replay was recorded (hash {recorded:016x}, now {current:016x}), \
+        "the move data or controller tuning changed since this replay was recorded (hash {recorded:016x}, \
+         now {current:016x}), \
          so it would run a different fight: re-record it with `cargo xtask replay --update`, then review \
          what moved"
     )]
@@ -292,6 +294,23 @@ mod tests {
         let mut player = Player::new(replay, &scenarios).unwrap();
         player.run_to_end();
         assert_eq!(player.finish().trail.ticks(), played.trail.ticks());
+    }
+
+    /// A changed controller profile refuses a replay as changed moves do: the same stick would carry
+    /// it somewhere else.
+    #[test]
+    fn a_changed_profile_refuses_and_says_re_record() {
+        fn retuned(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
+            let cast = crate::replay::scenario::melee(sim)?;
+            let run_speed = crate::ControllerProfile { run_speed: 7.0, ..Default::default() };
+            sim.add_controller_profile(&run_speed)?;
+            Ok(cast)
+        }
+        let (replay, _) = record(30, melee_sweep);
+        let scenarios = [Scenario { setup: retuned, ..*melee() }];
+        let error = Player::new(replay, &scenarios).err().expect("refused");
+        assert!(matches!(error, PlayError::MovesChanged { .. }), "{error}");
+        assert!(error.to_string().contains("--update"), "{error}");
     }
 
     /// A press that nothing but the checksum sees yet still names its tick.

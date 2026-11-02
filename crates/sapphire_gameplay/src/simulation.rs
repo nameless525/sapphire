@@ -10,6 +10,7 @@ use sapphire_core::alloc::AllocScope;
 use sapphire_ecs::prelude::*;
 use sapphire_math::Pcg32;
 use sapphire_moves::{MoveSet, MoveSetError};
+use sapphire_physics::PhysicsWorld;
 use sapphire_time::Stopwatch;
 
 use crate::actions::{CurrentActions, TickActions, read_actions};
@@ -17,12 +18,15 @@ use crate::actors::{
     self, ActorId, ActorRequests, ActorSpawn, ActorState, ActorTable, ActorView, SpawnError,
 };
 use crate::checksum;
+use crate::controller::{
+    self, CharacterController, CharacterWorld, ControllerProfile, PhysicsWorldError, ProfileError, ProfileId,
+};
 use crate::cues::{CueEvent, CueQueue};
 use crate::hits::HitQuery;
 use crate::intents::{self, IntentRing};
 use crate::movement::{self, ActorTransform};
 use crate::moves::{self, MoveLibrary, MoveOutput, MoveRead, MoveRunner, MoveSetId, MoveStats, WarpTarget};
-use crate::stats::{BUDGET_DESKTOP_LOW, SimStats};
+use crate::stats::{BUDGET_DESKTOP_LOW, PHYSICS_BUDGET_DESKTOP_LOW, SimStats};
 
 /// [`Pcg32`]'s sequence for combat's numbers (spec §5.4: seeded per subsystem). A subsystem that
 /// draws its own takes another, so one's draws can't move another's.
@@ -44,12 +48,21 @@ pub struct SimConfig {
     /// What a step is held to in [`SimStats::over_budget_steps`]: the app gives its tier's, from
     /// [`BUDGET_DESKTOP_LOW`] or [`crate::BUDGET_MOBILE_LOW`].
     pub step_budget: Duration,
+    /// What a step's physics is held to in [`SimStats::controllers_over_budget_steps`]: from
+    /// [`PHYSICS_BUDGET_DESKTOP_LOW`] or [`crate::PHYSICS_BUDGET_MOBILE_LOW`]. It reaches no state, so
+    /// a replay doesn't record it.
+    pub physics_budget: Duration,
 }
 
 impl Default for SimConfig {
-    /// Seed 0, room for 64 actors, Desktop-Low's budget.
+    /// Seed 0, room for 64 actors, Desktop-Low's budgets.
     fn default() -> Self {
-        Self { seed: 0, max_actors: 64, step_budget: BUDGET_DESKTOP_LOW }
+        Self {
+            seed: 0,
+            max_actors: 64,
+            step_budget: BUDGET_DESKTOP_LOW,
+            physics_budget: PHYSICS_BUDGET_DESKTOP_LOW,
+        }
     }
 }
 
@@ -68,7 +81,9 @@ pub enum CombatSet {
     Cancels,
     /// Each move advances on its local clock.
     Moves,
-    /// Root motion and the controller.
+    /// Root motion and the controller, then hurtboxes: `movement::apply_root_motion` writes each
+    /// character's drive, `controller::move_characters` moves its capsule, and M2 G3's hurtboxes come
+    /// third in that chain, because they read where the controller left the actor.
     Movement,
     /// Hit queries, queuing hit events.
     Hits,
@@ -85,6 +100,7 @@ type ResolveParams = (
     ResMut<'static, ActorTable>,
     ResMut<'static, WorldClock>,
     Query<'static, 'static, ActorState<'static>>,
+    ResMut<'static, CharacterWorld>,
 );
 
 /// One combat world with no window and no GPU. See the [crate docs](crate).
@@ -93,6 +109,7 @@ pub struct Simulation {
     /// Resolves spawns and despawns asked for between steps.
     resolve: SystemState<ResolveParams>,
     stats: SimStats,
+    physics_budget: Duration,
 }
 
 impl Simulation {
@@ -108,6 +125,9 @@ impl Simulation {
         world.insert_resource(MoveStats::default());
         world.insert_resource(CueQueue::default());
         world.insert_resource(HitQuery::new());
+        let empty = PhysicsWorld::new(Vec::new(), actors::body_capacity(config.max_actors))
+            .expect("a world with no colliders has nothing to refuse");
+        world.insert_resource(CharacterWorld::new(empty));
         actors::create_pool(world, config.max_actors);
 
         world.schedule_scope(FixedCombat, |_, schedule| {
@@ -129,13 +149,18 @@ impl Simulation {
             .add_systems(FixedCombat, intents::press_intents.in_set(CombatSet::Intents))
             .add_systems(FixedCombat, moves::settle_cancels.in_set(CombatSet::Cancels))
             .add_systems(FixedCombat, moves::advance_moves.in_set(CombatSet::Moves))
-            .add_systems(FixedCombat, movement::apply_root_motion.in_set(CombatSet::Movement))
+            .add_systems(
+                FixedCombat,
+                (movement::apply_root_motion, controller::move_characters)
+                    .chain()
+                    .in_set(CombatSet::Movement),
+            )
             .add_systems(FixedPost, actors::resolve_actor_requests);
         ecs.startup();
 
         let resolve = SystemState::new(ecs.world_mut());
         let stats = SimStats { budget: config.step_budget, ..SimStats::default() };
-        Self { ecs, resolve, stats }
+        Self { ecs, resolve, stats, physics_budget: config.physics_budget }
     }
 
     /// Adds a system to a [`CombatSet`], for a world built to test the simulation itself, such as the
@@ -180,17 +205,51 @@ impl Simulation {
         world.resource_mut::<MoveLibrary>().replace(id, set, |revision| in_use.contains(&revision))
     }
 
-    /// The hash of the move data this simulation runs on, tables included, in ID order: what a replay
-    /// records of it, to tell a changed move from a broken simulation.
+    /// The hash of the move data and controller profiles this simulation runs on, tables included, in
+    /// ID order: what a replay records of them, to tell changed moves or tuning from a broken simulation.
     #[must_use]
     pub fn tables_hash(&self) -> u64 {
-        checksum::tables_hash(self.ecs.world().resource::<MoveLibrary>())
+        let world = self.ecs.world();
+        checksum::tables_hash(world.resource::<MoveLibrary>(), world.resource::<CharacterWorld>())
     }
 
     /// The loaded sets of moves.
     #[must_use]
     pub fn move_library(&self) -> &MoveLibrary {
         self.ecs.world().resource::<MoveLibrary>()
+    }
+
+    /// Gives characters a world to move in, between steps and before any has spawned: a new
+    /// simulation's is empty. It needs room for [`Self::body_capacity`] bodies.
+    pub fn set_physics_world(&mut self, physics: PhysicsWorld) -> Result<(), PhysicsWorldError> {
+        let needed = self.body_capacity();
+        self.ecs.world_mut().resource_mut::<CharacterWorld>().replace_physics(physics, needed)
+    }
+
+    /// How many bodies a world must have room for here: a capsule and every hurtbox for each actor in
+    /// the pool, so a full cast is refused by nothing.
+    #[must_use]
+    pub fn body_capacity(&self) -> usize {
+        actors::body_capacity(self.ecs.world().resource::<ActorRequests>().capacity())
+    }
+
+    /// The world characters move in.
+    #[must_use]
+    pub fn physics(&self) -> &PhysicsWorld {
+        self.ecs.world().resource::<CharacterWorld>().physics()
+    }
+
+    /// Checks and loads a character's tuning, between steps. IDs count up from the first added: a
+    /// replay adds the same ones in the same order.
+    pub fn add_controller_profile(&mut self, profile: &ControllerProfile) -> Result<ProfileId, ProfileError> {
+        self.ecs.world_mut().resource_mut::<CharacterWorld>().add_profile(profile)
+    }
+
+    /// The hash of every loaded controller profile, in ID order: with [`Self::tables_hash`], what a
+    /// replay records to tell changed tuning from a broken simulation.
+    #[must_use]
+    pub fn controller_profiles_hash(&self) -> u64 {
+        self.ecs.world().resource::<CharacterWorld>().profiles_hash()
     }
 
     /// Spawns an actor between steps, at once. Inside a step, systems queue spawns on
@@ -204,17 +263,17 @@ impl Simulation {
     /// Removes an actor between steps, at once, and returns whether it was alive. Its ID is never
     /// used again.
     pub fn despawn(&mut self, id: ActorId) -> bool {
-        let (mut requests, table, clock, actors) =
+        let (mut requests, table, clock, actors, characters) =
             self.resolve.get_mut(self.ecs.world_mut()).expect(ACTORS_EXIST);
         let alive = requests.despawn(id, &table);
-        actors::resolve_actor_requests(requests, table, clock, actors);
+        actors::resolve_actor_requests(requests, table, clock, actors, characters);
         alive
     }
 
     fn resolve_requests(&mut self) {
-        let (requests, table, clock, actors) =
+        let (requests, table, clock, actors, characters) =
             self.resolve.get_mut(self.ecs.world_mut()).expect(ACTORS_EXIST);
-        actors::resolve_actor_requests(requests, table, clock, actors);
+        actors::resolve_actor_requests(requests, table, clock, actors, characters);
     }
 
     /// Runs one fixed step on `actions`: the only way time moves. Allocates nothing on this thread
@@ -237,6 +296,7 @@ impl Simulation {
     fn record_step(&mut self, elapsed: Duration, allocated: u64) {
         let world = self.ecs.world();
         let actors = u32::try_from(world.resource::<ActorTable>().len()).unwrap_or(u32::MAX);
+        let physics_budget = self.physics_budget;
         let stats = &mut self.stats;
         stats.steps += 1;
         stats.last_step = elapsed;
@@ -258,6 +318,12 @@ impl Simulation {
         let cues = world.resource::<CueQueue>();
         stats.cues_published = cues.published();
         stats.cues_dropped = cues.dropped();
+        let characters = world.resource::<CharacterWorld>();
+        stats.controllers_last = characters.last_time;
+        stats.controllers_longest = stats.controllers_longest.max(characters.last_time);
+        stats.controllers_over_budget_steps += u64::from(characters.last_time > physics_budget);
+        stats.controllers_refused = characters.refused;
+        stats.physics = characters.physics().take_stats();
     }
 
     /// The checksum of all simulated state: the same inputs give the same one on every run for an
@@ -391,5 +457,6 @@ fn view(world: &World, id: ActorId, entity: Entity) -> ActorView {
         clock_now: clock.0.now(),
         hitstop_ticks: clock.0.hitstop_ticks(),
         moves: MoveRead::of(runner, output, world.resource::<MoveLibrary>()),
+        controller: *actor.get::<CharacterController>().expect("every pooled entity has a controller"),
     }
 }

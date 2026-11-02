@@ -24,7 +24,7 @@ use sapphire_physics::{
     ColliderId, Group, GroupMask, PhysicsWorld, Pose, Shape, StaticCollider, StaticShape,
 };
 use sapphire_time::{ScaleSource, SimDuration};
-use support::{press, script, slice, world};
+use support::{mesh_arena, press, script, slice, world};
 
 #[global_allocator]
 static GLOBAL: CountingAllocator<System> = CountingAllocator::new(System);
@@ -55,6 +55,86 @@ fn steps_do_not_allocate_from_the_first_tick() {
     assert!(stats.peak_actors > actors.len() as u32, "spawned actors came and went");
     assert!(stats.cancels_fired > 0 && stats.cues_published > 0, "{stats:?}");
     assert!(stats.intents_expired > 0, "{stats:?}");
+}
+
+/// Characters on the mesh arena, counted from the first step: walking, stairs, walls, jumps, falls and
+/// landings, every one of them a move or a cast, plus a move's root motion through the controller.
+#[test]
+fn characters_do_not_allocate_from_the_first_tick() {
+    if !PER_THREAD_COUNTS {
+        return;
+    }
+    let (mut sim, actors) = characters(6);
+    let moves = sim.add_move_set(slice());
+    let lunger = sim
+        .spawn(ActorSpawn {
+            position: Vec3::new(2.0, 0.3, 2.0),
+            moves: Some(moves),
+            controller: sim.actor(actors[0]).and_then(|view| view.controller.profile()),
+            ..ActorSpawn::default()
+        })
+        .expect("room");
+    let ticks: Vec<TickActions> = (0..3000)
+        .map(|tick| {
+            let mut actions = mesh_arena::tick_actions(tick, &actors);
+            if tick % 101 == 0 {
+                actions
+                    .set(lunger, ActorActions { buttons: Buttons::LIGHT, ..Default::default() })
+                    .expect("room");
+            }
+            actions
+        })
+        .collect();
+
+    let ((), counts) = alloc::count_in_scope(|| {
+        for actions in &ticks {
+            sim.step(actions);
+        }
+    });
+
+    assert_eq!(counts.allocations, 0, "3000 steps allocated {} times", counts.allocations);
+    assert_eq!(sim.stats().allocations, 0, "and the stat agrees");
+    assert!(sim.stats().moves_started > 0, "the moves ran");
+    let moved = sim.actors().filter(|view| view.position != Vec3::ZERO).count();
+    assert_eq!(moved, actors.len() + 1, "they all went somewhere");
+}
+
+/// A capsule comes and goes with its actor, which doesn't allocate either.
+#[test]
+fn a_characters_body_comes_and_goes_without_allocating() {
+    if !PER_THREAD_COUNTS {
+        return;
+    }
+    let (mut sim, actors) = characters(2);
+    let profile = sim.actor(actors[0]).and_then(|view| view.controller.profile());
+    let spawn =
+        ActorSpawn { position: Vec3::new(5.0, 1.0, 5.0), controller: profile, ..ActorSpawn::default() };
+    let ((), counts) = alloc::count_in_scope(|| {
+        for _ in 0..100 {
+            let id = sim.spawn(spawn).expect("room");
+            sim.step(&TickActions::NEUTRAL);
+            assert!(sim.despawn(id));
+        }
+    });
+    assert_eq!(counts.allocations, 0, "{} allocations", counts.allocations);
+    assert_eq!(sim.physics().body_count(), 2);
+}
+
+/// `count` different characters on the mesh arena.
+fn characters(count: usize) -> (Simulation, Vec<ActorId>) {
+    let mut sim = Simulation::new(SimConfig { max_actors: 16, ..SimConfig::default() });
+    let world = PhysicsWorld::new(mesh_arena::statics(), sim.body_capacity()).expect("the arena builds");
+    sim.set_physics_world(world).expect("it has room");
+    let profiles =
+        mesh_arena::profiles().map(|profile| sim.add_controller_profile(&profile).expect("a good one"));
+    let actors = (0..count)
+        .map(|index| {
+            let (position, profile) = mesh_arena::start(index);
+            sim.spawn(ActorSpawn { position, controller: Some(profiles[profile]), ..ActorSpawn::default() })
+                .expect("room")
+        })
+        .collect();
+    (sim, actors)
 }
 
 /// A pool that's too small refuses inside a step, and that doesn't allocate either.
@@ -430,7 +510,7 @@ fn sweeping_what_moves_publish_does_not_allocate() {
     let moves = Some(sim.add_move_set(slice()));
     let attacker = sim.spawn(ActorSpawn { moves, ..ActorSpawn::default() }).expect("room");
     let position = Vec3::new(0.0, 0.0, 1.6);
-    let target = sim.spawn(ActorSpawn { position, yaw: 3.0, moves }).expect("room");
+    let target = sim.spawn(ActorSpawn { position, yaw: 3.0, moves, controller: None }).expect("room");
 
     support::join_moves_to_hits(&mut sim, BODY, OWN, chest);
 

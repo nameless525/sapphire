@@ -8,7 +8,8 @@ use std::process::Command;
 use sapphire_ecs::prelude::*;
 use sapphire_gameplay::replay;
 use sapphire_gameplay::{
-    ActorActions, ActorId, ActorSpawn, Buttons, CombatSet, SimConfig, SimRng, Simulation, Stick, TickActions,
+    ActorActions, ActorId, ActorSpawn, Buttons, CombatSet, ControllerProfile, SimConfig, SimRng, Simulation,
+    Stick, TickActions,
 };
 use sapphire_math::Vec3;
 use sapphire_moves::{MoveSet, MoveSetDocument};
@@ -109,8 +110,10 @@ fn the_tick_count_is_in_the_checksum() {
     assert_eq!(sim.tick(), 1);
 }
 
-/// One replay file holds one hash of the move data for every architecture, so a document must cook
-/// to the same bytes on all of them, unlike per-tick checksums, which may differ. CI's `Test` job holds
+/// One replay file holds one hash of the move data and controller profiles for every architecture, so
+/// a document must cook to the same bytes on all of them, unlike per-tick checksums, which may differ.
+/// This world holds what `melee` and `duel` hash, so it's what their replays are stamped with. CI's
+/// `Test` job holds
 /// this one constant on Linux, Windows and macOS. If only some of them fail, something on the bake's
 /// path has reached glam's SIMD types or a C math library (see `sapphire_math::det`), and that's the
 /// bug: don't record a value per architecture. If all of them fail, the test content or the format
@@ -118,12 +121,13 @@ fn the_tick_count_is_in_the_checksum() {
 #[test]
 fn the_test_contents_hash_is_the_same_on_every_architecture() {
     let mut sim = Simulation::new(SimConfig::default());
+    sim.add_controller_profile(&ControllerProfile::default()).expect("a good profile");
     sim.add_move_set(replay::test_moves().expect("compiles"));
     let hash = sim.tables_hash();
     assert_eq!(hash, TEST_CONTENT_HASH, "the test content's hash is {hash:#x}");
 }
 
-const TEST_CONTENT_HASH: u64 = 0x44a9_4f1c_eb7b_d542;
+const TEST_CONTENT_HASH: u64 = 0xa729_8bee_04fd_e6f4;
 
 #[test]
 fn a_different_seed_changes_the_checksum_once_a_number_is_drawn() {
@@ -179,8 +183,11 @@ fn the_order_of_creation_doesnt_leak_through_iteration_order() {
         let mut sim = Simulation::new(SimConfig { seed: 11, max_actors: 32, ..SimConfig::default() });
         let moves = sim.add_move_set(slice());
         sim.add_combat_system(CombatSet::Resolve, replay::melee_buttons);
-        let at =
-            |x: u32| ActorSpawn { position: Vec3::new(x as f32, 0.0, 0.0), moves: Some(moves), yaw: 0.0 };
+        let at = |x: u32| ActorSpawn {
+            position: Vec3::new(x as f32, 0.0, 0.0),
+            moves: Some(moves),
+            ..ActorSpawn::default()
+        };
         let mut ids: Vec<ActorId> = (0..6).map(|x| sim.spawn(at(x)).expect("room")).collect();
         let mut gone = [ids[1], ids[2], ids[4]];
         if reverse_despawns {

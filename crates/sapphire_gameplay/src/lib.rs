@@ -18,12 +18,14 @@
 //! - The move system (M2 G2): [`IntentRing`], the intents waiting on an actor's own clock; the `moves`
 //!   module's cancels and moves, on [`sapphire_moves::MoveSet`]s from [`MoveLibrary`]; what a move
 //!   publishes ([`MoveOutput`], [`MoveRead`]); and [`CueQueue`], presentation's events.
+//! - The character controller (the `controller` module): [`step_controller`] and
+//!   [`CharacterController`], a kinematic capsule on `sapphire_physics`, on each actor's own clock. A
+//!   move's root motion reaches it in [`CombatSet::Movement`] and collides as the stick's does.
 //! - [`HitQuery`], which sweeps moves' hit volumes against hurtboxes, over plain inputs that
 //!   [`HitQuery::sweep_published`] and [`published_hurtbox`] make from what moves publish.
 //!
-//! The controller and the system that runs hit queries arrive with M2's other G packages, each in its
-//! [`CombatSet`]. Until then [`CombatSet::Movement`] applies a move's root motion directly (the
-//! `movement` module, which G1 takes over), and hit volumes are published for G3 to sweep.
+//! The system that runs hit queries arrives with M2 G3, in [`CombatSet::Hits`]. Until then hit volumes
+//! are published for it to sweep.
 //!
 //! Doesn't own, and may never link: the renderer, the world (`sapphire_world`), animation, the
 //! platform layer, input bindings, SDL or wgpu. `cargo xtask check-layers` holds its dependency
@@ -64,7 +66,7 @@
 //! The engine's schedules, in order: [`FixedFirst`](sapphire_ecs::FixedFirst) copies each actor's
 //! actions ([`SimSet::Input`](sapphire_ecs::SimSet::Input)) and ticks the clocks;
 //! [`FixedCombat`](sapphire_ecs::FixedCombat) runs [`CombatSet`], spec §5.22's order;
-//! [`FixedPhysics`](sapphire_ecs::FixedPhysics) is empty until physics lands;
+//! [`FixedPhysics`](sapphire_ecs::FixedPhysics) stays empty, because a capsule's move applies at once;
 //! [`FixedPost`](sapphire_ecs::FixedPost) resolves the spawns and despawns queued during the step
 //! (rule R3).
 //!
@@ -109,9 +111,14 @@
 //! assert_ne!(sim.checksum(), 0);
 //! ```
 
+// The mesh arena in `tests/support` names this crate, and the controller's own tests share it.
+#[cfg(test)]
+extern crate self as sapphire_gameplay;
+
 mod actions;
 mod actors;
 mod checksum;
+mod controller;
 mod cues;
 mod hits;
 mod intents;
@@ -125,6 +132,11 @@ pub mod targeting;
 pub use actions::{ActionsError, ActorActions, Buttons, Controls, Stick, TickActions, TickActionsFull};
 pub use actors::{ActorId, ActorRequests, ActorSpawn, ActorTable, ActorView, SpawnError};
 pub use checksum::StateHasher;
+pub use controller::{
+    CharacterController, CharacterWorld, ControllerDrive, ControllerEvents, ControllerInput,
+    ControllerProfile, ControllerState, GroundMode, MovementMode, PhysicsWorldError, ProfileError, ProfileId,
+    ResolvedProfile, actor_body, step_controller,
+};
 pub use cues::{CUE_QUEUE_LEN, CueEvent, CueQueue};
 pub use hits::{
     HitEvent, HitQuery, HitStats, HurtboxId, MAX_CAST_RESULTS, MAX_CONTACTS, MAX_HIT_EVENTS, MAX_HIT_RECORDS,
@@ -138,4 +150,6 @@ pub use moves::{
     MoveLibrary, MoveOutput, MoveRead, MoveRef, MoveRunner, MoveSetId, Published, WarpTarget,
 };
 pub use simulation::{CombatSet, SimConfig, SimRng, Simulation};
-pub use stats::{BUDGET_DESKTOP_LOW, BUDGET_MOBILE_LOW, SimStats};
+pub use stats::{
+    BUDGET_DESKTOP_LOW, BUDGET_MOBILE_LOW, PHYSICS_BUDGET_DESKTOP_LOW, PHYSICS_BUDGET_MOBILE_LOW, SimStats,
+};

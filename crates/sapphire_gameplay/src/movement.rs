@@ -1,14 +1,12 @@
-//! Where actors are, and the one place a move's root motion reaches them.
-//!
-//! **M2 G1 takes over here:** [`apply_root_motion`] is everything between what a move wants and where
-//! an actor stands. The controller reads the same [`crate::MoveOutput::root_delta`] and moves a
-//! capsule instead.
+//! Where actors are, and the one place a move's root motion reaches them: [`apply_root_motion`] hands
+//! it to the actor's character controller, which collides it, or moves an actor with none directly.
 
 use sapphire_ecs::prelude::*;
 use sapphire_math::{Vec3, det};
 
 use crate::actors::ActorTable;
-use crate::moves::MoveOutput;
+use crate::controller::{CharacterController, ControllerDrive};
+use crate::moves::{MoveOutput, MoveRunner};
 
 /// Where an actor is, as the fixed step left it. Scalar on purpose: `Vec3` adds the same way on every
 /// architecture, which `Vec3A` doesn't promise (spec §5.4).
@@ -35,16 +33,27 @@ pub struct RootDelta {
     pub yaw: f32,
 }
 
-/// [`crate::CombatSet::Movement`]: applies each actor's root motion, warp included. It runs inside
-/// the combat step because hits read positions in the same tick.
+/// [`crate::CombatSet::Movement`], just before `controller::move_characters`: applies each actor's
+/// root motion, warp included. It runs inside the combat step because hits read positions in the same
+/// tick, and what [`MoveOutput::previous`] holds is the tick's start, whatever the controller does.
+///
+/// A running move takes the stick away from its first tick, startup's still frames included. A move's
+/// last stretch of motion arrives on the tick it ends, when it isn't running any more.
 pub(crate) fn apply_root_motion(
     table: Res<'_, ActorTable>,
-    mut actors: Query<'_, '_, (&mut ActorTransform, &mut MoveOutput)>,
+    mut actors: Query<'_, '_, (&mut ActorTransform, &mut MoveOutput, &MoveRunner, &mut CharacterController)>,
 ) {
     for (_, entity) in table.iter() {
-        let Ok((mut transform, mut output)) = actors.get_mut(entity) else { continue };
+        let Ok((mut transform, mut output, runner, mut controller)) = actors.get_mut(entity) else {
+            continue;
+        };
         output.previous = *transform;
-        transform.position += output.root_delta.translation;
         transform.yaw += output.root_delta.yaw;
+        let delta = output.root_delta.translation;
+        if !controller.is_active() {
+            transform.position += delta;
+        } else if runner.is_running() || delta != Vec3::ZERO {
+            controller.drive = ControllerDrive::strike(delta);
+        }
     }
 }

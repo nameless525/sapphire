@@ -28,7 +28,12 @@ fn press(raw: u32, buttons: Buttons, x: i8) -> TickActions {
 }
 
 fn config() -> SimConfig {
-    SimConfig { seed: 0xfeed, max_actors: 32, step_budget: Duration::from_micros(1500) }
+    SimConfig {
+        seed: 0xfeed,
+        max_actors: 32,
+        step_budget: Duration::from_micros(1500),
+        ..SimConfig::default()
+    }
 }
 
 /// A replay of these ticks, built the way an app does.

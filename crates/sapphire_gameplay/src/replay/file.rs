@@ -281,7 +281,7 @@ impl Replay {
         }
         validate_body(reader.0, ticks)?;
 
-        let config = SimConfig { seed, max_actors, step_budget };
+        let config = SimConfig { seed, max_actors, step_budget, ..SimConfig::default() };
         Ok(Self { scenario: scenario.to_owned(), config, tables_hash, ticks, body: reader.0.to_vec() })
     }
 

@@ -12,6 +12,7 @@ use xxhash_rust::xxh3::Xxh3;
 
 use crate::actions::{ActorActions, Controls};
 use crate::actors::{ActorRequests, ActorTable};
+use crate::controller::{CharacterController, CharacterWorld};
 use crate::cues::CueQueue;
 use crate::hits::HitQuery;
 use crate::intents::IntentRing;
@@ -21,8 +22,8 @@ use crate::simulation::SimRng;
 
 /// Goes up when [`state_checksum`] starts writing something different, so a recorded checksum can't
 /// match by accident. Recorded replays re-record then (`docs/m2-plan.md` §3). 2: M2 G2's moves. 3: M2
-/// D4's hit queries.
-const CHECKSUM_LAYOUT: u32 = 3;
+/// D4's hit queries. 4: M2 G1's controllers and their world.
+const CHECKSUM_LAYOUT: u32 = 4;
 
 /// A hasher over canonical bytes: XXH3-64, a published, frozen algorithm, unlike `DefaultHasher`,
 /// so a recorded checksum stays good.
@@ -256,6 +257,7 @@ pub(crate) fn state_checksum(world: &World) -> u64 {
     }
     hasher.u32(world.resource::<ActorRequests>().next_id());
     world.resource::<HitQuery>().write_canonical(&mut hasher);
+    world.resource::<CharacterWorld>().physics().write_canonical(&mut |bytes| hasher.bytes(bytes));
 
     let table = world.resource::<ActorTable>();
     hasher.u32(table.len() as u32);
@@ -285,6 +287,9 @@ pub(crate) fn state_checksum(world: &World) -> u64 {
         if let Some(target) = actor.get::<WarpTarget>() {
             write_target(&mut hasher, *target);
         }
+        if let Some(controller) = actor.get::<CharacterController>() {
+            controller.write_canonical(&mut hasher);
+        }
     }
     write_cues(&mut hasher, world.resource::<CueQueue>());
     hasher.finish()
@@ -293,13 +298,14 @@ pub(crate) fn state_checksum(world: &World) -> u64 {
 /// The hash of loaded move data, for a replay to check it runs against what it recorded: each set's
 /// current revision, whole, with its tables, in ID order. It hashes a set's cooked bytes, so no field
 /// can be forgotten here, and those are the same on every target.
-pub(crate) fn tables_hash(library: &MoveLibrary) -> u64 {
+pub(crate) fn tables_hash(library: &MoveLibrary, characters: &CharacterWorld) -> u64 {
     let mut hasher = StateHasher::new();
     let hashes = library.current_hashes();
     hasher.u32(hashes.len() as u32);
     for hash in hashes {
         hasher.u64(hash);
     }
+    hasher.u64(characters.profiles_hash());
     hasher.finish()
 }
 

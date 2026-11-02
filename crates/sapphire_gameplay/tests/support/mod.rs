@@ -1,6 +1,8 @@
 //! A scripted fight for the simulation's tests, the same one the replay suite records: the test
 //! content's moves, with buttons that do to clocks and the pool what hits will, on a fixed schedule.
 
+pub mod mesh_arena;
+
 use sapphire_core::Name;
 use sapphire_ecs::EntityClock;
 use sapphire_ecs::prelude::*;

@@ -2,11 +2,20 @@
 
 use std::time::Duration;
 
+use sapphire_physics::PhysicsStats;
+
 /// §3.2's "Fixed-step sim, per 60 Hz step" on Desktop-Low: combat, AI and the controller.
 pub const BUDGET_DESKTOP_LOW: Duration = Duration::from_millis(1);
 
 /// §3.2's "Fixed-step sim, per 60 Hz step" on Mobile-Low, which runs two such steps a frame.
 pub const BUDGET_MOBILE_LOW: Duration = Duration::from_micros(1500);
+
+/// §3.2's "Physics, per step" on Desktop-Low, which for now is all the character controllers: hit
+/// queries and the camera add to it when they land.
+pub const PHYSICS_BUDGET_DESKTOP_LOW: Duration = Duration::from_micros(700);
+
+/// §3.2's "Physics, per step" on Mobile-Low.
+pub const PHYSICS_BUDGET_MOBILE_LOW: Duration = Duration::from_micros(1200);
 
 /// What the simulation has done as of its latest step, for the overlay and the replay gates.
 ///
@@ -54,6 +63,18 @@ pub struct SimStats {
     pub volumes_dropped: u64,
     /// Steps on which an actor hit the limit on moves started in one step.
     pub transition_limit_steps: u64,
+    /// Wall time of the latest step's character controllers, physics included, to hold against
+    /// [`PHYSICS_BUDGET_DESKTOP_LOW`] or [`PHYSICS_BUDGET_MOBILE_LOW`].
+    pub controllers_last: Duration,
+    /// The longest step's character controllers.
+    pub controllers_longest: Duration,
+    /// Steps whose character controllers took longer than [`crate::SimConfig::physics_budget`].
+    pub controllers_over_budget_steps: u64,
+    /// Actors that asked for a controller and couldn't have one: an unknown profile, or a collision
+    /// world with no room for the body. They live on without one.
+    pub controllers_refused: u64,
+    /// What the collision world did in the latest step: moves, sweeps and casts.
+    pub physics: PhysicsStats,
 }
 
 impl SimStats {

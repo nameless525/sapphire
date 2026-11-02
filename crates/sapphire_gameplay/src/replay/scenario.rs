@@ -2,7 +2,7 @@
 //!
 //! A replay records the name of one, and running it means setting up the same world. **To add one,**
 //! write its setup and add a row to [`SCENARIOS`]. A setup does the same things in the same order
-//! every run: move sets first, then spawns.
+//! every run: the collision world and controller profiles, move sets, then spawns.
 //!
 //! One replay file holds one [`tables_hash`](Simulation::tables_hash) for every architecture, so a
 //! scenario's move sets must come out byte for byte the same on every architecture: from a document,
@@ -14,14 +14,18 @@ use sapphire_core::Name;
 use sapphire_ecs::prelude::*;
 use sapphire_math::Vec3;
 use sapphire_moves::{MoveSet, MoveSetDocument, MoveSetError};
+use sapphire_physics::{
+    ColliderId, Group, PhysicsWorld, Pose, Shape, StaticCollider, StaticShape, WorldError,
+};
 use sapphire_time::ScaleSource;
 
 use crate::actions::{Buttons, Controls};
 use crate::actors::{ActorId, ActorRequests, ActorSpawn, ActorTable, SpawnError};
+use crate::controller::{ControllerProfile, PhysicsWorldError, ProfileError, ProfileId};
 use crate::movement::ActorTransform;
 use crate::moves::{MoveRunner, WarpTarget};
 use crate::simulation::{CombatSet, SimConfig, SimRng, Simulation};
-use crate::stats::BUDGET_DESKTOP_LOW;
+use crate::stats::{BUDGET_DESKTOP_LOW, PHYSICS_BUDGET_DESKTOP_LOW};
 
 /// The test content's document: see that file for its numbers. M2 O3 replaces the content, and the
 /// suite is re-recorded then.
@@ -34,6 +38,12 @@ pub enum ScenarioError {
     Spawn(#[from] SpawnError),
     #[error(transparent)]
     Moves(#[from] MoveSetError),
+    #[error(transparent)]
+    Colliders(#[from] WorldError),
+    #[error(transparent)]
+    World(#[from] PhysicsWorldError),
+    #[error(transparent)]
+    Profile(#[from] ProfileError),
 }
 
 /// A named starting world.
@@ -64,15 +74,26 @@ impl Scenario {
 pub const SCENARIOS: &[Scenario] = &[
     Scenario {
         name: "melee",
-        about: "three actors on the test moves, warps aimed round the ring, and buttons that freeze and slow \
-                clocks and spawn actors",
-        config: SimConfig { seed: 7, max_actors: 16, step_budget: BUDGET_DESKTOP_LOW },
+        about: "three characters on flat ground and the test moves, warps aimed round the ring, and buttons \
+                that freeze and slow clocks and spawn actors",
+        config: SimConfig {
+            seed: 7,
+            max_actors: 16,
+            step_budget: BUDGET_DESKTOP_LOW,
+            physics_budget: PHYSICS_BUDGET_DESKTOP_LOW,
+        },
         setup: melee,
     },
     Scenario {
         name: "duel",
-        about: "a player and an opponent on the test moves, 4 m apart and facing, each aiming warps at the other",
-        config: SimConfig { seed: 7, max_actors: 2, step_budget: BUDGET_DESKTOP_LOW },
+        about: "a player and an opponent on flat ground and the test moves, 4 m apart and facing, each aiming \
+                warps at the other",
+        config: SimConfig {
+            seed: 7,
+            max_actors: 2,
+            step_budget: BUDGET_DESKTOP_LOW,
+            physics_budget: PHYSICS_BUDGET_DESKTOP_LOW,
+        },
         setup: duel,
     },
 ];
@@ -93,8 +114,9 @@ pub const MELEE_HITSTOP_TICKS: u16 = 6;
 
 /// The first three actors' buttons that do to clocks and the pool what hits will, until M2 G3:
 /// [`Buttons::HEAVY`] freezes the actor, [`Buttons::SWAP`] toggles slowing it, [`Buttons::ULTIMATE`]
-/// toggles slowing the world, and [`Buttons::JUMP`] spawns another actor at a random yaw, which plays
-/// a skill and leaves. None of these buttons has an intent in the test content.
+/// toggles slowing the world, and [`Buttons::JUMP`] jumps and spawns another actor at a random yaw,
+/// which plays a skill and leaves, with no capsule, as what a fight spawns that isn't a body has none.
+/// None of these buttons has an intent in the test content.
 pub fn melee_buttons(
     table: Res<'_, ActorTable>,
     mut requests: ResMut<'_, ActorRequests>,
@@ -128,7 +150,9 @@ pub fn melee_buttons(
         if pressed.contains(Buttons::JUMP) {
             let yaw = rng.0.unit_f32() * std::f32::consts::TAU;
             // A full pool refuses and counts it.
-            let _ = requests.spawn(ActorSpawn { position: transform.position, yaw, moves: runner.set() });
+            let spawn =
+                ActorSpawn { position: transform.position, yaw, moves: runner.set(), controller: None };
+            let _ = requests.spawn(spawn);
         }
     }
 }
@@ -140,9 +164,23 @@ fn aim_round(sim: &mut Simulation, cast: &[ActorId]) {
     }
 }
 
-/// Three actors that stand apart and turned differently, with [`melee_buttons`]: everything a step
+/// Flat ground for the test fights, 400 m across with its top at y = 0, and a profile of default tuning
+/// for everyone on it. M2 O5's arena is the real stage.
+fn flat_ground(sim: &mut Simulation) -> Result<ProfileId, ScenarioError> {
+    let floor = StaticCollider {
+        id: ColliderId(0),
+        shape: StaticShape::Convex(Shape::Box { half_extents: Vec3::new(200.0, 0.5, 200.0) }),
+        pose: Pose::at(Vec3::new(0.0, -0.5, 0.0)),
+        memberships: Group::World.mask(),
+    };
+    sim.set_physics_world(PhysicsWorld::new(vec![floor], sim.body_capacity())?)?;
+    Ok(sim.add_controller_profile(&ControllerProfile::default())?)
+}
+
+/// Three characters that stand apart and turned differently, with [`melee_buttons`]: everything a step
 /// can do to a move, on one world.
 pub fn melee(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
+    let controller = Some(flat_ground(sim)?);
     let moves = sim.add_move_set(test_moves()?);
     sim.add_combat_system(CombatSet::Resolve, melee_buttons);
     let mut cast = Vec::with_capacity(3);
@@ -151,6 +189,7 @@ pub fn melee(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
             position: Vec3::new(x, 0.0, 0.0),
             yaw: x * 0.5,
             moves: Some(moves),
+            controller,
         })?);
     }
     aim_round(sim, &cast);
@@ -160,12 +199,14 @@ pub fn melee(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
 /// A player at the origin and an opponent 4 m ahead of it, facing it: the string, its cancels and the
 /// dash attack as a fight has them.
 pub fn duel(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
+    let controller = Some(flat_ground(sim)?);
     let moves = sim.add_move_set(test_moves()?);
-    let player = sim.spawn(ActorSpawn { position: Vec3::ZERO, yaw: 0.0, moves: Some(moves) })?;
+    let player = sim.spawn(ActorSpawn { position: Vec3::ZERO, yaw: 0.0, moves: Some(moves), controller })?;
     let opponent = sim.spawn(ActorSpawn {
         position: Vec3::new(0.0, 0.0, 4.0),
         yaw: std::f32::consts::PI,
         moves: Some(moves),
+        controller,
     })?;
     let cast = vec![player, opponent];
     aim_round(sim, &cast);
@@ -189,6 +230,21 @@ mod tests {
             assert!(!cast.is_empty(), "{} has no one for input to drive", scenario.name);
         }
         assert!(find_scenario(SCENARIOS, "no-such-scenario").is_none());
+    }
+
+    /// A fight stands on the ground: every one of its cast has a capsule, and lands on its first tick.
+    #[test]
+    fn the_fights_stand_on_the_ground() {
+        for scenario in SCENARIOS {
+            let (mut sim, cast) = scenario.start(scenario.config).expect("sets up");
+            sim.step(&crate::actions::TickActions::NEUTRAL);
+            for actor in cast {
+                let view = sim.actor(actor).expect("alive");
+                assert!(view.controller.is_active(), "{}", scenario.name);
+                assert_eq!(view.controller.state.mode, crate::controller::GroundMode::Grounded);
+                assert_eq!(view.position.y, 0.0, "{}", scenario.name);
+            }
+        }
     }
 
     #[test]

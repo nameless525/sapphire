@@ -3034,6 +3034,8 @@ version = "0.1.0"
 dependencies = [
  "bevy_ecs",
  "profiling",
+ "ron",
+ "sapphire_colliders",
  "sapphire_core",
  "sapphire_ecs",
  "sapphire_math",
@@ -3041,6 +3043,7 @@ dependencies = [
  "sapphire_physics",
  "sapphire_serialize",
  "sapphire_time",
+ "serde",
  "thiserror 2.0.21",
  "xxhash-rust",
 ]

@@ -20,9 +20,17 @@ use sapphire_math::Vec3;
 use sapphire_time::SimTime;
 
 use crate::actions::Controls;
+use crate::controller::{CharacterController, CharacterWorld, ProfileId};
+use crate::hits::MAX_HURTBOXES;
 use crate::intents::IntentRing;
 use crate::movement::ActorTransform;
 use crate::moves::{MoveOutput, MoveRead, MoveRunner, MoveSetId, WarpTarget};
+
+/// How many bodies a pool of `max_actors` can put in a world: each actor's capsule and all its
+/// hurtboxes.
+pub(crate) const fn body_capacity(max_actors: u32) -> usize {
+    max_actors as usize * (1 + MAX_HURTBOXES as usize)
+}
 
 /// An actor's stable identity (the explicit ID review RS-005 left for M2). Handed out in spawn order
 /// from 1, and never reused within a run, so a replay's actions and a kept reference can't land
@@ -55,6 +63,9 @@ pub struct ActorSpawn {
     pub yaw: f32,
     /// The set of moves it plays. With none, it stands where it is.
     pub moves: Option<MoveSetId>,
+    /// Gives the actor a character controller: a capsule in the world, standing at
+    /// [`Self::position`]. See [`crate::Simulation::add_controller_profile`].
+    pub controller: Option<ProfileId>,
 }
 
 /// A spawn that couldn't be done. Reaching one is deterministic, so it replays too.
@@ -199,6 +210,7 @@ struct ActorBundle {
     ring: IntentRing,
     output: MoveOutput,
     target: WarpTarget,
+    controller: CharacterController,
 }
 
 /// Spawns the pool and creates the actor resources, before the world's first step.
@@ -214,6 +226,7 @@ pub(crate) fn create_pool(world: &mut World, capacity: u32) {
             ring: IntentRing::default(),
             output: MoveOutput::default(),
             target: WarpTarget::default(),
+            controller: CharacterController::default(),
         });
         pool.push(entity.id());
     }
@@ -230,6 +243,7 @@ pub(crate) type ActorState<'w> = (
     &'w mut IntentRing,
     &'w mut MoveOutput,
     &'w mut WarpTarget,
+    &'w mut CharacterController,
 );
 
 /// What a query for [`ActorState`] hands over.
@@ -241,6 +255,7 @@ type ActorStateItem<'w> = (
     Mut<'w, IntentRing>,
     Mut<'w, MoveOutput>,
     Mut<'w, WarpTarget>,
+    Mut<'w, CharacterController>,
 );
 
 /// `FixedPost`, and straight after a spawn or despawn between steps: resolves everything queued, in
@@ -250,17 +265,19 @@ pub(crate) fn resolve_actor_requests(
     mut table: ResMut<'_, ActorTable>,
     mut world_clock: ResMut<'_, WorldClock>,
     mut actors: Query<'_, '_, ActorState<'_>>,
+    mut characters: ResMut<'_, CharacterWorld>,
 ) {
     let requests = &mut *requests;
     for id in requests.despawns.drain(..) {
         if let Ok(index) = table.live.binary_search_by_key(&id, |&(id, _)| id) {
             let (_, entity) = table.live.remove(index);
             requests.free.push(entity);
+            characters.despawned(id);
         }
     }
     for PendingSpawn { id, entity, spawn } in requests.spawns.drain(..) {
         if let Ok(actor) = actors.get_mut(entity) {
-            reset_actor(actor, spawn, &mut world_clock);
+            reset_actor(actor, id, spawn, &mut world_clock, &mut characters);
             table.live.push((id, entity));
         }
     }
@@ -269,11 +286,11 @@ pub(crate) fn resolve_actor_requests(
 /// Makes a pooled entity a new actor. Clock IDs come from the world clock in spawn order, so a replay
 /// gets the same ones (and a reused entity's old scale handles can't touch its new clock).
 fn reset_actor(
-    (mut clock, mut controls, mut transform, mut runner, mut ring, mut output, mut target): ActorStateItem<
-        '_,
-    >,
+    (mut clock, mut controls, mut transform, mut runner, mut ring, mut output, mut target, mut controller): ActorStateItem<'_>,
+    id: ActorId,
     spawn: ActorSpawn,
     world_clock: &mut WorldClock,
+    characters: &mut CharacterWorld,
 ) {
     *clock = world_clock.new_entity_clock();
     *controls = Controls::default();
@@ -282,6 +299,7 @@ fn reset_actor(
     ring.reset();
     *output = MoveOutput::default();
     *target = WarpTarget::None;
+    *controller = characters.spawned(id, spawn.controller, &transform);
 }
 
 /// A live actor's public state, read between steps. Presentation interpolates between two of
@@ -298,4 +316,6 @@ pub struct ActorView {
     pub hitstop_ticks: u16,
     /// What its moves are doing: the move, its phase and local time, and what counts this step.
     pub moves: MoveRead,
+    /// Its character controller, inactive if it has none.
+    pub controller: CharacterController,
 }

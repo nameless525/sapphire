@@ -2,8 +2,11 @@
 //! `cargo test -p sapphire_debug --test overlay -- --ignored`.
 
 use sapphire_core::cvar::CvarRegistry;
+use sapphire_core::debug_draw::{Color, DebugLabel, LabelText};
 use sapphire_debug::{DebugOverlay, OverlayConfig, OverlayFrame, WindowMetrics};
+use sapphire_math::Vec3;
 use sapphire_platform::{Event, FingerId, Timestamp, TouchDeviceId, TouchEvent, TouchPhase, WindowId};
+use sapphire_render::CameraData;
 use sapphire_render::graph::{FrameGraph, GraphExecutor};
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 use sapphire_time::ScaledClock;
@@ -22,6 +25,9 @@ struct App {
     /// Touches the overlay passed to the game, and the cancels among them.
     game_touches: usize,
     game_cancels: usize,
+    /// Debug draw's labels, and the camera they are seen through.
+    camera: Option<CameraData>,
+    labels: Vec<DebugLabel>,
 }
 
 impl App {
@@ -33,6 +39,8 @@ impl App {
             clock: ScaledClock::new(),
             game_touches: 0,
             game_cancels: 0,
+            camera: None,
+            labels: Vec::new(),
         }
     }
 
@@ -52,6 +60,8 @@ impl App {
         let now = Timestamp::from_nanos(ms * 1_000_000);
         overlay.poll_gestures(now, &mut game);
         overlay.update(&OverlayFrame {
+            camera: self.camera,
+            debug_labels: &self.labels,
             now,
             window,
             allocations: Default::default(),
@@ -168,6 +178,47 @@ fn a_lost_device_loses_the_overlay_frame_alone() {
     let target = graph.import_texture("target", &view);
     overlay.record(&mut graph, target);
     app.graph.execute(&app.gpu, graph).expect("a valid graph, though nothing runs");
+}
+
+/// Debug draw's labels show with the panels hidden, as long as there are any: a hidden overlay with
+/// none adds no pass.
+#[test]
+#[ignore = "needs a GPU"]
+fn labels_show_with_the_panels_hidden() {
+    let mut app = App::new();
+    let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+    let mut overlay = DebugOverlay::new(&app.gpu, format, OverlayConfig::default());
+    app.graph.set_report(true);
+    let window = WindowMetrics::offscreen(320, 240, 1.0);
+    let texture = app.gpu.device().create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d { width: 320, height: 240, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&Default::default());
+    // Does the frame's graph hold the overlay's pass?
+    let draws = |app: &mut App, overlay: &mut DebugOverlay, ms| {
+        app.frame(overlay, ms, window, &[]);
+        let mut graph = FrameGraph::new();
+        let target = graph.import_texture("target", &view);
+        overlay.record(&mut graph, target);
+        app.graph.execute(&app.gpu, graph).expect("a valid graph");
+        app.graph.report().expect("the report is on").passes.iter().any(|pass| pass.order.is_some())
+    };
+    assert!(!draws(&mut app, &mut overlay, 0), "hidden, with nothing to label");
+    app.camera = Some(CameraData::look_at(Vec3::Z, Vec3::ZERO, Vec3::Y, 1.0, 4.0 / 3.0, 0.05));
+    assert!(!draws(&mut app, &mut overlay, 100), "a camera, but no labels");
+    let text = LabelText::format(format_args!("hit {}", 12));
+    app.labels.push(DebugLabel { position: Vec3::ZERO, color: Color::WHITE, text });
+    assert!(draws(&mut app, &mut overlay, 200), "labels draw with the panels hidden");
+    assert!(!overlay.is_visible());
+    app.labels.clear();
+    assert!(!draws(&mut app, &mut overlay, 300), "and no pass stays behind once they are gone");
 }
 
 /// RC-2: a device lost while the graph records, as a shader build's worker can: the executor

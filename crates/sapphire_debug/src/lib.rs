@@ -29,6 +29,9 @@
 //!   light lists, material IDs, ramp rows and outline widths) are a list in the cvar panel
 //!   (`r.debug_view`), and the stats panel's "Debug view" row names the one shown with its
 //!   legend's values.
+//! - **Debug draw's labels and switch** (`labels`, M2 T1): the frame packet's labels painted beside
+//!   their points, under the panels, whether the panels show or not; and [`DRAW`], which keeps
+//!   debug draw on in the builds that link this crate. The stats panel counts what it drew and lost.
 //! - **[`TimeControls`]**: pause, single-step and speed on the world clock's time-scale stack.
 //! - **[`TodControls`]**: scrubbing the hour, pausing the cycle and setting the day's length on
 //!   the world's `sapphire_world::tod::TimeOfDay`.
@@ -39,7 +42,8 @@
 //! # Does not own
 //!
 //! - Cvars themselves: [`sapphire_core::cvar`], so runtime crates declare them without depending
-//!   on this crate (the facade of spec §5.20).
+//!   on this crate (the facade of spec §5.20). Debug draw's API the same way:
+//!   [`sapphire_core::debug_draw`], with its lines drawn by `sapphire_render::debug_draw`.
 //! - What it shows: the app gathers each frame's numbers into an [`OverlayFrame`], time of day
 //!   included (the world's `TimeOfDay`, read-only: the panel changes it through
 //!   [`TodControls`]), the frame packet's characters with their resolved light rigs, and the
@@ -89,10 +93,8 @@
 //!
 //! # Later milestones
 //!
-//! - The rest of spec §5.20: the debug-draw API (lines, shapes and text from any thread, merged
-//!   at extract into the packet's `DebugDrawList`, with `sapphire_core` no-ops when no overlay is
-//!   linked), the entity inspector over `sapphire_reflect`, hitbox and hurtbox views and the
-//!   input-intent buffer (M2, with combat), and the replay recorder.
+//! - The rest of spec §5.20: the entity inspector over `sapphire_reflect`, hitbox and hurtbox views
+//!   and the input-intent buffer (M2, with combat, on debug draw), and the replay recorder.
 //! - Clipboard copy and paste once the platform has a clipboard API; IME composition previews;
 //!   cursor shapes; gamepad navigation of the panels; saving panel layout in `user://`.
 //! - On-screen controls (M3) will claim their fingers before the overlay's two-finger hold
@@ -103,6 +105,7 @@ mod console;
 mod effects;
 mod history;
 pub mod input;
+mod labels;
 mod overlay;
 mod render;
 pub mod route;
@@ -138,5 +141,13 @@ pub static GPU_TIMING: Cvar<bool> = Cvar::new(
     "Time each frame-graph pass on the GPU while the debug overlay shows (timestamp queries).",
 );
 
+/// Whether debug draw is on. It is off wherever no development tool turns it on
+/// ([`sapphire_core::debug_draw`]), so builds that link this crate default to on.
+pub static DRAW: Cvar<bool> = Cvar::new(
+    "debug.draw",
+    true,
+    "Debug draw: the lines, shapes and labels code draws (spec §5.20). Off, each call is one atomic load.",
+);
+
 /// This crate's cvars, for the app's registry.
-pub static CVARS: [&dyn AnyCvar; 2] = [&UI_SCALE, &GPU_TIMING];
+pub static CVARS: [&dyn AnyCvar; 3] = [&UI_SCALE, &GPU_TIMING, &DRAW];

@@ -5,6 +5,8 @@ use std::path::PathBuf;
 
 use sapphire_render::quality::{OcclusionSetting, QualitySettings, Switch, TierId};
 use sapphire_render::{DebugView, LightPath, MIN_RENDER_SCALE, Msaa, PostVariants, RenderSettings, Wind};
+
+use crate::debug_shapes::DebugDrawDemo;
 use sapphire_world::tod::CharacterShadeKey;
 
 use crate::faces::{FaceLayout, MaterialOverrides};
@@ -157,6 +159,8 @@ pub(crate) struct Options {
     pub outline_distance: Option<f32>,
     /// `--debug-view <view>`: the renderer's debug view (`r.debug_view`, M1 F5) instead of off.
     pub debug_view: Option<DebugView>,
+    /// `--debug-draw <what>`: turn debug draw on and draw this (M2 T1).
+    pub debug_draw: Option<DebugDrawDemo>,
     /// Render offscreen instead of opening a window.
     pub offscreen: Option<Offscreen>,
     /// `--serial-passes`: offscreen, submit each frame graph pass on its own and wait for the
@@ -311,6 +315,9 @@ impl Options {
             && let Err(error) = sapphire_render::debug_view::DEBUG_VIEW.set(view)
         {
             tracing::warn!(target: crate::LOG_TARGET, %error, "--debug-view");
+        }
+        if let Some(demo) = self.debug_draw {
+            scene.set_debug_draw_demo(demo);
         }
         for (preset, at) in &self.post_effects {
             scene.push_effect(preset, *at)?;
@@ -608,6 +615,9 @@ impl Options {
                         format!("--debug-view expects one of {}, got {name:?}", names.join(", "))
                     })?;
                     options.debug_view = Some(view);
+                }
+                "--debug-draw" => {
+                    options.debug_draw = Some(DebugDrawDemo::parse(&value("--debug-draw")?)?);
                 }
                 "--plain-sky" => options.plain_sky = true,
                 "--fog" => {
@@ -1079,6 +1089,19 @@ mod tests {
         assert!(!culling(&["--view-culling", "off"]));
         assert!(culling(&["--view-culling=on"]));
         assert!(parse(&["--view-culling", "some"]).is_err());
+    }
+
+    #[test]
+    fn debug_draw_is_named_on_the_command_line() {
+        assert_eq!(Options::default().debug_draw, None);
+        let (options, unknown) = parse(&["--debug-draw", "shapes"]).unwrap();
+        assert!(unknown.is_empty());
+        assert_eq!(options.debug_draw, Some(DebugDrawDemo::Shapes));
+        assert_eq!(
+            parse(&["--debug-draw=lines:2000"]).unwrap().0.debug_draw,
+            Some(DebugDrawDemo::Lines(2000))
+        );
+        assert!(parse(&["--debug-draw", "circles"]).is_err());
     }
 
     #[test]

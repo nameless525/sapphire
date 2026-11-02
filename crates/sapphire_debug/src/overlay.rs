@@ -5,11 +5,12 @@ use std::time::Duration;
 use sapphire_assets::AssetStats;
 use sapphire_core::alloc::{self, AllocCounts};
 use sapphire_core::cvar::CvarRegistry;
+use sapphire_core::debug_draw::DebugLabel;
 use sapphire_input::DeviceKind;
 use sapphire_platform::{Event, FramePacing, Scancode, Timestamp, TouchEvent, TouchPhase};
 use sapphire_render::graph::{FrameGraph, GraphExecutor, TextureId};
 use sapphire_render::quality::QualityStats;
-use sapphire_render::{CharacterInstance, RenderStats};
+use sapphire_render::{CameraData, CharacterInstance, RenderStats};
 use sapphire_rhi::{GpuContext, wgpu};
 use sapphire_time::{ScaledClock, Stopwatch};
 use sapphire_world::screen_effects::{EffectLibrary, EffectStack};
@@ -19,6 +20,7 @@ use crate::budget::CpuStages;
 use crate::effects::EffectControls;
 use crate::history::FrameTimes;
 use crate::input::{EguiInput, WindowMetrics};
+use crate::labels::{self, sync_debug_draw};
 use crate::render::OverlayRenderer;
 use crate::route::{Owner, Router, UiState};
 use crate::time::TimeControls;
@@ -74,6 +76,11 @@ pub struct OverlayFrame<'a> {
     /// This frame's characters with their resolved light rigs (M1 C2), as the frame packet
     /// carries them: the time-of-day panel shows them and previews the first.
     pub characters: &'a [CharacterInstance],
+    /// The main camera, which debug draw's labels are placed through.
+    pub camera: Option<CameraData>,
+    /// This frame's debug draw labels (M2 T1), as the frame packet carries them: painted whether
+    /// the panels show or not.
+    pub debug_labels: &'a [DebugLabel],
     /// The world's screen effects and their presets, if the app runs them (M1 P3): the effects
     /// panel's.
     pub screen_effects: Option<(&'a EffectStack, &'a EffectLibrary)>,
@@ -150,6 +157,8 @@ pub struct DebugOverlay {
     router: Router,
     renderer: OverlayRenderer,
     visible: bool,
+    /// The last [`Self::update`] built something to draw: the panels, or debug draw's labels alone.
+    drawing: bool,
     /// A text field had focus at the end of the last frame.
     wants_keyboard: bool,
     frame_times: FrameTimes,
@@ -173,6 +182,8 @@ impl std::fmt::Debug for DebugOverlay {
 impl DebugOverlay {
     /// An overlay drawing into targets of `format`, the frame's output format.
     pub fn new(gpu: &GpuContext, format: wgpu::TextureFormat, config: OverlayConfig) -> Self {
+        // Before the first fixed step, which may draw, on the thread that runs them.
+        sync_debug_draw();
         let ctx = egui::Context::default();
         ui::style(&ctx);
         Self {
@@ -181,6 +192,7 @@ impl DebugOverlay {
             router: Router::new(config.toggle_key),
             renderer: OverlayRenderer::new(gpu, format),
             visible: config.visible,
+            drawing: false,
             wants_keyboard: false,
             frame_times: FrameTimes::default(),
             stages: None,
@@ -314,7 +326,10 @@ impl DebugOverlay {
         let pixels_per_point = metrics.display_scale.max(0.25) * zoom;
         self.input.set_metrics(&metrics, pixels_per_point);
         self.router.set_window_size(metrics.size);
-        if !self.visible {
+        sync_debug_draw();
+        let camera = frame.camera.filter(|_| !frame.debug_labels.is_empty());
+        self.drawing = self.visible || camera.is_some();
+        if !self.drawing {
             return OverlayOutput::default();
         }
         profiling::scope!("DebugOverlay::update");
@@ -354,8 +369,15 @@ impl DebugOverlay {
         let (memory, time, day, effects) =
             (&mut self.memory, &mut self.time, &mut self.day, &mut self.effects);
         let mut hide = false;
-        let output =
-            self.input.run_pass(&ctx, raw, |ctx| hide = ui::show(ctx, memory, time, day, effects, &view));
+        let visible = self.visible;
+        let output = self.input.run_pass(&ctx, raw, |ctx| {
+            if let Some(camera) = &camera {
+                labels::paint(ctx, camera, frame.debug_labels);
+            }
+            if visible {
+                hide = ui::show(ctx, memory, time, day, effects, &view);
+            }
+        });
 
         self.wants_keyboard = ctx.text_edit_focused();
         // Text input follows focus alone: egui reports the field's area only on frames it lays
@@ -383,6 +405,7 @@ impl DebugOverlay {
         };
         if hide {
             self.set_visible(false);
+            self.drawing = false;
             return OverlayOutput::default();
         }
         OverlayOutput { text_input: self.wants_keyboard, text_area }
@@ -391,7 +414,7 @@ impl DebugOverlay {
     /// Adds the overlay's pass to `graph`, drawing the last [`Self::update`] over `target`. Add
     /// it after the renderer's passes; it draws nothing while hidden.
     pub fn record<'f>(&'f mut self, graph: &mut FrameGraph<'f>, target: TextureId) {
-        if self.visible {
+        if self.drawing {
             self.renderer.record(graph, target);
         }
     }

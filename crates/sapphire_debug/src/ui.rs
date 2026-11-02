@@ -15,7 +15,9 @@ use sapphire_render::debug_view::{
 };
 use sapphire_render::graph::{GraphReport, TextureReport};
 use sapphire_render::quality::{ResolutionSignal, TierSource};
-use sapphire_render::{DebugView, DebugViewStats, MAIN_PASS, PREPASSES, ambient, post, shadows, temporal};
+use sapphire_render::{
+    DebugDrawPassStats, DebugView, DebugViewStats, MAIN_PASS, PREPASSES, ambient, post, shadows, temporal,
+};
 use sapphire_time::{NORMAL_SPEED, ScaledClock};
 
 use crate::budget::{self, BudgetTier, CpuStage, CpuStages, format_bytes, format_ms};
@@ -336,6 +338,9 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
                 if views.peek().is_some() {
                     unbudgeted_row(ui, "  Debug view", views.map(|pass| pass.exclusive).sum());
                 }
+                if let Some(pass) = timings.get(sapphire_render::debug_draw::PASS) {
+                    unbudgeted_row(ui, "  Debug draw", pass.exclusive);
+                }
             }
             None => {
                 ui.label("GPU frame");
@@ -475,6 +480,7 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
         };
         row(ui, "Light lists", lists);
         debug_view(ui, &render.debug_view);
+        row(ui, "Debug draw", debug_draw_text(&render.debug_draw));
         row(
             ui,
             "Character rigs",
@@ -872,6 +878,17 @@ fn effects_text(
         Some((stack, _)) => format!("{drawn_text}; {} layers playing", stack.stats().depth),
         None => drawn_text,
     }
+}
+
+/// What debug draw drew and lost this frame (M2 T1).
+fn debug_draw_text(stats: &DebugDrawPassStats) -> String {
+    let list = stats.list;
+    let over =
+        if stats.over_limit > 0 { format!(", {} past the buffer", stats.over_limit) } else { String::new() };
+    format!(
+        "{} lines, {} shapes, {} labels; {} timed, {} held; {} dropped{over}",
+        stats.drawn, list.shapes, list.labels, list.persistent, list.held, list.dropped,
+    )
 }
 
 /// The renderer's debug view (`r.debug_view`, M1 F5): the one shown with its legend's values

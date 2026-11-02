@@ -145,6 +145,10 @@
 //!   characters' regions, ramp rows or outline widths, over the frame after post. In every
 //!   build, so captures and golden scenes show them; the overlay's cvar panel switches them in
 //!   `dev` builds.
+//! - `--debug-draw shapes|lines:<count>`: turn debug draw on and draw a fixed set of shapes around
+//!   the character, one of each kind and each way of lasting and facing a surface (the golden
+//!   scene `debugdraw-shapes`), or that many lines a frame, for benches. `dev` builds have debug
+//!   draw on anyway (`debug.draw`); other builds only with this flag.
 //! - `--fov <degrees>`: the camera's vertical field of view (default 43°), keeping the framing:
 //!   a narrow lens from farther away.
 //! - `--zoom <factor>`: start the orbit camera this factor of the framing's distance away.
@@ -227,6 +231,7 @@ mod bench;
 mod capture;
 mod content;
 mod cvars;
+mod debug_shapes;
 #[cfg(feature = "dev")]
 mod dev;
 mod environment;

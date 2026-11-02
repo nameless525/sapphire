@@ -89,6 +89,7 @@
 //! it logs, and logging allocates, which the fixed step must not (rule R6).
 
 use sapphire_assets::mesh::ArchivedMesh;
+use sapphire_core::debug_draw::{self, Collector};
 use sapphire_ecs::bevy_ecs::system::SystemState;
 use sapphire_ecs::prelude::*;
 use sapphire_math::{Mat4, Quat, Vec3};
@@ -106,6 +107,7 @@ use sapphire_world::tod::{self, TimeOfDay, tick_time_of_day};
 
 use crate::LOG_TARGET;
 use crate::content::Content;
+use crate::debug_shapes::DebugDrawDemo;
 use crate::environment;
 use crate::extract::{self, RenderExtract, RenderLight, RenderMesh, RenderPose, RenderTransform};
 use crate::faces::{self, FaceLayout, FaceRig};
@@ -332,6 +334,10 @@ pub(crate) struct Scene {
     fog: bool,
     /// Post without its compositing layers (`--plain-post`).
     plain_post: bool,
+    /// Merges every thread's debug draws into each frame's packet (M2 T1).
+    debug_draw: Collector,
+    /// `--debug-draw`'s draws.
+    debug_draw_demo: Option<DebugDrawDemo>,
     /// The player's sharpening instead of the cvar's (`--sharpening`).
     sharpening: Option<f32>,
     /// How the characters fade (`--fade`, `--proximity-fade`).
@@ -420,6 +426,8 @@ impl Scene {
             plain_sky: false,
             fog: true,
             plain_post: false,
+            debug_draw: Collector::new(),
+            debug_draw_demo: None,
             sharpening: None,
             fade: Fade::Off,
             pushed_effects: PostVariants::NONE,
@@ -1065,9 +1073,23 @@ impl Scene {
         }
     }
 
-    /// One fixed simulation step. Must not allocate (rule R6).
+    /// One fixed simulation step. Must not allocate (rule R6): debug draws inside it are held for
+    /// the step (`debug_draw::begin_step`), and allocate nothing on this thread, which turned
+    /// drawing on.
     pub fn step(&mut self) {
+        debug_draw::begin_step();
         self.ecs.fixed_step();
+        if let Some(demo) = self.debug_draw_demo {
+            demo.draw_in_step();
+        }
+        debug_draw::end_step();
+    }
+
+    /// Turns debug draw on and draws `demo` from now on (`--debug-draw`).
+    pub fn set_debug_draw_demo(&mut self, demo: DebugDrawDemo) {
+        debug_draw::set_enabled(true);
+        self.debug_draw_demo = Some(demo);
+        demo.draw_once();
     }
 
     /// Runs presentation and extraction, then returns this frame's packet, with the main view
@@ -1186,6 +1208,15 @@ impl Scene {
                 });
             }
         });
+        // Debug draws, from every thread (M2 T1). Timed ones run on the world clock, which pausing
+        // and single-stepping the world holds, so what they mark stays to be looked at.
+        profiling::scope!("debug draw");
+        if let Some(demo) = self.debug_draw_demo {
+            demo.draw_in_frame();
+        }
+        let now = self.ecs.world().resource::<WorldClock>().0.now().as_secs_f64();
+        let mut extract = self.ecs.world_mut().resource_mut::<RenderExtract>();
+        self.debug_draw.collect(now, &mut extract.packet_mut().debug);
         self.ecs.world().resource::<RenderExtract>().packet()
     }
 
@@ -1222,6 +1253,12 @@ impl Scene {
     #[cfg(feature = "dev")]
     pub fn characters(&self) -> &[CharacterInstance] {
         &self.ecs.world().resource::<RenderExtract>().packet().characters
+    }
+
+    /// This frame's packet, for what the overlay shows of it.
+    #[cfg(feature = "dev")]
+    pub fn packet(&self) -> &FramePacket {
+        self.ecs.world().resource::<RenderExtract>().packet()
     }
 
     pub fn time_of_day_mut(&mut self) -> Mut<'_, TimeOfDay> {

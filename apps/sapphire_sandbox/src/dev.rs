@@ -249,6 +249,8 @@ impl DevTools {
             world_clock: frame.scene.world_clock(),
             time_of_day: Some(frame.scene.time_of_day()),
             characters: frame.scene.characters(),
+            camera: frame.scene.packet().main_view().map(|view| view.camera),
+            debug_labels: &frame.scene.packet().debug.labels,
             screen_effects: Some(frame.scene.screen_effects()),
             assets: Some(frame.assets),
             hot_reload: Some(self.reload.status()),

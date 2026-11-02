@@ -128,7 +128,11 @@ pub struct Scene {
 /// scene's keys and pins what it pins; the back-lit hair scenes light the face rig from behind
 /// (`--face-layout backlit`), without and with light through the hair (`--hair-transmission`),
 /// and pin what the hair scenes pin.
-pub fn scenes() -> [Scene; 95] {
+///
+/// The debug draw scene (M2 T1) alone turns debug draw on (`--debug-draw`; nothing else in these
+/// builds draws any, so no earlier scene changes) and pins what the material layer scenes pin, with
+/// plain post and a plain sky, so the frame under its lines changes only with what they show.
+pub fn scenes() -> [Scene; 96] {
     [
         Scene {
             name: "turntable-start",
@@ -2054,6 +2058,32 @@ pub fn scenes() -> [Scene; 95] {
             ],
             thresholds: Thresholds::default(),
         },
+        // Debug draw through its whole path: one of each shape beside the mannequin, in its color;
+        // a blue line hidden behind it and a red one over it; a blue one through it on top, and a
+        // half-alpha red one; a magenta capsule inside its body, on top, where the green one
+        // depth-tested inside it stays hidden but where it pokes out; the violet box lasting from
+        // the first frame on the world's clock; the green arrow overhead held from the last fixed
+        // step. No labels: only `dev` builds' overlay paints them.
+        Scene {
+            name: "debugdraw-shapes",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--plain-post",
+                "--plain-sky",
+                "--aa",
+                "msaa",
+                "--shadows",
+                "off",
+                "--fog",
+                "off",
+                "--ao",
+                "off",
+                "--debug-draw",
+                "shapes",
+            ],
+            thresholds: Thresholds::default(),
+        },
         // The material layer samples (M1 C7) by day, right of the character: crimson lacquer with
         // a crisp highlight; gold, its tinted matcap and highlight, the sky reflected on its
         // metallic stripes; leather, darker toward its rim, with a soft GGX highlight; a dark suit
@@ -2982,6 +3012,18 @@ mod tests {
                 assert!(pinned("--ao", "off"), "{}", scene.name);
                 assert!(!scene.args.contains(&"--probes"), "{}", scene.name);
             }
+        }
+    }
+
+    #[test]
+    fn only_the_debug_draw_scene_turns_debug_draw_on() {
+        for scene in scenes() {
+            assert_eq!(
+                scene.args.contains(&"--debug-draw"),
+                scene.name.starts_with("debugdraw-"),
+                "{}",
+                scene.name
+            );
         }
     }
 

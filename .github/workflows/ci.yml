@@ -388,9 +388,8 @@ jobs:
   # The job then runs a development build headless and drives it over live link (review BC-002),
   # as the M1 exit run's desktop leg does: no other job starts a `dev` app.
   #
-  # WARP isn't run here: its trial on #93 took 29 minutes of tests after a 10-minute build, and
-  # four temporal AA tests failed there (outline.rs's turning body; temporal.rs's convergence to
-  # MSAA, upsampling and jitter-free velocity), which wants its own look before WARP joins.
+  # WARP runs the same suites in gpu-tests-warp.yml once a change is on main: 31 minutes of tests
+  # after a cold 18-minute build, longer than a PR's other checks together.
   gpu-tests:
     name: GPU tests (${{ matrix.family }})
     strategy:

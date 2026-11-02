@@ -1322,6 +1322,7 @@ mod tests {
                 probes: None,
                 town: Vec::new(),
                 enemy: Vec::new(),
+                sword: None,
                 enemy_skeleton: None,
                 arena_colliders: None,
                 rig: None,

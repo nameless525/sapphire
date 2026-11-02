@@ -403,11 +403,14 @@ mod tests {
                 continue;
             }
             let at = (a + b + c) / 3.0;
-            let piece = match at.y {
-                y if y >= BLADE_ROOT - 1e-4 && at.z.abs() < half_width(BLADE_ROOT) + 1e-4 => 0.04,
-                y if y >= GUARD_LOW - 1e-4 && y > POMMEL_NECK + 0.1 => (GUARD_LOW + GUARD_HIGH) * 0.5,
-                y if y >= POMMEL_NECK + 0.008 => (GUARD_LOW + POMMEL_NECK) * 0.5,
-                _ => (POMMEL_NECK + POMMEL_END) * 0.5,
+            let piece = if at.y >= BLADE_ROOT - 1e-4 && at.z.abs() < half_width(BLADE_ROOT) + 1e-4 {
+                0.04
+            } else if at.y >= GUARD_LOW - 1e-4 {
+                (GUARD_LOW + GUARD_HIGH) * 0.5
+            } else if at.y >= POMMEL_NECK + 0.008 {
+                (GUARD_LOW + POMMEL_NECK) * 0.5
+            } else {
+                (POMMEL_NECK + POMMEL_END) * 0.5
             };
             assert!(area.dot(at - Vec3::new(0.0, piece, 0.0)) > 0.0, "a face at {at} looks inward");
         }

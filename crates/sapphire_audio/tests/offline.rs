@@ -356,6 +356,26 @@ mod through_the_system {
         assert!(side_right > side_left * 10.0, "{side_left} against {side_right}");
     }
 
+    /// A document can't say this any more, but code can make one. One sample that isn't a number stays in
+    /// a bus's filter for good, even with the filter out of the mix, so it has to stay out of the mixer.
+    #[test]
+    fn a_cue_with_no_near_radius_leaves_the_mix_alive() {
+        let placed = Cue {
+            attenuation: Some(Attenuation { near: 0.0, far: 30.0, curve: AttenuationCurve::Inverse }),
+            ..cue()
+        };
+        let sound = tones(&[1_000.0], 0.2);
+        let mut system = system(&sound, placed);
+        let out = run(&mut system, Some(CueTarget::At(Vec3::new(0.0, 0.0, -5.0))), 1.0, 30);
+        assert!(out.iter().all(|sample| sample.is_finite()), "it reached the device as NaN");
+
+        // And what plays next on the same bus is heard.
+        system.add_cue(CUE, cue());
+        let out = run(&mut system, Some(CueTarget::Flat), 1.0, 6);
+        assert!(out.iter().all(|sample| sample.is_finite()), "the bus never recovered");
+        assert!(rms(&left(&out)) > 0.05, "{}", rms(&left(&out)));
+    }
+
     #[test]
     fn played_out_voices_free_their_slots_as_the_mixer_runs() {
         let sound = tones(&[1_000.0], 0.05);

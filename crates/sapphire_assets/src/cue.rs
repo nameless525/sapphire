@@ -126,7 +126,9 @@ impl Attenuation {
             // The inverse distance law, then down to silence over the range's last quarter, so a
             // cue with a far `far` doesn't cut out while still audible.
             AttenuationCurve::Inverse => {
-                let law = 20.0 * (self.near / distance).log10();
+                // Held to silence: a far `far` would otherwise climb back up it, and a `near` of 0, which
+                // reads as infinitely quiet, would come out of the sum below as NaN.
+                let law = (20.0 * (self.near / distance).log10()).max(SILENCE_DB);
                 let fade = ((along - 0.75) / 0.25).clamp(0.0, 1.0);
                 law + (SILENCE_DB - law) * fade
             }
@@ -285,12 +287,18 @@ impl Cue {
                 format!("({slow}, {fast}) leaves {} to {}", PITCH_RANGE.start(), PITCH_RANGE.end()),
             );
         }
-        if let Some(Attenuation { near, far, .. }) = self.attenuation {
+        if let Some(Attenuation { near, far, curve }) = self.attenuation {
             if !near.is_finite() || near < 0.0 {
                 return field("attenuation.near", format!("{near} isn't a distance"));
             }
             if !far.is_finite() || far <= near {
                 return field("attenuation.far", format!("{far} isn't beyond `near`, {near}"));
+            }
+            if near == 0.0 && curve == AttenuationCurve::Inverse {
+                return field(
+                    "attenuation.near",
+                    "the inverse law falls from `near`, so 0 would leave nothing to hear".to_owned(),
+                );
             }
         }
         if let HitstopResponse::Duck(db) = self.hitstop
@@ -395,6 +403,39 @@ mod tests {
         assert_eq!(cue.pitch, [1.0, 1.0]);
         assert_eq!(cue.attenuation, None);
         assert_eq!((cue.bus, cue.hitstop), (Bus::Sfx, HitstopResponse::Ignore));
+    }
+
+    /// Whatever the document says, a gain is a number, and it only ever falls with distance.
+    #[test]
+    fn the_gain_falls_from_near_to_far_and_stays_a_number() {
+        let curves = [AttenuationCurve::Linear, AttenuationCurve::Inverse];
+        for (near, far) in [(0.0, 30.0), (0.001, 30.0), (1.0, 30.0), (0.1, 10_000.0), (4.0, 4.5)] {
+            for curve in curves {
+                let attenuation = Attenuation { near, far, curve };
+                let mut last = attenuation.gain_db(0.0);
+                assert_eq!(last, 0.0, "{attenuation:?}");
+                for step in 1..=400 {
+                    let distance = far * step as f32 / 300.0;
+                    let gain = attenuation.gain_db(distance);
+                    assert!(gain.is_finite(), "{attenuation:?} at {distance} m: {gain}");
+                    assert!(gain <= last + 1e-3, "{attenuation:?} at {distance} m: {last}, then {gain}");
+                    assert!(gain >= SILENCE_DB, "{attenuation:?} at {distance} m: {gain}");
+                    last = gain;
+                }
+                assert_eq!(last, SILENCE_DB, "{attenuation:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_inverse_fall_needs_somewhere_to_fall_from() {
+        let error = error_of("        attenuation: Some((near: 0.0, far: 30.0)),");
+        assert!(error.contains("attenuation.near"), "{error}");
+        let text = document(&format!(
+            "{}\n        attenuation: Some((near: 0.0, far: 30.0, curve: Linear)),",
+            sounds()
+        ));
+        Cue::from_document(&text).expect("a designer's fade starts anywhere");
     }
 
     #[test]

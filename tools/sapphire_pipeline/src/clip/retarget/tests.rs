@@ -18,6 +18,7 @@ use crate::clip::{self, ClipCookError, ClipSettings, ClipTarget, ReductionError}
 use crate::import::gltf::clips;
 use crate::import::gltf::clips::ClipImportError;
 use crate::import::vrm;
+use crate::keypose::Turn;
 use crate::meta::{self, sidecar_path};
 
 const QUARTER: f32 = std::f32::consts::FRAC_PI_2;
@@ -211,7 +212,13 @@ fn retargeted(clip: &SampledClip, options: &RetargetOptions) -> (SampledClip, Sk
     (out, target_skeleton, target_map)
 }
 
-const UNGROUNDED: RetargetOptions = RetargetOptions { scale: None, ground: false };
+const UNGROUNDED: RetargetOptions = RetargetOptions {
+    scale: None,
+    ground: false,
+    adjust: BTreeMap::new(),
+    gain: BTreeMap::new(),
+    follow: Vec::new(),
+};
 
 #[test]
 fn the_scale_is_the_ratio_of_the_rigs_legs() {
@@ -306,7 +313,7 @@ fn the_hips_and_only_the_hips_travel_by_the_scale() {
     // In model space, through the turned root above the hips.
     assert!(hips.abs_diff_eq(Vec3::new(0.5, 2.2, -1.0), 1e-5), "{hips}");
 
-    let (out, skeleton, map) = retargeted(&clip, &RetargetOptions { scale: Some(4.0), ground: false });
+    let (out, skeleton, map) = retargeted(&clip, &RetargetOptions { scale: Some(4.0), ..UNGROUNDED });
     let hips = position(&pose(&out, &skeleton, 1), &map, Hips);
     assert!(hips.abs_diff_eq(Vec3::new(1.0, 2.4, -2.0), 1e-5), "{hips}");
 }
@@ -420,7 +427,7 @@ fn retargets_that_cant_be_are_errors_that_say_why() {
     let mut bad_hips = still(1);
     bad_hips.translations.push((SOURCE_HIPS, vec![Vec3::Y, Vec3::NAN]));
 
-    let scaled = |scale| RetargetOptions { scale: Some(scale), ground: true };
+    let scaled = |scale| RetargetOptions { scale: Some(scale), ..RetargetOptions::default() };
     let cases: Vec<(&str, RetargetError)> = vec![
         ("a scale of 0", retarget(&still(1), source, target, &scaled(0.0)).unwrap_err()),
         ("a scale below 0", retarget(&still(1), source, target, &scaled(-1.0)).unwrap_err()),
@@ -453,6 +460,7 @@ fn retargets_that_cant_be_are_errors_that_say_why() {
         RetargetError::NoLegLength { .. } => "target",
         RetargetError::NonFinite { .. } => "finite",
         RetargetError::SharedTargetJoint { .. } => "shared",
+        RetargetError::UnknownJoint { .. } | RetargetError::FollowedBone { .. } => "follow",
     };
     let expected = ["scale", "scale", "scale", "source", "target", "finite"];
     for ((name, error), expected) in cases.iter().zip(expected) {
@@ -501,6 +509,183 @@ fn a_sidecars_map_names_its_bad_entry() {
     short.remove(&LeftHand);
     let error = HumanMap::from_names(&short, &skeleton).unwrap_err();
     assert_eq!(error, HumanMapError::MissingBone { bone: "leftHand" });
+}
+
+// Adjustments and gains, on the small rigs.
+
+const TARGET_LEFT_LOWER_ARM: u16 = TARGET_UPPER_ARM + 1;
+const TARGET_LEFT_INDEX: u16 = TARGET_UPPER_ARM + 3;
+
+fn adjusted(bone: HumanBone, turn: Turn) -> RetargetOptions {
+    RetargetOptions { adjust: BTreeMap::from([(bone, turn)]), ..UNGROUNDED }
+}
+
+/// Turned about +Z by `degrees`, as a document says it.
+fn about_z(degrees: f32) -> Turn {
+    Turn { z: degrees, ..Turn::default() }
+}
+
+#[test]
+fn an_adjustment_turns_a_bone_and_what_hangs_below_it() {
+    let (out, skeleton, map) = retargeted(&still(2), &adjusted(LeftUpperArm, about_z(-90.0)));
+    let model = pose(&out, &skeleton, 2);
+    let upper = along(&model, &map, LeftUpperArm, LeftLowerArm);
+    assert!(upper.abs_diff_eq(Vec3::NEG_Y, 1e-5), "the T-pose's arm hangs: {upper}");
+    let lower = along(&model, &map, LeftLowerArm, LeftHand);
+    assert!(lower.abs_diff_eq(Vec3::NEG_Y, 1e-5), "and the forearm with it: {lower}");
+    let right = along(&model, &map, RightUpperArm, RightLowerArm);
+    assert!(right.abs_diff_eq(Vec3::NEG_X, 1e-5), "the other arm stays: {right}");
+}
+
+#[test]
+fn an_adjustment_moves_with_the_body_above_it() {
+    // The spine, which both rigs map, bows 90° forward, and the source's arm follows it.
+    let bow = Quat::from_rotation_x(QUARTER);
+    let clip = turned(still(2), &[(SOURCE_HIPS + 1, bow)]);
+    let (out, skeleton, map) = retargeted(&clip, &adjusted(LeftUpperArm, about_z(-90.0)));
+    let model = pose(&out, &skeleton, 2);
+    // Rest's arm hangs from a chest at rest, so from one bowed forward it reaches along +Z.
+    let upper = along(&model, &map, LeftUpperArm, LeftLowerArm);
+    assert!(upper.abs_diff_eq(bow * Vec3::NEG_Y, 1e-5), "{upper}");
+}
+
+#[test]
+fn an_adjustment_on_a_bone_only_the_target_has_is_a_fixed_pose() {
+    let swing = Quat::from_rotation_z(-QUARTER);
+    let clip = turned(still(2), &[(SOURCE_UPPER_LEFT_ARM, swing)]);
+    let curl = adjusted(LeftIndexProximal, about_z(-30.0));
+    let (out, skeleton, map) = retargeted(&clip, &curl);
+    let keys = track(&out.rotations, TARGET_LEFT_INDEX).expect("a finger the source lacks has a track");
+    assert!(keys.iter().all(|key| angle_between(*key, keys[0]) < 1e-3), "a fixed pose under its parent");
+    // At the hand: the finger's own turn, on an arm hanging by the source's.
+    let model = pose(&out, &skeleton, 2);
+    let hand = rotations(&out, &skeleton, 2)[usize::from(map.joint(LeftHand).unwrap())];
+    let finger = rotations(&out, &skeleton, 2)[usize::from(TARGET_LEFT_INDEX)];
+    let rest = rest_rotations(&skeleton);
+    let turn = finger
+        * rest[usize::from(TARGET_LEFT_INDEX)].inverse()
+        * (hand * rest[usize::from(map.joint(LeftHand).unwrap())].inverse()).inverse();
+    let expected = about_z(-30.0).quat();
+    assert!(angle_between(turn, swing * expected * swing.inverse()) < 1e-3, "{turn}");
+    assert!(model[usize::from(TARGET_LEFT_INDEX)].is_finite());
+}
+
+#[test]
+fn a_rig_without_the_bone_skips_its_adjustment() {
+    // The target has no left little finger.
+    let (out, _, _) = retargeted(&still(2), &adjusted(LeftLittleDistal, about_z(-30.0)));
+    let (plain, _, _) = retargeted(&still(2), &UNGROUNDED);
+    assert_eq!(out.rotations, plain.rotations);
+}
+
+#[test]
+fn a_gain_keeps_that_share_of_a_bones_own_turn() {
+    let bend = Quat::from_rotation_y(-QUARTER);
+    let clip = turned(still(2), &[(SOURCE_UPPER_LEFT_ARM + 1, bend)]);
+    let lower = |options: &RetargetOptions| {
+        let (out, skeleton, map) = retargeted(&clip, options);
+        along(&pose(&out, &skeleton, 2), &map, LeftLowerArm, LeftHand)
+    };
+    let gained = |gain| RetargetOptions { gain: BTreeMap::from([(LeftLowerArm, gain)]), ..UNGROUNDED };
+
+    assert!(lower(&UNGROUNDED).abs_diff_eq(bend * Vec3::X, 1e-5));
+    assert!(lower(&gained(1.0)).abs_diff_eq(bend * Vec3::X, 1e-5), "all of it");
+    let half = Quat::from_rotation_y(-QUARTER * 0.5);
+    assert!(lower(&gained(0.5)).abs_diff_eq(half * Vec3::X, 1e-5), "half of it");
+    assert!(lower(&gained(0.0)).abs_diff_eq(Vec3::X, 1e-5), "none of it");
+
+    // A gain on the bone above carries what's under it, as an adjustment does.
+    let upper_gain = RetargetOptions { gain: BTreeMap::from([(LeftUpperArm, 0.5)]), ..UNGROUNDED };
+    let swing = Quat::from_rotation_y(-QUARTER);
+    let upper_clip = turned(still(2), &[(SOURCE_UPPER_LEFT_ARM, swing)]);
+    let (out, skeleton, map) = retargeted(&upper_clip, &upper_gain);
+    let hand = along(&pose(&out, &skeleton, 2), &map, LeftLowerArm, LeftHand);
+    assert!(hand.abs_diff_eq(half * Vec3::X, 1e-5), "{hand}");
+    assert_eq!(usize::from(TARGET_LEFT_LOWER_ARM), usize::from(map.joint(LeftLowerArm).unwrap()));
+}
+
+#[test]
+fn settings_a_cook_cant_honor_are_invalid() {
+    let settings = |adjust: Turn, gain: f32| RetargetSettings {
+        target: AssetId::from_bytes([1; 16]),
+        names: Vec::new(),
+        scale: None,
+        ground: true,
+        adjust: BTreeMap::from([(Spine, adjust)]),
+        gain: BTreeMap::from([(Spine, gain)]),
+        follow: Vec::new(),
+    };
+    assert!(settings(Turn::default(), 0.5).is_valid());
+    assert!(!settings(Turn { x: f32::NAN, ..Turn::default() }, 0.5).is_valid());
+    assert!(!settings(Turn { z: f32::INFINITY, ..Turn::default() }, 0.5).is_valid());
+    assert!(!settings(Turn::default(), -0.5).is_valid());
+    assert!(!settings(Turn::default(), f32::NAN).is_valid());
+}
+
+/// Two rigs with one joint under a name in both and no humanoid bone on it: a hand block.
+fn rigs_with_a_block() -> [(Skeleton, HumanMap); 2] {
+    let plain = Quat::IDENTITY;
+    let turned = Quat::from_rotation_x(QUARTER);
+    let figure = |rest: Quat, length: f32| {
+        rig(&[
+            ("Hips", None, [0.0, length, 0.0], plain, Some(Hips)),
+            ("Spine", Some(0), [0.0, 1.1 * length, 0.0], plain, Some(Spine)),
+            ("Head", Some(1), [0.0, 1.6 * length, 0.0], plain, Some(Head)),
+            ("Wrist", Some(1), [0.7, 1.5 * length, 0.0], plain, Some(LeftHand)),
+            ("Block", Some(3), [0.8, 1.5 * length, 0.0], rest, None),
+            ("Slot", Some(4), [0.9, 1.5 * length, 0.0], rest, None),
+            ("Other", Some(3), [0.8, 1.4 * length, 0.0], plain, None),
+        ])
+    };
+    [figure(plain, 1.0), figure(turned, 2.0)]
+}
+
+#[test]
+fn a_joint_with_no_bone_follows_by_name() {
+    let [(source, source_map), (target, target_map)] = rigs_with_a_block();
+    let (block, slot, other) = (4, 5, 6);
+    let curl = Quat::from_rotation_z(0.7);
+    let clip = turned(still(2), &[(3, Quat::from_rotation_x(0.3)), (block, curl), (slot, curl)]);
+    let cook = |names: &[&str]| {
+        let options = RetargetOptions {
+            scale: Some(1.0),
+            follow: names.iter().map(|name| (*name).to_owned()).collect(),
+            ..UNGROUNDED
+        };
+        let (source, target) =
+            (Rig { skeleton: &source, map: &source_map }, Rig { skeleton: &target, map: &target_map });
+        retarget(&clip, source, target, &options)
+    };
+
+    let plain = cook(&[]).unwrap();
+    assert!(track(&plain.rotations, block).is_none(), "named by nothing, it rests under its parent");
+
+    let followed = cook(&["Block", "Slot"]).unwrap();
+    let (from, to) = (rotations(&clip, &source, 2), rotations(&followed, &target, 2));
+    let rests = rest_rotations(&target);
+    for joint in [usize::from(block), usize::from(slot)] {
+        let turn_of = |model: &[Quat], rest: Quat| model[joint] * rest.inverse();
+        let source_rest = rest_rotations(&source)[joint];
+        let apart = angle_between(turn_of(&from, source_rest), turn_of(&to, rests[joint]));
+        assert!(apart < 1e-5, "joint {joint} turns {apart} from the source's, on a rest of its own");
+    }
+    assert!(track(&followed.rotations, other).is_none(), "and only what it names");
+    assert_eq!(
+        track(&followed.rotations, 3),
+        track(&plain.rotations, 3),
+        "a bone's track doesn't change by what follows it"
+    );
+
+    assert!(matches!(cook(&["Nothing"]), Err(RetargetError::UnknownJoint { which: "the source", .. })));
+    assert!(matches!(cook(&["Wrist"]), Err(RetargetError::FollowedBone { bone: "leftHand", .. })));
+    let (fewer, fewer_map) = source_rig();
+    let error = retarget(
+        &still(2),
+        Rig { skeleton: &source, map: &source_map },
+        Rig { skeleton: &fewer, map: &fewer_map },
+        &RetargetOptions { scale: Some(1.0), follow: vec!["Block".to_owned()], ..UNGROUNDED },
+    );
+    assert!(matches!(error, Err(RetargetError::UnknownJoint { which: "the target", .. })));
 }
 
 // KayKit's real clips, read through their real sidecars, on the character.
@@ -941,4 +1126,127 @@ fn the_rigs_clips_reach_the_warrior_at_its_own_lengths() {
     let scale =
         leg_length(Rig { skeleton: &skeleton, map: &map }) / leg_length(Kaykit::open("General").rig());
     assert!((scale - 2.1).abs() < 1e-3, "the legs' stretch: {scale}");
+}
+
+/// A clip on the character as the sidecars cook it, with their adjustments and gains.
+fn as_cooked(kaykit: &Kaykit, name: &str) -> SampledClip {
+    let (skeleton, map) = character();
+    let entry = kaykit.settings.retarget.iter().find(|entry| entry.names.iter().any(|n| n == name));
+    let entry = entry.unwrap_or_else(|| panic!("{name} doesn't cook for the character"));
+    let options = RetargetOptions {
+        scale: entry.scale,
+        ground: entry.ground,
+        adjust: entry.adjust.clone(),
+        gain: entry.gain.clone(),
+        follow: entry.follow.clone(),
+    };
+    retarget(&kaykit.sampled(name), kaykit.rig(), Rig { skeleton, map }, &options).unwrap()
+}
+
+/// What the sheets judged, held as numbers, by each clip's measured value and a little: M2 O2's
+/// sidecars bring the arms in from their 32 to 58° off straight down at the source's angles, without
+/// burying a hand in the body, and leave a foot on the floor, under it by no more than a millimeter.
+#[test]
+fn as_cooked_the_arms_hang_close_and_a_foot_stays_down() {
+    let (skeleton, map) = character();
+    let rest = pose(&still(0), skeleton, 0);
+    // A clip, the file it's in, the most its arms come within straight down at their closest, the least
+    // a hand keeps from the torso, and the most its lowest foot leaves the floor.
+    let table: [(&str, &str, f32, f32, f32); 7] = [
+        ("Walking_B", "MovementBasic", 19.0, 0.2, 0.065),
+        ("Running_B", "MovementBasic", 19.0, 0.09, 0.29),
+        ("Walking_Backwards", "MovementAdvanced", 27.0, 0.2, 0.03),
+        ("Running_Strafe_Left", "MovementAdvanced", 33.0, 0.25, 0.27),
+        ("Running_Strafe_Right", "MovementAdvanced", 33.0, 0.25, 0.27),
+        ("Hit_A", "General", 29.0, 0.2, 0.001),
+        ("Hit_B", "General", 23.0, 0.2, 0.001),
+    ];
+    let mut failures = Vec::new();
+    for (name, file, arm_limit, clear_limit, lift_limit) in table {
+        let kaykit = Kaykit::open(file);
+        let out = as_cooked(&kaykit, name);
+        let (mut arm, mut clear, mut highest, mut lowest) = (f32::MAX, f32::MAX, f32::MIN, f32::MAX);
+        for tick in 0..=usize::from(out.ticks) {
+            let model = pose(&out, skeleton, tick);
+            for (upper, lower) in [(LeftUpperArm, LeftLowerArm), (RightUpperArm, RightLowerArm)] {
+                let cosine = along(&model, map, upper, lower).dot(Vec3::NEG_Y).clamp(-1.0, 1.0);
+                arm = arm.min(cosine.acos().to_degrees());
+            }
+            clear = clear.min(hands_to_torso(&model, map));
+            let (lower, _) = feet(&model, map, &rest);
+            highest = highest.max(lower);
+            lowest = lowest.min(lower);
+        }
+        if arm > arm_limit || clear < clear_limit || highest > lift_limit || lowest < -0.001 {
+            failures.push(format!("{name}: arm {arm}° hand {clear} m foot {lowest} to {highest} m"));
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// What the animation graph matches its speed to: how fast the planted foot passes under the character
+/// at 1×, as a median in meters a second. The run covers what the controller's run does (6 m/s).
+#[test]
+fn as_cooked_the_run_covers_the_ground_the_controller_does() {
+    let (skeleton, map) = character();
+    let rest = pose(&still(0), skeleton, 0);
+    let planted_speed = |file: &str, name: &str| {
+        let kaykit = Kaykit::open(file);
+        let out = as_cooked(&kaykit, name);
+        let models: Vec<Vec<Affine3A>> =
+            (0..=usize::from(out.ticks)).map(|tick| pose(&out, skeleton, tick)).collect();
+        let mut speeds = Vec::new();
+        for pair in models.windows(2) {
+            for bone in [LeftFoot, RightFoot] {
+                let height = |model: &[Affine3A]| position(model, map, bone).y - position(&rest, map, bone).y;
+                if height(&pair[0]) < 0.01 && height(&pair[1]) < 0.01 {
+                    let step = position(&pair[1], map, bone) - position(&pair[0], map, bone);
+                    speeds.push(Vec3::new(step.x, 0.0, step.z).length() * f32::from(out.rate));
+                }
+            }
+        }
+        speeds.sort_by(f32::total_cmp);
+        speeds[speeds.len() / 2]
+    };
+    let run = planted_speed("MovementBasic", "Running_B");
+    assert!((5.0..7.0).contains(&run), "{run}");
+    let walk = planted_speed("MovementBasic", "Walking_B");
+    assert!((0.7..1.5).contains(&walk), "{walk}");
+}
+
+/// `follow`, on a real clip: the rig retargeted onto itself, its hand blocks and slots named, takes
+/// each block's local rotation as the clip has it, the grip a held blade hangs from (M2 O4: up to 90°
+/// off without it).
+#[test]
+fn a_followed_hand_block_keeps_the_clips_grip() {
+    const BLOCKS: [&str; 4] = ["hand.l", "hand.r", "handslot.l", "handslot.r"];
+    let kaykit = Kaykit::open("CombatMelee");
+    let sampled = kaykit.sampled("Melee_1H_Attack_Chop");
+    let options = RetargetOptions {
+        follow: BLOCKS.iter().map(|name| (*name).to_owned()).collect(),
+        ..RetargetOptions::default()
+    };
+    let out = retarget(&sampled, kaykit.rig(), kaykit.rig(), &options).unwrap();
+    let plain = retarget(&sampled, kaykit.rig(), kaykit.rig(), &RetargetOptions::default()).unwrap();
+    let joint_of =
+        |name: &str| kaykit.skeleton.names.iter().position(|candidate| candidate == name).expect(name) as u16;
+    let (mut moved, mut without) = (0.0_f32, 0.0_f32);
+    for name in BLOCKS {
+        let joint = joint_of(name);
+        let Some(source) = track(&sampled.rotations, joint) else { continue };
+        let rest = Quat::from_array(kaykit.skeleton.rest[usize::from(joint)].rotation).normalize();
+        assert!(track(&plain.rotations, joint).is_none(), "{name} rests without it");
+        for (tick, key) in source.iter().enumerate() {
+            let followed = rotations(&out, &kaykit.skeleton, tick)[usize::from(joint)];
+            let parent = kaykit.skeleton.parents[usize::from(joint)];
+            let above = rotations(&out, &kaykit.skeleton, tick)[usize::from(parent)];
+            let local = (above.inverse() * followed).normalize();
+            let apart = angle_between(local, key.normalize());
+            assert!(apart < 0.002, "{name} tick {tick}: {apart} from the clip's");
+            moved = moved.max(apart);
+            without = without.max(angle_between(rest, key.normalize()));
+        }
+    }
+    assert!(moved < without, "the option does something: {moved} against {without}");
+    assert!(without > 1.0, "the clip's grip curls well past rest: {without}");
 }

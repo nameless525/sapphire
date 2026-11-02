@@ -474,6 +474,9 @@ fn to_the_character(names: &[&str]) -> ClipSettings {
             names: names.iter().map(|name| (*name).to_owned()).collect(),
             scale: None,
             ground: true,
+            adjust: BTreeMap::new(),
+            gain: BTreeMap::new(),
+            follow: Vec::new(),
         }],
         ..ClipSettings::default()
     }
@@ -494,6 +497,9 @@ pub(super) fn add_every_kind_of_animation_source(tree: &Tree) {
         names: vec!["Lower".to_owned()],
         scale: None,
         ground: true,
+        adjust: BTreeMap::new(),
+        gain: BTreeMap::new(),
+        follow: Vec::new(),
     };
     let settings =
         ClipSettings { humanoid: human_map(), retarget: vec![on_the_sample], ..ClipSettings::default() };
@@ -794,11 +800,11 @@ fn kaykits_sidecars_ask_for_what_its_files_have() {
     let warrior_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/combat/enemy/warrior.glb");
     let warrior = meta::read(&sidecar_path(&warrior_path)).unwrap().id;
     let rows = [
-        ("General", 1, 2, 10),
-        ("MovementBasic", 0, 1, 11),
+        ("General", 1, 0, 4),
+        ("MovementBasic", 0, 0, 6),
         ("MovementAdvanced", 0, 0, 7),
-        ("CombatMelee", 0, 3, 3),
-        ("Special", 0, 7, 0),
+        ("CombatMelee", 0, 0, 3),
+        ("Special", 0, 0, 0),
     ];
     let mut owner = None;
     for (file, skeletons, native, retargeted) in rows {

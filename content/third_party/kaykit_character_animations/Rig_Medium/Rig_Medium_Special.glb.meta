@@ -8,18 +8,9 @@
                 bone: "root",
             ),
             rig: "9a29e8c0-f131-4ea4-98b9-04879740413d",
-            // On this rig as authored. These clips pull the skeleton apart and back, so they don't
-            // retarget, and the pack's Warrior, the mesh that would play them, doesn't cook (M2 O4), so
-            // no mesh plays them yet.
-            names: [
-                "Skeletons_Idle",
-                "Skeletons_Walking",
-                "Skeletons_Taunt",
-                "Skeletons_Death",
-                "Skeletons_Death_Pose",
-                "Skeletons_Spawn_Ground",
-                "Skeletons_Awaken_Standing",
-            ],
+            // None: the `Skeletons_*` clips pull the skeleton apart and back, so they don't retarget, and
+            // the pack's Warrior, the mesh that would play them as authored, doesn't cook.
+            names: [],
         )),
     ),
 )

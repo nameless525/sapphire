@@ -1409,7 +1409,13 @@ fn cook_clip(
         &sampled,
         Rig { skeleton: &joints, map: &map },
         Rig { skeleton: &target_joints, map: &target_map },
-        &RetargetOptions { scale: retarget.scale, ground: retarget.ground },
+        &RetargetOptions {
+            scale: retarget.scale,
+            ground: retarget.ground,
+            adjust: retarget.adjust.clone(),
+            gain: retarget.gain.clone(),
+            follow: retarget.follow.clone(),
+        },
     )?;
     let target = ClipTarget { skeleton: Some((target_rig.skeleton_id, &target_joints)), morph_defaults: &[] };
     written_clip(&clip::cook(&retargeted, &target, &input.clips.error))

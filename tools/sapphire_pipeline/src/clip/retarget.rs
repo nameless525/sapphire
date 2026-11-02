@@ -39,6 +39,34 @@
 //!   A source's unmapped joint is read only through what it does to joints below it.
 //! - **A rest pose maps to the rest pose.** Each `delta` is then the identity, so a T-pose clip cooks
 //!   to no tracks at all (`clip::cook` drops a track at rest).
+//! - **A joint both skeletons have under one name** can follow by that name, as if a bone mapped it:
+//!   a sidecar's [`follow`](RetargetSettings::follow). Where the two rigs' rests turn alike, as the
+//!   same rig's on other lengths do, that's the source's local rotation. KayKit's hand blocks and
+//!   the slots under them have no humanoid bone, so a held blade stays out of the source's grip
+//!   without it, and mapping them through a finger would move every clip on a rig that has fingers.
+//!
+//! # Adjustments
+//!
+//! Rigs of other builds hold the same motion at other angles. A chibi's arms clear a body twice
+//! as thick as the character's, so at the source's angles they hang wide of it. A sidecar's
+//! [`adjust`](RetargetSettings::adjust) is a fixed [`Turn`] per bone, in the model's rest space as
+//! a key-pose document's is, that goes between a bone and its parent at every tick:
+//!
+//! ```text
+//! bone's turn from rest = parent's turn from rest · adjust(bone) · parent_delta⁻¹ · delta(bone)
+//! ```
+//!
+//! So a bone under a turned bone turns with it, and a turn stays where it was put as the body above
+//! it moves. A bone the rig has but the source doesn't (a finger) takes its turn as a fixed pose. A
+//! rig that lacks a bone skips its adjustment, as a key-pose document does.
+//!
+//! [`gain`](RetargetSettings::gain) is how much of a bone's own motion stays: `parent_delta⁻¹ ·
+//! delta(bone)` by that share of its angle, 0 at rest. A chibi's short legs take long swings and deep
+//! bends to cover ground, so its idle stoops and its walk lunges on long legs. Give a leg's three
+//! bones one gain, and a foot flat in the source stays nearly flat, since their angles still sum to
+//! what the hips lean by.
+//!
+//! With nothing to adjust, nothing here runs, so a clip without either keeps its bytes.
 //!
 //! # Translations
 //!
@@ -83,6 +111,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{SampledClip, SampledRoot, rest_model};
 use crate::cache::Stage;
+use crate::keypose::Turn;
 
 /// Retargeting and the `.sclip` writer, [`COOKER`](super::COOKER)'s version in the low 16 bits. Bump
 /// the high bits whenever retargeting changes output for the same samples and rigs.
@@ -103,6 +132,18 @@ pub struct RetargetSettings {
     /// [module docs](self). On unless a clip's own timing needs the source's hips as they are.
     #[serde(default = "grounded", skip_serializing_if = "is_grounded")]
     pub ground: bool,
+    /// Fixed turns, by bone, that make up for how the rigs' builds differ: see the
+    /// [module docs](self)' "Adjustments".
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub adjust: BTreeMap<HumanBone, Turn>,
+    /// How much of a bone's own motion stays, by bone, from 0 (at rest under its parent) up: the
+    /// same section.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub gain: BTreeMap<HumanBone, f32>,
+    /// Joints that turn as the source's of the same name do, though no humanoid bone names them:
+    /// see the [module docs](self). Both skeletons must have each.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub follow: Vec<String>,
 }
 
 fn grounded() -> bool {
@@ -114,9 +155,11 @@ fn is_grounded(ground: &bool) -> bool {
 }
 
 impl RetargetSettings {
-    /// Whether its scale, if it has one, is one a cook can honor.
+    /// Whether its scale, if it has one, and its turns are ones a cook can honor.
     pub(crate) fn is_valid(&self) -> bool {
         self.scale.is_none_or(|scale| scale.is_finite() && scale > 0.0)
+            && self.adjust.values().all(|turn| turn.x.is_finite() && turn.y.is_finite() && turn.z.is_finite())
+            && self.gain.values().all(|gain| gain.is_finite() && *gain >= 0.0)
     }
 }
 
@@ -140,6 +183,10 @@ pub enum RetargetError {
     Scale(f32),
     #[error("the motion isn't finite at tick {tick}: a scale of zero above the hips?")]
     NonFinite { tick: usize },
+    #[error("it should follow joint {name:?}, but {which} rig has no joint of that name")]
+    UnknownJoint { which: &'static str, name: String },
+    #[error("it should follow joint {name:?}, but the target's humanoid map already says that's {bone}")]
+    FollowedBone { name: String, bone: &'static str },
 }
 
 /// Which joint of one skeleton is which humanoid bone. See the [module docs](self).
@@ -199,17 +246,23 @@ pub struct Rig<'a> {
 }
 
 /// How a retarget moves the target. See the [module docs](self).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RetargetOptions {
     /// What translations scale by. `None`: the ratio of the rigs' leg lengths.
     pub scale: Option<f32>,
     /// Whether the hips make up for what rotations alone do to the lowest foot's height.
     pub ground: bool,
+    /// Fixed turns, by bone: the [module docs](self)' "Adjustments".
+    pub adjust: BTreeMap<HumanBone, Turn>,
+    /// How much of a bone's own motion stays, by bone: the same section.
+    pub gain: BTreeMap<HumanBone, f32>,
+    /// Joints that follow the source's of the same name, as if a bone mapped them.
+    pub follow: Vec<String>,
 }
 
 impl Default for RetargetOptions {
     fn default() -> Self {
-        Self { scale: None, ground: true }
+        Self { scale: None, ground: true, adjust: BTreeMap::new(), gain: BTreeMap::new(), follow: Vec::new() }
     }
 }
 
@@ -322,6 +375,29 @@ pub fn retarget(
         bone_of[joint] = Some(bone);
         driver_of[joint] = source.map.joint(bone).map(usize::from);
     }
+    for name in &options.follow {
+        let joint = |rig: Rig<'_>, which| {
+            let found = rig.skeleton.names.iter().position(|candidate| candidate == name);
+            found.ok_or_else(|| RetargetError::UnknownJoint { which, name: name.clone() })
+        };
+        let (from, joint) = (joint(source, "the source")?, joint(target, "the target")?);
+        if let Some(bone) = bone_of[joint] {
+            return Err(RetargetError::FollowedBone { name: name.clone(), bone: bone.name() });
+        }
+        driver_of[joint] = Some(from);
+    }
+    let mut adjust_of: Vec<Option<Quat>> = vec![None; target_joints];
+    for (bone, turn) in &options.adjust {
+        if let Some(joint) = target.map.joint(*bone) {
+            adjust_of[usize::from(joint)] = Some(turn.quat());
+        }
+    }
+    let mut gain_of: Vec<Option<f32>> = vec![None; target_joints];
+    for (bone, gain) in &options.gain {
+        if let Some(joint) = target.map.joint(*bone) {
+            gain_of[usize::from(joint)] = Some(*gain);
+        }
+    }
     let source_rest_rotation = rest_rotations(source.skeleton);
     let target_rest_rotation = rest_rotations(target.skeleton);
     let source_rest = rest_model(source.skeleton);
@@ -343,7 +419,7 @@ pub fn retarget(
         needed[foot.joint] = true;
     }
     for joint in (0..target_joints).rev() {
-        if driver_of[joint].is_some() || needed[joint] {
+        if driver_of[joint].is_some() || adjust_of[joint].is_some() || needed[joint] {
             needed[joint] = true;
             if let Some(parent) = parent_of(target.skeleton, joint) {
                 needed[parent] = true;
@@ -380,6 +456,9 @@ pub fn retarget(
     let mut source_model = vec![Affine3A::IDENTITY; source_joints];
     let mut target_rotation = vec![Quat::IDENTITY; target_joints];
     let mut target_model = vec![Affine3A::IDENTITY; target_joints];
+    // Each joint's `delta` this tick, and what its adjustments and those above it add to it.
+    let mut delta_of = vec![Quat::IDENTITY; target_joints];
+    let mut correction_of: Vec<Option<Quat>> = vec![None; target_joints];
     for tick in 0..count {
         for joint in 0..source_joints {
             let rest = &source.skeleton.rest[joint];
@@ -404,21 +483,40 @@ pub fn retarget(
         });
         for joint in (0..target_joints).filter(|&joint| needed[joint]) {
             let parent = parent_of(target.skeleton, joint);
-            let local = match driver_of[joint] {
-                Some(from) => {
-                    let delta = source_rotation[from] * source_rest_rotation[from].inverse();
-                    let model = (delta * target_rest_rotation[joint]).normalize();
-                    target_rotation[joint] = model;
-                    let local = parent.map_or(model, |parent| target_rotation[parent].inverse() * model);
-                    let local = local.normalize();
-                    rotations.entry(joint as u16).or_default().push(local);
-                    local
+            let (parent_delta, parent_correction) =
+                parent.map_or((Quat::IDENTITY, None), |parent| (delta_of[parent], correction_of[parent]));
+            let delta =
+                driver_of[joint].map(|from| source_rotation[from] * source_rest_rotation[from].inverse());
+            delta_of[joint] = delta.unwrap_or(parent_delta);
+            // What this joint changes about its own motion, in its parent's frame at rest.
+            let own_change = match (adjust_of[joint], gain_of[joint].zip(delta)) {
+                (None, None) => None,
+                (turn, gain) => {
+                    let lost = gain.map_or(Quat::IDENTITY, |(gain, delta)| {
+                        let own = parent_delta.inverse() * delta;
+                        Quat::IDENTITY.slerp(own, gain) * own.inverse()
+                    });
+                    Some(turn.unwrap_or(Quat::IDENTITY) * lost)
                 }
-                None => {
-                    let local = local_rest[joint];
-                    target_rotation[joint] = parent.map_or(local, |parent| target_rotation[parent] * local);
-                    local
-                }
+            };
+            let correction = own_change.map_or(parent_correction, |change| {
+                let above = parent_correction.unwrap_or(Quat::IDENTITY);
+                Some(above * parent_delta * change * parent_delta.inverse())
+            });
+            correction_of[joint] = correction;
+            let local = if delta.is_some() || adjust_of[joint].is_some() {
+                let delta = delta_of[joint];
+                let turned = correction.map_or(delta, |correction| correction * delta);
+                let model = (turned * target_rest_rotation[joint]).normalize();
+                target_rotation[joint] = model;
+                let local = parent.map_or(model, |parent| target_rotation[parent].inverse() * model);
+                let local = local.normalize();
+                rotations.entry(joint as u16).or_default().push(local);
+                local
+            } else {
+                let local = local_rest[joint];
+                target_rotation[joint] = parent.map_or(local, |parent| target_rotation[parent] * local);
+                local
             };
             let translation = if Some(joint) == target_hips {
                 hips_rest(joint) + to_parent.transform_vector3(offset)

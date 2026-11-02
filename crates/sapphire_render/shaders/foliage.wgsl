@@ -543,7 +543,7 @@ fn foliage_covered(material: u32, uv: vec2<f32>) -> bool {
 fn fs_foliage_prepass(in: FoliagePrepassVaryings) -> ScenePrepassTargets {
     let covered = foliage_covered(in.material, in.uv);
     let targets = scene_prepass_targets(ScenePrepassVaryings(in.clip_position, in.world_normal, in.current, in.previous));
-    if !covered {
+    if PERMUTATION_ALPHA_TEST && !covered {
         discard;
     }
     return targets;

@@ -185,6 +185,7 @@ All on this Mac's Apple M5 with release builds, which is none of §3's reference
 - **Store and signing work (M4):** device signing, an Xcode project, the local-network prompt's text and store compliance (spec §5.29, §6.7, §7.3).
 - **Frame pacing:** a desktop frame cap on F7's pacer, and timed presentation if a device check finds frames shown early (spec §6.2).
 - **Crash upload:** deferred by decision (spec §10, "M0 status"). Until it returns, `install` keeps the newest 8 runs' reports and deletes the rest (spec §5.2); an uploader consumes them first and decides again whether that stays.
+- **Android Back, a decision for the game layer (review PN-3):** Back reaches input as `Key::Hid(282)` (SDL's `SDL_SCANCODE_AC_BACK`), and the sandbox binds nothing to it, so Home and Recents are the only ways out. A game decides between quitting and a dialog. To quit, it should leave through `AppControl::Exit`, not `SDL_SendAndroidBackButton`: `SDLActivity.onDestroy` waits only a second for the SDL thread before freeing what that thread uses, so finishing the activity during longer work risks a hang (by reading SDL's source; not reproduced).
 
 ## Known limits and risks
 

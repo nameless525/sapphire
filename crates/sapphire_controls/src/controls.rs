@@ -2,11 +2,12 @@
 
 use std::time::Duration;
 
+use sapphire_gameplay::replay::ActionSource;
 use sapphire_gameplay::{ActorActions, ActorId, Buttons, Stick, TickActions};
 use sapphire_input::{
     ActionEventKind, ActionId, ActionKind, ContextId, InputBindings, InputMap, InputSystem, MapError,
 };
-use sapphire_math::Vec2;
+use sapphire_math::{Vec2, Vec3, det};
 use sapphire_platform::{Event, Timestamp};
 use sapphire_time::{FixedStepDriver, FixedSteps};
 
@@ -118,11 +119,21 @@ impl ActionIds {
     }
 }
 
-/// An action's value as the simulation's stick. Keys add up past the stick's range, a diagonal's two
-/// by √2, so the length is limited first. The simulation sees only the whole steps that come out.
-fn stick_of(value: Vec2) -> Stick {
-    let axes = value.clamp_length_max(1.0);
-    Stick::from_axes(axes.x, axes.y)
+/// An action's value as a stick: keys add up past its range, a diagonal's two by √2, and a square
+/// gate's corner reads (1, 1), so the length is limited to 1 before anything turns it.
+fn raw_stick_of(value: Vec2) -> Vec2 {
+    value.clamp_length_max(1.0)
+}
+
+/// A raw stick as the simulation's: turned from the view into the world, then quantized.
+///
+/// Everything faces +Z at yaw 0 (spec §5.4), and what's to the right of something facing +Z is −X in
+/// a right-handed world, so the stick goes in as a thing facing +Z with its x turned round. A length
+/// of at most 1 stays one through any turn, so no axis clips and the direction stays what it was.
+/// `det::rotate_y` is pinned, so a table of yaws here reads the same on every OS.
+fn world_stick(raw: Vec2, camera_yaw: f32) -> Stick {
+    let world = det::rotate_y(Vec3::new(-raw.x, 0.0, raw.y), camera_yaw);
+    Stick::from_axes(world.x, world.z)
 }
 
 /// Combat's controls: `sapphire_input`'s system, read once per frame and handed out once per fixed
@@ -139,6 +150,7 @@ fn stick_of(value: Vec2) -> Stick {
 /// #     driver: &mut FixedStepDriver,
 /// #     sim: &mut Simulation,
 /// #     player: ActorId,
+/// #     camera_yaw: f32,
 /// #     events: &[Event],
 /// #     now: Timestamp,
 /// #     frame_time: Duration,
@@ -152,7 +164,7 @@ fn stick_of(value: Vec2) -> Stick {
 /// }
 /// let steps = controls.advance(driver, frame_time);
 /// for _ in 0..steps.count {
-///     sim.step(&controls.next_tick(player));
+///     sim.step(&controls.next_tick(player, camera_yaw));
 /// }
 /// // On the real clock, whatever the steps did.
 /// let (look, zoom) = (controls.look(), controls.camera_zoom());
@@ -166,10 +178,10 @@ pub struct CombatControls {
     combat: ContextId,
     pause: ContextId,
     latch: PressLatch,
-    /// The latest update's stick.
-    stick: Stick,
+    /// The latest update's stick, of length at most 1, as the player pushed it.
+    stick: Vec2,
     /// A stick that came and went since the last step: the next one reads it if it reads no other.
-    stick_tap: Option<Stick>,
+    stick_tap: Option<Vec2>,
     paused: bool,
     /// Resuming, once the combat context is back. It takes effect at the next update, and steps
     /// that ran before that would read a centred stick that's really tilted.
@@ -198,7 +210,7 @@ impl CombatControls {
             combat,
             pause,
             latch: PressLatch::default(),
-            stick: Stick::CENTER,
+            stick: Vec2::ZERO,
             stick_tap: None,
             paused: false,
             resuming: false,
@@ -287,31 +299,56 @@ impl CombatControls {
         self.latch.sample(held);
 
         let movement = self.input.state(self.ids.movement);
-        self.stick = stick_of(movement.value());
+        self.stick = raw_stick_of(movement.value());
         // Started and over inside this update, which keys and on-screen controls can do: no later
         // value will show it, so a step has to read it from here.
         if !movement.is_triggered()
             && let Some(value) = moved
         {
-            self.stick_tap = Some(stick_of(value));
+            self.stick_tap = Some(raw_stick_of(value));
         }
     }
 
     /// What the next fixed step reads. Call it exactly once per step: each call moves a press along.
+    ///
+    /// The stick comes out world-space, turned by `camera_yaw`, so the simulation never reads a camera
+    /// and a replay carries the direction the player meant. `camera_yaw` is where the view looks
+    /// across the ground, as an actor's yaw: +Z at 0, turning toward +X
+    /// ([`det::direction_from_yaw`]). An actor walking straight away from the camera has that yaw,
+    /// and any camera's forward vector gives it through [`det::yaw_of_direction`]. A yaw that isn't
+    /// finite reads as a centred stick, so a broken camera can't move anyone.
     #[must_use = "a press this returns is gone from the next call"]
-    pub fn next_actions(&mut self) -> ActorActions {
+    pub fn next_actions(&mut self, camera_yaw: f32) -> ActorActions {
         let tap = self.stick_tap.take();
-        let stick = if self.stick == Stick::CENTER { tap.unwrap_or(Stick::CENTER) } else { self.stick };
+        let held = world_stick(self.stick, camera_yaw);
+        let stick = match tap {
+            Some(tap) if held == Stick::CENTER => world_stick(tap, camera_yaw),
+            _ => held,
+        };
         ActorActions { buttons: self.latch.next_step(), stick }
     }
 
     /// [`Self::next_actions`] as a tick for the simulation, for `player`, with everyone else neutral.
-    /// Replays record what this returns.
     #[must_use = "a press this returns is gone from the next call"]
-    pub fn next_tick(&mut self, player: ActorId) -> TickActions {
+    pub fn next_tick(&mut self, player: ActorId, camera_yaw: f32) -> TickActions {
         let mut tick = TickActions::NEUTRAL;
-        tick.set(player, self.next_actions()).expect("an empty tick has room for one actor");
+        tick.set(player, self.next_actions(camera_yaw)).expect("an empty tick has room for one actor");
         tick
+    }
+
+    /// These controls as a recording's source, for steps under this camera: hand it to
+    /// `sapphire_gameplay::replay::Recording::step`. Each step it's asked for moves a press along, as
+    /// [`Self::next_actions`] does.
+    pub fn source(&mut self, camera_yaw: f32) -> ControlsSource<'_> {
+        ControlsSource { controls: self, camera_yaw }
+    }
+
+    /// The stick as the player pushed it, before any camera: length at most 1, +x right and +y
+    /// forward, as of the latest update. It's for presentation, such as a camera that leans with it.
+    /// The simulation's stick comes from [`Self::next_actions`], and [`Self::look`] is the right
+    /// stick's.
+    pub fn raw_stick(&self) -> Vec2 {
+        self.stick
     }
 
     /// This frame's steps. While paused there are none and the driver never hears of the frame, so
@@ -365,5 +402,25 @@ impl CombatControls {
 
     pub fn stats(&self) -> ControlsStats {
         ControlsStats { presses: self.latch.presses(), presses_over_limit: self.latch.over_limit() }
+    }
+}
+
+/// A live player's bindings as an [`ActionSource`]: see [`CombatControls::source`].
+#[derive(Debug)]
+pub struct ControlsSource<'a> {
+    controls: &'a mut CombatControls,
+    camera_yaw: f32,
+}
+
+impl ActionSource for ControlsSource<'_> {
+    /// The next step's input for the player, who is first in `cast`, with everyone else neutral. A
+    /// cast with no one in it leaves no one to hand it to, and the step still moves presses along.
+    fn actions(&mut self, _tick: u64, cast: &[ActorId]) -> TickActions {
+        let actions = self.controls.next_actions(self.camera_yaw);
+        let mut tick = TickActions::NEUTRAL;
+        if let Some(&player) = cast.first() {
+            tick.set(player, actions).expect("an empty tick has room for one actor");
+        }
+        tick
     }
 }

@@ -35,7 +35,8 @@ sapphire_audio.workspace = true
 sapphire_controls.workspace = true
 sapphire_core = { workspace = true, features = ["mimalloc"] }
 sapphire_crash.workspace = true
-# `--replay` and `--record`: the simulation beside the renderer (M2 D2).
+# `--replay` and `--record`: the simulation beside the renderer (M2 D2), and the ticks combat's
+# controls give it (M2 I1).
 sapphire_gameplay.workspace = true
 sapphire_input.workspace = true
 sapphire_jobs.workspace = true

@@ -4,7 +4,7 @@
 //! them, so the view stays smooth when the world is slowed or paused (the camera owns its
 //! clock, spec §4.5).
 
-use std::f32::consts::FRAC_PI_2;
+use std::f32::consts::{FRAC_PI_2, PI};
 
 use sapphire_ecs::prelude::Resource;
 use sapphire_math::{Quat, SpringDamper, Vec3};
@@ -147,6 +147,12 @@ impl OrbitCamera {
         self.yaw.update(self.goal_yaw, dt);
         self.pitch.update(self.goal_pitch, dt);
         self.distance.update(self.goal_distance, dt);
+    }
+
+    /// Where it looks across the ground, as an actor's yaw: +Z at 0, turning toward +X. It stands
+    /// on the far side of its target from there, so this is half a turn from the yaw it orbits by.
+    pub fn heading(&self) -> f32 {
+        self.yaw.value + PI
     }
 
     pub fn camera_data(&self, aspect: f32) -> CameraData {

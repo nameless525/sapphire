@@ -257,7 +257,7 @@ impl Stage {
         self.dev.before_fixed_step(&mut self.scene);
         self.scene.step();
         if let Some(combat) = &mut self.combat {
-            combat.step();
+            combat.step(&mut crate::combat::no_bindings);
         }
     }
 

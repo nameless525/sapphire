@@ -72,7 +72,8 @@ impl std::ops::BitOr for Buttons {
 }
 
 /// A stick quantized to whole steps, −127 to 127 on each axis, so 0 is exactly the middle and the
-/// range is the same both ways.
+/// range is the same both ways. It's world-space: +x is world +X and +y is world +Z, since the
+/// simulation never reads a camera. The app turns the device's stick by the camera's yaw first.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Stick {
     x: i8,
@@ -92,27 +93,29 @@ impl Stick {
         Self { x: if x == i8::MIN { -127 } else { x }, y: if y == i8::MIN { -127 } else { y } }
     }
 
-    /// Quantizes a device's axes, each within [−1, 1]: what the app calls when it fills in a tick.
-    /// The nearest step, past the range is its end, and NaN is the middle.
+    /// Quantizes axes, each within [−1, 1]: what the app calls when it fills in a tick, once it has
+    /// turned the device's stick by the camera's yaw. The nearest step, past the range is its end,
+    /// and NaN is the middle.
     #[must_use]
     pub fn from_axes(x: f32, y: f32) -> Self {
         let step = |axis: f32| (axis.clamp(-1.0, 1.0) * Self::STEPS).round() as i8;
         Self { x: step(x), y: step(y) }
     }
 
-    /// The x axis's steps: +127 is fully right.
+    /// The x axis's steps: +127 is fully toward world +X.
     #[must_use]
     pub const fn x(self) -> i8 {
         self.x
     }
 
-    /// The y axis's steps: +127 is fully forward.
+    /// The y axis's steps: +127 is fully toward world +Z.
     #[must_use]
     pub const fn y(self) -> i8 {
         self.y
     }
 
-    /// Each axis within [−1, 1]: an exact division of whole numbers.
+    /// Each axis within [−1, 1]: an exact division of whole numbers. A full tilt rounded axis by axis
+    /// can be up to half a step per axis long of 1, at most 1.0056, so read a speed with a limit.
     #[must_use]
     pub fn to_vec2(self) -> Vec2 {
         Vec2::new(f32::from(self.x) / Self::STEPS, f32::from(self.y) / Self::STEPS)

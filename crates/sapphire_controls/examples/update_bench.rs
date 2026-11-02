@@ -49,7 +49,7 @@ fn round(controls: &mut CombatControls, frames: u64, clock: &mut u64, busy: bool
         let stopwatch = Stopwatch::start();
         controls.update(Timestamp::from_nanos(*clock + 1_000));
         if busy {
-            std::hint::black_box(controls.next_tick(player));
+            std::hint::black_box(controls.next_tick(player, 0.7));
         }
         lengths.push(stopwatch.elapsed());
     }

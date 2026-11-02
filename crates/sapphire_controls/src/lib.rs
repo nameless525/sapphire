@@ -10,14 +10,16 @@
 //!   pause contexts. Rebinding is editing that document, or [`InputSystem::rebind`] at run time by
 //!   a binding's name: `light.gamepad`, `dodge.keyboard`.
 //! - **The mapping from input to [`TickActions`]** ([`CombatControls`]), called once per frame and
-//!   once per fixed step.
+//!   once per fixed step, with the camera's yaw. [`ControlsSource`] is the same mapping as a replay
+//!   recording's source.
 //! - **The pause:** it stops the steps, not the app, and resuming takes no burst.
 //!
 //! # Doesn't own
 //!
 //! - Devices, contexts, triggers and rebinding: `sapphire_input`.
-//! - The camera. [`CombatControls::look`] and [`CombatControls::camera_zoom`] are presentation, for
-//!   the app to apply, and aren't in a tick.
+//! - The camera. [`CombatControls::look`], [`CombatControls::camera_zoom`] and
+//!   [`CombatControls::raw_stick`] are presentation, for the app to apply, and aren't in a tick. The
+//!   mapping takes the camera's yaw as a plain number.
 //! - Touch zones (`sapphire_ui`, which hands its values to [`CombatControls::set_on_screen`]), a
 //!   pause menu's visuals, and rumble.
 //!
@@ -46,12 +48,20 @@
 //! For the left stick, in this order: SDL's axes as −1..=1, with +y flipped to forward; the round
 //! dead zone, whose length rescales from 0 at 0.15 to 1 at 0.95; no curve; then the sum with the
 //! other bindings of `move` (keys, on-screen); that sum's length limited to 1, so two keys'
-//! diagonal is no faster than one; and [`Stick::from_axes`](sapphire_gameplay::Stick::from_axes).
-//! So a stick at the end of its range reads ±127, even one too worn to quite reach it, and a centred
-//! one, or one resting anywhere in its dead zone, reads exactly 0. The stick is a level: every step
-//! reads the latest update's value. So nothing is lost when a level comes and goes between steps,
-//! which only keys and on-screen controls are quick enough to do, the next step reads what it was,
-//! if the stick reads nothing else by then.
+//! diagonal is no faster than one; the turn by the camera's yaw, from the view into the world; and
+//! [`Stick::from_axes`](sapphire_gameplay::Stick::from_axes). So a stick at the end of its range has
+//! a length of 127 steps, even one too worn to quite reach it, and a centred one, or one resting
+//! anywhere in its dead zone, reads exactly 0. The stick is a level: every step reads the latest
+//! update's value. So nothing is lost when a level comes and goes between steps, which only keys and
+//! on-screen controls are quick enough to do, the next step reads what it was, if the stick reads
+//! nothing else by then.
+//!
+//! **A tick's stick is world-space:** +x is world +X and +y is world +Z, so the simulation never
+//! reads a camera and a replay carries the direction the player meant. A fully tilted diagonal is a
+//! length of 1 by the time it turns, because the limit comes first, so no axis clips: W and D under
+//! a camera along +Z read (−90, 90), and under a camera turned 45° they read (0, 127), the same
+//! speed. Each axis rounds on its own, so a full tilt's length is within half a step per axis of 127
+//! steps: at most 1.0056 through `Stick::to_vec2`. Whatever reads a speed from it limits that itself.
 //!
 //! # The pause
 //!
@@ -82,6 +92,6 @@ mod controls;
 mod latch;
 
 pub use controls::{
-    BUTTON_ACTIONS, COMBAT_CONTEXT, COMBAT_PRIORITY, CombatControls, ControlsError, ControlsStats,
-    DEFAULT_BINDINGS, MOVE_ACTION, PAUSE_CONTEXT, PAUSE_PRIORITY, default_bindings,
+    BUTTON_ACTIONS, COMBAT_CONTEXT, COMBAT_PRIORITY, CombatControls, ControlsError, ControlsSource,
+    ControlsStats, DEFAULT_BINDINGS, MOVE_ACTION, PAUSE_CONTEXT, PAUSE_PRIORITY, default_bindings,
 };

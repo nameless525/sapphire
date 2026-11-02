@@ -283,14 +283,14 @@ fn presses_keep_to_their_side_of_the_pause() {
 fn a_stick_reads_its_level_from_the_first_step_after_the_pause() {
     let mut rig = Rig::new();
     rig.frame(&[axis(PadAxis::LeftX, 1.0)]);
-    assert_eq!(rig.controls.next_actions().stick, Stick::new(127, 0));
+    assert_eq!(rig.next().stick, Stick::new(127, 0));
     rig.frame(&tap(ESCAPE));
     rig.frame(&[]);
     rig.frame(&tap(ESCAPE));
     assert!(rig.controls.is_paused(), "the first step comes with the combat context");
     rig.frame(&[]);
     assert!(!rig.controls.is_paused());
-    assert_eq!(rig.controls.next_actions().stick, Stick::new(127, 0));
+    assert_eq!(rig.next().stick, Stick::new(127, 0));
 
     // Pushed during the pause, it reads as soon as there's a step too: a stick has no presses.
     let mut rig = Rig::new();
@@ -298,7 +298,7 @@ fn a_stick_reads_its_level_from_the_first_step_after_the_pause() {
     rig.frame(&[axis(PadAxis::LeftY, -1.0)]);
     rig.frame(&tap(ESCAPE));
     rig.frame(&[]);
-    assert_eq!(rig.controls.next_actions().stick, Stick::new(0, 127));
+    assert_eq!(rig.next().stick, Stick::new(0, 127));
 }
 
 #[test]
@@ -367,7 +367,7 @@ fn run(pause_after: &[u32]) -> (Vec<u64>, Vec<TickActions>) {
     let mut stepped = |rig: &mut Rig, driver: &mut FixedStepDriver, sim: &mut Simulation| {
         let steps = rig.controls.advance(driver, frame_time);
         for _ in 0..steps.count {
-            let tick = rig.controls.next_tick(player);
+            let tick = rig.controls.next_tick(player, 0.0);
             sim.step(&tick);
             ticks.push(tick);
             checksums.push(sim.checksum());
@@ -423,8 +423,8 @@ fn two_steps_a_frame_press_the_simulation_once() {
     let ((mut sim, player), (mut expected, _)) = (fight(), fight());
     let mut rig = Rig::new();
     rig.frame(&tap(Scancode::J));
-    sim.step(&rig.controls.next_tick(player));
-    sim.step(&rig.controls.next_tick(player));
+    sim.step(&rig.controls.next_tick(player, 0.0));
+    sim.step(&rig.controls.next_tick(player, 0.0));
     press(&mut expected, player, L);
     press(&mut expected, player, N);
     assert_eq!(sim.checksum(), expected.checksum(), "a tap");
@@ -433,9 +433,10 @@ fn two_steps_a_frame_press_the_simulation_once() {
     let ((mut sim, player), (mut expected, _)) = (fight(), fight());
     let mut rig = Rig::new();
     rig.frame(&[key(Scancode::J, true)]);
-    sim.step(&rig.controls.next_tick(player));
-    sim.step(&rig.controls.next_tick(player));
+    sim.step(&rig.controls.next_tick(player, 0.0));
+    sim.step(&rig.controls.next_tick(player, 0.0));
     press(&mut expected, player, L);
     press(&mut expected, player, L);
     assert_eq!(sim.checksum(), expected.checksum(), "a held press");
+    assert_eq!(sim.actor(player).expect("alive").moves.started, 1, "it started one move");
 }

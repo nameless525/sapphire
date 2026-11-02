@@ -1443,6 +1443,10 @@ impl Scene {
         self.ecs.cleanup();
     }
 
+    pub fn camera(&self) -> &OrbitCamera {
+        self.ecs.world().resource()
+    }
+
     pub fn camera_mut(&mut self) -> Mut<'_, OrbitCamera> {
         self.ecs.world_mut().resource_mut()
     }

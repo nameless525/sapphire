@@ -1,4 +1,5 @@
-//! `--replay` and `--record`: a combat simulation stepping beside the scene, one tick per fixed step.
+//! `--replay` and `--record`: a combat simulation stepping beside the scene, one tick per fixed step
+//! that isn't paused.
 //!
 //! The simulation has nothing to show yet, so what this holds now is the property everything later
 //! leans on: a run inside the app, with the renderer beside it, reaches the same checksums as the
@@ -7,28 +8,46 @@
 //! golden or a bench from a recorded fight can't come from another fight.
 //!
 //! **Where a recording's actions come from:** [`action_source`], which returns an
-//! [`ActionSource`]. Today that's a named script; the app's own bindings go there too.
+//! [`ActionSource`]: a named script, with `--capture` or `--bench`, or in the windowed app the
+//! bindings of whoever's playing, on any platform (`--record <file> --scenario <name>`). So the file
+//! holds what was played, with each stick turned by the camera it was played under, and it's written
+//! when the app quits. Everything before that is in memory, so a killed process leaves no file.
 //!
-//! Both flags need `--capture` or `--bench`, so Android, whose windowed app refuses those, refuses
-//! these as well, and nothing here runs outside an offscreen mode yet.
+//! `--replay` needs `--capture` or `--bench`: there's no fight to show in a window yet.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use sapphire_gameplay::replay::{
     ARCHITECTURE, ActionSource, ChecksumFile, Divergence, Played, Player, RecordedTrail, Recording, Replay,
-    ReplayError, SCENARIOS, SCRIPTS, Script, checksums_file_name, find_scenario, find_script,
+    ReplayError, SCENARIOS, SCRIPTS, checksums_file_name, find_scenario, find_script,
 };
+use sapphire_gameplay::{ActorId, TickActions};
 
 use crate::LOG_TARGET;
 use crate::options::{CaptureFrames, CombatOption};
 
+/// A script's actions: a function of the tick.
+type ScriptActions = fn(u64, &[ActorId]) -> TickActions;
+
 /// Where a recording's actions come from: the one seam between what drives a fight and the file.
 ///
-/// A script's function is a source. So is anything else with the same shape, such as a live player's
-/// bindings read a tick at a time.
-fn action_source(script: &Script) -> Box<dyn ActionSource> {
-    Box::new(script.actions)
+/// A script's function is a source. So are the player's bindings, read a tick at a time
+/// (`sapphire_controls::ControlsSource`), which is what's left with no script.
+fn action_source<'a>(
+    script: &'a mut Option<ScriptActions>,
+    bindings: &'a mut dyn ActionSource,
+) -> &'a mut dyn ActionSource {
+    match script {
+        Some(actions) => actions,
+        None => bindings,
+    }
+}
+
+/// The bindings where there's no one to hold them: nothing asks this, since a recording without a
+/// window always has a script (`options.rs`).
+pub(crate) fn no_bindings(_tick: u64, _cast: &[ActorId]) -> TickActions {
+    TickActions::NEUTRAL
 }
 
 enum Mode {
@@ -41,13 +60,14 @@ enum Mode {
     },
     Recording {
         recording: Recording,
-        source: Box<dyn ActionSource>,
+        /// The script it plays. With none, it records the bindings it's given.
+        script: Option<ScriptActions>,
         /// The tick limit, once reached.
         stopped: Option<ReplayError>,
     },
 }
 
-/// A simulation run alongside an offscreen mode.
+/// A simulation run alongside the scene.
 pub(crate) struct Combat {
     /// The replay file, read or to write.
     path: PathBuf,
@@ -62,7 +82,9 @@ impl Combat {
     pub fn new(option: &CombatOption) -> Result<Self, String> {
         match option {
             CombatOption::Replay { path, .. } => Self::replaying(path),
-            CombatOption::Record { path, scenario, script } => Self::recording(path, scenario, script),
+            CombatOption::Record { path, scenario, script } => {
+                Self::recording(path, scenario, script.as_deref())
+            }
         }
     }
 
@@ -77,7 +99,7 @@ impl Combat {
         Ok(Self { path: path.to_owned(), mode, steps_past_end: 0 })
     }
 
-    fn recording(path: &Path, scenario: &str, script: &str) -> Result<Self, String> {
+    fn recording(path: &Path, scenario: &str, script: Option<&str>) -> Result<Self, String> {
         // Up front rather than after the run: it may be a session someone played, which no script
         // makes again.
         if path.exists() {
@@ -90,13 +112,17 @@ impl Combat {
             let known: Vec<&str> = SCENARIOS.iter().map(|scenario| scenario.name).collect();
             return Err(format!("--scenario: no scenario `{scenario}`; there's {known:?}"));
         };
-        let Some(script) = find_script(script) else {
-            let known: Vec<&str> = SCRIPTS.iter().map(|script| script.name).collect();
-            return Err(format!("--script: no script `{script}`; there's {known:?}"));
-        };
+        let script = script
+            .map(|name| {
+                find_script(name).map(|script| script.actions).ok_or_else(|| {
+                    let known: Vec<&str> = SCRIPTS.iter().map(|script| script.name).collect();
+                    format!("--script: no script `{name}`; there's {known:?}")
+                })
+            })
+            .transpose()?;
         let recording =
             Recording::new(scenario, scenario.config).map_err(|error| format!("--record: {error}"))?;
-        let mode = Mode::Recording { recording, source: action_source(script), stopped: None };
+        let mode = Mode::Recording { recording, script, stopped: None };
         Ok(Self { path: path.to_owned(), mode, steps_past_end: 0 })
     }
 
@@ -127,20 +153,24 @@ impl Combat {
     }
 
     /// One tick, with whatever else this fixed step does. Past a replay's end, or a recording's
-    /// limit, it does nothing and counts.
-    pub fn step(&mut self) {
+    /// limit, it does nothing and counts. Returns whether it asked `bindings`.
+    pub fn step(&mut self, bindings: &mut dyn ActionSource) -> bool {
         match &mut self.mode {
             Mode::Replaying { player, .. } => {
                 if !player.step() {
                     self.steps_past_end += 1;
                 }
+                false
             }
-            Mode::Recording { recording, source, stopped } => {
-                if stopped.is_none()
-                    && let Err(error) = recording.step(source.as_mut())
-                {
+            Mode::Recording { recording, script, stopped } => {
+                if stopped.is_some() {
+                    return false;
+                }
+                let asks = script.is_none();
+                if let Err(error) = recording.step(action_source(script, bindings)) {
                     *stopped = Some(error);
                 }
+                asks
             }
         }
     }
@@ -219,6 +249,16 @@ impl Combat {
     }
 }
 
+/// Asks `bindings` for one fixed step's input, exactly once: a recording of the player asks them
+/// itself, and otherwise this does, because asking is what moves a press along. `player` is who a
+/// step with no recording names.
+pub(crate) fn read_bindings(combat: Option<&mut Combat>, bindings: &mut dyn ActionSource, player: ActorId) {
+    let asked = combat.is_some_and(|combat| combat.step(bindings));
+    if !asked {
+        bindings.actions(0, &[player]);
+    }
+}
+
 /// Rule R6, beside a renderer. The replay suite is the gate; here it's a finding to look at, since a
 /// profiling build's zones may allocate where a plain one doesn't.
 fn log_gate(played: &Played) {
@@ -245,4 +285,139 @@ fn recorded_trail(path: &Path, name: &str) -> Result<Option<RecordedTrail>, Stri
     };
     let checksums = ChecksumFile::parse(&text).map_err(|error| format!("{}: {error}", file.display()))?;
     Ok(checksums.get(name).cloned())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use sapphire_gameplay::replay::{Replay, find_script};
+    use sapphire_gameplay::{ActorActions, Buttons};
+    use sapphire_input::RawInput;
+    use sapphire_platform::{Scancode, Size, Timestamp};
+
+    use super::*;
+    use crate::input::SandboxInput;
+
+    /// A file name of this process's own in the temp directory, deleted again when dropped.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            let file = format!("sapphire-sandbox-{}-{name}.sreplay", std::process::id());
+            let path = std::env::temp_dir().join(file);
+            let _ = fs::remove_file(&path);
+            Self(path)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.0);
+        }
+    }
+
+    fn recording(path: &Path, script: Option<&str>) -> Combat {
+        let option = CombatOption::Record {
+            path: path.to_owned(),
+            scenario: SCENARIOS[0].name.to_owned(),
+            script: script.map(str::to_owned),
+        };
+        Combat::new(&option).expect("sets up")
+    }
+
+    /// A fight played on the keyboard, through the sandbox's own input, reaches the file and plays
+    /// back to the same checksums.
+    #[test]
+    fn a_player_is_recorded_through_the_bindings() {
+        let scratch = Scratch::new("played");
+        let mut combat = recording(&scratch.0, None);
+        let cast = SCENARIOS[0].start(SCENARIOS[0].config).expect("sets up").1;
+        let mut input = SandboxInput::new(false, true, Size { width: 640, height: 360 }).expect("binds");
+        let frames: [&[(Scancode, bool)]; 4] = [
+            &[(Scancode::W, true)],
+            &[(Scancode::J, true), (Scancode::J, false)],
+            &[(Scancode::W, false)],
+            &[],
+        ];
+        // Looking along world +X, so forward is +x in the file.
+        let camera_yaw = std::f32::consts::FRAC_PI_2;
+        for (index, keys) in frames.iter().enumerate() {
+            let frame = index as u64 * 16;
+            for (offset, &(scancode, down)) in keys.iter().enumerate() {
+                input.push(frame + 1 + offset as u64, RawInput::Key { scancode, down });
+            }
+            assert!(!input.update(Timestamp::from_nanos((frame + 16) * 1_000_000)));
+            assert!(combat.step(&mut input.source(camera_yaw)), "it asks the bindings");
+        }
+        combat.finish().expect("writes");
+
+        let replay = Replay::decode(&fs::read(&scratch.0).expect("written")).expect("reads");
+        let read: Vec<_> = replay.actions().map(|tick| tick.get(cast[0])).collect();
+        let forward = sapphire_gameplay::Stick::new(127, 0);
+        assert_eq!(
+            read,
+            [
+                ActorActions { buttons: Buttons::NONE, stick: forward },
+                ActorActions { buttons: Buttons::LIGHT, stick: forward },
+                ActorActions::NEUTRAL,
+                ActorActions::NEUTRAL,
+            ]
+        );
+
+        let mut played = Combat::new(&CombatOption::Replay { path: scratch.0.clone(), to_end: true })
+            .expect("a recording reads as a replay");
+        for _ in 0..read.len() {
+            assert!(!played.step(&mut no_bindings), "a replay asks no one");
+        }
+        played.finish().expect("nothing recorded to differ from");
+    }
+
+    /// However the step goes, the bindings are read once, so no press waits or is lost.
+    #[test]
+    fn every_step_reads_the_bindings_exactly_once() {
+        let player = ActorId::from_raw(1).expect("not zero");
+        let scratch = (Scratch::new("once-player"), Scratch::new("once-script"), Scratch::new("once-replay"));
+        let script = Some(find_script("idle").expect("a script").name);
+        let mut played = recording(&scratch.0.0, None);
+        let mut scripted = recording(&scratch.1.0, script);
+        let mut for_replay = recording(&scratch.2.0, script);
+        for _ in 0..3 {
+            for_replay.step(&mut no_bindings);
+        }
+        for_replay.finish().expect("writes");
+        let replay = CombatOption::Replay { path: scratch.2.0.clone(), to_end: true };
+        let mut replaying = Combat::new(&replay).expect("reads");
+
+        let count = |combat: Option<&mut Combat>| {
+            let mut asked = 0;
+            let mut bindings = |_: u64, _: &[ActorId]| {
+                asked += 1;
+                TickActions::NEUTRAL
+            };
+            read_bindings(combat, &mut bindings, player);
+            asked
+        };
+        assert_eq!(count(None), 1, "nothing's recording");
+        assert_eq!(count(Some(&mut played)), 1, "a recording of the player");
+        assert_eq!(count(Some(&mut scripted)), 1, "a script's, which asks them nothing");
+        assert_eq!(count(Some(&mut replaying)), 1, "a replay");
+    }
+
+    #[test]
+    fn a_recording_refuses_to_overwrite_and_names_what_it_cant_find() {
+        let scratch = Scratch::new("refused");
+        let refused = |path: &Path, scenario: &str, script: Option<&str>| {
+            let option = CombatOption::Record {
+                path: path.to_owned(),
+                scenario: scenario.to_owned(),
+                script: script.map(str::to_owned),
+            };
+            Combat::new(&option).err().expect("refused")
+        };
+        assert!(refused(&scratch.0, "no-such", None).contains("no-such"));
+        assert!(refused(&scratch.0, SCENARIOS[0].name, Some("no-such")).contains("no-such"));
+        fs::write(&scratch.0, b"a session someone played").expect("writes");
+        assert!(refused(&scratch.0, SCENARIOS[0].name, None).contains("it exists"));
+    }
 }

@@ -4,6 +4,8 @@ use std::fmt;
 use std::time::Duration;
 
 use sapphire_assets::AssetStats;
+use sapphire_gameplay::ActorId;
+use sapphire_gameplay::replay::ActionSource;
 use sapphire_platform::raw_window_handle::{HandleError, HasDisplayHandle, HasWindowHandle};
 use sapphire_platform::{
     App, AppControl, AppInitError, AppMetadata, DeviceClass, Event, LifecycleEvent, Os, Platform,
@@ -22,12 +24,13 @@ use sapphire_time::{
 
 use crate::LOG_TARGET;
 use crate::audio::SandboxAudio;
+use crate::combat::Combat;
 use crate::content::Content;
 #[cfg(feature = "dev")]
 use crate::dev::{DevTools, FrameState};
 use crate::environment::FOG_CARDS;
 use crate::foliage::FoliageMeshes;
-use crate::input::SandboxInput;
+use crate::input::{PLAYER, SandboxInput};
 use crate::lookdev::TownMeshes;
 use crate::options::Options;
 use crate::rims::RimRigMeshes;
@@ -75,6 +78,8 @@ pub struct SandboxApp {
     input: SandboxInput,
     /// The audio system, with `--cue`: nothing audio exists without it.
     audio: Option<SandboxAudio>,
+    /// `--record`: a simulation that takes a tick with each fixed step, played by the bindings.
+    combat: Option<Combat>,
 
     real: RealClock,
     driver: FixedStepDriver,
@@ -156,6 +161,8 @@ impl App for SandboxApp {
         // Desktop-only bindings, such as `Esc` quitting, are a context of their own.
         let desktop = info.device_class == DeviceClass::Desktop;
         let input = SandboxInput::new(desktop, options.combat_input, window.size())?;
+        // Before any GPU work, so a bad scenario or a file in the way costs nothing and says why.
+        let combat = options.combat.as_ref().map(Combat::new).transpose().map_err(AppInitError::msg)?;
         let mut scene = Scene::with_character(renderer.character, renderer.character_bounds, options.skinned);
         scene.set_sky_material(renderer.sky);
         if let Some(rig) = &options.character_rig {
@@ -254,6 +261,7 @@ impl App for SandboxApp {
             scene,
             input,
             audio,
+            combat,
             real: RealClock::new(),
             driver: FixedStepDriver::new(FixedStepConfig::default()),
             background_pause: None,
@@ -388,6 +396,9 @@ impl App for SandboxApp {
 
     fn quit(&mut self, _platform: &mut Platform) {
         self.save_pipeline_cache();
+        if let Some(Err(error)) = self.combat.take().map(Combat::finish) {
+            tracing::error!(target: LOG_TARGET, %error, "the recording wasn't written");
+        }
         tracing::info!(target: LOG_TARGET, presented = self.presented_frames, "quit");
     }
 }
@@ -410,14 +421,12 @@ impl SandboxApp {
             return steps;
         }
         self.scene.apply(self.input.take_actions());
+        // The camera the player was looking at when they pushed. A tick carries the direction they
+        // meant, so nothing past here reads a camera.
+        let camera_yaw = self.scene.camera().heading();
 
         for _ in 0..steps.count {
-            // The tick's input for a simulation. Nothing plays it yet, so it goes to the log.
-            let tick = self.input.next_tick();
-            #[cfg(feature = "dev")]
-            self.dev.log_tick_actions(&tick);
-            #[cfg(not(feature = "dev"))]
-            let _ = tick;
+            self.read_combat_step(camera_yaw);
 
             let scene = &mut self.scene;
             #[cfg(feature = "dev")]
@@ -436,6 +445,22 @@ impl SandboxApp {
             );
         }
         steps
+    }
+
+    /// The tick's input, for `--record`'s simulation if there is one, which then takes its tick, and
+    /// for dev builds' log either way. Outside the steps' allocation count, because a recording's
+    /// list of actions grows: the simulation's own step is held to rule R6 by `SimStats::allocations`.
+    fn read_combat_step(&mut self, camera_yaw: f32) {
+        let mut bindings = self.input.source(camera_yaw);
+        #[cfg(feature = "dev")]
+        let dev = &mut self.dev;
+        let mut read = |tick: u64, cast: &[ActorId]| {
+            let actions = bindings.actions(tick, cast);
+            #[cfg(feature = "dev")]
+            dev.log_tick_actions(&actions);
+            actions
+        };
+        crate::combat::read_bindings(self.combat.as_mut(), &mut read, PLAYER);
     }
 
     /// Extracts the frame, then draws and presents it if the surface gave an image. Returns

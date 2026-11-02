@@ -2969,7 +2969,7 @@ dependencies = [
  "sapphire_platform",
  "sapphire_serialize",
  "sapphire_time",
- "thiserror",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

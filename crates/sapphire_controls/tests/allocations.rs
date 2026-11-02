@@ -6,6 +6,7 @@ use std::alloc::System;
 
 use sapphire_controls::CombatControls;
 use sapphire_core::alloc::{self, CountingAllocator, PER_THREAD_COUNTS};
+use sapphire_gameplay::replay::ActionSource;
 use sapphire_gameplay::{ActorId, Buttons};
 use sapphire_input::{PadAxis, PadButton, RawInput, Timestamp};
 use sapphire_math::Vec2;
@@ -34,11 +35,20 @@ fn frame(controls: &mut CombatControls, driver: &mut FixedStepDriver, frame: u64
     controls.update(t(16));
     let mut seen = 0;
     let steps = controls.advance(driver, std::time::Duration::from_millis(33));
-    for _ in 0..steps.count {
-        let tick = controls.next_tick(ActorId::from_raw(1).expect("not zero"));
-        seen += tick.get(ActorId::from_raw(1).expect("not zero")).buttons.bits().count_ones() as u64;
+    let player = ActorId::from_raw(1).expect("not zero");
+    // Under a turning camera, and through the source a recording asks, half the time.
+    let camera_yaw = frame as f32 * 0.05;
+    for step in 0..steps.count {
+        let tick = if (frame + u64::from(step)).is_multiple_of(2) {
+            controls.next_tick(player, camera_yaw)
+        } else {
+            controls.source(camera_yaw).actions(frame, &[player])
+        };
+        seen += tick.get(player).buttons.bits().count_ones() as u64;
     }
-    seen + u64::from(controls.look() != Vec2::ZERO) + u64::from(controls.camera_zoom() != 0.0)
+    seen + u64::from(controls.look() != Vec2::ZERO)
+        + u64::from(controls.camera_zoom() != 0.0)
+        + u64::from(controls.raw_stick() != Vec2::ZERO)
 }
 
 #[test]

@@ -196,19 +196,20 @@ pub(crate) struct Options {
     pub live_link: Option<LiveLinkOption>,
 }
 
-/// A combat simulation stepping beside the scene: see [`crate::combat`]. Needs `--capture` or
-/// `--bench`.
+/// A combat simulation stepping beside the scene: see [`crate::combat`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum CombatOption {
-    /// `--replay <file>`: play it, and check it against the recorded checksums beside it.
+    /// `--replay <file>`, with `--capture` or `--bench`: play it, and check it against the recorded
+    /// checksums beside it.
     Replay {
         path: PathBuf,
         /// A capture with no `--capture-ticks` stops at the replay's end, which isn't known yet.
         to_end: bool,
     },
-    /// `--record <file> --scenario <name> --script <name>`: run the scenario on the script's actions
-    /// and write the replay.
-    Record { path: PathBuf, scenario: String, script: String },
+    /// `--record <file> --scenario <name>`: run the scenario and write the replay. With `--script
+    /// <name>` and `--capture` or `--bench`, on the script's actions. In the windowed app, on the
+    /// actions of whoever's playing, so it's `None` there.
+    Record { path: PathBuf, scenario: String, script: Option<String> },
 }
 
 /// How live link takes connections (`--live-link`), in `dev` builds.
@@ -846,17 +847,30 @@ impl Options {
             (Some(path), None, None, None) => {
                 Some(CombatOption::Replay { path, to_end: capture_ticks.is_none() })
             }
-            (None, Some(path), Some(scenario), Some(script)) => {
+            (None, Some(path), Some(scenario), script) => {
                 Some(CombatOption::Record { path, scenario, script })
             }
             (Some(_), Some(_), ..) => return Err("--replay and --record are exclusive".to_owned()),
-            (None, Some(_), ..) => return Err("--record needs --scenario and --script".to_owned()),
+            (None, Some(_), None, _) => return Err("--record needs --scenario".to_owned()),
             _ => return Err("--scenario and --script need --record".to_owned()),
         };
-        if options.combat.is_some()
-            && !matches!(mode, Some(OffscreenMode::Capture { .. } | OffscreenMode::Bench { .. }))
-        {
-            return Err(format!("--replay and --record need {CAPTURE_FLAG} or {BENCH_FLAG}"));
+        let drawn_alone = matches!(mode, Some(OffscreenMode::Capture { .. } | OffscreenMode::Bench { .. }));
+        match &options.combat {
+            Some(CombatOption::Replay { .. }) if !drawn_alone => {
+                return Err(format!("--replay needs {CAPTURE_FLAG} or {BENCH_FLAG}"));
+            }
+            Some(CombatOption::Record { script: Some(_), .. }) if !drawn_alone => {
+                return Err(format!(
+                    "--script needs {CAPTURE_FLAG} or {BENCH_FLAG}: the windowed app records who's playing"
+                ));
+            }
+            Some(CombatOption::Record { script: None, .. }) if mode.is_some() => {
+                return Err(
+                    "--record needs --scenario and --script without a window: no one's there to play"
+                        .to_owned(),
+                );
+            }
+            _ => {}
         }
         for (given, flag) in [
             (capture_ticks.is_some(), "--capture-ticks"),
@@ -1524,9 +1538,21 @@ mod tests {
             Some(CombatOption::Record {
                 path: PathBuf::from("a.sreplay"),
                 scenario: "s".to_owned(),
-                script: "p".to_owned(),
+                script: Some("p".to_owned()),
             })
         );
+        // The windowed app records whoever's playing: it has no offscreen mode to refuse.
+        let (options, _) = parse(&["--record", "a.sreplay", "--scenario", "s"]).unwrap();
+        assert_eq!(
+            options.combat,
+            Some(CombatOption::Record {
+                path: PathBuf::from("a.sreplay"),
+                scenario: "s".to_owned(),
+                script: None,
+            })
+        );
+        assert!(options.offscreen.is_none());
+        options.refuse_offscreen().expect("Android's windowed app can record too");
 
         let refused = |args: &[&str], part: &str| {
             let error = parse(args).expect_err("refused");
@@ -1552,12 +1578,17 @@ mod tests {
             ],
             "before tick 0",
         );
-        // The windowed app, Android's, is refused here, as it refuses `--capture` itself.
+        // A replay has nothing to show in a window yet, and a window's recording is of its player.
         refused(&["--replay", "a.sreplay"], "--capture");
         refused(&["--record", "a", "--scenario", "s", "--script", "p"], "--capture");
         refused(&["--offscreen", "--replay", "a.sreplay"], "--capture");
+        refused(&["--offscreen", "--record", "a", "--scenario", "s", "--script", "p"], "--capture");
+        // Nothing without a window has a player, and `--offscreen` steps no simulation.
+        refused(&["--offscreen", "--record", "a", "--scenario", "s"], "no one's there");
+        refused(&["--capture", "x", "--record", "a", "--scenario", "s"], "--script");
+        refused(&["--bench", "10", "--record", "a", "--scenario", "s"], "--script");
+        refused(&["--record", "a"], "--scenario");
         refused(&["--capture", "x", "--record", "a"], "--scenario");
-        refused(&["--capture", "x", "--record", "a", "--scenario", "s"], "--scenario");
         refused(&["--capture", "x", "--scenario", "s"], "--record");
         refused(&["--capture", "x", "--replay", "a", "--scenario", "s"], "--record");
         refused(&["--capture", "x", "--replay", "a", "--record", "b"], "exclusive");

@@ -57,6 +57,8 @@ The next run's Linux and Windows jobs compare against that one file, which is wh
 
 `--replay <file>` and `--record <file> --scenario <name> --script <name>` go with `--capture` or `--bench`: the simulation takes a tick with each fixed step, beside the renderer. A replay is held to the recorded checksums beside its file, and a capture of one that has left them isn't written. A capture stops at the replay's end unless `--capture-ticks` picks an earlier tick. A bench goes on past the end, and says so, so give it a replay long enough for its frames (60 of warm-up, its own, and 240 timed).
 
+`--record <file> --scenario <name>`, with no `--script`, `--capture` or `--bench`, records a fight someone plays: the windowed app's simulation takes each fixed step's input from combat's bindings (`sapphire_controls::ControlsSource`, through `combat::action_source` in the sandbox), turned by the camera's yaw, so the file carries world directions and no camera. A pause records nothing, since no steps run. The file is written when the app quits, so a killed process leaves none. On Android, give an absolute path inside the app's own directory (`/data/user/0/dev.sapphire.sandbox/files/<name>.sreplay`) and fetch it with `adb exec-out run-as dev.sapphire.sandbox cat files/<name>.sreplay`.
+
 ## Build profiles and content
 
 `cargo xtask --locked content --cook desktop` builds the cooker with the `tools` profile. That profile

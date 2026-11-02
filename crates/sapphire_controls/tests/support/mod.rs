@@ -2,7 +2,7 @@
 #![allow(dead_code)] // Each test binary uses its own part of this.
 
 use sapphire_controls::CombatControls;
-use sapphire_gameplay::{Buttons, Controls};
+use sapphire_gameplay::{ActorActions, Buttons, Controls, Stick};
 use sapphire_input::{MouseButton, PadAxis, PadButton, RawInput, Timestamp, VirtualControl};
 use sapphire_math::Vec2;
 use sapphire_platform::{
@@ -79,7 +79,15 @@ impl Rig {
 
     /// What the next `count` steps read.
     pub fn steps(&mut self, count: usize) -> Vec<Buttons> {
-        (0..count).map(|_| self.controls.next_actions().buttons).collect()
+        (0..count).map(|_| self.next().buttons).collect()
+    }
+
+    /// What the next step reads, with its stick as the player pushed it: under a camera along +Z,
+    /// where the view's right is −X, with x turned back. `world_stick.rs` is about the turn itself;
+    /// everything else here has no camera in it.
+    pub fn next(&mut self) -> ActorActions {
+        let read = self.controls.next_actions(0.0);
+        ActorActions { buttons: read.buttons, stick: Stick::new(-read.stick.x(), read.stick.y()) }
     }
 
     /// A platform key event, within the current frame.

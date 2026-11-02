@@ -12,14 +12,15 @@
 //!   next fixed step consumes, so an input lands on a tick rather than whenever the OS delivered
 //!   it (spec §4.2 step 1, rule R3), and replays stay deterministic.
 //! - **Combat's controls** sit under the sandbox's contexts, so the sandbox's bindings take whatever
-//!   source they share, and with `--combat-input` the sandbox's are off. Their [`TickActions`] drive
-//!   nothing yet, since there's no fight to play: dev builds log them. Their pause stops the fixed
-//!   steps in every build, and Android's Back opens it and then leaves through it.
+//!   source they share, and with `--combat-input` the sandbox's are off. Their ticks drive a
+//!   recording's simulation under `--record`, and otherwise nothing yet, since there's no fight to
+//!   play: dev builds log them. Their pause stops the fixed steps in every build, and Android's Back
+//!   opens it and then leaves through it.
 
 use std::time::Duration;
 
-use sapphire_controls::{CombatControls, default_bindings};
-use sapphire_gameplay::{ActorId, TickActions};
+use sapphire_controls::{CombatControls, ControlsSource, default_bindings};
+use sapphire_gameplay::ActorId;
 use sapphire_input::{ActionEventKind, ActionId, InputMap};
 use sapphire_math::Vec2;
 use sapphire_platform::{AppInitError, Event, Size, Timestamp};
@@ -37,8 +38,9 @@ const CONTEXTS: [(&str, i32); 2] = [("camera", 10), ("debug", 20)];
 /// Enabled on desktop only: `Esc` quits there.
 const DESKTOP_CONTEXT: (&str, i32) = ("desktop", 30);
 
-/// The actor the sandbox's ticks name: the one a simulation spawns first.
-const PLAYER: ActorId = ActorId::from_raw(1).expect("not zero");
+/// The actor the sandbox's ticks name when there's no scenario to say: the one a simulation spawns
+/// first.
+pub(crate) const PLAYER: ActorId = ActorId::from_raw(1).expect("not zero");
 
 /// Simulation actions requested since the last fixed step.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -137,11 +139,10 @@ impl SandboxInput {
         self.controls.advance(driver, frame_time)
     }
 
-    /// One fixed step's input for the simulation, for the actor it spawned first. Once per step: this
-    /// is where a replay's recording takes its ticks.
-    #[must_use = "a press this returns is gone from the next call"]
-    pub fn next_tick(&mut self) -> TickActions {
-        self.controls.next_tick(PLAYER)
+    /// The bindings as the source of the fixed steps' input, turned by where the camera looks
+    /// (`OrbitCamera::heading`). Asked once per step: this is where a recording takes its ticks.
+    pub fn source(&mut self, camera_yaw: f32) -> ControlsSource<'_> {
+        self.controls.source(camera_yaw)
     }
 
     /// Applies this frame's orbit and zoom, the sandbox's own or combat's. Sources go to one or the
@@ -177,7 +178,9 @@ impl SandboxInput {
 #[cfg(test)]
 mod tests {
     use sapphire_gameplay::Buttons;
+    use sapphire_gameplay::replay::ActionSource;
     use sapphire_input::{PadAxis, PadButton, RawInput};
+    use sapphire_math::Vec3;
     use sapphire_platform::{GamepadType, LifecycleEvent, Scancode, TouchPhase};
 
     use super::*;
@@ -198,7 +201,7 @@ mod tests {
     }
 
     impl SandboxInput {
-        fn push(&mut self, t: u64, raw: RawInput) {
+        pub(crate) fn push(&mut self, t: u64, raw: RawInput) {
             self.controls.input_mut().push(ms(t), raw);
         }
 
@@ -387,7 +390,34 @@ mod tests {
 
     /// What the next tick gives the actor it names.
     fn next_buttons(input: &mut SandboxInput) -> Buttons {
-        input.next_tick().get(PLAYER).buttons
+        input.source(0.0).actions(0, &[PLAYER]).get(PLAYER).buttons
+    }
+
+    /// The camera the app hands the mapping is the one it draws: forward walks away from the view,
+    /// and right walks to the right of the picture, read from the view matrix itself.
+    #[test]
+    fn a_push_goes_where_the_view_goes() {
+        for orbit in [0.0, 0.35, 1.0, std::f32::consts::FRAC_PI_2, 2.5, -2.0, 40.0] {
+            let mut camera = OrbitCamera::framing([[-1.0, 0.0, -1.0], [1.0, 2.0, 1.0]]);
+            camera.rotate(orbit - 0.35, 0.2);
+            for _ in 0..600 {
+                camera.update(1.0 / 60.0);
+            }
+            let view = camera.camera_data(16.0 / 9.0).view;
+            let right = view.row(0).truncate();
+            let forward = -view.row(2).truncate();
+            let ground = Vec3::new(forward.x, 0.0, forward.z).normalize();
+
+            for (key, want) in [(Scancode::W, ground), (Scancode::D, right), (Scancode::S, -ground)] {
+                let mut input = input_with(false, true);
+                input.key(1, key, true);
+                input.update(ms(16));
+                let tick = input.source(camera.heading()).actions(0, &[PLAYER]);
+                let stick = tick.get(PLAYER).stick.to_vec2();
+                let got = Vec3::new(stick.x, 0.0, stick.y);
+                assert!(got.distance(want) < 0.02, "{key:?} at orbit {orbit}: {got}, the view's {want}");
+            }
+        }
     }
 
     #[test]

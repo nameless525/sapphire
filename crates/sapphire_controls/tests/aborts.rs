@@ -38,7 +38,7 @@ fn abort_no_a_player_letting_go() {
     rig.frame(&[key(J, true), axis(PadAxis::LeftX, 1.0)]);
     assert_eq!(rig.steps(1), [L]);
     rig.frame(&[key(J, false), axis(PadAxis::LeftX, 0.0)]);
-    let next = rig.controls.next_actions();
+    let next = rig.next();
     assert_eq!((next.buttons, next.stick), (N, Stick::CENTER), "reads released, and no press comes of it");
 
     // A tap binding fires on its release, and is one press.
@@ -54,10 +54,10 @@ fn abort_release_a_pad_disconnecting_lets_go_of_that_pad_alone() {
     // Held on the pad and on the keyboard.
     let mut rig = Rig::new();
     rig.frame(&[pad(PadButton::West, true), key(K, true), axis(PadAxis::LeftX, 1.0)]);
-    let next = rig.controls.next_actions();
+    let next = rig.next();
     assert_eq!((next.buttons, next.stick), (L | H, Stick::new(127, 0)));
     rig.frame(&[REMOVED]);
-    let next = rig.controls.next_actions();
+    let next = rig.next();
     assert_eq!(
         (next.buttons, next.stick),
         (H, Stick::CENTER),
@@ -91,7 +91,7 @@ fn abort_release_a_pad_disconnecting_lets_go_of_that_pad_alone() {
     rig.frame(&[REMOVED]);
     assert_eq!(rig.steps(1), [N]);
     rig.frame(&[RawInput::GamepadAdded { pad: 0, kind: GamepadType::XboxOne }]);
-    let next = rig.controls.next_actions();
+    let next = rig.next();
     assert_eq!((next.buttons, next.stick), (N, Stick::CENTER));
     rig.frame(&[pad(PadButton::West, true)]);
     assert_eq!(rig.steps(2), [L, L]);
@@ -118,11 +118,11 @@ fn abort_all_losing_focus_or_the_foreground_lets_go_of_everything() {
         // Keyboard and pad alike read released at the next step, and that's no press.
         let mut rig = Rig::new();
         rig.frame(&[key(J, true), pad(PadButton::East, true), axis(PadAxis::LeftX, 1.0)]);
-        let next = rig.controls.next_actions();
+        let next = rig.next();
         assert_eq!((next.buttons, next.stick), (L | H, Stick::new(127, 0)), "{name}");
         lose(&mut rig, &[J]);
         rig.finish_frame();
-        let next = rig.controls.next_actions();
+        let next = rig.next();
         assert_eq!((next.buttons, next.stick), (N, Stick::CENTER), "{name}");
 
         // A press made before the loss, in the same frame, still arrives once. Its key-up, which SDL

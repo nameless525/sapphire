@@ -72,8 +72,8 @@ const COPY_IN_PLACE: usize = 256 << 10;
 /// read the versions it serves, to find what a push needs to send. Packs nobody pushed are read
 /// from the app's source as they are. A pushed pack is served from then on, to every later open,
 /// until another push replaces it or the app restarts: a desktop app whose pack file changes
-/// after a push keeps serving the pushed version. What pushes may hold is bounded by its
-/// [`PushLimits`].
+/// after a push keeps serving the pushed version, which an app's hot reload should say, asking
+/// [`Self::pushed`]. What pushes may hold is bounded by its [`PushLimits`].
 pub struct LivePacks {
     base: Arc<dyn PackSource>,
     limits: PushLimits,

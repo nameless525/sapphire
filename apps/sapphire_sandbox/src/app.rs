@@ -881,8 +881,8 @@ struct GpuDevice {
 
 /// A renderer and the meshes it holds: built with the device, and again for a new quality
 /// tier.
-struct SceneRenderer {
-    renderer: Renderer,
+pub(crate) struct SceneRenderer {
+    pub(crate) renderer: Renderer,
     character: MeshHandle,
     character_bounds: [[f32; 3]; 2],
     /// The skinned stalk, with `--skinned`.
@@ -917,7 +917,7 @@ struct SceneRenderer {
 
 impl Scene {
     /// Draws the meshes of a new `renderer`: after device loss or for a new quality tier.
-    fn set_meshes(&mut self, renderer: &SceneRenderer) {
+    pub(crate) fn set_meshes(&mut self, renderer: &SceneRenderer) {
         self.set_character_mesh(renderer.character);
         self.set_sky_material(renderer.sky);
         if let Some(stalk) = renderer.stalk {
@@ -1008,7 +1008,7 @@ struct SceneMeshes {
 /// plants, the hard-edged outline sample, the stage and the look-dev town. Fails if the device is
 /// lost while the renderer is made or the assets uploaded (`gpu.is_lost()` then says so), rather
 /// than hand back a renderer of dead objects.
-fn create_renderer(
+pub(crate) fn create_renderer(
     content: &mut Content,
     gpu: &GpuContext,
     format: wgpu::TextureFormat,

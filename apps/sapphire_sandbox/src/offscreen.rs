@@ -53,7 +53,7 @@ impl App for OffscreenApp {
             #[cfg(feature = "dev")]
             OffscreenMode::Serve => {
                 let stage = Stage::new(platform, &options)?;
-                let serving = crate::serve::Serving::new(stage, width, height, options.frame_limit);
+                let serving = crate::serve::Serving::new(stage, options.clone(), width, height);
                 return Ok(Self { serving: Some(serving) });
             }
             #[cfg(not(feature = "dev"))]

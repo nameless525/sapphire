@@ -7,7 +7,9 @@
 //! - a rewritten pack (`cargo xtask content` after an edit) is remounted: the asset server
 //!   reloads the assets that changed behind their handles, and [`Content`] uploads the new
 //!   versions within the frame's upload budget, in place, and the scene poses what a replaced mesh
-//!   starts over ([`Scene::follow_content`]);
+//!   starts over ([`Scene::follow_content`]). A pack live link pushed is read from the push until
+//!   another push or a restart, so the file is left alone, and the log and the overlay say its
+//!   new version isn't in use;
 //! - WGSL files whose text changed on disk since hot reload's last swap replace those files in
 //!   the newest sources the renderer was asked for, so live link's pushes of other files keep
 //!   their text, and build the renderer's pipelines again off the frame thread, which swaps them
@@ -44,6 +46,7 @@ use sapphire_world::tod::TodTimeline;
 
 use crate::LOG_TARGET;
 use crate::content::Content;
+use crate::link::cook_not_in_use;
 use crate::scene::{Day, Scene};
 use crate::shader_edits::{Answered, Origin, ShaderEdits};
 
@@ -273,8 +276,13 @@ impl Reload {
             return;
         }
         profiling::scope!("hot reload");
-        // A pack the app never mounted is no concern of its.
         for pack in &packs {
+            // Live link's push is what the app reads: a remount would find nothing changed.
+            if let Some(warning) = cook_not_in_use(&content.live_packs(), pack) {
+                errors.push(warning);
+                continue;
+            }
+            // A pack the app never mounted is no concern of its.
             if !content.is_mounted(pack) {
                 continue;
             }

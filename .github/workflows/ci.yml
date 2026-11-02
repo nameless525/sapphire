@@ -448,8 +448,9 @@ jobs:
           cargo build --package sapphire_sandbox --package sapphire_livelink --features sapphire_sandbox/dev --locked
       # The dev sandbox offscreen on a private port: the tool reads its status, sets a cvar,
       # captures a frame and pushes a document that doesn't parse, which the app must refuse and
-      # count while it goes on drawing; then it must quit cleanly on SIGTERM. `--frames` bounds a
-      # run that the quit never reaches, and the step's limit everything else.
+      # count while it goes on drawing. A pack pushed and then touched on disk must be told of,
+      # and `r.tier` must make a new renderer. Then it must quit cleanly on SIGTERM. `--frames`
+      # bounds a run that the quit never reaches, and the step's limit everything else.
       - name: Live-link smoke (dev sandbox, offscreen)
         if: runner.os == 'Linux'
         timeout-minutes: 10
@@ -488,6 +489,22 @@ jobs:
           link status 2> "$out/status-after.log"
           cat "$out/status-after.log"
           grep -q ", 1 refused," "$out/status-after.log"
+          logged() {
+            for attempt in $(seq 240); do
+              if grep -q "$1" "$out/sandbox.log"; then return 0; fi
+              sleep 1
+            done
+            echo "::error::the dev sandbox never logged: $1"
+            tail -n 50 "$out/sandbox.log"
+            return 1
+          }
+          link push target/content/desktop/shared.spack
+          touch target/content/desktop/shared.spack
+          logged "that version isn't in use"
+          link cvar r.tier mobile-high
+          logged "renderer rebuilt for the quality tier"
+          link capture "$out/capture-mobile-high.png"
+          test -s "$out/capture-mobile-high.png"
           kill -TERM "$app"
           code=0
           wait "$app" || code=$?

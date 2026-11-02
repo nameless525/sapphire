@@ -283,6 +283,17 @@ fn shaders(
     Ok(())
 }
 
+/// What to say of pack `name`, rewritten on disk, when `packs` serves a push of it in place of the
+/// file (review DV-11), or nothing when it serves the file.
+pub(crate) fn cook_not_in_use(packs: &LivePacks, name: &str) -> Option<String> {
+    packs.pushed().iter().any(|(pushed, _)| pushed == name).then(|| {
+        format!(
+            "pack {name:?}: its file changed, but that version isn't in use: live link's push is \
+             served until another push or a restart"
+        )
+    })
+}
+
 /// Refuses a push with `error`, which the overlay lists.
 fn refuse(errors: &mut Vec<String>, reply: Responder, error: String) {
     tracing::warn!(target: LOG_TARGET, error, "live link refused a push");
@@ -454,5 +465,49 @@ mod gpu_tests {
             let error = capture_at(&gpu, size).expect_err("a refusal").to_string();
             assert!(error.contains("minimized"), "{size:?}: {error}");
         }
+    }
+}
+
+/// They need no GPU, but compile only in `dev` builds, which CI tests in its GPU job: run them
+/// with `cargo test -p sapphire_sandbox --features dev --lib -- --ignored link::`.
+#[cfg(test)]
+mod tests {
+    use std::net::SocketAddr;
+
+    use sapphire_assets::pack::{Codec, PackAsset, write_pack};
+    use sapphire_assets::{AssetBudgets, AssetId, AssetKind, AssetServer, MemoryPackSource};
+    use sapphire_livelink::Client;
+
+    use super::*;
+
+    #[test]
+    #[ignore = "runs with CI's dev tests, which take --ignored"]
+    fn a_pushed_pack_changed_on_disk_is_told_of() {
+        let packs = Arc::new(LivePacks::new(MemoryPackSource::new()));
+        let mut server = AssetServer::new(packs.clone(), AssetBudgets::DESKTOP);
+        assert_eq!(cook_not_in_use(&packs, "shared"), None, "the app reads its own file");
+
+        let mode = LinkMode::Listen(SocketAddr::from(([127, 0, 0, 1], 0)));
+        let link = LiveLink::start(mode, packs.clone()).expect("a link");
+        let address = link.address();
+        let id = AssetId::from_bytes([1; 16]);
+        let asset = PackAsset::encode(id, AssetKind::Rig, Codec::Lz4, b"a rig", Vec::new(), 3).unwrap();
+        let bytes = write_pack(vec![asset]).unwrap();
+        let tool = std::thread::spawn(move || {
+            Client::connect(address).expect("a device").push_pack("shared", &bytes)
+        });
+        let (pack, reply) = loop {
+            if let Some(Push::Pack { pack, reply }) = link.poll() {
+                break (pack, reply);
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        let outcome = pack.apply(&packs, &mut server).expect("served");
+        reply.reply(ReplyBody::PackApplied(outcome));
+        tool.join().expect("the tool's thread").expect("the push");
+
+        let warning = cook_not_in_use(&packs, "shared").expect("the push is what the app reads");
+        assert!(warning.contains("\"shared\"") && warning.contains("live link's push"), "{warning}");
+        assert_eq!(cook_not_in_use(&packs, "zone"), None, "another pack is read from its file");
     }
 }

@@ -10,7 +10,9 @@
 //! Its stage is the capture and bench modes' ([`Stage`]), which prewarms the post variants the
 //! scene may draw at startup (`Scene::effect_variants`, `Renderer::prewarm_post`), as the
 //! windowed app does; replaced screen effect presets prewarm theirs as hot reload or live link
-//! applies them. It has no tier changes or device loss to rebuild after.
+//! applies them. It follows `r.tier` as the windowed app does, with a new renderer on the same
+//! device, though it draws at 60 frames a second on any tier; it has no device loss to rebuild
+//! after.
 //!
 //! It draws one frame per iteration of the platform's loop, so SDL still delivers its events:
 //! Ctrl-C and `kill` (SIGINT, SIGTERM) come as a quit, which ends the run. Each frame is one fixed
@@ -27,8 +29,10 @@ use sapphire_rhi::wgpu;
 use sapphire_time::Stopwatch;
 
 use crate::LOG_TARGET;
+use crate::app::create_renderer;
 use crate::link::FrameCapture;
 use crate::offscreen::{FORMAT, Stage};
+use crate::options::Options;
 
 /// The shortest a frame takes: 60 frames a second, as the fixed step.
 const FRAME: Duration = Duration::from_micros(16_667);
@@ -41,6 +45,8 @@ pub(crate) struct Serving {
     view: wgpu::TextureView,
     _target: wgpu::Texture,
     stage: Stage,
+    /// What a new renderer holds and is made with.
+    options: Options,
     size: (u32, u32),
     /// Frames still to draw, with `--frames`.
     remaining: Option<u64>,
@@ -79,14 +85,15 @@ impl FrameLengths {
 }
 
 impl Serving {
-    /// Draws `stage`'s scene at `width` by `height`, `frame_limit` frames or until the process
-    /// quits.
-    pub fn new(stage: Stage, width: u32, height: u32, frame_limit: Option<u64>) -> Self {
+    /// Draws `stage`'s scene, made as `options` say, at `width` by `height`, `--frames` frames or
+    /// until the process quits.
+    pub fn new(stage: Stage, options: Options, width: u32, height: u32) -> Self {
         let target = stage.target(width, height, wgpu::TextureUsages::empty());
         let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        let frame_limit = options.frame_limit;
         tracing::info!(target: LOG_TARGET, width, height, ?frame_limit, "drawing offscreen until told to quit");
         let lengths = FrameLengths::default();
-        Self { view, _target: target, stage, size: (width, height), remaining: frame_limit, lengths }
+        Self { view, _target: target, stage, options, size: (width, height), remaining: frame_limit, lengths }
     }
 
     /// Draws the next frame, then sleeps out the rest of its 1/60 s.
@@ -108,7 +115,31 @@ impl Serving {
         AppControl::Continue
     }
 
+    /// Follows `r.tier`: a new tier gets a new renderer with its settings, on the same device, as
+    /// in the windowed app. If that fails the old tier and renderer stay.
+    fn follow_tier(&mut self) {
+        let stage = &mut self.stage;
+        let Some(previous) = stage.quality.update_tier() else { return };
+        let settings = self.options.render_settings(stage.quality.render_settings());
+        match create_renderer(&mut stage.content, &stage.gpu, FORMAT, settings, &self.options) {
+            Ok(renderer) => {
+                stage.scene.set_meshes(&renderer);
+                stage.renderer = renderer.renderer;
+                stage.dev.renderer_created(&mut stage.renderer);
+                stage.renderer.prewarm_post(stage.scene.effect_variants());
+                // The new renderer's scene starts empty.
+                stage.scene.resend_instances();
+                tracing::info!(target: LOG_TARGET, tier = %stage.quality.active().id, "renderer rebuilt for the quality tier");
+            }
+            Err(error) => {
+                tracing::error!(target: LOG_TARGET, %error, tier = %stage.quality.active().id, "no renderer for the quality tier; keeping the last one");
+                stage.quality.restore(previous);
+            }
+        }
+    }
+
     fn draw(&mut self) -> Result<(), AppInitError> {
+        self.follow_tier();
         let stage = &mut self.stage;
         stage.step();
         // Captures asked for while the last frame was drawn: this one answers them, drawn into a

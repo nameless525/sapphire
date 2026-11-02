@@ -28,7 +28,8 @@ Commands:
   push [<file>...]
       Push packs (.spack, named by their stem: only the assets the device lacks are sent), RON
       documents (.ron: the device applies them by the type their envelope names) and WGSL
-      sources (.wgsl). With no files, push every pack of the device's cook in --content.
+      sources (.wgsl). With no files, push every pack of the device's cook in --content. Exits
+      with an error if anything was refused, or an asset of a pack didn't reload.
   capture <png>
       Write the next frame the device draws, with everything pushed before it, to <png>.
   watch [<document>...]
@@ -195,6 +196,14 @@ impl Item {
                 let stopwatch = Stopwatch::start();
                 let outcome = client.push_pack(name, &bytes)?;
                 print_pack(name, &outcome, &stopwatch);
+                // The push went through, but scripts read the exit code (review DV-7). `watch`
+                // logs this and goes on, on a connection still open.
+                if !outcome.failed.is_empty() {
+                    bail!(
+                        "pack {name}: {} assets didn't reload and kept their versions",
+                        outcome.failed.len()
+                    );
+                }
             }
             Self::Document(path) => {
                 let text = std::fs::read_to_string(path)
@@ -290,7 +299,7 @@ fn push(target: &mut Target, content: Option<&Path>, files: &[String]) -> anyhow
         }
     }
     if failed > 0 {
-        bail!("{failed} of the pushes failed; the device kept what it had for them");
+        bail!("{failed} of the pushes failed; the device kept what it had for what failed");
     }
     Ok(())
 }
@@ -454,5 +463,100 @@ fn size(bytes: u64) -> String {
         0..1_000 => format!("{bytes} B"),
         1_000..1_000_000 => format!("{:.1} KB", bytes as f64 / 1e3),
         _ => format!("{:.1} MB", bytes as f64 / 1e6),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use sapphire_assets::pack::{Codec, PackAsset, write_pack};
+    use sapphire_assets::{AssetId, AssetKind, MemoryPackSource};
+    use sapphire_livelink::protocol::{AssetFailure, ReplyBody};
+    use sapphire_livelink::{LinkMode, LiveLink, LivePacks, Push};
+
+    use super::*;
+
+    /// A pack of one asset in a file of its own under the system's temporary directory.
+    fn pack_file(name: &str) -> PathBuf {
+        let id = AssetId::from_bytes([1; 16]);
+        let asset = PackAsset::encode(id, AssetKind::Rig, Codec::Lz4, b"a rig", Vec::new(), 3).unwrap();
+        let file = format!("sapphire_livelink_{name}_{}.spack", std::process::id());
+        let path = std::env::temp_dir().join(file);
+        std::fs::write(&path, write_pack(vec![asset]).unwrap()).unwrap();
+        path
+    }
+
+    /// Runs `tool` on a thread of its own against a device that answers every pack pushed with
+    /// `outcome`, and returns what it returned. `tool` gets the device's address.
+    fn with_device<T: Send + 'static>(
+        outcome: PackOutcome,
+        tool: impl FnOnce(SocketAddr) -> T + Send + 'static,
+    ) -> T {
+        let packs = Arc::new(LivePacks::new(MemoryPackSource::new()));
+        let link = LiveLink::start(LinkMode::Listen(SocketAddr::from(([127, 0, 0, 1], 0))), packs).unwrap();
+        let address = link.address();
+        let tool = std::thread::spawn(move || tool(address));
+        while !tool.is_finished() {
+            match link.poll() {
+                Some(Push::Pack { reply, .. }) => reply.reply(ReplyBody::PackApplied(outcome.clone())),
+                Some(_) => panic!("the tool only pushes packs here"),
+                None => std::thread::sleep(Duration::from_millis(1)),
+            }
+        }
+        tool.join().unwrap()
+    }
+
+    fn failed_reload() -> PackOutcome {
+        let failure = AssetFailure {
+            id: AssetId::from_bytes([1; 16]),
+            kind: AssetKind::Rig,
+            error: "it doesn't decode".to_owned(),
+        };
+        PackOutcome { mounted: true, changed: 1, failed: vec![failure], ..PackOutcome::default() }
+    }
+
+    /// What `sapphire_livelink --addr <address> push <file>` returns, which sets its exit code.
+    fn push_file(address: SocketAddr, file: PathBuf) -> anyhow::Result<()> {
+        let args = ["--addr", &address.to_string(), "push", &file.display().to_string()].map(str::to_owned);
+        run(args.to_vec())
+    }
+
+    /// Review DV-7: scripts read the exit code, so a pack whose assets failed to reload mustn't
+    /// exit as a success.
+    #[test]
+    fn a_push_whose_assets_failed_to_reload_is_a_failure() {
+        let file = pack_file("failed");
+        let path = file.clone();
+        let result = with_device(failed_reload(), move |address| push_file(address, path));
+        let _ = std::fs::remove_file(&file);
+        let error = result.expect_err("an asset kept its version");
+        assert!(error.to_string().contains("1 of the pushes failed"), "{error:#}");
+    }
+
+    #[test]
+    fn a_push_whose_assets_reloaded_is_a_success() {
+        let file = pack_file("reloaded");
+        let path = file.clone();
+        let outcome = PackOutcome { mounted: true, changed: 1, ..PackOutcome::default() };
+        let result = with_device(outcome, move |address| push_file(address, path));
+        let _ = std::fs::remove_file(&file);
+        result.unwrap();
+    }
+
+    /// `watch` logs what `Item::push` returns and goes on: on the same connection, since only a
+    /// connection that closed makes it connect again.
+    #[test]
+    fn a_failed_reload_leaves_the_connection_open_for_watch() {
+        let file = pack_file("watch");
+        let path = file.clone();
+        let (result, closed) = with_device(failed_reload(), move |address| {
+            let mut client = Client::connect(address).unwrap();
+            let result = Item::Pack(path).push(&mut client);
+            (result, client.is_closed())
+        });
+        let _ = std::fs::remove_file(&file);
+        assert!(result.is_err());
+        assert!(!closed);
     }
 }

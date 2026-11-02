@@ -227,6 +227,12 @@ impl Recording {
         self.edited_at
     }
 
+    /// The scenario it runs, as its file will name it.
+    #[must_use]
+    pub fn scenario(&self) -> &str {
+        self.recorder.scenario()
+    }
+
     /// How many ticks the file holds so far.
     #[must_use]
     pub fn recorded_ticks(&self) -> u32 {
@@ -303,6 +309,7 @@ mod tests {
         }
         let so_far = recording.so_far();
         assert_eq!(so_far.ticks(), 100);
+        assert_eq!(recording.scenario(), melee().name);
         let (replay, _) = record(100, melee_sweep);
         assert_eq!(so_far.encode(), replay.encode());
 

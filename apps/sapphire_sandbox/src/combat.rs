@@ -93,8 +93,6 @@ enum Mode {
     },
     Recording {
         recording: Recording,
-        /// The scenario it runs.
-        scenario: &'static str,
         /// The script it plays. With none, it records the bindings it's given.
         script: Option<ScriptActions>,
         /// The tick limit, once reached.
@@ -265,7 +263,7 @@ impl Combat {
         let recording = Recording::tuned(scenario, scenario.config, live)
             .map_err(|error| format!("--record: {error}"))?;
         let files = SessionFiles::new(std::env::temp_dir());
-        let mode = Mode::Recording { recording, scenario: scenario.name, script, stopped: None, files };
+        let mode = Mode::Recording { recording, script, stopped: None, files };
         Ok(Self { path: path.to_owned(), mode, steps_past_end: 0 })
     }
 
@@ -273,7 +271,7 @@ impl Combat {
     pub fn scenario(&self) -> &str {
         match &self.mode {
             Mode::Replaying { player, .. } => player.replay().scenario(),
-            Mode::Recording { scenario, .. } => scenario,
+            Mode::Recording { recording, .. } => recording.scenario(),
             Mode::Fighting(fight) => fight.scenario.name,
         }
     }
@@ -435,8 +433,8 @@ impl Combat {
             Mode::Replaying { player, name, .. } => {
                 CombatStatus::Replaying { name, length: player.replay().ticks() }
             }
-            Mode::Recording { scenario, script, stopped, .. } => CombatStatus::Recording {
-                scenario,
+            Mode::Recording { recording, script, stopped, .. } => CombatStatus::Recording {
+                scenario: recording.scenario(),
                 path: &self.path,
                 at_limit: stopped.is_some(),
                 scripted: script.is_some(),
@@ -728,7 +726,7 @@ fn holds(path: &Path, bytes: &[u8]) -> bool {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CombatStatus<'a> {
     Replaying { name: &'a str, length: u32 },
-    Recording { scenario: &'static str, path: &'a Path, at_limit: bool, scripted: bool },
+    Recording { scenario: &'a str, path: &'a Path, at_limit: bool, scripted: bool },
     Fighting { fights: u32 },
 }
 

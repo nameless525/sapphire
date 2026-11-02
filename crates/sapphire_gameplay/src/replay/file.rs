@@ -402,6 +402,12 @@ impl Recorder {
         self.replay.ticks
     }
 
+    /// The scenario it's recording.
+    #[must_use]
+    pub fn scenario(&self) -> &str {
+        self.replay.scenario()
+    }
+
     /// The finished replay.
     #[must_use]
     pub fn finish(mut self) -> Replay {

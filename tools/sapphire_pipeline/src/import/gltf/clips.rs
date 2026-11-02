@@ -145,14 +145,9 @@ pub enum ClipImportError {
 }
 
 /// The clip names of `bytes`' animations, in document order: unique, and what each sub-asset's ID
-/// is derived from. Called while planning a cook, so it parses and nothing more.
+/// is derived from. For finding a clip's index: a cook plans through `plan`, which reads the rig too.
 pub fn names(bytes: &[u8]) -> Result<Vec<String>, ClipImportError> {
-    let Gltf { document, .. } = parse(bytes).map_err(ClipImportError::Parse)?;
-    let found = document.animations().len();
-    if found > CLIP_BUDGET.animations {
-        return Err(ClipImportError::TooManyAnimations { found, budget: CLIP_BUDGET.animations });
-    }
-    Ok(names_of(&document))
+    plan(bytes, |_| Ok(Vec::new())).map(|(names, _)| names)
 }
 
 fn names_of(document: &Document) -> Vec<String> {

@@ -25,6 +25,24 @@
             (intent: "overhead", move: "overhead"),
             (intent: "lunge", move: "lunge"),
         ],
+        fighter: (
+            // A common enemy, to G3's numbers: about eight of the player's three-hit strings to fell, and
+            // two to break. Five seconds without a hit that takes poise, and the meter is full again.
+            health: 240,
+            poise: 60,
+            poise_refill: 300,
+            hurtboxes: [
+                // From the ground to about its crown at 1.87 m: the horns aren't something to hit.
+                (name: "body", offset: (0.0, 0.95, 0.0), shape: Capsule(radius: 0.4, length: 1.1)),
+            ],
+            reactions: (
+                light: "stagger_light",
+                medium: "stagger_light",
+                heavy: "knockdown",
+                poise_break: "stagger_heavy",
+                defeat: "death",
+            ),
+        ),
         moves: [
             (
                 // 1 s. A flat cut from its right to its left at chest height, reaching about 2 m from
@@ -55,7 +73,14 @@
                     ],
                 ),
                 hitboxes: [
-                    (name: "swipe_hit", from: 24, to: 29, path: "blade", shape: Capsule(radius: 0.18, length: 0.9)),
+                    (
+                        name: "swipe_hit",
+                        from: 24,
+                        to: 29,
+                        path: "blade",
+                        shape: Capsule(radius: 0.18, length: 0.9),
+                        attack: (damage: 20, poise: 12, weight: Light, hitstop: 5, knockback: (distance: 0.4, ticks: 8)),
+                    ),
                 ],
                 cancels: [
                     (from: 46, to: 60, allow: [
@@ -104,7 +129,21 @@
                     ],
                 ),
                 hitboxes: [
-                    (name: "overhead_hit", from: 48, to: 54, path: "blade", shape: Capsule(radius: 0.26, length: 0.9)),
+                    (
+                        name: "overhead_hit",
+                        from: 48,
+                        to: 54,
+                        path: "blade",
+                        shape: Capsule(radius: 0.26, length: 0.9),
+                        attack: (
+                            damage: 60,
+                            poise: 45,
+                            weight: Heavy,
+                            hitstop: 10,
+                            knockback: (distance: 1.6, ticks: 18),
+                            cue: "hit_heavy",
+                        ),
+                    ),
                 ],
                 warps: [
                     (from: 0, to: 48, max_distance: 0.8, max_turn: 1.6, keep: 1.6),
@@ -145,7 +184,14 @@
                     ],
                 ),
                 hitboxes: [
-                    (name: "lunge_hit", from: 30, to: 38, path: "blade", shape: Capsule(radius: 0.24, length: 0.9)),
+                    (
+                        name: "lunge_hit",
+                        from: 30,
+                        to: 38,
+                        path: "blade",
+                        shape: Capsule(radius: 0.24, length: 0.9),
+                        attack: (damage: 35, poise: 25, weight: Medium, hitstop: 7, knockback: (distance: 1.0, ticks: 12)),
+                    ),
                 ],
                 warps: [
                     (from: 6, to: 38, max_distance: 2.5, max_turn: 1.4, keep: 1.4),
@@ -171,11 +217,13 @@
                 cues: [(name: "stagger", at: 0)],
             ),
             (
-                // 700 ms: rocked back on its heels, for a hit that breaks it.
+                // 700 ms: rocked back on its heels, for a hit that breaks it. A hit takes its numbers and
+                // can't cut this short: it's the opening a break earns.
                 name: "stagger_heavy",
                 startup: 0,
                 active: 0,
                 recovery: 42,
+                armour: [(from: 0, to: 42, threshold: 1000)],
                 motion: (
                     root: [
                         (at: 10, offset: (0.0, 0.0, -0.55)),
@@ -187,11 +235,13 @@
             (
                 // 1.3 s: thrown back and down, landing at 467 ms and lying there. It gets up when
                 // `rise` is pressed in the last third or `recover` is forced; left alone, it ends lying
-                // down, which a brain or G3 won't leave it doing.
+                // down, which a brain or G3 won't leave it doing. A hit takes its numbers and can't flinch
+                // it back onto its feet.
                 name: "knockdown",
                 startup: 0,
                 active: 0,
                 recovery: 78,
+                armour: [(from: 0, to: 78, threshold: 1000)],
                 motion: (
                     root: [
                         (at: 16, offset: (0.0, 0.0, -1.1)),

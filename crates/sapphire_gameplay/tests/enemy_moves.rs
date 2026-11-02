@@ -5,7 +5,7 @@
 use sapphire_core::Name;
 use sapphire_gameplay::{ActorId, ActorSpawn, CurrentMove, SimConfig, Simulation, TickActions, WarpTarget};
 use sapphire_math::{Vec3, det};
-use sapphire_moves::{MoveSet, MoveSetDocument, PathSample, Phase, Shape};
+use sapphire_moves::{MoveSet, MoveSetDocument, PathSample, Phase, Shape, Weight};
 
 const WARRIOR: &str = include_str!("../../../content/combat/enemy/warrior.moves.ron");
 
@@ -276,4 +276,79 @@ fn warps_bend_toward_a_target_within_their_limits() {
     }
     let yaw = sim.actor(actor).expect("alive").yaw;
     assert!((yaw - std::f32::consts::FRAC_PI_4).abs() < 0.1, "turned to it through the wind-up: {yaw}");
+}
+
+/// Two warriors a swipe's reach apart, the second facing the first, with the first pressing its swipe.
+fn swiping() -> (Simulation, ActorId, ActorId) {
+    let mut sim = Simulation::new(SimConfig::default());
+    let moves = Some(sim.add_move_set(warrior()));
+    let attacker = sim.spawn(ActorSpawn { moves, ..ActorSpawn::default() }).expect("room");
+    let at = Vec3::new(0.0, 0.0, 1.5);
+    let target = sim
+        .spawn(ActorSpawn { position: at, yaw: std::f32::consts::PI, moves, controller: None })
+        .expect("room");
+    assert!(sim.press_intent(attacker, name("swipe")));
+    (sim, attacker, target)
+}
+
+/// Steps until a hit has landed, failing if the swipe's window passes with none.
+fn until_it_lands(sim: &mut Simulation) {
+    for _ in 0..30 {
+        step(sim);
+        if sim.stats().hits_applied > 0 {
+            return;
+        }
+    }
+    panic!("no hit landed: {:?}", sim.stats());
+}
+
+/// G3 reads the reactions by name: a hit by weight, a break and a defeat each play one of this set's.
+#[test]
+fn its_fighter_names_its_own_reactions_and_every_attack_does_something() {
+    let set = warrior();
+    let fighter = set.fighter().expect("hits can land on it");
+    let reactions = &fighter.reactions;
+    assert_eq!(reactions.flinch(Weight::Light), Some(name("stagger_light")));
+    assert_eq!(reactions.flinch(Weight::Medium), Some(name("stagger_light")));
+    assert_eq!(reactions.flinch(Weight::Heavy), Some(name("knockdown")));
+    assert_eq!(reactions.poise_break(), Some(name("stagger_heavy")));
+    assert_eq!(reactions.defeat(), Some(name("death")));
+    for attack in ATTACKS {
+        let (_, mv) = set.find(name(attack)).expect(attack);
+        assert!(
+            !mv.hitboxes.is_empty() && mv.hitboxes.iter().all(|hitbox| hitbox.attack.is_some()),
+            "{attack}"
+        );
+    }
+}
+
+#[test]
+fn a_swipe_lands_on_a_warrior_and_it_reacts() {
+    let (mut sim, attacker, target) = swiping();
+    until_it_lands(&mut sim);
+    let view = sim.actor(target).expect("alive");
+    assert_eq!(view.fighter.health(), view.fighter.max_health() - 20);
+    assert_eq!(view.fighter.poise(), view.fighter.max_poise() - 12);
+    assert_eq!(view.hitstop_ticks, 5);
+    assert_eq!(sim.actor(attacker).expect("alive").hitstop_ticks, 5);
+    step(&mut sim);
+    assert_eq!(current(&sim, target).expect("reacting").name, name("stagger_light"));
+}
+
+/// Lying down or broken, a hit takes its numbers and plays no reaction, so neither can be cut short.
+#[test]
+fn a_hit_cant_cut_a_knockdown_or_a_break_short() {
+    for reaction in ["knockdown", "stagger_heavy"] {
+        let (mut sim, attacker, target) = swiping();
+        for _ in 0..20 {
+            step(&mut sim);
+        }
+        assert!(sim.force_move(target, name(reaction)));
+        until_it_lands(&mut sim);
+        let stats = sim.stats();
+        assert_eq!((stats.hits_absorbed, stats.reactions_forced), (1, 0), "{reaction}");
+        assert_eq!(current(&sim, target).expect("still down").name, name(reaction));
+        assert_eq!(sim.actor(attacker).expect("alive").hitstop_ticks, 5);
+        assert_eq!(sim.actor(target).expect("alive").hitstop_ticks, 0, "{reaction}: armour lets it run");
+    }
 }

@@ -4,18 +4,18 @@ Sapphire is a Rust game engine built for 3D anime-aesthetic action games in the 
 
 ![The look-dev stage at golden hour. An anime character with long chestnut hair, a white T-shirt and black shorts stands in a flagstone square, in three-quarter view. Behind the character on the left is a pavilion with dark red columns and a sweeping charcoal tile roof, the low sun glowing over its eaves. On the right a white plastered wall opens through a round moon gate onto a street strung with paper lanterns. Long blue-violet shadows cross the paving, under a lavender sky and a pale mountain in haze.](docs/media/m1-lookdev.png)
 
-**Status: M1 is done, pending devices (2026-10-27).** M1 built the engine's data path and its anime look:
+**Status: the combat slice (M2) is built, and nobody has played it (2026-11-02).** One anime character fights one enemy in the look-dev town, on a gamepad or by touch, tuned while it runs, with deterministic replays in CI (`--arena --fight`). Whether it feels right is the project's go/no-go, and only the maintainer can answer it: [docs/m2-go-no-go.md](docs/m2-go-no-go.md). M1 is done, pending devices (2026-10-27). It built the engine's data path and its anime look:
 
 - **Data path:** `sapphire_pipeline` imports glTF, VRM 1.0 and FBX models, textures and RON documents. It cooks them per platform (BC on desktop, ASTC on phones) through a content-hash cache into packs, which the runtime loads asynchronously, by asset ID, behind handles.
 - **Characters:** anime character shading, with authored ramps and ILM maps, SDF face shadows, layered eyes, hair highlights, a depth-offset rim, inverted-hull outlines, material layers and a light rig of their own.
 - **World:** one time-of-day key moves the sky, fog, ambient light, shadow tint, the character light rig and the grade. Under it are a stylized environment shader, cascaded shadows, ambient probes and AO, and NPR foliage in the wind.
 - **Post:** HDR with bloom, a diffusion glow, gradient layers and a custom grade, TAA on desktop and 4× MSAA on phones, and a stack of combat screen effects.
 - **Iteration:** hot reload on the desktop, and live link to any development build. Content, materials, time-of-day keys, cvars and shaders change in the running app without a restart.
-- **Golden images:** 95 scenes, compared on Metal, Vulkan (lavapipe) and DX12 (WARP) on every pull request.
+- **Golden images:** 142 scenes since M2, compared on Metal, Vulkan (lavapipe) and DX12 (WARP) on every pull request.
 
 The look-dev stage (`--look-dev`) puts it all together: a VRM character in a Jinzhou-style town, through a day and a night.
 
-It has been verified on macOS (Apple Silicon, Metal), on the iOS 26.3 Simulator and on the Android 16 emulator. Windows and Linux build, pass their tests and render the golden images in CI, on software rasterizers. Nothing has run on a phone or on Windows or Linux hardware yet, and those checks are still owed. The spec's [§10](docs/engine-spec.md#10-milestones) has the M1 status, and the [M2 handoff notes](docs/m2-handoff.md) what comes next.
+It has been verified on macOS (Apple Silicon, Metal), on the iOS 26.3 Simulator and on the Android 16 emulator. Windows and Linux build, pass their tests and render the golden images in CI, on software rasterizers. Nothing has run on a phone or on Windows or Linux hardware yet, and those checks are still owed. The spec's [§10](docs/engine-spec.md#10-milestones) has the M1 and M2 statuses, and the [M3 handoff notes](docs/m3-handoff.md) what comes next, if the go/no-go says so.
 
 ## Documents
 
@@ -23,7 +23,10 @@ It has been verified on macOS (Apple Silicon, Metal), on the iOS 26.3 Simulator 
 - [M1 plan](docs/m1-plan.md): M1's work packages, each with an "As built" note.
 - [M1 exit run](docs/m1-exit-run.md): how to run M1's exit tests on the desktop, simulators and phones.
 - [M2 handoff notes](docs/m2-handoff.md): what M2 inherits from M1.
-- [M2 plan](docs/m2-plan.md): the combat slice's decisions, work packages and order. M2 is under way.
+- [M2 plan](docs/m2-plan.md): the combat slice's decisions, work packages and order.
+- [M2 exit run](docs/m2-exit-run.md): how to run M2's four exit tests, the feel reviews' sheet, and which file changes what.
+- [M2 go/no-go](docs/m2-go-no-go.md): what's proven and what isn't, and what the maintainer needs to do to decide.
+- [M3 handoff notes](docs/m3-handoff.md): what M3 would inherit from M2.
 - [Research report](reports/Rust%20anime%20action%20game%20engine.md): why Rust, and why these libraries.
 - [Conventions](docs/conventions.md): how the code should read.
 - [Privacy safeguards](docs/privacy.md): safe commit identities, local hooks and the CI guard.
@@ -60,7 +63,7 @@ cargo xtask run --platform ios-sim
 cargo xtask run --platform android
 ```
 
-Each command cooks the sample content, builds the sandbox, packages it where the platform needs that, launches it and streams its log here. Arguments after `--` go to the app; for example, `-- --frames 600` exits after 600 presented frames, and `-- --look-dev hero` shows the look-dev stage (also `wide`, `sky`, `street` and `face`). `--release` builds optimized, `--features dev` adds the debug overlay, hot reload and live link, and `--dry-run` builds and packages but prints the launch command instead of running it.
+For an app you're editing, `cargo xtask run --platform desktop --incremental` builds it optimized, with no LTO, so a one-line edit rebuilds in seconds. Each command cooks the sample content, builds the sandbox, packages it where the platform needs that, launches it and streams its log here. Arguments after `--` go to the app; for example, `-- --frames 600` exits after 600 presented frames, and `-- --look-dev hero` shows the look-dev stage (also `wide`, `sky`, `street` and `face`). `--release` builds optimized, `--features dev` adds the debug overlay, hot reload and live link, and `--dry-run` builds and packages but prints the launch command instead of running it.
 
 - **desktop** runs the build in place against `target/content/desktop/` (through `SAPPHIRE_CONTENT_DIR`). Use it to test on Windows and Linux hardware. `cargo xtask bundle --platform desktop` makes a self-contained `target/desktop/SapphireSandbox/` directory (the executable plus `content/`) to copy to another machine.
 - **macos** builds and signs `target/macos/SapphireSandbox.app`, then runs the executable inside it, which reads the content bundled with it as a player's copy does. A `--features dev` build reads `target/content/desktop/` instead (through `SAPPHIRE_CONTENT_DIR`, unless you set it), so `cargo xtask content` reaches it while it runs.
@@ -101,7 +104,7 @@ While the overlay shows, input over its windows is its own and the game gets the
 
 ### Hot reload and live link
 
-Development builds swap edits in while they run. On a desktop, hot reload watches the cooked packs, the renderer's WGSL sources and the time-of-day, light rig and screen effect documents (under `--look-dev`, the stage's own day and light rigs): save a document and it shows within a few tenths of a second; save a shader and its pipelines build off the frame thread, so frames keep drawing until the new ones swap in (about two seconds on a Mac with a cold shader cache); edit content and run `cargo xtask content`, and the assets that changed are swapped in behind their handles. On any platform, live link takes the same edits from the desktop over TCP (127.0.0.1:7811 by default; `iproxy` for an iPhone, `adb reverse` or `adb forward` for Android). Build the app and the tool from the same commit: live link's protocol is at version 3, and different versions refuse each other.
+Development builds swap edits in while they run. On a desktop, hot reload watches the cooked packs, the renderer's WGSL sources and the time-of-day, light rig and screen effect documents (under `--look-dev`, the stage's own day and light rigs): save a document and it shows within a few tenths of a second; save a shader and its pipelines build off the frame thread, so frames keep drawing until the new ones swap in (about two seconds on a Mac with a cold shader cache); edit content and run `cargo xtask content`, and the assets that changed are swapped in behind their handles. On any platform, live link takes the same edits from the desktop over TCP (127.0.0.1:7811 by default; `iproxy` for an iPhone, `adb reverse` or `adb forward` for Android). Build the app and the tool from the same commit: live link's protocol is at version 4, and different versions refuse each other.
 
 ```bash
 cargo xtask link status                                   # what the app runs, its assets and their generations
@@ -195,7 +198,7 @@ xtask/    build automation and the layer checker
 platform/ per-platform packaging (Info.plist templates, Android Gradle project)
 content/  source assets and their .meta sidecars, third-party content with its licenses
 tests/    golden images, one per scene and backend family
-docs/     spec, M1 plan and exit run, M2 handoff and plan, conventions, ADRs
+docs/     spec, plans, exit runs and handoffs per milestone, the go/no-go, conventions, ADRs
 ```
 
 ## Troubleshooting

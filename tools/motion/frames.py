@@ -1,8 +1,16 @@
-"""`player.moves.ron`: the moves' frame data, windows and combat numbers, written out beside their clips."""
+"""`player.moves.ron`'s numbers as this tool first wrote them: frame data, windows and combat numbers.
+
+The file is theirs to change from there, in the timeline editor or by hand, so it's written only when asked,
+and an edited file is replaced only when forced. See the README.
+"""
+import difflib
+import hashlib
 import os
+import sys
 
 from pose import *
 
+NUMBERS = 'player.moves.ron'
 SIDECAR_ID = '6fc61cbc-8189-4b6d-a4a0-b0e09475c6ce'
 IDS = {
     'light_1': '6d321a52-1aed-4279-bc32-a177b8fd81d4',
@@ -38,7 +46,9 @@ HEADER = """// The player's moves (M2 O3): frame data in 60 Hz ticks, for a char
 //
 // `blade` is a socket on the right hand: the middle of a 0.9 m blade leaving the fist on the thumb side,
 // 22 degrees toward the fingers, its +Y running grip to tip. A hit is a capsule along it, and the sandbox
-// draws `sword.glb` there. Written by tools/motion/moves.py, so edit it there.
+// draws `sword.glb` there.
+//
+// Written by tools/motion/moves.py --write-numbers, which won't replace edits made here unless forced.
 //
 // E3 hangs effects on the cues: `swing` is the blade starting to cut, and `step`, `skid` and
 // `finisher_land` a foot taking the weight. The combat numbers are first guesses for Feel review 2, on
@@ -273,7 +283,7 @@ def allow_text(allow):
     return f'(intent: "{intent}", move: "{target}"{extra})'
 
 
-def write(folder, clips):
+def numbers_text(clips):
     text = [HEADER.rstrip('\n')]
     for d in MOVES:
         text.append(move_text(d, clips))
@@ -281,9 +291,64 @@ def write(folder, clips):
     for d in ASSISTS:
         text.append(move_text(d, clips))
     text.append(FOOTER)
-    with open(os.path.join(folder, 'player.moves.ron'), 'w') as f:
-        f.write('\n'.join(text))
-    with open(os.path.join(folder, 'player.moves.ron.meta'), 'w') as f:
+    return '\n'.join(text)
+
+
+def _read(path):
+    try:
+        with open(path, newline='') as f:
+            return f.read()
+    except FileNotFoundError:
+        return None
+
+
+def _digest(text):
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def _last_written(stamp):
+    held = _read(stamp)
+    return held.split()[-1] if held else None
+
+
+def _changes(held, text):
+    lines = difflib.unified_diff(held.splitlines(), text.splitlines(), 'the file', 'this tool', lineterm='', n=0)
+    shown = list(lines)
+    return '\n'.join(shown[:40] + ['...'] if len(shown) > 40 else shown)
+
+
+def numbers_note(folder, clips):
+    """What `--write` says of the file it leaves alone, once that isn't what `--write-numbers` would write."""
+    try:
+        text = numbers_text(clips)
+    except AssertionError as error:
+        name, numbers, ticks = error.args[0]
+        return (f'frames.py has {name} at {numbers} ticks and its clip at {ticks}. If {NUMBERS} does too, the cook '
+                'will refuse it: a move plays its clip tick for tick.')
+    if _read(os.path.join(folder, NUMBERS)) == text:
+        return None
+    return f'{NUMBERS} is not what frames.py would write. --write left it alone; --write-numbers writes it.'
+
+
+def write_numbers(folder, clips, stamp, force=False):
+    """Writes `player.moves.ron`, unless something else has changed it since this last did: `stamp` holds
+    the digest of what this last wrote, so tuning can't be thrown away by accident. Returns whether it
+    changed the file."""
+    path = os.path.join(folder, NUMBERS)
+    text = numbers_text(clips)
+    held = _read(path)
+    edited = held is not None and held != text and _digest(held) != _last_written(stamp)
+    if edited and not force:
+        sys.exit(f'{path} has changed since this tool last wrote it, so nothing was written.\n'
+                 f'Copy what you want to keep into frames.py, or pass --force to replace the file. Its differences:\n'
+                 f'{_changes(held, text)}')
+    if held != text:
+        with open(path, 'w', newline='') as f:
+            f.write(text)
+    with open(stamp, 'w', newline='') as f:
+        f.write(f'# What tools/motion/moves.py --write-numbers last wrote to {NUMBERS}. A file that no longer '
+                f'matches has been edited since, and it\'s not replaced unless forced.\n{_digest(text)}\n')
+    with open(os.path.join(folder, NUMBERS + '.meta'), 'w', newline='') as f:
         f.write(f'''(
     type: "sapphire::assets::AssetMeta",
     version: 1,
@@ -293,6 +358,7 @@ def write(folder, clips):
     ),
 )
 ''')
+    return held != text
 
 
 def move_text(d, clips):

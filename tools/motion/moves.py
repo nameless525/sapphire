@@ -1,8 +1,10 @@
 """The player's moves: poses by target, written out as key-pose documents. See the README.
 
-usage: moves.py [--write] [-v] [<move> ...]
+usage: moves.py [--write] [--write-numbers [--force]] [-v] [<move> ...]
 
 With no flag it writes nothing, and prints what `Move.check` finds in each move, or in those named.
+`--write` writes the key-pose documents. `--write-numbers` writes `player.moves.ron` from `frames.py`, and
+refuses to replace a file changed since it last did, unless `--force` says to.
 """
 import os
 import sys
@@ -15,6 +17,8 @@ from pose import *
 from rig import REPO
 
 FOLDER = os.path.join(REPO, 'content/combat/player')
+# The digest of what `--write-numbers` last wrote, kept out of `content/`, which is cooked.
+STAMP = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'player.moves.written')
 
 # The combat idle (`content/lookdev/character/idle_combat.keypose.ron`) at tick 0: where every move starts
 # and most settle. Its arm holds the blade out in front, at `rh=(-24, -46, 0.35)`, `blade=(-26, 30)`.
@@ -581,9 +585,13 @@ SIDECAR = '''(
 '''
 
 
-def main():
-    args = sys.argv[1:]
+def main(args=None, folder=FOLDER, stamp=STAMP):
+    args = sys.argv[1:] if args is None else args
     writing = '--write' in args
+    numbers = '--write-numbers' in args
+    force = '--force' in args
+    if force and not numbers:
+        sys.exit('--force goes with --write-numbers, the only write that ever refuses')
     verbose = '-v' in args
     only = [a for a in args if not a.startswith('-')]
     built = {}
@@ -594,12 +602,20 @@ def main():
             move.check(verbose=verbose)
     if writing:
         for name, move in built.items():
-            with open(os.path.join(FOLDER, name + '.keypose.ron'), 'w') as f:
+            with open(os.path.join(folder, name + '.keypose.ron'), 'w') as f:
                 f.write(move.ron())
-            with open(os.path.join(FOLDER, name + '.keypose.ron.meta'), 'w') as f:
+            with open(os.path.join(folder, name + '.keypose.ron.meta'), 'w') as f:
                 f.write(SIDECAR % frames.IDS[name])
-        frames.write(FOLDER, built)
-        print(f'wrote {FOLDER}')
+        print(f'wrote the key-pose documents in {folder}')
+        note = frames.numbers_note(folder, built)
+        if note:
+            print(note)
+    if numbers:
+        if frames.write_numbers(folder, built, stamp, force):
+            print(f'wrote {frames.NUMBERS}. It owes the simulation its cooked copy: SAPPHIRE_BAKE_MOVES=1 cargo test '
+                  '-p sapphire_pipeline --test player_moves the_simulations_copy, then cargo xtask replay --update')
+        else:
+            print(f'{frames.NUMBERS} is already what frames.py writes')
 
 
 if __name__ == '__main__':

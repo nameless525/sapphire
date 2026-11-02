@@ -893,10 +893,7 @@ impl Editor {
             );
         }
         if let Some(line) = self.file.as_ref().and_then(|file| generated_by(file.text())) {
-            ui.colored_label(
-                Color32::from_rgb(235, 190, 110),
-                format!("{line} Edits here last until that runs again."),
-            );
+            ui.colored_label(Color32::from_rgb(235, 190, 110), line);
         }
         if let Some(notice) = &self.notice {
             let color =
@@ -1425,8 +1422,9 @@ fn default_entry(document: &MoveSetDocument, mv: &MoveDocument, track: Track, ti
     }
 }
 
-/// The line near a file's top that says something else writes it, if one does. Only comments before the
-/// document count, so a word in a move's comment can't set it off.
+/// What a file says of whatever else writes it, if anything does: the sentence near its top with
+/// "Written by" in it, so the file's own words decide what an edit here is worth. Only comments before
+/// the document count, so a word in a move's comment can't set it off.
 fn generated_by(text: &str) -> Option<String> {
     let header = text.lines().take_while(|line| line.trim_start().starts_with("//"));
     let mentions = header
@@ -1434,8 +1432,9 @@ fn generated_by(text: &str) -> Option<String> {
         .find(|line| line.contains("Written by"))?;
     let at = mentions.find("Written by")?;
     let said = &mentions[at..];
-    let end = said.find([',', ';', '(']).unwrap_or(said.len());
-    Some(format!("{}.", said[..end].trim().trim_end_matches('.')))
+    // A path's dots have no space after them.
+    let end = said.find(". ").map_or(said.len(), |end| end + 1);
+    Some(said[..end].trim().to_owned())
 }
 
 /// `target/content/desktop` above a document, if it's there.
@@ -1501,7 +1500,15 @@ mod tests {
 
     #[test]
     fn a_file_a_tool_writes_says_which() {
-        assert_eq!(generated_by(PLAYER).as_deref(), Some("Written by tools/motion/moves.py."));
+        assert_eq!(
+            generated_by(PLAYER).as_deref(),
+            Some(
+                "Written by tools/motion/moves.py --write-numbers, which won't replace edits made here unless \
+                 forced."
+            ),
+        );
         assert_eq!(generated_by(WARRIOR), None);
+        let more = "// Written by a.py, so edit it there. And more.\n(\n";
+        assert_eq!(generated_by(more).as_deref(), Some("Written by a.py, so edit it there."));
     }
 }

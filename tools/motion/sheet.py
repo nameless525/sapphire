@@ -1,4 +1,4 @@
-"""Writes the moves, cooks them, and draws each named one as a contact sheet under `target/motion/`.
+"""Writes the key-pose documents, cooks them, and draws each named move as a contact sheet under `target/motion/`.
 
 usage: sheet.py <move>[:<tick>,<tick>,...] ... [--views <yaw>,<yaw>] [--size <w>x<h>] [--zoom <factor>]
                 [--travel] [--no-write]

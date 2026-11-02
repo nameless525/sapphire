@@ -81,6 +81,8 @@ jobs:
           cache-on-failure: true
       - name: Test CI setup and artifact verification
         run: python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v
+      - name: Test who the motion tool writes
+        run: python3 -B -m unittest discover -s tools/motion -p 'test_*.py' -v
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy

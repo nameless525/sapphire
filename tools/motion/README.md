@@ -1,13 +1,17 @@
 # The player's moves, posed by target
 
-`content/combat/player/`'s key-pose documents and `player.moves.ron` are this tool's output. To re-pose a move, edit it here and write again. A hand edit to those files lasts only until the next `--write`.
+`content/combat/player/`'s key-pose documents are this tool's output. To re-pose a move, edit it here and write again: a hand edit to one lasts only until the next `--write`.
+
+`player.moves.ron` holds the moves' numbers, and **they're tuned in the file**, in the timeline editor (`cargo xtask editor`) or by hand. This tool wrote its first draft and rewrites it only when asked with `--write-numbers`, which refuses to replace a file changed since it last wrote it. Nothing here can throw tuning away without `--force`.
 
 It's plain Python 3 with no dependencies, and it writes nothing unless told to.
 
 ```
 python3 tools/motion/moves.py                  # checks every move, writes nothing
 python3 tools/motion/moves.py light_3 -v       # one move's checks, tick by tick
-python3 tools/motion/moves.py --write          # writes the documents and player.moves.ron
+python3 tools/motion/moves.py --write          # writes the key-pose documents, and only those
+python3 tools/motion/moves.py --write-numbers  # writes player.moves.ron from frames.py, if nothing else has changed it
+python3 tools/motion/moves.py --write-numbers --force  # writes it whatever's there
 python3 tools/motion/sheet.py light_1 skill:0,4,8,12,16  # cooks, then draws contact sheets
 ```
 
@@ -17,19 +21,24 @@ python3 tools/motion/sheet.py light_1 skill:0,4,8,12,16  # cooks, then draws con
 |---|---|
 | `moves.py` | The six moves, one function each: a key names where the feet stand, where the hand and blade go, how the body turns and where the head looks. |
 | `pose.py` | Solves a key's legs and arms by inverse kinematics, samples between keys as `sapphire_pipeline::keypose` does, checks a move (feet under the ground, slipping feet, the blade through the body, joint turns) and writes the `.keypose.ron`. |
-| `frames.py` | `player.moves.ron`: frame data, cancel windows, hits, combat numbers and cues. `swap_in`, a party's assist, is frames on the dash attack's clip, with no key-pose document of its own. |
+| `frames.py` | `player.moves.ron` as `--write-numbers` writes it: frame data, cancel windows, hits, combat numbers and cues. `swap_in`, a party's assist, is frames on the dash attack's clip, with no key-pose document of its own. |
+| `player.moves.written` | The digest of what `--write-numbers` last wrote, which tells it whether anything has changed the file since. |
+| `test_writing.py` | Holds who writes what: `python3 -B -m unittest discover -s tools/motion -p 'test_*.py'`. |
 | `rig.py` | Reads the character's rest skeleton from its VRM, so nothing derived from it is committed. |
-| `sheet.py` | Writes the documents, cooks them, and runs the sandbox's `--contact-sheet` (`--blade on`, springs off) at chosen ticks and views. |
+| `sheet.py` | Writes the key-pose documents, cooks them, and runs the sandbox's `--contact-sheet` (`--blade on`, springs off) at chosen ticks and views. |
 
 ## Working on a move
 
-1. Edit its function in `moves.py`, or its numbers in `frames.py`. A move's length must equal its clip's: `frames.py` refuses otherwise.
+1. Edit its function in `moves.py`. A move's length must equal its clip's, or the cook refuses it, so a clip that changes length takes the same change in `player.moves.ron`; `--write` says when `frames.py` no longer fits.
 2. Read a sheet: `python3 tools/motion/sheet.py light_1:0,3,7,8,9,10,11,15,22 --views 205,90`. The default views are from behind and from the side, which is what a fight's camera sees and what shows a silhouette best. Sheets go to `target/motion/`.
 3. Run `cargo test -p sapphire_pipeline --test player_moves`, which holds each move to its shape. It says nothing about whether the move looks good.
-4. Commit `moves.py` or `frames.py` with what they wrote. A clean checkout's `moves.py --write` changes nothing.
-5. The simulation keeps a cooked copy of the set for the arena's fight: `SAPPHIRE_BAKE_MOVES=1 cargo test -p sapphire_pipeline --test player_moves the_simulations_copy`, then `cargo xtask replay --update`.
+4. Commit `moves.py` with what it wrote. On a clean checkout, `--write` and `--write-numbers` change nothing.
 
-The timeline editor (`cargo xtask editor`) opens `player.moves.ron` as it does any moves file, and says this tool wrote it: what it changes there lasts until the next `--write`, so copy numbers worth keeping back into `frames.py`.
+## Tuning a move's numbers
+
+1. Change them in `player.moves.ron`, in the timeline editor or by hand. The editor's banner quotes what the file says about this tool.
+2. The simulation keeps a cooked copy of the set for the arena's fight, so any change that reaches a cook owes it a rewrite: `SAPPHIRE_BAKE_MOVES=1 cargo test -p sapphire_pipeline --test player_moves the_simulations_copy`, then `cargo xtask replay --update`. Forget, and that test fails saying exactly this.
+3. Leave `frames.py` behind, or copy the numbers worth keeping into it. It's only needed to add a move or change the file's layout: edit it, and `--write-numbers` then shows what it would lose from the file. When the file is already what `frames.py` writes, it writes nothing and takes the file as its own again.
 
 ## Posing rules learned the hard way
 

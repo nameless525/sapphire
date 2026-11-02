@@ -35,8 +35,11 @@
 //! - **Live input (I1 and G6, in):** `--arena --fight` in a window is player against brain with no file
 //!   (`crate::combat`), played by the bindings (`crate::combat::read_bindings`), turned by
 //!   [`crate::scene::Scene::camera_heading`], and `--script` drives the same path without a window.
-//!   `--arena --record <file> --scenario arena` keeps one. A new fight is a new simulation, and
-//!   [`ArenaActors::follow`] sees its tick go back: everything stands where it now is, and the camera cuts.
+//!   `--arena --record <file> --scenario arena-fight` keeps one, as far as it's got at each trip to the
+//!   background. A new fight is a new simulation, and [`ArenaActors::follow`] sees its tick go back:
+//!   everything stands where it now is, and the camera cuts, which
+//!   [`crate::scene::Scene::follow_simulation`] passes on to the renderer as the view's cut, for temporal AA
+//!   and the shadows. A party's swap doesn't: who comes in stands where the one who left stood.
 //! - **The camera (G5 and G6, in):** [`ArenaCamera`]. Look and zoom reach it through
 //!   [`crate::scene::Scene::drive_arena_camera`]. Its target is `sapphire_gameplay::targeting`'s soft lock,
 //!   chosen each frame by [`ArenaActors::present`], so a fallen enemy, or one out of range, stops being

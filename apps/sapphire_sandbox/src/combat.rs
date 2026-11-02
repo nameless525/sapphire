@@ -38,7 +38,8 @@
 //! from the same first tick: nothing carries over, and a script plays it exactly as it played the one
 //! before. That's what the app's own test leans on (`tests/replays.rs`): each fight's checksum in the log
 //! is the one a headless run of the same script reaches at that tick. Making one allocates, between steps,
-//! outside what rule R6 counts ([`read_bindings`]'s caller keeps it so).
+//! outside what rule R6 counts ([`read_bindings`]'s caller keeps it so). A script plays one in a window
+//! too, so a phone can fight for as long as exit test 4 asks with no one holding it (M2 Z1).
 
 use std::fs;
 use std::io::Write;

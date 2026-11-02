@@ -1113,19 +1113,14 @@ impl Options {
                         .to_owned(),
                 );
             }
-            Some(CombatOption::Fight { script: Some(_), .. }) if mode.is_none() => {
-                return Err(format!(
-                    "--script needs {CAPTURE_FLAG}, {BENCH_FLAG} or {OFFSCREEN_FLAG}: the windowed app's \
-                     fight is whoever's playing"
-                ));
-            }
             Some(CombatOption::Fight { script: None, .. }) if mode.is_some() => {
                 return Err("--fight needs --script without a window: no one's there to play".to_owned());
             }
             // The sandbox's own bindings would take the dodge and the heavy off a pad.
-            // Someone's there to play it, so it's all on: the bars, the zones, the sparks and the sound.
-            // A recording in the arena is the same fight, written down.
-            Some(CombatOption::Fight { script: None, .. }) => options.play_in_a_window(),
+            // Someone's there to play it, or a script plays a phone's fight unattended (exit test 4), so
+            // it's all on: the bars, the zones, the sparks and the sound. A recording in the arena is the
+            // same fight, written down.
+            Some(CombatOption::Fight { .. }) if mode.is_none() => options.play_in_a_window(),
             Some(CombatOption::Record { script: None, .. }) if options.arena.is_some() => {
                 options.play_in_a_window();
             }
@@ -1785,8 +1780,9 @@ mod tests {
         assert_eq!(scripted.hud, None);
     }
 
-    /// A fight has no file: in a window whoever's there plays it on combat's bindings alone, and
-    /// anywhere else a script does, down the same path.
+    /// A fight has no file: in a window whoever's there plays it on combat's bindings alone, anywhere else
+    /// a script does, down the same path, and a script can stand in for them in a window too, which is how
+    /// a phone fights for 15 minutes with no one holding it.
     #[test]
     fn a_fight_is_played_in_a_window_or_scripted_anywhere_else() {
         let (windowed, unknown) = parse(&["--arena", "--fight"]).unwrap();
@@ -1810,8 +1806,15 @@ mod tests {
             let error = parse(args).expect_err("refused");
             assert!(error.contains(part), "{args:?}: {error}");
         };
+        let (unattended, unknown) = parse(&["--arena", "--fight", "--script", "fight-back"]).unwrap();
+        assert!(unknown.is_empty());
+        assert_eq!(unattended.combat, Some(CombatOption::Fight { script: Some("fight-back".to_owned()) }));
+        assert!(unattended.offscreen.is_none());
+        assert!(unattended.cues, "the whole load");
+        assert_eq!(unattended.hud.map(|hud| hud.mode), Some(HudMode::Live));
+        unattended.refuse_offscreen().expect("Android's windowed app runs it");
+
         refused(&["--fight"], "--arena");
-        refused(&["--arena", "--fight", "--script", "idle"], "--capture");
         refused(&["--arena", "--fight", "--capture", "x"], "no one's there");
         refused(&["--arena", "--fight", "--offscreen"], "no one's there");
         refused(&["--arena", "--fight", "--capture", "x", "--replay", "a"], "--replay");

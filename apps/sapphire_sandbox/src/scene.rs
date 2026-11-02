@@ -1198,6 +1198,57 @@ impl Scene {
         self.extract_poses();
     }
 
+    /// The simulation a graph plays from, with `--graph`.
+    #[cfg(feature = "dev")]
+    pub fn graph_show(&self) -> Option<&GraphShow> {
+        self.graph_show.as_ref()
+    }
+
+    /// Gives the graph show a live edit of the document with this file name, if it plays that (M2 T2).
+    #[cfg(feature = "dev")]
+    pub fn tune_show(
+        &mut self,
+        document: &str,
+        set: sapphire_moves::MoveSet,
+    ) -> Option<(sapphire_gameplay::MoveSetId, sapphire_gameplay::Tuned)> {
+        self.graph_show.as_mut()?.tune(document, set)
+    }
+
+    /// Gives the arena's camera director new tuning (M2 T2), or says why nothing takes it.
+    #[cfg(feature = "dev")]
+    pub fn set_camera_tuning(&mut self, tuning: sapphire_camera::CameraTuning) -> Result<(), String> {
+        let Some(arena) = &mut self.arena else {
+            return Err("no camera director runs here: `--arena` has one".to_owned());
+        };
+        arena.set_camera_tuning(tuning)
+    }
+
+    /// Takes an edited graph (M2 T2): its clips loaded, bound against this character, and from then on
+    /// what binds it, until a pack brings another. It takes effect at the next state's start
+    /// ([`GraphPlayer::replace`]). What fails leaves what's playing alone.
+    ///
+    /// [`GraphPlayer::replace`]: sapphire_anim::GraphPlayer::replace
+    #[cfg(feature = "dev")]
+    pub fn replace_graph_document(
+        &mut self,
+        graph: sapphire_anim::AnimGraph,
+        content: &mut Content,
+        renderer: &mut Renderer,
+        gpu: &sapphire_rhi::GpuContext,
+    ) -> Result<(), String> {
+        let character = self.character;
+        if self.graph_show.is_none() || self.ecs.world().get::<GraphDriver>(character).is_none() {
+            return Err("no character here plays a graph: `--look-dev <shot> --graph <script>` has one".to_owned());
+        }
+        content.hold_clips_of(&graph, renderer, gpu)?;
+        let binding = lookdev::graph_binding_of(content, &graph)?;
+        content.set_live_graph(graph);
+        if let Some(mut playing) = self.ecs.world_mut().get_mut::<GraphDriver>(character) {
+            playing.player.replace(Arc::new(binding));
+        }
+        Ok(())
+    }
+
     /// Takes in a new version of the character, the graph or a clip it names. A new character can't wait,
     /// since its joints are others: its driver starts now from where the old one was. A new graph or
     /// clip binds now and takes effect at the next state's start ([`GraphPlayer::replace`]). What

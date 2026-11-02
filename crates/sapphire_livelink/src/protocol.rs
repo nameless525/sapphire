@@ -45,8 +45,10 @@ use serde::{Deserialize, Serialize};
 /// The protocol this build speaks. Raise it with any change to the preamble, the framing or a
 /// message's layout. Version 2 (M1 X2's rehearsal) added [`RequestBody::Capture`]; version 3 (M1
 /// A8 follow-up 2) the frames drawn while pushed shaders built
-/// ([`ReplyBody::ShadersApplied`]).
-pub const PROTOCOL_VERSION: u32 = 3;
+/// ([`ReplyBody::ShadersApplied`]); version 4 (M2 T2) what live tuning reads in the status: the packs
+/// served from pushes, the documents the app takes and what its fighters are playing
+/// ([`DeviceStatus`]).
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// The port a device listens on and the tool connects to by default.
 pub const DEFAULT_PORT: u16 = 7811;
@@ -413,6 +415,61 @@ pub struct DeviceStatus {
     pub applied: u32,
     pub refused: u32,
     pub received: u64,
+    /// The packs served from pushes, in place of the app's own files, until another push or a restart:
+    /// a cook of one of these changes nothing on this device.
+    pub pushed_packs: Vec<PushedPackStatus>,
+    /// The documents of a fight the app takes as it runs, which the tool's `watch` watches.
+    pub documents: Vec<LiveDocument>,
+    /// What the fight's fighters are playing right now: how a tool sees that an edit reached an attempt.
+    pub attempts: Vec<MoveAttempt>,
+}
+
+/// A pack served from a push.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PushedPackStatus {
+    pub name: String,
+    /// Its length in bytes.
+    pub len: u64,
+}
+
+/// A document of a fight that the app takes as it runs (M2 T2).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveDocument {
+    /// Where it is, from the repository's root, with forward slashes: its file name is what a push goes
+    /// by.
+    pub source: String,
+    /// What it's for, in messages.
+    pub owner: String,
+    /// Edits that changed something, since the app started.
+    pub edits: u32,
+}
+
+/// A move a fighter is playing, by what its revision says: a tool reads the windows themselves, so it
+/// sees an edit reach an attempt rather than being told it should have.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MoveAttempt {
+    pub actor: u32,
+    pub name: String,
+    /// The revision of its set it reads, which it keeps until it ends, and the set's newest.
+    pub revision: u32,
+    pub newest_revision: u32,
+    /// Which playing of a move this is, of all the actor's.
+    pub serial: u32,
+    /// Its phases, in ticks.
+    pub startup: u32,
+    pub active: u32,
+    pub recovery: u32,
+    /// When its hit volumes are open, in ticks from its start.
+    pub hit_windows: Vec<TickWindow>,
+    /// When something can cancel it, in ticks from its start.
+    pub cancel_windows: Vec<TickWindow>,
+}
+
+/// Ticks `from` up to but not including `to`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TickWindow {
+    pub from: u32,
+    pub to: u32,
 }
 
 /// The asset server's counters (`sapphire_assets::AssetStats`), as the status carries them.
@@ -493,6 +550,24 @@ mod tests {
             ReplyBody::Status(DeviceStatus {
                 app: "Sandbox 0.1.0".into(),
                 frame: 9,
+                pushed_packs: vec![PushedPackStatus { name: "shared".into(), len: 4096 }],
+                documents: vec![LiveDocument {
+                    source: "crates/sapphire_moves/test_content/slice.moves.ron".into(),
+                    owner: "moves".into(),
+                    edits: 2,
+                }],
+                attempts: vec![MoveAttempt {
+                    actor: 1,
+                    name: "light_1".into(),
+                    revision: 1,
+                    newest_revision: 2,
+                    serial: 3,
+                    startup: 5,
+                    active: 3,
+                    recovery: 18,
+                    hit_windows: vec![TickWindow { from: 5, to: 8 }],
+                    cancel_windows: vec![TickWindow { from: 8, to: 20 }, TickWindow { from: 2, to: 26 }],
+                }],
                 ..DeviceStatus::default()
             }),
             ReplyBody::CvarSet { name: "a.b".into(), value: "1".into() },

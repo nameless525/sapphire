@@ -14,15 +14,21 @@
 //! holds what was played, with each stick turned by the camera it was played under, and it's written
 //! when the app quits. Everything before that is in memory, so a killed process leaves no file.
 //!
-//! `--replay` needs `--capture` or `--bench`, for now. `--arena --record` shows its fight in a window.
+//! `--replay` needs `--capture` or `--bench`, for now. `--arena --record` shows its fight in a window,
+//! and with `--script`, `--offscreen` runs one for hot reload and live link.
+//!
+//! **Live edits (M2 T2, `tuning.rs`):** a replay plays what it recorded and refuses them. A recording's
+//! fight takes them, and its file stops at the first that changes anything: `Recording` says why.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use sapphire_gameplay::replay::{
-    ARCHITECTURE, ActionSource, ChecksumFile, Divergence, Played, Player, RecordedTrail, Recording, Replay,
-    ReplayError, SCENARIOS, SCRIPTS, checksums_file_name, find_scenario, find_script,
+    ARCHITECTURE, ActionSource, ChecksumFile, Divergence, LiveMoves, Played, Player, RecordedTrail,
+    Recording, Replay, ReplayError, SCENARIOS, SCRIPTS, checksums_file_name, find_scenario, find_script,
 };
+#[cfg(feature = "dev")]
+use sapphire_gameplay::{MoveSetId, Tuned};
 use sapphire_gameplay::{ActorId, Simulation, TickActions};
 
 use crate::LOG_TARGET;
@@ -86,7 +92,7 @@ impl Combat {
         match option {
             CombatOption::Replay { path, .. } => Self::replaying(path),
             CombatOption::Record { path, scenario, script } => {
-                Self::recording(path, scenario, script.as_deref())
+                Self::recording(path, scenario, script.as_deref(), &LiveMoves::default())
             }
         }
     }
@@ -102,7 +108,13 @@ impl Combat {
         Ok(Self { path: path.to_owned(), mode, steps_past_end: 0 })
     }
 
-    fn recording(path: &Path, scenario: &str, script: Option<&str>) -> Result<Self, String> {
+    /// Sets up a recording of `scenario`, from `live`'s edits of its documents.
+    fn recording(
+        path: &Path,
+        scenario: &str,
+        script: Option<&str>,
+        live: &LiveMoves,
+    ) -> Result<Self, String> {
         // Up front rather than after the run: it may be a session someone played, which no script
         // makes again.
         if path.exists() {
@@ -124,7 +136,7 @@ impl Combat {
             })
             .transpose()?;
         let recording =
-            Recording::new(scenario, scenario.config).map_err(|error| format!("--record: {error}"))?;
+            Recording::tuned(scenario, scenario.config, live).map_err(|error| format!("--record: {error}"))?;
         let mode = Mode::Recording { recording, scenario: scenario.name, script, stopped: None };
         Ok(Self { path: path.to_owned(), mode, steps_past_end: 0 })
     }
@@ -134,6 +146,52 @@ impl Combat {
         match &self.mode {
             Mode::Replaying { player, .. } => player.replay().scenario(),
             Mode::Recording { scenario, .. } => scenario,
+        }
+    }
+
+    /// The set that plays the document with this file name, in this fight (M2 T2).
+    #[cfg(feature = "dev")]
+    pub fn plays(&self, document: &str) -> Option<MoveSetId> {
+        find_scenario(SCENARIOS, self.scenario())?.set_of(document)
+    }
+
+    /// Gives this fight a live edit of the document with this file name, between steps: what the set
+    /// that plays it did with it, if one does. A replay refuses, since it plays what it recorded and
+    /// [`Self::check`] would fail it for anything else. A recording ends its file at the first edit
+    /// that changes anything.
+    #[cfg(feature = "dev")]
+    pub fn tune(
+        &mut self,
+        document: &str,
+        set: sapphire_moves::MoveSet,
+    ) -> Result<Option<(MoveSetId, Tuned)>, String> {
+        let Some(id) = self.plays(document) else { return Ok(None) };
+        match &mut self.mode {
+            Mode::Replaying { name, .. } => {
+                Err(format!("`{name}` is a replay, which plays what it recorded: it takes no live edits"))
+            }
+            Mode::Recording { recording, .. } => {
+                let ended = recording.edited_at();
+                let tuned = recording.tune_move_set(id, set);
+                if let (None, Some(tick)) = (ended, recording.edited_at()) {
+                    tracing::warn!(
+                        target: LOG_TARGET,
+                        document,
+                        tick,
+                        "a live edit ends the recording's file at this tick: the fight goes on, unrecorded",
+                    );
+                }
+                Ok(tuned.map(|tuned| (id, tuned)))
+            }
+        }
+    }
+
+    /// The tick a live edit ended a recording's file at, if one did.
+    #[cfg(any(feature = "dev", test))]
+    pub fn edited_at(&self) -> Option<u32> {
+        match &self.mode {
+            Mode::Replaying { .. } => None,
+            Mode::Recording { recording, .. } => recording.edited_at(),
         }
     }
 
@@ -279,6 +337,15 @@ impl Combat {
                 if let Some(error) = stopped {
                     tracing::warn!(target: LOG_TARGET, %error, "the recording stopped at its limit");
                 }
+                if let Some(tick) = recording.edited_at() {
+                    let played = recording.simulation().tick();
+                    tracing::warn!(
+                        target: LOG_TARGET,
+                        tick,
+                        played,
+                        "the file ends where a live edit changed the moves: it can't answer for the rest",
+                    );
+                }
                 let (replay, played) = recording.finish();
                 log_gate(&played);
                 let bytes = replay.encode();
@@ -339,12 +406,19 @@ impl SessionRecorder {
     }
 
     /// Starts `scenario` over, recording the player from its first tick. See the type's docs.
+    #[cfg(test)]
     pub fn start(&mut self, combat: &mut Option<Combat>, scenario: &str) {
+        self.start_tuned(combat, scenario, &LiveMoves::default());
+    }
+
+    /// [`Self::start`], from `live`'s edits of the scenario's documents (M2 T2): a fight started after a
+    /// save plays what was saved, and its file's hash says so.
+    pub fn start_tuned(&mut self, combat: &mut Option<Combat>, scenario: &str, live: &LiveMoves) {
         if combat.is_some() {
             self.note = Some("A fight is running: end it before starting another.".to_owned());
             return;
         }
-        match self.new_recording(scenario) {
+        match self.new_recording(scenario, live) {
             Ok(recording) => {
                 *combat = Some(recording);
                 self.note = None;
@@ -353,24 +427,28 @@ impl SessionRecorder {
         }
     }
 
-    fn new_recording(&self, scenario: &str) -> Result<Combat, String> {
+    fn new_recording(&self, scenario: &str, live: &LiveMoves) -> Result<Combat, String> {
         // Up front: failing here costs nothing, and failing at the end would cost the session.
         fs::create_dir_all(&self.dir).map_err(|error| format!("{}: {error}", self.dir.display()))?;
         let path = (1_u32..)
             .map(|number| self.dir.join(format!("{scenario}-{number}.sreplay")))
             .find(|path| !path.exists())
             .expect("fewer than 2³² recordings");
-        Combat::new(&CombatOption::Record { path, scenario: scenario.to_owned(), script: None })
+        Combat::recording(&path, scenario, None, live)
     }
 
     /// Ends a recording and writes it.
     pub fn save(&mut self, combat: &mut Option<Combat>) {
         let Some(recording) = take_recording(combat) else { return };
-        let ticks = recording.simulation().tick();
+        let edited_at = recording.edited_at();
+        let ticks = edited_at.map_or(recording.simulation().tick(), u64::from);
         let path = recording.path.clone();
-        self.note = Some(match recording.finish() {
-            Ok(()) => format!("Saved {ticks} ticks to {}", path.display()),
-            Err(error) => error,
+        self.note = Some(match (recording.finish(), edited_at) {
+            (Ok(()), None) => format!("Saved {ticks} ticks to {}", path.display()),
+            (Ok(()), Some(_)) => {
+                format!("Saved {ticks} ticks to {}: a live edit ended the file there", path.display())
+            }
+            (Err(error), _) => error,
         });
     }
 

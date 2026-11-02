@@ -362,6 +362,18 @@ impl ArenaActors {
         true
     }
 
+    /// Gives the director new tuning, whose goals its view eases to (M2 T2). Refuses with no director on
+    /// the stage, or tuning it won't take, keeping what it has either way. Whatever resolved shake IDs
+    /// from the old tuning resolves them again here: M2 E3's dispatcher, once it fires them on this
+    /// director.
+    #[cfg(feature = "dev")]
+    pub fn set_camera_tuning(&mut self, tuning: CameraTuning) -> Result<(), String> {
+        let Some(camera) = &mut self.camera else {
+            return Err("this shot has no camera director: `--arena-shot director` has one".to_owned());
+        };
+        camera.director.set_tuning(tuning).map_err(|error| error.to_string())
+    }
+
     /// Which way the director looks across the ground, if it's on, for the next tick's stick.
     pub fn heading(&self) -> Option<f32> {
         self.camera.as_ref().map(|camera| camera.director.heading())

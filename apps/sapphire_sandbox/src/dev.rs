@@ -33,16 +33,19 @@ use crate::content::Content;
 use crate::input::SandboxInput;
 use crate::link::{CaptureRequest, Link, LinkFrame};
 use crate::options::Options;
-use crate::reload::Reload;
+use crate::reload::{DocumentFrame, Reload};
 use crate::scene::Scene;
 use crate::shader_edits::ShaderEdits;
 use crate::stats::Stages;
+use crate::tuning::{Fight, LiveTuning};
 
 pub(crate) struct DevTools {
     overlay: DebugOverlay,
     cvars: CvarRegistry,
     reload: Reload,
     link: Link,
+    /// A fight's documents, as they're edited (M2 T2).
+    tuning: LiveTuning,
     /// Shader sources asked of the renderer by hot reload and live link, answered as they are
     /// swapped in.
     shaders: ShaderEdits,
@@ -96,7 +99,7 @@ impl DevTools {
         format: wgpu::TextureFormat,
         options: &Options,
         platform: &Platform,
-        content: &Content,
+        content: &mut Content,
     ) -> Result<Self, AppInitError> {
         let show = options.debug_overlay.as_deref();
         let panels = match show {
@@ -113,6 +116,7 @@ impl DevTools {
             .and_then(|()| cvars.register_all(&crate::combat_views::CVARS))
             .map_err(AppInitError::msg)?;
         let content_root = Path::new(platform.content().root());
+        let tuning = LiveTuning::new(options, content);
         Ok(Self {
             overlay: DebugOverlay::new(gpu, format, config),
             cvars,
@@ -121,8 +125,10 @@ impl DevTools {
                 content_root,
                 &crate::reload::day_source(options),
                 &crate::reload::light_rigs_source(options),
+                tuning.watched(options),
             ),
             link: Link::start(options.live_link, content.live_packs(), platform.system_info()),
+            tuning,
             shaders: ShaderEdits::default(),
             frames: 0,
             frame_time: Duration::ZERO,
@@ -145,23 +151,51 @@ impl DevTools {
     /// Applies what hot reload found changed and what live link received, before the frame's
     /// loading: once a frame. First answers the shader edits the renderer swapped in (or
     /// refused) since the last frame.
-    pub fn reload(&mut self, content: &mut Content, renderer: &mut Renderer, scene: &mut Scene) {
+    pub fn reload(
+        &mut self,
+        content: &mut Content,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+        scene: &mut Scene,
+        mut combat: Option<&mut Combat>,
+    ) {
         let mut answered = self.shaders.answer(renderer);
         self.reload.shaders_answered(&mut answered);
         self.link.shaders_refused(&mut answered.link_errors);
         // Taken once for both: hot reload lists failed reloads, live link answers pushes with them.
         let changes = content.take_changes();
-        self.reload.update(&changes, content, renderer, scene, &mut self.shaders);
+        let fight = Fight { combat: combat.as_deref_mut(), scene: &mut *scene };
+        let pack_errors = self.tuning.follow_packs(&changes, content, fight);
+        let frame = DocumentFrame {
+            content: &mut *content,
+            renderer: &mut *renderer,
+            gpu,
+            scene: &mut *scene,
+            combat: combat.as_deref_mut(),
+            tuning: &mut self.tuning,
+        };
+        self.reload.update(&changes, frame, &mut self.shaders);
+        if !pack_errors.is_empty() {
+            self.reload.add_errors(pack_errors);
+        }
         let frame = LinkFrame {
             content,
             renderer,
+            gpu,
             scene,
+            combat,
+            tuning: &mut self.tuning,
             cvars: &self.cvars,
             shaders: &mut self.shaders,
             frame: self.frames,
             frame_time: self.frame_time,
         };
         self.link.update(&changes, frame);
+    }
+
+    /// After the frame's fixed steps, before it draws: reports an attempt that plays a live edit.
+    pub fn after_steps(&mut self, combat: Option<&Combat>, scene: &Scene) {
+        self.tuning.after_steps(combat, scene);
     }
 
     /// The captures live link asked for, if any: the frame about to be drawn answers them
@@ -265,7 +299,9 @@ impl DevTools {
     /// started, and each still reads the bindings exactly once ([`SessionRecorder`]).
     pub fn apply_recorder(&mut self, combat: &mut Option<Combat>) {
         match self.overlay.recorder_controls().take() {
-            Some(RecorderRequest::Start { scenario }) => self.recorder.start(combat, &scenario),
+            Some(RecorderRequest::Start { scenario }) => {
+                self.recorder.start_tuned(combat, &scenario, self.tuning.moves())
+            }
             Some(RecorderRequest::Save) => self.recorder.save(combat),
             Some(RecorderRequest::Discard) => self.recorder.discard(combat),
             None => {}

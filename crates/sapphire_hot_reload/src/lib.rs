@@ -34,7 +34,8 @@
 //!   handles (`sapphire_assets::AssetServer::remount`); the renderer rebuilds pipelines from
 //!   shader sources (`sapphire_render::Renderer::set_shader_sources`); the app parses documents
 //!   and hands them to their owners (time of day's `TimeOfDay::set_timeline`, the light rig
-//!   presets' `LightRigLibrary` resource, the screen effect presets' `EffectLibrary` resource).
+//!   presets' `LightRigLibrary` resource, the screen effect presets' `EffectLibrary` resource,
+//!   and M2 T2's live tuning: a fight's moves, camera and animation graph).
 //!   Live link (A9)
 //!   drives the same three from a device's side.
 //! - Cooking: `cargo xtask content` writes packs, and hot reload sees them land.

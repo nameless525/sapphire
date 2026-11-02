@@ -8,7 +8,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::{Context as _, bail};
-use sapphire_livelink::protocol::{DeviceStatus, PackOutcome, SourceFile};
+use sapphire_livelink::protocol::{DeviceStatus, MoveAttempt, PackOutcome, SourceFile, TickWindow};
 use sapphire_livelink::{Client, DEFAULT_PORT};
 use sapphire_time::Stopwatch;
 use sapphire_watch::{DEBOUNCE, FileWatcher, WatchId, sources};
@@ -21,22 +21,24 @@ Talks to a development build's live link (spec §5.29): connects to it at --addr
 
 Commands:
   status
-      The device's app, platform and cook, its frame time, its assets, and the generation of
-      every asset replaced since it started.
+      The device's app, platform and cook, its frame time, its assets, the generation of every
+      asset replaced since it started, the packs it serves from pushes, the documents of a fight
+      it takes as it runs and what its fighters are playing.
   cvar <name> <value>
       Set a cvar, as the dev console does.
   push [<file>...]
       Push packs (.spack, named by their stem: only the assets the device lacks are sent), RON
       documents (.ron: the device applies them by the type their envelope names) and WGSL
       sources (.wgsl). With no files, push every pack of the device's cook in --content. Exits
-      with an error if anything was refused, or an asset of a pack didn't reload.
+      with an error if anything was refused, or an asset of a pack didn't reload. A document of
+      moves, a graph or the camera's tuning goes to a running fight: its next attempt plays it.
   capture <png>
       Write the next frame the device draws, with everything pushed before it, to <png>.
   watch [<document>...]
       Push what changes, until interrupted: the packs of the device's cook in --content when
       `cargo xtask content --cook <cook>` rewrites them, the renderer's WGSL sources, the default
-      day's timeline, the character light rig presets, the screen effect presets and the RON
-      documents named (a scene's own timeline, say).
+      day's timeline, the character light rig presets, the screen effect presets, the documents of
+      a fight the device says it takes and the RON documents named (a scene's own timeline, say).
 
 Each command says how long the device took to answer, from the request to its reply. A device
 has 10 s to answer (60 s for packs, shaders and captures), and must keep taking what is sent to
@@ -350,7 +352,8 @@ fn watch(target: &mut Target, content: Option<&Path>, extra: Vec<PathBuf>) -> an
     eprintln!("watching {}", shader_dir.display());
     let mut documents: Vec<(WatchId, OsString, PathBuf)> = Vec::new();
     let engine = [sources::default_day(), sources::default_light_rigs(), sources::default_screen_effects()];
-    for path in engine.into_iter().chain(extra) {
+    let fight = status.documents.iter().map(|document| sources::repository_file(&document.source));
+    for path in engine.into_iter().chain(fight).chain(extra) {
         let dir = path.parent().filter(|dir| !dir.as_os_str().is_empty()).unwrap_or(Path::new("."));
         let name = path.file_name().context("a document is a file")?.to_owned();
         documents.push((watcher.watch(dir)?, name, path.clone()));
@@ -435,6 +438,40 @@ fn print_status(status: &DeviceStatus) {
     for asset in &status.generations {
         eprintln!("  {} {} is generation {}", asset.kind, asset.id, asset.generation);
     }
+    for pack in &status.pushed_packs {
+        eprintln!(
+            "pack {} is served from a push ({}): a cook of it changes nothing until a restart",
+            pack.name,
+            size(pack.len)
+        );
+    }
+    for document in &status.documents {
+        eprintln!("{} ({}): {} edits", document.source, document.owner, document.edits);
+    }
+    for attempt in &status.attempts {
+        eprintln!("{}", attempt_line(attempt));
+    }
+}
+
+/// What a fighter is playing, for people.
+fn attempt_line(attempt: &MoveAttempt) -> String {
+    let windows = |windows: &[TickWindow]| {
+        let spans: Vec<String> = windows.iter().map(|span| format!("{}..{}", span.from, span.to)).collect();
+        spans.join(", ")
+    };
+    format!(
+        "actor {} plays {} (playing {}, revision {} of {}): {}+{}+{} ticks, hits at {}, cancels at {}",
+        attempt.actor,
+        attempt.name,
+        attempt.serial,
+        attempt.revision,
+        attempt.newest_revision,
+        attempt.startup,
+        attempt.active,
+        attempt.recovery,
+        windows(&attempt.hit_windows),
+        windows(&attempt.cancel_windows),
+    )
 }
 
 fn print_pack(name: &str, outcome: &PackOutcome, stopwatch: &Stopwatch) {
@@ -520,6 +557,53 @@ mod tests {
     fn push_file(address: SocketAddr, file: PathBuf) -> anyhow::Result<()> {
         let args = ["--addr", &address.to_string(), "push", &file.display().to_string()].map(str::to_owned);
         run(args.to_vec())
+    }
+
+    /// A pushed document the device refuses is the tool's non-zero exit, with the device's own text: for
+    /// a move set, the issue naming the move and the track.
+    #[test]
+    fn a_refused_document_is_a_failure_that_says_why() {
+        let file = std::env::temp_dir().join(format!("sapphire_livelink_{}_x.moves.ron", std::process::id()));
+        std::fs::write(&file, "(type: \"sapphire::moves::MoveSetDocument\", version: 1, data: ())").unwrap();
+        let path = file.clone();
+        let packs = Arc::new(LivePacks::new(MemoryPackSource::new()));
+        let link = LiveLink::start(LinkMode::Listen(SocketAddr::from(([127, 0, 0, 1], 0))), packs).unwrap();
+        let address = link.address();
+        let tool = std::thread::spawn(move || {
+            let mut client = Client::connect(address).unwrap();
+            Item::Document(path).push(&mut client)
+        });
+        while !tool.is_finished() {
+            match link.poll() {
+                Some(Push::Document { reply, .. }) => {
+                    reply.refuse("x.moves.ron: move `light_1`, track `hitboxes`: past its end".to_owned());
+                }
+                Some(_) => panic!("the tool only pushes a document here"),
+                None => std::thread::sleep(Duration::from_millis(1)),
+            }
+        }
+        let error = tool.join().unwrap().expect_err("refused");
+        let _ = std::fs::remove_file(&file);
+        assert!(format!("{error:#}").contains("move `light_1`, track `hitboxes`"), "{error:#}");
+    }
+
+    /// What `status` prints of a fighter says which revision it reads and where its windows are.
+    #[test]
+    fn a_status_line_names_a_moves_revision_and_windows() {
+        let line = attempt_line(&MoveAttempt {
+            actor: 1,
+            name: "light_1".to_owned(),
+            revision: 1,
+            newest_revision: 2,
+            serial: 4,
+            startup: 7,
+            active: 3,
+            recovery: 16,
+            hit_windows: vec![TickWindow { from: 7, to: 10 }],
+            cancel_windows: vec![TickWindow { from: 10, to: 22 }],
+        });
+        assert!(line.contains("light_1") && line.contains("revision 1 of 2"), "{line}");
+        assert!(line.contains("7+3+16") && line.contains("hits at 7..10"), "{line}");
     }
 
     /// Review DV-7: scripts read the exit code, so a pack whose assets failed to reload mustn't

@@ -231,7 +231,7 @@ mod gpu_tests {
             Renderer::new(&gpu, wgpu::TextureFormat::Rgba8UnormSrgb, RenderSettings::default())
                 .expect("renderer");
         let mut edits = ShaderEdits::default();
-        let mut reload = Reload::start(false, Path::new("."), Path::new("day.ron"), Path::new("rigs.ron"));
+        let mut reload = Reload::start(false, Path::new("."), Path::new("day.ron"), Path::new("rigs.ron"), Vec::new());
         let packs = Arc::new(LivePacks::new(MemoryPackSource::new()));
         let link =
             LiveLink::start(LinkMode::Listen(SocketAddr::from(([127, 0, 0, 1], 0))), packs).expect("a link");
@@ -316,7 +316,7 @@ mod gpu_tests {
                 .expect("a link");
             let mut editing = Self {
                 link,
-                reload: Reload::start(false, Path::new("."), Path::new("day.ron"), Path::new("rigs.ron")),
+                reload: Reload::start(false, Path::new("."), Path::new("day.ron"), Path::new("rigs.ron"), Vec::new()),
                 edits: ShaderEdits::default(),
                 packets: FramePacketRing::new(),
                 renderer,

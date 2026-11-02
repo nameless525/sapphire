@@ -24,8 +24,9 @@
 //! - edited screen effect presets replace the scene's (the `EffectLibrary` resource, M1 P3);
 //!   effects playing keep the layers they were pushed with, and the renderer prewarms the post
 //!   variants the new presets draw through, unless they lose a preset a fight's cue table pushes;
-//! - an edited cue table replaces the one a fight's cues fire through (M2 E3), if the names it holds
-//!   are all there.
+//! - an edited fight's document (M2 T2, `tuning.rs`): its moves and fighter, the camera's tuning, the
+//!   character's graph or the cue table (M2 E3, if the names it holds are all there), each playing on the
+//!   next attempt. A new `.smoves` from a pack does the same.
 //!
 //! On by default in `dev` builds; `--no-hot-reload` turns it off. Phones build no file watching
 //! (live link, A9, is their trigger), so it reports itself off there. Errors are logged and
@@ -36,22 +37,28 @@
 
 use std::path::{Path, PathBuf};
 
+use sapphire_anim::AnimGraph;
 use sapphire_assets::AssetChange;
+use sapphire_camera::CameraTuning;
 use sapphire_cues::CueTable;
 use sapphire_debug::HotReloadStatus;
 use sapphire_hot_reload::{Changes, DEBOUNCE, DocumentId, HotReload, sources};
+use sapphire_moves::MoveSetDocument;
 use sapphire_reflect::stable_name;
 use sapphire_render::{Renderer, ShaderFile, ShaderSources};
+use sapphire_rhi::GpuContext;
 use sapphire_time::Stopwatch;
 use sapphire_world::light_rig::LightRigLibrary;
 use sapphire_world::screen_effects::EffectLibrary;
 use sapphire_world::tod::TodTimeline;
 
 use crate::LOG_TARGET;
+use crate::combat::Combat;
 use crate::content::Content;
 use crate::link::cook_not_in_use;
 use crate::scene::{Day, Scene};
 use crate::shader_edits::{Answered, Origin, ShaderEdits};
+use crate::tuning::{Fight, LiveTuning};
 
 /// A document the sandbox swaps in while it runs, from hot reload or live link.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,10 +78,37 @@ pub(crate) enum Document {
     /// The cue table (`default_cues.ron`, M2 E3): it replaces the one a fight's cues fire through, if
     /// there's a fight, it parses and the names it holds are all there.
     Cues,
+    /// A fight's moves and fighter (`.moves.ron`, M2 T2): they replace the set of that file's name, for
+    /// the next attempt, if they compile.
+    Moves,
+    /// The camera's tuning (`default_camera.ron`, M2 T2): it replaces the director's, if there is one and
+    /// it's in range.
+    Camera,
+    /// The character's animation graph (`.animgraph.ron`, M2 T2): it replaces the one playing from the
+    /// next state's start, if it checks and binds.
+    Graph,
+}
+
+/// What applying a document can reach, once a document.
+pub(crate) struct DocumentFrame<'a> {
+    pub content: &'a mut Content,
+    pub renderer: &'a mut Renderer,
+    pub gpu: &'a GpuContext,
+    pub scene: &'a mut Scene,
+    pub combat: Option<&'a mut Combat>,
+    pub tuning: &'a mut LiveTuning,
 }
 
 impl Document {
-    const ALL: [Self; 4] = [Self::Day, Self::LightRigs, Self::ScreenEffects, Self::Cues];
+    const ALL: [Self; 7] = [
+        Self::Day,
+        Self::LightRigs,
+        Self::ScreenEffects,
+        Self::Cues,
+        Self::Moves,
+        Self::Camera,
+        Self::Graph,
+    ];
 
     /// The document whose envelope names `type_name`, if the sandbox has one.
     pub fn of_type(type_name: &str) -> Option<Self> {
@@ -87,6 +121,9 @@ impl Document {
             Self::LightRigs => stable_name::<LightRigLibrary>(),
             Self::ScreenEffects => stable_name::<EffectLibrary>(),
             Self::Cues => stable_name::<CueTable>(),
+            Self::Moves => stable_name::<MoveSetDocument>(),
+            Self::Camera => stable_name::<CameraTuning>(),
+            Self::Graph => stable_name::<AnimGraph>(),
         }
     }
 
@@ -97,43 +134,45 @@ impl Document {
             Self::LightRigs => "light rigs",
             Self::ScreenEffects => "screen effects",
             Self::Cues => "cue table",
+            Self::Moves => "moves",
+            Self::Camera => "camera's tuning",
+            Self::Graph => "animation graph",
         }
     }
 
-    /// Parses `text`, read from `origin` (a path or a file name), and swaps it into `scene`,
+    /// Parses `text`, read from `origin` (a path or a file name), and swaps it into its owner,
     /// returning what it replaced, or says why it keeps what it has. A timeline replaces the day
     /// only from the file of the day the scene runs on, so the default day can't replace the
-    /// look-dev stage's ([`Scene::replace_day`]). New screen effect presets have `renderer`
-    /// prewarm their post variants, which the overlay may fire.
-    pub fn apply(
-        self,
-        origin: &str,
-        text: &str,
-        scene: &mut Scene,
-        renderer: &mut Renderer,
-    ) -> Result<&'static str, String> {
+    /// look-dev stage's ([`Scene::replace_day`]). New screen effect presets have the renderer
+    /// prewarm their post variants, which the overlay may fire. A fight's documents go through
+    /// [`LiveTuning`].
+    pub fn apply(self, origin: &str, text: &str, frame: DocumentFrame<'_>) -> Result<String, String> {
+        let DocumentFrame { content, renderer, gpu, scene, combat, tuning } = frame;
         match self {
             Self::Day => {
                 let timeline = TodTimeline::from_ron(text).map_err(|error| error_chain(&error))?;
-                Ok(scene.replace_day(origin, timeline)?.name())
+                Ok(scene.replace_day(origin, timeline)?.name().to_owned())
             }
             Self::LightRigs => {
                 let rigs = LightRigLibrary::from_ron(text).map_err(|error| error_chain(&error))?;
                 scene.replace_light_rigs(origin, rigs)?;
-                Ok(self.name())
+                Ok(self.name().to_owned())
             }
             Self::ScreenEffects => {
                 let effects = EffectLibrary::from_ron(text).map_err(|error| error_chain(&error))?;
                 scene.set_effect_library(effects)?;
                 renderer.prewarm_post(scene.effect_variants());
-                Ok(self.name())
+                Ok(self.name().to_owned())
             }
             Self::Cues => {
                 let table = CueTable::from_ron(text).map_err(|error| error_chain(&error))?;
                 scene.set_cue_table(table)?;
                 renderer.prewarm_post(scene.effect_variants());
-                Ok(self.name())
+                Ok(self.name().to_owned())
             }
+            Self::Moves => tuning.moves_document(origin, text, Fight { combat, scene }),
+            Self::Camera => tuning.camera_document(text, scene),
+            Self::Graph => tuning.graph_document(text, content, scene, renderer, gpu),
         }
     }
 }
@@ -184,10 +223,16 @@ pub(crate) struct Reload {
 
 impl Reload {
     /// Watches the packs in `content_root`, the shaders, the day's timeline at `day`
-    /// ([`day_source`]), the light rig presets at `light_rigs` ([`light_rigs_source`]) and the
-    /// screen effect presets, unless `enabled` is false. A source that can't be watched is left
-    /// out, with a warning.
-    pub fn start(enabled: bool, content_root: &Path, day: &Path, light_rigs: &Path) -> Self {
+    /// ([`day_source`]), the light rig presets at `light_rigs` ([`light_rigs_source`]), the
+    /// screen effect presets and the fight's documents `tuned` ([`LiveTuning::watched`]), unless
+    /// `enabled` is false. A source that can't be watched is left out, with a warning.
+    pub fn start(
+        enabled: bool,
+        content_root: &Path,
+        day: &Path,
+        light_rigs: &Path,
+        tuned: Vec<(Document, PathBuf)>,
+    ) -> Self {
         let mut reload = Self {
             hot: None,
             watching: String::new(),
@@ -222,12 +267,13 @@ impl Reload {
             Ok(()) => watched.push("shaders"),
             Err(error) => warn("the shaders", &error),
         }
-        for (document, path, what) in [
+        let engine = [
             (Document::Day, day.to_owned(), "the day"),
             (Document::LightRigs, light_rigs.to_owned(), "the light rigs"),
             (Document::ScreenEffects, sources::default_screen_effects(), "the screen effects"),
-            (Document::Cues, sources::default_cues(), "the cue table"),
-        ] {
+        ];
+        let tuned = tuned.into_iter().map(|(document, path)| (document, path, document.name()));
+        for (document, path, what) in engine.into_iter().chain(tuned) {
             match hot.watch_document(&path) {
                 Ok(id) => {
                     // Its file's name, which says which day a timeline or the presets are for.
@@ -239,6 +285,7 @@ impl Reload {
                 Err(error) => warn(what, &error),
             }
         }
+        watched.dedup();
         reload.watching = format!("watching {}", watched.join(", "));
         tracing::info!(target: LOG_TARGET, content = %content_root.display(), "hot reload {}", reload.watching);
         reload.hot = Some(hot);
@@ -259,17 +306,24 @@ impl Reload {
         }
     }
 
+    /// Adds what a pack's new version of something went wrong with, which the overlay lists.
+    pub fn add_errors(&mut self, errors: Vec<String>) {
+        for error in &errors {
+            tracing::warn!(target: LOG_TARGET, error, "hot reload");
+        }
+        self.errors.extend(errors);
+    }
+
     /// Applies what changed since the last frame; `changes` are the asset server's since then.
     /// New shader sources go to the renderer through `shaders`, which answers them once they are
     /// swapped in. Allocates nothing while nothing changed.
     pub fn update(
         &mut self,
         changes: &[AssetChange],
-        content: &mut Content,
-        renderer: &mut Renderer,
-        scene: &mut Scene,
+        frame: DocumentFrame<'_>,
         shaders: &mut ShaderEdits,
     ) {
+        let DocumentFrame { content, renderer, gpu, scene, mut combat, tuning } = frame;
         let Some(hot) = &mut self.hot else { return };
         // Reloads land frames after their pack changed, so they are told of as they come: the
         // moment an edit shows.
@@ -318,7 +372,15 @@ impl Reload {
             else {
                 continue;
             };
-            match document.apply(origin, &text, scene, renderer) {
+            let frame = DocumentFrame {
+                content: &mut *content,
+                renderer: &mut *renderer,
+                gpu,
+                scene: &mut *scene,
+                combat: combat.as_deref_mut(),
+                tuning: &mut *tuning,
+            };
+            match document.apply(origin, &text, frame) {
                 Ok(replaced) => {
                     self.reloaded_documents += 1;
                     tracing::info!(target: LOG_TARGET, "{replaced} reloaded");

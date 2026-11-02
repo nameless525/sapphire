@@ -74,7 +74,8 @@ impl App for OffscreenApp {
             }
             #[cfg(feature = "dev")]
             OffscreenMode::Serve => {
-                let stage = Stage::new(platform, &options)?;
+                let mut stage = Stage::new(platform, &options)?;
+                stage.combat = combat;
                 let serving = crate::serve::Serving::new(stage, options.clone(), width, height);
                 return Ok(Self { serving: Some(serving) });
             }
@@ -96,7 +97,11 @@ impl App for OffscreenApp {
 
     fn event(&mut self, _platform: &mut Platform, event: &Event) -> AppControl {
         match event {
-            // Ctrl-C or `kill`, which SDL reports as a quit.
+            // Ctrl-C or `kill`, which SDL reports as a quit. A recording gets written then.
+            #[cfg(feature = "dev")]
+            Event::Quit { .. } if self.serving.is_some() => {
+                self.serving.as_mut().map_or(AppControl::Exit, crate::serve::Serving::finish)
+            }
             Event::Quit { .. } => AppControl::Exit,
             _ => AppControl::Continue,
         }
@@ -295,7 +300,7 @@ impl Stage {
             scene.set_hud(crate::hud::SandboxHud::new(hud));
         }
         #[cfg(feature = "dev")]
-        let dev = crate::dev::DevTools::new(&gpu, FORMAT, options, platform, &content)?;
+        let dev = crate::dev::DevTools::new(&gpu, FORMAT, options, platform, &mut content)?;
         #[cfg(not(feature = "dev"))]
         if options.debug_overlay.is_some() {
             tracing::warn!(target: LOG_TARGET, "--debug-overlay needs a `dev` build (`--features dev`)");
@@ -410,7 +415,13 @@ impl Stage {
         // Hot reload and loading run every frame, as in the windowed app, so the bench measures
         // them.
         #[cfg(feature = "dev")]
-        self.dev.reload(&mut self.content, &mut self.renderer, &mut self.scene);
+        self.dev.reload(
+            &mut self.content,
+            &mut self.renderer,
+            &self.gpu,
+            &mut self.scene,
+            self.combat.as_mut(),
+        );
         self.content.update(&mut self.renderer, &self.gpu);
         self.scene.follow_content(&mut self.content);
         // Reload/live link can change debug CVars, so inspect them after applying it.
@@ -441,6 +452,8 @@ impl Stage {
         // measures its own way, and fixed steps are run outside this).
         #[cfg(feature = "dev")]
         let mut stopwatch = self.dev.overlay_visible().then(sapphire_time::Stopwatch::start);
+        #[cfg(feature = "dev")]
+        self.dev.after_steps(self.combat.as_ref(), &self.scene);
         self.scene.animate(&self.content, alpha);
         if let Some(combat) = &self.combat {
             combat.draw_views();

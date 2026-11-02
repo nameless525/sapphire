@@ -911,6 +911,15 @@ fn list(issues: &[Issue]) -> String {
     lines.join("\n")
 }
 
+impl ArchivedMoveSet {
+    /// The set as plain data, for a simulation to take: what an app does with a new version of a cooked
+    /// set, which live tuning reloads through a pack.
+    pub fn to_owned_set(&self) -> Result<MoveSet, MoveSetError> {
+        rkyv::deserialize::<MoveSet, rkyv::rancor::Error>(self)
+            .map_err(|error| MoveSetError::Cooked(CookedError::from(error)))
+    }
+}
+
 impl MoveSet {
     pub(crate) fn from_parts(
         intents: Vec<IntentDef>,

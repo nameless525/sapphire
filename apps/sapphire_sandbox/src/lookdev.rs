@@ -57,7 +57,9 @@
 
 use std::sync::Arc;
 
-use sapphire_anim::{ArchivedSkeleton, CharacterPose, GraphBinding, GraphPlayer, IkRig, SpringBones};
+use sapphire_anim::{
+    AnimGraph, ArchivedSkeleton, CharacterPose, GraphBinding, GraphPlayer, IkRig, SpringBones,
+};
 use sapphire_assets::AssetId;
 use sapphire_assets::mesh::Mesh;
 use sapphire_assets::rig::{ArchivedCharacterRig, HumanBone};
@@ -688,12 +690,15 @@ pub(crate) fn player(content: &Content) -> Result<ClipPlayer, String> {
 /// The graph as `content` has it now, bound to the character as `content` has it now. Fails where
 /// [`held`] does, or if the graph isn't loaded or doesn't fit the character.
 pub(crate) fn graph_binding(content: &Content) -> Result<GraphBinding, String> {
+    graph_binding_of(content, &content.graph_document()?)
+}
+
+/// [`graph_binding`], for `graph` rather than the one `content` holds.
+pub(crate) fn graph_binding_of(content: &Content, graph: &AnimGraph) -> Result<GraphBinding, String> {
     let mesh = content.character_mesh().ok_or("the look-dev character isn't loaded")?;
     let rig = content.rig().ok_or("the look-dev character's rig isn't loaded")?;
     let skeleton = content.skeleton().ok_or("the look-dev character's skeleton isn't loaded")?;
-    let graph = content.graph().ok_or("the character's graph isn't loaded")?;
-    let graph = graph.to_owned_graph().map_err(|error| error.to_string())?;
-    GraphBinding::new(&graph, skeleton, Some(rig), mesh.morph_targets.len(), &content.graph_clips())
+    GraphBinding::new(graph, skeleton, Some(rig), mesh.morph_targets.len(), &content.graph_clips())
         .map_err(|error| error.to_string())
 }
 

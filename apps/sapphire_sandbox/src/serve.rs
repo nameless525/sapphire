@@ -7,6 +7,9 @@
 //! phone, `cargo xtask link capture <png>` writes what it draws, and A8's watcher reloads what
 //! changes on disk. The M1 exit run's desktop leg runs on it (`docs/m1-exit-run.md`).
 //!
+//! With `--record <file> --scenario <name> --script <name>` it runs a fight beside the scene, one tick a
+//! frame, which live tuning edits and whose recording is written when it quits (M2 T2).
+//!
 //! Its stage is the capture and bench modes' ([`Stage`]), which prewarms the post variants the
 //! scene may draw at startup (`Scene::effect_variants`, `Renderer::prewarm_post`), as the
 //! windowed app does; replaced screen effect presets prewarm theirs as hot reload or live link
@@ -96,10 +99,21 @@ impl Serving {
         Self { view, _target: target, stage, options, size: (width, height), remaining: frame_limit, lengths }
     }
 
+    /// Ends the fight, if there is one, and says how the app should leave.
+    pub fn finish(&mut self) -> AppControl {
+        match self.stage.finish_combat() {
+            Ok(()) => AppControl::Exit,
+            Err(error) => {
+                tracing::error!(target: LOG_TARGET, %error, "the fight didn't end cleanly");
+                AppControl::Fail
+            }
+        }
+    }
+
     /// Draws the next frame, then sleeps out the rest of its 1/60 s.
     pub fn frame(&mut self) -> AppControl {
         if self.remaining == Some(0) {
-            return AppControl::Exit;
+            return self.finish();
         }
         let stopwatch = Stopwatch::start();
         if let Err(error) = self.draw() {

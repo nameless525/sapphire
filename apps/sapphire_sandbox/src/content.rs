@@ -371,6 +371,9 @@ pub(crate) struct Content {
     graph: Option<Handle<AnimGraph>>,
     graph_clips: Vec<(AssetId, Handle<Clip>)>,
     graph_version: u32,
+    /// The graph live tuning took as a document, over the cooked one until that has a new version.
+    #[cfg(feature = "dev")]
+    live_graph: Option<LiveGraph>,
     /// The sky material the scene draws: [`SKY`] unless the scene wants another.
     sky_id: AssetId,
     /// The sky material, once asked for.
@@ -380,6 +383,14 @@ pub(crate) struct Content {
     /// platform's.
     #[cfg(feature = "dev")]
     live_packs: Arc<LivePacks>,
+}
+
+/// A graph live tuning took as a document (M2 T2).
+#[cfg(feature = "dev")]
+struct LiveGraph {
+    graph: AnimGraph,
+    /// The cooked graph's generation when it came.
+    cooked: u32,
 }
 
 impl Content {
@@ -434,6 +445,8 @@ impl Content {
             graph: None,
             graph_clips: Vec::new(),
             graph_version: 0,
+            #[cfg(feature = "dev")]
+            live_graph: None,
             sky_id: sky,
             sky: None,
             server,
@@ -981,6 +994,11 @@ impl Content {
     pub fn hold_graph_clips(&mut self) -> Result<(), LoadError> {
         let Some(graph) = self.graph() else { return Ok(()) };
         let ids: Vec<AssetId> = graph.clip_ids().collect();
+        #[cfg(feature = "dev")]
+        let ids = match &self.live_graph {
+            Some(live) => live.graph.clips.iter().map(|clip| clip.id).collect(),
+            None => ids,
+        };
         let clips = ids.into_iter().map(|id| Ok((id, self.server.load_with(id, LoadPriority::Critical)?)));
         self.graph_clips = clips.collect::<Result<_, LoadError>>()?;
         Ok(())
@@ -989,6 +1007,57 @@ impl Content {
     /// The graph [`Self::load_graph`] loaded.
     pub fn graph(&self) -> Option<&ArchivedAnimGraph> {
         self.graph.as_ref().and_then(|graph| self.server.get(graph))
+    }
+
+    /// The graph a character binds: the one live tuning took, or the one [`Self::load_graph`] loaded.
+    pub fn graph_document(&self) -> Result<AnimGraph, String> {
+        #[cfg(feature = "dev")]
+        if let Some(live) = &self.live_graph {
+            return Ok(live.graph.clone());
+        }
+        let graph = self.graph().ok_or("the character's graph isn't loaded")?;
+        graph.to_owned_graph().map_err(|error| error.to_string())
+    }
+
+    /// Loads the clips an edited graph names, until they're resident, keeping those a graph still playing
+    /// reads while there's room: it goes on until its next state's start. Fails on a clip nothing cooked,
+    /// keeping what's held.
+    #[cfg(feature = "dev")]
+    pub fn hold_clips_of(
+        &mut self,
+        graph: &AnimGraph,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+    ) -> Result<(), String> {
+        let mut held = Vec::with_capacity(graph.clips.len());
+        for clip in &graph.clips {
+            if let Some(found) = self.graph_clips.iter().find(|(id, _)| *id == clip.id) {
+                held.push(found.clone());
+                continue;
+            }
+            let failed = |error: &dyn std::fmt::Display| format!("clip `{}`: {error}", clip.name);
+            let handle = self.server.load_with(clip.id, LoadPriority::Critical).map_err(|e| failed(&e))?;
+            let assets = &mut self.gpu;
+            let loaded = self.server.finish(&handle, |upload| assets.upload(upload, renderer, gpu));
+            loaded.map_err(|e| failed(&e))?;
+            held.push((clip.id, handle));
+        }
+        for old in &self.graph_clips {
+            let room = held.len() < sapphire_assets::graph::MAX_GRAPH_CLIPS;
+            if room && !held.iter().any(|(id, _)| *id == old.0) {
+                held.push(old.clone());
+            }
+        }
+        self.graph_clips = held;
+        self.graph_version = self.graph_versions();
+        Ok(())
+    }
+
+    /// Binds characters to `graph` from now on, until the cooked graph has a new version.
+    #[cfg(feature = "dev")]
+    pub fn set_live_graph(&mut self, graph: AnimGraph) {
+        let cooked = self.graph.as_ref().map_or(0, |graph| self.server.generation(graph));
+        self.live_graph = Some(LiveGraph { graph, cooked });
     }
 
     /// The clips the graph names, as a frame's evaluation reads them. Allocates nothing.
@@ -1013,6 +1082,13 @@ impl Content {
     /// graph, and it allocates nothing.
     pub fn take_graph_changed(&mut self) -> bool {
         let version = self.graph_versions();
+        #[cfg(feature = "dev")]
+        if let Some(live) = &self.live_graph
+            && self.graph.as_ref().is_some_and(|graph| self.server.generation(graph) != live.cooked)
+        {
+            // A cook of the document came after it: that's the graph now.
+            self.live_graph = None;
+        }
         std::mem::replace(&mut self.graph_version, version) != version
     }
 
@@ -1080,6 +1156,20 @@ impl Content {
     #[cfg(feature = "dev")]
     pub fn take_changes(&mut self) -> Vec<AssetChange> {
         self.server.take_changes()
+    }
+
+    /// Takes a handle on a cooked set of moves, whose new versions then reach
+    /// [`AssetChange::Reloaded`](sapphire_assets::AssetChange) (M2 T2). It loads as anything does, and
+    /// stays. Fails for an asset no pack holds.
+    #[cfg(feature = "dev")]
+    pub fn hold_move_set(&mut self, id: AssetId) -> Result<Handle<sapphire_moves::MoveSet>, LoadError> {
+        self.server.load_with(id, LoadPriority::Normal)
+    }
+
+    /// A cooked set of moves [`Self::hold_move_set`] holds, if it's loaded.
+    #[cfg(feature = "dev")]
+    pub fn move_set(&self, set: &Handle<sapphire_moves::MoveSet>) -> Option<&sapphire_moves::ArchivedMoveSet> {
+        self.server.get(set)
     }
 
     /// The pack source the server reads through, which live link's connections plan pushes
@@ -1333,6 +1423,8 @@ mod tests {
                 graph: None,
                 graph_clips: Vec::new(),
                 graph_version: 0,
+                #[cfg(feature = "dev")]
+                live_graph: None,
                 sky_id: SKY,
                 sky: None,
                 server,

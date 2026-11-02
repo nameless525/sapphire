@@ -35,7 +35,8 @@
 //!   ([`capture_refusal`]).
 //! - Applying documents and shaders: the app hands a document to the owner of the type its
 //!   envelope names (time of day's `TimeOfDay::set_timeline`, the character light rig presets'
-//!   library, the screen effect presets' library), and shader sources to
+//!   library, the screen effect presets' library, and M2 T2's live tuning of a fight: its moves, its
+//!   camera and its animation graph), and shader sources to
 //!   `Renderer::request_shader_sources`, as its hot reload does, which builds them off the frame
 //!   thread and answers once they show; each keeps what it has if the new one doesn't parse,
 //!   validate or compile.

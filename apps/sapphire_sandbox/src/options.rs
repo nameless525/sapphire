@@ -204,6 +204,9 @@ pub(crate) struct Options {
     pub combat: Option<CombatOption>,
     /// `--cues`: fire that simulation's cues, as a game does (M2 E3).
     pub cues: bool,
+    /// `--watch-document <path>` (`dev` builds, repeatable): hot reload watches this file as well, as the
+    /// document of its file's name: a tuner's copy of a fight's moves, say (M2 T2).
+    pub watch_documents: Vec<PathBuf>,
     /// `--serial-passes`: offscreen, submit each frame graph pass on its own and wait for the
     /// GPU after it, logging each at debug level, so a GPU crash, hang or device loss names its
     /// pass (`GraphExecutor::set_serial`). Slow; for debugging.
@@ -411,6 +414,12 @@ impl Options {
     pub fn wind(&self) -> Option<Wind> {
         (self.foliage.is_some() || self.wind.is_some())
             .then(|| Wind { strength: self.wind.unwrap_or(DEFAULT_WIND.strength), ..DEFAULT_WIND })
+    }
+
+    /// Whether `sapphire_camera`'s director frames the scene: `--arena`, on its own shot.
+    #[cfg(feature = "dev")]
+    pub fn has_camera_director(&self) -> bool {
+        self.arena == Some(ArenaShot::Director)
     }
 
     /// Whether the scene is the look-dev town: `--look-dev`, or `--arena`, which fights in it.
@@ -863,6 +872,16 @@ impl Options {
                 "--record" => record = Some(PathBuf::from(value("--record")?)),
                 "--scenario" => scenario = Some(value("--scenario")?),
                 "--script" => script = Some(value("--script")?),
+                "--watch-document" => {
+                    let path = PathBuf::from(value("--watch-document")?);
+                    if cfg!(not(feature = "dev")) {
+                        return Err(
+                            "--watch-document feeds hot reload, which only `dev` builds have (`--features dev`)"
+                                .to_owned(),
+                        );
+                    }
+                    options.watch_documents.push(path);
+                }
                 _ => unknown.push(arg.clone()),
             }
         }
@@ -1041,9 +1060,10 @@ impl Options {
             Some(CombatOption::Replay { .. }) if !drawn_alone => {
                 return Err(format!("--replay needs {CAPTURE_FLAG} or {BENCH_FLAG}"));
             }
-            Some(CombatOption::Record { script: Some(_), .. }) if !drawn_alone => {
+            Some(CombatOption::Record { script: Some(_), .. }) if mode.is_none() => {
                 return Err(format!(
-                    "--script needs {CAPTURE_FLAG} or {BENCH_FLAG}: the windowed app records who's playing"
+                    "--script needs {CAPTURE_FLAG}, {BENCH_FLAG} or {OFFSCREEN_FLAG}: the windowed app records \
+                     who's playing"
                 ));
             }
             Some(CombatOption::Record { script: None, .. }) if mode.is_some() => {
@@ -2006,9 +2026,9 @@ mod tests {
         refused(&["--replay", "a.sreplay"], "--capture");
         refused(&["--record", "a", "--scenario", "s", "--script", "p"], "--capture");
         refused(&["--offscreen", "--replay", "a.sreplay"], "--capture");
-        refused(&["--offscreen", "--record", "a", "--scenario", "s", "--script", "p"], "--capture");
-        // Nothing without a window has a player, and `--offscreen` steps no simulation.
+        // Nothing without a window has a player, so `--offscreen` plays a script (M2 T2).
         refused(&["--offscreen", "--record", "a", "--scenario", "s"], "no one's there");
+        parse(&["--offscreen", "--record", "a", "--scenario", "s", "--script", "p"]).unwrap();
         refused(&["--capture", "x", "--record", "a", "--scenario", "s"], "--script");
         refused(&["--bench", "10", "--record", "a", "--scenario", "s"], "--script");
         refused(&["--record", "a"], "--scenario");

@@ -9,7 +9,8 @@
 use std::path::{Path, PathBuf};
 
 use sapphire_assets::AssetId;
-use sapphire_assets::graph::{AnimGraph, GraphClip, GraphError};
+pub use sapphire_assets::graph::clip_id;
+use sapphire_assets::graph::{AnimGraph, GraphError};
 use sapphire_serialize::cooked::CookedError;
 use serde::{Deserialize, Serialize};
 
@@ -56,16 +57,6 @@ pub fn output_path(relative: &Path, extension: &str) -> PathBuf {
     let name = relative.file_name().and_then(|name| name.to_str()).unwrap_or_default();
     let stem = &name[..name.len().saturating_sub(SOURCE_SUFFIX.len())];
     relative.with_file_name(format!("{stem}.{extension}"))
-}
-
-/// The ID a clip's own cook gives it. A key-pose document is its own clip, so its ID is its source's;
-/// see [`meta::sub_asset_id`] for the rest, and `sub_assets` in the cook for who else derives these.
-pub fn clip_id(clip: &GraphClip) -> AssetId {
-    match (&clip.clip, clip.target) {
-        (Some(name), Some(target)) => meta::sub_asset_id(clip.source, &format!("clip/{name}@{target}")),
-        (Some(name), None) => meta::sub_asset_id(clip.source, &format!("clip/{name}")),
-        (None, _) => clip.source,
-    }
 }
 
 /// Reads and checks a document's bytes, with its clips' IDs filled in.

@@ -159,6 +159,18 @@ fn no_id() -> AssetId {
     AssetId::from_bytes([0; 16])
 }
 
+/// The ID a clip's own cook gives it. A key-pose document is its own clip, so its ID is its source's;
+/// the rest are sub-assets of their sources, as the pipeline's cook derives them. Here so an app can take
+/// a graph's document over live link with no cook in between (M2 T2).
+#[must_use]
+pub fn clip_id(clip: &GraphClip) -> AssetId {
+    match (&clip.clip, clip.target) {
+        (Some(name), Some(target)) => clip.source.sub_asset(&format!("clip/{name}@{target}")),
+        (Some(name), None) => clip.source.sub_asset(&format!("clip/{name}")),
+        (None, _) => clip.source,
+    }
+}
+
 /// Which joints a layer touches: named humanoid bones, each with everything under it, later entries
 /// over earlier ones. A joint it doesn't name takes no part.
 #[derive(

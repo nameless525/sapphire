@@ -37,7 +37,11 @@ pub(crate) fn snapshot(
             state: combat.map_or(RecorderState::Idle, recorder_state),
             scenarios: SCENARIOS.iter().map(|scenario| scenario.name.to_owned()).collect(),
             can_record,
-            note: recorder.note().map(str::to_owned),
+            note: recorder.note().map(str::to_owned).or_else(|| {
+                combat.and_then(Combat::edited_at).map(|tick| {
+                    format!("A live edit ended this recording's file at tick {tick}: the fight goes on unrecorded.")
+                })
+            }),
         },
     }
 }

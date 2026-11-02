@@ -58,6 +58,10 @@ use crate::scene::Figure;
 /// The moves the scripts play, as the character's graph names them.
 const SHOW_MOVES: &str = include_str!("../../../content/lookdev/character/show.moves.ron");
 
+/// That document, from the repository's root: what live tuning goes by.
+#[cfg(feature = "dev")]
+pub(crate) const SHOW_MOVES_PATH: &str = "content/lookdev/character/show.moves.ron";
+
 const STRIKE: Name = Name::new("strike");
 const DODGE: Name = Name::new("dodge");
 const DODGE_BACK: Name = Name::new("dodge_back");
@@ -233,7 +237,8 @@ pub(crate) fn locomotion_of(view: &ActorView) -> LocomotionInput {
 }
 
 /// The moves a script plays: a document of the character's, read here since the simulation holds a
-/// compiled set and the asset server hands out a view of a cooked one. T2 brings its live tuning.
+/// compiled set and the asset server hands out a view of a cooked one. Live tuning reaches them through
+/// [`GraphShow::tune`].
 fn show_moves() -> sapphire_moves::MoveSet {
     MoveSetDocument::parse(SHOW_MOVES)
         .and_then(|document| document.compile())
@@ -489,6 +494,9 @@ impl GraphEvaluation<'_> {
 pub(crate) struct GraphShow {
     simulation: Simulation,
     actor: ActorId,
+    /// The set its moves come from.
+    #[cfg(feature = "dev")]
+    moves: sapphire_gameplay::MoveSetId,
     script: GraphScript,
     /// Fixed steps taken.
     tick: u32,
@@ -529,7 +537,44 @@ impl GraphShow {
             simulation.add_combat_system(CombatSet::Hits, hold_facing);
         }
         let view = simulation.actor(actor).expect("the actor just stepped in");
-        Self { simulation, actor, script, tick: 0, previous: view, current: view, landed: false, cut: false }
+        Self {
+            simulation,
+            actor,
+            #[cfg(feature = "dev")]
+            moves: set,
+            script,
+            tick: 0,
+            previous: view,
+            current: view,
+            landed: false,
+            cut: false,
+        }
+    }
+
+    /// Takes a live edit of the document with this file name, if its moves come from that (M2 T2): the
+    /// move playing keeps what it started with, and the next start reads this.
+    #[cfg(feature = "dev")]
+    pub fn tune(
+        &mut self,
+        document: &str,
+        set: sapphire_moves::MoveSet,
+    ) -> Option<(sapphire_gameplay::MoveSetId, sapphire_gameplay::Tuned)> {
+        if document != sapphire_gameplay::replay::document_file_name(SHOW_MOVES_PATH) {
+            return None;
+        }
+        Some((self.moves, self.simulation.tune_move_set(self.moves, set)?))
+    }
+
+    /// The simulation it runs, for live link's status and live tuning's report.
+    #[cfg(feature = "dev")]
+    pub fn simulation(&self) -> &Simulation {
+        &self.simulation
+    }
+
+    /// Who it plays.
+    #[cfg(feature = "dev")]
+    pub fn cast(&self) -> &[ActorId] {
+        std::slice::from_ref(&self.actor)
     }
 
     /// One fixed step. Allocates nothing, as a game's wouldn't.

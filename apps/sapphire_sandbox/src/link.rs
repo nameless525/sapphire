@@ -7,7 +7,8 @@
 //!   their new versions are uploaded, with each one's generation;
 //! - a document goes to the owner of the type its envelope names ([`Document`]): the day's
 //!   timeline (from the day's own file only, so pushing the default day can't replace the
-//!   look-dev stage's), the character light rig presets or the screen effect presets;
+//!   look-dev stage's), the character light rig presets, the screen effect presets or a running
+//!   fight's moves, camera and graph (M2 T2, `tuning.rs`);
 //! - shader sources replace those files in the newest sources the renderer was asked for, and
 //!   build off the frame thread; the push is answered once the new pipelines are swapped in, the
 //!   frame after the first one drawn with them, so the tool's time to the reply is the time until
@@ -33,7 +34,9 @@ use std::time::Duration;
 use sapphire_assets::AssetChange;
 use sapphire_core::cvar::CvarRegistry;
 use sapphire_debug::LiveLinkStatus;
-use sapphire_livelink::protocol::{Capture, DeviceStatus, MAX_CAPTURE, ReplyBody, SourceFile};
+use sapphire_livelink::protocol::{
+    Capture, DeviceStatus, MAX_CAPTURE, MoveAttempt, PushedPackStatus, ReplyBody, SourceFile,
+};
 use sapphire_livelink::{
     LinkMode, LiveLink, LivePacks, Push, ReloadTracker, Responder, capture_refusal, set_cvar,
 };
@@ -46,11 +49,13 @@ use sapphire_time::Stopwatch;
 use crate::LOG_TARGET;
 use crate::app::SandboxApp;
 use crate::capture::{Readback, compress};
+use crate::combat::Combat;
 use crate::content::Content;
 use crate::options::LiveLinkOption;
-use crate::reload::{Document, error_chain};
+use crate::reload::{Document, DocumentFrame, error_chain};
 use crate::scene::Scene;
 use crate::shader_edits::{Origin, ShaderEdits};
+use crate::tuning::{LiveTuning, attempts};
 
 /// How many refusals the overlay lists.
 const SHOWN_ERRORS: usize = 4;
@@ -81,7 +86,10 @@ pub(crate) struct Link {
 pub(crate) struct LinkFrame<'a> {
     pub content: &'a mut Content,
     pub renderer: &'a mut Renderer,
+    pub gpu: &'a GpuContext,
     pub scene: &'a mut Scene,
+    pub combat: Option<&'a mut Combat>,
+    pub tuning: &'a mut LiveTuning,
     pub cvars: &'a CvarRegistry,
     pub shaders: &'a mut ShaderEdits,
     /// Frames since the app started, and the last one's length.
@@ -149,7 +157,8 @@ impl Link {
     pub fn update(&mut self, changes: &[AssetChange], frame: LinkFrame<'_>) {
         self.tracker.record(changes);
         let Some(link) = &self.link else { return };
-        let LinkFrame { content, renderer, scene, cvars, shaders: edits, frame, frame_time } = frame;
+        let LinkFrame { content, renderer, gpu, scene, mut combat, tuning, cvars, shaders: edits, frame, frame_time } =
+            frame;
         for push in std::iter::from_fn(|| link.poll()).take(PUSHES_PER_FRAME) {
             profiling::scope!("live link");
             match push {
@@ -166,6 +175,14 @@ impl Link {
                         applied: counters.applied,
                         refused: counters.refused,
                         received: counters.received,
+                        pushed_packs: content
+                            .live_packs()
+                            .pushed()
+                            .into_iter()
+                            .map(|(name, len)| PushedPackStatus { name, len })
+                            .collect(),
+                        documents: tuning.documents(),
+                        attempts: fight_attempts(combat.as_deref(), scene),
                     }));
                 }
                 Push::Cvar { name, value, reply } => match set_cvar(cvars, &name, &value) {
@@ -183,10 +200,18 @@ impl Link {
                         refuse(&mut self.errors, reply, error);
                         continue;
                     };
-                    match document.apply(&origin, &text, scene, renderer) {
+                    let frame = DocumentFrame {
+                        content: &mut *content,
+                        renderer: &mut *renderer,
+                        gpu,
+                        scene: &mut *scene,
+                        combat: combat.as_deref_mut(),
+                        tuning: &mut *tuning,
+                    };
+                    match document.apply(&origin, &text, frame) {
                         Ok(replaced) => {
                             tracing::info!(target: LOG_TARGET, origin, "live link replaced the {replaced}");
-                            reply.reply(ReplyBody::DocumentApplied { owner: replaced.to_owned() });
+                            reply.reply(ReplyBody::DocumentApplied { owner: replaced });
                         }
                         Err(error) => refuse(&mut self.errors, reply, format!("{origin}: {error}")),
                     }
@@ -258,6 +283,13 @@ impl Link {
             errors: &self.errors,
         }
     }
+}
+
+/// What the fight's fighters are playing, for the status.
+fn fight_attempts(combat: Option<&Combat>, scene: &Scene) -> Vec<MoveAttempt> {
+    let combat = combat.into_iter().flat_map(|combat| attempts(combat.simulation(), combat.cast()));
+    let show = scene.graph_show().into_iter().flat_map(|show| attempts(show.simulation(), show.cast()));
+    combat.chain(show).collect()
 }
 
 /// Asks `renderer` to build its programs with pushed `files` in place of theirs, all or none, on

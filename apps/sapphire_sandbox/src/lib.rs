@@ -352,6 +352,8 @@ mod skinned;
 mod stage;
 mod stats;
 mod swatches;
+#[cfg(feature = "dev")]
+mod tuning;
 mod turntable;
 mod vfx;
 

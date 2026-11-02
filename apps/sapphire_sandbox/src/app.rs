@@ -303,7 +303,7 @@ impl App for SandboxApp {
             scene.set_hud(crate::hud::SandboxHud::new(hud));
         }
         #[cfg(feature = "dev")]
-        let dev = DevTools::new(&device.gpu, device.format, &options, platform, &content)?;
+        let dev = DevTools::new(&device.gpu, device.format, &options, platform, &mut content)?;
         #[cfg(not(feature = "dev"))]
         if options.debug_overlay.is_some() {
             tracing::warn!(target: LOG_TARGET, "--debug-overlay needs a `dev` build (`--features dev`)");
@@ -414,7 +414,13 @@ impl App for SandboxApp {
             }
             // Packs, shaders and documents changed on disk, swapped in before loading.
             #[cfg(feature = "dev")]
-            self.dev.reload(&mut self.content, &mut self.renderer, &mut self.scene);
+            self.dev.reload(
+                &mut self.content,
+                &mut self.renderer,
+                &self.gpu,
+                &mut self.scene,
+                self.combat.as_mut(),
+            );
             // Finished reads, unloads and this frame's uploads, within the upload budget.
             self.content.update(&mut self.renderer, &self.gpu);
             self.scene.follow_content(&mut self.content);
@@ -585,6 +591,8 @@ impl SandboxApp {
             // Every frame is extracted and prepared, drawn or not, so the renderer's persistent
             // scene sees every packet's deltas. On a lost device the GPU calls do nothing (wgpu
             // drops device-lost errors), and the rebuilt renderer is sent everything.
+            #[cfg(feature = "dev")]
+            self.dev.after_steps(self.combat.as_ref(), &self.scene);
             self.scene.animate(&self.content, alpha);
             if let Some(combat) = &self.combat {
                 combat.draw_views();

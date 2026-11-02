@@ -13,6 +13,16 @@ fn crates_dir() -> &'static Path {
     Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/.."))
 }
 
+/// A file by its path from the repository's root, as a device names a document it takes (M2 T2).
+pub fn repository_file(relative: &str) -> PathBuf {
+    crates_dir().join("..").join(relative)
+}
+
+/// The camera's tuning document, which `sapphire_camera::CameraTuning::default_tuning` compiles in.
+pub fn default_camera() -> PathBuf {
+    crates_dir().join("sapphire_camera").join("default_camera.ron")
+}
+
 /// The renderer's WGSL sources: every `sapphire_render::ShaderFile`, by its file name.
 pub fn shader_dir() -> PathBuf {
     crates_dir().join("sapphire_render").join("shaders")

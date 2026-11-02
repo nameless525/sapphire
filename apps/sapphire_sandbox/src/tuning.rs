@@ -11,8 +11,10 @@
 //! - **The camera** (`default_camera.ron`): the director's tuning, whose goals ease to the new numbers.
 //! - **The animation graph** (`.animgraph.ron`): bound against what's loaded, it takes effect at the next
 //!   state's start ([`sapphire_anim::GraphPlayer::replace`]). Its pack's route was N3's, and still works.
-//! - **The cue table** (M2 E3): `Document` gets a row, as the others have. **Colliders aren't tuned**, and a
-//!   running fight never changes under its feet.
+//! - **The cue table** (`default_cues.ron`, M2 E3): what fires a fight's cues takes it if every name it holds
+//!   is there. Camera tuning can move a shake's ID, so a new tuning resolves the table's shakes again
+//!   ([`Scene::set_camera_tuning`]) and is refused if one has gone. **Colliders aren't tuned**, and a running
+//!   fight never changes under its feet.
 //!
 //! A document that doesn't parse or check keeps what's playing, and says why in the log, in the overlay's
 //! stats panel and, pushed, in `link push`'s non-zero exit. The next good one works.
@@ -35,6 +37,7 @@ use std::path::{Path, PathBuf};
 use sapphire_assets::graph::{AnimGraph, clip_id};
 use sapphire_assets::{AssetChange, AssetId, AssetKind, Handle};
 use sapphire_camera::CameraTuning;
+use sapphire_cues::CueTable;
 use sapphire_gameplay::replay::{LiveMoves, SCENARIOS, compile_document, document_file_name};
 use sapphire_gameplay::{ActorId, MoveSetId, Simulation, Tuned};
 use sapphire_hot_reload::sources;
@@ -56,11 +59,14 @@ use crate::scene::Scene;
 const GRAPH_PATH: &str = "content/lookdev/character/character.animgraph.ron";
 /// The camera's tuning document.
 const CAMERA_PATH: &str = "crates/sapphire_camera/default_camera.ron";
+/// The cue table's document.
+const CUES_PATH: &str = "crates/sapphire_cues/default_cues.ron";
 
 /// The move sets a cook holds, by document and sidecar ID: what a pack's new `.smoves` is the new version
 /// of. A document under `content/` with moves that name clips needs a row, or nothing brings it.
-const COOKED_MOVES: [(&str, AssetId); 2] = [
+const COOKED_MOVES: [(&str, AssetId); 3] = [
     ("show.moves.ron", AssetId::from_text("e41a8d27-90c6-4f35-b1de-6a7c02f95d18")),
+    ("player.moves.ron", AssetId::from_text("6fc61cbc-8189-4b6d-a4a0-b0e09475c6ce")),
     ("warrior.moves.ron", AssetId::from_text("c50887be-5ce3-498a-9f28-255e7e372b32")),
 ];
 
@@ -102,27 +108,10 @@ pub(crate) struct LiveTuning {
 
 impl LiveTuning {
     /// The documents `options` runs can take: every scenario's, which the overlay's recorder can start,
-    /// and the camera's and the graph's and the graph show's where those run. The cooked sets among them
-    /// are loaded and kept (a few kilobytes each), so a pack's new version of one is told of.
+    /// and the camera's, the cue table's, the graph's and the graph show's where those run. The cooked sets
+    /// among them are loaded and kept (a few kilobytes each), so a pack's new version of one is told of.
     pub fn new(options: &Options, content: &mut Content) -> Self {
-        let mut sources: Vec<Source> = Vec::new();
-        let mut add = |path: &str, document| {
-            if !sources.iter().any(|source| source.path == path) {
-                sources.push(Source { path: path.to_owned(), document, edits: 0 });
-            }
-        };
-        for scenario in SCENARIOS {
-            for path in scenario.documents {
-                add(path, Document::Moves);
-            }
-        }
-        if options.has_camera_director() {
-            add(CAMERA_PATH, Document::Camera);
-        }
-        if options.graph.is_some() {
-            add(SHOW_MOVES_PATH, Document::Moves);
-            add(GRAPH_PATH, Document::Graph);
-        }
+        let sources = Self::sources_of(options);
         let mut cooked = Vec::new();
         for (document, id) in COOKED_MOVES {
             if !sources.iter().any(|source| document_file_name(&source.path) == document) {
@@ -137,6 +126,33 @@ impl LiveTuning {
             }
         }
         Self { moves: LiveMoves::default(), sources, waiting: Vec::new(), cooked }
+    }
+
+    /// The documents `options` runs can take.
+    fn sources_of(options: &Options) -> Vec<Source> {
+        let mut sources: Vec<Source> = Vec::new();
+        let mut add = |path: &str, document| {
+            if !sources.iter().any(|source| source.path == path) {
+                sources.push(Source { path: path.to_owned(), document, edits: 0 });
+            }
+        };
+        for scenario in SCENARIOS {
+            for path in scenario.documents {
+                add(path, Document::Moves);
+            }
+        }
+        // A fight's cues fire the camera's shakes, by their places in its tuning.
+        if options.has_camera_director() || options.cues {
+            add(CAMERA_PATH, Document::Camera);
+        }
+        if options.cues {
+            add(CUES_PATH, Document::Cues);
+        }
+        if options.graph.is_some() {
+            add(SHOW_MOVES_PATH, Document::Moves);
+            add(GRAPH_PATH, Document::Graph);
+        }
+        sources
     }
 
     /// Following only this cooked set of this document, for tests of a pack's route.
@@ -157,7 +173,8 @@ impl LiveTuning {
                 tracing::warn!(
                     target: LOG_TARGET,
                     path = %path.display(),
-                    "--watch-document takes `.moves.ron`, `.animgraph.ron` or `default_camera.ron`"
+                    "--watch-document takes `.moves.ron`, `.animgraph.ron`, `default_camera.ron` or \
+                     `default_cues.ron`"
                 );
                 None
             }
@@ -187,6 +204,7 @@ impl LiveTuning {
         fight: Fight<'_>,
     ) -> Result<String, String> {
         let document = document_file_name(origin);
+        self.check_takes(document)?;
         let running = self.moves.latest(document).or(cooked);
         let live = compile_document(text, running).map_err(|error| error_chain(&error))?;
         let taken = self.take_moves(document, live.set, fight)?;
@@ -200,10 +218,7 @@ impl LiveTuning {
     /// Gives every simulation that plays `document` its new set. Nothing unknown gets as far as a set, so a
     /// misnamed file can't replace another's. A replay refuses before anything changes.
     fn take_moves(&mut self, document: &str, set: MoveSet, fight: Fight<'_>) -> Result<String, String> {
-        if !self.takes(document) {
-            let known: Vec<&str> = self.documents_of(Document::Moves).collect();
-            return Err(format!("no fight here plays `{document}`: it takes {known:?}"));
-        }
+        self.check_takes(document)?;
         let Fight { combat, scene } = fight;
         let mut played = None;
         if let Some(combat) = combat.filter(|combat| combat.plays(document).is_some()) {
@@ -232,7 +247,31 @@ impl LiveTuning {
         })
     }
 
-    /// Takes an edited camera tuning, for the director.
+    /// Says why a document of moves reaches nothing here, if it doesn't.
+    fn check_takes(&self, document: &str) -> Result<(), String> {
+        if self.takes(document) {
+            return Ok(());
+        }
+        let known: Vec<&str> = self.documents_of(Document::Moves).collect();
+        Err(format!("no fight here plays `{document}`: it takes {known:?}"))
+    }
+
+    /// Takes an edited cue table, for what fires a fight's cues, and has the renderer prewarm what its
+    /// screen effects draw through. Says why not if a name it holds isn't there, keeping what fires.
+    pub fn cue_document(
+        &mut self,
+        text: &str,
+        scene: &mut Scene,
+        renderer: &mut Renderer,
+    ) -> Result<String, String> {
+        let table = CueTable::from_ron(text).map_err(|error| error_chain(&error))?;
+        scene.set_cue_table(table)?;
+        renderer.prewarm_post(scene.effect_variants());
+        self.count_edit(document_file_name(CUES_PATH));
+        Ok(Document::Cues.name().to_owned())
+    }
+
+    /// Takes an edited camera tuning, for the director and for what fires a fight's cues.
     pub fn camera_document(&mut self, text: &str, scene: &mut Scene) -> Result<String, String> {
         let tuning = CameraTuning::from_ron(text).map_err(|error| error_chain(&error))?;
         scene.set_camera_tuning(tuning)?;
@@ -383,6 +422,8 @@ pub(crate) fn kind_of_file(path: &Path) -> Option<Document> {
         Some(Document::Graph)
     } else if name == document_file_name(CAMERA_PATH) {
         Some(Document::Camera)
+    } else if name == document_file_name(CUES_PATH) {
+        Some(Document::Cues)
     } else {
         None
     }
@@ -658,6 +699,7 @@ mod tests {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
         let sidecars = [
             ("show.moves.ron", "lookdev/character/show.moves.ron.meta"),
+            ("player.moves.ron", "combat/player/player.moves.ron.meta"),
             ("warrior.moves.ron", "combat/enemy/warrior.moves.ron.meta"),
         ];
         for (document, id) in COOKED_MOVES {
@@ -674,6 +716,7 @@ mod tests {
         assert_eq!(kind_of_file(Path::new("x/fighter.moves.ron")), Some(Document::Moves));
         assert_eq!(kind_of_file(Path::new("x/character.animgraph.ron")), Some(Document::Graph));
         assert_eq!(kind_of_file(Path::new("x/default_camera.ron")), Some(Document::Camera));
+        assert_eq!(kind_of_file(Path::new("x/default_cues.ron")), Some(Document::Cues));
         assert_eq!(kind_of_file(Path::new("x/default_day.ron")), None);
     }
 
@@ -681,11 +724,36 @@ mod tests {
     #[test]
     #[ignore = "runs with CI's dev tests, which take --ignored"]
     fn the_documents_it_watches_are_there() {
-        for path in [GRAPH_PATH, CAMERA_PATH, SHOW_MOVES_PATH] {
+        for path in [GRAPH_PATH, CAMERA_PATH, CUES_PATH, SHOW_MOVES_PATH] {
             assert!(sources::repository_file(path).is_file(), "{path}");
         }
         let camera = std::fs::read_to_string(sources::default_camera()).expect("the camera's document");
         assert_eq!(CameraTuning::from_ron(&camera).expect("reads"), CameraTuning::default_tuning());
         assert!(sources::repository_file(CAMERA_PATH).ends_with("default_camera.ron"));
+        let cues = std::fs::read_to_string(sources::default_cues()).expect("the cue table's document");
+        assert_eq!(CueTable::from_ron(&cues).expect("reads"), CueTable::default_table());
+        assert!(sources::repository_file(CUES_PATH).ends_with("default_cues.ron"));
+    }
+
+    /// The cue table has one route: a watched file and a pushed one both go through its `Document` row, and
+    /// only a run that fires cues watches it, or lists it for `link watch`.
+    #[test]
+    #[ignore = "runs with CI's dev tests, which take --ignored"]
+    fn the_cue_table_is_a_document_of_a_run_that_fires_cues() {
+        let sources = |extra: &[&str]| {
+            let run =
+                ["sandbox", "--offscreen", "--record", "a", "--scenario", "duel", "--script", "attempts"];
+            let args: Vec<String> = run.iter().chain(extra).map(|arg| (*arg).to_owned()).collect();
+            LiveTuning::sources_of(&Options::parse(&args).expect("options").0)
+        };
+        let has = |sources: &[Source], document, path: &str| {
+            sources.iter().any(|source| source.document == document && source.path == path)
+        };
+        let firing = sources(&["--cues"]);
+        assert!(has(&firing, Document::Cues, CUES_PATH));
+        assert!(has(&firing, Document::Camera, CAMERA_PATH), "its shakes read the camera's tuning");
+        let quiet = sources(&[]);
+        assert!(!has(&quiet, Document::Cues, CUES_PATH));
+        assert!(!has(&quiet, Document::Camera, CAMERA_PATH));
     }
 }

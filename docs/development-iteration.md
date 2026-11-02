@@ -74,7 +74,7 @@ The next run's Linux and Windows jobs compare against that one file, which is wh
 
 ## Tuning a fight
 
-Run a `dev` build with a fight in it, and save. `crates/sapphire_moves/test_content/slice.moves.ron`, a fight's other `.moves.ron`, `default_camera.ron` and `character.animgraph.ron` are watched already, and `--watch-document <path>` adds a copy elsewhere. On a phone, `cargo xtask link push <file>`, or `cargo xtask link watch`, which watches what the app's status lists.
+Run a `dev` build with a fight in it, and save. `crates/sapphire_moves/test_content/slice.moves.ron`, a fight's other `.moves.ron`, `default_camera.ron`, `character.animgraph.ron` and, with `--cues`, `default_cues.ron` are watched already, and `--watch-document <path>` adds a copy elsewhere. On a phone, `cargo xtask link push <file>`, or `cargo xtask link watch`, which watches what the app's status lists.
 
 - A move in progress finishes on what it started with, and the next start reads the edit. The log says `the next attempt plays the new moves`, and `cargo xtask link status` shows each fighter's revision and windows.
 - A bad document changes nothing, and its issues name the move and the track. The next good one works.

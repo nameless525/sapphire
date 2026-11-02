@@ -25,6 +25,8 @@ use sapphire_time::Stopwatch;
 const SLICE: &str = include_str!("../../../crates/sapphire_moves/test_content/slice.moves.ron");
 const SLICE_FILE: &str = "slice.moves.ron";
 const GRAPH: &str = include_str!("../../../content/lookdev/character/character.animgraph.ron");
+const CUES: &str = include_str!("../../../crates/sapphire_cues/default_cues.ron");
+const CUES_FILE: &str = "default_cues.ron";
 
 /// How long a sandbox has to build its scene's pipelines, slowly on a CPU rasterizer.
 const STARTUP: Duration = Duration::from_secs(300);
@@ -339,6 +341,73 @@ fn the_camera_and_the_graph_reach_a_running_app() {
     assert!(reply.contains("revision 1"), "{reply}");
     let refused = client.push_document("nobody.moves.ron", show.to_owned()).expect_err("no owner");
     assert!(refused.to_string().contains("nobody.moves.ron"), "{refused}");
+    drop(client);
+    app.quit();
+}
+
+/// How often the status says this document has been taken.
+fn edits(status: &DeviceStatus, document: &str) -> Option<u32> {
+    status.documents.iter().find(|taken| taken.source.ends_with(document)).map(|taken| taken.edits)
+}
+
+/// The cue table has one route, pushed or saved, to what fires a fight's cues. New camera tuning resolves
+/// the table's shakes again, and is refused if one has gone. With nothing firing cues, a table says so.
+#[test]
+#[ignore = "needs a dev build, a GPU and cooked content"]
+fn the_cue_table_and_its_shakes_reach_what_fires_a_fights_cues() {
+    let temp = Temp::new("cues");
+    let replay = temp.text("session.sreplay");
+    let saved = temp.text(CUES_FILE);
+    fs::write(&saved, CUES).expect("a copy to save over");
+    let args = [
+        "--record",
+        &replay,
+        "--scenario",
+        "duel",
+        "--script",
+        "attempts",
+        "--cues",
+        "--watch-document",
+        &saved,
+    ];
+    let mut app = App::start(&temp, &args);
+    let mut client = app.connect();
+
+    let reply = client.push_document(CUES_FILE, CUES.replacen("strength: 1.8", "strength: 1.6", 1));
+    assert!(reply.expect("a good table").contains("cue table"));
+    let naming = CUES.replacen("preset: \"hit_light\"", "preset: \"no_such_shake\"", 1);
+    let refused = client.push_document(CUES_FILE, naming).expect_err("no such shake");
+    assert!(refused.to_string().contains("no_such_shake"), "{refused}");
+
+    fs::write(&saved, CUES.replacen("strength: 1.8", "strength: 1.5", 1)).expect("saved");
+    app.until(&mut client, "the saved table taken", |status| {
+        (edits(status, CUES_FILE) == Some(2)).then_some(())
+    });
+
+    let camera = "default_camera.ron";
+    let mut tuning = CameraTuning::default_tuning();
+    tuning.shakes.presets.rotate_left(1);
+    let reply = client.push_document(camera, tuning.to_ron().expect("writes")).expect("every shake's there");
+    assert!(reply.contains("camera"), "{reply}");
+    tuning.shakes.presets.retain(|preset| preset.name != "hit_light");
+    let refused =
+        client.push_document(camera, tuning.to_ron().expect("writes")).expect_err("the table fires it");
+    assert!(refused.to_string().contains("hit_light"), "{refused}");
+    let status = client.status().expect("a status");
+    assert_eq!(edits(&status, camera), Some(1));
+    assert_eq!(edits(&status, CUES_FILE), Some(2), "a refusal is no edit, and no route takes one twice");
+    drop(client);
+    app.quit();
+
+    let temp = Temp::new("no_cues");
+    let replay = temp.text("session.sreplay");
+    let args = ["--no-hot-reload", "--record", &replay, "--scenario", "duel", "--script", "attempts"];
+    let mut app = App::start(&temp, &args);
+    let mut client = app.connect();
+    let refused = client.push_document(CUES_FILE, CUES.to_owned()).expect_err("nothing fires them");
+    assert!(refused.to_string().contains("--cues"), "{refused}");
+    let status = client.status().expect("a status");
+    assert_eq!(edits(&status, CUES_FILE), None, "it isn't a document of this run");
     drop(client);
     app.quit();
 }

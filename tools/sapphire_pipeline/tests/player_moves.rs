@@ -12,8 +12,9 @@ use sapphire_assets::AssetId;
 use sapphire_assets::rig::{CharacterRig, HumanBone};
 use sapphire_assets::skeleton::{NO_PARENT, Skeleton};
 use sapphire_core::Name;
+use sapphire_gameplay::replay::compile_document;
 use sapphire_gameplay::{ActorId, ActorSpawn, CurrentMove, SimConfig, Simulation, TickActions, WarpTarget};
-use sapphire_moves::{Move, MoveSet, MoveSetDocument, Phase};
+use sapphire_moves::{Move, MoveSet, MoveSetDocument, MoveSetError, Phase};
 use sapphire_pipeline::clip::SampledClip;
 use sapphire_pipeline::clip::retarget::HumanMap;
 use sapphire_pipeline::import::vrm;
@@ -154,21 +155,133 @@ fn player() -> &'static Player {
 
         let text = std::fs::read_to_string(folder.join("player.moves.ron")).expect("the moves");
         let document = MoveSetDocument::parse(&text).expect("they parse");
-        let set = document
-            .compile_with(|mv| {
-                let motion = mv.motion.clip.as_ref().ok_or("every move plays a clip")?;
-                let clip = clips.get(mv.name.as_str()).ok_or("its clip has its name")?;
-                let input = moves::TableInput {
-                    sampled: &clip.sampled,
-                    skeleton: &skeleton,
-                    map: Some(&map),
-                    constraints: &rig.constraints,
-                };
-                moves::bake(motion, &input).map(Some).map_err(|error| error.to_string())
-            })
-            .expect("the document compiles against its clips");
+        let set = cook_against(&document, &clips, &skeleton, &rig).expect("it compiles against its clips");
         Player { rig, skeleton, clips, document, set }
     })
+}
+
+/// `document` baked from `clips`, as a cook bakes it.
+fn cook_against(
+    document: &MoveSetDocument,
+    clips: &BTreeMap<&'static str, Clip>,
+    skeleton: &Skeleton,
+    rig: &CharacterRig,
+) -> Result<MoveSet, MoveSetError> {
+    let map = HumanMap::from_rig(rig);
+    document.compile_with(|mv| {
+        let motion = mv.motion.clip.as_ref().ok_or("every move plays a clip")?;
+        let clip = clips.get(mv.name.as_str()).ok_or("its clip has its name")?;
+        let input = moves::TableInput {
+            sampled: &clip.sampled,
+            skeleton,
+            map: Some(&map),
+            constraints: &rig.constraints,
+        };
+        moves::bake(motion, &input).map(Some).map_err(|error| error.to_string())
+    })
+}
+
+// ---- Live tuning (M2 T2): what a running app, with no clips to bake from, makes of the document.
+
+fn bytes(set: &MoveSet) -> Vec<u8> {
+    set.to_cooked().expect("writes").into_vec()
+}
+
+/// The document as a person has it, comments and all.
+fn moves_text() -> String {
+    std::fs::read_to_string(content().join("combat/player/player.moves.ron")).expect("the moves")
+}
+
+/// `light_1`'s cut a tick later, in the file as a person edits it, with the move as long as its clip.
+fn a_later_first_cut() -> String {
+    let text = moves_text();
+    let phases = "startup: 7,\n                active: 4,\n                recovery: 23,";
+    let later = "startup: 8,\n                active: 4,\n                recovery: 22,";
+    let hit = "from: 7,\n                        to: 11,";
+    let later_hit = "from: 8,\n                        to: 12,";
+    assert!(text.contains(phases) && text.contains(hit), "the edit is still there to make");
+    text.replacen(phases, later, 1).replacen(hit, later_hit, 1)
+}
+
+/// What exit test 2 asks of the real moves: a saved timing needs no cook, and is what a cook makes of it.
+#[test]
+fn a_saved_timing_is_what_a_cook_makes_with_no_cook() {
+    let player = player();
+    let (clips, skeleton, rig) = (&player.clips, &player.skeleton, &player.rig);
+
+    let unchanged = compile_document(&moves_text(), Some(&player.set)).expect("no cook needed");
+    assert!(unchanged.motion_as_cooked);
+    assert_eq!(bytes(&unchanged.set), bytes(&player.set), "saving it unedited is no edit");
+
+    let edited = a_later_first_cut();
+    let live = compile_document(&edited, Some(&player.set)).expect("no cook needed");
+    let cooked = cook_against(&MoveSetDocument::parse(&edited).expect("parses"), clips, skeleton, rig);
+    assert_eq!(bytes(&live.set), bytes(&cooked.expect("it cooks")));
+    assert_ne!(bytes(&live.set), bytes(&player.set));
+    let (_, light) = live.set.find(name("light_1")).expect("there");
+    assert_eq!(light.startup, 8);
+    assert_eq!(light.hitboxes[0].span.from, 8);
+    assert_eq!(light.tables.ticks(), 34, "its clip's length");
+}
+
+/// The same for every move at once, through the text the timeline editor writes: it reads back whole.
+#[test]
+fn every_moves_timing_can_be_saved_with_no_cook() {
+    let player = player();
+    let (clips, skeleton, rig) = (&player.clips, &player.skeleton, &player.rig);
+    let written = player.document.to_text().expect("writes");
+    let same = compile_document(&written, Some(&player.set)).expect("reads back");
+    assert_eq!(bytes(&same.set), bytes(&player.set));
+
+    let mut document = player.document.clone();
+    for mv in &mut document.moves {
+        assert!(mv.motion.clip.is_some(), "{}: the route this tests", mv.name);
+        assert!(mv.recovery > 1, "{}: there's a tick to move", mv.name);
+        mv.startup += 1;
+        mv.recovery -= 1;
+        for hitbox in &mut mv.hitboxes {
+            hitbox.from += 1;
+            hitbox.to += 1;
+        }
+    }
+    let text = document.to_text().expect("writes");
+    let live = compile_document(&text, Some(&player.set)).expect("no cook needed");
+    let cooked = cook_against(&document, clips, skeleton, rig).expect("it cooks");
+    assert_eq!(bytes(&live.set), bytes(&cooked));
+}
+
+/// What only a cook can do says so, in the words a cook uses where it can. An edit of a `clip` block is the
+/// one thing a running app can't see, and its reply says motion stays as last cooked: that's held here too.
+#[test]
+fn what_a_saved_document_cant_change_waits_for_a_cook() {
+    let player = player();
+    let (clips, skeleton, rig) = (&player.clips, &player.skeleton, &player.rig);
+    let text = moves_text();
+
+    // A longer move is a longer clip.
+    let longer = text.replacen("recovery: 23,", "recovery: 24,", 1);
+    let refused = compile_document(&longer, Some(&player.set)).expect_err("its clip is shorter").to_string();
+    let parsed = MoveSetDocument::parse(&longer).expect("parses");
+    let cook_says = cook_against(&parsed, clips, skeleton, rig).expect_err("so says a cook").to_string();
+    assert_eq!(refused, cook_says);
+    assert!(refused.contains("light_1") && refused.contains("the clip is 34 ticks long"), "{refused}");
+
+    // A new path has no table here.
+    let mut path = player.document.clone();
+    let clip = path.moves[0].motion.clip.as_mut().expect("a clip");
+    clip.paths[0].name = "off_hand".to_owned();
+    path.moves[0].hitboxes[0].path = "off_hand".to_owned();
+    let refused = path.compile_over(&player.set).expect_err("no such table").to_string();
+    assert!(refused.contains("path `off_hand`: only a cook"), "{refused}");
+
+    // A moved socket isn't seen until a cook, whose bytes are then a new revision's.
+    let mut socket = player.document.clone();
+    socket.moves[0].motion.clip.as_mut().expect("a clip").paths[0].offset[2] += 0.1;
+    let live = compile_document(&socket.to_text().expect("writes"), Some(&player.set)).expect("reads");
+    assert!(live.motion_as_cooked);
+    assert_eq!(bytes(&live.set), bytes(&player.set));
+    let cooked = cook_against(&socket, clips, skeleton, rig).expect("it cooks");
+    assert_ne!(bytes(&cooked), bytes(&player.set));
 }
 
 // ---- What each clip has to be for the move document.

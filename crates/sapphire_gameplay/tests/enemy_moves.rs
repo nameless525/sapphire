@@ -3,6 +3,7 @@
 //! phase of every attack, and each hit volume reaches about as far as the document says.
 
 use sapphire_core::Name;
+use sapphire_gameplay::replay::compile_document;
 use sapphire_gameplay::{ActorId, ActorSpawn, CurrentMove, SimConfig, Simulation, TickActions, WarpTarget};
 use sapphire_math::{Vec3, det};
 use sapphire_moves::{MoveSet, MoveSetDocument, PathSample, Phase, Shape, Weight};
@@ -20,6 +21,32 @@ fn warrior() -> MoveSet {
     let document = MoveSetDocument::parse(WARRIOR).expect("the document parses");
     let set = document.compile().expect("the document compiles");
     MoveSet::from_cooked(&set.to_cooked().expect("cooks")).expect("reads back")
+}
+
+/// Live tuning (M2 T2): the warrior's moves are keyed by hand, so a saved timing over what's running is
+/// exactly what a build with it in its document plays, and saving it unedited is no edit.
+#[test]
+fn a_saved_timing_is_what_a_build_with_it_would_play() {
+    let bytes = |set: &MoveSet| set.to_cooked().expect("writes").into_vec();
+    let running = warrior();
+    let unchanged = compile_document(WARRIOR, Some(&running)).expect("it compiles");
+    assert_eq!(bytes(&unchanged.set), bytes(&running));
+
+    let mut document = MoveSetDocument::parse(WARRIOR).expect("the document parses");
+    for attack in ATTACKS {
+        let mv = document.moves.iter_mut().find(|mv| mv.name == attack).expect("there");
+        mv.startup += 1;
+        mv.recovery -= 1;
+        for hitbox in &mut mv.hitboxes {
+            hitbox.from += 1;
+            hitbox.to += 1;
+        }
+    }
+    let text = document.to_text().expect("writes");
+    let live = compile_document(&text, Some(&running)).expect("no cook needed");
+    assert!(!live.motion_as_cooked, "nothing here names a clip");
+    assert_eq!(bytes(&live.set), bytes(&document.compile().expect("it compiles")));
+    assert_ne!(bytes(&live.set), bytes(&running));
 }
 
 /// One warrior at the origin, facing +Z.

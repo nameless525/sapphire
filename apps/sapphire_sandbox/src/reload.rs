@@ -100,15 +100,8 @@ pub(crate) struct DocumentFrame<'a> {
 }
 
 impl Document {
-    const ALL: [Self; 7] = [
-        Self::Day,
-        Self::LightRigs,
-        Self::ScreenEffects,
-        Self::Cues,
-        Self::Moves,
-        Self::Camera,
-        Self::Graph,
-    ];
+    const ALL: [Self; 7] =
+        [Self::Day, Self::LightRigs, Self::ScreenEffects, Self::Cues, Self::Moves, Self::Camera, Self::Graph];
 
     /// The document whose envelope names `type_name`, if the sandbox has one.
     pub fn of_type(type_name: &str) -> Option<Self> {
@@ -164,12 +157,7 @@ impl Document {
                 renderer.prewarm_post(scene.effect_variants());
                 Ok(self.name().to_owned())
             }
-            Self::Cues => {
-                let table = CueTable::from_ron(text).map_err(|error| error_chain(&error))?;
-                scene.set_cue_table(table)?;
-                renderer.prewarm_post(scene.effect_variants());
-                Ok(self.name().to_owned())
-            }
+            Self::Cues => tuning.cue_document(text, scene, renderer),
             Self::Moves => {
                 let cooked = tuning.cooked_set(origin, content);
                 tuning.moves_document(origin, text, cooked.as_ref(), Fight { combat, scene })

@@ -201,6 +201,20 @@ impl CueShow {
         self.dispatcher.resolve(&self.table, self.world.library(), presets, &self.shakes.tuning)
     }
 
+    /// Takes new camera tuning, or says why not: the table names a shake it doesn't have. A shake's ID is
+    /// its place in the tuning's list, so the table's are resolved again, through the dispatcher's one
+    /// route for that. Shakes playing finish as they were fired.
+    #[cfg(any(test, feature = "dev"))]
+    pub fn take_camera_tuning(
+        &mut self,
+        tuning: CameraTuning,
+        presets: &ScreenLibrary,
+    ) -> Result<(), CueTableError> {
+        self.dispatcher.resolve(&self.table, self.world.library(), presets, &tuning)?;
+        self.shakes.tuning = tuning;
+        Ok(())
+    }
+
     /// Takes a new table, or says why not: it names what its libraries don't have.
     #[cfg(any(test, feature = "dev"))]
     pub fn take_table(&mut self, table: CueTable, presets: &ScreenLibrary) -> Result<(), CueTableError> {
@@ -307,6 +321,83 @@ mod tests {
         assert!(matches!(error, CueTableError::UnknownPreset { .. }), "{error}");
         assert_eq!(show.table().rows().len(), rows);
         show.take_table(CueTable::default_table(), &presets).expect("the shipped one again");
+    }
+
+    /// What a fired row asks of a camera.
+    #[derive(Default)]
+    struct FiredShakes(Vec<ShakeId>);
+
+    impl ShakeSink for FiredShakes {
+        fn fire_shake(&mut self, id: ShakeId, _strength: f32) {
+            self.0.push(id);
+        }
+    }
+
+    /// Fires the table's first row with a shake, read on `tick`, and returns what it asked for.
+    fn shakes_fired(show: &mut CueShow, presets: &ScreenLibrary, tick: u64) -> Vec<ShakeId> {
+        let row = show.table.rows().iter().find(|row| row.shake.is_some()).expect("a row with a shake");
+        let actor = ActorId::from_raw(1).expect("not zero");
+        let hit = |weight| HitCue {
+            target: actor,
+            hurtbox: 0,
+            point: Vec3::ZERO,
+            normal: Vec3::Z,
+            weight,
+            damage: 1,
+            poise: 1,
+            hitstop: 1,
+            outcome: HitOutcome::Flinched,
+        };
+        let event = CueEvent {
+            actor,
+            cue: sapphire_core::Name::intern(&row.cue),
+            tick,
+            local_time: SimTime::ZERO,
+            move_time: SimDuration::ZERO,
+            hit: row.weight.map(hit),
+        };
+        let mut clock = sapphire_time::ScaledClock::new();
+        let mut screen = EffectStack::new(clock.new_local_clock());
+        let mut fired = FiredShakes::default();
+        let root_of = |_| Some(Vec3::ZERO);
+        let mut step = CueStep {
+            vfx: &mut show.world,
+            screen: &mut screen,
+            presets,
+            shakes: &mut fired,
+            view_projection: Mat4::IDENTITY,
+            root_of: &root_of,
+        };
+        show.dispatcher.read_step(tick, [event], &mut step);
+        fired.0
+    }
+
+    /// New camera tuning moves shake IDs, which the table's are resolved against again, so a row still
+    /// fires the shake it names. Tuning that loses one the table names is refused, and what fires stays.
+    #[test]
+    fn new_camera_tuning_resolves_the_tables_shakes_again() {
+        let presets = ScreenLibrary::default_effects();
+        let mut show = CueShow::new(VfxBudget::DESKTOP_LOW, &presets).expect("resolves");
+        let shipped = CameraTuning::default_tuning();
+        let row = show.table.rows().iter().find_map(|row| row.shake.as_ref()).expect("a row with a shake");
+        let named = row.preset.clone();
+        let was = shipped.shake_id(&named).expect("in the shipped tuning");
+        assert_eq!(shakes_fired(&mut show, &presets, 1), [was]);
+
+        let mut moved = shipped.clone();
+        moved.shakes.presets.rotate_left(1);
+        let now = moved.shake_id(&named).expect("still there");
+        assert_ne!(now, was, "the edit has to move its ID");
+        show.take_camera_tuning(moved.clone(), &presets).expect("every name is there");
+        assert_eq!(show.shakes.tuning, moved);
+        assert_eq!(shakes_fired(&mut show, &presets, 2), [now]);
+
+        let mut losing = moved.clone();
+        losing.shakes.presets.retain(|preset| preset.name != named);
+        let error = show.take_camera_tuning(losing, &presets).expect_err("the table fires it");
+        assert!(matches!(error, CueTableError::UnknownShake { .. }), "{error}");
+        assert_eq!(show.shakes.tuning, moved, "it keeps what it has");
+        assert_eq!(shakes_fired(&mut show, &presets, 3), [now], "and it still fires");
     }
 
     /// Presets that lose one the table pushes are refused, so what's firing keeps working.

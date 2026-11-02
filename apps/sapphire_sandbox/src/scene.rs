@@ -752,12 +752,14 @@ impl Scene {
         Ok(())
     }
 
-    /// Replaces the table a fight's cues fire through (hot reload, `dev` builds), if there's a fight and
-    /// its names are all there.
+    /// Replaces the table a fight's cues fire through (live tuning, `dev` builds), if its names are all
+    /// there. With nothing firing cues, it says so.
     #[cfg(feature = "dev")]
     pub fn set_cue_table(&mut self, table: sapphire_cues::CueTable) -> Result<(), String> {
         let presets: &EffectLibrary = self.ecs.world().resource();
-        let Some(cues) = &mut self.cues else { return Ok(()) };
+        let Some(cues) = &mut self.cues else {
+            return Err("nothing fires a fight's cues here: `--cues` does".to_owned());
+        };
         cues.take_table(table, presets).map_err(|error| error.to_string())?;
         self.pushed_effects |= cues.post_variants(presets);
         Ok(())
@@ -1214,13 +1216,32 @@ impl Scene {
         self.graph_show.as_mut()?.tune(document, set)
     }
 
-    /// Gives the arena's camera director new tuning (M2 T2), or says why nothing takes it.
+    /// Gives new camera tuning to what plays it (M2 T2): the arena's director and a fight's cues, whose
+    /// shake IDs are places in the tuning's list and so are resolved again. All of them take it or none
+    /// does: a value out of range, or a shake the cue table names and the tuning has lost, keeps everything
+    /// as it was.
     #[cfg(feature = "dev")]
     pub fn set_camera_tuning(&mut self, tuning: sapphire_camera::CameraTuning) -> Result<(), String> {
-        let Some(arena) = &mut self.arena else {
-            return Err("no camera director runs here: `--arena` has one".to_owned());
-        };
-        arena.set_camera_tuning(tuning)
+        tuning.validate().map_err(|error| error.to_string())?;
+        let director = self.arena.as_ref().is_some_and(ArenaActors::has_director);
+        if !director && self.cues.is_none() {
+            return Err(match self.arena {
+                Some(_) => "this shot has no camera director: `--arena-shot director` has one",
+                None => {
+                    "no camera director runs here, and nothing fires a fight's shakes: `--arena` has one, \
+                         and `--cues` does the other"
+                }
+            }
+            .to_owned());
+        }
+        let presets: &EffectLibrary = self.ecs.world().resource();
+        if let Some(cues) = &mut self.cues {
+            cues.take_camera_tuning(tuning.clone(), presets).map_err(|error| error.to_string())?;
+        }
+        match self.arena.as_mut().filter(|arena| arena.has_director()) {
+            Some(arena) => arena.set_camera_tuning(tuning),
+            None => Ok(()),
+        }
     }
 
     /// Takes an edited graph (M2 T2): its clips loaded, bound against this character, and from then on

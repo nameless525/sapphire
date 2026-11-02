@@ -362,10 +362,16 @@ impl ArenaActors {
         true
     }
 
+    /// Whether the director frames this stage.
+    #[cfg(feature = "dev")]
+    pub fn has_director(&self) -> bool {
+        self.camera.is_some()
+    }
+
     /// Gives the director new tuning, whose goals its view eases to (M2 T2). Refuses with no director on
-    /// the stage, or tuning it won't take, keeping what it has either way. Whatever resolved shake IDs
-    /// from the old tuning resolves them again here: M2 E3's dispatcher, once it fires them on this
-    /// director.
+    /// the stage, or tuning it won't take, keeping what it has either way. Shake IDs resolved from the old
+    /// tuning are resolved again by [`Scene::set_camera_tuning`](crate::scene::Scene::set_camera_tuning),
+    /// which holds the cues' dispatcher beside this.
     #[cfg(feature = "dev")]
     pub fn set_camera_tuning(&mut self, tuning: CameraTuning) -> Result<(), String> {
         let Some(camera) = &mut self.camera else {

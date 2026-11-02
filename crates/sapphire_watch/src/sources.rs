@@ -29,6 +29,11 @@ pub fn default_light_rigs() -> PathBuf {
     crates_dir().join("sapphire_world").join("default_light_rigs.ron")
 }
 
+/// The cue table's document, which `sapphire_cues::CueTable::default_table` compiles in.
+pub fn default_cues() -> PathBuf {
+    crates_dir().join("sapphire_cues").join("default_cues.ron")
+}
+
 /// The screen effect presets' document, which
 /// `sapphire_world::screen_effects::EffectLibrary::default_effects` compiles in.
 pub fn default_screen_effects() -> PathBuf {

@@ -243,6 +243,9 @@ impl Stage {
         if let Some(show) = options.vfx {
             scene.play_vfx(show, crate::vfx::budget(quality.active().id));
         }
+        if options.cues {
+            scene.play_cues(crate::vfx::budget(quality.active().id)).map_err(AppInitError::msg)?;
+        }
         // The screen effects it may push, `--post-effect`'s among them, and the effects it plays,
         // show on their first frame.
         scene.prewarm(&mut renderer);
@@ -295,7 +298,10 @@ impl Stage {
         if let Some(combat) = &mut self.combat {
             combat.step(&mut crate::combat::no_bindings);
             self.scene.follow_simulation(combat.simulation(), combat.cast());
+            self.scene.show_cues(combat.simulation());
         }
+        // No sound and no pad here: a frame's end is all that's left of them.
+        self.scene.end_cue_frame(1.0 / sapphire_time::TICK_HZ as f32, &mut ());
     }
 
     /// An error if a replay has left its recorded checksums so far.
@@ -305,6 +311,9 @@ impl Stage {
 
     /// Ends the replay or recording, if there is one: see [`Combat::finish`].
     pub fn finish_combat(&mut self) -> Result<(), AppInitError> {
+        if let Some(cues) = self.scene.cue_show() {
+            tracing::info!(target: LOG_TARGET, stats = ?cues.stats(), "fired a fight's cues");
+        }
         self.combat.take().map_or(Ok(()), Combat::finish).map_err(AppInitError::msg)
     }
 

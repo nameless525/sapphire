@@ -106,8 +106,10 @@ use std::time::Duration;
 use sapphire_anim::{AnimStats, ArchivedClip, SpringQuality, SpringWork, evaluate_all};
 use sapphire_assets::mesh::ArchivedMesh;
 use sapphire_core::debug_draw::{self, Collector};
+use sapphire_cues::RumbleSink;
 use sapphire_ecs::bevy_ecs::system::SystemState;
 use sapphire_ecs::prelude::*;
+use sapphire_gameplay::Simulation;
 use sapphire_math::{Affine3A, Mat4, Quat, Vec3};
 use sapphire_render::{
     CharacterBody, CharacterFace, CharacterInstance, FaceExpression, Fog, FramePacket, HeadBasis, LightKind,
@@ -129,6 +131,7 @@ use crate::arena::{ArenaActors, ArenaGround, ArenaShot};
 use crate::audio::SceneSound;
 use crate::combat_views::{CombatViews, Facade};
 use crate::content::Content;
+use crate::cues::{CueShow, CueSounds};
 use crate::debug_shapes::DebugDrawDemo;
 use crate::enemy::{self, EnemyMeshes};
 use crate::environment;
@@ -428,6 +431,10 @@ pub(crate) struct Scene {
     pushed_effects: PostVariants,
     /// The effects `--vfx` plays (M2 E2).
     vfx: Option<VfxPlayer>,
+    /// A fight's cues, fired (`--cues`, M2 E3).
+    cues: Option<CueShow>,
+    /// Width over height of the last frame drawn, which puts a hit's point on screen.
+    view_aspect: f32,
 }
 
 impl Scene {
@@ -528,6 +535,8 @@ impl Scene {
             fade: Fade::Off,
             pushed_effects: PostVariants::NONE,
             vfx: None,
+            cues: None,
+            view_aspect: 16.0 / 9.0,
         }
     }
 
@@ -710,10 +719,26 @@ impl Scene {
     }
 
     /// Replaces the screen effect presets (hot reload, `dev` builds). Effects playing keep the
-    /// layers they were pushed with.
+    /// layers they were pushed with. Presets that lose one a fight's cues push are refused.
     #[cfg(feature = "dev")]
-    pub fn set_effect_library(&mut self, library: EffectLibrary) {
+    pub fn set_effect_library(&mut self, library: EffectLibrary) -> Result<(), String> {
+        if let Some(cues) = &mut self.cues {
+            cues.take_presets(&library).map_err(|error| error.to_string())?;
+            self.pushed_effects |= cues.post_variants(&library);
+        }
         self.ecs.world_mut().insert_resource(library);
+        Ok(())
+    }
+
+    /// Replaces the table a fight's cues fire through (hot reload, `dev` builds), if there's a fight and
+    /// its names are all there.
+    #[cfg(feature = "dev")]
+    pub fn set_cue_table(&mut self, table: sapphire_cues::CueTable) -> Result<(), String> {
+        let presets: &EffectLibrary = self.ecs.world().resource();
+        let Some(cues) = &mut self.cues else { return Ok(()) };
+        cues.take_table(table, presets).map_err(|error| error.to_string())?;
+        self.pushed_effects |= cues.post_variants(presets);
+        Ok(())
     }
 
     /// Replaces the character light rig presets with `rigs`, read from `origin` (a path or a file
@@ -1529,6 +1554,57 @@ impl Scene {
         self.vfx = Some(VfxPlayer::new(show, budget));
     }
 
+    /// Fires a fight's cues from now on (`--cues`, M2 E3), within `budget`, and has the scene prewarm
+    /// what they draw through. An error names what its table can't find.
+    pub fn play_cues(&mut self, budget: VfxBudget) -> Result<(), String> {
+        let presets: &EffectLibrary = self.ecs.world().resource();
+        let show = CueShow::new(budget, presets).map_err(|error| error.to_string())?;
+        self.pushed_effects |= show.post_variants(presets);
+        self.cues = Some(show);
+        Ok(())
+    }
+
+    /// What's firing a fight's cues, if anything is.
+    pub fn cue_show(&self) -> Option<&CueShow> {
+        self.cues.as_ref()
+    }
+
+    /// Fires what `sim`'s latest step published (`--cues`), and does nothing without that flag. Call it
+    /// after each of the simulation's steps: the next one clears them. Allocates nothing once warmed.
+    pub fn show_cues(&mut self, sim: &Simulation) {
+        let Some(cues) = &mut self.cues else { return };
+        let world = self.ecs.world();
+        let camera = world.resource::<OrbitCamera>().camera_data(self.view_aspect);
+        let view_projection = camera.proj * camera.view;
+        let place = world.get::<RenderTransform>(self.character);
+        let stand = place.map_or(Vec3::ZERO, |place| place.0.w_axis.truncate());
+        let (mut stack, presets) = self
+            .screen_effects
+            .get_mut(self.ecs.world_mut())
+            .expect("the scene inserts the effect stack and its presets");
+        cues.step(sim, &mut stack, &presets, view_projection, stand);
+    }
+
+    /// What a fight's cues ask of the audio system this frame.
+    pub fn cue_sounds(&self) -> CueSounds<'_> {
+        self.cues.as_ref().map_or(CueSounds::NONE, CueShow::sounds)
+    }
+
+    /// Ends a frame of a fight's cues, `dt` real seconds after the last, after the audio system took
+    /// [`Self::cue_sounds`]: tells `rumble` what changed, and shakes the camera for the frame to come.
+    pub fn end_cue_frame(&mut self, dt: f32, rumble: &mut dyn RumbleSink) {
+        let Some(cues) = &mut self.cues else { return };
+        let (turn, offset) = cues.end_frame(dt, rumble);
+        self.ecs.world_mut().resource_mut::<OrbitCamera>().set_shake(turn, offset);
+    }
+
+    /// Stops a fight's rumble at once: the app lost focus or the foreground.
+    pub fn stop_rumble(&mut self, rumble: &mut dyn RumbleSink) {
+        if let Some(cues) = &mut self.cues {
+            cues.stop_rumble(rumble);
+        }
+    }
+
     /// One step of the effects, by the clocks' last steps: the world's, and the character's for the
     /// attacker's and the victim's, which stops through its hitstop. A hit starts one on it.
     fn step_vfx(&mut self) {
@@ -1550,7 +1626,7 @@ impl Scene {
     /// The app calls it whenever it makes a renderer.
     pub fn prewarm(&self, renderer: &mut Renderer) {
         renderer.prewarm_post(self.effect_variants());
-        if self.vfx.is_some() {
+        if self.vfx.is_some() || self.cues.is_some() {
             renderer.prewarm_vfx();
         }
     }
@@ -1575,11 +1651,17 @@ impl Scene {
         let fog = self.fog;
         let (plain_post, sharpening, wind) = (self.plain_post, self.sharpening, self.wind);
         let probe_hours = &self.probe_hours;
-        let vfx = &mut self.vfx;
+        let (vfx, cues) = (&mut self.vfx, &mut self.cues);
+        if let Some(aspect) = drawable_aspect(target_size) {
+            self.view_aspect = aspect;
+        }
         self.ecs.world_mut().resource_scope(|world, mut extract: Mut<'_, RenderExtract>| {
             let packet = extract.begin();
             if let Some(vfx) = vfx {
                 vfx.write(&mut packet.vfx);
+            }
+            if let Some(cues) = cues {
+                cues.write(&mut packet.vfx);
             }
             let camera = world.resource::<OrbitCamera>();
             if let Some(aspect) = drawable_aspect(target_size) {
@@ -3206,6 +3288,66 @@ mod tests {
         }
         assert_eq!(effects(&mut scene), sapphire_render::PostEffects::NONE);
         scene.end_frame();
+    }
+
+    /// A recorded fight fired as `--cues` does: the frame the first hit lands in draws its spark and its
+    /// screen effect and shakes the camera, the frames before it draw none of them, and the simulation
+    /// still reaches its recorded checksums.
+    #[test]
+    fn a_fights_first_hit_reaches_the_frame_it_lands_in() {
+        let path =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/replays/fight.sreplay");
+        let option = crate::options::CombatOption::Replay { path, to_end: true };
+        let mut combat = crate::combat::Combat::new(&option).expect("a committed recording");
+        let mut scene = scene();
+        scene.play_cues(VfxBudget::DESKTOP_LOW).expect("the shipped table resolves");
+        let view_at =
+            |scene: &Scene| scene.ecs.world().resource::<OrbitCamera>().camera_data(16.0 / 9.0).view;
+        let mut landed = false;
+        for _ in 0..200 {
+            scene.step();
+            let still = view_at(&scene);
+            combat.step(&mut crate::combat::no_bindings);
+            scene.show_cues(combat.simulation());
+            let hit = combat.simulation().cues().any(|cue| cue.hit.is_some());
+            scene.end_cue_frame(1.0 / TICK_HZ as f32, &mut ());
+            let shaken = view_at(&scene) != still;
+            let packet = scene.frame_packet(1.0, Some((640, 360)));
+            let (spark, effects) = (!packet.vfx.is_empty(), packet.post.effects);
+            scene.end_frame();
+            if hit {
+                assert!(spark, "the hit's spark");
+                assert_ne!(effects, sapphire_render::PostEffects::NONE, "the hit's screen effect");
+                assert!(shaken, "the hit's shake");
+                landed = true;
+                break;
+            }
+            assert_eq!(effects, sapphire_render::PostEffects::NONE, "nothing's landed yet");
+        }
+        assert!(landed, "the fight's first hit comes within 200 ticks");
+        combat.check().expect("a fight fired is the fight recorded");
+    }
+
+    /// Without `--cues`, a fight stepping beside the scene fires nothing, whatever it publishes.
+    #[test]
+    fn a_fight_without_the_flag_fires_nothing() {
+        let path =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/replays/fight.sreplay");
+        let option = crate::options::CombatOption::Replay { path, to_end: true };
+        let mut combat = crate::combat::Combat::new(&option).expect("a committed recording");
+        let mut scene = scene();
+        for _ in 0..200 {
+            scene.step();
+            combat.step(&mut crate::combat::no_bindings);
+            scene.show_cues(combat.simulation());
+            scene.end_cue_frame(1.0 / TICK_HZ as f32, &mut ());
+            let packet = scene.frame_packet(1.0, Some((640, 360)));
+            assert!(packet.vfx.is_empty());
+            assert_eq!(packet.post.effects, sapphire_render::PostEffects::NONE);
+            scene.end_frame();
+        }
+        assert!(scene.cue_show().is_none());
+        assert!(scene.cue_sounds().requests.is_empty());
     }
 
     #[test]

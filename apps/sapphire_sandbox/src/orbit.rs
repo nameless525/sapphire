@@ -7,7 +7,7 @@
 use std::f32::consts::{FRAC_PI_2, PI};
 
 use sapphire_ecs::prelude::Resource;
-use sapphire_math::{Quat, SpringDamper, Vec3};
+use sapphire_math::{Mat4, Quat, SpringDamper, Vec3};
 use sapphire_render::CameraData;
 
 const FOV_Y: f32 = 0.75;
@@ -29,6 +29,8 @@ pub(crate) struct OrbitCamera {
     yaw: SpringDamper<f32>,
     pitch: SpringDamper<f32>,
     distance: SpringDamper<f32>,
+    /// What cues' shakes do to the view this frame ([`Self::set_shake`]).
+    shake: (Vec3, Vec3),
 }
 
 impl OrbitCamera {
@@ -49,6 +51,7 @@ impl OrbitCamera {
             yaw: SpringDamper::new(yaw, HALF_LIFE),
             pitch: SpringDamper::new(pitch, HALF_LIFE),
             distance: SpringDamper::new(distance, HALF_LIFE),
+            shake: (Vec3::ZERO, Vec3::ZERO),
         }
     }
 
@@ -81,6 +84,7 @@ impl OrbitCamera {
             yaw: SpringDamper::new(yaw, HALF_LIFE),
             pitch: SpringDamper::new(pitch, HALF_LIFE),
             distance: SpringDamper::new(distance, HALF_LIFE),
+            shake: (Vec3::ZERO, Vec3::ZERO),
         }
     }
 
@@ -178,8 +182,24 @@ impl OrbitCamera {
         self.yaw.value + PI
     }
 
+    /// What cues' shakes do to the view, as `sapphire_camera::ShakeStack::sample` gives it: radians about
+    /// its right, up and backward, then metres along its right, up and forward. Input, the orbit's
+    /// springs and the listener don't see it, so it can't move what the player aims by.
+    pub fn set_shake(&mut self, turn: Vec3, offset: Vec3) {
+        self.shake = (turn, offset);
+    }
+
     pub fn camera_data(&self, aspect: f32) -> CameraData {
-        CameraData::look_at(self.eye(), self.target, Vec3::Y, self.fov_y, aspect, NEAR)
+        let mut data = CameraData::look_at(self.eye(), self.target, Vec3::Y, self.fov_y, aspect, NEAR);
+        let (turn, offset) = self.shake;
+        if turn != Vec3::ZERO || offset != Vec3::ZERO {
+            let moved = Vec3::new(offset.x, offset.y, -offset.z);
+            data.position = data.view.inverse().transform_point3(moved);
+            // Small angles: half of each, plus a scalar of 1, normalized.
+            let small = Quat::from_xyzw(turn.x * 0.5, turn.y * 0.5, turn.z * 0.5, 1.0).normalize();
+            data.view = Mat4::from_quat(small.inverse()) * Mat4::from_translation(-moved) * data.view;
+        }
+        data
     }
 
     /// Where sound is heard from: the camera, facing what it looks at.
@@ -216,6 +236,36 @@ mod tests {
         }
         let eye = camera.camera_data(16.0 / 9.0).position;
         assert!((eye.distance(camera.target) - camera.min_distance).abs() < 1e-3);
+    }
+
+    /// A shake moves the view by what it says and touches nothing else.
+    #[test]
+    fn a_shake_moves_the_view_and_nothing_else() {
+        let mut camera = OrbitCamera::framing([[-1.0, 0.0, -1.0], [1.0, 2.0, 1.0]]);
+        let still = camera.camera_data(1.0);
+        let (eye, listener) = (camera.eye(), camera.listener());
+
+        camera.set_shake(Vec3::ZERO, Vec3::new(0.01, 0.02, 0.03));
+        let moved = camera.camera_data(1.0);
+        let inverse = still.view.inverse();
+        let (right, up, back) =
+            (inverse.x_axis.truncate(), inverse.y_axis.truncate(), inverse.z_axis.truncate());
+        let expected = eye + right * 0.01 + up * 0.02 - back * 0.03;
+        assert!(moved.position.abs_diff_eq(expected, 1e-5), "{} {expected}", moved.position);
+        assert!(moved.view.inverse().w_axis.truncate().abs_diff_eq(expected, 1e-5), "the view agrees");
+        assert_eq!(moved.proj, still.proj);
+
+        camera.set_shake(Vec3::new(0.0, 0.0, 0.02), Vec3::ZERO);
+        let turned = camera.camera_data(1.0);
+        assert!(turned.position.abs_diff_eq(eye, 1e-5), "a turn leaves the eye");
+        let looked = turned.view.inverse().z_axis.truncate();
+        assert!(looked.abs_diff_eq(back, 1e-5), "a roll leaves where it looks");
+        assert!(!turned.view.inverse().x_axis.truncate().abs_diff_eq(right, 1e-3), "and turns its right");
+
+        assert_eq!(camera.eye(), eye);
+        assert_eq!(camera.listener(), listener);
+        camera.set_shake(Vec3::ZERO, Vec3::ZERO);
+        assert_eq!(camera.camera_data(1.0).view, still.view, "gone with no trace");
     }
 
     #[test]

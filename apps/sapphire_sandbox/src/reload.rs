@@ -23,7 +23,9 @@
 //!   their preset IDs;
 //! - edited screen effect presets replace the scene's (the `EffectLibrary` resource, M1 P3);
 //!   effects playing keep the layers they were pushed with, and the renderer prewarms the post
-//!   variants the new presets draw through.
+//!   variants the new presets draw through, unless they lose a preset a fight's cue table pushes;
+//! - an edited cue table replaces the one a fight's cues fire through (M2 E3), if the names it holds
+//!   are all there.
 //!
 //! On by default in `dev` builds; `--no-hot-reload` turns it off. Phones build no file watching
 //! (live link, A9, is their trigger), so it reports itself off there. Errors are logged and
@@ -35,6 +37,7 @@
 use std::path::{Path, PathBuf};
 
 use sapphire_assets::AssetChange;
+use sapphire_cues::CueTable;
 use sapphire_debug::HotReloadStatus;
 use sapphire_hot_reload::{Changes, DEBOUNCE, DocumentId, HotReload, sources};
 use sapphire_reflect::stable_name;
@@ -65,10 +68,13 @@ pub(crate) enum Document {
     /// The screen effect presets (`default_screen_effects.ron`, M1 P3): they replace the scene's
     /// library, if they parse and are valid.
     ScreenEffects,
+    /// The cue table (`default_cues.ron`, M2 E3): it replaces the one a fight's cues fire through, if
+    /// there's a fight, it parses and the names it holds are all there.
+    Cues,
 }
 
 impl Document {
-    const ALL: [Self; 3] = [Self::Day, Self::LightRigs, Self::ScreenEffects];
+    const ALL: [Self; 4] = [Self::Day, Self::LightRigs, Self::ScreenEffects, Self::Cues];
 
     /// The document whose envelope names `type_name`, if the sandbox has one.
     pub fn of_type(type_name: &str) -> Option<Self> {
@@ -80,6 +86,7 @@ impl Document {
             Self::Day => stable_name::<TodTimeline>(),
             Self::LightRigs => stable_name::<LightRigLibrary>(),
             Self::ScreenEffects => stable_name::<EffectLibrary>(),
+            Self::Cues => stable_name::<CueTable>(),
         }
     }
 
@@ -89,6 +96,7 @@ impl Document {
             Self::Day => "day",
             Self::LightRigs => "light rigs",
             Self::ScreenEffects => "screen effects",
+            Self::Cues => "cue table",
         }
     }
 
@@ -116,7 +124,13 @@ impl Document {
             }
             Self::ScreenEffects => {
                 let effects = EffectLibrary::from_ron(text).map_err(|error| error_chain(&error))?;
-                scene.set_effect_library(effects);
+                scene.set_effect_library(effects)?;
+                renderer.prewarm_post(scene.effect_variants());
+                Ok(self.name())
+            }
+            Self::Cues => {
+                let table = CueTable::from_ron(text).map_err(|error| error_chain(&error))?;
+                scene.set_cue_table(table)?;
                 renderer.prewarm_post(scene.effect_variants());
                 Ok(self.name())
             }
@@ -212,6 +226,7 @@ impl Reload {
             (Document::Day, day.to_owned(), "the day"),
             (Document::LightRigs, light_rigs.to_owned(), "the light rigs"),
             (Document::ScreenEffects, sources::default_screen_effects(), "the screen effects"),
+            (Document::Cues, sources::default_cues(), "the cue table"),
         ] {
             match hot.watch_document(&path) {
                 Ok(id) => {

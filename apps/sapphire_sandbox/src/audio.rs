@@ -1,8 +1,10 @@
-//! `--cue <name>`: a cue played at the character on the real audio device (M2 E1, spec §5.15).
+//! `--cue <name>`: a cue played at the character on the real audio device (M2 E1, spec §5.15). And in
+//! the windowed app `--cues`: a fight's, as its table asks (M2 E3, `cues.rs`).
 //!
-//! Only that flag makes a [`SandboxAudio`]. Without it the app mounts no audio pack, starts no audio
-//! thread and opens no device. The offscreen modes refuse the flag, and [`stayed_shut`] holds capture
-//! and bench to it at the end of every run, golden scenes included: CI's runners have no sound.
+//! Only those flags make a [`SandboxAudio`]. Without them the app mounts no audio pack, starts no audio
+//! thread and opens no device. The offscreen modes refuse `--cue` and never make one for `--cues`, and
+//! [`stayed_shut`] holds capture and bench to it at the end of every run, golden scenes included: CI's
+//! runners have no sound.
 //!
 //! A device that isn't there or goes away is a logged state of the mixer, never a failure, and so is
 //! an OS that won't set up its audio session: the app runs on in silence. A cue that can't load is
@@ -25,6 +27,7 @@ use sapphire_time::Stopwatch;
 
 use crate::LOG_TARGET;
 use crate::content::Content;
+use crate::cues::CueSounds;
 
 /// The cues `--cue` can name, by their sidecars' IDs in `content/audio/`. A game names cues in its
 /// own data; a test holds this table to the sidecars.
@@ -72,20 +75,28 @@ pub(crate) struct SceneSound {
     pub hitstop: bool,
 }
 
-/// The audio system on the real device, playing one cue.
-pub(crate) struct SandboxAudio {
-    system: AudioSystem<KiraBackend<CpalOutput>>,
-    random: CueRng,
+/// `--cue`'s one cue, and when it's due.
+struct Repeating {
     cue: AssetId,
     repeat: Option<f32>,
     /// Seconds until the next play; none once a cue that doesn't repeat has played.
     next_play: Option<f32>,
+}
+
+/// The audio system on the real device, playing `--cue`'s one cue or a fight's.
+pub(crate) struct SandboxAudio {
+    system: AudioSystem<KiraBackend<CpalOutput>>,
+    random: CueRng,
+    /// `--cue`'s.
+    repeating: Option<Repeating>,
+    /// This frame's, the character's and a fight's.
+    emitters: Vec<Emitter>,
     /// Seconds until the next stats line.
     report_in: f32,
 }
 
 impl SandboxAudio {
-    /// Loads the cue and opens the device. `None`, logged, if the OS won't set up audio.
+    /// `--cue`'s cue on the device. `None`, logged, if the OS won't set up audio.
     pub fn new(
         option: &CueOption,
         platform: &mut Platform,
@@ -93,57 +104,86 @@ impl SandboxAudio {
         renderer: &mut Renderer,
         gpu: &GpuContext,
     ) -> Result<Option<Self>, AppInitError> {
+        let audio = Self::for_cues(&[option.id], platform, content, renderer, gpu)?;
+        Ok(audio.map(|audio| Self {
+            repeating: Some(Repeating { cue: option.id, repeat: option.repeat, next_play: Some(0.0) }),
+            ..audio
+        }))
+    }
+
+    /// Loads `cues` and opens the device, with nothing due to play. `None`, logged, if the OS won't set
+    /// up audio.
+    pub fn for_cues(
+        cues: &[AssetId],
+        platform: &mut Platform,
+        content: &mut Content,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+    ) -> Result<Option<Self>, AppInitError> {
         let stopwatch = Stopwatch::start();
-        let (cue, sounds) = content.load_cue(option.id, renderer, gpu)?;
-        let loaded = stopwatch.elapsed();
+        let mut loaded = Vec::with_capacity(cues.len());
+        for &id in cues {
+            let (cue, sounds) = content.load_cue(id, renderer, gpu)?;
+            loaded.push((id, cue, sounds));
+        }
+        let load_and_decode = stopwatch.elapsed();
         if let Err(error) = platform.prepare_audio() {
             tracing::warn!(target: LOG_TARGET, %error, "no audio this run");
             return Ok(None);
         }
         let Ok(backend) = KiraBackend::<CpalOutput>::new(());
         let mut system = AudioSystem::new(backend);
-        let frames: usize = sounds.iter().map(|(_, sound)| sound.frames()).sum();
-        system.add_cue(option.id, cue);
-        for (id, sound) in &sounds {
-            system.add_sound(*id, sound);
+        let (mut sound_count, mut frames) = (0, 0);
+        for (id, cue, sounds) in loaded {
+            system.add_cue(id, cue);
+            for (id, sound) in &sounds {
+                system.add_sound(*id, sound);
+                sound_count += 1;
+                frames += sound.frames();
+            }
         }
         tracing::info!(
             target: LOG_TARGET,
-            cue = %option.id,
-            sounds = sounds.len(),
+            cues = cues.len(),
+            sounds = sound_count,
             frames,
-            load_and_decode = ?loaded,
-            "cue ready"
+            ?load_and_decode,
+            "cues ready"
         );
         Ok(Some(Self {
             system,
             random: CueRng::new(CUE_SEED),
-            cue: option.id,
-            repeat: option.repeat,
-            next_play: Some(0.0),
+            repeating: None,
+            emitters: Vec::with_capacity(8),
             report_in: REPORT_EVERY,
         }))
     }
 
-    /// One frame, `dt` real seconds after the last: plays the cue when it's due, and follows the OS's
-    /// interruptions and the scene.
-    pub fn update(&mut self, dt: f32, platform: &Platform, scene: SceneSound) {
+    /// One frame, `dt` real seconds after the last: plays `--cue`'s cue when it's due and what a fight
+    /// asks, and follows the OS's interruptions and the scene.
+    pub fn update(&mut self, dt: f32, platform: &Platform, scene: SceneSound, fight: CueSounds<'_>) {
         self.system.set_interrupted(platform.audio_interrupted());
-        let due = self.next_play.as_mut().is_some_and(|left| {
-            *left -= dt;
-            *left <= 0.0
-        });
-        if due {
-            self.next_play = self.repeat;
+        let mut due = None;
+        if let Some(repeating) = &mut self.repeating {
+            let is_due = repeating.next_play.as_mut().is_some_and(|left| {
+                *left -= dt;
+                *left <= 0.0
+            });
+            if is_due {
+                repeating.next_play = repeating.repeat;
+                due = Some(repeating.cue);
+            }
         }
-        let requests = [CueRequest { cue: self.cue, target: CueTarget::On(CHARACTER) }];
-        let emitters = [Emitter { id: CHARACTER, position: scene.character, hitstop: scene.hitstop }];
+        let requests = due.map(|cue| [CueRequest { cue, target: CueTarget::On(CHARACTER) }]);
+        self.emitters.clear();
+        self.emitters.push(Emitter { id: CHARACTER, position: scene.character, hitstop: scene.hitstop });
+        self.emitters.extend_from_slice(fight.emitters);
         let frame = AudioFrame {
             dt,
             listener: scene.listener,
-            world_time_scale: scene.world_time_scale,
-            emitters: &emitters,
-            cues: if due { &requests } else { &[] },
+            world_time_scale: scene.world_time_scale.min(fight.world_time_scale),
+            emitters: &self.emitters,
+            cues: requests.as_ref().map_or(fight.requests, |requests| requests.as_slice()),
         };
         self.system.update(&frame, &mut self.random);
         self.report_in -= dt;

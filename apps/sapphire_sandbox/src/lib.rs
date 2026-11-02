@@ -273,6 +273,9 @@
 //!     scenario on a script's actions for as many ticks as the mode steps, and write the replay.
 //!     Without those two and without `--script`, in the windowed app, it records whoever's playing,
 //!     through combat's bindings, and writes the file when the app quits (`combat.rs`).
+//!   - `--cues`, with either: fire that simulation's cues as a game does (M2 E3, `cues.rs`), on the
+//!     scene's character: its effects, screen effects and camera shakes, and in the windowed app its
+//!     sounds and rumble, which load `audio.spack`. A capture and a bench stay silent.
 //!   - `--serial-passes`: submit each frame graph pass on its own and wait for the GPU after
 //!     it, logging each at debug level: a GPU crash or device loss then names its pass in the
 //!     log, even on drivers that report nothing. Slow; for debugging.
@@ -302,6 +305,7 @@ mod combat_panel;
 mod combat_views;
 mod contact_sheet;
 mod content;
+mod cues;
 mod cvars;
 mod debug_shapes;
 #[cfg(feature = "dev")]

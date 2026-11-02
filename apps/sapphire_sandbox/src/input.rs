@@ -134,6 +134,11 @@ impl SandboxInput {
         system.state(self.actions.quit).fired() || self.controls.wants_to_leave()
     }
 
+    /// The pad in the player's hands, which rumble goes to.
+    pub fn active_gamepad(&self) -> Option<sapphire_platform::GamepadId> {
+        self.controls.input().active_gamepad()
+    }
+
     /// This frame's fixed steps: none while paused, and no burst after.
     pub fn advance(&self, driver: &mut FixedStepDriver, frame_time: Duration) -> FixedSteps {
         self.controls.advance(driver, frame_time)

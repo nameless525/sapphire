@@ -26,6 +26,7 @@ use crate::LOG_TARGET;
 use crate::audio::SandboxAudio;
 use crate::combat::Combat;
 use crate::content::Content;
+use crate::cues::PadRumble;
 #[cfg(feature = "dev")]
 use crate::dev::{DevTools, FrameState};
 use crate::enemy::EnemyMeshes;
@@ -249,6 +250,9 @@ impl App for SandboxApp {
         if let Some(show) = options.vfx {
             scene.play_vfx(show, crate::vfx::budget(quality.active().id));
         }
+        if options.cues {
+            scene.play_cues(crate::vfx::budget(quality.active().id)).map_err(AppInitError::msg)?;
+        }
         // The screen effects it may push, `--post-effect`'s among them, and the effects it plays,
         // show on their first frame.
         scene.prewarm(&mut renderer.renderer);
@@ -256,9 +260,15 @@ impl App for SandboxApp {
         if let (Some(layout), Some(meshes)) = (options.stage, renderer.stage) {
             scene.spawn_stage(layout, meshes);
         }
-        let audio = match &options.cue {
-            Some(cue) => SandboxAudio::new(cue, platform, &mut content, &mut renderer.renderer, &device.gpu)?,
-            None => None,
+        let audio = match (&options.cue, scene.cue_show()) {
+            (Some(cue), _) => {
+                SandboxAudio::new(cue, platform, &mut content, &mut renderer.renderer, &device.gpu)?
+            }
+            (None, Some(show)) => {
+                let cues = show.table().sound_cues();
+                SandboxAudio::for_cues(&cues, platform, &mut content, &mut renderer.renderer, &device.gpu)?
+            }
+            (None, None) => None,
         };
         if let Some(hud) = options.hud {
             scene.set_hud(crate::hud::SandboxHud::new(hud));
@@ -320,6 +330,11 @@ impl App for SandboxApp {
                 WindowEvent::Restored => {
                     let size = self.window.pixel_size();
                     self.resize(size.width, size.height);
+                }
+                // Whoever's holding the pad isn't watching any more.
+                WindowEvent::FocusLost => {
+                    let pad = self.input.active_gamepad();
+                    self.scene.stop_rumble(&mut PadRumble { platform, pad });
                 }
                 _ => {}
             },
@@ -393,8 +408,10 @@ impl App for SandboxApp {
         self.scene.drive_arena_camera(dt, look, zoom);
         let presentation = stopwatch.lap();
         if let Some(audio) = &mut self.audio {
-            audio.update(dt, platform, self.scene.sound());
+            audio.update(dt, platform, self.scene.sound(), self.scene.cue_sounds());
         }
+        let pad = self.input.active_gamepad();
+        self.scene.end_cue_frame(dt, &mut PadRumble { platform, pad });
         self.stages.audio = stopwatch.lap();
         let presented = match self.render(steps.alpha, &mut stopwatch, presentation) {
             Ok(presented) => presented,
@@ -461,6 +478,7 @@ impl SandboxApp {
             self.read_combat_step(camera_yaw);
             if let Some(combat) = &self.combat {
                 self.scene.follow_simulation(combat.simulation(), combat.cast());
+                self.scene.show_cues(combat.simulation());
             }
 
             let scene = &mut self.scene;
@@ -630,6 +648,8 @@ impl SandboxApp {
         match event {
             LifecycleEvent::WillEnterBackground => {
                 self.suspended = true;
+                let pad = self.input.active_gamepad();
+                self.scene.stop_rumble(&mut PadRumble { platform, pad });
                 if let Some(audio) = &mut self.audio {
                     audio.set_background(true, platform);
                 }

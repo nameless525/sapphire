@@ -194,6 +194,8 @@ pub(crate) struct Options {
     pub offscreen: Option<Offscreen>,
     /// `--replay` or `--record`: a combat simulation beside the scene (M2 D2).
     pub combat: Option<CombatOption>,
+    /// `--cues`: fire that simulation's cues, as a game does (M2 E3).
+    pub cues: bool,
     /// `--serial-passes`: offscreen, submit each frame graph pass on its own and wait for the
     /// GPU after it, logging each at debug level, so a GPU crash, hang or device loss names its
     /// pass (`GraphExecutor::set_serial`). Slow; for debugging.
@@ -756,6 +758,7 @@ impl Options {
                     }
                     cue_repeat = Some(seconds);
                 }
+                "--cues" => options.cues = true,
                 "--vfx" => {
                     let raw = value("--vfx")?;
                     options.vfx = Some(VfxShow::from_name(&raw).ok_or_else(|| {
@@ -959,6 +962,15 @@ impl Options {
             && !arena_colliders
         {
             return Err("--debug-draw's views of a fight need --replay or --record".to_owned());
+        }
+        if options.cues && options.combat.is_none() {
+            return Err("--cues needs --replay or --record: it fires a fight's cues".to_owned());
+        }
+        if options.cues && options.vfx.is_some() {
+            return Err("--cues and --vfx are exclusive: both play the frame's effects".to_owned());
+        }
+        if options.cues && options.cue.is_some() {
+            return Err("--cues and --cue are exclusive: both play the frame's sound".to_owned());
         }
         let drawn_alone = matches!(mode, Some(OffscreenMode::Capture { .. } | OffscreenMode::Bench { .. }));
         match &options.combat {
@@ -1852,6 +1864,21 @@ mod tests {
         refused(&["--capture", "x", "--replay", "a", "--scenario", "s"], "--record");
         refused(&["--capture", "x", "--replay", "a", "--record", "b"], "exclusive");
         refused(&["--capture", "x", "--replay"], "--replay needs a value");
+    }
+
+    #[test]
+    fn cues_go_with_a_fight() {
+        let (options, _) = parse(&["--capture", "x.png", "--replay", "a.sreplay", "--cues"]).unwrap();
+        assert!(options.cues);
+        let (options, _) = parse(&["--capture", "x.png", "--replay", "a.sreplay"]).unwrap();
+        assert!(!options.cues);
+        let refused = |args: &[&str], with: &str| {
+            let error = parse(args).map(|_| ()).unwrap_err();
+            assert!(error.contains(with), "{args:?}: {error}");
+        };
+        refused(&["--capture", "x", "--cues"], "--replay or --record");
+        refused(&["--capture", "x", "--replay", "a", "--cues", "--vfx", "arc"], "exclusive");
+        refused(&["--cues", "--record", "a", "--scenario", "s", "--cue", "hit"], "exclusive");
     }
 
     #[test]

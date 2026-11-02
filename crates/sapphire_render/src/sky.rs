@@ -147,7 +147,7 @@ use serde::{Deserialize, Serialize};
 use crate::materials::{MaterialHandle, Materials};
 use crate::pipelines::{DEPTH_FORMAT, Layouts, SCENE_COLOR_FORMAT};
 use crate::shader_builds::Step;
-use crate::shaders::{self, Program, ShaderSources};
+use crate::shaders::{self, BuildOn, Program, ShaderSources};
 use crate::{CameraData, DirectionalLight, FramePacket, LOG_TARGET, RenderError};
 
 /// How much the sky costs on a quality tier (`tiers.ron`,
@@ -622,6 +622,30 @@ impl SkyPipelines {
         }
         built
     }
+
+    /// [`Self::build`] of a batch, where `on` says.
+    fn build_all(&mut self, builder: &Builder, layers: impl Iterator<Item = Layers>, on: BuildOn) -> u32 {
+        let mut missing: Vec<(Layers, bool)> = Vec::new();
+        for layers in layers {
+            if self.main[layers.index()].is_none() {
+                missing.push((layers, false));
+            }
+            if self.cube[layers.cube_index()].is_none()
+                && !missing.iter().any(|&(other, cube)| cube && other.cube_index() == layers.cube_index())
+            {
+                missing.push((layers, true));
+            }
+        }
+        let module = &self.module;
+        let builds =
+            missing.iter().map(|&(layers, cube)| move || builder.pipeline(module, layers, cube)).collect();
+        for (&(layers, cube), pipeline) in missing.iter().zip(on.run(builds)) {
+            let slot =
+                if cube { &mut self.cube[layers.cube_index()] } else { &mut self.main[layers.index()] };
+            *slot = Some(pipeline);
+        }
+        missing.len() as u32
+    }
 }
 
 impl Sky {
@@ -695,7 +719,7 @@ impl Sky {
         // compiles a pipeline mid-game; a material with more builds its own when it arrives.
         let mut pipelines = SkyPipelines::new(shaders::module(device, Program::Sky, sources));
         let plain = Features::default();
-        pipelines.build(&builder, Layers::drawable(plain));
+        pipelines.build_all(&builder, Layers::drawable(plain), BuildOn::Jobs);
         tracing::debug!(
             target: LOG_TARGET,
             cube_size = settings.cube_size,
@@ -754,7 +778,7 @@ impl Sky {
     /// The CPU half of a frame: folds the packet's sky layers and its sky material (or the
     /// default) into the frame's uniforms. The first frame drawn with a material that has a
     /// nebula or lit clouds builds every variant it can draw (see the module docs).
-    pub(crate) fn prepare(&mut self, packet: &FramePacket, materials: &Materials) {
+    pub(crate) fn prepare(&mut self, packet: &FramePacket, materials: &Materials, on: BuildOn) {
         let requested = packet.sky_material;
         let material = requested
             .filter(|&handle| materials.record(handle).is_some_and(|r| r.family == MaterialFamily::Sky))
@@ -768,7 +792,7 @@ impl Sky {
         let features = Features::of(&params);
         if self.ready & features.bit() == 0 {
             self.ready |= features.bit();
-            let built = self.pipelines.build(&self.builder, Layers::drawable(features));
+            let built = self.pipelines.build_all(&self.builder, Layers::drawable(features), on);
             self.stats.pipelines = self.pipelines.count();
             tracing::debug!(target: LOG_TARGET, built, ?features, "sky variants built for a sky material");
         }

@@ -81,9 +81,11 @@
 //! and lets an object show once its pipelines are ready. It can take from here the snapshot of
 //! what a pipeline is built from as an owned, `Send` step, the build inside per-thread error
 //! scopes, the cancellation that lets an owner be dropped mid-build, and handing results back
-//! at a frame boundary. What it adds: building many pipelines in parallel (a build here runs on
-//! one worker), and a cache of pipelines by descriptor that the lazy builds and these rebuilds
-//! share, so a set grown during a build is topped up rather than built again.
+//! at a frame boundary. What it adds: a cache of pipelines by descriptor that the lazy builds and
+//! these rebuilds share, so a set grown during a build is topped up rather than built again, and
+//! parallel builds under error scopes. A build here runs on one worker because its sources may be
+//! refused and error scopes are per thread; the compiled-in sources, which aren't, already build
+//! at once when a renderer starts and on first use (`shaders::BuildOn`).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};

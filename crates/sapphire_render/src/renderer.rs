@@ -33,8 +33,8 @@ use crate::materials::{MaterialHandle, Materials};
 use crate::mesh_pool::{MeshPool, MeshRecord, PoolMoves, SubmeshMaterial};
 use crate::outlines::OutlineCull;
 use crate::pipelines::{
-    Coverage, DEPTH_FORMAT, FOG_CARD_DEPTH_BINDING, FOLIAGE_WIND_BINDING, Layouts, MESH_FAMILIES, MeshPass,
-    MeshPipelines, NORMALS_FORMAT, OUTLINES_FORMAT, Part, Pipelines, SCENE_COLOR_FORMAT, Shading,
+    Coverage, DEPTH_FORMAT, Drawn, FOG_CARD_DEPTH_BINDING, FOLIAGE_WIND_BINDING, Layouts, MESH_FAMILIES,
+    MeshPass, MeshPipelines, NORMALS_FORMAT, OUTLINES_FORMAT, Part, Pipelines, SCENE_COLOR_FORMAT, Shading,
     SurfaceVariant, VELOCITY_FORMAT,
 };
 use crate::post::{PostEffectSettings, PostProcess, PostStats, PostVariants, SunOnScreen};
@@ -43,7 +43,7 @@ use crate::shader_builds::{
     Built, Cancel, Job, Rebuilt, Request, ShaderBuildStats, ShaderBuilds, ShaderOutcome, ShaderRequest,
     scope_error,
 };
-use crate::shaders::{Program, ShaderError, ShaderSources};
+use crate::shaders::{BuildOn, Program, ShaderError, ShaderSources};
 use crate::shadows::{CasterBindings, ShadowSettings, ShadowStats, Shadows};
 use crate::skinning::{Skinning, SkinningStats};
 use crate::sky::{self, Sky, SkySettings, SkyStats, cube_face_camera};
@@ -588,31 +588,8 @@ impl Renderer {
             return Err(RenderError::UnsupportedMsaa { format: DEPTH_FORMAT, samples });
         }
         let shaders = ShaderSources::compiled_in();
-        let post = PostProcess::new(
-            gpu,
-            color_format,
-            settings.bloom_levels,
-            settings.post_effects,
-            settings.post_variants,
-            &shaders,
-        )?;
-
         let device = gpu.device().clone();
         let layouts = Layouts::new(&device);
-        let pipelines = Pipelines::new(
-            &device,
-            &layouts,
-            SCENE_COLOR_FORMAT,
-            samples,
-            settings.environment,
-            settings.foliage,
-            gpu.pipeline_cache(),
-            &shaders,
-            settings.shadows.as_ref(),
-            settings.temporal,
-            crate::ambient::constants(&settings.ambient_occlusion, None),
-        );
-        let fog_cards = FogCards::new(&device, settings.temporal);
         let uniform = |label, size: usize| {
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(label),
@@ -622,12 +599,108 @@ impl Renderer {
             })
         };
         let frame_uniforms = uniform("frame uniforms", size_of::<FrameUniforms>());
+        // What builds pipelines builds at once: cold, they took most of nine seconds one after
+        // another on an M5 (`BuildOn`). The sky comes before the ambient passes, which read its cube.
+        let (device_ref, layouts_ref, shaders_ref, frame_ref) =
+            (&device, &layouts, &shaders, &frame_uniforms);
+        let cache = gpu.pipeline_cache();
+        let ((post, pipelines), (mut shadows, (lights, (temporal, sky_and_ambient)))) = sapphire_jobs::join(
+            || {
+                sapphire_jobs::join(
+                    || {
+                        PostProcess::new(
+                            gpu,
+                            color_format,
+                            settings.bloom_levels,
+                            settings.post_effects,
+                            settings.post_variants,
+                            shaders_ref,
+                        )
+                    },
+                    || {
+                        Pipelines::new(
+                            device_ref,
+                            layouts_ref,
+                            SCENE_COLOR_FORMAT,
+                            samples,
+                            settings.environment,
+                            settings.foliage,
+                            cache,
+                            shaders_ref,
+                            settings.shadows.as_ref(),
+                            settings.temporal,
+                            crate::ambient::constants(&settings.ambient_occlusion, None),
+                        )
+                    },
+                )
+            },
+            || {
+                sapphire_jobs::join(
+                    || Shadows::new(device_ref, layouts_ref, settings.shadows, cache, shaders_ref),
+                    || {
+                        sapphire_jobs::join(
+                            || {
+                                Lights::new(
+                                    device_ref,
+                                    &settings,
+                                    frame_ref,
+                                    &layouts_ref.view,
+                                    cache,
+                                    shaders_ref,
+                                )
+                            },
+                            || {
+                                sapphire_jobs::join(
+                                    || {
+                                        settings
+                                            .temporal
+                                            .then(|| Temporal::new(device_ref, cache, shaders_ref))
+                                    },
+                                    || -> Result<_, RenderError> {
+                                        let mut materials = Materials::new(device_ref, gpu.queue());
+                                        let sky = Sky::new(
+                                            gpu,
+                                            layouts_ref,
+                                            &mut materials,
+                                            settings.sky,
+                                            samples,
+                                            shaders_ref,
+                                        )?;
+                                        // The environment reads the reflection cube only with specular
+                                        // on; characters' reflection add on every tier (M1 C7).
+                                        let environment_reflects =
+                                            settings.environment.specular != crate::EnvironmentSpecular::Off;
+                                        let ambient = Ambient::new(
+                                            device_ref,
+                                            gpu.queue(),
+                                            layouts_ref,
+                                            frame_ref,
+                                            sky.cube_view(),
+                                            settings.ambient_occlusion,
+                                            settings.environment.probes,
+                                            settings.temporal,
+                                            settings.reflections,
+                                            environment_reflects,
+                                            cache,
+                                            shaders_ref,
+                                        );
+                                        Ok((materials, sky, ambient))
+                                    },
+                                )
+                            },
+                        )
+                    },
+                )
+            },
+        );
+        let post = post?;
+        let (materials, sky, mut ambient) = sky_and_ambient?;
+        let fog_cards = FogCards::new(&device, settings.temporal);
         // Every view at a stride of `min_uniform_buffer_offset_alignment`, each bound by offset:
         // the main camera, then the sky cube's faces, then the shadow cascades and character
         // maps (M1 R4).
         let view_stride = (size_of::<ViewUniforms>() as u32)
             .next_multiple_of(device.limits().min_uniform_buffer_offset_alignment);
-        let mut shadows = Shadows::new(&device, &layouts, settings.shadows, gpu.pipeline_cache(), &shaders);
         let views = FIRST_SHADOW_VIEW + shadows.views();
         let view_uniforms = uniform("view uniforms", (view_stride * views) as usize);
         for face in 0..sky::CUBE_FACES {
@@ -639,8 +712,6 @@ impl Renderer {
             let offset = u64::from(view_stride * (1 + face));
             gpu.queue().write_buffer(&view_uniforms, offset, bytemuck::bytes_of(&view));
         }
-        let lights =
-            Lights::new(&device, &settings, &frame_uniforms, &layouts.view, gpu.pipeline_cache(), &shaders);
         let characters = Characters::new(&device, settings.ambient_occlusion.capsules);
         shadows.set_character_buffer(&device, characters.buffer());
         let character_prepass = CharacterPrepassTargets::new(&device);
@@ -657,25 +728,6 @@ impl Renderer {
             }],
         });
         let meshes = MeshPool::new(&device);
-        let mut materials = Materials::new(&device, gpu.queue());
-        let sky = Sky::new(gpu, &layouts, &mut materials, settings.sky, samples, &shaders)?;
-        // The environment reads the reflection cube only with specular on; characters' reflection
-        // add on every tier (M1 C7).
-        let environment_reflects = settings.environment.specular != crate::EnvironmentSpecular::Off;
-        let mut ambient = Ambient::new(
-            &device,
-            gpu.queue(),
-            &layouts,
-            &frame_uniforms,
-            sky.cube_view(),
-            settings.ambient_occlusion,
-            settings.environment.probes,
-            settings.temporal,
-            settings.reflections,
-            environment_reflects,
-            gpu.pipeline_cache(),
-            &shaders,
-        );
         ambient.set_character_buffer(characters.buffer());
         let frame_bind_group = create_frame_bind_group(
             &device,
@@ -694,7 +746,6 @@ impl Renderer {
         let scene_bind_groups =
             create_scene_bind_groups(&device, &layouts, &scene, &materials, &fog_cards, &wind);
         let skinning = Skinning::new(&device);
-        let temporal = settings.temporal.then(|| Temporal::new(&device, gpu.pipeline_cache(), &shaders));
         let uploads = wgpu::util::StagingBelt::new(device.clone(), UPLOAD_CHUNK_SIZE);
         // A device lost while the pipelines were built (the Android emulator's, building GTAO's
         // on Mobile-High, QA-001) left everything made since invalid.
@@ -1076,17 +1127,19 @@ impl Renderer {
     fn build_mesh_pipelines(&mut self, handle: MeshHandle, materials: &[SubmeshMaterial], moves: PoolMoves) {
         let record = &self.meshes.records()[handle.index()];
         let format = record.draw_format();
-        self.pipelines.prepare_format(&self.device, format);
+        let on = BuildOn::sources(self.edited_shaders);
+        self.pipelines.prepare_format(&self.device, format, on);
         self.shadows.prepare_format(&self.device, format, &self.shaders);
-        for material in materials {
-            let Some(record) = self.materials.record(material.handle) else { continue };
-            let Some(variant) = SurfaceVariant::of_material(record.family, record.flags) else { continue };
-            let through_hair = record.flags.contains(MaterialFlags::THROUGH_HAIR);
-            self.pipelines.prepare_variant(&self.device, format, variant);
-            if through_hair {
-                self.pipelines.prepare_through_hair(&self.device, format, variant);
-            }
-        }
+        let draws: Vec<Drawn> = materials
+            .iter()
+            .filter_map(|material| {
+                let record = self.materials.record(material.handle)?;
+                let variant = SurfaceVariant::of_material(record.family, record.flags)?;
+                let through_hair = record.flags.contains(MaterialFlags::THROUGH_HAIR);
+                Some(Drawn { variant, surface: true, through_hair })
+            })
+            .collect();
+        self.pipelines.prepare_draws(&self.device, format, &draws, on);
         if record.deform().is_some() {
             self.skinning.enable(&self.device, self.pipeline_cache.as_ref(), &self.shaders);
         }
@@ -1104,7 +1157,10 @@ impl Renderer {
     /// pipelines it built; synchronous, on this thread.
     pub fn prewarm_post(&mut self, variants: PostVariants) -> u32 {
         profiling::scope!("Renderer::prewarm_post");
-        self.checked_build(|renderer| renderer.post.prewarm(variants))
+        self.checked_build(|renderer| {
+            let on = BuildOn::sources(renderer.edited_shaders);
+            renderer.post.prewarm(variants, on)
+        })
     }
 
     /// Starts building the renderer's shaders from `sources` off the frame thread (hot reload,
@@ -1447,7 +1503,10 @@ impl Renderer {
             self.fog_cards.sort(view.camera.position, list, slots, meshes);
         }
         // A sky material with a nebula or lit clouds builds its variants the first time it draws.
-        self.checked_build(|renderer| renderer.sky.prepare(packet, &renderer.materials));
+        self.checked_build(|renderer| {
+            let on = BuildOn::sources(renderer.edited_shaders);
+            renderer.sky.prepare(packet, &renderer.materials, on);
+        });
         // The lens flare follows the sun's disc as the main view sees it. A variant nothing
         // built ahead builds now, from the current shader sources.
         let camera = packet.main_view().map(|view| view.camera);

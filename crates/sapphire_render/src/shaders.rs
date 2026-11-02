@@ -386,6 +386,44 @@ pub(crate) fn module(device: &wgpu::Device, program: Program, sources: &ShaderSo
     })
 }
 
+/// Where a batch of pipelines builds. With an empty shader cache, on an app's first launch, each
+/// takes about a third of a second to compile on an M5, which is most of nine seconds one after
+/// another and three on the job system's threads; backends that compile as they create pipelines
+/// pay something like it in every process. The module docs of `shader_builds` say why building
+/// from several threads is safe.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BuildOn {
+    /// All at once, on the job system's threads and this one. wgpu reports what it refuses to the
+    /// error scopes of the thread that built it, none here, so this is for sources known to build:
+    /// the compiled-in ones.
+    Jobs,
+    /// One after another on this thread, inside the error scopes it has pushed: edited sources.
+    ThisThread,
+}
+
+impl BuildOn {
+    /// Where a batch built from the renderer's sources builds, whether they are `edited` or not.
+    pub(crate) fn sources(edited: bool) -> Self {
+        if edited { Self::ThisThread } else { Self::Jobs }
+    }
+
+    /// Runs each of `builds`, and returns what they built in their order.
+    pub(crate) fn run<T, F>(self, builds: Vec<F>) -> Vec<T>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> T + Send,
+    {
+        match self {
+            Self::Jobs if builds.len() > 1 => sapphire_jobs::scope(|scope| {
+                for build in builds {
+                    scope.spawn(build);
+                }
+            }),
+            _ => builds.into_iter().map(|build| build()).collect(),
+        }
+    }
+}
+
 /// Runs `expression`, a `vec4<f32>` of `input`, over `inputs` in a compute shader appended to
 /// `wgsl`, and returns its results: for tests of a shader's own functions on values only the GPU
 /// sees, which no compiler can fold. `uniforms` bind at group 0, binding 0, as `post.wgsl` declares

@@ -22,7 +22,7 @@ use crate::foliage::{self, FoliageSettings, WindUniforms};
 use crate::gpu_types::{Dequantize, DrawData, FrameUniforms, InstanceData, ViewUniforms};
 use crate::lights::GpuLight;
 use crate::shader_builds::{Cancel, Step};
-use crate::shaders::{self, Program, ShaderSources};
+use crate::shaders::{self, BuildOn, Program, ShaderSources};
 use crate::shadows::{self as shadow, ShadowSettings, ShadowUniforms};
 
 /// Reverse-Z depth: cleared to 0, tested with `Greater`. 32-bit float keeps precision all
@@ -1223,6 +1223,92 @@ impl Sides {
     }
 }
 
+/// What a draw draws through, for [`Pipelines::prepare_draws`]: `variant`'s surface and all that
+/// comes with it, its eyes through hair, or both.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Drawn {
+    pub variant: SurfaceVariant,
+    pub surface: bool,
+    pub through_hair: bool,
+}
+
+/// One pipeline of a format's mesh pipelines, built on its own, or the masked prepasses, which are
+/// built together.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Piece {
+    ScenePrepass,
+    CharacterPrepass {
+        hair: bool,
+    },
+    Surface(SurfaceVariant),
+    Outline(Coverage),
+    OutlinePrepass,
+    Masked,
+    TwoSidedCharacterPrepass {
+        coverage: Coverage,
+        hair: bool,
+    },
+    TwoSidedScenePrepass(Coverage),
+    FoliagePrepass(Coverage),
+    FoliageCaster(Coverage),
+    /// Its entry in [`SurfaceVariant::THROUGH_HAIR`].
+    ThroughHair(usize),
+}
+
+/// A [`Piece`], built.
+enum BuiltPiece {
+    One(wgpu::RenderPipeline),
+    Masked(MaskedPrepasses),
+}
+
+impl BuiltPiece {
+    fn pipeline(self) -> wgpu::RenderPipeline {
+        match self {
+            Self::One(pipeline) => pipeline,
+            Self::Masked(_) => unreachable!("the masked prepasses are stored as a set"),
+        }
+    }
+}
+
+impl Piece {
+    fn build(
+        self,
+        device: &wgpu::Device,
+        target: &PipelineTarget,
+        modules: &MeshModules,
+        format: PositionFormat,
+    ) -> BuiltPiece {
+        let one = Sides::One;
+        BuiltPiece::One(match self {
+            Self::ScenePrepass => build_scene_prepass(device, target, modules, format, false, one),
+            Self::CharacterPrepass { hair } => {
+                build_character_prepass(device, target, modules, format, false, hair, one)
+            }
+            Self::Surface(variant) => build_surface(device, target, modules, format, variant),
+            Self::Outline(coverage) => build_outline(device, target, modules, format, coverage),
+            Self::OutlinePrepass => build_outline_prepass(device, target, modules, format, false),
+            Self::Masked => {
+                return BuiltPiece::Masked(MaskedPrepasses::build(device, target, modules, format));
+            }
+            Self::TwoSidedCharacterPrepass { coverage, hair } => {
+                let masked = coverage == Coverage::AlphaTest;
+                build_character_prepass(device, target, modules, format, masked, hair, Sides::Two)
+            }
+            Self::TwoSidedScenePrepass(coverage) => {
+                let masked = coverage == Coverage::AlphaTest;
+                build_scene_prepass(device, target, modules, format, masked, Sides::Two)
+            }
+            Self::FoliagePrepass(coverage) => {
+                build_foliage_prepass(device, target, modules, format, coverage)
+            }
+            Self::FoliageCaster(coverage) => build_foliage_caster(device, target, modules, format, coverage),
+            Self::ThroughHair(index) => {
+                build_through_hair(device, target, modules, format, SurfaceVariant::THROUGH_HAIR[index])
+            }
+        })
+    }
+}
+
 /// Builds a pipeline again with its builder when its program changed, or keeps the one built
 /// before ([`Pipelines::rebuilt`]).
 type Rebuild<'a> =
@@ -1241,27 +1327,6 @@ pub(crate) struct TwoSidedPrepasses {
 }
 
 impl TwoSidedPrepasses {
-    /// Builds what `variant`, a two-sided anime character variant that writes depth, draws
-    /// through in the prepasses, unless it is built already.
-    fn prepare(
-        &mut self,
-        device: &wgpu::Device,
-        (target, modules): (&PipelineTarget, &MeshModules),
-        format: PositionFormat,
-        variant: SurfaceVariant,
-    ) {
-        let masked = variant.coverage == Coverage::AlphaTest;
-        let hair = variant.shading == Shading::Character(Part::Hair);
-        let character = if hair { &mut self.character_hair } else { &mut self.character };
-        if character.is_none() {
-            let sides = Sides::Two;
-            *character = Some(build_character_prepass(device, target, modules, format, masked, hair, sides));
-        }
-        if self.scene.is_none() {
-            self.scene = Some(build_scene_prepass(device, target, modules, format, masked, Sides::Two));
-        }
-    }
-
     /// The same pipelines built again from `modules` where `program` changed: the character
     /// prepass's and scene prepass's are `prepass.wgsl`'s.
     fn rebuilt(
@@ -1298,6 +1363,86 @@ impl TwoSidedPrepasses {
 }
 
 impl MeshPipelines {
+    /// Adds what `draw` draws through that isn't built, and isn't in `pieces` already, to `pieces`.
+    /// `casters`: shadows are on, so foliage draws into them.
+    fn missing(&self, draw: Drawn, casters: bool, pieces: &mut Vec<Piece>) {
+        let mut add = |piece| {
+            if !pieces.contains(&piece) {
+                pieces.push(piece);
+            }
+        };
+        let Drawn { variant, surface, through_hair } = draw;
+        if surface && self.surface(variant).is_none() {
+            let coverage = variant.coverage;
+            add(Piece::Surface(variant));
+            // Transparent surfaces and the environment have no outline; every part shares its
+            // coverage's.
+            if SurfaceVariant::OUTLINED.contains(&variant) {
+                if self.outline(variant).is_none() {
+                    add(Piece::Outline(coverage));
+                }
+                if self.outline_prepass.is_none() {
+                    add(Piece::OutlinePrepass);
+                }
+            }
+            if SurfaceVariant::CHARACTER_ALPHA_TEST.contains(&variant) && self.masked.is_none() {
+                add(Piece::Masked);
+            }
+            if variant.shading == Shading::Foliage {
+                if self.foliage_prepass(coverage).is_none() {
+                    add(Piece::FoliagePrepass(coverage));
+                }
+                if casters && self.foliage_caster(coverage).is_none() {
+                    add(Piece::FoliageCaster(coverage));
+                }
+            }
+            if variant.two_sided && coverage != Coverage::Transparent {
+                let two_sided = &self.two_sided[coverage.index()];
+                let hair = variant.shading == Shading::Character(Part::Hair);
+                let character = if hair { &two_sided.character_hair } else { &two_sided.character };
+                if character.is_none() {
+                    add(Piece::TwoSidedCharacterPrepass { coverage, hair });
+                }
+                if two_sided.scene.is_none() {
+                    add(Piece::TwoSidedScenePrepass(coverage));
+                }
+            }
+        }
+        if through_hair
+            && let Some(index) = variant.through_hair_index()
+            && self.through_hair[index].is_none()
+        {
+            add(Piece::ThroughHair(index));
+        }
+    }
+
+    /// Keeps `built`, what `piece` built.
+    fn store(&mut self, piece: Piece, built: BuiltPiece) {
+        let built = match built {
+            BuiltPiece::Masked(masked) => {
+                self.masked = Some(masked);
+                return;
+            }
+            BuiltPiece::One(pipeline) => Some(pipeline),
+        };
+        match piece {
+            Piece::ScenePrepass | Piece::CharacterPrepass { .. } | Piece::Masked => {
+                unreachable!("built with the format's pipelines, or as a set")
+            }
+            Piece::Surface(variant) => self.surfaces[variant.index()] = built,
+            Piece::Outline(coverage) => self.outline[coverage.index()] = built,
+            Piece::OutlinePrepass => self.outline_prepass = built,
+            Piece::TwoSidedCharacterPrepass { coverage, hair } => {
+                let two_sided = &mut self.two_sided[coverage.index()];
+                *(if hair { &mut two_sided.character_hair } else { &mut two_sided.character }) = built;
+            }
+            Piece::TwoSidedScenePrepass(coverage) => self.two_sided[coverage.index()].scene = built,
+            Piece::FoliagePrepass(coverage) => self.foliage_prepass[coverage.index()] = built,
+            Piece::FoliageCaster(coverage) => self.foliage_casters[coverage.index()] = built,
+            Piece::ThroughHair(index) => self.through_hair[index] = built,
+        }
+    }
+
     /// How many pipelines [`Self::character_prepasses`] lists.
     pub(crate) const CHARACTER_PREPASSES: usize = 8;
 
@@ -1782,16 +1927,27 @@ impl Pipelines {
             ambient,
             replay: None,
         };
+        let programs = [
+            Program::AnimeCharacter,
+            Program::Environment,
+            Program::FogCard,
+            Program::Outline,
+            Program::Prepass,
+            Program::Foliage,
+        ];
+        let builds = programs.map(|program| move || shaders::module(device, program, sources)).to_vec();
+        let mut built = BuildOn::Jobs.run(builds).into_iter();
+        let mut next = move || built.next().expect("one for each program");
         let modules = MeshModules {
-            character: shaders::module(device, Program::AnimeCharacter, sources),
-            environment: shaders::module(device, Program::Environment, sources),
-            fog_card: shaders::module(device, Program::FogCard, sources),
-            outline: shaders::module(device, Program::Outline, sources),
-            prepass: shaders::module(device, Program::Prepass, sources),
-            foliage: shaders::module(device, Program::Foliage, sources),
+            character: next(),
+            environment: next(),
+            fog_card: next(),
+            outline: next(),
+            prepass: next(),
+            foliage: next(),
         };
         let mut pipelines = Self { mesh: [None, None], target, modules, generation: 0 };
-        pipelines.prepare_format(device, PositionFormat::Unorm16);
+        pipelines.prepare_format(device, PositionFormat::Unorm16, BuildOn::Jobs);
         pipelines
     }
 
@@ -1918,31 +2074,44 @@ impl Pipelines {
         (pipelines, built)
     }
 
-    /// Builds the mesh pipelines for `format` unless they exist: the two prepasses, and the
-    /// opaque anime character surfaces and their outlines.
-    pub(crate) fn prepare_format(&mut self, device: &wgpu::Device, format: PositionFormat) {
+    /// Builds the mesh pipelines for `format` unless they exist, where `on` says: the two prepasses,
+    /// and the opaque anime character surfaces and their outlines.
+    pub(crate) fn prepare_format(&mut self, device: &wgpu::Device, format: PositionFormat, on: BuildOn) {
         if self.mesh[format_index(format)].is_some() {
             return;
         }
-        let (target, modules, one) = (&self.target, &self.modules, Sides::One);
-        let scene_prepass = build_scene_prepass(device, target, modules, format, false, one);
-        let character_prepass = build_character_prepass(device, target, modules, format, false, false, one);
-        let character_prepass_hair =
-            build_character_prepass(device, target, modules, format, false, true, one);
-        self.mesh[format_index(format)] = Some(MeshPipelines {
+        let opaque = SurfaceVariant::OPAQUE;
+        let pieces = [
+            Piece::ScenePrepass,
+            Piece::CharacterPrepass { hair: false },
+            Piece::CharacterPrepass { hair: true },
+            Piece::Surface(opaque),
+            Piece::Outline(opaque.coverage),
+            Piece::OutlinePrepass,
+        ];
+        let (target, modules) = (&self.target, &self.modules);
+        let builds =
+            pieces.iter().map(|&piece| move || piece.build(device, target, modules, format)).collect();
+        let mut built = on.run(builds).into_iter();
+        let mut next = move || built.next().expect("one for each piece");
+        let (scene_prepass, character_prepass, character_prepass_hair) = (next(), next(), next());
+        let mut mesh = MeshPipelines {
             surfaces: std::array::from_fn(|_| None),
             outline: Default::default(),
-            scene_prepass,
+            scene_prepass: scene_prepass.pipeline(),
             outline_prepass: None,
-            character_prepass,
-            character_prepass_hair,
+            character_prepass: character_prepass.pipeline(),
+            character_prepass_hair: character_prepass_hair.pipeline(),
             masked: None,
             two_sided: Default::default(),
             through_hair: Default::default(),
             foliage_prepass: Default::default(),
             foliage_casters: Default::default(),
-        });
-        self.prepare_variant(device, format, SurfaceVariant::OPAQUE);
+        };
+        for &piece in &pieces[3..] {
+            mesh.store(piece, next());
+        }
+        self.mesh[format_index(format)] = Some(mesh);
     }
 
     /// Builds the eyes-through-hair pipeline of `variant`, a face or eye variant that writes
@@ -1954,16 +2123,8 @@ impl Pipelines {
         format: PositionFormat,
         variant: SurfaceVariant,
     ) {
-        let Some(index) = variant.through_hair_index() else { return };
-        let mesh =
-            self.mesh[format_index(format)].as_ref().expect("prepare_format built the format's pipelines");
-        if mesh.through_hair[index].is_some() {
-            return;
-        }
-        let front = variant.one_sided();
-        let pipeline = build_through_hair(device, &self.target, &self.modules, format, front);
-        let mesh = self.mesh[format_index(format)].as_mut().expect("checked above");
-        mesh.through_hair[index] = Some(pipeline);
+        let draw = Drawn { variant, surface: false, through_hair: true };
+        self.prepare_draws(device, format, &[draw], BuildOn::ThisThread);
     }
 
     /// Builds the surface pipeline of `variant` for `format`, whose mesh pipelines must exist,
@@ -1977,51 +2138,34 @@ impl Pipelines {
         format: PositionFormat,
         variant: SurfaceVariant,
     ) {
-        let mesh =
-            self.mesh[format_index(format)].as_ref().expect("prepare_format built the format's pipelines");
-        if mesh.surface(variant).is_some() {
-            return;
+        let draw = Drawn { variant, surface: true, through_hair: false };
+        self.prepare_draws(device, format, &[draw], BuildOn::ThisThread);
+    }
+
+    /// Builds what `draws`, all in `format`, whose mesh pipelines must exist, draw through and
+    /// isn't built yet, as [`Self::prepare_variant`] and [`Self::prepare_through_hair`] each do,
+    /// where `on` says: a mesh's materials together, so a character's cold surfaces, a third of a
+    /// second each on an M5, compile at once.
+    pub(crate) fn prepare_draws(
+        &mut self,
+        device: &wgpu::Device,
+        format: PositionFormat,
+        draws: &[Drawn],
+        on: BuildOn,
+    ) {
+        let slot = format_index(format);
+        let mesh = self.mesh[slot].as_ref().expect("prepare_format built the format's pipelines");
+        let mut pieces = Vec::new();
+        for draw in draws {
+            mesh.missing(*draw, self.target.foliage_caster_layout.is_some(), &mut pieces);
         }
-        let outlined = SurfaceVariant::OUTLINED.contains(&variant);
-        let needs_outline = outlined && mesh.outline(variant).is_none();
-        let needs_outline_prepass = outlined && mesh.outline_prepass.is_none();
-        let surface = build_surface(device, &self.target, &self.modules, format, variant);
-        // Transparent surfaces and the environment have no outline; every part shares its
-        // coverage's.
-        let outline = needs_outline
-            .then(|| build_outline(device, &self.target, &self.modules, format, variant.coverage));
-        let outline_prepass = needs_outline_prepass
-            .then(|| build_outline_prepass(device, &self.target, &self.modules, format, false));
-        let masked = (SurfaceVariant::CHARACTER_ALPHA_TEST.contains(&variant) && mesh.masked.is_none())
-            .then(|| MaskedPrepasses::build(device, &self.target, &self.modules, format));
-        let foliage = variant.shading == Shading::Foliage;
-        let coverage = variant.coverage;
-        let foliage_prepass = (foliage && mesh.foliage_prepass(coverage).is_none())
-            .then(|| build_foliage_prepass(device, &self.target, &self.modules, format, coverage));
-        let foliage_caster = (foliage
-            && self.target.foliage_caster_layout.is_some()
-            && mesh.foliage_caster(coverage).is_none())
-        .then(|| build_foliage_caster(device, &self.target, &self.modules, format, coverage));
-        let mesh = self.mesh[format_index(format)].as_mut().expect("checked above");
-        if variant.two_sided && coverage != Coverage::Transparent {
-            let built = (&self.target, &self.modules);
-            mesh.two_sided[coverage.index()].prepare(device, built, format, variant);
-        }
-        if let Some(prepass) = foliage_prepass {
-            mesh.foliage_prepass[coverage.index()] = Some(prepass);
-        }
-        if let Some(caster) = foliage_caster {
-            mesh.foliage_casters[coverage.index()] = Some(caster);
-        }
-        mesh.surfaces[variant.index()] = Some(surface);
-        if masked.is_some() {
-            mesh.masked = masked;
-        }
-        if let Some(outline) = outline {
-            mesh.outline[variant.coverage.index()] = Some(outline);
-        }
-        if outline_prepass.is_some() {
-            mesh.outline_prepass = outline_prepass;
+        let (target, modules) = (&self.target, &self.modules);
+        let builds =
+            pieces.iter().map(|&piece| move || piece.build(device, target, modules, format)).collect();
+        let built = on.run(builds);
+        let mesh = self.mesh[slot].as_mut().expect("checked above");
+        for (&piece, built) in pieces.iter().zip(built) {
+            mesh.store(piece, built);
         }
     }
 

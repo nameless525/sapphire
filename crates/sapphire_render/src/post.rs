@@ -259,7 +259,7 @@ use sapphire_rhi::{GpuContext, TransientDesc, wgpu};
 use crate::graph::{FrameGraph, TextureId};
 use crate::pipelines::SCENE_COLOR_FORMAT;
 use crate::shader_builds::Step;
-use crate::shaders::{self, Program, ShaderSources};
+use crate::shaders::{self, BuildOn, Program, ShaderSources};
 use crate::{CameraData, RenderError, bind_cache};
 pub(crate) use effects::{COLOR_EFFECTS_CONSTANT, GpuEffects, LENS_EFFECTS_CONSTANT, RADIAL_TAPS_CONSTANT};
 pub use effects::{DrawnEffects, MAX_RADIAL_BLUR_TAPS, PostEffectSettings};
@@ -622,7 +622,8 @@ impl PostProcess {
         let module = shaders::module(device, Program::Post, sources);
         let bloom_levels = bloom_levels.min(MAX_BLOOM_LEVELS);
         let mut pipelines = Pipelines::default();
-        let built = pipelines.build(&builder, &module, Slot::within(variants, bloom_levels));
+        let built =
+            pipelines.build_all(&builder, &module, Slot::within(variants, bloom_levels), BuildOn::Jobs);
 
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("post uniforms"),
@@ -705,10 +706,10 @@ impl PostProcess {
     /// Builds the variants of `variants` that aren't built yet, with those of every earlier call
     /// and of the renderer's settings: every combination of the switches they turn on, so
     /// whatever a frame draws within them is ready. Says how many pipelines it built.
-    pub(crate) fn prewarm(&mut self, variants: PostVariants) -> u32 {
+    pub(crate) fn prewarm(&mut self, variants: PostVariants, on: BuildOn) -> u32 {
         self.ready |= variants;
         let slots = Slot::within(self.ready, self.bloom_levels);
-        let built = self.pipelines.build(&self.builder, &self.module, slots);
+        let built = self.pipelines.build_all(&self.builder, &self.module, slots, on);
         if built > 0 {
             tracing::debug!(target: crate::LOG_TARGET, built, ready = ?self.ready, "post variants prewarmed");
         }

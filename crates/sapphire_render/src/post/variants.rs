@@ -12,6 +12,7 @@ use super::{
     LENS_EFFECTS_CONSTANT, Layouts, PostEffectSettings, PostEffects, RADIAL_TAPS_CONSTANT, SHARPEN_CONSTANT,
 };
 use crate::shader_builds::Cancel;
+use crate::shaders::BuildOn;
 
 /// A set of post's switches, the pipeline-overridable constants of `post.wgsl` that pick each
 /// frame's variants (the module docs' "Variants"): the variants of a set are every combination of
@@ -312,6 +313,22 @@ impl Pipelines {
             }
         }
         built
+    }
+
+    /// [`Self::build`] of a batch, where `on` says.
+    pub(super) fn build_all(
+        &mut self,
+        builder: &Builder,
+        module: &wgpu::ShaderModule,
+        slots: impl IntoIterator<Item = Slot>,
+        on: BuildOn,
+    ) -> u32 {
+        let missing: Vec<Slot> = slots.into_iter().filter(|&slot| self.get(slot).is_none()).collect();
+        let builds = missing.iter().map(|&slot| move || builder.build(module, slot)).collect();
+        for (slot, pipeline) in missing.iter().zip(on.run(builds)) {
+            self.slots[slot.index()] = Some(pipeline);
+        }
+        missing.len() as u32
     }
 
     /// Every pipeline built here, built again from `module`, unless `cancel` is set first: then

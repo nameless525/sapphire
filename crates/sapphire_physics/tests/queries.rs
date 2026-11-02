@@ -627,6 +627,45 @@ fn cast_body_probes_from_where_a_body_stands() {
 /// with no physics step between. A capsule that moved, or a hurtbox that followed it, is where
 /// every query looks from the moment the call returns.
 #[test]
+fn a_run_of_excluded_bodies_takes_no_test_and_no_room() {
+    let mut world = world(vec![]);
+    for id in 10..=14 {
+        world
+            .add_body(BodyDesc {
+                id: BodyId(id),
+                shape: SPHERE,
+                pose: Pose::at(Vec3::new(id as f32, 0.0, 0.0)),
+                groups: CollisionGroups::new(Group::Hurtbox.mask(), GroupMask::NONE),
+            })
+            .expect("fits");
+    }
+    let hurtboxes = QueryFilter::new(Group::Hurtbox.mask());
+    let thin = Shape::Sphere { radius: 0.01 };
+    let cast = |filter: &QueryFilter| {
+        // Room for one result, so an excluded body in a list would push out what's behind it.
+        let mut out = [ShapeHit::NONE; 1];
+        world.take_stats();
+        let found = world.cast_shape_all(&thin, Pose::at(Vec3::ZERO), Vec3::X, 100.0, filter, &mut out);
+        (out[0].target, found.found, world.take_stats().narrow_tests)
+    };
+
+    assert_eq!(cast(&hurtboxes), (HitTarget::Body(BodyId(10)), 5, 5));
+    // Both ends of the run are excluded, and neither body past them is.
+    let middle = hurtboxes.excluding_bodies(BodyId(10), BodyId(13));
+    assert_eq!(cast(&middle), (HitTarget::Body(BodyId(14)), 1, 1));
+    let upper = hurtboxes.excluding_bodies(BodyId(11), BodyId(14));
+    assert_eq!(cast(&upper), (HitTarget::Body(BodyId(10)), 1, 1));
+    // Alongside one body on its own, and in every other query.
+    let both = hurtboxes.excluding_bodies(BodyId(11), BodyId(14)).excluding(BodyId(10));
+    assert_eq!(cast(&both).1, 0);
+    assert!(world.cast_ray(Vec3::ZERO, Vec3::X, 100.0, &both).is_none());
+    let hit = world.cast_ray(Vec3::ZERO, Vec3::X, 100.0, &middle).expect("the ray finds the last");
+    assert_eq!(hit.target, HitTarget::Body(BodyId(14)));
+    let hit = world.cast_shape(&thin, Pose::at(Vec3::ZERO), Vec3::X, 100.0, &upper).expect("and the cast");
+    assert_eq!(hit.target, HitTarget::Body(BodyId(10)));
+}
+
+#[test]
 fn a_body_moved_this_tick_is_found_at_once() {
     let mut world = world(vec![]);
     world.add_body(character(1, Vec3::new(100.0, 0.0, 0.0))).expect("fits");

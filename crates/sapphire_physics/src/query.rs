@@ -15,21 +15,35 @@ use crate::shape::{Convex, Pose, Shape};
 use crate::stats::Counters;
 use crate::world::{BodyEntry, BodyId, ColliderId, HitTarget, PhysicsWorld, StaticEntry, StaticGeometry};
 
-/// What a query may hit: colliders and bodies in `groups`, except `exclude_body`.
+/// What a query may hit: colliders and bodies in `groups`, except `exclude_body` and the run of IDs
+/// in `exclude_bodies`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct QueryFilter {
     pub groups: GroupMask,
     /// Normally the body asking.
     pub exclude_body: Option<BodyId>,
+    /// The first and last IDs of a run of bodies, both included. An excluded body takes no test and
+    /// no room in a result list, which filtering a list afterward can't promise.
+    pub exclude_bodies: Option<(BodyId, BodyId)>,
 }
 
 impl QueryFilter {
     pub const fn new(groups: GroupMask) -> Self {
-        Self { groups, exclude_body: None }
+        Self { groups, exclude_body: None, exclude_bodies: None }
     }
 
     pub const fn excluding(self, body: BodyId) -> Self {
         Self { exclude_body: Some(body), ..self }
+    }
+
+    /// Excludes every body from `first` to `last`, as when one actor owns several hurtboxes.
+    pub const fn excluding_bodies(self, first: BodyId, last: BodyId) -> Self {
+        Self { exclude_bodies: Some((first, last)), ..self }
+    }
+
+    fn excludes(&self, id: BodyId) -> bool {
+        self.exclude_body == Some(id)
+            || self.exclude_bodies.is_some_and(|(first, last)| first <= id && id <= last)
     }
 }
 
@@ -109,7 +123,7 @@ impl Selector {
     fn takes_body(self, body: &BodyEntry) -> bool {
         match self {
             Self::Query(filter) => {
-                filter.groups.intersects(body.groups.memberships) && filter.exclude_body != Some(body.id)
+                filter.groups.intersects(body.groups.memberships) && !filter.excludes(body.id)
             }
             Self::Mover { id, groups } => id != body.id && groups.interacts_with(body.groups),
         }

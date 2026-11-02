@@ -67,8 +67,8 @@
 //!
 //! - The character controller's behavior: grounded, slope and step-up handling (M2 G1), built on
 //!   [`PhysicsWorld::move_and_collide`] and the queries.
-//! - Hit queries and hurtboxes (M2 D4), built on bodies, [`Group::Hurtbox`] and
-//!   [`PhysicsWorld::cast_shape_all`].
+//! - Hit queries and hurtboxes: `sapphire_gameplay`'s `hits` module (M2 D4), built on bodies,
+//!   [`Group::Hurtbox`], [`QueryFilter::excluding_bodies`] and [`PhysicsWorld::cast_shape_all`].
 //! - Dynamic bodies, joints and ragdolls: no package needs them yet.
 //! - The document and cooked format: `sapphire_colliders`, which the cooker links without this
 //!   crate.

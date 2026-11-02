@@ -23,6 +23,10 @@
 //! - Every feature a local package declares is listed in its placement, and every listed
 //!   feature exists (R8: runtime features select platform or backend; dev tooling enters
 //!   through apps and dev-only crates).
+//! - No crate in `[simulation]` reaches a `forbidden` crate through normal dependencies, so a
+//!   replay job builds quickly and runs with no window or GPU (M2 D1). Each has a `clippy.toml`
+//!   banning what breaks determinism: the same file in all of them, and holding every ban in
+//!   the workspace's, since clippy reads the nearest file instead of adding them up.
 //!
 //! Dev-dependencies are exempt throughout: tests never ship, and test-support tool
 //! crates (`en_testkit` in the spec) exist to be dev-depended on. The resolve graph is
@@ -31,6 +35,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fmt;
+use std::path::Path;
 
 use anyhow::{Context as _, bail};
 use serde::Deserialize;
@@ -126,6 +131,8 @@ pub struct Config {
     tool_only_dependencies: ToolOnlyDependencies,
     #[serde(default)]
     dev_only_dependencies: DevOnlyDependencies,
+    #[serde(default)]
+    simulation: Simulation,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -148,6 +155,16 @@ struct ToolOnlyDependencies {
 struct DevOnlyDependencies {
     #[serde(default)]
     crates: Vec<String>,
+}
+
+/// `[simulation]`: the crates a replay job links, and what they must never reach.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Simulation {
+    #[serde(default)]
+    crates: Vec<String>,
+    #[serde(default)]
+    forbidden: Vec<String>,
 }
 
 impl Config {
@@ -280,6 +297,18 @@ pub enum Violation {
         krate: String,
         feature: String,
     },
+    SimulationCrateUnplaced {
+        krate: String,
+    },
+    SimulationReachable {
+        krate: String,
+        dependency: String,
+        path: Vec<String>,
+    },
+    SimulationClippy {
+        krate: String,
+        problem: String,
+    },
 }
 
 // Sorting violations groups them by kind, then by crate.
@@ -345,6 +374,18 @@ impl fmt::Display for Violation {
             Self::MissingFeature { krate, feature } => {
                 write!(f, "[crates] lists feature `{feature}` for `{krate}`, which doesn't declare it")
             }
+            Self::SimulationCrateUnplaced { krate } => {
+                write!(f, "[simulation] lists `{krate}`, which [crates] doesn't place")
+            }
+            Self::SimulationReachable { krate, dependency, path } => write!(
+                f,
+                "`{dependency}` is in the dependency tree of the simulation's `{krate}`, so a replay job \
+                 would build it: {}",
+                path.join(" -> ")
+            ),
+            Self::SimulationClippy { krate, problem } => {
+                write!(f, "`{krate}`'s clippy.toml {problem}")
+            }
         }
     }
 }
@@ -376,7 +417,8 @@ pub fn run() -> anyhow::Result<()> {
         workspace::output(workspace::cargo("metadata").args(["--format-version", "1", "--all-features"]))?;
     let metadata: Metadata = serde_json::from_str(&json).context("unexpected `cargo metadata` output")?;
 
-    let violations = check(&config, &metadata)?;
+    let mut violations = check(&config, &metadata)?;
+    violations.extend(check_simulation_clippy_files(&config, &workspace::root())?);
     if violations.is_empty() {
         eprintln!("check-layers: {} crates placed, no violations", config.crates.len());
         return Ok(());
@@ -388,6 +430,70 @@ pub fn run() -> anyhow::Result<()> {
         "{} layering violation(s); see xtask/layers.toml and docs/adr/0001-crate-layering.md",
         violations.len()
     )
+}
+
+/// `disallowed-methods` paths from a clippy.toml.
+fn banned_methods(text: &str) -> anyhow::Result<BTreeSet<String>> {
+    #[derive(Deserialize)]
+    struct ClippyFile {
+        #[serde(default, rename = "disallowed-methods")]
+        methods: Vec<Ban>,
+    }
+    #[derive(Deserialize)]
+    struct Ban {
+        path: String,
+    }
+    let file: ClippyFile = toml::from_str(text)?;
+    Ok(file.methods.into_iter().map(|ban| ban.path).collect())
+}
+
+/// Reads the workspace's clippy.toml and each simulation crate's, and checks them.
+fn check_simulation_clippy_files(config: &Config, root: &Path) -> anyhow::Result<Vec<Violation>> {
+    let workspace_path = root.join("clippy.toml");
+    let workspace = std::fs::read_to_string(&workspace_path)
+        .with_context(|| format!("failed to read {}", workspace_path.display()))?;
+    let crates: Vec<(&str, Option<String>)> = config
+        .simulation
+        .crates
+        .iter()
+        .map(|name| {
+            let path = root.join("crates").join(name).join("clippy.toml");
+            (name.as_str(), std::fs::read_to_string(path).ok())
+        })
+        .collect();
+    check_simulation_clippy(&workspace, &crates)
+}
+
+/// Each crate must have a clippy.toml (`None` if not), holding every ban in the workspace's, and
+/// the same bytes as the first crate's, so a ban can't quietly go missing from one.
+fn check_simulation_clippy(
+    workspace: &str,
+    crates: &[(&str, Option<String>)],
+) -> anyhow::Result<Vec<Violation>> {
+    let required = banned_methods(workspace).context("the workspace's clippy.toml")?;
+    let mut first: Option<(&str, &str)> = None;
+    let mut violations = Vec::new();
+    for (krate, text) in crates {
+        let mut problem = |problem: String| {
+            violations.push(Violation::SimulationClippy { krate: (*krate).to_owned(), problem });
+        };
+        let Some(text) = text else {
+            problem("is missing: a crate in [simulation] bans what breaks determinism".to_owned());
+            continue;
+        };
+        let bans = banned_methods(text).with_context(|| format!("`{krate}`'s clippy.toml"))?;
+        for missing in required.difference(&bans) {
+            problem(format!("doesn't ban `{missing}`, as the workspace's does, and it replaces that file"));
+        }
+        match first {
+            None => first = Some((krate, text)),
+            Some((other, its_text)) if its_text != text => {
+                problem(format!("differs from `{other}`'s: every crate in [simulation] holds the same file"));
+            }
+            Some(_) => {}
+        }
+    }
+    Ok(violations)
 }
 
 /// Checks `metadata` against `config`, returning violations sorted and deduplicated.
@@ -430,6 +536,14 @@ pub fn check(config: &Config, metadata: &Metadata) -> anyhow::Result<Vec<Violati
         }
     }
 
+    for krate in &config.simulation.crates {
+        if !config.crates.contains_key(krate) {
+            violations.push(Violation::SimulationCrateUnplaced { krate: krate.clone() });
+        }
+    }
+
+    let simulation_forbidden: BTreeSet<&str> =
+        config.simulation.forbidden.iter().map(String::as_str).collect();
     let tool_only: BTreeSet<&str> = config.tool_only_dependencies.crates.iter().map(String::as_str).collect();
     let dev_only: BTreeSet<&str> = config.dev_only_dependencies.crates.iter().map(String::as_str).collect();
     for package in &local {
@@ -454,8 +568,17 @@ pub fn check(config: &Config, metadata: &Metadata) -> anyhow::Result<Vec<Violati
             }
         }
 
+        if config.simulation.crates.contains(&package.name) {
+            for (dependency, path) in graph.reachable_named(&package.id, &simulation_forbidden) {
+                violations.push(Violation::SimulationReachable {
+                    krate: package.name.clone(),
+                    dependency,
+                    path,
+                });
+            }
+        }
         if from_placement.ships() {
-            for (dependency, path) in graph.reachable_tool_only(&package.id, &tool_only) {
+            for (dependency, path) in graph.reachable_named(&package.id, &tool_only) {
                 violations.push(Violation::ToolOnlyReachable {
                     krate: package.name.clone(),
                     dependency,
@@ -551,17 +674,17 @@ impl<'a> Graph<'a> {
         direct.into_iter().chain(indirect).collect()
     }
 
-    /// Each tool-only crate reachable from `root` through normal dependencies, with the
+    /// Each crate of `names` reachable from `root` through normal dependencies, with the
     /// shortest path to it (as package names, `root` first). The search passes through
-    /// everything, tools included, but not into a tool-only crate's own subtree.
-    fn reachable_tool_only(&self, root: &'a str, tool_only: &BTreeSet<&str>) -> Vec<(String, Vec<String>)> {
+    /// everything, tools included, but not into a named crate's own subtree.
+    fn reachable_named(&self, root: &'a str, names: &BTreeSet<&str>) -> Vec<(String, Vec<String>)> {
         let mut found = Vec::new();
         self.search(
             root,
             |dep| !dep.is_normal(),
             |id, path| {
                 let name = self.name(id);
-                if tool_only.contains(name.as_str()) {
+                if names.contains(name.as_str()) {
                     found.push((name, path.iter().map(|id| self.name(id)).collect()));
                     return false;
                 }
@@ -815,6 +938,10 @@ mod tests {
 
             [dev_only_dependencies]
             crates = ["egui", "notify"]
+
+            [simulation]
+            crates = ["sapphire_math"]
+            forbidden = ["sapphire_render", "wgpu"]
             "#,
         )
         .unwrap()
@@ -1144,6 +1271,98 @@ mod tests {
                 Violation::BadAllowEdge { from: "sapphire_sandbox".into(), to: "sapphire_render".into() },
             ]
         );
+    }
+
+    #[test]
+    fn the_simulation_reaches_nothing_forbidden() {
+        // `sapphire_platform` is allowed here by layer rules, so only this rule can catch `wgpu`
+        // below it, however far down. A build or dev dependency isn't in what a replay links.
+        assert_eq!(check_with(&[]), []);
+        assert_eq!(check_with(&[("sapphire_math", "wgpu", Build), ("sapphire_math", "wgpu", Dev)]), []);
+        let violations = check_with(&[("sapphire_math", "tiny", Normal), ("tiny", "wgpu", Normal)]);
+        assert_eq!(
+            violations,
+            [Violation::SimulationReachable {
+                krate: "sapphire_math".into(),
+                dependency: "wgpu".into(),
+                path: vec!["sapphire_math".into(), "tiny".into(), "wgpu".into()],
+            }]
+        );
+        // Another crate may reach it.
+        assert_eq!(check_with(&[("sapphire_render", "wgpu", Normal)]), []);
+    }
+
+    #[test]
+    fn the_simulations_crates_must_be_placed() {
+        let config = Config::parse(
+            r#"
+            [crates]
+            a = { kind = "runtime", layer = 0 }
+            [simulation]
+            crates = ["a", "gone"]
+            "#,
+        )
+        .unwrap();
+        let violations = check(&config, &metadata(&[("a", &[])], &[])).unwrap();
+        assert_eq!(violations, [Violation::SimulationCrateUnplaced { krate: "gone".into() }]);
+    }
+
+    #[test]
+    fn the_simulations_clippy_files_hold_every_ban_and_agree() {
+        let workspace = r#"disallowed-methods = [{ path = "std::time::Instant::now" }]"#;
+        let good = r#"disallowed-methods = [
+            { path = "std::time::Instant::now", reason = "R2" },
+            { path = "f32::sin", reason = "pinned" },
+        ]"#;
+        let dropped = r#"disallowed-methods = [{ path = "f32::sin" }]"#;
+        let check = |crates: &[(&str, Option<String>)]| {
+            let violations = check_simulation_clippy(workspace, crates).unwrap();
+            violations.iter().map(ToString::to_string).collect::<Vec<_>>()
+        };
+        let file = |text: &str| Some(text.to_owned());
+
+        assert_eq!(check(&[("a", file(good)), ("b", file(good))]), [] as [&str; 0]);
+        let missing = check(&[("a", None)]);
+        assert!(missing[0].contains("`a`'s clippy.toml is missing"), "{missing:?}");
+        let no_r2 = check(&[("a", file(dropped))]);
+        assert!(no_r2[0].contains("doesn't ban `std::time::Instant::now`"), "{no_r2:?}");
+        let differs = check(&[("a", file(good)), ("b", file(&format!("# another\n{good}")))]);
+        assert_eq!(differs.len(), 1);
+        assert!(differs[0].contains("`b`'s clippy.toml differs from `a`'s"), "{differs:?}");
+        assert!(check_simulation_clippy("not toml [", &[]).is_err());
+        assert!(check_simulation_clippy(workspace, &[("a", file("not toml ["))]).is_err());
+    }
+
+    /// The shipped files: every simulation crate holds them, and what they must hold is there.
+    #[test]
+    fn the_shipped_simulation_crates_ban_std_and_glams_math() {
+        let config = Config::parse(include_str!("../layers.toml")).unwrap();
+        assert!(config.simulation.crates.iter().any(|krate| krate == "sapphire_gameplay"));
+        let root = workspace::root();
+        assert_eq!(check_simulation_clippy_files(&config, &root).unwrap(), []);
+        let text = std::fs::read_to_string(root.join("crates/sapphire_gameplay/clippy.toml")).unwrap();
+        let bans = banned_methods(&text).unwrap();
+        for ban in [
+            "f32::sin",
+            "f32::cos",
+            "f32::atan2",
+            "f32::acos",
+            "f32::exp",
+            "f32::powf",
+            "f64::sin",
+            "glam::Quat::from_axis_angle",
+            "glam::Quat::slerp",
+            "glam::Vec3::slerp",
+            "glam::Vec3::angle_between",
+            "sapphire_math::spring::damp",
+        ] {
+            assert!(bans.contains(ban), "{ban}");
+        }
+        for name in
+            ["sdl3-sys", "wgpu", "sapphire_render", "sapphire_world", "sapphire_platform", "sapphire_input"]
+        {
+            assert!(config.simulation.forbidden.iter().any(|forbidden| forbidden == name), "{name}");
+        }
     }
 
     #[test]

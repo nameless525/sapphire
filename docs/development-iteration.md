@@ -12,6 +12,7 @@ same `CARGO_TARGET_DIR`.
 - While editing one crate: `cargo test -p <crate> --lib --locked`.
 - Before handing off a change: `cargo test-fast --locked` runs workspace unit and integration tests.
 - Full CPU coverage: `cargo test --workspace --locked --no-fail-fast`, including doctests. CI keeps this gate.
+- The simulation's determinism and allocation tests: `cargo test -p sapphire_gameplay --locked`. They need no GPU. Its cost: `cargo run --release -p sapphire_gameplay --example step_bench`.
 - Renderer GPU fixtures: `cargo test -p sapphire_render --test gpu --locked -- --ignored --test-threads=1`.
 - One renderer fixture family: `cargo test -p sapphire_render --test gpu ambient:: --locked -- --ignored --test-threads=1`.
 - All runtime GPU tests: `cargo test -p sapphire_render -p sapphire_rhi -p sapphire_world -p sapphire_debug --tests --locked -- --ignored --test-threads=1`.

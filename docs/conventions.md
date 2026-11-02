@@ -29,6 +29,7 @@ These apply to every crate. The engine spec ([engine-spec.md](engine-spec.md)) s
   - Every `unsafe` block has a `// SAFETY:` comment.
   - FFI wrappers expose safe APIs; raw pointers don't leak out of the module that owns them.
 - **Time:** never read the OS clock outside `sapphire_time` and `sapphire_platform` (rule R2, enforced by `clippy.toml`). Call sites that must read it carry `#[allow(clippy::disallowed_methods)]` plus a justification.
+- **The simulation's crates** (`[simulation]` in [`xtask/layers.toml`](../xtask/layers.toml)) take their time from owner clocks, their floats from `sapphire_math::det`, their random numbers from a seeded generator, and go through actors in ID order. Their `clippy.toml` bans the alternatives, and `sapphire_gameplay`'s crate docs have the rules.
 - **Platform code:** `#[cfg(target_os = ...)]` belongs in `sapphire_platform`, `sapphire_crash` and the backend selection in `sapphire_rhi` (rule R7). Anywhere else it is a review flag.
 - **Logging:** use `tracing` macros, with targets in the form `sapphire::<subsystem>`. Don't use `println!` in runtime code.
 - **Profiling:** use `profiling::scope!("Name")` / `#[profiling::function]` on anything that could appear in a frame budget.

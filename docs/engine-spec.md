@@ -346,7 +346,7 @@ pub struct FramePacket {
 | `sapphire_platform` | L1 | App lifecycle, windows, surfaces, events, file IO, threads, system info | `sdl3-sys`, `raw-window-handle` | M0 |
 | `sapphire_crash` | L1 | Crash capture; upload deferred (M0 status) | `crash-handler`, `minidumper`; `sentry` once upload returns | M0 |
 | `sapphire_core` | L0 | Allocators, handles, names, logging, profiling, cvars | `mimalloc`, `bumpalo`, `slotmap`, `tracing`, `profiling` | M0 |
-| `sapphire_math` | L0 | Vectors, transforms, bounds, curves, springs, RNG | `glam`, `libm`, `rand_pcg` | M0 |
+| `sapphire_math` | L0 | Vectors, transforms, bounds, curves, springs, RNG | `glam`, `libm` | M0 |
 | `sapphire_jobs` | L1 | The single task pool, scopes, parallel loops | `bevy_tasks` | M0 |
 | `sapphire_ecs` | L2 | Re-exported bevy_ecs, schedules, conventions | `bevy_ecs` (pinned) | M1 |
 | `sapphire_time` | L1 | Clock domains, fixed-step driver, interpolation | — | M0 |
@@ -507,6 +507,10 @@ Each module below follows the same template:
   - Basic arithmetic and `sqrt` are IEEE-exact, and Rust does not fuse multiply-adds implicitly.
   - **Determinism scope. Decision:** replays must be bit-identical *within a target architecture* (aarch64 or x86_64), and checksums are recorded per architecture. glam's SIMD types round differently on NEON and SSE2 (horizontal-add order, FMA), so cross-architecture determinism stays a non-goal until lockstep netcode needs it. Simulation state that must later match across architectures should use scalar `Vec3` and `det` functions.
 - **RNG:** `rand_pcg`, seeded per subsystem and per encounter. Never use thread-local or global RNG in the simulation.
+- **As built (M2 D1, `sapphire_math::rng`, `det`):**
+  - **RNG:** `Pcg32` is PCG-XSH-RR 64/32, written out in about 40 lines rather than taken from `rand_pcg`, since nothing else needs `rand_core`. A test holds it to the reference's `pcg32-demo` output.
+  - **`det` gains** `asin`, `atan`, `exp2`, `log2`, rotations (`quat_from_rotation_x`, `_y`, `_z`, `quat_to_axis_angle`, `quat_slerp`, `quat_nlerp`, `quat_angle_between`, `quat_rotate_towards`, `rotate_y`) and yaw and angle helpers (`direction_from_yaw`, `yaw_of_direction`, `yaw_of_quat`, `wrap_angle`, `turn_towards`, `angle_between`, `vec2_from_angle`, `vec2_to_angle`, `vec2_angle_to`), all scalar inside. glam's `libm` and `scalar-math` features stay off, since Cargo would unify them across the build.
+  - **What glam 0.33 calls, read from its source.** `std`, through its `math` module: `Quat`'s `from_axis_angle`, `from_scaled_axis`, `from_rotation_*`, `from_euler`, `to_euler`, `to_axis_angle`, `to_scaled_axis` and `from_rotation_arc` (at 180°); `Vec3` and `Vec3A`'s `slerp`, `rotate_*`, `rotate_towards`; `Vec2`'s `from_angle`, `to_angle`, `rotate_towards`; per-component `sin`, `exp`, `powf` and so on; the matrix and affine `from_axis_angle`, `from_rotation_*`, `from_euler` and `from_angle` families. Not `std`: `Quat::slerp` on NEON and SSE2 uses glam's own polynomial sine, and `angle_between` and `angle_to` its own polynomial arccosine. Those are banned too, since the scalar backend's `slerp` does call `std` and the replacements read better near 0.
 - **As built (review FI-005):** `det::slerp_direction` takes the short arc for directions within about 1.8° of opposite (dot below −0.9995), turning in the plane of `from` and `to`'s part perpendicular to it by `atan2(|perp|, cos)·t`, so it lands on `to` and its halfway point is between them. Before, it treated the whole band as exactly opposite and turned a half circle about an axis chosen from `from` alone, missing `to` by up to 1.8°. Only a perpendicular part below 4e-6 (ten times what rounding leaves exactly opposite vectors) keeps that deterministic axis. Every result outside the band is bit-identical, and no shipped day or light rig reaches it (both days' looks and both rig libraries digest the same before and after).
 
 ### 5.5 `sapphire_jobs` (L1)
@@ -1927,6 +1931,16 @@ At runtime, dynamic resolution adjusts the render scale from GPU timings and the
 - The headless `sapphire_testkit` world replays recorded input files and asserts outcomes: damage dealt, final positions, a checksum of the simulation state.
 - These replays run in CI on all three desktop OSes and are the combat regression suite.
 
+**As built (M2 D1, the headless simulation)**
+
+- **`Simulation`** owns its own `Ecs`: `new(SimConfig { seed, max_actors, step_budget })`, `add_tables`, `spawn`, `despawn`, `step(&TickActions)`, `checksum()`, `tables_hash()`, `actor(id)`, `actors()`, `stats()`. The engine's schedules fit as they are: `SimSet::Input` copies actions, `SimSet::Clocks` ticks, `CombatSet` chains this section's eight steps in `FixedCombat`, and `FixedPost` resolves spawns and despawns (rule R3). A small drill stands in for G1 and G2.
+- **Headless:** its normal dependency tree is 124 crates with no SDL, wgpu or naga, and `cargo xtask check-layers` fails if a `[simulation]` crate (`xtask/layers.toml`) reaches a forbidden one. `Ecs::new` still starts the job system's threads, which sit idle.
+- **Actors and input:** `ActorId`s count up from 1 and are never reused within a run. Entities come from a pool spawned up front, so a spawn changes no structure. Anything that affects a result goes through `ActorTable::iter`, in ID order. `TickActions` holds up to 8 actors' `Buttons` and a `Stick` quantized to ±127, in one pinned byte layout (`write_to`, `read_from`, `LAYOUT_VERSION` 1).
+- **Checksum:** XXH3-64 over canonical bytes: floats by bits (one NaN for all), actors in ID order, the tick count, clock carries (`sapphire_time`'s `write_canonical`) and RNG state.
+- **Baked tables (`sapphire_moves`):** `BakedTables` holds cumulative root motion per tick, in the root's space at the move's first tick, and named paths per tick, in the root's space at that same tick. Readings take whole sub-ticks, return a sample's exact bits on a whole tick and blend between. Cooked at version 1; `from_cooked` copies them out once at load, so a read has no header to check and no `unsafe`.
+- **Enforcement:** each `[simulation]` crate holds the same `clippy.toml`, banning `std`'s transcendentals, glam's helpers (§5.4), `sapphire_math`'s own that reach them and `HashMap`-likes, and repeating R2's list; every entry was confirmed to fail `cargo clippy` for arm64 and x86-64. No allocation on the simulation thread from the first tick, with spawns, despawns and refusals inside the steps, and `SimStats::allocations` counts it live. **For G5:** the camera lives in this crate, so its springs need a pinned `damp`, or an `allow` that says why.
+- **Cost (R9):** `SimStats` counts steps against §3.2's budget. On an M5 under load, release, the drill's median step takes 0.7 µs with 2 actors, 1.2 with 16 and 2.0 with 64, the worst single step 7–18 µs, against 1,000 µs on Desktop-Low (`--example step_bench`). A checksum takes 0.3–3.4 µs. No phone exists yet.
+
 ### 5.23 `sapphire_sequencer` (L4)
 
 - **Timeline asset tracks:**
@@ -2549,7 +2563,7 @@ rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
 
 | Command | Does |
 |---|---|
-| `cargo xtask check-layers` | Enforces §4.1 and rule R8 from `cargo metadata` |
+| `cargo xtask check-layers` | Enforces §4.1 and rule R8 from `cargo metadata`, and holds the simulation's crates to their dependency and clippy rules (§5.22) |
 | `cargo xtask cook --cook desktop\|mobile [--only <guid/zone>]` | Runs `sapphire_pipeline` with the content-hash cache |
 | `cargo xtask run --platform desktop\|ios-sim\|ios\|android` | Builds, cooks, deploys and launches, with live link enabled |
 | `cargo xtask package <platform> --profile shipping` | Produces store-ready artifacts and uploads symbols |

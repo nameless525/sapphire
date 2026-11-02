@@ -2490,6 +2490,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "sapphire_gameplay"
+version = "0.1.0"
+dependencies = [
+ "bevy_ecs",
+ "profiling",
+ "sapphire_core",
+ "sapphire_ecs",
+ "sapphire_math",
+ "sapphire_moves",
+ "sapphire_time",
+ "thiserror",
+ "xxhash-rust",
+]
+
+[[package]]
 name = "sapphire_hot_reload"
 version = "0.1.0"
 dependencies = [
@@ -2558,6 +2573,20 @@ version = "0.1.0"
 dependencies = [
  "glam",
  "libm",
+]
+
+[[package]]
+name = "sapphire_moves"
+version = "0.1.0"
+dependencies = [
+ "bevy_reflect",
+ "rkyv",
+ "sapphire_core",
+ "sapphire_math",
+ "sapphire_reflect",
+ "sapphire_serialize",
+ "sapphire_time",
+ "thiserror",
 ]
 
 [[package]]

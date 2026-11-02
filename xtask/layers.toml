@@ -33,6 +33,9 @@ sapphire_ecs = { kind = "runtime", layer = 2 }
 # renderer draws it: beneath the renderer and time of day alike, so tools that light by them link
 # neither (M1 A8's follow-up). Depends on L0 alone.
 sapphire_look = { kind = "runtime", layer = 2 }
+# Moves' cooked plain data, which the cooker writes and the simulation reads (M2 D1): no ECS, no
+# renderer, so tools can link it.
+sapphire_moves = { kind = "runtime", layer = 2 }
 sapphire_reflect = { kind = "runtime", layer = 2 }
 sapphire_rhi = { kind = "runtime", layer = 2 }
 sapphire_serialize = { kind = "runtime", layer = 2 }
@@ -44,6 +47,7 @@ sapphire_render = { kind = "runtime", layer = 3 }
 sapphire_tod = { kind = "runtime", layer = 3 }
 # L4 framework.
 sapphire_world = { kind = "runtime", layer = 4 }
+sapphire_gameplay = { kind = "runtime", layer = 4 }
 # Dev-only (spec §4.1 places sapphire_debug in L3; as dev-only it has no layer of its own).
 sapphire_debug = { kind = "dev_only" }
 # Desktop hot reload (M1 A8). `notify`: the file-watching backend, which apps turn on for
@@ -72,6 +76,34 @@ edges = [
     # envelope, named and versioned through sapphire_reflect.
     ["sapphire_assets", "sapphire_serialize"],
     ["sapphire_assets", "sapphire_reflect"],
+    # Baked tables are cooked the same way.
+    ["sapphire_moves", "sapphire_serialize"],
+    ["sapphire_moves", "sapphire_reflect"],
+]
+
+# The simulation's crates: what a replay job links (m2-plan §3, "Crate edges"). None of `forbidden`
+# may be in their dependency trees through normal dependencies, so a replay builds quickly and runs
+# with no window and no GPU. Each also has a clippy.toml banning what breaks determinism: the same
+# file in every one, holding every workspace ban too, since a crate's file replaces the workspace's.
+#
+# `wgpu-types` isn't listed: bevy_reflect's `std` feature names it as a weak optional dependency
+# (`wgpu-types?/std`), and `cargo metadata`'s graph keeps those though nothing builds it. `cargo tree
+# -p sapphire_gameplay -e normal --all-features --target all` shows it isn't there.
+[simulation]
+crates = ["sapphire_gameplay", "sapphire_moves"]
+forbidden = [
+    "naga",
+    "sapphire_anim",
+    "sapphire_input",
+    "sapphire_platform",
+    "sapphire_render",
+    "sapphire_rhi",
+    "sapphire_world",
+    "sdl3-src",
+    "sdl3-sys",
+    "wgpu",
+    "wgpu-core",
+    "wgpu-hal",
 ]
 
 # Third-party crates that must never reach a runtime, app or dev-only crate's dependency

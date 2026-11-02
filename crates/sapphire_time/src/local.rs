@@ -123,6 +123,14 @@ impl LocalClock {
         self.last_delta
     }
 
+    /// This clock's time to draw, in ticks with a fraction: `alpha` of the way from its previous
+    /// fixed step to its latest, where transforms draw (spec §4.5). A clock that didn't advance on
+    /// its latest step (hitstop, a stopped world) gives exactly [`Self::now`], whatever `alpha`.
+    #[must_use]
+    pub fn presented_ticks(&self, alpha: f32) -> f64 {
+        crate::sim_time::presented_ticks(self.now, self.last_delta, alpha)
+    }
+
     /// Feeds this clock's whole state to `sink` as little-endian bytes, the same on every target
     /// whatever the struct's layout: the scales and the fractional carry included, which nothing
     /// else shows. For state checksums (spec §9, gate 2).
@@ -173,6 +181,57 @@ mod tests {
         local.tick(&world);
         local.tick(&world);
         assert_eq!(local.effective_scale(&world), 1.0);
+    }
+
+    #[test]
+    fn presented_time_lies_between_the_last_two_steps_and_holds_while_frozen() {
+        let mut world = ScaledClock::new();
+        let mut local = world.new_local_clock();
+        assert_eq!(local.presented_ticks(0.5), 0.0, "before any step");
+        world.tick();
+        local.tick(&world);
+        world.tick();
+        local.tick(&world);
+        assert_eq!(local.presented_ticks(1.0), 2.0, "a whole tick reads exactly");
+        assert_eq!(local.presented_ticks(0.0), 1.0, "the step before");
+        assert_eq!(local.presented_ticks(0.25), 1.25);
+        assert_eq!(local.presented_ticks(f32::NAN), 1.0);
+        assert_eq!(local.presented_ticks(9.0), 2.0, "never past the latest");
+
+        // A frame between the steps, then hitstop: time goes on to where the clock stopped and
+        // holds exactly there, whatever the frame's alpha.
+        local.apply_hitstop(3);
+        world.tick();
+        local.tick(&world);
+        for alpha in [0.0, 0.25, 0.999, 1.0] {
+            assert_eq!(local.presented_ticks(alpha), 2.0, "frozen at alpha {alpha}");
+        }
+    }
+
+    /// Entering slow motion shrinks the step, but shown time still only goes forward.
+    #[test]
+    fn presented_time_never_steps_back_when_the_step_shrinks() {
+        let mut world = ScaledClock::new();
+        let mut local = world.new_local_clock();
+        let mut shown = 0.0_f64;
+        let mut show = |clock: &LocalClock, alpha: f32| {
+            let now = clock.presented_ticks(alpha);
+            assert!(now >= shown, "{now} after {shown}");
+            shown = now;
+        };
+        for tick in 0..30_u32 {
+            if tick == 10 {
+                world.push_scale(ScaleSource::Cinematic, 100).expect("room");
+            }
+            if tick == 20 {
+                world.push_scale(ScaleSource::Cinematic, 0).expect("room");
+            }
+            world.tick();
+            local.tick(&world);
+            for alpha in [0.1, 0.5, 0.9] {
+                show(&local, alpha);
+            }
+        }
     }
 
     /// The bytes are the contract a recorded checksum depends on, so they're pinned here.

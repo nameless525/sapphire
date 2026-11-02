@@ -230,6 +230,10 @@ egui-wgpu = { version = "0.37.0", default-features = false }
 # for desktop targets: phones and shipping builds never build it.
 notify = "8.2.0"
 
+# --- Tests ---
+# Pose snapshots (spec §5.13). No default features: its `colors` only colors a failing diff.
+insta = { version = "1.47", default-features = false }
+
 # --- Tools only (never in a runtime crate's dependency tree) ---
 sapphire_testkit = { path = "tools/sapphire_testkit" }
 sapphire_pipeline = { path = "tools/sapphire_pipeline" }

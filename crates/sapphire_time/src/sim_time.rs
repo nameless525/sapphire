@@ -127,6 +127,17 @@ impl SimTime {
     }
 }
 
+/// A clock's time to draw, in ticks with a fraction: `alpha` of the way from where it was before
+/// its latest step (`now - last_delta`) to `now`. It never reads past `now`, and a shrinking step
+/// can't take it back past a frame already drawn, as the two ends only move forward.
+#[must_use]
+pub(crate) fn presented_ticks(now: SimTime, last_delta: SimDuration, alpha: f32) -> f64 {
+    // Written so that NaN draws the previous state.
+    let alpha = if alpha >= 0.0 { f64::from(alpha.min(1.0)) } else { 0.0 };
+    let behind = (1.0 - alpha) * last_delta.as_subticks() as f64;
+    (now.as_subticks() as f64 - behind) / f64::from(SUBTICKS_PER_TICK)
+}
+
 impl Add<SimDuration> for SimTime {
     type Output = Self;
 

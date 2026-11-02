@@ -10,6 +10,14 @@ license.workspace = true
 [dependencies]
 # The cooked `Skeleton` and `Clip` formats, which the asset server checks by kind.
 sapphire_assets.workspace = true
+# One job per character (spec §5.13).
+sapphire_jobs.workspace = true
+sapphire_math.workspace = true
+
+[dev-dependencies]
+# Pose snapshots (spec §5.13).
+insta.workspace = true
+sapphire_core.workspace = true
 
 [lints]
 workspace = true

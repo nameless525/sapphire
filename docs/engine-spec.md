@@ -1452,16 +1452,16 @@ One uber-shader family, with at most 8 static permutation bits: layers, alpha-te
     Metal's compile runs in its own service, so it gains about 3.5× whatever the pool's threads are worth. A phone's pool is its performance cores less one: Mobile-High on this Mac with three workers took 3.80 s, and with one, an iPhone's, 5.05–5.29 s. Warm, with the allocation counters sharded (§5.3's allocator, which this needed: before them the pool cost 30 ms), startup went from 132, 118 and 116 ms to 96, 84 and 84 ms. Frames don't change.
   - **Not measured:** WARP and lavapipe, which compile every pipeline in every golden scene's process; CI's golden times will tell. A phone's real cold start is by reasoning alone.
 
-- **As built (performance hunt, wgpu's loop bound, `shaders::module`):** wgpu adds a counter to every shader loop so that none can loop forever, which keeps Metal from unrolling it and much else. Compiled-in programs build without it (`create_shader_module_trusted`, wgpu's bounds and integer division checks left on, which cost about 1%), and `shaders::tests::every_loop_ends` holds every WGSL loop to a counter moved in its header toward its bound, or to a listed reason. Edited sources keep the bound. So do the anime character and environment programs for now (`keeps_loop_bound`): without it they move `ambient-night`, `ambient-gtao`, `ambient-mobile` and `lookdev-face` on Metal by one or two pixels of one code value.
+- **As built (performance hunt, wgpu's loop bound, `shaders::module`):** wgpu adds a counter to every shader loop so that none can loop forever, which keeps Metal from unrolling it and much else. Compiled-in programs build without it (`create_shader_module_trusted`, wgpu's bounds and integer division checks left on, which cost about 1%), and `shaders::tests::every_loop_ends` holds every WGSL loop to a counter moved in its header toward its bound, or to a listed reason. Edited sources keep the bound. Without it the anime character and environment programs moved `ambient-night`, `ambient-gtao`, `ambient-mobile` and `lookdev-face` on Metal by one or two pixels of one code value, where fast math rounds an unrolled sum differently; those goldens were re-baselined.
   - **Measured** (release, M5, one binary with the bound switched per program, minima of 7 alternating rounds, noisy to about 2 points; GPU frame in µs for the look-dev shots wide, hero, street and face):
 
-    | Tier | Every program bound | As built | No program bound |
-    |---|---|---|---|
-    | Desktop-High | 5100, 4847, 4650, 4531 | 4573, 4692, 4493, 4395 | 4565, 4414, 4202, 4094 |
-    | Mobile-High | 2830, 2692, 2376, 2424 | 2664, 2604, 2311, 2355 | 2500, 2409, 2077, 2152 |
-    | Mobile-Low | 1432, 1381, 1219, 1311 | 1381, 1378, 1206, 1289 | 1276, 1238, 1107, 1190 |
+    | Tier | Every program bound | No program bound |
+    |---|---|---|
+    | Desktop-High | 5100, 4847, 4650, 4531 | 4565, 4414, 4202, 4094 |
+    | Mobile-High | 2830, 2692, 2376, 2424 | 2500, 2409, 2077, 2152 |
+    | Mobile-Low | 1432, 1381, 1219, 1311 | 1276, 1238, 1107, 1190 |
 
-    With no program bound the main pass takes 12 to 19% less, shadows up to 14% and GTAO 3 to 16%. As built, GTAO takes 9 to 18% less and the main pass up to 8%. Earlier unrolled loops (post's flare and gradient layers, TAA's resolve) stand; they were written under the bound. WARP and lavapipe compile from the same change, unmeasured: only CI's golden times and gates show them.
+    The main pass takes 12 to 19% less, shadows up to 14% and GTAO 3 to 16%. Earlier unrolled loops (post's flare and gradient layers, TAA's resolve) stand; they were written under the bound. WARP and lavapipe compile from the same change, unmeasured: only CI's golden times and gates show them.
 
 - **As built (review DV-1, an edit across files):** hot reload's requests replace the files whose text changed on disk since one of its requests was last swapped in, not only those changed since the last reading, which dropped a failed save's text: the base falls back to the last good sources once a request fails, so a rename saved a file at a time never applied, and a typo fixed after a second edit reported `shaders reloaded` with that edit left out. A failed edit is built again with any later save of a shader file, its text changed or not. Pushed files outside the set keep their text (#80's guarantee). **Known limit:** a file in the set that is then pushed gets the disk's text back at hot reload's next request, since the set clears only when a hot reload request is swapped in.
 - **As built (M1 A3, `sapphire_render::materials`, `shaders/materials.wgsl`):**

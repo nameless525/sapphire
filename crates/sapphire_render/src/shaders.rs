@@ -378,21 +378,12 @@ pub(crate) fn validate(program: Program, sources: &ShaderSources) -> Result<naga
     Ok(module)
 }
 
-/// Whether `program`, compiled in, keeps wgpu's bound on every loop (see [`module`]). Without it
-/// these two move four Metal goldens by one or two pixels of one code value, where Metal's fast
-/// math rounds an unrolled sum differently, so they keep it until those goldens are next
-/// re-baselined. It costs them much of the gain: 9 to 13% of the look-dev town's GPU frame on an
-/// M5 without it on any program, on every shot and tier.
-const fn keeps_loop_bound(program: Program) -> bool {
-    matches!(program, Program::AnimeCharacter | Program::Environment)
-}
-
 /// `program`'s shader module, from `sources`.
 ///
 /// Compiled-in files build without wgpu's bound on every loop, a counter it adds so that no shader
 /// can loop forever, which a backend's compiler may treat as undefined behavior. It's meant for
-/// shaders nobody has read, and it keeps Metal from unrolling and more: GTAO takes 9 to 18% less
-/// without it on an M5, and the look-dev town's whole GPU frame about 3%. Edited files keep it,
+/// shaders nobody has read, and it keeps Metal from unrolling and more: the look-dev town's whole
+/// GPU frame takes 9 to 13% less without it on an M5, on every shot and tier. Edited files keep it,
 /// since a slip in one mustn't hang a device while its author is working, so a pushed shader's
 /// timings read a little high. wgpu's bounds and integer division checks stay on everywhere; they
 /// cost about 1%.
@@ -401,7 +392,7 @@ pub(crate) fn module(device: &wgpu::Device, program: Program, sources: &ShaderSo
         label: Some(program.name()),
         source: wgpu::ShaderSource::Wgsl(sources.program(program).into()),
     };
-    if keeps_loop_bound(program) || !sources.is_compiled_in() {
+    if !sources.is_compiled_in() {
         return device.create_shader_module(desc);
     }
     let mut checks = wgpu::ShaderRuntimeChecks::checked();

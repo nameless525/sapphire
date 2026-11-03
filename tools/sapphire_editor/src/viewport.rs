@@ -237,8 +237,7 @@ pub fn stand_fight(
     let mut content = Content::new(host, desc.character, desc.sky)?;
     let mut show = ViewShow::default();
     let combat = show.fight.prepare_stock_fight_on(option, moves, &mut content)?;
-    let mut stage =
-        Stage::new_with_content(gpu.instance().clone(), Arc::clone(gpu), desc, content)?.with_show(show);
+    let mut stage = Stage::new_with_content(Arc::clone(gpu), desc, content)?.with_show(show);
     let Stage { show, scene, content, renderer, gpu, quality, .. } = &mut stage;
     show.fight.stand_prepared(combat, scene, content, renderer, gpu, quality.active().id)?;
     scene.prewarm(&*show, renderer);

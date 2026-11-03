@@ -159,7 +159,7 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
         combat.capture_ticks(option, ticks, frames).map_err(AppInitError::msg)?;
     }
     let content = content.map_or_else(mount_content, Ok)?;
-    let (instance, gpu) = headless_gpu()?;
+    let gpu = headless_gpu()?;
     if let Some(offscreen) = &options.offscreen {
         let limits = gpu.device().limits();
         target_fits(offscreen.width, offscreen.height, limits.max_texture_dimension_2d)
@@ -183,7 +183,7 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
         options.offscreen.as_ref().is_some_and(|run| matches!(run.mode, OffscreenMode::Bench { .. }));
     desc.inventory_without = options.inventory_without.clone();
     let history_only_capture = history_only_capture_allowed(options, desc.settings);
-    let mut stage = sapphire_stage::Stage::new_with_content(instance, gpu, desc, content)?.with_show(show);
+    let mut stage = sapphire_stage::Stage::new_with_content(gpu, desc, content)?.with_show(show);
     stage.history_only_capture = history_only_capture;
     stage.graph.set_serial(options.serial_passes);
     let character = stage.character;

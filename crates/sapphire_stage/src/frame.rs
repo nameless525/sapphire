@@ -193,11 +193,10 @@ impl StageDesc {
 
 /// A device with no window: for a stage that draws into textures, where no one's watching, so an error
 /// fails the run ([`gpu_failure`]) in every build rather than logging and going on.
-pub fn headless_gpu() -> Result<(GpuInstance, GpuContext), AppInitError> {
+pub fn headless_gpu() -> Result<GpuContext, AppInitError> {
     let instance = GpuInstance::new(&GpuInstanceDesc::default())?;
     let desc = GpuContextDesc { hold_errors: true, ..GpuContextDesc::default() };
-    let gpu = GpuContext::new(&instance, &desc, None)?;
-    Ok((instance, gpu))
+    Ok(GpuContext::new(&instance, &desc, None)?)
 }
 
 /// Why a run on `gpu`, made with `GpuContextDesc::hold_errors`, can't stand: the first error it held, or
@@ -215,7 +214,7 @@ pub fn gpu_failure(gpu: &GpuContext) -> Result<(), String> {
 
 /// The GPU, renderer, content and scene a frame draws with, and what plays on them.
 pub struct Stage<S: SceneShow = (), H: FrameHooks<S> = ()> {
-    // Drop order: everything on the device before the context, the context before the instance.
+    // Drop order: everything on the device before the context.
     /// What the caller adds to its frames.
     pub hooks: H,
     pub renderer: Renderer,
@@ -244,7 +243,6 @@ pub struct Stage<S: SceneShow = (), H: FrameHooks<S> = ()> {
     /// The last frame's stage times, measured while something draws over the frames.
     last_times: Option<StageTimes>,
     format: wgpu::TextureFormat,
-    _instance: GpuInstance,
 }
 
 impl Stage {
@@ -254,19 +252,13 @@ impl Stage {
     ///
     /// A device that's lost takes the stage with it: drop it, and make another on a new context. Nothing it
     /// holds outlives the device, so nothing's carried over.
-    pub fn new(
-        host: &Host,
-        instance: GpuInstance,
-        gpu: impl Into<Arc<GpuContext>>,
-        desc: StageDesc,
-    ) -> Result<Self, AppInitError> {
+    pub fn new(host: &Host, gpu: impl Into<Arc<GpuContext>>, desc: StageDesc) -> Result<Self, AppInitError> {
         let content = Content::new(host, desc.character, desc.sky)?;
-        Self::new_with_content(instance, gpu, desc, content)
+        Self::new_with_content(gpu, desc, content)
     }
 
     /// Builds the renderer over already mounted Content, after any CPU-only combat bootstrap.
     pub fn new_with_content(
-        instance: GpuInstance,
         gpu: impl Into<Arc<GpuContext>>,
         desc: StageDesc,
         mut content: Content,
@@ -335,7 +327,6 @@ impl Stage {
             gpu,
             last_times: None,
             format,
-            _instance: instance,
         })
     }
 
@@ -357,7 +348,6 @@ impl Stage {
             gpu,
             last_times,
             format,
-            _instance,
         } = self;
         Stage {
             hooks: (),
@@ -375,7 +365,6 @@ impl Stage {
             gpu,
             last_times,
             format,
-            _instance,
         }
     }
 }
@@ -399,7 +388,6 @@ impl<S: SceneShow> Stage<S> {
             gpu,
             last_times,
             format,
-            _instance,
         } = self;
         Stage {
             hooks,
@@ -417,7 +405,6 @@ impl<S: SceneShow> Stage<S> {
             gpu,
             last_times,
             format,
-            _instance,
         }
     }
 }

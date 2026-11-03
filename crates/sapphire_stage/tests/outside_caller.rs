@@ -80,9 +80,9 @@ impl App for OutsideCaller {
     };
 
     fn init(platform: &mut Platform) -> Result<Self, AppInitError> {
-        let (instance, gpu) = headless_gpu()?;
+        let gpu = headless_gpu()?;
         let desc = StageDesc::new(platform.host(), &gpu, FORMAT, QualitySettings::default());
-        let mut stage = Stage::new(platform.host(), instance, gpu, desc)?;
+        let mut stage = Stage::new(platform.host(), gpu, desc)?;
 
         for _ in 0..60 {
             stage.step();
@@ -98,9 +98,9 @@ impl App for OutsideCaller {
         assert_ne!(first, frame(&mut stage)?, "stepping moves the picture");
 
         // The same again with a show on it: it's called at each of a frame's points, and draws the same.
-        let (instance, gpu) = headless_gpu()?;
+        let gpu = headless_gpu()?;
         let desc = StageDesc::new(platform.host(), &gpu, FORMAT, QualitySettings::default());
-        let mut shown = Stage::new(platform.host(), instance, gpu, desc)?.with_show(Counting::default());
+        let mut shown = Stage::new(platform.host(), gpu, desc)?.with_show(Counting::default());
         for _ in 0..60 {
             shown.step();
         }

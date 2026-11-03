@@ -55,14 +55,14 @@ impl App for OutsideCaller {
     };
 
     fn init(platform: &mut Platform) -> Result<Self, AppInitError> {
-        let (instance, gpu) = headless_gpu()?;
+        let gpu = headless_gpu()?;
         let desc = fight_stage(StageDesc::new(platform.host(), &gpu, FORMAT, QualitySettings::default()));
         let mut content = Content::new(platform.host(), desc.character, desc.sky)?;
         let mut show = GameShow::new()?;
         let option = CombatOption::Fight { script: Some("fight-back".to_owned()), party: false };
         let combat = show.shown.fight.prepare_stock_combat(&option, &mut content)?;
         assert!(combat.simulation().overhead_presentation_pair().is_some());
-        let mut stage = Stage::new_with_content(instance, gpu, desc, content)?.with_show(show);
+        let mut stage = Stage::new_with_content(gpu, desc, content)?.with_show(show);
         let Stage { show, scene, content, renderer, gpu, quality, .. } = &mut stage;
         show.stand(combat, scene, content, renderer, gpu, quality.active().id)?;
 

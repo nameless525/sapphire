@@ -16,9 +16,9 @@
 //!
 //! fn one_frame(platform: &Platform) -> Result<Vec<u8>, AppInitError> {
 //!     const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
-//!     let (instance, gpu) = headless_gpu()?;
+//!     let gpu = headless_gpu()?;
 //!     let desc = StageDesc::new(platform.host(), &gpu, FORMAT, QualitySettings::default());
-//!     let mut stage = Stage::new(platform.host(), instance, gpu, desc)?;
+//!     let mut stage = Stage::new(platform.host(), gpu, desc)?;
 //!     for _ in 0..60 {
 //!         stage.step();
 //!     }

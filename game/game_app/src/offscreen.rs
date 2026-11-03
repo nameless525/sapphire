@@ -29,12 +29,12 @@ impl App for OffscreenGame {
     fn init(platform: &mut Platform) -> Result<Self, AppInitError> {
         let options = Options::parse(platform.args()).map_err(AppInitError::msg)?;
         let path = options.capture.clone().ok_or_else(|| AppInitError::msg("no --capture"))?;
-        let (instance, gpu) = headless_gpu()?;
+        let gpu = headless_gpu()?;
         let desc = fight_stage(StageDesc::new(platform.host(), &gpu, FORMAT, QualitySettings::default()));
         let mut content = Content::new(platform.host(), desc.character, desc.sky)?;
         let mut show = GameShow::new()?;
         let combat = show.shown.fight.prepare_stock_combat(&options.fight(), &mut content)?;
-        let mut stage = Stage::new_with_content(instance, gpu, desc, content)?.with_show(show);
+        let mut stage = Stage::new_with_content(gpu, desc, content)?.with_show(show);
         let Stage { show, scene, content, renderer, gpu, quality, .. } = &mut stage;
         show.stand(combat, scene, content, renderer, gpu, quality.active().id)?;
         if options.open_fight {

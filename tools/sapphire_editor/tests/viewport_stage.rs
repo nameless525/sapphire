@@ -51,8 +51,7 @@ fn host() -> Host {
 }
 
 fn device() -> Arc<GpuContext> {
-    let (_, gpu) = headless_gpu().expect("a GPU");
-    Arc::new(gpu)
+    Arc::new(headless_gpu().expect("a GPU"))
 }
 
 /// egui's renderer on the engine's device.

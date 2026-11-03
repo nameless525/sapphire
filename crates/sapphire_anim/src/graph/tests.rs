@@ -1045,6 +1045,180 @@ fn a_replacement_without_the_playing_state_starts_over_in_its_own() {
     assert_eq!(player.state(), Name::new("ground"));
 }
 
+/// Standing still with a row for one move, and `plays` for what it stands in: what a replacement adds to.
+fn with_one_row(plays: &str) -> String {
+    document(&format!(
+        r#"
+        locomotion: (start: "ground", states: [(name: "ground", plays: Clip(clip: "{plays}", looping: true))]),
+        combat: (decay: 8, exit: 12, moves: [(move: "jab", clip: "jab")]),
+        "#
+    ))
+}
+
+/// The pose of `name`'s clip at `position`, over the rest pose.
+fn clip_pose(fixture: &Fixture, name: &str, position: f32) -> Vec<Transform> {
+    let rest = fixture.pose().rest().to_vec();
+    let mut pose = rest.clone();
+    sample(fixture.clip(name), position, &rest, &mut pose);
+    pose
+}
+
+/// A graph replaced to add a row is waiting for that very move: its start is the start that takes it, though
+/// the graph playing has never heard of the move. It plays from its first frame, and nothing's unmapped.
+#[test]
+fn a_replacement_that_adds_a_move_comes_in_at_that_moves_start() {
+    let fixture = fixture();
+    let source = fixture.source();
+    let mut player = fixture.player(&with_one_row("idle"));
+    let new = fixture.bind(&fixture.graph(&plain()));
+    player.evaluate(&idle(0.0), source.as_slice(), 0);
+    player.replace(new.clone());
+    player.evaluate(&idle(1.0), source.as_slice(), 0);
+    assert!(player.has_replacement(), "nothing's started");
+
+    player.evaluate(&in_move(2.0, HOOK, 1, 0.0), source.as_slice(), 0);
+    assert!(Arc::ptr_eq(player.graph(), &new));
+    assert_eq!(bits(player.target()), bits(&clip_pose(&fixture, "hook", 0.0)));
+    assert_eq!(player.stats().unmapped_moves, 0);
+    assert_eq!(player.stats().transitions, 1, "and it decays from what was drawn");
+    player.evaluate(&in_move(3.0, HOOK, 1, 1.0), source.as_slice(), 0);
+    assert_eq!(bits(player.target()), bits(&clip_pose(&fixture, "hook", 1.0)));
+    assert_eq!(player.stats().transitions, 1);
+}
+
+/// Out of a move, into one only the new graph has: one transition, straight to it, with no frame of
+/// locomotion between that the new move's first frame would then have to decay from.
+#[test]
+fn a_cancel_into_a_move_the_replacement_adds_goes_straight_to_it() {
+    let fixture = fixture();
+    let source = fixture.source();
+    let mut player = fixture.player(&with_one_row("idle"));
+    let new = fixture.bind(&fixture.graph(&plain()));
+    player.evaluate(&in_move(0.0, JAB, 1, 0.0), source.as_slice(), 0);
+    player.replace(new.clone());
+    player.evaluate(&in_move(1.0, JAB, 1, 1.0), source.as_slice(), 0);
+    assert_eq!(
+        bits(player.target()),
+        bits(&clip_pose(&fixture, "jab", 1.0)),
+        "the running move keeps its clip"
+    );
+    assert!(player.has_replacement());
+    let transitions = player.stats().transitions;
+
+    player.evaluate(&in_move(2.0, HOOK, 2, 0.0), source.as_slice(), 0);
+    assert!(Arc::ptr_eq(player.graph(), &new));
+    assert_eq!(bits(player.target()), bits(&clip_pose(&fixture, "hook", 0.0)));
+    assert_eq!(player.stats().unmapped_moves, 0);
+    player.evaluate(&in_move(3.0, HOOK, 2, 1.0), source.as_slice(), 0);
+    assert_eq!(player.stats().transitions, transitions + 1, "one, into the hook");
+}
+
+/// A move's start takes a replacement that has no row for that move either. It still plays nothing, it's
+/// counted, and what the new graph has locomotion playing decays in rather than jumping.
+#[test]
+fn a_replacement_taken_at_a_move_it_has_no_row_for_decays_in() {
+    let fixture = fixture();
+    let source = fixture.source();
+    let old = with_one_row("idle");
+    let no_rows = old.replace(r#"(move: "jab", clip: "jab")"#, "");
+    let new = fixture.bind(&fixture.graph(&no_rows.replace(r#"clip: "idle""#, r#"clip: "run""#)));
+    // No graph has a row for the hook, and the old graph's row for the jab is gone.
+    for name in [HOOK, JAB] {
+        let mut player = fixture.player(&old);
+        player.evaluate(&idle(0.0), source.as_slice(), 0);
+        player.replace(new.clone());
+        player.evaluate(&in_move(1.0, name, 1, 0.0), source.as_slice(), 0);
+        assert!(Arc::ptr_eq(player.graph(), &new), "{name:?}");
+        assert_eq!(player.stats().unmapped_moves, 1, "{name:?}");
+        assert_eq!(player.stats().transitions, 1, "{name:?}");
+        let hips = fixture.pose().rest()[usize::from(HIPS)].rotation;
+        let moved = turn_of(&player, HIPS).angle_between(hips);
+        assert!(moved < 0.1, "{name:?}: the hips went {moved} rad toward the run in a frame");
+        for tick in 2..40 {
+            player.evaluate(&in_move(f64::from(tick), name, 1, f64::from(tick)), source.as_slice(), 0);
+        }
+        assert_eq!(bits(player.pose().locals()), bits(&clip_pose(&fixture, "run", 9.0)), "{name:?}");
+    }
+}
+
+/// A move ends in a new one with no row, and the new graph has none for the one that was playing either: the
+/// old graph's arm still comes down by a decay.
+#[test]
+fn a_replacement_without_the_running_move_lets_it_go_by_a_decay() {
+    let fixture = fixture();
+    let source = fixture.source();
+    let mut player = fixture.player(&plain());
+    let no_rows = with_one_row("idle").replace(r#"(move: "jab", clip: "jab")"#, "");
+    let new = fixture.bind(&fixture.graph(&no_rows));
+    player.evaluate(&in_move(0.0, JAB, 1, 0.0), source.as_slice(), 0);
+    player.evaluate(&in_move(30.0, JAB, 1, 30.0), source.as_slice(), 0);
+    player.replace(new.clone());
+    let transitions = player.stats().transitions;
+    let arm = turn_of(&player, ARM);
+    player.evaluate(&in_move(31.0, HOOK, 2, 0.0), source.as_slice(), 0);
+    assert!(Arc::ptr_eq(player.graph(), &new));
+    assert_eq!(player.stats().transitions, transitions + 1);
+    let moved = turn_of(&player, ARM).angle_between(arm);
+    assert!(moved < 0.1, "the arm went {moved} rad in a frame");
+}
+
+/// A move with no row isn't playing, so nothing keeps a replacement waiting behind it: one that arrives while
+/// it runs brings its clip in at the move's own position, which is where its tables are.
+#[test]
+fn a_replacement_arriving_under_a_move_with_no_row_plays_it_from_where_it_is() {
+    let fixture = fixture();
+    let source = fixture.source();
+    let mut player = fixture.player(&with_one_row("idle"));
+    let new = fixture.bind(&fixture.graph(&plain()));
+    player.evaluate(&idle(0.0), source.as_slice(), 0);
+    player.evaluate(&in_move(1.0, HOOK, 1, 0.0), source.as_slice(), 0);
+    player.evaluate(&in_move(2.0, HOOK, 1, 1.0), source.as_slice(), 0);
+    assert_eq!(player.stats().unmapped_moves, 2);
+    assert_eq!(player.stats().transitions, 0, "locomotion's playing on");
+
+    player.replace(new.clone());
+    player.evaluate(&in_move(3.0, HOOK, 1, 2.0), source.as_slice(), 0);
+    assert!(Arc::ptr_eq(player.graph(), &new));
+    assert_eq!(bits(player.target()), bits(&clip_pose(&fixture, "hook", 2.0)));
+    assert_eq!(player.stats().unmapped_moves, 2);
+    assert_eq!(player.stats().transitions, 1);
+}
+
+/// A defeated character's last move goes on when the simulation's over with it, and a replacement comes in
+/// there: what it names plays on, by a decay.
+#[test]
+fn a_replacement_taken_by_a_falling_character_decays_in() {
+    let fixture = fixture();
+    let source = fixture.source();
+    let old = a_body_that_falls();
+    let tuned = old.replace(r#"(move: "jab", clip: "jab")"#, r#"(move: "jab", clip: "hook")"#);
+    let mut player = fixture.player(&old);
+    let new = fixture.bind(&fixture.graph(&tuned));
+    let combat = Some(CombatInput { name: JAB, serial: 1, position: 10.0 });
+    player.evaluate(&defeated(10.0, combat), source.as_slice(), 0);
+    player.replace(new.clone());
+    let arm = turn_of(&player, ARM);
+    player.evaluate(&defeated(11.0, None), source.as_slice(), 0);
+    assert!(Arc::ptr_eq(player.graph(), &new));
+    assert!(player.is_decaying());
+    assert!(turn_of(&player, ARM).angle_between(arm) < 0.1, "not all at once");
+}
+
+/// Which playing a move is goes by its name as well as its serial: a party's next member counts its own, so
+/// who comes in can start a move under the number the one who left was on.
+#[test]
+fn another_move_under_the_same_serial_is_a_new_move() {
+    let fixture = fixture();
+    let source = fixture.source();
+    let mut player = fixture.player(&plain());
+    player.evaluate(&idle(0.0), source.as_slice(), 0);
+    player.evaluate(&in_move(1.0, JAB, 3, 0.0), source.as_slice(), 0);
+    let transitions = player.stats().transitions;
+    player.evaluate(&in_move(2.0, HOOK, 3, 0.0), source.as_slice(), 0);
+    assert_eq!(player.stats().transitions, transitions + 1);
+    assert_eq!(bits(player.target()), bits(&clip_pose(&fixture, "hook", 0.0)));
+}
+
 /// A cut has no decay, and counts: what N5 resets on.
 #[test]
 fn a_cut_stands_alone_and_says_so() {

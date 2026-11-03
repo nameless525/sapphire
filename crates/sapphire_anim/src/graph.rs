@@ -52,7 +52,9 @@
 //! [`GraphPlayer::replace`] takes a new binding for live tuning (T2) and takes effect at the next
 //! state's start, as a replaced move set does at the next move's: what's playing goes on as it was, and
 //! the next start reads the new one, by name. A move that's playing keeps its clip to its end, so a
-//! locomotion state's start under it doesn't take the new graph.
+//! locomotion state's start under it doesn't take the new graph. A move the graph has no row for isn't
+//! playing, so it doesn't keep anything waiting: the new graph comes in before its table's read, which
+//! is how a graph that adds a row plays that move at all.
 //!
 //! # Signals
 //!
@@ -128,7 +130,8 @@ impl Default for LocomotionInput {
 pub struct CombatInput {
     /// The move's name.
     pub name: Name,
-    /// Which playing this is, of all the character's. A change is a transition.
+    /// Which playing this is, of all the character's. A change of this or the name is a transition: a
+    /// party's next member counts its own.
     pub serial: u32,
     /// How far into the move, at the time [`GraphInput::ticks`] says, in the owner clock's ticks: the
     /// move's `elapsed` at the latest step less how far behind that step this frame draws. Below 0
@@ -867,46 +870,56 @@ impl GraphPlayer {
         let shortest =
             |decay: &mut Option<f32>, new: f32| *decay = Some(decay.map_or(new, |old| old.min(new)));
         self.layers.defeated = input.defeated;
-        // Combat first: a move's start or end is where a replaced graph comes in.
-        let serial = self.layers.combat.map(|playing| playing.serial);
-        let wanted = input.combat.filter(|combat| self.graph.move_entry(combat.name).is_some());
-        if input.combat.is_some() && wanted.is_none() {
-            self.stats.unmapped_moves += 1;
-        }
-        match (serial, wanted) {
-            (Some(serial), Some(combat)) if serial == combat.serial => {
+        // Combat first: a move's start or end is where a replaced graph comes in. It comes in before its
+        // table's asked for a clip, since the row that's wanted may be why it was replaced. Nothing plays a
+        // move with no row, so that counts as starting for as long as it runs.
+        let had = self.layers.combat;
+        let is_playing = |combat: &CombatInput| {
+            had.is_some_and(|playing| {
+                let name = self.graph.moves[usize::from(playing.entry)].name;
+                playing.serial == combat.serial && name == combat.name
+            })
+        };
+        match input.combat {
+            Some(combat) if is_playing(&combat) => {
                 if let Some(playing) = &mut self.layers.combat {
                     playing.position = combat.position;
                 }
             }
-            (None, None) => {}
-            (_, Some(combat)) => {
-                self.adopt_replacement();
+            Some(combat) => {
+                let adopted = self.adopt_replacement();
                 match self.graph.move_entry(combat.name) {
                     Some(entry) => {
                         self.layers.combat =
                             Some(Playing { entry, serial: combat.serial, position: combat.position });
                         shortest(&mut decay, self.graph.moves[usize::from(entry)].decay);
                     }
-                    // The new graph has no clip for it.
+                    // Locomotion takes over from the move, or plays on in what the new graph has it play.
                     None => {
-                        let had = self.layers.combat.take();
-                        if had.is_some() {
+                        self.stats.unmapped_moves += 1;
+                        self.layers.combat = None;
+                        if had.is_some() || adopted {
                             shortest(&mut decay, self.graph.combat_exit);
                         }
                     }
                 }
             }
+            None if had.is_none() => {}
             // The last move of a defeated character: it goes on to its clip's end, and stays.
-            (Some(_), None) if input.defeated && input.combat.is_none() => {
-                self.adopt_replacement();
+            None if input.defeated => {
+                let adopted = self.adopt_replacement();
                 match &mut self.layers.combat {
-                    Some(playing) => playing.position += input.ticks - drawn,
+                    Some(playing) => {
+                        playing.position += input.ticks - drawn;
+                        if adopted {
+                            shortest(&mut decay, self.graph.combat_exit);
+                        }
+                    }
                     // The new graph has no clip for it.
                     None => shortest(&mut decay, self.graph.combat_exit),
                 }
             }
-            (Some(_), None) => {
+            None => {
                 self.adopt_replacement();
                 self.layers.combat = None;
                 shortest(&mut decay, self.graph.combat_exit);
@@ -961,10 +974,10 @@ impl GraphPlayer {
         decay
     }
 
-    /// Takes the waiting replacement, if any: what's playing finds its place in it by name. Allocates
-    /// nothing.
-    fn adopt_replacement(&mut self) {
-        let Some(new) = self.replacement.take() else { return };
+    /// Takes the waiting replacement, if any: what's playing finds its place in it by name. Returns
+    /// whether there was one, so the caller can decay what it may have changed. Allocates nothing.
+    fn adopt_replacement(&mut self) -> bool {
+        let Some(new) = self.replacement.take() else { return false };
         let old = std::mem::replace(&mut self.graph, new);
         let state = old.states[usize::from(self.layers.state)].name;
         self.layers.state = self.graph.state(state).unwrap_or(self.graph.start);
@@ -977,6 +990,7 @@ impl GraphPlayer {
             Some(Reacting { entry: self.graph.reaction(name)?, ..playing })
         });
         self.revision += 1;
+        true
     }
 
     /// Writes the drawn pose into the character, with the blink on top.

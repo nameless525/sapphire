@@ -35,8 +35,9 @@ use sapphire_gameplay::{ActorView, CueEvent, Simulation};
 use sapphire_math::{Mat4, Quat, Vec3};
 use sapphire_platform::{GamepadId, Platform};
 use sapphire_render::{PostVariants, VfxFrame};
+use sapphire_sequencer::FiredCue;
 use sapphire_time::{Stopwatch, TICK_HZ};
-use sapphire_vfx::{EffectLibrary as VfxLibrary, VfxBudget, VfxWorld};
+use sapphire_vfx::{EffectLibrary as VfxLibrary, OwnerSteps, VfxBudget, VfxWorld};
 use sapphire_world::screen_effects::{EffectLibrary as ScreenLibrary, EffectStack};
 
 use crate::trails::BladeTrails;
@@ -192,6 +193,39 @@ impl CueShow {
         }));
         self.world_time_scale = sim.world().resource::<WorldClock>().0.effective_scale();
         self.stepping += stopwatch.elapsed();
+    }
+
+    /// Fires what a timeline's playhead reached this frame, at the places it says: effects into this show's
+    /// world, and sounds with the next frame's audio, since a frame's audio runs before its draw. Allocates
+    /// nothing.
+    pub(crate) fn fire_placed(
+        &mut self,
+        fired: impl Iterator<Item = FiredCue>,
+        screen: &mut EffectStack,
+        presets: &ScreenLibrary,
+        director: Option<&mut CameraDirector>,
+    ) {
+        let shakes: &mut dyn ShakeSink = match director {
+            Some(director) => director,
+            None => &mut self.shakes,
+        };
+        let mut step = CueStep {
+            vfx: &mut self.world,
+            screen,
+            presets,
+            shakes,
+            view_projection: Mat4::IDENTITY,
+            root_of: &|_| None,
+        };
+        for cue in fired {
+            self.dispatcher.fire_at(cue.cue, cue.place, &mut step);
+        }
+    }
+
+    /// Moves the effects by `dt` seconds with the simulation held under a cutscene, which has no step to
+    /// move them, and which holds no one's clock: what's running plays out.
+    pub(crate) fn advance_held(&mut self, dt: f32) {
+        self.world.advance(&OwnerSteps { world: dt, owners: &[] });
     }
 
     /// Whether a frame has a blade's trail to tell of where it's drawn.

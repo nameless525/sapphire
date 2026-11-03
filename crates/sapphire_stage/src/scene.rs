@@ -1818,6 +1818,7 @@ impl Scene {
             packet.wind = wind;
             // The effects gameplay pushed, over whatever post's look is (M1 P3).
             packet.post.effects = effects.resolve(alpha);
+            show.adjust_post(&mut packet.post);
         }
         // Lamps by night, before extraction writes the lights.
         let day_night = self.ecs.world().resource::<TimeOfDay>().frame().look.day_night;

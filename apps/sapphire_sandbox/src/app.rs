@@ -291,6 +291,10 @@ impl App for SandboxApp {
             if let Some(settings) = options.stream.settings(quality.active().id) {
                 scene.open_town_zone(&mut content, settings, &mut renderer.renderer, &device.gpu)?;
             }
+            if let Some(timeline) = options.timeline {
+                let timeline = content.load_timeline(timeline, &mut renderer.renderer, &device.gpu)?;
+                show.fight.show.play_timeline(timeline, sapphire_sequencer::Origin::default());
+            }
             if let Some(meshes) = renderer.party {
                 show.fight.show.set_party_meshes(&mut scene, meshes);
             }
@@ -733,6 +737,10 @@ impl SandboxApp {
                 allocations.allocations
             );
 
+            // A cutscene holds the fight, and the scene's own step goes on under it.
+            if self.show.fight.show.holds_simulation() {
+                continue;
+            }
             // After the scene's own step, as `Stage::step` does: what a cue pushes on the scene's effect
             // stack begins here, so the step just taken doesn't age it before its first frame.
             self.read_combat_step(camera_yaw);

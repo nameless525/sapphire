@@ -533,6 +533,10 @@ impl SceneShow for ShownFight {
         self.fight.write_effects(frame, alpha);
     }
 
+    fn adjust_post(&mut self, post: &mut sapphire_render::PostParams) {
+        self.fight.adjust_post(post);
+    }
+
     fn draw_interface(&mut self, size: (u32, u32), list: &mut UiDrawList) {
         let Some(hud) = &mut self.hud else { return };
         if let Some((values, time)) = self.fight.show.hud_values() {

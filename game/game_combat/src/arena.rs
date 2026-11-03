@@ -672,6 +672,11 @@ impl ArenaActors {
         true
     }
 
+    /// The director, if it frames this stage: a timeline's shots go to it.
+    pub(crate) fn director_mut(&mut self) -> Option<&mut CameraDirector> {
+        self.camera.as_mut().map(|camera| &mut camera.director)
+    }
+
     /// Whether the director frames this stage.
     #[cfg(feature = "dev")]
     pub(crate) fn has_director(&self) -> bool {

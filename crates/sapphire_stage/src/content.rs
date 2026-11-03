@@ -91,6 +91,7 @@ use sapphire_assets::pack;
 use sapphire_assets::probes::ProbeGrid;
 use sapphire_assets::rig::{ArchivedCharacterRig, CharacterRig};
 use sapphire_assets::sound::{AUDIO_PACK, DecodedSound, Sound};
+use sapphire_timeline::Timeline;
 use sapphire_assets::{
     Asset, AssetBudgets, AssetId, AssetServer, AssetSlot, AssetStats, Handle, LoadError, LoadPriority,
     PackFile, PackSource, ReadDone, TextureAsset, Unloaded, Upload, UploadError,
@@ -1199,6 +1200,25 @@ impl Content {
         loaded.map_err(|error| AppInitError::msg(format!("the character rig didn't load: {error}")))?;
         skeleton_loaded
             .map_err(|error| AppInitError::msg(format!("the character's skeleton didn't load: {error}")))
+    }
+
+    /// Loads the timeline `id` until it's resident, and hands it back to be played: it holds nothing of the
+    /// server's from then on.
+    pub fn load_timeline(
+        &mut self,
+        id: AssetId,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+    ) -> Result<std::sync::Arc<Timeline>, AppInitError> {
+        let failed = |error: &dyn std::fmt::Display| AppInitError::msg(format!("the timeline {id}: {error}"));
+        let assets = &mut self.gpu;
+        let handle =
+            self.server.load_with::<Timeline>(id, LoadPriority::Critical).map_err(|error| failed(&error))?;
+        self.server
+            .finish(&handle, |upload| assets.upload(upload, renderer, gpu))
+            .map_err(|error| failed(&error))?;
+        let timeline = self.server.get(&handle).ok_or_else(|| failed(&"not loaded"))?;
+        Ok(std::sync::Arc::new(Timeline::from_archived(timeline)))
     }
 
     /// Mounts the audio pack, which nothing else reads, and loads the cue `id` with its sounds until

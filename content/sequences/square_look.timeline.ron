@@ -1,0 +1,24 @@
+// A short shot of the square, for the `timeline-camera-post` golden: it takes the director's camera from a fight
+// that hasn't started, moves it around the player's spawn, and darkens the picture on the way. Run it with
+// `--arena --timeline 455708fd-5c63-4cf4-98b6-1c0921bf8213`. Q3 brings the real cutscene.
+(
+    type: "sapphire::timeline::TimelineDocument",
+    version: 1,
+    data: (
+        length: 4.0,
+        clock: Real,
+        camera: Some((
+            blend_in: 0.15,
+            blend_out: 0.2,
+            eye: Exact,
+            keys: [
+                (at: 0.0, eye: (6.0, 1.3, 2.4), look_at: (3.2, 1.2, 5.0), fov_degrees: 40.0),
+                (at: 4.0, eye: (1.0, 1.6, 2.2), look_at: (3.2, 1.3, 5.0), roll_degrees: 4.0, fov_degrees: 32.0, ease: Smooth),
+            ],
+        )),
+        post: [
+            (parameter: Exposure, keys: [(at: 0.0, value: 0.0), (at: 1.0, value: -0.35), (at: 3.5, value: -0.35), (at: 4.0, value: 0.0)]),
+            (parameter: Vignette, keys: [(at: 0.0, value: 0.0), (at: 1.0, value: 0.8), (at: 3.5, value: 0.8), (at: 4.0, value: 0.0)]),
+        ],
+    ),
+)

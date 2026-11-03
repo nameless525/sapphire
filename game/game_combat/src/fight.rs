@@ -24,9 +24,11 @@ use sapphire_math::{Mat4, Vec2, Vec3};
 use sapphire_physics::PhysicsWorld;
 use sapphire_platform::AppInitError;
 use sapphire_render::quality::TierId;
-use sapphire_render::{MeshHandle, PipelineInventory, Renderer, VfxFrame};
+use sapphire_render::{MeshHandle, PipelineInventory, PostParams, Renderer, VfxFrame};
 use sapphire_rhi::GpuContext;
+use sapphire_sequencer::{Origin, Playing, TimelinePlayer};
 use sapphire_time::{ScaleHandle, ScaleSource, Stopwatch, TICK_HZ};
+use sapphire_timeline::Timeline;
 use sapphire_vfx::VfxBudget;
 use sapphire_world::light_rig::{CharacterLightRig, LightRigId};
 #[cfg(feature = "dev")]
@@ -47,6 +49,7 @@ use sapphire_stage::{FrameLaps, StageDesc, lookdev, vfx};
 use sapphire_stage::{RenderMesh, RenderPose, RenderTransform};
 
 use crate::party_looks::{Drawn, PartyLooks};
+use crate::timeline::TimelineShow;
 use sapphire_stage::scene::{DEFAULT_TIME_OF_DAY, Figure, LookDev, Scene, stream_settings};
 use sapphire_stage::turntable::Turntable;
 use sapphire_stage::{ContentChanges, SceneShow};
@@ -118,6 +121,11 @@ pub struct FightShow {
     party_looks: Option<Drawn>,
     /// A fight's cues, fired (`--cues`, M2 E3).
     cues: Option<CueShow>,
+    /// The timeline playing (M3 Q1), which a fight with none spends nothing on.
+    timeline: Option<Box<TimelineShow>>,
+    /// Fighters draw on the latest step, not between it and the one before: a timeline has held the
+    /// simulation, and the next step hasn't come. Past that, a frame can't draw earlier than this one did.
+    draws_latest: bool,
     /// Made once: a query made each frame would allocate.
     graph_players: Option<GraphPlayers>,
     /// How long the last frame's camera took: the arena's director or plain follow.
@@ -293,6 +301,10 @@ impl FightShow {
         cast: &[sapphire_gameplay::ActorId],
     ) -> Followed {
         self.follow_slow_motion(scene, simulation);
+        self.draws_latest = self.holds_simulation();
+        if let Some(show) = &mut self.timeline {
+            show.follow(simulation);
+        }
         let mut followed = Followed::default();
         if let Some(arena) = &mut self.arena {
             let fought = arena.fight_time();
@@ -314,22 +326,26 @@ impl FightShow {
         followed
     }
 
-    /// Keeps the scene's world clock with a fight's slow motion (M2 G4), the only scale a simulation puts
-    /// on its world, so what the scene's clock times (screen effects, time of day, the wind and everything
-    /// else on `FramePacket::time_seconds`) stays with the fighters and the effects on theirs.
+    /// Keeps the scene's world clock with a fight's slow motion (M2 G4) and a timeline's time scale (M3 Q1),
+    /// the scales a simulation puts on its world, so what the scene's clock times (screen effects, time of
+    /// day, the wind and everything else on `FramePacket::time_seconds`) stays with the fighters and the
+    /// effects on theirs. It's one scale here, whatever it's made of.
     fn follow_slow_motion(&mut self, scene: &mut Scene, simulation: &Simulation) {
         let clock = &simulation.world().resource::<WorldClock>().0;
-        let slowed = clock.scales().find(|scale| scale.source == ScaleSource::PerfectDodge);
-        let slowed = slowed.map(|scale| scale.per_mille);
-        if slowed == self.slow_motion.map(|(per_mille, _)| per_mille) {
+        let slowed = clock
+            .scales()
+            .filter(|scale| matches!(scale.source, ScaleSource::PerfectDodge | ScaleSource::Cinematic))
+            .map(|scale| (scale.source, scale.per_mille))
+            .reduce(|(source, whole), (_, part)| (source, whole * part / 1000));
+        if slowed.map(|(_, per_mille)| per_mille) == self.slow_motion.map(|(per_mille, _)| per_mille) {
             return;
         }
         let mut clock = scene.world_clock_mut();
         if let Some((_, handle)) = self.slow_motion.take() {
             clock.0.pop_scale(handle);
         }
-        if let Some(per_mille) = slowed {
-            match clock.0.push_scale(ScaleSource::PerfectDodge, per_mille) {
+        if let Some((source, per_mille)) = slowed {
+            match clock.0.push_scale(source, per_mille) {
                 Ok(handle) => self.slow_motion = Some((per_mille, handle)),
                 Err(error) => {
                     tracing::warn!(target: LOG_TARGET, %error, "the scene misses a fight's slow motion")
@@ -362,7 +378,65 @@ impl FightShow {
     /// Gives the arena's camera director this much real time and input for its next frame, if one's
     /// on, and says whether it took them.
     pub fn drive_camera(&mut self, dt: f32, look: Vec2, zoom: f32) -> bool {
+        if let Some(show) = &mut self.timeline {
+            show.drive(dt);
+        }
         self.arena.as_mut().is_some_and(|arena| arena.drive_camera(dt, look, zoom))
+    }
+
+    /// Plays a timeline's presentation from the next frame (M3 Q1), in place of any it was playing: its
+    /// shots through the director, if this stage has one, its post on each frame, its cues through the
+    /// fight's table. The simulation's half is the simulation's: see [`Simulation::play_timeline`].
+    pub fn play_timeline(&mut self, timeline: Arc<Timeline>, origin: Origin) {
+        let show = Box::new(TimelineShow::new(timeline, origin));
+        self.draws_latest = show.holds_simulation();
+        self.timeline = Some(show);
+    }
+
+    /// Lets go of the timeline playing, and says how far it had got, in milliseconds, for a replay to record.
+    /// The camera blends back from its next frame.
+    pub fn skip_timeline(&mut self) -> Option<u32> {
+        self.timeline.as_mut().map(|show| show.player_mut().skip())
+    }
+
+    /// The timeline playing, for what it says at the playhead: its subtitle above all, which Q2 and U7 draw.
+    #[must_use]
+    pub fn timeline_player(&self) -> Option<&TimelinePlayer> {
+        self.timeline.as_deref().map(TimelineShow::player)
+    }
+
+    /// Whether a timeline holds the simulation, so that a loop of its own runs the fight no steps: a
+    /// cutscene, until it ends or is skipped. The scene's own step goes on, and the wind and clouds with it.
+    #[must_use]
+    pub fn holds_simulation(&self) -> bool {
+        self.timeline.as_deref().is_some_and(TimelineShow::holds_simulation)
+    }
+
+    /// Moves the timeline to this frame and gives the director its shot, ahead of the director's own frame.
+    /// A timeline over is gone from here: every post track ended on nothing, and the director's blend out
+    /// goes on by itself.
+    fn present_timeline(&mut self, scene: &mut Scene, alpha: f32) {
+        let Some(show) = &mut self.timeline else { return };
+        let shown = show.present(alpha, self.arena.as_mut().and_then(|arena| arena.director_mut()));
+        if shown.cut {
+            scene.cut_view();
+        }
+        if let Some(cues) = &mut self.cues {
+            let director = self.arena.as_mut().and_then(|arena| arena.director_mut());
+            let fired = show.player().fired();
+            scene.with_screen_effects(|stack, presets| cues.fire_placed(fired, stack, presets, director));
+            if show.holds_simulation() {
+                cues.advance_held(shown.dt);
+            }
+        }
+        if show.player().state() != Playing::Yes {
+            self.timeline = None;
+        }
+    }
+
+    /// Where a frame at `alpha` draws the fighters: see [`Self::draws_latest`].
+    fn alpha_of_fighters(&self, alpha: f32) -> f32 {
+        if self.draws_latest { 1.0 } else { alpha }
     }
 
     /// Where the view looks across the ground, as an actor's yaw: what the next tick's stick turns by.
@@ -818,11 +892,14 @@ impl SceneShow for FightShow {
 
     fn animate(&mut self, scene: &mut Scene, content: &Content, alpha: f32) {
         if self.fighters_posed {
+            let alpha = self.alpha_of_fighters(alpha);
             self.animate_fighters(scene, &content.graph_clips(), &content.graph_clips_of(ENEMY_GRAPH), alpha);
         }
     }
 
     fn present(&mut self, scene: &mut Scene, alpha: f32, aspect: Option<f32>) {
+        self.present_timeline(scene, alpha);
+        let alpha = self.alpha_of_fighters(alpha);
         if let Some(arena) = &mut self.arena {
             let started = Stopwatch::start();
             arena.present(scene.world_mut(), alpha, aspect);
@@ -835,6 +912,12 @@ impl SceneShow for FightShow {
     fn write_effects(&mut self, frame: &mut VfxFrame, alpha: f32) {
         if let Some(cues) = &mut self.cues {
             cues.write(frame, alpha);
+        }
+    }
+
+    fn adjust_post(&mut self, post: &mut PostParams) {
+        if let Some(show) = &self.timeline {
+            show.player().apply_post(post);
         }
     }
 
@@ -879,6 +962,9 @@ impl Fight {
         let mut stopwatch = Stopwatch::start();
         self.show.drive_camera(1.0 / TICK_HZ as f32, Vec2::ZERO, 0.0);
         laps.scene_step += stopwatch.lap();
+        if self.show.holds_simulation() {
+            return Followed::default();
+        }
         let Some(combat) = &mut self.combat else { return Followed::default() };
         combat.step(&mut no_bindings);
         laps.simulation += stopwatch.lap();
@@ -990,6 +1076,10 @@ impl SceneShow for Fight {
 
     fn write_effects(&mut self, frame: &mut VfxFrame, alpha: f32) {
         self.show.write_effects(frame, alpha);
+    }
+
+    fn adjust_post(&mut self, post: &mut PostParams) {
+        self.show.adjust_post(post);
     }
 
     fn draw_debug(&mut self) {

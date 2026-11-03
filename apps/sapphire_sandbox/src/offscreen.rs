@@ -265,6 +265,10 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
         if let Some(settings) = options.stream.settings(quality.active().id) {
             scene.open_town_zone(content, settings, renderer, gpu)?;
         }
+        if let Some(timeline) = options.timeline {
+            let timeline = content.load_timeline(timeline, renderer, gpu)?;
+            fight.play_timeline(timeline, sapphire_sequencer::Origin::default());
+        }
         if let Some(meshes) = FightShow::party_meshes(content, character) {
             fight.set_party_meshes(scene, meshes);
         }

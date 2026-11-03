@@ -1,0 +1,91 @@
+//! A timeline on a fight's stage (M3 Q1): the little that joins [`TimelinePlayer`]'s plain values to the
+//! director. [`FightShow`](crate::fight::FightShow) adds the frame's post and cues, and an app's loop asks it whether
+//! the simulation is held. The rest of it, and what a skip means, are in `sapphire_sequencer`'s docs. Characters
+//! aren't posed here: a track's [`CharacterCue`](sapphire_sequencer::CharacterCue) is Q3's to join to the fighters.
+
+use std::sync::Arc;
+
+use sapphire_camera::{CameraDirector, CameraPose, ShotEye, TakeoverTerms};
+use sapphire_gameplay::Simulation;
+use sapphire_sequencer::{Origin, StepClock, TimelinePlayer};
+use sapphire_timeline::{EyeRule, Timeline};
+
+/// What [`TimelineShow::present`] did this frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct Shown {
+    /// The real seconds it moved by.
+    pub(crate) dt: f32,
+    /// The view jumped between shots, so no frame's history is any use to the next.
+    pub(crate) cut: bool,
+}
+
+/// One timeline playing on the stage.
+#[derive(Debug)]
+pub(crate) struct TimelineShow {
+    player: TimelinePlayer,
+    /// The real seconds since the last frame, unscaled, and held by a pause.
+    dt: f32,
+    /// The steps the simulation's run has taken, while it has one.
+    steps_taken: Option<u32>,
+}
+
+impl TimelineShow {
+    pub(crate) fn new(timeline: Arc<Timeline>, origin: Origin) -> Self {
+        Self { player: TimelinePlayer::new(timeline, origin), dt: 0.0, steps_taken: None }
+    }
+
+    pub(crate) fn player(&self) -> &TimelinePlayer {
+        &self.player
+    }
+
+    pub(crate) fn player_mut(&mut self) -> &mut TimelinePlayer {
+        &mut self.player
+    }
+
+    pub(crate) fn holds_simulation(&self) -> bool {
+        self.player.holds_simulation()
+    }
+
+    /// This much real time for the next frame.
+    pub(crate) fn drive(&mut self, dt: f32) {
+        self.dt += dt;
+    }
+
+    /// Where the simulation's run has got to, after a step.
+    pub(crate) fn follow(&mut self, simulation: &Simulation) {
+        self.steps_taken = simulation.timeline().map(|run| run.tick);
+    }
+
+    /// Moves the playhead to a frame drawn at `alpha`, and gives `director` its shot, or, over or skipped,
+    /// lets it go on the blend out. The director's blend goes on from there with no one watching it.
+    pub(crate) fn present(&mut self, alpha: f32, director: Option<&mut CameraDirector>) -> Shown {
+        let dt = std::mem::take(&mut self.dt);
+        let steps = self.steps_taken.map(|taken| StepClock { taken, alpha });
+        self.player.advance(dt, steps);
+        let mut shown = Shown { dt, cut: false };
+        let (Some(director), Some(terms)) = (director, self.player.camera_terms()) else { return shown };
+        let eye = match terms.eye {
+            EyeRule::Exact => ShotEye::Exact,
+            EyeRule::Clear => ShotEye::Clear,
+        };
+        match self.player.shot() {
+            Some(shot) => {
+                director.set_takeover_terms(TakeoverTerms { eye, blend_half_life: terms.blend_in });
+                director.set_takeover(Some(CameraPose {
+                    eye: shot.eye,
+                    rotation: shot.rotation,
+                    fov_y: shot.fov_y,
+                }));
+                if shot.cut {
+                    director.cut_takeover();
+                    shown.cut = true;
+                }
+            }
+            None => {
+                director.set_takeover_terms(TakeoverTerms { eye, blend_half_life: terms.blend_out });
+                director.set_takeover(None);
+            }
+        }
+        shown
+    }
+}

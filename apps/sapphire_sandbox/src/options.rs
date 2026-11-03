@@ -216,6 +216,9 @@ pub(crate) struct Options {
     /// to fight, framed by this shot (`--arena-shot`). A scene of its own, as `--look-dev` is: it
     /// excludes what that excludes, and `--look-dev` too.
     pub arena: Option<ArenaShot>,
+    /// `--timeline <uuid>`: plays this timeline's presentation from the first frame (M3 Q1), its shots
+    /// through the director and in the arena's own space. Needs `--arena`, on the director's shot.
+    pub timeline: Option<sapphire_assets::AssetId>,
     /// `--party`: the arena's fight is a party's (M2 G7), so the player draws whoever's on the field, in
     /// that member's recolor (`game_combat::party_looks`). Needs the `party` scenario, which `--fight` then plays.
     pub party: bool,
@@ -763,6 +766,11 @@ impl Options {
                 "--clip-in-place" => options.clip_in_place = true,
                 "--arena" => arena_flag = true,
                 "--party" => options.party = true,
+                "--timeline" => {
+                    let raw = value("--timeline")?;
+                    let id = raw.parse().map_err(|error| format!("--timeline expects a UUID: {error}"))?;
+                    options.timeline = Some(id);
+                }
                 "--arena-shot" => {
                     let raw = value("--arena-shot")?;
                     arena_shot = Some(ArenaShot::from_name(&raw).ok_or_else(|| {
@@ -1048,6 +1056,9 @@ impl Options {
             (false, Some(_)) => return Err("--arena-shot needs --arena".to_owned()),
             (false, None) => None,
         };
+        if options.timeline.is_some() && options.arena != Some(ArenaShot::Director) {
+            return Err("--timeline's shots go to the director: it needs --arena, on the director's shot".to_owned());
+        }
         if options.arena.is_some()
             && (options.look_dev.is_some()
                 || options.stage.is_some()
@@ -1994,6 +2005,11 @@ mod tests {
 
     #[test]
     fn the_arena_s_other_flags_need_it() {
+        const INTRO: &str = "--timeline=8f1c2a6e-5b7d-4e39-9a10-2c64d7e0b311";
+        assert!(parse(&["--arena", INTRO]).unwrap().0.timeline.is_some());
+        assert!(parse(&[INTRO]).unwrap_err().contains("--arena"));
+        assert!(parse(&["--arena", "--arena-shot", "follow", INTRO]).unwrap_err().contains("director"));
+        assert!(parse(&["--arena", "--timeline", "soon"]).unwrap_err().contains("UUID"));
         let error = parse(&["--arena-shot", "over"]).expect_err("no arena");
         assert!(error.contains("needs --arena"), "{error}");
         let error = parse(&["--arena", "--arena-shot", "near"]).expect_err("no such shot");

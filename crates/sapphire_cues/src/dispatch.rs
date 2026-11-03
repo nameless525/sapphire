@@ -67,6 +67,22 @@ pub struct CueStep<'a> {
     pub root_of: &'a dyn Fn(ActorId) -> Option<Vec3>,
 }
 
+/// Who or where a cue happens.
+#[derive(Clone, Copy)]
+enum Site {
+    Actor { actor: ActorId, hit: Option<HitCue> },
+    Place(Vec3),
+}
+
+impl Site {
+    fn hit(self) -> Option<HitCue> {
+        match self {
+            Self::Actor { hit, .. } => hit,
+            Self::Place(_) => None,
+        }
+    }
+}
+
 /// What's been fired so far (rule R9). Nothing here reads a clock: whoever runs it times it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CueStats {
@@ -227,19 +243,29 @@ impl CueDispatcher {
         }
     }
 
+    /// Fires a cue with no actor behind it, at `place`: what a timeline's cue track does (M3 Q1). Its row is
+    /// looked up as a cue with no hit's would be, and its effects run on the world's clock. Allocates nothing.
+    pub fn fire_at(&mut self, cue: Name, place: Vec3, step: &mut CueStep<'_>) {
+        self.fire_on(cue, Site::Place(place), step);
+    }
+
     fn fire(&mut self, event: &CueEvent, step: &mut CueStep<'_>) {
+        self.fire_on(event.cue, Site::Actor { actor: event.actor, hit: event.hit }, step);
+    }
+
+    fn fire_on(&mut self, cue: Name, site: Site, step: &mut CueStep<'_>) {
         self.stats.cues += 1;
-        let weight = event.hit.map(|hit| hit.weight);
-        let Some(row) = find_row(&self.rows, event.cue, weight).copied() else {
+        let hit = site.hit();
+        let weight = hit.map(|hit| hit.weight);
+        let Some(row) = find_row(&self.rows, cue, weight).copied() else {
             self.stats.unmatched += 1;
             return;
         };
-        let subject = event.hit.map_or(event.actor, |hit| hit.target);
         for effect in row.effects.iter().flatten() {
-            self.fire_effect(effect, event, subject, step);
+            self.fire_effect(effect, site, step);
         }
         for sound in row.sounds.iter().flatten() {
-            self.queue_sound(*sound, event);
+            self.queue_sound(*sound, site);
         }
         if let Some((id, strength)) = row.shake {
             step.shakes.fire_shake(id, strength);
@@ -248,7 +274,7 @@ impl CueDispatcher {
         if let Some((id, center)) = row.screen
             && let Some(preset) = step.presets.preset(id)
         {
-            match center_of(center, event.hit, step.view_projection) {
+            match center_of(center, hit, step.view_projection) {
                 Some(center) => step.screen.push_at(preset, center),
                 None => step.screen.push(preset),
             };
@@ -260,22 +286,23 @@ impl CueDispatcher {
         }
     }
 
-    fn fire_effect(
-        &mut self,
-        effect: &RowEffect,
-        event: &CueEvent,
-        subject: ActorId,
-        step: &mut CueStep<'_>,
-    ) {
-        let root = (step.root_of)(subject);
-        let placement = match (effect.at, event.hit) {
-            (EffectPlace::Hit, Some(hit)) => Some(along_normal(&hit)),
-            _ => root.map(Placement::at),
-        };
-        let owner = match effect.clock {
-            EffectOwner::World => OwnerId::WORLD,
-            EffectOwner::Subject => owner_of(subject),
-            EffectOwner::Actor => owner_of(event.actor),
+    fn fire_effect(&mut self, effect: &RowEffect, site: Site, step: &mut CueStep<'_>) {
+        let (placement, owner) = match site {
+            Site::Actor { actor, hit } => {
+                let subject = hit.map_or(actor, |hit| hit.target);
+                let root = (step.root_of)(subject);
+                let placement = match (effect.at, hit) {
+                    (EffectPlace::Hit, Some(hit)) => Some(along_normal(&hit)),
+                    _ => root.map(Placement::at),
+                };
+                let owner = match effect.clock {
+                    EffectOwner::World => OwnerId::WORLD,
+                    EffectOwner::Subject => owner_of(subject),
+                    EffectOwner::Actor => owner_of(actor),
+                };
+                (placement, owner)
+            }
+            Site::Place(place) => (Some(Placement::at(place)), OwnerId::WORLD),
         };
         let spawned = placement.and_then(|placement| step.vfx.spawn(effect.effect, owner, placement));
         match spawned {
@@ -284,14 +311,15 @@ impl CueDispatcher {
         }
     }
 
-    fn queue_sound(&mut self, cue: AssetId, event: &CueEvent) {
+    fn queue_sound(&mut self, cue: AssetId, site: Site) {
         if self.sounds.len() == MAX_FRAME_SOUNDS {
             self.stats.sounds_dropped += 1;
             return;
         }
-        let target = match event.hit {
-            Some(hit) => CueTarget::At(hit.point),
-            None => CueTarget::On(emitter_of(event.actor)),
+        let target = match site {
+            Site::Actor { hit: Some(hit), .. } => CueTarget::At(hit.point),
+            Site::Actor { actor, hit: None } => CueTarget::On(emitter_of(actor)),
+            Site::Place(place) => CueTarget::At(place),
         };
         self.sounds.push(CueRequest { cue, target });
         self.stats.sounds += 1;
@@ -510,6 +538,34 @@ mod tests {
 
     fn with_effect(cue: &str, at: EffectPlace, clock: EffectOwner) -> CueRow {
         CueRow { effects: vec![EffectFire { effect: "dust_puff".to_owned(), at, clock }], ..row(cue) }
+    }
+
+    /// A timeline's cue has no one behind it: its effect stands at the place, on the world's clock whatever
+    /// the row says, its sound is at the place, and an unknown name fires nothing, as any other does.
+    #[test]
+    fn a_placed_cue_needs_no_actor() {
+        let place = Vec3::new(4.0, 2.0, -1.0);
+        let row = CueRow {
+            sounds: vec![SOUND],
+            ..with_effect("bell", EffectPlace::Feet, EffectOwner::Actor)
+        };
+        let mut dispatcher = dispatcher(vec![row]);
+        let mut sinks = Sinks::new();
+        let root_of = |_| panic!("a placed cue asks for no actor");
+        let mut step = CueStep {
+            vfx: &mut sinks.vfx,
+            screen: &mut sinks.screen,
+            presets: &sinks.presets,
+            shakes: &mut sinks.shakes,
+            view_projection: Mat4::IDENTITY,
+            root_of: &root_of,
+        };
+        dispatcher.fire_at(Name::new("bell"), place, &mut step);
+        dispatcher.fire_at(Name::new("nothing"), place, &mut step);
+        assert_eq!(dispatcher.sounds(), &[CueRequest { cue: SOUND, target: CueTarget::At(place) }]);
+        assert_eq!((dispatcher.stats().cues, dispatcher.stats().unmatched, dispatcher.stats().effects), (2, 1, 1));
+        // An owner in hitstop holds nothing of it.
+        assert!(sinks.sprites_after(&[(owner_of(ATTACKER), 0.0)]) > 0);
     }
 
     #[test]

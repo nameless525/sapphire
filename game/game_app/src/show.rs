@@ -231,7 +231,7 @@ impl SceneShow for GameShow {
     }
 
     fn step(&mut self, scene: &mut Scene, laps: &mut FrameLaps) {
-        if self.on_title() {
+        if self.on_title() || self.shown.fight.show.holds_simulation() {
             return;
         }
         let mut stopwatch = Stopwatch::start();
@@ -261,6 +261,10 @@ impl SceneShow for GameShow {
 
     fn write_effects(&mut self, frame: &mut VfxFrame, alpha: f32) {
         self.shown.write_effects(frame, alpha);
+    }
+
+    fn adjust_post(&mut self, post: &mut sapphire_render::PostParams) {
+        self.shown.adjust_post(post);
     }
 
     fn draw_interface(&mut self, size: (u32, u32), list: &mut UiDrawList) {

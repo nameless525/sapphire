@@ -25,8 +25,10 @@ sapphire_physics.workspace = true
 sapphire_platform.workspace = true
 sapphire_render.workspace = true
 sapphire_rhi.workspace = true
+sapphire_sequencer.workspace = true
 sapphire_stage.workspace = true
 sapphire_time.workspace = true
+sapphire_timeline.workspace = true
 # The plain values a fight says of its fighters, which a HUD reads.
 sapphire_ui.workspace = true
 sapphire_vfx.workspace = true

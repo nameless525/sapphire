@@ -155,7 +155,7 @@ pub struct Scene {
 /// and `arena-fight-telegraph`, `arena-fight-hit`, `arena-fight-cut` and `arena-fight-slash` a fight with
 /// the enemy (M2 G6), side on, so the character isn't in front of what they're there to show.
 /// `arena-party-second` and `arena-party-third` play a party's fight (M2 G7), and only they run `--party`.
-pub fn scenes() -> [Scene; 143] {
+pub fn scenes() -> [Scene; 144] {
     [
         Scene {
             name: "turntable-start",
@@ -2133,6 +2133,27 @@ pub fn scenes() -> [Scene; 143] {
                 "off",
                 "--debug-draw",
                 "volumes",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // A timeline with the camera and two post parameters (M3 Q1): the director's on a shot of the square
+        // and the picture's darkened, with the fight held.
+        Scene {
+            name: "timeline-camera-post",
+            args: &[
+                "--capture-ticks",
+                "120",
+                "--arena",
+                "--timeline",
+                "455708fd-5c63-4cf4-98b6-1c0921bf8213",
+                "--time-of-day",
+                "13",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--capture-frames",
+                "32",
             ],
             thresholds: Thresholds::default(),
         },

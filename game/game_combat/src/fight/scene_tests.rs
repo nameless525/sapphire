@@ -482,6 +482,132 @@ pub(super) fn arena_stage(shot: ArenaShot) -> (Staged, Figure) {
     (scene, figure)
 }
 
+fn square_look() -> Arc<sapphire_timeline::Timeline> {
+    let text = include_str!("../../../../content/sequences/square_look.timeline.ron");
+    let document = sapphire_timeline::TimelineDocument::from_ron(text).expect("reads");
+    Arc::new(document.cook().expect("cooks"))
+}
+
+/// One frame `dt` after the last: where the view is, and what post it's drawn through.
+fn timeline_frame(scene: &mut Staged, dt: f32) -> (Vec3, sapphire_render::PostParams) {
+    scene.drive_arena_camera(dt, Vec2::ZERO, 0.0);
+    let post = scene.frame_packet(1.0, Some((640, 360))).post;
+    scene.end_frame();
+    (scene.camera().eye(), post)
+}
+
+/// What Q1's golden shows, all the way through: the fight's held, the view goes to the shot and the post
+/// takes its offsets, and at the end everything's as it was, the post at once and the view by its blend.
+#[test]
+fn a_timeline_takes_the_view_and_the_post_and_gives_them_back() {
+    const FRAME: f32 = 1.0 / 60.0;
+    let (mut scene, _) = arena_stage(ArenaShot::Director);
+    let (eye_before, post_before) = timeline_frame(&mut scene, FRAME);
+    scene.show.play_timeline(square_look(), Origin::default());
+    assert!(scene.show.holds_simulation());
+    assert_eq!(scene.show.timeline_player().map(TimelinePlayer::length), Some(4.0));
+
+    for _ in 0..120 {
+        timeline_frame(&mut scene, FRAME);
+    }
+    let (eye, post) = timeline_frame(&mut scene, FRAME);
+    assert!(scene.show.holds_simulation());
+    assert!(eye.distance(eye_before) > 3.0, "on the shot: {eye} from {eye_before}");
+    assert!(eye.z < 3.0, "in front of the player, where no rig goes: {eye}");
+    assert!((post.exposure - post_before.exposure + 0.35).abs() < 1e-3, "{}", post.exposure);
+    assert!((post.vignette.intensity - post_before.vignette.intensity - 0.8).abs() < 1e-3);
+
+    let frames_left = 2.1 / FRAME;
+    for _ in 0..frames_left as u32 {
+        timeline_frame(&mut scene, FRAME);
+    }
+    assert!(!scene.show.holds_simulation());
+    assert!(scene.show.timeline_player().is_none(), "it's gone once it's over");
+    let (eye, post) = timeline_frame(&mut scene, FRAME);
+    assert_eq!(post, post_before, "handing back moves nothing");
+    assert!(eye.distance(eye_before) > 0.01, "the view's still on its way back: {eye}");
+    for _ in 0..180 {
+        timeline_frame(&mut scene, FRAME);
+    }
+    let (eye, _) = timeline_frame(&mut scene, FRAME);
+    assert!(eye.distance(eye_before) < 0.01, "and home: {eye} for {eye_before}");
+}
+
+#[test]
+fn a_skip_lets_go_on_the_next_frame_and_blends_home() {
+    const FRAME: f32 = 1.0 / 60.0;
+    let (mut scene, _) = arena_stage(ArenaShot::Director);
+    let (eye_before, post_before) = timeline_frame(&mut scene, FRAME);
+    assert_eq!(scene.show.skip_timeline(), None, "nothing to skip");
+    scene.show.play_timeline(square_look(), Origin::default());
+    for _ in 0..90 {
+        timeline_frame(&mut scene, FRAME);
+    }
+    let at_ms = scene.show.skip_timeline().expect("playing");
+    assert!((1450..=1550).contains(&at_ms), "{at_ms} ms in");
+    assert!(!scene.show.holds_simulation(), "the fight goes on from here");
+    let (eye, post) = timeline_frame(&mut scene, FRAME);
+    assert_eq!(post, post_before);
+    assert!(eye.distance(eye_before) > 1.0, "a blend, not a cut: {eye}");
+    for _ in 0..180 {
+        timeline_frame(&mut scene, FRAME);
+    }
+    let (eye, _) = timeline_frame(&mut scene, FRAME);
+    assert!(eye.distance(eye_before) < 0.01, "and home: {eye} for {eye_before}");
+}
+
+/// A timeline's time scale is on the simulation's world, and what the scene's clock times has to stay
+/// with it, as it does with a perfect dodge.
+#[test]
+fn the_scenes_clock_follows_a_timelines_time_scale() {
+    let text = include_str!("../../../../crates/sapphire_timeline/test_content/cinematic.timeline.ron");
+    let timeline = sapphire_timeline::TimelineDocument::from_ron(text).expect("reads").cook().expect("cooks");
+    let mut sim = Simulation::new(sapphire_gameplay::SimConfig::default());
+    let id = sim.add_timeline(timeline.simulation).expect("loads");
+    sim.play_timeline(id).expect("plays");
+    let mut scene = scene();
+    let mut slowed = false;
+    for _ in 0..timeline.presentation.length as u32 * TICK_HZ + 2 {
+        sim.step(&sapphire_gameplay::TickActions::NEUTRAL);
+        scene.follow_simulation(&sim, &[]);
+        let world = sim.world().resource::<WorldClock>().0.effective_scale();
+        assert_eq!(scene.world_clock_mut().0.effective_scale(), world);
+        slowed |= world < 1.0;
+    }
+    assert!(slowed, "the timeline's scale came and went");
+    assert_eq!(scene.world_clock_mut().0.effective_scale(), 1.0);
+}
+
+/// A cutscene holds a fight that steps itself, and the fight takes its next step once it's let go, with
+/// the fighters' clock never drawn behind what the hold drew.
+#[test]
+fn a_cutscene_holds_the_fight_and_a_skip_lets_it_go() {
+    let option = crate::combat::CombatOption::Fight { script: Some("idle".to_owned()), party: false };
+    let (mut staged, _) = arena_stage(ArenaShot::Director);
+    let mut fight = Fight {
+        combat: Some(crate::combat::Combat::new(&option).expect("sets up")),
+        show: std::mem::take(&mut staged.show),
+    };
+    let tick = |fight: &Fight| fight.combat.as_ref().expect("on").simulation().tick();
+    let mut laps = FrameLaps::default();
+    fight.step_alone(&mut staged.scene, &mut laps);
+    let started = tick(&fight);
+    assert_eq!(fight.show.alpha_of_fighters(0.25), 0.25, "a fight going on draws between its steps");
+
+    fight.show.play_timeline(square_look(), Origin::default());
+    for _ in 0..30 {
+        fight.step_alone(&mut staged.scene, &mut laps);
+    }
+    assert_eq!(tick(&fight), started, "held");
+    assert_eq!(fight.show.alpha_of_fighters(0.25), 1.0, "on the latest step");
+
+    fight.show.skip_timeline().expect("playing");
+    assert_eq!(fight.show.alpha_of_fighters(0.25), 1.0, "and still, until there's another");
+    fight.step_alone(&mut staged.scene, &mut laps);
+    assert_eq!(tick(&fight), started + 1);
+    assert_eq!(fight.show.alpha_of_fighters(0.25), 0.25);
+}
+
 /// A new fight stands everyone somewhere else, so the renderer hears of it once: temporal AA drops
 /// what it drew of the last fight, and velocity counts the camera as unmoved. A swap, which stands
 /// someone new in the same place with the camera going on, isn't a cut.

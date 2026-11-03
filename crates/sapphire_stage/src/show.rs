@@ -8,7 +8,7 @@
 //!
 //! `()` plays nothing, and costs nothing.
 
-use sapphire_render::{PipelineInventory, UiDrawList, UiPageState, VfxFrame};
+use sapphire_render::{PipelineInventory, PostParams, UiDrawList, UiPageState, VfxFrame};
 
 use crate::content::Content;
 use crate::frame::FrameLaps;
@@ -54,6 +54,10 @@ pub trait SceneShow {
 
     /// Writes its effects into the frame's packet, before extraction.
     fn write_effects(&mut self, _frame: &mut VfxFrame, _alpha: f32) {}
+
+    /// Moves the frame's post from what the look and the screen effects resolved. Nothing it writes here
+    /// asks for a pipeline a renderer's compositing doesn't already have.
+    fn adjust_post(&mut self, _post: &mut PostParams) {}
 
     /// Draws its interface over a frame of `size`, once the frame's characters are listed.
     fn draw_interface(&mut self, _size: (u32, u32), _list: &mut UiDrawList) {}

@@ -15,6 +15,10 @@ pub struct GpuContextDesc {
     /// Where to persist the pipeline cache. `None` disables persistence. Only Vulkan devices
     /// use it (wgpu 30).
     pub pipeline_cache: Option<PipelineCacheDesc>,
+    /// Holds the device's 2D textures to this many texels a side, where its adapter offers more.
+    /// wgpu validates against what a device asked for, so this tries a smaller device's limit on a
+    /// larger one, as tests do. `None` takes what the adapter offers.
+    pub max_texture_side: Option<u32>,
 }
 
 /// The GPU device the engine renders with: adapter, device, queue and probed capabilities.
@@ -61,7 +65,7 @@ impl GpuContext {
     ) -> Result<Self, RhiError> {
         let surface = compatible_surface.map(RenderSurface::raw);
         for (i, &backend) in instance.backends().iter().enumerate() {
-            let Some((adapter, device, queue, caps)) = open_device(instance, backend, surface) else {
+            let Some((adapter, device, queue, caps)) = open_device(instance, backend, desc, surface) else {
                 let next = instance.backends().get(i + 1);
                 tracing::warn!(target: LOG_TARGET, %backend, fallback = ?next, "no usable adapter on backend");
                 continue;
@@ -158,12 +162,16 @@ type OpenDevice = (Adapter, Device, Queue, GpuCaps);
 fn open_device(
     instance: &GpuInstance,
     backend: Backend,
+    context: &GpuContextDesc,
     surface: Option<&wgpu::Surface<'static>>,
 ) -> Option<OpenDevice> {
     let mut adapters = pollster::block_on(instance.raw().enumerate_adapters(backend.into()));
     adapters.sort_by_key(|adapter| performance_rank(adapter.get_info().device_type));
     for adapter in adapters {
-        let caps = GpuCaps::probe(&adapter);
+        let mut caps = GpuCaps::probe(&adapter);
+        if let Some(side) = context.max_texture_side {
+            caps.limits.max_texture_dimension_2d = caps.limits.max_texture_dimension_2d.min(side);
+        }
         if let Some(reason) = rejection_reason(&adapter, &caps, surface) {
             tracing::info!(target: LOG_TARGET, adapter = %caps.adapter.name, %backend, reason, "skipping adapter");
             continue;

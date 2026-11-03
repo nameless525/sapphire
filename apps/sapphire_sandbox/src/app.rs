@@ -1314,8 +1314,8 @@ fn create_device(platform: &Platform, window: &Window, debug: GpuDebug) -> Resul
         dir: platform.cache_dir().join("pipeline_cache"),
         build_id: SandboxApp::METADATA.version.to_owned(),
     };
-    let gpu =
-        GpuContext::new(&instance, &GpuContextDesc { pipeline_cache: Some(pipeline_cache) }, Some(&surface))?;
+    let desc = GpuContextDesc { pipeline_cache: Some(pipeline_cache), ..GpuContextDesc::default() };
+    let gpu = GpuContext::new(&instance, &desc, Some(&surface))?;
     tracing::info!(target: LOG_TARGET, caps = ?gpu.caps(), "GPU ready");
 
     let size = window.pixel_size();

@@ -953,6 +953,15 @@ mod tests {
         }
     }
 
+    /// Every tier's shadow maps fit Vulkan 1.1's least 2D texture side, the least of any device the
+    /// engine takes (`sapphire_rhi::caps`), so a shipped tier never meets `RenderError::ShadowMapTooLarge`.
+    #[test]
+    fn the_shipped_tiers_shadow_maps_fit_every_device() {
+        for tier in TierTable::shipped().tiers() {
+            assert!(tier.shadows.check_limit(4096).is_ok(), "{}", tier.id);
+        }
+    }
+
     #[test]
     fn the_shipped_table_is_valid_and_round_trips() {
         let table = TierTable::shipped();

@@ -243,6 +243,14 @@ pub enum RenderError {
     UnresolvedMaterial { slot: String, id: AssetId },
     #[error("the probe grid's {bricks} bricks don't fit this device's atlas, buffers or dispatches")]
     ProbeGridTooLarge { bricks: u32 },
+    /// [`RenderSettings::shadows`] holds a value out of its range ([`ShadowSettings::validate`]).
+    #[error("{field} {problem}")]
+    InvalidShadows { field: &'static str, problem: &'static str },
+    /// [`RenderSettings::shadows`] is in range and asks for a map past this device's limit, which
+    /// only the device can say. Nothing shrinks it behind the caller's back: asking again for less
+    /// is the caller's choice.
+    #[error("the shadow {map} would be {width} × {height} texels, past this device's {limit} a side")]
+    ShadowMapTooLarge { map: &'static str, width: u32, height: u32, limit: u32 },
     /// The GPU device was lost before or while the renderer was made
     /// ([`GpuContext::is_lost`]): what it built is dead. Recover as `GpuContext`'s docs say.
     #[error("the GPU device was lost")]
@@ -576,8 +584,9 @@ impl Renderer {
     /// Creates pipelines for `color_format`, the target's: the surface's sRGB view format, or
     /// another format that encodes on write. Fails if the device can't render to it, or can't
     /// render, filter and resolve HDR scene color (`Rgba16Float`) and depth at the requested
-    /// sample count, and with [`RenderError::DeviceLost`] if the device is lost before or while
-    /// it builds: a renderer is never handed back holding objects made on a dead device.
+    /// sample count, or make the shadow maps `settings` asks for, and with
+    /// [`RenderError::DeviceLost`] if the device is lost before or while it builds: a renderer is
+    /// never handed back holding objects made on a dead device.
     pub fn new(
         gpu: &GpuContext,
         color_format: wgpu::TextureFormat,
@@ -603,6 +612,11 @@ impl Renderer {
         let depth = gpu.format_support(DEPTH_FORMAT);
         if !depth.renderable || !depth.supports_samples(samples) {
             return Err(RenderError::UnsupportedMsaa { format: DEPTH_FORMAT, samples });
+        }
+        if let Some(shadows) = &settings.shadows {
+            let invalid = |(field, problem)| RenderError::InvalidShadows { field, problem };
+            shadows.validate().map_err(invalid)?;
+            shadows.check_limit(gpu.device().limits().max_texture_dimension_2d)?;
         }
         let shaders = ShaderSources::compiled_in();
         let device = gpu.device().clone();

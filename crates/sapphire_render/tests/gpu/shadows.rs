@@ -30,8 +30,8 @@ use sapphire_render::texture::GpuTexture;
 use sapphire_render::{
     BloomParams, CameraData, CharacterBody, CharacterFace, CharacterGi, CharacterInstance, CharacterLighting,
     ColorGrade, DirectionalLight, FramePacketRing, InstanceId, MaterialHandle, MeshHandle, MeshInstance,
-    Msaa, PostParams, RenderSettings, RenderStats, Renderer, ShaderError, ShaderFile, ShaderSources,
-    ShaderUpdate, ShadowFilter, ShadowSettings, SkyGradient, ToneCurve, ViewData, Vignette,
+    Msaa, PostParams, RenderError, RenderSettings, RenderStats, Renderer, ShaderError, ShaderFile,
+    ShaderSources, ShaderUpdate, ShadowFilter, ShadowSettings, SkyGradient, ToneCurve, ViewData, Vignette,
 };
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, TransientDesc, wgpu};
 
@@ -1367,4 +1367,42 @@ fn a_lost_frame_that_moves_the_cascades_has_them_drawn_with_the_next() {
             assert_eq!(got, (4, 0), "{loss:?}, {what}: (cascades drawn, pixels differing)");
         }
     }
+}
+
+/// Shadow settings in range can still ask for more than a device has: a limit is the device's, and
+/// the character atlas is several tiles a side. `Renderer::new` says so as an error rather than
+/// tripping the device's validation (review REN-003), and turns away only maps it would make.
+#[test]
+#[ignore = "needs a GPU"]
+fn shadow_maps_past_the_devices_limit_are_an_error() {
+    let instance = GpuInstance::new(&GpuInstanceDesc::default()).expect("instance");
+    let desc = GpuContextDesc { max_texture_side: Some(4096), ..GpuContextDesc::default() };
+    let gpu = GpuContext::new(&instance, &desc, None).expect("device");
+    assert_eq!(gpu.device().limits().max_texture_dimension_2d, 4096);
+    let make = |shadows| {
+        let settings = RenderSettings { shadows: Some(shadows), ..RenderSettings::default() };
+        Renderer::new(&gpu, FORMAT, settings)
+    };
+    let shadows = ShadowSettings::default();
+    let refused = |settings: ShadowSettings, what: &str, expected: (u32, u32)| match make(settings) {
+        Err(RenderError::ShadowMapTooLarge { width, height, limit: 4096, .. }) => {
+            assert_eq!((width, height), expected, "{what}");
+        }
+        Err(other) => panic!("{what}: {other}"),
+        Ok(_) => panic!("{what}: made"),
+    };
+
+    // Tiles of 2048 make an atlas of 8192 × 4096, and of 1024 one that just fits.
+    refused(ShadowSettings { character_resolution: 2048, ..shadows }, "the atlas", (8192, 4096));
+    make(ShadowSettings { character_resolution: 1024, ..shadows }).expect("an atlas of 4096 × 2048");
+    // Off, it asks for nothing, whatever its tiles.
+    let unused = ShadowSettings { character_shadow: false, character_resolution: 4096, ..shadows };
+    make(unused).expect("no atlas");
+    // Cascades take one texture a side.
+    refused(ShadowSettings { resolution: 8192, ..shadows }, "the cascades", (8192, 8192));
+    make(ShadowSettings { resolution: 4096, ..shadows }).expect("cascades of 4096");
+
+    // What's out of range on any device comes back as an error too, from a renderer made directly.
+    let no_cascades = make(ShadowSettings { cascades: 0, ..shadows });
+    assert!(matches!(no_cascades, Err(RenderError::InvalidShadows { field: "shadows.cascades", .. })));
 }

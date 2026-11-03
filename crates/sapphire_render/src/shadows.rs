@@ -170,7 +170,6 @@ use sapphire_assets::mesh::PositionFormat;
 use sapphire_rhi::wgpu;
 use serde::{Deserialize, Serialize};
 
-use crate::FramePacket;
 use crate::buffer;
 use crate::characters::{CharacterTable, GpuCharacter};
 use crate::draw::{DrawSet, MeshDraws};
@@ -183,6 +182,7 @@ use crate::pipelines::{
 use crate::scene::{DrawList, InstanceSlots};
 use crate::shader_builds::Step;
 use crate::shaders::{self, Program, ShaderSources};
+use crate::{FramePacket, RenderError};
 use plan::{ShadowPlan, WindMargin};
 
 /// The most cascades a tier may have (spec §5.12: 4 on desktop, 2 on phones).
@@ -317,6 +317,30 @@ impl ShadowSettings {
             return Err(("shadows.character_resolution", "must be a power of two in 128..=4096"));
         }
         Ok(())
+    }
+
+    /// The character atlas's size in texels, where these settings draw one.
+    fn atlas_size(&self) -> Option<(u32, u32)> {
+        self.character_shadow.then(|| {
+            let tile = self.character_resolution;
+            (ATLAS_COLUMNS.saturating_mul(tile), ATLAS_ROWS.saturating_mul(tile))
+        })
+    }
+
+    /// Checks that the maps these settings make fit textures of at most `limit` texels a side, which
+    /// is the device's to say: [`Self::validate`]'s ranges hold on any device, and a device may
+    /// hold less. An atlas these settings don't draw asks for nothing.
+    pub(crate) fn check_limit(&self, limit: u32) -> Result<(), RenderError> {
+        let too_large = |map, width, height| RenderError::ShadowMapTooLarge { map, width, height, limit };
+        if self.resolution > limit {
+            return Err(too_large("cascades", self.resolution, self.resolution));
+        }
+        match self.atlas_size() {
+            Some((width, height)) if width.max(height) > limit => {
+                Err(too_large("character atlas", width, height))
+            }
+            _ => Ok(()),
+        }
     }
 
     /// The receivers' pipeline constants for these settings (`SHADOWS`, `SHADOW_TENT`).
@@ -970,12 +994,7 @@ impl ShadowTextures {
             dimension: Some(wgpu::TextureViewDimension::D2Array),
             ..Default::default()
         });
-        let atlas_size = match settings {
-            Some(settings) if settings.character_shadow => {
-                (ATLAS_COLUMNS * settings.character_resolution, ATLAS_ROWS * settings.character_resolution)
-            }
-            _ => (1, 1),
-        };
+        let atlas_size = settings.and_then(ShadowSettings::atlas_size).unwrap_or((1, 1));
         let atlas = depth("character shadows", atlas_size.0, atlas_size.1, 1);
         Self {
             layers: layer_views,
@@ -1036,4 +1055,55 @@ fn face_layouts(device: &wgpu::Device) -> [wgpu::BindGroupLayout; 2] {
         }],
     });
     [maps, entries]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What each size of map asks of each device's limit, at the sizes on either side of it.
+    #[test]
+    fn maps_fit_a_device_by_their_whole_size() {
+        let check = |resolution, character_resolution, character_shadow, limit| {
+            let settings =
+                ShadowSettings { resolution, character_resolution, character_shadow, ..Default::default() };
+            assert_eq!(settings.validate(), Ok(()), "every case is in range");
+            match settings.check_limit(limit) {
+                Ok(()) => None,
+                Err(RenderError::ShadowMapTooLarge { map, width, height, limit: reported }) => {
+                    assert_eq!(reported, limit);
+                    Some((map, width, height))
+                }
+                Err(other) => panic!("{other}"),
+            }
+        };
+        let atlas = "character atlas";
+        for (tile, limit, expected) in [
+            (1024, 4096, None),
+            (2048, 4096, Some((atlas, 8192, 4096))),
+            (2048, 8192, None),
+            (4096, 8192, Some((atlas, 16384, 8192))),
+            (4096, 16384, None),
+            // Four tiles across and two down: its width is what a limit stops.
+            (128, 512, None),
+            (256, 512, Some((atlas, 1024, 512))),
+        ] {
+            assert_eq!(check(256, tile, true, limit), expected, "tiles of {tile} on {limit}");
+        }
+        // An atlas that isn't drawn asks for nothing.
+        assert_eq!(check(1024, 4096, false, 4096), None);
+        // The cascades, a side each, with or without one.
+        for character_shadow in [true, false] {
+            assert_eq!(check(4096, 128, character_shadow, 4096), None);
+            let too_large = Some(("cascades", 8192, 8192));
+            assert_eq!(check(8192, 128, character_shadow, 4096), too_large);
+        }
+    }
+
+    /// Past any limit the atlas's size can't wrap around to one that fits, however it was asked for.
+    #[test]
+    fn an_atlas_past_every_range_stays_too_large() {
+        let settings = ShadowSettings { character_resolution: u32::MAX / 2, ..Default::default() };
+        assert!(matches!(settings.check_limit(16384), Err(RenderError::ShadowMapTooLarge { .. })));
+    }
 }

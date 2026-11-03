@@ -45,7 +45,7 @@ impl Device {
         // SAFETY: the surface owns `handle`, which keeps the native window alive, and drops it right after
         // itself.
         let mut surface = unsafe { RenderSurface::new(&instance, target, handle)? };
-        let gpu = GpuContext::new(&instance, &GpuContextDesc { pipeline_cache: None }, Some(&surface))?;
+        let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), Some(&surface))?;
         let size = window.pixel_size();
         surface.configure(&gpu, size.width, size.height, PresentPolicy::Fifo)?;
         let format = surface.format().ok_or_else(|| AppInitError::msg("a surface with no format"))?;

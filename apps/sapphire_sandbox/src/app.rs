@@ -44,7 +44,7 @@ use sapphire_stage::rims::RimRigMeshes;
 use sapphire_stage::scene::{LookDev, Scene};
 use sapphire_stage::studio::StudioMeshes;
 use sapphire_stage::swatches::SWATCHES;
-use sapphire_stage::{garments, layers, lookdev, skinned, studio, swatches};
+use sapphire_stage::{SceneShow, garments, layers, lookdev, skinned, studio, swatches};
 
 /// Loop period while nothing can be presented (occluded, minimized, backgrounded).
 const IDLE_FRAME: Duration = Duration::from_millis(33);
@@ -803,6 +803,9 @@ impl SandboxApp {
             #[cfg(feature = "dev")]
             self.dev.after_steps(self.show.fight.combat.as_ref(), &self.scene);
             self.scene.animate(&self.content, alpha, &mut self.show);
+            if target.is_some() {
+                self.show.begin_interface(self.renderer.ui_page_state());
+            }
             let packet = self.scene.frame_packet(alpha, target.map(|(_, size)| size), &mut self.show);
             self.stages.extract = presentation + stopwatch.lap();
             // Before `prepare`, which culls hulls by it, and readies the debug view.

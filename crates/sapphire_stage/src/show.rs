@@ -8,7 +8,7 @@
 //!
 //! `()` plays nothing, and costs nothing.
 
-use sapphire_render::{PipelineInventory, UiDrawList, VfxFrame};
+use sapphire_render::{PipelineInventory, UiDrawList, UiPageState, VfxFrame};
 
 use crate::content::Content;
 use crate::frame::FrameLaps;
@@ -43,6 +43,10 @@ pub trait SceneShow {
     /// Poses what it plays for a frame `alpha` of the way from the previous fixed step to the latest: last in
     /// [`Scene::animate`].
     fn animate(&mut self, _scene: &mut Scene, _content: &Content, _alpha: f32) {}
+
+    /// What the renderer's glyph pages hold, before a frame that draws: what a glyph atlas starts its frame with,
+    /// since a new renderer holds none of what it placed. The scene can't say: it never sees the renderer.
+    fn begin_interface(&mut self, _pages: UiPageState) {}
 
     /// Places what it plays and aims the camera, at the head of [`Scene::frame_packet`]. With no `aspect` this
     /// frame draws nothing.

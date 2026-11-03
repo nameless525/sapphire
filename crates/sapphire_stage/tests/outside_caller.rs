@@ -11,6 +11,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use sapphire_platform::{App, AppControl, AppInitError, AppMetadata, Event, Platform, RunOptions, run_with};
+use sapphire_render::UiPageState;
 use sapphire_render::quality::QualitySettings;
 use sapphire_rhi::wgpu;
 use sapphire_stage::scene::Scene;
@@ -28,6 +29,7 @@ struct Counting {
     animations: u32,
     presentations: u32,
     interfaces: u32,
+    pages: Option<UiPageState>,
 }
 
 impl SceneShow for Counting {
@@ -41,6 +43,10 @@ impl SceneShow for Counting {
 
     fn animate(&mut self, _: &mut Scene, _: &sapphire_stage::Content, _: f32) {
         self.animations += 1;
+    }
+
+    fn begin_interface(&mut self, pages: UiPageState) {
+        self.pages = Some(pages);
     }
 
     fn present(&mut self, _: &mut Scene, _: f32, _: Option<f32>) {
@@ -100,9 +106,11 @@ impl App for OutsideCaller {
         }
         let drawn = frame(&mut shown)?;
         assert_eq!(drawn.len(), first.len());
-        let Counting { steps, ends, animations, presentations, interfaces } = shown.show;
+        let pages = shown.renderer.ui_page_state();
+        let Counting { steps, ends, animations, presentations, interfaces, pages: told } = shown.show;
         assert_eq!((steps, ends), (60, 60));
         assert_eq!((animations, presentations, interfaces), (1, 1, 1));
+        assert_eq!(told, Some(pages), "a show hears what the renderer's glyph pages hold");
         Ok(Self)
     }
 

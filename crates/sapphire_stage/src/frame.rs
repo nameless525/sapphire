@@ -527,6 +527,7 @@ impl<S: SceneShow, H: FrameHooks<S>> Stage<S, H> {
         self.scene.animate(&self.content, alpha, &mut self.show);
         self.laps.animation += laps.lap();
         self.laps.animation_allocations = next_scope(&mut scope);
+        self.show.begin_interface(self.renderer.ui_page_state());
         let packet = self.scene.frame_packet(alpha, Some((width, height)), &mut self.show);
         self.laps.packet += laps.lap();
         self.laps.packet_allocations = next_scope(&mut scope);

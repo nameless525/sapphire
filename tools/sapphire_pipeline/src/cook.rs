@@ -1172,6 +1172,13 @@ impl<'a> Assets<'a> {
         })
     }
 
+    /// The rig a sidecar's `rig` or `skeleton` shares: `id` must cook it. What shares a skeleton names
+    /// `id`'s as its own, and a source sharing another's cooks none, so a mesh going through one would
+    /// name a skeleton nothing makes.
+    fn shared_rig_source(&self, id: AssetId) -> Result<RigSource<'a>, ClipCookError> {
+        self.rig_source(id).filter(|rig| rig.owner == id).ok_or(ClipCookError::UnknownRig { id })
+    }
+
     /// The rig a key-pose document cooks for: `id`, which the sidecar must name, must have a map. Its
     /// mesh has cooked if it has one: a rig with none skips a document's morph weights, and a mesh yet
     /// to cook must never read as that, or the order of file names would decide what a clip holds.
@@ -1542,10 +1549,7 @@ fn shared_skeleton(
     settings: &ImportSettings,
     assets: &Assets<'_>,
 ) -> Result<Option<Skeleton>, ClipCookError> {
-    settings
-        .shared_rig()
-        .map(|id| assets.rig_source(id).ok_or(ClipCookError::UnknownRig { id })?.read_skeleton())
-        .transpose()
+    settings.shared_rig().map(|id| assets.shared_rig_source(id)?.read_skeleton()).transpose()
 }
 
 /// `clip` as cooked bytes, read back through the runtime's checks ([`Clip::read`]), so a cook never
@@ -1591,7 +1595,7 @@ fn source_samples(
     let Some(retarget) = retarget else {
         return match input.importer.shared_rig() {
             Some(id) => {
-                let shared = assets.rig_source(id).ok_or(ClipCookError::UnknownRig { id })?;
+                let shared = assets.shared_rig_source(id)?;
                 let skeleton = shared.read_skeleton()?;
                 let remap = joint_remap(&source.joints, &skeleton)?;
                 Ok(ClipSamples {
@@ -1648,7 +1652,7 @@ fn source_map(
         return Ok(map.clone());
     }
     let names = match input.importer.shared_rig() {
-        Some(id) => assets.rig_source(id).ok_or(ClipCookError::UnknownRig { id })?.names,
+        Some(id) => assets.shared_rig_source(id)?.names,
         None => Some(&input.clips.humanoid).filter(|names| !names.is_empty()),
     };
     Ok(HumanMap::from_names(names.ok_or(ClipCookError::NoHumanoid)?, joints)?)
@@ -1770,7 +1774,7 @@ fn rig_dependencies(
     let reads_shared =
         matches!(part, Part::Own | Part::Clip { .. }) && !matches!(settings, ImportSettings::KeyPose(_));
     if let Some(id) = settings.shared_rig().filter(|_| reads_shared) {
-        let rig = assets.rig_source(id).ok_or(ClipCookError::UnknownRig { id })?;
+        let rig = assets.shared_rig_source(id)?;
         dependencies.extend(rig.dependencies("shared"));
     }
     if let (Part::Clip { target: Some(entry), .. }, Some(clips)) = (part, settings.clips()) {

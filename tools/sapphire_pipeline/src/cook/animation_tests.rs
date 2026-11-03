@@ -258,7 +258,7 @@ fn a_rig_named_wrongly_is_the_sidecars_error() {
         ),
         (
             "at the end of a chain",
-            clips_of(ClipSettings { rig: Some(HUMAN), ..ClipSettings::default() }),
+            clips_of(ClipSettings { rig: Some(CHARACTER), ..ClipSettings::default() }),
             "isn't a source",
         ),
         (
@@ -290,12 +290,6 @@ fn a_rig_named_wrongly_is_the_sidecars_error() {
             CHARACTER,
             clips_of(ClipSettings { rig: Some(OWNER), ..ClipSettings::default() }),
         );
-        let chain = tree.write("chain.glb", &bare_rig_with_clips());
-        tree.sidecar(
-            &chain,
-            HUMAN,
-            clips_of(ClipSettings { rig: Some(CHARACTER), ..ClipSettings::default() }),
-        );
         let source = tree.write("follower.glb", &bare_rig_with_clips());
         tree.sidecar(&source, FOLLOWER, settings.clone());
         match tree.try_cook(false) {
@@ -309,6 +303,41 @@ fn a_rig_named_wrongly_is_the_sidecars_error() {
         }
     }
     assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// A source sharing a rig cooks no skeleton, so a mesh sharing it through that source would name a
+/// skeleton nothing cooks, and a load would fail far from the sidecar that caused it.
+#[test]
+fn a_mesh_sharing_a_skeleton_through_a_source_that_shares_it_is_the_sidecars_error() {
+    let cook = |skeleton: AssetId, name: &str| {
+        let tree = Tree::new(&format!("cook_shared_through_{name}"));
+        let owner = tree.write("owner.glb", &human_with_a_mesh());
+        tree.sidecar(
+            &owner,
+            OWNER,
+            clips_of(ClipSettings { names: Some(Vec::new()), ..ClipSettings::default() }),
+        );
+        let link = tree.write("link.glb", &human_with_a_mesh());
+        tree.sidecar(
+            &link,
+            CHARACTER,
+            clips_of(ClipSettings { rig: Some(OWNER), ..ClipSettings::default() }),
+        );
+        let body = tree.write("body.glb", &body_with_a_smile(0.0));
+        let settings = MeshSettings { skeleton: Some(skeleton), ..MeshSettings::default() };
+        tree.sidecar(&body, FOLLOWER, ImportSettings::Gltf(settings));
+        tree.try_cook(false).map(|report| {
+            let cooked: Vec<AssetId> =
+                by_extension(&report, SKELETON_EXTENSION).iter().map(|asset| asset.id).collect();
+            let mesh_bytes = read_aligned(&by_id(&report, FOLLOWER).output);
+            let mesh = Mesh::read(&mesh_bytes).unwrap();
+            let named = mesh.skin.as_ref().unwrap().skeleton.as_ref().copied().unwrap();
+            assert!(cooked.contains(&named), "{name}: its skin names {named}, and {cooked:?} cooked");
+        })
+    };
+    assert!(cook(OWNER, "the_owner").is_ok());
+    let error = cook(CHARACTER, "a_link").unwrap_err();
+    assert!(fault(&error, "body.glb").contains("isn't a source"), "{error}");
 }
 
 /// A rig of two joints with one name at one rest, a body skinned to both and a clip moving each its

@@ -350,7 +350,7 @@ impl MeshDraws<'_> {
         bound: &mut Option<MaterialHandle>,
     ) {
         if kind.binds_materials() && *bound != Some(material) {
-            pass.set_bind_group(3, &self.materials[material.index()].bind_group, &[]);
+            pass.set_bind_group(3, self.materials[material.index()].bind_group(), &[]);
             *bound = Some(material);
         }
     }

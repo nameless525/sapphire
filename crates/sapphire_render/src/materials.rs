@@ -6,7 +6,7 @@
 //!   ten times, so one shared array would pad every slot to the largest; and a pipeline only
 //!   ever reads its own family, so binding one buffer keeps the per-stage storage-buffer count
 //!   unchanged (crate docs, "Binding budget").
-//! - **Stable slots.** A [`MaterialHandle`] keeps its slot for the renderer's lifetime, and a
+//! - **Stable slots.** A [`MaterialHandle`] keeps its slot until it's freed, and a
 //!   draw record names its material by that slot, so [`Materials::update`] rewrites one slot
 //!   and touches nothing else: no draw-list rebuild, no other upload. That is the hot reload
 //!   (A8) and live link (A9) path for a material edit.
@@ -23,8 +23,9 @@
 //!   when the instance buffer or its family's buffer grows. The sky (W2) draws one material at a
 //!   time and reads its block from the mirror ([`Materials::params`]), binding only its group 3.
 //!
-//! Slots are never freed: residency arrives with the asset runtime (A4), as it does for meshes.
-//! An upload of several materials that fails partway takes back the ones it took
+//! A freed material ([`Materials::free`], M3 W3) gives its slot to later uploads and lets go of its
+//! group 3, and with it its textures, once no mesh draws with it and no frame can be reading it (the
+//! `retire` module). An upload of several materials that fails partway takes back the ones it took
 //! ([`Materials::roll_back`]), so rejected content uses up no slots.
 
 use sapphire_assets::AssetId;
@@ -37,23 +38,26 @@ use sapphire_rhi::wgpu;
 use crate::RenderError;
 use crate::buffer::{self, GrowableBuffer};
 use crate::pipelines::material_binding;
+use crate::retire::{Retiring, new_epoch};
 use crate::texture::GpuTexture;
 
-/// A material uploaded with [`crate::Renderer::upload_material`]. Only meaningful to the
-/// renderer that returned it.
+/// A material uploaded with [`crate::Renderer::upload_material`], until it's freed
+/// ([`crate::Renderer::free_material`]). Only meaningful to the renderer that returned it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct MaterialHandle(pub(crate) u32);
+pub struct MaterialHandle {
+    index: u32,
+    generation: u32,
+}
 
 impl MaterialHandle {
-    /// A handle from its raw index (the order materials were uploaded in), for code that builds
-    /// packets without a renderer, such as extraction tests. A sky material handle the renderer
-    /// doesn't know draws the default sky.
+    /// A handle from its raw index, for code that builds packets without a renderer, such as
+    /// extraction tests. A sky material handle the renderer doesn't know draws the default sky.
     pub const fn from_raw(index: u32) -> Self {
-        Self(index)
+        Self { index, generation: 0 }
     }
 
     pub(crate) fn index(self) -> usize {
-        self.0 as usize
+        self.index as usize
     }
 }
 
@@ -87,8 +91,19 @@ const INITIAL_SLOTS: u64 = 64;
 pub(crate) struct Materials {
     /// Per [`MaterialFamily::ALL`] entry.
     families: [FamilyBuffer; MaterialFamily::ALL.len()],
-    /// Per handle.
+    /// Per handle: a freed one's has no group 3.
     records: Vec<MaterialRecord>,
+    /// Where a new material's record starts counting from: this pool's own (the `retire` module).
+    epoch: u32,
+    /// Indices of [`Self::records`] that are free.
+    free_records: Vec<u32>,
+    /// Materials asked to be freed that a mesh may still draw with.
+    dying: Vec<MaterialHandle>,
+    /// Indices of [`Self::records`] that no draw names, until no frame can be reading them.
+    retired: Retiring<u32>,
+    /// Materials uploaded since the renderer was created, each record's place among which is what
+    /// [`Self::roll_back`] goes by.
+    uploads: u64,
     sampler: wgpu::Sampler,
     ramp_sampler: wgpu::Sampler,
     /// Nearest, level 0: material IDs.
@@ -99,13 +114,10 @@ pub(crate) struct Materials {
     pending: u32,
 }
 
-/// How many materials there were, and slots in each family's buffer: where
-/// [`Materials::roll_back`] goes back to.
+/// How many materials had been uploaded: where [`Materials::roll_back`] goes back to.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct MaterialsMark {
-    records: usize,
-    /// Per [`MaterialFamily::ALL`] entry.
-    slots: [u32; MaterialFamily::ALL.len()],
+    uploads: u64,
 }
 
 /// One uploaded material.
@@ -122,8 +134,21 @@ pub(crate) struct MaterialRecord {
     /// An anime character material with the reflection add (M1 C7), which reads the reflection
     /// cube: the ambient pass prefilters it while one draws.
     pub reflects: bool,
-    /// Group 3.
-    pub bind_group: wgpu::BindGroup,
+    /// Group 3: `None` once it's freed, which lets go of its textures.
+    bind_group: Option<wgpu::BindGroup>,
+    /// Its handle's generation: another names nothing.
+    generation: u32,
+    /// Meshes drawing with it, whose draws name its slot.
+    uses: u32,
+    /// Which upload it was.
+    upload: u64,
+}
+
+impl MaterialRecord {
+    /// Group 3. Only a material that draws is asked: nothing draws one that's been freed.
+    pub(crate) fn bind_group(&self) -> &wgpu::BindGroup {
+        self.bind_group.as_ref().expect("nothing draws a freed material")
+    }
 }
 
 /// A family's parameter buffer and its CPU mirror.
@@ -135,6 +160,8 @@ struct FamilyBuffer {
     mirror: Vec<u8>,
     /// Slots written since the last flush, each listed once.
     dirty: Vec<u32>,
+    /// Slots freed, for the next uploads.
+    free: Vec<u32>,
 }
 
 impl FamilyBuffer {
@@ -179,6 +206,7 @@ impl Materials {
             ),
             mirror: Vec::new(),
             dirty: Vec::new(),
+            free: Vec::new(),
         });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("material"),
@@ -222,7 +250,20 @@ impl Materials {
             wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
         );
         let fallback = fallback.create_view(&wgpu::TextureViewDescriptor::default());
-        Self { families, records: Vec::new(), sampler, ramp_sampler, id_sampler, fallback, pending: 0 }
+        Self {
+            families,
+            records: Vec::new(),
+            epoch: new_epoch(),
+            free_records: Vec::new(),
+            dying: Vec::new(),
+            retired: Retiring::default(),
+            uploads: 0,
+            sampler,
+            ramp_sampler,
+            id_sampler,
+            fallback,
+            pending: 0,
+        }
     }
 
     /// Validates `material`, gives it the next slot of its family's buffer and binds its
@@ -238,24 +279,109 @@ impl Materials {
     ) -> Result<(MaterialHandle, bool), RenderError> {
         material.validate()?;
         let family = material.family;
-        let handle = MaterialHandle(
-            u32::try_from(self.records.len()).map_err(|_| RenderError::MaterialPoolFull(family))?,
-        );
-        let bind_group = self.bind_group(device, layouts, material, textures)?;
-        let buffer = &mut self.families[family.index()];
-        let slot = buffer.slots();
-        let stride = buffer.stride() as u64;
-        let needed = (u64::from(slot) + 1) * stride;
-        if needed > buffer.buffer.max_size() {
+        if self.free_records.is_empty() && u32::try_from(self.records.len()).is_err() {
             return Err(RenderError::MaterialPoolFull(family));
         }
-        // The buffer holds every slot uploaded so far, and slots not yet uploaded are in the
-        // mirror, so a GPU copy of the old buffer keeps everything.
-        let replaced = buffer.buffer.reserve(device, queue, needed, buffer.buffer.buffer().size());
-        buffer.push(material.params());
+        let bind_group = self.bind_group(device, layouts, material, textures)?;
+        let buffer = &mut self.families[family.index()];
+        let (slot, replaced) = if let Some(slot) = buffer.free.pop() {
+            buffer.write(slot, material.params());
+            (slot, false)
+        } else {
+            let slot = buffer.slots();
+            let stride = buffer.stride() as u64;
+            let needed = (u64::from(slot) + 1) * stride;
+            if needed > buffer.buffer.max_size() {
+                return Err(RenderError::MaterialPoolFull(family));
+            }
+            // The buffer holds every slot uploaded so far, and slots not yet uploaded are in the
+            // mirror, so a GPU copy of the old buffer keeps everything.
+            let replaced = buffer.buffer.reserve(device, queue, needed, buffer.buffer.buffer().size());
+            buffer.push(material.params());
+            (slot, replaced)
+        };
         let (flags, layer, reflects) = (material.flags(), layer(material), reflects(material));
-        self.records.push(MaterialRecord { family, slot, flags, layer, reflects, bind_group });
-        Ok((handle, replaced))
+        self.uploads += 1;
+        let (epoch, upload) = (self.epoch, self.uploads);
+        let index = self.free_records.pop().map_or(self.records.len(), |index| index as usize);
+        let generation = self.records.get(index).map_or(epoch, |record| record.generation);
+        let record = MaterialRecord {
+            family,
+            slot,
+            flags,
+            layer,
+            reflects,
+            bind_group: Some(bind_group),
+            generation,
+            uses: 0,
+            upload,
+        };
+        if index == self.records.len() {
+            self.records.push(record);
+        } else {
+            self.records[index] = record;
+        }
+        Ok((MaterialHandle { index: index as u32, generation }, replaced))
+    }
+
+    /// Asks for material `handle` to be given back, once no mesh draws with it. Returns whether that's
+    /// news: not for a handle already freed, or one of another renderer's.
+    pub(crate) fn free(&mut self, handle: MaterialHandle) -> bool {
+        if self.record(handle).is_none() || self.dying.contains(&handle) {
+            return false;
+        }
+        self.dying.push(handle);
+        true
+    }
+
+    /// A mesh now draws with `handle`.
+    pub(crate) fn add_use(&mut self, handle: MaterialHandle) {
+        self.records[handle.index()].uses += 1;
+    }
+
+    /// A mesh no longer draws with `handle`.
+    pub(crate) fn drop_use(&mut self, handle: MaterialHandle) {
+        self.records[handle.index()].uses -= 1;
+    }
+
+    /// Retires each dying material no mesh draws with: its handle stops being current, and it waits
+    /// for frame `last_read`, the last that may read its slot or group 3.
+    pub(crate) fn retire_unused(&mut self, last_read: u64) {
+        let Self { records, dying, retired, .. } = self;
+        dying.retain(|handle| {
+            let record = &mut records[handle.index()];
+            if record.uses > 0 {
+                return true;
+            }
+            record.generation = record.generation.wrapping_add(1);
+            retired.push(last_read, handle.index);
+            false
+        });
+    }
+
+    /// Gives back the slot and group 3 of what no frame up to `finished` was the last to read. Returns
+    /// whether any went.
+    pub(crate) fn release_finished(&mut self, finished: u64) -> bool {
+        let mut released = false;
+        while let Some(index) = self.retired.pop_finished(finished) {
+            self.take_back(index);
+            released = true;
+        }
+        released
+    }
+
+    /// Materials dying or retired, still to go.
+    pub(crate) fn retiring(&self) -> usize {
+        self.dying.len() + self.retired.len()
+    }
+
+    fn take_back(&mut self, index: u32) {
+        let record = &mut self.records[index as usize];
+        record.bind_group = None;
+        let family = &mut self.families[record.family.index()];
+        family.free.push(record.slot);
+        family.dirty.retain(|&slot| slot != record.slot);
+        self.free_records.push(index);
     }
 
     /// Replaces material `handle`'s block and textures: its one slot is uploaded with the next
@@ -270,13 +396,13 @@ impl Materials {
         textures: impl Fn(AssetId) -> Option<&'t GpuTexture>,
     ) -> Result<(), RenderError> {
         material.validate()?;
-        let record = self.records.get(handle.index()).ok_or(RenderError::UnknownMaterial(handle))?;
+        let record = self.record(handle).ok_or(RenderError::UnknownMaterial(handle))?;
         if record.family != material.family {
             return Err(RenderError::MaterialFamilyChanged { from: record.family, to: material.family });
         }
         let bind_group = self.bind_group(device, layouts, material, textures)?;
         let record = &mut self.records[handle.index()];
-        record.bind_group = bind_group;
+        record.bind_group = Some(bind_group);
         record.flags = material.flags();
         record.layer = layer(material);
         record.reflects = reflects(material);
@@ -344,10 +470,7 @@ impl Materials {
 
     /// Where the materials are now, for [`Self::roll_back`].
     pub(crate) fn mark(&self) -> MaterialsMark {
-        MaterialsMark {
-            records: self.records.len(),
-            slots: self.families.each_ref().map(FamilyBuffer::slots),
-        }
+        MaterialsMark { uploads: self.uploads }
     }
 
     /// Takes back every material uploaded since `mark`, as if never uploaded: their handles and
@@ -355,16 +478,22 @@ impl Materials {
     /// for them keep their size. Only for uploads that failed partway (RA-005), before any
     /// handle uploaded since `mark` was given out; materials updated since keep their update.
     pub(crate) fn roll_back(&mut self, mark: MaterialsMark) {
-        self.records.truncate(mark.records);
-        for (family, slots) in self.families.iter_mut().zip(mark.slots) {
-            let stride = family.stride();
-            family.mirror.truncate(slots as usize * stride);
-            family.dirty.retain(|&slot| slot < slots);
+        // Last first, so that what's next uploaded takes the same slots and handles as if nothing had
+        // been tried: the free lists are stacks.
+        for index in (0..self.records.len()).rev() {
+            let record = &mut self.records[index];
+            if record.upload > mark.uploads && record.bind_group.is_some() {
+                record.generation = record.generation.wrapping_add(1);
+                self.take_back(index as u32);
+            }
         }
     }
 
+    /// The material `handle` names, while it's current.
     pub(crate) fn record(&self, handle: MaterialHandle) -> Option<&MaterialRecord> {
-        self.records.get(handle.index())
+        self.records
+            .get(handle.index())
+            .filter(|record| record.generation == handle.generation && record.bind_group.is_some())
     }
 
     /// Material `handle`'s block as its family's mirror holds it: what its slot uploads. The sky
@@ -421,13 +550,15 @@ impl Materials {
         self.pending
     }
 
+    /// Materials with a slot, freed ones still waiting for frames among them.
     pub(crate) fn len(&self) -> u32 {
-        self.records.len() as u32
+        (self.records.len() - self.free_records.len()) as u32
     }
 
-    /// Bytes of every family's slots.
+    /// Bytes of every family's slots in use.
     pub(crate) fn bytes_used(&self) -> u64 {
-        self.families.iter().map(|family| family.mirror.len() as u64).sum()
+        let free = |family: &FamilyBuffer| (family.free.len() * family.stride()) as u64;
+        self.families.iter().map(|family| family.mirror.len() as u64 - free(family)).sum()
     }
 
     pub(crate) fn growths(&self) -> u32 {
@@ -603,7 +734,7 @@ mod gpu_tests {
         let error =
             renderer.update_material(handles[0], Material::read(&sky).unwrap(), |_| None).unwrap_err();
         assert!(matches!(error, RenderError::MaterialFamilyChanged { .. }), "{error}");
-        let unknown = MaterialHandle(9);
+        let unknown = MaterialHandle::from_raw(9);
         let error =
             renderer.update_material(unknown, Material::read(&yellow).unwrap(), |_| None).unwrap_err();
         assert!(matches!(error, RenderError::UnknownMaterial(_)), "{error}");
@@ -674,7 +805,8 @@ mod gpu_tests {
         // What fits takes the first slots and handles, as if nothing had been tried before it.
         let fits = mesh_embedding(&colors[1..]);
         let handles = renderer.upload_embedded_materials(Mesh::read(&fits).unwrap()).unwrap();
-        assert_eq!(handles, (0..SLOTS as u32).map(|i| MaterialHandle(before.0 + i)).collect::<Vec<_>>());
+        let indices: Vec<usize> = handles.iter().map(|handle| handle.index()).collect();
+        assert_eq!(indices, (0..SLOTS).map(|i| before.0 as usize + i).collect::<Vec<_>>());
         let slots: Vec<u32> =
             handles.iter().map(|&handle| renderer.materials().record(handle).unwrap().slot).collect();
         assert_eq!(slots, [0, 1, 2]);

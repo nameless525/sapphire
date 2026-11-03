@@ -429,14 +429,30 @@ fn meshes_materials_and_textures_are_replaced_in_place() {
     let pixels = frames.render(&gpu);
     assert_eq!(at(&pixels, edge.0, edge.1), corner(&pixels), "the instance draws the new mesh");
     assert_eq!(center(&pixels), rebound);
-    // Replacing a mesh again and again reuses the pool's room: nothing grows.
-    for radius in [1.0, 0.5, 1.0, 0.5] {
+    // Replacing a mesh again and again reuses the pool's room once the frames that read the old ranges
+    // have finished. The first few rounds may take room for the ranges on their way back; then nothing
+    // grows, and what's in use is one mesh's once they've come back.
+    let wait = |gpu: &GpuContext| gpu.device().poll(wgpu::PollType::wait_indefinitely()).expect("poll");
+    let mut growths = 0;
+    for round in 0..8 {
+        if round == 4 {
+            growths = frames.renderer.stats().buffer_growths;
+        }
+        let radius = if round % 2 == 0 { 1.0 } else { 0.5 };
         let bytes = sphere(radius, SlotMaterial::Asset(material_id)).to_cooked().expect("cook");
         frames.renderer.update_mesh(mesh_handle, Mesh::read(&bytes).unwrap(), resolve).unwrap();
         frames.render(&gpu);
+        wait(&gpu);
+    }
+    for _ in 0..2 {
+        frames.render(&gpu);
+        wait(&gpu);
     }
     let after = frames.renderer.stats();
-    assert_eq!((after.mesh_pool_bytes, after.buffer_growths), (stats.mesh_pool_bytes, stats.buffer_growths));
+    assert_eq!(
+        (after.mesh_pool_bytes, after.buffer_growths, after.retiring),
+        (stats.mesh_pool_bytes, growths, 0)
+    );
 
     // A mesh that embeds its material rewrites the old one's slot rather than taking a new one.
     let green = sphere(1.0, SlotMaterial::Embedded(cooked(&flat([0.0, 0.8, 0.0], None))));

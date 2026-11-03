@@ -297,7 +297,7 @@ mod tests {
             lods: vec![vec![SubmeshDraw {
                 first_index: 0,
                 index_count: 3,
-                material: SubmeshMaterial { handle: MaterialHandle(0), slot: 0 },
+                material: SubmeshMaterial { handle: MaterialHandle::from_raw(0), slot: 0 },
             }]],
             lod_vertices: vec![3],
             placement: Placement::default(),
@@ -314,9 +314,9 @@ mod tests {
         // their materials' handles.
         let mut meshes =
             [record(false, false), record(true, false), record(false, true), record(false, false)];
-        meshes[1].lods[0][0].material.handle = MaterialHandle(1);
-        meshes[3].lods[0][0].material.handle = MaterialHandle(2);
-        let kind = |handle: MaterialHandle| match handle.0 {
+        meshes[1].lods[0][0].material.handle = MaterialHandle::from_raw(1);
+        meshes[3].lods[0][0].material.handle = MaterialHandle::from_raw(2);
+        let kind = |handle: MaterialHandle| match handle.index() {
             0 => (MaterialFamily::Environment, MaterialFlags::empty()),
             1 => (MaterialFamily::Foliage, MaterialFlags::empty()),
             _ => (MaterialFamily::AnimeCharacter, MaterialFlags::OUTLINE),

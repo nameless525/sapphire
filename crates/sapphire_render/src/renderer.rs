@@ -42,6 +42,7 @@ use crate::pipelines::{
     SurfaceVariant, VELOCITY_FORMAT,
 };
 use crate::post::{PostEffectSettings, PostProcess, PostStats, PostVariants, SunOnScreen};
+use crate::retire::FrameFence;
 use crate::scene::GpuScene;
 use crate::shader_builds::{
     Built, Cancel, Job, Rebuilt, Request, ShaderBuildStats, ShaderBuilds, ShaderOutcome, ShaderRequest,
@@ -378,7 +379,16 @@ pub struct RenderStats {
     pub draw_list_builds: u32,
     /// Mesh pool bytes in use: vertices (with skin and morph data) and indices.
     pub mesh_pool_bytes: u64,
-    /// Materials uploaded, across every family.
+    /// Bytes the mesh pool's buffers hold, in use or not. They never shrink.
+    pub mesh_pool_capacity: u64,
+    /// Meshes uploaded and not freed.
+    pub meshes: u32,
+    /// Meshes given back since the renderer was created.
+    pub meshes_freed: u64,
+    /// Freed meshes, replaced meshes' old ranges and freed materials still waiting for an instance to
+    /// go, a mesh to go or a frame to finish (the `retire` module).
+    pub retiring: u32,
+    /// Materials uploaded and not given back, across every family.
     pub materials: u32,
     /// Bytes of every family's material slots.
     pub material_bytes: u64,
@@ -571,6 +581,10 @@ pub struct Renderer {
     meshes: MeshPool,
     /// Every family's parameter buffer and each material's group 3.
     materials: Materials,
+    /// Which frames the GPU has finished, which what's freed waits on.
+    fence: FrameFence,
+    /// A packet named a mesh that isn't current, which is logged once.
+    warned_stale_mesh: bool,
     /// Instances, draw records and the draw list, persistent across frames.
     scene: Box<GpuScene>,
     /// Which draws' outline hulls the frame draws, by their LOD cutoff.
@@ -924,6 +938,8 @@ impl Renderer {
             shaders,
             edited_shaders: false,
             device_lost: false,
+            fence: FrameFence::default(),
+            warned_stale_mesh: false,
             stats: RenderStats {
                 temporal: TemporalStats { enabled: settings.temporal, ..TemporalStats::default() },
                 ..RenderStats::default()
@@ -939,8 +955,8 @@ impl Renderer {
     /// Validates and uploads a cooked material ([`sapphire_assets::material::Material::read`])
     /// into the next slot of its family's parameter buffer, and binds its textures (group 3),
     /// which `textures` resolves by ID. Each must have the swizzle the material was cooked with.
-    /// The slot is the material's for the renderer's lifetime; its block reaches the GPU with
-    /// the next recorded frame.
+    /// The slot is the material's until it's [freed](Self::free_material); its block reaches the GPU
+    /// with the next recorded frame.
     ///
     /// Every family uploads. Anime character, environment, foliage and fog card materials draw on
     /// meshes, and a sky material draws the sky when a packet names it
@@ -1074,8 +1090,7 @@ impl Renderer {
         })
     }
 
-    /// Runs `upload`, taking back every material it uploaded if it fails: material slots are
-    /// otherwise the renderer's for its lifetime. `upload` must give out no handle of a material
+    /// Runs `upload`, taking back every material it uploaded if it fails. `upload` must give out no handle of a material
     /// it uploads unless it succeeds, and the mesh pool must be unchanged when it fails (its
     /// uploads and replacements change nothing when they fail).
     fn all_or_nothing<T>(
@@ -1113,10 +1128,73 @@ impl Renderer {
         let families = materials.iter().filter_map(|material| self.materials.record(material.handle));
         check_foliage(mesh, families.map(|record| record.family))?;
         let (handle, moves) = self.meshes.upload(&self.device, &self.queue, mesh, &materials)?;
+        for material in &materials {
+            self.materials.add_use(material.handle);
+        }
         self.prepare_mesh(handle, &materials, moves);
         self.scene.meshes_changed();
         self.update_pool_stats();
         Ok(handle)
+    }
+
+    /// Gives mesh `handle` back: its room in the mesh pool goes to later uploads, and the materials it
+    /// embeds with it, once no instance draws it and no frame can be reading it (the `retire` module).
+    /// Until then it draws as it did. A handle that's already freed, or isn't this renderer's, frees
+    /// nothing. Instances a later packet gives this handle draw nothing.
+    pub fn free_mesh(&mut self, handle: MeshHandle) {
+        if self.meshes.free(handle) {
+            self.update_pool_stats();
+        }
+    }
+
+    /// Gives material `handle` back: its slot goes to later uploads and its group 3 lets go of its
+    /// textures, once no mesh draws with it and no frame can be reading it (the `retire` module). Until
+    /// then it draws as it did. A handle that's already freed, or isn't this renderer's, frees nothing.
+    /// A sky naming this handle later draws the default sky.
+    pub fn free_material(&mut self, handle: MaterialHandle) {
+        if self.materials.free(handle) {
+            self.update_pool_stats();
+        }
+    }
+
+    /// Counts no frame past `frame` as finished, or with `None` goes back to the queue's word, for tests
+    /// of what a slow GPU would do.
+    #[cfg(test)]
+    pub(crate) fn hold_frames_at(&mut self, frame: Option<u64>) {
+        self.fence.hold_at(frame);
+    }
+
+    /// Where mesh `handle` is in the pool, for tests of what's given to whom.
+    #[cfg(test)]
+    pub(crate) fn mesh_placement(&self, handle: MeshHandle) -> crate::mesh_pool::Placement {
+        self.meshes.records()[handle.index()].placement
+    }
+
+    /// Moves what's been freed along, after a packet's deltas: what nothing in this frame draws is
+    /// retired, and what no unfinished frame can read goes back to the free lists. Only a frame with
+    /// something retired pays for asking the queue.
+    fn settle_freed(&mut self) {
+        if self.meshes.retiring() + self.materials.retiring() == 0 {
+            return;
+        }
+        let last_read = self.fence.last_frame();
+        let Self { meshes, materials, scene, .. } = self;
+        meshes.retire_unused(scene.slots().live().map(|(_, mesh)| mesh), last_read, |slots| {
+            for slot in slots {
+                materials.drop_use(slot.material.handle);
+                if slot.embedded {
+                    materials.free(slot.material.handle);
+                }
+            }
+        });
+        materials.retire_unused(last_read);
+        let finished = self.fence.finished();
+        self.meshes.release_finished(finished);
+        self.materials.release_finished(finished);
+        if self.meshes.retiring() + self.materials.retiring() > 0 {
+            self.fence.ask(&self.queue);
+        }
+        self.update_pool_stats();
     }
 
     /// Replaces mesh `handle` in place with `mesh`, as [`Self::upload_slot_materials`] and
@@ -1146,8 +1224,10 @@ impl Renderer {
             Rewrite(MaterialHandle, &'m ArchivedMaterial),
             Upload(&'m ArchivedMaterial),
         }
-        let old_slots =
-            &self.meshes.records().get(handle.index()).ok_or(RenderError::UnknownMesh(handle))?.slots;
+        if !self.meshes.is_current(handle) {
+            return Err(RenderError::UnknownMesh(handle));
+        }
+        let old_slots = &self.meshes.records()[handle.index()].slots;
         mesh.validate()?;
         // Every slot is resolved and checked before anything is uploaded or rewritten.
         let mut plans = Vec::with_capacity(mesh.materials.len());
@@ -1182,7 +1262,8 @@ impl Renderer {
             });
         }
         check_foliage(mesh, families)?;
-        let (materials, moves) = self.all_or_nothing(|renderer| {
+        let frame = self.fence.frame();
+        let (materials, moves, old) = self.all_or_nothing(|renderer| {
             let mut handles = Vec::with_capacity(plans.len());
             for plan in &plans {
                 handles.push(match *plan {
@@ -1191,10 +1272,26 @@ impl Renderer {
                 });
             }
             let materials = renderer.submesh_materials(&handles)?;
-            let moves =
-                renderer.meshes.replace(&renderer.device, &renderer.queue, handle, mesh, &materials)?;
-            Ok((materials, moves))
+            let (moves, old) = renderer.meshes.replace(
+                &renderer.device,
+                &renderer.queue,
+                handle,
+                mesh,
+                &materials,
+                frame,
+            )?;
+            Ok((materials, moves, old))
         })?;
+        for material in &materials {
+            self.materials.add_use(material.handle);
+        }
+        for slot in &old.slots {
+            self.materials.drop_use(slot.material.handle);
+            // A slot the new mesh has no use for, which was this mesh's alone.
+            if slot.embedded && !materials.iter().any(|new| new.handle == slot.material.handle) {
+                self.materials.free(slot.material.handle);
+            }
+        }
         for plan in plans {
             if let Plan::Rewrite(handle, material) = plan {
                 self.update_material(handle, material, |_| None)?;
@@ -1639,6 +1736,7 @@ impl Renderer {
         let (device, queue) = (gpu.device(), gpu.queue());
         self.settle_last_frame();
         self.device_lost = gpu.is_lost();
+        self.fence.begin_frame(self.device_lost);
         // A finished shader build swaps in here, before anything reads a pipeline: the whole
         // frame draws with the old set or with the new.
         self.poll_shader_builds(self.device_lost);
@@ -1654,9 +1752,19 @@ impl Renderer {
                 &self.wind,
             );
         }
+        let meshes = &self.meshes;
+        let stale = self.scene.slots_mut().disown(|mesh| meshes.is_current(mesh));
+        if stale > 0 && !std::mem::replace(&mut self.warned_stale_mesh, true) {
+            tracing::warn!(
+                target: LOG_TARGET,
+                instances = stale,
+                "a packet named a mesh this renderer doesn't hold, or has freed: its instances draw nothing"
+            );
+        }
         self.materials.prepare();
         self.wind.prepare(packet);
         self.skinning.prepare(device, queue, packet, self.scene.slots_mut(), self.meshes.records());
+        self.settle_freed();
         let lists_replaced =
             self.lights.prepare(device, queue, packet, self.scene.slots(), self.meshes.records());
         let characters_replaced = self.characters.prepare(device, queue, packet, self.scene.slots_mut());
@@ -2705,6 +2813,10 @@ impl Renderer {
 
     fn update_pool_stats(&mut self) {
         self.stats.mesh_pool_bytes = self.meshes.bytes_used();
+        self.stats.mesh_pool_capacity = self.meshes.capacity_bytes();
+        self.stats.meshes = self.meshes.live() as u32;
+        self.stats.meshes_freed = self.meshes.freed();
+        self.stats.retiring = (self.meshes.retiring() + self.materials.retiring()) as u32;
         self.stats.materials = self.materials.len();
         self.stats.material_bytes = self.materials.bytes_used();
         self.stats.buffer_growths = self.meshes.growths()

@@ -459,6 +459,21 @@ impl InstanceSlots {
         self.data.get(slot as usize).is_some_and(|data| data.fade > 0.0)
     }
 
+    /// Takes the mesh off each instance the last [`Self::apply`] gave a handle that isn't `current`: one
+    /// freed, or another renderer's. It draws nothing, rather than whatever came to hold that index.
+    /// Returns how many there were.
+    pub(crate) fn disown(&mut self, current: impl Fn(MeshHandle) -> bool) -> usize {
+        let mut disowned = 0;
+        for &slot in &self.meshed {
+            let entry = &mut self.slots[slot as usize];
+            if !current(entry.mesh) {
+                entry.mesh = MeshHandle::NONE;
+                disowned += 1;
+            }
+        }
+        disowned
+    }
+
     /// Lists every live instance of `mesh` as given a mesh by the next [`Self::apply`].
     pub(crate) fn remesh(&mut self, mesh: MeshHandle) {
         if !self.remeshed.contains(&mesh) {
@@ -735,9 +750,8 @@ impl DrawList {
         let mut full = false;
         // In slot order, so every slot after one past the limit is past it too.
         for (slot, mesh) in slots.live().take_while(|&(slot, _)| slot < limits.slots) {
-            let record = meshes.get(mesh.index());
-            debug_assert!(record.is_some(), "{mesh:?} was not uploaded to this renderer");
-            let Some(record) = record else { continue };
+            // An instance of a stale handle was given no mesh (`InstanceSlots::disown`).
+            let Some(record) = meshes.get(mesh.index()) else { continue };
             // Whole instances: once one doesn't fit, it and every later one are left out, so a
             // smaller one never slips in after a bigger one that didn't.
             full = full || limits.draws - self.draws.len() < record.lods[0].len();
@@ -851,7 +865,7 @@ mod tests {
 
     /// Material `slot`, uploaded as handle `slot + 10`.
     fn material(slot: u32) -> SubmeshMaterial {
-        SubmeshMaterial { handle: MaterialHandle(slot + 10), slot }
+        SubmeshMaterial { handle: MaterialHandle::from_raw(slot + 10), slot }
     }
 
     fn instance(id: u64, mesh: u32, x: f32) -> MeshInstance {
@@ -1239,7 +1253,7 @@ mod tests {
         // Handle 12 (slot 2) is alpha-tested, 13 transparent with an outline it won't draw, 14
         // has no outline, and 11 is a face; all are anime character materials.
         let flags = |handle: MaterialHandle| {
-            let flags = match handle.0 {
+            let flags = match handle.index() {
                 11 => MaterialFlags::FACE | MaterialFlags::OUTLINE,
                 12 => MaterialFlags::ALPHA_TEST | MaterialFlags::OUTLINE,
                 13 => MaterialFlags::TRANSPARENT | MaterialFlags::OUTLINE,
@@ -1281,7 +1295,7 @@ mod tests {
             first_vertex,
             slot: instance,
             draw_id,
-            material: MaterialHandle(slot + 10),
+            material: MaterialHandle::from_raw(slot + 10),
             outline,
             foliage: 0,
         };
@@ -1292,7 +1306,7 @@ mod tests {
         assert!(float32.is_empty());
         assert_eq!(float32_transparent[..], [command(24..27, 0, 3, 3, 3, false)], "transparent: no outline");
         let [deformed_opaque, ..] = &list.deformed;
-        let material = MaterialHandle(14);
+        let material = MaterialHandle::from_raw(14);
         assert_eq!(
             deformed_opaque[..],
             [DeformedDraw { indices: 27..33, slot: 4, surface: 90, draw_id: 4, material, outline: false }]
@@ -1354,7 +1368,7 @@ mod tests {
         // Handles 10 and 12 are anime character materials (12 a face), 11, 13 and 14 environment
         // ones: opaque, alpha-tested, and transparent asking for an outline it never draws; 15 is
         // a fog card.
-        let kind = |handle: MaterialHandle| match handle.0 {
+        let kind = |handle: MaterialHandle| match handle.index() {
             10 => (MaterialFamily::AnimeCharacter, MaterialFlags::OUTLINE),
             12 => (MaterialFamily::AnimeCharacter, MaterialFlags::FACE | MaterialFlags::OUTLINE),
             11 => (MaterialFamily::Environment, MaterialFlags::empty()),
@@ -1375,14 +1389,14 @@ mod tests {
                 .map(|command| (command.indices.start, command.material, command.outline))
                 .collect()
         };
-        let (character, environment) = (MaterialHandle(10), MaterialHandle(11));
+        let (character, environment) = (MaterialHandle::from_raw(10), MaterialHandle::from_raw(11));
         assert_eq!(
             static_draws(SurfaceVariant::character(Coverage::Opaque, Part::Body)),
             [(0, character, true), (0, character, true)]
         );
         assert_eq!(
             static_draws(SurfaceVariant::character(Coverage::Opaque, Part::Face)),
-            [(6, MaterialHandle(12), true), (6, MaterialHandle(12), true)]
+            [(6, MaterialHandle::from_raw(12), true), (6, MaterialHandle::from_raw(12), true)]
         );
         assert_eq!(
             static_draws(SurfaceVariant::environment(Coverage::Opaque)),
@@ -1391,16 +1405,16 @@ mod tests {
         );
         assert_eq!(
             static_draws(SurfaceVariant::environment(Coverage::AlphaTest)),
-            [(9, MaterialHandle(13), false), (9, MaterialHandle(13), false)]
+            [(9, MaterialHandle::from_raw(13), false), (9, MaterialHandle::from_raw(13), false)]
         );
         assert_eq!(
             static_draws(SurfaceVariant::environment(Coverage::Transparent)),
-            [(12, MaterialHandle(14), false), (12, MaterialHandle(14), false)],
+            [(12, MaterialHandle::from_raw(14), false), (12, MaterialHandle::from_raw(14), false)],
             "transparent and environment: no outline either way"
         );
         assert_eq!(
             static_draws(SurfaceVariant::FOG_CARD),
-            [(21, MaterialHandle(15), false), (21, MaterialHandle(15), false)],
+            [(21, MaterialHandle::from_raw(15), false), (21, MaterialHandle::from_raw(15), false)],
             "fog cards: transparent, without a hull"
         );
         // The skinned instance's two families land in their variants' deformed groups.
@@ -1439,7 +1453,7 @@ mod tests {
             mesh(8, None, vec![submesh(9, 2)]),
         ];
         // Handle 10 is opaque foliage, 11 alpha-tested foliage, 12 an environment material.
-        let kind = |handle: MaterialHandle| match handle.0 {
+        let kind = |handle: MaterialHandle| match handle.index() {
             10 => (MaterialFamily::Foliage, MaterialFlags::empty()),
             11 => (MaterialFamily::Foliage, MaterialFlags::ALPHA_TEST),
             _ => (MaterialFamily::Environment, MaterialFlags::empty()),

@@ -729,7 +729,7 @@ mod tests {
         packet.celestial.sphere = Quat::from_rotation_x(0.5);
         packet.sky_layers.stars = 1.0;
         packet.sky_layers.clouds.coverage = 0.5;
-        packet.sky_material = Some(MaterialHandle(3));
+        packet.sky_material = Some(MaterialHandle::from_raw(3));
         packet.fog.far.density = 0.01;
         packet.shadow_tint = Vec3::splat(0.4);
         packet.weather = Weather { wetness: 0.5, puddles: 0.25 };

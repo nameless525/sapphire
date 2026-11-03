@@ -26,9 +26,12 @@
 //! the GPU-driven path (the `foliage` module's later milestones). A draw binds it at the mesh's
 //! first element, as it binds the slab's streams.
 //!
-//! Each buffer hands out ranges first fit ([`RangeAllocator`]): a mesh replaced in place (hot
-//! reload, live link: [`MeshPool::replace`]) frees its old ranges for later uploads, under the
-//! same handle. Meshes are not unloaded yet (see the crate docs' later milestones).
+//! Each buffer hands out ranges first fit ([`RangeAllocator`]), and what's given back goes to later
+//! uploads: a mesh freed ([`MeshPool::free`], M3 W3) gives its ranges and its record, and a mesh
+//! replaced in place (hot reload, live link: [`MeshPool::replace`]) its old ranges, under the same
+//! handle. Either way the ranges wait until no frame can be reading them (the `retire` module). The
+//! buffers themselves never shrink: what's freed is room to reuse, and [`MeshPool::capacity_bytes`]
+//! says what they hold on to.
 //!
 //! # Skinned and morphed meshes (M1 R2)
 //!
@@ -65,6 +68,7 @@ use crate::buffer::{GrowableBuffer, RangeAllocator};
 use crate::gpu_types::Dequantize;
 use crate::materials::MaterialHandle;
 use crate::pipelines::format_index;
+use crate::retire::{Retiring, new_epoch};
 
 const SHADING_BYTES: u64 = size_of::<VertexShading>() as u64;
 const SURFACE_BYTES: u64 = size_of::<VertexSurface>() as u64;
@@ -79,22 +83,27 @@ const MAX_MESH_VERTICES: usize = 1 << 24;
 /// are the exception, so their slab starts empty and grows on first use.
 const INITIAL_QUANTIZED_VERTICES: u64 = 1 << 15;
 
-/// A mesh uploaded with [`crate::Renderer::upload_mesh`]. Only meaningful to the renderer
-/// that returned it. Meshes are never unloaded in M0; residency arrives with the asset
-/// runtime in M1.
+/// A mesh uploaded with [`crate::Renderer::upload_mesh`], until it's freed
+/// ([`crate::Renderer::free_mesh`]). Only meaningful to the renderer that returned it: an instance
+/// of a handle that renderer never returned, or has freed, draws nothing (the `retire` module).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct MeshHandle(u32);
+pub struct MeshHandle {
+    index: u32,
+    generation: u32,
+}
 
 impl MeshHandle {
-    /// A handle from its raw index (the order meshes were uploaded in), for code that builds
-    /// packets without a renderer, such as extraction tests. Drawing a handle the renderer
-    /// never returned is a logic error: debug builds assert, release builds skip the instance.
+    /// What an instance draws once its handle turned out not to be current: no mesh at all.
+    pub(crate) const NONE: Self = Self { index: u32::MAX, generation: 0 };
+
+    /// A handle from its raw index, for code that builds packets without a renderer, such as
+    /// extraction tests. No renderer ever calls it current, so it draws nothing on one.
     pub const fn from_raw(index: u32) -> Self {
-        Self(index)
+        Self { index, generation: 0 }
     }
 
     pub(crate) fn index(self) -> usize {
-        self.0 as usize
+        self.index as usize
     }
 }
 
@@ -173,7 +182,44 @@ pub(crate) enum MeshStreams {
     Deformable(DeformSource),
 }
 
+/// A freed mesh's ranges, on their way back to the free lists.
+#[derive(Clone, Copy, Debug)]
+struct RetiredRanges {
+    /// Its slab's format; `None` for the deformable buffer.
+    slab: Option<PositionFormat>,
+    placement: Placement,
+}
+
+impl RetiredRanges {
+    fn of(record: &MeshRecord) -> Self {
+        let slab = match record.streams {
+            MeshStreams::Slab { format, .. } => Some(format),
+            MeshStreams::Deformable(_) => None,
+        };
+        Self { slab, placement: record.placement }
+    }
+}
+
 impl MeshRecord {
+    /// What's left at a freed mesh's index: nothing to draw, for a handle nobody should be holding.
+    fn gone() -> Self {
+        Self {
+            streams: MeshStreams::Slab { format: PositionFormat::Unorm16, first_vertex: 0 },
+            dequantize: Dequantize {
+                position_offset: [0.0; 3],
+                position_scale: [1.0; 3],
+                uv_transform: [0.0; 4],
+            },
+            lods: vec![Vec::new()],
+            lod_vertices: vec![0],
+            placement: Placement::default(),
+            slots: Vec::new(),
+            bounds: Sphere::around([[0.0; 3], [0.0; 3]]),
+            palette_reach: Vec::new(),
+            foliage: None,
+        }
+    }
+
     /// The position format its draws read: the slab's, or f32 skinning outputs.
     pub(crate) fn draw_format(&self) -> PositionFormat {
         match self.streams {
@@ -289,6 +335,10 @@ impl Slab {
         u64::from(self.used) * (self.position_stride() + SHADING_BYTES + SURFACE_BYTES)
     }
 
+    fn capacity_bytes(&self) -> u64 {
+        self.positions.buffer().size() + self.shading.buffer().size() + self.surface.buffer().size()
+    }
+
     fn growths(&self) -> u32 {
         self.positions.growths() + self.shading.growths() + self.surface.growths()
     }
@@ -318,7 +368,20 @@ pub(crate) struct MeshPool {
     /// Element ranges of the foliage buffer in use, and the elements they hold.
     foliage_ranges: RangeAllocator,
     foliage_used: u32,
+    /// Per handle: freed ones hold [`MeshRecord::gone`].
     records: Vec<MeshRecord>,
+    /// Each record's current generation: a handle of any other names nothing.
+    generations: Vec<u32>,
+    /// Where a new mesh's record starts counting from: this pool's own (the `retire` module).
+    epoch: u32,
+    /// Indices of [`Self::records`] that are free.
+    free_records: Vec<u32>,
+    /// Meshes asked to be freed that an instance may still draw.
+    dying: Vec<MeshHandle>,
+    /// Ranges of freed and replaced meshes, until no frame can be reading them.
+    retired: Retiring<RetiredRanges>,
+    /// Meshes given back since the pool was created.
+    freed: u64,
 }
 
 impl MeshPool {
@@ -361,6 +424,12 @@ impl MeshPool {
             foliage_ranges: RangeAllocator::default(),
             foliage_used: 0,
             records: Vec::new(),
+            generations: Vec::new(),
+            epoch: new_epoch(),
+            free_records: Vec::new(),
+            dying: Vec::new(),
+            retired: Retiring::default(),
+            freed: 0,
         }
     }
 
@@ -374,17 +443,103 @@ impl MeshPool {
         mesh: &ArchivedMesh,
         materials: &[SubmeshMaterial],
     ) -> Result<(MeshHandle, PoolMoves), RenderError> {
-        let handle =
-            MeshHandle(u32::try_from(self.records.len()).map_err(|_| RenderError::MeshPoolFull("meshes"))?);
+        if self.free_records.is_empty() && u32::try_from(self.records.len()).is_err() {
+            return Err(RenderError::MeshPoolFull("meshes"));
+        }
         let (record, moves) = self.place(device, queue, mesh, materials)?;
-        self.records.push(record);
-        Ok((handle, moves))
+        let index = self.free_records.pop().unwrap_or_else(|| {
+            self.records.push(MeshRecord::gone());
+            self.generations.push(self.epoch);
+            (self.records.len() - 1) as u32
+        });
+        self.records[index as usize] = record;
+        Ok((MeshHandle { index, generation: self.generations[index as usize] }, moves))
+    }
+
+    /// Whether `handle` names a mesh of this pool: one uploaded and not yet retired.
+    pub(crate) fn is_current(&self, handle: MeshHandle) -> bool {
+        self.generations.get(handle.index()).is_some_and(|&generation| generation == handle.generation)
+    }
+
+    /// Asks for mesh `handle` to be given back, once nothing draws it. Returns whether that's news: not
+    /// for a handle already freed, or one of another renderer's.
+    pub(crate) fn free(&mut self, handle: MeshHandle) -> bool {
+        if !self.is_current(handle) || self.dying.contains(&handle) {
+            return false;
+        }
+        self.dying.push(handle);
+        true
+    }
+
+    /// Retires each dying mesh no instance in `live` draws: its handle stops being current, its record
+    /// and index go to later uploads, and `gone` hears of the material slots it drew with. Its ranges
+    /// wait for frame `last_read`, the last that may read them. Call it after a packet's deltas and
+    /// before anything is drawn from the frame.
+    pub(crate) fn retire_unused(
+        &mut self,
+        live: impl Iterator<Item = MeshHandle>,
+        last_read: u64,
+        mut gone: impl FnMut(&[SlotRecord]),
+    ) {
+        if self.dying.is_empty() {
+            return;
+        }
+        self.dying.sort_unstable_by_key(|handle| handle.index);
+        let mut drawn = vec![false; self.dying.len()];
+        for mesh in live {
+            if let Ok(at) = self.dying.binary_search_by_key(&mesh.index, |handle| handle.index)
+                && self.dying[at] == mesh
+            {
+                drawn[at] = true;
+            }
+        }
+        let mut drawn = drawn.into_iter();
+        let mut dying = std::mem::take(&mut self.dying);
+        dying.retain(|&handle| {
+            if drawn.next().expect("one per dying mesh") {
+                return true;
+            }
+            let record = std::mem::replace(&mut self.records[handle.index()], MeshRecord::gone());
+            self.generations[handle.index()] = self.generations[handle.index()].wrapping_add(1);
+            self.free_records.push(handle.index);
+            self.retired.push(last_read, RetiredRanges::of(&record));
+            self.freed += 1;
+            gone(&record.slots);
+            false
+        });
+        self.dying = dying;
+    }
+
+    /// Hands back the ranges of what no frame up to `finished` was the last to read. Returns whether
+    /// any went.
+    pub(crate) fn release_finished(&mut self, finished: u64) -> bool {
+        let mut released = false;
+        while let Some(ranges) = self.retired.pop_finished(finished) {
+            self.release(ranges);
+            released = true;
+        }
+        released
+    }
+
+    /// Dying meshes and retired ranges still to go.
+    pub(crate) fn retiring(&self) -> usize {
+        self.dying.len() + self.retired.len()
+    }
+
+    /// Meshes with a current handle.
+    pub(crate) fn live(&self) -> usize {
+        self.records.len() - self.free_records.len()
+    }
+
+    /// Meshes given back since the pool was created.
+    pub(crate) fn freed(&self) -> u64 {
+        self.freed
     }
 
     /// Replaces mesh `handle` with `mesh`, whose material slots draw with `materials`, under the
-    /// same handle: the new streams and indices are written, then the old ranges freed for later
-    /// uploads. Nothing changes if it fails. GPU work already submitted read the old ranges
-    /// first, since queue writes land before the next submission.
+    /// same handle: the new streams and indices are written, then the old ranges retired, as frame
+    /// `last_read`, the one being prepared or recorded, may still read them. Nothing changes if it
+    /// fails. Returns the buffers it replaced and the old record.
     pub(crate) fn replace(
         &mut self,
         device: &wgpu::Device,
@@ -392,11 +547,12 @@ impl MeshPool {
         handle: MeshHandle,
         mesh: &ArchivedMesh,
         materials: &[SubmeshMaterial],
-    ) -> Result<PoolMoves, RenderError> {
+        last_read: u64,
+    ) -> Result<(PoolMoves, MeshRecord), RenderError> {
         let (record, moves) = self.place(device, queue, mesh, materials)?;
         let old = std::mem::replace(&mut self.records[handle.index()], record);
-        self.release(&old);
-        Ok(moves)
+        self.retired.push(last_read, RetiredRanges::of(&old));
+        Ok((moves, old))
     }
 
     /// Validates `mesh`, finds room for it and writes its streams and indices, returning its
@@ -590,20 +746,20 @@ impl MeshPool {
         indices && vertices
     }
 
-    /// Frees the ranges `record` occupied.
-    fn release(&mut self, record: &MeshRecord) {
+    /// Frees `ranges`.
+    fn release(&mut self, ranges: RetiredRanges) {
         let Placement {
             vertices: (first_vertex, vertex_len),
             indices: (first_index, index_len),
             foliage: (first_foliage, foliage_len),
-        } = record.placement;
-        match record.streams {
-            MeshStreams::Slab { format, .. } => {
+        } = ranges.placement;
+        match ranges.slab {
+            Some(format) => {
                 let slab = &mut self.slabs[format_index(format)];
                 slab.vertices.free(first_vertex, vertex_len);
                 slab.used -= vertex_len;
             }
-            MeshStreams::Deformable(_) => {
+            None => {
                 self.deformable_words.free(first_vertex, vertex_len);
                 self.deformable_used -= vertex_len;
             }
@@ -648,6 +804,15 @@ impl MeshPool {
             + u64::from(self.deformable_used) * 4
             + u64::from(self.indices_used) * INDEX_BYTES
             + u64::from(self.foliage_used) * FOLIAGE_BYTES
+    }
+
+    /// Bytes the pool's buffers hold, in use or not: they never shrink, so this is the most any walk
+    /// has needed, with what growing by doubling leaves over.
+    pub(crate) fn capacity_bytes(&self) -> u64 {
+        self.slabs.iter().map(Slab::capacity_bytes).sum::<u64>()
+            + self.deformable.buffer().size()
+            + self.indices.buffer().size()
+            + self.foliage.buffer().size()
     }
 
     /// Times any pool buffer grew.
@@ -764,6 +929,9 @@ fn write(queue: &wgpu::Queue, buffer: &wgpu::Buffer, offset: u64, bytes: &[u8]) 
         queue.write_buffer(buffer, offset, bytes);
     }
 }
+
+#[cfg(test)]
+mod gpu_tests;
 
 #[cfg(test)]
 mod tests {

@@ -763,7 +763,7 @@
 //! their buffer as group 2 binding 1 and the storage-buffer budget above is unchanged. The sky
 //! draws one material at a time and reads its block from the CPU mirror into its frame uniforms
 //! (see "The sky"), so the GPU copy of the sky family's buffer goes unread. A draw
-//! record's `material` is the slot in that buffer; a slot is kept for the renderer's lifetime
+//! record's `material` is the slot in that buffer; a slot is kept until its material is freed
 //! and written through a CPU mirror, so editing a material uploads its one block with the next
 //! frame and nothing else. Every family uploads and binds its textures today; meshes draw with
 //! the anime character and environment families, so [`Renderer::upload_mesh`] accepts their
@@ -776,8 +776,7 @@
 //!
 //! # Later milestones
 //!
-//! - **M1:** mesh residency (the pool's buffers already hand out ranges first fit and take them
-//!   back when a mesh is replaced) with generational [`MeshHandle`]s; mesh
+//! - **M1:** mesh
 //!   uploads through a persistent staging ring in place of `Queue::write_buffer`;
 //!   material/mesh draw sorting within each pipeline's group (draws already group by pipeline,
 //!   M1 W4). The [`FramePacket`] grows with the systems that
@@ -876,6 +875,7 @@ mod pipelines;
 pub mod post;
 pub mod quality;
 mod renderer;
+mod retire;
 mod scene;
 mod shader_builds;
 mod shaders;

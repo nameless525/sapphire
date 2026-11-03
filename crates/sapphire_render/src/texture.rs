@@ -23,6 +23,8 @@ pub struct GpuTexture {
     texture: wgpu::Texture,
     view: wgpu::TextureView,
     swizzle: Swizzle,
+    /// Every level's bytes.
+    bytes: u64,
 }
 
 /// Errors from uploading a texture.
@@ -82,11 +84,17 @@ impl GpuTexture {
             );
         }
         let view = raw.create_view(&wgpu::TextureViewDescriptor::default());
-        Ok(Self { texture: raw, view, swizzle: desc.swizzle })
+        let bytes = texture.levels.iter().map(|level| level.len() as u64).sum();
+        Ok(Self { texture: raw, view, swizzle: desc.swizzle, bytes })
     }
 
     pub fn texture(&self) -> &wgpu::Texture {
         &self.texture
+    }
+
+    /// Every level's bytes, as uploaded: what it counts for against a texture budget.
+    pub fn bytes(&self) -> u64 {
+        self.bytes
     }
 
     /// A view of every level, for binding.

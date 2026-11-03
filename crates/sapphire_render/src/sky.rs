@@ -858,7 +858,7 @@ impl Sky {
             .map_or((SkyUniforms::zeroed(), self.default_material, Layers::default()), |p| {
                 (p.uniforms, p.material, p.layers)
             });
-        let material = &materials[material.index()].bind_group;
+        let material = materials[material.index()].bind_group();
         self.cube.before = (self.cube.schedule, self.stats.cube_faces, self.stats.last_face);
         let faces = self.cube.schedule.faces_due();
         self.stats.last_face = None;

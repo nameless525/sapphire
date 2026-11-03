@@ -446,7 +446,18 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
         row(ui, "Foliage pipelines", render.foliage_pipelines.to_string());
         row(ui, "Changed instances", render.changed_instances.to_string());
         row(ui, "Draw-list builds", render.draw_list_builds.to_string());
-        row(ui, "Mesh pool", format_bytes(render.mesh_pool_bytes));
+        row(
+            ui,
+            "Mesh pool",
+            format!(
+                "{} of {}, {} meshes, {} freed, {} retiring",
+                format_bytes(render.mesh_pool_bytes),
+                format_bytes(render.mesh_pool_capacity),
+                render.meshes,
+                render.meshes_freed,
+                render.retiring
+            )
+        );
         let skinning = &render.skinning;
         let skinned = if skinning.instances == 0 {
             "no skinned or morphed instances".to_owned()

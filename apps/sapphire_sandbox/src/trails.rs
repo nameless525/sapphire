@@ -1074,28 +1074,29 @@ mod tests {
         assert!(nearest < 0.05, "the strip's head is {nearest} m from the blade at the close");
     }
 
-    /// A fight's frames allocate nothing, nor do its steps, once warm.
+    /// A fight's frames allocate nothing, nor do its steps, once warm: a whole fight's, in its own world,
+    /// with its trails running.
     #[test]
     fn trails_allocate_nothing() {
         let mut bout = Bout::new("arena-fight-won");
-        // Warm, with a cut drawn into the frame's vectors.
-        for _ in 0..80 {
-            bout.step();
-            bout.draw(1.0);
+        let (mut allocations, mut ran) = (0, 0);
+        for _ in 0..bout.combat.ticks_left().expect("a recording") {
+            bout.combat.step(&mut no_bindings);
+            let [player, enemy] = bout.views();
+            let drawn = [bout.drawn(player, 0.5), bout.drawn(enemy, 0.5)];
+            let Bout { trails, world, combat, .. } = &mut bout;
+            let library = combat.simulation().move_library();
+            let ((), counts) = sapphire_core::alloc::count_in_scope(|| {
+                trails.read_step([player.as_ref(), enemy.as_ref()], library, world);
+                trails.follow_frame(drawn, 0.5, world);
+            });
+            allocations += counts.allocations;
+            ran += usize::from(trails.are_running());
+            world.advance(&OwnerSteps { world: 1.0 / TICK_HZ as f32, owners: &[] });
         }
-        let mut trails = bout.trails;
-        let library = EffectLibrary::default_effects();
-        let mut world = VfxWorld::new(library, VfxBudget::DESKTOP_HIGH, 1);
-        let [player, enemy] = bout.views();
-        let sim = bout.combat.simulation();
-        let ((), counts) = sapphire_core::alloc::count_in_scope(|| {
-            for _ in 0..200 {
-                trails.read_step([player.as_ref(), enemy.as_ref()], sim.move_library(), &mut world);
-                trails.follow_frame([Some(Mat4::IDENTITY), Some(Mat4::IDENTITY)], 0.5, &mut world);
-            }
-        });
+        assert!(ran > 100, "{ran} ticks with a trail running");
         if sapphire_core::alloc::PER_THREAD_COUNTS {
-            assert_eq!(counts.allocations, 0, "{counts:?}");
+            assert_eq!(allocations, 0);
         }
     }
 

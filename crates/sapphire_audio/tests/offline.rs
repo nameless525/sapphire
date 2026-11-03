@@ -3,6 +3,7 @@
 
 use std::path::Path;
 
+use cpal::Sample;
 use sapphire_assets::AssetId;
 use sapphire_assets::cue::{Attenuation, AttenuationCurve, Bus, Cue, HitstopResponse};
 use sapphire_assets::sound::{DecodedSound, Sound};
@@ -209,6 +210,30 @@ fn a_voice_started_frozen_waits() {
     backend.freeze_voice(VoiceSlot(0), false);
     assert!(sounding(&render(&mut backend, 0.3)) > 4_000);
     assert!(backend.voice_finished(VoiceSlot(0)));
+}
+
+/// A device that doesn't take `f32` hears the same mix, in its own samples, and suspended its own silence.
+#[test]
+fn a_device_of_integers_hears_the_same_mix() {
+    let sound = tones(&[QUIET_FREE_TONE], 0.5);
+    let (mut floats, mut integers) = (mixer(&sound), mixer(&sound));
+    start(&mut floats, NEUTRAL);
+    start(&mut integers, NEUTRAL);
+    let heard = render(&mut floats, 0.25);
+    let mut samples = vec![0_u16; heard.len()];
+    integers.output_mut().render_samples(&mut samples);
+    assert!(sounding(&heard) > 0);
+    for (float, integer) in heard.iter().zip(&samples) {
+        assert_eq!(*integer, u16::from_sample(*float), "{float}");
+    }
+    let status = integers.status();
+    assert_eq!(status.frames, heard.len() as u64 / 2);
+    assert_eq!(status.callbacks, floats.status().callbacks);
+
+    integers.suspend();
+    integers.output_mut().render_samples(&mut samples);
+    assert!(samples.iter().all(|&sample| sample == u16::EQUILIBRIUM), "an unsigned sample's middle");
+    assert_eq!(integers.status().frames, status.frames, "the mixer doesn't move");
 }
 
 #[test]

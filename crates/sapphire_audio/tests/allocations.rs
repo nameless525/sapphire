@@ -97,6 +97,9 @@ fn what_a_cue_allocates_on_the_calling_thread() {
     let ((), moving) = count_in_scope(|| system.update(&frame(&moved, &[]), &mut rng));
     // What the audio callback does, with that voice playing.
     let ((), mixing) = count_in_scope(|| mix(&mut system));
+    // And for a device that takes integers.
+    let mut integers = vec![0_i16; GAME_FRAME * 2];
+    let ((), converting) = count_in_scope(|| system.backend_mut().output_mut().render_samples(&mut integers));
     #[allow(clippy::print_stdout, reason = "the measurement the plan's note reports")]
     {
         println!("warmed play: {} allocations, {} bytes", play.allocations, play.bytes);
@@ -106,4 +109,5 @@ fn what_a_cue_allocates_on_the_calling_thread() {
     assert!(play.allocations <= KIRA_PLAY_ALLOCATIONS, "a warmed play allocated {} times", play.allocations);
     assert_eq!(moving.allocations, 0, "moving a voice allocated");
     assert_eq!(mixing.allocations, 0, "the mix allocated, which the audio callback must never do");
+    assert_eq!(converting.allocations, 0, "converting the mix allocated, on the audio callback");
 }

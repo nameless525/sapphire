@@ -11,7 +11,7 @@
 //! cargo test -p sapphire_editor --test sandbox_push -- --ignored
 //! ```
 //!
-//! `SAPPHIRE_SANDBOX` names another binary. CI's `GPU tests` job runs this on lavapipe. Unix only, for the
+//! `SAPPHIRE_SANDBOX` names another binary. CI's `App tests` job runs this on lavapipe. Unix only, for the
 //! clean quit `kill -TERM` gives.
 #![cfg(unix)]
 

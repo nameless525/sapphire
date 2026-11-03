@@ -428,9 +428,6 @@ jobs:
   # and why (spec §9 lists them); none is skipped for failing. `--tests` leaves the doctests to the
   # Test job.
   #
-  # The job then runs a development build headless and drives it over live link (review BC-002),
-  # as the M1 exit run's desktop leg does: no other job starts a `dev` app.
-  #
   # WARP runs the same suites in gpu-tests-warp.yml once a change is on main: 31 minutes of tests
   # after a cold 18-minute build, longer than a PR's other checks together.
   gpu-tests:
@@ -480,30 +477,63 @@ jobs:
         run: cargo test --package sapphire_render --package sapphire_rhi --package sapphire_world --package sapphire_debug --locked --tests --no-fail-fast -- --ignored --test-threads=1
       - name: GPU tests (sandbox, dev)
         run: cargo test --package sapphire_sandbox --features dev --locked --lib -- --ignored --test-threads=1
+
+  # A development build, headless on lavapipe, in the real app: replays beside the renderer, live
+  # tuning, the timeline editor against a real fight, and the app driven over live link (review
+  # BC-002), as the M1 exit run's desktop leg does. No other job starts a `dev` app. These were the
+  # GPU tests job's last steps, and took 21 of its 37 minutes, which
+  # made it the last job of every run by 12 to 19 minutes.
+  app-tests:
+    name: App tests (vulkan-lavapipe)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      SAPPHIRE_GPU_BACKEND: vulkan
+      SAPPHIRE_GPU_DEBUG: none
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install SDL3 build dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends $SDL3_LINUX_DEPS libvulkan1
+      # As the golden job installs it; keep the two alike.
+      - name: Install lavapipe (Mesa 26.1.3)
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -sSfL --retry 5 -o mesa.tar.xz https://github.com/gfx-rs/ci-build/releases/download/build29/mesa-26.1.3-linux-x86_64.tar.xz
+          echo "63915836cf582bdbf13cf41c75ac335f7ec9c8b4886fe32e76b748ff8c6393c6  mesa.tar.xz" | sha256sum -c -
+          mkdir mesa && tar xpf mesa.tar.xz -C mesa
+          cat > lavapipe.json <<JSON
+          {"file_format_version": "1.0.1", "ICD": {"library_path": "$RUNNER_TEMP/mesa/lib/x86_64-linux-gnu/libvulkan_lvp.so", "api_version": "1.4.348", "library_arch": "64"}}
+          JSON
+          echo "VK_DRIVER_FILES=$RUNNER_TEMP/lavapipe.json" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$RUNNER_TEMP/mesa/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+      - name: Install Rust (job targets)
+        uses: ./.github/actions/setup-rust
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          env-vars: ${{ env.RUST_CACHE_ENV_VARS }}
+          cache-on-failure: true
+      # Built apart from the run, so the run's time is the tests' own.
+      - name: Build the app tests
+        run: cargo test --package sapphire_sandbox --features dev --locked --test replays --test live_tuning --no-run
       - name: Cook the desktop content
-        if: runner.os == 'Linux'
         run: cargo --locked xtask --locked content
       # The simulation beside the renderer must reach what it reaches alone (m2-plan D2). The app
       # compares, tick by tick, with what a headless run in the test wrote.
       - name: Replays in the app (dev sandbox, offscreen)
-        if: runner.os == 'Linux'
         run: cargo test --package sapphire_sandbox --features dev --locked --test replays -- --ignored --test-threads=1
       # An edit of a move reaches a running fight's next attempt, over live link and through hot
       # reload, and a bad one changes nothing (m2-plan T2, exit test 2).
       - name: Live tuning (dev sandbox, offscreen)
-        if: runner.os == 'Linux'
         run: cargo test --package sapphire_sandbox --features dev --locked --test live_tuning -- --ignored --test-threads=1
       # One feature graph reuses the dev sandbox's dependencies for the CLI too; building
       # the CLI separately compiled another renderer/hot-reload variant in this job.
       - name: Build the dev sandbox and the live-link tool
-        if: runner.os == 'Linux'
         run: |
           cargo build --package sapphire_sandbox --package sapphire_livelink --features sapphire_sandbox/dev --locked
       # The timeline editor against what the desktop cook holds and against a real fight: its preview
       # matches the simulation's pose and volumes, and save and push reaches the fight's next attempt
       # (m2-plan T3). It finds the sandbox the step above built.
       - name: Timeline editor (real cook, dev sandbox offscreen)
-        if: runner.os == 'Linux'
         run: cargo test --package sapphire_editor --locked --test preview --test sandbox_push -- --ignored --test-threads=1
       # The dev sandbox offscreen on a private port, with a fight running: the tool reads its
       # status, sets a cvar, captures a frame and pushes a document that doesn't parse, which the
@@ -512,7 +542,6 @@ jobs:
       # make a new renderer. Then it must quit cleanly on SIGTERM, writing the fight's recording.
       # `--frames` bounds a run that the quit never reaches, and the step's limit everything else.
       - name: Live-link smoke (dev sandbox, offscreen)
-        if: runner.os == 'Linux'
         timeout-minutes: 10
         shell: bash
         run: |
@@ -581,7 +610,7 @@ jobs:
           fi
           test -s "$out/session.sreplay"
       - name: Upload the live-link smoke's logs
-        if: always() && runner.os == 'Linux'
+        if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: live-link-smoke

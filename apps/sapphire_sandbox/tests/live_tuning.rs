@@ -5,7 +5,7 @@
 //!
 //! They need a `dev` build, a GPU and cooked content: `cargo xtask content`, then
 //! `cargo test -p sapphire_sandbox --features dev --test live_tuning -- --ignored --test-threads=1`. CI's
-//! `GPU tests` job runs them on lavapipe. Unix only, for the clean quit a `kill -TERM` gives, which is
+//! `App tests` job runs them on lavapipe. Unix only, for the clean quit a `kill -TERM` gives, which is
 //! what writes a recording.
 #![cfg(all(feature = "dev", unix))]
 

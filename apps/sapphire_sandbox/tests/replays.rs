@@ -4,7 +4,7 @@
 //!
 //! Refusals come before any GPU work, so those run everywhere. The runs that draw need a GPU and cooked
 //! content, so they're `#[ignore]`d: `cargo xtask content`, then
-//! `cargo test -p sapphire_sandbox --test replays -- --ignored --test-threads=1`. CI's `GPU tests` job
+//! `cargo test -p sapphire_sandbox --test replays -- --ignored --test-threads=1`. CI's `App tests` job
 //! runs them on lavapipe.
 
 use std::fs;

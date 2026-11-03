@@ -1,7 +1,7 @@
 //! Build automation for the Sapphire workspace (spec §7.4), run as `cargo xtask <command>`.
 //!
 //! Owns layer checking, content cooking, and building, bundling and launching the apps
-//! per platform. Asset processing itself lives in `sapphire_pipeline`, which xtask runs
+//! (`--app`, the sandbox by default) per platform. Asset processing itself lives in `sapphire_pipeline`, which xtask runs
 //! as a process, and golden-image tests (`golden`), which compare sandbox captures with
 //! per-backend references; live link's desktop tool (`link`) and the replay runner (`replay`) run
 //! as processes too. `package` (store artifacts) comes later.
@@ -35,17 +35,19 @@ Commands:
       target/content/loose/<cook>/ and pack it into target/content/<cook>/ (default cook:
       desktop). Only assets whose inputs changed are cooked or compressed again (cache:
       target/content/cache/). Sources without a .meta sidecar get one, to commit with them.
-  bundle --platform <platform> [--release | --incremental] [--features <list>] [--exe <path>]
-      [--identity <name> --profile <file>]
-      Cook, build and assemble the app for <platform> under target/<platform>/:
-        desktop   SapphireSandbox/ with the executable and content/ (any host)
-        macos     SapphireSandbox.app, ad-hoc signed
-        ios-sim   SapphireSandbox.app for the simulator, ad-hoc signed
-        ios       SapphireSandbox.app for devices, signed with --identity and --profile
+  bundle --platform <platform> [--app <package>] [--release | --incremental] [--features <list>]
+      [--exe <path>] [--identity <name> --profile <file>]
+      Cook, build and assemble the app for <platform> under target/<platform>/, by the
+      bundle-name in its Cargo.toml (<Name>, SapphireSandbox for the sandbox):
+        desktop   <Name>/ with the executable and content/ (any host)
+        macos     <Name>.app, ad-hoc signed
+        ios-sim   <Name>.app for the simulator, ad-hoc signed
+        ios       <Name>.app for devices, signed with --identity and --profile
                   (ad hoc without them, which no device installs)
-        android   SapphireSandbox.apk, debug-signed (Gradle)
-  run --platform <platform> [--release | --incremental] [--features <list>] [--exe <path>] [--dry-run]
-      [--show] [--identity <name> --profile <file> --device <name>] [-- <app args>]
+        android   <Name>.apk, debug-signed (Gradle)
+  run --platform <platform> [--app <package>] [--release | --incremental] [--features <list>]
+      [--exe <path>] [--dry-run] [--show] [--identity <name> --profile <file> --device <name>]
+      [-- <app args>]
       Cook, build and launch, with the app's output streamed here:
         desktop   runs the build in place with SAPPHIRE_CONTENT_DIR set (any host)
         macos     bundles, then runs the executable inside the .app
@@ -101,6 +103,9 @@ Commands:
       Show this message.
 
 Options:
+  --app <package>
+                 run, bundle: the app, a workspace package with a [package.metadata.sapphire]
+                 table (default: sapphire_sandbox, the only app `golden` runs).
   --locked       Pass --locked to every cargo command xtask runs, and fail the content
                  cook on a source without a committed .meta sidecar (CI).
   --incremental  desktop, macos: build the app optimized, with no LTO and incrementally (the
@@ -108,7 +113,7 @@ Options:
   --features <list>
                  Build the app with these Cargo features (comma-separated), such as `dev`
                  for the debug overlay.
-  --exe <path>   Use a prebuilt sapphire_sandbox executable instead of building one
+  --exe <path>   Use a prebuilt executable of the app instead of building one
                  (desktop, macos, ios-sim and ios).
   --dry-run      Build and bundle, then print the launch commands instead of running them.
   --show         ios-sim: also show the simulator in Simulator.app.
@@ -153,16 +158,18 @@ fn run(mut args: cli::Args) -> anyhow::Result<()> {
             Ok(())
         }
         "bundle" => {
+            let package = app_package(&mut args)?;
             let (platform, options) = platform_options(&mut args)?;
             args.finish(false)?;
-            platforms::bundle(platform, &App::load(SANDBOX)?, &options).map(drop)
+            platforms::bundle(platform, &App::load(&package)?, &options).map(drop)
         }
         "run" => {
+            let package = app_package(&mut args)?;
             let (platform, mut options) = platform_options(&mut args)?;
             options.show = args.flag("--show");
             options.dry_run = args.flag("--dry-run");
             let app_args = args.finish(true)?;
-            platforms::run(platform, &App::load(SANDBOX)?, &options, &app_args)
+            platforms::run(platform, &App::load(&package)?, &options, &app_args)
         }
         "link" => link::run(args.rest()),
         "editor" => editor::run(args.rest()),
@@ -192,6 +199,11 @@ fn run(mut args: cli::Args) -> anyhow::Result<()> {
     }
 }
 
+/// The app `run` or `bundle` builds.
+fn app_package(args: &mut cli::Args) -> anyhow::Result<String> {
+    Ok(args.value::<String>("--app")?.unwrap_or_else(|| SANDBOX.to_owned()))
+}
+
 fn platform_options(args: &mut cli::Args) -> anyhow::Result<(Platform, Options)> {
     let platform = args.required::<Platform>("--platform")?;
     let features = args.value::<String>("--features")?.unwrap_or_default();
@@ -206,4 +218,42 @@ fn platform_options(args: &mut cli::Args) -> anyhow::Result<(Platform, Options)>
         ..Options::default()
     };
     Ok((platform, options))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(line: &str) -> cli::Args {
+        cli::Args::new(line.split_whitespace().map(str::to_owned))
+    }
+
+    #[test]
+    fn the_app_is_the_sandbox_unless_named() {
+        assert_eq!(app_package(&mut args("--platform android")).unwrap(), SANDBOX);
+        for line in ["--app game_app --platform android", "--platform android --app=game_app"] {
+            let mut args = args(line);
+            assert_eq!(app_package(&mut args).unwrap(), "game_app");
+            assert_eq!(args.required::<String>("--platform").unwrap(), "android");
+            args.finish(false).unwrap();
+        }
+        let error = app_package(&mut args("--platform android --app")).unwrap_err();
+        assert_eq!(error.to_string(), "--app needs a value");
+    }
+
+    /// Past `--` it's the app's argument, not this one's.
+    #[test]
+    fn an_app_argument_named_app_stays_the_apps() {
+        let mut args = args("--platform android -- --app other");
+        assert_eq!(app_package(&mut args).unwrap(), SANDBOX);
+        args.required::<String>("--platform").unwrap();
+        assert_eq!(args.finish(true).unwrap(), ["--app", "other"]);
+    }
+
+    /// Goldens are the sandbox's scenes on the sandbox's flags.
+    #[test]
+    fn golden_takes_no_app() {
+        let error = run(args("golden --app game_app")).unwrap_err();
+        assert_eq!(error.to_string(), "unexpected argument `--app`");
+    }
 }

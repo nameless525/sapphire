@@ -5,8 +5,8 @@
 //!
 //! A platform has one place for its bundles, so a run claims it (`BundleClaim`) before it builds
 //! anything, and keeps the claim, in its [`Bundle`], until what it built has been installed or has
-//! finished running. Another run waits, saying so. A bundle is assembled and signed aside and only
-//! then moved into place, so what's at that path is always whole.
+//! finished running. Another run waits, saying so, whichever app it builds. A bundle is assembled and
+//! signed aside and only then moved into place, so what's at that path is always whole.
 //!
 //! The host's platforms and `golden` share one executable path across their builds, so each run launches
 //! or bundles a copy of its own ([`HostExecutable`]).
@@ -83,7 +83,7 @@ impl FromStr for Platform {
     }
 }
 
-/// The M0 app's package. The game app joins it later.
+/// The app `run` and `bundle` build unless `--app` names another, and the only one `golden` runs.
 pub const SANDBOX: &str = "sapphire_sandbox";
 
 /// The highest build number: the greatest `versionCode` Google Play takes, which also fits the `Int`
@@ -123,6 +123,14 @@ struct Identity {
 impl App {
     /// Reads `package`'s identity from its manifest through `cargo metadata`.
     pub fn load(package: &str) -> anyhow::Result<Self> {
+        let json =
+            workspace::output(workspace::cargo("metadata").args(["--format-version", "1", "--no-deps"]))?;
+        Self::from_metadata(&json, package)
+    }
+
+    /// The app `package` in `cargo metadata`'s output: a workspace package with a
+    /// `[package.metadata.sapphire]` table. Any other name fails, naming the apps there are.
+    fn from_metadata(json: &str, package: &str) -> anyhow::Result<Self> {
         #[derive(Deserialize)]
         struct Metadata {
             packages: Vec<Package>,
@@ -133,22 +141,25 @@ impl App {
             version: String,
             metadata: Option<serde_json::Value>,
         }
+        impl Package {
+            fn identity(&self) -> Option<&serde_json::Value> {
+                self.metadata.as_ref()?.get("sapphire")
+            }
+        }
 
-        let json =
-            workspace::output(workspace::cargo("metadata").args(["--format-version", "1", "--no-deps"]))?;
-        let metadata: Metadata = serde_json::from_str(&json).context("unexpected `cargo metadata` output")?;
-        let found = metadata
-            .packages
-            .into_iter()
-            .find(|p| p.name == package)
-            .with_context(|| format!("no workspace package `{package}`"))?;
-        let identity = found
-            .metadata
-            .and_then(|metadata| metadata.get("sapphire").cloned())
-            .with_context(|| format!("`{package}` has no [package.metadata.sapphire] table"))?;
-        let identity = serde_json::from_value(identity)
+        let metadata: Metadata = serde_json::from_str(json).context("unexpected `cargo metadata` output")?;
+        let apps = || metadata.packages.iter().filter_map(|p| Some((p, p.identity()?)));
+        let Some((found, identity)) = apps().find(|(p, _)| p.name == package) else {
+            let mut known: Vec<&str> = apps().map(|(p, _)| p.name.as_str()).collect();
+            known.sort_unstable();
+            bail!(
+                "no app `{package}`; the packages with a [package.metadata.sapphire] table are: {}",
+                known.join(", ")
+            );
+        };
+        let identity = serde_json::from_value(identity.clone())
             .with_context(|| format!("invalid [package.metadata.sapphire] in `{package}`"))?;
-        Self::new(package, found.version, identity)
+        Self::new(package, found.version.clone(), identity)
     }
 
     fn new(package: &str, version: String, identity: Identity) -> anyhow::Result<Self> {
@@ -429,13 +440,36 @@ fn display(path: &Path) -> String {
     path.strip_prefix(workspace::root()).unwrap_or(path).display().to_string()
 }
 
-/// The sandbox's real identity, read from its manifest without running cargo.
+/// The app `manifest` describes, read without running cargo.
+#[cfg(test)]
+fn app_from_manifest(package: &str, manifest: &str) -> App {
+    let manifest: toml::Table = toml::from_str(manifest).unwrap();
+    let identity = manifest["package"]["metadata"]["sapphire"].clone();
+    App::new(package, "0.1.0".into(), identity.try_into().unwrap()).unwrap()
+}
+
+/// The sandbox's real identity.
 #[cfg(test)]
 pub fn test_app() -> App {
-    let manifest: toml::Table =
-        toml::from_str(include_str!("../../../apps/sapphire_sandbox/Cargo.toml")).unwrap();
-    let identity = manifest["package"]["metadata"]["sapphire"].clone();
-    App::new(SANDBOX, "0.1.0".into(), identity.try_into().unwrap()).unwrap()
+    app_from_manifest(SANDBOX, include_str!("../../../apps/sapphire_sandbox/Cargo.toml"))
+}
+
+/// A second app: the game's identity, as its manifest gives it.
+#[cfg(test)]
+pub fn test_game() -> App {
+    app_from_manifest(
+        "game_app",
+        r#"
+            [package]
+            name = "game_app"
+
+            [package.metadata.sapphire]
+            bundle-id = "dev.sapphire.game"
+            bundle-name = "SapphireGame"
+            display-name = "Sapphire"
+            build = 1
+        "#,
+    )
 }
 
 #[cfg(test)]
@@ -489,6 +523,58 @@ mod tests {
         assert_eq!(app.bundle_name, "SapphireSandbox");
         assert_eq!(app.display_name, "Sapphire Sandbox");
         assert!(app.build >= 1);
+    }
+
+    #[test]
+    fn reads_a_second_apps_identity() {
+        let app = test_game();
+        assert_eq!(app.package, "game_app");
+        assert_eq!(app.bundle_id, "dev.sapphire.game");
+        assert_eq!(app.bundle_name, "SapphireGame");
+        assert_eq!(app.display_name, "Sapphire");
+        assert_eq!(app.build, 1);
+    }
+
+    /// `cargo metadata` as `App::load` reads it: two apps, and libraries with other metadata or none.
+    const METADATA: &str = r#"{"packages": [
+        {"name": "sapphire_sandbox", "version": "0.1.0", "metadata": {"sapphire": {
+            "bundle-id": "dev.sapphire.sandbox", "bundle-name": "SapphireSandbox",
+            "display-name": "Sapphire Sandbox", "build": 1}}},
+        {"name": "sapphire_render", "version": "0.1.0", "metadata": {"docs": {}}},
+        {"name": "sapphire_core", "version": "0.1.0", "metadata": null},
+        {"name": "game_app", "version": "0.2.0", "metadata": {"sapphire": {
+            "bundle-id": "dev.sapphire.game", "bundle-name": "SapphireGame",
+            "display-name": "Sapphire", "build": 1}}}
+    ]}"#;
+
+    #[test]
+    fn finds_each_app_in_the_workspace() {
+        let game = App::from_metadata(METADATA, "game_app").unwrap();
+        assert_eq!((game.bundle_id.as_str(), game.version.as_str()), ("dev.sapphire.game", "0.2.0"));
+        let sandbox = App::from_metadata(METADATA, SANDBOX).unwrap();
+        assert_eq!(sandbox.bundle_id, "dev.sapphire.sandbox");
+    }
+
+    /// A typo and a package that's no app fail alike, saying what would have worked.
+    #[test]
+    fn an_unknown_app_names_the_known_ones() {
+        for name in ["game", "sapphire_render", "sapphire_core"] {
+            assert_eq!(
+                App::from_metadata(METADATA, name).unwrap_err().to_string(),
+                format!(
+                    "no app `{name}`; the packages with a [package.metadata.sapphire] table are: \
+                     game_app, sapphire_sandbox"
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn a_broken_identity_is_reported_as_one() {
+        let json = r#"{"packages": [{"name": "game_app", "version": "0.1.0",
+            "metadata": {"sapphire": {"bundle-id": "dev.sapphire.game"}}}]}"#;
+        let error = App::from_metadata(json, "game_app").unwrap_err().to_string();
+        assert_eq!(error, "invalid [package.metadata.sapphire] in `game_app`");
     }
 
     #[test]

@@ -29,6 +29,7 @@ members = [
     "crates/sapphire_loc",
     "crates/sapphire_nav",
     "crates/sapphire_navmesh",
+    "crates/sapphire_timeline",
     # L3 subsystems
     "crates/sapphire_anim",
     "crates/sapphire_input",
@@ -112,6 +113,7 @@ sapphire_strings = { path = "crates/sapphire_strings" }
 sapphire_loc = { path = "crates/sapphire_loc" }
 sapphire_nav = { path = "crates/sapphire_nav" }
 sapphire_navmesh = { path = "crates/sapphire_navmesh" }
+sapphire_timeline = { path = "crates/sapphire_timeline" }
 sapphire_physics = { path = "crates/sapphire_physics" }
 sapphire_audio = { path = "crates/sapphire_audio" }
 sapphire_vfx = { path = "crates/sapphire_vfx" }

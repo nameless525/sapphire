@@ -1,0 +1,42 @@
+// A synthetic cutscene, for the tests of a skip and of each track: it holds the simulation at a step's edge.
+// Q3 brings a real one.
+(
+    type: "sapphire::timeline::TimelineDocument",
+    version: 1,
+    data: (
+        length: 6.0,
+        clock: Real,
+        camera: Some((
+            blend_in: 0.3,
+            blend_out: 0.25,
+            eye: Exact,
+            keys: [
+                (at: 0.0, eye: (0.0, 1.6, -4.0), look_at: (0.0, 1.4, 0.0), fov_degrees: 35.0),
+                (at: 2.5, eye: (1.5, 1.6, -3.0), look_at: (0.0, 1.4, 0.0), fov_degrees: 30.0, ease: Smooth),
+                (at: 3.0, eye: (-2.0, 1.2, 2.0), look_at: (0.0, 1.5, 0.0), roll_degrees: 4.0, fov_degrees: 40.0, ease: Cut),
+            ],
+        )),
+        characters: [
+            (
+                role: "hero",
+                plays: [(row: "bow", from: 0.5, to: 2.0), (row: "wave", from: 2.5, to: 4.0)],
+                places: [
+                    (at: 0.0, position: (0.0, 0.0, 0.0), yaw_degrees: 180.0),
+                    (at: 4.0, position: (1.0, 0.0, 0.0), yaw_degrees: 90.0, ease: Smooth),
+                ],
+            ),
+            (role: "villain", plays: [(row: "stand", from: 0.0, to: 6.0)]),
+        ],
+        cues: [(at: 1.0, cue: "bell", place: Some((0.0, 2.0, 0.0))), (at: 3.0, cue: "bell")],
+        post: [
+            (parameter: Exposure, keys: [(at: 0.0, value: 0.0), (at: 1.0, value: -0.5), (at: 5.0, value: 0.0)]),
+            (parameter: Vignette, keys: [(at: 0.0, value: 0.25), (at: 6.0, value: 0.0)]),
+        ],
+        subtitles: [
+            (from: 1.0, to: 3.0, key: "intro-first-line", speaker: Some("hero-name")),
+            (from: 3.0, to: 5.0, key: "intro-second-line.short"),
+        ],
+        time_scale: [],
+        events: [(at: 5.5, event: "boss_wakes"), (at: 5.5, event: "door_opens", value: 3)],
+    ),
+)

@@ -143,6 +143,7 @@ mod resolve;
 mod simulation;
 mod stats;
 pub mod targeting;
+mod timeline;
 
 pub use actions::{ActionsError, ActorActions, Buttons, Controls, Stick, TickActions, TickActionsFull};
 pub use actors::{ActorId, ActorRequests, ActorSpawn, ActorTable, ActorView, SpawnError};
@@ -173,6 +174,9 @@ pub use navigation::{PathId, SimNavigation};
 pub use party::{PARTY_SLOTS, Party, PartyError, PartySlot, PartyTuning, SWAP_IN_MOVE, SWAP_INTENT};
 pub use resolve::{Fighter, HitOutcome, SlowMotion};
 pub use simulation::{CombatSet, SimConfig, SimRng, Simulation};
+pub use timeline::{
+    TimelineCommand, TimelineEvent, TimelineId, TimelineLibrary, TimelinePlayError, TimelineProgress, TimelineRun,
+};
 pub use stats::{
     BUDGET_DESKTOP_LOW, BUDGET_MOBILE_LOW, PHYSICS_BUDGET_DESKTOP_LOW, PHYSICS_BUDGET_MOBILE_LOW, SimStats,
 };

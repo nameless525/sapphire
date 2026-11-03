@@ -7,6 +7,11 @@
 
 use crate::actions::{ActorActions, Buttons, Stick, TickActions};
 use crate::actors::ActorId;
+use crate::timeline::{TimelineCommand, TimelineId};
+
+/// What the `timelines` scenario loads, in order.
+pub const CINEMATIC: TimelineId = TimelineId::from_raw(0);
+pub const CUTSCENE: TimelineId = TimelineId::from_raw(1);
 
 /// Gives a recording each tick's actions: the seam between the simulation and what drives it.
 ///
@@ -34,6 +39,8 @@ pub struct Script {
     pub ticks: u32,
     /// The actions of a tick.
     pub actions: fn(u64, &[ActorId]) -> TickActions,
+    /// What it does with timelines, each with the tick it comes before, in order.
+    pub commands: &'static [(u32, TimelineCommand)],
 }
 
 /// Every script.
@@ -43,18 +50,21 @@ pub const SCRIPTS: &[Script] = &[
         about: "every actor presses every button on its own rhythm while its stick sweeps: no tick repeats",
         ticks: 1200,
         actions: melee_sweep,
+        commands: &[],
     },
     Script {
         name: "melee-play",
         about: "the first actor walks in legs and attacks in bursts, as a person would, the rest stand",
         ticks: 3600,
         actions: melee_play,
+        commands: &[],
     },
     Script {
         name: "string",
         about: "the three-hit string, each hit buffered ahead of its cancel window, over and over",
         ticks: 600,
         actions: string,
+        commands: &[],
     },
     Script {
         name: "dodge-dash",
@@ -62,6 +72,7 @@ pub const SCRIPTS: &[Script] = &[
                 opponent that moves",
         ticks: 720,
         actions: dodge_dash,
+        commands: &[],
     },
     Script {
         name: "fight",
@@ -69,6 +80,7 @@ pub const SCRIPTS: &[Script] = &[
                 and a defeat with its finish freeze",
         ticks: 1500,
         actions: fight,
+        commands: &[],
     },
     Script {
         name: "dodge-counter",
@@ -76,6 +88,7 @@ pub const SCRIPTS: &[Script] = &[
                 with a dodge too late and one through its i-frames alone",
         ticks: 1000,
         actions: dodge_counter,
+        commands: &[],
     },
     Script {
         name: "cancel-windows",
@@ -83,6 +96,7 @@ pub const SCRIPTS: &[Script] = &[
                 string started over from the third, a dodge out of a spin and out of a knockdown",
         ticks: 900,
         actions: cancel_windows,
+        commands: &[],
     },
     Script {
         name: "attempts",
@@ -90,6 +104,7 @@ pub const SCRIPTS: &[Script] = &[
                 tuning the move it starts",
         ticks: 600,
         actions: attempts,
+        commands: &[],
     },
     Script {
         name: "laps",
@@ -97,6 +112,7 @@ pub const SCRIPTS: &[Script] = &[
                 tuning how it moves",
         ticks: 600,
         actions: laps,
+        commands: &[],
     },
     Script {
         name: "fight-back",
@@ -104,6 +120,7 @@ pub const SCRIPTS: &[Script] = &[
                 attack, over and over, which the warps aim at whatever's in reach",
         ticks: 1700,
         actions: fight_back,
+        commands: &[],
     },
     Script {
         name: "party-swap",
@@ -112,12 +129,14 @@ pub const SCRIPTS: &[Script] = &[
                 defeat forcing the next in, until nobody's left",
         ticks: PARTY_SWAP_TICKS,
         actions: party_swap,
+        commands: &[],
     },
     Script {
         name: "idle",
         about: "nobody touches anything: the smallest a replay can be",
         ticks: 3600,
         actions: idle,
+        commands: &[],
     },
     Script {
         name: "arena-walk",
@@ -125,6 +144,41 @@ pub const SCRIPTS: &[Script] = &[
                 back, by the stick alone",
         ticks: ARENA_WALK_TICKS,
         actions: arena_walk,
+        commands: &[],
+    },
+    Script {
+        name: "cinematic-watched",
+        about: "`melee-sweep`'s presses, with a cinematic run under them from tick 120 and pressed all the way through",
+        ticks: 600,
+        actions: melee_sweep,
+        commands: &[(120, TimelineCommand::Play(CINEMATIC))],
+    },
+    Script {
+        name: "cinematic-skipped",
+        about: "`cinematic-watched`, with the cinematic skipped 50 steps in: it must reach all the same checksums",
+        ticks: 600,
+        actions: melee_sweep,
+        commands: &[
+            (120, TimelineCommand::Play(CINEMATIC)),
+            (170, TimelineCommand::Skip { at_ms: 833 }),
+        ],
+    },
+    Script {
+        name: "cutscene-watched",
+        about: "`melee-sweep`'s presses, with a cutscene between ticks 120 and 121, watched to its end",
+        ticks: 300,
+        actions: melee_sweep,
+        commands: &[(120, TimelineCommand::Play(CUTSCENE))],
+    },
+    Script {
+        name: "cutscene-skipped",
+        about: "`cutscene-watched`, skipped 2.5 s in: it must reach all the same checksums",
+        ticks: 300,
+        actions: melee_sweep,
+        commands: &[
+            (120, TimelineCommand::Play(CUTSCENE)),
+            (120, TimelineCommand::Skip { at_ms: 2500 }),
+        ],
     },
     Script {
         name: "chase-laps",
@@ -132,6 +186,7 @@ pub const SCRIPTS: &[Script] = &[
                 whoever's following a path to it",
         ticks: CHASE_LAPS_TICKS,
         actions: chase_laps,
+        commands: &[],
     },
 ];
 

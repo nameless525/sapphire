@@ -10,8 +10,8 @@ use sapphire_core::Name;
 use sapphire_core::alloc::{self, CountingAllocator, PER_THREAD_COUNTS};
 use sapphire_ecs::prelude::*;
 use sapphire_gameplay::replay::{
-    Player, Recording, Replay, SCENARIOS, Scenario, ScenarioError, StepAllocated, find_scenario, find_script,
-    melee, melee_buttons,
+    CINEMATIC, CUTSCENE, Player, Recording, Replay, SCENARIOS, Scenario, ScenarioError, StepAllocated,
+    find_scenario, find_script, melee, melee_buttons, melee_sweep,
 };
 use sapphire_gameplay::{
     ActorActions, ActorId, ActorSpawn, ActorTransform, Buttons, CombatSet, ControllerProfile, HitQuery,
@@ -55,6 +55,33 @@ fn steps_do_not_allocate_from_the_first_tick() {
     assert!(stats.peak_actors > actors.len() as u32, "spawned actors came and went");
     assert!(stats.cancels_fired > 0 && stats.cues_published > 0, "{stats:?}");
     assert!(stats.intents_expired > 0, "{stats:?}");
+}
+
+/// A timeline's whole run under a fight, counted from the first step: its time scale ramping up and back,
+/// its events firing, and input held, then a second timeline that takes no steps.
+#[test]
+fn a_timelines_run_does_not_allocate_from_the_first_tick() {
+    if !PER_THREAD_COUNTS {
+        return;
+    }
+    let scenario = find_scenario(SCENARIOS, "timelines").expect("listed");
+    let (mut sim, cast) = scenario.start(scenario.config).expect("sets up");
+    let ticks: Vec<TickActions> = (0..400).map(|tick| melee_sweep(tick, &cast)).collect();
+
+    let ((), counts) = alloc::count_in_scope(|| {
+        for (tick, actions) in ticks.iter().enumerate() {
+            if tick == 20 {
+                sim.play_timeline(CINEMATIC).expect("loaded");
+            } else if tick == 300 {
+                sim.play_timeline(CUTSCENE).expect("loaded");
+            }
+            sim.step(actions);
+        }
+    });
+
+    let stats = sim.stats();
+    assert_eq!(counts.allocations, 0, "a timeline's run allocated {} times", counts.allocations);
+    assert_eq!((stats.timelines_played, stats.timeline_events), (2, 5), "{stats:?}");
 }
 
 /// A party's whole fight, counted from the first step: swaps, assists and falls, capsules and hurtboxes

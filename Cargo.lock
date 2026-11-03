@@ -3648,6 +3648,7 @@ dependencies = [
  "sapphire_reflect",
  "sapphire_serialize",
  "sapphire_time",
+ "sapphire_timeline",
  "serde",
  "thiserror 2.0.21",
  "xxhash-rust",
@@ -4078,6 +4079,21 @@ name = "sapphire_time"
 version = "0.1.0"
 dependencies = [
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "sapphire_timeline"
+version = "0.1.0"
+dependencies = [
+ "bevy_reflect",
+ "rkyv",
+ "sapphire_core",
+ "sapphire_reflect",
+ "sapphire_serialize",
+ "sapphire_time",
+ "serde",
+ "thiserror 2.0.21",
+ "xxhash-rust",
 ]
 
 [[package]]

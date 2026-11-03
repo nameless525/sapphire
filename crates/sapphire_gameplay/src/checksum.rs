@@ -23,6 +23,7 @@ use crate::navigation::SimNavigation;
 use crate::party::Party;
 use crate::resolve::{Fighter, HitOutcome, Slide, SlowMotion};
 use crate::simulation::SimRng;
+use crate::timeline::{TimelineLibrary, TimelineRun};
 
 /// Goes up when [`state_checksum`] starts writing something different, so a recorded checksum can't
 /// match by accident. Recorded replays re-record then (`docs/m2-plan.md` §3). 2: M2 G2's moves. 3: M2
@@ -372,6 +373,7 @@ pub(crate) fn state_checksum(world: &World) -> u64 {
     world.resource::<CharacterWorld>().physics().write_canonical(&mut |bytes| hasher.bytes(bytes));
     world.resource::<SlowMotion>().write_canonical(&mut hasher);
     world.resource::<Party>().write_canonical(&mut hasher);
+    world.resource::<TimelineRun>().write_canonical(&mut hasher);
 
     let table = world.resource::<ActorTable>();
     hasher.u32(table.len() as u32);
@@ -422,12 +424,14 @@ pub(crate) fn state_checksum(world: &World) -> u64 {
 /// move set's current revision, whole, with its tables, in ID order, the controller profiles and the
 /// collision world's statics. It hashes a set's cooked bytes, so no field can be forgotten here, and
 /// those are the same on every target, as the statics' digest is: authored numbers, by their bits. A party's
-/// tuning goes in too, if there's a party, and a navmesh's digest if there's one of those.
+/// tuning goes in too, if there's a party, a navmesh's digest if there's one of those, and every loaded
+/// timeline's simulation half, if there are any.
 pub(crate) fn tables_hash(
     library: &MoveLibrary,
     characters: &CharacterWorld,
     party: &Party,
     navigation: Option<&SimNavigation>,
+    timelines: &TimelineLibrary,
 ) -> u64 {
     let mut hasher = StateHasher::new();
     let hashes = library.current_hashes();
@@ -441,6 +445,7 @@ pub(crate) fn tables_hash(
     if let Some(navigation) = navigation {
         hasher.u64(navigation.digest());
     }
+    timelines.write_digests(&mut hasher);
     hasher.finish()
 }
 

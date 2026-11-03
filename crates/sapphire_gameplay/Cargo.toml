@@ -28,6 +28,8 @@ sapphire_physics.workspace = true
 sapphire_reflect.workspace = true
 sapphire_serialize.workspace = true
 sapphire_time.workspace = true
+# What a timeline does to the simulation: its time scale and gameplay events.
+sapphire_timeline.workspace = true
 # Controller profiles as document data.
 serde.workspace = true
 thiserror.workspace = true

@@ -44,16 +44,17 @@ pub use checksums::{
     checksums_file_name,
 };
 pub use file::{
-    FORMAT_VERSION, MAX_ACTORS, MAX_NAME_LEN, MAX_TICKS, Recorder, Replay, ReplayError, is_valid_name,
+    FORMAT_VERSION, MAX_ACTORS, MAX_NAME_LEN, MAX_TICKS, PLAIN_FORMAT_VERSION, Recorder, Replay, ReplayError,
+    is_valid_name,
 };
 pub use play::{PlayError, Played, Player, Recording, StepAllocated};
 pub use scenario::{
     PARTY_TUNING, SCENARIOS, Scenario, ScenarioError, arena, arena_fight, document_file_name, duel,
     find_scenario, melee, melee_buttons, party, party_document, party_moves, player_moves, test_moves,
-    warrior_moves,
+    timelines, warrior_moves,
 };
 pub use script::{
-    ARENA_WALK_JUMP, ARENA_WALK_LEGS, ATTEMPT_EVERY, ActionSource, SCRIPTS, Script, arena_walk, attempts,
-    fight_back, find_script, melee_sweep,
+    ARENA_WALK_JUMP, ARENA_WALK_LEGS, ATTEMPT_EVERY, ActionSource, CINEMATIC, CUTSCENE, SCRIPTS, Script,
+    arena_walk, attempts, fight_back, find_script, melee_sweep,
 };
 pub use tuning::{LiveMoves, LiveSet, compile_document};

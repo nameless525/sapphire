@@ -96,6 +96,13 @@ pub struct SimStats {
     pub swaps: u32,
     /// Of those, the ones a defeat forced.
     pub forced_swaps: u32,
+    /// Timelines started.
+    pub timelines_played: u64,
+    /// Gameplay events timelines have fired.
+    pub timeline_events: u64,
+    /// Time scale beats the world clock's full stack turned away: one is a timeline playing slower or
+    /// faster than written, on every run alike.
+    pub timeline_scales_refused: u64,
 }
 
 impl SimStats {

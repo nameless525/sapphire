@@ -6,13 +6,14 @@ use sapphire_moves::MoveSet;
 use super::checksums::Trail;
 use super::file::{Cursor, MAX_TICKS, Recorder, Replay, ReplayError};
 use super::scenario::{Scenario, ScenarioError, find_scenario};
-use super::script::ActionSource;
+use super::script::{ActionSource, Script};
 use super::tuning::LiveMoves;
 use crate::actions::TickActions;
 use crate::actors::ActorId;
 use crate::moves::{MoveSetId, Tuned};
 use crate::simulation::{SimConfig, Simulation};
 use crate::stats::SimStats;
+use crate::timeline::{TimelineCommand, TimelineId, TimelinePlayError};
 
 /// A replay that can't start, or a recording that can't.
 #[derive(Debug, thiserror::Error)]
@@ -32,6 +33,8 @@ pub enum PlayError {
     MovesChanged { recorded: u64, current: u64 },
     #[error(transparent)]
     File(#[from] ReplayError),
+    #[error(transparent)]
+    Timeline(#[from] TimelinePlayError),
 }
 
 /// Rule R6, broken: the fixed step allocated during a run (spec §9, gate 4).
@@ -109,6 +112,10 @@ pub struct Player {
     tracked: Tracked,
     replay: Replay,
     cursor: Cursor,
+    /// The next of the replay's commands.
+    next_command: usize,
+    /// Ticks it has played.
+    played: u32,
     cast: Vec<ActorId>,
 }
 
@@ -129,7 +136,14 @@ impl Player {
         if current != replay.tables_hash() {
             return Err(PlayError::MovesChanged { recorded: replay.tables_hash(), current });
         }
-        Ok(Self { tracked: Tracked::new(sim, replay.ticks()), replay, cursor: Cursor::START, cast })
+        Ok(Self {
+            tracked: Tracked::new(sim, replay.ticks()),
+            replay,
+            cursor: Cursor::START,
+            next_command: 0,
+            played: 0,
+            cast,
+        })
     }
 
     /// The actors the scenario's input drives, the player first: who presentation stands where.
@@ -141,6 +155,17 @@ impl Player {
     /// Plays one tick. Returns `false`, and does nothing, once the replay has ended.
     pub fn step(&mut self) -> bool {
         let Some(actions) = self.cursor.next(&self.replay) else { return false };
+        while let Some(&(tick, command)) = self.replay.commands().get(self.next_command)
+            && tick == self.played
+        {
+            // A recording only holds what started, so a refusal here is a crafted file, and it refuses
+            // the same every run. A skip is presentation's: see the `timeline` module.
+            if let TimelineCommand::Play(id) = command {
+                let _ = self.tracked.sim.play_timeline(id);
+            }
+            self.next_command += 1;
+        }
+        self.played += 1;
         self.tracked.step(&actions);
         true
     }
@@ -249,6 +274,45 @@ impl Recording {
     #[must_use]
     pub fn cast(&self) -> &[ActorId] {
         &self.cast
+    }
+
+    /// Starts a timeline before the next step, and records that.
+    pub fn play_timeline(&mut self, id: TimelineId) -> Result<(), TimelinePlayError> {
+        self.tracked.sim.play_timeline(id)?;
+        if self.edited_at.is_none() {
+            self.recorder.command(TimelineCommand::Play(id));
+        }
+        Ok(())
+    }
+
+    /// Records that someone skipped the timeline playing, `at_ms` into it, and runs the steps it holds
+    /// input for, on neutral input: exactly the steps watching it would have run. See the `timeline`
+    /// module, which is why this is all a skip is.
+    pub fn skip_timeline(&mut self, at_ms: u32) -> Result<(), ReplayError> {
+        if self.edited_at.is_none() {
+            self.recorder.command(TimelineCommand::Skip { at_ms });
+        }
+        let mut neutral = |_: u64, _: &[ActorId]| TickActions::NEUTRAL;
+        for _ in 0..self.tracked.sim.timeline_steps_held() {
+            self.step(&mut neutral)?;
+        }
+        Ok(())
+    }
+
+    /// Runs `script`, its commands included, until the file holds at least `ticks` ticks.
+    pub fn run_script(&mut self, script: &Script, ticks: u32) -> Result<(), PlayError> {
+        let mut source = script.actions;
+        let mut commands = script.commands.iter().peekable();
+        while self.recorded_ticks() < ticks {
+            while let Some(&(_, command)) = commands.next_if(|&&(at, _)| at <= self.recorded_ticks()) {
+                match command {
+                    TimelineCommand::Play(id) => self.play_timeline(id)?,
+                    TimelineCommand::Skip { at_ms } => self.skip_timeline(at_ms)?,
+                }
+            }
+            self.step(&mut source)?;
+        }
+        Ok(())
     }
 
     /// Asks `source` for the next tick's actions, records them and steps. Refuses at the file's limit

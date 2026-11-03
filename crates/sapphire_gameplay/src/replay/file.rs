@@ -6,11 +6,18 @@ use xxhash_rust::xxh3::xxh3_64;
 
 use crate::actions::{ActionsError, TickActions};
 use crate::simulation::SimConfig;
+use crate::timeline::{TimelineCommand, TimelineId};
 
 const MAGIC: [u8; 8] = *b"SREPLAY\0";
 
 /// The file format's version. A change to its layout takes a new one, and older files are refused.
-pub const FORMAT_VERSION: u32 = 1;
+///
+/// A file with no [`TimelineCommand`]s is written in [`PLAIN_FORMAT_VERSION`] instead, which is this
+/// layout without that section: most runs play no timeline, and they keep the bytes they've always had.
+pub const FORMAT_VERSION: u32 = 2;
+
+/// [`FORMAT_VERSION`]'s layout, without its commands.
+pub const PLAIN_FORMAT_VERSION: u32 = 1;
 
 /// The longest replay: four hours at 60 Hz, past any session anyone would keep. The bound on what a
 /// crafted file can make a runner do.
@@ -24,6 +31,11 @@ pub const MAX_ACTORS: u32 = 4096;
 pub const MAX_NAME_LEN: usize = 64;
 
 const DIGEST_LEN: usize = 8;
+
+/// A command in the file: its tick, its kind and its argument.
+const COMMAND_LEN: usize = 4 + 1 + 4;
+const COMMAND_PLAY: u8 = 0;
+const COMMAND_SKIP: u8 = 1;
 
 /// A run's length takes at most this many LEB128 bytes.
 const MAX_RUN_BYTES: usize = 5;
@@ -66,6 +78,12 @@ pub enum ReplayError {
     RunsEndShort { found: u64, ticks: u32 },
     #[error("the run at tick {tick}: {source}")]
     Actions { tick: u64, source: ActionsError },
+    #[error("the file is in format version {FORMAT_VERSION} and holds no commands, which is version {PLAIN_FORMAT_VERSION}")]
+    EmptyCommands,
+    #[error("command {index} has kind {kind}, which this build doesn't know")]
+    BadCommand { index: u32, kind: u8 },
+    #[error("command {index} is at tick {tick}, before the one before it or past the file's {ticks} ticks")]
+    CommandOutOfOrder { index: u32, tick: u32, ticks: u32 },
 }
 
 /// Reads a file's fields in order, refusing to read past its end.
@@ -128,6 +146,35 @@ fn read_run_length(bytes: &[u8]) -> Option<(u32, &[u8])> {
         }
     }
     None
+}
+
+/// Reads the commands' section, checking all of it against the file's tick count. Allocates what the
+/// bytes that are really there pay for.
+fn read_commands(reader: &mut Reader<'_>, ticks: u32) -> Result<Vec<(u32, TimelineCommand)>, ReplayError> {
+    let count = reader.u32("the commands' count")?;
+    if count == 0 {
+        return Err(ReplayError::EmptyCommands);
+    }
+    let needed = (count as usize).saturating_mul(COMMAND_LEN);
+    let mut section = Reader(reader.take("the commands", needed)?);
+    let mut commands = Vec::with_capacity(count as usize);
+    let mut last = 0;
+    for index in 0..count {
+        let tick = section.u32("a command's tick")?;
+        let [kind] = section.array("a command's kind")?;
+        let argument = section.u32("a command's argument")?;
+        if tick < last || tick > ticks {
+            return Err(ReplayError::CommandOutOfOrder { index, tick, ticks });
+        }
+        last = tick;
+        let command = match kind {
+            COMMAND_PLAY => TimelineCommand::Play(TimelineId::from_raw(argument)),
+            COMMAND_SKIP => TimelineCommand::Skip { at_ms: argument },
+            kind => return Err(ReplayError::BadCommand { index, kind }),
+        };
+        commands.push((tick, command));
+    }
+    Ok(commands)
 }
 
 /// Checks a body's runs against its tick count, walking it once and keeping nothing.
@@ -208,12 +255,18 @@ impl Cursor {
 /// | 4 | the tick count, at most [`MAX_TICKS`] |
 /// | 1 | the scenario name's length |
 /// | n | the scenario's name: `a-z`, `0-9`, `-`, `_` |
+/// | 4 | how many commands, never 0 ([`FORMAT_VERSION`] alone) |
+/// | 9 each | a command: its tick, 1 byte for its kind, 4 for its argument ([`FORMAT_VERSION`] alone) |
 /// | … | the body: runs of equal ticks, up to the digest |
 /// | 8 | XXH3-64 of every byte before it |
 ///
 /// A run is its length in ticks, in LEB128, then one tick in [`TickActions`]' own layout. Runs add
 /// up to the tick count, and a run is never empty or followed by a run of the same actions, so one
 /// set of inputs has one encoding: encoding what was decoded gives the same bytes.
+///
+/// A [`TimelineCommand`] goes between two ticks: its tick is the step it comes before, or the tick count,
+/// after the last. They come in order, and a file with none is in [`PLAIN_FORMAT_VERSION`], so that also
+/// has one encoding.
 ///
 /// The magic and both versions come first and never move, so any later format is refused by name.
 /// There are no upgrades: a replay of another version says so, and is recorded again.
@@ -229,6 +282,7 @@ pub struct Replay {
     config: SimConfig,
     tables_hash: u64,
     ticks: u32,
+    commands: Vec<(u32, TimelineCommand)>,
     body: Vec<u8>,
 }
 
@@ -240,7 +294,7 @@ impl Replay {
             return Err(ReplayError::NotAReplay);
         }
         let version = reader.u32("the format version")?;
-        if version != FORMAT_VERSION {
+        if version != FORMAT_VERSION && version != PLAIN_FORMAT_VERSION {
             return Err(ReplayError::FormatVersion { found: version });
         }
         let layout = reader.u32("the actions' layout version")?;
@@ -279,10 +333,12 @@ impl Replay {
         if ticks > MAX_TICKS {
             return Err(ReplayError::TooManyTicks { count: u64::from(ticks) });
         }
+        let commands =
+            if version == FORMAT_VERSION { read_commands(&mut reader, ticks)? } else { Vec::new() };
         validate_body(reader.0, ticks)?;
 
         let config = SimConfig { seed, max_actors, step_budget, ..SimConfig::default() };
-        Ok(Self { scenario: scenario.to_owned(), config, tables_hash, ticks, body: reader.0.to_vec() })
+        Ok(Self { scenario: scenario.to_owned(), config, tables_hash, ticks, commands, body: reader.0.to_vec() })
     }
 
     /// The file's bytes. Decoding them gives this replay back.
@@ -291,7 +347,8 @@ impl Replay {
         const HEADER_LEN: usize = 49;
         let mut out = Vec::with_capacity(HEADER_LEN + self.scenario.len() + self.body.len() + DIGEST_LEN);
         out.extend_from_slice(&MAGIC);
-        out.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
+        let version = if self.commands.is_empty() { PLAIN_FORMAT_VERSION } else { FORMAT_VERSION };
+        out.extend_from_slice(&version.to_le_bytes());
         out.extend_from_slice(&TickActions::LAYOUT_VERSION.to_le_bytes());
         out.extend_from_slice(&self.config.seed.to_le_bytes());
         out.extend_from_slice(&self.config.max_actors.to_le_bytes());
@@ -302,6 +359,18 @@ impl Replay {
         // At most MAX_NAME_LEN: every way in checks the name.
         out.push(self.scenario.len() as u8);
         out.extend_from_slice(self.scenario.as_bytes());
+        if !self.commands.is_empty() {
+            out.extend_from_slice(&(self.commands.len() as u32).to_le_bytes());
+            for &(tick, command) in &self.commands {
+                let (kind, argument) = match command {
+                    TimelineCommand::Play(id) => (COMMAND_PLAY, id.raw()),
+                    TimelineCommand::Skip { at_ms } => (COMMAND_SKIP, at_ms),
+                };
+                out.extend_from_slice(&tick.to_le_bytes());
+                out.push(kind);
+                out.extend_from_slice(&argument.to_le_bytes());
+            }
+        }
         out.extend_from_slice(&self.body);
         let digest = xxh3_64(&out);
         out.extend_from_slice(&digest.to_le_bytes());
@@ -338,6 +407,13 @@ impl Replay {
         self.ticks
     }
 
+    /// What it did with timelines: each with the step it comes before, in order. A [`super::Player`] carries
+    /// out the [`TimelineCommand::Play`]s, and presentation beside it can read the skips here.
+    #[must_use]
+    pub fn commands(&self) -> &[(u32, TimelineCommand)] {
+        &self.commands
+    }
+
     /// Every tick's actions, in order.
     pub fn actions(&self) -> impl Iterator<Item = TickActions> + '_ {
         let mut cursor = Cursor::START;
@@ -363,8 +439,14 @@ impl Recorder {
         if config.max_actors > MAX_ACTORS {
             return Err(ReplayError::TooManyActors { count: config.max_actors });
         }
-        let replay =
-            Replay { scenario: scenario.to_owned(), config, tables_hash, ticks: 0, body: Vec::new() };
+        let replay = Replay {
+            scenario: scenario.to_owned(),
+            config,
+            tables_hash,
+            ticks: 0,
+            commands: Vec::new(),
+            body: Vec::new(),
+        };
         Ok(Self { replay, run: TickActions::NEUTRAL, run_len: 0 })
     }
 
@@ -382,6 +464,11 @@ impl Recorder {
         self.run = *actions;
         self.run_len = 1;
         Ok(())
+    }
+
+    /// Adds a command before the next tick.
+    pub fn command(&mut self, command: TimelineCommand) {
+        self.replay.commands.push((self.replay.ticks, command));
     }
 
     /// Stamps the recording with the move data's hash, once its world is set up.

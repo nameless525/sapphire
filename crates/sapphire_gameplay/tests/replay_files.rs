@@ -8,7 +8,8 @@ use std::time::Duration;
 
 use sapphire_core::alloc::{self, CountingAllocator};
 use sapphire_gameplay::replay::{
-    FORMAT_VERSION, MAX_ACTORS, MAX_NAME_LEN, MAX_TICKS, Recorder, Recording, Replay, ReplayError, SCENARIOS,
+    FORMAT_VERSION, MAX_ACTORS, MAX_NAME_LEN, MAX_TICKS, PLAIN_FORMAT_VERSION, Recorder, Recording, Replay,
+    ReplayError, SCENARIOS,
     Script, find_script,
 };
 use sapphire_gameplay::{ActionsError, ActorActions, ActorId, Buttons, SimConfig, Stick, TickActions};
@@ -88,7 +89,7 @@ fn stamping_a_new_move_hash_keeps_the_actions() {
 /// version's files recorded again.
 #[test]
 fn the_format_is_pinned() {
-    assert_eq!(FORMAT_VERSION, 1);
+    assert_eq!(PLAIN_FORMAT_VERSION, 1);
     assert_eq!(TickActions::LAYOUT_VERSION, 1);
     let ticks = [TickActions::NEUTRAL, TickActions::NEUTRAL, press(1, Buttons::LIGHT, 2)];
     let mut recorder = Recorder::new("ab", config(), 0x0102_0304_0506_0708).expect("good");
@@ -153,7 +154,7 @@ impl Crafted {
     /// Two neutral ticks and a press: decodes cleanly, so a row's edit is what breaks it.
     fn good() -> Self {
         Self {
-            version: FORMAT_VERSION,
+            version: PLAIN_FORMAT_VERSION,
             layout: TickActions::LAYOUT_VERSION,
             max_actors: 8,
             ticks: 3,
@@ -259,7 +260,7 @@ fn crafted_files_fail_cleanly() {
         ("a format from far later", with(|c| c.version = u32::MAX), |e| {
             matches!(e, ReplayError::FormatVersion { found: u32::MAX })
         }),
-        ("only a version", joined(&[b"SREPLAY\0", &FORMAT_VERSION.to_le_bytes()]), |e| {
+        ("only a version", joined(&[b"SREPLAY\0", &PLAIN_FORMAT_VERSION.to_le_bytes()]), |e| {
             matches!(e, ReplayError::Truncated { what: "the actions' layout version", .. })
         }),
         ("another actions layout", with(|c| c.layout = 2), |e| {

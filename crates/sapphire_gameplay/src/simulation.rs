@@ -13,6 +13,7 @@ use sapphire_moves::{MoveSet, MoveSetError};
 use sapphire_navmesh::NavMeshError;
 use sapphire_physics::PhysicsWorld;
 use sapphire_time::{SimDuration, Stopwatch};
+use sapphire_timeline::{TimelineError, TimelineSimulation};
 
 use crate::actions::{Controls, CurrentActions, TickActions, read_actions};
 use crate::actors::{
@@ -35,6 +36,9 @@ use crate::navigation::SimNavigation;
 use crate::party::{self, Party, PartyError, PartySlot, PartyTuning};
 use crate::resolve::{self, AppliedHits, Fighter, ResolveStats, SlowMotion};
 use crate::stats::{BUDGET_DESKTOP_LOW, PHYSICS_BUDGET_DESKTOP_LOW, SimStats};
+use crate::timeline::{
+    self, TimelineEvent, TimelineId, TimelineLibrary, TimelinePlayError, TimelineProgress, TimelineRun,
+};
 
 /// [`Pcg32`]'s sequence for combat's numbers (spec §5.4: seeded per subsystem). A subsystem that
 /// draws its own takes another, so one's draws can't move another's.
@@ -83,6 +87,8 @@ pub struct SimRng(pub Pcg32);
 /// [`FixedCombat`]. Each package's systems go in their step.
 #[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum CombatSet {
+    /// A playing timeline's beats, ahead of everything that might read what they told gameplay.
+    Timeline,
     /// The intent ring: what actors want to do this tick.
     Intents,
     /// A party's swap, with every press in the ring and before any cancel reads one: so the assist starts
@@ -142,6 +148,8 @@ impl Simulation {
         world.insert_resource(ResolveStats::default());
         world.insert_resource(SlowMotion::default());
         world.insert_resource(Party::default());
+        world.insert_resource(TimelineLibrary::default());
+        world.insert_resource(TimelineRun::default());
         let empty = PhysicsWorld::new(Vec::new(), actors::body_capacity(config.max_actors))
             .expect("a world with no colliders has nothing to refuse");
         world.insert_resource(CharacterWorld::new(empty));
@@ -150,6 +158,7 @@ impl Simulation {
         world.schedule_scope(FixedCombat, |_, schedule| {
             schedule.configure_sets(
                 (
+                    CombatSet::Timeline,
                     CombatSet::Intents,
                     CombatSet::Party,
                     CombatSet::Cancels,
@@ -164,6 +173,7 @@ impl Simulation {
             );
         });
         ecs.add_systems(FixedFirst, read_actions.in_set(SimSet::Input))
+            .add_systems(FixedCombat, timeline::advance_timeline.in_set(CombatSet::Timeline))
             .add_systems(
                 FixedCombat,
                 (intents::press_intents, brain::think).chain().in_set(CombatSet::Intents),
@@ -329,6 +339,7 @@ impl Simulation {
             world.resource::<CharacterWorld>(),
             world.resource::<Party>(),
             world.get_resource::<SimNavigation>(),
+            world.resource::<TimelineLibrary>(),
         )
     }
 
@@ -439,7 +450,8 @@ impl Simulation {
         let allocations = AllocScope::begin();
 
         let world = self.ecs.world_mut();
-        world.resource_mut::<CurrentActions>().0 = *actions;
+        let held = world.resource::<TimelineRun>().holds_input();
+        world.resource_mut::<CurrentActions>().0 = if held { TickActions::NEUTRAL } else { *actions };
         world.resource_mut::<CueQueue>().clear();
         self.ecs.fixed_step();
 
@@ -491,6 +503,10 @@ impl Simulation {
         let party = world.resource::<Party>();
         stats.swaps = party.swaps();
         stats.forced_swaps = party.forced_swaps();
+        let timeline = world.resource::<TimelineRun>();
+        stats.timelines_played = timeline.played();
+        stats.timeline_events = timeline.events_fired();
+        stats.timeline_scales_refused = timeline.scales_refused();
     }
 
     /// The checksum of all simulated state: the same inputs give the same one on every run for an
@@ -618,6 +634,43 @@ impl Simulation {
     /// tool would. A system does the same with `ResMut<SlowMotion>`.
     pub fn request_slow_motion(&mut self, per_mille: u32, steps: u16) {
         self.ecs.world_mut().resource_mut::<SlowMotion>().request(per_mille, steps);
+    }
+
+    /// Loads a timeline's simulation half, between steps, for [`Self::play_timeline`]. It goes in
+    /// [`Self::tables_hash`], so a replay that plays it says so if it changes. A scenario loads what a
+    /// replay of it could play, up front.
+    pub fn add_timeline(&mut self, timeline: TimelineSimulation) -> Result<TimelineId, TimelineError> {
+        self.ecs.world_mut().resource_mut::<TimelineLibrary>().add(timeline)
+    }
+
+    /// Starts a timeline, between steps: it does nothing until the next. A replay records this, as a
+    /// [`TimelineCommand`](crate::TimelineCommand). The `timeline` module's docs say why there's no way to
+    /// stop or skip one here.
+    pub fn play_timeline(&mut self, id: TimelineId) -> Result<(), TimelinePlayError> {
+        let world = self.ecs.world_mut();
+        let mut run = *world.resource::<TimelineRun>();
+        run.start(world.resource::<TimelineLibrary>(), id)?;
+        *world.resource_mut::<TimelineRun>() = run;
+        Ok(())
+    }
+
+    /// The timeline playing, if one is.
+    #[must_use]
+    pub fn timeline(&self) -> Option<TimelineProgress> {
+        self.ecs.world().resource::<TimelineRun>().progress()
+    }
+
+    /// The steps a run holding input has left. A skip takes exactly these, on [`TickActions::NEUTRAL`] or
+    /// on anything else, since it's held, and lands where watching would have.
+    #[must_use]
+    pub fn timeline_steps_held(&self) -> u32 {
+        self.ecs.world().resource::<TimelineRun>().steps_held()
+    }
+
+    /// What the latest step's timeline told gameplay.
+    pub fn timeline_events(&self) -> impl Iterator<Item = TimelineEvent> + '_ {
+        let world = self.ecs.world();
+        world.resource::<TimelineRun>().events(world.resource::<TimelineLibrary>())
     }
 
     /// World-clock slow motion as it stands: whether it's running and what it has refused.

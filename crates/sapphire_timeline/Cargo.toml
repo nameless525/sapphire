@@ -1,0 +1,26 @@
+[package]
+name = "sapphire_timeline"
+description = "Timelines as plain data: the `.timeline.ron` document, its checks and the cooked `.stimeline` format, split into what the simulation reads and what only presentation does, with no renderer, world or physics, so the cooker and the simulation can both link it."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+# Documents derive `Reflect` and cooked data `TypePath`, whose derives find the crate by this name.
+bevy_reflect.workspace = true
+rkyv.workspace = true
+# Gameplay events', cues', roles' and rows' IDs are names' hashes.
+sapphire_core.workspace = true
+sapphire_reflect.workspace = true
+sapphire_serialize.workspace = true
+# A beat's tick is a whole fixed step, at the rate the simulation runs.
+sapphire_time.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+# The digest a replay pins.
+xxhash-rust.workspace = true
+
+[lints]
+workspace = true

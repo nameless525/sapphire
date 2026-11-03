@@ -1,0 +1,31 @@
+// A synthetic cinematic in a fight, for the tests of a skip: the simulation runs beneath it, input held,
+// the world slowing and coming back, and gameplay told something three times over. Q3 brings a real one.
+(
+    type: "sapphire::timeline::TimelineDocument",
+    version: 1,
+    data: (
+        length: 2.5,
+        clock: Steps,
+        camera: Some((
+            blend_in: 0.15,
+            blend_out: 0.2,
+            eye: Clear,
+            keys: [
+                (at: 0.0, eye: (0.0, 1.6, -4.0), look_at: (0.0, 1.4, 0.0), fov_degrees: 35.0),
+                (at: 1.0, eye: (1.5, 1.6, -3.0), look_at: (0.0, 1.4, 0.0), fov_degrees: 30.0, ease: Smooth),
+                (at: 2.0, eye: (-2.0, 1.2, 2.0), look_at: (0.0, 1.5, 0.0), fov_degrees: 40.0, ease: Cut),
+            ],
+        )),
+        cues: [(at: 0.5, cue: "slash"), (at: 1.0, cue: "slash")],
+        // Slows hard at step 45, and comes back over the 6 steps after step 90.
+        time_scale: [
+            (at: 0.75, per_mille: 300),
+            (at: 1.5, per_mille: 1000, ramp: 0.1),
+        ],
+        events: [
+            (at: 0.75, event: "guard_up"),
+            (at: 0.75, event: "guard_up", value: 2),
+            (at: 2.0, event: "guard_down", value: -1),
+        ],
+    ),
+)

@@ -21,6 +21,7 @@ use sapphire_physics::{
 };
 use sapphire_serialize::cooked::AlignedVec;
 use sapphire_time::ScaleSource;
+use sapphire_timeline::{TimelineDocument, TimelineError};
 
 use crate::actions::{Buttons, Controls};
 use crate::actors::{ActorId, ActorRequests, ActorSpawn, ActorTable, SpawnError};
@@ -35,6 +36,10 @@ use crate::stats::{BUDGET_DESKTOP_LOW, PHYSICS_BUDGET_DESKTOP_LOW};
 /// The test content's document: see that file for its numbers. The real moves came beside it (M2 O3,
 /// `arena-fight`), and the older scenarios stay on it, so tuning those moves moves none of their replays.
 const TEST_MOVES: &str = include_str!("../../../sapphire_moves/test_content/slice.moves.ron");
+
+/// Synthetic timelines, for the scripts that hold a skip to the same checksums as a watch.
+const CINEMATIC: &str = include_str!("../../../sapphire_timeline/test_content/cinematic.timeline.ron");
+const CUTSCENE: &str = include_str!("../../../sapphire_timeline/test_content/cutscene.timeline.ron");
 
 /// That document, from the repository's root.
 const TEST_MOVES_PATH: &str = "crates/sapphire_moves/test_content/slice.moves.ron";
@@ -74,6 +79,8 @@ pub enum ScenarioError {
     Party(#[from] PartyError),
     #[error(transparent)]
     NavMesh(#[from] sapphire_navmesh::NavMeshError),
+    #[error(transparent)]
+    Timeline(#[from] TimelineError),
 }
 
 /// A named starting world.
@@ -196,6 +203,19 @@ pub const SCENARIOS: &[Scenario] = &[
         },
         documents: &[TEST_MOVES_PATH],
         setup: super::chase::nav_chase,
+    },
+    Scenario {
+        name: "timelines",
+        about: "`duel`, with a synthetic cinematic and a synthetic cutscene loaded, for the scripts that hold a \
+                skip to the same checksums as a watch",
+        config: SimConfig {
+            seed: 7,
+            max_actors: 2,
+            step_budget: BUDGET_DESKTOP_LOW,
+            physics_budget: PHYSICS_BUDGET_DESKTOP_LOW,
+        },
+        documents: &[TEST_MOVES_PATH],
+        setup: timelines,
     },
 ];
 
@@ -354,6 +374,16 @@ pub(super) fn duel_on(sim: &mut Simulation, set: MoveSet) -> Result<Vec<ActorId>
     let cast = vec![player, opponent];
     aim_round(sim, &cast);
     Ok(cast)
+}
+
+/// [`duel`], with the synthetic timelines loaded: first the cinematic, then the cutscene. Their simulation
+/// halves are decimal text cooked to whole numbers, so they come out the same on every architecture.
+pub fn timelines(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
+    for document in [CINEMATIC, CUTSCENE] {
+        let timeline = TimelineDocument::from_ron(document)?.cook()?;
+        sim.add_timeline(timeline.simulation)?;
+    }
+    duel(sim)
 }
 
 /// The arena (`crate::arena`): the town's square from its collider document, and a player and an

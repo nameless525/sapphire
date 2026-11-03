@@ -514,14 +514,19 @@ pub(crate) enum GraphOwner {
 /// cook has landed. A cook reads a document when it starts, so one that started before the newest save
 /// brings what the file said then, and taking it for the newer because it arrived later would undo the save
 /// with nothing to say so, while the file went on saying otherwise. So where there's a file it's the word,
-/// and what a cook read is the same text. With no file, on a phone, or one that doesn't read yet, the cook
-/// is all there is. Moves do the same (`LiveTuning::newest_of`).
+/// and what a cook read is the same text. With no file, on a phone, or one that doesn't read yet or names a
+/// clip no pack holds, which live tuning refuses too and can't bind, the cook is all there is. Moves do the
+/// same (`LiveTuning::newest_of`).
 #[cfg(feature = "dev")]
-fn newest_saved(files: &[(GraphOwner, PathBuf)], owner: GraphOwner) -> Option<AnimGraph> {
+fn newest_saved(
+    files: &[(GraphOwner, PathBuf)],
+    owner: GraphOwner,
+    server: &AssetServer,
+) -> Option<AnimGraph> {
     let named = files.iter().filter(|(of, _)| *of == owner).map(|(_, path)| path);
     let mut graph = AnimGraph::from_document(&crate::tuning::newest_text(named)?).ok()?;
     graph.resolve(sapphire_assets::graph::clip_id);
-    Some(graph)
+    graph.clips.iter().all(|clip| server.contains(clip.id)).then_some(graph)
 }
 
 impl Content {
@@ -1367,7 +1372,7 @@ impl Content {
                 let Some(held) = held else { continue };
                 let cooked = self.server.generation(&held.graph);
                 if std::mem::replace(&mut held.cooked, cooked) != cooked {
-                    held.live = newest_saved(&self.graph_files, owner);
+                    held.live = newest_saved(&self.graph_files, owner, &self.server);
                     if held.live.is_some() {
                         tracing::info!(target: LOG_TARGET, ?owner, "a cook landed: the graph is what its file says");
                     }
@@ -2930,6 +2935,34 @@ mod tests {
         std::fs::remove_dir_all(&folder).expect("cleaned up");
         land(&mut stage, 12);
         assert_eq!(bound(&stage), 12);
+    }
+
+    /// A save can read and still not bind, naming a clip nothing has cooked. Live tuning refuses it, and a
+    /// cook that lands mustn't take it up in the cook's place: moves fall back on what a cook made, and so
+    /// does this, or the graph playing goes on being older than both, with nothing that can bind.
+    #[cfg(feature = "dev")]
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_saved_graph_that_cant_bind_doesnt_keep_a_cook_out() {
+        let mut stage = Stage::new();
+        stage.play_graph();
+        stage.frame();
+        let folder =
+            std::env::temp_dir().join(format!("sapphire_sandbox_unbound_graph_{}", std::process::id()));
+        std::fs::create_dir_all(&folder).expect("a folder");
+        let file = folder.join("character.animgraph.ron");
+        stage.content.read_graphs_from(vec![(GraphOwner::Character, file.clone())]);
+
+        let nothing_cooked = AssetId::from_bytes([0x33; 16]);
+        let text = swing_document(4).replace(&SWING.to_string(), &nothing_cooked.to_string());
+        std::fs::write(&file, text).expect("the save");
+        let versions = stage.content.graph_versions();
+        stage.source.insert(PACK, pack_with_decay(0.0, 0, 7));
+        stage.content.remount(PACK).expect("the new pack");
+        stage.frames_until(|stage| stage.content.graph_versions() != versions);
+        std::fs::remove_dir_all(&folder).expect("cleaned up");
+        assert_eq!(stage.content.graph_document().expect("a graph").combat.decay, 7, "the cook's");
+        assert!(stage.scene.graph_player().expect("playing").has_replacement(), "and it's what comes next");
     }
 
     /// A fight's player plays a graph, so an edit of it takes as the graph show's does.

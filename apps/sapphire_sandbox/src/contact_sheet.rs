@@ -49,7 +49,7 @@ const GROUND: [u8; 3] = [255, 64, 64];
 const INK: [u8; 3] = [255, 255, 255];
 const PAPER: [u8; 3] = [0, 0, 0];
 /// The most image a sheet may hold, in bytes: a gibibyte, a cell of 16384 square or 64 by 64 cells of about
-/// 512 square, far past what anyone reads, where the next size up can ask for more than a machine has.
+/// 256 square, far past what anyone reads, where the next size up can ask for more than a machine has.
 const MAX_SHEET_BYTES: u128 = 1 << 30;
 /// How close the ground's marks may come, in pixels, before they run together.
 const MIN_MARK_SPACING: f32 = 4.0;

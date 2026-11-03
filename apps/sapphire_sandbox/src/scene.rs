@@ -4334,7 +4334,6 @@ mod tests {
             assert_eq!(held.moved_to, Some(Vec3::ZERO), "added at the place it stood");
         }
 
-        /// A clip's new version is drawn even by a frozen character.
         /// Playing a clip allocates nothing once its query has run: what benches read of the rest of a
         /// frame shouldn't have this in it.
         #[test]
@@ -4353,6 +4352,7 @@ mod tests {
             assert_eq!(counts.allocations, 0, "{counts:?}");
         }
 
+        /// A clip's new version is drawn even by a frozen character.
         #[test]
         fn a_new_version_of_the_clip_moves_a_frozen_character() {
             let bytes = clip().to_cooked().expect("cooked");

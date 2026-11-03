@@ -71,6 +71,10 @@ sapphire_gameplay = { kind = "runtime", layer = 4 }
 # stays outside the checksum and isn't in [simulation]. It reaches no renderer or window: the app
 # turns its plain pose into a view.
 sapphire_camera = { kind = "runtime", layer = 4 }
+# Settings and progress on disk (M3 V1): two rotating slots, migrations, atomic writes. Its normal
+# tree holds no `sapphire_platform`, and so no SDL: an app hands it `durable_replace`, and the replay
+# runner, which may not link the platform, can still read a save.
+sapphire_save = { kind = "runtime", layer = 4 }
 # L5 game. Combat's controls (M2 I1) map `sapphire_input`'s actions onto `sapphire_gameplay`'s
 # `TickActions`, so they need both, and the simulation may not link input (`[simulation]`). Above
 # gameplay rather than beside it through an `[allow]` edge: nothing in the framework needs them, and

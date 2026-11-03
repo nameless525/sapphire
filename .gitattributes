@@ -33,6 +33,7 @@
 *.astc binary
 *.smesh binary
 *.sreplay binary
+*.sav binary
 *.bank binary
 # Platform packaging.
 *.jar binary

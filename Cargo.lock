@@ -3291,6 +3291,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tracing",
  "tracing-subscriber",
+ "windows-sys",
 ]
 
 [[package]]
@@ -3391,6 +3392,21 @@ dependencies = [
  "sapphire_world",
  "thiserror 2.0.21",
  "tracing",
+]
+
+[[package]]
+name = "sapphire_save"
+version = "0.1.0"
+dependencies = [
+ "bevy_reflect",
+ "sapphire_jobs",
+ "sapphire_platform",
+ "sapphire_reflect",
+ "sapphire_serialize",
+ "serde",
+ "thiserror 2.0.21",
+ "tracing",
+ "xxhash-rust",
 ]
 
 [[package]]

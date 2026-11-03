@@ -18,7 +18,8 @@
 //! - **Content and user storage:** [`ContentFs`] for packaged read-only content
 //!   (including APK assets), [`user_dir`] for settings and saves, and [`cache_dir`] for
 //!   rebuildable data such as pipeline caches, logs and crash dumps. Both directory
-//!   functions work before SDL starts.
+//!   functions work before SDL starts. [`durable_replace`] writes a file so that a crash leaves
+//!   the old one or the new one whole (M3 V1).
 //! - **The IO thread** (M1 A4, [`IoThread`]): positioned reads of content files by priority,
 //!   with cancellation and completion callbacks (spec §4.3). The asset server reads packs
 //!   through it; decoding happens on the job system's workers, not here.
@@ -135,6 +136,7 @@ mod app;
 mod audio_session;
 mod content;
 mod dirs;
+mod durable;
 mod event;
 mod frame_clock;
 mod io;
@@ -153,6 +155,7 @@ pub use app::__private;
 pub use app::{App, AppControl, AppInitError, AppMetadata, RunOptions, run, run_with};
 pub use content::{CONTENT_DIR_ENV, ContentError, ContentFile, ContentFs};
 pub use dirs::{cache_dir, user_dir};
+pub use durable::{OsSteps, ReplaceSteps, durable_replace, durable_replace_with};
 pub use event::{
     Event, FingerId, GamepadAxis, GamepadButton, GamepadEvent, GamepadId, GamepadType, KeyEvent, Keycode,
     LifecycleEvent, Modifiers, MouseButton, MouseButtonEvent, MouseMotionEvent, MouseWheelEvent, Scancode,

@@ -1,0 +1,33 @@
+[package]
+name = "sapphire_save"
+description = "Settings and progress on disk: atomic writes, two rotating slots with checksums, migrations."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+sapphire_reflect.workspace = true
+sapphire_serialize.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+xxhash-rust.workspace = true
+
+[dev-dependencies]
+# The tests derive `TypePath`, whose derive finds the crate by this name.
+bevy_reflect.workspace = true
+# A save job off the frame's path.
+sapphire_jobs.workspace = true
+# The real `durable_replace` and the steps the fault injection wraps. Only tests and the example
+# link it: the crate itself takes the function from its caller, so its normal tree stays free of SDL.
+sapphire_platform.workspace = true
+
+# Its own `main` plays both sides: the test that kills, and the writer it kills.
+[[test]]
+name = "kill"
+harness = false
+
+[lints]
+workspace = true

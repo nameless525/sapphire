@@ -145,7 +145,7 @@ The usual rules carry over: existing goldens stay byte-identical unless a row sa
 
 | ID | Package | Size | Depends on | Notes |
 |---|---|---|---|---|
-| V1 | **`sapphire_save`:** settings, progress, migrations, atomic writes, rotating slots. A test kills a write at each step, by fault injection. | M | Plan | `user://` on all five, Simulator and emulator included. |
+| V1 | **`sapphire_save`:** settings, progress, migrations, atomic writes, rotating slots. A test kills a write at each step, by fault injection. | M | Plan | `user://` on all five, Simulator and emulator included. **As built (M3 V1):** `sapphire_save` at L4: `SettingsFile`, RON whose load can't fail, salvaging field by field and keeping a bad file aside; `ProgressStore`, two rotating `postcard` slots with a generation counter, xxh3 checksum and `Versioned` migrations, refusing newer saves. Writes go through `sapphire_platform::durable_replace`, which the app passes in, since `sapphire_replay` forbids the platform crate. A write costs about 7 ms on an M5, so it goes on a job from a snapshot of 6–57 µs. Fault injection at every step and 300 real kills held; simulator and emulator ran it. A power cut, a phone's flash and `SDL_GetPrefPath`'s real paths are unproved. |
 | V2 | **`sapphire_loc`:** `.ftl` to tables, the evaluator, `icu_plurals`, `icu_decimal`, pseudo-localization, a live language switch, a voice language apart from text's. | M | U1 | |
 
 ### Track E: editor

@@ -36,6 +36,7 @@ members = [
     "crates/sapphire_world",
     "crates/sapphire_gameplay",
     "crates/sapphire_camera",
+    "crates/sapphire_save",
     # L5 game
     "crates/sapphire_controls",
     "crates/sapphire_cues",
@@ -88,6 +89,7 @@ sapphire_ui = { path = "crates/sapphire_ui" }
 sapphire_world = { path = "crates/sapphire_world" }
 sapphire_gameplay = { path = "crates/sapphire_gameplay" }
 sapphire_camera = { path = "crates/sapphire_camera" }
+sapphire_save = { path = "crates/sapphire_save" }
 sapphire_controls = { path = "crates/sapphire_controls" }
 sapphire_cues = { path = "crates/sapphire_cues" }
 sapphire_debug = { path = "crates/sapphire_debug" }

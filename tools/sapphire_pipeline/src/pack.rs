@@ -24,10 +24,11 @@
 //! asset no zone reaches, or two do, is shared. So is whatever a shared asset reaches, even if only
 //! one zone does too, as the shared pack can't lean on a zone's. Anything else is its one zone's, in
 //! `zone_<stem>` ([`sapphire_zone::pack_name`]), with the zone itself. An asset named only by code (the
-//! look-dev scene's plants, say) reaches the app from nothing a pack can see: while one zone is all
-//! that names it, it would move to that zone's pack, so give the zone a copy of its own, or wait for
-//! the code to name it through a zone. A zone's navmesh is named by that zone alone, so it's always in
-//! that zone's pack.
+//! look-dev scene's plants, say) reaches the app from nothing a pack can see, so were one zone all that
+//! names it, it would move to that zone's pack and leave every other app without it:
+//! [`check_code_names`] fails the cook instead, naming the line ([`crate::code_names`]). Give the zone a
+//! copy of its own, or name the asset through the zone. A zone's navmesh is named by that zone alone, so
+//! it's always in that zone's pack.
 //!
 //! Sounds and cues go in [`AUDIO`] ([`group`], M2 E1). The content tree holds about 280 sounds, about
 //! 3 MB against the shared pack's 23 MB, and nothing yet says which a game needs. A pack of their own
@@ -91,26 +92,14 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use sapphire_assets::clip::CLIP_EXTENSION;
-use sapphire_assets::cue::CUE_EXTENSION;
-use sapphire_assets::font::{FONT_CHAINS_EXTENSION, FONT_EXTENSION, FONTS_PACK, Font};
-use sapphire_assets::graph::GRAPH_EXTENSION;
-use sapphire_assets::material::{MATERIAL_EXTENSION, Material, MaterialFamily, MaterialFlags};
-use sapphire_assets::mesh::{MESH_EXTENSION, Mesh};
+use crate::code_names::CodeName;
+use sapphire_assets::font::{FONTS_PACK, Font};
+use sapphire_assets::material::{Material, MaterialFamily, MaterialFlags};
+use sapphire_assets::mesh::Mesh;
 use sapphire_assets::pack::{self as format, Codec, PACK_EXTENSION, PackAsset};
-use sapphire_assets::probes::PROBE_GRID_EXTENSION;
-use sapphire_assets::rig::RIG_EXTENSION;
-use sapphire_assets::skeleton::SKELETON_EXTENSION;
-use sapphire_assets::sound::SOUND_EXTENSION;
-use sapphire_assets::texture::TEXTURE_EXTENSION;
 use sapphire_assets::{AssetError, AssetId, AssetKind, PipelineKey};
-use sapphire_colliders::COLLIDERS_EXTENSION;
-use sapphire_moves::MOVE_SET_EXTENSION;
-use sapphire_navmesh::NAVMESH_EXTENSION;
 use sapphire_serialize::cooked::AlignedVec;
 use sapphire_serialize::postcard;
-use sapphire_strings::STRINGS_EXTENSION;
-use sapphire_zone::ZONE_EXTENSION;
 
 use crate::cache::{Cache, CacheError, CacheKey, Stage};
 use crate::cook::{self, CookError, CookReport, CookedAsset};
@@ -182,31 +171,20 @@ pub fn codec(kind: AssetKind) -> Codec {
 
 /// The kind of a cooked file, from its format's extension.
 pub fn kind(output: &Path) -> Option<AssetKind> {
-    match output.extension()?.to_str()? {
-        MESH_EXTENSION => Some(AssetKind::Mesh),
-        TEXTURE_EXTENSION => Some(AssetKind::Texture),
-        MATERIAL_EXTENSION => Some(AssetKind::Material),
-        RIG_EXTENSION => Some(AssetKind::Rig),
-        PROBE_GRID_EXTENSION => Some(AssetKind::ProbeGrid),
-        SKELETON_EXTENSION => Some(AssetKind::Skeleton),
-        CLIP_EXTENSION => Some(AssetKind::Clip),
-        COLLIDERS_EXTENSION => Some(AssetKind::Colliders),
-        SOUND_EXTENSION => Some(AssetKind::Sound),
-        CUE_EXTENSION => Some(AssetKind::Cue),
-        MOVE_SET_EXTENSION => Some(AssetKind::MoveSet),
-        GRAPH_EXTENSION => Some(AssetKind::AnimGraph),
-        ZONE_EXTENSION => Some(AssetKind::Zone),
-        STRINGS_EXTENSION => Some(AssetKind::Strings),
-        FONT_EXTENSION => Some(AssetKind::Font),
-        FONT_CHAINS_EXTENSION => Some(AssetKind::FontChains),
-        NAVMESH_EXTENSION => Some(AssetKind::NavMesh),
-        _ => None,
-    }
+    let extension = output.extension()?.to_str()?;
+    AssetKind::ALL.into_iter().find(|kind| kind.extension() == extension)
 }
 
 /// Errors from packing. Each names the file it concerns.
 #[derive(Debug, thiserror::Error)]
 pub enum PackError {
+    #[error(
+        "{} would go in pack {pack}, as one zone is all that reaches it, but {}:{line} names it, so apps \
+         that don't mount that zone would lose it: name it through the zone, or give the zone its own copy",
+        source_path.display(),
+        code.display()
+    )]
+    CodeNamedInZone { source_path: PathBuf, pack: String, code: PathBuf, line: usize },
     #[error("{} isn't a cooked format packs hold", path.display())]
     UnknownKind { path: PathBuf },
     #[error("cooked asset {} is invalid", path.display())]
@@ -275,6 +253,36 @@ pub struct PackReport {
     pub removed: Vec<PathBuf>,
     /// The licenses of the fonts in these packs, if there are any.
     pub notices: Option<PathBuf>,
+}
+
+/// Fails if an asset that code names (`names`) would leave the shared packs for a zone's. A zone itself
+/// may be named: that's how an app opens it, and it mounts the pack that goes with it.
+pub fn check_code_names(
+    report: &CookReport,
+    cache: Option<&Path>,
+    names: &[CodeName],
+) -> Result<(), PackError> {
+    let cache = cache.map(Cache::new);
+    let groups = groups(report, cache.as_ref())?;
+    let by_id: HashMap<AssetId, &CodeName> = names.iter().map(|name| (name.id, name)).collect();
+    for (pack, assets) in &groups {
+        if pack == SHARED || pack == AUDIO {
+            continue;
+        }
+        for asset in assets {
+            if kind(&asset.output) != Some(AssetKind::Zone)
+                && let Some(name) = by_id.get(&asset.id)
+            {
+                return Err(PackError::CodeNamedInZone {
+                    source_path: asset.source.clone(),
+                    pack: pack.clone(),
+                    code: name.path.clone(),
+                    line: name.line,
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Packs every asset of `report` into `out` (see the [module docs](self)), caching encodings in

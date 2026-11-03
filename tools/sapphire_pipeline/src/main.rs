@@ -10,6 +10,7 @@ use std::str::FromStr;
 use anyhow::{Context as _, anyhow, bail};
 use sapphire_pipeline::bake::OutlineSettings;
 use sapphire_pipeline::character_maps::{self, MapKind};
+use sapphire_pipeline::code_names;
 use sapphire_pipeline::combat;
 use sapphire_pipeline::cook::{self, Cook, CookOptions, CookReport, CookStatus};
 use sapphire_pipeline::extract::{self, ExtractOptions};
@@ -63,6 +64,8 @@ Options:
                              differ from what the generator makes, after changing it.
   --cook <COOK>              Target cook: desktop or mobile.
   --packs <DIR>              Where packs go: the content apps ship.
+  --code <DIR>               With --packs: fail if an asset the Rust code under DIR names would
+                             leave the shared packs for one zone's.
   --cache <DIR>              Content cache: reuse the cooked output and pack encoding of
                              any asset whose inputs are unchanged, and store new ones.
   --locked                   Fail on a source without a sidecar instead of creating one (CI).
@@ -102,6 +105,7 @@ enum Command {
         source: PathBuf,
         out: PathBuf,
         packs: Option<PathBuf>,
+        code: Option<PathBuf>,
         cook: Cook,
         cache: Option<PathBuf>,
         locked: bool,
@@ -195,11 +199,16 @@ fn run(command: Command) -> anyhow::Result<()> {
                 extraction.written.len()
             );
         }
-        Command::Cook { source, out, packs, cook, cache, locked } => {
+        Command::Cook { source, out, packs, code, cook, cache, locked } => {
             let options = CookOptions { cook, cache: cache.as_deref(), locked };
             let report = cook::cook_dir(&source, &out, &options)?;
             print_report(&report, cook, &source, &out);
             if let Some(packs) = packs {
+                if let Some(code) = code {
+                    let names = code_names::scan(&code)
+                        .with_context(|| format!("reading the code in {}", code.display()))?;
+                    pack::check_code_names(&report, cache.as_deref(), &names)?;
+                }
                 let packed = pack::pack_cooked(&report, &packs, cache.as_deref())?;
                 print_packs(&packed, cook);
             }
@@ -376,6 +385,7 @@ fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Command> {
             source: options.required("--source")?,
             out: options.required("--out")?,
             packs: options.value("--packs")?,
+            code: options.value("--code")?,
             cook: options.required("--cook")?,
             cache: options.value("--cache")?,
             locked: options.flag("--locked"),
@@ -493,6 +503,7 @@ mod tests {
                 source: "content".into(),
                 out: "out".into(),
                 packs: None,
+                code: None,
                 cook: Cook::Desktop,
                 cache: None,
                 locked: true,

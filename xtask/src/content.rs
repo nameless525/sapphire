@@ -326,6 +326,8 @@ pub fn cook(cook: Cook) -> anyhow::Result<Cooked> {
         .arg(loose_dir(cook))
         .arg("--packs")
         .arg(&out)
+        .arg("--code")
+        .arg(workspace::root())
         .args(["--cook", cook.name()])
         .arg("--cache")
         .arg(cache_dir());

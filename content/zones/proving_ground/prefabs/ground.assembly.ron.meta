@@ -1,0 +1,11 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "d1d24907-c6b9-4587-8633-50df8b55a95b",
+        importer: Assembly((
+            materials: {"paving": "ee6d89ed-81cf-4e0a-bffc-ab3e2be262eb"},
+        )),
+        cook: false,
+    ),
+)

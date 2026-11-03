@@ -1,0 +1,11 @@
+// A lantern from the kit that cooks to a mesh of its own, for the zone to place as an instance.
+(
+    type: "sapphire::pipeline::Assembly",
+    version: 1,
+    data: (
+        kits: {"kenney": "../../../third_party/kenney_fantasy_town_kit/glb"},
+        slots: [(name: "iron", tile: (1.0, 1.0))],
+        surfaces: [],
+        place: [(piece: "kenney/lantern", slot: Some("iron"))],
+    ),
+)

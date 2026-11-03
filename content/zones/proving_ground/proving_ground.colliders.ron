@@ -1,0 +1,11 @@
+// The proving ground's static collision: the ground, and the pillar the player starts beside.
+(
+    type: "sapphire::colliders::ColliderDocument",
+    version: 1,
+    data: (
+        colliders: [
+            (name: "ground", shape: Box(half_extents: (48.0, 0.5, 48.0)), position: (8.0, -0.5, 0.0)),
+            (name: "pillar", shape: Box(half_extents: (0.5, 2.0, 0.5)), position: (2.0, 2.0, 2.0)),
+        ],
+    ),
+)

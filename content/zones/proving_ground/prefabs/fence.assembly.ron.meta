@@ -1,0 +1,11 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "0abc2847-4ae9-4d68-8549-6e398c92db43",
+        importer: Assembly((
+            materials: {"wood": "246fa7f8-624a-4e65-bcd5-5d2a7afeb117"},
+        )),
+        cook: false,
+    ),
+)

@@ -1,0 +1,11 @@
+// A prefab: a cart from the kit, in wood.
+(
+    type: "sapphire::pipeline::Assembly",
+    version: 1,
+    data: (
+        kits: {"kenney": "../../../third_party/kenney_fantasy_town_kit/glb"},
+        slots: [(name: "wood", tile: (1.0, 1.0))],
+        surfaces: [],
+        place: [(piece: "kenney/cart", slot: Some("wood"))],
+    ),
+)

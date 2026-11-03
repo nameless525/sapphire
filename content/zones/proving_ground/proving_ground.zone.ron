@@ -1,0 +1,60 @@
+// The proving ground (M3 W1): a small zone of kit pieces, for what reads zones to be tested on, the
+// runtime that streams them above all (M3 W2). No scene or stage draws it. Its pack is
+// `zone_proving_ground`, and it costs the other packs nothing: its materials are the town's, which stay
+// shared, and everything else here is its alone. Four cells 16 m wide hold a dozen placed pieces, the
+// backdrop holds the ground, and one of each thing a zone can hold stands somewhere.
+(
+    type: "sapphire::zone::ZoneDocument",
+    version: 1,
+    data: (
+        grid: (cell_size: 16.0),
+        placements: [
+            // Cell (0, 0): two pillars and a cart, turned.
+            (prefab: "2c0ce8b4-10c6-4cdd-b546-4249a9601188", at: (2.0, 0.0, 2.0)),
+            (prefab: "2c0ce8b4-10c6-4cdd-b546-4249a9601188", at: (6.0, 0.0, 2.0)),
+            (prefab: "940102ca-a2d8-419f-b3ab-cd504a73068f", at: (9.0, 0.0, 10.0), turn: 30.0),
+            // Cell (-1, 0): fences, joined end to end along X.
+            (prefab: "0abc2847-4ae9-4d68-8549-6e398c92db43", at: (-4.0, 0.0, 3.0)),
+            (prefab: "0abc2847-4ae9-4d68-8549-6e398c92db43", at: (-8.0, 0.0, 3.0)),
+            // Cell (1, 0): a larger cart.
+            (prefab: "940102ca-a2d8-419f-b3ab-cd504a73068f", at: (20.0, 0.0, 4.0), scale: (1.5, 1.5, 1.5)),
+            (prefab: "2c0ce8b4-10c6-4cdd-b546-4249a9601188", at: (24.0, 0.0, 12.0)),
+            // Cell (0, -1): a fence in another material.
+            (prefab: "0abc2847-4ae9-4d68-8549-6e398c92db43", at: (3.0, 0.0, -5.0)),
+            (prefab: "0abc2847-4ae9-4d68-8549-6e398c92db43", at: (7.0, 0.0, -5.0), materials: {"wood": "4877c2cb-8151-4e8f-a18e-393b1e80259c"}),
+            (prefab: "2c0ce8b4-10c6-4cdd-b546-4249a9601188", at: (12.0, 0.0, -12.0)),
+            // Cell (1, -1): a mirrored fence.
+            (prefab: "2c0ce8b4-10c6-4cdd-b546-4249a9601188", at: (20.0, 0.0, -4.0)),
+            (prefab: "0abc2847-4ae9-4d68-8549-6e398c92db43", at: (28.0, 0.0, -8.0), scale: (-1.0, 1.0, 1.0)),
+            // The ground.
+            (prefab: "d1d24907-c6b9-4587-8633-50df8b55a95b", at: (8.0, 0.0, 0.0), backdrop: true),
+        ],
+        instances: [
+            (mesh: "f6dcae8b-5937-4299-ba5e-e2f026fc2762", at: (4.0, 0.0, 6.0), turn: 20.0),
+            (mesh: "f6dcae8b-5937-4299-ba5e-e2f026fc2762", at: (20.0, 0.0, -10.0)),
+        ],
+        lights: [
+            (position: (4.0, 2.5, 6.0), color: (1.0, 0.72, 0.42), intensity: 6.0, range: 8.0, at_night: true),
+            (
+                position: (20.0, 4.0, -10.0),
+                color: (1.0, 0.9, 0.8),
+                intensity: 4.0,
+                range: 8.0,
+                shape: Spot(direction: (0.0, -1.0, 0.0), inner_degrees: 20.0, outer_degrees: 35.0),
+            ),
+        ],
+        day: Some("../../lookdev/lookdev_day.ron"),
+        rigs: Some("../../lookdev/lookdev_light_rigs.ron"),
+        colliders: Some("af99346e-5f08-439e-9d9b-70fa76fa0935"),
+        spawners: [
+            (name: "player_start", position: (1.0, 0.0, 1.0), yaw_degrees: 0.0, spawns: "player"),
+            (name: "far_gate", position: (22.0, 0.0, -2.0), yaw_degrees: 225.0, spawns: "warrior"),
+        ],
+        triggers: [
+            (name: "cart_yard", position: (9.0, 1.0, 10.0), volume: Box(half_extents: (4.0, 2.0, 4.0)), event: "cart_yard_entered"),
+        ],
+        splines: [
+            (name: "overlook", points: [(-10.0, 4.0, 14.0), (8.0, 6.0, 18.0), (26.0, 4.0, 14.0)]),
+        ],
+    ),
+)

@@ -1,0 +1,11 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "2c0ce8b4-10c6-4cdd-b546-4249a9601188",
+        importer: Assembly((
+            materials: {"stone": "30ccc7f0-62ba-410e-9d3d-1d3e77ee1d1e"},
+        )),
+        cook: false,
+    ),
+)

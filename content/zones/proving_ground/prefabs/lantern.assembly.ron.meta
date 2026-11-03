@@ -1,0 +1,12 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "f6dcae8b-5937-4299-ba5e-e2f026fc2762",
+        importer: Assembly((
+            lods: (levels: [], mobile_skip: 0),
+            position_format: Float32,
+            materials: {"iron": "c532189a-26a8-424b-81a8-edc34f3b8440"},
+        )),
+    ),
+)

@@ -50,5 +50,10 @@ sapphire_core = { workspace = true, features = ["mimalloc"] }
 # `dev` forwards it.
 dev = ["dep:sapphire_hot_reload", "dep:sapphire_livelink", "dep:sapphire_reflect"]
 
+# A caller outside the crate, on the platform's real loop, which must own the process's main thread.
+[[test]]
+name = "outside_caller"
+harness = false
+
 [lints]
 workspace = true

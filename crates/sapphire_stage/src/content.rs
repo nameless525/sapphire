@@ -1540,7 +1540,6 @@ impl Content {
     }
 
     /// The asset server's counters (rule R9).
-    #[cfg_attr(not(feature = "dev"), expect(dead_code, reason = "the debug overlay shows them"))]
     pub fn stats(&self) -> AssetStats {
         self.server.stats()
     }

@@ -6,6 +6,7 @@
 //!
 //! # Owns
 //!
+//! - [`font_subset`]: a font cut down to a string table's characters, its variable axes kept.
 //! - [`meta`]: `.meta` sidecars, which give every source asset its [`AssetId`], import
 //!   settings, and the only place new IDs are made.
 //! - [`import`]: source file → engine-neutral intermediate: an

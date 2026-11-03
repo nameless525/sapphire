@@ -724,9 +724,12 @@ fn japanese_lands_pixel_for_pixel_at_every_scale() {
     use sapphire_text::{AtlasConfig, GlyphAtlas, TextStyle, TextSystem};
 
     let Some(dir) = std::env::var_os("SAPPHIRE_TEST_FONTS").map(std::path::PathBuf::from) else {
-        eprintln!(
-            "*** japanese_lands_pixel_for_pixel_at_every_scale SKIPPED: SAPPHIRE_TEST_FONTS isn't set ***"
-        );
+        std::io::Write::write_all(
+            &mut std::io::stderr(),
+            "*** japanese_lands_pixel_for_pixel_at_every_scale SKIPPED: SAPPHIRE_TEST_FONTS isn't set ***\n"
+                .as_bytes(),
+        )
+        .expect("stderr");
         return;
     };
     let font = |name: &str| Arc::new(std::fs::read(dir.join(name)).expect("the font"));

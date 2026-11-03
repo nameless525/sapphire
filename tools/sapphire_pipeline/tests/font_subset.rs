@@ -2,6 +2,9 @@
 //! reads it, shapes it to the same positions with the same line breaks, and rasterizes the same
 //! coverage at any weight. Needs `SAPPHIRE_TEST_FONTS` (`tests/common` in `sapphire_text`).
 
+#![allow(clippy::print_stdout, reason = "the subset's size and time are what this test reports")]
+#![allow(clippy::disallowed_methods, reason = "timing a cook needs the OS clock, and nothing here ships")]
+
 #[path = "../../../crates/sapphire_text/tests/common/mod.rs"]
 mod common;
 

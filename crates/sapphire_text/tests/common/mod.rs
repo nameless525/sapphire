@@ -6,6 +6,7 @@
 
 #![allow(dead_code, reason = "each test binary uses its own share of this")]
 
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -20,7 +21,10 @@ pub fn fonts_dir(test: &str) -> Option<PathBuf> {
     match std::env::var_os("SAPPHIRE_TEST_FONTS") {
         Some(dir) => Some(PathBuf::from(dir)),
         None => {
-            eprintln!("*** {test} SKIPPED: SAPPHIRE_TEST_FONTS isn't set, so nothing was checked ***");
+            // Past the test harness's capture, which hides what a passing test prints.
+            let line =
+                format!("*** {test} SKIPPED: SAPPHIRE_TEST_FONTS isn't set, so nothing was checked ***\n");
+            std::io::stderr().write_all(line.as_bytes()).expect("stderr");
             None
         }
     }

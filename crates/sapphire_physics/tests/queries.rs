@@ -652,7 +652,9 @@ fn crossing_capsules_leave_at_right_angles_to_both() {
         state ^= state << 5;
         (state >> 8) as f32 / (1u32 << 24) as f32
     };
-    for case in 0..2000 {
+    // Enough cases to meet cores a rounding's width apart, where which way they're apart is mostly noise: on
+    // this many they fall short in about 1 of 3,000, and 2,000 of them can pass by luck on one architecture.
+    for case in 0..60_000 {
         let mut turn = || {
             #[allow(
                 clippy::disallowed_methods,

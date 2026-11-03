@@ -39,6 +39,11 @@ pub(crate) const GRAZE: f32 = 1e-3;
 /// hundred metres out, which is as large as a local frame gets.
 const TOUCHING: f32 = 1e-4;
 
+/// Round cores this close, in metres, leave as cores that touch do. The direction between them is noticeably
+/// rounding by here: a tenth of a millimetre apart a hundred metres out, it's off by several degrees, so a
+/// move along it by the depth their distance gives falls short.
+const NEARLY_TOUCHING: f32 = 2e-3;
+
 /// A sweep's distance is corrected by its last gap, along the approach. Below this cosine that
 /// division would amplify rounding rather than correct anything.
 const MIN_CORRECTED_APPROACH: f32 = 0.05;
@@ -266,10 +271,15 @@ pub(crate) fn contact(
     match measure(target, &relative, mover, radii + reach, start) {
         Measure::Far => None,
         Measure::Inside => inside_contact(target, target_pose, mover, mover_pose, radii),
-        Measure::Closest { on_target, normal, distance } => Some(Contact {
-            normal: target_pose.rotation * normal,
-            separation: distance - radii,
-            point: target_pose.transform_point(on_target + normal * target.radius()),
+        Measure::Closest { on_target, normal, distance } => Some(match (target.ends(), mover.ends()) {
+            (Some(target_ends), Some(mover_ends)) if distance < NEARLY_TOUCHING => {
+                crossing_contact(target_ends, target_pose, mover_ends, mover_pose, radii)
+            }
+            _ => Contact {
+                normal: target_pose.rotation * normal,
+                separation: distance - radii,
+                point: target_pose.transform_point(on_target + normal * target.radius()),
+            },
         }),
     }
 }

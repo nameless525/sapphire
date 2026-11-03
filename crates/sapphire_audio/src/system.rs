@@ -208,7 +208,8 @@ impl<B: AudioBackend> AudioSystem<B> {
     }
 
     /// The app went to the background or came back (spec §6.5): the mixer stops or starts asking
-    /// the device for audio. Voices wait where they were, and cues asked for meanwhile are dropped.
+    /// the device for audio. Voices wait where they were, and cues asked for meanwhile are dropped, from
+    /// this call on, whatever the output has got round to.
     pub fn set_background(&mut self, background: bool) {
         self.set_suspension(background, self.interrupted);
     }
@@ -248,7 +249,11 @@ impl<B: AudioBackend> AudioSystem<B> {
         profiling::scope!("AudioSystem::update");
         let timer = Stopwatch::start();
         self.stats.device = self.backend.status();
-        let state = self.stats.device.state;
+        // What was asked comes first: `CpalOutput` stops on a thread of its own and reads `Running` for
+        // a while after, when a voice started now would sound, or wait to sound on the way back. The
+        // stats keep the output's own word.
+        let suspended = self.background || self.interrupted;
+        let state = if suspended { DeviceState::Suspended } else { self.stats.device.state };
 
         self.track_emitters(frame.emitters);
         if state == DeviceState::Running {
@@ -816,6 +821,63 @@ mod tests {
         assert_eq!(system.backend_mut().take_calls(), [MockCall::Resume]);
         system.update(&frame(&[], &play(CueTarget::Flat)), &mut rng);
         assert_eq!(system.stats().cues_played, 1);
+    }
+
+    /// `CpalOutput`'s worker stops the stream when it gets to it, so its status reads `Running` for a
+    /// while after it was asked to stop. What may play goes by what was asked.
+    #[test]
+    fn a_suspension_counts_from_the_asking_not_from_the_output_catching_up() {
+        let mut system = system_with(plain_cue());
+        let mut rng = CueRng::new(1);
+        let cues = play(CueTarget::Flat);
+        system.update(&frame(&[], &cues), &mut rng);
+        assert_eq!(system.stats().cues_played, 1);
+
+        // An interruption, in the foreground, and an output that hasn't got there.
+        system.set_interrupted(true);
+        system.backend_mut().set_state(DeviceState::Running);
+        system.backend_mut().take_calls();
+        let rng_before = rng.clone();
+        for _ in 0..3 {
+            system.update(&frame(&[], &cues), &mut rng);
+        }
+        assert_eq!(system.stats().cues_played, 1, "no new voice");
+        assert_eq!(system.stats().dropped_no_output, 3);
+        assert_eq!(system.backend().calls(), &[], "and what's there is left alone");
+        assert_eq!(rng, rng_before, "a dropped cue takes no numbers");
+        assert_eq!(system.stats().device.state, DeviceState::Running, "the output's own word is kept");
+
+        // It ends before the output caught up: the output is asked to run, and that's enough.
+        system.set_interrupted(false);
+        system.backend_mut().set_state(DeviceState::Running);
+        system.update(&frame(&[], &cues), &mut rng);
+        assert_eq!(system.stats().cues_played, 2);
+
+        // Going back, the output's word counts too: it hasn't started yet.
+        system.set_interrupted(true);
+        system.set_interrupted(false);
+        system.backend_mut().set_state(DeviceState::Suspended);
+        system.update(&frame(&[], &cues), &mut rng);
+        assert_eq!(system.stats().dropped_no_output, 4);
+        system.backend_mut().set_state(DeviceState::Running);
+        system.update(&frame(&[], &cues), &mut rng);
+        assert_eq!(system.stats().cues_played, 3);
+
+        // Both at once: one ending leaves the other in force.
+        system.set_background(true);
+        system.set_interrupted(true);
+        system.set_background(false);
+        system.backend_mut().set_state(DeviceState::Running);
+        system.update(&frame(&[], &cues), &mut rng);
+        assert_eq!(system.stats().dropped_no_output, 5);
+        system.set_background(true);
+        system.set_interrupted(false);
+        system.backend_mut().set_state(DeviceState::Running);
+        system.update(&frame(&[], &cues), &mut rng);
+        assert_eq!(system.stats().dropped_no_output, 6);
+        system.set_background(false);
+        system.update(&frame(&[], &cues), &mut rng);
+        assert_eq!(system.stats().cues_played, 4);
     }
 
     #[test]

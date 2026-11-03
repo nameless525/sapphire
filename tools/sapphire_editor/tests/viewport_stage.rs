@@ -515,10 +515,11 @@ impl Stack {
 #[test]
 #[ignore = "needs a GPU and a cook"]
 fn a_lost_device_takes_the_stage_and_leaves_the_documents() {
+    let (size, scale) = ((800.0, 520.0), 1.5);
     let mut recovery = Recovery::new(Stack::new().expect("a stack"));
     let mut harness = {
         let stack = recovery.ready().expect("made");
-        editor_harness(&stack.painter, (1200.0, 700.0), 1.0)
+        editor_harness(&stack.painter, size, scale)
     };
     {
         let Stack { view, painter, gpu } = recovery.ready().expect("made");
@@ -557,7 +558,7 @@ fn a_lost_device_takes_the_stage_and_leaves_the_documents() {
     let stack = recovery.device(10.0, Stack::new).expect("another");
     let Stack { view, painter, gpu } = stack;
     let editor = std::mem::replace(harness.state_mut(), Editor::new(Options::default()));
-    let mut harness = harness_on(painter, editor, (1200.0, 700.0), 1.0);
+    let mut harness = harness_on(painter, editor, size, scale);
     settle(&mut harness, view, gpu, painter);
     assert_eq!(view.frames(), u64::from(SETTLING_FRAMES));
     assert_eq!(harness.state_mut().viewport().note(), None);
@@ -566,10 +567,12 @@ fn a_lost_device_takes_the_stage_and_leaves_the_documents() {
 
     let shell = painter.paint(gpu, &harness);
     let rect = harness.state_mut().viewport().rect().expect("shown");
-    let (_, pixels) = on_pixels(rect, 1.0);
+    let (_, pixels) = on_pixels(rect, scale);
+    let drawn = read_texture(gpu, view.frame().expect("drawn"));
+    assert_eq!(differences(&drawn, &shell, rect, scale, 0).1, 0, "the pane is its frame");
     let mut stage = capture_stage(gpu, &mut harness);
     let frame = capture(&mut stage, &[pixels], |_, _| ());
-    let (most, count, all) = differences(&frame, &shell, rect, 1.0, 0);
+    let (most, count, all) = differences(&frame, &shell, rect, scale, 0);
     println!("after the loss: {count} of {all} pixels differ, by at most {most}");
     assert_runs_agree(most, count, "after the loss");
     let builds = stage.renderer.stats().pipelines;
@@ -808,6 +811,32 @@ fn a_run_leaves_the_documents_alone() {
     assert!(!harness.state().is_dirty());
 }
 
+/// The same in few frames with one stage, for where a frame costs a second or more: CI's lavapipe lane.
+#[test]
+#[ignore = "needs a GPU and a cook"]
+fn a_short_run_leaves_the_documents_alone() {
+    let gpu = device();
+    let painter = Painter::new(&gpu, PLAIN);
+    let mut harness = editor_harness(&painter, (800.0, 520.0), 1.0);
+    let mut view = StageView::default();
+    harness.step();
+    let before = documents_as_they_are(harness.state());
+
+    let moves = play(&mut harness, &mut view, &gpu, &painter);
+    let (checksum, tick) = play_to(&mut harness, &mut view, &gpu, &painter, 40);
+    assert_eq!(checksum, headless(&moves, tick), "what a fight with no editor reaches");
+    let stage = view.stage().expect("stood");
+    assert_eq!(stage.renderer.stats().pipelines.first_use_builds, 0, "{}", stage.renderer.first_use_report());
+    assert_eq!(documents_as_they_are(harness.state()), before, "during the run");
+
+    harness.state_mut().shell_mut().close(Pane::Viewport);
+    harness.step();
+    view.draw(&gpu, &mut painter.renderer.write(), harness.state_mut().viewport_frame());
+    assert!(!harness.state_mut().viewport().is_playing());
+    assert!(view.stage().is_none());
+    assert_eq!(documents_as_they_are(harness.state()), before, "after it");
+}
+
 /// A run plays what stood when it started. An edit during it reaches only the next, which starts fresh, and undo
 /// takes the document back to its bytes with runs in between.
 #[test]
@@ -901,9 +930,14 @@ fn a_run_builds_no_pipeline() {
     let mut harness = editor_harness(&painter, (1200.0, 700.0), 1.0);
     let mut view = StageView::default();
     settle(&mut harness, &mut view, &gpu, &painter);
-    let _ = play(&mut harness, &mut view, &gpu, &painter);
+    harness.state_mut().play_in_viewport(Some("fight-back".to_owned()));
+    harness.step();
+    view.draw(&gpu, &mut painter.renderer.write(), harness.state_mut().viewport_frame());
     play_to(&mut harness, &mut view, &gpu, &painter, 1200);
     let stage = view.stage().expect("stood");
+    let (values, _) = stage.show.fight.show.hud_values().expect("the fight says how it's going");
+    let enemy = values.enemy.expect("an enemy stands there");
+    assert!(values.player.hp < 1.0 || enemy.hp < 1.0, "someone's been hit");
     let report = stage.renderer.first_use_report();
     let builds = stage.renderer.stats().pipelines;
     println!("after 1200 ticks of a run: {builds:?}");

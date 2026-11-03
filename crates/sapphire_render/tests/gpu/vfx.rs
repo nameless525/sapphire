@@ -685,6 +685,100 @@ fn a_ribbon_has_a_crisp_core_and_a_soft_glow() {
     }
 }
 
+/// A ribbon through the points `(x, z)`, a metre from its base rail to its tip around y 0, its light
+/// `color` all the way across, `additive` as a sword trail's is.
+fn glowing_ribbon(points: &[(f32, f32)], color: Vec3, additive: f32) -> Vec<VfxRibbonPoint> {
+    points
+        .iter()
+        .enumerate()
+        .map(|(place, &(x, z))| VfxRibbonPoint {
+            base: Vec3::new(x, -0.5, z),
+            tip: Vec3::new(x, 0.5, z),
+            color,
+            alpha: 1.0,
+            core: color,
+            core_position: 0.5,
+            core_half_width: 0.5,
+            glow_reach: 0.5,
+            additive,
+            soft: 1e-3,
+            ends: place + 1 == points.len(),
+        })
+        .collect()
+}
+
+/// Dust's kind of sprite: a surface that covers what's behind it, wide enough that it covers it whole
+/// around the frame's middle.
+fn covering_wall(z: f32, color: Vec3) -> VfxSprite {
+    VfxSprite { additive: 0.0, ..dot(Vec3::new(0.0, 0.0, z), 60.0, color) }
+}
+
+/// A ribbon behind a sprite that covers stays behind it, on both paths. Before this, sprites drew first
+/// and ribbons over all of them: a covering sprite alone read (0.69, 0.10, 0.10), and (0.93, 0.49, 0.59)
+/// with a ribbon 2 m behind it.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_ribbon_behind_a_covering_sprite_doesnt_show_over_it() {
+    let (red, trail) = (Vec3::new(0.69, 0.10, 0.10), Vec3::new(0.2, 0.3, 0.4));
+    for (path, settings) in paths() {
+        let mut harness = Harness::new(settings);
+        let wall = covering_wall(-2.0, red);
+        let ribbon = glowing_ribbon(&[(-1.0, -4.0), (1.0, -4.0)], trail, 0.8);
+        let alone = harness.render(|packet| packet.vfx.sprites.push(wall)).middle();
+        assert_near(alone, red, path);
+        assert_eq!(harness.renderer.stats().vfx.color_draws, 1, "{path}");
+        let frame = harness.render(|packet| {
+            packet.vfx.sprites.push(wall);
+            packet.vfx.ribbon_points.extend_from_slice(&ribbon);
+        });
+        assert_near(frame.middle(), alone, path);
+        assert_eq!(harness.renderer.stats().vfx.color_draws, 2, "{path}");
+        // Moved in front of the sprite it shows over it, in the frame's one draw.
+        let ribbon = glowing_ribbon(&[(-1.0, -1.0), (1.0, -1.0)], trail, 0.8);
+        let frame = harness.render(|packet| {
+            packet.vfx.sprites.push(wall);
+            packet.vfx.ribbon_points.extend_from_slice(&ribbon);
+        });
+        assert!((frame.middle() - alone).max_element() > 0.1, "{path}: {} over {alone}", frame.middle());
+        assert_eq!(harness.renderer.stats().vfx.color_draws, 1, "{path}");
+    }
+}
+
+/// A trail crossing a puff of dust, the real case: what's nearer shows over it, and what's farther
+/// doesn't, along one ribbon.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_ribbon_crossing_a_covering_sprite_shows_only_where_its_nearer() {
+    let (red, trail) = (Vec3::new(0.6, 0.1, 0.1), Vec3::new(0.2, 0.3, 0.4));
+    for (path, settings) in paths() {
+        let mut harness = Harness::new(settings);
+        let wall = covering_wall(-4.0, red);
+        // From 2 m on the left to 6 m on the right, through the sprite's plane at 4 m, in fine stretches.
+        let points: Vec<(f32, f32)> = (0..=32)
+            .map(|place| {
+                let t = place as f32 / 32.0;
+                (-1.2 + 3.6 * t, -2.0 - 4.0 * t)
+            })
+            .collect();
+        let ribbon = glowing_ribbon(&points, trail, 0.8);
+        let along = |t: f32| {
+            let x = -1.2 + 3.6 * t;
+            let z = -2.0 - 4.0 * t;
+            Vec3::new(x, 0.0, z)
+        };
+        let alone = harness.render(|packet| packet.vfx.sprites.push(wall));
+        let frame = harness.render(|packet| {
+            packet.vfx.sprites.push(wall);
+            packet.vfx.ribbon_points.extend_from_slice(&ribbon);
+        });
+        let (near, far) = (pixel_of(along(0.25)), pixel_of(along(0.75)));
+        assert!((frame.linear(near) - alone.linear(near)).max_element() > 0.1, "{path}: the near end");
+        assert_near(frame.linear(far), alone.linear(far), path);
+        // What's behind, then the sprite with what's nearer, which follows it in the buffer.
+        assert_eq!(harness.renderer.stats().vfx.color_draws, 2, "{path}");
+    }
+}
+
 /// A list's stretches join only within a ribbon: two ribbons draw nothing between them.
 #[test]
 #[ignore = "needs a GPU"]

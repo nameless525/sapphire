@@ -1,5 +1,5 @@
 // The frame's effects (M2 E2; `sapphire_render::vfx`, whose docs have the design): instanced quads,
-// sprites then the stretches of ribbons, one draw of four vertices an instance, pulling everything
+// sprites then the stretches of ribbons, drawn in ranges of four vertices an instance, pulling everything
 // from storage buffers. The program is frame.wgsl, materials.wgsl, then this file.
 //
 // Blending is premultiplied, so one pipeline draws light and surfaces alike: its alpha is how much

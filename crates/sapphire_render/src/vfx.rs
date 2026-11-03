@@ -47,10 +47,27 @@
 //!
 //! # Order
 //!
-//! One draw of `sprites + ribbon points` instances, sprites back to front, sorted here each frame
-//! (premultiplied quads that cover need it, and light doesn't mind), then ribbons. The sort and the
-//! upload are the frame's only per-effect CPU work here; the simulation's is `sapphire_vfx`'s, and
-//! §3.2 budgets the two of them together.
+//! Instances are `sprites + ribbon points`, sprites back to front, sorted here each frame (premultiplied
+//! quads that cover need it, and light doesn't mind), then ribbons. The sort and the upload are the
+//! frame's only per-effect CPU work here; the simulation's is `sapphire_vfx`'s, and §3.2 budgets the two
+//! of them together.
+//!
+//! They draw as one range, sprites then ribbons, **unless a sprite covers** (`additive` under 1: dust).
+//! Then each ribbon's stretches behind that sprite must draw before it, or their light lands on top of a
+//! surface that stands in front of them. A stretch can't move in the ribbon buffer, since it reads the
+//! next point there, so the instances stay where they are and the frame draws them in ranges
+//! (`plan_color_draws`): sprites up to a covering one, the stretches behind it, it and on, stretches
+//! nearer than every covering sprite last. A ribbon that crosses a puff of dust takes a few ranges, and a
+//! frame with no covering sprite or no ribbon still takes one. Draws are all that change: no pipeline,
+//! bind group or buffer.
+//!
+//! - **A stretch goes by its four corners' mean depth,** like a streak by its middle: one long enough to
+//!   pass through a sprite's plane falls wholly on one side of it. Trails sample often enough for this
+//!   not to show.
+//! - **Sprites of pure light aren't split by:** one in front of a ribbon draws under it and loses the
+//!   ribbon's covering share of its light (`1 - additive`, 0.2 at most for a sword trail), where it
+//!   should lose none. It's slight, and sparks over trails are what most frames hold, each worth a range.
+//! - **The scene color's alpha mask stays one draw:** what it adds doesn't depend on its order.
 //!
 //! Sprites sort by their middles' depth along the view, not their distance from the eye: a quad
 //! that faces the camera whole lies in a plane of one depth, and off to the side a nearer one's
@@ -60,6 +77,8 @@
 //! # Debug views
 //!
 //! The views replay the main pass's meshes, and effects aren't meshes, so they don't show there.
+
+use std::ops::Range;
 
 use bytemuck::{Pod, Zeroable};
 use glam::Vec3;
@@ -106,6 +125,9 @@ pub struct VfxRenderStats {
     pub pipelines: u32,
     /// Bytes of instance data the last prepared frame uploads.
     pub bytes: u64,
+    /// The ranges of instances the last prepared frame's color draws: one but where a ribbon must draw
+    /// behind a sprite that covers (see the module docs).
+    pub color_draws: u32,
     /// Whether they draw after temporal AA's resolve, in [`PASS`], rather than in the main pass.
     pub after_resolve: bool,
     /// What the simulation reported with the frame.
@@ -234,6 +256,81 @@ fn pack_ribbon_points(points: &[VfxRibbonPoint], packed: &mut Vec<GpuVfxRibbonPo
     // A list cut short still ends.
     if let Some(last) = packed.last_mut() {
         last.ends = 1;
+    }
+}
+
+/// What [`plan_color_draws`] works in, kept across frames so a warm frame allocates nothing.
+#[derive(Debug, Default)]
+struct DrawPlan {
+    /// The ranges of instances the color draw takes, in order.
+    draws: Vec<Range<u32>>,
+    /// Each covering sprite's place among the sprites and its depth, back to front.
+    covers: Vec<(u32, f32)>,
+    /// Each ribbon point's stretch: how many covering sprites draw before it, and its place.
+    stretches: Vec<(u32, u32)>,
+}
+
+impl DrawPlan {
+    /// Adds `range` to the draws, onto the last where it follows on.
+    fn push(&mut self, range: Range<u32>) {
+        match self.draws.last_mut() {
+            _ if range.is_empty() => {}
+            Some(last) if last.end == range.start => last.end = range.end,
+            _ => self.draws.push(range),
+        }
+    }
+}
+
+/// Plans the color draw of `sprites`, back to front, each with its `depths` entry's depth, and `points`,
+/// as seen from `camera`: see the module docs. Stretches keep their list's order among those between the
+/// same two covering sprites.
+fn plan_color_draws(
+    sprites: &[GpuVfxSprite],
+    depths: &[(f32, u32)],
+    points: &[GpuVfxRibbonPoint],
+    camera: &CameraData,
+    plan: &mut DrawPlan,
+) {
+    plan.draws.clear();
+    plan.covers.clear();
+    plan.stretches.clear();
+    let sprite_count = sprites.len() as u32;
+    plan.covers.extend(
+        sprites
+            .iter()
+            .zip(depths)
+            .enumerate()
+            .filter(|(_, (sprite, _))| sprite.additive < 1.0 && sprite.alpha > 0.0)
+            .map(|(place, (_, &(depth, _)))| (place as u32, depth)),
+    );
+    if plan.covers.is_empty() || points.is_empty() {
+        plan.push(0..sprite_count + points.len() as u32);
+        return;
+    }
+    let corners_depth = |point: &GpuVfxRibbonPoint| {
+        camera.view_depth(Vec3::from(point.base)) + camera.view_depth(Vec3::from(point.tip))
+    };
+    // A ribbon's last point draws nothing, so it goes where the point before it does, to join its range.
+    let mut gap = plan.covers.len() as u32;
+    for (place, pair) in points.windows(2).enumerate() {
+        if pair[0].ends == 0 {
+            let depth = (corners_depth(&pair[0]) + corners_depth(&pair[1])) * 0.25;
+            gap = plan.covers.partition_point(|&(_, cover)| cover >= depth) as u32;
+        }
+        plan.stretches.push((gap, place as u32));
+    }
+    plan.stretches.push((gap, points.len() as u32 - 1));
+    plan.stretches.sort_unstable();
+    let mut sprites_drawn = 0;
+    let mut stretch = 0;
+    for gap in 0..=plan.covers.len() {
+        let next_cover = plan.covers.get(gap).map_or(sprite_count, |&(place, _)| place);
+        plan.push(sprites_drawn..next_cover);
+        sprites_drawn = next_cover;
+        while let Some(&(_, place)) = plan.stretches.get(stretch).filter(|(at, _)| *at as usize == gap) {
+            plan.push(sprite_count + place..sprite_count + place + 1);
+            stretch += 1;
+        }
     }
 }
 
@@ -634,6 +731,8 @@ pub(crate) struct Vfx {
     sprites: Vec<GpuVfxSprite>,
     order: Vec<(f32, u32)>,
     points: Vec<GpuVfxRibbonPoint>,
+    /// The color draw's ranges of instances.
+    plan: DrawPlan,
     /// The reciprocal of the frame's exposure.
     emissive: f32,
     /// The frame's post reads scene color's alpha.
@@ -663,6 +762,7 @@ impl Vfx {
             sprites: Vec::new(),
             order: Vec::new(),
             points: Vec::new(),
+            plan: DrawPlan::default(),
             emissive: 1.0,
             mask_read: false,
             stats: VfxRenderStats { after_resolve, ..VfxRenderStats::default() },
@@ -742,6 +842,7 @@ impl Vfx {
         self.stats.ribbon_points = 0;
         self.stats.rejected = 0;
         self.stats.bytes = 0;
+        self.stats.color_draws = 0;
         self.stats.simulation = frame.stats;
         let Some(camera) = camera.filter(|_| !frame.is_empty()) else { return };
         self.build(sources, mask, on);
@@ -769,6 +870,8 @@ impl Vfx {
             .extend(self.order.iter().filter_map(|&(_, index)| GpuVfxSprite::new(&sprites[index as usize])));
         let points = &frame.ribbon_points[..frame.ribbon_points.len().min(max_points)];
         pack_ribbon_points(points, &mut self.points);
+        plan_color_draws(&self.sprites, &self.order, &self.points, camera, &mut self.plan);
+        self.stats.color_draws = self.plan.draws.len() as u32;
         self.stats.sprites = self.sprites.len() as u32;
         self.stats.ribbon_points = self.points.len() as u32;
         let total = frame.sprites.len() + frame.ribbon_points.len();
@@ -829,6 +932,7 @@ impl Vfx {
             buffers: &gpu.buffers_group,
             textures: &gpu.main_group,
             instances,
+            draws: &self.plan.draws,
         };
         let after = self.after_resolve.then_some(VfxAfterResolve {
             device: &self.device,
@@ -837,7 +941,7 @@ impl Vfx {
             textures_layout: &gpu.textures_layout,
             map: &gpu.map,
             depth_groups: &mut gpu.depth_groups,
-            instances,
+            draws: &self.plan.draws,
         });
         Some((upload, VfxDraw { main, after }))
     }
@@ -911,6 +1015,8 @@ pub(crate) struct VfxMainDraw<'a> {
     buffers: &'a wgpu::BindGroup,
     textures: &'a wgpu::BindGroup,
     instances: u32,
+    /// The color draw's ranges of instances.
+    draws: &'a [Range<u32>],
 }
 
 impl VfxMainDraw<'_> {
@@ -918,9 +1024,15 @@ impl VfxMainDraw<'_> {
     pub(crate) fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
         pass.set_bind_group(2, self.buffers, &[]);
         pass.set_bind_group(3, self.textures, &[]);
-        for pipeline in [self.mask, self.color].into_iter().flatten() {
-            pass.set_pipeline(pipeline);
+        if let Some(mask) = self.mask {
+            pass.set_pipeline(mask);
             pass.draw(0..4, 0..self.instances);
+        }
+        if let Some(color) = self.color {
+            pass.set_pipeline(color);
+            for instances in self.draws {
+                pass.draw(0..4, instances.clone());
+            }
         }
     }
 }
@@ -934,7 +1046,8 @@ pub(crate) struct VfxAfterResolve<'a> {
     textures_layout: &'a wgpu::BindGroupLayout,
     map: &'a wgpu::TextureView,
     depth_groups: &'a mut CachedBindGroup<2>,
-    instances: u32,
+    /// The color draw's ranges of instances.
+    draws: &'a [Range<u32>],
 }
 
 /// The pass's textures.
@@ -985,7 +1098,9 @@ impl VfxAfterResolve<'_> {
         pass.set_bind_group(1, view, &[0]);
         pass.set_bind_group(2, self.buffers, &[]);
         pass.set_bind_group(3, textures, &[]);
-        pass.draw(0..4, 0..self.instances);
+        for instances in self.draws {
+            pass.draw(0..4, instances.clone());
+        }
     }
 }
 
@@ -1089,6 +1204,107 @@ mod tests {
         assert_eq!(gpu.glow_reach, 1e-4, "it divides by this");
         assert_eq!(gpu.ends, 1);
         assert!(GpuVfxRibbonPoint::new(&VfxRibbonPoint { tip: Vec3::NAN, ..point }).is_none());
+    }
+
+    /// A sprite at `z`, along the camera's -Z, `additive` as asked.
+    fn sprite_at(z: f32, additive: f32) -> GpuVfxSprite {
+        let sprite = VfxSprite { position: Vec3::new(0.0, 0.0, z), additive, ..sprite() };
+        GpuVfxSprite::new(&sprite).expect("finite")
+    }
+
+    /// The color draw's ranges for `sprites`, listed by their `z` and `additive` back to front, and a
+    /// ribbon through each list of `z`s in `ribbons`.
+    fn planned(sprites: &[(f32, f32)], ribbons: &[&[f32]]) -> Vec<Range<u32>> {
+        let camera = CameraData::look_at(Vec3::ZERO, Vec3::NEG_Z, Vec3::Y, 1.5, 1.0, 0.05);
+        let order: Vec<(f32, u32)> =
+            sprites.iter().enumerate().map(|(place, &(z, _))| (-z, place as u32)).collect();
+        let sprites: Vec<GpuVfxSprite> = sprites.iter().map(|&(z, a)| sprite_at(z, a)).collect();
+        let mut points = Vec::new();
+        for ribbon in ribbons {
+            for (place, &z) in ribbon.iter().enumerate() {
+                points.push(VfxRibbonPoint {
+                    base: Vec3::new(place as f32, -0.5, z),
+                    tip: Vec3::new(place as f32, 0.5, z),
+                    color: Vec3::ONE,
+                    alpha: 1.0,
+                    core: Vec3::ONE,
+                    core_position: 0.5,
+                    core_half_width: 0.1,
+                    glow_reach: 0.5,
+                    additive: 0.8,
+                    soft: 0.02,
+                    ends: place + 1 == ribbon.len(),
+                });
+            }
+        }
+        let mut packed = Vec::new();
+        pack_ribbon_points(&points, &mut packed);
+        let mut plan = DrawPlan::default();
+        plan_color_draws(&sprites, &order, &packed, &camera, &mut plan);
+        plan.draws
+    }
+
+    /// A plan of one range.
+    fn one(range: Range<u32>) -> [Range<u32>; 1] {
+        [range]
+    }
+
+    #[test]
+    fn with_no_covering_sprite_or_no_ribbon_the_frame_is_one_range() {
+        assert_eq!(planned(&[], &[]), [] as [Range<u32>; 0]);
+        assert_eq!(planned(&[(-4.0, 1.0), (-2.0, 1.0)], &[]), one(0..2));
+        assert_eq!(planned(&[(-4.0, 0.0), (-2.0, 0.0)], &[]), one(0..2));
+        assert_eq!(planned(&[], &[&[-1.0, -9.0]]), one(0..2));
+        // Pure light, whatever stands where, and a covering sprite with no alpha.
+        assert_eq!(planned(&[(-4.0, 1.0), (-2.0, 1.0)], &[&[-9.0, -9.0]]), one(0..4));
+        let gone = GpuVfxSprite { alpha: 0.0, ..sprite_at(-2.0, 0.0) };
+        let camera = CameraData::look_at(Vec3::ZERO, Vec3::NEG_Z, Vec3::Y, 1.5, 1.0, 0.05);
+        let mut plan = DrawPlan::default();
+        let mut points = Vec::new();
+        pack_ribbon_points(&ribbon("o|"), &mut points);
+        plan_color_draws(&[gone], &[(2.0, 0)], &points, &camera, &mut plan);
+        assert_eq!(plan.draws, one(0..3));
+    }
+
+    #[test]
+    fn a_ribbon_nearer_than_every_covering_sprite_keeps_the_one_range() {
+        assert_eq!(planned(&[(-4.0, 0.0)], &[&[-2.0, -1.0, -2.0]]), one(0..4));
+    }
+
+    #[test]
+    fn a_ribbon_behind_a_covering_sprite_draws_before_it() {
+        // Sprite 0, then the ribbon's points 1 to 3: the ribbon first.
+        assert_eq!(planned(&[(-2.0, 0.0)], &[&[-4.0, -5.0, -4.0]]), [1..4, 0..1]);
+    }
+
+    #[test]
+    fn a_ribbon_crossing_a_covering_sprite_is_cut_where_it_crosses() {
+        // Its stretches read -9, -7, -5, -3 and -1 against the sprite at -6: the first two before it,
+        // and the rest, with its last point's empty instance, after.
+        let ribbon: &[f32] = &[-10.0, -8.0, -6.0, -4.0, -2.0, 0.0];
+        assert_eq!(planned(&[(-6.0, 0.0)], &[ribbon]), [1..3, 0..1, 3..7]);
+        // And back again: two runs of it behind, both before the sprite.
+        let back: &[f32] = &[-8.0, -8.0, -2.0, -2.0, -8.0, -8.0];
+        assert_eq!(planned(&[(-6.0, 0.0)], &[back]), [1..2, 5..7, 0..1, 2..5]);
+    }
+
+    /// Each stretch lands between the covering sprites that stand around it, and light's sprites keep
+    /// their places among the others.
+    #[test]
+    fn stretches_go_between_the_covering_sprites_around_them() {
+        // Sprites: 0 covers at -8, 1 is light at -6, 2 covers at -4. Ribbon, instances 3 to 6: its
+        // stretches read -9, -5 and -2.
+        let sprites = [(-8.0, 0.0), (-6.0, 1.0), (-4.0, 0.0)];
+        let ribbon: &[f32] = &[-9.0, -9.0, -1.0, -3.0];
+        assert_eq!(planned(&sprites, &[ribbon]), [3..4, 0..2, 4..5, 2..3, 5..7]);
+    }
+
+    #[test]
+    fn a_ribbons_end_joins_nothing_and_two_ribbons_are_cut_alone() {
+        // Instances: the sprite, then 1 and 2 behind it, then 3 and 4 in front.
+        assert_eq!(planned(&[(-4.0, 0.0)], &[&[-6.0, -6.0], &[-2.0, -2.0]]), [1..3, 0..1, 3..5]);
+        // The other way about.
+        assert_eq!(planned(&[(-4.0, 0.0)], &[&[-2.0, -2.0], &[-6.0, -6.0]]), [3..5, 0..3]);
     }
 
     /// The stretches `points` draw, each by its two ends' place in `points`: its rails' x hold them.

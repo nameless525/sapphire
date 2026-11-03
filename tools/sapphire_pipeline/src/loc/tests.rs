@@ -354,6 +354,17 @@ fn a_locked_cook_needs_a_ftls_sidecar() {
     cook_dir(&tree.source(), &out, &locked).unwrap();
 }
 
+#[test]
+fn the_importer_names_the_locked_parser() {
+    let lock = include_str!("../../../../Cargo.lock");
+    let version = lock
+        .split("[[package]]")
+        .find(|package| package.contains("name = \"fluent-syntax\""))
+        .and_then(|package| package.lines().find_map(|line| line.strip_prefix("version = ")))
+        .expect("fluent-syntax in Cargo.lock");
+    assert_eq!(IMPORTER.name, format!("fluent-syntax {}", version.trim_matches('"')));
+}
+
 /// `sapphire_loc`'s tests read these bytes, on phones as well, where no cooker runs: they stay what
 /// their sources cook to. After changing either or the format:
 /// `SAPPHIRE_UPDATE_LOC_FIXTURES=1 cargo test -p sapphire_pipeline loc::tests::the_committed`.

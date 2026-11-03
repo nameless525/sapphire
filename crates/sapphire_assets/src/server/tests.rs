@@ -602,6 +602,28 @@ fn rigs_are_ready_without_the_gpu_and_keep_their_bytes() {
     assert_eq!(server.state(&handle), LoadState::Ready);
 }
 
+/// A string table loads as other CPU data does, and what comes back is its cooked bytes, since it isn't
+/// read in place. Spoiled bytes fail its load, whatever else the pack holds (M3 V2).
+#[test]
+fn string_tables_are_ready_without_the_gpu_and_keep_their_bytes() {
+    use sapphire_strings::StringTable;
+    let table = StringTable { locale: "ja".to_owned(), ..StringTable::default() }.to_cooked().unwrap();
+    let mut spoiled = table.clone();
+    let last = spoiled.len() - 1;
+    spoiled.truncate(last);
+    assert!(AssetKind::Strings.references(&table).unwrap().is_empty());
+    assert!(AssetKind::Strings.reach(&table).unwrap().is_empty(), "its fonts are only family names");
+    assert!(matches!(AssetKind::Strings.references(&spoiled), Err(crate::AssetError::Strings(_))));
+
+    let (mut server, _) = serve(vec![packed(id(20), AssetKind::Strings, &table)], unlimited());
+    let handle: Handle<StringTable> = server.load(id(20)).unwrap();
+    let mut order = Vec::new();
+    server.finish(&handle, record(&mut order)).unwrap();
+    assert!(order.is_empty(), "nothing went to the uploader");
+    let bytes = server.get(&handle).expect("tables keep their bytes");
+    assert_eq!(StringTable::read(bytes).unwrap().locale, "ja");
+}
+
 /// A mesh brings the skeleton its skin names, and a clip the skeleton it was cooked for: both stay
 /// on the CPU, ready once decoded, with their bytes kept to read in place (M2 N1).
 #[test]

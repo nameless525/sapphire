@@ -673,7 +673,7 @@ pub struct CookReport {
     pub uncooked: Vec<PathBuf>,
     /// Stale files removed from the output directory.
     pub removed: Vec<PathBuf>,
-    /// What's untranslated, and what's translated from nothing ([`loc::check`]).
+    /// What's untranslated, and what's translated from nothing ([`loc::check()`]).
     pub localization: LocReport,
 }
 

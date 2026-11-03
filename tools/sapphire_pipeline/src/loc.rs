@@ -27,9 +27,9 @@
 //! adjacent text and literals become one, so a message with nothing to work out is one span and comes
 //! back with no allocation. The cook fails by name on a parse error, a duplicate key in a locale, a
 //! function other than `NUMBER` or a `NUMBER` option other than the three it runs, a selector Fluent
-//! doesn't run, and everything [`check`] finds across tables.
+//! doesn't run, and everything [`check()`] finds across tables.
 //!
-//! [`check`] runs on each cook against the tables as written, cached or not: fast, since a table is
+//! [`check()`] runs on each cook against the tables as written, cached or not: fast, since a table is
 //! small, and it means no table's key has to cover other locales' files, so an edit of English recooks
 //! only English and still fails the cook if Japanese no longer agrees. What it lists goes in the
 //! [`CookReport`](crate::cook::CookReport), so what's untranslated shows on every cook.

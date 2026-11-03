@@ -115,7 +115,7 @@ impl StringTable {
     /// anyone sees. A message gets a frame, a term doesn't.
     pub fn pseudolocalized(&self) -> StringTable {
         let mut table = self.clone();
-        let mut added = |pool: &mut String, text: String| {
+        let added = |pool: &mut String, text: String| {
             let span = Span { start: pool.len() as u32, len: text.len() as u32 };
             pool.push_str(&text);
             span
@@ -140,8 +140,7 @@ impl StringTable {
             table.entries[index].pattern = match entry.pattern {
                 Pattern::Plain(span) => {
                     let text = pseudolocalize(self.str(span));
-                    let text =
-                        if is_term { text } else { [FRAME_OPEN, text.as_str(), FRAME_CLOSE].concat() };
+                    let text = if is_term { text } else { [FRAME_OPEN, text.as_str(), FRAME_CLOSE].concat() };
                     Pattern::Plain(added(&mut table.pool, text))
                 }
                 Pattern::Parts(run) if is_term => Pattern::Parts(run),

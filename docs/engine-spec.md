@@ -247,12 +247,13 @@ ms, p50 / p99 / peak @ tick, with the budget in brackets (§3.1 to §3.3; §3.2 
  Apps                   apps/: sapphire_sandbox (engine test bed) · game_app (later)
  L6  Stage              sapphire_stage (a GPU, cooked content and a scene, for an app, a game or the editor's viewport)
  L5  Game               sapphire_controls · sapphire_cues · game_combat · game_characters · game_ai · game_ui
- L4  Framework          sapphire_world · sapphire_gameplay · sapphire_camera · sapphire_sequencer · sapphire_script · sapphire_save · sapphire_loc
+ L4  Framework          sapphire_world · sapphire_gameplay · sapphire_camera · sapphire_sequencer · sapphire_script · sapphire_save
                         sapphire_patch (later) · sapphire_online (later)
  L3  Subsystems         sapphire_render · sapphire_tod · sapphire_anim · sapphire_physics · sapphire_audio · sapphire_vfx
                         sapphire_ui · sapphire_input · sapphire_nav
                         sapphire_debug · sapphire_hot_reload · sapphire_livelink (dev builds only)
  L2  Services           sapphire_assets · sapphire_rhi · sapphire_ecs · sapphire_reflect · sapphire_serialize · sapphire_look
+                        sapphire_strings · sapphire_loc
  L1  Platform & system  sapphire_platform (SDL3) · sapphire_jobs · sapphire_time · sapphire_crash
  L0  Foundation         sapphire_core · sapphire_math   (pure Rust: no SDL, no GPU)
 ```
@@ -462,7 +463,8 @@ pub struct FramePacket {
 | `sapphire_sequencer` | L4 | Timelines for cutscenes and skill cinematics; dialogue | — | M3 |
 | `sapphire_script` | L4 | Luau VM, sandbox, generated bindings | `mlua` (`luau`) | M3 |
 | `sapphire_save` | L4 | Settings and progress saves, migrations | `postcard`, `ron` | M3 |
-| `sapphire_loc` | L4 | Strings, plurals, font fallback, pseudo-loc | `icu_plurals`, `icu_decimal` (`fluent-syntax` at cook) | M3 |
+| `sapphire_strings` | L2 | Localized strings as plain data: the cooked table, its checks, its characters, its pseudo-localized form. The cooker can link it. | `postcard` | M3 |
+| `sapphire_loc` | L2 | Runs those tables: plurals, numbers, the live switch, font family chains | `icu_plurals`, `icu_decimal` (`fluent-syntax` at cook) | M3 |
 | `sapphire_patch` | L4 | Chunk manifests, CDN download, verification (later) | `reqwest`, `rustls`, `ed25519-dalek` | M4 |
 | `sapphire_online` | L4 | Accounts, server-authoritative economy (later) | `reqwest` | later |
 | `sapphire_stage` | L6 | A stage: the scene, the content and the renderer on one device, stepped and drawn into a texture or a window. For now the fight's app side and the HUD too, until `game_combat` and `game_ui` take them | `sapphire_render`, `sapphire_world`, `sapphire_gameplay`, `sapphire_assets` | M3 |
@@ -2485,7 +2487,7 @@ The `resolve` module's "A perfect dodge", `moves`'s "A counter window" and `test
 - **Hot reload:** reload the chunk and rebind its hooks. On devices, pushed through live link.
 - **iOS policy:** scripts ship inside the app. Any downloadable script update needs legal and App Review sign-off first (App Store guideline 2.5.2).
 
-### 5.25 `sapphire_save` and `sapphire_loc` (L4)
+### 5.25 `sapphire_save` (L4) and `sapphire_loc` (L2)
 
 **`sapphire_save`**
 
@@ -2507,8 +2509,22 @@ The `resolve` module's "A perfect dodge", `moves`'s "A counter window" and `test
 
 - Fluent `.ftl` sources per locale, parsed at cook with `fluent-syntax` into `postcard` tables and run by a small evaluator of our own. `fluent`'s own bundles can't be cooked: `FluentResource::try_new` takes a `String`.
 - ICU4X 2.4 for plurals and numbers (`icu_plurals`, `icu_decimal`). Dates wait for a menu that shows one, since `icu_datetime`'s data is large.
-- **Font fallback chains** per script: Latin, CJK, Cyrillic, Thai, and so on.
+- **Font family chains** per locale and role of text, as data that `sapphire_text` takes as family lists. Per-script chains don't work: U1 found `set_fallbacks` with Hira or Kana and a locale returns false.
 - A **pseudo-localization mode** with expanded, accented strings for layout testing.
+- **As built (M3 V2):**
+  - **Two crates, both L2, not the L4 this spec first gave:** `sapphire_strings` is the cooked table, plain data, which `sapphire_assets` checks and the cooker writes with no ICU. `sapphire_loc` is the evaluator, and it's in L2 because `sapphire_ui` (L3) binds its text through it and it reads nothing but the table.
+  - **Sources:** `ja.locale.ron` states a locale, its file name being its tag: its fallback chain and, per role of text, its font family names. Its strings are every `.ftl` whose sidecar says `importer: Fluent((locale: "ja"))`, with no list anywhere. They cook to one `ja.sloc` in `loc.spack`. Fixtures are in `crates/sapphire_loc/testdata/`, outside `content/`, so no pack holds them.
+  - **A cook fails by name** on a parse error (file, line, column), a key twice in a locale (both files), a reference its chain doesn't hold, a reference loop, a chain naming a locale nobody states, a `.ftl` whose locale has no document, a function other than `NUMBER`, an option of `NUMBER` other than the two digit counts and `useGrouping`, and a variable or selector that differs across a chain. Those last checks run on every cook against the tables as written, so a table's key covers only its own locale's sources. **Consistent means:** one set of variables per key, through the messages it references, and a variable never a number in one locale and chosen by name in another. A translation may drop a plural select and keep showing the number, and one that wants to ignore a variable altogether keeps a select with only a default, which says so.
+  - **Fallback** is a stated chain, per table. What's found runs by its own table's rules and looks further only down the chain from there, so English standing in for Japanese takes English plurals and terms. `CookReport::localization` lists what's untranslated and what's stale on every cook, cached or not, and the tool prints it.
+  - **The evaluator** runs variables, plural selectors, exact-number variants, `NUMBER` (grouping, minimum and maximum fraction digits), message and term references, term arguments and attributes. Plain messages return as `&str` with no allocation (`text`), a formatted one goes in a caller's buffer (`format`), and `resolve` does whichever a message needs. An unknown key shows as itself and counts in `LocStats` (R9). A format is bounded to 32 levels and 4,096 steps, which a cook refuses to reach, so a hostile table stops and is counted.
+  - **Bidi isolation marks aren't emitted:** English and Japanese are both left to right, so a placeable can't reorder its neighbours, and the marks would be two more characters for subsets, shaping and comparisons. An RTL locale would make it a table's setting.
+  - **Pseudo-localization** is a runtime switch, `Localizer::set_pseudo`, that needs no cooked data: literals accented, grown by 2/5 (doubled vowels, then `~`) and each message framed `[!! … !!]`. **A hard-coded string is found** by running a screen in this mode and testing each string given to layout with `is_framed`: one that fails didn't come through a message, or was an unknown key.
+  - **The switch:** `set_text_locale` takes effect on the next key and leaves the voice language alone, and `generation()` tells whatever holds resolved text to resolve it again. `LocaleSettings { text, voice }` is plain data for `sapphire_save`.
+  - **For the font cook:** `StringTable::characters()` is what a table can show, numbers included; `font_chain(role)` gives a locale's family names for `sapphire_text`; `pseudo_characters()` is what a subset meant to show the pseudo mode adds.
+  - **What it costs,** on the M5, release, at a load average of 24 to 27, the best of nine rounds of 200,000 calls: a plain lookup 21 ns in 24 entries, 73 ns in 1,024, 128 ns in 10,024; a key that falls back 60 to 227 ns, and an unknown one 57 to 408 ns. A format with a plural and a grouped number takes 112 to 295 ns, a variable and a term 134 to 488 ns. Reading a 1,024-entry table takes 33 µs (68 KB cooked, 223 KB held for two) and a switch makes at most two small allocations. A lookup allocates nothing, and a format nothing once its buffer has grown, for numbers of up to 8 digits; past that `fixed_decimal` holds digits on the heap.
+  - **Size:** a stripped thin-LTO release binary linking the whole of it grows by 151,320 bytes on iOS and 127,576 on Android, 134,816 and 126,912 beside `parley` and its ICU, which share the provider and `zerovec` but no data. The baked tables the three markers read are under 49 KB of escaped source for every locale. They aren't cut to the locales we ship: `ICU4X_DATA_DIR` needs `icu4x-datagen` and CLDR's data, and it's one setting for every ICU crate in a build, the text stack's included, to save some tens of KB at most.
+  - **Proved on** the Mac, an iOS 26.3 Simulator and an arm64 API 36 emulator: the same test binaries, Japanese numbers and plurals included. No phone has run it.
+  - **It can't:** dates, ordinals, currency or percent; RTL; a term's plain text folded into a message at cook, so a label with a term in it takes `resolve` rather than `text`. Player-typed names are outside `characters()`.
 
 ### 5.26 `sapphire_patch` / `sapphire_online` (L4, later)
 
@@ -2847,7 +2863,7 @@ The `resolve` module's "A perfect dodge", `moves`'s "A counter window" and `test
 | Shaders | WGSL / WESL | `wesl`, `naga` | Validated WGSL plus permutation inventory | Same, with mobile tier flags |
 | Audio | WAV / OGG plus cue RON | Copied or transcoded by the cooker | OGG plus cues | OGG plus cues |
 | Fonts | TTF / OTF | `skrifa` | Subset font plus MSDF atlas for display text | Same |
-| Strings | `.ftl` | `fluent` | Binary tables | Same |
+| Strings | `.ftl` | `fluent-syntax` | Binary tables | Same |
 
 - **Blender as the level and modeling tool:** export glTF with custom-property extras (the pattern Bevy's Skein uses). The in-engine editor then only needs to cover gameplay data, combat tuning, VFX timing and cinematics.
 
@@ -3396,7 +3412,7 @@ Pin these in `[workspace.dependencies]`. Versions were checked against crates.io
 | `skera`, `fdsm` | 0.9, 0.8 | `sapphire_pipeline` | Subsetting fonts and MSDF, tools only (M3) |
 | `rerecast` | `=0.5.0` | `sapphire_pipeline` | Baking only, not vendored (P0: every defect had a way around through its public API). Never its `libm` feature, which turns on glam's, and any bump reruns the attack and the digests. `landmass` was rejected ([m3-plan.md](m3-plan.md) §3) |
 | `mlua` (feature `luau`) | 0.12 | `sapphire_script` | No `luau-jit` |
-| `fluent-syntax`, `icu_plurals`, `icu_decimal` | 0.12, 2.4, 2.4 | `sapphire_pipeline`, `sapphire_loc` | `fluent`'s bundles can't be cooked, so a small evaluator of our own runs the tables (M3). Versions checked when V2 adds them |
+| `fluent-syntax`, `icu_plurals`, `icu_decimal` | 0.12, 2.4, 2.4 | `sapphire_pipeline`, `sapphire_loc` | `fluent`'s bundles can't be cooked, so a small evaluator of our own runs the tables (M3 V2). `fluent-syntax` is tool-only |
 | `reqwest`, `rustls`, `rustls-platform-verifier`, `ed25519-dalek` | latest | `sapphire_patch` (later) | **unchecked** |
 | `jni` | latest | `sapphire_platform` (Android) | **unchecked** |
 | `egui`, `egui-wgpu`, `egui_plot`, `egui_tiles` | 0.37 line (`egui_tiles` 0.18, `egui_plot` 0.38) | `sapphire_debug`, `sapphire_editor` | M1 F5: `egui` and `egui-wgpu` 0.37.0 (on wgpu 30); the overlay draws its own frame-time graph, without `egui_plot` |

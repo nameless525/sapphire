@@ -3,6 +3,9 @@
 //!
 //! `cargo test -p sapphire_loc --release --test costs -- --ignored --nocapture --test-threads=1`
 
+#![allow(clippy::print_stdout, reason = "with --nocapture, the measurements the spec quotes")]
+#![allow(clippy::disallowed_methods, reason = "a stopwatch around the calls, in a test nothing else reads")]
+
 use std::hint::black_box;
 use std::time::Instant;
 
@@ -31,11 +34,8 @@ fn nanos(mut work: impl FnMut()) -> f64 {
 
 /// `table` with `count` more plain messages, the size a whole game's text might be.
 fn grown(mut table: StringTable, count: usize) -> StringTable {
-    let mut entries: Vec<(String, Entry)> = table
-        .entries
-        .iter()
-        .map(|entry| (table.str(entry.key).to_owned(), *entry))
-        .collect();
+    let mut entries: Vec<(String, Entry)> =
+        table.entries.iter().map(|entry| (table.str(entry.key).to_owned(), *entry)).collect();
     for index in 0..count {
         let key = format!("generated-menu-entry-number-{index:05}");
         let text = format!("Generated text number {index}");

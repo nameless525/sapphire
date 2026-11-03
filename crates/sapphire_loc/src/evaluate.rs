@@ -100,7 +100,9 @@ impl<'a, 'o> Walk<'a, 'o> {
     ) {
         let table = loaded.active();
         match expression {
-            Expression::Variable(name) => self.variable(loaded, table.str(name), NumberFormat::default(), scope),
+            Expression::Variable(name) => {
+                self.variable(loaded, table.str(name), NumberFormat::default(), scope)
+            }
             Expression::NumberVariable { name, format } => {
                 self.variable(loaded, table.str(name), format, scope);
             }
@@ -155,9 +157,9 @@ impl<'a, 'o> Walk<'a, 'o> {
         let variants = table.variants_of(select.variants);
         let selection = self.selection(link, table, select.selector, scope);
         let chosen = match &selection {
-            Selection::Text(text) => variants.iter().find(|variant| {
-                matches!(variant.key, VariantKey::Name(name) if table.str(name) == *text)
-            }),
+            Selection::Text(text) => variants
+                .iter()
+                .find(|variant| matches!(variant.key, VariantKey::Name(name) if table.str(name) == *text)),
             // An exact number before a plural category, wherever each is written: `[0]` after `[other]`
             // still means zero.
             Selection::Number { decimal, value } => {

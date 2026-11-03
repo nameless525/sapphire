@@ -71,7 +71,6 @@ fn plurals_by_locale() {
     assert_eq!(format(&ja, "enemies-left", &count(1)), "残りの敵：1体");
     assert_eq!(format(&ja, "enemies-left", &count(2)), "残りの敵：2体");
     assert_eq!(format(&ja, "enemies-left", &count(12345)), "残りの敵：12,345体");
-    // 1.0 shows a fraction digit, and so isn't English's `one`.
     let float = [("count", Value::Float(1.5))];
     assert_eq!(format(&en, "enemies-left", &float), "1.5 enemies left");
 }
@@ -122,6 +121,19 @@ fn numbers_stay_within_what_a_subset_keeps() {
             assert!(number.chars().any(|c| digits.contains(c)), "{text}");
         }
     }
+}
+
+/// What the font cook (M3 U3) subsets to: a table's text in its own script, numbers included.
+#[test]
+fn a_table_says_what_it_can_show() {
+    let ja = StringTable::read(JA).unwrap().characters();
+    for shown in ['メ', 'ー', '領', '：', '、', '！', 'C', '+', '0', '9', ','] {
+        assert!(ja.contains(&shown), "{shown}");
+    }
+    // Keys and variables aren't text.
+    assert!(!ja.contains(&'$') && !ja.contains(&'q'));
+    let en = StringTable::read(EN).unwrap().characters();
+    assert!(en.contains(&'M') && !en.contains(&'メ'));
 }
 
 #[test]
@@ -244,11 +256,12 @@ fn a_chain_waits_for_its_tables_and_a_table_can_be_replaced() {
 }
 
 #[test]
-fn settings_are_plain_data() {
+fn settings_survive_a_settings_file() {
     let settings = LocaleSettings { text: "ja".to_owned(), voice: "en".to_owned() };
-    assert_eq!(LocaleSettings::default().text, "en");
-    let _: fn(&LocaleSettings) -> LocaleSettings = Clone::clone;
-    assert_ne!(settings, LocaleSettings::default());
+    let written = ron::to_string(&settings).unwrap();
+    assert_eq!(ron::from_str::<LocaleSettings>(&written).unwrap(), settings);
+    assert!(ron::from_str::<LocaleSettings>(r#"(text: "ja", voice: "en", subtitles: "ja")"#).is_err());
+    assert_eq!(LocaleSettings::default(), LocaleSettings { text: "en".to_owned(), voice: "en".to_owned() });
 }
 
 /// Exit test 4's rule in small: with the mode on, everything through the tables is framed, in either

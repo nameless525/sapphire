@@ -19,6 +19,8 @@ writeable.workspace = true
 [dev-dependencies]
 # The counting allocator, for the allocation test and the costs.
 sapphire_core.workspace = true
+# Settings are RON in `user://`, in `sapphire_save`.
+ron.workspace = true
 
 [lints]
 workspace = true

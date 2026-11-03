@@ -497,6 +497,32 @@ fn what_one_zone_alone_reaches_goes_in_its_pack_and_the_rest_stays_shared() {
     assert!(shared.contains(&id(ALBEDO)), "so does the hair");
 }
 
+/// A locale's table stays in its own pack with zones in the tree, and nothing it holds moves theirs.
+#[test]
+fn zones_leave_string_tables_in_their_own_pack() {
+    const EN_TABLE: &str = "d0000000-0000-4000-8000-000000000011";
+    const EN_STRINGS: &str = "d0000000-0000-4000-8000-000000000012";
+    let scratch = two_zones("pack-zones-strings");
+    let (_, before) = scratch.pack(Cook::Desktop, true);
+    let town = pack_named(&scratch, "zone_town");
+    assert!(before.packs.iter().all(|pack| pack.name != LOC), "no tables, no pack");
+
+    let document = scratch.source().join("en.locale.ron");
+    fs::write(&document, r#"(type: "sapphire::strings::LocaleDocument", version: 1, data: ())"#).unwrap();
+    write_sidecar(&document, EN_TABLE, ImportSettings::Locale(Default::default()));
+    let strings = scratch.source().join("en.ftl");
+    fs::write(&strings, "town-name = The town\n").unwrap();
+    let settings = crate::loc::FluentSettings { locale: "en".to_owned() };
+    write_sidecar(&strings, EN_STRINGS, ImportSettings::Fluent(settings));
+
+    let (_, report) = scratch.pack(Cook::Desktop, true);
+    let names: Vec<&str> = report.packs.iter().map(|pack| pack.name.as_str()).collect();
+    assert_eq!(names, [LOC, "shared", "zone_town", "zone_village"]);
+    assert_eq!(ids_in(&pack_named(&scratch, LOC)), HashSet::from([id(EN_TABLE)]));
+    assert!(!ids_in(&pack_named(&scratch, SHARED)).contains(&id(EN_TABLE)));
+    assert_eq!(pack_named(&scratch, "zone_town"), town, "byte for byte");
+}
+
 /// What the app's packs are must not move when a zone comes along that reaches nothing of theirs but
 /// shared things: W1's promise to every pack before it.
 #[test]

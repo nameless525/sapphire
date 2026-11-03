@@ -333,7 +333,7 @@ impl StringTable {
     pub fn characters(&self) -> BTreeSet<char> {
         let mut characters: BTreeSet<char> = NUMBER_CHARACTERS.chars().collect();
         let mut add = |span: Span| characters.extend(self.str(span).chars());
-        let mut add_pattern = |pattern: Pattern, add: &mut dyn FnMut(Span)| {
+        let add_pattern = |pattern: Pattern, add: &mut dyn FnMut(Span)| {
             if let Pattern::Plain(span) = pattern {
                 add(span);
             }
@@ -439,7 +439,8 @@ mod tests {
     fn a_table_pointing_outside_itself_is_refused() {
         let huge = Span { start: u32::MAX, len: u32::MAX };
         let huge_run = Run { start: u32::MAX, len: u32::MAX };
-        let cases: Vec<(&str, fn(&mut StringTable, Span, Run))> = vec![
+        type Spoil = fn(&mut StringTable, Span, Run);
+        let cases: Vec<(&str, Spoil)> = vec![
             ("no locale", |table, _, _| table.locale.clear()),
             ("entry key", |table, span, _| table.entries[0].key = span),
             ("plain pattern", |table, span, _| table.entries[2].pattern = Pattern::Plain(span)),

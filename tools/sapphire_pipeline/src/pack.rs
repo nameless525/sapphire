@@ -33,7 +33,8 @@
 //! roots, the sounds nothing reaches drop out.
 //!
 //! String tables go in [`LOC`] (M3 V2), for the same reason: an app that shows no text pays for none of
-//! them, and every locale's table is wanted whichever zones a game holds.
+//! them, and every locale's table is wanted whichever zones a game holds. A table reaches nothing and no
+//! zone reaches a table, so zones never draw one into their packs.
 //!
 //! # Codecs
 //!

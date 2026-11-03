@@ -3361,6 +3361,7 @@ dependencies = [
  "icu_decimal",
  "icu_locale_core",
  "icu_plurals",
+ "ron",
  "sapphire_core",
  "sapphire_strings",
  "serde",

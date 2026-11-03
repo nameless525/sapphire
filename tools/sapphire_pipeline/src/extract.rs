@@ -294,6 +294,8 @@ pub fn extract_materials(source: &Path, options: &ExtractOptions) -> Result<Extr
         | ImportSettings::KeyPose(_)
         | ImportSettings::MoveSet(_)
         | ImportSettings::AnimGraph(_)
+        | ImportSettings::Fluent(_)
+        | ImportSettings::Locale(_)
         | ImportSettings::Assembly(_)
         | ImportSettings::Colliders(_)
         | ImportSettings::Sound(_)

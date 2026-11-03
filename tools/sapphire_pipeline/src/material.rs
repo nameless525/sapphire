@@ -110,6 +110,8 @@ impl TextureKind {
             | ImportSettings::Cue(_)
             | ImportSettings::MoveSet(_)
             | ImportSettings::AnimGraph(_)
+            | ImportSettings::Fluent(_)
+            | ImportSettings::Locale(_)
             | ImportSettings::GltfClips(_)
             | ImportSettings::FbxClips(_)
             | ImportSettings::Vrma(_)

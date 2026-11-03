@@ -113,6 +113,7 @@ pub mod extract;
 mod gltf_writer;
 pub mod import;
 pub mod keypose;
+pub mod loc;
 pub mod lookdev;
 pub mod material;
 pub mod mesh;

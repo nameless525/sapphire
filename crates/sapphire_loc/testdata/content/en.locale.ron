@@ -1,0 +1,10 @@
+(
+    type: "sapphire::strings::LocaleDocument",
+    version: 1,
+    data: (
+        fonts: {
+            "body": ["M PLUS 1"],
+            "display": ["Oxanium", "M PLUS 1"],
+        },
+    ),
+)

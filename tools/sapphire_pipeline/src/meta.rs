@@ -60,6 +60,9 @@
 //! Ogg Vorbis sounds (`.ogg`, M2 E1) have `importer: Sound(())` and cue documents (`hit.cue.ron`)
 //! `importer: Cue(())`.
 //!
+//! Fluent sources (`.ftl`, M3 V2) have `importer: Fluent((locale: "ja"))`, the locale they're part of,
+//! and locale documents (`ja.locale.ron`) `importer: Locale(())`.
+//!
 //! Material documents (`skin.material.ron`) have sidecars too, with `importer: Material(())`.
 //! VRM characters (`alicia.vrm`) have `importer: Vrm((mesh: (…), version: Some(V1)))`: the mesh
 //! settings above, and a note of the file's VRM version, read from the file when the sidecar is
@@ -137,6 +140,7 @@ use crate::clip::ClipSettings;
 use crate::colliders::{self, ColliderSettings};
 use crate::import::vrm::{self, VrmSettings};
 use crate::keypose::{self, KeyPoseSettings};
+use crate::loc::{self, FluentSettings, LocaleDocumentSettings};
 use crate::material::{self, MaterialSettings};
 use crate::moves::{self, MoveSetSettings};
 use crate::optimize::LodSettings;
@@ -216,6 +220,12 @@ pub enum ImportSettings {
     MoveSet(MoveSetSettings),
     /// An animation graph document (`.animgraph.ron`): how a character's clips play (M2 N3).
     AnimGraph(AnimGraphSettings),
+    /// A Fluent source (`.ftl`): strings of the locale it names, which cook into that locale's table,
+    /// with no asset of their own (M3 V2).
+    Fluent(FluentSettings),
+    /// A locale document (`ja.locale.ron`): its chain and fonts, and the table its `.ftl` sources make
+    /// (M3 V2).
+    Locale(LocaleDocumentSettings),
     /// A glTF wanted for its animations alone: clips and a skeleton, and no mesh (M2 N1), whatever
     /// the file holds. No extension picks this: its sidecar does.
     GltfClips(ClipSettings),
@@ -265,6 +275,12 @@ impl ImportSettings {
         if anim_graph::is_source(source) {
             return Some(Self::AnimGraph(AnimGraphSettings::default()));
         }
+        if loc::is_locale_source(source) {
+            return Some(Self::Locale(LocaleDocumentSettings::default()));
+        }
+        if loc::is_ftl_source(source) {
+            return Some(Self::Fluent(FluentSettings::for_source(source)));
+        }
         let extension = source.extension()?.to_str()?.to_ascii_lowercase();
         match extension.as_str() {
             "gltf" | "glb" => Some(Self::Gltf(MeshSettings::default())),
@@ -307,6 +323,8 @@ impl ImportSettings {
             | Self::Cue(_)
             | Self::MoveSet(_)
             | Self::AnimGraph(_)
+            | Self::Fluent(_)
+            | Self::Locale(_)
             | Self::GltfClips(_)
             | Self::FbxClips(_)
             | Self::Vrma(_)
@@ -329,6 +347,8 @@ impl ImportSettings {
             | Self::Cue(_)
             | Self::MoveSet(_)
             | Self::AnimGraph(_)
+            | Self::Fluent(_)
+            | Self::Locale(_)
             | Self::GltfClips(_)
             | Self::FbxClips(_)
             | Self::Vrma(_)
@@ -348,6 +368,12 @@ impl ImportSettings {
     /// Whether the source's animations are all it cooks: it has no asset under its own ID.
     pub fn is_animation_only(&self) -> bool {
         matches!(self, Self::GltfClips(_) | Self::FbxClips(_) | Self::Vrma(_))
+    }
+
+    /// Whether the source cooks an asset under its own ID. Sources wanted for their animations cook
+    /// only those, and a Fluent source cooks into its locale's table.
+    pub fn has_own_asset(&self) -> bool {
+        !self.is_animation_only() && !matches!(self, Self::Fluent(_))
     }
 
     /// The source whose skeleton this one shares instead of cooking its own, if any.

@@ -46,6 +46,13 @@ sapphire_colliders = { kind = "runtime", layer = 2 }
 # Zones as plain data: the document and the cooked format, which the cooker writes and the simulation
 # and the world read (M3 W1): no renderer, world or physics, so all three can link it.
 sapphire_zone = { kind = "runtime", layer = 2 }
+# Localized strings as plain data, the cooked table, beneath the asset server and the cooker, which
+# read it with no ICU (M3 V2).
+sapphire_strings = { kind = "runtime", layer = 2 }
+# Runs those tables: the evaluator, plurals and numbers through ICU4X, the live switch. In L2 rather
+# than the L4 the spec first gave it: `sapphire_ui` (L3) binds its text through it, and it reads only
+# `sapphire_strings`, so nothing asks it to be higher, and no L3 crate needs an edge to reach it.
+sapphire_loc = { kind = "runtime", layer = 2 }
 # L3 subsystems.
 # Animation: samples, blends and solves (M2). Its cooked formats sit below it, in sapphire_assets,
 # which checks every kind's bytes; it has no edge to the renderer or the world.
@@ -150,6 +157,11 @@ edges = [
     # dependency. The stage's `dev` is off unless an app's `dev` turns it on.
     ["sapphire_stage", "sapphire_hot_reload"],
     ["sapphire_stage", "sapphire_livelink"],
+    # String tables are named and versioned the same way, and packs store them; the evaluator reads them.
+    ["sapphire_strings", "sapphire_serialize"],
+    ["sapphire_strings", "sapphire_reflect"],
+    ["sapphire_assets", "sapphire_strings"],
+    ["sapphire_loc", "sapphire_strings"],
 ]
 
 # The simulation's crates: what a replay job links (m2-plan §3, "Crate edges"). None of `forbidden`
@@ -193,7 +205,7 @@ forbidden = ["cpal", "kira", "parry3d", "rapier3d", "sapphire_physics", "sapphir
 # Third-party crates that must never reach a runtime, app or dev-only crate's dependency
 # tree.
 [tool_only_dependencies]
-crates = ["gltf", "image", "ctt", "toml", "cargo_metadata", "rayon", "meshopt", "vrm-spec", "ufbx"]
+crates = ["gltf", "image", "ctt", "toml", "cargo_metadata", "rayon", "meshopt", "vrm-spec", "ufbx", "fluent-syntax"]
 
 # Third-party crates that only dev-only crates may bring in: a runtime or app crate reaching one
 # other than through a dev-only crate would link it into builds without `dev`.

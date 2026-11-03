@@ -77,6 +77,10 @@
 //!   cells' meshes merge prefabs, assemblies by their sidecars' IDs, and are keyed by what's in each, so
 //!   a save to one placed piece recooks the cells it's in. A `.szone` reads its meshes' bounds, so it
 //!   cooks last of all; its key depends on those assets' keys.
+//! - **Localized strings** cook `.ftl` sources and `.locale.ron` documents → `.sloc`, one table per
+//!   locale (M3 V2, [`loc`]), reading nothing another asset cooks. After every asset has cooked, the
+//!   tables are checked against each other, whatever came from the cache, and the report lists what's
+//!   untranslated.
 //!
 //! A source may cook to more than one asset: its own, and sub-assets, each with its own recipe,
 //! output beside the source's (`alicia.smesh`, `alicia.sskel`, `alicia.srig`) and an ID derived
@@ -140,6 +144,7 @@ use sapphire_assets::texture::{TEXTURE_EXTENSION, TEXTURE_VERSION};
 use sapphire_colliders::{COLLIDERS_EXTENSION, ColliderSet};
 use sapphire_moves::{BakedTables, ClipMotionDocument, MOVE_SET_EXTENSION, MoveSet};
 use sapphire_reflect::Versioned;
+use sapphire_strings::{STRINGS_EXTENSION, StringTable};
 use sapphire_zone::{Place, ZONE_EXTENSION, Zone};
 
 use crate::anim_graph::{self, AnimGraphCookError};
@@ -158,6 +163,7 @@ use crate::import::image;
 use crate::import::vrm::{self, VrmImportError, VrmSettings};
 use crate::import::vrma;
 use crate::keypose::{self, KeyPoseError};
+use crate::loc::{self, FluentFile, FluentFiles, LocCheckError, LocCookError, LocReport};
 use crate::material::{self, MaterialCookError, Referenced, TextureKind};
 use crate::mesh::ImportedMesh;
 use crate::mesh::MaterialSlotError;
@@ -241,6 +247,7 @@ pub(crate) const COOKED_EXTENSIONS: &[&str] = &[
     CUE_EXTENSION,
     MOVE_SET_EXTENSION,
     ZONE_EXTENSION,
+    STRINGS_EXTENSION,
 ];
 
 /// What a source's skeleton's ID is derived from.
@@ -347,6 +354,13 @@ impl Recipe {
                 format: AnimGraph::VERSION,
                 extension: GRAPH_EXTENSION,
             },
+            // Fluent sources have no asset of their own: this is their locale's table.
+            ImportSettings::Fluent(_) | ImportSettings::Locale(_) => Self {
+                importer: loc::IMPORTER,
+                cooker: loc::COOKER,
+                format: StringTable::VERSION,
+                extension: STRINGS_EXTENSION,
+            },
             ImportSettings::GltfClips(_) => Self::gltf_clip(),
             ImportSettings::FbxClips(_) => Self::fbx_clip(),
             ImportSettings::Vrma(_) => Self { importer: vrma::IMPORTER, ..Self::gltf_clip() },
@@ -422,6 +436,8 @@ impl Recipe {
             anim_graph::output_path(relative, self.extension)
         } else if zone::is_source(relative) {
             zone::output_path(relative, self.extension)
+        } else if loc::is_locale_source(relative) {
+            loc::output_path(relative, self.extension)
         } else {
             relative.with_extension(self.extension)
         }
@@ -524,6 +540,15 @@ pub enum CookError {
         #[source]
         source: Box<ColliderCookError>,
     },
+    #[error("failed to cook locale {}", path.display())]
+    Locale {
+        path: PathBuf,
+        /// Boxed, as material errors are.
+        #[source]
+        source: Box<LocCookError>,
+    },
+    #[error("localized strings can't ship as they are")]
+    Localization(#[from] Box<LocCheckError>),
     #[error("failed to cook sound or cue {}", path.display())]
     Audio {
         path: PathBuf,
@@ -648,6 +673,8 @@ pub struct CookReport {
     pub uncooked: Vec<PathBuf>,
     /// Stale files removed from the output directory.
     pub removed: Vec<PathBuf>,
+    /// What's untranslated, and what's translated from nothing ([`loc::check`]).
+    pub localization: LocReport,
 }
 
 impl CookReport {
@@ -791,15 +818,16 @@ fn cook_dir_through(
     let relative_of = |asset: &SourceAsset| -> PathBuf {
         asset.path.strip_prefix(source_root).expect("scanned under the source root").to_owned()
     };
+    let fluent = fluent_files(source_root, &cooked_assets)?;
     // Every source's own output first, so a collision says so before any file is read. A source
-    // wanted for its animations has none.
+    // wanted for its animations has none, nor has a Fluent source.
     let mut own_outputs = Vec::with_capacity(cooked_assets.len());
     for asset in &cooked_assets {
         let recipe = Recipe::for_settings(&asset.meta.importer);
-        own_outputs.push(if asset.meta.importer.is_animation_only() {
-            None
-        } else {
+        own_outputs.push(if asset.meta.importer.has_own_asset() {
             Some(claim(&asset.path, &recipe.output_path(&relative_of(asset)))?)
+        } else {
+            None
         });
     }
     let mut plan = Vec::with_capacity(cooked_assets.len());
@@ -893,6 +921,7 @@ fn cook_dir_through(
         cache: cache.as_ref(),
         cook: options.cook,
         memory: &memory,
+        fluent: &fluent,
     };
     let mut cooked: Vec<Option<CookedAsset>> = vec![None; plan.len()];
     reached(CookStage::Planned);
@@ -909,14 +938,65 @@ fn cook_dir_through(
     in_turn(vec![shared_meshes, clips])?;
     reached(CookStage::ClipsCooked);
     in_turn(vec![move_sets, materials, probe_grids, own_zones])?;
-    let assets = cooked.into_iter().map(|asset| asset.expect("every planned asset was cooked")).collect();
+    let assets: Vec<CookedAsset> =
+        cooked.into_iter().map(|asset| asset.expect("every planned asset was cooked")).collect();
+    let localization = check_localization(&assets)?;
     Ok(CookReport {
         assets,
         created_sidecars: resolved.created,
         orphaned_sidecars: resolved.orphaned,
         uncooked: uncooked.into_iter().map(|asset| asset.path).collect(),
         removed,
+        localization,
     })
+}
+
+/// Each `.ftl` source by the locale its sidecar names, which a locale document must state, and only
+/// one: said before any file is read.
+fn fluent_files(source_root: &Path, assets: &[SourceAsset]) -> Result<FluentFiles, CookError> {
+    let fail = |error: LocCheckError| CookError::Localization(Box::new(error));
+    let mut documents: HashMap<&str, &Path> = HashMap::new();
+    for asset in assets.iter().filter(|asset| matches!(asset.meta.importer, ImportSettings::Locale(_))) {
+        let locale = loc::locale_of_document(&asset.path);
+        if let Some(first) = documents.insert(locale, &asset.path) {
+            return Err(fail(LocCheckError::DuplicateLocale {
+                locale: locale.to_owned(),
+                first: first.to_owned(),
+                second: asset.path.clone(),
+            }));
+        }
+    }
+    let mut files = FluentFiles::new();
+    for asset in assets {
+        let ImportSettings::Fluent(settings) = &asset.meta.importer else { continue };
+        if !documents.contains_key(settings.locale.as_str()) {
+            return Err(fail(LocCheckError::NoLocaleDocument {
+                locale: settings.locale.clone(),
+                path: asset.path.clone(),
+            }));
+        }
+        let relative = asset.path.strip_prefix(source_root).expect("scanned under the source root");
+        let name = relative.to_string_lossy().replace('\\', "/");
+        files.entry(settings.locale.clone()).or_default().push(FluentFile { path: asset.path.clone(), name });
+    }
+    Ok(files)
+}
+
+/// Checks the cooked tables against each other, from the files as they now are: a table from the cache
+/// can disagree with one just cooked, and neither's key covers the other's sources.
+fn check_localization(assets: &[CookedAsset]) -> Result<LocReport, CookError> {
+    let mut tables = Vec::new();
+    for asset in
+        assets.iter().filter(|asset| asset.output.extension().is_some_and(|e| e == STRINGS_EXTENSION))
+    {
+        let bytes = fs::read(&asset.output)
+            .map_err(|source| CookError::Read { path: asset.output.clone(), source })?;
+        let table = StringTable::read(&bytes).map_err(|source| {
+            Box::new(LocCheckError::Read { path: asset.output.clone(), source: Box::new(source) })
+        })?;
+        tables.push(table);
+    }
+    loc::check(&tables).map_err(|error| CookError::Localization(Box::new(error)))
 }
 
 /// Cooks `indices` of the plan, ascending, assets that read nothing another asset cooks, on up to
@@ -1165,7 +1245,9 @@ fn sub_assets(
         | ImportSettings::Sound(_)
         | ImportSettings::Cue(_)
         | ImportSettings::MoveSet(_)
-        | ImportSettings::AnimGraph(_) => Ok(Vec::new()),
+        | ImportSettings::AnimGraph(_)
+        | ImportSettings::Fluent(_)
+        | ImportSettings::Locale(_) => Ok(Vec::new()),
         ImportSettings::Zone(_) => {
             let plan = ZonePlan::new(meta.id, &read()?, prefabs, cache).map_err(zone_error(path))?;
             let parts = plan.places().map(|place| PlannedPart {
@@ -1369,6 +1451,7 @@ struct PlannedTree<'a> {
     cache: Option<&'a Cache>,
     cook: Cook,
     memory: &'a CookMemory,
+    fluent: &'a FluentFiles,
 }
 
 impl<'a> PlannedTree<'a> {
@@ -1387,6 +1470,7 @@ impl<'a> PlannedTree<'a> {
             clip_sources: &remembered.clip_sources,
             last_source: &remembered.last_source,
             memory: self.memory,
+            fluent: self.fluent,
         }
     }
 
@@ -1421,6 +1505,7 @@ struct Assets<'a> {
     clip_sources: &'a ClipSources,
     last_source: &'a LastSource,
     memory: &'a CookMemory,
+    fluent: &'a FluentFiles,
 }
 
 /// A source's rig as other assets read it: its cooked skeleton and where its humanoid map comes
@@ -1984,6 +2069,13 @@ fn cook_source(
         ImportSettings::AnimGraph(_) => anim_graph::cook(bytes)
             .map_err(|source| CookError::AnimGraph { path: path.to_owned(), source: Box::new(source) }),
         ImportSettings::Zone(_) => cook_zone(path, assets),
+        ImportSettings::Locale(_) => {
+            let files = fluent_of(path, assets);
+            loc::cook(path, bytes, files)
+                .map_err(|source| CookError::Locale { path: path.to_owned(), source: Box::new(source) })
+        }
+        // Never planned: it cooks into its locale's table.
+        ImportSettings::Fluent(_) => Err(CookError::UnsupportedSource { path: path.to_owned() }),
     }
 }
 
@@ -2431,8 +2523,19 @@ fn source_dependencies(
                 .collect()
         }
         // Images and collider documents are self-contained.
-        ImportSettings::Texture(_) | ImportSettings::Colliders(_) => Ok(Vec::new()),
+        ImportSettings::Texture(_) | ImportSettings::Colliders(_) | ImportSettings::Fluent(_) => {
+            Ok(Vec::new())
+        }
         ImportSettings::Zone(_) => zone_dependencies(path, part, assets),
+        // A locale's table is its sources': another locale's aren't in its key (`loc`'s docs).
+        ImportSettings::Locale(_) => fluent_of(path, assets)
+            .iter()
+            .map(|file| {
+                let bytes = fs::read(&file.path)
+                    .map_err(|source| CookError::Read { path: file.path.clone(), source })?;
+                Ok(Dependency::File { path: file.name.clone(), hash: blake3::hash(&bytes) })
+            })
+            .collect(),
         ImportSettings::MoveSet(_) => Ok(move_set_dependencies(bytes, assets)),
         ImportSettings::CharacterMap(settings) => {
             let inputs = character_maps::inputs(settings.kind(), bytes).map_err(map_error(path))?;
@@ -2616,6 +2719,11 @@ fn assembly_dependencies(path: &Path, bytes: &[u8]) -> Result<Vec<Dependency>, C
     Ok(dependencies)
 }
 
+/// The `.ftl` sources of the locale document at `path`.
+fn fluent_of<'a>(path: &Path, assets: &Assets<'a>) -> &'a [FluentFile] {
+    assets.fluent.get(loc::locale_of_document(path)).map_or(&[], Vec::as_slice)
+}
+
 /// The detail an assembly's shapes are built in for `cook`: the mobile cook's lighter.
 fn assembly_detail(cook: Cook) -> assembly::Detail {
     match cook {
@@ -2708,6 +2816,8 @@ fn imported_mesh(
         | ImportSettings::Cue(_)
         | ImportSettings::MoveSet(_)
         | ImportSettings::AnimGraph(_)
+        | ImportSettings::Fluent(_)
+        | ImportSettings::Locale(_)
         | ImportSettings::GltfClips(_)
         | ImportSettings::FbxClips(_)
         | ImportSettings::Vrma(_)
@@ -3180,6 +3290,7 @@ mod tests {
                 cache: None,
                 cook: Cook::Desktop,
                 memory: &memory,
+                fluent: &FluentFiles::new(),
             };
             let remembered = Remembered::default();
             let keyed = tree.key(0, &tree.assets(&[], &remembered)).unwrap();
@@ -3232,6 +3343,7 @@ mod tests {
             cache: Some(&cache),
             cook: Cook::Desktop,
             memory: &memory,
+            fluent: &FluentFiles::new(),
         };
         let remembered = Remembered::default();
         let keyed = tree.key(0, &tree.assets(&[], &remembered)).unwrap();

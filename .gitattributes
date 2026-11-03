@@ -45,3 +45,6 @@
 content/third_party/** -text
 content/third_party/**/*.md text
 content/third_party/**/*.meta text
+
+# Cooked string tables committed as test fixtures, which a test holds to their sources.
+*.sloc binary

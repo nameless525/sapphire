@@ -1,0 +1,24 @@
+[package]
+name = "sapphire_loc"
+description = "Runs localized strings: the evaluator over cooked `.sloc` tables, plurals and numbers through ICU4X, a live language switch, a voice language apart from text's, and per-locale font family chains."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+icu_decimal.workspace = true
+icu_locale_core.workspace = true
+icu_plurals.workspace = true
+sapphire_strings.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+writeable.workspace = true
+
+[dev-dependencies]
+# The counting allocator, for the allocation test and the costs.
+sapphire_core.workspace = true
+
+[lints]
+workspace = true

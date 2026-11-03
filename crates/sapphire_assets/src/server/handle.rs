@@ -61,6 +61,7 @@ mod sealed {
     impl Sealed for crate::cue::Cue {}
     impl Sealed for sapphire_moves::MoveSet {}
     impl Sealed for crate::graph::AnimGraph {}
+    impl Sealed for sapphire_strings::StringTable {}
     impl Sealed for super::TextureAsset {}
 }
 
@@ -170,6 +171,18 @@ impl Asset for AnimGraph {
         // SAFETY: as for meshes: `AnimGraph::read` accepted these bytes, unchanged since.
         unsafe { access_unchecked::<AnimGraph>(bytes) }
             .expect("the envelope was checked when the graph was decoded")
+    }
+}
+
+impl Asset for sapphire_strings::StringTable {
+    const KIND: AssetKind = AssetKind::Strings;
+    /// The cooked bytes: a table isn't read in place, so [`StringTable::read`] makes one to hold.
+    ///
+    /// [`StringTable::read`]: sapphire_strings::StringTable::read
+    type View<'a> = &'a [u8];
+
+    unsafe fn view(bytes: &[u8]) -> &[u8] {
+        bytes
     }
 }
 

@@ -1,0 +1,8 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "948590bb-ae9a-4ed2-ac0a-d85f237a8669",
+        importer: Locale(()),
+    ),
+)

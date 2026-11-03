@@ -31,6 +31,8 @@ sapphire_jobs.workspace = true
 sapphire_moves.workspace = true
 sapphire_reflect.workspace = true
 sapphire_serialize.workspace = true
+# String tables are cooked assets, checked as the localizer reads them.
+sapphire_strings.workspace = true
 serde.workspace = true
 # Generational slots behind handles (spec §5.3).
 slotmap.workspace = true

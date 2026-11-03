@@ -39,6 +39,8 @@
 //! - Animation graphs (M2 N3, spec §5.13): [`graph`], the RON documents (cooked to `.sgraph`) that say
 //!   how a character's clips play: which layers, which states, what plays for which move. Plain
 //!   data, with its clips as dependencies; `sapphire_anim` runs it.
+//! - Where string tables go (`.sloc`, M3 V2): [`AssetKind::Strings`] packs and loads them. Their format
+//!   is `sapphire_strings`', and running them `sapphire_loc`'s, which has no reason to know about packs.
 //! - Packs ([`pack`], M1 A4): the `.spack` files content ships in, cooked assets by ID in
 //!   independently compressed 64 KB blocks (zstd or lz4) under blake3 hashes, with the reader,
 //!   its integrity checks and the writer the packer uses. Each asset's [`AssetKind`] says how it

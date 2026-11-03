@@ -1,0 +1,11 @@
+(
+    type: "sapphire::strings::LocaleDocument",
+    version: 1,
+    data: (
+        fallback: ["en"],
+        fonts: {
+            "body": ["M PLUS 1"],
+            "display": ["Dela Gothic One", "Oxanium", "M PLUS 1"],
+        },
+    ),
+)

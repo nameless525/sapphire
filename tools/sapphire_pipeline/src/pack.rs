@@ -32,6 +32,9 @@
 //! it: an app that plays no sound pays for none but the file's place in its bundle. When cues have
 //! roots, the sounds nothing reaches drop out.
 //!
+//! String tables go in [`LOC`] (M3 V2), for the same reason: an app that shows no text pays for none of
+//! them, and every locale's table is wanted whichever zones a game holds.
+//!
 //! # Codecs
 //!
 //! Blocks are compressed by kind ([`codec`]): **zstd** at level [`ZSTD_LEVEL`] for textures and
@@ -87,6 +90,7 @@ use sapphire_colliders::COLLIDERS_EXTENSION;
 use sapphire_moves::MOVE_SET_EXTENSION;
 use sapphire_serialize::cooked::AlignedVec;
 use sapphire_serialize::postcard;
+use sapphire_strings::STRINGS_EXTENSION;
 use sapphire_zone::ZONE_EXTENSION;
 
 use crate::cache::{Cache, CacheError, CacheKey, Stage};
@@ -112,11 +116,15 @@ pub const SHARED: &str = "shared";
 /// The pack sounds and cues go in (see the [module docs](self)).
 pub const AUDIO: &str = sapphire_assets::sound::AUDIO_PACK;
 
+/// The pack string tables go in (see the [module docs](self)).
+pub const LOC: &str = "loc";
+
 /// The pack an asset of `kind` goes in (see the [module docs](self)). A file of no kind goes where
 /// the packer reports it.
 pub fn group(kind: Option<AssetKind>) -> &'static str {
     match kind {
         Some(AssetKind::Sound | AssetKind::Cue) => AUDIO,
+        Some(AssetKind::Strings) => LOC,
         _ => SHARED,
     }
 }
@@ -133,7 +141,8 @@ pub fn codec(kind: AssetKind) -> Codec {
         | AssetKind::Cue
         | AssetKind::MoveSet
         | AssetKind::AnimGraph
-        | AssetKind::Zone => Codec::Lz4,
+        | AssetKind::Zone
+        | AssetKind::Strings => Codec::Lz4,
         AssetKind::Sound => Codec::None,
     }
 }
@@ -154,6 +163,7 @@ pub fn kind(output: &Path) -> Option<AssetKind> {
         MOVE_SET_EXTENSION => Some(AssetKind::MoveSet),
         GRAPH_EXTENSION => Some(AssetKind::AnimGraph),
         ZONE_EXTENSION => Some(AssetKind::Zone),
+        STRINGS_EXTENSION => Some(AssetKind::Strings),
         _ => None,
     }
 }

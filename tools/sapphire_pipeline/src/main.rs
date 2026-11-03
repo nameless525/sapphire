@@ -13,6 +13,7 @@ use sapphire_pipeline::character_maps::{self, MapKind};
 use sapphire_pipeline::combat;
 use sapphire_pipeline::cook::{self, Cook, CookOptions, CookReport, CookStatus};
 use sapphire_pipeline::extract::{self, ExtractOptions};
+use sapphire_pipeline::loc::{Stale, Untranslated};
 use sapphire_pipeline::lookdev;
 use sapphire_pipeline::meta::{self, ImportSettings, MeshSettings};
 use sapphire_pipeline::pack::{self, PackReport, PackStatus};
@@ -281,6 +282,12 @@ fn print_report(report: &CookReport, cook: Cook, source: &Path, out: &Path) {
     }
     for path in &report.uncooked {
         eprintln!("not cooked: {} (its sidecar says `cook: false`)", relative(path, source));
+    }
+    for Untranslated { locale, key, served_by } in &report.localization.untranslated {
+        eprintln!("untranslated in {locale}: {key} (shows {served_by}'s)");
+    }
+    for Stale { locale, key } in &report.localization.stale {
+        eprintln!("warning: {locale} holds {key}, which nothing down its chain does");
     }
     for asset in &report.assets {
         let how = match asset.status {

@@ -65,7 +65,7 @@
 //!
 //! Animation, the camera, the move system, hit detection, or pushing other characters: capsules block
 //! each other, and that's all. Another capsule underfoot isn't ground, so a character slides off one, or
-//! the stick walks it off the gentle top where there's no slope to slide on.
+//! the stick walks it off the gentle top where there's no slope to slide on, or a press jumps from there.
 
 mod profile;
 mod step;

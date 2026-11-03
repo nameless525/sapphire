@@ -67,7 +67,7 @@ pub fn step_controller(
     let start = pose.position;
     let mut tick = Tick { world, body, profile, center: start, rotation: pose.rotation };
 
-    if (input.jump || waited) && drive.gravity && can_jump(state) {
+    if (input.jump || waited) && drive.gravity && can_jump(state, profile) {
         state.velocity.y = profile.authored().jump_speed;
         state.mode = GroundMode::Airborne;
         state.coyote = SimDuration::ZERO;
@@ -131,11 +131,16 @@ fn sanitized(drive: &ControllerDrive) -> ControllerDrive {
     ControllerDrive { root_motion, face, ..*drive }
 }
 
-fn can_jump(state: &ControllerState) -> bool {
+/// Whether a press jumps from where it is: from the ground, off a ledge just left, out of a wedge, and from
+/// the one slide gentle enough to walk, on another character's top ([`slide_velocity`]), where a stick has it
+/// walking and a press can't wait for it to stop.
+fn can_jump(state: &ControllerState, profile: &ResolvedProfile) -> bool {
     match state.mode {
         GroundMode::Grounded => true,
         GroundMode::Airborne => state.coyote > SimDuration::ZERO,
-        GroundMode::Sliding => state.velocity.length() < WEDGED_SPEED,
+        GroundMode::Sliding => {
+            state.velocity.length() < WEDGED_SPEED || profile.walkable(state.ground_normal)
+        }
     }
 }
 

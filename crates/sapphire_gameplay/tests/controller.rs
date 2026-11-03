@@ -1587,6 +1587,57 @@ fn a_character_dead_center_on_another_can_always_leave() {
     assert_eq!(rig.mode(), GroundMode::Grounded);
 }
 
+/// Another character's gentle top is walked, so a press on it jumps however fast it's walking, on every
+/// tick that it's on it. What's too steep to walk is the rule this has to leave alone: a slide down that
+/// jumps only once it's wedged.
+#[test]
+fn a_press_while_walking_on_another_jumps_and_a_steep_slide_still_doesnt() {
+    const WEDGED: f32 = 0.1;
+    let stick = RIGHT;
+    let walking_on = || {
+        let mut rig = Rig::new(vec![floor(1)], Vec3::new(-0.2, 3.0, 0.0));
+        let profile = rig.profile;
+        second_capsule(&mut rig.world, &profile, Vec3::ZERO);
+        for _ in 0..240 {
+            if rig.mode() == GroundMode::Sliding {
+                return rig;
+            }
+            rig.stick(Vec2::ZERO);
+        }
+        panic!("it never landed on it: {:?} at {}", rig.mode(), rig.feet());
+    };
+
+    let mut pressed = 0;
+    for ticks in 0..30 {
+        let mut rig = walking_on();
+        rig.sticks(stick, ticks);
+        let gentle = rig.state.ground_normal.y > 0.9;
+        if rig.mode() != GroundMode::Sliding || !gentle || rig.state.velocity.length() <= WEDGED {
+            continue;
+        }
+        pressed += 1;
+        let across = rig.state.velocity.x;
+        rig.jump(stick);
+        assert!(rig.state.events.jumped, "{ticks} ticks of stick: a press is lost");
+        assert_eq!(rig.mode(), GroundMode::Airborne, "{ticks} ticks of stick");
+        assert!(rig.state.velocity.y > 0.0, "{ticks} ticks of stick: {}", rig.state.velocity);
+        assert!(rig.state.velocity.x >= across, "{ticks} ticks of stick: {}", rig.state.velocity);
+    }
+    assert!(pressed >= 3, "it walked on it for only {pressed} ticks");
+
+    let mut rig = Rig::new(vec![floor(1), slope(2, 0.0, 0.0, 60.0, 8.0)], Vec3::new(3.0, 6.0, 0.0));
+    for _ in 0..240 {
+        if rig.mode() == GroundMode::Sliding && rig.state.velocity.length() > WEDGED {
+            break;
+        }
+        rig.stick(Vec2::ZERO);
+    }
+    assert_eq!(rig.mode(), GroundMode::Sliding, "it never slid, at {}", rig.feet());
+    assert!(rig.state.velocity.length() > WEDGED, "{}", rig.state.velocity);
+    rig.jump(Vec2::ZERO);
+    assert!(!rig.state.events.jumped, "too steep to jump from");
+}
+
 /// However gentle the top it's on, a steep static slope is still what a stick can't climb, the rule this
 /// has to leave alone: the same stick on another character walks up its top and over.
 #[test]

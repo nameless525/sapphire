@@ -175,6 +175,21 @@ impl Default for RenderSettings {
     }
 }
 
+impl RenderSettings {
+    /// Checks every setting with a range, returning the field and what is wrong. A tier's table runs these
+    /// too, so this is what reaches a renderer made with no table.
+    fn validate(&self) -> Result<(), (&'static str, &'static str)> {
+        self.sky.validate()?;
+        if let Some(shadows) = &self.shadows {
+            shadows.validate()?;
+        }
+        self.post_effects.validate()?;
+        self.foliage.validate()?;
+        self.ambient_occlusion.validate()?;
+        self.reflections.validate()
+    }
+}
+
 /// The smallest render scale: a quarter of the target's width and height.
 pub const MIN_RENDER_SCALE: f32 = 0.25;
 
@@ -243,9 +258,10 @@ pub enum RenderError {
     UnresolvedMaterial { slot: String, id: AssetId },
     #[error("the probe grid's {bricks} bricks don't fit this device's atlas, buffers or dispatches")]
     ProbeGridTooLarge { bricks: u32 },
-    /// [`RenderSettings::shadows`] holds a value out of its range ([`ShadowSettings::validate`]).
+    /// A [`RenderSettings`] field holds a value out of its range ([`ShadowSettings::validate`] and its
+    /// fellows; a tier's table refuses the same values, with the tier's name).
     #[error("{field} {problem}")]
-    InvalidShadows { field: &'static str, problem: &'static str },
+    InvalidSettings { field: &'static str, problem: &'static str },
     /// [`RenderSettings::shadows`] is in range and asks for a map past this device's limit, which
     /// only the device can say. Nothing shrinks it behind the caller's back: asking again for less
     /// is the caller's choice.
@@ -613,9 +629,8 @@ impl Renderer {
         if !depth.renderable || !depth.supports_samples(samples) {
             return Err(RenderError::UnsupportedMsaa { format: DEPTH_FORMAT, samples });
         }
+        settings.validate().map_err(|(field, problem)| RenderError::InvalidSettings { field, problem })?;
         if let Some(shadows) = &settings.shadows {
-            let invalid = |(field, problem)| RenderError::InvalidShadows { field, problem };
-            shadows.validate().map_err(invalid)?;
             shadows.check_limit(gpu.device().limits().max_texture_dimension_2d)?;
         }
         let shaders = ShaderSources::compiled_in();

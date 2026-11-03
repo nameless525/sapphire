@@ -1404,5 +1404,5 @@ fn shadow_maps_past_the_devices_limit_are_an_error() {
 
     // What's out of range on any device comes back as an error too, from a renderer made directly.
     let no_cascades = make(ShadowSettings { cascades: 0, ..shadows });
-    assert!(matches!(no_cascades, Err(RenderError::InvalidShadows { field: "shadows.cascades", .. })));
+    assert!(matches!(no_cascades, Err(RenderError::InvalidSettings { field: "shadows.cascades", .. })));
 }

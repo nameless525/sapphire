@@ -29,6 +29,66 @@ fn gpu() -> GpuContext {
     GpuContext::new(&instance, &GpuContextDesc::default(), None).expect("device")
 }
 
+/// What a tier's table refuses, a renderer made directly refuses too, one row for each setting with a range.
+#[test]
+#[ignore = "needs a GPU"]
+fn settings_out_of_range_are_an_error_from_a_renderer_made_directly() {
+    use sapphire_render::{
+        AmbientOcclusion, FoliageSettings, GtaoSettings, PostEffectSettings, ReflectionSettings,
+        ShadowSettings, SkySettings,
+    };
+
+    let gpu = gpu();
+    let plain = RenderSettings::default;
+    let rows = [
+        (
+            "sky.cube_size",
+            RenderSettings { sky: SkySettings { cube_size: 100, ..SkySettings::default() }, ..plain() },
+        ),
+        (
+            "post_effects.radial_blur_taps",
+            RenderSettings { post_effects: PostEffectSettings { radial_blur_taps: 3 }, ..plain() },
+        ),
+        (
+            "foliage.wind_levels",
+            RenderSettings {
+                foliage: FoliageSettings { wind_levels: 4, ..FoliageSettings::default() },
+                ..plain()
+            },
+        ),
+        (
+            "ambient_occlusion.gtao.radius",
+            RenderSettings {
+                ambient_occlusion: AmbientOcclusion {
+                    capsules: false,
+                    gtao: Some(GtaoSettings { radius: f32::NAN, ..GtaoSettings::DESKTOP }),
+                },
+                ..plain()
+            },
+        ),
+        (
+            "reflections.cube_size",
+            RenderSettings { reflections: ReflectionSettings { cube_size: 96 }, ..plain() },
+        ),
+        (
+            "shadows.cascades",
+            RenderSettings {
+                shadows: Some(ShadowSettings { cascades: 0, ..ShadowSettings::default() }),
+                ..plain()
+            },
+        ),
+    ];
+    let mut wrong = Vec::new();
+    for (field, settings) in rows {
+        match Renderer::new(&gpu, FORMAT, settings) {
+            Err(RenderError::InvalidSettings { field: said, .. }) if said == field => {}
+            Err(other) => wrong.push(format!("{field}: {other}")),
+            Ok(_) => wrong.push(format!("{field}: a renderer was made")),
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
 fn target(gpu: &GpuContext, format: wgpu::TextureFormat, (width, height): (u32, u32)) -> wgpu::Texture {
     gpu.device().create_texture(&wgpu::TextureDescriptor {
         label: None,

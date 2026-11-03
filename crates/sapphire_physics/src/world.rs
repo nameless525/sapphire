@@ -221,6 +221,11 @@ impl PhysicsWorld {
         Self::new(statics, body_capacity)
     }
 
+    /// How deep its tree of statics goes: past `MAX_TREE_DEPTH`, [`Self::new`] would have refused it.
+    pub fn tree_depth(&self) -> u32 {
+        if self.tree.is_empty() { 0 } else { self.tree.subtree_depth(0) }
+    }
+
     pub fn static_count(&self) -> usize {
         self.statics.len()
     }

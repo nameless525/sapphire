@@ -216,6 +216,27 @@ impl GpuVfxRibbonPoint {
     }
 }
 
+/// Adds `points` to `packed`, but for those that can't draw. A stretch joins two points the list
+/// holds side by side and nothing else: ribbons are told apart only by their `ends` marks, so the
+/// point before one left out ends there, or the mark it carried would go with it and the next ribbon
+/// would join on (review REN-002).
+fn pack_ribbon_points(points: &[VfxRibbonPoint], packed: &mut Vec<GpuVfxRibbonPoint>) {
+    for point in points {
+        match GpuVfxRibbonPoint::new(point) {
+            Some(point) => packed.push(point),
+            None => {
+                if let Some(last) = packed.last_mut() {
+                    last.ends = 1;
+                }
+            }
+        }
+    }
+    // A list cut short still ends.
+    if let Some(last) = packed.last_mut() {
+        last.ends = 1;
+    }
+}
+
 /// The map of the shapes' coverage at `level` of a square of `size`: `VfxShape::ALL`'s layers, each
 /// a mean of the level above, down to one texel. Generated in code, so no art is involved.
 fn generate_map(size: u32) -> Vec<Vec<Vec<u8>>> {
@@ -747,11 +768,7 @@ impl Vfx {
         self.sprites
             .extend(self.order.iter().filter_map(|&(_, index)| GpuVfxSprite::new(&sprites[index as usize])));
         let points = &frame.ribbon_points[..frame.ribbon_points.len().min(max_points)];
-        self.points.extend(points.iter().filter_map(GpuVfxRibbonPoint::new));
-        // A list cut short, or missing its last point, still ends.
-        if let Some(last) = self.points.last_mut() {
-            last.ends = 1;
-        }
+        pack_ribbon_points(points, &mut self.points);
         self.stats.sprites = self.sprites.len() as u32;
         self.stats.ribbon_points = self.points.len() as u32;
         let total = frame.sprites.len() + frame.ribbon_points.len();
@@ -1072,5 +1089,80 @@ mod tests {
         assert_eq!(gpu.glow_reach, 1e-4, "it divides by this");
         assert_eq!(gpu.ends, 1);
         assert!(GpuVfxRibbonPoint::new(&VfxRibbonPoint { tip: Vec3::NAN, ..point }).is_none());
+    }
+
+    /// The stretches `points` draw, each by its two ends' place in `points`: its rails' x hold them.
+    fn stretches(points: &[VfxRibbonPoint]) -> Vec<(u32, u32)> {
+        let mut packed = Vec::new();
+        pack_ribbon_points(points, &mut packed);
+        assert!(packed.last().is_none_or(|last| last.ends == 1), "the list ends: {points:?}");
+        packed
+            .windows(2)
+            .filter(|pair| pair[0].ends == 0)
+            .map(|pair| (pair[0].base[0] as u32, pair[1].base[0] as u32))
+            .collect()
+    }
+
+    /// `marks`' points in order: `o` a point, `|` a ribbon's last, and `x` and `X` the same that
+    /// can't draw (the base rail's, the tip's: either leaves it out).
+    fn ribbon(marks: &str) -> Vec<VfxRibbonPoint> {
+        marks
+            .chars()
+            .enumerate()
+            .map(|(place, mark)| {
+                let x = Vec3::X * place as f32;
+                VfxRibbonPoint {
+                    base: if mark == 'x' { Vec3::NAN } else { x },
+                    tip: if mark == 'X' { Vec3::INFINITY } else { x + Vec3::Y },
+                    color: Vec3::ONE,
+                    alpha: 1.0,
+                    core: Vec3::ONE,
+                    core_position: 0.5,
+                    core_half_width: 0.1,
+                    glow_reach: 0.5,
+                    additive: 1.0,
+                    soft: 0.02,
+                    ends: mark == '|' || mark == 'X',
+                }
+            })
+            .collect()
+    }
+
+    /// Every stretch drawn joins points the list holds side by side, in one ribbon, however many
+    /// are left out and wherever (review REN-002).
+    #[test]
+    fn a_stretch_joins_only_points_side_by_side() {
+        let table: &[(&str, &[(u32, u32)])] = &[
+            ("oo|oo|", &[(0, 1), (1, 2), (3, 4), (4, 5)]),
+            // A ribbon's last point left out, which held the two ribbons apart.
+            ("oXoo|", &[(2, 3), (3, 4)]),
+            ("ooXoo|", &[(0, 1), (3, 4), (4, 5)]),
+            // Its first, and a point inside it.
+            ("xoo|", &[(1, 2), (2, 3)]),
+            ("oo|xoo|", &[(0, 1), (1, 2), (4, 5), (5, 6)]),
+            ("ooxoo|", &[(0, 1), (3, 4), (4, 5)]),
+            // More than one in a row, and a whole ribbon.
+            ("ooxxoo|", &[(0, 1), (4, 5), (5, 6)]),
+            ("oxXoo|", &[(3, 4), (4, 5)]),
+            ("xXoo|", &[(2, 3), (3, 4)]),
+            ("oo|xXoo|", &[(0, 1), (1, 2), (5, 6), (6, 7)]),
+            // The list's last.
+            ("oo|ooX", &[(0, 1), (1, 2), (3, 4)]),
+            ("ooX", &[(0, 1)]),
+            // Nothing left to join.
+            ("oxX", &[]),
+            ("xX", &[]),
+            ("", &[]),
+        ];
+        for (marks, expected) in table {
+            assert_eq!(stretches(&ribbon(marks)), *expected, "{marks}");
+        }
+    }
+
+    /// A list cut short by a buffer's limit ends where it was cut.
+    #[test]
+    fn a_list_cut_short_still_ends() {
+        let points = ribbon("ooooo|");
+        assert_eq!(stretches(&points[..3]), [(0, 1), (1, 2)]);
     }
 }

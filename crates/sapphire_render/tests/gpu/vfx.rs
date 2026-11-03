@@ -711,6 +711,44 @@ fn ribbons_dont_join_each_other() {
     }
 }
 
+/// A point that can't draw still ends what it ended: its ribbon's last, left out, doesn't leave the
+/// ribbon open to the next one's first, so nothing draws between them, and the next ribbon does
+/// (review REN-002).
+#[test]
+#[ignore = "needs a GPU"]
+fn a_point_left_out_doesnt_join_two_ribbons() {
+    for (path, settings) in paths() {
+        let mut harness = Harness::new(settings);
+        let glow = Vec3::new(0.05, 0.1, 0.4);
+        let core = Vec3::new(0.7, 0.7, 0.7);
+        let z = -2.0;
+        let at = |x: f32, ends| {
+            let mut point = strip(z, glow, core)[0];
+            point.base.x = x;
+            point.tip.x = x;
+            point.ends = ends;
+            point
+        };
+        let mut bad = at(0.0, true);
+        bad.tip = Vec3::NAN;
+        let frame = harness.render(|packet| {
+            packet.vfx.ribbon_points.extend([
+                at(-1.5, false),
+                at(-1.0, false),
+                bad,
+                at(1.0, false),
+                at(1.5, true),
+            ]);
+        });
+        let stats = harness.renderer.stats().vfx;
+        assert_eq!((stats.ribbon_points, stats.rejected), (4, 1), "{path}");
+        let (y, lit) = (0.25, GREY + 0.3);
+        assert_near(frame.linear(pixel_of(Vec3::new(0.0, y, z))), Vec3::splat(GREY), path);
+        assert!(frame.linear(pixel_of(Vec3::new(-1.25, y, z))).x > lit, "{path}: what came before");
+        assert!(frame.linear(pixel_of(Vec3::new(1.25, y, z))).x > lit, "{path}: what comes after");
+    }
+}
+
 /// A moving spark over a still world has that world's zero velocity, and temporal AA would hold its
 /// first frame to a thirty-third of its light: over the resolved frame it's whole on every frame.
 #[test]

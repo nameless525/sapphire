@@ -1,5 +1,5 @@
 //! What text costs, printed. `cargo test -p sapphire_text --release --test costs -- --ignored --nocapture
-//! --test-threads=1`, with `SAPPHIRE_TEST_FONTS` set (`tests/common`). They assert nothing but
+//! --test-threads=1`. They assert nothing but
 //! print what U1 reports: the same harness runs on a simulator and an emulator.
 //!
 //! `SAPPHIRE_TEST_SUBSET` names a subset of M PLUS 1 to register beside the whole font.
@@ -30,7 +30,7 @@ fn ms(start: Instant) -> f64 {
 #[test]
 #[ignore = "prints costs"]
 fn costs_1_registering_fonts() {
-    let Some(dir) = common::fonts_dir("costs_1_registering_fonts") else { return };
+    let dir = common::fonts_dir();
     let mut cases: Vec<(&str, Arc<Vec<u8>>)> = vec![
         ("M PLUS 1 whole", read_font(&dir, MPLUS1)),
         ("Oxanium whole", read_font(&dir, OXANIUM)),
@@ -89,7 +89,7 @@ fn shape_screen(text: &mut TextSystem, screen: &[Item], scale: f32) -> (usize, u
 #[test]
 #[ignore = "prints costs"]
 fn costs_2_shaping_a_screen() {
-    let Some(dir) = common::fonts_dir("costs_2_shaping_a_screen") else { return };
+    let dir = common::fonts_dir();
     let ja = menu_screen(true);
     let en = menu_screen(false);
     let scale = 1.5;
@@ -249,7 +249,7 @@ const TARGETS: [(&str, [f32; 2], f32); 4] = [
 #[test]
 #[ignore = "prints costs"]
 fn costs_3_atlas_on_a_full_screen() {
-    let Some(dir) = common::fonts_dir("costs_3_atlas_on_a_full_screen") else { return };
+    let dir = common::fonts_dir();
     let mut text = common::system(&dir);
     let mplus = read_font(&dir, MPLUS1);
     let ja = menu_screen(true);
@@ -312,7 +312,7 @@ fn costs_3_atlas_on_a_full_screen() {
 #[test]
 #[ignore = "prints costs"]
 fn costs_4_page_sizes_and_eviction() {
-    let Some(dir) = common::fonts_dir("costs_4_page_sizes_and_eviction") else { return };
+    let dir = common::fonts_dir();
     let mut text = common::system(&dir);
     let mplus = read_font(&dir, MPLUS1);
     let ja = menu_screen(true);
@@ -401,7 +401,7 @@ fn costs_4_page_sizes_and_eviction() {
 #[test]
 #[ignore = "prints costs"]
 fn costs_5_raster_by_size() {
-    let Some(dir) = common::fonts_dir("costs_5_raster_by_size") else { return };
+    let dir = common::fonts_dir();
     let mut text = common::system(&dir);
     let mplus = read_font(&dir, MPLUS1);
     let chars: &'static str = Box::leak(distinct_japanese(&mplus, 600).into_boxed_str());

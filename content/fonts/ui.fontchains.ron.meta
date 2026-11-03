@@ -1,0 +1,8 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "6258611d-eb23-4958-9680-4e262a60a6ea",
+        importer: FontChains(()),
+    ),
+)

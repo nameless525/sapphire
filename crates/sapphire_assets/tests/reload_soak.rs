@@ -126,6 +126,7 @@ impl Gpu {
             AssetKind::AnimGraph => unreachable!("animation graphs never go to the uploader"),
             AssetKind::Zone => unreachable!("zones never go to the uploader"),
             AssetKind::Strings => unreachable!("string tables never go to the uploader"),
+            AssetKind::Font | AssetKind::FontChains => unreachable!("fonts never go to the uploader"),
         }
         let held = self.0.insert(upload.slot(), upload.generation());
         assert!(held.is_none_or(|held| held <= upload.generation()), "an older version was sent");
@@ -225,6 +226,7 @@ fn hot_reload_leaks_no_handles_or_memory() {
         upload_per_frame: 32 << 10,
         resident: [
             400, 30_000, 2_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000,
+            1_000, 1_000,
         ],
     };
     let mut server = AssetServer::new(source.clone(), budgets);

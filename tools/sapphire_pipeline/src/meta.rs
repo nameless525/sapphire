@@ -63,6 +63,10 @@
 //! Fluent sources (`.ftl`, M3 V2) have `importer: Fluent((locale: "ja"))`, the locale they're part of,
 //! and locale documents (`ja.locale.ron`) `importer: Locale(())`.
 //!
+//! Fonts (`.ttf`, `.otf`, M3 U3) have `importer: Font((…))`, saying their license and the packs they
+//! go in, and a new font's sidecar has neither, so its cook asks ([`crate::font`]). Font chains
+//! documents (`ui.fontchains.ron`) have `importer: FontChains(())`.
+//!
 //! Material documents (`skin.material.ron`) have sidecars too, with `importer: Material(())`.
 //! VRM characters (`alicia.vrm`) have `importer: Vrm((mesh: (…), version: Some(V1)))`: the mesh
 //! settings above, and a note of the file's VRM version, read from the file when the sidecar is
@@ -138,6 +142,7 @@ use crate::bake::foliage::FoliageSettings;
 use crate::character_maps::{MapKind, MapSettings};
 use crate::clip::ClipSettings;
 use crate::colliders::{self, ColliderSettings};
+use crate::font::{self, FontChainsSettings, FontSettings};
 use crate::import::vrm::{self, VrmSettings};
 use crate::keypose::{self, KeyPoseSettings};
 use crate::loc::{self, FluentSettings, LocaleDocumentSettings};
@@ -216,6 +221,10 @@ pub enum ImportSettings {
     Sound(SoundSettings),
     /// A cue document (`.cue.ron`), naming sounds and how they play (M2 E1).
     Cue(CueSettings),
+    /// A font file (`.ttf`, `.otf`), cut down for each pack that shows it (M3 U3).
+    Font(FontSettings),
+    /// A font chains document (`.fontchains.ron`): which fonts answer for each use and script (M3 U3).
+    FontChains(FontChainsSettings),
     /// A move set document (`.moves.ron`): frame data and tables the simulation reads (M2 G2).
     MoveSet(MoveSetSettings),
     /// An animation graph document (`.animgraph.ron`): how a character's clips play (M2 N3).
@@ -269,6 +278,9 @@ impl ImportSettings {
         if audio::is_cue_source(source) {
             return Some(Self::Cue(CueSettings::default()));
         }
+        if font::is_chains_source(source) {
+            return Some(Self::FontChains(FontChainsSettings::default()));
+        }
         if moves::is_source(source) {
             return Some(Self::MoveSet(MoveSetSettings::default()));
         }
@@ -287,6 +299,7 @@ impl ImportSettings {
             "fbx" => Some(Self::Fbx(MeshSettings::default())),
             "vrm" => Some(Self::Vrm(VrmSettings::default())),
             "ogg" => Some(Self::Sound(SoundSettings::default())),
+            "ttf" | "otf" => Some(Self::Font(FontSettings::default())),
             "vrma" => Some(Self::Vrma(ClipSettings::default())),
             // Integer images are colors until their sidecar says otherwise; float images are HDR.
             "png" | "tga" => Some(Self::Texture(TextureSettings::default())),
@@ -321,6 +334,8 @@ impl ImportSettings {
             | Self::Colliders(_)
             | Self::Sound(_)
             | Self::Cue(_)
+            | Self::Font(_)
+            | Self::FontChains(_)
             | Self::MoveSet(_)
             | Self::AnimGraph(_)
             | Self::Fluent(_)
@@ -345,6 +360,8 @@ impl ImportSettings {
             | Self::Colliders(_)
             | Self::Sound(_)
             | Self::Cue(_)
+            | Self::Font(_)
+            | Self::FontChains(_)
             | Self::MoveSet(_)
             | Self::AnimGraph(_)
             | Self::Fluent(_)

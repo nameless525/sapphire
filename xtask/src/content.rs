@@ -2,9 +2,9 @@
 //! with the pipeline binary (spec §5.27, §7.4).
 //!
 //! Each cook writes loose cooked files to `target/content/loose/<cook>/` and packs them into
-//! `target/content/<cook>/`, which then holds packs only (`shared.spack`, a `zone_<stem>.spack` per
-//! zone, and `audio.spack`, which only apps that play sound mount): what apps ship and desktop runs
-//! read (M1 A4).
+//! `target/content/<cook>/`, which then holds packs (`shared.spack`, a `zone_<stem>.spack` per zone, and
+//! `audio.spack` and `fonts.spack`, which only apps that play sound or show text mount) and `NOTICES.txt`,
+//! the fonts' licenses: what apps ship and desktop runs read (M1 A4, M3 U3).
 //!
 //! Every run runs the pipeline, whose content cache (`target/content/cache/`, shared by both
 //! cooks) makes it incremental: an asset is cooked only when an input its cache key covers

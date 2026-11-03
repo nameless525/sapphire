@@ -7,7 +7,7 @@ use std::hash::{Hash, Hasher};
 use std::ops::Range;
 use std::sync::Arc;
 
-use parley::fontique::{Blob, Collection, CollectionOptions, FallbackKey, FamilyId, Script, SourceCache};
+use parley::fontique::{Blob, Collection, CollectionOptions, FamilyId, SourceCache};
 use parley::style::{FontFamily, FontWeight, LineHeight, StyleProperty};
 use parley::{
     Alignment, AlignmentOptions, FontContext, FontData, Layout, LayoutContext, PositionedLayoutItem,
@@ -34,9 +34,12 @@ pub struct FaceOptions {
 
 /// How a string looks.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct TextStyle {
-    /// A CSS font family list, in order: `"Oxanium, 'M PLUS 1'"`.
-    pub families: &'static str,
+pub struct TextStyle<'a> {
+    /// A CSS font family list, in order: `"Oxanium, 'M PLUS 1'"`, which [`family_list`] makes. This is
+    /// how a script gets its fallbacks: the shaper's own table has no entry for hiragana or katakana
+    /// with a locale, and a list answers for any script. Past its end a character draws as the first
+    /// font's missing glyph, and nothing comes from the OS.
+    pub families: &'a str,
     /// In UI points, from [`TYPE_SCALE`]. Times the scale, it rounds to a whole number of pixels.
     pub size: f32,
     /// 100 to 900, along a variable font's `wght` axis.
@@ -44,10 +47,10 @@ pub struct TextStyle {
     /// A multiple of the font's own line height.
     pub line_height: f32,
     /// A BCP 47 tag, which picks Han forms and fallbacks. It says what language the text is in.
-    pub locale: Option<&'static str>,
+    pub locale: Option<&'a str>,
 }
 
-impl TextStyle {
+impl TextStyle<'_> {
     fn hash_into(&self, state: &mut impl Hasher) {
         self.families.hash(state);
         self.size.to_bits().hash(state);
@@ -55,6 +58,13 @@ impl TextStyle {
         self.line_height.to_bits().hash(state);
         self.locale.hash(state);
     }
+}
+
+/// Family names, in the order they answer, as [`TextStyle::families`] takes them. A font chain's
+/// fonts say their families, and this is what a style is made from.
+pub fn family_list<'a>(families: impl IntoIterator<Item = &'a str>) -> String {
+    let quoted: Vec<String> = families.into_iter().map(|family| format!("'{family}'")).collect();
+    quoted.join(", ")
 }
 
 /// A run of glyphs from one font at one size. Nothing in it needs `parley` to read.
@@ -102,7 +112,11 @@ pub struct ShapeStats {
 
 struct CachedLayout {
     text: Box<str>,
-    style: TextStyle,
+    families: Box<str>,
+    size: f32,
+    weight: f32,
+    line_height: f32,
+    locale: Option<Box<str>>,
     scale: f32,
     max_width: Option<f32>,
     last_used: u64,
@@ -170,16 +184,6 @@ impl TextSystem {
         self.fonts.collection.family_names().map(str::to_owned).collect()
     }
 
-    /// Which families cover `script` when a style's own list runs out. Whether `fontique` tracks
-    /// fallbacks for that script and locale at all: where it doesn't, the style's list must name them.
-    pub fn set_fallbacks(&mut self, script: Script, locale: Option<&str>, families: &[FamilyId]) -> bool {
-        let key = match locale.and_then(|tag| parley::style::Language::parse(tag).ok()) {
-            Some(language) => FallbackKey::new(script, Some(&language)),
-            None => FallbackKey::new(script, None),
-        };
-        self.fonts.collection.set_fallbacks(key, families.iter().copied())
-    }
-
     /// Moves to the next frame, dropping old layouts if the cache is full.
     pub fn begin_frame(&mut self) {
         self.frame += 1;
@@ -194,7 +198,7 @@ impl TextSystem {
     pub fn shape(
         &mut self,
         text: &str,
-        style: &TextStyle,
+        style: &TextStyle<'_>,
         scale: f32,
         max_width: Option<f32>,
     ) -> &ShapedText {
@@ -206,7 +210,11 @@ impl TextSystem {
         let key = hasher.finish();
         let matches = |layout: &CachedLayout| {
             *layout.text == *text
-                && layout.style == *style
+                && *layout.families == *style.families
+                && layout.size == style.size
+                && layout.weight == style.weight
+                && layout.line_height == style.line_height
+                && layout.locale.as_deref() == style.locale
                 && layout.scale == scale
                 && layout.max_width == max_width
         };
@@ -218,7 +226,11 @@ impl TextSystem {
             let shaped = self.layout(text, style, scale, max_width);
             let layout = CachedLayout {
                 text: text.into(),
-                style: *style,
+                families: style.families.into(),
+                size: style.size,
+                weight: style.weight,
+                line_height: style.line_height,
+                locale: style.locale.map(Into::into),
                 scale,
                 max_width,
                 last_used: self.frame,
@@ -243,7 +255,13 @@ impl TextSystem {
         self.cache.clear();
     }
 
-    fn layout(&mut self, text: &str, style: &TextStyle, scale: f32, max_width: Option<f32>) -> ShapedText {
+    fn layout(
+        &mut self,
+        text: &str,
+        style: &TextStyle<'_>,
+        scale: f32,
+        max_width: Option<f32>,
+    ) -> ShapedText {
         // Laid out in pixels, at a whole pixel size, so every scale gets glyphs made for it.
         let mut builder = self.layouts.ranged_builder(&mut self.fonts, text, 1.0, true);
         builder.push_default(StyleProperty::FontFamily(FontFamily::Source(style.families.into())));

@@ -2,11 +2,12 @@
 //! files content ships in. The format, its writer and reader are `sapphire_assets::pack`'s.
 //!
 //! [`pack_cooked`] takes a [`CookReport`], which gives every asset's ID, cooked file and cache
-//! key, and writes one pack per group into a directory of its own, holding nothing but packs:
-//! what `cargo xtask` bundles into apps and points desktop runs at. Each asset goes in exactly as
-//! the cook wrote it, with its kind (from the cooked format's extension) and the assets it
-//! references, read from its bytes by the runtime's own check ([`AssetKind::references`]), as
-//! dependencies. Packs are deterministic: the same cooked assets make the same bytes.
+//! key, and writes one pack per group into a directory of its own, holding nothing but packs and
+//! their [notices](#notices): what `cargo xtask` bundles into apps and points desktop runs at. Each
+//! asset goes in exactly as the cook wrote it, with its kind (from the cooked format's extension) and
+//! the assets it references, read from its bytes by the runtime's own check
+//! ([`AssetKind::references`]), as dependencies. Packs are deterministic: the same cooked assets make
+//! the same bytes.
 //!
 //! # Groups
 //!
@@ -36,6 +37,18 @@
 //! them, and every locale's table is wanted whichever zones a game holds. A table reaches nothing and no
 //! zone reaches a table, so zones never draw one into their packs.
 //!
+//! Font chains go in [`FONTS`], and each font in the pack its sidecar names, which it carries in its
+//! cooked file (M3 U3, [`crate::font`]). That can be a zone's own pack, but never [`SHARED`], [`AUDIO`]
+//! or [`LOC`], whose bytes a font's change must not move. No zone reaches a font or a chain, so what
+//! zones reach never moves one.
+//!
+//! # Notices
+//!
+//! A font's license can require every build that ships it to ship the license too: the OFL's second
+//! condition does. So a cook that packs fonts writes [`NOTICES`] beside the packs, each family with its
+//! license as its authors wrote it, and since every bundler copies this directory whole, a build meets
+//! it at `content/NOTICES.txt`. It's written only when it changes, and goes with the last font.
+//!
 //! # Codecs
 //!
 //! Blocks are compressed by kind ([`codec`]): **zstd** at level [`ZSTD_LEVEL`] for textures and
@@ -44,7 +57,8 @@
 //! or ASTC textures at 0.66–0.69, against lz4's 0.63 and 0.86–0.88); **lz4** for materials, small
 //! and decoded mid-play when live link or hot reload swaps one, for rigs, skeletons and clips,
 //! animation's data, loaded with a character swapping in: zstd's 4–5× slower decoding buys little
-//! there, and for cues; **none** for sounds, whose Vorbis doesn't compress further. A block that
+//! there, and for cues and font chains; **none** for sounds, whose Vorbis doesn't compress further.
+//! Fonts take zstd, as they load once, with the app, and outlines compress well. A block that
 //! doesn't shrink by 1/64 is stored raw either way.
 //!
 //! # Caching
@@ -69,7 +83,7 @@
 //! worker count. Results and errors are consumed in asset-ID order. The worker limit bounds
 //! zstd's compression contexts and source buffers while leaving the host usable during a cook.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -77,6 +91,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use sapphire_assets::clip::CLIP_EXTENSION;
 use sapphire_assets::cue::CUE_EXTENSION;
+use sapphire_assets::font::{FONT_CHAINS_EXTENSION, FONT_EXTENSION, FONTS_PACK, Font};
 use sapphire_assets::graph::GRAPH_EXTENSION;
 use sapphire_assets::material::MATERIAL_EXTENSION;
 use sapphire_assets::mesh::MESH_EXTENSION;
@@ -120,12 +135,20 @@ pub const AUDIO: &str = sapphire_assets::sound::AUDIO_PACK;
 /// The pack string tables go in (see the [module docs](self)).
 pub const LOC: &str = "loc";
 
-/// The pack an asset of `kind` goes in (see the [module docs](self)). A file of no kind goes where
-/// the packer reports it.
+/// The pack font chains go in (see the [module docs](self)).
+pub const FONTS: &str = FONTS_PACK;
+
+/// What the licenses of the fonts in a directory of packs are written to, beside the packs (see the
+/// [module docs](self)).
+pub const NOTICES: &str = "NOTICES.txt";
+
+/// The pack an asset of `kind` goes in (see the [module docs](self)), but for a font, which says. A
+/// file of no kind goes where the packer reports it.
 pub fn group(kind: Option<AssetKind>) -> &'static str {
     match kind {
         Some(AssetKind::Sound | AssetKind::Cue) => AUDIO,
         Some(AssetKind::Strings) => LOC,
+        Some(AssetKind::Font | AssetKind::FontChains) => FONTS,
         _ => SHARED,
     }
 }
@@ -133,7 +156,7 @@ pub fn group(kind: Option<AssetKind>) -> &'static str {
 /// The codec a kind's blocks are compressed with (see the [module docs](self)).
 pub fn codec(kind: AssetKind) -> Codec {
     match kind {
-        AssetKind::Mesh | AssetKind::Texture | AssetKind::ProbeGrid => Codec::Zstd,
+        AssetKind::Mesh | AssetKind::Texture | AssetKind::ProbeGrid | AssetKind::Font => Codec::Zstd,
         AssetKind::Material
         | AssetKind::Rig
         | AssetKind::Skeleton
@@ -143,7 +166,8 @@ pub fn codec(kind: AssetKind) -> Codec {
         | AssetKind::MoveSet
         | AssetKind::AnimGraph
         | AssetKind::Zone
-        | AssetKind::Strings => Codec::Lz4,
+        | AssetKind::Strings
+        | AssetKind::FontChains => Codec::Lz4,
         AssetKind::Sound => Codec::None,
     }
 }
@@ -165,6 +189,8 @@ pub fn kind(output: &Path) -> Option<AssetKind> {
         GRAPH_EXTENSION => Some(AssetKind::AnimGraph),
         ZONE_EXTENSION => Some(AssetKind::Zone),
         STRINGS_EXTENSION => Some(AssetKind::Strings),
+        FONT_EXTENSION => Some(AssetKind::Font),
+        FONT_CHAINS_EXTENSION => Some(AssetKind::FontChains),
         _ => None,
     }
 }
@@ -238,6 +264,8 @@ pub struct PackReport {
     pub packs: Vec<PackedPack>,
     /// Files removed from the pack directory.
     pub removed: Vec<PathBuf>,
+    /// The licenses of the fonts in these packs, if there are any.
+    pub notices: Option<PathBuf>,
 }
 
 /// Packs every asset of `report` into `out` (see the [module docs](self)), caching encodings in
@@ -249,7 +277,8 @@ pub fn pack_cooked(report: &CookReport, out: &Path, cache: Option<&Path>) -> Res
     }
     let cache = cache.map(Cache::new);
     let ids: HashSet<AssetId> = report.assets.iter().map(|asset| asset.id).collect();
-    let groups = groups(report, cache.as_ref())?;
+    let (font_packs, licenses) = fonts(report)?;
+    let groups = groups(report, &font_packs, cache.as_ref())?;
     let mut packs = Vec::with_capacity(groups.len());
     let workers = std::thread::available_parallelism().map_or(1, usize::from).min(4);
     for (name, assets) in groups {
@@ -258,22 +287,83 @@ pub fn pack_cooked(report: &CookReport, out: &Path, cache: Option<&Path>) -> Res
     let paths: HashSet<&Path> = packs.iter().map(|pack| pack.path.as_path()).collect();
     let mut extensions = vec![PACK_EXTENSION];
     extensions.extend_from_slice(cook::COOKED_EXTENSIONS);
-    let removed = cook::prune(out, &|path| paths.contains(path), &extensions)?;
-    Ok(PackReport { packs, removed })
+    let mut removed = cook::prune(out, &|path| paths.contains(path), &extensions)?;
+    let notices = write_notices(out, &licenses, &mut removed)?;
+    Ok(PackReport { packs, removed, notices })
 }
 
-/// Which pack each asset of `report` goes in (see the [module docs](self)). A tree without zones reads
-/// no asset for this.
+/// Brings the notices beside the packs up to date: a family's license, for each of `licenses`.
+fn write_notices(
+    out: &Path,
+    licenses: &BTreeSet<(String, String)>,
+    removed: &mut Vec<PathBuf>,
+) -> Result<Option<PathBuf>, PackError> {
+    let path = out.join(NOTICES);
+    let read_error = |source| PackError::Read { path: path.clone(), source };
+    if licenses.is_empty() {
+        return match fs::remove_file(&path) {
+            Ok(()) => {
+                removed.push(path);
+                Ok(None)
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(read_error(error)),
+        };
+    }
+    let mut text = String::from("The fonts in this build and the licenses they ship under.\n");
+    for (family, license) in licenses {
+        text.push_str(&format!("\n{family}\n{}\n\n{}\n", "=".repeat(family.len()), license.trim_end()));
+    }
+    let current = match fs::read(&path) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(read_error(error)),
+    };
+    if current.as_deref() != Some(text.as_bytes()) {
+        cook::write_atomically(&path, text.as_bytes())?;
+    }
+    Ok(Some(path))
+}
+
+/// The pack each font says it goes in.
+type FontPacks = HashMap<AssetId, String>;
+
+/// A family and its license.
+type License = (String, String);
+
+/// The pack each font of `report` says it goes in, and every family with its license.
+fn fonts(report: &CookReport) -> Result<(FontPacks, BTreeSet<License>), PackError> {
+    let mut packs = HashMap::new();
+    let mut licenses = BTreeSet::new();
+    for asset in &report.assets {
+        if kind(&asset.output) == Some(AssetKind::Font) {
+            let bytes = read_cooked(asset)?;
+            let font = Font::read(&bytes)
+                .map_err(|source| PackError::Invalid { path: asset.output.clone(), source: source.into() })?;
+            licenses.insert((font.family.to_string(), font.license.to_string()));
+            packs.insert(asset.id, font.pack.to_string());
+        }
+    }
+    Ok((packs, licenses))
+}
+
+/// Which pack each asset of `report` goes in (see the [module docs](self)), given the fonts' from
+/// [`fonts`]. A tree without zones reads no further asset for this.
 fn groups<'a>(
     report: &'a CookReport,
+    font_packs: &FontPacks,
     cache: Option<&Cache>,
 ) -> Result<BTreeMap<String, Vec<&'a CookedAsset>>, PackError> {
+    // Where an asset goes if no one zone holds it.
+    let home = |asset: &CookedAsset| {
+        font_packs.get(&asset.id).cloned().unwrap_or_else(|| group(kind(&asset.output)).to_owned())
+    };
     let is_zone = |asset: &&CookedAsset| kind(&asset.output) == Some(AssetKind::Zone);
     let zones: Vec<&CookedAsset> = report.assets.iter().filter(is_zone).collect();
     let mut groups: BTreeMap<String, Vec<&CookedAsset>> = BTreeMap::new();
     if zones.is_empty() {
         for asset in &report.assets {
-            groups.entry(group(kind(&asset.output)).to_owned()).or_default().push(asset);
+            groups.entry(home(asset)).or_default().push(asset);
         }
         return Ok(groups);
     }
@@ -332,7 +422,7 @@ fn groups<'a>(
     for asset in &report.assets {
         let name = match owner.get(&asset.id).copied().flatten() {
             Some(zone) if !shared.contains(&asset.id) => packs[&zone].clone(),
-            _ => group(kind(&asset.output)).to_owned(),
+            _ => home(asset),
         };
         groups.entry(name).or_default().push(asset);
     }
@@ -574,8 +664,8 @@ fn check_unchanged(packing: &[Packing<'_>], workers: usize) -> Result<(), PackEr
     failures.into_iter().min_by_key(|(id, _)| *id).map_or(Ok(()), |(_, error)| Err(error))
 }
 
-/// Reads a cooked asset, checks it as the runtime will, and encodes it.
-fn encode(asset: &CookedAsset, kind: AssetKind, codec: Codec) -> Result<PackAsset, PackError> {
+/// The bytes of a cooked asset, as its cook wrote them.
+fn read_cooked(asset: &CookedAsset) -> Result<AlignedVec<16>, PackError> {
     let path = &asset.output;
     let read_error = |source| PackError::Read { path: path.clone(), source };
     let mut file = fs::File::open(path).map_err(read_error)?;
@@ -584,6 +674,13 @@ fn encode(asset: &CookedAsset, kind: AssetKind, codec: Codec) -> Result<PackAsse
     if blake3::hash(&bytes) != asset.output_hash {
         return Err(PackError::Changed { path: path.clone() });
     }
+    Ok(bytes)
+}
+
+/// Reads a cooked asset, checks it as the runtime will, and encodes it.
+fn encode(asset: &CookedAsset, kind: AssetKind, codec: Codec) -> Result<PackAsset, PackError> {
+    let path = &asset.output;
+    let bytes = read_cooked(asset)?;
     let dependencies =
         kind.references(&bytes).map_err(|source| PackError::Invalid { path: path.clone(), source })?;
     PackAsset::encode(asset.id, kind, codec, &bytes, dependencies, ZSTD_LEVEL)

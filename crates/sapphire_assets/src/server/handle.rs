@@ -12,6 +12,7 @@ use sapphire_zone::{ArchivedZone, Zone};
 
 use crate::clip::{ArchivedClip, Clip};
 use crate::cue::{ArchivedCue, Cue};
+use crate::font::{ArchivedFont, ArchivedFontChains, Font, FontChains};
 use crate::graph::{AnimGraph, ArchivedAnimGraph};
 use crate::material::{ArchivedMaterial, Material};
 use crate::mesh::{ArchivedMesh, Mesh};
@@ -30,7 +31,7 @@ slotmap::new_key_type! {
 
 /// A kind of asset handles can be typed with: [`Mesh`], [`TextureAsset`], [`Material`],
 /// [`CharacterRig`], [`ProbeGrid`], [`Skeleton`], [`Clip`], [`ColliderSet`], [`Zone`], [`Sound`], [`Cue`],
-/// [`MoveSet`].
+/// [`MoveSet`], [`Font`], [`FontChains`].
 pub trait Asset: sealed::Sealed + 'static {
     const KIND: AssetKind;
     /// How a loaded asset of this kind is read: in place, borrowing its bytes.
@@ -62,6 +63,8 @@ mod sealed {
     impl Sealed for sapphire_moves::MoveSet {}
     impl Sealed for crate::graph::AnimGraph {}
     impl Sealed for sapphire_strings::StringTable {}
+    impl Sealed for crate::font::Font {}
+    impl Sealed for crate::font::FontChains {}
     impl Sealed for super::TextureAsset {}
 }
 
@@ -149,6 +152,28 @@ impl Asset for Cue {
     unsafe fn view(bytes: &[u8]) -> &ArchivedCue {
         // SAFETY: as for meshes: `Cue::read` accepted these bytes, unchanged since.
         unsafe { access_unchecked::<Cue>(bytes) }.expect("the envelope was checked when the cue was decoded")
+    }
+}
+
+impl Asset for Font {
+    const KIND: AssetKind = AssetKind::Font;
+    type View<'a> = &'a ArchivedFont;
+
+    unsafe fn view(bytes: &[u8]) -> &ArchivedFont {
+        // SAFETY: as for meshes: `Font::read` accepted these bytes, unchanged since.
+        unsafe { access_unchecked::<Font>(bytes) }
+            .expect("the envelope was checked when the font was decoded")
+    }
+}
+
+impl Asset for FontChains {
+    const KIND: AssetKind = AssetKind::FontChains;
+    type View<'a> = &'a ArchivedFontChains;
+
+    unsafe fn view(bytes: &[u8]) -> &ArchivedFontChains {
+        // SAFETY: as for meshes: `FontChains::read` accepted these bytes, unchanged since.
+        unsafe { access_unchecked::<FontChains>(bytes) }
+            .expect("the envelope was checked when the font chains were decoded")
     }
 }
 

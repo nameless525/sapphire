@@ -1,13 +1,12 @@
-//! What the text tests share: the fonts, which aren't committed yet, and a menu's worth of strings.
+//! What the text tests share: the fonts in `content/third_party/`, and a menu's worth of strings.
 //!
-//! Set `SAPPHIRE_TEST_FONTS` to a folder with `mplus1/MPLUS1[wght].ttf`,
-//! `oxanium/Oxanium[wght].ttf` and `dela_gothic_one/DelaGothicOne-Regular.ttf`. Without it, a test
-//! that needs them says so loudly and passes.
+//! On a device, where the checkout isn't, set `SAPPHIRE_TEST_FONTS` to a folder with
+//! `mplus1/MPLUS1[wght].ttf`, `oxanium/Oxanium[wght].ttf` and
+//! `dela_gothic_one/DelaGothicOne-Regular.ttf`.
 
 #![allow(dead_code, reason = "each test binary uses its own share of this")]
 
-use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use sapphire_text::{TextStyle, TextSystem};
@@ -16,21 +15,18 @@ pub const FAMILY_BODY: &str = "'M PLUS 1'";
 pub const FAMILY_DISPLAY_LATIN: &str = "Oxanium, 'M PLUS 1'";
 pub const FAMILY_DISPLAY_JA: &str = "'Dela Gothic One', 'M PLUS 1'";
 
-/// The fonts' folder, or `None` after saying why this test isn't really running.
-pub fn fonts_dir(test: &str) -> Option<PathBuf> {
-    match std::env::var_os("SAPPHIRE_TEST_FONTS") {
-        Some(dir) => Some(PathBuf::from(dir)),
-        None => {
-            // Past the test harness's capture, which hides what a passing test prints.
-            let line =
-                format!("*** {test} SKIPPED: SAPPHIRE_TEST_FONTS isn't set, so nothing was checked ***\n");
-            std::io::stderr().write_all(line.as_bytes()).expect("stderr");
-            None
-        }
-    }
+/// The fonts' folder.
+pub fn fonts_dir() -> PathBuf {
+    let dir = std::env::var_os("SAPPHIRE_TEST_FONTS").map_or_else(
+        // Every crate these tests build in is two folders down.
+        || Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/third_party"),
+        PathBuf::from,
+    );
+    assert!(dir.is_dir(), "{} doesn't hold the fonts: set SAPPHIRE_TEST_FONTS", dir.display());
+    dir
 }
 
-pub fn read_font(dir: &std::path::Path, relative: &str) -> Arc<Vec<u8>> {
+pub fn read_font(dir: &Path, relative: &str) -> Arc<Vec<u8>> {
     let path = dir.join(relative);
     Arc::new(std::fs::read(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display())))
 }
@@ -40,7 +36,7 @@ pub const OXANIUM: &str = "oxanium/Oxanium[wght].ttf";
 pub const DELA: &str = "dela_gothic_one/DelaGothicOne-Regular.ttf";
 
 /// A system with all three fonts.
-pub fn system(dir: &std::path::Path) -> TextSystem {
+pub fn system(dir: &Path) -> TextSystem {
     let mut text = TextSystem::new();
     for font in [MPLUS1, OXANIUM, DELA] {
         text.register_font(read_font(dir, font));
@@ -49,7 +45,12 @@ pub fn system(dir: &std::path::Path) -> TextSystem {
 }
 
 /// A style in the menu's type scale.
-pub const fn style(families: &'static str, size: f32, weight: f32, locale: &'static str) -> TextStyle {
+pub const fn style(
+    families: &'static str,
+    size: f32,
+    weight: f32,
+    locale: &'static str,
+) -> TextStyle<'static> {
     TextStyle { families, size, weight, line_height: 1.3, locale: Some(locale) }
 }
 
@@ -57,7 +58,7 @@ pub const fn style(families: &'static str, size: f32, weight: f32, locale: &'sta
 #[derive(Clone, Copy, Debug)]
 pub struct Item {
     pub text: &'static str,
-    pub style: TextStyle,
+    pub style: TextStyle<'static>,
     pub max_width: Option<f32>,
 }
 

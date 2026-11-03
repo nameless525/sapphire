@@ -108,6 +108,8 @@ impl TextureKind {
             | ImportSettings::Colliders(_)
             | ImportSettings::Sound(_)
             | ImportSettings::Cue(_)
+            | ImportSettings::Font(_)
+            | ImportSettings::FontChains(_)
             | ImportSettings::MoveSet(_)
             | ImportSettings::AnimGraph(_)
             | ImportSettings::Fluent(_)

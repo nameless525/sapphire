@@ -1,0 +1,25 @@
+// Which fonts answer for each use of type and script. A style's family list comes from these, by
+// the families the fonts say they're in: M PLUS 1 (d7dfcd98-5464-470a-98c6-2c02a69d9765), Oxanium
+// (ce9360bf-ac52-4ecc-9e73-75cd14b619d5) and Dela Gothic One (9aab79e6-9051-4121-9a50-e20ce97db8f8).
+(
+    type: "sapphire::assets::FontChains",
+    version: 1,
+    data: (
+        chains: [
+            (
+                name: "body",
+                scripts: [
+                    (script: "Latn", fonts: ["d7dfcd98-5464-470a-98c6-2c02a69d9765"]),
+                    (script: "Jpan", fonts: ["d7dfcd98-5464-470a-98c6-2c02a69d9765"]),
+                ],
+            ),
+            (
+                name: "display",
+                scripts: [
+                    (script: "Latn", fonts: ["ce9360bf-ac52-4ecc-9e73-75cd14b619d5", "d7dfcd98-5464-470a-98c6-2c02a69d9765"]),
+                    (script: "Jpan", fonts: ["9aab79e6-9051-4121-9a50-e20ce97db8f8", "d7dfcd98-5464-470a-98c6-2c02a69d9765"]),
+                ],
+            ),
+        ],
+    ),
+)

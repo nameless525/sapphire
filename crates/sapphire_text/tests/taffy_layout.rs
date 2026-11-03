@@ -1,10 +1,7 @@
 //! `taffy` sizes a box from shaped text: a Japanese paragraph wraps to the width its column gives it,
-//! and its height comes back to push the next box down. The font is one every checkout has unless
-//! `SAPPHIRE_TEST_FONTS` names the real ones.
+//! and its height comes back to push the next box down.
 
 mod common;
-
-use std::sync::Arc;
 
 use sapphire_text::{TextStyle, TextSystem};
 use taffy::prelude::*;
@@ -14,7 +11,7 @@ use taffy::{LayoutInput, LayoutOutput};
 #[derive(Clone, Copy)]
 struct Label {
     text: &'static str,
-    style: TextStyle,
+    style: TextStyle<'static>,
 }
 
 const SCALE: f32 = 1.5;
@@ -58,26 +55,11 @@ fn lay_out(text: &mut TextSystem, labels: [Label; 2], column: f32) -> (Layout, L
 #[test]
 fn a_column_wraps_text_and_stacks_what_follows() {
     let mut text = TextSystem::new();
-    let (families, string, next): (&'static str, &'static str, &'static str) = match common::fonts_dir(
-        "the Japanese half of a_column_wraps_text_and_stacks_what_follows",
-    ) {
-        Some(dir) => {
-            text.register_font(common::read_font(&dir, common::MPLUS1));
-            (
-                common::FAMILY_BODY,
-                "嵐が過ぎた朝、港の鐘がふたつ鳴った。「まだ船は戻らないのか」と老人は海を見つめたまま尋ねた。",
-                "攻撃力",
-            )
-        }
-        None => {
-            text.register_font(Arc::new(epaint_default_fonts::UBUNTU_LIGHT.to_vec()));
-            (
-                "Ubuntu",
-                "On the morning after the storm, the harbor bell rang twice, and nobody came.",
-                "Attack",
-            )
-        }
-    };
+    text.register_font(common::read_font(&common::fonts_dir(), common::MPLUS1));
+    let string =
+        "嵐が過ぎた朝、港の鐘がふたつ鳴った。「まだ船は戻らないのか」と老人は海を見つめたまま尋ねた。";
+    let next = "攻撃力";
+    let families = common::FAMILY_BODY;
     let style = TextStyle { families, size: 14.0, weight: 400.0, line_height: 1.3, locale: Some("ja") };
     let labels = [Label { text: string, style }, Label { text: next, style }];
 

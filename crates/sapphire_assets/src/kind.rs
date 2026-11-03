@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::AssetId;
 use crate::clip::{Clip, ClipError};
 use crate::cue::{Cue, CueError};
+use crate::font::{Font, FontChains, FontError};
 use crate::graph::{AnimGraph, GraphError};
 use crate::material::{Material, MaterialError};
 use crate::mesh::{Mesh, MeshError};
@@ -59,11 +60,15 @@ pub enum AssetKind {
     /// One locale's strings (`.sloc`, M3 V2): [`StringTable`]. CPU data that `sapphire_loc` reads, never
     /// uploaded.
     Strings = 14,
+    /// A font cut down for a pack (`.sfont`, M3 U3): [`Font`]. The shaper's CPU data, never uploaded.
+    Font = 15,
+    /// Which fonts answer for each use and script (`.sfontc`, M3 U3): [`FontChains`], naming them.
+    FontChains = 16,
 }
 
 impl AssetKind {
     /// Every kind, in a stable order.
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 16] = [
         Self::Mesh,
         Self::Texture,
         Self::Material,
@@ -78,6 +83,8 @@ impl AssetKind {
         Self::AnimGraph,
         Self::Zone,
         Self::Strings,
+        Self::Font,
+        Self::FontChains,
     ];
 
     /// The kind's position in [`Self::ALL`].
@@ -102,12 +109,14 @@ impl AssetKind {
             Self::AnimGraph => "animation graph",
             Self::Zone => "zone",
             Self::Strings => "string table",
+            Self::Font => "font",
+            Self::FontChains => "font chains",
         }
     }
 
     /// Whether assets of this kind go to the GPU, through the asset server's upload queue. A rig,
-    /// a skeleton, a clip, a collider set, a sound, a cue, a move set, an animation graph, a zone or a
-    /// string table is ready once it and its dependencies are decoded.
+    /// a skeleton, a clip, a collider set, a sound, a cue, a move set, an animation graph, a zone, a
+    /// string table, a font or font chains is ready once it and its dependencies are decoded.
     pub const fn uploads(self) -> bool {
         !matches!(
             self,
@@ -121,14 +130,16 @@ impl AssetKind {
                 | Self::AnimGraph
                 | Self::Zone
                 | Self::Strings
+                | Self::Font
+                | Self::FontChains
         )
     }
 
     /// Whether the asset server keeps an asset's decoded bytes once it is ready. Meshes,
     /// textures and probe grids are GPU data, so their bytes go once uploaded (a new renderer
     /// has them read again). Materials are small and CPU code reads them (live link, the editor), and
-    /// rigs, skeletons, clips, collider sets, sounds, cues, move sets, animation graphs, zones and string
-    /// tables are read on the CPU only, so they stay.
+    /// rigs, skeletons, clips, collider sets, sounds, cues, move sets, animation graphs, zones, string
+    /// tables, fonts and font chains are read on the CPU only, so they stay.
     pub const fn keeps_bytes(self) -> bool {
         matches!(
             self,
@@ -143,6 +154,8 @@ impl AssetKind {
                 | Self::AnimGraph
                 | Self::Zone
                 | Self::Strings
+                | Self::Font
+                | Self::FontChains
         )
     }
 
@@ -156,10 +169,10 @@ impl AssetKind {
 
     /// Whether an asset of this kind may depend on one of `kind`: meshes on materials and
     /// skeletons, materials on textures, clips on skeletons, cues on sounds, animation graphs on
-    /// clips, zones on collider sets, and textures, rigs, probe grids, skeletons, collider sets, sounds,
-    /// move sets and string tables on nothing. A zone's meshes and probes aren't dependencies
-    /// ([`Self::reach`]). The allowed pairs form no loop, so chains are at most three long and cycles
-    /// can't exist, whatever a pack claims. A new kind takes its place in this order.
+    /// clips, zones on collider sets, font chains on fonts, and textures, rigs, probe grids, skeletons,
+    /// collider sets, sounds, move sets, string tables and fonts on nothing. A zone's meshes and probes
+    /// aren't dependencies ([`Self::reach`]). The allowed pairs form no loop, so chains are at most three
+    /// long and cycles can't exist, whatever a pack claims. A new kind takes its place in this order.
     pub const fn may_depend_on(self, kind: AssetKind) -> bool {
         matches!(
             (self, kind),
@@ -169,6 +182,7 @@ impl AssetKind {
                 | (Self::Cue, Self::Sound)
                 | (Self::AnimGraph, Self::Clip)
                 | (Self::Zone, Self::Colliders)
+                | (Self::FontChains, Self::Font)
         )
     }
 
@@ -189,6 +203,8 @@ impl AssetKind {
             12 => Some(Self::AnimGraph),
             13 => Some(Self::Zone),
             14 => Some(Self::Strings),
+            15 => Some(Self::Font),
+            16 => Some(Self::FontChains),
             _ => None,
         }
     }
@@ -196,11 +212,12 @@ impl AssetKind {
     /// Checks cooked bytes of this kind exactly as the runtime reads them (`Mesh::read`,
     /// `Texture::from_ktx2`, `Material::read`, `CharacterRig::read`, `ProbeGrid::read`,
     /// `Skeleton::read`, `Clip::read`, `ColliderSet::read`, `Sound::read`, `Cue::read`,
-    /// `MoveSet::from_cooked`, `AnimGraph::read`, `Zone::read`, `StringTable::read`), and returns the assets
-    /// they reference, sorted and without repeats: a mesh's material slots bound to material assets and
-    /// its skeleton, a material's textures, a clip's skeleton, a cue's sounds, a graph's clips, what the
-    /// simulation reads of a zone. The packer records these as the asset's dependencies, and decode jobs
-    /// check that a decoded asset references exactly what its pack says it does.
+    /// `MoveSet::from_cooked`, `AnimGraph::read`, `Zone::read`, `StringTable::read`, `Font::read`,
+    /// `FontChains::read`), and returns the assets they reference, sorted and without repeats: a mesh's
+    /// material slots bound to material assets and its skeleton, a material's textures, a clip's skeleton,
+    /// a cue's sounds, a graph's clips, what the simulation reads of a zone, font chains' fonts. The packer
+    /// records these as the asset's dependencies, and decode jobs check that a decoded asset references
+    /// exactly what its pack says it does.
     ///
     /// Everything but textures must start 16-byte aligned, as decoded assets do.
     pub fn references(self, bytes: &[u8]) -> Result<Vec<AssetId>, AssetError> {
@@ -258,6 +275,11 @@ impl AssetKind {
                 StringTable::read(bytes)?;
                 Vec::new()
             }
+            Self::Font => {
+                Font::read(bytes)?;
+                Vec::new()
+            }
+            Self::FontChains => FontChains::read(bytes)?.font_ids().collect(),
         };
         references.sort_unstable();
         references.dedup();
@@ -325,4 +347,6 @@ pub enum AssetError {
     Zone(#[from] ZoneError),
     #[error("invalid string table")]
     Strings(#[from] StringsError),
+    #[error("invalid font or font chains")]
+    Font(#[from] FontError),
 }

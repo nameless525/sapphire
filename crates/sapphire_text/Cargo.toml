@@ -14,8 +14,8 @@ sapphire_look.workspace = true
 swash.workspace = true
 
 [dev-dependencies]
-# A font every checkout has, for what must run on CI with none committed. It's in the tree already
-# (the debug overlay's), and a dev-dependency never reaches a shipped build.
+# Small fonts for what's about Latin text, or about the atlas whatever the font. It's in the tree
+# already (the debug overlay's), and a dev-dependency never reaches a shipped build.
 epaint_default_fonts.workspace = true
 # The counting allocator, for the allocation test and the costs.
 sapphire_core.workspace = true

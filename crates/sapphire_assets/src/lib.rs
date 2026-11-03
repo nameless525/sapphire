@@ -32,6 +32,9 @@
 //!   format and checks are `sapphire_colliders`', which has no reason to know about packs.
 //! - Where zones go (`.szone`, M3 W1): [`AssetKind::Zone`] packs and loads them and says what they
 //!   reach ([`AssetKind::reach`]). Their format and checks are `sapphire_zone`'s.
+//! - Fonts and font chains (M3 U3, spec §5.17): [`font`], fonts cut down for a pack with what their
+//!   cook read, and which fonts answer for each use of type and script. Plain data as well, so the
+//!   cooker writes them without linking a shaper (`sapphire_text`, which shapes with the bytes).
 //! - Sounds and cues (M2 E1, spec §5.15): [`sound`], `.ssound` Ogg Vorbis files with what their cook
 //!   learned, and the decoder cook and runtime share; [`cue`], the RON documents (cooked to `.scue`)
 //!   that say how sounds play. Both are plain data, so the cooker reads and writes them without
@@ -100,6 +103,7 @@
 pub mod character_maps;
 pub mod clip;
 pub mod cue;
+pub mod font;
 pub mod graph;
 mod kind;
 pub mod material;

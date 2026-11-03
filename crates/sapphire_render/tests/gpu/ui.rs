@@ -730,15 +730,7 @@ fn glyph_pages_fill_from_the_list_s_uploads_and_draw_in_order_with_the_atlas() {
 fn japanese_lands_pixel_for_pixel_at_every_scale() {
     use sapphire_text::{AtlasConfig, GlyphAtlas, TextStyle, TextSystem};
 
-    let Some(dir) = std::env::var_os("SAPPHIRE_TEST_FONTS").map(std::path::PathBuf::from) else {
-        std::io::Write::write_all(
-            &mut std::io::stderr(),
-            "*** japanese_lands_pixel_for_pixel_at_every_scale SKIPPED: SAPPHIRE_TEST_FONTS isn't set ***\n"
-                .as_bytes(),
-        )
-        .expect("stderr");
-        return;
-    };
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/third_party");
     let font = |name: &str| Arc::new(std::fs::read(dir.join(name)).expect("the font"));
     let mut text = TextSystem::new();
     text.register_font(font("mplus1/MPLUS1[wght].ttf"));

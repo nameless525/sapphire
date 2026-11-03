@@ -1,0 +1,11 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "9aab79e6-9051-4121-9a50-e20ce97db8f8",
+        importer: Font((
+            license: "OFL.txt",
+            subsets: [(pack: "fonts", characters: "../../fonts/ui.charset.ron")],
+        )),
+    ),
+)

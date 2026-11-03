@@ -1,14 +1,14 @@
 //! What shaping has to do for Japanese and for the three fonts, with the real fonts: no system fonts,
 //! kinsoku, mixed lines, one baseline, and weight along the variable axis.
 //!
-//! `cargo test -p sapphire_text --test shaping` with `SAPPHIRE_TEST_FONTS` set (`tests/common`).
+//! `cargo test -p sapphire_text --test shaping`.
 
 mod common;
 
 use common::{
     FAMILY_BODY, FAMILY_DISPLAY_JA, FAMILY_DISPLAY_LATIN, MPLUS1, OXANIUM, read_font, style, system,
 };
-use sapphire_text::{Script, TextSystem};
+use sapphire_text::{TextSystem, family_list};
 
 /// Characters a line must not start with (JIS X 4051's line-start prohibitions, the common ones).
 const NO_LINE_START: &str = "。、．，）」』】〉》！？：；・ーぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮ々ゝゞ";
@@ -22,7 +22,7 @@ const PARAGRAPH: &str = "嵐が過ぎた朝、港の鐘がふたつ鳴った。�
 
 #[test]
 fn kinsoku_holds_at_every_width() {
-    let Some(dir) = common::fonts_dir("kinsoku_holds_at_every_width") else { return };
+    let dir = common::fonts_dir();
     let mut text = system(&dir);
     let body = style(FAMILY_BODY, 14.0, 400.0, "ja");
     let mut breaks = 0;
@@ -50,9 +50,7 @@ fn kinsoku_holds_at_every_width() {
 
 #[test]
 fn a_line_breaks_between_han_and_kana_and_not_inside_latin_words() {
-    let Some(dir) = common::fonts_dir("a_line_breaks_between_han_and_kana_and_not_inside_latin_words") else {
-        return;
-    };
+    let dir = common::fonts_dir();
     let mut text = system(&dir);
     let body = style(FAMILY_BODY, 14.0, 400.0, "ja");
     let mixed = "Sapphire Engine で作ったゲームの設定画面を Wuthering Waves のように表示します。Level 90 の Boss を倒そう";
@@ -81,7 +79,7 @@ fn a_line_breaks_between_han_and_kana_and_not_inside_latin_words() {
 /// wherever a run comes from.
 #[test]
 fn three_faces_sit_on_one_baseline() {
-    let Some(dir) = common::fonts_dir("three_faces_sit_on_one_baseline") else { return };
+    let dir = common::fonts_dir();
     let mut text = system(&dir);
     for (family, name) in [
         (FAMILY_BODY, "M PLUS 1"),
@@ -122,7 +120,7 @@ fn three_faces_sit_on_one_baseline() {
 
 #[test]
 fn weight_moves_the_variable_axis() {
-    let Some(dir) = common::fonts_dir("weight_moves_the_variable_axis") else { return };
+    let dir = common::fonts_dir();
     let mut text = TextSystem::new();
     text.register_font(read_font(&dir, MPLUS1));
     text.register_font(read_font(&dir, OXANIUM));
@@ -150,7 +148,7 @@ fn nothing_comes_from_the_system() {
     let shaped = empty.shape("Hello 日本語", &style("sans-serif", 14.0, 400.0, "ja"), 1.0, None);
     assert!(shaped.glyphs.is_empty(), "no font, no glyphs: {:?}", shaped.glyphs);
 
-    let Some(dir) = common::fonts_dir("nothing_comes_from_the_system") else { return };
+    let dir = common::fonts_dir();
     let mut text = system(&dir);
     let mut names = text.family_names();
     names.sort();
@@ -170,37 +168,32 @@ fn nothing_comes_from_the_system() {
     }
 }
 
+/// A script's fallbacks are the style's own list: nothing past it answers, and the list answers for
+/// every script, including those `fontique`'s fallback table doesn't track (hiragana and katakana
+/// with a locale, where setting a family reports false).
 #[test]
-fn fallbacks_are_what_the_game_set() {
-    let Some(dir) = common::fonts_dir("fallbacks_are_what_the_game_set") else { return };
+fn a_chain_is_a_list_of_families() {
+    let dir = common::fonts_dir();
     let mut text = TextSystem::new();
-    let oxanium = text.register_font(read_font(&dir, OXANIUM));
-    let mplus = text.register_font(read_font(&dir, MPLUS1));
-    assert_eq!((oxanium.len(), mplus.len()), (1, 1));
-    // Oxanium alone has no Japanese, so with no fallback set it's the missing glyph.
-    let display = style("Oxanium", 20.0, 400.0, "ja");
-    let shaped = text.shape("設定", &display, 1.0, None);
-    assert!(shaped.glyphs.iter().all(|glyph| glyph.id == 0), "no fallback yet");
-    // `Script` by its ISO 15924 tag. What `fontique` tracks is its own table, so ask.
-    for (script, locale) in [
-        (*b"Hani", Some("ja")),
-        (*b"Hani", None),
-        (*b"Hira", None),
-        (*b"Hira", Some("ja")),
-        (*b"Kana", None),
-        (*b"Kana", Some("ja")),
-    ] {
-        let tracked = text.set_fallbacks(Script::from_bytes(script), locale, &mplus);
-        eprintln!("fallback {} {locale:?}: tracked {tracked}", String::from_utf8_lossy(&script));
+    text.register_font(read_font(&dir, OXANIUM));
+    text.register_font(read_font(&dir, MPLUS1));
+    let samples = ["設定", "かな", "カナ", "設定かなカナ", "Level 90 必殺技"];
+    let alone = style("Oxanium", 20.0, 400.0, "ja");
+    for sample in &samples[..4] {
+        let shaped = text.shape(sample, &alone, 1.0, None);
+        assert!(shaped.glyphs.iter().all(|glyph| glyph.id == 0), "{sample}: no list, no glyphs");
     }
-    text.clear_cache();
-    for sample in ["設定", "かな", "カナ", "設定かなカナ"] {
-        let shaped = text.shape(sample, &display, 1.0, None);
-        let missing = shaped.glyphs.iter().filter(|glyph| glyph.id == 0).count();
-        eprintln!("through fallbacks, {sample}: {missing} of {} missing", shaped.glyphs.len());
+    let families = family_list(["Oxanium", "M PLUS 1"]);
+    assert_eq!(families, "'Oxanium', 'M PLUS 1'");
+    let listed = sapphire_text::TextStyle { families: &families, ..alone };
+    for sample in samples {
+        let shaped = text.shape(sample, &listed, 1.0, None);
+        assert!(shaped.glyphs.iter().all(|glyph| glyph.id != 0), "{sample}: {:?}", shaped.glyphs);
     }
-    // A style's own list always answers, for any script, so that's what styles do.
-    let listed = style(FAMILY_DISPLAY_LATIN, 20.0, 400.0, "ja");
-    let shaped = text.shape("設定かなカナ", &listed, 1.0, None);
-    assert!(shaped.glyphs.iter().all(|glyph| glyph.id != 0), "the list answers: {:?}", shaped.glyphs);
+    // A style borrowed from a string that's gone finds what it made while it was here.
+    let again = family_list(["Oxanium", "M PLUS 1"]);
+    let before = text.take_stats();
+    assert_eq!(before.hits, 0);
+    text.shape(samples[0], &sapphire_text::TextStyle { families: &again, ..alone }, 1.0, None);
+    assert_eq!(text.take_stats().hits, 1, "the cache keeps its own copy of what a style says");
 }

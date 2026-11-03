@@ -523,6 +523,59 @@ fn zones_leave_string_tables_in_their_own_pack() {
     assert_eq!(pack_named(&scratch, "zone_town"), town, "byte for byte");
 }
 
+/// A font goes in the packs its sidecar names with zones in the tree, a zone's as well, and moves nothing
+/// but the pack that holds it.
+#[test]
+fn zones_leave_fonts_in_the_packs_their_sidecars_name() {
+    const FONT: &str = "d0000000-0000-4000-8000-000000000021";
+    const CHAINS: &str = "d0000000-0000-4000-8000-000000000022";
+    let scratch = two_zones("pack-zones-fonts");
+    let (_, before) = scratch.pack(Cook::Desktop, true);
+    assert_eq!(before.notices, None, "no fonts, no notices");
+    let (shared, village) = (pack_named(&scratch, SHARED), pack_named(&scratch, "zone_village"));
+    let town = ids_in(&pack_named(&scratch, "zone_town"));
+
+    let oxanium = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/third_party/oxanium");
+    let font = scratch.source().join("Oxanium.ttf");
+    fs::copy(oxanium.join("Oxanium[wght].ttf"), &font).unwrap();
+    fs::copy(oxanium.join("OFL.txt"), scratch.source().join("OFL.txt")).unwrap();
+    fs::write(
+        scratch.source().join("latin.charset.ron"),
+        r#"(type: "sapphire::pipeline::CharacterSet", version: 1, data: (ranges: [(0x20, 0x7e)]))"#,
+    )
+    .unwrap();
+    let subset = |pack: &str| crate::font::FontSubset {
+        pack: pack.to_owned(),
+        characters: "latin.charset.ron".to_owned(),
+    };
+    let settings = crate::font::FontSettings {
+        license: "OFL.txt".to_owned(),
+        baseline_shift: 0.0,
+        subsets: vec![subset(FONTS), subset("zone_town")],
+    };
+    write_sidecar(&font, FONT, ImportSettings::Font(settings));
+    let chains = scratch.source().join("ui.fontchains.ron");
+    let document = format!(
+        r#"(type: "sapphire::assets::FontChains", version: 1, data: (chains: [
+            (name: "body", scripts: [(script: "Latn", fonts: ["{FONT}"])]),
+        ]))"#
+    );
+    fs::write(&chains, document).unwrap();
+    write_sidecar(&chains, CHAINS, ImportSettings::FontChains(Default::default()));
+
+    let (_, report) = scratch.pack(Cook::Desktop, true);
+    let names: Vec<&str> = report.packs.iter().map(|pack| pack.name.as_str()).collect();
+    assert_eq!(names, [FONTS, "shared", "zone_town", "zone_village"]);
+    assert_eq!(ids_in(&pack_named(&scratch, FONTS)), HashSet::from([id(FONT), id(CHAINS)]));
+    let cut: Vec<_> = ids_in(&pack_named(&scratch, "zone_town")).difference(&town).copied().collect();
+    assert_eq!(cut.len(), 1, "one cut joins the zone's pack: {cut:?}");
+    assert!(!town.contains(&id(FONT)));
+    assert_eq!(pack_named(&scratch, SHARED), shared, "byte for byte");
+    assert_eq!(pack_named(&scratch, "zone_village"), village, "byte for byte");
+    let notices = report.notices.expect("fonts have notices");
+    assert!(fs::read_to_string(notices).unwrap().contains("Oxanium"));
+}
+
 /// What the app's packs are must not move when a zone comes along that reaches nothing of theirs but
 /// shared things: W1's promise to every pack before it.
 #[test]

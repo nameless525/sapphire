@@ -21,10 +21,13 @@ Third-party bytes live only here. Files extracted byte for byte from a source (a
 | [kenney_impact_sounds](kenney_impact_sounds/) | Footsteps and impacts | Kenney | CC0 1.0 | M2 E1 and E3 |
 | [kenney_rpg_audio](kenney_rpg_audio/) | Foley: cloth, blades, footsteps | Kenney | CC0 1.0 | M2 E1 and E3 |
 | [kenney_interface_sounds](kenney_interface_sounds/) | Interface clicks and confirmations | Kenney | CC0 1.0 | M2 E1 and I2 |
+| [mplus1](mplus1/) | Body text, Latin and Japanese: a variable face | The M+ FONTS Project Authors | OFL 1.1 | M3 U3 |
+| [oxanium](oxanium/) | Latin display text: a variable face | The Oxanium Project Authors | OFL 1.1 | M3 U3 |
+| [dela_gothic_one](dela_gothic_one/) | Japanese display text | The Dela Gothic Project Authors | OFL 1.1 | M3 U3 |
 
 ## Rules
 
-- A license must allow redistribution and modification in a public repository. CC0 or VPL 1.0 with those rights set in the model's license settings are fine.
+- A license must allow redistribution and modification in a public repository. CC0 or VPL 1.0 with those rights set in the model's license settings are fine, as is OFL 1.1 for fonts, whose cook ships each license in a build's `content/NOTICES.txt`.
 - Never add:
   - Unity-chan (its license can be revoked);
   - ripped models;

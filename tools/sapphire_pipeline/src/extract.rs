@@ -300,6 +300,8 @@ pub fn extract_materials(source: &Path, options: &ExtractOptions) -> Result<Extr
         | ImportSettings::Colliders(_)
         | ImportSettings::Sound(_)
         | ImportSettings::Cue(_)
+        | ImportSettings::Font(_)
+        | ImportSettings::FontChains(_)
         | ImportSettings::GltfClips(_)
         | ImportSettings::FbxClips(_)
         | ImportSettings::Vrma(_)

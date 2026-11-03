@@ -1,6 +1,6 @@
 //! A subset does everything the whole font does for the strings it was cut for: the runtime's stack
 //! reads it, shapes it to the same positions with the same line breaks, and rasterizes the same
-//! coverage at any weight. Needs `SAPPHIRE_TEST_FONTS` (`tests/common` in `sapphire_text`).
+//! coverage at any weight, with the fonts in `content/third_party/`.
 
 #![allow(clippy::print_stdout, reason = "the subset's size and time are what this test reports")]
 #![allow(clippy::disallowed_methods, reason = "timing a cook needs the OS clock, and nothing here ships")]
@@ -80,7 +80,7 @@ fn assert_same(whole: Arc<Vec<u8>>, cut: Arc<Vec<u8>>, items: &[Item], family: &
 
 #[test]
 fn a_subset_shapes_and_rasterizes_like_the_whole_font() {
-    let Some(dir) = common::fonts_dir("a_subset_shapes_and_rasterizes_like_the_whole_font") else { return };
+    let dir = common::fonts_dir();
     let whole = read_font(&dir, MPLUS1);
     let japanese = menu_screen(true);
     let english = menu_screen(false);
@@ -131,7 +131,7 @@ fn a_subset_shapes_and_rasterizes_like_the_whole_font() {
 
 #[test]
 fn the_display_faces_survive_too() {
-    let Some(dir) = common::fonts_dir("the_display_faces_survive_too") else { return };
+    let dir = common::fonts_dir();
     for (file, family, sample, locale) in [
         (common::OXANIUM, "Oxanium", "SETTINGS Level 1,284 AVATAR fi", "en"),
         (common::DELA, "Dela Gothic One", "設定と記録 必殺技ゲージ Lv.90", "ja"),

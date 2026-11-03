@@ -6,7 +6,7 @@ use std::sync::Arc;
 use sapphire_look::{UiDrawList, UiGlyphStats, UiPageBands, UiPageState};
 use sapphire_text::{AtlasConfig, FaceOptions, GlyphAtlas, TextStyle, TextSystem};
 
-const STYLE: TextStyle =
+const STYLE: TextStyle<'static> =
     TextStyle { families: "Ubuntu", size: 40.0, weight: 400.0, line_height: 1.3, locale: Some("en") };
 
 fn text_system() -> TextSystem {

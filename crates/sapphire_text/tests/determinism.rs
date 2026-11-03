@@ -2,8 +2,8 @@
 //! on it. Each test writes one `text-digest` line straight to stderr, past the test harness's capture,
 //! so a passing CI job shows it. Compare the lines across jobs: they must be equal.
 //!
-//! Ubuntu Light and Hack come from `epaint_default_fonts`, so they run everywhere. The Japanese line
-//! needs `SAPPHIRE_TEST_FONTS` (`tests/common`).
+//! Ubuntu Light and Hack come from `epaint_default_fonts`, and the Japanese line from the fonts in
+//! `content/third_party/` (`tests/common`).
 
 mod common;
 
@@ -78,7 +78,7 @@ impl Run {
         }
     }
 
-    fn add(&mut self, string: &str, style: &TextStyle, scale: f32, width: Option<f32>) {
+    fn add(&mut self, string: &str, style: &TextStyle<'_>, scale: f32, width: Option<f32>) {
         let shaped = self.text.shape(string, style, scale, width);
         digest_shape(&mut self.positions, shaped);
         self.glyphs += shaped.glyphs.len();
@@ -119,7 +119,7 @@ fn digest_of_latin_from_a_font_every_checkout_has() {
 
 #[test]
 fn digest_of_japanese_and_variable_fonts() {
-    let Some(dir) = common::fonts_dir("digest_of_japanese_and_variable_fonts") else { return };
+    let dir = common::fonts_dir();
     let mut run = Run::new(common::system(&dir));
     for scale in [1.0, 1.5, 3.0] {
         for japanese in [true, false] {

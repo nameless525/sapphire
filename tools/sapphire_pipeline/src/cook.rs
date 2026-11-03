@@ -69,6 +69,9 @@
 //! - **Sounds and cues** cook `.ogg` → `.ssound` and `.cue.ron` documents → `.scue` (M2 E1,
 //!   [`audio`]). A cue holds its sounds' IDs, so it reads none of their contents, but they must be
 //!   sounds of the tree.
+//! - **Fonts** cook `.ttf` and `.otf` → an `.sfont` for each pack that shows them, and `.fontchains.ron`
+//!   documents → `.sfontc` (M3 U3, [`font`]). A font reads its license and character sets; chains hold
+//!   IDs, so they read no font, but they must be fonts of the tree.
 //! - **Move sets** cook `.moves.ron` documents → `.smoves` (M2 G2, [`moves`]): frame data and tables
 //!   the simulation reads, checked by move and track. A move that names a clip reads what that clip's
 //!   own cook read, its source and its rig (M2 N1), so a set cooks after every clip, and its key depends
@@ -133,6 +136,7 @@ use std::thread;
 use sapphire_assets::AssetId;
 use sapphire_assets::clip::{CLIP_EXTENSION, Clip};
 use sapphire_assets::cue::{CUE_EXTENSION, Cue};
+use sapphire_assets::font::{FONT_CHAINS_EXTENSION, FONT_EXTENSION, Font, FontChains};
 use sapphire_assets::graph::{AnimGraph, GRAPH_EXTENSION};
 use sapphire_assets::material::{MATERIAL_EXTENSION, Material};
 use sapphire_assets::mesh::{MESH_EXTENSION, Mesh, MeshError};
@@ -157,6 +161,7 @@ use crate::clip::retarget::{self, HumanMap, RetargetOptions, Rig};
 use crate::clip::source::{ClipSource, ClipSources, joint_remap, remap_tracks};
 use crate::clip::{self, ClipCookError, ClipSettings, ClipTarget, SampledClip};
 use crate::colliders::{self, ColliderCookError};
+use crate::font::{self, FontCookError};
 use crate::import::fbx::{self, FbxImportError};
 use crate::import::gltf::{self, GltfImportError};
 use crate::import::image;
@@ -245,6 +250,8 @@ pub(crate) const COOKED_EXTENSIONS: &[&str] = &[
     COLLIDERS_EXTENSION,
     SOUND_EXTENSION,
     CUE_EXTENSION,
+    FONT_EXTENSION,
+    FONT_CHAINS_EXTENSION,
     MOVE_SET_EXTENSION,
     ZONE_EXTENSION,
     STRINGS_EXTENSION,
@@ -342,6 +349,18 @@ impl Recipe {
                 format: Cue::VERSION,
                 extension: CUE_EXTENSION,
             },
+            ImportSettings::Font(_) => Self {
+                importer: font::IMPORTER,
+                cooker: font::COOKER,
+                format: Font::VERSION,
+                extension: FONT_EXTENSION,
+            },
+            ImportSettings::FontChains(_) => Self {
+                importer: font::CHAINS_IMPORTER,
+                cooker: font::CHAINS_COOKER,
+                format: FontChains::VERSION,
+                extension: FONT_CHAINS_EXTENSION,
+            },
             ImportSettings::MoveSet(_) => Self {
                 importer: moves::IMPORTER,
                 cooker: moves::COOKER,
@@ -416,7 +435,8 @@ impl Recipe {
     /// Where a source at `relative` cooks to, relative to the output root: its path with the
     /// cooked extension in place of the source's (`samples/mannequin.glb` →
     /// `samples/mannequin.smesh`, `skin.material.ron` → `skin.smat`, `courtyard.probes.ron` →
-    /// `courtyard.sprobe`, `arena.colliders.ron` → `arena.scol`, `fighter.moves.ron` → `fighter.smoves`).
+    /// `courtyard.sprobe`, `arena.colliders.ron` → `arena.scol`, `fighter.moves.ron` → `fighter.smoves`,
+    /// `ui.fontchains.ron` → `ui.sfontc`).
     pub fn output_path(&self, relative: &Path) -> PathBuf {
         if material::is_source(relative) {
             material::output_path(relative, self.extension)
@@ -430,6 +450,8 @@ impl Recipe {
             colliders::output_path(relative, self.extension)
         } else if audio::is_cue_source(relative) {
             audio::cue_output_path(relative, self.extension)
+        } else if font::is_chains_source(relative) {
+            font::chains_output_path(relative, self.extension)
         } else if moves::is_source(relative) {
             moves::output_path(relative, self.extension)
         } else if anim_graph::is_source(relative) {
@@ -567,6 +589,15 @@ pub enum CookError {
     },
     #[error("zone {} names {id} in `{field}`, which is not {what} of this content tree that cooks", path.display())]
     ZoneReference { path: PathBuf, field: String, what: &'static str, id: AssetId },
+    #[error("failed to cook font or font chains {}", path.display())]
+    Font {
+        path: PathBuf,
+        /// Boxed, as material errors are.
+        #[source]
+        source: Box<FontCookError>,
+    },
+    #[error("font chains {} name {id}, which is not a font of this content tree that cooks", path.display())]
+    NotAFont { path: PathBuf, id: AssetId },
     #[error("failed to cook move set {}", path.display())]
     MoveSet {
         path: PathBuf,
@@ -868,6 +899,10 @@ fn cook_dir_through(
                     source_relative.with_file_name(file)
                 }
                 Part::Cell(place) => zone::part_path(&source_relative, *place, recipe.extension),
+                Part::FontSubset { pack, .. } => {
+                    let file = format!("{}.{pack}.{}", file_stem(&source_relative), recipe.extension);
+                    source_relative.with_file_name(file)
+                }
                 Part::Own | Part::Rig | Part::Skeleton => recipe.output_path(&source_relative),
             };
             let output = claim(&asset.path, &relative)?;
@@ -1127,6 +1162,8 @@ enum Part {
     KeyPose { rig: AssetId, file: String },
     /// A zone's merged mesh for one place.
     Cell(Place),
+    /// A font's cut for a further pack: its entry in the sidecar's `subsets`, and that pack.
+    FontSubset { index: usize, pack: String },
 }
 
 /// A part of a source, its ID and its recipe.
@@ -1237,6 +1274,21 @@ fn sub_assets(
                 recipe: own,
             })
             .collect()),
+        // The first subset is the source's own asset. Checked here, before anything cooks.
+        ImportSettings::Font(settings) => {
+            font::check_settings(settings).map_err(font_error(path))?;
+            Ok(settings
+                .subsets
+                .iter()
+                .enumerate()
+                .skip(1)
+                .map(|(index, subset)| PlannedPart {
+                    id: meta::sub_asset_id(meta.id, &format!("pack/{}", subset.pack)),
+                    part: Part::FontSubset { index, pack: subset.pack.clone() },
+                    recipe: own,
+                })
+                .collect())
+        }
         ImportSettings::Texture(_)
         | ImportSettings::CharacterMap(_)
         | ImportSettings::Material(_)
@@ -1244,6 +1296,7 @@ fn sub_assets(
         | ImportSettings::Colliders(_)
         | ImportSettings::Sound(_)
         | ImportSettings::Cue(_)
+        | ImportSettings::FontChains(_)
         | ImportSettings::MoveSet(_)
         | ImportSettings::AnimGraph(_)
         | ImportSettings::Fluent(_)
@@ -1431,6 +1484,10 @@ impl Planned {
 
     fn is_sound(&self) -> bool {
         matches!(self.asset.meta.importer, ImportSettings::Sound(_))
+    }
+
+    fn is_font(&self) -> bool {
+        matches!(self.asset.meta.importer, ImportSettings::Font(_))
     }
 
     /// Whether it cooks to a clip: a sub-asset of an animation source, or a key-pose document.
@@ -1963,6 +2020,10 @@ fn part_dependencies(
             dependencies.push(marker(format!("#target {}", clips.retarget[*entry].target)));
         }
     }
+    // Subsets of a font share its sidecar and differ by their entry in it.
+    if let Part::FontSubset { index, .. } = part {
+        dependencies.push(marker(format!("#subset {index}")));
+    }
     // A key-pose clip takes its name from its file, which a key doesn't otherwise hold.
     if matches!(settings, ImportSettings::KeyPose(_)) {
         dependencies.push(marker(format!("#name {}", keypose::stem(path))));
@@ -1983,7 +2044,7 @@ fn cook_source(
     let clip_error =
         |source: ClipCookError| CookError::Clip { path: path.to_owned(), source: Box::new(source) };
     match part {
-        Part::Own | Part::Rig | Part::KeyPose { .. } => {}
+        Part::Own | Part::Rig | Part::KeyPose { .. } | Part::FontSubset { .. } => {}
         Part::Cell(place) => {
             let ImportSettings::Zone(settings) = settings else {
                 unreachable!("only zones plan cells");
@@ -2064,6 +2125,10 @@ fn cook_source(
             .map_err(|source| CookError::Colliders { path: path.to_owned(), source: Box::new(source) }),
         ImportSettings::Sound(_) => audio::cook_sound(bytes).map_err(audio_error(path)),
         ImportSettings::Cue(_) => audio::cook_cue(bytes).map_err(audio_error(path)),
+        ImportSettings::Font(settings) => {
+            font::cook(path, bytes, settings, font_subset_of(part)).map_err(font_error(path))
+        }
+        ImportSettings::FontChains(_) => font::cook_chains(bytes).map_err(font_error(path)),
         ImportSettings::MoveSet(_) => moves::cook(bytes, |clip| move_tables(clip, assets))
             .map_err(|source| CookError::MoveSet { path: path.to_owned(), source: Box::new(source) }),
         ImportSettings::AnimGraph(_) => anim_graph::cook(bytes)
@@ -2360,6 +2425,16 @@ fn audio_error(path: &Path) -> impl Fn(AudioCookError) -> CookError + '_ {
     move |source| CookError::Audio { path: path.to_owned(), source: Box::new(source) }
 }
 
+/// Wraps a font error as the cook error for the file at `path`.
+fn font_error(path: &Path) -> impl Fn(FontCookError) -> CookError + '_ {
+    move |source| CookError::Font { path: path.to_owned(), source: Box::new(source) }
+}
+
+/// Which entry of a font's `subsets` a part of it is: the first is its own asset.
+fn font_subset_of(part: &Part) -> usize {
+    if let Part::FontSubset { index, .. } = part { *index } else { 0 }
+}
+
 /// Wraps a probe grid error as the cook error for the document at `path`.
 fn probe_error(path: &Path) -> impl Fn(ProbeCookError) -> CookError + '_ {
     move |source| CookError::ProbeGrid { path: path.to_owned(), source: Box::new(source) }
@@ -2576,6 +2651,19 @@ fn source_dependencies(
             for id in audio::read_cue(bytes).map_err(audio_error(path))?.sounds {
                 if !assets.get(id).is_some_and(Planned::is_sound) {
                     return Err(CookError::NotASound { path: path.to_owned(), id });
+                }
+            }
+            Ok(Vec::new())
+        }
+        ImportSettings::Font(settings) => {
+            font::dependencies(path, settings, font_subset_of(part)).map_err(font_error(path))
+        }
+        // Chains hold only their fonts' IDs, so their contents aren't inputs.
+        ImportSettings::FontChains(_) => {
+            let chains = font::read_chains(bytes).map_err(font_error(path))?;
+            for id in chains.chains.iter().flat_map(|chain| &chain.scripts).flat_map(|entry| &entry.fonts) {
+                if !assets.get(*id).is_some_and(Planned::is_font) {
+                    return Err(CookError::NotAFont { path: path.to_owned(), id: *id });
                 }
             }
             Ok(Vec::new())
@@ -2814,6 +2902,8 @@ fn imported_mesh(
         | ImportSettings::Colliders(_)
         | ImportSettings::Sound(_)
         | ImportSettings::Cue(_)
+        | ImportSettings::Font(_)
+        | ImportSettings::FontChains(_)
         | ImportSettings::MoveSet(_)
         | ImportSettings::AnimGraph(_)
         | ImportSettings::Fluent(_)

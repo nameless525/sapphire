@@ -138,6 +138,9 @@ fn round(
                     AssetKind::AnimGraph => unreachable!("animation graphs never go to the uploader"),
                     AssetKind::Zone => unreachable!("zones never go to the uploader"),
                     AssetKind::Strings => unreachable!("string tables never go to the uploader"),
+                    AssetKind::Font | AssetKind::FontChains => {
+                        unreachable!("fonts never go to the uploader")
+                    }
                 }
                 Ok(())
             })
@@ -163,6 +166,7 @@ fn loading_and_unloading_leaks_no_handles_or_memory() {
         upload_per_frame: 64 << 10,
         resident: [
             600, 40_000, 3_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000,
+            1_000, 1_000,
         ],
     };
     let mut server = AssetServer::new(source, budgets);

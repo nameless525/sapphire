@@ -139,6 +139,7 @@ mod dirs;
 mod durable;
 mod event;
 mod frame_clock;
+mod host;
 mod io;
 #[cfg(target_os = "ios")]
 mod ios_loop;
@@ -162,6 +163,7 @@ pub use event::{
     TextEvent, Timestamp, TouchDeviceId, TouchEvent, TouchPhase, WindowEvent,
 };
 pub use frame_clock::FramePacing;
+pub use host::Host;
 pub use io::{ContentReader, IoFile, IoPriority, IoThread, IoTicket, ReadCallback, ReadError};
 pub use log::{PlatformLogSink, sdl_log};
 pub use pacing::{PacingSource, PacingStats};

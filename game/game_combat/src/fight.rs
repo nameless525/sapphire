@@ -26,6 +26,7 @@ use sapphire_ecs::bevy_ecs::world::WorldId;
 use sapphire_ecs::prelude::*;
 use sapphire_gameplay::Simulation;
 use sapphire_gameplay::body::{BodySample, HeadAuthority};
+use sapphire_gameplay::replay::LiveMoves;
 use sapphire_math::{Mat4, Vec2, Vec3};
 use sapphire_physics::PhysicsWorld;
 use sapphire_platform::AppInitError;
@@ -50,7 +51,7 @@ use crate::combat_views::{CombatViews, Facade};
 use crate::cues::{CueShow, CueStage};
 use crate::enemy::{self, EnemyMeshes};
 #[cfg(feature = "dev")]
-use sapphire_gameplay::replay::{LiveMoves, document_file_name};
+use sapphire_gameplay::replay::document_file_name;
 use sapphire_stage::anim_graph::{ClipTable, FixedBodyRenderer, GraphDriver, GraphEvaluation};
 use sapphire_stage::animate::{self, ClipPlayer};
 use sapphire_stage::audio::CueSounds;
@@ -1240,9 +1241,29 @@ impl Fight {
         option: &CombatOption,
         content: impl FnOnce() -> Result<&'a mut Content, AppInitError>,
     ) -> Result<Combat, AppInitError> {
+        self.prepare_stock(option, None, content)
+    }
+
+    /// Sets up `option`'s fight as [`Self::prepare_stock_combat`] does, from `moves` rather than what the build
+    /// compiled in: what a build with those edits in its documents would fight. Only a fight can.
+    pub fn prepare_stock_fight_on(
+        &mut self,
+        option: &CombatOption,
+        moves: LiveMoves,
+        content: &mut Content,
+    ) -> Result<Combat, AppInitError> {
+        self.prepare_stock(option, Some(moves), move || Ok(content))
+    }
+
+    fn prepare_stock<'a>(
+        &mut self,
+        option: &CombatOption,
+        moves: Option<LiveMoves>,
+        content: impl FnOnce() -> Result<&'a mut Content, AppInitError>,
+    ) -> Result<Combat, AppInitError> {
         #[cfg(feature = "dev")]
         let mut bound_content = None;
-        let combat = Combat::new_with_setup(option, |scenario, simulation, cast| {
+        let combat = Combat::new_with_setup(option, moves, |scenario, simulation, cast| {
             if scenario.name != crate::arena::FIGHT_SCENARIO {
                 return Ok(());
             }
@@ -1515,6 +1536,24 @@ impl Fight {
         let followed = show.follow_simulation(scene, combat.simulation(), combat.cast());
         self.attach_prepared_combat(combat, scene, content)?;
         scene.warm_fixed_step();
+        Ok(followed)
+    }
+
+    /// Starts what's stood over, as `option`'s fight from `moves`, with nothing uploaded: see
+    /// [`Self::prepare_stock_fight_on`]. What can't be set up leaves what's playing as it was, and says why.
+    pub fn start_on(
+        &mut self,
+        option: &CombatOption,
+        moves: LiveMoves,
+        scene: &mut Scene,
+        content: &mut Content,
+    ) -> Result<Followed, String> {
+        let combat =
+            self.prepare_stock_fight_on(option, moves, content).map_err(|error| error.to_string())?;
+        let party = matches!(option, CombatOption::Fight { party: true, .. });
+        crate::arena::check_scenario(&combat, party)?;
+        let followed = self.show.follow_simulation(scene, combat.simulation(), combat.cast());
+        self.attach_prepared_combat(combat, scene, content).map_err(|error| error.to_string())?;
         Ok(followed)
     }
 

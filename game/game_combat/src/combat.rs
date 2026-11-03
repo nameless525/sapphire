@@ -302,37 +302,40 @@ impl Combat {
     /// Reads what `option` names and sets up the world, before any GPU work, so a bad file costs
     /// nothing and says why.
     pub fn new(option: &CombatOption) -> Result<Self, String> {
-        Self::new_with_setup(option, |_, _, _| Ok(()))
+        Self::new_with_setup(option, None, |_, _, _| Ok(()))
     }
 
+    /// `option`, set up by `setup` before its first tick. A fight takes `moves` in place of what the build
+    /// compiled in, if they're given: what a build with those edits in its documents would fight, and its own
+    /// from here, so whatever made them can go on changing. Only a [`CombatOption::Fight`] can: the others are
+    /// their files'.
     pub(crate) fn new_with_setup(
         option: &CombatOption,
+        moves: Option<LiveMoves>,
         setup: impl FnOnce(&Scenario, &mut Simulation, &[ActorId]) -> Result<(), String>,
     ) -> Result<Self, String> {
         match option {
+            CombatOption::Fight { script, party } => {
+                Self::fighting(script.as_deref(), *party, moves.unwrap_or_default(), setup)
+            }
+            _ if moves.is_some() => Err("only a fight starts from edits".to_owned()),
             CombatOption::Replay { path, .. } => Self::replaying(path, setup),
             CombatOption::Record { path, scenario, script } => {
                 Self::recording_with_setup(path, scenario, script.as_deref(), &LiveMoves::default(), setup)
             }
-            CombatOption::Fight { script, party } => Self::fighting(script.as_deref(), *party, setup),
         }
     }
 
     fn fighting(
         script: Option<&str>,
         party: bool,
+        moves: LiveMoves,
         setup: impl FnOnce(&Scenario, &mut Simulation, &[ActorId]) -> Result<(), String>,
     ) -> Result<Self, String> {
         let name = if party { crate::arena::PARTY_SCENARIO } else { crate::arena::FIGHT_SCENARIO };
         let scenario =
             find_scenario(SCENARIOS, name).ok_or_else(|| format!("--fight: no scenario `{name}`"))?;
-        let fight = LiveFight::new(
-            scenario,
-            script.map(script_actions).transpose()?,
-            LiveMoves::default(),
-            party,
-            setup,
-        )?;
+        let fight = LiveFight::new(scenario, script.map(script_actions).transpose()?, moves, party, setup)?;
         Ok(Self {
             path: PathBuf::new(),
             mode: Mode::Fighting(fight),

@@ -128,7 +128,7 @@ impl App for OffscreenApp {
 
 /// The stage `options` ask for. Offscreen modes run on desktops only.
 pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, AppInitError> {
-    let mount_content = || Content::new(platform, options.character(), options.sky());
+    let mount_content = || Content::new(platform.host(), options.character(), options.sky());
     let mut content = None;
     let mut show = ShownFight::default();
     let tooling = options.offscreen.as_ref().is_some_and(|offscreen| {
@@ -169,7 +169,7 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
                 .map_err(AppInitError::msg)?;
         }
     }
-    let mut desc = StageDesc::new(platform, &gpu, FORMAT, options.quality_settings());
+    let mut desc = StageDesc::new(platform.host(), &gpu, FORMAT, options.quality_settings());
     desc.settings = options.render_settings(desc.quality.render_settings());
     desc.character = options.character();
     desc.sky = options.sky();

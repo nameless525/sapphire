@@ -101,7 +101,7 @@ use sapphire_assets::{AssetChange, MountError, RemountReport};
 use sapphire_livelink::protocol::PackOutcome;
 #[cfg(feature = "dev")]
 use sapphire_livelink::{LivePacks, PushedPack};
-use sapphire_platform::{AppInitError, IoFile, IoPriority, IoThread, Platform, ReadError};
+use sapphire_platform::{AppInitError, Host, IoFile, IoPriority, IoThread, ReadError};
 use sapphire_render::texture::GpuTexture;
 use sapphire_render::{MaterialHandle, MeshHandle, PipelineInventory, Renderer};
 use sapphire_rhi::GpuContext;
@@ -777,9 +777,9 @@ impl Content {
     /// the character (`character`, a mesh's ID: [`CHARACTER`] unless the scene wants another),
     /// within the budgets of the device's class. The scene's sky is the sky material `sky`
     /// ([`SKY`] unless the scene wants another), loaded when asked for.
-    pub fn new(platform: &Platform, character: AssetId, sky: AssetId) -> Result<Self, AppInitError> {
+    pub fn new(host: &Host, character: AssetId, sky: AssetId) -> Result<Self, AppInitError> {
         let stopwatch = Stopwatch::start();
-        let content = platform.content();
+        let content = host.content();
         let missing = |error: &dyn std::fmt::Display| {
             AppInitError::msg(format!(
                 "{error} (content root {:?}; cook it with `cargo xtask content`)",
@@ -787,7 +787,7 @@ impl Content {
             ))
         };
         let io = IoThread::start(content.clone()).map_err(|error| missing(&error))?;
-        let budgets = AssetBudgets::for_form_factor(platform.system_info().device_class);
+        let budgets = AssetBudgets::for_form_factor(host.system_info().device_class);
         let packs = PlatformPacks(io);
         #[cfg(feature = "dev")]
         let live_packs = Arc::new(LivePacks::new(packs));

@@ -17,8 +17,8 @@
 //! fn one_frame(platform: &Platform) -> Result<Vec<u8>, AppInitError> {
 //!     const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 //!     let (instance, gpu) = headless_gpu()?;
-//!     let desc = StageDesc::new(platform, &gpu, FORMAT, QualitySettings::default());
-//!     let mut stage = Stage::new(platform, instance, gpu, desc)?;
+//!     let desc = StageDesc::new(platform.host(), &gpu, FORMAT, QualitySettings::default());
+//!     let mut stage = Stage::new(platform.host(), instance, gpu, desc)?;
 //!     for _ in 0..60 {
 //!         stage.step();
 //!     }
@@ -34,6 +34,11 @@
 //! **A window:** make the instance, the surface and `GpuContext::new(&instance, &desc, Some(&surface))`
 //! yourself, give [`StageDesc`] the surface's format, and pass [`Stage::render`] the acquired image's view.
 //! Nothing here reads a clock or asks for a surface.
+//!
+//! **With no loop:** a tool that isn't on the platform's loop names its content with
+//! [`Host::with_content_at`](sapphire_platform::Host::with_content_at), and can share its device: a stage takes an
+//! `Arc<GpuContext>` as well as a context, and drawing into a view of any size is all it asks of a frame. A lost
+//! device takes the stage, so it's made again on the next one. The editor's viewport is this.
 //!
 //! **What it shows** is placed on [`Stage::scene`], before the first step, and what plays there is a
 //! [`SceneShow`] of the caller's, in [`Stage::show`] by [`Stage::with_show`]. `apps/sapphire_sandbox`'s

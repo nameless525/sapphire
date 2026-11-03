@@ -2,11 +2,13 @@
 //! the sandbox's overlay draws. No test opens it, and agents never launch it: everything worth testing is
 //! in [`sapphire_editor::Editor`], which this only hands a `Ui` and frames.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use sapphire_editor::cli::Command;
 use sapphire_editor::input::WindowInput;
 use sapphire_editor::recovery::Recovery;
+use sapphire_editor::viewport::StageView;
 use sapphire_editor::{Editor, Options};
 use sapphire_platform::{
     App, AppControl, AppInitError, AppMetadata, Event, Platform, TextInputKind, Window, WindowDesc,
@@ -25,8 +27,10 @@ const IDLE: Duration = Duration::from_millis(4);
 struct Device {
     // Field order is drop order: the surface goes before the context it came from.
     surface: RenderSurface,
+    /// The viewport, on this device, which goes with it.
+    view: StageView,
     renderer: egui_wgpu::Renderer,
-    gpu: GpuContext,
+    gpu: Arc<GpuContext>,
 }
 
 impl Device {
@@ -41,7 +45,7 @@ impl Device {
         // SAFETY: the surface owns `handle`, which keeps the native window alive. The app state (and this
         // surface) drops on quit before SDL's run ends; the handle alone cannot extend that run.
         let mut surface = unsafe { RenderSurface::new(&instance, target, handle)? };
-        let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), Some(&surface))?;
+        let gpu = Arc::new(GpuContext::new(&instance, &GpuContextDesc::default(), Some(&surface))?);
         let size = window.pixel_size();
         surface.configure(&gpu, size.width, size.height, PresentPolicy::Fifo)?;
         let format = surface.format().ok_or_else(|| AppInitError::msg("a surface with no format"))?;
@@ -51,7 +55,7 @@ impl Device {
             ..egui_wgpu::RendererOptions::default()
         };
         let renderer = egui_wgpu::Renderer::new(gpu.device(), format, options);
-        Ok(Self { surface, renderer, gpu })
+        Ok(Self { surface, view: StageView::default(), renderer, gpu })
     }
 }
 
@@ -202,7 +206,7 @@ impl EditorApp {
     fn draw(&mut self, now: f64, primitives: &[egui::ClippedPrimitive], pixels_per_point: f32) {
         let window = &self.window;
         let Some(device) = self.device.device(now, || Device::new(window)) else { return };
-        let Device { surface, renderer, gpu } = device;
+        let Device { surface, view, renderer, gpu } = device;
         let mut drew = false;
         let lost = match surface.acquire() {
             SurfaceAcquire::Frame(frame) => {
@@ -219,6 +223,8 @@ impl EditorApp {
                 }
                 self.textures.set.clear();
                 self.to_free.extend(self.textures.free.drain());
+                // Where the pass just put the pane, before what it laid out is painted.
+                view.draw(gpu, renderer, self.editor.viewport_frame());
                 let mut encoder =
                     gpu.device().create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
                 renderer.update_buffers(gpu.device(), gpu.queue(), &mut encoder, primitives, &screen);
@@ -250,6 +256,9 @@ impl EditorApp {
         };
         if drew {
             self.device.drew();
+            if self.editor.viewport().is_settling() {
+                self.next_pass = 0.0;
+            }
         }
         if lost {
             // Everything GPU goes, and egui's textures with it: a new context sends them again, and they
@@ -258,6 +267,7 @@ impl EditorApp {
             self.to_free.clear();
             self.textures.clear();
             self.ctx = egui::Context::default();
+            self.editor.viewport().forget_gpu();
         }
     }
 }

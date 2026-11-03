@@ -81,8 +81,8 @@ impl App for OutsideCaller {
 
     fn init(platform: &mut Platform) -> Result<Self, AppInitError> {
         let (instance, gpu) = headless_gpu()?;
-        let desc = StageDesc::new(platform, &gpu, FORMAT, QualitySettings::default());
-        let mut stage = Stage::new(platform, instance, gpu, desc)?;
+        let desc = StageDesc::new(platform.host(), &gpu, FORMAT, QualitySettings::default());
+        let mut stage = Stage::new(platform.host(), instance, gpu, desc)?;
 
         for _ in 0..60 {
             stage.step();
@@ -99,8 +99,8 @@ impl App for OutsideCaller {
 
         // The same again with a show on it: it's called at each of a frame's points, and draws the same.
         let (instance, gpu) = headless_gpu()?;
-        let desc = StageDesc::new(platform, &gpu, FORMAT, QualitySettings::default());
-        let mut shown = Stage::new(platform, instance, gpu, desc)?.with_show(Counting::default());
+        let desc = StageDesc::new(platform.host(), &gpu, FORMAT, QualitySettings::default());
+        let mut shown = Stage::new(platform.host(), instance, gpu, desc)?.with_show(Counting::default());
         for _ in 0..60 {
             shown.step();
         }

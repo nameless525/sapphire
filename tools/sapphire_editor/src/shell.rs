@@ -22,6 +22,8 @@ pub enum Pane {
     Timeline,
     /// The simulation's run of the selected move.
     Preview,
+    /// The real renderer, on the arena.
+    Viewport,
     /// The entry selected on the timeline.
     Inspector,
     /// Every property of the current document, whatever its kind.
@@ -33,11 +35,12 @@ pub enum Pane {
 }
 
 impl Pane {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Browser,
         Self::Moves,
         Self::Timeline,
         Self::Preview,
+        Self::Viewport,
         Self::Inspector,
         Self::Properties,
         Self::Cvars,
@@ -52,6 +55,7 @@ impl Pane {
             Self::Moves => "Moves",
             Self::Timeline => "Timeline",
             Self::Preview => "Preview",
+            Self::Viewport => "Viewport",
             Self::Inspector => "Inspector",
             Self::Properties => "Properties",
             Self::Cvars => "Cvars",
@@ -94,7 +98,10 @@ impl Shell {
         let browser = tiles.insert_pane(Pane::Browser);
         let moves = tiles.insert_pane(Pane::Moves);
         let left = tiles.insert_vertical_tile(vec![browser, moves]);
+        // The preview stays in front: a viewport makes a stage when it's first shown, and no sooner.
         let preview = tiles.insert_pane(Pane::Preview);
+        let viewport = tiles.insert_pane(Pane::Viewport);
+        let preview = tiles.insert_tab_tile(vec![preview, viewport]);
         let timeline = tiles.insert_pane(Pane::Timeline);
         let middle = tiles.insert_vertical_tile(vec![preview, timeline]);
         share(&mut tiles, middle, &[(preview, 1.0 - TIMELINE), (timeline, TIMELINE)]);

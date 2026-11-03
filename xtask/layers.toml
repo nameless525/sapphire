@@ -150,8 +150,9 @@ sapphire_synthetic_zone = { kind = "dev_only" }
 # `dev`: development builds, linking the dev-only crates (the debug overlay, spec §5.20).
 sapphire_sandbox = { kind = "app", features = ["tracy", "dev"] }
 # Tools.
-# The combat timeline editor (M2 T3): links the simulation and live link, and no renderer or world. It
-# draws its preview by itself, through egui, so nothing here needs a GPU but the editor's own window.
+# The editor (M2 T3, M3 E1-E4): the simulation and live link, and since E3 the stage, which brings the
+# renderer and the world, and the game's fight, for its viewport. Nothing here opens a GPU until a viewport
+# is on the screen: its tests of everything else, and `--capture`, draw on the CPU.
 sapphire_editor = { kind = "tool" }
 sapphire_pipeline = { kind = "tool" }
 # The headless replay runner (M2 D2): what `cargo xtask replay` and CI's Replays job build.

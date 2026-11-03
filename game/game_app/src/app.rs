@@ -90,8 +90,8 @@ impl App for GameApp {
         let format =
             surface.format().ok_or_else(|| AppInitError::msg("configured surface reports no format"))?;
 
-        let desc = fight_stage(StageDesc::new(platform, &gpu, format, QualitySettings::default()));
-        let mut content = Content::new(platform, desc.character, desc.sky)?;
+        let desc = fight_stage(StageDesc::new(platform.host(), &gpu, format, QualitySettings::default()));
+        let mut content = Content::new(platform.host(), desc.character, desc.sky)?;
         let mut show = GameShow::new()?;
         let combat = show.shown.fight.prepare_stock_combat(&options.fight(), &mut content)?;
         let mut stage = Stage::new_with_content(instance, gpu, desc, content)?.with_show(show);

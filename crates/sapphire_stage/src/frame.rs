@@ -8,11 +8,12 @@
 //! [`FrameHooks`] are what a development build adds without this crate knowing it: the sandbox's overlay,
 //! hot reload and live link all come through them. `()` adds nothing, and costs nothing.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use sapphire_assets::AssetId;
 use sapphire_core::alloc::{AllocCounts, AllocScope};
-use sapphire_platform::{AppInitError, Platform};
+use sapphire_platform::{AppInitError, Host};
 use sapphire_render::debug_view::DebugView;
 use sapphire_render::graph::{FrameGraph, GraphExecutor, TextureId};
 use sapphire_render::quality::{DeviceProfile, FrameTiming, Quality, QualitySettings, TierTable};
@@ -165,16 +166,13 @@ pub struct StageDesc {
 impl StageDesc {
     /// The shipped tier for this device, with `settings` as the player would have them.
     pub fn new(
-        platform: &Platform,
+        host: &Host,
         gpu: &GpuContext,
         format: wgpu::TextureFormat,
         settings: QualitySettings,
     ) -> Self {
-        let profile = DeviceProfile::new(
-            platform.system_info().device_class,
-            gpu.caps(),
-            platform.system_info().ram_mib,
-        );
+        let device = host.system_info();
+        let profile = DeviceProfile::new(device.device_class, gpu.caps(), device.ram_mib);
         let quality = Quality::new(TierTable::shipped(), &profile, settings);
         let settings = quality.render_settings();
         Self {
@@ -240,7 +238,9 @@ pub struct Stage<S: SceneShow = (), H: FrameHooks<S> = ()> {
     pub lose_frames: bool,
     /// Where the frames' CPU time went since it was last reset.
     pub laps: FrameLaps,
-    pub gpu: GpuContext,
+    /// Shared with whatever else draws on the device, such as a window's interface over a stage it can make and
+    /// drop as it likes. Everything on it above goes first.
+    pub gpu: Arc<GpuContext>,
     /// The last frame's stage times, measured while something draws over the frames.
     last_times: Option<StageTimes>,
     format: wgpu::TextureFormat,
@@ -251,26 +251,30 @@ impl Stage {
     /// The renderer, the content and a scene with the character in it, on a device the caller made. The
     /// character and the sky have loaded by the time this returns. The scene holds nothing more: place
     /// what it should show on [`Self::scene`].
+    ///
+    /// A device that's lost takes the stage with it: drop it, and make another on a new context. Nothing it
+    /// holds outlives the device, so nothing's carried over.
     pub fn new(
-        platform: &Platform,
+        host: &Host,
         instance: GpuInstance,
-        gpu: GpuContext,
+        gpu: impl Into<Arc<GpuContext>>,
         desc: StageDesc,
     ) -> Result<Self, AppInitError> {
-        let content = Content::new(platform, desc.character, desc.sky)?;
+        let content = Content::new(host, desc.character, desc.sky)?;
         Self::new_with_content(instance, gpu, desc, content)
     }
 
     /// Builds the renderer over already mounted Content, after any CPU-only combat bootstrap.
     pub fn new_with_content(
         instance: GpuInstance,
-        gpu: GpuContext,
+        gpu: impl Into<Arc<GpuContext>>,
         desc: StageDesc,
         mut content: Content,
     ) -> Result<Self, AppInitError> {
         if content.selection() != (desc.character, desc.sky) {
             return Err(AppInitError::msg("preloaded content differs from the stage character or sky"));
         }
+        let gpu = gpu.into();
         let StageDesc {
             format,
             quality,

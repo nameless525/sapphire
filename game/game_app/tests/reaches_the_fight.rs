@@ -56,8 +56,8 @@ impl App for OutsideCaller {
 
     fn init(platform: &mut Platform) -> Result<Self, AppInitError> {
         let (instance, gpu) = headless_gpu()?;
-        let desc = fight_stage(StageDesc::new(platform, &gpu, FORMAT, QualitySettings::default()));
-        let mut content = Content::new(platform, desc.character, desc.sky)?;
+        let desc = fight_stage(StageDesc::new(platform.host(), &gpu, FORMAT, QualitySettings::default()));
+        let mut content = Content::new(platform.host(), desc.character, desc.sky)?;
         let mut show = GameShow::new()?;
         let option = CombatOption::Fight { script: Some("fight-back".to_owned()), party: false };
         let combat = show.shown.fight.prepare_stock_combat(&option, &mut content)?;

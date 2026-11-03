@@ -28,6 +28,7 @@ use crate::content::{self, ContentFs};
 use crate::dirs;
 use crate::event::{self, Event, GamepadEvent, GamepadId, GamepadType, Keycode, LifecycleEvent, Timestamp};
 use crate::frame_clock::{FrameClock, FramePacing};
+use crate::host::Host;
 use crate::system::SystemInfo;
 use crate::window::{Window, WindowDesc};
 use crate::{AppMetadata, LOG_TARGET, sdl};
@@ -61,8 +62,7 @@ pub struct Platform {
     args: Vec<String>,
     user_dir: PathBuf,
     cache_dir: PathBuf,
-    content: ContentFs,
-    system_info: SystemInfo,
+    host: Host,
     /// Gamepads opened on `GAMEPAD_ADDED`; SDL only reports input for open gamepads.
     gamepads: Vec<(GamepadId, NonNull<SDL_Gamepad>)>,
     last_background_transition: Option<LifecycleEvent>,
@@ -79,14 +79,16 @@ impl Platform {
             args: Vec::new(),
             user_dir: PathBuf::new(),
             cache_dir: PathBuf::new(),
-            content: ContentFs::new(String::new()),
-            system_info: SystemInfo {
-                os: crate::system::Os::CURRENT,
-                device_class: crate::system::Os::CURRENT.device_class(),
-                ram_mib: 0,
-                logical_cores: 1,
-                is_emulator: false,
-            },
+            host: Host::new(
+                ContentFs::new(String::new()),
+                SystemInfo {
+                    os: crate::system::Os::CURRENT,
+                    device_class: crate::system::Os::CURRENT.device_class(),
+                    ram_mib: 0,
+                    logical_cores: 1,
+                    is_emulator: false,
+                },
+            ),
             gamepads: Vec::new(),
             last_background_transition: None,
             frame_clock: FrameClock::new(),
@@ -141,8 +143,7 @@ impl Platform {
             args,
             user_dir,
             cache_dir,
-            content,
-            system_info,
+            host: Host::new(content, system_info),
             gamepads: Vec::new(),
             last_background_transition: None,
             frame_clock: FrameClock::new(),
@@ -175,11 +176,16 @@ impl Platform {
 
     /// The read-only packaged content.
     pub fn content(&self) -> &ContentFs {
-        &self.content
+        self.host.content()
     }
 
     pub fn system_info(&self) -> &SystemInfo {
-        &self.system_info
+        self.host.system_info()
+    }
+
+    /// The part of this that isn't the loop's: what a stage draws with, and all a program with no loop has.
+    pub fn host(&self) -> &Host {
+        &self.host
     }
 
     /// The current time on the clock event timestamps use.

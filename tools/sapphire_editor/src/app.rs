@@ -32,6 +32,7 @@ use crate::preview::{self, FigureCache, Overlays, PosedFigure, View};
 use crate::run::{Frame, Run, Setup};
 use crate::shell::{Pane, PaneUi, Shell};
 use crate::timeline::{self, Action, Drag, Part, PhaseEdge, Problem, TimelineView};
+use crate::viewport::{ViewportFrame, ViewportPane};
 
 /// How often the file and the cook are looked at again.
 const POLL_SECONDS: f64 = 1.0;
@@ -231,6 +232,7 @@ pub struct Editor {
     /// The number that has the keyboard, and its document, whose typing is one gesture: unlike a name it lands
     /// in the text key by key, since only its widget holds what's typed, and a save has to find it there.
     typing_number: Option<(egui::Id, AssetId)>,
+    viewport: ViewportPane,
 }
 
 /// What's being typed over.
@@ -329,6 +331,7 @@ impl Editor {
             closing: None,
             typed: None,
             typing_number: None,
+            viewport: ViewportPane::default(),
         };
         if let Some(path) = options.file {
             editor.open(&path);
@@ -609,6 +612,24 @@ impl Editor {
     #[must_use]
     pub fn is_dirty(&self) -> bool {
         self.typed.is_some() || self.documents.ids().any(|id| self.documents.is_dirty(id))
+    }
+
+    /// What a viewport's engine half takes from a pass that's just run, before egui paints it.
+    pub fn viewport_frame(&mut self) -> ViewportFrame<'_> {
+        let moves = self.moves.and_then(|id| self.documents.path(id)).and_then(Path::file_name);
+        ViewportFrame {
+            open: self.shell.is_open(Pane::Viewport),
+            content: self.content.as_deref(),
+            moves: moves
+                .and_then(|name| name.to_str())
+                .zip(self.preview.as_ref().map(|preview| &preview.set)),
+            pane: &mut self.viewport,
+        }
+    }
+
+    /// The viewport's pane, which holds nothing of the GPU's but a texture's name.
+    pub fn viewport(&mut self) -> &mut ViewportPane {
+        &mut self.viewport
     }
 
     /// The document on the timeline.
@@ -2117,6 +2138,7 @@ impl PaneUi for Editor {
             Pane::Moves => self.moves_list(ui),
             Pane::Timeline => self.timeline_panel(ui),
             Pane::Preview => self.preview_panel(ui, self.now),
+            Pane::Viewport => self.viewport.ui(ui),
             Pane::Inspector => {
                 egui::ScrollArea::vertical().id_salt("inspector").auto_shrink([false, false]).show(
                     ui,

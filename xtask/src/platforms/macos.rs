@@ -6,13 +6,14 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use super::apple::{self, BundleLayout};
-use super::{App, CONTENT_DIR_ENV, Options, Platform};
+use super::{App, Bundle, BundleClaim, CONTENT_DIR_ENV, Options, Platform};
 use crate::content::{self, Cook};
 use crate::workspace;
 
 /// Builds `target/macos/<Name>.app` with the desktop cook in `Contents/Resources/content`.
-pub fn bundle(app: &App, options: &Options) -> anyhow::Result<PathBuf> {
+pub fn bundle(app: &App, options: &Options) -> anyhow::Result<Bundle> {
     super::require_macos_host(Platform::MacOs)?;
+    let claim = BundleClaim::take(Platform::MacOs)?;
     let content = content::cook(Cook::Desktop)?;
     let executable = super::executable(app, None, &build_env()?, options)?;
     let (template_path, template) = super::info_plist_template("macos")?;
@@ -20,19 +21,18 @@ pub fn bundle(app: &App, options: &Options) -> anyhow::Result<PathBuf> {
     let info_plist = apple::render_info_plist(&template, app)
         .map_err(|e| e.context(format!("in {}", template_path.display())))?;
 
-    let layout =
-        BundleLayout::macos(super::bundle_dir(Platform::MacOs).join(format!("{}.app", app.bundle_name)));
+    let layout = BundleLayout::macos(claim.staging(&format!("{}.app", app.bundle_name))?);
     apple::assemble(&layout, app, &info_plist, &executable, &content.dir)?;
     apple::codesign_ad_hoc(&layout.root)?;
-    eprintln!("bundled {}", super::display(&layout.root));
-    Ok(layout.root)
+    claim.publish(&layout.root)
 }
 
 /// Bundles, then runs the bundled executable in the foreground, so the console stays
-/// attached (see [`launch_command`] for where its content comes from).
+/// attached (see [`launch_command`] for where its content comes from). The bundle stays claimed
+/// until the app exits: it runs from there, so another run's bundle would replace it underneath.
 pub fn run(app: &App, options: &Options, args: &[String]) -> anyhow::Result<()> {
     let bundle = bundle(app, options)?;
-    let executable = BundleLayout::macos(bundle).executable_dir.join(&app.package);
+    let executable = BundleLayout::macos(bundle.path.clone()).executable_dir.join(&app.package);
     let inherited = std::env::var_os(CONTENT_DIR_ENV);
     super::launch(&mut launch_command(executable, args, options, inherited.as_deref()), options)
 }

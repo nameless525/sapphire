@@ -26,7 +26,7 @@
 //! sources.
 
 use std::fmt;
-use std::fs::{self, File, TryLockError};
+use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str::FromStr;
@@ -311,7 +311,12 @@ pub fn cook(cook: Cook) -> anyhow::Result<Cooked> {
     let lock_path = out.with_extension("lock");
     let lock =
         File::create(&lock_path).with_context(|| format!("failed to create {}", lock_path.display()))?;
-    wait_for(&lock, File::try_lock, File::lock, &format!("to finish with the {cook} content"))?;
+    workspace::wait_for_lock(
+        &lock,
+        File::try_lock,
+        File::lock,
+        &format!("to finish with the {cook} content"),
+    )?;
     let mut command = Command::new(&pipeline);
     command
         .arg("cook")
@@ -330,7 +335,12 @@ pub fn cook(cook: Cook) -> anyhow::Result<Cooked> {
     workspace::run(&mut command)?;
     // Another run may recook in the gap before the shared lock; its output is the same.
     lock.unlock()?;
-    wait_for(&lock, File::try_lock_shared, File::lock_shared, &format!("to finish with the {cook} content"))?;
+    workspace::wait_for_lock(
+        &lock,
+        File::try_lock_shared,
+        File::lock_shared,
+        &format!("to finish with the {cook} content"),
+    )?;
     Ok(Cooked { dir: out, _lock: lock })
 }
 
@@ -358,7 +368,7 @@ fn generate_missing(
     generate: &mut dyn FnMut(&Generator) -> anyhow::Result<()>,
 ) -> anyhow::Result<Vec<&'static str>> {
     let file = File::create(lock).with_context(|| format!("failed to create {}", lock.display()))?;
-    wait_for(&file, File::try_lock, File::lock, "to finish generating sources")?;
+    workspace::wait_for_lock(&file, File::try_lock, File::lock, "to finish generating sources")?;
     if locked {
         let missing: Vec<(&Generator, PathBuf)> = generators
             .iter()
@@ -387,24 +397,6 @@ fn generate_missing(
     }
     file.unlock()?;
     Ok(ran)
-}
-
-/// Takes a lock with `try_lock`, falling back to the blocking `lock` with a message when
-/// another xtask run holds it: "waiting for another xtask run `until`...".
-fn wait_for(
-    file: &File,
-    try_lock: fn(&File) -> Result<(), TryLockError>,
-    lock: fn(&File) -> std::io::Result<()>,
-    until: &str,
-) -> anyhow::Result<()> {
-    match try_lock(file) {
-        Ok(()) => Ok(()),
-        Err(TryLockError::WouldBlock) => {
-            eprintln!("waiting for another xtask run {until}...");
-            Ok(lock(file)?)
-        }
-        Err(TryLockError::Error(error)) => Err(error).context("failed to lock content"),
-    }
 }
 
 #[cfg(test)]

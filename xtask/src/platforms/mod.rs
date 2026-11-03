@@ -3,6 +3,11 @@
 //! Each platform module exposes `bundle(app, options)` (assemble something installable)
 //! and `run(app, options, args)` (build, cook, deploy and launch).
 //!
+//! A platform has one place for its bundles, so a run claims it (`BundleClaim`) before it builds
+//! anything, and keeps the claim, in its [`Bundle`], until what it built has been installed or has
+//! finished running. Another run waits, saying so. A bundle is assembled and signed aside and only
+//! then moved into place, so what's at that path is always whole.
+//!
 //! Store packaging (`xtask package`, M4) is not here yet. It must decide how debug info
 //! reaches Sentry and leaves the shipped binaries: split DWARF (`split-debuginfo`, `.dwp`)
 //! or `objcopy --only-keep-debug` on Linux and Android, dSYMs on Apple, PDBs on Windows,
@@ -18,6 +23,7 @@ mod macos;
 
 use std::ffi::OsString;
 use std::fmt;
+use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str::FromStr;
@@ -210,8 +216,69 @@ pub struct Options {
     pub dry_run: bool,
 }
 
-/// Assembles an installable bundle and returns its path.
-pub fn bundle(platform: Platform, app: &App, options: &Options) -> anyhow::Result<PathBuf> {
+/// An assembled bundle, and this run's claim on where it lies: its path holds this run's build, whole,
+/// until this is dropped. Keep it until the bundle is installed or has finished running.
+#[derive(Debug)]
+pub struct Bundle {
+    pub path: PathBuf,
+    _claim: BundleClaim,
+}
+
+/// A run's claim on `target/<platform>/`, where the platform's bundles go along with what building
+/// them shares (Android's generated sources and Gradle's outputs, say). Taken before building, since
+/// two builds of one target with different features or profiles replace each other's executables as
+/// well, and before cooking, never while holding content, so this and the content's locks can't wait
+/// on each other.
+#[derive(Debug)]
+struct BundleClaim {
+    dir: PathBuf,
+    _lock: File,
+}
+
+impl BundleClaim {
+    fn take(platform: Platform) -> anyhow::Result<Self> {
+        Self::take_in(bundle_dir(platform))
+    }
+
+    /// Claims `dir`, waiting for any other run that has it. The operating system lets go of a run
+    /// that ends, however it ends.
+    fn take_in(dir: PathBuf) -> anyhow::Result<Self> {
+        fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
+        let path = dir.join("bundle.lock");
+        let lock = File::create(&path).with_context(|| format!("failed to create {}", path.display()))?;
+        workspace::wait_for_lock(
+            &lock,
+            File::try_lock,
+            File::lock,
+            &format!("to finish with {}", display(&dir)),
+        )?;
+        Ok(Self { dir, _lock: lock })
+    }
+
+    /// Where to assemble bundle `name`: beside where it goes, so moving it there is a rename, and under
+    /// the same name, which signing tools read.
+    fn staging(&self, name: &str) -> anyhow::Result<PathBuf> {
+        let partial = self.dir.join("partial");
+        fs::create_dir_all(&partial).with_context(|| format!("failed to create {}", partial.display()))?;
+        Ok(partial.join(name))
+    }
+
+    /// Moves a finished bundle from [`Self::staging`] into place, over the last one.
+    fn publish(self, staged: &Path) -> anyhow::Result<Bundle> {
+        let name = staged.file_name().context("a staged bundle has a name")?;
+        let path = self.dir.join(name);
+        if staged.is_dir() {
+            workspace::remove_dir_if_exists(&path)?;
+        }
+        fs::rename(staged, &path)
+            .with_context(|| format!("failed to move {} to {}", staged.display(), path.display()))?;
+        eprintln!("bundled {}", display(&path));
+        Ok(Bundle { path, _claim: self })
+    }
+}
+
+/// Assembles an installable bundle.
+pub fn bundle(platform: Platform, app: &App, options: &Options) -> anyhow::Result<Bundle> {
     check_device_options(platform, options)?;
     check_build_options(platform, options)?;
     match platform {
@@ -320,7 +387,7 @@ fn require_macos_host(platform: Platform) -> anyhow::Result<()> {
 /// The Info.plist template for a platform, from `platform/<dir>/Info.plist`.
 fn info_plist_template(dir: &str) -> anyhow::Result<(PathBuf, String)> {
     let path = workspace::root().join("platform").join(dir).join("Info.plist");
-    match std::fs::read_to_string(&path) {
+    match fs::read_to_string(&path) {
         Ok(text) => Ok((path, text)),
         Err(e) => bail!("failed to read {}: {e}", path.display()),
     }
@@ -341,6 +408,10 @@ pub fn test_app() -> App {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
     use super::*;
 
     #[test]
@@ -413,6 +484,153 @@ mod tests {
         assert!(App::new("game", "1.2.3".into(), named("Sword & Shield <$(NAME)>")).is_ok());
         assert!(App::new("game", "1.2.3".into(), named("Two\nLines")).is_err());
         assert!(App::new("game", "1.2.3".into(), named("Bell\u{7}")).is_err());
+    }
+
+    /// A scratch directory of a test's own, removed afterwards.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("xtask-{name}-{}", std::process::id()));
+            workspace::remove_dir_if_exists(&dir).unwrap();
+            fs::create_dir_all(dir.join("content")).unwrap();
+            fs::write(dir.join("content/shared.spack"), "pack").unwrap();
+            fs::write(dir.join("debug"), "the debug build").unwrap();
+            fs::write(dir.join("release"), "the release build").unwrap();
+            Self(dir)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = workspace::remove_dir_if_exists(&self.0);
+        }
+    }
+
+    /// What `apple::assemble` makes of `executable`, staged by `claim`.
+    fn staged(claim: &BundleClaim, scratch: &Path, executable: &str) -> anyhow::Result<PathBuf> {
+        let layout = apple::BundleLayout::ios(claim.staging("Game.app")?);
+        let content = scratch.join("content");
+        apple::assemble(&layout, &test_app(), "plist", &scratch.join(executable), &content)?;
+        Ok(layout.root)
+    }
+
+    fn executable_of(bundle: &Path) -> String {
+        fs::read_to_string(bundle.join(test_app().package)).unwrap()
+    }
+
+    /// One run as `run` goes about it: it claims the platform, bundles `executable`, says so, and when
+    /// `install` says go (as after an emulator has taken its time booting) reads what an installer
+    /// would. The claim goes with the bundle, after that.
+    fn one_run(
+        scratch: &Path,
+        executable: &str,
+        bundled: mpsc::Sender<()>,
+        install: mpsc::Receiver<()>,
+    ) -> String {
+        let claim = BundleClaim::take_in(scratch.join("bundles")).unwrap();
+        let stage = staged(&claim, scratch, executable).unwrap();
+        let bundle = claim.publish(&stage).unwrap();
+        bundled.send(()).unwrap();
+        install.recv().unwrap();
+        executable_of(&bundle.path)
+    }
+
+    /// A run paused between bundling and installing installs what it built, however long it takes, and
+    /// the other run, of another profile, waits and then installs what it built.
+    #[test]
+    fn a_run_installs_what_it_bundled() {
+        let scratch = Scratch::new("claim");
+        let (first_bundled, first_is_bundled) = mpsc::channel();
+        let (second_bundled, second_is_bundled) = mpsc::channel();
+        let (go_first, first_go) = mpsc::channel();
+        let (go_second, second_go) = mpsc::channel();
+        let dir = scratch.0.as_path();
+        // Everything moves in, so a failure here lets go of the runs' channels and they end with it.
+        thread::scope(move |scope| {
+            let first = scope.spawn(move || one_run(dir, "debug", first_bundled, first_go));
+            first_is_bundled.recv().unwrap();
+            let second = scope.spawn(move || one_run(dir, "release", second_bundled, second_go));
+            assert_eq!(
+                second_is_bundled.recv_timeout(Duration::from_millis(300)),
+                Err(mpsc::RecvTimeoutError::Timeout),
+                "the second run bundled over the first's"
+            );
+            go_first.send(()).unwrap();
+            assert_eq!(first.join().unwrap(), "the debug build");
+            second_is_bundled.recv().unwrap();
+            go_second.send(()).unwrap();
+            assert_eq!(second.join().unwrap(), "the release build");
+        });
+        assert_eq!(executable_of(&dir.join("bundles/Game.app")), "the release build");
+    }
+
+    /// An assembly or signing that fails leaves the last bundle where it was, whole, and lets go of the
+    /// platform, and the next run clears what it left.
+    #[test]
+    fn a_failed_bundle_leaves_the_last_one_whole() {
+        let scratch = Scratch::new("failed-bundle");
+        let dir = scratch.0.join("bundles");
+        let claim = BundleClaim::take_in(dir.clone()).unwrap();
+        let stage = staged(&claim, &scratch.0, "debug").unwrap();
+        let good = claim.publish(&stage).unwrap().path;
+        assert!(!stage.exists(), "moved, not copied");
+
+        // The executable can't be copied in, as after a build that vanished.
+        let claim = BundleClaim::take_in(dir.clone()).unwrap();
+        assert!(staged(&claim, &scratch.0, "missing").is_err());
+        drop(claim);
+        assert_eq!(executable_of(&good), "the debug build");
+        assert_eq!(fs::read_to_string(good.join("content/shared.spack")).unwrap(), "pack");
+
+        // Assembled whole, but it was never signed, so it never moved.
+        let claim = BundleClaim::take_in(dir.clone()).unwrap();
+        staged(&claim, &scratch.0, "release").unwrap();
+        drop(claim);
+        assert_eq!(executable_of(&good), "the debug build");
+
+        let claim = BundleClaim::take_in(dir).unwrap();
+        fs::write(claim.staging("Game.app").unwrap().join("left over"), "from the failed run").unwrap();
+        let stage = staged(&claim, &scratch.0, "release").unwrap();
+        assert!(!stage.join("left over").exists());
+        let bundle = claim.publish(&stage).unwrap();
+        assert_eq!(executable_of(&bundle.path), "the release build");
+        assert!(!bundle.path.join("left over").exists(), "nothing of the last bundle stays");
+    }
+
+    /// An APK is a file, which the next one replaces in one move.
+    #[test]
+    fn a_bundle_may_be_a_file() {
+        let scratch = Scratch::new("file-bundle");
+        let dir = scratch.0.join("bundles");
+        for contents in ["one", "two"] {
+            let claim = BundleClaim::take_in(dir.clone()).unwrap();
+            let apk = claim.staging("Game.apk").unwrap();
+            fs::write(&apk, contents).unwrap();
+            let bundle = claim.publish(&apk).unwrap();
+            assert_eq!(bundle.path, dir.join("Game.apk"));
+            assert_eq!(fs::read_to_string(&bundle.path).unwrap(), contents);
+        }
+    }
+
+    /// Signing happens before the move, so a signature must not care where it was made.
+    #[test]
+    fn a_signature_survives_the_move_into_place() {
+        if std::env::consts::OS != "macos" {
+            return;
+        }
+        let scratch = Scratch::new("signed-bundle");
+        let script = scratch.0.join("app");
+        fs::write(&script, "#!/bin/sh\n").unwrap();
+        let claim = BundleClaim::take_in(scratch.0.join("bundles")).unwrap();
+        let layout = apple::BundleLayout::macos(claim.staging("Game.app").unwrap());
+        apple::assemble(&layout, &test_app(), "", &script, &scratch.0.join("content")).unwrap();
+        let plist = apple::render_info_plist(include_str!("../../../platform/macos/Info.plist"), &test_app());
+        fs::write(&layout.info_plist, plist.unwrap()).unwrap();
+        apple::codesign_ad_hoc(&layout.root).unwrap();
+        let bundle = claim.publish(&layout.root).unwrap();
+        workspace::run(Command::new("codesign").args(["--verify", "--deep", "--strict"]).arg(&bundle.path))
+            .unwrap();
     }
 
     /// One bundle ID goes to Apple and Android alike, so it holds only what both take: Android has no

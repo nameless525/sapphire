@@ -9,7 +9,7 @@ use std::process::Command;
 
 use anyhow::Context as _;
 
-use super::{App, Options, Platform, macos};
+use super::{App, Bundle, BundleClaim, Options, Platform, macos};
 use crate::content::{self, Cook};
 use crate::workspace;
 
@@ -17,18 +17,18 @@ use super::CONTENT_DIR_ENV;
 
 /// Builds `target/desktop/<Name>/`: the executable with the desktop cook in `content/`
 /// beside it, where the platform layer looks by default.
-pub fn bundle(app: &App, options: &Options) -> anyhow::Result<PathBuf> {
+pub fn bundle(app: &App, options: &Options) -> anyhow::Result<Bundle> {
+    let claim = BundleClaim::take(Platform::Desktop)?;
     let content = content::cook(Cook::Desktop)?;
     let executable = super::executable(app, None, &build_env()?, options)?;
-    let dir = super::bundle_dir(Platform::Desktop).join(&app.bundle_name);
+    let dir = claim.staging(&app.bundle_name)?;
     workspace::remove_dir_if_exists(&dir)?;
     fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
     let name = executable.file_name().context("the executable path has no file name")?;
     fs::copy(&executable, dir.join(name))
         .with_context(|| format!("failed to copy {} into the bundle", executable.display()))?;
     workspace::copy_dir(&content.dir, &dir.join("content"))?;
-    eprintln!("bundled {}", super::display(&dir));
-    Ok(dir)
+    claim.publish(&dir)
 }
 
 /// Cooks for desktop, builds for the host and runs the executable in the foreground

@@ -6,14 +6,13 @@
 
 use std::cmp::Reverse;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 use std::process::Command;
 
 use anyhow::Context as _;
 use serde::Deserialize;
 
 use super::apple::{self, BundleLayout};
-use super::{App, Options, Platform};
+use super::{App, Bundle, BundleClaim, Options, Platform};
 use crate::content::{self, Cook};
 use crate::workspace;
 
@@ -23,8 +22,9 @@ const IOS_RUNTIME_PREFIX: &str = "com.apple.CoreSimulator.SimRuntime.iOS-";
 const MINIMUM_IOS: (u32, u32) = (17, 0);
 
 /// Builds `target/ios-sim/<Name>.app` with the mobile cook in `content/`.
-pub fn bundle(app: &App, options: &Options) -> anyhow::Result<PathBuf> {
+pub fn bundle(app: &App, options: &Options) -> anyhow::Result<Bundle> {
     super::require_macos_host(Platform::IosSim)?;
+    let claim = BundleClaim::take(Platform::IosSim)?;
     let content = content::cook(Cook::Mobile)?;
     // No extra environment: the deployment target comes from .cargo/config.toml, and
     // cargo and CMake pick the simulator SDK for the target, so SDKROOT stays unset.
@@ -34,12 +34,10 @@ pub fn bundle(app: &App, options: &Options) -> anyhow::Result<PathBuf> {
     let info_plist = apple::render_info_plist(&template, app)
         .map_err(|e| e.context(format!("in {}", template_path.display())))?;
 
-    let layout =
-        BundleLayout::ios(super::bundle_dir(Platform::IosSim).join(format!("{}.app", app.bundle_name)));
+    let layout = BundleLayout::ios(claim.staging(&format!("{}.app", app.bundle_name))?);
     apple::assemble(&layout, app, &info_plist, &executable, &content.dir)?;
     apple::codesign_ad_hoc(&layout.root)?;
-    eprintln!("bundled {}", super::display(&layout.root));
-    Ok(layout.root)
+    claim.publish(&layout.root)
 }
 
 /// Bundles, boots a simulator if none is running, installs, and launches with the app's
@@ -48,7 +46,7 @@ pub fn run(app: &App, options: &Options, args: &[String]) -> anyhow::Result<()> 
     let bundle = bundle(app, options)?;
     let simulator = choose_simulator_or_fail()?;
     let mut install = Command::new("xcrun");
-    install.args(["simctl", "install", &simulator.udid]).arg(&bundle);
+    install.args(["simctl", "install", &simulator.udid]).arg(&bundle.path);
     let mut launch = Command::new("xcrun");
     launch
         .args(["simctl", "launch", "--console-pty", "--terminate-running-process", &simulator.udid])
@@ -63,6 +61,7 @@ pub fn run(app: &App, options: &Options, args: &[String]) -> anyhow::Result<()> 
 
     boot(&simulator, options.show)?;
     workspace::run(&mut install)?;
+    drop(bundle); // The simulator has its own copy now.
     eprintln!(
         "launching {} on {} (iOS {}.{}); Ctrl-C detaches",
         app.bundle_id, simulator.name, simulator.runtime.0, simulator.runtime.1

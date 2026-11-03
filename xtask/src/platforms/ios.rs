@@ -21,13 +21,13 @@
 //! project (§7.3) comes with store builds.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 use anyhow::{Context as _, bail, ensure};
 
 use super::apple::{self, BundleLayout};
-use super::{App, Options, Platform};
+use super::{App, Bundle, BundleClaim, Options, Platform};
 use crate::content::{self, Cook};
 use crate::workspace;
 
@@ -35,9 +35,10 @@ const TARGET: &str = "aarch64-apple-ios";
 
 /// Builds `target/ios/<Name>.app` with the mobile cook in `content/`, signed with `--identity`
 /// and `--profile`, or ad hoc without them.
-pub fn bundle(app: &App, options: &Options) -> anyhow::Result<PathBuf> {
+pub fn bundle(app: &App, options: &Options) -> anyhow::Result<Bundle> {
     super::require_macos_host(Platform::Ios)?;
     let sign_with = signing(options)?;
+    let claim = BundleClaim::take(Platform::Ios)?;
     let content = content::cook(Cook::Mobile)?;
     // As for the simulator: cargo and CMake pick the device SDK for the target.
     let executable = super::executable(app, Some(TARGET), &[], options)?;
@@ -46,7 +47,7 @@ pub fn bundle(app: &App, options: &Options) -> anyhow::Result<PathBuf> {
     let info_plist = apple::render_info_plist(&template, app)
         .map_err(|e| e.context(format!("in {}", template_path.display())))?;
 
-    let layout = BundleLayout::ios(super::bundle_dir(Platform::Ios).join(format!("{}.app", app.bundle_name)));
+    let layout = BundleLayout::ios(claim.staging(&format!("{}.app", app.bundle_name))?);
     apple::assemble(&layout, app, &info_plist, &executable, &content.dir)?;
     match sign_with {
         Some((identity, profile)) => sign(&layout.root, app, identity, profile)?,
@@ -55,8 +56,7 @@ pub fn bundle(app: &App, options: &Options) -> anyhow::Result<PathBuf> {
             eprintln!("signed ad hoc, which no device installs: --identity and --profile sign it for one");
         }
     }
-    eprintln!("bundled {}", super::display(&layout.root));
-    Ok(layout.root)
+    claim.publish(&layout.root)
 }
 
 /// Bundles and signs, installs on `--device` and launches with the app's console attached
@@ -72,7 +72,7 @@ pub fn run(app: &App, options: &Options, args: &[String]) -> anyhow::Result<()> 
     );
     let bundle = bundle(app, options)?;
     let mut install = Command::new("xcrun");
-    install.args(["devicectl", "device", "install", "app", "--device", device]).arg(&bundle);
+    install.args(["devicectl", "device", "install", "app", "--device", device]).arg(&bundle.path);
     let mut launch = Command::new("xcrun");
     launch.args(["devicectl", "device", "process", "launch", "--device", device, "--console"]);
     // The app's arguments follow `--`, so devicectl takes none of them for its own options.
@@ -84,6 +84,7 @@ pub fn run(app: &App, options: &Options, args: &[String]) -> anyhow::Result<()> 
         return Ok(());
     }
     workspace::run(&mut install)?;
+    drop(bundle); // The device has its own copy now.
     eprintln!("launching {} on {device}; Ctrl-C ends it", app.bundle_id);
     workspace::run(&mut launch)
 }
@@ -212,6 +213,8 @@ fn concrete_keychain_groups(groups: &[String], application_id: &str, bundle_id: 
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
 
     const BUNDLE: &str = "dev.sapphire.sandbox";

@@ -28,7 +28,7 @@ use std::{env, thread};
 use anyhow::{Context as _, anyhow, bail, ensure};
 use serde::Deserialize;
 
-use super::{App, Options, Platform};
+use super::{App, Bundle, BundleClaim, Options, Platform};
 use crate::content::{self, Cook};
 use crate::workspace::{self, BuildProfile, CargoBuild};
 
@@ -51,12 +51,13 @@ const ACTIVITY: &str = "dev.sapphire.sandbox.SandboxActivity";
 const ARGS_EXTRA: &str = "sapphire.args";
 
 /// Builds the APK and copies it to `target/android/<Name>.apk`.
-pub fn bundle(app: &App, options: &Options) -> anyhow::Result<PathBuf> {
+pub fn bundle(app: &App, options: &Options) -> anyhow::Result<Bundle> {
     ensure!(options.exe.is_none(), "--exe is not supported for android");
     let sdk = sdk_dir()?;
     let ndk = Ndk::locate(&sdk)?;
     // Fail now rather than after the native build.
     require_java()?;
+    let claim = BundleClaim::take(Platform::Android)?;
     let library = build_library(app, &ndk, options)?;
     let content = content::cook(Cook::Mobile)?;
 
@@ -82,10 +83,9 @@ pub fn bundle(app: &App, options: &Options) -> anyhow::Result<PathBuf> {
     workspace::run(&mut gradle)?;
 
     let built = project.join(format!("app/build/outputs/apk/{variant}/app-{variant}.apk"));
-    let apk = dir.join(format!("{}.apk", app.bundle_name));
+    let apk = claim.staging(&format!("{}.apk", app.bundle_name))?;
     fs::copy(&built, &apk).with_context(|| format!("failed to copy {}", built.display()))?;
-    eprintln!("bundled {}", super::display(&apk));
-    Ok(apk)
+    claim.publish(&apk)
 }
 
 /// Bundles, picks the connected device (booting the emulator if there is none), installs
@@ -108,7 +108,7 @@ pub fn run(app: &App, options: &Options, args: &[String]) -> anyhow::Result<()> 
     };
     if options.dry_run {
         let mut install = Command::new(&program);
-        install.args(["install", "-r"]).arg(&apk);
+        install.args(["install", "-r"]).arg(&apk.path);
         let mut start = Command::new(&program);
         start_args(&mut start);
         for command in [&install, &start] {
@@ -118,7 +118,8 @@ pub fn run(app: &App, options: &Options, args: &[String]) -> anyhow::Result<()> 
     }
 
     let adb = Adb::connect(&sdk, program)?;
-    workspace::run(adb.command().args(["install", "-r"]).arg(&apk))?;
+    workspace::run(adb.command().args(["install", "-r"]).arg(&apk.path))?;
+    drop(apk); // The device has its own copy now.
     let mut start = adb.command();
     start_args(&mut start);
     eprintln!("launching {component} on {}", adb.serial);

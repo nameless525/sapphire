@@ -1,6 +1,7 @@
 //! Workspace paths and process helpers shared by every command.
 
 use std::ffi::{OsStr, OsString};
+use std::fs::{File, TryLockError};
 use std::io::{BufRead as _, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -206,6 +207,24 @@ pub fn remove_dir_if_exists(dir: &Path) -> anyhow::Result<()> {
             Err(e).with_context(|| format!("failed to remove {}", dir.display()))
         }
         _ => Ok(()),
+    }
+}
+
+/// Takes a lock with `try_lock`, falling back to the blocking `lock` with a message when
+/// another xtask run holds it: "waiting for another xtask run `until`...".
+pub fn wait_for_lock(
+    file: &File,
+    try_lock: fn(&File) -> Result<(), TryLockError>,
+    lock: fn(&File) -> std::io::Result<()>,
+    until: &str,
+) -> anyhow::Result<()> {
+    match try_lock(file) {
+        Ok(()) => Ok(()),
+        Err(TryLockError::WouldBlock) => {
+            eprintln!("waiting for another xtask run {until}...");
+            Ok(lock(file)?)
+        }
+        Err(TryLockError::Error(error)) => Err(error).context("failed to take a lock"),
     }
 }
 

@@ -218,7 +218,7 @@ XPBD cloth, ragdolls, Luau, navigation, decals, GPU particles, music, lip-sync, 
 ## Known limits and risks
 
 - **Feel is unknown.** All of M2 could be well built and still not fun. This is the largest risk, and [m2-go-no-go.md](m2-go-no-go.md) is about it.
-- **More bugs are likely.** The review found 31 past every gate, a later read of the camera's framing pass found six more, and nobody can say how many are left. Its fuzz (51,678 swaps and the rest, in [m2-go-no-go.md](m2-go-no-go.md)) ran on arm64 only. The two windows nobody has opened are the likeliest place.
+- **More bugs are likely.** The review found 31 past every gate, a later read of the camera's framing pass found six more, an outside review found 48 more after that, reading those 48 fixes found five, and nobody can say how many are left. Its fuzz (51,678 swaps and the rest, in [m2-go-no-go.md](m2-go-no-go.md)) ran on arm64 only. The two windows nobody has opened are the likeliest place.
 - **No phone has run anything,** after three milestones. Every mobile number is an M5 at the Mobile tiers' settings, the iOS Simulator or the Android emulator. §3's budgets are still proposals.
 - **Motion without an animator** (plan §6). The player's moves are solved from poses set by target, the enemy's and locomotion's are retargeted chibi clips, and nobody has said whether they're good enough to judge the fight by. The fallback is a commissioned animator or a bought pack, and a pack that bars redistribution can't go in a public repo.
 - **Tools and scenes are single-example:** one character, one enemy, one stage, one set of moves. What's data today has one consumer, so "authored with no Rust changes" is untested.

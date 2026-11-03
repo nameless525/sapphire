@@ -5,14 +5,20 @@
 //! hands each frame's requests the textures with the same descriptors from earlier frames.
 //! Textures unused for [`EVICT_AFTER_FRAMES`] frames are released, so sizes left behind by a
 //! resize or a quality change don't stay resident. Until then they count in
-//! [`TransientStats::bytes`]: each step of dynamic resolution leaves a set of scene-sized textures
-//! behind for that long. The pool has no byte budget yet: one waits for phones' memory to be
-//! measured (review RA-O06).
+//! [`TransientStats::bytes`], up to a byte budget: at each frame's start the unused ones may hold
+//! what the last frame used ([`MIN_SPARE_BYTES`] at least), the oldest going first. That is one
+//! set of scene-sized textures left by a step of dynamic resolution, which a step back reuses, and
+//! a window dragged through a size a frame holds three sets, not sixty (review RA-O06). A phone's
+//! own limit may still lower it once phones' memory is measured.
 
 use crate::GpuContext;
 
 /// Frames a pooled texture may sit unused before it is released.
 pub const EVICT_AFTER_FRAMES: u64 = 60;
+
+/// The most bytes of unused textures the pool is never asked to give up before their age: a frame
+/// using less than this, a tool's or a capture's, doesn't empty the pool.
+pub const MIN_SPARE_BYTES: u64 = 16 << 20;
 
 /// What a transient texture is; textures are shared only between identical descriptors.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -170,12 +176,35 @@ impl<K: PartialEq + Copy, T> SlotPool<K, T> {
             }
             kept
         });
-        self.stats.evicted += (before - self.slots.len()) as u64;
         self.stats.bytes -= released;
+        self.give_up_spares();
+        self.stats.evicted += (before - self.slots.len()) as u64;
         for slot in &mut self.slots {
             slot.in_use = false;
         }
         self.stats.textures = self.slots.len();
+    }
+
+    /// Releases the longest-unused textures until the ones the last frame didn't use weigh no
+    /// more than the budget (the module docs). Dropping them is safe with GPU work in flight: wgpu
+    /// keeps what a submission uses until it finishes.
+    fn give_up_spares(&mut self) {
+        let weigh = self.weigh;
+        let used: u64 = self.slots.iter().filter(|slot| slot.in_use).map(|slot| weigh(&slot.key)).sum();
+        let budget = used.max(MIN_SPARE_BYTES);
+        let mut spare = self.stats.bytes - used;
+        while spare > budget {
+            let oldest = self
+                .slots
+                .iter()
+                .enumerate()
+                .filter(|(_, slot)| !slot.in_use)
+                .min_by_key(|(_, slot)| slot.last_used);
+            let Some((oldest, _)) = oldest else { break };
+            let weight = weigh(&self.slots.remove(oldest).key);
+            spare -= weight;
+            self.stats.bytes -= weight;
+        }
     }
 
     fn acquire(&mut self, key: &K, create: impl FnOnce() -> T) -> usize {
@@ -262,6 +291,57 @@ mod tests {
             pool.acquire(&2, || 'z');
         }
         assert_eq!((pool.stats.textures, pool.stats.bytes, pool.stats.peak_bytes), (1, 200, 800));
+    }
+
+    /// One size a frame, as a dragged window asks: what's resident is this frame's, the last
+    /// frame's and one set more, never the second's worth of sets the age alone would keep (OPT-009).
+    #[test]
+    fn a_stream_of_sizes_keeps_one_spare_set() {
+        const SET: u64 = 8 * MIN_SPARE_BYTES;
+        // Keys are sizes: each weighs `SET`, as a whole frame's textures would.
+        let mut pool = SlotPool::new(|_: &u32| SET);
+        for size in 0..EVICT_AFTER_FRAMES as u32 + 5 {
+            pool.begin_frame();
+            pool.acquire(&size, || 'x');
+        }
+        assert_eq!(pool.stats.textures, 3);
+        assert_eq!(pool.stats.peak_bytes, 3 * SET, "three sets at most, not {} of them", EVICT_AFTER_FRAMES);
+        assert_eq!(pool.stats.bytes, 3 * SET);
+        assert_eq!(pool.stats.evicted, pool.stats.created - 3);
+
+        // A step back to the size before reuses its set, as dynamic resolution's next step does.
+        let last = EVICT_AFTER_FRAMES as u32 + 4;
+        let created = pool.stats.created;
+        pool.begin_frame();
+        pool.acquire(&(last - 1), || 'y');
+        assert_eq!(pool.stats.created, created, "the spare set came back");
+    }
+
+    /// Frames that use little don't empty the pool, and the oldest spares go first.
+    #[test]
+    fn the_budget_spares_small_frames_and_gives_up_the_oldest() {
+        let mut pool = SlotPool::new(|&key: &u64| key);
+        let spare = MIN_SPARE_BYTES / 4;
+        pool.begin_frame();
+        for key in [spare, spare + 1, spare + 2] {
+            pool.acquire(&key, || 'a');
+        }
+        for _ in 0..2 {
+            pool.begin_frame();
+            pool.acquire(&1, || 'b');
+        }
+        assert_eq!(pool.stats.textures, 4, "under the floor: the age still decides");
+
+        for key in [spare + 3, spare + 4] {
+            pool.begin_frame();
+            pool.acquire(&key, || 'c');
+        }
+        pool.begin_frame();
+        pool.acquire(&(spare + 4), || 'd');
+        // Those outweigh the floor now: the oldest went, and the newest spare stayed.
+        assert!(pool.slots.iter().all(|slot| slot.key != spare), "the oldest went");
+        assert!(pool.slots.iter().any(|slot| slot.key == spare + 3), "the newest spare stayed");
+        assert_eq!(pool.stats.evicted, 1);
     }
 
     #[test]

@@ -48,7 +48,9 @@ pub use context::{GpuContext, GpuContextDesc};
 pub use error::RhiError;
 pub use pipeline_cache::PipelineCacheDesc;
 pub use surface::{PresentPolicy, RenderSurface, SkipReason, SurfaceAcquire, SurfaceFrame, SurfaceTarget};
-pub use transient::{EVICT_AFTER_FRAMES, TransientDesc, TransientPool, TransientStats, TransientTexture};
+pub use transient::{
+    EVICT_AFTER_FRAMES, MIN_SPARE_BYTES, TransientDesc, TransientPool, TransientStats, TransientTexture,
+};
 
 /// wgpu, re-exported so `sapphire_render` uses exactly this version (spec §5.11).
 pub use wgpu;

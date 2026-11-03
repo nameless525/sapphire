@@ -1903,6 +1903,33 @@ fn two_slot_sphere(first: Material, second: Material) -> sapphire_assets::materi
 /// RA-005: an upload that fails partway takes back every material it uploaded, so retrying
 /// rejected content never uses up material slots. (A family's buffer filling up partway is
 /// `materials`' `a_full_family_takes_back_what_the_upload_took`.)
+/// A window dragged through a size a frame leaves the pool the frame's textures and a set or two
+/// more, not the sixty sets the age alone would keep (OPT-009).
+#[test]
+#[ignore = "needs a GPU"]
+fn a_dragged_window_keeps_few_sets_of_transients() {
+    let gpu = gpu();
+    let settings = RenderSettings { msaa: Msaa::Off, temporal: true, ..RenderSettings::default() };
+    let mut frames = Frames::with_settings(&gpu, FORMAT, settings).expect("renderer");
+    let camera = framing_camera(38.0, (640, 360), 0.3);
+    let mut peak = 0;
+    for step in 0..70 {
+        let texture = target(&gpu, FORMAT, (640 + 2 * step, 360 + step));
+        let view = texture.create_view(&Default::default());
+        assert!(frames.render(&gpu, &view, camera, &[], &[]).is_none());
+        peak = frames.graph.stats().pool.peak_bytes;
+    }
+    // Then the size holds: what's left is one frame's, once the spares have aged out.
+    let texture = target(&gpu, FORMAT, (640 + 2 * 69, 360 + 69));
+    let view = texture.create_view(&Default::default());
+    for _ in 0..70 {
+        assert!(frames.render(&gpu, &view, camera, &[], &[]).is_none());
+    }
+    let settled = frames.graph.stats().pool.bytes;
+    let most = 2 * settled + settled.max(sapphire_rhi::MIN_SPARE_BYTES);
+    assert!(peak <= most, "peak {peak}, one frame's {settled}");
+}
+
 #[test]
 #[ignore = "needs a GPU"]
 fn failed_material_uploads_leave_nothing_behind() {

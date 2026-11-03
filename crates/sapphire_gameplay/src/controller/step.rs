@@ -170,6 +170,11 @@ fn air_velocity(state: &mut ControllerState, profile: &ResolvedProfile, want: Ve
 
 /// Gravity along the slope, and the stick steering across it: never up it, or a strong enough stick
 /// would climb what's too steep to stand on.
+///
+/// The one slide gentle enough to stand on is on top of another character, which is never ground. There
+/// nothing is too steep, and gravity has next to no downhill to go by, and at the very top none at all,
+/// so the stick walks it off whichever way it points. Left alone dead center, it stays until a jump or
+/// the one under it moves.
 fn slide_velocity(
     state: &mut ControllerState,
     profile: &ResolvedProfile,
@@ -183,7 +188,10 @@ fn slide_velocity(
     if gravity {
         velocity.y -= p.gravity * dt;
     }
-    if let Some(downhill) = horizontal(normal) {
+    if want != Vec3::ZERO && profile.walkable(normal) {
+        let planar = move_towards(flat(velocity), want, p.acceleration * dt);
+        velocity = Vec3::new(planar.x, velocity.y, planar.z);
+    } else if let Some(downhill) = horizontal(normal) {
         let across = Vec3::new(-downhill.z, 0.0, downhill.x);
         let now = velocity.dot(across);
         let next = move_towards_scalar(now, want.dot(across), p.air_acceleration * dt);

@@ -1509,6 +1509,113 @@ fn a_character_doesnt_stand_on_another() {
     assert!(Vec2::new(rig.feet().x, rig.feet().z).length() >= 2.0 * 0.3, "beside it");
 }
 
+/// A character dropped on another, from dead center out, with any stick: the top of a head has no
+/// downhill for gravity to take it along, and it's the stick that takes it off, at once.
+#[test]
+fn the_stick_takes_a_character_off_another() {
+    let sticks = [RIGHT, -RIGHT, Vec2::Y, -Vec2::Y, Vec2::new(0.7, 0.7)];
+    let smaller = ControllerProfile { radius: 0.2, height: 1.2, ..ControllerProfile::default() };
+    let bigger = ControllerProfile { radius: 0.4, height: 2.0, ..ControllerProfile::default() };
+    for offset in [0.0, 1e-6, -1e-6, 1e-4, 1e-3, 0.05] {
+        for stick in sticks {
+            for (what, profile) in
+                [("the same", ControllerProfile::default()), ("smaller", smaller), ("bigger", bigger)]
+            {
+                let what = format!("{what}, {offset} off, stick {stick}");
+                let mut rig = Rig::with_profile(vec![floor(1)], Vec3::new(offset, 3.0, 0.0), profile);
+                let below = ResolvedProfile::new(&ControllerProfile::default()).expect("a good profile");
+                second_capsule(&mut rig.world, &below, Vec3::ZERO);
+                // Long enough to land.
+                rig.sticks(Vec2::ZERO, 45);
+                assert_ne!(rig.mode(), GroundMode::Grounded, "{what}: it stood on a head");
+                let from = Vec2::new(rig.feet().x, rig.feet().z);
+                for _ in 0..12 {
+                    rig.stick(stick);
+                }
+                let moved = Vec2::new(rig.feet().x, rig.feet().z) - from;
+                // Further off, gravity has had it for a while, and it's on what's too steep to walk.
+                let way = if offset.abs() <= 1e-3 { moved.dot(stick) } else { moved.length() };
+                assert!(way > 0.05, "{what}: 12 ticks of stick moved it {moved}");
+                for _ in 0..240 {
+                    rig.stick(stick);
+                }
+                assert_eq!(rig.mode(), GroundMode::Grounded, "{what}: at {}", rig.feet());
+                near(rig.feet().y, 0.0, 1e-3, &format!("{what}: on the floor beside it"));
+            }
+        }
+    }
+}
+
+/// Dead center and left alone, nothing says which way to go. It isn't stuck: a jump still leaves, as
+/// from anything wedged, and so does the stick, and the one under it walking away drops it.
+#[test]
+fn a_character_dead_center_on_another_can_always_leave() {
+    let landed = || {
+        let mut rig = Rig::new(vec![floor(1)], Vec3::new(0.0, 3.0, 0.0));
+        let profile = rig.profile;
+        second_capsule(&mut rig.world, &profile, Vec3::ZERO);
+        rig.sticks(Vec2::ZERO, 120);
+        assert_eq!(rig.mode(), GroundMode::Sliding, "on a head, and not standing on it");
+        near(rig.feet().y, FEET_TO_TOP, 1e-3, "on top of the other");
+        rig
+    };
+
+    let mut rig = landed();
+    rig.jump(Vec2::ZERO);
+    assert!(rig.state.events.jumped, "it jumped");
+    assert!(rig.state.velocity.y > 0.0, "and it's rising: {}", rig.state.velocity);
+
+    let mut rig = landed();
+    let center = rig.profile.feet_to_center();
+    rig.world.set_body_pose(BodyId(2), Pose::at(Vec3::new(2.0, 0.0, 0.0) + center)).expect("a good pose");
+    rig.sticks(Vec2::ZERO, 120);
+    assert_eq!(rig.mode(), GroundMode::Grounded);
+    near(rig.feet().y, 0.0, 1e-3, "dropped to the floor");
+    near(rig.feet().x, 0.0, 1e-5, "straight down");
+
+    // Someone under it who walks off slowly takes the top out from under it as well.
+    let mut rig = landed();
+    let mut under = Vec3::ZERO;
+    let mut left_it = false;
+    for _ in 0..240 {
+        under.x += 0.01;
+        rig.world.set_body_pose(BodyId(2), Pose::at(under + center)).expect("a good pose");
+        rig.stick(Vec2::ZERO);
+        left_it |= rig.feet().y < 0.1;
+    }
+    assert!(left_it, "it stayed up to {} with the other at {under}", rig.feet());
+    assert_eq!(rig.mode(), GroundMode::Grounded);
+}
+
+/// However gentle the top it's on, a steep static slope is still what a stick can't climb, the rule this
+/// has to leave alone: the same stick on another character walks up its top and over.
+#[test]
+fn only_another_characters_top_takes_the_stick_this_way() {
+    // Too steep to stand on, from the 60° row of the slopes above: pressed uphill, it only falls.
+    let mut rig = Rig::new(vec![floor(1), slope(2, 0.0, 0.0, 60.0, 8.0)], Vec3::new(3.0, 6.0, 0.0));
+    let mut highest_after_contact: Option<f32> = None;
+    for _ in 0..240 {
+        rig.stick(RIGHT);
+        if rig.mode() == GroundMode::Sliding {
+            let height = rig.feet().y;
+            if let Some(highest) = highest_after_contact {
+                assert!(height <= highest + 1e-3, "it climbed: {height} past {highest}");
+            }
+            highest_after_contact = Some(height);
+        }
+    }
+    assert!(highest_after_contact.is_some(), "it never slid");
+
+    let mut rig = Rig::new(vec![floor(1)], Vec3::new(-0.2, 3.0, 0.0));
+    let profile = rig.profile;
+    second_capsule(&mut rig.world, &profile, Vec3::ZERO);
+    while rig.mode() != GroundMode::Sliding {
+        rig.stick(Vec2::ZERO);
+    }
+    rig.sticks(RIGHT, 60);
+    assert!(rig.feet().x > 0.6, "up its top and over: {}", rig.feet());
+}
+
 // --- The profile ---
 
 #[test]

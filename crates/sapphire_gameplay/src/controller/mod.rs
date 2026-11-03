@@ -63,7 +63,8 @@
 //! # Doesn't own
 //!
 //! Animation, the camera, the move system, hit detection, or pushing other characters: capsules block
-//! each other, and that's all. Another capsule underfoot isn't ground, so a character slides off one.
+//! each other, and that's all. Another capsule underfoot isn't ground, so a character slides off one, or
+//! the stick walks it off the gentle top where there's no slope to slide on.
 
 mod profile;
 mod step;

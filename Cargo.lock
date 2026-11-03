@@ -3505,9 +3505,12 @@ name = "sapphire_controls"
 version = "0.1.0"
 dependencies = [
  "profiling",
+ "sapphire_assets",
  "sapphire_core",
  "sapphire_gameplay",
  "sapphire_input",
+ "sapphire_loc",
+ "sapphire_look",
  "sapphire_math",
  "sapphire_platform",
  "sapphire_serialize",

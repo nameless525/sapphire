@@ -34,6 +34,11 @@ pub enum RawInput {
     MouseMotion {
         delta: Vec2,
     },
+    /// Where the mouse is now, in points with +y down, for what points at things: motion above is what
+    /// looks around, and a captured mouse moves that and not this.
+    MouseAt {
+        position: Vec2,
+    },
     /// Scrolling in notches: +y away from the user, +x right.
     MouseWheel {
         delta: Vec2,

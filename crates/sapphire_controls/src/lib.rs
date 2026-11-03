@@ -13,6 +13,8 @@
 //!   once per fixed step, with the camera's yaw. [`ControlsSource`] is the same mapping as a replay
 //!   recording's source.
 //! - **The pause:** it stops the steps, not the app, and resuming takes no burst.
+//! - **A menu's controls** ([`MenuControls`], `menu_bindings.ron`, M3 U5): keyboard, gamepad, mouse and
+//!   fingers, as one plain `UiInput` for `sapphire_ui`'s tree.
 //!
 //! # Doesn't own
 //!
@@ -91,9 +93,11 @@
 
 mod controls;
 mod latch;
+mod menu;
 
 pub use controls::{
     BUTTON_ACTIONS, COMBAT_CONTEXT, COMBAT_PRIORITY, CombatControls, ControlsError, ControlsSource,
     ControlsStats, DEFAULT_BINDINGS, MOVE_ACTION, PAUSE_CONTEXT, PAUSE_PRIORITY, TOUCH_BUTTONS,
     default_bindings,
 };
+pub use menu::{MENU_BINDINGS, MENU_CONTEXT, MenuControls, MenuError, menu_bindings};

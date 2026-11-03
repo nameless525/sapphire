@@ -20,8 +20,12 @@ sapphire_ui.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+# The screen a menu's test walks.
+sapphire_assets.workspace = true
 # The counting allocator, for the steady-state allocation test.
 sapphire_core.workspace = true
+sapphire_loc.workspace = true
+sapphire_look.workspace = true
 
 [lints]
 workspace = true

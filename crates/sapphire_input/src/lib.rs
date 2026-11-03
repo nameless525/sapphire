@@ -23,6 +23,8 @@
 //!   [`InputSystem::capture_next`] captures the source a player presses for it.
 //! - **The last-used device** ([`DeviceKind`], with the gamepad's [`GamepadFamily`]), for
 //!   prompt glyphs.
+//! - **Where pointers are** ([`InputSystem::pointers`]): the mouse's left button and fingers, in
+//!   points and in time order, for a screen to hit-test (M3 U5). No action depends on them.
 //!
 //! # Does not own
 //!
@@ -105,7 +107,8 @@ pub use raw::RawInput;
 pub use sapphire_platform::Timestamp;
 pub use source::{Gesture, Key, MouseButton, PadAxis, PadButton, Source, Stick, SwipeDirection};
 pub use system::{
-    ActionEvent, ActionEventKind, ActionPhase, ActionState, InputSystem, MAX_UPDATE_DELTA, RebindError,
+    ActionEvent, ActionEventKind, ActionPhase, ActionState, InputSystem, MAX_UPDATE_DELTA, Pointer,
+    PointerEvent, PointerPhase, RebindError,
 };
 pub use trigger::Trigger;
 

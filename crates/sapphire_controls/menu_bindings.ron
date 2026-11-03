@@ -1,0 +1,76 @@
+// A menu's default bindings (sapphire_input's document format), compiled into sapphire_controls.
+// Rebinding is editing this file, or `InputSystem::rebind` by a binding's name at run time.
+//
+//   Action       Pad                     Keyboard                Mouse, finger
+//   ui_move      Left stick, D-pad       Arrow keys, W A S D     a pointer moves focus by itself
+//   ui_confirm   South (A, Cross)        Return, Space           a pointer lets go on what it pressed
+//   ui_back      East (B, Circle), Back  Esc, Backspace          Android's Back
+//   ui_scroll    Right stick                                     wheel; a finger drags what it's on
+//
+// A pointer isn't an action: `InputSystem::pointers` says where it is and what it did, since what it
+// means depends on what's under it, and `sapphire_ui`'s tree is what knows that.
+//
+// `ui_move` is +y up, as the stick reads. `ui_scroll` is in points further down what scrolls.
+(
+    type: "sapphire::input::InputBindings",
+    version: 1,
+    data: (
+        actions: [
+            (name: "ui_move", kind: Axis2D),
+            (name: "ui_confirm", kind: Button),
+            (name: "ui_back", kind: Button),
+            (name: "ui_scroll", kind: Axis2D),
+        ],
+        contexts: [
+            (
+                name: "menu",
+                bindings: [
+                    (
+                        action: "ui_move",
+                        source: PadStick(Left),
+                        modifiers: [DeadZone(lower: 0.15, upper: 0.95)],
+                        name: "ui_move.gamepad",
+                    ),
+                    (action: "ui_move", source: Pad(DpadUp), modifiers: [Swizzle]),
+                    (action: "ui_move", source: Pad(DpadDown), modifiers: [Swizzle, Negate(Y)]),
+                    (action: "ui_move", source: Pad(DpadLeft), modifiers: [Negate(X)]),
+                    (action: "ui_move", source: Pad(DpadRight)),
+                    (action: "ui_move", source: Key(Up), modifiers: [Swizzle], name: "ui_up.keyboard"),
+                    (action: "ui_move", source: Key(Down), modifiers: [Swizzle, Negate(Y)], name: "ui_down.keyboard"),
+                    (action: "ui_move", source: Key(Left), modifiers: [Negate(X)], name: "ui_left.keyboard"),
+                    (action: "ui_move", source: Key(Right), name: "ui_right.keyboard"),
+                    (action: "ui_move", source: Key(W), modifiers: [Swizzle]),
+                    (action: "ui_move", source: Key(S), modifiers: [Swizzle, Negate(Y)]),
+                    (action: "ui_move", source: Key(A), modifiers: [Negate(X)]),
+                    (action: "ui_move", source: Key(D)),
+
+                    (action: "ui_confirm", source: Pad(South), trigger: Pressed, name: "ui_confirm.gamepad"),
+                    (action: "ui_confirm", source: Key(Return), trigger: Pressed, name: "ui_confirm.keyboard"),
+                    (action: "ui_confirm", source: Key(Space), trigger: Pressed),
+
+                    (action: "ui_back", source: Pad(East), trigger: Pressed, name: "ui_back.gamepad"),
+                    (action: "ui_back", source: Pad(Back), trigger: Pressed),
+                    (action: "ui_back", source: Key(Escape), trigger: Pressed, name: "ui_back.keyboard"),
+                    (action: "ui_back", source: Key(Backspace), trigger: Pressed),
+                    // Android's Back reaches input as SDL's AC_BACK.
+                    (action: "ui_back", source: Key(Hid(282)), trigger: Pressed),
+
+                    // A wheel's notch is 48 points, a little over one line of a list, and away from you
+                    // goes back up it. A wheel reads along x, so it turns to y. A stick's full tilt is 900
+                    // points a second.
+                    (action: "ui_scroll", source: MouseWheel, modifiers: [Scale((-48.0, 0.0)), Swizzle]),
+                    (
+                        action: "ui_scroll",
+                        source: PadStick(Right),
+                        modifiers: [
+                            DeadZone(lower: 0.15, upper: 0.95),
+                            ResponseCurve(exponent: 2.0),
+                            Scale((900.0, -900.0)),
+                            ScaleByDeltaTime,
+                        ],
+                    ),
+                ],
+            ),
+        ],
+    ),
+)

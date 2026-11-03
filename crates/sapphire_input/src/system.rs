@@ -6,12 +6,12 @@ use sapphire_math::Vec2;
 use sapphire_platform::{Event, GamepadId, Timestamp, TouchPhase};
 
 use crate::bindings::{ActionKind, InputBindings};
-use crate::devices::{DeviceKind, Devices};
+use crate::devices::{DeviceKind, Devices, MAX_FINGERS};
 use crate::gesture::{Gestures, PressChange};
 use crate::map::{ActionId, Channel, ContextId, InputMap, MapError, SourceId, VirtualControl};
 use crate::modifier;
 use crate::raw::{PlatformAdapter, RawInput};
-use crate::source::{Key, PadAxis, Source};
+use crate::source::{Key, MouseButton, PadAxis, Source};
 use crate::trigger::{self, Abort, Memory, TriggerState};
 
 /// The longest update [`Modifier::ScaleByDeltaTime`](crate::Modifier::ScaleByDeltaTime) sees,
@@ -50,6 +50,43 @@ pub enum ActionEventKind {
     Completed,
     /// It returned to `Idle` without triggering: a hold let go early, a tap held too long.
     Canceled,
+}
+
+/// What points at the screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pointer {
+    Mouse,
+    /// A finger's slot, below [`MAX_FINGERS`](crate::MAX_FINGERS).
+    Finger(usize),
+}
+
+/// What a pointer did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PointerPhase {
+    Down,
+    Moved,
+    Up,
+    /// It's gone, and nothing it was doing should happen: the OS took back the finger, or focus was lost.
+    Canceled,
+}
+
+const fn pointer_phase(phase: TouchPhase) -> PointerPhase {
+    match phase {
+        TouchPhase::Down => PointerPhase::Down,
+        TouchPhase::Moved => PointerPhase::Moved,
+        TouchPhase::Up => PointerPhase::Up,
+        TouchPhase::Canceled => PointerPhase::Canceled,
+    }
+}
+
+/// One thing a pointer did, for what depends on where it is: see [`InputSystem::pointers`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PointerEvent {
+    pub pointer: Pointer,
+    pub phase: PointerPhase,
+    /// In points, +y down.
+    pub position: Vec2,
+    pub timestamp: Timestamp,
 }
 
 /// One change to an action, at the instant it happened.
@@ -274,6 +311,11 @@ pub struct InputSystem {
     gestures: Gestures,
     queue: Vec<(Timestamp, RawInput)>,
     events: Vec<ActionEvent>,
+    pointers: Vec<PointerEvent>,
+    /// Where the mouse last was, whether its left button is down, and each finger that is.
+    mouse_at: Vec2,
+    mouse_down: bool,
+    fingers_down: u32,
     contexts: Vec<EnabledContext>,
     next_context_order: u64,
     contexts_changed: bool,
@@ -313,6 +355,10 @@ impl InputSystem {
             gestures: Gestures::default(),
             queue: Vec::with_capacity(QUEUE_CAPACITY),
             events: Vec::with_capacity(EVENT_CAPACITY),
+            pointers: Vec::with_capacity(EVENT_CAPACITY),
+            mouse_at: Vec2::ZERO,
+            mouse_down: false,
+            fingers_down: 0,
             contexts: Vec::with_capacity(map.context_count()),
             next_context_order: 0,
             contexts_changed: true,
@@ -388,6 +434,15 @@ impl InputSystem {
     /// Touches over on-screen controls belong to the UI: give them to the control (which
     /// [`inject`](Self::inject)s), not here, or they would also drag the camera.
     pub fn handle_event(&mut self, event: &Event) {
+        let mouse = match *event {
+            Event::MouseMotion(motion) => Some((motion.timestamp, motion.x, motion.y)),
+            Event::MouseButton(button) => Some((button.timestamp, button.x, button.y)),
+            _ => None,
+        };
+        if let Some((timestamp, x, y)) = mouse {
+            let position = Vec2::new(x, y) * self.adapter.points_per_coordinate;
+            self.push(timestamp, RawInput::MouseAt { position });
+        }
         let Some((timestamp, input)) = self.adapter.translate(event) else { return };
         if input == RawInput::ReleaseAll {
             // `SDL_SetKeyboardFocus(NULL)` posts an ordinary key-up for every held key, then the
@@ -397,7 +452,9 @@ impl InputSystem {
             // held mouse buttons the same way, and may come just before the keyboard's leave.
             while let Some((
                 _,
-                RawInput::Key { down: false, .. } | RawInput::MouseButton { down: false, .. },
+                RawInput::Key { down: false, .. }
+                | RawInput::MouseButton { down: false, .. }
+                | RawInput::MouseAt { .. },
             )) = self.queue.last()
             {
                 self.queue.pop();
@@ -457,6 +514,7 @@ impl InputSystem {
     pub fn update(&mut self, now: Timestamp) {
         profiling::scope!("input::update");
         self.events.clear();
+        self.pointers.clear();
         for action in &mut self.actions {
             action.fired = 0;
         }
@@ -490,6 +548,13 @@ impl InputSystem {
     /// The action events of the latest update, in time order.
     pub fn events(&self) -> &[ActionEvent] {
         &self.events
+    }
+
+    /// What the mouse's left button and fingers did in the latest update, in time order, whatever the
+    /// contexts and bindings: what's under a pointer decides what it means, and that's not known here.
+    /// A screen's own touch controls take their fingers first, so those never get this far.
+    pub fn pointers(&self) -> &[PointerEvent] {
+        &self.pointers
     }
 
     pub fn state(&self, action: ActionId) -> &ActionState {
@@ -583,6 +648,11 @@ impl InputSystem {
                 if down {
                     self.devices.used(DeviceKind::KeyboardMouse);
                 }
+                if button == MouseButton::Left && self.mouse_down != down {
+                    self.mouse_down = down;
+                    let phase = if down { PointerPhase::Down } else { PointerPhase::Up };
+                    self.pointer(Pointer::Mouse, phase, self.mouse_at, now);
+                }
                 if self.devices.set_mouse(button, down) {
                     self.evaluate(now, MotionPass::Keep, Abort::No);
                 }
@@ -592,6 +662,12 @@ impl InputSystem {
                     self.devices.used(DeviceKind::KeyboardMouse);
                 }
                 self.add_motion(Channel::Pointer, delta, now);
+            }
+            RawInput::MouseAt { position } => {
+                if position != self.mouse_at {
+                    self.mouse_at = position;
+                    self.pointer(Pointer::Mouse, PointerPhase::Moved, position, now);
+                }
             }
             RawInput::MouseWheel { delta } => {
                 self.devices.used(DeviceKind::KeyboardMouse);
@@ -632,6 +708,13 @@ impl InputSystem {
                 if phase == TouchPhase::Down {
                     self.devices.used(DeviceKind::Touch);
                 }
+                let (phase_now, bit) = (pointer_phase(phase), 1 << finger);
+                match phase_now {
+                    PointerPhase::Down => self.fingers_down |= bit,
+                    PointerPhase::Up | PointerPhase::Canceled => self.fingers_down &= !bit,
+                    PointerPhase::Moved => {}
+                }
+                self.pointer(Pointer::Finger(finger), phase_now, position, now);
                 let out = self.gestures.touch(now, finger, phase, position, self.map.gestures());
                 // An up can carry the last move: settle it under the press's existing chord gate.
                 // Slop cancellation and OS cancellation keep their existing gate-first policy.
@@ -683,6 +766,16 @@ impl InputSystem {
                 }
             }
             RawInput::ReleaseAll => {
+                if std::mem::take(&mut self.mouse_down) {
+                    self.pointer(Pointer::Mouse, PointerPhase::Canceled, self.mouse_at, now);
+                }
+                for finger in 0..MAX_FINGERS {
+                    if self.fingers_down & (1 << finger) != 0 {
+                        // Gone, so wherever it was doesn't matter.
+                        self.pointer(Pointer::Finger(finger), PointerPhase::Canceled, Vec2::ZERO, now);
+                    }
+                }
+                self.fingers_down = 0;
                 self.devices.release_all();
                 self.gestures.reset();
                 // Motion bindings are judged too, on what they took so far, so the loss ends
@@ -690,6 +783,10 @@ impl InputSystem {
                 self.evaluate(now, MotionPass::All, Abort::All);
             }
         }
+    }
+
+    fn pointer(&mut self, pointer: Pointer, phase: PointerPhase, position: Vec2, timestamp: Timestamp) {
+        self.pointers.push(PointerEvent { pointer, phase, position, timestamp });
     }
 
     /// `axis` has reported for the first time since everything let go, which it was held through.

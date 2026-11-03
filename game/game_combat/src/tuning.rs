@@ -185,8 +185,15 @@ impl Document {
                 tuning.moves_document(origin, text, cooked.as_ref(), LiveFight { combat, scene })
             }
             Self::Camera => tuning.camera_document(text, &mut fight.show, scene),
+            // Checked as a cook checks it, its clips loaded if they aren't, and bound against this character.
+            // Everything before the swap can fail, and leaves what's playing.
             Self::Graph => {
-                tuning.graph_document(origin, text, content, &mut fight.show, scene, renderer, gpu)
+                let (owner, path) = graph_of(origin)?;
+                let mut graph = AnimGraph::from_document(text).map_err(|error| error_chain(&error))?;
+                graph.resolve(clip_id);
+                fight.show.replace_graph_document(scene, owner, graph, content, renderer, gpu)?;
+                tuning.count_edit(document_file_name(path));
+                Ok(format!("{}'s animation graph, from the next state's start", owner.0))
             }
         }
     }
@@ -535,26 +542,6 @@ impl LiveTuning {
         show.set_camera_tuning(scene, tuning)?;
         self.count_edit(document_file_name(CAMERA_PATH));
         Ok("camera's tuning".to_owned())
-    }
-
-    /// Takes an edited animation graph: checked as a cook checks it, its clips loaded if they aren't, and
-    /// bound against this character. Everything before the swap can fail, and leaves what's playing.
-    pub(crate) fn graph_document(
-        &mut self,
-        origin: &str,
-        text: &str,
-        content: &mut Content,
-        show: &mut FightShow,
-        scene: &mut Scene,
-        renderer: &mut Renderer,
-        gpu: &GpuContext,
-    ) -> Result<String, String> {
-        let (owner, path) = graph_of(origin)?;
-        let mut graph = AnimGraph::from_document(text).map_err(|error| error_chain(&error))?;
-        graph.resolve(clip_id);
-        show.replace_graph_document(scene, owner, graph, content, renderer, gpu)?;
-        self.count_edit(document_file_name(path));
-        Ok(format!("{}'s animation graph, from the next state's start", owner.0))
     }
 
     /// Takes the new versions of cooked sets among the asset server's `changes`, and returns what went

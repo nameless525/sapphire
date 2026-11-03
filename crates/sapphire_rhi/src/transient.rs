@@ -6,18 +6,19 @@
 //! Textures unused for [`EVICT_AFTER_FRAMES`] frames are released, so sizes left behind by a
 //! resize or a quality change don't stay resident. Until then they count in
 //! [`TransientStats::bytes`], up to a byte budget: at each frame's start the unused ones may hold
-//! what the last frame used ([`MIN_SPARE_BYTES`] at least), the oldest going first. That is one
-//! set of scene-sized textures left by a step of dynamic resolution, which a step back reuses, and
-//! a window dragged through a size a frame holds three sets, not sixty (review RA-O06). A phone's
-//! own limit may still lower it once phones' memory is measured.
+//! the most a frame used within those frames ([`MIN_SPARE_BYTES`] at least), the oldest going
+//! first. That is the whole set of scene-sized textures left by a step of dynamic resolution,
+//! though it outweighs the frames after it, which a step back reuses; a lone frame using little
+//! costs the next nothing; and a window dragged through a size a frame holds three sets, not sixty
+//! (review RA-O06). A phone's own limit may still lower it once phones' memory is measured.
 
 use crate::GpuContext;
 
 /// Frames a pooled texture may sit unused before it is released.
 pub const EVICT_AFTER_FRAMES: u64 = 60;
 
-/// The most bytes of unused textures the pool is never asked to give up before their age: a frame
-/// using less than this, a tool's or a capture's, doesn't empty the pool.
+/// The most bytes of unused textures the pool is never asked to give up before their age, however
+/// little frames have used lately.
 pub const MIN_SPARE_BYTES: u64 = 16 << 20;
 
 /// What a transient texture is; textures are shared only between identical descriptors.
@@ -147,6 +148,9 @@ struct SlotPool<K, T> {
     frame: u64,
     /// A key's estimated bytes.
     weigh: fn(&K) -> u64,
+    /// The most bytes a frame has used lately, and the frame that was seen at: what the unused
+    /// textures may weigh (the module docs).
+    recent_use: (u64, u64),
     stats: TransientStats,
 }
 
@@ -160,7 +164,7 @@ struct Slot<K, T> {
 
 impl<K, T> SlotPool<K, T> {
     fn new(weigh: fn(&K) -> u64) -> Self {
-        Self { slots: Vec::new(), frame: 0, weigh, stats: TransientStats::default() }
+        Self { slots: Vec::new(), frame: 0, weigh, recent_use: (0, 0), stats: TransientStats::default() }
     }
 }
 
@@ -191,7 +195,11 @@ impl<K: PartialEq + Copy, T> SlotPool<K, T> {
     fn give_up_spares(&mut self) {
         let weigh = self.weigh;
         let used: u64 = self.slots.iter().filter(|slot| slot.in_use).map(|slot| weigh(&slot.key)).sum();
-        let budget = used.max(MIN_SPARE_BYTES);
+        // A larger frame's textures last as long as this does, so it goes when they would.
+        if used >= self.recent_use.0 || self.frame - self.recent_use.1 > EVICT_AFTER_FRAMES {
+            self.recent_use = (used, self.frame);
+        }
+        let budget = self.recent_use.0.max(MIN_SPARE_BYTES);
         let mut spare = self.stats.bytes - used;
         while spare > budget {
             let oldest = self
@@ -342,6 +350,58 @@ mod tests {
         assert!(pool.slots.iter().all(|slot| slot.key != spare), "the oldest went");
         assert!(pool.slots.iter().any(|slot| slot.key == spare + 3), "the newest spare stayed");
         assert_eq!(pool.stats.evicted, 1);
+    }
+
+    /// A step of dynamic resolution down weighs less than the set it left, by 11% or more: that
+    /// whole set stays for the step back, however its textures are split.
+    #[test]
+    fn a_step_down_keeps_the_whole_set_it_left() {
+        const TEXTURE: u64 = MIN_SPARE_BYTES;
+        // Keys are a texture's bytes and which of the set it is.
+        let mut pool = SlotPool::new(|&(bytes, _): &(u64, u32)| bytes);
+        let frame = |pool: &mut SlotPool<(u64, u32), char>, bytes: u64| {
+            pool.begin_frame();
+            for index in 0..8 {
+                pool.acquire(&(bytes, index), || 'x');
+            }
+        };
+        frame(&mut pool, TEXTURE);
+        for _ in 0..30 {
+            frame(&mut pool, TEXTURE * 9 / 10);
+        }
+        let created = pool.stats.created;
+        frame(&mut pool, TEXTURE);
+        assert_eq!(pool.stats.created, created, "every texture of the larger set came back");
+        assert_eq!(pool.stats.evicted, 0);
+    }
+
+    /// A frame using little, a tool's or one with nothing to draw, doesn't cost the next frame its
+    /// set, nor do such frames in turn with whole ones.
+    #[test]
+    fn frames_using_little_leave_the_set_for_the_next() {
+        const SET: u64 = 8 * MIN_SPARE_BYTES;
+        let mut pool = SlotPool::new(|&key: &u32| if key == 0 { SET } else { 1 });
+        for frame in 0..20 {
+            pool.begin_frame();
+            pool.acquire(&(frame % 2), || 'x');
+        }
+        assert_eq!(pool.stats.created, 2, "both stayed");
+        assert_eq!(pool.stats.evicted, 0);
+    }
+
+    /// The budget follows what frames used lately, so once a large frame's age has passed, a
+    /// stream of smaller sizes holds its own few sets again.
+    #[test]
+    fn the_budget_falls_once_a_large_frame_has_aged_out() {
+        const SMALL: u64 = 2 * MIN_SPARE_BYTES;
+        let mut pool = SlotPool::new(|&key: &u32| if key == 0 { 8 * SMALL } else { SMALL });
+        pool.begin_frame();
+        pool.acquire(&0, || 'x');
+        for size in 1..EVICT_AFTER_FRAMES as u32 + 10 {
+            pool.begin_frame();
+            pool.acquire(&size, || 'x');
+        }
+        assert_eq!(pool.stats.bytes, 3 * SMALL, "this frame's, the last frame's and one set more");
     }
 
     #[test]

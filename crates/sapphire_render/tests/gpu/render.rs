@@ -1925,6 +1925,54 @@ fn the_sky_cubes_timing_spans_all_six_faces() {
     }
 }
 
+/// A step of dynamic resolution down and back, within the second a set stays, makes no textures:
+/// the set it left is all still there, though it weighs more than the frames at the lower scale.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_step_of_render_scale_and_back_reuses_its_transients() {
+    const SIZE: (u32, u32) = (1600, 900);
+    let gpu = gpu();
+    let settings = RenderSettings { msaa: Msaa::Off, temporal: true, ..RenderSettings::default() };
+    let mut frames = Frames::with_settings(&gpu, FORMAT, settings).expect("renderer");
+    let texture = target(&gpu, FORMAT, SIZE);
+    let view = texture.create_view(&Default::default());
+    let camera = framing_camera(38.0, SIZE, 0.3);
+    for down in [0.95, 0.85] {
+        let mut draw = |scale: f32| {
+            frames.renderer.set_render_scale(scale);
+            for _ in 0..3 {
+                assert!(frames.render(&gpu, &view, camera, &[], &[]).is_none());
+            }
+            frames.graph.stats().pool
+        };
+        let full = draw(1.0);
+        assert!(full.bytes > sapphire_rhi::MIN_SPARE_BYTES, "a set past the floor: {full:?}");
+        let created = draw(down).created;
+        let back = draw(1.0);
+        assert_eq!(back.created, created, "down to {down} and back: {back:?}");
+    }
+}
+
+/// A frame that uses no transients, as one with no view to draw does, leaves the next its set.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_frame_without_transients_leaves_the_next_its_set() {
+    const SIZE: (u32, u32) = (1600, 900);
+    let gpu = gpu();
+    let settings = RenderSettings { msaa: Msaa::Off, temporal: true, ..RenderSettings::default() };
+    let mut frames = Frames::with_settings(&gpu, FORMAT, settings).expect("renderer");
+    let texture = target(&gpu, FORMAT, SIZE);
+    let view = texture.create_view(&Default::default());
+    let camera = framing_camera(38.0, SIZE, 0.3);
+    assert!(frames.render(&gpu, &view, camera, &[], &[]).is_none());
+    let created = frames.graph.stats().pool.created;
+    frames.graph.execute(&gpu, FrameGraph::new()).expect("a valid graph");
+    frames.graph.execute(&gpu, FrameGraph::new()).expect("a valid graph");
+    assert!(frames.render(&gpu, &view, camera, &[], &[]).is_none());
+    let pool = frames.graph.stats().pool;
+    assert_eq!(pool.created, created, "{pool:?}");
+}
+
 /// A window dragged through a size a frame leaves the pool the frame's textures and a set or two
 /// more, not the sixty sets the age alone would keep (OPT-009).
 #[test]

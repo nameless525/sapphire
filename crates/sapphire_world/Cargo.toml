@@ -1,6 +1,6 @@
 [package]
 name = "sapphire_world"
-description = "The world framework. For now, time of day (one set of keys that drives the sky, light, fog, ambient, shadow tint, post and the character rig, with zone overrides and cutscene tracks), the character light rig's presets, and the stack of combat's screen effects."
+description = "The world framework: activating a zone's cells by distance within a budget, time of day (one set of keys that drives the sky, light, fog, ambient, shadow tint, post and the character rig, with zone overrides and cutscene tracks), the character light rig's presets, and the stack of combat's screen effects."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,6 +13,8 @@ bevy_ecs.workspace = true
 # The `Reflect` derives on time-of-day keys find the crate by this name (see sapphire_reflect).
 bevy_reflect.workspace = true
 profiling.workspace = true
+# What a zone's cells load through.
+sapphire_assets.workspace = true
 sapphire_ecs.workspace = true
 sapphire_math.workspace = true
 sapphire_reflect.workspace = true
@@ -23,18 +25,21 @@ sapphire_serialize.workspace = true
 sapphire_time.workspace = true
 # Time of day's model, which `tod` re-exports and runs.
 sapphire_tod.workspace = true
+# The cooked zone the streamer reads.
+sapphire_zone.workspace = true
 serde.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 # Waits on error scopes in the light rig's GPU tests.
 pollster.workspace = true
-# The light rig's GPU tests build the mesh and material they draw.
-sapphire_assets.workspace = true
 # The counting allocator, for the allocation tests.
 sapphire_core.workspace = true
 # The light rig's GPU tests draw through the renderer on a device of their own.
 sapphire_rhi.workspace = true
+# A zone with no art, for streaming's tests.
+sapphire_synthetic_zone.workspace = true
 
 [lints]
 workspace = true

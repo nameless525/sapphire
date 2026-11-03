@@ -4038,6 +4038,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sapphire_synthetic_zone"
+version = "0.1.0"
+dependencies = [
+ "sapphire_assets",
+ "sapphire_serialize",
+ "sapphire_zone",
+]
+
+[[package]]
 name = "sapphire_testkit"
 version = "0.1.0"
 dependencies = [
@@ -4133,10 +4142,13 @@ dependencies = [
  "sapphire_render",
  "sapphire_rhi",
  "sapphire_serialize",
+ "sapphire_synthetic_zone",
  "sapphire_time",
  "sapphire_tod",
+ "sapphire_zone",
  "serde",
  "thiserror 2.0.21",
+ "tracing",
 ]
 
 [[package]]

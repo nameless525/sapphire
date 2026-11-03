@@ -19,9 +19,11 @@
 //!   and clock, resolved once per frame into the post effects the app writes into the frame
 //!   packet.
 //!
-//! The rest of spec §5.21 (zones and their streaming cells, prefabs, spawning, zone transitions,
-//! activation budgets and encounter volumes) arrives with M3; time of day's volumes become zone
-//! data then.
+//! - **Streaming a zone's cells** ([`streaming`], M3 W2): by distance from a focus, within a budget of
+//!   entities or microseconds a frame, for presentation only: the simulation streams nothing.
+//!
+//! The rest of spec §5.21 (zone transitions and encounter volumes) arrives with M3; time of day's
+//! volumes become zone data then.
 //!
 //! # Does not own
 //!
@@ -43,4 +45,5 @@
 pub mod fade;
 pub mod light_rig;
 pub mod screen_effects;
+pub mod streaming;
 pub mod tod;

@@ -23,6 +23,7 @@ members = [
     "crates/sapphire_rhi",
     "crates/sapphire_serialize",
     "crates/sapphire_colliders",
+    "crates/sapphire_synthetic_zone",
     "crates/sapphire_zone",
     "crates/sapphire_strings",
     "crates/sapphire_loc",
@@ -105,6 +106,7 @@ sapphire_input = { path = "crates/sapphire_input" }
 sapphire_render = { path = "crates/sapphire_render" }
 sapphire_tod = { path = "crates/sapphire_tod" }
 sapphire_colliders = { path = "crates/sapphire_colliders" }
+sapphire_synthetic_zone = { path = "crates/sapphire_synthetic_zone" }
 sapphire_zone = { path = "crates/sapphire_zone" }
 sapphire_strings = { path = "crates/sapphire_strings" }
 sapphire_loc = { path = "crates/sapphire_loc" }

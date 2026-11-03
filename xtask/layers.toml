@@ -134,6 +134,8 @@ sapphire_livelink = { kind = "dev_only" }
 # crates and no renderer, GPU or egui. Not a tool, because the editor depends on it and nothing may
 # depend on a tool (R1).
 sapphire_document = { kind = "dev_only" }
+# A zone with no art, for streaming's tests and benches (M3 W2).
+sapphire_synthetic_zone = { kind = "dev_only" }
 # Apps.
 # `tracy`: stream profiling zones to Tracy (spec §5.3).
 # `dev`: development builds, linking the dev-only crates (the debug overlay, spec §5.20).

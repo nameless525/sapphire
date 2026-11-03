@@ -640,12 +640,12 @@ jobs:
       # Release with LTO, the configuration that ships: thin LTO once dropped a symbol SDL needed
       # (`___isPlatformVersionAtLeast`, see sapphire_platform/build.rs) and only release links failed.
       - name: Build for device (release)
-        run: cargo build --package sapphire_sandbox --target aarch64-apple-ios --release --locked
+        run: cargo build --package sapphire_sandbox --package game_app --target aarch64-apple-ios --release --locked
       # The simulator builds the development configuration (`dev`: the debug overlay, live link,
       # and hot reload without its desktop file watcher), which the M1 exit run's simulator leg
       # runs (review BC-002); the device build above stays the shipping one, without it.
       - name: Build for simulator (dev)
-        run: cargo build --package sapphire_sandbox --target aarch64-apple-ios-sim --features dev --locked
+        run: cargo build --package sapphire_sandbox --package game_app --target aarch64-apple-ios-sim --features dev --locked
 
   mobile-build-android:
     name: Mobile build (Android)
@@ -674,6 +674,12 @@ jobs:
         run: |
           export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/29.0.14206865" JAVA_HOME="$JAVA_HOME_17_X64"
           cargo --locked xtask --locked bundle --platform android
+      # The game's APK from the same project, with its own identity and its own Gradle outputs. The
+      # engine's crates and the cook are built by now, so this adds the game's crates and a Gradle run.
+      - name: Bundle the game's APK
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/29.0.14206865" JAVA_HOME="$JAVA_HOME_17_X64"
+          cargo --locked xtask --locked bundle --app game_app --platform android
       # The development configuration as well (live link, and hot reload without the desktop file
       # watcher), which the M1 exit run's emulator and phone legs run (review BC-002). The cook is
       # cached by now, so this adds the dev library and a Gradle run.

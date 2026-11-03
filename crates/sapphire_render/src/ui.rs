@@ -6,7 +6,7 @@
 //!
 //! Nothing here exists until a frame's list has quads and something for them to read: no pipeline,
 //! texture or buffer, and no pass in the graph. The first such frame builds the one pipeline, on the calling thread,
-//! as a new material variant's are, and uploads the atlas; those stay. A frame with an empty list
+//! as a new material variant's are, unless a load's inventory declared it (M3 K1), and uploads the atlas; those stay. A frame with an empty list
 //! after that adds no pass either. `tests/gpu/ui.rs` holds both by counting pipelines.
 //!
 //! # sRGB

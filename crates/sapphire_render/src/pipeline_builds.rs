@@ -140,7 +140,7 @@ pub struct PipelineInventory {
     pub effects: bool,
     /// It deforms meshes, with skinning or morphs.
     pub skinning: bool,
-    /// It draws an interface.
+    /// It draws an interface: atlas quads and glyph pages go through the one pipeline this builds.
     pub ui: bool,
     /// The sky materials it draws, uploaded by the time they're listed.
     pub sky: Vec<MaterialHandle>,
@@ -358,7 +358,7 @@ mod tests {
     use super::*;
 
     /// Test code that makes a pipeline of its own, none of which a renderer ever draws through.
-    const OTHER_ROUTES: [&str; 4] = [
+    const OTHER_ROUTES: [&str; 5] = [
         // The route itself.
         "crates/sapphire_render/src/pipeline_builds.rs",
         // Runs a shader's own functions on values only the GPU sees: `#[cfg(test)]`, with no renderer.
@@ -367,6 +367,8 @@ mod tests {
         "crates/sapphire_render/src/sky/gpu_tests.rs",
         // Samples textures to prove they uploaded, with no renderer.
         "crates/sapphire_render/tests/gpu/texture.rs",
+        // Draws a ramp into a texture for a pane to show, with no renderer.
+        "tools/sapphire_editor/tests/viewport.rs",
     ];
 
     fn rust_files(dir: &Path, files: &mut Vec<PathBuf>) {

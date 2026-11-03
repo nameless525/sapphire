@@ -206,7 +206,8 @@ fn list(size: (u32, u32), paint: impl FnOnce(&mut Painter<'_>)) -> UiDrawList {
     }
 }
 
-/// Its pipeline's on the inventory: declared, the first quads build nothing; not, they're a named first use.
+/// Its pipeline's on the inventory: declared, the first quads and the first glyph upload build nothing; not,
+/// they're a named first use. Glyph pages draw through the same pipeline, so they declare nothing more.
 #[test]
 #[ignore = "needs a GPU"]
 fn the_first_quads_build_nothing_only_when_the_inventory_declared_them() {
@@ -230,6 +231,26 @@ fn the_first_quads_build_nothing_only_when_the_inventory_declared_them() {
     warmed.draw(Some(&quads));
     assert_eq!(warmed.renderer.stats().pipelines.first_use_builds, before);
     assert_eq!(warmed.renderer.stats().ui.pipelines, 1);
+
+    let mut glyphs = UiDrawList { viewport: [64.0, 64.0], page_size: 64, ..UiDrawList::default() };
+    upload_block(&mut glyphs, 0, (0, 0), (4, 4), 255);
+    let mut cold = Harness::new((64, 64));
+    cold.draw(None);
+    let before = cold.renderer.stats().pipelines.first_use_builds;
+    cold.draw(Some(&glyphs));
+    assert_eq!(
+        cold.renderer.stats().pipelines.first_use_builds,
+        before + 1,
+        "a page's first upload builds it"
+    );
+    let mut warmed = Harness::new((64, 64));
+    warmed.renderer.prewarm(&inventory);
+    glyphs.page_state = warmed.renderer.ui_page_state();
+    warmed.draw(None);
+    let before = warmed.renderer.stats().pipelines.first_use_builds;
+    warmed.draw(Some(&glyphs));
+    assert_eq!(warmed.renderer.stats().pipelines.first_use_builds, before);
+    assert_eq!(warmed.renderer.stats().ui.page_uploads, 1);
 }
 
 #[test]

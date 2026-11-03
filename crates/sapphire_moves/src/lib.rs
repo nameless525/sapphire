@@ -487,6 +487,13 @@ impl BakedTables {
         &self.root
     }
 
+    /// Whether the root stays within [`MAX_MOVE_REACH`] on each axis and in its turn, as a document's
+    /// keys must: the character controller's arithmetic runs out somewhere past that.
+    pub(crate) fn root_within_reach(&self) -> bool {
+        let within = |value: &f32| value.abs() <= MAX_MOVE_REACH;
+        self.root.iter().all(|sample| sample.translation.iter().all(within) && within(&sample.yaw))
+    }
+
     /// The root motion `elapsed` into the move, between ticks by a blend; see the
     /// [crate docs](crate).
     #[must_use]

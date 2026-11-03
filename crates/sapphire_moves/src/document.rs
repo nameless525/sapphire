@@ -1071,7 +1071,7 @@ impl Checker {
 /// The ticks `spans` cover, as runs in order that neither overlap nor touch. An empty or reversed span
 /// covers nothing. Its cost is the spans', never the ticks between their ends: a document being refused
 /// can say anything a `u32` holds there.
-fn covered_runs(spans: &[Span]) -> Vec<Span> {
+pub(crate) fn covered_runs(spans: &[Span]) -> Vec<Span> {
     let mut spans: Vec<Span> = spans.iter().copied().filter(|span| span.from < span.to).collect();
     spans.sort_by_key(|span| span.from);
     let mut runs: Vec<Span> = Vec::with_capacity(spans.len());
@@ -1085,7 +1085,7 @@ fn covered_runs(spans: &[Span]) -> Vec<Span> {
 }
 
 /// Whether [`covered_runs`] cover every tick of `from..to`, which an empty window has none of.
-fn runs_cover(runs: &[Span], from: u32, to: u32) -> bool {
+pub(crate) fn runs_cover(runs: &[Span], from: u32, to: u32) -> bool {
     let after = runs.partition_point(|run| run.from <= from);
     from >= to || after.checked_sub(1).is_some_and(|run| to <= runs[run].to)
 }
@@ -1341,6 +1341,9 @@ fn compile_move(
     tables: &mut impl FnMut(&MoveDocument) -> Result<Option<BakedTables>, String>,
 ) -> Option<crate::set::Move> {
     let tables = compile_motion(mv, ticks, check, tables);
+    if tables.as_ref().is_some_and(|tables| !tables.root_within_reach()) {
+        check.add("motion", format!("the root goes past the limit of {MAX_MOVE_REACH}"));
+    }
 
     let mut hitboxes = Vec::with_capacity(mv.hitboxes.len());
     for hitbox in &mv.hitboxes {
@@ -2336,6 +2339,26 @@ mod tests {
                 && issue.contains("past the move's end")),
             "{said:?}"
         );
+    }
+
+    /// Tables from a cook are held to what keys are, or the set it writes would read back as damaged.
+    #[test]
+    fn a_root_from_elsewhere_stays_in_the_world() {
+        let document = slice();
+        let far = |mv: &MoveDocument| {
+            let mut root = vec![RootSample::ZERO; mv.ticks() as usize + 1];
+            root[1].yaw = MAX_MOVE_REACH * 2.0;
+            let paths =
+                mv.motion.paths.iter().map(|path| {
+                    BakedPath::new(Name::intern(&path.name), vec![PathSample::IDENTITY; root.len()])
+                });
+            let paths = paths.collect();
+            BakedTables::new(root, paths).map(Some).map_err(|error| error.to_string())
+        };
+        let Err(MoveSetError::Invalid(issues)) = document.compile_with(far) else {
+            panic!("it should be refused");
+        };
+        assert!(issues.iter().all(|issue| issue.track == "motion" && issue.message.contains("limit")));
     }
 
     /// A dodge's volume against what's invulnerable, each row a window and its i-frames, with or

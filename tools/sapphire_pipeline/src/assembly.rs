@@ -72,10 +72,11 @@
 //! by the path the document names them with, so editing a piece or the document recooks it,
 //! and the importer's version carries the glTF importer's ([`IMPORTER`]).
 //!
+//! An assembly is also what a zone's prefab is ([`crate::zone`]): zones place it, whole or by its
+//! top-level placements, and merge its triangles into a mesh per cell.
+//!
 //! # Later milestones
 //!
-//! - Zones (spec §5.21) place prefabs as instances at runtime, culled and streamed per cell;
-//!   an assembly is one static mesh, the right shape for a slice that is seen whole.
 //! - Painted vertex colors and per-piece texture offsets, once the environment family reads
 //!   an albedo tint from the vertex (it reads ambient occlusion alone today).
 //! - Telling hidden overlaps in one plane from open ones without the document's word: rays
@@ -604,14 +605,26 @@ impl Assembly {
 /// Reads the assembly at `path` (`bytes`) and the pieces it places, and assembles its mesh.
 pub fn import(path: &Path, bytes: &[u8], detail: Detail) -> Result<ImportedMesh, AssemblyError> {
     let assembly = read(bytes)?;
-    assemble(&assembly, detail, &mut |file: &str| {
-        let resolved = character_maps::resolve_input(path, file)
-            .map_err(|_| AssemblyError::PiecePath(file.to_owned()))?;
-        let bytes = std::fs::read(&resolved)
-            .map_err(|source| AssemblyError::Read { path: resolved.clone(), source })?;
-        gltf::import_slice(&bytes, resolved.parent())
-            .map_err(|source| AssemblyError::Import { path: resolved, source })
-    })
+    assemble(&assembly, detail, &mut |file: &str| import_piece(path, file))
+}
+
+/// Assembles `assembly`, read from `path`, with its pieces read from beside it.
+pub fn import_parts(
+    path: &Path,
+    assembly: &Assembly,
+    detail: Detail,
+) -> Result<AssembledParts, AssemblyError> {
+    assemble_parts(assembly, detail, &mut |file: &str| import_piece(path, file))
+}
+
+/// The piece file `file` names, from the directory of the assembly at `path`.
+fn import_piece(path: &Path, file: &str) -> Result<ImportedMesh, AssemblyError> {
+    let resolved =
+        character_maps::resolve_input(path, file).map_err(|_| AssemblyError::PiecePath(file.to_owned()))?;
+    let bytes =
+        std::fs::read(&resolved).map_err(|source| AssemblyError::Read { path: resolved.clone(), source })?;
+    gltf::import_slice(&bytes, resolved.parent())
+        .map_err(|source| AssemblyError::Import { path: resolved, source })
 }
 
 /// A piece's triangles, ready to place: three corners each, with the slot facts rules read.
@@ -653,12 +666,28 @@ struct PieceInfo {
     materials: Vec<String>,
 }
 
+/// An assembled mesh, and each triangle's owner: the index in the document's `place` of the
+/// top-level placement that made it, in the order of the mesh's indices. A zone cuts by these.
+pub struct AssembledParts {
+    pub mesh: ImportedMesh,
+    pub owners: Vec<u32>,
+}
+
 /// Assembles `assembly`, importing each piece file it names with `import_piece` (once each).
 pub fn assemble(
     assembly: &Assembly,
     detail: Detail,
     import_piece: &mut dyn FnMut(&str) -> Result<ImportedMesh, AssemblyError>,
 ) -> Result<ImportedMesh, AssemblyError> {
+    Ok(assemble_parts(assembly, detail, import_piece)?.mesh)
+}
+
+/// [`assemble`], saying which placement made each triangle.
+pub fn assemble_parts(
+    assembly: &Assembly,
+    detail: Detail,
+    import_piece: &mut dyn FnMut(&str) -> Result<ImportedMesh, AssemblyError>,
+) -> Result<AssembledParts, AssemblyError> {
     assembly.validate()?;
     let mut builder = Builder::new(assembly, detail);
     let mut pieces: HashMap<String, PieceInfo> = HashMap::new();
@@ -846,6 +875,8 @@ struct Builder<'a> {
     /// check.
     placements: Vec<Placed<'a>>,
     faces: Vec<coplanar::Face>,
+    /// Per slot: each triangle's top-level placement, in the order of its indices.
+    owners: Vec<Vec<u32>>,
 }
 
 /// A piece or builtin as placed.
@@ -912,6 +943,7 @@ impl<'a> Builder<'a> {
             placed: HashSet::new(),
             placements: Vec::new(),
             faces: Vec::new(),
+            owners: vec![Vec::new(); count],
         }
     }
 
@@ -1104,6 +1136,7 @@ impl<'a> Builder<'a> {
             });
         }
         self.indices[slot].extend(corner_indices);
+        self.owners[slot].push(self.placements[how.placed].path[0].1 as u32);
         self.faces.push(coplanar::Face {
             corners: positions,
             normal: face,
@@ -1157,8 +1190,9 @@ impl<'a> Builder<'a> {
 
     /// The mesh: a submesh per slot that has triangles, in slot order, and a material slot for
     /// every declared slot.
-    fn finish(self) -> Result<ImportedMesh, AssemblyError> {
+    fn finish(self) -> Result<AssembledParts, AssemblyError> {
         self.check_coplanar()?;
+        let owners = self.owners.iter().flatten().copied().collect();
         let mut mesh = ImportedMesh::default();
         let mut submeshes = Vec::new();
         for (slot, (vertices, indices)) in self.vertices.into_iter().zip(self.indices).enumerate() {
@@ -1188,7 +1222,7 @@ impl<'a> Builder<'a> {
                 generated: AnimeCharacterMaterial::default(),
             })
             .collect();
-        Ok(mesh)
+        Ok(AssembledParts { mesh, owners })
     }
 }
 
@@ -1218,7 +1252,7 @@ fn projection_axes(projection: Projection, face: Vec3) -> (Vec3, Vec3) {
 }
 
 /// Whether `name` matches `pattern`, where `*` matches any run of characters.
-fn matches_pattern(pattern: &str, name: &str) -> bool {
+pub(crate) fn matches_pattern(pattern: &str, name: &str) -> bool {
     let mut parts = pattern.split('*');
     let first = parts.next().unwrap_or_default();
     let Some(mut rest) = name.strip_prefix(first) else { return false };

@@ -42,6 +42,9 @@ sapphire_serialize = { kind = "runtime", layer = 2 }
 # Static collision as plain data: groups, the document and the cooked format, beneath the physics
 # crate and the asset server, so the cooker can read and check them without linking parry (M2 D3).
 sapphire_colliders = { kind = "runtime", layer = 2 }
+# Zones as plain data: the document and the cooked format, which the cooker writes and the simulation
+# and the world read (M3 W1): no renderer, world or physics, so all three can link it.
+sapphire_zone = { kind = "runtime", layer = 2 }
 # L3 subsystems.
 # Animation: samples, blends and solves (M2). Its cooked formats sit below it, in sapphire_assets,
 # which checks every kind's bytes; it has no edge to the renderer or the world.
@@ -128,6 +131,10 @@ edges = [
     ["sapphire_colliders", "sapphire_serialize"],
     ["sapphire_colliders", "sapphire_reflect"],
     ["sapphire_assets", "sapphire_colliders"],
+    # Cooked zones are named and versioned the same way, and packs store them.
+    ["sapphire_zone", "sapphire_serialize"],
+    ["sapphire_zone", "sapphire_reflect"],
+    ["sapphire_assets", "sapphire_zone"],
 ]
 
 # The simulation's crates: what a replay job links (m2-plan §3, "Crate edges"). None of `forbidden`
@@ -142,7 +149,7 @@ edges = [
 # `runners` are the tools that run those crates in a job of their own: the same tree rule, with no
 # clippy.toml, since they read files and print, and no result goes through them.
 [simulation]
-crates = ["sapphire_colliders", "sapphire_gameplay", "sapphire_moves", "sapphire_physics"]
+crates = ["sapphire_colliders", "sapphire_gameplay", "sapphire_moves", "sapphire_physics", "sapphire_zone"]
 runners = ["sapphire_replay"]
 forbidden = [
     "naga",

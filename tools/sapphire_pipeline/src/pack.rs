@@ -11,10 +11,20 @@
 //! # Groups
 //!
 //! Spec §5.10 groups packs per zone, per character and per encounter, plus one shared pack. The
-//! rule, for when zones, characters and encounters exist as documents (M2, M3): each is a root,
-//! and its pack holds what it reaches through dependencies; an asset two groups reach goes in the
-//! shared pack, which every app mounts first, so a group pack only ever depends on itself and the
-//! shared pack. Until there are roots, every asset goes in [`SHARED`], but for sound.
+//! rule: each is a root, and its pack holds what it alone reaches through dependencies; an asset two
+//! roots reach goes in the shared pack, which every app mounts first, so a root's pack only ever
+//! depends on itself and the shared pack. Zones are the roots so far (M3 W1, `groups`): characters
+//! and encounters aren't documents with a pack of their own yet, so everything else goes in [`SHARED`],
+//! but for sound.
+//!
+//! A zone reaches further than it depends: loading one doesn't load its cells' meshes
+//! ([`AssetKind::reach`]), but they ship with it. Which pack an asset goes in is decided like so. An
+//! asset no zone reaches, or two do, is shared. So is whatever a shared asset reaches, even if only
+//! one zone does too, as the shared pack can't lean on a zone's. Anything else is its one zone's, in
+//! `zone_<stem>` ([`sapphire_zone::pack_name`]), with the zone itself. An asset named only by code (the
+//! look-dev scene's plants, say) reaches the app from nothing a pack can see: while one zone is all
+//! that names it, it would move to that zone's pack, so give the zone a copy of its own, or wait for
+//! the code to name it through a zone.
 //!
 //! Sounds and cues go in [`AUDIO`] ([`group`], M2 E1). The content tree holds about 280 sounds, about
 //! 3 MB against the shared pack's 23 MB, and nothing yet says which a game needs. A pack of their own
@@ -77,14 +87,20 @@ use sapphire_colliders::COLLIDERS_EXTENSION;
 use sapphire_moves::MOVE_SET_EXTENSION;
 use sapphire_serialize::cooked::AlignedVec;
 use sapphire_serialize::postcard;
+use sapphire_zone::ZONE_EXTENSION;
 
 use crate::cache::{Cache, CacheError, CacheKey, Stage};
 use crate::cook::{self, CookError, CookReport, CookedAsset};
+use crate::zone;
 
 /// The packer as cache keys know it. Its name carries the encoders' versions, which a test keeps
 /// in step with `Cargo.lock`: a new zstd or lz4_flex may compress differently, so it re-encodes
 /// everything. Bump the version when the codec policy, block encoding or pack layout changes.
 pub const PACKER: Stage = Stage { name: "spack (zstd 1.5.7, lz4_flex 0.14.0)", version: 1 };
+
+/// What a cooked asset reaches, as cache keys know it. Bump the version whenever that changes for the
+/// same bytes ([`AssetKind::reach`]).
+const REACH: Stage = Stage { name: "pack reach", version: 1 };
 
 /// zstd's level for pack blocks. Encoding is cached, and decoding speed barely depends on the
 /// level, so packs take the best ratio short of zstd's slower "ultra" levels.
@@ -116,7 +132,8 @@ pub fn codec(kind: AssetKind) -> Codec {
         | AssetKind::Colliders
         | AssetKind::Cue
         | AssetKind::MoveSet
-        | AssetKind::AnimGraph => Codec::Lz4,
+        | AssetKind::AnimGraph
+        | AssetKind::Zone => Codec::Lz4,
         AssetKind::Sound => Codec::None,
     }
 }
@@ -136,6 +153,7 @@ pub fn kind(output: &Path) -> Option<AssetKind> {
         CUE_EXTENSION => Some(AssetKind::Cue),
         MOVE_SET_EXTENSION => Some(AssetKind::MoveSet),
         GRAPH_EXTENSION => Some(AssetKind::AnimGraph),
+        ZONE_EXTENSION => Some(AssetKind::Zone),
         _ => None,
     }
 }
@@ -153,6 +171,12 @@ pub enum PackError {
     },
     #[error("{} references asset {id}, which no pack holds", path.display())]
     MissingDependency { path: PathBuf, id: AssetId },
+    #[error(
+        "zones {} and {} would share one pack: packs go by a zone's file name, so rename one",
+        first.display(),
+        second.display()
+    )]
+    ZoneNameClash { first: PathBuf, second: PathBuf },
     #[error("{} changed after it was cooked; cook again", path.display())]
     Changed { path: PathBuf },
     #[error("the pack directory {} holds cooked file {}: packing would prune it", packs.display(), output.display())]
@@ -214,20 +238,117 @@ pub fn pack_cooked(report: &CookReport, out: &Path, cache: Option<&Path>) -> Res
     }
     let cache = cache.map(Cache::new);
     let ids: HashSet<AssetId> = report.assets.iter().map(|asset| asset.id).collect();
-    let mut groups: BTreeMap<&str, Vec<&CookedAsset>> = BTreeMap::new();
-    for asset in &report.assets {
-        groups.entry(group(kind(&asset.output))).or_default().push(asset);
-    }
+    let groups = groups(report, cache.as_ref())?;
     let mut packs = Vec::with_capacity(groups.len());
     let workers = std::thread::available_parallelism().map_or(1, usize::from).min(4);
     for (name, assets) in groups {
-        packs.push(pack_group(name, &assets, &ids, out, cache.as_ref(), workers)?);
+        packs.push(pack_group(&name, &assets, &ids, out, cache.as_ref(), workers)?);
     }
     let paths: HashSet<&Path> = packs.iter().map(|pack| pack.path.as_path()).collect();
     let mut extensions = vec![PACK_EXTENSION];
     extensions.extend_from_slice(cook::COOKED_EXTENSIONS);
     let removed = cook::prune(out, &|path| paths.contains(path), &extensions)?;
     Ok(PackReport { packs, removed })
+}
+
+/// Which pack each asset of `report` goes in (see the [module docs](self)). A tree without zones reads
+/// no asset for this.
+fn groups<'a>(
+    report: &'a CookReport,
+    cache: Option<&Cache>,
+) -> Result<BTreeMap<String, Vec<&'a CookedAsset>>, PackError> {
+    let is_zone = |asset: &&CookedAsset| kind(&asset.output) == Some(AssetKind::Zone);
+    let zones: Vec<&CookedAsset> = report.assets.iter().filter(is_zone).collect();
+    let mut groups: BTreeMap<String, Vec<&CookedAsset>> = BTreeMap::new();
+    if zones.is_empty() {
+        for asset in &report.assets {
+            groups.entry(group(kind(&asset.output)).to_owned()).or_default().push(asset);
+        }
+        return Ok(groups);
+    }
+
+    // Each zone's pack, by its name folded to lowercase: one file where case doesn't count.
+    let mut names: BTreeMap<String, &Path> = BTreeMap::new();
+    let mut packs = HashMap::with_capacity(zones.len());
+    for &asset in &zones {
+        let name = sapphire_zone::pack_name(zone::stem(&asset.source));
+        if let Some(first) = names.insert(name.to_lowercase(), &asset.source) {
+            return Err(PackError::ZoneNameClash { first: first.to_owned(), second: asset.source.clone() });
+        }
+        packs.insert(asset.id, name);
+    }
+
+    let by_id: HashMap<AssetId, &CookedAsset> = report.assets.iter().map(|asset| (asset.id, asset)).collect();
+    let mut reach = HashMap::new();
+    for asset in &report.assets {
+        // A kind that may depend on nothing reaches nothing: it needn't be read.
+        let reaches = kind(&asset.output).filter(|&of| AssetKind::ALL.iter().any(|&to| of.may_depend_on(to)));
+        if let Some(of) = reaches {
+            reach.insert(asset.id, reach_of(asset, of, cache)?);
+        }
+    }
+    let walk = |from: Vec<AssetId>| -> Result<HashSet<AssetId>, PackError> {
+        let mut seen: HashSet<AssetId> = from.iter().copied().collect();
+        let mut stack = from;
+        while let Some(id) = stack.pop() {
+            for &next in reach.get(&id).map_or(&[][..], Vec::as_slice) {
+                if !by_id.contains_key(&next) {
+                    return Err(PackError::MissingDependency { path: by_id[&id].output.clone(), id: next });
+                }
+                if seen.insert(next) {
+                    stack.push(next);
+                }
+            }
+        }
+        Ok(seen)
+    };
+
+    // The one zone that reaches each asset, or `None` once a second has.
+    let mut owner: HashMap<AssetId, Option<AssetId>> = HashMap::new();
+    for asset in &zones {
+        for id in walk(vec![asset.id])? {
+            owner.entry(id).and_modify(|owner| *owner = None).or_insert(Some(asset.id));
+        }
+    }
+    let shared = walk(
+        report
+            .assets
+            .iter()
+            .map(|asset| asset.id)
+            .filter(|id| owner.get(id).is_none_or(Option::is_none))
+            .collect(),
+    )?;
+    for asset in &report.assets {
+        let name = match owner.get(&asset.id).copied().flatten() {
+            Some(zone) if !shared.contains(&asset.id) => packs[&zone].clone(),
+            _ => group(kind(&asset.output)).to_owned(),
+        };
+        groups.entry(name).or_default().push(asset);
+    }
+    Ok(groups)
+}
+
+/// What cooked `asset`, of kind `of`, reaches, from the cache if its bytes have been asked before.
+fn reach_of(asset: &CookedAsset, of: AssetKind, cache: Option<&Cache>) -> Result<Vec<AssetId>, PackError> {
+    let key = CacheKey::reach(&asset.output_hash, REACH);
+    if let Some(cache) = cache
+        && let Some(cached) = cache.get(&key)?
+        && let Ok(reach) = postcard::from_bytes(&cached)
+    {
+        return Ok(reach);
+    }
+    let path = &asset.output;
+    let read_error = |source| PackError::Read { path: path.clone(), source };
+    let mut bytes = AlignedVec::<16>::new();
+    bytes.extend_from_reader(&mut fs::File::open(path).map_err(read_error)?).map_err(read_error)?;
+    if blake3::hash(&bytes) != asset.output_hash {
+        return Err(PackError::Changed { path: path.clone() });
+    }
+    let reach = of.reach(&bytes).map_err(|source| PackError::Invalid { path: path.clone(), source })?;
+    if let Some(cache) = cache {
+        cache.put(&key, &postcard::to_allocvec(&reach).expect("asset IDs always encode"))?;
+    }
+    Ok(reach)
 }
 
 /// An asset of a pack, with its kind, codec and packed key.

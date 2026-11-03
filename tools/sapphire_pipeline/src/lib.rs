@@ -20,6 +20,8 @@
 //! - [`extract`]: the `extract-materials` command, which writes a mesh's materials out as
 //!   material documents bound in its sidecar, a VRM's images as texture sources, and an FBX's
 //!   textures bound where they lie or, embedded, written out.
+//! - [`zone`]: zone documents (`.zone.ron`): prefabs placed and merged into a mesh per cell, and the
+//!   `.szone` that names them (M3 W1)
 //! - [`assembly`]: assembly documents (`.assembly.ron`), kit pieces placed into one static mesh
 //!   and re-materialed in slots of the project's own, cooked as meshes (M1 X1's town).
 //! - [`mesh`]: the mesh intermediate, and packing it into the cooked
@@ -123,3 +125,4 @@ pub mod samples;
 #[cfg(test)]
 mod test_util;
 pub mod texture;
+pub mod zone;

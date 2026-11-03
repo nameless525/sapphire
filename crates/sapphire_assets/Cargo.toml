@@ -22,6 +22,7 @@ rend.workspace = true
 rkyv.workspace = true
 # Cooked collider sets, a kind of asset that CPU code reads (M2 D3).
 sapphire_colliders.workspace = true
+sapphire_zone.workspace = true
 # The form factor the default budgets are chosen by.
 sapphire_core.workspace = true
 # Decode jobs run on the engine's task pool.

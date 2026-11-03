@@ -2940,6 +2940,7 @@ dependencies = [
  "sapphire_moves",
  "sapphire_reflect",
  "sapphire_serialize",
+ "sapphire_zone",
  "serde",
  "slotmap",
  "thiserror 2.0.21",
@@ -3266,6 +3267,7 @@ dependencies = [
  "sapphire_reflect",
  "sapphire_serialize",
  "sapphire_tod",
+ "sapphire_zone",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -3414,6 +3416,7 @@ name = "sapphire_serialize"
 version = "0.1.0"
 dependencies = [
  "bevy_reflect",
+ "blake3",
  "postcard",
  "rkyv",
  "ron",
@@ -3509,6 +3512,23 @@ dependencies = [
  "sapphire_tod",
  "serde",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "sapphire_zone"
+version = "0.1.0"
+dependencies = [
+ "bevy_reflect",
+ "glam 0.33.12",
+ "rkyv",
+ "sapphire_colliders",
+ "sapphire_core",
+ "sapphire_math",
+ "sapphire_reflect",
+ "sapphire_serialize",
+ "serde",
+ "thiserror 2.0.21",
+ "xxhash-rust",
 ]
 
 [[package]]

@@ -112,7 +112,8 @@ impl TextureKind {
             | ImportSettings::AnimGraph(_)
             | ImportSettings::GltfClips(_)
             | ImportSettings::FbxClips(_)
-            | ImportSettings::Vrma(_) => return None,
+            | ImportSettings::Vrma(_)
+            | ImportSettings::Zone(_) => return None,
         })
     }
 

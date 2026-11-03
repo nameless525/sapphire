@@ -8,16 +8,16 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+# `AssetId` derives `Reflect`, whose derive finds the crate by this name.
+bevy_reflect.workspace = true
+# A sub-asset's ID is derived with it.
+blake3.workspace = true
 postcard.workspace = true
 rkyv.workspace = true
 ron.workspace = true
 sapphire_reflect.workspace = true
 serde.workspace = true
 thiserror.workspace = true
-
-[dev-dependencies]
-# The tests derive `Reflect` and `TypePath`, whose derives find the crate by this name.
-bevy_reflect.workspace = true
 
 [lints]
 workspace = true

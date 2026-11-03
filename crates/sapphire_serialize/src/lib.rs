@@ -11,7 +11,9 @@
 //! read as the wrong type or the wrong version of the right one.
 //!
 //! - **Owns:** the three formats, their envelope and header, and loading documents by type
-//!   name through a type registry ([`document::ReflectDocument`]).
+//!   name through a type registry ([`document::ReflectDocument`]). Also [`AssetId`], what documents and
+//!   cooked data of every kind name assets by: it sits here, beneath `sapphire_assets`, because the
+//!   plain-data crates that crate reads (`sapphire_zone`) name assets too.
 //! - **Does not own:** files, paths, packs and memory maps (`sapphire_assets`, M1 A4), or
 //!   save slots and their storage (`sapphire_save`, M3).
 //!
@@ -24,10 +26,12 @@
 pub mod cooked;
 pub mod document;
 pub mod header;
+mod id;
 pub mod save;
 
 pub use cooked::{CookedError, access, access_unchecked, to_cooked};
 pub use document::{DocumentError, ReflectDocument, from_ron, from_ron_dynamic, to_ron, to_ron_dynamic};
 pub use header::HeaderError;
+pub use id::{AssetId, ParseAssetIdError};
 pub use save::{SaveError, from_save, to_save};
 pub use {postcard, rkyv, ron};

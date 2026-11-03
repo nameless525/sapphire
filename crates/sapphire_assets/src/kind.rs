@@ -5,6 +5,7 @@ use std::fmt;
 
 use sapphire_colliders::{ColliderError, ColliderSet};
 use sapphire_moves::{MoveSet, MoveSetError};
+use sapphire_zone::{Zone, ZoneError};
 use serde::{Deserialize, Serialize};
 
 use crate::AssetId;
@@ -51,11 +52,14 @@ pub enum AssetKind {
     /// A character's animation graph (`.sgraph`, M2 N3): [`AnimGraph`], naming the clips it plays.
     /// Animation's CPU data, never uploaded.
     AnimGraph = 12,
+    /// A cooked zone (`.szone`, M3 W1): [`Zone`], which the simulation and the world read and which
+    /// never goes near a GPU itself. What it holds and what it only names: [`Self::reach`].
+    Zone = 13,
 }
 
 impl AssetKind {
     /// Every kind, in a stable order.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::Mesh,
         Self::Texture,
         Self::Material,
@@ -68,6 +72,7 @@ impl AssetKind {
         Self::Cue,
         Self::MoveSet,
         Self::AnimGraph,
+        Self::Zone,
     ];
 
     /// The kind's position in [`Self::ALL`].
@@ -90,12 +95,13 @@ impl AssetKind {
             Self::Cue => "cue",
             Self::MoveSet => "move set",
             Self::AnimGraph => "animation graph",
+            Self::Zone => "zone",
         }
     }
 
     /// Whether assets of this kind go to the GPU, through the asset server's upload queue. A rig,
-    /// a skeleton, a clip, a collider set, a sound, a cue, a move set or an animation graph is ready
-    /// once it and its dependencies are decoded.
+    /// a skeleton, a clip, a collider set, a sound, a cue, a move set, an animation graph or a zone is
+    /// ready once it and its dependencies are decoded.
     pub const fn uploads(self) -> bool {
         !matches!(
             self,
@@ -107,14 +113,15 @@ impl AssetKind {
                 | Self::Cue
                 | Self::MoveSet
                 | Self::AnimGraph
+                | Self::Zone
         )
     }
 
     /// Whether the asset server keeps an asset's decoded bytes once it is ready. Meshes,
     /// textures and probe grids are GPU data, so their bytes go once uploaded (a new renderer
     /// has them read again). Materials are small and CPU code reads them (live link, the editor), and
-    /// rigs, skeletons, clips, collider sets, sounds, cues, move sets and animation graphs are read
-    /// on the CPU only, so they stay.
+    /// rigs, skeletons, clips, collider sets, sounds, cues, move sets, animation graphs and zones are
+    /// read on the CPU only, so they stay.
     pub const fn keeps_bytes(self) -> bool {
         matches!(
             self,
@@ -127,6 +134,7 @@ impl AssetKind {
                 | Self::Cue
                 | Self::MoveSet
                 | Self::AnimGraph
+                | Self::Zone
         )
     }
 
@@ -140,10 +148,10 @@ impl AssetKind {
 
     /// Whether an asset of this kind may depend on one of `kind`: meshes on materials and
     /// skeletons, materials on textures, clips on skeletons, cues on sounds, animation graphs on
-    /// clips, and textures, rigs, probe grids, skeletons, collider sets, sounds and move sets on
-    /// nothing. The allowed pairs
-    /// form no loop, so chains are at most three long and cycles can't exist, whatever a pack
-    /// claims. A new kind takes its place in this order.
+    /// clips, zones on collider sets, and textures, rigs, probe grids, skeletons, collider sets, sounds
+    /// and move sets on nothing. A zone's meshes and probes aren't dependencies ([`Self::reach`]). The
+    /// allowed pairs form no loop, so chains are at most three long and cycles can't exist, whatever a
+    /// pack claims. A new kind takes its place in this order.
     pub const fn may_depend_on(self, kind: AssetKind) -> bool {
         matches!(
             (self, kind),
@@ -152,6 +160,7 @@ impl AssetKind {
                 | (Self::Clip, Self::Skeleton)
                 | (Self::Cue, Self::Sound)
                 | (Self::AnimGraph, Self::Clip)
+                | (Self::Zone, Self::Colliders)
         )
     }
 
@@ -170,6 +179,7 @@ impl AssetKind {
             10 => Some(Self::Cue),
             11 => Some(Self::MoveSet),
             12 => Some(Self::AnimGraph),
+            13 => Some(Self::Zone),
             _ => None,
         }
     }
@@ -177,10 +187,11 @@ impl AssetKind {
     /// Checks cooked bytes of this kind exactly as the runtime reads them (`Mesh::read`,
     /// `Texture::from_ktx2`, `Material::read`, `CharacterRig::read`, `ProbeGrid::read`,
     /// `Skeleton::read`, `Clip::read`, `ColliderSet::read`, `Sound::read`, `Cue::read`,
-    /// `MoveSet::from_cooked`, `AnimGraph::read`), and returns the assets they reference, sorted and
-    /// without repeats: a mesh's material slots bound to material assets and its skeleton, a material's
-    /// textures, a clip's skeleton, a cue's sounds, a graph's clips. The packer records these as the asset's dependencies, and
-    /// decode jobs check that a decoded asset references exactly what its pack says it does.
+    /// `MoveSet::from_cooked`, `AnimGraph::read`, `Zone::read`), and returns the assets they reference,
+    /// sorted and without repeats: a mesh's material slots bound to material assets and its skeleton, a
+    /// material's textures, a clip's skeleton, a cue's sounds, a graph's clips, what the simulation reads
+    /// of a zone. The packer records these as the asset's dependencies, and decode jobs check that a
+    /// decoded asset references exactly what its pack says it does.
     ///
     /// Everything but textures must start 16-byte aligned, as decoded assets do.
     pub fn references(self, bytes: &[u8]) -> Result<Vec<AssetId>, AssetError> {
@@ -232,10 +243,24 @@ impl AssetKind {
                 Vec::new()
             }
             Self::AnimGraph => AnimGraph::read(bytes)?.clip_ids().collect(),
+            Self::Zone => Zone::read(bytes)?.references(),
         };
         references.sort_unstable();
         references.dedup();
         Ok(references)
+    }
+
+    /// [`Self::references`], and what an asset names without holding: a zone's cell and instance meshes
+    /// and its probe grid, which loading the zone doesn't load, so they aren't dependencies, but which
+    /// must ship with it. This is what decides which pack an asset goes in.
+    pub fn reach(self, bytes: &[u8]) -> Result<Vec<AssetId>, AssetError> {
+        let mut reach = self.references(bytes)?;
+        if self == Self::Zone {
+            reach.extend(Zone::read(bytes)?.presentation_references());
+            reach.sort_unstable();
+            reach.dedup();
+        }
+        Ok(reach)
     }
 }
 
@@ -282,4 +307,6 @@ pub enum AssetError {
     MoveSet(#[from] MoveSetError),
     #[error("invalid animation graph")]
     AnimGraph(#[from] GraphError),
+    #[error("invalid zone")]
+    Zone(#[from] ZoneError),
 }

@@ -142,6 +142,7 @@ use crate::moves::{self, MoveSetSettings};
 use crate::optimize::LodSettings;
 use crate::probes::{self, ProbeGridSettings};
 use crate::texture::{HdrSettings, TextureClass, TextureSettings};
+use crate::zone::{self, ZoneSettings};
 
 /// Extension of sidecar files, appended to the whole source file name.
 pub const SIDECAR_EXTENSION: &str = "meta";
@@ -223,6 +224,9 @@ pub enum ImportSettings {
     /// A VRMA (`.vrma`, `VRMC_vrm_animation`): a glTF whose animations name humanoid bones, cooked
     /// to clips (M2 N1). Its map is the file's.
     Vrma(ClipSettings),
+    /// A zone document (`.zone.ron`): prefabs merged into a mesh per cell, and what the simulation
+    /// reads (M3 W1). New variants go last: a key's encoding counts them.
+    Zone(ZoneSettings),
 }
 
 impl ImportSettings {
@@ -248,6 +252,9 @@ impl ImportSettings {
         }
         if colliders::is_source(source) {
             return Some(Self::Colliders(ColliderSettings::default()));
+        }
+        if zone::is_source(source) {
+            return Some(Self::Zone(ZoneSettings::default()));
         }
         if audio::is_cue_source(source) {
             return Some(Self::Cue(CueSettings::default()));
@@ -302,7 +309,8 @@ impl ImportSettings {
             | Self::AnimGraph(_)
             | Self::GltfClips(_)
             | Self::FbxClips(_)
-            | Self::Vrma(_) => None,
+            | Self::Vrma(_)
+            | Self::Zone(_) => None,
         }
     }
 
@@ -323,7 +331,8 @@ impl ImportSettings {
             | Self::AnimGraph(_)
             | Self::GltfClips(_)
             | Self::FbxClips(_)
-            | Self::Vrma(_) => None,
+            | Self::Vrma(_)
+            | Self::Zone(_) => None,
         }
     }
 

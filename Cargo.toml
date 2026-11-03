@@ -23,6 +23,7 @@ members = [
     "crates/sapphire_rhi",
     "crates/sapphire_serialize",
     "crates/sapphire_colliders",
+    "crates/sapphire_zone",
     # L3 subsystems
     "crates/sapphire_anim",
     "crates/sapphire_input",
@@ -82,6 +83,7 @@ sapphire_input = { path = "crates/sapphire_input" }
 sapphire_render = { path = "crates/sapphire_render" }
 sapphire_tod = { path = "crates/sapphire_tod" }
 sapphire_colliders = { path = "crates/sapphire_colliders" }
+sapphire_zone = { path = "crates/sapphire_zone" }
 sapphire_physics = { path = "crates/sapphire_physics" }
 sapphire_audio = { path = "crates/sapphire_audio" }
 sapphire_vfx = { path = "crates/sapphire_vfx" }

@@ -2,9 +2,9 @@
 //!
 //! # Owns
 //!
-//! - Asset identity: [`AssetId`], the GUID cooked data refers to assets by (rule R5). Its
-//!   text, serde and rkyv forms are defined here, because cooked data and documents both
-//!   hold IDs.
+//! - Asset identity: [`AssetId`], the GUID cooked data refers to assets by (rule R5), re-exported
+//!   from `sapphire_serialize`, beneath this crate because the plain-data formats it reads name
+//!   assets too.
 //! - Cooked formats shared by the cooker (`sapphire_pipeline`, which writes them) and the
 //!   runtime (which reads them): [`mesh`], `.smesh` meshes with quantized vertex streams,
 //!   LODs, skins, morph targets and material slots, read in place (M1 A5); [`texture`], KTX2
@@ -30,6 +30,8 @@
 //!   light per time-of-day key, in a sparse grid of bricks, which the renderer relights.
 //! - Where collider sets go (`.scol`, M2 D3): [`AssetKind::Colliders`] packs and loads them. Their
 //!   format and checks are `sapphire_colliders`', which has no reason to know about packs.
+//! - Where zones go (`.szone`, M3 W1): [`AssetKind::Zone`] packs and loads them and says what they
+//!   reach ([`AssetKind::reach`]). Their format and checks are `sapphire_zone`'s.
 //! - Sounds and cues (M2 E1, spec §5.15): [`sound`], `.ssound` Ogg Vorbis files with what their cook
 //!   learned, and the decoder cook and runtime share; [`cue`], the RON documents (cooked to `.scue`)
 //!   that say how sounds play. Both are plain data, so the cooker reads and writes them without
@@ -79,7 +81,8 @@
 //!
 //! # Later milestones
 //!
-//! - Group packs (M2): an asset is in one mounted pack only, so today it moves between packs by a
+//! - Group packs for characters and encounters (zones' came with M3 W1): an asset is in one mounted
+//!   pack only, so it moves between packs by a
 //!   remount of the pack it left and then of the pack it moved to, in that order. (Live link
 //!   needed no overlay mounts to push only what changed: its source serves the new pack whole,
 //!   assembled on the device from the changed assets it received and the rest of the pack it had.)
@@ -96,7 +99,6 @@ pub mod character_maps;
 pub mod clip;
 pub mod cue;
 pub mod graph;
-mod id;
 mod kind;
 pub mod material;
 pub mod mesh;
@@ -108,8 +110,8 @@ pub mod skeleton;
 pub mod sound;
 pub mod texture;
 
-pub use id::{AssetId, ParseAssetIdError};
 pub use kind::{AssetError, AssetKind};
+pub use sapphire_serialize::{AssetId, ParseAssetIdError};
 pub use server::{
     Asset, AssetBudgets, AssetChange, AssetServer, AssetSlot, AssetStats, Handle, LoadError, LoadPriority,
     LoadState, MemoryPackSource, MountError, PackFile, PackSource, ReadDone, RemountReport, TextureAsset,

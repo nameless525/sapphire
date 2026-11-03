@@ -162,6 +162,7 @@ fn uploads_are_plain_cooked_data() {
                 AssetKind::Colliders => unreachable!("colliders never go to the uploader"),
                 AssetKind::MoveSet => unreachable!("move sets never go to the uploader"),
                 AssetKind::AnimGraph => unreachable!("animation graphs never go to the uploader"),
+                AssetKind::Zone => unreachable!("zones never go to the uploader"),
             }
             Ok(())
         })

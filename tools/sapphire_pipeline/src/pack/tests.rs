@@ -397,6 +397,193 @@ fn sub_assets_are_packed_and_load_by_their_own_ids() {
     assert_eq!(server.get(&rig).unwrap().joint_count.to_native() as usize, joints);
 }
 
+/// A prop's mesh, for a zone's instances, in `wood`.
+fn write_prop(scratch: &Scratch, name: &str, prop: AssetId, material: AssetId) {
+    let path = scratch.source().join(format!("{name}.assembly.ron"));
+    let text = r##"(type: "sapphire::pipeline::Assembly", version: 1, data: (
+        kits: {}, slots: [(name: "wood")], surfaces: [], place: [(piece: "#box", slot: Some("wood"))],
+    ))"##;
+    fs::write(&path, text).unwrap();
+    let mut settings = MeshSettings::default();
+    settings.materials.insert("wood".into(), material);
+    fs::write(
+        sidecar_path(&path),
+        sapphire_serialize::to_ron(&AssetMeta::new(prop, ImportSettings::Assembly(settings))).unwrap(),
+    )
+    .unwrap();
+}
+
+/// Writes a zone named `name` of `instances`, its colliders of its own.
+fn write_zone(scratch: &Scratch, name: &str, zone: AssetId, instances: &[AssetId], colliders: AssetId) {
+    let path = scratch.source().join(format!("{name}.colliders.ron"));
+    let text = r#"(type: "sapphire::colliders::ColliderDocument", version: 1, data: (colliders: [
+        (name: "ground", shape: Box(half_extents: (9.0, 0.5, 9.0)), position: (0.0, -0.5, 0.0)),
+    ]))"#;
+    fs::write(&path, text).unwrap();
+    fs::write(
+        sidecar_path(&path),
+        sapphire_serialize::to_ron(&AssetMeta::new(colliders, ImportSettings::Colliders(Default::default())))
+            .unwrap(),
+    )
+    .unwrap();
+    let instances: Vec<String> =
+        instances.iter().map(|mesh| format!(r#"(mesh: "{mesh}", at: (1.0, 0.0, 1.0))"#)).collect();
+    let text = format!(
+        r#"(type: "sapphire::zone::ZoneDocument", version: 1, data: (
+            grid: (cell_size: 32.0), instances: [{}], colliders: Some("{colliders}"),
+            spawners: [(name: "start", position: (0.0, 0.0, 0.0), spawns: "player")],
+        ))"#,
+        instances.join(", ")
+    );
+    let path = scratch.source().join(format!("{name}.zone.ron"));
+    fs::write(&path, text).unwrap();
+    fs::write(
+        sidecar_path(&path),
+        sapphire_serialize::to_ron(&AssetMeta::new(zone, ImportSettings::Zone(Default::default()))).unwrap(),
+    )
+    .unwrap();
+}
+
+fn ids_in(pack: &[u8]) -> HashSet<AssetId> {
+    PackReader::new(pack).unwrap().toc().entries().iter().map(|entry| entry.id).collect()
+}
+
+const WOOD: &str = "d0000000-0000-4000-8000-000000000001";
+const OWN_PROP: &str = "d0000000-0000-4000-8000-000000000002";
+const COMMON_PROP: &str = "d0000000-0000-4000-8000-000000000003";
+const TOWN: &str = "d0000000-0000-4000-8000-000000000005";
+const VILLAGE: &str = "d0000000-0000-4000-8000-000000000006";
+const TOWN_COLLIDERS: &str = "d0000000-0000-4000-8000-000000000007";
+const VILLAGE_COLLIDERS: &str = "d0000000-0000-4000-8000-000000000008";
+
+/// Two zones: `town` has a prop of its own and shares one with `village`, and a material only those
+/// props name, which shared assets must not lose.
+fn two_zones(name: &str) -> Scratch {
+    let scratch = Scratch::new(name);
+    let path = scratch.source().join("wood.material.ron");
+    fs::write(&path, sapphire_serialize::to_ron(&AnimeCharacterMaterial::default()).unwrap()).unwrap();
+    write_sidecar(&path, WOOD, ImportSettings::Material(MaterialSettings::default()));
+    write_prop(&scratch, "own_prop", id(OWN_PROP), id(WOOD));
+    write_prop(&scratch, "common_prop", id(COMMON_PROP), id(WOOD));
+    write_zone(&scratch, "town", id(TOWN), &[id(OWN_PROP), id(COMMON_PROP)], id(TOWN_COLLIDERS));
+    write_zone(&scratch, "village", id(VILLAGE), &[id(COMMON_PROP)], id(VILLAGE_COLLIDERS));
+    scratch
+}
+
+fn pack_named(scratch: &Scratch, name: &str) -> Vec<u8> {
+    fs::read(scratch.packs(Cook::Desktop).join(format::file_name(name))).unwrap()
+}
+
+#[test]
+fn what_one_zone_alone_reaches_goes_in_its_pack_and_the_rest_stays_shared() {
+    let scratch = two_zones("pack-zones");
+    let (_, report) = scratch.pack(Cook::Desktop, true);
+    let names: Vec<&str> = report.packs.iter().map(|pack| pack.name.as_str()).collect();
+    assert_eq!(names, ["shared", "zone_town", "zone_village"]);
+
+    let town = ids_in(&pack_named(&scratch, "zone_town"));
+    assert!(town.contains(&id(TOWN)), "the zone goes in its own pack");
+    assert!(town.contains(&id(TOWN_COLLIDERS)), "what it loads");
+    assert!(town.contains(&id(OWN_PROP)), "what only it names");
+    assert_eq!(town.len(), 3, "and nothing else: {town:?}");
+    let village = ids_in(&pack_named(&scratch, "zone_village"));
+    assert_eq!(village, HashSet::from([id(VILLAGE), id(VILLAGE_COLLIDERS)]));
+
+    let shared = ids_in(&pack_named(&scratch, SHARED));
+    assert!(shared.contains(&id(COMMON_PROP)), "two zones name it");
+    assert!(shared.contains(&id(WOOD)), "a shared prop reaches it, though the town's own does too");
+    assert!(shared.contains(&id(MANNEQUIN)), "no zone names it");
+    assert!(shared.contains(&id(HAIR)), "the mannequin reaches it");
+    assert!(shared.contains(&id(ALBEDO)), "so does the hair");
+}
+
+/// What the app's packs are must not move when a zone comes along that reaches nothing of theirs but
+/// shared things: W1's promise to every pack before it.
+#[test]
+fn a_zone_of_its_own_assets_leaves_the_shared_pack_as_it_was() {
+    let scratch = Scratch::new("pack-zone-leaves-shared");
+    scratch.pack(Cook::Desktop, true);
+    let before = scratch.shared(Cook::Desktop);
+    write_prop(&scratch, "own_prop", id(OWN_PROP), id(HAIR));
+    write_zone(&scratch, "town", id(TOWN), &[id(OWN_PROP)], id(TOWN_COLLIDERS));
+    let (_, report) = scratch.pack(Cook::Desktop, true);
+    assert_eq!(scratch.shared(Cook::Desktop), before, "byte for byte");
+    let shared = report.packs.iter().find(|pack| pack.name == SHARED).unwrap();
+    assert_eq!(shared.status, PackStatus::UpToDate, "and untouched");
+}
+
+/// A zone loads with what the simulation reads, and its pack can be there or not for the rest.
+#[test]
+fn loading_a_zone_loads_what_the_simulation_reads_and_not_its_meshes() {
+    let scratch = two_zones("pack-zone-load");
+    scratch.pack(Cook::Desktop, true);
+    let source = Arc::new(MemoryPackSource::new());
+    source.insert(SHARED, pack_named(&scratch, SHARED));
+    source.insert("zone_town", pack_named(&scratch, "zone_town"));
+    let mut server = AssetServer::new(source, AssetBudgets::DESKTOP);
+    server.mount(SHARED).unwrap();
+    server.mount("zone_town").unwrap();
+    let zone: Handle<sapphire_zone::Zone> = server.load(id(TOWN)).unwrap();
+    let mut uploaded = Vec::new();
+    server
+        .finish(&zone, |upload| {
+            uploaded.push(upload.kind());
+            Ok(())
+        })
+        .unwrap();
+    assert!(uploaded.is_empty(), "no GPU data came with it: {uploaded:?}");
+    let colliders: Handle<sapphire_colliders::ColliderSet> = server.load(id(TOWN_COLLIDERS)).unwrap();
+    assert!(server.get(&colliders).is_some(), "ready with the zone");
+    let read = server.get(&zone).expect("ready");
+    assert_eq!(read.references(), [id(TOWN_COLLIDERS)]);
+    assert_eq!(read.presentation_references().len(), 2);
+}
+
+#[test]
+fn a_mesh_a_zone_names_that_no_pack_holds_is_an_error() {
+    let scratch = two_zones("pack-zone-missing");
+    let report = scratch.cook(Cook::Desktop);
+    let without: Vec<CookedAsset> =
+        report.assets.iter().filter(|asset| asset.id != id(OWN_PROP)).cloned().collect();
+    let cut = CookReport { assets: without, ..report };
+    let error = pack_cooked(&cut, &scratch.packs(Cook::Desktop), Some(&scratch.cache())).unwrap_err();
+    assert!(
+        matches!(&error, PackError::MissingDependency { id: missing, .. } if *missing == id(OWN_PROP)),
+        "{error}"
+    );
+}
+
+#[test]
+fn two_zones_of_one_name_are_refused_rather_than_merged() {
+    let scratch = two_zones("pack-zone-names");
+    fs::create_dir_all(scratch.source().join("elsewhere")).unwrap();
+    let path = scratch.source().join("elsewhere/TOWN.zone.ron");
+    let text = fs::read(scratch.source().join("village.zone.ron")).unwrap();
+    fs::write(&path, text).unwrap();
+    write_sidecar(&path, "d0000000-0000-4000-8000-000000000009", ImportSettings::Zone(Default::default()));
+    let report = scratch.cook(Cook::Desktop);
+    let error = pack_cooked(&report, &scratch.packs(Cook::Desktop), Some(&scratch.cache())).unwrap_err();
+    assert!(matches!(error, PackError::ZoneNameClash { .. }), "{error}");
+}
+
+/// What an asset reaches is read once per its bytes, so a warm pack of a tree with zones takes it from
+/// the cache.
+#[test]
+fn a_warm_pack_reads_what_zones_reach_from_the_cache() {
+    let scratch = two_zones("pack-zone-warm");
+    let (report, _) = scratch.pack(Cook::Desktop, true);
+    let again = pack_cooked(&report, &scratch.packs(Cook::Desktop), Some(&scratch.cache())).unwrap();
+    assert!(again.packs.iter().all(|pack| pack.status == PackStatus::UpToDate));
+    let key = CacheKey::reach(&by_output(&report, "town.szone").output_hash, REACH);
+    let bytes = Cache::new(scratch.cache()).get(&key).unwrap().expect("recorded");
+    let reach: Vec<AssetId> = postcard::from_bytes(&bytes).unwrap();
+    assert!(reach.contains(&id(OWN_PROP)));
+}
+
+fn by_output<'a>(report: &'a CookReport, name: &str) -> &'a CookedAsset {
+    report.assets.iter().find(|asset| asset.output.ends_with(name)).unwrap()
+}
+
 #[test]
 fn the_packers_name_tracks_its_encoders() {
     let packages: Vec<(&str, &str)> = include_str!("../../../../Cargo.lock")

@@ -29,6 +29,7 @@ sapphire_moves.workspace = true
 sapphire_reflect.workspace = true
 sapphire_serialize.workspace = true
 sapphire_tod.workspace = true
+sapphire_zone.workspace = true
 anyhow.workspace = true
 # `.meta` sidecars derive `TypePath`, whose derive finds the crate by this name.
 bevy_reflect.workspace = true

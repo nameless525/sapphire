@@ -1,0 +1,31 @@
+[package]
+name = "sapphire_zone"
+description = "Zones as plain data: the `.zone.ron` document, its checks and the cooked `.szone` format, with no renderer, world or physics, so the cooker and the simulation can both link it."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+# Documents derive `Reflect` and cooked data `TypePath`, whose derives find the crate by this name.
+bevy_reflect.workspace = true
+glam.workspace = true
+rkyv.workspace = true
+# Spawners', triggers' and splines' stable IDs are names' hashes.
+sapphire_core.workspace = true
+# An instance's turn goes through `det`, as everything a cook writes that isn't a look's own does.
+sapphire_math.workspace = true
+sapphire_reflect.workspace = true
+sapphire_serialize.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+# The digest a replay pins.
+xxhash-rust.workspace = true
+
+[dev-dependencies]
+# What a digest reads besides the zone: a cooked collider set, in its test.
+sapphire_colliders.workspace = true
+
+[lints]
+workspace = true

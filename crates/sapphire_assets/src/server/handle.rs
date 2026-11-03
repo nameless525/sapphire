@@ -8,6 +8,7 @@ use std::sync::Arc;
 use sapphire_colliders::{ArchivedColliderSet, ColliderSet};
 use sapphire_moves::{ArchivedMoveSet, MoveSet};
 use sapphire_serialize::cooked::access_unchecked;
+use sapphire_zone::{ArchivedZone, Zone};
 
 use crate::clip::{ArchivedClip, Clip};
 use crate::cue::{ArchivedCue, Cue};
@@ -28,7 +29,7 @@ slotmap::new_key_type! {
 }
 
 /// A kind of asset handles can be typed with: [`Mesh`], [`TextureAsset`], [`Material`],
-/// [`CharacterRig`], [`ProbeGrid`], [`Skeleton`], [`Clip`], [`ColliderSet`], [`Sound`], [`Cue`],
+/// [`CharacterRig`], [`ProbeGrid`], [`Skeleton`], [`Clip`], [`ColliderSet`], [`Zone`], [`Sound`], [`Cue`],
 /// [`MoveSet`].
 pub trait Asset: sealed::Sealed + 'static {
     const KIND: AssetKind;
@@ -55,6 +56,7 @@ mod sealed {
     impl Sealed for crate::skeleton::Skeleton {}
     impl Sealed for crate::clip::Clip {}
     impl Sealed for sapphire_colliders::ColliderSet {}
+    impl Sealed for sapphire_zone::Zone {}
     impl Sealed for crate::sound::Sound {}
     impl Sealed for crate::cue::Cue {}
     impl Sealed for sapphire_moves::MoveSet {}
@@ -103,6 +105,17 @@ impl Asset for ProbeGrid {
         // SAFETY: as for meshes: `ProbeGrid::read` accepted these bytes, unchanged since.
         unsafe { access_unchecked::<ProbeGrid>(bytes) }
             .expect("the envelope was checked when the probe grid was decoded")
+    }
+}
+
+impl Asset for Zone {
+    const KIND: AssetKind = AssetKind::Zone;
+    type View<'a> = &'a ArchivedZone;
+
+    unsafe fn view(bytes: &[u8]) -> &ArchivedZone {
+        // SAFETY: as for meshes: `Zone::read` accepted these bytes, unchanged since.
+        unsafe { access_unchecked::<Zone>(bytes) }
+            .expect("the envelope was checked when the zone was decoded")
     }
 }
 

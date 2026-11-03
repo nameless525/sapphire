@@ -73,6 +73,10 @@
 //!   the simulation reads, checked by move and track. A move that names a clip reads what that clip's
 //!   own cook read, its source and its rig (M2 N1), so a set cooks after every clip, and its key depends
 //!   on their keys.
+//! - **Zones** cook `.zone.ron` documents → `.szone` and a `.smesh` per cell (M3 W1, [`zone`]). Their
+//!   cells' meshes merge prefabs, assemblies by their sidecars' IDs, and are keyed by what's in each, so
+//!   a save to one placed piece recooks the cells it's in. A `.szone` reads its meshes' bounds, so it
+//!   cooks last of all; its key depends on those assets' keys.
 //!
 //! A source may cook to more than one asset: its own, and sub-assets, each with its own recipe,
 //! output beside the source's (`alicia.smesh`, `alicia.sskel`, `alicia.srig`) and an ID derived
@@ -83,8 +87,9 @@
 //!
 //! # Threads
 //!
-//! Assets that read nothing another asset cooks (textures, maps, meshes of their own, sounds, and the
-//! documents that only name others) cook first, on up to four threads (`COOK_WORKERS`); the rest cook
+//! Assets that read nothing another asset cooks (textures, maps, meshes of their own, a zone's cells,
+//! sounds, and the documents that only name others) cook first, on up to four threads (`COOK_WORKERS`),
+//! a source's parts together but for a zone's cells, each of which is a whole mesh's work; the rest cook
 //! after them, one after another, in the order above. To those first assets nothing has cooked, so one
 //! that came to read another's output would fail the same way every time rather than race it. Their
 //! keys all come first, so a key's first asset in plan order is the one that cooks, and the others take
@@ -135,6 +140,7 @@ use sapphire_assets::texture::{TEXTURE_EXTENSION, TEXTURE_VERSION};
 use sapphire_colliders::{COLLIDERS_EXTENSION, ColliderSet};
 use sapphire_moves::{BakedTables, ClipMotionDocument, MOVE_SET_EXTENSION, MoveSet};
 use sapphire_reflect::Versioned;
+use sapphire_zone::{Place, ZONE_EXTENSION, Zone};
 
 use crate::anim_graph::{self, AnimGraphCookError};
 use crate::assembly::{self, AssemblyError};
@@ -159,6 +165,7 @@ use crate::meta::{self, ImportSettings, MeshSettings, MetaError, SourceAsset, So
 use crate::moves::{self, BakeError, MoveSetCookError, TableInput};
 use crate::probes::{self, ProbeCookError, ProbeInput};
 use crate::texture::{self, TextureError};
+use crate::zone::{self, CookedPlace, ZoneCookError, ZonePlan};
 use crate::{bake, optimize};
 
 /// A target cook (spec §2): `desktop` for macOS, Windows and Linux, `mobile` for iOS and
@@ -233,6 +240,7 @@ pub(crate) const COOKED_EXTENSIONS: &[&str] = &[
     SOUND_EXTENSION,
     CUE_EXTENSION,
     MOVE_SET_EXTENSION,
+    ZONE_EXTENSION,
 ];
 
 /// What a source's skeleton's ID is derived from.
@@ -342,6 +350,12 @@ impl Recipe {
             ImportSettings::GltfClips(_) => Self::gltf_clip(),
             ImportSettings::FbxClips(_) => Self::fbx_clip(),
             ImportSettings::Vrma(_) => Self { importer: vrma::IMPORTER, ..Self::gltf_clip() },
+            ImportSettings::Zone(_) => Self {
+                importer: zone::IMPORTER,
+                cooker: zone::COOKER,
+                format: Zone::VERSION,
+                extension: ZONE_EXTENSION,
+            },
         }
     }
 
@@ -352,6 +366,16 @@ impl Recipe {
             cooker: clip::SKELETON_COOKER,
             format: Skeleton::VERSION,
             extension: SKELETON_EXTENSION,
+        }
+    }
+
+    /// The recipe of a zone's merged mesh for a place.
+    fn zone_cell() -> Self {
+        Self {
+            importer: zone::CELL_IMPORTER,
+            cooker: MESH_COOKER,
+            format: Mesh::VERSION,
+            extension: MESH_EXTENSION,
         }
     }
 
@@ -396,6 +420,8 @@ impl Recipe {
             moves::output_path(relative, self.extension)
         } else if anim_graph::is_source(relative) {
             anim_graph::output_path(relative, self.extension)
+        } else if zone::is_source(relative) {
+            zone::output_path(relative, self.extension)
         } else {
             relative.with_extension(self.extension)
         }
@@ -507,6 +533,15 @@ pub enum CookError {
     },
     #[error("cue {} names {id}, which is not a sound of this content tree that cooks", path.display())]
     NotASound { path: PathBuf, id: AssetId },
+    #[error("failed to cook zone {}", path.display())]
+    Zone {
+        path: PathBuf,
+        /// Boxed, as material errors are.
+        #[source]
+        source: Box<ZoneCookError>,
+    },
+    #[error("zone {} names {id} in `{field}`, which is not {what} of this content tree that cooks", path.display())]
+    ZoneReference { path: PathBuf, field: String, what: &'static str, id: AssetId },
     #[error("failed to cook move set {}", path.display())]
     MoveSet {
         path: PathBuf,
@@ -730,6 +765,9 @@ fn cook_dir_through(
     let resolved = meta::resolve(&tree, options.locked)?;
     let (cooked_assets, uncooked): (Vec<SourceAsset>, Vec<SourceAsset>) =
         resolved.assets.into_iter().partition(|asset| asset.meta.cook);
+    let prefabs = zone::prefab_sources(cooked_assets.iter().chain(&uncooked));
+    let mut zones: HashMap<PathBuf, ZonePlan> = HashMap::new();
+    let cache = options.cache.map(Cache::new);
 
     let mut outputs: HashMap<PathBuf, PathBuf> = HashMap::new();
     // Each output's path folded to lowercase, with its source and output: one file where case
@@ -768,7 +806,8 @@ fn cook_dir_through(
     for (asset, output) in cooked_assets.into_iter().zip(own_outputs) {
         // Which sub-assets there are may take reading the file, which could panic in a crate.
         let planned_from = Cell::new(None);
-        let parts = guarded(&asset.path, || sub_assets(&asset, &planned_from))?;
+        let parts =
+            guarded(&asset.path, || sub_assets(&asset, &planned_from, &prefabs, &mut zones, cache.as_ref()))?;
         let planned_from = planned_from.get();
         let skeleton =
             asset.meta.importer.shared_rig().map(|owner| meta::sub_asset_id(owner, SKELETON)).or_else(|| {
@@ -800,6 +839,7 @@ fn cook_dir_through(
                     let file = format!("{}.{file}.{}", keypose::stem(&source_relative), recipe.extension);
                     source_relative.with_file_name(file)
                 }
+                Part::Cell(place) => zone::part_path(&source_relative, *place, recipe.extension),
                 Part::Own | Part::Rig | Part::Skeleton => recipe.output_path(&source_relative),
             };
             let output = claim(&asset.path, &relative)?;
@@ -810,7 +850,6 @@ fn cook_dir_through(
     // system) is replaced rather than removed as stale.
     let removed = prune(out_root, &|path| outputs.contains_key(path), COOKED_EXTENSIONS)?;
 
-    let cache = options.cache.map(Cache::new);
     let mut by_id = HashMap::with_capacity(plan.len());
     for (index, planned) in plan.iter().enumerate() {
         // Sidecar IDs are unique (checked by `meta::resolve`) and random; a derived ID equal to
@@ -827,9 +866,12 @@ fn cook_dir_through(
     // key-pose documents and meshes sharing a skeleton read skeletons and rigs, so those go before
     // them; key-pose documents read those meshes' morph targets, so the meshes go before clips, and
     // move sets read clips' keys, so those go before move sets; probe grids read cooked meshes and
-    // their materials, so they cook last. `others` read none of what those cook.
+    // their materials, and a zone's `.szone` reads its meshes, so those cook last. `others` read none
+    // of what those cook.
+    let (own_zones, rest): (Vec<usize>, Vec<usize>) =
+        (0..plan.len()).partition(|&index| plan[index].is_own_zone());
     let (probe_grids, rest): (Vec<usize>, Vec<usize>) =
-        (0..plan.len()).partition(|&index| plan[index].is_probe_grid());
+        rest.into_iter().partition(|&index| plan[index].is_probe_grid());
     let (materials, rest): (Vec<usize>, Vec<usize>) =
         rest.into_iter().partition(|&index| plan[index].is_material());
     let (move_sets, rest): (Vec<usize>, Vec<usize>) =
@@ -847,6 +889,7 @@ fn cook_dir_through(
         plan: &plan,
         by_id: &by_id,
         sources: &sources,
+        zones: &zones,
         cache: cache.as_ref(),
         cook: options.cook,
         memory: &memory,
@@ -865,7 +908,7 @@ fn cook_dir_through(
     };
     in_turn(vec![shared_meshes, clips])?;
     reached(CookStage::ClipsCooked);
-    in_turn(vec![move_sets, materials, probe_grids])?;
+    in_turn(vec![move_sets, materials, probe_grids, own_zones])?;
     let assets = cooked.into_iter().map(|asset| asset.expect("every planned asset was cooked")).collect();
     Ok(CookReport {
         assets,
@@ -888,7 +931,10 @@ fn cook_independent(
     workers: usize,
     cooked: &mut [Option<CookedAsset>],
 ) -> Result<(), CookError> {
-    let same_source = |&a: &usize, &b: &usize| tree.plan[a].asset.path == tree.plan[b].asset.path;
+    // A zone's cells cook apart: each is a whole mesh's work, reading only what its own key holds.
+    let same_source = |&a: &usize, &b: &usize| {
+        tree.plan[a].asset.path == tree.plan[b].asset.path && !matches!(tree.plan[b].part, Part::Cell(_))
+    };
     let mut failure = None;
     let mut keyed: Vec<Option<Keyed>> = tree.plan.iter().map(|_| None).collect();
     // A source's parts stay together, to share a read of it.
@@ -999,6 +1045,8 @@ enum Part {
     /// A key-pose document, for a further rig its sidecar names, and what stands for it in the
     /// output's file name.
     KeyPose { rig: AssetId, file: String },
+    /// A zone's merged mesh for one place.
+    Cell(Place),
 }
 
 /// A part of a source, its ID and its recipe.
@@ -1010,10 +1058,13 @@ struct PlannedPart {
 
 /// The sub-assets `asset` cooks to besides its own asset, reading the file where that depends on
 /// what it holds, and saying the hash of what it read in `planned_from`. Its `clips` settings are
-/// checked here, before anything cooks.
+/// checked here, before anything cooks, and a zone's plan is made, from `prefabs`, and left in `zones`.
 fn sub_assets(
     asset: &SourceAsset,
     planned_from: &Cell<Option<blake3::Hash>>,
+    prefabs: &HashMap<AssetId, SourceAsset>,
+    zones: &mut HashMap<PathBuf, ZonePlan>,
+    cache: Option<&Cache>,
 ) -> Result<Vec<PlannedPart>, CookError> {
     let SourceAsset { path, meta } = asset;
     let clip_error = |source: ClipCookError| CookError::Clip { path: path.clone(), source: Box::new(source) };
@@ -1115,6 +1166,17 @@ fn sub_assets(
         | ImportSettings::Cue(_)
         | ImportSettings::MoveSet(_)
         | ImportSettings::AnimGraph(_) => Ok(Vec::new()),
+        ImportSettings::Zone(_) => {
+            let plan = ZonePlan::new(meta.id, &read()?, prefabs, cache).map_err(zone_error(path))?;
+            let parts = plan.places().map(|place| PlannedPart {
+                id: plan.part_id(place),
+                part: Part::Cell(place),
+                recipe: Recipe::zone_cell(),
+            });
+            let parts = parts.collect();
+            zones.insert(path.clone(), plan);
+            Ok(parts)
+        }
     }
 }
 
@@ -1272,6 +1334,11 @@ impl Planned {
         matches!(self.asset.meta.importer, ImportSettings::MoveSet(_))
     }
 
+    /// Whether it's a zone's `.szone`, which reads its meshes.
+    fn is_own_zone(&self) -> bool {
+        self.part == Part::Own && matches!(self.asset.meta.importer, ImportSettings::Zone(_))
+    }
+
     /// Whether its cook reads skeletons or rigs that other assets cook.
     fn reads_rigs(&self) -> bool {
         let importer = &self.asset.meta.importer;
@@ -1297,6 +1364,8 @@ struct PlannedTree<'a> {
     plan: &'a [Planned],
     by_id: &'a HashMap<AssetId, usize>,
     sources: &'a HashMap<AssetId, &'a SourceAsset>,
+    /// Zones' plans by their sources' paths.
+    zones: &'a HashMap<PathBuf, ZonePlan>,
     cache: Option<&'a Cache>,
     cook: Cook,
     memory: &'a CookMemory,
@@ -1314,6 +1383,7 @@ impl<'a> PlannedTree<'a> {
             by_id: self.by_id,
             cooked,
             sources: self.sources,
+            zones: self.zones,
             clip_sources: &remembered.clip_sources,
             last_source: &remembered.last_source,
             memory: self.memory,
@@ -1347,6 +1417,7 @@ struct Assets<'a> {
     cooked: &'a [Option<CookedAsset>],
     /// Sources by their sidecars' IDs, whether they have an asset of that ID or not.
     sources: &'a HashMap<AssetId, &'a SourceAsset>,
+    zones: &'a HashMap<PathBuf, ZonePlan>,
     clip_sources: &'a ClipSources,
     last_source: &'a LastSource,
     memory: &'a CookMemory,
@@ -1695,8 +1766,13 @@ fn asset_key(
     let Planned { asset: SourceAsset { path, meta }, part, skeleton, recipe, .. } = planned;
     let mut dependencies = dependencies(path, &source.bytes, &meta.importer, part, assets)?;
     dependencies.extend(part_dependencies(path, part, *skeleton, &meta.importer));
+    // A cell's key holds what's in it, rather than the whole document (see `zone`).
+    let keyed_source = match part {
+        Part::Cell(place) => assets.zones[path].recipe(*place),
+        _ => source.hash,
+    };
     Ok(CacheKey::new(&KeyInputs {
-        source: source.hash,
+        source: keyed_source,
         recipe,
         settings: &meta.importer,
         cook,
@@ -1823,6 +1899,12 @@ fn cook_source(
         |source: ClipCookError| CookError::Clip { path: path.to_owned(), source: Box::new(source) };
     match part {
         Part::Own | Part::Rig | Part::KeyPose { .. } => {}
+        Part::Cell(place) => {
+            let ImportSettings::Zone(settings) = settings else {
+                unreachable!("only zones plan cells");
+            };
+            return cook_cell(path, *place, settings, cook, assets);
+        }
         Part::Skeleton => {
             let joints = if settings.is_animation_only() {
                 assets.clip_sources.get(path, bytes, settings).map_err(clip_error)?.joints.clone()
@@ -1901,7 +1983,71 @@ fn cook_source(
             .map_err(|source| CookError::MoveSet { path: path.to_owned(), source: Box::new(source) }),
         ImportSettings::AnimGraph(_) => anim_graph::cook(bytes)
             .map_err(|source| CookError::AnimGraph { path: path.to_owned(), source: Box::new(source) }),
+        ImportSettings::Zone(_) => cook_zone(path, assets),
     }
+}
+
+/// A zone's merged mesh for `place`, as cooked bytes.
+fn cook_cell(
+    path: &Path,
+    place: Place,
+    settings: &zone::ZoneSettings,
+    cook: Cook,
+    assets: &Assets<'_>,
+) -> Result<Vec<u8>, CookError> {
+    let plan = &assets.zones[path];
+    let _held = assets.memory.hold(plan.source_bytes_in(place) * MESH_MEMORY_PER_SOURCE_BYTE);
+    let (mut mesh, bindings) = plan.merge(place, assembly_detail(cook)).map_err(zone_error(path))?;
+    if let Some(vertex) = mesh.vertices.iter().position(|v| !v.position.iter().all(|c| c.is_finite())) {
+        return Err(CookError::Invalid {
+            path: path.to_owned(),
+            source: MeshError::NonFinitePosition { vertex },
+        });
+    }
+    bake::outline_normals(&mut mesh, &settings.outline);
+    optimize::optimize(&mut mesh, &settings.lods, settings.outline.weld_tolerance(), cook);
+    let packed = mesh
+        .pack(settings.position_format, &bindings)
+        .map_err(|source| CookError::MaterialSlot { path: path.to_owned(), source })?;
+    Ok(cooked_bytes(path, &packed)?.into_vec())
+}
+
+/// A zone's `.szone`, from its plan and its cooked meshes.
+fn cook_zone(path: &Path, assets: &Assets<'_>) -> Result<Vec<u8>, CookError> {
+    let plan = &assets.zones[path];
+    let bounds_of = |id: AssetId| -> Result<sapphire_zone::Bounds, CookError> {
+        let cooked = assets.cooked(id).ok_or_else(|| CookError::ZoneReference {
+            path: path.to_owned(),
+            field: "instances".to_owned(),
+            what: "a mesh",
+            id,
+        })?;
+        let read_error = |source| CookError::Read { path: cooked.output.clone(), source };
+        let bytes = read_cooked(cooked).map_err(read_error)?;
+        let mesh = Mesh::read(&bytes)
+            .map_err(|source| CookError::Invalid { path: cooked.output.clone(), source })?;
+        let sapphire_assets::mesh::Bounds { min, max } = mesh.streams.bounds.to_native();
+        Ok(sapphire_zone::Bounds { min, max })
+    };
+    let places = plan
+        .places()
+        .map(|place| {
+            let id = plan.part_id(place);
+            Ok(CookedPlace { place, id, bounds: bounds_of(id)? })
+        })
+        .collect::<Result<Vec<_>, CookError>>()?;
+    let instances = plan
+        .document()
+        .instances
+        .iter()
+        .map(|instance| bounds_of(instance.mesh))
+        .collect::<Result<Vec<_>, CookError>>()?;
+    zone::cook(plan, path, places, instances).map_err(zone_error(path))
+}
+
+/// Maps a zone's cook error to one that names the source.
+fn zone_error(path: &Path) -> impl Fn(ZoneCookError) -> CookError + '_ {
+    |source| CookError::Zone { path: path.to_owned(), source: Box::new(source) }
 }
 
 /// About what cooking the map document in `bytes` holds at its peak: a texture of its first input's size,
@@ -2286,6 +2432,7 @@ fn source_dependencies(
         }
         // Images and collider documents are self-contained.
         ImportSettings::Texture(_) | ImportSettings::Colliders(_) => Ok(Vec::new()),
+        ImportSettings::Zone(_) => zone_dependencies(path, part, assets),
         ImportSettings::MoveSet(_) => Ok(move_set_dependencies(bytes, assets)),
         ImportSettings::CharacterMap(settings) => {
             let inputs = character_maps::inputs(settings.kind(), bytes).map_err(map_error(path))?;
@@ -2376,6 +2523,72 @@ fn clips_of_set<'a>(bytes: &[u8], assets: &Assets<'a>) -> Vec<&'a Planned> {
     let Ok(document) = moves::read(bytes) else { return Vec::new() };
     let clips = document.moves.iter().filter_map(|mv| mv.motion.clip.as_ref());
     clips.filter_map(|clip| assets.clip_of_move(clip).ok()).collect()
+}
+
+/// What a zone's part reads besides its own document, and the check of what it names, on every cook.
+fn zone_dependencies(path: &Path, part: &Part, assets: &Assets<'_>) -> Result<Vec<Dependency>, CookError> {
+    let plan = &assets.zones[path];
+    if let Part::Cell(place) = part {
+        for (field, id) in plan.materials_in(*place) {
+            if !assets.get(id).is_some_and(Planned::is_material) {
+                return Err(CookError::NotAMaterial { path: path.to_owned(), slot: field, id });
+            }
+        }
+        let mut dependencies = Vec::new();
+        for (id, prefab, hash) in plan.prefab_files_in(*place) {
+            let bytes =
+                fs::read(prefab).map_err(|source| CookError::Read { path: prefab.to_owned(), source })?;
+            // What's merged is the document the plan read: a save since then cooks again from the top.
+            if blake3::hash(&bytes) != hash {
+                return Err(CookError::SourceChanged { path: prefab.to_owned() });
+            }
+            dependencies.push(Dependency::File { path: format!("#prefab {id}"), hash });
+            dependencies.extend(assembly_dependencies(prefab, &bytes)?);
+        }
+        return Ok(dependencies);
+    }
+
+    let document = plan.document();
+    let reference = |field: String, what, id, good: fn(&Planned) -> bool| {
+        if assets.get(id).is_some_and(good) {
+            Ok(())
+        } else {
+            Err(CookError::ZoneReference { path: path.to_owned(), field, what, id })
+        }
+    };
+    if let Some(id) = document.colliders {
+        reference("colliders".to_owned(), "a collider document", id, |planned| {
+            matches!(planned.asset.meta.importer, ImportSettings::Colliders(_))
+        })?;
+    }
+    if let Some(id) = document.probes {
+        reference("probes".to_owned(), "a probe grid", id, Planned::is_probe_grid)?;
+    }
+    let mut dependencies = Vec::new();
+    let cooked_key = |id: AssetId, field: String, what| {
+        let cooked = assets.cooked(id);
+        let cooked = cooked.ok_or(CookError::ZoneReference { path: path.to_owned(), field, what, id })?;
+        Ok::<Dependency, CookError>(Dependency::Asset { id, key: cooked.key })
+    };
+    for (index, instance) in document.instances.iter().enumerate() {
+        let field = format!("instances[{index}].mesh");
+        reference(field.clone(), "a static mesh", instance.mesh, |planned| {
+            planned.recipe.extension == MESH_EXTENSION
+                && planned.skeleton.is_none()
+                && !matches!(planned.part, Part::Cell(_))
+        })?;
+        dependencies.push(cooked_key(instance.mesh, field, "a static mesh")?);
+    }
+    for place in plan.places() {
+        dependencies.push(cooked_key(plan.part_id(place), zone::part_name(place), "a mesh")?);
+    }
+    for (field, file) in [("day", &document.day), ("rigs", &document.rigs)] {
+        if let Some(file) = file {
+            let (_, bytes) = zone::read_document(path, field, file).map_err(zone_error(path))?;
+            dependencies.push(Dependency::File { path: file.clone(), hash: blake3::hash(&bytes) });
+        }
+    }
+    Ok(dependencies)
 }
 
 /// The pieces an assembly at `path` places: files it reads, by the path it names them with.
@@ -2497,7 +2710,8 @@ fn imported_mesh(
         | ImportSettings::AnimGraph(_)
         | ImportSettings::GltfClips(_)
         | ImportSettings::FbxClips(_)
-        | ImportSettings::Vrma(_) => Err(CookError::UnsupportedSource { path: path.to_owned() }),
+        | ImportSettings::Vrma(_)
+        | ImportSettings::Zone(_) => Err(CookError::UnsupportedSource { path: path.to_owned() }),
     }
 }
 
@@ -2957,10 +3171,12 @@ mod tests {
                 output: scratch.out().join("asset"),
             }];
             let (by_id, sources, memory) = (HashMap::new(), HashMap::new(), CookMemory::new(COOK_MEMORY));
+            let zones = HashMap::new();
             let tree = PlannedTree {
                 plan: &plan,
                 by_id: &by_id,
                 sources: &sources,
+                zones: &zones,
                 cache: None,
                 cook: Cook::Desktop,
                 memory: &memory,
@@ -3007,10 +3223,12 @@ mod tests {
             output,
         }];
         let (by_id, sources, memory) = (HashMap::new(), HashMap::new(), CookMemory::new(COOK_MEMORY));
+        let zones = HashMap::new();
         let tree = PlannedTree {
             plan: &plan,
             by_id: &by_id,
             sources: &sources,
+            zones: &zones,
             cache: Some(&cache),
             cook: Cook::Desktop,
             memory: &memory,
@@ -4038,3 +4256,5 @@ mod clip_tests;
 mod animation_tests;
 #[cfg(test)]
 mod move_tests;
+#[cfg(test)]
+mod zone_tests;

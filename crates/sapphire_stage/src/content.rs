@@ -78,7 +78,6 @@ use std::collections::{HashMap, HashSet};
 use std::io;
 #[cfg(feature = "dev")]
 use std::path::PathBuf;
-#[cfg(feature = "dev")]
 use std::sync::Arc;
 
 use sapphire_anim::{AnimGraph, ArchivedClip, ArchivedSkeleton, Clip, Skeleton};

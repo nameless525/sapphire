@@ -138,7 +138,6 @@ use crate::show::{ContentChanges, SceneShow};
 use crate::skinned::{self, Sway};
 use crate::studio::{self, Piece, StudioLayout, StudioMeshes, Subject};
 use crate::swatches::{self, SWATCHES};
-use crate::timeline::TimelineShow;
 use crate::turntable::{self, Turntable};
 use crate::vfx::{VfxPlayer, VfxShow};
 

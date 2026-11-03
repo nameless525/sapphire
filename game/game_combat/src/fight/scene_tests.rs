@@ -482,14 +482,14 @@ pub(super) fn arena_stage(shot: ArenaShot) -> (Staged, Figure) {
     (scene, figure)
 }
 
-fn square_look() -> Arc<sapphire_timeline::Timeline> {
+fn square_look() -> Arc<Timeline> {
     let text = include_str!("../../../../content/sequences/square_look.timeline.ron");
     let document = sapphire_timeline::TimelineDocument::from_ron(text).expect("reads");
     Arc::new(document.cook().expect("cooks"))
 }
 
 /// One frame `dt` after the last: where the view is, and what post it's drawn through.
-fn timeline_frame(scene: &mut Staged, dt: f32) -> (Vec3, sapphire_render::PostParams) {
+fn timeline_frame(scene: &mut Staged, dt: f32) -> (Vec3, PostParams) {
     scene.drive_arena_camera(dt, Vec2::ZERO, 0.0);
     let post = scene.frame_packet(1.0, Some((640, 360))).post;
     scene.end_frame();
@@ -582,10 +582,10 @@ fn the_scenes_clock_follows_a_timelines_time_scale() {
 /// the fighters' clock never drawn behind what the hold drew.
 #[test]
 fn a_cutscene_holds_the_fight_and_a_skip_lets_it_go() {
-    let option = crate::combat::CombatOption::Fight { script: Some("idle".to_owned()), party: false };
+    let option = CombatOption::Fight { script: Some("idle".to_owned()), party: false };
     let (mut staged, _) = arena_stage(ArenaShot::Director);
     let mut fight = Fight {
-        combat: Some(crate::combat::Combat::new(&option).expect("sets up")),
+        combat: Some(Combat::new(&option).expect("sets up")),
         show: std::mem::take(&mut staged.show),
     };
     let tick = |fight: &Fight| fight.combat.as_ref().expect("on").simulation().tick();

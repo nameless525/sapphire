@@ -8,7 +8,7 @@
 //! ```ron
 //! (
 //!     type: "sapphire::assets::UiDocument",
-//!     version: 1,
+//!     version: 2,
 //!     data: (
 //!         model: "hud.model.ron",
 //!         styles: [(name: "label", role: "body", size: 14)],
@@ -34,6 +34,11 @@
 //!     ),
 //! )
 //! ```
+//!
+//! **Motion and input (M3 U5).** A document's `timelines` move its nodes' opacity, position and scale;
+//! its `states` and `transitions` are a small machine that plays them; a node with `focus` is something
+//! a player can reach; and a masked node with `scroll` holds more than it shows. All of it is
+//! presentation, and `sapphire_ui` says what it costs.
 //!
 //! **No text lives here.** A text node names a key, and a style names a role, so a cook can work out
 //! what each locale shows in which fonts, and refuse what it can't.
@@ -73,6 +78,15 @@ pub const MAX_DEPTH: usize = 64;
 /// The widest a length can be, in points: past this it's a typing mistake.
 const MAX_POINTS: f32 = 100_000.0;
 
+/// The most timelines, states or transitions a document holds: past this it's a generated mistake.
+pub const MAX_MOTIONS: usize = 256;
+
+/// The largest a timeline may scale a node: past this it's a typing mistake.
+const MAX_SCALE: f32 = 16.0;
+
+/// The longest a key may wait, in seconds: past this it's a typing mistake.
+const MAX_SECONDS: f32 = 3600.0;
+
 /// A color as a designer picks it: display-encoded bytes, straight alpha.
 pub type UiColor = [u8; 4];
 
@@ -103,10 +117,20 @@ pub struct UiDocument {
     pub styles: Vec<UiTextStyle>,
     /// Its nodes. The first is the root, and a node's parent comes before it.
     pub nodes: Vec<UiNode>,
+    /// What can move, by name.
+    #[serde(default)]
+    pub timelines: Vec<UiTimeline>,
+    /// The screen's machine: the first is where it starts. None means it's always open to input, and
+    /// only code plays its timelines.
+    #[serde(default)]
+    pub states: Vec<UiState>,
+    /// What an event does in a state. An event with none in the current state does nothing.
+    #[serde(default)]
+    pub transitions: Vec<UiTransition>,
 }
 
 impl Versioned for UiDocument {
-    const VERSION: u32 = 1;
+    const VERSION: u32 = 2;
 }
 
 /// How a text looks, which any text node of the document can name.
@@ -186,6 +210,12 @@ pub struct UiNode {
     /// What the model drives, beyond its text's arguments.
     #[serde(default)]
     pub binds: Vec<UiBind>,
+    /// That a player can reach it, and how it answers.
+    #[serde(default)]
+    pub focus: Option<UiFocus>,
+    /// That it holds more than it shows along this axis, and scrolls through it. Takes a mask.
+    #[serde(default)]
+    pub scroll: Option<UiScrollAxis>,
 }
 
 fn opaque() -> f32 {
@@ -676,6 +706,300 @@ pub struct UiText {
     /// The message's variables, each read from the model.
     #[serde(default)]
     pub args: Vec<UiArg>,
+    /// Where a key chosen as it runs comes from, in place of `key`.
+    #[serde(default)]
+    pub key_from: Option<UiKeyFrom>,
+    /// A copy of the text behind it.
+    #[serde(default)]
+    pub shadow: Option<UiShadow>,
+}
+
+/// A key chosen as the game runs: a subtitle's line, an item's name. `key` shows while the path reads
+/// nothing. A cook takes every key starting with `prefix`, so all of them are held to the document's
+/// variables and to its fonts.
+#[derive(
+    Reflect,
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[reflect(Serialize, Deserialize, Default)]
+#[rkyv(derive(Debug))]
+#[serde(deny_unknown_fields)]
+pub struct UiKeyFrom {
+    /// A reflection path into the model, to a string.
+    pub path: String,
+    /// What every key it may read starts with, `key` among them.
+    pub prefix: String,
+}
+
+/// A copy of a text behind it, as a line over a busy picture needs.
+#[derive(
+    Reflect,
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[reflect(Serialize, Deserialize, Default)]
+#[rkyv(derive(Debug))]
+#[serde(deny_unknown_fields)]
+pub struct UiShadow {
+    pub color: UiColor,
+    /// How far it sits from the text, in points, which land on whole pixels.
+    pub offset: [f32; 2],
+}
+
+/// That a player can reach a node, by direction or by pointing.
+#[derive(
+    Reflect,
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[reflect(Serialize, Deserialize, Default)]
+#[rkyv(derive(Debug))]
+#[serde(default, deny_unknown_fields)]
+pub struct UiFocus {
+    /// The node a direction goes to, in place of the nearest one that way.
+    pub up: Option<String>,
+    pub down: Option<String>,
+    pub left: Option<String>,
+    pub right: Option<String>,
+    /// That focus starts here, rather than on the first such node in drawing order.
+    pub first: bool,
+    /// What it draws instead of `look` while focused.
+    pub focused: Option<UiLook>,
+    /// What it draws instead of `look` while a pointer holds it down.
+    pub pressed: Option<UiLook>,
+    /// The event it gives the screen's machine when activated.
+    pub fires: Option<String>,
+}
+
+/// The axis a node scrolls along.
+#[derive(
+    Reflect,
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[reflect(Serialize, Deserialize, Default)]
+#[rkyv(derive(Debug))]
+pub enum UiScrollAxis {
+    #[default]
+    Vertical,
+    Horizontal,
+}
+
+/// Motion over nodes, played from its start on whatever clock the app hands the tree.
+#[derive(
+    Reflect,
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[reflect(Serialize, Deserialize, Default)]
+#[rkyv(derive(Debug))]
+#[serde(deny_unknown_fields)]
+pub struct UiTimeline {
+    pub name: String,
+    /// That it starts over at its end, rather than leaving its last keys in place.
+    #[serde(default)]
+    pub looping: bool,
+    pub tracks: Vec<UiMotionTrack>,
+}
+
+/// One property of one node, over time.
+#[derive(
+    Reflect,
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[reflect(Serialize, Deserialize, Default)]
+#[rkyv(derive(Debug))]
+#[serde(deny_unknown_fields)]
+pub struct UiMotionTrack {
+    /// The node, by name. Its children go with it.
+    pub node: String,
+    pub property: UiMotion,
+    /// In order of time. Before the first it reads the first's value.
+    pub keys: Vec<UiKey>,
+}
+
+/// What a timeline can move: what a frame can change with no layout pass.
+#[derive(
+    Reflect,
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[reflect(Serialize, Deserialize, Default)]
+#[rkyv(derive(Debug))]
+pub enum UiMotion {
+    /// 0 to 1, multiplying [`UiNode::opacity`].
+    #[default]
+    Opacity,
+    /// Points to the right of where layout put it.
+    X,
+    /// Points below where layout put it.
+    Y,
+    /// A multiple of its size, about its center.
+    Scale,
+}
+
+/// A value at a time.
+#[derive(
+    Reflect,
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[reflect(Serialize, Deserialize, Default)]
+#[rkyv(derive(Debug))]
+#[serde(deny_unknown_fields)]
+pub struct UiKey {
+    /// Seconds from the timeline's start.
+    pub at: f32,
+    pub value: f32,
+    /// How the value gets here from the key before.
+    #[serde(default)]
+    pub ease: UiEase,
+}
+
+/// How a value gets from one key to the next.
+#[derive(
+    Reflect,
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[reflect(Serialize, Deserialize, Default)]
+#[rkyv(derive(Debug))]
+pub enum UiEase {
+    #[default]
+    Linear,
+    /// Starts slowly (cubic).
+    In,
+    /// Ends slowly (cubic), as most things arriving on a screen should.
+    Out,
+    InOut,
+    /// Goes a little past, and settles back.
+    Back,
+}
+
+/// A state of a screen's machine.
+#[derive(
+    Reflect,
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[reflect(Serialize, Deserialize, Default)]
+#[rkyv(derive(Debug))]
+#[serde(deny_unknown_fields)]
+pub struct UiState {
+    pub name: String,
+    /// The timeline it plays on entry.
+    #[serde(default)]
+    pub play: Option<String>,
+    /// The state it goes to when that timeline ends: how entering becomes open.
+    #[serde(default)]
+    pub then: Option<String>,
+    /// Whether the screen takes input in it.
+    #[serde(default)]
+    pub input: bool,
+}
+
+/// A move of a screen's machine.
+#[derive(
+    Reflect,
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[reflect(Serialize, Deserialize, Default)]
+#[rkyv(derive(Debug))]
+#[serde(deny_unknown_fields)]
+pub struct UiTransition {
+    pub from: String,
+    /// The event's name: what code fires, what [`UiFocus::fires`] says, or `back`, which a player's back
+    /// button gives.
+    pub on: String,
+    pub to: String,
 }
 
 /// A message's variable, and where its value comes from.
@@ -892,10 +1216,21 @@ impl UiDocument {
                     issue(&format!(".binds[{at}].to"), format!("{:?} is bound twice", bind.to));
                 }
             }
+            if node.scroll.is_some() {
+                if !node.mask {
+                    issue(".scroll", "what scrolls draws only inside its node: give it a mask".to_owned());
+                }
+                if node.text.is_some() {
+                    issue(".scroll", "it shows text, so it has no children to scroll".to_owned());
+                }
+            }
         }
+        self.check_focus(&mut issues);
+        self.check_motion(&mut issues);
         if self.model.is_none()
             && let Some((index, node)) = self.nodes.iter().enumerate().find(|(_, node)| {
-                !node.binds.is_empty() || node.text.as_ref().is_some_and(|t| !t.args.is_empty())
+                !node.binds.is_empty()
+                    || node.text.as_ref().is_some_and(|t| !t.args.is_empty() || t.key_from.is_some())
             })
         {
             issues.push(UiIssue {
@@ -904,6 +1239,165 @@ impl UiDocument {
             });
         }
         issues
+    }
+
+    /// What's wrong with its nodes' focus: where a direction goes, where it starts, what it fires.
+    fn check_focus(&self, issues: &mut Vec<UiIssue>) {
+        let focusable: BTreeSet<&str> =
+            self.nodes.iter().filter(|node| node.focus.is_some()).map(|node| node.name.as_str()).collect();
+        let mut first = false;
+        for (index, node) in self.nodes.iter().enumerate() {
+            let Some(focus) = &node.focus else { continue };
+            let mut issue = |field: &str, problem: String| {
+                let field = format!("nodes[{index}] `{}`.focus.{field}", node.name);
+                issues.push(UiIssue { field, problem });
+            };
+            let directions =
+                [("up", &focus.up), ("down", &focus.down), ("left", &focus.left), ("right", &focus.right)];
+            for (name, target) in directions {
+                if let Some(target) = target
+                    && !focusable.contains(target.as_str())
+                {
+                    issue(name, format!("`{target}` isn't a node that takes focus"));
+                }
+            }
+            if focus.first && std::mem::replace(&mut first, true) {
+                issue("first", "focus already starts on another node".to_owned());
+            }
+            for (name, look) in [("focused", &focus.focused), ("pressed", &focus.pressed)] {
+                if let Some(look) = look {
+                    check_look(look, &mut |field: &str, problem: String| {
+                        issue(&format!("{name}{field}"), problem);
+                    });
+                }
+            }
+            if let Some(event) = &focus.fires
+                && !self.transitions.iter().any(|transition| transition.on == *event)
+            {
+                issue("fires", format!("no transition is on `{event}`"));
+            }
+        }
+    }
+
+    /// What's wrong with its timelines and its machine.
+    fn check_motion(&self, issues: &mut Vec<UiIssue>) {
+        for (name, count) in [
+            ("timelines", self.timelines.len()),
+            ("states", self.states.len()),
+            ("transitions", self.transitions.len()),
+        ] {
+            if count > MAX_MOTIONS {
+                let problem = format!("{count}, past the {MAX_MOTIONS} a screen may hold");
+                issues.push(UiIssue { field: name.to_owned(), problem });
+            }
+        }
+        self.check_timelines(issues);
+        let mut names = BTreeSet::new();
+        for (index, state) in self.states.iter().enumerate() {
+            let mut issue = |field: &str, problem: String| {
+                issues.push(UiIssue { field: format!("states[{index}] `{}`{field}", state.name), problem });
+            };
+            if state.name.is_empty() {
+                issue(".name", "a state has a name".to_owned());
+            } else if !names.insert(state.name.as_str()) {
+                issue(".name", "a second state has this name".to_owned());
+            }
+            let timeline =
+                state.play.as_ref().map(|name| (name, self.timelines.iter().find(|t| t.name == *name)));
+            if let Some((name, None)) = timeline {
+                issue(".play", format!("`{name}` isn't a timeline"));
+            }
+            if let Some(then) = &state.then {
+                if !self.states.iter().any(|other| other.name == *then) {
+                    issue(".then", format!("`{then}` isn't a state"));
+                }
+                match timeline {
+                    None => issue(".then", "it goes on when its timeline ends, and it plays none".to_owned()),
+                    Some((name, Some(timeline))) if timeline.looping => {
+                        issue(".then", format!("`{name}` loops, so it never ends"));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if self.states.is_empty() && !self.transitions.is_empty() {
+            let problem = "they move between states, and it has none".to_owned();
+            issues.push(UiIssue { field: "transitions".to_owned(), problem });
+        }
+        for (index, transition) in self.transitions.iter().enumerate() {
+            let mut issue = |field: &str, problem: String| {
+                issues.push(UiIssue { field: format!("transitions[{index}].{field}"), problem });
+            };
+            for (name, state) in [("from", &transition.from), ("to", &transition.to)] {
+                if !self.states.iter().any(|other| other.name == *state) {
+                    issue(name, format!("`{state}` isn't a state"));
+                }
+            }
+            if transition.on.is_empty() {
+                issue("on", "a transition names its event".to_owned());
+            }
+            if self.transitions[..index]
+                .iter()
+                .any(|earlier| earlier.from == transition.from && earlier.on == transition.on)
+            {
+                let (on, from) = (&transition.on, &transition.from);
+                issue("on", format!("`{on}` already has a transition from `{from}`"));
+            }
+        }
+    }
+
+    fn check_timelines(&self, issues: &mut Vec<UiIssue>) {
+        let nodes: BTreeSet<&str> = self.nodes.iter().map(|node| node.name.as_str()).collect();
+        let mut timelines = BTreeSet::new();
+        for (index, timeline) in self.timelines.iter().enumerate() {
+            let mut issue = |field: &str, problem: String| {
+                let field = format!("timelines[{index}] `{}`{field}", timeline.name);
+                issues.push(UiIssue { field, problem });
+            };
+            if timeline.name.is_empty() {
+                issue(".name", "a timeline has a name".to_owned());
+            } else if !timelines.insert(timeline.name.as_str()) {
+                issue(".name", "a second timeline has this name".to_owned());
+            }
+            let mut longest = 0.0_f32;
+            let mut moved = BTreeSet::new();
+            for (at, track) in timeline.tracks.iter().enumerate() {
+                if !nodes.contains(track.node.as_str()) {
+                    issue(&format!(".tracks[{at}].node"), format!("`{}` isn't a node", track.node));
+                }
+                if !moved.insert((track.node.as_str(), track.property as u8)) {
+                    let problem = format!("`{}` has another {:?} track", track.node, track.property);
+                    issue(&format!(".tracks[{at}].property"), problem);
+                }
+                if track.keys.is_empty() {
+                    issue(&format!(".tracks[{at}].keys"), "a track has a key".to_owned());
+                }
+                let mut last = None;
+                for (number, key) in track.keys.iter().enumerate() {
+                    let field = |name: &str| format!(".tracks[{at}].keys[{number}].{name}");
+                    if !(key.at.is_finite() && (0.0..=MAX_SECONDS).contains(&key.at)) {
+                        issue(&field("at"), format!("{} isn't a time in seconds", key.at));
+                    } else if last.is_some_and(|last| key.at <= last) {
+                        issue(&field("at"), format!("{} doesn't come after the key before it", key.at));
+                    }
+                    last = Some(key.at);
+                    longest = longest.max(key.at);
+                    let good = key.value.is_finite()
+                        && match track.property {
+                            UiMotion::Opacity => (0.0..=1.0).contains(&key.value),
+                            UiMotion::X | UiMotion::Y => key.value.abs() <= MAX_POINTS,
+                            UiMotion::Scale => (0.0..=MAX_SCALE).contains(&key.value),
+                        };
+                    if !good {
+                        let problem = format!("{} isn't a value of {:?}", key.value, track.property);
+                        issue(&field("value"), problem);
+                    }
+                }
+            }
+            if timeline.looping && longest <= 0.0 {
+                issue(".looping", "what loops takes some time".to_owned());
+            }
+        }
     }
 
     /// Everything wrong with this document's paths against `model`, each naming its field.
@@ -934,6 +1428,18 @@ impl UiDocument {
             for (at, arg) in node.text.iter().flat_map(|text| &text.args).enumerate() {
                 if model.kind_of(&arg.path).is_none() {
                     issue(format!(".text.args[{at}].path"), format!("`{}` isn't in the model", arg.path));
+                }
+            }
+            if let Some(from) = node.text.as_ref().and_then(|text| text.key_from.as_ref()) {
+                match model.kind_of(&from.path) {
+                    Some(UiValueKind::Text) => {}
+                    Some(kind) => issue(
+                        ".text.key_from.path".to_owned(),
+                        format!("`{}` is a {kind:?}, and a key is a Text", from.path),
+                    ),
+                    None => {
+                        issue(".text.key_from.path".to_owned(), format!("`{}` isn't in the model", from.path))
+                    }
                 }
             }
         }
@@ -1089,6 +1595,21 @@ fn check_text(text: &UiText, styles: &[UiTextStyle], issue: &mut impl FnMut(&str
         if let Err(problem) = check_path(&arg.path) {
             issue(&format!(".text.args[{at}].path"), problem);
         }
+    }
+    if let Some(from) = &text.key_from {
+        if let Err(problem) = check_path(&from.path) {
+            issue(".text.key_from.path", problem);
+        }
+        if from.prefix.is_empty() {
+            issue(".text.key_from.prefix", "the keys it may read start with something".to_owned());
+        } else if !text.key.starts_with(&from.prefix) {
+            issue(".text.key", format!("it doesn't start with `{}`, as what it may read does", from.prefix));
+        }
+    }
+    if let Some(shadow) = &text.shadow
+        && !shadow.offset.iter().all(|value| value.is_finite() && value.abs() <= MAX_POINTS)
+    {
+        issue(".text.shadow.offset", format!("{:?} isn't a distance in points", shadow.offset));
     }
 }
 
@@ -1286,7 +1807,7 @@ mod tests {
         format!(
             r#"(
     type: "sapphire::assets::UiDocument",
-    version: 1,
+    version: 2,
     data: (
         model: "m.model.ron",
         styles: [(name: "label", role: "body", size: 14)],
@@ -1294,6 +1815,130 @@ mod tests {
     ),
 )"#
         )
+    }
+
+    /// Everything `issues` says of a document with these parts after its nodes.
+    fn motion_issues(nodes: &str, rest: &str) -> Vec<String> {
+        let text = format!(
+            r#"(type: "sapphire::assets::UiDocument", version: 2, data: (nodes: [{nodes}], {rest}))"#
+        );
+        let document: UiDocument = sapphire_serialize::from_ron(&text).unwrap();
+        document.issues().iter().map(ToString::to_string).collect()
+    }
+
+    const ROOT_AND_ROW: &str = r#"(name: "root"), (name: "row", parent: "root", focus: ())"#;
+
+    #[test]
+    fn a_timeline_is_refused_by_the_field_at_fault() {
+        for (rest, field) in [
+            (r#"timelines: [(name: "", tracks: [])]"#, "timelines[0] ``.name"),
+            (r#"timelines: [(name: "a", tracks: []), (name: "a", tracks: [])]"#, "timelines[1] `a`.name"),
+            (
+                r#"timelines: [(name: "a", tracks: [(node: "gone", property: X, keys: [(at: 0, value: 0)])])]"#,
+                ".tracks[0].node",
+            ),
+            (
+                r#"timelines: [(name: "a", tracks: [(node: "row", property: X, keys: [])])]"#,
+                ".tracks[0].keys",
+            ),
+            (
+                r#"timelines: [(name: "a", tracks: [(node: "row", property: X, keys: [(at: 1, value: 0), (at: 1, value: 0)])])]"#,
+                ".keys[1].at",
+            ),
+            (
+                r#"timelines: [(name: "a", tracks: [(node: "row", property: Opacity, keys: [(at: 0, value: 2)])])]"#,
+                ".keys[0].value",
+            ),
+            (
+                r#"timelines: [(name: "a", tracks: [(node: "row", property: Scale, keys: [(at: 0, value: 1)]), (node: "row", property: Scale, keys: [(at: 0, value: 1)])])]"#,
+                ".tracks[1].property",
+            ),
+            (r#"timelines: [(name: "a", looping: true, tracks: [])]"#, ".looping"),
+        ] {
+            let issues = motion_issues(ROOT_AND_ROW, rest);
+            assert!(issues.iter().any(|issue| issue.contains(field)), "{rest}: {issues:?}");
+        }
+    }
+
+    #[test]
+    fn a_machine_is_refused_by_the_field_at_fault() {
+        for (rest, field) in [
+            (r#"states: [(name: "a"), (name: "a")]"#, "states[1] `a`.name"),
+            (r#"states: [(name: "a", play: "gone")]"#, "states[0] `a`.play"),
+            (r#"states: [(name: "a", then: "a")]"#, "states[0] `a`.then"),
+            (
+                r#"states: [(name: "a", play: "b", then: "a")], timelines: [(name: "b", looping: true, tracks: [(node: "row", property: X, keys: [(at: 1, value: 0)])])]"#,
+                "states[0] `a`.then",
+            ),
+            (r#"transitions: [(from: "a", on: "b", to: "a")]"#, "transitions"),
+            (r#"states: [(name: "a")], transitions: [(from: "b", on: "c", to: "a")]"#, "transitions[0].from"),
+            (r#"states: [(name: "a")], transitions: [(from: "a", on: "c", to: "b")]"#, "transitions[0].to"),
+            (
+                r#"states: [(name: "a")], transitions: [(from: "a", on: "c", to: "a"), (from: "a", on: "c", to: "a")]"#,
+                "transitions[1].on",
+            ),
+        ] {
+            let issues = motion_issues(ROOT_AND_ROW, rest);
+            assert!(issues.iter().any(|issue| issue.contains(field)), "{rest}: {issues:?}");
+        }
+    }
+
+    #[test]
+    fn focus_and_scroll_are_refused_by_the_field_at_fault() {
+        for (nodes, field) in [
+            (r#"(name: "root"), (name: "a", parent: "root", focus: (down: "gone"))"#, ".focus.down"),
+            (r#"(name: "root"), (name: "a", parent: "root", focus: (down: "root"))"#, ".focus.down"),
+            (
+                r#"(name: "root"), (name: "a", parent: "root", focus: (first: true)), (name: "b", parent: "root", focus: (first: true))"#,
+                "`b`.focus.first",
+            ),
+            (r#"(name: "root"), (name: "a", parent: "root", focus: (fires: "open"))"#, ".focus.fires"),
+            (
+                r#"(name: "root"), (name: "a", parent: "root", focus: (focused: (fill: Color((0, 0, 0, 0)), slant: 9)))"#,
+                ".focus.focused.look.slant",
+            ),
+            (r#"(name: "root", scroll: Vertical)"#, ".scroll"),
+        ] {
+            let issues = motion_issues(nodes, "");
+            assert!(issues.iter().any(|issue| issue.contains(field)), "{nodes}: {issues:?}");
+        }
+    }
+
+    #[test]
+    fn a_bound_key_stays_under_its_prefix_and_needs_a_string() {
+        let text = |key_from: &str| {
+            format!(
+                r#"(name: "root"), (name: "line", parent: "root", text: (key: "line-none", style: "label", color: (0, 0, 0, 0), key_from: {key_from}))"#
+            )
+        };
+        let issue = one_issue(&text(r#"(path: "line", prefix: "subtitle-")"#));
+        assert!(issue.field.ends_with(".text.key"), "{issue}");
+        let issue = one_issue(&text(r#"(path: "", prefix: "line-")"#));
+        assert!(issue.field.ends_with(".text.key_from.path"), "{issue}");
+
+        let document =
+            UiDocument::from_document(&document(&text(r#"(path: "line", prefix: "line-")"#))).unwrap();
+        let model = |kind| UiModel { fields: vec![UiModelField { path: "line".to_owned(), kind }] };
+        assert!(document.path_issues(&model(UiValueKind::Text)).is_empty());
+        let issues = document.path_issues(&model(UiValueKind::Number));
+        assert!(issues[0].field.ends_with(".text.key_from.path"), "{issues:?}");
+    }
+
+    #[test]
+    fn motion_comes_back_from_a_cook() {
+        let text = format!(
+            r#"(type: "sapphire::assets::UiDocument", version: 2, data: (
+                nodes: [{ROOT_AND_ROW}],
+                timelines: [(name: "enter", tracks: [(node: "row", property: Y, keys: [
+                    (at: 0, value: 24), (at: 0.25, value: 0, ease: Out),
+                ])])],
+                states: [(name: "hidden"), (name: "entering", play: "enter", then: "open"), (name: "open", input: true)],
+                transitions: [(from: "hidden", on: "open", to: "entering")],
+            ))"#
+        );
+        let document = UiDocument::from_document(&text).unwrap();
+        let cooked = document.to_cooked().unwrap();
+        assert_eq!(UiDocument::read(&cooked).unwrap().to_owned_document().unwrap(), document);
     }
 
     fn one_issue(nodes: &str) -> UiIssue {
@@ -1385,7 +2030,7 @@ mod tests {
     fn styles_are_checked_too() {
         let text = |style: &str| {
             format!(
-                r#"(type: "sapphire::assets::UiDocument", version: 1, data: (styles: [{style}], nodes: [(name: "root")]))"#
+                r#"(type: "sapphire::assets::UiDocument", version: 2, data: (styles: [{style}], nodes: [(name: "root")]))"#
             )
         };
         let field = |style: &str| match UiDocument::from_document(&text(style)) {
@@ -1404,7 +2049,7 @@ mod tests {
 
     #[test]
     fn a_bind_with_no_model_is_refused() {
-        let text = r#"(type: "sapphire::assets::UiDocument", version: 1, data: (nodes: [(name: "root", binds: [(to: Fill, path: "a")])]))"#;
+        let text = r#"(type: "sapphire::assets::UiDocument", version: 2, data: (nodes: [(name: "root", binds: [(to: Fill, path: "a")])]))"#;
         match UiDocument::from_document(text) {
             Err(UiError::Field(issue)) => {
                 assert_eq!(issue.field, "nodes[0] `root`");
@@ -1416,7 +2061,7 @@ mod tests {
 
     #[test]
     fn too_many_nodes_and_too_deep_are_refused() {
-        let mut document = UiDocument { model: None, styles: Vec::new(), nodes: Vec::new() };
+        let mut document = UiDocument::default();
         document.nodes.push(UiNode { name: "n0".to_owned(), opacity: 1.0, ..UiNode::default() });
         for level in 1..=MAX_DEPTH {
             document.nodes.push(UiNode {
@@ -1546,7 +2191,7 @@ mod tests {
     fn the_wrong_type_or_a_new_version_is_refused() {
         let wrong = r#"(type: "sapphire::assets::Cue", version: 1, data: (nodes: []))"#;
         assert!(matches!(UiDocument::from_document(wrong), Err(UiError::Document(_))));
-        let newer = r#"(type: "sapphire::assets::UiDocument", version: 99, data: (nodes: []))"#;
+        let newer = r#"(type: "sapphire::assets::UiDocument", version: 100, data: (nodes: []))"#;
         assert!(matches!(UiDocument::from_document(newer), Err(UiError::Document(_))));
     }
 }

@@ -91,7 +91,7 @@ impl ScreenLayer {
         self.fonts.begin_frame(self.pages, &self.loc);
         let frame = UiFrame {
             metrics,
-            scale: self.scale,
+            now: sapphire_platform::Timestamp::from_nanos(0),
             loc: &self.loc,
             model: Some(self.model.as_partial_reflect()),
         };

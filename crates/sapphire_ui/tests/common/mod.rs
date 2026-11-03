@@ -10,6 +10,7 @@ use sapphire_assets::ui::UiDocument;
 use sapphire_loc::{LocaleSettings, Localizer, StringTable};
 use sapphire_look::{UiDrawList, UiPageState, UiQuad};
 use sapphire_math::Vec2;
+use sapphire_platform::Timestamp;
 use sapphire_ui::{Atlas, Insets, UiFonts, UiFrame, UiMetrics, UiTree};
 
 const EN: &[u8] = include_bytes!("../../../sapphire_loc/testdata/cooked/en.sloc");
@@ -56,17 +57,37 @@ pub struct Player {
 
 /// A document from what its `data` says, with the envelope added.
 pub fn document(data: &str) -> UiDocument {
-    let text = format!("(type: \"sapphire::assets::UiDocument\", version: 1, data: ({data}))");
+    let text = format!("(type: \"sapphire::assets::UiDocument\", version: 2, data: ({data}))");
     UiDocument::from_document(&text).unwrap_or_else(|error| panic!("{error}\n{text}"))
 }
 
 /// A frame of `size` points, with nothing covered.
 pub fn metrics(size: [f32; 2]) -> UiMetrics {
-    UiMetrics { size: Vec2::from(size), insets: Insets::default() }
+    UiMetrics::new(Vec2::from(size), Insets::default())
 }
 
-/// Runs a frame over `tree` at one pixel a point and writes it into `list`, with no renderer behind it.
+/// `seconds` on the clock a tree is handed.
+pub fn at(seconds: f32) -> Timestamp {
+    Timestamp::from_nanos((f64::from(seconds) * 1e9) as u64)
+}
+
+/// Runs a frame over `tree` at the clock's start, and writes it into `list`, with no renderer behind it.
 pub fn frame(
+    tree: &mut UiTree,
+    fonts: &mut UiFonts,
+    loc: &Localizer,
+    model: &Model,
+    metrics: UiMetrics,
+    atlas: &Atlas,
+    list: &mut UiDrawList,
+) {
+    frame_at(at(0.0), tree, fonts, loc, model, metrics, atlas, list);
+}
+
+/// Runs a frame over `tree` at `now`.
+#[allow(clippy::too_many_arguments, reason = "a test's whole frame, spelled out")]
+pub fn frame_at(
+    now: Timestamp,
     tree: &mut UiTree,
     fonts: &mut UiFonts,
     loc: &Localizer,
@@ -77,7 +98,7 @@ pub fn frame(
 ) {
     list.reset();
     fonts.begin_frame(UiPageState::NO_RENDERER, loc);
-    tree.update(&UiFrame { metrics, scale: 1.0, loc, model: Some(model) }, fonts);
+    tree.update(&UiFrame { metrics, now, loc, model: Some(model) }, fonts);
     tree.draw(fonts, atlas, list);
 }
 

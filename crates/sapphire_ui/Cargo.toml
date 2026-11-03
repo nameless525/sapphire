@@ -31,6 +31,8 @@ tracing.workspace = true
 [dev-dependencies]
 # A test's model derives `Reflect`, which finds the crate by this name.
 bevy_reflect.workspace = true
+# A test holds a frame to its bytes.
+bytemuck.workspace = true
 # The counting allocator, for the steady-state allocation test.
 sapphire_core.workspace = true
 

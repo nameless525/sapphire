@@ -947,6 +947,9 @@ fn interface_text(stats: &sapphire_render::UiStats) -> String {
             "; {} screens, {} nodes, {} layouts, {} strings, {} shaped, {} values changed, {} problems, {} µs",
             tree.trees, tree.nodes, tree.layouts, tree.resolves, tree.shaped, tree.bound_changes, tree.problems, tree.micros,
         ));
+        if tree.playing > 0 || tree.scrolling > 0 {
+            text.push_str(&format!(", {} timelines, {} scrolling", tree.playing, tree.scrolling));
+        }
     }
     text
 }

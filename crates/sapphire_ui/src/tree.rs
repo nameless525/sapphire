@@ -8,8 +8,10 @@
 //! // Once a frame, with what the renderer's glyph pages hold and the language in force.
 //! fonts.begin_frame(renderer.ui_page_state(), &localizer);
 //! // Each tree: the model's values, strings and layout, of which only what changed costs anything.
-//! tree.update(&UiFrame { metrics, scale, loc: &localizer, model: Some(&model) }, &mut fonts);
+//! tree.input(&input, now);
+//! tree.update(&UiFrame { metrics, now, loc: &localizer, model: Some(&model) }, &mut fonts);
 //! tree.draw(&mut fonts, &atlas, &mut packet.ui);
+//! for event in tree.drain_events() { /* ... */ }
 //! ```
 //!
 //! # What's retained
@@ -34,6 +36,20 @@
 //! A key the tables don't hold shows as itself and counts in `LocStats`. Under pseudo-localization,
 //! [`UiTree::unframed`] finds it, along with anything else that didn't come through a message.
 //!
+//! # Time and motion
+//!
+//! The app hands in `now`, on whatever clock it likes: the tree reads none (rule R2), and nothing here
+//! touches the simulation. Timelines, a screen's machine and scrolling are all functions of that time
+//! (`motion`, `scroll`), so a capture of a given time is the same bytes however it got there. Motion
+//! changes a node's opacity, offset and scale, never its layout, so a fade or a scroll costs no layout
+//! pass and allocates nothing once warm (`tests/tree_allocations.rs`). Text about to appear warms its
+//! glyphs while it's still invisible, a few a frame, so the frame it shows has nothing to rasterize.
+//!
+//! # Focus
+//!
+//! `focus` has what a keyboard, a pad and a pointer do. A screen's own input stops at [`UiEvent`]s, and
+//! what they mean is the game's.
+//!
 //! # Units and pixels
 //!
 //! Layout runs in UI points with `taffy`'s rounding off, and rectangles snap to whole pixels as they
@@ -41,15 +57,21 @@
 //! ([`TYPE_SCALE`](sapphire_text::TYPE_SCALE)).
 
 mod bind;
+mod focus;
+mod motion;
 mod paint;
+mod scroll;
 mod style;
 
 use std::any::TypeId;
 
-use sapphire_assets::ui::{UiBindTarget, UiColor, UiDocument, UiLayout, UiLook, UiModel, UiTextStyle};
+use sapphire_assets::ui::{
+    UiBindTarget, UiColor, UiDocument, UiLayout, UiLook, UiModel, UiTextStyle, UiValueKind,
+};
 use sapphire_loc::{Arg, Localizer};
 use sapphire_look::{UiDrawList, UiPageState, UiTreeStats};
 use sapphire_math::Vec2;
+use sapphire_platform::Timestamp;
 use sapphire_reflect::PartialReflect;
 use sapphire_reflect::bevy_reflect::ParsedPath;
 use sapphire_text::{AtlasConfig, FaceOptions, GlyphAtlas, TextStyle, TextSystem, family_list};
@@ -58,11 +80,19 @@ use taffy::prelude::{AvailableSpace, Display, NodeId, Size as TaffySize, Style a
 use taffy::{LayoutInput, compute_leaf_layout};
 
 use self::bind::{BoundText, read};
+use self::focus::Hold;
+pub use self::focus::{UiEvent, UiHit, UiInput, UiPointer, UiPointerKind, UiPointerPhase, UiStep};
+use self::motion::{Placement, Player, Pose};
+use self::scroll::Scroll;
 use crate::atlas::Atlas;
 use crate::layout::{Insets, Rect, UiMetrics};
 
 /// The color a node with something wrong is framed in: nothing a screen would pick on purpose.
 pub const PROBLEM_COLOR: UiColor = [255, 0, 200, 255];
+
+/// The most glyphs invisible text rasterizes in a frame, across every tree: a screen's worth of new text
+/// over a fade of a few frames, at a tenth of a millisecond or so.
+const WARM_PER_FRAME: u32 = 64;
 
 /// Fonts, shaping and the glyph atlas, which every tree on screen shares.
 #[derive(Debug)]
@@ -76,6 +106,8 @@ pub struct UiFonts {
     /// What a tree's layout depends on here: the language and the fonts.
     revision: u64,
     locale: String,
+    /// What this frame may still rasterize for text that doesn't show yet.
+    warm_left: u32,
 }
 
 impl Default for UiFonts {
@@ -93,6 +125,7 @@ impl UiFonts {
             generation: u64::MAX,
             revision: 0,
             locale: String::new(),
+            warm_left: WARM_PER_FRAME,
         }
     }
 
@@ -107,6 +140,7 @@ impl UiFonts {
     pub fn begin_frame(&mut self, pages: UiPageState, loc: &Localizer) {
         self.text.begin_frame();
         self.atlas.begin_frame(pages);
+        self.warm_left = WARM_PER_FRAME;
         if self.generation != loc.generation() {
             self.generation = loc.generation();
             self.families.clear();
@@ -136,8 +170,8 @@ impl UiFonts {
 #[derive(Clone, Copy)]
 pub struct UiFrame<'a> {
     pub metrics: UiMetrics,
-    /// Pixels per point.
-    pub scale: f32,
+    /// The time motion reads, on any clock that only goes forward.
+    pub now: Timestamp,
     pub loc: &'a Localizer,
     /// What the document's paths read. A document that binds nothing needs none.
     pub model: Option<&'a dyn PartialReflect>,
@@ -171,6 +205,17 @@ struct Bound {
     failed: bool,
 }
 
+/// How a node with `focus` answers, by where its names are in the tree.
+struct FocusRule {
+    up: Option<u32>,
+    down: Option<u32>,
+    left: Option<u32>,
+    right: Option<u32>,
+    focused: Option<UiLook>,
+    pressed: Option<UiLook>,
+    fires: Option<Box<str>>,
+}
+
 /// One node as it runs.
 struct Node {
     name: Box<str>,
@@ -188,12 +233,25 @@ struct Node {
     fill: f32,
     /// Has a problem, and draws a frame saying so.
     failed: bool,
-    /// Where it is, in points from the frame's top-left.
+    focus: Option<FocusRule>,
+    scroll: Option<Scroll>,
+    /// Its parent scrolls, so it keeps its size rather than shrinking to fit.
+    scrolled: bool,
+    /// Where layout put it, in points from the frame's top-left.
     rect: Rect,
     /// Inside its padding.
     content: Rect,
     /// False under a node the model hides.
     visible: bool,
+    /// What timelines that have ended left on it.
+    held: Pose,
+    /// What timelines say of it this frame.
+    pose: Pose,
+    /// From [`Self::rect`] to the screen this frame, for its own quads and for its children's.
+    placed: Placement,
+    child_placed: Placement,
+    /// Where it is on the screen this frame.
+    screen: Rect,
     /// The mask its own quads draw under, and the one its children's do.
     own_mask: Option<[f32; 4]>,
     child_mask: Option<[f32; 4]>,
@@ -211,12 +269,24 @@ pub struct UiTree {
     problems: Vec<UiProblem>,
     /// The model type the paths were last checked against, or none yet.
     checked_model: Option<Option<TypeId>>,
-    metrics: Option<(UiMetrics, u32)>,
+    metrics: Option<UiMetrics>,
     revision: Option<u64>,
     dirty: bool,
     scale: f32,
     size: Vec2,
     scratch: String,
+    player: Player,
+    /// Those that take focus, in drawing order.
+    focusable: Vec<u32>,
+    /// Where focus starts, and where it is.
+    first: Option<u32>,
+    focus: Option<u32>,
+    focus_shown: bool,
+    /// The pointer that's down, of those the tree follows: one at a time.
+    hold: Option<Hold>,
+    /// Where the mouse last was.
+    hover: Option<Vec2>,
+    events: Vec<UiEvent>,
     stats: UiTreeStats,
     /// How long this frame's update took.
     update_cost: std::time::Duration,
@@ -304,9 +374,17 @@ impl UiTree {
                 bound_opacity: 1.0,
                 fill: 1.0,
                 failed: false,
+                focus: None,
+                scroll: node.scroll.map(Scroll::new),
+                scrolled: parent.is_some_and(|parent: u32| nodes[parent as usize].scroll.is_some()),
                 rect: Rect::default(),
                 content: Rect::default(),
                 visible: true,
+                held: Pose::REST,
+                pose: Pose::REST,
+                placed: Placement::IDENTITY,
+                child_placed: Placement::IDENTITY,
+                screen: Rect::default(),
                 own_mask: None,
                 child_mask: None,
                 final_opacity: 1.0,
@@ -314,6 +392,27 @@ impl UiTree {
         }
         let root =
             nodes.first().map(|node| node.id).ok_or_else(|| UiTreeError::Layout("no root".to_owned()))?;
+        let at_name = |name: &str| parents[document.nodes.iter().position(|node| node.name == name)?];
+        let mut focusable = Vec::new();
+        let mut first = None;
+        for (at, &source) in order.iter().enumerate() {
+            let Some(focus) = &document.nodes[source].focus else { continue };
+            let target = |name: &Option<String>| name.as_deref().and_then(at_name);
+            nodes[at].focus = Some(FocusRule {
+                up: target(&focus.up),
+                down: target(&focus.down),
+                left: target(&focus.left),
+                right: target(&focus.right),
+                focused: focus.focused,
+                pressed: focus.pressed,
+                fires: focus.fires.as_deref().map(Into::into),
+            });
+            focusable.push(at as u32);
+            if focus.first {
+                first = Some(at as u32);
+            }
+        }
+        let player = Player::new(document, at_name);
         Ok(Self {
             taffy,
             nodes,
@@ -327,6 +426,15 @@ impl UiTree {
             scale: 1.0,
             size: Vec2::ZERO,
             scratch: String::new(),
+            player,
+            first: first.or(focusable.first().copied()),
+            focus: first.or(focusable.first().copied()),
+            focusable,
+            focus_shown: true,
+            hold: None,
+            hover: None,
+            // Most frames add nothing, and a walk or a mash adds a few.
+            events: Vec::with_capacity(16),
             stats: UiTreeStats::default(),
             update_cost: std::time::Duration::ZERO,
         })
@@ -338,10 +446,67 @@ impl UiTree {
         self.nodes.iter().position(|node| *node.name == *name).map(|at| UiNodeId(at as u32))
     }
 
-    /// Where `node` was last laid out, in points from the frame's top-left, before snapping.
+    /// Where `node` was last laid out, in points from the frame's top-left, before snapping, and with
+    /// no timeline or scroll on it.
     #[must_use]
     pub fn rect(&self, node: UiNodeId) -> Rect {
         self.nodes[node.0 as usize].rect
+    }
+
+    /// Where `node` was last drawn: timelines and scrolling on it, and its parents'.
+    #[must_use]
+    pub fn screen_rect(&self, node: UiNodeId) -> Rect {
+        self.nodes[node.0 as usize].screen
+    }
+
+    /// How opaque `node` was last drawn, with all that's over it.
+    #[must_use]
+    pub fn opacity(&self, node: UiNodeId) -> f32 {
+        self.nodes[node.0 as usize].final_opacity
+    }
+
+    /// `node`'s name.
+    #[must_use]
+    pub fn name(&self, node: UiNodeId) -> &str {
+        &self.nodes[node.0 as usize].name
+    }
+
+    /// Starts a timeline from its beginning. Whether the document has one by that name.
+    pub fn play(&mut self, timeline: &str, now: Timestamp) -> bool {
+        self.player.play(timeline, now, &mut self.nodes)
+    }
+
+    /// Stops a timeline where it is, its values staying. Whether it was running.
+    pub fn stop(&mut self, timeline: &str, now: Timestamp) -> bool {
+        self.player.stop(timeline, now, &mut self.nodes)
+    }
+
+    /// Gives the screen's machine an event. Whether it moved: an event with no transition from the
+    /// current state does nothing.
+    pub fn fire(&mut self, event: &str, now: Timestamp) -> bool {
+        self.player.fire(event, now, &mut self.nodes)
+    }
+
+    /// The state the screen's machine is in, if the document has one.
+    #[must_use]
+    pub fn state(&self) -> Option<&str> {
+        self.player.state()
+    }
+
+    /// Whether anything is moving, as of the last update. A screen that's hidden and still can stop being
+    /// updated.
+    #[must_use]
+    pub fn is_moving(&self) -> bool {
+        self.stats.playing > 0 || self.stats.scrolling > 0
+    }
+
+    /// How far `node` has scrolled, as of the last update.
+    #[must_use]
+    pub fn scroll_offset(&self, node: UiNodeId) -> Option<f32> {
+        let node = &self.nodes[node.0 as usize];
+        node.scroll.as_ref().map(|scroll| {
+            -scroll.along(node.child_placed.offset - node.placed.offset) / node.placed.scale.max(f32::EPSILON)
+        })
     }
 
     /// Whether `node` and everything over it are shown.
@@ -380,6 +545,8 @@ impl UiTree {
             problems: self.problems.len() as u32,
             ..UiTreeStats::default()
         };
+        self.player.advance(frame.now, &mut self.nodes);
+        self.player.pose(frame.now, &mut self.nodes);
         self.check_model(frame.model);
         let new_language = self.revision != Some(fonts.revision);
         if new_language {
@@ -388,18 +555,20 @@ impl UiTree {
         }
         self.read_model(frame);
         self.resolve_strings(frame.loc);
-        let positive = if frame.scale.is_finite() && frame.scale > 0.0 { frame.scale } else { 1.0 };
-        let metrics = (frame.metrics, positive.to_bits());
+        let metrics = UiMetrics { scale: frame.metrics.pixels_per_point(), ..frame.metrics };
         if self.metrics != Some(metrics) {
             self.metrics = Some(metrics);
-            self.follow_metrics(frame.metrics);
-            self.scale = positive;
-            self.size = frame.metrics.size;
+            self.follow_metrics(metrics);
+            self.scale = metrics.scale;
+            self.size = metrics.size;
         }
         if self.dirty {
             self.dirty = false;
             self.lay_out(fonts);
         }
+        self.resolve(frame.now);
+        self.settle_focus();
+        self.stats.playing = self.player.playing() as u32;
         self.stats.problems = self.problems.len() as u32;
         self.update_cost = stopwatch.elapsed();
     }
@@ -456,6 +625,22 @@ impl UiTree {
                         );
                     }
                 }
+                if let Some(from) = &mut text.key_from {
+                    let kind = model.as_ref().and_then(|model| model.kind_of(&from.source));
+                    from.failed = kind != Some(UiValueKind::Text);
+                    if from.failed {
+                        report(
+                            "text.key_from.path".to_owned(),
+                            match (&model, kind) {
+                                (None, _) => format!("`{}`: there's no model to read", from.source),
+                                (_, Some(kind)) => {
+                                    format!("`{}` is a {kind:?}, and a key is a Text", from.source)
+                                }
+                                (_, None) => format!("`{}` isn't in the model", from.source),
+                            },
+                        );
+                    }
+                }
                 text.stale = true;
             }
             node.failed = failed;
@@ -479,8 +664,9 @@ impl UiTree {
                 self.problems.push(UiProblem { node: node.name.to_string(), field, problem });
                 node.failed = true;
             } else {
-                node.failed =
-                    node.binds.iter().any(|bind| bind.failed) || text.args.iter().any(|arg| arg.failed);
+                node.failed = node.binds.iter().any(|bind| bind.failed)
+                    || text.args.iter().any(|arg| arg.failed)
+                    || text.key_from.as_ref().is_some_and(|from| from.failed);
             }
             self.taffy.mark_dirty(node.id).expect("the tree's own node");
         }
@@ -502,8 +688,7 @@ impl UiTree {
                         if shown != node.shown {
                             node.shown = shown;
                             self.stats.bound_changes += 1;
-                            let metrics = self.metrics.map(|(metrics, _)| metrics);
-                            let style = node_style(node, at == 0, metrics);
+                            let style = node_style(node, at == 0, self.metrics);
                             self.taffy.set_style(node.id, style).expect("the tree's own node");
                             self.dirty = true;
                         }
@@ -540,14 +725,23 @@ impl UiTree {
             }
             text.stale = false;
             self.stats.resolves += 1;
+            if let Some(chosen) = text.chosen_out_of_bounds() {
+                let (field, problem) = ("text.key_from.path".to_owned(), chosen);
+                tracing::error!(target: crate::LOG_TARGET, node = %node.name, field, problem, "a screen's text");
+                self.problems.push(UiProblem { node: node.name.to_string(), field, problem });
+                node.failed = true;
+            }
             let args: Vec<Arg<'_>> = text.args.iter().map(|arg| (&*arg.name, arg.value())).collect();
-            let resolved = loc.resolve(&text.key, &args, scratch);
-            if resolved != text.resolved {
-                text.resolved.clear();
-                text.resolved.push_str(resolved);
+            let mut shown = std::mem::take(&mut text.resolved);
+            let resolved = loc.resolve(text.current_key(), &args, scratch);
+            if resolved != shown {
+                shown.clear();
+                shown.push_str(resolved);
                 self.taffy.mark_dirty(node.id).expect("the tree's own node");
                 self.dirty = true;
             }
+            drop(args);
+            text.resolved = shown;
         }
     }
 
@@ -608,12 +802,12 @@ impl UiTree {
     /// Every node's rectangle in the frame, from `taffy`'s relative ones.
     fn place(&mut self) {
         for at in 0..self.nodes.len() {
-            let (parent_min, parent_visible, mask) = match self.nodes[at].parent {
+            let (parent_min, parent_visible) = match self.nodes[at].parent {
                 Some(parent) => {
                     let parent = &self.nodes[parent as usize];
-                    (parent.rect.min, parent.visible, parent.child_mask)
+                    (parent.rect.min, parent.visible)
                 }
-                None => (Vec2::ZERO, true, None),
+                None => (Vec2::ZERO, true),
             };
             let node = &mut self.nodes[at];
             let layout = self.taffy.layout(node.id).expect("the tree's own node");
@@ -624,15 +818,57 @@ impl UiTree {
                 node.rect.max - Vec2::new(layout.padding.right, layout.padding.bottom),
             );
             node.visible = parent_visible && node.shown;
+        }
+        self.measure_scrollers();
+    }
+
+    /// How far each scroller can go: what its shown children overflow it by, its end's padding included.
+    fn measure_scrollers(&mut self) {
+        for at in 0..self.nodes.len() {
+            if let Some(scroll) = &mut self.nodes[at].scroll {
+                scroll.extent = 0.0;
+            }
+            let node = &self.nodes[at];
+            let Some(parent) = node.parent.map(|parent| parent as usize) else { continue };
+            if !node.scrolled || !node.shown {
+                continue;
+            }
+            let margin = node.layout.margin;
+            let far = node.rect.max + Vec2::new(margin.right, margin.bottom);
+            let over = &mut self.nodes[parent];
+            let padding = over.rect.max - over.content.max;
+            let end = over.rect.max;
+            if let Some(scroll) = &mut over.scroll {
+                scroll.extent = scroll.extent.max(scroll.along(far + padding - end));
+            }
+        }
+    }
+
+    /// What this frame's timelines and scrolling make of what layout said: where each node is on the
+    /// screen, how opaque, under what mask. Input reads this between frames and drawing writes it out.
+    fn resolve(&mut self, now: Timestamp) {
+        let scale = self.scale;
+        for at in 0..self.nodes.len() {
+            let (parent_opacity, parent_placed, mask) = match self.nodes[at].parent {
+                Some(parent) => {
+                    let parent = &self.nodes[parent as usize];
+                    (parent.final_opacity, parent.child_placed, parent.child_mask)
+                }
+                None => (1.0, Placement::IDENTITY, None),
+            };
+            let node = &mut self.nodes[at];
+            node.final_opacity = parent_opacity * node.opacity * node.bound_opacity * node.pose.opacity;
+            let own = Placement::of_pose(node.pose, node.rect.center());
+            node.placed = parent_placed.after(own).snapped(scale);
+            node.screen = node.placed.rect(node.rect);
             node.own_mask = mask;
             node.child_mask = if node.mask {
-                let scale = self.scale;
                 let snapped = |value: f32| (value * scale).round() / scale;
                 let edges = [
-                    snapped(node.rect.min.x),
-                    snapped(node.rect.min.y),
-                    snapped(node.rect.max.x),
-                    snapped(node.rect.max.y),
+                    snapped(node.screen.min.x),
+                    snapped(node.screen.min.y),
+                    snapped(node.screen.max.x),
+                    snapped(node.screen.max.y),
                 ];
                 Some(mask.map_or(edges, |outer| {
                     [
@@ -645,6 +881,16 @@ impl UiTree {
             } else {
                 mask
             };
+            node.child_placed = match &node.scroll {
+                Some(scroll) => {
+                    if scroll.moving(now) {
+                        self.stats.scrolling += 1;
+                    }
+                    let moved = Placement { scale: 1.0, offset: -scroll.vector(scroll.offset(now)) };
+                    node.placed.after(moved).snapped(scale)
+                }
+                None => node.placed,
+            };
         }
     }
 
@@ -655,43 +901,56 @@ impl UiTree {
         list.viewport = self.size.to_array();
         list.atlas = Some(std::sync::Arc::clone(&atlas.image));
         let (scale, size) = (self.scale, self.size);
-        let UiFonts { text: system, atlas: glyphs, families, locale, .. } = fonts;
         for at in 0..self.nodes.len() {
-            let parent_opacity =
-                self.nodes[at].parent.map_or(1.0, |parent| self.nodes[parent as usize].final_opacity);
-            let node = &mut self.nodes[at];
-            node.final_opacity = parent_opacity * node.opacity * node.bound_opacity;
-            if !node.visible || !paint::on_screen(node.rect, node.own_mask, size) {
+            let node = &self.nodes[at];
+            if !node.visible {
                 continue;
             }
-            list.set_mask(node.own_mask);
-            if let Some(look) = &node.look {
-                paint::look(
-                    look,
-                    node.rect,
-                    node.fill,
-                    node.final_opacity,
-                    scale,
-                    &atlas.sprites,
-                    &mut list.quads,
-                );
+            let shows = node.final_opacity > 0.0 && paint::on_screen(node.screen, node.own_mask, size);
+            let first = list.quads.len();
+            if shows {
+                list.set_mask(node.own_mask);
+                if let Some(look) = self.look_of(at) {
+                    paint::look(
+                        look,
+                        node.rect,
+                        node.fill,
+                        node.final_opacity,
+                        scale,
+                        &atlas.sprites,
+                        &mut list.quads,
+                    );
+                }
             }
             if let Some(text) = &node.text
                 && let Some(family) = text.family
-                && node.final_opacity > 0.0
             {
+                let UiFonts { text: system, atlas: glyphs, families, locale, warm_left, .. } = fonts;
                 let style = text_style(&self.styles[usize::from(text.style)], families, family, locale);
                 let width = text.wrap.then_some(node.content.width());
                 let shaped = system.shape(&text.resolved, &style, scale, width);
-                let color = crate::paint::faded(text.color, node.final_opacity);
-                glyphs.draw(shaped, node.content.min.to_array(), scale, color, list);
+                if shows {
+                    let origin = node.content.min;
+                    if let Some(shadow) = &text.shadow {
+                        // Whole pixels from the text, wherever that lands.
+                        let [x, y] = shadow.offset.map(|value| (value * scale).round() / scale);
+                        let color = crate::paint::faded(shadow.color, node.final_opacity);
+                        glyphs.draw(shaped, (origin + Vec2::new(x, y)).to_array(), scale, color, list);
+                    }
+                    let color = crate::paint::faded(text.color, node.final_opacity);
+                    glyphs.draw(shaped, origin.to_array(), scale, color, list);
+                } else {
+                    // On its way in: the frame it shows has nothing to do.
+                    glyphs.warm(shaped, warm_left, list);
+                }
             }
-            if node.failed {
+            if shows && node.failed {
                 paint::problem_frame(node.rect, scale, &atlas.sprites, &mut list.quads);
             }
+            node.placed.apply(&mut list.quads[first..]);
         }
         list.set_mask(None);
-        let shaped = system.take_stats().misses;
+        let shaped = fonts.text.take_stats().misses;
         let cost = self.update_cost + stopwatch.elapsed();
         let stats = &mut list.tree;
         stats.trees += self.stats.trees;
@@ -701,6 +960,8 @@ impl UiTree {
         stats.bound_changes += self.stats.bound_changes;
         stats.shaped += shaped;
         stats.problems += self.stats.problems;
+        stats.playing += self.stats.playing;
+        stats.scrolling += self.stats.scrolling;
         stats.micros += cost.as_micros() as u32;
     }
 
@@ -729,6 +990,14 @@ fn node_style(node: &Node, root: bool, metrics: Option<UiMetrics>) -> TaffyStyle
     let insets =
         metrics.filter(|_| node.layout.safe_area).map_or_else(Insets::default, |metrics| metrics.insets);
     let mut style = style::taffy_style(&node.layout, insets);
+    if node.scroll.is_some() {
+        // What it holds may overflow it, and doesn't size it.
+        style.overflow =
+            taffy::geometry::Point { x: taffy::style::Overflow::Hidden, y: taffy::style::Overflow::Hidden };
+    }
+    if node.scrolled {
+        style.flex_shrink = 0.0;
+    }
     if root && let Some(metrics) = metrics {
         style.size = TaffySize {
             width: taffy::style::Dimension::length(metrics.size.x),

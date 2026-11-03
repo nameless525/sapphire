@@ -4162,6 +4162,7 @@ name = "sapphire_ui"
 version = "0.1.0"
 dependencies = [
  "bevy_reflect",
+ "bytemuck",
  "profiling",
  "sapphire_assets",
  "sapphire_core",

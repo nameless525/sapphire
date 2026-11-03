@@ -3,7 +3,7 @@
 
 mod common;
 
-use common::{Model, Player, document, fonts, frame, glyphs, localizer, metrics};
+use common::{Model, Player, at, document, fonts, frame, glyphs, localizer, metrics};
 use sapphire_assets::ui::{self, UiDocument};
 use sapphire_look::{UiDrawList, UiPageState, UiQuad};
 use sapphire_math::Vec2;
@@ -63,10 +63,8 @@ fn the_safe_area_moves_what_asks_for_it() {
     );
     let mut tree = UiTree::new(&doc).unwrap();
     let (mut fonts, loc, atlas, mut list) = (fonts(), localizer("en"), Atlas::paint(), UiDrawList::default());
-    let notch = UiMetrics {
-        size: Vec2::new(800.0, 400.0),
-        insets: Insets { left: 44.0, right: 0.0, top: 12.0, bottom: 0.0 },
-    };
+    let notch =
+        UiMetrics::new(Vec2::new(800.0, 400.0), Insets { left: 44.0, right: 0.0, top: 12.0, bottom: 0.0 });
     frame(&mut tree, &mut fonts, &loc, &Model::default(), notch, &atlas, &mut list);
     assert_eq!(tree.rect(tree.find("inner").unwrap()).min, Vec2::new(44.0, 12.0));
     // A device that turns moves it, with nothing else changed.
@@ -254,7 +252,10 @@ fn a_tree_binding_with_no_model_says_so() {
     let mut tree = UiTree::new(&document(data)).unwrap();
     let (mut fonts, loc) = (fonts(), localizer("en"));
     fonts.begin_frame(UiPageState::NO_RENDERER, &loc);
-    tree.update(&UiFrame { metrics: metrics([10.0, 10.0]), scale: 1.0, loc: &loc, model: None }, &mut fonts);
+    tree.update(
+        &UiFrame { metrics: metrics([10.0, 10.0]), now: at(0.0), loc: &loc, model: None },
+        &mut fonts,
+    );
     assert!(tree.problems()[0].problem.contains("no model"), "{:#?}", tree.problems());
 }
 

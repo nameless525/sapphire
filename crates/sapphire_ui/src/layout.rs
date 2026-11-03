@@ -70,18 +70,28 @@ pub struct UiMetrics {
     /// The frame's size in UI points.
     pub size: Vec2,
     pub insets: Insets,
+    /// Pixels per point: the display's scale and the player's. A document lays out the same at any scale,
+    /// and text and edges land on whole pixels at this one.
+    pub scale: f32,
 }
 
 impl UiMetrics {
+    /// For a frame at one pixel per point.
     pub const fn new(size: Vec2, insets: Insets) -> Self {
-        Self { size, insets }
+        Self { size, insets, scale: 1.0 }
+    }
+
+    /// [`Self::scale`], with anything that can't be one read as 1.
+    #[must_use]
+    pub fn pixels_per_point(&self) -> f32 {
+        positive_or_one(self.scale)
     }
 
     /// For a frame `pixels` large at `pixels_per_point`, such as an offscreen capture, whose
     /// `insets` the caller makes up.
     pub fn of_pixels(pixels: (u32, u32), pixels_per_point: f32, insets: Insets) -> Self {
         let scale = positive_or_one(pixels_per_point);
-        Self { size: Vec2::new(pixels.0 as f32, pixels.1 as f32) / scale, insets }
+        Self { size: Vec2::new(pixels.0 as f32, pixels.1 as f32) / scale, insets, scale }
     }
 
     /// `window`'s size and safe area, read fresh: cheap enough for once a frame, so a rotation or
@@ -94,7 +104,7 @@ impl UiMetrics {
         let area = window.safe_area();
         let coords = window.size();
         if coords.width == 0 || coords.height == 0 {
-            return Self { size, insets: Insets::default() };
+            return Self { size, insets: Insets::default(), scale };
         }
         // Shares of the window, which every platform's coordinates agree on.
         let share = Vec2::new(size.x / coords.width as f32, size.y / coords.height as f32);
@@ -106,7 +116,7 @@ impl UiMetrics {
             right: right as f32 * share.x,
             bottom: bottom as f32 * share.y,
         };
-        Self { size, insets }
+        Self { size, insets, scale }
     }
 
     /// The part of the frame nothing covers. Insets wider than the frame leave an empty rectangle

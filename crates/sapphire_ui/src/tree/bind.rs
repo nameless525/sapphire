@@ -1,6 +1,6 @@
 //! Values read through reflection paths, kept to compare with next frame's.
 
-use sapphire_assets::ui::{UiColor, UiText};
+use sapphire_assets::ui::{UiColor, UiShadow, UiText};
 use sapphire_loc::Value;
 use sapphire_reflect::PartialReflect;
 use sapphire_reflect::bevy_reflect::{ParsedPath, ReflectPath, ReflectRef};
@@ -131,9 +131,24 @@ impl BoundArg {
     }
 }
 
+/// Where a key chosen as the game runs comes from.
+pub(super) struct BoundKey {
+    pub(super) source: Box<str>,
+    path: ParsedPath,
+    prefix: Box<str>,
+    pub(super) failed: bool,
+    /// What the path last read: a key, or nothing.
+    chosen: String,
+    /// What it says of a key not under the prefix, once, until the path reads something else.
+    wrong: bool,
+    told: bool,
+}
+
 /// A node's text as it runs.
 pub(super) struct BoundText {
     pub(super) key: Box<str>,
+    pub(super) key_from: Option<BoundKey>,
+    pub(super) shadow: Option<UiShadow>,
     pub(super) style: u16,
     pub(super) color: UiColor,
     pub(super) wrap: bool,
@@ -163,8 +178,26 @@ impl BoundText {
                 })
             })
             .collect::<Result<Vec<_>, UiTreeError>>()?;
+        let key_from = text
+            .key_from
+            .as_ref()
+            .map(|from| {
+                Ok::<_, UiTreeError>(BoundKey {
+                    source: from.path.as_str().into(),
+                    path: ParsedPath::parse(&from.path)
+                        .map_err(|error| UiTreeError::Layout(error.to_string()))?,
+                    prefix: from.prefix.as_str().into(),
+                    failed: false,
+                    chosen: String::new(),
+                    wrong: false,
+                    told: false,
+                })
+            })
+            .transpose()?;
         Ok(Self {
             key: text.key.as_str().into(),
+            key_from,
+            shadow: text.shadow,
             style,
             color: text.color,
             wrap: text.wrap,
@@ -181,7 +214,41 @@ impl BoundText {
         for arg in &mut self.args {
             moved += u32::from(arg.read(model));
         }
+        if let Some(from) = &mut self.key_from
+            && !from.failed
+        {
+            let value = match read(&from.path, model) {
+                Read::Text(value) => value,
+                _ => "",
+            };
+            if from.chosen != value {
+                from.chosen.clear();
+                from.chosen.push_str(value);
+                from.wrong = !value.is_empty() && !value.starts_with(&*from.prefix);
+                from.told = false;
+                moved += 1;
+            }
+        }
         self.stale |= moved > 0;
         moved
+    }
+
+    /// The key it shows now: a chosen one under its prefix, or else its own.
+    pub(super) fn current_key(&self) -> &str {
+        match &self.key_from {
+            Some(from) if !from.failed && !from.wrong && !from.chosen.is_empty() => &from.chosen,
+            _ => &self.key,
+        }
+    }
+
+    /// What to say of a chosen key that isn't under the prefix, the first time it's read. A cook held
+    /// only the keys under it to the fonts and the variables, so one outside may not show properly.
+    pub(super) fn chosen_out_of_bounds(&mut self) -> Option<String> {
+        let from = self.key_from.as_mut()?;
+        if !from.wrong || from.told {
+            return None;
+        }
+        from.told = true;
+        Some(format!("`{}` read `{}`, which doesn't start with `{}`", from.source, from.chosen, from.prefix))
     }
 }

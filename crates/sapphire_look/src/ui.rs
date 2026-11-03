@@ -209,6 +209,10 @@ pub struct UiTreeStats {
     /// What's wrong with a tree that a person should see: a path that doesn't resolve, a role no font
     /// chain answers. They show on screen too.
     pub problems: u32,
+    /// Timelines running: 0 on a screen at rest.
+    pub playing: u32,
+    /// Scrollers on their way somewhere.
+    pub scrolling: u32,
     /// How long the trees took on the frame's thread, in microseconds.
     pub micros: u32,
 }

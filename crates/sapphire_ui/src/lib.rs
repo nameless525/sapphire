@@ -74,4 +74,7 @@ pub use layout::{Anchor, Insets, Rect, UiMetrics};
 pub use paint::{Align, Paint, Painter};
 pub use sapphire_look::{UiAtlas, UiDrawList, UiQuad};
 pub use touch::{Button, ButtonEvent, ButtonEventKind, ButtonState, StickState, TouchActions};
-pub use tree::{PROBLEM_COLOR, UiFonts, UiFrame, UiNodeId, UiProblem, UiTree, UiTreeError};
+pub use tree::{
+    PROBLEM_COLOR, UiEvent, UiFonts, UiFrame, UiHit, UiInput, UiNodeId, UiPointer, UiPointerKind,
+    UiPointerPhase, UiProblem, UiStep, UiTree, UiTreeError,
+};

@@ -43,7 +43,7 @@ fn model_file(paths: &[&str]) -> String {
 /// A document with one text node of `key`, in the role `role`, passing `args`.
 fn screen_file(key: &str, role: &str, args: &str) -> String {
     format!(
-        "(type: \"sapphire::assets::UiDocument\", version: 1, data: (
+        "(type: \"sapphire::assets::UiDocument\", version: 2, data: (
             model: \"a.model.ron\",
             styles: [(name: \"label\", role: \"{role}\", size: 16)],
             nodes: [
@@ -305,7 +305,7 @@ fn a_document_is_refused_by_field_and_its_paths_by_its_model() {
     let cache = tree.root.join("cache");
 
     // Its own checks.
-    let header = "(type: \"sapphire::assets::UiDocument\", version: 1, data: ";
+    let header = "(type: \"sapphire::assets::UiDocument\", version: 2, data: ";
     tree.screen(&format!("{header}(nodes: [])))"));
     says(&tree.refusal(), &["ui/a.ui.ron", "line"]);
     tree.screen(&format!("{header}(nodes: []))"));

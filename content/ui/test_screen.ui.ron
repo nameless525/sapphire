@@ -2,7 +2,7 @@
 // mask and bound values, at any aspect. Not a game's: U5 and U7 build those.
 (
     type: "sapphire::assets::UiDocument",
-    version: 1,
+    version: 2,
     data: (
         model: "test_screen.model.ron",
         styles: [

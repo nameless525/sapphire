@@ -170,8 +170,8 @@ mod tests {
         // Doesn't parse, doesn't check, doesn't resolve, and each says where.
         let renamed = nodes(&layer);
         for (bad, says) in [
-            ("(type: \"sapphire::assets::UiDocument\", version: 1, data: (nodes: [(nam: \"x\")]))", "line"),
-            ("(type: \"sapphire::assets::UiDocument\", version: 1, data: (nodes: []))", "nodes"),
+            ("(type: \"sapphire::assets::UiDocument\", version: 2, data: (nodes: [(nam: \"x\")]))", "line"),
+            ("(type: \"sapphire::assets::UiDocument\", version: 2, data: (nodes: []))", "nodes"),
             (&*DOCUMENT.replace("path: \"health\"", "path: \"mana\""), "mana"),
         ] {
             let error = layer.replace(bad).unwrap_err();

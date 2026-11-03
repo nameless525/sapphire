@@ -100,6 +100,6 @@ If you find yourself in those files and the restart is what hurts, that's a real
 
 ## Notes on the evidence
 
-- **CI during the macOS outage.** GitHub's macOS runners have been out since about 12:30 UTC on 2026-11-02. Every landing since was verified on Metal, tests, replays and iOS builds by a local stand-in running CI's four macOS jobs on this Mac, not by CI's own. Linux, Windows, Android and lint jobs ran in CI as usual.
+- **CI during the macOS outage.** GitHub's macOS runners were out from about 12:30 to about 23:20 UTC on 2026-11-02. Landings in that window were verified on Metal, tests, replays and iOS builds by a local stand-in running CI's four macOS jobs on this Mac, not by CI's own. The docs check, the leftovers, movement as data and the camera's framing came after, on CI's own macOS jobs. Linux, Windows, Android and lint jobs ran in CI as usual.
 - **Which tree.** The exit tests' numbers come from 410cf24b. WA-3's clocks and the review's fixes came after. A row saying 7a28c828 was taken there.
 - **Every number here** comes from one Apple M5 laptop on AC power, with other agents building beside it, which is why ranges and worst cases are quoted. It isn't one of the spec's reference devices. [m2-exit-run.md](m2-exit-run.md), "Rehearsal", has the exit tests' conditions, and spec §3.5 has the budgets'.

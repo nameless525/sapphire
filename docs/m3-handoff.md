@@ -6,7 +6,7 @@ Written at M2's close (Z3, 2026-11-02), on the review line's top, 7a28c828, with
 
 ## Where M2 stands
 
-- **Built, with nothing judged by a person** (spec §10, "M2 status"). Every package but the feel reviews (Z2) has landed or is landing.
+- **Built, with nothing judged by a person** (spec §10, "M2 status"). Every package but the feel reviews (Z2) has landed.
 - **Reviewed by agents who hadn't built it:** 31 bugs fixed ([m2-go-no-go.md](m2-go-no-go.md), "What the review found"). What they left open is below, under the device checks and the deferred list.
 - **Exit test 1 (feel):** nobody has played the fight. The window's fight loop has run on an emulator and a simulator, and never on a desktop. [m2-exit-run.md](m2-exit-run.md) has the sheet for the three reviews.
 - **Exit test 2 (iteration):** holds on the desktop, an emulator and a simulator. A phone is owed.
@@ -225,5 +225,5 @@ XPBD cloth, ragdolls, Luau, navigation, decals, GPU particles, music, lip-sync, 
 - **Tools and scenes are single-example:** one character, one enemy, one stage, one set of moves. What's data today has one consumer, so "authored with no Rust changes" is untested.
 - **The town doesn't scale as built:** one mesh, drawn whole wherever it shows (M2's handoff has this too).
 - **A moved checksum costs two CI rounds,** because no machine here runs x86-64 ([development-iteration.md](development-iteration.md)).
-- **GitHub's macOS runners were out** from about 12:30 UTC on 2026-11-02. Every landing since, this one included, was verified on Metal, tests, replays and iOS builds by a local stand-in, not by CI's macOS jobs. Those jobs should run again when runners return.
+- **GitHub's macOS runners were out** from about 12:30 to about 23:20 UTC on 2026-11-02. Landings in that window were verified on Metal, tests, replays and iOS builds by a local stand-in, not by CI's macOS jobs. Landings after it ran CI's own again.
 - **Software rasterizers aren't GPUs,** and the character shader is full: all eight permutation bits and all 16 sampled textures are taken (M2's handoff).

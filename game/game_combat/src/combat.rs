@@ -541,7 +541,6 @@ impl Combat {
     }
 
     /// What's running, for the overlay's recorder.
-    #[cfg(any(feature = "dev", test))]
     pub fn status(&self) -> CombatStatus<'_> {
         match &self.mode {
             Mode::Replaying { player, name, .. } => {
@@ -880,7 +879,6 @@ fn holds(path: &Path, bytes: &[u8]) -> bool {
 }
 
 /// What a [`Combat`] is running, as the overlay shows it.
-#[cfg(any(feature = "dev", test))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CombatStatus<'a> {
     Replaying { name: &'a str, length: u32 },

@@ -41,7 +41,7 @@ pub struct FrameLaps {
     /// `Content::update` and `Scene::follow_content`.
     pub content: Duration,
     /// `Scene::animate`.
-    pub animation: Duration,
+    pub(crate) animation: Duration,
     /// `Scene::frame_packet`: presentation, the camera, extraction and the HUD.
     pub packet: Duration,
     /// `Renderer::prepare`.

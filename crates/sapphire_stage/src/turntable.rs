@@ -62,7 +62,7 @@ pub(crate) fn spin(mut tables: Query<'_, '_, (&mut Turntable, &EntityClock)>) {
 /// Poses each turntable's entity between its last two steps. Runs at the head of `Extract`
 /// (see [`crate::scene`] for why not in `Presentation`). A table that holds still (hitstop,
 /// pause) leaves its transform unchanged, so it isn't extracted.
-pub fn pose(
+pub(crate) fn pose(
     interpolation: Res<'_, Interpolation>,
     mut tables: Query<'_, '_, (&Turntable, &mut RenderTransform)>,
 ) {

@@ -794,7 +794,7 @@ impl FigureJoints {
     }
 
     /// The right hand's joint, if the rig has one.
-    pub fn right_hand(&self) -> Option<usize> {
+    pub(crate) fn right_hand(&self) -> Option<usize> {
         self.right_hand
     }
 

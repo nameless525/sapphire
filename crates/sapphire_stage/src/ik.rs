@@ -234,11 +234,11 @@ impl IkDriver {
     }
 
     /// The inputs it runs on.
-    pub fn controls(&self) -> IkControls {
+    pub(crate) fn controls(&self) -> IkControls {
         self.controls
     }
 
-    pub fn set_controls(&mut self, controls: IkControls) {
+    pub(crate) fn set_controls(&mut self, controls: IkControls) {
         self.controls = controls;
     }
 

@@ -434,7 +434,12 @@ impl GraphDriver {
     }
 
     /// Whether its springs run this frame, for a character `view` sees or doesn't.
-    pub fn springs_run(&mut self, view: &SpringView, transform: &RenderTransform, figure: &Figure) -> bool {
+    pub(crate) fn springs_run(
+        &mut self,
+        view: &SpringView,
+        transform: &RenderTransform,
+        figure: &Figure,
+    ) -> bool {
         self.springs.as_mut().is_some_and(|springs| view.decide(springs, transform, figure))
     }
 

@@ -82,7 +82,7 @@ pub(crate) const HEAD: AssetId = AssetId::from_text("cff436cc-9604-4a9f-8d3a-3bc
 pub(crate) struct FaceRig {
     pub(crate) yaw: f32,
     pub(crate) elevation: f32,
-    pub expression: FaceExpression,
+    pub(crate) expression: FaceExpression,
     pub(crate) turn: f32,
     pub(crate) nod: f32,
     pub(crate) blink: f32,
@@ -100,7 +100,7 @@ impl FaceRig {
 
     /// The head's rotation from facing the camera, in its own space, that puts the camera at
     /// the pose's angles.
-    pub fn pose(&self) -> Quat {
+    pub(crate) fn pose(&self) -> Quat {
         Quat::from_rotation_x(self.nod.to_radians()) * Quat::from_rotation_y(self.turn.to_radians())
     }
 

@@ -180,12 +180,12 @@ impl ClipPlayer {
     }
 
     /// Its IK, for whatever drives it.
-    pub fn ik_mut(&mut self) -> Option<&mut IkDriver> {
+    pub(crate) fn ik_mut(&mut self) -> Option<&mut IkDriver> {
         self.ik.as_mut()
     }
 
     /// Whether it solves IK.
-    pub fn has_ik(&self) -> bool {
+    pub(crate) fn has_ik(&self) -> bool {
         self.ik.is_some()
     }
 
@@ -204,7 +204,7 @@ impl ClipPlayer {
 
     /// Takes over another player's start, for a new version of the character under a clip that
     /// keeps playing.
-    pub fn continue_from(&mut self, other: &Self) {
+    pub(crate) fn continue_from(&mut self, other: &Self) {
         self.start = other.start;
         self.base = other.base;
         self.root_motion = other.root_motion;
@@ -239,7 +239,7 @@ impl ClipPlayer {
     /// Whether it can play `clip` into `render`. Neither holds for a moment when a new version of
     /// the character or the clip lands before the others: the character keeps the pose it has until
     /// they fit.
-    pub fn fits(&self, clip: &ArchivedClip, render: &RenderPose) -> bool {
+    pub(crate) fn fits(&self, clip: &ArchivedClip, render: &RenderPose) -> bool {
         clip.joint_count.to_native() as usize == self.pose.joint_count()
             && render.palette.len() == self.pose.palette_len()
             && render.morph_weights.len() == self.pose.weights().len()
@@ -298,7 +298,12 @@ impl ClipPlayer {
     }
 
     /// Whether its springs run this frame, for a character `view` sees or doesn't.
-    pub fn springs_run(&mut self, view: &SpringView, transform: &RenderTransform, figure: &Figure) -> bool {
+    pub(crate) fn springs_run(
+        &mut self,
+        view: &SpringView,
+        transform: &RenderTransform,
+        figure: &Figure,
+    ) -> bool {
         self.springs.as_mut().is_some_and(|springs| view.decide(springs, transform, figure))
     }
 
@@ -334,13 +339,13 @@ pub(crate) struct Evaluation<'a> {
     /// Whether its springs run this frame ([`ClipPlayer::springs_run`]).
     pub(crate) springs_run: bool,
     /// What its springs did.
-    pub spring_work: SpringWork,
-    pub spring_time: Duration,
+    pub(crate) spring_work: SpringWork,
+    pub(crate) spring_time: Duration,
 }
 
 impl Evaluation<'_> {
     /// Samples `clip`, finishes the pose, runs the springs and hands it over. Allocates nothing.
-    pub fn run(&mut self, clip: &ArchivedClip) {
+    pub(crate) fn run(&mut self, clip: &ArchivedClip) {
         let player = &mut *self.player;
         if let Some(position) = self.position {
             player.pose.sample(clip, position);

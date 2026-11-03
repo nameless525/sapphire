@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str::FromStr;
 
-use anyhow::{Context as _, anyhow, bail};
+use anyhow::{anyhow, bail};
 
 use crate::workspace::{self, BuildProfile, CargoBuild};
 
@@ -309,8 +309,7 @@ pub fn cook(cook: Cook) -> anyhow::Result<Cooked> {
 
     let out = cooked_dir(cook);
     let lock_path = out.with_extension("lock");
-    let lock =
-        File::create(&lock_path).with_context(|| format!("failed to create {}", lock_path.display()))?;
+    let lock = workspace::lock_file(&lock_path)?;
     workspace::wait_for_lock(
         &lock,
         File::try_lock,
@@ -367,7 +366,7 @@ fn generate_missing(
     locked: bool,
     generate: &mut dyn FnMut(&Generator) -> anyhow::Result<()>,
 ) -> anyhow::Result<Vec<&'static str>> {
-    let file = File::create(lock).with_context(|| format!("failed to create {}", lock.display()))?;
+    let file = workspace::lock_file(lock)?;
     workspace::wait_for_lock(&file, File::try_lock, File::lock, "to finish generating sources")?;
     if locked {
         let missing: Vec<(&Generator, PathBuf)> = generators

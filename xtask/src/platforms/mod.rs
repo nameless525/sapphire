@@ -245,7 +245,7 @@ impl BundleClaim {
     fn take_in(dir: PathBuf) -> anyhow::Result<Self> {
         fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
         let path = dir.join("bundle.lock");
-        let lock = File::create(&path).with_context(|| format!("failed to create {}", path.display()))?;
+        let lock = workspace::lock_file(&path)?;
         workspace::wait_for_lock(
             &lock,
             File::try_lock,

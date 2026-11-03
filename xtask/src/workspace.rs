@@ -210,6 +210,17 @@ pub fn remove_dir_if_exists(dir: &Path) -> anyhow::Result<()> {
     }
 }
 
+/// Opens a lock file, making it if it's missing and never truncating it, because another process may hold
+/// its lock and Windows needn't let a truncation through one.
+pub fn lock_file(path: &Path) -> anyhow::Result<File> {
+    File::options()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path)
+        .with_context(|| format!("failed to open {}", path.display()))
+}
+
 /// Takes a lock with `try_lock`, falling back to the blocking `lock` with a message when
 /// another xtask run holds it: "waiting for another xtask run `until`...".
 pub fn wait_for_lock(

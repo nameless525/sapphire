@@ -21,12 +21,14 @@
 //! [`MAX_STEPS`]), and a cook refuses any pattern that would reach those bounds.
 
 mod pseudo;
+mod shows;
 mod table;
 
 pub use pseudo::{
     EXPANSION_DENOMINATOR, EXPANSION_NUMERATOR, FRAME_CLOSE, FRAME_OPEN, characters as pseudo_characters,
     is_framed, pseudolocalize,
 };
+pub use shows::{KeyShows, key_shows};
 pub use table::{
     ArgValue, Entry, Expression, FontChain, MAX_DEPTH, MAX_FRACTION_DIGITS, MAX_STEPS, NUMBER_CHARACTERS,
     NumberFormat, Part, Pattern, Run, STRINGS_EXTENSION, Select, Span, StringTable, StringsError, TermArg,

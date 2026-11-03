@@ -201,6 +201,7 @@ fn uploads_are_plain_cooked_data() {
                 AssetKind::AnimGraph => unreachable!("animation graphs never go to the uploader"),
                 AssetKind::Zone => unreachable!("zones never go to the uploader"),
                 AssetKind::Strings => unreachable!("string tables never go to the uploader"),
+                AssetKind::Ui => unreachable!("documents never go to the uploader"),
                 AssetKind::Font | AssetKind::FontChains => unreachable!("fonts never go to the uploader"),
                 AssetKind::NavMesh => unreachable!("navmeshes never go to the uploader"),
                 AssetKind::Timeline => unreachable!("timelines never go to the uploader"),

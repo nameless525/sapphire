@@ -1,0 +1,12 @@
+// What Japanese shows each role of text in, first choice first, and English where it lacks a key (M3 U4).
+(
+    type: "sapphire::strings::LocaleDocument",
+    version: 1,
+    data: (
+        fallback: ["en"],
+        fonts: {
+            "body": ["M PLUS 1"],
+            "display": ["Dela Gothic One", "Oxanium", "M PLUS 1"],
+        },
+    ),
+)

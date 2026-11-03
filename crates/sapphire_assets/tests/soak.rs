@@ -143,6 +143,7 @@ fn round(
                     }
                     AssetKind::NavMesh => unreachable!("navmeshes never go to the uploader"),
                     AssetKind::Timeline => unreachable!("timelines never go to the uploader"),
+                    AssetKind::Ui => unreachable!("screens never go to the uploader"),
                 }
                 Ok(())
             })
@@ -168,7 +169,7 @@ fn loading_and_unloading_leaks_no_handles_or_memory() {
         upload_per_frame: 64 << 10,
         resident: [
             600, 40_000, 3_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000, 1_000,
-            1_000, 1_000, 1_000, 1_000,
+            1_000, 1_000, 1_000, 1_000, 1_000,
         ],
     };
     let mut server = AssetServer::new(source, budgets);

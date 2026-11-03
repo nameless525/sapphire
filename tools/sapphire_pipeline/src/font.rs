@@ -19,7 +19,7 @@
 //! beside the packs ([`crate::pack`]), since a font's license can require a build to ship it; a font
 //! with none doesn't cook. Each of `subsets` is one cooked font for one pack: the first is the
 //! source's own asset, the rest sub-assets. A new font's sidecar has no subsets, and its cook asks
-//! for them. [`pack::SHARED`], [`pack::AUDIO`] and [`pack::LOC`] take no fonts, so a font never moves
+//! for them. [`pack::SHARED`], [`pack::AUDIO`], [`pack::LOC`] and [`pack::UI`] take no fonts, so a font never moves
 //! their bytes.
 //!
 //! # What a subset holds
@@ -39,9 +39,9 @@
 //! )
 //! ```
 //!
-//! String tables add what they use ([`Characters::add_table`]), and [`check_tables`] is what refuses
-//! a string its chain can't show, naming the string and the character. A character a font doesn't
-//! have is simply not in its subset: Oxanium has no kana, and its chain goes on to a font that does.
+//! A font's subset for [`pack::FONTS`] adds what the tree's screens show in its family
+//! ([`crate::ui`], which is also what refuses a string they can't). A character a font doesn't have is
+//! simply not in its subset: Oxanium has no kana, and a locale's list goes on to a font that does.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -52,12 +52,13 @@ use read_fonts_for_skera::types::NameId;
 use read_fonts_for_skera::{FontRef, TableProvider as _};
 use sapphire_assets::font::{Font, FontChains, FontError};
 use sapphire_reflect::Versioned;
-use sapphire_strings::{ArgValue, Expression, Part, Pattern, StringTable, pseudo_characters};
+use sapphire_strings::pseudo_characters;
 use serde::{Deserialize, Serialize};
 
 use crate::cache::{Dependency, Stage};
 use crate::font_subset::{self, FontSubsetError};
 use crate::pack;
+use crate::ui::ScreenCharacters;
 
 /// The font importer as cache keys know it. Its name carries the subsetter's version, which a test
 /// keeps in step with `Cargo.lock`: a new `skera` can cut differently.
@@ -68,6 +69,9 @@ pub const COOKER: Stage = Stage { name: "sfont", version: 1 };
 pub const CHAINS_IMPORTER: Stage = Stage { name: "font chains document", version: 1 };
 /// The font chains cooker. Bump it whenever it changes output for the same document.
 pub const CHAINS_COOKER: Stage = Stage { name: "sfontc", version: 1 };
+
+/// What a font's key calls what the screens need of it: no file, so no file can be called this.
+const SCREENS_DEPENDENCY: &str = "#screens";
 
 /// What a font chains document's file name ends with.
 const CHAINS_SOURCE_SUFFIX: &str = ".fontchains.ron";
@@ -128,11 +132,6 @@ pub enum FontCookError {
     Cooked(#[from] sapphire_serialize::cooked::CookedError),
     #[error("the document isn't UTF-8")]
     Utf8(#[from] std::str::Utf8Error),
-    #[error(
-        "the chain `{chain}` can't show {character:?} (U+{code:04X}) in `{locale}`'s `{key}`",
-        code = u32::from(*character)
-    )]
-    Uncovered { chain: String, locale: String, key: String, character: char },
 }
 
 /// Whether `path` names a font chains document.
@@ -191,12 +190,6 @@ impl Characters {
         self.0.extend(text.chars().filter(|c| !c.is_control()));
     }
 
-    /// Adds what `table` can show. A pack that shows a locale adds every table down its chain
-    /// ([`StringTable::fallback`]), since `ja` shows English where it lacks a key.
-    pub fn add_table(&mut self, table: &StringTable) {
-        self.0.extend(table.characters().into_iter().filter(|c| !c.is_control()));
-    }
-
     /// Adds what pseudo-localization adds to English.
     pub fn add_pseudo(&mut self) {
         self.0.extend(pseudo_characters());
@@ -240,62 +233,14 @@ fn english_name(name: &Name<'_>, id: NameId) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
-fn open(font: &[u8]) -> Result<FontRef<'_>, FontSubsetError> {
+pub(crate) fn open(font: &[u8]) -> Result<FontRef<'_>, FontSubsetError> {
     FontRef::new(font).map_err(|error| FontSubsetError::NotAFont(error.to_string()))
 }
 
 /// Whether `font` has a glyph for `character`.
-fn covers(font: &FontRef<'_>, character: char) -> bool {
+pub(crate) fn covers(font: &FontRef<'_>, character: char) -> bool {
     let glyph = font.cmap().ok().and_then(|cmap| cmap.map_codepoint(character));
     glyph.is_some_and(|glyph| glyph.to_u32() != 0)
-}
-
-/// Refuses the first character of `tables` that no font of `chain` can show, naming its table, its key
-/// and it. `tables` are a locale's and those down its chain, whose text it also shows. Given whole
-/// `fonts` this asks what a chain could show, and given a pack's cuts, what it will.
-pub fn check_tables(chain: &str, fonts: &[&[u8]], tables: &[&StringTable]) -> Result<(), FontCookError> {
-    let fonts = fonts.iter().map(|font| open(font)).collect::<Result<Vec<_>, _>>()?;
-    for table in tables {
-        for character in table.characters().into_iter().filter(|c| !c.is_control()) {
-            if !fonts.iter().any(|font| covers(font, character)) {
-                return Err(FontCookError::Uncovered {
-                    chain: chain.to_owned(),
-                    locale: table.locale.clone(),
-                    key: key_showing(table, character).unwrap_or("numbers").to_owned(),
-                    character,
-                });
-            }
-        }
-    }
-    Ok(())
-}
-
-/// The key of the first entry of `table` whose text holds `character`. None means it's only what numbers
-/// are written in.
-fn key_showing(table: &StringTable, character: char) -> Option<&str> {
-    let entry = table.entries.iter().find(|entry| pattern_holds(table, entry.pattern, character))?;
-    Some(table.str(entry.key))
-}
-
-/// Whether `pattern`'s own text holds `character`. A table a cook just compiled nests no further than its
-/// source did.
-fn pattern_holds(table: &StringTable, pattern: Pattern, character: char) -> bool {
-    let run = match pattern {
-        Pattern::Plain(span) => return table.str(span).contains(character),
-        Pattern::Parts(run) => run,
-    };
-    table.parts_of(run).iter().any(|part| match *part {
-        Part::Text(span) => table.str(span).contains(character),
-        Part::Select(index) => {
-            let select = &table.selects[index as usize];
-            table.variants_of(select.variants).iter().any(|arm| pattern_holds(table, arm.pattern, character))
-        }
-        Part::Place(Expression::Term { args, .. }) => table.args_of(args).iter().any(|arg| match arg.value {
-            ArgValue::Text(span) => table.str(span).contains(character),
-            _ => false,
-        }),
-        Part::Place(_) => false,
-    })
 }
 
 /// Checks a font's sidecar: a license, and something to cook, each for a pack that may hold it.
@@ -313,7 +258,7 @@ pub fn check_settings(settings: &FontSettings) -> Result<(), FontCookError> {
         if subset.pack.is_empty() || !subset.pack.as_bytes().iter().all(plain) {
             return problem("a pack's name is lower-case letters, digits, - and _");
         }
-        if [pack::SHARED, pack::AUDIO, pack::LOC].contains(&subset.pack.as_str()) {
+        if [pack::SHARED, pack::AUDIO, pack::LOC, pack::UI].contains(&subset.pack.as_str()) {
             return problem("fonts stay out of it, so a font's change never moves its bytes");
         }
         if settings.subsets[..index].iter().any(|earlier| earlier.pack == subset.pack) {
@@ -326,19 +271,39 @@ pub fn check_settings(settings: &FontSettings) -> Result<(), FontCookError> {
 /// The files the cook of `subset` reads besides the font: its license and its character set.
 pub fn dependencies(
     path: &Path,
+    bytes: &[u8],
     settings: &FontSettings,
     subset: usize,
+    screens: &ScreenCharacters,
 ) -> Result<Vec<Dependency>, FontCookError> {
     let dir = path.parent().unwrap_or(Path::new(""));
     let entry = settings.subsets.get(subset).ok_or(FontCookError::NoSubsets)?;
-    [settings.license.as_str(), entry.characters.as_str()]
+    let mut dependencies = [settings.license.as_str(), entry.characters.as_str()]
         .into_iter()
         .map(|file| {
             let full = dir.join(file);
             let bytes = std::fs::read(&full).map_err(|source| FontCookError::Read { path: full, source })?;
             Ok(Dependency::File { path: file.to_owned(), hash: blake3::hash(&bytes) })
         })
-        .collect()
+        .collect::<Result<Vec<_>, FontCookError>>()?;
+    if let Some(shown) = shown_by_screens(entry, bytes, screens)? {
+        let text: String = shown.iter().collect();
+        dependencies.push(Dependency::File { path: SCREENS_DEPENDENCY.to_owned(), hash: blake3::hash(text.as_bytes()) });
+    }
+    Ok(dependencies)
+}
+
+/// What the tree's screens show in this font, which only a subset for [`pack::FONTS`] holds: a zone's
+/// own subset adds to what a character set says it needs.
+fn shown_by_screens<'a>(
+    entry: &FontSubset,
+    bytes: &[u8],
+    screens: &'a ScreenCharacters,
+) -> Result<Option<&'a BTreeSet<char>>, FontCookError> {
+    if entry.pack != pack::FONTS {
+        return Ok(None);
+    }
+    Ok(screens.of(&family_name(bytes)?))
 }
 
 /// The bytes of a font's cooked file for `subset`, read back through the runtime's check.
@@ -347,6 +312,7 @@ pub fn cook(
     bytes: &[u8],
     settings: &FontSettings,
     subset: usize,
+    screens: &ScreenCharacters,
 ) -> Result<Vec<u8>, FontCookError> {
     check_settings(settings)?;
     let dir = path.parent().unwrap_or(Path::new(""));
@@ -356,8 +322,11 @@ pub fn cook(
         std::fs::read_to_string(&full).map_err(|source| FontCookError::Read { path: full, source })
     };
     let license = read(&settings.license)?;
-    let characters = Characters::from_document(&read(&entry.characters)?)
+    let mut characters = Characters::from_document(&read(&entry.characters)?)
         .map_err(|problem| FontCookError::Characters { path: dir.join(&entry.characters), problem })?;
+    if let Some(shown) = shown_by_screens(entry, bytes, screens)? {
+        characters.0.extend(shown.iter().filter(|character| !character.is_control()));
+    }
     let font = open(bytes)?;
     if !characters.0.iter().any(|&character| covers(&font, character)) {
         return Err(FontCookError::EmptySubset { pack: entry.pack.clone() });
@@ -503,7 +472,7 @@ mod tests {
         fs::write(
             tree.content().join("ui.fontchains.ron"),
             format!(
-                "(type: \"sapphire::assets::FontChains\", version: 1, data: (chains: [(name: \"display\", scripts: [(script: \"Jpan\", fonts: [\"{one}\", \"{two}\"])])]))"
+                "(type: \"sapphire::assets::FontChains\", version: 2, data: (chains: [(name: \"display\", fonts: [\"{one}\", \"{two}\"])]))"
             ),
         )
         .unwrap();
@@ -541,7 +510,7 @@ mod tests {
         let chains: Handle<FontChains> = server.load(chains_id).unwrap();
         server.finish(&chains, |upload| panic!("{} was sent to the uploader", upload.kind())).unwrap();
         let read = server.get(&chains).expect("the chains loaded");
-        assert_eq!(read.fonts("display", "Jpan"), Some([one, two].as_slice()));
+        assert_eq!(read.fonts("display"), Some([one, two].as_slice()));
         let font: Handle<Font> = server.load(two).unwrap();
         assert_eq!(server.get(&font).expect("loaded with its chains").family, "Oxanium");
     }
@@ -662,7 +631,7 @@ mod tests {
         let missing: AssetId = "9f6b2c1e-8a3d-4e5f-9b7c-0d1e2f3a4b5c".parse().unwrap();
         let document = |id: AssetId| {
             format!(
-                "(type: \"sapphire::assets::FontChains\", version: 1, data: (chains: [(name: \"body\", scripts: [(script: \"Latn\", fonts: [\"{id}\"])])]))"
+                "(type: \"sapphire::assets::FontChains\", version: 2, data: (chains: [(name: \"body\", fonts: [\"{id}\"])]))"
             )
         };
         fs::write(tree.content().join("ui.fontchains.ron"), document(missing)).unwrap();
@@ -709,58 +678,6 @@ mod tests {
         // Surrogates aren't characters, so a range over them holds what's around them.
         let around = Characters::from_document(&document("ranges: [(0xd7ff, 0xe000)]")).unwrap();
         assert_eq!(around.len(), 2);
-    }
-
-    /// What a string table's cook will do, with a table as a fixture until there is one.
-    /// A locale's table, from Fluent.
-    fn table(tag: &str, fallback: &[&str], fluent: &str) -> StringTable {
-        let document = crate::loc::LocaleDocument {
-            fallback: fallback.iter().map(|tag| (*tag).to_owned()).collect(),
-            fonts: Default::default(),
-        };
-        crate::loc::compile(tag, &document, &[(PathBuf::from("strings.ftl"), fluent.to_owned())]).unwrap()
-    }
-
-    #[test]
-    fn a_string_a_chain_cannot_show_is_refused_by_name_and_character() {
-        let oxanium = fs::read(third_party(OXANIUM)).unwrap();
-        let mplus = fs::read(third_party(MPLUS1)).unwrap();
-        let english = table("en", &[], "menu-latin = Settings 12,480\n");
-        let japanese = table("ja", &["en"], "menu-japanese = Lv.90 の設定を保存する\n");
-        let chain = [oxanium.as_slice(), mplus.as_slice()];
-        check_tables("display", &chain, &[&japanese, &english]).unwrap();
-
-        // Oxanium alone has no Japanese: the chain is what covers it.
-        let alone = check_tables("latin", &[oxanium.as_slice()], &[&english, &japanese]).unwrap_err();
-        assert!(alone.to_string().contains("`ja`'s `menu-japanese`"), "{alone}");
-
-        // However it comes: plain, a place's literal, an arm of a select.
-        for (fluent, key) in [
-            ("plain = 설정\n", "plain"),
-            ("-term = { $what }\nplaced = { -term(what: \"설정\") }\n", "placed"),
-            ("armed = { $n ->\n    [one] 설정\n   *[other] x\n }\n", "armed"),
-        ] {
-            let korean = table("ko", &["en"], fluent);
-            let error = check_tables("display", &chain, &[&english, &korean]).unwrap_err().to_string();
-            assert!(error.contains("display") && error.contains("U+C124"), "{error}");
-            assert!(error.contains(&format!("`ko`'s `{key}`")), "{error}");
-        }
-
-        // A table's numbers need digits of whichever font: no key says so.
-        let no_digits = font_subset::subset(&oxanium, "abc").unwrap();
-        let error = check_tables("cut", &[no_digits.as_slice()], &[&table("en", &[], "a = abc\n")]);
-        assert!(error.unwrap_err().to_string().contains("`en`'s `numbers`"));
-    }
-
-    #[test]
-    fn a_table_s_strings_join_a_pack_s_characters() {
-        let mut set = Characters::default();
-        assert!(set.is_empty());
-        set.add_table(&table("en", &[], "a = 設定\n    設\nb = { $n ->\n    [one] か\n   *[other] き\n }\n"));
-        for character in "設定かき0.".chars() {
-            assert!(set.contains(character), "{character}");
-        }
-        assert!(!set.contains('\n'), "no control characters");
     }
 
     #[test]

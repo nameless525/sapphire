@@ -1,7 +1,8 @@
-// What the interface's fonts hold until string tables say (M3 U3). Ranges are shown whole: printable
-// ASCII and Latin-1, general punctuation, CJK punctuation, kana, and fullwidth forms. The list is
-// the Han of the interface's words and the accents pseudo-localization adds past Latin-1, and a test
-// holds it all in M PLUS 1.
+// What the interface's fonts hold beyond what its documents bind (M3 U4). A cook adds every string a
+// screen's key can show, in the fonts its role's chain names, so this is what no document can say: what
+// code passes as a variable (a name a player typed, so kana and the commonest Han) and the accents
+// pseudo-localization adds past Latin-1. Ranges are shown whole: printable ASCII and Latin-1, general
+// punctuation, CJK punctuation, kana, and fullwidth forms. A test holds it all in M PLUS 1.
 (
     type: "sapphire::pipeline::CharacterSet",
     version: 1,

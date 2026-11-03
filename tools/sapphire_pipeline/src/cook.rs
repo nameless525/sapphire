@@ -133,12 +133,13 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Condvar, Mutex, PoisonError};
+use std::sync::{Condvar, Mutex, OnceLock, PoisonError};
 use std::thread;
 
 use sapphire_assets::clip::{CLIP_EXTENSION, Clip};
 use sapphire_assets::cue::{CUE_EXTENSION, Cue};
 use sapphire_assets::font::{FONT_CHAINS_EXTENSION, FONT_EXTENSION, Font, FontChains};
+use sapphire_assets::ui::{UI_EXTENSION, UiDocument};
 use sapphire_assets::graph::{AnimGraph, GRAPH_EXTENSION};
 use sapphire_assets::material::{MATERIAL_EXTENSION, Material};
 use sapphire_assets::mesh::{MESH_EXTENSION, Mesh, MeshError};
@@ -167,6 +168,7 @@ use crate::clip::source::{ClipSource, ClipSources, joint_remap, remap_tracks};
 use crate::clip::{self, ClipCookError, ClipSettings, ClipTarget, SampledClip};
 use crate::colliders::{self, ColliderCookError};
 use crate::font::{self, FontCookError};
+use crate::ui::{self, ScreenCharacters, ScreenError, Screens, UiCookError};
 use crate::import::fbx::{self, FbxImportError};
 use crate::import::gltf::{self, GltfImportError};
 use crate::import::image;
@@ -368,6 +370,12 @@ impl Recipe {
                 format: AnimGraph::VERSION,
                 extension: GRAPH_EXTENSION,
             },
+            ImportSettings::Ui(_) => Self {
+                importer: ui::IMPORTER,
+                cooker: ui::COOKER,
+                format: UiDocument::VERSION,
+                extension: UI_EXTENSION,
+            },
             // Fluent sources have no asset of their own: this is their locale's table.
             ImportSettings::Fluent(_) | ImportSettings::Locale(_) => Self {
                 importer: loc::IMPORTER,
@@ -457,6 +465,8 @@ impl Recipe {
             audio::cue_output_path(relative, self.extension)
         } else if font::is_chains_source(relative) {
             font::chains_output_path(relative, self.extension)
+        } else if ui::is_source(relative) {
+            ui::output_path(relative, self.extension)
         } else if moves::is_source(relative) {
             moves::output_path(relative, self.extension)
         } else if anim_graph::is_source(relative) {
@@ -587,6 +597,15 @@ pub enum CookError {
         #[source]
         source: Box<TimelineCookError>,
     },
+    #[error("failed to cook UI document {}", path.display())]
+    Ui {
+        path: PathBuf,
+        /// Boxed, as material errors are.
+        #[source]
+        source: Box<UiCookError>,
+    },
+    #[error("a screen can't ship as it is")]
+    Screen(#[from] Box<ScreenError>),
     #[error("failed to cook sound or cue {}", path.display())]
     Audio {
         path: PathBuf,
@@ -964,7 +983,9 @@ fn cook_dir_through(
             }));
         }
     }
-    // Materials read the cooked textures they reference, so everything else cooks first; clips,
+    // Fonts hold what screens show, which takes every UI document and table, so those go before them,
+    // apart from everything else since they read no other cooked asset. Materials read the cooked
+    // textures they reference, so everything else cooks first; clips,
     // key-pose documents and meshes sharing a skeleton read skeletons and rigs, so those go before
     // them; key-pose documents read those meshes' morph targets, so the meshes go before clips, and
     // move sets read clips' keys, so those go before move sets; probe grids read cooked meshes and
@@ -984,11 +1005,14 @@ fn cook_dir_through(
         rest.into_iter().partition(|&index| plan[index].reads_rigs());
     let (clips, shared_meshes): (Vec<usize>, Vec<usize>) =
         rig_readers.into_iter().partition(|&index| plan[index].is_clip());
+    let (fonts, others): (Vec<usize>, Vec<usize>) =
+        others.into_iter().partition(|&index| plan[index].is_font());
     let mut sources: HashMap<AssetId, &SourceAsset> = HashMap::new();
     for planned in &plan {
         sources.entry(planned.asset.meta.id).or_insert(&planned.asset);
     }
     let memory = CookMemory::new(COOK_MEMORY);
+    let screen_characters = OnceLock::new();
     let tree = PlannedTree {
         plan: &plan,
         by_id: &by_id,
@@ -998,10 +1022,15 @@ fn cook_dir_through(
         cook: options.cook,
         memory: &memory,
         fluent: &fluent,
+        screens: &screen_characters,
     };
     let mut cooked: Vec<Option<CookedAsset>> = vec![None; plan.len()];
     reached(CookStage::Planned);
     cook_independent(tree, &others, workers, &mut cooked)?;
+    let screens = read_screens(&cooked)?;
+    screens.check_strings().map_err(Box::new)?;
+    screen_characters.set(screens.characters_of()).expect("only set here");
+    cook_independent(tree, &fonts, workers, &mut cooked)?;
     let remembered = Remembered::default();
     let mut in_turn = |indices: Vec<Vec<usize>>| {
         for index in indices.into_iter().flatten() {
@@ -1017,6 +1046,7 @@ fn cook_dir_through(
     let assets: Vec<CookedAsset> =
         cooked.into_iter().map(|asset| asset.expect("every planned asset was cooked")).collect();
     let localization = check_localization(&assets)?;
+    check_screens(&screens, &assets)?;
     Ok(CookReport {
         assets,
         created_sidecars: resolved.created,
@@ -1073,6 +1103,39 @@ fn check_localization(assets: &[CookedAsset]) -> Result<LocReport, CookError> {
         tables.push(table);
     }
     loc::check(&tables).map_err(|error| CookError::Localization(Box::new(error)))
+}
+
+/// The tree's screens and tables, from the files as they now are.
+fn read_screens(cooked: &[Option<CookedAsset>]) -> Result<Screens, CookError> {
+    let outputs = cooked.iter().flatten().map(|asset| (asset.source.as_path(), asset.output.as_path()));
+    Ok(Screens::read(outputs).map_err(Box::new)?)
+}
+
+/// Checks the screens against the fonts that cooked for them. From the files as they now are, as
+/// [`check_localization`] is.
+fn check_screens(screens: &Screens, assets: &[CookedAsset]) -> Result<(), CookError> {
+    if !screens.shows_text() {
+        return Ok(());
+    }
+    let refused = |asset: &CookedAsset, source: Box<dyn std::error::Error + Send + Sync>| {
+        CookError::Screen(Box::new(ScreenError::Read { path: asset.output.clone(), source }))
+    };
+    let (mut fonts, mut chains) = (Vec::new(), Vec::new());
+    for asset in assets {
+        match asset.output.extension().and_then(|extension| extension.to_str()) {
+            Some(FONT_EXTENSION) => {
+                let bytes = read_cooked(asset).map_err(|error| refused(asset, Box::new(error)))?;
+                let font = Font::read(&bytes).map_err(|error| refused(asset, Box::new(error)))?;
+                fonts.push((asset.id, font.to_owned_font()));
+            }
+            Some(FONT_CHAINS_EXTENSION) => {
+                let bytes = read_cooked(asset).map_err(|error| refused(asset, Box::new(error)))?;
+                chains.push(FontChains::read(&bytes).map_err(|error| refused(asset, Box::new(error)))?.to_owned_chains());
+            }
+            _ => {}
+        }
+    }
+    Ok(screens.check_fonts(&fonts, &chains).map_err(Box::new)?)
 }
 
 /// Cooks `indices` of the plan, ascending, assets that read nothing another asset cooks, on up to
@@ -1344,7 +1407,8 @@ fn sub_assets(
         | ImportSettings::AnimGraph(_)
         | ImportSettings::Fluent(_)
         | ImportSettings::Locale(_)
-        | ImportSettings::Timeline(_) => Ok(Vec::new()),
+        | ImportSettings::Timeline(_)
+        | ImportSettings::Ui(_) => Ok(Vec::new()),
         ImportSettings::Zone(_) => {
             let plan = ZonePlan::new(meta.id, &read()?, prefabs, cache).map_err(zone_error(path))?;
             let parts = plan.places().map(|place| PlannedPart {
@@ -1553,6 +1617,8 @@ struct PlannedTree<'a> {
     cook: Cook,
     memory: &'a CookMemory,
     fluent: &'a FluentFiles,
+    /// What the screens show, once the tree's documents and tables have cooked: before fonts do.
+    screens: &'a OnceLock<ScreenCharacters>,
 }
 
 impl<'a> PlannedTree<'a> {
@@ -1573,6 +1639,7 @@ impl<'a> PlannedTree<'a> {
             last_source: &remembered.last_source,
             memory: self.memory,
             fluent: self.fluent,
+            screens: self.screens,
         }
     }
 
@@ -1610,6 +1677,7 @@ struct Assets<'a> {
     last_source: &'a LastSource,
     memory: &'a CookMemory,
     fluent: &'a FluentFiles,
+    screens: &'a OnceLock<ScreenCharacters>,
 }
 
 /// A source's rig as other assets read it: its cooked skeleton and where its humanoid map comes
@@ -2174,9 +2242,10 @@ fn cook_source(
         ImportSettings::Sound(_) => audio::cook_sound(bytes).map_err(audio_error(path)),
         ImportSettings::Cue(_) => audio::cook_cue(bytes).map_err(audio_error(path)),
         ImportSettings::Font(settings) => {
-            font::cook(path, bytes, settings, font_subset_of(part)).map_err(font_error(path))
+            font::cook(path, bytes, settings, font_subset_of(part), screens_of(assets)).map_err(font_error(path))
         }
         ImportSettings::FontChains(_) => font::cook_chains(bytes).map_err(font_error(path)),
+        ImportSettings::Ui(_) => ui::cook(path, bytes).map_err(ui_error(path)),
         ImportSettings::MoveSet(_) => moves::cook(bytes, |clip| move_tables(clip, assets))
             .map_err(|source| CookError::MoveSet { path: path.to_owned(), source: Box::new(source) }),
         ImportSettings::AnimGraph(_) => anim_graph::cook(bytes)
@@ -2488,6 +2557,17 @@ fn font_error(path: &Path) -> impl Fn(FontCookError) -> CookError + '_ {
     move |source| CookError::Font { path: path.to_owned(), source: Box::new(source) }
 }
 
+/// What the tree's screens show. Fonts cook after what that's read from.
+fn screens_of<'a>(assets: &Assets<'a>) -> &'a ScreenCharacters {
+    static NONE: OnceLock<ScreenCharacters> = OnceLock::new();
+    assets.screens.get().unwrap_or_else(|| NONE.get_or_init(ScreenCharacters::default))
+}
+
+/// Wraps a UI document error as the cook error for the document at `path`.
+fn ui_error(path: &Path) -> impl Fn(UiCookError) -> CookError + '_ {
+    move |source| CookError::Ui { path: path.to_owned(), source: Box::new(source) }
+}
+
 /// Which entry of a font's `subsets` a part of it is: the first is its own asset.
 fn font_subset_of(part: &Part) -> usize {
     if let Part::FontSubset { index, .. } = part { *index } else { 0 }
@@ -2715,12 +2795,14 @@ fn source_dependencies(
             Ok(Vec::new())
         }
         ImportSettings::Font(settings) => {
-            font::dependencies(path, settings, font_subset_of(part)).map_err(font_error(path))
+            font::dependencies(path, bytes, settings, font_subset_of(part), screens_of(assets))
+                .map_err(font_error(path))
         }
+        ImportSettings::Ui(_) => ui::dependencies(path, bytes).map_err(ui_error(path)),
         // Chains hold only their fonts' IDs, so their contents aren't inputs.
         ImportSettings::FontChains(_) => {
             let chains = font::read_chains(bytes).map_err(font_error(path))?;
-            for id in chains.chains.iter().flat_map(|chain| &chain.scripts).flat_map(|entry| &entry.fonts) {
+            for id in chains.chains.iter().flat_map(|chain| &chain.fonts) {
                 if !assets.get(*id).is_some_and(Planned::is_font) {
                     return Err(CookError::NotAFont { path: path.to_owned(), id: *id });
                 }
@@ -2995,6 +3077,7 @@ fn imported_mesh(
         | ImportSettings::AnimGraph(_)
         | ImportSettings::Fluent(_)
         | ImportSettings::Locale(_)
+        | ImportSettings::Ui(_)
         | ImportSettings::GltfClips(_)
         | ImportSettings::FbxClips(_)
         | ImportSettings::Vrma(_)
@@ -3558,6 +3641,7 @@ mod tests {
                 cook: Cook::Desktop,
                 memory: &memory,
                 fluent: &FluentFiles::new(),
+                screens: &OnceLock::new(),
             };
             let remembered = Remembered::default();
             let keyed = tree.key(0, &tree.assets(&[], &remembered)).unwrap();
@@ -3614,6 +3698,7 @@ mod tests {
             cook: Cook::Desktop,
             memory: &memory,
             fluent: &FluentFiles::new(),
+            screens: &OnceLock::new(),
         };
         let remembered = Remembered::default();
         let keyed = tree.key(0, &tree.assets(&[], &remembered)).unwrap();

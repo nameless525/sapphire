@@ -102,23 +102,19 @@ fn the_shipped_fonts_shape_the_menu_as_the_whole_fonts_do() {
     let chains_id = meta::read(&repo_content().join("fonts/ui.fontchains.ron.meta")).unwrap().id;
     let chains: Handle<FontChains> = server.load(chains_id).unwrap();
     server.finish(&chains, |upload| panic!("{} was uploaded", upload.kind())).unwrap();
-    let wanted: Vec<(&str, &str, Vec<AssetId>)> = {
+    let wanted: Vec<(&str, Vec<AssetId>)> = {
         let read = server.get(&chains).expect("the chains loaded");
-        [("body", "Latn"), ("body", "Jpan"), ("display", "Latn"), ("display", "Jpan")]
-            .into_iter()
-            .map(|(chain, script)| (chain, script, read.fonts(chain, script).expect("a chain").to_vec()))
-            .collect()
+        ["body", "display"].into_iter().map(|chain| (chain, read.fonts(chain).expect("a chain").to_vec())).collect()
     };
 
     let mut cut = TextSystem::new();
     let mut registered = BTreeMap::new();
     let mut lists = BTreeMap::new();
-    for (chain, script, ids) in &wanted {
-        lists.insert((*chain, *script), load_fonts(&mut server, ids, &mut cut, &mut registered));
+    for (chain, ids) in &wanted {
+        lists.insert(*chain, load_fonts(&mut server, ids, &mut cut, &mut registered));
     }
-    assert_eq!(lists[&("display", "Jpan")], "'Dela Gothic One', 'M PLUS 1'");
-    assert_eq!(lists[&("display", "Latn")], "'Oxanium', 'M PLUS 1'");
-    assert_eq!(lists[&("body", "Jpan")], "'M PLUS 1'");
+    assert_eq!(lists["body"], "'M PLUS 1'");
+    assert_eq!(lists["display"], "'Oxanium', 'Dela Gothic One', 'M PLUS 1'");
 
     // The whole fonts, with what the cook says about them. A family's name is what the shaper finds it
     // by, so a cooked font's must be what the whole file says.
@@ -160,8 +156,8 @@ fn the_shipped_fonts_shape_the_menu_as_the_whole_fonts_do() {
     // Oxanium's shift puts a Latin title on the baseline of a body line in the same box.
     let size = 32.0;
     let style = |families| TextStyle { families, size, weight: 700.0, line_height: 1.3, locale: Some("en") };
-    let display = cut.shape("SETTINGS", &style(&lists[&("display", "Latn")]), 1.0, None).baselines[0];
-    let body = cut.shape("SETTINGS", &style(&lists[&("body", "Latn")]), 1.0, None).baselines[0];
+    let display = cut.shape("SETTINGS", &style(&lists["display"]), 1.0, None).baselines[0];
+    let body = cut.shape("SETTINGS", &style(&lists["body"]), 1.0, None).baselines[0];
     assert!((display - body).abs() <= 1.0, "Oxanium {display}, M PLUS 1 {body}");
 }
 

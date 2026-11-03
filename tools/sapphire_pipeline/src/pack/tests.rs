@@ -612,8 +612,8 @@ fn zones_leave_fonts_in_the_packs_their_sidecars_name() {
     write_sidecar(&font, FONT, ImportSettings::Font(settings));
     let chains = scratch.source().join("ui.fontchains.ron");
     let document = format!(
-        r#"(type: "sapphire::assets::FontChains", version: 1, data: (chains: [
-            (name: "body", scripts: [(script: "Latn", fonts: ["{FONT}"])]),
+        r#"(type: "sapphire::assets::FontChains", version: 2, data: (chains: [
+            (name: "body", fonts: ["{FONT}"]),
         ]))"#
     );
     fs::write(&chains, document).unwrap();

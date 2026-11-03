@@ -134,4 +134,5 @@ pub mod samples;
 mod test_util;
 pub mod texture;
 pub mod timeline;
+pub mod ui;
 pub mod zone;

@@ -15,6 +15,7 @@ use sapphire_zone::{ArchivedZone, Zone};
 use crate::clip::{ArchivedClip, Clip};
 use crate::cue::{ArchivedCue, Cue};
 use crate::font::{ArchivedFont, ArchivedFontChains, Font, FontChains};
+use crate::ui::{ArchivedUiDocument, UiDocument};
 use crate::graph::{AnimGraph, ArchivedAnimGraph};
 use crate::material::{ArchivedMaterial, Material};
 use crate::mesh::{ArchivedMesh, Mesh};
@@ -33,7 +34,7 @@ slotmap::new_key_type! {
 
 /// A kind of asset handles can be typed with: [`Mesh`], [`TextureAsset`], [`Material`],
 /// [`CharacterRig`], [`ProbeGrid`], [`Skeleton`], [`Clip`], [`ColliderSet`], [`Zone`], [`Timeline`], [`Sound`],
-/// [`Cue`], [`MoveSet`], [`Font`], [`FontChains`].
+/// [`Cue`], [`MoveSet`], [`Font`], [`FontChains`], [`UiDocument`].
 pub trait Asset: sealed::Sealed + 'static {
     const KIND: AssetKind;
     /// How a loaded asset of this kind is read: in place, borrowing its bytes.
@@ -69,6 +70,7 @@ mod sealed {
     impl Sealed for sapphire_strings::StringTable {}
     impl Sealed for crate::font::Font {}
     impl Sealed for crate::font::FontChains {}
+    impl Sealed for crate::ui::UiDocument {}
     impl Sealed for super::TextureAsset {}
 }
 
@@ -200,6 +202,17 @@ impl Asset for FontChains {
         // SAFETY: as for meshes: `FontChains::read` accepted these bytes, unchanged since.
         unsafe { access_unchecked::<FontChains>(bytes) }
             .expect("the envelope was checked when the font chains were decoded")
+    }
+}
+
+impl Asset for UiDocument {
+    const KIND: AssetKind = AssetKind::Ui;
+    type View<'a> = &'a ArchivedUiDocument;
+
+    unsafe fn view(bytes: &[u8]) -> &ArchivedUiDocument {
+        // SAFETY: as for meshes: `UiDocument::read` accepted these bytes, unchanged since.
+        unsafe { access_unchecked::<UiDocument>(bytes) }
+            .expect("the envelope was checked when the document was decoded")
     }
 }
 

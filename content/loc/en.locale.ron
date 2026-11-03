@@ -1,0 +1,12 @@
+// What English shows each role of text in, first choice first (M3 U4): names `sapphire_text` finds fonts
+// by, which `content/fonts/ui.fontchains.ron` says to load.
+(
+    type: "sapphire::strings::LocaleDocument",
+    version: 1,
+    data: (
+        fonts: {
+            "body": ["M PLUS 1"],
+            "display": ["Oxanium", "M PLUS 1"],
+        },
+    ),
+)

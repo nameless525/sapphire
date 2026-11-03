@@ -119,6 +119,7 @@ mod server;
 pub mod skeleton;
 pub mod sound;
 pub mod texture;
+pub mod ui;
 
 pub use kind::{AssetError, AssetKind};
 pub use pipeline_key::PipelineKey;

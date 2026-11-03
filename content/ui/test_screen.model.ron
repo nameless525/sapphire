@@ -1,0 +1,16 @@
+// What `test_screen.ui.ron`'s paths can read, generated from `sapphire_stage::screen::TestScreenModel`, which a
+// test holds this to. A cook refuses a path that isn't here.
+(
+    type: "sapphire::assets::UiModel",
+    version: 1,
+    data: (
+        fields: [
+            (path: "coins", kind: Number),
+            (path: "health", kind: Number),
+            (path: "hp", kind: Number),
+            (path: "level", kind: Number),
+            (path: "max_hp", kind: Number),
+            (path: "show_badge", kind: Bool),
+        ],
+    ),
+)

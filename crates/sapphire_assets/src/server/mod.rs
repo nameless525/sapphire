@@ -45,7 +45,7 @@ impl AssetBudgets {
     /// (the zone texture pool), materials 32 MiB, rigs 64 MiB, probe grids 64 MiB, skeletons 16 MiB,
     /// clips 128 MiB, collider sets 16 MiB, sounds 32 MiB, cues 1 MiB, move sets 16 MiB, animation
     /// graphs 1 MiB, zones 16 MiB, string tables 8 MiB, fonts 64 MiB, font chains 1 MiB, navmeshes 16 MiB,
-    /// timelines 4 MiB. The numbers besides the texture pool's are proposals, to set by measuring zones
+    /// timelines 4 MiB, UI documents 4 MiB. The numbers besides the texture pool's are proposals, to set by measuring zones
     /// (M2, M3).
     pub const DESKTOP: Self = Self {
         upload_per_frame: 16 * MIB,
@@ -70,12 +70,13 @@ impl AssetBudgets {
             MIB,
             16 * MIB,
             4 * MIB,
+            4 * MIB,
         ]),
     };
     /// Mobile: 4 MiB of uploads a frame; meshes 192 MiB, textures 600 MiB, materials 8 MiB, rigs
     /// 16 MiB, probe grids 16 MiB, skeletons 4 MiB, clips 32 MiB, collider sets 4 MiB, sounds 16 MiB,
     /// cues 1 MiB, move sets 8 MiB, animation graphs 1 MiB, zones 4 MiB, string tables 4 MiB, fonts 32 MiB,
-    /// font chains 1 MiB, navmeshes 4 MiB, timelines 2 MiB.
+    /// font chains 1 MiB, navmeshes 4 MiB, timelines 2 MiB, UI documents 4 MiB.
     pub const MOBILE: Self = Self {
         upload_per_frame: 4 * MIB,
         resident: Self::by_kind([
@@ -97,6 +98,7 @@ impl AssetBudgets {
             MIB,
             4 * MIB,
             2 * MIB,
+            4 * MIB,
         ]),
     };
 
@@ -115,7 +117,7 @@ impl AssetBudgets {
 
     /// Budgets in [`AssetKind::ALL`]'s order: meshes, textures, materials, rigs, probe grids,
     /// skeletons, clips, collider sets, sounds, cues, move sets, animation graphs, zones, string tables,
-    /// fonts, font chains, navmeshes, timelines.
+    /// fonts, font chains, navmeshes, timelines, UI documents.
     const fn by_kind(budgets: [u64; AssetKind::ALL.len()]) -> [u64; AssetKind::ALL.len()] {
         budgets
     }

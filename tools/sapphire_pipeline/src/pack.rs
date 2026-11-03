@@ -40,9 +40,12 @@
 //! them, and every locale's table is wanted whichever zones a game holds. A table reaches nothing and no
 //! zone reaches a table, so zones never draw one into their packs.
 //!
+//! UI documents go in [`UI`] (M3 U4), for the same reason: a screen's change leaves the shared pack
+//! alone. A document reaches nothing and no zone reaches one.
+//!
 //! Font chains go in [`FONTS`], and each font in the pack its sidecar names, which it carries in its
-//! cooked file (M3 U3, [`crate::font`]). That can be a zone's own pack, but never [`SHARED`], [`AUDIO`]
-//! or [`LOC`], whose bytes a font's change must not move. No zone reaches a font or a chain, so what
+//! cooked file (M3 U3, [`crate::font`]). That can be a zone's own pack, but never [`SHARED`], [`AUDIO`],
+//! [`LOC`] or [`UI`], whose bytes a font's change must not move. No zone reaches a font or a chain, so what
 //! zones reach never moves one.
 //!
 //! # Notices
@@ -134,6 +137,9 @@ pub const LOC: &str = "loc";
 /// The pack font chains go in (see the [module docs](self)).
 pub const FONTS: &str = FONTS_PACK;
 
+/// The pack UI documents go in (see the [module docs](self)).
+pub const UI: &str = sapphire_assets::ui::UI_PACK;
+
 /// What the licenses of the fonts in a directory of packs are written to, beside the packs (see the
 /// [module docs](self)).
 pub const NOTICES: &str = "NOTICES.txt";
@@ -145,6 +151,7 @@ pub fn group(kind: Option<AssetKind>) -> &'static str {
         Some(AssetKind::Sound | AssetKind::Cue) => AUDIO,
         Some(AssetKind::Strings) => LOC,
         Some(AssetKind::Font | AssetKind::FontChains) => FONTS,
+        Some(AssetKind::Ui) => UI,
         _ => SHARED,
     }
 }
@@ -165,7 +172,8 @@ pub fn codec(kind: AssetKind) -> Codec {
         | AssetKind::Strings
         | AssetKind::FontChains
         | AssetKind::NavMesh
-        | AssetKind::Timeline => Codec::Lz4,
+        | AssetKind::Timeline
+        | AssetKind::Ui => Codec::Lz4,
         AssetKind::Sound => Codec::None,
     }
 }

@@ -63,6 +63,8 @@
 //! Fluent sources (`.ftl`, M3 V2) have `importer: Fluent((locale: "ja"))`, the locale they're part of,
 //! and locale documents (`ja.locale.ron`) `importer: Locale(())`.
 //!
+//! UI documents (`menu.ui.ron`, M3 U4) have `importer: Ui(())`.
+//!
 //! Fonts (`.ttf`, `.otf`, M3 U3) have `importer: Font((…))`, saying their license and the packs they
 //! go in, and a new font's sidecar has neither, so its cook asks ([`crate::font`]). Font chains
 //! documents (`ui.fontchains.ron`) have `importer: FontChains(())`.
@@ -146,6 +148,7 @@ use crate::font::{self, FontChainsSettings, FontSettings};
 use crate::import::vrm::{self, VrmSettings};
 use crate::keypose::{self, KeyPoseSettings};
 use crate::loc::{self, FluentSettings, LocaleDocumentSettings};
+use crate::ui::{self, UiSettings};
 use crate::material::{self, MaterialSettings};
 use crate::moves::{self, MoveSetSettings};
 use crate::optimize::LodSettings;
@@ -236,6 +239,8 @@ pub enum ImportSettings {
     /// A locale document (`ja.locale.ron`): its chain and fonts, and the table its `.ftl` sources make
     /// (M3 V2).
     Locale(LocaleDocumentSettings),
+    /// A UI document (`.ui.ron`): a screen, which cooks to a `.sui`.
+    Ui(UiSettings),
     /// A glTF wanted for its animations alone: clips and a skeleton, and no mesh (M2 N1), whatever
     /// the file holds. No extension picks this: its sidecar does.
     GltfClips(ClipSettings),
@@ -296,6 +301,9 @@ impl ImportSettings {
         if loc::is_locale_source(source) {
             return Some(Self::Locale(LocaleDocumentSettings::default()));
         }
+        if ui::is_source(source) {
+            return Some(Self::Ui(UiSettings::default()));
+        }
         if loc::is_ftl_source(source) {
             return Some(Self::Fluent(FluentSettings::for_source(source)));
         }
@@ -346,6 +354,7 @@ impl ImportSettings {
             | Self::AnimGraph(_)
             | Self::Fluent(_)
             | Self::Locale(_)
+            | Self::Ui(_)
             | Self::GltfClips(_)
             | Self::FbxClips(_)
             | Self::Vrma(_)
@@ -373,6 +382,7 @@ impl ImportSettings {
             | Self::AnimGraph(_)
             | Self::Fluent(_)
             | Self::Locale(_)
+            | Self::Ui(_)
             | Self::GltfClips(_)
             | Self::FbxClips(_)
             | Self::Vrma(_)

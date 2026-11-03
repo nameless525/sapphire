@@ -114,6 +114,7 @@ impl TextureKind {
             | ImportSettings::AnimGraph(_)
             | ImportSettings::Fluent(_)
             | ImportSettings::Locale(_)
+            | ImportSettings::Ui(_)
             | ImportSettings::GltfClips(_)
             | ImportSettings::FbxClips(_)
             | ImportSettings::Vrma(_)

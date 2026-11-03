@@ -5,28 +5,28 @@
 //! which a credits screen can show and a build's notices repeat. Its axes survive the cut, so a
 //! variable font keeps its weights.
 //!
-//! [`FontChains`] (`.sfontc`, cooked from a `.fontchains.ron` document) says, for a use of type such
-//! as `body` or `display` and a script, which fonts answer and in what order:
+//! [`FontChains`] (`.sfontc`, cooked from a `.fontchains.ron` document) says which font files each
+//! use of type, such as `body` or `display`, may need:
 //!
 //! ```ron
 //! (
 //!     type: "sapphire::assets::FontChains",
-//!     version: 1,
+//!     version: 2,
 //!     data: (
 //!         chains: [
-//!             (name: "display", scripts: [
-//!                 (script: "Latn", fonts: ["4f6b2c1e-8a3d-4e5f-9b7c-0d1e2f3a4b5c", "0e1f2a3b-4c5d-4e6f-8a9b-0c1d2e3f4a5b"]),
-//!                 (script: "Jpan", fonts: ["7a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", "0e1f2a3b-4c5d-4e6f-8a9b-0c1d2e3f4a5b"]),
-//!             ]),
+//!             (name: "display", fonts: ["4f6b2c1e-8a3d-4e5f-9b7c-0d1e2f3a4b5c", "0e1f2a3b-4c5d-4e6f-8a9b-0c1d2e3f4a5b"]),
 //!         ],
 //!     ),
 //! )
 //! ```
 //!
-//! An app turns a chain into a style's family list, from each font's [`Font::family`]. It's a list
-//! rather than the shaper's fallback table because that table doesn't track every script: `fontique`
-//! has no entry for hiragana or katakana with a locale, so setting one does nothing, and a list
-//! answers for any script. Chains hold IDs, like cues and graphs, so cooking them reads no font.
+//! **It's a list of what to load, and the order isn't read.** What a language shows a role in, first
+//! choice first, is the family list in its locale document (`LocaleDocument::fonts`, spec §5.25),
+//! which `sapphire_ui` passes to the shaper. Shaping knows a string's locale and not a run's script,
+//! and `fontique`'s fallback table has no entry for hiragana or katakana with a locale, so a list by
+//! script couldn't be chosen from. A cook refuses a locale's family that no font of its role's chain
+//! carries (`sapphire_pipeline::ui`). Chains hold IDs, like cues and graphs, so cooking them reads no
+//! font.
 //!
 //! Both are plain data, so the cooker writes them without linking a shaper, and `sapphire_text` takes
 //! the file's bytes with no edge to this crate. They go in a pack of their own ([`FONTS_PACK`]), so a
@@ -121,20 +121,7 @@ impl Font {
     }
 }
 
-/// Which fonts answer for one script, in order.
-#[derive(
-    Clone, Debug, PartialEq, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
-)]
-#[rkyv(derive(Debug))]
-#[serde(deny_unknown_fields)]
-pub struct ScriptFonts {
-    /// An ISO 15924 tag: `Latn`, `Jpan`.
-    pub script: String,
-    /// By asset ID: at least one.
-    pub fonts: Vec<AssetId>,
-}
-
-/// A use of type, such as `body` or `display`, and the fonts for each script it's shown in.
+/// A use of type, such as `body` or `display`, and the font files it may need.
 #[derive(
     Clone, Debug, PartialEq, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
 )]
@@ -142,7 +129,8 @@ pub struct ScriptFonts {
 #[serde(deny_unknown_fields)]
 pub struct FontChain {
     pub name: String,
-    pub scripts: Vec<ScriptFonts>,
+    /// By asset ID: at least one.
+    pub fonts: Vec<AssetId>,
 }
 
 /// A project's font chains. See the [module docs](self).
@@ -165,7 +153,7 @@ pub struct FontChains {
 }
 
 impl Versioned for FontChains {
-    const VERSION: u32 = 1;
+    const VERSION: u32 = 2;
 }
 
 impl FontChains {
@@ -202,24 +190,8 @@ impl FontChains {
             if self.chains[..index].iter().any(|earlier| earlier.name == chain.name) {
                 return field(format!("chain {}", chain.name), "two chains have this name");
             }
-            if chain.scripts.is_empty() {
-                return field(format!("chain {}", chain.name), "a chain covers at least one script");
-            }
-            for (at, entry) in chain.scripts.iter().enumerate() {
-                let path = format!("chain {} script {}", chain.name, entry.script);
-                let tag = entry.script.as_bytes();
-                let is_tag = tag.len() == 4
-                    && tag[0].is_ascii_uppercase()
-                    && tag[1..].iter().all(u8::is_ascii_lowercase);
-                if !is_tag {
-                    return field(path, "a script is an ISO 15924 tag such as Latn");
-                }
-                if chain.scripts[..at].iter().any(|earlier| earlier.script == entry.script) {
-                    return field(path, "named twice");
-                }
-                if entry.fonts.is_empty() {
-                    return field(path, "names no font");
-                }
+            if chain.fonts.is_empty() {
+                return field(format!("chain {}", chain.name), "names no font");
             }
         }
         Ok(())
@@ -237,6 +209,19 @@ impl FontChains {
     }
 }
 
+impl ArchivedFont {
+    /// The font as plain data.
+    pub fn to_owned_font(&self) -> Font {
+        Font {
+            family: self.family.to_string(),
+            pack: self.pack.to_string(),
+            baseline_shift: self.baseline_shift.to_native(),
+            license: self.license.to_string(),
+            file: self.file.to_vec(),
+        }
+    }
+}
+
 impl ArchivedFontChains {
     /// The chains as plain data.
     pub fn to_owned_chains(&self) -> FontChains {
@@ -246,32 +231,21 @@ impl ArchivedFontChains {
                 .iter()
                 .map(|chain| FontChain {
                     name: chain.name.to_string(),
-                    scripts: chain
-                        .scripts
-                        .iter()
-                        .map(|entry| ScriptFonts {
-                            script: entry.script.to_string(),
-                            fonts: entry.fonts.iter().copied().collect(),
-                        })
-                        .collect(),
+                    fonts: chain.fonts.iter().copied().collect(),
                 })
                 .collect(),
         }
     }
 
-    /// The fonts `chain` names for `script`, in order, if it does.
-    pub fn fonts(&self, chain: &str, script: &str) -> Option<&[AssetId]> {
+    /// The fonts `chain` names, if there's a chain of that name.
+    pub fn fonts(&self, chain: &str) -> Option<&[AssetId]> {
         let chain = self.chains.iter().find(|candidate| candidate.name == chain)?;
-        let entry = chain.scripts.iter().find(|candidate| candidate.script == script)?;
-        Some(entry.fonts.as_slice())
+        Some(chain.fonts.as_slice())
     }
 
     /// Every font any chain names, which are the assets the chains depend on.
     pub fn font_ids(&self) -> impl Iterator<Item = AssetId> + '_ {
-        self.chains
-            .iter()
-            .flat_map(|chain| chain.scripts.iter())
-            .flat_map(|entry| entry.fonts.iter().copied())
+        self.chains.iter().flat_map(|chain| chain.fonts.iter().copied())
     }
 }
 
@@ -283,7 +257,7 @@ mod tests {
 
     fn document(chains: &str) -> String {
         format!(
-            "(\n    type: \"sapphire::assets::FontChains\",\n    version: 1,\n    data: (\n        chains: [{chains}],\n    ),\n)\n"
+            "(\n    type: \"sapphire::assets::FontChains\",\n    version: 2,\n    data: (\n        chains: [{chains}],\n    ),\n)\n"
         )
     }
 
@@ -320,34 +294,25 @@ mod tests {
     }
 
     #[test]
-    fn chains_answer_by_use_and_script() {
-        let text = document(&format!(
-            "(name: \"display\", scripts: [(script: \"Latn\", fonts: [\"{ID}\"]), (script: \"Jpan\", fonts: [\"{ID}\", \"{ID}\"])])"
-        ));
+    fn chains_answer_by_use() {
+        let text = document(&format!("(name: \"display\", fonts: [\"{ID}\", \"{ID}\"])"));
         let chains = FontChains::from_document(&text).unwrap();
         let cooked = chains.to_cooked().unwrap();
         let read = FontChains::read(&cooked).unwrap();
         assert_eq!(read.to_owned_chains(), chains);
         let id: AssetId = ID.parse().unwrap();
-        assert_eq!(read.fonts("display", "Jpan"), Some([id, id].as_slice()));
-        assert_eq!(read.fonts("display", "Hang"), None);
-        assert_eq!(read.fonts("body", "Latn"), None);
-        assert_eq!(read.font_ids().count(), 3);
+        assert_eq!(read.fonts("display"), Some([id, id].as_slice()));
+        assert_eq!(read.fonts("body"), None);
+        assert_eq!(read.font_ids().count(), 2);
     }
 
     #[test]
     fn a_bad_document_says_what_is_wrong_with_it() {
         let error = |chains: &str| FontChains::from_document(&document(chains)).unwrap_err().to_string();
         assert!(error("").contains("at least one chain"));
-        assert!(error("(name: \"body\", scripts: [])").contains("chain body"));
-        let script = |tag: &str, fonts: &str| format!("(script: \"{tag}\", fonts: [{fonts}])");
-        let chain = |name: &str, scripts: String| format!("(name: \"{name}\", scripts: [{scripts}])");
-        let good = format!("\"{ID}\"");
-        assert!(error(&chain("body", script("latin", &good))).contains("ISO 15924"));
-        assert!(error(&chain("body", script("Latn", ""))).contains("names no font"));
-        let twice = format!("{}, {}", script("Latn", &good), script("Latn", &good));
-        assert!(error(&chain("body", twice)).contains("named twice"));
-        let same = format!("{0}, {0}", chain("body", script("Latn", &good)));
+        let empty = error("(name: \"body\", fonts: [])");
+        assert!(empty.contains("chain body") && empty.contains("names no font"), "{empty}");
+        let same = format!("(name: \"body\", fonts: [\"{ID}\"]), (name: \"body\", fonts: [\"{ID}\"])");
         assert!(error(&same).contains("two chains"));
         assert!(error("(nme: \"body\")").contains("line"));
     }

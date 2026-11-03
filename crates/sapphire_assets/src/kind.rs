@@ -23,6 +23,7 @@ use crate::rig::{CharacterRig, RIG_EXTENSION, RigError};
 use crate::skeleton::{SKELETON_EXTENSION, Skeleton, SkeletonError};
 use crate::sound::{SOUND_EXTENSION, Sound, SoundError};
 use crate::texture::{TEXTURE_EXTENSION, Texture, TextureFormatError};
+use crate::ui::{UI_EXTENSION, UiDocument, UiError};
 
 /// The kinds of cooked asset. Each is also a residency category with a budget of its own
 /// ([`AssetBudgets`](crate::AssetBudgets)).
@@ -72,11 +73,14 @@ pub enum AssetKind {
     /// A cooked timeline (`.stimeline`, M3 Q1): [`Timeline`], which the simulation and the sequencer read.
     /// It names what it plays by name, so it depends on nothing.
     Timeline = 18,
+    /// A screen (`.sui`, M3 U4): [`UiDocument`], which `sapphire_ui` builds a tree from. CPU data, never
+    /// uploaded.
+    Ui = 19,
 }
 
 impl AssetKind {
     /// Every kind, in a stable order.
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 19] = [
         Self::Mesh,
         Self::Texture,
         Self::Material,
@@ -95,6 +99,7 @@ impl AssetKind {
         Self::FontChains,
         Self::NavMesh,
         Self::Timeline,
+        Self::Ui,
     ];
 
     /// The kind's position in [`Self::ALL`].
@@ -124,6 +129,7 @@ impl AssetKind {
             Self::FontChains => FONT_CHAINS_EXTENSION,
             Self::NavMesh => NAVMESH_EXTENSION,
             Self::Timeline => TIMELINE_EXTENSION,
+            Self::Ui => UI_EXTENSION,
         }
     }
 
@@ -148,6 +154,7 @@ impl AssetKind {
             Self::FontChains => "font chains",
             Self::NavMesh => "navmesh",
             Self::Timeline => "timeline",
+            Self::Ui => "UI document",
         }
     }
 
@@ -172,6 +179,7 @@ impl AssetKind {
                 | Self::FontChains
                 | Self::NavMesh
                 | Self::Timeline
+                | Self::Ui
         )
     }
 
@@ -198,6 +206,7 @@ impl AssetKind {
                 | Self::FontChains
                 | Self::NavMesh
                 | Self::Timeline
+                | Self::Ui
         )
     }
 
@@ -212,7 +221,7 @@ impl AssetKind {
     /// Whether an asset of this kind may depend on one of `kind`: meshes on materials and
     /// skeletons, materials on textures, clips on skeletons, cues on sounds, animation graphs on
     /// clips, zones on collider sets and navmeshes, font chains on fonts, and textures, rigs, probe grids,
-    /// skeletons, collider sets, sounds, move sets, string tables, fonts, navmeshes and timelines on
+    /// skeletons, collider sets, sounds, move sets, string tables, fonts, navmeshes, timelines and UI documents on
     /// nothing. A zone's meshes and probes aren't dependencies ([`Self::reach`]). The allowed pairs form no
     /// loop, so chains are at most three long and cycles can't exist, whatever a pack claims. A new kind
     /// takes its place in this order.
@@ -250,6 +259,7 @@ impl AssetKind {
             16 => Some(Self::FontChains),
             17 => Some(Self::NavMesh),
             18 => Some(Self::Timeline),
+            19 => Some(Self::Ui),
             _ => None,
         }
     }
@@ -258,7 +268,7 @@ impl AssetKind {
     /// `Texture::from_ktx2`, `Material::read`, `CharacterRig::read`, `ProbeGrid::read`,
     /// `Skeleton::read`, `Clip::read`, `ColliderSet::read`, `Sound::read`, `Cue::read`,
     /// `MoveSet::from_cooked`, `AnimGraph::read`, `Zone::read`, `StringTable::read`, `Font::read`,
-    /// `FontChains::read`, `NavMesh::read`, `Timeline::read`), and returns the assets they reference, sorted and without
+    /// `FontChains::read`, `NavMesh::read`, `Timeline::read`, `UiDocument::read`), and returns the assets they reference, sorted and without
     /// repeats: a mesh's material slots bound to material assets and its skeleton, a material's textures,
     /// a clip's skeleton, a cue's sounds, a graph's clips, what the simulation reads of a zone, font chains'
     /// fonts. The packer records these as the asset's dependencies, and decode jobs check that a decoded
@@ -333,6 +343,11 @@ impl AssetKind {
             // It plays what its stage has loaded, by name.
             Self::Timeline => {
                 Timeline::read(bytes)?;
+                Vec::new()
+            }
+            // A screen names its strings by key and its fonts by role, not by asset.
+            Self::Ui => {
+                UiDocument::read(bytes)?;
                 Vec::new()
             }
         };
@@ -423,4 +438,6 @@ pub enum AssetError {
     NavMesh(#[from] NavMeshError),
     #[error("invalid timeline")]
     Timeline(#[from] TimelineError),
+    #[error("invalid UI document")]
+    Ui(#[from] UiError),
 }

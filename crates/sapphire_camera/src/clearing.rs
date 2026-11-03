@@ -362,12 +362,18 @@ impl Clearing {
         dt: f32,
         stats: &mut CameraStats,
     ) {
+        if tuning.reach <= 0.0 {
+            // All of it off, what it already chose included: a lean comes back as softly as it went.
+            *self = Self { lean: self.lean, ..Self::new() };
+            self.lean.update(0.0, tuning.half_life, dt);
+            return;
+        }
         self.lean.update(self.lean_goal, tuning.half_life, dt);
         if held {
             self.goal = None;
         }
         self.since_check += dt;
-        if self.since_check < tuning.check_every - ON_TIME || tuning.reach <= 0.0 {
+        if self.since_check < tuning.check_every - ON_TIME {
             return;
         }
         // Whole periods, and everything else that counts time counts them, so the same choices fall at the

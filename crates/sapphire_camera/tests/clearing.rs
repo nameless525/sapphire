@@ -286,3 +286,47 @@ fn it_only_runs_under_a_framing_rig() {
     settle(&mut camera, &world, 3.0, |_| Moment::alone(PLAYER));
     assert_eq!(camera.take_stats().swings, 0);
 }
+
+/// `reach: 0` saved with a turn on its way: the turn stops there, as under a thumb, rather than going on to
+/// what it chose.
+#[test]
+fn a_reach_of_0_ends_a_turn_on_its_way() {
+    let world = wall_behind();
+    let mut base = combat_director();
+    for _ in 0..180 {
+        base.update(&facing_the_enemy(0.0).frame(1.0 / 60.0), &world);
+        if base.take_stats().swings > 0 {
+            break;
+        }
+    }
+    let travel = |mut camera: CameraDirector| {
+        let from = camera.heading();
+        settle(&mut camera, &world, 3.0, facing_the_enemy);
+        sapphire_math::det::wrap_angle(camera.heading() - from).abs()
+    };
+    let off = without_clearing(base.clone());
+    let (left_alone, stopped) = (travel(base), travel(off));
+    assert!(left_alone > 0.3, "the turn should have gone on: {left_alone}");
+    assert!(stopped < left_alone * 0.25, "{stopped} against {left_alone}");
+}
+
+/// `reach: 0` saved with a lean on: the lean comes back to the line, softly and for good.
+#[test]
+fn a_reach_of_0_brings_a_lean_back() {
+    let world = wall_behind();
+    let mut leant = lock_on_director();
+    settle(&mut leant, &world, 5.0, facing_the_enemy);
+    assert!(leant.take_stats().swings >= 1);
+    let mut never = without_clearing(lock_on_director());
+    settle(&mut never, &world, 5.0, facing_the_enemy);
+    assert!((leant.heading() - never.heading()).abs() > 0.1, "it should be leaning");
+
+    let mut leant = without_clearing(leant);
+    let before = leant.pose();
+    let next = leant.update(&facing_the_enemy(0.0).frame(1.0 / 60.0), &world);
+    assert!(next.eye.distance(before.eye) < 0.3, "{} to {}", before.eye, next.eye);
+    settle(&mut leant, &world, 10.0, facing_the_enemy);
+    settle(&mut never, &world, 10.0, facing_the_enemy);
+    assert!((leant.heading() - never.heading()).abs() < 0.05, "{} from {}", leant.heading(), never.heading());
+    assert_eq!(leant.take_stats().swings, 0);
+}

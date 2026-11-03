@@ -347,6 +347,12 @@ pub fn reaches(skeleton: &Skeleton) -> Vec<f32> {
     chain.iter().map(|chain| chain + SKIN_REACH).collect()
 }
 
+/// How far anything of `skeleton` rests from +Y at the model's origin, plus [`SKIN_REACH`].
+fn off_axis_reach(skeleton: &Skeleton) -> f32 {
+    let off_axis = |model: &Affine3| Vec3::new(model.translation.x, 0.0, model.translation.z).length();
+    rest_model(skeleton).iter().map(off_axis).fold(0.0, f32::max) + SKIN_REACH
+}
+
 /// Why a name a sidecar or a document gives doesn't say which joint it means.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum JointName {
@@ -778,8 +784,10 @@ pub fn cook(sampled: &SampledClip, target: &ClipTarget<'_>, error: &ReductionErr
         })
         .collect();
     let root = sampled.root.as_ref().map(|root| {
-        // The whole body turns with root motion: the longest reach there is.
-        let reach = carries.rotation.iter().copied().fold(SKIN_REACH, f32::max);
+        // The whole body turns with root motion, about +Y at the model's origin: the longest reach there
+        // is, or how far anything rests from that axis, on a rig modeled away from it.
+        let off_axis = skeleton.map_or(0.0, off_axis_reach);
+        let reach = carries.rotation.iter().copied().fold(off_axis, f32::max).max(SKIN_REACH);
         let translation = keys.vector(root.joint, &root.translation, None, error.distance);
         let rotation = keys.rotation(root.joint, &root.rotation, None, error.distance / reach);
         RootMotion {

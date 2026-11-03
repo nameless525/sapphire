@@ -888,6 +888,52 @@ fn root_motion_recomposes_the_motion_as_authored() {
     }
 }
 
+/// Root motion turns the whole figure about +Y at the model's origin, so its yaw's error moves a joint by
+/// how far that joint stands from the axis, not only by how far it reaches from the rig's top: a figure
+/// modeled off the origin holds its bound too.
+#[test]
+fn root_motion_holds_its_bound_on_a_rig_modeled_off_the_origin() {
+    let at = |translation: [f32; 3]| JointTransform { translation, ..JointTransform::IDENTITY };
+    let figure = |x: f32| {
+        Skeleton::new(&[
+            Joint { name: "top".into(), parent: None, rest: at([x, 0.0, 0.0]) },
+            Joint { name: "hand".into(), parent: Some(0), rest: at([0.5, 0.0, 0.0]) },
+        ])
+    };
+    let ticks = 240;
+    // A slow wobble of the yaw, under what the rig's own reach would tolerate.
+    let yaw = |tick: u16| 0.000_35 * (f32::from(tick) * 0.1).sin();
+    let sampled = SampledClip {
+        name: "sway".into(),
+        rate: 60,
+        ticks,
+        root: Some(SampledRoot {
+            joint: 0,
+            translation: vec![Vec3::ZERO; usize::from(ticks) + 1],
+            rotation: (0..=ticks).map(|tick| Quat::from_rotation_y(yaw(tick))).collect(),
+        }),
+        ..SampledClip::default()
+    };
+    let error = ReductionError::default();
+    for x in [0.0_f32, 5.0, -40.0] {
+        let skeleton = figure(x);
+        let clip = cooked(&sampled, &skeleton, &error);
+        let bytes = read(&clip);
+        let clip = Clip::read(&bytes).unwrap();
+        let hand = Vec3::new(x + 0.5, 0.0, 0.0);
+        let far = hand.length() + SKIN_REACH;
+        let allowed = rotation_bound(far, &error) * far;
+        for tick in 0..=ticks {
+            let authored = Quat::from_rotation_y(yaw(tick)) * hand;
+            let strays = root_of(clip, f32::from(tick)).transform_point3(hand).distance(authored);
+            assert!(
+                strays <= allowed * 1.001,
+                "from {x} m, at tick {tick} it's {strays} m off: {allowed} allowed"
+            );
+        }
+    }
+}
+
 /// A bone that doesn't move lifts nothing, and the clip's root is a held identity.
 #[test]
 fn a_still_root_lifts_nothing() {

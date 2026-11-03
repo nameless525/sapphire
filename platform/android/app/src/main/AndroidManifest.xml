@@ -60,7 +60,7 @@
           hold this list to the compile SDK's.
         -->
         <activity
-            android:name=".SandboxActivity"
+            android:name="${activity}"
             android:alwaysRetainTaskState="true"
             android:configChanges="mcc|mnc|layoutDirection|locale|grammaticalGender|fontScale|fontWeightAdjustment|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|density|colorMode|keyboard|keyboardHidden|navigation|touchscreen|assetsPaths"
             android:exported="true"

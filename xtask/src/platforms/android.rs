@@ -1,10 +1,13 @@
 //! Android: build the app as a shared library, package it with the Gradle project in
 //! `platform/android/`, and run it on a device or the emulator.
 //!
-//! Gradle owns the APK. xtask generates its inputs under `target/android/gen/<variant>/`
-//! and points the project's source sets there, so nothing generated lands in the source
-//! tree (spec §7.3):
+//! Gradle owns the APK. xtask generates its inputs under
+//! `target/android/build/<Name>/gen/<variant>/` and points the project's source sets there, and
+//! Gradle's outputs at `target/android/build/<Name>/gradle/`, so nothing generated lands in the
+//! source tree (spec §7.3) and each app keeps its own build:
 //!
+//! - `java/<bundle id as a path>/<Class>.java`: the app's launcher activity, from the one template
+//!   `platform/android/app/src/main/AppActivity.java.in`.
 //! - `java/org/libsdl/app/`: SDL's Java glue, copied from the `sdl3-src` crate that
 //!   Cargo.lock pins, so the Java side always matches the SDL linked into the app.
 //! - `jniLibs/arm64-v8a/lib<package>.so`: the app crate as a `cdylib`, with SDL and libc++
@@ -44,9 +47,10 @@ const AVD: &str = "sapphire_api36";
 const BOOT_TIMEOUT_SECS: u32 = 300;
 /// How long an emulator that holds the AVD's lock gets to show up in `adb devices`.
 const REGISTER_TIMEOUT_SECS: u32 = 30;
-/// The launcher activity, relative to the Java namespace (`dev.sapphire.sandbox`).
-const ACTIVITY: &str = "dev.sapphire.sandbox.SandboxActivity";
-/// The intent extra `SandboxActivity.getArguments()` reads: a base64-encoded JSON array
+/// The launcher activity's template, in the Gradle project. It sits outside the source sets: xtask
+/// compiles only what it fills in.
+const ACTIVITY_TEMPLATE: &str = "app/src/main/AppActivity.java.in";
+/// The intent extra the activity's `getArguments()` reads: a base64-encoded JSON array
 /// of strings, honored only by debuggable builds.
 const ARGS_EXTRA: &str = "sapphire.args";
 
@@ -62,9 +66,12 @@ pub fn bundle(app: &App, options: &Options) -> anyhow::Result<Bundle> {
     let content = content::cook(Cook::Mobile)?;
 
     let variant = if options.release { "release" } else { "debug" };
-    let dir = super::bundle_dir(Platform::Android);
-    let gen_dir = dir.join("gen").join(variant);
+    let build_dir = super::bundle_dir(Platform::Android).join("build").join(&app.bundle_name);
+    let gen_dir = build_dir.join("gen").join(variant);
+    let gradle_dir = build_dir.join("gradle");
     workspace::remove_dir_if_exists(&gen_dir)?;
+    let project = workspace::root().join("platform/android");
+    write_activity(&project.join(ACTIVITY_TEMPLATE), app, &gen_dir.join("java"))?;
     sync_sdl_java(&gen_dir.join("java/org/libsdl/app"))?;
     let abi_dir = gen_dir.join("jniLibs").join(ABI);
     fs::create_dir_all(&abi_dir).with_context(|| format!("failed to create {}", abi_dir.display()))?;
@@ -73,16 +80,15 @@ pub fn bundle(app: &App, options: &Options) -> anyhow::Result<Bundle> {
     workspace::copy_dir(&content.dir, &gen_dir.join("assets/content"))?;
     drop(content);
 
-    let project = workspace::root().join("platform/android");
     let mut gradle = Command::new(project.join("gradlew"));
     gradle
         .current_dir(&project)
         .arg(if options.release { "assembleRelease" } else { "assembleDebug" })
-        .args(gradle_properties(app, &ndk, &gen_dir))
+        .args(gradle_properties(app, &ndk, &gen_dir, &gradle_dir))
         .env("ANDROID_HOME", &sdk);
     workspace::run(&mut gradle)?;
 
-    let built = project.join(format!("app/build/outputs/apk/{variant}/app-{variant}.apk"));
+    let built = gradle_dir.join(format!("outputs/apk/{variant}/app-{variant}.apk"));
     let apk = claim.staging(&format!("{}.apk", app.bundle_name))?;
     fs::copy(&built, &apk).with_context(|| format!("failed to copy {}", built.display()))?;
     claim.publish(&apk)
@@ -99,7 +105,7 @@ pub fn run(app: &App, options: &Options, args: &[String]) -> anyhow::Result<()> 
     let program = sdk.join("platform-tools/adb");
     // `-S` stops a running instance first: the activity is single-instance, so a running
     // one would get the new intent, and its arguments, only through `onNewIntent`.
-    let component = format!("{}/{ACTIVITY}", app.bundle_id);
+    let component = activity(app).component();
     let start_args = |command: &mut Command| {
         command.args(["shell", "am", "start", "-S", "-W", "-n", &component]);
         if !args.is_empty() {
@@ -299,8 +305,64 @@ enum Process {
     Unreachable(String),
 }
 
+/// The app's launcher activity: a class named for the bundle ID's last segment, in the Java package
+/// the bundle ID names, which is also the Gradle namespace.
+struct Activity<'a> {
+    package: &'a str,
+    class: String,
+}
+
+fn activity(app: &App) -> Activity<'_> {
+    // `App::new` holds every segment to ASCII letters and digits, starting with a letter.
+    let last = app.bundle_id.rsplit('.').next().expect("rsplit yields at least one piece");
+    let (first, rest) = last.split_at(1);
+    Activity { package: &app.bundle_id, class: format!("{}{rest}Activity", first.to_ascii_uppercase()) }
+}
+
+impl Activity<'_> {
+    /// As `am start -n` takes it, and as the runbooks write it.
+    fn component(&self) -> String {
+        format!("{}/.{}", self.package, self.class)
+    }
+
+    /// As the manifest names it.
+    fn name(&self) -> String {
+        format!("{}.{}", self.package, self.class)
+    }
+
+    /// Where its source goes, under a Java source root.
+    fn source_path(&self) -> PathBuf {
+        let mut path: PathBuf = self.package.split('.').collect();
+        path.push(format!("{}.java", self.class));
+        path
+    }
+}
+
+/// Fills the activity's template for `app`. The values are a bundle ID and a package name, which need
+/// no escaping in Java.
+fn render_activity(template: &str, app: &App) -> anyhow::Result<String> {
+    let activity = activity(app);
+    let variables = [
+        ("PACKAGE", activity.package),
+        ("CLASS", activity.class.as_str()),
+        ("LIBRARY", app.package.as_str()),
+    ];
+    super::fill_template(template, "activity", &variables, String::push_str)
+}
+
+/// Writes `app`'s activity under the Java source root `java_dir`.
+fn write_activity(template: &Path, app: &App, java_dir: &Path) -> anyhow::Result<()> {
+    let text =
+        fs::read_to_string(template).with_context(|| format!("failed to read {}", template.display()))?;
+    let path = java_dir.join(activity(app).source_path());
+    fs::create_dir_all(path.parent().expect("the path has a parent"))
+        .with_context(|| format!("failed to create the directory of {}", path.display()))?;
+    fs::write(&path, render_activity(&text, app)?)
+        .with_context(|| format!("failed to write {}", path.display()))
+}
+
 /// Everything the Gradle project takes from xtask (see `app/build.gradle.kts`).
-fn gradle_properties(app: &App, ndk: &Ndk, gen_dir: &Path) -> Vec<OsString> {
+fn gradle_properties(app: &App, ndk: &Ndk, gen_dir: &Path, gradle_dir: &Path) -> Vec<OsString> {
     let path = |name: &str, path: &Path| {
         let mut property = OsString::from(format!("-Psapphire.{name}="));
         property.push(path);
@@ -308,9 +370,11 @@ fn gradle_properties(app: &App, ndk: &Ndk, gen_dir: &Path) -> Vec<OsString> {
     };
     vec![
         path("genDir", gen_dir),
+        path("buildDir", gradle_dir),
         path("ndkPath", &ndk.root),
         format!("-Psapphire.ndkVersion={}", ndk.revision).into(),
         format!("-Psapphire.applicationId={}", app.bundle_id).into(),
+        format!("-Psapphire.activity={}", activity(app).name()).into(),
         format!("-Psapphire.displayName={}", app.display_name).into(),
         format!("-Psapphire.versionName={}", app.version).into(),
         format!("-Psapphire.versionCode={}", app.build).into(),
@@ -783,7 +847,7 @@ fn base64(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platforms::test_app;
+    use crate::platforms::{test_app, test_game};
 
     #[test]
     fn picks_the_newest_ndk_numerically() {
@@ -825,7 +889,7 @@ mod tests {
         let args = ["--frames", "120", "a,b", "it's", "", r"trailing\", "ünï"].map(String::from);
         let encoded = encode_args(&args);
         assert!(encoded.chars().all(|c| c.is_ascii_alphanumeric() || "+/=".contains(c)));
-        // What SandboxActivity does: base64 → UTF-8 → JSON array of strings.
+        // What the activity does: base64 → UTF-8 → JSON array of strings.
         let json = decode_base64(&encoded);
         assert_eq!(serde_json::from_slice::<Vec<String>>(&json).unwrap(), args);
     }
@@ -1061,29 +1125,126 @@ esac
         assert_eq!(error, "adb logcat ended (exit status: 0) while the app still ran");
     }
 
+    const ACTIVITY_SOURCE: &str = include_str!("../../../platform/android/app/src/main/AppActivity.java.in");
+
+    /// The properties xtask passes are the ones the project reads, each way round.
     #[test]
     fn gradle_project_matches_xtask() {
         let gradle = include_str!("../../../platform/android/app/build.gradle.kts");
-        let activity = include_str!(
-            "../../../platform/android/app/src/main/java/dev/sapphire/sandbox/SandboxActivity.java"
-        );
         let manifest = include_str!("../../../platform/android/app/src/main/AndroidManifest.xml");
         assert!(gradle.contains(&format!("minSdk = {MIN_SDK} ")));
         assert!(gradle.contains(&format!("abiFilters += \"{ABI}\"")));
-        for name in
-            ["genDir", "ndkPath", "ndkVersion", "applicationId", "displayName", "versionName", "versionCode"]
-        {
-            assert!(
-                gradle.contains(&format!("sapphire(\"{name}\")")),
-                "build.gradle.kts doesn't read {name}"
-            );
+
+        let ndk = Ndk { root: "ndk".into(), revision: "29.0.1".into() };
+        let passed = gradle_properties(&test_app(), &ndk, Path::new("gen"), Path::new("gradle"));
+        let mut passed: Vec<String> = passed
+            .iter()
+            .map(|property| {
+                let property = property.to_str().unwrap().strip_prefix("-Psapphire.").unwrap();
+                property.split_once('=').unwrap().0.to_owned()
+            })
+            .collect();
+        let mut read: Vec<String> = gradle
+            .split("sapphire(\"")
+            .skip(1)
+            .map(|rest| rest.split_once('"').unwrap().0.to_owned())
+            .collect();
+        passed.sort_unstable();
+        read.sort_unstable();
+        read.dedup();
+        assert_eq!(passed, read);
+
+        // The app's identity decides all of it: nothing in the project names one app.
+        assert!(gradle.contains("namespace = sapphire(\"applicationId\")"));
+        assert!(gradle.contains("applicationId = sapphire(\"applicationId\")"));
+        assert!(gradle.contains("manifestPlaceholders[\"activity\"] = sapphire(\"activity\")"));
+        assert!(gradle.contains("layout.buildDirectory.set(file(sapphire(\"buildDir\")))"));
+        assert!(manifest.contains("android:name=\"${activity}\""));
+        assert!(manifest.contains("android:label=\"${appLabel}\""));
+        for file in [gradle, manifest] {
+            assert!(!file.to_lowercase().contains("sandbox"), "{file}");
         }
-        let app = test_app();
-        assert!(activity.contains(&format!("new String[] {{\"{}\"}}", app.package)));
-        assert!(activity.contains(&format!("EXTRA_ARGS = \"{ARGS_EXTRA}\"")));
-        let (namespace, class) = ACTIVITY.rsplit_once('.').unwrap();
-        assert!(gradle.contains(&format!("namespace = \"{namespace}\"")));
-        assert!(manifest.contains(&format!("android:name=\".{class}\"")));
+    }
+
+    /// Notes and runbooks type the sandbox's launch line, so its identity must not move.
+    #[test]
+    fn each_app_has_its_own_activity() {
+        for (app, class, component, name, source) in [
+            (
+                test_app(),
+                "SandboxActivity",
+                "dev.sapphire.sandbox/.SandboxActivity",
+                "dev.sapphire.sandbox.SandboxActivity",
+                "dev/sapphire/sandbox/SandboxActivity.java",
+            ),
+            (
+                test_game(),
+                "GameActivity",
+                "dev.sapphire.game/.GameActivity",
+                "dev.sapphire.game.GameActivity",
+                "dev/sapphire/game/GameActivity.java",
+            ),
+        ] {
+            let activity = activity(&app);
+            assert_eq!(activity.class, class);
+            assert_eq!(activity.component(), component);
+            assert_eq!(activity.name(), name);
+            assert_eq!(activity.source_path(), Path::new(source));
+        }
+    }
+
+    #[test]
+    fn the_template_fills_for_each_app() {
+        for (app, package, class, library) in [
+            (test_app(), "dev.sapphire.sandbox", "SandboxActivity", "sapphire_sandbox"),
+            (test_game(), "dev.sapphire.game", "GameActivity", "game_app"),
+        ] {
+            let java = render_activity(ACTIVITY_SOURCE, &app).unwrap();
+            assert!(java.starts_with(&format!("package {package};\n")), "{java}");
+            assert!(java.contains(&format!("public final class {class} extends SDLActivity")), "{java}");
+            assert!(java.contains(&format!("new String[] {{\"{library}\"}}")), "{java}");
+            assert!(java.contains(&format!("{{@code lib{library}.so}}")), "{java}");
+            // `cargo xtask run -- <args>` reaches every app the same way.
+            assert!(java.contains(&format!("EXTRA_ARGS = \"{ARGS_EXTRA}\"")), "{java}");
+            assert!(!java.contains("$("), "{java}");
+        }
+        assert!(!ACTIVITY_SOURCE.to_lowercase().contains("sandbox"), "the template names no app");
+    }
+
+    #[test]
+    fn an_unknown_placeholder_in_the_template_fails() {
+        let error = render_activity("package $(PACKAGE);\n$(TEAM)", &test_game()).unwrap_err();
+        assert_eq!(error.to_string(), "unknown placeholder $(TEAM) in activity template");
+    }
+
+    #[test]
+    fn writes_the_activity_where_its_package_says() {
+        let dir = env::temp_dir().join(format!("xtask-activity-{}", std::process::id()));
+        workspace::remove_dir_if_exists(&dir).unwrap();
+        let template = dir.join("AppActivity.java.in");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(&template, ACTIVITY_SOURCE).unwrap();
+        for app in [test_app(), test_game()] {
+            write_activity(&template, &app, &dir.join("java")).unwrap();
+        }
+        let read = |path: &str| fs::read_to_string(dir.join("java").join(path)).unwrap();
+        let sandbox = read("dev/sapphire/sandbox/SandboxActivity.java");
+        let game = read("dev/sapphire/game/GameActivity.java");
+        workspace::remove_dir_if_exists(&dir).unwrap();
+        assert!(sandbox.contains("class SandboxActivity"));
+        assert!(game.contains("class GameActivity"));
+    }
+
+    #[test]
+    fn gradle_gets_the_apps_identity() {
+        let ndk = Ndk { root: "ndk".into(), revision: "29.0.1".into() };
+        let properties = gradle_properties(&test_game(), &ndk, Path::new("gen"), Path::new("gradle"));
+        let has = |expected: &str| properties.iter().any(|property| property == expected);
+        assert!(has("-Psapphire.applicationId=dev.sapphire.game"));
+        assert!(has("-Psapphire.activity=dev.sapphire.game.GameActivity"));
+        assert!(has("-Psapphire.displayName=Sapphire"));
+        assert!(has("-Psapphire.genDir=gen"));
+        assert!(has("-Psapphire.buildDir=gradle"));
     }
 
     /// Every value of `android:configChanges`, as the compile SDK lists them, but

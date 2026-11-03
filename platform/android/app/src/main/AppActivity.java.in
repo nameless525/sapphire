@@ -1,4 +1,4 @@
-package dev.sapphire.sandbox;
+package $(PACKAGE);
 
 import android.content.pm.ApplicationInfo;
 import android.util.Base64;
@@ -9,11 +9,12 @@ import org.json.JSONException;
 import org.libsdl.app.SDLActivity;
 
 /**
- * Hosts the sandbox. SDL's Java glue drives the Rust app in {@code libsapphire_sandbox.so},
- * calling its exported {@code SDL_main} on SDL's thread (see the "Android packaging" docs of
- * the {@code sapphire_platform} crate).
+ * Hosts the app. SDL's Java glue drives the Rust app in {@code lib$(LIBRARY).so}, calling its
+ * exported {@code SDL_main} on SDL's thread (see the "Android packaging" docs of the
+ * {@code sapphire_platform} crate). {@code cargo xtask bundle --platform android} fills this
+ * template for the app it builds, under {@code target/android/}.
  */
-public final class SandboxActivity extends SDLActivity {
+public final class $(CLASS) extends SDLActivity {
     /**
      * String extra with the app's command-line arguments: a base64-encoded JSON array of
      * strings, which {@code cargo xtask run --platform android -- <args>} sets. Base64 keeps
@@ -26,7 +27,7 @@ public final class SandboxActivity extends SDLActivity {
     @Override
     protected String[] getLibraries() {
         // SDL and libc++ are linked statically into the app library: there is no libSDL3.so.
-        return new String[] {"sapphire_sandbox"};
+        return new String[] {"$(LIBRARY)"};
     }
 
     @Override

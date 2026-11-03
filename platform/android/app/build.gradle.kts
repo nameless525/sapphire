@@ -9,9 +9,13 @@ fun sapphire(name: String): String =
     providers.gradleProperty("sapphire.$name").orNull
         ?: error("missing -Psapphire.$name: build with `cargo xtask bundle --platform android`")
 
+// Each app builds in a directory of its own under target/android/, so switching apps keeps the
+// other's outputs and nothing lands in the source tree.
+layout.buildDirectory.set(file(sapphire("buildDir")))
+
 android {
-    // The Java package of SandboxActivity; the application id comes from the app's Cargo.toml.
-    namespace = "dev.sapphire.sandbox"
+    // The app's identity, from its Cargo.toml. xtask writes the activity into this Java package.
+    namespace = sapphire("applicationId")
     compileSdk = 36
     // The NDK xtask linked the app library with; AGP uses it only to strip the `.so`.
     ndkPath = sapphire("ndkPath")
@@ -24,13 +28,14 @@ android {
         versionCode = sapphire("versionCode").toInt()
         versionName = sapphire("versionName")
         manifestPlaceholders["appLabel"] = sapphire("displayName")
+        manifestPlaceholders["activity"] = sapphire("activity")
         ndk {
             abiFilters += "arm64-v8a" // 64-bit only (spec §6.7).
         }
     }
 
-    // xtask's generated inputs (target/android/gen/<variant>/), kept out of the source tree:
-    // SDL's Java glue, the app library and the mobile cook.
+    // xtask's generated inputs (under target/android/), kept out of the source tree: the app's
+    // activity, SDL's Java glue, the app library and the mobile cook.
     sourceSets.getByName("main") {
         val gen = sapphire("genDir")
         java.directories += "$gen/java"
@@ -47,7 +52,7 @@ android {
     buildTypes {
         release {
             // M0 release builds are for profiling on test devices: signed with the debug key,
-            // and debuggable so SandboxActivity accepts launch arguments. Store builds, from
+            // and debuggable so the activity accepts launch arguments. Store builds, from
             // `xtask package` (M4), are neither.
             isDebuggable = true
             signingConfig = signingConfigs.getByName("debug")

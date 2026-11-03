@@ -1,6 +1,7 @@
-// Android packaging for the sandbox (spec §7.3). Build it through
-// `cargo xtask bundle --platform android`, which first generates the gitignored inputs:
-// SDL's Java glue, the app's `.so` in `jniLibs/` and the mobile cook in `assets/content/`.
+// Android packaging for the apps (spec §7.3). Build it through
+// `cargo xtask bundle --platform android [--app <package>]`, which first generates the inputs
+// under target/android/: the app's activity, SDL's Java glue, its `.so` in `jniLibs/` and the
+// mobile cook in `assets/content/`.
 
 pluginManagement {
     repositories {

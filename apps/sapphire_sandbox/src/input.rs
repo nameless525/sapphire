@@ -24,7 +24,7 @@ use std::time::Duration;
 
 use sapphire_controls::{CombatControls, ControlsSource, default_bindings};
 use sapphire_gameplay::ActorId;
-use sapphire_input::{ActionEventKind, ActionId, InputMap};
+use sapphire_input::{ActionEventKind, ActionId, InputBindings, InputMap, MapError};
 use sapphire_math::Vec2;
 use sapphire_platform::{AppInitError, Event, Size, Timestamp};
 use sapphire_time::{FixedStepDriver, FixedSteps};
@@ -88,6 +88,58 @@ pub struct SandboxInput {
     desktop: bool,
 }
 
+/// `document` with the sandbox's own bindings added, compiled.
+fn with_own_bindings(mut document: InputBindings) -> Result<InputMap, MapError> {
+    let own = InputMap::from_ron(BINDINGS)?;
+    document.actions.extend_from_slice(&own.document().actions);
+    document.contexts.extend_from_slice(&own.document().contexts);
+    InputMap::new(document)
+}
+
+impl Actions {
+    /// Finds them in `map`, which has them if it has the sandbox's own bindings.
+    fn of(map: &InputMap) -> Result<Self, String> {
+        let action =
+            |name: &str| map.action(name).ok_or_else(|| format!("the bindings have no `{name}` action"));
+        Ok(Self {
+            orbit: action("orbit")?,
+            zoom: action("zoom")?,
+            slow_motion: action("slow_motion")?,
+            hitstop: action("hitstop")?,
+            quit: action("quit")?,
+            restart_fight: action("restart_fight")?,
+        })
+    }
+}
+
+/// What in the sandbox takes a document the fight doesn't hold.
+#[cfg(feature = "dev")]
+pub(crate) struct DocumentsHere<'a> {
+    /// An offscreen run has none.
+    pub input: Option<&'a mut SandboxInput>,
+    pub hud: Option<&'a mut game_ui::hud::FightHud>,
+    pub screen: Option<&'a mut game_ui::screen::ScreenLayer>,
+}
+
+#[cfg(feature = "dev")]
+impl game_combat::tuning::DocumentHost for DocumentsHere<'_> {
+    fn take_bindings(&mut self, bindings: InputBindings) -> Result<(), String> {
+        let input = self.input.as_mut().ok_or("no bindings to replace: nothing plays an offscreen run")?;
+        input.take_bindings(bindings)
+    }
+
+    fn take_hud_design(&mut self, design: sapphire_ui::HudDesign) -> Result<(), String> {
+        let hud = self.hud.as_mut().ok_or("no HUD here: `--hud` shows one")?;
+        hud.set_design(design);
+        Ok(())
+    }
+
+    fn take_screen(&mut self, text: &str) -> Result<(), String> {
+        let screen = self.screen.as_mut().ok_or("no screen is showing: it takes --ui-screen")?;
+        screen.replace(text)
+    }
+}
+
 impl SandboxInput {
     /// Input from the default bindings, for a window `window_size` coordinates large
     /// ([`Self::follow_window`] says what those are). `desktop` enables the desktop-only context. `combat_input` leaves combat's controls alone with the
@@ -95,23 +147,9 @@ impl SandboxInput {
     pub fn new(desktop: bool, combat_input: bool, window_size: Size) -> Result<Self, AppInitError> {
         let bindings =
             |error: &dyn std::fmt::Display| AppInitError::msg(format!("default bindings: {error}"));
-        let own = InputMap::from_ron(BINDINGS).map_err(|error| bindings(&error))?;
-        let mut document = default_bindings().map_err(|error| bindings(&error))?;
-        document.actions.extend_from_slice(&own.document().actions);
-        document.contexts.extend_from_slice(&own.document().contexts);
-        let map = InputMap::new(document).map_err(|error| bindings(&error))?;
-        let action = |name: &str| {
-            map.action(name)
-                .ok_or_else(|| AppInitError::msg(format!("default bindings have no `{name}` action")))
-        };
-        let actions = Actions {
-            orbit: action("orbit")?,
-            zoom: action("zoom")?,
-            slow_motion: action("slow_motion")?,
-            hitstop: action("hitstop")?,
-            quit: action("quit")?,
-            restart_fight: action("restart_fight")?,
-        };
+        let document = default_bindings().map_err(|error| bindings(&error))?;
+        let map = with_own_bindings(document).map_err(|error| bindings(&error))?;
+        let actions = Actions::of(&map).map_err(AppInitError::msg)?;
         let mut controls = CombatControls::new(map).map_err(|error| bindings(&error))?;
         let system = controls.input_mut();
         if !combat_input {
@@ -125,6 +163,17 @@ impl SandboxInput {
         }
         system.set_window_size(window_size.width as f32, window_size.height as f32);
         Ok(Self { controls, actions, queued: SimActions::default(), paused: false, desktop })
+    }
+
+    /// Takes an edited document of combat's bindings, with the sandbox's own added, or says why what's playing
+    /// stays.
+    #[cfg(feature = "dev")]
+    pub fn take_bindings(&mut self, document: InputBindings) -> Result<(), String> {
+        let map = with_own_bindings(document).map_err(|error| error.to_string())?;
+        let actions = Actions::of(&map)?;
+        self.controls.replace_bindings(map).map_err(|error| error.to_string())?;
+        self.actions = actions;
+        Ok(())
     }
 
     /// Listens for the key that starts `--fight`'s fight over, in a context of its own: pausing takes
@@ -511,6 +560,42 @@ mod tests {
                 assert!(got.distance(want) < 0.02, "{key:?} at orbit {orbit}: {got}, the view's {want}");
             }
         }
+    }
+
+    /// An edited document reaches a running input, under the sandbox's own bindings, and one that can't
+    /// play combat leaves what's playing playing. Offscreen has no input, so this is the route's far end.
+    #[cfg(feature = "dev")]
+    #[test]
+    fn edited_bindings_reach_the_input_and_a_bad_document_leaves_what_plays() {
+        let document = |text: String| InputMap::from_ron(&text).expect("a document").document().clone();
+        let mut input = input(true);
+        let moved = sapphire_controls::DEFAULT_BINDINGS.replace("source: Key(J)", "source: Key(U)");
+        input.take_bindings(document(moved)).expect("takes it");
+
+        input.key(1, Scancode::J, true);
+        input.key(2, Scancode::J, false);
+        input.update(ms(16));
+        assert_eq!(next_buttons(&mut input), Buttons::NONE, "the old key's gone");
+        input.key(17, Scancode::U, true);
+        input.update(ms(32));
+        assert_eq!(next_buttons(&mut input), Buttons::LIGHT, "the new one reads at once");
+        input.key(33, Scancode::SPACE, true);
+        input.update(ms(48));
+        assert!(input.take_actions().toggle_slow_motion, "and the sandbox's own are still there");
+
+        let no_light = sapphire_controls::DEFAULT_BINDINGS
+            .lines()
+            .filter(|line| !line.contains("light"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let refused = input.take_bindings(document(no_light)).expect_err("combat can't play on it");
+        assert!(refused.contains("light"), "{refused}");
+        input.key(49, Scancode::U, false);
+        input.update(ms(64));
+        assert_eq!(next_buttons(&mut input), Buttons::NONE);
+        input.key(65, Scancode::U, true);
+        input.update(ms(80));
+        assert_eq!(next_buttons(&mut input), Buttons::LIGHT, "what played still plays");
     }
 
     #[test]

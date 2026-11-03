@@ -46,26 +46,31 @@
 
 use std::path::{Path, PathBuf};
 
+use sapphire_anim::CharacterMotion;
 use sapphire_assets::graph::{AnimGraph, clip_id};
 use sapphire_assets::ui::UiDocument;
 use sapphire_assets::{AssetChange, AssetId, AssetKind, Handle};
 use sapphire_camera::CameraTuning;
 use sapphire_cues::CueTable;
 use sapphire_gameplay::replay::{LiveMoves, SCENARIOS, compile_document, document_file_name};
+use sapphire_gameplay::targeting::TargetingTuning;
 use sapphire_gameplay::{ActorId, MoveSetId, Simulation, Tuned};
 use sapphire_hot_reload::sources;
+use sapphire_input::InputBindings;
 use sapphire_livelink::protocol::{LiveDocument, MoveAttempt, TickWindow};
 use sapphire_moves::{ControllerProfile, MoveSet, MoveSetDocument, Span};
 use sapphire_reflect::stable_name;
 use sapphire_render::Renderer;
 use sapphire_rhi::GpuContext;
 use sapphire_time::Stopwatch;
+use sapphire_ui::HudDesign;
 use sapphire_world::light_rig::LightRigLibrary;
 use sapphire_world::screen_effects::EffectLibrary;
 use sapphire_world::tod::TodTimeline;
 
 use crate::LOG_TARGET;
 use crate::combat::Combat;
+pub use crate::documents::error_chain;
 use crate::fight::{ENEMY_GRAPH, Fight, FightShow};
 use sapphire_stage::anim_graph::SHOW_MOVES_PATH;
 use sapphire_stage::content::{Content, GraphKey, newest_text};
@@ -102,8 +107,31 @@ pub enum Document {
     /// state's start, if it checks and binds.
     Graph,
     /// A retained screen (`.ui.ron`, M3 U4): it replaces the one on show, if there is one, and if it
-    /// parses, checks and resolves against its model ([`TunedScreen`]).
+    /// parses, checks and resolves against its model ([`DocumentHost::take_screen`]).
     Ui,
+    /// Combat's bindings (`combat_bindings.ron`, M3 S3): they replace what the app reads, from its next update,
+    /// if they compile and hold everything combat reads.
+    Bindings,
+    /// Who a soft lock picks (`default_targeting.ron`, M3 S3): the fight's simulation takes them, which ends
+    /// a recording's file, and a new fight starts on them. A replay refuses.
+    Targeting,
+    /// Hair, cloth and IK (`default_character_motion.ron`, M3 S3): what stands takes them, wherever it's got
+    /// to, and so does what's built later.
+    CharacterMotion,
+    /// Where the HUD's pieces go (`default_hud.ron`, M3 S3): it lays out again, if there's one.
+    Hud,
+}
+
+/// What a document reaches that isn't the fight's: an app's controls and its HUD. Each answers at once, since
+/// a live link's push waits to hear why it was refused.
+pub trait DocumentHost {
+    /// Takes an edited document of bindings, or says why what's there stays.
+    fn take_bindings(&mut self, bindings: InputBindings) -> Result<(), String>;
+    /// Lays the HUD out by `design`, or says there's none here.
+    fn take_hud_design(&mut self, design: HudDesign) -> Result<(), String>;
+    /// Replaces the retained screen on show from a document's text, keeping what's on screen if the text has
+    /// anything wrong with it, or says there's none here.
+    fn take_screen(&mut self, text: &str) -> Result<(), String>;
 }
 
 /// What applying a document can reach, once a document.
@@ -114,18 +142,11 @@ pub struct DocumentFrame<'a> {
     pub scene: &'a mut Scene,
     pub fight: &'a mut Fight,
     pub tuning: &'a mut LiveTuning,
-    /// The retained screen on show, if there is one.
-    pub screen: Option<&'a mut dyn TunedScreen>,
-}
-
-/// A retained screen a document can replace. What's on show is the interface's, above this crate.
-pub trait TunedScreen {
-    /// Takes a new document, keeping what's on screen if it has anything wrong with it.
-    fn replace(&mut self, text: &str) -> Result<(), String>;
+    pub host: &'a mut dyn DocumentHost,
 }
 
 impl Document {
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 13] = [
         Self::Day,
         Self::LightRigs,
         Self::ScreenEffects,
@@ -135,6 +156,10 @@ impl Document {
         Self::Camera,
         Self::Graph,
         Self::Ui,
+        Self::Bindings,
+        Self::Targeting,
+        Self::CharacterMotion,
+        Self::Hud,
     ];
 
     /// The document whose envelope names `type_name`, if the sandbox has one.
@@ -153,6 +178,10 @@ impl Document {
             Self::Camera => stable_name::<CameraTuning>(),
             Self::Graph => stable_name::<AnimGraph>(),
             Self::Ui => stable_name::<UiDocument>(),
+            Self::Bindings => stable_name::<InputBindings>(),
+            Self::Targeting => stable_name::<TargetingTuning>(),
+            Self::CharacterMotion => stable_name::<CharacterMotion>(),
+            Self::Hud => stable_name::<HudDesign>(),
         }
     }
 
@@ -168,6 +197,10 @@ impl Document {
             Self::Camera => "camera's tuning",
             Self::Graph => "animation graph",
             Self::Ui => "screen",
+            Self::Bindings => "bindings",
+            Self::Targeting => "targeting's weights",
+            Self::CharacterMotion => "character's motion",
+            Self::Hud => "HUD's design",
         }
     }
 
@@ -178,7 +211,7 @@ impl Document {
     /// prewarm their post variants, which the overlay may fire. A fight's documents go through
     /// [`LiveTuning`].
     pub fn apply(self, origin: &str, text: &str, frame: DocumentFrame<'_>) -> Result<String, String> {
-        let DocumentFrame { content, renderer, gpu, scene, fight, tuning, screen } = frame;
+        let DocumentFrame { content, renderer, gpu, scene, fight, tuning, host } = frame;
         match self {
             Self::Day => {
                 let timeline = TodTimeline::from_ron(text).map_err(|error| error_chain(&error))?;
@@ -218,8 +251,36 @@ impl Document {
                 Ok(format!("{}'s animation graph, from the next state's start", owner.0))
             }
             Self::Ui => {
-                screen.ok_or("no screen is showing: it takes --ui-screen")?.replace(text)?;
+                host.take_screen(text)?;
                 tuning.count_edit(document_file_name(SCREEN_PATH));
+                Ok(self.name().to_owned())
+            }
+            Self::Bindings => {
+                let bindings = sapphire_serialize::from_ron(text).map_err(|error| error_chain(&error))?;
+                host.take_bindings(bindings)?;
+                tuning.count_edit(document_file_name(BINDINGS_PATH));
+                Ok(self.name().to_owned())
+            }
+            Self::Targeting => {
+                let weights = TargetingTuning::from_ron(text).map_err(|error| error_chain(&error))?;
+                if let Some(combat) = &mut fight.combat {
+                    combat.tune_targeting(weights)?;
+                }
+                tuning.moves.set_targeting(weights);
+                tuning.count_edit(document_file_name(TARGETING_PATH));
+                Ok(self.name().to_owned())
+            }
+            Self::CharacterMotion => {
+                let motion = CharacterMotion::from_ron(text).map_err(|error| error_chain(&error))?;
+                content.set_character_motion(motion);
+                scene.set_character_motion(&motion);
+                tuning.count_edit(document_file_name(MOTION_PATH));
+                Ok(self.name().to_owned())
+            }
+            Self::Hud => {
+                let design = HudDesign::from_ron(text).map_err(|error| error_chain(&error))?;
+                host.take_hud_design(design)?;
+                tuning.count_edit(document_file_name(HUD_PATH));
                 Ok(self.name().to_owned())
             }
         }
@@ -239,6 +300,8 @@ pub struct TunedRun<'a> {
     pub arena_fight: bool,
     /// A retained screen shows (`--ui-screen`).
     pub screen: bool,
+    /// The combat HUD is over it.
+    pub hud: bool,
     /// Whether anything reads saved files: off, only what's pushed comes.
     pub reads_files: bool,
     /// Documents to read outside the repository, each by its file's name.
@@ -257,6 +320,14 @@ const CAMERA_PATH: &str = "crates/sapphire_camera/default_camera.ron";
 const CUES_PATH: &str = "crates/sapphire_cues/default_cues.ron";
 /// The effects' document.
 const EFFECTS_PATH: &str = "crates/sapphire_vfx/default_effects.ron";
+/// Combat's bindings' document.
+const BINDINGS_PATH: &str = "crates/sapphire_controls/combat_bindings.ron";
+/// Targeting's weights' document.
+const TARGETING_PATH: &str = "crates/sapphire_gameplay/default_targeting.ron";
+/// The character motion document.
+const MOTION_PATH: &str = "crates/sapphire_anim/default_character_motion.ron";
+/// The HUD's design's document.
+const HUD_PATH: &str = "crates/sapphire_ui/default_hud.ron";
 
 /// The move sets a cook holds, by document and sidecar ID: what a pack's new `.smoves` is the new version
 /// of. A document under `content/` with moves that name clips needs a row, or nothing brings it.
@@ -377,6 +448,12 @@ impl LiveTuning {
         }
         if run.arena_fight {
             add(ENEMY_GRAPH_PATH, Document::Graph);
+            add(TARGETING_PATH, Document::Targeting);
+        }
+        add(BINDINGS_PATH, Document::Bindings);
+        add(MOTION_PATH, Document::CharacterMotion);
+        if run.hud {
+            add(HUD_PATH, Document::Hud);
         }
         sources
     }
@@ -414,7 +491,8 @@ impl LiveTuning {
                     target: LOG_TARGET,
                     path = %path.display(),
                     "--watch-document takes `.moves.ron`, `.animgraph.ron`, `default_camera.ron`, \
-                     `default_cues.ron` or `default_effects.ron`"
+                     `default_cues.ron`, `default_effects.ron`, `combat_bindings.ron`, \
+                     `default_targeting.ron`, `default_character_motion.ron` or `default_hud.ron`"
                 );
                 None
             }
@@ -764,6 +842,14 @@ pub(crate) fn kind_of_file(path: &Path) -> Option<Document> {
         Some(Document::Cues)
     } else if name == document_file_name(EFFECTS_PATH) {
         Some(Document::Effects)
+    } else if name == document_file_name(BINDINGS_PATH) {
+        Some(Document::Bindings)
+    } else if name == document_file_name(TARGETING_PATH) {
+        Some(Document::Targeting)
+    } else if name == document_file_name(MOTION_PATH) {
+        Some(Document::CharacterMotion)
+    } else if name == document_file_name(HUD_PATH) {
+        Some(Document::Hud)
     } else {
         None
     }
@@ -771,18 +857,6 @@ pub(crate) fn kind_of_file(path: &Path) -> Option<Document> {
 
 /// They need no GPU, but compile only in `dev` builds, which CI tests in its GPU job: run them with
 /// `cargo test -p sapphire_stage --features dev --lib -- --ignored tuning::`.
-/// An error and its sources, as one line.
-pub fn error_chain(error: &dyn std::error::Error) -> String {
-    let mut message = error.to_string();
-    let mut source = error.source();
-    while let Some(cause) = source {
-        message.push_str(": ");
-        message.push_str(&cause.to_string());
-        source = cause.source();
-    }
-    message
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -1223,7 +1297,16 @@ mod tests {
     #[test]
     #[ignore = "runs with CI's dev tests, which take --ignored"]
     fn the_documents_it_watches_are_there() {
-        for path in [GRAPH_PATH, CAMERA_PATH, CUES_PATH, SHOW_MOVES_PATH] {
+        for path in [
+            GRAPH_PATH,
+            CAMERA_PATH,
+            CUES_PATH,
+            SHOW_MOVES_PATH,
+            BINDINGS_PATH,
+            TARGETING_PATH,
+            MOTION_PATH,
+            HUD_PATH,
+        ] {
             assert!(sources::repository_file(path).is_file(), "{path}");
         }
         let camera = std::fs::read_to_string(sources::default_camera()).expect("the camera's document");
@@ -1244,6 +1327,7 @@ mod tests {
         graph_show: false,
         arena_fight: false,
         screen: false,
+        hud: false,
         reads_files: true,
         extra_documents: &[],
     };

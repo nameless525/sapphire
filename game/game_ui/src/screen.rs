@@ -126,13 +126,6 @@ impl ScreenLayer {
     }
 }
 
-#[cfg(feature = "dev")]
-impl game_combat::tuning::TunedScreen for ScreenLayer {
-    fn replace(&mut self, text: &str) -> Result<(), String> {
-        Self::replace(self, text)
-    }
-}
-
 fn new_tree(document: &UiDocument) -> Result<UiTree, String> {
     UiTree::new(document).map_err(|error| error.to_string())
 }

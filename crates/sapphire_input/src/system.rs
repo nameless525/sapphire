@@ -159,6 +159,8 @@ pub enum RebindError {
     UnknownBinding(String),
     #[error(transparent)]
     Map(#[from] MapError),
+    #[error("the new bindings have no `{0}` context, which is enabled here")]
+    LostContext(String),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -600,6 +602,28 @@ impl InputSystem {
             self.map.rebound(name, source).ok_or_else(|| RebindError::UnknownBinding(name.to_owned()))?;
         self.replace_map(self.map.recompiled(document)?);
         Ok(previous)
+    }
+
+    /// Makes `map` what it reads, for an edited document of bindings. Every enabled context stays enabled at
+    /// its priority, under its name in `map`, or this refuses and nothing changes. Actions and on-screen
+    /// controls may have new places in `map`, so everything starts afresh: what's held is ignored until
+    /// released, and whatever an update hasn't played that names an on-screen control goes.
+    pub fn replace_bindings(&mut self, map: InputMap) -> Result<(), RebindError> {
+        let mut contexts = self.contexts.clone();
+        for enabled in &mut contexts {
+            let name = self.map.context_name(enabled.id);
+            enabled.id = map.context(name).ok_or_else(|| RebindError::LostContext(name.to_owned()))?;
+        }
+        self.contexts = contexts;
+        self.queue.retain(|(_, input)| {
+            !matches!(input, RawInput::Virtual { .. } | RawInput::VirtualCanceled { .. })
+        });
+        self.events.clear();
+        self.actions = vec![ActionState::default(); map.action_count()];
+        self.action_ranges = vec![(0, 0); map.action_count()];
+        self.devices.reset_virtuals(map.virtual_count());
+        self.replace_map(map);
+        Ok(())
     }
 
     /// The bindings as they stand, rebinding included: what user settings persist (M3).

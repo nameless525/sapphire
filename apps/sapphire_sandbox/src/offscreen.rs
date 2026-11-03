@@ -414,7 +414,9 @@ impl FrameHooks<ShownFight> for StageTools {
 
     fn before_loading(&mut self, frame: LoadingFrame<'_, ShownFight>) {
         let LoadingFrame { content, renderer, gpu, scene, show } = frame;
-        self.dev.reload(content, renderer, gpu, scene, show);
+        let mut host =
+            crate::input::DocumentsHere { input: None, hud: show.hud.as_mut(), screen: show.screen.as_mut() };
+        self.dev.reload(content, renderer, gpu, scene, &mut show.fight, &mut host);
     }
 
     fn overlay_visible(&self) -> bool {

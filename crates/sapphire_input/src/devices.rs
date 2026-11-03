@@ -199,6 +199,12 @@ impl Devices {
         self.virtuals.resize(count, Vec2::ZERO);
     }
 
+    /// Makes room for `count` on-screen controls, all at rest: a new map's, whose places mean something else.
+    pub fn reset_virtuals(&mut self, count: usize) {
+        self.virtuals.clear();
+        self.virtuals.resize(count, Vec2::ZERO);
+    }
+
     /// Sets an on-screen control; returns whether it changed.
     pub fn set_virtual(&mut self, index: usize, value: Vec2) -> bool {
         self.virtuals.get_mut(index).is_some_and(|slot| std::mem::replace(slot, value) != value)

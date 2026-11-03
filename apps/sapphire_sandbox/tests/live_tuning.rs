@@ -31,6 +31,14 @@ const CUES: &str = include_str!("../../../crates/sapphire_cues/default_cues.ron"
 const CUES_FILE: &str = "default_cues.ron";
 const EFFECTS: &str = include_str!("../../../crates/sapphire_vfx/default_effects.ron");
 const EFFECTS_FILE: &str = "default_effects.ron";
+const BINDINGS: &str = include_str!("../../../crates/sapphire_controls/combat_bindings.ron");
+const BINDINGS_FILE: &str = "combat_bindings.ron";
+const TARGETING: &str = include_str!("../../../crates/sapphire_gameplay/default_targeting.ron");
+const TARGETING_FILE: &str = "default_targeting.ron";
+const MOTION: &str = include_str!("../../../crates/sapphire_anim/default_character_motion.ron");
+const MOTION_FILE: &str = "default_character_motion.ron";
+const HUD: &str = include_str!("../../../crates/sapphire_ui/default_hud.ron");
+const HUD_FILE: &str = "default_hud.ron";
 const PLAYER: &str = include_str!("../../../content/combat/player/player.moves.ron");
 const PLAYER_FILE: &str = "player.moves.ron";
 const WARRIOR: &str = include_str!("../../../content/combat/enemy/warrior.moves.ron");
@@ -637,6 +645,74 @@ fn the_cue_table_and_its_shakes_reach_what_fires_a_fights_cues() {
     assert!(refused.to_string().contains("--cues"), "{refused}");
     let status = client.status().expect("a status");
     assert_eq!(edits(&status, CUES_FILE), None, "it isn't a document of this run");
+    drop(client);
+    app.quit();
+}
+
+/// `combat_bindings.ron`, `default_effects.ron` and the numbers that used to be code come by the one route, pushed
+/// or saved: a good document is taken, and a bad one is refused by name, with the count of what's been taken
+/// and the app going on as they were. An offscreen run has no input to rebind, so bindings reach it and are
+/// refused for that: `input.rs` tests what a window's input does with them.
+#[test]
+#[ignore = "needs a dev build, a GPU and cooked content"]
+fn the_documents_that_were_code_take_the_route_the_others_do() {
+    let temp = Temp::new("documents");
+    let saved = temp.text(HUD_FILE);
+    fs::write(&saved, HUD).expect("a copy to save over");
+    let args = [
+        "--arena",
+        "--fight",
+        "--script",
+        "fight-back",
+        "--cues",
+        "--hud",
+        "live",
+        "--watch-document",
+        &saved,
+    ];
+    let mut app = App::start(&temp, &args);
+    let mut client = app.connect();
+
+    let good = [
+        (EFFECTS_FILE, EFFECTS.to_owned(), "effects"),
+        (TARGETING_FILE, TARGETING.replacen("range: 12.0", "range: 13.0", 1), "targeting"),
+        (MOTION_FILE, MOTION.replacen("root_inertia: 0.25", "root_inertia: 0.3", 1), "motion"),
+        (HUD_FILE, HUD.replacen("margin: 16.0", "margin: 18.0", 1), "HUD"),
+    ];
+    for (file, text, reply_says) in good {
+        let reply = client.push_document(file, text).unwrap_or_else(|error| panic!("{file}: {error}"));
+        assert!(reply.contains(reply_says), "{file}: {reply}");
+    }
+    let status = client.status().expect("a status");
+    for file in [EFFECTS_FILE, TARGETING_FILE, MOTION_FILE, HUD_FILE] {
+        assert_eq!(edits(&status, file), Some(1), "{file}");
+    }
+    let bindings = BINDINGS.replace("source: Key(J)", "source: Key(U)");
+    let no_input = client.push_document(BINDINGS_FILE, bindings).expect_err("nothing plays here");
+    assert!(no_input.to_string().contains("no bindings to replace"), "{no_input}");
+
+    let bad = [
+        (BINDINGS_FILE, BINDINGS.replacen("source:", "sauce:", 1), "source"),
+        (EFFECTS_FILE, EFFECTS.replacen("lifetime:", "lifetimes:", 1), "lifetimes"),
+        (TARGETING_FILE, TARGETING.replacen("range: 12.0", "range: -1.0", 1), "soft_lock.range"),
+        (MOTION_FILE, MOTION.replacen("soften:", "soft:", 1), "soft"),
+        (HUD_FILE, HUD.replacen("margin:", "marginn:", 1), "marginn"),
+    ];
+    for (file, text, names) in bad {
+        let refused = client.push_document(file, text).expect_err(file);
+        assert!(refused.to_string().contains(names), "{file}: {refused}");
+    }
+    let status = client.status().expect("a status");
+    for file in [EFFECTS_FILE, TARGETING_FILE, MOTION_FILE, HUD_FILE] {
+        assert_eq!(edits(&status, file), Some(1), "{file} kept what it had");
+    }
+    assert_eq!(edits(&status, BINDINGS_FILE), Some(0), "none taken");
+
+    // Saved, by the file it watches: the other way in.
+    fs::write(&saved, HUD.replacen("margin: 16.0", "margin: 20.0", 1)).expect("saved");
+    app.until(&mut client, "the saved design taken", |status| {
+        (edits(status, HUD_FILE) == Some(2)).then_some(())
+    });
     drop(client);
     app.quit();
 }

@@ -6,6 +6,7 @@ use sapphire_gameplay::replay::ActionSource;
 use sapphire_gameplay::{ActorActions, ActorId, Buttons, Stick, TickActions};
 use sapphire_input::{
     ActionEventKind, ActionId, ActionKind, ContextId, InputBindings, InputMap, InputSystem, MapError,
+    RebindError,
 };
 use sapphire_math::{Vec2, Vec3, det};
 use sapphire_platform::{Event, Timestamp};
@@ -69,6 +70,8 @@ pub enum ControlsError {
     WrongActionKind { name: &'static str, found: ActionKind, expected: ActionKind },
     #[error("the bindings have no `{0}` context, which combat enables")]
     MissingContext(&'static str),
+    #[error(transparent)]
+    Rebind(#[from] RebindError),
 }
 
 /// The default bindings as a document, to rebind by editing or to add an app's own contexts to.
@@ -224,6 +227,19 @@ impl CombatControls {
             resuming: false,
             leaving: false,
         })
+    }
+
+    /// Takes an edited document of bindings, compiled, as it runs: a button's new binding reads from the next
+    /// update, and an old one's gone. Anything combat reads that it lacks refuses it, with what's playing kept
+    /// as it was. What's held is ignored until released ([`InputSystem::replace_bindings`]). An app's own
+    /// actions may have moved, so it finds them again.
+    pub fn replace_bindings(&mut self, map: InputMap) -> Result<(), ControlsError> {
+        let ids = ActionIds::new(&map)?;
+        let context = |name| map.context(name).ok_or(ControlsError::MissingContext(name));
+        let (combat, pause) = (context(COMBAT_CONTEXT)?, context(PAUSE_CONTEXT)?);
+        self.input.replace_bindings(map)?;
+        (self.ids, self.combat, self.pause) = (ids, combat, pause);
+        Ok(())
     }
 
     /// The input system, for what isn't combat's: state, the last-used device, the app's own

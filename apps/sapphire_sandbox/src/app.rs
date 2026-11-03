@@ -536,7 +536,12 @@ impl App for SandboxApp {
                 &mut self.renderer,
                 &self.gpu,
                 &mut self.scene,
-                &mut self.show,
+                &mut self.show.fight,
+                &mut crate::input::DocumentsHere {
+                    input: Some(&mut self.input),
+                    hud: self.show.hud.as_mut(),
+                    screen: self.show.screen.as_mut(),
+                },
             );
             // Finished reads, unloads and this frame's uploads, within the upload budget.
             self.content.update(&mut self.renderer, &self.gpu);

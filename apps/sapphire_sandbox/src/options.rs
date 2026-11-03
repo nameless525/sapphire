@@ -523,6 +523,7 @@ impl Options {
             graph_show: self.graph.is_some(),
             arena_fight: self.arena.is_some() && self.combat.is_some(),
             screen: self.ui_screen.is_some(),
+            hud: self.hud.is_some(),
             reads_files: !self.no_hot_reload,
             extra_documents: &self.watch_documents,
         }

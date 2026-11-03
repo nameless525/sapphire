@@ -42,7 +42,8 @@ fn ground_filter() -> QueryFilter {
 ///
 /// **Frozen is `delta` zero:** nothing moves and nothing accumulates. Only last tick's
 /// [`ControllerState::events`] clear, and a drive's motion is dropped, which a table can't notice:
-/// its reading can't move while its clock stands.
+/// its reading can't move while its clock stands. A jump asked for with the stick its own waits, and goes
+/// on the first tick that moves, if the character can jump then and no move has taken the stick.
 pub fn step_controller(
     world: &mut PhysicsWorld,
     body: BodyId,
@@ -55,8 +56,10 @@ pub fn step_controller(
     let pose = world.body_pose(body).ok_or(WorldError::UnknownBody(body))?;
     state.events = ControllerEvents::default();
     if delta == SimDuration::ZERO {
+        state.jump_waiting |= input.jump && input.drive.locomotion;
         return Ok(());
     }
+    let waited = std::mem::take(&mut state.jump_waiting) && input.drive.locomotion;
     let dt = delta.as_secs_f32();
     let drive = sanitized(&input.drive);
     let stick = if drive.locomotion && input.stick.is_finite() { input.stick } else { Vec2::ZERO };
@@ -64,7 +67,7 @@ pub fn step_controller(
     let start = pose.position;
     let mut tick = Tick { world, body, profile, center: start, rotation: pose.rotation };
 
-    if input.jump && drive.gravity && can_jump(state) {
+    if (input.jump || waited) && drive.gravity && can_jump(state) {
         state.velocity.y = profile.authored().jump_speed;
         state.mode = GroundMode::Airborne;
         state.coyote = SimDuration::ZERO;

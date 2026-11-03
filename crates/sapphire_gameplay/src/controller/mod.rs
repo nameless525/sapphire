@@ -40,7 +40,8 @@
 //!
 //! Everything runs on the owner's clock: motion by its last delta, coyote time in its sub-ticks. A
 //! frozen owner doesn't move and doesn't accumulate, and velocity integrates exactly, so a jump at half
-//! speed reaches the same height.
+//! speed reaches the same height. A jump pressed in a freeze waits for the clock, as what's in an intent's
+//! ring does.
 //!
 //! # Where the numbers come from
 //!
@@ -272,6 +273,8 @@ pub struct ControllerState {
     pub ground_normal: Vec3,
     /// The owner's time left in which a jump still works after walking off a ledge.
     pub coyote: SimDuration,
+    /// A jump was pressed while the owner's clock stood still, and goes when it moves.
+    pub jump_waiting: bool,
     pub events: ControllerEvents,
 }
 
@@ -282,6 +285,7 @@ impl Default for ControllerState {
             velocity: Vec3::ZERO,
             ground_normal: Vec3::Y,
             coyote: SimDuration::ZERO,
+            jump_waiting: false,
             events: ControllerEvents::default(),
         }
     }
@@ -290,11 +294,16 @@ impl Default for ControllerState {
 impl ControllerState {
     /// Written field by field, destructured so a new field can't be forgotten.
     fn write_canonical(&self, hasher: &mut StateHasher) {
-        let Self { mode, velocity, ground_normal, coyote, events } = *self;
+        let Self { mode, velocity, ground_normal, coyote, jump_waiting, events } = *self;
         hasher.u8(mode.code());
         hasher.vec3(velocity);
         hasher.vec3(ground_normal);
         hasher.u64(coyote.as_subticks());
+        // Nothing unless it's set, as a party writes nothing without one: only a run that presses jump in
+        // a freeze has this to say, and every other keeps its checksums.
+        if jump_waiting {
+            hasher.u8(1);
+        }
         let ControllerEvents {
             landed,
             landing_speed,

@@ -168,6 +168,127 @@ fn coyote_time_runs_on_the_owners_clock() {
     assert!(sim.actor(id).unwrap().controller.state.events.jumped);
 }
 
+fn held_jump(id: ActorId) -> TickActions {
+    tick_of(id, Stick::CENTER, Buttons::JUMP)
+}
+
+/// Takes the stick for the next step, as a move does.
+fn strike_next_step(sim: &mut Simulation, id: ActorId) {
+    let entity = entity(sim, id);
+    sim.ecs_mut().world_mut().get_mut::<CharacterController>(entity).unwrap().drive =
+        ControllerDrive::strike(Vec3::ZERO);
+}
+
+/// Six frozen steps from here and the first to move, pressing on those `press` says: whether it jumped
+/// on each.
+fn through_a_freeze(sim: &mut Simulation, id: ActorId, press: impl Fn(u32) -> bool) -> [bool; 7] {
+    apply_hitstop(sim, id, 6);
+    std::array::from_fn(|step| {
+        let buttons = if press(step as u32) { Buttons::JUMP } else { Buttons::NONE };
+        sim.step(&tick_of(id, Stick::CENTER, buttons));
+        sim.actor(id).unwrap().controller.state.events.jumped
+    })
+}
+
+const NO_JUMP: [bool; 7] = [false; 7];
+const JUMP_ON_THAW: [bool; 7] = [false, false, false, false, false, false, true];
+
+/// A press in a freeze waits for the clock, as what's in an intent's ring does. The raw button's edge is
+/// read once, and a frozen step moves nothing: without something to carry it, it was lost.
+#[test]
+fn a_jump_pressed_in_a_freeze_goes_when_the_clock_does() {
+    let standing = || {
+        let (mut sim, actors) = sim_with(vec![floor(1)], &[Vec3::ZERO]);
+        sim.step(&TickActions::NEUTRAL);
+        assert_eq!(sim.actor(actors[0]).unwrap().controller.state.mode, GroundMode::Grounded);
+        (sim, actors[0])
+    };
+
+    // Each of the freeze's steps, tapped once and let go.
+    for tapped in 0..6 {
+        let (mut sim, id) = standing();
+        let jumped = through_a_freeze(&mut sim, id, |step| step == tapped);
+        assert_eq!(jumped, JUMP_ON_THAW, "tapped on its step {tapped}");
+        assert!(sim.actor(id).unwrap().controller.state.velocity.y > 0.0, "it's rising");
+    }
+
+    // Held through it, and on, it's one press and one jump.
+    let (mut sim, id) = standing();
+    assert_eq!(through_a_freeze(&mut sim, id, |_| true), JUMP_ON_THAW);
+    for tick in 0..120 {
+        sim.step(&held_jump(id));
+        assert!(!sim.actor(id).unwrap().controller.state.events.jumped, "again, {tick} ticks on");
+    }
+
+    // Tapped twice in one freeze, it's still the one.
+    let (mut sim, id) = standing();
+    assert_eq!(through_a_freeze(&mut sim, id, |step| step == 1 || step == 3), JUMP_ON_THAW);
+
+    // Down since before the freeze, it isn't a press.
+    let (mut sim, id) = standing();
+    sim.step(&held_jump(id));
+    assert!(sim.actor(id).unwrap().controller.state.events.jumped, "the press itself, before it");
+    for _ in 0..120 {
+        sim.step(&held_jump(id));
+    }
+    assert_eq!(sim.actor(id).unwrap().controller.state.mode, GroundMode::Grounded, "it's back down");
+    assert_eq!(through_a_freeze(&mut sim, id, |_| true), NO_JUMP);
+}
+
+/// When the clock moves again the press is what any press is then: spent on what can't jump, and gone,
+/// so nothing's left waiting for a landing.
+#[test]
+fn a_jump_out_of_a_freeze_asks_what_a_press_asks() {
+    // On coyote time, which a freeze doesn't spend: it goes.
+    let plateau = solid(2, Vec3::new(-50.0, -1.0, -20.0), Vec3::new(0.0, 1.0, 20.0));
+    let (mut sim, actors) = sim_with(vec![floor(1), plateau], &[Vec3::new(-0.5, 1.0, 0.0)]);
+    let id = actors[0];
+    sim.step(&TickActions::NEUTRAL);
+    for _ in 0..600 {
+        if sim.actor(id).unwrap().controller.state.mode != GroundMode::Grounded {
+            break;
+        }
+        sim.step(&run_right(id));
+    }
+    assert!(sim.actor(id).unwrap().controller.state.coyote > SimDuration::ZERO, "it just walked off");
+    assert_eq!(through_a_freeze(&mut sim, id, |step| step == 2), JUMP_ON_THAW);
+
+    // In the air, with no coyote time: nothing, then or on landing.
+    let (mut sim, actors) = sim_with(vec![floor(1)], &[Vec3::new(0.0, 4.0, 0.0)]);
+    let id = actors[0];
+    sim.step(&TickActions::NEUTRAL);
+    assert_eq!(through_a_freeze(&mut sim, id, |step| step == 2), NO_JUMP);
+    for _ in 0..120 {
+        sim.step(&TickActions::NEUTRAL);
+        assert!(!sim.actor(id).unwrap().controller.state.events.jumped, "it waited for the ground");
+    }
+    assert_eq!(sim.actor(id).unwrap().controller.state.mode, GroundMode::Grounded);
+
+    // A move took the stick by the time the clock moved: a hit's reaction, in a freeze. Gone.
+    let (mut sim, actors) = sim_with(vec![floor(1)], &[Vec3::ZERO]);
+    let id = actors[0];
+    sim.step(&TickActions::NEUTRAL);
+    apply_hitstop(&mut sim, id, 2);
+    sim.step(&held_jump(id));
+    sim.step(&TickActions::NEUTRAL);
+    strike_next_step(&mut sim, id);
+    sim.step(&TickActions::NEUTRAL);
+    sim.step(&TickActions::NEUTRAL);
+    assert!(!sim.actor(id).unwrap().controller.state.events.jumped);
+    assert_eq!(sim.actor(id).unwrap().controller.state.mode, GroundMode::Grounded, "and it stays down");
+
+    // Pressed under a move while frozen, it's what a press under a move always is: nothing.
+    let (mut sim, actors) = sim_with(vec![floor(1)], &[Vec3::ZERO]);
+    let id = actors[0];
+    sim.step(&TickActions::NEUTRAL);
+    apply_hitstop(&mut sim, id, 1);
+    strike_next_step(&mut sim, id);
+    sim.step(&held_jump(id));
+    sim.step(&TickActions::NEUTRAL);
+    assert!(!sim.actor(id).unwrap().controller.state.events.jumped);
+    assert_eq!(sim.actor(id).unwrap().controller.state.mode, GroundMode::Grounded);
+}
+
 /// Under a time scale the same motion takes more ticks and covers the same distance: a jump reaches
 /// the same height at 500‰ and at 333‰, whose ticks alternate 333 and 334 sub-ticks, and a run start
 /// covers the same ground in its own time.
@@ -265,6 +386,7 @@ fn every_state_field_is_in_the_checksum() {
         ("ground_normal.y", |c| c.state.ground_normal.y -= 1e-5),
         ("ground_normal.z", |c| c.state.ground_normal.z += 1e-5),
         ("coyote", |c| c.state.coyote += SimDuration::from_subticks(1)),
+        ("jump_waiting", |c| c.state.jump_waiting = !c.state.jump_waiting),
         ("landed", |c| c.state.events.landed = !c.state.events.landed),
         ("landing_speed", |c| c.state.events.landing_speed += 1e-5),
         ("jumped", |c| c.state.events.jumped = !c.state.events.jumped),

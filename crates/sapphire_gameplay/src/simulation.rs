@@ -37,6 +37,7 @@ use crate::moves::{
 use crate::navigation::SimNavigation;
 use crate::party::{self, Party, PartyError, PartySlot, PartyTuning};
 use crate::resolve::{self, AppliedHits, Fighter, ResolveStats, SlowMotion};
+use crate::script::{self, ScriptWorld};
 use crate::stats::{BUDGET_DESKTOP_LOW, PHYSICS_BUDGET_DESKTOP_LOW, SimStats};
 use crate::targeting::{self, SoftLock, TargetingTuning};
 use crate::timeline::{
@@ -117,6 +118,12 @@ pub enum CombatSet {
     Resolve,
     /// Hitstop and time scale, which take effect from the next tick's clocks.
     TimeScale,
+    /// What this step did, for hooks to answer: only with [`Simulation::enable_scripts`].
+    HookEvents,
+    /// Hooks answer it, in `sapphire_script`, which reads and asks but changes nothing.
+    Hooks,
+    /// The one point what they asked for takes effect.
+    Commands,
     /// Cues, which are presentation only.
     Cues,
 }
@@ -182,6 +189,9 @@ impl Simulation {
                     CombatSet::Hits,
                     CombatSet::Resolve,
                     CombatSet::TimeScale,
+                    CombatSet::HookEvents,
+                    CombatSet::Hooks,
+                    CombatSet::Commands,
                     CombatSet::Cues,
                 )
                     .chain(),
@@ -280,6 +290,33 @@ impl Simulation {
                 panic!("the combat schedule doesn't build: {}", error.to_string(schedule.graph(), world));
             }
         });
+    }
+
+    /// Gives this simulation what scripts need, between steps: [`ScriptWorld`], and the systems either side
+    /// of [`CombatSet::Hooks`], where whoever runs them adds its own. From here on its state is in
+    /// [`Self::checksum`] and its chunk in [`Self::tables_hash`]; a simulation that never asks hashes
+    /// neither. Asking again does nothing. Each of the three sets holds just its one system, so their chain
+    /// is the order: a system added to one of them says its order against what's there.
+    pub fn enable_scripts(&mut self) {
+        if self.scripts().is_some() {
+            return;
+        }
+        let actors = script::capacity_of(self.ecs.world().resource::<ActorRequests>());
+        self.ecs.world_mut().insert_resource(ScriptWorld::new(actors));
+        self.add_combat_system(CombatSet::HookEvents, script::gather_hook_events);
+        self.add_combat_system(CombatSet::Commands, script::apply_script_commands);
+    }
+
+    /// Its script state, if [`Self::enable_scripts`] has given it one.
+    #[must_use]
+    pub fn scripts(&self) -> Option<&ScriptWorld> {
+        self.ecs.world().get_resource::<ScriptWorld>()
+    }
+
+    /// Its script state, between steps: a chunk bound, or a test's numbers. What it changes is on the
+    /// caller's checksum.
+    pub fn scripts_mut(&mut self) -> Option<Mut<'_, ScriptWorld>> {
+        self.ecs.world_mut().get_resource_mut::<ScriptWorld>()
     }
 
     /// Puts a resource in the world, where a system from [`Self::add_combat_system`] keeps its state.

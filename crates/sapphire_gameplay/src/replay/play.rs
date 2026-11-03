@@ -159,23 +159,44 @@ impl Player {
         live: &LiveMoves,
         setup: impl FnOnce(&Scenario, &mut Simulation, &[ActorId]) -> Result<(), String>,
     ) -> Result<Self, PlayError> {
-        let name = replay.scenario();
-        let Some(scenario) = find_scenario(scenarios, name) else {
-            let names: Vec<&str> = scenarios.iter().map(|scenario| scenario.name).collect();
-            return Err(PlayError::UnknownScenario { name: name.to_owned(), known: names.join(", ") });
-        };
-        let (mut sim, cast) = live
-            .start(scenario, replay.config())
-            .map_err(|source| PlayError::Setup { name: name.to_owned(), source })?;
+        let (scenario, mut sim, cast) = Self::setup(&replay, scenarios, live)?;
         let recorded = replay.tables_hash();
         if sim.tables_hash() != recorded {
             setup(scenario, &mut sim, &cast)
-                .map_err(|reason| PlayError::Configure { name: name.to_owned(), reason })?;
+                .map_err(|reason| PlayError::Configure { name: scenario.name.to_owned(), reason })?;
             let current = sim.tables_hash();
             if current != recorded {
                 return Err(PlayError::MovesChanged { recorded, current });
             }
         }
+        Ok(Self::started(sim, cast, replay))
+    }
+
+    /// [`Self::new`], going ahead whatever the tables now are: a recording's actions as a test's "what if",
+    /// with a script on them, say. No suite checks a replay this way, since its checksums mean nothing here.
+    pub fn on_current_tables(mut replay: Replay, scenarios: &[Scenario]) -> Result<Self, PlayError> {
+        let (_, sim, cast) = Self::setup(&replay, scenarios, &LiveMoves::default())?;
+        replay.set_tables_hash(sim.tables_hash());
+        Ok(Self::started(sim, cast, replay))
+    }
+
+    fn setup<'a>(
+        replay: &Replay,
+        scenarios: &'a [Scenario],
+        live: &LiveMoves,
+    ) -> Result<(&'a Scenario, Simulation, Vec<ActorId>), PlayError> {
+        let name = replay.scenario();
+        let Some(scenario) = find_scenario(scenarios, name) else {
+            let names: Vec<&str> = scenarios.iter().map(|scenario| scenario.name).collect();
+            return Err(PlayError::UnknownScenario { name: name.to_owned(), known: names.join(", ") });
+        };
+        let (sim, cast) = live
+            .start(scenario, replay.config())
+            .map_err(|source| PlayError::Setup { name: name.to_owned(), source })?;
+        Ok((scenario, sim, cast))
+    }
+
+    fn started(sim: Simulation, cast: Vec<ActorId>, replay: Replay) -> Self {
         let mut player = Self {
             tracked: Tracked::new(sim, replay.ticks()),
             replay,
@@ -185,7 +206,7 @@ impl Player {
             cast,
         };
         player.apply_commands();
-        Ok(player)
+        player
     }
 
     /// The actors the scenario's input drives, the player first: who presentation stands where.

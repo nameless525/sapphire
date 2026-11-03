@@ -28,6 +28,7 @@ use crate::moves::{MoveLibrary, MoveOutput, MoveRef, MoveRunner, Running, WarpTa
 use crate::navigation::SimNavigation;
 use crate::party::Party;
 use crate::resolve::{Fighter, HitOutcome, Slide, SlowMotion};
+use crate::script::ScriptWorld;
 use crate::simulation::SimRng;
 use crate::targeting::{SoftLock, TargetingTuning};
 use crate::timeline::{TimelineLibrary, TimelineRun};
@@ -37,7 +38,8 @@ use crate::timeline::{TimelineLibrary, TimelineRun};
 /// D4's hit queries. 4: M2 G1's controllers and their world. 5: M2 G3's fighters, slow motion and hit
 /// cues. 6: M2 G4's perfect dodges and counter windows. 7: M2 G6's brains and a controller drive's facing.
 /// 8: M2 G7's party, which writes nothing without one. M3 P2's paths write nothing without a navmesh
-/// either, and none of what's recorded before them has one, so they left this where it was.
+/// either, and none of what's recorded before them has one, so they left this where it was. So with M3
+/// L2's scripts, which write nothing in a world with no [`ScriptWorld`].
 const CHECKSUM_LAYOUT: u32 = 8;
 
 /// A hasher over canonical bytes: XXH3-64, a published, frozen algorithm, unlike `DefaultHasher`,
@@ -459,6 +461,9 @@ pub(crate) fn legacy_state(world: &World) -> StateHasher {
     if let Some(zone) = world.get_resource::<SimZone>() {
         zone.write_state(&mut hasher);
     }
+    if let Some(scripts) = world.get_resource::<ScriptWorld>() {
+        scripts.write_canonical(&mut hasher);
+    }
     hasher
 }
 
@@ -467,9 +472,10 @@ pub(crate) fn legacy_state(world: &World) -> StateHasher {
 /// collision world's statics. It hashes a set's cooked bytes, so no field can be forgotten here, and
 /// those are the same on every target, as the statics' digest is: authored numbers, by their bits. A party's
 /// tuning goes in too, if there's a party, a navmesh's digest if there's one of those, every loaded
-/// timeline's simulation half, if there are any, targeting's weights, and what a zone says if there's
-/// one. Opted-in standing jump preparation contributes the policy and setup actor IDs independently of
-/// any jump's live countdown. Each of those is a resource of `world`, or isn't there.
+/// timeline's simulation half, if there are any, targeting's weights, what a zone says if there's one,
+/// and last a script's bytecode and cadence, if there's one of those. Opted-in standing jump preparation
+/// contributes the policy and setup actor IDs independently of any jump's live countdown. Each of those
+/// is a resource of `world`, or isn't there.
 pub(crate) fn tables_hash(world: &World, standing_jump_actors: &[ActorId]) -> u64 {
     let library = world.resource::<MoveLibrary>();
     let characters = world.resource::<CharacterWorld>();
@@ -510,6 +516,9 @@ pub(crate) fn tables_hash(world: &World, standing_jump_actors: &[ActorId]) -> u6
     hasher.u64(targeting.digest());
     if let Some(zone) = zone {
         hasher.u64(zone.tables());
+    }
+    if let Some(scripts) = world.get_resource::<ScriptWorld>() {
+        scripts.write_tables(&mut hasher);
     }
     hasher.finish()
 }

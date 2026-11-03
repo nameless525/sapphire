@@ -1598,7 +1598,8 @@ fn every_authored_window_of_the_test_content_is_covered_by_a_replay() {
         let bytes = std::fs::read(&file).expect("reads");
         let replay = Replay::decode(&bytes).expect("decodes");
         // The fights play the shipped moves, which aren't the test content.
-        let scenario = replay::find_scenario(&SCENARIOS, replay.scenario()).expect("listed");
+        // A scripted scenario is the replay runner's alone.
+        let Some(scenario) = replay::find_scenario(&SCENARIOS, replay.scenario()) else { continue };
         if scenario.documents.iter().any(|document| document.starts_with("content/combat/")) {
             continue;
         }

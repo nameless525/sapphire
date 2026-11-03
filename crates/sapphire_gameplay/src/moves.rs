@@ -383,6 +383,12 @@ impl MoveRunner {
         self.started
     }
 
+    /// The name of the move it's playing, on the revision it started with.
+    pub(crate) fn running_name(&self, library: &MoveLibrary) -> Option<Name> {
+        let running = self.running?;
+        Some(library.get(running.at)?.name())
+    }
+
     /// Starts this move on the next step, whatever is running and whatever the clock is doing: a
     /// hit's reaction (M2 G3), which no window has to allow. A name not in the current set does
     /// nothing. Call it between steps or from inside one.

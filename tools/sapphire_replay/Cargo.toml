@@ -16,6 +16,9 @@ anyhow.workspace = true
 # The counting allocator gate 4 reads, in the binary.
 sapphire_core.workspace = true
 sapphire_gameplay.workspace = true
+# Scenarios with hooks on them (M3 L0). Normal, not a dev-dependency, because that's what a runner will
+# link for L3's scripted replays, and `[simulation]`'s `runners` holds normal trees to the forbidden list.
+sapphire_script.workspace = true
 
 [dev-dependencies]
 # A system for a test's world to allocate in.

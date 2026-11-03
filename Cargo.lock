@@ -3746,6 +3746,7 @@ dependencies = [
  "sapphire_core",
  "sapphire_ecs",
  "sapphire_gameplay",
+ "sapphire_script",
 ]
 
 [[package]]

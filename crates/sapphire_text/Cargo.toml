@@ -1,0 +1,25 @@
+[package]
+name = "sapphire_text"
+description = "Fonts, shaping and the glyph atlas: embedded fonts through parley, glyphs through swash, pages for the frame's draw list."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+etagere.workspace = true
+parley.workspace = true
+sapphire_look.workspace = true
+swash.workspace = true
+
+[dev-dependencies]
+# A font every checkout has, for what must run on CI with none committed. It's in the tree already
+# (the debug overlay's), and a dev-dependency never reaches a shipped build.
+epaint_default_fonts.workspace = true
+# The counting allocator, for the allocation test and the costs.
+sapphire_core.workspace = true
+taffy.workspace = true
+
+[lints]
+workspace = true

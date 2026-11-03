@@ -34,6 +34,7 @@ members = [
     "crates/sapphire_physics",
     "crates/sapphire_audio",
     "crates/sapphire_vfx",
+    "crates/sapphire_text",
     "crates/sapphire_ui",
     # L4 framework
     "crates/sapphire_world",
@@ -69,6 +70,16 @@ publish = false
 license = "MIT"
 
 [workspace.dependencies]
+# --- Text (M3 U1) ---
+# No system fonts: `system` is what would pull CoreText, fontconfig and DirectWrite.
+parley = { version = "0.12", default-features = false, features = ["std"] }
+swash = "0.2"
+etagere = "0.3"
+epaint_default_fonts = "0.37"
+taffy = { version = "0.15", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid"] }
+# Font subsetting: tools only, a second fontations line the runtime must never link.
+skera = "0.9"
+read_fonts_for_skera = { package = "read-fonts", version = "0.46", default-features = false, features = ["std"] }
 # --- Sapphire crates ---
 sapphire_core = { path = "crates/sapphire_core" }
 sapphire_math = { path = "crates/sapphire_math" }
@@ -94,6 +105,7 @@ sapphire_loc = { path = "crates/sapphire_loc" }
 sapphire_physics = { path = "crates/sapphire_physics" }
 sapphire_audio = { path = "crates/sapphire_audio" }
 sapphire_vfx = { path = "crates/sapphire_vfx" }
+sapphire_text = { path = "crates/sapphire_text" }
 sapphire_ui = { path = "crates/sapphire_ui" }
 sapphire_world = { path = "crates/sapphire_world" }
 sapphire_gameplay = { path = "crates/sapphire_gameplay" }

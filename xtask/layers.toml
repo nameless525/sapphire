@@ -74,6 +74,9 @@ sapphire_vfx = { kind = "runtime", layer = 3 }
 # The on-screen interface: touch zones and the HUD's quads (M2 I2). It writes the draw list
 # `sapphire_look` holds, so neither it nor the renderer depends on the other (rule R4).
 sapphire_ui = { kind = "runtime", layer = 3 }
+# Fonts, shaping and the glyph atlas (M3 U1), apart from `sapphire_ui` because `parley` and its ICU
+# data shouldn't reach what only draws a HUD, and because a tool may read fonts through it.
+sapphire_text = { kind = "runtime", layer = 3 }
 # L4 framework.
 sapphire_world = { kind = "runtime", layer = 4 }
 sapphire_gameplay = { kind = "runtime", layer = 4 }
@@ -205,7 +208,7 @@ forbidden = ["cpal", "kira", "parry3d", "rapier3d", "sapphire_physics", "sapphir
 # Third-party crates that must never reach a runtime, app or dev-only crate's dependency
 # tree.
 [tool_only_dependencies]
-crates = ["gltf", "image", "ctt", "toml", "cargo_metadata", "rayon", "meshopt", "vrm-spec", "ufbx", "fluent-syntax"]
+crates = ["gltf", "image", "ctt", "toml", "cargo_metadata", "rayon", "meshopt", "vrm-spec", "ufbx", "fluent-syntax", "skera"]
 
 # Third-party crates that only dev-only crates may bring in: a runtime or app crate reaching one
 # other than through a dev-only crate would link it into builds without `dev`.

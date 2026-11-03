@@ -3,7 +3,8 @@
 //! of widgets, touches or fighters.
 //!
 //! A [`UiDrawList`] is a list of [`UiQuad`]s in UI points, each a parallelogram over one cell of a
-//! [`UiAtlas`], a single-channel signed distance field. An empty list costs the renderer nothing: it
+//! [`UiAtlas`], a single-channel signed distance field, or of a glyph page, a single-channel texture
+//! of coverage that the list's own uploads fill in. An empty list costs the renderer nothing: it
 //! builds no pipeline and adds no pass.
 
 use std::fmt;
@@ -76,6 +77,9 @@ pub struct UiQuad {
     pub slice: f32,
 }
 
+/// A quad's [`UiQuad::softness`] when its texels are coverage, not a field: they draw as they are.
+pub const UI_COVERAGE: f32 = -1.0;
+
 impl UiQuad {
     /// A quad over `uv` in `color`, the shape as painted, nothing else on.
     pub const fn new(
@@ -100,6 +104,34 @@ impl UiQuad {
             slice: 0.0,
         }
     }
+
+    /// A glyph's quad, with its top-left at `origin` and `size` across and down: coverage from a
+    /// glyph page, which draws as it is.
+    pub const fn glyph(origin: [f32; 2], size: [f32; 2], uv: [f32; 4], color: [u8; 4]) -> Self {
+        let mut quad = Self::new(origin, [size[0], 0.0], [0.0, size[1]], uv, color);
+        quad.softness = UI_COVERAGE;
+        quad
+    }
+}
+
+/// A run of [`UiDrawList::quads`] that reads a glyph page, not the list's atlas.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UiPageRun {
+    pub first: u32,
+    pub count: u32,
+    pub page: u16,
+}
+
+/// New texels for a rectangle of a glyph page, tightly packed in [`UiDrawList::upload_texels`] from
+/// `offset`, row by row from the top.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UiPageUpload {
+    pub page: u16,
+    pub x: u16,
+    pub y: u16,
+    pub width: u16,
+    pub height: u16,
+    pub offset: u32,
 }
 
 /// What the frame draws over itself after post: the frame packet's `ui`, kept between frames for
@@ -113,6 +145,15 @@ pub struct UiDrawList {
     pub atlas: Option<Arc<UiAtlas>>,
     /// Back to front.
     pub quads: Vec<UiQuad>,
+    /// The quads that read a glyph page, in order and apart. Every other quad reads `atlas`.
+    pub page_runs: Vec<UiPageRun>,
+    /// A glyph page's side in texels, all of them `R8Unorm` with one mip level.
+    pub page_size: u32,
+    /// What changed in the pages since the last list, to apply before this list draws. A list that
+    /// names a page the renderer doesn't have makes it, empty.
+    pub page_uploads: Vec<UiPageUpload>,
+    /// The bytes [`Self::page_uploads`] name.
+    pub upload_texels: Vec<u8>,
 }
 
 impl UiDrawList {
@@ -121,5 +162,19 @@ impl UiDrawList {
         self.viewport = [0.0; 2];
         self.atlas = None;
         self.quads.clear();
+        self.page_runs.clear();
+        self.page_size = 0;
+        self.page_uploads.clear();
+        self.upload_texels.clear();
+    }
+
+    /// Adds a quad over a glyph page, joining the run before it if that's on the same page.
+    pub fn push_page_quad(&mut self, page: u16, quad: UiQuad) {
+        let at = self.quads.len() as u32;
+        self.quads.push(quad);
+        match self.page_runs.last_mut() {
+            Some(run) if run.page == page && run.first + run.count == at => run.count += 1,
+            _ => self.page_runs.push(UiPageRun { first: at, count: 1, page }),
+        }
     }
 }

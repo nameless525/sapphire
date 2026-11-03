@@ -3,7 +3,7 @@
 //! (`ClipSources` keeps the last).
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -147,6 +147,8 @@ impl ClipSources {
 pub enum RigMismatch {
     #[error("joint {joint:?} isn't in the skeleton it shares")]
     MissingJoint { joint: String },
+    #[error("two joints are called {joint:?}, so its name can't say which of them is shared")]
+    AmbiguousName { joint: String },
     #[error("joint {joint:?} is under {found:?} here and {expected:?} in the skeleton it shares")]
     Parent { joint: String, found: Option<String>, expected: Option<String> },
     #[error("joint {joint:?} rests elsewhere in the skeleton it shares")]
@@ -154,18 +156,26 @@ pub enum RigMismatch {
 }
 
 /// Each of `joints`' index in `shared`, by name: the same rig in another order, as two exports of
-/// one armature may be. Every joint must be there, under the same parent, at the same rest; `shared`
-/// may have more.
+/// one armature may be. Every joint must be there, once on each side, under the same parent, at the
+/// same rest; `shared` may have more. glTF lets names repeat, and a skeleton of its own has no trouble
+/// with that, but here a repeated name would land two joints on one, or one on the wrong one.
 pub fn joint_remap(joints: &[Joint], shared: &Skeleton) -> Result<Vec<u16>, RigMismatch> {
-    let by_name: HashMap<&str, usize> =
-        shared.names.iter().enumerate().map(|(index, name)| (name.as_str(), index)).collect();
+    // `None`: more than one joint has the name.
+    let mut by_name: HashMap<&str, Option<usize>> = HashMap::with_capacity(shared.names.len());
+    for (index, name) in shared.names.iter().enumerate() {
+        by_name.entry(name).and_modify(|found| *found = None).or_insert(Some(index));
+    }
+    let mut seen: HashSet<&str> = HashSet::with_capacity(joints.len());
     joints
         .iter()
         .map(|joint| {
             let name = || joint.name.clone();
-            let index = *by_name
+            let found = *by_name
                 .get(joint.name.as_str())
                 .ok_or_else(|| RigMismatch::MissingJoint { joint: name() })?;
+            let index = found
+                .filter(|_| seen.insert(joint.name.as_str()))
+                .ok_or_else(|| RigMismatch::AmbiguousName { joint: name() })?;
             let found = joint.parent.map(|parent| joints[usize::from(parent)].name.clone());
             let expected = (shared.parents[index] != sapphire_assets::skeleton::NO_PARENT)
                 .then(|| shared.names[usize::from(shared.parents[index])].clone());

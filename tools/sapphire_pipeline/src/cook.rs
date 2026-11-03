@@ -187,7 +187,9 @@ pub struct Recipe {
 /// Bake, optimization and LODs, packing and the `.smesh` writer. Bump its version whenever
 /// they change output for the same imported mesh. 3: deformation-aware LODs (the review's
 /// AP-005): what morph targets move is locked, and skinned meshes simplify in test poses too.
-pub const MESH_COOKER: Stage = Stage { name: "smesh", version: 3 };
+/// 4: a shared skeleton's repeated joint name is an error, where the palette aliased two joints (the
+/// review's IMP-001).
+pub const MESH_COOKER: Stage = Stage { name: "smesh", version: 4 };
 
 /// Every extension a recipe writes: stale files with these are removed from the output.
 pub(crate) const COOKED_EXTENSIONS: &[&str] = &[

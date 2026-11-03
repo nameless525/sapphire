@@ -311,6 +311,76 @@ fn a_rig_named_wrongly_is_the_sidecars_error() {
     assert!(wrong.is_empty(), "{wrong:#?}");
 }
 
+/// A rig of two joints with one name at one rest, a body skinned to both and a clip moving each its
+/// own way: a file glTF allows, and its own skeleton has no trouble with.
+fn rig_of_twins() -> Vec<u8> {
+    let (first, second) = (1, 2);
+    let geometry = Geometry {
+        positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        normals: vec![[0.0, 0.0, 1.0]; 3],
+        influences: vec![InfluenceSet {
+            joints: vec![[first as u16, second as u16, 0, 0]; 3],
+            weights: vec![[0.5, 0.5, 0.0, 0.0]; 3],
+        }],
+        indices: vec![0, 1, 2],
+        ..Geometry::default()
+    };
+    let mut writer = GltfWriter::default();
+    let mesh = writer.add_mesh("Body", &[(&geometry, None)]);
+    let root = writer.add_node(json!({ "name": "Root", "children": [first, second] }));
+    writer.add_node(json!({ "name": "part", "translation": [0.0, 1.0, 0.0] }));
+    writer.add_node(json!({ "name": "part", "translation": [0.0, 1.0, 0.0] }));
+    writer.add_skin(&[root, first, second], None);
+    let body = writer.add_node(json!({ "name": "Body", "mesh": mesh, "skin": 0 }));
+    writer.add_root(root);
+    writer.add_root(body);
+    let moving = |node, values| Track {
+        node,
+        path: "translation",
+        interpolation: "LINEAR",
+        times: &[0.0, 0.5],
+        values,
+    };
+    let (right, left) = ([0.0, 1.0, 0.0, 0.5, 1.0, 0.0], [0.0, 1.0, 0.0, -0.5, 1.0, 0.0]);
+    animate(&mut writer, Some("Part"), &[moving(first, &right), moving(second, &left)]);
+    writer.to_glb()
+}
+
+/// Two joints with one name cook as themselves, on a skeleton of their own. Sharing it goes by names,
+/// so it's the sharer's error, naming the joint, whichever kind of source shares: a mesh's palette or a
+/// clip's tracks would otherwise land both on one of them.
+#[test]
+fn a_rig_two_joints_name_alike_cooks_alone_and_cant_be_shared() {
+    let tree = Tree::new("cook_rig_of_twins");
+    let owner = tree.write("owner.glb", &rig_of_twins());
+    tree.sidecar(&owner, OWNER, clips_of(ClipSettings::default()));
+    let report = tree.try_cook(true).unwrap();
+    let bytes = read_aligned(&by_id(&report, meta::sub_asset_id(OWNER, "clip/Part")).output);
+    let moved: Vec<u16> =
+        Clip::read(&bytes).unwrap().translations.iter().map(|t| t.joint.to_native()).collect();
+    assert_eq!(moved, [1, 2], "each its own track");
+
+    let sharers = [
+        ("mesh", ImportSettings::Gltf(MeshSettings { skeleton: Some(OWNER), ..MeshSettings::default() })),
+        ("clips", clips_of(ClipSettings { rig: Some(OWNER), ..ClipSettings::default() })),
+    ];
+    let mut wrong = Vec::new();
+    for (name, settings) in sharers {
+        let source = tree.write("sharer.glb", &rig_of_twins());
+        tree.sidecar(&source, FOLLOWER, settings);
+        match tree.try_cook(false) {
+            Ok(_) => wrong.push(format!("{name}: it cooked")),
+            Err(error) => {
+                let text = fault(&error, "sharer.glb");
+                if !text.contains("\"part\"") {
+                    wrong.push(format!("{name}: said {text:?}"));
+                }
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
 /// Each of a mesh's binds, on its joint of a shared skeleton at rest, is the identity if the binds
 /// have found their own joints.
 fn assert_rest_palette_is_identity(

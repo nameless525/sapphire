@@ -237,6 +237,48 @@ fn the_reconstruction_stays_within_the_stated_bound() {
     assert!(worst > 1e-5, "the test measured something: {worst}");
 }
 
+/// Sharing a rig goes by names alone, so a name two joints have says nothing: picking one would move
+/// the other's skin. It's an error wherever a joint being shared has one, and only there.
+#[test]
+fn a_name_two_joints_share_cant_share_a_rig() {
+    use super::source::{RigMismatch, joint_remap};
+
+    let joint = |name: &str, parent: Option<u16>, x: f32| Joint {
+        name: name.to_owned(),
+        parent,
+        rest: JointTransform { translation: [x, 0.0, 0.0], ..JointTransform::IDENTITY },
+    };
+    let ambiguous = |name: &str| Err(RigMismatch::AmbiguousName { joint: name.to_owned() });
+    let twins = vec![joint("root", None, 0.0), joint("part", Some(0), 1.0), joint("part", Some(0), 1.0)];
+    let one = vec![joint("root", None, 0.0), joint("part", Some(0), 1.0)];
+    let apart = vec![joint("root", None, 0.0), joint("part", Some(0), 1.0), joint("part", Some(0), 2.0)];
+    let parents = vec![
+        joint("root", None, 0.0),
+        joint("arm", Some(0), 1.0),
+        joint("arm", Some(0), 1.0),
+        joint("hand", Some(2), 1.0),
+    ];
+    let more = vec![
+        joint("root", None, 0.0),
+        joint("part", Some(0), 1.0),
+        joint("spare", Some(0), 1.0),
+        joint("spare", Some(0), 1.0),
+    ];
+    type Row<'a> = (&'a str, &'a [Joint], &'a [Joint], Result<Vec<u16>, RigMismatch>);
+    let rows: Vec<Row<'_>> = vec![
+        ("twins at one rest, shared with themselves", &twins, &twins, ambiguous("part")),
+        ("twins at two rests", &apart, &apart, ambiguous("part")),
+        ("twins in the skeleton alone", &one, &twins, ambiguous("part")),
+        ("twins in the source alone", &twins, &one, ambiguous("part")),
+        ("parents with one name", &parents, &parents, ambiguous("arm")),
+        ("twins the source doesn't name", &one, &more, Ok(vec![0, 1])),
+        ("no twins", &one, &one, Ok(vec![0, 1])),
+    ];
+    for (name, source, shared, expected) in rows {
+        assert_eq!(joint_remap(source, &Skeleton::new(shared)), expected, "{name}");
+    }
+}
+
 /// Same samples, same bytes: reduction reads nothing else.
 #[test]
 fn reduction_is_deterministic() {

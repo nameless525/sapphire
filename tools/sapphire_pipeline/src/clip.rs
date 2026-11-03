@@ -91,7 +91,9 @@ use crate::keypose;
 /// same samples.
 ///
 /// 2: normalizes and walks a skeleton in scalars, for one set of bytes on every architecture (M2 N1).
-pub const COOKER: Stage = Stage { name: "sclip", version: 2 };
+/// 3: a shared rig's repeated joint name is an error, where its tracks landed on one joint (the review's
+/// IMP-001).
+pub const COOKER: Stage = Stage { name: "sclip", version: 3 };
 
 /// The `.sskel` writer. Bump its version whenever it changes output for the same import.
 pub const SKELETON_COOKER: Stage = Stage { name: "sskel", version: 1 };
@@ -166,7 +168,8 @@ pub struct ClipSettings {
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub humanoid: BTreeMap<HumanBone, String>,
     /// An animation source with the same rig as this file: its clips name that source's skeleton
-    /// rather than cooking one more, matching joints by name, parent and rest, in any order.
+    /// rather than cooking one more, matching joints by name, parent and rest, in any order. A name
+    /// two joints share can't be matched, and is an error.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rig: Option<AssetId>,
     /// Clips to carry onto other rigs, each entry one target: see [`retarget`].

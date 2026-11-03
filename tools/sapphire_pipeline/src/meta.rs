@@ -377,7 +377,8 @@ pub struct MeshSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub clips: Option<ClipSettings>,
     /// The source whose skeleton this mesh plays on instead of cooking its own (M2 N1): its joints
-    /// match by name, parent and rest, in any order. Written out only when set.
+    /// match by name, parent and rest, in any order, and a name two joints share is an error. Written
+    /// out only when set.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skeleton: Option<AssetId>,
 }

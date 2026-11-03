@@ -2,7 +2,7 @@
 
 use sapphire_rhi::{GpuContext, TransientPool, TransientTexture, wgpu};
 
-use super::plan::{Access, PassNode, Plan};
+use super::plan::{Access, PassNode, Plan, run_length};
 use super::report::GraphReport;
 use super::timing::{self, FrameQueries, FrameTimer, GpuTimings, PassTimestamps};
 use super::{FrameGraph, GraphError, GraphStats, PassContext, RecordFn, Resolved};
@@ -14,6 +14,11 @@ const PARALLEL_MIN_PASSES: usize = 4;
 
 /// The fewest passes recorded into each encoder when recording in parallel.
 const MIN_PASSES_PER_ENCODER: usize = 2;
+
+/// The most encoders a frame records into, whatever the workers: split by weight, six recorded a
+/// frame in 9-13% less time than eight split by count did, on every tier, each encoder costing
+/// about twenty allocations and a worker's wake-up.
+const MAX_ENCODERS: usize = 6;
 
 /// Compiles, records and submits [`FrameGraph`]s. Keep one per device for as long as it is
 /// rendering: it owns the transient texture pool.
@@ -40,6 +45,8 @@ struct Job<'g, 'f> {
     record: Option<RecordFn<'f>>,
     /// Its position among the running passes: its timestamp pair.
     order: u32,
+    /// The encoder it records into.
+    command_buffer: u32,
     /// Whether its timestamps were written.
     timed: bool,
 }
@@ -91,6 +98,7 @@ impl GraphExecutor {
                 pass: &shape.passes[index],
                 record: records[index].take(),
                 order: order as u32,
+                command_buffer: 0,
                 timed: false,
             })
             .collect();
@@ -112,9 +120,8 @@ impl GraphExecutor {
         } else {
             let threads = sapphire_jobs::system().compute_pool().thread_num();
             // The waiting thread records too.
-            (jobs.len() / MIN_PASSES_PER_ENCODER).min(threads + 1)
+            (jobs.len() / MIN_PASSES_PER_ENCODER).min(threads + 1).min(MAX_ENCODERS)
         };
-        let chunk_len = jobs.len().div_ceil(encoders.max(1)).max(1);
         let queries = match &mut self.timer {
             Some(timer) => timer.begin(gpu.device(), self.frames, jobs.len()),
             None => None,
@@ -130,7 +137,20 @@ impl GraphExecutor {
             vec![recorder.record(&mut jobs)]
         } else {
             sapphire_jobs::scope(|scope| {
-                for chunk in jobs.chunks_mut(chunk_len) {
+                let mut left: u32 = jobs.iter().map(|job| job.pass.weight).sum();
+                let mut rest = jobs.as_mut_slice();
+                for encoder in 0..encoders {
+                    if rest.is_empty() {
+                        break;
+                    }
+                    let runs = encoders - encoder;
+                    let length = run_length(rest.iter().map(|job| job.pass.weight), left, runs);
+                    let (chunk, tail) = rest.split_at_mut(length);
+                    rest = tail;
+                    for job in chunk.iter_mut() {
+                        job.command_buffer = encoder as u32;
+                        left -= job.pass.weight;
+                    }
                     let recorder = &recorder;
                     scope.spawn(move || recorder.record(chunk));
                 }
@@ -139,7 +159,7 @@ impl GraphExecutor {
         let timed = recorder.queries.is_some();
         self.stats = self.frame_stats(shape.passes.len(), command_buffers.len());
         if let Some(report) = &mut self.report {
-            report.fill(&shape, &self.plan, chunk_len);
+            report.fill(&shape, &self.plan, |order| jobs[order as usize].command_buffer);
         }
         if timed && let Some(timer) = &mut self.timer {
             let mut passes = jobs.iter().map(|job| (job.pass.name, job.timed));

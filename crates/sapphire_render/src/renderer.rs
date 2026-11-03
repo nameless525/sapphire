@@ -202,6 +202,17 @@ impl RenderSettings {
     }
 }
 
+/// What recording the passes that draw meshes costs against one that draws a triangle
+/// ([`crate::graph::PassBuilder::weight`]), in a fight's and the town's frames on an M5: the main
+/// pass and the scene prepass 30–45 µs, a shadow cascade and the uploads 10–20, the characters' 7,
+/// the others up to 5.
+pub(crate) mod pass_weight {
+    pub const SCENE: u32 = 8;
+    /// A shadow cascade's, and the uploads'.
+    pub const MAP: u32 = 4;
+    pub const CHARACTERS: u32 = 2;
+}
+
 /// The smallest render scale: a quarter of the target's width and height.
 pub const MIN_RENDER_SCALE: f32 = 0.25;
 
@@ -1990,7 +2001,7 @@ impl Renderer {
 
         // Buffers aren't graph resources (see the crate docs), so the uploads are a side effect
         // added first: the passes after read what they copy.
-        graph.add_pass("uploads").side_effect().record(move |ctx| {
+        graph.add_pass("uploads").side_effect().weight(pass_weight::MAP).record(move |ctx| {
             frame_ran.store(true, Ordering::Relaxed);
             upload(uploads, ctx.encoder, frame_uniforms, bytemuck::bytes_of(&constants));
             upload(uploads, ctx.encoder, view_uniforms, bytemuck::bytes_of(&view));
@@ -2077,8 +2088,12 @@ impl Renderer {
         // don't): an unlisted instance (a skinned prop, an anime-shaded pedestal) stays out of
         // what the rim, the bangs' shadow, eyes through hair and the responsive mask read. Its
         // layout leaves group 0, which binds its targets, out.
-        graph.add_pass(CHARACTER_PREPASS).write(targets.character_depth).write(targets.character_ids).record(
-            move |ctx| {
+        graph
+            .add_pass(CHARACTER_PREPASS)
+            .weight(pass_weight::CHARACTERS)
+            .write(targets.character_depth)
+            .write(targets.character_ids)
+            .record(move |ctx| {
                 let colors = [Some(targets.character_ids)];
                 let mut pass =
                     begin_prepass(ctx, CHARACTER_PREPASS, targets.character_depth, &colors, labels);
@@ -2114,10 +2129,13 @@ impl Renderer {
                         }
                     }
                 }
-            },
-        );
-        let mut scene_prepass =
-            graph.add_pass(SCENE_PREPASS).write(targets.depth).write(targets.normals).write(targets.outlines);
+            });
+        let mut scene_prepass = graph
+            .add_pass(SCENE_PREPASS)
+            .weight(pass_weight::SCENE)
+            .write(targets.depth)
+            .write(targets.normals)
+            .write(targets.outlines);
         if let Some(velocity) = targets.velocity {
             scene_prepass = scene_prepass.write(velocity);
         }
@@ -2228,6 +2246,7 @@ impl Renderer {
         let card_depth = (card_depth_fade && !card_draws.is_empty()).then_some(targets.depth);
         let mut main = graph
             .add_pass(MAIN_PASS)
+            .weight(pass_weight::SCENE)
             .read(targets.character_depth)
             .read(targets.character_ids)
             .write(scene_color)

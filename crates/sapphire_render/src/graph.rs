@@ -15,8 +15,9 @@
 //!    between frames.
 //!
 //! It then records the passes, on several workers when there are enough of them, into
-//! command buffers that it submits in order with one `queue.submit`. wgpu tracks barriers,
-//! so ordering, culling, pooling and parallel recording are the graph's whole job.
+//! command buffers that it submits in order with one `queue.submit`, each encoder taking about a
+//! fair share of the passes' [`PassBuilder::weight`]s. wgpu tracks barriers, so ordering, culling,
+//! pooling and parallel recording are the graph's whole job.
 //!
 //! # Writes
 //!
@@ -55,8 +56,6 @@
 //! - Textures kept into the next frame as graph resources. Temporal AA (M1 R7) keeps its history
 //!   and depth in persistent textures of its own and imports them every frame, which is enough
 //!   for one owner; a graph-managed history would pool them once several passes keep textures.
-//! - A per-pass cost hint, so parallel recording splits by work instead of pass count. GPU
-//!   timings could seed it.
 
 mod executor;
 mod plan;
@@ -169,6 +168,14 @@ impl<'f> PassBuilder<'_, 'f> {
     /// Runs the pass even if nothing reads what it writes: uploads, readbacks, queries.
     pub fn side_effect(self) -> Self {
         self.graph.shape.passes[self.pass].side_effect = true;
+        self
+    }
+
+    /// How much recording this pass costs against a pass that draws nothing, which counts 1:
+    /// parallel recording splits passes into encoders by this, so one encoder doesn't draw the
+    /// frame's meshes while the others wait with a blit each. It changes nothing on the GPU.
+    pub fn weight(self, weight: u32) -> Self {
+        self.graph.shape.passes[self.pass].weight = weight.max(1);
         self
     }
 

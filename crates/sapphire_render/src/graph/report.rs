@@ -64,9 +64,9 @@ impl GraphReport {
         self.passes.iter().filter(|pass| pass.order.is_some())
     }
 
-    /// Rewrites the report from a compiled graph whose running passes were recorded into command
-    /// buffers of `chunk_len` passes each, in order.
-    pub(super) fn fill(&mut self, shape: &Shape, plan: &Plan, chunk_len: usize) {
+    /// Rewrites the report from a compiled graph whose running passes were recorded into the
+    /// command buffers `command_buffer` gives by their order.
+    pub(super) fn fill(&mut self, shape: &Shape, plan: &Plan, command_buffer: impl Fn(u32) -> u32) {
         self.passes.clear();
         self.textures.clear();
         self.accesses.clear();
@@ -93,7 +93,7 @@ impl GraphReport {
                 name: pass.name,
                 order: running,
                 side_effect: pass.side_effect,
-                command_buffer: running.map(|order| order / chunk_len.max(1) as u32),
+                command_buffer: running.map(&command_buffer),
                 accesses: (start, self.accesses.len() as u32),
             });
         }
@@ -140,7 +140,7 @@ mod tests {
         plan.compile(&shape).expect("valid");
 
         let mut report = GraphReport::default();
-        report.fill(&shape, &plan, 2);
+        report.fill(&shape, &plan, |order| order / 2);
         let summary: Vec<_> = report.passes.iter().map(|p| (p.name, p.order, p.command_buffer)).collect();
         assert_eq!(
             summary,
@@ -168,7 +168,7 @@ mod tests {
 
         // Refilling reuses the lists.
         let capacity = report.passes.capacity();
-        report.fill(&shape, &plan, 8);
+        report.fill(&shape, &plan, |_| 0);
         assert_eq!(report.passes.capacity(), capacity);
         assert!(report.running().all(|pass| pass.command_buffer == Some(0)));
     }

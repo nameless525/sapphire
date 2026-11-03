@@ -179,6 +179,7 @@ use crate::mesh_pool::MeshRecord;
 use crate::pipelines::{
     Coverage, DEPTH_FORMAT, Layouts, MeshPass, Part, Pipelines, Shading, SurfaceVariant, format_index,
 };
+use crate::renderer::pass_weight;
 use crate::scene::{DrawList, InstanceSlots};
 use crate::shader_builds::Step;
 use crate::shaders::{self, Program, ShaderSources};
@@ -821,7 +822,7 @@ impl Shadows {
             }
             let layer = &self.textures.layers[index];
             let bit = 1u8 << index;
-            graph.add_pass(CASCADE_PASSES[index]).side_effect().record(move |ctx| {
+            graph.add_pass(CASCADE_PASSES[index]).side_effect().weight(pass_weight::MAP).record(move |ctx| {
                 let timestamps = ctx.timestamp_writes();
                 let mut pass =
                     begin_depth_pass(ctx.encoder, CASCADE_PASSES[index], layer, timestamps, labels);
@@ -834,7 +835,7 @@ impl Shadows {
         }
         if let Some(settings) = self.settings.filter(|_| !self.plan.maps.is_empty()) {
             let (tile, maps) = (settings.character_resolution, self.plan.maps.len());
-            graph.add_pass(CHARACTER_PASS).side_effect().record(move |ctx| {
+            graph.add_pass(CHARACTER_PASS).side_effect().weight(pass_weight::CHARACTERS).record(move |ctx| {
                 let timestamps = ctx.timestamp_writes();
                 let atlas = &self.textures.atlas;
                 let mut pass = begin_depth_pass(ctx.encoder, CHARACTER_PASS, atlas, timestamps, labels);

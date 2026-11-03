@@ -28,6 +28,26 @@ pub(super) struct PassNode {
     pub name: &'static str,
     pub accesses: Range<usize>,
     pub side_effect: bool,
+    /// What recording it costs against a pass that draws nothing ([`super::PassBuilder::weight`]).
+    pub weight: u32,
+}
+
+/// How many of the next passes, of `weights`, go into the next of `runs` runs in order: about a
+/// fair share of the `left` weight still to place, at least one pass. A pass goes in while at
+/// least half of it fits, so a heavy pass doesn't start a run early for a sliver of the share.
+pub(super) fn run_length(weights: impl Iterator<Item = u32>, left: u32, runs: usize) -> usize {
+    let (left, runs) = (u64::from(left), runs.max(1) as u64);
+    let mut taken = 0_u64;
+    let mut length = 0;
+    for weight in weights {
+        let weight = u64::from(weight);
+        if length > 0 && (2 * taken + weight) * runs > 2 * left {
+            break;
+        }
+        taken += weight;
+        length += 1;
+    }
+    length
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,7 +78,7 @@ impl Shape {
 
     pub fn add_pass(&mut self, name: &'static str) -> usize {
         let start = self.accesses.len();
-        self.passes.push(PassNode { name, accesses: start..start, side_effect: false });
+        self.passes.push(PassNode { name, accesses: start..start, side_effect: false, weight: 1 });
         self.passes.len() - 1
     }
 
@@ -197,6 +217,51 @@ impl Plan {
 #[cfg(test)]
 mod tests {
     use sapphire_rhi::wgpu;
+
+    /// `weights` split into `runs` runs: each run's weights.
+    fn split(weights: &[u32], runs: usize) -> Vec<Vec<u32>> {
+        let mut left: u32 = weights.iter().sum();
+        let mut rest = weights;
+        let mut out = Vec::new();
+        for run in 0..runs {
+            let length = run_length(rest.iter().copied(), left, runs - run);
+            let (chunk, tail) = rest.split_at(length);
+            left -= chunk.iter().sum::<u32>();
+            rest = tail;
+            if !chunk.is_empty() {
+                out.push(chunk.to_vec());
+            }
+        }
+        assert!(rest.is_empty(), "every pass is in a run: {rest:?} left");
+        out
+    }
+
+    #[test]
+    fn runs_share_the_weight_in_order_and_hold_every_pass() {
+        assert_eq!(split(&[1, 1, 1, 1], 2), [vec![1, 1], vec![1, 1]], "equal passes split evenly");
+        assert_eq!(split(&[1, 1, 1], 2), [vec![1, 1], vec![1]]);
+        assert_eq!(
+            split(&[1, 1, 1, 8, 1, 1], 2),
+            [vec![1, 1, 1], vec![8, 1, 1]],
+            "a heavy pass goes with less"
+        );
+        assert_eq!(split(&[8, 8, 1, 1], 2), [vec![8], vec![8, 1, 1]], "a heavy pass fills a run");
+        assert_eq!(split(&[8, 8, 8], 8), [vec![8], vec![8], vec![8]], "fewer passes than runs");
+        assert_eq!(split(&[1, 2, 3], 1), [vec![1, 2, 3]], "one run takes everything");
+        assert_eq!(split(&[], 3), Vec::<Vec<u32>>::new());
+    }
+
+    /// A fight's frame on Desktop-High, in its passes' weights: six encoders, the heaviest with no
+    /// more than a little over its share.
+    #[test]
+    fn a_fights_frame_splits_into_about_equal_shares() {
+        let frame = [4, 1, 1, 1, 4, 4, 4, 4, 2, 1, 2, 8, 1, 8, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1];
+        let runs = split(&frame, 6);
+        let total: u32 = frame.iter().sum();
+        assert_eq!(runs.len(), 6, "{runs:?}");
+        let heaviest = runs.iter().map(|run| run.iter().sum::<u32>()).max().expect("runs");
+        assert!(heaviest * 6 <= total * 3 / 2, "{heaviest} of {total}: {runs:?}");
+    }
 
     use super::*;
 

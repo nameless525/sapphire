@@ -60,8 +60,8 @@ impl TimelineId {
 pub enum TimelineCommand {
     /// [`Simulation::play_timeline`](crate::Simulation::play_timeline).
     Play(TimelineId),
-    /// Someone skipped, this far in. It changes nothing in the simulation (see the
-    /// [module docs](self)); it's here so a replay shown beside a renderer can show the skip.
+    /// Someone skipped, this far in. It changes nothing in the simulation, whose [`TimelineRun`] just runs
+    /// out; it's here so a replay shown beside a renderer can show the skip.
     Skip { at_ms: u32 },
 }
 

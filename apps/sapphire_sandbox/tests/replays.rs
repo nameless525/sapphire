@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use sapphire_gameplay::replay::{
-    ARCHITECTURE, ChecksumFile, Played, Player, RecordedTrail, Recording, Replay, SCENARIOS,
+    ARCHITECTURE, ChecksumFile, FORMAT_VERSION, Played, Player, RecordedTrail, Recording, Replay, SCENARIOS,
     checksums_file_name, melee_sweep,
 };
 use sapphire_gameplay::{ActorActions, ActorId, Buttons, TickActions};
@@ -126,12 +126,12 @@ fn a_replay_that_cant_run_is_refused_before_any_gpu_work() {
     let bytes = suite_of(&temp, "good", &replay, &played);
     let later = temp.path("later.sreplay");
     let mut newer = bytes.clone();
-    newer[8] = 2;
+    newer[8] = FORMAT_VERSION as u8 + 1;
     fs::write(&later, &newer).expect("writes");
     assert_refused(
         &run(&["--replay", &temp.text("later.sreplay")]),
         &capture,
-        &["version 2", "record it again"],
+        &[&format!("version {}", FORMAT_VERSION + 1), "record it again"],
     );
 
     // A move that changed since it was recorded.

@@ -355,12 +355,78 @@ fn budget_collection_rescans_dependencies_released_by_an_earlier_kind() {
 
     server.update();
     let gone: Vec<_> = server.take_unloaded().iter().map(|event| event.id).collect();
-    assert_eq!(gone, [id(MESH), id(MATERIAL)], "mesh releases material before its kind is scanned");
-    assert_eq!(server.stats().assets, 1, "texture's kind was scanned before material was removed");
-    server.update();
-    let gone: Vec<_> = server.take_unloaded().iter().map(|event| event.id).collect();
-    assert_eq!(gone, [id(TEXTURE)]);
+    assert_eq!(
+        gone,
+        [id(MESH), id(MATERIAL), id(TEXTURE)],
+        "mesh releases material before its kind is scanned"
+    );
     assert_eq!(server.stats().assets, 0);
+}
+
+/// Mesh `n + 2` draws with material `n + 1`, which binds texture `n`, each with an ID of its own.
+fn tree(n: u8, texture: u8) -> Vec<PackAsset> {
+    vec![
+        packed(id(n + 1), AssetKind::Material, &material_bytes(Some(id(texture)))),
+        packed(id(n + 2), AssetKind::Mesh, &mesh_bytes(id(n + 1))),
+    ]
+}
+
+/// A cached mesh holds its material and that its texture, so the texture is in use and nothing the app
+/// holds is: a kind over budget has to be able to get at it through them.
+#[test]
+fn a_cached_mesh_doesnt_keep_a_kind_over_budget() {
+    let mut assets = Vec::new();
+    for n in [10, 20, 30] {
+        assets.push(packed(id(n), AssetKind::Texture, &texture_bytes(8, 8, n)));
+        assets.extend(tree(n, n));
+    }
+    // A second mesh of the first texture.
+    assets.extend(tree(40, 10));
+    let size = assets[0].size;
+    let mut budgets = unlimited();
+    budgets.resident[AssetKind::Texture.index()] = size;
+    let (mut server, _) = serve(assets, budgets);
+    let load = |server: &mut AssetServer, n: u8| -> Handle<Mesh> {
+        let mesh = server.load(id(n)).unwrap();
+        server.finish(&mesh, |_| Ok(())).unwrap();
+        mesh
+    };
+    let gone = |server: &mut AssetServer| -> Vec<AssetId> {
+        let mut gone: Vec<AssetId> = server.take_unloaded().iter().map(|event| event.id).collect();
+        gone.sort();
+        gone
+    };
+    let sorted = |mut ids: Vec<AssetId>| {
+        ids.sort();
+        ids
+    };
+
+    // Used up, cached, within budget: it stays.
+    drop(load(&mut server, 12));
+    server.update();
+    assert!(gone(&mut server).is_empty());
+    // Over budget, with a mesh in use: the cached one goes with all it held.
+    let second = load(&mut server, 22);
+    server.update();
+    assert_eq!(gone(&mut server), sorted(vec![id(10), id(11), id(12)]));
+    assert_eq!(server.stats().resident[AssetKind::Texture.index()], size);
+
+    // Over budget with all of it in use: nothing goes, and what's in use holds its own.
+    let third = load(&mut server, 32);
+    server.update();
+    assert!(gone(&mut server).is_empty());
+    assert_eq!(server.stats().resident[AssetKind::Texture.index()], 2 * size);
+    drop(third);
+    server.update();
+    assert_eq!(gone(&mut server), sorted(vec![id(30), id(31), id(32)]));
+
+    // A cached mesh of a texture the app holds through another isn't worth anything to evict.
+    let first = load(&mut server, 12);
+    drop(load(&mut server, 42));
+    server.update();
+    assert!(gone(&mut server).is_empty(), "both textures are in use: mesh 42 frees nothing");
+    assert_eq!(server.stats().resident[AssetKind::Texture.index()], 2 * size);
+    drop((first, second));
 }
 
 #[test]

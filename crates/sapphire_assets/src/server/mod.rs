@@ -6,7 +6,7 @@ mod mounts;
 mod reload;
 mod source;
 
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -41,7 +41,7 @@ pub struct AssetBudgets {
 }
 
 impl AssetBudgets {
-    /// Desktop (spec §5.10, §3.4): 16 MiB of uploads a frame; meshes 768 MiB, textures 2.5 GiB
+    /// Desktop (spec §5.10, §3.4): 16 MiB of uploads a frame; meshes 384 MiB, textures 2.5 GiB
     /// (the zone texture pool), materials 32 MiB, rigs 64 MiB, probe grids 64 MiB, skeletons 16 MiB,
     /// clips 128 MiB, collider sets 16 MiB, sounds 32 MiB, cues 1 MiB, move sets 16 MiB, animation
     /// graphs 1 MiB, zones 16 MiB, string tables 8 MiB, fonts 64 MiB, font chains 1 MiB, navmeshes 16 MiB.
@@ -49,7 +49,9 @@ impl AssetBudgets {
     pub const DESKTOP: Self = Self {
         upload_per_frame: 16 * MIB,
         resident: Self::by_kind([
-            768 * MIB,
+            // What the pool holds under the device floor's 256 MiB a buffer: indices fill first, at a
+            // bit over half a mesh's bytes (M3 W3).
+            384 * MIB,
             2560 * MIB,
             32 * MIB,
             64 * MIB,
@@ -619,6 +621,11 @@ impl AssetServer {
         self.index.contains_key(&id)
     }
 
+    /// Whether asset `id` has a slot here, loading or loaded, used or cached.
+    pub fn is_resident(&self, id: AssetId) -> bool {
+        self.by_id.contains_key(&id)
+    }
+
     /// Loads asset `id` as a `T` at [`LoadPriority::Normal`]: see [`Self::load_with`].
     pub fn load<T: Asset>(&mut self, id: AssetId) -> Result<Handle<T>, LoadError> {
         self.load_with(id, LoadPriority::Normal)
@@ -1175,7 +1182,7 @@ impl AssetServer {
     fn collect(&mut self) {
         let mut resident = [0u64; AssetKind::ALL.len()];
         let mut failed = Vec::new();
-        let mut has_candidates = [false; AssetKind::ALL.len()];
+        let mut has_candidates = false;
         for (key, slot) in &mut self.slots {
             let users = slot.users();
             if users > 0 {
@@ -1183,9 +1190,7 @@ impl AssetServer {
             }
             let evictable =
                 users == 0 && slot.pins == 0 && matches!(slot.state, SlotState::Ready | SlotState::Failed(_));
-            if evictable {
-                has_candidates[slot.handle.kind().index()] = true;
-            }
+            has_candidates |= evictable;
             match slot.state {
                 SlotState::Failed(_) if evictable => failed.push(key),
                 SlotState::Failed(_) => {}
@@ -1193,17 +1198,16 @@ impl AssetServer {
                 _ => resident[slot.handle.kind().index()] += slot.size,
             }
         }
-        // Removal can drop the last dependency handle, invalidating the initial
-        // candidate flags. Preserve the original per-kind rescan after any removal.
-        // A handle dropped concurrently after the snapshot may instead be collected
-        // on the next update, just as one dropped after a kind's scan always was.
+        // Removal can drop the last dependency handle, which makes a candidate of what wasn't one, so
+        // any removal keeps the scans going. A handle dropped concurrently after the snapshot may
+        // instead be collected on the next update, just as one dropped after a kind's scan always was.
         let mut removed = !failed.is_empty();
         for key in failed {
             self.remove(key);
         }
         for kind in AssetKind::ALL {
             let excess = resident[kind.index()].saturating_sub(self.budgets.resident(kind));
-            if excess > 0 && (removed || has_candidates[kind.index()]) {
+            if excess > 0 && (removed || has_candidates) {
                 removed |= self.evict(kind, excess);
             }
         }
@@ -1231,7 +1235,87 @@ impl AssetServer {
             removed = true;
         }
         self.eviction_scratch = candidates;
+        if excess > 0 {
+            removed |= self.evict_holders(kind, excess);
+        }
         removed
+    }
+
+    /// Unloads the unused assets that hold `kind`'s for nobody, least recently used first, with all they
+    /// alone hold, until `excess` bytes of `kind` are gone or none are left. A cached mesh keeps its
+    /// material in use, and that its textures, so without this a kind could stay over budget with nothing
+    /// the app holds to blame. What the app holds or pins, and all that holds up, stays, and a cached
+    /// asset that shares only that isn't touched: it would free nothing. Reports whether it removed any.
+    fn evict_holders(&mut self, kind: AssetKind, mut excess: u64) -> bool {
+        // Down from what the app holds: a handle beyond the parents' is the app's.
+        let mut held = HashSet::new();
+        let mut stack: Vec<SlotKey> = self
+            .slots
+            .iter()
+            .filter(|(_, slot)| slot.pins > 0 || slot.users() > slot.parents.len())
+            .map(|(key, _)| key)
+            .collect();
+        while let Some(key) = stack.pop() {
+            if held.insert(key) {
+                let slot = &self.slots[key];
+                let next_children = slot.next.iter().flat_map(|next| &next.children);
+                stack.extend(slot.children.iter().chain(next_children).map(UntypedHandle::key));
+            }
+        }
+        // Up from what's left of this kind.
+        let mut stack: Vec<SlotKey> = self
+            .slots
+            .iter()
+            .filter(|&(key, slot)| slot.handle.kind() == kind && !held.contains(&key))
+            .map(|(key, _)| key)
+            .collect();
+        let mut seen = HashSet::new();
+        let mut holders = Vec::new();
+        while let Some(key) = stack.pop() {
+            for &parent in &self.slots[key].parents {
+                if seen.insert(parent) {
+                    stack.push(parent);
+                    if Self::evictable(&self.slots[parent]) {
+                        holders.push((self.slots[parent].last_used, parent));
+                    }
+                }
+            }
+        }
+        holders.sort_unstable();
+        let removed = !holders.is_empty();
+        for (_, key) in holders {
+            if excess == 0 {
+                break;
+            }
+            // What an earlier one held alone went with it.
+            if self.slots.contains_key(key) {
+                excess = excess.saturating_sub(self.remove_with_what_it_holds(key, kind));
+            }
+        }
+        removed
+    }
+
+    /// Unloads an asset nothing uses, and those it was the last user of. Returns how many bytes of `kind`
+    /// went.
+    fn remove_with_what_it_holds(&mut self, key: SlotKey, kind: AssetKind) -> u64 {
+        let mut bytes = 0;
+        let mut stack = vec![key];
+        while let Some(key) = stack.pop() {
+            let slot = &self.slots[key];
+            if slot.handle.kind() == kind {
+                bytes += slot.size;
+            }
+            let next_children = slot.next.iter().flat_map(|next| &next.children);
+            let children: Vec<SlotKey> =
+                slot.children.iter().chain(next_children).map(UntypedHandle::key).collect();
+            self.remove(key);
+            for child in children {
+                if !stack.contains(&child) && self.slots.get(child).is_some_and(Self::evictable) {
+                    stack.push(child);
+                }
+            }
+        }
+        bytes
     }
 
     /// Unloads an asset nothing uses. Its dependencies lose a user, and go in a later collection

@@ -74,6 +74,10 @@ impl FromStr for Platform {
 /// The M0 app's package. The game app joins it later.
 pub const SANDBOX: &str = "sapphire_sandbox";
 
+/// The highest build number: the greatest `versionCode` Google Play takes, which also fits the `Int`
+/// that `platform/android/app/build.gradle.kts` reads it as.
+const MAX_BUILD: u32 = 2_100_000_000;
+
 /// A shipping app and its platform identity. Everything but the package name comes from
 /// the package's Cargo.toml (`version` and `[package.metadata.sapphire]`), so every
 /// platform reports the same identity and version.
@@ -137,15 +141,14 @@ impl App {
 
     fn new(package: &str, version: String, identity: Identity) -> anyhow::Result<Self> {
         let Identity { bundle_id, bundle_name, display_name, build } = identity;
-        // Valid as both an Apple bundle identifier and an Android application id.
+        // Valid as both an Apple bundle identifier (no `_`) and an Android application id (no `-`).
         let segment_ok = |s: &str| {
-            s.starts_with(|c: char| c.is_ascii_alphabetic())
-                && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            s.starts_with(|c: char| c.is_ascii_alphabetic()) && s.chars().all(|c| c.is_ascii_alphanumeric())
         };
         ensure!(
             bundle_id.split('.').count() >= 2 && bundle_id.split('.').all(segment_ok),
-            "bundle-id `{bundle_id}`: use two or more dot-separated segments of letters, digits and `_`, \
-             each starting with a letter"
+            "bundle-id `{bundle_id}`: use two or more dot-separated segments of ASCII letters and digits, each \
+             starting with a letter, which is all that Apple and Android both take"
         );
         ensure!(
             (1..=15).contains(&bundle_name.len()) && bundle_name.chars().all(|c| c.is_ascii_alphanumeric()),
@@ -157,7 +160,10 @@ impl App {
             !display_name.chars().any(char::is_control),
             "display-name {display_name:?} holds a control character"
         );
-        ensure!(build >= 1, "build must be at least 1");
+        ensure!(
+            (1..=MAX_BUILD).contains(&build),
+            "build {build} must be from 1 to {MAX_BUILD}, the greatest versionCode Google Play takes"
+        );
         // Apple accepts up to three dot-separated integers; no pre-release suffixes.
         ensure!(
             version.split('.').count() <= 3 && version.split('.').all(|p| p.parse::<u32>().is_ok()),
@@ -407,5 +413,57 @@ mod tests {
         assert!(App::new("game", "1.2.3".into(), named("Sword & Shield <$(NAME)>")).is_ok());
         assert!(App::new("game", "1.2.3".into(), named("Two\nLines")).is_err());
         assert!(App::new("game", "1.2.3".into(), named("Bell\u{7}")).is_err());
+    }
+
+    /// One bundle ID goes to Apple and Android alike, so it holds only what both take: Android has no
+    /// hyphens and Apple no underscores, which leaves letters and digits.
+    #[test]
+    fn a_bundle_id_is_what_apple_and_android_both_take() {
+        let identity = |bundle_id: &str| Identity {
+            bundle_id: bundle_id.into(),
+            bundle_name: "Game".into(),
+            display_name: "Game".into(),
+            build: 1,
+        };
+        for good in ["dev.sapphire.sandbox", "com.Studio2.Game3", "a.b"] {
+            assert!(App::new("game", "1.2.3".into(), identity(good)).is_ok(), "{good}");
+        }
+        for bad in [
+            "dev.sapphire_bad.sandbox",
+            "dev.sapphire.sand_box",
+            "dev._studio.game",
+            "dev.my-studio.game",
+            "dev.1studio.game",
+            "dev..game",
+            ".dev.game",
+            "dev.game.",
+            "dev.st udio.game",
+            "dev.stüdio.game",
+            "game",
+            "",
+        ] {
+            let error = App::new("game", "1.2.3".into(), identity(bad)).unwrap_err().to_string();
+            assert!(error.contains("bundle-id") && error.contains("letters and digits"), "{bad}: {error}");
+        }
+    }
+
+    /// A build number becomes a `versionCode`, which Gradle reads as an `Int` and Google Play holds to
+    /// less than that.
+    #[test]
+    fn a_build_number_is_what_android_takes() {
+        let identity = |build: u32| Identity {
+            bundle_id: "dev.studio.game".into(),
+            bundle_name: "Game".into(),
+            display_name: "Game".into(),
+            build,
+        };
+        for good in [1, 2, MAX_BUILD] {
+            assert_eq!(App::new("game", "1.2.3".into(), identity(good)).unwrap().build, good);
+        }
+        for bad in [0, MAX_BUILD + 1, i32::MAX as u32, i32::MAX as u32 + 1, u32::MAX] {
+            let error = App::new("game", "1.2.3".into(), identity(bad)).unwrap_err().to_string();
+            assert!(error.contains("build"), "{bad}: {error}");
+        }
+        assert!(i32::try_from(MAX_BUILD).is_ok(), "Gradle's `toInt` reads it");
     }
 }

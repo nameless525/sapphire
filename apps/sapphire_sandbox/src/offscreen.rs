@@ -7,64 +7,35 @@
 //! [`bench`](crate::bench) measures the per-frame CPU path, then each exits; `--offscreen`
 //! (`serve.rs`) keeps drawing for hot reload and live link until stopped.
 
-use std::time::Duration;
-
-use sapphire_core::alloc::{AllocCounts, AllocScope};
-use sapphire_platform::{App, AppControl, AppInitError, AppMetadata, DeviceClass, Event, Platform};
+use sapphire_platform::{App, AppControl, AppInitError, AppMetadata, Event, Platform};
+use sapphire_render::RenderSettings;
 use sapphire_render::debug_view::DebugView;
+#[cfg(feature = "dev")]
 use sapphire_render::graph::{FrameGraph, GraphExecutor, TextureId};
-use sapphire_render::quality::{DeviceProfile, FrameTiming, Quality, TierTable};
-use sapphire_render::{RenderSettings, Renderer};
-use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, TransientDesc, wgpu};
-use sapphire_time::Stopwatch;
+use sapphire_rhi::wgpu;
 
 use crate::LOG_TARGET;
 use crate::app::SandboxApp;
 use crate::combat::Combat;
-use crate::content::Content;
+#[cfg(feature = "dev")]
+use crate::frame::{FRAME, FrameHooks, LoadingFrame, ToolFrame};
+use crate::frame::{StageDesc, headless_gpu};
 use crate::options::{OffscreenMode, Options};
-use crate::scene::{Arena, LookDev, Scene};
+#[cfg(feature = "dev")]
+use crate::scene::Scene;
+use crate::scene::{Arena, LookDev};
 #[cfg(feature = "dev")]
 use crate::stats::Stages;
 
 /// Offscreen targets are sRGB like the swapchain, so they match what the window shows.
 pub(crate) const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
-/// Where a frame's CPU time went, as [`Stage`] measures it: what `crate::fight_bench` reads and resets
-/// each frame. Nothing else reads it, and two clock reads a stage cost nothing a frame can see.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct FrameLaps {
-    /// The scene's fixed-step systems.
-    pub scene_step: Duration,
-    /// The simulation's steps.
-    pub simulation: Duration,
-    /// Of those, the character controllers with the physics they ask for: `SimStats::controllers_last`.
-    pub physics: Duration,
-    /// The arena following the steps, and their cues fired: effects spawned and moved.
-    pub cues: Duration,
-    /// `Content::update` and `Scene::follow_content`.
-    pub content: Duration,
-    /// `Scene::animate`.
-    pub animation: Duration,
-    /// `Scene::frame_packet`: presentation, the camera, extraction and the HUD.
-    pub packet: Duration,
-    /// `Renderer::prepare`.
-    pub prepare: Duration,
-    /// `Renderer::record` and the frame graph's execution, its submit included.
-    pub record: Duration,
-    /// What each drew on the heap, on this thread: the workers that record passes count apart.
-    pub animation_allocations: AllocCounts,
-    pub packet_allocations: AllocCounts,
-    pub prepare_allocations: AllocCounts,
-    pub record_allocations: AllocCounts,
-}
-
-/// What's been allocated on this thread since `scope` began, and a scope from now on.
-fn next_scope(scope: &mut AllocScope) -> AllocCounts {
-    let counts = scope.counts();
-    *scope = AllocScope::begin();
-    counts
-}
+/// The GPU, renderer and scene an offscreen mode draws with, under the debug overlay in `dev` builds.
+#[cfg(feature = "dev")]
+pub(crate) type Stage = crate::frame::Stage<StageTools>;
+/// The GPU, renderer and scene an offscreen mode draws with.
+#[cfg(not(feature = "dev"))]
+pub(crate) type Stage = crate::frame::Stage;
 
 /// The offscreen "app". A capture or bench does all its work in `init`, and the first frame
 /// exits; `--offscreen` draws a frame each iteration until the process is told to quit.
@@ -99,7 +70,7 @@ impl App for OffscreenApp {
                     }
                     _ => *ticks,
                 };
-                let mut stage = Stage::new(platform, &options)?;
+                let mut stage = stage(platform, &options)?;
                 stage.combat = combat;
                 crate::capture::run(&mut stage, path, ticks, *frames, width, height)?;
             }
@@ -107,17 +78,17 @@ impl App for OffscreenApp {
                 crate::bench::run(platform, &options, combat, *frames, width, height)?;
             }
             OffscreenMode::ContactSheet { path, cells, ticks, yaws } => {
-                let mut stage = Stage::new(platform, &options)?;
+                let mut stage = stage(platform, &options)?;
                 let framing = crate::contact_sheet::Framing::new(width, height, options.zoom);
                 let layout = crate::contact_sheet::Layout { cells: *cells, ticks, yaws };
                 crate::contact_sheet::run(&mut stage, path, &layout, framing)?;
             }
             #[cfg(feature = "dev")]
             OffscreenMode::Serve => {
-                let mut stage = Stage::new(platform, &options)?;
+                let mut stage = stage(platform, &options)?;
                 stage.combat = combat;
                 if let Some(combat) = &mut stage.combat {
-                    stage.dev.start_fight_from_cooks(combat, &stage.content);
+                    stage.hooks.dev.start_fight_from_cooks(combat, &stage.content);
                 }
                 let serving = crate::serve::Serving::new(stage, options.clone(), width, height)?;
                 return Ok(Self { serving: Some(serving) });
@@ -159,485 +130,264 @@ impl App for OffscreenApp {
     }
 }
 
-/// The GPU, renderer and scene an offscreen mode draws with.
-pub(crate) struct Stage {
-    // Drop order: everything on the device before the context, the context before the instance.
-    /// The debug overlay, drawn over the frame with `--debug-overlay`, hidden otherwise.
+/// The stage `options` ask for. Offscreen modes run on desktops only.
+pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, AppInitError> {
+    let (instance, gpu) = headless_gpu()?;
+    if let Some(offscreen) = &options.offscreen {
+        let limits = gpu.device().limits();
+        target_fits(offscreen.width, offscreen.height, limits.max_texture_dimension_2d)
+            .map_err(AppInitError::msg)?;
+        if matches!(offscreen.mode, OffscreenMode::Capture { .. } | OffscreenMode::ContactSheet { .. }) {
+            crate::capture::readback_fits(offscreen.width, offscreen.height, limits.max_buffer_size)
+                .map_err(AppInitError::msg)?;
+        }
+    }
+    let mut desc = StageDesc::new(platform, &gpu, FORMAT, options.quality_settings());
+    desc.settings = options.render_settings(desc.quality.render_settings());
+    desc.character = options.character();
+    desc.sky = options.sky();
+    desc.keep_character_mesh = options.keeps_character_mesh();
+    desc.party_looks = options.party;
+    desc.material_overrides = options.material_overrides();
+    desc.skinned = options.skinned;
+    let history_only_capture = history_only_capture_allowed(options, desc.settings);
+    let mut stage = crate::frame::Stage::new(platform, instance, gpu, desc)?;
+    stage.history_only_capture = history_only_capture;
+    stage.graph.set_serial(options.serial_passes);
+    let character = stage.character;
+    let crate::frame::Stage { scene, content, renderer, gpu, quality, .. } = &mut stage;
+    if let Some(rig) = &options.character_rig {
+        scene.set_character_rig(rig).map_err(AppInitError::msg)?;
+    }
+    if options.lights {
+        scene.spawn_demo_lights();
+    }
+    if options.skinned {
+        scene.set_stalk_mesh(crate::skinned::upload_stalk(renderer)?);
+    }
+    if options.swatches {
+        scene.spawn_swatches(crate::swatches::upload_swatches(content, gpu, renderer)?);
+    }
+    if options.materials {
+        scene.spawn_layer_samples(crate::layers::upload_samples(content, gpu, renderer)?);
+    }
+    if options.two_sided {
+        scene.spawn_garments(crate::garments::upload_samples(renderer)?);
+    }
+    if let Some(layout) = options.faces {
+        scene.spawn_face_rig(content.face_head(renderer, gpu)?, layout);
+    }
+    if let Some(layout) = options.rim_rig {
+        scene.spawn_rim_rig(layout, content.rim_rig_meshes(renderer)?);
+    }
+    if options.environment {
+        scene.spawn_environment(content.courtyard(renderer, gpu)?);
+        if !options.fog_off {
+            scene.spawn_fog_cards(content.fog_cards(renderer, gpu)?);
+        }
+    }
+    if let Some(view) = options.foliage {
+        scene.spawn_foliage(view, content.foliage(renderer, gpu)?);
+    }
+    if options.probes {
+        let arcade = content.probes(renderer, gpu)?;
+        scene.spawn_arcade(arcade, content.probe_hours());
+    }
+    if options.outline_row {
+        scene.spawn_outline_row(character);
+    }
+    if options.hard_edges {
+        scene.spawn_hard_edges(content.hard_edges(renderer, gpu)?);
+    }
+    if let Some(shot) = options.look_dev {
+        let town = content.town(renderer, gpu)?;
+        let fog_cards = (!options.fog_off).then(|| content.fog_cards(renderer, gpu)).transpose()?;
+        let (pose, figure) = crate::lookdev::hold(content, renderer, gpu)?;
+        scene.spawn_look_dev(shot, LookDev { town, fog_cards, pose, figure });
+        if let Some(clip) = options.clip {
+            content.load_clip(clip.id(), renderer, gpu)?;
+            let mut player = crate::lookdev::player(content)
+                .map_err(AppInitError::msg)?
+                .with_root_motion(!options.clip_in_place)
+                .with_springs_on(options.springs != Some(false));
+            if let Some(ik) = &options.ik {
+                let block = crate::stage::upload_block(renderer)?;
+                let solver = scene.start_ik(ik, block, content, player.pose()).map_err(AppInitError::msg)?;
+                player = player.with_ik(solver);
+            }
+            scene.play_clip(player);
+            scene.set_spring_quality(crate::animate::spring_quality(quality.active().id));
+        }
+        if let Some(script) = options.graph {
+            content.load_graph(crate::lookdev::GRAPH, renderer, gpu)?;
+            let mut driver = crate::lookdev::graph_driver(content).map_err(AppInitError::msg)?;
+            if let Some(ik) = &options.ik {
+                let block = crate::stage::upload_block(renderer)?;
+                let solver =
+                    scene.start_ik(ik, block, content, driver.player.pose()).map_err(AppInitError::msg)?;
+                driver = driver.with_ik(solver);
+            }
+            scene.play_graph(
+                driver.with_springs_on(options.springs != Some(false)),
+                crate::anim_graph::GraphShow::new(script),
+            );
+            scene.set_spring_quality(crate::animate::spring_quality(quality.active().id));
+        }
+        if shot == crate::lookdev::Shot::Enemy {
+            let meshes = content.enemy(renderer, gpu)?;
+            scene.spawn_enemy(meshes, content.held_enemy()?);
+        }
+    }
+    if let Some(shot) = options.arena {
+        let town = content.town(renderer, gpu)?;
+        let fog_cards = (!options.fog_off).then(|| content.fog_cards(renderer, gpu)).transpose()?;
+        let (pose, figure) = crate::lookdev::hold(content, renderer, gpu)?;
+        let ground = content.arena_ground(renderer, gpu)?;
+        let world = ground.share();
+        let look = LookDev { town, fog_cards, pose, figure };
+        let enemy = content.enemy(renderer, gpu)?;
+        scene.spawn_arena(Arena { shot, look, ground, enemy, held: content.held_enemy()? });
+        if let Some(meshes) = content.party_meshes(character) {
+            scene.set_party_meshes(meshes);
+        }
+        if let Some(clip) = options.clip {
+            content.load_clip(clip.id(), renderer, gpu)?;
+            let mut player = crate::lookdev::player(content)
+                .map_err(AppInitError::msg)?
+                .with_root_motion(false)
+                .with_springs_on(options.springs != Some(false));
+            if let Some(ik) = &options.ik {
+                let look = ik.look.map(|look| (look, 0.0));
+                let solver =
+                    scene.ik_on(world.clone(), look, content, player.pose()).map_err(AppInitError::msg)?;
+                player = player.with_ik(solver);
+            }
+            scene.play_clip(player);
+            scene.set_spring_quality(crate::animate::spring_quality(quality.active().id));
+        }
+        if options.combat.is_some() {
+            content.load_graph(crate::lookdev::GRAPH, renderer, gpu)?;
+            content.load_enemy_graph(renderer, gpu)?;
+            let player = crate::lookdev::graph_driver(content).map_err(AppInitError::msg)?;
+            let solver =
+                scene.ik_on(world.clone(), None, content, player.player.pose()).map_err(AppInitError::msg)?;
+            scene.play_fighters(
+                player.with_springs_on(options.springs != Some(false)).with_ik(solver),
+                content.enemy_driver(world)?,
+            );
+            scene.set_spring_quality(crate::animate::spring_quality(quality.active().id));
+        }
+    }
+    if options.blade() {
+        let sword = content.sword(renderer, gpu)?;
+        let hand = crate::lookdev::held_hand(content).map_err(AppInitError::msg)?;
+        scene.spawn_blade(sword, hand);
+    }
+    // The day, the sky options, the starting view and the turntable's speed, last so `--view`
+    // holds whatever framing the scene chose.
+    options.apply_to(scene).map_err(AppInitError::msg)?;
+    if let Some(show) = options.vfx {
+        scene.play_vfx(show, crate::vfx::budget(quality.active().id));
+    }
+    if options.cues {
+        scene.play_cues(crate::vfx::budget(quality.active().id)).map_err(AppInitError::msg)?;
+    }
+    // The screen effects it may push, `--post-effect`'s among them, and the effects it plays,
+    // show on their first frame.
+    scene.prewarm(renderer);
+    // The stage after the hour, which places its pillars.
+    if let Some(layout) = options.stage {
+        scene.spawn_stage(layout, content.stage_meshes(renderer)?);
+    }
+    // Offscreen there are no touches: the HUD is its fixed frame, in either mode, unless it's
+    // live and a fight's bars stand behind it.
+    if let Some(hud) = options.hud {
+        let fight = options.arena.is_some() && options.combat.is_some();
+        let mode = if fight { hud.mode } else { crate::hud::HudMode::Fixed };
+        let hud = crate::hud::HudOptions { mode, ..hud };
+        scene.set_hud(crate::hud::SandboxHud::new(hud));
+    }
     #[cfg(feature = "dev")]
-    pub dev: crate::dev::DevTools,
-    /// The last frame's stage times, measured while the overlay shows.
-    #[cfg(feature = "dev")]
-    stages: Option<Stages>,
-    pub renderer: Renderer,
-    /// `--replay` or `--record`: a simulation that takes a tick with each fixed step.
-    pub combat: Option<Combat>,
-    /// The asset server and what it uploaded, driven every frame like the windowed app's.
-    pub content: Content,
-    pub graph: GraphExecutor,
-    pub scene: Scene,
-    /// The quality tier the renderer was made for, and each frame's render scale.
-    pub quality: Quality,
-    /// Keeps the frame graph's GPU timing on whatever the quality tier wants: the bench's
-    /// GPU-timing phase.
-    pub measure_gpu: bool,
-    /// Only TAA captures without instrumentation can discard their warmup's display output.
-    history_only_capture: bool,
-    /// Where the frames' CPU time went since it was last reset.
-    pub laps: FrameLaps,
-    pub gpu: GpuContext,
-    _instance: GpuInstance,
+    let tools = StageTools { dev: crate::dev::DevTools::new(gpu, FORMAT, options, platform, content)? };
+    #[cfg(not(feature = "dev"))]
+    let tools = ();
+    #[cfg(not(feature = "dev"))]
+    if options.debug_overlay.is_some() {
+        tracing::warn!(target: LOG_TARGET, "--debug-overlay needs a `dev` build (`--features dev`)");
+    }
+    Ok(stage.with_hooks(tools))
 }
 
-impl Stage {
-    /// The scene and renderer `options` ask for. Offscreen modes run on desktops only.
-    pub fn new(platform: &Platform, options: &Options) -> Result<Self, AppInitError> {
-        let instance = GpuInstance::new(&GpuInstanceDesc::default())?;
-        // No one's watching: an error fails the run (`gpu_failure`), in every build.
-        let desc = GpuContextDesc { hold_errors: true, ..GpuContextDesc::default() };
-        let gpu = GpuContext::new(&instance, &desc, None)?;
-        if let Some(offscreen) = &options.offscreen {
-            let limits = gpu.device().limits();
-            target_fits(offscreen.width, offscreen.height, limits.max_texture_dimension_2d)
-                .map_err(AppInitError::msg)?;
-            if matches!(offscreen.mode, OffscreenMode::Capture { .. } | OffscreenMode::ContactSheet { .. }) {
-                crate::capture::readback_fits(offscreen.width, offscreen.height, limits.max_buffer_size)
-                    .map_err(AppInitError::msg)?;
-            }
-        }
-        let profile = DeviceProfile::new(DeviceClass::Desktop, gpu.caps(), platform.system_info().ram_mib);
-        let quality = Quality::new(TierTable::shipped(), &profile, options.quality_settings());
-        let settings = options.render_settings(quality.render_settings());
-        let history_only_capture = history_only_capture_allowed(options, settings);
-        let mut renderer = Renderer::new(&gpu, FORMAT, settings)?;
-        let mut content = Content::new(platform, options.character(), options.sky())?;
-        if options.keeps_character_mesh() {
-            content.keep_character_mesh();
-        }
-        if options.party {
-            content.keep_party_looks();
-        }
-        content.override_materials(options.material_overrides());
-        let (character, bounds) = content.character(&mut renderer, &gpu)?;
-        let mut scene = Scene::with_character(character, bounds, options.skinned);
-        scene.set_sky_material(content.sky_material(&mut renderer, &gpu)?);
-        if let Some(rig) = &options.character_rig {
-            scene.set_character_rig(rig).map_err(AppInitError::msg)?;
-        }
-        if options.lights {
-            scene.spawn_demo_lights();
-        }
-        if options.skinned {
-            scene.set_stalk_mesh(crate::skinned::upload_stalk(&mut renderer)?);
-        }
-        if options.swatches {
-            scene.spawn_swatches(crate::swatches::upload_swatches(&mut content, &gpu, &mut renderer)?);
-        }
-        if options.materials {
-            scene.spawn_layer_samples(crate::layers::upload_samples(&mut content, &gpu, &mut renderer)?);
-        }
-        if options.two_sided {
-            scene.spawn_garments(crate::garments::upload_samples(&mut renderer)?);
-        }
-        if let Some(layout) = options.faces {
-            scene.spawn_face_rig(content.face_head(&mut renderer, &gpu)?, layout);
-        }
-        if let Some(layout) = options.rim_rig {
-            scene.spawn_rim_rig(layout, content.rim_rig_meshes(&mut renderer)?);
-        }
-        if options.environment {
-            scene.spawn_environment(content.courtyard(&mut renderer, &gpu)?);
-            if !options.fog_off {
-                scene.spawn_fog_cards(content.fog_cards(&mut renderer, &gpu)?);
-            }
-        }
-        if let Some(view) = options.foliage {
-            scene.spawn_foliage(view, content.foliage(&mut renderer, &gpu)?);
-        }
-        if options.probes {
-            let arcade = content.probes(&mut renderer, &gpu)?;
-            scene.spawn_arcade(arcade, content.probe_hours());
-        }
-        if options.outline_row {
-            scene.spawn_outline_row(character);
-        }
-        if options.hard_edges {
-            scene.spawn_hard_edges(content.hard_edges(&mut renderer, &gpu)?);
-        }
-        if let Some(shot) = options.look_dev {
-            let town = content.town(&mut renderer, &gpu)?;
-            let fog_cards = (!options.fog_off).then(|| content.fog_cards(&mut renderer, &gpu)).transpose()?;
-            let (pose, figure) = crate::lookdev::hold(&mut content, &mut renderer, &gpu)?;
-            scene.spawn_look_dev(shot, LookDev { town, fog_cards, pose, figure });
-            if let Some(clip) = options.clip {
-                content.load_clip(clip.id(), &mut renderer, &gpu)?;
-                let mut player = crate::lookdev::player(&content)
-                    .map_err(AppInitError::msg)?
-                    .with_root_motion(!options.clip_in_place)
-                    .with_springs_on(options.springs != Some(false));
-                if let Some(ik) = &options.ik {
-                    let block = crate::stage::upload_block(&mut renderer)?;
-                    let solver =
-                        scene.start_ik(ik, block, &content, player.pose()).map_err(AppInitError::msg)?;
-                    player = player.with_ik(solver);
-                }
-                scene.play_clip(player);
-                scene.set_spring_quality(crate::animate::spring_quality(quality.active().id));
-            }
-            if let Some(script) = options.graph {
-                content.load_graph(crate::lookdev::GRAPH, &mut renderer, &gpu)?;
-                let mut driver = crate::lookdev::graph_driver(&content).map_err(AppInitError::msg)?;
-                if let Some(ik) = &options.ik {
-                    let block = crate::stage::upload_block(&mut renderer)?;
-                    let solver = scene
-                        .start_ik(ik, block, &content, driver.player.pose())
-                        .map_err(AppInitError::msg)?;
-                    driver = driver.with_ik(solver);
-                }
-                scene.play_graph(
-                    driver.with_springs_on(options.springs != Some(false)),
-                    crate::anim_graph::GraphShow::new(script),
-                );
-                scene.set_spring_quality(crate::animate::spring_quality(quality.active().id));
-            }
-            if shot == crate::lookdev::Shot::Enemy {
-                let meshes = content.enemy(&mut renderer, &gpu)?;
-                scene.spawn_enemy(meshes, content.held_enemy()?);
-            }
-        }
-        if let Some(shot) = options.arena {
-            let town = content.town(&mut renderer, &gpu)?;
-            let fog_cards = (!options.fog_off).then(|| content.fog_cards(&mut renderer, &gpu)).transpose()?;
-            let (pose, figure) = crate::lookdev::hold(&mut content, &mut renderer, &gpu)?;
-            let ground = content.arena_ground(&mut renderer, &gpu)?;
-            let world = ground.share();
-            let look = LookDev { town, fog_cards, pose, figure };
-            let enemy = content.enemy(&mut renderer, &gpu)?;
-            scene.spawn_arena(Arena { shot, look, ground, enemy, held: content.held_enemy()? });
-            if let Some(meshes) = content.party_meshes(character) {
-                scene.set_party_meshes(meshes);
-            }
-            if let Some(clip) = options.clip {
-                content.load_clip(clip.id(), &mut renderer, &gpu)?;
-                let mut player = crate::lookdev::player(&content)
-                    .map_err(AppInitError::msg)?
-                    .with_root_motion(false)
-                    .with_springs_on(options.springs != Some(false));
-                if let Some(ik) = &options.ik {
-                    let look = ik.look.map(|look| (look, 0.0));
-                    let solver = scene
-                        .ik_on(world.clone(), look, &content, player.pose())
-                        .map_err(AppInitError::msg)?;
-                    player = player.with_ik(solver);
-                }
-                scene.play_clip(player);
-                scene.set_spring_quality(crate::animate::spring_quality(quality.active().id));
-            }
-            if options.combat.is_some() {
-                content.load_graph(crate::lookdev::GRAPH, &mut renderer, &gpu)?;
-                content.load_enemy_graph(&mut renderer, &gpu)?;
-                let player = crate::lookdev::graph_driver(&content).map_err(AppInitError::msg)?;
-                let solver = scene
-                    .ik_on(world.clone(), None, &content, player.player.pose())
-                    .map_err(AppInitError::msg)?;
-                scene.play_fighters(
-                    player.with_springs_on(options.springs != Some(false)).with_ik(solver),
-                    content.enemy_driver(world)?,
-                );
-                scene.set_spring_quality(crate::animate::spring_quality(quality.active().id));
-            }
-        }
-        if options.blade() {
-            let sword = content.sword(&mut renderer, &gpu)?;
-            let hand = crate::lookdev::held_hand(&content).map_err(AppInitError::msg)?;
-            scene.spawn_blade(sword, hand);
-        }
-        // The day, the sky options, the starting view and the turntable's speed, last so `--view`
-        // holds whatever framing the scene chose.
-        options.apply_to(&mut scene).map_err(AppInitError::msg)?;
-        if let Some(show) = options.vfx {
-            scene.play_vfx(show, crate::vfx::budget(quality.active().id));
-        }
-        if options.cues {
-            scene.play_cues(crate::vfx::budget(quality.active().id)).map_err(AppInitError::msg)?;
-        }
-        // The screen effects it may push, `--post-effect`'s among them, and the effects it plays,
-        // show on their first frame.
-        scene.prewarm(&mut renderer);
-        // The stage after the hour, which places its pillars.
-        if let Some(layout) = options.stage {
-            scene.spawn_stage(layout, content.stage_meshes(&mut renderer)?);
-        }
-        // Offscreen there are no touches: the HUD is its fixed frame, in either mode, unless it's
-        // live and a fight's bars stand behind it.
-        if let Some(hud) = options.hud {
-            let fight = options.arena.is_some() && options.combat.is_some();
-            let mode = if fight { hud.mode } else { crate::hud::HudMode::Fixed };
-            let hud = crate::hud::HudOptions { mode, ..hud };
-            scene.set_hud(crate::hud::SandboxHud::new(hud));
-        }
-        #[cfg(feature = "dev")]
-        let dev = crate::dev::DevTools::new(&gpu, FORMAT, options, platform, &mut content)?;
-        #[cfg(not(feature = "dev"))]
-        if options.debug_overlay.is_some() {
-            tracing::warn!(target: LOG_TARGET, "--debug-overlay needs a `dev` build (`--features dev`)");
-        }
-        Ok(Self {
-            #[cfg(feature = "dev")]
-            dev,
-            #[cfg(feature = "dev")]
-            stages: None,
-            renderer,
-            combat: None,
-            content,
-            graph: {
-                let mut graph = GraphExecutor::new();
-                graph.set_serial(options.serial_passes);
-                graph
-            },
-            scene,
-            quality,
-            measure_gpu: false,
-            history_only_capture,
-            laps: FrameLaps::default(),
-            gpu,
-            _instance: instance,
-        })
+/// The debug overlay and what it reads: drawn over the frame with `--debug-overlay`, hidden otherwise, with
+/// hot reload and live link running before each frame's loading.
+#[cfg(feature = "dev")]
+pub(crate) struct StageTools {
+    pub dev: crate::dev::DevTools,
+}
+
+#[cfg(feature = "dev")]
+impl FrameHooks for StageTools {
+    const TOOLS: bool = true;
+
+    fn before_fixed_step(&mut self, scene: &mut Scene) {
+        self.dev.before_fixed_step(scene);
     }
 
-    /// One fixed step, under the overlay's time controls in `dev` builds, and the end of a cue frame:
-    /// each step here is a frame's worth, as it is on any tier that draws every tick.
-    pub fn step(&mut self) {
-        self.fixed_step();
-        // No sound and no pad here: a frame's end is all that's left of them. Frames here draw the latest step.
-        let frame = 1.0 / sapphire_time::TICK_HZ as f32;
-        self.scene.end_cue_frame(frame, frame, 1.0, &mut ());
+    fn before_loading(&mut self, frame: LoadingFrame<'_>) {
+        let LoadingFrame { content, renderer, gpu, scene, combat } = frame;
+        self.dev.reload(content, renderer, gpu, scene, combat);
     }
 
-    /// One fixed step and nothing of the frame's: for a frame that takes several, or asks what the steps
-    /// asked of the audio system before the cue frame ends.
-    pub fn fixed_step(&mut self) {
-        let mut stopwatch = Stopwatch::start();
-        #[cfg(feature = "dev")]
-        self.dev.before_fixed_step(&mut self.scene);
-        self.scene.step();
-        // No one's watching a clock here: a step of time is what a frame shows.
-        self.scene.drive_arena_camera(1.0 / sapphire_time::TICK_HZ as f32, sapphire_math::Vec2::ZERO, 0.0);
-        self.laps.scene_step += stopwatch.lap();
-        if let Some(combat) = &mut self.combat {
-            combat.step(&mut crate::combat::no_bindings);
-            self.laps.simulation += stopwatch.lap();
-            self.laps.physics += combat.simulation().stats().controllers_last;
-            self.scene.follow_simulation(combat.simulation(), combat.cast());
-            self.scene.show_cues(combat.simulation());
-            self.laps.cues += stopwatch.lap();
-        }
-    }
-
-    /// The latest step's hits as the HUD's numbers, for a fight an agent runs with no golden behind it:
-    /// captures leave them out, so `arena-fight-hit` keeps its frame.
-    #[cfg(feature = "dev")]
-    pub fn show_damage(&mut self) {
-        if let Some(combat) = &self.combat {
-            self.scene.show_damage(combat.simulation());
-        }
-    }
-
-    /// An error if a replay has left its recorded checksums so far.
-    pub fn check_combat(&self) -> Result<(), AppInitError> {
-        self.combat.as_ref().map_or(Ok(()), Combat::check).map_err(AppInitError::msg)
-    }
-
-    /// An error if the GPU has reported one since the stage was made: see [`gpu_failure`].
-    pub fn check_gpu(&self) -> Result<(), AppInitError> {
-        gpu_failure(&self.gpu).map_err(AppInitError::msg)
-    }
-
-    /// Ends the replay or recording, if there is one: see [`Combat::finish`].
-    pub fn finish_combat(&mut self) -> Result<(), AppInitError> {
-        if let Some(cues) = self.scene.cue_show() {
-            tracing::info!(target: LOG_TARGET, stats = ?cues.stats(), "fired a fight's cues");
-        }
-        self.combat.take().map_or(Ok(()), Combat::finish).map_err(AppInitError::msg)
-    }
-
-    /// Whether the overlay draws over the frames (`--debug-overlay` in a `dev` build).
-    #[cfg(feature = "dev")]
-    pub fn overlay_visible(&self) -> bool {
+    fn overlay_visible(&self) -> bool {
         self.dev.overlay_visible()
     }
 
-    #[cfg(not(feature = "dev"))]
-    pub fn overlay_visible(&self) -> bool {
-        false
+    fn after_steps(&mut self, combat: Option<&Combat>, scene: &Scene) {
+        self.dev.after_steps(combat, scene);
     }
 
-    /// A 2D render target in [`FORMAT`] with `usage` on top of `RENDER_ATTACHMENT`.
-    pub fn target(&self, width: u32, height: u32, usage: wgpu::TextureUsages) -> wgpu::Texture {
-        self.gpu.device().create_texture(&wgpu::TextureDescriptor {
-            label: self.gpu.label("offscreen target"),
-            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | usage,
-            view_formats: &[],
-        })
-    }
-
-    /// Renders the scene as it stands into `view` and submits it. `after` adds passes that
-    /// run after the renderer's, given the target (a readback, say). `alpha` interpolates
-    /// between the last two fixed steps, as in the windowed app.
-    pub fn render<'f>(
-        &'f mut self,
-        view: &'f wgpu::TextureView,
-        alpha: f32,
-        after: impl FnOnce(&mut FrameGraph<'f>, TextureId),
-    ) -> Result<(), AppInitError> {
-        self.render_frame(view, false, alpha, after).map(|_| ())
-    }
-
-    /// Draws every persistent history update but can discard an unused display result. The
-    /// graph keeps imported TAA history/depth, shadows and other persistent writes alive;
-    /// only unconsumed transient passes (bloom and the final composite) may be culled.
-    /// Instrumented frames use the ordinary path so their timings/reports stay representative.
-    pub fn render_capture_warmup(
-        &mut self,
-        view: &wgpu::TextureView,
-        requested: bool,
-    ) -> Result<bool, AppInitError> {
-        self.render_frame(view, requested, 1.0, |_, _| {})
-    }
-
-    fn render_frame<'f>(
-        &'f mut self,
-        view: &'f wgpu::TextureView,
-        discard_output: bool,
-        alpha: f32,
-        after: impl FnOnce(&mut FrameGraph<'f>, TextureId),
-    ) -> Result<bool, AppInitError> {
-        let mut laps = Stopwatch::start();
-        // Hot reload and loading run every frame, as in the windowed app, so the bench measures
-        // them.
-        #[cfg(feature = "dev")]
-        self.dev.reload(
-            &mut self.content,
-            &mut self.renderer,
-            &self.gpu,
-            &mut self.scene,
-            self.combat.as_mut(),
-        );
-        self.content.update(&mut self.renderer, &self.gpu);
-        self.scene.follow_content(&mut self.content);
-        self.laps.content += laps.lap();
-        // Reload/live link can change debug CVars, so inspect them after applying it.
-        let discard_output = discard_output
-            && self.history_only_capture
-            && !self.overlay_visible()
-            && !self.measure_gpu
-            && !self.quality.wants_gpu_timing()
-            && sapphire_render::debug_view::DEBUG_VIEW.get() == DebugView::Off;
-        let mut graph = FrameGraph::new();
-        let target = if discard_output {
-            let texture = view.texture();
-            graph.create_texture(
-                "discarded capture output",
-                TransientDesc {
-                    width: texture.width(),
-                    height: texture.height(),
-                    format: FORMAT,
-                    sample_count: 1,
-                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                },
-            )
-        } else {
-            graph.import_texture("offscreen target", view)
+    fn tools(&mut self, frame: ToolFrame<'_>, executor: &mut GraphExecutor) {
+        let ToolFrame {
+            width,
+            height,
+            last_times,
+            renderer,
+            quality,
+            gpu_timing,
+            gpu,
+            scene,
+            content,
+            combat,
+        } = frame;
+        let stages = last_times.map(|times| Stages {
+            extract: times.extract,
+            render: times.render,
+            ..Stages::default()
+        });
+        // Offscreen frames have no real length; the overlay is told each is a 60 Hz frame.
+        // No display paces offscreen frames.
+        self.dev.begin_frame(FRAME, stages.as_ref(), None);
+        self.dev.advance_offscreen(FRAME);
+        // Drawn as on a display 720 points high, so text stays legible at any size.
+        let scale = (height as f32 / 720.0).max(1.0);
+        let state = crate::dev::FrameState {
+            window: sapphire_debug::WindowMetrics::offscreen(width, height, scale),
+            render: renderer.stats(),
+            quality,
+            gpu_timing,
+            gpu,
+            input: None,
+            scene,
+            assets: content.stats(),
+            audio: None,
+            combat,
         };
-        let (width, height) = graph.size(target);
-        // While the overlay shows, it gets the extract and render stages' times (the bench
-        // measures its own way, and fixed steps are run outside this).
-        #[cfg(feature = "dev")]
-        let mut stopwatch = self.dev.overlay_visible().then(Stopwatch::start);
-        #[cfg(feature = "dev")]
-        self.dev.after_steps(self.combat.as_ref(), &self.scene);
-        laps.lap();
-        let mut scope = AllocScope::begin();
-        self.scene.animate(&self.content, alpha);
-        self.laps.animation += laps.lap();
-        self.laps.animation_allocations = next_scope(&mut scope);
-        if let Some(combat) = &self.combat {
-            combat.draw_views();
-        }
-        let packet = self.scene.frame_packet(alpha, Some((width, height)));
-        self.laps.packet += laps.lap();
-        self.laps.packet_allocations = next_scope(&mut scope);
-        #[cfg(feature = "dev")]
-        let extract = stopwatch.as_mut().map(Stopwatch::lap).unwrap_or_default();
-        // Before `prepare`, which culls hulls by it, and readies the debug view.
-        self.renderer.set_outline_distance(self.quality.outline_distance());
-        self.renderer.set_debug_view(sapphire_render::debug_view::DEBUG_VIEW.get());
-        self.renderer.prepare(&self.gpu, packet);
-        self.laps.prepare += laps.lap();
-        self.laps.prepare_allocations = next_scope(&mut scope);
-        let timing = FrameTiming::new(&self.graph, OFFSCREEN_FRAME);
-        self.renderer.set_render_scale(self.quality.render_scale((width, height), &timing));
-        let gpu_timing = self.quality.wants_gpu_timing() || self.measure_gpu;
-        #[cfg(not(feature = "dev"))]
-        self.graph.set_gpu_timing(&self.gpu, gpu_timing);
-        #[cfg(feature = "dev")]
-        let overlay = {
-            laps.lap();
-            let started = Stopwatch::start();
-            // Offscreen frames have no real length; the overlay is told each is a 60 Hz frame.
-            // No display paces offscreen frames.
-            self.dev.begin_frame(OFFSCREEN_FRAME, self.stages.as_ref(), None);
-            self.dev.advance_offscreen(OFFSCREEN_FRAME);
-            // Drawn as on a display 720 points high, so text stays legible at any size.
-            let scale = (height as f32 / 720.0).max(1.0);
-            let state = crate::dev::FrameState {
-                window: sapphire_debug::WindowMetrics::offscreen(width, height, scale),
-                render: self.renderer.stats(),
-                quality: &self.quality,
-                gpu_timing,
-                gpu: &self.gpu,
-                input: None,
-                scene: &self.scene,
-                assets: self.content.stats(),
-                audio: None,
-                combat: self.combat.as_ref(),
-            };
-            self.dev.update(state, &mut self.graph);
-            laps.lap();
-            scope = AllocScope::begin();
-            started.elapsed()
-        };
-        self.renderer.record(&mut graph, target);
-        #[cfg(feature = "dev")]
-        self.dev.record(&mut graph, target);
-        after(&mut graph, target);
-        self.graph.execute(&self.gpu, graph).map_err(AppInitError::msg)?;
-        self.laps.record += laps.lap();
-        self.laps.record_allocations = scope.counts();
-        #[cfg(feature = "dev")]
-        if let Some(mut stopwatch) = stopwatch {
-            let render = stopwatch.lap().saturating_sub(overlay);
-            self.stages = Some(Stages { extract, render, ..Stages::default() });
-        }
-        Ok(discard_output)
+        self.dev.update(state, executor);
     }
-}
 
-/// Why a run on `gpu`, made with `GpuContextDesc::hold_errors`, can't stand: the first error it held, or
-/// a device lost, whose frames since did nothing. What it drew can't be trusted, whatever its pixels look
-/// like, so a capture writes no picture past this and a bench no result.
-pub(crate) fn gpu_failure(gpu: &GpuContext) -> Result<(), String> {
-    if let Some(error) = gpu.first_error() {
-        return Err(format!("the GPU reported an error: {error}"));
+    fn record<'f>(&'f mut self, graph: &mut FrameGraph<'f>, target: TextureId) {
+        self.dev.record(graph, target);
     }
-    if gpu.is_lost() {
-        return Err("the GPU device was lost".to_owned());
-    }
-    Ok(())
 }
 
 /// Whether a `--size` target fits this device. It has to be said here, before anything is drawn: past
@@ -659,10 +409,6 @@ fn history_only_capture_allowed(options: &Options, settings: RenderSettings) -> 
         && options.debug_overlay.is_none()
         && options.debug_view.is_none_or(|view| view == DebugView::Off)
 }
-
-/// The length the overlay and dynamic resolution are told an offscreen frame takes: offscreen
-/// frames have no real length, so dynamic resolution follows GPU timings alone.
-const OFFSCREEN_FRAME: Duration = Duration::from_micros(16_667);
 
 #[cfg(test)]
 mod tests {

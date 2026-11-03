@@ -47,7 +47,8 @@ use crate::LOG_TARGET;
 use crate::audio::OfflineAudio;
 use crate::combat::Combat;
 use crate::combat::CombatOption;
-use crate::offscreen::{FrameLaps, Stage};
+use crate::frame::FrameLaps;
+use crate::offscreen::Stage;
 use crate::options::Options;
 
 /// What a phase measures.

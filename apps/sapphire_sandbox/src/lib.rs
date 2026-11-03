@@ -346,6 +346,8 @@ mod extract;
 mod faces;
 mod fight_bench;
 mod foliage;
+#[allow(dead_code)]
+mod frame;
 mod garments;
 mod hud;
 mod ik;

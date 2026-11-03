@@ -190,7 +190,7 @@ impl Serving {
             Ok(renderer) => {
                 crate::app::set_meshes(&mut stage.scene, &renderer);
                 stage.renderer = renderer.renderer;
-                stage.dev.renderer_created(&mut stage.renderer);
+                stage.hooks.dev.renderer_created(&mut stage.renderer);
                 stage.scene.prewarm(&mut stage.renderer);
                 // The new renderer's scene starts empty.
                 stage.scene.resend_instances();
@@ -222,13 +222,13 @@ impl Serving {
         stage.scene.end_cue_frame(dt, dt, 1.0, &mut ());
         // Captures asked for while the last frame was drawn: this one answers them, drawn into a
         // target that can be read back.
-        match stage.dev.take_capture() {
+        match stage.hooks.dev.take_capture() {
             Some(request) => {
                 let capture = FrameCapture::new(&stage.gpu, self.size, FORMAT, request);
                 stage.render(capture.view(), 1.0, |graph, target| capture.record(graph, target))?;
                 // No picture past a GPU error: the error's the answer, and it ends the run.
                 stage.check_gpu()?;
-                capture.finish(&stage.gpu, stage.dev.frames());
+                capture.finish(&stage.gpu, stage.hooks.dev.frames());
             }
             None => {
                 stage.render(&self.view, 1.0, |_, _| {})?;

@@ -72,7 +72,7 @@ pub(crate) fn run(
         return Err(AppInitError::msg("--bench needs at least one frame"));
     }
     let startup = Stopwatch::start();
-    let mut stage = Stage::new(platform, options)?;
+    let mut stage = crate::offscreen::stage(platform, options)?;
     stage.combat = combat;
     let startup = startup.elapsed();
     if let Some(fight @ (CombatOption::Replay { .. } | CombatOption::Fight { .. })) = &options.combat {

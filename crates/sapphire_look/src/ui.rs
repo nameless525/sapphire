@@ -178,3 +178,30 @@ impl UiDrawList {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn page_quads_join_a_run_only_on_its_page_and_right_after_it() {
+        let quad = UiQuad::glyph([0.0; 2], [1.0; 2], [0.0; 4], [255; 4]);
+        let mut list = UiDrawList::default();
+        list.push_page_quad(0, quad);
+        list.push_page_quad(0, quad);
+        list.push_page_quad(1, quad);
+        list.quads.push(quad);
+        list.push_page_quad(1, quad);
+        assert_eq!(
+            list.page_runs,
+            [
+                UiPageRun { first: 0, count: 2, page: 0 },
+                UiPageRun { first: 2, count: 1, page: 1 },
+                UiPageRun { first: 4, count: 1, page: 1 },
+            ],
+            "a field quad between two quads of a page keeps its place",
+        );
+        list.reset();
+        assert!(list.page_runs.is_empty() && list.quads.is_empty());
+    }
+}

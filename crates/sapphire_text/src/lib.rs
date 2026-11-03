@@ -21,9 +21,9 @@
 //!
 //! # Why a crate of its own
 //!
-//! `sapphire_ui` is plain quads that allocate nothing and link nothing. `parley` brings ICU's data
-//! and `harfrust`, and the cooker's checks need to read fonts through the same code without linking
-//! widgets. Nothing above L3 but an app or `sapphire_ui` needs it.
+//! `sapphire_ui` is plain quads that link next to nothing. `parley` brings 60 crates, ICU's data
+//! among them, which a tool checking a font or a test of a touch zone shouldn't have to build. Only
+//! `sapphire_ui`'s text and an app need it.
 //!
 //! # The clock
 //!

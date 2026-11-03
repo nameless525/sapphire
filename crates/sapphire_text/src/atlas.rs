@@ -46,7 +46,7 @@ pub struct AtlasConfig {
 
 impl Default for AtlasConfig {
     fn default() -> Self {
-        Self { page_size: 2048, max_pages: 4, subpixel_bins: 1, keep_frames: 2 }
+        Self { page_size: 2048, max_pages: 4, subpixel_bins: 4, keep_frames: 2 }
     }
 }
 
@@ -184,7 +184,7 @@ impl GlyphAtlas {
             let coords = coords_key(&run.coords);
             for glyph in &text.glyphs[run.glyphs.start as usize..run.glyphs.end as usize] {
                 let x = origin_px[0] + glyph.x;
-                let snapped = (x * bins).floor() / bins;
+                let snapped = (x * bins).round() / bins;
                 let (whole, share) = (snapped.floor(), snapped - snapped.floor());
                 let key = GlyphKey {
                     font: (run.font.data.id(), run.font.index),
@@ -298,8 +298,13 @@ impl GlyphAtlas {
 
     /// Room for `width × height` texels, making a page or evicting if it has to.
     fn allocate(&mut self, width: u32, height: u32) -> Option<(u16, AllocId, u16, u16)> {
+        let side = self.config.page_size as i32;
         let size = size2(width as i32, height as i32);
-        for attempt in 0..2 {
+        if size.width > side || size.height > side {
+            return None;
+        }
+        // A freed slot may be the wrong shape for this glyph, so it can take more than one round.
+        loop {
             for (index, page) in self.pages.iter_mut().enumerate() {
                 if let Some(allocation) = page.allocate(size) {
                     let corner = allocation.rectangle.min;
@@ -307,18 +312,16 @@ impl GlyphAtlas {
                 }
             }
             if usize::from(self.config.max_pages) > self.pages.len() {
-                let side = self.config.page_size as i32;
                 let mut page = BucketedAtlasAllocator::new(size2(side, side));
                 let allocation = page.allocate(size)?;
                 self.pages.push(page);
                 let corner = allocation.rectangle.min;
                 return Some((self.pages.len() as u16 - 1, allocation.id, corner.x as u16, corner.y as u16));
             }
-            if attempt == 0 && !self.evict() {
+            if !self.evict() {
                 return None;
             }
         }
-        None
     }
 
     /// Frees the least recently drawn glyphs, up to a share of a page. Whether it freed any.

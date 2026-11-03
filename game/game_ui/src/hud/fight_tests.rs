@@ -274,3 +274,18 @@ fn a_steps_hits_show_once_however_often_theyre_read() {
     show_damage(scene.show.hud.as_mut().expect("a HUD"), &scene.scene, combat.simulation());
     assert_eq!(numbers(&mut scene), once, "the new fight's");
 }
+
+#[test]
+fn a_shown_fight_declares_what_it_plays() {
+    use crate::hud::HudOptions;
+
+    let (mut scene, _) = arena_stage(ArenaShot::Follow);
+    let bare = scene.scene.declared_pipelines(&scene.show);
+    assert!(!bare.effects && !bare.ui, "neither cues nor a HUD yet");
+    scene.play_cues(VfxBudget::DESKTOP_LOW).expect("the shipped table resolves");
+    scene.set_hud(FightHud::for_fight(HudOptions::default()));
+    let declared = scene.scene.declared_pipelines(&scene.show);
+    assert!(declared.effects, "cues play effects");
+    assert!(declared.ui, "a HUD draws an interface");
+    assert_ne!(declared.post, bare.post, "the cues' screen effects go through their post variants");
+}

@@ -75,5 +75,10 @@ crate-type = ["cdylib"]
 name = "lifecycle"
 harness = false
 
+# Pushes SDL events from worker threads, so it needs that same real loop.
+[[test]]
+name = "worker_events"
+harness = false
+
 [lints]
 workspace = true

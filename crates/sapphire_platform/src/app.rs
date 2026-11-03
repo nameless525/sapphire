@@ -7,6 +7,18 @@
 //! Android the engine's vsync loop (`android_loop.rs`, ADR 0004), and everywhere the platform's
 //! frame clock may turn an iteration down before the app sees it.
 //!
+//! All three loops initialize, iterate and quit on one thread, and SDL's own lifecycle events reach
+//! the app on it: UIKit's on the main thread, and Android's marshalled to its SDL thread. Only a
+//! thread that calls `SDL_PushEvent` with a lifecycle event itself gets `SDL_AppEvent` called on it,
+//! before the push returns, as SDL documents, and with the queued events as well. So such a thread's
+//! events go to an inbox of their own, which touches nothing of the app's, and the app's thread
+//! delivers them with its next callback, or on its way out. Nothing in the tree pushes one today.
+//!
+//! SDL holds its event-watch lock through such a call, and `SDL_QuitMainCallbacks` takes that lock to
+//! remove the watch before the quit callback, so no other thread is in `app_event` once `app_quit`
+//! runs. It's also why that call can't wait for the app's thread, which may be waiting for the lock,
+//! and events are held rather than handed over.
+//!
 //! Panics never unwind into SDL's C frames. Each callback catches them, stashes the
 //! first payload and reports failure, so SDL winds down and calls `SDL_AppQuit`. What
 //! happens next depends on who called SDL:
@@ -29,14 +41,16 @@ use std::panic::{self, AssertUnwindSafe};
 use std::process::ExitCode;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use sdl3_sys::events::SDL_Event;
 use sdl3_sys::init::{SDL_APP_CONTINUE, SDL_APP_FAILURE, SDL_APP_SUCCESS, SDL_AppResult};
 use sdl3_sys::main::SDL_RunApp;
 use sdl3_sys::timer::SDL_GetTicksNS;
 
-use crate::event::TextEvent;
+use crate::event::{TextEvent, Timestamp};
 use crate::platform::{Platform, collect_args};
+use crate::window::WindowId;
 use crate::{Event, LOG_TARGET, sdl};
 
 /// What the app wants after a callback.
@@ -66,10 +80,11 @@ pub struct AppMetadata {
 
 /// A program driven by the platform's main loop.
 ///
-/// Every method runs on the main thread. Calls never overlap: if the OS delivers a
-/// lifecycle event while another callback is running (iOS can, for example, from
-/// inside a modal system dialog), the platform queues it and delivers it as soon as
-/// that callback returns.
+/// Every method runs on the main thread (on Android, SDL's thread). Calls never overlap: if the OS
+/// delivers a lifecycle event while another callback is running (iOS can, for example, from inside
+/// a modal system dialog), the platform queues it and delivers it as soon as that callback returns.
+/// An event another thread raises through SDL waits the same way for the next callback, so it can
+/// arrive after the moment it was raised for.
 ///
 /// A panic in any callback ends the app: SDL shuts down, dropping the app without
 /// calling [`quit`](Self::quit). On desktop [`run`] then resumes the panic. On iOS and
@@ -363,6 +378,8 @@ unsafe extern "C" fn app_init<A: App>(
         Ok(Ok(runtime)) => {
             // SAFETY: SDL passes a valid out-pointer for the app state.
             unsafe { *appstate = Box::into_raw(runtime).cast::<c_void>() };
+            // SDL installs the event watch after this returns, so no event comes before it's set.
+            RUNS_THE_APP.set(true);
             SDL_APP_CONTINUE
         }
         Ok(Err(error)) => {
@@ -383,10 +400,26 @@ unsafe extern "C" fn app_iterate<A: App>(appstate: *mut c_void) -> SDL_AppResult
     runtime.iterate()
 }
 
+/// SDL may call this on any thread (the module docs have when).
 unsafe extern "C" fn app_event<A: App>(appstate: *mut c_void, event: *mut SDL_Event) -> SDL_AppResult {
-    // SAFETY: as in `app_iterate`; `event` is valid for the duration of the call.
-    let (runtime, event) = unsafe { (&*appstate.cast::<Runtime<A>>(), &*event) };
-    runtime.event(event)
+    // SAFETY: `event` is valid for the duration of the call.
+    let mut raw = unsafe { *event };
+    // SAFETY: every event variant starts with the common header, so `timestamp` is
+    // initialized whatever the variant.
+    if unsafe { raw.common.timestamp } == 0 {
+        // Lifecycle events bypass SDL's queue, which is what stamps events, and reach
+        // us synchronously as they happen. Stamp them on arrival, before any deferral.
+        // SAFETY: SDL_GetTicksNS has no preconditions.
+        raw.common.timestamp = unsafe { SDL_GetTicksNS() };
+    }
+    if !RUNS_THE_APP.get() {
+        INBOX.hold(HeldEvent::of(&raw));
+        return SDL_APP_CONTINUE;
+    }
+    // SAFETY: `appstate` is the `Runtime<A>` that `app_init` installed on this thread, and only
+    // `app_quit`, on this thread too, frees it, so it's alive and no other thread reads it.
+    let runtime = unsafe { &*appstate.cast::<Runtime<A>>() };
+    runtime.event(&raw)
 }
 
 unsafe extern "C" fn app_quit<A: App>(appstate: *mut c_void, _result: SDL_AppResult) {
@@ -404,9 +437,14 @@ unsafe extern "C" fn app_quit<A: App>(appstate: *mut c_void, _result: SDL_AppRes
             // SAFETY: `appstate` is the box leaked by `app_init`; no callback is running,
             // SDL calls quit exactly once and never uses the pointer afterwards.
             let runtime = unsafe { Box::from_raw(appstate.cast::<Runtime<A>>()) };
-            shut_down(runtime.state.into_inner());
+            let app_stopped = runtime.stopped.get();
+            shut_down(runtime.state.into_inner(), app_stopped);
         }
     }
+    // SDL removed its event watch before calling this, so nothing joins the inbox now. An app that
+    // said stop leaves its events here, and a later run mustn't hear them.
+    INBOX.clear();
+    RUNS_THE_APP.set(false);
     // SDL shuts down right after this callback, so whatever the app kept past its run (in a
     // thread-local, say) must stop lending native handles now.
     end_run();
@@ -416,8 +454,14 @@ unsafe extern "C" fn app_quit<A: App>(appstate: *mut c_void, _result: SDL_AppRes
     }
 }
 
-/// Runs [`App::quit`] (unless a callback panicked) and drops the app, then the platform.
-fn shut_down<A: App>(mut state: State<A>) {
+/// Delivers what's still held, unless the app has said to stop: a worker's `TERMINATING` ends the run
+/// with no callback left to deliver it. Then runs [`App::quit`] (unless a callback panicked) and drops
+/// the app, then the platform.
+fn shut_down<A: App>(mut state: State<A>, app_stopped: bool) {
+    if !app_stopped {
+        // Its result can only say to stop, which is under way.
+        let _ = state.deliver_held(MOST_HELD);
+    }
     if !has_panicked() {
         let quit = panic::catch_unwind(AssertUnwindSafe(|| state.app.quit(&mut state.platform)));
         if let Err(payload) = quit {
@@ -437,15 +481,104 @@ struct State<A> {
     platform: Platform,
 }
 
+thread_local! {
+    /// Set on the thread `app_init` ran on, for as long as the app runs. Constant, with no destructor,
+    /// so any thread SDL calls back on can read it, at any point of that thread's life.
+    static RUNS_THE_APP: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The most events the inbox holds. Past this the newest are dropped and the log says so, as SDL's
+/// own queue does. It takes a thread raising events while the app's thread sleeps: a paused Android
+/// app, or an iOS app in the background.
+const MOST_HELD: usize = 4096;
+
+/// The most held events one callback delivers, so a thread raising events without pause can't keep
+/// the app's thread in its callback. The rest wait for the next one, in order.
+const HELD_PER_CALLBACK: usize = 1024;
+
+/// An event waiting for the app's thread, owning what it says.
+enum HeldEvent {
+    /// SDL frees text at the next pump of the thread that took it off the queue, and a pushed event's
+    /// bytes are its pusher's. It's the only pointer the platform follows in an event.
+    Text {
+        timestamp: Timestamp,
+        window: WindowId,
+        text: String,
+    },
+    Plain(SDL_Event),
+}
+
+// SAFETY: `Plain` is only read for its plain fields (`State::dispatch`). Nothing follows a pointer it
+// holds, the one that gets followed having become `Text`.
+unsafe impl Send for HeldEvent {}
+
+impl HeldEvent {
+    fn of(raw: &SDL_Event) -> Self {
+        match crate::event::text_input(raw) {
+            Some((timestamp, window, text)) => Self::Text { timestamp, window, text: text.into_owned() },
+            None => Self::Plain(*raw),
+        }
+    }
+}
+
+/// Events that couldn't reach the app when SDL called: it was in a callback, or the call came on
+/// another thread. Any thread adds to it and the app's thread takes from it.
+///
+/// A static, not part of [`Runtime`], so no other thread comes near anything of the app's, whatever the
+/// app's thread is doing with it. Its lock is never held across a call into SDL or the app, so it can't
+/// wait on SDL's event-watch lock, which a thread adding to it holds.
+struct Inbox(Mutex<HeldQueue>);
+
+struct HeldQueue {
+    events: VecDeque<HeldEvent>,
+    limit: usize,
+    /// The log has heard of the overflow under way.
+    overflowed: bool,
+}
+
+static INBOX: Inbox = Inbox::new(MOST_HELD);
+
+impl Inbox {
+    const fn new(limit: usize) -> Self {
+        Self(Mutex::new(HeldQueue { events: VecDeque::new(), limit, overflowed: false }))
+    }
+
+    /// Nothing panics while holding it, so a poisoned lock is as good as any.
+    fn queue(&self) -> MutexGuard<'_, HeldQueue> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn hold(&self, event: HeldEvent) {
+        let mut queue = self.queue();
+        if queue.events.len() < queue.limit {
+            queue.events.push_back(event);
+            queue.overflowed = false;
+            return;
+        }
+        let first = !std::mem::replace(&mut queue.overflowed, true);
+        drop(queue);
+        if first {
+            tracing::warn!(target: LOG_TARGET, "too many events waiting for the app's thread; dropping the newest");
+        }
+    }
+
+    fn next(&self) -> Option<HeldEvent> {
+        self.queue().events.pop_front()
+    }
+
+    fn clear(&self) {
+        self.queue().events.clear();
+    }
+}
+
 /// The app state SDL carries between callbacks, plus the guard that keeps callback
-/// borrows exclusive.
+/// borrows exclusive. Only the thread that runs the app touches it.
 struct Runtime<A> {
     state: UnsafeCell<State<A>>,
     /// Set while a callback is running.
     busy: Cell<bool>,
-    /// Events that arrived while `busy` (SDL dispatches lifecycle events synchronously,
-    /// from wherever the OS raised them).
-    deferred: RefCell<VecDeque<SDL_Event>>,
+    /// The app said to stop, or a callback panicked: it hears nothing more.
+    stopped: Cell<bool>,
 }
 
 impl<A: App> Runtime<A> {
@@ -453,7 +586,7 @@ impl<A: App> Runtime<A> {
         Self {
             state: UnsafeCell::new(State { app, platform }),
             busy: Cell::new(false),
-            deferred: RefCell::new(VecDeque::new()),
+            stopped: Cell::new(false),
         }
     }
 
@@ -472,34 +605,30 @@ impl<A: App> Runtime<A> {
     }
 
     fn event(&self, raw: &SDL_Event) -> SDL_AppResult {
-        let mut raw = *raw;
-        // SAFETY: every event variant starts with the common header, so `timestamp` is
-        // initialized whatever the variant.
-        if unsafe { raw.common.timestamp } == 0 {
-            // Lifecycle events bypass SDL's queue, which is what stamps events, and reach
-            // us synchronously as they happen. Stamp them on arrival, before any deferral.
-            // SAFETY: SDL_GetTicksNS has no preconditions.
-            raw.common.timestamp = unsafe { SDL_GetTicksNS() };
-        }
         if self.busy.get() {
-            self.deferred.borrow_mut().push_back(raw);
+            INBOX.hold(HeldEvent::of(raw));
             return SDL_APP_CONTINUE;
         }
-        self.exclusive(|state| state.dispatch(&raw))
+        self.exclusive(|state| state.dispatch(raw))
     }
 
-    /// Runs `f` with the only reference to the state, then drains events deferred
-    /// meanwhile.
+    /// Runs `f` with the only reference to the state, after the events held so far, so events reach
+    /// the app in the order they came, then delivers those held meanwhile.
     fn exclusive(&self, f: impl FnOnce(&mut State<A>) -> AppControl) -> SDL_AppResult {
         self.busy.set(true);
-        // SAFETY: all callbacks run on SDL's main thread, and every path that reaches
-        // the state checks `busy` first, so this is the only live reference until
-        // `busy` is cleared below.
+        // SAFETY: this runs on the app's thread alone (`app_event` keeps other threads out), and
+        // every path that reaches the state checks `busy` first, so this is the only live
+        // reference until `busy` is cleared below.
         let state = unsafe { &mut *self.state.get() };
-        let mut result = guarded(|| f(state));
-        while result == SDL_APP_CONTINUE {
-            let Some(raw) = self.deferred.borrow_mut().pop_front() else { break };
-            result = guarded(|| state.dispatch(&raw));
+        let mut result = state.deliver_held(HELD_PER_CALLBACK);
+        if result == SDL_APP_CONTINUE {
+            result = guarded(|| f(state));
+        }
+        if result == SDL_APP_CONTINUE {
+            result = state.deliver_held(HELD_PER_CALLBACK);
+        }
+        if result != SDL_APP_CONTINUE {
+            self.stopped.set(true);
         }
         self.busy.set(false);
         result
@@ -507,20 +636,39 @@ impl<A: App> Runtime<A> {
 }
 
 impl<A: App> State<A> {
+    /// Delivers up to `most` held events, in order, until the app says to stop.
+    fn deliver_held(&mut self, most: usize) -> SDL_AppResult {
+        for _ in 0..most {
+            let Some(held) = INBOX.next() else { break };
+            let result = guarded(|| match &held {
+                HeldEvent::Text { timestamp, window, text } => self.deliver_text(*timestamp, *window, text),
+                HeldEvent::Plain(raw) => self.dispatch(raw),
+            });
+            if result != SDL_APP_CONTINUE {
+                return result;
+            }
+        }
+        SDL_APP_CONTINUE
+    }
+
     fn dispatch(&mut self, raw: &SDL_Event) -> AppControl {
         if let Some((timestamp, window, text)) = crate::event::text_input(raw) {
-            for chunk in TextEvent::split(timestamp, window, &text) {
-                let control = self.app.event(&mut self.platform, &Event::Text(chunk));
-                if control != AppControl::Continue {
-                    return control;
-                }
-            }
-            return AppControl::Continue;
+            return self.deliver_text(timestamp, window, &text);
         }
         match self.platform.translate_event(raw) {
             Some(event) => self.app.event(&mut self.platform, &event),
             None => AppControl::Continue,
         }
+    }
+
+    fn deliver_text(&mut self, timestamp: Timestamp, window: WindowId, text: &str) -> AppControl {
+        for chunk in TextEvent::split(timestamp, window, text) {
+            let control = self.app.event(&mut self.platform, &Event::Text(chunk));
+            if control != AppControl::Continue {
+                return control;
+            }
+        }
+        AppControl::Continue
     }
 }
 
@@ -595,6 +743,54 @@ mod tests {
         let payload = take_panic().expect("a panic was stashed");
         assert_eq!(payload.downcast_ref::<&str>(), Some(&"first"));
         assert!(!has_panicked());
+    }
+
+    fn low_memory_at(nanos: u64) -> HeldEvent {
+        let mut raw = SDL_Event::default();
+        raw.common.r#type = sdl3_sys::events::SDL_EVENT_LOW_MEMORY.0;
+        raw.common.timestamp = nanos;
+        HeldEvent::of(&raw)
+    }
+
+    fn stamp_of(held: &HeldEvent) -> u64 {
+        match held {
+            // SAFETY: every event variant starts with the common header.
+            HeldEvent::Plain(raw) => unsafe { raw.common.timestamp },
+            HeldEvent::Text { timestamp, .. } => timestamp.as_nanos(),
+        }
+    }
+
+    #[test]
+    fn the_inbox_keeps_order_and_drops_the_newest_past_its_limit() {
+        let inbox = Inbox::new(3);
+        assert!(inbox.next().is_none());
+        for nanos in 1..=5 {
+            inbox.hold(low_memory_at(nanos));
+        }
+        let held: Vec<u64> = std::iter::from_fn(|| inbox.next()).map(|held| stamp_of(&held)).collect();
+        assert_eq!(held, [1, 2, 3], "oldest first, as far as it holds");
+
+        // Room again, and it would say so again if it filled.
+        inbox.hold(low_memory_at(6));
+        assert!(!inbox.queue().overflowed);
+        inbox.clear();
+        assert!(inbox.next().is_none());
+    }
+
+    #[test]
+    fn a_held_event_owns_its_text() {
+        let mut bytes = *b"typed\0";
+        let mut raw = SDL_Event::default();
+        raw.text = sdl3_sys::events::SDL_TextInputEvent {
+            r#type: sdl3_sys::events::SDL_EVENT_TEXT_INPUT,
+            timestamp: 7,
+            text: bytes.as_ptr().cast(),
+            ..Default::default()
+        };
+        let held = HeldEvent::of(&raw);
+        bytes.fill(b'#');
+        let HeldEvent::Text { timestamp, text, .. } = &held else { panic!("text stays text") };
+        assert_eq!((timestamp.as_nanos(), text.as_str()), (7, "typed"));
     }
 
     /// `cargo xtask run --platform android` matches this line literally (review BC-005).

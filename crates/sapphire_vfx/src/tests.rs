@@ -881,3 +881,46 @@ fn a_duels_worst_moment_fits_every_tier() {
         assert_eq!(frame.stats.ribbons, 2);
     }
 }
+
+/// A trail alone leaves the random numbers of what's spawned after it as they'd be without it, so a sword
+/// trail never moves a hit's sparks.
+#[test]
+fn a_trail_takes_no_random_numbers_from_what_follows_it() {
+    let sparks_after = |trail_first: bool| {
+        let library = EffectLibrary::default_effects();
+        let (trail, spark) =
+            (library.find("blade_trail").expect("shipped"), library.find("hit_spark").expect("shipped"));
+        let mut world = VfxWorld::new(library, VfxBudget::DESKTOP_HIGH, 7);
+        if trail_first {
+            assert!(world.spawn_trail(trail, OwnerId::WORLD, Placement::default()).is_some());
+        }
+        assert!(world.spawn(spark, OwnerId::WORLD, Placement::default()).is_some());
+        world.advance(&OwnerSteps { world: 1.0 / 60.0, owners: &[] });
+        let mut frame = VfxFrame::default();
+        world.write_frame(&mut frame, 1.0);
+        assert!(!frame.sprites.is_empty());
+        frame.sprites
+    };
+    assert_eq!(sparks_after(true), sparks_after(false));
+}
+
+/// An effect with emitters takes numbers of its own, however it's spawned.
+#[test]
+fn spawning_a_trail_with_emitters_is_spawning_it() {
+    let burst_after = |by_trail: bool| {
+        let library = EffectLibrary::default_effects();
+        let spark = library.find("hit_spark").expect("shipped");
+        let mut world = VfxWorld::new(library, VfxBudget::DESKTOP_HIGH, 7);
+        let spawned = if by_trail {
+            world.spawn_trail(spark, OwnerId::WORLD, Placement::default())
+        } else {
+            world.spawn(spark, OwnerId::WORLD, Placement::default())
+        };
+        assert!(spawned.is_some());
+        world.advance(&OwnerSteps { world: 1.0 / 60.0, owners: &[] });
+        let mut frame = VfxFrame::default();
+        world.write_frame(&mut frame, 1.0);
+        frame.sprites
+    };
+    assert_eq!(burst_after(true), burst_after(false));
+}

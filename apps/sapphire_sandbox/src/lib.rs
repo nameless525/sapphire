@@ -185,8 +185,8 @@
 //!   it all. With `--replay <arena replay>` the actors follow the replay, and `--record <file>
 //!   --scenario arena` plays one by the bindings, in a window. It's a scene of its own: it can't join
 //!   `--look-dev` or anything that can't. The golden scenes `arena-day`, `arena-golden` and
-//!   `arena-replay` show it, and `arena-fight-telegraph`, `arena-fight-hit` and `arena-fight-cut` a
-//!   fight with the enemy.
+//!   `arena-replay` show it, and `arena-fight-telegraph`, `arena-fight-hit`, `arena-fight-cut` and
+//!   `arena-fight-slash` a fight with the enemy.
 //! - `--fight` (with `--arena`): player against brain with no file (M2 G6, `combat.rs`), each on its
 //!   graph and its IK, the player with its sword. Add `--cues` and `--hud live` for the rest. In a window
 //!   whoever's there plays it on combat's bindings alone, as with `--combat-input`, and it starts over
@@ -372,6 +372,7 @@ mod skinned;
 mod stage;
 mod stats;
 mod swatches;
+mod trails;
 #[cfg(feature = "dev")]
 mod tuning;
 mod turntable;

@@ -802,6 +802,17 @@ impl Scene {
         Ok(())
     }
 
+    /// Replaces the effects a fight's cues and sword trails play (live tuning, `dev` builds), if the table
+    /// firing them finds its names there. With nothing firing cues, it says so.
+    #[cfg(feature = "dev")]
+    pub fn set_vfx_effects(&mut self, effects: sapphire_vfx::EffectLibrary) -> Result<(), String> {
+        let presets: &EffectLibrary = self.ecs.world().resource();
+        let Some(cues) = &mut self.cues else {
+            return Err("nothing plays a fight's effects here: `--cues` does".to_owned());
+        };
+        cues.take_effects(effects, presets).map_err(|error| error.to_string())
+    }
+
     /// Replaces the table a fight's cues fire through (live tuning, `dev` builds), if its names are all
     /// there. With nothing firing cues, it says so.
     #[cfg(feature = "dev")]
@@ -2073,6 +2084,17 @@ impl Scene {
         }
     }
 
+    /// Tells a fight's sword trails where this frame draws the blades, once they're placed: what a trail
+    /// reads is what's drawn.
+    fn follow_blades(&mut self, alpha: f32) {
+        let Some(cues) = self.cues.as_mut().filter(|cues| cues.trails_are_running()) else { return };
+        let world = self.ecs.world();
+        let drawn = |entity| world.get::<RenderTransform>(entity).map(|transform| transform.0);
+        let player = self.blade.and_then(|held| drawn(held.entity));
+        let enemy = self.arena.as_ref().and_then(|arena| drawn(arena.enemy_blade()));
+        cues.follow_blades([player, enemy], alpha);
+    }
+
     /// Sets the meshes the enemy draws again: after GPU device loss.
     pub fn set_enemy_meshes(&mut self, meshes: EnemyMeshes) {
         if let Some((warrior, blade)) = self.enemy {
@@ -2203,8 +2225,13 @@ impl Scene {
         let view_projection = camera.proj * camera.view;
         let place = world.get::<RenderTransform>(self.character);
         let stand = place.map_or(Vec3::ZERO, |place| place.0.w_axis.truncate());
+        let (posed, sword) = (self.fighters_posed, self.blade.is_some());
         let stage = match &mut self.arena {
-            Some(arena) => CueStage::Actors { director: arena.director() },
+            Some(arena) => {
+                let (director, [player, enemy]) = arena.cue_stage();
+                let fighters = [player.filter(|_| posed && sword), enemy.filter(|_| posed)];
+                CueStage::Actors { director, fighters }
+            }
             None => CueStage::OneCharacter { stand },
         };
         let (mut stack, presets) = self
@@ -2282,6 +2309,7 @@ impl Scene {
             self.camera_time = started.elapsed();
         }
         self.follow_hand();
+        self.follow_blades(alpha);
         let (sky_material, cloud_cover, plain_sky) = (self.sky_material, self.cloud_cover, self.plain_sky);
         let fog = self.fog;
         let (plain_post, sharpening, wind) = (self.plain_post, self.sharpening, self.wind);
@@ -3412,7 +3440,7 @@ mod tests {
     }
 
     /// A small humanoid for clips: hips, a spine, a head, and two feet, each a joint of the palette.
-    mod clips {
+    pub(super) mod clips {
         use sapphire_anim::{
             CharacterPose, Clip, Joint, JointTransform, PackedRotation, RotationTrack, Skeleton, SpringBones,
             VectorRange, VectorTrack,
@@ -3450,7 +3478,7 @@ mod tests {
 
         /// Over 60 ticks: the head turning a quarter about Y, the hips dropping 0.2 m and
         /// leaning, the second morph target from 0 to 1, and 3 m of root motion.
-        fn clip() -> Clip {
+        pub(in crate::scene) fn clip() -> Clip {
             let half = core::f32::consts::FRAC_1_SQRT_2;
             let drop = VectorRange::enclosing([HIPS, [0.0, 0.6, 0.0]]);
             let root = VectorRange::enclosing([[0.0; 3], [0.0, 0.0, 3.0]]);
@@ -3595,7 +3623,7 @@ mod tests {
             graph
         }
 
-        const GRAPH_CLIP: AssetId = AssetId::from_bytes([8; 16]);
+        pub(in crate::scene) const GRAPH_CLIP: AssetId = AssetId::from_bytes([8; 16]);
 
         fn driver(table: &ClipTable<'_>) -> GraphDriver {
             let bytes = skeleton().to_cooked().expect("cooked");
@@ -3676,7 +3704,9 @@ mod tests {
 
         /// An arena whose fighters both play `driver`'s graph, standing at the start of a fight, and that
         /// fight: the warrior's blade hangs from joint 2.
-        fn fighting(table: &ClipTable<'_>) -> (Scene, Simulation, Vec<sapphire_gameplay::ActorId>) {
+        pub(in crate::scene) fn fighting(
+            table: &ClipTable<'_>,
+        ) -> (Scene, Simulation, Vec<sapphire_gameplay::ActorId>) {
             use sapphire_gameplay::replay::{SCENARIOS, find_scenario};
 
             let mut scene = Scene::with_character(MeshHandle::from_raw(0), BOUNDS, false);

@@ -229,6 +229,38 @@ impl VfxWorld {
     ///
     /// Allocates nothing.
     pub fn spawn(&mut self, effect: EffectId, owner: OwnerId, placement: Placement) -> Option<EffectHandle> {
+        let handle = self.start(effect, owner, placement)?;
+        self.spawned += 1;
+        self.reseed(handle);
+        Some(handle)
+    }
+
+    /// As [`Self::spawn`], for an effect that's a trail and nothing else, which takes no random numbers: so
+    /// it leaves those of the effects spawned after it as they'd be without it. One with emitters needs
+    /// numbers of its own, and is spawned as ever.
+    pub fn spawn_trail(
+        &mut self,
+        effect: EffectId,
+        owner: OwnerId,
+        placement: Placement,
+    ) -> Option<EffectHandle> {
+        if self.library.effect(effect)?.emitters.is_empty() {
+            self.start(effect, owner, placement)
+        } else {
+            self.spawn(effect, owner, placement)
+        }
+    }
+
+    /// Gives `handle`'s effect its random numbers, by how many have been spawned.
+    fn reseed(&mut self, handle: EffectHandle) {
+        let (seed, spawned) = (self.seed, self.spawned);
+        if let Some(slot) = self.slot_mut(handle) {
+            slot.rng = Rng::new(seed, spawned);
+        }
+    }
+
+    /// Takes a slot, and a ring for a trail, for `effect`.
+    fn start(&mut self, effect: EffectId, owner: OwnerId, placement: Placement) -> Option<EffectHandle> {
         let desc = self.library.effect(effect)?;
         let Some(index) = self.free_slots.pop() else {
             self.dropped_effects += 1;
@@ -245,7 +277,6 @@ impl VfxWorld {
                 ring as u16
             })
         });
-        self.spawned += 1;
         let slot = &mut self.slots[usize::from(index)];
         *slot = Slot {
             live: true,
@@ -253,7 +284,6 @@ impl VfxWorld {
             effect: effect.0,
             owner,
             placement,
-            rng: Rng::new(self.seed, self.spawned),
             trail,
             ..Slot::new()
         };

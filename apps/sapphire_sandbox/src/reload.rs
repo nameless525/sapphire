@@ -78,6 +78,9 @@ pub(crate) enum Document {
     /// The cue table (`default_cues.ron`, M2 E3): it replaces the one a fight's cues fire through, if
     /// there's a fight, it parses and the names it holds are all there.
     Cues,
+    /// The effects a fight's cues and sword trails play (`default_effects.ron`): they replace what's
+    /// playing's, if there's a fight, they parse and the cue table's names are all there.
+    Effects,
     /// A fight's moves and fighter (`.moves.ron`, M2 T2): they replace the set of that file's name, for
     /// the next attempt, if they compile.
     Moves,
@@ -100,8 +103,16 @@ pub(crate) struct DocumentFrame<'a> {
 }
 
 impl Document {
-    const ALL: [Self; 7] =
-        [Self::Day, Self::LightRigs, Self::ScreenEffects, Self::Cues, Self::Moves, Self::Camera, Self::Graph];
+    const ALL: [Self; 8] = [
+        Self::Day,
+        Self::LightRigs,
+        Self::ScreenEffects,
+        Self::Cues,
+        Self::Effects,
+        Self::Moves,
+        Self::Camera,
+        Self::Graph,
+    ];
 
     /// The document whose envelope names `type_name`, if the sandbox has one.
     pub fn of_type(type_name: &str) -> Option<Self> {
@@ -114,6 +125,7 @@ impl Document {
             Self::LightRigs => stable_name::<LightRigLibrary>(),
             Self::ScreenEffects => stable_name::<EffectLibrary>(),
             Self::Cues => stable_name::<CueTable>(),
+            Self::Effects => stable_name::<sapphire_vfx::EffectLibrary>(),
             Self::Moves => stable_name::<MoveSetDocument>(),
             Self::Camera => stable_name::<CameraTuning>(),
             Self::Graph => stable_name::<AnimGraph>(),
@@ -127,6 +139,7 @@ impl Document {
             Self::LightRigs => "light rigs",
             Self::ScreenEffects => "screen effects",
             Self::Cues => "cue table",
+            Self::Effects => "effects",
             Self::Moves => "moves",
             Self::Camera => "camera's tuning",
             Self::Graph => "animation graph",
@@ -158,6 +171,7 @@ impl Document {
                 Ok(self.name().to_owned())
             }
             Self::Cues => tuning.cue_document(text, scene, renderer),
+            Self::Effects => tuning.effects_document(text, scene),
             Self::Moves => {
                 let cooked = tuning.cooked_set(origin, content);
                 tuning.moves_document(origin, text, cooked.as_ref(), Fight { combat, scene })

@@ -13,6 +13,7 @@ use sapphire_time::SimDuration;
 use sapphire_vfx::{EffectLibrary as VfxLibrary, VfxBudget};
 
 use super::tests::arena_stage;
+use super::tests::clips::{GRAPH_CLIP, clip, fighting};
 use super::*;
 use crate::combat::{Combat, no_bindings};
 use crate::cues::CueShow;
@@ -390,4 +391,125 @@ fn a_hits_shake_starts_when_the_pose_gets_there() {
     assert_eq!(landed, also);
     assert_eq!(&still[..=landed], &shaken[..=landed], "up to and including the frame it lands on");
     assert_ne!(still[landed + 1], shaken[landed + 1], "and the frame the pose gets there it's begun");
+}
+
+/// A fight with a sword in hand, its graphs posing both fighters, playing the shipped effects from a table
+/// that fires none: all the trails here are the blades' own.
+fn armed(replay: &str, table: &ClipTable<'_>) -> (Scene, Combat) {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/replays")
+        .join(format!("{replay}.sreplay"));
+    let combat = Combat::new(&CombatOption::Replay { path, to_end: true }).expect("a committed recording");
+    let (mut scene, ..) = fighting(table);
+    scene.spawn_blade(MeshHandle::from_raw(6), Mat4::IDENTITY);
+    let presets = probe_presets();
+    let cues = CueTable::from_ron(
+        "(type: \"sapphire::cues::CueTable\", version: 1, data: (rows: [(cue: \"never\", \
+         effects: [(effect: \"hit_spark\")])]))",
+    )
+    .expect("valid");
+    let show = CueShow::with_table(cues, VfxLibrary::default_effects(), VfxBudget::DESKTOP_LOW, &presets)
+        .expect("the table finds them");
+    scene.cues = Some(show);
+    scene.ecs.world_mut().insert_resource(presets);
+    (scene, combat)
+}
+
+/// One fixed step of it, in the order the app and a capture run one.
+fn armed_step(scene: &mut Scene, combat: &mut Combat) {
+    scene.step();
+    combat.step(&mut no_bindings);
+    scene.follow_simulation(combat.simulation(), combat.cast());
+    scene.show_cues(combat.simulation());
+    scene.end_cue_frame(TICK, TICK, 1.0, &mut ());
+}
+
+/// Where the frame's packet has its ribbons end, and where the world draws each blade.
+struct TrailFrame {
+    heads: Vec<(Vec3, Vec3)>,
+    blades: [Option<Mat4>; 2],
+    points: Vec<sapphire_render::VfxRibbonPoint>,
+}
+
+fn trail_frame(scene: &mut Scene, table: &ClipTable<'_>, alpha: f32) -> TrailFrame {
+    scene.animate_fighters(table, table, alpha);
+    let packet = scene.frame_packet(alpha, Some((64, 36)));
+    let points = packet.vfx.ribbon_points.clone();
+    scene.end_frame();
+    let heads = points.iter().filter(|point| point.ends).map(|point| (point.base, point.tip)).collect();
+    let world = scene.ecs.world();
+    let drawn = |entity| world.get::<RenderTransform>(entity).map(|transform| transform.0);
+    let player = scene.blade.and_then(|held| drawn(held.entity));
+    let enemy = scene.arena.as_ref().and_then(|arena| drawn(arena.enemy_blade()));
+    TrailFrame { heads, blades: [player, enemy], points }
+}
+
+/// A trail leaves the sword as drawn: what a frame's packet ends a ribbon on is what the same packet draws
+/// the blade at, base and tip, at every alpha between a fight's steps, through its hitstops. There, nothing
+/// of the strip moves at any alpha. And a new fight forgets it.
+#[test]
+fn a_trail_leaves_the_sword_as_drawn_and_a_hitstop_holds_it() {
+    let bytes = clip().to_cooked().expect("cooked");
+    let cooked = sapphire_anim::Clip::read(&bytes).expect("a valid clip");
+    let clips = ClipTable::new([(GRAPH_CLIP, Some(cooked), 0)].into_iter());
+    let (mut scene, mut combat) = armed("arena-fight-won", &clips);
+    let (mut drawn_on, mut began, mut held) = ([0; 2], [None; 2], 0);
+    for _ in 0..combat.ticks_left().expect("a recording") {
+        armed_step(&mut scene, &mut combat);
+        let sim = combat.simulation();
+        let frozen = combat
+            .cast()
+            .iter()
+            .all(|id| sim.actor(*id).is_none_or(|actor| actor.clock_delta == SimDuration::ZERO));
+        let before = frozen.then(|| trail_frame(&mut scene, &clips, 1.0).points);
+        for alpha in ALPHAS {
+            let frame = trail_frame(&mut scene, &clips, alpha);
+            if let Some(before) = &before {
+                assert_eq!(&frame.points, before, "alpha {alpha}");
+                held += usize::from(!before.is_empty());
+            }
+            // A strip has two samples once the blade has moved from where its trail began. Until a frame
+            // closes it, it ends where the blade's drawn, among any others still fading.
+            let rails = [crate::trails::player_rails, crate::trails::warrior_rails];
+            for place in 0..2 {
+                let running = scene.cues.as_ref().expect("on").trail_runs_at(place);
+                let Some(blade) = frame.blades[place].filter(|_| running) else {
+                    began[place] = None;
+                    continue;
+                };
+                let (base, tip) = rails[place](blade);
+                let (_, began_tip) = *began[place].get_or_insert((base, tip));
+                if began_tip.distance(tip) > 2e-3 {
+                    let head = frame.heads.iter().find(|(head_base, head_tip)| {
+                        head_base.distance(base) < 2e-3 && head_tip.distance(tip) < 2e-3
+                    });
+                    assert!(
+                        head.is_some(),
+                        "alpha {alpha}, fighter {place}: {base} {tip} in {:?}",
+                        frame.heads
+                    );
+                    drawn_on[place] += 1;
+                }
+            }
+        }
+    }
+    assert!(drawn_on[0] > 20, "the sword's: {drawn_on:?}");
+    assert!(drawn_on[1] > 10, "the warrior's: {drawn_on:?}");
+    assert!(held > 0, "a hitstop with a strip showing");
+
+    // Starting over: the tick goes back, the world's effects and what the trails hold go with it.
+    let (mut scene, mut combat) = armed("arena-fight-won", &clips);
+    while !scene.cues.as_ref().expect("on").trails_are_running() {
+        armed_step(&mut scene, &mut combat);
+        let _ = trail_frame(&mut scene, &clips, 1.0);
+    }
+    let (_, mut combat) = {
+        drop(combat);
+        armed("arena-fight-won", &clips)
+    };
+    scene.step();
+    combat.step(&mut no_bindings);
+    scene.follow_simulation(combat.simulation(), combat.cast());
+    assert!(!scene.cues.as_ref().expect("on").trails_are_running(), "the last fight's trail has gone");
+    assert!(trail_frame(&mut scene, &clips, 1.0).points.is_empty(), "and so has its strip");
 }

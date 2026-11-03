@@ -518,6 +518,11 @@ impl ArenaActors {
         }
     }
 
+    /// The entity that draws the enemy's blade.
+    pub fn enemy_blade(&self) -> Entity {
+        self.blade.0
+    }
+
     /// The enemy's joint that holds its blade.
     pub fn blade_hand(&self) -> usize {
         self.hand
@@ -567,6 +572,13 @@ impl ArenaActors {
     /// The camera director, if it's on: what a fight's shakes go to.
     pub fn director(&mut self) -> Option<&mut CameraDirector> {
         self.camera.as_mut().map(|camera| &mut camera.director)
+    }
+
+    /// The director, if it's on, and what the last step said of each fighter, the player first: what a
+    /// fight's cues read together.
+    pub fn cue_stage(&mut self) -> (Option<&mut CameraDirector>, [Option<&ActorView>; 2]) {
+        let [player, enemy] = &self.seen;
+        (self.camera.as_mut().map(|camera| &mut camera.director), [player.as_ref(), enemy.as_ref()])
     }
 
     /// Holds the line from the player to whoever the soft lock has, or lets go: the director's own rig,

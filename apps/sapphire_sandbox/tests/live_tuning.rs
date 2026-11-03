@@ -29,6 +29,8 @@ const SLICE_FILE: &str = "slice.moves.ron";
 const GRAPH: &str = include_str!("../../../content/lookdev/character/character.animgraph.ron");
 const CUES: &str = include_str!("../../../crates/sapphire_cues/default_cues.ron");
 const CUES_FILE: &str = "default_cues.ron";
+const EFFECTS: &str = include_str!("../../../crates/sapphire_vfx/default_effects.ron");
+const EFFECTS_FILE: &str = "default_effects.ron";
 const PLAYER: &str = include_str!("../../../content/combat/player/player.moves.ron");
 const PLAYER_FILE: &str = "player.moves.ron";
 const WARRIOR: &str = include_str!("../../../content/combat/enemy/warrior.moves.ron");
@@ -558,6 +560,14 @@ fn the_cue_table_and_its_shakes_reach_what_fires_a_fights_cues() {
     let status = client.status().expect("a status");
     assert_eq!(edits(&status, camera), Some(1));
     assert_eq!(edits(&status, CUES_FILE), Some(2), "a refusal is no edit, and no route takes one twice");
+
+    let reply = client.push_document(EFFECTS_FILE, EFFECTS.replacen("lifetime: 0.2,", "lifetime: 0.18,", 1));
+    assert!(reply.expect("good effects").contains("effects"));
+    let gone = EFFECTS.replacen("name: \"cut_spark\"", "name: \"no_such_spark\"", 1);
+    let refused = client.push_document(EFFECTS_FILE, gone).expect_err("the table fires it");
+    assert!(refused.to_string().contains("cut_spark"), "{refused}");
+    let status = client.status().expect("a status");
+    assert_eq!(edits(&status, EFFECTS_FILE), Some(1), "a refusal is no edit");
     drop(client);
     app.quit();
 

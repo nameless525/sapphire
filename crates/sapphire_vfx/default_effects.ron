@@ -269,6 +269,47 @@
                     ),
                 ],
             ),
+            (
+                // What a fight's sword leaves on a cut (the sandbox's `trails.rs` holds its handle, which a
+                // cue's row can't): a crescent off the blade, going thin toward the tip's bright edge. It
+                // starts whole, because a strike's arc lasts four ticks and `start_fade` would eat three.
+                name: "blade_trail",
+                trail: Some((
+                    lifetime: 0.2,
+                    max_samples: 48,
+                    width: [(0.0, 1.0), (0.45, 0.72), (1.0, 0.1)],
+                    anchor: 1.0,
+                    color: [(0.0, (0.16, 0.42, 1.0)), (0.5, (0.09, 0.24, 0.8)), (1.0, (0.08, 0.12, 0.5))],
+                    alpha: [(0.0, 0.85), (0.4, 0.6), (1.0, 0.0)],
+                    core: (
+                        position: 0.96,
+                        half_width: 0.016,
+                        color: [(0.0, (3.0, 3.5, 4.0)), (0.5, (1.8, 2.6, 4.0)), (1.0, (0.5, 1.0, 2.6))],
+                    ),
+                    glow_reach: 0.45,
+                    additive: 0.8,
+                )),
+            ),
+            (
+                // The warrior's blade on its slower swings: ember rather than the sword's blue, so whose
+                // blade it is reads at a glance, and dimmer, as a warning rather than a flourish.
+                name: "warrior_trail",
+                trail: Some((
+                    lifetime: 0.22,
+                    max_samples: 48,
+                    width: [(0.0, 1.0), (0.5, 0.7), (1.0, 0.1)],
+                    anchor: 1.0,
+                    color: [(0.0, (0.85, 0.22, 0.08)), (0.5, (0.6, 0.12, 0.05)), (1.0, (0.3, 0.06, 0.03))],
+                    alpha: [(0.0, 0.7), (0.4, 0.5), (1.0, 0.0)],
+                    core: (
+                        position: 0.95,
+                        half_width: 0.016,
+                        color: [(0.0, (2.2, 1.2, 0.5)), (0.5, (1.6, 0.7, 0.25)), (1.0, (0.9, 0.3, 0.1))],
+                    ),
+                    glow_reach: 0.4,
+                    additive: 0.7,
+                )),
+            ),
         ],
     ),
 )

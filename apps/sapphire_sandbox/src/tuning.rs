@@ -20,6 +20,8 @@
 //!   is there and every sound it plays was loaded as the app started. Camera tuning can move a shake's ID, so
 //!   a new tuning resolves the table's shakes again ([`Scene::set_camera_tuning`]) and is refused if one has
 //!   gone. **Colliders aren't tuned**, and a running fight never changes under its feet.
+//! - **The effects** (`default_effects.ron`): what a fight's cues and sword trails play takes them if the cue
+//!   table still finds its names. What's playing ends, and a trail starts again at the next cut.
 //!
 //! A document that doesn't parse or check keeps what's playing, and says why in the log, in the overlay's
 //! stats panel and, pushed, in `link push`'s non-zero exit. The next good one works.
@@ -70,6 +72,8 @@ const ENEMY_GRAPH_PATH: &str = "content/combat/enemy/warrior.animgraph.ron";
 const CAMERA_PATH: &str = "crates/sapphire_camera/default_camera.ron";
 /// The cue table's document.
 const CUES_PATH: &str = "crates/sapphire_cues/default_cues.ron";
+/// The effects' document.
+const EFFECTS_PATH: &str = "crates/sapphire_vfx/default_effects.ron";
 
 /// The move sets a cook holds, by document and sidecar ID: what a pack's new `.smoves` is the new version
 /// of. A document under `content/` with moves that name clips needs a row, or nothing brings it.
@@ -176,6 +180,7 @@ impl LiveTuning {
         }
         if options.cues {
             add(CUES_PATH, Document::Cues);
+            add(EFFECTS_PATH, Document::Effects);
         }
         if options.graph.is_some() {
             add(SHOW_MOVES_PATH, Document::Moves);
@@ -223,8 +228,8 @@ impl LiveTuning {
                 tracing::warn!(
                     target: LOG_TARGET,
                     path = %path.display(),
-                    "--watch-document takes `.moves.ron`, `.animgraph.ron`, `default_camera.ron` or \
-                     `default_cues.ron`"
+                    "--watch-document takes `.moves.ron`, `.animgraph.ron`, `default_camera.ron`, \
+                     `default_cues.ron` or `default_effects.ron`"
                 );
                 None
             }
@@ -358,6 +363,15 @@ impl LiveTuning {
         renderer.prewarm_post(scene.effect_variants());
         self.count_edit(document_file_name(CUES_PATH));
         Ok(Document::Cues.name().to_owned())
+    }
+
+    /// Takes edited effects, for what a fight's cues and sword trails play. Says why not if the cue table
+    /// names one that's gone, keeping what plays.
+    pub fn effects_document(&mut self, text: &str, scene: &mut Scene) -> Result<String, String> {
+        let effects = sapphire_vfx::EffectLibrary::from_ron(text).map_err(|error| error_chain(&error))?;
+        scene.set_vfx_effects(effects)?;
+        self.count_edit(document_file_name(EFFECTS_PATH));
+        Ok(Document::Effects.name().to_owned())
     }
 
     /// Takes an edited camera tuning, for the director and for what fires a fight's cues.
@@ -580,6 +594,8 @@ pub(crate) fn kind_of_file(path: &Path) -> Option<Document> {
         Some(Document::Camera)
     } else if name == document_file_name(CUES_PATH) {
         Some(Document::Cues)
+    } else if name == document_file_name(EFFECTS_PATH) {
+        Some(Document::Effects)
     } else {
         None
     }
@@ -919,6 +935,7 @@ mod tests {
         assert_eq!(kind_of_file(Path::new("x/character.animgraph.ron")), Some(Document::Graph));
         assert_eq!(kind_of_file(Path::new("x/default_camera.ron")), Some(Document::Camera));
         assert_eq!(kind_of_file(Path::new("x/default_cues.ron")), Some(Document::Cues));
+        assert_eq!(kind_of_file(Path::new("x/default_effects.ron")), Some(Document::Effects));
         assert_eq!(kind_of_file(Path::new("x/default_day.ron")), None);
     }
 
@@ -1020,6 +1037,9 @@ mod tests {
         let cues = std::fs::read_to_string(sources::default_cues()).expect("the cue table's document");
         assert_eq!(CueTable::from_ron(&cues).expect("reads"), CueTable::default_table());
         assert!(sources::repository_file(CUES_PATH).ends_with("default_cues.ron"));
+        let effects = std::fs::read_to_string(sources::repository_file(EFFECTS_PATH)).expect("the effects");
+        let shipped = sapphire_vfx::EffectLibrary::default_effects();
+        assert_eq!(sapphire_vfx::EffectLibrary::from_ron(&effects).expect("reads"), shipped);
     }
 
     /// A real fight's fighters each play a graph, so a run of one watches both and lists them for
@@ -1059,9 +1079,11 @@ mod tests {
         };
         let firing = sources(&["--cues"]);
         assert!(has(&firing, Document::Cues, CUES_PATH));
+        assert!(has(&firing, Document::Effects, EFFECTS_PATH), "its sparks and trails read them");
         assert!(has(&firing, Document::Camera, CAMERA_PATH), "its shakes read the camera's tuning");
         let quiet = sources(&[]);
         assert!(!has(&quiet, Document::Cues, CUES_PATH));
+        assert!(!has(&quiet, Document::Effects, EFFECTS_PATH));
         assert!(!has(&quiet, Document::Camera, CAMERA_PATH));
     }
 }

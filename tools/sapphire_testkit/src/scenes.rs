@@ -152,10 +152,10 @@ pub struct Scene {
 /// The arena scenes (M2 O5) pin what the look-dev scenes pin: Desktop-High and ambient occlusion off,
 /// and the plain camera (`--arena-shot follow`), so tuning the camera director moves none of them.
 /// They alone run `--arena`, so no earlier scene sees its stage. `arena-replay` plays a replay on it,
-/// and `arena-fight-telegraph`, `arena-fight-hit` and `arena-fight-cut` a fight with the enemy (M2 G6),
-/// side on, so the character isn't in front of what they're there to show. `arena-party-second` and
-/// `arena-party-third` play a party's fight (M2 G7), and only they run `--party`.
-pub fn scenes() -> [Scene; 142] {
+/// and `arena-fight-telegraph`, `arena-fight-hit`, `arena-fight-cut` and `arena-fight-slash` a fight with
+/// the enemy (M2 G6), side on, so the character isn't in front of what they're there to show.
+/// `arena-party-second` and `arena-party-third` play a party's fight (M2 G7), and only they run `--party`.
+pub fn scenes() -> [Scene; 143] {
     [
         Scene {
             name: "turntable-start",
@@ -2248,6 +2248,34 @@ pub fn scenes() -> [Scene; 142] {
                 "75,8",
                 "--replay",
                 "tests/replays/arena-fight-still.sreplay",
+                "--time-of-day",
+                "10",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--blade",
+                "on",
+                "--capture-frames",
+                "32",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The player's first cut of `arena-fight-won`, its sword trail mid-arc: a strip that ends on the
+        // drawn blade, the crescent narrowing back along what the tip passed.
+        Scene {
+            name: "arena-fight-slash",
+            args: &[
+                "--capture-ticks",
+                "12",
+                "--cues",
+                "--arena",
+                "--arena-shot",
+                "follow",
+                "--view",
+                "75,8",
+                "--replay",
+                "tests/replays/arena-fight-won.sreplay",
                 "--time-of-day",
                 "10",
                 "--tier",

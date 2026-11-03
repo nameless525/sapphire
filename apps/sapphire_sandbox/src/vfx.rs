@@ -1,8 +1,8 @@
 //! `--vfx <show>`: plays `sapphire_vfx`'s shipped effects at fixed ticks around the character (M2
 //! E2), for golden images, benches and looking at them. Everything it plays is on a schedule of
-//! simulation ticks and seeded, so a capture is the same frame in every run. Until animation can
-//! feed sockets (N2) a swing is a circle's arc in front of the character: what a real blade's base
-//! and tip would pass to [`VfxWorld::sample_trail`] at sub-tick rate.
+//! simulation ticks and seeded, so a capture is the same frame in every run. A swing here is a circle's
+//! arc in front of the character, passed to [`VfxWorld::sample_trail`] at sub-tick rate. A fight's trails
+//! leave its real blades: `trails.rs`.
 //!
 //! The attacker's and the victim's effects run on the character's own clock, so its hitstop (the
 //! `hit` show's, or a key press's) freezes them through it, and world effects keep running.

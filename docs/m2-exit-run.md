@@ -107,7 +107,8 @@ Pillars: 2 (readable), 3 (impact), 4 (cancels and dodges), 6.
 - Does a press swing now? Does the string flow as fast as you press, and not faster?
 - Can you read wind-up, strike and recovery on each move?
 - Does a hit land everywhere at once: the freeze, the spark, the shake, the sound and the rumble?
-- **Is the motion good enough to judge the fight by?** The player's moves are poses solved from targets, with no animator. O3's own read: the finisher and the skill's coil are strongest, the dodge is weakest, `light_2`'s anticipation is weak and the dash attack's hit wants a trail. If this fails, say so, because the plan's answer is an animator or a bought pack, not tuning (§6, §7).
+- **Is the motion good enough to judge the fight by?** The player's moves are poses solved from targets, with no animator. O3's own read: the finisher and the skill's coil are strongest, the dodge is weakest and `light_2`'s anticipation is weak. It also said the dash attack's hit wanted a trail: every cut has one now, so say whether that's enough. The dash attack is a thrust, so its trail is a thin bright line and a low crescent rather than a wide sweep. If this fails, say so, because the plan's answer is an animator or a bought pack, not tuning (§6, §7).
+- Do the trails help you read a cut, or get in the way? Are they too bright by a face, too long, or too thin on the warrior's swings?
 - Do the sound and rumble suit each hit? Nobody has heard or felt them, and every number is a guess.
 
 ### Review 3: the fight, and tuning it (30 minutes): the real go/no-go check
@@ -185,7 +186,9 @@ A move in progress finishes on what it started with. A bad document changes noth
 | A material | `content/combat/enemy/`, `content/lookdev/character/materials/` | Cook |
 | How a sound plays | [content/audio/](../content/audio/)`<name>.cue.ron`: `volume_db`, `pitch`, `attenuation`, `sounds` | Restart: the mixer holds what it decoded at launch |
 | Which sound a hit plays | `default_cues.ron`'s `sounds`, by a cue's ID. A cue already loaded is a Save. One that wasn't loaded at launch is refused live, keeping what fires, because only the table's cues load then, so it's a Restart | Save or Restart |
-| Sparks and trails | [default_effects.ron](../crates/sapphire_vfx/default_effects.ron): compiled in, with no reload | Rebuild |
+| Sparks and how a trail looks | [default_effects.ron](../crates/sapphire_vfx/default_effects.ron): `blade_trail` and `warrior_trail` for a trail's `lifetime`, `width`, `color`, `alpha` and `core`. It's the `--vfx` show's too, which reads what it compiled in. A save ends every effect playing, and a trail starts again at the next cut. Names the cue table fires can't go, and are refused | Save |
+| When a trail runs | `CUTTING_SPEED` and `FOLLOW_TICKS` in [trails.rs](../apps/sapphire_sandbox/src/trails.rs). It follows the blade on its own: a cooked pose moves it for the next playing, while a hitbox's `from` and `to` only say which of a move's fast runs of ticks is a cut | Rebuild |
+| Whether the warrior's blade has a trail | Rename `warrior_trail` in `default_effects.ron`: with no effect of that name it plays none, and the same goes for the player's `blade_trail` | Save |
 | Stick dead zones, look speed, bindings | [combat_bindings.ron](../crates/sapphire_controls/combat_bindings.ron): `DeadZone`, `Scale`. Compiled in | Rebuild |
 | Hair's swing and limits | `SpringTuning::ACTION` in [springs.rs](../crates/sapphire_anim/src/springs.rs): `root_inertia`, `anchor_inertia`, `swing_limit`, `bend_limit` | Rebuild |
 | HUD layout, colours, damage numbers | Constants in [hud.rs](../crates/sapphire_ui/src/hud.rs). `--hud live --hud-scale <n>` and `--hud live --hud-insets l,t,r,b` on the command | Rebuild |

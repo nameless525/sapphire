@@ -18,6 +18,8 @@
 //!   the latest to the latest, each by its own clock, and what began on the latest step from where it
 //!   begins. Shakes stay on the real clock, as the director's do, and start when what's drawn reaches
 //!   their step, so none of it leads the blow.
+//! - **Sword trails** have no row, because a row keeps no handle to stop one with. [`BladeTrails`] runs
+//!   them in the same world of effects, from what the blades are doing.
 //!
 //! [`Scene::follow_simulation`]: crate::scene::Scene::follow_simulation
 
@@ -29,13 +31,15 @@ use sapphire_cues::{
     CueDispatcher, CueStats, CueStep, CueTable, CueTableError, RumbleSink, ShakeSink, actor_emitter,
 };
 use sapphire_ecs::prelude::WorldClock;
-use sapphire_gameplay::{CueEvent, Simulation};
+use sapphire_gameplay::{ActorView, CueEvent, Simulation};
 use sapphire_math::{Mat4, Quat, Vec3};
 use sapphire_platform::{GamepadId, Platform};
 use sapphire_render::{PostVariants, VfxFrame};
 use sapphire_time::{Stopwatch, TICK_HZ};
 use sapphire_vfx::{EffectLibrary as VfxLibrary, VfxBudget, VfxWorld};
 use sapphire_world::screen_effects::{EffectLibrary as ScreenLibrary, EffectStack};
+
+use crate::trails::BladeTrails;
 
 /// Seeded, so a capture's sparks land the same way in every run, and so do its shakes.
 const SEED: u64 = 0x5EED;
@@ -56,8 +60,8 @@ pub(crate) enum CueStage<'a> {
     /// On the one character that stands here, whichever actor they name ([`on_stage`]).
     OneCharacter { stand: Vec3 },
     /// Where the simulation has its actors, which are drawn there: the arena. With a director on, it plays
-    /// their shakes.
-    Actors { director: Option<&'a mut CameraDirector> },
+    /// their shakes. `fighters` are those with a blade drawn to leave a trail, the player first.
+    Actors { director: Option<&'a mut CameraDirector>, fighters: [Option<&'a ActorView>; 2] },
 }
 
 /// The camera's shakes, for a view that plays them itself.
@@ -115,6 +119,7 @@ pub(crate) struct CueShow {
     loaded_sounds: Vec<sapphire_assets::AssetId>,
     dispatcher: CueDispatcher,
     world: VfxWorld,
+    trails: BladeTrails,
     shakes: OrbitShakes,
     emitters: Vec<Emitter>,
     world_time_scale: f32,
@@ -147,6 +152,7 @@ impl CueShow {
             loaded_sounds: table.sound_cues(),
             table,
             dispatcher,
+            trails: BladeTrails::new(&effects),
             world: VfxWorld::new(effects, budget, SEED),
             shakes: OrbitShakes { stack: ShakeStack::new(SEED), tuning },
             emitters: Vec::new(),
@@ -183,16 +189,17 @@ impl CueShow {
         }
         self.tick = Some(tick);
         let stopwatch = Stopwatch::start();
-        let (stand, shakes): (Option<Vec3>, &mut dyn ShakeSink) = match stage {
-            CueStage::OneCharacter { stand } => (Some(stand), &mut self.shakes),
-            CueStage::Actors { director: Some(director) } => (None, director),
-            CueStage::Actors { director: None } => (None, &mut self.shakes),
+        let (stand, shakes, fighters): (Option<Vec3>, &mut dyn ShakeSink, _) = match stage {
+            CueStage::OneCharacter { stand } => (Some(stand), &mut self.shakes, [None; 2]),
+            CueStage::Actors { director: Some(director), fighters } => (None, director, fighters),
+            CueStage::Actors { director: None, fighters } => (None, &mut self.shakes, fighters),
         };
         let root_of = |id| stand.or_else(|| sim.actor(id).map(|actor| actor.position));
         let mut step =
             CueStep { vfx: &mut self.world, screen, presets, shakes, view_projection, root_of: &root_of };
         let cues = sim.cues().map(|cue| stand.map_or(cue, |stand| on_stage(cue, sim, stand)));
         self.dispatcher.read_step(tick, cues, &mut step);
+        self.trails.read_step(fighters, sim.move_library(), &mut self.world);
         self.dispatcher.advance_effects(sim, &mut self.world);
         self.emitters.clear();
         self.emitters.extend(sim.actors().map(|actor| {
@@ -200,6 +207,25 @@ impl CueShow {
             Emitter { position: stand.unwrap_or(emitter.position), ..emitter }
         }));
         self.world_time_scale = sim.world().resource::<WorldClock>().0.effective_scale();
+        self.stepping += stopwatch.elapsed();
+    }
+
+    /// Whether a frame has a blade's trail to tell of where it's drawn.
+    pub fn trails_are_running(&self) -> bool {
+        self.trails.are_running()
+    }
+
+    /// Whether the trail of the fighter at `place`, the player first, plays now.
+    #[cfg(test)]
+    pub fn trail_runs_at(&self, place: usize) -> bool {
+        self.trails.runs_at(place)
+    }
+
+    /// Takes where this frame draws each blade, the player's first, `alpha` of the way from the step
+    /// before the latest to the latest, for the trails: before [`Self::write`].
+    pub fn follow_blades(&mut self, drawn: [Option<Mat4>; 2], alpha: f32) {
+        let stopwatch = Stopwatch::start();
+        self.trails.follow_frame(drawn, alpha, &mut self.world);
         self.stepping += stopwatch.elapsed();
     }
 
@@ -254,6 +280,7 @@ impl CueShow {
     /// which [`Self::sounds`] tells, along with any the last fight had yet to start.
     pub fn start_over(&mut self, screen: &mut EffectStack) {
         self.world.clear();
+        self.trails.start_over();
         self.shakes.stack.clear();
         self.dispatcher.release_rumble();
         self.dispatcher.forget_sounds();
@@ -266,6 +293,20 @@ impl CueShow {
     #[cfg(any(test, feature = "dev"))]
     pub fn take_presets(&mut self, presets: &ScreenLibrary) -> Result<(), CueTableError> {
         self.dispatcher.resolve(&self.table, self.world.library(), presets, &self.shakes.tuning)
+    }
+
+    /// Takes new effects, or says why not: the table names one they don't have. Every effect playing ends,
+    /// since their places in the library may have moved, and a sword trail begins again at the next cut.
+    #[cfg(any(test, feature = "dev"))]
+    pub fn take_effects(
+        &mut self,
+        effects: VfxLibrary,
+        presets: &ScreenLibrary,
+    ) -> Result<(), CueTableError> {
+        self.dispatcher.resolve(&self.table, &effects, presets, &self.shakes.tuning)?;
+        self.trails.take_effects(&effects);
+        self.world.set_library(effects);
+        Ok(())
     }
 
     /// Takes new camera tuning, or says why not: the table names a shake it doesn't have. A shake's ID is
@@ -311,6 +352,25 @@ mod tests {
     use sapphire_time::{SimDuration, SimTime};
 
     use super::*;
+
+    /// New effects reach what plays a fight's, as long as the table still finds its names.
+    #[test]
+    fn new_effects_are_taken_if_the_table_finds_its_names() {
+        let presets = ScreenLibrary::default_effects();
+        let shipped = VfxLibrary::default_effects;
+        let mut show =
+            CueShow::with_table(CueTable::default_table(), shipped(), VfxBudget::DESKTOP_LOW, &presets)
+                .expect("the shipped table finds them");
+        show.take_effects(shipped(), &presets).expect("the same names");
+        let without = VfxLibrary::from_ron(
+            "(type: \"sapphire::vfx::EffectLibrary\", version: 1, data: (effects: [(name: \"other\", \
+             emitters: [(name: \"flies\", spawn: Burst(count: 1), lifetime: (1.0, 1.0), \
+             motion: (speed: (1.0, 1.0)), size: [(0.0, 0.1)], color: [(0.0, (1.0, 1.0, 1.0))])])]))",
+        )
+        .expect("valid");
+        assert!(show.take_effects(without, &presets).is_err(), "the table's sparks are gone");
+        assert!(show.world.library().find("hit_spark").is_some(), "and it keeps what it has");
+    }
 
     /// A hit on the target's chest, a little off its middle, lands there on the character, whichever
     /// way and wherever the fight had the target stand.
@@ -380,7 +440,7 @@ mod tests {
             let mut director = director;
             for _ in 0..140 {
                 sim.step(&sapphire_gameplay::TickActions::NEUTRAL);
-                let stage = CueStage::Actors { director: director.as_deref_mut() };
+                let stage = CueStage::Actors { director: director.as_deref_mut(), fighters: [None; 2] };
                 show.step(&sim, &mut screen, &presets, Mat4::IDENTITY, stage);
             }
             let places: Vec<Vec3> = sim.actors().map(|actor| actor.position).collect();
@@ -427,7 +487,7 @@ mod tests {
         let until_a_sound = |sim: &mut Simulation, show: &mut CueShow, screen: &mut EffectStack| {
             for _ in 0..600 {
                 sim.step(&sapphire_gameplay::TickActions::NEUTRAL);
-                let stage = CueStage::Actors { director: None };
+                let stage = CueStage::Actors { director: None, fighters: [None; 2] };
                 show.step(sim, screen, &presets, Mat4::IDENTITY, stage);
                 if !show.sounds().requests.is_empty() {
                     return;

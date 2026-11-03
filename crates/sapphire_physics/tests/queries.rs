@@ -686,6 +686,43 @@ fn crossing_capsules_leave_at_right_angles_to_both() {
     }
 }
 
+/// Cores that all but touch, nearly along one line: what GJK measures between them is rounding, and the
+/// line it gives can run along them, where moving by the radii clears nothing. Upright characters never
+/// tilt, so this takes a leaning collider, a log say, and a capsule that starts inside it.
+#[test]
+fn capsules_nearly_along_one_line_leave_by_a_way_that_clears_them() {
+    let shapes = [
+        (capsule(10.0, 0.1), capsule(0.5, 0.3)),
+        (capsule(2.0, 0.2), capsule(0.5, 0.3)),
+        (capsule(0.5, 0.3), capsule(2.0, 0.2)),
+        (capsule(1.0, 0.3), capsule(0.5, 0.3)),
+        (capsule(0.5, 0.3), capsule(0.5, 0.3)),
+    ];
+    let sides = [Vec3::X, Vec3::Z, Vec3::new(0.6, 0.0, 0.8), Vec3::new(-0.8, 0.0, 0.6)];
+    let mut checked = 0;
+    for (target, shape) in shapes {
+        for lateral in [0.0_f32, 1e-9, 1e-8, 1e-7, 1e-6, 1e-5, 1e-4, 1e-3] {
+            for side in sides {
+                for along in [0.0_f32, 0.3, -0.3, 0.99, 1.2] {
+                    for lean in [1e-4_f32, 9e-4, 1.1e-3, 3e-3, 1e-2, 0.03] {
+                        let at = side * lateral + Vec3::Y * along;
+                        #[allow(
+                            clippy::disallowed_methods,
+                            reason = "a test's lean: its last bit matters to nothing"
+                        )]
+                        let pose = Pose::new(at, Quat::from_rotation_x(lean));
+                        let what = format!("{target:?} and {shape:?}, {lateral} off along {side}");
+                        let what = format!("{what}, {along} along it, leaning by {lean}");
+                        depth_separates(&what, target, Pose::IDENTITY, shape, pose);
+                        checked += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(checked, 5 * 8 * 4 * 5 * 6);
+}
+
 // --- Moves ---
 
 /// A body whose core lies along another's clears it in one call, by one push, sideways, and doesn't pop

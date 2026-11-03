@@ -39,11 +39,6 @@ pub(crate) const GRAZE: f32 = 1e-3;
 /// hundred metres out, which is as large as a local frame gets.
 const TOUCHING: f32 = 1e-4;
 
-/// Round cores this close, in metres, leave as cores that touch do. The direction between them is noticeably
-/// rounding by here: a tenth of a millimetre apart a hundred metres out, it's off by several degrees, so a
-/// move along it by the depth their distance gives falls short.
-const NEARLY_TOUCHING: f32 = 2e-3;
-
 /// A sweep's distance is corrected by its last gap, along the approach. Below this cosine that
 /// division would amplify rounding rather than correct anything.
 const MIN_CORRECTED_APPROACH: f32 = 0.05;
@@ -271,17 +266,38 @@ pub(crate) fn contact(
     match measure(target, &relative, mover, radii + reach, start) {
         Measure::Far => None,
         Measure::Inside => inside_contact(target, target_pose, mover, mover_pose, radii),
-        Measure::Closest { on_target, normal, distance } => Some(match (target.ends(), mover.ends()) {
-            (Some(target_ends), Some(mover_ends)) if distance < NEARLY_TOUCHING => {
-                crossing_contact(target_ends, target_pose, mover_ends, mover_pose, radii)
-            }
-            _ => Contact {
+        Measure::Closest { on_target, normal, distance } => {
+            let contact = Contact {
                 normal: target_pose.rotation * normal,
                 separation: distance - radii,
                 point: target_pose.transform_point(on_target + normal * target.radius()),
-            },
-        }),
+            };
+            // The line between truly closest points has nothing more in the way than rounding. What GJK says
+            // of cores that all but touch is itself rounding, and can lie along them, lengths and all.
+            if distance < radii
+                && let (Some(target_ends), Some(mover_ends)) = (target.ends(), mover.ends())
+            {
+                let ends = (target_ends, target_pose, mover_ends, mover_pose);
+                if out_along(contact.normal, ends, radii) > TOUCHING - contact.separation {
+                    return Some(crossing_contact(target_ends, target_pose, mover_ends, mover_pose, radii));
+                }
+            }
+            Some(contact)
+        }
     }
+}
+
+/// How far along `way` a mover has to go to clear a target by `radii`, of each one's two ends and its pose,
+/// target first.
+fn out_along(
+    way: Vec3,
+    (target, target_pose, mover, mover_pose): ([Vec3; 2], &ParryPose, [Vec3; 2], &ParryPose),
+    radii: f32,
+) -> f32 {
+    let reach = |along: Vec3, ends: [Vec3; 2], pose: &ParryPose| {
+        pose.transform_point(ends[0]).dot(along).max(pose.transform_point(ends[1]).dot(along))
+    };
+    reach(way, target, target_pose) + reach(-way, mover, mover_pose) + radii
 }
 
 /// Cores that overlap. Small enough to answer by hand for a round mover; `None` for a box.
@@ -315,13 +331,12 @@ fn crossing_contact(
     mover_pose: &ParryPose,
     radii: f32,
 ) -> Contact {
-    let target = target.map(|end| target_pose.transform_point(end));
-    let mover = mover.map(|end| mover_pose.transform_point(end));
     let between = mover_pose.translation - target_pose.translation;
-    let across = way_across(target[1] - target[0], mover[1] - mover[0], between);
-    let reach = |along: Vec3, ends: [Vec3; 2]| ends[0].dot(along).max(ends[1].dot(along));
-    let out_along = |along: Vec3| reach(along, target) + reach(-along, mover) + radii;
-    let (forward, back) = (out_along(across), out_along(-across));
+    let length =
+        |ends: [Vec3; 2], pose: &ParryPose| pose.transform_point(ends[1]) - pose.transform_point(ends[0]);
+    let across = way_across(length(target, target_pose), length(mover, mover_pose), between);
+    let ends = (target, target_pose, mover, mover_pose);
+    let (forward, back) = (out_along(across, ends, radii), out_along(-across, ends, radii));
     let (normal, depth) = if back < forward { (-across, back) } else { (across, forward) };
     Contact { normal, separation: -depth, point: target_pose.translation }
 }

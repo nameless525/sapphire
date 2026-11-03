@@ -328,6 +328,60 @@ pub fn count_in_scope<R>(f: impl FnOnce() -> R) -> (R, AllocCounts) {
     (result, scope.counts())
 }
 
+/// While alive, this thread's allocations count as the script VM's ([`vm_counts`]) rather than the
+/// thread's ([`thread_counts`]). Luau's allocator is `mlua`'s, which calls the global allocator with no
+/// way to give it another, so this is how gate 4 tells a hook's VM from everything else (spec §5.24): a
+/// hook runs inside one, and a binding, which is Rust, leaves it through [`HostAllocations`] so that its
+/// allocations still fail the gate. Does nothing where [`PER_THREAD_COUNTS`] is `false`.
+#[derive(Debug)]
+#[must_use = "allocations go back to the thread when this is dropped"]
+pub struct VmAllocations {
+    was: bool,
+    _not_send: PhantomData<*const ()>,
+}
+
+impl VmAllocations {
+    /// From now on this thread's allocations are the VM's.
+    pub fn enter() -> Self {
+        Self { was: per_thread::set_vm(true), _not_send: PhantomData }
+    }
+}
+
+impl Drop for VmAllocations {
+    fn drop(&mut self) {
+        per_thread::set_vm(self.was);
+    }
+}
+
+/// While alive, inside a [`VmAllocations`], this thread's allocations are the thread's again: what a
+/// binding holds around its Rust.
+#[derive(Debug)]
+#[must_use = "allocations go back to the VM when this is dropped"]
+pub struct HostAllocations {
+    was: bool,
+    _not_send: PhantomData<*const ()>,
+}
+
+impl HostAllocations {
+    /// From now on this thread's allocations are the thread's.
+    pub fn enter() -> Self {
+        Self { was: per_thread::set_vm(false), _not_send: PhantomData }
+    }
+}
+
+impl Drop for HostAllocations {
+    fn drop(&mut self) {
+        per_thread::set_vm(self.was);
+    }
+}
+
+/// Cumulative counts of this thread's allocations inside a [`VmAllocations`]. Zero where
+/// [`PER_THREAD_COUNTS`] is `false`.
+#[must_use]
+pub fn vm_counts() -> AllocCounts {
+    per_thread::vm()
+}
+
 #[cfg(any(target_os = "macos", target_os = "ios", target_os = "windows", target_os = "linux"))]
 mod per_thread {
     use std::cell::Cell;
@@ -340,12 +394,15 @@ mod per_thread {
         // Const-initialized and drop-free, so on targets with native TLS accessing it never
         // allocates or registers a destructor, which makes it safe inside the allocator.
         static COUNTS: Cell<AllocCounts> = const { Cell::new(AllocCounts { allocations: 0, bytes: 0 }) };
+        static VM_COUNTS: Cell<AllocCounts> = const { Cell::new(AllocCounts { allocations: 0, bytes: 0 }) };
+        static IN_VM: Cell<bool> = const { Cell::new(false) };
     }
 
     #[inline]
     pub(super) fn record(size: usize) {
         // `try_with` rather than `with`: an allocator must never panic.
-        let _ = COUNTS.try_with(|counts| {
+        let in_vm = IN_VM.try_with(Cell::get).unwrap_or(false);
+        let _ = (if in_vm { &VM_COUNTS } else { &COUNTS }).try_with(|counts| {
             let current = counts.get();
             counts.set(AllocCounts {
                 allocations: current.allocations.wrapping_add(1),
@@ -356,6 +413,16 @@ mod per_thread {
 
     pub(super) fn current() -> AllocCounts {
         COUNTS.try_with(Cell::get).unwrap_or_default()
+    }
+
+    pub(super) fn vm() -> AllocCounts {
+        VM_COUNTS.try_with(Cell::get).unwrap_or_default()
+    }
+
+    /// Whether allocations are the VM's from here on, and what it was.
+    #[inline]
+    pub(super) fn set_vm(in_vm: bool) -> bool {
+        IN_VM.try_with(|cell| cell.replace(in_vm)).unwrap_or(false)
     }
 }
 
@@ -372,6 +439,15 @@ mod per_thread {
     pub(super) fn current() -> AllocCounts {
         let stats = stats();
         AllocCounts { allocations: stats.total_allocations, bytes: stats.total_bytes }
+    }
+
+    pub(super) fn vm() -> AllocCounts {
+        AllocCounts::default()
+    }
+
+    #[inline]
+    pub(super) fn set_vm(_in_vm: bool) -> bool {
+        false
     }
 }
 

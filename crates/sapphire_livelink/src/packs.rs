@@ -20,13 +20,16 @@
 //! A pushed pack is served until another push replaces it or the app restarts, mounted or not:
 //! packs the app hasn't mounted are kept for whatever mounts them later. So what they hold is
 //! bounded across pushes, by [`PushLimits`]: the pack names served (16 by default) and the
-//! received bytes held in memory (1 GiB by default), counting every version served, every file
-//! the asset server has open on one, and every push being received or waiting to be applied, each
-//! piece of memory once however many versions share it. A push past either is refused when it
+//! received bytes held in memory (1 GiB by default). Those count from when a push asks for them
+//! until the last thing holding them lets go, each piece of memory once however many share it:
+//! a version served, a file the asset server has open on one, a read on a worker, and a push
+//! being received or waiting to be applied, which holds what it reuses from the version it would
+//! replace even if another push replaces that first. A push past either is refused when it
 //! begins, saying which limit and why, before any of its bytes are sent; nothing pushed is
 //! dropped to make room. Restarting the app frees what pushes hold.
 
 use std::io;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use sapphire_assets::pack::{Block, HEADER_LEN, PackError, PackHeader, Toc};
@@ -43,9 +46,8 @@ pub struct PushLimits {
     /// Pack names served from pushes. A push of another name is refused once this many are
     /// served or being pushed; the names served can always be pushed again.
     pub packs: usize,
-    /// Received bytes held in memory, by the versions served (and those the asset server still
-    /// reads) and by the pushes being received or waiting to be applied. A push that would hold
-    /// more is refused.
+    /// Received bytes in memory, or asked for by a push under way, for as long as anything holds
+    /// them (see the [module docs](self)). A push that would hold more is refused.
     pub resident: u64,
 }
 
@@ -87,34 +89,20 @@ struct State {
     pushed: Vec<(String, Arc<Version>)>,
     /// Files open through this source, by [`PackFile`] number.
     files: Vec<Option<Open>>,
-    /// Bytes reserved by pushes being received or waiting to be applied.
+    /// Bytes pushes under way have asked for and not yet taken into memory ([`Received`]).
     reserved: u64,
     /// The names, not served yet, that those pushes are for: one entry a push.
     reserved_names: Vec<String>,
+    /// What every [`Received`] alive holds. Apart from the lock, because a `Received` is often let
+    /// go inside it (`LivePacks::restore`), and from this state, which holds versions that hold
+    /// `Received`s: one holding the state back would keep it alive for good.
+    held: Arc<AtomicU64>,
 }
 
 impl State {
-    /// Received bytes held in memory by the versions served and those open, each piece of
-    /// memory once however many versions share it.
+    /// Received bytes in memory now, whoever holds them, each piece of memory once.
     fn held(&self) -> u64 {
-        let open = self.files.iter().filter_map(|open| match open {
-            Some(Open::Pushed(version)) => Some(version),
-            _ => None,
-        });
-        let mut memory: Vec<(*const u8, u64)> = self
-            .pushed
-            .iter()
-            .map(|(_, version)| version)
-            .chain(open)
-            .flat_map(|version| &version.pieces)
-            .filter_map(|piece| match &piece.backing {
-                Backing::Memory { bytes, .. } => Some((bytes.as_ptr(), bytes.len() as u64)),
-                Backing::Base { .. } | Backing::Zeros => None,
-            })
-            .collect();
-        memory.sort_unstable();
-        memory.dedup_by_key(|(pointer, _)| *pointer);
-        memory.iter().map(|(_, len)| len).sum()
+        self.held.load(Ordering::Relaxed)
     }
 
     /// Pack names served or being pushed, each once.
@@ -167,9 +155,10 @@ impl LivePacks {
         self.lock().pushed.iter().map(|(name, version)| (name.clone(), version.len)).collect()
     }
 
-    /// Received bytes the pushed packs hold in memory now: those of the versions served, and of
-    /// older versions the asset server still has open, each piece once. Pushes being received
-    /// are not counted, though their reservations count against [`PushLimits::resident`].
+    /// Received bytes in memory now, whoever holds them, each piece once: the versions served,
+    /// older versions something still reads, and pushes under way. Bytes a push hasn't finished
+    /// receiving aren't counted, though what it asked for counts against
+    /// [`PushLimits::resident`].
     pub fn held(&self) -> u64 {
         self.lock().held()
     }
@@ -208,8 +197,7 @@ impl LivePacks {
         }
         let toc = Toc::read(header, &head[HEADER_LEN..], len)?;
         let current = self.current(name);
-        let head: Arc<[u8]> = head.into();
-        let mut pieces = vec![Piece { start: 0, len: header.data_offset, backing: Backing::memory(&head) }];
+        let mut pieces = Vec::new();
         let mut needed = Vec::new();
         // Blocks lie in entry order, so stored ranges come in order of offset. Between two
         // assets lies alignment padding, zeros as the packer writes it, which nothing reads.
@@ -238,8 +226,10 @@ impl LivePacks {
             return Err(PushError::TooLarge(total));
         }
         // The new version's memory: its head and what it asks for. What it takes from the
-        // version before is held already.
-        let reservation = self.reserve(name, head.len() as u64 + total)?;
+        // version before is held already, and stays held for as long as these pieces are.
+        let mut reservation = self.reserve(name, head.len() as u64 + total)?;
+        let head = reservation.take(head);
+        pieces.push(Piece { start: 0, len: header.data_offset, backing: Backing::memory(&head) });
         let received = needed.iter().map(|_| Vec::new()).collect();
         Ok(PackPlan { name: name.to_owned(), len, toc, pieces, needed, received, filling: 0, reservation })
     }
@@ -373,12 +363,31 @@ impl std::fmt::Display for Mib {
     }
 }
 
-/// A push's claim on its [`PushLimits`] while it is received and waits to be applied: its bytes,
-/// and the name it is for if no version of that is served yet. Dropped, it gives them back.
+/// A push's claim on its [`PushLimits`] while it is received and waits to be applied: the bytes it
+/// asked for and hasn't [taken](Self::take) yet, and the name it is for if no version of that is
+/// served yet. Dropped, it gives them back.
 struct Reservation {
     state: Arc<Mutex<State>>,
     bytes: u64,
     name: Option<String>,
+}
+
+impl Reservation {
+    /// Makes `bytes`, which this reservation has room for, received memory: the budget they take
+    /// moves from what's reserved to what's held at one instant, so a push beginning sees either.
+    fn take(&mut self, bytes: Vec<u8>) -> Arc<Received> {
+        // Without its spare capacity, which isn't on the budget. A buffer filled to its capacity
+        // stays where it is: this is no copy, as making an `Arc<[u8]>` of it would be.
+        let bytes = bytes.into_boxed_slice();
+        let len = bytes.len() as u64;
+        let mut state = lock(&self.state);
+        self.bytes -= len;
+        state.reserved -= len;
+        state.held.fetch_add(len, Ordering::Relaxed);
+        let held = state.held.clone();
+        drop(state);
+        Arc::new(Received { bytes, held })
+    }
 }
 
 impl Drop for Reservation {
@@ -415,7 +424,7 @@ struct Piece {
 #[derive(Clone)]
 enum Backing {
     /// Bytes received, from `offset` in `bytes`.
-    Memory { bytes: Arc<[u8]>, offset: usize },
+    Memory { bytes: Arc<Received>, offset: usize },
     /// The app's own pack file, from `offset`.
     Base { file: Arc<BaseFile>, offset: u64 },
     /// Padding between assets.
@@ -423,7 +432,7 @@ enum Backing {
 }
 
 impl Backing {
-    fn memory(bytes: &Arc<[u8]>) -> Self {
+    fn memory(bytes: &Arc<Received>) -> Self {
         Self::Memory { bytes: bytes.clone(), offset: 0 }
     }
 
@@ -436,6 +445,28 @@ impl Backing {
             Self::Base { file, offset } => Self::Base { file: file.clone(), offset: offset + by },
             Self::Zeros => Self::Zeros,
         }
+    }
+}
+
+/// Bytes a push sent, in memory, on the budget until the last thing holding them lets go: versions
+/// served or open, pushes that reuse them, reads on a worker. So they count once however many share
+/// them, whichever of those is last.
+struct Received {
+    bytes: Box<[u8]>,
+    held: Arc<AtomicU64>,
+}
+
+impl std::ops::Deref for Received {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+impl Drop for Received {
+    fn drop(&mut self) {
+        self.held.fetch_sub(self.bytes.len() as u64, Ordering::Relaxed);
     }
 }
 
@@ -659,10 +690,13 @@ impl PackPlan {
             return Err(PushError::Unrequested(range.end()));
         }
         // Buffers grow as bytes come, so a table of contents claiming a huge asset reserves
-        // nothing up front.
+        // nothing up front, and doubling stops at the range, so what's allocated stays inside what
+        // the push reserved.
         if buffer.is_empty() {
             *buffer = bytes;
         } else {
+            let doubled = buffer.capacity().saturating_mul(2).min(range.len as usize);
+            buffer.reserve_exact(doubled.saturating_sub(buffer.len()).max(bytes.len()));
             buffer.extend_from_slice(&bytes);
         }
         if buffer.len() as u64 == range.len {
@@ -679,10 +713,11 @@ impl PackPlan {
             return Err(PushError::Incomplete(range.len - sent + rest));
         }
         let mut pieces = self.pieces;
+        let mut reservation = self.reservation;
         let mut received = 0;
         for (range, bytes) in self.needed.iter().zip(self.received) {
             received += range.len;
-            let bytes: Arc<[u8]> = bytes.into();
+            let bytes = reservation.take(bytes);
             pieces.push(Piece { start: range.offset, len: range.len, backing: Backing::memory(&bytes) });
         }
         pieces.sort_unstable_by_key(|piece| piece.start);
@@ -692,12 +727,7 @@ impl PackPlan {
             "a plan's pieces cover its pack"
         );
         let version = Version { len: self.len, toc: self.toc, pieces };
-        Ok(PushedPack {
-            name: self.name,
-            version: Arc::new(version),
-            received,
-            _reservation: self.reservation,
-        })
+        Ok(PushedPack { name: self.name, version: Arc::new(version), received, _reservation: reservation })
     }
 }
 
@@ -706,8 +736,8 @@ pub struct PushedPack {
     name: String,
     version: Arc<Version>,
     received: u64,
-    /// Given back once applied, when the version it holds is served (or refused), or if the
-    /// push is dropped.
+    /// The place among the pack names it may be holding, given back once applied, when the version
+    /// it holds is served (or refused), or if the push is dropped.
     _reservation: Reservation,
 }
 
@@ -1069,6 +1099,199 @@ mod tests {
         // Going back to the app's own version frees them all.
         packs.restore("shared", None);
         assert_eq!(packs.held(), 0);
+    }
+
+    /// What a push reuses from the version it replaces is memory it holds: if another push replaces
+    /// that version first, those bytes are on the budget still, or a third push could be let in on
+    /// room they fill.
+    #[test]
+    fn what_a_push_reuses_stays_on_the_budget_once_its_version_is_replaced() {
+        let big = pack(vec![noise(1, 50_000)]);
+        let tiny = pack(vec![asset(2, 100, 2)]);
+        let limits = PushLimits { resident: 80_000, ..PushLimits::DEFAULT };
+        let packs = LivePacks::with_limits(MemoryPackSource::new(), limits);
+        push_and_serve(&packs, "shared", &big).unwrap();
+
+        // One connection begins pushing the same bytes: it asks for nothing, and reuses it all.
+        let plan = packs.plan("shared", big.len() as u64, head(&big)).unwrap();
+        assert!(plan.needed().is_empty());
+        // Another replaces what it reuses, and a third has no room beside it.
+        push_and_serve(&packs, "shared", &tiny).unwrap();
+        assert!(packs.held() > 50_000, "the plan still holds them: {}", packs.held());
+        let error = push_and_serve(&packs, "other", &pack(vec![noise(3, 50_000)])).unwrap_err();
+        assert!(matches!(error, PushError::OverBudget { .. }), "{error}");
+
+        // Finished and served, it holds what the budget said it would.
+        let pushed = plan.finish().unwrap();
+        packs.install("shared", pushed.version.clone());
+        drop(pushed);
+        assert_eq!(read_all(&packs, "shared"), big);
+        assert_eq!(packs.held(), whole(&big), "only the second head, the tiny pack's freed");
+
+        // Cancelled instead, it gives them back at once, with no version left to hold them.
+        let plan = packs.plan("shared", big.len() as u64, head(&big)).unwrap();
+        push_and_serve(&packs, "shared", &tiny).unwrap();
+        assert!(packs.held() > 50_000);
+        drop(plan);
+        assert_eq!(packs.held(), whole(&tiny));
+        push_and_serve(&packs, "other", &pack(vec![noise(3, 50_000)])).unwrap();
+    }
+
+    /// Sends up to `budget` bytes of what `plan` asks for next, from the pack it pushes.
+    fn feed(plan: &mut PackPlan, bytes: &[u8], mut budget: usize) {
+        while let Some(range) = plan.needed.get(plan.filling).copied().filter(|_| budget > 0) {
+            let at = range.offset + plan.received[plan.filling].len() as u64;
+            let len = budget.min((range.end() - at) as usize);
+            plan.receive(at, bytes[at as usize..at as usize + len].to_vec()).unwrap();
+            budget -= len;
+        }
+    }
+
+    /// The memory `pieces` hold, each allocation once.
+    fn distinct_memory<'a>(pieces: impl Iterator<Item = &'a Piece>) -> u64 {
+        let mut memory: Vec<(*const u8, u64)> = pieces
+            .filter_map(|piece| match &piece.backing {
+                Backing::Memory { bytes, .. } => Some((bytes.as_ptr(), bytes.len() as u64)),
+                Backing::Base { .. } | Backing::Zeros => None,
+            })
+            .collect();
+        memory.sort_unstable();
+        memory.dedup_by_key(|(pointer, _)| *pointer);
+        memory.iter().map(|(_, len)| len).sum()
+    }
+
+    /// In whatever order pushes begin, stall, finish, wait, apply and are cancelled, with files open on
+    /// what they replace: what's held is every live piece of received memory, once; that and what's
+    /// reserved stays inside the budget; no buffer outgrows its range; and what's served is whole.
+    #[test]
+    fn every_schedule_of_pushes_stays_inside_the_budget() {
+        // Versions that share some of their assets, and one that shares none.
+        let versions = [
+            pack(vec![noise(1, 30_000), asset(2, 9_000, 2)]),
+            pack(vec![noise(1, 30_000), asset(2, 9_000, 7)]),
+            pack(vec![asset(2, 9_000, 7), asset(3, 20_000, 3)]),
+            pack(vec![asset(4, 100, 4)]),
+        ];
+        let names = ["shared", "zone"];
+        let limits = PushLimits { resident: 90_000, packs: 16 };
+        let (mut refused, mut applied) = (0, 0);
+        for seed in 1..=8_u32 {
+            let base = MemoryPackSource::new();
+            base.insert("shared", versions[0].clone());
+            let packs = LivePacks::with_limits(base, limits);
+            let mut plans: Vec<(&str, usize, PackPlan)> = Vec::new();
+            let mut waiting: Vec<(usize, PushedPack)> = Vec::new();
+            let mut files: Vec<PackFile> = Vec::new();
+            let mut state = seed.wrapping_mul(0x9e37_79b9) | 1;
+            let mut next = move |limit: usize| {
+                // xorshift32.
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                state as usize % limit
+            };
+            for _ in 0..3_000 {
+                match next(8) {
+                    0 | 1 => {
+                        let (name, version) = (names[next(names.len())], next(versions.len()));
+                        let bytes = &versions[version];
+                        match packs.plan(name, bytes.len() as u64, head(bytes)) {
+                            Ok(plan) => plans.push((name, version, plan)),
+                            Err(PushError::OverBudget { .. }) => refused += 1,
+                            Err(error) => panic!("{error}"),
+                        }
+                    }
+                    2 if !plans.is_empty() => {
+                        let (_, version, plan) = {
+                            let picked = next(plans.len());
+                            &mut plans[picked]
+                        };
+                        feed(plan, &versions[*version], 4096);
+                    }
+                    3 if !plans.is_empty() => {
+                        let (_, version, mut plan) = plans.swap_remove(next(plans.len()));
+                        feed(&mut plan, &versions[version], usize::MAX);
+                        waiting.push((version, plan.finish().unwrap()));
+                    }
+                    4 if !waiting.is_empty() => {
+                        let (version, pushed) = waiting.swap_remove(next(waiting.len()));
+                        packs.install(pushed.name(), pushed.version.clone());
+                        assert_eq!(read_all(&packs, pushed.name()), versions[version]);
+                        applied += 1;
+                    }
+                    5 if !plans.is_empty() => drop(plans.swap_remove(next(plans.len()))),
+                    6 if !waiting.is_empty() => drop(waiting.swap_remove(next(waiting.len()))),
+                    7 if !packs.pushed().is_empty() => {
+                        if files.len() < 4 {
+                            files.push(packs.open(names[next(names.len())]).unwrap_or((PackFile(9999), 0)).0);
+                        } else {
+                            packs.close(files.swap_remove(next(files.len())));
+                        }
+                    }
+                    _ => {}
+                }
+
+                let state = packs.lock();
+                let open = state.files.iter().flatten().filter_map(|open| match open {
+                    Open::Pushed(version) => Some(version),
+                    Open::Base(_) => None,
+                });
+                let served = state.pushed.iter().map(|(_, version)| version);
+                let queued = waiting.iter().map(|(_, pushed)| &pushed.version);
+                let versions_alive = served.chain(open).chain(queued).flat_map(|version| &version.pieces);
+                let planned = plans.iter().flat_map(|(_, _, plan)| &plan.pieces);
+                let live = distinct_memory(versions_alive.chain(planned));
+                assert_eq!(state.held(), live, "each piece of received memory, once");
+                assert!(
+                    state.held() + state.reserved <= limits.resident,
+                    "{} held and {} reserved",
+                    state.held(),
+                    state.reserved
+                );
+                for (_, _, plan) in &plans {
+                    assert!(
+                        plan.received
+                            .iter()
+                            .zip(&plan.needed)
+                            .all(|(got, want)| got.capacity() as u64 <= want.len),
+                        "a buffer outgrew its range"
+                    );
+                }
+            }
+
+            // Everyone goes, and nothing is left on the budget.
+            drop((plans, waiting));
+            for file in files {
+                packs.close(file);
+            }
+            assert_eq!(packs.lock().reserved, 0);
+            for name in names {
+                packs.restore(name, None);
+            }
+            assert_eq!(packs.held(), 0);
+        }
+        assert!(refused > 100 && applied > 100, "a schedule that tests the budget: {refused}, {applied}");
+    }
+
+    #[test]
+    fn finishing_a_push_moves_its_bytes_from_reserved_to_held() {
+        let bytes = pack(vec![noise(1, 40_000)]);
+        let packs = LivePacks::new(MemoryPackSource::new());
+        let budget_used = |packs: &LivePacks| {
+            let state = packs.lock();
+            state.held() + state.reserved
+        };
+        let mut plan = packs.plan("zone", bytes.len() as u64, head(&bytes)).unwrap();
+        assert_eq!(budget_used(&packs), whole(&bytes));
+        assert_eq!(packs.held(), head(&bytes).len() as u64, "the head has come, the data hasn't");
+        feed(&mut plan, &bytes, usize::MAX);
+        assert_eq!(budget_used(&packs), whole(&bytes), "taking the bytes changes nothing");
+        let pushed = plan.finish().unwrap();
+        assert_eq!(packs.held(), whole(&bytes));
+        assert_eq!(budget_used(&packs), whole(&bytes));
+        // It frees what it holds if it's dropped unapplied (a link closed with it queued).
+        drop(pushed);
+        assert_eq!(budget_used(&packs), 0);
     }
 
     #[test]

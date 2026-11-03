@@ -304,6 +304,61 @@ fn pushes_past_the_limits_are_refused_as_they_begin() {
     assert_eq!(app.link.counters().received, sent, "the refused pushes sent nothing");
 }
 
+/// A push under way on one connection holds what it reuses from the version it would replace, so
+/// when another connection replaces that version those bytes stay on the budget until the first push
+/// is done with them, here by its tool going away.
+#[test]
+fn a_push_under_way_keeps_what_it_reuses_on_the_budget() {
+    let base = MemoryPackSource::new();
+    base.insert("shared", shared([1.0; 4]));
+    let zone = |size, seed| {
+        write_pack(vec![packed(ZONE_TEXTURE, AssetKind::Texture, &texture(size, seed), Vec::new())]).unwrap()
+    };
+    let (big, tiny, other) = (zone(128, 1), zone(4, 2), zone(128, 3));
+    let limits = PushLimits { resident: big.len() as u64 * 3 / 2, ..PushLimits::DEFAULT };
+    let mut app = App::with_limits(base, limits);
+    let address = app.address();
+    let first = big.clone();
+    app.serve(on_client(address, move |client| client.push_pack("zone", &first).unwrap()));
+
+    let mut tool = RawTool::connect(address);
+    let data = PackHeader::read(&big).unwrap().data_offset as usize;
+    let begin =
+        RequestBody::PackBegin { name: "zone".into(), len: big.len() as u64, head: big[..data].to_vec() };
+    tool.send(1, begin);
+    let reply = tool.reply().unwrap();
+    assert!(
+        matches!(&reply.body, ReplyBody::PackNeed { ranges } if ranges.is_empty()),
+        "the same pack again asks for nothing: {reply:?}"
+    );
+
+    let retry = other.clone();
+    let error = app.serve(on_client(address, move |client| {
+        client.push_pack("zone", &tiny).unwrap();
+        client.push_pack("zone2", &retry).unwrap_err()
+    }));
+    assert!(matches!(&error, LinkError::Refused(message) if message.contains("past the")), "{error}");
+    assert!(app.packs.held() > big.len() as u64 / 2, "the push under way holds the big pack's bytes");
+
+    // Its tool leaves, which drops the push, and the room comes back.
+    drop(tool);
+    let outcome = app.serve(on_client(address, move |client| {
+        let mut attempts = 0;
+        loop {
+            match client.push_pack("zone2", &other) {
+                Ok(outcome) => break outcome,
+                Err(LinkError::Refused(message)) if attempts < 1000 && message.contains("past the") => {
+                    attempts += 1;
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("{error}"),
+            }
+        }
+    }));
+    assert!(outcome.received > 0);
+    assert!(app.packs.held() <= limits.resident, "{} held", app.packs.held());
+}
+
 #[test]
 fn a_pack_streams_in_chunks_and_serves_later_mounts() {
     let base = MemoryPackSource::new();

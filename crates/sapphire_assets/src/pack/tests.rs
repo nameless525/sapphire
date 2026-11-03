@@ -1,4 +1,6 @@
 use super::*;
+use crate::material::{MaterialFamily, MaterialFlags};
+use crate::mesh::PositionFormat;
 
 const ZSTD_LEVEL: i32 = 19;
 
@@ -172,7 +174,7 @@ fn bad_headers_are_rejected() {
         PackReader::new(&bytes).map(|_| ())
     };
     assert_eq!(edit(0, b"SPAX", false), Err(PackError::NotAPack));
-    assert_eq!(edit(4, &2u32.to_le_bytes(), false), Err(PackError::UnsupportedVersion(2)));
+    assert_eq!(edit(4, &3u32.to_le_bytes(), false), Err(PackError::UnsupportedVersion(3)));
     assert_eq!(edit(20, &7u32.to_le_bytes(), false), Err(PackError::HeaderHash));
     assert_eq!(edit(160, &1u32.to_le_bytes(), false), Err(PackError::UnsupportedSignature(1)));
     assert!(matches!(edit(200, &[1], false), Err(PackError::Header(_))), "signature bytes while unsigned");
@@ -216,7 +218,8 @@ fn bad_tables_of_contents_are_rejected() {
     assert!(edit(second, &good[entries..entries + 16]).contains("sorted"), "a repeated ID");
     assert!(edit(entries + 16, &[u8::MAX]).contains("kind"));
     assert!(edit(entries + 17, &[7]).contains("codec"));
-    assert!(edit(entries + 18, &[1]).contains("reserved"));
+    assert!(edit(entries + 18, &[1]).contains("pipeline key"), "a count the table doesn't hold");
+    assert!(edit(entries + 36, &[1]).contains("pipeline key"), "a first key out of order");
     assert!(edit(entries + 40, &(5 * BLOCK_SIZE as u64).to_le_bytes()).contains("block count"));
     assert!(edit(entries + 40, &0u64.to_le_bytes()).contains("empty"));
     assert!(edit(entries + 20, &1u32.to_le_bytes()).contains("order"), "first block");
@@ -339,4 +342,84 @@ fn malformed_compressed_blocks_fail_to_decode_without_panicking() {
     asset.hash[0] ^= 1;
     let pack = write_pack(vec![asset]).unwrap();
     assert_eq!(PackReader::new(&pack).unwrap().read(id(1)).unwrap_err(), PackError::AssetHash { id: id(1) });
+}
+
+fn mesh_with_keys(byte: u8, keys: Vec<PipelineKey>) -> PackAsset {
+    let mut asset =
+        PackAsset::encode(id(byte), AssetKind::Mesh, Codec::Lz4, &[byte; 64], Vec::new(), ZSTD_LEVEL)
+            .unwrap();
+    asset.pipeline_keys = keys;
+    asset
+}
+
+fn two_keys() -> [PipelineKey; 2] {
+    let key = |flags, format| PipelineKey { family: MaterialFamily::AnimeCharacter, flags, format };
+    [
+        key(MaterialFlags::OUTLINE, PositionFormat::Float32),
+        key(MaterialFlags::empty(), PositionFormat::Unorm16),
+    ]
+}
+
+#[test]
+fn a_meshs_pipeline_keys_are_its_own_in_slot_order() {
+    let [outlined, plain] = two_keys();
+    let rig = PackAsset::encode(id(5), AssetKind::Rig, Codec::Lz4, &[5; 64], Vec::new(), ZSTD_LEVEL).unwrap();
+    let bytes = write_pack(vec![
+        mesh_with_keys(9, vec![plain, outlined, plain]),
+        rig,
+        mesh_with_keys(2, vec![outlined]),
+        mesh_with_keys(7, Vec::new()),
+    ])
+    .unwrap();
+    let reader = PackReader::new(&bytes).unwrap();
+    let toc = reader.toc();
+    assert_eq!(toc.header().pipeline_key_count, 4);
+    let of = |byte| toc.pipeline_keys_of(toc.find(id(byte)).unwrap());
+    assert_eq!(of(2), [outlined]);
+    assert_eq!(of(5), []);
+    assert_eq!(of(7), []);
+    assert_eq!(of(9), [plain, outlined, plain]);
+    assert_eq!(toc.pipeline_keys(), [outlined, plain, outlined, plain], "in entry order");
+}
+
+#[test]
+fn pipeline_keys_a_reader_cant_trust_are_refused() {
+    let [outlined, plain] = two_keys();
+    let rig = PackAsset::encode(id(1), AssetKind::Rig, Codec::Lz4, &[1; 64], Vec::new(), ZSTD_LEVEL).unwrap();
+    // The writer refuses them on anything but a mesh.
+    let mut keyed_rig = rig.clone();
+    keyed_rig.pipeline_keys = vec![plain];
+    assert!(matches!(write_pack(vec![keyed_rig]), Err(PackError::Invalid { .. })));
+
+    let good = write_pack(vec![mesh_with_keys(2, vec![plain, outlined]), rig]).unwrap();
+    let header = PackHeader::read(&good).unwrap();
+    let entries = HEADER_LEN;
+    // Sorted by ID: the rig, then the mesh.
+    let (rig_entry, mesh_entry) = (entries, entries + ENTRY_LEN);
+    let keys = HEADER_LEN + (header.toc_len() as usize) - 2 * PIPELINE_KEY_LEN;
+    let edit = |offset: usize, value: &[u8]| {
+        let mut bytes = good.clone();
+        bytes[offset..offset + value.len()].copy_from_slice(value);
+        rehash(&mut bytes);
+        PackReader::new(&bytes).unwrap_err()
+    };
+    let reason = |error| match error {
+        PackError::Toc { reason, .. } => reason,
+        other => panic!("expected an inconsistent table of contents, got {other:?}"),
+    };
+    assert_eq!(reason(edit(keys, &[9])), "unknown material family");
+    assert_eq!(reason(edit(keys + 1, &[9])), "unknown position format");
+    assert_eq!(reason(edit(keys + 4, &[0xff; 4])), "unknown material flags");
+    assert_eq!(reason(edit(keys + 2, &[1])), "reserved bytes aren't zero");
+    assert_eq!(reason(edit(rig_entry + 18, &[1])), "only a mesh has pipeline keys");
+    assert_eq!(reason(edit(mesh_entry + 18, &[3])), "pipeline keys run past the table");
+    assert_eq!(reason(edit(mesh_entry + 18, &[1])), "blocks, dependencies or keys belong to no entry");
+    assert_eq!(reason(edit(mesh_entry + 36, &[1])), "pipeline keys aren't in entry order");
+}
+
+#[test]
+fn a_pack_of_the_format_before_is_refused() {
+    let mut bytes = write_pack(vec![mesh_with_keys(2, Vec::new())]).unwrap();
+    bytes[4..8].copy_from_slice(&1u32.to_le_bytes());
+    assert_eq!(PackReader::new(&bytes).unwrap_err(), PackError::UnsupportedVersion(1));
 }

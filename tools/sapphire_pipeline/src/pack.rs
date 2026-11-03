@@ -6,8 +6,9 @@
 //! their [notices](#notices): what `cargo xtask` bundles into apps and points desktop runs at. Each
 //! asset goes in exactly as the cook wrote it, with its kind (from the cooked format's extension) and
 //! the assets it references, read from its bytes by the runtime's own check
-//! ([`AssetKind::references`]), as dependencies. Packs are deterministic: the same cooked assets make
-//! the same bytes.
+//! ([`AssetKind::references`]), as dependencies. A mesh goes in with what each of its slots draws through
+//! ([`PipelineKey`], M3 K1), from its materials wherever they're packed; nothing else has any. Packs are
+//! deterministic: the same cooked assets make the same bytes.
 //!
 //! # Groups
 //!
@@ -94,15 +95,15 @@ use sapphire_assets::clip::CLIP_EXTENSION;
 use sapphire_assets::cue::CUE_EXTENSION;
 use sapphire_assets::font::{FONT_CHAINS_EXTENSION, FONT_EXTENSION, FONTS_PACK, Font};
 use sapphire_assets::graph::GRAPH_EXTENSION;
-use sapphire_assets::material::MATERIAL_EXTENSION;
-use sapphire_assets::mesh::MESH_EXTENSION;
+use sapphire_assets::material::{MATERIAL_EXTENSION, Material, MaterialFamily, MaterialFlags};
+use sapphire_assets::mesh::{MESH_EXTENSION, Mesh};
 use sapphire_assets::pack::{self as format, Codec, PACK_EXTENSION, PackAsset};
 use sapphire_assets::probes::PROBE_GRID_EXTENSION;
 use sapphire_assets::rig::RIG_EXTENSION;
 use sapphire_assets::skeleton::SKELETON_EXTENSION;
 use sapphire_assets::sound::SOUND_EXTENSION;
 use sapphire_assets::texture::TEXTURE_EXTENSION;
-use sapphire_assets::{AssetError, AssetId, AssetKind};
+use sapphire_assets::{AssetError, AssetId, AssetKind, PipelineKey};
 use sapphire_colliders::COLLIDERS_EXTENSION;
 use sapphire_moves::MOVE_SET_EXTENSION;
 use sapphire_navmesh::NAVMESH_EXTENSION;
@@ -118,11 +119,15 @@ use crate::zone;
 /// The packer as cache keys know it. Its name carries the encoders' versions, which a test keeps
 /// in step with `Cargo.lock`: a new zstd or lz4_flex may compress differently, so it re-encodes
 /// everything. Bump the version when the codec policy, block encoding or pack layout changes.
-pub const PACKER: Stage = Stage { name: "spack (zstd 1.5.7, lz4_flex 0.14.0)", version: 1 };
+pub const PACKER: Stage = Stage { name: "spack (zstd 1.5.7, lz4_flex 0.14.0)", version: 2 };
 
 /// What a cooked asset reaches, as cache keys know it. Bump the version whenever that changes for the
 /// same bytes ([`AssetKind::reach`]).
 const REACH: Stage = Stage { name: "pack reach", version: 1 };
+
+/// What reads a mesh's pipeline keys, as cache keys know it. Bump the version whenever they change for the
+/// same bytes ([`PipelineKey::of_mesh`]).
+const PIPELINE_KEYS: Stage = Stage { name: "pack pipeline keys", version: 1 };
 
 /// zstd's level for pack blocks. Encoding is cached, and decoding speed barely depends on the
 /// level, so packs take the best ratio short of zstd's slower "ultra" levels.
@@ -280,7 +285,7 @@ pub fn pack_cooked(report: &CookReport, out: &Path, cache: Option<&Path>) -> Res
         return Err(PackError::Overlap { packs: out.to_owned(), output: asset.output.clone() });
     }
     let cache = cache.map(Cache::new);
-    let ids: HashSet<AssetId> = report.assets.iter().map(|asset| asset.id).collect();
+    let ids: HashMap<AssetId, &CookedAsset> = report.assets.iter().map(|asset| (asset.id, asset)).collect();
     let (font_packs, licenses) = fonts(report)?;
     let groups = groups(report, &font_packs, cache.as_ref())?;
     let mut packs = Vec::with_capacity(groups.len());
@@ -443,12 +448,7 @@ fn reach_of(asset: &CookedAsset, of: AssetKind, cache: Option<&Cache>) -> Result
         return Ok(reach);
     }
     let path = &asset.output;
-    let read_error = |source| PackError::Read { path: path.clone(), source };
-    let mut bytes = AlignedVec::<16>::new();
-    bytes.extend_from_reader(&mut fs::File::open(path).map_err(read_error)?).map_err(read_error)?;
-    if blake3::hash(&bytes) != asset.output_hash {
-        return Err(PackError::Changed { path: path.clone() });
-    }
+    let bytes = cooked_bytes(asset)?;
     let reach = of.reach(&bytes).map_err(|source| PackError::Invalid { path: path.clone(), source })?;
     if let Some(cache) = cache {
         cache.put(&key, &postcard::to_allocvec(&reach).expect("asset IDs always encode"))?;
@@ -456,19 +456,86 @@ fn reach_of(asset: &CookedAsset, of: AssetKind, cache: Option<&Cache>) -> Result
     Ok(reach)
 }
 
-/// An asset of a pack, with its kind, codec and packed key.
+/// What mesh `asset` draws through ([`PipelineKey::of_mesh`]), from the cache if its bytes and those of what
+/// it references have been asked before. Its materials may be in any pack, so `assets` is the whole cook's.
+fn pipeline_keys_of(
+    asset: &CookedAsset,
+    assets: &HashMap<AssetId, &CookedAsset>,
+    cache: Option<&Cache>,
+) -> Result<Vec<PipelineKey>, PackError> {
+    let path = &asset.output;
+    let missing = |id| PackError::MissingDependency { path: path.clone(), id };
+    let references = reach_of(asset, AssetKind::Mesh, cache)?
+        .into_iter()
+        .map(|id| assets.get(&id).copied().ok_or_else(|| missing(id)))
+        .collect::<Result<Vec<_>, _>>()?;
+    let hashes: Vec<_> = references.iter().map(|reference| *reference.output_hash.as_bytes()).collect();
+    let key = CacheKey::pipeline_keys(&asset.output_hash, &hashes, PIPELINE_KEYS);
+    if let Some(cache) = cache
+        && let Some(cached) = cache.get(&key)?
+        && let Some(keys) = keys_of_rows(&cached)
+    {
+        return Ok(keys);
+    }
+    let mut materials: HashMap<AssetId, (MaterialFamily, MaterialFlags)> = HashMap::new();
+    for reference in references {
+        if kind(&reference.output) == Some(AssetKind::Material) {
+            let bytes = cooked_bytes(reference)?;
+            let material = Material::read(&bytes).map_err(|source| PackError::Invalid {
+                path: reference.output.clone(),
+                source: source.into(),
+            })?;
+            materials.insert(reference.id, (material.family, material.flags()));
+        }
+    }
+    let bytes = cooked_bytes(asset)?;
+    let mesh = Mesh::read(&bytes)
+        .map_err(|source| PackError::Invalid { path: path.clone(), source: source.into() })?;
+    let keys = PipelineKey::of_mesh(mesh, |id| materials.get(&id).copied()).map_err(missing)?;
+    if let Some(cache) = cache {
+        cache.put(&key, &rows_of_keys(&keys))?;
+    }
+    Ok(keys)
+}
+
+/// The rows a pack's table stores `keys` as.
+fn rows_of_keys(keys: &[PipelineKey]) -> Vec<u8> {
+    keys.iter().flat_map(|key| key.to_row()).collect()
+}
+
+/// The keys of `rows`, or `None` if they aren't rows of keys.
+fn keys_of_rows(rows: &[u8]) -> Option<Vec<PipelineKey>> {
+    let (rows, rest) = rows.as_chunks::<{ PipelineKey::ROW_LEN }>();
+    let keys = rows.iter().map(|row| PipelineKey::from_row(row).ok());
+    if rest.is_empty() { keys.collect() } else { None }
+}
+
+/// The bytes of cooked `asset`, aligned as cooked files are read, if they're still what its cook wrote.
+fn cooked_bytes(asset: &CookedAsset) -> Result<AlignedVec<16>, PackError> {
+    let path = &asset.output;
+    let read_error = |source| PackError::Read { path: path.clone(), source };
+    let mut bytes = AlignedVec::<16>::new();
+    bytes.extend_from_reader(&mut fs::File::open(path).map_err(read_error)?).map_err(read_error)?;
+    if blake3::hash(&bytes) != asset.output_hash {
+        return Err(PackError::Changed { path: path.clone() });
+    }
+    Ok(bytes)
+}
+
+/// An asset of a pack, with its kind, codec and packed key, and for a mesh what it draws through.
 struct Packing<'a> {
     asset: &'a CookedAsset,
     kind: AssetKind,
     codec: Codec,
     key: CacheKey,
+    pipeline_keys: Vec<PipelineKey>,
 }
 
 /// Brings pack `name`, holding `assets`, up to date.
 fn pack_group(
     name: &str,
     assets: &[&CookedAsset],
-    ids: &HashSet<AssetId>,
+    ids: &HashMap<AssetId, &CookedAsset>,
     out: &Path,
     cache: Option<&Cache>,
     workers: usize,
@@ -480,11 +547,14 @@ fn pack_group(
             let kind =
                 kind(&asset.output).ok_or_else(|| PackError::UnknownKind { path: asset.output.clone() })?;
             let codec = codec(kind);
+            let pipeline_keys =
+                if kind == AssetKind::Mesh { pipeline_keys_of(asset, ids, cache)? } else { Vec::new() };
             Ok(Packing {
                 asset,
                 kind,
                 codec,
                 key: CacheKey::packed(&asset.output_hash, PACKER, codec, ZSTD_LEVEL),
+                pipeline_keys,
             })
         })
         .collect::<Result<Vec<_>, PackError>>()?;
@@ -492,7 +562,8 @@ fn pack_group(
     check_unchanged(&packing, workers)?;
     let keys: Vec<(AssetId, CacheKey)> =
         packing.iter().map(|packing| (packing.asset.id, packing.key)).collect();
-    let pack_key = CacheKey::pack(PACKER, name, &keys);
+    let rows: Vec<u8> = packing.iter().flat_map(|item| rows_of_keys(&item.pipeline_keys)).collect();
+    let pack_key = CacheKey::pack(PACKER, name, &keys, &rows);
     let current = file_hash(&path)?;
     let done = |encoded, bytes, status| PackedPack {
         name: name.to_owned(),
@@ -541,9 +612,11 @@ fn pack_group(
             }
         };
         encoded += usize::from(fresh && jobs[job] == index);
-        // Identical cooks share an encoding; each asset keeps its own ID.
+        // Identical cooks share an encoding; each asset keeps its own ID, and what it draws through,
+        // which its materials say rather than its bytes.
         pack_asset.id = asset.id;
-        if let Some(&missing) = pack_asset.dependencies.iter().find(|id| !ids.contains(id)) {
+        pack_asset.pipeline_keys.clone_from(&item.pipeline_keys);
+        if let Some(&missing) = pack_asset.dependencies.iter().find(|id| !ids.contains_key(*id)) {
             return Err(PackError::MissingDependency { path: asset.output.clone(), id: missing });
         }
         packed.push(pack_asset);
@@ -571,7 +644,7 @@ fn encode_jobs(
     workers: usize,
 ) -> Vec<Option<Encoded>> {
     let encode_job = |job: usize| {
-        let Packing { asset, kind, codec, key } = &packing[jobs[job]];
+        let Packing { asset, kind, codec, key, .. } = &packing[jobs[job]];
         if let Some(cache) = cache
             && let Some(cached) = cache.get(key)?
             && let Ok(packed) = postcard::from_bytes::<PackAsset>(&cached)

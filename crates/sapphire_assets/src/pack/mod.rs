@@ -15,6 +15,7 @@
 //! | 256 | 80 × entries | one entry per asset, sorted by ID ([`Entry`]) |
 //! | … | 48 × blocks | one per block, asset by asset in entry order ([`Block`]) |
 //! | … | 16 × dependencies | asset IDs, each entry's in a run of its own, sorted |
+//! | … | 16 × pipeline keys | [`PipelineKey::to_row`], each mesh's in a run of its own, in slot order |
 //! | `data_offset` | `data_len` | block data, each block starting 16-byte aligned |
 //!
 //! The header:
@@ -28,15 +29,16 @@
 //! | 16 | 4 | block size, [`BLOCK_SIZE`] |
 //! | 20 | 12 | entry, block and dependency counts (u32 each) |
 //! | 32 | 24 | table of contents length, data offset and data length (u64 each) |
-//! | 56 | 8 | reserved, 0 |
+//! | 56 | 4 | pipeline key count (u32) |
+//! | 60 | 4 | reserved, 0 |
 //! | 64 | 32 | blake3 of the table of contents |
 //! | 96 | 32 | reserved, 0 |
 //! | 128 | 32 | blake3 of bytes 0..128: the header hash |
 //! | 160 | 96 | signature: scheme (u32), 28 bytes for the signing key's ID, 64 signature bytes; all 0 while unsigned |
 //!
-//! An entry is the asset's ID (16 bytes), its [`AssetKind`] (u8) and [`Codec`] (u8), 2 reserved
-//! bytes, its first block and block count, its first dependency and dependency count (u32
-//! each), 4 reserved bytes, its size (u64) and the blake3 hash of its bytes (32). A block is its
+//! An entry is the asset's ID (16 bytes), its [`AssetKind`] (u8) and [`Codec`] (u8), its pipeline key
+//! count (u16), its first block and block count, its first dependency and dependency count and its
+//! first pipeline key (u32 each), its size (u64) and the blake3 hash of its bytes (32). A block is its
 //! offset in the data (u64), its stored length (u32), its [`Codec`] (u8), 3 reserved bytes and the
 //! blake3 hash of its stored bytes (32). Reserved bytes are 0.
 //!
@@ -66,6 +68,13 @@
 //! an asset stored raw is contiguous and aligned in the file: memory-mapping one in place is
 //! possible later without a format change.
 //!
+//! # Pipeline keys
+//!
+//! A mesh's run says what each of its material slots draws through (M3 K1, [`PipelineKey`]), so a load
+//! can build a pack's pipelines before anything draws, with no asset decoded. The table holds them
+//! rather than the mesh because a slot may bind a material asset, whose flags can change without the
+//! mesh's bytes changing. Format 1 had no keys.
+//!
 //! [`PackReader`] reads packs held in memory (tools and tests). The runtime reads ranges through
 //! the asset server's IO ([`crate::PackSource`]) and decodes them with [`Toc::decode_asset`].
 
@@ -77,14 +86,14 @@ use std::ops::Range;
 use sapphire_serialize::cooked::AlignedVec;
 use serde::{Deserialize, Serialize};
 
-use crate::{AssetId, AssetKind};
+use crate::{AssetId, AssetKind, PipelineKey};
 
 pub use write::{PackAsset, StoredBlock, write_pack};
 
 /// Conventional file extension for packs.
 pub const PACK_EXTENSION: &str = "spack";
 /// The pack layout this build reads and writes. Readers reject other versions.
-pub const PACK_VERSION: u32 = 1;
+pub const PACK_VERSION: u32 = 2;
 /// Bytes per block of an asset (its last block may be shorter).
 pub const BLOCK_SIZE: usize = 64 * 1024;
 /// Bytes in a pack's header.
@@ -100,6 +109,7 @@ const HASHED_HEADER_LEN: usize = 128;
 const ENTRY_LEN: usize = 80;
 const BLOCK_LEN: usize = 48;
 const DEPENDENCY_LEN: usize = 16;
+const PIPELINE_KEY_LEN: usize = PipelineKey::ROW_LEN;
 /// Block data starts at multiples of this, as rkyv archives and KTX2 levels need.
 const DATA_ALIGN: u64 = 16;
 
@@ -188,6 +198,7 @@ pub struct PackHeader {
     pub entry_count: u32,
     pub block_count: u32,
     pub dependency_count: u32,
+    pub pipeline_key_count: u32,
     /// Where block data starts in the file: right after the table of contents.
     pub data_offset: u64,
     pub data_len: u64,
@@ -227,13 +238,14 @@ impl PackHeader {
         if u32_at(header, 16) as usize != BLOCK_SIZE {
             return Err(PackError::Header("the block size isn't 64 KiB"));
         }
-        if header[56..64].iter().chain(&header[96..128]).any(|&byte| byte != 0) {
+        if header[60..64].iter().chain(&header[96..128]).any(|&byte| byte != 0) {
             return Err(PackError::Header("reserved bytes aren't zero"));
         }
         let parsed = Self {
             entry_count: u32_at(header, 20),
             block_count: u32_at(header, 24),
             dependency_count: u32_at(header, 28),
+            pipeline_key_count: u32_at(header, 56),
             data_offset: u64_at(header, 40),
             data_len: u64_at(header, 48),
             toc_hash: *header[64..96].first_chunk().expect("32 bytes"),
@@ -255,6 +267,7 @@ impl PackHeader {
         u64::from(self.entry_count) * ENTRY_LEN as u64
             + u64::from(self.block_count) * BLOCK_LEN as u64
             + u64::from(self.dependency_count) * DEPENDENCY_LEN as u64
+            + u64::from(self.pipeline_key_count) * PIPELINE_KEY_LEN as u64
     }
 
     /// Where the table of contents lies in the file.
@@ -280,6 +293,7 @@ impl PackHeader {
         header[32..40].copy_from_slice(&self.toc_len().to_le_bytes());
         header[40..48].copy_from_slice(&self.data_offset.to_le_bytes());
         header[48..56].copy_from_slice(&self.data_len.to_le_bytes());
+        header[56..60].copy_from_slice(&self.pipeline_key_count.to_le_bytes());
         header[64..96].copy_from_slice(&self.toc_hash);
         let hash = blake3::hash(&header[..HASHED_HEADER_LEN]);
         header[HASHED_HEADER_LEN..HASHED_HEADER_LEN + 32].copy_from_slice(hash.as_bytes());
@@ -300,6 +314,7 @@ pub struct Entry {
     pub hash: [u8; 32],
     blocks: (u32, u32),
     dependencies: (u32, u32),
+    pipeline_keys: (u32, u16),
 }
 
 impl Entry {
@@ -338,6 +353,7 @@ pub struct Toc {
     entries: Vec<Entry>,
     blocks: Vec<Block>,
     dependencies: Vec<AssetId>,
+    pipeline_keys: Vec<PipelineKey>,
 }
 
 impl Toc {
@@ -360,7 +376,8 @@ impl Toc {
         let entry_bytes = header.entry_count as usize * ENTRY_LEN;
         let block_bytes = header.block_count as usize * BLOCK_LEN;
         let (entry_table, rest) = toc.split_at(entry_bytes);
-        let (block_table, dependency_table) = rest.split_at(block_bytes);
+        let (block_table, rest) = rest.split_at(block_bytes);
+        let (dependency_table, key_table) = rest.split_at(header.dependency_count as usize * DEPENDENCY_LEN);
 
         let dependencies: Vec<AssetId> = dependency_table
             .as_chunks::<DEPENDENCY_LEN>()
@@ -370,19 +387,26 @@ impl Toc {
             .collect();
         let toc_error =
             |part: &'static str, index: usize, reason: &'static str| PackError::Toc { part, index, reason };
+        let pipeline_keys = key_table
+            .as_chunks::<PIPELINE_KEY_LEN>()
+            .0
+            .iter()
+            .enumerate()
+            .map(|(index, row)| {
+                PipelineKey::from_row(row).map_err(|reason| toc_error("pipeline key", index, reason))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
 
         let mut entries = Vec::with_capacity(header.entry_count as usize);
-        let (mut next_block, mut next_dependency) = (0u32, 0u32);
+        let (mut next_block, mut next_dependency, mut next_key) = (0u32, 0u32, 0u32);
         for (index, raw) in entry_table.as_chunks::<ENTRY_LEN>().0.iter().enumerate() {
             let fail = |reason| toc_error("entry", index, reason);
             let id = AssetId::from_bytes(*raw.first_chunk().expect("16 bytes"));
             let kind = AssetKind::from_u8(raw[16]).ok_or_else(|| fail("unknown asset kind"))?;
             let codec = Codec::from_u8(raw[17]).ok_or_else(|| fail("unknown codec"))?;
-            if raw[18..20] != [0, 0] || raw[36..40] != [0; 4] {
-                return Err(fail("reserved bytes aren't zero"));
-            }
             let blocks = (u32_at(raw, 20), u32_at(raw, 24));
             let dependency_run = (u32_at(raw, 28), u32_at(raw, 32));
+            let key_run = (u32_at(raw, 36), u16::from_le_bytes([raw[18], raw[19]]));
             let size = u64_at(raw, 40);
             if entries.last().is_some_and(|previous: &Entry| previous.id >= id) {
                 return Err(fail("entries aren't sorted by ID, or an ID repeats"));
@@ -396,6 +420,17 @@ impl Toc {
             if blocks.0 != next_block || dependency_run.0 != next_dependency {
                 return Err(fail("blocks or dependencies aren't in entry order"));
             }
+            if key_run.0 != next_key {
+                return Err(fail("pipeline keys aren't in entry order"));
+            }
+            if key_run.1 > 0 && kind != AssetKind::Mesh {
+                return Err(fail("only a mesh has pipeline keys"));
+            }
+            next_key =
+                next_key.checked_add(key_run.1.into()).ok_or_else(|| fail("too many pipeline keys"))?;
+            if next_key > header.pipeline_key_count {
+                return Err(fail("pipeline keys run past the table"));
+            }
             next_block = next_block.checked_add(blocks.1).ok_or_else(|| fail("too many blocks"))?;
             next_dependency =
                 next_dependency.checked_add(dependency_run.1).ok_or_else(|| fail("too many dependencies"))?;
@@ -407,10 +442,22 @@ impl Toc {
                 return Err(fail("dependencies aren't sorted and distinct, or include the asset itself"));
             }
             let hash = *raw[48..80].first_chunk().expect("32 bytes");
-            entries.push(Entry { id, kind, codec, size, hash, blocks, dependencies: dependency_run });
+            entries.push(Entry {
+                id,
+                kind,
+                codec,
+                size,
+                hash,
+                blocks,
+                dependencies: dependency_run,
+                pipeline_keys: key_run,
+            });
         }
-        if next_block != header.block_count || next_dependency != header.dependency_count {
-            return Err(toc_error("entry", entries.len(), "blocks or dependencies belong to no entry"));
+        if next_block != header.block_count
+            || next_dependency != header.dependency_count
+            || next_key != header.pipeline_key_count
+        {
+            return Err(toc_error("entry", entries.len(), "blocks, dependencies or keys belong to no entry"));
         }
 
         let block_table = block_table.as_chunks::<BLOCK_LEN>().0;
@@ -451,7 +498,7 @@ impl Toc {
         if data_end != header.data_len {
             return Err(PackError::Header("the data is longer than its blocks"));
         }
-        Ok(Self { header, entries, blocks, dependencies })
+        Ok(Self { header, entries, blocks, dependencies, pipeline_keys })
     }
 
     pub fn header(&self) -> &PackHeader {
@@ -479,6 +526,17 @@ impl Toc {
     pub fn dependencies(&self, entry: &Entry) -> &[AssetId] {
         let (first, count) = entry.dependencies;
         &self.dependencies[first as usize..(first + count) as usize]
+    }
+
+    /// What a mesh's material slots draw through, in slot order; nothing for any other asset.
+    pub fn pipeline_keys_of(&self, entry: &Entry) -> &[PipelineKey] {
+        let (first, count) = entry.pipeline_keys;
+        &self.pipeline_keys[first as usize..first as usize + usize::from(count)]
+    }
+
+    /// What every mesh in the pack draws through, mesh by mesh, with repeats.
+    pub fn pipeline_keys(&self) -> &[PipelineKey] {
+        &self.pipeline_keys
     }
 
     /// Where an asset's blocks lie in the file, padding between them included: one read.

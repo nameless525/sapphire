@@ -202,6 +202,11 @@ impl PositionFormat {
     /// Every format, in a stable order.
     pub const ALL: [Self; 2] = [Self::Unorm16, Self::Float32];
 
+    /// The format's position in [`Self::ALL`].
+    pub const fn index(self) -> usize {
+        self as usize
+    }
+
     /// Bytes per vertex.
     pub const fn stride(self) -> usize {
         match self {
@@ -571,6 +576,17 @@ impl Mesh {
 }
 
 impl ArchivedMesh {
+    /// Whether it deforms: skinned or morphed. Each of its instances then draws its own skinning outputs.
+    pub fn deforms(&self) -> bool {
+        self.skin.is_some() || !self.morph_targets.is_empty()
+    }
+
+    /// The position format its draws read: f32 skinning outputs if it [deforms](Self::deforms), whatever
+    /// its stream holds, and otherwise that stream.
+    pub fn draw_format(&self) -> PositionFormat {
+        if self.deforms() { PositionFormat::Float32 } else { self.streams.position_format() }
+    }
+
     /// The index list of every LOD as the GPU reads it: little-endian u32.
     pub fn index_bytes(&self) -> &[u8] {
         bytemuck::cast_slice(self.indices.as_slice())

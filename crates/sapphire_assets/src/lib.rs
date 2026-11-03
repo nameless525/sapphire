@@ -35,6 +35,8 @@
 //! - Fonts and font chains (M3 U3, spec §5.17): [`font`], fonts cut down for a pack with what their
 //!   cook read, and which fonts answer for each use of type and script. Plain data as well, so the
 //!   cooker writes them without linking a shaper (`sapphire_text`, which shapes with the bytes).
+//! - What a mesh's material slots draw through, as data: [`PipelineKey`], which packs list per mesh
+//!   (M3 K1) and the renderer derives its pipelines from, so the cooker needn't link the renderer.
 //! - Sounds and cues (M2 E1, spec §5.15): [`sound`], `.ssound` Ogg Vorbis files with what their cook
 //!   learned, and the decoder cook and runtime share; [`cue`], the RON documents (cooked to `.scue`)
 //!   that say how sounds play. Both are plain data, so the cooker reads and writes them without
@@ -109,6 +111,7 @@ mod kind;
 pub mod material;
 pub mod mesh;
 pub mod pack;
+mod pipeline_key;
 pub mod probes;
 pub mod rig;
 mod server;
@@ -117,6 +120,7 @@ pub mod sound;
 pub mod texture;
 
 pub use kind::{AssetError, AssetKind};
+pub use pipeline_key::PipelineKey;
 pub use sapphire_serialize::{AssetId, ParseAssetIdError};
 pub use server::{
     Asset, AssetBudgets, AssetChange, AssetServer, AssetSlot, AssetStats, Handle, LoadError, LoadPriority,

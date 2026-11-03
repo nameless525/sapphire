@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use sapphire_assets::material::{AnimeCharacterMaterial, Material};
+use sapphire_assets::material::{AlphaMode, AnimeCharacterMaterial, Material, MaterialFlags};
 use sapphire_assets::mesh::Mesh;
 use sapphire_assets::pack::PackReader;
 use sapphire_assets::{AssetBudgets, AssetServer, Handle, MemoryPackSource};
@@ -199,7 +199,7 @@ fn parallel_packing_keeps_bytes_and_shared_encoding_counts() {
     duplicate.id = AssetId::from_bytes([7; 16]);
     report.assets.push(duplicate);
     let assets: Vec<_> = report.assets.iter().collect();
-    let ids = report.assets.iter().map(|asset| asset.id).collect();
+    let ids = report.assets.iter().map(|asset| (asset.id, asset)).collect();
     let mut expected = None;
     for workers in [1, 2, 4] {
         let out = scratch.dir.path().join(format!("workers-{workers}"));
@@ -235,7 +235,7 @@ fn parallel_encoding_reports_the_first_error_in_asset_order() {
     let scratch = Scratch::new("pack_parallel_errors");
     let report = scratch.cook(Cook::Desktop);
     let assets: Vec<_> = report.assets.iter().collect();
-    let ids = report.assets.iter().map(|asset| asset.id).collect();
+    let ids = report.assets.iter().map(|asset| (asset.id, asset)).collect();
     for asset in &report.assets {
         fs::write(&asset.output, b"changed after cooking").unwrap();
     }
@@ -657,6 +657,95 @@ fn a_warm_pack_reads_what_zones_reach_from_the_cache() {
     let bytes = Cache::new(scratch.cache()).get(&key).unwrap().expect("recorded");
     let reach: Vec<AssetId> = postcard::from_bytes(&bytes).unwrap();
     assert!(reach.contains(&id(OWN_PROP)));
+}
+
+/// What the mannequin's pack says each of its slots draws through.
+fn mannequin_keys(scratch: &Scratch, cook: Cook) -> Vec<PipelineKey> {
+    let bytes = scratch.shared(cook);
+    let reader = PackReader::new(&bytes).unwrap();
+    let toc = reader.toc();
+    toc.pipeline_keys_of(toc.find(id(MANNEQUIN)).unwrap()).to_vec()
+}
+
+#[test]
+fn a_meshs_slots_are_listed_by_what_each_draws_through() {
+    let scratch = Scratch::new("pack_pipeline_keys");
+    scratch.pack(Cook::Desktop, true);
+    let bytes = scratch.shared(Cook::Desktop);
+    let reader = PackReader::new(&bytes).unwrap();
+    let mesh = reader.read(id(MANNEQUIN)).unwrap();
+    let mesh = Mesh::read(&mesh).unwrap();
+    let keys = mannequin_keys(&scratch, Cook::Desktop);
+    assert_eq!(keys.len(), mesh.materials.len(), "one per slot");
+    let hair = mesh.materials.iter().position(|slot| slot.name.as_str() == "Hair").expect("a hair slot");
+    let material = reader.read(id(HAIR)).unwrap();
+    let material = Material::read(&material).unwrap();
+    assert_eq!(
+        keys[hair],
+        PipelineKey { family: material.family, flags: material.flags(), format: mesh.draw_format() },
+        "a bound slot, from its material asset",
+    );
+    for (slot, key) in mesh.materials.iter().zip(&keys) {
+        if let sapphire_assets::mesh::ArchivedSlotMaterial::Embedded(material) = &slot.material {
+            assert_eq!((key.family, key.flags), (material.family, material.flags()), "an embedded one");
+        }
+    }
+}
+
+#[test]
+fn a_new_material_moves_its_meshs_keys_though_the_meshs_bytes_stay() {
+    let scratch = Scratch::new("pack_pipeline_keys_material");
+    let (before, _) = scratch.pack(Cook::Desktop, true);
+    let keys = mannequin_keys(&scratch, Cook::Desktop);
+    let mesh_hash = |report: &CookReport| {
+        report.assets.iter().find(|asset| asset.id == id(MANNEQUIN)).unwrap().output_hash
+    };
+
+    let material = AnimeCharacterMaterial {
+        base_color_map: Some(id(ALBEDO)),
+        alpha: AlphaMode::Mask { cutoff: 0.5 },
+        ..AnimeCharacterMaterial::default()
+    };
+    fs::write(scratch.source().join("hair.material.ron"), sapphire_serialize::to_ron(&material).unwrap())
+        .unwrap();
+    let (after, packed) = scratch.pack(Cook::Desktop, true);
+    assert_eq!(mesh_hash(&before), mesh_hash(&after), "the mesh binds the material by its ID");
+    assert_eq!(packed.packs[0].status, PackStatus::Packed);
+    let moved = mannequin_keys(&scratch, Cook::Desktop);
+    assert_ne!(moved, keys);
+    assert!(moved.iter().any(|key| key.flags.contains(MaterialFlags::ALPHA_TEST)), "{moved:?}");
+
+    // And a cache that has seen both answers for each, as an uncached pack does.
+    scratch.pack(Cook::Desktop, false);
+    assert_eq!(mannequin_keys(&scratch, Cook::Desktop), moved);
+}
+
+#[test]
+fn a_meshs_keys_cross_packs_when_its_material_is_shared() {
+    // The town's own prop binds a material a shared prop keeps in the shared pack: the zone's table still
+    // says what it draws through, and moves when that material does, with nothing in the zone's pack moving.
+    let scratch = two_zones("pack_pipeline_keys_across");
+    scratch.pack(Cook::Desktop, true);
+    let keys = |scratch: &Scratch| {
+        let bytes = pack_named(scratch, "zone_town");
+        let reader = PackReader::new(&bytes).unwrap();
+        let toc = reader.toc();
+        toc.pipeline_keys_of(toc.find(id(OWN_PROP)).unwrap()).to_vec()
+    };
+    let before = keys(&scratch);
+    assert!(!before.is_empty());
+    assert!(before.iter().all(|key| !key.flags.contains(MaterialFlags::ALPHA_TEST)), "{before:?}");
+
+    let wood = AnimeCharacterMaterial {
+        alpha: AlphaMode::Mask { cutoff: 0.5 },
+        ..AnimeCharacterMaterial::default()
+    };
+    fs::write(scratch.source().join("wood.material.ron"), sapphire_serialize::to_ron(&wood).unwrap())
+        .unwrap();
+    let (_, packed) = scratch.pack(Cook::Desktop, true);
+    let town = packed.packs.iter().find(|pack| pack.name == "zone_town").unwrap();
+    assert_eq!(town.status, PackStatus::Packed, "it isn't up to date: the material it binds moved");
+    assert!(keys(&scratch).iter().any(|key| key.flags.contains(MaterialFlags::ALPHA_TEST)));
 }
 
 fn by_output<'a>(report: &'a CookReport, name: &str) -> &'a CookedAsset {

@@ -67,6 +67,7 @@ const KEY_CONTEXT: &str = "sapphire_pipeline 2026-10-24 content cache key";
 const PACKED_CONTEXT: &str = "sapphire_pipeline 2026-10-25 packed asset key";
 const PACK_CONTEXT: &str = "sapphire_pipeline 2026-10-25 pack key";
 const REACH_CONTEXT: &str = "sapphire_pipeline 2026-11-03 pack reach key";
+const PIPELINE_KEYS_CONTEXT: &str = "sapphire_pipeline 2026-11-03 pack pipeline keys key";
 const PARSED_CONTEXT: &str = "sapphire_pipeline 2026-11-03 parsed document key";
 const TILE_CONTEXT: &str = "sapphire_pipeline 2026-11-03 navigation tile key";
 
@@ -163,6 +164,12 @@ impl CacheKey {
         Self::derive(REACH_CONTEXT, &(cooked.as_bytes(), (reader.name, reader.version)))
     }
 
+    /// The key a mesh's pipeline keys are cached under ([`crate::pack`]): its bytes' hash, those of the
+    /// assets it references, whose flags they say, and the stage that reads them.
+    pub fn pipeline_keys(cooked: &blake3::Hash, references: &[[u8; blake3::OUT_LEN]], reader: Stage) -> Self {
+        Self::derive(PIPELINE_KEYS_CONTEXT, &(cooked.as_bytes(), references, (reader.name, reader.version)))
+    }
+
     /// The key a document's parse is recorded under: its bytes' hash and the stage that reads it.
     pub fn parsed(source: &blake3::Hash, reader: Stage) -> Self {
         Self::derive(PARSED_CONTEXT, &(source.as_bytes(), (reader.name, reader.version)))
@@ -175,11 +182,13 @@ impl CacheKey {
     }
 
     /// The key a pack's hash is recorded under: the packer's stage, the pack's name, and its
-    /// assets by ID and [`Self::packed`] key, in ID order. Equal keys mean equal pack bytes.
-    pub fn pack(packer: Stage, name: &str, assets: &[(AssetId, CacheKey)]) -> Self {
+    /// assets by ID and [`Self::packed`] key, in ID order, and their pipeline keys' rows, in the same
+    /// order: a material in another pack can change them with no asset here changing. Equal keys mean
+    /// equal pack bytes.
+    pub fn pack(packer: Stage, name: &str, assets: &[(AssetId, CacheKey)], pipeline_keys: &[u8]) -> Self {
         let assets: Vec<(AssetId, [u8; blake3::OUT_LEN])> =
             assets.iter().map(|(id, key)| (*id, key.0)).collect();
-        Self::derive(PACK_CONTEXT, &((packer.name, packer.version), name, assets))
+        Self::derive(PACK_CONTEXT, &((packer.name, packer.version), name, assets, pipeline_keys))
     }
 
     /// blake3 in derive-key mode over `inputs` as postcard encodes them.
@@ -433,15 +442,16 @@ mod tests {
         ];
         let (a, b) = (AssetId::from_bytes([1; 16]), AssetId::from_bytes([2; 16]));
         let other = CacheKey([9; 32]);
-        let pack = CacheKey::pack(packer, "shared", &[(a, key), (b, other)]);
-        assert_eq!(CacheKey::pack(packer, "shared", &[(a, key), (b, other)]), pack);
+        let pack = CacheKey::pack(packer, "shared", &[(a, key), (b, other)], &[]);
+        assert_eq!(CacheKey::pack(packer, "shared", &[(a, key), (b, other)], &[]), pack);
         keys.extend([
             pack,
-            CacheKey::pack(packer, "zone", &[(a, key), (b, other)]),
-            CacheKey::pack(packer, "shared", &[(a, key)]),
-            CacheKey::pack(packer, "shared", &[(a, key), (b, key)]),
-            CacheKey::pack(packer, "shared", &[(a, key), (AssetId::from_bytes([3; 16]), other)]),
-            CacheKey::pack(Stage { version: 2, ..packer }, "shared", &[(a, key), (b, other)]),
+            CacheKey::pack(packer, "zone", &[(a, key), (b, other)], &[]),
+            CacheKey::pack(packer, "shared", &[(a, key)], &[]),
+            CacheKey::pack(packer, "shared", &[(a, key), (b, key)], &[]),
+            CacheKey::pack(packer, "shared", &[(a, key), (AssetId::from_bytes([3; 16]), other)], &[]),
+            CacheKey::pack(Stage { version: 2, ..packer }, "shared", &[(a, key), (b, other)], &[]),
+            CacheKey::pack(packer, "shared", &[(a, key), (b, other)], &[1]),
         ]);
         let count = keys.len();
         keys.sort();

@@ -6,9 +6,9 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     BLOCK_LEN, BLOCK_SIZE, Codec, DATA_ALIGN, DEPENDENCY_LEN, ENTRY_LEN, HEADER_LEN, MAX_ASSET_SIZE,
-    PackError, PackHeader, block_len,
+    PIPELINE_KEY_LEN, PackError, PackHeader, block_len,
 };
-use crate::{AssetId, AssetKind};
+use crate::{AssetId, AssetKind, PipelineKey};
 
 /// An asset encoded for a pack: its blocks as stored, and what its table of contents entry
 /// records. Pack layouts are built from these, so an asset is compressed once however many
@@ -26,6 +26,11 @@ pub struct PackAsset {
     pub hash: [u8; 32],
     /// One per [`BLOCK_SIZE`] of the asset, in order.
     pub blocks: Vec<StoredBlock>,
+    /// What a mesh's material slots draw through, in slot order. [`Self::encode`] leaves it empty and a
+    /// cached encoding doesn't hold it: a mesh's bytes don't say, for a slot that binds a material asset,
+    /// so the packer fills it in for each pack it lays out.
+    #[serde(skip)]
+    pub pipeline_keys: Vec<PipelineKey>,
 }
 
 /// One block of a [`PackAsset`], as stored.
@@ -91,6 +96,7 @@ impl PackAsset {
             size: bytes.len() as u64,
             hash: *blake3::hash(bytes).as_bytes(),
             blocks,
+            pipeline_keys: Vec::new(),
         })
     }
 
@@ -111,6 +117,12 @@ impl PackAsset {
         if self.dependencies.windows(2).any(|pair| pair[0] >= pair[1]) || self.dependencies.contains(&self.id)
         {
             return Err(invalid("its dependencies aren't sorted and distinct, or include itself"));
+        }
+        if !self.pipeline_keys.is_empty() && self.kind != AssetKind::Mesh {
+            return Err(invalid("only a mesh has pipeline keys"));
+        }
+        if u16::try_from(self.pipeline_keys.len()).is_err() {
+            return Err(invalid("it has more than 65,535 pipeline keys"));
         }
         for (index, block) in (0..).zip(&self.blocks) {
             let len = block_len(self.size, index) as usize;
@@ -145,17 +157,22 @@ pub fn write_pack(mut assets: Vec<PackAsset>) -> Result<Vec<u8>, PackError> {
     let count = |n: usize| u32::try_from(n).map_err(|_| PackError::Header("more than 2^32 records"));
     let block_count = count(assets.iter().map(|asset| asset.blocks.len()).sum())?;
     let dependency_count = count(assets.iter().map(|asset| asset.dependencies.len()).sum())?;
+    let pipeline_key_count = count(assets.iter().map(|asset| asset.pipeline_keys.len()).sum())?;
     let entry_count = count(assets.len())?;
 
     let mut entries = Vec::with_capacity(assets.len() * ENTRY_LEN);
     let mut blocks = Vec::with_capacity(block_count as usize * BLOCK_LEN);
     let mut dependencies = Vec::with_capacity(dependency_count as usize * DEPENDENCY_LEN);
-    let (mut first_block, mut first_dependency, mut data_len) = (0u32, 0u32, 0u64);
+    let mut pipeline_keys = Vec::with_capacity(pipeline_key_count as usize * PIPELINE_KEY_LEN);
+    let (mut first_block, mut first_dependency, mut first_key, mut data_len) = (0u32, 0u32, 0u32, 0u64);
     for asset in &assets {
         let (asset_blocks, asset_dependencies) = (asset.blocks.len() as u32, asset.dependencies.len() as u32);
+        // Each asset was validated above: its keys' count fits.
+        let asset_keys = asset.pipeline_keys.len() as u16;
         entries.extend_from_slice(&asset.id.to_bytes());
-        entries.extend_from_slice(&[asset.kind as u8, asset.codec as u8, 0, 0]);
-        for value in [first_block, asset_blocks, first_dependency, asset_dependencies, 0] {
+        entries.extend_from_slice(&[asset.kind as u8, asset.codec as u8]);
+        entries.extend_from_slice(&asset_keys.to_le_bytes());
+        for value in [first_block, asset_blocks, first_dependency, asset_dependencies, first_key] {
             entries.extend_from_slice(&value.to_le_bytes());
         }
         entries.extend_from_slice(&asset.size.to_le_bytes());
@@ -172,16 +189,20 @@ pub fn write_pack(mut assets: Vec<PackAsset>) -> Result<Vec<u8>, PackError> {
             dependencies.extend_from_slice(&dependency.to_bytes());
         }
         first_block += asset_blocks;
+        pipeline_keys.extend(asset.pipeline_keys.iter().flat_map(|key| key.to_row()));
         first_dependency += asset_dependencies;
+        first_key += u32::from(asset_keys);
     }
 
     let mut toc = entries;
     toc.extend_from_slice(&blocks);
     toc.extend_from_slice(&dependencies);
+    toc.extend_from_slice(&pipeline_keys);
     let header = PackHeader {
         entry_count,
         block_count,
         dependency_count,
+        pipeline_key_count,
         data_offset: (HEADER_LEN + toc.len()) as u64,
         data_len,
         toc_hash: *blake3::hash(&toc).as_bytes(),

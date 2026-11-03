@@ -5,7 +5,7 @@ mod handle;
 mod reload;
 mod source;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -22,7 +22,7 @@ pub use self::reload::{AssetChange, RemountReport};
 use self::reload::{Next, NextStage};
 pub use self::source::{LoadPriority, MemoryPackSource, PackFile, PackSource, ReadDone};
 use crate::pack::{Decoder, Entry, HEADER_LEN, PackError, PackHeader, Toc};
-use crate::{AssetId, AssetKind};
+use crate::{AssetId, AssetKind, PipelineKey};
 
 const LOG_TARGET: &str = "sapphire::assets";
 const MIB: u64 = 1 << 20;
@@ -545,6 +545,12 @@ impl AssetServer {
     /// Changes the budgets; a kind now over budget is trimmed on the next update.
     pub fn set_budgets(&mut self, budgets: AssetBudgets) {
         self.budgets = budgets;
+    }
+
+    /// What the meshes of every mounted pack draw through, each key once: what a load prewarms (M3 K1). A pack
+    /// mounted later adds its own.
+    pub fn pipeline_keys(&self) -> BTreeSet<PipelineKey> {
+        self.mounts.iter().flat_map(|mount| mount.toc.pipeline_keys().iter().copied()).collect()
     }
 
     /// Mounts the pack called `name` ([`crate::pack::file_name`] in the source): reads and checks its

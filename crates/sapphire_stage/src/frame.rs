@@ -229,6 +229,9 @@ pub struct Stage<H: FrameHooks = ()> {
     pub measure_gpu: bool,
     /// Only TAA captures without instrumentation can discard their warmup's display output.
     pub history_only_capture: bool,
+    /// Prepare and record the next frames but run none of it, as a frame whose surface was lost (M3 K1). A
+    /// load's inventory is checked this way where drawing is what costs: everything but the graph's passes runs.
+    pub lose_frames: bool,
     /// Where the frames' CPU time went since it was last reset.
     pub laps: FrameLaps,
     pub gpu: GpuContext,
@@ -303,6 +306,7 @@ impl Stage {
             character,
             measure_gpu: false,
             history_only_capture: false,
+            lose_frames: false,
             laps: FrameLaps::default(),
             gpu,
             last_times: None,
@@ -324,6 +328,7 @@ impl Stage {
             character,
             measure_gpu,
             history_only_capture,
+            lose_frames,
             laps,
             gpu,
             last_times,
@@ -341,6 +346,7 @@ impl Stage {
             character,
             measure_gpu,
             history_only_capture,
+            lose_frames,
             laps,
             gpu,
             last_times,
@@ -542,7 +548,13 @@ impl<H: FrameHooks> Stage<H> {
         self.renderer.record(&mut graph, target);
         self.hooks.record(&mut graph, target);
         after(&mut graph, target);
-        self.graph.execute(&self.gpu, graph).map_err(AppInitError::msg)?;
+        if self.lose_frames {
+            drop(graph);
+            // What `prepare` wrote goes on its way, as a frame's submit would take it.
+            self.gpu.queue().submit([]);
+        } else {
+            self.graph.execute(&self.gpu, graph).map_err(AppInitError::msg)?;
+        }
         self.laps.record += laps.lap();
         self.laps.record_allocations = scope.counts();
         if let Some(mut stopwatch) = stopwatch {

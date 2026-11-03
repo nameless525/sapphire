@@ -24,11 +24,15 @@
 //! tick that frame fell on and the budget it has on this tier. `--bench-trace <csv>` writes every frame:
 //! a spike's tick says which moment of the fight it was. Nothing it records allocates in a frame.
 //!
+//! `--bench-draw-every` is the same load and the same fight with nearly no frames drawn, which checks a load's
+//! pipeline inventory (exit test 7) where drawing costs seconds. It logs the pipelines' row, and no others.
+//!
 //! Rows the spec budgets on Desktop-Low and Mobile-Low only, as §3.2 does, have no budget on the other
 //! two tiers. A row is per frame, so a Mobile-Low step's budget is doubled, as §3.2's "× 2 steps" says.
 
 use std::fmt::Write as _;
 use std::io::Write as _;
+use std::num::NonZeroU32;
 use std::path::Path;
 use std::time::Duration;
 
@@ -293,6 +297,7 @@ struct Run<'a> {
     audio: Option<OfflineAudio>,
     steps: u32,
     bloom_levels: u32,
+    draw_every: Option<NonZeroU32>,
     trace: Vec<Traced>,
     /// The graph frame the phase's first frame is, as [`GpuTimings::frame`] counts.
     first_graph_frame: u64,
@@ -339,11 +344,18 @@ pub(crate) fn run(
         audio,
         steps,
         bloom_levels: settings.bloom_levels,
+        draw_every: options.bench_draw_every,
         trace: Vec::with_capacity(per_phase * 2 * Phase::ALL.len()),
         first_graph_frame: 1,
         first_traced: 0,
         last_timed: 0,
     };
+    if run.draw_every.is_some() {
+        run.phase(Phase::First, frames)?;
+        stage.lose_frames = false;
+        stage.check_gpu()?;
+        return stage.finish_combat();
+    }
     let mut measured = [0; 3];
     for (index, phase) in Phase::ALL.into_iter().enumerate() {
         if phase == Phase::Gpu && !run.stage.gpu.caps().timestamp_query {
@@ -385,6 +397,7 @@ impl Run<'_> {
         let at_start = pipelines(self.stage);
         let mut after_first_frame = at_start;
         loop {
+            self.stage.lose_frames = self.draw_every.is_some_and(|every| played % every != 0);
             let frame = self.frame(phase, played, fight, start_over)?;
             self.trace.push(frame);
             played += 1;

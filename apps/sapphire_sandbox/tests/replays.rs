@@ -467,12 +467,17 @@ fn a_bench_of_a_fight_plays_it_whole_beside_the_renderer() {
 }
 
 /// A bench of a committed replay on `tier`'s settings, as a phone's or a laptop's run has them: not [`PINS`],
-/// because the count is of what those settings build.
+/// because the count is of what those settings build. Every tick of the replay steps, and every frame prepares and
+/// records, but only one frame in [`DRAW_EVERY`] runs its graph: lavapipe takes over a second to draw a frame here,
+/// and under one to build the load's pipelines. So a build anywhere but a graph's passes counts on the frame it
+/// happens, and a build in its passes on the next frame drawn.
 fn inventory_bench(replay: &str, tier: &str, without: Option<&str>) -> Output {
     let replay = workspace().join("tests").join("replays").join(format!("{replay}.sreplay"));
     let mut args = vec![
         "--bench",
         "1",
+        "--bench-draw-every",
+        DRAW_EVERY,
         "--arena",
         "--replay",
         replay.to_str().expect("UTF-8"),
@@ -493,6 +498,9 @@ fn inventory_bench(replay: &str, tier: &str, without: Option<&str>) -> Output {
     sandbox(&args, &content())
 }
 
+/// One frame in this many runs its graph: 17 of the 3,147 frames the four whole plays below take.
+const DRAW_EVERY: &str = "200";
+
 /// The arena's stage draws through this and nothing else does, on either tier.
 const UNIQUE_KEY: &str = "mesh environment flags 0x0 Float32";
 
@@ -510,18 +518,18 @@ fn assert_no_misses(replay: &str, tier: &str) {
     }
 }
 
-/// Exit test 7: after a load, no frame of the recorded walk builds a pipeline, on either tier's settings, nor any
-/// frame of a recorded fight, whose hits draw what a walk doesn't; and take one entry of what the load declared out
-/// and the same bench fails, naming what it had to build. A software GPU pays for a load's pipelines on each run, so
-/// the things no table lists run on one tier: they don't vary by tier.
+/// Exit test 7: after a load, no frame of the recorded walk builds a pipeline, nor of a recorded fight, whose hits
+/// draw what a walk doesn't, on either tier's settings; and take one entry of what the load declared out and the
+/// same bench fails, naming what it had to build. A key is missed at the load, so it costs no frames on either tier.
+/// What no table lists doesn't vary by tier, so it runs on one.
 #[test]
 #[ignore = "needs a GPU and cooked content (`cargo xtask content`)"]
 fn a_load_leaves_no_pipeline_to_build_and_a_missing_entry_fails_naming_it() {
     for tier in ["desktop-low", "mobile-low"] {
         assert_no_misses("arena-walk", tier);
+        assert_no_misses("arena-fight-won", tier);
         assert_inventory_miss("arena-walk", tier, UNIQUE_KEY, UNIQUE_KEY);
     }
-    assert_no_misses("arena-fight-won", "mobile-low");
     for (entry, named) in [("skinning", "skinning: "), ("sky", "sky: "), ("ui", "ui: ")] {
         assert_inventory_miss("arena-walk", "mobile-low", entry, named);
     }

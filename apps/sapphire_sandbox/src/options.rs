@@ -1,6 +1,7 @@
 //! Command-line options.
 
 use std::net::SocketAddr;
+use std::num::NonZeroU32;
 use std::path::PathBuf;
 
 use sapphire_render::quality::{OcclusionSetting, QualitySettings, Switch, TierId};
@@ -211,6 +212,10 @@ pub(crate) struct Options {
     pub cues: bool,
     /// `--bench-trace <csv>`: a bench of a fight writes every frame here (M2 Z1, `fight_bench.rs`).
     pub bench_trace: Option<PathBuf>,
+    /// `--bench-draw-every <n>`: a bench of a fight plays once and runs the graph of only every `n`th frame, the
+    /// first among them, losing the rest: it checks a load's inventory and measures nothing (M3 K1). On a software
+    /// GPU a frame costs seconds, and every pipeline is built before a graph runs.
+    pub bench_draw_every: Option<NonZeroU32>,
     /// `--inventory-without <entry>`: a bench of a fight leaves this entry out of what it prewarms, by the name
     /// a miss gives it: `mesh` and a key, `post`, `effects`, `skinning`, `ui` or `sky` (M3 K1). The bench then
     /// fails naming what it had to build.
@@ -659,6 +664,10 @@ impl Options {
                     };
                     hud_mode = Some(mode);
                 }
+                "--bench-draw-every" => {
+                    options.bench_draw_every =
+                        Some(number(&value("--bench-draw-every")?, "--bench-draw-every")?);
+                }
                 "--inventory-without" => options.inventory_without = Some(value("--inventory-without")?),
                 "--hud-insets" => hud_insets = Some(parse_insets(&value("--hud-insets")?)?),
                 "--hud-paused" => hud_paused = true,
@@ -1080,12 +1089,12 @@ impl Options {
                 "--bench-trace needs {BENCH_FLAG} of a fight: --replay, or --fight with --script"
             ));
         }
-        if options.inventory_without.is_some()
+        if (options.inventory_without.is_some() || options.bench_draw_every.is_some())
             && !(matches!(mode, Some(OffscreenMode::Bench { .. }))
                 && matches!(options.combat, Some(CombatOption::Replay { .. } | CombatOption::Fight { .. })))
         {
             return Err(format!(
-                "--inventory-without needs {BENCH_FLAG} of a fight: --replay, or --fight with --script"
+                "--inventory-without and --bench-draw-every need {BENCH_FLAG} of a fight: --replay, or --fight with --script"
             ));
         }
         let drawn_alone = matches!(mode, Some(OffscreenMode::Capture { .. } | OffscreenMode::Bench { .. }));
@@ -2251,6 +2260,19 @@ mod tests {
             &["--bench", "1", "--record", "x", "--scenario", "y", "--script", "z", "--bench-trace", "t.csv"],
         ] {
             assert!(parse(args).unwrap_err().contains("--bench-trace"), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn drawing_one_frame_in_n_goes_with_a_bench_of_a_fight() {
+        let (options, _) = parse(&["--bench", "1", "--replay", "x", "--bench-draw-every", "200"]).unwrap();
+        assert_eq!(options.bench_draw_every.map(NonZeroU32::get), Some(200));
+        for args in [
+            &["--bench", "1", "--bench-draw-every", "200"][..],
+            &["--capture", "x.png", "--replay", "x", "--bench-draw-every", "200"],
+            &["--bench", "1", "--replay", "x", "--bench-draw-every", "0"],
+        ] {
+            assert!(parse(args).unwrap_err().contains("--bench-draw-every"), "{args:?}");
         }
     }
 

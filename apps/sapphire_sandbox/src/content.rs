@@ -1259,17 +1259,19 @@ impl Content {
 
     /// Takes handles on the clips the graphs name now, which they keep loaded as their dependencies, with
     /// those of the character's and the enemy's that their players have `in_use`: a new version may name
-    /// others. Allocates, so only when [`Self::take_graph_changed`] says so.
+    /// others. A clip one can't hold leaves the other's held all the same, and the first failure is what
+    /// returns. Allocates, so only when [`Self::take_graph_changed`] says so.
     pub fn hold_graph_clips(
         &mut self,
         (character, enemy): (&[AssetId], &[AssetId]),
     ) -> Result<(), LoadError> {
+        let mut held_all = Ok(());
         for (held, in_use) in [(&mut self.enemy_graph, enemy), (&mut self.graph, character)] {
             if let Some(held) = held {
-                held.hold_clips(&mut self.server, in_use)?;
+                held_all = held_all.and(held.hold_clips(&mut self.server, in_use));
             }
         }
-        Ok(())
+        held_all
     }
 
     /// The graph a character binds: the one live tuning took, or the one [`Self::load_graph`] loaded.
@@ -3202,6 +3204,33 @@ mod tests {
         stage.frames_until(|stage| stage.joints() != joints);
         std::fs::remove_dir_all(&folder).expect("cleaned up");
         assert_eq!(stage.content.graph_document().expect("a graph").combat.decay, 4, "and it binds");
+    }
+
+    /// A clip one fighter's graph can't hold says nothing about the other's, which goes on to hold what it
+    /// names, either way round, and the first failure is still heard.
+    #[cfg(feature = "dev")]
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_clip_one_fighter_cant_hold_leaves_the_others_held() {
+        let nothing_cooked = AssetId::from_bytes([0x33; 16]);
+        let mut stage = Stage::new();
+        stage.play_fighters();
+        let holds = |held: &Option<HeldGraph>, id: AssetId| {
+            held.as_ref().expect("a graph").clips.iter().any(|(clip, _)| *clip == id)
+        };
+        let content = &mut stage.content;
+
+        content.set_live_graph(GraphOwner::Enemy, Some(graph_naming(&[nothing_cooked])));
+        content.set_live_graph(GraphOwner::Character, Some(graph_naming(&[OTHER_SWING])));
+        let error = content.hold_graph_clips((&[], &[])).expect_err("nothing cooked it");
+        assert_eq!(error, LoadError::NotFound(nothing_cooked));
+        assert!(holds(&content.graph, OTHER_SWING), "the character's, past the enemy's failure");
+
+        content.set_live_graph(GraphOwner::Enemy, Some(graph_naming(&[OTHER_SWING])));
+        content.set_live_graph(GraphOwner::Character, Some(graph_naming(&[nothing_cooked])));
+        let error = content.hold_graph_clips((&[], &[])).expect_err("nothing cooked it");
+        assert_eq!(error, LoadError::NotFound(nothing_cooked));
+        assert!(holds(&content.enemy_graph, OTHER_SWING), "the enemy's, past the character's failure");
     }
 
     /// A fight's player plays a graph, so an edit of it takes as the graph show's does.

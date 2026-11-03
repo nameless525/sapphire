@@ -1439,7 +1439,7 @@ impl Scene {
     /// [`GraphPlayer::replace`]: sapphire_anim::GraphPlayer::replace
     fn replace_graph(&mut self, content: &mut Content, character_changed: bool, graph_changed: bool) {
         if let Err(error) = self.hold_graph_clips(content) {
-            tracing::warn!(target: LOG_TARGET, %error, "the character's graph lost a clip");
+            tracing::warn!(target: LOG_TARGET, %error, "a fighter's graph lost a clip");
         }
         let character = self.character;
         let ground = self.ik_ground.clone();
@@ -1495,7 +1495,7 @@ impl Scene {
     fn replace_enemy(&mut self, content: &mut Content) {
         let Some((warrior, blade)) = self.enemy else { return };
         if let Err(error) = self.hold_graph_clips(content) {
-            tracing::warn!(target: LOG_TARGET, %error, "the enemy's graph lost a clip");
+            tracing::warn!(target: LOG_TARGET, %error, "a fighter's graph lost a clip");
         }
         let ground = self.arena.as_ref().filter(|_| self.fighters_posed).map(|arena| arena.ground());
         let fitted = content.held_enemy().and_then(|held| {

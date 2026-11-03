@@ -169,6 +169,38 @@ pub fn read_frame<T: DeserializeOwned>(reader: &mut impl Read) -> Result<T, Link
     Ok(postcard::from_bytes(&bytes)?)
 }
 
+/// A `Vec<u8>` of a message, handed to postcard whole. On the wire it's what serde's own `Vec<u8>` is, a
+/// length and the bytes, which serde writes and reads one element at a time: that was 70% of a pack
+/// push's time over loopback.
+mod whole_bytes {
+    use std::fmt;
+
+    use serde::de::Visitor;
+    use serde::{Deserializer, Serializer};
+
+    pub(super) fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_bytes(bytes)
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+        struct Bytes;
+
+        impl Visitor<'_> for Bytes {
+            type Value = Vec<u8>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("bytes")
+            }
+
+            fn visit_bytes<E>(self, bytes: &[u8]) -> Result<Vec<u8>, E> {
+                Ok(bytes.to_vec())
+            }
+        }
+
+        deserializer.deserialize_bytes(Bytes)
+    }
+}
+
 /// A request from the tool. The device answers it with a [`Reply`] of the same `id`, except a
 /// [`RequestBody::PackChunk`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -194,11 +226,20 @@ pub enum RequestBody {
     Shaders { files: Vec<SourceFile> },
     /// Starts pushing pack `name`, `len` bytes long: `head` is its header and table of contents
     /// (the bytes before its data). [`ReplyBody::PackNeed`].
-    PackBegin { name: String, len: u64, head: Vec<u8> },
+    PackBegin {
+        name: String,
+        len: u64,
+        #[serde(with = "whole_bytes")]
+        head: Vec<u8>,
+    },
     /// The next bytes of the ranges the device asked for, from `offset` in the pack: ranges in
     /// order, each from its start. No reply: a chunk that doesn't fit fails the push, which
     /// [`RequestBody::PackEnd`] reports.
-    PackChunk { offset: u64, bytes: Vec<u8> },
+    PackChunk {
+        offset: u64,
+        #[serde(with = "whole_bytes")]
+        bytes: Vec<u8>,
+    },
     /// Every range is sent: the device assembles the pack and swaps it in.
     /// [`ReplyBody::PackApplied`].
     PackEnd,
@@ -328,6 +369,7 @@ pub struct Capture {
     pub height: u32,
     /// How many times the image was halved to fit: the PNG is that much smaller than the frame.
     pub halved: u32,
+    #[serde(with = "whole_bytes")]
     pub png: Vec<u8>,
 }
 
@@ -587,6 +629,28 @@ mod tests {
         for (id, body) in replies.into_iter().enumerate() {
             let reply = Reply { id: id as u32, body };
             assert_eq!(round_trip(&reply), reply);
+        }
+    }
+
+    /// Protocol 4's frames as they always were, so handing bytes over whole changes no version.
+    #[test]
+    fn whole_bytes_are_what_a_vec_of_bytes_is_on_the_wire() {
+        #[derive(Debug, PartialEq, Serialize, Deserialize)]
+        struct Elements(u64, Vec<u8>);
+        #[derive(Debug, PartialEq, Serialize, Deserialize)]
+        struct Whole(u64, #[serde(with = "whole_bytes")] Vec<u8>);
+
+        for len in [0, 1, 127, 128, 16_383, 16_384, CHUNK_LEN] {
+            let bytes: Vec<u8> = (0..len).map(|index| index as u8).collect();
+            let wire = postcard::to_stdvec(&Elements(9, bytes.clone())).unwrap();
+            assert_eq!(postcard::to_stdvec(&Whole(9, bytes.clone())).unwrap(), wire, "{len} bytes");
+            let read: Whole = postcard::from_bytes(&wire).unwrap();
+            assert_eq!(read, Whole(9, bytes), "{len} bytes");
+            // A frame cut anywhere in its bytes or its length is refused.
+            if len > 0 {
+                let cut = &wire[..wire.len() - 1];
+                assert!(postcard::from_bytes::<Whole>(cut).is_err(), "{len} bytes");
+            }
         }
     }
 

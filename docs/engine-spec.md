@@ -2037,8 +2037,8 @@ At runtime, dynamic resolution adjusts the render scale from GPU timings and the
 
 ### 5.19 `sapphire_nav` (L3)
 
-- **Baking:** at cook time, `rerecast` 0.5 bakes a tiled navmesh per zone, into plain tiles in `sapphire_navmesh` (L2).
-- **Runtime:** our own, about 1,200 lines in `[simulation]`: grid point location, A* on a preallocated pool, a funnel, corridors, a repath budget, separation. **`landmass` isn't used:** read at 0.9.3 it allocates on every update and search, iterates hash maps, calls `rand::random()` through `dodgy_2d`, uses `std`'s transcendentals and is on glam 0.30, and each of those fails gate 2 or gate 4 ([m3-plan.md](m3-plan.md) §3, P0).
+- **Baking:** at cook time, `rerecast` 0.5 bakes a tiled navmesh per zone. The cook cuts seams and prunes islands, and writes one flat graph per zone in `sapphire_navmesh` (L2). P0 read a bake byte-identical across repeats and profiles.
+- **Runtime:** our own, about 1,200 lines in `[simulation]`: grid point location, A* on a preallocated pool, a funnel, corridors, separation, and a repath budget of 1024 nodes a tick, in actor order. **`landmass` isn't used:** read at 0.9.3 it allocates on every update and search, iterates hash maps, calls `rand::random()` through `dodgy_2d`, uses `std`'s transcendentals and is on glam 0.30, and each of those fails gate 2 or gate 4 ([m3-plan.md](m3-plan.md) §3, P0).
 - **Arena enemies** mostly steer directly at the player. The navmesh is for chasing across a zone, patrols and exploration NPCs.
 
 ### 5.20 `sapphire_debug` (L3, dev builds only)
@@ -2472,14 +2472,14 @@ The `resolve` module's "A perfect dodge", `moves`'s "A counter window" and `test
 
 ### 5.24 `sapphire_script` (L4)
 
-- **VM:** Luau via `mlua` 0.12 with the `luau` feature and **no JIT** on any platform (iOS forbids it, and determinism benefits). One sandboxed VM per world, with read-only globals.
+- **VM:** Luau via `mlua` 0.12 with the `luau` feature and **no JIT** on any platform (iOS forbids it, and determinism benefits). One sandboxed VM per world, with read-only globals, which takes `set_readonly` on the sandbox's proxy as well.
 - **Calls are event hooks only:** encounter start, boss phase change, move start and hit, dialogue conditions and quest steps. Scripts never run every tick.
 - **Scripts are pure decisions (Decision, [m3-plan.md](m3-plan.md) §3):** they read through queries and write typed commands into a fixed queue that one point in the step applies, each going into the checksum. Anything that lasts lives in a simulation-owned, fixed-size, numeric blackboard, hashed with the rest. Nothing relies on a VM's state between hooks.
 - **Bindings** come from one declared table of commands and queries: `xtask` generates the Rust wrappers and a `.d.luau` type-definition file for editor autocompletion, and a test holds the checked-in output to it. They don't come from the `sapphire_reflect` registry, which M3's plan changed: `bevy_reflect`'s function reflection isn't on, and the surface has to stay narrow.
-- **GC:** incremental, stepped once per frame at a fixed point outside the simulation hot loop, and stopped inside a step. `mlua` gives no time budget for a step, so the 0.2 ms desktop and 0.4 ms mobile limits are read by a counter (**Verify,** L0).
+- **GC:** incremental, stepped once per tick boundary outside the simulation's steps, 16 KB a step, stepping and stopping in one raw call. `mlua` gives no time budget for a step, so `step_size` bounds one, about 3 µs on an M5 against the 0.2 ms desktop and 0.4 ms mobile limits, and the memory limit bounds a table, since a table is marked whole (130,000 slots took about 360 µs).
 - **Allocations (gate 4, narrowed):** zero on every step with no hook. `mlua` hardcodes `std::alloc`, so around a hook the VM's allocations go to their own count and budget, and generated bindings flip back, so a Rust allocation in a binding still fails.
-- **Determinism:** Luau has no `time` or `random` global, so what goes is `os.*`, `math.random` and `math.randomseed`, `gcinfo`, `collectgarbage`, `newproxy`, `getfenv` and `setfenv`, `debug.*`, `print`, `require`, transcendental `math.*`, `math.noise`, `vector.angle`, weak tables, float conversions in `string.format`, and `tonumber` on non-integer text. `pairs` over non-primitive keys, `tostring` of reference types, `^` except 2, 3 and 0.5, and coroutines across ticks are forbidden. The engine provides seeded RNG, clock and math functions, with libm builtins disabled at compile, and bytecode is cooked once with a pinned compiler and scanned. L0 attacks all of it.
-- **Shipping's `panic = "abort"` (Verify):** `mlua` raises a binding's `Err` and an interrupt's error from a Rust frame, which probably aborts there. L0 decides between bindings that never return `Err` with a budget ending a hook by a yield, and `panic = "unwind"`.
+- **Determinism:** Luau has no `time` or `random` global, so what goes is `os.*`, `math.random` and `math.randomseed`, `gcinfo`, `collectgarbage`, `newproxy`, `getfenv` and `setfenv`, `debug.*`, `print`, `require`, `pcall`, `xpcall`, `setmetatable`, `getmetatable`, `next`, the coroutine library, `string.format`, patterns, `string.lower`, `string.upper`, `string.rep`, `math.noise`, `vector.angle`, weak tables, and `tonumber` on non-integer text. `math.*` is an allowlist, `pairs` is a checked one that raises on table and function keys, and a cook's scan refuses a bare `for` over a table. `tostring` of reference types and `^` except 2, 3 and 0.5 are forbidden. The engine provides seeded RNG, clock and math functions, with libm builtins disabled at compile and Luau built with `-ffp-contract=off`. Tables reachable from a chunk are deep-frozen at load. Bytecode is cooked once with a pinned compiler and scanned for FASTCALL outside an allowlist, FORGPREP, SETGLOBAL, SETUPVAL, POW and POWK, with a level 0 read for folded powers. L0 attacked all of it: one cook's bytes, simulation and digest on aarch64 macOS and x86-64 Linux and Windows, and across ASLR.
+- **Shipping's `panic = "abort"` stays (L0):** a `create_function` `Err`, even in a `pcall`, aborts there, as do a raising `set_interrupt` and a raw `lua_error` from Rust; `panic = "unwind"` would add 15%. So bindings are raw and take only numbers, never `create_function`, prelude refusals are written in Luau, and the budget ends a hook by a raw interrupt yielding in a thread.
 - **Hot reload:** reload the chunk and rebind its hooks. On devices, pushed through live link.
 - **iOS policy:** scripts ship inside the app. Any downloadable script update needs legal and App Review sign-off first (App Store guideline 2.5.2).
 
@@ -2856,16 +2856,16 @@ The `resolve` module's "A perfect dodge", `moves`'s "A counter window" and `test
 **How**
 
 - **Document model first** (after The Machinery's "The Truth"):
-  - All editor state is typed objects with GUIDs and reflected properties.
+  - All editor state is typed objects with GUIDs, kept in `.meta` files, and reflected properties.
   - Every edit is a change record `(object, property, old, new)`.
   - Undo and redo, copy and paste, dirty tracking and live-link sync all fall out of that one model.
   - Documents save as RON files that are friendly to git.
-- **Backing (Decision, [m3-plan.md](m3-plan.md) §3):** T3's reason for keeping text stands, so a change record is applied as a splice: find the property path's byte range, replace it, re-parse, check equal. Untouched bytes never move, and comments and layout survive. It lives in `sapphire_document`.
+- **Backing (Decision, [m3-plan.md](m3-plan.md) §3):** T3's reason for keeping text stands, so a change record is applied as a splice: find the property path's byte range, replace it, re-parse, check equal. Untouched bytes never move, and comments and layout survive. A list set to another length or a changed variant replaces that value alone. It lives in `sapphire_document`, which is `dev_only` in the layers because R1 bars a tool depending on a tool.
 - **UI:**
   - `egui` 0.37 with `egui_tiles` for docking.
   - A small translate gizmo of our own. `transform-gizmo` and `egui-snarl` are still on egui 0.36, and graphs stay out until they catch up.
   - `egui_plot` for curves.
-- **Platform:** the editor runs on `sapphire_platform` (SDL3) too. The viewport is the real engine renderer drawing into a texture that egui displays, so the editor and the game share one input and windowing stack.
+- **Platform:** the editor runs on `sapphire_platform` (SDL3) too. The viewport is the real engine renderer drawing through the sRGB view of an `Rgba8UnormSrgb` target whose plain `Rgba8Unorm` view egui samples, so the editor and the game share one input and windowing stack.
 - **Play-in-editor:** creates a fresh runtime world from a snapshot of the current documents. Game code never mutates documents.
 - **Combat timeline editor**, the highest-value tool:
   - Tracks for hitboxes, hurtboxes and invulnerability, cancel windows, root motion and warp, and cues.
@@ -3380,7 +3380,7 @@ Pin these in `[workspace.dependencies]`. Versions were checked against crates.io
 | `taffy`, `parley` | 0.15, 0.12 | `sapphire_ui` | `rustybuzz` is archived |
 | `swash`, `etagere` | 0.2, 0.3 | `sapphire_ui` | Rasterizing and packing the glyph atlas (M3) |
 | `skera`, `fdsm` | 0.9, 0.8 | `sapphire_pipeline` | Subsetting fonts and MSDF, tools only (M3) |
-| `rerecast` | 0.5 | `sapphire_pipeline` | Baking only. Small maintainer base, so P1 decides on vendoring. `landmass` was rejected ([m3-plan.md](m3-plan.md) §3) |
+| `rerecast` | `=0.5.0` | `sapphire_pipeline` | Baking only, not vendored (P0: every defect had a way around through its public API). Never its `libm` feature, which turns on glam's, and any bump reruns the attack and the digests. `landmass` was rejected ([m3-plan.md](m3-plan.md) §3) |
 | `mlua` (feature `luau`) | 0.12 | `sapphire_script` | No `luau-jit` |
 | `fluent-syntax`, `icu_plurals`, `icu_decimal` | 0.12, 2.4, 2.4 | `sapphire_pipeline`, `sapphire_loc` | `fluent`'s bundles can't be cooked, so a small evaluator of our own runs the tables (M3). Versions checked when V2 adds them |
 | `reqwest`, `rustls`, `rustls-platform-verifier`, `ed25519-dalek` | latest | `sapphire_patch` (later) | **unchecked** |

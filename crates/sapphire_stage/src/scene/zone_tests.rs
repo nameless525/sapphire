@@ -179,6 +179,9 @@ impl Walk {
         self.renderer.record(&mut graph, target).expect("a view and a target");
         self.graph.execute(&self.gpu, graph).expect("a valid graph");
         self.scene.end_frame();
+        // A surface's present holds a game to a few frames in flight. With none, a CPU device falls as
+        // far behind as the queue lets it, and what's on its way back through those frames fills the pool.
+        self.gpu.device().poll(wgpu::PollType::wait_indefinitely()).expect("poll");
         frame
     }
 

@@ -65,8 +65,19 @@
 //! where it meets geometry (a soft particle) and near the lens, and is lit by the fog itself:
 //! its tint × the light the frame's fog has at its distance (the sky's horizon where the frame
 //! has none), brightening toward the key light by its sun scatter, then fogged like any surface.
-//! Cards draw after every other transparent surface, sorted back to front by their instances'
-//! bounds, without writing depth; they cast no shadow and have no outline.
+//! Cards draw after every other transparent surface, sorted back to front, without writing depth;
+//! they cast no shadow and have no outline.
+//!
+//! - **Cards the camera turns sort by depth along the view** (review REN-001): off to the side, a
+//!   nearer one can be the farther from the eye. A card turned whole lies in the plane through its
+//!   instance's origin, at that origin's depth, wherever its mesh's middle lies. Upright ones lie in
+//!   planes parallel to each other, whatever the pitch, each holding its origin's vertical line, so
+//!   they compare exactly where those lines meet the eye's height.
+//! - **World-placed cards sort by their meshes' middles' distance from the eye**, which is a guess:
+//!   two that aren't parallel have no one order across the screen, and no one key can hold it. It's
+//!   the guess for sheets that face the eye, as the look-dev valley's rings of mist do, and turning
+//!   the camera can't change it, where depth along the view would reorder sheets that haven't moved.
+//!   Between a card of each kind, a depth meets a distance, a guess too.
 //!
 //! - **Decision: the depth they fade against is the scene prepass's**, where the frame has it:
 //!   the desktop tiers, whose temporal AA runs the prepass anyway, so it costs nothing more. The
@@ -88,17 +99,19 @@
 
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3};
+use sapphire_assets::material::CardFacing;
 use sapphire_assets::mesh::PositionFormat;
 pub use sapphire_look::fog::{
     CEILING, FogRay, HORIZON_WEIGHT, MAX_EXPONENT, MIN_DENSITY, MIX_DEPTH, SERIES_BELOW, SKY_DISTANCE,
 };
 use sapphire_rhi::wgpu;
 
-use crate::Fog;
 use crate::draw::DrawRef;
+use crate::materials::{MaterialHandle, Materials};
 use crate::mesh_pool::MeshRecord;
 use crate::pipelines::{DEPTH_FORMAT, FOG_CARD_DEPTH_BINDING, SurfaceVariant};
 use crate::scene::{DrawList, InstanceSlots};
+use crate::{CameraData, Fog};
 
 /// The frame's fog as the shaders read it (WGSL `FogUniforms`, the last field of
 /// `FrameUniforms`). 80 bytes.
@@ -213,29 +226,44 @@ impl FogCards {
         &self.stand_in
     }
 
-    /// Orders the frame's card draws back to front from `eye`, by the distance to the center of
-    /// each draw's mesh bounds where its instance places them; ties keep the draw list's order.
-    pub(crate) fn sort(&mut self, eye: Vec3, list: &DrawList, slots: &InstanceSlots, meshes: &[MeshRecord]) {
+    /// Orders the frame's card draws back to front from `camera`, each by how far it lies as its
+    /// facing has it (the fog cards docs above have why); ties keep the draw list's order.
+    pub(crate) fn sort(
+        &mut self,
+        camera: &CameraData,
+        list: &DrawList,
+        slots: &InstanceSlots,
+        meshes: &[MeshRecord],
+        materials: &Materials,
+    ) {
         let variant = SurfaceVariant::FOG_CARD.index();
-        let distance = |slot: u32| {
-            let center = slots
-                .mesh(slot)
-                .and_then(|mesh| meshes.get(mesh.index()))
-                .map_or(Vec3::ZERO, |record| record.bounds.center);
+        let depth = |slot: u32, material: MaterialHandle| {
             let transform = slots.transform(slot).unwrap_or(Mat4::IDENTITY);
-            transform.transform_point3(center).distance(eye)
+            let origin = transform.w_axis.truncate();
+            let facing = materials.fog_card_facing(material);
+            if facing == Some(CardFacing::Camera.code()) {
+                camera.view_depth(origin)
+            } else if facing == Some(CardFacing::Upright.code()) {
+                camera.view_depth(origin.with_y(camera.position.y))
+            } else {
+                let center = slots
+                    .mesh(slot)
+                    .and_then(|mesh| meshes.get(mesh.index()))
+                    .map_or(Vec3::ZERO, |record| record.bounds.center);
+                transform.transform_point3(center).distance(camera.position)
+            }
         };
         self.order.clear();
         for format in PositionFormat::ALL {
             let commands = &list.commands[crate::pipelines::format_index(format)][variant];
             for (index, command) in commands.iter().enumerate() {
                 let draw = DrawRef::Static { format, index: index as u32 };
-                self.order.push((distance(command.slot), self.order.len() as u32, draw));
+                self.order.push((depth(command.slot, command.material), self.order.len() as u32, draw));
             }
         }
         for (index, command) in list.deformed[variant].iter().enumerate() {
             let draw = DrawRef::Deformed { index: index as u32 };
-            self.order.push((distance(command.slot), self.order.len() as u32, draw));
+            self.order.push((depth(command.slot, command.material), self.order.len() as u32, draw));
         }
         // Ties keep the draw list's order, so the order holds frame to frame; unstable, so sorting
         // never allocates.

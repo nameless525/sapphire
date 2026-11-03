@@ -52,6 +52,11 @@
 //! upload are the frame's only per-effect CPU work here; the simulation's is `sapphire_vfx`'s, and
 //! §3.2 budgets the two of them together.
 //!
+//! Sprites sort by their middles' depth along the view, not their distance from the eye: a quad
+//! that faces the camera whole lies in a plane of one depth, and off to the side a nearer one's
+//! middle can be the farther from the eye (review REN-001). A streak, turned about its axis, lies
+//! across depths, so for it this is a good guess, and two that cross have no one right order.
+//!
 //! # Debug views
 //!
 //! The views replay the main pass's meshes, and effects aren't meshes, so they don't show there.
@@ -61,6 +66,7 @@ use glam::Vec3;
 use sapphire_look::{VfxFrame, VfxLight, VfxRibbonPoint, VfxShape, VfxSprite, VfxStats};
 use sapphire_rhi::{TransientDesc, wgpu};
 
+use crate::CameraData;
 use crate::bind_cache::CachedBindGroup;
 use crate::buffer::{self, GrowableBuffer};
 use crate::graph::{PassContext, TextureId};
@@ -695,13 +701,13 @@ impl Vfx {
         self.stats.pipelines = gpu.pipelines.count();
     }
 
-    /// The CPU half of a frame: orders the frame's effects, back to front from `eye`, sizes their
+    /// The CPU half of a frame: orders the frame's effects, back to front from `camera`, sizes their
     /// buffers and builds what they first need from `sources`. `exposure` is the frame's multiplier,
     /// and `mask` whether post reads scene color's alpha. Empty, it costs this call alone.
     pub(crate) fn prepare(
         &mut self,
         frame: &VfxFrame,
-        eye: Option<Vec3>,
+        camera: Option<&CameraData>,
         exposure: f32,
         mask: bool,
         sources: &ShaderSources,
@@ -716,7 +722,7 @@ impl Vfx {
         self.stats.rejected = 0;
         self.stats.bytes = 0;
         self.stats.simulation = frame.stats;
-        let Some(eye) = eye.filter(|_| !frame.is_empty()) else { return };
+        let Some(camera) = camera.filter(|_| !frame.is_empty()) else { return };
         self.build(sources, mask, on);
         let gpu = self.gpu.as_mut().expect("just built");
         self.emissive = 1.0 / exposure.max(1e-6);
@@ -734,7 +740,7 @@ impl Vfx {
                 .iter()
                 .enumerate()
                 .filter(|(_, sprite)| sprite.position.is_finite())
-                .map(|(index, sprite)| (sprite.position.distance_squared(eye), index as u32)),
+                .map(|(index, sprite)| (camera.view_depth(sprite.position), index as u32)),
         );
         // Ties keep the frame's order; unstable, so sorting never allocates.
         self.order.sort_unstable_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));

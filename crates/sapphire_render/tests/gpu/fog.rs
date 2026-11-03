@@ -846,3 +846,144 @@ fn fog_cards_draw_back_to_front() {
         assert!((drawn - expected).abs().max_element() < TOLERANCE, "{drawn} against {expected}");
     }
 }
+
+/// A card in [`two_cards`]: its tint, where its instance stands, its turn about the up axis, its
+/// size, and where its mesh's middle lies from that origin, in a square of side 1.
+#[derive(Clone, Copy)]
+struct PlacedCard {
+    tint: Vec3,
+    at: Vec3,
+    yaw: f32,
+    size: Vec3,
+    middle: Vec3,
+}
+
+/// The horizon's light in [`two_cards`].
+const CARD_LIGHT: Vec3 = Vec3::splat(0.8);
+
+/// What half-opaque `cards`, in their draw list's order, show where the ray through `probe` crosses
+/// them: facing as `facing`, over a black wall, seen from the origin along `forward`.
+fn two_cards(facing: CardFacing, forward: Vec3, cards: [PlacedCard; 2], probe: Vec3) -> Vec3 {
+    let mut harness = Harness::exact();
+    harness.sky = SkyGradient { zenith: CARD_LIGHT, horizon: CARD_LIGHT, ground: CARD_LIGHT };
+    let black = harness.material(&glowing(Vec3::ZERO));
+    let wall = Rect {
+        center: Vec3::new(0.0, 0.0, -60.0),
+        normal: Vec3::Z,
+        across: Vec3::X,
+        width: 300.0,
+        height: 300.0,
+    };
+    let world = harness.mesh(&mesh(vec![wall.part()]), &[black]);
+    harness.add(world, Mat4::IDENTITY);
+    for placed in cards {
+        let square =
+            Rect { center: placed.middle, normal: Vec3::Z, across: Vec3::X, width: 1.0, height: 1.0 };
+        let material = harness.material(&card(placed.tint, 0.5, facing));
+        let handle = harness.mesh(&mesh(vec![square.part()]), &[material]);
+        let turn = Quat::from_rotation_y(placed.yaw);
+        harness.add(handle, Mat4::from_scale_rotation_translation(placed.size, turn, placed.at));
+    }
+    harness.camera = CameraData::look_at(Vec3::ZERO, forward, Vec3::Y, 1.0, 1.0, 0.05);
+    let frame = harness.render();
+    let (x, y) = frame.pixel_of(probe);
+    frame.linear(x, y)
+}
+
+/// What half-opaque `over` shows over half-opaque `under`, over black, in [`two_cards`].
+fn card_over(over: Vec3, under: Vec3) -> Vec3 {
+    over * CARD_LIGHT * 0.5 + under * CARD_LIGHT * 0.25
+}
+
+/// A card turned whole lies in a plane its depth along the view says all about, and upright ones in
+/// planes parallel to each other whatever the pitch, so a near card stands in front of a far one
+/// whichever is farther from the eye and whichever the draw list holds first (review REN-001).
+/// World-placed sheets stay on their distance from the eye.
+#[test]
+#[ignore = "needs a GPU"]
+fn cards_draw_by_the_planes_they_lie_in() {
+    let (red, green) = (Vec3::new(1.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0));
+    let check = |what, facing, forward, near: PlacedCard, far: PlacedCard, probe| {
+        for cards in [[near, far], [far, near]] {
+            let drawn = two_cards(facing, forward, cards, probe);
+            let expected = card_over(near.tint, far.tint);
+            assert!(
+                (drawn - expected).abs().max_element() < TOLERANCE,
+                "{what}, {} first: {drawn} against {expected}",
+                if cards[0].at == near.at { "near" } else { "far" },
+            );
+        }
+    };
+    let placed = |tint, at, size| PlacedCard { tint, at, yaw: 0.0, size, middle: Vec3::ZERO };
+
+    // Off to the side, the near card's middle is farther from the eye than the far one's.
+    let wide = Vec3::new(8.0, 8.0, 1.0);
+    let near = placed(red, Vec3::new(3.0, 0.0, -6.0), wide);
+    let far = placed(green, Vec3::new(0.0, 0.0, -6.5), wide);
+    assert!(near.at.length() > far.at.length(), "as the test means");
+    let probe = Vec3::new(1.0, 0.0, -6.5);
+    for (what, facing) in [("turned to the camera", CardFacing::Camera), ("upright", CardFacing::Upright)] {
+        check(what, facing, Vec3::NEG_Z, near, far, probe);
+    }
+
+    // Looking down, depth along the view counts a card's height too. The near upright card stands
+    // low and the far one high, deeper along the view than it, but their planes stand as they do
+    // on the ground, however the camera has turned.
+    let pitched = Vec3::new(0.0, -0.6_f32.sin(), -0.6_f32.cos());
+    for yaw in [0.0, 0.7] {
+        let turn = Quat::from_rotation_y(yaw);
+        let tall = Vec3::new(6.0, 10.0, 1.0);
+        let near = placed(red, turn * Vec3::new(0.0, -3.0, -6.0), tall);
+        let far = placed(green, turn * Vec3::new(0.0, 0.0, -7.0), tall);
+        let forward = turn * pitched;
+        check("upright, looking down", CardFacing::Upright, forward, near, far, forward * 8.0);
+    }
+
+    // A card turned to the camera lies in the plane through its instance's origin wherever its
+    // mesh lies from there. The far card here rises from its foot, which brings its mesh's middle
+    // nearer along a view looking down than the near card's plane.
+    let near = placed(red, pitched * 6.0, wide);
+    let far = PlacedCard {
+        tint: green,
+        at: pitched * 6.5,
+        yaw: 0.0,
+        size: Vec3::new(8.0, 14.0, 1.0),
+        middle: Vec3::new(0.0, 0.4, 0.0),
+    };
+    check("turned to the camera, rising", CardFacing::Camera, pitched, near, far, pitched * 8.0);
+
+    // World-placed sheets facing the eye, as the look-dev valley's rings of mist do: the far one
+    // lies off to the side, where its depth along the view is the less of the two, and the near
+    // one still stands in front where they meet, as it does however the camera turns.
+    let bearing = |angle: f32, reach: f32| Vec3::new(angle.sin(), 0.0, -angle.cos()) * reach;
+    let far_side = 55.0_f32.to_radians();
+    let near = placed(red, bearing(0.0, 6.0), Vec3::new(12.0, 8.0, 1.0));
+    let far =
+        PlacedCard { yaw: -far_side, ..placed(green, bearing(far_side, 9.0), Vec3::new(18.0, 8.0, 1.0)) };
+    let view = CameraData::look_at(Vec3::ZERO, Vec3::NEG_Z, Vec3::Y, 1.0, 1.0, 0.05);
+    let depth = |at: Vec3| -view.view.transform_point3(at).z;
+    assert!(depth(far.at) < depth(near.at), "as the test means");
+    let probe = bearing(20.0_f32.to_radians(), 8.0);
+    check("as placed, facing the eye", CardFacing::World, Vec3::NEG_Z, near, far, probe);
+}
+
+/// Cards at one depth keep the draw list's order, the later over the earlier.
+#[test]
+#[ignore = "needs a GPU"]
+fn cards_at_one_depth_keep_the_draw_lists_order() {
+    let placed = |tint, x| PlacedCard {
+        tint,
+        at: Vec3::new(x, 0.0, -6.0),
+        yaw: 0.0,
+        size: Vec3::new(8.0, 8.0, 1.0),
+        middle: Vec3::ZERO,
+    };
+    let red = placed(Vec3::new(1.0, 0.0, 0.0), -0.5);
+    let green = placed(Vec3::new(0.0, 1.0, 0.0), 0.5);
+    for [under, over] in [[red, green], [green, red]] {
+        let probe = Vec3::new(0.0, 0.0, -6.0);
+        let drawn = two_cards(CardFacing::Camera, Vec3::NEG_Z, [under, over], probe);
+        let expected = card_over(over.tint, under.tint);
+        assert!((drawn - expected).abs().max_element() < TOLERANCE, "{drawn} against {expected}");
+    }
+}

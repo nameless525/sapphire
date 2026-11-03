@@ -1575,7 +1575,7 @@ impl Renderer {
             let (list, slots) = (self.scene.draw_list(), self.scene.slots());
             let meshes = self.meshes.records();
             self.outlines.prepare(&view.camera, self.outline_distance, list, slots, meshes, params);
-            self.fog_cards.sort(view.camera.position, list, slots, meshes);
+            self.fog_cards.sort(&view.camera, list, slots, meshes, materials);
         }
         // A sky material with a nebula or lit clouds builds its variants the first time it draws.
         self.checked_build(|renderer| {
@@ -1588,11 +1588,10 @@ impl Renderer {
         let sun = camera.zip(self.sky.sun_disc()).and_then(|(camera, disc)| SunOnScreen::new(&camera, disc));
         self.checked_build(|renderer| renderer.post.prepare(queue, &packet.post, camera.as_ref(), sun));
         // Effects, at the exposure post just settled, which build what the first one draws through.
-        let eye = camera.as_ref().map(|camera| camera.position);
         self.checked_build(|renderer| {
             let on = BuildOn::sources(renderer.edited_shaders);
             let (exposure, mask) = (renderer.post.exposure(), renderer.post.reads_character_mask());
-            renderer.vfx.prepare(&packet.vfx, eye, exposure, mask, &renderer.shaders, on);
+            renderer.vfx.prepare(&packet.vfx, camera.as_ref(), exposure, mask, &renderer.shaders, on);
         });
         let counts = self.scene.draw_counts();
         let draws = |include: fn(SurfaceVariant) -> bool| -> u32 {

@@ -498,6 +498,86 @@ fn covering_sprites_draw_back_to_front() {
     }
 }
 
+/// The frame's sprites over a black sky, seen from `camera`.
+fn over_black(harness: &mut Harness, camera: CameraData, sprites: &[VfxSprite]) -> Frame {
+    harness.render(|packet| {
+        packet.views[0] = ViewData::new(camera);
+        packet.sky = SkyGradient { zenith: Vec3::ZERO, horizon: Vec3::ZERO, ground: Vec3::ZERO };
+        packet.vfx.sprites.extend_from_slice(sprites);
+    })
+}
+
+/// A half-covering quad of `color`: where it covers, what's behind it counts for less.
+fn covering(position: Vec3, half: f32, color: Vec3) -> VfxSprite {
+    VfxSprite { additive: 0.0, alpha: 0.65, ..dot(position, half, color) }
+}
+
+/// Quads facing the camera lie in parallel planes, so which covers which is their depth along the
+/// view, whichever is farther from the eye: off to the side, a near quad's middle is farther away
+/// than a far one's straight ahead (review REN-001). Red in front of blue, on black: what stands in
+/// front keeps all its light, whatever order the frame lists them and however the camera has turned.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_near_sprite_off_to_the_side_covers_a_far_one_straight_ahead() {
+    let (red, blue) = (Vec3::new(0.8, 0.0, 0.0), Vec3::new(0.0, 0.0, 0.8));
+    for (path, settings) in paths() {
+        let mut harness = Harness::new(settings);
+        for (yaw, height) in [(0.0, 0.0), (0.9, 1.5), (2.4, -2.0), (-1.3, 3.0)] {
+            let eye = Mat4::from_rotation_y(yaw).transform_point3(Vec3::new(0.0, height, 6.0));
+            let camera =
+                CameraData::look_at(eye, Vec3::ZERO, Vec3::Y, std::f32::consts::FRAC_PI_2, 1.0, 0.05);
+            let view = camera.view;
+            let right = Vec3::new(view.x_axis.x, view.y_axis.x, view.z_axis.x);
+            let forward = -Vec3::new(view.x_axis.z, view.y_axis.z, view.z_axis.z);
+            let near = covering(eye + forward * 2.0 + right * 1.4, 2.0, red);
+            let far = covering(eye + forward * 2.3, 1.8, blue);
+            let what = format!("{path}, turned {yaw} from {height} up");
+            assert!(near.position.distance(eye) > far.position.distance(eye), "{what}: as the test means");
+            let at = (84, 64);
+            let near_alone = over_black(&mut harness, camera, &[near]).linear(at).x;
+            let far_alone = over_black(&mut harness, camera, &[far]).linear(at).z;
+            assert!(near_alone > 0.2 && far_alone > 0.2, "{what}: {near_alone} and {far_alone} reach it");
+            for list in [[near, far], [far, near]] {
+                let both = over_black(&mut harness, camera, &list).linear(at);
+                assert!((both.x - near_alone).abs() < TOLERANCE, "{what}: red {} of {near_alone}", both.x);
+                assert!(both.z < far_alone - 0.05, "{what}: blue {} of {far_alone}, covered", both.z);
+            }
+        }
+    }
+}
+
+/// Quads at one depth keep the frame's order, the later over the earlier; and quads of light add,
+/// whichever draws first.
+#[test]
+#[ignore = "needs a GPU"]
+fn sprites_at_one_depth_keep_the_frames_order_and_light_adds_either_way() {
+    let view = camera();
+    let (red, blue) = (Vec3::new(0.8, 0.0, 0.0), Vec3::new(0.0, 0.0, 0.8));
+    for (path, settings) in paths() {
+        let mut harness = Harness::new(settings);
+        let left = covering(Vec3::new(-0.2, 0.0, -2.0), 1.5, red);
+        let right = covering(Vec3::new(0.2, 0.0, -2.0), 1.5, blue);
+        let middle = (SIDE / 2, SIDE / 2);
+        let left_alone = over_black(&mut harness, view, &[left]).linear(middle).x;
+        let right_alone = over_black(&mut harness, view, &[right]).linear(middle).z;
+        let right_last = over_black(&mut harness, view, &[left, right]).linear(middle);
+        assert!((right_last.z - right_alone).abs() < TOLERANCE, "{path}: {right_last} of {right_alone}");
+        assert!(right_last.x < left_alone - 0.05, "{path}: {right_last} covers {left_alone}");
+        let left_last = over_black(&mut harness, view, &[right, left]).linear(middle);
+        assert!((left_last.x - left_alone).abs() < TOLERANCE, "{path}: {left_last} of {left_alone}");
+        assert!(left_last.z < right_alone - 0.05, "{path}: {left_last} covers {right_alone}");
+
+        let near = dot(Vec3::new(1.4, 0.0, -2.0), 2.0, red * 0.6);
+        let far = dot(Vec3::new(0.0, 0.0, -2.3), 1.8, blue * 0.6);
+        let at = (84, 64);
+        let summed = over_black(&mut harness, view, &[near]).linear(at)
+            + over_black(&mut harness, view, &[far]).linear(at);
+        for list in [[near, far], [far, near]] {
+            assert_near(over_black(&mut harness, view, &list).linear(at), summed, path);
+        }
+    }
+}
+
 /// Depth on both paths: behind a wall nothing shows; in front, everything does.
 #[test]
 #[ignore = "needs a GPU"]

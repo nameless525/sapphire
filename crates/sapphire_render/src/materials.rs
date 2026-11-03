@@ -29,7 +29,8 @@
 
 use sapphire_assets::AssetId;
 use sapphire_assets::material::{
-    AnimeCharacterParams, ArchivedMaterial, FoliageParams, MaterialFamily, MaterialFlags, TextureUsage,
+    AnimeCharacterParams, ArchivedMaterial, FogCardParams, FoliageParams, MaterialFamily, MaterialFlags,
+    TextureUsage,
 };
 use sapphire_rhi::wgpu;
 
@@ -384,6 +385,17 @@ impl Materials {
         let params: FoliageParams =
             bytemuck::pod_read_unaligned(buffer.mirror.get(start..start + buffer.stride())?);
         Some(params.wind)
+    }
+
+    /// How fog card material `handle` faces (`FogCardParams::modes`' y, `CardFacing::code`), as the
+    /// GPU will read it; `None` for another family's.
+    pub(crate) fn fog_card_facing(&self, handle: MaterialHandle) -> Option<u32> {
+        let record = self.record(handle).filter(|record| record.family == MaterialFamily::FogCard)?;
+        let buffer = &self.families[record.family.index()];
+        let start = record.slot as usize * buffer.stride();
+        let params: FogCardParams =
+            bytemuck::pod_read_unaligned(buffer.mirror.get(start..start + buffer.stride())?);
+        Some(params.modes[1])
     }
 
     /// The anime character block in `slot` of that family's buffer, as the GPU will hold it: what

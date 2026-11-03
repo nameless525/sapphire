@@ -518,6 +518,12 @@ impl CameraData {
             position: eye,
         }
     }
+
+    /// How far `point` lies in front of the camera along its view axis, negative behind it. Every
+    /// point of a plane parallel to the screen has the same, however far it is from the eye.
+    pub(crate) fn view_depth(&self, point: Vec3) -> f32 {
+        -self.view.transform_point3(point).z
+    }
 }
 
 /// The weather's wetness inputs (world_lighting_post.md §7), which every uber-shader will read

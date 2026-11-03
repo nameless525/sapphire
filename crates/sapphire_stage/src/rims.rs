@@ -3,7 +3,7 @@
 //! around it, the way an artist checks a rim: on the lit side and the shadow side, against dark
 //! and bright, and back-lit.
 //!
-//! - **The figures** are the character without its pedestal (the stage's figure), each a
+//! - **The figures** are the character without its pedestal (the studio's figure), each a
 //!   character lit by the default light rig preset with its key light turned to its [`RimKey`]
 //!   around it, as the camera sees it ([`RimKey::toward`]). They face the camera, upright, so the
 //!   angles read the same across the row.
@@ -33,7 +33,7 @@ use sapphire_platform::AppInitError;
 use sapphire_render::{MeshHandle, Renderer};
 
 use crate::orbit::OrbitCamera;
-use crate::stage;
+use crate::studio;
 
 /// Figures in the row.
 pub(crate) const FIGURES: usize = 4;
@@ -210,9 +210,9 @@ pub(crate) fn panels(bounds: [[f32; 3]; 2], camera: &OrbitCamera) -> [(Panel, Ma
 /// with its embedded material.
 pub(crate) fn upload_rig(renderer: &mut Renderer, character: &Mesh) -> Result<RimRigMeshes, AppInitError> {
     Ok(RimRigMeshes {
-        figure: stage::upload_figure(renderer, character)?,
-        dark: stage::upload(renderer, &panel_mesh(Panel::Dark))?,
-        bright: stage::upload(renderer, &panel_mesh(Panel::Bright))?,
+        figure: studio::upload_figure(renderer, character)?,
+        dark: studio::upload(renderer, &panel_mesh(Panel::Dark))?,
+        bright: studio::upload(renderer, &panel_mesh(Panel::Bright))?,
     })
 }
 

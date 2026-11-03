@@ -4,7 +4,7 @@ use crate::input::SandboxInput;
 use game_combat::arena::{ArenaGround, ArenaShot};
 use game_combat::enemy::{self, EnemyMeshes};
 use game_combat::fight::Arena;
-use game_ui::hud::{HudMode, HudOptions, SandboxHud, ShownFight};
+use game_ui::hud::{FightHud, HudMode, HudOptions, ShownFight};
 use sapphire_math::{Mat4, Vec3};
 use sapphire_render::MeshHandle;
 use sapphire_stage::RenderPose;
@@ -57,7 +57,7 @@ fn a_pause_shows_on_the_hud() {
     };
     let live = HudOptions { mode: HudMode::Live, ..HudOptions::default() };
     let scene = Scene::with_character(MeshHandle::from_raw(0), [[-1.0; 3], [1.0; 3]], false);
-    let show = ShownFight { hud: Some(SandboxHud::for_fight(live)), ..ShownFight::default() };
+    let show = ShownFight { hud: Some(FightHud::for_fight(live)), ..ShownFight::default() };
     let mut scene = Staged { scene, show };
     let size = sapphire_platform::Size { width: 1000, height: 500 };
     let mut input = SandboxInput::new(false, true, size).expect("the default bindings");
@@ -91,7 +91,7 @@ fn a_pause_shows_on_the_hud() {
     assert_eq!(quads(&mut scene), running, "gone with the pause");
 
     let asked = HudOptions { paused: true, ..live };
-    scene.show.hud = Some(SandboxHud::for_fight(asked));
+    scene.show.hud = Some(FightHud::for_fight(asked));
     assert_eq!(quads(&mut scene), running + 3, "with no input at all");
 }
 

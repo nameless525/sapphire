@@ -4,10 +4,10 @@
 //!   a thumb on the stick and another dragging the attack, with a hit landing and numbers in the
 //!   air. What the golden scenes capture. Real touches go to the app as if there were no HUD.
 //! - **`live`:** real touches through the zones, on `Platform::now`. The zones say what the fingers did
-//!   ([`SandboxHud::update`]), and the frame's input takes that through combat's bindings
-//!   (`SandboxInput::read_touch`), so a press and a drag reach a tick and the camera by the road a pad
-//!   takes. With a fight on (`--arena`, [`SandboxHud::for_fight`]), its bars are the fighters'
-//!   ([`SandboxHud::show_fight`]) and its numbers the hits that landed ([`SandboxHud::show_hit`]),
+//!   ([`FightHud::update`]), and the frame's input takes that through combat's bindings
+//!   (`CombatControls::read_touch`), so a press and a drag reach a tick and the camera by the road a pad
+//!   takes. With a fight on (`--arena`, [`FightHud::for_fight`]), its bars are the fighters'
+//!   ([`FightHud::show_fight`]) and its numbers the hits that landed ([`FightHud::show_hit`]),
 //!   offscreen too, where the fight's own time is its clock. With none, no gameplay stands behind the
 //!   zones, so a stand-in shows that input arrives: the attack spends the enemy's bars and throws a
 //!   number, a held attack a heavier one, the dodge spends the player's and the skill starts a cooldown.
@@ -97,7 +97,7 @@ impl Default for LiveValues {
 }
 
 /// The HUD, its touch zones and what they show.
-pub struct SandboxHud {
+pub struct FightHud {
     options: HudOptions,
     atlas: Atlas,
     layout: HudLayout,
@@ -124,7 +124,7 @@ pub struct SandboxHud {
     last_cost: Duration,
 }
 
-impl SandboxHud {
+impl FightHud {
     pub fn new(options: HudOptions) -> Self {
         let painting = Stopwatch::start();
         let atlas = Atlas::paint();
@@ -458,7 +458,7 @@ fn wrapped(value: f32) -> f32 {
 pub struct ShownFight {
     pub fight: Fight,
     /// The combat HUD over the scene (`--hud`, M2 I2).
-    pub hud: Option<SandboxHud>,
+    pub hud: Option<FightHud>,
 }
 
 impl ShownFight {
@@ -480,7 +480,7 @@ impl ShownFight {
 }
 
 /// Shows the hits `sim`'s latest step landed, once however often it's read.
-pub fn show_damage(hud: &mut SandboxHud, scene: &Scene, sim: &Simulation) {
+pub fn show_damage(hud: &mut FightHud, scene: &Scene, sim: &Simulation) {
     if !hud.reads_hits_of(sim.tick()) {
         return;
     }
@@ -555,7 +555,7 @@ mod tests {
     /// With a fight on, live mode's bars are the fight's, on the fight's clock where there's no other.
     #[test]
     fn live_mode_shows_a_fights_values_in_place_of_the_stand_in() {
-        let mut hud = SandboxHud::new(HudOptions { mode: HudMode::Live, ..HudOptions::default() });
+        let mut hud = FightHud::new(HudOptions { mode: HudMode::Live, ..HudOptions::default() });
         let mut list = UiDrawList::default();
         hud.draw((640, 360), &mut list);
         assert_eq!(hud.values.enemy.map(|enemy| enemy.hp), Some(1.0), "the stand-in, unhurt");
@@ -588,7 +588,7 @@ mod tests {
     #[test]
     fn a_fights_hud_reads_no_stand_in_from_its_first_frame() {
         let live = HudOptions { mode: HudMode::Live, ..HudOptions::default() };
-        let mut hud = SandboxHud::for_fight(live);
+        let mut hud = FightHud::for_fight(live);
         let metrics = UiMetrics::new(Vec2::new(900.0, 400.0), Insets::default());
         assert!(hud.update(ms(1), metrics).is_some());
         let attack = hud.layout.attack.center;
@@ -601,7 +601,7 @@ mod tests {
         assert_eq!(hud.values, HudValues::default());
 
         // The stand-in stops at a fight's first word, on a HUD that started without one.
-        let mut hud = SandboxHud::new(live);
+        let mut hud = FightHud::new(live);
         hud.show_fight(HudValues::default(), Duration::ZERO);
         assert!(hud.stand_in.is_none());
     }
@@ -629,7 +629,7 @@ mod tests {
         assert_eq!(on_screen(Vec3::new(0.0, 1.0, 9.0), view_projection, size), None, "behind");
 
         let live = HudOptions { mode: HudMode::Live, ..HudOptions::default() };
-        let mut hud = SandboxHud::for_fight(live);
+        let mut hud = FightHud::for_fight(live);
         let metrics = UiMetrics::new(size, Insets::default());
         let _ = hud.update(ms(1), metrics);
         hud.show_hit(30, Vec3::new(0.0, 1.0, 0.0), Weight::Light, view_projection);
@@ -640,7 +640,7 @@ mod tests {
         assert_eq!(hud.last_frame().0.damage_numbers, 2, "and none from behind");
 
         // A fixed frame's numbers are its own.
-        let mut fixed = SandboxHud::new(HudOptions::default());
+        let mut fixed = FightHud::new(HudOptions::default());
         fixed.draw((640, 360), &mut list);
         let before = fixed.last_frame().0.damage_numbers;
         fixed.show_hit(30, Vec3::new(0.0, 1.0, 0.0), Weight::Light, view_projection);
@@ -654,12 +654,12 @@ mod tests {
     fn the_on_screen_controls_follow_who_is_holding_what() {
         let live = HudOptions { mode: HudMode::Live, ..HudOptions::default() };
         let metrics = UiMetrics::new(Vec2::new(900.0, 400.0), Insets::default());
-        let quads = |hud: &mut SandboxHud| {
+        let quads = |hud: &mut FightHud| {
             let mut list = UiDrawList::default();
             hud.draw((900, 400), &mut list);
             hud.last_frame().0.quads
         };
-        let mut hud = SandboxHud::for_fight(live);
+        let mut hud = FightHud::for_fight(live);
         let _ = hud.update(ms(1), metrics);
         let whole = quads(&mut hud);
 
@@ -681,7 +681,7 @@ mod tests {
     /// A fixed frame stays the same frame, whatever's going on behind it.
     #[test]
     fn a_fixed_frame_ignores_a_fight() {
-        let mut hud = SandboxHud::new(HudOptions::default());
+        let mut hud = FightHud::new(HudOptions::default());
         let mut list = UiDrawList::default();
         hud.draw((640, 360), &mut list);
         let before = hud.values;
@@ -697,8 +697,8 @@ mod tests {
 
     #[test]
     fn a_fixed_frame_draws_the_same_quads_every_frame() {
-        let mut hud = SandboxHud::new(HudOptions::default());
-        let draw = |hud: &mut SandboxHud| {
+        let mut hud = FightHud::new(HudOptions::default());
+        let draw = |hud: &mut FightHud| {
             let mut list = UiDrawList::default();
             hud.draw((640, 360), &mut list);
             list
@@ -718,7 +718,7 @@ mod tests {
 
     #[test]
     fn a_fixed_frame_follows_its_target_and_takes_no_touches() {
-        let mut hud = SandboxHud::new(HudOptions { scale: 3.0, ..HudOptions::default() });
+        let mut hud = FightHud::new(HudOptions { scale: 3.0, ..HudOptions::default() });
         let mut list = UiDrawList::default();
         hud.draw((2622, 1206), &mut list);
         assert_eq!(list.viewport, [874.0, 402.0], "points, at 3 pixels each");
@@ -737,7 +737,7 @@ mod tests {
     #[test]
     fn made_up_insets_move_a_fixed_frame_inside_them() {
         let insets = Insets { left: 62.0, top: 0.0, right: 62.0, bottom: 21.0 };
-        let mut hud = SandboxHud::new(HudOptions { insets: Some(insets), ..HudOptions::default() });
+        let mut hud = FightHud::new(HudOptions { insets: Some(insets), ..HudOptions::default() });
         let mut list = UiDrawList::default();
         hud.draw((874, 402), &mut list);
         assert_eq!(hud.layout.safe.min.x, 62.0);

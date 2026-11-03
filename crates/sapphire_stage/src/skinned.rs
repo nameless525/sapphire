@@ -87,7 +87,10 @@ pub(crate) fn sway(mut stalks: Query<'_, '_, (&mut Sway, &EntityClock)>) {
 
 /// Poses each stalk between its last two steps. Runs at the head of `Extract`, before
 /// extraction; writes only poses that changed.
-pub(crate) fn pose(interpolation: Res<'_, Interpolation>, mut stalks: Query<'_, '_, (&Sway, &mut RenderPose)>) {
+pub(crate) fn pose(
+    interpolation: Res<'_, Interpolation>,
+    mut stalks: Query<'_, '_, (&Sway, &mut RenderPose)>,
+) {
     for (sway, mut pose) in &mut stalks {
         let (palette, weights) = stalk_pose(sway.phase(interpolation.alpha));
         if pose.palette != palette || pose.morph_weights != weights {

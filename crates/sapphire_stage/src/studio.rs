@@ -1,4 +1,4 @@
-//! The stage (`--stage floor|pillar|plinth`, M1 R4): a floor under the character and an
+//! The studio (the sandbox's `--stage floor|pillar|plinth`, M1 R4): a floor under the character and an
 //! environment caster beside it, generated in code like the swatches and the stalk, so the sandbox
 //! has shadows to look at in a controlled frame: a character's contact shadow on the ground, an
 //! environment shadow across a character and over faces. The courtyard (`--environment`, W4)
@@ -6,7 +6,7 @@
 //!
 //! - **The pedestal splits off.** The sample mannequin stands on a pedestal that is part of its
 //!   own mesh, and a character never receives its own shadow, so its feet's contact shadow
-//!   couldn't fall on it. On the stage the character draws the mannequin without its pedestal
+//!   couldn't fall on it. In the studio the character draws the mannequin without its pedestal
 //!   (its `Pedestal` material slot's submeshes left out, the streams as cooked, so the figure
 //!   draws exactly as before), and the pedestal is an environment instance of its own, at rest
 //!   while the figure turns: it receives the character's contact shadow, and casts its own.
@@ -41,16 +41,16 @@ pub(crate) const FLOOR_SIZE: f32 = 64.0;
 /// The material slot of the sample mannequin's pedestal (`sapphire_pipeline`'s samples).
 const PEDESTAL_SLOT: &str = "Pedestal";
 
-/// What the stage holds besides the floor and the pedestal (`--stage`).
+/// What the studio holds besides the floor and the pedestal (`--stage`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum StageLayout {
+pub enum StudioLayout {
     Floor,
     Pillar,
     /// The floor, with the pedestal in stone (M1 W5).
     Plinth,
 }
 
-impl StageLayout {
+impl StudioLayout {
     /// The layout `--stage` names.
     pub fn from_name(name: &str) -> Option<Self> {
         match name {
@@ -62,7 +62,7 @@ impl StageLayout {
     }
 }
 
-/// A stage piece's mesh.
+/// A studio piece's mesh.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Piece {
     Floor,
@@ -72,18 +72,18 @@ pub(crate) enum Piece {
     Plinth,
 }
 
-/// The stage's meshes on a renderer: its own, and the character split from its pedestal.
+/// The studio's meshes on a renderer: its own, and the character split from its pedestal.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct StageMeshes {
+pub struct StudioMeshes {
     pub(crate) floor: MeshHandle,
     pub(crate) pillar: MeshHandle,
-    /// The character without its pedestal, which the turntable draws on the stage.
+    /// The character without its pedestal, which the turntable draws in the studio.
     pub(crate) figure: MeshHandle,
     /// The pedestal alone, and its object-space bounds; `None` for a character without one.
     pub(crate) pedestal: Option<(MeshHandle, Bounds)>,
 }
 
-impl StageMeshes {
+impl StudioMeshes {
     /// The mesh `piece` draws; a pedestal piece exists only with a pedestal mesh.
     pub(crate) fn get(&self, piece: Piece) -> MeshHandle {
         match piece {
@@ -98,8 +98,8 @@ impl StageMeshes {
 /// of it by itself, where the character's own handle does. Kept per renderer, as what it holds is.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct CharacterCopies {
-    /// The stage's figure and pedestal, with `--stage`.
-    pub(crate) stage: Option<StageMeshes>,
+    /// The studio's figure and pedestal, with `--stage`.
+    pub(crate) studio: Option<StudioMeshes>,
     /// The rim rig's figure, with `--rim-rig`.
     pub(crate) rim_figure: Option<MeshHandle>,
 }
@@ -108,14 +108,14 @@ impl CharacterCopies {
     /// Takes a new version of `character`, which the renderer has just taken, under the handles the scene
     /// draws with, its materials through `materials`. What won't convert fails first, leaving what's held
     /// as it was. A pedestal it has now and hadn't gets a new handle; one it's lost stays in the renderer,
-    /// as meshes do, with nothing drawing it once the scene has placed the stage again.
+    /// as meshes do, with nothing drawing it once the scene has placed the studio again.
     pub(crate) fn take_character(
         &mut self,
         character: &Mesh,
         materials: impl Fn(AssetId) -> Option<MaterialHandle> + Copy,
         renderer: &mut Renderer,
     ) -> Result<(), UploadError> {
-        if self.stage.is_none() && self.rim_figure.is_none() {
+        if self.studio.is_none() && self.rim_figure.is_none() {
             return Ok(());
         }
         let (figure, pedestal) = split_pedestal(character);
@@ -132,9 +132,9 @@ impl CharacterCopies {
         if let Some(rim_figure) = self.rim_figure {
             renderer.update_mesh(rim_figure, figure, materials)?;
         }
-        if let Some(stage) = &mut self.stage {
-            renderer.update_mesh(stage.figure, figure, materials)?;
-            stage.pedestal = match (stage.pedestal, pedestal) {
+        if let Some(studio) = &mut self.studio {
+            renderer.update_mesh(studio.figure, figure, materials)?;
+            studio.pedestal = match (studio.pedestal, pedestal) {
                 (Some((handle, _)), Some((mesh, bounds))) => {
                     renderer.update_mesh(handle, mesh, materials)?;
                     Some((handle, bounds))
@@ -149,7 +149,7 @@ impl CharacterCopies {
     }
 }
 
-/// What the stage is built around: where its subject stands, and how the pillar's shadow covers
+/// What the studio is built around: where its subject stands, and how the pillar's shadow covers
 /// it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Subject {
@@ -164,9 +164,9 @@ pub(crate) struct Subject {
 
 /// Uploads the floor and the pillar, each with its embedded material, and the `character`
 /// split from its pedestal (see the module docs).
-pub(crate) fn upload_stage(renderer: &mut Renderer, character: &Mesh) -> Result<StageMeshes, AppInitError> {
+pub(crate) fn upload_studio(renderer: &mut Renderer, character: &Mesh) -> Result<StudioMeshes, AppInitError> {
     let (figure, pedestal) = split_pedestal(character);
-    Ok(StageMeshes {
+    Ok(StudioMeshes {
         floor: upload(renderer, &floor_mesh())?,
         pillar: upload(renderer, &pillar_mesh())?,
         figure: upload(renderer, &figure)?,
@@ -177,13 +177,13 @@ pub(crate) fn upload_stage(renderer: &mut Renderer, character: &Mesh) -> Result<
     })
 }
 
-/// Uploads the `character` without its pedestal: the stage's figure, and the rim rig's
+/// Uploads the `character` without its pedestal: the studio's figure, and the rim rig's
 /// (`crate::rims`).
 pub(crate) fn upload_figure(renderer: &mut Renderer, character: &Mesh) -> Result<MeshHandle, AppInitError> {
     upload(renderer, &split_pedestal(character).0)
 }
 
-/// Uploads the pillar's stone box alone, for whatever else wants a block of the stage's stone
+/// Uploads the pillar's stone box alone, for whatever else wants a block of the studio's stone
 /// (`crate::ik`).
 pub fn upload_block(renderer: &mut Renderer) -> Result<MeshHandle, AppInitError> {
     upload(renderer, &pillar_mesh())
@@ -229,7 +229,7 @@ fn split_pedestal(mesh: &Mesh) -> (Mesh, Option<Mesh>) {
 /// the floor first, then the pedestal or the plinth (with `pedestal`, the pedestal's bounds),
 /// then the pillar.
 pub(crate) fn placements(
-    layout: StageLayout,
+    layout: StudioLayout,
     subject: &Subject,
     pedestal: Option<Bounds>,
     toward_light: Vec3,
@@ -244,7 +244,7 @@ pub(crate) fn placements(
         ),
     )];
     match (pedestal, layout) {
-        (Some(bounds), StageLayout::Plinth) => {
+        (Some(bounds), StudioLayout::Plinth) => {
             // The pillar's unit box stands on its base's middle.
             let (min, max) = (Vec3::from(bounds.min), Vec3::from(bounds.max));
             let base = Vec3::new(0.5 * (min.x + max.x), min.y, 0.5 * (min.z + max.z));
@@ -261,7 +261,7 @@ pub(crate) fn placements(
     let level = Vec3::new(toward.x, 0.0, toward.z);
     let across = level.normalize_or(Vec3::Z);
     let climb = (toward.y / level.length().max(1e-3)).max(0.0);
-    if layout == StageLayout::Pillar {
+    if layout == StudioLayout::Pillar {
         // A ray from the subject at the shade height toward the light passes the pillar's top:
         // everything below it is in the pillar's shadow.
         let distance = subject.pillar_distance;
@@ -284,7 +284,7 @@ fn floor_geometry() -> (Vec<Vertex>, Vec<u32>) {
     (vertices, vec![0, 2, 1, 0, 3, 2])
 }
 
-/// The stage's stone in `base_color`: a soft wrap, a narrow terminator widening with distance,
+/// The studio's stone in `base_color`: a soft wrap, a narrow terminator widening with distance,
 /// and no highlight.
 fn stone(base_color: [f32; 3]) -> EnvironmentMaterial {
     EnvironmentMaterial {
@@ -348,7 +348,7 @@ fn vertex(position: [f32; 3], normal: [f32; 3], uv: [f32; 2]) -> Vertex {
 /// `vertices` and `indices` as a mesh drawn with `material`, embedded.
 fn mesh(name: &str, vertices: &[Vertex], indices: Vec<u32>, material: &EnvironmentMaterial) -> Mesh {
     let swizzles = [Swizzle::IDENTITY; EnvironmentMaterial::TEXTURE_SLOTS.len()];
-    let material = Material::from_document(material, &swizzles).expect("the stage's materials are valid");
+    let material = Material::from_document(material, &swizzles).expect("the studio's materials are valid");
     let submeshes = vec![Submesh { first_index: 0, index_count: indices.len() as u32, material: 0 }];
     Mesh::from_vertices(
         vertices,
@@ -434,7 +434,7 @@ mod tests {
     #[test]
     fn the_pillar_stands_toward_the_light_and_shades_the_subject_to_its_height() {
         let toward = Vec3::new(-0.55, 0.7, 0.45).normalize();
-        let pieces = placements(StageLayout::Pillar, &SUBJECT, Some(PEDESTAL), toward);
+        let pieces = placements(StudioLayout::Pillar, &SUBJECT, Some(PEDESTAL), toward);
         assert_eq!(
             pieces.iter().map(|(piece, _)| *piece).collect::<Vec<_>>(),
             [Piece::Floor, Piece::Pedestal, Piece::Pillar]
@@ -448,13 +448,13 @@ mod tests {
         let at_pillar =
             ray + toward * (SUBJECT.pillar_distance / Vec3::new(toward.x, 0.0, toward.z).length());
         assert!((at_pillar.y - (at.y + scale.y)).abs() < 1e-3);
-        assert_eq!(placements(StageLayout::Floor, &SUBJECT, None, toward).len(), 1);
+        assert_eq!(placements(StudioLayout::Floor, &SUBJECT, None, toward).len(), 1);
     }
 
     #[test]
     fn the_plinth_takes_the_pedestals_place_and_size() {
         let toward = Vec3::new(-0.55, 0.7, 0.45).normalize();
-        let pieces = placements(StageLayout::Plinth, &SUBJECT, Some(PEDESTAL), toward);
+        let pieces = placements(StudioLayout::Plinth, &SUBJECT, Some(PEDESTAL), toward);
         assert_eq!(pieces.iter().map(|(piece, _)| *piece).collect::<Vec<_>>(), [Piece::Floor, Piece::Plinth]);
         // The pillar's unit box, placed: it spans the pedestal's bounds exactly.
         let place = pieces[1].1;
@@ -467,7 +467,7 @@ mod tests {
                 && max.abs_diff_eq(Vec3::from(PEDESTAL.max), 1e-6)
         );
         assert_eq!(
-            placements(StageLayout::Plinth, &SUBJECT, None, toward).len(),
+            placements(StudioLayout::Plinth, &SUBJECT, None, toward).len(),
             1,
             "no pedestal, no plinth"
         );
@@ -475,9 +475,9 @@ mod tests {
 
     #[test]
     fn layouts_are_named_as_the_command_line_spells_them() {
-        assert_eq!(StageLayout::from_name("floor"), Some(StageLayout::Floor));
-        assert_eq!(StageLayout::from_name("pillar"), Some(StageLayout::Pillar));
-        assert_eq!(StageLayout::from_name("plinth"), Some(StageLayout::Plinth));
-        assert_eq!(StageLayout::from_name("arena"), None);
+        assert_eq!(StudioLayout::from_name("floor"), Some(StudioLayout::Floor));
+        assert_eq!(StudioLayout::from_name("pillar"), Some(StudioLayout::Pillar));
+        assert_eq!(StudioLayout::from_name("plinth"), Some(StudioLayout::Plinth));
+        assert_eq!(StudioLayout::from_name("arena"), None);
     }
 }

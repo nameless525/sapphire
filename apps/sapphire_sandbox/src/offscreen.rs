@@ -221,7 +221,7 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
                 .with_root_motion(!options.clip_in_place)
                 .with_springs_on(options.springs != Some(false));
             if let Some(ik) = &options.ik {
-                let block = sapphire_stage::stage::upload_block(renderer)?;
+                let block = sapphire_stage::studio::upload_block(renderer)?;
                 let solver = scene.start_ik(ik, block, content, player.pose()).map_err(AppInitError::msg)?;
                 player = player.with_ik(solver);
             }
@@ -232,7 +232,7 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
             content.load_graph(sapphire_stage::lookdev::GRAPH, renderer, gpu)?;
             let mut driver = sapphire_stage::lookdev::graph_driver(content).map_err(AppInitError::msg)?;
             if let Some(ik) = &options.ik {
-                let block = sapphire_stage::stage::upload_block(renderer)?;
+                let block = sapphire_stage::studio::upload_block(renderer)?;
                 let solver =
                     scene.start_ik(ik, block, content, driver.player.pose()).map_err(AppInitError::msg)?;
                 driver = driver.with_ik(solver);
@@ -310,7 +310,7 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
     }
     // The stage after the hour, which places its pillars.
     if let Some(layout) = options.stage {
-        scene.spawn_stage(layout, content.stage_meshes(renderer)?);
+        scene.spawn_studio(layout, content.studio_meshes(renderer)?);
     }
     // Offscreen there are no touches: the HUD is its fixed frame, in either mode, unless it's
     // live and a fight's bars stand behind it.
@@ -318,7 +318,7 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
         let fighting = options.arena.is_some() && options.combat.is_some();
         let mode = if fighting { hud.mode } else { game_ui::hud::HudMode::Fixed };
         let hud = game_ui::hud::HudOptions { mode, ..hud };
-        *shown_hud = Some(game_ui::hud::SandboxHud::new(hud));
+        *shown_hud = Some(game_ui::hud::FightHud::new(hud));
     }
     // The screen effects it may push, `--post-effect`'s among them, the effects it plays, its sky and
     // its HUD show on their first frame.

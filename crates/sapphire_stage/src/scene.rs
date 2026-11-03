@@ -45,9 +45,9 @@
 //!   outline cutoff, each a character with the default light rig; and **the hard-edged sample**
 //!   (`--hard-edges`), which the camera frames instead of the character
 //!   ([`Scene::spawn_outline_row`], [`Scene::spawn_hard_edges`], [`crate::outlines`]).
-//! - **The stage** (`--stage`): a floor at the character's feet and a pillar beside it, static
-//!   environment instances for shadows to fall on and be cast by ([`Scene::spawn_stage`],
-//!   [`crate::stage`]).
+//! - **The studio** (`--stage`): a floor at the character's feet and a pillar beside it, static
+//!   environment instances for shadows to fall on and be cast by ([`Scene::spawn_studio`],
+//!   [`crate::studio`]).
 //! - **The look-dev stage** (`--look-dev`): the town, one static entity, its fog cards and its
 //!   lamps (each a [`RenderLight`] whose intensity [`Scene::frame_packet`] sets from time of
 //!   day's night before extraction), around the VRM character held in a pose: a
@@ -135,7 +135,7 @@ use crate::outlines::{self, ROW};
 use crate::rims::{self, Panel, RimKey, RimLayout, RimRigMeshes};
 use crate::show::{ContentChanges, SceneShow};
 use crate::skinned::{self, Sway};
-use crate::stage::{self, Piece, StageLayout, StageMeshes, Subject};
+use crate::studio::{self, Piece, StudioLayout, StudioMeshes, Subject};
 use crate::swatches::{self, SWATCHES};
 use crate::turntable::{self, Turntable};
 use crate::vfx::{VfxPlayer, VfxShow};
@@ -385,10 +385,10 @@ pub struct Scene {
     outline_row: Option<[Entity; ROW.len()]>,
     /// The hard-edged outline sample, with `--hard-edges`.
     hard_edges: Option<Entity>,
-    /// The stage's pieces, with `--stage`.
-    stage: Vec<(Entity, Piece)>,
-    /// How the stage is laid out, and toward the key light it was built for.
-    stage_layout: Option<(StageLayout, Vec3)>,
+    /// The studio's pieces, with `--stage`.
+    studio: Vec<(Entity, Piece)>,
+    /// How the studio is laid out, and toward the key light it was built for.
+    studio_layout: Option<(StudioLayout, Vec3)>,
     /// The look-dev town, with `--look-dev`, its plants and its mountains.
     town: Option<Entity>,
     town_plants: Vec<(Entity, lookdev::Plant)>,
@@ -529,8 +529,8 @@ impl Scene {
             probe_hours: Vec::new(),
             outline_row: None,
             hard_edges: None,
-            stage: Vec::new(),
-            stage_layout: None,
+            studio: Vec::new(),
+            studio_layout: None,
             town: None,
             town_plants: Vec::new(),
             town_mountains: Vec::new(),
@@ -891,25 +891,25 @@ impl Scene {
         }
     }
 
-    /// Builds the stage (`--stage`) around the subject, the face rig with `--faces` or else the
+    /// Builds the studio (`--stage`) around the subject, the face rig with `--faces` or else the
     /// character, drawing `meshes`: the character without its pedestal, which stands on the
-    /// floor of its own (or on a stone plinth, with [`StageLayout::Plinth`]), and with
-    /// [`StageLayout::Pillar`] a pillar placed for the key light at the scene's hour.
+    /// floor of its own (or on a stone plinth, with [`StudioLayout::Plinth`]), and with
+    /// [`StudioLayout::Pillar`] a pillar placed for the key light at the scene's hour.
     /// Call after the hour is set. The pieces never move, so they are extracted once.
-    pub fn spawn_stage(&mut self, layout: StageLayout, meshes: StageMeshes) {
+    pub fn spawn_studio(&mut self, layout: StudioLayout, meshes: StudioMeshes) {
         self.set_character_mesh(meshes.figure);
         let mut packet = FramePacket::default();
         let eye = self.ecs.world().resource::<OrbitCamera>().eye();
         self.time_of_day_mut().resolve(eye, 1.0).write(&mut packet);
-        self.stage_layout = Some((layout, -packet.sun.direction));
-        self.place_stage(meshes);
+        self.studio_layout = Some((layout, -packet.sun.direction));
+        self.place_studio(meshes);
     }
 
-    /// Stands the stage's pieces for `meshes`, in place of any it has, around the subject as it is now,
+    /// Stands the studio's pieces for `meshes`, in place of any it has, around the subject as it is now,
     /// for the key light it was built for. A piece's placement can follow the pedestal, which a new
     /// version of the character may have made another size, or given or taken away.
-    fn place_stage(&mut self, meshes: StageMeshes) {
-        let Some((layout, toward_light)) = self.stage_layout else { return };
+    fn place_studio(&mut self, meshes: StudioMeshes) {
+        let Some((layout, toward_light)) = self.studio_layout else { return };
         let floor = self.bounds[0][1];
         let subject = match self.faces.is_empty() {
             // Every head's shadow from far enough to stay out of the rig's view.
@@ -931,21 +931,21 @@ impl Scene {
             },
         };
         let world = self.ecs.world_mut();
-        for (entity, _) in self.stage.drain(..) {
+        for (entity, _) in self.studio.drain(..) {
             world.despawn(entity);
         }
         let pedestal = meshes.pedestal.map(|(_, bounds)| bounds);
-        for (piece, place) in stage::placements(layout, &subject, pedestal, toward_light) {
+        for (piece, place) in studio::placements(layout, &subject, pedestal, toward_light) {
             let entity = world.spawn((RenderMesh(meshes.get(piece)), RenderTransform(place))).id();
-            self.stage.push((entity, piece));
+            self.studio.push((entity, piece));
         }
     }
 
-    /// Sets the meshes the stage draws again, the character's figure among them, its pieces standing
+    /// Sets the meshes the studio draws again, the character's figure among them, its pieces standing
     /// where they say: after GPU device loss, and for a new version of the character.
-    pub fn set_stage_meshes(&mut self, meshes: StageMeshes) {
+    pub fn set_studio_meshes(&mut self, meshes: StudioMeshes) {
         self.set_character_mesh(meshes.figure);
-        self.place_stage(meshes);
+        self.place_studio(meshes);
     }
 
     /// Sets the mesh the face rig's heads draw again: after GPU device loss.
@@ -1059,20 +1059,20 @@ impl Scene {
     /// joints, and a new version of them or of the clip gives the clip a new pose to play on. While
     /// only some have landed the character may not fit: it keeps the pose it has, which the renderer
     /// ignores if the new mesh's palette is another length, until the others land. The enemy's mesh and
-    /// skeleton do the same for it (`Self::replace_enemy`). A stage's pieces stand again for a new
-    /// version of the character it copied (`Content::take_new_stage`). Allocates nothing while nothing
+    /// skeleton do the same for it (`Self::replace_enemy`). A studio's pieces stand again for a new
+    /// version of the character it copied (`Content::take_new_studio`). Allocates nothing while nothing
     /// changed.
     pub fn follow_content(&mut self, content: &mut Content, show: &mut impl SceneShow) {
         self.set_probe_hours(content.probe_hours());
         if content.take_meshes_replaced() {
             self.ecs.world_mut().resource_mut::<RenderExtract>().resend_poses();
         }
-        if let Some((meshes, bounds)) = content.take_new_stage() {
-            // A face rig stands where the bounds it was placed by put it, and the stage goes round that.
+        if let Some((meshes, bounds)) = content.take_new_studio() {
+            // A face rig stands where the bounds it was placed by put it, and the studio goes round that.
             if self.faces.is_empty() {
                 self.bounds = bounds;
             }
-            self.set_stage_meshes(meshes);
+            self.set_studio_meshes(meshes);
         }
         let clip_changed = content.take_clip_changed();
         let character_changed = content.take_character_changed();

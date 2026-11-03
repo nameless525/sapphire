@@ -67,7 +67,7 @@
 //! `Scene::follow_content`). A new version of the look-dev character's mesh, rig or skeleton holds
 //! the character anew ([`Content::take_character_changed`]). What the stage and the rim rig made from
 //! the character's mesh are replaced with it, so they're as new as it is
-//! ([`crate::stage::CharacterCopies`]).
+//! ([`crate::studio::CharacterCopies`]).
 //!
 //! In `dev` builds the server reads packs through live link's source (M1 A9,
 //! `sapphire_livelink::LivePacks`), which serves packs pushed from the desktop in place of the
@@ -116,7 +116,7 @@ use crate::lookdev::{self, Plant, TownMeshes};
 use crate::outlines;
 use crate::rims::{self, RimRigMeshes};
 use crate::scene;
-use crate::stage::{self, CharacterCopies, StageMeshes};
+use crate::studio::{self, CharacterCopies, StudioMeshes};
 use crate::swatches::{self, SWATCHES};
 
 /// The pack the sandbox's content ships in.
@@ -204,7 +204,7 @@ struct GpuAssets {
     /// What the stage and the rim rig made of the character on this renderer.
     copies: CharacterCopies,
     /// A new version of the character has replaced the stage's copies, since the scene last asked.
-    stage_replaced: bool,
+    studio_replaced: bool,
     /// The probe grid the renderer holds (it holds one), as its key hours.
     probe_grid: Option<Held<Vec<f32>>>,
 }
@@ -224,7 +224,7 @@ impl GpuAssets {
             overrides: MaterialOverrides::default(),
             watcher: None,
             copies: CharacterCopies::default(),
-            stage_replaced: false,
+            studio_replaced: false,
             probe_grid: None,
         }
     }
@@ -306,7 +306,7 @@ impl GpuAssets {
                     self.meshes_replaced = true;
                     if let Some(character) = &copy {
                         self.copies.take_character(character, resolve, renderer)?;
-                        self.stage_replaced = self.copies.stage.is_some();
+                        self.studio_replaced = self.copies.studio.is_some();
                     }
                 }
                 None => {
@@ -696,12 +696,12 @@ impl Content {
     }
 
     /// Makes the stage's meshes from the character, on `renderer`: a new version of it replaces them, and
-    /// the scene hears of that ([`Self::take_new_stage`]).
-    pub fn stage_meshes(&mut self, renderer: &mut Renderer) -> Result<StageMeshes, AppInitError> {
+    /// the scene hears of that ([`Self::take_new_studio`]).
+    pub fn studio_meshes(&mut self, renderer: &mut Renderer) -> Result<StudioMeshes, AppInitError> {
         let character =
             self.character_mesh().ok_or_else(|| AppInitError::msg("the character isn't loaded"))?;
-        let meshes = stage::upload_stage(renderer, character)?;
-        self.gpu.copies.stage = Some(meshes);
+        let meshes = studio::upload_studio(renderer, character)?;
+        self.gpu.copies.studio = Some(meshes);
         Ok(meshes)
     }
 
@@ -717,10 +717,10 @@ impl Content {
 
     /// The stage's meshes and the character's bounds, if a new version of the character has replaced them
     /// since the last call, which the stage's pieces stand by.
-    pub(crate) fn take_new_stage(&mut self) -> Option<(StageMeshes, [[f32; 3]; 2])> {
-        std::mem::take(&mut self.gpu.stage_replaced).then_some(())?;
+    pub(crate) fn take_new_studio(&mut self) -> Option<(StudioMeshes, [[f32; 3]; 2])> {
+        std::mem::take(&mut self.gpu.studio_replaced).then_some(())?;
         let bounds = self.gpu.meshes.get(&self.character_id)?.object.bounds;
-        Some((self.gpu.copies.stage?, bounds))
+        Some((self.gpu.copies.studio?, bounds))
     }
 
     /// The character's mesh as last uploaded, if [`Self::keep_character_mesh`] asked for it.
@@ -1650,7 +1650,7 @@ mod tests {
     use crate::anim_graph::{GraphScript, GraphShow};
     use crate::lookdev::Shot;
     use crate::scene::{LookDev, Scene};
-    use crate::stage::StageLayout;
+    use crate::studio::StudioLayout;
 
     const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
     const SIDE: u32 = 32;
@@ -2208,10 +2208,10 @@ mod tests {
     }
 
     /// `mesh` on a stage of `layout`, framed.
-    fn on_a_stage(mesh: &Mesh, layout: StageLayout) -> Stage {
+    fn on_a_studio_floor(mesh: &Mesh, layout: StudioLayout) -> Stage {
         let mut stage = Stage::mannequin_of(mesh);
-        let meshes = stage.content.stage_meshes(&mut stage.renderer).expect("the stage's meshes");
-        stage.scene.spawn_stage(layout, meshes);
+        let meshes = stage.content.studio_meshes(&mut stage.renderer).expect("the stage's meshes");
+        stage.scene.spawn_studio(layout, meshes);
         stage.frame_on_character();
         stage
     }
@@ -2239,18 +2239,18 @@ mod tests {
         let first = mannequin(-1.0, PALE, Some(1.0));
         let moved = mannequin(0.5, PALE, Some(1.0));
         let recolored = mannequin(0.5, [0.8, 0.1, 0.1, 1.0], Some(1.0));
-        let mut stage = on_a_stage(&first, StageLayout::Floor);
+        let mut stage = on_a_studio_floor(&first, StudioLayout::Floor);
         let before = stage.pixels();
 
         land_mannequin(&mut stage, &moved);
         let after = stage.pixels();
         assert!(!same_picture(&before, &after), "its new shape shows");
-        assert!(same_picture(&after, &on_a_stage(&moved, StageLayout::Floor).pixels()));
+        assert!(same_picture(&after, &on_a_studio_floor(&moved, StudioLayout::Floor).pixels()));
 
         land_mannequin(&mut stage, &recolored);
         let colored = stage.pixels();
         assert!(!same_picture(&after, &colored), "its new color shows");
-        assert!(same_picture(&colored, &on_a_stage(&recolored, StageLayout::Floor).pixels()));
+        assert!(same_picture(&colored, &on_a_studio_floor(&recolored, StudioLayout::Floor).pixels()));
     }
 
     /// The rim rig's figures are a copy of their own.
@@ -2274,25 +2274,25 @@ mod tests {
     fn a_new_character_brings_its_pedestal_or_leaves_it_out() {
         let with = mannequin(-1.0, PALE, Some(1.0));
         let without = mannequin(-1.0, PALE, None);
-        let mut stage = on_a_stage(&with, StageLayout::Floor);
+        let mut stage = on_a_studio_floor(&with, StudioLayout::Floor);
         let before = stage.pixels();
         land_mannequin(&mut stage, &without);
         let gone = stage.pixels();
         assert!(!same_picture(&before, &gone), "the pedestal's gone");
-        assert!(same_picture(&gone, &on_a_stage(&without, StageLayout::Floor).pixels()));
+        assert!(same_picture(&gone, &on_a_studio_floor(&without, StudioLayout::Floor).pixels()));
         land_mannequin(&mut stage, &with);
         assert!(
-            same_picture(&stage.pixels(), &on_a_stage(&with, StageLayout::Floor).pixels()),
+            same_picture(&stage.pixels(), &on_a_studio_floor(&with, StudioLayout::Floor).pixels()),
             "and it's back"
         );
 
-        let mut stage = on_a_stage(&with, StageLayout::Plinth);
+        let mut stage = on_a_studio_floor(&with, StudioLayout::Plinth);
         let narrow = mannequin(-1.0, PALE, Some(0.25));
         let before = stage.pixels();
         land_mannequin(&mut stage, &narrow);
         let after = stage.pixels();
         assert!(!same_picture(&before, &after), "the plinth takes the pedestal's size");
-        assert!(same_picture(&after, &on_a_stage(&narrow, StageLayout::Plinth).pixels()));
+        assert!(same_picture(&after, &on_a_studio_floor(&narrow, StudioLayout::Plinth).pixels()));
     }
 
     /// `ids`, each a clip like [`SWING`] for the character, as a pack holds them.

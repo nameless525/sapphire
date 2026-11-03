@@ -26,7 +26,7 @@ use sapphire_math::{Mat4, Quat, Vec3};
 use sapphire_platform::AppInitError;
 use sapphire_render::{MeshHandle, Renderer};
 
-use crate::stage;
+use crate::studio;
 
 /// The garments, top to bottom.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -96,7 +96,7 @@ pub fn upload_samples(renderer: &mut Renderer) -> Result<[MeshHandle; SAMPLES], 
     let mut samples = Vec::with_capacity(SAMPLES);
     for index in 0..SAMPLES {
         let (garment, two_sided) = sample(index);
-        samples.push(stage::upload(renderer, &mesh(garment, two_sided))?);
+        samples.push(studio::upload(renderer, &mesh(garment, two_sided))?);
     }
     Ok(samples.try_into().expect("one mesh per sample"))
 }

@@ -21,7 +21,7 @@ use sapphire_stage::foliage::{DEFAULT_WIND, FoliageView};
 use sapphire_stage::lookdev::{self, Shot};
 use sapphire_stage::rims::RimLayout;
 use sapphire_stage::scene::{self, Fade, Scene};
-use sapphire_stage::stage::StageLayout;
+use sapphire_stage::studio::StudioLayout;
 use sapphire_stage::vfx::VfxShow;
 
 /// The flags that select an offscreen mode; see [`Offscreen`].
@@ -93,7 +93,7 @@ pub(crate) struct Options {
     pub ambient_occlusion: Option<OcclusionSetting>,
     /// `--stage floor|pillar|plinth`: a floor under the character, and a pillar shadowing it or
     /// a stone plinth in place of its pedestal.
-    pub stage: Option<StageLayout>,
+    pub stage: Option<StudioLayout>,
     /// `--skinned`: place the skinned stalk beside the character.
     pub skinned: bool,
     /// `--time-of-day <hours>`: the hour the scene starts at, `0 ≤ hours < 24`, instead of the
@@ -594,7 +594,7 @@ impl Options {
                 "--stage" => {
                     let raw = value("--stage")?;
                     options.stage =
-                        Some(StageLayout::from_name(&raw).ok_or_else(|| {
+                        Some(StudioLayout::from_name(&raw).ok_or_else(|| {
                             format!("--stage expects floor, pillar or plinth, got {raw:?}")
                         })?);
                 }
@@ -1440,7 +1440,7 @@ mod tests {
         assert_eq!(parse(&["--shadows=on"]).unwrap().0.shadows, Some(Switch::On));
         assert!(parse(&["--shadows", "soft"]).is_err());
         let (staged, _) = parse(&["--stage", "pillar"]).unwrap();
-        assert_eq!(staged.stage, Some(StageLayout::Pillar));
+        assert_eq!(staged.stage, Some(StudioLayout::Pillar));
         assert!(parse(&["--stage", "arena"]).is_err());
         assert_eq!(Options::default().quality_settings(), QualitySettings::default());
         assert_eq!(parse(&["--tier=Desktop-High"]).unwrap().0.tier, Some(TierId::DesktopHigh));

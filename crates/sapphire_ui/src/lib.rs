@@ -31,26 +31,18 @@
 //!
 //! ```ignore
 //! let layout = HudLayout::new(UiMetrics::of_window(&window, 1.0));
-//! let mut controls = TouchControls::new(layout);
 //! let mut hud = CombatHud::new();
 //!
-//! // Every platform event: what the controls take, nothing else should see.
-//! if !controls.handle_event(event) {
-//!     input.handle_event(event);
-//! }
-//!
-//! // Each frame, on the real clock:
-//! let actions = controls.update(platform.now());
-//! // ... actions.stick.value, actions.camera_delta, actions.events into intents ...
+//! // Each frame, on the real clock, with `actions` from `game_ui`'s touch zones:
 //! hud.update(platform.now(), &values, actions);
 //! hud.spawn_damage(1284, screen_position, DamageKind::Normal);
-//! hud.draw(controls.layout(), actions, &mut packet.ui);
+//! hud.draw(&layout, actions, &mut packet.ui);
 //! ```
 //!
 //! # Allocation
 //!
-//! Steady-state frames allocate nothing: finger slots and damage numbers are fixed arrays, the event
-//! list keeps its capacity and the draw list is the packet's (`tests/allocations.rs`). The atlas is
+//! Steady-state frames allocate nothing: damage numbers are a fixed array and the draw list is the packet's
+//! (`game_ui`'s `tests/allocations.rs`, with the zones' finger slots and event list). The atlas is
 //! the one allocation, at load: 69,120 bytes, painted in about 0.85 ms (release, Apple M5).
 //!
 //! The sandbox's fixed frame is 41 quads, written in 2.3 µs on the same machine.

@@ -76,7 +76,7 @@ pub mod rims;
 pub mod scene;
 mod show;
 pub mod skinned;
-pub mod stage;
+pub mod studio;
 pub mod swatches;
 pub mod turntable;
 pub mod vfx;

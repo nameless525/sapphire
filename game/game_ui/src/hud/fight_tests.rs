@@ -42,11 +42,11 @@ impl Staged {
         self.scene.frame_packet(alpha, size, &mut self.show)
     }
 
-    fn set_hud(&mut self, hud: SandboxHud) {
+    fn set_hud(&mut self, hud: FightHud) {
         self.show.hud = Some(hud);
     }
 
-    fn hud(&self) -> Option<&SandboxHud> {
+    fn hud(&self) -> Option<&FightHud> {
         self.show.hud.as_ref()
     }
 
@@ -121,7 +121,7 @@ fn a_swap_doesnt_read_as_a_hit_on_the_huds_bar() {
     let bar = HudLayout::new(UiMetrics::of_pixels(target, 1.0, Insets::default())).player.hp;
     let (mut scene, _) = arena_stage(ArenaShot::Follow);
     let live = HudOptions { mode: HudMode::Live, ..HudOptions::default() };
-    scene.set_hud(SandboxHud::for_fight(live));
+    scene.set_hud(FightHud::for_fight(live));
     let party = find_scenario(SCENARIOS, game_combat::arena::PARTY_SCENARIO).expect("listed");
     let mut fight = Recording::new(party, party.config).expect("sets up");
     let cast = fight.cast().to_vec();
@@ -183,7 +183,7 @@ fn a_new_fight_shows_nothing_the_last_one_set_going() {
     let cast = combat.cast().to_vec();
     let (mut scene, _) = arena_stage(ArenaShot::Director);
     scene.play_cues(VfxBudget::DESKTOP_LOW).expect("the shipped table resolves");
-    scene.set_hud(SandboxHud::for_fight(HudOptions { mode: HudMode::Live, ..HudOptions::default() }));
+    scene.set_hud(FightHud::for_fight(HudOptions { mode: HudMode::Live, ..HudOptions::default() }));
     let step = |scene: &mut Staged, combat: &mut game_combat::combat::Combat| {
         combat.step(&mut game_combat::combat::no_bindings);
         scene.follow_simulation(combat.simulation(), &cast);
@@ -238,7 +238,7 @@ fn a_steps_hits_show_once_however_often_theyre_read() {
     let mut combat = game_combat::combat::Combat::new(&option).expect("sets up");
     let cast = combat.cast().to_vec();
     let (mut scene, _) = arena_stage(ArenaShot::Director);
-    scene.set_hud(SandboxHud::for_fight(HudOptions { mode: HudMode::Live, ..HudOptions::default() }));
+    scene.set_hud(FightHud::for_fight(HudOptions { mode: HudMode::Live, ..HudOptions::default() }));
     let numbers = |scene: &mut Staged| {
         scene.drive_arena_camera(1.0 / TICK_HZ as f32, Vec2::ZERO, 0.0);
         let _ = scene.frame_packet(1.0, Some((640, 360)));

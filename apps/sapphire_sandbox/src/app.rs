@@ -34,17 +34,17 @@ use game_combat::cues::PadRumble;
 use game_combat::enemy::EnemyMeshes;
 use game_combat::fight::{Arena, FightShow};
 use game_combat::party_looks::PartyLooks;
-use game_ui::hud::{SandboxHud, ShownFight};
-use sapphire_stage::audio::SandboxAudio;
+use game_ui::hud::{FightHud, ShownFight};
+use sapphire_stage::audio::DeviceAudio;
 use sapphire_stage::content::Content;
 use sapphire_stage::environment::FOG_CARDS;
 use sapphire_stage::foliage::FoliageMeshes;
 use sapphire_stage::lookdev::{Shot, TownMeshes};
 use sapphire_stage::rims::RimRigMeshes;
 use sapphire_stage::scene::{LookDev, Scene};
-use sapphire_stage::stage::StageMeshes;
+use sapphire_stage::studio::StudioMeshes;
 use sapphire_stage::swatches::SWATCHES;
-use sapphire_stage::{garments, layers, lookdev, skinned, stage, swatches};
+use sapphire_stage::{garments, layers, lookdev, skinned, studio, swatches};
 
 /// Loop period while nothing can be presented (occluded, minimized, backgrounded).
 const IDLE_FRAME: Duration = Duration::from_millis(33);
@@ -83,7 +83,7 @@ pub struct SandboxApp {
     scene: Scene,
     input: SandboxInput,
     /// The audio system, with `--cue`: nothing audio exists without it.
-    audio: Option<SandboxAudio>,
+    audio: Option<DeviceAudio>,
     /// What plays on the scene: with `--record` a simulation that takes a tick with each fixed step,
     /// played by the bindings, with `--arena` what stands it there, and with `--hud` the HUD.
     show: ShownFight,
@@ -338,22 +338,22 @@ impl App for SandboxApp {
         }
         // The stage after the hour, which places its pillars.
         if let (Some(layout), Some(meshes)) = (options.stage, renderer.stage) {
-            scene.spawn_stage(layout, meshes);
+            scene.spawn_studio(layout, meshes);
         }
         let audio = match (&options.cue, show.fight.show.cue_show()) {
             (Some(cue), _) => {
-                SandboxAudio::new(cue, platform, &mut content, &mut renderer.renderer, &device.gpu)?
+                DeviceAudio::new(cue, platform, &mut content, &mut renderer.renderer, &device.gpu)?
             }
             (None, Some(show)) => {
                 let cues = show.table().sound_cues();
-                SandboxAudio::for_cues(&cues, platform, &mut content, &mut renderer.renderer, &device.gpu)?
+                DeviceAudio::for_cues(&cues, platform, &mut content, &mut renderer.renderer, &device.gpu)?
             }
             (None, None) => None,
         };
         if let Some(hud) = options.hud {
             show.hud = Some(match &show.fight.combat {
-                Some(_) => SandboxHud::for_fight(hud),
-                None => SandboxHud::new(hud),
+                Some(_) => FightHud::for_fight(hud),
+                None => FightHud::new(hud),
             });
         }
         // The screen effects it may push, `--post-effect`'s among them, the effects it plays, its sky
@@ -578,7 +578,7 @@ impl App for SandboxApp {
 /// the rest. Losing focus or the foreground reaches both. While paused a landing is the pause's, since
 /// a tap is how a phone gets out of it, and the zones keep only the fingers they already hold: a thumb
 /// that was on the stick when the pause came still has to lift.
-fn game_event(hud: Option<&mut SandboxHud>, input: &mut SandboxInput, event: &Event) {
+fn game_event(hud: Option<&mut FightHud>, input: &mut SandboxInput, event: &Event) {
     let pauses_landing = input.pause_takes_landings()
         && matches!(event, Event::Touch(touch) if touch.phase == sapphire_platform::TouchPhase::Down);
     if pauses_landing || !hud.is_some_and(|hud| hud.handle_event(event)) {
@@ -589,7 +589,7 @@ fn game_event(hud: Option<&mut SandboxHud>, input: &mut SandboxInput, event: &Ev
 /// The HUD's frame on the real clock, where a window has its metrics: what its touch zones read goes to
 /// `input`, before that judges the frame.
 fn update_hud(
-    hud: Option<&mut SandboxHud>,
+    hud: Option<&mut FightHud>,
     now: sapphire_platform::Timestamp,
     window: &Window,
     input: &mut SandboxInput,
@@ -602,7 +602,7 @@ fn update_hud(
 
 /// What the HUD's touch zones read this frame, on a frame of `metrics`, to `input`.
 fn read_touch(
-    hud: &mut SandboxHud,
+    hud: &mut FightHud,
     now: sapphire_platform::Timestamp,
     metrics: sapphire_ui::UiMetrics,
     input: &mut SandboxInput,
@@ -830,7 +830,7 @@ impl SandboxApp {
                         input: Some(&self.input),
                         scene: &self.scene,
                         assets: self.content.stats(),
-                        audio: self.audio.as_ref().map(SandboxAudio::stats),
+                        audio: self.audio.as_ref().map(DeviceAudio::stats),
                         combat: self.show.fight.combat.as_ref(),
                     };
                     // It also keeps GPU timing on while dynamic resolution reads it.
@@ -1321,7 +1321,7 @@ pub(crate) struct SceneRenderer {
     /// The player's sword, with `--blade on`.
     sword: Option<MeshHandle>,
     /// The stage's floor and pillar, with `--stage`.
-    stage: Option<StageMeshes>,
+    stage: Option<StudioMeshes>,
     /// The stone block IK's ground is built of, with `--ik on`.
     ik_block: Option<MeshHandle>,
     /// The zone's sky material.
@@ -1370,7 +1370,7 @@ pub(crate) fn set_meshes(scene: &mut Scene, show: &mut ShownFight, renderer: &Sc
         scene.set_hard_edges_mesh(mesh);
     }
     if let Some(meshes) = renderer.stage {
-        scene.set_stage_meshes(meshes);
+        scene.set_studio_meshes(meshes);
     }
     if let Some(block) = renderer.ik_block {
         scene.set_ik_block_mesh(block);
@@ -1423,7 +1423,7 @@ struct SceneMeshes {
     town: Option<TownMeshes>,
     enemy: Option<EnemyMeshes>,
     sword: Option<MeshHandle>,
-    stage: Option<StageMeshes>,
+    stage: Option<StudioMeshes>,
     ik_block: Option<MeshHandle>,
 }
 
@@ -1469,12 +1469,12 @@ pub(crate) fn create_renderer(
             .then(|| fight.load_enemy(content, &mut renderer, gpu))
             .transpose()?;
         let sword = options.blade().then(|| fight.load_sword(content, &mut renderer, gpu)).transpose()?;
-        let stage = options.stage.map(|_| content.stage_meshes(&mut renderer)).transpose()?;
+        let stage = options.stage.map(|_| content.studio_meshes(&mut renderer)).transpose()?;
         let ik_block = options
             .ik
             .as_ref()
             .filter(|_| options.arena.is_none())
-            .map(|_| stage::upload_block(&mut renderer))
+            .map(|_| studio::upload_block(&mut renderer))
             .transpose()?;
         let sky = content.sky_material(&mut renderer, gpu)?;
         let meshes = SceneMeshes {

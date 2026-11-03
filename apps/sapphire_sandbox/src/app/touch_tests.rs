@@ -18,7 +18,7 @@ use super::{PointerState, focus_lost, game_event, read_touch};
 use crate::input::{PLAYER, SandboxInput};
 use game_combat::combat::Combat;
 use game_combat::combat::CombatOption;
-use game_ui::hud::{HudMode, HudOptions, SandboxHud, ShownFight, show_damage};
+use game_ui::hud::{FightHud, HudMode, HudOptions, ShownFight, show_damage};
 use sapphire_stage::scene::Scene;
 
 const SIZE: Vec2 = Vec2::new(900.0, 400.0);
@@ -48,7 +48,7 @@ impl Rig {
         let bounds = [[-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]];
         let scene = Scene::with_character(MeshHandle::from_raw(0), bounds, false);
         let live = HudOptions { mode: HudMode::Live, ..HudOptions::default() };
-        let show = ShownFight { hud: Some(SandboxHud::for_fight(live)), ..ShownFight::default() };
+        let show = ShownFight { hud: Some(FightHud::for_fight(live)), ..ShownFight::default() };
         let size = sapphire_platform::Size { width: SIZE.x as u32, height: SIZE.y as u32 };
         let input = SandboxInput::new(false, true, size).expect("the default bindings");
         let layout = HudLayout::new(metrics());

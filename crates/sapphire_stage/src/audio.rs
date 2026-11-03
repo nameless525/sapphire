@@ -1,7 +1,7 @@
-//! `--cue <name>`: a cue played at the character on the real audio device (M2 E1, spec §5.15). And in
-//! the windowed app `--cues`: a fight's, as its table asks (M2 E3, `cues.rs`).
+//! The real audio device: the sandbox's `--cue <name>` plays a cue at the character (M2 E1, spec §5.15), and
+//! a fight plays what its table asks (M2 E3, `game_combat`'s `cues`).
 //!
-//! Only those flags make a [`SandboxAudio`]. Without them the app mounts no audio pack, starts no audio
+//! A [`DeviceAudio`] is made only when an app asks. Without one, the app mounts no audio pack, starts no audio
 //! thread and opens no device. The offscreen modes refuse `--cue` and never make one for `--cues`, and
 //! [`stayed_shut`] holds capture and bench to it at the end of every run, golden scenes included: CI's
 //! runners have no sound. A bench of a fight with `--cues` measures the real mixer through
@@ -105,8 +105,8 @@ struct Repeating {
     next_play: Option<f32>,
 }
 
-/// The audio system on the real device, playing `--cue`'s one cue or a fight's.
-pub struct SandboxAudio {
+/// The audio system on the real device, playing `--cue`'s one cue or a fight's: what a window hears.
+pub struct DeviceAudio {
     system: AudioSystem<KiraBackend<CpalOutput>>,
     random: CueRng,
     /// `--cue`'s.
@@ -117,7 +117,7 @@ pub struct SandboxAudio {
     report_in: f32,
 }
 
-impl SandboxAudio {
+impl DeviceAudio {
     /// `--cue`'s cue on the device. `None`, logged, if the OS won't set up audio.
     pub fn new(
         option: &CueOption,
@@ -307,7 +307,7 @@ impl OfflineAudio {
         })
     }
 
-    /// One frame, `dt` seconds after the last, as [`SandboxAudio::update`] plays a fight's.
+    /// One frame, `dt` seconds after the last, as [`DeviceAudio::update`] plays a fight's.
     pub fn update(&mut self, dt: f32, scene: SceneSound, fight: CueSounds<'_>) {
         if fight.started_over {
             self.system.stop_voices();

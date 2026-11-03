@@ -74,7 +74,7 @@ struct Finger {
     last: TouchEvent,
     /// The game's on-screen controls hold it, so the toggle doesn't count it.
     control: bool,
-    /// Where it was when the hold began, in window coordinates.
+    /// Where it was when the hold began, in points.
     anchor: (f32, f32),
 }
 
@@ -218,7 +218,11 @@ impl Router {
                     return Route::default();
                 };
                 // Before the first frame no overlay window has been drawn to cover the finger.
-                let over = ui.visible && position.is_some_and(|(x, y)| (ui.covers)(x, y));
+                let over = ui.visible
+                    && self.window_size.is_some_and(|size| {
+                        let (x, y) = in_window(touch, size);
+                        (ui.covers)(x, y)
+                    });
                 let owner = if over { Owner::Overlay } else { Owner::Game };
                 let anchor = position.unwrap_or_default();
                 self.fingers[free] =
@@ -299,12 +303,17 @@ impl Router {
     }
 }
 
-/// A touch's normalized position, in points, on a window of `size` window coordinates.
+/// A touch's normalized position, in the window coordinates of a window `size` of them: what
+/// [`UiState::covers`] takes, as a mouse's positions are.
+fn in_window(touch: &TouchEvent, size: Size) -> (f32, f32) {
+    (touch.x * size.width as f32, touch.y * size.height as f32)
+}
+
+/// A touch's normalized position, in points, on a window of `size` window coordinates: what a hold's
+/// drift is measured in.
 fn in_points(touch: &TouchEvent, size: Size, points_per_coordinate: f32) -> (f32, f32) {
-    (
-        touch.x * size.width as f32 * points_per_coordinate,
-        touch.y * size.height as f32 * points_per_coordinate,
-    )
+    let (x, y) = in_window(touch, size);
+    (x * points_per_coordinate, y * points_per_coordinate)
 }
 
 fn button_index(button: MouseButton) -> Option<usize> {
@@ -321,11 +330,12 @@ fn button_index(button: MouseButton) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use sapphire_platform::{
-        KeyEvent, Keycode, Modifiers, MouseButtonEvent, MouseMotionEvent, MouseWheelEvent, TextEvent,
+        KeyEvent, Keycode, Modifiers, MouseButtonEvent, MouseMotionEvent, MouseWheelEvent, Rect, TextEvent,
         TouchDeviceId, WindowId,
     };
 
     use super::*;
+    use crate::input::{EguiInput, WindowMetrics};
 
     const WINDOW: WindowId = WindowId::from_raw(1);
 
@@ -626,6 +636,81 @@ mod tests {
         assert!(!drifting(&mut router, &hidden, 60.0), "20 points isn't");
         router.set_points_per_coordinate(1.0);
         assert!(!drifting(&mut router, &hidden, 30.0), "30 points isn't, where a coordinate is one");
+    }
+
+    /// A finger lands on the side a mouse press at that place would, whatever a window coordinate is
+    /// in points and however far the overlay is zoomed: what's measured in points is its drift.
+    #[test]
+    fn a_finger_lands_where_a_press_there_would() {
+        // Pixels and window coordinates across, and the display's scale: a coordinate is a point on
+        // a Retina Mac, half of one on a 2× phone and a third on a 3× one.
+        for (pixels, coordinates, scale) in [(2400_u32, 1200_u32, 2.0), (2400, 2400, 2.0), (2400, 2400, 3.0)]
+        {
+            for zoom in [0.5, 1.0, 1.5, 3.0] {
+                let metrics = WindowMetrics {
+                    pixel_size: Size { width: pixels, height: pixels / 2 },
+                    size: Size { width: coordinates, height: coordinates / 2 },
+                    display_scale: scale,
+                    safe_area: Rect { x: 0, y: 0, width: coordinates, height: coordinates / 2 },
+                    focused: true,
+                };
+                let mut input = EguiInput::default();
+                input.set_metrics(&metrics, scale * zoom);
+                // A panel across the left quarter of the screen, in egui's points, tested as
+                // `DebugOverlay::handle_event` tests its windows.
+                let panel = pixels as f32 / (scale * zoom) / 4.0;
+                let covers = |x: f32, y: f32| input.to_points(x, y).x < panel;
+                let visible = UiState { visible: true, wants_keyboard: false, covers: &covers };
+                let mut router = Router::new(Scancode::GRAVE);
+                router.set_window_size(metrics.size);
+                router.set_points_per_coordinate(metrics.points_per_coordinate());
+                for (across, on_panel) in
+                    [(0.1, true), (0.24, true), (0.26, false), (0.6, false), (0.9, false)]
+                {
+                    let owner = (!on_panel, on_panel);
+                    let at = across * coordinates as f32;
+                    let what = format!("{across} across, {pixels}/{coordinates}/{scale} at zoom {zoom}");
+                    assert_eq!(to(router.route(&button(true, at), &visible)), owner, "a press {what}");
+                    router.route(&button(false, at), &visible);
+                    let down = router.route(&touch(1, 1, TouchPhase::Down, across), &visible);
+                    assert_eq!(to(down), owner, "a finger {what}");
+                    // It stays with its owner, off the panel or onto it, until it's cancelled.
+                    let moved = router.route(&touch(2, 1, TouchPhase::Moved, 1.0 - across), &visible);
+                    assert_eq!(to(moved), owner, "its move {what}");
+                    let cancel = router.route(&touch(3, 1, TouchPhase::Canceled, 1.0 - across), &visible);
+                    assert_eq!(to(cancel), owner, "its cancel {what}");
+                }
+            }
+        }
+    }
+
+    /// The router hands the overlay window coordinates, exact at a panel's edge at any scale.
+    #[test]
+    fn a_fingers_position_reaches_the_overlay_in_window_coordinates() {
+        let covers = |x: f32, y: f32| x < 600.0 && y < 270.0;
+        let visible = UiState { visible: true, wants_keyboard: false, covers: &covers };
+        for points_per_coordinate in [1.0, 0.5, 1.0 / 3.0] {
+            let mut router = Router::new(Scancode::GRAVE);
+            router.set_window_size(Size { width: 2400, height: 1080 });
+            router.set_points_per_coordinate(points_per_coordinate);
+            let landing = |router: &mut Router, x: f32, y: f32| {
+                let down = Event::Touch(TouchEvent {
+                    timestamp: ms(0),
+                    window: WINDOW,
+                    finger: finger_id(1),
+                    phase: TouchPhase::Down,
+                    x,
+                    y,
+                    pressure: 1.0,
+                });
+                let route = router.route(&down, &visible);
+                router.forget();
+                to(route)
+            };
+            assert_eq!(landing(&mut router, 0.2499, 0.2499), (false, true), "{points_per_coordinate}");
+            assert_eq!(landing(&mut router, 0.25, 0.2499), (true, false), "{points_per_coordinate}");
+            assert_eq!(landing(&mut router, 0.2499, 0.25), (true, false), "{points_per_coordinate}");
+        }
     }
 
     #[test]

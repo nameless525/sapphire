@@ -579,13 +579,16 @@ impl Editor {
     }
 
     /// Typing is over when its field lets go, whatever took the focus: a click anywhere, Enter, or the
-    /// row going with the selection, which leaves the field no pass to see it in. A refused value waits
-    /// for someone to change it.
+    /// row going with the selection, which leaves the field no pass to see it in. Escape takes back what
+    /// was typed, refused or not, and a refused value otherwise waits for someone to change it.
     fn settle_typed(&mut self, ui: &Ui) {
-        let let_go = self.typed.as_ref().is_some_and(|typed| {
-            typed.refused.is_none() && !ui.memory(|memory| memory.has_focus(typed.field))
-        });
-        if let_go {
+        let Some(typed) = &self.typed else { return };
+        if ui.memory(|memory| memory.has_focus(typed.field)) {
+            return;
+        }
+        if ui.input(|input| input.key_pressed(Key::Escape)) {
+            self.typed = None;
+        } else if typed.refused.is_none() {
             self.take_typed();
         }
     }

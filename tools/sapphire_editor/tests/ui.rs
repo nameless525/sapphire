@@ -925,6 +925,37 @@ fn on_device(path: &Path, device: &FakeDevice) -> Harness<'static, Editor> {
         .build_ui_state(|ui, editor: &mut Editor| editor.ui(ui), Editor::new(options))
 }
 
+/// Escape takes back what's being typed, as it does in a text field anywhere: nothing goes into the text,
+/// so nothing's left to save or undo.
+#[test]
+fn escape_takes_back_what_is_being_typed() {
+    let dir = TestDir::new("typed_escape");
+    let path = dir.write("slice.moves.ron", SLICE);
+    let mut harness = harness(&path);
+    type_over_the_cue_name(&mut harness, TYPED_NAME);
+
+    harness.key_press(Key::Escape);
+    harness.run_steps(3);
+    assert_same(&text_of(&harness), SLICE, "the text");
+    assert!(!harness.state().is_dirty());
+    let _ = field(&harness, CUE_NAME);
+    assert_eq!(harness.state().file().expect("a file").undo_label(), None, "there's no step to take back");
+
+    // What the text refused goes the same way, and Enter still puts in what it takes.
+    type_over_the_cue_name(&mut harness, "\"half");
+    harness.key_press(Key::Enter);
+    harness.run_steps(3);
+    let _ = harness.get_by_label_contains("nothing else can until");
+    harness.key_press(Key::Escape);
+    harness.run_steps(3);
+    assert!(harness.query_by_label_contains("nothing else can until").is_none());
+    assert!(!harness.state().is_dirty());
+    type_over_the_cue_name(&mut harness, TYPED_NAME);
+    harness.key_press(Key::Enter);
+    harness.run_steps(3);
+    assert_same(&text_of(&harness), &slice_with_typed_name(), "the text");
+}
+
 /// Cmd+S with a field still focused saves and pushes what's on the screen, and the field keeps the keyboard.
 #[test]
 fn saving_by_key_takes_what_is_being_typed() {

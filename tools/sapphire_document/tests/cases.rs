@@ -854,7 +854,7 @@ fn history_past_its_cap_lets_the_oldest_go_and_says_so() {
         );
     }
     let (_, steps) = document.history();
-    assert!(steps >= 3 && steps <= 4, "{steps} steps fit four of them");
+    assert!((3..=4).contains(&steps), "{steps} steps fit four of them");
     assert_eq!(document.forgotten(), 39 - steps);
 
     // Undo goes back exactly as far as it holds, each step to the bytes it left.

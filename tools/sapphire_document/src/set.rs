@@ -289,6 +289,12 @@ struct OpenFile {
     duplicated: bool,
 }
 
+impl std::fmt::Debug for DocumentSet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DocumentSet").field("roots", &self.roots).field("stats", &self.stats()).finish()
+    }
+}
+
 /// The documents open, by ID.
 pub struct DocumentSet {
     roots: Vec<PathBuf>,

@@ -142,7 +142,7 @@ pub fn shape(value: &dyn PartialReflect) -> Shape<'_> {
 }
 
 /// What the text calls a struct's field.
-fn written_name<'n>(value: &dyn PartialReflect, name: &'n str) -> &'n str {
+pub fn written_name<'n>(value: &dyn PartialReflect, name: &'n str) -> &'n str {
     if let Some(TypeInfo::Struct(info)) = value.get_represented_type_info()
         && let Some(renamed) = info.field(name).and_then(|field| field.get_attribute::<SerdeName>())
     {

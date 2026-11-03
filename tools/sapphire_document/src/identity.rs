@@ -229,6 +229,13 @@ impl Sidecars {
         self.documents.iter().map(|(path, kind)| (path.as_path(), *kind))
     }
 
+    /// Every source with a sidecar and its ID, as of this look. What two sidecars claim is listed by the first.
+    pub fn assets(&self) -> impl Iterator<Item = (PathBuf, AssetId)> + '_ {
+        self.claims
+            .iter()
+            .filter_map(|(id, claims)| claims.first().map(|sidecar| (source_path(sidecar), *id)))
+    }
+
     /// The sidecars with no source.
     #[must_use]
     pub fn orphaned(&self) -> Vec<PathBuf> {

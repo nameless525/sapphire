@@ -9,6 +9,7 @@ use sapphire_time::{SUBTICKS_PER_TICK, SimDuration};
 
 use crate::ActorTransform;
 use crate::actors::ActorId;
+use crate::faction::Faction;
 
 /// How far a sub-step's straight cast may sag from the arc a root's turn swings a volume along, in
 /// metres. A centimetre is well under any hurtbox.
@@ -96,6 +97,8 @@ impl OwnerStep {
 #[derive(Clone, Copy, Debug)]
 pub struct VolumeSweep<'a> {
     pub attacker: ActorId,
+    /// The attacker's side: the volume passes over hurtboxes and dodge volumes of the same one.
+    pub faction: Faction,
     /// Which playing of a move this is, of all the attacker's, counting up: `ActiveVolume::serial`.
     /// Hit records are per instance, and a later instance retires the earlier ones'.
     pub instance: u32,
@@ -280,6 +283,7 @@ mod boundary_tests {
         let root = ActorTransform::default();
         let sweep = VolumeSweep {
             attacker: ActorId::from_raw(1).expect("valid"),
+            faction: crate::faction::Faction::NONE,
             instance: 1,
             volume: 0,
             group: Name::new("hit"),

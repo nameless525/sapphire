@@ -307,6 +307,18 @@ impl PhysicsWorld {
         Some(self.bodies[self.body_slot(id).ok()?].shape)
     }
 
+    /// What a body belongs to and what it may touch.
+    pub fn body_groups(&self, id: BodyId) -> Option<CollisionGroups> {
+        Some(self.bodies[self.body_slot(id).ok()?].groups)
+    }
+
+    /// Changes what a body belongs to and what it may touch, and leaves it where it is.
+    pub fn set_body_groups(&mut self, id: BodyId, groups: CollisionGroups) -> Result<(), WorldError> {
+        let slot = self.body_slot(id).map_err(|_| WorldError::UnknownBody(id))?;
+        self.bodies[slot].groups = groups;
+        Ok(())
+    }
+
     /// Moves a body without sweeping: a teleport, or a hurtbox following its table.
     pub fn set_body_pose(&mut self, id: BodyId, pose: Pose) -> Result<(), WorldError> {
         if !pose.is_valid() {

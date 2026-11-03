@@ -57,7 +57,9 @@ pub fn ward_spawns() -> Result<ArenaSpawns, ScenarioError> {
             .map(|spawner| SpawnPoint { position: spawner.position, yaw_degrees: spawner.yaw_degrees })
             .ok_or(ScenarioError::MissingSpawner(name))
     };
-    Ok(ArenaSpawns { player: point(PLAYER_SPAWNER)?, enemy: point(WARRIOR_SPAWNER)? })
+    let enemy = point(WARRIOR_SPAWNER)?;
+    // The court fights one warrior, so it has no crowd: any would stand where that one does.
+    Ok(ArenaSpawns { player: point(PLAYER_SPAWNER)?, enemy, crowd: [enemy; 6] })
 }
 
 /// The ward's colliders, cooked as a pack holds them.

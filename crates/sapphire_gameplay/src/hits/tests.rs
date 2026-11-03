@@ -8,7 +8,7 @@ use sapphire_time::SimDuration;
 
 use super::*;
 use crate::simulation::{SimConfig, Simulation};
-use crate::{ActorTransform, HurtboxId, OwnerStep, VolumeSweep};
+use crate::{ActorTransform, Faction, HurtboxId, OwnerStep, VolumeSweep};
 
 fn actor(raw: u32) -> ActorId {
     ActorId::from_raw(raw).unwrap()
@@ -26,10 +26,12 @@ fn busy_query() -> HitQuery {
     let mut world = PhysicsWorld::new(vec![wall], 4).unwrap();
     let local = PathSample { translation: [1.0, 1.0, 0.0], ..PathSample::IDENTITY };
     let target = HurtboxId::new(actor(2), 1).unwrap();
-    target.set(&mut world, Some(Shape::Sphere { radius: 0.2 }), ActorTransform::default(), local).unwrap();
+    target
+        .set(&mut world, Some(Shape::Sphere { radius: 0.2 }), ActorTransform::default(), local, Faction::NONE)
+        .unwrap();
     let dodging = PathSample { translation: [1.5, 1.0, 0.0], ..PathSample::IDENTITY };
     let volume = Some((Shape::Sphere { radius: 0.2 }, dodging));
-    set_dodge_volume(&mut world, actor(3), volume, ActorTransform::default()).unwrap();
+    set_dodge_volume(&mut world, actor(3), volume, ActorTransform::default(), Faction::NONE).unwrap();
 
     let samples = [0.0, 4.0].map(|x| PathSample { translation: [x, 1.0, 0.0], ..PathSample::IDENTITY });
     let path = BakedPath::new(Name::new("blade"), samples.to_vec());
@@ -39,6 +41,7 @@ fn busy_query() -> HitQuery {
         &world,
         &VolumeSweep {
             attacker: actor(1),
+            faction: Faction::NONE,
             instance: 7,
             volume: 3,
             group: Name::new("swing"),

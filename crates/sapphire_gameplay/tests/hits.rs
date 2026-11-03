@@ -10,10 +10,10 @@ use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU};
 
 use sapphire_core::Name;
 use sapphire_gameplay::{
-    ActorActions, ActorId, ActorSpawn, ActorTable, ActorTransform, Buttons, HitEvent, HitQuery, HurtboxId,
-    MAX_CAST_RESULTS, MAX_CONTACTS, MAX_HIT_EVENTS, MAX_HIT_RECORDS, MAX_HURTBOXES, MAX_SAG, MAX_SUB_STEPS,
-    MoveOutput, OwnerStep, SimConfig, Simulation, Stick, SubStep, TickActions, VolumeSweep, dodge_body,
-    dodger_of, hit_shape, published_hurtbox, remove_hurtboxes, volume_pose,
+    ActorActions, ActorId, ActorSpawn, ActorTable, ActorTransform, Buttons, Faction, HitEvent, HitQuery,
+    HurtboxId, MAX_CAST_RESULTS, MAX_CONTACTS, MAX_HIT_EVENTS, MAX_HIT_RECORDS, MAX_HURTBOXES, MAX_SAG,
+    MAX_SUB_STEPS, MoveOutput, OwnerStep, SimConfig, Simulation, Stick, SubStep, TickActions, VolumeSweep,
+    dodge_body, dodger_of, hit_shape, published_hurtbox, remove_hurtboxes, volume_pose,
 };
 use sapphire_math::{Vec3, det};
 use sapphire_moves::{BakedPath, MoveSet, MoveSetDocument, PathSample, Span, Stretch};
@@ -80,7 +80,7 @@ fn empty_world() -> PhysicsWorld {
 fn add_target(world: &mut PhysicsWorld, owner: u32, index: u8, shape: Shape, at: Vec3) {
     let id = HurtboxId::new(actor(owner), index).unwrap();
     let local = PathSample { translation: at.to_array(), ..PathSample::IDENTITY };
-    id.set(world, Some(shape), ActorTransform::default(), local).unwrap();
+    id.set(world, Some(shape), ActorTransform::default(), local, Faction::NONE).unwrap();
 }
 
 /// A volume of attacker 1 sweeping a whole span, with a root that stays at the origin facing +Z and a
@@ -90,6 +90,7 @@ fn swing<'a>(path: &'a BakedPath, shape: Shape, from: SimDuration, to: SimDurati
     let delta = if covered == 0 { ticks(1) } else { sub(covered) };
     VolumeSweep {
         attacker: actor(1),
+        faction: Faction::NONE,
         instance: 1,
         volume: 0,
         group: SWING,
@@ -1008,7 +1009,7 @@ fn a_volume_holding_still_on_a_moving_clock_is_still_live() {
     let id = HurtboxId::new(actor(2), 0).unwrap();
     let here = PathSample { translation: [0.15, 1.0, 0.0], ..PathSample::IDENTITY };
     let target = Shape::Sphere { radius: 0.2 };
-    id.set(&mut world, Some(target), ActorTransform::default(), here).unwrap();
+    id.set(&mut world, Some(target), ActorTransform::default(), here, Faction::NONE).unwrap();
     let events = step(&mut hits, &world, &swing(&path, SPHERE, ticks(1), ticks(2)));
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].at, ticks(1));
@@ -1111,7 +1112,7 @@ fn a_sweep_sees_this_ticks_hurtbox() {
     let root = |x: f32| ActorTransform { position: Vec3::new(x, 0.0, 0.0), yaw: 0.0 };
     let chest = PathSample { translation: [0.0, 1.0, 0.0], ..PathSample::IDENTITY };
     let own = Shape::Sphere { radius: 0.2 };
-    id.set(&mut world, Some(own), root(50.0), chest).unwrap();
+    id.set(&mut world, Some(own), root(50.0), chest, Faction::NONE).unwrap();
     let path = path_through(&[Vec3::new(0.0, 1.0, 0.0), Vec3::new(2.0, 1.0, 0.0)]);
     let touched = |world: &PhysicsWorld| {
         let mut hits = HitQuery::new();
@@ -1119,7 +1120,7 @@ fn a_sweep_sees_this_ticks_hurtbox() {
     };
 
     assert!(touched(&world).is_empty());
-    id.set(&mut world, Some(own), root(1.0), chest).unwrap();
+    id.set(&mut world, Some(own), root(1.0), chest, Faction::NONE).unwrap();
     let events = touched(&world);
     assert_eq!(events.len(), 1);
     assert_near(events[0].point, Vec3::new(0.8, 1.0, 0.0));
@@ -1127,32 +1128,32 @@ fn a_sweep_sees_this_ticks_hurtbox() {
 
     // A move's track can change its shape. 0.5 around x = 1 is touched 0.3 sooner.
     let swollen = Shape::Sphere { radius: 0.5 };
-    id.set(&mut world, Some(swollen), root(1.0), chest).unwrap();
+    id.set(&mut world, Some(swollen), root(1.0), chest, Faction::NONE).unwrap();
     assert_eq!(world.body_shape(id.body()), Some(swollen));
     assert_eq!(world.body_count(), 1);
     assert_close(touched(&world)[0].travel, 0.4);
 
     // Or switch it off, which `HurtboxState::Off` does: then nothing touches it. Its own shape next
     // tick brings it back, wherever its root has got to.
-    id.set(&mut world, None, root(1.0), chest).unwrap();
+    id.set(&mut world, None, root(1.0), chest, Faction::NONE).unwrap();
     assert_eq!(world.body_count(), 0);
     assert!(touched(&world).is_empty());
-    id.set(&mut world, None, root(1.0), chest).unwrap();
-    id.set(&mut world, Some(own), root(1.0), chest).unwrap();
+    id.set(&mut world, None, root(1.0), chest, Faction::NONE).unwrap();
+    id.set(&mut world, Some(own), root(1.0), chest, Faction::NONE).unwrap();
     assert_eq!(touched(&world).len(), 1);
 
     // A hurtbox's own transform goes through its root's yaw, as a volume's does.
     let yawed = ActorTransform { position: Vec3::new(0.0, 0.0, 3.0), yaw: FRAC_PI_2 };
     let front = PathSample { translation: [0.0, 1.0, 1.0], ..PathSample::IDENTITY };
-    id.set(&mut world, Some(own), yawed, front).unwrap();
+    id.set(&mut world, Some(own), yawed, front, Faction::NONE).unwrap();
     assert_near(world.body_pose(id.body()).unwrap().position, Vec3::new(1.0, 1.0, 3.0));
 
     // What the world refuses leaves it as it was.
     let bad = Shape::Sphere { radius: -1.0 };
-    assert!(id.set(&mut world, Some(bad), yawed, front).is_err());
+    assert!(id.set(&mut world, Some(bad), yawed, front, Faction::NONE).is_err());
     assert_eq!(world.body_shape(id.body()), Some(own));
     let lost = ActorTransform { position: Vec3::NAN, yaw: 0.0 };
-    assert!(id.set(&mut world, Some(swollen), lost, front).is_err());
+    assert!(id.set(&mut world, Some(swollen), lost, front, Faction::NONE).is_err());
     assert_eq!(world.body_shape(id.body()), Some(own));
 
     // A despawn takes them all, and no one else's.
@@ -1832,7 +1833,7 @@ fn fight(ticks_run: u64) -> Vec<HitEvent> {
             let shape = Shape::Capsule { half_height: 0.3, radius: 0.25 + 0.05 * f32::from(index) };
             HurtboxId::new(actor(attacker), index)
                 .unwrap()
-                .set(&mut world, Some(shape), root, local)
+                .set(&mut world, Some(shape), root, local, Faction::NONE)
                 .unwrap();
         }
     }
@@ -1854,7 +1855,7 @@ fn fight(ticks_run: u64) -> Vec<HitEvent> {
                 let shape = Shape::Capsule { half_height: 0.3, radius: 0.25 + 0.05 * f32::from(index) };
                 HurtboxId::new(actor(attacker), index)
                     .unwrap()
-                    .set(&mut world, Some(shape), root, local)
+                    .set(&mut world, Some(shape), root, local, Faction::NONE)
                     .unwrap();
             }
         }

@@ -30,7 +30,15 @@
 //! for a drawn `recover`, shorter than a rest, and **keeps the patience it had:** a reaction doesn't put
 //! off its next attack, or a string of light hits landing every second would hold it off for good, as long
 //! as a hit lands before it's ready to try again. **Defeat** ([`BrainState::Defeated`]) ends everything. A
-//! target that's gone or defeated leaves it standing.
+//! target that's gone or defeated, with nobody else to turn on, leaves it standing.
+//!
+//! # Who it fights
+//!
+//! A brain picks its own foe (`choose_foe`): the nearest across the ground of whoever's hostile, up and on
+//! the field, by `STAY_ON_FOE` in favour of the one it has. It looks while it's pacing or resting, and
+//! otherwise only when its foe has gone, so an attack finishes on who it started on. There's no draw in it
+//! and it's no director: who gets to attack when several could is M3 B2's attack tokens, which would hold
+//! back the press and leave this alone.
 //!
 //! # What it reads
 //!
@@ -63,14 +71,20 @@ use sapphire_time::{SimDuration, SimTime};
 use crate::actions::{Controls, Stick};
 use crate::actors::{ActorId, ActorTable};
 use crate::controller::{CharacterController, ControllerDrive};
+use crate::faction::Faction;
 use crate::intents::IntentRing;
 use crate::movement::ActorTransform;
 use crate::moves::{MoveLibrary, MoveOutput, MoveRunner, MoveStats, WarpTarget};
+use crate::party::Party;
 use crate::resolve::Fighter;
 use crate::simulation::SimRng;
 
 /// Under this many metres across the ground, two roots give no direction: it stands where it is.
 const MIN_SEPARATION: f32 = 1e-4;
+
+/// How many metres nearer than its foe another has to be for a brain to turn on them, so two standing
+/// about equally far don't have it dithering.
+const STAY_ON_FOE: f32 = 1.5;
 
 /// What a brain is doing. A plain value in the checksum: the [module docs](self) say why it's this.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -98,6 +112,9 @@ impl Default for BrainState {
 /// [`crate::Simulation::give_brain`]. See the [module docs](self).
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Brain {
+    pub(crate) on: bool,
+    /// The foe it's fighting: [`choose_foe`]'s last answer. It keeps the last one when there's nobody
+    /// left to choose, so a brain stands over who it beat rather than losing sight of them.
     pub(crate) target: Option<ActorId>,
     pub(crate) state: BrainState,
     /// When it next looks for an attack, on its own clock. A reaction leaves this where it is.
@@ -114,7 +131,7 @@ impl Brain {
     /// Whether it's thinking at all.
     #[must_use]
     pub const fn is_on(&self) -> bool {
-        self.target.is_some()
+        self.on
     }
 
     /// Who it's fighting.
@@ -143,9 +160,9 @@ impl Brain {
         Self { state: BrainState::Pacing, patience_until: until, ..Self::default() }
     }
 
-    /// A brain fighting `target`, from its next tick, with its first patience drawn.
-    pub(crate) fn fighting(target: ActorId, def: &BrainDef, now: SimTime, rng: &mut Pcg32) -> Self {
-        Self { target: Some(target), patience_until: now + draw_ticks(def.patience, rng), ..Self::default() }
+    /// A brain ready to fight, from its next tick, with its first patience drawn.
+    pub(crate) fn fighting(def: &BrainDef, now: SimTime, rng: &mut Pcg32) -> Self {
+        Self { on: true, patience_until: now + draw_ticks(def.patience, rng), ..Self::default() }
     }
 }
 
@@ -427,11 +444,45 @@ fn what_it_is_doing(runner: &MoveRunner, output: &MoveOutput, library: &MoveLibr
     }
 }
 
+/// Whether this actor is someone a member of `faction` can fight now.
+fn can_fight(id: ActorId, fighter: &Fighter, faction: Faction, party: &Party) -> bool {
+    fighter.is_foe_of(faction) && !party.is_off_field(id)
+}
+
+/// The foe a brain should have: see the [module docs](self#who-it-fights). `None` when there's nobody.
+/// Reads no angle and draws nothing, and the lower ID takes a tie.
+fn choose_foe(
+    actor: ActorId,
+    position: Vec3,
+    faction: Faction,
+    current: Option<ActorId>,
+    table: &ActorTable,
+    party: &Party,
+    bodies: &Query<'_, '_, (&ActorTransform, &MoveRunner, &MoveOutput, &Fighter)>,
+) -> Option<ActorId> {
+    let mut best: Option<(f32, ActorId)> = None;
+    for (id, entity) in table.iter() {
+        let Ok((transform, _, _, fighter)) = bodies.get(entity) else { continue };
+        if id == actor || !can_fight(id, fighter, faction, party) {
+            continue;
+        }
+        let apart = transform.position - position;
+        let metres = (apart.x * apart.x + apart.z * apart.z).sqrt();
+        let score = if current == Some(id) { metres - STAY_ON_FOE } else { metres };
+        if best.is_none_or(|(top, _)| score < top) {
+            best = Some((score, id));
+        }
+    }
+    best.map(|(_, id)| id)
+}
+
 /// [`crate::CombatSet::Intents`], after the buttons have gone in: each brain, in ID order, on its own
 /// clock. Everyone reads where everyone stood at the end of the last step, so the only thing that goes in
 /// order is its draws.
+#[allow(clippy::too_many_arguments, reason = "a system's parameters read as what it touches")]
 pub(crate) fn think(
     table: Res<'_, ActorTable>,
+    party: Res<'_, Party>,
     library: Res<'_, MoveLibrary>,
     mut rng: ResMut<'_, SimRng>,
     mut stats: ResMut<'_, MoveStats>,
@@ -442,12 +493,14 @@ pub(crate) fn think(
     >,
     bodies: Query<'_, '_, (&ActorTransform, &MoveRunner, &MoveOutput, &Fighter)>,
 ) {
-    for (_, entity) in table.iter() {
+    for (id, entity) in table.iter() {
         let Ok((mut brain, mut ring, mut controls, mut aim, mut controller, clock)) = minds.get_mut(entity)
         else {
             continue;
         };
-        let Some(target) = brain.target else { continue };
+        if !brain.on {
+            continue;
+        }
         let Ok((transform, runner, _, fighter)) = bodies.get(entity) else { continue };
         let Some(set) = runner.set().and_then(|set| library.current(set)) else { continue };
         let Some(def) = set.brain() else { continue };
@@ -458,13 +511,27 @@ pub(crate) fn think(
             continue;
         }
 
-        let seen_target = table.entity(target).and_then(|entity| bodies.get(entity).ok()).map(
-            |(transform, runner, output, fighter)| SeenTarget {
+        let faction = fighter.faction();
+        let foe_is_there = brain.target.is_some_and(|foe| {
+            let foe_fighter = table.entity(foe).and_then(|entity| bodies.get(entity).ok());
+            foe_fighter.is_some_and(|(.., fighter)| can_fight(foe, fighter, faction, &party))
+        });
+        if !fighter.is_defeated()
+            && (!foe_is_there || matches!(brain.state, BrainState::Pacing | BrainState::Resting { .. }))
+            && let Some(foe) =
+                choose_foe(id, transform.position, faction, brain.target, &table, &party, &bodies)
+        {
+            brain.target = Some(foe);
+        }
+
+        let seen_target = brain.target.and_then(|foe| table.entity(foe)).and_then(|entity| {
+            let (transform, runner, output, fighter) = bodies.get(entity).ok()?;
+            Some(SeenTarget {
                 position: transform.position,
                 doing: what_it_is_doing(runner, output, &library),
                 defeated: fighter.is_defeated(),
-            },
-        );
+            })
+        });
         let running = runner.running.and_then(|running| {
             Some(SeenMove {
                 name: library.get(running.at)?.name(),
@@ -486,7 +553,9 @@ pub(crate) fn think(
         let output = step_brain(&mut brain, def, &seen, &mut rng.0);
 
         controls.current.stick = output.stick;
-        *aim = WarpTarget::Actor(target);
+        if let Some(foe) = brain.target {
+            *aim = WarpTarget::Actor(foe);
+        }
         if let Some(face) = output.face {
             controller.drive = ControllerDrive { face: Some(face), ..ControllerDrive::NONE };
         }

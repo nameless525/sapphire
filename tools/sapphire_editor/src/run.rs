@@ -313,6 +313,7 @@ fn stage(sim: &mut Simulation, set: MoveSet, setup: Setup) -> Result<(ActorId, A
             yaw: 0.0,
             moves: Some(moves),
             controller: Some(controller),
+            ..ActorSpawn::default()
         })
         .map_err(|error| run_error("the character", error))?;
     let dummy = sim
@@ -321,6 +322,7 @@ fn stage(sim: &mut Simulation, set: MoveSet, setup: Setup) -> Result<(ActorId, A
             yaw: PI,
             moves: Some(moves),
             controller: Some(controller),
+            ..ActorSpawn::default()
         })
         .map_err(|error| run_error("the dummy", error))?;
     if setup.warp_to_dummy {

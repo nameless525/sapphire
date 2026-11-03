@@ -96,6 +96,7 @@ use crate::intents::IntentRing;
 use crate::movement::ActorTransform;
 use crate::moves::{MoveLibrary, MoveRunner, WarpTarget};
 use crate::resolve::{Fighter, counter_scale};
+use crate::targeting::SoftLock;
 
 /// How many members a party can have.
 pub const PARTY_SLOTS: usize = 3;
@@ -438,6 +439,7 @@ pub(crate) fn settle_swaps(
     mut characters: ResMut<'_, CharacterWorld>,
     mut actors: Query<'_, '_, Member<'_>>,
     mut brains: Query<'_, '_, &mut Brain>,
+    mut locks: Query<'_, '_, &mut SoftLock>,
 ) {
     let Some(formed) = party.formed.filter(|formed| !formed.down) else { return };
     let tick = world_clock.0.ticks();
@@ -487,6 +489,12 @@ pub(crate) fn settle_swaps(
     // The assist starts at this step's reading: what's between that and the last one belongs to no move.
     runner.cursor = now;
     runner.force(SWAP_IN_MOVE);
+
+    // Who the one leaving had locked is who the one coming has, as with its aim.
+    let locked = table.entity(leaving).and_then(|entity| locks.get(entity).ok()).map(|lock| lock.target);
+    if let (Some(locked), Ok(mut lock)) = (locked, locks.get_mut(incoming)) {
+        lock.target = locked;
+    }
 
     // Whoever aimed at the one who left, or was thinking about it, turns on this one now.
     for (_, entity) in table.iter() {

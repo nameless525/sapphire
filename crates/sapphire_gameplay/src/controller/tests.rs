@@ -13,6 +13,7 @@ use sapphire_time::ScaleSource;
 use super::*;
 use crate::actions::{ActorActions, Stick, TickActions};
 use crate::actors::{ActorSpawn, ActorTable};
+use crate::faction::Faction;
 use crate::hits::{HurtboxId, MAX_HURTBOXES};
 use crate::moves::MoveOutput;
 use crate::simulation::{SimConfig, Simulation};
@@ -727,10 +728,13 @@ fn a_full_cast_with_every_hurtbox_is_refused_by_nothing() {
             let mut characters = world.resource_mut::<CharacterWorld>();
             for index in 0..MAX_HURTBOXES {
                 let hurtbox = HurtboxId::new(actor, index).unwrap();
-                hurtbox.set(characters.physics_mut(), Some(shape), root, PathSample::IDENTITY).unwrap();
+                hurtbox
+                    .set(characters.physics_mut(), Some(shape), root, PathSample::IDENTITY, Faction::NONE)
+                    .unwrap();
             }
             let volume = Some((shape, PathSample::IDENTITY));
-            crate::hits::set_dodge_volume(characters.physics_mut(), actor, volume, root).unwrap();
+            crate::hits::set_dodge_volume(characters.physics_mut(), actor, volume, root, Faction::NONE)
+                .unwrap();
         }
         let full = sim.body_capacity();
         assert_eq!(sim.physics().body_count(), full, "world set: {set_a_world}");

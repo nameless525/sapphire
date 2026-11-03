@@ -19,6 +19,7 @@ use crate::controller::{
     STANDING_JUMP_MAX_SPEED, STANDING_JUMP_PREPARATION,
 };
 use crate::cues::CueQueue;
+use crate::faction::Faction;
 use crate::hits::HitQuery;
 use crate::intents::IntentRing;
 use crate::movement::ActorTransform;
@@ -27,7 +28,7 @@ use crate::navigation::SimNavigation;
 use crate::party::Party;
 use crate::resolve::{Fighter, HitOutcome, Slide, SlowMotion};
 use crate::simulation::SimRng;
-use crate::targeting::TargetingTuning;
+use crate::targeting::{SoftLock, TargetingTuning};
 use crate::timeline::{TimelineLibrary, TimelineRun};
 
 /// Goes up when [`state_checksum`] starts writing something different, so a recorded checksum can't
@@ -37,13 +38,6 @@ use crate::timeline::{TimelineLibrary, TimelineRun};
 /// 8: M2 G7's party, which writes nothing without one. M3 P2's paths write nothing without a navmesh
 /// either, and none of what's recorded before them has one, so they left this where it was.
 const CHECKSUM_LAYOUT: u32 = 8;
-
-/// The digest of the targeting weights every replay on disk ran on, when they were constants and couldn't
-/// change: those write nothing into [`tables_hash`], as a world with no party does, so those files keep their
-/// hashes, and any other weights, the shipped document's after an edit included, move it. It's not a name for
-/// "shipped", so an edit of `default_targeting.ron` doesn't change this: `xtask replay --update` does what it
-/// does for any change of tables. B1, which records every file again, removes this and hashes the digest always.
-const WEIGHTS_REPLAYS_RAN_ON: u64 = 0xbb91_ef7d_8b40_6bb7;
 
 /// A hasher over canonical bytes: XXH3-64, a published, frozen algorithm, unlike `DefaultHasher`,
 /// so a recorded checksum stays good.
@@ -289,6 +283,10 @@ fn write_fighter(hasher: &mut StateHasher, fighter: &Fighter) {
     }
     hasher.u8(u8::from(fighter.defeated));
     write_slide(hasher, &fighter.slide);
+    // Nothing for no faction, which is a fight that names none: their checksums stay what they were.
+    if fighter.faction != Faction::NONE {
+        hasher.u8(fighter.faction.number());
+    }
 }
 
 fn write_time(hasher: &mut StateHasher, time: Option<sapphire_time::SimTime>) {
@@ -301,8 +299,20 @@ fn write_time(hasher: &mut StateHasher, time: Option<sapphire_time::SimTime>) {
     }
 }
 
+fn write_soft_lock(hasher: &mut StateHasher, lock: &SoftLock) {
+    let SoftLock { on, target } = *lock;
+    // Nothing for one that's off, which is most actors: their checksums stay what they were.
+    if on {
+        hasher.u32(target.map_or(0, |id| id.raw()));
+    }
+}
+
 fn write_brain(hasher: &mut StateHasher, brain: &Brain) {
-    let Brain { target, state, patience_until, circle, stick, last_used } = *brain;
+    let Brain { on, target, state, patience_until, circle, stick, last_used } = *brain;
+    // Nothing for one that's off, which is most actors: their checksums stay what they were.
+    if on {
+        hasher.u8(1);
+    }
     hasher.u32(target.map_or(0, |id| id.raw()));
     match state {
         BrainState::Pacing => hasher.u8(0),
@@ -433,6 +443,9 @@ pub(crate) fn legacy_state(world: &World) -> StateHasher {
         if let Some(brain) = actor.get::<Brain>() {
             write_brain(&mut hasher, brain);
         }
+        if let Some(lock) = actor.get::<SoftLock>() {
+            write_soft_lock(&mut hasher, lock);
+        }
     }
     write_cues(&mut hasher, world.resource::<CueQueue>());
     if let Some(navigation) = world.get_resource::<SimNavigation>() {
@@ -445,10 +458,9 @@ pub(crate) fn legacy_state(world: &World) -> StateHasher {
 /// move set's current revision, whole, with its tables, in ID order, the controller profiles and the
 /// collision world's statics. It hashes a set's cooked bytes, so no field can be forgotten here, and
 /// those are the same on every target, as the statics' digest is: authored numbers, by their bits. A party's
-/// tuning goes in too, if there's a party, a navmesh's digest if there's one of those, and every loaded
-/// timeline's simulation half, if there are any, and targeting's weights unless they're
-/// [`WEIGHTS_REPLAYS_RAN_ON`]. Opted-in standing jump preparation contributes the
-/// policy and setup actor IDs independently of any jump's live countdown.
+/// tuning goes in too, if there's a party, a navmesh's digest if there's one of those, every loaded
+/// timeline's simulation half, if there are any, and targeting's weights. Opted-in standing jump
+/// preparation contributes the policy and setup actor IDs independently of any jump's live countdown.
 pub(crate) fn tables_hash(
     library: &MoveLibrary,
     characters: &CharacterWorld,
@@ -487,42 +499,8 @@ pub(crate) fn tables_hash(
             hasher.u32(actor.raw());
         }
     }
-    let weights = targeting.digest();
-    if weights != WEIGHTS_REPLAYS_RAN_ON {
-        hasher.u64(weights);
-    }
+    hasher.u64(targeting.digest());
     hasher.finish()
-}
-
-#[cfg(test)]
-mod weights_tests {
-    use super::*;
-    use crate::targeting::TargetingWeights;
-
-    /// `WEIGHTS_REPLAYS_RAN_ON` is what M2's constants were, whatever the shipped document says by now: if
-    /// it followed the document, an edit of the document would pass every replay.
-    #[test]
-    fn the_weights_replays_ran_on_are_the_constants_they_ran_on() {
-        let ran_on = TargetingTuning {
-            soft_lock: TargetingWeights {
-                direction: 1.6,
-                facing: 0.5,
-                distance: 1.0,
-                range: 12.0,
-                keep_range: 16.0,
-                hysteresis: 0.12,
-            },
-            touch: TargetingWeights {
-                direction: 0.3,
-                facing: 0.15,
-                distance: 1.5,
-                range: 14.0,
-                keep_range: 18.0,
-                hysteresis: 0.15,
-            },
-        };
-        assert_eq!(ran_on.digest(), WEIGHTS_REPLAYS_RAN_ON, "their digest is {:#x}", ran_on.digest());
-    }
 }
 
 #[cfg(test)]
@@ -756,6 +734,7 @@ mod sensitivity_tests {
             ("a slide's length", |f| f.slide.length = SimDuration::from_subticks(1)),
             ("a slide's progress", |f| f.slide.elapsed = SimDuration::from_subticks(1)),
             ("how far a slide has gone", |f| f.slide.moved += 0.125),
+            ("its side", |f| f.faction = Faction::new(1).unwrap()),
         ];
         let (mut sim, swinging, _) = world();
         for (what, edit) in edits {
@@ -772,11 +751,23 @@ mod sensitivity_tests {
         });
     }
 
+    /// A lock that's off writes nothing, so a lock's target only counts once it's on.
+    #[test]
+    fn a_soft_lock_is_in_the_checksum_once_it_is_on() {
+        let (mut sim, swinging, _) = world();
+        flips::<SoftLock>(&mut sim, swinging, "being on", |lock| lock.on = true);
+        let before = sim.checksum();
+        sim.give_soft_lock(swinging);
+        assert_ne!(sim.checksum(), before);
+        flips::<SoftLock>(&mut sim, swinging, "who it has", |lock| lock.target = ActorId::from_raw(99));
+    }
+
     #[test]
     fn every_field_of_a_brain_is_in_the_checksum() {
         let at = |subticks| SimTime::from_subticks(subticks);
         type Edit = fn(&mut Brain);
         let edits: &[(&str, Edit)] = &[
+            ("being on", |b| b.on = !b.on),
             ("its target", |b| b.target = ActorId::from_raw(99)),
             ("when its patience runs out", |b| b.patience_until = SimTime::from_subticks(1)),
             ("which way it circles", |b| b.circle = 1),

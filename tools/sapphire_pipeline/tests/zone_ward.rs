@@ -186,7 +186,13 @@ fn a_body_walks_the_ward_from_the_start_to_the_boss() {
     let speed = profile.run_speed;
     let controller = Some(sim.add_controller_profile(&profile).expect("a good profile"));
     let walker = sim
-        .spawn(ActorSpawn { position: start(&document), yaw: 0.0, moves: None, controller })
+        .spawn(ActorSpawn {
+            position: start(&document),
+            yaw: 0.0,
+            moves: None,
+            controller,
+            ..ActorSpawn::default()
+        })
         .expect("room for one");
     let path = sim.navigation_mut().expect("just given").add_path();
 

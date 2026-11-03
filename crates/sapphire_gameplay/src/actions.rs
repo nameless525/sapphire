@@ -21,10 +21,14 @@ impl Buttons {
     pub const SWAP: Self = Self(1 << 5);
     pub const LOCK_ON: Self = Self(1 << 6);
     pub const JUMP: Self = Self(1 << 7);
+    /// No button: this tick's input came from a thumb on a screen, so a soft lock weighs its choice by
+    /// [`TargetingTuning::touch`](crate::targeting::TargetingTuning::touch). A tick says, rather than a
+    /// run, because a player can pick up a pad halfway through a fight. No intent ever names it.
+    pub const TOUCH: Self = Self(1 << 8);
 
     /// Every button there is. Adding one is a change to the byte layout's meaning: older replays
     /// still read, and an older build refuses a new file's button rather than ignoring it.
-    pub const ALL: Self = Self((1 << 8) - 1);
+    pub const ALL: Self = Self((1 << 9) - 1);
 
     /// The set these bits name, or `None` if a bit names no button.
     #[must_use]
@@ -378,8 +382,8 @@ mod tests {
         assert!(both.contains(Buttons::NONE));
         assert_eq!(both.minus(Buttons::LIGHT), Buttons::DODGE);
         assert!(Buttons::NONE.is_empty());
-        assert_eq!(Buttons::from_bits(0xff), Some(Buttons::ALL));
-        assert_eq!(Buttons::from_bits(0x100), None);
+        assert_eq!(Buttons::from_bits(0x1ff), Some(Buttons::ALL));
+        assert_eq!(Buttons::from_bits(0x200), None);
         // These bits are in recorded replays.
         assert_eq!(
             [
@@ -534,8 +538,8 @@ mod tests {
         );
         assert_eq!(read(&[1, 7, 0, 0, 0, 0, 0, 0, 0]), Err(ActionsError::NeutralListed { raw: 7 }));
         assert_eq!(
-            read(&[1, 7, 0, 0, 0, 0, 1, 0, 0]),
-            Err(ActionsError::UnknownButtons { raw: 7, bits: 0x100 })
+            read(&[1, 7, 0, 0, 0, 0, 2, 0, 0]),
+            Err(ActionsError::UnknownButtons { raw: 7, bits: 0x200 })
         );
         assert_eq!(read(&[1, 7, 0, 0, 0, 1, 0, 0x80, 0]), Err(ActionsError::StickOutOfRange { raw: 7 }));
     }

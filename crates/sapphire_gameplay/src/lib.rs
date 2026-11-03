@@ -133,6 +133,7 @@ pub mod brain;
 mod checksum;
 mod controller;
 mod cues;
+pub mod faction;
 mod hits;
 mod intents;
 mod movement;
@@ -159,6 +160,7 @@ pub use cues::{
     CUE_QUEUE_LEN, CueEvent, CueQueue, DEFEATED, HitCue, PARTY_DEFEATED, PARTY_SWAP, PERFECT_DODGE,
     POISE_BROKEN,
 };
+pub use faction::Faction;
 pub use hits::{
     DodgedSwing, HitEvent, HitQuery, HitStats, HurtboxId, MAX_CAST_RESULTS, MAX_CONTACTS, MAX_DODGED_SWINGS,
     MAX_HIT_EVENTS, MAX_HIT_RECORDS, MAX_HURTBOXES, MAX_SAG, MAX_STOPPED_VOLUMES, MAX_SUB_STEPS,
@@ -178,6 +180,7 @@ pub use simulation::{CombatSet, SimConfig, SimRng, Simulation};
 pub use stats::{
     BUDGET_DESKTOP_LOW, BUDGET_MOBILE_LOW, PHYSICS_BUDGET_DESKTOP_LOW, PHYSICS_BUDGET_MOBILE_LOW, SimStats,
 };
+pub use targeting::SoftLock;
 pub use timeline::{
     CinematicError, TimelineCommand, TimelineEvent, TimelineId, TimelineLibrary, TimelinePlayError,
     TimelineProgress, TimelineRun,

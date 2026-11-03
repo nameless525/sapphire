@@ -5,6 +5,8 @@ use sapphire_math::Vec3;
 use sapphire_moves::{Attack, FighterDef, Knockback};
 use sapphire_time::{SimDuration, SimTime};
 
+use crate::faction::Faction;
+
 /// What a landed hit came to: the `resolve` module's docs say how.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum HitOutcome {
@@ -61,6 +63,8 @@ pub struct Fighter {
     pub(crate) poise_refills_at: Option<SimTime>,
     pub(crate) defeated: bool,
     pub(crate) slide: Slide,
+    /// Whose side it's on, from its spawn to its end.
+    pub(crate) faction: Faction,
 }
 
 impl Fighter {
@@ -82,7 +86,7 @@ impl Fighter {
     /// with no [`FighterDef`] any more leaves an actor nothing can land on.
     pub(crate) fn refit(&mut self, def: Option<&FighterDef>) {
         let Some(def) = def else {
-            *self = Self { slide: self.slide, ..Self::default() };
+            *self = Self { slide: self.slide, faction: self.faction, ..Self::default() };
             return;
         };
         if self.defeated {
@@ -126,6 +130,19 @@ impl Fighter {
     #[must_use]
     pub const fn max_poise(&self) -> u32 {
         self.max_poise
+    }
+
+    /// Whose side it's on.
+    #[must_use]
+    pub const fn faction(&self) -> Faction {
+        self.faction
+    }
+
+    /// Whether this is someone a member of `faction` would fight: someone hits can land on, still up, on
+    /// another side. Whether it's on the field is the party's to say.
+    #[must_use]
+    pub const fn is_foe_of(&self, faction: Faction) -> bool {
+        self.is_fighter() && !self.defeated && faction.is_hostile_to(self.faction)
     }
 
     /// Whether a hit has taken the last of its health: it starts nothing more, hits nothing more and

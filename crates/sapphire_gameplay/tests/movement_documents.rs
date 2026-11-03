@@ -109,7 +109,9 @@ impl Stage {
         let controller = Some(sim.add_controller_profile(spawned).expect("a good profile"));
         let id = sim.add_move_set(set);
         let moves = Some(id);
-        let actor = sim.spawn(ActorSpawn { position: feet, yaw: 0.0, moves, controller }).expect("room");
+        let actor = sim
+            .spawn(ActorSpawn { position: feet, yaw: 0.0, moves, controller, ..ActorSpawn::default() })
+            .expect("room");
         let mut stage = Self { sim, actor, set: id };
         stage.hold(Stick::CENTER, 2);
         stage
@@ -634,13 +636,16 @@ fn an_edit_during_hitstop_waits_for_the_thaw() {
     let controller = Some(sim.add_controller_profile(&TODAY).expect("a good profile"));
     let id = sim.add_move_set(slice(Some(TODAY)));
     let moves = Some(id);
-    let attacker = sim.spawn(ActorSpawn { position: Vec3::ZERO, yaw: 0.0, moves, controller }).expect("room");
+    let attacker = sim
+        .spawn(ActorSpawn { position: Vec3::ZERO, yaw: 0.0, moves, controller, ..ActorSpawn::default() })
+        .expect("room");
     let target = sim
         .spawn(ActorSpawn {
             position: Vec3::new(0.0, 0.0, 1.0),
             yaw: std::f32::consts::PI,
             moves,
             controller,
+            ..ActorSpawn::default()
         })
         .expect("room");
     let mut press = TickActions::NEUTRAL;
@@ -740,8 +745,14 @@ impl Party {
         let controller = Some(sim.add_controller_profile(&TODAY).expect("a good profile"));
         let sets = [0, 1, 2].map(|index| sim.add_move_set(member(index, movements[index])));
         let members = sets.map(|set| {
-            sim.spawn(ActorSpawn { position: Vec3::ZERO, yaw: 0.0, moves: Some(set), controller })
-                .expect("room")
+            sim.spawn(ActorSpawn {
+                position: Vec3::ZERO,
+                yaw: 0.0,
+                moves: Some(set),
+                controller,
+                ..ActorSpawn::default()
+            })
+            .expect("room")
         });
         sim.form_party(&members, PartyTuning { swap_cooldown: 10, rest: 10 }).expect("a good party");
         Self { sim, members, sets }
@@ -851,7 +862,13 @@ fn a_brains_enemy_moves_by_its_own_numbers() {
     let warrior_set = sim.add_move_set(warrior(ControllerProfile { run_speed: 3.0, ..TODAY }));
     let player_set = sim.add_move_set(slice(Some(ControllerProfile { run_speed: 7.0, ..TODAY })));
     let enemy = sim
-        .spawn(ActorSpawn { position: Vec3::ZERO, yaw: 0.0, moves: Some(warrior_set), controller })
+        .spawn(ActorSpawn {
+            position: Vec3::ZERO,
+            yaw: 0.0,
+            moves: Some(warrior_set),
+            controller,
+            ..ActorSpawn::default()
+        })
         .expect("room");
     let player = sim
         .spawn(ActorSpawn {
@@ -859,10 +876,11 @@ fn a_brains_enemy_moves_by_its_own_numbers() {
             yaw: 0.0,
             moves: Some(player_set),
             controller,
+            ..ActorSpawn::default()
         })
         .expect("room");
     sim.step(&TickActions::NEUTRAL);
-    assert!(sim.give_brain(enemy, player), "the warrior's set has a brain");
+    assert!(sim.give_brain(enemy), "the warrior's set has a brain");
 
     let enemy_speed = |sim: &mut Simulation| {
         for _ in 0..20 {

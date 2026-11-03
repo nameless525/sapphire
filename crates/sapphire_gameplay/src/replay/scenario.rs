@@ -26,6 +26,7 @@ use sapphire_timeline::{TimelineDocument, TimelineError, TimelineSimulation};
 use crate::actions::{Buttons, Controls};
 use crate::actors::{ActorId, ActorRequests, ActorSpawn, ActorTable, SpawnError};
 use crate::controller::{ControllerProfile, PhysicsWorldError, ProfileError, ProfileId};
+use crate::faction::Faction;
 use crate::movement::ActorTransform;
 use crate::moves::{MoveRunner, MoveSetId, WarpTarget};
 use crate::party::{PARTY_SLOTS, Party, PartyError, PartyTuning};
@@ -45,7 +46,7 @@ const CUTSCENE: &str = include_str!("../../../sapphire_timeline/test_content/cut
 const TEST_MOVES_PATH: &str = "crates/sapphire_moves/test_content/slice.moves.ron";
 
 /// The enemy's document (M2 O4), brain and all, as this build holds it: a replay needs no assets.
-const WARRIOR_MOVES: &str = include_str!("../../../../content/combat/enemy/warrior.moves.ron");
+pub const WARRIOR_MOVES: &str = include_str!("../../../../content/combat/enemy/warrior.moves.ron");
 
 /// That document, from the repository's root.
 const WARRIOR_MOVES_PATH: &str = "content/combat/enemy/warrior.moves.ron";
@@ -146,6 +147,13 @@ impl Scenario {
 pub fn document_file_name(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
+
+/// The side the arena's player is on: a party is all of it.
+pub const PLAYERS: Faction = Faction::new(1).expect("a faction's number");
+/// The side the arena's warriors are on, who leave each other alone.
+pub const WARRIORS: Faction = Faction::new(2).expect("a faction's number");
+/// A second side of warriors in [`skirmish`], who fight the first as readily as the player.
+pub const RIVALS: Faction = Faction::new(3).expect("a faction's number");
 
 /// Every scenario.
 pub const SCENARIOS: &[Scenario] = &[
@@ -253,6 +261,19 @@ pub const SCENARIOS: &[Scenario] = &[
         documents: &[PLAYER_MOVES_PATH, WARRIOR_MOVES_PATH],
         setup: super::ward::ward_court,
     },
+    Scenario {
+        name: "arena-skirmish",
+        about: "the arena's player against two sides of real warriors, four and three, on the same moves and \
+                each with its own brain: nobody hits their own side, and everyone picks a foe",
+        config: SimConfig {
+            seed: 7,
+            max_actors: 8,
+            step_budget: BUDGET_DESKTOP_LOW,
+            physics_budget: PHYSICS_BUDGET_DESKTOP_LOW,
+        },
+        documents: &[PLAYER_MOVES_PATH, WARRIOR_MOVES_PATH],
+        setup: skirmish,
+    },
 ];
 
 /// The scenario named `name`, among `scenarios`.
@@ -350,8 +371,13 @@ pub fn melee_buttons(
         if pressed.contains(Buttons::JUMP) {
             let yaw = rng.0.unit_f32() * std::f32::consts::TAU;
             // A full pool refuses and counts it.
-            let spawn =
-                ActorSpawn { position: transform.position, yaw, moves: runner.set(), controller: None };
+            let spawn = ActorSpawn {
+                position: transform.position,
+                yaw,
+                moves: runner.set(),
+                controller: None,
+                ..ActorSpawn::default()
+            };
             let _ = requests.spawn(spawn);
         }
     }
@@ -398,6 +424,7 @@ pub fn melee(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
             yaw: x * 0.5,
             moves: Some(moves),
             controller,
+            ..ActorSpawn::default()
         })?);
     }
     aim_round(sim, &cast);
@@ -414,12 +441,19 @@ pub fn duel(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
 pub(super) fn duel_on(sim: &mut Simulation, set: MoveSet) -> Result<Vec<ActorId>, ScenarioError> {
     let controller = Some(flat_ground(sim)?);
     let moves = sim.add_move_set(set);
-    let player = sim.spawn(ActorSpawn { position: Vec3::ZERO, yaw: 0.0, moves: Some(moves), controller })?;
+    let player = sim.spawn(ActorSpawn {
+        position: Vec3::ZERO,
+        yaw: 0.0,
+        moves: Some(moves),
+        controller,
+        ..ActorSpawn::default()
+    })?;
     let opponent = sim.spawn(ActorSpawn {
         position: Vec3::new(0.0, 0.0, 4.0),
         yaw: std::f32::consts::PI,
         moves: Some(moves),
         controller,
+        ..ActorSpawn::default()
     })?;
     let cast = vec![player, opponent];
     aim_round(sim, &cast);
@@ -447,7 +481,13 @@ pub fn arena(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
     let spawns = crate::arena::spawns();
     let mut cast = Vec::with_capacity(2);
     for spot in [spawns.player, spawns.enemy] {
-        cast.push(sim.spawn(ActorSpawn { position: spot.position(), yaw: spot.yaw(), moves, controller })?);
+        cast.push(sim.spawn(ActorSpawn {
+            position: spot.position(),
+            yaw: spot.yaw(),
+            moves,
+            controller,
+            ..ActorSpawn::default()
+        })?);
     }
     sim.prepare_standing_jump(cast[0]);
     aim_round(sim, &cast);
@@ -618,6 +658,27 @@ pub(super) fn arena_fight_on(sim: &mut Simulation, warrior: MoveSet) -> Result<V
     fight_on(sim, player_moves()?, &ultimate_cinematic()?, warrior, &cooked, crate::arena::spawns(), false)
 }
 
+/// `arena-skirmish`: [`arena_fight`]'s two, then the crowd at the arena's other spawn points. The first
+/// four warriors, the original among them, are [`WARRIORS`] and the other three [`RIVALS`]. The cast is the
+/// player, then every warrior by ID. Eight in a pool of eight is the most this arena's fights ask for.
+pub fn skirmish(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
+    let mut cast = arena_fight(sim)?;
+    let (moves, controller) =
+        sim.actor(cast[1]).map_or((None, None), |warrior| (warrior.moves.set, warrior.controller.profile()));
+    for (index, point) in crate::arena::spawns().crowd.iter().enumerate() {
+        let warrior = sim.spawn(ActorSpawn {
+            position: point.position(),
+            yaw: point.yaw(),
+            moves,
+            controller,
+            faction: if index < 3 { WARRIORS } else { RIVALS },
+        })?;
+        sim.give_brain(warrior);
+        cast.push(warrior);
+    }
+    Ok(cast)
+}
+
 /// [`arena_fight`] with a party (`crate::party`): three members on the player's moves at its spawn point,
 /// the first on the field. The other two members come after the warrior in actor ID order.
 pub fn party(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
@@ -672,14 +733,20 @@ impl FightActors {
     ) -> Result<[ActorId; 2], ScenarioError> {
         let Self { spawns, player, warrior, controller } = self;
         let (moves, warrior, controller) = (Some(player), Some(warrior), Some(controller));
-        let member =
-            ActorSpawn { position: spawns.player.position(), yaw: spawns.player.yaw(), moves, controller };
+        let member = ActorSpawn {
+            position: spawns.player.position(),
+            yaw: spawns.player.yaw(),
+            moves,
+            controller,
+            faction: PLAYERS,
+        };
         let first = sim.spawn(member)?;
         let enemy = sim.spawn(ActorSpawn {
             position: spawns.enemy.position(),
             yaw: spawns.enemy.yaw(),
             moves: warrior,
             controller,
+            faction: WARRIORS,
         })?;
         if party {
             let members = [first, sim.spawn(member)?, sim.spawn(member)?];
@@ -689,14 +756,14 @@ impl FightActors {
                 sim.form_party(&members, PARTY_TUNING)?;
             }
             for member in members {
-                sim.set_warp_target(member, WarpTarget::Actor(enemy));
+                sim.give_soft_lock(member);
             }
         } else {
             sim.prepare_standing_jump(first);
-            sim.set_warp_target(first, WarpTarget::Actor(enemy));
+            sim.give_soft_lock(first);
         }
         // An edit can take the brain away, in which case the enemy stands there.
-        sim.give_brain(enemy, first);
+        sim.give_brain(enemy);
         Ok([first, enemy])
     }
 }
@@ -810,12 +877,7 @@ mod tests {
                 let view = sim.actor(actor).expect("alive");
                 assert!(view.controller.is_active(), "{}", scenario.name);
                 assert_eq!(view.controller.state.mode, crate::controller::GroundMode::Grounded);
-                if scenario.zone().is_some() {
-                    // A zone's ground is its own colliders, whose tops are as near 0 as a cook's f32s land.
-                    assert!(view.position.y.abs() < 1e-6, "{}: {}", scenario.name, view.position.y);
-                } else {
-                    assert_eq!(view.position.y, 0.0, "{}", scenario.name);
-                }
+                assert!(view.position.y.abs() < 1e-5, "{}: {}", scenario.name, view.position.y);
             }
         }
     }

@@ -68,10 +68,10 @@ fn world(actors: u32, spacing: f32, set: MoveSet) -> (Simulation, Vec<ActorId>) 
     (sim, ids)
 }
 
-/// Each thinks, fighting the next: the first has no brain in a duel, as a player has none.
+/// Each thinks, picking its own foe: the first has no brain in a duel, as a player has none.
 fn give_brains(sim: &mut Simulation, ids: &[ActorId], from: usize) {
-    for index in from..ids.len() {
-        assert!(sim.give_brain(ids[index], ids[(index + 1) % ids.len()]));
+    for &id in &ids[from..] {
+        assert!(sim.give_brain(id));
     }
 }
 

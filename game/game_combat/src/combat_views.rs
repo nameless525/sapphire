@@ -224,6 +224,7 @@ fn sweep_of<'a>(
     };
     Some(VolumeSweep {
         attacker: actor.id,
+        faction: actor.fighter.faction(),
         instance: volume.serial,
         volume: index as u16,
         group: volume.name,
@@ -561,6 +562,7 @@ mod tests {
                 yaw: QUARTER,
                 moves: Some(moves),
                 controller: None,
+                ..ActorSpawn::default()
             })
             .unwrap();
         sim.force_move(actor, Name::new("swing"));

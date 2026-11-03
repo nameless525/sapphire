@@ -14,9 +14,9 @@ use sapphire_gameplay::replay::{
     add_melee_buttons, find_scenario, find_script, melee, melee_sweep,
 };
 use sapphire_gameplay::{
-    ActorActions, ActorId, ActorSpawn, ActorTransform, Buttons, CombatSet, ControllerProfile, HitQuery,
-    HurtboxId, INTENT_RING_LEN, MAX_HIT_RECORDS, OwnerStep, SimConfig, Simulation, TickActions, VolumeSweep,
-    WarpTarget, remove_hurtboxes,
+    ActorActions, ActorId, ActorSpawn, ActorTransform, Buttons, CombatSet, ControllerProfile, Faction,
+    HitQuery, HurtboxId, INTENT_RING_LEN, MAX_HIT_RECORDS, OwnerStep, SimConfig, Simulation, TickActions,
+    VolumeSweep, WarpTarget, remove_hurtboxes,
 };
 use sapphire_math::{Vec3, det};
 use sapphire_moves::{BakedPath, MoveSet, MoveSetDocument, PathSample};
@@ -581,7 +581,7 @@ fn hit_queries_do_not_allocate_from_the_first_sweep() {
                     1 => Some(Shape::Sphere { radius: 0.4 }),
                     _ => Some(Shape::Sphere { radius: 0.3 }),
                 };
-                id.set(&mut physics, shape, root, chest(index)).expect("fits");
+                id.set(&mut physics, shape, root, chest(index), Faction::NONE).expect("fits");
             }
 
             // Every attacker's volumes along the table, at speeds that change.
@@ -597,6 +597,7 @@ fn hit_queries_do_not_allocate_from_the_first_sweep() {
                         &VolumeSweep {
                             dodgeable: true,
                             attacker: actor(1 + attacker),
+                            faction: Faction::NONE,
                             instance: (tick / 40) as u32,
                             volume,
                             group: groups[usize::from(volume % 2)],
@@ -766,9 +767,13 @@ fn a_fight_with_hits_landing_allocates_nothing_from_the_first_step() {
     let moves = Some(sim.add_move_set(frail.compile().expect("compiles")));
     let attacker = sim.spawn(ActorSpawn { moves, ..ActorSpawn::default() }).expect("room");
     let position = Vec3::new(0.0, 0.0, 1.6);
-    let target = sim.spawn(ActorSpawn { position, yaw: 3.0, moves, controller: None }).expect("room");
+    let target = sim
+        .spawn(ActorSpawn { position, yaw: 3.0, moves, controller: None, ..ActorSpawn::default() })
+        .expect("room");
     let at = Vec3::X;
-    let second = sim.spawn(ActorSpawn { position: at, yaw: -1.0, moves, controller: None }).expect("room");
+    let second = sim
+        .spawn(ActorSpawn { position: at, yaw: -1.0, moves, controller: None, ..ActorSpawn::default() })
+        .expect("room");
     let scripted: Vec<TickActions> = (0..2400_u64)
         .map(|tick| {
             let mut actions = TickActions::NEUTRAL;

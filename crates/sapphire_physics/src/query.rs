@@ -15,8 +15,8 @@ use crate::shape::{Convex, Pose, Shape};
 use crate::stats::Counters;
 use crate::world::{BodyEntry, BodyId, ColliderId, HitTarget, PhysicsWorld, StaticEntry, StaticGeometry};
 
-/// What a query may hit: colliders and bodies in `groups`, except `exclude_body` and the run of IDs
-/// in `exclude_bodies`.
+/// What a query may hit: colliders and bodies in `groups`, except `exclude_body`, the run of IDs in
+/// `exclude_bodies` and bodies in any of `exclude_groups`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct QueryFilter {
     pub groups: GroupMask,
@@ -25,11 +25,14 @@ pub struct QueryFilter {
     /// The first and last IDs of a run of bodies, both included. An excluded body takes no test and
     /// no room in a result list, which filtering a list afterward can't promise.
     pub exclude_bodies: Option<(BodyId, BodyId)>,
+    /// Bodies in any of these are left out the same way, whatever else they're in. Colliders aren't
+    /// asked: this is for a mark on some of the bodies of a group, as a fight marks a faction's hurtboxes.
+    pub exclude_groups: GroupMask,
 }
 
 impl QueryFilter {
     pub const fn new(groups: GroupMask) -> Self {
-        Self { groups, exclude_body: None, exclude_bodies: None }
+        Self { groups, exclude_body: None, exclude_bodies: None, exclude_groups: GroupMask::NONE }
     }
 
     pub const fn excluding(self, body: BodyId) -> Self {
@@ -41,9 +44,15 @@ impl QueryFilter {
         Self { exclude_bodies: Some((first, last)), ..self }
     }
 
-    fn excludes(&self, id: BodyId) -> bool {
-        self.exclude_body == Some(id)
-            || self.exclude_bodies.is_some_and(|(first, last)| first <= id && id <= last)
+    /// Excludes every body in any of `groups`.
+    pub const fn excluding_groups(self, groups: GroupMask) -> Self {
+        Self { exclude_groups: groups, ..self }
+    }
+
+    fn excludes(&self, body: &BodyEntry) -> bool {
+        self.exclude_body == Some(body.id)
+            || self.exclude_bodies.is_some_and(|(first, last)| first <= body.id && body.id <= last)
+            || self.exclude_groups.intersects(body.groups.memberships)
     }
 }
 
@@ -123,7 +132,7 @@ impl Selector {
     fn takes_body(self, body: &BodyEntry) -> bool {
         match self {
             Self::Query(filter) => {
-                filter.groups.intersects(body.groups.memberships) && !filter.excludes(body.id)
+                filter.groups.intersects(body.groups.memberships) && !filter.excludes(body)
             }
             Self::Mover { id, groups } => id != body.id && groups.interacts_with(body.groups),
         }

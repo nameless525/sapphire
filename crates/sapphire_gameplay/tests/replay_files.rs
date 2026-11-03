@@ -377,7 +377,7 @@ fn crafted_files_fail_cleanly() {
         ("an actor listed neutral", with_body(3, joined(&[&[3], &tick_bytes(7, 0, 0)])), |e| {
             matches!(e, ReplayError::Actions { tick: 0, source: ActionsError::NeutralListed { raw: 7 } })
         }),
-        ("a button no build has", with_body(3, joined(&[&[3], &tick_bytes(7, 0x100, 0)])), |e| {
+        ("a button no build has", with_body(3, joined(&[&[3], &tick_bytes(7, 0x200, 0)])), |e| {
             matches!(e, ReplayError::Actions { source: ActionsError::UnknownButtons { .. }, .. })
         }),
         ("a stick below its range", with_body(3, joined(&[&[3], &tick_bytes(7, 1, 0x80)])), |e| {

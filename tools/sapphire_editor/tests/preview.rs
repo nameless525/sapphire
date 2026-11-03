@@ -63,7 +63,13 @@ fn lone_run(set: &MoveSet, name: &str) -> Vec<LoneFrame> {
     let mut sim = Simulation::new(SimConfig::default());
     let moves = sim.add_move_set(set.clone());
     let actor = sim
-        .spawn(ActorSpawn { position: Vec3::ZERO, yaw: 0.0, moves: Some(moves), controller: None })
+        .spawn(ActorSpawn {
+            position: Vec3::ZERO,
+            yaw: 0.0,
+            moves: Some(moves),
+            controller: None,
+            ..ActorSpawn::default()
+        })
         .expect("spawns");
     sim.step(&TickActions::NEUTRAL);
     sim.force_move(actor, Name::intern(name));

@@ -99,7 +99,8 @@ fn party_world() -> (Simulation, Vec<ActorId>) {
     let position = Vec3::new(0.0, 0.0, 1.2);
     let moves = Some(sim.add_move_set(slice()));
     let yaw = std::f32::consts::PI;
-    let opponent = sim.spawn(ActorSpawn { position, yaw, moves, controller }).expect("room");
+    let opponent =
+        sim.spawn(ActorSpawn { position, yaw, moves, controller, ..ActorSpawn::default() }).expect("room");
     sim.form_party(&members, PARTY_TUNING).expect("a good party");
     for &member in &members {
         sim.set_warp_target(member, WarpTarget::Actor(opponent));

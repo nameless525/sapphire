@@ -5,7 +5,11 @@
 //! answer whatever order the candidates come in. It holds no state. The target it chose last goes back
 //! in as [`TargetQuery::current`], which is what keeps it from flickering between two enemies at equal
 //! angles: the current one has to be beaten by [`TargetingWeights::hysteresis`], not merely matched.
-//! Whoever owns that state (the moves' warp, when G2 and G3 wire this in) checksums it.
+//!
+//! [`SoftLock`] is that state, on the actor, in the checksum. `choose_soft_locks` asks once a step, in
+//! [`crate::CombatSet::Intents`], for whoever has one ([`crate::Simulation::give_soft_lock`]), and writes
+//! the answer to its [`WarpTarget`], which is all the moves read. Which of the two sets of weights comes
+//! from the tick's own [`Buttons::TOUCH`], never from the device, so a replay chooses what its run chose.
 //!
 //! A candidate scores by how near it is to where the player is pointing and how close it is:
 //! `direction · (1 − angle / π) + distance · (1 − metres / range)`. Pointing means the stick, or the actor's
@@ -22,15 +26,19 @@
 use std::sync::OnceLock;
 
 use bevy_reflect::TypePath;
-use sapphire_ecs::prelude::Resource;
+use sapphire_ecs::prelude::*;
 use sapphire_math::{Vec3, det};
 use sapphire_reflect::Versioned;
 use sapphire_serialize::DocumentError;
 use serde::{Deserialize, Serialize};
 
-use crate::actions::Stick;
-use crate::actors::ActorId;
+use crate::actions::{Buttons, Controls, Stick};
+use crate::actors::{ActorId, ActorTable};
 use crate::checksum::StateHasher;
+use crate::movement::ActorTransform;
+use crate::moves::{MoveOutput, WarpTarget};
+use crate::party::Party;
+use crate::resolve::Fighter;
 
 /// The shipped weights (see [`TargetingTuning::shipped`]).
 const SHIPPED: &str = include_str!("../default_targeting.ron");
@@ -147,6 +155,41 @@ impl TargetingTuning {
     }
 }
 
+/// An actor's soft lock: whether it has one, and who it has now. Every pooled actor carries one, off until
+/// [`crate::Simulation::give_soft_lock`]. See the [module docs](self).
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SoftLock {
+    pub(crate) on: bool,
+    pub(crate) target: Option<ActorId>,
+}
+
+impl SoftLock {
+    /// On, with nobody chosen yet: its first step chooses.
+    pub(crate) const ON: Self = Self { on: true, target: None };
+
+    /// Whether this actor chooses at all.
+    #[must_use]
+    pub const fn is_on(&self) -> bool {
+        self.on
+    }
+
+    /// Who it has, as of the last step.
+    #[must_use]
+    pub const fn target(&self) -> Option<ActorId> {
+        self.target
+    }
+}
+
+/// Room for one actor's candidates, so choosing allocates nothing: the pool's size bounds it.
+#[derive(Resource, Debug)]
+pub(crate) struct LockCandidates(Vec<TargetCandidate>);
+
+impl LockCandidates {
+    pub(crate) fn with_capacity(capacity: usize) -> Self {
+        Self(Vec::with_capacity(capacity))
+    }
+}
+
 /// What a choice is made from: one tick's plain values.
 #[derive(Clone, Copy, Debug)]
 pub struct TargetQuery<'a> {
@@ -193,6 +236,52 @@ pub fn choose_target(query: &TargetQuery<'_>, weights: &TargetingWeights) -> Opt
         }
     }
     best.map(|(_, id)| id)
+}
+
+/// [`crate::CombatSet::Intents`], after the buttons and before the brains: each soft lock, in ID order,
+/// chooses among whoever's hostile, up and on the field, as they stood at the end of the last step, and
+/// aims its actor's warps at that. Nobody in reach aims them at nothing. It runs on a frozen clock too,
+/// so a target that falls in a hit's own freeze doesn't stay chosen through it, and leaves the aim alone
+/// while a warp window is open, so a move bends toward one target from start to end.
+#[allow(clippy::type_complexity, reason = "a system's query reads as what it touches")]
+pub(crate) fn choose_soft_locks(
+    table: Res<'_, ActorTable>,
+    party: Res<'_, Party>,
+    weights: Res<'_, TargetingTuning>,
+    mut candidates: ResMut<'_, LockCandidates>,
+    mut locks: Query<'_, '_, (&mut SoftLock, &mut WarpTarget, &Controls, &MoveOutput)>,
+    bodies: Query<'_, '_, (&ActorTransform, &Fighter)>,
+) {
+    let candidates = &mut candidates.0;
+    for (id, entity) in table.iter() {
+        let Ok((mut lock, mut aim, controls, output)) = locks.get_mut(entity) else { continue };
+        if !lock.on || party.is_off_field(id) {
+            continue;
+        }
+        let Ok((transform, fighter)) = bodies.get(entity) else { continue };
+        if fighter.is_defeated() {
+            continue;
+        }
+        candidates.clear();
+        for (other, entity) in table.iter() {
+            let Ok((there, other_fighter)) = bodies.get(entity) else { continue };
+            if other != id && other_fighter.is_foe_of(fighter.faction()) && !party.is_off_field(other) {
+                candidates.push(TargetCandidate { id: other, position: there.position });
+            }
+        }
+        let query = TargetQuery {
+            position: transform.position,
+            yaw: transform.yaw,
+            stick: controls.current.stick,
+            current: lock.target,
+            candidates,
+        };
+        let by_thumb = controls.current.buttons.contains(Buttons::TOUCH);
+        lock.target = choose_target(&query, if by_thumb { &weights.touch } else { &weights.soft_lock });
+        if !output.windows.warp {
+            *aim = lock.target.map_or(WarpTarget::None, WarpTarget::Actor);
+        }
+    }
 }
 
 #[cfg(test)]

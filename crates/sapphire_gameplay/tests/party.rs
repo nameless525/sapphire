@@ -63,13 +63,22 @@ fn fight_of(
         .into_iter()
         .map(|set| {
             let moves = Some(sim.add_move_set(set.expect("compiles")));
-            sim.spawn(ActorSpawn { position: Vec3::ZERO, yaw: 0.0, moves, controller }).expect("room")
+            sim.spawn(ActorSpawn {
+                position: Vec3::ZERO,
+                yaw: 0.0,
+                moves,
+                controller,
+                ..ActorSpawn::default()
+            })
+            .expect("room")
         })
         .collect();
     let members = [spawned[0], spawned[1], spawned[2]];
     let moves = Some(sim.add_move_set(replay::test_moves().expect("compiles")));
     let position = Vec3::new(0.0, 0.0, apart);
-    let opponent = sim.spawn(ActorSpawn { position, yaw: PI, moves, controller }).expect("room");
+    let opponent = sim
+        .spawn(ActorSpawn { position, yaw: PI, moves, controller, ..ActorSpawn::default() })
+        .expect("room");
     sim.form_party(&members, tuning).expect("a good party");
     // Everyone lands.
     sim.step(&TickActions::NEUTRAL);
@@ -923,11 +932,12 @@ fn scripted_world() -> (Simulation, [ActorId; 2]) {
     let (position, yaw) = (spawns.player.position(), spawns.player.yaw());
     let members = [0, 1, 2].map(|member| {
         let moves = Some(sim.add_move_set(replay::party_moves(member).expect("compiles")));
-        sim.spawn(ActorSpawn { position, yaw, moves, controller }).expect("room")
+        sim.spawn(ActorSpawn { position, yaw, moves, controller, ..ActorSpawn::default() }).expect("room")
     });
     let moves = Some(sim.add_move_set(replay::test_moves().expect("compiles")));
     let (position, yaw) = (spawns.enemy.position(), spawns.enemy.yaw());
-    let opponent = sim.spawn(ActorSpawn { position, yaw, moves, controller }).expect("room");
+    let opponent =
+        sim.spawn(ActorSpawn { position, yaw, moves, controller, ..ActorSpawn::default() }).expect("room");
     sim.form_party(&members, replay::PARTY_TUNING).expect("a good party");
     for member in members {
         sim.set_warp_target(member, WarpTarget::Actor(opponent));
@@ -937,7 +947,7 @@ fn scripted_world() -> (Simulation, [ActorId; 2]) {
 }
 
 /// Long enough for [`scripted`]'s last member to have fallen.
-const SCRIPTED_TICKS: u64 = 2200;
+const SCRIPTED_TICKS: u64 = 2600;
 
 /// What the party presses in [`scripted`]'s first part, whose input names its first member throughout.
 const SCRIPTED_PARTY: [(u64, Buttons); 10] = [
@@ -962,9 +972,9 @@ const SCRIPTED_SECOND_PART: u64 = 340;
 /// Ticks of its second part's round: a knockdown has to play out, and the two have to meet again.
 const SCRIPTED_ROUND: u64 = 130;
 
-/// A fight of [`scripted_world`]'s. Both walk at each other at the start of each round, whatever the last did
-/// to where they stand: the party's spawn point lies toward +Z of the opponent's.
-fn scripted(tick: u64, cast: [ActorId; 2]) -> TickActions {
+/// A fight of [`scripted_world`]'s. Both walk straight at each other at the start of each round, whatever the
+/// last did to where they stand, and a fallen member who's still there stops neither of them.
+fn scripted(tick: u64, cast: [ActorId; 2], sim: &Simulation) -> TickActions {
     let pressed = |schedule: &[(u64, Buttons)]| {
         schedule.iter().find(|(at, _)| *at == tick).map_or(Buttons::NONE, |(_, buttons)| *buttons)
     };
@@ -977,7 +987,11 @@ fn scripted(tick: u64, cast: [ActorId; 2]) -> TickActions {
         let opponent = if at == 44 { Buttons::HEAVY } else { Buttons::NONE };
         (party, opponent, at <= 40)
     };
-    let sticks = if walking { [Stick::new(0, -127), Stick::new(0, 127)] } else { [Stick::CENTER; 2] };
+    let position = |actor| sim.actor(actor).map_or(Vec3::ZERO, |view| view.position);
+    let apart = position(cast[1]) - sim.party().active().map_or(Vec3::ZERO, position);
+    let (x, z) = (apart.x / apart.length(), apart.z / apart.length());
+    let sticks =
+        if walking { [Stick::from_axes(x, z), Stick::from_axes(-x, -z)] } else { [Stick::CENTER; 2] };
     let mut actions = TickActions::NEUTRAL;
     let turns = [(cast[0], party, sticks[0]), (cast[1], opponent, sticks[1])];
     for (actor, buttons, stick) in turns {
@@ -992,7 +1006,8 @@ fn one_set_of_inputs_gives_one_checksum() {
         let (mut sim, cast) = scripted_world();
         let checksums: Vec<u64> = (0..SCRIPTED_TICKS)
             .map(|tick| {
-                sim.step(&scripted(tick, cast));
+                let actions = scripted(tick, cast, &sim);
+                sim.step(&actions);
                 sim.checksum()
             })
             .collect();
@@ -1042,7 +1057,8 @@ fn a_scripted_fight_does_what_its_comments_say() {
     let mut fell = Vec::new();
     let mut down_at = None;
     for tick in 0..SCRIPTED_TICKS {
-        sim.step(&scripted(tick, cast));
+        let actions = scripted(tick, cast, &sim);
+        sim.step(&actions);
         for cue in sim.cues() {
             if cue.cue == PARTY_SWAP {
                 swaps.push((sim.tick(), cue.actor));
@@ -1099,6 +1115,7 @@ fn pressing(party: ActorId, buttons: Buttons) -> TickActions {
 fn a_brain_turns_on_whoever_came_in() {
     let (mut sim, [first, warrior]) = real_fight();
     let brain = |sim: &Simulation| sim.actor(warrior).expect("alive").brain.target();
+    sim.step(&TickActions::NEUTRAL);
     assert_eq!(brain(&sim), Some(first));
     sim.step(&pressing(first, Buttons::SWAP));
     let second = sim.party().active().expect("formed");

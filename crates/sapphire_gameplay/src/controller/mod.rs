@@ -511,12 +511,25 @@ impl CharacterWorld {
         transform: &ActorTransform,
     ) {
         let body = actor_body(id);
+        let groups = self.physics.body_groups(body);
         if now.same_body(was) || !self.physics.remove_body(body) {
             return;
         }
+        let mut refitted = now.body(body, transform.position, transform.yaw);
+        // What it meets stays what it was: a capsule that [`Self::fell`] stays out of everyone's way.
+        refitted.groups = groups.unwrap_or(refitted.groups);
         // It has just made room, and a resolved profile's capsule is one the world takes.
-        let added = self.physics.add_body(now.body(body, transform.position, transform.yaw));
+        let added = self.physics.add_body(refitted);
         debug_assert!(added.is_ok(), "{added:?}");
+    }
+
+    /// An actor is defeated: its capsule leaves the fight. Nobody meets it from here on, so a corpse holds
+    /// up no one's walk and a crowd can close over it. It stays a body, in nobody's group, because what's
+    /// falling still has a floor and walls: its defeat plays out on the same controller, on what it was
+    /// standing on, and a push still stops at a wall.
+    pub(crate) fn fell(&mut self, id: ActorId) {
+        // An actor with no capsule has nothing to take out.
+        let _ = self.physics.set_body_groups(actor_body(id), profile::fallen_groups());
     }
 
     /// Takes an actor's bodies out of the world: its capsule and any hurtboxes, whose IDs nothing will

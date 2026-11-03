@@ -36,13 +36,14 @@ pub(crate) fn place_hurtboxes(
         let Some(def) = runner.set().and_then(|set| library.current(set)).and_then(MoveSet::fighter) else {
             continue;
         };
+        let faction = fighter.faction();
         for (index, own) in def.hurtboxes.iter().enumerate() {
             let shape = (!fighter.is_defeated())
                 .then(|| published_hurtbox(own.name(), hit_shape(own.shape), output))
                 .flatten();
             // A set holds at most as many as an ID has room for, and only a run's 2²⁷th actor has none.
             let placed = HurtboxId::new(id, index as u8)
-                .is_some_and(|hurtbox| hurtbox.set(physics, shape, *root, own.local).is_ok());
+                .is_some_and(|hurtbox| hurtbox.set(physics, shape, *root, own.local, faction).is_ok());
             stats.hurtboxes_refused += u64::from(!placed);
         }
         let volume = output.perfect_window.filter(|_| !fighter.is_defeated()).and_then(|window| {
@@ -50,7 +51,7 @@ pub(crate) fn place_hurtboxes(
             let volume = library.get(at)?.perfect_dodge.get(window as usize)?.volume?;
             Some((hit_shape(volume.shape), volume.local))
         });
-        let placed = set_dodge_volume(physics, id, volume, *root).is_ok();
+        let placed = set_dodge_volume(physics, id, volume, *root, faction).is_ok();
         stats.hurtboxes_refused += u64::from(!placed);
     }
 }
@@ -71,7 +72,14 @@ pub(crate) fn sweep_hits(
         if fighter.is_defeated() {
             continue;
         }
-        let moves = PublishedMoves { attacker, delta: clock.0.last_delta(), runner, output, root: *root };
+        let moves = PublishedMoves {
+            attacker,
+            faction: fighter.faction(),
+            delta: clock.0.last_delta(),
+            runner,
+            output,
+            root: *root,
+        };
         hits.sweep_published(characters.physics(), &library, &moves);
     }
     hits.finish_step();

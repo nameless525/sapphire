@@ -108,7 +108,13 @@ impl Fight {
         let warrior = Some(sim.add_move_set(set));
         let others = Some(sim.add_move_set(target_set));
         let brain = sim
-            .spawn(ActorSpawn { position: Vec3::ZERO, yaw: 0.0, moves: warrior, controller })
+            .spawn(ActorSpawn {
+                position: Vec3::ZERO,
+                yaw: 0.0,
+                moves: warrior,
+                controller,
+                ..ActorSpawn::default()
+            })
             .expect("room");
         let target = sim
             .spawn(ActorSpawn {
@@ -116,10 +122,11 @@ impl Fight {
                 yaw: std::f32::consts::PI,
                 moves: others,
                 controller,
+                ..ActorSpawn::default()
             })
             .expect("room");
         sim.step(&TickActions::NEUTRAL);
-        assert!(sim.give_brain(brain, target), "the warrior's set has a brain");
+        assert!(sim.give_brain(brain), "the warrior's set has a brain");
         Self { sim, brain, target }
     }
 
@@ -476,8 +483,13 @@ fn the_order_brains_draw_in_is_their_ids_not_the_pools() {
         brain.patience = TickRange { min: 20, max: 70 };
         brain.pace.circle_share = 0.8;
         let moves = Some(sim.add_move_set(warrior_with(brain)));
-        let at =
-            |x: f32, z: f32, yaw: f32| ActorSpawn { position: Vec3::new(x, 0.0, z), yaw, moves, controller };
+        let at = |x: f32, z: f32, yaw: f32| ActorSpawn {
+            position: Vec3::new(x, 0.0, z),
+            yaw,
+            moves,
+            controller,
+            ..ActorSpawn::default()
+        };
         let spawned: Vec<ActorId> =
             (0..6).map(|n| sim.spawn(at(n as f32 * 3.0, 0.0, 0.0)).expect("room")).collect();
         let mut gone = [spawned[0], spawned[1], spawned[3]];
@@ -491,8 +503,8 @@ fn the_order_brains_draw_in_is_their_ids_not_the_pools() {
         let first = sim.spawn(at(0.0, 5.0, 0.3)).expect("room");
         let second = sim.spawn(at(-4.0, 1.0, 1.2)).expect("room");
         let third = sim.spawn(at(7.0, -3.0, 2.2)).expect("room");
-        for (brain, target) in [(first, second), (second, third), (third, first)] {
-            assert!(sim.give_brain(brain, target));
+        for brain in [first, second, third] {
+            assert!(sim.give_brain(brain));
         }
         (0..900)
             .map(|_| {
@@ -619,9 +631,15 @@ fn a_poise_break_lying_down_replaces_the_knockdown_and_its_rise() {
     // Close enough that a knockdown's 1.4 m back stays in reach.
     let at = Vec3::new(0.0, 0.0, 0.8);
     let lying = sim
-        .spawn(ActorSpawn { position: at, yaw: std::f32::consts::PI, moves, controller: None })
+        .spawn(ActorSpawn {
+            position: at,
+            yaw: std::f32::consts::PI,
+            moves,
+            controller: None,
+            ..ActorSpawn::default()
+        })
         .expect("room");
-    assert!(sim.give_brain(lying, attacker));
+    assert!(sim.give_brain(lying));
     assert!(sim.force_move(lying, name("knockdown")));
     sim.step(&TickActions::NEUTRAL);
     sim.step(&TickActions::NEUTRAL);
@@ -673,9 +691,15 @@ fn it_stops_when_its_defeated() {
     let attacker = sim.spawn(ActorSpawn { moves: frail, ..ActorSpawn::default() }).expect("room");
     let at = Vec3::new(0.0, 0.0, 1.5);
     let falling = sim
-        .spawn(ActorSpawn { position: at, yaw: std::f32::consts::PI, moves: frail, controller: None })
+        .spawn(ActorSpawn {
+            position: at,
+            yaw: std::f32::consts::PI,
+            moves: frail,
+            controller: None,
+            ..ActorSpawn::default()
+        })
         .expect("room");
-    assert!(sim.give_brain(falling, attacker));
+    assert!(sim.give_brain(falling));
     assert!(sim.press_intent(attacker, name("swipe")));
     while !sim.actor(falling).expect("alive").fighter.is_defeated() {
         assert!(sim.tick() < 100, "the swipe lands inside its window");
@@ -812,15 +836,15 @@ fn a_brain_comes_only_from_a_set_that_has_one() {
         sim.spawn(ActorSpawn { moves: plain, ..ActorSpawn::default() }).expect("room"),
         sim.spawn(ActorSpawn { moves: warrior, ..ActorSpawn::default() }).expect("room"),
     );
-    assert!(!sim.give_brain(no_brain, has_one), "this set says nothing of how it fights");
+    assert!(!sim.give_brain(no_brain), "this set says nothing of how it fights");
     assert!(!sim.actor(no_brain).expect("alive").brain.is_on());
     assert!(!sim.actor(has_one).expect("alive").brain.is_on());
     let gone = ActorId::from_raw(99).expect("not zero");
-    assert!(!sim.give_brain(gone, has_one), "nobody's there");
-    assert!(sim.give_brain(has_one, no_brain));
+    assert!(!sim.give_brain(gone), "nobody's there");
+    assert!(sim.give_brain(has_one));
     let view = sim.actor(has_one).expect("alive");
     assert!(view.brain.is_on());
-    assert_eq!(view.brain.target(), Some(no_brain));
+    assert_eq!(view.brain.target(), None, "it looks for a foe as it thinks");
 }
 
 /// **The shipped brain's reach:** each attack, pressed by the brain itself at its best distance and at the
@@ -867,7 +891,8 @@ fn each_shipped_attack_lands_from_where_it_says_it_suits() {
 #[test]
 fn the_shipped_brain_is_the_one_a_replay_runs_on() {
     let scenario = find_scenario(SCENARIOS, "arena-fight").expect("listed");
-    let (sim, cast) = scenario.start(scenario.config).expect("sets up");
+    let (mut sim, cast) = scenario.start(scenario.config).expect("sets up");
+    sim.step(&TickActions::NEUTRAL);
     let view = sim.actor(cast[1]).expect("alive");
     assert!(view.brain.is_on());
     assert_eq!(view.brain.target(), Some(cast[0]));

@@ -9,8 +9,8 @@ use sapphire_ecs::prelude::*;
 use sapphire_gameplay::replay;
 use sapphire_gameplay::{
     ActorActions, ActorId, ActorSpawn, ActorTransform, Buttons, CharacterWorld, CombatSet, ControllerProfile,
-    CueEvent, DEFEATED, Fighter, HitOutcome, HurtboxId, MAX_HURTBOXES, POISE_BROKEN, SimConfig, Simulation,
-    SlowMotion, Stick, TickActions,
+    CueEvent, DEFEATED, Faction, Fighter, HitOutcome, HurtboxId, MAX_HURTBOXES, POISE_BROKEN, SimConfig,
+    Simulation, SlowMotion, Stick, TickActions,
 };
 use sapphire_math::{Vec3, det};
 use sapphire_moves::{HIT_LANDED, MoveSet, MoveSetDocument, PathSample, Weight};
@@ -579,7 +579,7 @@ fn a_hurtbox_on_something_thats_no_fighter_is_an_event_and_nothing_more() {
         let root = ActorTransform { position, yaw: 0.0 };
         let local = PathSample { translation: [0.0, 1.0, 0.0], ..PathSample::IDENTITY };
         let shape = Some(Shape::Sphere { radius: 0.25 });
-        hurtbox.set(characters.physics_mut(), shape, root, local).unwrap();
+        hurtbox.set(characters.physics_mut(), shape, root, local, Faction::NONE).unwrap();
     });
 
     land(&mut sim, attacker, Buttons::LIGHT);

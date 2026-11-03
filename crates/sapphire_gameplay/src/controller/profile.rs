@@ -2,13 +2,18 @@
 
 use sapphire_math::{Vec2, Vec3, det};
 use sapphire_moves::{ControllerProfile, MAX_JUMP_REACH, MAX_THROW_REACH, ProfileError};
-use sapphire_physics::{BodyDesc, BodyId, CollisionGroups, Group, Pose, Shape};
+use sapphire_physics::{BodyDesc, BodyId, CollisionGroups, Group, GroupMask, Pose, Shape};
 
 use crate::checksum::StateHasher;
 
 /// What a character's capsule hits: the scenery, invisible walls and other characters.
 fn capsule_groups() -> CollisionGroups {
     CollisionGroups::new(Group::Character.mask(), Group::World | Group::Character | Group::CharacterBlocker)
+}
+
+/// What a defeated character's capsule is: in no group, so nothing meets it, and meeting only scenery.
+pub(super) fn fallen_groups() -> CollisionGroups {
+    CollisionGroups::new(GroupMask::NONE, Group::World | Group::CharacterBlocker)
 }
 
 /// Writes every number as canonical bytes: destructured, so a new field can't be forgotten.

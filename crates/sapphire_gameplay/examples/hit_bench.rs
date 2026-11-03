@@ -24,7 +24,7 @@ use std::time::Duration;
 
 use rounds::Rounds;
 use sapphire_core::Name;
-use sapphire_gameplay::{ActorId, ActorTransform, HitQuery, HurtboxId, OwnerStep, VolumeSweep};
+use sapphire_gameplay::{ActorId, ActorTransform, Faction, HitQuery, HurtboxId, OwnerStep, VolumeSweep};
 use sapphire_math::{Vec3, det};
 use sapphire_moves::{BakedPath, PathSample};
 use sapphire_physics::{
@@ -100,7 +100,9 @@ fn scene(load: Load) -> Scene {
             let root = ActorTransform { position, yaw };
             for hurtbox in 0..2 {
                 let hurtbox_id = HurtboxId::new(id, hurtbox).expect("in range");
-                hurtbox_id.set(&mut world, Some(HURTBOX), root, hurtbox_local(hurtbox)).expect("it fits");
+                hurtbox_id
+                    .set(&mut world, Some(HURTBOX), root, hurtbox_local(hurtbox), Faction::NONE)
+                    .expect("it fits");
             }
             (id, root)
         })
@@ -141,7 +143,9 @@ impl Scene {
         for &(id, root) in &self.actors {
             for index in 0..2 {
                 let hurtbox = HurtboxId::new(id, index).expect("in range");
-                hurtbox.set(&mut self.world, Some(HURTBOX), root, hurtbox_local(index)).expect("it fits");
+                hurtbox
+                    .set(&mut self.world, Some(HURTBOX), root, hurtbox_local(index), Faction::NONE)
+                    .expect("it fits");
             }
         }
         let blocked_by = if stop_at_walls { Group::World.mask() } else { GroupMask::NONE };
@@ -164,6 +168,7 @@ impl Scene {
                     &VolumeSweep {
                         dodgeable: true,
                         attacker,
+                        faction: Faction::NONE,
                         instance,
                         volume,
                         group,

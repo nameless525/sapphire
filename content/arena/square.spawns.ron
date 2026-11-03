@@ -3,14 +3,25 @@
 // stands its characters on them. Yaw is degrees about +Y; 0 faces +Z, and the player faces the
 // enemy across 6 m, on the line through the street's moon gate, so the frame looks up the street.
 //
+// `crowd` is where a fight with more than one enemy puts the others (M3 B1), on the same clear floor,
+// the first three on the enemy's side of the street and the rest down its east edge.
+//
 // Compiled in (`sapphire_gameplay::arena`), so a replay can't run from other spawn points than its
 // build's. Moving one moves the `arena` replays' checksums (`cargo xtask replay --update`), and
 // `crates/sapphire_gameplay/tests/arena.rs` holds each to the ground and clear of the colliders.
 (
     type: "sapphire::gameplay::ArenaSpawns",
-    version: 1,
+    version: 2,
     data: (
         player: (position: (3.2, 0.0, 5.0), yaw_degrees: 180.0),
         enemy: (position: (3.2, 0.0, -1.0), yaw_degrees: 0.0),
+        crowd: (
+            (position: (0.4, 0.0, -3.5), yaw_degrees: 0.0),
+            (position: (6.2, 0.0, -4.5), yaw_degrees: 0.0),
+            (position: (1.0, 0.0, 1.0), yaw_degrees: 30.0),
+            (position: (8.6, 0.0, 3.0), yaw_degrees: -90.0),
+            (position: (9.6, 0.0, 0.2), yaw_degrees: -90.0),
+            (position: (8.6, 0.0, 7.0), yaw_degrees: -90.0),
+        ),
     ),
 )

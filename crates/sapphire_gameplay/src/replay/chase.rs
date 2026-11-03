@@ -49,13 +49,25 @@ pub(super) fn set_up(sim: &mut Simulation) -> Result<(ActorId, Vec<(ActorId, Pat
     let moves = Some(sim.add_move_set(test_moves()?));
 
     let start = crate::arena::spawns().player;
-    let player = sim.spawn(ActorSpawn { position: start.position(), yaw: start.yaw(), moves, controller })?;
+    let player = sim.spawn(ActorSpawn {
+        position: start.position(),
+        yaw: start.yaw(),
+        moves,
+        controller,
+        ..ActorSpawn::default()
+    })?;
     let mut navigation = sim.navigation_mut().expect("just given");
     let spots = spots(navigation.navigation().graph(), CHASERS);
     let paths: Vec<PathId> = spots.iter().map(|_| navigation.add_path()).collect();
     let mut chasers = Vec::with_capacity(CHASERS);
     for position in spots {
-        chasers.push(sim.spawn(ActorSpawn { position, yaw: 0.0, moves, controller })?);
+        chasers.push(sim.spawn(ActorSpawn {
+            position,
+            yaw: 0.0,
+            moves,
+            controller,
+            ..ActorSpawn::default()
+        })?);
     }
 
     let followers: Vec<(ActorId, PathId)> = chasers.into_iter().zip(paths).collect();

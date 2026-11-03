@@ -238,7 +238,7 @@ pub struct HitStats {
 ///
 /// ```
 /// use sapphire_core::Name;
-/// use sapphire_gameplay::{ActorId, ActorTransform, HitQuery, HurtboxId, OwnerStep, VolumeSweep};
+/// use sapphire_gameplay::{ActorId, ActorTransform, Faction, HitQuery, HurtboxId, OwnerStep, VolumeSweep};
 /// use sapphire_math::Vec3;
 /// use sapphire_moves::{BakedPath, PathSample};
 /// use sapphire_physics::{GroupMask, PhysicsWorld, Shape};
@@ -251,7 +251,7 @@ pub struct HitStats {
 /// let mut world = PhysicsWorld::new(Vec::new(), 8).unwrap();
 /// let chest = HurtboxId::new(target, 0).unwrap();
 /// let local = PathSample { translation: [0.0, 1.0, 2.0], ..PathSample::IDENTITY };
-/// chest.set(&mut world, Some(Shape::Sphere { radius: 0.25 }), root, local).unwrap();
+/// chest.set(&mut world, Some(Shape::Sphere { radius: 0.25 }), root, local, Faction::NONE).unwrap();
 ///
 /// // A fist that goes three metres forward in a tick, right through it.
 /// let samples = [0.0, 3.0].map(|z| PathSample { translation: [0.0, 1.0, z], ..PathSample::IDENTITY });
@@ -263,6 +263,7 @@ pub struct HitStats {
 ///     &world,
 ///     &VolumeSweep {
 ///         attacker,
+///         faction: Faction::NONE,
 ///         instance: 1,
 ///         volume: 0,
 ///         group: Name::new("jab"),
@@ -378,9 +379,10 @@ impl HitQuery {
         }
         self.stats.sweeps += 1;
 
+        let hurtboxes = QueryFilter::new(Group::Hurtbox.mask()).excluding_groups(volume.faction.mark());
         let filter = match HurtboxId::bodies_of(volume.attacker) {
-            Some((first, last)) => QueryFilter::new(Group::Hurtbox.mask()).excluding_bodies(first, last),
-            None => QueryFilter::new(Group::Hurtbox.mask()),
+            Some((first, last)) => hurtboxes.excluding_bodies(first, last),
+            None => hurtboxes,
         };
         let stop = (volume.group, volume.path.name());
         let mut stopped_in = self.stopped.volley_of(volume.attacker, volume.instance, stop);

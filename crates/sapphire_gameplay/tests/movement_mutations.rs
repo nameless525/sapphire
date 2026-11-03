@@ -175,8 +175,15 @@ fn gets_about(movement: ControllerProfile, label: &str) {
     sim.set_physics_world(world).expect("nobody's in it yet");
     let controller = Some(sim.add_controller_profile(&ControllerProfile::default()).expect("a good profile"));
     let id = sim.add_move_set(set(ControllerProfile::default(), &mut document));
-    let actor =
-        sim.spawn(ActorSpawn { position: Vec3::ZERO, yaw: 0.0, moves: Some(id), controller }).expect("room");
+    let actor = sim
+        .spawn(ActorSpawn {
+            position: Vec3::ZERO,
+            yaw: 0.0,
+            moves: Some(id),
+            controller,
+            ..ActorSpawn::default()
+        })
+        .expect("room");
     let step = |sim: &mut Simulation, stick: Stick, buttons: Buttons| {
         let mut actions = TickActions::NEUTRAL;
         actions.set(actor, ActorActions { buttons, stick }).expect("room");

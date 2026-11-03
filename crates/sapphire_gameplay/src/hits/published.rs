@@ -10,6 +10,7 @@ use sapphire_time::SimDuration;
 use super::HitQuery;
 use super::volume::{OwnerStep, VolumeSweep};
 use crate::actors::ActorId;
+use crate::faction::Faction;
 use crate::movement::ActorTransform;
 use crate::moves::{ActiveVolume, MoveLibrary, MoveOutput, MoveRunner};
 
@@ -53,6 +54,8 @@ pub fn published_hurtbox(name: Name, own: Shape, output: &MoveOutput) -> Option<
 #[derive(Clone, Copy, Debug)]
 pub struct PublishedMoves<'a> {
     pub attacker: ActorId,
+    /// Its side.
+    pub faction: Faction,
     /// How far its clock moved this step (`LocalClock::last_delta`).
     pub delta: SimDuration,
     pub runner: &'a MoveRunner,
@@ -88,6 +91,7 @@ impl HitQuery {
                 world,
                 &VolumeSweep {
                     attacker: moves.attacker,
+                    faction: moves.faction,
                     instance: volume.serial,
                     volume: index as u16,
                     group: volume.name,

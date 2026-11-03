@@ -312,7 +312,13 @@ fn swiping() -> (Simulation, ActorId, ActorId) {
     let attacker = sim.spawn(ActorSpawn { moves, ..ActorSpawn::default() }).expect("room");
     let at = Vec3::new(0.0, 0.0, 1.5);
     let target = sim
-        .spawn(ActorSpawn { position: at, yaw: std::f32::consts::PI, moves, controller: None })
+        .spawn(ActorSpawn {
+            position: at,
+            yaw: std::f32::consts::PI,
+            moves,
+            controller: None,
+            ..ActorSpawn::default()
+        })
         .expect("room");
     assert!(sim.press_intent(attacker, name("swipe")));
     (sim, attacker, target)

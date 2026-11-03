@@ -9,6 +9,7 @@ use sapphire_physics::{
 use super::volume::volume_pose;
 use crate::ActorTransform;
 use crate::actors::ActorId;
+use crate::faction::Faction;
 
 /// The most hurtboxes one actor can have: as many as a move set's fighter may list.
 pub const MAX_HURTBOXES: u8 = {
@@ -91,7 +92,8 @@ impl HurtboxId {
 
     /// Makes this hurtbox what it is this tick. `Some` puts it in the world in that shape, where its
     /// root and `local`, its transform in the root's space, say, in [`Group::Hurtbox`], which only hit
-    /// queries read. `None` takes it out, so nothing can touch it.
+    /// queries read, marked as `faction`'s, whose own swings pass over it. `None` takes it out, so
+    /// nothing can touch it.
     ///
     /// Call it for each of an actor's hurtboxes in
     /// [`CombatSet::Movement`](crate::CombatSet::Movement), after the actor's own movement, so
@@ -107,8 +109,9 @@ impl HurtboxId {
         shape: Option<Shape>,
         root: ActorTransform,
         local: PathSample,
+        faction: Faction,
     ) -> Result<(), WorldError> {
-        place_body(world, self.body(), shape, root, local)
+        place_body(world, self.body(), shape, root, local, faction)
     }
 }
 
@@ -119,6 +122,7 @@ fn place_body(
     shape: Option<Shape>,
     root: ActorTransform,
     local: PathSample,
+    faction: Faction,
 ) -> Result<(), WorldError> {
     let Some(shape) = shape else {
         world.remove_body(id);
@@ -128,7 +132,7 @@ fn place_body(
         return Err(WorldError::InvalidBody(id));
     }
     let pose = volume_pose(root, local);
-    let groups = CollisionGroups::new(Group::Hurtbox.mask(), GroupMask::NONE);
+    let groups = CollisionGroups::new(Group::Hurtbox.mask() | faction.mark(), GroupMask::NONE);
     match world.body_shape(id) {
         Some(current) if current == shape => world.set_body_pose(id, pose),
         Some(_) => {
@@ -169,12 +173,13 @@ pub(crate) fn set_dodge_volume(
     actor: ActorId,
     volume: Option<(Shape, PathSample)>,
     root: ActorTransform,
+    faction: Faction,
 ) -> Result<(), WorldError> {
     let Some(id) = dodge_body(actor) else {
         return Err(WorldError::InvalidBody(BodyId(actor.raw())));
     };
     let (shape, local) = volume.map_or((None, PathSample::IDENTITY), |(shape, local)| (Some(shape), local));
-    place_body(world, id, shape, root, local)
+    place_body(world, id, shape, root, local, faction)
 }
 
 /// Takes all of an actor's hurtboxes and its perfect-dodge volume out of the world, for a despawn, and

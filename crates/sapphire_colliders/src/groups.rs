@@ -48,6 +48,17 @@ impl GroupMask {
     /// Every group, those added later included.
     pub const ALL: Self = Self(u32::MAX);
 
+    /// How many marks there are. See [`Self::mark`].
+    pub const MARKS: u32 = 24;
+
+    /// A bit no [`Group`] ever takes, from 0 to [`Self::MARKS`] less one, for a game to tell apart some
+    /// of a group's bodies, as a fight's factions do their hurtboxes. Bits 5 to 7 stay for groups.
+    #[must_use]
+    pub const fn mark(number: u32) -> Self {
+        assert!(number < Self::MARKS);
+        Self(1 << (8 + number))
+    }
+
     /// The mask with these bits, as cooked data stores it.
     pub const fn from_bits(bits: u32) -> Self {
         Self(bits)

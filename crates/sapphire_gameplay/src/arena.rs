@@ -95,11 +95,13 @@ impl SpawnPoint {
 pub struct ArenaSpawns {
     pub player: SpawnPoint,
     pub enemy: SpawnPoint,
+    /// Where a fight with more than one enemy puts the others, in the order they join it.
+    pub crowd: [SpawnPoint; 6],
 }
 
 impl Versioned for ArenaSpawns {
-    /// 1: M2 O5.
-    const VERSION: u32 = 1;
+    /// 1: M2 O5. 2: M3 B1's crowd.
+    const VERSION: u32 = 2;
 }
 
 /// The arena's spawn points.

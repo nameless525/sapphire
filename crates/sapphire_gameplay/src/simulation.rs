@@ -37,7 +37,7 @@ use crate::navigation::SimNavigation;
 use crate::party::{self, Party, PartyError, PartySlot, PartyTuning};
 use crate::resolve::{self, AppliedHits, Fighter, ResolveStats, SlowMotion};
 use crate::stats::{BUDGET_DESKTOP_LOW, PHYSICS_BUDGET_DESKTOP_LOW, SimStats};
-use crate::targeting::TargetingTuning;
+use crate::targeting::{self, SoftLock, TargetingTuning};
 use crate::timeline::{
     self, CinematicError, TimelineEvent, TimelineId, TimelineLibrary, TimelinePlayError, TimelineProgress,
     TimelineRun,
@@ -188,7 +188,9 @@ impl Simulation {
             .add_systems(FixedCombat, timeline::advance_timeline.in_set(CombatSet::Timeline))
             .add_systems(
                 FixedCombat,
-                (intents::press_intents, brain::think).chain().in_set(CombatSet::Intents),
+                (intents::press_intents, targeting::choose_soft_locks, brain::think)
+                    .chain()
+                    .in_set(CombatSet::Intents),
             )
             .add_systems(FixedCombat, party::settle_swaps.in_set(CombatSet::Party))
             .add_systems(FixedCombat, moves::settle_cancels.in_set(CombatSet::Cancels))
@@ -760,9 +762,19 @@ impl Simulation {
         true
     }
 
-    /// Gives a live actor a brain that fights `target`, from its next step, between steps. Returns whether
+    /// Gives a live actor a soft lock, between steps: from its next step on, each step chooses who it's
+    /// aiming at from where it stands and where its stick points, and writes the [`WarpTarget`]. Returns
+    /// whether the actor is alive. See [`crate::targeting`].
+    pub fn give_soft_lock(&mut self, id: ActorId) -> bool {
+        let world = self.ecs.world_mut();
+        let Some(entity) = world.resource::<ActorTable>().entity(id) else { return false };
+        *world.get_mut::<SoftLock>(entity).expect("every pooled entity has a soft lock") = SoftLock::ON;
+        true
+    }
+
+    /// Gives a live actor a brain, from its next step, between steps: it picks its own foes. Returns whether
     /// the actor's set says how it fights ([`sapphire_moves::MoveSet::brain`]). See [`crate::brain`].
-    pub fn give_brain(&mut self, id: ActorId, target: ActorId) -> bool {
+    pub fn give_brain(&mut self, id: ActorId) -> bool {
         let world = self.ecs.world_mut();
         let Some(entity) = world.resource::<ActorTable>().entity(id) else { return false };
         let set = world.get::<MoveRunner>(entity).and_then(MoveRunner::set);
@@ -772,7 +784,7 @@ impl Simulation {
         };
         let now = world.get::<EntityClock>(entity).expect("every pooled entity has a clock").0.now();
         let mut rng = world.resource::<SimRng>().0;
-        let brain = Brain::fighting(target, def, now, &mut rng);
+        let brain = Brain::fighting(def, now, &mut rng);
         world.resource_mut::<SimRng>().0 = rng;
         *world.get_mut::<Brain>(entity).expect("every pooled entity has a brain") = brain;
         true
@@ -985,6 +997,7 @@ pub(crate) fn view(world: &World, id: ActorId, entity: Entity) -> ActorView {
         controller: *actor.get::<CharacterController>().expect("every pooled entity has a controller"),
         fighter,
         brain,
+        soft_lock: *actor.get::<SoftLock>().expect("every pooled entity has a soft lock"),
         controls: *actor.get::<Controls>().expect("every pooled entity has controls"),
         off_field: world.resource::<Party>().is_off_field(id),
     }

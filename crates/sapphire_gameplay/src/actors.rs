@@ -23,11 +23,13 @@ use sapphire_time::{SimDuration, SimTime};
 use crate::actions::Controls;
 use crate::brain::Brain;
 use crate::controller::{CharacterController, CharacterWorld, ProfileId};
+use crate::faction::Faction;
 use crate::hits::{HitQuery, MAX_HURTBOXES};
 use crate::intents::IntentRing;
 use crate::movement::ActorTransform;
 use crate::moves::{MoveLibrary, MoveOutput, MoveRead, MoveRunner, MoveSetId, WarpTarget};
 use crate::resolve::Fighter;
+use crate::targeting::{LockCandidates, SoftLock};
 
 /// How many bodies a pool of `max_actors` can put in a world: each actor's capsule, all its hurtboxes
 /// and its perfect-dodge volume.
@@ -70,6 +72,8 @@ pub struct ActorSpawn {
     /// [`Self::position`]. See [`crate::Simulation::add_controller_profile`]. The `movement` section of
     /// its set's document, if there is one, is what it moves by instead.
     pub controller: Option<ProfileId>,
+    /// Whose side it's on, for its whole life. See [`Faction`].
+    pub faction: Faction,
 }
 
 /// A spawn that couldn't be done. Reaching one is deterministic, so it replays too.
@@ -217,6 +221,7 @@ struct ActorBundle {
     controller: CharacterController,
     fighter: Fighter,
     brain: Brain,
+    soft_lock: SoftLock,
 }
 
 /// Spawns the pool and creates the actor resources, before the world's first step.
@@ -235,10 +240,12 @@ pub(crate) fn create_pool(world: &mut World, capacity: u32) {
             controller: CharacterController::default(),
             fighter: Fighter::default(),
             brain: Brain::default(),
+            soft_lock: SoftLock::default(),
         });
         pool.push(entity.id());
     }
     world.insert_resource(ActorTable::with_capacity(capacity as usize));
+    world.insert_resource(LockCandidates::with_capacity(capacity as usize));
     world.insert_resource(ActorRequests::with_pool(pool));
 }
 
@@ -254,6 +261,7 @@ pub(crate) type ActorState<'w> = (
     &'w mut CharacterController,
     &'w mut Fighter,
     &'w mut Brain,
+    &'w mut SoftLock,
 );
 
 /// What a query for [`ActorState`] hands over.
@@ -268,6 +276,7 @@ type ActorStateItem<'w> = (
     Mut<'w, CharacterController>,
     Mut<'w, Fighter>,
     Mut<'w, Brain>,
+    Mut<'w, SoftLock>,
 );
 
 /// `FixedPost`, and straight after a spawn or despawn between steps: resolves everything queued, in
@@ -329,6 +338,7 @@ pub(crate) fn restart_pool(
         mut controller,
         mut fighter,
         mut brain,
+        mut soft_lock,
     ) in &mut actors
     {
         *clock = world_clock.new_entity_clock();
@@ -341,6 +351,7 @@ pub(crate) fn restart_pool(
         *controller = CharacterController::default();
         *fighter = Fighter::default();
         *brain = Brain::default();
+        *soft_lock = SoftLock::default();
     }
     characters.refused = 0;
     characters.last_time = std::time::Duration::ZERO;
@@ -362,6 +373,7 @@ fn reset_actor(
         mut controller,
         mut fighter,
         mut brain,
+        mut soft_lock,
     ): ActorStateItem<'_>,
     id: ActorId,
     spawn: ActorSpawn,
@@ -380,7 +392,9 @@ fn reset_actor(
     *controller = characters.spawned(id, spawn.controller, movement, &transform);
     let def = spawn.moves.and_then(|set| library.current(set)).and_then(MoveSet::fighter);
     *fighter = def.map_or_else(Fighter::default, Fighter::new);
+    fighter.faction = spawn.faction;
     *brain = Brain::default();
+    *soft_lock = SoftLock::default();
 }
 
 /// A live actor's public state, read between steps. Presentation interpolates between two of
@@ -405,6 +419,8 @@ pub struct ActorView {
     pub fighter: Fighter,
     /// What's thinking for it, if anything: see [`crate::Simulation::give_brain`].
     pub brain: Brain,
+    /// Who it has soft-locked, if it does that: see [`crate::Simulation::give_soft_lock`].
+    pub soft_lock: SoftLock,
     /// Its input as its last step read it: its stick, in the world's directions, is where it's
     /// pointing, for [`crate::targeting`].
     pub controls: Controls,

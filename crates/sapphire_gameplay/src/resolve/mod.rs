@@ -39,7 +39,8 @@
 //! 1. Its damage comes off health, and its poise off the meter, whatever else happens. An invulnerable
 //!    target has no hurtboxes to touch, so it never gets this far.
 //! 2. If that took the last of its health, it's **defeated:** its `defeat` reaction plays, its hurtboxes
-//!    leave the world, it starts nothing more and hits nothing more.
+//!    leave the world, its capsule stops meeting anyone (`CharacterWorld::fell`), it starts nothing more
+//!    and hits nothing more.
 //! 3. If that took the last of its poise, its **poise breaks:** its `poise_break` reaction plays, whatever
 //!    armour says, and the meter fills again.
 //! 4. If the hit's poise is below the threshold of an armour window open on its running move, its armour
@@ -146,6 +147,7 @@ pub use self::fighter::{Fighter, HitOutcome};
 pub use self::time::SlowMotion;
 pub(crate) use self::time::{apply_time, counter_scale};
 use crate::actors::ActorTable;
+use crate::controller::CharacterWorld;
 use crate::cues::{CueEvent, CueQueue, DEFEATED, HitCue, POISE_BROKEN};
 use crate::hits::{HitEvent, HitQuery};
 use crate::movement::ActorTransform;
@@ -237,6 +239,7 @@ pub(crate) fn push_knockback(
 /// [`crate::CombatSet::Resolve`]: refills poise that's due, then applies this step's hits. See the
 /// [module docs](self).
 #[allow(clippy::type_complexity, reason = "a system's query reads as what it touches")]
+#[allow(clippy::too_many_arguments, reason = "a system's parameters read as what it touches")]
 pub(crate) fn apply_hits(
     table: Res<'_, ActorTable>,
     hits: Res<'_, HitQuery>,
@@ -245,6 +248,7 @@ pub(crate) fn apply_hits(
     mut stats: ResMut<'_, ResolveStats>,
     attackers: Query<'_, '_, (&MoveOutput, &ActorTransform)>,
     mut targets: Query<'_, '_, (&EntityClock, &mut Fighter, &mut MoveRunner, &MoveOutput, &ActorTransform)>,
+    mut characters: ResMut<'_, CharacterWorld>,
 ) {
     applied.0.clear();
     for (_, entity) in table.iter() {
@@ -284,6 +288,9 @@ pub(crate) fn apply_hits(
         stats.hits_absorbed += u64::from(outcome == HitOutcome::Absorbed);
         stats.poise_breaks += u64::from(outcome == HitOutcome::PoiseBroken);
         stats.defeats += u64::from(outcome == HitOutcome::Defeated);
+        if outcome == HitOutcome::Defeated {
+            characters.fell(event.target);
+        }
         applied.0.push(AppliedHit { event: *event, attack, outcome, move_started_at });
     }
 }

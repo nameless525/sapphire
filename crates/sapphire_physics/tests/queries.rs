@@ -1417,3 +1417,53 @@ fn touching_query_shapes_report_zero_even_when_tangent_or_separating() {
         }
     }
 }
+
+/// A mark on some of a group's bodies leaves them out as `excluding_bodies` does, with no test and no room
+/// in a list, while they stay what every other query finds. Nothing's a collider's to leave out.
+#[test]
+fn a_query_can_leave_out_bodies_with_a_mark() {
+    let marked = GroupMask::mark(0);
+    let body = |id: u32, x: f32, memberships: GroupMask| BodyDesc {
+        id: BodyId(id),
+        shape: SPHERE,
+        pose: Pose::at(Vec3::new(x, 0.0, 0.0)),
+        groups: CollisionGroups::new(memberships, GroupMask::NONE),
+    };
+    let wall = collider(0, UNIT_BOX, Vec3::new(40.0, 0.0, 0.0));
+    let mut world = PhysicsWorld::new(vec![wall], 8).expect("builds");
+    world.add_body(body(1, 5.0, Group::Hurtbox.mask() | marked)).expect("adds");
+    world.add_body(body(2, 10.0, Group::Hurtbox.mask() | GroupMask::mark(1))).expect("adds");
+    world.add_body(body(3, 15.0, Group::Hurtbox.mask())).expect("adds");
+
+    let hurtboxes = QueryFilter::new(Group::Hurtbox.mask());
+    let thin = Shape::Sphere { radius: 0.01 };
+    let cast = |filter: &QueryFilter| {
+        let mut out = [ShapeHit::NONE; 1];
+        world.take_stats();
+        let found = world.cast_shape_all(&thin, Pose::at(Vec3::ZERO), Vec3::X, 100.0, filter, &mut out);
+        (out[0].target, found.found, world.take_stats().narrow_tests)
+    };
+    assert_eq!(cast(&hurtboxes), (HitTarget::Body(BodyId(1)), 3, 3));
+    assert_eq!(cast(&hurtboxes.excluding_groups(marked)), (HitTarget::Body(BodyId(2)), 2, 2));
+    let both = hurtboxes.excluding_groups(marked | GroupMask::mark(1));
+    assert_eq!(cast(&both), (HitTarget::Body(BodyId(3)), 1, 1));
+
+    let everything = QueryFilter::new(GroupMask::ALL).excluding_groups(Group::World.mask());
+    let ray =
+        world.cast_ray(Vec3::new(30.0, 0.0, 0.0), Vec3::X, 100.0, &everything).expect("it finds the wall");
+    assert_eq!(ray.target, HitTarget::Static(ColliderId(0)), "a collider isn't asked");
+}
+
+#[test]
+fn a_bodys_groups_change_where_it_stands() {
+    let mut world = PhysicsWorld::new(Vec::new(), 8).expect("builds");
+    world.add_body(character(1, Vec3::ZERO)).expect("adds");
+    let found = world.cast_ray(Vec3::new(-5.0, 0.0, 0.0), Vec3::X, 100.0, &ALL);
+    assert!(found.is_some());
+    let gone = CollisionGroups::new(GroupMask::NONE, Group::World.mask());
+    world.set_body_groups(BodyId(1), gone).expect("it's there");
+    assert_eq!(world.body_groups(BodyId(1)), Some(gone));
+    assert!(world.cast_ray(Vec3::new(-5.0, 0.0, 0.0), Vec3::X, 100.0, &ALL).is_none());
+    assert_eq!(world.body_pose(BodyId(1)), Some(Pose::at(Vec3::ZERO)));
+    assert!(matches!(world.set_body_groups(BodyId(2), gone), Err(WorldError::UnknownBody(_))));
+}

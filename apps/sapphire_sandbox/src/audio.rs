@@ -15,6 +15,7 @@
 //! both through the scene's own clocks ([`Scene::sound`](crate::scene::Scene::sound)). A sound
 //! recooked while the app runs isn't picked up: the mixer holds what was decoded at startup.
 
+use std::collections::HashSet;
 use std::time::Duration;
 
 use sapphire_assets::AssetId;
@@ -230,9 +231,10 @@ fn load_cues(
     gpu: &GpuContext,
 ) -> Result<Vec<LoadedCue>, AppInitError> {
     let stopwatch = Stopwatch::start();
+    let mut decoded = HashSet::new();
     let loaded = cues
         .iter()
-        .map(|&id| content.load_cue(id, renderer, gpu).map(|(cue, sounds)| (id, cue, sounds)))
+        .map(|&id| content.load_cue(id, &mut decoded, renderer, gpu).map(|(cue, sounds)| (id, cue, sounds)))
         .collect::<Result<Vec<_>, _>>()?;
     let sounds = loaded.iter().map(|(_, _, sounds)| sounds.len()).sum::<usize>();
     let frames =
@@ -252,7 +254,7 @@ fn add_cues<B: sapphire_audio::AudioBackend>(system: &mut AudioSystem<B>, loaded
     }
 }
 
-/// A cue and its sounds, decoded.
+/// A cue and those of its sounds no cue before it brought, decoded.
 type LoadedCue = (AssetId, Cue, Vec<(AssetId, DecodedSound)>);
 
 /// The rate [`OfflineAudio`] mixes at: a phone's and most devices' own.

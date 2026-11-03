@@ -394,8 +394,10 @@ pub struct ByteRange {
 }
 
 impl ByteRange {
+    /// Where it ends. A peer says what a range is, so one running past the last number there is ends
+    /// there, which is past any pack.
     pub fn end(&self) -> u64 {
-        self.offset + self.len
+        self.offset.saturating_add(self.len)
     }
 }
 

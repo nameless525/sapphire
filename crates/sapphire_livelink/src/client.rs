@@ -430,6 +430,28 @@ mod tests {
         assert!(matches!(after, Err(LinkError::Closed)), "{after:?}");
     }
 
+    /// A range is what a peer says, so one whose end overflows is a range past the pack like any other:
+    /// the push ends with that, in a build that checks overflow as in one that wraps.
+    #[test]
+    fn a_device_asking_past_the_last_number_there_is_fails_a_push() {
+        for asked in [ByteRange { offset: u64::MAX, len: 2 }, ByteRange { offset: 1, len: u64::MAX }] {
+            let address = device(move |mut stream| {
+                let Ok(Request { id, body: RequestBody::PackBegin { .. } }) = read_frame(&mut stream) else {
+                    panic!("a pack push begins");
+                };
+                write_frame(&mut stream, &Reply { id, body: ReplyBody::PackNeed { ranges: vec![asked] } })
+                    .unwrap();
+            });
+            let mut client = Client::connect(address).unwrap();
+            let result = client.push_pack("zone", &large_pack(0));
+            assert!(
+                matches!(&result, Err(LinkError::PastPack(name)) if name == "zone"),
+                "{asked:?}: {result:?}"
+            );
+            assert!(matches!(client.status(), Err(LinkError::Closed)), "{asked:?}");
+        }
+    }
+
     #[test]
     fn a_device_reading_slowly_takes_a_push_as_long_as_it_keeps_reading() {
         // The device takes a chunk every `PACE`: the push takes several progress deadlines in

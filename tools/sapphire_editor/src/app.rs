@@ -104,6 +104,8 @@ pub struct Editor {
     notice: Option<Notice>,
     last_poll: f64,
     quit: Quit,
+    /// A close the window couldn't ask about has been heard since the last pass.
+    closed_unseen: bool,
     /// A document picked with edits unsaved: the top bar asks first.
     opening: Option<PathBuf>,
     /// What's being typed in the inspector, which is on the screen and not yet in the text.
@@ -170,6 +172,7 @@ impl Editor {
             notice: None,
             last_poll: 0.0,
             quit: Quit::No,
+            closed_unseen: false,
             opening: None,
             typed: None,
         };
@@ -608,9 +611,15 @@ impl Editor {
     /// The window was asked to close and can't draw, so the question it would ask can't be seen. Edits are
     /// saved rather than lost unseen. If the file won't take them the log says why and it stays open, in
     /// case that's the one thing to put right, and a second close goes anyway.
+    ///
+    /// A second close comes after a pass. SDL follows the close of its last window with a quit in the same
+    /// pump, so one click calls this twice, and every event wakes a pass, so the next click comes after one.
     pub fn request_quit_unseen(&mut self) {
         if !self.is_dirty() {
             self.quit = Quit::Yes;
+            return;
+        }
+        if std::mem::replace(&mut self.closed_unseen, true) {
             return;
         }
         self.quit = match self.save() {
@@ -838,6 +847,7 @@ impl Editor {
 
     /// The whole interface.
     pub fn ui(&mut self, ui: &mut Ui) {
+        self.closed_unseen = false;
         let now = ui.input(|input| input.time);
         self.poll(now);
         self.advance_playback(now);

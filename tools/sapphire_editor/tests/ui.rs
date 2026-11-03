@@ -1041,8 +1041,33 @@ fn closing_a_window_that_cant_draw_saves_instead_of_asking() {
     harness.state_mut().request_quit_unseen();
     assert!(!harness.state().may_quit(), "it would lose someone's save, or these edits");
     assert_same(&fs::read_to_string(&path).expect("the file"), &elsewhere, "the file");
+    harness.run_steps(1);
     harness.state_mut().request_quit_unseen();
     assert!(harness.state().may_quit(), "the second close is an answer");
+    assert_same(&fs::read_to_string(&path).expect("the file"), &elsewhere, "the file");
+}
+
+/// SDL follows the close of its last window with a quit, in the same pump, so one click on a window that
+/// can't draw reaches the editor as two requests with no pass between them. That's one close: the edits
+/// the file wouldn't have must still be here, and the pass after it, a close is a second one.
+#[test]
+fn one_close_that_sdl_says_twice_isnt_a_second_close() {
+    let dir = TestDir::new("unseen_twice");
+    let path = dir.write("slice.moves.ron", SLICE);
+    let mut harness = harness(&path);
+    type_over_the_cue_name(&mut harness, TYPED_NAME);
+    let elsewhere = SLICE.replacen("startup: 5", "startup: 6", 1);
+    fs::write(&path, &elsewhere).expect("someone else's save");
+
+    harness.state_mut().request_quit_unseen();
+    harness.state_mut().request_quit_unseen();
+    assert!(!harness.state().may_quit(), "one click lost the edits");
+    assert!(harness.state().is_dirty());
+
+    harness.run_steps(1);
+    harness.state_mut().request_quit_unseen();
+    harness.state_mut().request_quit_unseen();
+    assert!(harness.state().may_quit(), "the next click is the second close");
     assert_same(&fs::read_to_string(&path).expect("the file"), &elsewhere, "the file");
 }
 

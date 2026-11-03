@@ -711,7 +711,8 @@ impl Checker {
         }
     }
 
-    /// Checks a perfect-dodge window and resolves what it names.
+    /// Checks a perfect-dodge window and resolves what it names. `invulnerable` is the move's i-frames
+    /// as [`covered_runs`] gives them.
     fn perfect_dodge(
         &mut self,
         window: &PerfectDodgeDocument,
@@ -729,7 +730,7 @@ impl Checker {
                     format!("window {from}..{to} has a volume, in a set with no fighter to dodge"),
                 );
             }
-            if !(from..to).all(|tick| invulnerable.iter().any(|span| span.from <= tick && tick < span.to)) {
+            if !runs_cover(invulnerable, from, to) {
                 self.add(
                     TRACK,
                     format!("window {from}..{to} has a volume, and isn't invulnerable throughout"),
@@ -1067,6 +1068,28 @@ impl Checker {
     }
 }
 
+/// The ticks `spans` cover, as runs in order that neither overlap nor touch. An empty or reversed span
+/// covers nothing. Its cost is the spans', never the ticks between their ends: a document being refused
+/// can say anything a `u32` holds there.
+fn covered_runs(spans: &[Span]) -> Vec<Span> {
+    let mut spans: Vec<Span> = spans.iter().copied().filter(|span| span.from < span.to).collect();
+    spans.sort_by_key(|span| span.from);
+    let mut runs: Vec<Span> = Vec::with_capacity(spans.len());
+    for span in spans {
+        match runs.last_mut() {
+            Some(run) if span.from <= run.to => run.to = run.to.max(span.to),
+            _ => runs.push(span),
+        }
+    }
+    runs
+}
+
+/// Whether [`covered_runs`] cover every tick of `from..to`, which an empty window has none of.
+fn runs_cover(runs: &[Span], from: u32, to: u32) -> bool {
+    let after = runs.partition_point(|run| run.from <= from);
+    from >= to || after.checked_sub(1).is_some_and(|run| to <= runs[run].to)
+}
+
 /// The keys around `tick`, and how far between them. `None` if there are none at all.
 fn around<K: Copy>(keys: &[K], at: impl Fn(&K) -> u32, tick: u32) -> Option<(K, K, f32)> {
     let after = keys.iter().position(|key| at(key) > tick);
@@ -1369,10 +1392,11 @@ fn compile_move(
         list.iter().map(|span| check.span(track, span.from, span.to, ticks)).collect()
     };
     let invulnerable = spans(check, "invulnerable", &mv.invulnerable);
+    let invulnerable_runs = covered_runs(&invulnerable);
     let perfect_dodge = mv
         .perfect_dodge
         .iter()
-        .map(|window| check.perfect_dodge(window, ticks, &invulnerable, known))
+        .map(|window| check.perfect_dodge(window, ticks, &invulnerable_runs, known))
         .collect();
     let parry = spans(check, "parry", &mv.parry);
 
@@ -2281,6 +2305,86 @@ mod tests {
         let other = tuned.compile().expect("still good").to_cooked().expect("cooks");
         assert_ne!(other.as_slice(), cooked.as_slice());
         assert!(slice().compile().expect("compiles").brain().is_none(), "the test content has none");
+    }
+
+    /// A move of ordinary length whose dodge and i-frames say they run to the end of a `u32`, behind
+    /// plenty of i-frames that don't cover it. Walking its ticks took minutes to say what's wrong, so this
+    /// runs off to one side, against a limit it would only reach by doing that again.
+    #[test]
+    fn a_refused_dodge_costs_its_windows_not_their_ticks() {
+        let mut document = slice();
+        let dodge = document.moves.iter_mut().find(|mv| mv.name == "dodge").expect("in the content");
+        dodge.perfect_dodge[0].from = 0;
+        dodge.perfect_dodge[0].to = u32::MAX;
+        dodge.invulnerable = vec![SpanDocument { from: 4_000_000_000, to: 4_000_000_001 }; 64];
+        dodge.invulnerable.push(SpanDocument { from: 0, to: u32::MAX });
+
+        let (said, heard) = std::sync::mpsc::channel();
+        std::thread::spawn(move || said.send(document.check()));
+        let issues = heard
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("what's wrong takes no time to find, whatever the numbers say");
+        let said: Vec<String> = issues.iter().map(ToString::to_string).collect();
+        assert!(
+            said.iter().any(|issue| issue.contains("`dodge`, track `perfect_dodge`")
+                && issue.contains(&format!("0..{}", u32::MAX))
+                && issue.contains("past the move's end")),
+            "{said:?}"
+        );
+        assert!(
+            said.iter().any(|issue| issue.contains("`dodge`, track `invulnerable`")
+                && issue.contains("past the move's end")),
+            "{said:?}"
+        );
+    }
+
+    /// A dodge's volume against what's invulnerable, each row a window and its i-frames, with or
+    /// without a gap: runs that touch or overlap in any order, and empty and reversed ones, which cover
+    /// nothing.
+    #[test]
+    fn a_dodges_volume_needs_iframes_on_every_tick() {
+        const THROUGHOUT: &str = "isn't invulnerable throughout";
+        type Ticks = (u32, u32);
+        #[rustfmt::skip]
+        let rows: &[(Ticks, &[Ticks], bool)] = &[
+            ((1, 7), &[(1, 7)], true),
+            ((1, 7), &[(0, 26)], true),
+            ((1, 7), &[(1, 4), (4, 7)], true),
+            ((1, 7), &[(4, 7), (1, 4)], true),
+            ((1, 7), &[(1, 5), (3, 7)], true),
+            ((1, 7), &[(3, 7), (1, 5), (2, 3)], true),
+            ((1, 7), &[(1, 7), (9, 9), (12, 10)], true),
+            ((1, 7), &[(1, 3), (2, 2), (9, 2), (3, 7)], true),
+            ((1, 7), &[(1, 5), (2, 3), (5, 7)], true),
+            ((1, 7), &[], false),
+            ((1, 7), &[(2, 7)], false),
+            ((1, 7), &[(1, 6)], false),
+            ((1, 7), &[(1, 3), (4, 7)], false),
+            ((1, 7), &[(4, 7), (1, 3)], false),
+            ((1, 7), &[(1, 3), (3, 3), (4, 7)], false),
+            ((1, 7), &[(1, 3), (7, 3), (4, 7)], false),
+            ((1, 7), &[(7, 1)], false),
+            ((1, 2), &[(1, 2)], true),
+            ((1, 2), &[(0, 1), (2, 3)], false),
+        ];
+        for &((from, to), iframes, covered) in rows {
+            let mut document = slice();
+            let dodge = document.moves.iter_mut().find(|mv| mv.name == "dodge").expect("in the content");
+            (dodge.perfect_dodge[0].from, dodge.perfect_dodge[0].to) = (from, to);
+            dodge.invulnerable = iframes.iter().map(|&(from, to)| SpanDocument { from, to }).collect();
+            let issues = document.check();
+            let found = issues.iter().any(|issue| issue.to_string().contains(THROUGHOUT));
+            assert_eq!(found, !covered, "{from}..{to} under {iframes:?}: {issues:?}");
+        }
+
+        // An empty window has no ticks to cover, and says what's wrong with it by itself.
+        let mut document = slice();
+        let dodge = document.moves.iter_mut().find(|mv| mv.name == "dodge").expect("in the content");
+        (dodge.perfect_dodge[0].from, dodge.perfect_dodge[0].to) = (5, 5);
+        dodge.invulnerable.clear();
+        let said: Vec<String> = document.check().iter().map(ToString::to_string).collect();
+        assert!(said.iter().any(|issue| issue.contains("window 5..5 is empty")), "{said:?}");
+        assert!(!said.iter().any(|issue| issue.contains(THROUGHOUT)), "{said:?}");
     }
 
     /// Bytes from anywhere: a brain that points at no intent is damaged, as a move's window would be.

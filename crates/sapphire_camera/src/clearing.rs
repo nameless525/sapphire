@@ -378,10 +378,13 @@ impl Clearing {
         }
         // Whole periods, and everything else that counts time counts them, so the same choices fall at the
         // same moments at any frame rate.
+        let mut periods = 0_u16;
         while self.since_check >= tuning.check_every - ON_TIME {
             self.since_check -= tuning.check_every;
+            periods += 1;
         }
-        self.until_free = (self.until_free - tuning.check_every).max(0.0);
+        let elapsed = f32::from(periods) * tuning.check_every;
+        self.until_free = (self.until_free - elapsed).max(0.0);
         if let Some(goal) = self.goal
             && wrap_angle(goal - yaw).abs() < THERE
         {
@@ -398,7 +401,7 @@ impl Clearing {
             }
             return;
         }
-        self.troubled += tuning.check_every;
+        self.troubled += elapsed;
         if self.troubled < tuning.patience || self.until_free > 0.0 {
             return;
         }

@@ -270,6 +270,33 @@ fn it_chooses_at_the_same_moment_at_any_rate() {
     assert!((slow - fast).abs() < 1e-3 && (middle - fast).abs() < 1e-3, "{slow}, {middle}, {fast}");
 }
 
+/// The same with frames longer than a check: slow frames, and a document's short `check_every`. Patience and
+/// settling count the time that went by, not the checks that were made.
+#[test]
+fn it_counts_the_time_that_went_by_not_its_checks() {
+    let world = wall_behind();
+    let first_choice = |check_every: f32, rate: u32| {
+        let mut camera = combat_director();
+        let mut tuning = camera.tuning().clone();
+        tuning.clearing.check_every = check_every;
+        tuning.clearing.patience = 0.6;
+        camera.set_tuning(tuning).expect("it's in range");
+        let (dt, moment) = (1.0 / rate as f32, facing_the_enemy(0.0));
+        for frame in 1..=(rate * 10) {
+            camera.update(&moment.frame(dt), &world);
+            if camera.take_stats().swings > 0 {
+                return (frame - 1) as f32 * dt;
+            }
+        }
+        panic!("no choice in 10 s, checking every {check_every} s at {rate} Hz");
+    };
+    // At 5 Hz it's two checks' time a frame, and at 30 Hz, for checks of 0.01 s, more than three.
+    for (check_every, rate) in [(0.1, 5), (0.1, 6), (0.01, 30), (0.01, 60), (0.02, 30)] {
+        let at = first_choice(check_every, rate);
+        assert!((0.6..0.6 + 1.5 / rate as f32).contains(&at), "at {at}, checking every {check_every} s at {rate} Hz");
+    }
+}
+
 /// A reach of 0 turns all of it off, and the framing rigs never ask for it when they're off.
 #[test]
 fn it_only_runs_under_a_framing_rig() {

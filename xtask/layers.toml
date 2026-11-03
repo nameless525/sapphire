@@ -103,6 +103,10 @@ sapphire_watch = { kind = "dev_only", features = ["default", "notify"] }
 # Live link (M1 A9): the device half apps link through `dev`, and the desktop tool, a binary of
 # the same crate that `cargo xtask link` runs.
 sapphire_livelink = { kind = "dev_only" }
+# What an editor edits (M3 E1): typed documents and change records over RON text. Links the documents'
+# crates and no renderer, GPU or egui. Not a tool, because the editor depends on it and nothing may
+# depend on a tool (R1).
+sapphire_document = { kind = "dev_only" }
 # Apps.
 # `tracy`: stream profiling zones to Tracy (spec §5.3).
 # `dev`: development builds, linking the dev-only crates (the debug overlay, spec §5.20).

@@ -21,6 +21,8 @@ pollster.workspace = true
 sapphire_anim.workspace = true
 sapphire_assets.workspace = true
 sapphire_core.workspace = true
+# Where each value of a document sits in its text.
+sapphire_document.workspace = true
 # The preview is a real run of the simulation.
 sapphire_gameplay.workspace = true
 # Save and push.

@@ -51,6 +51,7 @@ members = [
     # Apps
     "apps/sapphire_sandbox",
     # Tools (never shipped)
+    "tools/sapphire_document",
     "tools/sapphire_editor",
     "tools/sapphire_pipeline",
     "tools/sapphire_replay",
@@ -251,6 +252,7 @@ insta = { version = "1.47", default-features = false }
 egui_kittest = { version = "0.37.0", default-features = false }
 
 # --- Tools only (never in a runtime crate's dependency tree) ---
+sapphire_document = { path = "tools/sapphire_document" }
 sapphire_testkit = { path = "tools/sapphire_testkit" }
 sapphire_pipeline = { path = "tools/sapphire_pipeline" }
 # FLIP image comparison for golden images (NVIDIA's FLIP via C++), as wgpu's own tests use.

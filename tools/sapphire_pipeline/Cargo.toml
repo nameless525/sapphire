@@ -61,6 +61,8 @@ vrm-spec.workspace = true
 sapphire_anim.workspace = true
 # A move's tables played in the simulation.
 sapphire_gameplay.workspace = true
+# The editor's sidecars and a cook's are one thing (`tests/document_sidecars.rs`).
+sapphire_document.workspace = true
 
 [lints]
 workspace = true

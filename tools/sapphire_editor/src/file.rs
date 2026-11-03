@@ -10,10 +10,10 @@
 //! ([`History`]): the smallest splice that takes one text to the other, so a drag across twenty ticks is
 //! one step and a long session costs little.
 
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::{fs, io};
 
+use sapphire_document::disk::Temporary;
 use sapphire_moves::{Issue, MoveSet, MoveSetDocument, MoveSetError};
 
 use crate::edits::{EditError, MovesText};
@@ -375,64 +375,6 @@ fn read_text(path: &Path) -> Result<String, FileError> {
     String::from_utf8(bytes).map_err(|_| FileError::NotText { path: path.to_owned() })
 }
 
-/// How many names a save tries for its temporary. Each one taken is someone else's file.
-const TEMPORARY_NAMES: u32 = 1024;
-
-/// A file of one save's own, written whole beside the one it's to replace and renamed over it: all of it
-/// or none of it, keeping the file's mode. Only a name nothing's at will do, so whatever is there already, another save's temporary, a person's file or a link to anything, is
-/// left alone, and another editor's save can't write into this one or rename it away. Dropped before it
-/// replaces anything, it's gone, and only it.
-#[derive(Debug)]
-struct Temporary {
-    path: PathBuf,
-    replaced: bool,
-}
-
-impl Temporary {
-    fn beside(target: &Path, text: &str) -> io::Result<Self> {
-        let (mut file, temporary) = Self::create(target)?;
-        if let Ok(metadata) = fs::metadata(target) {
-            file.set_permissions(metadata.permissions())?;
-        }
-        file.write_all(text.as_bytes())?;
-        file.sync_all()?;
-        Ok(temporary)
-    }
-
-    fn create(target: &Path) -> io::Result<(fs::File, Self)> {
-        for attempt in 0..TEMPORARY_NAMES {
-            let path = temporary_path(target, attempt);
-            match fs::OpenOptions::new().write(true).create_new(true).open(&path) {
-                Ok(file) => return Ok((file, Self { path, replaced: false })),
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(error),
-            }
-        }
-        Err(io::Error::new(io::ErrorKind::AlreadyExists, "no name left for a temporary beside it"))
-    }
-
-    fn replace(mut self, target: &Path) -> io::Result<()> {
-        fs::rename(&self.path, target)?;
-        self.replaced = true;
-        Ok(())
-    }
-}
-
-impl Drop for Temporary {
-    fn drop(&mut self) {
-        if !self.replaced {
-            let _ = fs::remove_file(&self.path);
-        }
-    }
-}
-
-/// A hidden sibling, which the cook and a watcher's documents pass over. The process's ID keeps two editors
-/// off each other's names, for speed: `create_new` is what makes a name this save's own.
-fn temporary_path(target: &Path, attempt: u32) -> PathBuf {
-    let name = target.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
-    target.with_file_name(format!(".{name}.{}.{attempt}.sapphire_editor", std::process::id()))
-}
-
 /// What the move system says of a document, as a device would: its issues, and the set it became.
 #[derive(Clone, Debug, Default)]
 pub struct Verdict {
@@ -502,6 +444,8 @@ pub(crate) mod test_dir {
 
 #[cfg(test)]
 mod tests {
+    use sapphire_document::disk::temporary_path;
+
     use super::test_dir::TestDir;
     use super::*;
     use crate::edits::test_files::{ALL, PLAYER};

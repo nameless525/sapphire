@@ -1,0 +1,30 @@
+[package]
+name = "sapphire_document"
+description = "What an editor edits: typed documents whose every edit is a change record, kept as RON text in which untouched bytes never move. Desktop only, never shipped."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+# Types with `Reflect` are its values, and its tests derive their own, which finds the crate by this name.
+bevy_reflect.workspace = true
+# A new document's ID.
+getrandom.workspace = true
+ron.workspace = true
+# The documents it knows by kind.
+sapphire_assets.workspace = true
+sapphire_moves.workspace = true
+sapphire_reflect.workspace = true
+sapphire_serialize.workspace = true
+sapphire_vfx.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+# The fuzz's report says how long it took, and rule R2 keeps tests off the OS's clock too.
+sapphire_time.workspace = true
+
+[lints]
+workspace = true

@@ -3081,6 +3081,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "sapphire_document"
+version = "0.1.0"
+dependencies = [
+ "bevy_reflect",
+ "getrandom",
+ "ron",
+ "sapphire_assets",
+ "sapphire_moves",
+ "sapphire_reflect",
+ "sapphire_serialize",
+ "sapphire_time",
+ "sapphire_vfx",
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "sapphire_ecs"
 version = "0.1.0"
 dependencies = [
@@ -3104,6 +3121,7 @@ dependencies = [
  "sapphire_anim",
  "sapphire_assets",
  "sapphire_core",
+ "sapphire_document",
  "sapphire_gameplay",
  "sapphire_livelink",
  "sapphire_math",
@@ -3260,6 +3278,7 @@ dependencies = [
  "sapphire_assets",
  "sapphire_colliders",
  "sapphire_core",
+ "sapphire_document",
  "sapphire_gameplay",
  "sapphire_look",
  "sapphire_math",

@@ -27,7 +27,8 @@ pub mod link;
 pub mod preview;
 pub mod recovery;
 pub mod run;
-pub mod text;
 pub mod timeline;
+
+pub use sapphire_document::text;
 
 pub use app::{Editor, Options};

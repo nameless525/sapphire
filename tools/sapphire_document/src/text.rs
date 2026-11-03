@@ -3,7 +3,7 @@
 //! A person writes these files too, with comments and a layout that say things, so the editor never
 //! writes one out from its values. The text is what it edits, and this is how it finds its way: [`scan`]
 //! reads a document into a tree of byte ranges and nothing else. What the values mean stays with
-//! `sapphire_moves`' parser, and [`crate::edits`] holds the two together, so a place this got wrong can't
+//! the document's parser, and [`crate::document`] holds the two together, so a place this got wrong can't
 //! become a wrong edit.
 
 use std::ops::Range;
@@ -102,6 +102,35 @@ pub fn scan(source: &str) -> Result<Node, ScanError> {
     Ok(root)
 }
 
+/// Every comment in `source`, as written: what an edit can be held to leaving alone. `source` needn't be a
+/// whole document, so anything this can't read past is stepped over.
+#[must_use]
+pub fn comments(source: &str) -> Vec<&str> {
+    let mut scanner = Scanner { source, at: 0 };
+    let mut found = Vec::new();
+    while let Some(byte) = scanner.peek() {
+        let start = scanner.at;
+        match (byte, scanner.rest().get(1)) {
+            (b'/', Some(b'/' | b'*')) => {
+                scanner.skip_one_comment();
+                found.push(&source[start..scanner.at]);
+            }
+            (b'"', _) => {
+                if scanner.string().is_err() {
+                    break;
+                }
+            }
+            _ if is_ident_byte(byte) => match scanner.raw_or_byte_string() {
+                Ok(Some(_)) => {}
+                Ok(None) => scanner.ident(),
+                Err(_) => break,
+            },
+            _ => scanner.at += 1,
+        }
+    }
+    found
+}
+
 /// What follows `at`, past spaces and comments on any line.
 #[must_use]
 pub fn skip_trivia(source: &str, at: usize) -> usize {
@@ -128,35 +157,39 @@ impl Scanner<'_> {
         self.rest().first().copied()
     }
 
-    /// Past whitespace and comments. RON's block comments nest.
+    /// Past whitespace and comments.
     fn skip_trivia(&mut self) {
         loop {
             match self.rest() {
                 [byte, ..] if byte.is_ascii_whitespace() => self.at += 1,
-                [b'/', b'/', ..] => {
-                    while self.peek().is_some_and(|byte| byte != b'\n') {
-                        self.at += 1;
-                    }
-                }
-                [b'/', b'*', ..] => {
-                    self.at += 2;
-                    let mut depth = 1;
-                    while depth > 0 {
-                        match self.rest() {
-                            [] => return,
-                            [b'/', b'*', ..] => {
-                                depth += 1;
-                                self.at += 2;
-                            }
-                            [b'*', b'/', ..] => {
-                                depth -= 1;
-                                self.at += 2;
-                            }
-                            _ => self.at += 1,
-                        }
-                    }
-                }
+                [b'/', b'/' | b'*', ..] => self.skip_one_comment(),
                 _ => return,
+            }
+        }
+    }
+
+    /// Past the comment here. RON's block comments nest.
+    fn skip_one_comment(&mut self) {
+        if self.rest().starts_with(b"//") {
+            while self.peek().is_some_and(|byte| byte != b'\n') {
+                self.at += 1;
+            }
+            return;
+        }
+        self.at += 2;
+        let mut depth = 1;
+        while depth > 0 {
+            match self.rest() {
+                [] => return,
+                [b'/', b'*', ..] => {
+                    depth += 1;
+                    self.at += 2;
+                }
+                [b'*', b'/', ..] => {
+                    depth -= 1;
+                    self.at += 2;
+                }
+                _ => self.at += 1,
             }
         }
     }
@@ -445,6 +478,12 @@ mod tests {
         assert_eq!(list[2].text(text), "Light");
         assert!(root.field("empty").expect("empty").items().is_empty());
         assert!(matches!(root.field("map").expect("map").kind, Kind::Map(_)));
+    }
+
+    #[test]
+    fn comments_are_found_past_strings_that_look_like_them() {
+        let text = "// one\n(a: \"// no\", /* two /* three */ */ b: r#\"/* no */\"#) // four";
+        assert_eq!(comments(text), ["// one", "/* two /* three */ */", "// four"]);
     }
 
     #[test]

@@ -66,6 +66,54 @@ fn bare_rig_with_clips() -> Vec<u8> {
     writer.to_glb()
 }
 
+/// A plan says which of a file's animations a clip is, by its place in the file as the plan read it.
+/// A save that reorders them must not cook another animation under that clip's name, and leave it in
+/// the cache for the next cook of that file to find.
+#[test]
+fn a_file_saved_after_its_plan_fails_rather_than_cook_another_animation_under_a_name() {
+    let settings = ClipSettings::default;
+    let clips = |first: (&str, Track<'_>), second: (&str, Track<'_>), mut writer: GltfWriter| {
+        animate(&mut writer, Some(first.0), &[first.1]);
+        animate(&mut writer, Some(second.0), &[second.1]);
+        writer.to_glb()
+    };
+    let walk = || ("Walk", move_hips());
+    let hit = || ("Hit", turn_arm());
+    let mesh = ImportSettings::Gltf(MeshSettings { clips: Some(settings()), ..MeshSettings::default() });
+    for (importer, rig) in
+        [(ImportSettings::GltfClips(settings()), bare_rig as fn() -> GltfWriter), (mesh, figure)]
+    {
+        let (before, after) = (clips(walk(), hit(), rig()), clips(hit(), walk(), rig()));
+        let walk_id = meta::sub_asset_id(OWNER, "clip/Walk");
+
+        let tree = Tree::new("cook_plan_changed");
+        let source = tree.write("anims.glb", &before);
+        tree.sidecar(&source, OWNER, importer.clone());
+        let error = tree
+            .try_cook_through(&|stage| {
+                if stage == CookStage::Planned {
+                    tree.write_at(&source, &after);
+                }
+            })
+            .map(|_| "it cooked")
+            .unwrap_err();
+        assert!(matches!(&error, CookError::SourceChanged { path } if *path == source), "{error:?}");
+
+        // Cooked again as the file now stands, it's what a cook that never saw the save makes.
+        let again = fs::read(&by_id(&tree.cook(), walk_id).output).unwrap();
+        let fresh = Tree::new("cook_plan_changed_fresh");
+        let fresh_source = fresh.write("anims.glb", &after);
+        fresh.sidecar(&fresh_source, OWNER, importer);
+        let report = fresh.cook();
+        assert_eq!(again, fs::read(&by_id(&report, walk_id).output).unwrap());
+        assert_ne!(
+            again,
+            fs::read(&by_id(&report, meta::sub_asset_id(OWNER, "clip/Hit")).output).unwrap(),
+            "the two animations are two clips, or this holds nothing"
+        );
+    }
+}
+
 /// The same rig as [`bare_rig`] but written the other way round, so its joints come in another
 /// order, with a clip of `Swing` on the arm and `Bob` on the hips.
 fn rig_in_another_order(arm_at: [f32; 3], extra: &str, arm_parent_is_hips: bool) -> Vec<u8> {
@@ -947,7 +995,7 @@ fn kaykits_sidecars_ask_for_what_its_files_have() {
             "{file}"
         );
         let asset = SourceAsset { path, meta: meta.clone() };
-        let parts = sub_assets(&asset).unwrap_or_else(|error| panic!("{file}: {error}"));
+        let parts = sub_assets(&asset, &Cell::new(None)).unwrap_or_else(|error| panic!("{file}: {error}"));
         let count = |what: fn(&Part) -> bool| parts.iter().filter(|planned| what(&planned.part)).count();
         assert_eq!(count(|part| matches!(part, Part::Skeleton)), skeletons, "{file}");
         assert_eq!(count(|part| matches!(part, Part::Clip { target: None, .. })), native, "{file}");

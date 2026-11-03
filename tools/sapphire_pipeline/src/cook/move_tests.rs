@@ -287,6 +287,34 @@ fn a_set_recooks_when_its_clip_or_the_rig_changes() {
     assert_eq!(fs::read(&by_id(&fourth, SET).output).unwrap(), bytes);
 }
 
+/// A bake reads its clip's source for itself, after the clip has cooked, and a set's key holds only the
+/// clip's key. A save in between must not cook the old clip beside the new one's tables, nor leave those
+/// tables in the cache for when the file is put back.
+#[test]
+fn a_clips_source_saved_before_a_move_bakes_fails_rather_than_leave_stale_tables() {
+    let set = set_with(&swing_clip(), (8, 7, 5));
+    let tree = swing_tree("cook_move_saved", &set);
+    let document = tree.content().join("moves/swing.keypose.ron");
+    let edited = SWING.replace("root: (0, 0, 0.5)", "root: (0, 0, 0.75)");
+    let error = tree
+        .try_cook_through(&|stage| {
+            if stage == CookStage::ClipsCooked {
+                tree.write_at(&document, edited.as_bytes());
+            }
+        })
+        .map(|_| "it cooked")
+        .unwrap_err();
+    let source = tree.content().join("moves/fighter.moves.ron");
+    assert!(matches!(&error, CookError::SourceChanged { path } if *path == source), "{error:?}");
+
+    tree.write_at(&document, SWING.as_bytes());
+    let report = tree.cook();
+    let clean_tree = swing_tree("cook_move_saved_clean", &set);
+    let clean = clean_tree.cook();
+    let set_bytes = |report: &CookReport| fs::read(&by_id(report, SET).output).unwrap();
+    assert_eq!(set_bytes(&report), set_bytes(&clean), "put back, it's the set of that file");
+}
+
 /// Two cooks in two trees write one set of bytes, and it's one value on every architecture: these are
 /// the bytes `Simulation::tables_hash` hashes, so CI's `Test` job holds them on Linux and Windows too.
 /// `moves::tests::baked_tables_and_clips_hash_the_same_on_every_architecture` says what to do when

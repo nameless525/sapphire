@@ -91,7 +91,9 @@
 //! its output from the cache, as on one thread. Neither a cooked file nor the report depends on the
 //! worker count, and a cook fails with the first failure in plan order. A key can come seconds before
 //! its cook, so a file saved in between, the source or anything else its key covers, fails the cook
-//! (`SourceChanged`) rather than store another version's output under that key.
+//! (`SourceChanged`) rather than store another version's output under that key. So does a save after
+//! the plan read a source, since what it took from the file holds for that version alone, and a save of
+//! a clip's source after the clip cooked and before a move set bakes from it.
 //!
 //! Texture encoding is what a cold cook spends its time on, 58% of 17.6 s on the M5, in encoders that
 //! run a level on one thread. astcenc shares two things: it rewrites its angle tables with the same
@@ -106,7 +108,7 @@
 //! worker count what they hold at once is limited (`COOK_MEMORY`). Peak resident size goes from about
 //! 680 MiB to about 1040 MiB; eight workers took it to 1328 MiB for a tenth less time.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::fs;
@@ -702,6 +704,26 @@ fn cook_dir_on(
     options: &CookOptions<'_>,
     workers: usize,
 ) -> Result<CookReport, CookError> {
+    cook_dir_through(source_root, out_root, options, workers, &|_| {})
+}
+
+/// Where a cook has got to, as far as a file saved meanwhile can tell.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CookStage {
+    /// Which assets there are is decided, from the files as they stood, and none has its key yet.
+    Planned,
+    /// Clips have cooked, and the move sets that read their sources haven't.
+    ClipsCooked,
+}
+
+/// [`cook_dir_on`], calling `reached` at each [`CookStage`], which is where a test saves a file.
+fn cook_dir_through(
+    source_root: &Path,
+    out_root: &Path,
+    options: &CookOptions<'_>,
+    workers: usize,
+    reached: &dyn Fn(CookStage),
+) -> Result<CookReport, CookError> {
     let mut tree = SourceTree::scan(source_root)?;
     let inputs = map_inputs(source_root, &tree)?;
     tree.sources.retain(|source| !inputs.contains(source));
@@ -745,7 +767,9 @@ fn cook_dir_on(
     let mut plan = Vec::with_capacity(cooked_assets.len());
     for (asset, output) in cooked_assets.into_iter().zip(own_outputs) {
         // Which sub-assets there are may take reading the file, which could panic in a crate.
-        let parts = guarded(&asset.path, || sub_assets(&asset))?;
+        let planned_from = Cell::new(None);
+        let parts = guarded(&asset.path, || sub_assets(&asset, &planned_from))?;
+        let planned_from = planned_from.get();
         let skeleton =
             asset.meta.importer.shared_rig().map(|owner| meta::sub_asset_id(owner, SKELETON)).or_else(|| {
                 parts
@@ -760,6 +784,7 @@ fn cook_dir_on(
                 asset: asset.clone(),
                 id: asset.meta.id,
                 part: Part::Own,
+                planned_from,
                 skeleton,
                 recipe,
                 output,
@@ -778,7 +803,7 @@ fn cook_dir_on(
                 Part::Own | Part::Rig | Part::Skeleton => recipe.output_path(&source_relative),
             };
             let output = claim(&asset.path, &relative)?;
-            plan.push(Planned { asset: asset.clone(), id, part, skeleton, recipe, output });
+            plan.push(Planned { asset: asset.clone(), id, part, planned_from, skeleton, recipe, output });
         }
     }
     // Before writing, so an output whose name only changed case (on a case-insensitive file
@@ -827,13 +852,20 @@ fn cook_dir_on(
         memory: &memory,
     };
     let mut cooked: Vec<Option<CookedAsset>> = vec![None; plan.len()];
+    reached(CookStage::Planned);
     cook_independent(tree, &others, workers, &mut cooked)?;
     let remembered = Remembered::default();
-    for index in shared_meshes.into_iter().chain(clips).chain(move_sets).chain(materials).chain(probe_grids) {
-        let assets = tree.assets(&cooked, &remembered);
-        let keyed = tree.key(index, &assets)?;
-        cooked[index] = Some(tree.finish(index, keyed, &assets)?);
-    }
+    let mut in_turn = |indices: Vec<Vec<usize>>| {
+        for index in indices.into_iter().flatten() {
+            let assets = tree.assets(&cooked, &remembered);
+            let keyed = tree.key(index, &assets)?;
+            cooked[index] = Some(tree.finish(index, keyed, &assets)?);
+        }
+        Ok::<(), CookError>(())
+    };
+    in_turn(vec![shared_meshes, clips])?;
+    reached(CookStage::ClipsCooked);
+    in_turn(vec![move_sets, materials, probe_grids])?;
     let assets = cooked.into_iter().map(|asset| asset.expect("every planned asset was cooked")).collect();
     Ok(CookReport {
         assets,
@@ -977,13 +1009,21 @@ struct PlannedPart {
 }
 
 /// The sub-assets `asset` cooks to besides its own asset, reading the file where that depends on
-/// what it holds. Its `clips` settings are checked here, before anything cooks.
-fn sub_assets(asset: &SourceAsset) -> Result<Vec<PlannedPart>, CookError> {
+/// what it holds, and saying the hash of what it read in `planned_from`. Its `clips` settings are
+/// checked here, before anything cooks.
+fn sub_assets(
+    asset: &SourceAsset,
+    planned_from: &Cell<Option<blake3::Hash>>,
+) -> Result<Vec<PlannedPart>, CookError> {
     let SourceAsset { path, meta } = asset;
     let clip_error = |source: ClipCookError| CookError::Clip { path: path.clone(), source: Box::new(source) };
     let unsupported = |importer| clip_error(ClipCookError::ClipsUnsupported { importer });
     let import_error = |source: gltf::clips::ClipImportError| clip_error(source.into());
-    let read = || fs::read(path).map_err(|source| CookError::Read { path: path.clone(), source });
+    let read = || {
+        let bytes = fs::read(path).map_err(|source| CookError::Read { path: path.clone(), source })?;
+        planned_from.set(Some(blake3::hash(&bytes)));
+        Ok::<_, CookError>(bytes)
+    };
     let skeleton = |recipe: Recipe| PlannedPart {
         id: meta::sub_asset_id(meta.id, SKELETON),
         part: Part::Skeleton,
@@ -1209,6 +1249,10 @@ struct Planned {
     /// The sidecar's ID, or the sub-asset's derived one.
     id: AssetId,
     part: Part,
+    /// The hash of the source as the plan read it, if it did: which parts there are and which animation
+    /// a clip is hold for that version alone. A name wouldn't do instead, as a file's unnamed or repeated
+    /// animations are named by their place in it.
+    planned_from: Option<blake3::Hash>,
     /// The ID of the source's skeleton, if it cooks one: what its mesh and its clips name.
     skeleton: Option<AssetId>,
     recipe: Recipe,
@@ -1632,7 +1676,11 @@ struct Keyed {
 
 /// Keys one asset.
 fn key_asset(planned: &Planned, assets: &Assets<'_>, cook: Cook) -> Result<Keyed, CookError> {
-    let source = assets.last_source.read(&planned.asset.path)?;
+    let path = &planned.asset.path;
+    let source = match planned.planned_from {
+        Some(hash) => assets.last_source.read_as(path, hash)?,
+        None => assets.last_source.read(path)?,
+    };
     let key = asset_key(planned, &source, assets, cook)?;
     Ok(Keyed { key, source: source.hash, current: file_hash(&planned.output)? })
 }
@@ -1691,7 +1739,9 @@ fn finish_asset(
             // A cook reads its other files for itself, as long after its key as the assets ahead of it
             // take, and a key mustn't cover what other versions of them cook to. Their keys are made from
             // the files as they stand, so this sees a save from before or during the cook.
-            if asset_key(planned, &source, assets, cook)? != key {
+            if asset_key(planned, &source, assets, cook)? != key
+                || !baked_clips_as_keyed(planned, &source.bytes, assets, cook)?
+            {
                 return Err(CookError::SourceChanged { path: path.clone() });
             }
             if let Some(cache) = cache {
@@ -1705,6 +1755,29 @@ fn finish_asset(
         write_atomically(output, &cooked)?;
     }
     Ok(done(status, hash))
+}
+
+/// Whether the clips a move set baked from would key now as they did when they cooked. A bake reads a
+/// clip's source for itself, and a set's key holds only the clip's key, which making the set's key again
+/// takes from what has cooked, so that can't see a save. The other parts of a cook have no such reads.
+fn baked_clips_as_keyed(
+    planned: &Planned,
+    bytes: &[u8],
+    assets: &Assets<'_>,
+    cook: Cook,
+) -> Result<bool, CookError> {
+    if !planned.is_move_set() {
+        return Ok(true);
+    }
+    for clip in clips_of_set(bytes, assets) {
+        if let Some(cooked) = assets.cooked(clip.id) {
+            let source = assets.last_source.read(&clip.asset.path)?;
+            if asset_key(clip, &source, assets, cook)? != cooked.key {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
 }
 
 /// What keys a part of a source apart from its other parts, and from the same bytes under another
@@ -2286,10 +2359,8 @@ fn source_dependencies(
 /// read, or a clip that doesn't resolve, keys nothing here: its cook fails by move and track, with
 /// everything else wrong with the document.
 fn move_set_dependencies(bytes: &[u8], assets: &Assets<'_>) -> Vec<Dependency> {
-    let Ok(document) = moves::read(bytes) else { return Vec::new() };
     let mut dependencies = Vec::new();
-    for clip in document.moves.iter().filter_map(|mv| mv.motion.clip.as_ref()) {
-        let Ok(planned) = assets.clip_of_move(clip) else { continue };
+    for planned in clips_of_set(bytes, assets) {
         if let Some(cooked) = assets.cooked(planned.id) {
             dependencies.push(Dependency::Asset { id: cooked.id, key: cooked.key });
         }
@@ -2298,6 +2369,13 @@ fn move_set_dependencies(bytes: &[u8], assets: &Assets<'_>) -> Vec<Dependency> {
         }
     }
     dependencies
+}
+
+/// The clips a move set's document names, as far as it reads and they resolve.
+fn clips_of_set<'a>(bytes: &[u8], assets: &Assets<'a>) -> Vec<&'a Planned> {
+    let Ok(document) = moves::read(bytes) else { return Vec::new() };
+    let clips = document.moves.iter().filter_map(|mv| mv.motion.clip.as_ref());
+    clips.filter_map(|clip| assets.clip_of_move(clip).ok()).collect()
 }
 
 /// The pieces an assembly at `path` places: files it reads, by the path it names them with.
@@ -2873,6 +2951,7 @@ mod tests {
                 id: meta.id,
                 asset: SourceAsset { path: path.clone(), meta },
                 part: part.clone(),
+                planned_from: None,
                 skeleton: None,
                 recipe,
                 output: scratch.out().join("asset"),
@@ -2922,6 +3001,7 @@ mod tests {
             id: meta.id,
             asset: SourceAsset { path: path.to_owned(), meta },
             part: Part::Own,
+            planned_from: None,
             skeleton: None,
             recipe,
             output,

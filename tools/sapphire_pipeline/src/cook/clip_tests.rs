@@ -63,6 +63,13 @@ impl Tree {
         cook_dir(&self.content(), &self.out(), &options)
     }
 
+    /// A cook on one worker that calls `reached` at each stage, to save a file there.
+    pub(super) fn try_cook_through(&self, reached: &dyn Fn(CookStage)) -> Result<CookReport, CookError> {
+        let cache = self.dir.path().join("cache");
+        let options = CookOptions { cook: Cook::Desktop, cache: Some(&cache), locked: false };
+        cook_dir_through(&self.content(), &self.out(), &options, 1, reached)
+    }
+
     pub(super) fn cook(&self) -> CookReport {
         self.try_cook(false).unwrap()
     }

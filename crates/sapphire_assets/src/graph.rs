@@ -8,7 +8,8 @@
 //!     data: (
 //!         // Every clip the graph plays, named here and by that name below. `source` is the sidecar
 //!         // ID of a file; `clip` names one of its clips and `target` the character it was retargeted
-//!         // to. A key-pose document is its own clip, so it needs only `source`.
+//!         // to. A key-pose document is its own clip, so it needs only `source`, and `target` for a
+//!         // rig of its sidecar's `also`.
 //!         clips: [
 //!             (name: "idle", source: "9a29e8c0-f131-4ea4-98b9-04879740413d", clip: "Idle_A",
 //!              target: "6f8a81b6-29c4-485f-b161-847b001d561f"),
@@ -146,7 +147,9 @@ pub struct GraphClip {
     /// Which of the file's clips: `None` for a key-pose document, which is its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clip: Option<String>,
-    /// The character it was retargeted to: `None` for a clip on its source's own rig.
+    /// The character it was retargeted to: `None` for a clip on its source's own rig. On a key-pose
+    /// document, a rig of its sidecar's `also`: `None` is its `rig`, which naming here is an error, as
+    /// nothing reading a graph's document over live link has a sidecar to tell them apart.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<AssetId>,
     /// The clip's asset ID, which a person can't write since it's a hash of the other three. The cook
@@ -159,15 +162,16 @@ fn no_id() -> AssetId {
     AssetId::from_bytes([0; 16])
 }
 
-/// The ID a clip's own cook gives it. A key-pose document is its own clip, so its ID is its source's;
-/// the rest are sub-assets of their sources, as the pipeline's cook derives them. Here so an app can take
-/// a graph's document over live link with no cook in between (M2 T2).
+/// The ID a clip's own cook gives it. A key-pose document is its own clip for its first rig, so that ID
+/// is its source's; the rest are sub-assets of their sources, as the pipeline's cook derives them. Here
+/// so an app can take a graph's document over live link with no cook in between (M2 T2).
 #[must_use]
 pub fn clip_id(clip: &GraphClip) -> AssetId {
     match (&clip.clip, clip.target) {
         (Some(name), Some(target)) => clip.source.sub_asset(&format!("clip/{name}@{target}")),
         (Some(name), None) => clip.source.sub_asset(&format!("clip/{name}")),
-        (None, _) => clip.source,
+        (None, Some(target)) => clip.source.sub_asset(&format!("rig/{target}")),
+        (None, None) => clip.source,
     }
 }
 

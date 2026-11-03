@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use glam::{Mat4, Quat, Vec3};
+use sapphire_assets::AssetKind;
 use sapphire_assets::clip::Clip;
 use sapphire_assets::mesh::Mesh;
 use sapphire_assets::rig::HumanBone;
@@ -439,6 +440,31 @@ pub(super) fn human_with_a_mesh() -> Vec<u8> {
     let body = writer.add_node(json!({ "name": "Body", "mesh": mesh, "skin": 0 }));
     writer.add_root(body);
     vrma_files::lower_arm(&mut writer);
+    writer.to_glb()
+}
+
+/// [`human_with_a_mesh`]'s rig with every node's children the other way round, so its joints are the
+/// same ones in another order.
+fn human_in_another_order() -> Vec<u8> {
+    let mut writer = vrma_files::vrma_with_children(|mut children| {
+        children.reverse();
+        children
+    });
+    let geometry = Geometry {
+        positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        normals: vec![[0.0, 0.0, 1.0]; 3],
+        influences: vec![InfluenceSet {
+            joints: vec![[0, 0, 0, 0]; 3],
+            weights: vec![[1.0, 0.0, 0.0, 0.0]; 3],
+        }],
+        indices: vec![0, 1, 2],
+        ..Geometry::default()
+    };
+    let mesh = writer.add_mesh("Body", &[(&geometry, None)]);
+    let joints: Vec<usize> = (0..15).collect();
+    writer.add_skin(&joints, None);
+    let body = writer.add_node(json!({ "name": "Body", "mesh": mesh, "skin": 0 }));
+    writer.add_root(body);
     writer.to_glb()
 }
 
@@ -884,6 +910,116 @@ fn a_key_pose_document_cooks_for_each_rig_it_names() {
         KeyPoseSettings { rig: Some(CHARACTER), also: vec![figure_id], ..KeyPoseSettings::default() };
     tree.sidecar(&document, FOLLOWER, ImportSettings::KeyPose(settings));
     assert!(fault(&tree.try_cook(false).unwrap_err(), "swing.keypose.ron").contains("isn't a source"));
+}
+
+/// A graph plays a key-pose document for the rig it names: with no `target` the document's first rig,
+/// with one a rig of its `also`, each that rig's own clip and nothing of the others'. Naming the first
+/// rig, or a rig the document doesn't cook for, is refused by the clip's name: an app taking the graph
+/// over live link has no sidecar to read, so a cook can't accept what it would refuse.
+#[test]
+fn a_graphs_target_chooses_a_key_pose_documents_rig() {
+    const DOCUMENT: &str = "(
+        type: \"sapphire::pipeline::KeyPoseClip\",
+        version: 1,
+        data: (keys: [(tick: 0, pose: { LeftUpperArm: (z: -70) }), (tick: 10, pose: { LeftUpperArm: (z: 20) })]),
+    )";
+    const OTHER_ORDER: AssetId = AssetId::from_bytes([0x94; 16]);
+    const POSE: AssetId = AssetId::from_bytes([0x95; 16]);
+    let map = || ClipSettings { humanoid: human_map(), names: Some(Vec::new()), ..ClipSettings::default() };
+    let graph_of = |clip: String| {
+        format!(
+            "(type: \"sapphire::assets::AnimGraph\", version: 1, data: (clips: [{clip}], locomotion: \
+             (start: \"held\", states: [(name: \"held\", plays: Clip(clip: \"held\", looping: true))])))"
+        )
+    };
+    let clip_for = |target: Option<AssetId>| {
+        let target = target.map_or(String::new(), |target| format!(", target: \"{target}\""));
+        graph_of(format!("(name: \"held\", source: \"{POSE}\"{target})"))
+    };
+
+    let tree = Tree::new("cook_graph_key_pose_rig");
+    // Three rigs: the first, one of the same 15 joints in another order, one of another count.
+    let human = tree.write("human.glb", &human_with_a_mesh());
+    tree.sidecar(&human, HUMAN, clips_of(map()));
+    let other = tree.write("other.glb", &human_in_another_order());
+    tree.sidecar(&other, OTHER_ORDER, clips_of(map()));
+    let character = tree.write("sample.vrm", &samples::vrm1().to_glb());
+    tree.sidecar(&character, CHARACTER, ImportSettings::for_new_sidecar(&character).unwrap());
+    let document = tree.write("swing.keypose.ron", DOCUMENT.as_bytes());
+    let settings = KeyPoseSettings {
+        rig: Some(HUMAN),
+        also: vec![OTHER_ORDER, CHARACTER],
+        ..KeyPoseSettings::default()
+    };
+    tree.sidecar(&document, POSE, ImportSettings::KeyPose(settings));
+    let graphs = [
+        (AssetId::from_bytes([0xb0; 16]), "first", None, HUMAN),
+        (AssetId::from_bytes([0xb1; 16]), "other_order", Some(OTHER_ORDER), OTHER_ORDER),
+        (AssetId::from_bytes([0xb2; 16]), "other_count", Some(CHARACTER), CHARACTER),
+    ];
+    for (id, name, target, _) in graphs {
+        let path = tree.write(&format!("{name}.animgraph.ron"), clip_for(target).as_bytes());
+        tree.sidecar(&path, id, ImportSettings::AnimGraph(Default::default()));
+    }
+
+    let report = tree.try_cook(true).unwrap();
+    let joint_names = |rig: AssetId| {
+        let bytes = read_aligned(&by_id(&report, meta::sub_asset_id(rig, SKELETON)).output);
+        Skeleton::from_cooked(&bytes).unwrap().names
+    };
+    assert_ne!(joint_names(HUMAN), joint_names(OTHER_ORDER), "one count of joints, in two orders");
+    assert_eq!(joint_names(HUMAN).len(), joint_names(OTHER_ORDER).len());
+    assert_ne!(joint_names(HUMAN).len(), joint_names(CHARACTER).len());
+    for (id, name, target, rig) in graphs {
+        let expected = target.map_or(POSE, |target| meta::sub_asset_id(POSE, &format!("rig/{target}")));
+        let bytes = read_aligned(&by_id(&report, id).output);
+        let references = AssetKind::AnimGraph.references(&bytes).unwrap();
+        assert_eq!(references, [expected], "{name}: that rig's clip and no other");
+
+        let clip_bytes = read_aligned(&by_id(&report, expected).output);
+        let clip = Clip::read(&clip_bytes).unwrap();
+        let skeleton_id = meta::sub_asset_id(rig, SKELETON);
+        assert_eq!(clip.skeleton.as_ref().copied(), Some(skeleton_id), "{name}");
+        // Its tracks index the rig it plays on, which an equal joint count alone wouldn't show.
+        let skeleton_bytes = read_aligned(&by_id(&report, skeleton_id).output);
+        let skeleton = Skeleton::read(&skeleton_bytes).unwrap();
+        clip.check_skeleton(skeleton).unwrap();
+        let moved: Vec<&str> = clip
+            .rotations
+            .iter()
+            .map(|track| skeleton.names[usize::from(track.joint.to_native())].as_str())
+            .collect();
+        assert_eq!(moved.len(), 1, "{name}: {moved:?}");
+        assert!(moved[0].contains("Arm"), "{name}: {moved:?}");
+    }
+    // A cached graph holds the same IDs.
+    let second = tree.cook();
+    assert!(second.assets.iter().all(|asset| asset.status == CookStatus::UpToDate), "{:?}", second.assets);
+
+    let stray = AssetId::from_bytes([0xee; 16]);
+    let refused: [(&str, String); 3] = [
+        ("the first rig", clip_for(Some(HUMAN))),
+        ("a rig it doesn't cook for", clip_for(Some(stray))),
+        (
+            "a rig on what's no key-pose document",
+            graph_of(format!("(name: \"held\", source: \"{HUMAN}\", target: \"{CHARACTER}\")")),
+        ),
+    ];
+    let path = tree.content().join("first.animgraph.ron");
+    let mut wrong = Vec::new();
+    for (name, text) in refused {
+        fs::write(&path, text).unwrap();
+        match tree.try_cook(false) {
+            Ok(_) => wrong.push(format!("{name}: it cooked")),
+            Err(error) => {
+                let said = error.to_string();
+                if !said.contains("first.animgraph.ron") || !said.contains("`held`") {
+                    wrong.push(format!("{name}: said {said}"));
+                }
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
 }
 
 /// A document's morph weights, by name, on the mesh a rig's source cooks: a name the mesh lacks is

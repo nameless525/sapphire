@@ -21,7 +21,10 @@ pub const IMPORTER: Stage = Stage { name: "animation graph document", version: 1
 
 /// Checking it and deriving its clips' IDs. Bump the version whenever they change output for the same
 /// document.
-pub const COOKER: Stage = Stage { name: "sgraph", version: 1 };
+///
+/// 2: a `target` on a key-pose document names that rig's clip, where it was ignored for the first rig's
+/// (the review's AST-001).
+pub const COOKER: Stage = Stage { name: "sgraph", version: 2 };
 
 /// What a graph source's file name ends with.
 pub const SOURCE_SUFFIX: &str = ".animgraph.ron";
@@ -204,6 +207,7 @@ mod tests {
         );
         assert_eq!(clip_id(&clip(Some("Hit_A"), None)), meta::sub_asset_id(source, "clip/Hit_A"));
         assert_eq!(clip_id(&clip(None, None)), source);
+        assert_eq!(clip_id(&clip(None, Some(target))), meta::sub_asset_id(source, &format!("rig/{target}")));
     }
 
     /// The character's document reads, with every clip's ID derived.

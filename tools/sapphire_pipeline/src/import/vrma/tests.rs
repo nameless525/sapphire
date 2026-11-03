@@ -35,9 +35,16 @@ pub(crate) const ARM: usize = 9;
 
 /// The file's nodes and its extension, with no animation yet.
 pub(crate) fn vrma() -> GltfWriter {
+    vrma_with_children(|children| children)
+}
+
+/// [`vrma`] with each node's children listed in `order`'s order, so the same rig's joints come in
+/// another order.
+pub(crate) fn vrma_with_children(order: impl Fn(Vec<usize>) -> Vec<usize>) -> GltfWriter {
     let mut writer = GltfWriter::default();
     for (index, (name, _, translation, _)) in NODES.iter().enumerate() {
-        let children: Vec<usize> = (0..NODES.len()).filter(|&child| NODES[child].1 == Some(index)).collect();
+        let children: Vec<usize> =
+            order((0..NODES.len()).filter(|&child| NODES[child].1 == Some(index)).collect());
         let mut node = json!({ "name": name, "translation": translation });
         if !children.is_empty() {
             node["children"] = json!(children);

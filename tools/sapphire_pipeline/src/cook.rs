@@ -487,7 +487,11 @@ pub enum CookError {
         #[source]
         source: Box<AnimGraphCookError>,
     },
-    #[error("animation graph {} names {id} (`{name}`), which is not a clip of this content tree that cooks", path.display())]
+    #[error(
+        "animation graph {} names {id} (`{name}`), which is not a clip of this content tree that cooks \
+         (on a key-pose document, `target` names a rig of its sidecar's `also`, and no `target` its `rig`)",
+        path.display()
+    )]
     NotAClip { path: PathBuf, name: String, id: AssetId },
     #[error("failed to resolve the material slots of {}", path.display())]
     MaterialSlot {

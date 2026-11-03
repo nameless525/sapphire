@@ -84,12 +84,12 @@ fn an_eye_shut_in_looks_at_who_its_framing() {
 
 /// With who it's framing right behind it, across a wall, going over to them is a half turn, and it's as soft
 /// as any other: nearly opposite, a straight line between the two ways crosses it all in a frame or two.
-/// Never exactly opposite here: which way round is then up to a float's last bits.
+/// Exactly opposite, which way round is up to a float's last bits, and it stays whichever it took.
 #[test]
 fn an_eye_shut_in_goes_over_to_someone_behind_it_evenly() {
     let world =
         ground_with(&[(Shape::Box { half_extents: Vec3::new(4.0, 2.5, 0.2) }, Vec3::new(0.0, 2.5, -1.0))]);
-    for across in [0.05, 0.2, 0.5, -0.05, -0.2] {
+    for across in [0.0, 0.05, 0.2, 0.5, -0.05, -0.2] {
         let enemy = Vec3::new(across, 0.0, -2.5);
         let mut camera = without_clearing(combat_director());
         // Facing away from where they'll be, on the first frame.
@@ -105,6 +105,49 @@ fn an_eye_shut_in_goes_over_to_someone_behind_it_evenly() {
         let to = (enemy + Vec3::Y * 1.6 - last.eye).normalize();
         assert!(last.forward().dot(to) > 0.9, "it should have got there: {} and {to}", last.forward());
     }
+}
+
+/// Someone passing right behind a shut-in eye, and back. The short way round changes sides as they go by, and
+/// if the view changed sides with it, part of the way over to them, it would flip in a frame, and the stick
+/// with it, however soft everything else is. Walls at a few distances, so it's part of the way at some of them.
+#[test]
+fn an_eye_shut_in_keeps_its_way_round_as_someone_passes_behind_it() {
+    for wall in [1.0, 1.2, 1.4, 1.6, 1.8] {
+        let world = ground_with(&[(
+            Shape::Box { half_extents: Vec3::new(8.0, 2.5, 0.2) },
+            Vec3::new(0.0, 2.5, -wall),
+        )]);
+        let script = |t: f32| Moment::against(PLAYER, Vec3::new(1.5 * (t * 0.8).sin(), 0.0, -3.0 - wall));
+        let mut camera = without_clearing(combat_director());
+        let mut last = settle(&mut camera, &world, 1.0, script);
+        let mut most = 0.0_f32;
+        run(&mut camera, &world, 60, (1.0, 21.0), script, |_, pose, _| {
+            most = most.max(pose.rotation.angle_between(last.rotation));
+            last = *pose;
+        });
+        assert!(most < 0.2, "with the wall {wall} m behind, {most} rad in a frame");
+    }
+}
+
+/// Round and round a shut-in eye that sees only them, and then the eye gets room: the view comes back by the
+/// short way, however many times they went round. A turn left long would swing it right round as it let go.
+#[test]
+fn an_eye_given_room_comes_back_the_short_way() {
+    let world =
+        ground_with(&[(Shape::Box { half_extents: Vec3::new(8.0, 2.5, 0.2) }, Vec3::new(0.0, 2.5, -1.0))]);
+    let script = |t: f32| {
+        let player = PLAYER + Vec3::Z * (t - 10.0).max(0.0) * 2.0;
+        let (sin, cos) = (t * 1.5).sin_cos();
+        Moment::against(player, player + Vec3::new(sin, 0.0, cos) * 3.0)
+    };
+    let mut camera = without_clearing(combat_director());
+    let mut last = settle(&mut camera, &world, 1.0, script);
+    let mut most = 0.0_f32;
+    run(&mut camera, &world, 60, (1.0, 16.0), script, |_, pose, _| {
+        most = most.max(pose.rotation.angle_between(last.rotation));
+        last = *pose;
+    });
+    assert!(most < 0.2, "{most} rad in a frame");
 }
 
 /// Having turned, it stays: a settled good view isn't re-judged into another.

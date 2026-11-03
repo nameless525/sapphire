@@ -189,7 +189,7 @@ impl Scene<'_> {
         // Who's in the frame from there, looking where the director would.
         let framed = self.target.at_height(self.framed_height);
         let share = shut_in(eye, self.anchor, framed);
-        let forward = looking(eye, self.pivot, axes.forward, Some(framed), share)
+        let forward = looking(eye, self.pivot, axes.forward, Some(framed), share, &mut 0.0)
             .try_normalize()
             .unwrap_or(axes.forward);
         let right = forward.cross(UP).try_normalize().unwrap_or(axes.right);

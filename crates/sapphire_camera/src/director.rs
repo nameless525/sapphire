@@ -48,6 +48,9 @@ const LOOK_AHEAD: f32 = 0.5;
 const SHUT_IN: f32 = 0.6;
 /// How softly a view goes over to who it's framing and back, as the arm comes and goes much faster.
 const SHUT_IN_HALF_LIFE: f32 = 0.15;
+/// With this little of the view on who it's framing, or this little off them, which way round it went shows
+/// no more than a frame's turn: a whole turn, by this much.
+const SWAP_SHOWS: f32 = 0.01;
 /// A frame this long, in seconds, has no view to judge: it lands where a settled camera stands, and whatever
 /// clearing was doing is over.
 const LONG_FRAME: f32 = 0.25;
@@ -62,20 +65,40 @@ pub(crate) fn shut_in(eye: Vec3, anchor: Vec3, framed: Vec3) -> f32 {
         * smoothstep(SHUT_IN, CRAMPED, eye.distance(framed))
 }
 
-/// The way a view looks from `eye`, given where its rig looks, with `share` of it on who it's framing.
-pub(crate) fn looking(eye: Vec3, pivot: Vec3, forward: Vec3, framed: Option<Vec3>, share: f32) -> Vec3 {
+/// The way a view looks from `eye`, given where its rig looks, with `share` of it on who it's framing. `turn` is
+/// how far round it's going over to them, kept from frame to frame by a view that's drawn. A view being judged
+/// has no last frame, and starts from 0.
+pub(crate) fn looking(
+    eye: Vec3,
+    pivot: Vec3,
+    forward: Vec3,
+    framed: Option<Vec3>,
+    share: f32,
+    turn: &mut f32,
+) -> Vec3 {
     let along = pivot - eye + forward * LOOK_STEADY;
     let Some(framed) = framed.filter(|_| share > 0.0) else { return along };
-    turned_toward(along.normalize_or(forward), (framed - eye).normalize_or(forward), share)
+    turned_toward(along.normalize_or(forward), (framed - eye).normalize_or(forward), share, turn)
 }
 
 /// The way `share` of the turn from `from` to `to`, both of length 1: round and up or down at an even pace. A
 /// straight line between two ways nearly opposite passes close to nothing half way along, so the view would
 /// cross nearly all of the turn in a frame or two there, and an arc can pass overhead, where it has no level.
-fn turned_toward(from: Vec3, to: Vec3, share: f32) -> Vec3 {
+///
+/// `turn` is the yaw's whole turn last frame. The short way swaps sides as `to` passes opposite `from`, and part
+/// of the way over, that's a view flipping in a frame, with a float's last bits enough to do it. So it goes on
+/// from where it was, past opposite if need be, and takes the short way again at either end of `share`, where
+/// a swap doesn't show: there, a turn left long would swing the view right round as `share` falls.
+fn turned_toward(from: Vec3, to: Vec3, share: f32, turn: &mut f32) -> Vec3 {
     let angles = |way: Vec3| (way.x.atan2(way.z), way.y.atan2(Vec2::new(way.x, way.z).length()));
     let ((from_yaw, from_pitch), (to_yaw, to_pitch)) = (angles(from), angles(to));
-    let (sin_yaw, cos_yaw) = (from_yaw + wrap_angle(to_yaw - from_yaw) * share).sin_cos();
+    let short = wrap_angle(to_yaw - from_yaw);
+    *turn = if (SWAP_SHOWS..=1.0 - SWAP_SHOWS).contains(&share) {
+        *turn + wrap_angle(short - *turn)
+    } else {
+        short
+    };
+    let (sin_yaw, cos_yaw) = (from_yaw + *turn * share).sin_cos();
     let (sin_pitch, cos_pitch) = (from_pitch + (to_pitch - from_pitch) * share).sin_cos();
     Vec3::new(sin_yaw * cos_pitch, sin_pitch, cos_yaw * cos_pitch)
 }
@@ -196,6 +219,8 @@ pub struct CameraDirector {
     arm: Arm,
     /// How much of the view is on who it's framing, for an eye shut in: [`shut_in`], softened.
     shut_in: Follow<f32>,
+    /// How far round that goes: the yaw's whole turn ([`looking`]).
+    shut_in_turn: f32,
     clearing: Clearing,
     shakes: ShakeStack,
     takeover: Option<CameraPose>,
@@ -343,6 +368,7 @@ impl CameraDirector {
             target_offset: Follow::new(Vec3::ZERO),
             arm: Arm::new(radius),
             shut_in: Follow::new(0.0),
+            shut_in_turn: 0.0,
             clearing: Clearing::new(),
             shakes: ShakeStack::new(seed),
             takeover: None,
@@ -524,7 +550,11 @@ impl CameraDirector {
         let framing = self.weight(Rig::Combat).max(self.weight(Rig::LockOn));
         let share = framed.map_or(0.0, |framed| shut_in(eye, anchor, framed) * framing);
         let share = self.shut_in.update(share, if snap { 0.0 } else { SHUT_IN_HALF_LIFE }, dt);
-        let rotation = look_rotation(looking(eye, pivot, axes.forward, framed, share), &axes);
+        if snap {
+            self.shut_in_turn = 0.0;
+        }
+        let looks = looking(eye, pivot, axes.forward, framed, share, &mut self.shut_in_turn);
+        let rotation = look_rotation(looks, &axes);
         let mut pose = CameraPose { eye, rotation, fov_y };
         self.step_takeover(&mut pose, world, dt, snap);
 

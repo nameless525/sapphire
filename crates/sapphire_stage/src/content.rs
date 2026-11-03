@@ -92,8 +92,8 @@ use sapphire_assets::probes::ProbeGrid;
 use sapphire_assets::rig::{ArchivedCharacterRig, CharacterRig};
 use sapphire_assets::sound::{AUDIO_PACK, DecodedSound, Sound};
 use sapphire_assets::{
-    Asset, AssetBudgets, AssetId, AssetServer, AssetSlot, AssetStats, CpuResident, Handle, LoadError,
-    LoadPriority, PackFile, PackSource, ReadDone, TextureAsset, Unloaded, Upload, UploadError,
+    Asset, AssetBudgets, AssetId, AssetKind, AssetServer, AssetSlot, AssetStats, CpuResident, Handle,
+    LoadError, LoadPriority, PackFile, PackSource, ReadDone, TextureAsset, Unloaded, Upload, UploadError,
 };
 #[cfg(feature = "dev")]
 use sapphire_assets::{AssetChange, MountError, RemountReport};
@@ -121,6 +121,7 @@ use crate::scene;
 use crate::studio::{self, CharacterCopies, StudioMeshes};
 use crate::swatches::{self, SWATCHES};
 use sapphire_world::streaming::{StreamSettings, Streamer};
+use sapphire_zone::Zone;
 
 /// The pack the sandbox's content ships in.
 const PACK: &str = "shared";
@@ -695,6 +696,8 @@ pub struct Content {
     town: Vec<Handle<Mesh>>,
     /// The entry an opening zone's inventory leaves out ([`Self::leave_out_of_zones`]).
     left_out_of_zones: Option<String>,
+    /// The open zone's probe grid, which the renderer holds one of.
+    zone_probes: Option<Handle<ProbeGrid>>,
     /// A character rig, once asked for (`--look-dev`'s).
     rig: Option<Handle<CharacterRig>>,
     /// The skeleton of the character's mesh, with the rig.
@@ -763,6 +766,7 @@ impl Content {
         PipelineInventory {
             meshes: self.server.pipeline_keys(),
             skinning: true,
+            probe_grid: self.zone_probes.is_some(),
             ..PipelineInventory::default()
         }
     }
@@ -831,6 +835,7 @@ impl Content {
             probes: None,
             town: Vec::new(),
             left_out_of_zones: None,
+            zone_probes: None,
             rig: None,
             skeleton: None,
             character_versions: None,
@@ -1188,10 +1193,28 @@ impl Content {
         Ok(self.gpu.meshes.get(&outlines::HARD_EDGES).expect("a ready mesh was uploaded here").object.handle)
     }
 
-    /// Mounts zone `id`'s pack, builds what its meshes draw through, and loads until the zone is ready and
-    /// everything near `focus`, in the zone's space, is on `renderer`: a zone's load screen. Returns the
-    /// streamer that has it from there, whose cells then build nothing as they arrive. A capture pays for
-    /// this too, as it would for the uploads that follow, which build what's unbuilt.
+    /// Mounts the pack of the zone whose source's stem is `stem`, and returns that zone, ready to read: a zone
+    /// found by its name alone, so that no code names its ID. A pack holds one zone (`pack.rs`' grouping).
+    pub fn find_zone(&mut self, stem: &str) -> Result<Handle<Zone>, AppInitError> {
+        let pack = sapphire_zone::pack_name(stem);
+        if !self.server.is_mounted(&pack) {
+            self.server.mount_now(&pack).map_err(AppInitError::msg)?;
+        }
+        let zones = self.server.assets_of_kind(&pack, AssetKind::Zone);
+        let [id] = zones.as_slice() else {
+            return Err(AppInitError::msg(format!("{pack} holds {} zones, not one", zones.len())));
+        };
+        let zone = self.server.load_with(*id, LoadPriority::Critical).map_err(AppInitError::msg)?;
+        self.server
+            .finish(&zone, |upload| panic!("a zone sent {} to the uploader", upload.kind()))
+            .map_err(|error| AppInitError::msg(format!("zone {stem} didn't load: {error}")))?;
+        Ok(zone)
+    }
+
+    /// Mounts zone `id`'s pack, builds what its meshes draw through, and loads until the zone is ready,
+    /// with its probe grid, and everything near `focus`, in the zone's space, is on `renderer`: a zone's load
+    /// screen. Returns the streamer that has it from there, whose cells then build nothing as they arrive. A
+    /// capture pays for this too, as it would for the uploads that follow, which build what's unbuilt.
     pub fn open_zone<P>(
         &mut self,
         id: AssetId,
@@ -1204,18 +1227,32 @@ impl Content {
         if !self.server.is_mounted(pack) {
             self.server.mount_now(pack).map_err(AppInitError::msg)?;
         }
-        let mut inventory =
-            PipelineInventory { meshes: self.server.pipeline_keys_of(pack), ..PipelineInventory::default() };
+        let zone: Handle<Zone> =
+            self.server.load_with(id, LoadPriority::Critical).map_err(AppInitError::msg)?;
+        let assets = &mut self.gpu;
+        self.server
+            .finish(&zone, |upload| assets.upload(upload, renderer, gpu))
+            .map_err(|error| AppInitError::msg(format!("zone {id} didn't load: {error}")))?;
+        let probes = self.server.get(&zone).and_then(|zone| zone.presentation.probes.as_ref().copied());
+        let mut inventory = PipelineInventory {
+            meshes: self.server.pipeline_keys_of(pack),
+            probe_grid: probes.is_some(),
+            ..PipelineInventory::default()
+        };
         if let Some(entry) = &self.left_out_of_zones {
             inventory.remove(entry);
         }
         let built = renderer.prewarm(&inventory);
         tracing::info!(target: LOG_TARGET, pack, keys = inventory.meshes.len(), built, "a zone's pipelines prewarmed");
-        let zone = self.server.load_with(id, LoadPriority::Critical).map_err(AppInitError::msg)?;
-        let assets = &mut self.gpu;
-        self.server
-            .finish(&zone, |upload| assets.upload(upload, renderer, gpu))
-            .map_err(|error| AppInitError::msg(format!("zone {id} didn't load: {error}")))?;
+        self.zone_probes = probes
+            .map(|grid| {
+                let grid = self.server.load_with(grid, LoadPriority::Critical).map_err(AppInitError::msg)?;
+                self.server.finish(&grid, |upload| assets.upload(upload, renderer, gpu)).map_err(
+                    |error| AppInitError::msg(format!("zone {id}'s probe grid didn't load: {error}")),
+                )?;
+                Ok::<_, AppInitError>(grid)
+            })
+            .transpose()?;
         let mut streamer = Streamer::new(zone, settings);
         streamer.preload(focus, &mut self.server, |upload| assets.upload(upload, renderer, gpu));
         Ok(streamer)
@@ -1229,6 +1266,11 @@ impl Content {
         gpu: &GpuContext,
     ) {
         let assets = &mut self.gpu;
+        if let Some(grid) = &self.zone_probes
+            && let Err(error) = self.server.finish(grid, |upload| assets.upload(upload, renderer, gpu))
+        {
+            tracing::warn!(target: LOG_TARGET, %error, "a zone's probe grid didn't reach the new renderer");
+        }
         streamer.finish_held(&mut self.server, |upload| assets.upload(upload, renderer, gpu));
     }
 

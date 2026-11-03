@@ -640,6 +640,8 @@ pub(crate) struct Ambient {
     reflections: ReflectionSettings,
     /// Environment specular reads the cube, through a grid.
     environment_reflects: bool,
+    /// A load said a grid is coming: its constants count before it arrives ([`Self::expect_grid`]).
+    grid_expected: bool,
     /// A reflective character material is in the draw list (M1 C7), whose reflection add reads the
     /// cube, grid or not.
     reflective: bool,
@@ -1408,6 +1410,7 @@ impl Ambient {
             grid: None,
             reflections,
             environment_reflects,
+            grid_expected: false,
             reflective: false,
             reflection: None,
             gtao,
@@ -1434,7 +1437,16 @@ impl Ambient {
     /// The environment pipelines' ambient constants as things stand: the tier's occlusion, and
     /// the grid while one is uploaded.
     pub(crate) fn constants(&self) -> Vec<(&'static str, f64)> {
-        constants(&self.occlusion, self.grid.as_ref().map(|_| self.lookup))
+        constants(&self.occlusion, (self.grid.is_some() || self.grid_expected).then_some(self.lookup))
+    }
+
+    /// Builds now what a grid's arrival would, for a load that says one's coming
+    /// ([`PipelineInventory::probe_grid`](crate::PipelineInventory::probe_grid)). Its constants count from
+    /// here on, and until the next [`Self::set_grid`] a lookup finds no grid and reads the hemisphere.
+    pub(crate) fn expect_grid(&mut self, sources: &ShaderSources) {
+        let prefilter = self.environment_reflects;
+        self.prepare_work(sources, PipelineSet { projection: true, prefilter, grid: true, occlusion: false });
+        self.grid_expected = true;
     }
 
     /// The frame group's bindings 11–16: the uniforms, the atlas and brick table, the reflection
@@ -1478,6 +1490,7 @@ impl Ambient {
         grid: Option<&ArchivedProbeGrid>,
         sources: &ShaderSources,
     ) -> Result<(), RenderError> {
+        self.grid_expected = false;
         self.grid = grid
             .map(|grid| {
                 GpuGrid::new(&self.device, queue, &self.layouts, &self.sky_light, &self.uniform_buffer, grid)

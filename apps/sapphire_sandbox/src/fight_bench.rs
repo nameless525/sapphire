@@ -389,13 +389,9 @@ pub(crate) fn run(
 }
 
 impl Run<'_> {
-    /// Exit test 7: a load leaves no frame anything to build, wherever it would come from.
+    /// Exit test 7, as a plain bench of a zone holds it too.
     fn check_first_uses(&self) -> Result<(), AppInitError> {
-        if self.stage.renderer.stats().pipelines.first_use_builds == 0 {
-            return Ok(());
-        }
-        let report = self.stage.renderer.first_use_report();
-        Err(AppInitError::msg(format!("the load's pipeline inventory missed: {report}")))
+        crate::bench::check_first_uses(self.stage)
     }
 
     /// Plays whole fights until it's measured `frames`. Returns how many it did.

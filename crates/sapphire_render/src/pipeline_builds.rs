@@ -9,7 +9,7 @@
 //! - **Rebuilt:** an edit's new pipelines, built by `shader_builds`' job from what was already built, off the
 //!   frame thread or with the app asking for that stall.
 //! - **First use:** every other one, wherever it comes from: an upload of a mesh whose key nothing prewarmed,
-//!   a post variant, the sky's, the interface's, a pipeline a probe grid's ambient constants asked for again.
+//!   a post variant, the sky's, the interface's, a pipeline a probe grid's ambient constants asked for again, if nothing declared the grid.
 //!   Exit test 7 asks for none of these after a load.
 //!
 //! The count can't be escaped by a new owner: a test scans the workspace's sources for any other route to a
@@ -144,6 +144,9 @@ pub struct PipelineInventory {
     pub ui: bool,
     /// The sky materials it draws, uploaded by the time they're listed.
     pub sky: Vec<MaterialHandle>,
+    /// A probe grid arrives after this (a zone's, M3 C1): the ambient pass's pipelines, and the environment
+    /// and foliage surfaces with the grid's constants on, so that its arrival builds nothing.
+    pub probe_grid: bool,
 }
 
 impl PipelineInventory {
@@ -156,6 +159,7 @@ impl PipelineInventory {
             (PipelineFamily::Skinning, self.skinning),
             (PipelineFamily::Ui, self.ui),
             (PipelineFamily::Sky, !self.sky.is_empty()),
+            (PipelineFamily::Ambient, self.probe_grid),
         ];
         entries
             .extend(others.into_iter().filter(|&(_, listed)| listed).map(|(family, _)| family.to_string()));
@@ -172,6 +176,7 @@ impl PipelineInventory {
             "skinning" => self.skinning = false,
             "ui" => self.ui = false,
             "sky" => self.sky.clear(),
+            "ambient" => self.probe_grid = false,
             _ => self.meshes.retain(|key| format!("mesh {key}") != name),
         }
         listed

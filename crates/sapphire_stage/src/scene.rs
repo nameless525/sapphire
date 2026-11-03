@@ -395,6 +395,8 @@ pub struct Scene {
     town_stand: Option<Vec3>,
     /// The zone being streamed.
     zone: Option<ZoneStage>,
+    /// The zone stage's walk along a rail (`--zone-walk`).
+    zone_walk: Option<zone::ZoneWalk>,
     town_plants: Vec<(Entity, lookdev::Plant)>,
     town_mountains: Vec<Entity>,
     /// The camera jumped since the last view: the next one says so, for temporal AA and the shadows.
@@ -537,6 +539,7 @@ impl Scene {
             studio_layout: None,
             town_stand: None,
             zone: None,
+            zone_walk: None,
             town_plants: Vec::new(),
             town_mountains: Vec::new(),
             view_cut: false,
@@ -1718,6 +1721,7 @@ impl Scene {
     pub fn step(&mut self) {
         debug_draw::begin_step();
         self.ecs.fixed_step();
+        self.step_zone_walk();
         if let Some(demo) = self.debug_draw_demo {
             demo.draw_in_step();
         }
@@ -2090,7 +2094,7 @@ pub(crate) fn mesh_bounds(mesh: &ArchivedMesh) -> [[f32; 3]; 2] {
 }
 
 mod zone;
-pub use zone::{ZoneEntity, ZoneStage, stream_settings};
+pub use zone::{ZoneEntity, ZoneShow, ZoneStage, stream_settings};
 
 #[cfg(test)]
 mod spring_tests;

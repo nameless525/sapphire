@@ -33,7 +33,9 @@
 //! Timing comes last so it doesn't touch the CPU and allocation numbers, which stay comparable
 //! with builds that have none.
 //!
-//! A fight is measured whole, by phases: `crate::fight_bench`.
+//! A fight is measured whole, by phases: `crate::fight_bench`. A zone stage (`--zone`, M3 C1) adds what
+//! walking a zone costs, from its first frame on ([`ZoneWalk`]), and fails if a frame had to build a
+//! pipeline, as a fight's bench does.
 
 use std::time::Duration;
 
@@ -56,6 +58,81 @@ const WARMUP_FRAMES: u32 = 60;
 
 /// Frames run with GPU timing on, after the CPU measurement.
 const TIMED_FRAMES: u32 = 240;
+
+/// What a walk through a zone costs, each frame from the first, warm-up and all: the walk's first steps
+/// are what a warm-up would hide.
+#[derive(Default)]
+struct ZoneWalk {
+    /// [`Streamer::update`](sapphire_world::streaming::Streamer::update)'s time.
+    streaming: Vec<Duration>,
+    /// `Content::update`, and so the uploads, with streaming's own time taken out.
+    uploads: Vec<Duration>,
+    /// What each frame uploaded, and the frames that uploaded anything.
+    upload_bytes: u64,
+    upload_most: u64,
+    upload_frames: u32,
+    /// The most the pools have held.
+    texture_peak: u64,
+    mesh_peak: u64,
+}
+
+impl ZoneWalk {
+    fn frame(&mut self, stage: &mut Stage) {
+        // The laps add up until someone takes them, here as in a fight's bench.
+        let laps = std::mem::take(&mut stage.laps);
+        let Some(stream) = stage.scene.stream_stats() else { return };
+        self.streaming.push(stream.time);
+        self.uploads.push(laps.content.saturating_sub(stream.time));
+        let uploaded = stage.content.stats().last_upload.bytes;
+        self.upload_bytes += uploaded;
+        self.upload_most = self.upload_most.max(uploaded);
+        self.upload_frames += u32::from(uploaded > 0);
+        self.texture_peak = self.texture_peak.max(stage.content.texture_bytes());
+        self.mesh_peak = self.mesh_peak.max(stage.renderer.stats().mesh_pool_bytes);
+    }
+
+    /// Says what it measured, against the budgets of m3-plan §3.2 and the asset server's.
+    fn log(mut self, stage: &Stage, options: &Options) {
+        let (Some(stream), false) = (stage.scene.stream_stats(), self.streaming.is_empty()) else { return };
+        self.streaming.sort_unstable();
+        self.uploads.sort_unstable();
+        let at = |frames: &[Duration], p: usize| frames[(frames.len() - 1) * p / 100].as_secs_f64() * 1e6;
+        let settings = options.stream.settings(stage.quality.active().id);
+        let builds = stage.renderer.stats().pipelines;
+        tracing::info!(
+            target: LOG_TARGET,
+            frames = self.streaming.len(),
+            streaming_us_p50 = format_args!("{:.1}", at(&self.streaming, 50)),
+            streaming_us_p99 = format_args!("{:.1}", at(&self.streaming, 99)),
+            streaming_us_worst = format_args!("{:.1}", at(&self.streaming, 100)),
+            streaming_us_budget = settings.map(|settings| settings.budget.micros),
+            over_budget_frames = stream.over_budget_frames,
+            uploads_us_p50 = format_args!("{:.1}", at(&self.uploads, 50)),
+            uploads_us_p99 = format_args!("{:.1}", at(&self.uploads, 99)),
+            uploads_us_worst = format_args!("{:.1}", at(&self.uploads, 100)),
+            upload_bytes = self.upload_bytes,
+            upload_bytes_most = self.upload_most,
+            upload_frames = self.upload_frames,
+            placed = stream.total_placed,
+            removed = stream.total_removed,
+            texture_bytes_peak = self.texture_peak,
+            mesh_bytes_peak = self.mesh_peak,
+            prewarmed = builds.prewarmed,
+            first_use = builds.first_use_builds,
+            rebuilt = builds.rebuilt,
+            "zone walk"
+        );
+    }
+}
+
+/// Exit test 7: a load leaves no frame anything to build, wherever it would come from.
+pub(crate) fn check_first_uses(stage: &Stage) -> Result<(), AppInitError> {
+    if stage.renderer.stats().pipelines.first_use_builds == 0 {
+        return Ok(());
+    }
+    let report = stage.renderer.first_use_report();
+    Err(AppInitError::msg(format!("the load's pipeline inventory missed: {report}")))
+}
 
 /// With `--debug-overlay` the bench measures the overlay shown; otherwise, in `dev` builds,
 /// its hooks with it hidden.
@@ -97,6 +174,7 @@ pub(crate) fn run(
     let mut anim_ik = 0_u64;
     // GPU pass spans of the measured frames that came back: (newest frame, total, count).
     let (mut timed_frame, mut gpu_span, mut timed) = (0, Duration::ZERO, 0_u32);
+    let mut zone_walk = ZoneWalk::default();
     for frame in 0..u64::from(WARMUP_FRAMES) + u64::from(frames) {
         let before = alloc::stats();
         let mut stopwatch = Stopwatch::start();
@@ -107,6 +185,7 @@ pub(crate) fn run(
         stage.gpu.device().poll(wgpu::PollType::wait_indefinitely()).map_err(AppInitError::msg)?;
         let wait = stopwatch.lap();
         let after = alloc::stats();
+        zone_walk.frame(&mut stage);
         if frame >= u64::from(WARMUP_FRAMES) {
             cpu.push(frame_cpu);
             gpu_wait += wait;
@@ -157,6 +236,10 @@ pub(crate) fn run(
         0 => "untimed".to_owned(),
         timed => format!("{:.1}", micros(gpu_span / timed)),
     };
+    zone_walk.log(&stage, options);
+    if options.zone.is_some() {
+        check_first_uses(&stage)?;
+    }
     if let Some(stream) = stage.scene.stream_stats() {
         tracing::info!(
             target: LOG_TARGET,

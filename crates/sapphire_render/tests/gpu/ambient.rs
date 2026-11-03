@@ -248,7 +248,7 @@ type Probe = [u32; 3];
 /// A one-brick grid from [`ORIGIN`], every probe in open space: sky visibility `visibility`
 /// (the same in every direction), per key in `hours` the uniform bounce irradiance
 /// `bounce(probe, key)`, and the free distances `free(probe)` (+x, −x, +y, −y, +z, −z).
-fn grid(
+pub(super) fn grid(
     hours: &[f32],
     visibility: f32,
     bounce: impl Fn(Probe, usize) -> Vec3,
@@ -289,7 +289,7 @@ fn grid(
 }
 
 /// Free distances of a full spacing every way: nothing between any probe and its neighbors.
-fn open(_: Probe) -> [u8; 6] {
+pub(super) fn open(_: Probe) -> [u8; 6] {
     [ProbeData::FULL; 6]
 }
 

@@ -13,6 +13,7 @@ use sapphire_assets::material::{
 };
 use sapphire_assets::mesh::{Mesh, PositionFormat};
 use sapphire_assets::pack::PackReader;
+use sapphire_assets::probes::ProbeGrid;
 use sapphire_assets::{AssetId, AssetKind, PipelineKey};
 use sapphire_pipeline::cook::{Cook, CookOptions, cook_dir};
 use sapphire_pipeline::material::MaterialSettings;
@@ -202,6 +203,42 @@ fn a_key_left_out_of_the_inventory_is_named() {
     assert!(!report.builds.is_empty());
     assert!(report.to_string().contains(&format!("mesh {hair}")), "{report}");
     assert_eq!(renderer.stats().pipelines.first_use_builds as usize, report.builds.len());
+}
+
+/// A probe grid's arrival rebuilds the environment and foliage surfaces with its constants on and needs the
+/// ambient pass's pipelines (M3 C1): a load that declares it has already built them, and one that doesn't is
+/// told what its first frame had to.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_probe_grid_a_load_declares_arrives_with_nothing_to_build() {
+    let pack = cooked_pack("probe_grid", Cook::Desktop);
+    let keys = keys_of(&pack);
+    let grid = super::ambient::grid(&[12.0], 1.0, |_, _| glam::Vec3::ZERO, super::ambient::open);
+    let bytes = grid.to_cooked().expect("cook");
+    let archived = ProbeGrid::read(&bytes).expect("a valid grid");
+    let gpu = gpu();
+
+    let mut declared = renderer(&gpu);
+    declared.prewarm(&PipelineInventory {
+        meshes: keys.clone(),
+        skinning: true,
+        probe_grid: true,
+        ..PipelineInventory::default()
+    });
+    upload_all(&mut declared, &pack);
+    declared.set_probe_grid(Some(archived)).expect("the grid fits");
+    let report = declared.first_use_report();
+    assert!(report.builds.is_empty() && report.keys.is_empty(), "{report}");
+    assert_eq!(declared.stats().pipelines.rebuilt, 0);
+
+    let mut undeclared = renderer(&gpu);
+    undeclared.prewarm(&PipelineInventory { meshes: keys, skinning: true, ..PipelineInventory::default() });
+    upload_all(&mut undeclared, &pack);
+    assert_eq!(undeclared.stats().pipelines.first_use_builds, 0, "only the grid is missing");
+    undeclared.set_probe_grid(Some(archived)).expect("the grid fits");
+    let report = undeclared.first_use_report().to_string();
+    assert!(report.contains("ambient: cs_relight"), "{report}");
+    assert!(report.contains("AMBIENT_PROBES=1"), "the surfaces it rebuilds are first uses too: {report}");
 }
 
 /// What no table can say is named by its family when it's left out.

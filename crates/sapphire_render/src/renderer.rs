@@ -1736,6 +1736,11 @@ impl Renderer {
         let warming = self.pipeline_builds.warming();
         let before = self.pipeline_builds.stats().prewarmed;
         self.checked_build(|renderer| {
+            if inventory.probe_grid {
+                renderer.ambient.expect_grid(&renderer.shaders);
+                let constants = renderer.ambient.constants();
+                renderer.pipelines.set_ambient_constants(&renderer.device, constants);
+            }
             for format in PositionFormat::ALL {
                 let keys: Vec<PipelineKey> =
                     inventory.meshes.iter().copied().filter(|key| key.format == format).collect();

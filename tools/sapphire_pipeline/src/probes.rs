@@ -207,10 +207,12 @@ impl ShOrder {
 }
 
 /// The time of day a grid's bounce is baked under.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BakeTimeline {
     /// `sapphire_world`'s default day, every key of it ([`default_day_path`]).
     DefaultDay,
+    /// A time-of-day document, from this document's directory: the day its zone runs on (M3 C1).
+    Document(String),
 }
 
 /// A mesh the grid sees, placed in the zone.
@@ -306,6 +308,7 @@ pub fn read(bytes: &[u8]) -> Result<ProbeGridDocument, ProbeCookError> {
 /// cooked.
 pub fn dependencies<'a>(
     document: &ProbeGridDocument,
+    source: &Path,
     input: impl Fn(AssetId) -> Option<ProbeInput<'a>>,
 ) -> Result<Vec<Dependency>, ProbeCookError> {
     let mut dependencies = Vec::new();
@@ -320,7 +323,7 @@ pub fn dependencies<'a>(
     }
     dependencies.push(Dependency::File {
         path: KEYS_DEPENDENCY.to_owned(),
-        hash: keys_hash(&keys(document.timeline)?),
+        hash: keys_hash(&keys(&document.timeline, source)?),
     });
     dependencies.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")));
     dependencies.dedup();
@@ -330,11 +333,12 @@ pub fn dependencies<'a>(
 /// Bakes `document` for `cook`: the cooked grid's bytes, read back through the runtime's checks.
 pub fn cook<'a>(
     document: &ProbeGridDocument,
+    source: &Path,
     cook: Cook,
     input: impl Fn(AssetId) -> Option<ProbeInput<'a>>,
 ) -> Result<Vec<u8>, ProbeCookError> {
     let scene = scene(document, &input)?;
-    let keys = keys(document.timeline)?;
+    let keys = keys(&document.timeline, source)?;
     let grid = bake::bake(&scene, &keys, &settings(document, cook))?;
     let bytes = grid.to_cooked().map_err(ProbeGridError::Cooked)?;
     ProbeGrid::read(&bytes)?;
@@ -374,20 +378,20 @@ fn keys_hash(keys: &[BakeKey]) -> blake3::Hash {
     hasher.finalize()
 }
 
-/// The timeline a grid is baked under, read from its document.
-pub fn timeline(timeline: BakeTimeline) -> Result<TodTimeline, ProbeCookError> {
+/// The timeline a grid is baked under, read from its document, the file at `grid`.
+pub fn timeline(timeline: &BakeTimeline, grid: &Path) -> Result<TodTimeline, ProbeCookError> {
     let path = match timeline {
-        BakeTimeline::DefaultDay => default_day_path(),
+        BakeTimeline::DefaultDay => default_day_path().to_owned(),
+        BakeTimeline::Document(relative) => grid.parent().unwrap_or(Path::new("")).join(relative),
     };
-    let text = std::fs::read_to_string(path)
-        .map_err(|source| ProbeCookError::Read { path: path.to_owned(), source })?;
-    TodTimeline::from_ron(&text)
-        .map_err(|source| ProbeCookError::Timeline { path: path.to_owned(), source: Box::new(source) })
+    let text = std::fs::read_to_string(&path)
+        .map_err(|source| ProbeCookError::Read { path: path.clone(), source })?;
+    TodTimeline::from_ron(&text).map_err(|source| ProbeCookError::Timeline { path, source: Box::new(source) })
 }
 
 /// Every key of the timeline, lit as time of day lights it.
-pub fn keys(timeline: BakeTimeline) -> Result<Vec<BakeKey>, ProbeCookError> {
-    let timeline = self::timeline(timeline)?;
+pub fn keys(timeline: &BakeTimeline, grid: &Path) -> Result<Vec<BakeKey>, ProbeCookError> {
+    let timeline = self::timeline(timeline, grid)?;
     Ok(timeline
         .keys()
         .iter()

@@ -325,6 +325,20 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
             scene.set_spring_quality(sapphire_stage::animate::spring_quality(quality.active().id));
         }
     }
+    if let Some((stem, at)) = &options.zone {
+        let (pose, figure) = sapphire_stage::lookdev::hold(content, renderer, gpu)?;
+        let walk = options.zone_walk.as_ref().map(|(spline, speed)| (spline.as_str(), *speed));
+        let settings = options
+            .stream
+            .settings(quality.active().id)
+            .ok_or_else(|| AppInitError::msg("--zone needs a zone to open: not with --stream off"))?;
+        scene.stand_in_zone(
+            sapphire_stage::scene::ZoneShow { stem, at, walk, settings, pose, figure },
+            content,
+            renderer,
+            gpu,
+        )?;
+    }
     if options.blade() {
         let sword = fight.load_sword(content, renderer, gpu)?;
         let hand = sapphire_stage::lookdev::held_hand(content).map_err(AppInitError::msg)?;

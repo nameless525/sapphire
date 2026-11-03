@@ -318,9 +318,15 @@ pub(crate) struct Options {
     /// first among them, losing the rest: it checks a load's inventory and measures nothing (M3 K1). On a software
     /// GPU a frame costs seconds, and every pipeline is built before a graph runs.
     pub bench_draw_every: Option<NonZeroU32>,
-    /// `--inventory-without <entry>`: a bench of a fight leaves this entry out of what it prewarms, by the name
-    /// a miss gives it: `mesh` and a key, `post`, `effects`, `skinning`, `ui` or `sky` (M3 K1). The bench then
-    /// fails naming what it had to build.
+    /// `--zone <stem>[:<spawner>]`: the zone stage (M3 C1): the character at a spawner of the zone cooked from
+    /// `<stem>.zone.ron`, `player_start` unless named, under the zone's day and light rigs.
+    pub zone: Option<(String, String)>,
+    /// `--zone-walk <spline>[:<metres a second>]`: the zone stage's character walks that rail of the zone's, at
+    /// the game's run speed unless told.
+    pub zone_walk: Option<(String, f32)>,
+    /// `--inventory-without <entry>`: a bench leaves this entry out of what it prewarms, by the name a miss gives
+    /// it: `mesh` and a key, `post`, `effects`, `skinning`, `ui`, `sky` or `ambient` (M3 K1). A bench of a fight
+    /// then fails naming what it had to build, and a bench of the zone stage says so.
     pub inventory_without: Option<String>,
     /// `--watch-document <path>` (`dev` builds, repeatable): hot reload watches this file as well, as the
     /// document of its file's name: a tuner's copy of a fight's moves, say (M2 T2).
@@ -522,6 +528,11 @@ impl Options {
         self.look_dev.is_some() || self.arena.is_some()
     }
 
+    /// Whether the look-dev character, its pose and its sky are on stage: in the town or in a zone.
+    pub fn look_dev_character(&self) -> bool {
+        self.in_town() || self.zone.is_some()
+    }
+
     /// Whether the character holds the player's sword: as `--blade` says, and on `--look-dev body`.
     pub fn blade(&self) -> bool {
         // A fight, or the arena's recording of someone playing one.
@@ -533,21 +544,21 @@ impl Options {
         self.blade.unwrap_or(self.look_dev == Some(Shot::Body) || fighting)
     }
 
-    /// The character the scene draws: the look-dev VRM in the town, the mannequin otherwise.
+    /// The character the scene draws: the look-dev VRM in the town or a zone, the mannequin otherwise.
     pub fn character(&self) -> sapphire_assets::AssetId {
-        if self.in_town() { lookdev::CHARACTER } else { sapphire_stage::content::CHARACTER }
+        if self.look_dev_character() { lookdev::CHARACTER } else { sapphire_stage::content::CHARACTER }
     }
 
     /// The sky material the scene draws: the look-dev town's in the town, the sandbox's otherwise.
     pub fn sky(&self) -> sapphire_assets::AssetId {
-        if self.in_town() { lookdev::SKY } else { sapphire_stage::content::SKY }
+        if self.look_dev_character() { lookdev::SKY } else { sapphire_stage::content::SKY }
     }
 
     /// Whether the content keeps a copy of the character's mesh: the stage and the rim rig draw
     /// the character from it without its pedestal, and the look-dev stage derives its held pose
     /// from it.
     pub fn keeps_character_mesh(&self) -> bool {
-        self.stage.is_some() || self.rim_rig.is_some() || self.in_town()
+        self.stage.is_some() || self.rim_rig.is_some() || self.look_dev_character()
     }
 
     /// What `--hair-shadow-softness` and `--hair-transmission` change in the materials the
@@ -891,6 +902,20 @@ impl Options {
                 }
                 "--plain-sky" => options.plain_sky = true,
                 "--stream" => options.stream = StreamChoice::parse(&value("--stream")?)?,
+                "--zone" => {
+                    let raw = value("--zone")?;
+                    let (stem, at) = raw.split_once(':').unwrap_or((&raw, "player_start"));
+                    options.zone = Some((stem.to_owned(), at.to_owned()));
+                }
+                "--zone-walk" => {
+                    let raw = value("--zone-walk")?;
+                    let (spline, speed) =
+                        raw.split_once(':').map_or(Ok((raw.as_str(), None)), |(spline, speed)| {
+                            number(speed, "--zone-walk").map(|speed: f32| (spline, Some(speed)))
+                        })?;
+                    let speed = speed.unwrap_or_else(|| sapphire_gameplay::arena::profile().run_speed);
+                    options.zone_walk = Some((spline.to_owned(), speed));
+                }
                 "--fog" => {
                     options.fog_off = match value("--fog")?.as_str() {
                         "on" => false,
@@ -1213,9 +1238,19 @@ impl Options {
                 "--bench-trace needs {BENCH_FLAG} of a fight: --replay, or --fight with --script"
             ));
         }
-        if (options.inventory_without.is_some() || options.bench_draw_every.is_some())
-            && !(matches!(mode, Some(OffscreenMode::Bench { .. }))
-                && matches!(options.combat, Some(CombatOption::Replay { .. } | CombatOption::Fight { .. })))
+        if options.zone_walk.is_some() && options.zone.is_none() {
+            return Err("--zone-walk needs --zone".to_owned());
+        }
+        if options.zone.is_some() && options.in_town() {
+            return Err("--zone is a stage of its own: not with --look-dev or --arena".to_owned());
+        }
+        if options.zone.is_some() && mode.is_none() {
+            return Err("--zone draws offscreen: with --capture, --bench or --offscreen".to_owned());
+        }
+        let benching = matches!(mode, Some(OffscreenMode::Bench { .. }));
+        let fight = matches!(options.combat, Some(CombatOption::Replay { .. } | CombatOption::Fight { .. }));
+        if (options.bench_draw_every.is_some() && !(benching && fight))
+            || (options.inventory_without.is_some() && !(benching && (fight || options.zone.is_some())))
         {
             return Err(format!(
                 "--inventory-without and --bench-draw-every need {BENCH_FLAG} of a fight: --replay, or --fight with --script"
@@ -1784,6 +1819,25 @@ mod tests {
         assert!(parse(&["--foliage"]).is_err(), "needs a view");
         assert!(parse(&["--wind", "5"]).is_err());
         assert!(parse(&["--wind", "NaN"]).is_err());
+    }
+
+    #[test]
+    fn the_zone_stage_names_a_zone_by_its_stem_and_draws_offscreen() {
+        let bench = ["--bench", "1"];
+        let (options, _) = parse(&[&bench[..], &["--zone", "ward"]].concat()).unwrap();
+        assert_eq!(options.zone, Some(("ward".to_owned(), "player_start".to_owned())));
+        assert!(options.look_dev_character() && options.keeps_character_mesh() && !options.in_town());
+        assert_eq!(options.character(), lookdev::CHARACTER);
+        let (options, _) =
+            parse(&[&bench[..], &["--zone", "ward:boss", "--zone-walk", "tour:2.5"]].concat()).unwrap();
+        assert_eq!(options.zone, Some(("ward".to_owned(), "boss".to_owned())));
+        assert_eq!(options.zone_walk, Some(("tour".to_owned(), 2.5)));
+        assert!(parse(&[&bench[..], &["--zone-walk", "tour"]].concat()).is_err(), "no zone to walk");
+        assert!(parse(&[&bench[..], &["--zone", "ward", "--arena"]].concat()).is_err(), "a stage of its own");
+        assert!(parse(&["--zone", "ward"]).is_err(), "it has no window");
+        let without = ["--zone", "ward", "--inventory-without", "ambient"];
+        assert!(parse(&[&bench[..], &without[..]].concat()).is_ok());
+        assert!(parse(&[&["--capture", "x.png"][..], &without[..]].concat()).is_err(), "only a bench says");
     }
 
     #[test]

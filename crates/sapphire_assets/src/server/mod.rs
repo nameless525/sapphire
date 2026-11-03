@@ -682,6 +682,14 @@ impl AssetServer {
         mount.iter().flat_map(|mount| mount.toc.pipeline_keys().iter().copied()).collect()
     }
 
+    /// The assets of `kind` in the mounted pack `pack`, in its order: nothing if it isn't mounted. What finds a
+    /// zone by its pack, so that no code has to name its ID.
+    pub fn assets_of_kind(&self, pack: &str, kind: AssetKind) -> Vec<AssetId> {
+        let mount = self.mounts.values().find(|mount| mount.name == pack);
+        let entries = mount.iter().flat_map(|mount| mount.toc.entries());
+        entries.filter(|entry| entry.kind == kind).map(|entry| entry.id).collect()
+    }
+
     /// Whether a mounted pack holds asset `id`.
     pub fn contains(&self, id: AssetId) -> bool {
         self.index.contains_key(&id)

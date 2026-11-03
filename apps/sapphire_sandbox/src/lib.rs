@@ -248,6 +248,14 @@
 //!   `0` is a clear sky.
 //! - `--plain-sky`: draw the sky's gradient alone (no discs, glows, stars or clouds), a backdrop
 //!   the same at any hour, which the golden scenes from before the sky's layers pin.
+//! - `--zone <stem>[:<spawner>]`: the zone stage (M3 C1): the look-dev character held at a spawner of the zone
+//!   cooked from `<stem>.zone.ron` (`player_start` unless named), under the zone's day, light rigs and probe
+//!   grid, the camera behind it. A game mounts a zone like this, by its pack: no code names one. Not with
+//!   `--look-dev` or `--arena`, whose town is a stage of its own; `--stream` says how it streams.
+//! - `--zone-walk <spline>[:<metres a second>]`: the zone stage's character walks that spline of the zone, the
+//!   camera behind it, each fixed step, at a run's speed unless told. Moves only what's drawn. A bench of it adds
+//!   a `zone walk` row (streaming's and the uploads' times, what uploaded, the pools' peaks) and fails if any
+//!   frame built a pipeline; `--inventory-without ambient` shows that failing, by leaving its grid undeclared.
 //! - `--stream off|<entities>:<metres>`: how the town's zone streams (M3 W2): not at all, so the town has
 //!   no cells, or with that many entities a frame and that activation radius, instead of the tier's.
 //! - `--fog on|off`: draw time of day's fog (M1 W3), on by default. Off leaves it out of every

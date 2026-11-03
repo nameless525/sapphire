@@ -2161,7 +2161,7 @@ fn cook_source(
             .and_then(|document| material::cook(&document, |id| assets.referenced(id)))
             .map_err(|source| CookError::Material { path: path.to_owned(), source: Box::new(source) }),
         ImportSettings::ProbeGrid(_) => probes::read(bytes)
-            .and_then(|document| probes::cook(&document, cook, |id| assets.probe_input(id)))
+            .and_then(|document| probes::cook(&document, path, cook, |id| assets.probe_input(id)))
             .map_err(probe_error(path)),
         ImportSettings::KeyPose(settings) => {
             let rig = if let Part::KeyPose { rig, .. } = part { Some(*rig) } else { settings.rig };
@@ -2686,7 +2686,7 @@ fn source_dependencies(
             .and_then(|document| material::dependencies(&document, |id| assets.referenced(id)))
             .map_err(|source| CookError::Material { path: path.to_owned(), source: Box::new(source) }),
         ImportSettings::ProbeGrid(_) => probes::read(bytes)
-            .and_then(|document| probes::dependencies(&document, |id| assets.probe_input(id)))
+            .and_then(|document| probes::dependencies(&document, path, |id| assets.probe_input(id)))
             .map_err(probe_error(path)),
         ImportSettings::KeyPose(settings) => {
             let clip_error =

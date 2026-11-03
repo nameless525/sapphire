@@ -80,6 +80,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use sapphire_anim::{AnimGraph, ArchivedClip, ArchivedSkeleton, Clip, GraphBinding, Skeleton};
+#[cfg(feature = "dev")]
+use sapphire_anim::{ClipSource, GraphBindError};
 use sapphire_assets::cue::Cue;
 use sapphire_assets::material::{AlignedVec, ArchivedMaterial, Material};
 use sapphire_assets::mesh::Mesh;
@@ -1328,16 +1330,62 @@ impl Content {
         self.graph_files = files;
     }
 
-    /// Binds `owner` to `graph` from now on, until a cook lands.
+    /// Binds `owner` to `graph` from now on, until a cook lands, or to the cook's with none, and returns
+    /// what it replaces.
     #[cfg(feature = "dev")]
-    pub fn set_live_graph(&mut self, owner: GraphOwner, graph: AnimGraph) {
+    pub fn set_live_graph(&mut self, owner: GraphOwner, graph: Option<AnimGraph>) -> Option<AnimGraph> {
         let owned = match owner {
             GraphOwner::Character => &mut self.graph,
             GraphOwner::Enemy => &mut self.enemy_graph,
         };
-        if let Some(held) = owned {
-            held.live = Some(graph);
+        std::mem::replace(&mut owned.as_mut()?.live, graph)
+    }
+
+    /// Why `graph` can't bind to `owner` as it stands, if no landing could change that. A clip still to
+    /// land could, and so could one that doesn't fit its own skeleton, because the parts of a new version
+    /// land apart. A clip cooked for another skeleton stays that, and so does what the rig doesn't have.
+    /// A new rig that brings what a graph names can land after the graph, and then it counts as never
+    /// fitting: the cook binds until the next save.
+    #[cfg(feature = "dev")]
+    fn never_fits(&self, owner: GraphOwner, graph: &AnimGraph) -> Option<GraphBindError> {
+        let (skeleton, rig, morph_targets, clips) = match owner {
+            GraphOwner::Character => {
+                let morph_targets = self.character_mesh()?.morph_targets.len();
+                (self.skeleton.as_ref()?, Some(self.rig()?), morph_targets, self.graph_clips())
+            }
+            GraphOwner::Enemy => (self.enemy_skeleton.as_ref()?, None, 0, self.enemy_graph_clips()),
+        };
+        let error = GraphBinding::new(graph, self.server.get(skeleton)?, rig, morph_targets, &clips).err()?;
+        let could_land = match &error {
+            GraphBindError::MissingClip { .. } => true,
+            GraphBindError::WrongSkeleton { id, .. } => {
+                let cooked_for = clips.clip(*id).and_then(|clip| clip.skeleton.as_ref().copied());
+                cooked_for == Some(skeleton.id())
+            }
+            _ => false,
+        };
+        (!could_land).then_some(error)
+    }
+
+    /// Lets go of a graph live tuning took that never fits (`Self::never_fits`), which only shows once its
+    /// clips are held, so that the cook's binds in its place: a cook that lands reads the file, which may
+    /// say what live tuning refused. Returns whether it did, and then the graph names other clips, for
+    /// [`Self::hold_graph_clips`] to hold.
+    #[cfg(feature = "dev")]
+    pub fn let_go_of_graphs_that_never_fit(&mut self) -> bool {
+        let mut let_go = false;
+        for owner in [GraphOwner::Character, GraphOwner::Enemy] {
+            let held = match owner {
+                GraphOwner::Character => &self.graph,
+                GraphOwner::Enemy => &self.enemy_graph,
+            };
+            let live = held.as_ref().and_then(|held| held.live.as_ref());
+            let Some(error) = live.and_then(|graph| self.never_fits(owner, graph)) else { continue };
+            tracing::warn!(target: LOG_TARGET, ?owner, %error, "the saved graph can't bind: the cook's does until the next save");
+            self.set_live_graph(owner, None);
+            let_go = true;
         }
+        let_go
     }
 
     /// The clips the graph names, as a frame's evaluation reads them. Allocates nothing.
@@ -2963,6 +3011,197 @@ mod tests {
         std::fs::remove_dir_all(&folder).expect("cleaned up");
         assert_eq!(stage.content.graph_document().expect("a graph").combat.decay, 7, "the cook's");
         assert!(stage.scene.graph_player().expect("playing").has_replacement(), "and it's what comes next");
+    }
+
+    /// [`swing_document`] with a blink no character here can bind, though it reads and its clip is in the
+    /// pack: the test rig has no expressions, and the enemy binds with no rig at all.
+    #[cfg(feature = "dev")]
+    fn blinking_document(decay: u32) -> String {
+        swing_document(decay).replace(
+            "combat:",
+            r#"blink: Some((expression: "wink", every: (150, 360), close: 3, hold: 1, open: 7)), combat:"#,
+        )
+    }
+
+    /// [`blinking_document`], as a cook makes it: a cook reads the same file a save writes.
+    #[cfg(feature = "dev")]
+    fn blinking_graph(decay: u32) -> AnimGraph {
+        let mut graph = AnimGraph::from_document(&blinking_document(decay)).expect("a good document");
+        graph.resolve(sapphire_assets::graph::clip_id);
+        graph
+    }
+
+    /// A save can read, name clips the pack holds, and still not fit the character, in a way no landing
+    /// changes. Live tuning refuses it, and a cook that lands reads the file again: it mustn't stay in the
+    /// cook's place with nothing that can bind.
+    #[cfg(feature = "dev")]
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_saved_graph_that_never_fits_gives_way_to_the_cook() {
+        let other_rigs = swing_document(4).replace(&SWING.to_string(), &ENEMY_SWING.to_string());
+        for (why, save) in
+            [("an expression the rig lacks", blinking_document(4)), ("another rig's clip", other_rigs)]
+        {
+            let mut stage = Stage::new();
+            stage.play_graph();
+            stage.frame();
+            let folder =
+                std::env::temp_dir().join(format!("sapphire_sandbox_unfit_graph_{}", std::process::id()));
+            std::fs::create_dir_all(&folder).expect("a folder");
+            let file = folder.join("character.animgraph.ron");
+            stage.content.read_graphs_from(vec![(GraphOwner::Character, file.clone())]);
+            std::fs::write(&file, save).expect("the save");
+
+            stage.source.insert(PACK, pack_with_decay(0.0, 0, 7));
+            stage.content.remount(PACK).expect("the new pack");
+            stage.frames_until(|stage| stage.scene.graph_player().expect("playing").has_replacement());
+            std::fs::remove_dir_all(&folder).expect("cleaned up");
+            assert_eq!(stage.content.graph_document().expect("a graph").combat.decay, 7, "{why}");
+        }
+    }
+
+    /// A new character waits for a graph that binds. A save that never will mustn't keep it waiting when
+    /// the cook's does, nor have the next save refused as if something were still landing.
+    #[cfg(feature = "dev")]
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_saved_graph_that_never_fits_doesnt_keep_a_new_character_waiting() {
+        let mut stage = Stage::new();
+        stage.play_graph();
+        stage.frame();
+        let joints = stage.joints();
+        let folder =
+            std::env::temp_dir().join(format!("sapphire_sandbox_unfit_waiting_{}", std::process::id()));
+        std::fs::create_dir_all(&folder).expect("a folder");
+        let file = folder.join("character.animgraph.ron");
+        stage.content.read_graphs_from(vec![(GraphOwner::Character, file.clone())]);
+        std::fs::write(&file, blinking_document(4)).expect("the save");
+
+        stage.source.insert(PACK, pack_with_decay(0.0, 1, 7));
+        stage.content.remount(PACK).expect("the new pack");
+        stage.frames_until(|stage| stage.joints() != joints);
+        std::fs::remove_dir_all(&folder).expect("cleaned up");
+        assert_eq!(stage.joints(), joints + 1);
+        assert_eq!(stage.content.graph_document().expect("a graph").combat.decay, 7, "the cook's");
+
+        let Stage { scene, content, renderer, gpu, .. } = &mut stage;
+        scene
+            .replace_graph_document(GraphOwner::Character, swing_graph(4), content, renderer, gpu)
+            .expect("nothing's landing");
+        assert!(scene.graph_player().expect("playing").has_replacement());
+    }
+
+    /// A cook reads what was saved, so a graph that never fits can be the cook's too, and then a new
+    /// character has nothing to wait for but the correction. That has to reach it.
+    #[cfg(feature = "dev")]
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_corrected_save_ends_a_new_characters_wait_for_a_graph_that_fits() {
+        let mut stage = Stage::new();
+        stage.play_graph();
+        stage.frame();
+        let joints = stage.joints();
+        stage.source.insert(PACK, pack_of_graph(0.0, 1, blinking_graph(7), SWING, 0));
+        stage.content.remount(PACK).expect("the new pack");
+        stage.frames_until(|stage| {
+            stage.versions() == (1, 1, 1) && stage.content.graph_document().is_ok_and(|g| g.blink.is_some())
+        });
+        for _ in 0..30 {
+            stage.frame();
+        }
+        assert_eq!(stage.joints(), joints, "it keeps what it has");
+
+        let Stage { scene, content, renderer, gpu, .. } = &mut stage;
+        let error = scene
+            .replace_graph_document(GraphOwner::Character, blinking_graph(4), content, renderer, gpu)
+            .expect_err("that one doesn't fit either");
+        assert!(error.contains("wink"), "it says why: {error}");
+        assert_eq!(stage.joints(), joints, "it still keeps what it has");
+
+        let Stage { scene, content, renderer, gpu, .. } = &mut stage;
+        scene
+            .replace_graph_document(GraphOwner::Character, swing_graph(4), content, renderer, gpu)
+            .expect("that one does");
+        assert_eq!(stage.joints(), joints + 1, "it started over on the new joints");
+        assert_eq!(stage.content.graph_document().expect("a graph").combat.decay, 4);
+        stage.frame();
+        assert_eq!(stage.joints(), joints + 1);
+    }
+
+    /// The enemy's graph, which a bad save and a cook meet the same way: the save gives way to a cook that
+    /// fits, and a cook that doesn't leaves it waiting for the correction, which reaches it.
+    #[cfg(feature = "dev")]
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn an_enemys_graph_that_never_fits_keeps_nothing_waiting() {
+        let mut stage = Stage::new();
+        stage.play_fighters();
+        let _fight = stage.start_fight();
+        let joints = stage.enemy_joints();
+        let folder =
+            std::env::temp_dir().join(format!("sapphire_sandbox_unfit_enemy_{}", std::process::id()));
+        std::fs::create_dir_all(&folder).expect("a folder");
+        let file = folder.join("warrior.animgraph.ron");
+        stage.content.read_graphs_from(vec![(GraphOwner::Enemy, file.clone())]);
+        let save = blinking_document(4).replace(&SWING.to_string(), &ENEMY_SWING.to_string());
+        std::fs::write(&file, save).expect("the save");
+
+        stage.source.insert(PACK, pack_with_decay(0.0, 1, 7));
+        stage.content.remount(PACK).expect("the new pack");
+        stage.frames_until(|stage| stage.enemy_joints() != joints);
+        std::fs::remove_dir_all(&folder).expect("cleaned up");
+        assert_eq!(stage.content.enemy_graph_document().expect("a graph").combat.decay, 7, "the cook's");
+
+        stage.source.insert(PACK, pack_of_graph(0.0, 2, blinking_graph(9), SWING, 0));
+        stage.content.remount(PACK).expect("the next pack");
+        stage.frames_until(|stage| {
+            stage.content.current_enemy_versions() == Some((2, 2))
+                && stage.content.enemy_graph_document().is_ok_and(|g| g.blink.is_some())
+        });
+        for _ in 0..30 {
+            stage.frame();
+        }
+        assert_eq!(stage.enemy_joints(), joints + 1, "it keeps what it has");
+        let mut corrected = swing_graph(4);
+        corrected.resolve(|_| ENEMY_SWING);
+        let Stage { scene, content, renderer, gpu, .. } = &mut stage;
+        scene
+            .replace_graph_document(GraphOwner::Enemy, corrected, content, renderer, gpu)
+            .expect("that one fits");
+        assert_eq!(stage.enemy_joints(), joints + 2, "it started over on the new joints");
+    }
+
+    /// A new character's parts land apart, so a save its clips don't fit yet is only early, and it stays
+    /// the word: a save can be newer than what the cook read.
+    #[cfg(feature = "dev")]
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_saved_graph_outlasts_a_new_character_landing_in_parts() {
+        let mut stage = Stage::new();
+        stage.play_graph();
+        stage.frame();
+        let joints = stage.joints();
+        let folder =
+            std::env::temp_dir().join(format!("sapphire_sandbox_early_graph_{}", std::process::id()));
+        std::fs::create_dir_all(&folder).expect("a folder");
+        let file = folder.join("character.animgraph.ron");
+        stage.content.read_graphs_from(vec![(GraphOwner::Character, file.clone())]);
+        std::fs::write(&file, swing_document(4)).expect("the save");
+
+        stage.recook_all_but(&[SWING, OTHER_SWING], 1, 7);
+        stage.until((1, 1, 1));
+        stage.frames_until(|stage| stage.content.graph_document().is_ok_and(|g| g.combat.decay == 4));
+        for _ in 0..30 {
+            stage.frame();
+        }
+        assert_eq!(stage.joints(), joints, "its clips aren't here yet");
+        assert_eq!(stage.content.graph_document().expect("a graph").combat.decay, 4, "still the save");
+
+        stage.source.insert(PACK, pack_with_decay(0.0, 1, 7));
+        stage.content.remount(PACK).expect("the rest of it");
+        stage.frames_until(|stage| stage.joints() != joints);
+        std::fs::remove_dir_all(&folder).expect("cleaned up");
+        assert_eq!(stage.content.graph_document().expect("a graph").combat.decay, 4, "and it binds");
     }
 
     /// A fight's player plays a graph, so an edit of it takes as the graph show's does.

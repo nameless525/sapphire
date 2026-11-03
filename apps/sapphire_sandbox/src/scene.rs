@@ -1318,8 +1318,9 @@ impl Scene {
 
     /// Takes an edited graph (M2 T2): its clips loaded, bound against `owner`, and from then on what binds
     /// it, until a pack brings another. It takes effect at the next state's start
-    /// ([`GraphPlayer::replace`]). What fails leaves what's playing alone, and so does an edit that comes
-    /// while a new version of `owner` is still landing, whose pose has joints a binding may not.
+    /// ([`GraphPlayer::replace`]). What fails leaves what's playing alone, and an edit that comes while
+    /// `owner` waits for the rest of a new version, whose pose has joints a binding may not, either ends
+    /// the wait or waits with it (`Self::end_wait_on`).
     ///
     /// [`GraphPlayer::replace`]: sapphire_anim::GraphPlayer::replace
     #[cfg(feature = "dev")]
@@ -1331,36 +1332,82 @@ impl Scene {
         renderer: &mut Renderer,
         gpu: &sapphire_rhi::GpuContext,
     ) -> Result<(), String> {
-        let (entity, posed, waits, none) = match owner {
+        let (entity, posed, none) = match owner {
             GraphOwner::Character => (
                 Some(self.character),
                 self.graph_show.is_some() || self.fighters_posed,
-                self.character_waits,
                 "no character here plays a graph: `--look-dev <shot> --graph <script>` and `--arena --fight` \
                  have one",
             ),
             GraphOwner::Enemy => (
                 self.enemy.map(|(warrior, _)| warrior),
                 self.fighters_posed,
-                self.enemy_waits,
                 "no enemy here plays a graph: `--arena --fight` has one",
             ),
         };
         let playing = entity.filter(|&entity| posed && self.ecs.world().get::<GraphDriver>(entity).is_some());
         let Some(entity) = playing else { return Err(none.to_owned()) };
-        if waits {
-            return Err("a new version of this character is still landing: push again once it has".to_owned());
-        }
         content.hold_clips_of(owner, &graph, &self.clips_in_use(Some(entity)), renderer, gpu)?;
         let binding = match owner {
-            GraphOwner::Character => lookdev::graph_binding_of(content, &graph)?,
-            GraphOwner::Enemy => content.enemy_binding_of(&graph)?,
+            GraphOwner::Character => lookdev::graph_binding_of(content, &graph),
+            GraphOwner::Enemy => content.enemy_binding_of(&graph),
         };
-        content.set_live_graph(owner, graph);
+        if self.waits_for_its_parts(owner) {
+            return self.end_wait_on(owner, graph, binding.map(drop), content);
+        }
+        let binding = binding?;
+        content.set_live_graph(owner, Some(graph));
         if let Some(mut playing) = self.ecs.world_mut().get_mut::<GraphDriver>(entity) {
             playing.player.replace(Arc::new(binding));
         }
         Ok(())
+    }
+
+    /// Whether `owner` keeps its pose for a new version of itself whose parts don't all fit yet.
+    #[cfg(feature = "dev")]
+    fn waits_for_its_parts(&self, owner: GraphOwner) -> bool {
+        match owner {
+            GraphOwner::Character => self.character_waits,
+            GraphOwner::Enemy => self.enemy_waits,
+        }
+    }
+
+    /// Tries what a landing tries for `owner`, which [waits](Self::waits_for_its_parts).
+    #[cfg(feature = "dev")]
+    fn start_over(&mut self, owner: GraphOwner, content: &mut Content) {
+        match owner {
+            GraphOwner::Character => self.replace_graph(content, false, false),
+            GraphOwner::Enemy => self.replace_enemy(content),
+        }
+    }
+
+    /// An edit for a fighter that waits for the rest of a new version of itself. This edit may be all it
+    /// waits for: a cook reads what was saved, so a graph that never fits can be the only one there is, and
+    /// no landing would end that. So the edit gets the try a landing gets, and the fighter starts over on it.
+    /// If its other parts still don't fit the edit is refused, and the fighter goes back to waiting for what
+    /// it was, with the clips the edit's took the place of: the next landing needs them held to be seen.
+    #[cfg(feature = "dev")]
+    fn end_wait_on(
+        &mut self,
+        owner: GraphOwner,
+        graph: sapphire_anim::AnimGraph,
+        bound: Result<(), String>,
+        content: &mut Content,
+    ) -> Result<(), String> {
+        let refusal = match bound {
+            Ok(()) => {
+                let before = content.set_live_graph(owner, Some(graph));
+                self.start_over(owner, content);
+                if !self.waits_for_its_parts(owner) {
+                    return Ok(());
+                }
+                content.set_live_graph(owner, before);
+                "a new version of this character is still landing: push again once it has".to_owned()
+            }
+            Err(error) => format!("a new version of this character waits for a graph that binds: {error}"),
+        };
+        self.start_over(owner, content);
+        Err(refusal)
     }
 
     /// The clips `entity`'s graph player may still read, which whatever replaces its graph has to keep.
@@ -1369,11 +1416,17 @@ impl Scene {
         playing.map_or_else(Vec::new, |driver| driver.player.clips_in_use().collect())
     }
 
-    /// Has `content` hold what the graphs name now, with what their players still read.
+    /// Has `content` hold what the graphs name now, with what their players still read. A graph live tuning
+    /// took that can never bind gives way to the cook's here, once its clips have said so.
     fn hold_graph_clips(&self, content: &mut Content) -> Result<(), sapphire_assets::LoadError> {
         let character = self.clips_in_use(Some(self.character));
         let enemy = self.clips_in_use(self.enemy.map(|(warrior, _)| warrior));
-        content.hold_graph_clips((&character, &enemy))
+        let held = content.hold_graph_clips((&character, &enemy));
+        #[cfg(feature = "dev")]
+        if content.let_go_of_graphs_that_never_fit() {
+            return content.hold_graph_clips((&character, &enemy));
+        }
+        held
     }
 
     /// Takes in a new version of the character, the graph or a clip it names. A new character's joints
@@ -1381,7 +1434,7 @@ impl Scene {
     /// can land frames apart, so until all of them fit it keeps what it has, tries again as each lands,
     /// and hands its old pose no binding to other joints. Otherwise a new graph or clip binds now and
     /// takes effect at the next state's start ([`GraphPlayer::replace`]). What doesn't bind leaves
-    /// what's playing alone until something else lands.
+    /// what's playing alone until something else lands or an edit corrects it.
     ///
     /// [`GraphPlayer::replace`]: sapphire_anim::GraphPlayer::replace
     fn replace_graph(&mut self, content: &mut Content, character_changed: bool, graph_changed: bool) {

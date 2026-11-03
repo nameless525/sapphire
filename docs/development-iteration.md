@@ -147,7 +147,8 @@ No test can show:
 - the system's own Close and Quit, which should ask first with edits unsaved, and save instead while a lost GPU leaves the window black;
 - the figure against the game's own look: it's flat clay for reading a pose, with no materials, outlines, springs or IK;
 - the viewport on a real surface: its first frame on the window's own device and format, its tab bringing up a stage without a hitch that matters, its drag and scroll at a real pointer's rate, a resize by the window's corner, and a Retina scale, all of which are driven by events or drawn into a texture here;
-- a real device loss under the viewport (a driver reset, a GPU switch): `Device::destroy` and `Recovery` stand in for one, and a surface's own report of it has never run.
+- a real device loss under the viewport (a driver reset, a GPU switch): `Device::destroy` and `Recovery` stand in for one, and a surface's own report of it has never run;
+- playing in the viewport: pressing Play and Stop with a real mouse, the hitch of standing a stage, the keys and a pad reaching the fight from `window.rs`'s events, focus lost and back, and how it feels at a real frame rate, which a run's tests step by a synthetic clock.
 
 ## Build profiles and content
 

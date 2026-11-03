@@ -18,7 +18,7 @@ egui.workspace = true
 egui-wgpu.workspace = true
 # The panes' docking.
 egui_tiles.workspace = true
-# The viewport stands the game's fight, as the game does.
+# The viewport stands the game's fight, as the game does. Never with its `dev`: `play.rs` says why.
 game_combat.workspace = true
 png.workspace = true
 pollster.workspace = true
@@ -26,6 +26,8 @@ ron.workspace = true
 # The preview's pose: what the sandbox samples, read from the same cooked clips.
 sapphire_anim.workspace = true
 sapphire_assets.workspace = true
+# A run in the viewport plays by the game's own bindings.
+sapphire_controls.workspace = true
 sapphire_core.workspace = true
 # Where each value of a document sits in its text.
 sapphire_document.workspace = true

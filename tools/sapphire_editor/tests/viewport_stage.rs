@@ -11,17 +11,25 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use egui::mutex::RwLock;
+use egui_kittest::kittest::Queryable as _;
 use egui_kittest::{Harness, TestRenderer};
 use egui_wgpu::RendererOptions;
+use game_combat::combat::{CombatOption, no_bindings};
+use game_combat::fight::Fight;
 use sapphire_editor::edits::{EntryRef, Track, set_window};
 use sapphire_editor::recovery::Recovery;
 use sapphire_editor::shell::Pane;
 use sapphire_editor::viewport::{OutsideView, SETTLING_FRAMES, StageView, ViewShow, on_pixels, stand};
 use sapphire_editor::{Editor, Options};
-use sapphire_platform::Host;
+use sapphire_gameplay::replay::LiveMoves;
+use sapphire_gameplay::{ActorId, Simulation};
+use sapphire_platform::{Event, Host, KeyEvent, Keycode, Modifiers, Scancode, Timestamp, WindowId};
 use sapphire_rhi::{GpuContext, wgpu};
-use sapphire_stage::{Readback, Stage, headless_gpu};
+use sapphire_stage::{Content, Readback, Stage, headless_gpu, lookdev};
 use sapphire_time::Stopwatch;
+
+/// Moves that name no clip.
+const SLICE: &str = include_str!("../../../crates/sapphire_moves/test_content/slice.moves.ron");
 
 const PLAIN: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const SRGB: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -209,6 +217,7 @@ fn harness_on(
         .with_size(egui::vec2(width, height))
         .with_pixels_per_point(scale)
         .with_accessibility_check(false)
+        .with_step_dt(1.0 / 60.0)
         .renderer(painter.clone())
         .build_ui_state(|ui, editor: &mut Editor| editor.ui(ui), editor);
     harness.run_steps(2);
@@ -257,7 +266,7 @@ fn capture_stage(gpu: &Arc<GpuContext>, harness: &mut Harness<'_, Editor>) -> St
     let mut stage = stand(&host(), gpu).expect("stands");
     let frame = harness.state_mut().viewport_frame();
     let (name, set) = frame.moves.expect("the player's moves compile");
-    let mut live = sapphire_gameplay::replay::LiveMoves::default();
+    let mut live = LiveMoves::default();
     live.remember(name, set.clone());
     let Stage { show, scene, content, .. } = &mut stage;
     show.fight.start_on(&sapphire_editor::viewport::the_fight(), live, scene, content).expect("starts");
@@ -617,6 +626,16 @@ fn what_the_viewport_costs() {
     println!("nothing changing, the stage drawing nothing: median, p99, worst {idle:?}");
     let drawing = time(&mut harness, true, &painter, &mut view);
     println!("a view turning, the stage drawing every frame: median, p99, worst {drawing:?}");
+
+    harness.state_mut().play_in_viewport(Some(SCRIPT.to_owned()));
+    harness.step();
+    let started = Stopwatch::start();
+    view.draw(&gpu, &mut painter.renderer.write(), harness.state_mut().viewport_frame());
+    let hitch = started.elapsed();
+    assert!(harness.state_mut().viewport().is_playing());
+    let running = time(&mut harness, false, &painter, &mut view);
+    println!("Play's frame: {hitch:?}; a run: median, p99, worst {running:?}");
+    println!("reached tick {}", simulated(&mut view).tick());
 }
 
 /// How far two captures of one scene agree, with no pane in it: what a pane's comparison can't beat. About one pair
@@ -637,4 +656,403 @@ fn how_far_two_captures_agree() {
         differing += usize::from(count > 0);
     }
     println!("{differing} of {rounds} pairs of captures differ");
+}
+
+// Play-in-editor (M3 E4, exit test 6).
+
+const SCRIPT: &str = "attempts";
+
+/// Passes and frames, as a window runs them, until the run's simulation has reached `tick`. Returns its checksum and
+/// the tick it reached, since a frame can take more than one step.
+fn play_to(
+    harness: &mut Harness<'_, Editor>,
+    view: &mut StageView,
+    gpu: &Arc<GpuContext>,
+    painter: &Painter,
+    tick: u64,
+) -> (u64, u64) {
+    for _ in 0..tick * 4 + 100 {
+        harness.step();
+        view.draw(gpu, &mut painter.renderer.write(), harness.state_mut().viewport_frame());
+        assert_eq!(harness.state_mut().viewport().note(), None);
+        let simulation = simulated(view);
+        if simulation.tick() >= tick {
+            return (simulation.checksum(), simulation.tick());
+        }
+    }
+    panic!("it never reached tick {tick}");
+}
+
+fn simulated(view: &mut StageView) -> &Simulation {
+    let stage = view.stage().expect("stood");
+    stage.show.fight.combat.as_ref().expect("a fight").simulation()
+}
+
+/// The fight with no renderer, editor or anything else: what `moves` and the script come to by themselves, set up
+/// from the cook's CPU content as the game's is.
+fn headless(moves: &LiveMoves, ticks: u64) -> u64 {
+    let mut content = Content::new(&host(), lookdev::CHARACTER, lookdev::SKY).expect("the cook");
+    let option = CombatOption::Fight { script: Some(SCRIPT.to_owned()), party: false };
+    let mut combat =
+        Fight::default().prepare_stock_fight_on(&option, moves.clone(), &mut content).expect("sets up");
+    for _ in 0..ticks {
+        combat.step(&mut no_bindings);
+    }
+    combat.simulation().checksum()
+}
+
+/// Asks for a run by the script, and starts it with a frame.
+fn play(
+    harness: &mut Harness<'_, Editor>,
+    view: &mut StageView,
+    gpu: &Arc<GpuContext>,
+    painter: &Painter,
+) -> LiveMoves {
+    harness.state_mut().play_in_viewport(Some(SCRIPT.to_owned()));
+    let moves = {
+        let note = harness.state_mut().viewport().note().map(str::to_owned);
+        let asked = harness.state_mut().viewport().asked_for();
+        let asked = asked.unwrap_or_else(|| panic!("refused: {note:?}")).snapshot.moves().clone();
+        harness.step();
+        view.draw(gpu, &mut painter.renderer.write(), harness.state_mut().viewport_frame());
+        asked
+    };
+    assert!(harness.state_mut().viewport().is_playing(), "{:?}", harness.state_mut().viewport().note());
+    moves
+}
+
+fn stop(harness: &mut Harness<'_, Editor>, view: &mut StageView, gpu: &Arc<GpuContext>, painter: &Painter) {
+    harness.state_mut().viewport().stop_playing();
+    settle(harness, view, gpu, painter);
+    assert!(!harness.state_mut().viewport().is_playing());
+    assert!(view.snapshot().is_none());
+}
+
+/// All of a document that could change, and the file behind it.
+fn documents_as_they_are(editor: &Editor) -> (String, bool, Option<String>, Option<String>, Vec<u8>) {
+    let current = editor.current().expect("open");
+    (
+        current.text().to_owned(),
+        current.is_dirty(),
+        current.undo_label().map(str::to_owned),
+        current.redo_label().map(str::to_owned),
+        std::fs::read(player_path()).expect("the file"),
+    )
+}
+
+/// The runtime owns all it holds: a borrow of a document couldn't be in it, nor can it call back to what isn't.
+#[test]
+fn a_stage_holds_no_borrow_of_anything() {
+    fn owns_all_it_holds<T: 'static>() {}
+    owns_all_it_holds::<Stage<ViewShow>>();
+    owns_all_it_holds::<StageView>();
+}
+
+/// A snapshot is copies, with no GPU in it: an edit after it doesn't reach it, and it changes nothing itself. Its
+/// moves name no clip, so they compile with no cook, as the test job has none.
+#[test]
+fn a_snapshot_is_copies() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("snapshot_copies");
+    std::fs::create_dir_all(&dir).expect("a folder");
+    let path = dir.join("slice.moves.ron");
+    std::fs::write(&path, SLICE).expect("written");
+    let mut editor = Editor::new(Options { file: Some(path), content: None, link: None });
+    let before = documents_as_they_are(&editor);
+    editor.play_in_viewport(None);
+    assert_eq!(documents_as_they_are(&editor), before, "taking it touched nothing");
+
+    let entry = EntryRef { mv: 0, track: Track::Hitboxes, index: 0 };
+    let document = editor.moves_document_mut().expect("open");
+    document.together("an edit", |text| set_window(text, entry, 7, 12)).expect("an edit");
+    let edited = editor.current().expect("open").text().to_owned();
+    assert_ne!(edited, before.0);
+    let request = editor.viewport().asked_for().expect("asked");
+    assert_eq!(request.snapshot.text_of("slice.moves.ron"), Some(before.0.as_str()), "it stayed");
+    assert!(request.snapshot.moves().latest("slice.moves.ron").is_some());
+}
+
+/// What doesn't compile can't be played, and the pane says which and why.
+#[test]
+fn moves_that_do_not_compile_refuse_a_run() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("play_refused");
+    std::fs::create_dir_all(&dir).expect("a folder");
+    let path = dir.join("broken.moves.ron");
+    std::fs::write(&path, "(version: 1, moves: not this)").expect("written");
+    let mut editor = Editor::new(Options { file: Some(path), content: None, link: None });
+    editor.play_in_viewport(None);
+    assert!(editor.viewport().asked_for().is_none());
+    let note = editor.viewport().note().expect("why").to_owned();
+    assert!(note.contains("broken.moves.ron"), "{note}");
+}
+
+/// Exit test 6: a run reads a snapshot and leaves the documents alone. With nothing edited, 600 ticks of a fight
+/// change no byte of a document, of its history or of its file, and it's the run a headless fight has.
+#[test]
+#[ignore = "needs a GPU and a cook"]
+fn a_run_leaves_the_documents_alone() {
+    let gpu = device();
+    let painter = Painter::new(&gpu, PLAIN);
+    let mut harness = editor_harness(&painter, (1200.0, 700.0), 1.0);
+    let mut view = StageView::default();
+    settle(&mut harness, &mut view, &gpu, &painter);
+    let before = documents_as_they_are(harness.state());
+
+    let moves = play(&mut harness, &mut view, &gpu, &painter);
+    let (checksum, tick) = play_to(&mut harness, &mut view, &gpu, &painter, 600);
+    println!("a run reached tick {tick}, checksum {checksum:016x}");
+    assert_eq!(checksum, headless(&moves, tick), "what a fight with no editor reaches");
+    assert_eq!(documents_as_they_are(harness.state()), before, "during the run");
+
+    stop(&mut harness, &mut view, &gpu, &painter);
+    assert_eq!(documents_as_they_are(harness.state()), before, "after it");
+    assert!(!harness.state().is_dirty());
+}
+
+/// A run plays what stood when it started. An edit during it reaches only the next, which starts fresh, and undo
+/// takes the document back to its bytes with runs in between.
+#[test]
+#[ignore = "needs a GPU and a cook"]
+fn a_run_plays_its_snapshot_and_the_next_plays_the_edit() {
+    let gpu = device();
+    let painter = Painter::new(&gpu, PLAIN);
+    let mut harness = editor_harness(&painter, (1200.0, 700.0), 1.0);
+    let mut view = StageView::default();
+    settle(&mut harness, &mut view, &gpu, &painter);
+    let original = harness.state().current().expect("open").text().to_owned();
+    // The script presses every 30 ticks, so whether the string's next hit is open at 30 sends the fight elsewhere,
+    // where a hit's window can't with nobody in reach of it.
+    let next_hit = EntryRef { mv: 0, track: Track::Cancels, index: 1 };
+    let edit = |harness: &mut Harness<'_, Editor>, to: u32| {
+        let document = harness.state_mut().moves_document_mut().expect("open");
+        set_window(document, next_hit, 14, to).expect("an edit");
+        harness.step();
+    };
+
+    edit(&mut harness, 31);
+    let first = play(&mut harness, &mut view, &gpu, &painter);
+    let (.., early) = play_to(&mut harness, &mut view, &gpu, &painter, 120);
+    edit(&mut harness, 29);
+    let edited = harness.state().current().expect("open").text().to_owned();
+    assert_eq!(
+        view.snapshot().expect("a run").text_of("player.moves.ron").map(|text| text != edited),
+        Some(true)
+    );
+    let (checksum, tick) = play_to(&mut harness, &mut view, &gpu, &painter, 600);
+    println!("from tick {early}, an edit in the run: at {tick}, {checksum:016x}");
+    assert_eq!(checksum, headless(&first, tick), "the snapshot's");
+    stop(&mut harness, &mut view, &gpu, &painter);
+
+    let second = play(&mut harness, &mut view, &gpu, &painter);
+    assert_eq!(simulated(&mut view).tick(), 0, "it starts fresh");
+    let (again, tick) = play_to(&mut harness, &mut view, &gpu, &painter, 600);
+    assert_eq!(again, headless(&second, tick), "the edit's");
+    println!("the next run: at {tick}, {again:016x}");
+    assert_ne!(checksum, again, "the edit shows");
+    stop(&mut harness, &mut view, &gpu, &painter);
+
+    // A run's cost nothing of history.
+    harness.state_mut().undo();
+    harness.state_mut().undo();
+    harness.step();
+    assert_eq!(harness.state().current().expect("open").text(), original, "the same bytes");
+    assert!(!harness.state().is_dirty());
+}
+
+/// Two runs from one snapshot are one run, whatever came before them, since nothing's carried from it. And a stage
+/// after a run shows what it showed before.
+#[test]
+#[ignore = "needs a GPU and a cook"]
+fn a_run_starts_from_nothing_of_the_last() {
+    let gpu = device();
+    let painter = Painter::new(&gpu, PLAIN);
+    let mut harness = editor_harness(&painter, (1200.0, 700.0), 1.0);
+    let mut view = StageView::default();
+    settle(&mut harness, &mut view, &gpu, &painter);
+    let rect = harness.state_mut().viewport().rect().expect("shown");
+    let (_, pixels) = on_pixels(rect, 1.0);
+
+    let moves = play(&mut harness, &mut view, &gpu, &painter);
+    let tick = 300;
+    let (one, reached) = play_to(&mut harness, &mut view, &gpu, &painter, tick);
+    stop(&mut harness, &mut view, &gpu, &painter);
+    let shell = painter.paint(&gpu, &harness);
+    let rect_after = harness.state_mut().viewport().rect().expect("shown");
+    assert_eq!(rect_after, rect);
+    let mut stage = capture_stage(&gpu, &mut harness);
+    let frame = capture(&mut stage, &[pixels], |_, _| ());
+    let (most, count, all) = differences(&frame, &shell, rect, 1.0, 0);
+    println!("back at rest: {count} of {all} pixels differ, by at most {most}");
+    assert_runs_agree(most, count, "back at rest");
+    drop(stage);
+
+    let _ = play(&mut harness, &mut view, &gpu, &painter);
+    let (two, reached_again) = play_to(&mut harness, &mut view, &gpu, &painter, tick);
+    assert_eq!(one, headless(&moves, reached));
+    assert_eq!(two, headless(&moves, reached_again));
+    stop(&mut harness, &mut view, &gpu, &painter);
+}
+
+/// What a fight plays builds nothing a load didn't: its hits and effects, over a long run.
+#[test]
+#[ignore = "needs a GPU and a cook"]
+fn a_run_builds_no_pipeline() {
+    let gpu = device();
+    let painter = Painter::new(&gpu, PLAIN);
+    let mut harness = editor_harness(&painter, (1200.0, 700.0), 1.0);
+    let mut view = StageView::default();
+    settle(&mut harness, &mut view, &gpu, &painter);
+    let _ = play(&mut harness, &mut view, &gpu, &painter);
+    play_to(&mut harness, &mut view, &gpu, &painter, 1200);
+    let stage = view.stage().expect("stood");
+    let report = stage.renderer.first_use_report();
+    let builds = stage.renderer.stats().pipelines;
+    println!("after 1200 ticks of a run: {builds:?}");
+    assert_eq!(builds.first_use_builds, 0, "{report}");
+    stage.check_gpu().expect("no errors");
+}
+
+/// The keys reach the fight through the game's own bindings, and the editor's shortcuts wait.
+#[test]
+#[ignore = "needs a GPU and a cook"]
+fn the_keys_play_a_run() {
+    let gpu = device();
+    let painter = Painter::new(&gpu, PLAIN);
+    let mut harness = editor_harness(&painter, (1200.0, 700.0), 1.0);
+    let mut view = StageView::default();
+    settle(&mut harness, &mut view, &gpu, &painter);
+    harness.state_mut().play_in_viewport(None);
+    harness.step();
+    view.draw(&gpu, &mut painter.renderer.write(), harness.state_mut().viewport_frame());
+    assert!(harness.state_mut().viewport().is_playing());
+    let player = ActorId::from_raw(1).expect("not zero");
+
+    let mut nanos = 1_000_000_u64;
+    let mut frame = |harness: &mut Harness<'_, Editor>, view: &mut StageView, down: Option<bool>| {
+        nanos += 16_666_667;
+        let timestamp = Timestamp::from_nanos(nanos);
+        if let Some(down) = down {
+            view.handle_event(&Event::Key(KeyEvent {
+                timestamp,
+                window: WindowId::from_raw(1),
+                scancode: Scancode::J,
+                keycode: Keycode(0),
+                modifiers: Modifiers::default(),
+                down,
+                repeat: false,
+            }));
+        }
+        view.read_input(timestamp);
+        harness.step();
+        view.draw(&gpu, &mut painter.renderer.write(), harness.state_mut().viewport_frame());
+    };
+    for _ in 0..10 {
+        frame(&mut harness, &mut view, None);
+    }
+    let simulation = simulated(&mut view);
+    assert!(simulation.actor(player).expect("there").moves.current.is_none(), "nobody's pressed anything");
+
+    frame(&mut harness, &mut view, Some(true));
+    frame(&mut harness, &mut view, Some(false));
+    for _ in 0..6 {
+        frame(&mut harness, &mut view, None);
+    }
+    let simulation = simulated(&mut view);
+    assert!(simulation.actor(player).expect("there").moves.current.is_some(), "a press starts a move");
+
+    // The timeline's Space is the fight's now: it doesn't start the timeline's playback.
+    harness.key_press(egui::Key::Space);
+    harness.step();
+    assert!(!harness.state().is_playing());
+}
+
+/// The buttons start and stop a run, and the keys a fight takes don't press them.
+#[test]
+#[ignore = "needs a GPU and a cook"]
+fn the_buttons_start_and_stop_a_run() {
+    let gpu = device();
+    let painter = Painter::new(&gpu, PLAIN);
+    let mut harness = editor_harness(&painter, (1200.0, 700.0), 1.0);
+    let mut view = StageView::default();
+    settle(&mut harness, &mut view, &gpu, &painter);
+    let frame = |harness: &mut Harness<'_, Editor>, view: &mut StageView| {
+        harness.run_steps(2);
+        view.draw(&gpu, &mut painter.renderer.write(), harness.state_mut().viewport_frame());
+    };
+
+    harness.get_by_label("Play in viewport").click();
+    frame(&mut harness, &mut view);
+    frame(&mut harness, &mut view);
+    assert!(harness.state_mut().viewport().is_playing(), "{:?}", harness.state_mut().viewport().note());
+
+    for key in [egui::Key::Space, egui::Key::Enter] {
+        harness.key_press(key);
+        frame(&mut harness, &mut view);
+        assert!(harness.state_mut().viewport().is_playing(), "{key:?} is the fight's");
+    }
+
+    harness.get_by_label("Stop playing").click();
+    frame(&mut harness, &mut view);
+    frame(&mut harness, &mut view);
+    assert!(!harness.state_mut().viewport().is_playing());
+    settle(&mut harness, &mut view, &gpu, &painter);
+    assert!(view.stage().is_some(), "the viewport stands again");
+}
+
+/// Nobody can see or stop a run behind another tab, and it would hold the keys, so a tab away ends it: the keys
+/// are the editor's again and what comes back is the viewport at rest.
+#[test]
+#[ignore = "needs a GPU and a cook"]
+fn a_tab_away_ends_a_run() {
+    let gpu = device();
+    let painter = Painter::new(&gpu, PLAIN);
+    let mut harness = editor_harness(&painter, (1200.0, 700.0), 1.0);
+    let mut view = StageView::default();
+    settle(&mut harness, &mut view, &gpu, &painter);
+    let before = documents_as_they_are(harness.state());
+    let _ = play(&mut harness, &mut view, &gpu, &painter);
+    play_to(&mut harness, &mut view, &gpu, &painter, 30);
+
+    harness.key_press(egui::Key::Space);
+    harness.step();
+    assert!(!harness.state().is_playing(), "the fight's");
+    view.draw(&gpu, &mut painter.renderer.write(), harness.state_mut().viewport_frame());
+
+    harness.state_mut().shell_mut().open(Pane::Preview);
+    harness.step();
+    view.draw(&gpu, &mut painter.renderer.write(), harness.state_mut().viewport_frame());
+    assert!(!harness.state_mut().viewport().is_playing());
+    assert!(view.snapshot().is_none());
+    assert_eq!(documents_as_they_are(harness.state()), before);
+
+    harness.key_press(egui::Key::Space);
+    harness.step();
+    assert!(harness.state().is_playing(), "the editor's again");
+    harness.key_press(egui::Key::Space);
+    harness.step();
+
+    harness.state_mut().shell_mut().open(Pane::Viewport);
+    settle(&mut harness, &mut view, &gpu, &painter);
+    assert!(view.stage().expect("stood").show.controls.is_none(), "at rest");
+}
+
+/// A device lost in a run ends it, and the documents go on.
+#[test]
+#[ignore = "needs a GPU and a cook"]
+fn a_lost_device_ends_a_run() {
+    let gpu = device();
+    let painter = Painter::new(&gpu, PLAIN);
+    let mut harness = editor_harness(&painter, (1200.0, 700.0), 1.0);
+    let mut view = StageView::default();
+    settle(&mut harness, &mut view, &gpu, &painter);
+    let before = documents_as_they_are(harness.state());
+    let _ = play(&mut harness, &mut view, &gpu, &painter);
+    play_to(&mut harness, &mut view, &gpu, &painter, 60);
+    gpu.device().destroy();
+    let _ = gpu.device().poll(wgpu::PollType::wait_indefinitely());
+    harness.step();
+    view.draw(&gpu, &mut painter.renderer.write(), harness.state_mut().viewport_frame());
+    harness.state_mut().viewport().forget_gpu();
+    drop(view);
+    assert!(!harness.state_mut().viewport().is_playing());
+    assert_eq!(documents_as_they_are(harness.state()), before);
 }

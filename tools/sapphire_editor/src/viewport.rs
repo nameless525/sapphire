@@ -6,25 +6,35 @@
 //! paints. So a resize shows in its own frame. Nothing here steps a simulation at rest, and a stage draws only
 //! when something's changed, until temporal AA has settled: an editor left open costs what it did.
 //!
+//! A run ([`crate::play`]) is another stage, made fresh: what stood goes first, the fight starts on a snapshot's
+//! moves, the game's bindings play it, and stopping it or a tab away stands the viewport again. It holds copies, so
+//! nothing a game does can reach a document.
+//!
 //! Everything on the GPU is the window's to drop: a lost device takes the [`StageView`] with it, and the next
 //! is made from what the editor holds, which is the documents. `tests/viewport.rs` and
 //! `tests/viewport_stage.rs` hold what makes it right, on a real GPU and with no window.
 
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
-use game_combat::combat::CombatOption;
+use game_combat::combat::{CombatOption, read_bindings};
 use game_combat::fight::{Fight, fight_stage};
+use sapphire_controls::CombatControls;
+use sapphire_gameplay::ActorId;
 use sapphire_gameplay::replay::LiveMoves;
 use sapphire_math::{Vec2, Vec3};
 use sapphire_moves::MoveSet;
-use sapphire_platform::{AppInitError, Host};
+use sapphire_platform::{AppInitError, Event, Host, Timestamp, WindowEvent};
 use sapphire_render::quality::QualitySettings;
 use sapphire_render::{CameraData, PipelineInventory, VfxFrame};
 use sapphire_rhi::GpuContext;
 use sapphire_rhi::wgpu;
 use sapphire_stage::scene::Scene;
 use sapphire_stage::{Content, ContentChanges, FrameLaps, SceneShow, Stage, StageDesc};
+use sapphire_time::{FixedStepConfig, FixedStepDriver, Stopwatch};
+
+use crate::play::{PlayRequest, Snapshot};
 
 /// The format a viewport draws in: an sRGB target, which encodes what post returns (`post.wgsl`).
 pub const VIEWPORT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -82,6 +92,12 @@ impl ViewportTarget {
         (self.texture.width(), self.texture.height())
     }
 }
+
+/// Who the keys play.
+const PLAYER: ActorId = ActorId::from_raw(1).expect("not zero");
+
+/// The longest a frame's presentation moves by, as the game has it.
+const MAX_PRESENTATION_DT: Duration = Duration::from_millis(100);
 
 /// How many frames a change draws, for temporal AA to settle on what it shows.
 pub const SETTLING_FRAMES: u32 = 16;
@@ -151,6 +167,10 @@ pub struct ViewShow {
     pub fight: Fight,
     /// Takes over from the game's own camera.
     pub outside: Option<OutsideView>,
+    /// The bindings, in a run.
+    pub controls: Option<CombatControls>,
+    /// Where the view looks across the ground, which the next tick's stick turns by.
+    camera_yaw: f32,
 }
 
 impl SceneShow for ViewShow {
@@ -159,7 +179,15 @@ impl SceneShow for ViewShow {
     }
 
     fn step(&mut self, scene: &mut Scene, laps: &mut FrameLaps) {
-        self.fight.step(scene, laps);
+        let Some(controls) = &mut self.controls else {
+            self.fight.step(scene, laps);
+            return;
+        };
+        let mut stopwatch = Stopwatch::start();
+        let mut bindings = controls.source(self.camera_yaw);
+        read_bindings(self.fight.combat.as_mut(), &mut bindings, PLAYER);
+        laps.simulation += stopwatch.lap();
+        self.fight.follow_step(scene, laps);
     }
 
     fn end_steps(&mut self, scene: &mut Scene, dt: f32) {
@@ -194,10 +222,21 @@ impl SceneShow for ViewShow {
 
 /// A stage on `gpu` with `host`'s content, and the game's fight stood on it, with everything it can draw built.
 pub fn stand(host: &Host, gpu: &Arc<GpuContext>) -> Result<Stage<ViewShow>, AppInitError> {
+    stand_fight(host, gpu, &the_fight(), LiveMoves::default())
+}
+
+/// [`stand`] with `option`'s fight on `moves`, as a run plays it: set up as the game's own is, before its first
+/// tick, from a snapshot's moves rather than the build's.
+pub fn stand_fight(
+    host: &Host,
+    gpu: &Arc<GpuContext>,
+    option: &CombatOption,
+    moves: LiveMoves,
+) -> Result<Stage<ViewShow>, AppInitError> {
     let desc = fight_stage(StageDesc::new(host, gpu, VIEWPORT_FORMAT, QualitySettings::default()));
     let mut content = Content::new(host, desc.character, desc.sky)?;
     let mut show = ViewShow::default();
-    let combat = show.fight.prepare_stock_combat(&the_fight(), &mut content)?;
+    let combat = show.fight.prepare_stock_fight_on(option, moves, &mut content)?;
     let mut stage =
         Stage::new_with_content(gpu.instance().clone(), Arc::clone(gpu), desc, content)?.with_show(show);
     let Stage { show, scene, content, renderer, gpu, quality, .. } = &mut stage;
@@ -226,10 +265,33 @@ pub struct ViewportPane {
     back_to_game: bool,
     /// A person asked for another try at what failed.
     try_again: bool,
+    /// The button's been pressed, and the editor hasn't taken its snapshot yet.
+    asked_to_play: bool,
+    /// A run for the engine half's next frame.
+    play: Option<PlayRequest>,
+    /// A run's going on.
+    playing: bool,
+    /// What the run is, for a person.
+    status: Option<String>,
+    /// The button's been pressed.
+    stop: bool,
 }
 
 impl ViewportPane {
     pub(crate) fn ui(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            if self.playing {
+                self.stop |= ui.button("Stop playing").clicked();
+                // Anything with the keyboard would take the fight's keys.
+                ui.ctx().memory_mut(egui::Memory::stop_text_input);
+            } else {
+                self.asked_to_play |=
+                    ui.add_enabled(self.texture.is_some(), egui::Button::new("Play in viewport")).clicked();
+            }
+            if let Some(status) = &self.status {
+                ui.label(status);
+            }
+        });
         let (rect, size) = on_pixels(ui.available_rect_before_wrap(), ui.pixels_per_point());
         let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
         response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, "Viewport"));
@@ -264,6 +326,36 @@ impl ViewportPane {
         }
     }
 
+    pub(crate) fn take_asked_to_play(&mut self) -> bool {
+        std::mem::take(&mut self.asked_to_play)
+    }
+
+    pub(crate) fn ask(&mut self, request: PlayRequest) {
+        self.play = Some(request);
+        self.note = None;
+    }
+
+    pub(crate) fn refuse(&mut self, why: String) {
+        self.note = Some(why);
+    }
+
+    /// The run asked for and not started yet.
+    #[must_use]
+    pub fn asked_for(&self) -> Option<&PlayRequest> {
+        self.play.as_ref()
+    }
+
+    /// Whether a run's going on.
+    #[must_use]
+    pub const fn is_playing(&self) -> bool {
+        self.playing
+    }
+
+    /// Ends the run at the next frame.
+    pub fn stop_playing(&mut self) {
+        self.stop = true;
+    }
+
     /// Where the last pass put the frame, on whole pixels.
     #[must_use]
     pub fn rect(&self) -> Option<egui::Rect> {
@@ -286,6 +378,10 @@ impl ViewportPane {
     pub fn forget_gpu(&mut self) {
         self.texture = None;
         self.settling = false;
+        self.play = None;
+        self.playing = false;
+        self.stop = false;
+        self.status = None;
         self.note = Some("The GPU went away: the viewport comes back with the next one".to_owned());
     }
 }
@@ -299,6 +395,18 @@ pub struct ViewportFrame<'a> {
     pub content: Option<&'a Path>,
     /// The document of moves it has open, by file name, as it last compiled.
     pub moves: Option<(&'a str, &'a MoveSet)>,
+    /// The time of the pass, in seconds.
+    pub now: f64,
+}
+
+/// A run going on, on the stage that's up.
+struct Run {
+    driver: FixedStepDriver,
+    snapshot: Snapshot,
+    /// When the last frame was, on the pass's clock.
+    last: Option<f64>,
+    /// How far this frame is between steps.
+    alpha: f32,
 }
 
 /// A viewport's engine half: everything on the device, made when it's first shown and dropped with the device
@@ -316,6 +424,7 @@ pub struct StageView {
     frames: u64,
     /// What it was stood from couldn't be, and no one's asked it to try again.
     failed: bool,
+    run: Option<Run>,
 }
 
 impl StageView {
@@ -328,6 +437,35 @@ impl StageView {
     #[must_use]
     pub fn frame(&self) -> Option<&wgpu::Texture> {
         self.target.as_ref().map(|target| &target.texture)
+    }
+
+    /// What the run going on started from.
+    #[must_use]
+    pub fn snapshot(&self) -> Option<&Snapshot> {
+        self.run.as_ref().map(|run| &run.snapshot)
+    }
+
+    /// A platform event, which the bindings of a run take: only the keyboard's and a pad's, since a mouse over the
+    /// editor is the editor's. A window that loses focus pauses it, as the game does.
+    pub fn handle_event(&mut self, event: &Event) {
+        let Some(controls) = self.controls() else { return };
+        match event {
+            Event::Key(_) | Event::Gamepad { .. } => controls.handle_event(event),
+            Event::Window { event: WindowEvent::FocusLost, .. } => controls.set_paused(true),
+            _ => {}
+        }
+    }
+
+    /// Where the bindings stand at `now`, on the clock of events. Call it once a frame, before [`Self::draw`].
+    pub fn read_input(&mut self, now: Timestamp) {
+        if let Some(controls) = self.controls() {
+            controls.update(now);
+        }
+    }
+
+    fn controls(&mut self) -> Option<&mut CombatControls> {
+        self.run.as_ref()?;
+        self.stage.as_mut()?.show.controls.as_mut()
     }
 
     /// How many frames the stage has drawn.
@@ -344,21 +482,113 @@ impl StageView {
         painter: &mut egui_wgpu::Renderer,
         frame: ViewportFrame<'_>,
     ) {
-        let ViewportFrame { pane, open, content, moves } = frame;
+        let ViewportFrame { pane, open, content, moves, now } = frame;
         if !open {
             self.close(painter, pane);
             return;
         }
+        let leaving = self.controls().is_some_and(|controls| controls.wants_to_leave());
+        if std::mem::take(&mut pane.stop) || leaving {
+            self.end_run(pane);
+        }
+        if let Some(request) = pane.play.take() {
+            self.start_run(gpu, content, request, pane);
+        }
         let Some(size) = pane.wanted.take() else {
+            // A run behind another tab holds the keys, with its Stop out of reach.
+            self.end_run(pane);
             pane.settling = false;
             return;
         };
         if self.stage.is_none() && !self.stood(gpu, content, pane) {
             return;
         }
-        self.follow(moves, pane);
+        if self.run.is_none() {
+            self.follow(moves, pane);
+        }
         self.look(pane, size);
+        self.advance_run(now);
         self.draw_at(gpu, painter, pane, size);
+    }
+
+    /// Stands a stage of its own for `request`, with what was up gone first: nothing of it goes on into the run.
+    fn start_run(
+        &mut self,
+        gpu: &Arc<GpuContext>,
+        content: Option<&Path>,
+        request: PlayRequest,
+        pane: &mut ViewportPane,
+    ) {
+        self.end_run(pane);
+        self.stage = None;
+        self.moves = None;
+        let Some(content) = content else {
+            pane.note = Some("No cook to play: `cargo xtask content` makes one".to_owned());
+            return;
+        };
+        let PlayRequest { snapshot, script } = request;
+        let option = CombatOption::Fight { script, party: false };
+        let started = stand_fight(&Host::with_content_at(content), gpu, &option, snapshot.moves().clone())
+            .map_err(|error| error.to_string())
+            .and_then(|mut stage| {
+                stage.show.controls =
+                    Some(CombatControls::with_default_bindings().map_err(|error| error.to_string())?);
+                Ok(stage)
+            });
+        match started {
+            Ok(stage) => {
+                self.stage = Some(stage);
+                pane.note = None;
+                pane.playing = true;
+                pane.status = Some(if snapshot.not_played().is_empty() {
+                    "Playing the documents as they were at Play. Edits wait for the next.".to_owned()
+                } else {
+                    format!(
+                        "Playing, without edits to {}: only moves reach a run.",
+                        snapshot.not_played().join(", ")
+                    )
+                });
+                let driver = FixedStepDriver::new(FixedStepConfig::default());
+                self.run = Some(Run { driver, snapshot, last: None, alpha: 1.0 });
+            }
+            Err(why) => pane.note = Some(format!("Can't play: {why}")),
+        }
+    }
+
+    /// Ends a run, if there's one, and the stage it had: the next frame stands the viewport again.
+    fn end_run(&mut self, pane: &mut ViewportPane) {
+        pane.playing = false;
+        pane.status = None;
+        if self.run.take().is_none() {
+            return;
+        }
+        if let Some(mut stage) = self.stage.take()
+            && let Err(error) = stage.show.fight.finish()
+        {
+            tracing::warn!(%error, "the run didn't end well");
+        }
+    }
+
+    /// A frame of a run, as the game's: the bindings' steps, then the view's share on the real clock.
+    fn advance_run(&mut self, now: f64) {
+        let (Some(run), Some(stage)) = (&mut self.run, &mut self.stage) else { return };
+        let since = now - run.last.replace(now).unwrap_or(now);
+        let frame_time = Duration::from_secs_f64(since.max(0.0));
+        let show = &mut stage.show;
+        show.camera_yaw = show.fight.show.camera_heading(&stage.scene);
+        let Some(controls) = &show.controls else { return };
+        let steps = controls.advance(&mut run.driver, frame_time);
+        for _ in 0..steps.count {
+            stage.fixed_step();
+        }
+        let show = &mut stage.show;
+        let Some(controls) = &show.controls else { return };
+        let dt = frame_time.min(MAX_PRESENTATION_DT).as_secs_f32();
+        let view_dt = if controls.is_paused() { 0.0 } else { dt };
+        let (look, zoom) = (controls.look(), controls.camera_zoom());
+        show.fight.show.drive_camera(view_dt, look, zoom);
+        show.fight.show.end_cue_frame(&mut stage.scene, dt, view_dt, steps.alpha, &mut ());
+        run.alpha = steps.alpha;
     }
 
     /// Makes the stage, if that's not failed since a person last asked. Says whether there is one.
@@ -375,6 +605,7 @@ impl StageView {
                 self.stage = Some(stage);
                 self.moves = None;
                 self.failed = false;
+                self.settling = SETTLING_FRAMES;
                 pane.note = None;
                 true
             }
@@ -458,12 +689,13 @@ impl StageView {
             }
             self.settling = SETTLING_FRAMES;
         }
-        if self.settling > 0
+        let playing = self.run.as_ref().map(|run| run.alpha);
+        if (self.settling > 0 || playing.is_some())
             && let Some(target) = &self.target
         {
-            self.settling -= 1;
+            self.settling = self.settling.saturating_sub(1);
             self.frames += 1;
-            if let Err(error) = stage.render(&target.render_view, 1.0, |_, _| {}) {
+            if let Err(error) = stage.render(&target.render_view, playing.unwrap_or(1.0), |_, _| {}) {
                 pane.note = Some(error.to_string());
                 self.settling = 0;
             }
@@ -471,7 +703,7 @@ impl StageView {
         }
         // A pass that laid out no image has this from the next, which `settling` asks for.
         pane.texture = self.texture;
-        pane.settling = self.settling > 0;
+        pane.settling = self.settling > 0 || playing.is_some();
     }
 
     fn close(&mut self, painter: &mut egui_wgpu::Renderer, pane: &mut ViewportPane) {
@@ -482,6 +714,9 @@ impl StageView {
         pane.texture = None;
         pane.wanted = None;
         pane.settling = false;
+        pane.play = None;
+        pane.playing = false;
+        pane.status = None;
     }
 }
 

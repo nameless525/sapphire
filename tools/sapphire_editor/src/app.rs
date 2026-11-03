@@ -28,6 +28,7 @@ use crate::edits::{self, EditError, EntryRef, EntryValue, MovesDocument, Track};
 use crate::figure::{Casting, Figure, Figures};
 use crate::judge::judge;
 use crate::link::{Link, Pushed};
+use crate::play::{PlayRequest, Snapshot};
 use crate::preview::{self, FigureCache, Overlays, PosedFigure, View};
 use crate::run::{Frame, Run, Setup};
 use crate::shell::{Pane, PaneUi, Shell};
@@ -623,7 +624,21 @@ impl Editor {
             moves: moves
                 .and_then(|name| name.to_str())
                 .zip(self.preview.as_ref().map(|preview| &preview.set)),
+            now: self.now,
             pane: &mut self.viewport,
+        }
+    }
+
+    /// Asks the viewport for a run from the documents as they stand now, whatever's being typed included, played by
+    /// `script` if there's one and otherwise by the keys. What can't be played says why in the pane.
+    pub fn play_in_viewport(&mut self, script: Option<String>) {
+        if !self.take_typed() {
+            self.viewport.refuse("What's being typed doesn't fit, so it can't be played".to_owned());
+            return;
+        }
+        match Snapshot::take(&self.documents, self.cook.cook.as_ref()) {
+            Ok(snapshot) => self.viewport.ask(PlayRequest { snapshot, script }),
+            Err(why) => self.viewport.refuse(format!("Can't play {why}")),
         }
     }
 
@@ -1342,6 +1357,10 @@ impl Editor {
     }
 
     fn keys(&mut self, ui: &Ui, now: f64) {
+        // The keys are the fight's while it's played.
+        if self.viewport.is_playing() {
+            return;
+        }
         let ctx = ui.ctx();
         let typing = ctx.egui_wants_keyboard_input();
         let pressed =
@@ -2138,7 +2157,12 @@ impl PaneUi for Editor {
             Pane::Moves => self.moves_list(ui),
             Pane::Timeline => self.timeline_panel(ui),
             Pane::Preview => self.preview_panel(ui, self.now),
-            Pane::Viewport => self.viewport.ui(ui),
+            Pane::Viewport => {
+                self.viewport.ui(ui);
+                if self.viewport.take_asked_to_play() {
+                    self.play_in_viewport(None);
+                }
+            }
             Pane::Inspector => {
                 egui::ScrollArea::vertical().id_salt("inspector").auto_shrink([false, false]).show(
                     ui,

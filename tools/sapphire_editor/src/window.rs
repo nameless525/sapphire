@@ -98,6 +98,9 @@ impl App for EditorApp {
     }
 
     fn event(&mut self, _platform: &mut Platform, event: &Event) -> AppControl {
+        if let Some(device) = self.device.ready() {
+            device.view.handle_event(event);
+        }
         match event {
             Event::Quit { .. } | Event::Window { event: WindowEvent::CloseRequested, .. } => {
                 if self.device.ready().is_some() {
@@ -119,7 +122,10 @@ impl App for EditorApp {
         if self.editor.may_quit() { AppControl::Exit } else { AppControl::Continue }
     }
 
-    fn iterate(&mut self, _platform: &mut Platform) -> AppControl {
+    fn iterate(&mut self, platform: &mut Platform) -> AppControl {
+        if let Some(device) = self.device.ready() {
+            device.view.read_input(platform.now());
+        }
         let now = self.clock.elapsed().as_secs_f64();
         if !self.input.woken() && now < self.next_pass {
             std::thread::sleep(IDLE);

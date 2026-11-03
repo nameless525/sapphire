@@ -857,6 +857,27 @@ fn pixel_index(frame: &Frame, point: Vec3) -> usize {
     (y * SIDE + x) as usize
 }
 
+/// Without temporal AA nothing reads the scene prepass's velocity (OPT-021: Mobile-High's GTAO), so
+/// the graph holds no such target, and GTAO's frame is the same to the byte as one that keeps it.
+#[test]
+#[ignore = "needs a GPU"]
+fn gtao_draws_the_same_without_a_velocity_target() {
+    let occlusion = AmbientOcclusion { capsules: false, gtao: Some(GtaoSettings::DESKTOP) };
+    let scene = |scene_velocity: bool| {
+        let mut harness = Harness::new(RenderSettings { scene_velocity, ..settings(occlusion) });
+        harness.ground();
+        harness.environment(cuboid(Vec3::new(0.0, 0.5, 0.0), Vec3::splat(0.5)));
+        harness.ambient = AmbientLight { sky: Vec3::ONE, ground: Vec3::ZERO, intensity: 1.0 };
+        harness.camera = Harness::looking(Vec3::new(2.0, 2.5, 3.0), Vec3::new(0.2, 0.2, 0.2));
+        let pixels = harness.render().pixels;
+        (pixels, harness.graph.stats().transients)
+    };
+    let (without, without_targets) = scene(false);
+    let (with, with_targets) = scene(true);
+    assert!(without == with, "GTAO reads no velocity");
+    assert_eq!(without_targets + 1, with_targets, "one transient fewer");
+}
+
 #[test]
 #[ignore = "needs a GPU"]
 fn gtao_darkens_creases_and_holds_still() {

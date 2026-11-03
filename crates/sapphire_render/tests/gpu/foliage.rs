@@ -281,7 +281,12 @@ impl Harness {
 
     /// Without MSAA or temporal AA, so every pixel is shaded once at its center.
     fn exact() -> Self {
-        Self::new(RenderSettings { msaa: Msaa::Off, temporal: false, ..RenderSettings::default() })
+        Self::new(RenderSettings {
+            msaa: Msaa::Off,
+            temporal: false,
+            scene_velocity: true,
+            ..RenderSettings::default()
+        })
     }
 
     /// Cooks `document` against the textures it names and uploads it.
@@ -480,7 +485,7 @@ fn velocity_compares_with_the_wind_of_the_last_frame_that_ran() {
             harness.renderer.record(&mut graph, target).expect("a view and a target");
         }
         let velocities = Readback::new(&harness.gpu, (SIDE, SIDE), 4);
-        let reads: [Read<'_>; 1] = [(|t| t.velocity, &velocities)];
+        let reads: [Read<'_>; 1] = [(|t| t.velocity.expect("asked for"), &velocities)];
         harness.render_reading(&reads);
         velocities.texels(&harness.gpu)
     };
@@ -500,8 +505,13 @@ fn wind_moves_cards_in_every_pass_and_their_velocity_follows() {
     let (start, end) = (10.0, 10.4);
     for levels in [3, 0] {
         let foliage = FoliageSettings { wind_levels: levels, ..FoliageSettings::default() };
-        let settings =
-            RenderSettings { msaa: Msaa::Off, temporal: false, foliage, ..RenderSettings::default() };
+        let settings = RenderSettings {
+            msaa: Msaa::Off,
+            temporal: false,
+            scene_velocity: true,
+            foliage,
+            ..RenderSettings::default()
+        };
         let mut harness = Harness::new(settings);
         harness.sun.direction = Vec3::NEG_Y;
         harness.wind = wind;
@@ -524,7 +534,8 @@ fn wind_moves_cards_in_every_pass_and_their_velocity_follows() {
         harness.time_seconds = end;
         let readback = || Readback::new(&harness.gpu, (SIDE, SIDE), 4);
         let (depths, velocities) = (readback(), readback());
-        let reads: [Read<'_>; 2] = [(|t| t.depth, &depths), (|t| t.velocity, &velocities)];
+        let reads: [Read<'_>; 2] =
+            [(|t| t.depth, &depths), (|t| t.velocity.expect("asked for"), &velocities)];
         let frame = harness.render_reading(&reads);
         let (depths, velocities) = (depths.texels(&harness.gpu), velocities.texels(&harness.gpu));
 

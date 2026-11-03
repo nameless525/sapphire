@@ -258,8 +258,11 @@
 //!   vertices, so its depth is the main pass's hull's, and its velocity is its line's, the
 //!   silhouette's motion (M1 P1). TAA (R7), GTAO and screen-space edges read it.
 //!
-//! Temporal AA reads both (its depth, velocity and responsive mask). Without it nothing reads
-//! the scene prepass yet, so the frame graph culls it: a boxed closure a frame and no GPU time.
+//! Temporal AA reads both (its depth, velocity and responsive mask). Without it the scene prepass
+//! has no velocity target and its vertex stages leave the last frame's positions and wind alone
+//! ([`RenderSettings::scene_velocity`] keeps them), and what GTAO reads costs 4.7 MB less at
+//! Mobile-High's 1600 × 740. With nothing reading it, the frame graph culls it: a boxed closure a
+//! frame and no GPU time.
 //!
 //! # Render scale
 //!

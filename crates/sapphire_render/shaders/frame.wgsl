@@ -323,6 +323,11 @@ fn faded_out(fade: f32, pixel: vec2<f32>, character: u32, samples: u32) -> bool 
     return fade_coverage(fade, fade_threshold(pixel, character), samples) == 0u;
 }
 
+// Whether the scene prepass has a velocity target (`pipelines::override_constant::VELOCITY`): only
+// temporal AA reads one. Without it the vertex stages leave the last frame's positions and the wind
+// alone, and `current` and `previous` as zeros that no fragment reads.
+override SCENE_PREPASS_VELOCITY: bool = true;
+
 // What the scene prepass's vertex stages pass on (prepass.wgsl, and the outline hull's in
 // outline.wgsl).
 struct ScenePrepassVaryings {
@@ -354,12 +359,14 @@ struct ScenePrepassTargets {
 
 // The scene prepass's targets for a pixel of a surface or hull.
 fn scene_prepass_targets(in: ScenePrepassVaryings) -> ScenePrepassTargets {
-    let current = in.current.xy / in.current.w;
-    let previous = in.previous.xy / in.previous.w;
     var out: ScenePrepassTargets;
     out.normal = oct_encode(safe_normalize(in.world_normal));
-    // NDC is y up, texture coordinates y down, and both span 2 NDC units per texture.
-    out.velocity = (current - previous) * vec2<f32>(0.5, -0.5);
+    if SCENE_PREPASS_VELOCITY {
+        let current = in.current.xy / in.current.w;
+        let previous = in.previous.xy / in.previous.w;
+        // NDC is y up, texture coordinates y down, and both span 2 NDC units per texture.
+        out.velocity = (current - previous) * vec2<f32>(0.5, -0.5);
+    }
     return out;
 }
 

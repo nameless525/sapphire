@@ -377,6 +377,7 @@ impl QualityTier {
     pub fn render_settings(&self) -> RenderSettings {
         RenderSettings {
             msaa: self.antialiasing.msaa,
+            scene_velocity: false,
             temporal: self.antialiasing.temporal,
             bloom_levels: self.bloom_levels,
             light_path: self.light_path,

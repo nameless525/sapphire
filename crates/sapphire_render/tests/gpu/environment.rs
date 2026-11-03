@@ -1230,8 +1230,11 @@ fn the_prepass_holds_the_world_and_temporal_aa_converges_on_it() {
     // holds still; the character prepass holds nothing.
     let readback = || Readback::new(&harness.gpu, (SIDE, SIDE), 4);
     let (depths, velocities, characters) = (readback(), readback(), readback());
-    let reads: [Read<'_>; 3] =
-        [(|t| t.depth, &depths), (|t| t.velocity, &velocities), (|t| t.character_depth, &characters)];
+    let reads: [Read<'_>; 3] = [
+        (|t| t.depth, &depths),
+        (|t| t.velocity.expect("temporal AA writes it"), &velocities),
+        (|t| t.character_depth, &characters),
+    ];
     let frame = harness.render_reading(&reads);
     let read = [depths.texels(&harness.gpu), velocities.texels(&harness.gpu)];
     assert!(characters.texels(&harness.gpu).iter().all(|texel| depth(texel) == 0.0), "no characters");

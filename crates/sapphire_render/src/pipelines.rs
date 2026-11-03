@@ -79,17 +79,18 @@ pub(crate) mod outline_mask {
     pub const FADING_LINE: f32 = 0.75;
 }
 
-/// The scene prepass's color targets: normals, velocity and the outline mask, which only the
-/// hulls and the masked surfaces write (`outlines`, M1 C7: a fading character's); the others
-/// leave it as cleared, drawn before them.
-fn scene_prepass_targets(outlines: bool) -> [Option<wgpu::ColorTargetState>; 3] {
+/// The scene prepass's color targets: normals, velocity where something reads it (`velocity`,
+/// temporal AA; the slot stays, empty, so the mask keeps its location) and the outline mask, which
+/// only the hulls and the masked surfaces write (`outlines`, M1 C7: a fading character's); the
+/// others leave it as cleared, drawn before them.
+fn scene_prepass_targets(velocity: bool, outlines: bool) -> [Option<wgpu::ColorTargetState>; 3] {
+    let target = |format, write_mask| Some(wgpu::ColorTargetState { format, blend: None, write_mask });
     let mask = if outlines { wgpu::ColorWrites::ALL } else { wgpu::ColorWrites::empty() };
     [
-        (NORMALS_FORMAT, wgpu::ColorWrites::ALL),
-        (VELOCITY_FORMAT, wgpu::ColorWrites::ALL),
-        (OUTLINES_FORMAT, mask),
+        target(NORMALS_FORMAT, wgpu::ColorWrites::ALL),
+        velocity.then(|| target(VELOCITY_FORMAT, wgpu::ColorWrites::ALL)).flatten(),
+        target(OUTLINES_FORMAT, mask),
     ]
-    .map(|(format, write_mask)| Some(wgpu::ColorTargetState { format, blend: None, write_mask }))
 }
 
 /// Vertex buffer slots. Every mesh pass binds the draw record and positions; a position-only
@@ -105,7 +106,8 @@ pub(crate) mod slot {
     /// UV and vertex color: always the mesh's.
     pub const SURFACE: u32 = 3;
     /// Positions when the instance was last drawn, for velocity (the scene prepass): the other
-    /// half of a skinned instance's outputs, or slot 1's buffer again.
+    /// half of a skinned instance's outputs, or slot 1's buffer again. Bound without temporal AA
+    /// too, since one vertex stage serves both, which reads it only with a velocity target.
     pub const PREVIOUS_POSITIONS: u32 = 4;
     /// The foliage stream (M1 W6): wind weights, phase and gradient, of foliage passes alone.
     pub const FOLIAGE: u32 = 5;
@@ -930,6 +932,9 @@ pub(crate) mod override_constant {
     /// covered pipelines, which cover a share of them, and on the masked prepasses, which keep
     /// the pixels where that share isn't empty.
     pub const FADE_SAMPLES: &str = "FADE_SAMPLES";
+    /// Whether the scene prepass has a velocity target (declared by `frame.wgsl`): off, its vertex
+    /// stages skip the last frame's positions and wind, and its fragment stages the motion.
+    pub const VELOCITY: &str = "SCENE_PREPASS_VELOCITY";
 }
 
 /// The bind group layouts of `shaders/frame.wgsl`, and group 3 per material family.
@@ -1828,6 +1833,8 @@ struct PipelineTarget {
     shadows: Option<[(&'static str, f64); 2]>,
     /// Fog cards fade against the scene prepass's depth (`fog::FogCards`).
     card_depth_fade: bool,
+    /// The scene prepass has a velocity target (`RenderSettings::writes_velocity`).
+    velocity: bool,
     /// The environment shader's ambient constants (M1 W5, `ambient::constants`): only those on,
     /// so without a probe grid or ambient occlusion it is the shader as it was without them.
     ambient: Vec<(&'static str, f64)>,
@@ -1851,6 +1858,11 @@ impl PipelineTarget {
 }
 
 impl Pipelines {
+    /// Whether the scene prepass has a velocity target.
+    pub(crate) fn writes_velocity(&self) -> bool {
+        self.target.velocity
+    }
+
     #[expect(
         clippy::too_many_arguments,
         reason = "the device's targets and the tier's shader settings, each read once"
@@ -1865,7 +1877,7 @@ impl Pipelines {
         cache: Option<&wgpu::PipelineCache>,
         sources: &ShaderSources,
         shadows: Option<&ShadowSettings>,
-        card_depth_fade: bool,
+        (card_depth_fade, velocity): (bool, bool),
         ambient: Vec<(&'static str, f64)>,
     ) -> Self {
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -1927,6 +1939,7 @@ impl Pipelines {
             cache: cache.cloned(),
             shadows: shadows.map(ShadowSettings::constants),
             card_depth_fade,
+            velocity,
             ambient,
             replay: None,
         };
@@ -2389,6 +2402,7 @@ fn build_scene_prepass(
         ("scene prepass", MeshPass::ScenePrepass, &target.layout)
     };
     let mut constants = target.prepass_constants(masked);
+    constants.push(target.velocity_constant());
     if sides == Sides::Two {
         constants.push((override_constant::TWO_SIDED, 1.0));
     }
@@ -2397,7 +2411,7 @@ fn build_scene_prepass(
         (name, sides.cull()),
         &modules.prepass,
         &pass.buffers(format),
-        &scene_prepass_targets(masked),
+        &scene_prepass_targets(target.velocity, masked),
         (layout, constants.as_slice()),
     )
 }
@@ -2414,12 +2428,13 @@ fn build_foliage_prepass(
 ) -> wgpu::RenderPipeline {
     let mut constants = coverage.constants().to_vec();
     constants.push(target.foliage.wind_constant());
+    constants.push(target.velocity_constant());
     target.build_prepass(
         device,
         ("foliage prepass", foliage::cull(coverage)),
         &modules.foliage,
         &MeshPass::FoliagePrepass.buffers(format),
-        &scene_prepass_targets(false),
+        &scene_prepass_targets(target.velocity, false),
         (&target.family_layouts[Shading::Foliage.scene_group()], &constants),
     )
 }
@@ -2493,13 +2508,15 @@ fn build_outline_prepass(
     } else {
         ("outline prepass", MeshPass::OutlinePrepass, &target.layout)
     };
+    let mut constants = target.prepass_constants(masked);
+    constants.push(target.velocity_constant());
     target.build_prepass(
         device,
         (name, Some(wgpu::Face::Front)),
         &modules.outline,
         &pass.buffers(format),
-        &scene_prepass_targets(true),
-        (layout, target.prepass_constants(masked).as_slice()),
+        &scene_prepass_targets(target.velocity, true),
+        (layout, constants.as_slice()),
     )
 }
 
@@ -2592,6 +2609,11 @@ impl PipelineTarget {
 
     /// A prepass's constants (M1 C7): a masked one's, under MSAA, the main pass's sample count,
     /// so it keeps the pixels where the main pass covers any sample of a fading character.
+    /// Whether the scene prepass writes velocity, as its programs' pipeline constant.
+    fn velocity_constant(&self) -> (&'static str, f64) {
+        (override_constant::VELOCITY, f64::from(u8::from(self.velocity)))
+    }
+
     fn prepass_constants(&self, masked: bool) -> Vec<(&'static str, f64)> {
         self.covered(Coverage::AlphaTest).filter(|_| masked).into_iter().collect()
     }

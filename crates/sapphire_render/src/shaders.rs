@@ -1408,13 +1408,15 @@ mod tests {
         }
         let overrides: Vec<&str> =
             environment.overrides.iter().filter_map(|(_, o)| o.name.as_deref()).collect();
-        // `frame.wgsl`'s shadow constants (M1 R4), which its receivers read, then its own: the
-        // permutation, the tier's specular model and the ambient terms (M1 W5).
+        // `frame.wgsl`'s scene prepass (OPT-021) and shadow constants (M1 R4), which its receivers
+        // read, then its own: the permutation, the tier's specular model and the ambient terms
+        // (M1 W5).
         let shadows = [crate::shadows::override_constant::SHADOWS, crate::shadows::override_constant::TENT];
         use crate::ambient::override_constant as ambient;
         assert_eq!(
             overrides,
             [
+                crate::pipelines::override_constant::VELOCITY,
                 shadows[0],
                 shadows[1],
                 "PERMUTATION_ALPHA_TEST",
@@ -1539,6 +1541,7 @@ mod tests {
         assert_eq!(
             overrides,
             [
+                crate::pipelines::override_constant::VELOCITY,
                 shadows[0],
                 shadows[1],
                 "PERMUTATION_ALPHA_TEST",

@@ -414,20 +414,22 @@ fn outline_prepass_varyings(packed: PackedVertex, previous_position: vec4<f32>, 
     let instance = instances[draw.instance];
     let width = hull_width(vertex, draw.material, outline_region(vertex, draw.material));
     let hull = hull_vertex(instance.world_from_object, vertex.position, vertex.outline_normal);
-    let previous = hull_vertex(
-        instance.previous_world_from_object,
-        object_position(previous_position, draw),
-        vertex.outline_normal,
-    );
     var out: OutlinePrepassVaryings;
     out.current = outline_clip(view.unjittered_clip_from_world, hull, width);
     out.clip_position = jittered(out.current);
-    out.previous = outline_clip(view.previous_clip_from_world, previous, width);
     out.world_normal = hull.normal;
-    out.facing = dot(safe_normalize(hull.normal), safe_normalize(view.position.xyz - hull.position));
-    let base = view.unjittered_clip_from_world * vec4<f32>(hull.position, 1.0);
-    let across = out.current.xy / max(out.current.w, 1e-4) - base.xy / max(base.w, 1e-4);
-    out.reach = length(across * 0.5 * view.viewport.xy);
+    if SCENE_PREPASS_VELOCITY {
+        let previous = hull_vertex(
+            instance.previous_world_from_object,
+            object_position(previous_position, draw),
+            vertex.outline_normal,
+        );
+        out.previous = outline_clip(view.previous_clip_from_world, previous, width);
+        out.facing = dot(safe_normalize(hull.normal), safe_normalize(view.position.xyz - hull.position));
+        let base = view.unjittered_clip_from_world * vec4<f32>(hull.position, 1.0);
+        let across = out.current.xy / max(out.current.w, 1e-4) - base.xy / max(base.w, 1e-4);
+        out.reach = length(across * 0.5 * view.viewport.xy);
+    }
     return out;
 }
 
@@ -454,6 +456,16 @@ fn fs_outline_prepass(in: OutlinePrepassVaryings) -> OutlinePrepassTargets {
 
 // `fs_outline_prepass`'s targets.
 fn outline_prepass_targets(in: OutlinePrepassVaryings) -> OutlinePrepassTargets {
+    var line = vec2<f32>(0.0);
+    if SCENE_PREPASS_VELOCITY {
+        line = line_velocity(in);
+    }
+    return OutlinePrepassTargets(oct_encode(safe_normalize(in.world_normal)), line, OUTLINE_MASK_LINE);
+}
+
+// The line's velocity: called under a pipeline constant's branch, so its derivatives stay in
+// uniform control flow.
+fn line_velocity(in: OutlinePrepassVaryings) -> vec2<f32> {
     let current = in.current.xy / in.current.w;
     let previous = in.previous.xy / in.previous.w;
     // NDC is y up, texture coordinates y down, and both span 2 NDC units per texture.
@@ -469,8 +481,7 @@ fn outline_prepass_targets(in: OutlinePrepassVaryings) -> OutlinePrepassTargets 
     let sliding = along * (in.facing * followed / steepness);
     // Below a thousandth of a pixel the derivatives' rounding is all there is: a hull that holds
     // still keeps exactly no velocity.
-    let line = velocity - select(vec2<f32>(0.0), sliding, dot(sliding, sliding) > 1e-12);
-    return OutlinePrepassTargets(oct_encode(safe_normalize(in.world_normal)), line, OUTLINE_MASK_LINE);
+    return velocity - select(vec2<f32>(0.0), sliding, dot(sliding, sliding) > 1e-12);
 }
 
 // An alpha-tested or fading character's hull in the scene prepass (M1 C7): `OutlinePrepassVaryings`,

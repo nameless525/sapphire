@@ -309,7 +309,7 @@ impl Frames {
     }
 
     fn msaa(gpu: &GpuContext) -> Self {
-        Self::new(gpu, RenderSettings::default())
+        Self::new(gpu, RenderSettings { scene_velocity: true, ..RenderSettings::default() })
     }
 
     /// Draws one frame from `camera`, adding or changing the `changed` instances, and returns
@@ -823,7 +823,7 @@ fn hulls_move_with_their_silhouette() {
     let gpu = gpu();
     let mut frames = Frames::msaa(&gpu);
     let velocity = Readback::new(&gpu);
-    let reads: [PrepassRead<'_>; 1] = [(|targets| targets.velocity, &velocity)];
+    let reads: [PrepassRead<'_>; 1] = [(|targets| targets.velocity.expect("asked for"), &velocity)];
     let (radius, distance, fov): (f32, f32, f32) = (0.5, 4.0, 40.0);
     // 20 px at 1080 rows: 10 here.
     let line = 10.0;

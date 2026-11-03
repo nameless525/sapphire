@@ -509,18 +509,20 @@ fn vs_foliage_prepass(
     let instance = instances[draw.instance];
     let response = foliage_materials[draw.material].wind;
     let world = foliage_position(wind.current, instance.world_from_object, vertex.position, foliage.wind, response);
-    let previous_object = object_position(previous_position, draw);
-    let previous = foliage_position(
-        wind.previous,
-        instance.previous_world_from_object,
-        previous_object,
-        foliage.wind,
-        response,
-    );
     var out: FoliagePrepassVaryings;
     out.clip_position = view.clip_from_world * vec4<f32>(world, 1.0);
-    out.current = view.unjittered_clip_from_world * vec4<f32>(world, 1.0);
-    out.previous = view.previous_clip_from_world * vec4<f32>(previous, 1.0);
+    if SCENE_PREPASS_VELOCITY {
+        let previous_object = object_position(previous_position, draw);
+        let previous = foliage_position(
+            wind.previous,
+            instance.previous_world_from_object,
+            previous_object,
+            foliage.wind,
+            response,
+        );
+        out.current = view.unjittered_clip_from_world * vec4<f32>(world, 1.0);
+        out.previous = view.previous_clip_from_world * vec4<f32>(previous, 1.0);
+    }
     out.world_normal = instance.normal_from_object * vertex.normal;
     out.uv = vertex.uv;
     out.material = draw.material;

@@ -180,7 +180,7 @@ fn a_lost_pose_still_lands_and_velocity_follows_the_pose_last_drawn() {
     let view = texture.create_view(&Default::default());
     let camera = framing_camera(38.0, SIZE, 0.6);
     let velocity = Readback::new(&gpu, SIZE);
-    let reads: [PrepassRead<'_>; 1] = [(|targets| targets.velocity, &velocity)];
+    let reads: [PrepassRead<'_>; 1] = [(|targets| targets.velocity.expect("asked for"), &velocity)];
     let run = |loss: Option<Loss>| {
         let mut frames = Frames::new(&gpu, FORMAT, Msaa::Off).expect("renderer");
         let skinned = upload(&mut frames.renderer, &skinned_sphere(colored([0.9, 0.1, 0.1])));

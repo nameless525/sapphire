@@ -544,12 +544,7 @@ fn velocity_ignores_the_jitter() {
     let velocity = Readback::new(&gpu, size, 4);
     for frame in 0..10 {
         let changed = [instance(0, ball, translate(-0.5, 0.0, 0.4))];
-        frames.frame(
-            &gpu,
-            view,
-            if frame == 0 { &changed } else { &[] },
-            &[(|t| Some(t.velocity), &velocity)],
-        );
+        frames.frame(&gpu, view, if frame == 0 { &changed } else { &[] }, &[(|t| t.velocity, &velocity)]);
         let texels = velocity.texels(&gpu);
         // Zero up to the target's smallest step: WARP rounds a few texels to 6e-8, 1e-5 of a pixel.
         assert!(
@@ -562,7 +557,7 @@ fn velocity_ignores_the_jitter() {
     let step = 3.0 / 45.0;
     for frame in 0..10 {
         let at = Mat4::from_translation(Vec3::new(0.5 + step * frame as f32, 0.0, 0.0));
-        frames.frame(&gpu, view, &[instance(1, quad, at)], &[(|t| Some(t.velocity), &velocity)]);
+        frames.frame(&gpu, view, &[instance(1, quad, at)], &[(|t| t.velocity, &velocity)]);
         if frame == 0 {
             continue;
         }

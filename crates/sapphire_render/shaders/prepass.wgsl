@@ -80,12 +80,14 @@ fn vs_scene_prepass(
 ) -> ScenePrepassVaryings {
     let instance = instances[draw.instance];
     let world_position = instance.world_from_object * vec4<f32>(object_position(position, draw), 1.0);
-    let previous_world =
-        instance.previous_world_from_object * vec4<f32>(object_position(previous_position, draw), 1.0);
     var out: ScenePrepassVaryings;
     out.clip_position = view.clip_from_world * world_position;
-    out.current = view.unjittered_clip_from_world * world_position;
-    out.previous = view.previous_clip_from_world * previous_world;
+    if SCENE_PREPASS_VELOCITY {
+        let previous_world =
+            instance.previous_world_from_object * vec4<f32>(object_position(previous_position, draw), 1.0);
+        out.current = view.unjittered_clip_from_world * world_position;
+        out.previous = view.previous_clip_from_world * previous_world;
+    }
     out.world_normal = instance.normal_from_object * oct_decode(normal);
     return out;
 }
@@ -195,12 +197,14 @@ fn vs_scene_prepass_masked(
 ) -> MaskedScenePrepassVaryings {
     let instance = instances[draw.instance];
     let world_position = instance.world_from_object * vec4<f32>(object_position(position, draw), 1.0);
-    let previous_world =
-        instance.previous_world_from_object * vec4<f32>(object_position(previous_position, draw), 1.0);
     var out: MaskedScenePrepassVaryings;
     out.clip_position = view.clip_from_world * world_position;
-    out.current = view.unjittered_clip_from_world * world_position;
-    out.previous = view.previous_clip_from_world * previous_world;
+    if SCENE_PREPASS_VELOCITY {
+        let previous_world =
+            instance.previous_world_from_object * vec4<f32>(object_position(previous_position, draw), 1.0);
+        out.current = view.unjittered_clip_from_world * world_position;
+        out.previous = view.previous_clip_from_world * previous_world;
+    }
     out.world_normal = instance.normal_from_object * oct_decode(normal);
     out.uv = draw.uv_transform.xy + draw.uv_transform.zw * uv;
     out.material = draw.material;

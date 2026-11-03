@@ -259,7 +259,11 @@ struct Frames {
 
 impl Frames {
     fn new(gpu: &GpuContext, format: wgpu::TextureFormat, msaa: Msaa) -> Result<Self, RenderError> {
-        Self::with_settings(gpu, format, RenderSettings { msaa, ..RenderSettings::default() })
+        Self::with_settings(
+            gpu,
+            format,
+            RenderSettings { msaa, scene_velocity: true, ..RenderSettings::default() },
+        )
     }
 
     fn with_settings(
@@ -866,7 +870,7 @@ fn velocity_follows_transforms_skins_and_the_camera() {
         CameraData::look_at(Vec3::new(x, 0.0, 3.0), Vec3::new(x, 0.0, 0.0), Vec3::Y, fov, aspect, 0.05)
     };
     let velocity = Readback::new(&gpu, size);
-    let reads: [PrepassRead<'_>; 1] = [(|targets| targets.velocity, &velocity)];
+    let reads: [PrepassRead<'_>; 1] = [(|targets| targets.velocity.expect("asked for"), &velocity)];
     // The velocity at a world point on the z = 0 plane, seen from `camera`.
     let texel = |camera: &CameraData, point: Vec3, texels: &[[u8; 4]]| {
         let clip = camera.proj * camera.view * point.extend(1.0);
@@ -945,7 +949,7 @@ fn skinning_and_prepasses_run_at_any_size_and_msaa() {
                 (|targets| targets.character_depth, &readbacks[0]),
                 (|targets| targets.depth, &readbacks[1]),
                 (|targets| targets.normals, &readbacks[2]),
-                (|targets| targets.velocity, &readbacks[3]),
+                (|targets| targets.velocity.expect("asked for"), &readbacks[3]),
             ];
             frames.poses.push((1, bend(0.1 * frame as f32, 0.0), vec![0.5]));
             frames.poses.push((2, vec![], vec![frame as f32 * 0.3]));

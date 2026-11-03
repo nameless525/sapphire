@@ -99,6 +99,9 @@ impl Msaa {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RenderSettings {
     pub msaa: Msaa,
+    /// Writes the scene prepass's velocity without temporal AA, which writes it anyway, for
+    /// whatever reads [`PrepassTargets::velocity`] instead. Off by default: nothing else does.
+    pub scene_velocity: bool,
     /// Temporal AA and upsampling (M1 R7, the [`temporal`] module): the
     /// projection jitters, and a resolve accumulates the frames at the target's size, which
     /// also upsamples a scene drawn below render scale 1. The desktop tiers turn it on with MSAA
@@ -150,6 +153,14 @@ pub struct RenderSettings {
     pub view_culling: bool,
 }
 
+impl RenderSettings {
+    /// Whether the scene prepass writes velocity: temporal AA reads it, and nothing else in the
+    /// frame does, so Mobile-High's GTAO goes without.
+    pub(crate) fn writes_velocity(&self) -> bool {
+        self.temporal || self.scene_velocity
+    }
+}
+
 impl Default for RenderSettings {
     /// The desktop tiers' settings with 4× MSAA instead of temporal AA, and without shadows or
     /// ambient occlusion: what the golden scenes from before M1 R7 pin (`--aa msaa`, `--shadows
@@ -158,6 +169,7 @@ impl Default for RenderSettings {
     fn default() -> Self {
         Self {
             msaa: Msaa::default(),
+            scene_velocity: false,
             temporal: false,
             bloom_levels: 5,
             light_path: LightPath::Clustered,
@@ -449,8 +461,9 @@ pub struct PrepassTargets {
     /// instance's transform and, for skinned and morphed instances, their skinned positions
     /// (`Rg16Float`). Pixels no geometry covers stay 0; TAA reprojects those from depth. It
     /// ignores the jitter, so geometry that holds still has exactly 0. Outline hulls write their
-    /// own (M1 C4).
-    pub velocity: TextureId,
+    /// own (M1 C4). Only with temporal AA or [`RenderSettings::scene_velocity`], since nothing
+    /// else reads it.
+    pub velocity: Option<TextureId>,
     /// The scene prepass: 1 where an outline hull is the nearest surface, else 0 (`R8Unorm`, M1
     /// C4). Temporal AA's responsive mask takes it in, so lines in motion are drawn from the
     /// current frame (M1 P1).
@@ -674,7 +687,7 @@ impl Renderer {
                             cache,
                             shaders_ref,
                             settings.shadows.as_ref(),
-                            settings.temporal,
+                            (settings.temporal, settings.writes_velocity()),
                             crate::ambient::constants(&settings.ambient_occlusion, None),
                         )
                     },
@@ -1917,7 +1930,9 @@ impl Renderer {
                 None => graph.create_texture("prepass depth", prepass_target(DEPTH_FORMAT)),
             },
             normals: graph.create_texture("normals", prepass_target(NORMALS_FORMAT)),
-            velocity: graph.create_texture("velocity", prepass_target(VELOCITY_FORMAT)),
+            velocity: pipelines
+                .writes_velocity()
+                .then(|| graph.create_texture("velocity", prepass_target(VELOCITY_FORMAT))),
             outlines: graph.create_texture("outline mask", prepass_target(OUTLINES_FORMAT)),
             responsive: temporal
                 .is_some()
@@ -2064,7 +2079,7 @@ impl Renderer {
         // layout leaves group 0, which binds its targets, out.
         graph.add_pass(CHARACTER_PREPASS).write(targets.character_depth).write(targets.character_ids).record(
             move |ctx| {
-                let colors = [targets.character_ids];
+                let colors = [Some(targets.character_ids)];
                 let mut pass =
                     begin_prepass(ctx, CHARACTER_PREPASS, targets.character_depth, &colors, labels);
                 pass.set_bind_group(1, view_bind_group, &[0]);
@@ -2101,98 +2116,97 @@ impl Renderer {
                 }
             },
         );
-        graph
-            .add_pass(SCENE_PREPASS)
-            .write(targets.depth)
-            .write(targets.normals)
-            .write(targets.velocity)
-            .write(targets.outlines)
-            .record(move |ctx| {
-                let colors = [targets.normals, targets.velocity, targets.outlines];
-                let mut pass = begin_prepass(ctx, SCENE_PREPASS, targets.depth, &colors, labels);
-                bind(&mut pass);
-                // Opaque and alpha-tested surfaces of every family but foliage, through one
-                // pipeline per format, but the alpha-tested anime character surfaces (fading
-                // characters' among them), which draw through the masked one (M1 C7), cut out
-                // as the main pass cuts them. The environment's alpha-tested surfaces aren't cut
-                // out yet (crate docs, "Later milestones"). Two-sided anime character surfaces
-                // draw through their own, which cull nothing (M1 C8). Transparent surfaces write
-                // no depth.
-                let set = DrawSet::Surfaces;
-                for format in PositionFormat::ALL {
-                    let Some(mesh) = pipelines.mesh(format) else { continue };
-                    for (pipeline, kind, variants) in mesh.scene_prepasses() {
-                        if variants.iter().any(|&variant| view_draws.has_static(format, variant)) {
-                            pass.set_pipeline(pipeline.expect("built with the variants' surfaces"));
-                            for &variant in variants {
-                                view_draws.draw_static(&mut pass, kind, format, variant, set);
-                            }
+        let mut scene_prepass =
+            graph.add_pass(SCENE_PREPASS).write(targets.depth).write(targets.normals).write(targets.outlines);
+        if let Some(velocity) = targets.velocity {
+            scene_prepass = scene_prepass.write(velocity);
+        }
+        scene_prepass.record(move |ctx| {
+            let colors = [Some(targets.normals), targets.velocity, Some(targets.outlines)];
+            let mut pass = begin_prepass(ctx, SCENE_PREPASS, targets.depth, &colors, labels);
+            bind(&mut pass);
+            // Opaque and alpha-tested surfaces of every family but foliage, through one
+            // pipeline per format, but the alpha-tested anime character surfaces (fading
+            // characters' among them), which draw through the masked one (M1 C7), cut out
+            // as the main pass cuts them. The environment's alpha-tested surfaces aren't cut
+            // out yet (crate docs, "Later milestones"). Two-sided anime character surfaces
+            // draw through their own, which cull nothing (M1 C8). Transparent surfaces write
+            // no depth.
+            let set = DrawSet::Surfaces;
+            for format in PositionFormat::ALL {
+                let Some(mesh) = pipelines.mesh(format) else { continue };
+                for (pipeline, kind, variants) in mesh.scene_prepasses() {
+                    if variants.iter().any(|&variant| view_draws.has_static(format, variant)) {
+                        pass.set_pipeline(pipeline.expect("built with the variants' surfaces"));
+                        for &variant in variants {
+                            view_draws.draw_static(&mut pass, kind, format, variant, set);
                         }
                     }
                 }
-                if let Some(mesh) = pipelines.mesh(PositionFormat::Float32) {
-                    for (pipeline, kind, variants) in mesh.scene_prepasses() {
-                        if variants.iter().any(|&variant| view_draws.has_deformed(variant)) {
-                            pass.set_pipeline(pipeline.expect("built with the variants' surfaces"));
-                            for &variant in variants {
-                                view_draws.draw_deformed(&mut pass, kind, variant, set);
-                            }
+            }
+            if let Some(mesh) = pipelines.mesh(PositionFormat::Float32) {
+                for (pipeline, kind, variants) in mesh.scene_prepasses() {
+                    if variants.iter().any(|&variant| view_draws.has_deformed(variant)) {
+                        pass.set_pipeline(pipeline.expect("built with the variants' surfaces"));
+                        for &variant in variants {
+                            view_draws.draw_deformed(&mut pass, kind, variant, set);
                         }
                     }
                 }
-                // Foliage (M1 W6) through its own pipelines per coverage, on its scene group (the
-                // wind) and each draw's group 3: displaced by this frame's wind, with velocity
-                // from the last drawn frame's, and its alpha-tested cards cut out as the main pass
-                // cuts them.
-                let mut foliage_bound = false;
-                for format in PositionFormat::ALL {
-                    let Some(mesh) = pipelines.mesh(format) else { continue };
-                    for variant in SurfaceVariant::FOLIAGE {
-                        if !view_draws.has_static(format, variant) {
-                            continue;
-                        }
-                        let pipeline =
-                            mesh.foliage_prepass(variant.coverage).expect("built with the variant's surface");
-                        if !foliage_bound {
-                            pass.set_bind_group(2, &scene_bind_groups[foliage_group], &[]);
-                            foliage_bound = true;
-                        }
-                        pass.set_pipeline(pipeline);
-                        let foliage = MeshPass::FoliagePrepass;
-                        view_draws.draw_static(&mut pass, foliage, format, variant, DrawSet::Surfaces);
+            }
+            // Foliage (M1 W6) through its own pipelines per coverage, on its scene group (the
+            // wind) and each draw's group 3: displaced by this frame's wind, with velocity
+            // from the last drawn frame's, and its alpha-tested cards cut out as the main pass
+            // cuts them.
+            let mut foliage_bound = false;
+            for format in PositionFormat::ALL {
+                let Some(mesh) = pipelines.mesh(format) else { continue };
+                for variant in SurfaceVariant::FOLIAGE {
+                    if !view_draws.has_static(format, variant) {
+                        continue;
                     }
-                }
-                if foliage_bound {
-                    pass.set_bind_group(2, &scene_bind_groups[0], &[]);
-                }
-                // Then the outline hulls, after every surface as in the main pass and with the
-                // same depths, writing their own velocity (M1 C4): temporal AA reprojects a line
-                // by its own motion. The opaque variants share one pipeline per format, the
-                // alpha-tested ones the masked one (M1 C7), which keeps the pixels their main pass
-                // keeps.
-                let set = DrawSet::Outlines;
-                for format in PositionFormat::ALL {
-                    let Some(mesh) = pipelines.mesh(format) else { continue };
-                    for (pipeline, kind, variants) in mesh.outline_prepasses() {
-                        if variants.iter().any(|&variant| view_draws.has_static(format, variant)) {
-                            pass.set_pipeline(pipeline.expect("built with the variants' surfaces"));
-                            for &variant in variants {
-                                view_draws.draw_static(&mut pass, kind, format, variant, set);
-                            }
-                        }
+                    let pipeline =
+                        mesh.foliage_prepass(variant.coverage).expect("built with the variant's surface");
+                    if !foliage_bound {
+                        pass.set_bind_group(2, &scene_bind_groups[foliage_group], &[]);
+                        foliage_bound = true;
                     }
+                    pass.set_pipeline(pipeline);
+                    let foliage = MeshPass::FoliagePrepass;
+                    view_draws.draw_static(&mut pass, foliage, format, variant, DrawSet::Surfaces);
                 }
-                if let Some(mesh) = pipelines.mesh(PositionFormat::Float32) {
-                    for (pipeline, kind, variants) in mesh.outline_prepasses() {
-                        if variants.iter().any(|&variant| view_draws.has_deformed(variant)) {
-                            pass.set_pipeline(pipeline.expect("built with the variants' surfaces"));
-                            for &variant in variants {
-                                view_draws.draw_deformed(&mut pass, kind, variant, set);
-                            }
+            }
+            if foliage_bound {
+                pass.set_bind_group(2, &scene_bind_groups[0], &[]);
+            }
+            // Then the outline hulls, after every surface as in the main pass and with the
+            // same depths, writing their own velocity (M1 C4): temporal AA reprojects a line
+            // by its own motion. The opaque variants share one pipeline per format, the
+            // alpha-tested ones the masked one (M1 C7), which keeps the pixels their main pass
+            // keeps.
+            let set = DrawSet::Outlines;
+            for format in PositionFormat::ALL {
+                let Some(mesh) = pipelines.mesh(format) else { continue };
+                for (pipeline, kind, variants) in mesh.outline_prepasses() {
+                    if variants.iter().any(|&variant| view_draws.has_static(format, variant)) {
+                        pass.set_pipeline(pipeline.expect("built with the variants' surfaces"));
+                        for &variant in variants {
+                            view_draws.draw_static(&mut pass, kind, format, variant, set);
                         }
                     }
                 }
-            });
+            }
+            if let Some(mesh) = pipelines.mesh(PositionFormat::Float32) {
+                for (pipeline, kind, variants) in mesh.outline_prepasses() {
+                    if variants.iter().any(|&variant| view_draws.has_deformed(variant)) {
+                        pass.set_pipeline(pipeline.expect("built with the variants' surfaces"));
+                        for &variant in variants {
+                            view_draws.draw_deformed(&mut pass, kind, variant, set);
+                        }
+                    }
+                }
+            }
+        });
         // The ambient pass (M1 W5), a side effect before the main pass, which reads what it
         // writes: with a probe grid, the sky's projection and the reflection cube's prefilter,
         // which read this frame's face, the grid's relight and the characters' ambient; with GTAO,
@@ -2280,7 +2294,7 @@ impl Renderer {
                 let inputs = TemporalInputs {
                     color: scene_color,
                     depth: targets.depth,
-                    velocity: targets.velocity,
+                    velocity: targets.velocity.expect("written under temporal AA"),
                     responsive,
                 };
                 let masks = TemporalMasks { characters: targets.character_depth, outlines: targets.outlines };
@@ -2771,11 +2785,11 @@ fn begin_prepass<'p>(
     ctx: &'p mut PassContext<'_>,
     label: &'static str,
     depth: TextureId,
-    colors: &[TextureId],
+    colors: &[Option<TextureId>],
     labels: bool,
 ) -> wgpu::RenderPass<'p> {
     let color_attachments: [Option<wgpu::RenderPassColorAttachment<'_>>; 3] = std::array::from_fn(|index| {
-        colors.get(index).map(|&color| wgpu::RenderPassColorAttachment {
+        colors.get(index).copied().flatten().map(|color| wgpu::RenderPassColorAttachment {
             view: ctx.view(color),
             depth_slice: None,
             resolve_target: None,

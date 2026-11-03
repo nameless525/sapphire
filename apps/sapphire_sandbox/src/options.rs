@@ -425,14 +425,6 @@ pub(crate) enum Antialiasing {
     Taa,
 }
 
-/// The clip `raw` names, for the flag `flag`.
-fn clip_name(raw: &str, flag: &str) -> Result<lookdev::ClipName, String> {
-    lookdev::ClipName::from_name(raw).ok_or_else(|| {
-        let names: Vec<&str> = lookdev::ClipName::all().map(lookdev::ClipName::name).collect();
-        format!("{flag} expects an asset ID or one of {}, got {raw:?}", names.join(", "))
-    })
-}
-
 impl Options {
     /// Sets `scene` up as the options ask: the hour and the day's length, the plants' framing at
     /// that hour and the wind, the cloud cover, the sky's and post's layers, sharpening, the
@@ -835,7 +827,7 @@ impl Options {
                         format!("--look-dev expects one of {}, got {raw:?}", names.join(", "))
                     })?);
                 }
-                "--clip" => options.clip = Some(clip_name(&value("--clip")?, "--clip")?),
+                "--clip" => options.clip = Some(lookdev::ClipName::parse(&value("--clip")?)),
                 "--clip-in-place" => options.clip_in_place = true,
                 "--arena" => arena_flag = true,
                 "--party" => options.party = true,
@@ -1018,7 +1010,7 @@ impl Options {
                 "--bench-trace" => options.bench_trace = Some(PathBuf::from(value("--bench-trace")?)),
                 OFFSCREEN_FLAG => serve = true,
                 CONTACT_SHEET_FLAG => {
-                    options.clip = Some(clip_name(&value(CONTACT_SHEET_FLAG)?, CONTACT_SHEET_FLAG)?);
+                    options.clip = Some(lookdev::ClipName::parse(&value(CONTACT_SHEET_FLAG)?));
                     sheet = Some(PathBuf::from(value(CONTACT_SHEET_FLAG)?));
                 }
                 "--sheet-cells" => {
@@ -1637,7 +1629,7 @@ mod tests {
     #[test]
     fn a_contact_sheet_names_its_clip_and_pins_what_it_implies() {
         let (options, _) = parse(&["--contact-sheet", "Hit_A", "sheet.png"]).unwrap();
-        assert_eq!(options.clip, lookdev::ClipName::from_name("Hit_A"));
+        assert_eq!(options.clip, Some(lookdev::ClipName::parse("Hit_A")));
         assert_eq!(options.look_dev, Some(Shot::Hero));
         assert_eq!(options.aa, Some(Antialiasing::Msaa), "a cell has no history for temporal AA");
         assert!(options.fog_off);
@@ -1695,7 +1687,7 @@ mod tests {
         assert!(parse(&["--sheet-ticks", "3"]).unwrap_err().contains("--contact-sheet"));
         assert!(parse(&["--sheet-views", "3"]).unwrap_err().contains("--contact-sheet"));
 
-        // Any clip by its ID, which is how a new document's first sheet needs no table.
+        // Any clip by its ID. A name isn't looked for until the packs are mounted (`ClipName::resolve`).
         let id = "15af86bb-67b3-4208-bc54-1618aabf450b";
         assert!(parse(&["--contact-sheet", id, "sheet.png"]).is_ok());
 
@@ -1703,7 +1695,6 @@ mod tests {
             let error = parse(args).unwrap_err();
             assert!(error.contains(says), "{args:?}: {error}");
         };
-        refused(&["--contact-sheet", "Waving", "sheet.png"], "Hit_A");
         refused(&["--contact-sheet", "Hit_A"], "--contact-sheet");
         refused(&["--contact-sheet", "Hit_A", "a.png", "--capture", "b.png"], "--capture");
         refused(&["--contact-sheet", "Hit_A", "a.png", "--look-dev", "hero"], "--look-dev");
@@ -1754,13 +1745,12 @@ mod tests {
         assert_eq!(parse(&["--look-dev", "hero"]).unwrap().0.clip, None);
         assert_eq!(
             parse(&["--look-dev", "hero", "--clip", "strike"]).unwrap().0.clip,
-            lookdev::ClipName::from_name("strike")
+            Some(lookdev::ClipName::parse("strike"))
         );
-        assert!(parse(&["--look-dev", "hero", "--clip", "wave"]).unwrap_err().contains("strike"));
         assert!(parse(&["--clip", "strike"]).unwrap_err().contains("--look-dev"));
         assert_eq!(
             parse(&["--arena", "--clip", "idle"]).unwrap().0.clip,
-            lookdev::ClipName::from_name("idle")
+            Some(lookdev::ClipName::parse("idle"))
         );
         let solving = ["--look-dev", "hero", "--clip", "strike", "--ik", "on"];
         assert_eq!(parse(&solving).unwrap().0.ik, Some(sapphire_stage::ik::IkOptions::default()));

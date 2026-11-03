@@ -4,6 +4,7 @@
 
 use glam::Vec3;
 use sapphire_anim::{CharacterPose, root_motion};
+use sapphire_assets::AssetKind;
 use sapphire_assets::clip::Clip;
 use sapphire_assets::rig::{CharacterRig, HumanBone};
 use sapphire_assets::skeleton::Skeleton;
@@ -99,6 +100,84 @@ fn says(error: &CookError) -> String {
     assert!(matches!(error, CookError::MoveSet { .. }), "{error:?}");
     assert!(error.to_string().contains("fighter.moves.ron"), "{error}");
     std::error::Error::source(error).expect("a fault").to_string()
+}
+
+/// Adding a move set and a clip is two files with sidecars: their names reach a pack, on the IDs the sidecars
+/// say, and nothing in Rust lists them. What a game finds them by is this.
+#[test]
+fn a_new_set_and_a_new_clip_are_found_in_a_pack_by_their_names() {
+    let tree = swing_tree("cook_named_in_pack", &set_with(&swing_clip(), (8, 7, 5)));
+    let packs = tree.dir.path().join("packs");
+    let named_in_packs = |report: &CookReport| {
+        crate::pack::pack_cooked(report, &packs, None).expect("packs");
+        let mut named = Vec::new();
+        for entry in fs::read_dir(&packs).expect("packs").flatten() {
+            let bytes = fs::read(entry.path()).expect("a pack");
+            let reader = sapphire_assets::pack::PackReader::new(&bytes).expect("reads");
+            for (asset, name) in reader.toc().named() {
+                named.push((
+                    name.to_owned(),
+                    asset.kind,
+                    asset.id,
+                    reader.toc().dependencies(asset).to_vec(),
+                ));
+            }
+        }
+        named.sort_by(|a, b| a.0.cmp(&b.0));
+        named
+    };
+
+    let report = tree.try_cook(false).unwrap();
+    let skeleton = meta::sub_asset_id(CHARACTER, SKELETON);
+    let first = named_in_packs(&report);
+    assert_eq!(
+        first,
+        [
+            ("fighter".to_owned(), AssetKind::MoveSet, SET, vec![]),
+            ("swing".to_owned(), AssetKind::Clip, DOCUMENT, vec![skeleton]),
+        ],
+        "only the kinds asked for by name carry one",
+    );
+
+    let added = AssetId::from_bytes([0xb2; 16]);
+    let document = tree.write("moves/lunge.keypose.ron", SWING.as_bytes());
+    let settings = KeyPoseSettings { rig: Some(CHARACTER), ..KeyPoseSettings::default() };
+    tree.sidecar(&document, added, ImportSettings::KeyPose(settings));
+    let report = tree.try_cook(false).unwrap();
+    let second = named_in_packs(&report);
+    assert!(second.iter().any(|(name, kind, id, deps)| name == "lunge"
+        && *kind == AssetKind::Clip
+        && *id == added
+        && deps == &[skeleton]));
+
+    // A rename is a new name on the same ID, and it reaches a pack that holds the same bytes otherwise.
+    fs::rename(&document, tree.content().join("moves/thrust.keypose.ron")).expect("renamed");
+    fs::rename(
+        tree.content().join("moves/lunge.keypose.ron.meta"),
+        tree.content().join("moves/thrust.keypose.ron.meta"),
+    )
+    .expect("renamed");
+    let report = tree.try_cook(false).unwrap();
+    let third = named_in_packs(&report);
+    assert!(third.iter().any(|(name, _, id, _)| name == "thrust" && *id == added));
+    assert!(!third.iter().any(|(name, ..)| name == "lunge"));
+}
+
+/// Live tuning follows a set by its file's name, so two with one can't both be followed: said at the cook.
+#[test]
+fn two_move_sets_with_one_name_stop_the_pack_by_name() {
+    let tree = swing_tree("cook_two_sets", &set_with(&swing_clip(), (8, 7, 5)));
+    let other = tree.write("other/fighter.moves.ron", set_with(&swing_clip(), (8, 7, 5)).as_bytes());
+    tree.sidecar(
+        &other,
+        AssetId::from_bytes([0xb3; 16]),
+        ImportSettings::MoveSet(MoveSetSettings::default()),
+    );
+    let report = tree.try_cook(false).unwrap();
+    let error = crate::pack::pack_cooked(&report, &tree.dir.path().join("packs"), None).unwrap_err();
+    assert!(matches!(error, crate::pack::PackError::MoveSetNameClash { .. }), "{error}");
+    let text = error.to_string();
+    assert!(text.contains("moves/fighter.moves.ron") && text.contains("other/fighter.moves.ron"), "{text}");
 }
 
 /// The pose a clip draws at a tick: a joint's position with an offset and its rotation, in model space,

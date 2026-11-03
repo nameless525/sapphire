@@ -249,7 +249,7 @@ pub struct Recipe {
 pub const MESH_COOKER: Stage = Stage { name: "smesh", version: 5 };
 
 /// What a source's skeleton's ID is derived from.
-pub const SKELETON: &str = "skeleton";
+pub const SKELETON: &str = sapphire_assets::skeleton::SKELETON_SUB_ASSET;
 
 /// An asset every source of a kind cooks to besides its own (see the [module docs](self)).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -724,6 +724,9 @@ pub struct CookedAsset {
     /// blake3 of the cooked file's bytes, as written: what the packer keys its encoding by.
     pub output_hash: blake3::Hash,
     pub status: CookStatus,
+    /// What its author calls it: a clip's name, or else its source's file name up to the first dot. Only
+    /// some kinds carry it into a pack (`crate::pack`).
+    pub name: String,
 }
 
 /// What [`cook_dir`] did.
@@ -2039,6 +2042,15 @@ fn asset_key(
     }))
 }
 
+/// See [`CookedAsset::name`].
+fn asset_name(path: &Path, part: &Part) -> String {
+    if let Part::Clip { name, .. } = part {
+        return name.clone();
+    }
+    let file = path.file_name().and_then(|file| file.to_str()).unwrap_or_default();
+    file.split('.').next().unwrap_or_default().to_owned()
+}
+
 /// Brings one asset's output up to date, by its key.
 fn finish_asset(
     planned: &Planned,
@@ -2055,6 +2067,7 @@ fn finish_asset(
         key,
         output_hash,
         status,
+        name: asset_name(path, part),
     };
 
     let mut cached = None;

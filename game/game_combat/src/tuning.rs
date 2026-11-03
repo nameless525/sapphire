@@ -49,7 +49,7 @@ use std::path::{Path, PathBuf};
 use sapphire_anim::CharacterMotion;
 use sapphire_assets::graph::{AnimGraph, clip_id};
 use sapphire_assets::ui::UiDocument;
-use sapphire_assets::{AssetChange, AssetId, AssetKind, Handle};
+use sapphire_assets::{AssetChange, AssetKind, Handle};
 use sapphire_camera::CameraTuning;
 use sapphire_cues::CueTable;
 use sapphire_gameplay::replay::{LiveMoves, SCENARIOS, compile_document, document_file_name};
@@ -329,14 +329,6 @@ const MOTION_PATH: &str = "crates/sapphire_anim/default_character_motion.ron";
 /// The HUD's design's document.
 const HUD_PATH: &str = "crates/sapphire_ui/default_hud.ron";
 
-/// The move sets a cook holds, by document and sidecar ID: what a pack's new `.smoves` is the new version
-/// of. A document under `content/` with moves that name clips needs a row, or nothing brings it.
-const COOKED_MOVES: [(&str, AssetId); 3] = [
-    ("show.moves.ron", AssetId::from_text("e41a8d27-90c6-4f35-b1de-6a7c02f95d18")),
-    ("player.moves.ron", AssetId::from_text("6fc61cbc-8189-4b6d-a4a0-b0e09475c6ce")),
-    ("warrior.moves.ron", AssetId::from_text("c50887be-5ce3-498a-9f28-255e7e372b32")),
-];
-
 /// What a live edit of a move set reaches: the fight in the app, and the graph show on the scene.
 pub struct LiveFight<'a> {
     pub combat: Option<&'a mut Combat>,
@@ -369,7 +361,7 @@ struct Moving {
 
 /// A cooked set held so a new version of it is told of.
 struct CookedSet {
-    document: &'static str,
+    document: String,
     handle: Handle<MoveSet>,
 }
 
@@ -391,13 +383,18 @@ impl LiveTuning {
     pub fn new(run: &TunedRun<'_>, content: &mut Content) -> Self {
         let sources = Self::sources_of(run);
         let mut cooked = Vec::new();
-        for (document, id) in COOKED_MOVES {
-            if !sources.iter().any(|source| document_file_name(&source.path) == document) {
+        for source in sources.iter().filter(|source| source.document == Document::Moves) {
+            let document = document_file_name(&source.path);
+            let name = document.split('.').next().unwrap_or(document);
+            let found =
+                content.named_assets(AssetKind::MoveSet).find(|set| set.name == name).map(|set| set.id);
+            // A document no cook takes, as a scenario's in a crate: its edits come as documents only.
+            let Some(id) = found else {
+                tracing::debug!(target: LOG_TARGET, document, "no cooked moves to follow");
                 continue;
-            }
+            };
             match content.hold_move_set(id) {
-                Ok(handle) => cooked.push(CookedSet { document, handle }),
-                // A pack from before this document: its edits come as documents only.
+                Ok(handle) => cooked.push(CookedSet { document: document.to_owned(), handle }),
                 Err(error) => {
                     tracing::info!(target: LOG_TARGET, document, %error, "no cooked moves to follow")
                 }
@@ -463,7 +460,7 @@ impl LiveTuning {
     pub(crate) fn following(document: &'static str, handle: Handle<MoveSet>) -> Self {
         let path = format!("content/{document}");
         let source = Source { path, document: Document::Moves, edits: 0 };
-        let cooked = vec![CookedSet { document, handle }];
+        let cooked = vec![CookedSet { document: document.to_owned(), handle }];
         Self {
             moves: LiveMoves::default(),
             sources: vec![source],
@@ -594,10 +591,10 @@ impl LiveTuning {
             let Some(set) = content.move_set(&cooked.handle).and_then(|set| set.to_owned_set().ok()) else {
                 continue;
             };
-            if combat.start_fight_from(cooked.document, set) {
+            if combat.start_fight_from(&cooked.document, set) {
                 tracing::info!(
                     target: LOG_TARGET,
-                    document = cooked.document,
+                    document = %cooked.document,
                     "the fight starts from what a cook made of this document, not the build's copy",
                 );
             }
@@ -668,13 +665,13 @@ impl LiveTuning {
         for change in changes {
             let AssetChange::Reloaded { id, kind: AssetKind::MoveSet, .. } = change else { continue };
             let Some(cooked) = self.cooked.iter().find(|cooked| cooked.handle.id() == *id) else { continue };
-            let document = cooked.document;
+            let document = cooked.document.clone();
             let Some(set) = content.move_set(&cooked.handle) else { continue };
             let fight = LiveFight { combat: fight.combat.as_deref_mut(), scene: &mut *fight.scene };
             let taken = set
                 .to_owned_set()
                 .map_err(|error| error_chain(&error))
-                .and_then(|set| self.take_moves(document, self.newest_of(document, set), fight));
+                .and_then(|set| self.take_moves(&document, self.newest_of(&document, set), fight));
             match taken {
                 Ok(what) => tracing::info!(target: LOG_TARGET, what, "a pack replaced the moves"),
                 Err(error) => errors.push(format!("{document}, from its pack: {error}")),
@@ -1176,24 +1173,6 @@ mod tests {
         assert_eq!(library.current_revision(set), Some(0));
         recorder.discard(&mut combat);
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// The table holds cooked sets to their sidecars, or a pack's new version goes unnoticed.
-    #[test]
-    #[ignore = "runs with CI's dev tests, which take --ignored"]
-    fn cooked_moves_are_their_sidecars() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
-        let sidecars = [
-            ("show.moves.ron", "lookdev/character/show.moves.ron.meta"),
-            ("player.moves.ron", "combat/player/player.moves.ron.meta"),
-            ("warrior.moves.ron", "combat/enemy/warrior.moves.ron.meta"),
-        ];
-        for (document, id) in COOKED_MOVES {
-            let (_, sidecar) = sidecars.iter().find(|(name, _)| *name == document).expect("a row");
-            let text = std::fs::read_to_string(root.join(sidecar)).expect("a sidecar");
-            let written = text.split("id: \"").nth(1).and_then(|rest| rest.split('"').next()).expect("an ID");
-            assert_eq!(AssetId::from_text(written), id, "{document}");
-        }
     }
 
     #[test]

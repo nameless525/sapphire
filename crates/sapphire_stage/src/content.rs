@@ -95,7 +95,8 @@ use sapphire_assets::sound::{AUDIO_PACK, DecodedSound, Sound};
 use sapphire_assets::ui::{UI_PACK, UiDocument};
 use sapphire_assets::{
     Asset, AssetBudgets, AssetId, AssetKind, AssetServer, AssetSlot, AssetStats, CpuResident, Handle,
-    LoadError, LoadPriority, PackFile, PackSource, ReadDone, TextureAsset, Unloaded, Upload, UploadError,
+    LoadError, LoadPriority, NamedAsset, PackFile, PackSource, ReadDone, TextureAsset, Unloaded, Upload,
+    UploadError,
 };
 #[cfg(feature = "dev")]
 use sapphire_assets::{AssetChange, MountError, RemountReport};
@@ -1967,6 +1968,11 @@ impl Content {
     #[cfg(feature = "dev")]
     pub fn take_changes(&mut self) -> Vec<AssetChange> {
         self.server.take_changes()
+    }
+
+    /// Every asset of `kind` the mounted packs hold with a name: see [`AssetServer::named`].
+    pub fn named_assets(&self, kind: AssetKind) -> impl Iterator<Item = NamedAsset<'_>> {
+        self.server.named(kind)
     }
 
     /// Takes a handle on a cooked set of moves, whose new versions then reach

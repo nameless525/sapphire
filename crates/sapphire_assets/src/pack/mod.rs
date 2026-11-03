@@ -3,7 +3,8 @@
 //! A pack holds cooked assets (meshes, textures, materials) by [`AssetId`], each exactly the bytes
 //! the cook wrote, compressed in 64 KB blocks so any block can be read and decoded on its own. Its
 //! table of contents is the runtime's ID index: nothing at runtime names an asset by path
-//! (rule R5).
+//! (rule R5). The few kinds a person asks for by name carry a name beside their ID ([`Toc::named`]):
+//! a clip's or a move set's, never a path, which is how the dev tools find them with no list in code.
 //!
 //! # Layout
 //!
@@ -16,6 +17,7 @@
 //! | … | 48 × blocks | one per block, asset by asset in entry order ([`Block`]) |
 //! | … | 16 × dependencies | asset IDs, each entry's in a run of its own, sorted |
 //! | … | 16 × pipeline keys | [`PipelineKey::to_row`], each mesh's in a run of its own, in slot order |
+//! | … | `names_len` | names, if any asset has one: for each entry in order, its length (u16, 0 for none) and its UTF-8 bytes, then zeros up to a multiple of 16 |
 //! | `data_offset` | `data_len` | block data, each block starting 16-byte aligned |
 //!
 //! The header:
@@ -30,7 +32,7 @@
 //! | 20 | 12 | entry, block and dependency counts (u32 each) |
 //! | 32 | 24 | table of contents length, data offset and data length (u64 each) |
 //! | 56 | 4 | pipeline key count (u32) |
-//! | 60 | 4 | reserved, 0 |
+//! | 60 | 4 | bytes of names (u32), a multiple of 16 |
 //! | 64 | 32 | blake3 of the table of contents |
 //! | 96 | 32 | reserved, 0 |
 //! | 128 | 32 | blake3 of bytes 0..128: the header hash |
@@ -95,7 +97,7 @@ pub use write::{PackAsset, StoredBlock, write_pack};
 /// Conventional file extension for packs.
 pub const PACK_EXTENSION: &str = "spack";
 /// The pack layout this build reads and writes. Readers reject other versions.
-pub const PACK_VERSION: u32 = 2;
+pub const PACK_VERSION: u32 = 3;
 /// Bytes per block of an asset (its last block may be shorter).
 pub const BLOCK_SIZE: usize = 64 * 1024;
 /// Bytes in a pack's header.
@@ -112,6 +114,8 @@ const ENTRY_LEN: usize = 80;
 const BLOCK_LEN: usize = 48;
 const DEPENDENCY_LEN: usize = 16;
 const PIPELINE_KEY_LEN: usize = PipelineKey::ROW_LEN;
+/// The names' section is padded to a multiple of this, so the data after it starts aligned.
+const NAMES_ALIGN: usize = 16;
 /// Block data starts at multiples of this, as rkyv archives and KTX2 levels need.
 const DATA_ALIGN: u64 = 16;
 
@@ -203,6 +207,8 @@ pub struct PackHeader {
     pub block_count: u32,
     pub dependency_count: u32,
     pub pipeline_key_count: u32,
+    /// Bytes of names, padding included: 0 where no asset has one.
+    pub names_len: u32,
     /// Where block data starts in the file: right after the table of contents.
     pub data_offset: u64,
     pub data_len: u64,
@@ -242,14 +248,18 @@ impl PackHeader {
         if u32_at(header, 16) as usize != BLOCK_SIZE {
             return Err(PackError::Header("the block size isn't 64 KiB"));
         }
-        if header[60..64].iter().chain(&header[96..128]).any(|&byte| byte != 0) {
+        if header[96..128].iter().any(|&byte| byte != 0) {
             return Err(PackError::Header("reserved bytes aren't zero"));
+        }
+        if !(u32_at(header, 60) as usize).is_multiple_of(NAMES_ALIGN) {
+            return Err(PackError::Header("the names' length isn't a multiple of 16"));
         }
         let parsed = Self {
             entry_count: u32_at(header, 20),
             block_count: u32_at(header, 24),
             dependency_count: u32_at(header, 28),
             pipeline_key_count: u32_at(header, 56),
+            names_len: u32_at(header, 60),
             data_offset: u64_at(header, 40),
             data_len: u64_at(header, 48),
             toc_hash: *header[64..96].first_chunk().expect("32 bytes"),
@@ -272,6 +282,7 @@ impl PackHeader {
             + u64::from(self.block_count) * BLOCK_LEN as u64
             + u64::from(self.dependency_count) * DEPENDENCY_LEN as u64
             + u64::from(self.pipeline_key_count) * PIPELINE_KEY_LEN as u64
+            + u64::from(self.names_len)
     }
 
     /// Where the table of contents lies in the file.
@@ -313,6 +324,7 @@ impl PackHeader {
         header[40..48].copy_from_slice(&self.data_offset.to_le_bytes());
         header[48..56].copy_from_slice(&self.data_len.to_le_bytes());
         header[56..60].copy_from_slice(&self.pipeline_key_count.to_le_bytes());
+        header[60..64].copy_from_slice(&self.names_len.to_le_bytes());
         header[64..96].copy_from_slice(&self.toc_hash);
         let hash = blake3::hash(&header[..HASHED_HEADER_LEN]);
         header[HASHED_HEADER_LEN..HASHED_HEADER_LEN + 32].copy_from_slice(hash.as_bytes());
@@ -373,6 +385,8 @@ pub struct Toc {
     blocks: Vec<Block>,
     dependencies: Vec<AssetId>,
     pipeline_keys: Vec<PipelineKey>,
+    /// The assets with names, by their index in `entries`, in that order.
+    names: Vec<(u32, Box<str>)>,
 }
 
 impl Toc {
@@ -391,6 +405,8 @@ impl Toc {
         let (entry_table, rest) = toc.split_at(entry_bytes);
         let (block_table, rest) = rest.split_at(block_bytes);
         let (dependency_table, key_table) = rest.split_at(header.dependency_count as usize * DEPENDENCY_LEN);
+        let (key_table, name_table) =
+            key_table.split_at(header.pipeline_key_count as usize * PIPELINE_KEY_LEN);
 
         let mut dependencies = Vec::with_capacity(header.dependency_count as usize);
         for id in dependency_table.as_chunks::<DEPENDENCY_LEN>().0 {
@@ -505,7 +521,8 @@ impl Toc {
         if data_end != header.data_len {
             return Err(PackError::Header("the data is longer than its blocks"));
         }
-        Ok(Self { header, entries, blocks, dependencies, pipeline_keys })
+        let names = read_names(name_table, header.entry_count)?;
+        Ok(Self { header, entries, blocks, dependencies, pipeline_keys, names })
     }
 
     pub fn header(&self) -> &PackHeader {
@@ -520,6 +537,11 @@ impl Toc {
     /// The asset `id`, if the pack has it.
     pub fn find(&self, id: AssetId) -> Option<&Entry> {
         self.entries.binary_search_by(|entry| entry.id.cmp(&id)).ok().map(|index| &self.entries[index])
+    }
+
+    /// Every asset with a name, in ID order, and its name.
+    pub fn named(&self) -> impl Iterator<Item = (&Entry, &str)> {
+        self.names.iter().map(|(index, name)| (&self.entries[*index as usize], &**name))
     }
 
     /// An asset's blocks, in order.
@@ -716,6 +738,34 @@ impl<'a> PackReader<'a> {
 fn block_len(size: u64, index: u32) -> u32 {
     let start = u64::from(index) * BLOCK_SIZE as u64;
     (size - start).min(BLOCK_SIZE as u64) as u32
+}
+
+/// Reads the names' section of a pack of `entries` assets. Nothing's asked of a name but to be text: what
+/// asks for one says what it expected.
+fn read_names(table: &[u8], entries: u32) -> Result<Vec<(u32, Box<str>)>, PackError> {
+    let mut names = Vec::new();
+    if table.is_empty() {
+        return Ok(names);
+    }
+    let fail = |index: u32, reason| PackError::Toc { part: "name", index: index as usize, reason };
+    let mut rest = table;
+    for index in 0..entries {
+        let Some((len, after)) = rest.split_first_chunk::<2>() else {
+            return Err(fail(index, "names run past their section"));
+        };
+        let Some((name, after)) = after.split_at_checked(u16::from_le_bytes(*len) as usize) else {
+            return Err(fail(index, "names run past their section"));
+        };
+        rest = after;
+        if !name.is_empty() {
+            let name = std::str::from_utf8(name).map_err(|_| fail(index, "a name isn't UTF-8"))?;
+            names.push((index, name.into()));
+        }
+    }
+    if rest.len() >= NAMES_ALIGN || rest.iter().any(|&byte| byte != 0) {
+        return Err(fail(entries, "bytes follow the last name that aren't its padding"));
+    }
+    Ok(names)
 }
 
 fn u32_at<const N: usize>(bytes: &[u8; N], offset: usize) -> u32 {

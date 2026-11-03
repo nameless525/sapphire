@@ -21,6 +21,8 @@ use sapphire_serialize::cooked::{AlignedVec, CookedError};
 
 /// Conventional file extension for cooked skeletons.
 pub const SKELETON_EXTENSION: &str = "sskel";
+/// The sub-asset a skinned source's skeleton is, whose ID derives from this: what a clip for it depends on.
+pub const SKELETON_SUB_ASSET: &str = "skeleton";
 
 /// What [`Skeleton::parents`] holds for a root.
 pub const NO_PARENT: u16 = u16::MAX;

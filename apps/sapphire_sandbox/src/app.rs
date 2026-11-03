@@ -257,8 +257,12 @@ impl App for SandboxApp {
             if let Some(settings) = options.stream.settings(quality.active().id) {
                 scene.open_town_zone(&mut content, settings, &mut renderer.renderer, &device.gpu)?;
             }
-            if let Some(clip) = options.clip {
-                content.load_clip(clip.id(), &mut renderer.renderer, &device.gpu)?;
+            if let Some(clip) = &options.clip {
+                content.load_clip(
+                    clip.resolve(&content).map_err(AppInitError::msg)?,
+                    &mut renderer.renderer,
+                    &device.gpu,
+                )?;
                 let mut player = lookdev::player(&content)
                     .map_err(AppInitError::msg)?
                     .with_root_motion(!options.clip_in_place)
@@ -309,8 +313,12 @@ impl App for SandboxApp {
             if let Some(meshes) = renderer.party {
                 show.fight.show.set_party_meshes(&mut scene, meshes);
             }
-            if let Some(clip) = options.clip {
-                content.load_clip(clip.id(), &mut renderer.renderer, &device.gpu)?;
+            if let Some(clip) = &options.clip {
+                content.load_clip(
+                    clip.resolve(&content).map_err(AppInitError::msg)?,
+                    &mut renderer.renderer,
+                    &device.gpu,
+                )?;
                 let mut player = lookdev::player(&content)
                     .map_err(AppInitError::msg)?
                     .with_root_motion(false)

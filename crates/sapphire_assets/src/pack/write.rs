@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     BLOCK_LEN, BLOCK_SIZE, Codec, DATA_ALIGN, DEPENDENCY_LEN, ENTRY_LEN, HEADER_LEN, MAX_ASSET_SIZE,
-    PIPELINE_KEY_LEN, PackError, PackHeader, block_len,
+    NAMES_ALIGN, PIPELINE_KEY_LEN, PackError, PackHeader, block_len,
 };
 use crate::{AssetId, AssetKind, PipelineKey};
 
@@ -31,6 +31,10 @@ pub struct PackAsset {
     /// so the packer fills it in for each pack it lays out.
     #[serde(skip)]
     pub pipeline_keys: Vec<PipelineKey>,
+    /// What a person asks for it by, if its kind is found that way. Not part of its encoding, which assets
+    /// with the same bytes share: the packer says it, for this asset in this pack.
+    #[serde(skip)]
+    pub name: Option<String>,
 }
 
 /// One block of a [`PackAsset`], as stored.
@@ -97,6 +101,7 @@ impl PackAsset {
             hash: *blake3::hash(bytes).as_bytes(),
             blocks,
             pipeline_keys: Vec::new(),
+            name: None,
         })
     }
 
@@ -123,6 +128,9 @@ impl PackAsset {
         }
         if u16::try_from(self.pipeline_keys.len()).is_err() {
             return Err(invalid("it has more than 65,535 pipeline keys"));
+        }
+        if self.name.as_ref().is_some_and(|name| name.is_empty() || name.len() > u16::MAX as usize) {
+            return Err(invalid("its name is empty or longer than 64 KiB"));
         }
         for (index, block) in (0..).zip(&self.blocks) {
             let len = block_len(self.size, index) as usize;
@@ -198,11 +206,15 @@ pub fn write_pack(mut assets: Vec<PackAsset>) -> Result<Vec<u8>, PackError> {
     toc.extend_from_slice(&blocks);
     toc.extend_from_slice(&dependencies);
     toc.extend_from_slice(&pipeline_keys);
+    let names = names_section(&assets);
+    toc.extend_from_slice(&names);
+    let names_len = u32::try_from(names.len()).map_err(|_| PackError::Header("more than 4 GiB of names"))?;
     let header = PackHeader {
         entry_count,
         block_count,
         dependency_count,
         pipeline_key_count,
+        names_len,
         data_offset: (HEADER_LEN + toc.len()) as u64,
         data_len,
         toc_hash: *blake3::hash(&toc).as_bytes(),
@@ -221,6 +233,22 @@ pub fn write_pack(mut assets: Vec<PackAsset>) -> Result<Vec<u8>, PackError> {
     }
     debug_assert_eq!(out.len() as u64, header.file_len());
     Ok(out)
+}
+
+/// The names' section for `assets` in entry order: nothing, if none has a name. Each is at most 64 KiB, as
+/// [`PackAsset::validate`] checked.
+fn names_section(assets: &[PackAsset]) -> Vec<u8> {
+    if assets.iter().all(|asset| asset.name.is_none()) {
+        return Vec::new();
+    }
+    let mut names = Vec::new();
+    for asset in assets {
+        let name = asset.name.as_deref().unwrap_or_default();
+        names.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        names.extend_from_slice(name.as_bytes());
+    }
+    names.resize(names.len().next_multiple_of(NAMES_ALIGN), 0);
+    names
 }
 
 /// Whether a block compressed from `len` to `stored` bytes is worth decoding: smaller by at

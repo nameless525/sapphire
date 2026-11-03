@@ -260,7 +260,7 @@ impl LivePacks {
         let toc_len = metadata.toc_read_len(&header, len).ok()?;
         let toc = read(HEADER_LEN as u64, toc_len as u64).ok()?;
         let toc = Toc::read(header, &toc, len).ok()?;
-        Some(Current::Base { file, toc, _metadata: metadata })
+        Some(Current::Base { file, toc: Box::new(toc), _metadata: metadata })
     }
 
     /// Serves `version` as pack `name` from now on, and returns the version it replaces.
@@ -602,7 +602,12 @@ impl Gather {
 /// The version of a pack served before a push.
 enum Current {
     Pushed(Arc<Version>),
-    Base { file: Arc<BaseFile>, toc: Toc, _metadata: PackMetadataRead },
+    /// The table is boxed: with its names it's most of the enum's size.
+    Base {
+        file: Arc<BaseFile>,
+        toc: Box<Toc>,
+        _metadata: PackMetadataRead,
+    },
 }
 
 impl Current {

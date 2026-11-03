@@ -172,7 +172,7 @@
 //! - `--hud-paused`: draws the pause's veil and mark, to look at them in a capture, which has no input
 //!   to pause it.
 //! - `--clip <name>` (with `--look-dev` or `--arena`): plays that clip on the character instead of holding it,
-//!   looping (M2 N2, `animate.rs`). A name is a clip `lookdev::ClipName` lists (M2 O2), or any clip's
+//!   looping (M2 N2, `animate.rs`). A name is what a clip's source calls it among those the packs hold for the character (M3 S3), or any clip's
 //!   asset ID. Each `--capture-ticks` is a fixed point of it, and `--bench` measures it.
 //!   `--clip-in-place` leaves its root motion out, for a shot that frames the character close. The
 //!   golden scenes `lookdev-strike-*` and `lookdev-clip-*` show it.

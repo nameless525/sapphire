@@ -111,7 +111,7 @@ use crate::zone;
 /// The packer as cache keys know it. Its name carries the encoders' versions, which a test keeps
 /// in step with `Cargo.lock`: a new zstd or lz4_flex may compress differently, so it re-encodes
 /// everything. Bump the version when the codec policy, block encoding or pack layout changes.
-pub const PACKER: Stage = Stage { name: "spack (zstd 1.5.7, lz4_flex 0.14.0)", version: 2 };
+pub const PACKER: Stage = Stage { name: "spack (zstd 1.5.7, lz4_flex 0.14.0)", version: 3 };
 
 /// What a cooked asset reaches, as cache keys know it. Bump the version whenever that changes for the
 /// same bytes ([`AssetKind::reach`]).
@@ -210,6 +210,12 @@ pub enum PackError {
         second.display()
     )]
     ZoneNameClash { first: PathBuf, second: PathBuf },
+    #[error(
+        "{} and {} are both called the same: live tuning follows a move set by its file's name, so rename one",
+        first.display(),
+        second.display()
+    )]
+    MoveSetNameClash { first: PathBuf, second: PathBuf },
     #[error("{} changed after it was cooked; cook again", path.display())]
     Changed { path: PathBuf },
     #[error("the pack directory {} holds cooked file {}: packing would prune it", packs.display(), output.display())]
@@ -327,6 +333,7 @@ pub fn pack_cooked(report: &CookReport, out: &Path, cache: Option<&Path>) -> Res
         }
     }
     let cache = cache.map(Cache::new);
+    check_move_set_names(report)?;
     let ids: HashMap<AssetId, &CookedAsset> = report.assets.iter().map(|asset| (asset.id, asset)).collect();
     let (font_packs, licenses) = fonts(report)?;
     let groups = groups(report, &font_packs, cache.as_ref())?;
@@ -588,6 +595,26 @@ struct Packing<'a> {
     pipeline_keys: Vec<PipelineKey>,
 }
 
+/// Whether a kind's assets carry their names into a pack: those a person asks for by name, so the tools can
+/// find them with no list in code. The rest stay IDs (rule R5).
+fn carries_a_name(kind: AssetKind) -> bool {
+    matches!(kind, AssetKind::Clip | AssetKind::MoveSet)
+}
+
+/// Two move sets with one name can't be told apart by what follows a document's edits by its file's name.
+fn check_move_set_names(report: &CookReport) -> Result<(), PackError> {
+    let mut seen: HashMap<&str, &Path> = HashMap::new();
+    for asset in report.assets.iter().filter(|asset| kind(&asset.output) == Some(AssetKind::MoveSet)) {
+        if let Some(first) = seen.insert(&asset.name, &asset.source) {
+            return Err(PackError::MoveSetNameClash {
+                first: first.to_owned(),
+                second: asset.source.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Brings pack `name`, holding `assets`, up to date.
 fn pack_group(
     name: &str,
@@ -620,7 +647,12 @@ fn pack_group(
     let keys: Vec<(AssetId, CacheKey)> =
         packing.iter().map(|packing| (packing.asset.id, packing.key)).collect();
     let rows: Vec<u8> = packing.iter().flat_map(|item| rows_of_keys(&item.pipeline_keys)).collect();
-    let pack_key = CacheKey::pack(PACKER, name, &keys, &rows);
+    let names: Vec<(AssetId, &str)> = packing
+        .iter()
+        .filter(|packing| carries_a_name(packing.kind))
+        .map(|packing| (packing.asset.id, packing.asset.name.as_str()))
+        .collect();
+    let pack_key = CacheKey::pack(PACKER, name, &keys, &rows, &names);
     let current = file_hash(&path)?;
     let done = |encoded, bytes, status| PackedPack {
         name: name.to_owned(),
@@ -673,6 +705,7 @@ fn pack_group(
         // which its materials say rather than its bytes.
         pack_asset.id = asset.id;
         pack_asset.pipeline_keys.clone_from(&item.pipeline_keys);
+        pack_asset.name = carries_a_name(item.kind).then(|| asset.name.clone());
         if let Some(&missing) = pack_asset.dependencies.iter().find(|id| !ids.contains_key(*id)) {
             return Err(PackError::MissingDependency { path: asset.output.clone(), id: missing });
         }

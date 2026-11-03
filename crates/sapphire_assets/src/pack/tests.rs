@@ -137,6 +137,75 @@ fn bad_inputs_are_refused_when_packing() {
     assert!(matches!(write_pack(vec![asset]), Err(PackError::Invalid { .. })));
 }
 
+/// A pack of three of [`samples`], two with names, one of them not ASCII.
+fn named_pack() -> Vec<u8> {
+    let names = [(id(9), "player"), (id(5), "\u{6b69}\u{304d}")];
+    let mut assets: Vec<PackAsset> = samples().iter().take(3).map(encode).collect();
+    for asset in &mut assets {
+        asset.name = names.iter().find(|(id, _)| *id == asset.id).map(|(_, name)| (*name).to_owned());
+    }
+    write_pack(assets).expect("write")
+}
+
+/// Names come back on the assets they were given to, and the data stays aligned behind them.
+#[test]
+fn names_round_trip_and_a_pack_without_any_has_no_section() {
+    let bytes = named_pack();
+    let reader = PackReader::new(&bytes).expect("reads");
+    let toc = reader.toc();
+    let named: Vec<(AssetId, &str)> = toc.named().map(|(entry, name)| (entry.id, name)).collect();
+    assert_eq!(named, [(id(5), "\u{6b69}\u{304d}"), (id(9), "player")], "in ID order");
+    assert!(toc.header().names_len > 0 && toc.header().names_len.is_multiple_of(16));
+    assert!(toc.header().data_offset.is_multiple_of(DATA_ALIGN));
+    for (sample, _) in samples().iter().take(3).zip(0..) {
+        assert_eq!(&reader.read(sample.id).expect("reads")[..], &sample.bytes[..]);
+    }
+
+    let bare = pack();
+    let reader = PackReader::new(&bare).expect("reads");
+    assert_eq!(reader.toc().header().names_len, 0);
+    assert_eq!(reader.toc().named().count(), 0);
+}
+
+#[test]
+fn bad_names_are_refused_writing_and_reading() {
+    let refused = |name: String| {
+        let mut asset = encode(&samples()[1]);
+        asset.name = Some(name);
+        matches!(write_pack(vec![asset]), Err(PackError::Invalid { .. }))
+    };
+    assert!(refused(String::new()));
+    assert!(refused("x".repeat(usize::from(u16::MAX) + 1)));
+
+    let good = named_pack();
+    let header = PackHeader::read(&good).expect("reads");
+    let names = header.data_offset as usize - header.names_len as usize;
+    let reason = |edit: &dyn Fn(&mut Vec<u8>)| {
+        let mut bytes = good.clone();
+        edit(&mut bytes);
+        rehash(&mut bytes);
+        match PackReader::new(&bytes) {
+            Err(PackError::Toc { part: "name", reason, .. }) => reason,
+            other => panic!("expected a bad name, got {other:?}"),
+        }
+    };
+    // Entries sort 2, 5, 9: the first has none, so the second's length is two bytes in.
+    assert_eq!(good[names..names + 2], [0, 0]);
+    let second = names + 2;
+    assert_eq!(
+        reason(&|bytes| bytes[second..second + 2].copy_from_slice(&u16::MAX.to_le_bytes())),
+        "names run past their section"
+    );
+    assert_eq!(reason(&|bytes| bytes[second + 2] = 0xff), "a name isn't UTF-8");
+    let end = header.data_offset as usize;
+    assert_eq!(reason(&|bytes| bytes[end - 1] = 1), "bytes follow the last name that aren't its padding",);
+
+    let mut bytes = good.clone();
+    bytes[60] ^= 1;
+    rehash(&mut bytes);
+    assert_eq!(PackHeader::read(&bytes), Err(PackError::Header("the names' length isn't a multiple of 16")));
+}
+
 /// Recomputes the table of contents' and the header's hashes after an edit, so tests reach
 /// the structural checks behind them.
 fn rehash(bytes: &mut [u8]) {
@@ -174,7 +243,10 @@ fn bad_headers_are_rejected() {
         PackReader::new(&bytes).map(|_| ())
     };
     assert_eq!(edit(0, b"SPAX", false), Err(PackError::NotAPack));
-    assert_eq!(edit(4, &3u32.to_le_bytes(), false), Err(PackError::UnsupportedVersion(3)));
+    let other = PACK_VERSION + 1;
+    assert_eq!(edit(4, &other.to_le_bytes(), false), Err(PackError::UnsupportedVersion(other)));
+    let older = PACK_VERSION - 1;
+    assert_eq!(edit(4, &older.to_le_bytes(), false), Err(PackError::UnsupportedVersion(older)));
     assert_eq!(edit(20, &7u32.to_le_bytes(), false), Err(PackError::HeaderHash));
     assert_eq!(edit(160, &1u32.to_le_bytes(), false), Err(PackError::UnsupportedSignature(1)));
     assert!(matches!(edit(200, &[1], false), Err(PackError::Header(_))), "signature bytes while unsigned");
@@ -292,7 +364,10 @@ fn every_byte_that_is_read_is_covered() {
         assets
             .iter()
             .map(|(id, codec, bytes)| {
-                PackAsset::encode(*id, AssetKind::Material, *codec, bytes, vec![], 3).unwrap()
+                let mut asset =
+                    PackAsset::encode(*id, AssetKind::Material, *codec, bytes, vec![], 3).unwrap();
+                asset.name = Some(format!("asset {id}"));
+                asset
             })
             .collect(),
     )

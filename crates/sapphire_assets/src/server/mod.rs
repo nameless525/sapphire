@@ -354,6 +354,15 @@ pub struct AssetStats {
     pub reload_failures: u64,
 }
 
+/// An asset a mounted pack holds with a name ([`AssetServer::named`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NamedAsset<'a> {
+    pub id: AssetId,
+    pub name: &'a str,
+    /// What it references, as its pack's table says: a clip's skeleton, for one.
+    pub dependencies: &'a [AssetId],
+}
+
 /// One asset's place in the server.
 struct Slot {
     /// The server's own reference: while its count is 1, nothing else uses the asset.
@@ -690,6 +699,19 @@ impl AssetServer {
         let mount = self.mounts.values().find(|mount| mount.name == pack);
         let entries = mount.iter().flat_map(|mount| mount.toc.entries());
         entries.filter(|entry| entry.kind == kind).map(|entry| entry.id).collect()
+    }
+
+    /// Every asset of `kind` the mounted packs hold with a name, pack by pack and by ID in each. It walks
+    /// the packs' tables, so it's for a tool's start or a person's question rather than a frame: a game
+    /// keeps the [`AssetId`].
+    pub fn named(&self, kind: AssetKind) -> impl Iterator<Item = NamedAsset<'_>> {
+        self.mounts.values().flat_map(move |mount| {
+            mount.toc.named().filter(move |(entry, _)| entry.kind == kind).map(|(entry, name)| NamedAsset {
+                id: entry.id,
+                name,
+                dependencies: mount.toc.dependencies(entry),
+            })
+        })
     }
 
     /// Whether a mounted pack holds asset `id`.

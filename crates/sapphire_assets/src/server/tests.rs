@@ -7,7 +7,7 @@ use crate::material::{AnimeCharacterMaterial, Material};
 use crate::mesh::{
     MaterialSlot, Mesh, PositionFormat, SlotMaterial, Submesh, VERTEX_COLOR_NEUTRAL, Vertex, VertexFlags,
 };
-use crate::pack::{Codec, PackAsset, write_pack};
+use crate::pack::{Codec, PACK_VERSION, PackAsset, write_pack};
 use crate::texture::{Swizzle, Texture, TextureDesc, TextureFormat};
 
 mod lifetime;
@@ -862,12 +862,19 @@ fn mounting_checks_packs() {
     let mut corrupt = write_pack(textures(2)).unwrap();
     corrupt[0] = b'X';
     source.insert("corrupt", corrupt);
+    let mut older = write_pack(textures(3)).unwrap();
+    older[4..8].copy_from_slice(&(PACK_VERSION - 1).to_le_bytes());
+    source.insert("older", older);
     let mut server = AssetServer::new(source, unlimited());
     server.mount_now("shared").unwrap();
     assert!(server.contains(id(MESH)));
     assert!(matches!(server.mount_now("shared"), Err(MountError::AlreadyMounted(_))));
     assert!(matches!(server.mount_now("missing"), Err(MountError::Io { .. })));
     assert!(matches!(server.mount_now("corrupt"), Err(MountError::Pack { source: PackError::NotAPack, .. })));
+    // A pack from before this format is refused by its name, not read as garbage.
+    let refused = server.mount_now("older").unwrap_err();
+    assert_eq!(refused.to_string(), "pack \"older\" could not be loaded");
+    assert!(matches!(refused, MountError::Pack { source: PackError::UnsupportedVersion(_), .. }));
     // Texture 1 is in both.
     assert!(matches!(server.mount_now("zone"), Err(MountError::Duplicate { .. })));
     assert!(!server.contains(id(4)));

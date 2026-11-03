@@ -61,9 +61,10 @@ use std::sync::Arc;
 use sapphire_anim::{
     AnimGraph, ArchivedSkeleton, CharacterPose, GraphBinding, GraphPlayer, IkRig, SpringBones,
 };
-use sapphire_assets::AssetId;
 use sapphire_assets::mesh::{ArchivedMesh, Mesh};
 use sapphire_assets::rig::{ArchivedCharacterRig, HumanBone};
+use sapphire_assets::skeleton::SKELETON_SUB_ASSET;
+use sapphire_assets::{AssetId, AssetKind, NamedAsset};
 use sapphire_gameplay::body::{BodyAssets, BodyProfile, BodyProfileOptions, HeadAuthority};
 use sapphire_math::{Affine3A, Mat4, Quat, Vec3};
 use sapphire_platform::AppInitError;
@@ -96,90 +97,58 @@ pub const RIG: AssetId = AssetId::from_text("4b4073fd-44c5-8437-a712-1cccad486da
 pub const GRAPH: AssetId = AssetId::from_text("b7f2c9a4-6e13-4d8a-a5c0-1e94d7b23f68");
 /// What sets the character's blinks apart from another's. Any number: a golden pins this one's.
 const GRAPH_SEED: u32 = 1;
-/// A clip the character can play (`--clip`, `--contact-sheet`): a key-pose document by its sidecar's
-/// ID, a clip retargeted at cook time by its source's, or any clip the character's skeleton fits by
-/// its ID.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// A clip the character can play (`--clip`, `--contact-sheet`): what its source calls it, among the clips
+/// the packs hold for the character's skeleton, or any clip by its ID. A key-pose document's name is its
+/// file's, and a clip of a file of many is its name there.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ClipName {
-    /// A key-pose document, by its name and its sidecar's ID.
-    Document(&'static str, AssetId),
-    /// A clip of KayKit's, retargeted onto the character: its name, and its source's sidecar ID.
-    Retargeted(&'static str, AssetId),
-    /// Whatever cooked with this ID, for a clip no table here names yet.
+    Named(String),
+    /// Whatever cooked with this ID.
     Id(AssetId),
 }
 
-/// The key-pose documents the character plays (`content/lookdev/character/`).
-const CLIP_DOCUMENTS: [(&str, AssetId); 5] = [
-    ("strike", AssetId::from_text("15af86bb-67b3-4208-bc54-1618aabf450b")),
-    ("idle", AssetId::from_text("0853fc78-9a5d-4f9d-bcfe-1c8a485a0db4")),
-    ("idle_combat", AssetId::from_text("5fa1f634-6e77-4485-9f50-577be76b7323")),
-    ("death_back", AssetId::from_text("bcd18896-4e3d-4a31-8075-848494beee4a")),
-    ("death_forward", AssetId::from_text("7a20f0b9-eae3-48cf-b715-9b937731fe6b")),
-];
-
-/// The player's moves (M2 O3, `content/combat/player/`), also key-pose documents.
-const PLAYER_DOCUMENTS: [(&str, AssetId); 6] = [
-    ("light_1", AssetId::from_text("6d321a52-1aed-4279-bc32-a177b8fd81d4")),
-    ("light_2", AssetId::from_text("0c4be2d4-4149-4852-80c5-109683aad3e1")),
-    ("light_3", AssetId::from_text("5fe300c9-a4a3-4339-a556-7bc112f2bb59")),
-    ("dash_attack", AssetId::from_text("997ddfa0-e2bf-4887-94dd-e8f51cb6e958")),
-    ("dodge", AssetId::from_text("9b5f353a-2c97-45c7-a70f-bcab216de811")),
-    ("skill", AssetId::from_text("9491f5d1-0c11-45c9-8139-8f54918b25f6")),
-];
-
-/// The clips of KayKit's retargeted onto the character, by the file they come from: the names the
-/// sidecars under `content/third_party/kaykit_character_animations/Rig_Medium/` list for it.
-const CLIP_SOURCES: [(AssetId, &[&str]); 3] = [
-    (AssetId::from_text("9a29e8c0-f131-4ea4-98b9-04879740413d"), &["Hit_A", "Hit_B"]),
-    (
-        AssetId::from_text("2bb6b794-55db-42cf-921a-c0638eed48ca"),
-        &["Walking_B", "Running_B", "Jump_Start", "Jump_Idle", "Jump_Land"],
-    ),
-    (
-        AssetId::from_text("c7c4200c-d939-494a-8851-0fbc2f8a7a35"),
-        &[
-            "Walking_Backwards",
-            "Running_Strafe_Left",
-            "Running_Strafe_Right",
-            "Dodge_Forward",
-            "Dodge_Backward",
-            "Dodge_Left",
-            "Dodge_Right",
-        ],
-    ),
-];
+/// A name no clip for the character answers to, or more than one does.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum ClipNameError {
+    #[error("no clip called {name:?} is cooked for the character: the packs hold {}", known.join(", "))]
+    Unknown { name: String, known: Vec<String> },
+    #[error("{} clips called {name:?} are cooked for the character: name one by its ID", ids.len())]
+    Ambiguous { name: String, ids: Vec<AssetId> },
+}
 
 impl ClipName {
-    /// Every clip with a name, documents first.
-    pub fn all() -> impl Iterator<Item = Self> {
-        let documents =
-            CLIP_DOCUMENTS.into_iter().chain(PLAYER_DOCUMENTS).map(|(name, id)| Self::Document(name, id));
-        documents.chain(
-            CLIP_SOURCES
-                .into_iter()
-                .flat_map(|(source, names)| names.iter().map(move |name| Self::Retargeted(name, source))),
-        )
+    /// What `raw` says: an asset ID, or a name to look for once the packs are mounted.
+    pub fn parse(raw: &str) -> Self {
+        raw.parse().map_or_else(|_| Self::Named(raw.to_owned()), Self::Id)
     }
 
-    /// The clip called `name`, or with that asset ID.
-    pub fn from_name(name: &str) -> Option<Self> {
-        Self::all().find(|clip| clip.name() == name).or_else(|| name.parse().ok().map(Self::Id))
+    /// The clip this names among those `content`'s packs hold for the character.
+    pub fn resolve(&self, content: &Content) -> Result<AssetId, ClipNameError> {
+        self.among(content.named_assets(AssetKind::Clip), CHARACTER.sub_asset(SKELETON_SUB_ASSET))
     }
 
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Document(name, _) | Self::Retargeted(name, _) => name,
-            Self::Id(_) => "(by ID)",
-        }
-    }
-
-    pub fn id(self) -> AssetId {
-        match self {
-            Self::Document(_, id) | Self::Id(id) => id,
-            Self::Retargeted(name, source) => {
-                sapphire_assets::graph::imported_clip_id(source, name, Some(CHARACTER))
+    fn among<'a>(
+        &self,
+        clips: impl Iterator<Item = NamedAsset<'a>>,
+        skeleton: AssetId,
+    ) -> Result<AssetId, ClipNameError> {
+        let name = match self {
+            Self::Named(name) => name,
+            Self::Id(id) => return Ok(*id),
+        };
+        let playable: Vec<NamedAsset<'a>> =
+            clips.filter(|clip| clip.dependencies.contains(&skeleton)).collect();
+        let ids: Vec<AssetId> =
+            playable.iter().filter(|clip| clip.name == name).map(|clip| clip.id).collect();
+        match ids[..] {
+            [id] => Ok(id),
+            [] => {
+                let mut known: Vec<String> = playable.iter().map(|clip| clip.name.to_owned()).collect();
+                known.sort_unstable();
+                known.dedup();
+                Err(ClipNameError::Unknown { name: name.clone(), known })
             }
+            _ => Err(ClipNameError::Ambiguous { name: name.clone(), ids }),
         }
     }
 }
@@ -959,57 +928,44 @@ fn check_counts(rig: &ArchivedCharacterRig, skeleton: &ArchivedSkeleton, mesh: &
 
 #[cfg(test)]
 mod tests {
-    /// What `--clip` can name is what the sidecars cook: the file each clip's table entry says, and
-    /// a document's ID.
-    #[test]
-    fn clips_by_name_are_the_ones_their_sidecars_cook() {
-        let content = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
-        let read = |path: String| std::fs::read_to_string(content.join(path)).expect("a sidecar");
-        for (name, id) in CLIP_DOCUMENTS {
-            let sidecar = read(format!("lookdev/character/{name}.keypose.ron.meta"));
-            assert!(sidecar.contains(&format!("id: \"{id}\"")), "{name}");
-            assert!(sidecar.contains(&format!("rig: \"{CHARACTER}\"")), "{name}");
-        }
-        for (file, (source, names)) in
-            ["General", "MovementBasic", "MovementAdvanced"].iter().zip(CLIP_SOURCES)
-        {
-            let sidecar = read(format!(
-                "third_party/kaykit_character_animations/Rig_Medium/Rig_Medium_{file}.glb.meta"
-            ));
-            assert!(sidecar.contains(&format!("id: \"{source}\"")), "{file}");
-            // Each entry of its `retarget` begins at a `target`: only the character's count here.
-            let (_, retargets) = sidecar.split_once("retarget: [").expect("it retargets");
-            let on_the_character = retargets
-                .split("target: \"")
-                .filter(|entry| entry.starts_with(CHARACTER.to_string().as_str()))
-                .collect::<Vec<_>>()
-                .join("");
-            for name in names {
-                let listed = format!("\"{name}\",");
-                assert!(on_the_character.contains(&listed), "{file} doesn't retarget {name}");
-            }
-            // And the other way: nothing cooks for the character that `--clip` can't name.
-            let (_, after_names) = on_the_character.split_once("names: [").expect("names");
-            let cooked = on_the_character.matches("                        \"").count();
-            assert_eq!(cooked, names.len(), "{file}: {after_names}");
-        }
-    }
-
     use sapphire_world::light_rig::LightRig;
 
     use super::*;
 
-    /// `--clip` names a move by its document, whose sidecar says the same ID and rig.
+    fn clip_asset(name: &'static str, id: u8, dependencies: &'static [AssetId]) -> NamedAsset<'static> {
+        NamedAsset { id: AssetId::from_bytes([id; 16]), name, dependencies }
+    }
+
+    /// A clip is found among the character's, by what its source calls it: another rig's with the same name
+    /// doesn't count, a misnamed one says what there is, and two is an error rather than a pick.
     #[test]
-    fn the_players_clips_are_the_ones_their_sidecars_cook() {
-        let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/combat/player");
-        for (name, id) in PLAYER_DOCUMENTS {
-            let sidecar = std::fs::read_to_string(folder.join(format!("{name}.keypose.ron.meta")))
-                .unwrap_or_else(|error| panic!("{name}: {error}"));
-            assert!(sidecar.contains(&format!("id: \"{id}\"")), "{name}");
-            assert!(sidecar.contains(&format!("rig: \"{CHARACTER}\"")), "{name}");
-            assert_eq!(ClipName::from_name(name), Some(ClipName::Document(name, id)));
-        }
+    fn a_clip_is_found_by_name_among_the_characters() {
+        const THE_CHARACTERS: [AssetId; 1] = [AssetId::from_bytes([1; 16])];
+        const OTTHE_CHARACTERS: [AssetId; 1] = [AssetId::from_bytes([2; 16])];
+        let clips = [
+            clip_asset("strike", 10, &THE_CHARACTERS),
+            clip_asset("idle", 11, &THE_CHARACTERS),
+            clip_asset("idle", 12, &OTTHE_CHARACTERS),
+            clip_asset("hit", 13, &THE_CHARACTERS),
+            clip_asset("hit", 14, &THE_CHARACTERS),
+        ];
+        let find = |raw: &str| ClipName::parse(raw).among(clips.iter().copied(), THE_CHARACTERS[0]);
+        assert_eq!(find("strike"), Ok(AssetId::from_bytes([10; 16])));
+        assert_eq!(
+            find("idle"),
+            Ok(AssetId::from_bytes([11; 16])),
+            "the other rig's isn't one the character plays"
+        );
+
+        let misnamed = find("strik").unwrap_err();
+        assert_eq!(
+            misnamed.to_string(),
+            "no clip called \"strik\" is cooked for the character: the packs hold hit, idle, strike",
+        );
+        assert!(matches!(find("hit"), Err(ClipNameError::Ambiguous { ids, .. }) if ids.len() == 2));
+
+        let id = AssetId::from_bytes([0x7f; 16]);
+        assert_eq!(find(&id.to_string()), Ok(id), "an ID is taken at its word");
     }
 
     /// The look-dev day is a complete base timeline with keys on the golden scenes' hours, so their

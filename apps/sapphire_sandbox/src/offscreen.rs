@@ -240,8 +240,8 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
         if let Some(settings) = options.stream.settings(quality.active().id) {
             scene.open_town_zone(content, settings, renderer, gpu)?;
         }
-        if let Some(clip) = options.clip {
-            content.load_clip(clip.id(), renderer, gpu)?;
+        if let Some(clip) = &options.clip {
+            content.load_clip(clip.resolve(&*content).map_err(AppInitError::msg)?, renderer, gpu)?;
             let mut player = sapphire_stage::lookdev::player(content)
                 .map_err(AppInitError::msg)?
                 .with_root_motion(!options.clip_in_place)
@@ -295,8 +295,8 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
         if let Some(meshes) = FightShow::party_meshes(content, character) {
             fight.set_party_meshes(scene, meshes);
         }
-        if let Some(clip) = options.clip {
-            content.load_clip(clip.id(), renderer, gpu)?;
+        if let Some(clip) = &options.clip {
+            content.load_clip(clip.resolve(&*content).map_err(AppInitError::msg)?, renderer, gpu)?;
             let mut player = sapphire_stage::lookdev::player(content)
                 .map_err(AppInitError::msg)?
                 .with_root_motion(false)

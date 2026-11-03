@@ -181,13 +181,19 @@ impl CacheKey {
     }
 
     /// The key a pack's hash is recorded under: the packer's stage, the pack's name, and its
-    /// assets by ID and [`Self::packed`] key, in ID order, and their pipeline keys' rows, in the same
-    /// order: a material in another pack can change them with no asset here changing. Equal keys mean
-    /// equal pack bytes.
-    pub fn pack(packer: Stage, name: &str, assets: &[(AssetId, CacheKey)], pipeline_keys: &[u8]) -> Self {
+    /// assets by ID and [`Self::packed`] key, in ID order, their pipeline keys' rows, in the same
+    /// order (a material in another pack can change them with no asset here changing), and the names those
+    /// with one carry. Equal keys mean equal pack bytes.
+    pub fn pack(
+        packer: Stage,
+        name: &str,
+        assets: &[(AssetId, CacheKey)],
+        pipeline_keys: &[u8],
+        names: &[(AssetId, &str)],
+    ) -> Self {
         let assets: Vec<(AssetId, [u8; blake3::OUT_LEN])> =
             assets.iter().map(|(id, key)| (*id, key.0)).collect();
-        Self::derive(PACK_CONTEXT, &((packer.name, packer.version), name, assets, pipeline_keys))
+        Self::derive(PACK_CONTEXT, &((packer.name, packer.version), name, assets, pipeline_keys, names))
     }
 
     /// blake3 in derive-key mode over `inputs` as postcard encodes them.
@@ -444,16 +450,18 @@ mod tests {
         ];
         let (a, b) = (AssetId::from_bytes([1; 16]), AssetId::from_bytes([2; 16]));
         let other = CacheKey([9; 32]);
-        let pack = CacheKey::pack(packer, "shared", &[(a, key), (b, other)], &[]);
-        assert_eq!(CacheKey::pack(packer, "shared", &[(a, key), (b, other)], &[]), pack);
+        let pack = CacheKey::pack(packer, "shared", &[(a, key), (b, other)], &[], &[]);
+        assert_eq!(CacheKey::pack(packer, "shared", &[(a, key), (b, other)], &[], &[]), pack);
         keys.extend([
             pack,
-            CacheKey::pack(packer, "zone", &[(a, key), (b, other)], &[]),
-            CacheKey::pack(packer, "shared", &[(a, key)], &[]),
-            CacheKey::pack(packer, "shared", &[(a, key), (b, key)], &[]),
-            CacheKey::pack(packer, "shared", &[(a, key), (AssetId::from_bytes([3; 16]), other)], &[]),
-            CacheKey::pack(Stage { version: 2, ..packer }, "shared", &[(a, key), (b, other)], &[]),
-            CacheKey::pack(packer, "shared", &[(a, key), (b, other)], &[1]),
+            CacheKey::pack(packer, "zone", &[(a, key), (b, other)], &[], &[]),
+            CacheKey::pack(packer, "shared", &[(a, key)], &[], &[]),
+            CacheKey::pack(packer, "shared", &[(a, key), (b, key)], &[], &[]),
+            CacheKey::pack(packer, "shared", &[(a, key), (AssetId::from_bytes([3; 16]), other)], &[], &[]),
+            CacheKey::pack(Stage { version: 2, ..packer }, "shared", &[(a, key), (b, other)], &[], &[]),
+            CacheKey::pack(packer, "shared", &[(a, key), (b, other)], &[1], &[]),
+            CacheKey::pack(packer, "shared", &[(a, key), (b, other)], &[], &[(a, "swing")]),
+            CacheKey::pack(packer, "shared", &[(a, key), (b, other)], &[], &[(a, "thrust")]),
         ]);
         let count = keys.len();
         keys.sort();

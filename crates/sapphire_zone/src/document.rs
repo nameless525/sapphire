@@ -106,7 +106,7 @@ pub struct ZoneDocument {
     /// What to bake a navmesh over. With this, a cook makes a `.snav` from `colliders`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub navigation: Option<ZoneNavigation>,
-    /// Encounters. No such asset cooks yet, so a cook refuses any.
+    /// Encounters: `.encounter.ron` sources, by their sidecars' IDs.
     #[serde(default)]
     pub encounters: Vec<AssetId>,
 }

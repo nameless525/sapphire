@@ -46,9 +46,8 @@
 //! # What a cook checks that a document can't
 //!
 //! On every cook, cached or not, since what's named can change while the zone stays the same: each
-//! material, colliders and probe reference is that kind of asset of this tree, and each instance's a
-//! static mesh. `encounters` have nothing to name yet, so a non-empty list fails
-//! (`check_lists_to_come` has the line the package that adds their kind takes out).
+//! material, colliders, probe and encounter reference is that kind of asset of this tree, each instance's
+//! a static mesh, and each encounter names this zone's own triggers and spawners.
 //!
 //! # Navigation
 //!
@@ -155,7 +154,7 @@ pub enum ZoneCookError {
 }
 
 impl ZoneCookError {
-    fn invalid(field: impl Into<String>, problem: impl Into<String>) -> Self {
+    pub(crate) fn invalid(field: impl Into<String>, problem: impl Into<String>) -> Self {
         Self::Zone(ZoneError::Invalid { field: field.into(), problem: problem.into() })
     }
 }
@@ -325,7 +324,6 @@ impl ZonePlan {
         cache: Option<&Cache>,
     ) -> Result<Self, ZoneCookError> {
         let document = parse_document(bytes, cache)?;
-        check_lists_to_come(&document)?;
 
         let mut read = BTreeMap::new();
         let mut materials = Vec::with_capacity(document.placements.len());
@@ -676,15 +674,6 @@ fn parse_document(bytes: &[u8], cache: Option<&Cache>) -> Result<ZoneDocument, Z
     let document = ZoneDocument::from_ron(text)?;
     cache.put(&key, &serde_json::to_vec(&document).expect("a checked document's numbers are finite"))?;
     Ok(document)
-}
-
-/// Refuses what has nothing to name yet. Each package that gives one of these lists a kind of asset
-/// checks its references where the others are, and takes its line out of here.
-fn check_lists_to_come(document: &ZoneDocument) -> Result<(), ZoneCookError> {
-    if !document.encounters.is_empty() {
-        return Err(ZoneCookError::invalid("encounters", "no encounters cook yet"));
-    }
-    Ok(())
 }
 
 /// Reads the file a zone's `day` or `rigs` names, from the document's directory.

@@ -15,9 +15,9 @@
 //! Spec §5.10 groups packs per zone, per character and per encounter, plus one shared pack. The
 //! rule: each is a root, and its pack holds what it alone reaches through dependencies; an asset two
 //! roots reach goes in the shared pack, which every app mounts first, so a root's pack only ever
-//! depends on itself and the shared pack. Zones are the roots so far (M3 W1, `groups`): characters
-//! and encounters aren't documents with a pack of their own yet, so everything else goes in [`SHARED`],
-//! but for sound.
+//! depends on itself and the shared pack. Zones are the roots so far (M3 W1, `groups`), and an encounter
+//! is reached from its zone, so it goes in that zone's pack (M3 B2): characters aren't documents with a pack
+//! of their own yet, so everything else goes in [`SHARED`], but for sound.
 //!
 //! A zone reaches further than it depends: loading one doesn't load its cells' meshes
 //! ([`AssetKind::reach`]), but they ship with it. Which pack an asset goes in is decided like so. An
@@ -173,7 +173,8 @@ pub fn codec(kind: AssetKind) -> Codec {
         | AssetKind::FontChains
         | AssetKind::NavMesh
         | AssetKind::Timeline
-        | AssetKind::Ui => Codec::Lz4,
+        | AssetKind::Ui
+        | AssetKind::Encounter => Codec::Lz4,
         AssetKind::Sound => Codec::None,
     }
 }

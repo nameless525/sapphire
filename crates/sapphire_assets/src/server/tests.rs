@@ -205,6 +205,7 @@ fn uploads_are_plain_cooked_data() {
                 AssetKind::Font | AssetKind::FontChains => unreachable!("fonts never go to the uploader"),
                 AssetKind::NavMesh => unreachable!("navmeshes never go to the uploader"),
                 AssetKind::Timeline => unreachable!("timelines never go to the uploader"),
+                AssetKind::Encounter => unreachable!("encounters never go to the uploader"),
             }
             Ok(())
         })

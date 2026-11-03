@@ -10,7 +10,7 @@ use sapphire_moves::{ArchivedMoveSet, MoveSet};
 use sapphire_navmesh::{ArchivedNavMesh, NavMesh};
 use sapphire_serialize::cooked::access_unchecked;
 use sapphire_timeline::{ArchivedTimeline, Timeline};
-use sapphire_zone::{ArchivedZone, Zone};
+use sapphire_zone::{ArchivedEncounter, ArchivedZone, Encounter, Zone};
 
 use crate::clip::{ArchivedClip, Clip};
 use crate::cue::{ArchivedCue, Cue};
@@ -61,6 +61,7 @@ mod sealed {
     impl Sealed for crate::clip::Clip {}
     impl Sealed for sapphire_colliders::ColliderSet {}
     impl Sealed for sapphire_zone::Zone {}
+    impl Sealed for sapphire_zone::Encounter {}
     impl Sealed for sapphire_navmesh::NavMesh {}
     impl Sealed for sapphire_timeline::Timeline {}
     impl Sealed for crate::sound::Sound {}
@@ -126,6 +127,17 @@ impl Asset for Zone {
         // SAFETY: as for meshes: `Zone::read` accepted these bytes, unchanged since.
         unsafe { access_unchecked::<Zone>(bytes) }
             .expect("the envelope was checked when the zone was decoded")
+    }
+}
+
+impl Asset for Encounter {
+    const KIND: AssetKind = AssetKind::Encounter;
+    type View<'a> = &'a ArchivedEncounter;
+
+    unsafe fn view(bytes: &[u8]) -> &ArchivedEncounter {
+        // SAFETY: as for meshes: `Encounter::read` accepted these bytes, unchanged since.
+        unsafe { access_unchecked::<Encounter>(bytes) }
+            .expect("the envelope was checked when the encounter was decoded")
     }
 }
 

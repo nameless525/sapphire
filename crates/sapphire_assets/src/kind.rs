@@ -8,7 +8,7 @@ use sapphire_moves::{MOVE_SET_EXTENSION, MoveSet, MoveSetError};
 use sapphire_navmesh::{NAVMESH_EXTENSION, NavMesh, NavMeshError};
 use sapphire_strings::{STRINGS_EXTENSION, StringTable, StringsError};
 use sapphire_timeline::{TIMELINE_EXTENSION, Timeline, TimelineError};
-use sapphire_zone::{ZONE_EXTENSION, Zone, ZoneError};
+use sapphire_zone::{ENCOUNTER_EXTENSION, Encounter, ZONE_EXTENSION, Zone, ZoneError};
 use serde::{Deserialize, Serialize};
 
 use crate::AssetId;
@@ -76,11 +76,14 @@ pub enum AssetKind {
     /// A screen (`.sui`, M3 U4): [`UiDocument`], which `sapphire_ui` builds a tree from. CPU data, never
     /// uploaded.
     Ui = 19,
+    /// A zone's encounter (`.sencounter`, M3 B2): [`Encounter`], which the simulation reads when it's
+    /// given a zone and which never goes near a GPU.
+    Encounter = 20,
 }
 
 impl AssetKind {
     /// Every kind, in a stable order.
-    pub const ALL: [Self; 19] = [
+    pub const ALL: [Self; 20] = [
         Self::Mesh,
         Self::Texture,
         Self::Material,
@@ -100,6 +103,7 @@ impl AssetKind {
         Self::NavMesh,
         Self::Timeline,
         Self::Ui,
+        Self::Encounter,
     ];
 
     /// The kind's position in [`Self::ALL`].
@@ -130,6 +134,7 @@ impl AssetKind {
             Self::NavMesh => NAVMESH_EXTENSION,
             Self::Timeline => TIMELINE_EXTENSION,
             Self::Ui => UI_EXTENSION,
+            Self::Encounter => ENCOUNTER_EXTENSION,
         }
     }
 
@@ -155,6 +160,7 @@ impl AssetKind {
             Self::NavMesh => "navmesh",
             Self::Timeline => "timeline",
             Self::Ui => "UI document",
+            Self::Encounter => "encounter",
         }
     }
 
@@ -180,6 +186,7 @@ impl AssetKind {
                 | Self::NavMesh
                 | Self::Timeline
                 | Self::Ui
+                | Self::Encounter
         )
     }
 
@@ -207,6 +214,7 @@ impl AssetKind {
                 | Self::NavMesh
                 | Self::Timeline
                 | Self::Ui
+                | Self::Encounter
         )
     }
 
@@ -233,7 +241,7 @@ impl AssetKind {
                 | (Self::Clip, Self::Skeleton)
                 | (Self::Cue, Self::Sound)
                 | (Self::AnimGraph, Self::Clip)
-                | (Self::Zone, Self::Colliders | Self::NavMesh)
+                | (Self::Zone, Self::Colliders | Self::NavMesh | Self::Encounter)
                 | (Self::FontChains, Self::Font)
         )
     }
@@ -260,6 +268,7 @@ impl AssetKind {
             17 => Some(Self::NavMesh),
             18 => Some(Self::Timeline),
             19 => Some(Self::Ui),
+            20 => Some(Self::Encounter),
             _ => None,
         }
     }
@@ -325,6 +334,11 @@ impl AssetKind {
             }
             Self::AnimGraph => AnimGraph::read(bytes)?.clip_ids().collect(),
             Self::Zone => Zone::read(bytes)?.references(),
+            // An encounter names a zone's things and moves by name, so it needs nothing loaded first.
+            Self::Encounter => {
+                Encounter::read(bytes)?;
+                Vec::new()
+            }
             // A table holds its text, and its fonts only by family name.
             Self::Strings => {
                 StringTable::read(bytes)?;

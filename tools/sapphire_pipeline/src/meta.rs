@@ -144,6 +144,7 @@ use crate::bake::foliage::FoliageSettings;
 use crate::character_maps::{MapKind, MapSettings};
 use crate::clip::ClipSettings;
 use crate::colliders::{self, ColliderSettings};
+use crate::encounter::{self, EncounterSettings};
 use crate::font::{self, FontChainsSettings, FontSettings};
 use crate::import::vrm::{self, VrmSettings};
 use crate::keypose::{self, KeyPoseSettings};
@@ -221,6 +222,8 @@ pub enum ImportSettings {
     KeyPose(KeyPoseSettings),
     /// A collider document (`.colliders.ron`): a zone's static collision (M2 D3).
     Colliders(ColliderSettings),
+    /// An encounter document (`.encounter.ron`), cooked to `.sencounter` (M3 B2).
+    Encounter(EncounterSettings),
     /// An Ogg Vorbis file (`.ogg`), copied as the target format once it decodes (M2 E1).
     Sound(SoundSettings),
     /// A cue document (`.cue.ron`), naming sounds and how they play (M2 E1).
@@ -279,6 +282,9 @@ impl ImportSettings {
         }
         if colliders::is_source(source) {
             return Some(Self::Colliders(ColliderSettings::default()));
+        }
+        if encounter::is_source(source) {
+            return Some(Self::Encounter(EncounterSettings::default()));
         }
         if zone::is_source(source) {
             return Some(Self::Zone(ZoneSettings::default()));
@@ -346,6 +352,7 @@ impl ImportSettings {
             | Self::ProbeGrid(_)
             | Self::KeyPose(_)
             | Self::Colliders(_)
+            | Self::Encounter(_)
             | Self::Sound(_)
             | Self::Cue(_)
             | Self::Font(_)
@@ -374,6 +381,7 @@ impl ImportSettings {
             | Self::ProbeGrid(_)
             | Self::KeyPose(_)
             | Self::Colliders(_)
+            | Self::Encounter(_)
             | Self::Sound(_)
             | Self::Cue(_)
             | Self::Font(_)

@@ -262,7 +262,7 @@ impl ArchivedCookedTrigger {
 }
 
 impl ArchivedCookedVolume {
-    fn to_native(&self) -> CookedVolume {
+    pub fn to_native(&self) -> CookedVolume {
         match self {
             Self::Box { half_extents } => CookedVolume::Box { half_extents: native3(half_extents) },
             Self::Sphere { radius } => CookedVolume::Sphere { radius: radius.to_native() },
@@ -418,7 +418,25 @@ impl ArchivedZone {
     /// architectures.
     pub fn simulation_digest<'a>(
         &self,
+        read: impl FnMut(AssetId) -> Option<&'a [u8]>,
+    ) -> Result<u64, ZoneError> {
+        self.digest(read, true)
+    }
+
+    /// [`Self::simulation_digest`] without the navmesh, for a simulation that takes that apart: its
+    /// `tables_hash` holds a navmesh's own digest once it's been given one, and a run that isn't given
+    /// the one a zone names reads nothing of it.
+    pub fn digest_without_navigation<'a>(
+        &self,
+        read: impl FnMut(AssetId) -> Option<&'a [u8]>,
+    ) -> Result<u64, ZoneError> {
+        self.digest(read, false)
+    }
+
+    fn digest<'a>(
+        &self,
         mut read: impl FnMut(AssetId) -> Option<&'a [u8]>,
+        navigation: bool,
     ) -> Result<u64, ZoneError> {
         let simulation = &self.simulation;
         let mut digest = Digest::new();
@@ -457,9 +475,11 @@ impl ArchivedZone {
         if let Some(id) = simulation.colliders.as_ref() {
             referenced("collider set", *id, &mut digest)?;
         }
-        digest.u32(u32::from(simulation.navigation.is_some()));
-        if let Some(id) = simulation.navigation.as_ref() {
-            referenced("navmesh", *id, &mut digest)?;
+        if navigation {
+            digest.u32(u32::from(simulation.navigation.is_some()));
+            if let Some(id) = simulation.navigation.as_ref() {
+                referenced("navmesh", *id, &mut digest)?;
+            }
         }
         digest.u32(simulation.encounters.len() as u32);
         for id in simulation.encounters.iter() {

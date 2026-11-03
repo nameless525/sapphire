@@ -16,6 +16,8 @@
 //!   into what the simulation reads ([`ZoneSimulation`]) and what only presentation does
 //!   ([`ZonePresentation`]).
 //! - **The digest** ([`ArchivedZone::simulation_digest`]): what a replay pins.
+//! - **Encounters** ([`encounter`], M3 B2): `.encounter.ron`, [`EncounterDocument`], and its cooked form
+//!   (`.sencounter`), which a zone lists.
 //!
 //! # Does not own
 //!
@@ -43,6 +45,7 @@
 
 pub mod cooked;
 pub mod document;
+pub mod encounter;
 pub mod grid;
 
 pub use cooked::{
@@ -55,6 +58,10 @@ pub use cooked::{
 pub use document::{
     Instance, Light, LightShape, Placement, Spawner, Spline, Split, Trigger, Volume, ZoneDocument, ZoneError,
     ZoneGeometry, ZoneNavigation,
+};
+pub use encounter::{
+    ArchivedCookedWave, ArchivedEncounter, ArchivedWaveStart, CookedWave, ENCOUNTER_EXTENSION, Encounter,
+    EncounterDocument, MAX_FACTION, MAX_TOKENS, MAX_WAVE_SPAWNS, MAX_WAVES, Wave, WaveStart,
 };
 pub use grid::{Bounds, CellCoord, Grid, Place};
 

@@ -64,6 +64,7 @@
 //!   other sources cook, so they cook after every other asset but materials and probe grids; their
 //!   keys depend on those assets' keys. Such a mesh cooks before the clips, since a key-pose document
 //!   for its rig reads its morph targets.
+//! - **Encounter documents** cook `.encounter.ron` → `.sencounter` (M3 B2, [`encounter`]): a zone's fights.
 //! - **Collider documents** cook `.colliders.ron` → `.scol` (M2 D3, [`colliders`]): a zone's static
 //!   collision, checked entry by entry, reading nothing besides themselves.
 //! - **Timelines** cook `.timeline.ron` → `.stimeline` (M3 Q1, [`timeline`]), reading nothing besides
@@ -155,7 +156,7 @@ use sapphire_navmesh::{NAVMESH_EXTENSION, NavMesh};
 use sapphire_reflect::Versioned;
 use sapphire_strings::{STRINGS_EXTENSION, StringTable};
 use sapphire_timeline::{TIMELINE_EXTENSION, Timeline};
-use sapphire_zone::{Place, ZONE_EXTENSION, Zone};
+use sapphire_zone::{ENCOUNTER_EXTENSION, Encounter, Place, ZONE_EXTENSION, Zone, ZoneDocument};
 
 use crate::anim_graph::{self, AnimGraphCookError};
 use crate::assembly::{self, AssemblyError};
@@ -167,6 +168,7 @@ use crate::clip::retarget::{self, HumanMap, RetargetOptions, Rig};
 use crate::clip::source::{ClipSource, ClipSources, joint_remap, remap_tracks};
 use crate::clip::{self, ClipCookError, ClipSettings, ClipTarget, SampledClip};
 use crate::colliders::{self, ColliderCookError};
+use crate::encounter::{self, EncounterCookError};
 use crate::font::{self, FontCookError};
 use crate::import::fbx::{self, FbxImportError};
 use crate::import::gltf::{self, GltfImportError};
@@ -334,6 +336,12 @@ impl Recipe {
                 format: Timeline::VERSION,
                 extension: TIMELINE_EXTENSION,
             },
+            ImportSettings::Encounter(_) => Self {
+                importer: encounter::IMPORTER,
+                cooker: encounter::COOKER,
+                format: Encounter::VERSION,
+                extension: ENCOUNTER_EXTENSION,
+            },
             ImportSettings::Sound(_) => Self {
                 importer: audio::SOUND_IMPORTER,
                 cooker: audio::SOUND_COOKER,
@@ -461,6 +469,8 @@ impl Recipe {
             keypose::output_path(relative, self.extension)
         } else if colliders::is_source(relative) {
             colliders::output_path(relative, self.extension)
+        } else if encounter::is_source(relative) {
+            encounter::output_path(relative, self.extension)
         } else if audio::is_cue_source(relative) {
             audio::cue_output_path(relative, self.extension)
         } else if font::is_chains_source(relative) {
@@ -580,6 +590,13 @@ pub enum CookError {
         /// Boxed, as material errors are.
         #[source]
         source: Box<ColliderCookError>,
+    },
+    #[error("failed to cook encounter document {}", path.display())]
+    Encounter {
+        path: PathBuf,
+        /// Boxed, as material errors are.
+        #[source]
+        source: Box<EncounterCookError>,
     },
     #[error("failed to cook locale {}", path.display())]
     Locale {
@@ -1407,6 +1424,7 @@ fn sub_assets(
         | ImportSettings::Material(_)
         | ImportSettings::ProbeGrid(_)
         | ImportSettings::Colliders(_)
+        | ImportSettings::Encounter(_)
         | ImportSettings::Sound(_)
         | ImportSettings::Cue(_)
         | ImportSettings::FontChains(_)
@@ -2252,6 +2270,8 @@ fn cook_source(
             let rig = if let Part::KeyPose { rig, .. } = part { Some(*rig) } else { settings.rig };
             cook_key_pose(path, bytes, settings, rig, assets).map_err(clip_error)
         }
+        ImportSettings::Encounter(_) => encounter::cook(bytes)
+            .map_err(|source| CookError::Encounter { path: path.to_owned(), source: Box::new(source) }),
         ImportSettings::Colliders(_) => colliders::cook(bytes)
             .map_err(|source| CookError::Colliders { path: path.to_owned(), source: Box::new(source) }),
         ImportSettings::Timeline(_) => timeline::cook(bytes)
@@ -2753,9 +2773,10 @@ fn source_dependencies(
                 })
                 .collect()
         }
-        // Images, collider documents and timelines are self-contained.
+        // Images, collider and encounter documents, and timelines are self-contained.
         ImportSettings::Texture(_)
         | ImportSettings::Colliders(_)
+        | ImportSettings::Encounter(_)
         | ImportSettings::Fluent(_)
         | ImportSettings::Timeline(_) => Ok(Vec::new()),
         ImportSettings::Zone(_) => zone_dependencies(path, part, assets),
@@ -2914,6 +2935,13 @@ fn zone_dependencies(path: &Path, part: &Part, assets: &Assets<'_>) -> Result<Ve
     if let Some(id) = document.probes {
         reference("probes".to_owned(), "a probe grid", id, Planned::is_probe_grid)?;
     }
+    for (index, &id) in document.encounters.iter().enumerate() {
+        let field = format!("encounters[{index}]");
+        reference(field.clone(), "an encounter document", id, |planned| {
+            matches!(planned.asset.meta.importer, ImportSettings::Encounter(_))
+        })?;
+        check_encounter_in(path, document, &field, id, assets)?;
+    }
     let mut dependencies = Vec::new();
     let cooked_key = |id: AssetId, field: String, what| {
         let cooked = assets.cooked(id);
@@ -2947,6 +2975,26 @@ fn zone_dependencies(path: &Path, part: &Part, assets: &Assets<'_>) -> Result<Ve
         }
     }
     Ok(dependencies)
+}
+
+/// Holds an encounter a zone lists to the zone's own triggers and spawners. The zone's bytes don't hold the
+/// encounter's, so a save to one recooks no zone, and this runs every cook, as the zone's other checks do.
+fn check_encounter_in(
+    path: &Path,
+    document: &ZoneDocument,
+    field: &str,
+    id: AssetId,
+    assets: &Assets<'_>,
+) -> Result<(), CookError> {
+    let source = &assets.get(id).expect("just checked").asset.path;
+    let bytes = fs::read(source).map_err(|error| CookError::Read { path: source.clone(), source: error })?;
+    let encounter = encounter::read(&bytes)
+        .map_err(|error| CookError::Encounter { path: source.clone(), source: Box::new(error) })?;
+    let simulation = document.simulation().map_err(|error| zone_error(path)(error.into()))?;
+    encounter.check_in(&simulation).map_err(|error| {
+        let problem = format!("{}: {error}", source.display());
+        zone_error(path)(ZoneCookError::invalid(field, problem))
+    })
 }
 
 /// The pieces an assembly at `path` places: files it reads, by the path it names them with.
@@ -3087,6 +3135,7 @@ fn imported_mesh(
         | ImportSettings::ProbeGrid(_)
         | ImportSettings::KeyPose(_)
         | ImportSettings::Colliders(_)
+        | ImportSettings::Encounter(_)
         | ImportSettings::Sound(_)
         | ImportSettings::Cue(_)
         | ImportSettings::Font(_)

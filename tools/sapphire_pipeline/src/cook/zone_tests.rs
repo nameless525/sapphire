@@ -522,7 +522,7 @@ fn what_a_zone_gets_wrong_is_named() {
         (format!(r##"probes: Some("{WOOD}"),"##), "`probes`"),
         (format!(r##"instances: [(mesh: "{WOOD}")],"##), "`instances[0].mesh`"),
         (format!(r##"instances: [(mesh: "{LAMP}", scale: (99.0, 1.0, 1.0))],"##), "`instances[0]`"),
-        (format!(r##"encounters: ["{WOOD}"],"##), "no encounters"),
+        (format!(r##"encounters: ["{WOOD}"],"##), "`encounters[0]`"),
         (r##"day: Some("missing.ron"),"##.to_owned(), "failed to read"),
         (r##"day: Some("not_a_day.ron"),"##.to_owned(), "`day`"),
         (r##"rigs: Some("not_rigs.ron"),"##.to_owned(), "not a `sapphire::world::LightRigLibrary`"),
@@ -752,6 +752,86 @@ fn file_count(dir: &Path) -> usize {
             if path.is_dir() { file_count(&path) } else { 1 }
         })
         .sum()
+}
+
+const YARD: AssetId = AssetId::from_bytes([0x28; 16]);
+
+/// An encounter's document with this for its `data`, and its sidecar.
+fn write_encounter(tree: &Tree, data: &str) {
+    let text = format!(r##"(type: "sapphire::zone::EncounterDocument", version: 1, data: ({data}))"##);
+    let path = tree.write("yard.encounter.ron", text.as_bytes());
+    tree.sidecar(&path, YARD, ImportSettings::Encounter(encounter::EncounterSettings::default()));
+}
+
+/// An encounter starting on `event`, whose one wave is `spawner`.
+fn encounter_data(event: &str, spawner: &str) -> String {
+    format!(
+        r##"starts_on: "{event}", faction: 2, tokens: 1, waves: [(when: Start, spawners: ["{spawner}"])],"##
+    )
+}
+
+/// What a zone needs for [`encounter_data`] of `in_the_yard` and `gate` to stand in it.
+fn zone_with_a_yard() -> String {
+    format!(
+        r##"spawners: [(name: "gate", position: (1.0, 0.0, 1.0), yaw_degrees: 0.0, spawns: "warrior")],
+            triggers: [(name: "yard", position: (0.0, 0.0, 0.0), volume: Sphere(radius: 2.0), event: "in_the_yard")],
+            encounters: ["{YARD}"],"##
+    )
+}
+
+/// An encounter a zone lists cooks, packs with that zone and no other, and reads back from there.
+#[test]
+fn a_zones_encounter_ships_with_it() {
+    let tree = tree("zone-encounter");
+    write_encounter(&tree, &encounter_data("in_the_yard", "gate"));
+    write_zone(&tree, &zone_with_a_yard());
+    let report = tree.cook();
+    let cooked = by_id(&report, YARD);
+    assert_eq!(cooked.output.extension().and_then(|extension| extension.to_str()), Some("sencounter"));
+    let bytes = read_aligned(&cooked.output);
+    let encounter = Encounter::read(&bytes).expect("reads");
+    assert_eq!(encounter.starts_on.as_str(), "in_the_yard");
+
+    let packs = tree.out().join("packs");
+    let packed = pack_cooked(&report, &packs, None).unwrap();
+    let holding: Vec<&str> = packed
+        .packs
+        .iter()
+        .filter(|pack| {
+            let bytes = fs::read(&pack.path).unwrap();
+            let reader = PackReader::new(&bytes).unwrap();
+            reader.toc().entries().iter().any(|entry| entry.id == YARD)
+        })
+        .map(|pack| pack.name.as_str())
+        .collect();
+    assert_eq!(holding, ["zone_town"]);
+}
+
+/// What an encounter names has to be in the zone that lists it, and a cook says which field of which.
+#[test]
+fn an_encounter_that_doesnt_fit_its_zone_fails_the_cook_naming_the_field() {
+    let tree = tree("zone-encounter-bad");
+    write_zone(&tree, &zone_with_a_yard());
+    for (event, spawner, expected) in
+        [("in_the_yard", "nowhere", "nowhere"), ("no_such_event", "gate", "no_such_event")]
+    {
+        write_encounter(&tree, &encounter_data(event, spawner));
+        let text = chain(&tree.try_cook(false).expect_err(expected));
+        assert!(text.contains("town.zone.ron"), "`{text}`");
+        assert!(text.contains("`encounters[0]`"), "`{text}`");
+        assert!(text.contains(expected), "`{text}` must say `{expected}`");
+    }
+
+    // Wrong on its own, it says so whatever lists it.
+    for (data, expected) in [
+        (r##"starts_on: "e", faction: 2, tokens: 99, waves: [(when: Start, spawners: ["a"])],"##, "tokens"),
+        (r##"starts_on: "e", faction: 2, tokens: 1, waves: [], attackers: 2,"##, "attackers"),
+    ] {
+        write_encounter(&tree, data);
+        let text = chain(&tree.try_cook(false).expect_err(expected));
+        assert!(text.contains("yard.encounter.ron"), "`{text}`");
+        assert!(text.contains(expected), "`{text}` must say `{expected}`");
+    }
 }
 
 #[test]

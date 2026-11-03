@@ -90,7 +90,7 @@
 //!
 //! # Later milestones
 //!
-//! - Group packs for characters and encounters (zones' came with M3 W1): an asset is in one mounted
+//! - Group packs for characters (zones' came with M3 W1, and an encounter ships in its zone's): an asset is in one mounted
 //!   pack only, so it moves between packs by a
 //!   remount of the pack it left and then of the pack it moved to, in that order. (Live link
 //!   needed no overlay mounts to push only what changed: its source serves the new pack whole,

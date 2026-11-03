@@ -902,6 +902,7 @@ impl Quality {
         };
         let base = if base.is_finite() { base.clamp(MIN_RENDER_SCALE, 1.0) } else { 1.0 };
         self.dynamic.set_enabled(self.wants_gpu_timing());
+        self.dynamic.limit_floor(MIN_RENDER_SCALE / base);
         let (width, height) = scaled_size(size, base);
         let factor = self.dynamic.update(timing, width as f32 * height as f32);
         self.base_scale = base;
@@ -1217,6 +1218,40 @@ mod tests {
     fn quality(settings: QualitySettings) -> Quality {
         let profile = device(FormFactor::Desktop, GpuKind::Discrete, GpuBackend::Vulkan, 32);
         Quality::new(TierTable::shipped(), &profile, settings)
+    }
+
+    /// At a low base scale the controller stops where the renderer's minimum does: its factor
+    /// and pixels stay the scene's, under a load that keeps asking for less (OPT-017).
+    #[test]
+    fn dynamic_resolution_stops_at_what_the_renderer_can_draw() {
+        let timing = |frame| FrameTiming {
+            frame,
+            gpu: Some((frame.saturating_sub(1), Duration::from_secs(1))),
+            frame_time: Duration::from_secs(1),
+        };
+        let mut controller = DynamicResolution::new(
+            ResolutionBudget {
+                gpu_frame: Duration::from_millis(12),
+                frame: Duration::from_millis(16),
+                floor: 0.7,
+            },
+            true,
+        );
+        for (base, lowest) in [(0.25, 1.0), (0.3, 0.25 / 0.3), (0.5, 0.7), (1.0, 0.7)] {
+            controller.set_enabled(false);
+            controller.limit_floor(MIN_RENDER_SCALE / base);
+            controller.set_enabled(true);
+            let mut factor = 1.0;
+            for frame in 1..200 {
+                factor = controller.update(&timing(frame), 1_000_000.0 * base * base);
+            }
+            assert!((factor - lowest).abs() < 1e-5, "at {base}: {factor}, not {lowest}");
+            assert!(base * factor >= MIN_RENDER_SCALE - 1e-5, "at {base}: {}", base * factor);
+            assert_eq!(controller.stats().floor, lowest);
+        }
+        // A lower base later pulls a factor already past its floor back up to it.
+        controller.limit_floor(MIN_RENDER_SCALE / 0.25);
+        assert_eq!(controller.factor(), 1.0);
     }
 
     // The tests below set the module's cvars, which are process-wide, so they run as one.

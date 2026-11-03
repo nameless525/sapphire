@@ -22,8 +22,8 @@
 //!   frames is what makes naive controllers ring.
 //!
 //! Steps keep the frame graph's transient pool from making new textures for every frame: each
-//! step is one new set of scene-sized targets, and the pool releases sizes left unused for 60
-//! frames (`sapphire_rhi::EVICT_AFTER_FRAMES`).
+//! step is one new set of scene-sized targets, and the pool keeps one spare set, for 60 frames at
+//! most (`sapphire_rhi::EVICT_AFTER_FRAMES`).
 //!
 //! # Signals
 //!
@@ -108,12 +108,20 @@ impl FrameTiming {
     }
 }
 
+/// Enough steps to reach `floor`; the last one stops at it.
+fn levels_to(floor: f32) -> u32 {
+    ((1.0 - floor) / STEP - 1e-4).ceil().max(0.0) as u32
+}
+
 /// A dynamic-resolution controller (see the [module docs](self)). It is the hook later tuning
 /// builds on: thermal input, per-pass budgets and an upscaler's own ranges replace the inputs and
 /// constants, not the shape.
 #[derive(Clone, Debug)]
 pub struct DynamicResolution {
     budget: ResolutionBudget,
+    /// The lowest factor: the budget's, or higher where the renderer can't go lower
+    /// ([`Self::limit_floor`]).
+    floor: f32,
     /// The device times GPU passes, so the controller follows GPU time alone.
     gpu_timings: bool,
     enabled: bool,
@@ -159,20 +167,32 @@ impl DynamicResolution {
     /// [`DeviceProfile::timestamps`]: super::DeviceProfile::timestamps
     pub fn new(budget: ResolutionBudget, gpu_timings: bool) -> Self {
         let floor = if budget.floor.is_finite() { budget.floor.clamp(f32::EPSILON, 1.0) } else { 1.0 };
-        // Enough steps to reach the floor; the last one stops at it.
-        let max_level = ((1.0 - floor) / STEP - 1e-4).ceil().max(0.0) as u32;
         Self {
             budget: ResolutionBudget { floor, ..budget },
+            floor,
             gpu_timings,
             enabled: false,
             level: 0,
-            max_level,
+            max_level: levels_to(floor),
             signal: None,
             load: None,
             history: [(0, 1.0, 0.0); HISTORY],
             sampled: 0,
             changed_at: 0,
             changes: 0,
+        }
+    }
+
+    /// Holds the factor at or above `floor` as well as the budget's: what the renderer can realize
+    /// from the base scale (`MIN_RENDER_SCALE / base`). Below that the scene stays the same size
+    /// while the factor and its pixels went on falling, and the load came out wrong.
+    pub fn limit_floor(&mut self, floor: f32) {
+        let floor = floor.max(self.budget.floor).clamp(f32::EPSILON, 1.0);
+        self.max_level = levels_to(floor);
+        self.floor = floor;
+        if self.level > self.max_level {
+            self.level = self.max_level;
+            self.changes += 1;
         }
     }
 
@@ -231,7 +251,7 @@ impl DynamicResolution {
         DynamicResolutionStats {
             enabled: self.enabled,
             factor: self.factor(),
-            floor: self.budget.floor,
+            floor: self.floor,
             signal: self.signal,
             estimate: estimate.map(Duration::from_secs_f32),
             low: Duration::from_secs_f32(low),
@@ -241,7 +261,7 @@ impl DynamicResolution {
     }
 
     fn factor_at(&self, level: u32) -> f32 {
-        (1.0 - level as f32 * STEP).max(self.budget.floor)
+        (1.0 - level as f32 * STEP).max(self.floor)
     }
 
     /// The pixels of the newest remembered frame.

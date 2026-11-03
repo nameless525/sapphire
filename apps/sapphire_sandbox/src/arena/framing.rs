@@ -7,7 +7,9 @@
 //! two worlds: the colliders the camera can see, and, when a cook is there, the triangles a player can
 //! (the town's and the plantings', with [`VisibleTown`]), since the town draws more than it collides with.
 //!
-//! - `framing_stays_within_its_bounds` runs on every test run, on colliders alone, and holds the numbers.
+//! - `framing_stays_within_its_bounds` runs on every test run, on colliders alone, and holds the numbers:
+//!   each fight's to what's asked of it, so one gone wrong has nowhere to hide among the rest, and all of
+//!   them together.
 //! - `framing_report` is the whole measurement, for someone changing the camera:
 //!
 //! ```text
@@ -719,10 +721,10 @@ fn fights() -> Vec<Fight> {
     let tour = |stops, looks, locks| Tour { stops, looks, locks, circles: None, swaps: false };
     vec![
         Fight::replay("arena-fight-still"),
-        Fight::replay("arena-fight-won"),
-        Fight::replay("party-swap"),
+        Fight::replay("arena-fight-won").allowing(WANDERING),
+        Fight::replay("party-swap").allowing(WANDERING),
         Fight::replay("arena-walk"),
-        Fight::script("fight-back", FIGHT_SCENARIO, 1700),
+        Fight::script("fight-back", FIGHT_SCENARIO, 1700).allowing(WANDERING),
         Fight::tour("edge", FIGHT_SCENARIO, 4800, 7, tour(ROUND_THE_EDGE, false, false)),
         Fight::tour("middle", FIGHT_SCENARIO, 4800, 7, tour(THROUGH_THE_MIDDLE, false, false)),
         Fight::tour("middle-seed", FIGHT_SCENARIO, 4800, 23, tour(THROUGH_THE_MIDDLE, false, false)),
@@ -733,15 +735,18 @@ fn fights() -> Vec<Fight> {
             7,
             Tour { swaps: true, ..tour(ROUND_THE_EDGE, false, false) },
         ),
-        Fight::tour("edge-looks", FIGHT_SCENARIO, 4800, 7, tour(ROUND_THE_EDGE, true, false)),
-        Fight::tour("middle-locked", FIGHT_SCENARIO, 4800, 7, tour(THROUGH_THE_MIDDLE, false, true)),
+        Fight::tour("edge-looks", FIGHT_SCENARIO, 4800, 7, tour(ROUND_THE_EDGE, true, false))
+            .allowing(UNDER_A_THUMB),
+        Fight::tour("middle-locked", FIGHT_SCENARIO, 4800, 7, tour(THROUGH_THE_MIDDLE, false, true))
+            .allowing(LOCKED_ON),
         Fight::tour(
             "circling",
             FIGHT_SCENARIO,
             3600,
             7,
             Tour { stops: &[], looks: false, locks: false, circles: Some(4.0), swaps: false },
-        ),
+        )
+        .allowing(CIRCLING),
     ]
 }
 
@@ -752,6 +757,8 @@ struct Fight {
     ticks: u32,
     seed: u64,
     drive: Drive,
+    /// What it may come to, in any condition.
+    allowed: Bounds,
 }
 
 enum Drive {
@@ -762,15 +769,20 @@ enum Drive {
 
 impl Fight {
     fn replay(name: &'static str) -> Self {
-        Self { name, scenario: "", ticks: 0, seed: 0, drive: Drive::Replay }
+        Self { name, scenario: "", ticks: 0, seed: 0, drive: Drive::Replay, allowed: ON_THE_CLEAR_FLOOR }
     }
 
     fn script(name: &'static str, scenario: &'static str, ticks: u32) -> Self {
-        Self { name, scenario, ticks, seed: 7, drive: Drive::Script(name) }
+        Self { name, scenario, ticks, seed: 7, drive: Drive::Script(name), allowed: ON_THE_CLEAR_FLOOR }
     }
 
     fn tour(name: &'static str, scenario: &'static str, ticks: u32, seed: u64, tour: Tour) -> Self {
-        Self { name, scenario, ticks, seed, drive: Drive::Tour(tour) }
+        Self { name, scenario, ticks, seed, drive: Drive::Tour(tour), allowed: IN_THE_CLUTTER }
+    }
+
+    /// With what's asked of it, where that isn't what's asked of its kind.
+    fn allowing(self, allowed: Bounds) -> Self {
+        Self { allowed, ..self }
     }
 }
 
@@ -1136,10 +1148,12 @@ fn merge(sum: &mut Tally, more: Tally) {
     sum.stretches.extend(more.stretches);
 }
 
-/// What the whole measurement may come to, as shares of frames in percent, on colliders alone. Each sits
-/// over the camera's numbers by a margin, since a fight's chaotic to a nudge and x86-64 plays a different one,
-/// and under what the director did before M2 G5's framing pass where that pass moved it. Raising one means
-/// the framing got worse: say why.
+/// What a run may come to, as shares of frames in percent, on colliders alone. Each sits over the camera's
+/// numbers by a margin, since a fight's chaotic to a nudge and x86-64 plays a different one, and the whole
+/// measurement's sit under what the director did before M2 G5's framing pass where that pass moved it. A
+/// fight's sit about a third over the worst of 56 seeds in all four conditions, a little over nothing where
+/// nothing went wrong, and further where fresh seeds passed that, until 16 more in a row didn't. Raising one
+/// means the framing got worse, or x86-64's fight is one more seed to allow for: say which.
 #[derive(Clone, Copy, Debug)]
 struct Bounds {
     player_out: f32,
@@ -1159,8 +1173,16 @@ struct Bounds {
     /// Frames that read as a cut, a thousand seconds. At 30 Hz a fast swing counts, 0.75 m a frame being
     /// only 22 m/s.
     jumps: f32,
-    /// Times the eye hopped, in the whole measurement.
+    /// Times the eye hopped.
     hops: f32,
+    /// How long each fault may run without a break, in seconds: a share spread out is a nuisance, and the
+    /// same share all at once is a fighter lost.
+    player_out_for: f32,
+    enemy_out_for: f32,
+    player_hidden_for: f32,
+    enemy_hidden_for: f32,
+    covered_for: f32,
+    fills_for: f32,
 }
 
 const BOUNDS: Bounds = Bounds {
@@ -1177,43 +1199,259 @@ const BOUNDS: Bounds = Bounds {
     swing: 0.5,
     jumps: 150.0,
     hops: 12.0,
+    // As long as any fight's may run.
+    player_out_for: 9.0,
+    enemy_out_for: 5.0,
+    player_hidden_for: 3.6,
+    enemy_hidden_for: 11.5,
+    covered_for: 5.2,
+    fills_for: 5.2,
 };
 
-/// Pillar 5, held: every fight in every condition stays within [`BOUNDS`], and its eye is never in a collider.
-/// `framing_report` says what moved, if this fails.
+/// A fight that stays where it starts, on the clear floor right of the pavilion: there's little in the way,
+/// and a camera has no excuse.
+const ON_THE_CLEAR_FLOOR: Bounds = Bounds {
+    player_out: 2.0,
+    enemy_out: 2.0,
+    player_gone: 1.0,
+    enemy_gone: 1.0,
+    player_hidden: 5.5,
+    enemy_hidden: 3.5,
+    covered: 2.0,
+    fills: 2.0,
+    speed: 14.0,
+    turn: 2.6,
+    swing: 0.25,
+    jumps: 200.0,
+    hops: 1.0,
+    player_out_for: 0.5,
+    enemy_out_for: 0.5,
+    player_hidden_for: 2.1,
+    enemy_hidden_for: 1.3,
+    covered_for: 0.8,
+    fills_for: 0.5,
+};
+
+/// Scripted fights: nothing much goes wrong as they're played here, but their dash attacks and swaps carry them
+/// off the clear floor, on some seeds past the pavilion's columns.
+const WANDERING: Bounds = Bounds {
+    player_out: 4.0,
+    player_hidden: 13.0,
+    enemy_hidden: 16.0,
+    player_gone: 2.0,
+    enemy_gone: 2.0,
+    covered: 5.5,
+    fills: 3.0,
+    speed: 19.0,
+    turn: 4.5,
+    swing: 0.35,
+    hops: 2.0,
+    player_out_for: 1.5,
+    enemy_out_for: 1.5,
+    player_hidden_for: 2.3,
+    enemy_hidden_for: 4.2,
+    covered_for: 3.2,
+    fills_for: 0.9,
+    ..ON_THE_CLEAR_FLOOR
+};
+
+/// Circling round the enemy on the clear floor: the enemy passes in front, and on some seeds they stray.
+const CIRCLING: Bounds = Bounds {
+    enemy_hidden: 9.0,
+    covered: 15.0,
+    speed: 16.0,
+    swing: 0.45,
+    player_out_for: 1.5,
+    enemy_out_for: 1.5,
+    enemy_hidden_for: 3.2,
+    covered_for: 4.0,
+    ..ON_THE_CLEAR_FLOOR
+};
+
+/// The tours: running a fight round the square's edge and through its clutter, where the framing's whole job
+/// is, and it can't always be done.
+const IN_THE_CLUTTER: Bounds = Bounds {
+    player_out: 17.0,
+    enemy_out: 15.0,
+    player_gone: 12.0,
+    enemy_gone: 13.0,
+    player_hidden: 16.0,
+    enemy_hidden: 23.0,
+    covered: 15.0,
+    fills: 10.5,
+    speed: 31.0,
+    turn: 9.0,
+    swing: 0.7,
+    jumps: 540.0,
+    hops: 3.0,
+    player_out_for: 6.5,
+    enemy_out_for: 4.5,
+    player_hidden_for: 3.6,
+    enemy_hidden_for: 11.5,
+    covered_for: 5.0,
+    fills_for: 4.5,
+};
+
+/// Lock-on holds its line through what's in the way, with only a lean to get round it.
+const LOCKED_ON: Bounds = Bounds {
+    player_out: 18.5,
+    player_gone: 14.5,
+    player_hidden: 18.5,
+    enemy_hidden: 32.0,
+    fills: 11.5,
+    swing: 0.9,
+    covered_for: 5.2,
+    fills_for: 5.2,
+    ..IN_THE_CLUTTER
+};
+
+/// A thumb swinging the view on a schedule, past what the rigs would frame: much of what goes wrong is its
+/// doing, and clearing keeps its hands off for `after_look`.
+const UNDER_A_THUMB: Bounds = Bounds {
+    player_out: 27.0,
+    enemy_out: 26.0,
+    player_gone: 22.0,
+    enemy_gone: 23.0,
+    enemy_hidden: 30.0,
+    covered: 18.5,
+    fills: 22.0,
+    turn: 13.5,
+    swing: 1.45,
+    hops: 6.0,
+    player_out_for: 9.0,
+    enemy_out_for: 5.0,
+    ..IN_THE_CLUTTER
+};
+
+impl Tally {
+    /// How long `fault` ran without a break at most, in seconds, if that's long enough to be named.
+    fn longest(&self, fault: Fault) -> f32 {
+        let stretches = self.stretches.iter().filter(|stretch| stretch.fault == fault);
+        stretches.map(|stretch| stretch.seconds).fold(0.0, f32::max)
+    }
+
+    /// Whatever's past `bounds`, each saying what and by how much.
+    fn past(&self, bounds: &Bounds) -> Vec<String> {
+        let faults = |fault: Fault, of: u32| share(self.faulty.get(&fault).copied().unwrap_or(0), of);
+        let (frames, targeted) = (self.frames, self.targeted);
+        let seconds = self.seconds.max(1e-3);
+        let rows = [
+            ("player out", faults(Fault::PlayerOut, frames), bounds.player_out),
+            ("enemy out", faults(Fault::EnemyOut, targeted), bounds.enemy_out),
+            ("player gone", share(self.gone[0], frames), bounds.player_gone),
+            ("enemy gone", share(self.gone[1], targeted), bounds.enemy_gone),
+            ("player hidden", share(self.player_hidden[0], frames), bounds.player_hidden),
+            ("enemy hidden", share(self.enemy_hidden[0], targeted), bounds.enemy_hidden),
+            ("enemy over player", faults(Fault::Covered, targeted), bounds.covered),
+            ("enemy fills", faults(Fault::Fills, targeted), bounds.fills),
+            ("eye speed", percentile(&self.speeds, 0.99), bounds.speed),
+            ("view turn", percentile(&self.turns, 0.99), bounds.turn),
+            ("swing", self.swing / seconds, bounds.swing),
+            ("jumps", self.jumps as f32 * 1000.0 / seconds, bounds.jumps),
+            ("hops", self.stats.hops as f32, bounds.hops),
+            ("player out for", self.longest(Fault::PlayerOut), bounds.player_out_for),
+            ("enemy out for", self.longest(Fault::EnemyOut), bounds.enemy_out_for),
+            ("player hidden for", self.longest(Fault::PlayerHidden), bounds.player_hidden_for),
+            ("enemy hidden for", self.longest(Fault::EnemyHidden), bounds.enemy_hidden_for),
+            ("enemy over player for", self.longest(Fault::Covered), bounds.covered_for),
+            ("enemy fills for", self.longest(Fault::Fills), bounds.fills_for),
+            // Never, in anything.
+            ("the eye in a collider", self.eye_touching[0] as f32, 0.0),
+        ];
+        rows.into_iter()
+            .filter(|(_, value, bound)| value > bound)
+            .map(|(name, value, bound)| format!("{name} is {value:.2}, over {bound}"))
+            .collect()
+    }
+}
+
+/// Pillar 5, held: every fight in every condition stays within what's asked of it, its eye is never in a
+/// collider, and all of them together stay within [`BOUNDS`]. `framing_report` says what moved, if this fails.
 #[test]
 fn framing_stays_within_its_bounds() {
     let colliders = Colliders::load();
     let tuning = CameraTuning::default_tuning();
+    let mut past = Vec::new();
     for condition in CONDITIONS {
+        let label = condition.label;
         let mut sum = Tally::default();
         for fight in fights() {
-            merge(&mut sum, run_fight(&fight, condition, &colliders, None, &tuning, None));
+            let tally = run_fight(&fight, condition, &colliders, None, &tuning, None);
+            let name = fight.name;
+            past.extend(tally.past(&fight.allowed).into_iter().map(|row| format!("{label}, {name}: {row}")));
+            merge(&mut sum, tally);
         }
         table_header();
-        table_row(condition.label, &sum);
-        let faults = |fault: Fault, of: u32| share(sum.faulty.get(&fault).copied().unwrap_or(0), of);
-        let (frames, targeted) = (sum.frames, sum.targeted);
-        let rows = [
-            ("player out", faults(Fault::PlayerOut, frames), BOUNDS.player_out),
-            ("enemy out", faults(Fault::EnemyOut, targeted), BOUNDS.enemy_out),
-            ("player gone", share(sum.gone[0], frames), BOUNDS.player_gone),
-            ("enemy gone", share(sum.gone[1], targeted), BOUNDS.enemy_gone),
-            ("player hidden", share(sum.player_hidden[0], frames), BOUNDS.player_hidden),
-            ("enemy hidden", share(sum.enemy_hidden[0], targeted), BOUNDS.enemy_hidden),
-            ("enemy over player", faults(Fault::Covered, targeted), BOUNDS.covered),
-            ("enemy fills", faults(Fault::Fills, targeted), BOUNDS.fills),
-            ("eye speed", percentile(&sum.speeds, 0.99), BOUNDS.speed),
-            ("view turn", percentile(&sum.turns, 0.99), BOUNDS.turn),
-            ("swing", sum.swing / sum.seconds, BOUNDS.swing),
-            ("jumps", sum.jumps as f32 * 1000.0 / sum.seconds, BOUNDS.jumps),
-            ("hops", sum.stats.hops as f32, BOUNDS.hops),
-        ];
-        for (name, value, bound) in rows {
-            assert!(value <= bound, "{}: {name} is {value:.2}, over {bound}", condition.label);
-        }
-        assert_eq!(sum.eye_touching[0], 0, "{}: the eye's in a collider", condition.label);
+        table_row(label, &sum);
+        past.extend(sum.past(&BOUNDS).into_iter().map(|row| format!("{label}, every fight: {row}")));
     }
+    assert!(past.is_empty(), "{}", past.join("\n"));
+}
+
+/// A tally of a fight of `frames` frames at 60 Hz, all of them framing someone, with nothing wrong yet.
+fn tally_of(frames: u32) -> Tally {
+    Tally { frames, targeted: frames, seconds: frames as f32 / 60.0, ..Tally::default() }
+}
+
+/// With `count` of its frames, in one stretch, showing `fault`.
+fn with_fault(mut tally: Tally, fault: Fault, count: u32) -> Tally {
+    tally.faulty.insert(fault, count);
+    tally.stretches.push(Stretch {
+        fault,
+        fight: "short".to_owned(),
+        segment: 0,
+        from_tick: 0,
+        to_tick: u64::from(count),
+        seconds: count as f32 / 60.0,
+        what: String::new(),
+    });
+    tally
+}
+
+/// A short fight entirely wrong, in a measurement mostly right: however little it weighs in all of them, its
+/// own bounds say so, by name.
+#[test]
+fn one_fight_gone_wrong_shows_however_well_the_rest_go() {
+    let short = with_fault(tally_of(300), Fault::PlayerOut, 300);
+    let mut sum = tally_of(43_500);
+    merge(&mut sum, short.clone());
+    assert!(sum.past(&BOUNDS).is_empty(), "what all of them can't see: {:?}", sum.past(&BOUNDS));
+
+    let past = short.past(&ON_THE_CLEAR_FLOOR);
+    assert_eq!(past.len(), 2, "{past:?}");
+    assert!(past[0].starts_with("player out is 100.00"), "{past:?}");
+    assert!(past[1].starts_with("player out for is 5.00"), "{past:?}");
+}
+
+/// The same share, spread out or all at once: only one of them is a fighter lost.
+#[test]
+fn a_fault_all_at_once_is_past_a_share_that_would_let_it_by() {
+    let hidden = 720;
+    let spread = Tally { enemy_hidden: [hidden, 0], ..tally_of(4800) };
+    assert!(spread.past(&IN_THE_CLUTTER).is_empty(), "{:?}", spread.past(&IN_THE_CLUTTER));
+
+    let lost = with_fault(spread, Fault::EnemyHidden, hidden);
+    assert_eq!(lost.past(&IN_THE_CLUTTER), ["enemy hidden for is 12.00, over 11.5"]);
+}
+
+/// Every number a fight can come to reaches what's checked: a row that never fails holds nothing.
+#[test]
+fn every_bound_can_be_passed() {
+    let mut tally = tally_of(1000);
+    tally.gone = [1000, 1000];
+    tally.player_hidden = [1000, 0];
+    tally.enemy_hidden = [1000, 0];
+    tally.eye_touching = [1, 0];
+    tally.speeds = vec![1000.0; 2];
+    tally.turns = vec![1000.0; 2];
+    tally.swing = 1e6;
+    tally.jumps = 1000;
+    tally.stats.hops = 1000;
+    for fault in Fault::ALL {
+        tally = with_fault(tally, fault, 1000);
+    }
+    let past = tally.past(&UNDER_A_THUMB);
+    assert_eq!(past.len(), 20, "{past:?}");
 }
 
 /// The whole measurement: every fight in every condition, a table per condition, what stood in the way,

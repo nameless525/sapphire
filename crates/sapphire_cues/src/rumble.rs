@@ -135,8 +135,9 @@ impl RumbleMixer {
         // A rumble that changes nothing may still outlast what SDL was told.
         if felt != self.sent || (started && running) {
             self.sent = felt;
-            let duration = if running { Duration::from_secs_f32(longest) } else { Duration::ZERO };
-            sink.rumble(felt.0, felt.1, duration);
+            // `start` takes any length: one no `Duration` holds runs as long as a pad can.
+            let length = || Duration::try_from_secs_f32(longest).unwrap_or(Duration::MAX);
+            sink.rumble(felt.0, felt.1, if running { length() } else { Duration::ZERO });
         }
     }
 
@@ -178,6 +179,32 @@ mod tests {
 
     fn close(a: f32, b: f32) -> bool {
         (a - b).abs() < 1e-4
+    }
+
+    /// A table holds its rumbles to 2 s, but `start` takes any number, and one no `Duration` can hold runs
+    /// as long as a pad can until something stops it.
+    #[test]
+    fn a_length_past_what_a_duration_holds_runs_until_it_is_stopped() {
+        /// Writes down how long it's told to run, exactly.
+        #[derive(Default)]
+        struct Lengths(Vec<Duration>);
+
+        impl RumbleSink for Lengths {
+            fn rumble(&mut self, _low: f32, _high: f32, duration: Duration) {
+                self.0.push(duration);
+            }
+        }
+
+        for seconds in [f32::INFINITY, f32::MAX, 1e30] {
+            let (mut mixer, mut pad) = (RumbleMixer::new(), Lengths::default());
+            mixer.start(pulse(0.5, 0.25, seconds));
+            mixer.update(FRAME, &mut pad);
+            mixer.update(FRAME, &mut pad);
+            assert_eq!(mixer.playing(), 1, "{seconds}");
+            assert_eq!(pad.0, [Duration::MAX], "{seconds}");
+            mixer.stop(&mut pad);
+            assert_eq!(pad.0, [Duration::MAX, Duration::ZERO], "{seconds}");
+        }
     }
 
     #[test]

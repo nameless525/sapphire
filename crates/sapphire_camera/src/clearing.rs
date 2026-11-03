@@ -61,6 +61,9 @@ const THERE: f32 = 0.03;
 /// Drawing nearer its goal slower than this, in radians a second, is as near as it's getting: a rig's own pull
 /// is holding it short, and standing by that goal would be waiting there for good.
 const STALLED: f32 = 0.02;
+/// How much of `tolerance` a line may have wrong for a lean to come back to it. Less than leaving it takes:
+/// what's wrong from there isn't all to be seen from here, where the eye's not behind what it would pass behind.
+const COME_BACK: f32 = 0.5;
 /// How long, in seconds, it doesn't choose again the way the rigs held it short. Long enough that turning back
 /// and forth doesn't become a habit, and short enough that a fight that's moved on isn't kept from that side.
 const HELD_FOR: f32 = 5.0;
@@ -424,7 +427,10 @@ impl Clearing {
                 self.goal = None;
             }
             // The line's clear again: back to it, once it's clear from the line itself.
-            if held && self.lean_goal != 0.0 && scene.faults(yaw, stats).troubling() <= tuning.tolerance {
+            if held
+                && self.lean_goal != 0.0
+                && scene.faults(yaw, stats).troubling() <= tuning.tolerance * COME_BACK
+            {
                 self.lean_goal = 0.0;
             }
             return;

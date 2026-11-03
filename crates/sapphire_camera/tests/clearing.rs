@@ -257,6 +257,17 @@ fn a_lean_at_its_reach_chooses_nothing_further() {
     assert!(swings <= 1, "{swings} choices in 20 s, with nothing moving");
 }
 
+/// A corner of a box on the line, thin enough that the arm stays out behind it. From there the line's trouble,
+/// so the view leans out, and from out there the line looks clear, so it goes back. Coming back has to take
+/// more than leaving did, or it does that for as long as the fight stands there.
+#[test]
+fn a_lean_doesnt_take_turns_with_the_line() {
+    let world =
+        ground_with(&[(Shape::Box { half_extents: Vec3::new(2.85, 2.66, 1.02) }, Vec3::new(4.92, 2.66, 2.9))]);
+    let swings = choices_once_settled(lock_on_director(), &world, Vec3::new(-1.12, 0.0, -23.22));
+    assert!(swings <= 1, "{swings} choices in 20 s, with nothing moving");
+}
+
 /// A pause holds everything, a turn on its way included, and costs nothing.
 #[test]
 fn a_pause_holds_a_turn_on_its_way() {

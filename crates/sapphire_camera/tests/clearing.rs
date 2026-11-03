@@ -150,6 +150,35 @@ fn an_eye_given_room_comes_back_the_short_way() {
     assert!(most < 0.2, "{most} rad in a frame");
 }
 
+/// A hitch has no view to judge, and whatever clearing was doing is over. A thumb isn't over: what it's asked
+/// for holds through one, counting the hitch's time, and a thumb on the view during one counts too.
+#[test]
+fn a_long_frame_doesnt_forget_a_thumb() {
+    let world = wall_behind();
+    let long = 0.3;
+    let after_look = combat_director().tuning().clearing.after_look;
+    let thumb = |t: f32| Moment {
+        look_rate: if t < 3.0 { Vec2::new(0.01 * (t * 3.0).sin(), 0.0) } else { Vec2::ZERO },
+        ..facing_the_enemy(t)
+    };
+    for thumb_in_the_hitch in [false, true] {
+        let mut camera = combat_director();
+        run(&mut camera, &world, 60, (0.0, 3.0), thumb, |_, _, _| {});
+        let mut hitch = facing_the_enemy(3.0).frame(long);
+        if thumb_in_the_hitch {
+            hitch.look = Vec2::new(0.01, 0.0);
+        }
+        camera.update(&hitch, &world);
+        // The hitch counts for a thumb that let go before it, and not for one still on the view during it.
+        let from = if thumb_in_the_hitch { 3.0 + long } else { 3.0 };
+        let until = from + after_look - 0.1;
+        run(&mut camera, &world, 60, (3.0 + long, until), thumb, |_, _, _| {});
+        assert_eq!(camera.take_stats().swings, 0, "nothing's chosen just after: {thumb_in_the_hitch}");
+        run(&mut camera, &world, 60, (until, until + 3.0), thumb, |_, _, _| {});
+        assert!(camera.take_stats().swings >= 1, "and then it's free to: {thumb_in_the_hitch}");
+    }
+}
+
 /// Having turned, it stays: a settled good view isn't re-judged into another.
 #[test]
 fn a_good_view_stays_where_it_is() {

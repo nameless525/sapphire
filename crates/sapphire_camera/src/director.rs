@@ -52,7 +52,7 @@ const SHUT_IN_HALF_LIFE: f32 = 0.15;
 /// no more than a frame's turn: a whole turn, by this much.
 const SWAP_SHOWS: f32 = 0.01;
 /// A frame this long, in seconds, has no view to judge: it lands where a settled camera stands, and whatever
-/// clearing was doing is over.
+/// clearing was doing is over, though not how long it holds off.
 const LONG_FRAME: f32 = 0.25;
 /// How far ahead the framing rigs look for the fighters, as a share of the half-life they pull out with:
 /// half of a spring's lag behind a steady goal (`2 / rate`), since the pivot catches up with them meanwhile.
@@ -723,13 +723,19 @@ impl CameraDirector {
         snap: bool,
     ) {
         let (combat, lock_on) = (self.weight(Rig::Combat), self.weight(Rig::LockOn));
-        let Some(target) = target.filter(|_| !snap && dt < LONG_FRAME && combat.max(lock_on) >= 0.5) else {
+        let Some(target) = target.filter(|_| !snap && combat.max(lock_on) >= 0.5) else {
             self.clearing.reset();
             return;
         };
         let tuning = self.tuning.clearing;
+        if dt >= LONG_FRAME {
+            self.clearing.long_frame(dt);
+        }
         if frame.look != Vec2::ZERO {
             self.clearing.hand_over(&tuning);
+        }
+        if dt >= LONG_FRAME {
+            return;
         }
         let locked = lock_on >= 0.5;
         let framing = if locked { &self.tuning.lock_on.framing } else { &self.tuning.combat.framing };

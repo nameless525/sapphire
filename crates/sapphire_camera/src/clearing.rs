@@ -349,6 +349,12 @@ impl Clearing {
         *self = Self::new();
     }
 
+    /// A frame of `dt` seconds with no view to judge: what it was doing is over, but how long it's to hold off
+    /// counts on, since that's for a thumb or for a view to settle, and neither's gone anywhere.
+    pub(crate) fn long_frame(&mut self, dt: f32) {
+        *self = Self { until_free: (self.until_free - dt).max(0.0), ..Self::new() };
+    }
+
     /// A thumb's on the view: it's theirs.
     pub(crate) fn hand_over(&mut self, tuning: &ClearingTuning) {
         self.goal = None;

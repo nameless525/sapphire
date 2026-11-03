@@ -89,7 +89,9 @@
 //! that came to read another's output would fail the same way every time rather than race it. Their
 //! keys all come first, so a key's first asset in plan order is the one that cooks, and the others take
 //! its output from the cache, as on one thread. Neither a cooked file nor the report depends on the
-//! worker count, and a cook fails with the first failure in plan order.
+//! worker count, and a cook fails with the first failure in plan order. A key can come seconds before
+//! its cook, so a file saved in between, the source or anything else its key covers, fails the cook
+//! (`SourceChanged`) rather than store another version's output under that key.
 //!
 //! Texture encoding is what a cold cook spends its time on, 58% of 17.6 s on the M5, in encoders that
 //! run a level on one thread and share nothing that reaches their output. astcenc comes closest: it
@@ -403,7 +405,7 @@ pub enum CookError {
     UnsupportedSource { path: PathBuf },
     #[error(transparent)]
     Meta(#[from] MetaError),
-    #[error("{} changed during the cook; cook again", path.display())]
+    #[error("{} or a file it reads changed during the cook; cook again", path.display())]
     SourceChanged { path: PathBuf },
     #[error("failed to import {}", path.display())]
     Import {
@@ -1619,18 +1621,28 @@ struct Keyed {
 
 /// Keys one asset.
 fn key_asset(planned: &Planned, assets: &Assets<'_>, cook: Cook) -> Result<Keyed, CookError> {
-    let Planned { asset: SourceAsset { path, meta }, part, skeleton, recipe, output, .. } = planned;
-    let source = assets.last_source.read(path)?;
+    let source = assets.last_source.read(&planned.asset.path)?;
+    let key = asset_key(planned, &source, assets, cook)?;
+    Ok(Keyed { key, source: source.hash, current: file_hash(&planned.output)? })
+}
+
+/// The key of one asset cooked from `source`, by everything else it reads as that stands now.
+fn asset_key(
+    planned: &Planned,
+    source: &SourceBytes,
+    assets: &Assets<'_>,
+    cook: Cook,
+) -> Result<CacheKey, CookError> {
+    let Planned { asset: SourceAsset { path, meta }, part, skeleton, recipe, .. } = planned;
     let mut dependencies = dependencies(path, &source.bytes, &meta.importer, part, assets)?;
     dependencies.extend(part_dependencies(path, part, *skeleton, &meta.importer));
-    let key = CacheKey::new(&KeyInputs {
+    Ok(CacheKey::new(&KeyInputs {
         source: source.hash,
         recipe,
         settings: &meta.importer,
         cook,
         dependencies: &dependencies,
-    });
-    Ok(Keyed { key, source: source.hash, current: file_hash(output)? })
+    }))
 }
 
 /// Brings one asset's output up to date, by its key.
@@ -1665,6 +1677,12 @@ fn finish_asset(
         None => {
             let source = assets.last_source.read_as(path, source)?;
             let cooked = cook_source(path, &source.bytes, &meta.importer, part, *skeleton, cook, assets)?;
+            // A cook reads its other files for itself, as long after its key as the assets ahead of it
+            // take, and a key mustn't cover what other versions of them cook to. Their keys are made from
+            // the files as they stand, so this sees a save from before or during the cook.
+            if asset_key(planned, &source, assets, cook)? != key {
+                return Err(CookError::SourceChanged { path: path.clone() });
+            }
             if let Some(cache) = cache {
                 cache.put(&key, &cooked)?;
             }
@@ -2696,6 +2714,101 @@ mod tests {
         fs::write(&path, b"saved since").unwrap();
         let error = LastSource::default().read_as(&path, hash).err().expect("it changed");
         assert!(matches!(&error, CookError::SourceChanged { path: at } if *at == path), "{error:?}");
+    }
+
+    /// Keys the source at `path`, runs `save`, and finishes it, as a worker reaches an asset long after
+    /// its key: the result, and what the cache then holds under that key.
+    fn finish_after(
+        scratch: &Scratch,
+        path: &Path,
+        importer: ImportSettings,
+        save: impl FnOnce(),
+    ) -> (Result<CookedAsset, CookError>, Option<Vec<u8>>) {
+        let cache = Cache::new(scratch.dir.path().join("cache"));
+        let meta = AssetMeta::new(AssetId::from_bytes([7; 16]), importer);
+        let recipe = Recipe::for_settings(&meta.importer);
+        let output = scratch.out().join("asset").with_extension(recipe.extension);
+        let plan = [Planned {
+            id: meta.id,
+            asset: SourceAsset { path: path.to_owned(), meta },
+            part: Part::Own,
+            skeleton: None,
+            recipe,
+            output,
+        }];
+        let (by_id, sources, memory) = (HashMap::new(), HashMap::new(), CookMemory::new(COOK_MEMORY));
+        let tree = PlannedTree {
+            plan: &plan,
+            by_id: &by_id,
+            sources: &sources,
+            cache: Some(&cache),
+            cook: Cook::Desktop,
+            memory: &memory,
+        };
+        let remembered = Remembered::default();
+        let keyed = tree.key(0, &tree.assets(&[], &remembered)).unwrap();
+        let key = keyed.key;
+        save();
+        let remembered = Remembered::default();
+        let result = tree.finish(0, keyed, &tree.assets(&[], &remembered));
+        (result, cache.get(&key).unwrap())
+    }
+
+    #[test]
+    fn a_file_saved_between_a_key_and_its_cook_fails_rather_than_poisons_the_cache() {
+        let scratch = Scratch::new("cook_input_changed");
+        fs::create_dir_all(scratch.source()).unwrap();
+        let shade = |value| ::image::RgbaImage::from_pixel(8, 8, ::image::Rgba([value, value, value, 255]));
+        // A map's input.
+        let input = scratch.source().join("bias.png");
+        shade(10).save(&input).unwrap();
+        let map = scratch.source().join("body.ilm.ron");
+        fs::write(&map, ilm_document("bias.png")).unwrap();
+        let settings = ImportSettings::CharacterMap(MapKind::Ilm.default_settings());
+        let (result, cached) =
+            finish_after(&scratch, &map, settings.clone(), || shade(200).save(&input).unwrap());
+        let error = result.unwrap_err();
+        assert!(matches!(&error, CookError::SourceChanged { path } if *path == map), "{error:?}");
+        assert!(error.to_string().contains("or a file it reads changed"), "{error}");
+        assert_eq!(cached, None, "nothing is stored under the key the other version made");
+        assert!(!scratch.out().join("asset.ktx2").exists(), "and nothing is written");
+        // With nothing saved it cooks, and its input as it stands now.
+        let (result, cached) = finish_after(&scratch, &map, settings, || {});
+        assert_eq!(result.unwrap().status, CookStatus::Cooked);
+        assert!(cached.is_some());
+
+        // A glTF's external buffer.
+        let mut writer = GltfWriter::default();
+        let triangle = Geometry {
+            positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            indices: vec![0, 1, 2],
+            ..Geometry::default()
+        };
+        let mesh = writer.add_mesh("Triangle", &[(&triangle, None)]);
+        let node = writer.add_node(json!({ "mesh": mesh }));
+        writer.add_root(node);
+        let gltf = scratch.source().join("triangle.gltf");
+        fs::write(&gltf, serde_json::to_vec(&writer.document(Some("triangle.bin"))).unwrap()).unwrap();
+        let buffer = scratch.source().join("triangle.bin");
+        fs::write(&buffer, writer.bin()).unwrap();
+        let mut moved = writer.bin().to_vec();
+        moved[..4].copy_from_slice(&0.5f32.to_le_bytes());
+        let settings = ImportSettings::Gltf(MeshSettings::default());
+        let (result, cached) =
+            finish_after(&scratch, &gltf, settings, || fs::write(&buffer, &moved).unwrap());
+        let error = result.unwrap_err();
+        assert!(matches!(&error, CookError::SourceChanged { path } if *path == gltf), "{error:?}");
+        assert_eq!(cached, None);
+
+        // A file gone by then is the error that says so.
+        let settings = ImportSettings::CharacterMap(MapKind::Ilm.default_settings());
+        let other = scratch.source().join("other.ilm.ron");
+        let gone = scratch.source().join("gone.png");
+        shade(30).save(&gone).unwrap();
+        fs::write(&other, ilm_document("gone.png")).unwrap();
+        let (result, cached) = finish_after(&scratch, &other, settings, || fs::remove_file(&gone).unwrap());
+        assert!(result.is_err());
+        assert_eq!(cached, None);
     }
 
     #[test]

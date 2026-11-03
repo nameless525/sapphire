@@ -12,7 +12,7 @@ use crate::cook::{CookOptions, CookStatus, cook_dir};
 use crate::gltf_writer::{Geometry, GltfWriter};
 use crate::meta::{AssetMeta, sidecar_path};
 use crate::test_util::TempDir;
-use crate::texture::{ColorSettings, TextureSettings};
+use crate::texture::{ColorSettings, HdrSettings, TextureClass, TextureSettings};
 
 /// Two triangles of the rectangle from `corner` along `u` and `v`, wound to face `u × v`, its
 /// texture coordinates running 0 to 1 along each.
@@ -512,6 +512,137 @@ fn cards_hide_the_sky_and_bounce_as_their_leaves() {
     let one_sided = bake(&card_scene(Some([1.0, 1.0]), false));
     assert!(!data(&one_sided).valid, "a one-sided card's back");
     assert!(data(&one_sided).free[2] < ProbeData::FULL / 2 + 1, "{:?}", data(&one_sided));
+}
+
+/// `image` in `format`, as a file's bytes.
+fn encoded(image: ::image::DynamicImage, format: ::image::ImageFormat) -> Vec<u8> {
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image.write_to(&mut bytes, format).unwrap();
+    bytes.into_inner()
+}
+
+/// An image of one float color, as an EXR's bytes.
+fn exr(value: f32) -> Vec<u8> {
+    let image = ::image::Rgba32FImage::from_pixel(4, 4, ::image::Rgba([value, value, value, 1.0]));
+    encoded(::image::DynamicImage::ImageRgba32F(image), ::image::ImageFormat::OpenExr)
+}
+
+fn hdr() -> TextureClass {
+    TextureClass::Hdr(HdrSettings::default())
+}
+
+fn color() -> TextureClass {
+    TextureClass::Color(ColorSettings::default())
+}
+
+/// A map reads as its texture's cook reads it: float sources are linear light whatever their class,
+/// integer ones sRGB-encoded in both classes that can color a surface, nothing past what the cooked
+/// format holds, and every sample at its own depth.
+#[test]
+fn a_color_map_reads_as_its_texture_does() {
+    let scratch = TempDir::new("probe_color_maps");
+    let srgb = |code: u16, max: f32| crate::color::srgb_to_linear(f32::from(code) / max);
+    let gray8 = |code: u8, format| {
+        let image = ::image::RgbaImage::from_pixel(4, 4, ::image::Rgba([code, code, code, 255]));
+        encoded(::image::DynamicImage::ImageRgba8(image), format)
+    };
+    let gray16 = |code: u16| {
+        let image = ::image::ImageBuffer::<::image::Rgba<u16>, Vec<u16>>::from_pixel(
+            4,
+            4,
+            ::image::Rgba([code, code, code, 65535]),
+        );
+        encoded(::image::DynamicImage::ImageRgba16(image), ::image::ImageFormat::Png)
+    };
+    use ::image::ImageFormat::{Png, Tga};
+    let rows: Vec<(&str, &str, Vec<u8>, TextureClass, f32)> = vec![
+        ("HDR past one", "a.exr", exr(4.0), hdr(), 4.0),
+        ("HDR below one stays linear", "b.exr", exr(0.5), hdr(), 0.5),
+        ("HDR below zero", "c.exr", exr(-1.0), hdr(), 0.0),
+        ("HDR past a half float", "d.exr", exr(70000.0), hdr(), 65504.0),
+        ("an HDR map in 8 bits is sRGB", "e.png", gray8(128, Png), hdr(), srgb(128, 255.0)),
+        ("a color map in 8 bits is too", "f.png", gray8(128, Png), color(), srgb(128, 255.0)),
+        ("a TGA reads as a PNG does", "g.tga", gray8(128, Tga), color(), srgb(128, 255.0)),
+        ("16 bits keep their depth", "h.png", gray16(0x8040), hdr(), srgb(0x8040, 65535.0)),
+        ("a float color map is linear too", "i.exr", exr(0.5), color(), 0.5),
+        ("no brighter than BC7 and ASTC hold", "j.exr", exr(4.0), color(), 1.0),
+    ];
+    let mut wrong = Vec::new();
+    for (name, file, bytes, class, expected) in rows {
+        let path = scratch.path().join(file);
+        fs::write(&path, bytes).unwrap();
+        let settings = ImportSettings::Texture(TextureSettings { class });
+        let input = |_| Some(ProbeInput { source: &path, settings: &settings, cooked: None });
+        let read = color_map(Some(AssetId::from_bytes([1; 16])), &input);
+        match read {
+            Ok(Some(map)) if map.mean(|_| true) == Vec3::splat(expected) => {}
+            Ok(Some(map)) => wrong.push(format!("{name}: {} for {expected}", map.mean(|_| true))),
+            other => wrong.push(format!("{name}: {:?}", other.map(|map| map.is_some()))),
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+
+    // Alpha is a share at any depth, and cuts a card as it did.
+    let path = scratch.path().join("leaves.png");
+    let leaves = ::image::RgbaImage::from_pixel(4, 4, ::image::Rgba([40, 200, 40, 128]));
+    leaves.save_with_format(&path, Png).unwrap();
+    let settings = ImportSettings::Texture(TextureSettings { class: color() });
+    let input = |_| Some(ProbeInput { source: &path, settings: &settings, cooked: None });
+    let map = color_map(Some(AssetId::from_bytes([1; 16])), &input).unwrap().unwrap();
+    assert!(map.alpha.iter().all(|&alpha| alpha == 128.0 / 255.0));
+    assert_eq!((map.width, map.height), (4, 4));
+}
+
+/// An emissive floor's bounce follows its map past one: at 1 and 4 a grid baked from a map read in 8
+/// bits came out the same to the byte, while the renderer shows the map's own light.
+#[test]
+fn an_hdr_emission_map_bounces_at_its_own_strength() {
+    let scratch = TempDir::new("probe_hdr_emission");
+    let glow = AssetId::from_text("00000000-0000-4000-8000-000000000006");
+    // The red channel's bounce, over every probe and key.
+    let bake = |name: &str, map: &[u8], file: &str, class: TextureClass| {
+        let source = scratch.path().join(name).join("content");
+        write_tree(&source, [0.0, 0.0, 0.0, 1.0], Wall::Open);
+        let material = EnvironmentMaterial {
+            base_color: [0.0, 0.0, 0.0, 1.0],
+            emission: [1.0; 3],
+            emission_map: Some(glow),
+            emission_steady: 1.0,
+            ..EnvironmentMaterial::default()
+        };
+        fs::write(source.join("floor.material.ron"), sapphire_serialize::to_ron(&material).unwrap()).unwrap();
+        fs::write(source.join(file), map).unwrap();
+        let settings = ImportSettings::Texture(TextureSettings { class });
+        let meta = AssetMeta::new(glow, settings);
+        fs::write(sidecar_path(&source.join(file)), sapphire_serialize::to_ron(&meta).unwrap()).unwrap();
+        let out = scratch.path().join(name).join("out");
+        let options = CookOptions { cook: Cook::Desktop, cache: None, locked: true };
+        cook_dir(&source, &out, &options).unwrap();
+        let bytes = crate::test_util::read_aligned(&out.join("court.sprobe"));
+        ProbeGrid::read(&bytes)
+            .unwrap()
+            .bounce
+            .iter()
+            .step_by(12)
+            .map(|bits| half::f16::from_bits(bits.to_native()).to_f32())
+            .sum::<f32>()
+    };
+    let (dark, one, four) = (
+        bake("dark", &exr(0.0), "glow.exr", hdr()),
+        bake("one", &exr(1.0), "glow.exr", hdr()),
+        bake("four", &exr(4.0), "glow.exr", hdr()),
+    );
+    assert_eq!(dark, 0.0, "a black floor under a black map lights nothing");
+    assert!(one > 0.0, "the map at 1 lights the grid");
+    assert!((four / one - 4.0).abs() < 0.02, "the map at 4 lights it 4 times as much: {four} and {one}");
+
+    // Below one, the same light in a float file and an integer one bakes the same, to rounding.
+    let gray = ::image::RgbaImage::from_pixel(4, 4, ::image::Rgba([128, 128, 128, 255]));
+    let png = encoded(::image::DynamicImage::ImageRgba8(gray), ::image::ImageFormat::Png);
+    let linear = crate::color::srgb_to_linear(128.0 / 255.0);
+    let as_float = bake("float", &exr(linear), "glow.exr", hdr());
+    let as_integer = bake("integer", &png, "glow.png", hdr());
+    assert!((as_integer / as_float - 1.0).abs() < 1e-3, "{as_integer} and {as_float}");
 }
 
 #[test]

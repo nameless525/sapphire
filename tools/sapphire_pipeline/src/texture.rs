@@ -148,6 +148,20 @@ impl TextureClass {
         }
     }
 
+    /// The brightest linear RGB its cooked texture holds: what anything reading the source as a shader
+    /// will read the texture stops at.
+    pub fn peak(&self) -> f32 {
+        match self {
+            Self::Hdr(_) => HALF_MAX,
+            Self::Color(_)
+            | Self::Normal(_)
+            | Self::Mask(_)
+            | Self::Ramp(_)
+            | Self::Ilm(_)
+            | Self::Sdf(_) => 1.0,
+        }
+    }
+
     /// Whether the cook writes a full mip chain or only level 0.
     pub fn mips(&self) -> bool {
         match self {

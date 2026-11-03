@@ -68,6 +68,10 @@
 //!   through the middle of the color gradient. A material nothing of which is drawn bakes as
 //!   none.
 //! - **Everything else** solid, by its base color times its color map's mean.
+//!
+//! A map reads as its texture's cook reads it ([`texture::import`]), so bounced light and what the
+//! renderer samples start from the same values: an EXR emission map's light past one, and an integer
+//! one's sRGB, whichever class it is.
 
 pub mod bake;
 mod bvh;
@@ -91,7 +95,7 @@ use serde::{Deserialize, Serialize};
 use crate::cache::{CacheKey, Dependency, Stage};
 use crate::cook::Cook;
 use crate::meta::ImportSettings;
-use crate::texture::TextureClass;
+use crate::texture::{self, TextureError};
 use bake::{BakeError, BakeKey, BakeMaterial, BakeScene, BakeSettings, BakeTriangle, Cutout};
 
 /// Reading the document, as cache keys know it. Bump the version whenever its output changes
@@ -100,7 +104,10 @@ pub const IMPORTER: Stage = Stage { name: "probe grid document", version: 1 };
 
 /// The bake and the `.sprobe` writer. Bump the version whenever they change output for the same
 /// document and inputs.
-pub const COOKER: Stage = Stage { name: "sprobe bake", version: 2 };
+///
+/// 3: color maps read as their textures' cook reads them, past one and at their own depth (the
+/// review's AST-003).
+pub const COOKER: Stage = Stage { name: "sprobe bake", version: 3 };
 
 /// What a probe grid source's file name ends with.
 pub const SOURCE_SUFFIX: &str = ".probes.ron";
@@ -264,7 +271,7 @@ pub enum ProbeCookError {
     Image {
         path: PathBuf,
         #[source]
-        source: image::ImageError,
+        source: Box<TextureError>,
     },
     #[error(transparent)]
     Bake(#[from] BakeError),
@@ -623,23 +630,17 @@ fn color_map<'a>(
     let ImportSettings::Texture(settings) = texture.settings else {
         return Ok(None);
     };
-    let srgb = matches!(settings.class, TextureClass::Color(_));
     let path = texture.source;
     let bytes =
         std::fs::read(path).map_err(|source| ProbeCookError::Read { path: path.to_owned(), source })?;
-    let image = image::load_from_memory(&bytes)
-        .map_err(|source| ProbeCookError::Image { path: path.to_owned(), source })?
-        .to_rgba8();
-    let mut color = Vec::with_capacity(image.pixels().len());
-    let mut alpha = Vec::with_capacity(image.pixels().len());
-    for pixel in image.pixels() {
-        let linear = if srgb {
-            crate::color::srgb8(pixel[0], pixel[1], pixel[2])
-        } else {
-            [pixel[0], pixel[1], pixel[2], 255].map(|c| f32::from(c) / 255.0)
-        };
-        color.push([linear[0], linear[1], linear[2]]);
-        alpha.push(f32::from(pixel[3]) / 255.0);
+    let image = texture::import(path, &bytes, settings)
+        .map_err(|source| ProbeCookError::Image { path: path.to_owned(), source: Box::new(source) })?;
+    let peak = settings.class.peak();
+    let mut color = Vec::with_capacity(image.pixels.len());
+    let mut alpha = Vec::with_capacity(image.pixels.len());
+    for [r, g, b, a] in image.pixels {
+        color.push([r, g, b].map(|channel| channel.clamp(0.0, peak)));
+        alpha.push(a.clamp(0.0, 1.0));
     }
-    Ok(Some(ColorMap { width: image.width(), height: image.height(), color, alpha }))
+    Ok(Some(ColorMap { width: image.width, height: image.height, color, alpha }))
 }

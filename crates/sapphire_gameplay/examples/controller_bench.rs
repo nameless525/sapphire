@@ -21,14 +21,19 @@
 #[path = "../tests/support/mesh_arena.rs"]
 mod mesh_arena;
 
+use std::alloc::System;
 use std::time::Duration;
 
+use sapphire_core::alloc::{self, CountingAllocator};
 use sapphire_gameplay::{
     ActorId, ActorSpawn, ActorTransform, ControllerInput, ControllerState, GroundMode, ResolvedProfile,
     SimConfig, Simulation, step_controller,
 };
 use sapphire_physics::{BodyId, PhysicsStats, PhysicsWorld};
 use sapphire_time::{SimDuration, Stopwatch};
+
+#[global_allocator]
+static GLOBAL: CountingAllocator<System> = CountingAllocator::new(System);
 
 const WARM_STEPS: u64 = 300;
 const SIZES: [usize; 2] = [2, 16];
@@ -152,7 +157,7 @@ fn simulation_round(size: usize, steps: u64) -> (Figure, Figure) {
         whole.push(sim.stats().last_step);
         controllers.push(sim.stats().controllers_last);
     }
-    assert_eq!(sim.stats().allocations, 0, "no counting allocator here, so this only reads 0");
+    assert_eq!(sim.stats().allocations, 0, "rule R6");
     (Figure::of(whole), Figure::of(controllers))
 }
 
@@ -161,6 +166,7 @@ fn micros(duration: Duration) -> f64 {
 }
 
 fn main() {
+    assert!(alloc::is_installed(), "the step's allocation count would read 0 whatever it did");
     let steps = std::env::args().nth(1).and_then(|steps| steps.parse().ok()).unwrap_or(2_000);
     let mut direct: [Option<Figure>; SIZES.len()] = [None; SIZES.len()];
     let mut whole: [Option<Figure>; SIZES.len()] = [None; SIZES.len()];

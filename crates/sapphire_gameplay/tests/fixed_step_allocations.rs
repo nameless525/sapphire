@@ -273,6 +273,24 @@ fn the_allocation_gate_bites_a_step_that_allocates() {
     assert_eq!(player.finish().allocation_gate(), Ok(()));
 }
 
+/// With no counting allocator [`sapphire_gameplay::SimStats::allocations`] stays 0 whatever a step
+/// does, so a bench holding a step to it without one would check nothing.
+#[test]
+fn every_bench_reading_the_allocation_stat_can_count() {
+    let examples = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
+    let mut reading = Vec::new();
+    for entry in std::fs::read_dir(&examples).expect("the examples are there") {
+        let path = entry.expect("readable").path();
+        let source = std::fs::read_to_string(&path).expect("readable");
+        if source.contains(".allocations") {
+            let installs = source.contains("#[global_allocator]") && source.contains("alloc::is_installed()");
+            assert!(installs, "{} reads what it can't count", path.display());
+            reading.push(path);
+        }
+    }
+    assert!(!reading.is_empty(), "the benches moved, or this test has nothing to look at");
+}
+
 /// Every button at once on alternate ticks into a long move with nothing to take them: the ring fills
 /// and gives up its oldest presses.
 #[test]

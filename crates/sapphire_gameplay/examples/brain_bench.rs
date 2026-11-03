@@ -16,14 +16,19 @@
 
 #![allow(clippy::print_stdout, reason = "a bench's output is what it's for")]
 
+use std::alloc::System;
 use std::time::Duration;
 
+use sapphire_core::alloc::{self, CountingAllocator};
 use sapphire_gameplay::brain::{Seen, SeenTarget, step_brain};
 use sapphire_gameplay::{ActorId, ActorSpawn, Brain, ControllerProfile, SimConfig, Simulation, TickActions};
 use sapphire_math::{Pcg32, Vec3};
 use sapphire_moves::{MoveSet, MoveSetDocument, TargetDoing, TickRange};
 use sapphire_physics::{ColliderId, Group, PhysicsWorld, Pose, Shape, StaticCollider, StaticShape};
 use sapphire_time::{SimDuration, SimTime, Stopwatch};
+
+#[global_allocator]
+static GLOBAL: CountingAllocator<System> = CountingAllocator::new(System);
 
 const WARRIOR: &str = include_str!("../../../content/combat/enemy/warrior.moves.ron");
 
@@ -163,6 +168,7 @@ fn one_call(deciding: bool, calls: u32) -> f64 {
 }
 
 fn main() {
+    assert!(alloc::is_installed(), "the step's allocation count would read 0 whatever it did");
     let steps: u64 = std::env::args().nth(1).and_then(|steps| steps.parse().ok()).unwrap_or(20_000);
     const SIZES: [u32; 3] = [2, 16, 64];
     const ROUNDS: usize = 7;

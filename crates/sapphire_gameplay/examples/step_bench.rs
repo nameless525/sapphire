@@ -15,7 +15,8 @@
 //! dodges fire and counters start, and the world spends about half the run slowed. That costs more, not
 //! less: a slowed swing stays live five times as many steps, and each of those sweeps. It reads the steps
 //! through `Simulation::stats`, as the overlay would, and adds its checksum cost, which a replay pays per
-//! tick only when asked.
+//! tick only when asked. It fails if a step allocates: a counting allocator only costs what's allocated,
+//! so it adds nothing to steps that don't.
 //!
 //! Its last row is a party's (M2 G7): three members and an opponent, on the same rhythm, with the party
 //! swapping every second and a half, so every swap takes one member's capsule and hurtboxes out of the
@@ -23,8 +24,10 @@
 
 #![allow(clippy::print_stdout, reason = "a bench's output is what it's for")]
 
+use std::alloc::System;
 use std::time::Duration;
 
+use sapphire_core::alloc::{self, CountingAllocator};
 use sapphire_gameplay::replay::{PARTY_TUNING, party_document};
 use sapphire_gameplay::{
     ActorActions, ActorId, ActorSpawn, Buttons, ControllerProfile, PARTY_SLOTS, SimConfig, Simulation, Stick,
@@ -34,6 +37,9 @@ use sapphire_math::Vec3;
 use sapphire_moves::{MoveSet, MoveSetDocument};
 use sapphire_physics::{ColliderId, Group, PhysicsWorld, Pose, Shape, StaticCollider, StaticShape};
 use sapphire_time::Stopwatch;
+
+#[global_allocator]
+static GLOBAL: CountingAllocator<System> = CountingAllocator::new(System);
 
 const SLICE: &str = include_str!("../../sapphire_moves/test_content/slice.moves.ron");
 
@@ -200,6 +206,7 @@ fn run(
 }
 
 fn main() {
+    assert!(alloc::is_installed(), "the step's allocation count would read 0 whatever it did");
     let steps = std::env::args().nth(1).and_then(|steps| steps.parse().ok()).unwrap_or(20_000);
     const SIZES: [u32; 3] = [2, 16, 64];
     const ROUNDS: usize = 7;

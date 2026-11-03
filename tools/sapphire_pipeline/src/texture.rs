@@ -584,6 +584,19 @@ pub fn import(path: &Path, bytes: &[u8], settings: &TextureSettings) -> Result<S
     Ok(image_import::import_slice(bytes, format, settings.class.transfer())?)
 }
 
+/// What cooking a color map holds a texel at its peak, measured: 411 MiB for 2048 × 2048, on either
+/// cook. The source image and its prepared level 0 at 16 bytes each, the widened level 0 at 28, the
+/// largest level's intermediate at 14 and its result at 7, the chain so far at about 5, and an encoder's
+/// input. Other classes hold less.
+const COOK_BYTES_PER_TEXEL: u64 = 100;
+
+/// About what cooking the texture source in `bytes` holds at its peak, from its header: nothing if that
+/// doesn't read, since neither will the rest of it.
+pub fn cook_memory(path: &Path, bytes: &[u8]) -> u64 {
+    let size = SourceFormat::from_path(path).and_then(|format| image_import::header_size(bytes, format));
+    size.map_or(0, |(width, height)| u64::from(width) * u64::from(height) * COOK_BYTES_PER_TEXEL)
+}
+
 /// Imports and cooks one texture source: the bytes of its cooked KTX2 file.
 pub fn cook_source(
     path: &Path,
@@ -964,6 +977,17 @@ mod tests {
 
     fn statuses(report: &CookReport) -> Vec<CookStatus> {
         report.assets.iter().map(|asset| asset.status).collect()
+    }
+
+    #[test]
+    fn a_textures_cook_says_what_it_holds_from_its_header() {
+        let path = Path::new("albedo.png");
+        let image = ::image::RgbaImage::new(64, 32);
+        let mut bytes = Vec::new();
+        image.write_to(&mut Cursor::new(&mut bytes), ::image::ImageFormat::Png).unwrap();
+        assert_eq!(cook_memory(path, &bytes), 64 * 32 * COOK_BYTES_PER_TEXEL);
+        assert_eq!(cook_memory(path, b"not an image"), 0);
+        assert_eq!(cook_memory(Path::new("albedo.unknown"), &bytes), 0);
     }
 
     #[test]

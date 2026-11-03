@@ -81,8 +81,26 @@
 //! for clips, which share one import (`clip::source`). Which ones a glTF or an FBX has depends on
 //! the file (is it skinned? what animations?), so planning reads those.
 //!
-//! Assets cook one after another. Cooking in parallel (rayon) waits for content that makes it
-//! worth it.
+//! # Threads
+//!
+//! Assets that read nothing another asset cooks (textures, maps, meshes of their own, sounds, and the
+//! documents that only name others) cook first, on up to four threads (`COOK_WORKERS`); the rest cook
+//! after them, one after another, in the order above. To those first assets nothing has cooked, so one
+//! that came to read another's output would fail the same way every time rather than race it. Their
+//! keys all come first, so a key's first asset in plan order is the one that cooks, and the others take
+//! its output from the cache, as on one thread. Neither a cooked file nor the report depends on the
+//! worker count, and a cook fails with the first failure in plan order.
+//!
+//! Texture encoding is what a cold cook spends its time on, 58% of 17.6 s on the M5, in encoders that
+//! run a level on one thread and share nothing that reaches their output. astcenc comes closest: it
+//! rewrites its angle tables with the same values at every context, so a reader sees the same value
+//! either way, though it's a race as C++ counts them. Six cold cooks of each target on four workers
+//! under load matched one thread's bytes. Medians of six alternating rounds at a load of 13 to 20 take
+//! the desktop cook from 25.4 s to 12.2 s and the mobile cook from 12.3 s to 5.6 s, for the same CPU.
+//!
+//! What it costs is memory: a texture's cook holds several expanded copies of its image, so besides the
+//! worker count what they hold at once is limited (`COOK_MEMORY`). Peak resident size goes from about
+//! 680 MiB to about 1040 MiB; eight workers took it to 1328 MiB for a tenth less time.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -93,6 +111,9 @@ use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Condvar, Mutex, PoisonError};
+use std::thread;
 
 use sapphire_assets::AssetId;
 use sapphire_assets::clip::{CLIP_EXTENSION, Clip};
@@ -382,6 +403,8 @@ pub enum CookError {
     UnsupportedSource { path: PathBuf },
     #[error(transparent)]
     Meta(#[from] MetaError),
+    #[error("{} changed during the cook; cook again", path.display())]
+    SourceChanged { path: PathBuf },
     #[error("failed to import {}", path.display())]
     Import {
         path: PathBuf,
@@ -593,12 +616,78 @@ impl CookReport {
     }
 }
 
+/// Assets cooking at once, at most: as many as the packer's encoders ([`crate::pack`]), which leaves
+/// the host usable during a cook.
+const COOK_WORKERS: usize = 4;
+
+/// A worker's stack: what a main thread has on every desktop this runs on (Windows' is set by
+/// `.cargo/config.toml`), since importers that ran on one now run here.
+const WORKER_STACK: usize = 8 << 20;
+
+/// What the assets cooking at once may hold, as far as they can say beforehand: past four of the largest
+/// committed textures (2048 × 2048, 411 MiB each), so only a source near
+/// [`image::SOURCE_BUDGET`], whose cook holds several GiB, makes the others wait.
+const COOK_MEMORY: u64 = 4 << 30;
+
+/// What a map document's cook is taken to hold, since only reading the document says which images it
+/// reads: its images, as large as the largest committed, and the texture they make.
+const MAP_MEMORY: u64 = 1 << 30;
+
+/// Memory the assets cooking at once share.
+struct CookMemory {
+    limit: u64,
+    free: Mutex<u64>,
+    freed: Condvar,
+}
+
+impl CookMemory {
+    fn new(limit: u64) -> Self {
+        Self { limit, free: Mutex::new(limit), freed: Condvar::new() }
+    }
+
+    /// Waits until `bytes` are free and holds them. A cook needing more than the limit waits for all of
+    /// it, so it runs alone. Nothing holding some waits for more, so every wait ends.
+    fn hold(&self, bytes: u64) -> HeldMemory<'_> {
+        let bytes = bytes.min(self.limit);
+        let mut free = self.free.lock().unwrap_or_else(PoisonError::into_inner);
+        while *free < bytes {
+            free = self.freed.wait(free).unwrap_or_else(PoisonError::into_inner);
+        }
+        *free -= bytes;
+        HeldMemory { memory: self, bytes }
+    }
+}
+
+/// Memory held until this drops, a panicking cook's included.
+struct HeldMemory<'a> {
+    memory: &'a CookMemory,
+    bytes: u64,
+}
+
+impl Drop for HeldMemory<'_> {
+    fn drop(&mut self) {
+        *self.memory.free.lock().unwrap_or_else(PoisonError::into_inner) += self.bytes;
+        self.memory.freed.notify_all();
+    }
+}
+
 /// Cooks every source asset under `source_root` into `out_root`, as the [module docs](self)
 /// describe.
 pub fn cook_dir(
     source_root: &Path,
     out_root: &Path,
     options: &CookOptions<'_>,
+) -> Result<CookReport, CookError> {
+    let workers = thread::available_parallelism().map_or(1, usize::from).min(COOK_WORKERS);
+    cook_dir_on(source_root, out_root, options, workers)
+}
+
+/// [`cook_dir`], on up to `workers` threads.
+fn cook_dir_on(
+    source_root: &Path,
+    out_root: &Path,
+    options: &CookOptions<'_>,
+    workers: usize,
 ) -> Result<CookReport, CookError> {
     let mut tree = SourceTree::scan(source_root)?;
     let inputs = map_inputs(source_root, &tree)?;
@@ -700,7 +789,7 @@ pub fn cook_dir(
     // key-pose documents and meshes sharing a skeleton read skeletons and rigs, so those go before
     // them; key-pose documents read those meshes' morph targets, so the meshes go before clips, and
     // move sets read clips' keys, so those go before move sets; probe grids read cooked meshes and
-    // their materials, so they cook last.
+    // their materials, so they cook last. `others` read none of what those cook.
     let (probe_grids, rest): (Vec<usize>, Vec<usize>) =
         (0..plan.len()).partition(|&index| plan[index].is_probe_grid());
     let (materials, rest): (Vec<usize>, Vec<usize>) =
@@ -715,29 +804,22 @@ pub fn cook_dir(
     for planned in &plan {
         sources.entry(planned.asset.meta.id).or_insert(&planned.asset);
     }
-    let clip_sources = ClipSources::default();
-    let last_source = LastSource::default();
+    let memory = CookMemory::new(COOK_MEMORY);
+    let tree = PlannedTree {
+        plan: &plan,
+        by_id: &by_id,
+        sources: &sources,
+        cache: cache.as_ref(),
+        cook: options.cook,
+        memory: &memory,
+    };
     let mut cooked: Vec<Option<CookedAsset>> = vec![None; plan.len()];
-    let order = others
-        .into_iter()
-        .chain(shared_meshes)
-        .chain(clips)
-        .chain(move_sets)
-        .chain(materials)
-        .chain(probe_grids);
-    for index in order {
-        let assets = Assets {
-            plan: &plan,
-            by_id: &by_id,
-            cooked: &cooked,
-            sources: &sources,
-            clip_sources: &clip_sources,
-            last_source: &last_source,
-        };
-        let asset = guarded(&plan[index].asset.path, || {
-            cook_asset(&plan[index], &assets, cache.as_ref(), options.cook)
-        })?;
-        cooked[index] = Some(asset);
+    cook_independent(tree, &others, workers, &mut cooked)?;
+    let remembered = Remembered::default();
+    for index in shared_meshes.into_iter().chain(clips).chain(move_sets).chain(materials).chain(probe_grids) {
+        let assets = tree.assets(&cooked, &remembered);
+        let keyed = tree.key(index, &assets)?;
+        cooked[index] = Some(tree.finish(index, keyed, &assets)?);
     }
     let assets = cooked.into_iter().map(|asset| asset.expect("every planned asset was cooked")).collect();
     Ok(CookReport {
@@ -746,6 +828,113 @@ pub fn cook_dir(
         orphaned_sidecars: resolved.orphaned,
         uncooked: uncooked.into_iter().map(|asset| asset.path).collect(),
         removed,
+    })
+}
+
+/// Cooks `indices` of the plan, ascending, assets that read nothing another asset cooks, on up to
+/// `workers` threads. Failing, it fails as one thread would, with the first failure in plan order.
+///
+/// Keys come first: one cook serves every asset of a key, and which of them that is, and so what
+/// each reports, mustn't depend on which got there first. The first in plan order of each key finishes
+/// on the workers, and the others after them, from the cache, where nothing is left to cook.
+fn cook_independent(
+    tree: PlannedTree<'_>,
+    indices: &[usize],
+    workers: usize,
+    cooked: &mut [Option<CookedAsset>],
+) -> Result<(), CookError> {
+    let same_source = |&a: &usize, &b: &usize| tree.plan[a].asset.path == tree.plan[b].asset.path;
+    let mut failure = None;
+    let mut keyed: Vec<Option<Keyed>> = tree.plan.iter().map(|_| None).collect();
+    // A source's parts stay together, to share a read of it.
+    let runs: Vec<&[usize]> = indices.chunk_by(same_source).collect();
+    for (index, result) in on_workers(tree, &runs, workers, |index, assets| tree.key(index, assets)) {
+        match result {
+            Ok(key) => keyed[index] = Some(key),
+            Err(error) => keep_first(&mut failure, index, error),
+        }
+    }
+    let before_failure = |failure: &Option<(usize, CookError)>, index: usize| {
+        keyed[index].is_some() && failure.as_ref().is_none_or(|(first, _)| index < *first)
+    };
+    let mut keys = HashSet::new();
+    let (first_of_key, repeats): (Vec<usize>, Vec<usize>) =
+        indices.iter().copied().filter(|&index| before_failure(&failure, index)).partition(|&index| {
+            // With no cache to serve the others, every asset cooks.
+            tree.cache.is_none() || keys.insert(keyed[index].as_ref().expect("filtered on its key").key)
+        });
+    let runs: Vec<&[usize]> = first_of_key.chunk_by(same_source).collect();
+    let finish = |index, assets: &Assets<'_>| {
+        tree.finish(index, keyed[index].as_ref().expect("only keyed assets finish").clone(), assets)
+    };
+    for (index, result) in on_workers(tree, &runs, workers, finish) {
+        match result {
+            Ok(asset) => cooked[index] = Some(asset),
+            Err(error) => keep_first(&mut failure, index, error),
+        }
+    }
+    let remembered = Remembered::default();
+    let assets = tree.assets(&[], &remembered);
+    for index in repeats {
+        if !before_failure(&failure, index) {
+            break;
+        }
+        match finish(index, &assets) {
+            Ok(asset) => cooked[index] = Some(asset),
+            Err(error) => keep_first(&mut failure, index, error),
+        }
+    }
+    failure.map_or(Ok(()), |(_, error)| Err(error))
+}
+
+/// Keeps the failure of the asset earliest in the plan.
+fn keep_first(failure: &mut Option<(usize, CookError)>, index: usize, error: CookError) {
+    if failure.as_ref().is_none_or(|(first, _)| index < *first) {
+        *failure = Some((index, error));
+    }
+}
+
+/// `job` over the assets of `runs`, on up to `workers` threads, each run's on one, in order. As far as
+/// the jobs can tell, nothing has cooked.
+///
+/// Runs start in plan order, so when an asset fails, every asset before it has started, and whatever
+/// comes after is left: the earliest failure is among what this returns.
+fn on_workers<T: Send>(
+    tree: PlannedTree<'_>,
+    runs: &[&[usize]],
+    workers: usize,
+    job: impl Fn(usize, &Assets<'_>) -> Result<T, CookError> + Sync,
+) -> Vec<(usize, Result<T, CookError>)> {
+    let next = AtomicUsize::new(0);
+    let failed = AtomicUsize::new(usize::MAX);
+    let work = || {
+        let remembered = Remembered::default();
+        let assets = tree.assets(&[], &remembered);
+        let mut done = Vec::new();
+        while let Some(run) = runs.get(next.fetch_add(1, Ordering::Relaxed)) {
+            if run[0] > failed.load(Ordering::Relaxed) {
+                break;
+            }
+            for &index in *run {
+                let result = job(index, &assets);
+                let ok = result.is_ok();
+                done.push((index, result));
+                if !ok {
+                    failed.fetch_min(index, Ordering::Relaxed);
+                    break;
+                }
+            }
+        }
+        done
+    };
+    thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers.min(runs.len()))
+            .map(|_| {
+                let worker = thread::Builder::new().stack_size(WORKER_STACK);
+                worker.spawn_scoped(scope, work).expect("the system starts a cook worker")
+            })
+            .collect();
+        handles.into_iter().flat_map(|handle| handle.join().expect("a cook worker panicked")).collect()
     })
 }
 
@@ -1045,6 +1234,55 @@ impl Planned {
     }
 }
 
+/// What a cook of the planned tree shares between threads.
+#[derive(Clone, Copy)]
+struct PlannedTree<'a> {
+    plan: &'a [Planned],
+    by_id: &'a HashMap<AssetId, usize>,
+    sources: &'a HashMap<AssetId, &'a SourceAsset>,
+    cache: Option<&'a Cache>,
+    cook: Cook,
+    memory: &'a CookMemory,
+}
+
+impl<'a> PlannedTree<'a> {
+    /// The tree's assets, as a thread that remembers `remembered` sees them with `cooked` cooked: an
+    /// asset past the end of `cooked` hasn't.
+    fn assets<'b>(&self, cooked: &'b [Option<CookedAsset>], remembered: &'b Remembered) -> Assets<'b>
+    where
+        'a: 'b,
+    {
+        Assets {
+            plan: self.plan,
+            by_id: self.by_id,
+            cooked,
+            sources: self.sources,
+            clip_sources: &remembered.clip_sources,
+            last_source: &remembered.last_source,
+            memory: self.memory,
+        }
+    }
+
+    /// The plan's asset `index`'s key.
+    fn key(&self, index: usize, assets: &Assets<'_>) -> Result<Keyed, CookError> {
+        let planned = &self.plan[index];
+        guarded(&planned.asset.path, || key_asset(planned, assets, self.cook))
+    }
+
+    /// Brings the output of the plan's asset `index` up to date, by its key.
+    fn finish(&self, index: usize, keyed: Keyed, assets: &Assets<'_>) -> Result<CookedAsset, CookError> {
+        let planned = &self.plan[index];
+        guarded(&planned.asset.path, || finish_asset(planned, keyed, assets, self.cache, self.cook))
+    }
+}
+
+/// What a thread keeps from one asset to the next, each holding one source's data.
+#[derive(Default)]
+struct Remembered {
+    clip_sources: ClipSources,
+    last_source: LastSource,
+}
+
 /// The content tree's assets by ID, with what has cooked so far.
 struct Assets<'a> {
     plan: &'a [Planned],
@@ -1054,6 +1292,7 @@ struct Assets<'a> {
     sources: &'a HashMap<AssetId, &'a SourceAsset>,
     clip_sources: &'a ClipSources,
     last_source: &'a LastSource,
+    memory: &'a CookMemory,
 }
 
 /// A source's rig as other assets read it: its cooked skeleton and where its humanoid map comes
@@ -1132,7 +1371,11 @@ impl<'a> Assets<'a> {
         Some(Referenced {
             source: &planned.asset.path,
             class: TextureKind::of(&planned.asset.meta.importer),
-            cooked: self.cooked[index].as_ref().map(|asset| (asset.output.as_path(), asset.key)),
+            cooked: self
+                .cooked
+                .get(index)
+                .and_then(Option::as_ref)
+                .map(|asset| (asset.output.as_path(), asset.key)),
         })
     }
 
@@ -1143,13 +1386,17 @@ impl<'a> Assets<'a> {
         Some(ProbeInput {
             source: &planned.asset.path,
             settings: &planned.asset.meta.importer,
-            cooked: self.cooked[index].as_ref().map(|asset| (asset.output.as_path(), asset.key)),
+            cooked: self
+                .cooked
+                .get(index)
+                .and_then(Option::as_ref)
+                .map(|asset| (asset.output.as_path(), asset.key)),
         })
     }
 
     /// The cooked asset `id`, if it has cooked.
     fn cooked(&self, id: AssetId) -> Option<&'a CookedAsset> {
-        self.cooked[*self.by_id.get(&id)?].as_ref()
+        self.cooked.get(*self.by_id.get(&id)?)?.as_ref()
     }
 
     /// The rig of source `id`: its own, or the one it shares.
@@ -1342,6 +1589,13 @@ impl LastSource {
         *self.0.borrow_mut() = Some((path.to_owned(), Rc::clone(&source)));
         Ok(source)
     }
+
+    /// The source at `path`, which must be what `hash` was made from: a key mustn't cover what another
+    /// version of its source cooks to, for as long as the cache lasts.
+    fn read_as(&self, path: &Path, hash: blake3::Hash) -> Result<Rc<SourceBytes>, CookError> {
+        let source = self.read(path)?;
+        if source.hash == hash { Ok(source) } else { Err(CookError::SourceChanged { path: path.to_owned() }) }
+    }
 }
 
 /// Runs `cook` for the source at `path`, a panic becoming an error that names it. Importers and
@@ -1355,17 +1609,19 @@ fn guarded<T>(path: &Path, cook: impl FnOnce() -> Result<T, CookError>) -> Resul
     })
 }
 
-/// Brings one asset's output up to date.
-fn cook_asset(
-    planned: &Planned,
-    assets: &Assets<'_>,
-    cache: Option<&Cache>,
-    cook: Cook,
-) -> Result<CookedAsset, CookError> {
-    let Planned { asset: SourceAsset { path, meta }, id, part, skeleton, recipe, output } = planned;
+/// An asset's key, and the hashes of what it was made from and of its output as it stands.
+#[derive(Clone)]
+struct Keyed {
+    key: CacheKey,
+    source: blake3::Hash,
+    current: Option<blake3::Hash>,
+}
+
+/// Keys one asset.
+fn key_asset(planned: &Planned, assets: &Assets<'_>, cook: Cook) -> Result<Keyed, CookError> {
+    let Planned { asset: SourceAsset { path, meta }, part, skeleton, recipe, output, .. } = planned;
     let source = assets.last_source.read(path)?;
-    let bytes = &source.bytes;
-    let mut dependencies = dependencies(path, bytes, &meta.importer, part, assets)?;
+    let mut dependencies = dependencies(path, &source.bytes, &meta.importer, part, assets)?;
     dependencies.extend(part_dependencies(path, part, *skeleton, &meta.importer));
     let key = CacheKey::new(&KeyInputs {
         source: source.hash,
@@ -1374,7 +1630,18 @@ fn cook_asset(
         cook,
         dependencies: &dependencies,
     });
-    let current = file_hash(output)?;
+    Ok(Keyed { key, source: source.hash, current: file_hash(output)? })
+}
+
+/// Brings one asset's output up to date, by its key.
+fn finish_asset(
+    planned: &Planned,
+    Keyed { key, source, current }: Keyed,
+    assets: &Assets<'_>,
+    cache: Option<&Cache>,
+    cook: Cook,
+) -> Result<CookedAsset, CookError> {
+    let Planned { asset: SourceAsset { path, meta }, id, part, skeleton, output, .. } = planned;
     let done = |status, output_hash| CookedAsset {
         id: *id,
         source: path.clone(),
@@ -1396,7 +1663,8 @@ fn cook_asset(
     let (status, cooked) = match cached {
         Some(cooked) => (CookStatus::Cached, cooked),
         None => {
-            let cooked = cook_source(path, bytes, &meta.importer, part, *skeleton, cook, assets)?;
+            let source = assets.last_source.read_as(path, source)?;
+            let cooked = cook_source(path, &source.bytes, &meta.importer, part, *skeleton, cook, assets)?;
             if let Some(cache) = cache {
                 cache.put(&key, &cooked)?;
             }
@@ -1500,9 +1768,13 @@ fn cook_source(
         ImportSettings::GltfClips(_) | ImportSettings::FbxClips(_) | ImportSettings::Vrma(_) => {
             unreachable!("animation sources have their clips and skeleton, and nothing of their own")
         }
-        ImportSettings::Texture(settings) => texture::cook_source(path, bytes, settings, cook)
-            .map_err(|source| CookError::Texture { path: path.to_owned(), source: Box::new(source) }),
+        ImportSettings::Texture(settings) => {
+            let _held = assets.memory.hold(texture::cook_memory(path, bytes));
+            texture::cook_source(path, bytes, settings, cook)
+                .map_err(|source| CookError::Texture { path: path.to_owned(), source: Box::new(source) })
+        }
         ImportSettings::CharacterMap(settings) => {
+            let _held = assets.memory.hold(MAP_MEMORY);
             character_maps::cook_source(path, bytes, settings, cook).map_err(map_error(path))
         }
         ImportSettings::Material(_) => material::read(bytes)
@@ -2320,6 +2592,110 @@ mod tests {
         fs::remove_file(&b).unwrap();
         let error = last.read(&b).err().expect("the file is gone");
         assert!(matches!(&error, CookError::Read { path, .. } if *path == b), "{error:?}");
+    }
+
+    /// The assets of `scratch`'s tree cooked on `workers` threads: what each reports, and its file.
+    fn cooked_on(scratch: &Scratch, workers: usize, cache: bool) -> Vec<(AssetId, CookStatus, Vec<u8>)> {
+        let cache_dir = scratch.dir.path().join(format!("cache{workers}"));
+        let options =
+            CookOptions { cook: Cook::Desktop, cache: cache.then_some(cache_dir.as_path()), locked: false };
+        let out = scratch.dir.path().join(format!("out{workers}"));
+        let report = cook_dir_on(&scratch.source(), &out, &options, workers).unwrap();
+        let read = |asset: &CookedAsset| fs::read(&asset.output).unwrap();
+        report.assets.iter().map(|asset| (asset.id, asset.status, read(asset))).collect()
+    }
+
+    #[test]
+    fn a_cook_is_the_same_on_any_number_of_threads() {
+        let scratch = Scratch::new("cook_threads");
+        for mesh in ["a.glb", "b/b.glb", "c.glb", "d.glb"] {
+            scratch.add_mannequin(mesh);
+        }
+        for (index, name) in ["e.png", "f.png", "g.png", "h.png", "i.png", "j.png"].iter().enumerate() {
+            let shade = (index as u8) / 2;
+            let image = ::image::RgbaImage::from_pixel(32, 32, ::image::Rgba([shade, 20, 30, 255]));
+            image.save(scratch.source().join(name)).unwrap();
+        }
+        let one = cooked_on(&scratch, 1, true);
+        let statuses: Vec<_> = one.iter().map(|asset| asset.1).collect();
+        assert!(statuses.contains(&CookStatus::Cached), "a repeated source is served by one cook");
+        let files = |cook: &[(AssetId, CookStatus, Vec<u8>)]| -> Vec<(AssetId, Vec<u8>)> {
+            cook.iter().map(|(id, _, bytes)| (*id, bytes.clone())).collect()
+        };
+        for _ in 0..4 {
+            assert_eq!(cooked_on(&scratch, 4, true), one, "what each asset reports too");
+            fs::remove_dir_all(scratch.dir.path().join("out4")).unwrap();
+            fs::remove_dir_all(scratch.dir.path().join("cache4")).unwrap();
+            assert_eq!(files(&cooked_on(&scratch, 4, false)), files(&one), "with no cache");
+            fs::remove_dir_all(scratch.dir.path().join("out4")).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_cook_fails_on_the_first_failure_in_plan_order_on_any_number_of_threads() {
+        let scratch = Scratch::new("cook_first_failure");
+        fs::create_dir_all(scratch.source()).unwrap();
+        let good = ::image::RgbaImage::from_pixel(64, 64, ::image::Rgba([1, 2, 3, 255]));
+        for name in ["a.png", "b.png", "d.png", "f.png", "g.png"] {
+            good.save(scratch.source().join(name)).unwrap();
+        }
+        // A broken file fails at once, so a later one is often found first.
+        for name in ["c.png", "e.png", "h.png"] {
+            fs::write(scratch.source().join(name), b"not an image").unwrap();
+        }
+        for workers in [1, 2, 4, 8] {
+            for _ in 0..8 {
+                let options = CookOptions { cook: Cook::Desktop, cache: None, locked: false };
+                let error = cook_dir_on(&scratch.source(), &scratch.out(), &options, workers).unwrap_err();
+                let CookError::Texture { path, .. } = &error else { panic!("{error:?}") };
+                assert_eq!(path.file_name().unwrap(), "c.png", "{workers} workers");
+            }
+        }
+    }
+
+    #[test]
+    fn cooks_share_their_memory_and_a_large_one_runs_alone() {
+        let memory = CookMemory::new(100);
+        let free = || *memory.free.lock().unwrap();
+        let some = memory.hold(60);
+        assert_eq!(free(), 40);
+        let more = memory.hold(40);
+        assert_eq!(free(), 0);
+        drop(more);
+
+        let started = std::sync::atomic::AtomicBool::new(false);
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                // Past the limit: it waits for all of it.
+                let large = memory.hold(1000);
+                started.store(true, Ordering::SeqCst);
+                drop(large);
+            });
+            thread::sleep(std::time::Duration::from_millis(20));
+            assert!(!started.load(Ordering::SeqCst), "it waits for what's held");
+            drop(some);
+        });
+        assert!(started.load(Ordering::SeqCst));
+        assert_eq!(free(), 100, "all of it comes back");
+
+        let panicking = panic::catch_unwind(AssertUnwindSafe(|| {
+            let _held = memory.hold(100);
+            panic!("a cook's panic");
+        }));
+        assert!(panicking.is_err());
+        assert_eq!(free(), 100, "a panicking cook's too");
+    }
+
+    #[test]
+    fn a_source_saved_between_its_key_and_its_cook_fails_rather_than_poisons_the_cache() {
+        let dir = TempDir::new("cook_source_changed");
+        let path = dir.path().join("source");
+        fs::write(&path, b"keyed").unwrap();
+        let hash = LastSource::default().read(&path).unwrap().hash;
+        assert_eq!(LastSource::default().read_as(&path, hash).unwrap().bytes, b"keyed");
+        fs::write(&path, b"saved since").unwrap();
+        let error = LastSource::default().read_as(&path, hash).err().expect("it changed");
+        assert!(matches!(&error, CookError::SourceChanged { path: at } if *at == path), "{error:?}");
     }
 
     #[test]

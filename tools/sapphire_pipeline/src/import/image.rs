@@ -201,6 +201,12 @@ pub fn import_slice(
     import_within(bytes, format, transfer, SOURCE_BUDGET)
 }
 
+/// The size in the header of a source read as `format`, if it reads.
+pub fn header_size(bytes: &[u8], format: SourceFormat) -> Option<(u32, u32)> {
+    let reader = image::ImageReader::with_format(Cursor::new(bytes), format.image_format());
+    reader.into_decoder().ok().map(|decoder| decoder.dimensions())
+}
+
 /// Decodes `bytes` as `format`, as [`image::load_from_memory_with_format`] does, once the
 /// header shows the image within `budget`: an image over it fails before any pixel is decoded.
 pub fn decode(

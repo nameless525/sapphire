@@ -101,7 +101,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use sapphire_anim::{AnimStats, ArchivedClip, SpringQuality, SpringWork, evaluate_all};
+use sapphire_anim::{AnimStats, ArchivedClip, SpringQuality, SpringWork};
 use sapphire_assets::mesh::ArchivedMesh;
 use sapphire_core::debug_draw::{self, Collector};
 use sapphire_cues::RumbleSink;
@@ -1533,13 +1533,13 @@ impl Scene {
         }
     }
 
-    /// Evaluates every character playing a clip, one job each, for a frame `alpha` of the way from
-    /// the previous fixed step to the latest: at the position their own clock's presented time gives, so
-    /// a clock that stands still costs nothing and holds the pose. Results reach this frame's packet
-    /// through what extraction reads: each [`RenderPose`], [`RenderTransform`], [`Figure`] and light
-    /// rig (see [`crate::animate`]). Call it just before [`Self::frame_packet`]. A scene that plays
-    /// no clip returns at once. It runs here rather than as a `Presentation` system, which would cost
-    /// allocations and a worker's wake-up per frame (the module docs).
+    /// Evaluates what plays on the character for a frame `alpha` of the way from the previous fixed step
+    /// to the latest: at the position its own clock's presented time gives, so a clock that stands still
+    /// costs nothing and holds the pose. Results reach this frame's packet through what extraction
+    /// reads: each [`RenderPose`], [`RenderTransform`], [`Figure`] and light rig (see [`crate::animate`]).
+    /// Call it just before [`Self::frame_packet`]. A scene that plays nothing returns at once. It runs
+    /// here rather than as a `Presentation` system, which would cost allocations and a worker's wake-up
+    /// per frame (the module docs).
     pub fn animate(&mut self, content: &Content, alpha: f32) {
         if self.animating {
             self.animate_clip(content.clip(), alpha);
@@ -1675,13 +1675,13 @@ impl Scene {
         }
     }
 
-    /// [`Self::animate`], with its clip and the clip's version.
+    /// [`Self::animate`], with its clip and the clip's version. Only the character plays one
+    /// ([`Self::play_clip`]), on this thread, so this frame has no list of jobs to make.
     fn animate_clip(&mut self, clip: Option<(&ArchivedClip, u32)>, alpha: f32) {
         profiling::scope!("animate");
         let started = Stopwatch::start();
         let mut stats = AnimStats::default();
         if let Some((clip, version)) = clip {
-            let mut jobs = Vec::new();
             let world = self.ecs.world_mut();
             let camera = world.resource::<OrbitCamera>().camera_data(self.aspect);
             let view = SpringView::new(&camera, self.spring_quality);
@@ -1706,7 +1706,7 @@ impl Scene {
                     stats.joints += player.joint_count() as u32;
                     stats.ik += u32::from(player.has_ik());
                 }
-                jobs.push(Evaluation {
+                let mut job = Evaluation {
                     player,
                     render,
                     figure,
@@ -1717,10 +1717,8 @@ impl Scene {
                     springs_run,
                     spring_work: SpringWork::default(),
                     spring_time: Duration::ZERO,
-                });
-            }
-            evaluate_all(&mut jobs, |job| job.run(clip));
-            for job in &jobs {
+                };
+                job.run(clip);
                 stats.springs += u32::from(job.spring_work.wrote_pose);
                 stats.spring_substeps += job.spring_work.substeps;
                 stats.spring_time += job.spring_time;
@@ -4337,6 +4335,24 @@ mod tests {
         }
 
         /// A clip's new version is drawn even by a frozen character.
+        /// Playing a clip allocates nothing once its query has run: what benches read of the rest of a
+        /// frame shouldn't have this in it.
+        #[test]
+        fn a_frame_of_a_clip_allocates_nothing() {
+            let bytes = clip().to_cooked().expect("cooked");
+            let clip = Clip::read(&bytes).expect("a valid clip");
+            let mut scene = stage();
+            scene.play_clip(player());
+            scene.step();
+            scene.animate_clip(Some((clip, 0)), 1.0);
+            scene.step();
+            let ((), counts) = sapphire_core::alloc::count_in_scope(|| {
+                scene.animate_clip(Some((clip, 0)), 1.0);
+            });
+            assert_eq!(scene.anim_stats().evaluated, 1, "it evaluated");
+            assert_eq!(counts.allocations, 0, "{counts:?}");
+        }
+
         #[test]
         fn a_new_version_of_the_clip_moves_a_frozen_character() {
             let bytes = clip().to_cooked().expect("cooked");

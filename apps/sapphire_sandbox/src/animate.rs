@@ -10,11 +10,10 @@
 //!   advance (hitstop, pause) gives the position it gave before, and a position already drawn is
 //!   not evaluated again: the [`RenderPose`] isn't written, so it isn't extracted and the renderer
 //!   doesn't skin. Hitstop freezes a pose at no cost, as it does the turntable.
-//! - **One job per character** ([`Evaluation`], [`sapphire_anim::evaluate_all`]), each writing only
-//!   its own entity's components: the pose and morph weights that `Extract` sends when they change,
-//!   and what follows the skeleton every frame: its [`Figure`] (the head and feet that its light rig,
-//!   face basis, shadow and capsule AO read), its light rig's head, and its transform by the clip's
-//!   root motion. See `Scene::animate`.
+//! - **A frame's work** ([`Evaluation`]) writes only the character's own components: the pose and morph
+//!   weights that `Extract` sends when they change, and what follows the skeleton every frame: its
+//!   [`Figure`] (the head and feet that its light rig, face basis, shadow and capsule AO read), its
+//!   light rig's head, and its transform by the clip's root motion. See `Scene::animate`.
 //! - **Looping** is this harness's: the position wraps at the clip's end, and root motion starts
 //!   over with it, so a loop's first frame teleports back, which resets the springs. A graph (N3)
 //!   chooses what plays next.
@@ -239,7 +238,7 @@ impl ClipPlayer {
 
     /// Whether it can play `clip` into `render`. Neither holds for a moment when a new version of
     /// the character or the clip lands before the others: the character keeps the pose it has until
-    /// they fit, and the frame's other players go on.
+    /// they fit.
     pub fn fits(&self, clip: &ArchivedClip, render: &RenderPose) -> bool {
         clip.joint_count.to_native() as usize == self.pose.joint_count()
             && render.palette.len() == self.pose.palette_len()
@@ -321,7 +320,7 @@ impl ClipPlayer {
     }
 }
 
-/// One character's job this frame: its player and everything that follows the skeleton.
+/// One character's work this frame: its player and everything that follows the skeleton.
 pub(crate) struct Evaluation<'a> {
     pub player: Mut<'a, ClipPlayer>,
     pub render: Mut<'a, RenderPose>,

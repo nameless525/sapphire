@@ -294,7 +294,8 @@ struct Running {
     handle: EffectHandle,
     /// The cut it's for, among its move's.
     cut: usize,
-    /// The cut's over: it stops once the frame has drawn up to there.
+    /// The cut's over: it stops once the frame has drawn up to there, or at the next step if none comes
+    /// first.
     closing: bool,
     /// How far into the move the last frame drew, and how far its table fell from its pose then.
     drawn: Option<(f64, Option<Offset>)>,
@@ -343,7 +344,9 @@ impl FighterTrail {
         let open = self.cuts.open_at(elapsed);
         let another =
             open.is_some() && self.running.as_ref().is_some_and(|running| Some(running.cut) != open);
-        if another {
+        // A cut that closed on an earlier step has had no frame since: what follows is its recovery.
+        let closed = open.is_none() && self.running.as_ref().is_some_and(|running| running.closing);
+        if another || closed {
             self.end(world);
         }
         self.latest = LatestStep {
@@ -1036,6 +1039,39 @@ mod tests {
         assert!(!each.is_empty());
         let (each_total, other_total): (f32, f32) = (each.iter().sum(), every_other.iter().sum());
         assert!(other_total > each_total * 0.9, "{each:?} against {every_other:?}");
+    }
+
+    /// A capture takes all its steps before its first frame, and a hitch several: a cut that closed with
+    /// no frame since ends where it closed, its arc kept, not on what the blade does in its recovery.
+    #[test]
+    fn a_cut_closed_with_no_frame_keeps_its_arc() {
+        let mut bout = Bout::new("arena-fight-won");
+        let serial = |bout: &Bout| bout.views()[0].and_then(|view| view.moves.current).map(|at| at.serial);
+        let at_its_close = 'a_cut: loop {
+            assert!(bout.combat.ticks_left().expect("a recording") > 8, "no cut closed with a recovery");
+            bout.step();
+            if !bout.trails.fighters[0].running.is_some_and(|running| running.closing) {
+                continue;
+            }
+            let view = bout.views()[0].expect("on the field");
+            let current = view.moves.current.expect("in its move");
+            let library = bout.simulation().move_library();
+            let path = library.get(current.at).and_then(|moved| moved.tables.path(BLADE));
+            let at = Rails::PLAYER.in_table(path.expect("a cut's path").at(current.elapsed), &view);
+            bout.step();
+            assert!(!bout.running(0), "past its close: {:?}", bout.trails.fighters[0].running);
+            for _ in 0..5 {
+                bout.step();
+                if serial(&bout) != Some(current.serial) {
+                    continue 'a_cut;
+                }
+            }
+            break at;
+        };
+        bout.draw(1.0);
+        let heads = bout.frame.ribbon_points.iter().filter(|point| point.ends);
+        let nearest = heads.map(|point| point.tip.distance(at_its_close.tip)).fold(f32::INFINITY, f32::min);
+        assert!(nearest < 0.05, "the strip's head is {nearest} m from the blade at the close");
     }
 
     /// A fight's frames allocate nothing, nor do its steps, once warm.

@@ -41,6 +41,28 @@ pub(crate) fn is_offscreen_flag(arg: &str) -> bool {
     name == CAPTURE_FLAG || name == BENCH_FLAG || name == OFFSCREEN_FLAG || name == CONTACT_SHEET_FLAG
 }
 
+/// What `--debug-draw` draws.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DebugDraw {
+    /// A fixed test of the debug draw path.
+    Demo(DebugDrawDemo),
+    /// These views of the fight `--replay` or `--record` runs, which the fight's `draw_views` draws.
+    Views(CombatViews),
+}
+
+impl DebugDraw {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "volumes" => Ok(Self::Views(CombatViews::VOLUMES)),
+            "colliders" => Ok(Self::Views(CombatViews::COLLIDERS)),
+            "combat" => Ok(Self::Views(CombatViews::ALL)),
+            _ => DebugDrawDemo::parse(value).map(Self::Demo).ok_or_else(|| {
+                format!("--debug-draw expects shapes, lines:<count>, volumes, colliders or combat, got {value:?}")
+            }),
+        }
+    }
+}
+
 /// Options parsed from the process arguments. The default is no options: everything from the
 /// quality tier and the scene.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -201,7 +223,7 @@ pub(crate) struct Options {
     /// `--debug-view <view>`: the renderer's debug view (`r.debug_view`, M1 F5) instead of off.
     pub debug_view: Option<DebugView>,
     /// `--debug-draw <what>`: turn debug draw on and draw this (M2 T1).
-    pub debug_draw: Option<DebugDrawDemo>,
+    pub debug_draw: Option<DebugDraw>,
     /// `--cue <name> [--cue-repeat <seconds>]`: play this cue on the real audio device (M2 E1).
     pub cue: Option<CueOption>,
     /// Render offscreen instead of opening a window.
@@ -366,8 +388,13 @@ impl Options {
         {
             tracing::warn!(target: crate::LOG_TARGET, %error, "--debug-view");
         }
-        if let Some(demo) = self.debug_draw {
-            scene.set_debug_draw_demo(demo);
+        match self.debug_draw {
+            Some(DebugDraw::Demo(demo)) => scene.set_debug_draw_demo(demo),
+            Some(DebugDraw::Views(views)) => {
+                sapphire_core::debug_draw::set_enabled(true);
+                views.turn_on();
+            }
+            None => {}
         }
         for (preset, at) in &self.post_effects {
             scene.push_effect(preset, *at)?;
@@ -775,7 +802,7 @@ impl Options {
                     options.debug_view = Some(view);
                 }
                 "--debug-draw" => {
-                    options.debug_draw = Some(DebugDrawDemo::parse(&value("--debug-draw")?)?);
+                    options.debug_draw = Some(DebugDraw::parse(&value("--debug-draw")?)?);
                 }
                 "--plain-sky" => options.plain_sky = true,
                 "--fog" => {
@@ -1062,8 +1089,8 @@ impl Options {
         };
         // The arena has colliders to draw with no fight.
         let arena_colliders = options.arena.is_some()
-            && options.debug_draw == Some(DebugDrawDemo::Combat(CombatViews::COLLIDERS));
-        if matches!(options.debug_draw, Some(DebugDrawDemo::Combat(_)))
+            && options.debug_draw == Some(DebugDraw::Views(CombatViews::COLLIDERS));
+        if matches!(options.debug_draw, Some(DebugDraw::Views(_)))
             && options.combat.is_none()
             && !arena_colliders
         {
@@ -1930,7 +1957,7 @@ mod tests {
     fn the_arena_draws_its_colliders_with_no_fight() {
         assert_eq!(
             parse(&["--arena", "--debug-draw", "colliders"]).unwrap().0.debug_draw,
-            Some(DebugDrawDemo::Combat(CombatViews::COLLIDERS)),
+            Some(DebugDraw::Views(CombatViews::COLLIDERS)),
         );
         let refused: [&[&str]; 3] = [
             &["--debug-draw", "colliders"],
@@ -1948,17 +1975,17 @@ mod tests {
         assert_eq!(Options::default().debug_draw, None);
         let (options, unknown) = parse(&["--debug-draw", "shapes"]).unwrap();
         assert!(unknown.is_empty());
-        assert_eq!(options.debug_draw, Some(DebugDrawDemo::Shapes));
+        assert_eq!(options.debug_draw, Some(DebugDraw::Demo(DebugDrawDemo::Shapes)));
         assert_eq!(
             parse(&["--debug-draw=lines:2000"]).unwrap().0.debug_draw,
-            Some(DebugDrawDemo::Lines(2000))
+            Some(DebugDraw::Demo(DebugDrawDemo::Lines(2000)))
         );
         assert!(parse(&["--debug-draw", "circles"]).is_err());
         // The views of a fight have nothing to show without one.
         let error = parse(&["--debug-draw", "volumes"]).expect_err("no fight");
         assert!(error.contains("--replay or --record"), "{error}");
         let (options, _) = parse(&["--capture", "x", "--replay", "a", "--debug-draw", "combat"]).unwrap();
-        assert!(matches!(options.debug_draw, Some(DebugDrawDemo::Combat(_))));
+        assert!(matches!(options.debug_draw, Some(DebugDraw::Views(_))));
         assert!(parse(&["--record", "a", "--scenario", "s", "--debug-draw", "colliders"]).is_ok());
     }
 

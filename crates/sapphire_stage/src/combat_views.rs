@@ -111,7 +111,7 @@ pub struct CombatViews {
 impl CombatViews {
     pub const VOLUMES: Self = Self { volumes: true, colliders: false };
     pub const COLLIDERS: Self = Self { volumes: false, colliders: true };
-    pub(crate) const ALL: Self = Self { volumes: true, colliders: true };
+    pub const ALL: Self = Self { volumes: true, colliders: true };
 
     /// Which are on now.
     pub(crate) fn current() -> Self {
@@ -119,7 +119,7 @@ impl CombatViews {
     }
 
     /// Turns these on, for `--debug-draw`.
-    pub(crate) fn turn_on(self) {
+    pub fn turn_on(self) {
         let set = |cvar: &Cvar<bool>, on: bool| {
             if on {
                 cvar.set(true).expect("a boolean has no range");

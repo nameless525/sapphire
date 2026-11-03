@@ -37,6 +37,7 @@ use sapphire_serialize::to_ron;
 
 use super::noise::smoothstep;
 use crate::color::{linear_to_srgb, srgb8, unorm8};
+use crate::generators::Output;
 
 /// The directory of the material layer samples, under the samples directory.
 pub const DIR: &str = "materials";
@@ -72,17 +73,17 @@ const STOCKING_TOP: [f32; 2] = [0.12, 0.17];
 const MATCAP_RADIUS: f32 = 0.49;
 
 /// Every material sample file, relative to the samples directory, with its bytes.
-pub fn files() -> io::Result<Vec<(String, Vec<u8>)>> {
+pub fn files() -> Vec<Output> {
     let path = |name: &str| format!("{DIR}/{name}");
-    Ok(vec![
-        (path(MATCAP_FILE_NAME), matcap_png()?),
-        (path(LAYERS_FILE_NAME), layers_png()?),
-        (path(LACQUER_FILE_NAME), document(&lacquer())),
-        (path(GOLD_FILE_NAME), document(&gold())),
-        (path(LEATHER_FILE_NAME), document(&leather())),
-        (path(STOCKINGS_FILE_NAME), document(&stockings())),
-        (path(GLOW_FILE_NAME), document(&glow())),
-    ])
+    vec![
+        Output::new(path(MATCAP_FILE_NAME), matcap_png),
+        Output::new(path(LAYERS_FILE_NAME), layers_png),
+        Output::plain(path(LACQUER_FILE_NAME), || document(&lacquer())),
+        Output::plain(path(GOLD_FILE_NAME), || document(&gold())),
+        Output::plain(path(LEATHER_FILE_NAME), || document(&leather())),
+        Output::plain(path(STOCKINGS_FILE_NAME), || document(&stockings())),
+        Output::plain(path(GLOW_FILE_NAME), || document(&glow())),
+    ]
 }
 
 fn document(material: &AnimeCharacterMaterial) -> Vec<u8> {

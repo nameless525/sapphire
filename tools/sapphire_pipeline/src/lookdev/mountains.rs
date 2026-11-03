@@ -54,14 +54,17 @@
 //! the files come out the same bits on every platform; tests still compare the committed files to
 //! the generated ones only up to float rounding, as the other generated content.
 
+use std::cell::OnceCell;
 use std::f32::consts::TAU;
 use std::io;
+use std::rc::Rc;
 
 use glam::{Vec2, Vec3};
 use sapphire_math::det;
 use serde_json::json;
 
 use crate::color::{linear_to_srgb, srgb_to_linear, unorm8};
+use crate::generators::Output;
 use crate::gltf_writer::{Geometry, GltfWriter};
 use crate::samples::noise::{NO_PERIOD, Rng, fbm, hash, smoothstep, value_noise};
 
@@ -282,12 +285,14 @@ pub const RANGES: [Range; 3] = [
 ];
 
 /// One sector of a range: its file, relative to the look-dev directory, and its geometry.
+#[cfg(test)]
 pub(crate) struct Chunk {
     pub file: String,
     pub geometry: Geometry,
 }
 
 /// Every range's sectors, nearest range first, each along the arc from −X to +X.
+#[cfg(test)]
 pub(crate) fn chunks() -> Vec<Chunk> {
     RANGES
         .iter()
@@ -303,13 +308,21 @@ pub(crate) fn chunks() -> Vec<Chunk> {
         .collect()
 }
 
-/// Every generated mountain file, relative to the look-dev directory, with its bytes: the
-/// sectors' glTF and the palette.
-pub fn files() -> io::Result<Vec<(String, Vec<u8>)>> {
-    let mut files: Vec<(String, Vec<u8>)> =
-        chunks().into_iter().map(|chunk| (chunk.file, glb(&chunk.geometry))).collect();
-    files.push((format!("{MOUNTAINS_DIR}/{PALETTE}"), palette_png()?));
-    Ok(files)
+/// Every generated mountain file, relative to the look-dev directory, and how to make it: the sectors'
+/// glTF and the palette. A range's field is built once, when the first of its sectors is made.
+pub fn files() -> Vec<Output> {
+    let mut files = Vec::new();
+    for range in &RANGES {
+        let field = Rc::new(OnceCell::new());
+        for sector in 0..range.sectors {
+            let field = field.clone();
+            files.push(Output::plain(format!("{MOUNTAINS_DIR}/{}_{sector}.glb", range.name), move || {
+                glb(&field.get_or_init(|| Field::new(range)).sector(sector))
+            }));
+        }
+    }
+    files.push(Output::new(format!("{MOUNTAINS_DIR}/{PALETTE}"), palette_png));
+    files
 }
 
 /// A sector as a binary glTF: one primitive in [`SLOT`].

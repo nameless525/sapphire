@@ -51,8 +51,10 @@
 //! as a character with a key light, a head and expression weights of its own, and posing its
 //! lids and gaze through the morph targets.
 
+use std::cell::OnceCell;
 use std::f32::consts::{PI, TAU};
 use std::io;
+use std::rc::Rc;
 
 use sapphire_assets::AssetId;
 use sapphire_assets::material::{
@@ -65,6 +67,7 @@ use serde_json::json;
 use crate::character_maps::FaceSdfMap;
 use crate::character_maps::face_sdf::ThresholdMask;
 use crate::color::srgb8;
+use crate::generators::Output;
 use crate::gltf_writer::{Geometry, GltfWriter};
 
 /// The directory of the face content, under the samples directory.
@@ -166,31 +169,31 @@ const HORIZONTAL_ANGLES: [u32; 19] = {
 const VERTICAL_ANGLES: [u32; 7] = [0, 15, 30, 45, 60, 75, 90];
 
 /// Every face file, relative to the samples directory, with its bytes.
-pub fn files() -> io::Result<Vec<(String, Vec<u8>)>> {
+pub fn files() -> Vec<Output> {
     let path = |name: &str| format!("{DIR}/{name}");
     let mut files = vec![
-        (path(HEAD_FILE_NAME), head_glb()),
-        (path(SDF_FILE_NAME), sdf_document().into_bytes()),
-        (path(BASE_COLOR_FILE_NAME), base_color_png()?),
-        (path(MASK_FILE_NAME), mask_png()?),
-        (path(EXPRESSION_FILE_NAME), expression_png()?),
-        (path(MATERIAL_FILE_NAME), material_document().into_bytes()),
-        (path(HAIR_MATERIAL_FILE_NAME), hair_material_document().into_bytes()),
-        (path(BANGS_MATERIAL_FILE_NAME), bangs_material_document().into_bytes()),
-        (path(BROW_MATERIAL_FILE_NAME), brow_material_document().into_bytes()),
-        (path(HAIR_MASK_FILE_NAME), hair_mask_png()?),
-        (path(EYE_WHITE_MATERIAL_FILE_NAME), eye_white_material_document().into_bytes()),
-        (path(EYE_SHADOW_MATERIAL_FILE_NAME), eye_shadow_material_document().into_bytes()),
-        (path(IRIS_MATERIAL_FILE_NAME), iris_material_document().into_bytes()),
-        (path(HIGHLIGHT_MATERIAL_FILE_NAME), highlight_material_document().into_bytes()),
-        (path(LASH_MATERIAL_FILE_NAME), lash_material_document().into_bytes()),
-        (path(LID_MATERIAL_FILE_NAME), lid_material_document().into_bytes()),
-        (path(EYE_SHADOW_FILE_NAME), eye_map_png(eye_shadow)?),
-        (path(IRIS_FILE_NAME), eye_map_png(iris)?),
-        (path(HIGHLIGHT_FILE_NAME), eye_map_png(highlight)?),
+        Output::plain(path(HEAD_FILE_NAME), head_glb),
+        Output::plain(path(SDF_FILE_NAME), || sdf_document().into_bytes()),
+        Output::new(path(BASE_COLOR_FILE_NAME), base_color_png),
+        Output::new(path(MASK_FILE_NAME), mask_png),
+        Output::new(path(EXPRESSION_FILE_NAME), expression_png),
+        Output::plain(path(MATERIAL_FILE_NAME), || material_document().into_bytes()),
+        Output::plain(path(HAIR_MATERIAL_FILE_NAME), || hair_material_document().into_bytes()),
+        Output::plain(path(BANGS_MATERIAL_FILE_NAME), || bangs_material_document().into_bytes()),
+        Output::plain(path(BROW_MATERIAL_FILE_NAME), || brow_material_document().into_bytes()),
+        Output::new(path(HAIR_MASK_FILE_NAME), hair_mask_png),
+        Output::plain(path(EYE_WHITE_MATERIAL_FILE_NAME), || eye_white_material_document().into_bytes()),
+        Output::plain(path(EYE_SHADOW_MATERIAL_FILE_NAME), || eye_shadow_material_document().into_bytes()),
+        Output::plain(path(IRIS_MATERIAL_FILE_NAME), || iris_material_document().into_bytes()),
+        Output::plain(path(HIGHLIGHT_MATERIAL_FILE_NAME), || highlight_material_document().into_bytes()),
+        Output::plain(path(LASH_MATERIAL_FILE_NAME), || lash_material_document().into_bytes()),
+        Output::plain(path(LID_MATERIAL_FILE_NAME), || lid_material_document().into_bytes()),
+        Output::new(path(EYE_SHADOW_FILE_NAME), || eye_map_png(eye_shadow)),
+        Output::new(path(IRIS_FILE_NAME), || eye_map_png(iris)),
+        Output::new(path(HIGHLIGHT_FILE_NAME), || eye_map_png(highlight)),
     ];
-    // Threshold fields do not depend on the selected light angle. Keep one family
-    // at a time so its bounded scratch is released before preparing the next.
+    // Threshold fields do not depend on the selected light angle: the first of a family's masks that's
+    // missing works its field out, the rest of the family shares it, and it goes with the last of them.
     for (angles, field, name) in [
         (
             &HORIZONTAL_ANGLES[..],
@@ -203,28 +206,27 @@ pub fn files() -> io::Result<Vec<(String, Vec<u8>)>> {
             vertical_mask_name as fn(u32) -> String,
         ),
     ] {
-        let mut thresholds = Vec::with_capacity((SIZE * SIZE) as usize);
-        thresholds.extend((0..SIZE).flat_map(|y| {
-            (0..SIZE).map(move |x| {
-                let center = |i: u32| (i as f32 + 0.5) / SIZE as f32;
-                let (x, y) = point(center(x), center(y));
-                field(x, y)
-            })
-        }));
+        let thresholds = Rc::new(OnceCell::new());
         for &angle in angles {
-            let image = image::GrayImage::from_fn(SIZE, SIZE, |x, y| {
-                image::Luma([
-                    if thresholds[(y * SIZE + x) as usize].is_some_and(|threshold| threshold > angle as f32) {
-                        255
-                    } else {
-                        0
-                    },
-                ])
-            });
-            files.push((path(&name(angle)), encode(image)?));
+            let thresholds = Rc::clone(&thresholds);
+            files.push(Output::new(path(&name(angle)), move || {
+                let thresholds: &Vec<Option<f32>> = thresholds.get_or_init(|| threshold_field(field));
+                let image = image::GrayImage::from_fn(SIZE, SIZE, |x, y| {
+                    image::Luma([
+                        if thresholds[(y * SIZE + x) as usize]
+                            .is_some_and(|threshold| threshold > angle as f32)
+                        {
+                            255
+                        } else {
+                            0
+                        },
+                    ])
+                });
+                encode(image)
+            }));
         }
     }
-    Ok(files)
+    files
 }
 
 fn horizontal_mask_name(angle: u32) -> String {
@@ -350,6 +352,19 @@ pub fn vertical_threshold(x: f32, y: f32) -> Option<f32> {
         }
     }
     Some(angle.clamp(15.0, 180.0))
+}
+
+/// `field`'s threshold at each texel's centre, row by row.
+fn threshold_field(field: fn(f32, f32) -> Option<f32>) -> Vec<Option<f32>> {
+    let mut thresholds = Vec::with_capacity((SIZE * SIZE) as usize);
+    thresholds.extend((0..SIZE).flat_map(|y| {
+        (0..SIZE).map(move |x| {
+            let center = |i: u32| (i as f32 + 0.5) / SIZE as f32;
+            let (x, y) = point(center(x), center(y));
+            field(x, y)
+        })
+    }));
+    thresholds
 }
 
 /// The face's lit region with the light `angle` degrees along `field`: white where lit.
@@ -1434,13 +1449,14 @@ mod tests {
 
     use super::*;
     use crate::character_maps::{MapKind, generate};
+    use crate::generators::made;
     use crate::gltf_writer::MorphGeometry;
     use crate::test_util::TempDir;
 
     #[test]
     fn the_face_map_generates_and_turns_where_the_fields_say() {
         let dir = TempDir::new("face_sdf");
-        for (name, bytes) in files().unwrap() {
+        for (name, bytes) in made(files()).unwrap() {
             let path = dir.path().join(name);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, bytes).unwrap();
@@ -1551,7 +1567,7 @@ mod tests {
 
     #[test]
     fn prepared_threshold_fields_match_independent_per_angle_generation() {
-        let generated = files().unwrap();
+        let generated = made(files()).unwrap();
         for (angles, field, name) in [
             (
                 &HORIZONTAL_ANGLES[..],
@@ -1867,6 +1883,6 @@ mod tests {
 
     #[test]
     fn generation_is_deterministic() {
-        assert_eq!(files().unwrap(), files().unwrap());
+        assert_eq!(made(files()).unwrap(), made(files()).unwrap());
     }
 }

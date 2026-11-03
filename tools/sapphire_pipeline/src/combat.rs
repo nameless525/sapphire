@@ -31,6 +31,7 @@ use glam::{Vec2, Vec3};
 use sapphire_assets::character_maps::{MaterialId, ilm};
 
 use crate::color::{linear_to_srgb, srgb_to_linear, unorm8};
+use crate::generators::Output;
 use crate::samples::noise::smoothstep;
 use crate::samples::{Existing, Generated, write_files};
 
@@ -108,29 +109,35 @@ pub fn cell_of(uv: Vec2) -> (u32, u32, f32) {
     (column as u32, row as u32, y - row)
 }
 
-/// Every generated map, relative to the combat directory, with its bytes.
-pub fn files() -> io::Result<Vec<(String, Vec<u8>)>> {
+/// Every generated map, relative to the combat directory, and how to make each.
+pub fn files() -> Vec<Output> {
     let path = |name: &str| format!("{ENEMY_DIR}/{name}");
-    Ok(vec![
-        (path("warrior_palette.png"), palette_png()?),
-        (path("warrior_control.png"), control_png()?),
-        (path("warrior_layers.png"), layers_png()?),
-        (path("warrior_matcap.png"), matcap_png()?),
-        (format!("{PLAYER_DIR}/sword.glb"), sword::sword_glb()),
-        (format!("{PLAYER_DIR}/sword_palette.png"), sword::palette_png()?),
-        (format!("{PLAYER_DIR}/sword_control.png"), sword::control_png()?),
-        (format!("{PLAYER_DIR}/sword_layers.png"), sword::layers_png()?),
-    ])
+    vec![
+        Output::new(path("warrior_palette.png"), palette_png),
+        Output::new(path("warrior_control.png"), control_png),
+        Output::new(path("warrior_layers.png"), layers_png),
+        Output::new(path("warrior_matcap.png"), matcap_png),
+        Output::plain(format!("{PLAYER_DIR}/sword.glb"), sword::sword_glb),
+        Output::new(format!("{PLAYER_DIR}/sword_palette.png"), sword::palette_png),
+        Output::new(format!("{PLAYER_DIR}/sword_control.png"), sword::control_png),
+        Output::new(format!("{PLAYER_DIR}/sword_layers.png"), sword::layers_png),
+    ]
+}
+
+/// Everything generated in the combat directory `dir`: [`files`], and the model, from [`WARRIOR_SOURCE`]
+/// under `dir` when it's made.
+pub fn outputs(dir: &Path) -> Vec<Output> {
+    let source = dir.join(WARRIOR_SOURCE);
+    let mut generated = files();
+    generated.push(Output::new(WARRIOR, move || warrior::warrior_glb(&std::fs::read(source)?)));
+    generated
 }
 
 /// Writes every generated file into the combat directory `dir` (creating the directories they sit
-/// in), the model from [`WARRIOR_SOURCE`] under `dir`. Only what's missing is written, as
-/// [`write_files`] says, unless `existing` replaces what differs. Returns what it did with each file.
+/// in). Only what's missing is written, as [`write_files`] says, unless `existing` replaces what differs.
+/// Returns what it did with each file.
 pub fn write_all(dir: &Path, existing: Existing) -> io::Result<Generated> {
-    let source = std::fs::read(dir.join(WARRIOR_SOURCE))?;
-    let mut generated = files()?;
-    generated.push((WARRIOR.to_owned(), warrior::warrior_glb(&source)?));
-    write_files(dir, generated, existing)
+    write_files(dir, outputs(dir), existing)
 }
 
 /// Linear RGB from 8-bit sRGB.
@@ -290,6 +297,7 @@ mod tests {
     use sapphire_assets::character_maps::ilm::decode_material_id;
 
     use super::*;
+    use crate::generators::made;
     use crate::import::gltf;
     use crate::mesh::ImportedMesh;
     use crate::test_util::{assert_glb_matches, assert_png_matches};
@@ -365,14 +373,14 @@ mod tests {
 
     #[test]
     fn generating_twice_is_byte_identical() {
-        assert_eq!(files().unwrap(), files().unwrap());
+        assert_eq!(made(files()).unwrap(), made(files()).unwrap());
     }
 
     /// The committed maps and model are what the generator makes.
     #[test]
     fn the_committed_content_is_generated() {
         let combat = content_dir().join("combat");
-        for (name, generated) in files().unwrap() {
+        for (name, generated) in made(files()).unwrap() {
             let committed = std::fs::read(combat.join(&name)).unwrap();
             if name.ends_with(".glb") {
                 assert_glb_matches(&name, &committed, &generated, |_, a, b| (a - b).abs() <= 1e-5);

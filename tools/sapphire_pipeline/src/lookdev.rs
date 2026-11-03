@@ -59,6 +59,7 @@ use glam::{Vec2, Vec3};
 use sapphire_assets::character_maps::{face_expression, face_mask, hair_mask};
 
 use crate::color::{linear_to_srgb, srgb_to_linear, unorm8};
+use crate::generators::Output;
 use crate::samples::noise::{Rng, fbm, hash, smoothstep};
 use crate::samples::{Existing, Generated, foliage, sky, write_files};
 
@@ -144,55 +145,64 @@ pub const MODEL: &str = "../third_party/vrm1_constraint_twist_sample/VRM1_Constr
 /// the body's ILM map (`character/body.ilm.ron`) reads.
 pub const NECK_SHADOW: &str = "character/neck_shadow.png";
 
-/// Every generated file, relative to the look-dev directory, with its bytes.
-pub fn files() -> io::Result<Vec<(String, Vec<u8>)>> {
+/// The town's maps, relative to the look-dev directory, and how to make each.
+pub fn files() -> Vec<Output> {
     let path = |name: &str| format!("{TOWN_DIR}/textures/{name}");
-    Ok(vec![
-        (path("stone.png"), stone_png()?),
-        (path("timber.png"), timber_png()?),
-        (path("grass.png"), grass_png()?),
-        (path("foliage.png"), foliage_png()?),
-        (path("band.png"), band_png()?),
-        (path("whitewash.png"), whitewash_png()?),
-        (path("granite.png"), granite_png()?),
-        (path("tiles.png"), tiles_png()?),
-        (path("tiles_mask.png"), tiles_mask_png()?),
-        (path("rafters.png"), rafters_png()?),
-        (path("lantern.png"), lantern_png()?),
-        (path("flagstones.png"), flagstones_png()?),
-    ])
+    vec![
+        Output::new(path("stone.png"), stone_png),
+        Output::new(path("timber.png"), timber_png),
+        Output::new(path("grass.png"), grass_png),
+        Output::new(path("foliage.png"), foliage_png),
+        Output::new(path("band.png"), band_png),
+        Output::new(path("whitewash.png"), whitewash_png),
+        Output::new(path("granite.png"), granite_png),
+        Output::new(path("tiles.png"), tiles_png),
+        Output::new(path("tiles_mask.png"), tiles_mask_png),
+        Output::new(path("rafters.png"), rafters_png),
+        Output::new(path("lantern.png"), lantern_png),
+        Output::new(path("flagstones.png"), flagstones_png),
+    ]
 }
 
 /// The generated plants, the sky's maps, the character's face masks and the far mountains,
-/// relative to the look-dev directory, with their bytes: the sources [`files`]'s maps don't
+/// relative to the look-dev directory, and how to make each: the sources [`files`]'s maps don't
 /// cover.
-pub fn content_files() -> io::Result<Vec<(String, Vec<u8>)>> {
-    let mut generated: Vec<(String, Vec<u8>)> =
-        PLANTS.iter().map(|&(name, plant)| (format!("{FOLIAGE_DIR}/{name}"), plant.glb())).collect();
-    generated.push((format!("{SKY_DIR}/milky_way.png"), sky::milky_way_png_in(&MILKY_WAY)?));
-    generated.push((format!("{SKY_DIR}/cumulus.png"), sky_maps::cumulus_png()?));
-    generated.push((format!("{SKY_DIR}/nebula.png"), sky_maps::nebula_png()?));
-    generated.push((FACE_MASK.to_owned(), face_mask_png()?));
-    generated.push((FACE_EXPRESSION.to_owned(), face_expression_png()?));
-    generated.extend(mountains::files()?);
-    Ok(generated)
+pub fn content_files() -> Vec<Output> {
+    let mut generated: Vec<Output> = PLANTS
+        .iter()
+        .map(|&(name, plant)| Output::plain(format!("{FOLIAGE_DIR}/{name}"), move || plant.glb()))
+        .collect();
+    generated.push(Output::new(format!("{SKY_DIR}/milky_way.png"), || sky::milky_way_png_in(&MILKY_WAY)));
+    generated.push(Output::new(format!("{SKY_DIR}/cumulus.png"), sky_maps::cumulus_png));
+    generated.push(Output::new(format!("{SKY_DIR}/nebula.png"), sky_maps::nebula_png));
+    generated.push(Output::new(FACE_MASK, face_mask_png));
+    generated.push(Output::new(FACE_EXPRESSION, face_expression_png));
+    generated.extend(mountains::files());
+    generated
+}
+
+/// Everything generated in the look-dev directory `dir`: the town's maps and the character's hair mask,
+/// irises and neck shadow, which [`HAIR_HIGHLIGHT`], [`IRIS_SOURCE`] and [`MODEL`] under `dir` are read for
+/// when they're made, and [`content_files`].
+pub fn outputs(dir: &std::path::Path) -> Vec<Output> {
+    let read = |file: &str| {
+        let path = dir.join(file);
+        move || std::fs::read(path)
+    };
+    let (highlight, iris, model) = (read(HAIR_HIGHLIGHT), read(IRIS_SOURCE), read(MODEL));
+    let mut generated = files();
+    generated.extend(content_files());
+    generated.push(Output::new(HAIR_MASK, move || hair_mask_png(&highlight()?)));
+    generated.push(Output::new(IRIS, move || eye_iris_png(&iris()?)));
+    generated.push(Output::new(NECK_SHADOW, move || neck_shadow_png(&model()?)));
+    generated
 }
 
 /// Writes every generated file into the look-dev directory `dir` (creating the directories they
-/// sit in): the town's maps and the character's hair mask, irises and neck shadow, which
-/// [`HAIR_HIGHLIGHT`], [`IRIS_SOURCE`] and [`MODEL`] under `dir` are read for. Only what's
-/// missing is written, as [`write_files`] says, unless `existing` replaces what differs. Returns
-/// what it did with each file.
+/// sit in). Only what's missing is written, as [`write_files`] says, unless `existing` replaces
+/// what differs. Returns what it did with each file.
 pub fn write_all(dir: &std::path::Path, existing: Existing) -> io::Result<Generated> {
-    let highlight = std::fs::read(dir.join(HAIR_HIGHLIGHT))?;
-    let iris = std::fs::read(dir.join(IRIS_SOURCE))?;
-    let model = std::fs::read(dir.join(MODEL))?;
-    let mut generated = files()?;
-    generated.extend(content_files()?);
-    generated.push((HAIR_MASK.to_owned(), hair_mask_png(&highlight)?));
-    generated.push((IRIS.to_owned(), eye_iris_png(&iris)?));
-    generated.push((NECK_SHADOW.to_owned(), neck_shadow_png(&model)?));
-    write_files(dir, generated, existing)
+    write_files(dir, outputs(dir), existing)
 }
 
 /// Linear RGB from 8-bit sRGB.
@@ -839,6 +849,7 @@ fn mask(size: u32, texel: impl Fn(Vec2) -> [f32; 3]) -> io::Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::generators::made;
     use crate::test_util::{assert_glb_matches, assert_png_matches, floats_agree};
 
     /// The look-dev directory in the repository.
@@ -1112,8 +1123,8 @@ mod tests {
 
     #[test]
     fn maps_regenerate_byte_for_byte() {
-        assert_eq!(files().unwrap(), files().unwrap());
-        assert_eq!(content_files().unwrap(), content_files().unwrap());
+        assert_eq!(made(files()).unwrap(), made(files()).unwrap());
+        assert_eq!(made(content_files()).unwrap(), made(content_files()).unwrap());
     }
 
     /// The committed plants and Milky Way are what the generator makes, and each plant is its
@@ -1123,7 +1134,7 @@ mod tests {
     /// generator that isn't regenerated still fails it.
     #[test]
     fn the_committed_content_is_generated() {
-        for (name, generated) in content_files().unwrap() {
+        for (name, generated) in made(content_files()).unwrap() {
             let committed = std::fs::read(lookdev_dir().join(&name)).unwrap();
             if name.ends_with(".glb") {
                 assert_glb_matches(&name, &committed, &generated, |_, a, b| floats_agree(a, b));
@@ -1136,7 +1147,7 @@ mod tests {
 
     #[test]
     fn maps_tile_without_a_seam() {
-        for (name, bytes) in files().unwrap() {
+        for (name, bytes) in made(files()).unwrap() {
             if name.ends_with("band.png") || name.ends_with("lantern.png") {
                 continue;
             }

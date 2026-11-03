@@ -40,6 +40,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 
 use crate::color::srgb8;
+use crate::generators::{Output, made};
 use crate::gltf_writer::GltfWriter;
 use crate::meta;
 
@@ -74,20 +75,15 @@ pub struct Generated {
     pub unchanged: Vec<PathBuf>,
 }
 
-/// Writes generated `files` (paths relative to `dir`, with their bytes) into `dir`, creating the
-/// directories they sit in.
+/// Makes generated `files` and writes them into `dir`, creating the directories they sit in.
 ///
 /// Only what's missing is written (review BC-006): a file that holds these bytes is left alone,
 /// and one that differs is kept or replaced as `existing` says, never overwritten unasked. Each
 /// file is written whole, to a hidden staged file renamed into place, so a cook reading the tree
 /// meanwhile sees no file or a complete one.
-pub fn write_files(
-    dir: &Path,
-    files: impl IntoIterator<Item = (String, Vec<u8>)>,
-    existing: Existing,
-) -> io::Result<Generated> {
+pub fn write_files(dir: &Path, files: Vec<Output>, existing: Existing) -> io::Result<Generated> {
     let mut generated = Generated::default();
-    for (name, bytes) in files {
+    for (name, bytes) in made(files)? {
         let path = dir.join(name);
         let written = match fs::read(&path) {
             Ok(current) if current == bytes => {
@@ -129,36 +125,36 @@ fn publish_missing(path: &Path, bytes: &[u8], generated: &mut Generated) -> io::
 /// Writes every sample source asset into `dir` (creating it and the subdirectories they sit
 /// in) as [`write_files`] does, and returns what it did with each.
 pub fn write_all(dir: &Path, existing: Existing) -> io::Result<Generated> {
-    write_files(dir, files()?, existing)
+    write_files(dir, files(), existing)
 }
 
-/// Every sample source asset, relative to the samples directory, with its bytes: what
+/// Every sample source asset, relative to the samples directory, and how to make it: what
 /// [`write_all`] writes.
-pub fn files() -> io::Result<Vec<(String, Vec<u8>)>> {
-    let files = [
-        (MANNEQUIN_FILE_NAME, mannequin_glb()),
-        (swatch::RAMP_FILE_NAME, swatch::ramp_document().into_bytes()),
-        (swatch::ILM_FILE_NAME, swatch::ilm_document().into_bytes()),
-        (swatch::MATERIAL_ID_FILE_NAME, swatch::material_id_png()?),
-        (swatch::SHADOW_BIAS_FILE_NAME, swatch::shadow_bias_png()?),
-        (swatch::RAMP_MATERIAL_FILE_NAME, swatch::ramp_material_document().into_bytes()),
-        (swatch::SUBSURFACE_MATERIAL_FILE_NAME, swatch::subsurface_material_document().into_bytes()),
-        (swatch::BAND_MATERIAL_FILE_NAME, swatch::band_material_document().into_bytes()),
-        (sky::CLOUDS_FILE_NAME, sky::clouds_png()?),
-        (sky::CIRRUS_FILE_NAME, sky::cirrus_png()?),
-        (sky::MOON_FILE_NAME, sky::moon_png()?),
-        (sky::STARS_FILE_NAME, sky::stars_png()?),
-        (sky::MILKY_WAY_FILE_NAME, sky::milky_way_png()?),
-        (sky::MATERIAL_FILE_NAME, sky::material_document().into_bytes()),
-        (hard_edges::FILE_NAME, hard_edges::glb()),
-    ]
-    .map(|(name, bytes)| (name.to_owned(), bytes));
-    let nested = face::files()?
-        .into_iter()
-        .chain(environment::files()?)
-        .chain(foliage::files()?)
-        .chain(materials::files()?);
-    Ok(files.into_iter().chain(nested).collect())
+pub fn files() -> Vec<Output> {
+    let mut files = vec![
+        Output::plain(MANNEQUIN_FILE_NAME, mannequin_glb),
+        Output::plain(swatch::RAMP_FILE_NAME, || swatch::ramp_document().into_bytes()),
+        Output::plain(swatch::ILM_FILE_NAME, || swatch::ilm_document().into_bytes()),
+        Output::new(swatch::MATERIAL_ID_FILE_NAME, swatch::material_id_png),
+        Output::new(swatch::SHADOW_BIAS_FILE_NAME, swatch::shadow_bias_png),
+        Output::plain(swatch::RAMP_MATERIAL_FILE_NAME, || swatch::ramp_material_document().into_bytes()),
+        Output::plain(swatch::SUBSURFACE_MATERIAL_FILE_NAME, || {
+            swatch::subsurface_material_document().into_bytes()
+        }),
+        Output::plain(swatch::BAND_MATERIAL_FILE_NAME, || swatch::band_material_document().into_bytes()),
+        Output::new(sky::CLOUDS_FILE_NAME, sky::clouds_png),
+        Output::new(sky::CIRRUS_FILE_NAME, sky::cirrus_png),
+        Output::new(sky::MOON_FILE_NAME, sky::moon_png),
+        Output::new(sky::STARS_FILE_NAME, sky::stars_png),
+        Output::new(sky::MILKY_WAY_FILE_NAME, sky::milky_way_png),
+        Output::plain(sky::MATERIAL_FILE_NAME, || sky::material_document().into_bytes()),
+        Output::plain(hard_edges::FILE_NAME, hard_edges::glb),
+    ];
+    files.extend(face::files());
+    files.extend(environment::files());
+    files.extend(foliage::files());
+    files.extend(materials::files());
+    files
 }
 
 /// A character material in an anime palette. Colors are 8-bit sRGB, the way an artist picks
@@ -517,18 +513,17 @@ mod tests {
             hard_edges::FILE_NAME,
         ];
         assert_eq!(written[..names.len()], names.map(|name| nested.join(name)));
-        let faces: Vec<_> = face::files().unwrap().into_iter().map(|(name, _)| nested.join(name)).collect();
+        let faces: Vec<_> = face::files().into_iter().map(|output| nested.join(output.name)).collect();
         let environment: Vec<_> =
-            environment::files().unwrap().into_iter().map(|(name, _)| nested.join(name)).collect();
+            environment::files().into_iter().map(|output| nested.join(output.name)).collect();
         assert_eq!(
             written[names.len()..names.len() + faces.len()],
             faces,
             "then the face's, in their directory"
         );
-        let foliage: Vec<_> =
-            foliage::files().unwrap().into_iter().map(|(name, _)| nested.join(name)).collect();
+        let foliage: Vec<_> = foliage::files().into_iter().map(|output| nested.join(output.name)).collect();
         let materials: Vec<_> =
-            materials::files().unwrap().into_iter().map(|(name, _)| nested.join(name)).collect();
+            materials::files().into_iter().map(|output| nested.join(output.name)).collect();
         let first = names.len() + faces.len();
         assert_eq!(written[first..first + environment.len()], environment, "then the environment's");
         let first = first + environment.len();
@@ -576,7 +571,7 @@ mod tests {
     #[test]
     fn the_committed_samples_are_generated() {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/samples");
-        let files = files().unwrap();
+        let files = made(files()).unwrap();
         let failed: Vec<&str> = files
             .iter()
             .filter(|(name, generated)| {

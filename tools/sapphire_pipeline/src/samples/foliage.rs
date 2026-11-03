@@ -33,6 +33,7 @@ use serde_json::json;
 
 use super::noise::{Rng, fbm, smoothstep};
 use crate::color::{srgb8, unorm8};
+use crate::generators::Output;
 use crate::gltf_writer::{Geometry, GltfWriter};
 
 /// The directory of the foliage content, under the samples directory.
@@ -69,19 +70,19 @@ pub const GRASS_SLOTS: [(&str, AssetId); 1] = [("Blades", GRASS_MATERIAL_ID)];
 pub const GRASS_RADIUS: f32 = 2.0;
 
 /// Every foliage file, relative to the samples directory, with its bytes.
-pub fn files() -> io::Result<Vec<(String, Vec<u8>)>> {
+pub fn files() -> Vec<Output> {
     let path = |name: &str| format!("{DIR}/{name}");
-    Ok(vec![
-        (path(TREE_FILE_NAME), tree_glb()),
-        (path(BUSH_FILE_NAME), bush_glb()),
-        (path(GRASS_FILE_NAME), grass_glb()),
-        (path(BARK_MATERIAL_FILE_NAME), document(&bark_material())),
-        (path(LEAVES_MATERIAL_FILE_NAME), document(&leaves_material())),
-        (path(BUSH_MATERIAL_FILE_NAME), document(&bush_material())),
-        (path(GRASS_MATERIAL_FILE_NAME), document(&grass_material())),
-        (path(LEAVES_COLOR_FILE_NAME), leaves_png()?),
-        (path(GRASS_COLOR_FILE_NAME), grass_png()?),
-    ])
+    vec![
+        Output::plain(path(TREE_FILE_NAME), tree_glb),
+        Output::plain(path(BUSH_FILE_NAME), bush_glb),
+        Output::plain(path(GRASS_FILE_NAME), grass_glb),
+        Output::plain(path(BARK_MATERIAL_FILE_NAME), || document(&bark_material())),
+        Output::plain(path(LEAVES_MATERIAL_FILE_NAME), || document(&leaves_material())),
+        Output::plain(path(BUSH_MATERIAL_FILE_NAME), || document(&bush_material())),
+        Output::plain(path(GRASS_MATERIAL_FILE_NAME), || document(&grass_material())),
+        Output::new(path(LEAVES_COLOR_FILE_NAME), leaves_png),
+        Output::new(path(GRASS_COLOR_FILE_NAME), grass_png),
+    ]
 }
 
 fn document(material: &FoliageMaterial) -> Vec<u8> {
@@ -523,6 +524,7 @@ mod tests {
 
     use super::*;
     use crate::bake::foliage::{self, NormalTransfer};
+    use crate::generators::made;
     use crate::import;
     use crate::meta::{self, ImportSettings};
 
@@ -607,7 +609,7 @@ mod tests {
             assert_eq!(cooked.lods.len(), 1, "{file}");
             assert_eq!(cooked.streams.foliage.len(), cooked.streams.len(), "{file}: a foliage stream");
         }
-        for (_, bytes) in files().expect("files") {
+        for (_, bytes) in made(files()).expect("files") {
             let Ok(text) = String::from_utf8(bytes) else { continue };
             let document = AnyMaterialDocument::from_ron(&text).expect("a material document");
             let textures = document.textures();

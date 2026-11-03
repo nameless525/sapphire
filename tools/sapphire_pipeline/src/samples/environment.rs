@@ -57,6 +57,7 @@ use serde_json::json;
 use super::noise::{NO_PERIOD, Rng, fbm, smoothstep};
 use super::shapes;
 use crate::color::{srgb8, unorm8};
+use crate::generators::Output;
 use crate::gltf_writer::{Geometry, GltfWriter};
 use crate::probes::{BakeBounds, BakeMesh, BakeTimeline, PerCook, ProbeGridDocument, ShOrder};
 
@@ -127,28 +128,27 @@ const FLAT_RADIUS: f32 = 7.0;
 const HILLS_START: f32 = 45.0;
 
 /// Every environment file, relative to the samples directory, with its bytes.
-pub fn files() -> io::Result<Vec<(String, Vec<u8>)>> {
+pub fn files() -> Vec<Output> {
     let path = |name: &str| format!("{DIR}/{name}");
-    Ok(vec![
-        (path(COURTYARD_FILE_NAME), courtyard_glb()),
-        (path(GROUND_MATERIAL_FILE_NAME), document(&ground_material())),
-        (path(ROCK_MATERIAL_FILE_NAME), document(&rock_material())),
-        (path(STONE_MATERIAL_FILE_NAME), document(&stone_material())),
-        (path(WALL_MATERIAL_FILE_NAME), document(&wall_material())),
-        (path(LANTERN_MATERIAL_FILE_NAME), document(&lantern_material())),
-        (path(BAND_FILE_NAME), band_png()?),
-        (path(GROUND_COLOR_FILE_NAME), ground_png()?),
-        (path(MIST_SHEET_FILE_NAME), card_glb(MIST_SLOT.0)),
-        (path(HAZE_CARD_FILE_NAME), card_glb(HAZE_SLOT.0)),
-        (path(MIST_MATERIAL_FILE_NAME), document(&mist_material())),
-        (path(HAZE_MATERIAL_FILE_NAME), document(&haze_material())),
-        (path(MIST_MAP_FILE_NAME), mist_png()?),
-        (path(ARCADE_FILE_NAME), arcade_glb()),
-        (
-            path(PROBES_FILE_NAME),
-            sapphire_serialize::to_ron(&probe_document()).map_err(io::Error::other)?.into_bytes(),
-        ),
-    ])
+    vec![
+        Output::plain(path(COURTYARD_FILE_NAME), courtyard_glb),
+        Output::plain(path(GROUND_MATERIAL_FILE_NAME), || document(&ground_material())),
+        Output::plain(path(ROCK_MATERIAL_FILE_NAME), || document(&rock_material())),
+        Output::plain(path(STONE_MATERIAL_FILE_NAME), || document(&stone_material())),
+        Output::plain(path(WALL_MATERIAL_FILE_NAME), || document(&wall_material())),
+        Output::plain(path(LANTERN_MATERIAL_FILE_NAME), || document(&lantern_material())),
+        Output::new(path(BAND_FILE_NAME), band_png),
+        Output::new(path(GROUND_COLOR_FILE_NAME), ground_png),
+        Output::plain(path(MIST_SHEET_FILE_NAME), || card_glb(MIST_SLOT.0)),
+        Output::plain(path(HAZE_CARD_FILE_NAME), || card_glb(HAZE_SLOT.0)),
+        Output::plain(path(MIST_MATERIAL_FILE_NAME), || document(&mist_material())),
+        Output::plain(path(HAZE_MATERIAL_FILE_NAME), || document(&haze_material())),
+        Output::new(path(MIST_MAP_FILE_NAME), mist_png),
+        Output::plain(path(ARCADE_FILE_NAME), arcade_glb),
+        Output::new(path(PROBES_FILE_NAME), || {
+            Ok(sapphire_serialize::to_ron(&probe_document()).map_err(io::Error::other)?.into_bytes())
+        }),
+    ]
 }
 
 fn document<M: MaterialDocument>(material: &M) -> Vec<u8> {
@@ -791,6 +791,7 @@ mod tests {
     use sapphire_assets::mesh::PositionFormat;
 
     use super::*;
+    use crate::generators::made;
     use crate::import;
 
     #[test]
@@ -886,7 +887,7 @@ mod tests {
             let meta = crate::meta::read(&crate::meta::sidecar_path(&samples.join(file))).expect("a sidecar");
             assert_eq!(meta.id, id, "{file}");
         }
-        for (name, bytes) in files().expect("files") {
+        for (name, bytes) in made(files()).expect("files") {
             let Ok(text) = String::from_utf8(bytes) else { continue };
             if name.ends_with(crate::probes::SOURCE_SUFFIX) {
                 continue;

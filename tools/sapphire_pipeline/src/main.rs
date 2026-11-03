@@ -15,6 +15,7 @@ use sapphire_pipeline::combat;
 use sapphire_pipeline::cook::{self, Cook, CookOptions, CookReport, CookStatus};
 use sapphire_pipeline::documents;
 use sapphire_pipeline::extract::{self, ExtractOptions};
+use sapphire_pipeline::generators::{GENERATORS, generate_missing};
 use sapphire_pipeline::loc::{Stale, Untranslated};
 use sapphire_pipeline::lookdev;
 use sapphire_pipeline::meta::{self, ImportSettings, MeshSettings};
@@ -37,6 +38,10 @@ Usage:
       Write the combat slice's generated sources into DIR, created if missing: the enemy's
       model, from the pack's that DIR's ../third_party holds, and its palette and masks. Missing
       files only, as gen-samples, unless --force.
+  sapphire_pipeline generate --source <DIR> --lock <FILE> [--locked]
+      Run each generator with a declared file missing under the content directory DIR, holding
+      FILE's lock while it does. With --locked, a missing file is an error naming it, and nothing
+      is written.
   sapphire_pipeline cook-mesh <INPUT> <OUTPUT> [--cook <COOK>] [--weld-tolerance <METERS>]
       Cook one .gltf/.glb/.fbx/.vrm file into a .smesh file (default cook: desktop), with the
       settings of its .meta sidecar if it has one. Creates no sidecar and uses no cache.
@@ -78,6 +83,11 @@ Options:
 
 #[derive(Debug, PartialEq)]
 enum Command {
+    Generate {
+        source: PathBuf,
+        lock: PathBuf,
+        locked: bool,
+    },
     GenSamples {
         out: PathBuf,
         force: bool,
@@ -138,6 +148,11 @@ fn main() -> ExitCode {
 #[expect(clippy::print_stdout, reason = "--help and --version answer on stdout; progress goes to stderr")]
 fn run(command: Command) -> anyhow::Result<()> {
     match command {
+        Command::Generate { source, lock, locked } => {
+            for (command, generated) in generate_missing(&lock, &source, &GENERATORS, locked)? {
+                print_generated(&generated, command);
+            }
+        }
         Command::GenSamples { out, force } => {
             let generated = samples::write_all(&out, existing(force))
                 .with_context(|| format!("failed to write samples to {}", out.display()))?;
@@ -362,6 +377,11 @@ fn parse(args: impl IntoIterator<Item = String>) -> anyhow::Result<Command> {
     let name = args.remove(0);
     let mut options = Options(args);
     let command = match name.as_str() {
+        "generate" => Command::Generate {
+            source: options.required("--source")?,
+            lock: options.required("--lock")?,
+            locked: options.flag("--locked"),
+        },
         "gen-samples" => {
             Command::GenSamples { out: options.required("--out")?, force: options.flag("--force") }
         }

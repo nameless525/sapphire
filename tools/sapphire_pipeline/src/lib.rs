@@ -117,6 +117,7 @@ pub mod documents;
 pub mod extract;
 pub mod font;
 pub mod font_subset;
+pub mod generators;
 mod gltf_writer;
 pub mod import;
 pub mod keypose;

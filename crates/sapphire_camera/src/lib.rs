@@ -90,7 +90,7 @@
 //! The `collision` module's docs have the method. It casts spheres through `sapphire_physics` against
 //! `Group::World | Group::CameraBlocker`: the eye's sweep never enters a collider, a thin occluder is
 //! passed behind for a while rather than pumped in front of, and the rest come in early and leave
-//! slowly.
+//! slowly. A takeover's eye keeps to the same rule with no arm ([`CameraDirector::set_takeover`]).
 //!
 //! # Clearing
 //!

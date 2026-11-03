@@ -9,9 +9,9 @@ use common::{
     Moment, RATES, arena, combat_director, director, eye_overlaps, ground_with, lock_on_director, run,
     sweeping_look, walk_through,
 };
-use sapphire_camera::{CameraDirector, CameraPose, CameraTuning};
-use sapphire_math::{Vec2, Vec3};
-use sapphire_physics::Shape;
+use sapphire_camera::{CameraDirector, CameraPose, CameraTuning, Rig};
+use sapphire_math::{Quat, Vec2, Vec3};
+use sapphire_physics::{PhysicsWorld, Shape};
 
 const WALK_SPEED: f32 = 3.2;
 /// A tour of the committed arena's colliders: around the pillar, past the crate and the ball, and up and
@@ -96,7 +96,7 @@ fn looking_up_keeps_the_eye_above_the_ground() {
     }
 }
 
-fn pillar_world() -> sapphire_physics::PhysicsWorld {
+fn pillar_world() -> PhysicsWorld {
     // Between a camera at yaw 0 and a player at the origin, at about the arm's middle.
     ground_with(&[(Shape::Capsule { half_height: 2.0, radius: 0.35 }, Vec3::new(0.0, 2.35, -2.5))])
 }
@@ -382,6 +382,194 @@ fn a_cut_lands_clear_and_at_rest() {
     let mut fresh = director();
     let same = fresh.update(&near.frame(1.0 / 60.0), &world);
     assert!(same.eye.distance(first.eye) < 1e-3, "{} vs {}", same.eye, first.eye);
+}
+
+/// An authored shot, its eye at `eye`.
+fn shot_from(eye: Vec3) -> CameraPose {
+    CameraPose { eye, rotation: Quat::from_rotation_y(0.6) * Quat::from_rotation_x(0.2), fov_y: 0.6 }
+}
+
+/// A wall along the view, 2 m to the side of a player at the origin, with the eye on the player's side.
+fn wall_beside() -> PhysicsWorld {
+    ground_with(&[(Shape::Box { half_extents: Vec3::new(0.2, 5.0, 30.0) }, Vec3::new(2.0, 5.0, 0.0))])
+}
+
+/// Past the wall from the eye, and clear.
+const BEYOND_THE_WALL: Vec3 = Vec3::new(4.0, 2.0, -3.0);
+
+/// How fast a takeover's eye may move, in metres a second, at most: what a rig really changing is held to
+/// (`tests/jerk.rs`).
+const TAKEOVER_SPEED: f32 = 40.0;
+
+/// Runs `script` at 60 Hz, failing on any frame with the eye's sphere in a collider, and gives back how
+/// many times it hopped and how fast it moved at most, in metres a second, on the other frames.
+fn clear_through(
+    camera: &mut CameraDirector,
+    world: &PhysicsWorld,
+    what: &str,
+    times: (f32, f32),
+    script: impl Fn(f32) -> Moment,
+) -> (u32, f32) {
+    let radius = camera.tuning().collision.radius;
+    let mut steps = Vec::new();
+    let mut last = camera.pose().eye;
+    run(camera, world, 60, times, script, |time, pose, _| {
+        let overlap = eye_overlaps(world, pose, radius);
+        assert!(overlap.is_none(), "{what} at {time} s: {:?} in by {overlap:?}", pose.eye);
+        steps.push(pose.eye.distance(last));
+        last = pose.eye;
+    });
+    steps.sort_by(f32::total_cmp);
+    let hops = camera.take_stats().hops;
+    (hops, steps[steps.len() - 1 - hops as usize] * 60.0)
+}
+
+/// A shot whose eye stands in a wall is drawn from the nearest place the eye's sphere fits, as its author
+/// has it otherwise: a shot's rotation and field of view are its own, and a cut lands there at once.
+#[test]
+fn a_takeover_inside_a_wall_draws_from_outside_it() {
+    let inside = Vec3::new(5.0, 2.0, 0.0);
+    let world = ground_with(&[(Shape::Box { half_extents: Vec3::ONE }, inside)]);
+    let mut camera = director();
+    let radius = camera.tuning().collision.radius;
+    let shot = shot_from(inside);
+    camera.update(&Moment::alone(Vec3::ZERO).frame(1.0 / 60.0), &world);
+    camera.set_takeover(Some(shot));
+    camera.cut();
+    let first = camera.update(&Moment::alone(Vec3::ZERO).frame(1.0 / 60.0), &world);
+    assert!(eye_overlaps(&world, &first, radius).is_none(), "{:?}", first.eye);
+    assert!(first.eye.distance(inside) < 1.0 + radius + 0.01, "the nearest way out: {:?}", first.eye);
+    assert_eq!((first.rotation, first.fov_y), (shot.rotation, shot.fov_y));
+    clear_through(&mut camera, &world, "held in a wall", (0.0, 1.0), |_| Moment::alone(Vec3::ZERO));
+    assert_eq!(camera.pose().eye, first.eye, "and it stays there");
+}
+
+/// In where two walls meet, one push isn't always out of everything.
+#[test]
+fn a_takeover_in_a_corner_gets_out_of_both_walls() {
+    let world = ground_with(&[
+        (Shape::Box { half_extents: Vec3::new(1.0, 5.0, 4.0) }, Vec3::new(5.0, 5.0, 0.0)),
+        (Shape::Box { half_extents: Vec3::new(4.0, 5.0, 1.0) }, Vec3::new(2.0, 5.0, 4.5)),
+    ]);
+    let mut camera = director();
+    let radius = camera.tuning().collision.radius;
+    camera.set_takeover(Some(shot_from(Vec3::new(4.2, 2.0, 3.7))));
+    let pose = camera.update(&Moment::alone(Vec3::ZERO).frame(1.0 / 60.0), &world);
+    assert!(eye_overlaps(&world, &pose, radius).is_none(), "{:?}", pose.eye);
+}
+
+/// Between walls too close for the eye's sphere, pushing gets nowhere: it stands as far along the way as it gets.
+#[test]
+fn a_takeover_with_nowhere_to_stand_stops_on_its_way() {
+    let wall = Shape::Box { half_extents: Vec3::new(0.5, 5.0, 4.0) };
+    let world = ground_with(&[(wall, Vec3::new(3.5, 5.0, 0.0)), (wall, Vec3::new(4.7, 5.0, 0.0))]);
+    let mut camera = director();
+    let radius = camera.tuning().collision.radius;
+    let script = |_: f32| Moment::alone(Vec3::ZERO);
+    run(&mut camera, &world, 60, (0.0, 1.0), script, |_, _, _| {});
+    camera.set_takeover(Some(shot_from(Vec3::new(4.1, 2.0, 0.0))));
+    camera.cut();
+    let first = camera.update(&script(0.0).frame(1.0 / 60.0), &world);
+    assert!(eye_overlaps(&world, &first, radius).is_none(), "{:?}", first.eye);
+    assert!(first.eye.x < 3.0, "on this side of them: {:?}", first.eye);
+    let (hops, _) = clear_through(&mut camera, &world, "shut out", (1.0, 5.0), script);
+    assert_eq!(hops, 0, "there's nowhere to hop to");
+    assert!(first.eye.distance(camera.pose().eye) < 1.0, "{:?}", camera.pose().eye);
+}
+
+/// A shot the eye has clear way to is exactly the shot, whatever else is about.
+#[test]
+fn a_takeover_with_nothing_in_its_way_is_exact() {
+    let world = wall_beside();
+    let mut camera = director();
+    let shot = shot_from(Vec3::new(-3.0, 2.0, -3.0));
+    run(&mut camera, &world, 60, (0.0, 1.0), |_| Moment::alone(Vec3::ZERO), |_, _, _| {});
+    camera.set_takeover(Some(shot));
+    clear_through(&mut camera, &world, "a clear shot", (1.0, 4.0), |_| Moment::alone(Vec3::ZERO));
+    assert_eq!(camera.pose(), shot);
+}
+
+/// Blending to a shot past a wall, the eye doesn't cross it: it stops and slides, and once that's plainly as far
+/// as it gets, hops to the shot, the one jump there is, as it does for the arm. Blending back goes the same way.
+#[test]
+fn a_takeover_past_a_wall_hops_rather_than_crossing_it() {
+    let world = wall_beside();
+    let mut camera = director();
+    let script = |_: f32| Moment::alone(Vec3::ZERO);
+    let shot = shot_from(BEYOND_THE_WALL);
+    run(&mut camera, &world, 60, (0.0, 1.0), script, |_, _, _| {});
+    let before = camera.pose();
+    camera.take_stats();
+
+    camera.set_takeover(Some(shot));
+    let (hops, top) = clear_through(&mut camera, &world, "blending in", (1.0, 5.0), script);
+    assert_eq!(camera.pose(), shot, "it gets there");
+    assert_eq!(hops, 1);
+    assert!(top < TAKEOVER_SPEED, "the eye reached {top} m/s");
+
+    camera.set_takeover(None);
+    let (hops, top) = clear_through(&mut camera, &world, "blending out", (5.0, 9.0), script);
+    assert_eq!(camera.weight(Rig::Takeover), 0.0);
+    assert!(camera.pose().eye.distance(before.eye) < 0.01, "back to the rigs: {:?}", camera.pose());
+    assert_eq!(hops, 1);
+    assert!(top < TAKEOVER_SPEED, "the eye reached {top} m/s");
+}
+
+/// Slid along something and clear of it, the eye comes back to its place softly, rather than all at once.
+#[test]
+fn a_takeover_past_a_short_wall_comes_round_it_softly() {
+    // Across the way from the eye to the shot, and ending short of where the shot is along it, so the eye
+    // slides off its end.
+    let world =
+        ground_with(&[(Shape::Box { half_extents: Vec3::new(0.2, 5.0, 1.5) }, Vec3::new(2.0, 5.0, -3.5))]);
+    let mut camera = director();
+    let script = |_: f32| Moment::alone(Vec3::ZERO);
+    run(&mut camera, &world, 60, (0.0, 1.0), script, |_, _, _| {});
+    camera.take_stats();
+    let shot = shot_from(Vec3::new(4.0, 2.0, -1.0));
+    camera.set_takeover(Some(shot));
+    let (hops, top) = clear_through(&mut camera, &world, "coming round", (1.0, 5.0), script);
+    assert_eq!(hops, 0, "it never had to");
+    assert!(top < TAKEOVER_SPEED, "the eye reached {top} m/s");
+    assert_eq!(camera.pose(), shot, "and it ends exactly on the shot");
+}
+
+/// A shot with its own motion, carried through a wall and out: each frame clear, however it moves.
+#[test]
+fn a_moving_takeover_stays_out_of_what_it_passes() {
+    let world = wall_beside();
+    let mut camera = director();
+    let script = |_: f32| Moment::alone(Vec3::ZERO);
+    run(&mut camera, &world, 60, (0.0, 1.0), script, |_, _, _| {});
+    let radius = camera.tuning().collision.radius;
+    for frame in 0..600 {
+        // From this side of the wall to the far side and back, every 5 s.
+        let t = frame as f32 / 60.0;
+        camera.set_takeover(Some(shot_from(Vec3::new(2.0 + 3.0 * (t * 1.25).sin(), 2.0, -3.0))));
+        let pose = camera.update(&script(t).frame(1.0 / 60.0), &world);
+        assert!(eye_overlaps(&world, &pose, radius).is_none(), "at {t} s: {:?}", pose.eye);
+    }
+    assert!(camera.take_stats().hops >= 1, "it must have been shut out at some point");
+}
+
+/// A shake on top of a shot right by a wall stops short of it, as it does on a rig's view.
+#[test]
+fn a_shaking_takeover_stays_out_of_what_its_beside() {
+    let world = wall_beside();
+    let mut camera = director();
+    let radius = camera.tuning().collision.radius;
+    let shake = camera.tuning().shake_id("finish").expect("a shipped preset");
+    camera.set_takeover(Some(shot_from(Vec3::new(1.8 - radius - 0.005, 2.0, -3.0))));
+    let mut moved = 0.0_f32;
+    for frame in 0..300 {
+        if frame % 10 == 0 {
+            camera.fire_shake(shake, 1.0);
+        }
+        let pose = camera.update(&Moment::alone(Vec3::ZERO).frame(1.0 / 60.0), &world);
+        assert!(eye_overlaps(&world, &pose, radius).is_none(), "frame {frame}: {:?}", pose.eye);
+        moved = moved.max(pose.eye.distance(Vec3::new(1.8 - radius - 0.005, 2.0, -3.0)));
+    }
+    assert!(moved > 0.0, "the shake must have moved it");
 }
 
 /// The sphere's radius from the shipped tuning stays well clear of the near plane's corners, which is

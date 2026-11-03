@@ -7,7 +7,7 @@ use sapphire_math::{Mat3, Mat4, Quat, Transform, UP, Vec2, Vec3};
 use sapphire_physics::PhysicsWorld;
 
 use crate::clearing::{Clearing, Scene};
-use crate::collision::{Arm, CRAMPED};
+use crate::collision::{Arm, CRAMPED, TakeoverEye};
 use crate::rigs::{Axes, Rig, Subject, framed_distance, framed_pivot, smoothstep, yaw_limit};
 use crate::shake::{ShakeId, ShakeStack};
 use crate::spring::{Follow, chase, rate_of};
@@ -201,6 +201,8 @@ pub struct CameraDirector {
     takeover: Option<CameraPose>,
     /// The takeover pose a fade-out blends from once the sequencer stops giving one.
     last_takeover: Option<CameraPose>,
+    /// The eye, from a takeover's first share of the view until it's back where the rigs have theirs.
+    takeover_eye: Option<TakeoverEye>,
 
     /// The last valid inputs, which stand in for invalid ones.
     last_frame: Option<CameraFrame>,
@@ -345,6 +347,7 @@ impl CameraDirector {
             shakes: ShakeStack::new(seed),
             takeover: None,
             last_takeover: None,
+            takeover_eye: None,
             last_frame: None,
             cut_pending: true,
             pose: CameraPose { eye: Vec3::ZERO, rotation: Quat::IDENTITY, fov_y: 1.0 },
@@ -387,8 +390,12 @@ impl CameraDirector {
 
     /// Gives the top of the stack to an authored pose, updated every frame by a sequencer (M3), or hands
     /// it back with `None`. It blends with the rigs' result over the tuning's half-life. At full weight
-    /// the view is exactly this pose, collision aside: a shot's author owns its framing. The rigs keep
-    /// running beneath it, so the view they hand back to is current. Shakes still apply on top.
+    /// the view is exactly this pose, wherever the eye's sphere has room: a shot's author owns its framing,
+    /// and nothing asks that the player be seen. The eye never enters a collider, in the shot or on its way
+    /// in and out: it stops and slides, a shot's place in a wall means the nearest place out of it, and one it
+    /// can't slide to it hops to after `stuck_time`, which [`CameraStats::hops`] counts. [`Self::cut`] goes
+    /// straight there. Its rotation and field of view are always the shot's. The rigs keep running beneath
+    /// it, so the view they hand back to is current. Shakes still apply on top.
     pub fn set_takeover(&mut self, pose: Option<CameraPose>) {
         self.wanted[Rig::Takeover as usize] = pose.is_some();
         self.takeover = pose;
@@ -519,21 +526,7 @@ impl CameraDirector {
         let share = self.shut_in.update(share, if snap { 0.0 } else { SHUT_IN_HALF_LIFE }, dt);
         let rotation = look_rotation(looking(eye, pivot, axes.forward, framed, share), &axes);
         let mut pose = CameraPose { eye, rotation, fov_y };
-
-        let takeover = self.weight(Rig::Takeover);
-        if takeover > 0.0
-            && let Some(shot) = self.takeover.or(self.last_takeover)
-        {
-            pose = if takeover >= 1.0 {
-                shot
-            } else {
-                CameraPose {
-                    eye: pose.eye.lerp(shot.eye, takeover),
-                    rotation: pose.rotation.slerp(shot.rotation, takeover),
-                    fov_y: pose.fov_y + (shot.fov_y - pose.fov_y) * takeover,
-                }
-            };
-        }
+        self.step_takeover(&mut pose, world, dt, snap);
 
         let forward = pose.forward();
         if forward.x.abs().max(forward.z.abs()) > 1e-3 {
@@ -627,6 +620,33 @@ impl CameraDirector {
             if settled {
                 self.weight_speeds[index] = 0.0;
             }
+        }
+    }
+
+    /// Lays the takeover's shot over the rigs' `pose`. Its rotation and field of view blend at the pose. Its
+    /// eye goes where the blend wants it by the collision's rule, until it's back where the rigs have theirs.
+    fn step_takeover(&mut self, pose: &mut CameraPose, world: &PhysicsWorld, dt: f32, snap: bool) {
+        let takeover = self.weight(Rig::Takeover);
+        let shot = self.takeover.or(self.last_takeover).filter(|_| takeover > 0.0);
+        if shot.is_none() && self.takeover_eye.is_none() {
+            return;
+        }
+        let mut goal = pose.eye;
+        if let Some(shot) = shot {
+            if takeover >= 1.0 {
+                goal = shot.eye;
+                pose.rotation = shot.rotation;
+                pose.fov_y = shot.fov_y;
+            } else {
+                goal = goal.lerp(shot.eye, takeover);
+                pose.rotation = pose.rotation.slerp(shot.rotation, takeover);
+                pose.fov_y += (shot.fov_y - pose.fov_y) * takeover;
+            }
+        }
+        let eye = self.takeover_eye.get_or_insert_with(|| TakeoverEye::at(self.arm.eye()));
+        pose.eye = eye.step(&self.arm, world, goal, &self.tuning.collision, dt, snap, &mut self.stats);
+        if shot.is_none() && eye.is_there() {
+            self.takeover_eye = None;
         }
     }
 

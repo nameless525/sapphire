@@ -28,6 +28,11 @@
 //! **An eye pulled in within `CRAMPED` of the player's chest** sees neither fighter, so it comes out as
 //! quickly as it went in, with no delay: there's nothing there to keep steady. What gets it room in the first
 //! place is turning the view: the `clearing` module.
+//!
+//! **A takeover's eye** ([`TakeoverEye`]) has no arm: a shot's author says where it stands, and nothing need
+//! see the player from there. The second half of the rule holds it all the same: it sweeps and slides from
+//! where it was to where the shot or the blend wants it, a place in a wall meaning the nearest one out of it,
+//! and hops there as the arm's eye does if sliding can't get it there. Nothing in the way, and it's exactly there.
 
 use sapphire_math::Vec3;
 use sapphire_physics::{Group, PhysicsWorld, Pose, QueryFilter, Shape};
@@ -46,6 +51,8 @@ const NO_MOVE: f32 = 1e-5;
 pub(crate) const CRAMPED: f32 = 1.5;
 /// How far the line must move over the lead time before it's worth a second cast, in metres.
 const WORTH_LEADING: f32 = 0.01;
+/// Pushes to get a place out of everything it's in: enough for an inside corner.
+const PUSHES_OUT: u32 = 4;
 
 /// What's along a line, from its start to its end.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -264,20 +271,9 @@ impl Arm {
         eye + direction * reach
     }
 
-    /// What's left of the eye's gap from its place after this step, closing no faster than the arm moves.
+    /// What's left of the eye's gap from its place after this step.
     fn closed_gap(&mut self, tuning: &CollisionTuning, dt: f32) -> Vec3 {
-        let gap = self.eye - self.last_proposed;
-        if gap.length_squared() < NO_MOVE * NO_MOVE {
-            self.gap.reset(Vec3::ZERO);
-            return Vec3::ZERO;
-        }
-        self.gap.value = gap;
-        let next = self.gap.update(Vec3::ZERO, tuning.pull_in_half_life, dt);
-        let limit = tuning.max_pull_speed * dt;
-        let closed = (gap - next).clamp_length_max(limit);
-        self.gap.value = gap - closed;
-        self.gap.velocity = self.gap.velocity.clamp_length_max(tuning.max_pull_speed);
-        self.gap.value
+        closed_gap(&mut self.gap, self.eye - self.last_proposed, tuning, dt)
     }
 
     /// Moves the pull toward `wanted`: quickly in, and slowly out once the line has stayed clear. An eye in
@@ -345,6 +341,103 @@ impl Arm {
             None => at,
         }
     }
+
+    /// `at`, or the nearest place out of everything it overlaps, if a few pushes find one: walls can stand
+    /// too close together for the eye's sphere to fit between them.
+    fn clear_of_everything(&self, world: &PhysicsWorld, at: Vec3, stats: &mut CameraStats) -> Option<Vec3> {
+        let mut at = at;
+        for _ in 0..PUSHES_OUT {
+            stats.casts += 1;
+            match world.penetration(&self.sphere, Pose::at(at), &self.filter) {
+                Some(deepest) => at += deepest.normal * (deepest.depth + SKIN),
+                None => return Some(at),
+            }
+        }
+        None
+    }
+}
+
+/// The eye while a takeover has any of the view: see the [module docs](self). The arm goes on beneath it, so
+/// the rigs have a current view to hand back to.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TakeoverEye {
+    eye: Vec3,
+    /// How far the eye sits from its place: as the arm's, nothing while it moves freely.
+    gap: Follow<Vec3>,
+    /// Its place last frame.
+    last_place: Vec3,
+    /// Seconds it's been away from its place.
+    stuck_for: f32,
+}
+
+impl TakeoverEye {
+    /// Setting out from `eye`, which is clear: the arm's, as the takeover gets its first share of the view.
+    pub(crate) fn at(eye: Vec3) -> Self {
+        Self { eye, gap: Follow::new(Vec3::ZERO), last_place: eye, stuck_for: 0.0 }
+    }
+
+    /// Whether the eye's on its place, which it needn't have been for a shot to be over.
+    pub(crate) fn is_there(&self) -> bool {
+        self.eye == self.last_place
+    }
+
+    /// Where the eye goes this frame, for a shot or a blend that wants it at `goal`. With `snap` it goes
+    /// straight there, or to the nearest place it fits, however far that is from where it was. The eye's
+    /// sphere ends clear of every collider, and with nothing in the way the eye is exactly `goal`.
+    #[allow(clippy::too_many_arguments, reason = "one frame's inputs, at its one call")]
+    pub(crate) fn step(
+        &mut self,
+        arm: &Arm,
+        world: &PhysicsWorld,
+        goal: Vec3,
+        tuning: &CollisionTuning,
+        dt: f32,
+        snap: bool,
+        stats: &mut CameraStats,
+    ) -> Vec3 {
+        let clear = arm.clear_of_everything(world, goal, stats);
+        if snap {
+            // With nowhere near there to stand, as far along the way from what's known to be clear.
+            self.eye = clear.unwrap_or_else(|| arm.slide(world, arm.eye(), goal, stats));
+            self.gap.reset(Vec3::ZERO);
+            self.last_place = self.eye;
+            self.stuck_for = 0.0;
+            return self.eye;
+        }
+        let place = clear.unwrap_or(goal);
+        let aim = place + closed_gap(&mut self.gap, self.eye - self.last_place, tuning, dt);
+        self.eye = arm.slide(world, self.eye, aim, stats);
+        self.last_place = place;
+        self.stuck_for = if self.eye.distance_squared(place) > tuning.stuck_gap * tuning.stuck_gap {
+            self.stuck_for + dt
+        } else {
+            0.0
+        };
+        if self.stuck_for >= tuning.stuck_time
+            && let Some(clear) = clear
+        {
+            self.eye = clear;
+            self.gap.reset(Vec3::ZERO);
+            self.stuck_for = 0.0;
+            stats.hops += 1;
+        }
+        self.eye
+    }
+}
+
+/// What's left of `gap`, from an eye to its place, after this step, closing no faster than the arm moves.
+fn closed_gap(spring: &mut Follow<Vec3>, gap: Vec3, tuning: &CollisionTuning, dt: f32) -> Vec3 {
+    if gap.length_squared() < NO_MOVE * NO_MOVE {
+        spring.reset(Vec3::ZERO);
+        return Vec3::ZERO;
+    }
+    spring.value = gap;
+    let next = spring.update(Vec3::ZERO, tuning.pull_in_half_life, dt);
+    let limit = tuning.max_pull_speed * dt;
+    let closed = (gap - next).clamp_length_max(limit);
+    spring.value = gap - closed;
+    spring.velocity = spring.velocity.clamp_length_max(tuning.max_pull_speed);
+    spring.value
 }
 
 /// How much pull a line asks for. A thin occluder asks for none while there's patience left.

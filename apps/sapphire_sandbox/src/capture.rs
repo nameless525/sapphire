@@ -156,11 +156,11 @@ impl Readback {
         receiver.recv().map_err(|error| error.to_string())?.map_err(|error| error.to_string())?;
         let mapped = self.buffer.get_mapped_range(..).map_err(|error| error.to_string())?;
         let row_bytes = self.width as usize * 4;
-        Ok(mapped
-            .chunks_exact(self.padded_row_bytes as usize)
-            .flat_map(|row| &row[..row_bytes])
-            .copied()
-            .collect())
+        let mut pixels = Vec::with_capacity(row_bytes * self.height as usize);
+        for row in mapped.chunks_exact(self.padded_row_bytes as usize) {
+            pixels.extend_from_slice(&row[..row_bytes]);
+        }
+        Ok(pixels)
     }
 }
 

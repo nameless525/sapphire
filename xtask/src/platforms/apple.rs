@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{Context as _, bail, ensure};
+use anyhow::{Context as _, ensure};
 
 use super::App;
 use crate::workspace;
@@ -56,21 +56,7 @@ pub fn render_info_plist(template: &str, app: &App) -> anyhow::Result<String> {
         ("MARKETING_VERSION", &app.version),
         ("CURRENT_PROJECT_VERSION", &build),
     ];
-    let mut plist = String::with_capacity(template.len());
-    let mut rest = template;
-    while let Some(start) = rest.find("$(") {
-        plist.push_str(&rest[..start]);
-        let token = &rest[start..];
-        let Some(end) = token.find(')') else { bail!("unterminated placeholder in Info.plist template") };
-        let name = &token["$(".len()..end];
-        let Some((_, value)) = variables.iter().find(|(variable, _)| *variable == name) else {
-            bail!("unknown placeholder $({name}) in Info.plist template");
-        };
-        push_xml_escaped(&mut plist, value);
-        rest = &token[end + 1..];
-    }
-    plist.push_str(rest);
-    Ok(plist)
+    super::fill_template(template, "Info.plist", &variables, push_xml_escaped)
 }
 
 /// Appends `text` escaped for an XML text node.

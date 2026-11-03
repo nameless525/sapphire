@@ -390,6 +390,32 @@ fn require_macos_host(platform: Platform) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Fills a template's Xcode-style `$(NAME)` placeholders from `variables`, in one pass over the
+/// template: a value is never scanned for placeholders. `push` appends a value as the file needs it
+/// written. `file` names the template in errors.
+fn fill_template(
+    template: &str,
+    file: &str,
+    variables: &[(&str, &str)],
+    push: fn(&mut String, &str),
+) -> anyhow::Result<String> {
+    let mut filled = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(start) = rest.find("$(") {
+        filled.push_str(&rest[..start]);
+        let token = &rest[start..];
+        let Some(end) = token.find(')') else { bail!("unterminated placeholder in {file} template") };
+        let name = &token["$(".len()..end];
+        let Some((_, value)) = variables.iter().find(|(variable, _)| *variable == name) else {
+            bail!("unknown placeholder $({name}) in {file} template");
+        };
+        push(&mut filled, value);
+        rest = &token[end + 1..];
+    }
+    filled.push_str(rest);
+    Ok(filled)
+}
+
 /// The Info.plist template for a platform, from `platform/<dir>/Info.plist`.
 fn info_plist_template(dir: &str) -> anyhow::Result<(PathBuf, String)> {
     let path = workspace::root().join("platform").join(dir).join("Info.plist");

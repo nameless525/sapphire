@@ -168,6 +168,171 @@ fn a_ray_starting_inside_hits_at_once() {
     }
 }
 
+// --- A query's range ---
+
+fn in_the_world(id: u32, shape: Shape, position: Vec3) -> BodyDesc {
+    BodyDesc {
+        id: BodyId(id),
+        shape,
+        pose: Pose::at(position),
+        groups: CollisionGroups::new(Group::Hurtbox.mask(), GroupMask::NONE),
+    }
+}
+
+/// What every query says of one target: one world, and where to look from.
+struct RangeCase {
+    what: &'static str,
+    world: PhysicsWorld,
+    from: Vec3,
+    along: Vec3,
+}
+
+fn range_cases() -> Vec<RangeCase> {
+    let ball = Shape::Sphere { radius: 1.0 };
+    let at = Vec3::new(3.0, 0.0, 0.0);
+    let mut body = world(Vec::new());
+    body.add_body(in_the_world(1, ball, at)).expect("fits");
+    let mut bodies = world(vec![collider(9, UNIT_BOX, Vec3::new(0.0, 50.0, 0.0))]);
+    bodies.add_body(in_the_world(1, ball, at)).expect("fits");
+    vec![
+        RangeCase {
+            what: "a sphere alone in the tree",
+            world: world(vec![collider(1, ball, at)]),
+            from: Vec3::ZERO,
+            along: Vec3::X,
+        },
+        RangeCase {
+            what: "a sphere in a tree of two",
+            world: world(vec![collider(1, ball, at), collider(2, ball, Vec3::new(0.0, 50.0, 0.0))]),
+            from: Vec3::ZERO,
+            along: Vec3::X,
+        },
+        RangeCase {
+            what: "a box",
+            world: world(vec![collider(1, UNIT_BOX, at)]),
+            from: Vec3::ZERO,
+            along: Vec3::X,
+        },
+        RangeCase {
+            what: "a mesh",
+            world: world(vec![plane_mesh(1, 2.0)]),
+            from: Vec3::new(1.0, 7.0, 1.0),
+            along: Vec3::NEG_Y,
+        },
+        RangeCase { what: "a body", world: body, from: Vec3::ZERO, along: Vec3::X },
+        RangeCase { what: "a body beside a static", world: bodies, from: Vec3::ZERO, along: Vec3::X },
+    ]
+}
+
+/// A range is the distance a query is asked about, its end included, for first hits as for all of
+/// them: what touches at exactly that distance is within it, and a float short of it isn't.
+#[test]
+fn a_querys_range_includes_its_end() {
+    let mut hits = [ShapeHit::NONE; 4];
+    for case in range_cases() {
+        let RangeCase { what, world, from, along } = case;
+        let ray = |limit: f32| world.cast_ray(from, along, limit, &ALL).map(|hit| hit.distance);
+        let touches = ray(100.0).unwrap_or_else(|| panic!("{what}: a ray should reach it"));
+        assert_eq!(ray(touches), Some(touches), "{what}: a ray that ends on it");
+        assert_eq!(ray(touches.next_up()), Some(touches), "{what}: a ray a float past it");
+        assert_eq!(ray(touches.next_down()), None, "{what}: a ray a float short of it");
+
+        let ball = Shape::Sphere { radius: 1.0 };
+        let pose = Pose::at(from);
+        let first = |limit: f32| world.cast_shape(&ball, pose, along, limit, &ALL).map(|hit| hit.distance);
+        let touches = first(100.0).unwrap_or_else(|| panic!("{what}: a cast should reach it"));
+        assert_eq!(first(touches), Some(touches), "{what}: a cast that ends on it");
+        assert_eq!(first(touches.next_up()), Some(touches), "{what}: a cast a float past it");
+        assert_eq!(first(touches.next_down()), None, "{what}: a cast a float short of it");
+        let mut all = |limit: f32| {
+            let found = world.cast_shape_all(&ball, pose, along, limit, &ALL, &mut hits);
+            (found.written == 1).then_some(hits[0].distance)
+        };
+        assert_eq!(all(touches), Some(touches), "{what}: all hits, ending on it");
+        assert_eq!(all(touches.next_up()), Some(touches), "{what}: all hits, a float past it");
+        assert_eq!(all(touches.next_down()), None, "{what}: all hits, a float short of it");
+    }
+}
+
+/// A range of nothing still says what a shape starts in or on, and the two kinds of query say the same.
+#[test]
+fn a_range_of_nothing_says_what_a_shape_starts_in() {
+    let ball = Shape::Sphere { radius: 1.0 };
+    let mut hits = [ShapeHit::NONE; 4];
+    // The sphere at the origin against one at these distances, as a static and as a body.
+    for (apart, found, what) in [(1.5, true, "overlapping"), (2.0, true, "touching"), (2.5, false, "apart")] {
+        let at = Vec3::new(apart, 0.0, 0.0);
+        let mut body = world(Vec::new());
+        body.add_body(in_the_world(1, ball, at)).expect("fits");
+        for world in [world(vec![collider(1, ball, at)]), body] {
+            let first = world.cast_shape(&ball, Pose::IDENTITY, Vec3::X, 0.0, &ALL);
+            assert_eq!(first.is_some(), found, "first hit, {what}");
+            let all = world.cast_shape_all(&ball, Pose::IDENTITY, Vec3::X, 0.0, &ALL, &mut hits);
+            assert_eq!(all.written == 1, found, "all hits, {what}");
+            if let Some(first) = first {
+                assert_eq!(first.distance, 0.0, "{what}");
+                assert_eq!(first, hits[0], "{what}");
+                assert_eq!(first.started_overlapping, apart < 2.0, "{what}");
+            }
+        }
+    }
+    // A ray from inside something, with no range at all.
+    let world = world(vec![collider(1, ball, Vec3::ZERO)]);
+    let hit = world.cast_ray(Vec3::ZERO, Vec3::X, 0.0, &ALL).expect("it starts inside");
+    assert_eq!(hit.distance, 0.0);
+}
+
+/// Taking the end of a range in changes who wins no tie: a static over a body and a lower ID over a
+/// higher, wherever the tie falls.
+#[test]
+fn ties_at_a_querys_limit_go_as_every_tie_does() {
+    let ball = Shape::Sphere { radius: 1.0 };
+    let (near, far) = (Vec3::new(3.0, 0.0, 0.0), Vec3::new(-3.0, 0.0, 0.0));
+    // A ray from the origin touches each after 2, and a cast of this size after 1, both exactly: each
+    // pair is where the limit falls on the tie, a float past it, and well past it.
+    let limits = [(2.0, 1.0), (2.0_f32.next_up(), 1.0_f32.next_up()), (100.0, 100.0)];
+    let hits_first = |world: &PhysicsWorld, target: HitTarget| {
+        for (ray, cast) in limits {
+            let by_ray = world.cast_ray(Vec3::ZERO, Vec3::X, ray, &ALL).expect("a ray reaches it");
+            assert_eq!((by_ray.target, by_ray.distance), (target, 2.0), "within {ray}");
+            let by_cast =
+                world.cast_shape(&ball, Pose::IDENTITY, Vec3::X, cast, &ALL).expect("a cast reaches it");
+            assert_eq!((by_cast.target, by_cast.distance), (target, 1.0), "within {cast}");
+        }
+    };
+    // A static and a body, and the body's ID lower.
+    let mut mixed = world(vec![collider(9, ball, near), collider(8, ball, far)]);
+    mixed.add_body(in_the_world(1, ball, near)).expect("fits");
+    hits_first(&mixed, HitTarget::Static(ColliderId(9)));
+    // Two bodies, added high to low.
+    let mut bodies = world(Vec::new());
+    bodies.add_body(in_the_world(5, ball, near)).expect("fits");
+    bodies.add_body(in_the_world(2, ball, near)).expect("fits");
+    hits_first(&bodies, HitTarget::Body(BodyId(2)));
+}
+
+/// A move's reach goes four skins past its motion, and a surface exactly there is still past the
+/// motion: it goes the whole way, and nothing was hit.
+#[test]
+fn a_surface_at_the_end_of_a_moves_reach_doesnt_stop_it() {
+    let options = MoveOptions::default();
+    let motion = 0.5;
+    let touches_after = motion + 4.0 * options.skin;
+    // A radius of 0.5 and of 1 touch 1.5 apart.
+    let target = collider(1, Shape::Sphere { radius: 1.0 }, Vec3::new(touches_after + 1.5, 0.0, 0.0));
+    let mut world = world(vec![target]);
+    let body = BodyDesc {
+        id: BodyId(1),
+        shape: SPHERE,
+        pose: Pose::IDENTITY,
+        groups: CollisionGroups::new(Group::Character.mask(), Group::World.mask()),
+    };
+    world.add_body(body).expect("fits");
+    let outcome = world.move_and_collide(BodyId(1), Vec3::X * motion, &options).expect("moves");
+    assert!(outcome.hits().is_empty(), "{:?}", outcome.hits());
+    assert_close(outcome.position.x, motion);
+}
+
 // --- Shape casts ---
 
 #[test]

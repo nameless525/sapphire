@@ -148,6 +148,13 @@ impl BvhLeafCost for LeafRay {
     }
 }
 
+/// What to start a best-first walk's bound at for a query's range to include its end. A walk keeps only
+/// what's strictly nearer than its bound, which is right for what it has already found, so a tie stays
+/// with whatever it reached first, and a float past the end is the one bound that also takes in the end.
+fn past(range: f32) -> f32 {
+    range.next_up()
+}
+
 /// The time a ray from the origin along `direction` takes to reach `node` grown by a shape's box
 /// (its Minkowski sum), or `f32::MAX`: a shape reaching the node can't happen sooner.
 fn sweep_cost(node: &BvhNode, shape_box: &Aabb, direction: &Ray, best: f32) -> f32 {
@@ -158,8 +165,8 @@ fn sweep_cost(node: &BvhNode, shape_box: &Aabb, direction: &Ray, best: f32) -> f
 }
 
 impl PhysicsWorld {
-    /// The first thing a ray hits within `max_distance`. `direction` needn't be unit length; a
-    /// zero one hits nothing.
+    /// The first thing a ray hits within `max_distance`, what it reaches at exactly that distance
+    /// included, as in every query here. `direction` needn't be unit length; a zero one hits nothing.
     pub fn cast_ray(
         &self,
         origin: Vec3,
@@ -173,11 +180,12 @@ impl PhysicsWorld {
         let ray = Ray::new(origin, direction);
         let selector = Selector::Query(*filter);
         let tests = Cell::new(0u32);
+        let limit = past(max_distance);
 
         let mut best = self
             .tree
             .find_best(
-                max_distance,
+                limit,
                 |node: &BvhNode, best| node.cast_ray(&ray, best),
                 |leaf, best| {
                     let entry = &self.statics[leaf as usize];
@@ -191,7 +199,7 @@ impl PhysicsWorld {
             )
             .map(|(leaf, hit)| (HitTarget::Static(self.statics[leaf as usize].id), hit.0, hit.1));
 
-        let mut reach = best.map_or(max_distance, |hit| hit.1);
+        let mut reach = best.map_or(limit, |hit| hit.1);
         for body in &self.bodies {
             if !selector.takes_body(body) {
                 continue;
@@ -365,13 +373,14 @@ impl PhysicsWorld {
     ) -> Option<(HitTarget, Sweep)> {
         let tests = Cell::new(0u32);
         let box_at_start = mover.aabb(start);
+        let limit = past(max_distance);
         // The tree's boxes are in world space: a ray from the origin measures how far `mover`
         // travels before its box reaches theirs, as `parry3d`'s own composite cast does.
         let ray = Ray::new(Vec3::ZERO, direction);
         let mut best = self
             .tree
             .find_best(
-                max_distance,
+                limit,
                 |node: &BvhNode, best| sweep_cost(node, &box_at_start, &ray, best),
                 |leaf, best| {
                     let entry = &self.statics[leaf as usize];
@@ -386,7 +395,7 @@ impl PhysicsWorld {
             )
             .map(|(leaf, hit)| (HitTarget::Static(self.statics[leaf as usize].id), hit.0));
 
-        let mut reach = best.map_or(max_distance, |hit| hit.1.distance);
+        let mut reach = best.map_or(limit, |hit| hit.1.distance);
         let swept = swept_box(mover, start, direction, reach);
         for body in &self.bodies {
             if !selector.takes_body(body) || !body.aabb.intersects(&swept) {
@@ -520,7 +529,7 @@ fn sweep_mesh(
     let core = mover.core();
     let count = Cell::new(*tests);
     let hit = mesh.bvh().find_best(
-        reach,
+        past(reach),
         |node: &BvhNode, best| sweep_cost(node, &box_at_start, &ray, best),
         |triangle, best| {
             count.set(count.get() + 1);

@@ -15,6 +15,11 @@
 // a test instead of leaving an invisible wall. `apps/sapphire_sandbox/src/arena.rs`'s tests hold the
 // trees to the stage's plantings, which aren't in the assembly.
 //
+// A `camera_` box is what a camera can't stand in or see through and a body never reaches: the blockers'
+// twins where the town closes a gap, the rows' eaves, the stalls' and the pavilion's roofs. They exist so
+// that what the camera's own casts read is what a player sees: `arena::framing`'s report names what's drawn
+// in the way with no collider on the ray, and what a camera does with them is `sapphire_camera`'s clearing.
+//
 // The simulation compiles this file in (`sapphire_gameplay::arena`), so moving anything here re-records
 // the `arena` replays: `cargo xtask replay --update`. Look at it over the town:
 //
@@ -108,6 +113,36 @@
             // The one canopy solid enough and low enough to matter: from under a character's chin to
             // 7.4 m. A camera backing into it would see the inside of a lump.
             (name: "camera_tree_kit", shape: Box(half_extents: (1.53, 3.0, 1.53)), position: (13.0, 4.4, 5.0), groups: [CameraBlocker]),
+            // A body under that canopy has its head in it, and the camera's arm starts there: stopping
+            // short of it is what a body would do at a solid lump at chin height.
+            (name: "block_tree_kit", shape: Box(half_extents: (1.53, 3.0, 1.53)), position: (13.0, 3.0, 5.0), groups: [CharacterBlocker]),
+
+            // ---- Where a character can't leave the square a camera can't either, or it ends up in the
+            // street looking back through a moon gate, or down an alley at a wall. These are the
+            // blockers below that close the town's gaps: the paving's open end stays open, since a camera
+            // over the lawn has a view.
+            (name: "camera_gate_street", shape: Box(half_extents: (1.7, 3.0, 0.25)), position: (3.2, 3.0, -18.0), groups: [CameraBlocker]),
+            (name: "camera_gate_courtyard", shape: Box(half_extents: (1.0, 3.0, 0.25)), position: (-3.6, 3.0, -18.0), groups: [CameraBlocker]),
+            (name: "camera_back_west", shape: Box(half_extents: (0.14, 3.0, 0.41)), position: (-6.79, 3.0, -17.84), groups: [CameraBlocker]),
+            (name: "camera_back_east", shape: Box(half_extents: (0.845, 3.0, 0.25)), position: (7.695, 3.0, -18.0), groups: [CameraBlocker]),
+            (name: "camera_west_corner", shape: Box(half_extents: (0.25, 3.0, 1.485)), position: (-17.29, 3.0, -15.945), groups: [CameraBlocker]),
+            (name: "camera_west_alley_back", shape: Box(half_extents: (0.25, 3.0, 0.89)), position: (-17.29, 3.0, -5.45), groups: [CameraBlocker]),
+            (name: "camera_west_alley_front", shape: Box(half_extents: (0.25, 3.0, 0.69)), position: (-17.29, 3.0, 3.45), groups: [CameraBlocker]),
+            (name: "camera_east_corner", shape: Box(half_extents: (0.25, 3.0, 1.34)), position: (17.29, 3.0, -16.6), groups: [CameraBlocker]),
+            (name: "camera_east_corner_back", shape: Box(half_extents: (0.44, 3.0, 0.25)), position: (17.1, 3.0, -17.69), groups: [CameraBlocker]),
+            (name: "camera_east_alley_back", shape: Box(half_extents: (0.25, 3.0, 0.94)), position: (17.29, 3.0, -7.8), groups: [CameraBlocker]),
+            (name: "camera_east_alley_front", shape: Box(half_extents: (0.25, 3.0, 0.94)), position: (17.29, 3.0, 2.2), groups: [CameraBlocker]),
+            // The rows' eaves, from 3.1 m up and about 0.95 m out from their walls, which a body never
+            // reaches and an eye does: it would sit in the tiles.
+            (name: "camera_eaves_west", shape: Box(half_extents: (0.52, 2.5, 13.85)), position: (-16.52, 5.5, -2.65), groups: [CameraBlocker]),
+            (name: "camera_eaves_east", shape: Box(half_extents: (0.52, 2.5, 13.75)), position: (16.52, 5.5, -3.5), groups: [CameraBlocker]),
+            (name: "camera_eaves_back", shape: Box(half_extents: (18.6, 2.5, 0.57)), position: (-0.1, 5.5, -16.87), groups: [CameraBlocker]),
+            // The same of the stalls' roofs and the pavilion's, past the frames the colliders above hold to.
+            (name: "camera_roof_greens", shape: Box(half_extents: (2.04, 0.85, 1.54)), position: (6.4, 2.9, -9.2), rotation: AxisAngle(axis: (0.0, 1.0, 0.0), degrees: 15.0), groups: [CameraBlocker]),
+            (name: "camera_roof_cloth", shape: Box(half_extents: (1.38, 0.5, 1.13)), position: (9.9955, 2.33, -10.9744), rotation: AxisAngle(axis: (0.0, 1.0, 0.0), degrees: -10.0), groups: [CameraBlocker]),
+            (name: "camera_roof_pots", shape: Box(half_extents: (2.14, 0.9, 1.59)), position: (12.5, 2.9, -6.2), rotation: AxisAngle(axis: (0.0, 1.0, 0.0), degrees: -60.0), groups: [CameraBlocker]),
+            (name: "camera_roof_fruit", shape: Box(half_extents: (1.4, 0.6, 1.15)), position: (-8.6, 2.5, 0.4), rotation: AxisAngle(axis: (0.0, 1.0, 0.0), degrees: 30.0), groups: [CameraBlocker]),
+            (name: "camera_roof_pavilion", shape: Box(half_extents: (2.91, 1.05, 2.91)), position: (-4.5, 4.3, -7.0), rotation: AxisAngle(axis: (0.0, 1.0, 0.0), degrees: 30.0), groups: [CameraBlocker]),
 
             // ---- What keeps characters in, without stopping cameras or hits. Where the town leaves
             // a way out, a blocker stands in the plane of what's beside it, 6 m tall, well over any

@@ -159,7 +159,7 @@ fn the_arenas_world_is_the_same_on_every_architecture() {
     assert_eq!(digest, ARENA_WORLD_DIGEST, "the arena's world's digest is {digest:#x}");
 }
 
-const ARENA_WORLD_DIGEST: u64 = 0x98e6_1174_9c60_6459;
+const ARENA_WORLD_DIGEST: u64 = 0x41a3_7315_25a5_18cb;
 
 #[test]
 fn the_document_parses_cooks_and_builds_a_world() {
@@ -201,6 +201,21 @@ fn only_blockers_are_out_of_the_world_group() {
         assert_eq!(entry.groups, [expected], "{}", entry.name);
     }
     assert!(blockers > 0);
+}
+
+/// The kit tree's canopy starts at chin height, so a head under it is in it, and so is the camera's arm:
+/// a body stops at the canopy's edge as it would at a wall.
+#[test]
+fn a_body_stays_out_from_under_the_kit_trees_canopy() {
+    let bytes = cooked();
+    let cooked = set(&bytes);
+    let world = world(&bytes);
+    let filter = QueryFilter::new(character_filter());
+    let mut hits = [HitTarget::Body(BodyId(0)); 8];
+    let under = Vec3::new(14.0, 0.0, 5.0);
+    let found = world.overlap(&capsule(), capsule_pose(under), &filter, &mut hits);
+    let names: Vec<String> = hits[..found.written].iter().map(|&hit| name_of(cooked, hit)).collect();
+    assert!(names.iter().any(|name| name == "block_tree_kit"), "{names:?}");
 }
 
 #[test]

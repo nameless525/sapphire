@@ -489,6 +489,40 @@ fn a_takeover_with_nothing_in_its_way_is_exact() {
     assert_eq!(camera.pose(), shot);
 }
 
+/// A sequencer's bad frame is a frame: the eye goes on from where it stands now, so a place that isn't one
+/// would stay in it for good, through handing back and on, with the rigs' eye fine beneath it.
+#[test]
+fn a_shot_that_isnt_a_place_leaves_nothing_behind() {
+    let world = wall_beside();
+    let script = |_: f32| Moment::alone(Vec3::ZERO);
+    let mut camera = director();
+    run(&mut camera, &world, 60, (0.0, 1.0), script, |_, _, _| {});
+    let before = camera.pose();
+
+    let shot = shot_from(Vec3::new(-3.0, 2.0, -3.0));
+    camera.set_takeover(Some(shot));
+    clear_through(&mut camera, &world, "a clear shot", (1.0, 4.0), script);
+    for bad in [Vec3::NAN, Vec3::new(f32::INFINITY, 2.0, -3.0)] {
+        camera.set_takeover(Some(CameraPose { eye: bad, ..shot }));
+        assert_eq!(camera.update(&script(4.0).frame(1.0 / 60.0), &world), shot, "the last good one holds");
+    }
+    camera.set_takeover(Some(CameraPose { fov_y: f32::NAN, ..shot }));
+    assert_eq!(camera.update(&script(4.0).frame(1.0 / 60.0), &world), shot);
+    camera.set_takeover(Some(CameraPose { rotation: Quat::NAN, ..shot }));
+    assert_eq!(camera.update(&script(4.0).frame(1.0 / 60.0), &world), shot);
+
+    camera.set_takeover(None);
+    clear_through(&mut camera, &world, "handing back", (4.0, 9.0), script);
+    assert_eq!(camera.weight(Rig::Takeover), 0.0);
+    assert!(camera.pose().eye.distance(before.eye) < 0.01, "back to the rigs: {:?}", camera.pose());
+
+    // With nothing good before it, it's no shot at all.
+    let mut camera = director();
+    camera.set_takeover(Some(CameraPose { eye: Vec3::NAN, ..shot }));
+    assert!(camera.update(&script(0.0).frame(1.0 / 60.0), &world).eye.is_finite());
+    assert_eq!(camera.weight(Rig::Takeover), 0.0);
+}
+
 /// Blending to a shot past a wall, the eye doesn't cross it: it stops and slides, and once that's plainly as far
 /// as it gets, hops to the shot, the one jump there is, as it does for the arm. Blending back goes the same way.
 #[test]

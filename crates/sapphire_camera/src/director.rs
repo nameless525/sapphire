@@ -147,6 +147,10 @@ impl CameraPose {
         self.rotation * sapphire_math::FORWARD
     }
 
+    fn is_finite(&self) -> bool {
+        self.eye.is_finite() && self.rotation.is_finite() && self.fov_y.is_finite()
+    }
+
     /// World to view space, as `sapphire_math::projection::view_from_transform` builds it.
     #[must_use]
     pub fn view(&self) -> Mat4 {
@@ -421,8 +425,13 @@ impl CameraDirector {
     /// in and out: it stops and slides, a shot's place in a wall means the nearest place out of it, and one it
     /// can't slide to it hops to after `stuck_time`, which [`CameraStats::hops`] counts. [`Self::cut`] goes
     /// straight there. Its rotation and field of view are always the shot's. The rigs keep running beneath
-    /// it, so the view they hand back to is current. Shakes still apply on top.
+    /// it, so the view they hand back to is current. Shakes still apply on top. A pose with a number that
+    /// isn't finite changes nothing, as with [`Self::update`]'s frames: the eye goes on from where it stands,
+    /// so it would never get over one.
     pub fn set_takeover(&mut self, pose: Option<CameraPose>) {
+        if pose.is_some_and(|pose| !pose.is_finite()) {
+            return;
+        }
         self.wanted[Rig::Takeover as usize] = pose.is_some();
         self.takeover = pose;
         if pose.is_some() {

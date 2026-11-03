@@ -27,10 +27,11 @@ use sapphire_platform::{Event, FingerId, Timestamp, TouchDeviceId, TouchPhase, W
 use sapphire_time::Stopwatch;
 use sapphire_ui::{
     Atlas, Button, ButtonEventKind, CombatHud, DamageKind, FighterValues, HudLayout, HudStats, HudValues,
-    Insets, SkillValues, TouchActions, TouchControls, UiDrawList, UiMetrics,
+    Insets, SkillValues, TouchActions, UiDrawList, UiMetrics,
 };
 
 use crate::LOG_TARGET;
+use crate::touch::TouchControls;
 use game_combat::fight::{Fight, Followed};
 use sapphire_stage::FrameLaps;
 use sapphire_stage::content::Content;

@@ -1,5 +1,5 @@
-//! The game's on-screen interface, first slice (spec §5.17, M2 I2): touch controls and a combat HUD
-//! as quads over a generated atlas, drawn after post. `taffy`, `parley`, UI documents and menus stay
+//! The game's on-screen interface, first slice (spec §5.17, M2 I2): a combat HUD as quads over a
+//! generated atlas, drawn after post. `taffy`, `parley`, UI documents and menus stay
 //! in M3 (M2 plan §3); this is what a fight needs on a phone.
 //!
 //! # Owns
@@ -9,9 +9,8 @@
 //!   anchors. A UI point is `pixels / display scale`, so a thumb's size is the same everywhere.
 //! - **The atlas** ([`atlas`]): every shape as a signed distance field, painted by code at load.
 //! - **Painting** ([`paint`]): shapes into [`sapphire_look::UiQuad`]s, in points.
-//! - **Touch zones** ([`touch`]): fingers to a floating stick, three buttons and a camera drag, with
-//!   ownership from press to release and `sapphire_input`'s rules for cancels and focus, read back
-//!   as plain [`TouchActions`].
+//! - **What the touch zones read** ([`touch`]), as plain [`TouchActions`]: the zones themselves, fingers to
+//!   a floating stick, three buttons and a camera drag, are `game_ui`'s (M3 S2).
 //! - **The combat HUD** ([`hud`]): where everything goes ([`HudLayout`], shared by what's drawn and
 //!   what's hit-tested), plain [`HudValues`] and how it all draws and animates ([`CombatHud`]).
 //!
@@ -81,6 +80,4 @@ pub use hud::{
 pub use layout::{Anchor, Insets, Rect, UiMetrics};
 pub use paint::{Align, Paint, Painter};
 pub use sapphire_look::{UiAtlas, UiDrawList, UiQuad};
-pub use touch::{
-    Button, ButtonEvent, ButtonEventKind, ButtonState, StickState, TouchActions, TouchControls, TouchTuning,
-};
+pub use touch::{Button, ButtonEvent, ButtonEventKind, ButtonState, StickState, TouchActions};

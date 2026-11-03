@@ -21,9 +21,13 @@ tracing.workspace = true
 
 [dev-dependencies]
 sapphire_colliders.workspace = true
+sapphire_controls.workspace = true
+# Its tests read the quads the HUD draws.
+sapphire_look.workspace = true
 # The counting allocator, for the steady-state allocation test.
 sapphire_core = { workspace = true, features = ["mimalloc"] }
 sapphire_cues.workspace = true
+sapphire_input.workspace = true
 sapphire_vfx.workspace = true
 
 [features]

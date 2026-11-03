@@ -1,17 +1,19 @@
-//! Touch's road to a tick: `sapphire_ui`'s zones say what the fingers did, and `read_touch` hands that to
+//! Touch's road to a tick: the zones say what the fingers did, and `read_touch` hands that to
 //! the bindings. Every rule a pad has holds here too: a press is one edge however frames and steps line
 //! up, a stick is a level turned by the camera, and what ends a press is `sapphire_input`'s.
 
+#[path = "../../../crates/sapphire_controls/tests/support/mod.rs"]
 mod support;
 
 use std::f32::consts::FRAC_PI_2;
 
+use game_ui::touch::TouchControls;
 use sapphire_controls::{CombatControls, TOUCH_BUTTONS, default_bindings};
 use sapphire_gameplay::{Buttons, Stick};
 use sapphire_input::{InputMap, RawInput, Source, Trigger};
 use sapphire_math::{Vec2, Vec3, det};
 use sapphire_platform::{Event, FingerId, LifecycleEvent, TouchDeviceId, TouchPhase, WindowEvent, WindowId};
-use sapphire_ui::{Button, HudLayout, Insets, TouchControls, UiMetrics};
+use sapphire_ui::{Button, HudLayout, Insets, UiMetrics};
 use support::{BACK, D, FRAME_MS, L, N, Rig, key, ms};
 
 const SKILL: Buttons = Buttons::SKILL;

@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 use sapphire_platform::{TouchDeviceId, TouchEvent, WindowId};
 
 use super::*;
-use crate::layout::{Insets, UiMetrics};
+use sapphire_ui::{Insets, UiMetrics};
 
 /// A phone-shaped frame.
 fn layout() -> HudLayout {

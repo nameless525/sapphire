@@ -19,8 +19,8 @@ use sapphire_render::{
 };
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 use sapphire_ui::{
-    Atlas, Button, CombatHud, FighterValues, HudLayout, HudValues, Insets, Paint, Painter, SkillValues,
-    TouchActions, TouchControls, UiMetrics,
+    Atlas, Button, ButtonState, CombatHud, FighterValues, HudLayout, HudValues, Insets, Paint, Painter,
+    SkillValues, TouchActions, UiMetrics,
 };
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -411,14 +411,17 @@ fn a_cooldown_s_sweep_covers_its_share_clockwise_from_the_top() {
 /// The combat HUD, its fixed values, at `metrics`, with a thumb on each of the buttons `held`.
 fn hud_list(metrics: UiMetrics, held: &[Button]) -> (HudLayout, UiDrawList) {
     let layout = HudLayout::new(metrics);
-    let mut controls = TouchControls::new(layout);
     let timestamp = sapphire_platform::Timestamp::from_nanos(1);
-    for (id, &button) in held.iter().enumerate() {
-        let finger =
-            sapphire_platform::FingerId::new(sapphire_platform::TouchDeviceId::from_raw(1), id as u64);
-        controls.touch(timestamp, finger, sapphire_platform::TouchPhase::Down, layout.button(button).center);
+    let mut actions = TouchActions::default();
+    for &button in held {
+        actions.buttons[button.index()] = ButtonState {
+            down: true,
+            pressed_at: timestamp,
+            over: true,
+            pressed: true,
+            ..ButtonState::default()
+        };
     }
-    let actions: TouchActions = controls.update(timestamp).clone();
     let values = HudValues {
         player: FighterValues { hp: 0.5, poise: 0.5, hp_points: Some(1234) },
         enemy: Some(FighterValues { hp: 0.5, poise: 0.5, hp_points: None }),

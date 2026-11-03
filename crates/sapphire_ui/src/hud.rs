@@ -118,7 +118,7 @@ pub struct BarsLayout {
 
 /// Where everything goes, from the frame's metrics. All in points, all inside the safe area,
 /// pinned to its corners and edges so each keeps its distance from them at any aspect ratio. It is
-/// plain data, and [`TouchControls`](crate::TouchControls) hit-tests against the same numbers it
+/// plain data, and `game_ui`'s touch zones hit-test against the same numbers it
 /// draws from.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct HudLayout {

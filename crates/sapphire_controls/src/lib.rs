@@ -20,7 +20,7 @@
 //! - The camera. [`CombatControls::look`], [`CombatControls::camera_zoom`] and
 //!   [`CombatControls::raw_stick`] are presentation, for the app to apply, and aren't in a tick. The
 //!   mapping takes the camera's yaw as a plain number.
-//! - Touch zones: `sapphire_ui` says what the fingers did, and [`CombatControls::read_touch`] takes it.
+//! - Touch zones: `game_ui`'s say what the fingers did, in `sapphire_ui`'s plain values, and [`CombatControls::read_touch`] takes it.
 //!   Which verb a button presses is here ([`TOUCH_BUTTONS`]), and the rest is the bindings'.
 //! - A pause menu's visuals, and rumble.
 //!

@@ -7,6 +7,7 @@
 #![allow(rustdoc::private_intra_doc_links)]
 
 pub mod hud;
+pub mod touch;
 
 /// Log target for the interface.
 pub(crate) const LOG_TARGET: &str = "game::ui";

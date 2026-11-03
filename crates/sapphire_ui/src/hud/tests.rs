@@ -4,7 +4,6 @@ use sapphire_look::UiQuad;
 
 use super::*;
 use crate::layout::Insets;
-use crate::touch::TouchControls;
 
 fn ms(ms: u64) -> Timestamp {
     Timestamp::from_nanos(ms * 1_000_000)
@@ -159,50 +158,14 @@ fn quad_corners(quad: &UiQuad) -> [Vec2; 4] {
     [origin, origin + x, origin + y, origin + x + y]
 }
 
-/// The list a HUD with `values` draws at `layout`, with fingers in `set_up`.
-fn draw(layout: &HudLayout, values: &HudValues, set_up: impl FnOnce(&mut TouchControls)) -> UiDrawList {
-    let mut controls = TouchControls::new(*layout);
-    set_up(&mut controls);
+/// The list a HUD with `values` draws at `layout`, with nobody on the zones.
+fn draw(layout: &HudLayout, values: &HudValues) -> UiDrawList {
     let mut hud = CombatHud::new();
-    let actions = controls.update(ms(0));
-    hud.update(ms(0), values, actions);
+    let actions = TouchActions::default();
+    hud.update(ms(0), values, &actions);
     let mut list = UiDrawList::default();
-    hud.draw(layout, actions, &mut list);
+    hud.draw(layout, &actions, &mut list);
     list
-}
-
-#[test]
-fn every_quad_stays_on_the_frame_with_nothing_held_or_with_everything_held() {
-    let mut failures = String::new();
-    for (name, metrics) in frames() {
-        let layout = HudLayout::new(metrics);
-        let held = |controls: &mut TouchControls| {
-            for (id, position) in
-                [layout.stick.rest, layout.attack.center, layout.dodge.center, layout.skill.center]
-                    .into_iter()
-                    .enumerate()
-            {
-                let finger = sapphire_platform::FingerId::new(
-                    sapphire_platform::TouchDeviceId::from_raw(1),
-                    id as u64,
-                );
-                controls.touch(ms(0), finger, sapphire_platform::TouchPhase::Down, position);
-            }
-        };
-        let idle = draw(&layout, &values(), |_| {});
-        let busy = draw(&layout, &values(), held);
-        for quad in idle.quads.iter().chain(&busy.quads) {
-            for corner in quad_corners(quad) {
-                // A cell's empty margin may hang over the edge, not more.
-                let slop = Vec2::splat(16.0);
-                let frame = Rect::new(-slop, metrics.size + slop);
-                if !frame.contains(corner) {
-                    let _ = writeln!(failures, "{name}: a quad's corner at {corner}");
-                }
-            }
-        }
-    }
-    assert!(failures.is_empty(), "\n{failures}");
 }
 
 #[test]
@@ -225,8 +188,8 @@ fn a_draw_names_its_atlas_and_viewport_and_counts_its_quads() {
 #[test]
 fn a_fighter_with_no_enemy_draws_fewer_bars() {
     let layout = HudLayout::new(UiMetrics::new(Vec2::new(640.0, 360.0), Insets::default()));
-    let with = draw(&layout, &values(), |_| {}).quads.len();
-    let alone = draw(&layout, &HudValues { enemy: None, ..values() }, |_| {}).quads.len();
+    let with = draw(&layout, &values()).quads.len();
+    let alone = draw(&layout, &HudValues { enemy: None, ..values() }).quads.len();
     assert!(alone < with);
 }
 
@@ -239,9 +202,8 @@ fn a_pause_lays_a_veil_over_the_frame_and_a_mark_in_its_middle() {
     let bar = Atlas::paint().sprites.bar;
     for (name, metrics) in frames {
         let layout = HudLayout::new(metrics);
-        let mut controls = TouchControls::new(layout);
         let mut hud = CombatHud::new();
-        let actions = controls.update(ms(0));
+        let actions = &TouchActions::default();
         hud.update(ms(0), &values(), actions);
         let draw = |hud: &CombatHud| {
             let mut list = UiDrawList::default();
@@ -288,9 +250,8 @@ fn a_pause_lays_a_veil_over_the_frame_and_a_mark_in_its_middle() {
 #[test]
 fn someone_coming_in_with_less_shows_no_loss() {
     let layout = HudLayout::new(UiMetrics::new(Vec2::new(640.0, 360.0), Insets::default()));
-    let mut controls = TouchControls::new(layout);
     let mut hud = CombatHud::new();
-    let actions = controls.update(ms(0));
+    let actions = &TouchActions::default();
     let fighters = |player: f32, enemy: f32| HudValues {
         player: FighterValues { hp: player, ..FighterValues::default() },
         enemy: Some(FighterValues { hp: enemy, ..FighterValues::default() }),
@@ -550,37 +511,4 @@ fn values_outside_their_ranges_clamp_and_nan_reads_as_zero() {
     let enemy = good.enemy.unwrap();
     assert_eq!((enemy.hp, enemy.poise), (0.0, 1.0));
     assert_eq!(good.skill.cooldown, 0.0);
-}
-
-#[test]
-fn a_held_stick_draws_under_the_thumb_inside_the_safe_area() {
-    let layout = HudLayout::new(UiMetrics::new(Vec2::new(874.0, 402.0), NOTCHED));
-    let finger = sapphire_platform::FingerId::new(sapphire_platform::TouchDeviceId::from_raw(1), 1);
-    let landing = layout.stick.zone.center();
-    let list = draw(&layout, &values(), |controls| {
-        controls.touch(ms(0), finger, sapphire_platform::TouchPhase::Down, landing);
-    });
-    let centers: Vec<Vec2> = list
-        .quads
-        .iter()
-        .map(|quad| {
-            let [first, _, _, last] = quad_corners(quad);
-            (first + last) * 0.5
-        })
-        .collect();
-    assert!(centers.iter().any(|center| center.distance(landing) < 1e-3), "under the thumb");
-    assert!(!centers.iter().any(|center| center.distance(layout.stick.rest) < 1e-3), "not at its rest");
-    // A landing against the safe area's edge keeps the ring on it.
-    let edge = Vec2::new(layout.safe.min.x, layout.safe.max.y);
-    let list = draw(&layout, &values(), |controls| {
-        controls.touch(ms(0), finger, sapphire_platform::TouchPhase::Down, edge);
-    });
-    let inset = edge + Vec2::new(layout.stick.radius, -layout.stick.radius);
-    assert!(
-        list.quads.iter().any(|quad| {
-            let [first, _, _, last] = quad_corners(quad);
-            ((first + last) * 0.5).distance(inset) < 1e-3
-        }),
-        "the ring stays whole inside the safe area"
-    );
 }

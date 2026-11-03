@@ -1348,9 +1348,12 @@ version = "0.1.0"
 dependencies = [
  "game_combat",
  "sapphire_colliders",
+ "sapphire_controls",
  "sapphire_core",
  "sapphire_cues",
  "sapphire_gameplay",
+ "sapphire_input",
+ "sapphire_look",
  "sapphire_math",
  "sapphire_moves",
  "sapphire_platform",

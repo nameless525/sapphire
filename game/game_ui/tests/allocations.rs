@@ -4,13 +4,13 @@
 
 use std::alloc::System;
 
+use game_ui::touch::TouchControls;
 use sapphire_core::alloc::{self, CountingAllocator, PER_THREAD_COUNTS};
 use sapphire_math::Vec2;
 use sapphire_platform::Timestamp;
 use sapphire_platform::{FingerId, TouchDeviceId, TouchPhase};
 use sapphire_ui::{
-    CombatHud, DamageKind, FighterValues, HudLayout, HudValues, Insets, SkillValues, TouchControls,
-    UiDrawList, UiMetrics,
+    CombatHud, DamageKind, FighterValues, HudLayout, HudValues, Insets, SkillValues, UiDrawList, UiMetrics,
 };
 
 #[global_allocator]

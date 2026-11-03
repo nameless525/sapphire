@@ -17,8 +17,9 @@
 //! iPhone's app never quits. Only what came after the last of those is lost to a killed process.
 //!
 //! **A session nobody can play again survives a bad save** ([`SessionFiles`]), on both of those routes.
-//! Each write goes beside the file first, so a process killed in the middle of one leaves the last whole
-//! file standing, and it replaces only what this session put there. A file that can't be written, for a
+//! Each write goes beside the file first, through a part of its own that a killed process leaves for
+//! someone to find, so a kill in the middle of one leaves the last whole file standing, and it replaces
+//! only what this session put there. A file that can't be written, for a
 //! full disk, a directory gone since the run began or someone else's file at the name, sends the session
 //! to one file in the temp directory instead, and says where. If that fails too, the overlay's recorder
 //! goes on recording and asks to be tried again. Only when the app is already quitting is what came after
@@ -738,10 +739,12 @@ impl Unwritten {
 ///
 /// A rename replaces whatever it lands on, so a name not known to be ours is claimed first, which fails
 /// if it's taken. Phones are why it isn't a hard link: Android refuses apps those. A kill between the
-/// claim and the rename leaves an empty file at the name, with the session whole beside it.
+/// claim and the rename leaves an empty file at the name, with the session whole beside it, so what lies
+/// beside a file may be all there is of a session: this goes through a part of its own ([`new_partial`]),
+/// and removes that and nothing else.
 fn write_file(path: &Path, bytes: &[u8], ours: Option<&[u8]>) -> std::io::Result<()> {
-    let partial = path.with_extension("partial");
-    fill(fs::File::create(&partial)?, &partial, bytes)?;
+    let (partial, file) = new_partial(path)?;
+    fill(file, &partial, bytes)?;
     let replacing = ours.is_some_and(|ours| holds(path, ours));
     let claimed = if replacing {
         Ok(())
@@ -758,6 +761,36 @@ fn write_file(path: &Path, bytes: &[u8], ours: Option<&[u8]>) -> std::io::Result
     placed.inspect_err(|_| {
         let _ = fs::remove_file(&partial);
     })
+}
+
+/// How many names beside a file [`new_partial`] tries. Only kills leave parts behind, so this is a lot of
+/// kills, and a directory that says every name is taken can't hold a write forever.
+const PARTIAL_NAMES: u32 = 64;
+
+/// The name beside `path` that a write's part takes, by how many are taken before it.
+fn partial_name(path: &Path, taken: u32) -> PathBuf {
+    match taken {
+        0 => path.with_extension("partial"),
+        _ => path.with_extension(format!("{taken}.partial")),
+    }
+}
+
+/// Makes a file beside `path` that nothing else has: the first free [`partial_name`], since making it
+/// fails if it's there, so two runs can't write through each other. Beside it, a rename stays on one
+/// file system.
+fn new_partial(path: &Path) -> std::io::Result<(PathBuf, fs::File)> {
+    for taken in 0..PARTIAL_NAMES {
+        let partial = partial_name(path, taken);
+        match fs::OpenOptions::new().write(true).create_new(true).open(&partial) {
+            Ok(file) => return Ok((partial, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        format!("{PARTIAL_NAMES} parts of earlier writes are beside it"),
+    ))
 }
 
 /// Writes `bytes` to `file`, the file at `path`, and removes it if they don't all go in.
@@ -1436,8 +1469,17 @@ mod tests {
         }
     }
 
+    /// The names of what's in `dir`, in order.
+    fn listing(dir: &Path) -> Vec<String> {
+        let entries = fs::read_dir(dir).expect("reads");
+        let mut names: Vec<String> =
+            entries.map(|entry| entry.expect("reads").file_name().to_string_lossy().into_owned()).collect();
+        names.sort();
+        names
+    }
+
     /// A killed app says nothing and writes nothing: what it last kept is all there is, whole, and the
-    /// write it was in the middle of leaves only a part beside it, which the next run's write takes over.
+    /// write it was in the middle of leaves only a part beside it, which no later run's write touches.
     #[test]
     fn a_session_kept_on_a_trip_survives_a_kill() {
         let scratch = ScratchDir::new("killed");
@@ -1445,7 +1487,8 @@ mod tests {
         play(&mut combat, 5);
         combat.keep_so_far();
         play(&mut combat, 5);
-        fs::write(path.with_extension("partial"), b"part of a re").expect("writes");
+        let left = path.with_extension("partial");
+        fs::write(&left, b"part of a re").expect("writes");
         std::mem::forget(combat);
         assert_eq!(ticks_in(&path), 5);
 
@@ -1454,7 +1497,88 @@ mod tests {
         play(&mut combat, 3);
         combat.keep_so_far();
         assert_eq!(ticks_in(&path), 3);
-        assert!(!path.with_extension("partial").exists(), "nothing's left beside it");
+        assert_eq!(fs::read(&left).expect("kept"), b"part of a re");
+        assert_eq!(listing(&scratch.0), ["played.partial", "played.sreplay"], "its own part is gone");
+    }
+
+    /// A kill between a write's claim and its rename leaves the name empty and the session whole beside
+    /// it, so what's beside a file may be the only copy of a session nobody can play again.
+    #[test]
+    fn a_session_whole_beside_its_name_outlives_the_next_run() {
+        let scratch = ScratchDir::new("killed-whole");
+        let (mut combat, path) = played_in(&scratch);
+        play(&mut combat, 5);
+        let left = path.with_extension("partial");
+        let Mode::Recording { recording: session, .. } = &mut combat.mode else { panic!("a recording") };
+        fs::write(&left, session.so_far().encode()).expect("writes");
+        std::mem::forget(combat);
+
+        // The name's free again, and someone plays under it.
+        let mut combat = recording(&path, None);
+        play(&mut combat, 3);
+        combat.finish().expect("written");
+        assert_eq!(ticks_in(&path), 3);
+        assert_eq!(ticks_in(&left), 5, "the first session is still there to be found");
+    }
+
+    /// A write takes away only what it made, whichever way it goes: to a free name, over its own file, or
+    /// refused by someone else's.
+    #[test]
+    fn a_write_leaves_what_it_found_beside_its_file() {
+        let scratch = ScratchDir::new("beside");
+        let (mut combat, path) = played_in(&scratch);
+        send_rescues_to(&mut combat, scratch.0.clone());
+        let left = path.with_extension("partial");
+        fs::write(&left, b"another run's").expect("writes");
+        let kept = |expected: &[&str]| {
+            assert_eq!(fs::read(&left).expect("kept"), b"another run's");
+            assert_eq!(listing(&scratch.0), expected);
+        };
+
+        play(&mut combat, 2);
+        combat.keep_so_far();
+        assert_eq!(ticks_in(&path), 2, "a free name");
+        kept(&["played.partial", "played.sreplay"]);
+
+        play(&mut combat, 2);
+        combat.keep_so_far();
+        assert_eq!(ticks_in(&path), 4, "its own file");
+        kept(&["played.partial", "played.sreplay"]);
+
+        fs::write(&path, b"another session").expect("writes");
+        play(&mut combat, 2);
+        combat.keep_so_far();
+        assert_eq!(fs::read(&path).expect("kept"), b"another session", "refused");
+        assert_eq!(ticks_in(&scratch.0.join("played-unsaved-1.sreplay")), 6);
+        kept(&["played-unsaved-1.sreplay", "played.partial", "played.sreplay"]);
+
+        let error = write_file(&path, b"more", None).expect_err("refused");
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        kept(&["played-unsaved-1.sreplay", "played.partial", "played.sreplay"]);
+    }
+
+    /// Two runs after one name: whichever writes first has it, and the other goes elsewhere, with neither
+    /// writing through the other's part.
+    #[test]
+    fn two_sessions_after_one_name_keep_out_of_each_others_way() {
+        let scratch = ScratchDir::new("two");
+        let (mut first, path) = played_in(&scratch);
+        let mut second = recording(&path, None);
+        send_rescues_to(&mut first, scratch.0.clone());
+        play(&mut first, 2);
+        play(&mut second, 3);
+
+        // The second writes while the first is part way through writing its part.
+        let writing = path.with_extension("partial");
+        fs::write(&writing, b"the first's").expect("writes");
+        second.keep_so_far();
+        assert_eq!(fs::read(&writing).expect("kept"), b"the first's");
+        assert_eq!(ticks_in(&path), 3, "the second came first");
+        fs::remove_file(&writing).expect("the first's part");
+
+        first.keep_so_far();
+        assert_eq!(ticks_in(&path), 3, "and it stays");
+        assert_eq!(ticks_in(&scratch.0.join("played-unsaved-1.sreplay")), 2);
     }
 
     /// A file there from before the first trip isn't the session's, and the session stays in one file
@@ -1549,7 +1673,9 @@ mod tests {
         play(&mut combat, 2);
         combat.keep_so_far();
         // Nothing can write beside it now, as a full disk would refuse.
-        fs::create_dir_all(path.with_extension("partial")).expect("makes");
+        for taken in 0..PARTIAL_NAMES {
+            fs::write(partial_name(&path, taken), b"in the way").expect("writes");
+        }
         play(&mut combat, 2);
 
         let error = combat.finish().expect_err("nothing took it");

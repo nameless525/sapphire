@@ -121,7 +121,7 @@ fn a_swap_doesnt_read_as_a_hit_on_the_huds_bar() {
     let (mut scene, _) = arena_stage(ArenaShot::Follow);
     let live = HudOptions { mode: HudMode::Live, ..HudOptions::default() };
     scene.set_hud(FightHud::for_fight(live));
-    let party = find_scenario(SCENARIOS, game_combat::arena::PARTY_SCENARIO).expect("listed");
+    let party = find_scenario(&SCENARIOS, game_combat::arena::PARTY_SCENARIO).expect("listed");
     let mut fight = Recording::new(party, party.config).expect("sets up");
     let cast = fight.cast().to_vec();
     // Its schedule goes round to the first again, and pressing on brings back those the warrior hurt.

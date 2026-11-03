@@ -449,7 +449,7 @@ impl Stage {
 
     /// A fight of the arena's scenario, its first step told to the scene.
     fn start_fight(&mut self) -> (Simulation, Vec<ActorId>) {
-        let scenario = find_scenario(SCENARIOS, arena::FIGHT_SCENARIO).expect("listed");
+        let scenario = find_scenario(&SCENARIOS, arena::FIGHT_SCENARIO).expect("listed");
         let (sim, cast) = scenario.start(scenario.config).expect("it starts");
         let mut fight = (sim, cast);
         self.step_fight(&mut fight);

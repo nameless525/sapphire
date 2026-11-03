@@ -37,8 +37,8 @@
 //! A brain picks its own foe (`choose_foe`): the nearest across the ground of whoever's hostile, up and on
 //! the field, by `STAY_ON_FOE` in favour of the one it has. It looks while it's pacing or resting, and
 //! otherwise only when its foe has gone, so an attack finishes on who it started on. There's no draw in it
-//! and it's no director: who gets to attack when several could is M3 B2's attack tokens, which would hold
-//! back the press and leave this alone.
+//! and it's no director: who gets to attack when several could is [`crate::encounter`]'s attack tokens, for
+//! a brain an encounter spawned ([`Seen::may_attack`]), which hold back the press and leave the rest alone.
 //!
 //! # What it reads
 //!
@@ -71,6 +71,7 @@ use sapphire_time::{SimDuration, SimTime};
 use crate::actions::{Controls, Stick};
 use crate::actors::{ActorId, ActorTable};
 use crate::controller::{CharacterController, ControllerDrive};
+use crate::encounter::SimZone;
 use crate::faction::Faction;
 use crate::intents::IntentRing;
 use crate::movement::ActorTransform;
@@ -125,6 +126,8 @@ pub struct Brain {
     pub(crate) stick: Stick,
     /// When it last chose each attack, in [`BrainDef::attacks`]' order, on its own clock.
     pub(crate) last_used: [Option<SimTime>; MAX_BRAIN_ATTACKS],
+    /// Which of the zone's encounters spawned it, whose tokens it has to ask for. None for anyone else.
+    pub(crate) encounter: Option<u8>,
 }
 
 impl Brain {
@@ -132,6 +135,12 @@ impl Brain {
     #[must_use]
     pub const fn is_on(&self) -> bool {
         self.on
+    }
+
+    /// Whether it's on an attack it chose: what a director's token lets it do ([`crate::encounter`]).
+    #[must_use]
+    pub const fn is_attacking(&self) -> bool {
+        matches!(self.state, BrainState::Attacking { .. })
     }
 
     /// Who it's fighting.
@@ -202,6 +211,8 @@ pub struct Seen {
     pub reaction_due: bool,
     /// Its target, if that's alive.
     pub target: Option<SeenTarget>,
+    /// Whether it could start an attack: false while its encounter's tokens are all out or resting.
+    pub may_attack: bool,
 }
 
 /// What a brain asks of its actor for one tick.
@@ -212,6 +223,8 @@ pub struct BrainOutput {
     pub stick: Stick,
     /// The yaw to turn toward this tick, already limited to the brain's turn rate.
     pub face: Option<f32>,
+    /// It would have looked for an attack, and has no token to start one with.
+    pub waiting: bool,
 }
 
 /// A length drawn from `range`, from a generator. Draws nothing if it's one length.
@@ -413,18 +426,26 @@ fn facing(def: &BrainDef, seen: &Seen) -> Option<f32> {
 /// the distance.
 fn pace(brain: &mut Brain, def: &BrainDef, seen: &Seen, rng: &mut Pcg32) -> BrainOutput {
     let way = way_to_target(seen);
-    if seen.now >= brain.patience_until
+    let ready = seen.now >= brain.patience_until;
+    if ready
+        && seen.may_attack
         && let (Some((_, distance)), Some(target)) = (way, seen.target)
         && let Some(index) = choose_attack(brain, def, seen.now, distance, target.doing, rng)
     {
         brain.last_used[index] = Some(seen.now);
         brain.state = BrainState::Attacking { serial: seen.started.wrapping_add(1) };
         brain.stick = Stick::CENTER;
-        return BrainOutput { press: Some(def.attacks[index].intent()), stick: Stick::CENTER, face: None };
+        return BrainOutput {
+            press: Some(def.attacks[index].intent()),
+            stick: Stick::CENTER,
+            face: None,
+            waiting: false,
+        };
     }
     brain.stick = way
         .map_or(Stick::CENTER, |(to_target, distance)| pacing_stick(def, brain.circle, to_target, distance));
-    BrainOutput { press: None, stick: brain.stick, face: facing(def, seen) }
+    let waiting = ready && !seen.may_attack && seen.target.is_some();
+    BrainOutput { press: None, stick: brain.stick, face: facing(def, seen), waiting }
 }
 
 /// What a target is doing, by what a player would read off a screen.
@@ -484,6 +505,8 @@ pub(crate) fn think(
     table: Res<'_, ActorTable>,
     party: Res<'_, Party>,
     library: Res<'_, MoveLibrary>,
+    world_clock: Res<'_, WorldClock>,
+    mut zone: Option<ResMut<'_, SimZone>>,
     mut rng: ResMut<'_, SimRng>,
     mut stats: ResMut<'_, MoveStats>,
     mut minds: Query<
@@ -539,6 +562,10 @@ pub(crate) fn think(
                 tick: runner.cursor.since(running.started_at).whole_ticks(),
             })
         });
+        let tick = world_clock.0.ticks();
+        let directed = brain.encounter.filter(|_| zone.is_some());
+        let may_attack =
+            directed.is_none_or(|index| zone.as_deref().is_some_and(|zone| zone.may_attack(index, id, tick)));
         let seen = Seen {
             now: clock.0.now(),
             delta,
@@ -549,8 +576,13 @@ pub(crate) fn think(
             running,
             reaction_due: runner.forced.is_some(),
             target: seen_target,
+            may_attack,
         };
         let output = step_brain(&mut brain, def, &seen, &mut rng.0);
+        if let (Some(index), Some(zone)) = (directed, zone.as_deref_mut()) {
+            let attacking = matches!(brain.state, BrainState::Attacking { .. });
+            zone.settle(index, id, attacking, output.waiting, tick);
+        }
 
         controls.current.stick = output.stick;
         if let Some(foe) = brain.target {

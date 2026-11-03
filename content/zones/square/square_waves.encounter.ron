@@ -1,0 +1,17 @@
+// Seven warriors on the arena's square in three waves on the clock, with two tokens between them (M3 B2).
+// That's a pool of eight with the player, the most this arena's fights ask for.
+(
+    type: "sapphire::zone::EncounterDocument",
+    version: 1,
+    data: (
+        starts_on: "square_entered",
+        faction: 2,
+        tokens: 2,
+        token_rest: 30,
+        waves: [
+            (when: Start, spawners: ["north", "north_west", "north_east"]),
+            (when: After(420), gap: 20, spawners: ["east", "far_east"]),
+            (when: After(300), gap: 20, spawners: ["west", "south_east"]),
+        ],
+    ),
+)

@@ -12,7 +12,7 @@ fn the_suite_refuses_to_run_blind() {
         out: &dir,
         update: false,
         only: None,
-        scenarios: SCENARIOS,
+        scenarios: &SCENARIOS,
         architecture: ARCHITECTURE,
     };
     let error = check(&suite).expect_err("refused").to_string();
@@ -26,7 +26,7 @@ fn the_suite_refuses_to_run_blind() {
         script: "idle",
         ticks: None,
         seed: None,
-        scenarios: SCENARIOS,
+        scenarios: &SCENARIOS,
         architecture: ARCHITECTURE,
     };
     let error = record(&request).expect_err("refused").to_string();

@@ -75,7 +75,7 @@ vrm-spec.workspace = true
 # move's tables against the pose on screen. Tests only, like the next: the cooker itself links neither
 # (`[cooker]` in xtask/layers.toml looks at normal dependencies).
 sapphire_anim.workspace = true
-# A move's tables played in the simulation.
+# A move's tables played in the simulation, and a cooked zone stood up in one.
 sapphire_gameplay.workspace = true
 # The same, on a zone's own colliders (`tests/zone_ward.rs`).
 sapphire_physics.workspace = true

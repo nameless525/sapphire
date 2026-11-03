@@ -128,7 +128,7 @@ Follow [content/combat/enemy/](../content/combat/enemy/) and [enemy.rs](../game/
 2. **Clips, through N1's retarget:** add the mesh's ID as a `retarget:` target in the pack's sidecars. Sidecars only, no code. Key-posed ones come from `tools/motion/figure_pose.py`: a module per figure, named as its spec (`lancer.py`), lists each clip's keys and writes its `.keypose.ron` documents with `--write`; a test holds them to it. `--look-dev enemy --model <mesh>[:<clip>[@<tick>]]` stands a figure where the warrior does, posed, before anything plays it.
 3. **`<name>.moves.ron`:** `intents` with no buttons, `fighter`, `brain`, `moves`. The warrior's hit volumes are hand-keyed and reach further than its clips' hands, so they want retuning against the pose.
 4. **`<name>.animgraph.ron`:** a row for every move and every reaction.
-5. **Code, today:** a `SCENARIOS` row in [scenario.rs](../crates/sapphire_gameplay/src/replay/scenario.rs) that loads it and spawns it, and a change to `enemy.rs`, which spawns the one warrior. There's no data-driven encounter.
+5. **Code, today:** a change to `enemy.rs`, which draws everyone as the one warrior. Then it's data: a `content/scenarios/` document names its moves, and an `.encounter.ron` brings it on through a zone's spawners (M3 B2).
 
 ### How to add a stage
 
@@ -137,8 +137,8 @@ The arena is the one example ([arena.rs](../game/game_combat/src/arena.rs), spec
 1. **The look:** an assembly (`.assembly.ron`), a day and light rigs. The town stays one mesh until zones.
 2. **Colliders:** `<stage>.colliders.ron` with a sidecar. A `block_` prefix is a character blocker and `camera_` a camera blocker, held by a test. Moving a collider means updating `ARENA_WORLD_DIGEST`, `cargo xtask replay --update`, then `cargo xtask content`.
 3. **Spawn points:** `<stage>.spawns.ron`, compiled in with `include_str!`, so a replay can't run from another build's points.
-4. **A scenario row,** and goldens through `--arena-shot follow` so a camera edit moves none.
-5. **Code, today:** everything above is compiled in for one stage. `sapphire_gameplay::arena` holds the two documents, each arena scenario's setup reads them there, and the sandbox draws `lookdev::TOWN` on `lookdev::day()` and loads its `arena::COLLIDERS`. A second stage needs a second of each.
+4. **A scenario document** (`content/scenarios/`), and goldens through `--arena-shot follow` so a camera edit moves none.
+5. **Code, today:** everything above is compiled in for one stage. `sapphire_gameplay::arena` holds the two documents, a scenario document names the same colliders and points, and the sandbox draws `lookdev::TOWN` on `lookdev::day()` and loads its `arena::COLLIDERS`. A second stage needs a second of each.
 
 Zones replace most of this: a stage can't yet be chosen by data.
 

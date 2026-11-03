@@ -1904,7 +1904,7 @@ fn the_replay_suites_scripts_play_what_they_say() {
         opponent_started: u32,
     }
     fn play(script: &str) -> Played {
-        let scenario = replay::find_scenario(replay::SCENARIOS, "duel").expect("listed");
+        let scenario = replay::find_scenario(&replay::SCENARIOS, "duel").expect("listed");
         let script = replay::find_script(script).expect("listed");
         let (mut sim, cast) = scenario.start(scenario.config).expect("sets up");
         let mut played = Played { starts: Vec::new(), warp_ticks: 0, opponent_started: 0 };

@@ -133,6 +133,7 @@ pub mod brain;
 mod checksum;
 mod controller;
 mod cues;
+pub mod encounter;
 pub mod faction;
 mod hits;
 mod intents;
@@ -160,6 +161,7 @@ pub use cues::{
     CUE_QUEUE_LEN, CueEvent, CueQueue, DEFEATED, HitCue, PARTY_DEFEATED, PARTY_SWAP, PERFECT_DODGE,
     POISE_BROKEN,
 };
+pub use encounter::{EncounterPhase, SimEncounter, SimZone, ZoneCast, ZoneStartError, ZoneStats};
 pub use faction::Faction;
 pub use hits::{
     DodgedSwing, HitEvent, HitQuery, HitStats, HurtboxId, MAX_CAST_RESULTS, MAX_CONTACTS, MAX_DODGED_SWINGS,

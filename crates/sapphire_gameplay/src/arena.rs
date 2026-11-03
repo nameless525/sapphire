@@ -28,6 +28,9 @@ use crate::controller::ControllerProfile;
 /// The collider document, as this build holds it.
 const COLLIDERS: &str = include_str!("../../../content/arena/square.colliders.ron");
 
+/// That document, from the repository's root, as a scenario on this stage names it.
+pub const COLLIDERS_PATH: &str = "content/arena/square.colliders.ron";
+
 /// The spawn points' document, as this build holds it.
 const SPAWNS: &str = include_str!("../../../content/arena/square.spawns.ron");
 

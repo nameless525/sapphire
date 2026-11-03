@@ -335,7 +335,7 @@ mod tests {
     #[test]
     #[ignore = "runs with CI's dev tests, which take --ignored"]
     fn every_track_of_the_test_content_is_listed_with_its_window() {
-        let scenario = find_scenario(SCENARIOS, "duel").expect("there");
+        let scenario = find_scenario(&SCENARIOS, "duel").expect("there");
         let (sim, cast) = scenario.start(scenario.config).expect("sets up");
         let set = sim.move_library().current(sim.actor(cast[0]).unwrap().moves.set.unwrap()).unwrap();
         let (_, skill) = set.find(Name::new("skill")).expect("a skill");

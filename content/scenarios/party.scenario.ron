@@ -1,0 +1,18 @@
+(
+    type: "sapphire::gameplay::ScenarioDocument",
+    version: 1,
+    data: (
+        about: "`arena-fight`, with the player a party of three on the player's moves, one on the field: input drives whoever that is, and the warrior's brain fights them",
+        max_actors: 8,
+        colliders: "content/arena/square.colliders.ron",
+        moves: ["content/combat/player/player.moves.ron", "content/combat/enemy/warrior.moves.ron"],
+        // Each actor's ID is what it is in an `arena-fight`, and the other two members come after.
+        cast: [
+            (moves: "player", at: "player", faction: 1, soft_lock: true),
+            (moves: "warrior", at: "enemy", faction: 2, brain: true),
+            (moves: "player", at: "player", faction: 1, soft_lock: true),
+            (moves: "player", at: "player", faction: 1, soft_lock: true),
+        ],
+        party: Some((members: [0, 2, 3], swap_cooldown: 60, rest: 150)),
+    ),
+)

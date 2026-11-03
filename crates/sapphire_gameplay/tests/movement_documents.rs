@@ -240,7 +240,7 @@ fn the_warrior_keeps_the_defaults_and_the_player_has_its_own_profile() {
 #[test]
 fn todays_numbers_in_a_section_change_no_tick_of_a_fight() {
     let run = |scenario: &str, script: &str, edits: &[(&str, MoveSet)]| {
-        let scenario = find_scenario(SCENARIOS, scenario).expect("listed");
+        let scenario = find_scenario(&SCENARIOS, scenario).expect("listed");
         let script = find_script(script).expect("listed");
         let mut live = LiveMoves::default();
         for (name, set) in edits {

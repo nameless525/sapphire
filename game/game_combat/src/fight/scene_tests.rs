@@ -312,7 +312,7 @@ pub(super) fn fighting(table: &ClipTable<'_>) -> (Staged, Simulation, Vec<sapphi
         ground: ArenaGround::new(set).expect("the stage stands on it"),
     });
     scene.play_fighters(driver(table).with_right_hand(1), driver(table));
-    let scenario = find_scenario(SCENARIOS, crate::arena::FIGHT_SCENARIO).expect("listed");
+    let scenario = find_scenario(&SCENARIOS, crate::arena::FIGHT_SCENARIO).expect("listed");
     let (sim, cast) = scenario.start(scenario.config).expect("it starts");
     (scene, sim, cast)
 }
@@ -327,7 +327,7 @@ fn everyone_in_a_fight_stands_on_the_stage() {
     let cooked = Clip::read(&bytes).expect("a valid clip");
     let table = ClipTable::new(0, [(GRAPH_CLIP, Some(cooked))].into_iter());
     let (mut scene, _, _) = fighting(&table);
-    let scenario = find_scenario(SCENARIOS, crate::arena::SKIRMISH_SCENARIO).expect("listed");
+    let scenario = find_scenario(&SCENARIOS, crate::arena::SKIRMISH_SCENARIO).expect("listed");
     let (mut sim, cast) = scenario.start(scenario.config).expect("it starts");
     sim.step(&sapphire_gameplay::TickActions::NEUTRAL);
     scene.follow_simulation(&sim, &cast);
@@ -369,10 +369,75 @@ fn everyone_in_a_fight_stands_on_the_stage() {
     sim.step(&sapphire_gameplay::TickActions::NEUTRAL);
     scene.follow_simulation(&sim, &cast);
     assert_eq!(scene.show.warriors.len(), cast.len() - 2);
-    assert!(scene.world().get_entity(leaving).is_err());
-    assert!(scene.world().get_entity(blade).is_err());
+    assert!(scene.world().get::<RenderMesh>(leaving).is_none(), "nothing draws it");
+    assert!(scene.world().get::<RenderMesh>(blade).is_none());
+    assert_eq!(scene.show.spares, [(leaving, blade)], "and it's there for whoever comes next");
     let _ = scene.frame_packet(1.0, Some((16, 9)));
     scene.end_frame();
+    assert_eq!(scene.packet().characters.len(), 1 + 2 * (cast.len() - 2), "they aren't lit either");
+}
+
+/// An encounter's waves come in fixed steps, with the fight well under way, so the warriors who'll draw them
+/// were there before its first step. Their arrival takes the heap for nothing, here or in the simulation, and
+/// the spares cost a frame nothing until then.
+#[test]
+fn a_wave_comes_on_with_no_heap() {
+    use sapphire_gameplay::SimZone;
+    use sapphire_gameplay::replay::{SCENARIOS, find_scenario};
+
+    let bytes = clip().to_cooked().expect("cooked");
+    let cooked = Clip::read(&bytes).expect("a valid clip");
+    let table = ClipTable::new(0, [(GRAPH_CLIP, Some(cooked))].into_iter());
+    let (mut scene, _, _) = fighting(&table);
+    let scenario = find_scenario(&SCENARIOS, "arena-waves").expect("listed");
+    let (mut sim, cast) = scenario.start(scenario.config).expect("it starts");
+    let planned = sim.zone().map_or(0, SimZone::planned);
+    assert_eq!(planned, 7);
+
+    // As `Fight::stand` does: before a step, with nobody but the player.
+    scene.follow_simulation(&sim, &cast);
+    assert_eq!(scene.show.warriors.len(), 1, "the one the stage had");
+    assert_eq!(scene.show.spares.len(), planned - 1, "and the rest stand by");
+    let _ = scene.frame_packet(1.0, Some((16, 9)));
+    scene.end_frame();
+    assert_eq!(scene.packet().characters.len(), 3, "the player, the one warrior and its blade");
+
+    let steps = |scene: &mut Staged, sim: &mut sapphire_gameplay::Simulation, ticks: u32| {
+        sapphire_core::alloc::count_in_scope(|| {
+            for _ in 0..ticks {
+                sim.step(&sapphire_gameplay::TickActions::NEUTRAL);
+                scene.follow_simulation(sim, &cast);
+                scene.animate_fighters(&table, &table, 0.5);
+            }
+        })
+        .1
+    };
+    let counts = steps(&mut scene, &mut sim, 900);
+    if sapphire_core::alloc::PER_THREAD_COUNTS {
+        assert_eq!(counts.allocations, 0, "{counts:?}");
+    }
+    assert_eq!(sim.zone().expect("it has one").stats().spawned, 7, "all of them came");
+    assert_eq!(scene.show.warriors.len(), planned);
+    assert!(scene.show.spares.is_empty());
+    let world = scene.world();
+    for (warrior, blade) in &scene.show.warriors {
+        assert!(world.get::<RenderMesh>(*warrior).is_some() && world.get::<RenderMesh>(*blade).is_some());
+    }
+    scene.animate_fighters(&table, &table, 1.0);
+    assert_eq!(scene.anim_stats().characters as usize, 1 + planned, "they all pose");
+    let _ = scene.frame_packet(1.0, Some((16, 9)));
+    scene.end_frame();
+    assert_eq!(scene.packet().characters.len(), 1 + 2 * planned, "and they're all lit");
+
+    // One goes, and there's a place for it, heap-free too.
+    let gone = sim.zone().expect("it has one").encounters()[0].fighters().next().expect("came");
+    assert!(sim.despawn(gone));
+    let counts = steps(&mut scene, &mut sim, 2);
+    if sapphire_core::alloc::PER_THREAD_COUNTS {
+        assert_eq!(counts.allocations, 0, "{counts:?}");
+    }
+    assert_eq!(scene.show.warriors.len(), planned - 1);
+    assert_eq!(scene.show.spares.len(), 1);
 }
 
 /// The character's sword stays in the hand of the held pose until its graph has made a pose.
@@ -674,7 +739,7 @@ fn a_cutscene_holds_the_fight_and_a_skip_lets_it_go() {
 fn a_new_fight_cuts_the_view_once_and_a_swap_doesnt() {
     use sapphire_gameplay::replay::{Recording, SCENARIOS, arena_walk, find_scenario, find_script};
 
-    let scenario = find_scenario(SCENARIOS, crate::arena::SCENARIO).expect("listed");
+    let scenario = find_scenario(&SCENARIOS, crate::arena::SCENARIO).expect("listed");
     let cut_of = |scene: &mut Staged| {
         let cut = scene.frame_packet(1.0, Some((16, 9))).main_view().expect("a view").cut;
         scene.end_frame();
@@ -700,7 +765,7 @@ fn a_new_fight_cuts_the_view_once_and_a_swap_doesnt() {
     assert!(cut_of(&mut scene), "the new fight's first view");
     assert!(!cut_of(&mut scene), "and only that");
 
-    let party = find_scenario(SCENARIOS, crate::arena::PARTY_SCENARIO).expect("listed");
+    let party = find_scenario(&SCENARIOS, crate::arena::PARTY_SCENARIO).expect("listed");
     let mut swapping = Recording::new(party, party.config).expect("sets up");
     let cast = swapping.cast().to_vec();
     let mut source = find_script("party-swap").expect("listed").actions;
@@ -767,7 +832,7 @@ fn the_arena_stands_its_actors_where_the_simulation_has_them() {
     let packet = scene.packet();
     assert_eq!(packet.characters.len(), 3, "all three are lit as characters");
 
-    let scenario = find_scenario(SCENARIOS, crate::arena::SCENARIO).expect("listed");
+    let scenario = find_scenario(&SCENARIOS, crate::arena::SCENARIO).expect("listed");
     let mut recording = Recording::new(scenario, scenario.config).expect("sets up");
     let mut source = arena_walk;
     let cast = recording.cast().to_vec();
@@ -1030,7 +1095,7 @@ fn a_same_tick_restart_cuts_history_and_fighter_poses_once() {
 fn an_independent_simulation_at_the_same_tick_cuts_and_snaps_once() {
     use sapphire_gameplay::replay::{Recording, SCENARIOS, arena_walk, find_scenario};
 
-    let scenario = find_scenario(SCENARIOS, crate::arena::SCENARIO).expect("listed");
+    let scenario = find_scenario(&SCENARIOS, crate::arena::SCENARIO).expect("listed");
     for tick in [0, 20] {
         let (mut scene, _) = arena_stage(ArenaShot::Follow);
         let mut previous = Recording::new(scenario, scenario.config).expect("sets up");
@@ -1262,7 +1327,7 @@ fn the_ultimate_plays_on_its_owner_and_blends_in_and_out_with_no_pop() {
     scene.show.timelines = vec![ultimate()];
     let path = std::env::temp_dir().join(format!("sapphire-q3b-eye-{}.sreplay", std::process::id()));
     let _ = std::fs::remove_file(&path);
-    let scenario = find_scenario(SCENARIOS, "arena-fight").expect("listed").name.to_owned();
+    let scenario = find_scenario(&SCENARIOS, "arena-fight").expect("listed").name.to_owned();
     let option = CombatOption::Record { path, scenario, script: Some("arena-ultimate".to_owned()) };
     let mut combat = Combat::new(&option).expect("sets up");
     let player = combat.cast()[0];

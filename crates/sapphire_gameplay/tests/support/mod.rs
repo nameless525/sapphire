@@ -26,7 +26,7 @@ pub fn slice() -> MoveSet {
 /// A pool with room for all this script's extra actors at their peak.
 #[allow(dead_code, reason = "not every test binary that shares this module runs the script")]
 pub fn world(seed: u64) -> (Simulation, Vec<ActorId>) {
-    let scenario = replay::find_scenario(replay::SCENARIOS, "melee").expect("listed");
+    let scenario = replay::find_scenario(&replay::SCENARIOS, "melee").expect("listed");
     scenario.start(SimConfig { seed, ..scenario.config }).expect("the melee sets up")
 }
 

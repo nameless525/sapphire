@@ -207,7 +207,7 @@ mod tests {
         let moved = HudLayout::designed(metrics, &documents.hud);
         assert_ne!(moved.attack.center, HudLayout::new(metrics).attack.center);
 
-        let scenario = find_scenario(SCENARIOS, "duel").expect("listed");
+        let scenario = find_scenario(&SCENARIOS, "duel").expect("listed");
         let hash = |live: &LiveMoves| {
             let recording = Recording::tuned(scenario, scenario.config, live).expect("sets up");
             recording.simulation().tables_hash()

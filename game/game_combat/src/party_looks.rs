@@ -447,7 +447,7 @@ mod tests {
     /// The party's own recording, with what draws following who's on the field and nothing in between.
     #[test]
     fn a_swap_changes_what_draws_and_only_a_swap_does() {
-        let scenario = find_scenario(SCENARIOS, crate::arena::PARTY_SCENARIO).expect("listed");
+        let scenario = find_scenario(&SCENARIOS, crate::arena::PARTY_SCENARIO).expect("listed");
         let (mut sim, cast) = scenario.start(scenario.config).expect("sets up");
         let meshes = [0, 1, 2].map(MeshHandle::from_raw);
         let mut drawn = Drawn::new(meshes);

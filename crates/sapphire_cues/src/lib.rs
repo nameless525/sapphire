@@ -47,7 +47,7 @@
 //! let tuning = CameraTuning::default_tuning();
 //! let table = CueTable::default_table();
 //! let mut cues = CueDispatcher::new(&table, &effects, &presets, &tuning).unwrap();
-//! # let scenario = find_scenario(SCENARIOS, "duel").unwrap();
+//! # let scenario = find_scenario(&SCENARIOS, "duel").unwrap();
 //! # let (mut sim, _) = scenario.start(scenario.config).unwrap();
 //! # let mut world = ScaledClock::new();
 //! # let mut screen = EffectStack::new(world.new_local_clock());

@@ -379,6 +379,11 @@ impl CueDispatcher {
         self.mixer.release();
     }
 
+    /// Makes room for this many actors' effects to advance, so that the next ones' first steps allocate nothing.
+    pub fn stand_by(&mut self, actors: usize) {
+        self.owners.reserve(actors);
+    }
+
     /// Forgets the sounds this frame's steps asked for, before any of them started: a fight started over
     /// after they fired.
     pub fn forget_sounds(&mut self) {

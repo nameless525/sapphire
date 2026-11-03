@@ -956,7 +956,7 @@ impl Fight {
     /// The fight from its first tick.
     fn start(&self) -> Stepper {
         let recording = || {
-            let scenario: &Scenario = find_scenario(SCENARIOS, self.scenario).expect("listed");
+            let scenario: &Scenario = find_scenario(&SCENARIOS, self.scenario).expect("listed");
             let mut config = scenario.config;
             config.seed = self.seed;
             Box::new(Recording::new(scenario, config).expect("it starts"))
@@ -966,7 +966,7 @@ impl Fight {
                 let path = replays_dir().join(format!("{}.sreplay", self.name));
                 let bytes = std::fs::read(&path).expect("a committed replay");
                 let replay = Replay::decode(&bytes).expect("it decodes");
-                Stepper::Played(Box::new(Player::new(replay, SCENARIOS).expect("it starts")))
+                Stepper::Played(Box::new(Player::new(replay, &SCENARIOS).expect("it starts")))
             }
             Drive::Script(name) => Stepper::Recorded {
                 recording: recording(),

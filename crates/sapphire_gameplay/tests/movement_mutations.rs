@@ -64,7 +64,7 @@ fn rewritten(text: &str, field: &str, value: &str) -> String {
 }
 
 fn fights() -> [&'static Scenario; 2] {
-    ["arena-fight", "party"].map(|name| find_scenario(SCENARIOS, name).expect("listed"))
+    ["arena-fight", "party"].map(|name| find_scenario(&SCENARIOS, name).expect("listed"))
 }
 
 /// What a set of a real document's name compiles against, as a running app has it.

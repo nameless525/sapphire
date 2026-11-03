@@ -471,6 +471,13 @@ impl BladeTrails {
         }
     }
 
+    /// Gets ready for this many fighters, so that the next ones' first steps allocate nothing.
+    pub(crate) fn stand_by(&mut self, fighters: usize) {
+        while self.fighters.len() < fighters {
+            self.fighters.push(FighterTrail::new(self.warrior, Rails::WARRIOR, false));
+        }
+    }
+
     /// Whether a frame has anything to tell a trail.
     pub(crate) fn are_running(&self) -> bool {
         self.fighters.iter().any(|trail| trail.running.is_some())

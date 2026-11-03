@@ -75,7 +75,7 @@ fn record(ticks: u32, source: impl Fn(u64, &[ActorId]) -> TickActions) -> (Repla
 
 /// Plays a replay's bytes with nothing beside it.
 fn headless(bytes: &[u8]) -> Played {
-    let mut player = Player::new(Replay::decode(bytes).expect("reads"), SCENARIOS).expect("starts");
+    let mut player = Player::new(Replay::decode(bytes).expect("reads"), &SCENARIOS).expect("starts");
     player.run_to_end();
     player.finish()
 }
@@ -156,7 +156,7 @@ fn a_replay_that_cant_run_is_refused_before_any_gpu_work() {
     // The arena plays only its own scenario's fights: another's actors aren't standing in the square.
     fs::remove_file(temp.path(&checksums_file_name(ARCHITECTURE))).expect("there");
     let elsewhere = run(&["--arena", "--replay", &good]);
-    assert_refused(&elsewhere, &capture, &["--arena", "`arena` scenario", "`melee`"]);
+    assert_refused(&elsewhere, &capture, &["--arena", "arena's colliders", "`melee`"]);
 
     // A fight with no file plays a script it has, and fights only in the arena.
     let bad_fight = run(&["--arena", "--fight", "--script", "none"]);
@@ -622,6 +622,54 @@ fn a_bench_of_a_fight_plays_it_whole_beside_the_renderer() {
     assert_eq!(frame_row.is_some(), span_samples > 0, "{log}");
     if let Some(frame_row) = frame_row {
         assert!(frame_row.contains(&format!(" samples={span_samples} ")), "{log}");
+    }
+}
+
+/// An encounter's waves come in the middle of a fight, each warrior in a fixed step of its own, on the real
+/// show's stage, and the gate holds there as it does in a fight whose everyone stands at the start.
+#[test]
+#[ignore = "needs a GPU and cooked content (`cargo xtask content`)"]
+fn a_wave_comes_on_in_a_bench_with_no_heap_in_its_steps() {
+    let temp = Temp::new("waves");
+    let trace = temp.path("trace.csv");
+    let replay = workspace().join("tests").join("replays").join("arena-waves.sreplay");
+    let output = sandbox(
+        &[
+            "--bench",
+            "1",
+            "--bench-trace",
+            trace.to_str().expect("UTF-8"),
+            "--arena",
+            "--replay",
+            replay.to_str().expect("UTF-8"),
+            "--tier",
+            "desktop-low",
+            "--size",
+            "64x36",
+            "--cues",
+            "--hud",
+            "live",
+            "--no-hot-reload",
+            "--live-link",
+            "off",
+        ],
+        &content(),
+    );
+    let log = log_of(&output);
+    assert!(output.status.success(), "{log}");
+    assert_eq!(log.matches("replay reached its recorded checksums").count(), 3, "{log}");
+
+    let trace = fs::read_to_string(&trace).expect("written");
+    let mut lines = trace.lines();
+    let header: Vec<&str> = lines.next().expect("a header").split(',').collect();
+    let column = |name: &str| header.iter().position(|field| *field == name).expect(name);
+    let (tick, step_allocations) = (column("tick"), column("step_allocations"));
+    let rows: Vec<Vec<&str>> = lines.map(|line| line.split(',').collect()).collect();
+    assert!(rows.iter().any(|row| row[tick] == "900"), "it reached the last wave");
+    // Tick 1's are what stands the warriors in the first pass, since a bench's first follow of a fight is after
+    // its first step, and any arena fight's start over in the others.
+    for row in rows.iter().filter(|row| row[tick] != "1") {
+        assert_eq!(row[step_allocations], "0", "rule R6, at tick {}", row[tick]);
     }
 }
 

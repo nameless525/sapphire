@@ -423,7 +423,7 @@ impl LiveTuning {
                 sources.push(Source { path: path.to_owned(), document, edits: 0 });
             }
         };
-        for scenario in SCENARIOS {
+        for scenario in SCENARIOS.iter() {
             for path in scenario.documents {
                 add(path, Document::Moves);
             }
@@ -1172,7 +1172,7 @@ mod tests {
         let mut combat = None;
         recorder.start_tuned(&mut combat, "duel", tuning.moves());
         let fight = combat.as_ref().expect("started");
-        let set = sapphire_gameplay::replay::find_scenario(SCENARIOS, "duel")
+        let set = sapphire_gameplay::replay::find_scenario(&SCENARIOS, "duel")
             .and_then(|scenario| scenario.set_of(SLICE_FILE))
             .expect("its set");
         let library = fight.simulation().move_library();

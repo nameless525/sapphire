@@ -140,7 +140,7 @@ struct Sinks {
 /// One whole fight.
 fn fight(sinks: &mut Sinks, samples: &mut Vec<Sample>) {
     let bytes = fs::read(repo().join("tests/replays/fight.sreplay")).expect("committed");
-    let mut player = Player::new(Replay::decode(&bytes).expect("reads"), SCENARIOS).expect("sets up");
+    let mut player = Player::new(Replay::decode(&bytes).expect("reads"), &SCENARIOS).expect("sets up");
     let mut cues =
         CueDispatcher::new(&sinks.table, &sinks.effects, &sinks.presets, &sinks.tuning).expect("resolves");
     let mut vfx = VfxWorld::new(sinks.effects.clone(), VfxBudget::DESKTOP_HIGH, 7);

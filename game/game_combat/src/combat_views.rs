@@ -589,7 +589,7 @@ mod tests {
     /// is who's in the fight.
     #[test]
     fn off_the_field_draws_nothing() {
-        let scenario = find_scenario(SCENARIOS, "party").expect("listed");
+        let scenario = find_scenario(&SCENARIOS, "party").expect("listed");
         let (sim, _) = scenario.start(scenario.config).expect("sets up");
         let sketch = sketch(CombatViews::COLLIDERS, &sim);
         let capsules = drawn_in(&sketch, palette::CAPSULE);
@@ -975,7 +975,7 @@ mod tests {
     /// keeps standing on it.
     #[test]
     fn colliders_show_a_scenarios_floor_and_its_characters_on_it() {
-        let melee = find_scenario(SCENARIOS, "melee").unwrap();
+        let melee = find_scenario(&SCENARIOS, "melee").unwrap();
         let (mut sim, cast) = melee.start(melee.config).unwrap();
         for _ in 0..10 {
             sim.step(&TickActions::NEUTRAL);
@@ -1132,7 +1132,7 @@ mod tests {
 
     fn player(name: &str) -> Player {
         let bytes = fs::read(replays().join(format!("{name}.sreplay"))).expect("committed");
-        Player::new(Replay::decode(&bytes).expect("reads"), SCENARIOS).expect("starts")
+        Player::new(Replay::decode(&bytes).expect("reads"), &SCENARIOS).expect("starts")
     }
 
     /// The property: the views look at every tick of the suite's fights, with volumes and the moves and

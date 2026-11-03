@@ -10,8 +10,8 @@ use sapphire_core::Name;
 use sapphire_core::alloc::{self, CountingAllocator, PER_THREAD_COUNTS};
 use sapphire_ecs::prelude::*;
 use sapphire_gameplay::replay::{
-    CINEMATIC, CUTSCENE, Player, Recording, Replay, SCENARIOS, Scenario, ScenarioError, StepAllocated,
-    add_melee_buttons, find_scenario, find_script, melee, melee_sweep,
+    CINEMATIC, CUTSCENE, Player, Recording, Replay, SCENARIOS, Scenario, ScenarioError, ScenarioSetup,
+    StepAllocated, add_melee_buttons, find_scenario, find_script, melee, melee_sweep,
 };
 use sapphire_gameplay::{
     ActorActions, ActorId, ActorSpawn, ActorTransform, Buttons, CombatSet, ControllerProfile, Faction,
@@ -64,7 +64,7 @@ fn a_timelines_run_does_not_allocate_from_the_first_tick() {
     if !PER_THREAD_COUNTS {
         return;
     }
-    let scenario = find_scenario(SCENARIOS, "timelines").expect("listed");
+    let scenario = find_scenario(&SCENARIOS, "timelines").expect("listed");
     let (mut sim, cast) = scenario.start(scenario.config).expect("sets up");
     let ticks: Vec<TickActions> = (0..400).map(|tick| melee_sweep(tick, &cast)).collect();
 
@@ -133,7 +133,7 @@ fn a_partys_fight_does_not_allocate_from_the_first_tick() {
     if !PER_THREAD_COUNTS {
         return;
     }
-    let scenario = find_scenario(SCENARIOS, "party").expect("listed");
+    let scenario = find_scenario(&SCENARIOS, "party").expect("listed");
     let (mut sim, cast) = scenario.start(scenario.config).expect("sets up");
     let script = find_script("party-swap").expect("listed");
     let ticks: Vec<TickActions> =
@@ -285,7 +285,7 @@ fn a_replay_runs_with_no_allocation_in_any_step() {
     if !PER_THREAD_COUNTS {
         return;
     }
-    let mut player = Player::new(recorded(2000), SCENARIOS).expect("starts");
+    let mut player = Player::new(recorded(2000), &SCENARIOS).expect("starts");
     let ((), counts) = alloc::count_in_scope(|| {
         // Past where a trail's reserved room would run out, it's the trail that grows, outside the
         // step. This run stays within it, so the whole of a tick costs nothing.
@@ -326,7 +326,7 @@ fn the_allocation_gate_bites_a_step_that_allocates() {
     if !PER_THREAD_COUNTS {
         return;
     }
-    let scenarios = [Scenario { setup: with_an_allocating_system, ..SCENARIOS[0] }];
+    let scenarios = [Scenario { setup: ScenarioSetup::Code(with_an_allocating_system), ..SCENARIOS[0] }];
     let mut player = Player::new(recorded(100), &scenarios).expect("starts");
     player.run_to_end();
     let played = player.finish();
@@ -336,7 +336,8 @@ fn the_allocation_gate_bites_a_step_that_allocates() {
 
     // The same world without the allocation passes, so it's the allocation it bit on, and adding a
     // system costs its first step nothing.
-    let scenarios = [Scenario { setup: with_a_system_that_does_nothing, ..SCENARIOS[0] }];
+    let scenarios =
+        [Scenario { setup: ScenarioSetup::Code(with_a_system_that_does_nothing), ..SCENARIOS[0] }];
     let mut player = Player::new(recorded(100), &scenarios).expect("starts");
     player.run_to_end();
     assert_eq!(player.finish().allocation_gate(), Ok(()));
@@ -657,7 +658,7 @@ fn perfect_dodges_and_counters_allocate_nothing_from_the_first_step() {
     if !PER_THREAD_COUNTS {
         return;
     }
-    let scenario = find_scenario(SCENARIOS, "duel").expect("listed");
+    let scenario = find_scenario(&SCENARIOS, "duel").expect("listed");
     let script = find_script("dodge-counter").expect("listed");
     let (mut sim, cast) = scenario.start(scenario.config).expect("sets up");
     let scripted: Vec<TickActions> =
@@ -731,7 +732,7 @@ fn a_brain_allocates_nothing_from_the_first_step() {
     if !PER_THREAD_COUNTS {
         return;
     }
-    let scenario = find_scenario(SCENARIOS, "arena-fight").expect("listed");
+    let scenario = find_scenario(&SCENARIOS, "arena-fight").expect("listed");
     let (mut sim, cast) = scenario.start(scenario.config).expect("sets up");
     let script = find_script("fight-back").expect("listed");
     let scripted: Vec<TickActions> =
@@ -831,7 +832,8 @@ fn restarting_a_builtin_fight_reuses_capacity_and_matches_a_fresh_world() {
     for party in [false, true] {
         let prepared = sapphire_gameplay::replay::PreparedFight::new(party).expect("prepares");
         let live = sapphire_gameplay::replay::LiveMoves::default();
-        let scenario = find_scenario(SCENARIOS, if party { "party" } else { "arena-fight" }).expect("listed");
+        let scenario =
+            find_scenario(&SCENARIOS, if party { "party" } else { "arena-fight" }).expect("listed");
         let mut world = prepared.start_resettable(scenario.config, &live).expect("starts");
         for length in [37, 400, 2000] {
             let (mut fresh, cast) = scenario.start(scenario.config).expect("independent constructor");

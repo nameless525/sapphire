@@ -1,0 +1,21 @@
+(
+    type: "sapphire::gameplay::ScenarioDocument",
+    version: 1,
+    data: (
+        about: "the arena's player against two sides of real warriors, four and three, on the same moves and each with its own brain: nobody hits their own side, and everyone picks a foe",
+        // Eight in a pool of eight is the most this arena's fights ask for.
+        max_actors: 8,
+        colliders: "content/arena/square.colliders.ron",
+        moves: ["content/combat/player/player.moves.ron", "content/combat/enemy/warrior.moves.ron"],
+        cast: [
+            (moves: "player", at: "player", faction: 1, soft_lock: true, standing_jump: true),
+            (moves: "warrior", at: "enemy", faction: 2, brain: true),
+            (moves: "warrior", at: "crowd_0", faction: 2, brain: true),
+            (moves: "warrior", at: "crowd_1", faction: 2, brain: true),
+            (moves: "warrior", at: "crowd_2", faction: 2, brain: true),
+            (moves: "warrior", at: "crowd_3", faction: 3, brain: true),
+            (moves: "warrior", at: "crowd_4", faction: 3, brain: true),
+            (moves: "warrior", at: "crowd_5", faction: 3, brain: true),
+        ],
+    ),
+)

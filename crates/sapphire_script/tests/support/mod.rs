@@ -7,7 +7,9 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use sapphire_gameplay::Simulation;
-use sapphire_gameplay::replay::{Played, Player, Replay, SCENARIOS, Scenario, arena_fight, find_scenario};
+use sapphire_gameplay::replay::{
+    Played, Player, Replay, SCENARIOS, Scenario, ScenarioSetup, arena_fight, find_scenario,
+};
 use sapphire_script::bindings::{BOARD_SLOTS, Frame};
 use sapphire_script::{HookEnd, Limits, ScriptHost, ScriptStats, ScriptVm, attach, cook, host_of};
 
@@ -30,8 +32,8 @@ pub fn replay_file(name: &str) -> Replay {
 
 /// `arena-fight`, with `host` in it. Only one may start at a time, since they share the static.
 pub fn player_with(host: ScriptHost, replay: Replay) -> Player {
-    let plain = find_scenario(SCENARIOS, "arena-fight").expect("listed");
-    let scenarios = [Scenario { setup, ..*plain }];
+    let plain = find_scenario(&SCENARIOS, "arena-fight").expect("listed");
+    let scenarios = [Scenario { setup: ScenarioSetup::Code(setup), ..*plain }];
     *WAITING.lock().unwrap() = Some(host);
     Player::new(replay, &scenarios).expect("starts")
 }

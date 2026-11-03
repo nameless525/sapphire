@@ -178,7 +178,7 @@ fn a_cinematic_that_cannot_start_is_counted_and_moves_the_checksum() {
 /// lands for the move's 60, can't be skipped, and lets everyone go at its end.
 #[test]
 fn the_players_ultimate_holds_the_warrior_while_its_chop_lands() {
-    let scenario = find_scenario(SCENARIOS, "arena-fight").expect("listed");
+    let scenario = find_scenario(&SCENARIOS, "arena-fight").expect("listed");
     let mut recording = Recording::new(scenario, scenario.config).expect("sets up");
     let player = recording.cast()[0];
     let warrior =

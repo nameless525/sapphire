@@ -431,7 +431,7 @@ fn the_draw_follows_the_scores() {
 
 /// A seed's fight, as what it did when, for comparing whole runs.
 fn fight_by_seed(seed: u64, ticks: u64) -> (Vec<(u64, Name)>, Vec<u64>) {
-    let scenario = find_scenario(SCENARIOS, "arena-fight").expect("listed");
+    let scenario = find_scenario(&SCENARIOS, "arena-fight").expect("listed");
     let (mut sim, cast) = scenario.start(SimConfig { seed, ..scenario.config }).expect("sets up");
     let mut started = Vec::new();
     let mut checksums = Vec::new();
@@ -890,7 +890,7 @@ fn each_shipped_attack_lands_from_where_it_says_it_suits() {
 /// The shipped brain presses only what its document can start, and gets up inside a window that takes it.
 #[test]
 fn the_shipped_brain_is_the_one_a_replay_runs_on() {
-    let scenario = find_scenario(SCENARIOS, "arena-fight").expect("listed");
+    let scenario = find_scenario(&SCENARIOS, "arena-fight").expect("listed");
     let (mut sim, cast) = scenario.start(scenario.config).expect("sets up");
     sim.step(&TickActions::NEUTRAL);
     let view = sim.actor(cast[1]).expect("alive");
@@ -919,7 +919,7 @@ fn a_tuned_brain_changes_the_hash_a_replay_checks() {
 /// Plays a committed replay to its end, showing `each_tick` the simulation after each step.
 fn play_committed(bytes: &[u8], mut each_tick: impl FnMut(&Simulation, &[ActorId])) {
     let replay = Replay::decode(bytes).expect("reads");
-    let mut player = Player::new(replay, SCENARIOS).expect("the moves are what it was recorded on");
+    let mut player = Player::new(replay, &SCENARIOS).expect("the moves are what it was recorded on");
     let cast = player.cast().to_vec();
     while player.step() {
         each_tick(player.simulation(), &cast);
@@ -1030,7 +1030,7 @@ fn the_replay_of_a_player_fighting_back_plays_what_it_says() {
 /// slows, and a press answers with the dash attack sooner than a dodge's own cancel window opens.
 #[test]
 fn a_perfect_dodge_of_the_warrior_opens_a_counter_into_the_dash_attack() {
-    let scenario = find_scenario(SCENARIOS, "arena-fight").expect("listed");
+    let scenario = find_scenario(&SCENARIOS, "arena-fight").expect("listed");
     let (mut sim, cast) = scenario.start(scenario.config).expect("sets up");
     let press = |buttons| {
         let mut actions = TickActions::NEUTRAL;

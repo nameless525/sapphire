@@ -435,7 +435,7 @@ impl Recording {
 #[cfg(test)]
 mod tests {
     use super::super::script::{SCRIPTS, melee_sweep};
-    use super::super::{MAX_ACTORS, SCENARIOS};
+    use super::super::{MAX_ACTORS, SCENARIOS, ScenarioSetup};
     use super::*;
     use crate::actions::{ActorActions, Buttons};
 
@@ -480,7 +480,7 @@ mod tests {
         assert_eq!(replay.ticks(), 300);
         assert_eq!(recorded.trail.ticks(), 300);
 
-        let mut player = Player::new(replay.clone(), SCENARIOS).unwrap();
+        let mut player = Player::new(replay.clone(), &SCENARIOS).unwrap();
         player.run_to_end();
         assert!(!player.step(), "past the end, it does nothing");
         assert_eq!(player.simulation().tick(), 300);
@@ -511,7 +511,7 @@ mod tests {
         let mut recording = Recording::new(&scenario, melee().config).unwrap();
         recording.step(&mut super::super::script::idle).unwrap();
         let (replay, _) = recording.finish();
-        let error = Player::new(replay, SCENARIOS).err().expect("refused");
+        let error = Player::new(replay, &SCENARIOS).err().expect("refused");
         assert!(matches!(&error, PlayError::UnknownScenario { name, .. } if name == "gone"));
         assert!(error.to_string().contains("melee"), "it lists what there is: {error}");
     }
@@ -535,8 +535,8 @@ mod tests {
             Ok(cast)
         }
 
-        let before = *find_scenario(SCENARIOS, "duel").unwrap();
-        let after = Scenario { setup: prepared_duel, ..before };
+        let before = *find_scenario(&SCENARIOS, "duel").unwrap();
+        let after = Scenario { setup: ScenarioSetup::Code(prepared_duel), ..before };
         let record_jump = |scenario: &Scenario| {
             let mut recording = Recording::new(scenario, scenario.config).unwrap();
             let mut source = |tick, cast: &[ActorId]| {
@@ -568,7 +568,7 @@ mod tests {
         player.run_to_end();
         assert_eq!(player.finish().trail, expected.trail);
 
-        let scenario = find_scenario(SCENARIOS, "arena-fight").unwrap();
+        let scenario = find_scenario(&SCENARIOS, "arena-fight").unwrap();
         let mut fight = PreparedFight::new(false)
             .unwrap()
             .start_resettable(scenario.config, &Default::default())
@@ -591,7 +591,7 @@ mod tests {
     #[test]
     fn legacy_replay_keeps_the_exact_unconfigured_path() {
         let (replay, recorded) = record(30, melee_sweep);
-        let mut player = Player::new_with_setup(replay, SCENARIOS, |_, _, _| {
+        let mut player = Player::new_with_setup(replay, &SCENARIOS, |_, _, _| {
             panic!("legacy replay tried to load the optional profiles");
         })
         .unwrap();
@@ -608,25 +608,29 @@ mod tests {
             recording.step(&mut melee_sweep).unwrap();
         }
         let (replay, recorded) = recording.finish();
-        assert!(matches!(Player::new(replay.clone(), SCENARIOS), Err(PlayError::MovesChanged { .. })));
-        let unavailable = Player::new_with_setup(replay.clone(), SCENARIOS, |_, _, _| {
+        assert!(matches!(Player::new(replay.clone(), &SCENARIOS), Err(PlayError::MovesChanged { .. })));
+        let unavailable = Player::new_with_setup(replay.clone(), &SCENARIOS, |_, _, _| {
             Err("the required mesh is missing".to_owned())
         });
         assert!(matches!(unavailable, Err(PlayError::Configure { .. })));
         let mut wrong = replay.clone();
         wrong.set_tables_hash(replay.tables_hash() ^ 1);
         assert!(matches!(
-            Player::new_with_setup(wrong, SCENARIOS, configure_tables),
+            Player::new_with_setup(wrong, &SCENARIOS, configure_tables),
             Err(PlayError::MovesChanged { .. })
         ));
-        let mut player = Player::new_with_setup(replay, SCENARIOS, configure_tables).unwrap();
+        let mut player = Player::new_with_setup(replay, &SCENARIOS, configure_tables).unwrap();
         player.run_to_end();
         assert_eq!(player.finish().trail, recorded.trail);
     }
 
     #[test]
     fn zero_tick_commands_run_after_configured_hash_validation() {
-        let scenario = Scenario { name: "setup-test", setup: crate::replay::scenario::timelines, ..*melee() };
+        let scenario = Scenario {
+            name: "setup-test",
+            setup: ScenarioSetup::Code(crate::replay::scenario::timelines),
+            ..*melee()
+        };
         let mut recording =
             Recording::tuned_with_setup(&scenario, scenario.config, &LiveMoves::default(), configure_tables)
                 .unwrap();
@@ -653,7 +657,7 @@ mod tests {
             Ok(cast)
         }
         let (mut replay, played) = record(30, melee_sweep);
-        let scenarios = [Scenario { setup: moved, ..*melee() }];
+        let scenarios = [Scenario { setup: ScenarioSetup::Code(moved), ..*melee() }];
 
         let error = Player::new(replay.clone(), &scenarios).err().expect("refused");
         let PlayError::MovesChanged { recorded, current } = error else { panic!("{error}") };
@@ -684,7 +688,7 @@ mod tests {
             Ok(cast)
         }
         let (replay, _) = record(30, melee_sweep);
-        let scenarios = [Scenario { setup: retuned, ..*melee() }];
+        let scenarios = [Scenario { setup: ScenarioSetup::Code(retuned), ..*melee() }];
         let error = Player::new(replay, &scenarios).err().expect("refused");
         assert!(matches!(error, PlayError::MovesChanged { .. }), "{error}");
         assert!(error.to_string().contains("--update"), "{error}");
@@ -707,7 +711,7 @@ mod tests {
                 }
                 actions
             });
-            let mut player = Player::new(other, SCENARIOS).unwrap();
+            let mut player = Player::new(other, &SCENARIOS).unwrap();
             player.run_to_end();
             let difference = recorded.first_difference(&player.finish().trail).expect("it differs");
             assert_eq!(u64::from(difference.tick), changed + 1, "actions of tick {changed} went in");
@@ -717,7 +721,7 @@ mod tests {
 
     #[test]
     fn every_script_records_and_plays_back_on_every_scenario() {
-        for scenario in SCENARIOS {
+        for scenario in SCENARIOS.iter() {
             for script in SCRIPTS {
                 let mut recording = Recording::new(scenario, scenario.config).unwrap();
                 let mut source = script.actions;
@@ -725,7 +729,7 @@ mod tests {
                     recording.step(&mut source).unwrap();
                 }
                 let (replay, recorded) = recording.finish();
-                let mut player = Player::new(replay, SCENARIOS).unwrap();
+                let mut player = Player::new(replay, &SCENARIOS).unwrap();
                 player.run_to_end();
                 assert_eq!(player.finish().trail, recorded.trail, "{} {}", scenario.name, script.name);
             }

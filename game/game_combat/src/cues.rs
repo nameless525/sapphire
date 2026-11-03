@@ -323,6 +323,13 @@ impl CueShow {
         self.dispatcher.stats()
     }
 
+    /// Gets ready for this many fighters, the player among them: see [`BladeTrails::stand_by`].
+    pub(crate) fn stand_by(&mut self, fighters: usize) {
+        self.trails.stand_by(fighters);
+        self.emitters.reserve(fighters);
+        self.dispatcher.stand_by(fighters);
+    }
+
     /// A new fight: what the last one set going ends here, rather than playing out over ground its
     /// actors have left. Every screen effect goes, `--post-effect`'s among them. A rumble stops at the
     /// next [`Self::end_frame`], which has a pad to tell, and sounds at the audio system's next update,
@@ -414,7 +421,7 @@ mod tests {
         use sapphire_gameplay::replay::{SCENARIOS, find_scenario};
 
         let presets = ScreenLibrary::default_effects();
-        let scenario = find_scenario(SCENARIOS, "arena-fight").expect("listed");
+        let scenario = find_scenario(&SCENARIOS, "arena-fight").expect("listed");
         let (mut sim, _) = scenario.start(scenario.config).expect("sets up");
         for _ in 0..600 {
             sim.step(&sapphire_gameplay::TickActions::NEUTRAL);
@@ -463,7 +470,7 @@ mod tests {
         use sapphire_gameplay::replay::{SCENARIOS, find_scenario};
 
         let presets = ScreenLibrary::default_effects();
-        let scenario = find_scenario(SCENARIOS, "arena-fight").expect("listed");
+        let scenario = find_scenario(&SCENARIOS, "arena-fight").expect("listed");
         let (mut previous, _) = scenario.start(scenario.config).expect("sets up");
         for _ in 0..600 {
             previous.step(&sapphire_gameplay::TickActions::NEUTRAL);
@@ -527,7 +534,7 @@ mod tests {
         use sapphire_gameplay::replay::{SCENARIOS, find_scenario};
 
         let presets = ScreenLibrary::default_effects();
-        let scenario = find_scenario(SCENARIOS, "arena-fight").expect("listed");
+        let scenario = find_scenario(&SCENARIOS, "arena-fight").expect("listed");
         let (mut previous, _) = scenario.start(scenario.config).expect("sets up");
         let (mut next, _) = scenario.start(scenario.config).expect("sets up");
         for _ in 0..140 {
@@ -556,7 +563,7 @@ mod tests {
         use sapphire_gameplay::replay::{SCENARIOS, find_scenario};
 
         assert!(sapphire_core::alloc::is_installed());
-        let scenario = find_scenario(SCENARIOS, "arena-fight").expect("listed");
+        let scenario = find_scenario(&SCENARIOS, "arena-fight").expect("listed");
         let (mut sim, _) = scenario.start(scenario.config).expect("sets up");
         let presets = ScreenLibrary::default_effects();
         let mut show = CueShow::new(VfxBudget::DESKTOP_LOW, &presets).expect("resolves");
@@ -614,8 +621,9 @@ mod tests {
     /// way and wherever the fight had the target stand.
     #[test]
     fn a_hit_lands_on_the_character_as_on_its_target() {
-        let scenario = sapphire_gameplay::replay::find_scenario(sapphire_gameplay::replay::SCENARIOS, "duel")
-            .expect("a scenario");
+        let scenario =
+            sapphire_gameplay::replay::find_scenario(&sapphire_gameplay::replay::SCENARIOS, "duel")
+                .expect("a scenario");
         let (sim, cast) = scenario.start(scenario.config).expect("sets up");
         // The opponent stands 4 m along +Z, half a turn round, facing the player.
         let target = sim.actor(cast[1]).expect("there");
@@ -649,8 +657,9 @@ mod tests {
 
     #[test]
     fn a_cue_with_no_hit_is_left_as_it_is() {
-        let scenario = sapphire_gameplay::replay::find_scenario(sapphire_gameplay::replay::SCENARIOS, "duel")
-            .expect("a scenario");
+        let scenario =
+            sapphire_gameplay::replay::find_scenario(&sapphire_gameplay::replay::SCENARIOS, "duel")
+                .expect("a scenario");
         let (sim, cast) = scenario.start(scenario.config).expect("sets up");
         let event = CueEvent {
             actor: cast[0],
@@ -673,7 +682,7 @@ mod tests {
             let presets = ScreenLibrary::default_effects();
             let mut screen = EffectStack::new(sapphire_time::ScaledClock::new().new_local_clock());
             let mut show = CueShow::new(VfxBudget::DESKTOP_LOW, &presets).expect("resolves");
-            let scenario = find_scenario(SCENARIOS, "arena-fight").expect("listed");
+            let scenario = find_scenario(&SCENARIOS, "arena-fight").expect("listed");
             let (mut sim, _) = scenario.start(scenario.config).expect("sets up");
             let mut director = director;
             for _ in 0..140 {
@@ -723,7 +732,7 @@ mod tests {
         let presets = ScreenLibrary::default_effects();
         let mut screen = EffectStack::new(sapphire_time::ScaledClock::new().new_local_clock());
         let mut show = CueShow::new(VfxBudget::DESKTOP_LOW, &presets).expect("resolves");
-        let scenario = find_scenario(SCENARIOS, "arena-fight").expect("listed");
+        let scenario = find_scenario(&SCENARIOS, "arena-fight").expect("listed");
         let (mut sim, _) = scenario.start(scenario.config).expect("sets up");
         assert!(!show.sounds().started_over);
         let until_a_sound = |sim: &mut Simulation, show: &mut CueShow, screen: &mut EffectStack| {

@@ -250,7 +250,7 @@ mod tests {
         use crate::hits::{DodgedSwing, HitQuery};
         use crate::replay::{SCENARIOS, find_scenario};
 
-        let scenario = find_scenario(SCENARIOS, "arena-fight").unwrap();
+        let scenario = find_scenario(&SCENARIOS, "arena-fight").unwrap();
         let (simulation, cast) = scenario.start(scenario.config).unwrap();
         let [target, attacker] = cast[..2].try_into().unwrap();
         let set = simulation.actor(attacker).unwrap().moves.set.unwrap();

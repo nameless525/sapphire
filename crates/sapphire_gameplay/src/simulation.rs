@@ -27,6 +27,7 @@ use crate::controller::{
     ResolvedProfile,
 };
 use crate::cues::{CueEvent, CueQueue};
+use crate::encounter::{self, SimZone, ZoneCast, ZoneStartError};
 use crate::hits::{self, HitQuery, remove_hurtboxes};
 use crate::intents::{self, IntentRing};
 use crate::movement::{self, ActorTransform};
@@ -42,6 +43,8 @@ use crate::timeline::{
     self, CinematicError, TimelineEvent, TimelineId, TimelineLibrary, TimelinePlayError, TimelineProgress,
     TimelineRun,
 };
+use sapphire_serialize::AssetId;
+use sapphire_zone::ArchivedZone;
 
 /// [`Pcg32`]'s sequence for combat's numbers (spec §5.4: seeded per subsystem). A subsystem that
 /// draws its own takes another, so one's draws can't move another's.
@@ -188,7 +191,7 @@ impl Simulation {
             .add_systems(FixedCombat, timeline::advance_timeline.in_set(CombatSet::Timeline))
             .add_systems(
                 FixedCombat,
-                (intents::press_intents, targeting::choose_soft_locks, brain::think)
+                (intents::press_intents, encounter::direct, targeting::choose_soft_locks, brain::think)
                     .chain()
                     .in_set(CombatSet::Intents),
             )
@@ -388,15 +391,7 @@ impl Simulation {
     #[must_use]
     pub fn tables_hash(&self) -> u64 {
         let world = self.ecs.world();
-        let tables = checksum::tables_hash(
-            world.resource::<MoveLibrary>(),
-            world.resource::<CharacterWorld>(),
-            world.resource::<Party>(),
-            world.get_resource::<SimNavigation>(),
-            world.resource::<TimelineLibrary>(),
-            &self.standing_jump_actors,
-            world.resource::<TargetingTuning>(),
-        );
+        let tables = checksum::tables_hash(world, &self.standing_jump_actors);
         let Some(body) = world.get_resource::<BodyAuthority>() else { return tables };
         let mut hash = checksum::StateHasher::new();
         hash.u64(tables);
@@ -499,6 +494,35 @@ impl Simulation {
         let changed = *current != tuning;
         *current = tuning;
         changed
+    }
+
+    /// Gives this simulation a zone, between steps and before any character has spawned: its colliders if it
+    /// names any, and its triggers and encounters, copied, so nothing here streams and nothing is read again.
+    /// `read` hands over what the zone references, cooked, by ID. Its digest goes in [`Self::tables_hash`],
+    /// without the navmesh, which [`Self::set_navigation`] takes apart, and what it's doing in
+    /// [`Self::checksum`]. A simulation that's never given one hashes neither. See [`crate::encounter`].
+    ///
+    /// # Errors
+    ///
+    /// If what it names isn't there or isn't good, in which case it keeps what it had.
+    pub fn set_zone<'a>(
+        &mut self,
+        zone: &ArchivedZone,
+        cast: ZoneCast<'_>,
+        mut read: impl FnMut(AssetId) -> Option<&'a [u8]>,
+    ) -> Result<(), ZoneStartError> {
+        let held = SimZone::new(zone, cast, self.move_library(), &mut read)?;
+        if let Some(physics) = SimZone::physics_of(zone, self.body_capacity(), &mut read)? {
+            self.set_physics_world(physics)?;
+        }
+        self.ecs.world_mut().insert_resource(held);
+        Ok(())
+    }
+
+    /// Its zone, if it's been given one.
+    #[must_use]
+    pub fn zone(&self) -> Option<&SimZone> {
+        self.ecs.world().get_resource::<SimZone>()
     }
 
     /// Gives this simulation a zone's navmesh, from a cook's bytes, which must start 16-byte aligned,

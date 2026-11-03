@@ -108,7 +108,7 @@ mod tests {
     use crate::actions::TickActions;
 
     fn start() -> (Simulation, ActorId, Vec<(ActorId, PathId)>) {
-        let scenario = find_scenario(SCENARIOS, "nav-chase").expect("listed");
+        let scenario = find_scenario(&SCENARIOS, "nav-chase").expect("listed");
         let mut sim = Simulation::new(scenario.config);
         let (player, chasers) = set_up(&mut sim).expect("it sets up");
         (sim, player, chasers)
@@ -150,7 +150,7 @@ mod tests {
     /// A replay tells one navmesh from another, and a simulation with none hashes what it always did.
     #[test]
     fn the_tables_hash_holds_the_navmesh_and_only_if_there_is_one() {
-        let scenario = find_scenario(SCENARIOS, "arena").expect("listed");
+        let scenario = find_scenario(&SCENARIOS, "arena").expect("listed");
         let (mut sim, _) = scenario.start(scenario.config).expect("it sets up");
         let without = sim.tables_hash();
         let mut bytes = crate::arena::cooked_navmesh();

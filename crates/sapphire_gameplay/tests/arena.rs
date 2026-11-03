@@ -168,7 +168,7 @@ fn the_document_parses_cooks_and_builds_a_world() {
     let cooked = set(&bytes);
     assert_eq!(cooked.colliders.len(), document.colliders.len());
     // The scenario stands on this world, whole.
-    let scenario = find_scenario(SCENARIOS, "arena").expect("listed");
+    let scenario = find_scenario(&SCENARIOS, "arena").expect("listed");
     let (sim, _) = scenario.start(scenario.config).expect("sets up");
     assert_eq!(sim.physics().static_count(), document.colliders.len());
     assert_eq!(sim.physics().statics_digest(), world(&bytes).statics_digest());
@@ -303,7 +303,7 @@ fn the_duels_floor_is_clear() {
 /// standing throughout.
 #[test]
 fn the_arena_walk_collides_with_the_post_and_comes_back() {
-    let scenario = find_scenario(SCENARIOS, "arena").expect("listed");
+    let scenario = find_scenario(&SCENARIOS, "arena").expect("listed");
     let script = find_script("arena-walk").expect("listed");
     let mut recording = Recording::new(scenario, scenario.config).expect("sets up");
     let (player, enemy) = (recording.cast()[0], recording.cast()[1]);

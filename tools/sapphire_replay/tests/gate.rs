@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use sapphire_core::alloc::CountingAllocator;
 use sapphire_ecs::prelude::*;
-use sapphire_gameplay::replay::{ARCHITECTURE, SCENARIOS, Scenario, ScenarioError, melee};
+use sapphire_gameplay::replay::{ARCHITECTURE, SCENARIOS, Scenario, ScenarioError, ScenarioSetup, melee};
 use sapphire_gameplay::{ActorId, CombatSet, Simulation};
 use sapphire_replay::{Record, Suite, check, record};
 
@@ -49,7 +49,7 @@ fn a_step_that_allocates_fails_the_suite() {
         script: "melee-sweep",
         ticks: Some(100),
         seed: None,
-        scenarios: SCENARIOS,
+        scenarios: &SCENARIOS,
         architecture: ARCHITECTURE,
     })
     .expect("records");
@@ -59,7 +59,7 @@ fn a_step_that_allocates_fails_the_suite() {
         out: &out,
         update: false,
         only: None,
-        scenarios: SCENARIOS,
+        scenarios: &SCENARIOS,
         architecture: ARCHITECTURE,
     };
     let outcome = check(&clean).expect("runs");
@@ -67,7 +67,7 @@ fn a_step_that_allocates_fails_the_suite() {
     assert_eq!(outcome.played, 1);
 
     // The same world and the same actions, with an allocation in its step.
-    let scenarios = [Scenario { setup: allocating, ..SCENARIOS[0] }];
+    let scenarios = [Scenario { setup: ScenarioSetup::Code(allocating), ..SCENARIOS[0] }];
     let outcome = check(&Suite { scenarios: &scenarios, ..clean }).expect("runs");
     assert_eq!(outcome.failures.len(), 1, "{:?}", outcome.failures);
     let failure = &outcome.failures[0];

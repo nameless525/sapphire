@@ -8,7 +8,7 @@ use std::sync::Mutex;
 
 use sapphire_core::alloc::CountingAllocator;
 use sapphire_gameplay::replay::{
-    Player, Replay, SCENARIOS, Scenario, ScenarioError, arena_fight, find_scenario,
+    Player, Replay, SCENARIOS, Scenario, ScenarioError, ScenarioSetup, arena_fight, find_scenario,
 };
 use sapphire_gameplay::{ActorId, Simulation};
 use sapphire_script::{Limits, ScriptHost, attach, cook, host_of};
@@ -31,8 +31,8 @@ fn a_runner_plays_a_recorded_fight_with_a_hook_on_it() {
     host.bind(&cook(chunk).unwrap(), "=test").unwrap();
     *HOST.lock().unwrap() = Some(host);
 
-    let plain = find_scenario(SCENARIOS, "arena-fight").expect("listed");
-    let scenarios = [Scenario { setup: scripted_fight, ..*plain }];
+    let plain = find_scenario(&SCENARIOS, "arena-fight").expect("listed");
+    let scenarios = [Scenario { setup: ScenarioSetup::Code(scripted_fight), ..*plain }];
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/replays/arena-fight-won.sreplay");
     let replay = Replay::decode(&std::fs::read(path).unwrap()).unwrap();
     let mut player = Player::new(replay, &scenarios).unwrap();

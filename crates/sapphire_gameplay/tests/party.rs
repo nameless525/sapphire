@@ -1097,7 +1097,7 @@ fn a_scripted_fight_does_what_its_comments_say() {
 
 /// That scenario's fight, as a test of it needs one.
 fn real_fight() -> (Simulation, [ActorId; 2]) {
-    let scenario = find_scenario(SCENARIOS, "party").expect("listed");
+    let scenario = find_scenario(&SCENARIOS, "party").expect("listed");
     let (sim, cast) = scenario.start(scenario.config).expect("sets up");
     (sim, [cast[0], cast[1]])
 }
@@ -1164,7 +1164,7 @@ fn edited(from: &str, to: &str) -> String {
 #[test]
 fn a_live_edit_reaches_the_whole_party() {
     let (mut sim, [first, _]) = real_fight();
-    let scenario = find_scenario(SCENARIOS, "party").expect("listed");
+    let scenario = find_scenario(&SCENARIOS, "party").expect("listed");
     assert_eq!(
         scenario.documents,
         ["content/combat/player/player.moves.ron", "content/combat/enemy/warrior.moves.ron"]
@@ -1219,7 +1219,7 @@ fn a_swap_with_no_assist_left_still_swaps() {
 #[test]
 fn a_new_fight_refuses_an_edit_that_leaves_no_assist() {
     let (sim, _) = real_fight();
-    let scenario = find_scenario(SCENARIOS, "party").expect("listed");
+    let scenario = find_scenario(&SCENARIOS, "party").expect("listed");
     let id = scenario.set_of("player.moves.ron").expect("its first");
     let mut document = MoveSetDocument::parse(&edited("", "")).expect("parses");
     document.moves.retain(|mv| mv.name != "swap_in");
@@ -1235,7 +1235,7 @@ fn a_new_fight_refuses_an_edit_that_leaves_no_assist() {
 fn the_recorded_fight_does_what_its_script_says() {
     let bytes = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/replays/party-swap.sreplay"))
         .expect("in the suite");
-    let mut player = Player::new(Replay::decode(&bytes).expect("decodes"), SCENARIOS).expect("starts");
+    let mut player = Player::new(Replay::decode(&bytes).expect("decodes"), &SCENARIOS).expect("starts");
     let warrior = player.cast()[1];
     let members: Vec<ActorId> = player.simulation().party().slots().map(|slot| slot.actor).collect();
     let [a, b, c] = members[..] else { panic!("{members:?}") };

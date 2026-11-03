@@ -1497,7 +1497,7 @@ fn a_window_reads_the_revision_it_opened_in() {
 /// script that had stopped doing these would hold nothing.
 #[test]
 fn the_replay_suites_dodge_counter_plays_what_it_says() {
-    let scenario = replay::find_scenario(SCENARIOS, "duel").expect("listed");
+    let scenario = replay::find_scenario(&SCENARIOS, "duel").expect("listed");
     let script = replay::find_script("dodge-counter").expect("listed");
     let (mut sim, cast) = scenario.start(scenario.config).expect("sets up");
     let (player, opponent) = (cast[0], cast[1]);
@@ -1598,10 +1598,11 @@ fn every_authored_window_of_the_test_content_is_covered_by_a_replay() {
         let bytes = std::fs::read(&file).expect("reads");
         let replay = Replay::decode(&bytes).expect("decodes");
         // The fights play the shipped moves, which aren't the test content.
-        if ["arena-fight", "arena-skirmish", "party", "ward-court"].contains(&replay.scenario()) {
+        let scenario = replay::find_scenario(&SCENARIOS, replay.scenario()).expect("listed");
+        if scenario.documents.iter().any(|document| document.starts_with("content/combat/")) {
             continue;
         }
-        let mut player = Player::new(replay, SCENARIOS).expect("starts");
+        let mut player = Player::new(replay, &SCENARIOS).expect("starts");
         let mut last: BTreeMap<ActorId, CurrentMove> = BTreeMap::new();
         let mut opened: BTreeMap<ActorId, Name> = BTreeMap::new();
         while player.step() {

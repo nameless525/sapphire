@@ -289,7 +289,7 @@ fn a_soft_lock_weighs_by_the_simulations_weights_and_the_ticks_own_device() {
 /// aim follows only once the window's closed.
 #[test]
 fn the_aim_holds_while_a_warp_is_open() {
-    let scenario = find_scenario(SCENARIOS, "arena-skirmish").expect("listed");
+    let scenario = find_scenario(&SCENARIOS, "arena-skirmish").expect("listed");
     let (mut sim, cast) = scenario.start(scenario.config).expect("sets up");
     let player = cast[0];
     let (mut disagreed, mut followed) = (false, false);
@@ -368,7 +368,7 @@ fn a_brain_with_no_one_there_just_stands() {
 /// own, and a step allocates nothing however many are fighting.
 #[test]
 fn the_skirmish_is_two_sides_and_a_player() {
-    let scenario = find_scenario(SCENARIOS, "arena-skirmish").expect("listed");
+    let scenario = find_scenario(&SCENARIOS, "arena-skirmish").expect("listed");
     let (mut sim, cast) = scenario.start(scenario.config).expect("sets up");
     assert_eq!(cast.len(), 8);
     let faction = |sim: &Simulation, actor: ActorId| sim.actor(actor).expect("alive").fighter.faction();

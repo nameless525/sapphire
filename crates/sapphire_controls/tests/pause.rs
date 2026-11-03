@@ -345,7 +345,7 @@ fn the_app_can_pause_too() {
 
 /// A player and an opponent on the test moves, so a press starts something and a wrong tick shows.
 fn fight() -> (Simulation, ActorId) {
-    let scenario = find_scenario(SCENARIOS, "duel").expect("a scenario");
+    let scenario = find_scenario(&SCENARIOS, "duel").expect("a scenario");
     let (sim, cast) = scenario.start(scenario.config).expect("sets up");
     (sim, cast[0])
 }

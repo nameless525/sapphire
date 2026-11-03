@@ -144,6 +144,14 @@ pub const SCRIPTS: &[Script] = &[
         commands: &[],
     },
     Script {
+        name: "into-the-yard",
+        about: "the proving ground's player runs round the pillar and into the cart yard, whose trigger \
+                starts its encounter, then does as `fight-back` does",
+        ticks: 2400,
+        actions: into_the_yard,
+        commands: &[],
+    },
+    Script {
         name: "arena-walk",
         about: "the arena's player walks and runs its clear floor, into a lantern post, jumps there, and comes \
                 back, by the stick alone",
@@ -504,7 +512,7 @@ const PARTY_SWAP: [(u64, Buttons); 6] = [
     (330, Buttons::LIGHT),
 ];
 
-/// [`SCRIPTS`]' `party-swap`: the [`party`](super::party) scenario's fight, by [`PARTY_SWAP`].
+/// [`SCRIPTS`]' `party-swap`: the `party` scenario's fight, by [`PARTY_SWAP`].
 #[must_use]
 pub fn party_swap(tick: u64, cast: &[ActorId]) -> TickActions {
     let mut actions = TickActions::NEUTRAL;
@@ -580,6 +588,29 @@ pub fn arena_ultimate(tick: u64, cast: &[ActorId]) -> TickActions {
     let buttons = if tick == ARENA_ULTIMATE_AT { Buttons::ULTIMATE } else { Buttons::NONE };
     actions.set(player, ActorActions { buttons, stick: Stick::CENTER }).expect("one actor fits a tick");
     actions
+}
+
+/// [`into_the_yard`]'s legs from the proving ground's start at (1, 1): a run along +Z, past the pillar at
+/// (2, 2), then along +X until it's well inside the cart yard, whose box starts at x = 5.
+const INTO_THE_YARD_LEGS: [(i8, i8, u64); 2] = [(0, 127, 90), (127, 0, 70)];
+
+/// [`SCRIPTS`]' `into-the-yard`.
+#[must_use]
+pub fn into_the_yard(tick: u64, cast: &[ActorId]) -> TickActions {
+    let mut ends_at = 0;
+    for (x, y, ticks) in INTO_THE_YARD_LEGS {
+        ends_at += ticks;
+        if tick < ends_at {
+            let mut actions = TickActions::NEUTRAL;
+            let Some(&player) = cast.first() else { return actions };
+            let stick = Stick::new(x, y);
+            actions
+                .set(player, ActorActions { buttons: Buttons::NONE, stick })
+                .expect("one actor fits a tick");
+            return actions;
+        }
+    }
+    fight_back(tick - ends_at, cast)
 }
 
 /// [`SCRIPTS`]' `idle`.

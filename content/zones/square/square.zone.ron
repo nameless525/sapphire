@@ -1,0 +1,25 @@
+// The arena's square as a zone (M3 B2): only what a fight there reads, with no geometry and no colliders of its
+// own, since the stage's town and `content/arena/square.colliders.ron` are every app's and stay shared. The
+// spawners are the arena's spawn points (`content/arena/square.spawns.ron`). The trigger is round the player's,
+// so it fires on a fight's first step.
+(
+    type: "sapphire::zone::ZoneDocument",
+    version: 1,
+    data: (
+        grid: (cell_size: 16.0),
+        spawners: [
+            (name: "player_start", position: (3.2, 0.0, 5.0), yaw_degrees: 180.0, spawns: "player"),
+            (name: "north", position: (3.2, 0.0, -1.0), yaw_degrees: 0.0, spawns: "warrior"),
+            (name: "north_west", position: (0.4, 0.0, -3.5), yaw_degrees: 0.0, spawns: "warrior"),
+            (name: "north_east", position: (6.2, 0.0, -4.5), yaw_degrees: 0.0, spawns: "warrior"),
+            (name: "west", position: (1.0, 0.0, 1.0), yaw_degrees: 30.0, spawns: "warrior"),
+            (name: "east", position: (8.6, 0.0, 3.0), yaw_degrees: -90.0, spawns: "warrior"),
+            (name: "far_east", position: (9.6, 0.0, 0.2), yaw_degrees: -90.0, spawns: "warrior"),
+            (name: "south_east", position: (8.6, 0.0, 7.0), yaw_degrees: -90.0, spawns: "warrior"),
+        ],
+        triggers: [
+            (name: "the_square", position: (3.2, 1.0, 5.0), volume: Sphere(radius: 2.0), event: "square_entered"),
+        ],
+        encounters: ["8e62f1d9-b3c7-4a58-a14e-37c90d5fb186"],
+    ),
+)

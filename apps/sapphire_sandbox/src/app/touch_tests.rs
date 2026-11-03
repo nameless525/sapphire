@@ -681,7 +681,7 @@ fn a_session_played_by_touch_replays_to_its_checksum() {
 
     rig.combat.finish().expect("written");
     let bytes = std::fs::read(&path).expect("written");
-    let mut player = Player::new(Replay::decode(&bytes).expect("reads"), SCENARIOS).expect("starts");
+    let mut player = Player::new(Replay::decode(&bytes).expect("reads"), &SCENARIOS).expect("starts");
     player.run_to_end();
     let played = player.finish();
     assert_eq!(played.trail.end(), ended, "the file plays to where the app got");

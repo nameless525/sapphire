@@ -101,7 +101,7 @@ fn a_hook_in_a_real_replay_passes_the_gate_and_the_vm_has_its_own_count() {
 #[test]
 fn a_hook_that_commands_nothing_leaves_the_recording_alone() {
     let _one = ONE_AT_A_TIME.lock().unwrap();
-    let plain = find_scenario(SCENARIOS, "arena-fight").expect("listed");
+    let plain = find_scenario(&SCENARIOS, "arena-fight").expect("listed");
     let mut player =
         sapphire_gameplay::replay::Player::new(replay_file("arena-fight-won"), std::slice::from_ref(plain))
             .unwrap();

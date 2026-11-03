@@ -133,6 +133,7 @@ fn one_call(deciding: bool, calls: u32) -> f64 {
         defeated: false,
         started: 0,
         running: None,
+        may_attack: true,
         reaction_due: false,
         target: Some(SeenTarget {
             position: Vec3::new(1.0, 0.0, 2.0),

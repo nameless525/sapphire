@@ -91,7 +91,7 @@ impl LiveMoves {
                 sim.stand_in_move_set(id, set.clone());
             }
         }
-        let cast = (scenario.setup)(&mut sim)?;
+        let cast = scenario.set_up(&mut sim)?;
         sim.check_cinematics()?;
         Ok((sim, cast))
     }
@@ -99,20 +99,25 @@ impl LiveMoves {
 
 #[cfg(test)]
 mod tests {
+    use sapphire_colliders::ColliderSet;
     use sapphire_core::Name;
     use sapphire_moves::MoveSetDocument;
+    use sapphire_physics::PhysicsWorld;
 
-    use super::super::scenario::{SCENARIOS, arena_fight_on, duel_on, find_scenario, test_moves};
+    use super::super::scenario::{
+        PLAYERS, SCENARIOS, ScenarioSetup, WARRIORS, duel_on, find_scenario, player_moves, test_moves,
+    };
     use super::super::script::{ATTEMPT_EVERY, attempts, fight};
     use super::super::{PlayError, Player, Recording, Replay};
     use super::*;
+    use crate::actors::ActorSpawn;
     use crate::controller::ControllerProfile;
     use crate::moves::Tuned;
 
     const SLICE: &str = "slice.moves.ron";
 
     fn duel() -> &'static Scenario {
-        find_scenario(SCENARIOS, "duel").expect("listed")
+        find_scenario(&SCENARIOS, "duel").expect("listed")
     }
 
     /// The test moves, with `light_1` two ticks slower to come out and its hit two ticks later, as a
@@ -199,7 +204,7 @@ mod tests {
         assert_eq!(replay.tables_hash(), before, "what those ticks ran on");
 
         let mut player =
-            Player::new(Replay::decode(&replay.encode()).expect("reads"), SCENARIOS).expect("starts");
+            Player::new(Replay::decode(&replay.encode()).expect("reads"), &SCENARIOS).expect("starts");
         player.run_to_end();
         assert_eq!(player.finish().trail, played.trail);
     }
@@ -262,7 +267,7 @@ mod tests {
         let (replay, played) = recording.finish();
         assert_eq!(replay.tables_hash(), before, "what those ticks ran on");
         let mut player =
-            Player::new(Replay::decode(&replay.encode()).expect("reads"), SCENARIOS).expect("starts");
+            Player::new(Replay::decode(&replay.encode()).expect("reads"), &SCENARIOS).expect("starts");
         player.run_to_end();
         assert_eq!(player.finish().trail, played.trail);
     }
@@ -277,7 +282,7 @@ mod tests {
         let mut live = LiveMoves::default();
         live.remember(SLICE, moving_at(9.0));
 
-        let scenario = Scenario { setup: edited_duel, ..*duel() };
+        let scenario = Scenario { setup: ScenarioSetup::Code(edited_duel), ..*duel() };
         let mut tuned = Recording::tuned(&scenario, duel().config, &live).expect("sets up");
         let mut source = attempts;
         for _ in 0..200 {
@@ -291,7 +296,7 @@ mod tests {
         assert_eq!(replay.tables_hash(), hash);
 
         let bytes = replay.encode();
-        let refused = Player::new(Replay::decode(&bytes).expect("reads"), SCENARIOS);
+        let refused = Player::new(Replay::decode(&bytes).expect("reads"), &SCENARIOS);
         assert!(matches!(refused, Err(PlayError::MovesChanged { .. })), "a build without the edit");
 
         let has_it = [scenario];
@@ -343,7 +348,7 @@ mod tests {
         assert!(live.latest("warrior.moves.ron").is_none());
 
         // What recording from the edit makes.
-        let scenario = Scenario { setup: edited_duel, ..*duel() };
+        let scenario = Scenario { setup: ScenarioSetup::Code(edited_duel), ..*duel() };
         let mut tuned = Recording::tuned(&scenario, duel().config, &live).expect("sets up");
         let mut source = attempts;
         for _ in 0..200 {
@@ -358,7 +363,7 @@ mod tests {
         assert_eq!(with_the_edit.finish().trail, played.trail);
 
         // This build, without it, refuses.
-        let refused = Player::new(replay, SCENARIOS);
+        let refused = Player::new(replay, &SCENARIOS);
         assert!(matches!(refused, Err(PlayError::MovesChanged { .. })), "{:?}", refused.err());
     }
 
@@ -374,14 +379,41 @@ mod tests {
             document.compile().expect("compiles")
         }
         fn built_with_it(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
-            arena_fight_on(sim, patient())
+            // `arena-fight`, in code, with this for the warrior's moves.
+            let cooked = crate::arena::cooked_colliders()?;
+            let set = ColliderSet::read(&cooked)?;
+            sim.set_physics_world(PhysicsWorld::from_cooked(set, sim.body_capacity())?)?;
+            sim.add_cinematic(super::super::ULTIMATE_CINEMATIC, super::super::ultimate_cinematic()?)?;
+            let controller = Some(sim.add_controller_profile(&crate::arena::profile())?);
+            let moves = Some(sim.add_move_set(player_moves()?));
+            let warrior = Some(sim.add_move_set(patient()));
+            let spawns = crate::arena::spawns();
+            let player = sim.spawn(ActorSpawn {
+                position: spawns.player.position(),
+                yaw: spawns.player.yaw(),
+                moves,
+                controller,
+                faction: PLAYERS,
+            })?;
+            let enemy = sim.spawn(ActorSpawn {
+                position: spawns.enemy.position(),
+                yaw: spawns.enemy.yaw(),
+                moves: warrior,
+                controller,
+                faction: WARRIORS,
+            })?;
+            sim.give_soft_lock(player);
+            sim.prepare_standing_jump(player);
+            sim.give_brain(enemy);
+            Ok(vec![player, enemy])
         }
-        let scenario = find_scenario(SCENARIOS, "arena-fight").expect("listed");
+        let scenario = find_scenario(&SCENARIOS, "arena-fight").expect("listed");
         let mut live = LiveMoves::default();
         live.remember("warrior.moves.ron", patient());
         let (tuned, _) = live.start(scenario, scenario.config).expect("sets up");
-        let (built, _) =
-            Scenario { setup: built_with_it, ..*scenario }.start(scenario.config).expect("sets up");
+        let (built, _) = Scenario { setup: ScenarioSetup::Code(built_with_it), ..*scenario }
+            .start(scenario.config)
+            .expect("sets up");
         assert_eq!(tuned.tables_hash(), built.tables_hash(), "the same tables");
         assert_eq!(tuned.checksum(), built.checksum(), "and the same world, before a step");
     }
@@ -391,7 +423,7 @@ mod tests {
     #[test]
     fn a_new_fight_starts_without_a_brain_an_edit_took_away() {
         for name in ["arena-fight", "party"] {
-            let scenario = find_scenario(SCENARIOS, name).expect("listed");
+            let scenario = find_scenario(&SCENARIOS, name).expect("listed");
             let warrior = |sim: &Simulation| sim.actors().find(|actor| actor.brain.is_on()).is_some();
             let (compiled, _) = scenario.start(scenario.config).expect("sets up");
             assert!(warrior(&compiled), "{name}: the document as it stands has a brain");
@@ -466,7 +498,7 @@ mod tests {
     #[test]
     fn a_fight_takes_a_saved_timing_over_its_cooked_copy_and_starts_over_from_it() {
         const PLAYER: &str = "player.moves.ron";
-        let fight = find_scenario(SCENARIOS, "arena-fight").expect("listed");
+        let fight = find_scenario(&SCENARIOS, "arena-fight").expect("listed");
         let id = fight.set_of(PLAYER).expect("it plays this document");
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let text =
@@ -521,7 +553,7 @@ mod tests {
     #[test]
     fn a_scenarios_documents_are_the_sets_it_loads() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        for scenario in SCENARIOS {
+        for scenario in SCENARIOS.iter() {
             let (sim, _) = scenario.start(scenario.config).expect("sets up");
             let library = sim.move_library();
             assert_eq!(library.set_count(), scenario.documents.len(), "{}", scenario.name);
@@ -563,9 +595,9 @@ mod tests {
         let (replay, played) = recording.finish();
         assert_eq!(replay.tables_hash(), hash);
 
-        let refused = Player::new(replay.clone(), SCENARIOS).err().expect("not on the shipped weights");
+        let refused = Player::new(replay.clone(), &SCENARIOS).err().expect("not on the shipped weights");
         assert!(matches!(refused, PlayError::MovesChanged { .. }), "{refused}");
-        let mut player = Player::tuned(replay, SCENARIOS, &live).expect("on its own");
+        let mut player = Player::tuned(replay, &SCENARIOS, &live).expect("on its own");
         player.run_to_end();
         assert_eq!(player.finish().trail, played.trail);
     }

@@ -1,31 +1,37 @@
 //! Scenarios: the named starting worlds replays run from.
 //!
 //! A replay records the name of one, and running it means setting up the same world. **To add one,**
-//! write its setup and add a row to [`SCENARIOS`]. A setup does the same things in the same order
-//! every run: the collision world and controller profiles, move sets, then spawns.
+//! write a document in `content/scenarios/` ([`document`](super::document)), and no Rust changes. A world only
+//! code can say gets its setup and a row in [`CODE_SCENARIOS`]. A setup does the same things in the same
+//! order every run: the collision world and controller profiles, move sets, then spawns.
 //!
 //! One replay file holds one [`tables_hash`](Simulation::tables_hash) for every architecture, so a
 //! scenario's move sets must come out byte for byte the same on every architecture: from a document,
 //! as [`test_moves`] does, or from committed cooked bytes, and in scalars and `sapphire_math::det` if
 //! a setup computes anything, never through glam's SIMD types. Anything else a run depends on belongs
-//! in that hash too. Its collision world is already there: [`arena`]'s comes from a compiled-in
+//! in that hash too. Its collision world is already there: `arena`'s comes from a compiled-in
 //! document, whose cook goes through `det` for that reason, and the hash takes its statics' digest.
 
-use sapphire_colliders::ColliderError;
+use std::sync::LazyLock;
+
+use sapphire_colliders::{ColliderError, ColliderSet};
 use sapphire_core::Name;
 use sapphire_ecs::prelude::*;
 use sapphire_math::Vec3;
 use sapphire_moves::{MoveSet, MoveSetDocument, MoveSetError};
 use sapphire_physics::{
-    ColliderId, ColliderSet, Group, PhysicsWorld, Pose, Shape, StaticCollider, StaticShape, WorldError,
+    ColliderId, Group, PhysicsWorld, Pose, Shape, StaticCollider, StaticShape, WorldError,
 };
 use sapphire_serialize::cooked::AlignedVec;
 use sapphire_time::ScaleSource;
 use sapphire_timeline::{TimelineDocument, TimelineError, TimelineSimulation};
+use sapphire_zone::ZoneError;
 
+use super::document::ScenarioDocument;
 use crate::actions::{Buttons, Controls};
 use crate::actors::{ActorId, ActorRequests, ActorSpawn, ActorTable, SpawnError};
 use crate::controller::{ControllerProfile, PhysicsWorldError, ProfileError, ProfileId};
+use crate::encounter::ZoneStartError;
 use crate::faction::Faction;
 use crate::movement::ActorTransform;
 use crate::moves::{MoveRunner, MoveSetId, WarpTarget};
@@ -48,23 +54,17 @@ const TEST_MOVES_PATH: &str = "crates/sapphire_moves/test_content/slice.moves.ro
 /// The enemy's document (M2 O4), brain and all, as this build holds it: a replay needs no assets.
 pub const WARRIOR_MOVES: &str = include_str!("../../../../content/combat/enemy/warrior.moves.ron");
 
-/// That document, from the repository's root.
+/// The player's and the warrior's documents, from the repository's root: what [`PreparedFight`] finds a live
+/// edit of either by.
+const PLAYER_MOVES_PATH: &str = "content/combat/player/player.moves.ron";
 const WARRIOR_MOVES_PATH: &str = "content/combat/enemy/warrior.moves.ron";
 
-/// The player's moves (`content/combat/player/player.moves.ron`), cooked. A cook bakes their tables
-/// from their clips, which takes the pipeline, and nothing that runs a replay links that, so the
-/// simulation keeps a copy. `tools/sapphire_pipeline/tests/player_moves.rs` holds it to the document.
-const PLAYER_MOVES: &[u8] = include_bytes!("../../baked/player.smoves");
-
 /// The cinematic the player's ultimate names (M3 Q3b), as this build holds it: every fight on the player's
-/// moves loads it under [`ULTIMATE_CINEMATIC`], wherever it is.
+/// moves loads it under [`ULTIMATE_CINEMATIC`], wherever it is, a scenario document's among them.
 const ULTIMATE: &str = include_str!("../../../../content/combat/player/ultimate.timeline.ron");
 
 /// The name the player's `ultimate` move gives its cinematic.
 pub const ULTIMATE_CINEMATIC: &str = "ultimate";
-
-/// That document, from the repository's root.
-const PLAYER_MOVES_PATH: &str = "content/combat/player/player.moves.ron";
 /// What the party's tests add to [`TEST_MOVES`]: a swap and three assists.
 const PARTY_MOVES: &str = include_str!("../../../sapphire_moves/test_content/party.moves.ron");
 
@@ -90,13 +90,18 @@ pub enum ScenarioError {
     #[error(transparent)]
     Timeline(#[from] TimelineError),
     #[error(transparent)]
-    Zone(#[from] sapphire_zone::ZoneError),
-    #[error(transparent)]
     Cinematic(#[from] crate::CinematicError),
     #[error("the zone has no spawner named `{0}`")]
     MissingSpawner(&'static str),
     #[error("the arena couldn't bind its runtime profiles: {0}")]
     RuntimeProfiles(String),
+    #[error(transparent)]
+    ZoneDocument(#[from] ZoneError),
+    #[error(transparent)]
+    Zone(#[from] ZoneStartError),
+    /// A scenario's document names something it can't have.
+    #[error("`{field}`: {problem}")]
+    Document { field: String, problem: String },
 }
 
 /// A named starting world.
@@ -113,18 +118,44 @@ pub struct Scenario {
     /// them: what live tuning goes by (M2 T2), and what `link watch` watches. A test holds them to
     /// what the setup loads.
     pub documents: &'static [&'static str],
-    /// Loads the move sets and spawns the actors, and returns the actors input drives, the player
-    /// first, for an [`ActionSource`](super::ActionSource).
-    pub setup: fn(&mut Simulation) -> Result<Vec<ActorId>, ScenarioError>,
+    /// Loads the move sets and spawns the actors.
+    pub setup: ScenarioSetup,
+}
+
+/// How a scenario makes its world.
+#[derive(Clone, Copy, Debug)]
+pub enum ScenarioSetup {
+    /// By a function, for a world only code can say.
+    Code(fn(&mut Simulation) -> Result<Vec<ActorId>, ScenarioError>),
+    /// By what a document says.
+    Document(&'static ScenarioDocument),
 }
 
 impl Scenario {
     /// A new simulation set up as this scenario says, with `config`, and the actors input drives.
     pub fn start(&self, config: SimConfig) -> Result<(Simulation, Vec<ActorId>), ScenarioError> {
         let mut sim = Simulation::new(config);
-        let cast = (self.setup)(&mut sim)?;
+        let cast = self.set_up(&mut sim)?;
         sim.check_cinematics()?;
         Ok((sim, cast))
+    }
+
+    /// What it was written from, if it's a document.
+    #[must_use]
+    pub const fn document(&self) -> Option<&'static ScenarioDocument> {
+        match self.setup {
+            ScenarioSetup::Code(_) => None,
+            ScenarioSetup::Document(document) => Some(document),
+        }
+    }
+
+    /// Loads its move sets and spawns its actors in `sim`, and returns the actors input drives, the player
+    /// first, for an [`ActionSource`](super::ActionSource).
+    pub fn set_up(&self, sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
+        match self.setup {
+            ScenarioSetup::Code(setup) => setup(sim),
+            ScenarioSetup::Document(document) => document.set_up(sim),
+        }
     }
 
     /// The set that plays the document with this file name, in this scenario's simulations.
@@ -152,11 +183,12 @@ pub fn document_file_name(path: &str) -> &str {
 pub const PLAYERS: Faction = Faction::new(1).expect("a faction's number");
 /// The side the arena's warriors are on, who leave each other alone.
 pub const WARRIORS: Faction = Faction::new(2).expect("a faction's number");
-/// A second side of warriors in [`skirmish`], who fight the first as readily as the player.
+/// A second side of warriors in `arena-skirmish`, who fight the first as readily as the player.
 pub const RIVALS: Faction = Faction::new(3).expect("a faction's number");
 
-/// Every scenario.
-pub const SCENARIOS: &[Scenario] = &[
+/// The scenarios that need code: a setup adds a system, or computes who stands where. The rest are documents
+/// ([`document`](super::document)), and a new one should be.
+const CODE_SCENARIOS: &[Scenario] = &[
     Scenario {
         name: "melee",
         about: "three characters on flat ground within reach of each other on the test moves, warps aimed round \
@@ -168,7 +200,7 @@ pub const SCENARIOS: &[Scenario] = &[
             physics_budget: PHYSICS_BUDGET_DESKTOP_LOW,
         },
         documents: &[TEST_MOVES_PATH],
-        setup: melee,
+        setup: ScenarioSetup::Code(melee),
     },
     Scenario {
         name: "duel",
@@ -181,46 +213,7 @@ pub const SCENARIOS: &[Scenario] = &[
             physics_budget: PHYSICS_BUDGET_DESKTOP_LOW,
         },
         documents: &[TEST_MOVES_PATH],
-        setup: duel,
-    },
-    Scenario {
-        name: "arena",
-        about: "a player and an opponent at the look-dev town's spawn points, on its square's colliders, with \
-                the test moves and each aiming warps at the other",
-        config: SimConfig {
-            seed: 7,
-            max_actors: 8,
-            step_budget: BUDGET_DESKTOP_LOW,
-            physics_budget: PHYSICS_BUDGET_DESKTOP_LOW,
-        },
-        documents: &[TEST_MOVES_PATH],
-        setup: arena,
-    },
-    Scenario {
-        name: "arena-fight",
-        about: "the arena's player on its own moves, aiming warps at the real warrior: O4's moves and fighter, \
-                driven by its own brain, so input drives only the player",
-        config: SimConfig {
-            seed: 7,
-            max_actors: 8,
-            step_budget: BUDGET_DESKTOP_LOW,
-            physics_budget: PHYSICS_BUDGET_DESKTOP_LOW,
-        },
-        documents: &[PLAYER_MOVES_PATH, WARRIOR_MOVES_PATH],
-        setup: arena_fight,
-    },
-    Scenario {
-        name: "party",
-        about: "`arena-fight`, with the player a party of three on the player's moves, one on the field: input \
-                drives whoever that is, and the warrior's brain fights them",
-        config: SimConfig {
-            seed: 7,
-            max_actors: 8,
-            step_budget: BUDGET_DESKTOP_LOW,
-            physics_budget: PHYSICS_BUDGET_DESKTOP_LOW,
-        },
-        documents: &[PLAYER_MOVES_PATH, WARRIOR_MOVES_PATH],
-        setup: party,
+        setup: ScenarioSetup::Code(duel),
     },
     Scenario {
         name: "nav-chase",
@@ -233,7 +226,7 @@ pub const SCENARIOS: &[Scenario] = &[
             physics_budget: PHYSICS_BUDGET_DESKTOP_LOW,
         },
         documents: &[TEST_MOVES_PATH],
-        setup: super::chase::nav_chase,
+        setup: ScenarioSetup::Code(super::chase::nav_chase),
     },
     Scenario {
         name: "timelines",
@@ -246,7 +239,7 @@ pub const SCENARIOS: &[Scenario] = &[
             physics_budget: PHYSICS_BUDGET_DESKTOP_LOW,
         },
         documents: &[TEST_MOVES_PATH],
-        setup: timelines,
+        setup: ScenarioSetup::Code(timelines),
     },
     Scenario {
         name: super::ward::WARD_COURT,
@@ -259,22 +252,32 @@ pub const SCENARIOS: &[Scenario] = &[
             physics_budget: PHYSICS_BUDGET_DESKTOP_LOW,
         },
         documents: &[PLAYER_MOVES_PATH, WARRIOR_MOVES_PATH],
-        setup: super::ward::ward_court,
-    },
-    Scenario {
-        name: "arena-skirmish",
-        about: "the arena's player against two sides of real warriors, four and three, on the same moves and \
-                each with its own brain: nobody hits their own side, and everyone picks a foe",
-        config: SimConfig {
-            seed: 7,
-            max_actors: 8,
-            step_budget: BUDGET_DESKTOP_LOW,
-            physics_budget: PHYSICS_BUDGET_DESKTOP_LOW,
-        },
-        documents: &[PLAYER_MOVES_PATH, WARRIOR_MOVES_PATH],
-        setup: skirmish,
+        setup: ScenarioSetup::Code(super::ward::ward_court),
     },
 ];
+
+/// The scenario documents this build holds, read. A bad one stops here, naming itself and the field.
+static DOCUMENTS: LazyLock<Vec<(&'static str, ScenarioDocument)>> = LazyLock::new(super::document::read_all);
+
+/// Each document's move sets' paths, for [`Scenario::documents`].
+static DOCUMENT_PATHS: LazyLock<Vec<Vec<&'static str>>> = LazyLock::new(|| {
+    let paths = |(_, document): &'static (&str, ScenarioDocument)| {
+        document.moves.iter().map(String::as_str).collect()
+    };
+    DOCUMENTS.iter().map(paths).collect()
+});
+
+/// Every scenario: those that take code, then the documents by name.
+pub static SCENARIOS: LazyLock<Vec<Scenario>> = LazyLock::new(|| {
+    let documents = DOCUMENTS.iter().zip(DOCUMENT_PATHS.iter()).map(|((name, document), paths)| Scenario {
+        name,
+        about: &document.about,
+        config: document.config(),
+        documents: paths,
+        setup: ScenarioSetup::Document(document),
+    });
+    CODE_SCENARIOS.iter().copied().chain(documents).collect()
+});
 
 /// The scenario named `name`, among `scenarios`.
 #[must_use]
@@ -294,9 +297,7 @@ pub fn warrior_moves() -> Result<MoveSet, MoveSetError> {
 
 /// The player's moves, from the simulation's cooked copy of them.
 pub fn player_moves() -> Result<MoveSet, MoveSetError> {
-    let mut bytes = AlignedVec::<16>::with_capacity(PLAYER_MOVES.len());
-    bytes.extend_from_slice(PLAYER_MOVES);
-    MoveSet::from_cooked(&bytes)
+    super::document::baked_moves("player").expect("`arena-fight` names them, so this build holds them")
 }
 
 /// The simulation half of the player's ultimate's cinematic, which a fight on the player's moves loads
@@ -305,7 +306,7 @@ pub fn ultimate_cinematic() -> Result<TimelineSimulation, ScenarioError> {
     Ok(TimelineDocument::from_ron(ULTIMATE)?.cook()?.simulation)
 }
 
-/// What the [`party`] scenario's swap takes: a second on the field, and two and a half off it.
+/// What a party's swap takes in a test: a second on the field, and two and a half off it.
 pub const PARTY_TUNING: PartyTuning = PartyTuning { swap_cooldown: 60, rest: 150 };
 
 /// Each [`party_document`] member's health: little enough that a test's fight reaches a defeat soon, and
@@ -470,38 +471,6 @@ pub fn timelines(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
     duel(sim)
 }
 
-/// The arena (`crate::arena`): the town's square from its collider document, and a player and an
-/// opponent at the document's spawn points. Input drives both, the player first.
-pub fn arena(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
-    let cooked = crate::arena::cooked_colliders()?;
-    let set = ColliderSet::read(&cooked)?;
-    sim.set_physics_world(PhysicsWorld::from_cooked(set, sim.body_capacity())?)?;
-    let controller = Some(sim.add_controller_profile(&crate::arena::profile())?);
-    let moves = Some(sim.add_move_set(test_moves()?));
-    let spawns = crate::arena::spawns();
-    let mut cast = Vec::with_capacity(2);
-    for spot in [spawns.player, spawns.enemy] {
-        cast.push(sim.spawn(ActorSpawn {
-            position: spot.position(),
-            yaw: spot.yaw(),
-            moves,
-            controller,
-            ..ActorSpawn::default()
-        })?);
-    }
-    sim.prepare_standing_jump(cast[0]);
-    aim_round(sim, &cast);
-    Ok(cast)
-}
-
-/// A fight: the arena's square, the player at its spawn point on its moves, and the warrior at its, on
-/// its own document, with a brain that fights the player. The cast is both, the player first, for
-/// presentation to stand where they are; input reaches only the player, since the brain overrides the
-/// warrior's stick and none of its intents has a button.
-pub fn arena_fight(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
-    arena_fight_on(sim, warrior_moves()?)
-}
-
 /// Immutable inputs for repeated arena fights. Each start builds a fresh simulation and collision
 /// world; preparation belongs to the combat session, so a restart never reparses its built-in content.
 pub struct PreparedFight {
@@ -652,46 +621,10 @@ impl PreparedFight {
     }
 }
 
-/// [`arena_fight`], with `warrior` for the warrior's moves.
-pub(super) fn arena_fight_on(sim: &mut Simulation, warrior: MoveSet) -> Result<Vec<ActorId>, ScenarioError> {
-    let cooked = crate::arena::cooked_colliders()?;
-    fight_on(sim, player_moves()?, &ultimate_cinematic()?, warrior, &cooked, crate::arena::spawns(), false)
-}
-
-/// `arena-skirmish`: [`arena_fight`]'s two, then the crowd at the arena's other spawn points. The first
-/// four warriors, the original among them, are [`WARRIORS`] and the other three [`RIVALS`]. The cast is the
-/// player, then every warrior by ID. Eight in a pool of eight is the most this arena's fights ask for.
-pub fn skirmish(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
-    let mut cast = arena_fight(sim)?;
-    let (moves, controller) =
-        sim.actor(cast[1]).map_or((None, None), |warrior| (warrior.moves.set, warrior.controller.profile()));
-    for (index, point) in crate::arena::spawns().crowd.iter().enumerate() {
-        let warrior = sim.spawn(ActorSpawn {
-            position: point.position(),
-            yaw: point.yaw(),
-            moves,
-            controller,
-            faction: if index < 3 { WARRIORS } else { RIVALS },
-        })?;
-        sim.give_brain(warrior);
-        cast.push(warrior);
-    }
-    Ok(cast)
-}
-
-/// [`arena_fight`] with a party (`crate::party`): three members on the player's moves at its spawn point,
-/// the first on the field. The other two members come after the warrior in actor ID order.
-pub fn party(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
-    let cooked = crate::arena::cooked_colliders()?;
-    fight_on(
-        sim,
-        player_moves()?,
-        &ultimate_cinematic()?,
-        warrior_moves()?,
-        &cooked,
-        crate::arena::spawns(),
-        true,
-    )
+/// A fight, as `arena-fight`'s document says it: for a test that wants one with something of its own added
+/// to it, by a setup of its own.
+pub fn arena_fight(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
+    find_scenario(&SCENARIOS, "arena-fight").expect("this build holds its document").set_up(sim)
 }
 
 /// The player's moves after the cinematic their ultimate names, so the scenario's check finds it loaded.
@@ -776,7 +709,7 @@ mod tests {
     #[test]
     fn reset_preflights_party_edits_and_restarts_from_the_latest_valid_revisions() {
         let prepared = PreparedFight::new(true).expect("prepares");
-        let scenario = find_scenario(SCENARIOS, "party").expect("listed");
+        let scenario = find_scenario(&SCENARIOS, "party").expect("listed");
         let mut live = super::super::LiveMoves::default();
         let mut world = prepared.start_resettable(scenario.config, &live).expect("starts");
         for tick in 0..120 {
@@ -822,7 +755,7 @@ mod tests {
     #[test]
     fn prepared_fights_make_independent_worlds_on_the_latest_edits() {
         for (name, party) in [("arena-fight", false), ("party", true)] {
-            let scenario = find_scenario(SCENARIOS, name).expect("listed");
+            let scenario = find_scenario(&SCENARIOS, name).expect("listed");
             let prepared = PreparedFight::new(party).expect("prepares");
             let mut live = super::super::LiveMoves::default();
             for edited in [false, true] {
@@ -858,19 +791,19 @@ mod tests {
         for (index, scenario) in SCENARIOS.iter().enumerate() {
             assert!(is_valid_name(scenario.name), "{}", scenario.name);
             assert!(!scenario.about.is_empty(), "{}", scenario.name);
-            let found = find_scenario(SCENARIOS, scenario.name).expect("listed");
+            let found = find_scenario(&SCENARIOS, scenario.name).expect("listed");
             assert!(std::ptr::eq(found, &SCENARIOS[index]), "{} is listed twice", scenario.name);
             let (sim, cast) = scenario.start(scenario.config).expect("sets up");
             assert_eq!(sim.tick(), 0);
             assert!(!cast.is_empty(), "{} has no one for input to drive", scenario.name);
         }
-        assert!(find_scenario(SCENARIOS, "no-such-scenario").is_none());
+        assert!(find_scenario(&SCENARIOS, "no-such-scenario").is_none());
     }
 
     /// A fight stands on the ground: every one of its cast has a capsule, and lands on its first tick.
     #[test]
     fn the_fights_stand_on_the_ground() {
-        for scenario in SCENARIOS {
+        for scenario in SCENARIOS.iter() {
             let (mut sim, cast) = scenario.start(scenario.config).expect("sets up");
             sim.step(&crate::actions::TickActions::NEUTRAL);
             for actor in cast {
@@ -885,7 +818,7 @@ mod tests {
     /// The arena's cast stands where the document says, the player first, each facing the other.
     #[test]
     fn the_arena_spawns_its_two_actors_where_the_document_says() {
-        let scenario = find_scenario(SCENARIOS, "arena").expect("listed");
+        let scenario = find_scenario(&SCENARIOS, "arena").expect("listed");
         let (mut sim, cast) = scenario.start(scenario.config).expect("sets up");
         let spawns = crate::arena::spawns();
         assert_eq!(cast.len(), 2);

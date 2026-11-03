@@ -19,7 +19,7 @@ const AFTER: u32 = 120;
 const CINEMATIC_TICKS: u32 = 150;
 
 fn timelines() -> &'static Scenario {
-    find_scenario(SCENARIOS, "timelines").expect("listed")
+    find_scenario(&SCENARIOS, "timelines").expect("listed")
 }
 
 fn recording() -> Recording {
@@ -67,7 +67,7 @@ fn a_skip_at_every_step_of_a_cinematic_reaches_the_checksums_of_watching_it() {
 
         // Its own file plays back to it, through its bytes.
         let bytes = replay.encode();
-        let mut player = Player::new(Replay::decode(&bytes).expect("reads"), SCENARIOS).expect("starts");
+        let mut player = Player::new(Replay::decode(&bytes).expect("reads"), &SCENARIOS).expect("starts");
         player.run_to_end();
         assert_eq!(trail_of(player.trail()), watch, "skipped {skip_after} steps in, played back");
     }
@@ -148,7 +148,7 @@ fn run_sim(sim: &mut Simulation, cast: &[ActorId], id: TimelineId, skip_after: O
 #[test]
 fn a_skip_over_a_real_fight_reaches_the_checksums_of_watching_it() {
     let run = |skip_after| {
-        let scenario = find_scenario(SCENARIOS, "arena-fight").expect("listed");
+        let scenario = find_scenario(&SCENARIOS, "arena-fight").expect("listed");
         let mut sim = Simulation::new(scenario.config);
         let cast = arena_fight(&mut sim).expect("sets up");
         let id = sim.add_timeline(cinematic()).expect("loads");
@@ -311,7 +311,7 @@ fn a_crafted_play_of_nothing_is_ignored() {
     let argument = commands_at() + 4 + 4 + 1;
     bytes[argument..argument + 4].copy_from_slice(&77_u32.to_le_bytes());
     let decoded = Replay::decode(&reseal(bytes)).expect("well formed");
-    let mut player = Player::new(decoded, SCENARIOS).expect("starts");
+    let mut player = Player::new(decoded, &SCENARIOS).expect("starts");
     player.run_to_end();
     assert!(player.simulation().timeline().is_none());
 }
@@ -333,7 +333,7 @@ fn a_replay_refuses_a_timeline_that_changed() {
     let (replay, _) = watched();
     let mut stale = replay;
     stale.set_tables_hash(stale.tables_hash() ^ 1);
-    let error = Player::new(stale, SCENARIOS).err().expect("refused");
+    let error = Player::new(stale, &SCENARIOS).err().expect("refused");
     assert!(matches!(error, sapphire_gameplay::replay::PlayError::MovesChanged { .. }), "{error}");
 }
 
@@ -347,7 +347,7 @@ fn a_terminal_play_is_applied_once_without_an_extra_tick() {
         let expected = recording.simulation().checksum();
         let (replay, played) = recording.finish();
         let mut player =
-            Player::new(Replay::decode(&replay.encode()).expect("reads"), SCENARIOS).expect("starts");
+            Player::new(Replay::decode(&replay.encode()).expect("reads"), &SCENARIOS).expect("starts");
         player.run_to_end();
         assert_eq!(player.simulation().tick(), u64::from(ticks));
         assert!(player.simulation().timeline().is_some());
@@ -369,7 +369,7 @@ fn a_replay_starts_a_cutscene_at_the_boundary_its_recording_did() {
     recording.run_script(script, script.ticks).expect("runs");
     let (replay, played) = recording.finish();
     let mut player =
-        Player::new(Replay::decode(&replay.encode()).expect("reads"), SCENARIOS).expect("starts");
+        Player::new(Replay::decode(&replay.encode()).expect("reads"), &SCENARIOS).expect("starts");
     let play_at = u64::from(script.commands[0].0);
     while player.simulation().tick() < play_at {
         assert!(player.simulation().timeline().is_none(), "nothing plays before its boundary");
@@ -387,7 +387,7 @@ fn a_replay_starts_a_cutscene_at_the_boundary_its_recording_did() {
 /// and the fight before it is the fight with no cutscene at all, checksum for checksum.
 #[test]
 fn the_wards_gate_watched_or_skipped_leaves_its_fight_on_one_trail() {
-    let scenario = find_scenario(SCENARIOS, "ward-court").expect("listed");
+    let scenario = find_scenario(&SCENARIOS, "ward-court").expect("listed");
     let trail = |name| {
         let script = find_script(name).expect("listed");
         let mut recording = Recording::new(scenario, scenario.config).expect("sets up");

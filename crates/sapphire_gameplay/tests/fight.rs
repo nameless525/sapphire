@@ -1745,7 +1745,7 @@ fn a_world_needs_room_for_every_hurtbox_and_comes_before_them() {
 /// had stopped doing these would hold nothing.
 #[test]
 fn the_replay_suites_fight_plays_what_it_says() {
-    let scenario = replay::find_scenario(replay::SCENARIOS, "duel").expect("listed");
+    let scenario = replay::find_scenario(&replay::SCENARIOS, "duel").expect("listed");
     let script = replay::find_script("fight").expect("listed");
     let (mut sim, cast) = scenario.start(scenario.config).expect("sets up");
     let (player, opponent) = (cast[0], cast[1]);

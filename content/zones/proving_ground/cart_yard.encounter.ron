@@ -1,0 +1,16 @@
+// What the cart yard holds (M3 B2): two warriors as someone walks in, and two more when one is left, with
+// one token between them, so whoever's waiting paces round whoever's swinging.
+(
+    type: "sapphire::zone::EncounterDocument",
+    version: 1,
+    data: (
+        starts_on: "cart_yard_entered",
+        faction: 2,
+        tokens: 1,
+        token_rest: 45,
+        waves: [
+            (when: Start, spawners: ["yard_north", "yard_east"]),
+            (when: Remaining(1), gap: 30, spawners: ["far_gate", "yard_west"]),
+        ],
+    ),
+)

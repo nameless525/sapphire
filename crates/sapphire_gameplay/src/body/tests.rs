@@ -282,8 +282,8 @@ fn enabled_read_only_body_pair_preserves_melee_sweep_replay() {
     let text = std::fs::read_to_string(directory.join(checksums_file_name(ARCHITECTURE))).unwrap();
     let recorded = ChecksumFile::parse(&text).unwrap();
     let replay = Replay::decode(&bytes).unwrap();
-    let mut legacy = Player::new(replay.clone(), SCENARIOS).unwrap();
-    let mut attached = Player::new(replay, SCENARIOS).unwrap();
+    let mut legacy = Player::new(replay.clone(), &SCENARIOS).unwrap();
+    let mut attached = Player::new(replay, &SCENARIOS).unwrap();
     assert!(alloc::is_installed());
     let actors: [ActorId; 2] = attached.cast()[..2].try_into().unwrap();
     for (index, actor) in actors.into_iter().enumerate() {
@@ -318,8 +318,8 @@ fn attaching_the_shadow_preserves_the_frozen_melee_sweep_schedule() {
     let text = std::fs::read_to_string(directory.join(checksums_file_name(ARCHITECTURE))).unwrap();
     let recorded = ChecksumFile::parse(&text).unwrap();
     let replay = Replay::decode(&bytes).unwrap();
-    let mut baseline = Player::new(replay.clone(), SCENARIOS).unwrap();
-    let mut shadowed = Player::new(replay, SCENARIOS).unwrap();
+    let mut baseline = Player::new(replay.clone(), &SCENARIOS).unwrap();
+    let mut shadowed = Player::new(replay, &SCENARIOS).unwrap();
     let actors: [ActorId; 2] = shadowed.cast()[..2].try_into().unwrap();
     assert!(alloc::is_installed());
     bind_test_shadow(shadowed.simulation_mut(), actors);
@@ -361,7 +361,7 @@ fn bind_test_shadow(sim: &mut Simulation, actors: [ActorId; 2]) {
 
 #[test]
 fn active_overhead_shadow_has_no_fixed_step_allocations() {
-    let scenario = find_scenario(SCENARIOS, "arena-fight").unwrap();
+    let scenario = find_scenario(&SCENARIOS, "arena-fight").unwrap();
     let (mut baseline, baseline_cast) = scenario.start(scenario.config).unwrap();
     let (mut shadowed, cast) = scenario.start(scenario.config).unwrap();
     assert_eq!(baseline_cast, cast);

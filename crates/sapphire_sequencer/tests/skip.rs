@@ -23,7 +23,7 @@ fn cook(text: &str) -> Arc<Timeline> {
 }
 
 fn scenario() -> &'static Scenario {
-    find_scenario(SCENARIOS, "duel").expect("listed")
+    find_scenario(&SCENARIOS, "duel").expect("listed")
 }
 
 /// A fight, and a timeline, loaded as `timelines` does but free of its document: so a test can load one

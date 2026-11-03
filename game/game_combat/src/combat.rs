@@ -364,7 +364,7 @@ impl Combat {
     ) -> Result<Self, String> {
         let name = if party { crate::arena::PARTY_SCENARIO } else { crate::arena::FIGHT_SCENARIO };
         let scenario =
-            find_scenario(SCENARIOS, name).ok_or_else(|| format!("--fight: no scenario `{name}`"))?;
+            find_scenario(&SCENARIOS, name).ok_or_else(|| format!("--fight: no scenario `{name}`"))?;
         let fight = LiveFight::new(scenario, script.map(script_actions).transpose()?, moves, party, setup)?;
         Ok(Self {
             path: PathBuf::new(),
@@ -383,7 +383,7 @@ impl Combat {
         let bytes = fs::read(path).map_err(|error| fail(&error))?;
         let replay = Replay::decode(&bytes).map_err(|error| fail(&error))?;
         let player =
-            Player::tuned_with_setup(replay, SCENARIOS, live, setup).map_err(|error| fail(&error))?;
+            Player::tuned_with_setup(replay, &SCENARIOS, live, setup).map_err(|error| fail(&error))?;
         let name = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or_default().to_owned();
         let recorded = recorded_trail(path, &name).map_err(|error| fail(&error))?;
         let mode = Mode::Replaying { player, name, recorded };
@@ -420,7 +420,7 @@ impl Combat {
         if path.parent().is_some_and(|parent| !parent.as_os_str().is_empty() && !parent.is_dir()) {
             return Err(format!("--record {}: its directory doesn't exist", path.display()));
         }
-        let Some(scenario) = find_scenario(SCENARIOS, scenario) else {
+        let Some(scenario) = find_scenario(&SCENARIOS, scenario) else {
             let known: Vec<&str> = SCENARIOS.iter().map(|scenario| scenario.name).collect();
             return Err(format!("--scenario: no scenario `{scenario}`; there's {known:?}"));
         };
@@ -446,7 +446,7 @@ impl Combat {
     /// The set that plays the document with this file name, in this fight (M2 T2).
     #[cfg(feature = "dev")]
     pub(crate) fn plays(&self, document: &str) -> Option<MoveSetId> {
-        find_scenario(SCENARIOS, self.scenario())?.set_of(document)
+        find_scenario(&SCENARIOS, self.scenario())?.set_of(document)
     }
 
     /// Gives this fight a live edit of the document with this file name, between steps: what the set
@@ -1264,7 +1264,7 @@ mod tests {
         let kept = Replay::decode(&fs::read(&scratch.0).expect("kept")).expect("a whole file");
         assert_eq!(kept.ticks(), 30);
         assert!(!scratch.0.with_extension("partial").exists(), "nothing's left beside it");
-        let mut player = Player::new(kept, SCENARIOS).expect("starts");
+        let mut player = Player::new(kept, &SCENARIOS).expect("starts");
         player.run_to_end();
         assert_eq!(player.finish().trail.end(), at_30, "what it kept plays to where it was");
 
@@ -1360,7 +1360,7 @@ mod tests {
     #[test]
     fn a_fight_goes_on_while_a_foe_stands() {
         // A live fight is always the arena's two or a party, so this runs the skirmish's own world.
-        let scenario = find_scenario(SCENARIOS, crate::arena::SKIRMISH_SCENARIO).expect("listed");
+        let scenario = find_scenario(&SCENARIOS, crate::arena::SKIRMISH_SCENARIO).expect("listed");
         let (mut sim, cast) = scenario.start(scenario.config).expect("it starts");
         // The player runs for it, so the warriors' fight with each other is what fells someone first.
         let mut away = TickActions::NEUTRAL;
@@ -1525,14 +1525,14 @@ mod tests {
         assert_eq!((replay.scenario(), replay.ticks()), ("duel", 3));
 
         // It plays back to what a recording made in one go reaches.
-        let scenario = find_scenario(SCENARIOS, "duel").expect("there");
+        let scenario = find_scenario(&SCENARIOS, "duel").expect("there");
         let mut whole = Recording::new(scenario, scenario.config).expect("sets up");
         for _ in 0..3 {
             whole.step(&mut press_light).expect("short");
         }
         let (whole, played) = whole.finish();
         assert_eq!(replay, whole, "the same file, byte for byte");
-        let mut player = Player::new(replay, SCENARIOS).expect("starts");
+        let mut player = Player::new(replay, &SCENARIOS).expect("starts");
         player.run_to_end();
         assert_eq!(player.finish().trail, played.trail);
     }

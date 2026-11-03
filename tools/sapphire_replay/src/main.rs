@@ -81,7 +81,7 @@ fn run() -> anyhow::Result<ExitCode> {
                 out: &out,
                 update,
                 only: only.as_deref(),
-                scenarios: SCENARIOS,
+                scenarios: &SCENARIOS,
                 architecture: ARCHITECTURE,
             })?;
             if outcome.failures.is_empty() {
@@ -109,14 +109,14 @@ fn run() -> anyhow::Result<ExitCode> {
                 script: &script,
                 ticks,
                 seed,
-                scenarios: SCENARIOS,
+                scenarios: &SCENARIOS,
                 architecture: ARCHITECTURE,
             })?;
             Ok(ExitCode::SUCCESS)
         }
         "list" => {
             args.finish()?;
-            list(&dir, SCENARIOS)?;
+            list(&dir, &SCENARIOS)?;
             Ok(ExitCode::SUCCESS)
         }
         other => bail!("unknown command `{other}`\n\n{USAGE}"),

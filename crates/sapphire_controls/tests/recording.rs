@@ -37,7 +37,7 @@ fn a_played_session_plays_back_to_the_same_trail() {
     assert_eq!(replay.ticks(), SESSION.len() as u32);
 
     let decoded = Replay::decode(&replay.encode()).expect("reads back");
-    let mut player = Player::new(decoded, SCENARIOS).expect("starts");
+    let mut player = Player::new(decoded, &SCENARIOS).expect("starts");
     player.run_to_end();
     assert_eq!(player.finish().trail, recorded.trail);
 }

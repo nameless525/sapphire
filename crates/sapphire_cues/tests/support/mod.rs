@@ -83,7 +83,7 @@ pub struct Fight {
 
 fn player(name: &str) -> Player {
     let bytes = fs::read(repo().join("tests/replays").join(format!("{name}.sreplay"))).expect("committed");
-    Player::new(Replay::decode(&bytes).expect("reads"), SCENARIOS).expect("sets up")
+    Player::new(Replay::decode(&bytes).expect("reads"), &SCENARIOS).expect("sets up")
 }
 
 impl Fight {

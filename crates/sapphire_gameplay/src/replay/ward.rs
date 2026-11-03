@@ -114,7 +114,7 @@ mod tests {
 
     #[test]
     fn the_scenario_loads_the_gate_and_says_its_zone() {
-        let scenario = find_scenario(SCENARIOS, WARD_COURT).expect("listed");
+        let scenario = find_scenario(&SCENARIOS, WARD_COURT).expect("listed");
         assert_eq!(scenario.zone(), Some(WARD_ZONE_STEM));
         let (mut sim, cast) = scenario.start(scenario.config).expect("sets up");
         assert_eq!(cast.len(), 2);

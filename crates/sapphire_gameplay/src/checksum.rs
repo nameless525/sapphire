@@ -19,6 +19,7 @@ use crate::controller::{
     STANDING_JUMP_MAX_SPEED, STANDING_JUMP_PREPARATION,
 };
 use crate::cues::CueQueue;
+use crate::encounter::SimZone;
 use crate::faction::Faction;
 use crate::hits::HitQuery;
 use crate::intents::IntentRing;
@@ -308,10 +309,14 @@ fn write_soft_lock(hasher: &mut StateHasher, lock: &SoftLock) {
 }
 
 fn write_brain(hasher: &mut StateHasher, brain: &Brain) {
-    let Brain { on, target, state, patience_until, circle, stick, last_used } = *brain;
+    let Brain { on, target, state, patience_until, circle, stick, last_used, encounter } = *brain;
     // Nothing for one that's off, which is most actors: their checksums stay what they were.
     if on {
         hasher.u8(1);
+    }
+    // Nor for one no encounter spawned.
+    if let Some(encounter) = encounter {
+        hasher.u8(encounter.wrapping_add(1));
     }
     hasher.u32(target.map_or(0, |id| id.raw()));
     match state {
@@ -451,6 +456,9 @@ pub(crate) fn legacy_state(world: &World) -> StateHasher {
     if let Some(navigation) = world.get_resource::<SimNavigation>() {
         navigation.write_state(&mut hasher);
     }
+    if let Some(zone) = world.get_resource::<SimZone>() {
+        zone.write_state(&mut hasher);
+    }
     hasher
 }
 
@@ -459,17 +467,17 @@ pub(crate) fn legacy_state(world: &World) -> StateHasher {
 /// collision world's statics. It hashes a set's cooked bytes, so no field can be forgotten here, and
 /// those are the same on every target, as the statics' digest is: authored numbers, by their bits. A party's
 /// tuning goes in too, if there's a party, a navmesh's digest if there's one of those, every loaded
-/// timeline's simulation half, if there are any, and targeting's weights. Opted-in standing jump
-/// preparation contributes the policy and setup actor IDs independently of any jump's live countdown.
-pub(crate) fn tables_hash(
-    library: &MoveLibrary,
-    characters: &CharacterWorld,
-    party: &Party,
-    navigation: Option<&SimNavigation>,
-    timelines: &TimelineLibrary,
-    standing_jump_actors: &[ActorId],
-    targeting: &TargetingTuning,
-) -> u64 {
+/// timeline's simulation half, if there are any, targeting's weights, and what a zone says if there's
+/// one. Opted-in standing jump preparation contributes the policy and setup actor IDs independently of
+/// any jump's live countdown. Each of those is a resource of `world`, or isn't there.
+pub(crate) fn tables_hash(world: &World, standing_jump_actors: &[ActorId]) -> u64 {
+    let library = world.resource::<MoveLibrary>();
+    let characters = world.resource::<CharacterWorld>();
+    let party = world.resource::<Party>();
+    let navigation = world.get_resource::<SimNavigation>();
+    let timelines = world.resource::<TimelineLibrary>();
+    let targeting = world.resource::<TargetingTuning>();
+    let zone = world.get_resource::<SimZone>();
     let mut hasher = StateHasher::new();
     let hashes = library.current_hashes();
     hasher.u32(hashes.len() as u32);
@@ -500,6 +508,9 @@ pub(crate) fn tables_hash(
         }
     }
     hasher.u64(targeting.digest());
+    if let Some(zone) = zone {
+        hasher.u64(zone.tables());
+    }
     hasher.finish()
 }
 

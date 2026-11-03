@@ -1,0 +1,15 @@
+(
+    type: "sapphire::gameplay::ScenarioDocument",
+    version: 1,
+    data: (
+        about: "a player and an opponent at the look-dev town's spawn points, on its square's colliders, with the test moves and each aiming warps at the other",
+        max_actors: 8,
+        colliders: "content/arena/square.colliders.ron",
+        moves: ["crates/sapphire_moves/test_content/slice.moves.ron"],
+        cast: [
+            (moves: "slice", at: "player", standing_jump: true),
+            (moves: "slice", at: "enemy"),
+        ],
+        warps_round: true,
+    ),
+)

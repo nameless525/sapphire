@@ -24,6 +24,7 @@ use sapphire_colliders::ColliderSet;
 use sapphire_cues::RumbleSink;
 use sapphire_ecs::bevy_ecs::world::WorldId;
 use sapphire_ecs::prelude::*;
+use sapphire_gameplay::SimZone;
 use sapphire_gameplay::Simulation;
 use sapphire_gameplay::body::{BodySample, HeadAuthority};
 use sapphire_gameplay::replay::LiveMoves;
@@ -269,6 +270,12 @@ pub struct FightShow {
     warriors: Vec<(Entity, Entity)>,
     /// What stands the next, with `--arena`.
     stock: Option<WarriorStock>,
+    /// Warriors with no [`RenderMesh`], so nothing draws them and nothing poses them, who have what they need
+    /// to come on: those whose actors have gone, and those a zone's encounters will want
+    /// ([`Self::warm_roster`]). A warrior who comes on from here allocates nothing.
+    spares: Vec<(Entity, Entity)>,
+    /// Whether [`Self::warm_roster`] has looked at this fight's zone.
+    roster_warm: bool,
     /// The character's blade, with `--blade on`.
     blade: Option<HeldBlade>,
     /// The arena's actors, with `--arena`.
@@ -581,28 +588,67 @@ impl FightShow {
         cast: &[sapphire_gameplay::ActorId],
     ) {
         let Some(arena) = &mut self.arena else { return };
+        let world = scene.world_mut();
         while let Some(change) = arena.next_change(simulation, cast) {
-            let world = scene.world_mut();
             match change {
-                RosterChange::Left { warrior, blade } => {
-                    world.despawn(warrior);
-                    if let Some(blade) = blade {
-                        world.despawn(blade);
-                    }
-                    self.warriors.retain(|(standing, _)| *standing != warrior);
+                RosterChange::Left { warrior } => {
+                    let place = self.warriors.iter().position(|(standing, _)| *standing == warrior);
+                    let pair = self.warriors.remove(place.expect("it stood here"));
+                    undraw(world, pair);
+                    self.spares.push(pair);
                 }
                 RosterChange::Arrived(id) => {
                     let stock = self.stock.as_ref().expect("an arena has what stands its warriors");
                     let actor = simulation.actor(id).expect("it just arrived");
-                    let (warrior, blade) = spawn_warrior(world, stock.meshes, &stock.held);
-                    if let Some(driver) = &stock.driver {
-                        world.entity_mut(warrior).insert(driver.clone());
-                    }
-                    self.warriors.push((warrior, blade));
+                    let pair = match self.spares.pop() {
+                        Some(pair) => {
+                            draw(world, pair, stock.meshes);
+                            pair
+                        }
+                        None => stand_warrior(world, stock),
+                    };
+                    self.warriors.push(pair);
                     let (blade_in_model, hand) = (stock.held.blade, stock.held.hand);
+                    let (warrior, blade) = pair;
                     arena.stand(ArenaEnemy { warrior, blade, blade_in_model, hand }, actor);
                 }
             }
+        }
+        if !self.roster_warm {
+            self.roster_warm = true;
+            self.warm_roster(scene, simulation);
+        }
+    }
+
+    /// Stands by a warrior for everyone `simulation`'s zone will bring, once, before its first step wherever a
+    /// caller follows it then ([`Fight::stand`] does), so that a wave's arrival in a fixed step allocates
+    /// nothing. It's about 29 allocations a warrior, and memory for their poses, and a spare costs a frame nothing.
+    fn warm_roster(&mut self, scene: &mut Scene, simulation: &Simulation) {
+        let (Some(arena), Some(stock)) = (&mut self.arena, &self.stock) else { return };
+        let planned = simulation.zone().map_or(0, SimZone::planned);
+        let wanted = planned.saturating_sub(arena.free_warriors() + self.spares.len());
+        if planned == 0 {
+            return;
+        }
+        if let Some(cues) = &mut self.cues {
+            cues.stand_by(arena.fighter_count() + planned - arena.free_warriors().min(planned));
+        }
+        arena.reserve(planned);
+        self.warriors.reserve(planned);
+        self.spares.reserve(planned);
+        let world = scene.world_mut();
+        let first = self.spares.len();
+        for _ in 0..wanted {
+            self.spares.push(stand_warrior(world, stock));
+        }
+        // All of them drawn first, so that what holds drawn warriors has room for them all, then none, then the
+        // way back once, so that the world knows it.
+        for &pair in &self.spares[first..] {
+            undraw(world, pair);
+        }
+        if let Some(&pair) = self.spares.get(first) {
+            draw(world, pair, stock.meshes);
+            undraw(world, pair);
         }
     }
 
@@ -993,7 +1039,7 @@ impl FightShow {
     /// The clips any warrior's player may still read. Allocates, so only as a graph changes.
     fn warrior_clips_in_use(&self, scene: &Scene) -> Vec<AssetId> {
         let mut clips = Vec::new();
-        for (warrior, _) in &self.warriors {
+        for (warrior, _) in self.warriors.iter().chain(&self.spares) {
             for clip in scene.clips_in_use(Some(*warrior)) {
                 if !clips.contains(&clip) {
                     clips.push(clip);
@@ -1050,7 +1096,7 @@ impl FightShow {
         self.enemy_waits = false;
         let carried = enemy::blade_figure(&held);
         let world = scene.world_mut();
-        for &(warrior, blade) in &self.warriors {
+        for &(warrior, blade) in self.warriors.iter().chain(&self.spares) {
             let place = world.get::<RenderTransform>(warrior).map_or(Mat4::IDENTITY, |transform| transform.0);
             let mut character = world.entity_mut(warrior);
             if let (Some(mut playing), Some(driver)) = (character.get_mut::<GraphDriver>(), &driver) {
@@ -1082,7 +1128,7 @@ impl FightShow {
     /// Gives every warrior `binding`, from its next state's start (`GraphPlayer::replace`).
     fn replace_warriors_graph(&self, scene: &mut Scene, binding: &Arc<sapphire_anim::GraphBinding>) {
         let world = scene.world_mut();
-        for (warrior, _) in &self.warriors {
+        for (warrior, _) in self.warriors.iter().chain(&self.spares) {
             if let Some(mut playing) = world.get_mut::<GraphDriver>(*warrior) {
                 playing.player.replace(Arc::clone(binding));
             }
@@ -1392,6 +1438,27 @@ fn spawn_warrior(world: &mut World, meshes: EnemyMeshes, held: &enemy::Held) -> 
         ))
         .id();
     (warrior, blade)
+}
+
+/// A warrior and its blade, ready to come on: what [`FightShow::warm_roster`] does ahead of time.
+fn stand_warrior(world: &mut World, stock: &WarriorStock) -> (Entity, Entity) {
+    let (warrior, blade) = spawn_warrior(world, stock.meshes, &stock.held);
+    if let Some(driver) = &stock.driver {
+        world.entity_mut(warrior).insert(driver.clone());
+    }
+    (warrior, blade)
+}
+
+/// Takes a warrior and its blade out of what's drawn: a spare.
+fn undraw(world: &mut World, (warrior, blade): (Entity, Entity)) {
+    world.entity_mut(warrior).remove::<RenderMesh>();
+    world.entity_mut(blade).remove::<RenderMesh>();
+}
+
+/// Puts a spare back in what's drawn. Allocates nothing once [`FightShow::warm_roster`] has done it.
+fn draw(world: &mut World, (warrior, blade): (Entity, Entity), meshes: EnemyMeshes) {
+    world.entity_mut(warrior).insert(RenderMesh(meshes.warrior));
+    world.entity_mut(blade).insert(RenderMesh(meshes.blade));
 }
 
 impl SceneShow for FightShow {

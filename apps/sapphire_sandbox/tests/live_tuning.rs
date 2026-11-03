@@ -286,7 +286,7 @@ fn a_pushed_move_plays_on_the_next_attempt() {
     assert!(log.contains("a live edit ends the recording's file"), "{log}");
     let replay = Replay::decode(&fs::read(&replay).expect("written at quit")).expect("reads");
     assert!(replay.ticks() > 0, "{log}");
-    let mut player = Player::new(replay, SCENARIOS).expect("it ran on this build's moves up to there");
+    let mut player = Player::new(replay, &SCENARIOS).expect("it ran on this build's moves up to there");
     player.run_to_end();
 }
 
@@ -439,7 +439,7 @@ fn a_saved_timing_of_the_real_moves_plays_in_a_fight_and_the_next_fight_starts_f
     // Every fight after the edits is what a build with them in its documents would play. The first
     // crossed them, so it has nothing to be held to.
     let log = app.quit();
-    let scenario = find_scenario(SCENARIOS, "arena-fight").expect("listed");
+    let scenario = find_scenario(&SCENARIOS, "arena-fight").expect("listed");
     let mut live = LiveMoves::default();
     let baked = player_moves().expect("the simulation's copy reads");
     live.remember(PLAYER_FILE, compile_document(&edited, Some(&baked)).expect("compiles").set);

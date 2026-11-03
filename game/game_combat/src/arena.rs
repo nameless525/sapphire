@@ -20,7 +20,8 @@
 //! - **Who stands there:** [`ArenaActors`]: the character, in the look-dev stage's held pose, at the
 //!   player's spawn point, and the enemy (`crate::enemy`) and its blade at the enemy's. With `--replay`,
 //!   `--record` or `--fight`, each actor's root follows `ActorTransform` a tick at a time, and whoever
-//!   else a simulation has comes on as another warrior ([`ArenaActors::next_change`]).
+//!   else a simulation has comes on as another warrior ([`ArenaActors::next_change`]). Those a zone's
+//!   encounters will bring stand by from before the first step, undrawn (`FightShow::warm_roster`).
 //! - **The camera** (`--arena-shot`, [`ArenaShot`]): `sapphire_camera`'s director by default, on its
 //!   combat rig, framing both fighters and colliding with the world. `follow` is a plain fixed follow,
 //!   what the golden scenes pin, so a change of camera tuning moves none of them. The tests' `framing`
@@ -88,7 +89,7 @@ use sapphire_core::debug_draw::{Color, Shape, Style};
 use sapphire_ecs::bevy_ecs::world::WorldId;
 use sapphire_ecs::prelude::*;
 use sapphire_gameplay::arena::{ArenaSpawns, SpawnPoint, cooked_colliders, profile, spawns};
-use sapphire_gameplay::replay::{WARD_COURT, ZoneFight, zone_fight};
+use sapphire_gameplay::replay::{SCENARIOS, Scenario, WARD_COURT, ZoneFight, find_scenario, zone_fight};
 use sapphire_gameplay::{ActorId, ActorView, Buttons, Faction, MoveLibrary, Simulation};
 use sapphire_math::{Affine3A, Mat4, Quat, Vec2, Vec3};
 use sapphire_moves::RootSample;
@@ -193,25 +194,31 @@ pub(crate) fn follow_target(player: Vec3) -> Vec3 {
     player + Vec3::new(0.0, FOLLOW_AIM_HEIGHT, 0.0)
 }
 
-/// Refuses a fight that doesn't start from the arena's scenarios, or with `party` the party's: its actors
-/// aren't standing here, or there aren't three looks to draw them in.
+/// Refuses a fight that doesn't start from a scenario document on the arena's colliders, or with `party` a
+/// party's: its actors aren't standing here, or there aren't three looks to draw them in. Without `party` a
+/// party has only the one look. A new scenario here takes no Rust.
 pub fn check_scenario(combat: &crate::combat::Combat, party: bool) -> Result<(), String> {
     let scenario = combat.scenario();
+    let document = find_scenario(&SCENARIOS, scenario).and_then(Scenario::document);
+    let on_the_stage =
+        document.filter(|document| document.colliders == sapphire_gameplay::arena::COLLIDERS_PATH);
+    let has_a_party = on_the_stage.is_some_and(|document| document.party.is_some());
     if party {
-        if scenario == PARTY_SCENARIO {
+        if has_a_party {
             return Ok(());
         }
         return Err(format!(
-            "--arena --party plays a fight of the `{PARTY_SCENARIO}` scenario, and this one starts from \
-             `{scenario}`"
+            "--arena --party plays a fight of a party on the arena's colliders such as `{PARTY_SCENARIO}`, and \
+             this one starts from `{scenario}`"
         ));
     }
-    if [SCENARIO, FIGHT_SCENARIO, SKIRMISH_SCENARIO, WARD_COURT].contains(&scenario) {
+    // A fight on the arena's colliders, or the one a zone stands (M3 Q3), whose court is code.
+    if (on_the_stage.is_some() && !has_a_party) || scenario == WARD_COURT {
         return Ok(());
     }
     Err(format!(
-        "--arena plays a fight of the `{SCENARIO}` scenario, of `{FIGHT_SCENARIO}`, `{SKIRMISH_SCENARIO}` or \
-         `{WARD_COURT}`, and this one starts from `{scenario}`",
+        "--arena plays a fight of a scenario on the arena's colliders such as `{SCENARIO}`, `{FIGHT_SCENARIO}` \
+         or `{SKIRMISH_SCENARIO}`, or `{WARD_COURT}`, and this one starts from `{scenario}`",
     ))
 }
 
@@ -509,7 +516,7 @@ pub(crate) enum RosterChange {
     /// This actor needs a warrior to draw it: [`ArenaActors::stand`].
     Arrived(ActorId),
     /// This warrior's actor is gone, and it's off the roster: nothing's left to draw it for.
-    Left { warrior: Entity, blade: Option<Entity> },
+    Left { warrior: Entity },
 }
 
 /// Everyone on the stage and where the simulation has them: what the scene carries from the simulation
@@ -586,11 +593,21 @@ impl ArenaActors {
         if let Some(place) = gone {
             let fighter = self.fighters.remove(place);
             self.seen.remove(place);
-            let blade = fighter.blade.map(|(blade, _)| blade);
-            return Some(RosterChange::Left { warrior: fighter.entity, blade });
+            return Some(RosterChange::Left { warrior: fighter.entity });
         }
         self.bind_free_warriors(simulation, cast);
         self.unseated(simulation, cast).map(|actor| RosterChange::Arrived(actor.id))
+    }
+
+    /// How many warriors stand here with no actor yet.
+    pub(crate) fn free_warriors(&self) -> usize {
+        self.seen.iter().skip(1).filter(|seen| seen.is_none()).count()
+    }
+
+    /// Makes room for `more` to stand here, so their arrival allocates nothing here.
+    pub(crate) fn reserve(&mut self, more: usize) {
+        self.fighters.reserve(more);
+        self.seen.reserve(more);
     }
 
     /// The first actor who needs a warrior to draw it: anyone with a capsule who isn't the player, one of a
@@ -1013,7 +1030,6 @@ mod framing;
 mod tests {
     use sapphire_colliders::{ColliderDocument, ColliderEntry, ColliderSet, ColliderShape};
     use sapphire_gameplay::Stick;
-    use sapphire_gameplay::replay::{SCENARIOS, find_scenario};
     use sapphire_stage::lookdev::{PLANTINGS, Plant};
 
     use super::*;
@@ -1172,9 +1188,8 @@ mod tests {
                     let parts = ArenaEnemy { warrior, blade, blade_in_model: Mat4::IDENTITY, hand: 0 };
                     actors.stand(parts, sim.actor(id).expect("it just arrived"));
                 }
-                RosterChange::Left { warrior, blade } => {
+                RosterChange::Left { warrior } => {
                     world.despawn(warrior);
-                    blade.map(|blade| world.despawn(blade));
                 }
             }
         }
@@ -1183,7 +1198,7 @@ mod tests {
 
     /// A fight of `name`, on a director, and what it does first.
     fn fight_of(name: &str) -> (ArenaActors, World, Simulation, Vec<ActorId>) {
-        let scenario = find_scenario(SCENARIOS, name).expect("listed");
+        let scenario = find_scenario(&SCENARIOS, name).expect("listed");
         let (sim, cast) = scenario.start(scenario.config).expect("it starts");
         let (mut actors, mut world) = actors_on(built(), ArenaShot::Director);
         world.insert_resource(ArenaShot::Director.camera(spawns().player.position()));
@@ -1248,7 +1263,7 @@ mod tests {
     /// (`GraphInput::defeated`), and the next fight is a cut.
     #[test]
     fn a_defeated_fighter_says_so_and_the_next_fight_is_a_cut() {
-        let scenario = find_scenario(SCENARIOS, FIGHT_SCENARIO).expect("listed");
+        let scenario = find_scenario(&SCENARIOS, FIGHT_SCENARIO).expect("listed");
         let (mut actors, _, mut sim, cast) = fight();
         // An idle player falls inside a minute.
         let mut steps = 0;
@@ -1520,7 +1535,7 @@ mod tests {
         actors.follow(&sim, &cast);
         assert_eq!(actors.fighters[0].root.previous_position, moved, "the same tick again is no new fight");
 
-        let scenario = find_scenario(SCENARIOS, FIGHT_SCENARIO).expect("listed");
+        let scenario = find_scenario(&SCENARIOS, FIGHT_SCENARIO).expect("listed");
         let (fresh, cast) = scenario.start(scenario.config).expect("it starts");
         assert!(sapphire_core::alloc::is_installed(), "this regression requires counting");
         let scope = sapphire_core::alloc::AllocScope::begin();
@@ -1598,7 +1613,7 @@ mod tests {
         actors.draw_colliders(&mut alone);
         assert_eq!(alone.0, colliders + SPAWN_SHAPES);
 
-        let scenario = find_scenario(SCENARIOS, SCENARIO).expect("listed");
+        let scenario = find_scenario(&SCENARIOS, SCENARIO).expect("listed");
         let (sim, cast) = scenario.start(scenario.config).expect("it starts");
         actors.follow(&sim, &cast);
         let mut beside = Drawn::default();

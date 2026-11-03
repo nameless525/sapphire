@@ -1,0 +1,13 @@
+(
+    type: "sapphire::gameplay::ScenarioDocument",
+    version: 1,
+    data: (
+        about: "the arena's player alone until the square's encounter brings seven warriors in three waves, two tokens between them: they take turns, and the rest wait",
+        max_actors: 8,
+        colliders: "content/arena/square.colliders.ron",
+        zone: Some("content/zones/square/square.zone.ron"),
+        encounters: ["content/zones/square/square_waves.encounter.ron"],
+        moves: ["content/combat/player/player.moves.ron", "content/combat/enemy/warrior.moves.ron"],
+        cast: [(moves: "player", at: "player_start", faction: 1, soft_lock: true)],
+    ),
+)

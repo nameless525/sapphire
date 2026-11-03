@@ -8,6 +8,7 @@
 //! ([`History`]): the smallest splice that takes one text to the other, so a drag across twenty ticks is
 //! one step and a long session costs little.
 
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::{fs, io};
 
@@ -307,18 +308,65 @@ fn read_text(path: &Path) -> Result<String, FileError> {
 /// Writes `text` beside `path` and renames it over: all of it or none of it, keeping the file's mode.
 fn write_whole(path: &Path, text: &str) -> Result<(), FileError> {
     let io_error = |source| FileError::Io { path: path.to_owned(), source };
-    let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
-    let temporary = path.with_file_name(format!(".{name}.sapphire_editor"));
-    let written = fs::write(&temporary, text).and_then(|()| {
-        if let Ok(metadata) = fs::metadata(path) {
-            fs::set_permissions(&temporary, metadata.permissions())?;
+    Temporary::beside(path, text).and_then(|temporary| temporary.replace(path)).map_err(io_error)
+}
+
+/// How many names a save tries for its temporary. Each one taken is someone else's file.
+const TEMPORARY_NAMES: u32 = 1024;
+
+/// A file of one save's own, written whole beside the one it's to replace. Only a name nothing's at will
+/// do, so whatever is there already, another save's temporary, a person's file or a link to anything, is
+/// left alone, and another editor's save can't write into this one or rename it away. Dropped before it
+/// replaces anything, it's gone, and only it.
+#[derive(Debug)]
+struct Temporary {
+    path: PathBuf,
+    replaced: bool,
+}
+
+impl Temporary {
+    fn beside(target: &Path, text: &str) -> io::Result<Self> {
+        let (mut file, temporary) = Self::create(target)?;
+        if let Ok(metadata) = fs::metadata(target) {
+            file.set_permissions(metadata.permissions())?;
         }
-        fs::rename(&temporary, path)
-    });
-    if written.is_err() {
-        let _ = fs::remove_file(&temporary);
+        file.write_all(text.as_bytes())?;
+        file.sync_all()?;
+        Ok(temporary)
     }
-    written.map_err(io_error)
+
+    fn create(target: &Path) -> io::Result<(fs::File, Self)> {
+        for attempt in 0..TEMPORARY_NAMES {
+            let path = temporary_path(target, attempt);
+            match fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(file) => return Ok((file, Self { path, replaced: false })),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Err(io::Error::new(io::ErrorKind::AlreadyExists, "no name left for a temporary beside it"))
+    }
+
+    fn replace(mut self, target: &Path) -> io::Result<()> {
+        fs::rename(&self.path, target)?;
+        self.replaced = true;
+        Ok(())
+    }
+}
+
+impl Drop for Temporary {
+    fn drop(&mut self) {
+        if !self.replaced {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
+/// A hidden sibling, which the cook and a watcher's documents pass over. The process's ID keeps two editors
+/// off each other's names, for speed: `create_new` is what makes a name this save's own.
+fn temporary_path(target: &Path, attempt: u32) -> PathBuf {
+    let name = target.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    target.with_file_name(format!(".{name}.{}.{attempt}.sapphire_editor", std::process::id()))
 }
 
 /// What the move system says of a document, as a device would: its issues, and the set it became.
@@ -451,6 +499,134 @@ mod tests {
         assert!(!file.is_dirty());
         assert_eq!(fs::read_to_string(&path).expect("reads"), file.text());
         assert_eq!(fs::read_dir(dir.path()).expect("lists").count(), 1);
+    }
+
+    /// The name every save used to write through: what's there isn't a save's to touch.
+    #[test]
+    fn a_save_leaves_a_file_at_an_old_temporary_name_alone() {
+        let dir = TestDir::new("old_temporary");
+        let path = dir.write("moves.ron", PLAYER);
+        let there = dir.write(".moves.ron.sapphire_editor", "someone's");
+        let mut file = MovesFile::open(&path).expect("opens");
+        file.edit("move a cue", |text| text.set_instant(cue(0), 3)).expect("the edit");
+        file.save().expect("saves");
+        assert_eq!(fs::read_to_string(&there).expect("still there"), "someone's");
+        assert_eq!(fs::read_to_string(&path).expect("reads"), file.text());
+    }
+
+    /// Nor does a link there lead a save to what it points at, or end up over the document.
+    #[cfg(unix)]
+    #[test]
+    fn a_save_doesnt_follow_a_link_at_an_old_temporary_name() {
+        let dir = TestDir::new("old_temporary_link");
+        let path = dir.write("moves.ron", PLAYER);
+        let unrelated = dir.write("unrelated", "someone's");
+        std::os::unix::fs::symlink(&unrelated, dir.path().join(".moves.ron.sapphire_editor"))
+            .expect("a link");
+        let mut file = MovesFile::open(&path).expect("opens");
+        file.edit("move a cue", |text| text.set_instant(cue(0), 3)).expect("the edit");
+        file.save().expect("saves");
+        assert_eq!(fs::read_to_string(&unrelated).expect("reads"), "someone's");
+        assert!(!fs::symlink_metadata(&path).expect("the document").is_symlink());
+        assert_eq!(fs::read_to_string(&path).expect("reads"), file.text());
+    }
+
+    /// A name a save would use, taken, is passed over: it writes through a file nothing else was at.
+    #[test]
+    fn a_save_passes_over_names_that_are_taken() {
+        let dir = TestDir::new("taken_names");
+        let path = dir.write("moves.ron", PLAYER);
+        let first = temporary_path(&path, 0);
+        fs::write(&first, "someone's").expect("a file there");
+        #[cfg(unix)]
+        let unrelated = {
+            let unrelated = dir.write("unrelated", "someone's");
+            std::os::unix::fs::symlink(&unrelated, temporary_path(&path, 1)).expect("a link there");
+            unrelated
+        };
+        let mut file = MovesFile::open(&path).expect("opens");
+        file.edit("move a cue", |text| text.set_instant(cue(0), 3)).expect("the edit");
+        file.save().expect("saves");
+        assert_eq!(fs::read_to_string(&path).expect("reads"), file.text());
+        assert_eq!(fs::read_to_string(&first).expect("still there"), "someone's");
+        #[cfg(unix)]
+        {
+            assert!(fs::symlink_metadata(temporary_path(&path, 1)).expect("a link").is_symlink());
+            assert_eq!(fs::read_to_string(&unrelated).expect("reads"), "someone's");
+        }
+    }
+
+    /// A save that can't finish takes away only what it made.
+    #[test]
+    fn a_failed_save_removes_only_its_own_temporary() {
+        let dir = TestDir::new("failed");
+        let path = dir.write("moves.ron", PLAYER);
+        let there = temporary_path(&path, 0);
+        fs::write(&there, "someone's").expect("a file there");
+        let temporary = Temporary::beside(&path, "mine").expect("written");
+        assert_eq!(temporary.path, temporary_path(&path, 1));
+        assert_eq!(fs::read_to_string(&temporary.path).expect("reads"), "mine");
+        drop(temporary);
+        assert!(!temporary_path(&path, 1).exists());
+        assert_eq!(fs::read_to_string(&there).expect("still there"), "someone's");
+        assert_eq!(fs::read_to_string(&path).expect("reads"), PLAYER);
+    }
+
+    /// The file's mode goes with it.
+    #[cfg(unix)]
+    #[test]
+    fn a_save_keeps_the_files_mode() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = TestDir::new("mode");
+        let path = dir.write("moves.ron", PLAYER);
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).expect("a mode");
+        let mut file = MovesFile::open(&path).expect("opens");
+        file.edit("move a cue", |text| text.set_instant(cue(0), 3)).expect("the edit");
+        file.save().expect("saves");
+        assert_eq!(fs::metadata(&path).expect("the file").permissions().mode() & 0o777, 0o640);
+    }
+
+    /// Editors saving one file at once: each is whole or refused, whoever reads it sees a whole file, and
+    /// no temporary is left, however the saves fall. Windows can fail a rename over a file someone's reading,
+    /// which is a save refused, not a broken file, and says nothing about this.
+    #[cfg(unix)]
+    #[test]
+    fn saves_racing_each_other_leave_a_whole_file() {
+        const EDITORS: u32 = 4;
+        const SAVES: u32 = 25;
+        let dir = TestDir::new("racing");
+        let path = dir.write("moves.ron", PLAYER);
+        let whole = |bytes: &[u8]| {
+            let (head, tail) = (&PLAYER.as_bytes()[..200], &PLAYER.as_bytes()[PLAYER.len() - 200..]);
+            bytes.starts_with(head) && bytes.ends_with(tail)
+        };
+        std::thread::scope(|scope| {
+            let editors: Vec<_> = (0..EDITORS)
+                .map(|editor| {
+                    let path = &path;
+                    scope.spawn(move || {
+                        let mut file = MovesFile::open(path).expect("opens");
+                        for save in 0..SAVES {
+                            let at = editor * 1000 + save;
+                            file.edit("move a cue", |text| text.set_instant(cue(0), at)).expect("the edit");
+                            match file.save() {
+                                Ok(()) | Err(FileError::ChangedOnDisk { .. }) => file.keep_mine(),
+                                Err(error) => panic!("{error}"),
+                            }
+                        }
+                    })
+                })
+                .collect();
+            while !editors.iter().all(std::thread::ScopedJoinHandle::is_finished) {
+                let bytes = fs::read(&path).expect("always a file");
+                assert!(whole(&bytes), "a save showed {} bytes of a file", bytes.len());
+            }
+            for editor in editors {
+                editor.join().expect("an editor");
+            }
+        });
+        assert!(whole(&fs::read(&path).expect("reads")));
+        assert_eq!(fs::read_dir(dir.path()).expect("lists").count(), 1, "nothing beside it");
     }
 
     #[test]

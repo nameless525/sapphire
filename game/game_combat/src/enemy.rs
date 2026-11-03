@@ -193,7 +193,7 @@ pub(crate) fn held(skin: &Skin, skeleton: &ArchivedSkeleton) -> Result<Held, Str
 }
 
 /// A driver for the warrior on `binding`, over its rest pose: what poses it in a fight
-/// ([`sapphire_stage::scene::Scene::play_fighters`]). Fails if the rig lacks a joint the pose needs.
+/// ([`crate::fight::FightShow::play_fighters`]). Fails if the rig lacks a joint the pose needs.
 pub(crate) fn driver(
     skin: &Skin,
     skeleton: &ArchivedSkeleton,

@@ -3,7 +3,7 @@
 //! The simulation is `sapphire_gameplay`'s and knows no renderer. This crate owns what a frame needs from a
 //! fight: the arena and its camera ([`arena`]), the enemy and the blades ([`enemy`]), a fight's run and its file
 //! ([`combat`]), the cues it fires ([`cues`]), the views that draw its volumes ([`combat_views`]), the party's
-//! looks ([`party_looks`]), and live tuning in `dev` builds ([`tuning`]).
+//! looks ([`party_looks`]), and live tuning in `dev` builds (`tuning`).
 //!
 //! [`fight::Fight`] holds it all, and it's a `sapphire_stage::SceneShow`: the caller owns it and passes it to
 //! the scene's frame. A stage knows nothing of a fight.

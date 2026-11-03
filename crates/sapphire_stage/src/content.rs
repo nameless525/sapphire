@@ -39,8 +39,8 @@
 //! of: a new version replaces it there, and the scene takes its key hours ([`Content::probes`],
 //! [`Content::probe_hours`]).
 //!
-//! `--look-dev enemy` and `--arena` also load the enemy ([`enemy::WARRIOR`], [`enemy::BLADE`], [`Content::enemy`]),
-//! its mesh copied as it uploads, since its held pose derives from it ([`Content::held_enemy`]).
+//! What a game loads beside these, it holds itself ([`Content::hold`]): `game_combat`'s enemy and blade are
+//! that, the enemy's mesh copied as it uploads since its held pose derives from it ([`Content::keep_mesh_copy`]).
 //!
 //! With `--look-dev` it loads the look-dev town ([`lookdev::TOWN`]), whose slots its sidecar
 //! binds to the town's environment materials, the town's plants ([`lookdev::Plant`]), whose
@@ -1143,7 +1143,7 @@ impl Content {
     }
 
     /// Loads the graph `id` until it and the clips it names are resident: CPU data, which nothing
-    /// uploads ([`Self::graph`] and [`Self::graph_clips`] read them). They stay loaded from then on.
+    /// uploads ([`Self::graph_document`] and [`Self::graph_clips`] read them). They stay loaded from then on.
     pub fn load_graph(
         &mut self,
         id: AssetId,

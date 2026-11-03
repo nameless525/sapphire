@@ -472,11 +472,11 @@ jobs:
         shell: bash
         run: |
           cargo test --package sapphire_render --package sapphire_rhi --package sapphire_world --package sapphire_debug --locked --tests --no-run
-          cargo test --package sapphire_sandbox --package sapphire_stage --features dev --locked --lib --no-run
+          cargo test --package sapphire_sandbox --package sapphire_stage --package game_combat --package game_ui --features dev --locked --lib --no-run
       - name: GPU tests (render, RHI, world, debug overlay)
         run: cargo test --package sapphire_render --package sapphire_rhi --package sapphire_world --package sapphire_debug --locked --tests --no-fail-fast -- --ignored --test-threads=1
       - name: GPU tests (stage and sandbox, dev)
-        run: cargo test --package sapphire_sandbox --package sapphire_stage --features dev --locked --lib -- --ignored --test-threads=1
+        run: cargo test --package sapphire_sandbox --package sapphire_stage --package game_combat --package game_ui --features dev --locked --lib -- --ignored --test-threads=1
 
   # A development build, headless on lavapipe, in the real app: replays beside the renderer, live
   # tuning, the timeline editor against a real fight, and the app driven over live link (review
@@ -514,13 +514,16 @@ jobs:
           cache-on-failure: true
       # Built apart from the run, so the run's time is the tests' own.
       - name: Build the app tests
-        run: cargo test --package sapphire_sandbox --package sapphire_stage --features dev --locked --test replays --test live_tuning --test outside_caller --no-run
+        run: cargo test --package sapphire_sandbox --package sapphire_stage --package game_app --features dev --locked --test replays --test live_tuning --test outside_caller --test reaches_the_fight --no-run
       - name: Cook the desktop content
         run: cargo --locked xtask --locked content
       # What a game or the editor does with a stage: make it, step it, and read a frame back, with
       # only its public surface (m3-plan S1).
       - name: A stage from outside its crate
         run: cargo test --package sapphire_stage --features dev --locked --test outside_caller -- --ignored
+      # The game from outside its crates: wait at the title, press, and see a fight go by.
+      - name: The game from its title to a fight
+        run: cargo test --package game_app --features dev --locked --test reaches_the_fight -- --ignored
       # The simulation beside the renderer must reach what it reaches alone (m2-plan D2). The app
       # compares, tick by tick, with what a headless run in the test wrote.
       - name: Replays in the app (dev sandbox, offscreen)

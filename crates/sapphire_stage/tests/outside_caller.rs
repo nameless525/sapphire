@@ -13,14 +13,47 @@ use std::process::ExitCode;
 use sapphire_platform::{App, AppControl, AppInitError, AppMetadata, Event, Platform, RunOptions, run_with};
 use sapphire_render::quality::QualitySettings;
 use sapphire_rhi::wgpu;
-use sapphire_stage::{Readback, Stage, StageDesc, headless_gpu};
+use sapphire_stage::scene::Scene;
+use sapphire_stage::{FrameLaps, Readback, SceneShow, Stage, StageDesc, headless_gpu};
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 const WIDTH: u32 = 320;
 const HEIGHT: u32 = 180;
 
+/// A show from outside: what a game's fight is to the stage, and how the stage's seam is held.
+#[derive(Default)]
+struct Counting {
+    steps: u32,
+    ends: u32,
+    animations: u32,
+    presentations: u32,
+    interfaces: u32,
+}
+
+impl SceneShow for Counting {
+    fn step(&mut self, _: &mut Scene, _: &mut FrameLaps) {
+        self.steps += 1;
+    }
+
+    fn end_steps(&mut self, _: &mut Scene, _: f32) {
+        self.ends += 1;
+    }
+
+    fn animate(&mut self, _: &mut Scene, _: &sapphire_stage::Content, _: f32) {
+        self.animations += 1;
+    }
+
+    fn present(&mut self, _: &mut Scene, _: f32, _: Option<f32>) {
+        self.presentations += 1;
+    }
+
+    fn draw_interface(&mut self, _: (u32, u32), _: &mut sapphire_render::UiDrawList) {
+        self.interfaces += 1;
+    }
+}
+
 /// Draws the stage's next frame into a new texture and reads it back.
-fn frame(stage: &mut Stage) -> Result<Vec<u8>, AppInitError> {
+fn frame<S: SceneShow>(stage: &mut Stage<S>) -> Result<Vec<u8>, AppInitError> {
     let target = stage.target(WIDTH, HEIGHT, wgpu::TextureUsages::COPY_SRC);
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
     let readback = Readback::new(&stage.gpu, WIDTH, HEIGHT);
@@ -57,6 +90,19 @@ impl App for OutsideCaller {
             stage.step();
         }
         assert_ne!(first, frame(&mut stage)?, "stepping moves the picture");
+
+        // The same again with a show on it: it's called at each of a frame's points, and draws the same.
+        let (instance, gpu) = headless_gpu()?;
+        let desc = StageDesc::new(platform, &gpu, FORMAT, QualitySettings::default());
+        let mut shown = Stage::new(platform, instance, gpu, desc)?.with_show(Counting::default());
+        for _ in 0..60 {
+            shown.step();
+        }
+        let drawn = frame(&mut shown)?;
+        assert_eq!(drawn.len(), first.len());
+        let Counting { steps, ends, animations, presentations, interfaces } = shown.show;
+        assert_eq!((steps, ends), (60, 60));
+        assert_eq!((animations, presentations, interfaces), (1, 1, 1));
         Ok(Self)
     }
 

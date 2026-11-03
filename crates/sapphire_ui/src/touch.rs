@@ -27,7 +27,7 @@ impl Button {
 pub enum ButtonEventKind {
     /// A finger landed on it.
     Pressed,
-    /// It has been held for its hold time ([`TouchTuning::attack_hold`]).
+    /// It has been held for its hold time (`game_ui`'s attack hold).
     Held,
     /// Its finger lifted.
     Released,

@@ -21,7 +21,7 @@
 //! - **Sword trails** have no row, because a row keeps no handle to stop one with. [`BladeTrails`] runs
 //!   them in the same world of effects, from what the blades are doing.
 //!
-//! [`Scene::follow_simulation`]: sapphire_stage::scene::Scene::follow_simulation
+//! [`Scene::follow_simulation`]: crate::fight::FightShow::follow_simulation
 
 use std::time::Duration;
 

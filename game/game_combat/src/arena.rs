@@ -35,14 +35,14 @@
 //!   [`ArenaActors::follow`] reads `ActorView`, whatever moved it.
 //! - **Live input (I1 and G6, in):** `--arena --fight` in a window is player against brain with no file
 //!   (`crate::combat`), played by the bindings (`crate::combat::read_bindings`), turned by
-//!   [`sapphire_stage::scene::Scene::camera_heading`], and `--script` drives the same path without a window.
+//!   [`crate::fight::FightShow::camera_heading`], and `--script` drives the same path without a window.
 //!   `--arena --record <file> --scenario arena-fight` keeps one, as far as it's got at each trip to the
 //!   background. A new fight is a new simulation, and [`ArenaActors::follow`] sees its tick go back:
 //!   everything stands where it now is, and the camera cuts, which
-//!   [`sapphire_stage::scene::Scene::follow_simulation`] passes on to the renderer as the view's cut, for temporal AA
+//!   [`crate::fight::FightShow::follow_simulation`] passes on to the renderer as the view's cut, for temporal AA
 //!   and the shadows. A party's swap doesn't: who comes in stands where the one who left stood.
 //! - **The camera (G5 and G6, in):** [`ArenaCamera`]. Look and zoom reach it through
-//!   [`sapphire_stage::scene::Scene::drive_arena_camera`]. Its target is `sapphire_gameplay::targeting`'s soft lock,
+//!   [`crate::fight::FightShow::drive_camera`]. Its target is `sapphire_gameplay::targeting`'s soft lock,
 //!   chosen each frame by [`ArenaActors::present`], so a fallen enemy, or one out of range, stops being
 //!   framed. The player's lock-on button holds the line to it, through the director's own rig
 //!   ([`ArenaActors::set_lock_on`]). Shakes are the director's own calls too, for E3, made on
@@ -681,7 +681,7 @@ impl ArenaActors {
 
     /// Gives the director new tuning, whose goals its view eases to (M2 T2). Refuses with no director on
     /// the stage, or tuning it won't take, keeping what it has either way. Shake IDs resolved from the old
-    /// tuning are resolved again by [`Scene::set_camera_tuning`](sapphire_stage::scene::Scene::set_camera_tuning),
+    /// tuning are resolved again by [`FightShow::set_camera_tuning`](crate::fight::FightShow::set_camera_tuning),
     /// which holds the cues' dispatcher beside this.
     #[cfg(feature = "dev")]
     pub(crate) fn set_camera_tuning(&mut self, tuning: CameraTuning) -> Result<(), String> {

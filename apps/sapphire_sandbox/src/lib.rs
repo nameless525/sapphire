@@ -7,9 +7,10 @@
 //! change-detecting extract systems, and the wgpu anime renderer's persistent scene, drawing the
 //! cooked sample mannequin.
 //!
-//! What it draws is [`sapphire_stage`]'s, and a file this page names that this crate doesn't have is that
-//! crate's. This one is the bench and the goldens' host: its command line (`options.rs`), its window loop
-//! (`app.rs`), captures, benches and dev panels, and what mobile links.
+//! What it draws is [`sapphire_stage`]'s, and its fights and their HUD `game_combat`'s and `game_ui`'s: a file
+//! this page names that this crate doesn't have is one of theirs. This one is the bench and the goldens' host:
+//! its command line (`options.rs`), its window loop (`app.rs`), captures, benches and dev panels, and what
+//! mobile links.
 //!
 //! # Controls
 //!

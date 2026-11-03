@@ -20,7 +20,7 @@
 //! - **Shots** ([`Shot`]): a wide establishing shot across the square, a three-quarter hero shot
 //!   of the character, a low angle up past it toward the sky and the rooftops, and the street
 //!   out of the square with the character standing in it, its face up close, and the enemy squaring
-//!   up to it ([`crate::enemy`]). `--view`, `--fov` and `--zoom` adjust them as they do the turntable's
+//!   up to it (`game_combat`'s `enemy`). `--view`, `--fov` and `--zoom` adjust them as they do the turntable's
 //!   framing. The character always stands at the world's origin: a shot
 //!   elsewhere in the town ([`Shot::stand`]) moves the town, its lamps and its cards instead.
 //! - **The far mountains** ([`MOUNTAINS`], X1 part 2d): three ranges of the project's own round

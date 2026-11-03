@@ -53,7 +53,7 @@ jobs:
         shell: bash
         run: |
           cargo test --package sapphire_render --package sapphire_rhi --package sapphire_world --package sapphire_debug --locked --tests --no-run
-          cargo test --package sapphire_sandbox --package sapphire_stage --features dev --locked --lib --no-run
+          cargo test --package sapphire_sandbox --package sapphire_stage --package game_combat --package game_ui --features dev --locked --lib --no-run
       # Beside the test executables, where D3D12 looks for it.
       - name: Install WARP 1.0.21
         shell: pwsh
@@ -65,4 +65,4 @@ jobs:
       - name: GPU tests (render, RHI, world, overlay)
         run: cargo test --package sapphire_render --package sapphire_rhi --package sapphire_world --package sapphire_debug --locked --tests --no-fail-fast -- --ignored --test-threads=1
       - name: GPU tests (stage and sandbox, dev)
-        run: cargo test --package sapphire_sandbox --package sapphire_stage --features dev --locked --lib -- --ignored --test-threads=1
+        run: cargo test --package sapphire_sandbox --package sapphire_stage --package game_combat --package game_ui --features dev --locked --lib -- --ignored --test-threads=1

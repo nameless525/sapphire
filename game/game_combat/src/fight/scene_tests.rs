@@ -697,7 +697,7 @@ fn the_enemy_stands_beside_the_character_in_a_shape_of_its_own() {
 /// G3's recording, from its start.
 fn recorded_fight() -> Combat {
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/replays/fight.sreplay");
-    let option = crate::combat::CombatOption::Replay { path, to_end: true };
+    let option = CombatOption::Replay { path, to_end: true };
     Combat::new(&option).expect("a committed recording")
 }
 

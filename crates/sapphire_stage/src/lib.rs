@@ -43,11 +43,17 @@
 //! in before it loads. The `dev` feature adds live tuning (`tuning`), and the packs live link pushes to
 //! [`Content`]: an app's own `dev` turns it on.
 //!
-//! # What's here that a game's crates will take
+//! # What a game holds
 //!
-//! The fight's app side (`arena`, `combat`, `enemy`, `blade`, `cues`, `party_looks`, `trails`) and the HUD (`hud`)
-//! moved here whole, since [`Scene`] and [`Content`] hold their types and call them directly. `game_combat` and
-//! `game_ui` take them once a seam stands between (M3's S2).
+//! The fight and its HUD are `game_combat`'s and `game_ui`'s (M3 S2), on these seams:
+//!
+//! - **What plays** is a [`SceneShow`], which the caller owns and passes in: the stage calls it at each of a
+//!   frame's points. It knows nothing of who's fighting or how many.
+//! - **What loads:** the caller holds its own assets by [`Content::hold`] and reads them by [`Content::read`], and
+//!   [`Content::load_graph_of`] keys a graph by a [`content::GraphKey`] the game names. A recolor is an
+//!   [`content::UploadWatcher`].
+//!
+//! Half the crate's public surface is what the sandbox's scene flags build, which a game never names.
 
 // These docs are read with `--document-private-items`, as CI renders them: a module an app reaches into keeps
 // its links to what stands behind it.

@@ -18,9 +18,8 @@ The engine spec (§4.1) put the platform crate at L0, with `core` / `math` / `jo
   | L1 Platform and system | `sapphire_platform`, `sapphire_jobs`, `sapphire_time`, `sapphire_crash` |
   | L2 Services | `sapphire_assets`, `sapphire_rhi` (later `sapphire_ecs`, `sapphire_reflect`, `sapphire_serialize`) |
   | L3 Subsystems | `sapphire_render` (later animation, physics, audio, VFX, UI, input, navigation, debug) |
-  | L4 Framework, L5 Game | as in the spec |
-  | L6 Stage | `sapphire_stage` |
-  | Apps | `apps/` (`sapphire_sandbox` now; the game app later) |
+  | L4 Framework, L5 Stage and controls, L6 Game | as in the spec |
+  | Apps | `apps/sapphire_sandbox` and `game/game_app` |
   | Tools | `tools/` and `xtask/` |
 
 - `sapphire_core` provides a log-sink hook. The platform layer registers SDL's logger on mobile, so `sapphire_core` never depends on SDL.

@@ -126,6 +126,13 @@ pub const SCRIPTS: &[Script] = &[
         ticks: ARENA_WALK_TICKS,
         actions: arena_walk,
     },
+    Script {
+        name: "chase-laps",
+        about: "the arena's player runs a lap of the square's clear floor by the stick, and stands, for \
+                whoever's following a path to it",
+        ticks: CHASE_LAPS_TICKS,
+        actions: chase_laps,
+    },
 ];
 
 /// The script named `name`.
@@ -513,6 +520,41 @@ pub fn arena_walk(tick: u64, cast: &[ActorId]) -> TickActions {
     }
     let buttons = if tick == ARENA_WALK_JUMP { Buttons::JUMP } else { Buttons::NONE };
     actions.set(player, ActorActions { buttons, stick }).expect("one actor fits a tick");
+    actions
+}
+
+/// [`chase_laps`]' legs, as [`ARENA_WALK_LEGS`]' are, all at a run of 6 m/s, from the player's spawn point:
+/// out to the square's north side, along it, down its east side, back along its south and up its west.
+const CHASE_LAPS_LEGS: [(i8, i8, u32); 6] =
+    [(0, 127, 70), (127, 0, 108), (0, -127, 250), (-127, 0, 240), (0, 127, 260), (127, 0, 170)];
+
+/// [`chase_laps`]' length: its legs, and ten seconds for everyone to arrive.
+const CHASE_LAPS_TICKS: u32 = {
+    let mut ticks = 600;
+    let mut leg = 0;
+    while leg < CHASE_LAPS_LEGS.len() {
+        ticks += CHASE_LAPS_LEGS[leg].2;
+        leg += 1;
+    }
+    ticks
+};
+
+/// [`SCRIPTS`]' `chase-laps`: the player by the stick, round the square.
+#[must_use]
+pub fn chase_laps(tick: u64, cast: &[ActorId]) -> TickActions {
+    let mut actions = TickActions::NEUTRAL;
+    let Some(&player) = cast.first() else { return actions };
+    let mut left = tick;
+    for (x, y, ticks) in CHASE_LAPS_LEGS {
+        if left < u64::from(ticks) {
+            let stick = Stick::new(x, y);
+            actions
+                .set(player, ActorActions { buttons: Buttons::NONE, stick })
+                .expect("one actor fits a tick");
+            break;
+        }
+        left -= u64::from(ticks);
+    }
     actions
 }
 

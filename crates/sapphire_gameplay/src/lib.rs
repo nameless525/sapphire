@@ -136,6 +136,7 @@ mod hits;
 mod intents;
 mod movement;
 mod moves;
+mod navigation;
 mod party;
 pub mod replay;
 mod resolve;
@@ -168,6 +169,7 @@ pub use moves::{
     ActiveHurtbox, ActiveVolume, CurrentMove, LiveWindows, MAX_ACTIVE_HURTBOXES, MAX_ACTIVE_VOLUMES,
     MoveLibrary, MoveOutput, MoveRead, MoveRef, MoveRunner, MoveSetId, Published, Tuned, WarpTarget,
 };
+pub use navigation::{PathId, SimNavigation};
 pub use party::{PARTY_SLOTS, Party, PartyError, PartySlot, PartyTuning, SWAP_IN_MOVE, SWAP_INTENT};
 pub use resolve::{Fighter, HitOutcome, SlowMotion};
 pub use simulation::{CombatSet, SimConfig, SimRng, Simulation};

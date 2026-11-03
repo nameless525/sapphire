@@ -8,7 +8,10 @@ use std::path::{Path, PathBuf};
 use sapphire_colliders::{ColliderDocument, ColliderSet};
 use sapphire_pipeline::assembly::{self, Detail};
 use sapphire_pipeline::import::gltf;
-use sapphire_pipeline::nav::{Triangle, colliders_to_triangles, solid_groups};
+use sapphire_pipeline::nav::{
+    BakeSettings, Baked, IslandStats, Seed, Triangle, bake_colliders, colliders_to_triangles, solid_groups,
+};
+use sapphire_zone::ZoneDocument;
 
 pub fn content() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content")
@@ -18,6 +21,28 @@ pub fn content() -> PathBuf {
 pub fn arena_colliders() -> ColliderSet {
     let text = fs::read_to_string(content().join("arena/square.colliders.ron")).expect("the document");
     ColliderDocument::from_ron(&text).expect("it reads").cook().expect("it cooks")
+}
+
+/// The proving ground's colliders and its navmesh, as a cook bakes it from its zone document.
+pub fn proving_ground() -> (ColliderSet, Baked, IslandStats) {
+    let dir = content().join("zones/proving_ground");
+    let read = |name: &str| fs::read_to_string(dir.join(name)).expect("the zone's file");
+    let zone = ZoneDocument::from_ron(&read("proving_ground.zone.ron")).expect("the zone reads");
+    let navigation = zone.navigation.as_ref().expect("it asks for a navmesh");
+    let colliders = ColliderDocument::from_ron(&read("proving_ground.colliders.ron"))
+        .expect("it reads")
+        .cook()
+        .expect("it cooks");
+    let cooked = colliders.to_cooked().expect("it writes");
+    let seeds: Vec<Seed> = zone
+        .spawners
+        .iter()
+        .map(|spawner| Seed { field: spawner.name.clone(), position: spawner.position })
+        .collect();
+    let area = (navigation.min, navigation.max);
+    let (baked, islands) =
+        bake_colliders(&cooked, area, &seeds, &BakeSettings::CHARACTER, None).expect("it bakes");
+    (colliders, baked, islands)
 }
 
 /// What stops a character in the arena.

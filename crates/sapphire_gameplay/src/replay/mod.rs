@@ -31,6 +31,7 @@
 //! assert_eq!(recorded.first_difference(&player.finish().trail), None);
 //! ```
 
+mod chase;
 mod checksums;
 mod file;
 mod play;

@@ -10,6 +10,7 @@ use sapphire_core::alloc::AllocScope;
 use sapphire_ecs::prelude::*;
 use sapphire_math::Pcg32;
 use sapphire_moves::{MoveSet, MoveSetError};
+use sapphire_navmesh::NavMeshError;
 use sapphire_physics::PhysicsWorld;
 use sapphire_time::{SimDuration, Stopwatch};
 
@@ -30,6 +31,7 @@ use crate::movement::{self, ActorTransform};
 use crate::moves::{
     self, MoveLibrary, MoveOutput, MoveRead, MoveRunner, MoveSetId, MoveStats, Tuned, WarpTarget,
 };
+use crate::navigation::SimNavigation;
 use crate::party::{self, Party, PartyError, PartySlot, PartyTuning};
 use crate::resolve::{self, AppliedHits, Fighter, ResolveStats, SlowMotion};
 use crate::stats::{BUDGET_DESKTOP_LOW, PHYSICS_BUDGET_DESKTOP_LOW, SimStats};
@@ -326,7 +328,32 @@ impl Simulation {
             world.resource::<MoveLibrary>(),
             world.resource::<CharacterWorld>(),
             world.resource::<Party>(),
+            world.get_resource::<SimNavigation>(),
         )
+    }
+
+    /// Gives this simulation a zone's navmesh, from a cook's bytes, which must start 16-byte aligned,
+    /// between steps. From here on its digest is in [`Self::tables_hash`] and its paths in
+    /// [`Self::checksum`]; a simulation that's never given one hashes neither.
+    ///
+    /// # Errors
+    ///
+    /// If the bytes aren't a good navmesh, in which case it keeps what it had.
+    pub fn set_navigation(&mut self, cooked: &[u8]) -> Result<(), NavMeshError> {
+        let navigation = SimNavigation::new(cooked)?;
+        self.ecs.world_mut().insert_resource(navigation);
+        Ok(())
+    }
+
+    /// Its navigation, if it's been given a navmesh.
+    #[must_use]
+    pub fn navigation(&self) -> Option<&SimNavigation> {
+        self.ecs.world().get_resource::<SimNavigation>()
+    }
+
+    /// Its navigation, between steps: to add a path, or read what paths have cost.
+    pub fn navigation_mut(&mut self) -> Option<Mut<'_, SimNavigation>> {
+        self.ecs.world_mut().get_resource_mut::<SimNavigation>()
     }
 
     /// The loaded sets of moves.

@@ -29,6 +29,7 @@
 # Cooked or GPU-ready formats.
 *.ktx2 binary
 *.smoves binary
+*.snav binary
 *.dds binary
 *.astc binary
 *.smesh binary

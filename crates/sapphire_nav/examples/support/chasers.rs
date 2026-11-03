@@ -1,13 +1,10 @@
-//! P0's chasers: the smallest thing that moves on what `sapphire_nav` returns, as a brain would, for
-//! the allocation test and the bench to share. A chaser walks its corners in a straight line and
-//! searches again when its turn comes. There's no separation and no corridor to reuse, so every
-//! search is a whole search, which is the worst a path can cost.
+//! Chasers with no physics: the smallest thing that moves on what [`Navigation::follow`] says, as a brain
+//! would, for the allocation test and the bench to share. Each walks straight where it's told and stands
+//! on the mesh. There's nobody to bump into, so all that a tick costs here is paths.
 
 use glam::Vec3;
-use sapphire_nav::{FunnelEnd, NavGraph, PathSearch, Reach, RouteEnd, straighten};
-
-const CORRIDOR: usize = 256;
-const CORNERS: usize = 32;
+use sapphire_nav::{NavStats, Navigation, Path, PathSearch, Reach, RouteEnd, Steer};
+use sapphire_navmesh::ArchivedNavMesh;
 
 /// 60 Hz.
 const TICK: f32 = 1.0 / 60.0;
@@ -22,111 +19,78 @@ impl Lcg {
     }
 }
 
-/// A polygon's corners' mean, which a convex polygon holds.
-pub fn centre(graph: &NavGraph, polygon: u32) -> Vec3 {
-    let mut sum = Vec3::ZERO;
-    let mut count = 0.0;
-    for corner in graph.polygon(polygon) {
-        sum += corner;
-        count += 1.0;
-    }
-    sum / count
-}
-
-#[derive(Clone)]
 struct Chaser {
     position: Vec3,
     speed: f32,
-    corners: [Vec3; CORNERS],
-    count: u32,
-    next: u32,
+    path: Path,
 }
 
-/// `N` chasers and what their searches share. Sized once, and nothing in [`Chasers::step`] allocates.
+/// `N` chasers and the navigation they share. Sized once, and nothing in [`Chasers::step`] allocates.
 pub struct Chasers {
     chasers: Vec<Chaser>,
-    search: PathSearch,
-    corridor: Box<[u32; CORRIDOR]>,
-    /// Whose search is next, in ID order.
-    turn: usize,
-    /// FNV-1a over every position, by bits, every tick.
+    navigation: Navigation,
+    /// FNV-1a over every position and path, by bits, every tick.
     pub checksum: u64,
-    pub searches: u64,
-    pub unreached: u64,
+    /// Everything spent so far, `worst_tick` the worst of them.
+    pub stats: NavStats,
+    /// How many times, over all ticks, a chaser stood on a route that found no way.
+    pub no_way: u64,
 }
 
 impl Chasers {
     /// `count` chasers, on polygons a seeded generator picks from those a search from `home` reaches,
     /// at speeds that differ, because identical actors hide an ordering leak.
-    pub fn new(graph: &NavGraph, count: usize, node_limit: u32, home: Vec3, seed: u64) -> Self {
-        let mut search = PathSearch::new(graph, node_limit);
-        let mut corridor = Box::new([0; CORRIDOR]);
+    pub fn new(mesh: &ArchivedNavMesh, count: usize, budget: u32, home: Vec3, seed: u64) -> Self {
+        let navigation = Navigation::with_budget(mesh, budget);
+        let graph = navigation.graph();
+        let mut search = PathSearch::new(graph, u32::MAX);
+        let mut corridor = vec![0; graph.polygon_count()];
         let home = graph.locate(home, Reach::CHARACTER).expect("the chasers' home is on the mesh");
         let mut random = Lcg(seed);
         let mut chasers = Vec::with_capacity(count);
         while chasers.len() < count {
-            let polygon = random.next(graph.polygon_count() as u32);
-            let position = centre(graph, polygon);
+            let position = graph.centre(random.next(graph.polygon_count() as u32));
             let Some(start) = graph.locate(position, Reach::CHARACTER) else { continue };
-            let route = search.find(graph, start, home, &mut corridor[..]);
-            if route.end != RouteEnd::Reached {
+            if search.find(graph, start, home, &mut corridor).end != RouteEnd::Reached {
                 continue;
             }
             let speed = 3.0 + chasers.len() as f32 * 0.037;
-            chasers.push(Chaser { position, speed, corners: [position; CORNERS], count: 1, next: 0 });
+            chasers.push(Chaser { position, speed, path: Path::new() });
         }
-        Self {
-            chasers,
-            search,
-            corridor,
-            turn: 0,
-            checksum: 0xcbf2_9ce4_8422_2325,
-            searches: 0,
-            unreached: 0,
-        }
+        Self { chasers, navigation, checksum: 0xcbf2_9ce4_8422_2325, stats: NavStats::default(), no_way: 0 }
     }
 
-    /// One fixed step: `budget` chasers search for `target`, then all of them walk.
-    pub fn step(&mut self, graph: &NavGraph, target: Vec3, budget: usize) {
-        if let Some(goal) = graph.locate(target, Reach::CHARACTER) {
-            for _ in 0..budget.min(self.chasers.len()) {
-                let index = self.turn;
-                self.turn = (self.turn + 1) % self.chasers.len();
-                let chaser = &mut self.chasers[index];
-                let Some(from) = graph.locate(chaser.position, Reach::CHARACTER) else { continue };
-                let route = self.search.find(graph, from, goal, &mut self.corridor[..]);
-                self.searches += 1;
-                if route.end != RouteEnd::Reached {
-                    self.unreached += 1;
-                }
-                let corridor = &self.corridor[..route.polygons as usize];
-                let (count, end) =
-                    straighten(graph, corridor, from.position, goal.position, &mut chaser.corners);
-                debug_assert!(end == FunnelEnd::Whole || count as usize == CORNERS);
-                chaser.count = count;
-                chaser.next = 1;
-            }
-        }
+    /// One fixed step: each chaser, in order, follows its path toward `target`, and walks.
+    pub fn step(&mut self, target: Vec3) {
+        self.navigation.begin_tick();
         for chaser in &mut self.chasers {
-            let mut left = chaser.speed * TICK;
-            while chaser.next < chaser.count && left > 0.0 {
-                let to = chaser.corners[chaser.next as usize];
-                let gap = chaser.position.distance(to);
-                if gap <= left {
-                    chaser.position = to;
-                    chaser.next += 1;
-                    left -= gap;
-                } else {
-                    chaser.position += (to - chaser.position) * (left / gap);
-                    left = 0.0;
+            if let Steer::Walk(direction) = self.navigation.follow(&mut chaser.path, chaser.position, target)
+            {
+                let moved = chaser.position + direction * (chaser.speed * TICK);
+                if let Some(on) = self.navigation.graph().locate(moved, Reach::CHARACTER) {
+                    chaser.position = on.position;
                 }
             }
+            if chaser.path.route_end() == Some(RouteEnd::Unreachable) {
+                self.no_way += 1;
+            }
+            let checksum = &mut self.checksum;
+            let mut write = |bytes: &[u8]| {
+                for byte in bytes {
+                    *checksum = (*checksum ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3);
+                }
+            };
             for value in chaser.position.to_array() {
-                for byte in value.to_bits().to_le_bytes() {
-                    self.checksum = (self.checksum ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
-                }
+                write(&value.to_bits().to_le_bytes());
             }
+            chaser.path.write_state(&mut write);
         }
+        let stats = self.navigation.take_stats();
+        self.stats.searches += stats.searches;
+        self.stats.expanded += stats.expanded;
+        self.stats.out_of_nodes += stats.out_of_nodes;
+        self.stats.deferred += stats.deferred;
+        self.stats.worst_tick = self.stats.worst_tick.max(stats.worst_tick);
     }
 }
 

@@ -17,10 +17,10 @@ mod chasers;
 
 use std::time::Duration;
 
-use chasers::{Chasers, Lcg, centre, target_at};
+use chasers::{Chasers, Lcg, target_at};
 use glam::Vec3;
-use sapphire_nav::{NavGraph, PathSearch, Reach, RouteEnd, straighten};
-use sapphire_navmesh::{NO_NEIGHBOUR, NavMesh};
+use sapphire_nav::{NODES_PER_TICK, NavGraph, NavStats, PathSearch, Reach, RouteEnd, straighten};
+use sapphire_navmesh::{ArchivedNavMesh, NO_NEIGHBOUR, NavMesh};
 use sapphire_serialize::cooked::AlignedVec;
 use sapphire_time::Stopwatch;
 
@@ -57,8 +57,8 @@ fn pairs(graph: &NavGraph, range: (f32, f32), seed: u64) -> Vec<Pair> {
     let mut tries = 0;
     while found.len() < QUERIES && tries < 4_000_000 {
         tries += 1;
-        let from = centre(graph, random.next(graph.polygon_count() as u32));
-        let to = centre(graph, random.next(graph.polygon_count() as u32));
+        let from = graph.centre(random.next(graph.polygon_count() as u32));
+        let to = graph.centre(random.next(graph.polygon_count() as u32));
         let gap = from.distance(to);
         if gap < range.0 || gap >= range.1 {
             continue;
@@ -119,27 +119,31 @@ fn queries(graph: &NavGraph, label: &str, set: &[Pair]) {
     report("every run", every);
 }
 
-fn chasers_step(graph: &NavGraph, walk: &[Vec3], count: usize, budget: usize) {
+fn chasers_step(mesh: &ArchivedNavMesh, walk: &[Vec3], count: usize, budget: u32) {
     const TICKS: usize = 1800;
     const CHASER_ROUNDS: usize = 5;
     let mut least = vec![Duration::MAX; TICKS];
     let mut worst_seen = Duration::ZERO;
-    let (mut searches, mut unreached) = (0, 0);
+    let mut stats = NavStats::default();
     for _ in 0..CHASER_ROUNDS {
-        let mut chasers = Chasers::new(graph, count, 4096, walk[0], 7);
+        let mut chasers = Chasers::new(mesh, count, budget, walk[0], 7);
         for (tick, least) in least.iter_mut().enumerate() {
             let target = target_at(walk, tick as u32);
             let watch = Stopwatch::start();
-            chasers.step(graph, target, budget);
+            chasers.step(target);
             let time = watch.elapsed();
             *least = (*least).min(time);
             worst_seen = worst_seen.max(time);
         }
-        (searches, unreached) = (chasers.searches, chasers.unreached);
+        stats = chasers.stats;
     }
     least.sort_unstable();
     println!(
-        "  {count} chasers, {budget} searches a tick ({unreached} of {searches} found no way): each tick's least p50 {:.1} µs, p99 {:.1}, worst {:.1}; worst of any tick in any round {:.0}",
+        "  {count} chasers on {budget} nodes a tick ({} searches, {} nodes over {TICKS} ticks, worst tick {}, {} deferred): each tick's least p50 {:.1} µs, p99 {:.1}, worst {:.1}; worst seen {:.1}",
+        stats.searches,
+        stats.expanded,
+        stats.worst_tick,
+        stats.deferred,
         percentile(&least, 0.5),
         percentile(&least, 0.99),
         percentile(&least, 1.0),
@@ -156,8 +160,8 @@ fn no_way_pairs(graph: &NavGraph) -> Vec<Pair> {
     let mut tries = 0;
     while found.len() < QUERIES && tries < 400_000 {
         tries += 1;
-        let from = centre(graph, random.next(graph.polygon_count() as u32));
-        let to = centre(graph, random.next(graph.polygon_count() as u32));
+        let from = graph.centre(random.next(graph.polygon_count() as u32));
+        let to = graph.centre(random.next(graph.polygon_count() as u32));
         let (Some(start), Some(end)) =
             (graph.locate(from, Reach::CHARACTER), graph.locate(to, Reach::CHARACTER))
         else {
@@ -278,10 +282,9 @@ fn main() {
         (None, None) => vec![short[0].from, short[0].to],
     };
     for count in [4, 16, 64] {
-        chasers_step(&graph, &walk, count, 1);
-        chasers_step(&graph, &walk, count, 4);
+        chasers_step(mesh, &walk, count, NODES_PER_TICK);
     }
-    chasers_step(&graph, &walk, 64, 64);
+    chasers_step(mesh, &walk, 64, NODES_PER_TICK / 4);
 
     node_limits(100);
     node_limits(400);

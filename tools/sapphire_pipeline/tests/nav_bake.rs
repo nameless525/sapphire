@@ -15,13 +15,11 @@ mod nav_support;
 use std::fs;
 use std::io::Write as _;
 
-use nav_support::{arena_triangles, content, town_part_digests, town_triangles, triangles_digest};
-use sapphire_colliders::ColliderDocument;
+use nav_support::{arena_triangles, proving_ground, town_part_digests, town_triangles, triangles_digest};
 use sapphire_navmesh::NavMesh;
 use sapphire_pipeline::nav::{
-    BakeSettings, Seed, TileBounds, Triangle, bake, bake_colliders, colliders_to_triangles, solid_groups,
+    BakeSettings, TileBounds, Triangle, bake, colliders_to_triangles, solid_groups,
 };
-use sapphire_zone::ZoneDocument;
 
 /// The arena's ground reaches 60 m each way.
 const ARENA: TileBounds = ([-4, -4], [3, 3]);
@@ -72,23 +70,7 @@ fn the_towns_bake_repeats() {
 /// the bytes of its cooked colliders, and what the cook writes.
 #[test]
 fn the_proving_grounds_bake_is_pinned() {
-    let dir = content().join("zones/proving_ground");
-    let read = |name: &str| fs::read_to_string(dir.join(name)).expect("the zone's file");
-    let zone = ZoneDocument::from_ron(&read("proving_ground.zone.ron")).expect("the zone reads");
-    let navigation = zone.navigation.as_ref().expect("it asks for a navmesh");
-    let colliders = ColliderDocument::from_ron(&read("proving_ground.colliders.ron"))
-        .expect("it reads")
-        .cook()
-        .expect("it cooks");
-    let cooked = colliders.to_cooked().expect("it writes");
-    let seeds: Vec<Seed> = zone
-        .spawners
-        .iter()
-        .map(|spawner| Seed { field: spawner.name.clone(), position: spawner.position })
-        .collect();
-    let settings = BakeSettings::CHARACTER;
-    let (baked, islands) =
-        bake_colliders(&cooked, (navigation.min, navigation.max), &seeds, &settings, None).expect("it bakes");
+    let (colliders, baked, islands) = proving_ground();
     let input = triangles_digest(&colliders_to_triangles(&colliders, solid_groups())).to_string();
     let bytes = baked.mesh.to_cooked().expect("it writes");
     let output = blake3::hash(&bytes).to_string();

@@ -88,6 +88,13 @@ SAPPHIRE_BAKE_MOVES=1 cargo test -p sapphire_pipeline --test player_moves the_si
 cargo xtask replay --update
 ```
 
+The arena's navmesh reaches it the same way, `crates/sapphire_gameplay/baked/arena.snav`. After moving a collider or a spawn point in `content/arena/`, rewrite it and the replays:
+
+```
+SAPPHIRE_BAKE_NAV=1 cargo test -p sapphire_pipeline --test nav_baked
+cargo xtask replay --update
+```
+
 ## Tuning a fight
 
 Run a `dev` build with a fight in it, and save. `crates/sapphire_moves/test_content/slice.moves.ron`, a fight's other `.moves.ron`, `default_camera.ron`, its fighters' `.animgraph.ron` and, with `--cues`, `default_cues.ron` are watched already, and `--watch-document <path>` adds a copy elsewhere. [m2-exit-run.md](m2-exit-run.md), "What changes what", has every route. On a phone, `cargo xtask link push <file>`, or `cargo xtask link watch`, which watches what the app's status lists.

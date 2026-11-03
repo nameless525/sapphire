@@ -92,6 +92,18 @@ impl PathSearch {
 
     /// Finds a corridor of polygons from `from` to `to`, writing it to `corridor`.
     pub fn find(&mut self, graph: &NavGraph, from: Location, to: Location, corridor: &mut [u32]) -> Route {
+        self.find_within(graph, from, to, corridor, self.node_limit)
+    }
+
+    /// [`Self::find`], expanding at most `node_limit` polygons: what's left of a tick's budget, say.
+    pub fn find_within(
+        &mut self,
+        graph: &NavGraph,
+        from: Location,
+        to: Location,
+        corridor: &mut [u32],
+        node_limit: u32,
+    ) -> Route {
         self.begin();
         let start = from.polygon as usize;
         self.touch(start);
@@ -113,7 +125,7 @@ impl PathSearch {
                 end = RouteEnd::Reached;
                 break;
             }
-            if expanded == self.node_limit {
+            if expanded == node_limit {
                 end = RouteEnd::OutOfNodes;
                 break;
             }

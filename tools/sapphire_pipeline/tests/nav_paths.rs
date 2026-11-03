@@ -7,11 +7,13 @@ mod nav_support;
 use std::io::Write as _;
 
 use glam::Vec3;
-use nav_support::{arena_colliders, arena_triangles, town_triangles};
+use nav_support::{arena_colliders, arena_triangles, proving_ground, town_triangles};
 use sapphire_colliders::{
     ColliderDocument, ColliderEntry, ColliderSet, ColliderShape, CookedShape, Group, Rotation,
 };
-use sapphire_nav::{FunnelEnd, Location, NavGraph, PathSearch, Reach, RouteEnd, straighten};
+use sapphire_nav::{
+    FunnelEnd, Location, NavGraph, Navigation, Path, PathSearch, Reach, RouteEnd, Steer, straighten,
+};
 use sapphire_navmesh::NavMesh;
 use sapphire_pipeline::nav::{
     BakeSettings, Baked, TileBounds, Triangle, bake, bake_tile, colliders_to_triangles, stitch,
@@ -172,6 +174,186 @@ fn a_path_crosses_the_square_round_its_stalls_with_a_capsules_room() {
         assert!(gap > CAPSULE_RADIUS - 0.09, "{name}: {gap} m to {what}");
     }
     say(format!("arena: islands {:?}, seams {:?}", islands(&graph), baked.seams));
+}
+
+/// How high a bake's floor stands over paving at 0: a row's height, which `Reach::CHARACTER` allows for.
+const FLOOR: f32 = 0.03125;
+
+/// A route that's pinned, by the bits of its corners. Either end's height only has to be near the ground.
+struct Golden {
+    name: &'static str,
+    from: [f32; 3],
+    to: [f32; 3],
+    corners: &'static [[f32; 3]],
+}
+
+/// Routes over the arena's navmesh, as the simulation holds it.
+const ARENA_GOLDEN: &[Golden] = &[
+    Golden {
+        name: "from the player's spawn to the enemy's",
+        from: [3.2, 0.0, 5.0],
+        to: [3.2, 0.0, -1.0],
+        corners: &[[3.2, FLOOR, 5.0], [3.2, FLOOR, -1.0]],
+    },
+    Golden {
+        name: "front to back through the market",
+        from: [-14.0, 0.0, 14.0],
+        to: [13.5, 0.0, -12.5],
+        corners: &[
+            [-14.0, FLOOR, 14.0],
+            [-4.875, FLOOR, 3.125],
+            [11.375, FLOOR, -9.75],
+            [13.5, FLOOR, -12.5],
+        ],
+    },
+    Golden {
+        name: "along the stalls",
+        from: [15.0, 0.0, -2.0],
+        to: [8.0, 0.0, -13.5],
+        corners: &[
+            [15.0, FLOOR, -2.0],
+            [14.875, FLOOR, -6.125],
+            [11.75, FLOOR, -11.75],
+            [11.5, FLOOR, -12.0],
+            [8.0, FLOOR, -13.25],
+        ],
+    },
+    Golden {
+        name: "past the pavilion",
+        from: [-15.0, 0.0, -2.0],
+        to: [-1.0, 0.0, -12.0],
+        corners: &[
+            [-15.0, FLOOR, -2.0],
+            [-14.125, FLOOR, -7.125],
+            [-13.625, FLOOR, -7.375],
+            [-1.0, FLOOR, -12.0],
+        ],
+    },
+    Golden {
+        name: "into the pavilion's opening",
+        from: [-3.0, 0.0, -3.0],
+        to: [-4.5, 0.0, -7.0],
+        corners: &[[-3.0, FLOOR, -3.0], [-4.5, FLOOR, -7.0]],
+    },
+    Golden {
+        name: "out of the corner behind the cart",
+        from: [-14.0, 0.0, -16.0],
+        to: [14.0, 0.0, 14.0],
+        corners: &[
+            [-14.0, FLOOR, -16.0],
+            [-15.125, FLOOR, -16.0],
+            [-14.875, FLOOR, -15.75],
+            [-12.875, FLOOR, -12.25],
+            [-0.875, FLOOR, 3.375],
+            [0.0, FLOOR, 5.75],
+            [14.0, FLOOR, 14.0],
+        ],
+    },
+];
+
+/// Routes over the proving ground's, as a cook bakes it.
+const PROVING_GROUND_GOLDEN: &[Golden] = &[
+    Golden {
+        name: "from the player's start to the far gate",
+        from: [1.0, 0.0, 1.0],
+        to: [22.0, 0.0, -2.0],
+        corners: &[[1.0, FLOOR, 1.0], [2.125, FLOOR, 0.0], [22.0, FLOOR, -2.0]],
+    },
+    Golden {
+        name: "round the pillar",
+        from: [1.0, 0.0, 1.0],
+        to: [3.0, 0.0, 3.0],
+        corners: &[
+            [1.0, FLOOR, 1.0],
+            [2.75, FLOOR, 1.125],
+            [3.0, FLOOR, 1.375],
+            [3.0, FLOOR, 2.625],
+            [3.0, FLOOR, 3.0],
+        ],
+    },
+    Golden {
+        name: "across the whole ground",
+        from: [-30.0, 0.0, -40.0],
+        to: [50.0, 0.0, 40.0],
+        corners: &[[-30.0, FLOOR, -40.0], [50.0, FLOOR, 40.0]],
+    },
+];
+
+/// Follows a route as a brain would, the whole way, a run's 0.1 m a tick. Returns its corners as they
+/// stood after the search that started it, having held the searches to next to none, every step
+/// to stay on the mesh, and the walk to end where the route said at about the length it said.
+fn follow_the_whole_way(bytes: &[u8], route: &Golden) -> Vec<Vec3> {
+    let mut navigation = Navigation::new(NavMesh::read(bytes).expect("it reads"));
+    let mut path = Path::new();
+    let target = Vec3::from(route.to);
+    let mut position = Vec3::from(route.from);
+    navigation.begin_tick();
+    let first = navigation.follow(&mut path, position, target);
+    assert!(matches!(first, Steer::Walk(_)), "{}: {first:?}", route.name);
+    assert_eq!(path.route_end(), Some(RouteEnd::Reached), "{}", route.name);
+    let start = navigation.graph().locate(position, Reach::CHARACTER).expect("on the mesh").position;
+    let mut corners = vec![start];
+    corners.extend_from_slice(path.corners());
+
+    let mut walked = 0.0;
+    for tick in 0.. {
+        assert!(tick < 20_000, "{}: it never arrived, at {position}", route.name);
+        navigation.begin_tick();
+        match navigation.follow(&mut path, position, target) {
+            Steer::Walk(direction) => {
+                let to = position + direction * 0.1;
+                let on = navigation.graph().locate(to, Reach::CHARACTER);
+                position = on.unwrap_or_else(|| panic!("{}: off the mesh at {to}", route.name)).position;
+                walked += 0.1;
+            }
+            Steer::Arrived => break,
+            Steer::NoPath => panic!("{}: no path at {position}", route.name),
+        }
+    }
+    let stats = navigation.take_stats();
+    // Nothing moved, so only this: rounding a corner can clip a polygon off the corridor, which asks again.
+    assert!(stats.searches <= 3, "{}: {stats:?}", route.name);
+    let goal = navigation.graph().locate(target, Reach::CHARACTER).expect("on the mesh").position;
+    assert!(position.distance(goal) < 0.3, "{}: it stopped at {position}, short of {goal}", route.name);
+    let promised = length(&corners);
+    assert!(walked <= promised * 1.05 + 0.5, "{}: {walked} m walked for a route of {promised} m", route.name,);
+    corners
+}
+
+/// Pins each route and walks it. A failure prints each route as it now is, to paste back in, after reading
+/// why it moved: a route that changes changes how every character in a zone gets anywhere.
+#[test]
+fn golden_paths_go_where_they_went() {
+    let arena_bytes = sapphire_gameplay::arena::cooked_navmesh();
+    let (ground_set, ground_baked, _) = proving_ground();
+    let ground_bytes = ground_baked.mesh.to_cooked().expect("it writes");
+    let arena_set = arena_colliders();
+    let mut moved = Vec::new();
+    for (bytes, set, routes) in [
+        (&arena_bytes[..], &arena_set, ARENA_GOLDEN),
+        (&ground_bytes[..], &ground_set, PROVING_GROUND_GOLDEN),
+    ] {
+        for route in routes {
+            let corners = follow_the_whole_way(bytes, route);
+            let (gap, what) = clearance(set, &corners);
+            say(format!(
+                "golden {}: {} corners, {:.2} m, least gap {gap:.3} m to {what}",
+                route.name,
+                corners.len(),
+                length(&corners)
+            ));
+            assert!(gap > CAPSULE_RADIUS - 0.09, "{}: {gap} m to {what}", route.name);
+            let pinned: Vec<Vec3> = route.corners.iter().copied().map(Vec3::from).collect();
+            if corners != pinned {
+                moved.push(format!(
+                    "{}: {:?}",
+                    route.name,
+                    corners.iter().map(|c| c.to_array()).collect::<Vec<_>>()
+                ));
+            }
+        }
+    }
+    assert!(moved.is_empty(), "routes that moved:\n{}", moved.join("\n"));
 }
 
 /// The town as drawn has no blockers, so its moon gates are open. Through one, from the square to

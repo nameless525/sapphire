@@ -19,6 +19,7 @@ use crate::hits::HitQuery;
 use crate::intents::IntentRing;
 use crate::movement::ActorTransform;
 use crate::moves::{MoveLibrary, MoveOutput, MoveRef, MoveRunner, Running, WarpTarget};
+use crate::navigation::SimNavigation;
 use crate::party::Party;
 use crate::resolve::{Fighter, HitOutcome, Slide, SlowMotion};
 use crate::simulation::SimRng;
@@ -27,7 +28,8 @@ use crate::simulation::SimRng;
 /// match by accident. Recorded replays re-record then (`docs/m2-plan.md` §3). 2: M2 G2's moves. 3: M2
 /// D4's hit queries. 4: M2 G1's controllers and their world. 5: M2 G3's fighters, slow motion and hit
 /// cues. 6: M2 G4's perfect dodges and counter windows. 7: M2 G6's brains and a controller drive's facing.
-/// 8: M2 G7's party, which writes nothing without one.
+/// 8: M2 G7's party, which writes nothing without one. M3 P2's paths write nothing without a navmesh
+/// either, and none of what's recorded before them has one, so they left this where it was.
 const CHECKSUM_LAYOUT: u32 = 8;
 
 /// A hasher over canonical bytes: XXH3-64, a published, frozen algorithm, unlike `DefaultHasher`,
@@ -410,6 +412,9 @@ pub(crate) fn state_checksum(world: &World) -> u64 {
         }
     }
     write_cues(&mut hasher, world.resource::<CueQueue>());
+    if let Some(navigation) = world.get_resource::<SimNavigation>() {
+        navigation.write_state(&mut hasher);
+    }
     hasher.finish()
 }
 
@@ -417,8 +422,13 @@ pub(crate) fn state_checksum(world: &World) -> u64 {
 /// move set's current revision, whole, with its tables, in ID order, the controller profiles and the
 /// collision world's statics. It hashes a set's cooked bytes, so no field can be forgotten here, and
 /// those are the same on every target, as the statics' digest is: authored numbers, by their bits. A party's
-/// tuning goes in too, if there's a party.
-pub(crate) fn tables_hash(library: &MoveLibrary, characters: &CharacterWorld, party: &Party) -> u64 {
+/// tuning goes in too, if there's a party, and a navmesh's digest if there's one of those.
+pub(crate) fn tables_hash(
+    library: &MoveLibrary,
+    characters: &CharacterWorld,
+    party: &Party,
+    navigation: Option<&SimNavigation>,
+) -> u64 {
     let mut hasher = StateHasher::new();
     let hashes = library.current_hashes();
     hasher.u32(hashes.len() as u32);
@@ -428,6 +438,9 @@ pub(crate) fn tables_hash(library: &MoveLibrary, characters: &CharacterWorld, pa
     hasher.u64(characters.profiles_hash());
     hasher.u64(characters.physics().statics_digest());
     party.write_tuning(&mut hasher);
+    if let Some(navigation) = navigation {
+        hasher.u64(navigation.digest());
+    }
     hasher.finish()
 }
 

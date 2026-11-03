@@ -10,11 +10,13 @@
 //! - **The search** ([`search`]): [`PathSearch`], A* over polygons on a pool sized at load, with a
 //!   limit on the nodes one search may spend.
 //! - **The funnel** ([`funnel`]): a corridor of polygons to the corners a character walks.
+//! - **What a brain calls** ([`path`]): [`Path`], one character's route from tick to tick, and
+//!   [`Navigation`], the graph, the pool and the budget of 1024 nodes a tick their searches share.
 //!
 //! # Does not own
 //!
 //! - The format: `sapphire_navmesh`. Baking: `sapphire_pipeline`'s `nav` module.
-//! - Following a path, when to search again, and keeping characters apart.
+//! - Keeping characters apart, and which brains use any of this: P3.
 //! - Height under a character: the graph has polygons alone, no detail mesh, so a position's height
 //!   here is good for telling floors apart. Feet stay on the ground by the controller's own casts.
 //!
@@ -26,8 +28,10 @@
 
 pub mod funnel;
 pub mod graph;
+pub mod path;
 pub mod search;
 
 pub use funnel::{FunnelEnd, straighten};
 pub use graph::{Location, NavGraph, Reach};
+pub use path::{CORRIDOR_POLYGONS, NODES_PER_TICK, NavStats, Navigation, PATH_CORNERS, Path, Steer};
 pub use search::{PathSearch, Route, RouteEnd, SearchStats};

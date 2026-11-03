@@ -10,7 +10,8 @@
 //! **The same on every OS:** the document's numbers are parsed exactly, and a collider's turn goes
 //! through `sapphire_math::det` (see `sapphire_colliders`), so its cooked bytes, and the statics' digest
 //! that [`crate::Simulation::tables_hash`] takes, don't depend on where they were cooked. Moving a
-//! collider or a spawn point re-records the `arena` replays: `cargo xtask replay --update`.
+//! collider or a spawn point re-records the `arena` replays: `cargo xtask replay --update`. It also
+//! rebakes the simulation's copy of the navmesh ([`cooked_navmesh`]), and a test says how.
 //!
 //! `tests/arena.rs` holds the documents to each other and walks them with a character: each spawn point
 //! on the ground and clear of everything, and no stick or jump that leaves.
@@ -37,6 +38,20 @@ const SPAWNS: &str = include_str!("../../../content/arena/square.spawns.ron");
 /// Never for a build whose document this crate's tests have read.
 pub fn cooked_colliders() -> Result<AlignedVec, ColliderError> {
     ColliderDocument::from_ron(COLLIDERS)?.cook()?.to_cooked()
+}
+
+/// The arena's navmesh (M3 P2), baked from those colliders with these spawn points for seeds. A bake takes
+/// the pipeline, and nothing that runs a replay links that, so the simulation keeps a copy.
+/// `tools/sapphire_pipeline/tests/nav_baked.rs` holds it to a bake on every platform CI has.
+const NAVMESH: &[u8] = include_bytes!("../baked/arena.snav");
+
+/// The arena's navmesh, cooked as a pack holds one, 16-byte aligned as
+/// [`crate::Simulation::set_navigation`] takes it.
+#[must_use]
+pub fn cooked_navmesh() -> AlignedVec {
+    let mut bytes = AlignedVec::with_capacity(NAVMESH.len());
+    bytes.extend_from_slice(NAVMESH);
+    bytes
 }
 
 /// How anyone in the arena moves whose document doesn't say, and how big they are: a capsule 1.6 m tall,

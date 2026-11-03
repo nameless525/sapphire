@@ -123,6 +123,16 @@ impl NavGraph {
         self.corner_range(polygon).map(|corner| self.positions[self.corners[corner] as usize])
     }
 
+    /// A polygon's corners' mean, which a convex polygon holds.
+    pub fn centre(&self, polygon: u32) -> Vec3 {
+        let (mut sum, mut count) = (Vec3::ZERO, 0.0);
+        for corner in self.polygon(polygon) {
+            sum += corner;
+            count += 1.0;
+        }
+        sum / count
+    }
+
     /// The polygons across a polygon's edges, for tools and tests.
     pub fn neighbours_of(&self, polygon: u32) -> impl Iterator<Item = u32> + '_ {
         self.corner_range(polygon).filter_map(|corner| self.neighbour(corner))

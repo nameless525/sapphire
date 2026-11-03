@@ -72,6 +72,8 @@ pub enum ScenarioError {
     Profile(#[from] ProfileError),
     #[error(transparent)]
     Party(#[from] PartyError),
+    #[error(transparent)]
+    NavMesh(#[from] sapphire_navmesh::NavMeshError),
 }
 
 /// A named starting world.
@@ -181,6 +183,19 @@ pub const SCENARIOS: &[Scenario] = &[
         },
         documents: &[PLAYER_MOVES_PATH, WARRIOR_MOVES_PATH],
         setup: party,
+    },
+    Scenario {
+        name: "nav-chase",
+        about: "the arena's square on its real navmesh: input drives the player, and 64 chasers follow paths \
+                to them on the budget of 1024 nodes a tick, through the stick and the controller",
+        config: SimConfig {
+            seed: 11,
+            max_actors: 1 + super::chase::CHASERS as u32,
+            step_budget: BUDGET_DESKTOP_LOW,
+            physics_budget: PHYSICS_BUDGET_DESKTOP_LOW,
+        },
+        documents: &[TEST_MOVES_PATH],
+        setup: super::chase::nav_chase,
     },
 ];
 

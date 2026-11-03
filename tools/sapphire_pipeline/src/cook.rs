@@ -630,12 +630,21 @@ const WORKER_STACK: usize = 8 << 20;
 
 /// What the assets cooking at once may hold, as far as they can say beforehand: past four of the largest
 /// committed textures (2048 × 2048, 411 MiB each), so only a source near
-/// [`image::SOURCE_BUDGET`], whose cook holds several GiB, makes the others wait.
+/// [`image::SOURCE_BUDGET`], whose cook holds several GiB, or a mesh source of some MiB
+/// ([`MESH_MEMORY_PER_SOURCE_BYTE`]), makes the others wait.
 const COOK_MEMORY: u64 = 4 << 30;
 
 /// What a map document's cook is taken to hold at least, for a document whose inputs don't say, as one of
 /// constants doesn't: its images, as large as the largest committed, and the texture they make.
 const MAP_MEMORY: u64 = 1 << 30;
+
+/// What a mesh's cook is taken to hold for each byte it reads, at the top of what was measured, so most
+/// hold far less and a source of 16 MiB or more runs alone. Peaks per byte: 11 to 16 for a glTF with
+/// normals, 59 to 88 for one the importer must make them for, 5 to 44 for FBX by how it's compressed, 5
+/// for a VRM with its textures, 175 for the town's assembly, whose shapes are built from numbers, and
+/// 234 for a glTF placing one mesh 16 times. Bytes can't see further: more instances of a mesh, or a
+/// document of more shapes, hold more than this says.
+const MESH_MEMORY_PER_SOURCE_BYTE: u64 = 256;
 
 /// Memory the assets cooking at once share.
 struct CookMemory {
@@ -1745,6 +1754,7 @@ fn cook_source(
             let joints = if settings.is_animation_only() {
                 assets.clip_sources.get(path, bytes, settings).map_err(clip_error)?.joints.clone()
             } else {
+                let _held = assets.memory.hold(mesh_memory(path, bytes, settings));
                 let mesh = imported_mesh(path, bytes, settings, cook)?;
                 mesh.skin.ok_or_else(|| clip_error(ClipCookError::NoSkeleton))?.joints
             };
@@ -1767,15 +1777,18 @@ fn cook_source(
             if *part == Part::Own =>
         {
             let shared = shared_skeleton(settings, assets).map_err(clip_error)?;
+            let _held = assets.memory.hold(mesh_memory(path, bytes, settings));
             let mut mesh = import_mesh(path, bytes, settings, cook, shared.as_ref())?;
             if let Some(skin) = &mut mesh.skin {
                 skin.skeleton = skeleton;
             }
             Ok(cooked_bytes(path, &mesh)?.into_vec())
         }
-        ImportSettings::Vrm(settings) => {
+        ImportSettings::Vrm(vrm_settings) => {
             debug_assert_eq!(*part, Part::Rig, "a VRM's other sub-asset is its rig");
-            let rig = vrm::import_rig(bytes, settings.version).map_err(vrm_error(path))?;
+            // Reading a rig imports the file's whole scene.
+            let _held = assets.memory.hold(mesh_memory(path, bytes, settings));
+            let rig = vrm::import_rig(bytes, vrm_settings.version).map_err(vrm_error(path))?;
             let invalid = |source| CookError::InvalidRig { path: path.to_owned(), source };
             let cooked = rig.to_cooked().map_err(|error| invalid(RigError::Cooked(error)))?;
             // The runtime's checks, so a cook never writes a rig animation would refuse.
@@ -1827,6 +1840,41 @@ fn map_memory(path: &Path, bytes: &[u8], settings: &character_maps::MapSettings)
     let input = first.and_then(|input| character_maps::resolve_input(path, &input).ok());
     let holds = input.and_then(|input| Some(texture::cook_memory(&input, &fs::read(&input).ok()?)));
     holds.unwrap_or(0).max(MAP_MEMORY)
+}
+
+/// About what importing and cooking the mesh source in `bytes` holds at its peak, from all the source
+/// bytes it reads ([`MESH_MEMORY_PER_SOURCE_BYTE`]). Whatever else it names that doesn't read counts for
+/// nothing here: its cook is about to say so.
+fn mesh_memory(path: &Path, bytes: &[u8], settings: &ImportSettings) -> u64 {
+    let others = match settings {
+        // VRM files are GLB, and the FBX importer never opens the files an FBX names.
+        ImportSettings::Vrm(_) | ImportSettings::Fbx(_) => 0,
+        ImportSettings::Assembly(_) => assembly_piece_bytes(path, bytes),
+        _ => external_buffer_bytes(path, bytes),
+    };
+    (bytes.len() as u64).saturating_add(others).saturating_mul(MESH_MEMORY_PER_SOURCE_BYTE)
+}
+
+/// The sizes of the pieces the assembly at `path` places, with their external buffers.
+fn assembly_piece_bytes(path: &Path, bytes: &[u8]) -> u64 {
+    let files = assembly::read(bytes).and_then(|assembly| assembly.files()).unwrap_or_default();
+    let piece_bytes = |file: String| {
+        let full = character_maps::resolve_input(path, &file).ok()?;
+        let piece = fs::read(&full).ok()?;
+        Some((piece.len() as u64).saturating_add(external_buffer_bytes(&full, &piece)))
+    };
+    files.into_iter().filter_map(piece_bytes).fold(0, u64::saturating_add)
+}
+
+/// The sizes of the external buffers of the glTF at `path`.
+fn external_buffer_bytes(path: &Path, bytes: &[u8]) -> u64 {
+    let dir = path.parent().unwrap_or(Path::new(""));
+    let files = gltf::external_files(bytes).unwrap_or_default();
+    files
+        .iter()
+        .filter_map(|file| fs::metadata(dir.join(file)).ok())
+        .map(|file| file.len())
+        .fold(0, u64::saturating_add)
 }
 
 /// Cooks the document in `bytes` for the rig of source `rig`.
@@ -2748,6 +2796,114 @@ mod tests {
         assert_eq!(memory(), large);
         let constants = br#"(type: "sapphire::pipeline::IlmMap", version: 1, data: (size: Some((4, 4))))"#;
         assert_eq!(map_memory(&map, constants, &settings), MAP_MEMORY);
+    }
+
+    /// A mesh's cook counts all it reads, and what doesn't read counts for nothing rather than failing.
+    #[test]
+    fn a_meshs_cook_says_what_it_holds_from_all_it_reads() {
+        let scratch = Scratch::new("cook_mesh_memory");
+        let (source, pieces) = (scratch.source(), scratch.source().join("pieces"));
+        fs::create_dir_all(&pieces).unwrap();
+        let gltf_settings = ImportSettings::Gltf(MeshSettings::default());
+        let holds = |bytes: usize| bytes as u64 * MESH_MEMORY_PER_SOURCE_BYTE;
+
+        let glb = samples::mannequin_glb();
+        let memory = mesh_memory(&source.join("a.glb"), &glb, &gltf_settings);
+        assert_eq!(memory, holds(glb.len()), "a GLB holds all it reads in itself");
+        let fbx = ImportSettings::Fbx(MeshSettings::default());
+        assert_eq!(mesh_memory(&source.join("a.fbx"), b"Kaydara", &fbx), holds(7));
+        let path = source.join("broken.glb");
+        assert_eq!(mesh_memory(&path, b"not glTF", &gltf_settings), holds(8), "the cook reports the rest");
+
+        // A glTF's external buffer, counted once it's there.
+        let mut writer = GltfWriter::default();
+        let triangle = Geometry {
+            positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            indices: vec![0, 1, 2],
+            ..Geometry::default()
+        };
+        let mesh = writer.add_mesh("Triangle", &[(&triangle, None)]);
+        let node = writer.add_node(json!({ "mesh": mesh }));
+        writer.add_root(node);
+        let gltf = serde_json::to_vec(&writer.document(Some("wall.bin"))).unwrap();
+        let path = pieces.join("wall.glb");
+        assert_eq!(mesh_memory(&path, &gltf, &gltf_settings), holds(gltf.len()), "no buffer yet");
+        fs::write(pieces.join("wall.bin"), writer.bin()).unwrap();
+        let with_buffer = gltf.len() + writer.bin().len();
+        assert_eq!(mesh_memory(&path, &gltf, &gltf_settings), holds(with_buffer));
+
+        // An assembly's pieces, with their buffers, once each however often they're placed.
+        let assembly = br#"(
+            type: "sapphire::pipeline::Assembly",
+            version: 1,
+            data: (
+                kits: { "kit": "pieces" },
+                palette: (columns: 2, rows: 1, gradient_columns: [1]),
+                slots: [(name: "Plaster")],
+                surfaces: [],
+                place: [(piece: "kit/wall"), (piece: "kit/wall", turn: 90.0)],
+            ),
+        )"#;
+        let (path, settings) =
+            (source.join("town.assembly.ron"), ImportSettings::Assembly(MeshSettings::default()));
+        assert_eq!(mesh_memory(&path, assembly, &settings), holds(assembly.len()), "no piece yet");
+        fs::write(pieces.join("wall.glb"), &gltf).unwrap();
+        assert_eq!(mesh_memory(&path, assembly, &settings), holds(assembly.len() + with_buffer));
+        assert_eq!(mesh_memory(&path, b"not a document", &settings), holds(14));
+    }
+
+    /// Every part of a mesh's source that imports it waits for what it holds, so that all of them
+    /// count against what the assets cooking at once may hold.
+    #[test]
+    fn a_meshs_cook_waits_for_the_memory_it_holds() {
+        let scratch = Scratch::new("cook_mesh_waits");
+        let mannequin = scratch.add_mannequin("mannequin.glb");
+        let character = scratch.source().join("character.vrm");
+        fs::write(&character, vrm::samples::vrm1().to_glb()).unwrap();
+        let cases = [
+            (&mannequin, ImportSettings::Gltf(MeshSettings::default()), Part::Own),
+            (&character, ImportSettings::for_new_sidecar(&character).unwrap(), Part::Own),
+            (&character, ImportSettings::for_new_sidecar(&character).unwrap(), Part::Skeleton),
+            (&character, ImportSettings::for_new_sidecar(&character).unwrap(), Part::Rig),
+        ];
+        for (path, importer, part) in cases {
+            let meta = AssetMeta::new(AssetId::from_bytes([7; 16]), importer);
+            let recipe = Recipe::for_settings(&meta.importer);
+            let plan = [Planned {
+                id: meta.id,
+                asset: SourceAsset { path: path.clone(), meta },
+                part: part.clone(),
+                skeleton: None,
+                recipe,
+                output: scratch.out().join("asset"),
+            }];
+            let (by_id, sources, memory) = (HashMap::new(), HashMap::new(), CookMemory::new(COOK_MEMORY));
+            let tree = PlannedTree {
+                plan: &plan,
+                by_id: &by_id,
+                sources: &sources,
+                cache: None,
+                cook: Cook::Desktop,
+                memory: &memory,
+            };
+            let remembered = Remembered::default();
+            let keyed = tree.key(0, &tree.assets(&[], &remembered)).unwrap();
+            let held = memory.hold(COOK_MEMORY);
+            let finished = std::sync::atomic::AtomicBool::new(false);
+            thread::scope(|scope| {
+                let cook = scope.spawn(|| {
+                    let remembered = Remembered::default();
+                    let result = tree.finish(0, keyed, &tree.assets(&[], &remembered));
+                    finished.store(true, Ordering::SeqCst);
+                    result
+                });
+                thread::sleep(std::time::Duration::from_millis(200));
+                assert!(!finished.load(Ordering::SeqCst), "{part:?} of {path:?} waits for what's held");
+                drop(held);
+                assert_eq!(cook.join().unwrap().unwrap().status, CookStatus::Cooked);
+            });
+            assert_eq!(*memory.free.lock().unwrap(), COOK_MEMORY, "and gives it back");
+        }
     }
 
     /// Keys the source at `path`, runs `save`, and finishes it, as a worker reaches an asset long after

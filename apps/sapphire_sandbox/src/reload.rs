@@ -190,7 +190,7 @@ impl Reload {
     /// New shader sources go to the renderer through `shaders`, which answers them once they are
     /// swapped in. Allocates nothing while nothing changed.
     pub fn update(&mut self, changes: &[AssetChange], frame: DocumentFrame<'_>, shaders: &mut ShaderEdits) {
-        let DocumentFrame { content, renderer, gpu, scene, mut combat, tuning } = frame;
+        let DocumentFrame { content, renderer, gpu, scene, fight, tuning } = frame;
         let Some(hot) = &mut self.hot else { return };
         // Reloads land frames after their pack changed, so they are told of as they come: the
         // moment an edit shows.
@@ -244,7 +244,7 @@ impl Reload {
                 renderer: &mut *renderer,
                 gpu,
                 scene: &mut *scene,
-                combat: combat.as_deref_mut(),
+                fight: &mut *fight,
                 tuning: &mut *tuning,
             };
             match document.apply(origin, &text, frame) {

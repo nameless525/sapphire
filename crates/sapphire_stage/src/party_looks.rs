@@ -25,6 +25,8 @@ use sapphire_gameplay::{PARTY_SLOTS, Party};
 use sapphire_render::texture::GpuTexture;
 use sapphire_render::{MaterialHandle, MeshHandle, Renderer};
 
+use crate::content::UploadWatcher;
+
 /// The looks beyond the character's own.
 const LOOKS: usize = PARTY_SLOTS - 1;
 
@@ -87,19 +89,19 @@ struct Look {
 
 /// The looks' copies on one renderer. `crate::content` shows it what it uploads.
 #[derive(Default)]
-pub(crate) struct PartyLooks {
+pub struct PartyLooks {
     looks: [Look; LOOKS],
 }
 
-impl PartyLooks {
+impl UploadWatcher for PartyLooks {
     /// A material the renderer has just taken: each look recoloring it makes its copy, or, if it's a new
     /// version (hot reload), replaces it.
-    pub(crate) fn take_material<'t>(
+    fn take_material<'t>(
         &mut self,
         id: AssetId,
         generation: u32,
         material: &ArchivedMaterial,
-        textures: impl Fn(AssetId) -> Option<&'t GpuTexture> + Copy,
+        textures: &dyn Fn(AssetId) -> Option<&'t GpuTexture>,
         renderer: &mut Renderer,
     ) -> Result<(), UploadError> {
         for (look, tint) in self.looks.iter_mut().zip(&TINTS) {
@@ -128,11 +130,11 @@ impl PartyLooks {
 
     /// The character's mesh, which the renderer has just taken, with its materials through `materials`
     /// (the server uploads dependencies first): each look makes its copy, or replaces it.
-    pub(crate) fn take_character(
+    fn take_character(
         &mut self,
         generation: u32,
         mesh: &ArchivedMesh,
-        materials: impl Fn(AssetId) -> Option<MaterialHandle> + Copy,
+        materials: &dyn Fn(AssetId) -> Option<MaterialHandle>,
         renderer: &mut Renderer,
     ) -> Result<(), UploadError> {
         for look in &mut self.looks {
@@ -150,8 +152,15 @@ impl PartyLooks {
         Ok(())
     }
 
+    /// A new renderer holds none of the looks' copies, and they come again as it uploads.
+    fn for_new_renderer(&self) -> Box<dyn UploadWatcher> {
+        Box::new(Self::default())
+    }
+}
+
+impl PartyLooks {
     /// Each member's mesh, the first being `character`'s, once the character has loaded.
-    pub(crate) fn meshes(&self, character: MeshHandle) -> Option<[MeshHandle; PARTY_SLOTS]> {
+    pub fn meshes(&self, character: MeshHandle) -> Option<[MeshHandle; PARTY_SLOTS]> {
         let [second, third] = &self.looks;
         Some([character, second.mesh?.1, third.mesh?.1])
     }

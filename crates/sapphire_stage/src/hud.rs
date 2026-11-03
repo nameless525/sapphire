@@ -20,7 +20,7 @@
 
 use std::time::Duration;
 
-use sapphire_gameplay::{CueEvent, DEFEATED, HitCue, POISE_BROKEN};
+use sapphire_gameplay::{CueEvent, DEFEATED, HitCue, POISE_BROKEN, Simulation};
 use sapphire_math::{Mat4, Vec2, Vec3};
 use sapphire_moves::Weight;
 use sapphire_platform::{Event, FingerId, Timestamp, TouchDeviceId, TouchPhase, Window};
@@ -31,6 +31,11 @@ use sapphire_ui::{
 };
 
 use crate::LOG_TARGET;
+use crate::content::Content;
+use crate::fight::{Fight, Followed};
+use crate::frame::FrameLaps;
+use crate::scene::Scene;
+use crate::show::{ContentChanges, SceneShow};
 
 /// How the HUD runs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -187,24 +192,24 @@ impl SandboxHud {
     }
 
     /// Whether the frame says the fight is waiting.
-    pub(crate) fn show_pause(&mut self, shown: bool) {
+    pub fn show_pause(&mut self, shown: bool) {
         self.hud.show_pause(shown);
     }
 
     /// A platform event: whether the touch zones took it, which the rest of the input then never
     /// sees. Only live mode takes touches.
-    pub(crate) fn handle_event(&mut self, event: &Event) -> bool {
+    pub fn handle_event(&mut self, event: &Event) -> bool {
         self.options.mode == HudMode::Live && self.controls.handle_event(event)
     }
 
     /// Whether this finger holds the stick or a button.
     #[cfg(feature = "dev")]
-    pub(crate) fn holds_control(&self, finger: FingerId) -> bool {
+    pub fn holds_control(&self, finger: FingerId) -> bool {
         self.options.mode == HudMode::Live && self.controls.holds_control(finger)
     }
 
     /// `window`'s metrics, as this HUD draws on it.
-    pub(crate) fn metrics_of(&self, window: &Window) -> UiMetrics {
+    pub fn metrics_of(&self, window: &Window) -> UiMetrics {
         let mut metrics = UiMetrics::of_window(window, self.options.scale);
         if let Some(insets) = self.options.insets {
             metrics.insets = insets;
@@ -216,7 +221,7 @@ impl SandboxHud {
     /// finger brings them back, and a desktop shows them only once a finger has landed. A pad merely
     /// connected changes nothing: the iOS simulator reports one nobody holds, and with no controls and
     /// no pad there'd be no way to play. Nothing that doesn't ask has them hidden.
-    pub(crate) fn follow_devices(&mut self, desktop: bool, pad_in_hands: bool) {
+    pub fn follow_devices(&mut self, desktop: bool, pad_in_hands: bool) {
         let touching = self.controls.fingers() > 0;
         self.touched |= touching;
         self.hud.show_controls(touching || (!pad_in_hands && (!desktop || self.touched)));
@@ -225,7 +230,7 @@ impl SandboxHud {
     /// Live mode's frame on the real clock, before the frame's input is judged: the window's metrics,
     /// the touch zones and the stand-in. Returns what the zones read, which that input takes; a fixed
     /// frame has none, since its touches are made up.
-    pub(crate) fn update(&mut self, now: Timestamp, metrics: UiMetrics) -> Option<&TouchActions> {
+    pub fn update(&mut self, now: Timestamp, metrics: UiMetrics) -> Option<&TouchActions> {
         self.window_metrics = Some(metrics);
         if self.options.mode != HudMode::Live {
             return None;
@@ -278,7 +283,7 @@ impl SandboxHud {
     }
 
     /// Whatever else the frame needs, then this frame's HUD into `list`.
-    pub(crate) fn draw(&mut self, target: (u32, u32), list: &mut UiDrawList) {
+    pub fn draw(&mut self, target: (u32, u32), list: &mut UiDrawList) {
         let stopwatch = Stopwatch::start();
         let metrics = self.window_metrics.unwrap_or_else(|| {
             let insets = self.options.insets.unwrap_or_default();
@@ -447,6 +452,101 @@ fn wrapped(value: f32) -> f32 {
     if value <= 0.0 { 1.0 } else { value }
 }
 
+/// A fight with its HUD over it, as one show. With no HUD, it's the fight.
+#[derive(Default)]
+pub struct ShownFight {
+    pub fight: Fight,
+    /// The combat HUD over the scene (`--hud`, M2 I2).
+    pub hud: Option<SandboxHud>,
+}
+
+impl ShownFight {
+    /// Tells the HUD what a step of the fight did.
+    pub fn hear(&mut self, followed: Followed) {
+        let Some(hud) = &mut self.hud else { return };
+        hud.fighters_came_in(followed.came_in);
+        if followed.started_over {
+            hud.start_over();
+        }
+    }
+
+    /// The hits the latest step landed, as the HUD's numbers, once: a run that's stopped takes no more
+    /// steps, and its last one's cues stand.
+    pub fn show_damage(&mut self, scene: &Scene) {
+        let (Some(hud), Some(combat)) = (&mut self.hud, &self.fight.combat) else { return };
+        show_damage(hud, scene, combat.simulation());
+    }
+}
+
+/// Shows the hits `sim`'s latest step landed, once however often it's read.
+pub fn show_damage(hud: &mut SandboxHud, scene: &Scene, sim: &Simulation) {
+    if !hud.reads_hits_of(sim.tick()) {
+        return;
+    }
+    let camera = scene.camera().camera_data(scene.view_aspect());
+    let view_projection = camera.proj * camera.view;
+    for cue in sim.cues() {
+        let Some(hit) = landed(&cue) else { continue };
+        hud.show_hit(hit.damage, hit.point, hit.weight, view_projection);
+        // So a run on a device can be read from its log, as the HUD's buttons are.
+        tracing::info!(
+            target: LOG_TARGET,
+            tick = cue.tick,
+            attacker = ?cue.actor,
+            target_actor = ?hit.target,
+            damage = hit.damage,
+            outcome = ?hit.outcome,
+            "hit landed"
+        );
+    }
+}
+
+impl SceneShow for ShownFight {
+    fn declare_pipelines(&self, inventory: &mut sapphire_render::PipelineInventory) {
+        self.fight.declare_pipelines(inventory);
+        inventory.ui |= self.hud.is_some();
+    }
+
+    fn step(&mut self, scene: &mut Scene, laps: &mut FrameLaps) {
+        let followed = self.fight.step_alone(scene, laps);
+        self.hear(followed);
+    }
+
+    fn end_steps(&mut self, scene: &mut Scene, dt: f32) {
+        self.fight.end_steps(scene, dt);
+    }
+
+    fn follow_content(&mut self, scene: &mut Scene, content: &mut Content, changes: ContentChanges) {
+        self.fight.follow_content(scene, content, changes);
+    }
+
+    fn animate(&mut self, scene: &mut Scene, content: &Content, alpha: f32) {
+        self.fight.animate(scene, content, alpha);
+    }
+
+    fn present(&mut self, scene: &mut Scene, alpha: f32, aspect: Option<f32>) {
+        self.fight.present(scene, alpha, aspect);
+    }
+
+    fn write_effects(&mut self, frame: &mut sapphire_render::VfxFrame, alpha: f32) {
+        self.fight.write_effects(frame, alpha);
+    }
+
+    fn draw_interface(&mut self, size: (u32, u32), list: &mut UiDrawList) {
+        let Some(hud) = &mut self.hud else { return };
+        if let Some((values, time)) = self.fight.show.hud_values() {
+            hud.show_fight(values, time);
+        }
+        hud.draw(size, list);
+    }
+
+    fn draw_debug(&mut self) {
+        self.fight.draw_debug();
+    }
+}
+
+#[cfg(test)]
+mod fight_tests;
 #[cfg(test)]
 mod tests {
     use super::*;

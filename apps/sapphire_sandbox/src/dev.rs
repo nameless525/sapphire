@@ -35,9 +35,10 @@ use crate::shader_edits::ShaderEdits;
 use crate::stats::Stages;
 use sapphire_stage::combat::{Combat, SessionRecorder};
 use sapphire_stage::content::Content;
+use sapphire_stage::fight::Fight;
 use sapphire_stage::input::SandboxInput;
 use sapphire_stage::scene::Scene;
-use sapphire_stage::tuning::{DocumentFrame, Fight, LiveTuning};
+use sapphire_stage::tuning::{DocumentFrame, LiveFight, LiveTuning};
 
 pub(crate) struct DevTools {
     overlay: DebugOverlay,
@@ -163,21 +164,21 @@ impl DevTools {
         renderer: &mut Renderer,
         gpu: &GpuContext,
         scene: &mut Scene,
-        mut combat: Option<&mut Combat>,
+        fight: &mut Fight,
     ) {
         let mut answered = self.shaders.answer(renderer);
         self.reload.shaders_answered(&mut answered);
         self.link.shaders_refused(&mut answered.link_errors);
         // Taken once for both: hot reload lists failed reloads, live link answers pushes with them.
         let changes = content.take_changes();
-        let fight = Fight { combat: combat.as_deref_mut(), scene: &mut *scene };
-        let pack_errors = self.tuning.follow_packs(&changes, content, fight);
+        let live = LiveFight { combat: fight.combat.as_mut(), scene: &mut *scene };
+        let pack_errors = self.tuning.follow_packs(&changes, content, live);
         let frame = DocumentFrame {
             content: &mut *content,
             renderer: &mut *renderer,
             gpu,
             scene: &mut *scene,
-            combat: combat.as_deref_mut(),
+            fight: &mut *fight,
             tuning: &mut self.tuning,
         };
         self.reload.update(&changes, frame, &mut self.shaders);
@@ -189,7 +190,7 @@ impl DevTools {
             renderer,
             gpu,
             scene,
-            combat,
+            fight,
             tuning: &mut self.tuning,
             cvars: &self.cvars,
             shaders: &mut self.shaders,

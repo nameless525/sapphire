@@ -18,7 +18,7 @@
 //!   older than the newest save leaves the save playing, as with moves.
 //! - **The cue table** (`default_cues.ron`, M2 E3): what fires a fight's cues takes it if every name it holds
 //!   is there and every sound it plays was loaded as the app started. Camera tuning can move a shake's ID, so
-//!   a new tuning resolves the table's shakes again ([`Scene::set_camera_tuning`]) and is refused if one has
+//!   a new tuning resolves the table's shakes again (`FightShow::set_camera_tuning`) and is refused if one has
 //!   gone. **Colliders aren't tuned**, and a running fight never changes under its feet.
 //! - **The effects** (`default_effects.ron`): what a fight's cues and sword trails play takes them if the cue
 //!   table still finds its names. What's playing ends, and a trail starts again at the next cut.
@@ -63,7 +63,8 @@ use sapphire_world::tod::TodTimeline;
 use crate::LOG_TARGET;
 use crate::anim_graph::SHOW_MOVES_PATH;
 use crate::combat::Combat;
-use crate::content::{Content, GraphOwner};
+use crate::content::{Content, GraphKey, newest_text};
+use crate::fight::{ENEMY_GRAPH, Fight, FightShow};
 use crate::scene::Scene;
 
 /// A document the sandbox swaps in while it runs, from hot reload or live link.
@@ -104,7 +105,7 @@ pub struct DocumentFrame<'a> {
     pub renderer: &'a mut Renderer,
     pub gpu: &'a GpuContext,
     pub scene: &'a mut Scene,
-    pub combat: Option<&'a mut Combat>,
+    pub fight: &'a mut Fight,
     pub tuning: &'a mut LiveTuning,
 }
 
@@ -159,7 +160,7 @@ impl Document {
     /// prewarm their post variants, which the overlay may fire. A fight's documents go through
     /// [`LiveTuning`].
     pub fn apply(self, origin: &str, text: &str, frame: DocumentFrame<'_>) -> Result<String, String> {
-        let DocumentFrame { content, renderer, gpu, scene, combat, tuning } = frame;
+        let DocumentFrame { content, renderer, gpu, scene, fight, tuning } = frame;
         match self {
             Self::Day => {
                 let timeline = TodTimeline::from_ron(text).map_err(|error| error_chain(&error))?;
@@ -172,18 +173,21 @@ impl Document {
             }
             Self::ScreenEffects => {
                 let effects = EffectLibrary::from_ron(text).map_err(|error| error_chain(&error))?;
-                scene.set_effect_library(effects)?;
+                fight.show.set_effect_library(scene, effects)?;
                 renderer.prewarm_post(scene.effect_variants());
                 Ok(self.name().to_owned())
             }
-            Self::Cues => tuning.cue_document(text, scene, renderer),
-            Self::Effects => tuning.effects_document(text, scene),
+            Self::Cues => tuning.cue_document(text, &mut fight.show, scene, renderer),
+            Self::Effects => tuning.effects_document(text, &mut fight.show, scene),
             Self::Moves => {
                 let cooked = tuning.cooked_set(origin, content);
-                tuning.moves_document(origin, text, cooked.as_ref(), Fight { combat, scene })
+                let combat = fight.combat.as_mut();
+                tuning.moves_document(origin, text, cooked.as_ref(), LiveFight { combat, scene })
             }
-            Self::Camera => tuning.camera_document(text, scene),
-            Self::Graph => tuning.graph_document(origin, text, content, scene, renderer, gpu),
+            Self::Camera => tuning.camera_document(text, &mut fight.show, scene),
+            Self::Graph => {
+                tuning.graph_document(origin, text, content, &mut fight.show, scene, renderer, gpu)
+            }
         }
     }
 }
@@ -224,8 +228,8 @@ const COOKED_MOVES: [(&str, AssetId); 3] = [
     ("warrior.moves.ron", AssetId::from_text("c50887be-5ce3-498a-9f28-255e7e372b32")),
 ];
 
-/// What a live edit reaches: the fight in the app, wherever it runs. The sandbox has two kinds, for now.
-pub struct Fight<'a> {
+/// What a live edit of a move set reaches: the fight in the app, and the graph show on the scene.
+pub struct LiveFight<'a> {
     pub combat: Option<&'a mut Combat>,
     pub scene: &'a mut Scene,
 }
@@ -396,7 +400,7 @@ impl LiveTuning {
         origin: &str,
         text: &str,
         cooked: Option<&MoveSet>,
-        fight: Fight<'_>,
+        fight: LiveFight<'_>,
     ) -> Result<String, String> {
         let document = document_file_name(origin);
         self.check_takes(document)?;
@@ -412,9 +416,9 @@ impl LiveTuning {
 
     /// Gives every simulation that plays `document` its new set. Nothing unknown gets as far as a set, so a
     /// misnamed file can't replace another's. A replay refuses before anything changes.
-    fn take_moves(&mut self, document: &str, set: MoveSet, fight: Fight<'_>) -> Result<String, String> {
+    fn take_moves(&mut self, document: &str, set: MoveSet, fight: LiveFight<'_>) -> Result<String, String> {
         self.check_takes(document)?;
-        let Fight { combat, scene } = fight;
+        let LiveFight { combat, scene } = fight;
         let mut played = None;
         let mut moved_by = None;
         let mut tick = 0;
@@ -495,11 +499,12 @@ impl LiveTuning {
     pub(crate) fn cue_document(
         &mut self,
         text: &str,
+        show: &mut FightShow,
         scene: &mut Scene,
         renderer: &mut Renderer,
     ) -> Result<String, String> {
         let table = CueTable::from_ron(text).map_err(|error| error_chain(&error))?;
-        scene.set_cue_table(table)?;
+        show.set_cue_table(scene, table)?;
         renderer.prewarm_post(scene.effect_variants());
         self.count_edit(document_file_name(CUES_PATH));
         Ok(Document::Cues.name().to_owned())
@@ -507,17 +512,27 @@ impl LiveTuning {
 
     /// Takes edited effects, for what a fight's cues and sword trails play. Says why not if the cue table
     /// names one that's gone, keeping what plays.
-    pub(crate) fn effects_document(&mut self, text: &str, scene: &mut Scene) -> Result<String, String> {
+    pub(crate) fn effects_document(
+        &mut self,
+        text: &str,
+        show: &mut FightShow,
+        scene: &mut Scene,
+    ) -> Result<String, String> {
         let effects = sapphire_vfx::EffectLibrary::from_ron(text).map_err(|error| error_chain(&error))?;
-        scene.set_vfx_effects(effects)?;
+        show.set_vfx_effects(scene, effects)?;
         self.count_edit(document_file_name(EFFECTS_PATH));
         Ok(Document::Effects.name().to_owned())
     }
 
     /// Takes an edited camera tuning, for the director and for what fires a fight's cues.
-    pub(crate) fn camera_document(&mut self, text: &str, scene: &mut Scene) -> Result<String, String> {
+    pub(crate) fn camera_document(
+        &mut self,
+        text: &str,
+        show: &mut FightShow,
+        scene: &mut Scene,
+    ) -> Result<String, String> {
         let tuning = CameraTuning::from_ron(text).map_err(|error| error_chain(&error))?;
-        scene.set_camera_tuning(tuning)?;
+        show.set_camera_tuning(scene, tuning)?;
         self.count_edit(document_file_name(CAMERA_PATH));
         Ok("camera's tuning".to_owned())
     }
@@ -529,6 +544,7 @@ impl LiveTuning {
         origin: &str,
         text: &str,
         content: &mut Content,
+        show: &mut FightShow,
         scene: &mut Scene,
         renderer: &mut Renderer,
         gpu: &GpuContext,
@@ -536,13 +552,9 @@ impl LiveTuning {
         let (owner, path) = graph_of(origin)?;
         let mut graph = AnimGraph::from_document(text).map_err(|error| error_chain(&error))?;
         graph.resolve(clip_id);
-        scene.replace_graph_document(owner, graph, content, renderer, gpu)?;
+        show.replace_graph_document(scene, owner, graph, content, renderer, gpu)?;
         self.count_edit(document_file_name(path));
-        let whose = match owner {
-            GraphOwner::Character => "character",
-            GraphOwner::Enemy => "enemy",
-        };
-        Ok(format!("{whose}'s animation graph, from the next state's start"))
+        Ok(format!("{}'s animation graph, from the next state's start", owner.0))
     }
 
     /// Takes the new versions of cooked sets among the asset server's `changes`, and returns what went
@@ -551,7 +563,7 @@ impl LiveTuning {
         &mut self,
         changes: &[AssetChange],
         content: &Content,
-        mut fight: Fight<'_>,
+        mut fight: LiveFight<'_>,
     ) -> Vec<String> {
         let mut errors = Vec::new();
         for change in changes {
@@ -559,7 +571,7 @@ impl LiveTuning {
             let Some(cooked) = self.cooked.iter().find(|cooked| cooked.handle.id() == *id) else { continue };
             let document = cooked.document;
             let Some(set) = content.move_set(&cooked.handle) else { continue };
-            let fight = Fight { combat: fight.combat.as_deref_mut(), scene: &mut *fight.scene };
+            let fight = LiveFight { combat: fight.combat.as_deref_mut(), scene: &mut *fight.scene };
             let taken = set
                 .to_owned_set()
                 .map_err(|error| error_chain(&error))
@@ -706,18 +718,11 @@ pub fn attempts(sim: &Simulation, cast: &[ActorId]) -> Vec<MoveAttempt> {
         .collect()
 }
 
-/// A document's kind from its file's name, for a path hot reload is told to watch.
-/// The text of the last modified of `files`, if one reads.
-pub(crate) fn newest_text<'a>(files: impl Iterator<Item = &'a PathBuf>) -> Option<String> {
-    let modified = |path: &&PathBuf| std::fs::metadata(path).and_then(|file| file.modified()).ok();
-    std::fs::read_to_string(files.max_by_key(modified)?).ok()
-}
-
 /// Whose graph a document with this name is, and its path, or why it reaches nothing here: an edit can
 /// replace a fighter's graph, and any other would bind to the wrong character or fail for its clips.
-fn graph_of(origin: &str) -> Result<(GraphOwner, &'static str), String> {
+fn graph_of(origin: &str) -> Result<(GraphKey, &'static str), String> {
     let document = document_file_name(origin);
-    let graphs = [(GraphOwner::Character, GRAPH_PATH), (GraphOwner::Enemy, ENEMY_GRAPH_PATH)];
+    let graphs = [(GraphKey::CHARACTER, GRAPH_PATH), (ENEMY_GRAPH, ENEMY_GRAPH_PATH)];
     graphs.into_iter().find(|(_, path)| document == document_file_name(path)).ok_or_else(|| {
         let (character, enemy) = (document_file_name(GRAPH_PATH), document_file_name(ENEMY_GRAPH_PATH));
         format!("only `{character}` and `{enemy}` take edits, and a cook brings any other graph")
@@ -835,7 +840,7 @@ mod tests {
         let mut scene = scene();
         let mut tuning = tuning();
         let mut take = |tuning: &mut LiveTuning, combat: &mut Combat, name: &str, text: &str| {
-            tuning.moves_document(name, text, None, Fight { combat: Some(combat), scene: &mut scene })
+            tuning.moves_document(name, text, None, LiveFight { combat: Some(combat), scene: &mut scene })
         };
 
         let reply = take(&mut tuning, &mut combat, SLICE_FILE, &slower_text()).expect("a good document");
@@ -888,7 +893,12 @@ mod tests {
         let mut scene = scene();
         let mut tuning = tuning();
         let mut take = |tuning: &mut LiveTuning, combat: &mut Combat, text: &str| {
-            tuning.moves_document(SLICE_FILE, text, None, Fight { combat: Some(combat), scene: &mut scene })
+            tuning.moves_document(
+                SLICE_FILE,
+                text,
+                None,
+                LiveFight { combat: Some(combat), scene: &mut scene },
+            )
         };
         let with =
             |numbers: &str| SLICE.replacen("fighter: (", &format!("fighter: (\nmovement: ({numbers}),"), 1);
@@ -937,7 +947,7 @@ mod tests {
                 SLICE_FILE,
                 &slower_text(),
                 None,
-                Fight { combat: Some(&mut replay), scene: &mut scene },
+                LiveFight { combat: Some(&mut replay), scene: &mut scene },
             )
             .expect_err("it plays what it recorded");
         assert!(error.contains("replay"), "{error}");
@@ -981,7 +991,12 @@ mod tests {
         let mut scene = scene();
         let mut tuning = tuning();
         let error = tuning
-            .moves_document(SLICE_FILE, &text, None, Fight { combat: Some(&mut combat), scene: &mut scene })
+            .moves_document(
+                SLICE_FILE,
+                &text,
+                None,
+                LiveFight { combat: Some(&mut combat), scene: &mut scene },
+            )
             .expect_err("nothing to read its motion from");
         assert!(error.contains("only a cook"), "{error}");
 
@@ -990,7 +1005,7 @@ mod tests {
                 SLICE_FILE,
                 &text,
                 Some(&cooked),
-                Fight { combat: Some(&mut combat), scene: &mut scene },
+                LiveFight { combat: Some(&mut combat), scene: &mut scene },
             )
             .expect("no cook needed");
         assert!(reply.contains("as revision 1") && reply.contains("as last cooked"), "{reply}");
@@ -999,7 +1014,12 @@ mod tests {
 
         // A later edit reads the last, with no cook handed over.
         let reply = tuning
-            .moves_document(SLICE_FILE, &text, None, Fight { combat: Some(&mut combat), scene: &mut scene })
+            .moves_document(
+                SLICE_FILE,
+                &text,
+                None,
+                LiveFight { combat: Some(&mut combat), scene: &mut scene },
+            )
             .expect("it has the tables now");
         assert!(reply.contains("still revision 1"), "{reply}");
     }
@@ -1020,7 +1040,7 @@ mod tests {
                 SLICE_FILE,
                 &slower_text(),
                 None,
-                Fight { combat: Some(&mut combat), scene: &mut scene },
+                LiveFight { combat: Some(&mut combat), scene: &mut scene },
             )
             .expect("a good document");
         for _ in 0..20 {
@@ -1041,7 +1061,7 @@ mod tests {
         let mut scene = scene();
         let mut tuning = tuning();
         let reply = tuning
-            .moves_document(SLICE_FILE, &slower_text(), None, Fight { combat: None, scene: &mut scene })
+            .moves_document(SLICE_FILE, &slower_text(), None, LiveFight { combat: None, scene: &mut scene })
             .expect("a good document");
         assert!(reply.contains("next fight"), "{reply}");
         let dir = std::env::temp_dir().join(format!("sapphire-tuning-{}-next", std::process::id()));
@@ -1216,8 +1236,8 @@ mod tests {
         assert_eq!(graphs(TunedRun { arena_fight: true, ..QUIET }), [GRAPH_PATH, ENEMY_GRAPH_PATH]);
         assert_eq!(graphs(TunedRun { graph_show: true, ..QUIET }), [GRAPH_PATH]);
         assert_eq!(graphs(QUIET), Vec::<String>::new());
-        assert_eq!(graph_of("x/character.animgraph.ron").map(|(owner, _)| owner), Ok(GraphOwner::Character));
-        assert_eq!(graph_of("warrior.animgraph.ron").map(|(owner, _)| owner), Ok(GraphOwner::Enemy));
+        assert_eq!(graph_of("x/character.animgraph.ron").map(|(owner, _)| owner), Ok(GraphKey::CHARACTER));
+        assert_eq!(graph_of("warrior.animgraph.ron").map(|(owner, _)| owner), Ok(ENEMY_GRAPH));
         let refused = graph_of("slime.animgraph.ron").expect_err("nobody plays it");
         assert!(refused.contains("warrior.animgraph.ron"), "{refused}");
     }

@@ -54,6 +54,7 @@ use crate::shader_edits::{Origin, ShaderEdits};
 use sapphire_stage::Readback;
 use sapphire_stage::combat::Combat;
 use sapphire_stage::content::Content;
+use sapphire_stage::fight::Fight;
 use sapphire_stage::scene::Scene;
 use sapphire_stage::tuning::{Document, DocumentFrame, LiveTuning, attempts, error_chain};
 
@@ -88,7 +89,7 @@ pub(crate) struct LinkFrame<'a> {
     pub renderer: &'a mut Renderer,
     pub gpu: &'a GpuContext,
     pub scene: &'a mut Scene,
-    pub combat: Option<&'a mut Combat>,
+    pub fight: &'a mut Fight,
     pub tuning: &'a mut LiveTuning,
     pub cvars: &'a CvarRegistry,
     pub shaders: &'a mut ShaderEdits,
@@ -162,7 +163,7 @@ impl Link {
             renderer,
             gpu,
             scene,
-            mut combat,
+            fight,
             tuning,
             cvars,
             shaders: edits,
@@ -192,7 +193,7 @@ impl Link {
                             .map(|(name, len)| PushedPackStatus { name, len })
                             .collect(),
                         documents: tuning.documents(),
-                        attempts: fight_attempts(combat.as_deref(), scene),
+                        attempts: fight_attempts(fight.combat.as_ref(), scene),
                     }));
                 }
                 Push::Cvar { name, value, reply } => match set_cvar(cvars, &name, &value) {
@@ -216,7 +217,7 @@ impl Link {
                         renderer: &mut *renderer,
                         gpu,
                         scene: &mut *scene,
-                        combat: combat.as_deref_mut(),
+                        fight: &mut *fight,
                         tuning: &mut *tuning,
                     };
                     match document.apply(&origin, &text, frame) {

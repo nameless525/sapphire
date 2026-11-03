@@ -20,9 +20,12 @@ use crate::options::{OffscreenMode, Options};
 #[cfg(feature = "dev")]
 use crate::stats::Stages;
 use sapphire_stage::combat::Combat;
+use sapphire_stage::fight::{Arena, Fight, FightShow};
+use sapphire_stage::hud::ShownFight;
+use sapphire_stage::party_looks::PartyLooks;
+use sapphire_stage::scene::LookDev;
 #[cfg(feature = "dev")]
 use sapphire_stage::scene::Scene;
-use sapphire_stage::scene::{Arena, LookDev};
 #[cfg(feature = "dev")]
 use sapphire_stage::{FRAME, FrameHooks, LoadingFrame, ToolFrame};
 use sapphire_stage::{StageDesc, headless_gpu};
@@ -32,10 +35,10 @@ pub(crate) const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSr
 
 /// The GPU, renderer and scene an offscreen mode draws with, under the debug overlay in `dev` builds.
 #[cfg(feature = "dev")]
-pub(crate) type Stage = sapphire_stage::Stage<StageTools>;
+pub(crate) type Stage = sapphire_stage::Stage<ShownFight, StageTools>;
 /// The GPU, renderer and scene an offscreen mode draws with.
 #[cfg(not(feature = "dev"))]
-pub(crate) type Stage = sapphire_stage::Stage;
+pub(crate) type Stage = sapphire_stage::Stage<ShownFight>;
 
 /// The offscreen "app". A capture or bench does all its work in `init`, and the first frame
 /// exits; `--offscreen` draws a frame each iteration until the process is told to quit.
@@ -71,7 +74,7 @@ impl App for OffscreenApp {
                     _ => *ticks,
                 };
                 let mut stage = stage(platform, &options)?;
-                stage.combat = combat;
+                stage.show.fight.combat = combat;
                 crate::capture::run(&mut stage, path, ticks, *frames, width, height)?;
             }
             OffscreenMode::Bench { frames } => {
@@ -86,8 +89,8 @@ impl App for OffscreenApp {
             #[cfg(feature = "dev")]
             OffscreenMode::Serve => {
                 let mut stage = stage(platform, &options)?;
-                stage.combat = combat;
-                if let Some(combat) = &mut stage.combat {
+                stage.show.fight.combat = combat;
+                if let Some(combat) = &mut stage.show.fight.combat {
                     stage.hooks.dev.start_fight_from_cooks(combat, &stage.content);
                 }
                 let serving = crate::serve::Serving::new(stage, options.clone(), width, height)?;
@@ -147,18 +150,22 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
     desc.character = options.character();
     desc.sky = options.sky();
     desc.keep_character_mesh = options.keeps_character_mesh();
-    desc.party_looks = options.party;
+    if options.party {
+        desc.uploads = Some(Box::<PartyLooks>::default());
+    }
     desc.material_overrides = options.material_overrides();
     desc.skinned = options.skinned;
     desc.prewarm_packs =
         options.offscreen.as_ref().is_some_and(|run| matches!(run.mode, OffscreenMode::Bench { .. }));
     desc.inventory_without = options.inventory_without.clone();
     let history_only_capture = history_only_capture_allowed(options, desc.settings);
-    let mut stage = sapphire_stage::Stage::new(platform, instance, gpu, desc)?;
+    let mut stage =
+        sapphire_stage::Stage::new(platform, instance, gpu, desc)?.with_show(ShownFight::default());
     stage.history_only_capture = history_only_capture;
     stage.graph.set_serial(options.serial_passes);
     let character = stage.character;
-    let sapphire_stage::Stage { scene, content, renderer, gpu, quality, .. } = &mut stage;
+    let sapphire_stage::Stage { scene, content, renderer, gpu, quality, show, .. } = &mut stage;
+    let ShownFight { fight: Fight { show: fight, .. }, hud: shown_hud } = &mut *show;
     if let Some(rig) = &options.character_rig {
         scene.set_character_rig(rig).map_err(AppInitError::msg)?;
     }
@@ -237,21 +244,23 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
             scene.set_spring_quality(sapphire_stage::animate::spring_quality(quality.active().id));
         }
         if shot == sapphire_stage::lookdev::Shot::Enemy {
-            let meshes = content.enemy(renderer, gpu)?;
-            scene.spawn_enemy(meshes, content.held_enemy()?);
+            let meshes = fight.load_enemy(content, renderer, gpu)?;
+            let held = fight.held_enemy(content)?;
+            fight.spawn_enemy(scene, meshes, held);
         }
     }
     if let Some(shot) = options.arena {
         let town = content.town(renderer, gpu)?;
         let fog_cards = (!options.fog_off).then(|| content.fog_cards(renderer, gpu)).transpose()?;
         let (pose, figure) = sapphire_stage::lookdev::hold(content, renderer, gpu)?;
-        let ground = content.arena_ground(renderer, gpu)?;
+        let ground = fight.load_arena_ground(content, renderer, gpu)?;
         let world = ground.share();
         let look = LookDev { town, fog_cards, pose, figure };
-        let enemy = content.enemy(renderer, gpu)?;
-        scene.spawn_arena(Arena { shot, look, ground, enemy, held: content.held_enemy()? });
-        if let Some(meshes) = content.party_meshes(character) {
-            scene.set_party_meshes(meshes);
+        let enemy = fight.load_enemy(content, renderer, gpu)?;
+        let held = fight.held_enemy(content)?;
+        fight.spawn_arena(scene, Arena { shot, look, ground, enemy, held });
+        if let Some(meshes) = FightShow::party_meshes(content, character) {
+            fight.set_party_meshes(scene, meshes);
         }
         if let Some(clip) = options.clip {
             content.load_clip(clip.id(), renderer, gpu)?;
@@ -270,21 +279,23 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
         }
         if options.combat.is_some() {
             content.load_graph(sapphire_stage::lookdev::GRAPH, renderer, gpu)?;
-            content.load_enemy_graph(renderer, gpu)?;
+            fight.load_enemy_graph(content, renderer, gpu)?;
             let player = sapphire_stage::lookdev::graph_driver(content).map_err(AppInitError::msg)?;
             let solver =
                 scene.ik_on(world.clone(), None, content, player.player.pose()).map_err(AppInitError::msg)?;
-            scene.play_fighters(
+            let enemy = fight.enemy_driver(content, world)?;
+            fight.play_fighters(
+                scene,
                 player.with_springs_on(options.springs != Some(false)).with_ik(solver),
-                content.enemy_driver(world)?,
+                enemy,
             );
             scene.set_spring_quality(sapphire_stage::animate::spring_quality(quality.active().id));
         }
     }
     if options.blade() {
-        let sword = content.sword(renderer, gpu)?;
+        let sword = fight.load_sword(content, renderer, gpu)?;
         let hand = sapphire_stage::lookdev::held_hand(content).map_err(AppInitError::msg)?;
-        scene.spawn_blade(sword, hand);
+        fight.spawn_blade(scene, sword, hand);
     }
     // The day, the sky options, the starting view and the turntable's speed, last so `--view`
     // holds whatever framing the scene chose.
@@ -293,7 +304,9 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
         scene.play_vfx(show, sapphire_stage::vfx::budget(quality.active().id));
     }
     if options.cues {
-        scene.play_cues(sapphire_stage::vfx::budget(quality.active().id)).map_err(AppInitError::msg)?;
+        fight
+            .play_cues(scene, sapphire_stage::vfx::budget(quality.active().id))
+            .map_err(AppInitError::msg)?;
     }
     // The stage after the hour, which places its pillars.
     if let Some(layout) = options.stage {
@@ -302,14 +315,14 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
     // Offscreen there are no touches: the HUD is its fixed frame, in either mode, unless it's
     // live and a fight's bars stand behind it.
     if let Some(hud) = options.hud {
-        let fight = options.arena.is_some() && options.combat.is_some();
-        let mode = if fight { hud.mode } else { sapphire_stage::hud::HudMode::Fixed };
+        let fighting = options.arena.is_some() && options.combat.is_some();
+        let mode = if fighting { hud.mode } else { sapphire_stage::hud::HudMode::Fixed };
         let hud = sapphire_stage::hud::HudOptions { mode, ..hud };
-        scene.set_hud(sapphire_stage::hud::SandboxHud::new(hud));
+        *shown_hud = Some(sapphire_stage::hud::SandboxHud::new(hud));
     }
     // The screen effects it may push, `--post-effect`'s among them, the effects it plays, its sky and
     // its HUD show on their first frame.
-    let mut declared = scene.declared_pipelines();
+    let mut declared = scene.declared_pipelines(&*show);
     if let Some(entry) = &options.inventory_without {
         declared.remove(entry);
     }
@@ -333,39 +346,29 @@ pub(crate) struct StageTools {
 }
 
 #[cfg(feature = "dev")]
-impl FrameHooks for StageTools {
+impl FrameHooks<ShownFight> for StageTools {
     const TOOLS: bool = true;
 
     fn before_fixed_step(&mut self, scene: &mut Scene) {
         self.dev.before_fixed_step(scene);
     }
 
-    fn before_loading(&mut self, frame: LoadingFrame<'_>) {
-        let LoadingFrame { content, renderer, gpu, scene, combat } = frame;
-        self.dev.reload(content, renderer, gpu, scene, combat);
+    fn before_loading(&mut self, frame: LoadingFrame<'_, ShownFight>) {
+        let LoadingFrame { content, renderer, gpu, scene, show } = frame;
+        self.dev.reload(content, renderer, gpu, scene, &mut show.fight);
     }
 
     fn overlay_visible(&self) -> bool {
         self.dev.overlay_visible()
     }
 
-    fn after_steps(&mut self, combat: Option<&Combat>, scene: &Scene) {
-        self.dev.after_steps(combat, scene);
+    fn after_steps(&mut self, show: &ShownFight, scene: &Scene) {
+        self.dev.after_steps(show.fight.combat.as_ref(), scene);
     }
 
-    fn tools(&mut self, frame: ToolFrame<'_>, executor: &mut GraphExecutor) {
-        let ToolFrame {
-            width,
-            height,
-            last_times,
-            renderer,
-            quality,
-            gpu_timing,
-            gpu,
-            scene,
-            content,
-            combat,
-        } = frame;
+    fn tools(&mut self, frame: ToolFrame<'_, ShownFight>, executor: &mut GraphExecutor) {
+        let ToolFrame { width, height, last_times, renderer, quality, gpu_timing, gpu, scene, content, show } =
+            frame;
         let stages = last_times.map(|times| Stages {
             extract: times.extract,
             render: times.render,
@@ -387,7 +390,7 @@ impl FrameHooks for StageTools {
             scene,
             assets: content.stats(),
             audio: None,
-            combat,
+            combat: show.fight.combat.as_ref(),
         };
         self.dev.update(state, executor);
     }

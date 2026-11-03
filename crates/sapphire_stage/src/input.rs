@@ -32,6 +32,7 @@ use sapphire_ui::TouchActions;
 
 use crate::LOG_TARGET;
 use crate::orbit::OrbitCamera;
+use crate::scene::SceneActions;
 
 /// The default bindings document.
 const BINDINGS: &str = include_str!("../default_bindings.ron");
@@ -52,11 +53,18 @@ pub const PLAYER: ActorId = ActorId::from_raw(1).expect("not zero");
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SimActions {
     /// Flip world slow motion. Two presses before a step cancel out.
-    pub(crate) toggle_slow_motion: bool,
+    pub toggle_slow_motion: bool,
     /// Freeze the turntable for a few ticks.
-    pub(crate) hitstop: bool,
+    pub hitstop: bool,
     /// Start `--fight`'s fight over.
     pub restart_fight: bool,
+}
+
+impl SimActions {
+    /// What of them the scene takes.
+    pub fn of_scene(self) -> SceneActions {
+        SceneActions { toggle_slow_motion: self.toggle_slow_motion, hitstop: self.hitstop }
+    }
 }
 
 /// The actions the sandbox reads.
@@ -143,7 +151,7 @@ impl SandboxInput {
 
     /// What the HUD's touch zones read for this frame, before [`Self::update`]: as of `now`, the same
     /// time that gets.
-    pub(crate) fn read_touch(&mut self, touch: &TouchActions, now: Timestamp) {
+    pub fn read_touch(&mut self, touch: &TouchActions, now: Timestamp) {
         self.controls.read_touch(touch, now);
     }
 
@@ -217,7 +225,7 @@ impl SandboxInput {
     }
 
     /// Applies this frame's orbit and zoom.
-    pub(crate) fn drive_camera(&self, camera: &mut OrbitCamera) {
+    pub fn drive_camera(&self, camera: &mut OrbitCamera) {
         let (orbit, zoom) = self.camera_motion();
         if orbit != Vec2::ZERO {
             camera.rotate(orbit.x, orbit.y);

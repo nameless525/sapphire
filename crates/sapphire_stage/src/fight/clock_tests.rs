@@ -11,9 +11,9 @@ use sapphire_math::Vec2;
 use sapphire_render::VfxFrame;
 use sapphire_time::SimDuration;
 use sapphire_vfx::{EffectLibrary as VfxLibrary, VfxBudget};
+use sapphire_world::screen_effects::EffectLibrary;
 
-use super::tests::arena_stage;
-use super::tests::clips::{GRAPH_CLIP, clip, fighting};
+use super::scene_tests::{GRAPH_CLIP, Staged, arena_stage, clip, fighting};
 use super::*;
 use crate::combat::CombatOption;
 use crate::combat::{Combat, no_bindings};
@@ -80,7 +80,7 @@ fn probe_table(cue: &str) -> CueTable {
 
 /// A recorded fight stepping beside an arena, as `Stage::step` runs them, the probes firing on `cue`.
 struct Fight {
-    scene: Scene,
+    scene: Staged,
     combat: Combat,
 }
 
@@ -95,8 +95,8 @@ impl Fight {
         let presets = probe_presets();
         let show = CueShow::with_table(probe_table(cue), probe_effects(), VfxBudget::DESKTOP_LOW, &presets)
             .expect("the table finds them");
-        scene.cues = Some(show);
-        scene.ecs.world_mut().insert_resource(presets);
+        scene.show.cues = Some(show);
+        scene.world_mut().insert_resource(presets);
         Self { scene, combat }
     }
 
@@ -136,7 +136,7 @@ impl Fight {
     /// Where the attacker's pose draws at `alpha`, in ticks on its own clock, by what its graph is given.
     fn pose_ticks(&mut self, attacker: ActorId, alpha: f32) -> f64 {
         let index = self.combat.cast().iter().position(|id| *id == attacker).expect("in the cast");
-        let arena = self.scene.arena.as_mut().expect("an arena");
+        let arena = self.scene.show.arena.as_mut().expect("an arena");
         arena.graph_input(index, alpha).expect("a fight is on").ticks
     }
 
@@ -297,7 +297,7 @@ fn shown_time_never_steps_back_through_a_fight() {
     let mut slowed = 0;
     for _ in 0..1000 {
         fight.step();
-        let clock = &fight.scene.ecs.world().resource::<WorldClock>().0;
+        let clock = &fight.scene.world().resource::<WorldClock>().0;
         slowed += u32::from(clock.last_delta() < SimDuration::from_ticks(1));
         for alpha in [0.0, 0.9] {
             let seconds = fight.scene.frame_packet(alpha, Some((64, 36))).time_seconds;
@@ -319,26 +319,29 @@ fn the_scenes_world_clock_keeps_with_a_fights_slow_motion() {
     let mut slowed = 0;
     for _ in 0..1000 {
         fight.step();
-        let scene = fight.scene.ecs.world().resource::<WorldClock>().0.last_delta();
+        let scene = fight.scene.world().resource::<WorldClock>().0.last_delta();
         let fought = fight.simulation().world().resource::<WorldClock>().0.last_delta();
         assert_eq!(scene, fought, "tick {}", fight.simulation().tick());
         slowed += u32::from(fought < SimDuration::from_ticks(1));
     }
     assert!(slowed > 0, "the fight slowed");
     assert!(
-        fight.scene.fight_slow_motion.is_none(),
+        fight.scene.show.slow_motion.is_none(),
         "and it ended within the recording: {:?}",
-        fight.scene.fight_slow_motion
+        fight.scene.show.slow_motion
     );
-    assert_eq!(fight.scene.ecs.world().resource::<WorldClock>().0.scales().len(), 0);
+    assert_eq!(fight.scene.world().resource::<WorldClock>().0.scales().len(), 0);
 
     // One the scene's own controls pushed isn't the fight's to take off.
     let mut fight = Fight::new("dodge-counter", "hit_counter");
-    fight.scene.apply(SimActions { toggle_slow_motion: true, ..SimActions::default() });
+    fight.scene.apply(crate::scene::SceneActions {
+        toggle_slow_motion: true,
+        ..crate::scene::SceneActions::default()
+    });
     for _ in 0..1000 {
         fight.step();
     }
-    assert_eq!(fight.scene.ecs.world().resource::<WorldClock>().0.scales().len(), 1);
+    assert_eq!(fight.scene.world().resource::<WorldClock>().0.scales().len(), 1);
 }
 
 /// A hit's shake is on the real clock, and starts from where it begins too: its view is the unshaken one
@@ -366,7 +369,7 @@ fn a_hits_shake_starts_when_the_pose_gets_there() {
             &presets,
         )
         .expect("the table finds it");
-        scene.cues = Some(show);
+        scene.show.cues = Some(show);
         let mut views = Vec::new();
         let mut landed = None;
         for frame in 0..400 {
@@ -395,7 +398,7 @@ fn a_hits_shake_starts_when_the_pose_gets_there() {
 
 /// A fight with a sword in hand, its graphs posing both fighters, playing the shipped effects from a table
 /// that fires none: all the trails here are the blades' own.
-fn armed(replay: &str, table: &ClipTable<'_>) -> (Scene, Combat) {
+fn armed(replay: &str, table: &ClipTable<'_>) -> (Staged, Combat) {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/replays")
         .join(format!("{replay}.sreplay"));
@@ -410,13 +413,13 @@ fn armed(replay: &str, table: &ClipTable<'_>) -> (Scene, Combat) {
     .expect("valid");
     let show = CueShow::with_table(cues, VfxLibrary::default_effects(), VfxBudget::DESKTOP_LOW, &presets)
         .expect("the table finds them");
-    scene.cues = Some(show);
-    scene.ecs.world_mut().insert_resource(presets);
+    scene.show.cues = Some(show);
+    scene.world_mut().insert_resource(presets);
     (scene, combat)
 }
 
 /// One fixed step of it, in the order the app and a capture run one.
-fn armed_step(scene: &mut Scene, combat: &mut Combat) {
+fn armed_step(scene: &mut Staged, combat: &mut Combat) {
     scene.step();
     combat.step(&mut no_bindings);
     scene.follow_simulation(combat.simulation(), combat.cast());
@@ -431,16 +434,16 @@ struct TrailFrame {
     points: Vec<sapphire_render::VfxRibbonPoint>,
 }
 
-fn trail_frame(scene: &mut Scene, table: &ClipTable<'_>, alpha: f32) -> TrailFrame {
+fn trail_frame(scene: &mut Staged, table: &ClipTable<'_>, alpha: f32) -> TrailFrame {
     scene.animate_fighters(table, table, alpha);
     let packet = scene.frame_packet(alpha, Some((64, 36)));
     let points = packet.vfx.ribbon_points.clone();
     scene.end_frame();
     let heads = points.iter().filter(|point| point.ends).map(|point| (point.base, point.tip)).collect();
-    let world = scene.ecs.world();
+    let world = scene.world();
     let drawn = |entity| world.get::<RenderTransform>(entity).map(|transform| transform.0);
-    let player = scene.blade.and_then(|held| drawn(held.entity));
-    let enemy = scene.arena.as_ref().and_then(|arena| drawn(arena.enemy_blade()));
+    let player = scene.show.blade.and_then(|held| drawn(held.entity));
+    let enemy = scene.show.arena.as_ref().and_then(|arena| drawn(arena.enemy_blade()));
     TrailFrame { heads, blades: [player, enemy], points }
 }
 
@@ -472,7 +475,7 @@ fn a_trail_leaves_the_sword_as_drawn_and_a_hitstop_holds_it() {
             // closes it, it ends where the blade's drawn, among any others still fading.
             let rails = [crate::trails::player_rails, crate::trails::warrior_rails];
             for place in 0..2 {
-                let running = scene.cues.as_ref().expect("on").trail_runs_at(place);
+                let running = scene.show.cues.as_ref().expect("on").trail_runs_at(place);
                 let Some(blade) = frame.blades[place].filter(|_| running) else {
                     began[place] = None;
                     continue;
@@ -499,7 +502,7 @@ fn a_trail_leaves_the_sword_as_drawn_and_a_hitstop_holds_it() {
 
     // Starting over: the tick goes back, the world's effects and what the trails hold go with it.
     let (mut scene, mut combat) = armed("arena-fight-won", &clips);
-    while !scene.cues.as_ref().expect("on").trails_are_running() {
+    while !scene.show.cues.as_ref().expect("on").trails_are_running() {
         armed_step(&mut scene, &mut combat);
         let _ = trail_frame(&mut scene, &clips, 1.0);
     }
@@ -510,6 +513,6 @@ fn a_trail_leaves_the_sword_as_drawn_and_a_hitstop_holds_it() {
     scene.step();
     combat.step(&mut no_bindings);
     scene.follow_simulation(combat.simulation(), combat.cast());
-    assert!(!scene.cues.as_ref().expect("on").trails_are_running(), "the last fight's trail has gone");
+    assert!(!scene.show.cues.as_ref().expect("on").trails_are_running(), "the last fight's trail has gone");
     assert!(trail_frame(&mut scene, &clips, 1.0).points.is_empty(), "and so has its strip");
 }

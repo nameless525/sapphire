@@ -73,7 +73,7 @@ pub(crate) fn run(
     }
     let startup = Stopwatch::start();
     let mut stage = crate::offscreen::stage(platform, options)?;
-    stage.combat = combat;
+    stage.show.fight.combat = combat;
     let startup = startup.elapsed();
     if let Some(fight @ (CombatOption::Replay { .. } | CombatOption::Fight { .. })) = &options.combat {
         return crate::fight_bench::run(&mut stage, fight, options, (frames, width, height), startup);
@@ -123,7 +123,7 @@ pub(crate) fn run(
             vfx_max = vfx_max.max(effects.simulation.simulation);
             vfx_particles += u64::from(effects.sprites);
             vfx_points += u64::from(effects.ribbon_points);
-            if let Some(hud) = stage.scene.hud() {
+            if let Some(hud) = &stage.show.hud {
                 let (_, cost) = hud.last_frame();
                 hud_total += cost;
                 hud_max = hud_max.max(cost);
@@ -225,7 +225,7 @@ pub(crate) fn run(
     }
     gpu_times(&mut stage, &view, settings.bloom_levels)?;
     stage.check_gpu()?;
-    stage.finish_combat()
+    stage.show.fight.finish().map_err(AppInitError::msg)
 }
 
 /// Runs [`TIMED_FRAMES`] frames with GPU timing on and logs the mean GPU times: each pass's

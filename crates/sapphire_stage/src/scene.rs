@@ -58,14 +58,7 @@
 //!   `--clip` plays a clip on the character instead (M2 N2, [`Scene::play_clip`],
 //!   [`crate::animate`]): a [`ClipPlayer`] rewrites its pose and [`Figure`] each frame its clock
 //!   has moved.
-//!   `--look-dev enemy` stands the enemy beside the character, a character with a [`Figure`] of its
-//!   own, and its blade ([`Scene::spawn_enemy`], [`crate::enemy`]).
-//! - **The HUD** (`--hud`, M2 I2): not ECS data: [`SandboxHud`] draws into each packet's interface
-//!   list as [`Scene::frame_packet`] ends, and survives a new renderer with the scene.
-//! - **The arena** (`--arena`): the same town, its lamps and its day, with the character at the
-//!   player's spawn point and the enemy at the enemy's, each posed from where the simulation has
-//!   its actor rather than by a turntable, and the camera following the player
-//!   ([`Scene::spawn_arena`], [`Scene::follow_simulation`], [`crate::arena`]).
+//!   `--look-dev enemy` and a fight stand what they stand on the same way, through [`SceneShow`].
 //! - **Systems:** time of day and the screen effects tick in `FixedFirst`, after the clocks;
 //!   turntables spin, and
 //!   stalks sway, in `FixedCombat`. `Extract` poses them,
@@ -104,10 +97,8 @@ use std::time::Duration;
 use sapphire_anim::{AnimStats, ArchivedClip, SpringQuality, SpringWork};
 use sapphire_assets::mesh::ArchivedMesh;
 use sapphire_core::debug_draw::{self, Collector};
-use sapphire_cues::RumbleSink;
 use sapphire_ecs::bevy_ecs::system::SystemState;
 use sapphire_ecs::prelude::*;
-use sapphire_gameplay::Simulation;
 use sapphire_math::{Affine3A, Mat4, Quat, Vec3};
 use sapphire_physics::PhysicsWorld;
 use sapphire_render::{
@@ -127,30 +118,22 @@ use sapphire_world::tod::{self, TimeOfDay, tick_time_of_day};
 use crate::LOG_TARGET;
 use crate::anim_graph::{ClipTable, GraphDriver, GraphEvaluation, GraphShow};
 use crate::animate::{ClipPlayer, Evaluation, SpringView};
-use crate::arena::{ArenaActors, ArenaEnemy, ArenaGround, ArenaShot};
 use crate::audio::SceneSound;
-use crate::blade::{self, HeldBlade};
-use crate::combat_views::{CombatViews, Facade};
 use crate::content::Content;
-#[cfg(feature = "dev")]
-use crate::content::GraphOwner;
-use crate::cues::{CueShow, CueSounds, CueStage};
+use crate::content::GraphKey;
 use crate::debug_shapes::DebugDrawDemo;
-use crate::enemy::{self, EnemyMeshes};
 use crate::environment;
 use crate::extract::{self, RenderExtract, RenderLight, RenderMesh, RenderPose, RenderTransform};
 use crate::faces::{self, FaceLayout, FaceRig};
 use crate::foliage::{self, FoliageMeshes, FoliageView, Plant};
 use crate::garments;
-use crate::hud::SandboxHud;
 use crate::ik::{IkControls, IkDriver, IkGround, IkLook, IkOptions};
-use crate::input::{SandboxInput, SimActions};
 use crate::layers::{self, SAMPLES};
 use crate::lookdev::{self, Shot, TownMeshes};
 use crate::orbit::OrbitCamera;
 use crate::outlines::{self, ROW};
-use crate::party_looks::Drawn;
 use crate::rims::{self, Panel, RimKey, RimLayout, RimRigMeshes};
+use crate::show::{ContentChanges, SceneShow};
 use crate::skinned::{self, Sway};
 use crate::stage::{self, Piece, StageLayout, StageMeshes, Subject};
 use crate::swatches::{self, SWATCHES};
@@ -230,6 +213,15 @@ type FrameCharacters = SystemState<(
 /// fixed step, which must not allocate (rule R6).
 type ScreenEffects = SystemState<(ResMut<'static, EffectStack>, Res<'static, EffectLibrary>)>;
 
+/// What input asks of the scene's own clocks, queued since the last fixed step.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SceneActions {
+    /// Flip world slow motion. Two presses before a step cancel out.
+    pub toggle_slow_motion: bool,
+    /// Freeze the turntable for a few ticks.
+    pub hitstop: bool,
+}
+
 /// World slow motion, while it is toggled on.
 #[derive(Resource, Debug, Default)]
 struct SlowMotion(Option<ScaleHandle>);
@@ -241,30 +233,30 @@ struct SlowMotion(Option<ScaleHandle>);
 pub struct Figure {
     /// The middle of the head: face and hair GI turn toward a sphere around it, and the light
     /// rig's limits are judged around it.
-    pub(crate) head: Vec3,
+    pub head: Vec3,
     /// Where it stands.
-    pub(crate) feet: Vec3,
+    pub feet: Vec3,
     /// The radius of its body capsule (M1 R4), from its feet to its head: its torso's, which its
     /// shadow is cast from.
-    pub(crate) body_radius: f32,
+    pub body_radius: f32,
     /// How its head is turned from facing +Z upright: its face's basis (M1 C3).
-    pub(crate) face: Quat,
+    pub face: Quat,
     /// The expression its face holds: its blush and gloom weights (M1 C3).
-    pub(crate) expression: FaceExpression,
+    pub expression: FaceExpression,
 }
 
 impl Figure {
     /// The figure something held draws as, placed by `item` in this figure's space, in its own space:
     /// no body, so it adds no capsule to the holder's shadow or occlusion, and its head where the
     /// holder's is, so the light rig lights the two alike.
-    pub(crate) fn of_item_at(&self, item: Mat4) -> Self {
+    pub fn of_item_at(&self, item: Mat4) -> Self {
         let head = item.inverse().transform_point3(self.head);
         Self { head, feet: head, body_radius: 0.0, face: Quat::IDENTITY, expression: self.expression }
     }
 
     /// The sample mannequin (`sapphire_pipeline`'s samples): its head sphere 1.47 m above its
     /// 0.2 m pedestal, its torso's radius, its head turning with it.
-    pub(crate) const MANNEQUIN: Self = Self {
+    pub const MANNEQUIN: Self = Self {
         head: Vec3::new(0.0, 1.67, 0.0),
         feet: Vec3::new(0.0, 0.2, 0.0),
         body_radius: 0.24,
@@ -290,16 +282,6 @@ pub struct LookDev {
     pub fog_cards: Option<[MeshHandle; environment::FOG_CARDS.len()]>,
     pub pose: RenderPose,
     pub figure: Figure,
-}
-
-/// What the arena (`--arena`) stands on and how it's framed, around what the look-dev stage draws,
-/// and the enemy who fights there.
-pub struct Arena {
-    pub enemy: EnemyMeshes,
-    pub held: enemy::Held,
-    pub shot: ArenaShot,
-    pub look: LookDev,
-    pub ground: ArenaGround,
 }
 
 /// The day time of day runs on, by the document it comes from ([`Scene::day`]), for `dev`
@@ -411,25 +393,14 @@ pub struct Scene {
     town: Option<Entity>,
     town_plants: Vec<(Entity, lookdev::Plant)>,
     town_mountains: Vec<Entity>,
-    /// The enemy and its blade, with `--look-dev enemy` or `--arena`.
-    enemy: Option<(Entity, Entity)>,
-    /// The character's blade, with `--blade on`.
-    blade: Option<HeldBlade>,
-    /// The arena's actors, with `--arena`.
-    arena: Option<Box<ArenaActors>>,
     /// The camera jumped since the last view: the next one says so, for temporal AA and the shadows.
     view_cut: bool,
-    /// A fight's slow motion on the scene's world clock, while it runs: how slow, and its scale there.
-    fight_slow_motion: Option<(u32, ScaleHandle)>,
-    /// Whether the arena's fighters play graphs ([`Self::play_fighters`]).
-    fighters_posed: bool,
-    /// A new version of the enemy landed that its other parts don't fit yet ([`Self::replace_enemy`]).
-    enemy_waits: bool,
+    /// Whether something plays the character by a graph that a [`SceneShow`] gave it
+    /// ([`Self::pose_character_by_graph`]).
+    character_plays_graph: bool,
     /// A new version of the character landed that its other parts or its graph's clips don't fit yet
     /// ([`Self::replace_graph`]).
     character_waits: bool,
-    /// Which party member the character draws as, with `--party`.
-    party_looks: Option<Drawn>,
     /// Where the character's light rig finds its head and body, for a character without a
     /// [`Figure`] of its own.
     figure: Figure,
@@ -472,8 +443,6 @@ pub struct Scene {
     cloud_cover: Option<f32>,
     /// The sky's gradient alone (`--plain-sky`).
     plain_sky: bool,
-    /// The combat HUD over the scene (`--hud`, M2 I2).
-    hud: Option<SandboxHud>,
     /// Time of day's fog, unless `--fog off` (M1 W3).
     fog: bool,
     /// Post without its compositing layers (`--plain-post`).
@@ -490,12 +459,8 @@ pub struct Scene {
     pushed_effects: PostVariants,
     /// The effects `--vfx` plays (M2 E2).
     vfx: Option<VfxPlayer>,
-    /// A fight's cues, fired (`--cues`, M2 E3).
-    cues: Option<CueShow>,
     /// Width over height of the last frame drawn, which puts a hit's point on screen.
     view_aspect: f32,
-    /// How long the last frame's camera took: the arena's director or plain follow.
-    camera_time: Duration,
 }
 
 impl Scene {
@@ -569,15 +534,9 @@ impl Scene {
             town: None,
             town_plants: Vec::new(),
             town_mountains: Vec::new(),
-            enemy: None,
-            blade: None,
-            arena: None,
             view_cut: false,
-            fight_slow_motion: None,
-            fighters_posed: false,
-            enemy_waits: false,
+            character_plays_graph: false,
             character_waits: false,
-            party_looks: None,
             figure,
             animating: false,
             players,
@@ -598,7 +557,6 @@ impl Scene {
             sky_material: None,
             cloud_cover: None,
             plain_sky: false,
-            hud: None,
             fog: true,
             plain_post: false,
             debug_draw: Collector::new(),
@@ -607,9 +565,7 @@ impl Scene {
             fade: Fade::Off,
             pushed_effects: PostVariants::NONE,
             vfx: None,
-            cues: None,
             view_aspect: 16.0 / 9.0,
-            camera_time: Duration::ZERO,
         }
     }
 
@@ -792,39 +748,10 @@ impl Scene {
     }
 
     /// Replaces the screen effect presets (hot reload, `dev` builds). Effects playing keep the
-    /// layers they were pushed with. Presets that lose one a fight's cues push are refused.
+    /// layers they were pushed with.
     #[cfg(feature = "dev")]
-    pub(crate) fn set_effect_library(&mut self, library: EffectLibrary) -> Result<(), String> {
-        if let Some(cues) = &mut self.cues {
-            cues.take_presets(&library).map_err(|error| error.to_string())?;
-            self.pushed_effects |= cues.post_variants(&library);
-        }
+    pub fn set_effect_library(&mut self, library: EffectLibrary) {
         self.ecs.world_mut().insert_resource(library);
-        Ok(())
-    }
-
-    /// Replaces the effects a fight's cues and sword trails play (live tuning, `dev` builds), if the table
-    /// firing them finds its names there. With nothing firing cues, it says so.
-    #[cfg(feature = "dev")]
-    pub(crate) fn set_vfx_effects(&mut self, effects: sapphire_vfx::EffectLibrary) -> Result<(), String> {
-        let presets: &EffectLibrary = self.ecs.world().resource();
-        let Some(cues) = &mut self.cues else {
-            return Err("nothing plays a fight's effects here: `--cues` does".to_owned());
-        };
-        cues.take_effects(effects, presets).map_err(|error| error.to_string())
-    }
-
-    /// Replaces the table a fight's cues fire through (live tuning, `dev` builds), if its names are all
-    /// there. With nothing firing cues, it says so.
-    #[cfg(feature = "dev")]
-    pub(crate) fn set_cue_table(&mut self, table: sapphire_cues::CueTable) -> Result<(), String> {
-        let presets: &EffectLibrary = self.ecs.world().resource();
-        let Some(cues) = &mut self.cues else {
-            return Err("nothing fires a fight's cues here: `--cues` does".to_owned());
-        };
-        cues.take_table(table, presets).map_err(|error| error.to_string())?;
-        self.pushed_effects |= cues.post_variants(presets);
-        Ok(())
     }
 
     /// Replaces the character light rig presets with `rigs`, read from `origin` (a path or a file
@@ -1135,7 +1062,7 @@ impl Scene {
     /// skeleton do the same for it (`Self::replace_enemy`). A stage's pieces stand again for a new
     /// version of the character it copied (`Content::take_new_stage`). Allocates nothing while nothing
     /// changed.
-    pub fn follow_content(&mut self, content: &mut Content) {
+    pub fn follow_content(&mut self, content: &mut Content, show: &mut impl SceneShow) {
         self.set_probe_hours(content.probe_hours());
         if content.take_meshes_replaced() {
             self.ecs.world_mut().resource_mut::<RenderExtract>().resend_poses();
@@ -1161,11 +1088,10 @@ impl Scene {
             self.replace_player(content);
         }
         let graph_changed = content.take_graph_changed();
-        if content.take_enemy_changed() || (self.enemy_waits && graph_changed) {
-            self.replace_enemy(content);
-        }
-        if (self.graph_show.is_some() || self.fighters_posed) && (character_changed || graph_changed) {
-            self.replace_graph(content, character_changed, graph_changed);
+        let changes = ContentChanges { character: character_changed, graphs: graph_changed };
+        show.follow_content(self, content, changes);
+        if (self.graph_show.is_some() || self.character_plays_graph) && (character_changed || graph_changed) {
+            self.replace_graph(content, character_changed);
         }
     }
 
@@ -1300,145 +1226,50 @@ impl Scene {
         self.graph_show.as_mut()?.tune(document, set)
     }
 
-    /// Gives new camera tuning to what plays it (M2 T2): the arena's director and a fight's cues, whose
-    /// shake IDs are places in the tuning's list and so are resolved again. All of them take it or none
-    /// does: a value out of range, or a shake the cue table names and the tuning has lost, keeps everything
-    /// as it was.
-    #[cfg(feature = "dev")]
-    pub(crate) fn set_camera_tuning(&mut self, tuning: sapphire_camera::CameraTuning) -> Result<(), String> {
-        tuning.validate().map_err(|error| error.to_string())?;
-        let director = self.arena.as_deref().is_some_and(ArenaActors::has_director);
-        if !director && self.cues.is_none() {
-            return Err(match self.arena {
-                Some(_) => "this shot has no camera director: `--arena-shot director` has one",
-                None => {
-                    "no camera director runs here, and nothing fires a fight's shakes: `--arena` has one, \
-                         and `--cues` does the other"
-                }
-            }
-            .to_owned());
-        }
-        let presets: &EffectLibrary = self.ecs.world().resource();
-        if let Some(cues) = &mut self.cues {
-            cues.take_camera_tuning(tuning.clone(), presets).map_err(|error| error.to_string())?;
-        }
-        match self.arena.as_mut().filter(|arena| arena.has_director()) {
-            Some(arena) => arena.set_camera_tuning(tuning),
-            None => Ok(()),
-        }
-    }
-
-    /// Takes an edited graph (M2 T2): its clips loaded, bound against `owner`, and from then on what binds
-    /// it, until a pack brings another. It takes effect at the next state's start
+    /// Takes an edited graph (M2 T2): its clips loaded, bound against the character, and from then on what
+    /// binds it, until a pack brings another. It takes effect at the next state's start
     /// ([`GraphPlayer::replace`]). What fails leaves what's playing alone, and an edit that comes while
-    /// `owner` waits for the rest of a new version, whose pose has joints a binding may not, either ends
-    /// the wait or waits with it (`Self::end_wait_on`).
+    /// the character waits for the rest of a new version, whose pose has joints a binding may not, either ends
+    /// the wait or waits with it ([`Content::end_wait_on`]).
     ///
     /// [`GraphPlayer::replace`]: sapphire_anim::GraphPlayer::replace
     #[cfg(feature = "dev")]
-    pub(crate) fn replace_graph_document(
+    pub fn replace_graph_document(
         &mut self,
-        owner: GraphOwner,
         graph: sapphire_anim::AnimGraph,
         content: &mut Content,
         renderer: &mut Renderer,
         gpu: &sapphire_rhi::GpuContext,
     ) -> Result<(), String> {
-        let (entity, posed, none) = match owner {
-            GraphOwner::Character => (
-                Some(self.character),
-                self.graph_show.is_some() || self.fighters_posed,
-                "no character here plays a graph: `--look-dev <shot> --graph <script>` and `--arena --fight` \
-                 have one",
-            ),
-            GraphOwner::Enemy => (
-                self.enemy.map(|(warrior, _)| warrior),
-                self.fighters_posed,
-                "no enemy here plays a graph: `--arena --fight` has one",
-            ),
-        };
-        let playing = entity.filter(|&entity| posed && self.ecs.world().get::<GraphDriver>(entity).is_some());
-        let Some(entity) = playing else { return Err(none.to_owned()) };
-        content.hold_clips_of(owner, &graph, &self.clips_in_use(Some(entity)), renderer, gpu)?;
-        let binding = match owner {
-            GraphOwner::Character => lookdev::graph_binding_of(content, &graph),
-            GraphOwner::Enemy => content.enemy_binding_of(&graph),
-        };
-        if self.waits_for_its_parts(owner) {
-            return self.end_wait_on(owner, graph, binding.map(drop), content);
+        let posed = self.graph_show.is_some() || self.character_plays_graph;
+        let world = self.ecs.world();
+        if !posed || world.get::<GraphDriver>(self.character).is_none() {
+            return Err("no character here plays a graph: `--look-dev <shot> --graph <script>` and `--arena --fight` \
+                 have one"
+                .to_owned());
+        }
+        let owner = GraphKey::CHARACTER;
+        content.hold_clips_of(owner, &graph, &self.clips_in_use(Some(self.character)), renderer, gpu)?;
+        let binding = lookdev::graph_binding_of(content, &graph);
+        if self.character_waits {
+            return content.end_wait_on(owner, graph, binding.map(drop), |content| {
+                self.replace_graph(content, false);
+                self.character_waits
+            });
         }
         let binding = binding?;
         content.set_live_graph(owner, Some(graph));
-        if let Some(mut playing) = self.ecs.world_mut().get_mut::<GraphDriver>(entity) {
+        if let Some(mut playing) = self.ecs.world_mut().get_mut::<GraphDriver>(self.character) {
             playing.player.replace(Arc::new(binding));
         }
         Ok(())
     }
 
-    /// Whether `owner` keeps its pose for a new version of itself whose parts don't all fit yet.
-    #[cfg(feature = "dev")]
-    fn waits_for_its_parts(&self, owner: GraphOwner) -> bool {
-        match owner {
-            GraphOwner::Character => self.character_waits,
-            GraphOwner::Enemy => self.enemy_waits,
-        }
-    }
-
-    /// Tries what a landing tries for `owner`, which [waits](Self::waits_for_its_parts).
-    #[cfg(feature = "dev")]
-    fn start_over(&mut self, owner: GraphOwner, content: &mut Content) {
-        match owner {
-            GraphOwner::Character => self.replace_graph(content, false, false),
-            GraphOwner::Enemy => self.replace_enemy(content),
-        }
-    }
-
-    /// An edit for a fighter that waits for the rest of a new version of itself. This edit may be all it
-    /// waits for: a cook reads what was saved, so a graph that never fits can be the only one there is, and
-    /// no landing would end that. So the edit gets the try a landing gets, and the fighter starts over on it.
-    /// If its other parts still don't fit the edit is refused, and the fighter goes back to waiting for what
-    /// it was, with the clips the edit's took the place of: the next landing needs them held to be seen.
-    #[cfg(feature = "dev")]
-    fn end_wait_on(
-        &mut self,
-        owner: GraphOwner,
-        graph: sapphire_anim::AnimGraph,
-        bound: Result<(), String>,
-        content: &mut Content,
-    ) -> Result<(), String> {
-        let refusal = match bound {
-            Ok(()) => {
-                let before = content.set_live_graph(owner, Some(graph));
-                self.start_over(owner, content);
-                if !self.waits_for_its_parts(owner) {
-                    return Ok(());
-                }
-                content.set_live_graph(owner, before);
-                "a new version of this character is still landing: push again once it has".to_owned()
-            }
-            Err(error) => format!("a new version of this character waits for a graph that binds: {error}"),
-        };
-        self.start_over(owner, content);
-        Err(refusal)
-    }
-
     /// The clips `entity`'s graph player may still read, which whatever replaces its graph has to keep.
-    fn clips_in_use(&self, entity: Option<Entity>) -> Vec<sapphire_assets::AssetId> {
+    /// The clips `entity`'s graph player may still read, which whatever replaces its graph has to keep.
+    pub fn clips_in_use(&self, entity: Option<Entity>) -> Vec<sapphire_assets::AssetId> {
         let playing = entity.and_then(|entity| self.ecs.world().get::<GraphDriver>(entity));
         playing.map_or_else(Vec::new, |driver| driver.player.clips_in_use().collect())
-    }
-
-    /// Has `content` hold what the graphs name now, with what their players still read. A graph live tuning
-    /// took that can never bind gives way to the cook's here, once its clips have said so.
-    fn hold_graph_clips(&self, content: &mut Content) -> Result<(), sapphire_assets::LoadError> {
-        let character = self.clips_in_use(Some(self.character));
-        let enemy = self.clips_in_use(self.enemy.map(|(warrior, _)| warrior));
-        let held = content.hold_graph_clips((&character, &enemy));
-        #[cfg(feature = "dev")]
-        if content.let_go_of_graphs_that_never_fit() {
-            return content.hold_graph_clips((&character, &enemy));
-        }
-        held
     }
 
     /// Takes in a new version of the character, the graph or a clip it names. A new character's joints
@@ -1449,9 +1280,10 @@ impl Scene {
     /// what's playing alone until something else lands or an edit corrects it.
     ///
     /// [`GraphPlayer::replace`]: sapphire_anim::GraphPlayer::replace
-    fn replace_graph(&mut self, content: &mut Content, character_changed: bool, graph_changed: bool) {
-        if let Err(error) = self.hold_graph_clips(content) {
-            tracing::warn!(target: LOG_TARGET, %error, "a fighter's graph lost a clip");
+    fn replace_graph(&mut self, content: &mut Content, character_changed: bool) {
+        let in_use = self.clips_in_use(Some(self.character));
+        if let Err(error) = content.hold_graph_clips(&[(GraphKey::CHARACTER, &in_use)]) {
+            tracing::warn!(target: LOG_TARGET, %error, "the character's graph lost a clip");
         }
         let character = self.character;
         let ground = self.ik_ground.clone();
@@ -1486,63 +1318,6 @@ impl Scene {
                 }
             }
         }
-        // A new character is the player's alone, and may have come in the same frame as a new graph. An
-        // enemy waiting for the rest of it has the joints it had, which a new binding's aren't.
-        if !self.fighters_posed || !graph_changed || self.enemy_waits {
-            return;
-        }
-        let Some(enemy) = self.enemy.map(|(warrior, _)| warrior) else { return };
-        let Some(mut playing) = self.ecs.world_mut().get_mut::<GraphDriver>(enemy) else { return };
-        match content.enemy_binding() {
-            Ok(binding) => playing.player.replace(Arc::new(binding)),
-            Err(error) => tracing::warn!(target: LOG_TARGET, %error, "the enemy keeps the graph it has"),
-        }
-    }
-
-    /// Takes in a new version of the enemy's mesh or skeleton, whose joints may be others: the pose it
-    /// holds, the hand its blade follows, what lights them, and in a fight a driver that starts now from
-    /// where the old one was, as the character's does ([`Self::replace_graph`]). Those can land frames
-    /// apart and its clips later still, so until all of it fits it keeps everything it has, and tries again
-    /// as each part lands.
-    fn replace_enemy(&mut self, content: &mut Content) {
-        let Some((warrior, blade)) = self.enemy else { return };
-        if let Err(error) = self.hold_graph_clips(content) {
-            tracing::warn!(target: LOG_TARGET, %error, "a fighter's graph lost a clip");
-        }
-        let ground = self.arena.as_ref().filter(|_| self.fighters_posed).map(|arena| arena.ground());
-        let fitted = content.held_enemy().and_then(|held| {
-            let driver = ground.map(|ground| content.enemy_driver(ground)).transpose()?;
-            Ok((held, driver))
-        });
-        let (held, driver) = match fitted {
-            Ok(fitted) => fitted,
-            Err(error) => {
-                self.enemy_waits = true;
-                tracing::warn!(target: LOG_TARGET, %error, "the enemy keeps its pose until the rest of it lands");
-                return;
-            }
-        };
-        self.enemy_waits = false;
-        let carried = enemy::blade_figure(&held);
-        let world = self.ecs.world_mut();
-        let place = world.get::<RenderTransform>(warrior).map_or(Mat4::IDENTITY, |transform| transform.0);
-        let mut character = world.entity_mut(warrior);
-        if let (Some(mut playing), Some(mut driver)) = (character.get_mut::<GraphDriver>(), driver) {
-            driver.continue_from(&playing);
-            *playing = driver;
-        }
-        if let Some(mut rig) = character.get_mut::<CharacterLightRig>() {
-            rig.head = held.figure.head;
-        }
-        character.insert((held.pose, held.figure));
-        let mut item = world.entity_mut(blade);
-        if let Some(mut rig) = item.get_mut::<CharacterLightRig>() {
-            rig.head = carried.head;
-        }
-        item.insert((carried, RenderTransform(place * held.blade)));
-        if let Some(arena) = &mut self.arena {
-            arena.follow_new_enemy(held.hand, held.blade);
-        }
     }
 
     /// Evaluates what plays on the character for a frame `alpha` of the way from the previous fixed step
@@ -1552,78 +1327,14 @@ impl Scene {
     /// Call it just before [`Self::frame_packet`]. A scene that plays nothing returns at once. It runs
     /// here rather than as a `Presentation` system, which would cost allocations and a worker's wake-up
     /// per frame (the module docs).
-    pub fn animate(&mut self, content: &Content, alpha: f32) {
+    pub fn animate(&mut self, content: &Content, alpha: f32, show: &mut impl SceneShow) {
         if self.animating {
             self.animate_clip(content.clip(), alpha);
         }
         if self.graph_show.is_some() {
             self.animate_graph(&content.graph_clips(), alpha);
         }
-        if self.fighters_posed {
-            self.animate_fighters(&content.graph_clips(), &content.enemy_graph_clips(), alpha);
-        }
-    }
-
-    /// Plays each fighter's graph for this frame, from what the last step said of it, solves its feet
-    /// and its look at the other, and moves the enemy's blade to its hand. Two run in turn on this
-    /// thread, so there's no list of jobs to make, and this allocates nothing; a crowd would want
-    /// `evaluate_all`'s jobs and a retained list. A fighter whose mesh is changing keeps the pose it has
-    /// until it fits.
-    fn animate_fighters(&mut self, player: &ClipTable<'_>, enemy: &ClipTable<'_>, alpha: f32) {
-        profiling::scope!("animate fighters");
-        let started = Stopwatch::start();
-        let mut stats = AnimStats::default();
-        let Some(arena) = &mut self.arena else { return };
-        let world = self.ecs.world_mut();
-        let camera = world.resource::<OrbitCamera>().camera_data(self.aspect);
-        let view = SpringView::new(&camera, self.spring_quality);
-        let entities = [arena.fighters()[0].0, arena.fighters()[1].0];
-        for (index, (entity, clips)) in entities.into_iter().zip([player, enemy]).enumerate() {
-            let Ok((mut driver, render, figure, rig, _)) = self.graph_players.get_mut(world, entity) else {
-                continue;
-            };
-            if !driver.fits(&render) {
-                continue;
-            }
-            // After that, since it spends a cut and a landing, which wait for a frame the graph plays.
-            let Some(input) = arena.graph_input(index, alpha) else { continue };
-            stats.characters += 1;
-            let place = arena.drawn(index, alpha);
-            if let Some(ik) = driver.ik_mut() {
-                let look_target = arena.look_target(index, alpha);
-                ik.set_controls(IkControls { look_target, ..ik.controls() });
-            }
-            let springs_run = driver.springs_run(&view, &RenderTransform(place), &figure);
-            let mut job = GraphEvaluation {
-                driver,
-                render,
-                figure,
-                rig,
-                input,
-                world_from_model: Affine3A::from_mat4(place),
-                place,
-                springs_run,
-                evaluated: false,
-                spring_work: SpringWork::default(),
-                spring_time: Duration::ZERO,
-            };
-            job.run(clips);
-            stats.teleports += job.driver.player.teleports();
-            if job.evaluated {
-                stats.evaluated += 1;
-                stats.joints += job.driver.player.pose().joint_count() as u32;
-                stats.ik += u32::from(job.driver.has_ik());
-                if index == 1 {
-                    let hand = job.driver.player.pose().model()[arena.blade_hand()];
-                    arena.hold_blade(Mat4::from(hand));
-                }
-            }
-            stats.springs += u32::from(job.spring_work.wrote_pose);
-            stats.spring_substeps += job.spring_work.substeps;
-            stats.spring_time += job.spring_time;
-        }
-        stats.time = started.elapsed();
-        self.anim_stats = stats;
+        show.animate(self, content, alpha);
     }
 
     /// Plays the show's frame on the character. Allocates nothing: the show has one character, so
@@ -1689,7 +1400,7 @@ impl Scene {
 
     /// [`Self::animate`], with its clip and the clip's version. Only the character plays one
     /// ([`Self::play_clip`]), on this thread, so this frame has no list of jobs to make.
-    fn animate_clip(&mut self, clip: Option<(&ArchivedClip, u32)>, alpha: f32) {
+    pub fn animate_clip(&mut self, clip: Option<(&ArchivedClip, u32)>, alpha: f32) {
         profiling::scope!("animate");
         let started = Stopwatch::start();
         let mut stats = AnimStats::default();
@@ -1746,39 +1457,63 @@ impl Scene {
         self.ecs.world().get::<GraphDriver>(self.character).map(|driver| &driver.player)
     }
 
-    /// The arena's actors, for hot reload's tests.
-    #[cfg(all(test, feature = "dev"))]
-    pub(crate) fn arena_mut(&mut self) -> Option<&mut ArenaActors> {
-        self.arena.as_deref_mut()
-    }
-
-    /// Draws the enemy with this pose, for hot reload's tests: as a mesh that landed before its driver.
-    #[cfg(all(test, feature = "dev"))]
-    pub(crate) fn set_enemy_pose(&mut self, pose: RenderPose) {
-        let (warrior, _) = self.enemy.expect("an enemy");
-        self.ecs.world_mut().entity_mut(warrior).insert(pose);
-    }
-
-    /// The enemy's graph player, for hot reload's tests.
-    #[cfg(all(test, feature = "dev"))]
-    pub(crate) fn enemy_graph_player(&self) -> Option<&sapphire_anim::GraphPlayer> {
-        let (warrior, _) = self.enemy?;
-        self.ecs.world().get::<GraphDriver>(warrior).map(|driver| &driver.player)
-    }
-
     /// What animation did in the last frame.
     pub fn anim_stats(&self) -> AnimStats {
         self.anim_stats
     }
 
-    /// How long the last frame's camera took (rule R9): nothing without the arena.
-    pub fn camera_time(&self) -> Duration {
-        self.camera_time
-    }
-
     /// Runs spring bones as a quality tier does, from the next frame on.
     pub fn set_spring_quality(&mut self, quality: SpringQuality) {
         self.spring_quality = quality;
+    }
+
+    /// The character's entity, which a show may place and pose as it does its own.
+    pub fn character(&self) -> Entity {
+        self.character
+    }
+
+    /// Where the character's light rig finds its head and body, for a character without a [`Figure`] of its
+    /// own.
+    pub fn figure(&self) -> Figure {
+        self.figure
+    }
+
+    /// The scene's world, for what a show keeps there.
+    pub fn world(&self) -> &World {
+        self.ecs.world()
+    }
+
+    /// [`Self::world`], to spawn and to place in.
+    pub fn world_mut(&mut self) -> &mut World {
+        self.ecs.world_mut()
+    }
+
+    /// What decides whether a character's springs run this frame: the camera of the last frame's shape, at
+    /// the tier's quality.
+    pub fn spring_view(&self) -> SpringView {
+        let camera = self.camera().camera_data(self.aspect);
+        SpringView::new(&camera, self.spring_quality)
+    }
+
+    /// Says what animation did in this frame, for a show that evaluates its own (rule R9).
+    pub fn set_anim_stats(&mut self, stats: AnimStats) {
+        self.anim_stats = stats;
+    }
+
+    /// Width over height of the last frame drawn, which puts a point in the world on screen.
+    pub fn view_aspect(&self) -> f32 {
+        self.view_aspect
+    }
+
+    /// Tells the next view that the camera jumped since the last, for temporal AA and the shadows.
+    pub fn cut_view(&mut self) {
+        self.view_cut = true;
+    }
+
+    /// Says which post variants the screen effects a show fires on this scene go through, so they're among
+    /// [`Self::effect_variants`]. Its effects' own pipelines it declares ([`SceneShow::declare_pipelines`]).
+    pub fn will_push_effects(&mut self, variants: PostVariants) {
+        self.pushed_effects |= variants;
     }
 
     /// Holds the character in `pose`, making `figure`: `Extract` sends it if it differs from the
@@ -1795,7 +1530,7 @@ impl Scene {
     }
 
     /// Makes `Extract` write poses from now on, once: scenes without any pose don't run it.
-    fn extract_poses(&mut self) {
+    pub fn extract_poses(&mut self) {
         if !self.poses {
             self.ecs.add_systems(Extract, extract::extract_poses.after(extract::extract_lights));
             self.poses = true;
@@ -1814,140 +1549,19 @@ impl Scene {
         self.spawn_town(shot.stand(), look);
     }
 
-    /// Builds the arena (`--arena`, [`crate::arena`]): the look-dev stage's town, day and light rigs
-    /// where the town stands, with the character at the player's spawn point and the enemy
-    /// ([`crate::enemy`]) and its blade at the enemy's. Unlike the look-dev stage, the town stays still
-    /// and they move, so none of them has a turntable: [`Self::follow_simulation`] carries each actor's
-    /// root here.
-    pub fn spawn_arena(&mut self, arena: Arena) {
-        let Arena { enemy, held, shot, look, ground } = arena;
-        self.ecs
-            .world_mut()
-            .insert_resource(shot.camera(sapphire_gameplay::arena::spawns().player.position()));
-        self.spawn_town(Vec3::ZERO, look);
-        self.ecs.world_mut().entity_mut(self.character).remove::<Turntable>();
-        let (blade_in_model, hand) = (held.blade, held.hand);
-        self.spawn_enemy(enemy, held);
-        let (warrior, blade) = self.enemy.expect("it just stood there");
-        let enemy = ArenaEnemy { warrior, blade, blade_in_model, hand };
-        self.arena = Some(Box::new(ArenaActors::new(self.character, enemy, shot, ground)));
-    }
-
-    /// Poses the arena's fighters by these graphs from now on, from what the simulation says of them
-    /// ([`crate::arena`]). They hold what they have until a fight steps. Nothing without `--arena`.
-    pub fn play_fighters(&mut self, player: GraphDriver, enemy: GraphDriver) {
-        let Some(arena) = &self.arena else { return };
-        let [(player_entity, _), (enemy_entity, _)] = arena.fighters();
-        let figure = self.figure;
-        let world = self.ecs.world_mut();
-        world.entity_mut(player_entity).insert((player, figure));
-        world.entity_mut(enemy_entity).insert(enemy);
-        self.fighters_posed = true;
-    }
-
-    /// Poses the character as [`Self::play_fighters`] does, with no arena to fight in, for tests.
-    #[cfg(all(test, feature = "dev"))]
-    pub(crate) fn pose_as_fighter(&mut self, driver: GraphDriver) {
+    /// Poses the character by `driver` from now on: for a [`SceneShow`] that plays it, which says where it
+    /// stands and what it does each frame, and which evaluates it. The character takes in new versions of
+    /// itself and of its graph from then on, as it does with [`Self::play_graph`].
+    pub fn pose_character_by_graph(&mut self, driver: GraphDriver) {
         let figure = self.figure;
         self.ecs.world_mut().entity_mut(self.character).insert((driver, figure));
-        self.fighters_posed = true;
-    }
-
-    /// Takes the arena's actors from `simulation`, after a step of it: nothing without `--arena`.
-    /// `cast` is its scenario's, the player first. Whatever the stage, the scene's world clock takes up
-    /// the fight's slow motion, as the simulation's does from its next step.
-    pub fn follow_simulation(&mut self, simulation: &Simulation, cast: &[sapphire_gameplay::ActorId]) {
-        self.follow_slow_motion(simulation);
-        if let Some(arena) = &mut self.arena {
-            let fought = arena.fight_time();
-            let came_in = arena.follow(simulation, cast);
-            if let Some(hud) = &mut self.hud {
-                hud.fighters_came_in(came_in);
-            }
-            // A clock that went back is a new fight, and everything stands somewhere else: the frame
-            // draws nothing of the last one. A party's swap needs none of this, since who comes in
-            // stands where the one who left stood, and the camera goes on.
-            if arena.fight_time() < fought {
-                self.view_cut = true;
-                if let Some(cues) = &mut self.cues {
-                    cues.start_over(&mut self.ecs.world_mut().resource_mut::<EffectStack>());
-                }
-                if let Some(hud) = &mut self.hud {
-                    hud.start_over();
-                }
-            }
-        }
-        if let Some(mesh) = self.party_looks.as_mut().and_then(|drawn| drawn.follow(simulation.party())) {
-            self.ecs.world_mut().entity_mut(self.character).insert(RenderMesh(mesh));
-        }
-    }
-
-    /// Keeps the scene's world clock with a fight's slow motion (M2 G4), the only scale a simulation puts
-    /// on its world, so what the scene's clock times (screen effects, time of day, the wind and everything
-    /// else on `FramePacket::time_seconds`) stays with the fighters and the effects on theirs.
-    fn follow_slow_motion(&mut self, simulation: &Simulation) {
-        let clock = &simulation.world().resource::<WorldClock>().0;
-        let slowed = clock.scales().find(|scale| scale.source == ScaleSource::PerfectDodge);
-        let slowed = slowed.map(|scale| scale.per_mille);
-        if slowed == self.fight_slow_motion.map(|(per_mille, _)| per_mille) {
-            return;
-        }
-        let mut clock = self.ecs.world_mut().resource_mut::<WorldClock>();
-        if let Some((_, handle)) = self.fight_slow_motion.take() {
-            clock.0.pop_scale(handle);
-        }
-        if let Some(per_mille) = slowed {
-            match clock.0.push_scale(ScaleSource::PerfectDodge, per_mille) {
-                Ok(handle) => self.fight_slow_motion = Some((per_mille, handle)),
-                Err(error) => {
-                    tracing::warn!(target: LOG_TARGET, %error, "the scene misses a fight's slow motion")
-                }
-            }
-        }
-    }
-
-    /// Gives the character each party member's mesh (`--party`): at startup, and after GPU device loss or
-    /// a tier change, when whoever's on the field stays there.
-    pub fn set_party_meshes(&mut self, meshes: [MeshHandle; sapphire_gameplay::PARTY_SLOTS]) {
-        let drawn =
-            self.party_looks.map_or_else(|| Drawn::new(meshes), |drawn| drawn.on_new_renderer(meshes));
-        self.party_looks = Some(drawn);
-        self.ecs.world_mut().entity_mut(self.character).insert(RenderMesh(drawn.mesh()));
-    }
-
-    /// The view's share of a windowed frame, `dt` real seconds after the last: `input`'s orbit and zoom,
-    /// on the real clock so the view stays responsive in slow motion. A pause holds a fight's view, as the
-    /// director's frame asks, shakes and all: only the sandbox's own orbit still moves, for looking
-    /// around at what's held, and the HUD says it's waiting. Returns the seconds the view moved by, for
-    /// [`Self::end_cue_frame`].
-    pub fn drive_view(&mut self, input: &SandboxInput, dt: f32) -> f32 {
-        let view_dt = if input.is_paused() { 0.0 } else { dt };
-        if let Some(hud) = &mut self.hud {
-            hud.show_pause(input.is_paused());
-        }
-        let mut camera = self.camera_mut();
-        input.drive_camera(&mut camera);
-        camera.update(dt);
-        let (look, zoom) = input.camera_motion();
-        self.drive_arena_camera(view_dt, look, zoom);
-        view_dt
-    }
-
-    /// Gives the arena's camera director this much real time and input for its next frame, if one's
-    /// on, and says whether it took them.
-    pub(crate) fn drive_arena_camera(&mut self, dt: f32, look: sapphire_math::Vec2, zoom: f32) -> bool {
-        self.arena.as_mut().is_some_and(|arena| arena.drive_camera(dt, look, zoom))
-    }
-
-    /// Where the view looks across the ground, as an actor's yaw: what the next tick's stick turns by.
-    pub fn camera_heading(&self) -> f32 {
-        self.arena.as_deref().and_then(ArenaActors::heading).unwrap_or_else(|| self.camera().heading())
+        self.character_plays_graph = true;
     }
 
     /// The town, its plants and its far mountains around the character, its fog cards and lamps, on
     /// the stage's day under its light rigs, the character held in `look.pose`. It's drawn moved by
     /// `-stand`, so the character, at the origin, stands at `stand` in it.
-    fn spawn_town(&mut self, stand: Vec3, look: LookDev) {
+    pub fn spawn_town(&mut self, stand: Vec3, look: LookDev) {
         self.figure = look.figure;
         self.extract_poses();
         self.time_of_day_mut().set_timeline(lookdev::day()).expect("the look-dev day sets every group");
@@ -2003,107 +1617,6 @@ impl Scene {
         }
     }
 
-    /// Stands the enemy on the look-dev stage (`--look-dev enemy`, [`crate::enemy`]): the warrior
-    /// held in its pose beside the character, and its blade at its hand. Neither moves, so they are
-    /// extracted once. Call after [`Self::spawn_look_dev`], whose light rigs they take.
-    pub fn spawn_enemy(&mut self, meshes: EnemyMeshes, held: enemy::Held) {
-        self.extract_poses();
-        let place = enemy::place();
-        let rig = LightRigId::DEFAULT;
-        let blade_figure = enemy::blade_figure(&held);
-        let world = self.ecs.world_mut();
-        let warrior = world
-            .spawn((
-                RenderMesh(meshes.warrior),
-                RenderTransform(place),
-                CharacterLightRig { rig, head: held.figure.head },
-                held.figure,
-                held.pose,
-            ))
-            .id();
-        let blade = world
-            .spawn((
-                RenderMesh(meshes.blade),
-                RenderTransform(place * held.blade),
-                CharacterLightRig { rig, head: blade_figure.head },
-                blade_figure,
-            ))
-            .id();
-        self.enemy = Some((warrior, blade));
-    }
-
-    /// Puts the player's blade in the character's right hand (`--blade on`, M2 O3): `held_hand` is where
-    /// the character's held pose has that hand, for when no clip plays. It follows the hand each frame
-    /// ([`Self::follow_hand`]).
-    pub fn spawn_blade(&mut self, mesh: MeshHandle, held_hand: Mat4) {
-        let rig = LightRigId::DEFAULT;
-        let figure = self.figure.of_item_at(held_hand * blade::socket());
-        let entity = self
-            .ecs
-            .world_mut()
-            .spawn((
-                RenderMesh(mesh),
-                RenderTransform::default(),
-                CharacterLightRig { rig, head: figure.head },
-                figure,
-            ))
-            .id();
-        self.blade = Some(HeldBlade { entity, held_hand });
-    }
-
-    /// Sets the mesh the blade draws again: after GPU device loss.
-    pub fn set_blade_mesh(&mut self, mesh: MeshHandle) {
-        if let Some(held) = self.blade {
-            self.ecs.world_mut().entity_mut(held.entity).insert(RenderMesh(mesh));
-        }
-    }
-
-    /// Moves the blade to where the character's hand is this frame: after whatever poses and places
-    /// the character, and before extraction.
-    fn follow_hand(&mut self) {
-        let Some(held) = self.blade else { return };
-        let world = self.ecs.world_mut();
-        let character = world.entity(self.character);
-        let place = character.get::<RenderTransform>().map_or(Mat4::IDENTITY, |transform| transform.0);
-        let hand = character
-            .get::<ClipPlayer>()
-            .and_then(ClipPlayer::right_hand)
-            .or_else(|| character.get::<GraphDriver>().and_then(GraphDriver::right_hand))
-            .unwrap_or(held.held_hand);
-        let holder = character.get::<Figure>().copied().unwrap_or(self.figure);
-        let item = hand * blade::socket();
-        let figure = holder.of_item_at(item);
-        let mut blade = world.entity_mut(held.entity);
-        if let Some(mut transform) = blade.get_mut::<RenderTransform>() {
-            transform.set_if_neq(RenderTransform(place * item));
-        }
-        if let Some(mut own) = blade.get_mut::<Figure>() {
-            own.set_if_neq(figure);
-        }
-        if let Some(mut rig) = blade.get_mut::<CharacterLightRig>() {
-            rig.head = figure.head;
-        }
-    }
-
-    /// Tells a fight's sword trails where this frame draws the blades, once they're placed: what a trail
-    /// reads is what's drawn.
-    fn follow_blades(&mut self, alpha: f32) {
-        let Some(cues) = self.cues.as_mut().filter(|cues| cues.trails_are_running()) else { return };
-        let world = self.ecs.world();
-        let drawn = |entity| world.get::<RenderTransform>(entity).map(|transform| transform.0);
-        let player = self.blade.and_then(|held| drawn(held.entity));
-        let enemy = self.arena.as_ref().and_then(|arena| drawn(arena.enemy_blade()));
-        cues.follow_blades([player, enemy], alpha);
-    }
-
-    /// Sets the meshes the enemy draws again: after GPU device loss.
-    pub fn set_enemy_meshes(&mut self, meshes: EnemyMeshes) {
-        if let Some((warrior, blade)) = self.enemy {
-            self.ecs.world_mut().entity_mut(warrior).insert(RenderMesh(meshes.warrior));
-            self.ecs.world_mut().entity_mut(blade).insert(RenderMesh(meshes.blade));
-        }
-    }
-
     /// Places the outline row (`--outline-row`) behind the character, drawing `mesh` (the
     /// character's), each a character lit by the default light rig, and lowers the camera to
     /// see them all. They never move, so they are extracted once.
@@ -2140,7 +1653,7 @@ impl Scene {
     }
 
     /// Applies input queued since the last fixed step. Call before the frame's steps.
-    pub fn apply(&mut self, actions: SimActions) {
+    pub fn apply(&mut self, actions: SceneActions) {
         let world = self.ecs.world_mut();
         if actions.toggle_slow_motion {
             let held = world.resource_mut::<SlowMotion>().0.take();
@@ -2202,70 +1715,6 @@ impl Scene {
         self.vfx = Some(VfxPlayer::new(show, budget));
     }
 
-    /// Fires a fight's cues from now on (`--cues`, M2 E3), within `budget`, and has the scene prewarm
-    /// what they draw through. An error names what its table can't find.
-    pub fn play_cues(&mut self, budget: VfxBudget) -> Result<(), String> {
-        let presets: &EffectLibrary = self.ecs.world().resource();
-        let show = CueShow::new(budget, presets).map_err(|error| error.to_string())?;
-        self.pushed_effects |= show.post_variants(presets);
-        self.cues = Some(show);
-        Ok(())
-    }
-
-    /// What's firing a fight's cues, if anything is.
-    pub fn cue_show(&self) -> Option<&CueShow> {
-        self.cues.as_ref()
-    }
-
-    /// Fires what `sim`'s latest step published (`--cues`), and does nothing without that flag. Call it
-    /// after each of the simulation's steps: the next one clears them. Allocates nothing once warmed.
-    pub fn show_cues(&mut self, sim: &Simulation) {
-        let Some(cues) = &mut self.cues else { return };
-        let world = self.ecs.world();
-        let camera = world.resource::<OrbitCamera>().camera_data(self.view_aspect);
-        let view_projection = camera.proj * camera.view;
-        let place = world.get::<RenderTransform>(self.character);
-        let stand = place.map_or(Vec3::ZERO, |place| place.0.w_axis.truncate());
-        let (posed, sword) = (self.fighters_posed, self.blade.is_some());
-        let stage = match &mut self.arena {
-            Some(arena) => {
-                let (director, [player, enemy]) = arena.cue_stage();
-                let fighters = [player.filter(|_| posed && sword), enemy.filter(|_| posed)];
-                CueStage::Actors { director, fighters }
-            }
-            None => CueStage::OneCharacter { stand },
-        };
-        let (mut stack, presets) = self
-            .screen_effects
-            .get_mut(self.ecs.world_mut())
-            .expect("the scene inserts the effect stack and its presets");
-        cues.step(sim, &mut stack, &presets, view_projection, stage);
-    }
-
-    /// What a fight's cues ask of the audio system this frame.
-    pub fn cue_sounds(&self) -> CueSounds<'_> {
-        self.cues.as_ref().map_or(CueSounds::NONE, CueShow::sounds)
-    }
-
-    /// Ends a frame's steps of a fight's cues, `dt` real seconds after the last frame's, for a frame drawn
-    /// at `alpha`, after the audio system took [`Self::cue_sounds`]: tells `rumble` what changed, and
-    /// shakes the camera for the frame to come by `view_dt`, what [`Self::drive_view`] gave the view.
-    pub fn end_cue_frame(&mut self, dt: f32, view_dt: f32, alpha: f32, rumble: &mut dyn RumbleSink) {
-        let Some(cues) = &mut self.cues else { return };
-        let (turn, offset) = cues.end_frame(dt, view_dt, alpha, rumble);
-        // With a director on, its own frame has the shakes, and a turn its roll.
-        if self.arena.as_mut().is_none_or(|arena| arena.director().is_none()) {
-            self.ecs.world_mut().resource_mut::<OrbitCamera>().set_shake(turn, offset);
-        }
-    }
-
-    /// Stops a fight's rumble at once: the app lost focus or the foreground.
-    pub fn stop_rumble(&mut self, rumble: &mut dyn RumbleSink) {
-        if let Some(cues) = &mut self.cues {
-            cues.stop_rumble(rumble);
-        }
-    }
-
     /// One step of the effects, by the clocks' last steps: the world's, and the character's for the
     /// attacker's and the victim's, which stops through its hitstop. A hit starts one on it.
     fn step_vfx(&mut self) {
@@ -2282,22 +1731,23 @@ impl Scene {
         }
     }
 
-    /// What this scene may draw through that no pack's table can say (M3 K1): the post variants of its screen
-    /// effects, its effects if it plays any, its sky and its HUD.
-    pub fn declared_pipelines(&self) -> PipelineInventory {
-        PipelineInventory {
+    /// What this scene and `show` may draw through that no pack's table can say (M3 K1): the post variants of the
+    /// screen effects it may push, its effects if it plays any, its sky, and what the show declares.
+    pub fn declared_pipelines(&self, show: &impl SceneShow) -> PipelineInventory {
+        let mut inventory = PipelineInventory {
             post: self.effect_variants(),
-            effects: self.vfx.is_some() || self.cues.is_some(),
-            ui: self.hud.is_some(),
+            effects: self.vfx.is_some(),
             sky: self.sky_material.into_iter().collect(),
             ..PipelineInventory::default()
-        }
+        };
+        show.declare_pipelines(&mut inventory);
+        inventory
     }
 
-    /// Readies `renderer` for what this scene declares ([`Self::declared_pipelines`]), so none of it compiles
-    /// on the frame it first shows. The app calls it whenever it makes a renderer.
-    pub fn prewarm(&self, renderer: &mut Renderer) {
-        renderer.prewarm(&self.declared_pipelines());
+    /// Readies `renderer` for what this scene and `show` declare ([`Self::declared_pipelines`]), so none of it
+    /// compiles on the frame it first shows. The app calls it whenever it makes a renderer.
+    pub fn prewarm(&self, show: &impl SceneShow, renderer: &mut Renderer) {
+        renderer.prewarm(&self.declared_pipelines(show));
     }
 
     /// Runs presentation and extraction, then returns this frame's packet, with the main view
@@ -2309,21 +1759,20 @@ impl Scene {
     /// latest, for transforms, poses and clocks alike (time of day, cutscenes, screen effects, effects'
     /// particles and trails, `FramePacket::time_seconds`). So an effect stays with the pose it accents,
     /// and shown time never steps back on entering pause or slow motion.
-    pub fn frame_packet(&mut self, alpha: f32, target_size: Option<(u32, u32)>) -> &FramePacket {
+    pub fn frame_packet(
+        &mut self,
+        alpha: f32,
+        target_size: Option<(u32, u32)>,
+        show: &mut impl SceneShow,
+    ) -> &FramePacket {
         self.aspect = drawable_aspect(target_size).unwrap_or(self.aspect);
         self.ecs.presentation(alpha);
-        if let Some(arena) = &mut self.arena {
-            let started = Stopwatch::start();
-            arena.present(self.ecs.world_mut(), alpha, drawable_aspect(target_size));
-            self.camera_time = started.elapsed();
-        }
-        self.follow_hand();
-        self.follow_blades(alpha);
+        show.present(self, alpha, drawable_aspect(target_size));
         let (sky_material, cloud_cover, plain_sky) = (self.sky_material, self.cloud_cover, self.plain_sky);
         let fog = self.fog;
         let (plain_post, sharpening, wind) = (self.plain_post, self.sharpening, self.wind);
         let probe_hours = &self.probe_hours;
-        let (vfx, cues) = (&mut self.vfx, &mut self.cues);
+        let vfx = &mut self.vfx;
         let view_cut = &mut self.view_cut;
         if let Some(aspect) = drawable_aspect(target_size) {
             self.view_aspect = aspect;
@@ -2337,9 +1786,7 @@ impl Scene {
             if let Some(vfx) = vfx {
                 vfx.write(&mut packet.vfx, alpha);
             }
-            if let Some(cues) = cues {
-                cues.write(&mut packet.vfx, alpha);
-            }
+            show.write_effects(&mut packet.vfx, alpha);
             if let Some(aspect) = drawable_aspect(target_size) {
                 let cut = std::mem::take(view_cut);
                 packet.views.push(ViewData { cut, ..ViewData::new(camera.camera_data(aspect)) });
@@ -2438,14 +1885,9 @@ impl Scene {
                 });
             }
         }
-        if let (Some(hud), Some(size)) = (&mut self.hud, target_size) {
-            if let Some(arena) = &self.arena
-                && let Some(values) = arena.hud_values()
-            {
-                hud.show_fight(values, arena.fight_time());
-            }
+        if let Some(size) = target_size {
             let mut extract = self.ecs.world_mut().resource_mut::<RenderExtract>();
-            hud.draw(size, &mut extract.packet_mut().ui);
+            show.draw_interface(size, &mut extract.packet_mut().ui);
         }
         // Debug draws, from every thread (M2 T1). Timed ones run on the world clock, which pausing
         // and single-stepping the world holds, so what they mark stays to be looked at.
@@ -2453,96 +1895,11 @@ impl Scene {
         if let Some(demo) = self.debug_draw_demo {
             demo.draw_in_frame();
         }
-        if let Some(arena) = &self.arena
-            && CombatViews::current().colliders
-        {
-            arena.draw_colliders(&mut Facade);
-        }
+        show.draw_debug();
         let now = self.ecs.world().resource::<WorldClock>().0.now().as_secs_f64();
         let mut extract = self.ecs.world_mut().resource_mut::<RenderExtract>();
         self.debug_draw.collect(now, &mut extract.packet_mut().debug);
         self.ecs.world().resource::<RenderExtract>().packet()
-    }
-
-    /// Shows the combat HUD over the scene (`--hud`, M2 I2).
-    pub fn set_hud(&mut self, hud: SandboxHud) {
-        self.hud = Some(hud);
-    }
-
-    /// The HUD, if the scene shows one.
-    pub fn hud(&self) -> Option<&SandboxHud> {
-        self.hud.as_ref()
-    }
-
-    /// A platform event for the HUD's touch zones: whether they took it.
-    pub fn hud_event(&mut self, event: &sapphire_platform::Event) -> bool {
-        self.hud.as_mut().is_some_and(|hud| hud.handle_event(event))
-    }
-
-    /// Whether the HUD's stick or a button holds this finger.
-    #[cfg(feature = "dev")]
-    pub fn hud_holds_control(&self, finger: sapphire_platform::FingerId) -> bool {
-        self.hud.as_ref().is_some_and(|hud| hud.holds_control(finger))
-    }
-
-    /// Says whether a thumb is what's playing, for who a fight's soft lock chooses
-    /// ([`crate::arena::ArenaActors::set_played_on_touch`]).
-    pub fn set_played_on_touch(&mut self, touch: bool) {
-        if let Some(arena) = &mut self.arena {
-            arena.set_played_on_touch(touch);
-        }
-    }
-
-    /// The HUD's frame on the real clock, where a window has its metrics: what its touch zones read
-    /// goes to `input`, before that judges the frame.
-    pub fn update_hud(
-        &mut self,
-        now: sapphire_platform::Timestamp,
-        window: &sapphire_platform::Window,
-        input: &mut SandboxInput,
-    ) {
-        let Some(hud) = &mut self.hud else { return };
-        let metrics = hud.metrics_of(window);
-        hud.follow_devices(input.desktop(), input.active_gamepad().is_some());
-        self.read_touch(now, metrics, input);
-    }
-
-    /// What the HUD's touch zones read this frame, on a frame of `metrics`, to `input`.
-    pub fn read_touch(
-        &mut self,
-        now: sapphire_platform::Timestamp,
-        metrics: sapphire_ui::UiMetrics,
-        input: &mut SandboxInput,
-    ) {
-        let Some(hud) = &mut self.hud else { return };
-        if let Some(touch) = hud.update(now, metrics) {
-            input.read_touch(touch, now);
-        }
-    }
-
-    /// The hits `sim`'s latest step landed, as the HUD's numbers, once: a run that's stopped takes no more
-    /// steps, and its last one's cues stand.
-    pub fn show_damage(&mut self, sim: &Simulation) {
-        let Some(hud) = &mut self.hud else { return };
-        if !hud.reads_hits_of(sim.tick()) {
-            return;
-        }
-        let camera = self.ecs.world().resource::<OrbitCamera>().camera_data(self.view_aspect);
-        let view_projection = camera.proj * camera.view;
-        for cue in sim.cues() {
-            let Some(hit) = crate::hud::landed(&cue) else { continue };
-            hud.show_hit(hit.damage, hit.point, hit.weight, view_projection);
-            // So a run on a device can be read from its log, as the HUD's buttons are.
-            tracing::info!(
-                target: LOG_TARGET,
-                tick = cue.tick,
-                attacker = ?cue.actor,
-                target_actor = ?hit.target,
-                damage = hit.damage,
-                outcome = ?hit.outcome,
-                "hit landed"
-            );
-        }
     }
 
     /// Makes the next packet add every instance again, changed or not, for a renderer that
@@ -2600,7 +1957,6 @@ impl Scene {
     }
 
     /// This frame's packet, for what the overlay shows of it.
-    #[cfg(feature = "dev")]
     pub fn packet(&self) -> &FramePacket {
         self.ecs.world().resource::<RenderExtract>().packet()
     }
@@ -2691,8 +2047,6 @@ pub(crate) fn mesh_bounds(mesh: &ArchivedMesh) -> [[f32; 3]; 2] {
 }
 
 #[cfg(test)]
-mod clock_tests;
-#[cfg(test)]
 mod spring_tests;
 
 #[cfg(test)]
@@ -2730,13 +2084,13 @@ mod tests {
     #[test]
     fn hitstop_and_slow_motion_scale_the_spin() {
         let mut scene = scene();
-        scene.apply(SimActions { hitstop: true, ..SimActions::default() });
+        scene.apply(SceneActions { hitstop: true, ..SceneActions::default() });
         for _ in 0..HITSTOP_TICKS {
             scene.step();
         }
         assert_eq!(angle(&scene), 0.0, "frozen by hitstop");
 
-        scene.apply(SimActions { toggle_slow_motion: true, ..SimActions::default() });
+        scene.apply(SceneActions { toggle_slow_motion: true, ..SceneActions::default() });
         for _ in 0..TICK_HZ {
             scene.step();
         }
@@ -2754,9 +2108,9 @@ mod tests {
             scene.step();
         }
         // The hit's own step, which a frame draws up to the end of; what freezes holds there.
-        let on_its_way = scene.frame_packet(0.5, Some((1, 1))).vfx.clone();
+        let on_its_way = scene.frame_packet(0.5, Some((1, 1)), &mut ()).vfx.clone();
         scene.end_frame();
-        let before = scene.frame_packet(1.0, Some((1, 1))).vfx.clone();
+        let before = scene.frame_packet(1.0, Some((1, 1)), &mut ()).vfx.clone();
         scene.end_frame();
         assert!(!before.ribbon_points.is_empty() && !before.sprites.is_empty(), "the trail and the spark");
         assert!(on_its_way.ribbon_points.len() < before.ribbon_points.len(), "the blade's still on its way");
@@ -2765,7 +2119,7 @@ mod tests {
         for _ in 0..5 {
             scene.step();
         }
-        let held = scene.frame_packet(0.5, Some((1, 1))).vfx.clone();
+        let held = scene.frame_packet(0.5, Some((1, 1)), &mut ()).vfx.clone();
         scene.end_frame();
         assert_eq!(angle(&scene), spun, "the turntable");
         assert_eq!(held.ribbon_points, before.ribbon_points, "the trail");
@@ -2774,7 +2128,7 @@ mod tests {
             scene.step();
         }
         assert!(angle(&scene) > spun, "and it moves on after them");
-        let after = scene.frame_packet(0.5, Some((1, 1))).vfx.clone();
+        let after = scene.frame_packet(0.5, Some((1, 1)), &mut ()).vfx.clone();
         assert_ne!(after.ribbon_points, before.ribbon_points);
     }
 
@@ -2807,7 +2161,7 @@ mod tests {
                 scene.step();
             });
             allocations += steps.allocations;
-            let _ = scene.frame_packet(0.5, Some((1, 1)));
+            let _ = scene.frame_packet(0.5, Some((1, 1)), &mut ());
             scene.end_frame();
         }
         assert_eq!(allocations, 0, "rule R6");
@@ -2887,354 +2241,11 @@ mod tests {
                 }
             });
             allocations += steps.allocations;
-            let _ = scene.frame_packet(0.5, Some((1, 1)));
+            let _ = scene.frame_packet(0.5, Some((1, 1)), &mut ());
             scene.end_frame();
         }
         assert_eq!(scene.with_screen_effects(|stack, _| stack.stats().pushed), layers, "the preset fired");
         assert_eq!(allocations, 0, "rule R6");
-    }
-
-    /// The arena's stage with stand-in meshes, framed by `shot`, and the figure it holds the character by.
-    pub(super) fn arena_stage(shot: ArenaShot) -> (Scene, Figure) {
-        let plain = MeshHandle::from_raw(1);
-        let town = TownMeshes {
-            town: plain,
-            plants: [plain; lookdev::Plant::ALL.len()],
-            mountains: [plain; lookdev::MOUNTAINS.len()],
-        };
-        let figure = Figure { head: Vec3::new(0.0, 1.45, 0.0), ..Figure::MANNEQUIN };
-        let pose = RenderPose { palette: vec![Default::default(); 2], morph_weights: vec![] };
-        let look = LookDev { town, fog_cards: None, pose, figure };
-        let cooked = sapphire_gameplay::arena::cooked_colliders().expect("it cooks");
-        let set = sapphire_colliders::ColliderSet::read(&cooked).expect("it reads");
-        let ground = ArenaGround::new(set).expect("the stage stands on it");
-        let mut scene = Scene::with_character(MeshHandle::from_raw(0), BOUNDS, false);
-        let enemy = EnemyMeshes { warrior: MeshHandle::from_raw(2), blade: MeshHandle::from_raw(3) };
-        let blade_in_model = Mat4::from_translation(Vec3::new(0.0, 1.0, 0.0));
-        let held = enemy::Held {
-            pose: RenderPose { palette: vec![Default::default(); 2], morph_weights: vec![] },
-            figure: Figure { head: Vec3::new(0.0, 2.2, 0.0), ..Figure::MANNEQUIN },
-            blade: blade_in_model,
-            hand: 0,
-        };
-        scene.spawn_arena(Arena { enemy, held, shot, look, ground });
-        (scene, figure)
-    }
-
-    /// A new fight stands everyone somewhere else, so the renderer hears of it once: temporal AA drops
-    /// what it drew of the last fight, and velocity counts the camera as unmoved. A swap, which stands
-    /// someone new in the same place with the camera going on, isn't a cut.
-    #[test]
-    fn a_new_fight_cuts_the_view_once_and_a_swap_doesnt() {
-        use sapphire_gameplay::replay::{Recording, SCENARIOS, arena_walk, find_scenario, find_script};
-
-        let scenario = find_scenario(SCENARIOS, crate::arena::SCENARIO).expect("listed");
-        let cut_of = |scene: &mut Scene| {
-            let cut = scene.frame_packet(1.0, Some((16, 9))).main_view().expect("a view").cut;
-            scene.end_frame();
-            cut
-        };
-        let (mut scene, _) = arena_stage(ArenaShot::Follow);
-        assert!(!cut_of(&mut scene), "a first frame has nothing to drop");
-        let mut first = Recording::new(scenario, scenario.config).expect("sets up");
-        let cast = first.cast().to_vec();
-        let mut source = arena_walk;
-        for _ in 0..80 {
-            first.step(&mut source).expect("short");
-            scene.follow_simulation(first.simulation(), &cast);
-        }
-        assert!(!cut_of(&mut scene), "a fight going on");
-
-        let mut next = Recording::new(scenario, scenario.config).expect("sets up");
-        next.step(&mut source).expect("short");
-        scene.follow_simulation(next.simulation(), &cast);
-        // A frame with no target draws no view, and leaves the cut for the one that does.
-        let _ = scene.frame_packet(1.0, None);
-        scene.end_frame();
-        assert!(cut_of(&mut scene), "the new fight's first view");
-        assert!(!cut_of(&mut scene), "and only that");
-
-        let party = find_scenario(SCENARIOS, crate::arena::PARTY_SCENARIO).expect("listed");
-        let mut swapping = Recording::new(party, party.config).expect("sets up");
-        let cast = swapping.cast().to_vec();
-        let mut source = find_script("party-swap").expect("listed").actions;
-        let (mut scene, _) = arena_stage(ArenaShot::Follow);
-        for _ in 0..240 {
-            swapping.step(&mut source).expect("short");
-            scene.follow_simulation(swapping.simulation(), &cast);
-            assert!(!cut_of(&mut scene), "tick {}", swapping.simulation().tick());
-        }
-        assert!(swapping.simulation().party().swaps() > 0, "it swapped");
-    }
-
-    /// A shake's roll, which `OrbitCamera::set_view` can't take, reaches the frame's view: everything
-    /// sums on the director's pose, so the roll is read back off it.
-    #[test]
-    fn a_directors_shake_rolls_the_view_the_frame_draws() {
-        let (mut scene, _) = arena_stage(ArenaShot::Director);
-        // How far the view's right has left level, from a frame `dt` seconds on.
-        let tilt = |scene: &mut Scene, dt: f32| {
-            assert!(scene.drive_arena_camera(dt, sapphire_math::Vec2::ZERO, 0.0));
-            let view = scene.frame_packet(1.0, Some((16, 9))).main_view().expect("a view").camera.view;
-            scene.end_frame();
-            view.inverse().x_axis.y.abs()
-        };
-        assert!(tilt(&mut scene, 1.0 / 60.0) < 1e-5, "level with no shake");
-        let director = scene.arena.as_mut().expect("built").director().expect("this shot has one");
-        let finish = director.tuning().shake_id("finish").expect("a shipped preset");
-        director.fire_shake(finish, 1.0);
-        let most = (0..30).map(|_| tilt(&mut scene, 1.0 / 60.0)).fold(0.0_f32, f32::max);
-        assert!(most > 1e-3, "it rolls: {most}");
-    }
-
-    /// A pause holds what's on screen, a shake mid-swing and the director's springs among it, however
-    /// long it lasts, and the shake plays on from there when it ends.
-    /// A real party fight, by the script that swaps back to someone hurt: the bar shows a loss for a hit,
-    /// and none for a swap to someone with less.
-    #[test]
-    fn a_swap_doesnt_read_as_a_hit_on_the_huds_bar() {
-        use sapphire_gameplay::replay::{Recording, SCENARIOS, find_scenario, find_script};
-        use sapphire_gameplay::{ActorActions, ActorId, Buttons};
-        use sapphire_math::Vec2;
-        use sapphire_ui::{HudLayout, Insets, UiMetrics};
-
-        use crate::hud::{HudMode, HudOptions};
-
-        let target = (1280, 720);
-        let bar = HudLayout::new(UiMetrics::of_pixels(target, 1.0, Insets::default())).player.hp;
-        let (mut scene, _) = arena_stage(ArenaShot::Follow);
-        let live = HudOptions { mode: HudMode::Live, ..HudOptions::default() };
-        scene.set_hud(SandboxHud::for_fight(live));
-        let party = find_scenario(SCENARIOS, crate::arena::PARTY_SCENARIO).expect("listed");
-        let mut fight = Recording::new(party, party.config).expect("sets up");
-        let cast = fight.cast().to_vec();
-        // Its schedule goes round to the first again, and pressing on brings back those the warrior hurt.
-        let script = find_script("party-swap").expect("listed").actions;
-        let mut source = |tick: u64, cast: &[ActorId]| {
-            let mut actions = script(tick, cast);
-            if tick >= 352 && tick.is_multiple_of(2) {
-                let swap = ActorActions { buttons: Buttons::SWAP, ..ActorActions::NEUTRAL };
-                actions.set(cast[0], swap).expect("one actor fits a tick");
-            }
-            actions
-        };
-        let mut on_field = cast[0];
-        let (mut swaps_down, mut losses) = (0, 0);
-        for _ in 0..1200 {
-            fight.step(&mut source).expect("short");
-            let sim = fight.simulation();
-            scene.follow_simulation(sim, &cast);
-            let quads = &scene.frame_packet(1.0, Some(target)).ui.quads;
-            // What the bar shows lost: a range that starts past its left end, on the bar itself.
-            let lost = quads
-                .iter()
-                .filter(|quad| {
-                    let center =
-                        Vec2::from(quad.origin) + (Vec2::from(quad.axis_x) + Vec2::from(quad.axis_y)) * 0.5;
-                    quad.clip[0] > 0.0 && (center - bar.center()).length() < 1e-2
-                })
-                .count();
-            scene.end_frame();
-
-            let share = |id| {
-                let fighter = sim.actor(id).expect("in the party").fighter;
-                fighter.health() as f32 / fighter.max_health() as f32
-            };
-            let now = sim.party().on_field(cast[0]);
-            if now != on_field {
-                if share(now) < share(on_field) {
-                    swaps_down += 1;
-                    assert_eq!(lost, 0, "tick {}: a swap to someone with less", sim.tick());
-                }
-                on_field = now;
-            }
-            losses += lost;
-        }
-        assert!(swaps_down > 0, "the script swaps to someone hurt");
-        assert!(losses > 0, "and the bar does show a hit");
-    }
-
-    /// The HUD says a fight is waiting for as long as it is, on a phone as on a desktop, and a capture
-    /// can ask for the same.
-    #[test]
-    fn a_pause_shows_on_the_hud() {
-        use crate::hud::{HudMode, HudOptions};
-
-        let quads = |scene: &mut Scene| {
-            let mut list = sapphire_ui::UiDrawList::default();
-            scene.hud.as_mut().expect("set").draw((1000, 500), &mut list);
-            list.quads.len()
-        };
-        let live = HudOptions { mode: HudMode::Live, ..HudOptions::default() };
-        let mut scene = Scene::with_character(MeshHandle::from_raw(0), [[-1.0; 3], [1.0; 3]], false);
-        scene.set_hud(SandboxHud::for_fight(live));
-        let size = sapphire_platform::Size { width: 1000, height: 500 };
-        let mut input = SandboxInput::new(false, true, size).expect("the default bindings");
-        let time = |ms: u64| sapphire_platform::Timestamp::from_nanos(ms * 1_000_000);
-        input.update(time(1));
-        scene.drive_view(&input, 1.0 / 60.0);
-        let running = quads(&mut scene);
-
-        input.pause();
-        input.update(time(2));
-        scene.drive_view(&input, 1.0 / 60.0);
-        assert_eq!(quads(&mut scene), running + 3, "a veil and two bars");
-
-        let key = |ms: u64, down| {
-            sapphire_platform::Event::Key(sapphire_platform::KeyEvent {
-                timestamp: time(ms),
-                window: sapphire_platform::WindowId::from_raw(1),
-                scancode: sapphire_platform::Scancode::P,
-                keycode: sapphire_platform::Keycode(0),
-                modifiers: sapphire_platform::Modifiers::default(),
-                down,
-                repeat: false,
-            })
-        };
-        input.handle_event(&key(3, true));
-        input.handle_event(&key(4, false));
-        input.update(time(5));
-        input.update(time(6));
-        assert!(!input.is_paused());
-        scene.drive_view(&input, 1.0 / 60.0);
-        assert_eq!(quads(&mut scene), running, "gone with the pause");
-
-        let asked = HudOptions { paused: true, ..live };
-        scene.set_hud(SandboxHud::for_fight(asked));
-        assert_eq!(quads(&mut scene), running + 3, "with no input at all");
-    }
-
-    #[test]
-    fn a_pause_holds_the_directors_view_and_its_shake() {
-        let (mut scene, _) = arena_stage(ArenaShot::Director);
-        let size = sapphire_platform::Size { width: 1000, height: 500 };
-        let mut input = SandboxInput::new(true, true, size).expect("the default bindings");
-        let press = |input: &mut SandboxInput, at: u64| {
-            let time = |ms: u64| sapphire_platform::Timestamp::from_nanos(ms * 1_000_000);
-            let key = |ms: u64, down| {
-                sapphire_platform::Event::Key(sapphire_platform::KeyEvent {
-                    timestamp: time(ms),
-                    window: sapphire_platform::WindowId::from_raw(1),
-                    scancode: sapphire_platform::Scancode::P,
-                    keycode: sapphire_platform::Keycode(0),
-                    modifiers: sapphire_platform::Modifiers::default(),
-                    down,
-                    repeat: false,
-                })
-            };
-            input.handle_event(&key(at, true));
-            input.handle_event(&key(at + 1, false));
-            input.update(time(at + 2));
-        };
-        let frame = |scene: &mut Scene, input: &SandboxInput| {
-            scene.drive_view(input, 1.0 / 60.0);
-            let view = scene.frame_packet(1.0, Some((16, 9))).main_view().expect("a view").camera.view;
-            scene.end_frame();
-            view
-        };
-        let _ = frame(&mut scene, &input);
-        let director = scene.arena.as_mut().expect("built").director().expect("this shot has one");
-        let finish = director.tuning().shake_id("finish").expect("a shipped preset");
-        director.fire_shake(finish, 1.0);
-        for _ in 0..4 {
-            let _ = frame(&mut scene, &input);
-        }
-
-        press(&mut input, 100);
-        assert!(input.is_paused());
-        let held = frame(&mut scene, &input);
-        for _ in 0..120 {
-            assert_eq!(frame(&mut scene, &input), held, "nothing moves in a pause");
-        }
-
-        press(&mut input, 200);
-        input.update(sapphire_platform::Timestamp::from_nanos(210_000_000));
-        assert!(!input.is_paused());
-        let moved = (0..4).any(|_| frame(&mut scene, &input) != held);
-        assert!(moved, "the shake plays on from where it was");
-    }
-
-    /// The arena stands its two actors where the simulation has them, and no turntable moves them:
-    /// at their spawn points before a replay moves them, then each step's position, and the camera
-    /// follows the player. Moved or not, its town is the look-dev stage's, on its day.
-    #[test]
-    fn the_arena_stands_its_actors_where_the_simulation_has_them() {
-        use sapphire_gameplay::arena::spawns;
-        use sapphire_gameplay::replay::{Recording, SCENARIOS, arena_walk, find_scenario};
-
-        let (mut scene, figure) = arena_stage(ArenaShot::Follow);
-        assert_eq!(scene.time_of_day().timeline(), &lookdev::day(), "the look-dev stage's day");
-        assert!(scene.ecs.world().get::<Turntable>(scene.character).is_none());
-
-        let spawns = spawns();
-        let (character, enemy) = (scene.character, scene.arena.as_ref().expect("built").enemy_entity());
-        let origin = |scene: &Scene, entity: Entity| {
-            scene.ecs.world().get::<RenderTransform>(entity).expect("placed").0.transform_point3(Vec3::ZERO)
-        };
-        let _ = scene.frame_packet(1.0, Some((16, 9)));
-        scene.end_frame();
-        assert_eq!(origin(&scene, character), spawns.player.position());
-        assert_eq!(origin(&scene, enemy), spawns.enemy.position());
-        assert_eq!(scene.figure, figure);
-        // Drawn at its own size, with its blade where the model holds it, facing where it faces.
-        let (warrior, blade) = scene.enemy.expect("it stands there");
-        let scale = enemy::SCALE;
-        let transform =
-            |scene: &Scene, entity| scene.ecs.world().get::<RenderTransform>(entity).expect("placed").0;
-        let upright = transform(&scene, warrior).transform_vector3(Vec3::Y).length();
-        assert!((upright - scale).abs() < 1e-5, "{upright}");
-        let hand = transform(&scene, blade).transform_point3(Vec3::ZERO);
-        let expected = spawns.enemy.position() + Vec3::new(0.0, scale, 0.0);
-        assert!(hand.distance(expected) < 1e-5, "{hand}");
-        let packet = scene.ecs.world().resource::<RenderExtract>().packet();
-        assert_eq!(packet.characters.len(), 3, "all three are lit as characters");
-
-        let scenario = find_scenario(SCENARIOS, crate::arena::SCENARIO).expect("listed");
-        let mut recording = Recording::new(scenario, scenario.config).expect("sets up");
-        let mut source = arena_walk;
-        let cast = recording.cast().to_vec();
-        for _ in 0..80 {
-            recording.step(&mut source).expect("short");
-            scene.follow_simulation(recording.simulation(), &cast);
-        }
-        let walked = recording.simulation().actor(cast[0]).expect("alive").position;
-        let view = scene.frame_packet(1.0, Some((16, 9))).main_view().expect("a view").camera;
-        let eye = view.position;
-        scene.end_frame();
-        assert_eq!(origin(&scene, character), walked);
-        assert_eq!(origin(&scene, enemy), spawns.enemy.position(), "the enemy stands");
-        assert!(walked.distance(spawns.player.position()) > 1.5, "it walked: {walked}");
-        let target = crate::arena::follow_target(walked);
-        assert!(
-            (eye.distance(target) - ArenaShot::Follow.camera(walked).eye().distance(target)).abs() < 1e-4
-        );
-        assert!(eye.z > walked.z, "the camera came with it: {eye}");
-
-        // The director's view is the frame's and the stick's, behind the player and framing both.
-        let (mut scene, _) = arena_stage(ArenaShot::Director);
-        let player = spawns.player.position();
-        let view = scene.frame_packet(1.0, Some((16, 9))).main_view().expect("a view").camera;
-        let eye = view.position;
-        scene.end_frame();
-        assert!(eye.z > player.z, "behind the player, who faces -Z: {eye}");
-        assert!(eye.distance(player) > 2.0, "{eye}");
-        assert!((scene.camera().eye() - eye).length() < 1e-3, "{eye}");
-        let heading = scene.camera_heading();
-        assert!(sapphire_math::det::cos(heading) < -0.8, "it looks along -Z: {heading}");
-        assert!(
-            (sapphire_math::det::sin(heading - scene.camera().heading())).abs() < 1e-3,
-            "the camera's and the director's headings agree: {heading}, {}",
-            scene.camera().heading()
-        );
-        // A look turns it, and nothing moves it without time.
-        assert!(scene.drive_arena_camera(1.0 / 60.0, sapphire_math::Vec2::new(0.2, 0.0), 0.0));
-        let _ = scene.frame_packet(1.0, Some((16, 9)));
-        scene.end_frame();
-        assert_ne!(scene.camera_heading(), heading);
-        // With another shot it takes nothing, and the plain camera's heading is the one.
-        let (mut scene, _) = arena_stage(ArenaShot::Follow);
-        assert!(!scene.drive_arena_camera(1.0, sapphire_math::Vec2::ZERO, 0.0));
-        assert_eq!(scene.camera_heading(), scene.camera().heading());
     }
 
     #[test]
@@ -3244,7 +2255,7 @@ mod tests {
         let stalk = InstanceId(scene.stalk.expect("skinned").to_bits());
         let pose = |scene: &mut Scene| {
             scene.step();
-            let packet = scene.frame_packet(1.0, Some((1920, 1080)));
+            let packet = scene.frame_packet(1.0, Some((1920, 1080)), &mut ());
             let poses: Vec<_> = packet
                 .skinned
                 .iter()
@@ -3269,7 +2280,7 @@ mod tests {
         let mut scene = Scene::with_character(MeshHandle::from_raw(0), BOUNDS, false);
         scene.spawn_demo_lights();
         for _ in 0..2 {
-            let packet = scene.frame_packet(1.0, Some((1920, 1080)));
+            let packet = scene.frame_packet(1.0, Some((1920, 1080)), &mut ());
             assert_eq!(packet.lights.len(), 3, "every frame");
             let [min, max] = BOUNDS.map(Vec3::from);
             for light in &packet.lights {
@@ -3284,76 +2295,6 @@ mod tests {
             assert!(direction.normalize().dot(to_floor.normalize()) > 0.999, "aimed in front of the feet");
             scene.end_frame();
         }
-    }
-
-    /// The enemy stands beside the character in a shape of its own, and its blade lights as it does
-    /// but casts no capsule, so it adds nothing to shadows or occlusion. Each keeps its pose and
-    /// transform through a device loss's new meshes.
-    #[test]
-    fn the_enemy_stands_beside_the_character_in_a_shape_of_its_own() {
-        let mut scene = Scene::with_character(MeshHandle::from_raw(0), BOUNDS, false);
-        let figure = Figure {
-            head: Vec3::new(0.0, 1.45, 0.0),
-            feet: Vec3::ZERO,
-            body_radius: 0.16,
-            face: Quat::IDENTITY,
-            expression: FaceExpression::default(),
-        };
-        let town = TownMeshes {
-            town: MeshHandle::from_raw(1),
-            plants: [MeshHandle::from_raw(2); 8],
-            mountains: [MeshHandle::from_raw(3); lookdev::MOUNTAINS.len()],
-        };
-        let pose = RenderPose { palette: vec![Affine3A::IDENTITY; 2], morph_weights: Vec::new() };
-        scene.spawn_look_dev(Shot::Enemy, LookDev { town, fog_cards: None, pose: pose.clone(), figure });
-        let warrior_figure = Figure {
-            head: Vec3::new(0.0, 2.0, 0.0),
-            feet: Vec3::ZERO,
-            body_radius: 0.3,
-            face: Quat::IDENTITY,
-            expression: FaceExpression::default(),
-        };
-        let held = enemy::Held {
-            pose,
-            figure: warrior_figure,
-            blade: Mat4::from_translation(Vec3::new(-0.8, 1.2, 0.0)),
-            hand: 0,
-        };
-        let meshes = EnemyMeshes { warrior: MeshHandle::from_raw(4), blade: MeshHandle::from_raw(5) };
-        scene.spawn_enemy(meshes, held);
-        scene.step();
-        let (warrior, blade) = scene.enemy.expect("it stands there");
-        let (warrior, blade) = (InstanceId(warrior.to_bits()), InstanceId(blade.to_bits()));
-        let character = InstanceId(scene.character.to_bits());
-        let packet = scene.frame_packet(1.0, Some((1920, 1080)));
-        assert_eq!(packet.characters.len(), 3, "the character, the warrior and its blade");
-        assert_eq!(
-            packet.skinned.iter().filter(|skinned| skinned.id == warrior).count(),
-            1,
-            "the pose is sent"
-        );
-        let listed = |id| packet.characters.iter().find(|character| character.id == id).expect("listed");
-        let scale = enemy::SCALE;
-        assert!(
-            (listed(warrior).body.radius - warrior_figure.body_radius * scale).abs() < 1e-4,
-            "its own body, placed: {:?}",
-            listed(warrior).body
-        );
-        assert!((listed(character).body.radius - figure.body_radius).abs() < 1e-5, "the character's own");
-        assert!(!listed(blade).body.casts(), "the blade adds no capsule");
-        let (warrior_key, blade_key) = (listed(warrior).lighting.key, listed(blade).lighting.key);
-        assert!(warrior_key.direction.abs_diff_eq(blade_key.direction, 1e-4), "the two are lit alike");
-        scene.end_frame();
-        scene.set_enemy_meshes(EnemyMeshes {
-            warrior: MeshHandle::from_raw(6),
-            blade: MeshHandle::from_raw(7),
-        });
-        let packet = scene.frame_packet(1.0, Some((1920, 1080)));
-        let drawn: Vec<MeshHandle> = packet.instances.changed.iter().map(|instance| instance.mesh).collect();
-        assert!(
-            drawn.contains(&MeshHandle::from_raw(6)) && drawn.contains(&MeshHandle::from_raw(7)),
-            "{drawn:?}"
-        );
     }
 
     #[test]
@@ -3382,7 +2323,7 @@ mod tests {
         let frame = |scene: &mut Scene, hours: f32| {
             scene.set_day(hours, None);
             scene.step();
-            let packet = scene.frame_packet(1.0, Some((1920, 1080)));
+            let packet = scene.frame_packet(1.0, Some((1920, 1080)), &mut ());
             let lamps: f32 = packet.lights.iter().map(|light| light.intensity).sum();
             let posed: Vec<_> = packet.skinned.iter().map(|skinned| skinned.id).collect();
             let head = packet.characters[0].lighting.gi.head;
@@ -3421,7 +2362,7 @@ mod tests {
         scene.spawn_look_dev(Shot::Hero, LookDev { town, fog_cards: None, pose: pose.clone(), figure });
         let frame = |scene: &mut Scene| {
             scene.step();
-            let packet = scene.frame_packet(1.0, Some((1920, 1080)));
+            let packet = scene.frame_packet(1.0, Some((1920, 1080)), &mut ());
             let palettes: Vec<usize> = packet
                 .skinned
                 .iter()
@@ -3588,7 +2529,7 @@ mod tests {
 
         /// What this frame's packet says of `id`.
         fn drawn(scene: &mut Scene, alpha: f32, id: InstanceId) -> Drawn {
-            let packet = scene.frame_packet(alpha, Some((1920, 1080)));
+            let packet = scene.frame_packet(alpha, Some((1920, 1080)), &mut ());
             let posed = packet.skinned.iter().find(|skinned| skinned.id == id);
             let palette = posed.map(|skinned| {
                 packet.palette(skinned).expect("in range").iter().map(Affine3A::to_cols_array).collect()
@@ -3711,120 +2652,6 @@ mod tests {
             }
         }
 
-        /// An arena whose fighters both play `driver`'s graph, standing at the start of a fight, and that
-        /// fight: the warrior's blade hangs from joint 2.
-        pub(in crate::scene) fn fighting(
-            table: &ClipTable<'_>,
-        ) -> (Scene, Simulation, Vec<sapphire_gameplay::ActorId>) {
-            use sapphire_gameplay::replay::{SCENARIOS, find_scenario};
-
-            let mut scene = Scene::with_character(MeshHandle::from_raw(0), BOUNDS, false);
-            let pose = RenderPose { palette: vec![Affine3A::IDENTITY; 5], morph_weights: vec![0.25, 0.0] };
-            let figure = Figure { head: Vec3::new(0.0, 1.6, 0.0), ..Figure::MANNEQUIN };
-            let town = TownMeshes {
-                town: MeshHandle::from_raw(1),
-                plants: [MeshHandle::from_raw(2); lookdev::Plant::ALL.len()],
-                mountains: [MeshHandle::from_raw(3); lookdev::MOUNTAINS.len()],
-            };
-            let cooked = sapphire_gameplay::arena::cooked_colliders().expect("it cooks");
-            let set = sapphire_colliders::ColliderSet::read(&cooked).expect("it reads");
-            let held = enemy::Held { pose: pose.clone(), figure, blade: Mat4::IDENTITY, hand: 2 };
-            scene.spawn_arena(Arena {
-                enemy: EnemyMeshes { warrior: MeshHandle::from_raw(4), blade: MeshHandle::from_raw(5) },
-                held,
-                shot: ArenaShot::Follow,
-                look: LookDev { town, fog_cards: None, pose, figure },
-                ground: ArenaGround::new(set).expect("the stage stands on it"),
-            });
-            scene.play_fighters(driver(table).with_right_hand(1), driver(table));
-            let scenario = find_scenario(SCENARIOS, crate::arena::FIGHT_SCENARIO).expect("listed");
-            let (sim, cast) = scenario.start(scenario.config).expect("it starts");
-            (scene, sim, cast)
-        }
-
-        /// The character's sword stays in the hand of the held pose until its graph has made a pose.
-        #[test]
-        fn a_graphs_hand_says_nothing_until_it_has_a_pose() {
-            let bytes = clip().to_cooked().expect("cooked");
-            let cooked = Clip::read(&bytes).expect("a valid clip");
-            let table = ClipTable::new([(GRAPH_CLIP, Some(cooked), 0)].into_iter());
-            let (mut scene, mut sim, cast) = fighting(&table);
-            let character = scene.character;
-            let hand =
-                |scene: &Scene| scene.ecs.world().get::<GraphDriver>(character).expect("on").right_hand();
-            assert_eq!(hand(&scene), None, "no pose yet");
-            sim.step(&sapphire_gameplay::TickActions::NEUTRAL);
-            scene.follow_simulation(&sim, &cast);
-            scene.animate_fighters(&table, &table, 1.0);
-            let held = scene.ecs.world().get::<GraphDriver>(character).expect("on").player.pose().model()[1];
-            assert_eq!(hand(&scene), Some(Mat4::from(held)));
-        }
-
-        /// Both fighters play from the steps' views, the enemy's blade goes where its hand does, a frozen
-        /// clock asks nothing of them, and a frame allocates nothing.
-        #[test]
-        fn both_fighters_play_their_graphs_and_the_blade_stays_in_hand() {
-            let bytes = clip().to_cooked().expect("cooked");
-            let cooked = Clip::read(&bytes).expect("a valid clip");
-            let table = ClipTable::new([(GRAPH_CLIP, Some(cooked), 0)].into_iter());
-            let (mut scene, mut sim, cast) = fighting(&table);
-            let (warrior, blade) = scene.enemy.expect("it stands there");
-            let palette = |scene: &Scene, entity| {
-                scene.ecs.world().get::<RenderPose>(entity).expect("posed").palette.clone()
-            };
-            let held = palette(&scene, warrior);
-
-            scene.animate_fighters(&table, &table, 1.0);
-            assert_eq!(scene.anim_stats().characters, 0, "nothing before a fight");
-            assert_eq!(palette(&scene, warrior), held, "it holds what it has");
-
-            sim.step(&sapphire_gameplay::TickActions::NEUTRAL);
-            scene.follow_simulation(&sim, &cast);
-            scene.animate_fighters(&table, &table, 1.0);
-            assert_eq!(scene.anim_stats().characters, 2);
-            assert_eq!(scene.anim_stats().evaluated, 2);
-            assert_eq!(scene.anim_stats().joints, 10);
-            assert_ne!(palette(&scene, warrior), held, "the graph has it");
-            assert_ne!(palette(&scene, scene.character), held);
-
-            let _ = scene.frame_packet(1.0, Some((16, 9)));
-            scene.end_frame();
-            let world = scene.ecs.world();
-            let drawn = |entity| world.get::<RenderTransform>(entity).expect("placed").0;
-            let driver = world.get::<GraphDriver>(warrior).expect("playing");
-            let hand = Mat4::from(driver.player.pose().model()[2]);
-            let expected = drawn(warrior) * hand;
-            assert!(drawn(blade).abs_diff_eq(expected, 1e-5), "{} against {expected}", drawn(blade));
-
-            scene.animate_fighters(&table, &table, 1.0);
-            let ((), counts) = sapphire_core::alloc::count_in_scope(|| {
-                for _ in 0..200 {
-                    sim.step(&sapphire_gameplay::TickActions::NEUTRAL);
-                    scene.follow_simulation(&sim, &cast);
-                    scene.animate_fighters(&table, &table, 0.5);
-                }
-            });
-            if sapphire_core::alloc::PER_THREAD_COUNTS {
-                assert_eq!(counts.allocations, 0, "{counts:?}");
-            }
-
-            let mut frozen = false;
-            for _ in 0..240 {
-                sim.step(&sapphire_gameplay::TickActions::NEUTRAL);
-                scene.follow_simulation(&sim, &cast);
-                frozen = sim.actor(cast[0]).expect("alive").clock_delta == sapphire_time::SimDuration::ZERO;
-                scene.animate_fighters(&table, &table, 1.0);
-                if frozen {
-                    break;
-                }
-            }
-            assert!(frozen, "a hit stops its target's clock within 4 s");
-            for alpha in [0.25, 0.75] {
-                scene.animate_fighters(&table, &table, alpha);
-                assert!(scene.anim_stats().evaluated <= 1, "at most the one still moving");
-            }
-        }
-
         /// A scene with no graph does no graph work, and a graph's frame allocates nothing once it's
         /// made: every step and frame of a script, a cancel's transition among them.
         #[test]
@@ -3941,68 +2768,6 @@ mod tests {
             }
         }
 
-        /// The blade is where the hand is, held or playing, and goes with the character when root
-        /// motion moves it. It draws as a character with no body, lit like the one holding it, and
-        /// keeps its place through a device loss's new mesh.
-        #[test]
-        fn the_blade_follows_the_hand_and_adds_no_body() {
-            let bytes = clip().to_cooked().expect("cooked");
-            let clip = Clip::read(&bytes).expect("a valid clip");
-            let mut scene = stage();
-            let held_hand = Mat4::from_translation(Vec3::new(-0.2, 0.9, 0.1));
-            scene.spawn_blade(MeshHandle::from_raw(9), held_hand);
-            let entity = scene.blade.expect("in the hand").entity;
-            let id = extract::instance_id(entity);
-            let character = extract::instance_id(scene.character);
-            let transform = |scene: &Scene, entity: Entity| {
-                scene.ecs.world().get::<RenderTransform>(entity).expect("it draws").0
-            };
-
-            // Held: the held pose's hand.
-            let packet = scene.frame_packet(1.0, Some((1920, 1080)));
-            let drawn = packet.instances.changed.iter().find(|instance| instance.id == id).expect("it draws");
-            assert!(drawn.transform.abs_diff_eq(held_hand * blade::socket(), 1e-5), "{:?}", drawn.transform);
-            let listed = |id| packet.characters.iter().find(|entry| entry.id == id).expect("listed");
-            assert!(!listed(id).body.casts(), "it adds no capsule");
-            let (own, holder) = (listed(id).lighting.key, listed(character).lighting.key);
-            assert!(own.direction.abs_diff_eq(holder.direction, 1e-4), "the two are lit alike");
-            scene.end_frame();
-
-            // Playing: the pose's hand, with the root's place.
-            let rest = skeleton_pose_rest();
-            let hand = 1;
-            let joints = FigureJoints::for_test(&rest, 2, 0.0, [3, 4]).with_right_hand(hand);
-            let bytes = skeleton().to_cooked().expect("cooked");
-            let binds: Vec<SkinBind> = (0..5)
-                .map(|joint| SkinBind { joint, inverse_bind_matrix: Mat4::IDENTITY.to_cols_array_2d() })
-                .collect();
-            let pose =
-                CharacterPose::new(Skeleton::read(&bytes).expect("valid"), &binds, &[], vec![0.25, 0.0]);
-            scene.play_clip(ClipPlayer::new(pose, joints));
-            let mut places = Vec::new();
-            for _ in 0..30 {
-                scene.step();
-                frame(&mut scene, clip, 1.0, id);
-                let holder = scene.ecs.world().get::<ClipPlayer>(scene.character).expect("playing");
-                let expected = transform(&scene, scene.character)
-                    * holder.right_hand().expect("found")
-                    * blade::socket();
-                let place = transform(&scene, entity);
-                assert!(place.abs_diff_eq(expected, 1e-4), "{place:?} against {expected:?}");
-                places.push(place.transform_point3(Vec3::ZERO));
-            }
-            assert!(places[0].distance(places[29]) > 0.5, "root motion carried it: {places:?}");
-
-            // A device loss's new mesh keeps its place.
-            let before = transform(&scene, entity);
-            scene.set_blade_mesh(MeshHandle::from_raw(10));
-            let packet = scene.frame_packet(1.0, Some((1920, 1080)));
-            let drawn =
-                packet.instances.changed.iter().find(|instance| instance.id == id).expect("re-meshed");
-            assert_eq!(drawn.mesh, MeshHandle::from_raw(10));
-            assert!(drawn.transform.abs_diff_eq(before, 1e-5));
-        }
-
         #[test]
         fn a_clip_poses_the_character_each_frame_and_everything_follows_the_skeleton() {
             let bytes = clip().to_cooked().expect("cooked");
@@ -4076,7 +2841,7 @@ mod tests {
             frame(&mut scene, clip, 1.0, id);
             assert_eq!(scene.anim_stats().evaluated, 1);
 
-            scene.apply(SimActions { hitstop: true, ..SimActions::default() });
+            scene.apply(SceneActions { hitstop: true, ..SceneActions::default() });
             // The hitstop's first step: time goes on to where it stopped, at most, whatever alpha.
             scene.step();
             let frozen = frame(&mut scene, clip, 0.25, id);
@@ -4151,7 +2916,7 @@ mod tests {
                 frame(&mut scene, clip, 1.0, id);
                 assert_eq!(scene.anim_stats().ik, 1);
             }
-            scene.apply(SimActions { hitstop: true, ..SimActions::default() });
+            scene.apply(SceneActions { hitstop: true, ..SceneActions::default() });
             scene.step();
             frame(&mut scene, clip, 0.25, id);
             let held = head_turn(&scene);
@@ -4293,7 +3058,7 @@ mod tests {
             for _ in 0..3 {
                 scene.step();
                 scene.animate_if_playing(Some((clip, 0)), 1.0);
-                scene.frame_packet(1.0, Some((1920, 1080)));
+                scene.frame_packet(1.0, Some((1920, 1080)), &mut ());
                 scene.end_frame();
                 assert_eq!(scene.anim_stats(), AnimStats::default(), "no player, no work");
             }
@@ -4483,7 +3248,7 @@ mod tests {
         // Review WA-3: clocks ran up to a tick ahead of the latest step, by the last step's delta,
         // so when that delta shrank, on a pause or into slow motion, shown time stepped back.
         fn shown(scene: &mut Scene, alpha: f32) -> f64 {
-            let seconds = scene.frame_packet(alpha, Some((1920, 1080))).time_seconds;
+            let seconds = scene.frame_packet(alpha, Some((1920, 1080)), &mut ()).time_seconds;
             scene.end_frame();
             seconds
         }
@@ -4524,10 +3289,10 @@ mod tests {
         }
         let hours = |scene: &Scene| scene.time_of_day().clock().hours(1.0);
         assert!((hours(&scene) - 19.0).abs() < 1e-4, "an hour a second");
-        let packet = scene.frame_packet(1.0, Some((1920, 1080)));
+        let packet = scene.frame_packet(1.0, Some((1920, 1080)), &mut ());
         assert!(packet.day_night > 0.0, "past sunset");
         scene.end_frame();
-        scene.apply(SimActions { toggle_slow_motion: true, ..SimActions::default() });
+        scene.apply(SceneActions { toggle_slow_motion: true, ..SceneActions::default() });
         for _ in 0..TICK_HZ {
             scene.step();
         }
@@ -4540,7 +3305,7 @@ mod tests {
         let emission = |scene: &mut Scene, hours: f32| {
             scene.set_day(hours, None);
             scene.step();
-            let scale = scene.frame_packet(1.0, Some((1920, 1080))).emission_scale;
+            let scale = scene.frame_packet(1.0, Some((1920, 1080)), &mut ()).emission_scale;
             scene.end_frame();
             scale
         };
@@ -4564,7 +3329,7 @@ mod tests {
         let mut scene = Scene::with_character(MeshHandle::from_raw(0), BOUNDS, false);
         let character = InstanceId(scene.character.to_bits());
         scene.step();
-        let packet = scene.frame_packet(1.0, Some((1920, 1080)));
+        let packet = scene.frame_packet(1.0, Some((1920, 1080)), &mut ());
         let [lit] = packet.characters[..] else { panic!("one character: {:?}", packet.characters) };
         assert_eq!(lit.id, character);
         // At the default hour the gameplay preset's key is the sun the sandbox always drew with,
@@ -4577,27 +3342,27 @@ mod tests {
 
         // A portrait key holds to the camera, wherever the sun is.
         scene.set_character_rig("portrait").expect("shipped");
-        let packet = scene.frame_packet(1.0, Some((1920, 1080)));
+        let packet = scene.frame_packet(1.0, Some((1920, 1080)), &mut ());
         assert_ne!(packet.characters[0].lighting.key.direction, SUN.direction);
         scene.end_frame();
         let error = scene.set_character_rig("noir").unwrap_err();
         assert!(error.contains("gameplay, portrait"), "{error}");
 
         // Without a view there is no camera to resolve the rig for, and nothing draws.
-        assert!(scene.frame_packet(1.0, None).characters.is_empty());
+        assert!(scene.frame_packet(1.0, None, &mut ()).characters.is_empty());
         scene.end_frame();
     }
 
     #[test]
     fn the_sky_material_and_cloud_cover_reach_the_packet() {
         let mut scene = scene();
-        let packet = scene.frame_packet(1.0, Some((1920, 1080)));
+        let packet = scene.frame_packet(1.0, Some((1920, 1080)), &mut ());
         assert_eq!(packet.sky_material, None, "none until loaded");
         assert!(packet.sky_layers.clouds.coverage > 0.0, "the default day's clouds at 10:00");
         scene.end_frame();
         scene.set_sky_material(MaterialHandle::from_raw(4));
         scene.set_cloud_cover(Some(0.0));
-        let packet = scene.frame_packet(1.0, Some((1920, 1080)));
+        let packet = scene.frame_packet(1.0, Some((1920, 1080)), &mut ());
         assert_eq!(packet.sky_material, Some(MaterialHandle::from_raw(4)));
         assert_eq!(
             (packet.sky_layers.clouds.coverage, packet.sky_layers.clouds.cirrus),
@@ -4608,7 +3373,7 @@ mod tests {
         scene.end_frame();
         scene.set_day(22.0, None);
         scene.set_plain_sky(true);
-        let packet = scene.frame_packet(1.0, Some((1920, 1080)));
+        let packet = scene.frame_packet(1.0, Some((1920, 1080)), &mut ());
         assert_eq!(packet.sky_layers, SkyLayers::default(), "no stars or moon at night either");
         scene.end_frame();
     }
@@ -4617,15 +3382,15 @@ mod tests {
     fn plain_post_drops_the_compositing_layers_and_sharpening_reaches_the_packet() {
         let mut scene = scene();
         scene.set_day(18.5, None);
-        let layered = scene.frame_packet(1.0, Some((1920, 1080))).post;
+        let layered = scene.frame_packet(1.0, Some((1920, 1080)), &mut ()).post;
         assert!(layered.diffusion.intensity > 0.0, "the default day's sunset glows");
         assert_eq!(layered.sharpening, 0.0, "off by default");
         scene.end_frame();
         scene.set_sharpening(Some(0.5));
-        assert_eq!(scene.frame_packet(1.0, Some((1920, 1080))).post.sharpening, 0.5);
+        assert_eq!(scene.frame_packet(1.0, Some((1920, 1080)), &mut ()).post.sharpening, 0.5);
         scene.end_frame();
         scene.set_plain_post(true);
-        let plain = scene.frame_packet(1.0, Some((1920, 1080))).post;
+        let plain = scene.frame_packet(1.0, Some((1920, 1080)), &mut ()).post;
         assert_eq!(plain, layered.plain(), "time of day's post without the layers");
         scene.end_frame();
     }
@@ -4639,7 +3404,7 @@ mod tests {
         let (turntable, turntable_id) = (scene.character, InstanceId(scene.character.to_bits()));
         for frame in 0..2 {
             scene.step();
-            let packet = scene.frame_packet(1.0, Some((1920, 1080)));
+            let packet = scene.frame_packet(1.0, Some((1920, 1080)), &mut ());
             assert_eq!(packet.characters.len(), count + 1, "the heads and the turntable");
             let added =
                 packet.instances.changed.iter().filter(|instance| heads.contains(&instance.id)).count();
@@ -4669,7 +3434,7 @@ mod tests {
         let heads: Vec<_> = scene.faces.iter().map(|head| InstanceId(head.to_bits())).collect();
         let turntable = InstanceId(scene.character.to_bits());
         scene.step();
-        let packet = scene.frame_packet(1.0, Some((1920, 1080)));
+        let packet = scene.frame_packet(1.0, Some((1920, 1080)), &mut ());
         let preset = LightRigLibrary::default_rigs().rig(LightRigId::DEFAULT).gi;
         for id in &heads {
             let lighting = packet.characters.iter().find(|c| c.id == *id).expect("listed").lighting;
@@ -4691,7 +3456,7 @@ mod tests {
     fn screen_effects_reach_the_packet_and_end() {
         let mut scene = scene();
         scene.step();
-        let effects = |scene: &mut Scene| scene.frame_packet(1.0, Some((64, 36))).post.effects;
+        let effects = |scene: &mut Scene| scene.frame_packet(1.0, Some((64, 36)), &mut ()).post.effects;
         assert_eq!(effects(&mut scene), sapphire_render::PostEffects::NONE, "an empty stack draws nothing");
         scene.end_frame();
 
@@ -4725,115 +3490,13 @@ mod tests {
         scene.end_frame();
     }
 
-    /// G3's recording, from its start.
-    fn recorded_fight() -> crate::combat::Combat {
-        let path =
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/replays/fight.sreplay");
-        let option = crate::combat::CombatOption::Replay { path, to_end: true };
-        crate::combat::Combat::new(&option).expect("a committed recording")
-    }
-
-    /// A recorded fight fired as `--cues` does: the frame the first hit lands in draws its spark and its
-    /// screen effect and fires its shake, which moves the view from the next, the frames before it draw
-    /// none of them, and the simulation still reaches its recorded checksums.
-    #[test]
-    fn a_fights_first_hit_reaches_the_frame_it_lands_in() {
-        let mut combat = recorded_fight();
-        let mut scene = scene();
-        scene.play_cues(VfxBudget::DESKTOP_LOW).expect("the shipped table resolves");
-        let view_at =
-            |scene: &Scene| scene.ecs.world().resource::<OrbitCamera>().camera_data(16.0 / 9.0).view;
-        let mut landed = false;
-        for _ in 0..200 {
-            scene.step();
-            let still = view_at(&scene);
-            combat.step(&mut crate::combat::no_bindings);
-            scene.show_cues(combat.simulation());
-            let hit = combat.simulation().cues().any(|cue| cue.hit.is_some());
-            scene.end_cue_frame(1.0 / TICK_HZ as f32, 1.0 / TICK_HZ as f32, 1.0, &mut ());
-            let shaken = view_at(&scene) != still;
-            let packet = scene.frame_packet(1.0, Some((640, 360)));
-            let (spark, effects) = (!packet.vfx.is_empty(), packet.post.effects);
-            scene.end_frame();
-            if hit {
-                assert!(spark, "the hit's spark");
-                assert_ne!(effects, sapphire_render::PostEffects::NONE, "the hit's screen effect");
-                assert!(!shaken, "its shake is fired, and reads from where it begins, which is nothing");
-                scene.step();
-                scene.end_cue_frame(1.0 / TICK_HZ as f32, 1.0 / TICK_HZ as f32, 1.0, &mut ());
-                assert!(view_at(&scene) != still, "the hit's shake, a frame on");
-                landed = true;
-                break;
-            }
-            assert_eq!(effects, sapphire_render::PostEffects::NONE, "nothing's landed yet");
-        }
-        assert!(landed, "the fight's first hit comes within 200 ticks");
-        combat.check().expect("a fight fired is the fight recorded");
-    }
-
-    /// What a fight set going ends with it. A spark in the air, a screen effect, a shake and a hit's number
-    /// all belong to where the last fight's actors stood, so the new fight's first frame, the one the
-    /// view cuts on, shows none of them.
-    #[test]
-    fn a_new_fight_shows_nothing_the_last_one_set_going() {
-        use crate::hud::{HudMode, HudOptions};
-
-        let option = crate::combat::CombatOption::Fight { script: Some("idle".to_owned()), party: false };
-        let mut combat = crate::combat::Combat::new(&option).expect("sets up");
-        let cast = combat.cast().to_vec();
-        let (mut scene, _) = arena_stage(ArenaShot::Director);
-        scene.play_cues(VfxBudget::DESKTOP_LOW).expect("the shipped table resolves");
-        scene.set_hud(SandboxHud::for_fight(HudOptions { mode: HudMode::Live, ..HudOptions::default() }));
-        let step = |scene: &mut Scene, combat: &mut crate::combat::Combat| {
-            combat.step(&mut crate::combat::no_bindings);
-            scene.follow_simulation(combat.simulation(), &cast);
-            scene.show_cues(combat.simulation());
-            scene.show_damage(combat.simulation());
-            scene.end_cue_frame(1.0 / TICK_HZ as f32, 1.0 / TICK_HZ as f32, 1.0, &mut ());
-        };
-        // How far the view's right has left level, whether the frame draws no effects, its screen
-        // effects, and the numbers its HUD draws.
-        let frame = |scene: &mut Scene| {
-            scene.drive_arena_camera(1.0 / TICK_HZ as f32, sapphire_math::Vec2::ZERO, 0.0);
-            let packet = scene.frame_packet(1.0, Some((640, 360)));
-            let view = packet.main_view().expect("a view").camera.view;
-            let shown = (view.inverse().x_axis.y.abs(), packet.vfx.is_empty(), packet.post.effects);
-            let (hud, _) = scene.hud().expect("set").last_frame();
-            scene.end_frame();
-            (shown, hud.damage_numbers)
-        };
-        while !combat.simulation().cues().any(|cue| cue.hit.is_some()) {
-            let _ = frame(&mut scene);
-            step(&mut scene, &mut combat);
-            assert!(combat.simulation().tick() < 2000, "someone lands a hit by now");
-        }
-        let director = scene.arena.as_mut().expect("built").director().expect("this shot has one");
-        let finish = director.tuning().shake_id("finish").expect("a shipped preset");
-        director.fire_shake(finish, 1.0);
-        let ((_, empty, effects), numbers) = frame(&mut scene);
-        assert!(!empty, "the spark's up");
-        assert_ne!(effects, sapphire_render::PostEffects::NONE, "the screen effect's up");
-        assert!(numbers > 0, "the number's up");
-        let most = (0..6).map(|_| frame(&mut scene).0.0).fold(0.0_f32, f32::max);
-        assert!(most > 1e-3, "the shake's up: {most}");
-
-        combat.restart();
-        step(&mut scene, &mut combat);
-        assert_eq!(combat.simulation().tick(), 1, "the new fight's first step");
-        let ((tilt, empty, effects), numbers) = frame(&mut scene);
-        assert!(empty, "no spark of the last fight");
-        assert_eq!(effects, sapphire_render::PostEffects::NONE, "no screen effect of the last fight");
-        assert!(tilt < 1e-5, "no shake of the last fight: {tilt}");
-        assert_eq!(numbers, 0, "no number of the last fight");
-    }
-
     /// A frame's extract borrows what it reads where it is. `World::resource_scope` takes a resource off
     /// its entity and puts it back, two archetype moves each time for nothing, on a path rule R6 can't see.
     #[test]
     fn a_frames_extract_leaves_its_resources_where_they_are() {
         let mut scene = scene();
         for _ in 0..2 {
-            let _ = scene.frame_packet(1.0, Some((640, 360)));
+            let _ = scene.frame_packet(1.0, Some((640, 360)), &mut ());
             assert_eq!(scene.ecs.world().removed::<RenderExtract>().count(), 0);
             scene.end_frame();
         }
@@ -4847,105 +3510,12 @@ mod tests {
         let scale = |scene: &Scene| scene.ecs.world().resource::<WorldClock>().0.effective_scale();
         let normal = scale(&scene);
         let archetypes = scene.ecs.world().archetypes().len();
-        scene.apply(SimActions { toggle_slow_motion: true, ..SimActions::default() });
+        scene.apply(SceneActions { toggle_slow_motion: true, ..SceneActions::default() });
         assert!(scale(&scene) < normal, "it slows");
-        scene.apply(SimActions { toggle_slow_motion: true, ..SimActions::default() });
+        scene.apply(SceneActions { toggle_slow_motion: true, ..SceneActions::default() });
         assert_eq!(scale(&scene), normal, "and comes back");
         assert_eq!(scene.ecs.world().removed::<SlowMotion>().count(), 0);
         assert_eq!(scene.ecs.world().archetypes().len(), archetypes, "no new shape for a step to meet");
-    }
-
-    /// A step's cues stand until the next step, and a recording stopped at its limit or a replay past its
-    /// end takes none, so the frames after it read the same hits. They show once, and a new fight's show
-    /// whatever tick they land on.
-    #[test]
-    fn a_steps_hits_show_once_however_often_theyre_read() {
-        use crate::hud::{HudMode, HudOptions};
-
-        let option = crate::combat::CombatOption::Fight { script: Some("idle".to_owned()), party: false };
-        let mut combat = crate::combat::Combat::new(&option).expect("sets up");
-        let cast = combat.cast().to_vec();
-        let (mut scene, _) = arena_stage(ArenaShot::Director);
-        scene.set_hud(SandboxHud::for_fight(HudOptions { mode: HudMode::Live, ..HudOptions::default() }));
-        let numbers = |scene: &mut Scene| {
-            scene.drive_arena_camera(1.0 / TICK_HZ as f32, sapphire_math::Vec2::ZERO, 0.0);
-            let _ = scene.frame_packet(1.0, Some((640, 360)));
-            let (hud, _) = scene.hud().expect("set").last_frame();
-            scene.end_frame();
-            hud.damage_numbers
-        };
-        while !combat.simulation().cues().any(|cue| cue.hit.is_some()) {
-            let _ = numbers(&mut scene);
-            combat.step(&mut crate::combat::no_bindings);
-            scene.follow_simulation(combat.simulation(), &cast);
-            assert!(combat.simulation().tick() < 2000, "someone lands a hit by now");
-        }
-
-        scene.show_damage(combat.simulation());
-        let once = numbers(&mut scene);
-        assert!(once > 0, "the number's up");
-        for _ in 0..5 {
-            scene.show_damage(combat.simulation());
-        }
-        assert_eq!(numbers(&mut scene), once, "the same tick's hits again");
-
-        // A script's fight lands the same hit on the same tick, and it's a new one.
-        let tick = combat.simulation().tick();
-        combat.restart();
-        combat.step(&mut crate::combat::no_bindings);
-        scene.follow_simulation(combat.simulation(), &cast);
-        while combat.simulation().tick() < tick {
-            let _ = numbers(&mut scene);
-            combat.step(&mut crate::combat::no_bindings);
-            scene.follow_simulation(combat.simulation(), &cast);
-        }
-        scene.show_damage(combat.simulation());
-        assert_eq!(numbers(&mut scene), once, "the new fight's");
-    }
-
-    /// A step's firing allocates nothing once a whole fight has warmed it (rule R6). The simulation's
-    /// own steps are left out: a replay's trail of checksums grows.
-    #[test]
-    fn a_fights_cues_do_not_allocate_once_warmed() {
-        let mut scene = scene();
-        scene.play_cues(VfxBudget::DESKTOP_LOW).expect("the shipped table resolves");
-        let mut fight = || {
-            let mut combat = recorded_fight();
-            let mut allocations = 0;
-            for _ in 0..1500 {
-                scene.step();
-                combat.step(&mut crate::combat::no_bindings);
-                let ((), fired) = sapphire_core::alloc::count_in_scope(|| {
-                    scene.show_cues(combat.simulation());
-                    scene.end_cue_frame(1.0 / TICK_HZ as f32, 1.0 / TICK_HZ as f32, 1.0, &mut ());
-                });
-                allocations += fired.allocations;
-                let _ = scene.frame_packet(1.0, Some((640, 360)));
-                scene.end_frame();
-            }
-            allocations
-        };
-        let _ = fight();
-        assert_eq!(fight(), 0, "rule R6");
-    }
-
-    /// Without `--cues`, a fight stepping beside the scene fires nothing, whatever it publishes.
-    #[test]
-    fn a_fight_without_the_flag_fires_nothing() {
-        let mut combat = recorded_fight();
-        let mut scene = scene();
-        for _ in 0..200 {
-            scene.step();
-            combat.step(&mut crate::combat::no_bindings);
-            scene.show_cues(combat.simulation());
-            scene.end_cue_frame(1.0 / TICK_HZ as f32, 1.0 / TICK_HZ as f32, 1.0, &mut ());
-            let packet = scene.frame_packet(1.0, Some((640, 360)));
-            assert!(packet.vfx.is_empty());
-            assert_eq!(packet.post.effects, sapphire_render::PostEffects::NONE);
-            scene.end_frame();
-        }
-        assert!(scene.cue_show().is_none());
-        assert!(scene.cue_sounds().requests.is_empty());
     }
 
     #[test]
@@ -4978,7 +3548,7 @@ mod tests {
         };
 
         scene.step();
-        let packet = scene.frame_packet(1.0, Some((1920, 1080)));
+        let packet = scene.frame_packet(1.0, Some((1920, 1080)), &mut ());
         assert_eq!(packet.views.len(), 1);
         // At the default hour, time of day draws the sandbox's look from before it existed, with
         // post's compositing layers on top.
@@ -4993,7 +3563,7 @@ mod tests {
 
         // The turntable spins, so it changes every frame, drawn or not.
         scene.step();
-        let packet = scene.frame_packet(1.0, None);
+        let packet = scene.frame_packet(1.0, None, &mut ());
         assert!(packet.views.is_empty(), "no target, no view");
         assert_eq!(changed(packet), [character]);
         assert_ne!(packet.instances.changed[0].transform, first);
@@ -5003,13 +3573,13 @@ mod tests {
         let world = scene.ecs.world_mut();
         world.get_mut::<EntityClock>(scene.character).expect("clock").0.apply_hitstop(2);
         scene.step();
-        assert!(scene.frame_packet(1.0, Some((1920, 1080))).instances.is_empty());
+        assert!(scene.frame_packet(1.0, Some((1920, 1080)), &mut ()).instances.is_empty());
         scene.end_frame();
 
         // A renderer that starts over gets it again.
         scene.resend_instances();
-        assert_eq!(changed(scene.frame_packet(1.0, Some((1920, 1080)))), [character]);
+        assert_eq!(changed(scene.frame_packet(1.0, Some((1920, 1080)), &mut ())), [character]);
         scene.end_frame();
-        assert!(scene.frame_packet(1.0, Some((1920, 1080))).instances.is_empty());
+        assert!(scene.frame_packet(1.0, Some((1920, 1080)), &mut ()).instances.is_empty());
     }
 }

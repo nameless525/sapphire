@@ -14,10 +14,10 @@ use sapphire_platform::{
 use sapphire_render::MeshHandle;
 use sapphire_ui::{HudLayout, Insets, UiMetrics};
 
-use super::{PointerState, focus_lost, game_event};
+use super::{PointerState, focus_lost, game_event, read_touch};
 use sapphire_stage::combat::Combat;
 use sapphire_stage::combat::CombatOption;
-use sapphire_stage::hud::{HudMode, HudOptions, SandboxHud};
+use sapphire_stage::hud::{HudMode, HudOptions, SandboxHud, ShownFight, show_damage};
 use sapphire_stage::input::{PLAYER, SandboxInput};
 use sapphire_stage::scene::Scene;
 
@@ -36,6 +36,7 @@ fn ms(ms: u64) -> Timestamp {
 /// in its order, by the functions it calls.
 struct Rig {
     scene: Scene,
+    show: ShownFight,
     input: SandboxInput,
     combat: Combat,
     layout: HudLayout,
@@ -45,13 +46,13 @@ struct Rig {
 impl Rig {
     fn new(combat: Combat) -> Self {
         let bounds = [[-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]];
-        let mut scene = Scene::with_character(MeshHandle::from_raw(0), bounds, false);
+        let scene = Scene::with_character(MeshHandle::from_raw(0), bounds, false);
         let live = HudOptions { mode: HudMode::Live, ..HudOptions::default() };
-        scene.set_hud(SandboxHud::for_fight(live));
+        let show = ShownFight { hud: Some(SandboxHud::for_fight(live)), ..ShownFight::default() };
         let size = sapphire_platform::Size { width: SIZE.x as u32, height: SIZE.y as u32 };
         let input = SandboxInput::new(false, true, size).expect("the default bindings");
         let layout = HudLayout::new(metrics());
-        let mut rig = Self { scene, input, combat, layout, now: 0 };
+        let mut rig = Self { scene, show, input, combat, layout, now: 0 };
         rig.frame();
         rig
     }
@@ -119,7 +120,7 @@ impl Rig {
 
     /// A platform event, as `App::event` routes it.
     fn event(&mut self, event: &Event) {
-        game_event(&mut self.scene, &mut self.input, event);
+        game_event(self.show.hud.as_mut(), &mut self.input, event);
     }
 
     fn touch(&mut self, offset: u64, id: u64, phase: TouchPhase, at: Vec2) {
@@ -162,24 +163,24 @@ impl Rig {
     fn frame(&mut self) -> bool {
         self.now += FRAME_MS;
         let now = ms(self.now);
-        self.scene.read_touch(now, metrics(), &mut self.input);
+        read_touch(self.show.hud.as_mut().expect("a HUD"), now, metrics(), &mut self.input);
         self.input.update(now)
     }
 
     /// What a fixed step reads, unturned by any fight: it moves a press along, as a step does.
     fn read(&mut self) -> sapphire_gameplay::ActorActions {
-        let heading = self.scene.camera_heading();
+        let heading = self.show.fight.show.camera_heading(&self.scene);
         let mut source = self.input.source(heading);
         sapphire_gameplay::replay::ActionSource::actions(&mut source, 0, &[PLAYER]).get(PLAYER)
     }
 
     /// A fixed step of the fight, as `read_combat_step` asks it.
     fn step(&mut self) {
-        let heading = self.scene.camera_heading();
+        let heading = self.show.fight.show.camera_heading(&self.scene);
         let mut source = self.input.source(heading);
         sapphire_stage::combat::read_bindings(Some(&mut self.combat), &mut source, PLAYER);
-        self.scene.follow_simulation(self.combat.simulation(), self.combat.cast());
-        self.scene.show_damage(self.combat.simulation());
+        self.show.fight.show.follow_simulation(&mut self.scene, self.combat.simulation(), self.combat.cast());
+        show_damage(self.show.hud.as_mut().expect("a HUD"), &self.scene, self.combat.simulation());
     }
 
     fn sim(&self) -> &Simulation {

@@ -33,7 +33,6 @@ use sapphire_time::Stopwatch;
 
 use crate::LOG_TARGET;
 use crate::content::Content;
-use crate::cues::CueSounds;
 
 /// The cues `--cue` can name, by their sidecars' IDs in `content/audio/`. A game names cues in its
 /// own data; a test holds this table to the sidecars.
@@ -42,6 +41,23 @@ const CUES: [(&str, AssetId); 3] = [
     ("hit", AssetId::from_text("16e787b3-260f-4873-a443-40c8c52ef5c2")),
     ("swing", AssetId::from_text("e595fa42-bdd3-4e6e-845c-52684b76f8ed")),
 ];
+
+/// What a fight or whatever else fires sounds asks of the audio system this frame.
+#[derive(Clone, Copy, Debug)]
+pub struct CueSounds<'a> {
+    pub requests: &'a [CueRequest],
+    pub emitters: &'a [Emitter],
+    /// The world clock's speed where they fire, which a slow motion turns down.
+    pub world_time_scale: f32,
+    /// A new fight began this frame, so what the last one left playing ends before these start.
+    pub started_over: bool,
+}
+
+impl CueSounds<'_> {
+    /// Nothing: there's no fight.
+    pub const NONE: CueSounds<'static> =
+        CueSounds { requests: &[], emitters: &[], world_time_scale: 1.0, started_over: false };
+}
 
 /// The emitter cues play on: the scene's character.
 const CHARACTER: EmitterId = EmitterId(0);

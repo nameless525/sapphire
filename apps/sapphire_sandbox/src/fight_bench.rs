@@ -328,14 +328,14 @@ pub(crate) fn run(
     let rate = stage.quality.frame_rate().map_or(TICK_HZ, std::num::NonZero::get);
     let steps = steps_a_frame(rate);
     let settings = options.render_settings(stage.quality.render_settings());
-    let audio = match stage.scene.cue_show().map(|show| show.table().sound_cues()) {
+    let audio = match stage.show.fight.show.cue_show().map(|show| show.table().sound_cues()) {
         Some(cues) => {
             Some(OfflineAudio::for_cues(&cues, &mut stage.content, &mut stage.renderer, &stage.gpu)?)
         }
         None => None,
     };
     // A fight's length, for what to reserve. A fight with no file measures just `frames`.
-    let length = stage.combat.as_ref().and_then(Combat::ticks_left).unwrap_or(0);
+    let length = stage.show.fight.combat.as_ref().and_then(Combat::ticks_left).unwrap_or(0);
     let per_phase = u64::from(frames).max(length / u64::from(steps) + 1) as usize;
     let mut run = Run {
         stage,
@@ -354,7 +354,7 @@ pub(crate) fn run(
         run.phase(Phase::First, frames)?;
         stage.lose_frames = false;
         stage.check_gpu()?;
-        return stage.finish_combat();
+        return stage.show.fight.finish().map_err(AppInitError::msg);
     }
     let mut measured = [0; 3];
     for (index, phase) in Phase::ALL.into_iter().enumerate() {
@@ -375,7 +375,7 @@ pub(crate) fn run(
     }
     tracing::info!(target: LOG_TARGET, ?measured, "frames measured by phase: first, cpu, gpu");
     stage.check_gpu()?;
-    stage.finish_combat()
+    stage.show.fight.finish().map_err(AppInitError::msg)
 }
 
 impl Run<'_> {
@@ -407,8 +407,8 @@ impl Run<'_> {
             }
             self.check_first_uses()?;
             start_over = false;
-            let over = self.stage.combat.as_ref().and_then(Combat::ticks_left) == Some(0);
-            let endless = self.stage.combat.as_ref().and_then(Combat::ticks_left).is_none();
+            let over = self.stage.show.fight.combat.as_ref().and_then(Combat::ticks_left) == Some(0);
+            let endless = self.stage.show.fight.combat.as_ref().and_then(Combat::ticks_left).is_none();
             if played >= frames && (over || endless) {
                 // Anything built after a phase's first frame stalled the frame it was first drawn on.
                 let builds = self.stage.renderer.stats().pipelines;
@@ -444,11 +444,12 @@ impl Run<'_> {
         stage.laps = FrameLaps::default();
         // Checking the last one's checksums and logging is the bench's, not a frame's.
         if start_over && matches!(self.option, CombatOption::Replay { .. }) {
-            stage.combat.take().map_or(Ok(()), Combat::finish).map_err(AppInitError::msg)?;
+            stage.show.fight.combat.take().map_or(Ok(()), Combat::finish).map_err(AppInitError::msg)?;
         }
         let cues_before =
-            stage.scene.cue_show().map(sapphire_stage::cues::CueShow::stats).unwrap_or_default();
-        let sim_before = stage.combat.as_ref().map_or(0, |combat| combat.simulation().stats().allocations);
+            stage.show.fight.show.cue_show().map(sapphire_stage::cues::CueShow::stats).unwrap_or_default();
+        let sim_before =
+            stage.show.fight.combat.as_ref().map_or(0, |combat| combat.simulation().stats().allocations);
         let before = alloc::stats();
         let mut stopwatch = Stopwatch::start();
         let cpu = Stopwatch::start();
@@ -456,10 +457,10 @@ impl Run<'_> {
         if start_over {
             match self.option {
                 CombatOption::Replay { .. } => {
-                    stage.combat = Some(Combat::new(self.option).map_err(AppInitError::msg)?);
+                    stage.show.fight.combat = Some(Combat::new(self.option).map_err(AppInitError::msg)?);
                 }
                 _ => {
-                    if let Some(combat) = &mut stage.combat {
+                    if let Some(combat) = &mut stage.show.fight.combat {
                         combat.restart();
                     }
                 }
@@ -469,7 +470,7 @@ impl Run<'_> {
         let scope = AllocScope::begin();
         let mut steps = 0;
         for _ in 0..self.steps {
-            if stage.combat.as_ref().and_then(Combat::ticks_left) == Some(0) {
+            if stage.show.fight.combat.as_ref().and_then(Combat::ticks_left) == Some(0) {
                 break;
             }
             stage.fixed_step();
@@ -479,10 +480,10 @@ impl Run<'_> {
         let frame_dt = steps as f32 / TICK_HZ as f32;
         stopwatch.lap();
         if let Some(audio) = &mut self.audio {
-            audio.update(frame_dt, stage.scene.sound(), stage.scene.cue_sounds());
+            audio.update(frame_dt, stage.scene.sound(), stage.show.fight.show.cue_sounds());
         }
         let audio_time = stopwatch.lap();
-        stage.scene.end_cue_frame(frame_dt, frame_dt, 1.0, &mut ());
+        stage.show.fight.show.end_cue_frame(&mut stage.scene, frame_dt, frame_dt, 1.0, &mut ());
         stage.render(self.view, 1.0, |_, _| {})?;
         stage.scene.end_frame();
         let cpu = cpu.elapsed();
@@ -494,8 +495,9 @@ impl Run<'_> {
 
         let anim = stage.scene.anim_stats();
         let stats = stage.renderer.stats();
-        let cues = stage.scene.cue_show().map(sapphire_stage::cues::CueShow::stats).unwrap_or_default();
-        let (tick, sim_allocations, hitstop, world_scale) = match &stage.combat {
+        let cues =
+            stage.show.fight.show.cue_show().map(sapphire_stage::cues::CueShow::stats).unwrap_or_default();
+        let (tick, sim_allocations, hitstop, world_scale) = match &stage.show.fight.combat {
             Some(combat) => {
                 let sim = combat.simulation();
                 let mut hitstop = [0; 2];
@@ -524,8 +526,8 @@ impl Run<'_> {
             springs: anim.spring_time,
             poses: anim.evaluated,
             joints: anim.joints,
-            camera: stage.scene.camera_time(),
-            hud: stage.scene.hud().map_or(Duration::ZERO, |hud| hud.last_frame().1),
+            camera: stage.show.fight.show.camera_time(),
+            hud: stage.show.hud.as_ref().map_or(Duration::ZERO, |hud| hud.last_frame().1),
             vfx: stats.vfx.simulation.simulation,
             allocations: after.total_allocations - before.total_allocations,
             bytes: after.total_bytes - before.total_bytes,

@@ -3852,6 +3852,7 @@ dependencies = [
  "sapphire_assets",
  "sapphire_audio",
  "sapphire_camera",
+ "sapphire_colliders",
  "sapphire_core",
  "sapphire_crash",
  "sapphire_debug",

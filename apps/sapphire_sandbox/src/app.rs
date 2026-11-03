@@ -34,11 +34,14 @@ use sapphire_stage::content::Content;
 use sapphire_stage::cues::PadRumble;
 use sapphire_stage::enemy::EnemyMeshes;
 use sapphire_stage::environment::FOG_CARDS;
+use sapphire_stage::fight::{Arena, FightShow};
 use sapphire_stage::foliage::FoliageMeshes;
+use sapphire_stage::hud::{SandboxHud, ShownFight};
 use sapphire_stage::input::{PLAYER, SandboxInput};
 use sapphire_stage::lookdev::{Shot, TownMeshes};
+use sapphire_stage::party_looks::PartyLooks;
 use sapphire_stage::rims::RimRigMeshes;
-use sapphire_stage::scene::{Arena, LookDev, Scene};
+use sapphire_stage::scene::{LookDev, Scene};
 use sapphire_stage::stage::StageMeshes;
 use sapphire_stage::swatches::SWATCHES;
 use sapphire_stage::{garments, layers, lookdev, skinned, stage, swatches};
@@ -81,8 +84,9 @@ pub struct SandboxApp {
     input: SandboxInput,
     /// The audio system, with `--cue`: nothing audio exists without it.
     audio: Option<SandboxAudio>,
-    /// `--record`: a simulation that takes a tick with each fixed step, played by the bindings.
-    combat: Option<Combat>,
+    /// What plays on the scene: with `--record` a simulation that takes a tick with each fixed step,
+    /// played by the bindings, with `--arena` what stands it there, and with `--hud` the HUD.
+    show: ShownFight,
     /// Whether the window last held the pointer for a fight.
     pointer_held: bool,
 
@@ -149,15 +153,23 @@ impl App for SandboxApp {
             content.keep_character_mesh();
         }
         if options.party {
-            content.keep_party_looks();
+            content.watch_uploads(Box::<PartyLooks>::default());
         }
         content.override_materials(options.material_overrides());
+        let mut show = ShownFight::default();
         // A device lost while the renderer is made gets a new device and another try, under
         // `CreationLosses`' policy, rather than a renderer of dead objects.
         let mut losses = CreationLosses::default();
         let mut renderer = loop {
             let settings = losses.settings(options.render_settings(quality.render_settings()));
-            match create_renderer(&mut content, &device.gpu, device.format, settings, &options) {
+            match create_renderer(
+                &mut content,
+                &mut show.fight.show,
+                &device.gpu,
+                device.format,
+                settings,
+                &options,
+            ) {
                 Ok(renderer) => {
                     losses.built();
                     break renderer;
@@ -179,8 +191,9 @@ impl App for SandboxApp {
             input.listen_for_fight_restart()?;
         }
         // Before any GPU work, so a bad scenario or a file in the way costs nothing and says why.
-        let combat = options.combat.as_ref().map(Combat::new).transpose().map_err(AppInitError::msg)?;
-        if let (Some(_), Some(combat)) = (options.arena, &combat) {
+        show.fight.combat =
+            options.combat.as_ref().map(Combat::new).transpose().map_err(AppInitError::msg)?;
+        if let (Some(_), Some(combat)) = (options.arena, &show.fight.combat) {
             sapphire_stage::arena::check_scenario(combat, options.party).map_err(AppInitError::msg)?;
         }
         let mut scene = Scene::with_character(renderer.character, renderer.character_bounds, options.skinned);
@@ -260,17 +273,20 @@ impl App for SandboxApp {
                 scene.set_spring_quality(sapphire_stage::animate::spring_quality(quality.active().id));
             }
             if let Some(meshes) = renderer.enemy {
-                scene.spawn_enemy(meshes, content.held_enemy()?);
+                let held = show.fight.show.held_enemy(&content)?;
+                show.fight.show.spawn_enemy(&mut scene, meshes, held);
             }
         }
         if let (Some(shot), Some(town), Some(enemy)) = (options.arena, renderer.town, renderer.enemy) {
             let (pose, figure) = lookdev::hold(&mut content, &mut renderer.renderer, &device.gpu)?;
-            let ground = content.arena_ground(&mut renderer.renderer, &device.gpu)?;
+            let ground =
+                show.fight.show.load_arena_ground(&mut content, &mut renderer.renderer, &device.gpu)?;
             let world = ground.share();
             let look = LookDev { town, fog_cards: renderer.fog_cards, pose, figure };
-            scene.spawn_arena(Arena { shot, look, ground, enemy, held: content.held_enemy()? });
+            let held = show.fight.show.held_enemy(&content)?;
+            show.fight.show.spawn_arena(&mut scene, Arena { shot, look, ground, enemy, held });
             if let Some(meshes) = renderer.party {
-                scene.set_party_meshes(meshes);
+                show.fight.show.set_party_meshes(&mut scene, meshes);
             }
             if let Some(clip) = options.clip {
                 content.load_clip(clip.id(), &mut renderer.renderer, &device.gpu)?;
@@ -290,20 +306,23 @@ impl App for SandboxApp {
             }
             if options.combat.is_some() {
                 content.load_graph(lookdev::GRAPH, &mut renderer.renderer, &device.gpu)?;
-                content.load_enemy_graph(&mut renderer.renderer, &device.gpu)?;
+                show.fight.show.load_enemy_graph(&mut content, &mut renderer.renderer, &device.gpu)?;
                 let player = lookdev::graph_driver(&content).map_err(AppInitError::msg)?;
                 let solver = scene
                     .ik_on(world.clone(), None, &content, player.player.pose())
                     .map_err(AppInitError::msg)?;
-                scene.play_fighters(
+                let enemy = show.fight.show.enemy_driver(&content, world)?;
+                show.fight.show.play_fighters(
+                    &mut scene,
                     player.with_springs_on(options.springs != Some(false)).with_ik(solver),
-                    content.enemy_driver(world)?,
+                    enemy,
                 );
                 scene.set_spring_quality(sapphire_stage::animate::spring_quality(quality.active().id));
             }
         }
         if let Some(sword) = renderer.sword {
-            scene.spawn_blade(sword, lookdev::held_hand(&content).map_err(AppInitError::msg)?);
+            let hand = lookdev::held_hand(&content).map_err(AppInitError::msg)?;
+            show.fight.show.spawn_blade(&mut scene, sword, hand);
         }
         // The day, the sky options, the starting view and the turntable's speed, last so `--view`
         // holds whatever framing the scene chose.
@@ -312,13 +331,16 @@ impl App for SandboxApp {
             scene.play_vfx(show, sapphire_stage::vfx::budget(quality.active().id));
         }
         if options.cues {
-            scene.play_cues(sapphire_stage::vfx::budget(quality.active().id)).map_err(AppInitError::msg)?;
+            show.fight
+                .show
+                .play_cues(&mut scene, sapphire_stage::vfx::budget(quality.active().id))
+                .map_err(AppInitError::msg)?;
         }
         // The stage after the hour, which places its pillars.
         if let (Some(layout), Some(meshes)) = (options.stage, renderer.stage) {
             scene.spawn_stage(layout, meshes);
         }
-        let audio = match (&options.cue, scene.cue_show()) {
+        let audio = match (&options.cue, show.fight.show.cue_show()) {
             (Some(cue), _) => {
                 SandboxAudio::new(cue, platform, &mut content, &mut renderer.renderer, &device.gpu)?
             }
@@ -329,29 +351,26 @@ impl App for SandboxApp {
             (None, None) => None,
         };
         if let Some(hud) = options.hud {
-            scene.set_hud(match &combat {
-                Some(_) => sapphire_stage::hud::SandboxHud::for_fight(hud),
-                None => sapphire_stage::hud::SandboxHud::new(hud),
+            show.hud = Some(match &show.fight.combat {
+                Some(_) => SandboxHud::for_fight(hud),
+                None => SandboxHud::new(hud),
             });
         }
         // The screen effects it may push, `--post-effect`'s among them, the effects it plays, its sky
         // and its HUD show on their first frame.
-        scene.prewarm(&mut renderer.renderer);
+        scene.prewarm(&show, &mut renderer.renderer);
         // Its bars read the fighters from the first frame, with no step yet.
-        if let Some(combat) = &combat {
-            scene.follow_simulation(combat.simulation(), combat.cast());
+        if let Some(combat) = &show.fight.combat {
+            let followed = show.fight.show.follow_simulation(&mut scene, combat.simulation(), combat.cast());
+            show.hear(followed);
         }
         scene.warm_fixed_step();
         #[cfg(feature = "dev")]
         let dev = DevTools::new(&device.gpu, device.format, &options, platform, &mut content)?;
         #[cfg(feature = "dev")]
-        let combat = {
-            let mut combat = combat;
-            if let Some(combat) = &mut combat {
-                dev.start_fight_from_cooks(combat, &content);
-            }
-            combat
-        };
+        if let Some(combat) = &mut show.fight.combat {
+            dev.start_fight_from_cooks(combat, &content);
+        }
         #[cfg(not(feature = "dev"))]
         if options.debug_overlay.is_some() {
             tracing::warn!(target: LOG_TARGET, "--debug-overlay needs a `dev` build (`--features dev`)");
@@ -375,7 +394,7 @@ impl App for SandboxApp {
             scene,
             input,
             audio,
-            combat,
+            show,
             pointer_held: false,
             real: RealClock::new(),
             driver: FixedStepDriver::new(FixedStepConfig::default()),
@@ -393,16 +412,16 @@ impl App for SandboxApp {
         // Input queues for the next frame. Losing focus or the foreground releases everything
         // held, since the releases may never arrive. With the debug overlay, it sees each event
         // first and passes on what it doesn't use.
-        let (scene, input) = (&mut self.scene, &mut self.input);
+        let (show, input) = (&mut self.show, &mut self.input);
         #[cfg(feature = "dev")]
-        self.dev.handle_event(event, &mut |event| game_event(scene, input, event));
+        self.dev.handle_event(event, &mut |event| game_event(show.hud.as_mut(), input, event));
         #[cfg(not(feature = "dev"))]
-        game_event(scene, input, event);
+        game_event(show.hud.as_mut(), input, event);
         // A thumb on the stick and another on a button are playing, not holding two fingers still.
         #[cfg(feature = "dev")]
         if let Event::Touch(touch) = event
             && touch.phase == sapphire_platform::TouchPhase::Down
-            && scene.hud_holds_control(touch.finger)
+            && show.hud.as_ref().is_some_and(|hud| hud.holds_control(touch.finger))
         {
             self.dev.claim_touch(touch.finger, touch.timestamp);
         }
@@ -420,8 +439,8 @@ impl App for SandboxApp {
                 // Whoever's holding the pad isn't watching any more.
                 WindowEvent::FocusLost => {
                     let pad = self.input.active_gamepad();
-                    self.scene.stop_rumble(&mut PadRumble { platform, pad });
-                    focus_lost(&mut self.input, self.combat.as_ref());
+                    self.show.fight.show.stop_rumble(&mut PadRumble { platform, pad });
+                    focus_lost(&mut self.input, self.show.fight.combat.as_ref());
                 }
                 _ => {}
             },
@@ -447,8 +466,8 @@ impl App for SandboxApp {
         // On the clock event timestamps use, so every trigger is judged on one timeline.
         #[cfg(feature = "dev")]
         {
-            let (scene, input) = (&mut self.scene, &mut self.input);
-            self.dev.poll(platform.now(), &mut |event| game_event(scene, input, event));
+            let (show, input) = (&mut self.show, &mut self.input);
+            self.dev.poll(platform.now(), &mut |event| game_event(show.hud.as_mut(), input, event));
         }
         #[cfg(feature = "dev")]
         if sapphire_stage::cvars::take_device_loss() {
@@ -459,11 +478,11 @@ impl App for SandboxApp {
         // The HUD's touch zones and animation are on the real clock too. What they read reaches this
         // frame's steps and camera through the bindings, as a pad's does, so they go first.
         self.input.follow_window(&self.window);
-        self.scene.update_hud(now, &self.window, &mut self.input);
+        update_hud(self.show.hud.as_mut(), now, &self.window, &mut self.input);
         if self.input.update(now) {
             return AppControl::Exit;
         }
-        self.scene.set_played_on_touch(self.input.played_on_touch());
+        self.show.fight.show.set_played_on_touch(self.input.played_on_touch());
         self.follow_pointer();
         self.stages.input = stopwatch.lap();
         if self.suspended {
@@ -489,11 +508,11 @@ impl App for SandboxApp {
                 &mut self.renderer,
                 &self.gpu,
                 &mut self.scene,
-                self.combat.as_mut(),
+                &mut self.show.fight,
             );
             // Finished reads, unloads and this frame's uploads, within the upload budget.
             self.content.update(&mut self.renderer, &self.gpu);
-            self.scene.follow_content(&mut self.content);
+            self.scene.follow_content(&mut self.content, &mut self.show);
         }
         // Recovery, tier changes and loading are no stage of the frame.
         stopwatch.lap();
@@ -504,13 +523,19 @@ impl App for SandboxApp {
 
         // Presentation runs on the real clock, so the camera stays responsive in slow motion.
         let dt = frame_time.min(MAX_PRESENTATION_DT).as_secs_f32();
-        let view_dt = self.scene.drive_view(&self.input, dt);
+        let view_dt = drive_view(&mut self.scene, &mut self.show, &self.input, dt);
         let presentation = stopwatch.lap();
         if let Some(audio) = &mut self.audio {
-            audio.update(dt, platform, self.scene.sound(), self.scene.cue_sounds());
+            audio.update(dt, platform, self.scene.sound(), self.show.fight.show.cue_sounds());
         }
         let pad = self.input.active_gamepad();
-        self.scene.end_cue_frame(dt, view_dt, steps.alpha, &mut PadRumble { platform, pad });
+        self.show.fight.show.end_cue_frame(
+            &mut self.scene,
+            dt,
+            view_dt,
+            steps.alpha,
+            &mut PadRumble { platform, pad },
+        );
         self.stages.audio = stopwatch.lap();
         let presented = match self.render(steps.alpha, &mut stopwatch, presentation) {
             Ok(presented) => presented,
@@ -542,7 +567,7 @@ impl App for SandboxApp {
 
     fn quit(&mut self, _platform: &mut Platform) {
         self.save_pipeline_cache();
-        if let Some(Err(error)) = self.combat.take().map(Combat::finish) {
+        if let Some(Err(error)) = self.show.fight.combat.take().map(Combat::finish) {
             tracing::error!(target: LOG_TARGET, %error, "the recording didn't reach its file");
         }
         tracing::info!(target: LOG_TARGET, presented = self.presented_frames, "quit");
@@ -553,12 +578,55 @@ impl App for SandboxApp {
 /// the rest. Losing focus or the foreground reaches both. While paused a landing is the pause's, since
 /// a tap is how a phone gets out of it, and the zones keep only the fingers they already hold: a thumb
 /// that was on the stick when the pause came still has to lift.
-fn game_event(scene: &mut Scene, input: &mut SandboxInput, event: &Event) {
+fn game_event(hud: Option<&mut SandboxHud>, input: &mut SandboxInput, event: &Event) {
     let pauses_landing = input.pause_takes_landings()
         && matches!(event, Event::Touch(touch) if touch.phase == sapphire_platform::TouchPhase::Down);
-    if pauses_landing || !scene.hud_event(event) {
+    if pauses_landing || !hud.is_some_and(|hud| hud.handle_event(event)) {
         input.handle_event(event);
     }
+}
+
+/// The HUD's frame on the real clock, where a window has its metrics: what its touch zones read goes to
+/// `input`, before that judges the frame.
+fn update_hud(
+    hud: Option<&mut SandboxHud>,
+    now: sapphire_platform::Timestamp,
+    window: &Window,
+    input: &mut SandboxInput,
+) {
+    let Some(hud) = hud else { return };
+    let metrics = hud.metrics_of(window);
+    hud.follow_devices(input.desktop(), input.active_gamepad().is_some());
+    read_touch(hud, now, metrics, input);
+}
+
+/// What the HUD's touch zones read this frame, on a frame of `metrics`, to `input`.
+fn read_touch(
+    hud: &mut SandboxHud,
+    now: sapphire_platform::Timestamp,
+    metrics: sapphire_ui::UiMetrics,
+    input: &mut SandboxInput,
+) {
+    if let Some(touch) = hud.update(now, metrics) {
+        input.read_touch(touch, now);
+    }
+}
+
+/// The view's share of a windowed frame, `dt` real seconds after the last: `input`'s orbit and zoom, on the
+/// real clock so the view stays responsive in slow motion. A pause holds a fight's view, as the director's
+/// frame asks, shakes and all: only the sandbox's own orbit still moves, for looking around at what's held,
+/// and the HUD says it's waiting. Returns the seconds the view moved by, for `FightShow::end_cue_frame`.
+fn drive_view(scene: &mut Scene, show: &mut ShownFight, input: &SandboxInput, dt: f32) -> f32 {
+    let view_dt = if input.is_paused() { 0.0 } else { dt };
+    if let Some(hud) = &mut show.hud {
+        hud.show_pause(input.is_paused());
+    }
+    let mut camera = scene.camera_mut();
+    input.drive_camera(&mut camera);
+    camera.update(dt);
+    let (look, zoom) = input.camera_motion();
+    show.fight.show.drive_camera(view_dt, look, zoom);
+    view_dt
 }
 
 /// A fight someone's playing in a desktop's window waits for them when they go elsewhere, and they end
@@ -612,7 +680,7 @@ impl SandboxApp {
         #[cfg(not(feature = "dev"))]
         let overlay = false;
         let focused = self.window.has_keyboard_focus();
-        let held = PointerState::of(&self.input, self.combat.as_ref(), focused, overlay).holds();
+        let held = PointerState::of(&self.input, self.show.fight.combat.as_ref(), focused, overlay).holds();
         if held != self.pointer_held {
             self.pointer_held = held;
             self.window.set_relative_mouse(held);
@@ -625,7 +693,7 @@ impl SandboxApp {
         profiling::scope!("simulate");
         // The overlay's recorder, between frames: a recording starts or ends with no step under way.
         #[cfg(feature = "dev")]
-        self.dev.apply_recorder(&mut self.combat);
+        self.dev.apply_recorder(&mut self.show.fight.combat);
         let steps = self.input.advance(&mut self.driver, frame_time);
         if steps.count == 0 {
             return steps;
@@ -633,14 +701,14 @@ impl SandboxApp {
         let actions = self.input.take_actions();
         // Between steps, as the overlay's recorder is: a new fight's simulation allocates.
         if actions.restart_fight
-            && let Some(combat) = &mut self.combat
+            && let Some(combat) = &mut self.show.fight.combat
         {
             combat.restart();
         }
-        self.scene.apply(actions);
+        self.scene.apply(actions.of_scene());
         // The camera the player was looking at when they pushed. A tick carries the direction they
         // meant, so nothing past here reads a camera.
-        let camera_yaw = self.scene.camera_heading();
+        let camera_yaw = self.show.fight.show.camera_heading(&self.scene);
 
         for _ in 0..steps.count {
             let scene = &mut self.scene;
@@ -662,10 +730,15 @@ impl SandboxApp {
             // After the scene's own step, as `Stage::step` does: what a cue pushes on the scene's effect
             // stack begins here, so the step just taken doesn't age it before its first frame.
             self.read_combat_step(camera_yaw);
-            if let Some(combat) = &self.combat {
-                self.scene.follow_simulation(combat.simulation(), combat.cast());
-                self.scene.show_cues(combat.simulation());
-                self.scene.show_damage(combat.simulation());
+            if let Some(combat) = &self.show.fight.combat {
+                let followed = self.show.fight.show.follow_simulation(
+                    &mut self.scene,
+                    combat.simulation(),
+                    combat.cast(),
+                );
+                self.show.fight.show.show_cues(&mut self.scene, combat.simulation());
+                self.show.hear(followed);
+                self.show.show_damage(&self.scene);
             }
         }
         steps
@@ -684,7 +757,7 @@ impl SandboxApp {
             dev.log_tick_actions(&actions);
             actions
         };
-        sapphire_stage::combat::read_bindings(self.combat.as_mut(), &mut read, PLAYER);
+        sapphire_stage::combat::read_bindings(self.show.fight.combat.as_mut(), &mut read, PLAYER);
     }
 
     /// Extracts the frame, then draws and presents it if the surface gave an image. Returns
@@ -728,12 +801,9 @@ impl SandboxApp {
             // scene sees every packet's deltas. On a lost device the GPU calls do nothing (wgpu
             // drops device-lost errors), and the rebuilt renderer is sent everything.
             #[cfg(feature = "dev")]
-            self.dev.after_steps(self.combat.as_ref(), &self.scene);
-            self.scene.animate(&self.content, alpha);
-            if let Some(combat) = &self.combat {
-                combat.draw_views();
-            }
-            let packet = self.scene.frame_packet(alpha, target.map(|(_, size)| size));
+            self.dev.after_steps(self.show.fight.combat.as_ref(), &self.scene);
+            self.scene.animate(&self.content, alpha, &mut self.show);
+            let packet = self.scene.frame_packet(alpha, target.map(|(_, size)| size), &mut self.show);
             self.stages.extract = presentation + stopwatch.lap();
             // Before `prepare`, which culls hulls by it, and readies the debug view.
             self.renderer.set_outline_distance(self.quality.outline_distance());
@@ -761,7 +831,7 @@ impl SandboxApp {
                         scene: &self.scene,
                         assets: self.content.stats(),
                         audio: self.audio.as_ref().map(SandboxAudio::stats),
-                        combat: self.combat.as_ref(),
+                        combat: self.show.fight.combat.as_ref(),
                     };
                     // It also keeps GPU timing on while dynamic resolution reads it.
                     let output = self.dev.update(state, &mut self.graph);
@@ -821,11 +891,11 @@ impl SandboxApp {
         match event {
             LifecycleEvent::WillEnterBackground => {
                 self.suspended = true;
-                if let Some(combat) = &mut self.combat {
+                if let Some(combat) = &mut self.show.fight.combat {
                     combat.keep_so_far();
                 }
                 let pad = self.input.active_gamepad();
-                self.scene.stop_rumble(&mut PadRumble { platform, pad });
+                self.show.fight.show.stop_rumble(&mut PadRumble { platform, pad });
                 if let Some(audio) = &mut self.audio {
                     audio.set_background(true, platform);
                 }
@@ -857,7 +927,7 @@ impl SandboxApp {
             }
             LifecycleEvent::Terminating => {
                 self.save_pipeline_cache();
-                if let Some(combat) = &mut self.combat {
+                if let Some(combat) = &mut self.show.fight.combat {
                     combat.keep_so_far();
                 }
             }
@@ -931,8 +1001,15 @@ impl SandboxApp {
         let (content, options) = (&mut self.content, &self.options);
         let mut lost = false;
         let stack = create_device(platform, &self.window, self.gpu_debug).and_then(|device| {
-            let renderer = create_renderer(content, &device.gpu, device.format, settings, options)
-                .inspect_err(|_| lost = device.gpu.is_lost())?;
+            let renderer = create_renderer(
+                content,
+                &mut self.show.fight.show,
+                &device.gpu,
+                device.format,
+                settings,
+                options,
+            )
+            .inspect_err(|_| lost = device.gpu.is_lost())?;
             Ok((device, renderer))
         });
         match stack {
@@ -941,11 +1018,11 @@ impl SandboxApp {
                 // Field order matters even here: the renderer goes before the old context.
                 #[cfg(feature = "dev")]
                 self.dev.recreate_gpu(&device.gpu, device.format);
-                set_meshes(&mut self.scene, &renderer);
+                set_meshes(&mut self.scene, &mut self.show, &renderer);
                 self.renderer = renderer.renderer;
                 #[cfg(feature = "dev")]
                 self.dev.renderer_created(&mut self.renderer);
-                self.scene.prewarm(&mut self.renderer);
+                self.scene.prewarm(&self.show, &mut self.renderer);
                 self.graph = GraphExecutor::new();
                 self.gpu = device.gpu;
                 self.format = device.format;
@@ -978,14 +1055,21 @@ impl SandboxApp {
         let Some(previous) = self.quality.update_tier() else { return Ok(()) };
         self.steady = false;
         let settings = self.render_settings();
-        match create_renderer(&mut self.content, &self.gpu, self.format, settings, &self.options) {
+        match create_renderer(
+            &mut self.content,
+            &mut self.show.fight.show,
+            &self.gpu,
+            self.format,
+            settings,
+            &self.options,
+        ) {
             Ok(renderer) => {
                 self.losses.built();
-                set_meshes(&mut self.scene, &renderer);
+                set_meshes(&mut self.scene, &mut self.show, &renderer);
                 self.renderer = renderer.renderer;
                 #[cfg(feature = "dev")]
                 self.dev.renderer_created(&mut self.renderer);
-                self.scene.prewarm(&mut self.renderer);
+                self.scene.prewarm(&self.show, &mut self.renderer);
                 // The new renderer's scene starts empty.
                 self.scene.resend_instances();
                 tracing::info!(target: LOG_TARGET, tier = %self.quality.active().id, "renderer rebuilt for the quality tier");
@@ -1245,10 +1329,10 @@ pub(crate) struct SceneRenderer {
 }
 
 /// Draws the meshes of a new `renderer`: after device loss or for a new quality tier.
-pub(crate) fn set_meshes(scene: &mut Scene, renderer: &SceneRenderer) {
+pub(crate) fn set_meshes(scene: &mut Scene, show: &mut ShownFight, renderer: &SceneRenderer) {
     scene.set_character_mesh(renderer.character);
     if let Some(meshes) = renderer.party {
-        scene.set_party_meshes(meshes);
+        show.fight.show.set_party_meshes(scene, meshes);
     }
     scene.set_sky_material(renderer.sky);
     if let Some(stalk) = renderer.stalk {
@@ -1295,10 +1379,10 @@ pub(crate) fn set_meshes(scene: &mut Scene, renderer: &SceneRenderer) {
         scene.set_town_mesh(town);
     }
     if let Some(meshes) = renderer.enemy {
-        scene.set_enemy_meshes(meshes);
+        show.fight.show.set_enemy_meshes(scene, meshes);
     }
     if let Some(sword) = renderer.sword {
-        scene.set_blade_mesh(sword);
+        show.fight.show.set_blade_mesh(scene, sword);
     }
 }
 
@@ -1352,6 +1436,7 @@ struct SceneMeshes {
 /// than hand back a renderer of dead objects.
 pub(crate) fn create_renderer(
     content: &mut Content,
+    fight: &mut FightShow,
     gpu: &GpuContext,
     format: wgpu::TextureFormat,
     settings: RenderSettings,
@@ -1381,9 +1466,9 @@ pub(crate) fn create_renderer(
         let hard_edges = options.hard_edges.then(|| content.hard_edges(&mut renderer, gpu)).transpose()?;
         let town = options.in_town().then(|| content.town(&mut renderer, gpu)).transpose()?;
         let enemy = (options.look_dev == Some(Shot::Enemy) || options.arena.is_some())
-            .then(|| content.enemy(&mut renderer, gpu))
+            .then(|| fight.load_enemy(content, &mut renderer, gpu))
             .transpose()?;
-        let sword = options.blade().then(|| content.sword(&mut renderer, gpu)).transpose()?;
+        let sword = options.blade().then(|| fight.load_sword(content, &mut renderer, gpu)).transpose()?;
         let stage = options.stage.map(|_| content.stage_meshes(&mut renderer)).transpose()?;
         let ik_block = options
             .ik
@@ -1443,7 +1528,7 @@ pub(crate) fn create_renderer(
                 renderer,
                 character,
                 character_bounds,
-                party: content.party_meshes(character),
+                party: FightShow::party_meshes(content, character),
                 stalk,
                 swatches,
                 layer_samples,
@@ -1482,6 +1567,8 @@ fn surface_target(handle: &SurfaceHandle) -> Result<SurfaceTarget, HandleError> 
     })
 }
 
+#[cfg(test)]
+mod pause_tests;
 #[cfg(test)]
 mod touch_tests;
 

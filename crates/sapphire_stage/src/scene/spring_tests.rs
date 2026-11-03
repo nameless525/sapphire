@@ -151,7 +151,7 @@ fn stage(springs: bool) -> Scene {
 fn frame(scene: &mut Scene, clip: &ArchivedClip, alpha: f32) -> Option<Vec<[f32; 12]>> {
     scene.animate_clip(Some((clip, 0)), alpha);
     let id = extract::instance_id(scene.character);
-    let packet = scene.frame_packet(alpha, Some((1920, 1080)));
+    let packet = scene.frame_packet(alpha, Some((1920, 1080)), &mut ());
     let posed = packet.skinned.iter().find(|skinned| skinned.id == id);
     let palette = posed.map(|skinned| {
         packet.palette(skinned).expect("in range").iter().map(Affine3A::to_cols_array).collect()
@@ -241,7 +241,7 @@ fn a_frozen_clock_holds_the_hair_and_it_carries_on() {
     for _ in 0..30 {
         last = strand_end(&tick(&mut scene, clip).expect("moving"));
     }
-    scene.apply(SimActions { hitstop: true, ..SimActions::default() });
+    scene.apply(SceneActions { hitstop: true, ..SceneActions::default() });
     for _ in 0..HITSTOP_TICKS {
         scene.step();
         for alpha in [0.25, 1.0] {

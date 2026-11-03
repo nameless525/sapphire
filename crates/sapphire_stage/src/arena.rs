@@ -202,7 +202,7 @@ pub fn check_scenario(combat: &crate::combat::Combat, party: bool) -> Result<(),
 
 /// Why the stage can't stand on its cooked colliders.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum ArenaError {
+pub enum ArenaError {
     #[error(transparent)]
     World(#[from] WorldError),
     #[error(transparent)]
@@ -229,7 +229,7 @@ pub struct ArenaGround {
 impl ArenaGround {
     /// Builds the world from the cooked `set`, holds it to this build's own document, and checks the
     /// spawn points stand on it.
-    pub(crate) fn new(set: &ArchivedColliderSet) -> Result<Self, ArenaError> {
+    pub fn new(set: &ArchivedColliderSet) -> Result<Self, ArenaError> {
         let world = PhysicsWorld::from_cooked(set, 0)?;
         let spawns = spawns();
         check_spawn(&world, set, "player", spawns.player)?;
@@ -415,7 +415,7 @@ impl ArenaCamera {
 
 /// The player's and the enemy's entities and where the simulation has them: what the scene carries
 /// from the simulation to the frame (rule R4).
-pub(crate) struct ArenaActors {
+pub struct ArenaActors {
     player: (Entity, Root),
     enemy: (Entity, Root),
     /// Its blade, and where that is in the enemy's model space.
@@ -570,7 +570,7 @@ impl ArenaActors {
     }
 
     /// The camera director, if it's on: what a fight's shakes go to.
-    pub(crate) fn director(&mut self) -> Option<&mut CameraDirector> {
+    pub fn director(&mut self) -> Option<&mut CameraDirector> {
         self.camera.as_mut().map(|camera| &mut camera.director)
     }
 

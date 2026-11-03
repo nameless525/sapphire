@@ -21,10 +21,10 @@ use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, Tra
 use sapphire_time::Stopwatch;
 
 use crate::LOG_TARGET;
-use crate::combat::Combat;
-use crate::content::{self, Content};
+use crate::content::{self, Content, UploadWatcher};
 use crate::faces::MaterialOverrides;
 use crate::scene::Scene;
+use crate::show::SceneShow;
 
 /// Where a frame's CPU time went, as [`Stage`] measures it, for whoever reads and resets it each frame.
 /// Two clock reads a stage cost nothing a frame can see.
@@ -62,8 +62,9 @@ fn next_scope(scope: &mut AllocScope) -> AllocCounts {
     counts
 }
 
-/// What a caller adds to a stage's frames. Every method defaults to nothing, in the frame's order.
-pub trait FrameHooks {
+/// What a caller adds to a stage's frames, whose show is an `S`. Every method defaults to nothing, in the
+/// frame's order.
+pub trait FrameHooks<S = ()> {
     /// Whether [`Self::tools`] does work of its own, whose time and allocations [`FrameLaps`] leaves out.
     const TOOLS: bool = false;
 
@@ -71,7 +72,7 @@ pub trait FrameHooks {
     fn before_fixed_step(&mut self, _scene: &mut Scene) {}
 
     /// First in a frame, before loading runs: the place to swap in what changed on disk.
-    fn before_loading(&mut self, _frame: LoadingFrame<'_>) {}
+    fn before_loading(&mut self, _frame: LoadingFrame<'_, S>) {}
 
     /// Whether something draws over the frame, so a capture's warmup can't discard its output.
     fn overlay_visible(&self) -> bool {
@@ -79,11 +80,11 @@ pub trait FrameHooks {
     }
 
     /// Once the frame's fixed steps are over and loading has run.
-    fn after_steps(&mut self, _combat: Option<&Combat>, _scene: &Scene) {}
+    fn after_steps(&mut self, _show: &S, _scene: &Scene) {}
 
     /// Before recording, with the frame prepared: what asks the graph for GPU timing or not has to,
     /// which is all this does by default. A frame graph's GPU timing comes from one owner.
-    fn tools(&mut self, frame: ToolFrame<'_>, executor: &mut GraphExecutor) {
+    fn tools(&mut self, frame: ToolFrame<'_, S>, executor: &mut GraphExecutor) {
         executor.set_gpu_timing(frame.gpu, frame.gpu_timing);
     }
 
@@ -91,15 +92,15 @@ pub trait FrameHooks {
     fn record<'f>(&'f mut self, _graph: &mut FrameGraph<'f>, _target: TextureId) {}
 }
 
-impl FrameHooks for () {}
+impl<S> FrameHooks<S> for () {}
 
 /// What [`FrameHooks::before_loading`] can change.
-pub struct LoadingFrame<'a> {
+pub struct LoadingFrame<'a, S = ()> {
     pub content: &'a mut Content,
     pub renderer: &'a mut Renderer,
     pub gpu: &'a GpuContext,
     pub scene: &'a mut Scene,
-    pub combat: Option<&'a mut Combat>,
+    pub show: &'a mut S,
 }
 
 /// How long the last frame's stages took, measured while [`FrameHooks::overlay_visible`] says so.
@@ -112,7 +113,7 @@ pub struct StageTimes {
 }
 
 /// What [`FrameHooks::tools`] can read of a prepared frame.
-pub struct ToolFrame<'a> {
+pub struct ToolFrame<'a, S = ()> {
     pub width: u32,
     pub height: u32,
     /// The last frame's stages, if they were measured.
@@ -123,7 +124,7 @@ pub struct ToolFrame<'a> {
     pub gpu: &'a GpuContext,
     pub scene: &'a Scene,
     pub content: &'a Content,
-    pub combat: Option<&'a Combat>,
+    pub show: &'a S,
 }
 
 /// What [`Stage::new`] makes. [`Self::new`] takes the device's own tier and the mannequin under the
@@ -141,8 +142,8 @@ pub struct StageDesc {
     pub sky: AssetId,
     /// Keep a copy of the character's mesh, for meshes derived from it ([`Content::keep_character_mesh`]).
     pub keep_character_mesh: bool,
-    /// Make the party's recolors of the character ([`Content::keep_party_looks`]).
-    pub party_looks: bool,
+    /// What hears of uploads as they happen, from before the character's ([`Content::watch_uploads`]).
+    pub uploads: Option<Box<dyn UploadWatcher>>,
     /// What every matching material takes as it loads.
     pub material_overrides: MaterialOverrides,
     /// Give the scene its compute-skinning stalk's systems.
@@ -178,7 +179,7 @@ impl StageDesc {
             character: content::CHARACTER,
             sky: content::SKY,
             keep_character_mesh: false,
-            party_looks: false,
+            uploads: None,
             material_overrides: MaterialOverrides::default(),
             skinned: false,
             prewarm_packs: false,
@@ -209,14 +210,14 @@ pub fn gpu_failure(gpu: &GpuContext) -> Result<(), String> {
     Ok(())
 }
 
-/// The GPU, renderer, content and scene a frame draws with, and the fight beside them if there is one.
-pub struct Stage<H: FrameHooks = ()> {
+/// The GPU, renderer, content and scene a frame draws with, and what plays on them.
+pub struct Stage<S: SceneShow = (), H: FrameHooks<S> = ()> {
     // Drop order: everything on the device before the context, the context before the instance.
     /// What the caller adds to its frames.
     pub hooks: H,
     pub renderer: Renderer,
-    /// A simulation that takes a tick with each fixed step.
-    pub combat: Option<Combat>,
+    /// What plays on the scene, which is the caller's.
+    pub show: S,
     /// The asset server and what it uploaded, driven every frame.
     pub content: Content,
     pub graph: GraphExecutor,
@@ -258,7 +259,7 @@ impl Stage {
             character,
             sky,
             keep_character_mesh,
-            party_looks,
+            uploads,
             material_overrides,
             skinned,
             prewarm_packs,
@@ -288,8 +289,8 @@ impl Stage {
         if keep_character_mesh {
             content.keep_character_mesh();
         }
-        if party_looks {
-            content.keep_party_looks();
+        if let Some(uploads) = uploads {
+            content.watch_uploads(uploads);
         }
         content.override_materials(material_overrides);
         let (character, bounds) = content.character(&mut renderer, &gpu)?;
@@ -298,7 +299,7 @@ impl Stage {
         Ok(Self {
             hooks: (),
             renderer,
-            combat: None,
+            show: (),
             content,
             graph: GraphExecutor::new(),
             scene,
@@ -315,12 +316,12 @@ impl Stage {
         })
     }
 
-    /// The same stage, with `hooks` on its frames.
-    pub fn with_hooks<H: FrameHooks>(self, hooks: H) -> Stage<H> {
+    /// The same stage, with `show` playing on it.
+    pub fn with_show<S: SceneShow>(self, show: S) -> Stage<S> {
         let Self {
             hooks: (),
             renderer,
-            combat,
+            show: (),
             content,
             graph,
             scene,
@@ -336,9 +337,9 @@ impl Stage {
             _instance,
         } = self;
         Stage {
-            hooks,
+            hooks: (),
             renderer,
-            combat,
+            show,
             content,
             graph,
             scene,
@@ -356,60 +357,69 @@ impl Stage {
     }
 }
 
-impl<H: FrameHooks> Stage<H> {
-    /// One fixed step and the end of a cue frame: each step here is a frame's worth, as it is on any tier
+impl<S: SceneShow> Stage<S> {
+    /// The same stage, with `hooks` on its frames.
+    pub fn with_hooks<H: FrameHooks<S>>(self, hooks: H) -> Stage<S, H> {
+        let Self {
+            hooks: (),
+            renderer,
+            show,
+            content,
+            graph,
+            scene,
+            quality,
+            character,
+            measure_gpu,
+            history_only_capture,
+            lose_frames,
+            laps,
+            gpu,
+            last_times,
+            format,
+            _instance,
+        } = self;
+        Stage {
+            hooks,
+            renderer,
+            show,
+            content,
+            graph,
+            scene,
+            quality,
+            character,
+            measure_gpu,
+            history_only_capture,
+            lose_frames,
+            laps,
+            gpu,
+            last_times,
+            format,
+            _instance,
+        }
+    }
+}
+
+impl<S: SceneShow, H: FrameHooks<S>> Stage<S, H> {
+    /// One fixed step and the end of a frame's: each step here is a frame's worth, as it is on any tier
     /// that draws every tick.
     pub fn step(&mut self) {
         self.fixed_step();
-        // No sound and no pad here: a frame's end is all that's left of them. Frames here draw the latest step.
-        let frame = 1.0 / sapphire_time::TICK_HZ as f32;
-        self.scene.end_cue_frame(frame, frame, 1.0, &mut ());
+        self.show.end_steps(&mut self.scene, 1.0 / sapphire_time::TICK_HZ as f32);
     }
 
     /// One fixed step and nothing of the frame's: for a frame that takes several, or asks what the steps
-    /// asked of the audio system before the cue frame ends.
+    /// asked of the audio system before the frame's steps end.
     pub fn fixed_step(&mut self) {
         let mut stopwatch = Stopwatch::start();
         self.hooks.before_fixed_step(&mut self.scene);
         self.scene.step();
-        // No one's watching a clock here: a step of time is what a frame shows.
-        self.scene.drive_arena_camera(1.0 / sapphire_time::TICK_HZ as f32, sapphire_math::Vec2::ZERO, 0.0);
         self.laps.scene_step += stopwatch.lap();
-        if let Some(combat) = &mut self.combat {
-            combat.step(&mut crate::combat::no_bindings);
-            self.laps.simulation += stopwatch.lap();
-            self.laps.physics += combat.simulation().stats().controllers_last;
-            self.scene.follow_simulation(combat.simulation(), combat.cast());
-            self.scene.show_cues(combat.simulation());
-            self.laps.cues += stopwatch.lap();
-        }
-    }
-
-    /// The latest step's hits as the HUD's numbers, for a fight an agent runs with no golden behind it:
-    /// captures leave them out, so `arena-fight-hit` keeps its frame.
-    #[cfg(feature = "dev")]
-    pub fn show_damage(&mut self) {
-        if let Some(combat) = &self.combat {
-            self.scene.show_damage(combat.simulation());
-        }
-    }
-
-    /// An error if a replay has left its recorded checksums so far.
-    pub fn check_combat(&self) -> Result<(), AppInitError> {
-        self.combat.as_ref().map_or(Ok(()), Combat::check).map_err(AppInitError::msg)
+        self.show.step(&mut self.scene, &mut self.laps);
     }
 
     /// An error if the GPU has reported one since the stage was made: see [`gpu_failure`].
     pub fn check_gpu(&self) -> Result<(), AppInitError> {
         gpu_failure(&self.gpu).map_err(AppInitError::msg)
-    }
-
-    /// Ends the replay or recording, if there is one: see [`Combat::finish`].
-    pub fn finish_combat(&mut self) -> Result<(), AppInitError> {
-        if let Some(cues) = self.scene.cue_show() {
-            tracing::info!(target: LOG_TARGET, stats = ?cues.stats(), "fired a fight's cues");
-        }
-        self.combat.take().map_or(Ok(()), Combat::finish).map_err(AppInitError::msg)
     }
 
     /// Whether something draws over the frames: see [`FrameHooks::overlay_visible`].
@@ -469,10 +479,10 @@ impl<H: FrameHooks> Stage<H> {
             renderer: &mut self.renderer,
             gpu: &self.gpu,
             scene: &mut self.scene,
-            combat: self.combat.as_mut(),
+            show: &mut self.show,
         });
         self.content.update(&mut self.renderer, &self.gpu);
-        self.scene.follow_content(&mut self.content);
+        self.scene.follow_content(&mut self.content, &mut self.show);
         self.laps.content += laps.lap();
         // Reload/live link can change debug CVars, so inspect them after applying it.
         let discard_output = discard_output
@@ -501,16 +511,13 @@ impl<H: FrameHooks> Stage<H> {
         // While something draws over the frame, it gets the extract and render stages' times (a bench
         // measures its own way, and fixed steps are run outside this).
         let mut stopwatch = (H::TOOLS && self.hooks.overlay_visible()).then(Stopwatch::start);
-        self.hooks.after_steps(self.combat.as_ref(), &self.scene);
+        self.hooks.after_steps(&self.show, &self.scene);
         laps.lap();
         let mut scope = AllocScope::begin();
-        self.scene.animate(&self.content, alpha);
+        self.scene.animate(&self.content, alpha, &mut self.show);
         self.laps.animation += laps.lap();
         self.laps.animation_allocations = next_scope(&mut scope);
-        if let Some(combat) = &self.combat {
-            combat.draw_views();
-        }
-        let packet = self.scene.frame_packet(alpha, Some((width, height)));
+        let packet = self.scene.frame_packet(alpha, Some((width, height)), &mut self.show);
         self.laps.packet += laps.lap();
         self.laps.packet_allocations = next_scope(&mut scope);
         let extract = stopwatch.as_mut().map(Stopwatch::lap).unwrap_or_default();
@@ -537,7 +544,7 @@ impl<H: FrameHooks> Stage<H> {
             gpu: &self.gpu,
             scene: &self.scene,
             content: &self.content,
-            combat: self.combat.as_ref(),
+            show: &self.show,
         };
         self.hooks.tools(frame, &mut self.graph);
         let tools = started.map(|started| started.elapsed()).unwrap_or_default();

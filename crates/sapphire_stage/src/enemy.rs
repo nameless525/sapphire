@@ -144,19 +144,19 @@ const SHAPE: FigureShape = FigureShape {
 /// The enemy's meshes on a renderer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EnemyMeshes {
-    pub(crate) warrior: MeshHandle,
-    pub(crate) blade: MeshHandle,
+    pub warrior: MeshHandle,
+    pub blade: MeshHandle,
 }
 
 /// The enemy, ready to place: its held pose, the figure it makes, and where the pose puts the blade.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Held {
-    pub(crate) pose: RenderPose,
-    pub(crate) figure: Figure,
+    pub pose: RenderPose,
+    pub figure: Figure,
     /// The blade's mesh in the warrior's model space.
-    pub(crate) blade: Mat4,
+    pub blade: Mat4,
     /// The joint that holds it.
-    pub(crate) hand: usize,
+    pub hand: usize,
 }
 
 /// Where the warrior stands on the stage: the model's space to the world.

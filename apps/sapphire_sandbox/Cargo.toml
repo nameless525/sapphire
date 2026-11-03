@@ -70,5 +70,8 @@ tracy = ["profiling/profile-with-tracy"]
 # (spec §5.29). Shipping builds leave it off.
 dev = ["dep:sapphire_debug", "dep:sapphire_hot_reload", "dep:sapphire_livelink", "sapphire_stage/dev"]
 
+[dev-dependencies]
+sapphire_colliders.workspace = true
+
 [lints]
 workspace = true

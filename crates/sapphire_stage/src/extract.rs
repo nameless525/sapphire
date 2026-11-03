@@ -34,7 +34,7 @@ use sapphire_render::{
 /// stops.
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
 #[require(RenderTransform)]
-pub(crate) struct RenderMesh(pub MeshHandle);
+pub struct RenderMesh(pub MeshHandle);
 
 /// A light an entity casts. Its position and spot direction are in the entity's space, placed by
 /// its [`RenderTransform`]; its range is in world meters, whatever the transform's scale.
@@ -46,7 +46,7 @@ pub(crate) struct RenderLight(pub LocalLight);
 /// steps. Written before [`extract_instances`] runs, through `set_if_neq` so an entity that
 /// holds still isn't extracted again.
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) struct RenderTransform(pub Mat4);
+pub struct RenderTransform(pub Mat4);
 
 /// The pose a skinned or morphed [`RenderMesh`] draws in this frame: its skinning palette (one
 /// matrix per palette entry of the mesh, in the mesh's object space) and its morph weights (see
@@ -54,8 +54,8 @@ pub(crate) struct RenderTransform(pub Mat4);
 /// vectors never reallocate and a pose that holds still isn't extracted again.
 #[derive(Component, Clone, Debug, Default, PartialEq)]
 pub struct RenderPose {
-    pub(crate) palette: Vec<Affine3A>,
-    pub(crate) morph_weights: Vec<f32>,
+    pub palette: Vec<Affine3A>,
+    pub morph_weights: Vec<f32>,
 }
 
 /// The packets extraction fills, and whether the next one resends everything, or every pose.

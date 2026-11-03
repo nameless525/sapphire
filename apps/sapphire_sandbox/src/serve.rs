@@ -119,7 +119,7 @@ impl Serving {
     /// Draws `stage`'s scene, made as `options` say, at `width` by `height`, `--frames` frames or
     /// until the process quits.
     pub fn new(mut stage: Stage, options: Options, width: u32, height: u32) -> Result<Self, AppInitError> {
-        let audio = match stage.scene.cue_show().map(|show| show.table().sound_cues()) {
+        let audio = match stage.show.fight.show.cue_show().map(|show| show.table().sound_cues()) {
             Some(cues) => {
                 Some(OfflineAudio::for_cues(&cues, &mut stage.content, &mut stage.renderer, &stage.gpu)?)
             }
@@ -150,7 +150,7 @@ impl Serving {
             tracing::error!(target: LOG_TARGET, %error, "offscreen frame failed");
             return AppControl::Fail;
         }
-        match self.stage.finish_combat() {
+        match self.stage.show.fight.finish() {
             Ok(()) => AppControl::Exit,
             Err(error) => {
                 tracing::error!(target: LOG_TARGET, %error, "the fight didn't end cleanly");
@@ -186,12 +186,19 @@ impl Serving {
         let stage = &mut self.stage;
         let Some(previous) = stage.quality.update_tier() else { return };
         let settings = self.options.render_settings(stage.quality.render_settings());
-        match create_renderer(&mut stage.content, &stage.gpu, FORMAT, settings, &self.options) {
+        match create_renderer(
+            &mut stage.content,
+            &mut stage.show.fight.show,
+            &stage.gpu,
+            FORMAT,
+            settings,
+            &self.options,
+        ) {
             Ok(renderer) => {
-                crate::app::set_meshes(&mut stage.scene, &renderer);
+                crate::app::set_meshes(&mut stage.scene, &mut stage.show, &renderer);
                 stage.renderer = renderer.renderer;
                 stage.hooks.dev.renderer_created(&mut stage.renderer);
-                stage.scene.prewarm(&mut stage.renderer);
+                stage.scene.prewarm(&stage.show, &mut stage.renderer);
                 // The new renderer's scene starts empty.
                 stage.scene.resend_instances();
                 tracing::info!(target: LOG_TARGET, tier = %stage.quality.active().id, "renderer rebuilt for the quality tier");
@@ -212,14 +219,14 @@ impl Serving {
         for _ in 0..steps {
             stage.fixed_step();
             // Each step clears its cues, so its hits read here.
-            stage.show_damage();
+            stage.show.show_damage(&stage.scene);
         }
         let dt = steps as f32 / TICK_HZ as f32;
         if let Some(audio) = &mut self.audio {
-            audio.update(dt, stage.scene.sound(), stage.scene.cue_sounds());
+            audio.update(dt, stage.scene.sound(), stage.show.fight.show.cue_sounds());
             audio.mix(dt);
         }
-        stage.scene.end_cue_frame(dt, dt, 1.0, &mut ());
+        stage.show.fight.show.end_cue_frame(&mut stage.scene, dt, dt, 1.0, &mut ());
         // Captures asked for while the last frame was drawn: this one answers them, drawn into a
         // target that can be read back.
         match stage.hooks.dev.take_capture() {

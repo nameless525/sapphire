@@ -25,7 +25,7 @@
 
 use std::time::Duration;
 
-use sapphire_audio::{CueRequest, Emitter};
+use sapphire_audio::Emitter;
 use sapphire_camera::{CameraDirector, CameraTuning, ShakeId, ShakeStack};
 use sapphire_cues::{
     CueDispatcher, CueStats, CueStep, CueTable, CueTableError, RumbleSink, ShakeSink, actor_emitter,
@@ -39,6 +39,7 @@ use sapphire_time::{Stopwatch, TICK_HZ};
 use sapphire_vfx::{EffectLibrary as VfxLibrary, VfxBudget, VfxWorld};
 use sapphire_world::screen_effects::{EffectLibrary as ScreenLibrary, EffectStack};
 
+use crate::audio::CueSounds;
 use crate::trails::BladeTrails;
 
 /// Seeded, so a capture's sparks land the same way in every run, and so do its shakes.
@@ -92,23 +93,6 @@ impl RumbleSink for PadRumble<'_> {
             self.platform.rumble_gamepad(pad, low, high, duration);
         }
     }
-}
-
-/// What a fight asks of the audio system this frame.
-#[derive(Clone, Copy, Debug)]
-pub struct CueSounds<'a> {
-    pub(crate) requests: &'a [CueRequest],
-    pub(crate) emitters: &'a [Emitter],
-    /// The simulation's world clock's speed, which its slow motion turns down.
-    pub(crate) world_time_scale: f32,
-    /// A new fight began this frame, so what the last one left playing ends before these start.
-    pub(crate) started_over: bool,
-}
-
-impl CueSounds<'_> {
-    /// Nothing: there's no fight.
-    pub(crate) const NONE: CueSounds<'static> =
-        CueSounds { requests: &[], emitters: &[], world_time_scale: 1.0, started_over: false };
 }
 
 /// What's firing, and what it fires into that the scene doesn't hold itself.

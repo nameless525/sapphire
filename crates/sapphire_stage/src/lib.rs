@@ -35,8 +35,8 @@
 //! yourself, give [`StageDesc`] the surface's format, and pass [`Stage::render`] the acquired image's view.
 //! Nothing here reads a clock or asks for a surface.
 //!
-//! **What it shows** is placed on [`Stage::scene`], before the first step: `Scene::spawn_arena` with what
-//! [`Content`] loads, and a `combat::Combat` in [`Stage::combat`] for a fight. `apps/sapphire_sandbox`'s
+//! **What it shows** is placed on [`Stage::scene`], before the first step, and what plays there is a
+//! [`SceneShow`] of the caller's, in [`Stage::show`] by [`Stage::with_show`]. `apps/sapphire_sandbox`'s
 //! `offscreen.rs` is every scene it can hold, flag by flag.
 //!
 //! **Tools:** [`FrameHooks`] on [`Stage::with_hooks`], for what a development build draws over a frame or swaps
@@ -68,6 +68,7 @@ pub mod enemy;
 pub mod environment;
 mod extract;
 pub mod faces;
+pub mod fight;
 pub mod foliage;
 mod frame;
 pub mod garments;
@@ -78,11 +79,12 @@ pub mod layers;
 pub mod lookdev;
 pub mod orbit;
 mod outlines;
-mod party_looks;
+pub mod party_looks;
 mod pose;
 mod readback;
 pub mod rims;
 pub mod scene;
+mod show;
 pub mod skinned;
 pub mod stage;
 pub mod swatches;
@@ -93,12 +95,14 @@ mod turntable;
 pub mod vfx;
 
 pub use content::Content;
+pub use extract::{RenderMesh, RenderPose, RenderTransform};
 pub use frame::{
     FRAME, FrameHooks, FrameLaps, LoadingFrame, Stage, StageDesc, StageTimes, ToolFrame, gpu_failure,
     headless_gpu,
 };
 pub use readback::Readback;
 pub use scene::Scene;
+pub use show::{ContentChanges, SceneShow};
 
 /// Log target for the stage.
 pub(crate) const LOG_TARGET: &str = "sapphire::stage";

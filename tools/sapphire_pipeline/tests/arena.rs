@@ -16,11 +16,15 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use glam::{Quat, Vec3};
-use sapphire_colliders::{ColliderDocument, ColliderSet, CookedShape, Group};
+use glam::Vec3;
+use sapphire_colliders::{ColliderDocument, ColliderSet};
 use sapphire_pipeline::assembly::{self, Assembly, Detail, Scale};
 use sapphire_pipeline::import::gltf;
 use sapphire_pipeline::meta::{self, ImportSettings, SourceTree};
+
+mod support;
+
+use support::{Triangle, Volume, clip_plane, in_band, volumes};
 
 /// How far a collider's face may stand from what's drawn there, or what's drawn from a collider: a
 /// little under half a character's radius, past which an invisible wall starts to show.
@@ -50,8 +54,6 @@ fn colliders() -> ColliderSet {
     let text = fs::read_to_string(content().join("arena/square.colliders.ron")).expect("the document");
     ColliderDocument::from_ron(&text).expect("it reads").cook().expect("it cooks")
 }
-
-type Triangle = [Vec3; 3];
 
 /// One placement of the town, as the cook would build it alone.
 struct Placed {
@@ -90,72 +92,6 @@ fn placements() -> Vec<Placed> {
             Placed { label, triangles }
         })
         .collect()
-}
-
-/// A collider as a box in its own space: a capsule's box, for this test's purposes.
-struct Volume {
-    name: String,
-    center: Vec3,
-    rotation: Quat,
-    half: Vec3,
-    /// In the world group, rather than one of the blockers nothing draws.
-    world: bool,
-}
-
-impl Volume {
-    fn local(&self, point: Vec3) -> Vec3 {
-        self.rotation.inverse() * (point - self.center)
-    }
-
-    /// How far `point` is outside the box, along its worst axis: 0 or less is inside.
-    fn outside(&self, point: Vec3) -> f32 {
-        (self.local(point).abs() - self.half).max_element()
-    }
-}
-
-fn volumes(set: &ColliderSet) -> Vec<Volume> {
-    set.colliders
-        .iter()
-        .map(|collider| {
-            let half = match collider.shape {
-                CookedShape::Box { half_extents } => Vec3::from(half_extents),
-                CookedShape::Capsule { half_height, radius } => {
-                    Vec3::new(radius, half_height + radius, radius)
-                }
-                CookedShape::Sphere { radius } => Vec3::splat(radius),
-                CookedShape::Mesh { .. } => panic!("{}: a mesh has no box here", collider.name),
-            };
-            Volume {
-                name: collider.name.clone(),
-                center: Vec3::from(collider.position),
-                rotation: Quat::from_array(collider.rotation),
-                half,
-                world: collider.memberships & Group::World.mask().bits() != 0,
-            }
-        })
-        .collect()
-}
-
-/// Sutherland–Hodgman against one plane: what of `polygon` has `distance(point) >= 0`.
-fn clip_plane(polygon: &[Vec3], distance: impl Fn(Vec3) -> f32) -> Vec<Vec3> {
-    let mut out = Vec::with_capacity(polygon.len() + 1);
-    for k in 0..polygon.len() {
-        let (a, b) = (polygon[k], polygon[(k + 1) % polygon.len()]);
-        let (da, db) = (distance(a), distance(b));
-        if da >= 0.0 {
-            out.push(a);
-        }
-        if (da >= 0.0) != (db >= 0.0) {
-            out.push(a + (b - a) * (da / (da - db)));
-        }
-    }
-    out
-}
-
-/// What of a triangle lies in the band of heights.
-fn in_band(triangle: Triangle, band: [f32; 2]) -> Vec<Vec3> {
-    let above = clip_plane(&triangle, |p| p.y - band[0]);
-    clip_plane(&above, |p| band[1] - p.y)
 }
 
 /// **Nothing to walk through:** every point drawn at a character's height, of any placement near the

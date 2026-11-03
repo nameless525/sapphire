@@ -3845,6 +3845,7 @@ dependencies = [
  "sapphire_moves",
  "sapphire_nav",
  "sapphire_navmesh",
+ "sapphire_physics",
  "sapphire_reflect",
  "sapphire_serialize",
  "sapphire_strings",

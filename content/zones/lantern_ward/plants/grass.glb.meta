@@ -1,0 +1,20 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "3dce8bab-8061-5eab-9275-9465e7c472e3",
+        importer: Gltf((
+            lods: (
+                levels: [],
+            ),
+            materials: {
+                "Blades": "e90344a2-f6fc-4097-9887-11dcbc64a1c9",
+            },
+            foliage: (
+                normals: Up,
+                slots: ["Blades"],
+                blend: 1.0,
+            ),
+        )),
+    ),
+)

@@ -155,7 +155,7 @@ pub struct Scene {
 /// and `arena-fight-telegraph`, `arena-fight-hit`, `arena-fight-cut` and `arena-fight-slash` a fight with
 /// the enemy (M2 G6), side on, so the character isn't in front of what they're there to show.
 /// `arena-party-second` and `arena-party-third` play a party's fight (M2 G7), and only they run `--party`.
-pub fn scenes() -> [Scene; 144] {
+pub fn scenes() -> [Scene; 146] {
     [
         Scene {
             name: "turntable-start",
@@ -1298,6 +1298,40 @@ pub fn scenes() -> [Scene; 144] {
                 "mobile-high",
                 "--fog",
                 "off",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // A zone's own look (M3 C1): the hub and the last room, as a walk would come on them, with its
+        // grid, its day and its rigs, and every feature on, as what a game would ship.
+        Scene {
+            name: "zone-ward-hub",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--zone",
+                "lantern_ward:player_start",
+                "--time-of-day",
+                "14",
+                "--tier",
+                "desktop-high",
+                "--capture-frames",
+                "32",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        Scene {
+            name: "zone-ward-court",
+            args: &[
+                "--capture-ticks",
+                "90",
+                "--zone",
+                "lantern_ward:checkpoint_court",
+                "--time-of-day",
+                "17.5",
+                "--tier",
+                "desktop-high",
+                "--capture-frames",
+                "32",
             ],
             thresholds: Thresholds::default(),
         },
@@ -4276,11 +4310,13 @@ mod tests {
     #[test]
     fn only_the_ambient_scenes_take_ambient_occlusion_and_a_grid() {
         // Every scene from before M1 W5 pins AO off and loads no grid, so it draws as it did; the
-        // ambient scenes pin fog off instead.
+        // ambient scenes pin fog off instead. A zone's brings its grid and pins nothing: it's its look.
         for scene in scenes() {
             let pinned = |flag: &str, value: &str| scene.args.windows(2).any(|pair| pair == [flag, value]);
             if scene.name.starts_with("ambient-") {
                 assert!(pinned("--fog", "off"), "{}", scene.name);
+            } else if scene.name.starts_with("zone-") {
+                assert!(scene.args.contains(&"--zone"), "{}", scene.name);
             } else {
                 assert!(pinned("--ao", "off"), "{}", scene.name);
                 assert!(!scene.args.contains(&"--probes"), "{}", scene.name);

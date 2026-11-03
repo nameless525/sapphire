@@ -612,6 +612,50 @@ fn a_load_leaves_no_pipeline_to_build_and_a_missing_entry_fails_naming_it() {
     }
 }
 
+/// Exit test 7 where exit test 1 walks (M3 C1): a zone found by its stem declares its keys and its probe grid
+/// when it opens, so no frame of walking it builds a pipeline on either tier's settings; and leave its grid out
+/// and the same bench fails, naming the ambient pass. `--bench` adds its warm-up to the frames it asks for.
+#[test]
+#[ignore = "needs a GPU and cooked content (`cargo xtask content`)"]
+fn walking_a_zone_builds_no_pipeline_and_a_grid_left_out_is_named() {
+    let bench = |tier: &str, without: &[&'static str]| {
+        let mut args = vec![
+            "--bench",
+            "240",
+            "--zone",
+            "lantern_ward",
+            "--zone-walk",
+            "tour",
+            "--tier",
+            tier,
+            "--size",
+            "64x36",
+            "--no-hot-reload",
+            "--live-link",
+            "off",
+        ];
+        args.extend(without);
+        sandbox(&args, &content())
+    };
+    for tier in ["desktop-low", "mobile-low"] {
+        let output = bench(tier, &[]);
+        let log = log_of(&output);
+        assert!(output.status.success(), "{tier}: {log}");
+        let row =
+            log.lines().find(|line| line.contains("zone walk")).unwrap_or_else(|| panic!("{tier}: {log}"));
+        for part in ["first_use=0", "rebuilt=0"] {
+            assert!(row.contains(part), "{tier}: {row}");
+        }
+        let streaming =
+            log.lines().rfind(|line| line.contains(" streaming ")).unwrap_or_else(|| panic!("{tier}: {log}"));
+        assert!(streaming.contains("failed=0"), "{tier}: {streaming}");
+        let output = bench(tier, &["--inventory-without", "ambient"]);
+        let log = log_of(&output);
+        assert!(!output.status.success(), "{tier} without its grid: it passed: {log}");
+        assert!(log.contains("pipeline inventory missed") && log.contains("ambient: "), "{tier}: {log}");
+    }
+}
+
 /// A bench on `tier` with `entry` left out fails, saying `named`.
 fn assert_inventory_miss(replay: &str, tier: &str, entry: &str, named: &str) {
     let output = inventory_bench(replay, tier, Some(entry));

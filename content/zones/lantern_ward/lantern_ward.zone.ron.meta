@@ -1,0 +1,8 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "f15b7d04-631d-59b5-8c42-338147fc4e86",
+        importer: Zone(()),
+    ),
+)

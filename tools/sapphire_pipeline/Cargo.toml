@@ -77,6 +77,8 @@ vrm-spec.workspace = true
 sapphire_anim.workspace = true
 # A move's tables played in the simulation.
 sapphire_gameplay.workspace = true
+# The same, on a zone's own colliders (`tests/zone_ward.rs`).
+sapphire_physics.workspace = true
 # The editor's sidecars and a cook's are one thing (`tests/document_sidecars.rs`).
 sapphire_document.workspace = true
 # Reads a subset the way the runtime will.

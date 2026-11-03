@@ -37,11 +37,11 @@ use sapphire_time::{Stopwatch, TICK_HZ};
 
 use crate::LOG_TARGET;
 use crate::app::create_renderer;
-use crate::audio::OfflineAudio;
 use crate::fight_bench::{frame_length, steps_a_frame};
 use crate::link::FrameCapture;
 use crate::offscreen::{FORMAT, Stage};
 use crate::options::Options;
+use sapphire_stage::audio::OfflineAudio;
 
 /// How often the frame stats line is logged, as the windowed app's.
 const REPORT_INTERVAL: Duration = Duration::from_secs(2);
@@ -201,7 +201,7 @@ impl Serving {
                 stage.quality.restore(previous);
             }
         }
-        stage.scene.set_spring_quality(crate::animate::spring_quality(stage.quality.active().id));
+        stage.scene.set_spring_quality(sapphire_stage::animate::spring_quality(stage.quality.active().id));
     }
 
     fn draw(&mut self) -> Result<(), AppInitError> {

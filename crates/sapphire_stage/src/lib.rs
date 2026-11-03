@@ -1,0 +1,105 @@
+//! A stage: a GPU, cooked content and a scene, stepped and drawn. It's what turns a simulation and a
+//! pack into a frame the renderer can draw, so an app, a game and the editor's viewport share one.
+//!
+//! It owns [`Scene`] (the ECS world, the fixed-step systems and what extracts a `FramePacket`), [`Content`]
+//! (the asset server and what it uploaded) and [`Stage`], which holds them with a renderer on one device.
+//! It owns no window, no command line, no main loop and no dev panel: those are the app's. What a frame draws
+//! into is the caller's too.
+//!
+//! # A frame
+//!
+//! ```no_run
+//! use sapphire_platform::{AppInitError, Platform};
+//! use sapphire_render::quality::QualitySettings;
+//! use sapphire_rhi::wgpu;
+//! use sapphire_stage::{Readback, Stage, StageDesc, headless_gpu};
+//!
+//! fn one_frame(platform: &Platform) -> Result<Vec<u8>, AppInitError> {
+//!     const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+//!     let (instance, gpu) = headless_gpu()?;
+//!     let desc = StageDesc::new(platform, &gpu, FORMAT, QualitySettings::default());
+//!     let mut stage = Stage::new(platform, instance, gpu, desc)?;
+//!     for _ in 0..60 {
+//!         stage.step();
+//!     }
+//!     let target = stage.target(640, 360, wgpu::TextureUsages::COPY_SRC);
+//!     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+//!     let readback = Readback::new(&stage.gpu, 640, 360);
+//!     stage.render(&view, 1.0, |graph, target| readback.record(graph, target))?;
+//!     stage.check_gpu()?;
+//!     readback.read(&stage.gpu).map_err(AppInitError::msg)
+//! }
+//! ```
+//!
+//! **A window:** make the instance, the surface and `GpuContext::new(&instance, &desc, Some(&surface))`
+//! yourself, give [`StageDesc`] the surface's format, and pass [`Stage::render`] the acquired image's view.
+//! Nothing here reads a clock or asks for a surface.
+//!
+//! **What it shows** is placed on [`Stage::scene`], before the first step: `Scene::spawn_arena` with what
+//! [`Content`] loads, and a `combat::Combat` in [`Stage::combat`] for a fight. `apps/sapphire_sandbox`'s
+//! `offscreen.rs` is every scene it can hold, flag by flag.
+//!
+//! **Tools:** [`FrameHooks`] on [`Stage::with_hooks`], for what a development build draws over a frame or swaps
+//! in before it loads. The `dev` feature adds live tuning (`tuning`), and the packs live link pushes to
+//! [`Content`]: an app's own `dev` turns it on.
+//!
+//! # What's here that a game's crates will take
+//!
+//! The fight's app side (`arena`, `combat`, `enemy`, `blade`, `cues`, `party_looks`, `trails`) and the HUD (`hud`)
+//! moved here whole, since [`Scene`] and [`Content`] hold their types and call them directly. `game_combat` and
+//! `game_ui` take them once a seam stands between (M3's S2).
+
+pub mod anim_graph;
+pub mod animate;
+pub mod arena;
+pub mod audio;
+mod blade;
+pub mod combat;
+pub mod combat_views;
+pub mod content;
+pub mod cues;
+pub mod cvars;
+pub mod debug_shapes;
+pub mod enemy;
+pub mod environment;
+mod extract;
+pub mod faces;
+pub mod foliage;
+mod frame;
+pub mod garments;
+pub mod hud;
+pub mod ik;
+pub mod input;
+pub mod layers;
+pub mod lookdev;
+pub mod orbit;
+mod outlines;
+pub mod party_looks;
+mod pose;
+mod readback;
+pub mod rims;
+pub mod scene;
+pub mod skinned;
+pub mod stage;
+pub mod swatches;
+mod trails;
+#[cfg(feature = "dev")]
+pub mod tuning;
+mod turntable;
+pub mod vfx;
+
+pub use content::Content;
+pub use frame::{
+    FRAME, FrameHooks, FrameLaps, LoadingFrame, Stage, StageDesc, StageTimes, ToolFrame, gpu_failure,
+    headless_gpu,
+};
+pub use readback::Readback;
+pub use scene::Scene;
+
+/// Log target for the stage.
+pub(crate) const LOG_TARGET: &str = "sapphire::stage";
+
+/// mimalloc, counted, as an app's: tests hold allocations to what they should be.
+#[cfg(test)]
+#[global_allocator]
+static GLOBAL: sapphire_core::alloc::EngineAllocator = sapphire_core::alloc::engine_allocator();

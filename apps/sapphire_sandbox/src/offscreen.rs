@@ -16,26 +16,26 @@ use sapphire_rhi::wgpu;
 
 use crate::LOG_TARGET;
 use crate::app::SandboxApp;
-use crate::combat::Combat;
-#[cfg(feature = "dev")]
-use crate::frame::{FRAME, FrameHooks, LoadingFrame, ToolFrame};
-use crate::frame::{StageDesc, headless_gpu};
 use crate::options::{OffscreenMode, Options};
 #[cfg(feature = "dev")]
-use crate::scene::Scene;
-use crate::scene::{Arena, LookDev};
-#[cfg(feature = "dev")]
 use crate::stats::Stages;
+use sapphire_stage::combat::Combat;
+#[cfg(feature = "dev")]
+use sapphire_stage::scene::Scene;
+use sapphire_stage::scene::{Arena, LookDev};
+#[cfg(feature = "dev")]
+use sapphire_stage::{FRAME, FrameHooks, LoadingFrame, ToolFrame};
+use sapphire_stage::{StageDesc, headless_gpu};
 
 /// Offscreen targets are sRGB like the swapchain, so they match what the window shows.
 pub(crate) const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
 /// The GPU, renderer and scene an offscreen mode draws with, under the debug overlay in `dev` builds.
 #[cfg(feature = "dev")]
-pub(crate) type Stage = crate::frame::Stage<StageTools>;
+pub(crate) type Stage = sapphire_stage::Stage<StageTools>;
 /// The GPU, renderer and scene an offscreen mode draws with.
 #[cfg(not(feature = "dev"))]
-pub(crate) type Stage = crate::frame::Stage;
+pub(crate) type Stage = sapphire_stage::Stage;
 
 /// The offscreen "app". A capture or bench does all its work in `init`, and the first frame
 /// exits; `--offscreen` draws a frame each iteration until the process is told to quit.
@@ -60,7 +60,7 @@ impl App for OffscreenApp {
         // Before any GPU work, so a bad replay file costs nothing and says why.
         let combat = options.combat.as_ref().map(Combat::new).transpose().map_err(AppInitError::msg)?;
         if let (Some(_), Some(combat)) = (options.arena, &combat) {
-            crate::arena::check_scenario(combat, options.party).map_err(AppInitError::msg)?;
+            sapphire_stage::arena::check_scenario(combat, options.party).map_err(AppInitError::msg)?;
         }
         match &offscreen.mode {
             OffscreenMode::Capture { path, ticks, frames } => {
@@ -102,7 +102,7 @@ impl App for OffscreenApp {
         }
         // Every golden scene passes through here: CI's runners have no sound, and a run that draws
         // has no business opening a device.
-        crate::audio::stayed_shut(sapphire_audio::device_opens()).map_err(AppInitError::msg)?;
+        sapphire_stage::audio::stayed_shut(sapphire_audio::device_opens()).map_err(AppInitError::msg)?;
         Ok(Self {
             #[cfg(feature = "dev")]
             serving: None,
@@ -151,11 +151,11 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
     desc.material_overrides = options.material_overrides();
     desc.skinned = options.skinned;
     let history_only_capture = history_only_capture_allowed(options, desc.settings);
-    let mut stage = crate::frame::Stage::new(platform, instance, gpu, desc)?;
+    let mut stage = sapphire_stage::Stage::new(platform, instance, gpu, desc)?;
     stage.history_only_capture = history_only_capture;
     stage.graph.set_serial(options.serial_passes);
     let character = stage.character;
-    let crate::frame::Stage { scene, content, renderer, gpu, quality, .. } = &mut stage;
+    let sapphire_stage::Stage { scene, content, renderer, gpu, quality, .. } = &mut stage;
     if let Some(rig) = &options.character_rig {
         scene.set_character_rig(rig).map_err(AppInitError::msg)?;
     }
@@ -163,16 +163,16 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
         scene.spawn_demo_lights();
     }
     if options.skinned {
-        scene.set_stalk_mesh(crate::skinned::upload_stalk(renderer)?);
+        scene.set_stalk_mesh(sapphire_stage::skinned::upload_stalk(renderer)?);
     }
     if options.swatches {
-        scene.spawn_swatches(crate::swatches::upload_swatches(content, gpu, renderer)?);
+        scene.spawn_swatches(sapphire_stage::swatches::upload_swatches(content, gpu, renderer)?);
     }
     if options.materials {
-        scene.spawn_layer_samples(crate::layers::upload_samples(content, gpu, renderer)?);
+        scene.spawn_layer_samples(sapphire_stage::layers::upload_samples(content, gpu, renderer)?);
     }
     if options.two_sided {
-        scene.spawn_garments(crate::garments::upload_samples(renderer)?);
+        scene.spawn_garments(sapphire_stage::garments::upload_samples(renderer)?);
     }
     if let Some(layout) = options.faces {
         scene.spawn_face_rig(content.face_head(renderer, gpu)?, layout);
@@ -202,38 +202,38 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
     if let Some(shot) = options.look_dev {
         let town = content.town(renderer, gpu)?;
         let fog_cards = (!options.fog_off).then(|| content.fog_cards(renderer, gpu)).transpose()?;
-        let (pose, figure) = crate::lookdev::hold(content, renderer, gpu)?;
+        let (pose, figure) = sapphire_stage::lookdev::hold(content, renderer, gpu)?;
         scene.spawn_look_dev(shot, LookDev { town, fog_cards, pose, figure });
         if let Some(clip) = options.clip {
             content.load_clip(clip.id(), renderer, gpu)?;
-            let mut player = crate::lookdev::player(content)
+            let mut player = sapphire_stage::lookdev::player(content)
                 .map_err(AppInitError::msg)?
                 .with_root_motion(!options.clip_in_place)
                 .with_springs_on(options.springs != Some(false));
             if let Some(ik) = &options.ik {
-                let block = crate::stage::upload_block(renderer)?;
+                let block = sapphire_stage::stage::upload_block(renderer)?;
                 let solver = scene.start_ik(ik, block, content, player.pose()).map_err(AppInitError::msg)?;
                 player = player.with_ik(solver);
             }
             scene.play_clip(player);
-            scene.set_spring_quality(crate::animate::spring_quality(quality.active().id));
+            scene.set_spring_quality(sapphire_stage::animate::spring_quality(quality.active().id));
         }
         if let Some(script) = options.graph {
-            content.load_graph(crate::lookdev::GRAPH, renderer, gpu)?;
-            let mut driver = crate::lookdev::graph_driver(content).map_err(AppInitError::msg)?;
+            content.load_graph(sapphire_stage::lookdev::GRAPH, renderer, gpu)?;
+            let mut driver = sapphire_stage::lookdev::graph_driver(content).map_err(AppInitError::msg)?;
             if let Some(ik) = &options.ik {
-                let block = crate::stage::upload_block(renderer)?;
+                let block = sapphire_stage::stage::upload_block(renderer)?;
                 let solver =
                     scene.start_ik(ik, block, content, driver.player.pose()).map_err(AppInitError::msg)?;
                 driver = driver.with_ik(solver);
             }
             scene.play_graph(
                 driver.with_springs_on(options.springs != Some(false)),
-                crate::anim_graph::GraphShow::new(script),
+                sapphire_stage::anim_graph::GraphShow::new(script),
             );
-            scene.set_spring_quality(crate::animate::spring_quality(quality.active().id));
+            scene.set_spring_quality(sapphire_stage::animate::spring_quality(quality.active().id));
         }
-        if shot == crate::lookdev::Shot::Enemy {
+        if shot == sapphire_stage::lookdev::Shot::Enemy {
             let meshes = content.enemy(renderer, gpu)?;
             scene.spawn_enemy(meshes, content.held_enemy()?);
         }
@@ -241,7 +241,7 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
     if let Some(shot) = options.arena {
         let town = content.town(renderer, gpu)?;
         let fog_cards = (!options.fog_off).then(|| content.fog_cards(renderer, gpu)).transpose()?;
-        let (pose, figure) = crate::lookdev::hold(content, renderer, gpu)?;
+        let (pose, figure) = sapphire_stage::lookdev::hold(content, renderer, gpu)?;
         let ground = content.arena_ground(renderer, gpu)?;
         let world = ground.share();
         let look = LookDev { town, fog_cards, pose, figure };
@@ -252,7 +252,7 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
         }
         if let Some(clip) = options.clip {
             content.load_clip(clip.id(), renderer, gpu)?;
-            let mut player = crate::lookdev::player(content)
+            let mut player = sapphire_stage::lookdev::player(content)
                 .map_err(AppInitError::msg)?
                 .with_root_motion(false)
                 .with_springs_on(options.springs != Some(false));
@@ -263,34 +263,34 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
                 player = player.with_ik(solver);
             }
             scene.play_clip(player);
-            scene.set_spring_quality(crate::animate::spring_quality(quality.active().id));
+            scene.set_spring_quality(sapphire_stage::animate::spring_quality(quality.active().id));
         }
         if options.combat.is_some() {
-            content.load_graph(crate::lookdev::GRAPH, renderer, gpu)?;
+            content.load_graph(sapphire_stage::lookdev::GRAPH, renderer, gpu)?;
             content.load_enemy_graph(renderer, gpu)?;
-            let player = crate::lookdev::graph_driver(content).map_err(AppInitError::msg)?;
+            let player = sapphire_stage::lookdev::graph_driver(content).map_err(AppInitError::msg)?;
             let solver =
                 scene.ik_on(world.clone(), None, content, player.player.pose()).map_err(AppInitError::msg)?;
             scene.play_fighters(
                 player.with_springs_on(options.springs != Some(false)).with_ik(solver),
                 content.enemy_driver(world)?,
             );
-            scene.set_spring_quality(crate::animate::spring_quality(quality.active().id));
+            scene.set_spring_quality(sapphire_stage::animate::spring_quality(quality.active().id));
         }
     }
     if options.blade() {
         let sword = content.sword(renderer, gpu)?;
-        let hand = crate::lookdev::held_hand(content).map_err(AppInitError::msg)?;
+        let hand = sapphire_stage::lookdev::held_hand(content).map_err(AppInitError::msg)?;
         scene.spawn_blade(sword, hand);
     }
     // The day, the sky options, the starting view and the turntable's speed, last so `--view`
     // holds whatever framing the scene chose.
     options.apply_to(scene).map_err(AppInitError::msg)?;
     if let Some(show) = options.vfx {
-        scene.play_vfx(show, crate::vfx::budget(quality.active().id));
+        scene.play_vfx(show, sapphire_stage::vfx::budget(quality.active().id));
     }
     if options.cues {
-        scene.play_cues(crate::vfx::budget(quality.active().id)).map_err(AppInitError::msg)?;
+        scene.play_cues(sapphire_stage::vfx::budget(quality.active().id)).map_err(AppInitError::msg)?;
     }
     // The screen effects it may push, `--post-effect`'s among them, and the effects it plays,
     // show on their first frame.
@@ -303,9 +303,9 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
     // live and a fight's bars stand behind it.
     if let Some(hud) = options.hud {
         let fight = options.arena.is_some() && options.combat.is_some();
-        let mode = if fight { hud.mode } else { crate::hud::HudMode::Fixed };
-        let hud = crate::hud::HudOptions { mode, ..hud };
-        scene.set_hud(crate::hud::SandboxHud::new(hud));
+        let mode = if fight { hud.mode } else { sapphire_stage::hud::HudMode::Fixed };
+        let hud = sapphire_stage::hud::HudOptions { mode, ..hud };
+        scene.set_hud(sapphire_stage::hud::SandboxHud::new(hud));
     }
     #[cfg(feature = "dev")]
     let tools = StageTools { dev: crate::dev::DevTools::new(gpu, FORMAT, options, platform, content)? };

@@ -29,41 +29,27 @@ name = "sapphire_sandbox"
 path = "src/main.rs"
 
 [dependencies]
-sapphire_anim.workspace = true
 sapphire_assets.workspace = true
 sapphire_audio.workspace = true
-# `--arena`: the camera a player sees it through (M2 O5).
 sapphire_camera.workspace = true
-# `--arena`: the arena's cooked colliders (M2 O5).
-sapphire_colliders.workspace = true
-sapphire_controls.workspace = true
 sapphire_core = { workspace = true, features = ["mimalloc"] }
 sapphire_crash.workspace = true
-sapphire_cues.workspace = true
-# `--replay` and `--record`: the simulation beside the renderer (M2 D2), and the ticks combat's
-# controls give it (M2 I1).
+# The scene, content and the stage's frame, which this app fills from its flags (M3 S1).
+sapphire_stage.workspace = true
+# `--replay` and `--record`: the simulation beside the renderer (M2 D2).
 sapphire_gameplay.workspace = true
-# What the combat views read: a move's shapes, and the collision world (M2 T1).
-sapphire_moves.workspace = true
-sapphire_physics.workspace = true
-sapphire_input.workspace = true
 sapphire_jobs.workspace = true
 sapphire_math.workspace = true
+sapphire_moves.workspace = true
 sapphire_platform.workspace = true
 sapphire_ecs.workspace = true
-# bevy's `Component` / `Resource` derives resolve the `bevy_ecs` crate by name (see sapphire_ecs).
-bevy_ecs.workspace = true
-# Documents pushed over live link name their type by its stable name.
-sapphire_reflect.workspace = true
 sapphire_render.workspace = true
 sapphire_rhi.workspace = true
 sapphire_time.workspace = true
 sapphire_ui.workspace = true
-sapphire_vfx.workspace = true
 sapphire_world.workspace = true
 png.workspace = true
 profiling.workspace = true
-thiserror.workspace = true
 tracing.workspace = true
 # Dev-only (rule R8): linked only by the `dev` feature.
 sapphire_debug = { workspace = true, optional = true }
@@ -82,7 +68,7 @@ sapphire_hot_reload = { workspace = true, optional = true, features = ["notify"]
 tracy = ["profiling/profile-with-tracy"]
 # Development builds: the debug overlay (spec §5.20), hot reload (spec §5.10) and live link
 # (spec §5.29). Shipping builds leave it off.
-dev = ["dep:sapphire_debug", "dep:sapphire_hot_reload", "dep:sapphire_livelink"]
+dev = ["dep:sapphire_debug", "dep:sapphire_hot_reload", "dep:sapphire_livelink", "sapphire_stage/dev"]
 
 [lints]
 workspace = true

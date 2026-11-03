@@ -41,6 +41,8 @@ members = [
     # L5 game
     "crates/sapphire_controls",
     "crates/sapphire_cues",
+    # L6 stage
+    "crates/sapphire_stage",
     # Dev-only: development builds, through an app's `dev` feature
     "crates/sapphire_debug",
     "crates/sapphire_hot_reload",
@@ -94,6 +96,7 @@ sapphire_camera = { path = "crates/sapphire_camera" }
 sapphire_save = { path = "crates/sapphire_save" }
 sapphire_controls = { path = "crates/sapphire_controls" }
 sapphire_cues = { path = "crates/sapphire_cues" }
+sapphire_stage = { path = "crates/sapphire_stage" }
 sapphire_debug = { path = "crates/sapphire_debug" }
 # Its default `notify` feature is for its own tests: apps turn it on per target.
 sapphire_hot_reload = { path = "crates/sapphire_hot_reload", default-features = false }

@@ -8,20 +8,20 @@ use sapphire_render::{DebugView, LightPath, MIN_RENDER_SCALE, Msaa, PostVariants
 use sapphire_ui::Insets;
 use sapphire_world::tod::CharacterShadeKey;
 
-use crate::anim_graph::GraphScript;
-use crate::arena::ArenaShot;
-use crate::audio::CueOption;
-use crate::combat::{CaptureFrames, CombatOption};
-use crate::combat_views::CombatViews;
-use crate::debug_shapes::DebugDrawDemo;
-use crate::faces::{FaceLayout, MaterialOverrides};
-use crate::foliage::{DEFAULT_WIND, FoliageView};
-use crate::hud::{HudMode, HudOptions};
-use crate::lookdev::{self, Shot};
-use crate::rims::RimLayout;
-use crate::scene::{self, Fade, Scene};
-use crate::stage::StageLayout;
-use crate::vfx::VfxShow;
+use sapphire_stage::anim_graph::GraphScript;
+use sapphire_stage::arena::ArenaShot;
+use sapphire_stage::audio::CueOption;
+use sapphire_stage::combat::{CaptureFrames, CombatOption};
+use sapphire_stage::combat_views::CombatViews;
+use sapphire_stage::debug_shapes::DebugDrawDemo;
+use sapphire_stage::faces::{FaceLayout, MaterialOverrides};
+use sapphire_stage::foliage::{DEFAULT_WIND, FoliageView};
+use sapphire_stage::hud::{HudMode, HudOptions};
+use sapphire_stage::lookdev::{self, Shot};
+use sapphire_stage::rims::RimLayout;
+use sapphire_stage::scene::{self, Fade, Scene};
+use sapphire_stage::stage::StageLayout;
+use sapphire_stage::vfx::VfxShow;
 
 /// The flags that select an offscreen mode; see [`Offscreen`].
 pub(crate) const CAPTURE_FLAG: &str = "--capture";
@@ -144,19 +144,19 @@ pub(crate) struct Options {
     /// `--springs on|off`: whether the character's spring bones run under its clip or graph (M2 N5). On
     /// unless it says off, and a character holding still has none. Needs `--clip` or `--graph`.
     pub springs: Option<bool>,
-    /// `--arena`: the combat stage (M2 O5, [`crate::arena`]), the look-dev town's square as a place
+    /// `--arena`: the combat stage (M2 O5, [`sapphire_stage::arena`]), the look-dev town's square as a place
     /// to fight, framed by this shot (`--arena-shot`). A scene of its own, as `--look-dev` is: it
     /// excludes what that excludes, and `--look-dev` too.
     pub arena: Option<ArenaShot>,
     /// `--party`: the arena's fight is a party's (M2 G7), so the player draws whoever's on the field, in
-    /// that member's recolor (`crate::party_looks`). Needs the `party` scenario, which `--fight` then plays.
+    /// that member's recolor (`sapphire_stage::party_looks`). Needs the `party` scenario, which `--fight` then plays.
     pub party: bool,
     /// `--graph`: the animation graph on the look-dev character, from this script (M2 N3).
     pub graph: Option<GraphScript>,
     /// `--ik on|off` (off by default), `--ik-ground flat|step|slope`, `--ik-look x,y,z|orbit`: solves IK
-    /// over the clip or the graph (M2 N4, [`crate::ik`]), the character standing on that ground and
+    /// over the clip or the graph (M2 N4, [`sapphire_stage::ik`]), the character standing on that ground and
     /// looking there. Needs `--clip` or `--graph`. On `--arena` its ground is the arena's colliders.
-    pub ik: Option<crate::ik::IkOptions>,
+    pub ik: Option<sapphire_stage::ik::IkOptions>,
     /// `--cloud-cover <0..1>`: both cloud layers' coverage instead of time of day's; 0 is a
     /// clear sky.
     pub cloud_cover: Option<f32>,
@@ -390,8 +390,8 @@ impl Options {
 
     /// What live tuning follows in this run.
     #[cfg(feature = "dev")]
-    pub fn tuned_run(&self) -> crate::tuning::TunedRun<'_> {
-        crate::tuning::TunedRun {
+    pub fn tuned_run(&self) -> sapphire_stage::tuning::TunedRun<'_> {
+        sapphire_stage::tuning::TunedRun {
             camera_director: self.has_camera_director(),
             cues: self.cues,
             graph_show: self.graph.is_some(),
@@ -419,12 +419,12 @@ impl Options {
 
     /// The character the scene draws: the look-dev VRM in the town, the mannequin otherwise.
     pub fn character(&self) -> sapphire_assets::AssetId {
-        if self.in_town() { lookdev::CHARACTER } else { crate::content::CHARACTER }
+        if self.in_town() { lookdev::CHARACTER } else { sapphire_stage::content::CHARACTER }
     }
 
     /// The sky material the scene draws: the look-dev town's in the town, the sandbox's otherwise.
     pub fn sky(&self) -> sapphire_assets::AssetId {
-        if self.in_town() { lookdev::SKY } else { crate::content::SKY }
+        if self.in_town() { lookdev::SKY } else { sapphire_stage::content::SKY }
     }
 
     /// Whether the content keeps a copy of the character's mesh: the stage and the rim rig draw
@@ -712,14 +712,14 @@ impl Options {
                 }
                 "--ik-ground" => {
                     let raw = value("--ik-ground")?;
-                    ik_ground = Some(crate::ik::IkGround::from_name(&raw).ok_or_else(|| {
+                    ik_ground = Some(sapphire_stage::ik::IkGround::from_name(&raw).ok_or_else(|| {
                         let names: Vec<_> =
-                            crate::ik::IkGround::ALL.iter().map(|ground| ground.name()).collect();
+                            sapphire_stage::ik::IkGround::ALL.iter().map(|ground| ground.name()).collect();
                         format!("--ik-ground expects one of {}, got {raw:?}", names.join(", "))
                     })?);
                 }
                 "--ik-look" => {
-                    ik_look = Some(crate::ik::IkLook::parse(&value("--ik-look")?)?);
+                    ik_look = Some(sapphire_stage::ik::IkLook::parse(&value("--ik-look")?)?);
                 }
                 "--cloud-cover" => {
                     let cover: f32 = number(&value("--cloud-cover")?, "--cloud-cover")?;
@@ -787,7 +787,7 @@ impl Options {
                     options.sharpening = Some(amount);
                 }
                 "--post-effect" => options.post_effects.push(parse_post_effect(&value("--post-effect")?)?),
-                "--cue" => cue = Some(crate::audio::named_cue(&value("--cue")?)?),
+                "--cue" => cue = Some(sapphire_stage::audio::named_cue(&value("--cue")?)?),
                 "--cue-repeat" => {
                     let seconds: f32 = number(&value("--cue-repeat")?, "--cue-repeat")?;
                     if !(seconds.is_finite() && seconds > 0.0) {
@@ -997,8 +997,8 @@ impl Options {
         if !ik && (ik_ground.is_some() || ik_look.is_some()) {
             return Err("--ik-ground and --ik-look need --ik on".to_owned());
         }
-        options.ik =
-            ik.then(|| crate::ik::IkOptions { ground: ik_ground.unwrap_or_default(), look: ik_look });
+        options.ik = ik
+            .then(|| sapphire_stage::ik::IkOptions { ground: ik_ground.unwrap_or_default(), look: ik_look });
         let frames = CaptureFrames { count: capture_frames.unwrap_or(1), step: capture_step.unwrap_or(0) };
         if usize::from(capture.is_some()) + usize::from(bench.is_some()) + usize::from(serve) > 1 {
             return Err(format!("{CAPTURE_FLAG}, {BENCH_FLAG} and {OFFSCREEN_FLAG} are exclusive"));
@@ -1311,7 +1311,7 @@ mod tests {
     fn a_cue_is_asked_for_by_name() {
         let (options, unknown) = parse(&["--cue", "swing", "--cue-repeat", "1.5"]).unwrap();
         assert!(unknown.is_empty());
-        let id = crate::audio::named_cue("swing").unwrap();
+        let id = sapphire_stage::audio::named_cue("swing").unwrap();
         assert_eq!(options.cue, Some(CueOption { id, repeat: Some(1.5) }));
         assert_eq!(parse(&["--cue", "hit"]).unwrap().0.cue.and_then(|cue| cue.repeat), None);
         assert_eq!(parse(&[]).unwrap().0.cue, None, "no sound unless asked");
@@ -1528,7 +1528,7 @@ mod tests {
             lookdev::ClipName::from_name("idle")
         );
         let solving = ["--look-dev", "hero", "--clip", "strike", "--ik", "on"];
-        assert_eq!(parse(&solving).unwrap().0.ik, Some(crate::ik::IkOptions::default()));
+        assert_eq!(parse(&solving).unwrap().0.ik, Some(sapphire_stage::ik::IkOptions::default()));
         assert_eq!(parse(&["--look-dev", "hero", "--clip", "strike", "--ik", "off"]).unwrap().0.ik, None);
         assert_eq!(parse(&["--look-dev", "hero", "--clip", "strike"]).unwrap().0.ik, None, "off by default");
         let on_a_slope = [
@@ -1545,18 +1545,18 @@ mod tests {
         ];
         assert_eq!(
             parse(&on_a_slope).unwrap().0.ik,
-            Some(crate::ik::IkOptions {
-                ground: crate::ik::IkGround::Slope,
-                look: Some(crate::ik::IkLook::Point(sapphire_math::Vec3::new(1.0, 1.5, 2.0))),
+            Some(sapphire_stage::ik::IkOptions {
+                ground: sapphire_stage::ik::IkGround::Slope,
+                look: Some(sapphire_stage::ik::IkLook::Point(sapphire_math::Vec3::new(1.0, 1.5, 2.0))),
             })
         );
         assert!(parse(&["--look-dev", "hero", "--ik", "on"]).unwrap_err().contains("--clip"));
         // Over a graph, as over a clip.
         let on_a_graph = ["--look-dev", "hero", "--graph", "walk", "--ik", "on"];
-        assert_eq!(parse(&on_a_graph).unwrap().0.ik, Some(crate::ik::IkOptions::default()));
+        assert_eq!(parse(&on_a_graph).unwrap().0.ik, Some(sapphire_stage::ik::IkOptions::default()));
         // On the arena's own colliders, which have no test bed to choose.
         let in_the_arena = ["--arena", "--clip", "idle", "--ik", "on"];
-        assert_eq!(parse(&in_the_arena).unwrap().0.ik, Some(crate::ik::IkOptions::default()));
+        assert_eq!(parse(&in_the_arena).unwrap().0.ik, Some(sapphire_stage::ik::IkOptions::default()));
         assert!(
             parse(&["--arena", "--clip", "idle", "--ik", "on", "--ik-ground", "step"])
                 .unwrap_err()
@@ -1576,7 +1576,10 @@ mod tests {
             parse(&["--look-dev", "hero", "--clip", "strike", "--ik", "on", "--ik-look", "1,2"]).is_err()
         );
         let orbit = ["--look-dev", "hero", "--clip", "strike", "--ik", "on", "--ik-look", "orbit"];
-        assert_eq!(parse(&orbit).unwrap().0.ik.and_then(|ik| ik.look), Some(crate::ik::IkLook::Orbit));
+        assert_eq!(
+            parse(&orbit).unwrap().0.ik.and_then(|ik| ik.look),
+            Some(sapphire_stage::ik::IkLook::Orbit)
+        );
         let in_place = ["--look-dev", "hero", "--clip", "strike", "--clip-in-place"];
         assert!(parse(&in_place).unwrap().0.clip_in_place);
         assert!(parse(&["--look-dev", "hero", "--clip-in-place"]).unwrap_err().contains("--clip"));
@@ -1606,7 +1609,7 @@ mod tests {
         let foliage = parse(&["--look-dev", "wide", "--foliage", "grove"]).unwrap_err();
         assert!(foliage.contains("--foliage"), "{foliage}");
         let defaults = Options::default();
-        assert_eq!(defaults.character(), crate::content::CHARACTER);
+        assert_eq!(defaults.character(), sapphire_stage::content::CHARACTER);
         assert!(!defaults.keeps_character_mesh());
     }
 

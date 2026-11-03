@@ -24,8 +24,8 @@ use crate::LOG_TARGET;
 use crate::capture::write_png;
 use crate::offscreen::Stage;
 use crate::options::{Antialiasing, CONTACT_SHEET_FLAG, Options};
-use crate::orbit::OrbitCamera;
-use crate::readback::Readback;
+use sapphire_stage::Readback;
+use sapphire_stage::orbit::OrbitCamera;
 
 /// How many ticks across, unless `--sheet-cells` says.
 pub(crate) const DEFAULT_CELLS: u32 = 8;
@@ -73,7 +73,7 @@ const DIGITS: [[u8; 5]; 10] = [
 
 /// Fills in what `--contact-sheet` implies, and what it isn't told otherwise.
 pub(crate) fn pin_defaults(options: &mut Options) {
-    options.look_dev = Some(crate::lookdev::Shot::Hero);
+    options.look_dev = Some(sapphire_stage::lookdev::Shot::Hero);
     options.aa.get_or_insert(Antialiasing::Msaa);
     options.time_of_day.get_or_insert(12.0);
     options.fog_off = true;

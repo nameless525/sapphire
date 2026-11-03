@@ -14,8 +14,8 @@ use sapphire_gameplay::{ActorView, CurrentMove, LiveWindows, Simulation};
 use sapphire_moves::{Move, MoveSet, Phase, Span};
 use sapphire_time::{SUBTICKS_PER_TICK, SimDuration};
 
-use crate::combat::{Combat, CombatStatus, SessionRecorder};
-use crate::combat_views::{BodyState, palette};
+use sapphire_stage::combat::{Combat, CombatStatus, SessionRecorder};
+use sapphire_stage::combat_views::{BodyState, palette};
 
 /// Colours for what only the panel shows, so a cancel isn't taken for a state of the hurtbox.
 const CANCEL: Color = Color::BLUE;
@@ -216,12 +216,12 @@ mod tests {
     use sapphire_gameplay::{ActorActions, Buttons, TickActions};
 
     use super::*;
-    use crate::combat::CombatOption;
+    use sapphire_stage::combat::CombatOption;
 
     #[test]
     #[ignore = "runs with CI's dev tests, which take --ignored"]
     fn the_panel_finds_these_cvars_by_their_prefix() {
-        for cvar in &crate::combat_views::CVARS {
+        for cvar in &sapphire_stage::combat_views::CVARS {
             assert!(cvar.name().starts_with(sapphire_debug::COMBAT_VIEW_CVARS), "{}", cvar.name());
         }
     }

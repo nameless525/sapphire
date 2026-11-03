@@ -5,9 +5,9 @@
 //! applied:
 //!
 //! - a rewritten pack (`cargo xtask content` after an edit) is remounted: the asset server
-//!   reloads the assets that changed behind their handles, and [`Content`](crate::content::Content) uploads the new
+//!   reloads the assets that changed behind their handles, and [`Content`](sapphire_stage::content::Content) uploads the new
 //!   versions within the frame's upload budget, in place, and the scene poses what a replaced mesh
-//!   starts over ([`Scene::follow_content`](crate::scene::Scene::follow_content)). A pack live link pushed is read from the push until
+//!   starts over ([`Scene::follow_content`](sapphire_stage::scene::Scene::follow_content)). A pack live link pushed is read from the push until
 //!   another push or a restart, so the file is left alone, and the log and the overlay say its
 //!   new version isn't in use;
 //! - WGSL files whose text changed on disk since hot reload's last swap replace those files in
@@ -16,10 +16,10 @@
 //!   in once they are all built, or keeps the ones it has if they don't compile, and they are
 //!   built again with the next save (`shader_edits.rs`);
 //! - an edited timeline replaces time of day's base timeline if it is the file of the day the
-//!   scene runs on ([`Scene::replace_day`](crate::scene::Scene::replace_day));
+//!   scene runs on ([`Scene::replace_day`](sapphire_stage::scene::Scene::replace_day));
 //! - edited presets replace the scene's (the `LightRigLibrary` resource) if they are the file of
 //!   the presets the scene runs on (the shipped ones, or with `--look-dev` the look-dev stage's,
-//!   `content/lookdev/lookdev_light_rigs.ron`; [`Scene::replace_light_rigs`](crate::scene::Scene::replace_light_rigs)); characters keep
+//!   `content/lookdev/lookdev_light_rigs.ron`; [`Scene::replace_light_rigs`](sapphire_stage::scene::Scene::replace_light_rigs)); characters keep
 //!   their preset IDs;
 //! - edited screen effect presets replace the scene's (the `EffectLibrary` resource, M1 P3);
 //!   effects playing keep the layers they were pushed with, and the renderer prewarms the post
@@ -45,9 +45,9 @@ use sapphire_time::Stopwatch;
 
 use crate::LOG_TARGET;
 use crate::link::cook_not_in_use;
-use crate::scene::Day;
 use crate::shader_edits::{Answered, Origin, ShaderEdits};
-use crate::tuning::{Document, DocumentFrame, error_chain};
+use sapphire_stage::scene::Day;
+use sapphire_stage::tuning::{Document, DocumentFrame, error_chain};
 
 /// The timeline document the scene's day comes from ([`Day`]): the default day's, or the
 /// look-dev day's with `--look-dev` (in the repository this build was compiled from, as `sources`
@@ -96,7 +96,7 @@ pub(crate) struct Reload {
 impl Reload {
     /// Watches the packs in `content_root`, the shaders, the day's timeline at `day`
     /// ([`day_source`]), the light rig presets at `light_rigs` ([`light_rigs_source`]), the
-    /// screen effect presets and the fight's documents `tuned` ([`LiveTuning::watched`](crate::tuning::LiveTuning::watched)), unless
+    /// screen effect presets and the fight's documents `tuned` ([`LiveTuning::watched`](sapphire_stage::tuning::LiveTuning::watched)), unless
     /// `enabled` is false. A source that can't be watched is left out, with a warning.
     pub fn start(
         enabled: bool,

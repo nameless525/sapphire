@@ -1,7 +1,8 @@
 # Crate layering for `cargo xtask check-layers` (spec §4.1, ADR 0001).
 #
 # kind = "runtime":  may depend only on runtime crates in *lower* layers, plus the
-#                    same-layer edges listed in [allow].
+#                    same-layer edges listed in [allow]. An [allow] edge to a dev-only crate
+#                    must be through an optional dependency.
 # kind = "app":      shipping binaries; may depend on runtime crates, and on dev-only
 #                    crates through optional dependencies.
 # kind = "dev_only": ships only in development builds (sapphire_debug, the live-link
@@ -87,6 +88,11 @@ sapphire_controls = { kind = "runtime", layer = 5 }
 # screen effects and rumble. It needs gameplay, the camera and the world alike, so it sits above
 # them, and it reads a step's cues and feeds nothing back, so it stays out of [simulation].
 sapphire_cues = { kind = "runtime", layer = 5 }
+# L6 stage (M3 S1): a GPU, cooked content and a scene, stepped and drawn. Above all of the engine's
+# systems, since it's what runs them for a frame, and below every app, so a game and the editor's
+# viewport can share it. `dev`: what an app's own `dev` forwards, for live tuning and pushed packs; the
+# edges it needs are in [allow], and it's the one runtime crate with such a feature.
+sapphire_stage = { kind = "runtime", layer = 6, features = ["dev"] }
 # Dev-only (spec §4.1 places sapphire_debug in L3; as dev-only it has no layer of its own).
 sapphire_debug = { kind = "dev_only" }
 # Desktop hot reload (M1 A8). `notify`: the file-watching backend, which apps turn on for
@@ -111,7 +117,8 @@ sapphire_replay = { kind = "tool" }
 sapphire_testkit = { kind = "tool" }
 xtask = { kind = "tool" }
 
-# Same-layer dependencies that are allowed, as [from, to] pairs.
+# Same-layer dependencies that are allowed, as [from, to] pairs, and the runtime crate that may reach a
+# dev-only one.
 [allow]
 edges = [
     # Formats store reflection's stable names and schema versions.
@@ -135,6 +142,10 @@ edges = [
     ["sapphire_zone", "sapphire_serialize"],
     ["sapphire_zone", "sapphire_reflect"],
     ["sapphire_assets", "sapphire_zone"],
+    # A runtime crate reaches a dev-only one only by an edge named here, through a direct optional
+    # dependency. The stage's `dev` is off unless an app's `dev` turns it on.
+    ["sapphire_stage", "sapphire_hot_reload"],
+    ["sapphire_stage", "sapphire_livelink"],
 ]
 
 # The simulation's crates: what a replay job links (m2-plan §3, "Crate edges"). None of `forbidden`

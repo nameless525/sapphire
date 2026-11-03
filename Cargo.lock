@@ -3362,37 +3362,28 @@ dependencies = [
 name = "sapphire_sandbox"
 version = "0.1.0"
 dependencies = [
- "bevy_ecs",
  "png",
  "profiling",
- "sapphire_anim",
  "sapphire_assets",
  "sapphire_audio",
  "sapphire_camera",
- "sapphire_colliders",
- "sapphire_controls",
  "sapphire_core",
  "sapphire_crash",
- "sapphire_cues",
  "sapphire_debug",
  "sapphire_ecs",
  "sapphire_gameplay",
  "sapphire_hot_reload",
- "sapphire_input",
  "sapphire_jobs",
  "sapphire_livelink",
  "sapphire_math",
  "sapphire_moves",
- "sapphire_physics",
  "sapphire_platform",
- "sapphire_reflect",
  "sapphire_render",
  "sapphire_rhi",
+ "sapphire_stage",
  "sapphire_time",
  "sapphire_ui",
- "sapphire_vfx",
  "sapphire_world",
- "thiserror 2.0.21",
  "tracing",
 ]
 
@@ -3423,6 +3414,40 @@ dependencies = [
  "sapphire_reflect",
  "serde",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "sapphire_stage"
+version = "0.1.0"
+dependencies = [
+ "bevy_ecs",
+ "profiling",
+ "sapphire_anim",
+ "sapphire_assets",
+ "sapphire_audio",
+ "sapphire_camera",
+ "sapphire_colliders",
+ "sapphire_controls",
+ "sapphire_core",
+ "sapphire_cues",
+ "sapphire_ecs",
+ "sapphire_gameplay",
+ "sapphire_hot_reload",
+ "sapphire_input",
+ "sapphire_livelink",
+ "sapphire_math",
+ "sapphire_moves",
+ "sapphire_physics",
+ "sapphire_platform",
+ "sapphire_reflect",
+ "sapphire_render",
+ "sapphire_rhi",
+ "sapphire_time",
+ "sapphire_ui",
+ "sapphire_vfx",
+ "sapphire_world",
+ "thiserror 2.0.21",
+ "tracing",
 ]
 
 [[package]]

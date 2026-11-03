@@ -18,10 +18,10 @@ use sapphire_platform::AppInitError;
 use sapphire_rhi::{GpuContext, wgpu};
 
 use crate::LOG_TARGET;
-use crate::combat::CaptureFrames;
-use crate::frame::gpu_failure;
 use crate::offscreen::Stage;
-use crate::readback::Readback;
+use sapphire_stage::Readback;
+use sapphire_stage::combat::CaptureFrames;
+use sapphire_stage::gpu_failure;
 
 /// Frames drawn before a capture with the debug overlay shown: egui sizes its windows over its
 /// first frames, and the frame graph's report and GPU timings come back a frame or two late.

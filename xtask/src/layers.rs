@@ -11,8 +11,9 @@
 //! - Dependencies between local packages follow the placements: runtime crates depend
 //!   only on lower layers, or on the same layer through an `[allow]` edge; apps and
 //!   dev-only crates depend on runtime crates; only apps reach dev-only crates, and only
-//!   through a direct optional dependency; nothing depends on a tool or an app. An edge
-//!   counts even when it runs through registry crates or unplaced local packages.
+//!   through a direct optional dependency, as does a runtime crate through an `[allow]` edge
+//!   (the stage, whose `dev` an app's own turns on); nothing depends on a tool or an app. An
+//!   edge counts even when it runs through registry crates or unplaced local packages.
 //! - No `tool_only_dependencies` crate is reachable from a shipping (runtime, app or
 //!   dev-only) package through normal dependencies, including through tools. Build-
 //!   dependency subtrees (cmake, bindgen, ...) run on the build host and never ship, so
@@ -368,7 +369,11 @@ impl fmt::Display for Violation {
                 "[crates] places `{krate}`, which is neither a workspace member nor a path or git dependency"
             ),
             Self::BadAllowEdge { from, to } => {
-                write!(f, "[allow] edge `{from}` -> `{to}` must join two runtime crates in the same layer")
+                write!(
+                    f,
+                    "[allow] edge `{from}` -> `{to}` must join two runtime crates in the same layer, or a \
+                     runtime crate to a dev-only one"
+                )
             }
             Self::Dependency { from, from_placement, to, to_placement, via } => {
                 write!(f, "`{from}` ({from_placement}) depends on `{to}` ({to_placement})")?;
@@ -426,7 +431,10 @@ fn rule(from: Placement, to: Placement) -> &'static str {
         (Placement::App, Placement::DevOnly) => {
             "apps may reach a dev-only crate only through a direct optional dependency (R8)"
         }
-        (_, Placement::DevOnly) => "only apps may depend on dev-only crates (R8)",
+        (_, Placement::DevOnly) => {
+            "only apps may depend on dev-only crates, or a runtime crate named by an [allow] edge, through a \
+             direct optional dependency (R8)"
+        }
         (Placement::Runtime { layer: a }, Placement::Runtime { layer: b }) if a == b => {
             "same-layer dependencies need an [allow] edge"
         }
@@ -555,11 +563,12 @@ pub fn check(config: &Config, metadata: &Metadata) -> anyhow::Result<Vec<Violati
         }
     }
     for (from, to) in &config.allow.edges {
-        let same_layer = matches!(
-            (config.placement(from), config.placement(to)),
-            (Some(Placement::Runtime { layer: a }), Some(Placement::Runtime { layer: b })) if a == b
-        );
-        if !same_layer {
+        let allowed = match (config.placement(from), config.placement(to)) {
+            (Some(Placement::Runtime { layer: a }), Some(Placement::Runtime { layer: b })) => a == b,
+            (Some(Placement::Runtime { .. }), Some(Placement::DevOnly)) => true,
+            _ => false,
+        };
+        if !allowed {
             violations.push(Violation::BadAllowEdge { from: from.clone(), to: to.clone() });
         }
     }
@@ -654,7 +663,7 @@ fn dependency_allowed(from: Placement, to: Placement, allowed_edge: bool, direct
         (_, Placement::App) => false,
         (Placement::App, Placement::DevOnly) => direct_optional,
         (Placement::DevOnly, Placement::DevOnly) => true,
-        (Placement::Runtime { .. }, Placement::DevOnly) => false,
+        (Placement::Runtime { .. }, Placement::DevOnly) => allowed_edge && direct_optional,
         (Placement::App | Placement::DevOnly, Placement::Runtime { .. }) => true,
         (Placement::Runtime { layer: from }, Placement::Runtime { layer: to }) => {
             to < from || (to == from && allowed_edge)
@@ -1146,13 +1155,28 @@ mod tests {
                 ("sapphire_sandbox", "sapphire_debug", vec!["debug-shim"]),
             ]
         );
-        assert!(violations[0].to_string().ends_with("only apps may depend on dev-only crates (R8)"));
+        assert!(violations[0].to_string().contains("only apps may depend on dev-only crates"));
         assert!(violations[1].to_string().ends_with("through a direct optional dependency (R8)"));
 
         let mut deps: Vec<_> = CLEAN.iter().copied().filter(|d| d.1 != "sapphire_debug").collect();
         deps.push(("sapphire_sandbox", "sapphire_debug", Normal));
         let violations = check(&config(), &metadata(MEMBERS, &deps)).unwrap();
         assert_eq!(edges(&violations), [("sapphire_sandbox", "sapphire_debug", vec![])]);
+    }
+
+    /// The stage's `dev`: an edge named in `[allow]`, and still only through a direct optional dependency.
+    #[test]
+    fn a_runtime_crate_reaches_a_dev_only_one_only_by_an_allowed_optional_edge() {
+        let mut config = config();
+        config.allow.edges.push(("sapphire_render".into(), "sapphire_debug".into()));
+        let deps = |kind| {
+            let mut deps = CLEAN.to_vec();
+            deps.push(("sapphire_render", "sapphire_debug", kind));
+            deps
+        };
+        assert_eq!(check(&config, &metadata(MEMBERS, &deps(Optional))).unwrap(), []);
+        let normal = check(&config, &metadata(MEMBERS, &deps(Normal))).unwrap();
+        assert_eq!(edges(&normal), [("sapphire_render", "sapphire_debug", vec![])]);
     }
 
     /// The reviewer's chains: a runtime crate reaching a tool and a higher layer through

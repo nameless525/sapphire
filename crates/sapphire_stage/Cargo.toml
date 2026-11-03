@@ -1,0 +1,54 @@
+[package]
+name = "sapphire_stage"
+description = "A stage: a GPU, cooked content and a scene, stepped and drawn into a texture or a window."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+sapphire_anim.workspace = true
+sapphire_assets.workspace = true
+sapphire_audio.workspace = true
+sapphire_camera.workspace = true
+sapphire_colliders.workspace = true
+sapphire_controls.workspace = true
+sapphire_core.workspace = true
+sapphire_cues.workspace = true
+sapphire_ecs.workspace = true
+# bevy's `Component` / `Resource` derives resolve the `bevy_ecs` crate by name (see sapphire_ecs).
+bevy_ecs.workspace = true
+sapphire_gameplay.workspace = true
+sapphire_input.workspace = true
+sapphire_math.workspace = true
+sapphire_moves.workspace = true
+sapphire_physics.workspace = true
+sapphire_platform.workspace = true
+sapphire_render.workspace = true
+sapphire_rhi.workspace = true
+sapphire_time.workspace = true
+sapphire_ui.workspace = true
+sapphire_vfx.workspace = true
+sapphire_world.workspace = true
+profiling.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+# Documents pushed over live link name their type by its stable name.
+sapphire_reflect = { workspace = true, optional = true }
+# Live tuning and the packs live link pushes, dev-only (rule R8): linked only by the `dev` feature, which
+# an app's own `dev` turns on.
+sapphire_hot_reload = { workspace = true, optional = true }
+sapphire_livelink = { workspace = true, optional = true }
+
+[dev-dependencies]
+# The tests hold allocations to their budgets, so they count them as an app does.
+sapphire_core = { workspace = true, features = ["mimalloc"] }
+
+[features]
+# Development builds: live tuning, and the hooks hot reload and live link reach a stage by. An app's
+# `dev` forwards it.
+dev = ["dep:sapphire_hot_reload", "dep:sapphire_livelink", "dep:sapphire_reflect"]
+
+[lints]
+workspace = true

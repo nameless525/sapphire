@@ -321,65 +321,26 @@
 //! card clouds on the horizon, cirrus, the sun and moon with their glows, stars and the Milky Way
 //! (spec §5.12, "Sky").
 
-mod anim_graph;
-mod animate;
 mod app;
-mod arena;
-mod audio;
 mod bench;
-mod blade;
 mod capture;
-mod combat;
 #[cfg(feature = "dev")]
 mod combat_panel;
-mod combat_views;
 mod contact_sheet;
-mod content;
-mod cues;
-mod cvars;
-mod debug_shapes;
 #[cfg(feature = "dev")]
 mod dev;
-mod enemy;
-mod environment;
-mod extract;
-mod faces;
 mod fight_bench;
-mod foliage;
-#[allow(dead_code)]
-mod frame;
-mod garments;
-mod hud;
-mod ik;
-mod input;
-mod layers;
 #[cfg(feature = "dev")]
 mod link;
-mod lookdev;
 mod offscreen;
 mod options;
-mod orbit;
-mod outlines;
-mod party_looks;
-mod pose;
-mod readback;
 #[cfg(feature = "dev")]
 mod reload;
-mod rims;
-mod scene;
 #[cfg(feature = "dev")]
 mod serve;
 #[cfg(feature = "dev")]
 mod shader_edits;
-mod skinned;
-mod stage;
 mod stats;
-mod swatches;
-mod trails;
-#[cfg(feature = "dev")]
-mod tuning;
-mod turntable;
-mod vfx;
 
 use std::cell::RefCell;
 use std::fmt::Write as _;

@@ -47,10 +47,10 @@ use sapphire_rhi::wgpu;
 use sapphire_time::Stopwatch;
 
 use crate::LOG_TARGET;
-use crate::combat::Combat;
-use crate::combat::CombatOption;
 use crate::offscreen::Stage;
 use crate::options::Options;
+use sapphire_stage::combat::Combat;
+use sapphire_stage::combat::CombatOption;
 
 /// Frames run before measuring: first-use pipeline work and buffer growth settle here.
 const WARMUP_FRAMES: u32 = 60;

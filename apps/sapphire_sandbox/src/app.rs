@@ -23,25 +23,25 @@ use sapphire_time::{
 };
 
 use crate::LOG_TARGET;
-use crate::audio::SandboxAudio;
-use crate::combat::Combat;
-use crate::combat::CombatOption;
-use crate::content::Content;
-use crate::cues::PadRumble;
 #[cfg(feature = "dev")]
 use crate::dev::{DevTools, FrameState};
-use crate::enemy::EnemyMeshes;
-use crate::environment::FOG_CARDS;
-use crate::foliage::FoliageMeshes;
-use crate::input::{PLAYER, SandboxInput};
-use crate::lookdev::{Shot, TownMeshes};
 use crate::options::Options;
-use crate::rims::RimRigMeshes;
-use crate::scene::{Arena, LookDev, Scene};
-use crate::stage::StageMeshes;
 use crate::stats::{FrameStats, Stages};
-use crate::swatches::SWATCHES;
-use crate::{garments, layers, lookdev, skinned, stage, swatches};
+use sapphire_stage::audio::SandboxAudio;
+use sapphire_stage::combat::Combat;
+use sapphire_stage::combat::CombatOption;
+use sapphire_stage::content::Content;
+use sapphire_stage::cues::PadRumble;
+use sapphire_stage::enemy::EnemyMeshes;
+use sapphire_stage::environment::FOG_CARDS;
+use sapphire_stage::foliage::FoliageMeshes;
+use sapphire_stage::input::{PLAYER, SandboxInput};
+use sapphire_stage::lookdev::{Shot, TownMeshes};
+use sapphire_stage::rims::RimRigMeshes;
+use sapphire_stage::scene::{Arena, LookDev, Scene};
+use sapphire_stage::stage::StageMeshes;
+use sapphire_stage::swatches::SWATCHES;
+use sapphire_stage::{garments, layers, lookdev, skinned, stage, swatches};
 
 /// Loop period while nothing can be presented (occluded, minimized, backgrounded).
 const IDLE_FRAME: Duration = Duration::from_millis(33);
@@ -181,7 +181,7 @@ impl App for SandboxApp {
         // Before any GPU work, so a bad scenario or a file in the way costs nothing and says why.
         let combat = options.combat.as_ref().map(Combat::new).transpose().map_err(AppInitError::msg)?;
         if let (Some(_), Some(combat)) = (options.arena, &combat) {
-            crate::arena::check_scenario(combat, options.party).map_err(AppInitError::msg)?;
+            sapphire_stage::arena::check_scenario(combat, options.party).map_err(AppInitError::msg)?;
         }
         let mut scene = Scene::with_character(renderer.character, renderer.character_bounds, options.skinned);
         scene.set_sky_material(renderer.sky);
@@ -242,7 +242,7 @@ impl App for SandboxApp {
                     player = player.with_ik(solver);
                 }
                 scene.play_clip(player);
-                scene.set_spring_quality(crate::animate::spring_quality(quality.active().id));
+                scene.set_spring_quality(sapphire_stage::animate::spring_quality(quality.active().id));
             }
             if let Some(script) = options.graph {
                 content.load_graph(lookdev::GRAPH, &mut renderer.renderer, &device.gpu)?;
@@ -255,9 +255,9 @@ impl App for SandboxApp {
                 }
                 scene.play_graph(
                     driver.with_springs_on(options.springs != Some(false)),
-                    crate::anim_graph::GraphShow::new(script),
+                    sapphire_stage::anim_graph::GraphShow::new(script),
                 );
-                scene.set_spring_quality(crate::animate::spring_quality(quality.active().id));
+                scene.set_spring_quality(sapphire_stage::animate::spring_quality(quality.active().id));
             }
             if let Some(meshes) = renderer.enemy {
                 scene.spawn_enemy(meshes, content.held_enemy()?);
@@ -286,7 +286,7 @@ impl App for SandboxApp {
                     player = player.with_ik(solver);
                 }
                 scene.play_clip(player);
-                scene.set_spring_quality(crate::animate::spring_quality(quality.active().id));
+                scene.set_spring_quality(sapphire_stage::animate::spring_quality(quality.active().id));
             }
             if options.combat.is_some() {
                 content.load_graph(lookdev::GRAPH, &mut renderer.renderer, &device.gpu)?;
@@ -299,7 +299,7 @@ impl App for SandboxApp {
                     player.with_springs_on(options.springs != Some(false)).with_ik(solver),
                     content.enemy_driver(world)?,
                 );
-                scene.set_spring_quality(crate::animate::spring_quality(quality.active().id));
+                scene.set_spring_quality(sapphire_stage::animate::spring_quality(quality.active().id));
             }
         }
         if let Some(sword) = renderer.sword {
@@ -309,10 +309,10 @@ impl App for SandboxApp {
         // holds whatever framing the scene chose.
         options.apply_to(&mut scene).map_err(AppInitError::msg)?;
         if let Some(show) = options.vfx {
-            scene.play_vfx(show, crate::vfx::budget(quality.active().id));
+            scene.play_vfx(show, sapphire_stage::vfx::budget(quality.active().id));
         }
         if options.cues {
-            scene.play_cues(crate::vfx::budget(quality.active().id)).map_err(AppInitError::msg)?;
+            scene.play_cues(sapphire_stage::vfx::budget(quality.active().id)).map_err(AppInitError::msg)?;
         }
         // The screen effects it may push, `--post-effect`'s among them, and the effects it plays,
         // show on their first frame.
@@ -333,8 +333,8 @@ impl App for SandboxApp {
         };
         if let Some(hud) = options.hud {
             scene.set_hud(match &combat {
-                Some(_) => crate::hud::SandboxHud::for_fight(hud),
-                None => crate::hud::SandboxHud::new(hud),
+                Some(_) => sapphire_stage::hud::SandboxHud::for_fight(hud),
+                None => sapphire_stage::hud::SandboxHud::new(hud),
             });
         }
         // Its bars read the fighters from the first frame, with no step yet.
@@ -451,7 +451,7 @@ impl App for SandboxApp {
             self.dev.poll(platform.now(), &mut |event| game_event(scene, input, event));
         }
         #[cfg(feature = "dev")]
-        if crate::cvars::take_device_loss() {
+        if sapphire_stage::cvars::take_device_loss() {
             tracing::warn!(target: LOG_TARGET, "losing the GPU device, as debug.lose_device asks");
             self.gpu.device().destroy();
         }
@@ -684,7 +684,7 @@ impl SandboxApp {
             dev.log_tick_actions(&actions);
             actions
         };
-        crate::combat::read_bindings(self.combat.as_mut(), &mut read, PLAYER);
+        sapphire_stage::combat::read_bindings(self.combat.as_mut(), &mut read, PLAYER);
     }
 
     /// Extracts the frame, then draws and presents it if the surface gave an image. Returns
@@ -998,7 +998,7 @@ impl SandboxApp {
                 self.quality.restore(previous);
             }
         }
-        self.scene.set_spring_quality(crate::animate::spring_quality(self.quality.active().id));
+        self.scene.set_spring_quality(sapphire_stage::animate::spring_quality(self.quality.active().id));
         platform.set_frame_rate(self.quality.frame_rate());
         Ok(())
     }

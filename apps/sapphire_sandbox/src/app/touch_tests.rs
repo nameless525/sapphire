@@ -15,11 +15,11 @@ use sapphire_render::MeshHandle;
 use sapphire_ui::{HudLayout, Insets, UiMetrics};
 
 use super::{PointerState, focus_lost, game_event};
-use crate::combat::Combat;
-use crate::combat::CombatOption;
-use crate::hud::{HudMode, HudOptions, SandboxHud};
-use crate::input::{PLAYER, SandboxInput};
-use crate::scene::Scene;
+use sapphire_stage::combat::Combat;
+use sapphire_stage::combat::CombatOption;
+use sapphire_stage::hud::{HudMode, HudOptions, SandboxHud};
+use sapphire_stage::input::{PLAYER, SandboxInput};
+use sapphire_stage::scene::Scene;
 
 const SIZE: Vec2 = Vec2::new(900.0, 400.0);
 const FRAME_MS: u64 = 16;
@@ -177,7 +177,7 @@ impl Rig {
     fn step(&mut self) {
         let heading = self.scene.camera_heading();
         let mut source = self.input.source(heading);
-        crate::combat::read_bindings(Some(&mut self.combat), &mut source, PLAYER);
+        sapphire_stage::combat::read_bindings(Some(&mut self.combat), &mut source, PLAYER);
         self.scene.follow_simulation(self.combat.simulation(), self.combat.cast());
         self.scene.show_damage(self.combat.simulation());
     }
@@ -608,7 +608,7 @@ fn each_hit_counts_once() {
         rig.step();
         for cue in rig.sim().cues() {
             cues += u32::from(cue.hit.is_some());
-            match crate::hud::landed(&cue) {
+            match sapphire_stage::hud::landed(&cue) {
                 Some(hit) => taken += hit.damage,
                 None => followed += u32::from(cue.hit.is_some()),
             }
@@ -638,7 +638,7 @@ fn a_session_played_by_touch_replays_to_its_checksum() {
     let _ = std::fs::remove_file(&path);
     let option = CombatOption::Record {
         path: path.clone(),
-        scenario: crate::arena::FIGHT_SCENARIO.to_owned(),
+        scenario: sapphire_stage::arena::FIGHT_SCENARIO.to_owned(),
         script: None,
     };
     let mut rig = Rig::new(Combat::new(&option).expect("sets up"));

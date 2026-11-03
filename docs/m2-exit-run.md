@@ -93,7 +93,7 @@ Pillars: 1 (responsive), 5 (camera), 6 (alive: hair and the look in motion).
 
 - Does the character go where the thumb says, at once? Does stopping feel planted?
 - Do the walk and the run look like someone walking and running? (O2 calls the walk plain and the run over-split in the legs.)
-- Does the camera keep both fighters in frame without jerking or clipping? (Nobody has judged: the player behind a tree after a 3 s push, the enemy filling the frame beside a stall, the enemy between camera and player, a view through the pavilion.)
+- Does the camera keep both fighters in frame without jerking or clipping? What to expect: with a stall or a wall behind you the view turns on its own, softly, to find room, about a second after it needs to and never under your thumb, and an enemy standing between you and the camera does the same. In the open it never turns by itself. Corners and the stalls' backs are where it's still poor: against a stall with the enemy across it, it holds a view that shows only you for up to 3 s rather than swing, and running between the kit tree's canopy at (13, 5) and the east row puts the eye at your chest, looking at the enemy, for up to 3 s. Does the turn feel like the camera helping, or like the camera taking over? Would you rather it did less?
 - Does the hair follow? Does it hold its shape on the run? (`--springs off` shows the difference.)
 
 ### Review 2: attacks against a dummy (30 minutes)
@@ -172,6 +172,7 @@ A move in progress finishes on what it started with. A bad document changes noth
 | Camera distance, height, how much it leads | [default_camera.ron](../crates/sapphire_camera/default_camera.ron): `combat.framing`'s `distance`, `pivot_bias`, `max_lead`, `safe_frame`, `fov_y`. `lock_on` the same | Save |
 | The camera lags or snaps | The same file's `*_half_life`s, and `look`'s `max_turn_rate`, `idle_delay` | Save |
 | The camera at walls | The same file's `collision` | Save |
+| The camera turning by itself | The same file's `clearing`: `tolerance` and `better_by` for how much it takes (raise them for fewer turns), `settle` for how often, `half_life` and `top_speed` for how fast, `after_look` for how long your thumb keeps it, and `reach: 0` turns it off | Save |
 | A shake | The same file's `shakes.presets`: `duration`, `frequency`, `rotation`, `translation`. Held to 0.05 rad and 0.05 m in sum | Save |
 | What a hit fires | [default_cues.ron](../crates/sapphire_cues/default_cues.ron), a row by cue and weight: `effects`, `sounds`, `shake`, `screen` | Save |
 | Rumble | The same rows' `rumble: (low, high, seconds)` | Save. Only a pad can judge |

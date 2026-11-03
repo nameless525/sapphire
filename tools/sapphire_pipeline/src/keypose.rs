@@ -319,6 +319,8 @@ pub enum KeyPoseError {
         "the sidecar's `rig` {id} isn't a source of this content tree with a skeleton and a humanoid map"
     )]
     UnknownRig { id: AssetId },
+    #[error("the rig's mesh {id} hasn't cooked: every mesh should cook before a key-pose document")]
+    MeshNotCooked { id: AssetId },
     #[error("the rig's cooked mesh is invalid")]
     Mesh(#[source] sapphire_assets::mesh::MeshError),
     #[error("failed to read the rig's cooked output")]

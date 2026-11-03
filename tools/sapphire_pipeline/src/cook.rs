@@ -62,7 +62,8 @@
 //!   their sidecar names.
 //! - Key-pose documents, every clip and a mesh sharing a skeleton read skeletons and rigs that
 //!   other sources cook, so they cook after every other asset but materials and probe grids; their
-//!   keys depend on those assets' keys.
+//!   keys depend on those assets' keys. Such a mesh cooks before the clips, since a key-pose document
+//!   for its rig reads its morph targets.
 //! - **Collider documents** cook `.colliders.ron` → `.scol` (M2 D3, [`colliders`]): a zone's static
 //!   collision, checked entry by entry, reading nothing besides themselves.
 //! - **Sounds and cues** cook `.ogg` → `.ssound` and `.cue.ron` documents → `.scue` (M2 E1,
@@ -693,8 +694,9 @@ pub fn cook_dir(
     }
     // Materials read the cooked textures they reference, so everything else cooks first; clips,
     // key-pose documents and meshes sharing a skeleton read skeletons and rigs, so those go before
-    // them, and move sets read clips' keys, so those go before move sets; probe grids read cooked
-    // meshes and their materials, so they cook last.
+    // them; key-pose documents read those meshes' morph targets, so the meshes go before clips, and
+    // move sets read clips' keys, so those go before move sets; probe grids read cooked meshes and
+    // their materials, so they cook last.
     let (probe_grids, rest): (Vec<usize>, Vec<usize>) =
         (0..plan.len()).partition(|&index| plan[index].is_probe_grid());
     let (materials, rest): (Vec<usize>, Vec<usize>) =
@@ -703,13 +705,22 @@ pub fn cook_dir(
         rest.into_iter().partition(|&index| plan[index].is_move_set());
     let (rig_readers, others): (Vec<usize>, Vec<usize>) =
         rest.into_iter().partition(|&index| plan[index].reads_rigs());
+    let (clips, shared_meshes): (Vec<usize>, Vec<usize>) =
+        rig_readers.into_iter().partition(|&index| plan[index].is_clip());
     let mut sources: HashMap<AssetId, &SourceAsset> = HashMap::new();
     for planned in &plan {
         sources.entry(planned.asset.meta.id).or_insert(&planned.asset);
     }
     let clip_sources = ClipSources::default();
     let mut cooked: Vec<Option<CookedAsset>> = vec![None; plan.len()];
-    for index in others.into_iter().chain(rig_readers).chain(move_sets).chain(materials).chain(probe_grids) {
+    let order = others
+        .into_iter()
+        .chain(shared_meshes)
+        .chain(clips)
+        .chain(move_sets)
+        .chain(materials)
+        .chain(probe_grids);
+    for index in order {
         let assets = Assets {
             plan: &plan,
             by_id: &by_id,
@@ -1156,10 +1167,16 @@ impl<'a> Assets<'a> {
         })
     }
 
-    /// The rig a key-pose document cooks for: `id`, which the sidecar must name, must have a map.
+    /// The rig a key-pose document cooks for: `id`, which the sidecar must name, must have a map. Its
+    /// mesh has cooked if it has one: a rig with none skips a document's morph weights, and a mesh yet
+    /// to cook must never read as that, or the order of file names would decide what a clip holds.
     fn key_pose_rig(&self, id: Option<AssetId>) -> Result<RigSource<'a>, KeyPoseError> {
         let id = id.ok_or(KeyPoseError::NoRig)?;
-        self.rig_source(id).filter(RigSource::has_map).ok_or(KeyPoseError::UnknownRig { id })
+        let rig = self.rig_source(id).filter(RigSource::has_map).ok_or(KeyPoseError::UnknownRig { id })?;
+        if rig.mesh.is_none() && self.get(id).is_some() {
+            return Err(KeyPoseError::MeshNotCooked { id });
+        }
+        Ok(rig)
     }
 
     /// The clip a move names ([`moves`]), by what its document says.

@@ -18,7 +18,7 @@ use super::*;
 use crate::clip::retarget::RetargetSettings;
 use crate::clip::source::ClipSources;
 use crate::clip::{ClipSettings, RootMotionSettings, rest_model};
-use crate::gltf_writer::{Geometry, GltfWriter, InfluenceSet};
+use crate::gltf_writer::{Geometry, GltfWriter, InfluenceSet, MorphGeometry};
 use crate::import::gltf::clips::tests::{ARM, HIPS, Track, animate, figure};
 use crate::import::vrm::samples;
 use crate::import::vrma::tests as vrma_files;
@@ -1020,6 +1020,91 @@ fn a_graphs_target_chooses_a_key_pose_documents_rig() {
         }
     }
     assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// A body on [`human_with_a_mesh`]'s joints with a morph target `smile`, for a mesh that shares the
+/// skeleton another source cooks.
+fn body_with_a_smile(default_weight: f32) -> Vec<u8> {
+    let mut writer = vrma_files::vrma();
+    let geometry = Geometry {
+        positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        normals: vec![[0.0, 0.0, 1.0]; 3],
+        influences: vec![InfluenceSet {
+            joints: vec![[0, 0, 0, 0]; 3],
+            weights: vec![[1.0, 0.0, 0.0, 0.0]; 3],
+        }],
+        indices: vec![0, 1, 2],
+        targets: vec![MorphGeometry { positions: vec![[0.0, 0.1, 0.0]; 3], normals: Vec::new() }],
+        ..Geometry::default()
+    };
+    let mesh = writer.add_mesh("Body", &[(&geometry, None)]);
+    writer.set_mesh_field(mesh, "extras", json!({ "targetNames": ["smile"] }));
+    writer.set_mesh_field(mesh, "weights", json!([default_weight]));
+    let joints: Vec<usize> = (0..15).collect();
+    writer.add_skin(&joints, None);
+    let body = writer.add_node(json!({ "name": "Body", "mesh": mesh, "skin": 0 }));
+    writer.add_root(body);
+    writer.to_glb()
+}
+
+/// A mesh sharing a skeleton cooks before the document that names its morphs, whatever the files are
+/// called: cooking in the order of their names left a document sorted first with no weights at all, and
+/// no dependency on the mesh to bring them back.
+#[test]
+fn a_key_pose_document_reads_a_mesh_sharing_a_skeleton_whatever_sorts_first() {
+    const DOCUMENT: &str = "(
+        type: \"sapphire::pipeline::KeyPoseClip\",
+        version: 1,
+        data: (keys: [(tick: 0, morphs: { \"smile\": 0.0 }), (tick: 10, morphs: { \"smile\": 1.0 })]),
+    )";
+    const POSE: AssetId = AssetId::from_bytes([0x95; 16]);
+    let rows = [
+        ("a/pose.keypose.ron", "m/body.glb", "z/owner.glb"),
+        ("a/pose.keypose.ron", "z/body.glb", "m/owner.glb"),
+        ("m/pose.keypose.ron", "a/body.glb", "z/owner.glb"),
+        ("m/pose.keypose.ron", "z/body.glb", "a/owner.glb"),
+        ("z/pose.keypose.ron", "a/body.glb", "m/owner.glb"),
+        ("z/pose.keypose.ron", "m/body.glb", "a/owner.glb"),
+        ("pose.keypose.ron", "in/a/deep/folder/body.glb", "owner.glb"),
+    ];
+    let mut first: Option<Vec<u8>> = None;
+    for (index, (pose, body, owner)) in rows.into_iter().enumerate() {
+        let tree = Tree::new(&format!("cook_keypose_shared_mesh_{index}"));
+        let owner = tree.write(owner, &human_with_a_mesh());
+        let map = ClipSettings { humanoid: human_map(), names: Some(Vec::new()), ..ClipSettings::default() };
+        tree.sidecar(&owner, OWNER, clips_of(map));
+        let body = tree.write(body, &body_with_a_smile(0.0));
+        let settings = MeshSettings { skeleton: Some(OWNER), ..MeshSettings::default() };
+        tree.sidecar(&body, FOLLOWER, ImportSettings::Gltf(settings));
+        let pose_path = tree.write(pose, DOCUMENT.as_bytes());
+        let settings = KeyPoseSettings { rig: Some(FOLLOWER), ..KeyPoseSettings::default() };
+        tree.sidecar(&pose_path, POSE, ImportSettings::KeyPose(settings));
+
+        let report = tree.try_cook(true).unwrap();
+        let clip_bytes = read_aligned(&by_id(&report, POSE).output);
+        let clip = Clip::read(&clip_bytes).unwrap();
+        let mesh_bytes = read_aligned(&by_id(&report, FOLLOWER).output);
+        let mesh = Mesh::read(&mesh_bytes).unwrap();
+        assert_eq!(clip.weights.len(), 1, "{pose} beside {}", body.display());
+        assert_eq!(clip.morph_target_count.to_native(), 1, "{pose}");
+        assert_eq!(clip.weight(&clip.weights[0], 10.0), 1.0, "{pose}");
+        clip.check_mesh(mesh).unwrap();
+        let bytes = fs::read(&by_id(&report, POSE).output).unwrap();
+        match &first {
+            Some(first) => assert!(*first == bytes, "{pose} beside {} cooks otherwise", body.display()),
+            None => first = Some(bytes),
+        }
+
+        // A warm cache holds what a cold cook does.
+        let again = tree.try_cook(true).unwrap();
+        assert!(again.assets.iter().all(|asset| asset.status == CookStatus::UpToDate), "{:?}", again.assets);
+
+        // Its key reads the mesh: what the mesh's targets say reaches the document.
+        tree.write_at(&body, &body_with_a_smile(0.25));
+        let edited = tree.try_cook(true).unwrap();
+        assert_ne!(by_id(&edited, POSE).key, by_id(&report, POSE).key, "{pose}");
+        assert_eq!(by_id(&edited, POSE).status, CookStatus::Cooked, "{pose}");
+    }
 }
 
 /// A document's morph weights, by name, on the mesh a rig's source cooks: a name the mesh lacks is

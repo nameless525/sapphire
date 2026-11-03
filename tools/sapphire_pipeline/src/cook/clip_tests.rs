@@ -47,6 +47,11 @@ impl Tree {
         path
     }
 
+    /// Replaces a file [`Self::write`] wrote.
+    pub(super) fn write_at(&self, path: &Path, bytes: &[u8]) {
+        fs::write(path, bytes).unwrap();
+    }
+
     pub(super) fn sidecar(&self, source: &Path, id: AssetId, importer: ImportSettings) {
         let meta = AssetMeta::new(id, importer);
         fs::write(sidecar_path(source), sapphire_serialize::to_ron::<AssetMeta>(&meta).unwrap()).unwrap();

@@ -49,15 +49,15 @@ pub mod encounter;
 pub mod grid;
 
 pub use cooked::{
-    ArchivedCookedInstance, ArchivedCookedLight, ArchivedCookedLightShape, ArchivedCookedSpawner,
-    ArchivedCookedSpline, ArchivedCookedTrigger, ArchivedCookedVolume, ArchivedPlaceContents, ArchivedZone,
-    ArchivedZoneCell, ArchivedZonePresentation, ArchivedZoneSimulation, CookedInstance, CookedLight,
-    CookedLightShape, CookedSpawner, CookedSpline, CookedTrigger, CookedVolume, PlaceContents,
-    ZONE_EXTENSION, Zone, ZoneCell, ZonePresentation, ZoneSimulation,
+    ArchivedCookedExit, ArchivedCookedInstance, ArchivedCookedLight, ArchivedCookedLightShape,
+    ArchivedCookedSpawner, ArchivedCookedSpline, ArchivedCookedTrigger, ArchivedCookedVolume,
+    ArchivedPlaceContents, ArchivedZone, ArchivedZoneCell, ArchivedZonePresentation, ArchivedZoneSimulation,
+    CookedExit, CookedInstance, CookedLight, CookedLightShape, CookedSpawner, CookedSpline, CookedTrigger,
+    CookedVolume, PlaceContents, ZONE_EXTENSION, Zone, ZoneCell, ZonePresentation, ZoneSimulation,
 };
 pub use document::{
-    Instance, Light, LightShape, Placement, Spawner, Spline, Split, Trigger, Volume, ZoneDocument, ZoneError,
-    ZoneGeometry, ZoneNavigation,
+    Exit, Instance, Light, LightShape, Placement, Spawner, Spline, Split, Trigger, Volume, ZoneDocument,
+    ZoneError, ZoneGeometry, ZoneNavigation,
 };
 pub use encounter::{
     ArchivedCookedWave, ArchivedEncounter, ArchivedWaveStart, CookedWave, ENCOUNTER_EXTENSION, Encounter,

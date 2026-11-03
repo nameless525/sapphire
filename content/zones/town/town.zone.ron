@@ -15,5 +15,7 @@
                 split: Some((backdrop: ["#ground", "kenney/rock-*"])),
             ),
         ],
+        // Nothing asks for the hub ahead of time: a look-dev scene has no reason to pay for it.
+        exits: [(name: "to_proving_hub", to: "5f3ac6de-0b7c-4f21-9d3e-7a1e64c2b805", arrive: "player_start")],
     ),
 )

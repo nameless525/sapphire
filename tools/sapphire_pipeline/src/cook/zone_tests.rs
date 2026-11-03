@@ -1163,3 +1163,84 @@ fn a_saved_document_is_parsed_again() {
     let error = tree.try_cook(false).unwrap_err();
     assert!(format!("{error:?}").contains("grid.cell_size"), "{error:?}");
 }
+
+const MARKET: AssetId = AssetId::from_bytes([0x2a; 16]);
+
+/// A second zone in `tree`, called `market`, with a spawner and these exits.
+fn write_market(tree: &Tree, exits: &str) -> PathBuf {
+    let data = format!(
+        r##"spawners: [(name: "from_town", position: (0.0, 0.0, 3.0), yaw_degrees: 0.0, spawns: "player")],
+            placements: [(prefab: "{BLOCK}", at: (2.0, 0.0, 2.0))],
+            exits: [{exits}],"##
+    );
+    let path = tree.write("market.zone.ron", zone_text(&data).as_bytes());
+    tree.sidecar(&path, MARKET, ImportSettings::Zone(zone::ZoneSettings::default()));
+    path
+}
+
+/// Two zones can lead to each other, and neither reads the other's output, nor ships a piece of it.
+#[test]
+fn two_zones_lead_to_each_other_and_stay_apart() {
+    let tree = tree("zone-exits");
+    let spawner = r#"spawners: [(name: "from_market", position: (0.0, 0.0, 0.0), yaw_degrees: 0.0, spawns: "player")],"#;
+    let exits = format!(
+        r#"{spawner} exits: [(name: "to_market", to: "{MARKET}", arrive: "from_town", prefetch: true)],"#
+    );
+    write_zone(&tree, &format!("{} {exits}", placements()));
+    write_market(&tree, &format!(r#"(name: "to_town", to: "{ZONE}", arrive: "from_market")"#));
+
+    let report = tree.cook();
+    let town = read_zone(&report);
+    let town = Zone::read(&town).unwrap();
+    let exit = town.simulation.exits.first().expect("one");
+    assert_eq!(exit.pack.as_str(), "zone_market");
+    assert_eq!(exit.to, MARKET);
+    assert!(exit.prefetch);
+    assert!(!town.references().contains(&MARKET));
+    assert!(!town.presentation_references().contains(&MARKET));
+    let market = read_aligned(&by_id(&report, MARKET).output);
+    assert_eq!(
+        Zone::read(&market).unwrap().simulation.exits.first().expect("one").pack.as_str(),
+        "zone_town"
+    );
+}
+
+#[test]
+fn an_exit_must_lead_to_a_zone_and_a_spawner_in_it() {
+    let tree = tree("zone-exit-refused");
+    let exit = |to: AssetId, arrive: &str| {
+        format!(r#"{} exits: [(name: "out", to: "{to}", arrive: "{arrive}")],"#, placements())
+    };
+    write_zone(&tree, &exit(WOOD, "from_town"));
+    write_market(&tree, "");
+    let error = tree.try_cook(false).expect_err("not a zone");
+    let text = chain(&error);
+    assert!(text.contains("exits `out`.to"), "{text}");
+
+    write_zone(&tree, &exit(MARKET, "nowhere"));
+    let error = tree.try_cook(false).expect_err("no such spawner");
+    let text = chain(&error);
+    assert!(text.contains("exits `out`.arrive") && text.contains("nowhere"), "{text}");
+}
+
+/// The pack's name comes from the other zone's stem, so renaming it recooks this one.
+#[test]
+fn the_other_zones_pack_is_in_the_key() {
+    let tree = tree("zone-exit-key");
+    write_zone(
+        &tree,
+        &format!(r#"{} exits: [(name: "out", to: "{MARKET}", arrive: "from_town")],"#, placements()),
+    );
+    let market = write_market(&tree, "");
+    assert_eq!(by_id(&tree.cook(), ZONE).status, CookStatus::Cooked);
+    assert_eq!(by_id(&tree.cook(), ZONE).status, CookStatus::UpToDate);
+
+    let renamed = market.with_file_name("bazaar.zone.ron");
+    fs::rename(&market, &renamed).unwrap();
+    fs::rename(sidecar_path(&market), sidecar_path(&renamed)).unwrap();
+    let report = tree.cook();
+    assert_eq!(by_id(&report, ZONE).status, CookStatus::Cooked);
+    let town = read_zone(&report);
+    let town = Zone::read(&town).unwrap();
+    assert_eq!(town.simulation.exits[0].pack.as_str(), "zone_bazaar");
+}

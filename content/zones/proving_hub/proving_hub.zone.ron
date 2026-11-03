@@ -1,0 +1,37 @@
+// The proving hub (M3 W4): a square a test can leave and come back to, so a transition has somewhere to go
+// until M3 C1's zone. It leads to the proving ground, whose pack comes in ahead of time while anyone's here:
+// what makes a zone a hub. Its pack is `zone_proving_hub`: its materials are the town's, which stay shared, and
+// its pieces are its own, so that no piece two zones share leaves their packs for `shared`.
+(
+    type: "sapphire::zone::ZoneDocument",
+    version: 1,
+    data: (
+        grid: (cell_size: 16.0),
+        placements: [
+            (prefab: "a84f0b37-2d61-4e9c-b7f5-c93e16d2708a", at: (-6.0, 0.0, -6.0)),
+            (prefab: "a84f0b37-2d61-4e9c-b7f5-c93e16d2708a", at: (6.0, 0.0, -6.0)),
+            (prefab: "a84f0b37-2d61-4e9c-b7f5-c93e16d2708a", at: (-6.0, 0.0, 6.0)),
+            (prefab: "a84f0b37-2d61-4e9c-b7f5-c93e16d2708a", at: (6.0, 0.0, 6.0)),
+            // The ground.
+            (prefab: "3c9d1f62-8e47-4ab3-a1d6-60f2b57e9c18", at: (0.0, 0.0, 0.0), backdrop: true),
+        ],
+        colliders: Some("b27e4d19-63a8-4c55-8e0f-12d9f7a6c340"),
+        // The ground's whole square.
+        navigation: Some((min: (-24.0, -24.0), max: (24.0, 24.0))),
+        spawners: [
+            (name: "player_start", position: (0.0, 0.0, 0.0), yaw_degrees: 0.0, spawns: "player"),
+            (name: "from_ground", position: (0.0, 0.0, 10.0), yaw_degrees: 180.0, spawns: "player"),
+        ],
+        triggers: [
+            (
+                name: "ground_door",
+                position: (0.0, 1.0, -14.0),
+                volume: Box(half_extents: (3.0, 2.0, 1.0)),
+                event: "to_proving_ground",
+            ),
+        ],
+        exits: [
+            (name: "to_proving_ground", to: "e8c21831-7d98-4a79-b592-912b806cf3e2", arrive: "player_start", prefetch: true),
+        ],
+    ),
+)

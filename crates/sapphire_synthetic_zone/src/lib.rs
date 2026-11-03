@@ -158,6 +158,7 @@ impl SyntheticZone {
                 triggers: Vec::new(),
                 navigation: None,
                 encounters: Vec::new(),
+                exits: Vec::new(),
             },
             presentation: ZonePresentation {
                 cell_size: self.cell_size,

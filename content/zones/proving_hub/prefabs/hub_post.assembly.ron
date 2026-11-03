@@ -1,0 +1,11 @@
+// A prefab: a stone post from the kit.
+(
+    type: "sapphire::pipeline::Assembly",
+    version: 1,
+    data: (
+        kits: {"kenney": "../../../third_party/kenney_fantasy_town_kit/glb"},
+        slots: [(name: "stone", tile: (1.0, 1.0))],
+        surfaces: [],
+        place: [(piece: "kenney/pillar-stone", slot: Some("stone"))],
+    ),
+)

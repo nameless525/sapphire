@@ -2384,7 +2384,16 @@ fn cook_zone(path: &Path, assets: &Assets<'_>) -> Result<Vec<u8>, CookError> {
         .iter()
         .map(|instance| bounds_of(instance.mesh))
         .collect::<Result<Vec<_>, CookError>>()?;
-    zone::cook(plan, path, places, instances).map_err(zone_error(path))
+    let exit_packs = plan
+        .document()
+        .exits
+        .iter()
+        .map(|exit| {
+            let (other, _) = exit_target(path, exit, assets)?;
+            Ok(sapphire_zone::pack_name(zone::stem(other)))
+        })
+        .collect::<Result<Vec<_>, CookError>>()?;
+    zone::cook(plan, path, places, instances, exit_packs).map_err(zone_error(path))
 }
 
 /// Maps a zone's cook error to one that names the source.
@@ -2995,6 +3004,11 @@ fn zone_dependencies(path: &Path, part: &Part, assets: &Assets<'_>) -> Result<Ve
             dependencies.push(Dependency::File { path: file.clone(), hash: blake3::hash(&bytes) });
         }
     }
+    for exit in &document.exits {
+        let (other, _) = exit_target(path, exit, assets)?;
+        let hash = blake3::hash(zone::stem(other).as_bytes());
+        dependencies.push(Dependency::File { path: format!("#exit {}", exit.name), hash });
+    }
     Ok(dependencies)
 }
 
@@ -3016,6 +3030,28 @@ fn check_encounter_in(
         let problem = format!("{}: {error}", source.display());
         zone_error(path)(ZoneCookError::invalid(field, problem))
     })
+}
+
+/// The zone `exit` of the zone at `path` leads to, its source's path and its plan, once it's held to having
+/// the spawner the exit arrives at: from its document, since two zones can lead to each other.
+fn exit_target<'a>(
+    path: &Path,
+    exit: &sapphire_zone::Exit,
+    assets: &Assets<'a>,
+) -> Result<(&'a Path, &'a ZonePlan), CookError> {
+    let found = assets.zones.iter().find(|(_, plan)| plan.id() == exit.to);
+    let (other, plan) = found.ok_or_else(|| CookError::ZoneReference {
+        path: path.to_owned(),
+        field: format!("exits `{}`.to", exit.name),
+        what: "a zone",
+        id: exit.to,
+    })?;
+    if !plan.document().spawners.iter().any(|spawner| spawner.name == exit.arrive) {
+        let problem = format!("{} has no spawner `{}`", other.display(), exit.arrive);
+        let field = format!("exits `{}`.arrive", exit.name);
+        return Err(zone_error(path)(ZoneCookError::invalid(field, problem)));
+    }
+    Ok((other, plan))
 }
 
 /// The pieces an assembly at `path` places: files it reads, by the path it names them with.

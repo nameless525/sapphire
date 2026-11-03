@@ -57,6 +57,13 @@
 //! placement or a light leaves it alone, and a moved collider rebakes the tiles it reaches
 //! ([`crate::nav`]). The zone's `.szone` holds its ID and its key.
 //!
+//! # Exits
+//!
+//! An exit names another zone and a spawner in it, and a cook holds the two together from the other's
+//! document, since each of two zones that lead to each other can't wait for the other's output. All the other
+//! gives this one's `.szone` is its pack's name, from its source's stem, so that's in the key. Nothing of the
+//! other is a reference, so it goes in no pack of this one's.
+//!
 //! # What it doesn't do
 //!
 //! The coplanar check runs within an assembly and not between placements, so two prefabs fighting in
@@ -400,6 +407,11 @@ impl ZonePlan {
             })
             .collect();
         Ok(Self { id, document, prefabs: read, materials, places })
+    }
+
+    /// The zone source's ID.
+    pub fn id(&self) -> AssetId {
+        self.id
     }
 
     /// The ID of the zone's navmesh, which it has if its document says so.
@@ -767,6 +779,7 @@ pub fn cook(
     zone: &Path,
     places: Vec<CookedPlace>,
     instance_bounds: Vec<Bounds>,
+    exit_packs: Vec<String>,
 ) -> Result<Vec<u8>, ZoneCookError> {
     let document = plan.document();
     let instances = document
@@ -787,7 +800,8 @@ pub fn cook(
         .transpose()?;
     let meshes = places.into_iter().map(|place| (place.place, (place.id, place.bounds))).collect();
     let navigation = plan.navigation_id();
-    let cooked = document.cook(ZoneGeometry { meshes, instances, day, rigs, navigation })?.to_cooked()?;
+    let geometry = ZoneGeometry { meshes, instances, day, rigs, navigation, exit_packs };
+    let cooked = document.cook(geometry)?.to_cooked()?;
     Zone::read(&cooked)?;
     Ok(cooked.into_vec())
 }

@@ -1,0 +1,11 @@
+// A prefab: the paving under the whole hub, which the backdrop holds.
+(
+    type: "sapphire::pipeline::Assembly",
+    version: 1,
+    data: (
+        kits: {"kenney": "../../../third_party/kenney_fantasy_town_kit/glb"},
+        slots: [(name: "paving", tile: (1.0, 1.0))],
+        surfaces: [],
+        place: [(piece: "#quad", scale: 48.0, slot: Some("paving"))],
+    ),
+)

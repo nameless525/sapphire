@@ -39,8 +39,8 @@ pub struct Zone {
 }
 
 impl Versioned for Zone {
-    /// 1: M3 W1. 2: one navmesh in place of a list of tiles (P1).
-    const VERSION: u32 = 2;
+    /// 1: M3 W1. 2: one navmesh in place of a list of tiles (P1). 3: exits (W4).
+    const VERSION: u32 = 3;
 }
 
 /// What the simulation reads of a zone. Everything here, and everything it references, is in a
@@ -58,6 +58,27 @@ pub struct ZoneSimulation {
     pub navigation: Option<AssetId>,
     /// Encounters, ascending.
     pub encounters: Vec<AssetId>,
+    /// By ascending ID.
+    pub exits: Vec<CookedExit>,
+}
+
+/// A way out of a zone ([`Exit`](crate::Exit)). Only the IDs and the pack's name say where it goes: nothing of
+/// the zone it names is a reference, so nothing of it loads or goes in this zone's pack.
+#[derive(Clone, Debug, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[rkyv(derive(Debug))]
+pub struct CookedExit {
+    /// The name's hash ([`Name`]), which a replay and a save name it by.
+    pub id: u64,
+    pub name: String,
+    /// The zone it leads to.
+    pub to: AssetId,
+    /// That zone's pack, for mounting before anything of it can be read.
+    pub pack: String,
+    /// The spawner it arrives at, in that zone: the hash of its name.
+    pub arrive: u64,
+    /// Whether that zone's pack comes in ahead of time. How soon loading starts is no business of a replay's,
+    /// so it stays out of the digest.
+    pub prefetch: bool,
 }
 
 /// A place something spawns at.
@@ -485,6 +506,13 @@ impl ArchivedZone {
         for id in simulation.encounters.iter() {
             referenced("encounter", *id, &mut digest)?;
         }
+        digest.u32(simulation.exits.len() as u32);
+        for exit in simulation.exits.iter() {
+            digest.u64(exit.id.to_native());
+            digest.bytes(&exit.to.to_bytes());
+            digest.bytes(exit.pack.as_bytes());
+            digest.u64(exit.arrive.to_native());
+        }
         Ok(digest.finish())
     }
 
@@ -517,7 +545,15 @@ impl ArchivedZone {
             check_name(trigger.event.as_str()).map_err(invalid)?;
         }
         check_count("encounters", simulation.encounters.len())?;
-        check_ascending("encounters", simulation.encounters.as_slice())
+        check_ascending("encounters", simulation.encounters.as_slice())?;
+        check_count("exits", simulation.exits.len())?;
+        let exits = simulation.exits.iter().map(|entry| (entry.id.to_native(), entry.name.as_str()));
+        check_ids("exits", exits)?;
+        for exit in simulation.exits.iter() {
+            let invalid = |problem| ZoneError::invalid(format!("exit `{}`", exit.name.as_str()), problem);
+            check_name(exit.pack.as_str()).map_err(invalid)?;
+        }
+        Ok(())
     }
 
     fn validate_presentation(&self) -> Result<(), ZoneError> {
@@ -700,6 +736,7 @@ mod tests {
     const CELL_MESH: AssetId = AssetId::from_text("44f04da1-31ba-4d3f-9e65-3e38a30fff43");
     const BACKDROP_MESH: AssetId = AssetId::from_text("1e7721b7-7898-4d83-8d21-3ff9c59e5b6c");
     const PROBES: AssetId = AssetId::from_text("9df1c80b-9d2d-4100-a6cc-a16331f57cb5");
+    const OTHER_ZONE: AssetId = AssetId::from_text("e8c21831-7d98-4a79-b592-912b806cf3e2");
 
     fn document() -> ZoneDocument {
         ZoneDocument::from_ron(&format!(
@@ -731,6 +768,10 @@ mod tests {
                         (name: "well", position: (0.3, 0.1, 0.7), volume: Sphere(radius: 2.5), event: "well_entered"),
                     ],
                     splines: [(name: "street_rail", points: [(3.2, 2.0, -20.0), (3.2, 2.5, -40.0)])],
+                    exits: [
+                        (name: "to_market", to: "{OTHER_ZONE}", arrive: "from_town", prefetch: true),
+                        (name: "to_docks", to: "{OTHER_ZONE}", arrive: "player_start"),
+                    ],
                 ),
             )"#
         ))
@@ -760,6 +801,7 @@ mod tests {
                 day: Some("a day's text".to_owned()),
                 rigs: None,
                 navigation: None,
+                exit_packs: vec!["zone_market".to_owned(), "zone_market".to_owned()],
             })
             .expect("cooks")
     }
@@ -1026,6 +1068,35 @@ mod tests {
         assert_ne!(digest_of(&zone(), &saved), base, "the colliders' bytes are in it");
     }
 
+    /// An exit names a zone without leaning on it: nothing of it loads with this one or ships with it. A
+    /// replay does care where it leads, and doesn't care how soon the pack comes in.
+    #[test]
+    fn an_exit_is_no_reference_and_its_way_is_in_the_digest() {
+        let mut cooked = zone();
+        let bytes = cooked.to_cooked().expect("write");
+        let read = Zone::read(&bytes).expect("read");
+        assert!(!read.references().contains(&OTHER_ZONE));
+        assert!(!read.presentation_references().contains(&OTHER_ZONE));
+        assert_eq!(cooked.simulation.exits.len(), 2);
+        assert!(cooked.simulation.exits.is_sorted_by_key(|exit| exit.id));
+        let id = Name::new("to_market").as_u64();
+        let at = cooked.simulation.exits.iter().position(|exit| exit.id == id).expect("cooked");
+        assert_eq!(cooked.simulation.exits[at].pack, "zone_market");
+        assert_eq!(cooked.simulation.exits[at].arrive, Name::new("from_town").as_u64());
+        assert!(cooked.simulation.exits[at].prefetch);
+
+        let colliders = colliders();
+        let digest = |zone: &Zone| {
+            let bytes = zone.to_cooked().expect("write");
+            Zone::read(&bytes).expect("read").simulation_digest(|_| Some(&colliders[..])).expect("digests")
+        };
+        let before = digest(&cooked);
+        cooked.simulation.exits[at].prefetch = false;
+        assert_eq!(digest(&cooked), before, "how soon a pack loads is nobody's business but the frame's");
+        cooked.simulation.exits[at].arrive = Name::new("elsewhere").as_u64();
+        assert_ne!(digest(&cooked), before, "where it arrives is");
+    }
+
     #[test]
     fn a_digest_says_what_it_lacks() {
         let bytes = zone().to_cooked().expect("write");
@@ -1034,6 +1105,15 @@ mod tests {
             matches!(error, ZoneError::NotLoaded { what: "collider set", id } if id == COLLIDERS),
             "{error}"
         );
+    }
+
+    /// A pack an exit names has to be one a mount can ask for.
+    #[test]
+    fn a_bad_pack_name_in_an_exit_is_refused_on_read() {
+        let mut bad = zone();
+        bad.simulation.exits[0].pack = String::new();
+        let error = Zone::read(&bad.to_cooked().expect("write")).expect_err("refused").to_string();
+        assert!(error.contains("exit `"), "{error}");
     }
 
     /// The test CI's Linux, Windows and macOS jobs read, on x86-64 and arm64. The digest goes through
@@ -1055,6 +1135,6 @@ mod tests {
             std::env::consts::ARCH
         );
         std::io::stderr().write_all(line.as_bytes()).expect("stderr takes it");
-        assert_eq!(digest, 0x0147_a8f7_85fa_8b41, "the digest moved; {line}");
+        assert_eq!(digest, 0xd0e1_b4d1_dce4_05c2, "the digest moved; {line}");
     }
 }

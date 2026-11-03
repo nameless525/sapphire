@@ -1,0 +1,14 @@
+// The proving hub's static collision: the ground, and its four posts.
+(
+    type: "sapphire::colliders::ColliderDocument",
+    version: 1,
+    data: (
+        colliders: [
+            (name: "ground", shape: Box(half_extents: (24.0, 0.5, 24.0)), position: (0.0, -0.5, 0.0)),
+            (name: "post_a", shape: Box(half_extents: (0.5, 2.0, 0.5)), position: (-6.0, 2.0, -6.0)),
+            (name: "post_b", shape: Box(half_extents: (0.5, 2.0, 0.5)), position: (6.0, 2.0, -6.0)),
+            (name: "post_c", shape: Box(half_extents: (0.5, 2.0, 0.5)), position: (-6.0, 2.0, 6.0)),
+            (name: "post_d", shape: Box(half_extents: (0.5, 2.0, 0.5)), position: (6.0, 2.0, 6.0)),
+        ],
+    ),
+)

@@ -62,5 +62,7 @@
         splines: [
             (name: "overlook", points: [(-10.0, 4.0, 14.0), (8.0, 6.0, 18.0), (26.0, 4.0, 14.0)]),
         ],
+        // Back the way it came: nothing here asks for the hub ahead of time, so it's a cold way back.
+        exits: [(name: "to_proving_hub", to: "5f3ac6de-0b7c-4f21-9d3e-7a1e64c2b805", arrive: "from_ground")],
     ),
 )

@@ -29,6 +29,8 @@
 //!         spawners: [(name: "player_start", position: (0.0, 0.0, 3.0), yaw_degrees: 180.0, spawns: "player")],
 //!         triggers: [(name: "gate", position: (3.2, 1.0, -18.0), volume: Box(half_extents: (3.0, 2.0, 1.0)), event: "gate_entered")],
 //!         splines: [(name: "street_rail", points: [(3.2, 2.0, -20.0), (3.2, 2.5, -40.0), (3.2, 3.0, -60.0)])],
+//!         // Where it leads. A trigger whose `event` is `to_market` is its door.
+//!         exits: [(name: "to_market", to: "e8c21831-7d98-4a79-b592-912b806cf3e2", arrive: "player_start", prefetch: true)],
 //!     ),
 //! )
 //! ```
@@ -37,7 +39,7 @@
 //! fields are errors. Everything is plain and reflected, so the editor can edit a document by a
 //! reflection path (`placements[3].at[1]`) and splice the text.
 //!
-//! **Stable IDs:** a spawner's, trigger's or spline's name is its identity. Its ID is the name's hash
+//! **Stable IDs:** a spawner's, trigger's, spline's or exit's name is its identity. Its ID is the name's hash
 //! ([`Name`]), which no other entry's addition or order can change, so a replay and a save can name it.
 //! A placement or an instance has no ID: nothing about them that the simulation can see survives cook.
 //!
@@ -56,8 +58,8 @@ use sapphire_serialize::{AssetId, CookedError, DocumentError};
 use serde::{Deserialize, Serialize};
 
 use crate::cooked::{
-    CookedInstance, CookedLight, CookedLightShape, CookedSpawner, CookedSpline, CookedTrigger, CookedVolume,
-    PlaceContents, Zone, ZoneCell, ZonePresentation, ZoneSimulation,
+    CookedExit, CookedInstance, CookedLight, CookedLightShape, CookedSpawner, CookedSpline, CookedTrigger,
+    CookedVolume, PlaceContents, Zone, ZoneCell, ZonePresentation, ZoneSimulation,
 };
 use crate::grid::{Bounds, Grid, MAX_COORDINATE, Place};
 
@@ -109,6 +111,9 @@ pub struct ZoneDocument {
     /// Encounters: `.encounter.ron` sources, by their sidecars' IDs.
     #[serde(default)]
     pub encounters: Vec<AssetId>,
+    /// Where this zone leads.
+    #[serde(default)]
+    pub exits: Vec<Exit>,
 }
 
 impl Versioned for ZoneDocument {
@@ -219,6 +224,27 @@ pub struct Spawner {
     pub spawns: String,
 }
 
+/// A way out of a zone: all there is to say of a transition but how it looks (M3 W4). A trigger whose `event`
+/// is an exit's name is that exit's door, for whoever hears triggers.
+///
+/// Naming a zone loads nothing of it and puts nothing of it in this zone's pack: the two stay apart, however
+/// they lead to each other.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Reflect)]
+#[type_path = "sapphire::zone"]
+#[serde(deny_unknown_fields)]
+pub struct Exit {
+    /// Unique among the zone's exits: its identity (see the [module docs](self)).
+    pub name: String,
+    /// The zone it leads to: a `.zone.ron` source, by its sidecar's ID.
+    pub to: AssetId,
+    /// Which of that zone's spawners whoever takes it arrives at. A cook holds the two together.
+    pub arrive: String,
+    /// Whether that zone's pack comes in ahead of time, as long as anyone's in this zone: what makes this
+    /// zone a hub. It costs memory for a door that may not be taken, so an exit only asks if it's likely.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub prefetch: bool,
+}
+
 /// Where a zone's navmesh bakes, and which of what it finds is real.
 ///
 /// A bake finds every flat top a character could stand on, roofs and crates too, and most of them lead
@@ -322,6 +348,8 @@ pub struct ZoneGeometry {
     pub rigs: Option<String>,
     /// The navmesh baked for the document's `navigation`.
     pub navigation: Option<AssetId>,
+    /// The pack each of the document's exits leads into, in its order.
+    pub exit_packs: Vec<String>,
 }
 
 impl ZoneDocument {
@@ -350,6 +378,7 @@ impl ZoneDocument {
             ("splines", self.splines.len()),
             ("navigation.seeds", self.navigation.as_ref().map_or(0, |navigation| navigation.seeds.len())),
             ("encounters", self.encounters.len()),
+            ("exits", self.exits.len()),
         ] {
             if count > MAX_ENTRIES {
                 return Err(ZoneError::invalid(
@@ -416,6 +445,10 @@ impl ZoneDocument {
         if let Some(navigation) = &self.navigation {
             self.check_navigation(navigation)?;
         }
+        check_names("exits", self.exits.iter().map(|exit| exit.name.as_str()))?;
+        for (index, exit) in self.exits.iter().enumerate() {
+            check_name(&exit.arrive).map_err(invalid(format!("exits[{index}].arrive")))?;
+        }
         Ok(())
     }
 
@@ -476,6 +509,20 @@ impl ZoneDocument {
         triggers.sort_unstable_by_key(|trigger| trigger.id);
         check_distinct("spawners", &spawners, |spawner| (spawner.id, &spawner.name))?;
         check_distinct("triggers", &triggers, |trigger| (trigger.id, &trigger.name))?;
+        let mut exits: Vec<CookedExit> = self
+            .exits
+            .iter()
+            .map(|exit| CookedExit {
+                id: Name::new(&exit.name).as_u64(),
+                name: exit.name.clone(),
+                to: exit.to,
+                pack: String::new(),
+                arrive: Name::new(&exit.arrive).as_u64(),
+                prefetch: exit.prefetch,
+            })
+            .collect();
+        exits.sort_unstable_by_key(|exit| exit.id);
+        check_distinct("exits", &exits, |exit| (exit.id, &exit.name))?;
         let sorted_set = |ids: &[AssetId]| ids.iter().copied().collect::<BTreeSet<_>>().into_iter().collect();
         Ok(ZoneSimulation {
             colliders: self.colliders,
@@ -483,6 +530,7 @@ impl ZoneDocument {
             triggers,
             navigation: None,
             encounters: sorted_set(&self.encounters),
+            exits,
         })
     }
 
@@ -498,6 +546,15 @@ impl ZoneDocument {
             return Err(ZoneError::invalid("navigation", problem));
         }
         simulation.navigation = geometry.navigation;
+        if geometry.exit_packs.len() != self.exits.len() {
+            let problem = format!("{} packs for {} exits", geometry.exit_packs.len(), self.exits.len());
+            return Err(ZoneError::invalid("exits", problem));
+        }
+        for (exit, pack) in self.exits.iter().zip(geometry.exit_packs) {
+            let id = Name::new(&exit.name).as_u64();
+            let cooked = simulation.exits.iter_mut().find(|cooked| cooked.id == id);
+            cooked.expect("cooked from these exits").pack = pack;
+        }
         if geometry.instances.len() != self.instances.len() {
             return Err(ZoneError::invalid(
                 "instances",
@@ -896,6 +953,40 @@ mod tests {
         };
         assert_eq!(of(&more, "gate"), of(&simulation, "gate"));
         assert_eq!(of(&more, "well"), of(&simulation, "well"));
+    }
+
+    #[test]
+    fn an_exit_names_itself_and_where_it_arrives() {
+        let exit = |name: &str, arrive: &str| Exit {
+            name: name.to_owned(),
+            to: PREFAB.parse().expect("an ID"),
+            arrive: arrive.to_owned(),
+            prefetch: false,
+        };
+        let mut document = full();
+        document.exits = vec![exit("to_market", "player_start"), exit("to_docks", "player_start")];
+        document.check().expect("good");
+
+        let text = sapphire_serialize::to_ron(&document).expect("write");
+        assert!(!text.contains("prefetch"), "left out unless asked: {text}");
+        assert_eq!(ZoneDocument::from_ron(&text).expect("read"), document);
+
+        document.exits[1].name = "to_market".to_owned();
+        let message = document.check().expect_err("twice").to_string();
+        assert!(message.contains("exits"), "{message}");
+
+        document.exits[1] = exit("to_docks", "");
+        let message = document.check().expect_err("nowhere").to_string();
+        assert!(message.contains("exits[1].arrive"), "{message}");
+
+        document.exits[1] = exit("to_docks", "player_start");
+        let geometry = ZoneGeometry { exit_packs: vec!["zone_a".to_owned()], ..ZoneGeometry::default() };
+        document.placements.clear();
+        document.lights.clear();
+        document.instances.clear();
+        document.colliders = None;
+        let message = document.cook(geometry).expect_err("short a pack").to_string();
+        assert!(message.contains("1 packs for 2 exits"), "{message}");
     }
 
     #[test]

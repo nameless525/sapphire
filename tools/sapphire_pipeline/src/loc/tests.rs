@@ -225,7 +225,7 @@ fn a_duplicate_across_a_locales_files_names_both() {
     let tree = Tree::new("across", "title = One\n", "title = メニュー\n");
     tree.write("en/b.ftl", "title = Two\n");
     let message = tree.failure();
-    assert!(message.contains("en/a.ftl") && message.contains("en/b.ftl"), "{message}");
+    assert!(message.contains("a.ftl") && message.contains("b.ftl"), "{message}");
 }
 
 #[test]

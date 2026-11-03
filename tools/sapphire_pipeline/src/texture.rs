@@ -594,7 +594,10 @@ const COOK_BYTES_PER_TEXEL: u64 = 100;
 /// doesn't read, since neither will the rest of it.
 pub fn cook_memory(path: &Path, bytes: &[u8]) -> u64 {
     let size = SourceFormat::from_path(path).and_then(|format| image_import::header_size(bytes, format));
-    size.map_or(0, |(width, height)| u64::from(width) * u64::from(height) * COOK_BYTES_PER_TEXEL)
+    // A header says what it likes, and a size over the budget is the import's to refuse.
+    size.map_or(0, |(width, height)| {
+        (u64::from(width) * u64::from(height)).saturating_mul(COOK_BYTES_PER_TEXEL)
+    })
 }
 
 /// Imports and cooks one texture source: the bytes of its cooked KTX2 file.

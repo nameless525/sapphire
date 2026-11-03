@@ -441,6 +441,17 @@ mod tests {
         png
     }
 
+    /// What a header says can be far past the budget and still read: 2²⁹ on a side takes the cook's
+    /// estimate past 64 bits, and the source must still fail for its size, not for that.
+    #[test]
+    fn a_header_past_any_budget_is_estimated_as_all_there_is() {
+        let path = Path::new("albedo.png");
+        let bytes = png_header(1 << 29, 1 << 29);
+        assert_eq!(crate::texture::cook_memory(path, &bytes), u64::MAX);
+        let error = import_slice(&bytes, SourceFormat::Png, Transfer::Linear).unwrap_err();
+        assert!(matches!(error, ImageImportError::TooLarge { .. }), "{error:?}");
+    }
+
     #[test]
     fn oversized_images_fail_from_their_header() {
         // Too wide, too tall, or within both sides but over the texel count: refused before a

@@ -26,6 +26,8 @@ pub struct PhysicsStats {
     pub move_hits: u32,
     /// Moves that began by pushing a body out of something.
     pub overlaps_resolved: u32,
+    /// Moves whose pushes ran out with the body still in something: non-zero means a body is squeezed.
+    pub overlaps_unresolved: u32,
     /// Ray casts.
     pub ray_casts: u32,
     /// Shape casts, single and all-hits.
@@ -46,6 +48,7 @@ pub(crate) struct Counters {
     pub(crate) move_sweeps: AtomicU32,
     pub(crate) move_hits: AtomicU32,
     pub(crate) overlaps_resolved: AtomicU32,
+    pub(crate) overlaps_unresolved: AtomicU32,
     pub(crate) ray_casts: AtomicU32,
     pub(crate) shape_casts: AtomicU32,
     pub(crate) overlap_queries: AtomicU32,
@@ -68,6 +71,7 @@ impl Counters {
             move_sweeps: take(&self.move_sweeps),
             move_hits: take(&self.move_hits),
             overlaps_resolved: take(&self.overlaps_resolved),
+            overlaps_unresolved: take(&self.overlaps_unresolved),
             ray_casts: take(&self.ray_casts),
             shape_casts: take(&self.shape_casts),
             overlap_queries: take(&self.overlap_queries),

@@ -76,8 +76,13 @@ pub struct MoveOutcome {
     /// Motion not travelled when the sweeps ran out: zero after a clear run. Not yet slid along
     /// the last surface, so with `max_sweeps: 1` this is the part a wall stopped.
     pub remaining: Vec3,
-    /// The part of [`Self::moved`] that pushed the body out of overlaps it started in.
+    /// The part of [`Self::moved`] that pushed the body out of overlaps it started in. Pushes back and
+    /// forth can add up to nothing, so [`Self::started_overlapping`] is what says whether there were any.
     pub overlap_push: Vec3,
+    /// The pushes ran out with the body still in something: a gap narrower than it, say, where each one
+    /// out of one side goes into the other. The move goes on from where they left it.
+    pub still_overlapping: bool,
+    started_overlapping: bool,
     hits: [MoveHit; MAX_MOVE_HITS],
     hit_count: u8,
 }
@@ -90,7 +95,7 @@ impl MoveOutcome {
 
     /// Whether the body started overlapping something.
     pub fn started_overlapping(&self) -> bool {
-        self.overlap_push != Vec3::ZERO
+        self.started_overlapping
     }
 }
 
@@ -127,23 +132,30 @@ impl PhysicsWorld {
             moved: Vec3::ZERO,
             remaining: Vec3::ZERO,
             overlap_push: Vec3::ZERO,
+            still_overlapping: false,
+            started_overlapping: false,
             hits: [MoveHit::NONE; MAX_MOVE_HITS],
             hit_count: 0,
         };
 
-        for _ in 0..MAX_OVERLAP_PUSHES {
+        let overlap_at = |position: Vec3| {
             let at = with_position(&body.parry_pose, position);
-            let Some(Penetration { normal, depth, .. }) = self.deepest_overlap(&body.convex, &at, selector)
-            else {
-                break;
-            };
-            if depth < MIN_OVERLAP {
-                break;
-            }
+            self.deepest_overlap(&body.convex, &at, selector).filter(|overlap| overlap.depth >= MIN_OVERLAP)
+        };
+        let mut pushes = 0;
+        while pushes < MAX_OVERLAP_PUSHES
+            && let Some(Penetration { normal, depth, .. }) = overlap_at(position)
+        {
             position += normal * (depth + skin);
+            pushes += 1;
         }
         outcome.overlap_push = position - start;
-        if outcome.overlap_push != Vec3::ZERO {
+        outcome.started_overlapping = pushes > 0;
+        // Only a squeezed body looks again, so a move through open space pays nothing for this.
+        outcome.still_overlapping = pushes == MAX_OVERLAP_PUSHES && overlap_at(position).is_some();
+        if outcome.still_overlapping {
+            Counters::add(&self.counters.overlaps_unresolved, 1);
+        } else if outcome.started_overlapping {
             Counters::add(&self.counters.overlaps_resolved, 1);
         }
 

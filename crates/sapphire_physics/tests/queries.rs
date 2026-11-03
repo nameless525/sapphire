@@ -282,6 +282,45 @@ fn a_range_of_nothing_says_what_a_shape_starts_in() {
     assert_eq!(hit.distance, 0.0);
 }
 
+#[test]
+fn a_move_squeezed_with_no_way_out_says_so() {
+    let wall = Shape::Box { half_extents: Vec3::new(0.5, 5.0, 5.0) };
+    // Radius 0.5, so a body needs a gap of 1 and the skins: each push out of one wall goes into the other.
+    let squeeze = |gap: f32, from: f32| {
+        moving_world(
+            vec![
+                collider(1, wall, Vec3::new(-0.5 - gap / 2.0, 0.0, 0.0)),
+                collider(2, wall, Vec3::new(0.5 + gap / 2.0, 0.0, 0.0)),
+            ],
+            Vec3::new(from, 0.0, 0.0),
+        )
+    };
+    let options = MoveOptions::default();
+    for (gap, from) in [(0.8, 0.0), (0.8, 0.05), (0.5, -0.13), (0.99, 0.0)] {
+        let (mut world, id) = squeeze(gap, from);
+        // Move after move, since the pushes can come back to where they started and add up to nothing.
+        for tick in 0..3 {
+            let outcome = world.move_and_collide(id, Vec3::new(0.0, 0.0, 0.1), &options).expect("moves");
+            let what = format!("a gap of {gap} from {from}, move {tick}: {outcome:?}");
+            assert!(outcome.started_overlapping(), "{what}");
+            assert!(outcome.still_overlapping, "{what}");
+            let stats = world.take_stats();
+            assert_eq!((stats.overlaps_resolved, stats.overlaps_unresolved), (0, 1), "{what}");
+        }
+    }
+
+    // Room enough: pushed clear of both, and it says that.
+    let (mut world, id) = squeeze(1.5, 0.0);
+    world.set_body_pose(id, Pose::at(Vec3::new(0.5, 0.0, 0.0))).expect("it's there");
+    let outcome = world.move_and_collide(id, Vec3::ZERO, &options).expect("moves");
+    assert!(outcome.started_overlapping(), "{outcome:?}");
+    assert!(!outcome.still_overlapping, "{outcome:?}");
+    let stats = world.take_stats();
+    assert_eq!((stats.overlaps_resolved, stats.overlaps_unresolved), (1, 0));
+    let outcome = world.move_and_collide(id, Vec3::ZERO, &options).expect("moves");
+    assert!(!outcome.started_overlapping() && !outcome.still_overlapping, "{outcome:?}");
+}
+
 /// Taking the end of a range in changes who wins no tie: a static over a body and a lower ID over a
 /// higher, wherever the tie falls.
 #[test]

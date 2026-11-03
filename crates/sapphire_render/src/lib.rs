@@ -848,7 +848,7 @@
 //!   families' alpha-tested surfaces under MSAA (foliage writes its own sample mask).
 //! - **Anisotropic filtering** joins the quality tiers.
 //! - **Shader builds** (see the `shader_builds` module): M4's PSO warm-up builds a pack's listed
-//!   pipelines on workers in parallel (an edit's build runs on one worker today), and a cache of
+//!   pipelines ([`Renderer::prewarm`], at a load since M3 K1) on workers while the game draws, and a cache of
 //!   pipelines by descriptor lets a build in flight take the pipelines built lazily meanwhile
 //!   instead of starting again; WESL imports replace the concatenation.
 
@@ -871,6 +871,7 @@ mod lights;
 mod materials;
 mod mesh_pool;
 mod outlines;
+mod pipeline_builds;
 mod pipelines;
 pub mod post;
 pub mod quality;
@@ -904,6 +905,7 @@ pub use frame::{
 pub use lights::{LightPath, LightStats, MAX_LIGHTS};
 pub use materials::MaterialHandle;
 pub use mesh_pool::MeshHandle;
+pub use pipeline_builds::{FirstUseBuild, FirstUseReport, PipelineFamily, PipelineInventory, PipelineStats};
 pub use post::{
     BloomParams, CharacterBloom, ChromaticAberration, ColorGrade, Diffusion, DrawnEffects, Duotone,
     EffectCoverage, GradientBlend, GradientLayer, GradientShape, Inversion, LensFlare, MAX_BLOOM_LEVELS,

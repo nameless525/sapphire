@@ -60,6 +60,7 @@ use sapphire_rhi::wgpu;
 use crate::CameraData;
 use crate::buffer::{GrowableBuffer, stage};
 use crate::graph::{FrameGraph, TextureId};
+use crate::pipeline_builds::{PipelineBuilds, PipelineFamily};
 use crate::shader_builds::Step;
 use crate::shaders::{self, Program, ShaderSources};
 
@@ -159,7 +160,7 @@ impl DebugDrawUniforms {
 pub(crate) struct DebugDraw {
     device: wgpu::Device,
     color_format: wgpu::TextureFormat,
-    cache: Option<wgpu::PipelineCache>,
+    builds: PipelineBuilds,
     bind_layout: wgpu::BindGroupLayout,
     pipeline_layout: wgpu::PipelineLayout,
     pipeline: wgpu::RenderPipeline,
@@ -176,7 +177,7 @@ impl DebugDraw {
         device: &wgpu::Device,
         color_format: wgpu::TextureFormat,
         sources: &ShaderSources,
-        cache: Option<&wgpu::PipelineCache>,
+        builds: &PipelineBuilds,
     ) -> Self {
         let bind_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some(PASS),
@@ -208,7 +209,7 @@ impl DebugDraw {
             bind_group_layouts: &[Some(&bind_layout)],
             immediate_size: 0,
         });
-        let pipeline = build_pipeline(device, &pipeline_layout, color_format, sources, cache);
+        let pipeline = build_pipeline(device, &pipeline_layout, color_format, sources, builds);
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some(PASS),
             size: size_of::<DebugDrawUniforms>() as u64,
@@ -225,7 +226,7 @@ impl DebugDraw {
         Self {
             device: device.clone(),
             color_format,
-            cache: cache.cloned(),
+            builds: builds.clone(),
             bind_layout,
             pipeline_layout,
             pipeline,
@@ -268,9 +269,10 @@ impl DebugDraw {
     /// Its pipeline, to build from new sources (shader hot reload, off the frame thread:
     /// `shader_builds`), for [`Self::set_pipeline`] once every changed program built.
     pub(crate) fn rebuild(&self) -> Step<wgpu::RenderPipeline> {
-        let (device, layout, cache) = (self.device.clone(), self.pipeline_layout.clone(), self.cache.clone());
+        let (device, layout, builds) =
+            (self.device.clone(), self.pipeline_layout.clone(), self.builds.clone());
         let color_format = self.color_format;
-        Box::new(move |sources, _| build_pipeline(&device, &layout, color_format, sources, cache.as_ref()))
+        Box::new(move |sources, _| build_pipeline(&device, &layout, color_format, sources, &builds))
     }
 
     pub(crate) fn set_pipeline(&mut self, pipeline: wgpu::RenderPipeline) {
@@ -345,41 +347,45 @@ fn build_pipeline(
     layout: &wgpu::PipelineLayout,
     color_format: wgpu::TextureFormat,
     sources: &ShaderSources,
-    cache: Option<&wgpu::PipelineCache>,
+    builds: &PipelineBuilds,
 ) -> wgpu::RenderPipeline {
     let module = shaders::module(device, Program::DebugDraw, sources);
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some(PASS),
-        layout: Some(layout),
-        vertex: wgpu::VertexState {
-            module: &module,
-            entry_point: Some("vs_debug_line"),
-            compilation_options: Default::default(),
-            buffers: &[Some(wgpu::VertexBufferLayout {
-                array_stride: size_of::<GpuLine>() as u64,
-                step_mode: wgpu::VertexStepMode::Instance,
-                attributes: &LINE_ATTRIBUTES,
-            })],
+    builds.render(
+        device,
+        PipelineFamily::Debug,
+        &wgpu::RenderPipelineDescriptor {
+            label: Some(PASS),
+            layout: Some(layout),
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("vs_debug_line"),
+                compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: size_of::<GpuLine>() as u64,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &LINE_ATTRIBUTES,
+                })],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some("fs_debug_line"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: color_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: builds.cache(),
         },
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleStrip,
-            ..Default::default()
-        },
-        depth_stencil: None,
-        multisample: wgpu::MultisampleState::default(),
-        fragment: Some(wgpu::FragmentState {
-            module: &module,
-            entry_point: Some("fs_debug_line"),
-            compilation_options: Default::default(),
-            targets: &[Some(wgpu::ColorTargetState {
-                format: color_format,
-                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-        }),
-        multiview_mask: None,
-        cache,
-    })
+    )
 }
 
 /// The list's stats, on a frame or a renderer that has no pass for it.

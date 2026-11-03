@@ -293,8 +293,12 @@ fn a_shader_edit_rebuilds_the_pipelines_built_from_it() {
     // The sky's program alone: its six pipelines (four layer variants into the scene, two into
     // the sky cube).
     let blue_sky = edited(&sources, ShaderFile::Sky, SKY_RETURN, "return vec4<f32>(0.0, 0.0, 0.5, 1.0);");
+    let builds = frames.renderer.stats().pipelines;
     let update = frames.renderer.set_shader_sources(&blue_sky).expect("a valid edit");
     assert_eq!(update, ShaderUpdate { programs: 1, pipelines: 6 });
+    let rebuilt = frames.renderer.stats().pipelines;
+    assert_eq!(rebuilt.rebuilt, builds.rebuilt + 6, "an edit's are rebuilds");
+    assert_eq!(rebuilt.first_use_builds, builds.first_use_builds, "not first uses");
     let pixels = frames.render(&gpu);
     assert_eq!(center(&pixels), sphere_red, "the sphere's pipelines are untouched");
     let new_sky = corner(&pixels);

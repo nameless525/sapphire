@@ -89,6 +89,7 @@ use crate::CameraData;
 use crate::bind_cache::CachedBindGroup;
 use crate::buffer::{self, GrowableBuffer};
 use crate::graph::{PassContext, TextureId};
+use crate::pipeline_builds::{PipelineBuilds, PipelineFamily};
 use crate::pipelines::{DEPTH_FORMAT, SCENE_COLOR_FORMAT};
 use crate::shader_builds::Step;
 use crate::shaders::{self, BuildOn, Program, ShaderSources};
@@ -375,7 +376,7 @@ struct Builder {
     samples: u32,
     /// Effects draw after temporal AA's resolve.
     after_resolve: bool,
-    cache: Option<wgpu::PipelineCache>,
+    builds: PipelineBuilds,
 }
 
 /// What blends premultiplied light over what's behind, and writes the color alone: its source alpha
@@ -430,34 +431,38 @@ impl Builder {
             bias: Default::default(),
         });
         let samples = if after_resolve { 1 } else { self.samples };
-        self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some(label),
-            layout: Some(&self.layout),
-            vertex: wgpu::VertexState {
-                module,
-                entry_point: Some("vs_vfx"),
-                compilation_options: compilation_options.clone(),
-                buffers: &[],
+        self.builds.render(
+            &self.device,
+            PipelineFamily::Effects,
+            &wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&self.layout),
+                vertex: wgpu::VertexState {
+                    module,
+                    entry_point: Some("vs_vfx"),
+                    compilation_options: compilation_options.clone(),
+                    buffers: &[],
+                },
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleStrip,
+                    ..Default::default()
+                },
+                depth_stencil: depth,
+                multisample: wgpu::MultisampleState { count: samples, ..Default::default() },
+                fragment: Some(wgpu::FragmentState {
+                    module,
+                    entry_point: Some(fragment),
+                    compilation_options,
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: SCENE_COLOR_FORMAT,
+                        blend: Some(blend),
+                        write_mask,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: self.builds.cache(),
             },
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleStrip,
-                ..Default::default()
-            },
-            depth_stencil: depth,
-            multisample: wgpu::MultisampleState { count: samples, ..Default::default() },
-            fragment: Some(wgpu::FragmentState {
-                module,
-                entry_point: Some(fragment),
-                compilation_options,
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: SCENE_COLOR_FORMAT,
-                    blend: Some(blend),
-                    write_mask,
-                })],
-            }),
-            multiview_mask: None,
-            cache: self.cache.as_ref(),
-        })
+        )
     }
 
     fn color(&self, module: &wgpu::ShaderModule) -> wgpu::RenderPipeline {
@@ -724,7 +729,7 @@ pub(crate) struct Vfx {
     view_layout: wgpu::BindGroupLayout,
     samples: u32,
     after_resolve: bool,
-    cache: Option<wgpu::PipelineCache>,
+    builds: PipelineBuilds,
     gpu: Option<Box<VfxGpu>>,
     /// This frame's sprites from back to front, and the sort's keys, kept across frames so a warm
     /// frame allocates nothing.
@@ -749,6 +754,7 @@ impl Vfx {
         view_layout: &wgpu::BindGroupLayout,
         samples: u32,
         after_resolve: bool,
+        builds: &PipelineBuilds,
     ) -> Self {
         Self {
             device: gpu.device().clone(),
@@ -757,7 +763,7 @@ impl Vfx {
             view_layout: view_layout.clone(),
             samples,
             after_resolve,
-            cache: gpu.pipeline_cache().cloned(),
+            builds: builds.clone(),
             gpu: None,
             sprites: Vec::new(),
             order: Vec::new(),
@@ -791,7 +797,7 @@ impl Vfx {
                 layout,
                 samples: self.samples,
                 after_resolve: self.after_resolve,
-                cache: self.cache.clone(),
+                builds: self.builds.clone(),
             };
             let module = shaders::module(device, Program::Vfx, sources);
             let pipelines = VfxPipelines { module, color: None, mask: None };

@@ -224,6 +224,7 @@ use crate::characters::GpuCharacter;
 use crate::environment::ProbeLookup;
 use crate::gpu_types::FrameUniforms;
 use crate::graph::{FrameGraph, TextureId};
+use crate::pipeline_builds::{PipelineBuilds, PipelineFamily};
 use crate::pipelines::Layouts;
 use crate::shader_builds::Step;
 use crate::shaders::{self, Program, ShaderSources};
@@ -647,7 +648,7 @@ pub(crate) struct Ambient {
     sky_cube: wgpu::TextureView,
     layouts: AmbientLayouts,
     pipelines: AmbientPipelines,
-    cache: Option<wgpu::PipelineCache>,
+    builds: PipelineBuilds,
     /// The frame's uniforms, which the projection and the character pass read.
     frame_uniforms: wgpu::Buffer,
     /// Group 0 of the compute passes that read the grid: the frame's and the ambient uniforms,
@@ -959,7 +960,7 @@ impl AmbientPipelines {
     fn new(
         device: &wgpu::Device,
         layouts: &AmbientLayouts,
-        cache: Option<&wgpu::PipelineCache>,
+        builds: &PipelineBuilds,
         sources: &ShaderSources,
         set: PipelineSet,
     ) -> Self {
@@ -968,17 +969,21 @@ impl AmbientPipelines {
         }
         let module = shaders::module(device, Program::Ambient, sources);
         let build_zeroing = |index: usize, entry_point: &str, zero_initialize_workgroup_memory: bool| {
-            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some(entry_point),
-                layout: Some(&layouts.pipelines[index]),
-                module: &module,
-                entry_point: Some(entry_point),
-                compilation_options: wgpu::PipelineCompilationOptions {
-                    zero_initialize_workgroup_memory,
-                    ..Default::default()
+            builds.compute(
+                device,
+                PipelineFamily::Ambient,
+                &wgpu::ComputePipelineDescriptor {
+                    label: Some(entry_point),
+                    layout: Some(&layouts.pipelines[index]),
+                    module: &module,
+                    entry_point: Some(entry_point),
+                    compilation_options: wgpu::PipelineCompilationOptions {
+                        zero_initialize_workgroup_memory,
+                        ..Default::default()
+                    },
+                    cache: builds.cache(),
                 },
-                cache,
-            })
+            )
         };
         let build = |index: usize, entry_point: &str| build_zeroing(index, entry_point, true);
         Self {
@@ -1342,13 +1347,13 @@ impl Ambient {
         temporal: bool,
         reflections: ReflectionSettings,
         environment_reflects: bool,
-        cache: Option<&wgpu::PipelineCache>,
+        builds: &PipelineBuilds,
         sources: &ShaderSources,
     ) -> Self {
         let ambient_layouts = AmbientLayouts::new(device, layouts);
         // GTAO runs every frame on the tiers that have it; the grid's light waits for a grid.
         let set = PipelineSet { occlusion: occlusion.gtao.is_some(), ..PipelineSet::default() };
-        let pipelines = AmbientPipelines::new(device, &ambient_layouts, cache, sources, set);
+        let pipelines = AmbientPipelines::new(device, &ambient_layouts, builds, sources, set);
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("ambient uniforms"),
             size: size_of::<AmbientBlock>() as u64,
@@ -1405,7 +1410,7 @@ impl Ambient {
             sky_cube: sky_cube.clone(),
             layouts: ambient_layouts,
             pipelines,
-            cache: cache.cloned(),
+            builds: builds.clone(),
             frame_uniforms: frame_uniforms.clone(),
             compute_frame,
             projection_group: None,
@@ -1614,8 +1619,7 @@ impl Ambient {
         }
         let missing = set.without(self.pipelines.set());
         if !missing.is_empty() {
-            let built =
-                AmbientPipelines::new(&self.device, &self.layouts, self.cache.as_ref(), sources, missing);
+            let built = AmbientPipelines::new(&self.device, &self.layouts, &self.builds, sources, missing);
             self.pipelines.add(built);
             self.stats.pipelines = self.pipelines.count();
         }
@@ -1633,9 +1637,9 @@ impl Ambient {
     /// The passes' pipelines built so far, to build again from new sources (hot reload, off the
     /// frame thread: `shader_builds`), on the layouts they had: none if none were built.
     pub(crate) fn rebuild(&self) -> Step<AmbientPipelines> {
-        let (device, layouts, cache) = (self.device.clone(), self.layouts.clone(), self.cache.clone());
+        let (device, layouts, builds) = (self.device.clone(), self.layouts.clone(), self.builds.clone());
         let set = self.pipelines.set();
-        Box::new(move |sources, _| AmbientPipelines::new(&device, &layouts, cache.as_ref(), sources, set))
+        Box::new(move |sources, _| AmbientPipelines::new(&device, &layouts, &builds, sources, set))
     }
 
     /// The pipelines built so far, which a build off the frame thread checks it rebuilt all of

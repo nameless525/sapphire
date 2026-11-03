@@ -150,6 +150,9 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
     desc.party_looks = options.party;
     desc.material_overrides = options.material_overrides();
     desc.skinned = options.skinned;
+    desc.prewarm_packs =
+        options.offscreen.as_ref().is_some_and(|run| matches!(run.mode, OffscreenMode::Bench { .. }));
+    desc.inventory_without = options.inventory_without.clone();
     let history_only_capture = history_only_capture_allowed(options, desc.settings);
     let mut stage = sapphire_stage::Stage::new(platform, instance, gpu, desc)?;
     stage.history_only_capture = history_only_capture;
@@ -292,9 +295,6 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
     if options.cues {
         scene.play_cues(sapphire_stage::vfx::budget(quality.active().id)).map_err(AppInitError::msg)?;
     }
-    // The screen effects it may push, `--post-effect`'s among them, and the effects it plays,
-    // show on their first frame.
-    scene.prewarm(renderer);
     // The stage after the hour, which places its pillars.
     if let Some(layout) = options.stage {
         scene.spawn_stage(layout, content.stage_meshes(renderer)?);
@@ -307,6 +307,13 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
         let hud = sapphire_stage::hud::HudOptions { mode, ..hud };
         scene.set_hud(sapphire_stage::hud::SandboxHud::new(hud));
     }
+    // The screen effects it may push, `--post-effect`'s among them, the effects it plays, its sky and
+    // its HUD show on their first frame.
+    let mut declared = scene.declared_pipelines();
+    if let Some(entry) = &options.inventory_without {
+        declared.remove(entry);
+    }
+    renderer.prewarm(&declared);
     #[cfg(feature = "dev")]
     let tools = StageTools { dev: crate::dev::DevTools::new(gpu, FORMAT, options, platform, content)? };
     #[cfg(not(feature = "dev"))]

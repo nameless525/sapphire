@@ -59,6 +59,7 @@ use sapphire_rhi::wgpu;
 
 use super::GpuLight;
 use crate::gpu_types::FrameUniforms;
+use crate::pipeline_builds::{PipelineBuilds, PipelineFamily};
 use crate::shader_builds::Step;
 use crate::shaders::{self, Program, ShaderSources};
 
@@ -128,7 +129,7 @@ pub(crate) struct ClusterPass {
     bind_group: wgpu::BindGroup,
     /// Kept to build the pipelines again from new shader sources.
     layout: wgpu::PipelineLayout,
-    cache: Option<wgpu::PipelineCache>,
+    builds: PipelineBuilds,
 }
 
 impl ClusterPass {
@@ -139,7 +140,7 @@ impl ClusterPass {
         frame_uniforms: &wgpu::Buffer,
         lights: &wgpu::Buffer,
         clusters: &wgpu::Buffer,
-        cache: Option<&wgpu::PipelineCache>,
+        builds: &PipelineBuilds,
         sources: &ShaderSources,
     ) -> Self {
         let view_lights = device.create_buffer(&wgpu::BufferDescriptor {
@@ -182,15 +183,15 @@ impl ClusterPass {
             bind_group_layouts: &[Some(&layout), Some(view_layout)],
             immediate_size: 0,
         });
-        let pipelines = build(device, &layout, cache, sources);
-        Self { pipelines, bind_group, layout, cache: cache.cloned() }
+        let pipelines = build(device, &layout, builds, sources);
+        Self { pipelines, bind_group, layout, builds: builds.clone() }
     }
 
     /// The pass's pipelines, to build from new sources instead (off the frame thread:
     /// `shader_builds`), for [`Self::set_pipelines`] (shader hot reload).
     pub(crate) fn rebuild(&self, device: &wgpu::Device) -> Step<ClusterPipelines> {
-        let (device, layout, cache) = (device.clone(), self.layout.clone(), self.cache.clone());
-        Box::new(move |sources, _| build(&device, &layout, cache.as_ref(), sources))
+        let (device, layout, builds) = (device.clone(), self.layout.clone(), self.builds.clone());
+        Box::new(move |sources, _| build(&device, &layout, &builds, sources))
     }
 
     pub(crate) fn set_pipelines(&mut self, pipelines: ClusterPipelines) {
@@ -227,19 +228,23 @@ impl ClusterPass {
 fn build(
     device: &wgpu::Device,
     layout: &wgpu::PipelineLayout,
-    cache: Option<&wgpu::PipelineCache>,
+    builds: &PipelineBuilds,
     sources: &ShaderSources,
 ) -> ClusterPipelines {
     let module = shaders::module(device, Program::Clusters, sources);
     let pipeline = |label, entry_point| {
-        device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some(label),
-            layout: Some(layout),
-            module: &module,
-            entry_point: Some(entry_point),
-            compilation_options: Default::default(),
-            cache,
-        })
+        builds.compute(
+            device,
+            PipelineFamily::Lights,
+            &wgpu::ComputePipelineDescriptor {
+                label: Some(label),
+                layout: Some(layout),
+                module: &module,
+                entry_point: Some(entry_point),
+                compilation_options: Default::default(),
+                cache: builds.cache(),
+            },
+        )
     };
     ClusterPipelines {
         view_lights: pipeline("view-space lights", "cs_cluster_lights"),

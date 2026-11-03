@@ -462,6 +462,7 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
         row(ui, "Skinning", skinned);
         row(ui, "Interface", interface_text(&render.ui));
         row(ui, "Sky", sky_text(&render.sky));
+        row(ui, "Pipelines", pipelines_text(&render.pipelines));
         row(ui, "Post layers", post_text(&render.post));
         row(ui, "Screen effects", effects_text(&render.post.effects, view.frame.screen_effects));
         row(ui, "Fog", fog_text(&render.fog));
@@ -937,6 +938,11 @@ fn fog_text(fog: &sapphire_render::FogStats) -> String {
 
 /// The compositing layers post drew this frame (M1 P2), and its pipelines: those built so far,
 /// and those frames built on first use, each a stall a prewarm would have saved.
+/// What the renderer's built, by why: a first use after a load is what exit test 7 forbids.
+fn pipelines_text(stats: &sapphire_render::PipelineStats) -> String {
+    format!("{} prewarmed, {} first use, {} rebuilt", stats.prewarmed, stats.first_use_builds, stats.rebuilt)
+}
+
 fn post_text(post: &sapphire_render::PostStats) -> String {
     let gradients = match post.gradient_layers {
         0 => None,

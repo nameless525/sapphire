@@ -257,6 +257,7 @@ use bytemuck::{Pod, Zeroable};
 use sapphire_rhi::{GpuContext, TransientDesc, wgpu};
 
 use crate::graph::{FrameGraph, TextureId};
+use crate::pipeline_builds::PipelineBuilds;
 use crate::pipelines::SCENE_COLOR_FORMAT;
 use crate::shader_builds::Step;
 use crate::shaders::{self, BuildOn, Program, ShaderSources};
@@ -540,6 +541,7 @@ impl PostProcess {
         bloom_levels: u32,
         effects: PostEffectSettings,
         variants: PostVariants,
+        builds: &PipelineBuilds,
         sources: &ShaderSources,
     ) -> Result<Self, RenderError> {
         if !gpu.format_support(LUT_FORMAT).filterable {
@@ -552,7 +554,7 @@ impl PostProcess {
         } else {
             SCENE_COLOR_FORMAT
         };
-        let (device, cache) = (gpu.device(), gpu.pipeline_cache());
+        let device = gpu.device();
         use wgpu::ShaderStages as S;
         // The fused pass's vertex shader reads its input and the constants too: it measures the
         // sun's visibility for the lens flare once a frame.
@@ -617,7 +619,7 @@ impl PostProcess {
             bloom_format,
             output_format,
             effects,
-            cache: cache.cloned(),
+            builds: builds.clone(),
         };
         let module = shaders::module(device, Program::Post, sources);
         let bloom_levels = bloom_levels.min(MAX_BLOOM_LEVELS);

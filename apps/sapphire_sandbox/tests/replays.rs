@@ -466,6 +466,81 @@ fn a_bench_of_a_fight_plays_it_whole_beside_the_renderer() {
     }
 }
 
+/// A bench of a committed replay on `tier`'s settings, as a phone's or a laptop's run has them: not [`PINS`],
+/// because the count is of what those settings build.
+fn inventory_bench(replay: &str, tier: &str, without: Option<&str>) -> Output {
+    let replay = workspace().join("tests").join("replays").join(format!("{replay}.sreplay"));
+    let mut args = vec![
+        "--bench",
+        "1",
+        "--arena",
+        "--replay",
+        replay.to_str().expect("UTF-8"),
+        "--tier",
+        tier,
+        "--size",
+        "64x36",
+        "--cues",
+        "--hud",
+        "live",
+        "--no-hot-reload",
+        "--live-link",
+        "off",
+    ];
+    if let Some(entry) = without {
+        args.extend(["--inventory-without", entry]);
+    }
+    sandbox(&args, &content())
+}
+
+/// The arena's stage draws through this and nothing else does, on either tier.
+const UNIQUE_KEY: &str = "mesh environment flags 0x0 Float32";
+
+/// A bench of `replay` on `tier` builds nothing after its load, and says so.
+fn assert_no_misses(replay: &str, tier: &str) {
+    let output = inventory_bench(replay, tier, None);
+    let log = log_of(&output);
+    assert!(output.status.success(), "{replay} on {tier}: {log}");
+    let rows: Vec<&str> = log.lines().filter(|line| line.contains("fight pipelines")).collect();
+    assert!(!rows.is_empty(), "{replay} on {tier}: {log}");
+    for row in rows {
+        for part in ["first_use=0", "rebuilt=0"] {
+            assert!(row.contains(part), "{replay} on {tier}: {row}");
+        }
+    }
+}
+
+/// Exit test 7: after a load, no frame of the recorded walk builds a pipeline, on either tier's settings, nor any
+/// frame of a recorded fight, whose hits draw what a walk doesn't; and take one entry of what the load declared out
+/// and the same bench fails, naming what it had to build. A software GPU pays for a load's pipelines on each run, so
+/// the things no table lists run on one tier: they don't vary by tier.
+#[test]
+#[ignore = "needs a GPU and cooked content (`cargo xtask content`)"]
+fn a_load_leaves_no_pipeline_to_build_and_a_missing_entry_fails_naming_it() {
+    for tier in ["desktop-low", "mobile-low"] {
+        assert_no_misses("arena-walk", tier);
+        assert_inventory_miss("arena-walk", tier, UNIQUE_KEY, UNIQUE_KEY);
+    }
+    assert_no_misses("arena-fight-won", "mobile-low");
+    for (entry, named) in [("skinning", "skinning: "), ("sky", "sky: "), ("ui", "ui: ")] {
+        assert_inventory_miss("arena-walk", "mobile-low", entry, named);
+    }
+    for (entry, named) in [("effects", "effects: "), ("post", "post: ")] {
+        assert_inventory_miss("arena-fight-won", "mobile-low", entry, named);
+    }
+}
+
+/// A bench on `tier` with `entry` left out fails, saying `named`.
+fn assert_inventory_miss(replay: &str, tier: &str, entry: &str, named: &str) {
+    let output = inventory_bench(replay, tier, Some(entry));
+    let log = log_of(&output);
+    assert!(!output.status.success(), "{tier} without {entry}: it passed: {log}");
+    let failure = log.lines().position(|line| line.contains("pipeline inventory missed"));
+    let failure = failure.unwrap_or_else(|| panic!("{tier} without {entry}: {log}"));
+    let names = log.lines().skip(failure).any(|line| line.contains(named));
+    assert!(names, "{tier} without {entry} doesn't say {named:?}: {log}");
+}
+
 /// A fight with no file has no end of its own: a bench measures the frames it asked for in each phase,
 /// starting over between them, with the real mixer and no device, and the whole frame's rows.
 #[test]

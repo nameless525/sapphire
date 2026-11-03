@@ -65,6 +65,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::buffer::{self, GrowableBuffer};
 use crate::mesh_pool::MeshRecord;
+use crate::pipeline_builds::PipelineBuilds;
 use crate::scene::InstanceSlots;
 use crate::shader_builds::Step;
 use crate::shaders::ShaderSources;
@@ -247,7 +248,7 @@ impl Lights {
         settings: &RenderSettings,
         frame_uniforms: &wgpu::Buffer,
         view_layout: &wgpu::BindGroupLayout,
-        cache: Option<&wgpu::PipelineCache>,
+        builds: &PipelineBuilds,
         sources: &ShaderSources,
     ) -> Self {
         let max_lights = settings.max_lights.min(MAX_LIGHTS);
@@ -272,7 +273,7 @@ impl Lights {
                         frame_uniforms,
                         &light_buffer,
                         lists.buffer(),
-                        cache,
+                        builds,
                         sources,
                     )
                 });

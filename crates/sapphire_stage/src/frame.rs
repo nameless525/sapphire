@@ -147,6 +147,13 @@ pub struct StageDesc {
     pub material_overrides: MaterialOverrides,
     /// Give the scene its compute-skinning stalk's systems.
     pub skinned: bool,
+    /// Build what the packs' meshes draw through before the character's uploaded (M3 K1), as a game does. A
+    /// capture doesn't, for the same reason a renderer builds nothing a frame can't run: a software GPU's run would
+    /// pay for the whole pack.
+    pub prewarm_packs: bool,
+    /// The entry of [`Content::pipeline_inventory`] left out of `prewarm_packs`, by its name: what proves a miss
+    /// fails.
+    pub inventory_without: Option<String>,
 }
 
 impl StageDesc {
@@ -174,6 +181,8 @@ impl StageDesc {
             party_looks: false,
             material_overrides: MaterialOverrides::default(),
             skinned: false,
+            prewarm_packs: false,
+            inventory_without: None,
         }
     }
 }
@@ -249,9 +258,30 @@ impl Stage {
             party_looks,
             material_overrides,
             skinned,
+            prewarm_packs,
+            inventory_without,
         } = desc;
         let mut renderer = Renderer::new(&gpu, format, settings)?;
         let mut content = Content::new(platform, character, sky)?;
+        if prewarm_packs {
+            let mut inventory = content.pipeline_inventory();
+            if let Some(entry) = &inventory_without
+                && !inventory.remove(entry)
+                && entry.starts_with("mesh ")
+            {
+                let listed = inventory.entries().join(", ");
+                return Err(AppInitError::msg(format!("the packs list no {entry:?}, only: {listed}")));
+            }
+            let stopwatch = Stopwatch::start();
+            let built = renderer.prewarm(&inventory);
+            tracing::info!(
+                target: LOG_TARGET,
+                keys = inventory.meshes.len(),
+                built,
+                elapsed_ms = format_args!("{:.1}", stopwatch.elapsed().as_secs_f64() * 1e3),
+                "the packs' pipelines prewarmed"
+            );
+        }
         if keep_character_mesh {
             content.keep_character_mesh();
         }

@@ -13,9 +13,9 @@ use glam::{Vec2, Vec3};
 use sapphire_core::debug_draw::{Color, DebugLine, Depth};
 use sapphire_render::graph::{FrameGraph, GraphExecutor};
 use sapphire_render::{
-    BloomParams, CameraData, ColorGrade, DirectionalLight, FramePacketRing, PostParams, RenderSettings,
-    Renderer, ShaderFile, ShaderSources, ShaderUpdate, SkyGradient, ToneCurve, UI_PASS, UiAtlas, UiDrawList,
-    UiPageUpload, UiQuad, ViewData, Vignette,
+    BloomParams, CameraData, ColorGrade, DirectionalLight, FramePacketRing, PipelineInventory, PostParams,
+    RenderSettings, Renderer, ShaderFile, ShaderSources, ShaderUpdate, SkyGradient, ToneCurve, UI_PASS,
+    UiAtlas, UiDrawList, UiPageUpload, UiQuad, ViewData, Vignette,
 };
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 use sapphire_ui::{
@@ -204,6 +204,32 @@ fn list(size: (u32, u32), paint: impl FnOnce(&mut Painter<'_>)) -> UiDrawList {
         quads,
         ..UiDrawList::default()
     }
+}
+
+/// Its pipeline's on the inventory: declared, the first quads build nothing; not, they're a named first use.
+#[test]
+#[ignore = "needs a GPU"]
+fn the_first_quads_build_nothing_only_when_the_inventory_declared_them() {
+    let quads = list((64, 64), |painter| {
+        let disc = painter.sprites().disc;
+        painter.sprite(disc, Vec2::splat(32.0), Vec2::splat(20.0), 0.0, Paint::fill([255; 4]));
+    });
+    let mut cold = Harness::new((64, 64));
+    cold.draw(None);
+    let before = cold.renderer.stats().pipelines.first_use_builds;
+    cold.draw(Some(&quads));
+    assert_eq!(cold.renderer.stats().pipelines.first_use_builds, before + 1);
+    assert!(cold.renderer.first_use_report().to_string().contains("ui: "));
+
+    let mut warmed = Harness::new((64, 64));
+    let inventory = PipelineInventory { ui: true, ..PipelineInventory::default() };
+    assert_eq!(warmed.renderer.prewarm(&inventory), 1);
+    assert_eq!(warmed.renderer.prewarm(&inventory), 0);
+    warmed.draw(None);
+    let before = warmed.renderer.stats().pipelines.first_use_builds;
+    warmed.draw(Some(&quads));
+    assert_eq!(warmed.renderer.stats().pipelines.first_use_builds, before);
+    assert_eq!(warmed.renderer.stats().ui.pipelines, 1);
 }
 
 #[test]

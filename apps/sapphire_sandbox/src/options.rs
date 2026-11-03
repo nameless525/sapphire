@@ -211,6 +211,10 @@ pub(crate) struct Options {
     pub cues: bool,
     /// `--bench-trace <csv>`: a bench of a fight writes every frame here (M2 Z1, `fight_bench.rs`).
     pub bench_trace: Option<PathBuf>,
+    /// `--inventory-without <entry>`: a bench of a fight leaves this entry out of what it prewarms, by the name
+    /// a miss gives it: `mesh` and a key, `post`, `effects`, `skinning`, `ui` or `sky` (M3 K1). The bench then
+    /// fails naming what it had to build.
+    pub inventory_without: Option<String>,
     /// `--watch-document <path>` (`dev` builds, repeatable): hot reload watches this file as well, as the
     /// document of its file's name: a tuner's copy of a fight's moves, say (M2 T2).
     pub watch_documents: Vec<PathBuf>,
@@ -655,6 +659,7 @@ impl Options {
                     };
                     hud_mode = Some(mode);
                 }
+                "--inventory-without" => options.inventory_without = Some(value("--inventory-without")?),
                 "--hud-insets" => hud_insets = Some(parse_insets(&value("--hud-insets")?)?),
                 "--hud-paused" => hud_paused = true,
                 "--hud-scale" => {
@@ -1073,6 +1078,14 @@ impl Options {
         {
             return Err(format!(
                 "--bench-trace needs {BENCH_FLAG} of a fight: --replay, or --fight with --script"
+            ));
+        }
+        if options.inventory_without.is_some()
+            && !(matches!(mode, Some(OffscreenMode::Bench { .. }))
+                && matches!(options.combat, Some(CombatOption::Replay { .. } | CombatOption::Fight { .. })))
+        {
+            return Err(format!(
+                "--inventory-without needs {BENCH_FLAG} of a fight: --replay, or --fight with --script"
             ));
         }
         let drawn_alone = matches!(mode, Some(OffscreenMode::Capture { .. } | OffscreenMode::Bench { .. }));

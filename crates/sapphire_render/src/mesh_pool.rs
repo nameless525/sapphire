@@ -417,7 +417,7 @@ impl MeshPool {
         if vertices > MAX_MESH_VERTICES {
             return Err(RenderError::MeshTooLarge { vertices });
         }
-        let deformable = mesh.skin.is_some() || !mesh.morph_targets.is_empty();
+        let deformable = mesh.deforms();
         let (position_offset, position_scale) = streams.position_transform();
         let (uv_offset, uv_scale) = streams.uv_transform();
         let uv_transform = [uv_offset[0], uv_offset[1], uv_scale[0], uv_scale[1]];

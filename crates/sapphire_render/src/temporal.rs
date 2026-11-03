@@ -114,6 +114,7 @@ use sapphire_rhi::{TransientDesc, wgpu};
 
 use crate::bind_cache::CachedBindGroup;
 use crate::graph::{FrameGraph, PassContext, TextureId};
+use crate::pipeline_builds::{PipelineBuilds, PipelineFamily};
 use crate::pipelines::{DEPTH_FORMAT, SCENE_COLOR_FORMAT};
 use crate::shader_builds::Step;
 use crate::shaders::{self, Program, ShaderSources};
@@ -401,7 +402,7 @@ impl TemporalTextures {
 #[derive(Debug)]
 pub(crate) struct TemporalPasses {
     device: wgpu::Device,
-    cache: Option<wgpu::PipelineCache>,
+    builds: PipelineBuilds,
     /// The mask's and the resolve's, which rebuilt pipelines keep.
     pipeline_layouts: [wgpu::PipelineLayout; 2],
     pipelines: TemporalPipelines,
@@ -433,46 +434,54 @@ impl TemporalPipelines {
         device: &wgpu::Device,
         module: &wgpu::ShaderModule,
         layouts: &[wgpu::PipelineLayout; 2],
-        cache: Option<&wgpu::PipelineCache>,
+        builds: &PipelineBuilds,
     ) -> Self {
-        let mask = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some(MASK_PASS),
-            layout: Some(&layouts[0]),
-            vertex: wgpu::VertexState {
-                module,
-                entry_point: Some("vs_fullscreen"),
-                compilation_options: Default::default(),
-                buffers: &[],
+        let mask = builds.render(
+            device,
+            PipelineFamily::Temporal,
+            &wgpu::RenderPipelineDescriptor {
+                label: Some(MASK_PASS),
+                layout: Some(&layouts[0]),
+                vertex: wgpu::VertexState {
+                    module,
+                    entry_point: Some("vs_fullscreen"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module,
+                    entry_point: Some("fs_responsive_mask"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: RESPONSIVE_FORMAT,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: builds.cache(),
             },
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
+        );
+        let resolve = builds.compute(
+            device,
+            PipelineFamily::Temporal,
+            &wgpu::ComputePipelineDescriptor {
+                label: Some(RESOLVE_PASS),
+                layout: Some(&layouts[1]),
                 module,
-                entry_point: Some("fs_responsive_mask"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: RESPONSIVE_FORMAT,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache,
-        });
-        let resolve = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some(RESOLVE_PASS),
-            layout: Some(&layouts[1]),
-            module,
-            entry_point: Some("cs_temporal_resolve"),
-            // Every thread writes its share of the tile before any reads it, so zeroing it first
-            // is wasted work: one thread per workgroup clears it while the rest wait.
-            compilation_options: wgpu::PipelineCompilationOptions {
-                zero_initialize_workgroup_memory: false,
-                ..Default::default()
+                entry_point: Some("cs_temporal_resolve"),
+                // Every thread writes its share of the tile before any reads it, so zeroing it first
+                // is wasted work: one thread per workgroup clears it while the rest wait.
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    zero_initialize_workgroup_memory: false,
+                    ..Default::default()
+                },
+                cache: builds.cache(),
             },
-            cache,
-        });
+        );
         Self { mask, resolve }
     }
 }
@@ -524,14 +533,10 @@ pub fn fade_turn(frame: u64) -> f32 {
 
 impl Temporal {
     /// Temporal AA with its pipelines built from `sources`.
-    pub(crate) fn new(
-        device: &wgpu::Device,
-        cache: Option<&wgpu::PipelineCache>,
-        sources: &ShaderSources,
-    ) -> Self {
+    pub(crate) fn new(device: &wgpu::Device, builds: &PipelineBuilds, sources: &ShaderSources) -> Self {
         Self {
             textures: TemporalTextures::default(),
-            passes: TemporalPasses::new(device, cache, sources),
+            passes: TemporalPasses::new(device, builds, sources),
             frames: 0,
             stats: TemporalStats { enabled: true, ..TemporalStats::default() },
             before: Before::default(),
@@ -662,7 +667,7 @@ fn history_reset(previous: bool, resized: bool, cut: bool) -> Option<HistoryRese
 }
 
 impl TemporalPasses {
-    fn new(device: &wgpu::Device, cache: Option<&wgpu::PipelineCache>, sources: &ShaderSources) -> Self {
+    fn new(device: &wgpu::Device, builds: &PipelineBuilds, sources: &ShaderSources) -> Self {
         use wgpu::ShaderStages as S;
         let entry =
             |binding, visibility, ty| wgpu::BindGroupLayoutEntry { binding, visibility, ty, count: None };
@@ -731,7 +736,7 @@ impl TemporalPasses {
         let pipeline_layouts =
             [pipeline_layout(MASK_PASS, &mask_layout), pipeline_layout(RESOLVE_PASS, &resolve_layout)];
         let module = shaders::module(device, Program::Temporal, sources);
-        let pipelines = TemporalPipelines::new(device, &module, &pipeline_layouts, cache);
+        let pipelines = TemporalPipelines::new(device, &module, &pipeline_layouts, builds);
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("temporal uniforms"),
             size: size_of::<TemporalUniforms>() as u64,
@@ -760,7 +765,7 @@ impl TemporalPasses {
         });
         Self {
             device: device.clone(),
-            cache: cache.cloned(),
+            builds: builds.clone(),
             pipeline_layouts,
             pipelines,
             mask_layout,
@@ -776,11 +781,11 @@ impl TemporalPasses {
     /// The pipelines, to build again from new sources on the layouts they had (off the frame
     /// thread: `shader_builds`), for the renderer to keep if every rebuilt pipeline is valid.
     fn rebuild(&self) -> Step<TemporalPipelines> {
-        let (device, layouts, cache) =
-            (self.device.clone(), self.pipeline_layouts.clone(), self.cache.clone());
+        let (device, layouts, builds) =
+            (self.device.clone(), self.pipeline_layouts.clone(), self.builds.clone());
         Box::new(move |sources, _| {
             let module = shaders::module(&device, Program::Temporal, sources);
-            TemporalPipelines::new(&device, &module, &layouts, cache.as_ref())
+            TemporalPipelines::new(&device, &module, &layouts, &builds)
         })
     }
 

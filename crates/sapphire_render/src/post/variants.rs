@@ -11,6 +11,7 @@ use super::{
     CHARACTERS_CONSTANT, COLOR_EFFECTS_CONSTANT, COMPOSITE_PASS, GpuEffects, LAYERS_CONSTANT,
     LENS_EFFECTS_CONSTANT, Layouts, PostEffectSettings, PostEffects, RADIAL_TAPS_CONSTANT, SHARPEN_CONSTANT,
 };
+use crate::pipeline_builds::{PipelineBuilds, PipelineFamily};
 use crate::shader_builds::Cancel;
 use crate::shaders::BuildOn;
 
@@ -182,7 +183,7 @@ pub(super) struct Builder {
     pub bloom_format: wgpu::TextureFormat,
     pub output_format: wgpu::TextureFormat,
     pub effects: PostEffectSettings,
-    pub cache: Option<wgpu::PipelineCache>,
+    pub builds: PipelineBuilds,
 }
 
 impl Builder {
@@ -252,31 +253,35 @@ impl Builder {
             immediate_size: 0,
         });
         let compilation_options = wgpu::PipelineCompilationOptions { constants, ..Default::default() };
-        self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some(name),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module,
-                entry_point: Some(vertex),
-                compilation_options: compilation_options.clone(),
-                buffers: &[],
+        self.builds.render(
+            &self.device,
+            PipelineFamily::Post,
+            &wgpu::RenderPipelineDescriptor {
+                label: Some(name),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module,
+                    entry_point: Some(vertex),
+                    compilation_options: compilation_options.clone(),
+                    buffers: &[],
+                },
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module,
+                    entry_point: Some(fragment),
+                    compilation_options,
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: self.builds.cache(),
             },
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module,
-                entry_point: Some(fragment),
-                compilation_options,
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: self.cache.as_ref(),
-        })
+        )
     }
 }
 

@@ -314,9 +314,6 @@ impl App for SandboxApp {
         if options.cues {
             scene.play_cues(sapphire_stage::vfx::budget(quality.active().id)).map_err(AppInitError::msg)?;
         }
-        // The screen effects it may push, `--post-effect`'s among them, and the effects it plays,
-        // show on their first frame.
-        scene.prewarm(&mut renderer.renderer);
         // The stage after the hour, which places its pillars.
         if let (Some(layout), Some(meshes)) = (options.stage, renderer.stage) {
             scene.spawn_stage(layout, meshes);
@@ -337,6 +334,9 @@ impl App for SandboxApp {
                 None => sapphire_stage::hud::SandboxHud::new(hud),
             });
         }
+        // The screen effects it may push, `--post-effect`'s among them, the effects it plays, its sky
+        // and its HUD show on their first frame.
+        scene.prewarm(&mut renderer.renderer);
         // Its bars read the fighters from the first frame, with no step yet.
         if let Some(combat) = &combat {
             scene.follow_simulation(combat.simulation(), combat.cast());
@@ -1358,6 +1358,8 @@ pub(crate) fn create_renderer(
     options: &Options,
 ) -> Result<SceneRenderer, AppInitError> {
     let mut renderer = Renderer::new(gpu, format, settings)?;
+    // Before any upload, so nothing the packs list builds on a first use (M3 K1).
+    renderer.prewarm(&content.pipeline_inventory());
     // A new renderer starts empty, so every asset goes to it again. If it fails, the content goes
     // back to the renderer the app keeps.
     let previous = content.renderer_rebuilt();

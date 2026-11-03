@@ -137,6 +137,7 @@ use crate::draw::{DrawRef, DrawSet, MeshDraws};
 use crate::gpu_types::ViewUniforms;
 use crate::graph::{FrameGraph, TextureId};
 use crate::lights::{LightPath, Lights};
+use crate::pipeline_builds::{PipelineBuilds, PipelineFamily};
 use crate::pipelines::{
     Coverage, Layouts, MainPipeline, Pipelines, REPLAY_COLOR_FORMAT, Replay, ReplayTarget, Shading,
     SurfaceVariant, VALUES_FORMAT, format_index, replay_depth_format,
@@ -783,38 +784,42 @@ struct ViewBuilder<'a> {
     color_format: wgpu::TextureFormat,
     /// The replay's depth and stencil format, for the sky's stand-in.
     depth_format: wgpu::TextureFormat,
-    cache: Option<&'a wgpu::PipelineCache>,
+    builds: &'a PipelineBuilds,
 }
 
 impl ViewBuilder<'_> {
     /// `plan`'s pass over the frame: one triangle over the target, blended over the frame by its
     /// alpha.
     fn pass(&self, module: &wgpu::ShaderModule, plan: Plan) -> wgpu::RenderPipeline {
-        self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some(VIEW_PASS),
-            layout: Some(if plan.values() { &self.layouts.values_pass } else { &self.layouts.pass }),
-            vertex: wgpu::VertexState {
-                module,
-                entry_point: Some("vs_debug_view"),
-                compilation_options: Default::default(),
-                buffers: &[],
+        self.builds.render(
+            self.device,
+            PipelineFamily::Debug,
+            &wgpu::RenderPipelineDescriptor {
+                label: Some(VIEW_PASS),
+                layout: Some(if plan.values() { &self.layouts.values_pass } else { &self.layouts.pass }),
+                vertex: wgpu::VertexState {
+                    module,
+                    entry_point: Some("vs_debug_view"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module,
+                    entry_point: Some(plan.entry_point()),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: self.color_format,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: self.builds.cache(),
             },
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module,
-                entry_point: Some(plan.entry_point()),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: self.color_format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: self.cache,
-        })
+        )
     }
 
     /// The sky's stand-in in the overdraw replay: one triangle at the far plane, which passes
@@ -827,49 +832,62 @@ impl ViewBuilder<'_> {
             depth_fail_op: wgpu::StencilOperation::Keep,
             pass_op: wgpu::StencilOperation::IncrementClamp,
         };
-        self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("debug view sky"),
-            layout: Some(&self.layouts.sky),
-            vertex: wgpu::VertexState {
-                module,
-                entry_point: Some("vs_debug_view"),
-                compilation_options: Default::default(),
-                buffers: &[],
+        self.builds.render(
+            self.device,
+            PipelineFamily::Debug,
+            &wgpu::RenderPipelineDescriptor {
+                label: Some("debug view sky"),
+                layout: Some(&self.layouts.sky),
+                vertex: wgpu::VertexState {
+                    module,
+                    entry_point: Some("vs_debug_view"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: self.depth_format,
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(wgpu::CompareFunction::Equal),
+                    stencil: wgpu::StencilState {
+                        front: count,
+                        back: count,
+                        read_mask: 0xff,
+                        write_mask: 0xff,
+                    },
+                    bias: Default::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module,
+                    entry_point: Some("fs_debug_stand_in"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: REPLAY_COLOR_FORMAT,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::empty(),
+                    })],
+                }),
+                multiview_mask: None,
+                cache: self.builds.cache(),
             },
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: self.depth_format,
-                depth_write_enabled: Some(false),
-                depth_compare: Some(wgpu::CompareFunction::Equal),
-                stencil: wgpu::StencilState { front: count, back: count, read_mask: 0xff, write_mask: 0xff },
-                bias: Default::default(),
-            }),
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module,
-                entry_point: Some("fs_debug_stand_in"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: REPLAY_COLOR_FORMAT,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::empty(),
-                })],
-            }),
-            multiview_mask: None,
-            cache: self.cache,
-        })
+        )
     }
 
     /// The wireframe's line indices' compute pass.
     fn lines(&self, module: &wgpu::ShaderModule) -> wgpu::ComputePipeline {
-        self.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some(LINES_PASS),
-            layout: Some(&self.layouts.lines),
-            module,
-            entry_point: Some("cs_debug_lines"),
-            compilation_options: Default::default(),
-            cache: self.cache,
-        })
+        self.builds.compute(
+            self.device,
+            PipelineFamily::Debug,
+            &wgpu::ComputePipelineDescriptor {
+                label: Some(LINES_PASS),
+                layout: Some(&self.layouts.lines),
+                module,
+                entry_point: Some("cs_debug_lines"),
+                compilation_options: Default::default(),
+                cache: self.builds.cache(),
+            },
+        )
     }
 }
 
@@ -887,7 +905,7 @@ impl RebuiltViews {
 #[derive(Debug)]
 pub(crate) struct DebugViews {
     device: wgpu::Device,
-    cache: Option<wgpu::PipelineCache>,
+    builds: PipelineBuilds,
     color_format: wgpu::TextureFormat,
     /// The replays' depth and stencil format ([`replay_depth_format`]).
     depth_format: wgpu::TextureFormat,
@@ -928,7 +946,7 @@ impl DebugViews {
         layouts: &Layouts,
         color_format: wgpu::TextureFormat,
         sources: &ShaderSources,
-        cache: Option<&wgpu::PipelineCache>,
+        builds: &PipelineBuilds,
     ) -> Self {
         let size = size_of::<ViewUniforms>() as u64;
         let view_uniforms = device.create_buffer(&wgpu::BufferDescriptor {
@@ -956,7 +974,7 @@ impl DebugViews {
             limits.max_storage_buffer_binding_size.min(limits.max_buffer_size).min(dispatch);
         Self {
             device: device.clone(),
-            cache: cache.cloned(),
+            builds: builds.clone(),
             color_format,
             depth_format: replay_depth_format(device),
             max_lines_bytes,
@@ -1012,7 +1030,7 @@ impl DebugViews {
             layouts: &self.layouts,
             color_format: self.color_format,
             depth_format: self.depth_format,
-            cache: self.cache.as_ref(),
+            builds: &self.builds,
         };
         self.pipelines.prepare(&builder, plan);
         for &replay in plan.replays() {
@@ -1076,7 +1094,7 @@ impl DebugViews {
     /// The views' own pipelines, to build from new sources (shader hot reload, off the frame
     /// thread: `shader_builds`), for [`Self::set_pipelines`] once every changed program built.
     pub(crate) fn rebuild(&self) -> Step<RebuiltViews> {
-        let (device, layouts, cache) = (self.device.clone(), self.layouts.clone(), self.cache.clone());
+        let (device, layouts, builds) = (self.device.clone(), self.layouts.clone(), self.builds.clone());
         let (color_format, depth_format) = (self.color_format, self.depth_format);
         let built = self.pipelines.clone();
         Box::new(move |sources, _| {
@@ -1085,7 +1103,7 @@ impl DebugViews {
                 layouts: &layouts,
                 color_format,
                 depth_format,
-                cache: cache.as_ref(),
+                builds: &builds,
             };
             RebuiltViews(built.rebuilt(&builder, sources))
         })

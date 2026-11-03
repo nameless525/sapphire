@@ -5,15 +5,16 @@
 //! character's light rig (or, for the world, the sun) under the frame's shadows, ambient light,
 //! local lights and fog, then post-processing into the target, and the on-screen interface over it.
 
+use std::collections::BTreeSet;
 use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use bevy_reflect::Reflect;
 use glam::Mat4;
-use sapphire_assets::AssetId;
 use sapphire_assets::material::{ArchivedMaterial, MaterialError, MaterialFamily, MaterialFlags};
 use sapphire_assets::mesh::{ArchivedMesh, ArchivedSlotMaterial, MeshError, PositionFormat};
 use sapphire_assets::probes::ArchivedProbeGrid;
+use sapphire_assets::{AssetId, PipelineKey};
 use sapphire_core::debug_draw::DebugLine;
 use sapphire_rhi::{GpuContext, TransientDesc, wgpu};
 use serde::{Deserialize, Serialize};
@@ -34,6 +35,7 @@ use crate::lights::{LightPath, LightStats, Lights};
 use crate::materials::{MaterialHandle, Materials};
 use crate::mesh_pool::{MeshPool, MeshRecord, PoolMoves, SubmeshMaterial};
 use crate::outlines::OutlineCull;
+use crate::pipeline_builds::{FirstUseReport, PipelineBuilds, PipelineInventory, PipelineStats};
 use crate::pipelines::{
     Coverage, DEPTH_FORMAT, Drawn, FOG_CARD_DEPTH_BINDING, FOLIAGE_WIND_BINDING, Layouts, MESH_FAMILIES,
     MeshPass, MeshPipelines, NORMALS_FORMAT, OUTLINES_FORMAT, Part, Pipelines, SCENE_COLOR_FORMAT, Shading,
@@ -422,6 +424,9 @@ pub struct RenderStats {
     /// Shader builds off the frame thread (M1 A8 follow-up 2): whether one is in flight, and how
     /// many were started, started again, superseded and failed.
     pub shader_builds: ShaderBuildStats,
+    /// Every pipeline built so far, by why (M3 K1). [`PipelineStats::first_use_builds`] is what exit test 7
+    /// holds at 0 after a load, and [`Renderer::first_use_report`] names them.
+    pub pipelines: PipelineStats,
     /// Temporal AA's jitter, sizes and history resets; all zero when it is off.
     pub temporal: TemporalStats,
     /// The compositing layers post drew (M1 P2).
@@ -602,8 +607,10 @@ pub struct Renderer {
     /// What the last [`Self::record`] took, if it built a graph, until the next [`Self::prepare`]
     /// knows whether that graph ran.
     recorded: Option<RecordedFrame>,
-    /// Kept for the pipelines built when meshes arrive.
-    pipeline_cache: Option<wgpu::PipelineCache>,
+    /// The route to a pipeline, with its cache and its count (`pipeline_builds`).
+    pipeline_builds: PipelineBuilds,
+    /// The mesh keys prewarmed so far, to name those an upload's first-use builds were for.
+    prewarmed_keys: BTreeSet<PipelineKey>,
     /// The shader sources every pipeline in use is built from, and those built later.
     shaders: ShaderSources,
     /// `shaders` aren't the compiled-in ones, so pipelines built later are checked
@@ -685,7 +692,10 @@ impl Renderer {
         // another on an M5 (`BuildOn`). The sky comes before the ambient passes, which read its cube.
         let (device_ref, layouts_ref, shaders_ref, frame_ref) =
             (&device, &layouts, &shaders, &frame_uniforms);
-        let cache = gpu.pipeline_cache();
+        let pipeline_builds = PipelineBuilds::new(gpu.pipeline_cache());
+        let builds = &pipeline_builds;
+        // What a renderer builds to start with is the load's, not a first use.
+        let _warming = builds.warming();
         let ((post, pipelines), (mut shadows, (lights, (temporal, sky_and_ambient)))) = sapphire_jobs::join(
             || {
                 sapphire_jobs::join(
@@ -696,6 +706,7 @@ impl Renderer {
                             settings.bloom_levels,
                             settings.post_effects,
                             settings.post_variants,
+                            builds,
                             shaders_ref,
                         )
                     },
@@ -707,7 +718,7 @@ impl Renderer {
                             samples,
                             settings.environment,
                             settings.foliage,
-                            cache,
+                            builds,
                             shaders_ref,
                             settings.shadows.as_ref(),
                             (settings.temporal, settings.writes_velocity(), settings.reads_scene_prepass()),
@@ -718,7 +729,7 @@ impl Renderer {
             },
             || {
                 sapphire_jobs::join(
-                    || Shadows::new(device_ref, layouts_ref, settings.shadows, cache, shaders_ref),
+                    || Shadows::new(device_ref, layouts_ref, settings.shadows, builds, shaders_ref),
                     || {
                         sapphire_jobs::join(
                             || {
@@ -727,7 +738,7 @@ impl Renderer {
                                     &settings,
                                     frame_ref,
                                     &layouts_ref.view,
-                                    cache,
+                                    builds,
                                     shaders_ref,
                                 )
                             },
@@ -736,7 +747,7 @@ impl Renderer {
                                     || {
                                         settings
                                             .temporal
-                                            .then(|| Box::new(Temporal::new(device_ref, cache, shaders_ref)))
+                                            .then(|| Box::new(Temporal::new(device_ref, builds, shaders_ref)))
                                     },
                                     || -> Result<_, RenderError> {
                                         let mut materials = Materials::new(device_ref, gpu.queue());
@@ -746,6 +757,7 @@ impl Renderer {
                                             &mut materials,
                                             settings.sky,
                                             samples,
+                                            builds,
                                             shaders_ref,
                                         )?;
                                         // The environment reads the reflection cube only with specular
@@ -763,7 +775,7 @@ impl Renderer {
                                             settings.temporal,
                                             settings.reflections,
                                             environment_reflects,
-                                            cache,
+                                            builds,
                                             shaders_ref,
                                         );
                                         Ok((materials, sky, Box::new(ambient)))
@@ -778,8 +790,14 @@ impl Renderer {
         let post = post?;
         let (materials, sky, mut ambient) = sky_and_ambient?;
         let fog_cards = FogCards::new(&device, settings.temporal);
-        let vfx =
-            Vfx::new(gpu, &layouts.frame, &layouts.view, settings.msaa.sample_count(), settings.temporal);
+        let vfx = Vfx::new(
+            gpu,
+            &layouts.frame,
+            &layouts.view,
+            settings.msaa.sample_count(),
+            settings.temporal,
+            builds,
+        );
         // Every view at a stride of `min_uniform_buffer_offset_alignment`, each bound by offset:
         // the main camera, then the sky cube's faces, then the shadow cascades and character
         // maps (M1 R4).
@@ -855,7 +873,7 @@ impl Renderer {
             post_variants = ?settings.post_variants,
             "renderer created"
         );
-        let ui = Ui::new(&device, color_format, gpu.pipeline_cache().cloned(), gpu.label("").is_some());
+        let ui = Ui::new(&device, color_format, pipeline_builds.clone(), gpu.label("").is_some());
         let mut renderer = Self {
             builds: ShaderBuilds::default(),
             device,
@@ -901,7 +919,8 @@ impl Renderer {
             pending_cut: false,
             frame_ran: AtomicBool::new(false),
             recorded: None,
-            pipeline_cache: gpu.pipeline_cache().cloned(),
+            pipeline_builds,
+            prewarmed_keys: BTreeSet::new(),
             shaders,
             edited_shaders: false,
             device_lost: false,
@@ -1215,21 +1234,23 @@ impl Renderer {
     fn build_mesh_pipelines(&mut self, handle: MeshHandle, materials: &[SubmeshMaterial], moves: PoolMoves) {
         let record = &self.meshes.records()[handle.index()];
         let format = record.draw_format();
-        let on = BuildOn::sources(self.edited_shaders);
-        self.pipelines.prepare_format(&self.device, format, on);
-        self.shadows.prepare_format(&self.device, format, &self.shaders);
-        let draws: Vec<Drawn> = materials
+        let deforms = record.deform().is_some();
+        let keys: Vec<PipelineKey> = materials
             .iter()
             .filter_map(|material| {
                 let record = self.materials.record(material.handle)?;
-                let variant = SurfaceVariant::of_material(record.family, record.flags)?;
-                let through_hair = record.flags.contains(MaterialFlags::THROUGH_HAIR);
-                Some(Drawn { variant, surface: true, through_hair })
+                Some(PipelineKey { family: record.family, flags: record.flags, format })
             })
             .collect();
-        self.pipelines.prepare_draws(&self.device, format, &draws, on);
-        if record.deform().is_some() {
-            self.skinning.enable(&self.device, self.pipeline_cache.as_ref(), &self.shaders);
+        let before = self.pipeline_builds.stats().first_use_builds;
+        self.prepare_keys(format, &keys);
+        if deforms {
+            self.skinning.enable(&self.device, &self.pipeline_builds, &self.shaders);
+        }
+        // Only a key something built for: the key another key's draws cover wasn't a miss.
+        if self.pipeline_builds.stats().first_use_builds != before {
+            let listed = &self.prewarmed_keys;
+            self.pipeline_builds.unlisted(keys.iter().copied().filter(|key| !listed.contains(key)));
         }
         if moves.deformable {
             self.skinning.sources_moved();
@@ -1245,6 +1266,7 @@ impl Renderer {
     /// pipelines it built; synchronous, on this thread.
     pub fn prewarm_post(&mut self, variants: PostVariants) -> u32 {
         profiling::scope!("Renderer::prewarm_post");
+        let _warming = self.pipeline_builds.warming();
         self.checked_build(|renderer| {
             let on = BuildOn::sources(renderer.edited_shaders);
             renderer.post.prewarm(variants, on)
@@ -1321,7 +1343,6 @@ impl Renderer {
     fn shader_job(&self, sources: &ShaderSources, changed: Vec<Program>) -> Job {
         let device = &self.device;
         let has = |program| changed.contains(&program);
-        let cache = self.pipeline_cache.as_ref();
         let mesh = changed.iter().any(|program| program.is_mesh());
         Job {
             sources: sources.clone(),
@@ -1336,7 +1357,9 @@ impl Renderer {
                 .then(|| self.temporal.as_deref().map(Temporal::rebuild))
                 .flatten(),
             clusters: has(Program::Clusters).then(|| self.lights.rebuild_clusters(device)).flatten(),
-            skinning: has(Program::Skinning).then(|| self.skinning.rebuild(device, cache)).flatten(),
+            skinning: has(Program::Skinning)
+                .then(|| self.skinning.rebuild(device, &self.pipeline_builds))
+                .flatten(),
             shadows: has(Program::Shadows).then(|| self.shadows.rebuild(device)).flatten(),
             // Only those built so far: none without a grid or GTAO.
             ambient: has(Program::Ambient).then(|| self.ambient.rebuild()),
@@ -1518,10 +1541,54 @@ impl Renderer {
     /// pipeline on the frame it lands. A frame with effects that wasn't prewarmed builds them
     /// itself; a renderer that's never given any makes none of this (see the [`vfx`] module).
     pub fn prewarm_vfx(&mut self) {
+        let _warming = self.pipeline_builds.warming();
         self.checked_build(|renderer| {
             let on = BuildOn::sources(renderer.edited_shaders);
             renderer.vfx.build(&renderer.shaders, true, on);
         });
+    }
+
+    /// Builds everything `inventory` lists that isn't built, so no frame after a load stalls on it (M3 K1,
+    /// exit test 7). Call it before the uploads it's for, because what an upload finds unbuilt it builds as a
+    /// first use, and as often as a load has more to declare: it only adds. Says how many pipelines it built;
+    /// synchronous, on this thread and the workers it spreads builds across.
+    pub fn prewarm(&mut self, inventory: &PipelineInventory) -> u32 {
+        profiling::scope!("Renderer::prewarm");
+        let warming = self.pipeline_builds.warming();
+        let before = self.pipeline_builds.stats().prewarmed;
+        self.checked_build(|renderer| {
+            for format in PositionFormat::ALL {
+                let keys: Vec<PipelineKey> =
+                    inventory.meshes.iter().copied().filter(|key| key.format == format).collect();
+                if !keys.is_empty() {
+                    renderer.prepare_keys(format, &keys);
+                }
+            }
+            if inventory.skinning {
+                renderer.skinning.enable(&renderer.device, &renderer.pipeline_builds, &renderer.shaders);
+            }
+            let on = BuildOn::sources(renderer.edited_shaders);
+            renderer.post.prewarm(inventory.post, on);
+            if inventory.effects {
+                renderer.vfx.build(&renderer.shaders, true, on);
+            }
+            if inventory.ui {
+                renderer.ui.build(&renderer.shaders);
+            }
+            for &material in &inventory.sky {
+                renderer.sky.prewarm(material, &renderer.materials, on);
+            }
+        });
+        self.prewarmed_keys.extend(inventory.meshes.iter().copied());
+        let built = self.pipeline_builds.stats().prewarmed - before;
+        drop(warming);
+        built
+    }
+
+    /// Every pipeline built on first use so far, by name (M3 K1): what [`PipelineStats::first_use_builds`]
+    /// counts.
+    pub fn first_use_report(&self) -> FirstUseReport {
+        self.pipeline_builds.first_use_report()
     }
 
     /// Builds the scene prepass's pipelines, on a renderer whose settings don't read that pass (no
@@ -1772,8 +1839,9 @@ impl Renderer {
     /// with the first one shown and building what it needs that isn't built.
     fn prepare_debug_view(&mut self) {
         if self.debug_views.is_none() {
-            let cache = self.pipeline_cache.as_ref();
-            let views = DebugViews::new(&self.device, &self.layouts, self.color_format, &self.shaders, cache);
+            let builds = &self.pipeline_builds;
+            let views =
+                DebugViews::new(&self.device, &self.layouts, self.color_format, &self.shaders, builds);
             self.debug_views = Some(Box::new(views));
         }
         let views = self.debug_views.as_mut().expect("made above");
@@ -1787,8 +1855,8 @@ impl Renderer {
         // Its pass reads the scene prepass's depth, so that pass runs while there are lines.
         self.pipelines.keep_scene_prepass(&self.device, BuildOn::sources(self.edited_shaders));
         let draw = self.debug_draw.get_or_insert_with(|| {
-            let cache = self.pipeline_cache.as_ref();
-            Box::new(DebugDraw::new(&self.device, self.color_format, &self.shaders, cache))
+            let builds = &self.pipeline_builds;
+            Box::new(DebugDraw::new(&self.device, self.color_format, &self.shaders, builds))
         });
         draw.prepare(&self.device, &self.queue, lines);
     }
@@ -2388,6 +2456,16 @@ impl Renderer {
         Some(targets)
     }
 
+    /// Builds what submeshes with `keys`, all in `format`, draw through and isn't built: the one way from a
+    /// key to its pipelines, for an upload and a prewarm alike, so they can't disagree.
+    fn prepare_keys(&mut self, format: PositionFormat, keys: &[PipelineKey]) {
+        let on = BuildOn::sources(self.edited_shaders);
+        self.pipelines.prepare_format(&self.device, format, on);
+        self.shadows.prepare_format(&self.device, format, &self.shaders);
+        let draws: Vec<Drawn> = keys.iter().copied().filter_map(Drawn::of_key).collect();
+        self.pipelines.prepare_draws(&self.device, format, &draws, on);
+    }
+
     /// Builds the pipelines the rebuilt draw list needs that no upload has (M1 C7): a fading
     /// character's opaque draws move to alpha-tested variants, with their outlines, eyes through
     /// hair and the prepasses' masked pipelines; and a reflective character material's draws
@@ -2467,6 +2545,7 @@ impl Renderer {
     /// size, sky cube faces and ambient textures.
     pub fn stats(&self) -> RenderStats {
         RenderStats {
+            pipelines: self.pipeline_builds.stats(),
             character_pipelines: self.pipelines.built(MaterialFamily::AnimeCharacter),
             environment_pipelines: self.pipelines.built(MaterialFamily::Environment),
             foliage_pipelines: self.pipelines.built(MaterialFamily::Foliage),

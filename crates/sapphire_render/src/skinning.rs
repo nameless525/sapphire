@@ -80,6 +80,7 @@ use sapphire_rhi::wgpu;
 use crate::bounds::posed_bounds;
 use crate::buffer::{self, GrowableBuffer, RangeAllocator};
 use crate::mesh_pool::{DeformSource, MeshPool, MeshRecord};
+use crate::pipeline_builds::{PipelineBuilds, PipelineFamily};
 use crate::scene::InstanceSlots;
 use crate::shader_builds::Step;
 use crate::shaders::{self, Program, ShaderSources};
@@ -323,14 +324,9 @@ impl Skinning {
 
     /// Builds the pass's pipeline from `sources`, unless it exists: for the first skinned or
     /// morphed mesh.
-    pub(crate) fn enable(
-        &mut self,
-        device: &wgpu::Device,
-        cache: Option<&wgpu::PipelineCache>,
-        sources: &ShaderSources,
-    ) {
+    pub(crate) fn enable(&mut self, device: &wgpu::Device, builds: &PipelineBuilds, sources: &ShaderSources) {
         if self.pass.is_none() {
-            self.pass = Some(SkinningPipeline::new(device, cache, sources));
+            self.pass = Some(SkinningPipeline::new(device, builds, sources));
         }
     }
 
@@ -340,13 +336,11 @@ impl Skinning {
     pub(crate) fn rebuild(
         &self,
         device: &wgpu::Device,
-        cache: Option<&wgpu::PipelineCache>,
+        builds: &PipelineBuilds,
     ) -> Option<Step<wgpu::ComputePipeline>> {
         let layout = self.pass.as_ref()?.pipeline_layout.clone();
-        let (device, cache) = (device.clone(), cache.cloned());
-        Some(Box::new(move |sources, _| {
-            SkinningPipeline::pipeline(&device, &layout, cache.as_ref(), sources)
-        }))
+        let (device, builds) = (device.clone(), builds.clone());
+        Some(Box::new(move |sources, _| SkinningPipeline::pipeline(&device, &layout, &builds, sources)))
     }
 
     /// Whether the pass's pipeline is built: with the first skinned or morphed mesh.
@@ -890,7 +884,7 @@ fn palette_rows(matrix: &Affine3A) -> PaletteRows {
 }
 
 impl SkinningPipeline {
-    fn new(device: &wgpu::Device, cache: Option<&wgpu::PipelineCache>, sources: &ShaderSources) -> Self {
+    fn new(device: &wgpu::Device, builds: &PipelineBuilds, sources: &ShaderSources) -> Self {
         let storage = |binding, read_only, min_size: u64| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: wgpu::ShaderStages::COMPUTE,
@@ -910,7 +904,7 @@ impl SkinningPipeline {
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
-        let pipeline = Self::pipeline(device, &pipeline_layout, cache, sources);
+        let pipeline = Self::pipeline(device, &pipeline_layout, builds, sources);
         Self { layout, pipeline_layout, pipeline }
     }
 
@@ -918,17 +912,21 @@ impl SkinningPipeline {
     fn pipeline(
         device: &wgpu::Device,
         layout: &wgpu::PipelineLayout,
-        cache: Option<&wgpu::PipelineCache>,
+        builds: &PipelineBuilds,
         sources: &ShaderSources,
     ) -> wgpu::ComputePipeline {
-        device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("skinning"),
-            layout: Some(layout),
-            module: &shaders::module(device, Program::Skinning, sources),
-            entry_point: Some("cs_skinning"),
-            compilation_options: Default::default(),
-            cache,
-        })
+        builds.compute(
+            device,
+            PipelineFamily::Skinning,
+            &wgpu::ComputePipelineDescriptor {
+                label: Some("skinning"),
+                layout: Some(layout),
+                module: &shaders::module(device, Program::Skinning, sources),
+                entry_point: Some("cs_skinning"),
+                compilation_options: Default::default(),
+                cache: builds.cache(),
+            },
+        )
     }
 }
 

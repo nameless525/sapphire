@@ -58,6 +58,7 @@ use sapphire_rhi::wgpu;
 
 use crate::buffer::{self, GrowableBuffer};
 use crate::graph::{FrameGraph, TextureId};
+use crate::pipeline_builds::{PipelineBuilds, PipelineFamily};
 use crate::shader_builds::Step;
 use crate::shaders::{self, Program, ShaderSources};
 
@@ -174,7 +175,7 @@ struct Built {
 pub(crate) struct Ui {
     device: wgpu::Device,
     color_format: wgpu::TextureFormat,
-    cache: Option<wgpu::PipelineCache>,
+    builds: PipelineBuilds,
     labels: bool,
     built: Option<Box<Built>>,
     /// This frame's quads, for the uploads pass. Its capacity stays.
@@ -211,13 +212,13 @@ impl Ui {
     pub(crate) fn new(
         device: &wgpu::Device,
         color_format: wgpu::TextureFormat,
-        cache: Option<wgpu::PipelineCache>,
+        builds: PipelineBuilds,
         labels: bool,
     ) -> Self {
         Self {
             device: device.clone(),
             color_format,
-            cache,
+            builds,
             labels,
             built: None,
             quads: Vec::new(),
@@ -246,10 +247,19 @@ impl Ui {
     /// Builds the pipeline and what it reads, if `list` is the first that draws. The caller holds
     /// the error scopes for edited sources (`Renderer::checked_build`).
     pub(crate) fn prepare_pipeline(&mut self, list: &UiDrawList, sources: &ShaderSources) {
-        if self.built.is_some() || !(Self::draws(list) || !list.page_uploads.is_empty()) {
+        if Self::draws(list) || !list.page_uploads.is_empty() {
+            self.build(sources);
+        }
+    }
+
+    /// Builds the pipeline and what it reads unless they're built: a prewarm's, or the first list that draws or
+    /// uploads a glyph page. Atlas quads and glyph pages draw through this one pipeline, so there's nothing else
+    /// to declare for either.
+    pub(crate) fn build(&mut self, sources: &ShaderSources) {
+        if self.built.is_some() {
             return;
         }
-        profiling::scope!("Ui::prepare_pipeline");
+        profiling::scope!("Ui::build");
         let device = &self.device;
         let group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: self.labels.then_some("ui"),
@@ -287,8 +297,7 @@ impl Ui {
             bind_group_layouts: &[Some(&group_layout)],
             immediate_size: 0,
         });
-        let pipeline =
-            build_pipeline(device, &pipeline_layout, self.color_format, self.cache.as_ref(), sources);
+        let pipeline = build_pipeline(device, &pipeline_layout, self.color_format, &self.builds, sources);
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: self.labels.then_some("ui"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -435,8 +444,8 @@ impl Ui {
     /// `shader_builds`), if it was built, for [`Self::set_pipeline`].
     pub(crate) fn rebuild(&self) -> Option<Step<wgpu::RenderPipeline>> {
         let layout = self.built.as_ref()?.pipeline_layout.clone();
-        let (device, format, cache) = (self.device.clone(), self.color_format, self.cache.clone());
-        Some(Box::new(move |sources, _| build_pipeline(&device, &layout, format, cache.as_ref(), sources)))
+        let (device, format, builds) = (self.device.clone(), self.color_format, self.builds.clone());
+        Some(Box::new(move |sources, _| build_pipeline(&device, &layout, format, &builds, sources)))
     }
 
     /// Whether the pipeline is built: with the first frame that draws quads.
@@ -465,44 +474,48 @@ fn build_pipeline(
     device: &wgpu::Device,
     layout: &wgpu::PipelineLayout,
     format: wgpu::TextureFormat,
-    cache: Option<&wgpu::PipelineCache>,
+    builds: &PipelineBuilds,
     sources: &ShaderSources,
 ) -> wgpu::RenderPipeline {
     let module = shaders::module(device, Program::Ui, sources);
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some(UI_PASS),
-        layout: Some(layout),
-        vertex: wgpu::VertexState {
-            module: &module,
-            entry_point: Some("vs_ui"),
-            compilation_options: Default::default(),
-            buffers: &[Some(wgpu::VertexBufferLayout {
-                array_stride: QUAD_BYTES,
-                step_mode: wgpu::VertexStepMode::Instance,
-                attributes: &QUAD_ATTRIBUTES,
-            })],
+    builds.render(
+        device,
+        PipelineFamily::Ui,
+        &wgpu::RenderPipelineDescriptor {
+            label: Some(UI_PASS),
+            layout: Some(layout),
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("vs_ui"),
+                compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: QUAD_BYTES,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &QUAD_ATTRIBUTES,
+                })],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
+                ..wgpu::PrimitiveState::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some("fs_ui"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    // The shader's color is premultiplied, so a fill, its outline and their edge
+                    // compose in one quad.
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: builds.cache(),
         },
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleStrip,
-            ..wgpu::PrimitiveState::default()
-        },
-        depth_stencil: None,
-        multisample: wgpu::MultisampleState::default(),
-        fragment: Some(wgpu::FragmentState {
-            module: &module,
-            entry_point: Some("fs_ui"),
-            compilation_options: Default::default(),
-            targets: &[Some(wgpu::ColorTargetState {
-                format,
-                // The shader's color is premultiplied, so a fill, its outline and their edge
-                // compose in one quad.
-                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-        }),
-        multiview_mask: None,
-        cache,
-    })
+    )
 }
 
 /// Makes the pages `list` names and applies its uploads: the rectangles and bytes written.
@@ -684,7 +697,8 @@ mod tests {
 
         let instance = GpuInstance::new(&GpuInstanceDesc::default()).expect("instance");
         let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), None).expect("device");
-        let mut ui = Ui::new(gpu.device(), wgpu::TextureFormat::Rgba8UnormSrgb, None, false);
+        let mut ui =
+            Ui::new(gpu.device(), wgpu::TextureFormat::Rgba8UnormSrgb, PipelineBuilds::new(None), false);
         ui.limit_quads(4);
         let atlas = UiAtlas { width: 1, height: 1, spread: 6.0, texels: vec![255] };
         let quad = UiQuad::new([0.0; 2], [1.0, 0.0], [0.0, 1.0], [0.0, 0.0, 1.0, 1.0], [255; 4]);

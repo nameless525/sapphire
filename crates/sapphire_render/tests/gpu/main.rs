@@ -19,6 +19,7 @@ mod fog;
 mod foliage;
 mod graph;
 mod hot_reload;
+mod inventory;
 mod layers;
 mod outline;
 mod render;

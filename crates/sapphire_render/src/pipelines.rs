@@ -7,6 +7,7 @@
 use std::mem::offset_of;
 use std::num::NonZeroU64;
 
+use sapphire_assets::PipelineKey;
 use sapphire_assets::material::{MaterialFamily, MaterialFlags};
 use sapphire_assets::mesh::{PositionFormat, VertexFoliage, VertexShading, VertexSurface};
 use sapphire_rhi::wgpu;
@@ -21,6 +22,7 @@ use crate::fog;
 use crate::foliage::{self, FoliageSettings, WindUniforms};
 use crate::gpu_types::{Dequantize, DrawData, FrameUniforms, InstanceData, ViewUniforms};
 use crate::lights::GpuLight;
+use crate::pipeline_builds::{PipelineBuilds, PipelineFamily};
 use crate::shader_builds::{Cancel, Step};
 use crate::shaders::{self, BuildOn, Program, ShaderSources};
 use crate::shadows::{self as shadow, ShadowSettings, ShadowUniforms};
@@ -1237,6 +1239,15 @@ pub(crate) struct Drawn {
     pub through_hair: bool,
 }
 
+impl Drawn {
+    /// What a submesh with `key` draws through. `None` for a family meshes don't draw with.
+    pub(crate) fn of_key(key: PipelineKey) -> Option<Self> {
+        let variant = SurfaceVariant::of_material(key.family, key.flags)?;
+        let through_hair = key.flags.contains(MaterialFlags::THROUGH_HAIR);
+        Some(Self { variant, surface: true, through_hair })
+    }
+}
+
 /// One pipeline of a format's mesh pipelines, built on its own, or the masked prepasses, which are
 /// built together.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1852,7 +1863,7 @@ struct PipelineTarget {
     /// into, as the shared casters' layout leaves it out), the view, foliage's scene group and
     /// its group 3, for the alpha test.
     foliage_caster_layout: Option<wgpu::PipelineLayout>,
-    cache: Option<wgpu::PipelineCache>,
+    builds: PipelineBuilds,
     /// The receivers' shadow constants (`frame.wgsl`'s `SHADOWS` and `SHADOW_TENT`), which every
     /// surface and outline takes with its permutation's; none with shadows off, which keeps the
     /// shaders as they were without them.
@@ -1900,7 +1911,7 @@ impl Pipelines {
         sample_count: u32,
         environment: EnvironmentSettings,
         foliage: FoliageSettings,
-        cache: Option<&wgpu::PipelineCache>,
+        builds: &PipelineBuilds,
         sources: &ShaderSources,
         shadows: Option<&ShadowSettings>,
         (card_depth_fade, velocity, scene_prepass): (bool, bool, bool),
@@ -1962,7 +1973,7 @@ impl Pipelines {
             environment,
             foliage,
             foliage_caster_layout,
-            cache: cache.cloned(),
+            builds: builds.clone(),
             shadows: shadows.map(ShadowSettings::constants),
             card_depth_fade,
             velocity,
@@ -2525,39 +2536,43 @@ fn build_foliage_caster(
         wgpu::PipelineCompilationOptions { constants: &constants, ..Default::default() };
     let cut_out = coverage == Coverage::AlphaTest;
     tracing::debug!(target: LOG_TARGET, pipeline = "foliage shadow caster", cut_out, "building a mesh pipeline");
-    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("foliage shadow caster"),
-        layout: Some(layout),
-        vertex: wgpu::VertexState {
-            module: &modules.foliage,
-            entry_point: Some("vs_foliage_caster"),
-            compilation_options: compilation_options.clone(),
-            buffers: &MeshPass::FoliageShadow.buffers(format),
+    let pipeline = target.builds.render(
+        device,
+        PipelineFamily::Mesh,
+        &wgpu::RenderPipelineDescriptor {
+            label: Some("foliage shadow caster"),
+            layout: Some(layout),
+            vertex: wgpu::VertexState {
+                module: &modules.foliage,
+                entry_point: Some("vs_foliage_caster"),
+                compilation_options: compilation_options.clone(),
+                buffers: &MeshPass::FoliageShadow.buffers(format),
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Greater),
+                stencil: Default::default(),
+                bias: shadow::CASTER_BIAS,
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            // Opaque foliage writes depth alone, as the shared casters do.
+            fragment: cut_out.then_some(wgpu::FragmentState {
+                module: &modules.foliage,
+                entry_point: Some("fs_foliage_caster"),
+                compilation_options,
+                targets: &[],
+            }),
+            multiview_mask: None,
+            cache: target.builds.cache(),
         },
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleList,
-            front_face: wgpu::FrontFace::Ccw,
-            cull_mode: None,
-            ..Default::default()
-        },
-        depth_stencil: Some(wgpu::DepthStencilState {
-            format: DEPTH_FORMAT,
-            depth_write_enabled: Some(true),
-            depth_compare: Some(wgpu::CompareFunction::Greater),
-            stencil: Default::default(),
-            bias: shadow::CASTER_BIAS,
-        }),
-        multisample: wgpu::MultisampleState::default(),
-        // Opaque foliage writes depth alone, as the shared casters do.
-        fragment: cut_out.then_some(wgpu::FragmentState {
-            module: &modules.foliage,
-            entry_point: Some("fs_foliage_caster"),
-            compilation_options,
-            targets: &[],
-        }),
-        multiview_mask: None,
-        cache: target.cache.as_ref(),
-    });
+    );
     tracing::debug!(target: LOG_TARGET, pipeline = "foliage shadow caster", "built a mesh pipeline");
     pipeline
 }
@@ -2705,38 +2720,42 @@ impl PipelineTarget {
         let targets = color_targets.len();
         let compilation_options = wgpu::PipelineCompilationOptions { constants, ..Default::default() };
         tracing::debug!(target: LOG_TARGET, pipeline = name, targets, "building a mesh pipeline");
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some(name),
-            layout: Some(layout),
-            vertex: wgpu::VertexState {
-                module,
-                entry_point: Some(&vs),
-                compilation_options: compilation_options.clone(),
-                buffers: vertex_buffers,
+        let pipeline = self.builds.render(
+            device,
+            PipelineFamily::Mesh,
+            &wgpu::RenderPipelineDescriptor {
+                label: Some(name),
+                layout: Some(layout),
+                vertex: wgpu::VertexState {
+                    module,
+                    entry_point: Some(&vs),
+                    compilation_options: compilation_options.clone(),
+                    buffers: vertex_buffers,
+                },
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: cull,
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH_FORMAT,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::Greater),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                fragment: (!color_targets.is_empty()).then(|| wgpu::FragmentState {
+                    module,
+                    entry_point: Some(&fs),
+                    compilation_options,
+                    targets: color_targets,
+                }),
+                multiview_mask: None,
+                cache: self.builds.cache(),
             },
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: cull,
-                ..Default::default()
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: DEPTH_FORMAT,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::Greater),
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-            multisample: wgpu::MultisampleState::default(),
-            fragment: (!color_targets.is_empty()).then(|| wgpu::FragmentState {
-                module,
-                entry_point: Some(&fs),
-                compilation_options,
-                targets: color_targets,
-            }),
-            multiview_mask: None,
-            cache: self.cache.as_ref(),
-        });
+        );
         tracing::debug!(target: LOG_TARGET, pipeline = name, "built a mesh pipeline");
         pipeline
     }
@@ -2798,32 +2817,36 @@ impl PipelineTarget {
         let (pipeline, samples) = (pass.name, self.sample_count);
         tracing::debug!(target: LOG_TARGET, pipeline, samples, constants = ?pass.constants, "building a mesh pipeline");
         let (fragment_module, fragment_entry, fragment_options) = fragment;
-        let built = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some(pass.name),
-            layout: Some(layout),
-            vertex: wgpu::VertexState {
-                module: pass.module,
-                entry_point: Some(&vs),
-                compilation_options,
-                buffers: pass.vertex_buffers,
+        let built = self.builds.render(
+            device,
+            PipelineFamily::Mesh,
+            &wgpu::RenderPipelineDescriptor {
+                label: Some(pass.name),
+                layout: Some(layout),
+                vertex: wgpu::VertexState {
+                    module: pass.module,
+                    entry_point: Some(&vs),
+                    compilation_options,
+                    buffers: pass.vertex_buffers,
+                },
+                primitive: wgpu::PrimitiveState {
+                    topology,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode,
+                    ..Default::default()
+                },
+                depth_stencil: Some(depth_stencil),
+                multisample: wgpu::MultisampleState { count: self.sample_count, ..Default::default() },
+                fragment: Some(wgpu::FragmentState {
+                    module: fragment_module,
+                    entry_point: Some(fragment_entry),
+                    compilation_options: fragment_options,
+                    targets: &color_targets,
+                }),
+                multiview_mask: None,
+                cache: self.builds.cache(),
             },
-            primitive: wgpu::PrimitiveState {
-                topology,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode,
-                ..Default::default()
-            },
-            depth_stencil: Some(depth_stencil),
-            multisample: wgpu::MultisampleState { count: self.sample_count, ..Default::default() },
-            fragment: Some(wgpu::FragmentState {
-                module: fragment_module,
-                entry_point: Some(fragment_entry),
-                compilation_options: fragment_options,
-                targets: &color_targets,
-            }),
-            multiview_mask: None,
-            cache: self.cache.as_ref(),
-        });
+        );
         tracing::debug!(target: LOG_TARGET, pipeline, "built a mesh pipeline");
         built
     }

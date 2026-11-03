@@ -176,6 +176,7 @@ use crate::draw::{DrawSet, MeshDraws};
 use crate::gpu_types::ViewUniforms;
 use crate::graph::FrameGraph;
 use crate::mesh_pool::MeshRecord;
+use crate::pipeline_builds::{PipelineBuilds, PipelineFamily};
 use crate::pipelines::{
     Coverage, DEPTH_FORMAT, Layouts, MeshPass, Part, Pipelines, Shading, SurfaceVariant, format_index,
 };
@@ -493,7 +494,7 @@ pub(crate) struct Shadows {
 struct ShadowBuilder {
     caster_layout: wgpu::PipelineLayout,
     face_layout: wgpu::PipelineLayout,
-    cache: Option<wgpu::PipelineCache>,
+    builds: PipelineBuilds,
 }
 
 impl ShadowBuilder {
@@ -510,17 +511,21 @@ impl ShadowBuilder {
             casters[format_index(format)] = Some(self.build_caster(device, &module, format));
         }
         let constants = [(override_constant::SHADOWS, 1.0)];
-        let face = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some(FACE_PASS),
-            layout: Some(&self.face_layout),
-            module: &module,
-            entry_point: Some("cs_face_shadow"),
-            compilation_options: wgpu::PipelineCompilationOptions {
-                constants: &constants,
-                ..Default::default()
+        let face = self.builds.compute(
+            device,
+            PipelineFamily::Shadow,
+            &wgpu::ComputePipelineDescriptor {
+                label: Some(FACE_PASS),
+                layout: Some(&self.face_layout),
+                module: &module,
+                entry_point: Some("cs_face_shadow"),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: &constants,
+                    ..Default::default()
+                },
+                cache: self.builds.cache(),
             },
-            cache: self.cache.as_ref(),
-        });
+        );
         ShadowPipelines { casters, face }
     }
 
@@ -531,34 +536,38 @@ impl ShadowBuilder {
         module: &wgpu::ShaderModule,
         format: PositionFormat,
     ) -> wgpu::RenderPipeline {
-        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("shadow caster"),
-            layout: Some(&self.caster_layout),
-            vertex: wgpu::VertexState {
-                module,
-                entry_point: Some("vs_shadow_caster"),
-                compilation_options: Default::default(),
-                buffers: &MeshPass::Shadow.buffers(format),
+        self.builds.render(
+            device,
+            PipelineFamily::Shadow,
+            &wgpu::RenderPipelineDescriptor {
+                label: Some("shadow caster"),
+                layout: Some(&self.caster_layout),
+                vertex: wgpu::VertexState {
+                    module,
+                    entry_point: Some("vs_shadow_caster"),
+                    compilation_options: Default::default(),
+                    buffers: &MeshPass::Shadow.buffers(format),
+                },
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    front_face: wgpu::FrontFace::Ccw,
+                    // Two-sided: single-sided walls and cards cast too.
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH_FORMAT,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::Greater),
+                    stencil: Default::default(),
+                    bias: CASTER_BIAS,
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                fragment: None,
+                multiview_mask: None,
+                cache: self.builds.cache(),
             },
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                front_face: wgpu::FrontFace::Ccw,
-                // Two-sided: single-sided walls and cards cast too.
-                cull_mode: None,
-                ..Default::default()
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: DEPTH_FORMAT,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::Greater),
-                stencil: Default::default(),
-                bias: CASTER_BIAS,
-            }),
-            multisample: wgpu::MultisampleState::default(),
-            fragment: None,
-            multiview_mask: None,
-            cache: self.cache.as_ref(),
-        })
+        )
     }
 }
 
@@ -569,7 +578,7 @@ impl Shadows {
         device: &wgpu::Device,
         layouts: &Layouts,
         settings: Option<ShadowSettings>,
-        cache: Option<&wgpu::PipelineCache>,
+        builds: &PipelineBuilds,
         sources: &ShaderSources,
     ) -> Self {
         let textures = ShadowTextures::new(device, settings.as_ref());
@@ -620,7 +629,7 @@ impl Shadows {
             sampler,
             uniforms,
             pipelines: None,
-            builder: ShadowBuilder { caster_layout, face_layout, cache: cache.cloned() },
+            builder: ShadowBuilder { caster_layout, face_layout, builds: builds.clone() },
             face_layouts,
             face_maps,
             face_entries: None,

@@ -77,7 +77,8 @@
 //!
 //! # Later: M4's PSO warm-up
 //!
-//! The warm-up (spec §5.12) compiles a pack's listed pipelines on workers while the game draws
+//! The warm-up (spec §5.12) compiles a pack's listed pipelines, which `Renderer::prewarm` builds behind
+//! a load since M3 K1 (`pipeline_builds`), on workers while the game draws
 //! and lets an object show once its pipelines are ready. It can take from here the snapshot of
 //! what a pipeline is built from as an owned, `Send` step, the build inside per-thread error
 //! scopes, the cancellation that lets an owner be dropped mid-build, and handing results back
@@ -97,6 +98,7 @@ use crate::LOG_TARGET;
 use crate::ambient::AmbientPipelines;
 use crate::debug_view::RebuiltViews;
 use crate::lights::clusters::ClusterPipelines;
+use crate::pipeline_builds::Rebuilding;
 use crate::pipelines::Pipelines;
 use crate::post::RebuiltPipelines;
 use crate::renderer::ShaderUpdate;
@@ -240,6 +242,8 @@ impl Job {
     /// `None`, once `cancel` is set.
     pub(crate) fn run(self, cancel: &Cancel) -> Finished {
         profiling::scope!("shader build");
+        // Every step runs on this thread, inside its error scopes.
+        let _rebuilding = Rebuilding::begin();
         let programs = self.programs();
         let Self {
             sources,

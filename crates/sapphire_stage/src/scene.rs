@@ -112,7 +112,8 @@ use sapphire_math::{Affine3A, Mat4, Quat, Vec3};
 use sapphire_physics::PhysicsWorld;
 use sapphire_render::{
     CharacterBody, CharacterFace, CharacterInstance, FaceExpression, Fog, FramePacket, HeadBasis, LightKind,
-    LocalLight, MaterialHandle, MeshHandle, PostVariants, Renderer, SkyLayers, ViewData, Wind,
+    LocalLight, MaterialHandle, MeshHandle, PipelineInventory, PostVariants, Renderer, SkyLayers, ViewData,
+    Wind,
 };
 use sapphire_time::{ScaleHandle, ScaleSource, Stopwatch, TICK_HZ};
 use sapphire_vfx::VfxBudget;
@@ -2281,14 +2282,22 @@ impl Scene {
         }
     }
 
-    /// Readies `renderer` for what this scene may draw: the post variants of its screen effects,
-    /// and, if it plays effects, their pipelines, so neither compiles on the frame it first shows.
-    /// The app calls it whenever it makes a renderer.
-    pub fn prewarm(&self, renderer: &mut Renderer) {
-        renderer.prewarm_post(self.effect_variants());
-        if self.vfx.is_some() || self.cues.is_some() {
-            renderer.prewarm_vfx();
+    /// What this scene may draw through that no pack's table can say (M3 K1): the post variants of its screen
+    /// effects, its effects if it plays any, its sky and its HUD.
+    pub fn declared_pipelines(&self) -> PipelineInventory {
+        PipelineInventory {
+            post: self.effect_variants(),
+            effects: self.vfx.is_some() || self.cues.is_some(),
+            ui: self.hud.is_some(),
+            sky: self.sky_material.into_iter().collect(),
+            ..PipelineInventory::default()
         }
+    }
+
+    /// Readies `renderer` for what this scene declares ([`Self::declared_pipelines`]), so none of it compiles
+    /// on the frame it first shows. The app calls it whenever it makes a renderer.
+    pub fn prewarm(&self, renderer: &mut Renderer) {
+        renderer.prewarm(&self.declared_pipelines());
     }
 
     /// Runs presentation and extraction, then returns this frame's packet, with the main view

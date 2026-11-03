@@ -367,6 +367,15 @@ pub(crate) fn run(
 }
 
 impl Run<'_> {
+    /// Exit test 7: a load leaves no frame anything to build, wherever it would come from.
+    fn check_first_uses(&self) -> Result<(), AppInitError> {
+        if self.stage.renderer.stats().pipelines.first_use_builds == 0 {
+            return Ok(());
+        }
+        let report = self.stage.renderer.first_use_report();
+        Err(AppInitError::msg(format!("the load's pipeline inventory missed: {report}")))
+    }
+
     /// Plays whole fights until it's measured `frames`. Returns how many it did.
     fn phase(&mut self, phase: Phase, frames: u32) -> Result<u32, AppInitError> {
         self.stage.measure_gpu = phase == Phase::Gpu;
@@ -383,17 +392,22 @@ impl Run<'_> {
             if played == 1 {
                 after_first_frame = pipelines(self.stage);
             }
+            self.check_first_uses()?;
             start_over = false;
             let over = self.stage.combat.as_ref().and_then(Combat::ticks_left) == Some(0);
             let endless = self.stage.combat.as_ref().and_then(Combat::ticks_left).is_none();
             if played >= frames && (over || endless) {
                 // Anything built after a phase's first frame stalled the frame it was first drawn on.
+                let builds = self.stage.renderer.stats().pipelines;
                 tracing::info!(
                     target: LOG_TARGET,
                     phase = phase.name(),
                     at_start,
                     after_first_frame,
                     at_end = pipelines(self.stage),
+                    prewarmed = builds.prewarmed,
+                    first_use = builds.first_use_builds,
+                    rebuilt = builds.rebuilt,
                     "fight pipelines",
                 );
                 return Ok(played);

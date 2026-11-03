@@ -104,7 +104,7 @@ use sapphire_livelink::{LivePacks, PushedPack};
 use sapphire_physics::PhysicsWorld;
 use sapphire_platform::{AppInitError, IoFile, IoPriority, IoThread, Platform, ReadError};
 use sapphire_render::texture::GpuTexture;
-use sapphire_render::{MaterialHandle, MeshHandle, Renderer};
+use sapphire_render::{MaterialHandle, MeshHandle, PipelineInventory, Renderer};
 use sapphire_rhi::GpuContext;
 use sapphire_time::Stopwatch;
 
@@ -532,6 +532,16 @@ fn newest_saved(
 }
 
 impl Content {
+    /// What the mounted packs' meshes draw through, and the skinning that deforms theirs (M3 K1): for a renderer
+    /// to prewarm before any of them is uploaded.
+    pub fn pipeline_inventory(&self) -> PipelineInventory {
+        PipelineInventory {
+            meshes: self.server.pipeline_keys(),
+            skinning: true,
+            ..PipelineInventory::default()
+        }
+    }
+
     /// Starts the IO thread on the app's content root, mounts the shared pack and starts loading
     /// the character (`character`, a mesh's ID: [`CHARACTER`] unless the scene wants another),
     /// within the budgets of the device's class. The scene's sky is the sky material `sky`

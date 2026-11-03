@@ -145,6 +145,7 @@ use sapphire_rhi::{GpuContext, wgpu};
 use serde::{Deserialize, Serialize};
 
 use crate::materials::{MaterialHandle, Materials};
+use crate::pipeline_builds::{PipelineBuilds, PipelineFamily};
 use crate::pipelines::{DEPTH_FORMAT, Layouts, SCENE_COLOR_FORMAT};
 use crate::shader_builds::Step;
 use crate::shaders::{self, BuildOn, Program, ShaderSources};
@@ -395,7 +396,7 @@ struct Builder {
     /// The main pass's sample count.
     samples: u32,
     cube_format: wgpu::TextureFormat,
-    cache: Option<wgpu::PipelineCache>,
+    builds: PipelineBuilds,
 }
 
 impl Builder {
@@ -424,31 +425,35 @@ impl Builder {
         });
         let (label, format, samples) =
             if cube { ("sky cube", self.cube_format, 1) } else { ("sky", SCENE_COLOR_FORMAT, self.samples) };
-        self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some(label),
-            layout: Some(&self.layout),
-            vertex: wgpu::VertexState {
-                module,
-                entry_point: Some("vs_sky"),
-                compilation_options: compilation_options.clone(),
-                buffers: &[],
+        self.builds.render(
+            &self.device,
+            PipelineFamily::Sky,
+            &wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&self.layout),
+                vertex: wgpu::VertexState {
+                    module,
+                    entry_point: Some("vs_sky"),
+                    compilation_options: compilation_options.clone(),
+                    buffers: &[],
+                },
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: depth,
+                multisample: wgpu::MultisampleState { count: samples, ..Default::default() },
+                fragment: Some(wgpu::FragmentState {
+                    module,
+                    entry_point: Some("fs_sky"),
+                    compilation_options,
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: self.builds.cache(),
             },
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: depth,
-            multisample: wgpu::MultisampleState { count: samples, ..Default::default() },
-            fragment: Some(wgpu::FragmentState {
-                module,
-                entry_point: Some("fs_sky"),
-                compilation_options,
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: self.cache.as_ref(),
-        })
+        )
     }
 }
 
@@ -674,6 +679,7 @@ impl Sky {
         materials: &mut Materials,
         settings: SkySettings,
         samples: u32,
+        builds: &PipelineBuilds,
         sources: &ShaderSources,
     ) -> Result<Self, RenderError> {
         let device = gpu.device();
@@ -730,7 +736,7 @@ impl Sky {
             layout,
             samples,
             cube_format: cube.format(),
-            cache: gpu.pipeline_cache().cloned(),
+            builds: builds.clone(),
         };
         // The plainest material's variants now, behind the load, so night falling never
         // compiles a pipeline mid-game; a material with more builds its own when it arrives.
@@ -792,6 +798,27 @@ impl Sky {
         self.cube.schedule = FaceSchedule::new(self.settings.cube_interval);
     }
 
+    /// Builds every variant `material`, a sky material or not, can draw, for a prewarm.
+    pub(crate) fn prewarm(&mut self, material: MaterialHandle, materials: &Materials, on: BuildOn) {
+        let material = Some(material)
+            .filter(|&handle| materials.record(handle).is_some_and(|r| r.family == MaterialFamily::Sky))
+            .unwrap_or(self.default_material);
+        let params: SkyParams = bytemuck::pod_read_unaligned(
+            materials.params(material).expect("a sky material's block is in its family's mirror"),
+        );
+        self.build_for(Features::of(&params), on);
+    }
+
+    /// Builds every variant a material with `features` can draw, the first time.
+    fn build_for(&mut self, features: Features, on: BuildOn) {
+        if self.ready & features.bit() == 0 {
+            self.ready |= features.bit();
+            let built = self.pipelines.build_all(&self.builder, Layers::drawable(features), on);
+            self.stats.pipelines = self.pipelines.count();
+            tracing::debug!(target: LOG_TARGET, built, ?features, "sky variants built for a sky material");
+        }
+    }
+
     /// The CPU half of a frame: folds the packet's sky layers and its sky material (or the
     /// default) into the frame's uniforms. The first frame drawn with a material that has a
     /// nebula or lit clouds builds every variant it can draw (see the module docs).
@@ -807,12 +834,7 @@ impl Sky {
             materials.params(material).expect("a sky material's block is in its family's mirror"),
         );
         let features = Features::of(&params);
-        if self.ready & features.bit() == 0 {
-            self.ready |= features.bit();
-            let built = self.pipelines.build_all(&self.builder, Layers::drawable(features), on);
-            self.stats.pipelines = self.pipelines.count();
-            tracing::debug!(target: LOG_TARGET, built, ?features, "sky variants built for a sky material");
-        }
+        self.build_for(features, on);
         let uniforms = SkyUniforms::new(packet, &params, self.settings);
         let layers = Layers::of(&uniforms, features);
         self.stats.stars = uniforms.stars[0] > 0.0;

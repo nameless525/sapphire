@@ -6,7 +6,8 @@
 //! ```
 //!
 //! Each row fires a warm hook many times and reads the quietest tenth, the median and the slowest: the
-//! slowest is mostly the scheduler while the machine's busy.
+//! slowest is mostly the scheduler while the machine's busy. The last rows play `arena-scripted`, a real
+//! fight with every hook on it, and read the row itself: a step's hooks and the collector's step after it.
 
 #![allow(clippy::print_stdout, reason = "a bench's output is what it's for")]
 
@@ -14,9 +15,11 @@ use std::alloc::System;
 use std::time::Duration;
 
 use sapphire_core::alloc::{self, CountingAllocator};
-use sapphire_script::bindings::Frame;
+use sapphire_gameplay::HookFrame;
+use sapphire_gameplay::replay::{Player, Replay};
 use sapphire_script::compile::{self, cook};
-use sapphire_script::{CookedScript, Hook, HookEnd, Limits, ScriptVm};
+use sapphire_script::scenarios::SCRIPTED;
+use sapphire_script::{CookedScript, Hook, HookEnd, Limits, ScriptVm, host_of};
 use sapphire_time::Stopwatch;
 
 #[global_allocator]
@@ -99,7 +102,7 @@ fn fire_row(name: &str, bytes: &CookedScript, collect: Collector) {
     const FIRES: usize = 20_000;
     let vm = ScriptVm::new(Limits { memory: 1 << 30, ..Limits::default() }).expect("starts");
     let hook = load(&vm, bytes);
-    let mut frame = Frame::new();
+    let mut frame = HookFrame::new(0);
     if matches!(collect, Collector::Running) {
         // SAFETY: this diagnostic only changes collector scheduling; it executes no binary bytecode.
         unsafe { vm.lua_for_tests() }.gc_restart();
@@ -109,7 +112,7 @@ fn fire_row(name: &str, bytes: &CookedScript, collect: Collector) {
     let mut allocations = 0;
     for fire in 0..WARM + FIRES {
         frame.tick = fire as u64;
-        frame.queued = 0;
+        frame.truncate_queue(0);
         let before = alloc::vm_counts().allocations;
         let stopwatch = Stopwatch::start();
         let end = vm.fire(&mut frame, &hook, ());
@@ -155,7 +158,7 @@ fn budget_row(name: &str, source: &str, limits: Limits) {
     const SAMPLES: usize = 24;
     let vm = ScriptVm::new(limits).expect("starts");
     let hook = load(&vm, &cook(source).expect("cooks"));
-    let mut frame = Frame::new();
+    let mut frame = HookFrame::new(0);
     let mut times = Vec::with_capacity(SAMPLES);
     for sample in 0..WARM + SAMPLES {
         let before = ScriptVm::interrupts();
@@ -275,6 +278,56 @@ fn gc_row(bytes: usize, step_size_kb: Option<i32>, shape: Held, allocating: bool
     drop(keep);
 }
 
+/// One step's whole allowance, as a crowd's hits on one tick might spend it: every event's hook a boss's.
+fn crowd_row(events: usize) {
+    const STEPS: usize = 5_000;
+    let vm = ScriptVm::new(Limits::default()).expect("starts");
+    let hook = load(&vm, &cook(BOSS_PHASE).expect("cooks"));
+    let mut frame = HookFrame::new(0);
+    let mut times = Vec::with_capacity(STEPS);
+    for _ in 0..STEPS {
+        let stopwatch = Stopwatch::start();
+        for _ in 0..events {
+            frame.truncate_queue(0);
+            assert_eq!(vm.fire(&mut frame, &hook, ()), HookEnd::Returned);
+        }
+        times.push(stopwatch.elapsed());
+        vm.gc_step().expect("collects");
+    }
+    let (low, median, high) = read(&mut times);
+    println!("  {events} boss phases in one step: {low:.1} / {median:.1} / {high:.1} µs");
+}
+
+/// `arena-scripted`, whole: what each step with a hook spent on hooks, and each collector step.
+fn fight_row() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/replays/arena-scripted.sreplay");
+    let replay = Replay::decode(&std::fs::read(path).expect("committed")).expect("reads");
+    let mut player = Player::new(replay, &SCRIPTED).expect("starts");
+    let (mut hooks, mut collector) = (Vec::new(), Vec::new());
+    let mut fired = 0;
+    while player.step() {
+        let host = host_of(player.simulation());
+        let stats = host.stats();
+        if stats.hooks_fired > fired {
+            hooks.push(stats.last_step);
+            fired = stats.hooks_fired;
+        }
+        let stopwatch = Stopwatch::start();
+        host.gc_step().expect("collects");
+        collector.push(stopwatch.elapsed());
+    }
+    let stats = host_of(player.simulation()).stats();
+    let (steps, quiet) = (hooks.len(), player.simulation().tick() as usize - hooks.len());
+    println!(
+        "  {fired} hooks on {steps} steps, {quiet} steps with none; over budget {}",
+        stats.over_budget_steps
+    );
+    let (low, median, high) = read(&mut hooks);
+    println!("  a step's hooks: {low:.2} / {median:.2} / {high:.2} µs");
+    let (low, median, high) = read(&mut collector);
+    println!("  a collector step: {low:.2} / {median:.2} / {high:.2} µs");
+}
+
 fn main() {
     println!("hooks, one fire:");
     for (name, source) in [("empty", EMPTY), ("boss phase", BOSS_PHASE), ("careless", CARELESS)] {
@@ -315,4 +368,9 @@ fn main() {
         }
         gc_row(1 << 20, Some(16), Held::SmallTables, allocating);
     }
+    println!("a step, against the row's 300 µs on a desktop and 500 µs on a phone:");
+    for events in [1, 8, 64] {
+        crowd_row(events);
+    }
+    fight_row();
 }

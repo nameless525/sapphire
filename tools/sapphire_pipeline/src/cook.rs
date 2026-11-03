@@ -84,6 +84,8 @@
 //!   cells' meshes merge prefabs, assemblies by their sidecars' IDs, and are keyed by what's in each, so
 //!   a save to one placed piece recooks the cells it's in. A `.szone` reads its meshes' bounds, so it
 //!   cooks last of all; its key depends on those assets' keys.
+//! - **Scripts** cook `.luau` → `.sscript` (M3 L2, [`script`]): one chunk's bytecode, compiled once with a
+//!   pinned compiler and refused if it breaks a rule. A `.d.luau` is an editor's, and cooks to nothing.
 //! - **Localized strings** cook `.ftl` sources and `.locale.ron` documents → `.sloc`, one table per
 //!   locale (M3 V2, [`loc`]), reading nothing another asset cooks. After every asset has cooked, the
 //!   tables are checked against each other, whatever came from the cache, and the report lists what's
@@ -150,6 +152,7 @@ use sapphire_assets::sound::{SOUND_EXTENSION, Sound};
 use sapphire_assets::texture::{TEXTURE_EXTENSION, TEXTURE_VERSION};
 use sapphire_assets::ui::{UI_EXTENSION, UiDocument};
 use sapphire_assets::{AssetId, AssetKind};
+use sapphire_bytecode::{SCRIPT_EXTENSION, ScriptChunk};
 use sapphire_colliders::{COLLIDERS_EXTENSION, ColliderSet};
 use sapphire_moves::{BakedTables, ClipMotionDocument, MOVE_SET_EXTENSION, MoveSet};
 use sapphire_navmesh::{NAVMESH_EXTENSION, NavMesh};
@@ -184,6 +187,7 @@ use crate::meta::{self, ImportSettings, MeshSettings, MetaError, SourceAsset, So
 use crate::moves::{self, BakeError, MoveSetCookError, TableInput};
 use crate::nav;
 use crate::probes::{self, ProbeCookError, ProbeInput};
+use crate::script::{self, ScriptCookError};
 use crate::texture::{self, TextureError};
 use crate::timeline::{self, TimelineCookError};
 use crate::ui::{self, ScreenCharacters, ScreenError, Screens, UiCookError};
@@ -390,6 +394,12 @@ impl Recipe {
                 cooker: loc::COOKER,
                 format: StringTable::VERSION,
                 extension: STRINGS_EXTENSION,
+            },
+            ImportSettings::Script(_) => Self {
+                importer: script::IMPORTER,
+                cooker: script::COOKER,
+                format: ScriptChunk::VERSION,
+                extension: SCRIPT_EXTENSION,
             },
             ImportSettings::GltfClips(_) => Self::gltf_clip(),
             ImportSettings::FbxClips(_) => Self::fbx_clip(),
@@ -656,6 +666,13 @@ pub enum CookError {
         /// Boxed, as material errors are.
         #[source]
         source: Box<MoveSetCookError>,
+    },
+    #[error("failed to cook script {}", path.display())]
+    Script {
+        path: PathBuf,
+        /// Boxed, as material errors are.
+        #[source]
+        source: Box<ScriptCookError>,
     },
     #[error("failed to cook animation graph {}", path.display())]
     AnimGraph {
@@ -1433,7 +1450,8 @@ fn sub_assets(
         | ImportSettings::Fluent(_)
         | ImportSettings::Locale(_)
         | ImportSettings::Timeline(_)
-        | ImportSettings::Ui(_) => Ok(Vec::new()),
+        | ImportSettings::Ui(_)
+        | ImportSettings::Script(_) => Ok(Vec::new()),
         ImportSettings::Zone(_) => {
             let plan = ZonePlan::new(meta.id, &read()?, prefabs, cache).map_err(zone_error(path))?;
             let parts = plan.places().map(|place| PlannedPart {
@@ -2286,6 +2304,8 @@ fn cook_source(
         ImportSettings::Ui(_) => ui::cook(path, bytes).map_err(ui_error(path)),
         ImportSettings::MoveSet(_) => moves::cook(bytes, |clip| move_tables(clip, assets))
             .map_err(|source| CookError::MoveSet { path: path.to_owned(), source: Box::new(source) }),
+        ImportSettings::Script(_) => script::cook(bytes)
+            .map_err(|source| CookError::Script { path: path.to_owned(), source: Box::new(source) }),
         ImportSettings::AnimGraph(_) => anim_graph::cook(bytes)
             .map_err(|source| CookError::AnimGraph { path: path.to_owned(), source: Box::new(source) }),
         ImportSettings::Zone(_) => cook_zone(path, assets),
@@ -2773,12 +2793,13 @@ fn source_dependencies(
                 })
                 .collect()
         }
-        // Images, collider and encounter documents, and timelines are self-contained.
+        // Images, collider and encounter documents, timelines and scripts are self-contained.
         ImportSettings::Texture(_)
         | ImportSettings::Colliders(_)
         | ImportSettings::Encounter(_)
         | ImportSettings::Fluent(_)
-        | ImportSettings::Timeline(_) => Ok(Vec::new()),
+        | ImportSettings::Timeline(_)
+        | ImportSettings::Script(_) => Ok(Vec::new()),
         ImportSettings::Zone(_) => zone_dependencies(path, part, assets),
         // A locale's table is its sources': another locale's aren't in its key (`loc`'s docs).
         ImportSettings::Locale(_) => fluent_of(path, assets)
@@ -3143,6 +3164,7 @@ fn imported_mesh(
         | ImportSettings::MoveSet(_)
         | ImportSettings::AnimGraph(_)
         | ImportSettings::Fluent(_)
+        | ImportSettings::Script(_)
         | ImportSettings::Locale(_)
         | ImportSettings::Ui(_)
         | ImportSettings::GltfClips(_)
@@ -4635,6 +4657,39 @@ mod tests {
         // With its sidecar written, the locked cook runs.
         scratch.cook();
         assert!(cook_dir(&scratch.source(), &scratch.out(), &locked).is_ok());
+    }
+
+    /// A `.luau` cooks to what a pack's reader takes, and a change to it changes what's cooked; its
+    /// neighbouring `.d.luau`, for an editor, isn't a source; and a script that breaks a rule stops the cook,
+    /// naming it, as anything else broken does.
+    #[test]
+    fn a_luau_source_cooks_to_a_script_or_stops_the_cook() {
+        let scratch = Scratch::new("cook_script");
+        let source = scratch.source().join("boss/phases.luau");
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        fs::write(&source, "return { on_phase = function(actor) sapphire.mark(actor) end }").unwrap();
+        fs::write(source.with_file_name("sapphire.d.luau"), "declare sapphire: {}\n").unwrap();
+
+        let report = scratch.cook();
+        assert_eq!(report.created_sidecars, [sidecar_path(&source)], "only the script's");
+        let [asset] = report.assets.as_slice() else { panic!("{:?}", report.assets) };
+        assert_eq!(asset.output.extension().unwrap(), SCRIPT_EXTENSION);
+        let cooked = read_aligned(&asset.output);
+        assert!(!ScriptChunk::read(&cooked).unwrap().bytecode.is_empty());
+        assert_eq!(AssetKind::Script.references(&cooked).unwrap(), []);
+        let first = asset.output_hash;
+
+        fs::write(&source, "return { on_phase = function(actor) sapphire.mark(actor + 1) end }").unwrap();
+        assert_ne!(scratch.cook().assets[0].output_hash, first, "other meaning, other bytes");
+
+        fs::write(&source, "return { on_phase = function(actor) sapphire.mark(actor ^ 2.5) end }").unwrap();
+        let error = cook_dir(
+            &scratch.source(),
+            &scratch.out(),
+            &CookOptions { cook: Cook::Desktop, cache: None, locked: false },
+        )
+        .unwrap_err();
+        assert!(matches!(&error, CookError::Script { path, .. } if *path == source), "{error:?}");
     }
 
     #[test]

@@ -20,6 +20,8 @@ rerecast.workspace = true
 # Where a spawner stands on a bake, when a cook prunes what no one can walk to.
 sapphire_nav.workspace = true
 sapphire_navmesh.workspace = true
+# Scripts cook through the compiler the VM's own chunks do, and its scan.
+sapphire_bytecode = { workspace = true, features = ["compile"] }
 # Names of a move's baked paths.
 sapphire_core.workspace = true
 # The probe bake lights the sky as the renderer relights it (`sky::sky_radiance`), under time of

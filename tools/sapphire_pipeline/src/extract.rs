@@ -301,6 +301,7 @@ pub fn extract_materials(source: &Path, options: &ExtractOptions) -> Result<Extr
         | ImportSettings::MoveSet(_)
         | ImportSettings::AnimGraph(_)
         | ImportSettings::Fluent(_)
+        | ImportSettings::Script(_)
         | ImportSettings::Locale(_)
         | ImportSettings::Ui(_)
         | ImportSettings::Assembly(_)

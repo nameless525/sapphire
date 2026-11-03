@@ -12,8 +12,8 @@
 
 use std::process::ExitCode;
 
-use sapphire_script::bindings::Frame;
-use sapphire_script::{Command, HookEnd, Limits, ScriptVm, cook};
+use sapphire_gameplay::{HookFrame, ScriptCommand};
+use sapphire_script::{HookEnd, Limits, ScriptVm, cook};
 
 const FOLD: &str = r#"
 return { hook = function()
@@ -32,10 +32,10 @@ return { hook = function()
 end }
 "#;
 
-fn fire(vm: &ScriptVm, source: &str) -> (HookEnd, Frame) {
+fn fire(vm: &ScriptVm, source: &str) -> (HookEnd, HookFrame) {
     let hooks = vm.load(&cook(source).expect("cooks"), "=smoke").expect("loads");
     let hook = hooks.hook("hook").expect("hook type").expect("has a hook");
-    let mut frame = Frame::new();
+    let mut frame = HookFrame::new(0);
     let end = vm.fire(&mut frame, &hook, ());
     (end, frame)
 }
@@ -49,15 +49,15 @@ fn main() -> ExitCode {
     };
 
     let (end, frame) = fire(&vm, FOLD);
-    let value = match frame.queue[0] {
-        Command::Mark(value) => value,
+    let value = match frame.queued()[0] {
+        ScriptCommand::Mark(value) => value,
         _ => f64::NAN,
     };
     check(
         "a hook runs and pinned math reads",
         end == HookEnd::Returned
             && !frame.fault
-            && frame.queued == 1
+            && frame.queued().len() == 1
             && value.to_bits() == 0x41e9_64a7_9620_0000
             && frame.board[0].to_bits() == value.to_bits(),
         format!("{end:?} {:016x}", value.to_bits()),

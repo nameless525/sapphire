@@ -3,15 +3,18 @@
 use std::cell::Cell;
 use std::ffi::c_int;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use mlua::chunk::ChunkMode;
 use mlua::state::{GcIncParams, GcMode};
 use mlua::thread::ThreadStatus;
 use mlua::{Function, Lua, LuaOptions, StdLib, Table, Thread, Value, ffi, lua_State};
+use sapphire_bytecode::compile::{self, CookedScript};
+use sapphire_bytecode::{CookError, check};
 use sapphire_core::alloc::{HostAllocations, VmAllocations};
+use sapphire_gameplay::HookFrame;
 
-use crate::bindings::{self, Binding, Frame};
-use crate::compile::{self, CookError, CookedScript};
+use crate::bindings::{self, Binding};
 
 /// Globals a script may reach. Anything else, now or in a later Luau, is gone before the sandbox closes.
 const GLOBALS: &[&str] = &[
@@ -73,6 +76,13 @@ pub struct Limits {
     /// table is marked whole, so a table of 130,000 slots is a 360 µs step at any size. The memory limit
     /// is what keeps a table from getting there.
     pub gc_step_kb: i32,
+    /// Interrupts one step's hooks may spend, all told. Once they've gone, what's left of the step's events
+    /// goes unanswered: a crowd's hits on one tick mustn't be `interrupts` times itself. At its default, one
+    /// budget, the worst a step can spend is the worst one hook can.
+    pub step_interrupts: u64,
+    /// What one step's hooks are held to in [`crate::ScriptStats::over_budget_steps`]: spec §3.2's row, the
+    /// desktop's by default, for an app to replace with its tier's.
+    pub step_budget: Duration,
 }
 
 impl Default for Limits {
@@ -80,7 +90,13 @@ impl Default for Limits {
     /// a real hook takes tens. 2 MiB holds the VM's own 520 KB and a boss's garbage between steps, and at
     /// 16 KB a step a 2 MiB heap's cycle takes about 50 steps.
     fn default() -> Self {
-        Self { memory: 2 << 20, interrupts: 10_000, gc_step_kb: 16 }
+        Self {
+            memory: 2 << 20,
+            interrupts: 10_000,
+            gc_step_kb: 16,
+            step_interrupts: 10_000,
+            step_budget: Duration::from_micros(300),
+        }
     }
 }
 
@@ -119,6 +135,12 @@ impl HookTable {
         let _vm = VmAllocations::enter();
         let function = self.table.raw_get::<Option<Function>>(name)?;
         Ok(function.map(|function| Hook { function }))
+    }
+
+    /// The chunk's `names`, the moves its commands and `on_move` name by place, or none if it lists none.
+    pub fn names(&self) -> Result<Vec<String>, VmError> {
+        let _vm = VmAllocations::enter();
+        Ok(self.table.raw_get::<Option<Vec<String>>>("names")?.unwrap_or_default())
     }
 
     /// Whether the table is frozen, including after a trusted diagnostic integration.
@@ -174,8 +196,9 @@ impl Hook {
 /// are deliberately excluded from this fixed-step event boundary.
 ///
 /// ```compile_fail
-/// use sapphire_script::{Frame, ScriptVm};
-/// fn arbitrary(vm: &ScriptVm, frame: &mut Frame, hook: &sapphire_script::Hook, args: mlua::MultiValue) {
+/// use sapphire_gameplay::HookFrame;
+/// use sapphire_script::ScriptVm;
+/// fn arbitrary(vm: &ScriptVm, frame: &mut HookFrame, hook: &sapphire_script::Hook, args: mlua::MultiValue) {
 ///     vm.fire(frame, hook, args);
 /// }
 /// ```
@@ -318,9 +341,9 @@ impl ScriptVm {
         Self::with_bindings(limits, &[])
     }
 
-    /// [`Self::new`], with more bindings put in `sapphire` before the sandbox closes: the shape L2's
-    /// generated table takes, and how a test adds one that misbehaves. Each is called once here, with no
-    /// frame and no arguments, and one that doesn't go through [`bindings::with_frame`] is refused.
+    /// [`Self::new`], with more bindings put in `sapphire` beside the declared table's before the sandbox
+    /// closes: how a test adds one that misbehaves. Each is called once here, with no frame and no
+    /// arguments, and one that doesn't go through [`bindings::with_frame`] is refused.
     pub fn with_bindings(limits: Limits, more: &[Binding]) -> Result<Self, VmError> {
         let lua = Lua::new_with(
             StdLib::MATH | StdLib::STRING | StdLib::TABLE | StdLib::BIT | StdLib::VECTOR,
@@ -374,8 +397,14 @@ impl ScriptVm {
     /// Runs bytecode with compiler provenance, rechecks its deterministic instruction policy, and
     /// returns the table of hooks it makes. Allocates, so it happens between steps. Raw serialized
     /// bytes require the explicit trust contract on [`CookedScript::from_trusted_bytes`].
+    ///
+    /// ```compile_fail
+    /// use sapphire_script::{Limits, ScriptVm};
+    /// let vm = ScriptVm::new(Limits::default()).unwrap();
+    /// vm.load(&[9, 1, 0, 0, 0], "=untrusted");
+    /// ```
     pub fn load(&self, cooked: &CookedScript, name: &str) -> Result<HookTable, VmError> {
-        compile::check(cooked.as_ref())?;
+        check(cooked.as_ref())?;
         let _vm = VmAllocations::enter();
         let _frame = bindings::without_frame();
         let _budget = BudgetGuard::enter(self.limits.interrupts);
@@ -406,7 +435,7 @@ impl ScriptVm {
     /// another VM, but reentering this VM's reusable hook coroutine fails before it is changed.
     /// Caller-provided conversion into [`HookArgs`] runs as host work, so its Rust allocations reach
     /// the fixed-step gate. Only the resulting numeric stack pushes and VM work use VM attribution.
-    pub fn fire(&self, frame: &mut Frame, hook: &Hook, args: impl Into<HookArgs>) -> HookEnd {
+    pub fn fire(&self, frame: &mut HookFrame, hook: &Hook, args: impl Into<HookArgs>) -> HookEnd {
         // Also covers caller-owned argument destruction when ownership/reentry rejects preparation.
         let _host = HostAllocations::enter();
         self.fire_prepared(
@@ -440,7 +469,7 @@ impl ScriptVm {
     /// cannot constrain this callback.
     pub unsafe fn fire_trusted(
         &self,
-        frame: &mut Frame,
+        frame: &mut HookFrame,
         hook: &Function,
         args: impl mlua::IntoLuaMulti,
     ) -> HookEnd {
@@ -451,7 +480,7 @@ impl ScriptVm {
     /// only reset/resume uses VM attribution. The guards cover caller conversion as well as execution.
     fn fire_prepared<A>(
         &self,
-        frame: &mut Frame,
+        frame: &mut HookFrame,
         hook: &Function,
         prepare: impl FnOnce() -> A,
         resume: impl FnOnce(&Thread, A) -> mlua::Result<()>,
@@ -480,6 +509,12 @@ impl ScriptVm {
                 HookEnd::OverBudget
             }
         }
+    }
+
+    /// The limits it runs under.
+    #[must_use]
+    pub const fn limits(&self) -> Limits {
+        self.limits
     }
 
     /// What the running count of interrupts has reached on this thread.

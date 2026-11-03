@@ -3443,6 +3443,7 @@ dependencies = [
  "rend",
  "rkyv",
  "ron",
+ "sapphire_bytecode",
  "sapphire_colliders",
  "sapphire_core",
  "sapphire_jobs",
@@ -3486,6 +3487,18 @@ dependencies = [
  "sapphire_serialize",
  "sapphire_time",
  "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "sapphire_bytecode"
+version = "0.1.0"
+dependencies = [
+ "bevy_reflect",
+ "mlua",
+ "rkyv",
+ "sapphire_reflect",
+ "sapphire_serialize",
  "thiserror 2.0.21",
 ]
 
@@ -3863,6 +3876,7 @@ dependencies = [
  "rerecast",
  "sapphire_anim",
  "sapphire_assets",
+ "sapphire_bytecode",
  "sapphire_colliders",
  "sapphire_core",
  "sapphire_document",
@@ -4038,6 +4052,7 @@ version = "0.1.0"
 dependencies = [
  "bevy_ecs",
  "mlua",
+ "sapphire_bytecode",
  "sapphire_core",
  "sapphire_ecs",
  "sapphire_gameplay",

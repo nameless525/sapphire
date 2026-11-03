@@ -2,7 +2,8 @@
 
 use mlua::chunk::Compiler;
 
-use crate::scan::{self, Findings, ScanError};
+use crate::scan;
+pub use crate::{CookError, check};
 
 /// The optimization level a chunk ships at. Level 1 is the first with `FORGPREP_NEXT` and `POWK`, without
 /// which a `pairs` can't be told from a bare table, nor `x ^ 2` from `x ^ y`. It's also the first that
@@ -37,15 +38,6 @@ pub const DISABLED_BUILTINS: &[&str] = &[
     "tostring",
 ];
 
-/// What a script can get wrong before it runs.
-#[derive(Debug, thiserror::Error)]
-pub enum CookError {
-    #[error(transparent)]
-    Unreadable(#[from] ScanError),
-    #[error("{0}")]
-    Refused(String),
-}
-
 /// The compiler for every chunk the VM runs.
 #[must_use]
 pub fn compiler(level: u8) -> Compiler {
@@ -62,18 +54,13 @@ pub fn compile_unchecked(source: &str, level: u8) -> Result<Vec<u8>, CookError> 
     compiler(level).compile(source).map_err(|error| CookError::Refused(error.to_string()))
 }
 
-/// Immutable bytecode produced by the pinned compiler. Safe execution accepts this provenance-bearing
-/// type rather than arbitrary bytes: Luau's binary loader assumes structurally valid bytecode.
-/// Deterministic instruction/library rules are still checked whenever the script is loaded.
+/// Immutable bytecode produced by the pinned compiler. Safe execution (`sapphire_script::ScriptVm::load`)
+/// accepts this provenance-bearing type rather than arbitrary bytes: Luau's binary loader assumes
+/// structurally valid bytecode. Deterministic instruction/library rules are still checked whenever the
+/// script is loaded. A cooked file holds the bytes as a [`ScriptChunk`](crate::ScriptChunk).
 ///
 /// ```compile_fail
-/// use sapphire_script::{Limits, ScriptVm};
-/// let vm = ScriptVm::new(Limits::default()).unwrap();
-/// vm.load(&[9, 1, 0, 0, 0], "=untrusted");
-/// ```
-///
-/// ```compile_fail
-/// let script = sapphire_script::cook("return {}").unwrap();
+/// let script = sapphire_bytecode::cook("return {}").unwrap();
 /// script.as_ref()[0] = 0;
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -83,7 +70,7 @@ pub struct CookedScript {
 
 impl CookedScript {
     /// Restores bytecode whose compiler provenance the caller has independently established.
-    /// Instruction/library policy is checked by [`crate::ScriptVm::load`], not by this constructor.
+    /// Instruction/library policy is checked by `sapphire_script::ScriptVm::load`, not by this constructor.
     ///
     /// # Safety
     ///
@@ -94,6 +81,12 @@ impl CookedScript {
     #[must_use]
     pub unsafe fn from_trusted_bytes(bytes: Vec<u8>) -> Self {
         Self { bytes }
+    }
+
+    /// The bytes, for a cooked file.
+    #[must_use]
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.bytes
     }
 }
 
@@ -123,14 +116,4 @@ pub fn cook(source: &str) -> Result<CookedScript, CookError> {
     let bytes = compile_unchecked(source, SHIPPING_LEVEL)?;
     check(&bytes)?;
     Ok(CookedScript { bytes })
-}
-
-/// Reads a chunk and refuses it if it breaks a deterministic instruction/library rule. This is not a
-/// complete bytecode verifier or proof of compiler provenance; success cannot admit bytes to execution.
-pub fn check(bytes: &[u8]) -> Result<Findings, CookError> {
-    let findings = scan::scan(bytes)?;
-    match findings.violation() {
-        Some(rule) => Err(CookError::Refused(rule)),
-        None => Ok(findings),
-    }
 }

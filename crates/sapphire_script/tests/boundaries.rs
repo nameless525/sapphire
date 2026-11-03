@@ -4,10 +4,12 @@ use std::alloc::System;
 
 use mlua::Table;
 use sapphire_core::alloc::{self, CountingAllocator, VmAllocations};
+use sapphire_gameplay::script::{ActorFacts, QUEUE_LEN};
+use sapphire_gameplay::{ActorId, HookFrame, ScriptCommand};
 use sapphire_script::bindings::{in_host, with_frame};
 use sapphire_script::compile::{CookError, SHIPPING_LEVEL, check, compile_unchecked};
 use sapphire_script::scan::{ScanError, scan};
-use sapphire_script::{CookedScript, Frame, Hook, HookArgs, HookEnd, Limits, ScriptVm, VmError, cook};
+use sapphire_script::{CookedScript, Hook, HookArgs, HookEnd, Limits, ScriptVm, VmError, cook};
 
 #[global_allocator]
 static GLOBAL: CountingAllocator<System> = CountingAllocator::new(System);
@@ -27,9 +29,9 @@ fn initializer_loops_are_bounded_and_failed_loads_leave_hooks_usable() {
         let bytes = cook(source).unwrap();
         for _ in 0..8 {
             assert!(matches!(vm.load(&bytes, "=loop"), Err(VmError::OverBudget)));
-            let mut frame = Frame::new();
+            let mut frame = HookFrame::new(0);
             assert_eq!(vm.fire(&mut frame, &finite, ()), HookEnd::Returned);
-            assert_eq!(frame.queue[0], sapphire_script::Command::Mark(6.0));
+            assert_eq!(frame.queued()[0], ScriptCommand::Mark(6.0));
             while !vm.gc_step().unwrap() {}
         }
     }
@@ -56,7 +58,7 @@ impl From<Nested<'_>> for HookArgs {
         with_frame(|outer| {
             outer.board[0] = 5.0;
             assert!(with_frame(|_| panic!("outer borrow is live")).is_none());
-            let mut inner = Frame::new();
+            let mut inner = HookFrame::new(0);
             assert_eq!(arguments.vm.fire(&mut inner, arguments.hook, ()), HookEnd::Returned);
             assert_eq!(inner.board[0], 9.0);
             assert!(with_frame(|_| panic!("outer borrow is still live")).is_none());
@@ -76,12 +78,12 @@ fn nested_vms_restore_frame_access_and_the_callers_budget() {
     let inner = ScriptVm::new(Limits { interrupts: 2_000, ..Limits::default() }).unwrap();
     let spinning = hook(&outer, "return {hook = function() while true do end end}");
     let marking = hook(&inner, "return {hook = function() sapphire.set_board(0, 9) end}");
-    let mut frame = Frame::new();
+    let mut frame = HookFrame::new(0);
     let before = ScriptVm::interrupts();
     assert_eq!(outer.fire(&mut frame, &spinning, ()), HookEnd::OverBudget);
     let ordinary = ScriptVm::interrupts() - before;
     let before = ScriptVm::interrupts();
-    assert_eq!(inner.fire(&mut Frame::new(), &marking, ()), HookEnd::Returned);
+    assert_eq!(inner.fire(&mut HookFrame::new(0), &marking, ()), HookEnd::Returned);
     // Include the initializer used by Nested in the inner cost, outside the outer hook.
     inner.load(&cook("sapphire.set_board(0, 99) return {}").unwrap(), "=nested").unwrap();
     let nested_cost = ScriptVm::interrupts() - before;
@@ -124,7 +126,7 @@ fn graph_freezing_covers_cycles_keys_shared_children_and_function_upvalues() {
         }
     }
     let hook = hooks.hook("hook").unwrap().unwrap();
-    assert!(matches!(vm.fire(&mut Frame::new(), &hook, ()), HookEnd::Failed(_)));
+    assert!(matches!(vm.fire(&mut HookFrame::new(0), &hook, ()), HookEnd::Failed(_)));
 }
 
 #[test]
@@ -160,11 +162,11 @@ fn reentering_one_vms_hook_does_not_replace_its_running_coroutine() {
     let vm = ScriptVm::new(Limits { interrupts: 20, ..Limits::default() }).unwrap();
     let spinning = hook(&vm, "return {hook = function() while true do end end}");
     let marking = hook(&vm, "return {hook = function() sapphire.mark(1) end}");
-    let mut frame = Frame::new();
+    let mut frame = HookFrame::new(0);
     assert_eq!(vm.fire(&mut frame, &spinning, Reentry { vm: &vm, hook: &marking }), HookEnd::OverBudget);
-    assert_eq!(frame.queued, 0);
+    assert_eq!(frame.queued().len(), 0);
     assert_eq!(vm.fire(&mut frame, &marking, ()), HookEnd::Returned);
-    assert_eq!(frame.queued, 1);
+    assert_eq!(frame.queued().len(), 1);
 }
 
 #[test]
@@ -174,7 +176,7 @@ fn nested_host_and_vm_entries_restore_allocation_attribution() {
     }
     let vm = ScriptVm::new(Limits::default()).unwrap();
     let allocating = hook(&vm, "return {hook = function() local t = {} for i = 1, 32 do t[i] = {i} end end}");
-    let mut frame = Frame::new();
+    let mut frame = HookFrame::new(0);
     let _outer_vm = VmAllocations::enter();
     let host_before = alloc::thread_counts().allocations;
     let vm_before = alloc::vm_counts().allocations;
@@ -206,14 +208,14 @@ impl From<Panicking> for HookArgs {
 fn a_panicking_argument_conversion_releases_frame_budget_and_coroutine_guards() {
     let vm = ScriptVm::new(Limits::default()).unwrap();
     let marking = hook(&vm, "return {hook = function() sapphire.mark(7) end}");
-    let mut frame = Frame::new();
+    let mut frame = HookFrame::new(0);
     let caught =
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| vm.fire(&mut frame, &marking, Panicking)));
     assert!(caught.is_err());
     assert!(with_frame(|_| ()).is_none());
     assert_eq!(frame.board[0], 23.0);
     assert_eq!(vm.fire(&mut frame, &marking, ()), HookEnd::Returned);
-    assert_eq!(frame.queue[0], sapphire_script::Command::Mark(7.0));
+    assert_eq!(frame.queued()[0], ScriptCommand::Mark(7.0));
 }
 
 struct Initializing<'a>(&'a ScriptVm);
@@ -233,7 +235,7 @@ impl From<Initializing<'_>> for HookArgs {
 fn initialization_has_no_frame_even_when_a_calling_hooks_frame_is_available() {
     let vm = ScriptVm::new(Limits::default()).unwrap();
     let noop = hook(&vm, "return {hook = function() end}");
-    let mut frame = Frame::new();
+    let mut frame = HookFrame::new(0);
     assert_eq!(vm.fire(&mut frame, &noop, Initializing(&vm)), HookEnd::Returned);
     assert_eq!(frame.board[0], 0.0);
     assert!(!frame.fault);
@@ -247,7 +249,7 @@ fn invalid_numeric_indices_cannot_alias_slot_zero_or_another_actor() {
     let reading_health =
         hook(&vm, "return {hook = function(index) sapphire.mark(sapphire.health(index)) end}");
     for index in [-1.0, f64::NAN, 0.5, f64::INFINITY, 64.0] {
-        let mut frame = Frame::new();
+        let mut frame = HookFrame::new(0);
         frame.board[0] = 7.0;
         assert_eq!(vm.fire(&mut frame, &writing, index), HookEnd::Returned);
         assert!(frame.fault, "{index}");
@@ -255,25 +257,37 @@ fn invalid_numeric_indices_cannot_alias_slot_zero_or_another_actor() {
         frame.fault = false;
         assert_eq!(vm.fire(&mut frame, &reading_board, index), HookEnd::Returned);
         assert!(frame.fault, "{index}");
-        assert_eq!(frame.queue[0], sapphire_script::Command::Mark(0.0));
+        assert_eq!(frame.queued()[0], ScriptCommand::Mark(0.0));
     }
-    for index in [-1.0, f64::NAN, 0.5, f64::INFINITY, 16.0] {
-        let mut frame = Frame::new();
-        frame.health[0] = 123.0;
+    // An actor is its ID: a fraction of one mustn't truncate into it.
+    for index in [-1.0, f64::NAN, 0.0, 0.5, 1.5, f64::INFINITY, 2.0] {
+        let mut frame = HookFrame::new(1);
+        frame.set_actors([ActorFacts {
+            id: ActorId::from_raw(1).unwrap(),
+            health: 123,
+            max_health: 123,
+            defeated: false,
+            faction: 0,
+            position: sapphire_math::Vec3::ZERO,
+            soft_lock: None,
+            brain_target: None,
+        }]);
         assert_eq!(vm.fire(&mut frame, &reading_health, index), HookEnd::Returned);
-        assert_eq!(frame.queue[0], sapphire_script::Command::Mark(0.0));
+        assert_eq!(frame.queued()[0], ScriptCommand::Mark(0.0));
     }
 }
 
 #[test]
-fn a_preseeded_full_drop_counter_stays_saturated() {
+fn a_full_queue_faults_and_stays_full() {
     let vm = ScriptVm::new(Limits::default()).unwrap();
     let marking = hook(&vm, "return {hook = function() sapphire.mark(1) end}");
-    let mut frame = Frame::new();
-    frame.queued = sapphire_script::bindings::QUEUE_LEN;
-    frame.dropped = u32::MAX;
+    let mut frame = HookFrame::new(0);
+    for _ in 0..QUEUE_LEN {
+        frame.push(ScriptCommand::Mark(0.0));
+    }
     assert_eq!(vm.fire(&mut frame, &marking, ()), HookEnd::Returned);
-    assert_eq!(frame.dropped, u32::MAX);
+    assert!(frame.fault);
+    assert_eq!(frame.queued().len(), QUEUE_LEN);
 }
 
 #[test]
@@ -291,7 +305,7 @@ fn table_walk_positions_are_finite_whole_array_indices() {
             );
             for &input in inputs {
                 assert!(
-                    matches!(vm.fire(&mut Frame::new(), &body, input), HookEnd::Failed(_)),
+                    matches!(vm.fire(&mut HookFrame::new(0), &body, input), HookEnd::Failed(_)),
                     "{operation} {input}"
                 );
             }
@@ -304,7 +318,7 @@ fn budgeted_table_walks_reject_non_tables_even_when_they_would_do_no_work() {
     let vm = ScriptVm::new(Limits::default()).unwrap();
     for operation in ["table.find('', 1)", "table.remove('')", "table.sort('')"] {
         let body = hook(&vm, &format!("return {{hook = function() {operation} end}}"));
-        assert!(matches!(vm.fire(&mut Frame::new(), &body, ()), HookEnd::Failed(_)), "{operation}");
+        assert!(matches!(vm.fire(&mut HookFrame::new(0), &body, ()), HookEnd::Failed(_)), "{operation}");
     }
 }
 
@@ -380,9 +394,9 @@ fn runtime_numbers_can_still_be_nonfinite() {
     let vm = ScriptVm::new(Limits::default()).unwrap();
     let marking = hook(&vm, "return {hook = function(value) sapphire.mark(value) end}");
     for number in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -0.0] {
-        let mut frame = Frame::new();
+        let mut frame = HookFrame::new(0);
         assert_eq!(vm.fire(&mut frame, &marking, number), HookEnd::Returned);
-        let sapphire_script::Command::Mark(mark) = frame.queue[0] else {
+        let ScriptCommand::Mark(mark) = frame.queued()[0] else {
             panic!("the hook must mark its argument");
         };
         if number.is_nan() {
@@ -402,9 +416,9 @@ fn trusted_compiler_output_round_trips_without_changing_bytes() {
     assert_eq!(restored, original);
     let vm = ScriptVm::new(Limits::default()).unwrap();
     let hooks = vm.load(&restored, "=restored").unwrap();
-    let mut frame = Frame::new();
+    let mut frame = HookFrame::new(0);
     assert_eq!(vm.fire(&mut frame, &hooks.hook("hook").unwrap().unwrap(), ()), HookEnd::Returned);
-    assert_eq!(frame.queue[0], sapphire_script::Command::Mark(17.0));
+    assert_eq!(frame.queued()[0], ScriptCommand::Mark(17.0));
 }
 
 struct AllocatingArgs<'a> {
@@ -415,7 +429,7 @@ struct AllocatingArgs<'a> {
 impl From<AllocatingArgs<'_>> for HookArgs {
     fn from(arguments: AllocatingArgs<'_>) -> Self {
         drop(std::hint::black_box(vec![0u8; 64]));
-        assert_eq!(arguments.inner.fire(&mut Frame::new(), arguments.hook, ()), HookEnd::Returned);
+        assert_eq!(arguments.inner.fire(&mut HookFrame::new(0), arguments.hook, ()), HookEnd::Returned);
         drop(std::hint::black_box(vec![0u8; 64]));
         HookArgs::Three(2.0, 3.0, 5.0)
     }
@@ -434,7 +448,7 @@ fn custom_argument_allocations_are_host_work_while_lua_allocations_remain_vm_wor
     let inner = ScriptVm::new(Limits::default()).unwrap();
     let inner_allocating =
         hook(&inner, "return {hook = function() local t = {} for i = 1, 32 do t[i] = {i} end end}");
-    let mut frame = Frame::new();
+    let mut frame = HookFrame::new(0);
     // Even a caller already inside VM attribution must charge its custom Rust conversion to host.
     let _outer_vm = VmAllocations::enter();
     let host_before = alloc::thread_counts().allocations;
@@ -470,7 +484,7 @@ fn numeric_event_argument_shapes_preserve_arity_and_values() {
         (HookArgs::from((2.0, 3.0)), [2.0, 2.0, 3.0, 0.0]),
         (HookArgs::from((2.0, 3.0, 5.0)), [3.0, 2.0, 3.0, 5.0]),
     ] {
-        let mut frame = Frame::new();
+        let mut frame = HookFrame::new(0);
         assert_eq!(vm.fire(&mut frame, &recording, args), HookEnd::Returned);
         assert_eq!(&frame.board[..4], &expected);
         assert!(!frame.fault);
@@ -488,16 +502,16 @@ fn hook_lookup_is_optional_typed_and_foreign_vm_rejection_does_not_change_either
     assert!(hooks.hook("invalid").is_err());
     let foreign = hooks.hook("hook").unwrap().unwrap();
     let local = hook(&second, "return {hook = function() sapphire.mark(23) end}");
-    let mut frame = Frame::new();
+    let mut frame = HookFrame::new(0);
     let refused = second.fire(&mut frame, &foreign, ());
     assert!(matches!(refused, HookEnd::Failed(_)));
-    assert_eq!(frame.queued, 0);
+    assert_eq!(frame.queued().len(), 0);
     assert!(with_frame(|_| ()).is_none());
     assert_eq!(second.fire(&mut frame, &local, ()), HookEnd::Returned);
-    assert_eq!(frame.queue[0], sapphire_script::Command::Mark(23.0));
-    frame.queued = 0;
+    assert_eq!(frame.queued()[0], ScriptCommand::Mark(23.0));
+    frame.truncate_queue(0);
     assert_eq!(first.fire(&mut frame, &foreign, ()), HookEnd::Returned);
-    assert_eq!(frame.queue[0], sapphire_script::Command::Mark(17.0));
+    assert_eq!(frame.queued()[0], ScriptCommand::Mark(17.0));
 }
 
 struct TrustedTableArgs;
@@ -518,7 +532,7 @@ impl mlua::IntoLuaMulti for TrustedTableArgs {
 fn explicit_trusted_integration_retains_arbitrary_lua_arguments_with_honest_attribution() {
     let vm = ScriptVm::new(Limits::default()).unwrap();
     let reading = hook(&vm, "return {hook = function(value) sapphire.set_board(0, value.number) end}");
-    let mut frame = Frame::new();
+    let mut frame = HookFrame::new(0);
     let host_before = alloc::thread_counts().allocations;
     let vm_before = alloc::vm_counts().allocations;
     // SAFETY: the hook was cooked by the pinned compiler. The converter only creates ordinary Lua
@@ -556,7 +570,10 @@ fn rejected_numeric_arguments_drop_as_host_work_before_restoring_an_outer_vm_sco
     let _outer_vm = VmAllocations::enter();
     let host_before = alloc::thread_counts().allocations;
     let vm_before = alloc::vm_counts().allocations;
-    assert!(matches!(second.fire(&mut Frame::new(), &foreign, DroppingArgs(&dropped)), HookEnd::Failed(_)));
+    assert!(matches!(
+        second.fire(&mut HookFrame::new(0), &foreign, DroppingArgs(&dropped)),
+        HookEnd::Failed(_)
+    ));
     assert!(dropped.get());
     if alloc::PER_THREAD_COUNTS {
         assert_eq!(alloc::vm_counts().allocations, vm_before);

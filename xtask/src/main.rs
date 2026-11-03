@@ -14,6 +14,7 @@ mod layers;
 mod link;
 mod platforms;
 mod replay;
+mod script_api;
 mod workspace;
 
 use std::path::PathBuf;
@@ -97,6 +98,9 @@ Commands:
   replay --record <name> --scenario <name> --script <name> [--ticks <n>] [--seed <n>]
       Record a new tests/replays/<name>.sreplay from a registered script, and this architecture's
       checksums for it.
+  script-api [--check]
+      Make crates/sapphire_script's wrappers and sapphire.d.luau from its api.toml, or fail if what's
+      checked in isn't what it makes (spec §5.24).
   replay --list
       List the scenarios, scripts and replays.
   help
@@ -185,6 +189,11 @@ fn run(mut args: cli::Args) -> anyhow::Result<()> {
                 shard: shard.as_deref(),
                 scene_timeout,
             })
+        }
+        "script-api" => {
+            let check = args.flag("--check");
+            args.finish(false)?;
+            script_api::run(check)
         }
         "replay" => {
             let command = replay::Command::parse(&mut args)?;

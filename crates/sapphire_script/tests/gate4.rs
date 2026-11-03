@@ -10,7 +10,7 @@ use std::sync::Mutex;
 
 use mlua::lua_State;
 use sapphire_core::alloc::{self, CountingAllocator, PER_THREAD_COUNTS};
-use sapphire_gameplay::replay::{RecordedTrail, SCENARIOS, find_scenario};
+use sapphire_gameplay::replay::{Player, SCENARIOS, find_scenario};
 use sapphire_script::bindings::{in_host, with_frame};
 use sapphire_script::{Binding, Limits, ScriptHost, VmError, cook, host_of};
 use support::{host_running, play, player_with, replay_file};
@@ -94,28 +94,36 @@ fn a_hook_in_a_real_replay_passes_the_gate_and_the_vm_has_its_own_count() {
     let stats = finished.stats;
     assert!(stats.hooks_fired >= 3, "{stats:?}");
     assert_eq!((stats.hooks_failed, stats.hooks_over_budget), (0, 0), "{stats:?}");
-    assert!(stats.commands_applied > stats.hooks_fired, "{stats:?}");
+    assert!(finished.commands_applied > stats.hooks_fired, "{stats:?}");
 }
 
-/// A hook that asks for nothing changes nothing: a fight with one on it reaches the recorded checksums.
+/// A hook that asks for nothing changes nothing of the fight, tick by tick, though the checksum has moved
+/// to hold the board and how each hook ended.
 #[test]
-fn a_hook_that_commands_nothing_leaves_the_recording_alone() {
+fn a_hook_that_commands_nothing_leaves_the_fight_alone() {
     let _one = ONE_AT_A_TIME.lock().unwrap();
     let plain = find_scenario(&SCENARIOS, "arena-fight").expect("listed");
-    let mut player =
-        sapphire_gameplay::replay::Player::new(replay_file("arena-fight-won"), std::slice::from_ref(plain))
-            .unwrap();
-    player.run_to_end();
-    let recorded = RecordedTrail::from_trail(&player.finish().trail);
+    let mut unscripted = Player::new(replay_file("arena-fight-won"), std::slice::from_ref(plain)).unwrap();
 
     let mut host = host_running(
         "return { on_phase = function(actor, phase) sapphire.set_board(0, actor + phase) end, on_beat = function() local t = {} t.x = 1 end }",
         Limits::default(),
     );
     host.beat_every(7);
-    let finished = play(host, replay_file("arena-fight-won"));
-    assert_eq!(recorded.first_difference(&finished.played.trail), None);
-    assert!(finished.stats.hooks_fired > 100);
+    let mut scripted = player_with(host, replay_file("arena-fight-won"));
+    let cast = unscripted.cast().to_vec();
+    assert_eq!(scripted.cast(), cast);
+    while unscripted.step() {
+        assert!(scripted.step());
+        let tick = unscripted.simulation().tick();
+        for &actor in &cast {
+            let (a, b) = (unscripted.simulation().actor(actor), scripted.simulation().actor(actor));
+            assert_eq!(a, b, "at tick {tick}");
+        }
+        host_of(scripted.simulation()).gc_step().unwrap();
+    }
+    assert!(host_of(scripted.simulation()).stats().hooks_fired > 100);
+    assert_ne!(unscripted.simulation().checksum(), scripted.simulation().checksum(), "the board's in it");
 }
 
 /// Allocates and returns, as a careless generated binding could.

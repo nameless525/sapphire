@@ -5,7 +5,8 @@ mod support;
 
 use std::sync::Mutex;
 
-use sapphire_script::{BOARD_SLOTS, CookedScript, Limits, ScriptStats, cook, host_of, host_of_mut};
+use sapphire_gameplay::script::BOARD_SLOTS;
+use sapphire_script::{CookedScript, Limits, ScriptStats, cook, host_of, rebind};
 use support::{finish, host_running, player_with, replay_file};
 
 /// The first chunk. Every number it leaves goes in the digest, and the board keeps a count of hooks.
@@ -90,13 +91,12 @@ fn run(reload: Option<&str>) -> Run {
     while player.step() {
         tick += 1;
         sim.push(player.simulation().checksum());
-        let host = host_of(player.simulation());
-        digest.push(host.digest());
-        host.gc_step().unwrap();
+        digest.push(player.simulation().scripts().expect("attached").digest());
+        host_of(player.simulation()).gc_step().unwrap();
         if tick == RELOAD_AT
             && let Some(source) = reload
         {
-            host_of_mut(player.simulation_mut()).bind(&cook(source).unwrap(), "=reloaded").unwrap();
+            rebind(player.simulation_mut(), &cook(source).unwrap(), "=reloaded").unwrap();
         }
     }
     let finished = finish(player);
@@ -135,8 +135,8 @@ fn a_reload_moves_only_what_it_means_to_from_when_it_means_to() {
     assert_eq!(plain.board[1].to_bits(), tuned.board[1].to_bits());
     assert!(tuned.board[1] > 10.0);
 
-    // A beat's mark isn't the simulation's. Only a phase's slow motion can reach it, so it stays put
-    // until the first phase after the reload.
+    // Everything a hook leaves is in the simulation's checksum, so this reload's only change, a phase's slow
+    // motion, moves both at the first phase after it.
     let phase_only = run(Some(TUNED_PHASE_ONLY));
     let digest_moved = first_difference(&plain.digest, &phase_only.digest);
     let sim_moved = first_difference(&plain.sim, &phase_only.sim);

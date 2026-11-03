@@ -3,6 +3,7 @@
 
 use std::fmt;
 
+use sapphire_bytecode::{SCRIPT_EXTENSION, ScriptChunk, ScriptError};
 use sapphire_colliders::{COLLIDERS_EXTENSION, ColliderError, ColliderSet};
 use sapphire_moves::{MOVE_SET_EXTENSION, MoveSet, MoveSetError};
 use sapphire_navmesh::{NAVMESH_EXTENSION, NavMesh, NavMeshError};
@@ -79,11 +80,14 @@ pub enum AssetKind {
     /// A zone's encounter (`.sencounter`, M3 B2): [`Encounter`], which the simulation reads when it's
     /// given a zone and which never goes near a GPU.
     Encounter = 20,
+    /// A script's bytecode (`.sscript`, M3 L2): [`ScriptChunk`], which the simulation's VM runs and
+    /// nothing uploads.
+    Script = 21,
 }
 
 impl AssetKind {
     /// Every kind, in a stable order.
-    pub const ALL: [Self; 20] = [
+    pub const ALL: [Self; 21] = [
         Self::Mesh,
         Self::Texture,
         Self::Material,
@@ -104,6 +108,7 @@ impl AssetKind {
         Self::Timeline,
         Self::Ui,
         Self::Encounter,
+        Self::Script,
     ];
 
     /// The kind's position in [`Self::ALL`].
@@ -135,6 +140,7 @@ impl AssetKind {
             Self::Timeline => TIMELINE_EXTENSION,
             Self::Ui => UI_EXTENSION,
             Self::Encounter => ENCOUNTER_EXTENSION,
+            Self::Script => SCRIPT_EXTENSION,
         }
     }
 
@@ -161,13 +167,14 @@ impl AssetKind {
             Self::Timeline => "timeline",
             Self::Ui => "UI document",
             Self::Encounter => "encounter",
+            Self::Script => "script",
         }
     }
 
     /// Whether assets of this kind go to the GPU, through the asset server's upload queue. A rig,
     /// a skeleton, a clip, a collider set, a sound, a cue, a move set, an animation graph, a zone, a
-    /// string table, a font, font chains, a navmesh or a timeline is ready once it and its dependencies
-    /// are decoded.
+    /// string table, a font, font chains, a navmesh, a timeline or a script is ready once it and its
+    /// dependencies are decoded.
     pub const fn uploads(self) -> bool {
         !matches!(
             self,
@@ -187,6 +194,7 @@ impl AssetKind {
                 | Self::Timeline
                 | Self::Ui
                 | Self::Encounter
+                | Self::Script
         )
     }
 
@@ -194,7 +202,7 @@ impl AssetKind {
     /// textures and probe grids are GPU data, so their bytes go once uploaded (a new renderer
     /// has them read again). Materials are small and CPU code reads them (live link, the editor), and
     /// rigs, skeletons, clips, collider sets, sounds, cues, move sets, animation graphs, zones, string
-    /// tables, fonts, font chains, navmeshes and timelines are read on the CPU only, so they stay.
+    /// tables, fonts, font chains, navmeshes, timelines and scripts are read on the CPU only, so they stay.
     pub const fn keeps_bytes(self) -> bool {
         matches!(
             self,
@@ -215,6 +223,7 @@ impl AssetKind {
                 | Self::Timeline
                 | Self::Ui
                 | Self::Encounter
+                | Self::Script
         )
     }
 
@@ -229,8 +238,8 @@ impl AssetKind {
     /// Whether an asset of this kind may depend on one of `kind`: meshes on materials and
     /// skeletons, materials on textures, clips on skeletons, cues on sounds, animation graphs on
     /// clips, zones on collider sets and navmeshes, font chains on fonts, and textures, rigs, probe grids,
-    /// skeletons, collider sets, sounds, move sets, string tables, fonts, navmeshes, timelines and UI documents on
-    /// nothing. A zone's meshes and probes aren't dependencies ([`Self::reach`]). The allowed pairs form no
+    /// skeletons, collider sets, sounds, move sets, string tables, fonts, navmeshes, timelines, UI documents and
+    /// scripts on nothing. A zone's meshes and probes aren't dependencies ([`Self::reach`]). The allowed pairs form no
     /// loop, so chains are at most three long and cycles can't exist, whatever a pack claims. A new kind
     /// takes its place in this order.
     pub const fn may_depend_on(self, kind: AssetKind) -> bool {
@@ -269,6 +278,7 @@ impl AssetKind {
             18 => Some(Self::Timeline),
             19 => Some(Self::Ui),
             20 => Some(Self::Encounter),
+            21 => Some(Self::Script),
             _ => None,
         }
     }
@@ -277,7 +287,7 @@ impl AssetKind {
     /// `Texture::from_ktx2`, `Material::read`, `CharacterRig::read`, `ProbeGrid::read`,
     /// `Skeleton::read`, `Clip::read`, `ColliderSet::read`, `Sound::read`, `Cue::read`,
     /// `MoveSet::from_cooked`, `AnimGraph::read`, `Zone::read`, `StringTable::read`, `Font::read`,
-    /// `FontChains::read`, `NavMesh::read`, `Timeline::read`, `UiDocument::read`), and returns the assets they reference, sorted and without
+    /// `FontChains::read`, `NavMesh::read`, `Timeline::read`, `UiDocument::read`, `ScriptChunk::read`), and returns the assets they reference, sorted and without
     /// repeats: a mesh's material slots bound to material assets and its skeleton, a material's textures,
     /// a clip's skeleton, a cue's sounds, a graph's clips, what the simulation reads of a zone, font chains'
     /// fonts. The packer records these as the asset's dependencies, and decode jobs check that a decoded
@@ -362,6 +372,11 @@ impl AssetKind {
             // A screen names its strings by key and its fonts by role, not by asset.
             Self::Ui => {
                 UiDocument::read(bytes)?;
+                Vec::new()
+            }
+            // A script's names are its own to look up in a set of moves: it holds no asset.
+            Self::Script => {
+                ScriptChunk::read(bytes)?;
                 Vec::new()
             }
         };
@@ -454,4 +469,6 @@ pub enum AssetError {
     Timeline(#[from] TimelineError),
     #[error("invalid UI document")]
     Ui(#[from] UiError),
+    #[error("invalid script")]
+    Script(#[from] ScriptError),
 }

@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use mlua::thread::ThreadStatus;
 use mlua::{Lua, VmState, ffi, lua_State};
-use sapphire_script::bindings::Frame;
+use sapphire_gameplay::HookFrame;
 use sapphire_script::{HookArgs, HookEnd, Limits, ScriptVm, VmError, cook};
 
 /// Exits 0 only by reaching the line after the failure: the process lived.
@@ -41,7 +41,7 @@ fn on_vm_with_args(source: &str, limits: Limits, args: impl Into<HookArgs>) -> H
     let cooked = cook(source).expect("cooks");
     let hooks = vm.load(&cooked, "=case").expect("loads");
     let hook = hooks.hook("hook").expect("hook type").expect("has a hook");
-    let mut frame = Frame::new();
+    let mut frame = HookFrame::new(0);
     vm.fire(&mut frame, &hook, args)
 }
 
@@ -282,7 +282,7 @@ const CASES: &[Case] = &[
         let hoard =
             cook("return { hook = function() local t = {} for i = 1, 1e7 do t[i] = {} end end }").unwrap();
         let hook = vm.load(&hoard, "=case").unwrap().hook("hook").unwrap().unwrap();
-        let mut frame = Frame::new();
+        let mut frame = HookFrame::new(0);
         // Full, and with the collector stopped it stays full for what comes next.
         let first = vm.fire(&mut frame, &hook, ());
         let deep =

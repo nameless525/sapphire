@@ -6,11 +6,11 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use sapphire_gameplay::Simulation;
 use sapphire_gameplay::replay::{
     Played, Player, Replay, SCENARIOS, Scenario, ScenarioSetup, arena_fight, find_scenario,
 };
-use sapphire_script::bindings::{BOARD_SLOTS, Frame};
+use sapphire_gameplay::script::BOARD_SLOTS;
+use sapphire_gameplay::{HookFrame, ScriptCommand, Simulation};
 use sapphire_script::{HookEnd, Limits, ScriptHost, ScriptStats, ScriptVm, attach, cook, host_of};
 
 static WAITING: Mutex<Option<ScriptHost>> = Mutex::new(None);
@@ -30,12 +30,13 @@ pub fn replay_file(name: &str) -> Replay {
     Replay::decode(&std::fs::read(path).expect("the replay is there")).expect("reads")
 }
 
-/// `arena-fight`, with `host` in it. Only one may start at a time, since they share the static.
+/// `arena-fight`, with `host` in it, playing the replay's actions whatever its chunk does to the tables'
+/// hash. Only one may start at a time, since they share the static.
 pub fn player_with(host: ScriptHost, replay: Replay) -> Player {
     let plain = find_scenario(&SCENARIOS, "arena-fight").expect("listed");
     let scenarios = [Scenario { setup: ScenarioSetup::Code(setup), ..*plain }];
     *WAITING.lock().unwrap() = Some(host);
-    Player::new(replay, &scenarios).expect("starts")
+    Player::on_current_tables(replay, &scenarios).expect("starts")
 }
 
 /// A host running `source`.
@@ -49,6 +50,7 @@ pub fn host_running(source: &str, limits: Limits) -> ScriptHost {
 pub struct Finished {
     pub played: Played,
     pub stats: ScriptStats,
+    pub commands_applied: u64,
     pub digest: u64,
     pub board: [f64; BOARD_SLOTS],
     pub used_memory: usize,
@@ -58,9 +60,11 @@ pub struct Finished {
 /// Ends a run, reading its host before the simulation goes.
 pub fn finish(player: Player) -> Finished {
     let host = host_of(player.simulation());
-    let (stats, digest, board) = (host.stats(), host.digest(), *host.board());
-    let (used_memory, last_error) = (host.vm().used_memory(), host.last_error().map(str::to_owned));
-    Finished { played: player.finish(), stats, digest, board, used_memory, last_error }
+    let scripts = player.simulation().scripts().expect("a host enables them");
+    let (commands_applied, digest, board) = (scripts.commands_applied(), scripts.digest(), *scripts.board());
+    let (stats, used_memory) = (host.stats(), host.vm().used_memory());
+    let last_error = host.last_error().map(str::to_owned);
+    Finished { played: player.finish(), stats, commands_applied, digest, board, used_memory, last_error }
 }
 
 /// Plays a whole replay with `host` on it, a collection step after every tick, as a frame's would be.
@@ -73,22 +77,23 @@ pub fn play(host: ScriptHost, replay: Replay) -> Finished {
 }
 
 /// One hook named `hook` on a fresh VM, with a frame the test can read afterwards.
-pub fn run_hook(source: &str) -> Result<(HookEnd, Frame), String> {
+pub fn run_hook(source: &str) -> Result<(HookEnd, HookFrame), String> {
     let vm = ScriptVm::new(Limits::default()).expect("the VM starts");
     let cooked = cook(source).map_err(|error| error.to_string())?;
     let hooks = vm.load(&cooked, "=test").map_err(|error| error.to_string())?;
     let hook = hooks.hook("hook").map_err(|error| error.to_string())?.expect("has a hook");
-    let mut frame = Frame::new();
+    let mut frame = HookFrame::new(0);
     let end = vm.fire(&mut frame, &hook, ());
     Ok((end, frame))
 }
 
 /// What a hook left as `sapphire.mark`, in order.
-pub fn marks(frame: &Frame) -> Vec<f64> {
-    frame.queue[..frame.queued]
+pub fn marks(frame: &HookFrame) -> Vec<f64> {
+    frame
+        .queued()
         .iter()
         .filter_map(|command| match command {
-            sapphire_script::Command::Mark(value) => Some(*value),
+            ScriptCommand::Mark(value) => Some(*value),
             _ => None,
         })
         .collect()

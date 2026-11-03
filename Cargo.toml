@@ -44,6 +44,7 @@ members = [
     # L4 framework
     "crates/sapphire_world",
     "crates/sapphire_gameplay",
+    "crates/sapphire_bytecode",
     "crates/sapphire_script",
     "crates/sapphire_camera",
     "crates/sapphire_sequencer",
@@ -124,6 +125,7 @@ sapphire_text = { path = "crates/sapphire_text" }
 sapphire_ui = { path = "crates/sapphire_ui" }
 sapphire_world = { path = "crates/sapphire_world" }
 sapphire_gameplay = { path = "crates/sapphire_gameplay" }
+sapphire_bytecode = { path = "crates/sapphire_bytecode" }
 sapphire_script = { path = "crates/sapphire_script" }
 sapphire_camera = { path = "crates/sapphire_camera" }
 sapphire_sequencer = { path = "crates/sapphire_sequencer" }

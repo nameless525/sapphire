@@ -10,15 +10,14 @@ license.workspace = true
 [dependencies]
 bevy_ecs.workspace = true
 mlua.workspace = true
+sapphire_bytecode = { workspace = true, features = ["compile"] }
 sapphire_core.workspace = true
 sapphire_ecs.workspace = true
 sapphire_gameplay.workspace = true
 sapphire_math.workspace = true
-thiserror.workspace = true
-
-[dev-dependencies]
-# The bench's clock.
+# How long a step's hooks took (rule R9). Nothing reads it back.
 sapphire_time.workspace = true
+thiserror.workspace = true
 
 [lints]
 workspace = true

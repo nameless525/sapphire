@@ -26,6 +26,8 @@
 //!   character's joints as an asset that meshes and clips name, and motion as sparse tracks of
 //!   quantized keys, read in place. Their formats sit here with every other cooked format's,
 //!   because [`AssetKind::references`] checks each kind's bytes; `sapphire_anim` samples them.
+//! - Scripts (`.sscript`, M3 L2): `sapphire_bytecode`'s `ScriptChunk`, loaded like any kind and read by
+//!   whoever runs it, with no VM here.
 //! - Ambient probe grids ([`probes`], `.sprobe`, M1 W5): a zone's baked sky visibility and bounce
 //!   light per time-of-day key, in a sparse grid of bricks, which the renderer relights.
 //! - Where collider sets go (`.scol`, M2 D3): [`AssetKind::Colliders`] packs and loads them. Their

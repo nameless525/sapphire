@@ -153,6 +153,7 @@ use crate::material::{self, MaterialSettings};
 use crate::moves::{self, MoveSetSettings};
 use crate::optimize::LodSettings;
 use crate::probes::{self, ProbeGridSettings};
+use crate::script::{self, ScriptSettings};
 use crate::texture::{HdrSettings, TextureClass, TextureSettings};
 use crate::timeline::{self, TimelineSettings};
 use crate::ui::{self, UiSettings};
@@ -236,6 +237,8 @@ pub enum ImportSettings {
     MoveSet(MoveSetSettings),
     /// An animation graph document (`.animgraph.ron`): how a character's clips play (M2 N3).
     AnimGraph(AnimGraphSettings),
+    /// A script (`.luau`): event hooks for the simulation's VM (M3 L2).
+    Script(ScriptSettings),
     /// A Fluent source (`.ftl`): strings of the locale it names, which cook into that locale's table,
     /// with no asset of their own (M3 V2).
     Fluent(FluentSettings),
@@ -304,6 +307,9 @@ impl ImportSettings {
         if anim_graph::is_source(source) {
             return Some(Self::AnimGraph(AnimGraphSettings::default()));
         }
+        if script::is_source(source) {
+            return Some(Self::Script(ScriptSettings::default()));
+        }
         if loc::is_locale_source(source) {
             return Some(Self::Locale(LocaleDocumentSettings::default()));
         }
@@ -360,6 +366,7 @@ impl ImportSettings {
             | Self::MoveSet(_)
             | Self::AnimGraph(_)
             | Self::Fluent(_)
+            | Self::Script(_)
             | Self::Locale(_)
             | Self::Ui(_)
             | Self::GltfClips(_)
@@ -389,6 +396,7 @@ impl ImportSettings {
             | Self::MoveSet(_)
             | Self::AnimGraph(_)
             | Self::Fluent(_)
+            | Self::Script(_)
             | Self::Locale(_)
             | Self::Ui(_)
             | Self::GltfClips(_)

@@ -5,6 +5,7 @@ use std::fmt;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
+use sapphire_bytecode::{ArchivedScriptChunk, ScriptChunk};
 use sapphire_colliders::{ArchivedColliderSet, ColliderSet};
 use sapphire_moves::{ArchivedMoveSet, MoveSet};
 use sapphire_navmesh::{ArchivedNavMesh, NavMesh};
@@ -64,6 +65,7 @@ mod sealed {
     impl Sealed for sapphire_zone::Encounter {}
     impl Sealed for sapphire_navmesh::NavMesh {}
     impl Sealed for sapphire_timeline::Timeline {}
+    impl Sealed for sapphire_bytecode::ScriptChunk {}
     impl Sealed for crate::sound::Sound {}
     impl Sealed for crate::cue::Cue {}
     impl Sealed for sapphire_moves::MoveSet {}
@@ -160,6 +162,17 @@ impl Asset for Timeline {
         // SAFETY: as for meshes: `Timeline::read` accepted these bytes, unchanged since.
         unsafe { access_unchecked::<Timeline>(bytes) }
             .expect("the envelope was checked when the timeline was decoded")
+    }
+}
+
+impl Asset for ScriptChunk {
+    const KIND: AssetKind = AssetKind::Script;
+    type View<'a> = &'a ArchivedScriptChunk;
+
+    unsafe fn view(bytes: &[u8]) -> &ArchivedScriptChunk {
+        // SAFETY: as for meshes: `ScriptChunk::read` accepted these bytes, unchanged since.
+        unsafe { access_unchecked::<ScriptChunk>(bytes) }
+            .expect("the envelope was checked when the script was decoded")
     }
 }
 

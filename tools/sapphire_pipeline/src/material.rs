@@ -114,6 +114,7 @@ impl TextureKind {
             | ImportSettings::MoveSet(_)
             | ImportSettings::AnimGraph(_)
             | ImportSettings::Fluent(_)
+            | ImportSettings::Script(_)
             | ImportSettings::Locale(_)
             | ImportSettings::Ui(_)
             | ImportSettings::GltfClips(_)

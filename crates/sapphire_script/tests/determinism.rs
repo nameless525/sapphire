@@ -17,8 +17,10 @@ use sapphire_script::scan::scan;
 use std::ffi::c_int;
 
 use mlua::{ffi, lua_State};
-use sapphire_script::bindings::{BOARD_SLOTS, with_frame};
-use sapphire_script::{Binding, CookedScript, Frame, HookEnd, Limits, ScriptHost, ScriptVm, cook};
+use sapphire_gameplay::HookFrame;
+use sapphire_gameplay::script::BOARD_SLOTS;
+use sapphire_script::bindings::with_frame;
+use sapphire_script::{Binding, CookedScript, HookEnd, Limits, ScriptHost, ScriptVm, cook};
 use support::{marks, play, replay_file, run_hook};
 
 fn refused(source: &str) -> String {
@@ -276,7 +278,7 @@ fn a_replaced_function_is_the_pinned_one_at_every_level() {
         let compiled = unsafe { CookedScript::from_trusted_bytes(bytes) };
         let hooks = vm.load(&compiled, "=test").unwrap();
         let hook = hooks.hook("hook").unwrap().unwrap();
-        let mut frame = Frame::new();
+        let mut frame = HookFrame::new(0);
         assert_eq!(vm.fire(&mut frame, &hook, 0.7), HookEnd::Returned);
         let x = 0.7_f64 as f32;
         assert_eq!(
@@ -303,7 +305,7 @@ fn fastcall_reaches_libm_with_the_global_replaced_unless_it_is_disabled() {
         // SAFETY: the unchanged bytes came directly from the same pinned compiler above.
         unsafe { vm.lua_for_tests() }.load(&bytes).set_mode(mlua::chunk::ChunkMode::Binary).eval().unwrap();
     let hook: mlua::Function = hooks.get("hook").unwrap();
-    let mut frame = Frame::new();
+    let mut frame = HookFrame::new(0);
     // SAFETY: the raw function was just compiled by the pinned compiler above; this control
     // deliberately bypasses the allowlist, with only numeric conversion and no new bytecode.
     assert_eq!(unsafe { vm.fire_trusted(&mut frame, &hook, 0.7) }, HookEnd::Returned);
@@ -421,10 +423,6 @@ fn nothing_written_outlasts_a_hook_but_the_board() {
     let source = "local t = {} local function helper() t.n = 1 end return { hook = function() helper() end }";
     let (end, _) = run_hook(source).unwrap();
     assert!(matches!(&end, HookEnd::Failed(error) if error.contains("readonly")), "{end:?}");
-    // The board does.
-    let mut host = ScriptHost::new(Limits::default()).unwrap();
-    host.bind(&cook("return { on_phase = function() end }").unwrap(), "=test").unwrap();
-    assert_eq!(host.board()[0].to_bits(), 0);
 }
 
 #[test]
@@ -443,7 +441,7 @@ fn a_budget_is_a_count_that_lands_on_one_instruction() {
         let vm = ScriptVm::new(Limits { interrupts: limit, ..Limits::default() }).unwrap();
         let hooks = vm.load(&cook(spin).unwrap(), "=test").unwrap();
         let hook = hooks.hook("hook").unwrap().unwrap();
-        let mut frame = Frame::new();
+        let mut frame = HookFrame::new(0);
         let before = ScriptVm::interrupts();
         let end = vm.fire(&mut frame, &hook, ());
         assert_eq!(end, HookEnd::OverBudget);
@@ -456,7 +454,7 @@ fn a_budget_is_a_count_that_lands_on_one_instruction() {
     let vm = ScriptVm::new(Limits::default()).unwrap();
     let hooks = vm.load(&cook(counted).unwrap(), "=test").unwrap();
     let hook = hooks.hook("hook").unwrap().unwrap();
-    let mut frame = Frame::new();
+    let mut frame = HookFrame::new(0);
     let before = ScriptVm::interrupts();
     assert_eq!(vm.fire(&mut frame, &hook, ()), HookEnd::Returned);
     let first = ScriptVm::interrupts() - before;
@@ -490,7 +488,7 @@ fn a_walk_of_a_table_spends_the_budget() {
         let vm = ScriptVm::new(Limits { interrupts: 1_000_000, ..Limits::default() }).unwrap();
         let hook = vm.load(&cook(&source).unwrap(), "=test").unwrap().hook("hook").unwrap().unwrap();
         let before = ScriptVm::interrupts();
-        assert_eq!(vm.fire(&mut Frame::new(), &hook, ()), HookEnd::Returned, "{body}");
+        assert_eq!(vm.fire(&mut HookFrame::new(0), &hook, ()), HookEnd::Returned, "{body}");
         assert!(ScriptVm::interrupts() - before >= 9000, "{body}: {}", ScriptVm::interrupts() - before);
     }
     assert_eq!(
@@ -712,7 +710,7 @@ unsafe extern "C-unwind" fn note(state: *mut lua_State) -> c_int {
 }
 
 fn attack_run_of(source: &str) -> (u64, u64, u64) {
-    let limits = Limits { interrupts: 1_000_000, ..Limits::default() };
+    let limits = Limits { interrupts: 1_000_000, step_interrupts: 10_000_000, ..Limits::default() };
     // SAFETY: `note` takes only checked numbers from the supplied live state, preserves its stack,
     // returns zero results, enters host attribution, and never raises or executes new bytecode.
     let binding = unsafe { Binding::new("note", note) };
@@ -722,9 +720,9 @@ fn attack_run_of(source: &str) -> (u64, u64, u64) {
     let finished = play(host, replay_file("arena-fight-won"));
     assert_eq!(finished.stats.hooks_failed, 0, "{:?}", finished.last_error);
     assert_eq!(finished.stats.hooks_over_budget, 0);
-    assert_eq!(finished.stats.commands_dropped, 0, "a dropped command is a number the digest didn't see");
+    assert_eq!(finished.stats.hooks_skipped, 0, "a skipped hook is a number the digest didn't see");
     assert!(finished.stats.hooks_fired > 50, "{:?}", finished.stats);
-    assert!(finished.stats.commands_applied >= finished.stats.hooks_fired, "{:?}", finished.stats);
+    assert!(finished.commands_applied >= finished.stats.hooks_fired, "{:?}", finished.stats);
     assert!(finished.board[0].is_finite(), "a NaN would hide everything folded into it");
     assert_ne!(finished.board[BOARD_SLOTS - 1], 0.0);
     (finished.played.trail.end(), finished.digest, finished.used_memory as u64)
@@ -833,8 +831,8 @@ fn the_same_hook_reads_one_checksum_under_aslr() {
 
 /// What the attack reads on every machine, including the stock movement and moves in its replay: a Luau
 /// upgrade or a change to `ATTACK` moves them on purpose, and a moved `arena-fight-won` moves the first.
-const ATTACK_SIM: u64 = 0x1b44_2b97_27b4_0897;
-const ATTACK_DIGEST: u64 = 0xa916_38eb_2827_1c70;
+const ATTACK_SIM: u64 = 0xe824_3733_5853_2d9d;
+const ATTACK_DIGEST: u64 = 0xe226_e06f_14dd_0bb9;
 const ATTACK_COOKED: u64 = 0xaeb4_3be9_564b_eb34;
 const CORPUS_COOKED: [u64; 3] = [0x5242_6308_ea97_c17b, 0x4e2e_a36b_d34f_f76d, 0x4e2e_a36b_d34f_f76d];
 

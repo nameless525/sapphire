@@ -174,7 +174,8 @@ pub fn codec(kind: AssetKind) -> Codec {
         | AssetKind::NavMesh
         | AssetKind::Timeline
         | AssetKind::Ui
-        | AssetKind::Encounter => Codec::Lz4,
+        | AssetKind::Encounter
+        | AssetKind::Script => Codec::Lz4,
         AssetKind::Sound => Codec::None,
     }
 }

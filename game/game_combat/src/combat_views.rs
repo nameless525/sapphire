@@ -1150,6 +1150,12 @@ mod tests {
             .collect();
         assert!(!names.is_empty(), "no replays");
         for name in &names {
+            // One with a script on it is the replay runner's alone, which links a VM.
+            let bytes = fs::read(replays().join(format!("{name}.sreplay"))).expect("committed");
+            let replay = Replay::decode(&bytes).expect("reads");
+            if find_scenario(&SCENARIOS, replay.scenario()).is_none() {
+                continue;
+            }
             let mut on = player(name);
             let mut off = player(name);
             let mut drawn = 0;

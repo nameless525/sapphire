@@ -5,23 +5,24 @@
 //!
 //! - [`ScriptVm`]: the VM. An allowlist of libraries, a prelude, frozen globals, a budget counted in
 //!   interrupts and ended by a yield, a memory limit, a collector that only runs when asked.
-//! - [`cook`] and [`scan`]: compiling at one pinned level with libm's builtins off, and refusing the
-//!   instruction/library paths covered by the deterministic policy. Luau's implicit arithmetic text
-//!   coercion and compiler folding through constant locals remain documented portability limits;
-//!   the pinned cross-platform corpus checks samples rather than proving every source equivalent.
-//! - [`bindings`]: what a script can call, as Rust that never raises and sends what it allocates to gate 4.
-//! - [`ScriptHost`]: which hooks are bound, what lasts between them, and the system that fires them.
+//! - [`bindings`]: what a script can call, as Rust that never raises and sends what it allocates to gate 4,
+//!   made by `cargo xtask script-api` from the table in `api.toml`, which makes `sapphire.d.luau` too.
+//! - [`ScriptHost`]: which hooks are bound, and the system that fires them.
+//! - [`scenarios`]: replay scenarios with a script in them.
 //!
-//! Doesn't own: anything of gameplay's. It depends on `sapphire_gameplay` and not the other way round,
-//! and adds itself with `Simulation::add_combat_system`.
+//! Doesn't own: compiling and scanning, which are `sapphire_bytecode`'s, for the cooker to link without a
+//! simulation (re-exported here as [`cook`] and [`scan`]); or what a script reads and asks for, which is
+//! `sapphire_gameplay::script`'s. It depends on `sapphire_gameplay` and not the other way round, and adds
+//! itself with `Simulation::add_combat_system`.
 
+mod api;
 pub mod bindings;
-pub mod compile;
 pub mod host;
-pub mod scan;
+pub mod scenarios;
 pub mod vm;
 
-pub use bindings::{BOARD_SLOTS, Binding, Command, Frame};
-pub use compile::{CookError, CookedScript, cook};
-pub use host::{HOOKS, ScriptHost, ScriptStats, attach, host_of, host_of_mut};
+pub use bindings::{API, Binding, Declared, HOOKS};
+pub use host::{ScriptHost, ScriptStats, attach, host_of, host_of_mut, rebind};
+pub use sapphire_bytecode::compile::{self, CookedScript, cook};
+pub use sapphire_bytecode::{CookError, scan};
 pub use vm::{Hook, HookArgs, HookEnd, HookTable, Limits, ScriptVm, VmError};

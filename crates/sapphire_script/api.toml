@@ -1,0 +1,146 @@
+# What a script can call and what it can answer: the one declared table (spec §5.24, M3 L2).
+#
+# `cargo xtask script-api` makes `src/bindings/generated.rs` and `sapphire.d.luau` from this, and a test in xtask
+# holds what's checked in to it. A function's body is `src/api.rs`'s, by the same name, taking the hook's
+# frame and each argument as a number and returning its results as numbers: a wrapper reads and pushes
+# nothing else, so nothing here can raise or allocate in the VM.
+#
+# `query` reads what this step left, and `command` asks. Arguments an actor names are its ID, which hooks
+# are handed, and one a name names is a place in the `names` list the chunk returned, counting from 1.
+
+[[function]]
+kind = "query"
+name = "tick"
+args = []
+returns = ["tick"]
+doc = "The simulation's tick."
+
+[[function]]
+kind = "query"
+name = "health"
+args = ["actor"]
+returns = ["health"]
+doc = "An actor's health, or 0 if it's gone or was never there."
+
+[[function]]
+kind = "query"
+name = "max_health"
+args = ["actor"]
+returns = ["max_health"]
+doc = "An actor's most health, or 0 if it's gone or was never there."
+
+[[function]]
+kind = "query"
+name = "is_defeated"
+args = ["actor"]
+returns = ["defeated"]
+doc = "1 if an actor has fallen and is still in the world, or 0."
+
+[[function]]
+kind = "query"
+name = "faction"
+args = ["actor"]
+returns = ["faction"]
+doc = "The number of an actor's side, or 0 for none, as also for one that's gone."
+
+[[function]]
+kind = "query"
+name = "position"
+args = ["actor"]
+returns = ["x", "y", "z"]
+doc = "Where an actor stands, in metres, or the origin if it's gone."
+
+[[function]]
+kind = "query"
+name = "soft_lock_target"
+args = ["actor"]
+returns = ["target"]
+doc = "Who an actor's soft lock has chosen, or -1."
+
+[[function]]
+kind = "query"
+name = "brain_target"
+args = ["actor"]
+returns = ["target"]
+doc = "Who an actor's brain has picked, or -1."
+
+[[function]]
+kind = "query"
+name = "random"
+args = []
+returns = ["value"]
+doc = "The next of the simulation's numbers in 0..1, so a draw is in the checksum."
+
+[[function]]
+kind = "query"
+name = "board"
+args = ["slot"]
+returns = ["value"]
+doc = "A number that lasts, from slot 0 to 63. Any other slot is a fault."
+
+[[function]]
+kind = "command"
+name = "set_board"
+args = ["slot", "value"]
+returns = []
+doc = "Keeps a number from slot 0 to 63, at once. A hook that ends badly puts the board back as it found it."
+
+[[function]]
+kind = "command"
+name = "slow_motion"
+args = ["per_mille", "steps"]
+returns = []
+doc = "The world's clock runs at this many thousandths for this many steps, starting on the next. A rate that doesn't divide a million, or is over 1000, does nothing."
+
+[[function]]
+kind = "command"
+name = "mark"
+args = ["value"]
+returns = []
+doc = "Puts a number in the checksum and does nothing else, to show a hook ran."
+
+[[function]]
+kind = "command"
+name = "force_move"
+args = ["actor", "name"]
+returns = []
+doc = "Starts a move on the next step, whatever's running. A name the actor's set doesn't have does nothing, and a fallen fighter stays down."
+
+[[function]]
+kind = "command"
+name = "give_brain"
+args = ["actor"]
+returns = []
+doc = "From the next step this actor fights for itself, if its set says how. One already fighting carries on, and a fallen fighter gets no brain."
+
+[[function]]
+kind = "command"
+name = "give_soft_lock"
+args = ["actor"]
+returns = []
+doc = "From the next step this actor chooses who it's aiming at. One already choosing carries on."
+
+[[hook]]
+name = "on_phase"
+args = ["actor", "phase", "health"]
+doc = "A fighter's health crossed a quarter. The first crossing is phase 1."
+
+[[hook]]
+name = "on_move"
+args = ["actor", "name"]
+doc = "An actor started a move: its place in `names`, or 0 if the chunk doesn't list it."
+
+[[hook]]
+name = "on_hit"
+args = ["attacker", "target", "damage"]
+doc = "A hit was applied."
+
+[[hook]]
+name = "on_defeat"
+args = ["actor"]
+doc = "A fighter fell."
+
+[[hook]]
+name = "on_beat"
+args = ["tick"]
+doc = "The tick is a multiple of what the host was set to, for a scenario that asks. Never every tick in a game."

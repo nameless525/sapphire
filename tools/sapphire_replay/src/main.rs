@@ -5,8 +5,9 @@ use std::process::ExitCode;
 
 use anyhow::{Context as _, bail};
 use sapphire_core::alloc::CountingAllocator;
-use sapphire_gameplay::replay::{ARCHITECTURE, SCENARIOS};
+use sapphire_gameplay::replay::{ARCHITECTURE, SCENARIOS, Scenario};
 use sapphire_replay::{Record, Suite, check, list, record, values_help};
+use sapphire_script::scenarios::SCRIPTED;
 
 /// What gate 4 reads: the suite refuses to run without it. Every allocation in this process counts,
 /// and the gate looks only at the simulation thread's, inside its steps.
@@ -67,6 +68,8 @@ fn main() -> ExitCode {
 fn run() -> anyhow::Result<ExitCode> {
     let mut args = Args(std::env::args().skip(1).collect());
     anyhow::ensure!(!args.0.is_empty(), "no command given\n\n{USAGE}");
+    // Gameplay's list can't name a script, which stands above it.
+    let scenarios: Vec<Scenario> = SCENARIOS.iter().chain(SCRIPTED.iter()).copied().collect();
     let command = args.0.remove(0);
     let name = (command == "record" && !args.0.is_empty()).then(|| args.0.remove(0));
     let dir = PathBuf::from(args.required("--dir")?);
@@ -81,7 +84,7 @@ fn run() -> anyhow::Result<ExitCode> {
                 out: &out,
                 update,
                 only: only.as_deref(),
-                scenarios: &SCENARIOS,
+                scenarios: &scenarios,
                 architecture: ARCHITECTURE,
             })?;
             if outcome.failures.is_empty() {
@@ -109,14 +112,14 @@ fn run() -> anyhow::Result<ExitCode> {
                 script: &script,
                 ticks,
                 seed,
-                scenarios: &SCENARIOS,
+                scenarios: &scenarios,
                 architecture: ARCHITECTURE,
             })?;
             Ok(ExitCode::SUCCESS)
         }
         "list" => {
             args.finish()?;
-            list(&dir, &SCENARIOS)?;
+            list(&dir, &scenarios)?;
             Ok(ExitCode::SUCCESS)
         }
         other => bail!("unknown command `{other}`\n\n{USAGE}"),

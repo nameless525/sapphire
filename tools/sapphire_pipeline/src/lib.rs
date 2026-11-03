@@ -137,6 +137,7 @@ pub mod optimize;
 pub mod pack;
 pub mod probes;
 pub mod samples;
+pub mod script;
 #[cfg(test)]
 mod test_util;
 pub mod texture;

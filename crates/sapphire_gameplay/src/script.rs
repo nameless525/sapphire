@@ -203,6 +203,15 @@ impl HookFrame {
     }
 }
 
+/// The quarters `health` has fallen through, 0 to [`PHASES`], or `None` for a fighter with no health. In
+/// `u64`, so a health near `u32::MAX` can't overflow; several crossed in one step make one event, at the
+/// latest, so a hook never answers a phase the fighter has already passed.
+fn phase_of(health: u32, max: u32) -> Option<u8> {
+    (u64::from(max - health.min(max)) * u64::from(PHASES))
+        .checked_div(u64::from(max))
+        .map(|phase| phase as u8)
+}
+
 /// What one actor last showed: what events are the differences of.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ActorWatch {
@@ -388,8 +397,7 @@ pub(crate) fn gather_hook_events(
         let mut watch = seen.unwrap_or(ActorWatch { id, started: 0, phase: 0, defeated: false });
 
         let (health, max) = (fighter.health(), fighter.max_health());
-        // A fighter with no health has no quarters.
-        if let Some(phase) = ((max - health.min(max)) * PHASES).checked_div(max).map(|phase| phase as u8)
+        if let Some(phase) = phase_of(health, max)
             && phase > watch.phase
         {
             watch.phase = phase;
@@ -528,6 +536,14 @@ mod tests {
 
     const fn id(raw: u32) -> ActorId {
         ActorId::from_raw(raw).unwrap()
+    }
+
+    #[test]
+    fn phases_cover_all_of_u32s_health() {
+        assert_eq!(phase_of(u32::MAX, u32::MAX), Some(0));
+        assert_eq!(phase_of(u32::MAX / 4 * 3, u32::MAX), Some(1));
+        assert_eq!(phase_of(0, u32::MAX), Some(4), "the latest quarter, not four");
+        assert_eq!(phase_of(0, 0), None);
     }
 
     fn facts(raw: u32) -> ActorFacts {

@@ -97,11 +97,14 @@ pub(crate) struct CueSounds<'a> {
     pub emitters: &'a [Emitter],
     /// The simulation's world clock's speed, which its slow motion turns down.
     pub world_time_scale: f32,
+    /// A new fight began this frame, so what the last one left playing ends before these start.
+    pub started_over: bool,
 }
 
 impl CueSounds<'_> {
     /// Nothing: there's no fight.
-    pub const NONE: CueSounds<'static> = CueSounds { requests: &[], emitters: &[], world_time_scale: 1.0 };
+    pub const NONE: CueSounds<'static> =
+        CueSounds { requests: &[], emitters: &[], world_time_scale: 1.0, started_over: false };
 }
 
 /// What's firing, and what it fires into that the scene doesn't hold itself.
@@ -119,6 +122,8 @@ pub(crate) struct CueShow {
     tick: Option<u64>,
     /// The time spent in steps since the last frame was written.
     stepping: Duration,
+    /// A new fight began since the last frame ended.
+    started_over: bool,
 }
 
 impl CueShow {
@@ -148,6 +153,7 @@ impl CueShow {
             world_time_scale: 1.0,
             tick: None,
             stepping: Duration::ZERO,
+            started_over: false,
         })
     }
 
@@ -212,6 +218,7 @@ impl CueShow {
             requests: self.dispatcher.sounds(),
             emitters: &self.emitters,
             world_time_scale: self.world_time_scale,
+            started_over: self.started_over,
         }
     }
 
@@ -227,6 +234,7 @@ impl CueShow {
         rumble: &mut dyn RumbleSink,
     ) -> (Vec3, Vec3) {
         self.dispatcher.end_frame(dt, rumble);
+        self.started_over = false;
         self.shakes.stack.advance(view_dt, behind_latest(alpha));
         self.shakes.stack.sample(&self.shakes.tuning.shakes)
     }
@@ -242,12 +250,14 @@ impl CueShow {
 
     /// A new fight: what the last one set going ends here, rather than playing out over ground its
     /// actors have left. Every screen effect goes, `--post-effect`'s among them. A rumble stops at the
-    /// next [`Self::end_frame`], which has a pad to tell. A sound rings out: the mixer has no way to stop
-    /// one, and the longest is a second or so.
+    /// next [`Self::end_frame`], which has a pad to tell, and sounds at the audio system's next update,
+    /// which [`Self::sounds`] tells, along with any the last fight had yet to start.
     pub fn start_over(&mut self, screen: &mut EffectStack) {
         self.world.clear();
         self.shakes.stack.clear();
         self.dispatcher.release_rumble();
+        self.dispatcher.forget_sounds();
+        self.started_over = true;
         screen.clear();
     }
 
@@ -400,6 +410,42 @@ mod tests {
             moved,
             "and it plays on from there"
         );
+    }
+
+    /// A new fight, in the frame's second step, say: the sounds the last one's first step asked for go
+    /// with it, the audio system hears once that it started over, and the new fight's sounds still play.
+    #[test]
+    fn a_new_fight_tells_the_audio_system_once() {
+        use sapphire_gameplay::replay::{SCENARIOS, find_scenario};
+
+        let presets = ScreenLibrary::default_effects();
+        let mut screen = EffectStack::new(sapphire_time::ScaledClock::new().new_local_clock());
+        let mut show = CueShow::new(VfxBudget::DESKTOP_LOW, &presets).expect("resolves");
+        let scenario = find_scenario(SCENARIOS, "arena-fight").expect("listed");
+        let (mut sim, _) = scenario.start(scenario.config).expect("sets up");
+        assert!(!show.sounds().started_over);
+        let until_a_sound = |sim: &mut Simulation, show: &mut CueShow, screen: &mut EffectStack| {
+            for _ in 0..600 {
+                sim.step(&sapphire_gameplay::TickActions::NEUTRAL);
+                let stage = CueStage::Actors { director: None };
+                show.step(sim, screen, &presets, Mat4::IDENTITY, stage);
+                if !show.sounds().requests.is_empty() {
+                    return;
+                }
+                let _ = show.end_frame(1.0 / 60.0, 1.0 / 60.0, 1.0, &mut ());
+            }
+            panic!("a whole fight's start with no sound");
+        };
+        until_a_sound(&mut sim, &mut show, &mut screen);
+
+        show.start_over(&mut screen);
+        assert!(show.sounds().started_over);
+        assert!(show.sounds().requests.is_empty(), "the last fight's, not yet started");
+
+        let _ = show.end_frame(1.0 / 60.0, 1.0 / 60.0, 1.0, &mut ());
+        assert!(!show.sounds().started_over, "once");
+        until_a_sound(&mut sim, &mut show, &mut screen);
+        assert!(!show.sounds().started_over);
     }
 
     /// The shipped table resolves against the libraries a scene starts with.

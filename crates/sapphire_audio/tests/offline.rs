@@ -201,6 +201,40 @@ fn a_frozen_voice_stops_and_goes_on_from_where_it_was() {
     assert!((heard as i64 - expected).abs() < 400, "{heard} of {expected} frames");
 }
 
+/// Ended, a voice is silent within a moment, and gets there without a click.
+#[test]
+fn a_stopped_voice_ends_at_once_and_smoothly() {
+    let sound = tones(&[QUIET_FREE_TONE], 1.0);
+    let mut backend = mixer(&sound);
+    start(&mut backend, NEUTRAL);
+    let before = left(&render(&mut backend, 0.1));
+    backend.stop_voice(VoiceSlot(0));
+    let after = left(&render(&mut backend, 0.05));
+    let largest_step =
+        |samples: &[f32]| samples.windows(2).map(|pair| (pair[1] - pair[0]).abs()).fold(0.0, f32::max);
+    assert!(
+        largest_step(&after) <= largest_step(&before) * 1.5,
+        "a click: {} against the tone's {}",
+        largest_step(&after),
+        largest_step(&before)
+    );
+    let settled = (0.015 * RATE as f32) as usize;
+    assert!(after[settled..].iter().all(|sample| sample.abs() < 1e-4), "still sounding after 15 ms");
+    assert!(backend.voice_finished(VoiceSlot(0)));
+}
+
+/// A frozen voice ends too, and thawing what's left of it brings nothing back.
+#[test]
+fn a_frozen_voice_ends_when_stopped() {
+    let sound = tones(&[QUIET_FREE_TONE], 1.0);
+    let mut backend = mixer(&sound);
+    backend.start_voice(VoiceSlot(0), SOUND, Bus::Sfx, NEUTRAL, true).expect("a voice");
+    assert_eq!(sounding(&render(&mut backend, 0.05)), 0);
+    backend.stop_voice(VoiceSlot(0));
+    assert_eq!(sounding(&render(&mut backend, 0.05)), 0);
+    assert!(backend.voice_finished(VoiceSlot(0)));
+}
+
 #[test]
 fn a_voice_started_frozen_waits() {
     let sound = tones(&[1_000.0], 0.1);
@@ -399,6 +433,27 @@ mod through_the_system {
         let out = run(&mut system, Some(CueTarget::Flat), 1.0, 6);
         assert!(out.iter().all(|sample| sample.is_finite()), "the bus never recovered");
         assert!(rms(&left(&out)) > 0.05, "{}", rms(&left(&out)));
+    }
+
+    /// Through the system, as a fight starting over asks it: the old voice is gone from the samples
+    /// and the slots, and what plays next plays.
+    #[test]
+    fn stopped_voices_leave_the_mix_and_free_their_slots() {
+        let sound = tones(&[1_000.0], 1.0);
+        let mut system = system(&sound, cue());
+        let out = run(&mut system, Some(CueTarget::Flat), 1.0, 6);
+        assert!(rms(&left(&out)) > 0.05, "{}", rms(&left(&out)));
+        assert_eq!(system.stats().voices, 1);
+
+        system.stop_voices();
+        let _gone = run(&mut system, None, 1.0, 2);
+        let out = run(&mut system, None, 1.0, 6);
+        assert_eq!(sounding(&out), 0);
+        assert_eq!(system.stats().voices, 0);
+
+        let out = run(&mut system, Some(CueTarget::Flat), 1.0, 6);
+        assert!(rms(&left(&out)) > 0.05, "{}", rms(&left(&out)));
+        assert_eq!(system.stats().cues_played, 2);
     }
 
     #[test]

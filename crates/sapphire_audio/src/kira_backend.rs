@@ -29,7 +29,7 @@ const INTERNAL_BUFFER_FRAMES: usize = 128;
 
 /// How long a voice takes to reach new parameters: enough to hide the steps of a frame's updates.
 const VOICE_TWEEN: Duration = Duration::from_millis(30);
-/// How long a voice takes to stop or go on. Hitstop is about a tenth of a second, so this stays
+/// How long a voice takes to freeze, go on or end. Hitstop is about a tenth of a second, so this stays
 /// short of hearing as a fade, and long enough not to click.
 const FREEZE_TWEEN: Duration = Duration::from_millis(5);
 /// How long a bus's filter takes to move.
@@ -162,6 +162,12 @@ impl<O: Output> AudioBackend for KiraBackend<O> {
             voice.pause(tween(FREEZE_TWEEN));
         } else {
             voice.resume(tween(FREEZE_TWEEN));
+        }
+    }
+
+    fn stop_voice(&mut self, slot: VoiceSlot) {
+        if let Some(voice) = self.voice(slot) {
+            voice.stop(tween(FREEZE_TWEEN));
         }
     }
 

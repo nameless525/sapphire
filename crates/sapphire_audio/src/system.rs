@@ -137,6 +137,8 @@ struct Voice {
     /// What the backend was last told.
     sent: VoiceParams,
     frozen: bool,
+    /// Told to end, and only waiting to.
+    stopped: bool,
 }
 
 /// A tracked emitter.
@@ -229,6 +231,16 @@ impl<B: AudioBackend> AudioSystem<B> {
             } else {
                 self.backend.resume();
             }
+        }
+    }
+
+    /// Ends every voice playing, at once as far as anyone hears: a new fight has no use for the last
+    /// one's sounds. Their slots come back as they finish, and cues go on playing as usual, this
+    /// frame's among them. Suspended, they end as the mixer next runs.
+    pub fn stop_voices(&mut self) {
+        for voice in self.voices.iter_mut().filter(|voice| !voice.stopped) {
+            voice.stopped = true;
+            self.backend.stop_voice(voice.slot);
         }
     }
 
@@ -357,6 +369,7 @@ impl<B: AudioBackend> AudioSystem<B> {
             pitch: slow + (fast - slow) * pitch,
             sent: VoiceParams { gain_db: 0.0, pan: 0.0, pitch: 1.0 },
             frozen: false,
+            stopped: false,
         };
         let in_hitstop = self.in_hitstop(&voice);
         voice.frozen = in_hitstop && voice.hitstop == HitstopResponse::Freeze;
@@ -387,6 +400,10 @@ impl<B: AudioBackend> AudioSystem<B> {
     fn update_voices(&mut self, listener: &Listener) {
         for index in 0..self.voices.len() {
             let voice = self.voices[index];
+            // Thawing one would resume it, which cancels its stop.
+            if voice.stopped {
+                continue;
+            }
             let frozen = self.in_hitstop(&voice) && voice.hitstop == HitstopResponse::Freeze;
             if frozen != voice.frozen {
                 self.backend.freeze_voice(voice.slot, frozen);
@@ -764,6 +781,45 @@ mod tests {
             system.backend_mut().take_calls(),
             [MockCall::FreezeVoice { slot: VoiceSlot(0), frozen: false }]
         );
+    }
+
+    /// A fight starts over, and what the last one left ringing goes. Nothing brings it back: a frozen
+    /// voice told to thaw would resume, and cancel its stop.
+    #[test]
+    fn stopping_voices_ends_them_for_good_and_new_cues_play() {
+        let freeze = AssetId::from_text("44444444-2222-4333-8444-555555555555");
+        let mut system = system_with(placed_cue());
+        system.add_cue(freeze, Cue { hitstop: HitstopResponse::Freeze, ..placed_cue() });
+        let mut rng = CueRng::new(1);
+        let stopped = [Emitter { hitstop: true, ..actor_at(Vec3::new(0.0, 0.0, -1.0)) }];
+        let frozen_too = [
+            CueRequest { cue: CUE, target: CueTarget::On(ACTOR) },
+            CueRequest { cue: freeze, target: CueTarget::On(ACTOR) },
+        ];
+        system.update(&frame(&stopped, &frozen_too), &mut rng);
+        assert_eq!(system.stats().voices, 2);
+        system.backend_mut().take_calls();
+
+        system.stop_voices();
+        assert_eq!(
+            system.backend_mut().take_calls(),
+            [MockCall::StopVoice { slot: VoiceSlot(0) }, MockCall::StopVoice { slot: VoiceSlot(1) }]
+        );
+        system.stop_voices();
+        assert_eq!(system.backend().calls(), &[], "told once");
+
+        // The actor thaws and moves far away, and a cue of the new fight plays in the same frame.
+        let thawed = [actor_at(Vec3::new(0.0, 0.0, -11.0))];
+        system.update(&frame(&thawed, &play(CueTarget::Flat)), &mut rng);
+        let calls = system.backend_mut().take_calls();
+        assert!(matches!(calls[..], [MockCall::StartVoice { slot: VoiceSlot(2), .. }]), "{calls:?}");
+        assert_eq!(system.stats().voices, 3, "they hold their slots until they've ended");
+
+        system.backend_mut().finish(VoiceSlot(0));
+        system.backend_mut().finish(VoiceSlot(1));
+        system.update(&frame(&thawed, &[]), &mut rng);
+        assert_eq!(system.stats().voices, 1);
+        assert_eq!(system.stats().cues_played, 3);
     }
 
     #[test]

@@ -336,6 +336,12 @@ impl CueDispatcher {
         self.mixer.release();
     }
 
+    /// Forgets the sounds this frame's steps asked for, before any of them started: a fight started over
+    /// after they fired.
+    pub fn forget_sounds(&mut self) {
+        self.sounds.clear();
+    }
+
     /// The player's rumble setting, 0 (none, for accessibility) to 1 (as authored). What's playing takes it
     /// at the next [`Self::end_frame`], and 0 stops a pad that's running.
     pub fn set_rumble_setting(&mut self, setting: f32) {
@@ -581,6 +587,18 @@ mod tests {
         assert_eq!((stats.sounds, stats.sounds_dropped), (MAX_FRAME_SOUNDS as u64, 3));
         dispatcher.end_frame(TICK, &mut ());
         assert!(dispatcher.sounds().is_empty(), "with no audio, quietly gone");
+    }
+
+    /// A fight starting over takes back what it hadn't started, and goes on from there.
+    #[test]
+    fn forgetting_sounds_leaves_the_steps_after_it_theirs() {
+        let mut dispatcher = dispatcher(vec![with_sound("swing")]);
+        let mut sinks = Sinks::new();
+        sinks.read(&mut dispatcher, 1, &[event("swing", None)]);
+        dispatcher.forget_sounds();
+        assert!(dispatcher.sounds().is_empty());
+        sinks.read(&mut dispatcher, 2, &[event("swing", None)]);
+        assert_eq!(dispatcher.sounds().len(), 1);
     }
 
     #[test]

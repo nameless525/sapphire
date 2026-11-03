@@ -18,6 +18,7 @@ pub enum MockCall {
     StartVoice { slot: VoiceSlot, sound: AssetId, bus: Bus, params: VoiceParams, frozen: bool },
     SetVoice { slot: VoiceSlot, params: VoiceParams },
     FreezeVoice { slot: VoiceSlot, frozen: bool },
+    StopVoice { slot: VoiceSlot },
     SetBus { bus: Bus, params: BusParams },
     Suspend,
     Resume,
@@ -96,6 +97,10 @@ impl AudioBackend for MockBackend {
 
     fn freeze_voice(&mut self, slot: VoiceSlot, frozen: bool) {
         self.calls.push(MockCall::FreezeVoice { slot, frozen });
+    }
+
+    fn stop_voice(&mut self, slot: VoiceSlot) {
+        self.calls.push(MockCall::StopVoice { slot });
     }
 
     fn voice_finished(&mut self, slot: VoiceSlot) -> bool {

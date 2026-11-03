@@ -146,6 +146,9 @@ impl SandboxAudio {
     /// asks, and follows the OS's interruptions and the scene.
     pub fn update(&mut self, dt: f32, platform: &Platform, scene: SceneSound, fight: CueSounds<'_>) {
         self.system.set_interrupted(platform.audio_interrupted());
+        if fight.started_over {
+            self.system.stop_voices();
+        }
         let mut due = None;
         if let Some(repeating) = &mut self.repeating {
             let is_due = repeating.next_play.as_mut().is_some_and(|left| {
@@ -288,6 +291,9 @@ impl OfflineAudio {
 
     /// One frame, `dt` seconds after the last, as [`SandboxAudio::update`] plays a fight's.
     pub fn update(&mut self, dt: f32, scene: SceneSound, fight: CueSounds<'_>) {
+        if fight.started_over {
+            self.system.stop_voices();
+        }
         self.emitters.clear();
         self.emitters.push(Emitter { id: CHARACTER, position: scene.character, hitstop: scene.hitstop });
         self.emitters.extend_from_slice(fight.emitters);

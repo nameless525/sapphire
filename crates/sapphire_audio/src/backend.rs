@@ -151,6 +151,10 @@ pub trait AudioBackend {
     /// Stops a live voice where it is, or lets it go on from there.
     fn freeze_voice(&mut self, slot: VoiceSlot, frozen: bool);
 
+    /// Ends a live voice for good, frozen or not, soon enough to read as at once and smoothly enough not
+    /// to click. [`Self::voice_finished`] says when it has.
+    fn stop_voice(&mut self, slot: VoiceSlot);
+
     /// Whether the voice in `slot` has played out, which frees the slot.
     fn voice_finished(&mut self, slot: VoiceSlot) -> bool;
 

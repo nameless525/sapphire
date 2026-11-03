@@ -235,6 +235,28 @@ fn lock_on_leans_off_its_line_and_comes_back() {
     assert!((back - line).abs() < 0.05, "the lean should be gone: {back} from {line}");
 }
 
+/// Choices that go on being made with nothing moving: the view hunting, or making a choice of nothing.
+fn choices_once_settled(mut camera: CameraDirector, world: &PhysicsWorld, enemy: Vec3) -> u32 {
+    let script = move |_: f32| Moment::against(PLAYER, enemy);
+    settle(&mut camera, world, 20.0, script);
+    camera.take_stats();
+    settle(&mut camera, world, 20.0, script);
+    camera.take_stats().swings
+}
+
+/// A lean as far as `reach` goes has nothing further to choose. It used to choose it anyway, every `settle`,
+/// each time counting as a turn and changing nothing.
+#[test]
+fn a_lean_at_its_reach_chooses_nothing_further() {
+    let world = ground_with(&[
+        (Shape::Box { half_extents: Vec3::new(1.59, 2.76, 1.55) }, Vec3::new(2.41, 2.76, -1.1)),
+        (Shape::Box { half_extents: Vec3::new(3.38, 2.84, 2.86) }, Vec3::new(-3.22, 2.84, 2.62)),
+        (Shape::Box { half_extents: Vec3::new(2.68, 1.29, 1.43) }, Vec3::new(-8.03, 1.29, 2.89)),
+    ]);
+    let swings = choices_once_settled(lock_on_director(), &world, Vec3::new(-3.0, 0.0, 12.08));
+    assert!(swings <= 1, "{swings} choices in 20 s, with nothing moving");
+}
+
 /// A pause holds everything, a turn on its way included, and costs nothing.
 #[test]
 fn a_pause_holds_a_turn_on_its_way() {

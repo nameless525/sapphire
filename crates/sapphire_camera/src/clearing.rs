@@ -452,6 +452,10 @@ impl Clearing {
                     continue;
                 }
                 let turn = share * tuning.reach * side;
+                // A lean goes no further than `reach`, so there's nothing to choose past it.
+                if held && (self.lean_goal + turn).abs() > tuning.reach {
+                    continue;
+                }
                 let fault = scene.fault(from + turn, stats) + TURNING * turn.abs();
                 if fault < best.0 {
                     best = (fault, turn);

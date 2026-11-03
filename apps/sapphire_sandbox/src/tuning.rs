@@ -14,7 +14,8 @@
 //! - **The animation graphs** (`character.animgraph.ron`, on the graph show's character or a fight's player,
 //!   and `warrior.animgraph.ron`, on a fight's enemy): bound against what's loaded, each takes effect at the
 //!   next state's start ([`sapphire_anim::GraphPlayer::replace`]). A clip it names must be cooked for that
-//!   character, and a new one comes through a cook. Their pack's route was N3's, and still works.
+//!   character, and a new one comes through a cook. Their pack's route was N3's, and still works. A cook
+//!   older than the newest save leaves the save playing, as with moves.
 //! - **The cue table** (`default_cues.ron`, M2 E3): what fires a fight's cues takes it if every name it holds
 //!   is there and every sound it plays was loaded as the app started. Camera tuning can move a shake's ID, so
 //!   a new tuning resolves the table's shakes again ([`Scene::set_camera_tuning`]) and is refused if one has
@@ -144,11 +145,15 @@ impl LiveTuning {
                 }
             }
         }
-        let mut files = Vec::new();
+        let mut files: Vec<PathBuf> = Vec::new();
         if !options.no_hot_reload {
             files.extend(sources.iter().map(|source| sources::repository_file(&source.path)));
             files.extend(options.watch_documents.iter().cloned());
         }
+        let graph_owner = |file: &PathBuf| Some(graph_of(file.to_str()?).ok()?.0);
+        content.read_graphs_from(
+            files.iter().filter_map(|file| Some((graph_owner(file)?, file.clone()))).collect(),
+        );
         Self { moves: LiveMoves::default(), sources, waiting: Vec::new(), moving: Vec::new(), cooked, files }
     }
 
@@ -419,12 +424,8 @@ impl LiveTuning {
     /// over the tables the cook made. What a cook read is the same bytes, and so no edit past its own. With
     /// no file, on a phone, or one that doesn't read yet, the cook is all there is.
     fn newest_of(&self, document: &str, cooked: MoveSet) -> MoveSet {
-        let modified = |path: &&PathBuf| std::fs::metadata(path).and_then(|file| file.modified()).ok();
         let named = self.files.iter().filter(|path| path.file_name().is_some_and(|name| name == document));
-        let Some(text) = named.max_by_key(modified).and_then(|path| std::fs::read_to_string(path).ok())
-        else {
-            return cooked;
-        };
+        let Some(text) = newest_text(named) else { return cooked };
         compile_document(&text, Some(&cooked)).map_or(cooked, |live| live.set)
     }
 
@@ -552,6 +553,12 @@ pub(crate) fn attempts(sim: &Simulation, cast: &[ActorId]) -> Vec<MoveAttempt> {
 }
 
 /// A document's kind from its file's name, for a path hot reload is told to watch.
+/// The text of the last modified of `files`, if one reads.
+pub(crate) fn newest_text<'a>(files: impl Iterator<Item = &'a PathBuf>) -> Option<String> {
+    let modified = |path: &&PathBuf| std::fs::metadata(path).and_then(|file| file.modified()).ok();
+    std::fs::read_to_string(files.max_by_key(modified)?).ok()
+}
+
 /// Whose graph a document with this name is, and its path, or why it reaches nothing here: an edit can
 /// replace a fighter's graph, and any other would bind to the wrong character or fail for its clips.
 fn graph_of(origin: &str) -> Result<(GraphOwner, &'static str), String> {

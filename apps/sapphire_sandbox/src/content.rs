@@ -73,6 +73,8 @@
 
 use std::collections::HashMap;
 use std::io;
+#[cfg(feature = "dev")]
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use sapphire_anim::{AnimGraph, ArchivedClip, ArchivedSkeleton, Clip, GraphBinding, Skeleton};
@@ -365,9 +367,13 @@ fn keeping_held(
 struct HeldGraph {
     graph: Handle<AnimGraph>,
     clips: Vec<(AssetId, Handle<Clip>)>,
-    /// The graph live tuning took as a document, over the cooked one until that has a new version.
+    /// The graph live tuning took as a document, over the cooked one until a cook lands
+    /// ([`newest_saved`]).
     #[cfg(feature = "dev")]
-    live: Option<LiveGraph>,
+    live: Option<AnimGraph>,
+    /// The cooked graph's generation, as [`Content::take_graph_changed`] last saw it.
+    #[cfg(feature = "dev")]
+    cooked: u32,
 }
 
 impl HeldGraph {
@@ -383,7 +389,7 @@ impl HeldGraph {
     fn clip_ids(&self, server: &AssetServer) -> Option<Vec<AssetId>> {
         #[cfg(feature = "dev")]
         if let Some(live) = &self.live {
-            return Some(live.graph.clips.iter().map(|clip| clip.id).collect());
+            return Some(live.clips.iter().map(|clip| clip.id).collect());
         }
         Some(server.get(&self.graph)?.clip_ids().collect())
     }
@@ -392,7 +398,7 @@ impl HeldGraph {
     fn document(&self, server: &AssetServer) -> Result<AnimGraph, String> {
         #[cfg(feature = "dev")]
         if let Some(live) = &self.live {
-            return Ok(live.graph.clone());
+            return Ok(live.clone());
         }
         let graph = server.get(&self.graph).ok_or("its cooked graph isn't resident")?;
         graph.to_owned_graph().map_err(|error| error.to_string())
@@ -473,6 +479,9 @@ pub(crate) struct Content {
     /// platform's.
     #[cfg(feature = "dev")]
     live_packs: Arc<LivePacks>,
+    /// The files hot reload reads each fighter's graph from, on a machine that has them.
+    #[cfg(feature = "dev")]
+    graph_files: Vec<(GraphOwner, PathBuf)>,
 }
 
 /// Whose graph a document is (M2 T2): each binds against its own skeleton.
@@ -483,12 +492,18 @@ pub(crate) enum GraphOwner {
     Enemy,
 }
 
-/// A graph live tuning took as a document (M2 T2).
+/// What the newest of `owner`'s `files` says its graph is, if there's one and it reads: what binds, once a
+/// cook has landed. A cook reads a document when it starts, so one that started before the newest save
+/// brings what the file said then, and taking it for the newer because it arrived later would undo the save
+/// with nothing to say so, while the file went on saying otherwise. So where there's a file it's the word,
+/// and what a cook read is the same text. With no file, on a phone, or one that doesn't read yet, the cook
+/// is all there is. Moves do the same (`LiveTuning::newest_of`).
 #[cfg(feature = "dev")]
-struct LiveGraph {
-    graph: AnimGraph,
-    /// The cooked graph's generation when it came.
-    cooked: u32,
+fn newest_saved(files: &[(GraphOwner, PathBuf)], owner: GraphOwner) -> Option<AnimGraph> {
+    let named = files.iter().filter(|(of, _)| *of == owner).map(|(_, path)| path);
+    let mut graph = AnimGraph::from_document(&crate::tuning::newest_text(named)?).ok()?;
+    graph.resolve(sapphire_assets::graph::clip_id);
+    Some(graph)
 }
 
 impl Content {
@@ -567,6 +582,8 @@ impl Content {
             server,
             #[cfg(feature = "dev")]
             live_packs,
+            #[cfg(feature = "dev")]
+            graph_files: Vec::new(),
         }
     }
 
@@ -1172,6 +1189,8 @@ impl Content {
         let assets = &mut self.gpu;
         let loaded = self.server.finish(&graph, |upload| assets.upload(upload, renderer, gpu));
         let mut held = HeldGraph {
+            #[cfg(feature = "dev")]
+            cooked: self.server.generation(&graph),
             graph,
             clips: Vec::new(),
             #[cfg(feature = "dev")]
@@ -1244,7 +1263,14 @@ impl Content {
         Ok(())
     }
 
-    /// Binds `owner` to `graph` from now on, until the cooked graph has a new version.
+    /// Where each fighter's graph documents are, on a machine that has them: what a cook that lands is
+    /// weighed against ([`newest_saved`]).
+    #[cfg(feature = "dev")]
+    pub fn read_graphs_from(&mut self, files: Vec<(GraphOwner, PathBuf)>) {
+        self.graph_files = files;
+    }
+
+    /// Binds `owner` to `graph` from now on, until a cook lands.
     #[cfg(feature = "dev")]
     pub fn set_live_graph(&mut self, owner: GraphOwner, graph: AnimGraph) {
         let owned = match owner {
@@ -1252,8 +1278,7 @@ impl Content {
             GraphOwner::Enemy => &mut self.enemy_graph,
         };
         if let Some(held) = owned {
-            let cooked = self.server.generation(&held.graph);
-            held.live = Some(LiveGraph { graph, cooked });
+            held.live = Some(graph);
         }
     }
 
@@ -1277,15 +1302,22 @@ impl Content {
 
     /// Whether a graph or a clip one names has a new version since the last call or since
     /// [`Self::load_graph`], which a character's graph has to be bound again for. Always false without a
-    /// graph, and it allocates nothing.
+    /// graph. A cook that has landed reads its graph's file, if it has one (`newest_saved`), and otherwise
+    /// it allocates nothing.
     pub fn take_graph_changed(&mut self) -> bool {
         let version = self.graph_versions();
         #[cfg(feature = "dev")]
-        for held in [&mut self.graph, &mut self.enemy_graph].into_iter().flatten() {
-            let cooked = self.server.generation(&held.graph);
-            if held.live.as_ref().is_some_and(|live| live.cooked != cooked) {
-                // A cook of the document came after it: that's the graph now.
-                held.live = None;
+        {
+            let graphs = [(GraphOwner::Character, &mut self.graph), (GraphOwner::Enemy, &mut self.enemy_graph)];
+            for (owner, held) in graphs {
+                let Some(held) = held else { continue };
+                let cooked = self.server.generation(&held.graph);
+                if std::mem::replace(&mut held.cooked, cooked) != cooked {
+                    held.live = newest_saved(&self.graph_files, owner);
+                    if held.live.is_some() {
+                        tracing::info!(target: LOG_TARGET, ?owner, "a cook landed: the graph is what its file says");
+                    }
+                }
             }
         }
         std::mem::replace(&mut self.graph_version, version) != version
@@ -1726,20 +1758,25 @@ mod tests {
         document.compile().expect("compiles")
     }
 
-    /// The swing, looping. Its decay is all that tells one version from another.
-    fn swing_graph(decay: u32) -> AnimGraph {
-        let text = format!(
+    /// The swing's document, looping. Its decay is all that tells one version from another. Its source is
+    /// the clip's own ID, so what a file of it resolves to is what a cook of it does.
+    fn swing_document(decay: u32) -> String {
+        format!(
             r#"(type: "sapphire::assets::AnimGraph", version: 1, data: (
-                clips: [(name: "swing", source: "15af86bb-67b3-4208-bc54-1618aabf450b")],
+                clips: [(name: "swing", source: "{SWING}")],
                 locomotion: (
                     start: "ground",
                     states: [(name: "ground", plays: Clip(clip: "swing", looping: true))],
                 ),
                 combat: (decay: {decay}, exit: {decay}, moves: []),
             ))"#
-        );
-        let mut graph = AnimGraph::from_document(&text).expect("a good document");
-        graph.resolve(|_| SWING);
+        )
+    }
+
+    /// [`swing_document`], as a cook makes it.
+    fn swing_graph(decay: u32) -> AnimGraph {
+        let mut graph = AnimGraph::from_document(&swing_document(decay)).expect("a good document");
+        graph.resolve(sapphire_assets::graph::clip_id);
         graph
     }
 
@@ -2393,6 +2430,59 @@ mod tests {
         assert!(plays(&stage, 9));
         assert_eq!(revision(&stage), Some(2));
         std::fs::remove_dir_all(file.parent().expect("a folder")).expect("cleaned up");
+    }
+
+    /// A cook reads a document when it starts, so one that started before the newest save brings what the
+    /// file said then, which mustn't undo the save with nothing to say so. Arriving later doesn't make it
+    /// newer: the file is the word, and a cook of what it says, or a file that says nothing, leaves the
+    /// cook's.
+    #[cfg(feature = "dev")]
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_cook_older_than_the_newest_save_leaves_the_saved_graph_playing() {
+        let mut stage = Stage::new();
+        stage.play_graph();
+        stage.frame();
+        let folder = std::env::temp_dir().join(format!("sapphire_sandbox_older_graph_{}", std::process::id()));
+        std::fs::create_dir_all(&folder).expect("a folder");
+        let file = folder.join("character.animgraph.ron");
+        stage.content.read_graphs_from(vec![(GraphOwner::Character, file.clone())]);
+        let bound = |stage: &Stage| stage.content.graph_document().expect("a graph").combat.decay;
+        let land = |stage: &mut Stage, decay: u32| {
+            let versions = stage.content.graph_versions();
+            stage.source.insert(PACK, pack_with_decay(0.0, 0, decay));
+            stage.content.remount(PACK).expect("the new pack");
+            stage.frames_until(|stage| stage.content.graph_versions() != versions);
+        };
+
+        // Saved as a cook of an earlier save ran: 4, where it read 7.
+        std::fs::write(&file, swing_document(4)).expect("the save");
+        let Stage { scene, content, renderer, gpu, .. } = &mut stage;
+        scene
+            .replace_graph_document(GraphOwner::Character, swing_graph(4), content, renderer, gpu)
+            .expect("it binds");
+        land(&mut stage, 7);
+        assert_eq!(bound(&stage), 4, "the save stands");
+        assert!(stage.scene.graph_player().expect("playing").has_replacement(), "and it's what comes next");
+        stage.frame();
+        assert_eq!(bound(&stage), 4, "from then on");
+
+        // The next cook reads the save, and is no edit.
+        land(&mut stage, 4);
+        assert_eq!(bound(&stage), 4);
+
+        // A newer save, with no edit taken of it, and a cook of it: what they say is the graph.
+        std::fs::write(&file, swing_document(9)).expect("the save");
+        land(&mut stage, 9);
+        assert_eq!(bound(&stage), 9);
+
+        // A file that doesn't read says nothing against a cook, and nor does none.
+        std::fs::write(&file, "half a docu").expect("half a save");
+        land(&mut stage, 11);
+        assert_eq!(bound(&stage), 11);
+        std::fs::remove_dir_all(&folder).expect("cleaned up");
+        land(&mut stage, 12);
+        assert_eq!(bound(&stage), 12);
     }
 
     /// A fight's player plays a graph, so an edit of it takes as the graph show's does.

@@ -603,9 +603,15 @@ impl AssetServer {
     }
 
     /// What the meshes of every mounted pack draw through, each key once: what a load prewarms (M3 K1). A pack
-    /// mounted later adds its own.
+    /// mounted later adds its own ([`Self::pipeline_keys_of`]).
     pub fn pipeline_keys(&self) -> BTreeSet<PipelineKey> {
         self.mounts.values().flat_map(|mount| mount.toc.pipeline_keys().iter().copied()).collect()
+    }
+
+    /// What the meshes of the mounted pack `pack` draw through, each key once: nothing if it isn't mounted.
+    pub fn pipeline_keys_of(&self, pack: &str) -> BTreeSet<PipelineKey> {
+        let mount = self.mounts.values().find(|mount| mount.name == pack);
+        mount.iter().flat_map(|mount| mount.toc.pipeline_keys().iter().copied()).collect()
     }
 
     /// Whether a mounted pack holds asset `id`.

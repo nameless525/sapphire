@@ -136,7 +136,7 @@ impl SyntheticZone {
                 colliders: None,
                 spawners: Vec::new(),
                 triggers: Vec::new(),
-                navigation: Vec::new(),
+                navigation: None,
                 encounters: Vec::new(),
             },
             presentation: ZonePresentation {

@@ -559,6 +559,10 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
         ui.separator();
         audio(ui, &stats);
     }
+    if let Some(stats) = frame.streaming {
+        ui.separator();
+        streaming(ui, &stats);
+    }
     if let Some(status) = frame.hot_reload {
         ui.separator();
         hot_reload(ui, frame, &status);
@@ -613,6 +617,28 @@ fn hot_reload(ui: &mut Ui, frame: &OverlayFrame<'_>, status: &HotReloadStatus<'_
 }
 
 /// The audio system's counters (M2 E1). The update's time against its budget is a CPU stage's row.
+/// A zone's streaming (M3 W2), against §3.2's row.
+fn streaming(ui: &mut Ui, stats: &sapphire_world::streaming::StreamStats) {
+    egui::Grid::new("streaming").num_columns(2).show(ui, |ui| {
+        ui.label("Streaming");
+        ui.monospace(format!(
+            "{} of {} places, {} loading, {} failed, {} entities",
+            stats.active, stats.places, stats.loading, stats.failed, stats.entities
+        ));
+        ui.end_row();
+        ui.label("Activation");
+        ui.monospace(format!(
+            "{:.0} us, peak {:.0}, {} frames over budget, +{} -{}",
+            stats.time.as_secs_f32() * 1e6,
+            stats.peak_time.as_secs_f32() * 1e6,
+            stats.over_budget_frames,
+            stats.placed,
+            stats.removed
+        ));
+        ui.end_row();
+    });
+}
+
 fn audio(ui: &mut Ui, stats: &sapphire_audio::AudioStats) {
     egui::Grid::new("audio").num_columns(2).show(ui, |ui| {
         let row = |ui: &mut Ui, name: &str, value: String| {

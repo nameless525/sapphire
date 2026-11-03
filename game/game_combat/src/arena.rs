@@ -1,8 +1,7 @@
 //! The arena (`--arena`, M2 O5): the combat stage, and its one home.
 //!
 //! The look-dev town's square as a place to fight. It draws what the look-dev stage draws, on the
-//! same day and under the same light rigs, because the town stays one mesh until M3's zones; what it
-//! adds is what a fight needs of the place:
+//! same day and under the same light rigs; what it adds is what a fight needs of the place:
 //!
 //! - **Collision:** `content/arena/square.colliders.ron`. A replay's simulation compiles it in
 //!   (`sapphire_gameplay::arena`), so a headless runner needs no assets. The stage loads the same

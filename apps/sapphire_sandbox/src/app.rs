@@ -243,6 +243,9 @@ impl App for SandboxApp {
         if let (Some(shot), Some(town)) = (options.look_dev, renderer.town) {
             let (pose, figure) = lookdev::hold(&mut content, &mut renderer.renderer, &device.gpu)?;
             scene.spawn_look_dev(shot, LookDev { town, fog_cards: renderer.fog_cards, pose, figure });
+            if let Some(settings) = options.stream.settings(quality.active().id) {
+                scene.open_town_zone(&mut content, settings, &mut renderer.renderer, &device.gpu)?;
+            }
             if let Some(clip) = options.clip {
                 content.load_clip(clip.id(), &mut renderer.renderer, &device.gpu)?;
                 let mut player = lookdev::player(&content)
@@ -285,6 +288,9 @@ impl App for SandboxApp {
             let look = LookDev { town, fog_cards: renderer.fog_cards, pose, figure };
             let held = show.fight.show.held_enemy(&content)?;
             show.fight.show.spawn_arena(&mut scene, Arena { shot, look, ground, enemy, held });
+            if let Some(settings) = options.stream.settings(quality.active().id) {
+                scene.open_town_zone(&mut content, settings, &mut renderer.renderer, &device.gpu)?;
+            }
             if let Some(meshes) = renderer.party {
                 show.fight.show.set_party_meshes(&mut scene, meshes);
             }
@@ -1016,12 +1022,12 @@ impl SandboxApp {
             Ok((device, renderer))
         });
         match stack {
-            Ok((device, renderer)) => {
+            Ok((device, mut renderer)) => {
                 self.losses.built();
                 // Field order matters even here: the renderer goes before the old context.
                 #[cfg(feature = "dev")]
                 self.dev.recreate_gpu(&device.gpu, device.format);
-                set_meshes(&mut self.scene, &mut self.show, &renderer);
+                set_meshes(&mut self.scene, &mut self.show, &mut renderer, content, &device.gpu);
                 self.renderer = renderer.renderer;
                 #[cfg(feature = "dev")]
                 self.dev.renderer_created(&mut self.renderer);
@@ -1066,9 +1072,9 @@ impl SandboxApp {
             settings,
             &self.options,
         ) {
-            Ok(renderer) => {
+            Ok(mut renderer) => {
                 self.losses.built();
-                set_meshes(&mut self.scene, &mut self.show, &renderer);
+                set_meshes(&mut self.scene, &mut self.show, &mut renderer, &mut self.content, &self.gpu);
                 self.renderer = renderer.renderer;
                 #[cfg(feature = "dev")]
                 self.dev.renderer_created(&mut self.renderer);
@@ -1332,7 +1338,14 @@ pub(crate) struct SceneRenderer {
 }
 
 /// Draws the meshes of a new `renderer`: after device loss or for a new quality tier.
-pub(crate) fn set_meshes(scene: &mut Scene, show: &mut ShownFight, renderer: &SceneRenderer) {
+pub(crate) fn set_meshes(
+    scene: &mut Scene,
+    show: &mut ShownFight,
+    renderer: &mut SceneRenderer,
+    content: &mut Content,
+    gpu: &GpuContext,
+) {
+    scene.set_zone_meshes(content, &mut renderer.renderer, gpu);
     scene.set_character_mesh(renderer.character);
     if let Some(meshes) = renderer.party {
         show.fight.show.set_party_meshes(scene, meshes);

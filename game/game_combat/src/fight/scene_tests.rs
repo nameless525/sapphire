@@ -249,7 +249,6 @@ fn stage() -> Staged {
         expression: FaceExpression::default(),
     };
     let town = TownMeshes {
-        town: MeshHandle::from_raw(1),
         plants: [MeshHandle::from_raw(2); 8],
         mountains: [MeshHandle::from_raw(3); lookdev::MOUNTAINS.len()],
     };
@@ -299,7 +298,6 @@ pub(super) fn fighting(table: &ClipTable<'_>) -> (Staged, Simulation, Vec<sapphi
     let pose = RenderPose { palette: vec![Affine3A::IDENTITY; 5], morph_weights: vec![0.25, 0.0] };
     let figure = Figure { head: Vec3::new(0.0, 1.6, 0.0), ..Figure::MANNEQUIN };
     let town = TownMeshes {
-        town: MeshHandle::from_raw(1),
         plants: [MeshHandle::from_raw(2); lookdev::Plant::ALL.len()],
         mountains: [MeshHandle::from_raw(3); lookdev::MOUNTAINS.len()],
     };
@@ -462,7 +460,6 @@ fn the_blade_follows_the_hand_and_adds_no_body() {
 pub(super) fn arena_stage(shot: ArenaShot) -> (Staged, Figure) {
     let plain = MeshHandle::from_raw(1);
     let town = TownMeshes {
-        town: plain,
         plants: [plain; lookdev::Plant::ALL.len()],
         mountains: [plain; lookdev::MOUNTAINS.len()],
     };
@@ -645,7 +642,6 @@ fn the_enemy_stands_beside_the_character_in_a_shape_of_its_own() {
         expression: FaceExpression::default(),
     };
     let town = TownMeshes {
-        town: MeshHandle::from_raw(1),
         plants: [MeshHandle::from_raw(2); 8],
         mountains: [MeshHandle::from_raw(3); lookdev::MOUNTAINS.len()],
     };

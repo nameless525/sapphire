@@ -537,7 +537,7 @@ mod tests {
         let source = Arc::new(MemoryPackSource::new());
         source.insert(FONTS_PACK, fs::read(packs.join("fonts.spack")).unwrap());
         let mut server = AssetServer::new(source, AssetBudgets::DESKTOP);
-        server.mount(FONTS_PACK).unwrap();
+        server.mount_now(FONTS_PACK).unwrap();
         let chains: Handle<FontChains> = server.load(chains_id).unwrap();
         server.finish(&chains, |upload| panic!("{} was sent to the uploader", upload.kind())).unwrap();
         let read = server.get(&chains).expect("the chains loaded");

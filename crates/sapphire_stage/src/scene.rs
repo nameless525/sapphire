@@ -48,13 +48,14 @@
 //! - **The studio** (`--stage`): a floor at the character's feet and a pillar beside it, static
 //!   environment instances for shadows to fall on and be cast by ([`Scene::spawn_studio`],
 //!   [`crate::studio`]).
-//! - **The look-dev stage** (`--look-dev`): the town, one static entity, its fog cards and its
+//! - **The look-dev stage** (`--look-dev`): the town's fog cards, plants, mountains and
 //!   lamps (each a [`RenderLight`] whose intensity [`Scene::frame_packet`] sets from time of
 //!   day's night before extraction), around the VRM character held in a pose: a
 //!   [`RenderPose`] written once, which `Extract` sends while it is new, and the
 //!   [`Figure`] it makes, where the light rig finds the character's head, body and face
 //!   ([`Scene::spawn_look_dev`], [`crate::lookdev`]). A new version of the character's mesh or
-//!   rig under a running app holds it anew ([`Scene::follow_content`]).
+//!   rig under a running app holds it anew ([`Scene::follow_content`]). The town itself is a zone whose
+//!   cells [`ZoneStage`] streams in as entities (M3 W2, [`Scene::open_town_zone`]).
 //!   `--clip` plays a clip on the character instead (M2 N2, [`Scene::play_clip`],
 //!   [`crate::animate`]): a [`ClipPlayer`] rewrites its pose and [`Figure`] each frame its clock
 //!   has moved.
@@ -390,7 +391,10 @@ pub struct Scene {
     /// How the studio is laid out, and toward the key light it was built for.
     studio_layout: Option<(StudioLayout, Vec3)>,
     /// The look-dev town, with `--look-dev`, its plants and its mountains.
-    town: Option<Entity>,
+    /// Where the character stands in the town, once it's spawned: the zone's origin lies at minus this.
+    town_stand: Option<Vec3>,
+    /// The zone being streamed.
+    zone: Option<ZoneStage>,
     town_plants: Vec<(Entity, lookdev::Plant)>,
     town_mountains: Vec<Entity>,
     /// The camera jumped since the last view: the next one says so, for temporal AA and the shadows.
@@ -531,7 +535,8 @@ impl Scene {
             hard_edges: None,
             studio: Vec::new(),
             studio_layout: None,
-            town: None,
+            town_stand: None,
+            zone: None,
             town_plants: Vec::new(),
             town_mountains: Vec::new(),
             view_cut: false,
@@ -1093,6 +1098,7 @@ impl Scene {
         if (self.graph_show.is_some() || self.character_plays_graph) && (character_changed || graph_changed) {
             self.replace_graph(content, character_changed);
         }
+        self.stream_zone(content);
     }
 
     /// Plays a clip on the character from now on, instead of holding it still: from its transform
@@ -1578,7 +1584,7 @@ impl Scene {
         }
         // The town moves so the character, at the origin, stands where the shot has it.
         let town = Mat4::from_translation(-stand);
-        self.town = Some(world.spawn((RenderMesh(look.town.town), RenderTransform(town))).id());
+        self.town_stand = Some(stand);
         self.town_plants = lookdev::plantings()
             .map(|(plant, place)| {
                 (world.spawn((RenderMesh(look.town.plant(plant)), RenderTransform(town * place))).id(), plant)
@@ -1603,12 +1609,8 @@ impl Scene {
         }
     }
 
-    /// Sets the meshes the look-dev town, its plants and its mountains draw again: after GPU
-    /// device loss.
+    /// Sets the meshes the look-dev town's plants and its mountains draw again: after GPU device loss.
     pub fn set_town_mesh(&mut self, meshes: TownMeshes) {
-        if let Some(town) = self.town {
-            self.ecs.world_mut().entity_mut(town).insert(RenderMesh(meshes.town));
-        }
         for &(entity, plant) in &self.town_plants {
             self.ecs.world_mut().entity_mut(entity).insert(RenderMesh(meshes.plant(plant)));
         }
@@ -1969,7 +1971,7 @@ impl Scene {
     /// the timeline with the town, [`Scene::spawn_look_dev`]), the default day otherwise.
     #[cfg(any(test, feature = "dev"))]
     pub(crate) fn day(&self) -> Day {
-        if self.town.is_some() { Day::LookDev } else { Day::Default }
+        if self.town_stand.is_some() { Day::LookDev } else { Day::Default }
     }
 
     /// Replaces the day's timeline with `timeline`, read from `origin` (a path or a file name),
@@ -2046,8 +2048,13 @@ pub(crate) fn mesh_bounds(mesh: &ArchivedMesh) -> [[f32; 3]; 2] {
     [bounds.min, bounds.max]
 }
 
+mod zone;
+pub use zone::{ZoneEntity, ZoneStage, stream_settings};
+
 #[cfg(test)]
 mod spring_tests;
+#[cfg(all(test, feature = "dev"))]
+mod zone_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2310,7 +2317,6 @@ mod tests {
             expression: FaceExpression::default(),
         };
         let town = TownMeshes {
-            town: MeshHandle::from_raw(1),
             plants: [MeshHandle::from_raw(2); 8],
             mountains: [MeshHandle::from_raw(3); lookdev::MOUNTAINS.len()],
         };
@@ -2355,7 +2361,6 @@ mod tests {
             expression: FaceExpression::default(),
         };
         let town = TownMeshes {
-            town: MeshHandle::from_raw(1),
             plants: [MeshHandle::from_raw(2); 8],
             mountains: [MeshHandle::from_raw(3); lookdev::MOUNTAINS.len()],
         };
@@ -2500,7 +2505,6 @@ mod tests {
                 expression: FaceExpression::default(),
             };
             let town = TownMeshes {
-                town: MeshHandle::from_raw(1),
                 plants: [MeshHandle::from_raw(2); 8],
                 mountains: [MeshHandle::from_raw(3); lookdev::MOUNTAINS.len()],
             };
@@ -3177,7 +3181,6 @@ mod tests {
     fn a_timeline_replaces_the_day_only_from_the_days_own_file() {
         let look = || {
             let town = TownMeshes {
-                town: MeshHandle::from_raw(1),
                 plants: [MeshHandle::from_raw(2); 8],
                 mountains: [MeshHandle::from_raw(3); lookdev::MOUNTAINS.len()],
             };

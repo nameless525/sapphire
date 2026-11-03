@@ -80,6 +80,7 @@ impl App {
             combat: None,
             assets: None,
             audio: None,
+            streaming: None,
             hot_reload: None,
             live_link: None,
         });

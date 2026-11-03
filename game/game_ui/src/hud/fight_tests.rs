@@ -82,7 +82,6 @@ impl Staged {
 fn arena_stage(shot: ArenaShot) -> (Staged, Figure) {
     let plain = MeshHandle::from_raw(1);
     let town = TownMeshes {
-        town: plain,
         plants: [plain; lookdev::Plant::ALL.len()],
         mountains: [plain; lookdev::MOUNTAINS.len()],
     };

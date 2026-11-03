@@ -42,12 +42,13 @@
 //! What a game loads beside these, it holds itself ([`Content::hold`]): `game_combat`'s enemy and blade are
 //! that, the enemy's mesh copied as it uploads since its held pose derives from it ([`Content::keep_mesh_copy`]).
 //!
-//! With `--look-dev` it loads the look-dev town ([`lookdev::TOWN`]), whose slots its sidecar
-//! binds to the town's environment materials, the town's plants ([`lookdev::Plant`]), whose
+//! With `--look-dev` it loads the town's plants ([`lookdev::Plant`]), whose
 //! sidecars bind theirs to the look-dev foliage materials, and its far mountains
 //! ([`lookdev::MOUNTAINS`], whose sidecars bind them to the mountains' environment material;
 //! [`Content::town`]), the courtyard's fog cards, and the character's rig ([`lookdev::RIG`],
-//! [`Content::rig`]) and skeleton ([`Content::skeleton`]), which stay on the CPU.
+//! [`Content::rig`]) and skeleton ([`Content::skeleton`]), which stay on the CPU. The town itself is a
+//! zone ([`lookdev::TOWN_ZONE`]), which the scene streams ([`crate::scene::ZoneStage`]): this holds
+//! none of its cells' handles, only the means to load them ([`Content::open_zone`]).
 //!
 //! With `--stage` or `--look-dev` it keeps a copy of the character's mesh, from which the stage
 //! derives the character without its pedestal and the look-dev stage its held pose
@@ -118,6 +119,7 @@ use crate::rims::{self, RimRigMeshes};
 use crate::scene;
 use crate::studio::{self, CharacterCopies, StudioMeshes};
 use crate::swatches::{self, SWATCHES};
+use sapphire_world::streaming::{StreamSettings, Streamer};
 
 /// The pack the sandbox's content ships in.
 const PACK: &str = "shared";
@@ -488,8 +490,10 @@ pub struct Content {
     hard_edges: Option<Handle<Mesh>>,
     /// The arcade and the courtyard's probe grid, once asked for (`--probes`).
     probes: Option<(Handle<Mesh>, Handle<ProbeGrid>)>,
-    /// The look-dev town, its plants and its mountains, once asked for (`--look-dev`).
+    /// The look-dev town's plants and mountains, once asked for (`--look-dev`). Its cells are the zone's.
     town: Vec<Handle<Mesh>>,
+    /// The entry an opening zone's inventory leaves out ([`Self::leave_out_of_zones`]).
+    left_out_of_zones: Option<String>,
     /// A character rig, once asked for (`--look-dev`'s).
     rig: Option<Handle<CharacterRig>>,
     /// The skeleton of the character's mesh, with the rig.
@@ -554,6 +558,12 @@ impl Content {
         }
     }
 
+    /// Leaves `entry` of [`PipelineInventory::entries`] out of what a zone builds as it opens, as a load's
+    /// `--inventory-without` leaves it out of the packs': what proves a miss fails, whichever pack lists it.
+    pub fn leave_out_of_zones(&mut self, entry: Option<String>) {
+        self.left_out_of_zones = entry;
+    }
+
     /// Starts the IO thread on the app's content root, mounts the shared pack and starts loading
     /// the character (`character`, a mesh's ID: [`CHARACTER`] unless the scene wants another),
     /// within the budgets of the device's class. The scene's sky is the sky material `sky`
@@ -611,6 +621,7 @@ impl Content {
             hard_edges: None,
             probes: None,
             town: Vec::new(),
+            left_out_of_zones: None,
             rig: None,
             skeleton: None,
             character_versions: None,
@@ -964,12 +975,65 @@ impl Content {
         Ok(self.gpu.meshes.get(&outlines::HARD_EDGES).expect("a ready mesh was uploaded here").object.handle)
     }
 
-    /// Loads until the look-dev town, its plants and its mountains are on `renderer`, with their
+    /// Mounts zone `id`'s pack, builds what its meshes draw through, and loads until the zone is ready and
+    /// everything near `focus`, in the zone's space, is on `renderer`: a zone's load screen. Returns the
+    /// streamer that has it from there, whose cells then build nothing as they arrive. A capture pays for
+    /// this too, as it would for the uploads that follow, which build what's unbuilt.
+    pub fn open_zone<P>(
+        &mut self,
+        id: AssetId,
+        pack: &str,
+        focus: [f32; 3],
+        settings: StreamSettings,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+    ) -> Result<Streamer<P>, AppInitError> {
+        if !self.server.is_mounted(pack) {
+            self.server.mount_now(pack).map_err(AppInitError::msg)?;
+        }
+        let mut inventory =
+            PipelineInventory { meshes: self.server.pipeline_keys_of(pack), ..PipelineInventory::default() };
+        if let Some(entry) = &self.left_out_of_zones {
+            inventory.remove(entry);
+        }
+        let built = renderer.prewarm(&inventory);
+        tracing::info!(target: LOG_TARGET, pack, keys = inventory.meshes.len(), built, "a zone's pipelines prewarmed");
+        let zone = self.server.load_with(id, LoadPriority::Critical).map_err(AppInitError::msg)?;
+        let assets = &mut self.gpu;
+        self.server
+            .finish(&zone, |upload| assets.upload(upload, renderer, gpu))
+            .map_err(|error| AppInitError::msg(format!("zone {id} didn't load: {error}")))?;
+        let mut streamer = Streamer::new(zone, settings);
+        streamer.preload(focus, &mut self.server, |upload| assets.upload(upload, renderer, gpu));
+        Ok(streamer)
+    }
+
+    /// Brings what `streamer` holds to `renderer`, a new one.
+    pub(crate) fn finish_zone_meshes<P>(
+        &mut self,
+        streamer: &mut Streamer<P>,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+    ) {
+        let assets = &mut self.gpu;
+        streamer.finish_held(&mut self.server, |upload| assets.upload(upload, renderer, gpu));
+    }
+
+    /// What a zone's streaming reads: the server its meshes load through, and each mesh's handle on the
+    /// renderer, if it's there.
+    pub(crate) fn streaming_parts(
+        &mut self,
+    ) -> (&mut AssetServer, impl Fn(AssetId) -> Option<MeshHandle> + use<'_>) {
+        let meshes = &self.gpu.meshes;
+        (&mut self.server, move |id| meshes.get(&id).map(|held| held.object.handle))
+    }
+
+    /// Loads until the look-dev town's plants and its mountains are on `renderer`, with their
     /// materials and the maps they name, and returns their meshes: the load screen of
-    /// `--look-dev`. They stay loaded from then on.
+    /// `--look-dev`. They stay loaded from then on. The town itself is a zone ([`Self::open_zone`]).
     pub fn town(&mut self, renderer: &mut Renderer, gpu: &GpuContext) -> Result<TownMeshes, AppInitError> {
         // Asking again tries a town that failed before, as the character does.
-        let ids = std::iter::once(lookdev::TOWN).chain(Plant::ALL.map(Plant::id)).chain(lookdev::MOUNTAINS);
+        let ids = Plant::ALL.map(Plant::id).into_iter().chain(lookdev::MOUNTAINS);
         let handles = ids
             .map(|id| self.server.load_with(id, LoadPriority::Critical).map_err(AppInitError::msg))
             .collect::<Result<Vec<_>, _>>()?;
@@ -984,7 +1048,6 @@ impl Content {
         loaded.map_err(|error| AppInitError::msg(format!("the look-dev town didn't load: {error}")))?;
         let mesh = |id| self.gpu.meshes.get(&id).expect("a ready mesh was uploaded here").object.handle;
         Ok(TownMeshes {
-            town: mesh(lookdev::TOWN),
             plants: Plant::ALL.map(|plant| mesh(plant.id())),
             mountains: lookdev::MOUNTAINS.map(mesh),
         })
@@ -1892,7 +1955,6 @@ mod tests {
             let materials = renderer.upload_embedded_materials(plain).expect("materials");
             let plain = renderer.upload_mesh(plain, &materials).expect("a mesh");
             let town = TownMeshes {
-                town: plain,
                 plants: Plant::ALL.map(|_| plain),
                 mountains: lookdev::MOUNTAINS.map(|_| plain),
             };

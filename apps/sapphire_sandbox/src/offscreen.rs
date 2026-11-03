@@ -214,6 +214,9 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
         let fog_cards = (!options.fog_off).then(|| content.fog_cards(renderer, gpu)).transpose()?;
         let (pose, figure) = sapphire_stage::lookdev::hold(content, renderer, gpu)?;
         scene.spawn_look_dev(shot, LookDev { town, fog_cards, pose, figure });
+        if let Some(settings) = options.stream.settings(quality.active().id) {
+            scene.open_town_zone(content, settings, renderer, gpu)?;
+        }
         if let Some(clip) = options.clip {
             content.load_clip(clip.id(), renderer, gpu)?;
             let mut player = sapphire_stage::lookdev::player(content)
@@ -259,6 +262,9 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
         let enemy = fight.load_enemy(content, renderer, gpu)?;
         let held = fight.held_enemy(content)?;
         fight.spawn_arena(scene, Arena { shot, look, ground, enemy, held });
+        if let Some(settings) = options.stream.settings(quality.active().id) {
+            scene.open_town_zone(content, settings, renderer, gpu)?;
+        }
         if let Some(meshes) = FightShow::party_meshes(content, character) {
             fight.set_party_meshes(scene, meshes);
         }

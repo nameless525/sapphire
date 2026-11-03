@@ -263,10 +263,18 @@ pub fn check_code_names(
     names: &[CodeName],
 ) -> Result<(), PackError> {
     let cache = cache.map(Cache::new);
-    let groups = groups(report, cache.as_ref())?;
+    let (font_packs, _) = fonts(report)?;
+    let groups = groups(report, &font_packs, cache.as_ref())?;
     let by_id: HashMap<AssetId, &CodeName> = names.iter().map(|name| (name.id, name)).collect();
+    let is_zone = |asset: &&CookedAsset| kind(&asset.output) == Some(AssetKind::Zone);
+    let zone_packs: HashSet<String> = report
+        .assets
+        .iter()
+        .filter(is_zone)
+        .map(|asset| sapphire_zone::pack_name(zone::stem(&asset.source)))
+        .collect();
     for (pack, assets) in &groups {
-        if pack == SHARED || pack == AUDIO {
+        if !zone_packs.contains(pack) {
             continue;
         }
         for asset in assets {

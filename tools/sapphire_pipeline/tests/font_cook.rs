@@ -98,7 +98,7 @@ fn the_shipped_fonts_shape_the_menu_as_the_whole_fonts_do() {
     let source = Arc::new(MemoryPackSource::new());
     source.insert(FONTS_PACK, fs::read(packs.join("fonts.spack")).unwrap());
     let mut server = AssetServer::new(source, AssetBudgets::MOBILE);
-    server.mount(FONTS_PACK).unwrap();
+    server.mount_now(FONTS_PACK).unwrap();
     let chains_id = meta::read(&repo_content().join("fonts/ui.fontchains.ron.meta")).unwrap().id;
     let chains: Handle<FontChains> = server.load(chains_id).unwrap();
     server.finish(&chains, |upload| panic!("{} was uploaded", upload.kind())).unwrap();

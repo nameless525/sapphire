@@ -286,6 +286,7 @@ impl Stage {
                 "the packs' pipelines prewarmed"
             );
         }
+        content.leave_out_of_zones(inventory_without);
         if keep_character_mesh {
             content.keep_character_mesh();
         }

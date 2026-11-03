@@ -7,8 +7,9 @@
 //! - **The town** is content: `content/lookdev/town/town.assembly.ron`, an assembly
 //!   (`sapphire_pipeline::assembly`) of Jinzhou-style halls, shops, walls, roofs, lanterns and
 //!   market stalls built by its parametric builtins, the Chinese pavilion and one of Kenney's
-//!   Fantasy Town Kit's rocks as the hills, cooked into one static mesh whose slots its sidecar
-//!   binds to the town's environment materials ([`TOWN`]). It never moves, so it is extracted once.
+//!   Fantasy Town Kit's rocks as the hills, whose slots its sidecar binds to the town's environment
+//!   materials. It cooks as a zone, cut into cells ([`TOWN_ZONE`], M3 W2), so its cells are ordinary
+//!   entities the zone's streaming places and takes away ([`crate::scene::ZoneStage`]).
 //! - **The character** is pixiv's VRM sample (A6, [`CHARACTER`]) in place of the mannequin. VRM
 //!   characters rest in a T-pose, so the stage holds a standing pose ([`held_pose`]): humanoid
 //!   bones turned from rest, the rig's twist and aim constraints followed ([`crate::pose`]), and a
@@ -79,8 +80,10 @@ use crate::orbit::OrbitCamera;
 use crate::pose::{self, RigJoints};
 use crate::scene::Figure;
 
-/// The town, by its sidecar's ID (`content/lookdev/town/town.assembly.ron.meta`).
-pub const TOWN: AssetId = AssetId::from_text("1ff3290e-5fa9-4f61-b891-2ca6d76b285f");
+/// The town's zone, by its sidecar's ID (`content/zones/town/town.zone.ron.meta`).
+pub const TOWN_ZONE: AssetId = AssetId::from_text("c6a8f3d2-5b47-4e19-8d0c-27f1b9e46a13");
+/// The stem of its source, which names its pack.
+pub const TOWN_STEM: &str = "town";
 /// The character: pixiv's `VRM1_Constraint_Twist_Sample`, by its sidecar's ID
 /// (`content/third_party/vrm1_constraint_twist_sample/VRM1_Constraint_Twist_Sample.vrm.meta`).
 pub const CHARACTER: AssetId = AssetId::from_text("6f8a81b6-29c4-485f-b161-847b001d561f");
@@ -294,11 +297,10 @@ pub const MOUNTAINS: [AssetId; 48] = [
     AssetId::from_text("d859ec69-1c23-4619-9c87-b48284e86774"),
 ];
 
-/// The town's meshes on a renderer: the town, each plant's, in [`Plant::ALL`] order, and the
-/// mountains', in [`MOUNTAINS`] order.
+/// What the stage places around the town on a renderer: each plant's mesh, in [`Plant::ALL`] order, and
+/// the mountains', in [`MOUNTAINS`] order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TownMeshes {
-    pub town: MeshHandle,
     pub plants: [MeshHandle; Plant::ALL.len()],
     pub mountains: [MeshHandle; MOUNTAINS.len()],
 }

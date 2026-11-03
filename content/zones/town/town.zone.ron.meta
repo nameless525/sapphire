@@ -1,0 +1,17 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "c6a8f3d2-5b47-4e19-8d0c-27f1b9e46a13",
+        importer: Zone((
+            outline: (
+                weld_tolerance: 0.0001,
+            ),
+            lods: (
+                levels: [],
+                mobile_skip: 0,
+            ),
+            position_format: Float32,
+        )),
+    ),
+)

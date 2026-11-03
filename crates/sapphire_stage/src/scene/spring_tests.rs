@@ -134,7 +134,6 @@ fn stage_playing(player: ClipPlayer) -> Scene {
         expression: FaceExpression::default(),
     };
     let town = TownMeshes {
-        town: MeshHandle::from_raw(1),
         plants: [MeshHandle::from_raw(2); 8],
         mountains: [MeshHandle::from_raw(3); lookdev::MOUNTAINS.len()],
     };

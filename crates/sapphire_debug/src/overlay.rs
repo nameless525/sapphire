@@ -15,6 +15,7 @@ use sapphire_render::{CameraData, CharacterInstance, RenderStats};
 use sapphire_rhi::{GpuContext, wgpu};
 use sapphire_time::{ScaledClock, Stopwatch};
 use sapphire_world::screen_effects::{EffectLibrary, EffectStack};
+use sapphire_world::streaming::StreamStats;
 use sapphire_world::tod::TimeOfDay;
 
 use crate::budget::CpuStages;
@@ -93,6 +94,8 @@ pub struct OverlayFrame<'a> {
     pub assets: Option<AssetStats>,
     /// The audio system's counters, if the app plays sound (M2 E1).
     pub audio: Option<AudioStats>,
+    /// A zone's streaming, if one is open (M3 W2).
+    pub streaming: Option<StreamStats>,
     /// Hot reload, if the app runs it.
     pub hot_reload: Option<HotReloadStatus<'a>>,
     /// Live link, if the app runs it.

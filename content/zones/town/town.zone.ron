@@ -1,0 +1,19 @@
+// The look-dev town as a zone (M3 W2): the assembly it always was (`../../lookdev/town/`), cut into
+// cells, so a scene draws only what's near. Its pack is `zone_town`. The ground and the hills, which reach
+// far past any cell, are its backdrop. The plants, far mountains, lamps and fog cards the stage places in
+// code stay out of it, and in the shared pack, until a document can name them (M3 S3).
+(
+    type: "sapphire::zone::ZoneDocument",
+    version: 1,
+    data: (
+        // A street's width: about 44 by 120 m of town makes about a dozen cells.
+        grid: (cell_size: 32.0),
+        placements: [
+            (
+                prefab: "1ff3290e-5fa9-4f61-b891-2ca6d76b285f",
+                at: (0.0, 0.0, 0.0),
+                split: Some((backdrop: ["#ground", "kenney/rock-*"])),
+            ),
+        ],
+    ),
+)

@@ -288,6 +288,42 @@ fn the_arena_plays_its_committed_replay() {
     assert!(capture.exists(), "{log}");
 }
 
+/// The rule that governs a zone's streaming (M3 W2): the simulation streams nothing. The arena's replay
+/// walks through the town with the town's zone off, on as its tier has it, on another budget and radius
+/// by which cells come and go all the way, and on a phone's settings, and every run reaches every one of
+/// a headless run's checksums, with no allocation in a fixed step.
+#[test]
+#[ignore = "needs a GPU and cooked content (`cargo xtask content`)"]
+fn the_town_streaming_changes_nothing_the_checksums_see() {
+    let replay = workspace().join("tests").join("replays").join("arena-walk.sreplay");
+    let played = headless(&fs::read(&replay).expect("committed"));
+    let temp = Temp::new("streaming");
+    let capture = temp.path("drawn.png");
+    let runs: [&[&str]; 6] = [
+        &["--stream", "off"],
+        &[],
+        &["--stream", "1:8"],
+        &["--stream", "1000:48"],
+        &["--tier", "mobile-low"],
+        &["--tier", "mobile-low", "--stream", "4:16"],
+    ];
+    for extra in runs {
+        let mut args = vec![
+            "--capture",
+            capture.to_str().expect("UTF-8"),
+            "--arena",
+            "--replay",
+            replay.to_str().expect("UTF-8"),
+        ];
+        args.extend_from_slice(extra);
+        let output = run_app(&args);
+        let log = log_of(&output);
+        assert!(output.status.success(), "{extra:?}: {log}");
+        assert!(log.contains(&format!("checksum={:016x}", played.trail.end())), "{extra:?}: {log}");
+        assert!(log.contains("allocations=0"), "{extra:?}: {log}");
+    }
+}
+
 /// One `a fight ended` line of a log, as the numbers it gives.
 struct FightEnded {
     ticks: u32,

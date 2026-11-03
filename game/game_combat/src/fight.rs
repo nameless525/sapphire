@@ -47,7 +47,7 @@ use sapphire_stage::{FrameLaps, StageDesc, lookdev, vfx};
 use sapphire_stage::{RenderMesh, RenderPose, RenderTransform};
 
 use crate::party_looks::{Drawn, PartyLooks};
-use sapphire_stage::scene::{DEFAULT_TIME_OF_DAY, Figure, LookDev, Scene};
+use sapphire_stage::scene::{DEFAULT_TIME_OF_DAY, Figure, LookDev, Scene, stream_settings};
 use sapphire_stage::turntable::Turntable;
 use sapphire_stage::{ContentChanges, SceneShow};
 
@@ -923,6 +923,7 @@ impl Fight {
         let enemy = show.load_enemy(content, renderer, gpu)?;
         let held = show.held_enemy(content)?;
         show.spawn_arena(scene, Arena { shot: ArenaShot::Director, look, ground, enemy, held });
+        scene.open_town_zone(content, stream_settings(tier), renderer, gpu)?;
 
         content.load_graph(lookdev::GRAPH, renderer, gpu)?;
         show.load_enemy_graph(content, renderer, gpu)?;

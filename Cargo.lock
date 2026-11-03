@@ -1361,6 +1361,7 @@ dependencies = [
  "sapphire_ui",
  "sapphire_vfx",
  "sapphire_world",
+ "sapphire_zone",
  "thiserror 2.0.21",
  "tracing",
 ]
@@ -3428,6 +3429,7 @@ dependencies = [
  "sapphire_reflect",
  "sapphire_serialize",
  "sapphire_strings",
+ "sapphire_time",
  "sapphire_zone",
  "serde",
  "slotmap",
@@ -4019,9 +4021,11 @@ dependencies = [
  "sapphire_platform",
  "sapphire_render",
  "sapphire_rhi",
+ "sapphire_synthetic_zone",
  "sapphire_time",
  "sapphire_vfx",
  "sapphire_world",
+ "sapphire_zone",
  "thiserror 2.0.21",
  "tracing",
 ]

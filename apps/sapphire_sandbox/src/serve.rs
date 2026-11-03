@@ -194,8 +194,14 @@ impl Serving {
             settings,
             &self.options,
         ) {
-            Ok(renderer) => {
-                crate::app::set_meshes(&mut stage.scene, &mut stage.show, &renderer);
+            Ok(mut renderer) => {
+                crate::app::set_meshes(
+                    &mut stage.scene,
+                    &mut stage.show,
+                    &mut renderer,
+                    &mut stage.content,
+                    &stage.gpu,
+                );
                 stage.renderer = renderer.renderer;
                 stage.hooks.dev.renderer_created(&mut stage.renderer);
                 stage.scene.prewarm(&stage.show, &mut stage.renderer);

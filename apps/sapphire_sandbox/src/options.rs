@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use sapphire_render::quality::{OcclusionSetting, QualitySettings, Switch, TierId};
 use sapphire_render::{DebugView, LightPath, MIN_RENDER_SCALE, Msaa, PostVariants, RenderSettings, Wind};
 use sapphire_ui::Insets;
+use sapphire_world::streaming::{StreamBudget, StreamSettings};
 use sapphire_world::tod::CharacterShadeKey;
 
 use game_combat::arena::ArenaShot;
@@ -67,6 +68,48 @@ impl DebugDraw {
 
 /// Options parsed from the process arguments. The default is no options: everything from the
 /// quality tier and the scene.
+/// How the town's zone streams (`--stream`, M3 W2). Nothing it says reaches a simulation, which is what
+/// `the_town_streaming_changes_nothing_the_checksums_see` holds.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum StreamChoice {
+    /// As the tier's class of device does.
+    #[default]
+    Tier,
+    /// `off`: the zone isn't opened, so the town has no cells.
+    Off,
+    /// `<entities>:<metres>`: that many entities a frame, and an activation radius.
+    Limits { entities: u32, activate: f32 },
+}
+
+impl StreamChoice {
+    fn parse(text: &str) -> Result<Self, String> {
+        if text == "off" {
+            return Ok(Self::Off);
+        }
+        let limits = text.split_once(':').and_then(|(entities, activate)| {
+            let activate =
+                activate.parse::<f32>().ok().filter(|metres| metres.is_finite() && *metres >= 0.0)?;
+            Some(Self::Limits { entities: entities.parse().ok()?, activate })
+        });
+        limits.ok_or_else(|| format!("--stream expects off or <entities>:<metres>, got {text:?}"))
+    }
+
+    /// The settings on `tier`, if the zone opens.
+    pub fn settings(self, tier: TierId) -> Option<StreamSettings> {
+        let settings = scene::stream_settings(tier);
+        match self {
+            Self::Tier => Some(settings),
+            Self::Off => None,
+            Self::Limits { entities, activate } => Some(StreamSettings {
+                activate,
+                load: activate + 16.0,
+                release: activate + 32.0,
+                budget: StreamBudget { entities, ..settings.budget },
+            }),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Options {
     /// Exit after this many presented frames.
@@ -187,6 +230,8 @@ pub(crate) struct Options {
     pub cloud_cover: Option<f32>,
     /// `--plain-sky`: the sky's gradient alone, with no discs, glows, stars or clouds.
     pub plain_sky: bool,
+    /// `--stream`: how the town's zone streams.
+    pub stream: StreamChoice,
     /// `--fog off`: no fog (M1 W3): time of day's fog left out of every frame, and no fog cards
     /// in the courtyard. `--fog on` is the default.
     pub fog_off: bool,
@@ -807,6 +852,7 @@ impl Options {
                     options.debug_draw = Some(DebugDraw::parse(&value("--debug-draw")?)?);
                 }
                 "--plain-sky" => options.plain_sky = true,
+                "--stream" => options.stream = StreamChoice::parse(&value("--stream")?)?,
                 "--fog" => {
                     options.fog_off = match value("--fog")?.as_str() {
                         "on" => false,

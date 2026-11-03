@@ -248,6 +248,8 @@
 //!   `0` is a clear sky.
 //! - `--plain-sky`: draw the sky's gradient alone (no discs, glows, stars or clouds), a backdrop
 //!   the same at any hour, which the golden scenes from before the sky's layers pin.
+//! - `--stream off|<entities>:<metres>`: how the town's zone streams (M3 W2): not at all, so the town has
+//!   no cells, or with that many entities a frame and that activation radius, instead of the tier's.
 //! - `--fog on|off`: draw time of day's fog (M1 W3), on by default. Off leaves it out of every
 //!   frame and places no fog cards in the courtyard, so frames draw exactly as before fog, which
 //!   the golden scenes from before it pin.

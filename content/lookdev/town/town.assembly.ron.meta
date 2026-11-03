@@ -39,5 +39,7 @@
                 "wood_dark": "4877c2cb-8151-4e8f-a18e-393b1e80259c",
             },
         )),
+        // It draws as a zone, cut into cells (`../../zones/town/`): no mesh of its own.
+        cook: false,
     ),
 )

@@ -160,6 +160,20 @@ pub(crate) fn run(
         0 => "untimed".to_owned(),
         timed => format!("{:.1}", micros(gpu_span / timed)),
     };
+    if let Some(stream) = stage.scene.stream_stats() {
+        tracing::info!(
+            target: LOG_TARGET,
+            places = stream.places,
+            active = stream.active,
+            failed = stream.failed,
+            entities = stream.entities,
+            placed = stream.total_placed,
+            removed = stream.total_removed,
+            peak_us = format_args!("{:.1}", micros(stream.peak_time)),
+            over_budget_frames = stream.over_budget_frames,
+            "streaming"
+        );
+    }
     tracing::info!(
         target: LOG_TARGET,
         frames,
@@ -318,6 +332,7 @@ fn gpu_times(stage: &mut Stage, view: &wgpu::TextureView, bloom_levels: u32) -> 
         gpu_character_prepass_us = format_args!("{:.1}", micros(character_prepass.0, character_prepass.2)),
         gpu_character_prepass_duration_us =
             format_args!("{:.1}", micros(character_prepass.1, character_prepass.2)),
+        surface_draws = stage.renderer.stats().draws,
         character_prepass_draws = stage.renderer.stats().character_prepass.draws,
         eye_layer_draws = stage.renderer.stats().character_prepass.eye_layer_draws,
         gpu_taa_us = format_args!("{:.1}", micros(taa.0, taa.2)),

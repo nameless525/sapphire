@@ -158,6 +158,8 @@ struct Traced {
     hud: Duration,
     /// The effects' simulation and frame write, in the cue steps and the packet.
     vfx: Duration,
+    /// The zone's streaming, within [`FrameLaps::content`].
+    streaming: Duration,
     /// Allocations and bytes in the whole frame, the mix and the wait included.
     allocations: u64,
     bytes: u64,
@@ -212,7 +214,7 @@ const fn low(desktop: u32, mobile: u32) -> [Option<u32>; 4] {
 const UNBUDGETED: [Option<u32>; 4] = [None; 4];
 
 /// What's logged, in the order of spec §3: the whole, §3.2's rows, what §3.2 has no row for, §3.3's.
-const ROWS: [Row; 26] = [
+const ROWS: [Row; 27] = [
     cpu_row("cpu frame", |t| t.cpu, [Some(8_000), Some(12_000), Some(12_000), Some(22_000)]),
     cpu_row("game side", |t| t.cpu.saturating_sub(t.laps.prepare + t.laps.record), low(6_000, 13_600)),
     cpu_row("simulation", |t| t.laps.simulation, low(1_000, 3_000)),
@@ -221,6 +223,7 @@ const ROWS: [Row; 26] = [
     cpu_row("secondary motion", |t| t.springs, low(500, 1_000)),
     cpu_row("vfx simulation", |t| t.vfx, low(300, 600)),
     cpu_row("audio update", |t| t.audio, low(200, 300)),
+    cpu_row("streaming activation", |t| t.streaming, low(500, 1_000)),
     cpu_row("extract", |t| t.laps.packet.saturating_sub(t.camera + t.hud), low(700, 1_200)),
     cpu_row("render", |t| t.laps.prepare + t.laps.record, low(4_000, 8_000)),
     cpu_row("cues", |t| t.laps.cues, UNBUDGETED),
@@ -529,6 +532,7 @@ impl Run<'_> {
             camera: stage.show.fight.show.camera_time(),
             hud: stage.show.hud.as_ref().map_or(Duration::ZERO, |hud| hud.last_frame().1),
             vfx: stats.vfx.simulation.simulation,
+            streaming: stage.scene.stream_stats().map_or(Duration::ZERO, |stream| stream.time),
             allocations: after.total_allocations - before.total_allocations,
             bytes: after.total_bytes - before.total_bytes,
             live_bytes: after.live_bytes,
@@ -643,7 +647,7 @@ fn report(run: &Run<'_>, options: &Options, (width, height): (u32, u32), rate: u
 
 /// The header of `--bench-trace`'s file: times in µs.
 const TRACE_HEADER: &str = "phase,frame,fight,tick,steps,cpu,wait,restart,scene_step,simulation,physics,cues,\
-audio,mix,content,animation,springs,poses,joints,packet,camera,hud,vfx,prepare,record,allocations,bytes,\
+audio,mix,content,animation,springs,poses,joints,packet,camera,hud,vfx,streaming,prepare,record,allocations,bytes,\
 live_bytes,step_allocations,sim_allocations,animation_allocations,packet_allocations,packet_bytes,prepare_allocations,\
 prepare_bytes,record_allocations,record_bytes,sprites,ribbon_points,cues_read,effects,sounds,screens,layers,\
 hitstop_player,hitstop_enemy,world_scale,post_first_use,draws,gpu_timed,gpu_span,gpu_main,gpu_prepasses,\
@@ -679,7 +683,7 @@ fn trace_line(frame: &Traced) -> String {
             let _ = write!(line, ",{:.1}", time.as_secs_f64() * 1e6);
         }
     };
-    times(&[laps.packet, frame.camera, frame.hud, frame.vfx, laps.prepare, laps.record]);
+    times(&[laps.packet, frame.camera, frame.hud, frame.vfx, frame.streaming, laps.prepare, laps.record]);
     let _ = write!(
         line,
         ",{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{:.4},{},{},{}",
@@ -762,6 +766,7 @@ mod tests {
             camera: Duration::ZERO,
             hud: Duration::ZERO,
             vfx: Duration::ZERO,
+            streaming: Duration::ZERO,
             allocations: 0,
             bytes: 0,
             live_bytes: 0,

@@ -42,7 +42,7 @@ use sapphire_gameplay::replay::{
 use sapphire_physics::{ColliderId, Group, GroupMask, RayHit, Shape, StaticCollider, StaticShape};
 
 use super::*;
-use sapphire_stage::lookdev::{TOWN, plantings};
+use sapphire_stage::lookdev::{TOWN_STEM, TOWN_ZONE, plantings};
 
 /// A desktop's shape and a phone's: an iPhone 17 Pro's 2622 by 1206.
 const DESKTOP: f32 = 16.0 / 9.0;
@@ -153,11 +153,14 @@ struct VisibleTown {
 }
 
 impl VisibleTown {
-    /// From `target/content/desktop`'s pack, or `None` with no cook to read.
+    /// From `target/content/desktop`'s packs, or `None` with no cook to read.
     fn load() -> Option<Self> {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/content/desktop/shared.spack");
-        let bytes = std::fs::read(&root).ok()?;
+        let packs = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/content/desktop");
+        let bytes = std::fs::read(packs.join("shared.spack")).ok()?;
         let pack = PackReader::new(&bytes).expect("the cook's pack reads");
+        let name = sapphire_zone::pack_name(TOWN_STEM);
+        let zone_bytes = std::fs::read(packs.join(format!("{name}.spack"))).ok()?;
+        let zone_pack = PackReader::new(&zone_bytes).expect("the cook's pack reads");
         let mut statics = Vec::new();
         let mut names = Vec::new();
         // In tiles: a world's trees have to stay shallow, and one mesh of a whole town's materials doesn't.
@@ -187,10 +190,17 @@ impl VisibleTown {
                 });
             }
         };
-        let town = pack.read(TOWN).expect("the pack has the town");
-        let town = Mesh::read(&town).expect("the town reads");
-        for (slot, vertices, faces) in triangles(town, &Mat4::IDENTITY) {
-            add(slot, &vertices, &faces);
+        let zone = zone_pack.read(TOWN_ZONE).expect("the pack has the town");
+        let zone = sapphire_zone::Zone::read(&zone).expect("the town reads");
+        let presentation = &zone.presentation;
+        let backdrop = presentation.backdrop.as_ref().into_iter();
+        for contents in backdrop.chain(presentation.cells.iter().map(|cell| &cell.contents)) {
+            let Some(&mesh) = contents.mesh.as_ref() else { continue };
+            let mesh = zone_pack.read(mesh).expect("the pack has the cell");
+            let mesh = Mesh::read(&mesh).expect("the cell reads");
+            for (slot, vertices, faces) in triangles(mesh, &Mat4::IDENTITY) {
+                add(slot, &vertices, &faces);
+            }
         }
         for (plant, place) in plantings() {
             let mesh = pack.read(plant.id()).expect("the pack has the plant");

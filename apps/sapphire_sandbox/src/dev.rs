@@ -360,6 +360,7 @@ impl DevTools {
             combat,
             assets: Some(frame.assets),
             audio: frame.audio,
+            streaming: frame.scene.stream_stats(),
             hot_reload: Some(self.reload.status()),
             live_link: Some(self.link.status()),
         })

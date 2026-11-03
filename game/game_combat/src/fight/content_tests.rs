@@ -341,11 +341,8 @@ impl Stage {
         let plain = Mesh::read(&bytes).expect("a valid mesh");
         let materials = renderer.upload_embedded_materials(plain).expect("materials");
         let plain = renderer.upload_mesh(plain, &materials).expect("a mesh");
-        let town = TownMeshes {
-            town: plain,
-            plants: Plant::ALL.map(|_| plain),
-            mountains: lookdev::MOUNTAINS.map(|_| plain),
-        };
+        let town =
+            TownMeshes { plants: Plant::ALL.map(|_| plain), mountains: lookdev::MOUNTAINS.map(|_| plain) };
         let mut scene = Scene::with_character(mesh, bounds, false);
         scene.spawn_look_dev(Shot::Hero, LookDev { town, fog_cards: None, pose, figure });
         scene
@@ -360,7 +357,7 @@ impl Stage {
         let live_packs = Arc::new(LivePacks::new(source.clone()));
         let budgets = AssetBudgets { upload_per_frame: u64::MAX, resident: [u64::MAX; AssetKind::ALL.len()] };
         let mut server = AssetServer::new(live_packs.clone(), budgets);
-        server.mount(PACK).expect("the pack");
+        server.mount_now(PACK).expect("the pack");
         let character = server.load_with(lookdev::CHARACTER, LoadPriority::Critical).expect("loading");
         let mut content = Content::over_server(server, lookdev::CHARACTER, character, SKY, live_packs);
         content.keep_character_mesh();
@@ -433,11 +430,8 @@ impl Stage {
         let plain = Mesh::read(&bytes).expect("a valid mesh");
         let materials = self.renderer.upload_embedded_materials(plain).expect("materials");
         let plain = self.renderer.upload_mesh(plain, &materials).expect("a mesh");
-        let town = TownMeshes {
-            town: plain,
-            plants: Plant::ALL.map(|_| plain),
-            mountains: lookdev::MOUNTAINS.map(|_| plain),
-        };
+        let town =
+            TownMeshes { plants: Plant::ALL.map(|_| plain), mountains: lookdev::MOUNTAINS.map(|_| plain) };
         let held = self.show.held_enemy(&self.content).expect("the enemy's pose");
         let cooked = sapphire_gameplay::arena::cooked_colliders().expect("it cooks");
         let set = ColliderSet::read(&cooked).expect("it reads");

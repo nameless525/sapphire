@@ -259,6 +259,20 @@ pub struct Effect {
     pub trail: Option<TrailDesc>,
 }
 
+impl Effect {
+    /// Whether it plays until it's [stopped](crate::VfxWorld::stop): a trail records until then, and a
+    /// rate with no duration emits. Only what keeps its [handle](crate::EffectHandle) can start one,
+    /// or it holds its place in the budget for good.
+    #[must_use]
+    pub fn is_endless(&self) -> bool {
+        self.trail.is_some()
+            || self
+                .emitters
+                .iter()
+                .any(|emitter| matches!(emitter.spawn, Spawn::Rate { duration, .. } if duration <= 0.0))
+    }
+}
+
 /// An effect of an [`EffectLibrary`], by its place in the library.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct EffectId(pub u16);

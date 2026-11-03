@@ -9,7 +9,7 @@ use sapphire_gameplay::{ActorId, ActorTable, ActorView, CueEvent, HitCue, Simula
 use sapphire_math::{Mat4, Quat, Vec2, Vec3};
 use sapphire_moves::Weight;
 use sapphire_render::PostVariants;
-use sapphire_vfx::{EffectId, EffectLibrary as VfxLibrary, OwnerId, OwnerSteps, Placement, VfxWorld};
+use sapphire_vfx::{Effect, EffectId, EffectLibrary as VfxLibrary, OwnerId, OwnerSteps, Placement, VfxWorld};
 use sapphire_world::screen_effects::{EffectLibrary as ScreenLibrary, EffectPresetId, EffectStack};
 
 use crate::rumble::{Rumble, RumbleMixer, RumbleSink};
@@ -124,6 +124,10 @@ impl Row {
             let found = effects
                 .find(effect)
                 .ok_or_else(|| CueTableError::UnknownEffect { row: row.label(), name: effect.clone() })?;
+            // Firing keeps no handle, so nothing could stop one, and each would hold its place for good.
+            if effects.effect(found).is_some_and(Effect::is_endless) {
+                return Err(CueTableError::EndlessEffect { row: row.label(), name: effect.clone() });
+            }
             *slot = Some(RowEffect { effect: found, at: *at, clock: *clock });
         }
         for (slot, sound) in resolved.sounds.iter_mut().zip(&row.sounds) {
@@ -384,7 +388,7 @@ mod tests {
     use sapphire_look::VfxFrame;
     use sapphire_math::Vec4;
     use sapphire_time::{ScaledClock, SimDuration, SimTime};
-    use sapphire_vfx::VfxBudget;
+    use sapphire_vfx::{EmitterDesc, Spawn, VfxBudget};
 
     use super::*;
     use crate::table::{ScreenFire, ShakeFire};
@@ -697,6 +701,105 @@ mod tests {
         let mut sinks = Sinks::new();
         sinks.read(&mut kept, 1, &[event("swing", None)]);
         assert_eq!(kept.sounds().len(), 1, "what it had still fires");
+    }
+
+    /// A library of the shipped dust's emitter, spawning each way named.
+    fn effects_spawning(effects: &[(&str, &[Spawn])]) -> VfxLibrary {
+        let shipped = VfxLibrary::default_effects();
+        let dust = shipped.effect(shipped.find("dust_puff").expect("shipped")).expect("found");
+        let effects = effects.iter().map(|(name, spawns)| Effect {
+            name: (*name).to_owned(),
+            emitters: spawns.iter().map(|&spawn| EmitterDesc { spawn, ..dust.emitters[0].clone() }).collect(),
+            trail: None,
+        });
+        VfxLibrary::new(effects.collect()).expect("valid")
+    }
+
+    const ENDLESS: Spawn = Spawn::Rate { per_second: 1.0, duration: 0.0 };
+    const ONE_SECOND: Spawn = Spawn::Rate { per_second: 1.0, duration: 1.0 };
+    const ONCE: Spawn = Spawn::Burst { count: 1 };
+
+    fn naming(effect: &str) -> CueRow {
+        let fire = EffectFire { effect: effect.to_owned(), at: EffectPlace::Hit, clock: EffectOwner::World };
+        CueRow { effects: vec![fire], ..row("hit") }
+    }
+
+    /// A cue keeps no handle, so nothing could ever stop an effect that plays until it's stopped: each
+    /// one fired would hold its place in the budget for good.
+    #[test]
+    fn a_row_cant_fire_an_effect_that_plays_until_its_stopped() {
+        let tuning = CameraTuning::default_tuning();
+        let presets = ScreenLibrary::default_effects();
+        let resolve = |effect: &str, library: &VfxLibrary| {
+            let table = CueTable::new(vec![naming(effect)]).expect("valid");
+            CueDispatcher::new(&table, library, &presets, &tuning).map(|_| ())
+        };
+        let refused =
+            |name: &str| CueTableError::EndlessEffect { row: "hit".to_owned(), name: name.to_owned() };
+
+        let shipped = VfxLibrary::default_effects();
+        assert_eq!(resolve("sword_trail", &shipped), Err(refused("sword_trail")), "a trail");
+        let error = resolve("sword_trail", &shipped).unwrap_err().to_string();
+        assert!(error.contains("sword_trail") && error.contains("`hit`"), "{error}");
+
+        let library = effects_spawning(&[
+            ("endless", &[ENDLESS]),
+            ("mixed", &[ONCE, ENDLESS]),
+            ("finite", &[ONCE, ONE_SECOND]),
+        ]);
+        assert_eq!(resolve("endless", &library), Err(refused("endless")));
+        assert_eq!(resolve("mixed", &library), Err(refused("mixed")), "one emitter is enough");
+        assert_eq!(resolve("finite", &library), Ok(()));
+    }
+
+    /// A reload goes through the same check: a table naming one is refused, and so is a library that
+    /// turns a name the table holds into one. The dispatcher keeps what it has.
+    #[test]
+    fn a_reload_cant_bring_in_an_effect_that_plays_until_its_stopped() {
+        let tuning = CameraTuning::default_tuning();
+        let presets = ScreenLibrary::default_effects();
+        let finite = effects_spawning(&[("spark", &[ONCE]), ("endless", &[ENDLESS])]);
+        let table = CueTable::new(vec![naming("spark")]).expect("valid");
+        let mut dispatcher = CueDispatcher::new(&table, &finite, &presets, &tuning).expect("resolves");
+
+        let bad_table = CueTable::new(vec![naming("endless")]).expect("valid");
+        assert!(matches!(
+            dispatcher.resolve(&bad_table, &finite, &presets, &tuning),
+            Err(CueTableError::EndlessEffect { .. })
+        ));
+        let bad_library = effects_spawning(&[("spark", &[ENDLESS])]);
+        assert!(matches!(
+            dispatcher.resolve(&table, &bad_library, &presets, &tuning),
+            Err(CueTableError::EndlessEffect { .. })
+        ));
+
+        let mut sinks = Sinks::new();
+        sinks.vfx = VfxWorld::new(finite, VfxBudget::DESKTOP_LOW, 7);
+        sinks.read(&mut dispatcher, 1, &[event("hit", Some(hit(Weight::Light)))]);
+        assert_eq!(dispatcher.stats().effects, 1, "what it had still fires");
+    }
+
+    /// More one-shot cues than the budget holds: the ones that fit play out and give their places back.
+    #[test]
+    fn what_a_cue_fires_gives_its_place_back() {
+        let mut dispatcher = dispatcher(vec![naming("dust_puff")]);
+        let budget = VfxBudget::MOBILE_LOW;
+        let mut sinks = Sinks::new();
+        sinks.vfx = VfxWorld::new(VfxLibrary::default_effects(), budget, 7);
+        let cues = vec![event("hit", Some(hit(Weight::Light))); budget.max_effects as usize + 12];
+        sinks.read(&mut dispatcher, 1, &cues);
+        let stats = dispatcher.stats();
+        assert_eq!((stats.effects, stats.effects_dropped), (u64::from(budget.max_effects), 12));
+        assert_eq!(sinks.vfx.stats().effects, budget.max_effects);
+
+        for _ in 0..600 {
+            sinks.vfx.advance(&OwnerSteps { world: TICK, owners: &[] });
+        }
+        assert_eq!(sinks.vfx.stats().effects, 0);
+        assert_eq!(sinks.vfx.stats().particles, 0);
+
+        sinks.read(&mut dispatcher, 2, &cues[..1]);
+        assert_eq!(sinks.vfx.stats().effects, 1, "there's room again");
     }
 
     /// The table's screen presets draw through these, and a preset nothing pushes adds nothing.

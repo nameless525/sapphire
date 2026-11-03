@@ -60,7 +60,8 @@ pub enum ScreenCenter {
     Preset,
 }
 
-/// An effect a row spawns, from `sapphire_vfx`'s library.
+/// An effect a row spawns, from `sapphire_vfx`'s library. It has to end by itself: nothing keeps its
+/// handle, so a trail or a rate with no duration is refused ([`CueTableError::EndlessEffect`]).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EffectFire {
@@ -170,6 +171,8 @@ pub enum CueTableError {
     Invalid { row: String, field: &'static str, problem: &'static str },
     #[error("cue `{row}`: no effect `{name}` in the effects library")]
     UnknownEffect { row: String, name: String },
+    #[error("cue `{row}`: effect `{name}` plays until it's stopped, and a cue keeps nothing to stop it with")]
+    EndlessEffect { row: String, name: String },
     #[error("cue `{row}`: no screen effect preset `{name}`")]
     UnknownPreset { row: String, name: String },
     #[error("cue `{row}`: no camera shake preset `{name}`")]

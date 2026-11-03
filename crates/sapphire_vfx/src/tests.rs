@@ -609,6 +609,44 @@ fn a_rate_emits_at_its_rate_and_stops_when_stopped() {
     assert!(!world.is_playing(handle), "gone with its last particle");
 }
 
+/// What an effect says of itself is what the world does with it, left alone.
+#[test]
+fn an_effect_is_endless_exactly_when_it_never_ends_by_itself() {
+    let of = |spawns: &[Spawn]| Effect {
+        name: "effect".to_owned(),
+        emitters: spawns.iter().map(|&spawn| dots("dots", spawn)).collect(),
+        trail: None,
+    };
+    let (once, brief) = (Spawn::Burst { count: 2 }, Spawn::Rate { per_second: 60.0, duration: 0.5 });
+    let endless = Spawn::Rate { per_second: 60.0, duration: 0.0 };
+    let mut with_trail = burst(2);
+    with_trail.trail = trail(8).trail;
+    let effects = [
+        (of(&[once]), false),
+        (of(&[brief]), false),
+        (of(&[once, brief]), false),
+        (of(&[endless]), true),
+        (of(&[once, endless]), true),
+        (of(&[endless, brief]), true),
+        (trail(8), true),
+        (with_trail, true),
+    ];
+    for (effect, endless) in effects {
+        assert_eq!(effect.is_endless(), endless, "{effect:?}");
+        let mut world = world_of(vec![effect.clone()], VfxBudget::DESKTOP_LOW);
+        let handle = world.spawn(EffectId(0), OwnerId::WORLD, Placement::default()).expect("spawned");
+        for _ in 0..600 {
+            world.advance(&ALL_RUN);
+        }
+        assert_eq!(world.is_playing(handle), endless, "{effect:?}");
+        world.stop(handle);
+        for _ in 0..600 {
+            world.advance(&ALL_RUN);
+        }
+        assert!(!world.is_playing(handle), "stopping ends any of them: {effect:?}");
+    }
+}
+
 #[test]
 fn a_delay_waits_on_the_owners_clock() {
     let mut effect = burst(1);

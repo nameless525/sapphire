@@ -479,6 +479,16 @@ pub struct FramePacket {
 | `sapphire_replay` | Tools | The headless replay runner: `cargo xtask replay` and CI's `Replays` job (§5.22) | None | M2 |
 | `sapphire_testkit` | Tools | Golden images | `insta`, `nv-flip` | M1 |
 
+**As built (M3 S2), the stage and `game/`:**
+
+- **The seam:** `SceneShow` is one trait of eight defaulted calls: `step`, `end_steps`, `follow_content`, `animate`, `present`, `write_effects`, `draw_interface`, `draw_debug`. `Stage<S: SceneShow = ()>` owns the caller's show and hands it to `Scene` by argument at each, so `Scene` holds no fight and the frame's order stays where the stage wrote it. `()` plays nothing. It assumes no number of fighters.
+- **Content:** `Content` holds a character, a sky and what the caller hands it through `hold`, `read` and `version_of`. Graphs are keyed by a `GraphKey`, a name the game gives. `UploadWatcher` is the hook for recolors.
+- **Layers:** the stage is at L5, beside `sapphire_controls` and `sapphire_cues`, with no edge to either. `game_combat` and `game_ui` are at L6, and `game_ui` reads `game_combat` by an allowed edge. The HUD stays out of the fight, and a generic on `Fight` to keep the edge away cost more than the edge.
+- **The sandbox** reaches the fight by depending on `game_combat` and `game_ui`, with `ShownFight` as its show, and keeps its flags, captures, benches and `SandboxInput`. Only one whole fight, `Fight::stand`, is in `game_combat`, for `game_app` and its test.
+- **`pub` lines:** 465 in `sapphire_stage`, against 498 before. A game names 216. The other 249 are only what the sandbox's scene flags build (`spawn_swatches`, the `set_*_mesh` calls, `FaceLayout`, `RimLayout`, `studio`).
+- **What it costs:** every golden and replay is byte-identical, and the fight's rows read as before (the whole fight's bench at Desktop-High and Desktop-Low, alternating rounds against the base's binary on an M5). 745 allocations a frame, 0 in a step. The sandbox's binary grows from 28.71 MB to 29.10 MB, and the game's is 27.53 MB.
+- **What it can't do:** `game_app` has one scene, no scene flags, no recovery from a lost device (it logs and fails), no tier following, no dev overlay, no saves and no words on its title. `tests/outside_caller.rs` holds the surface for what it names and no more. Two fighters are still the fight's shape until B1.
+
 Each module below follows the same template:
 
 - **Owns**: what it is responsible for.
@@ -2551,7 +2561,7 @@ The `resolve` module's "A perfect dodge", `moves`'s "A counter window" and `test
   - **A write:** `sapphire_platform::durable_replace`: temp file, flush, rename, flush the directory; its docs say where each OS's guarantee stops. An app hands that function to the store, so this crate's normal tree has no platform and no SDL, and the replay runner, which may not link them, can still read a save. A lock file keeps a second copy of the game, or a second job, from sharing a temp.
   - **Off the frame's path:** `snapshot` makes plain bytes, and `write` goes on a job, one in flight. On an M5's APFS at a load average of 300–480, release, 40 writes each: a snapshot takes a median of 5.6 µs at 1 KiB and 57 µs at 64 KiB; a write takes 7.0 ms at either (5.9 minimum, 9.1 maximum), nearly all of it the two `F_FULLFSYNC`s, so a write can't share a frame even on this Mac. No phone's flash has been timed.
   - **Proved:** a fault at each of the four steps, failing or dying, with 0 to 3 saves before it, leaves the old save or the new one whole, and the next write works; so does every flipped byte, every truncation, an empty file and both slots bad. `tests/kill.rs` kills a writing process 300 times with no torn load and no acknowledged write lost, and fails within 20 kills if `durable_replace` writes in place. The `save_smoke` example ran a write, a load, a corrupted slot's fall-back and rotation on the iOS Simulator (`simctl spawn`, which is the Mac's APFS underneath) and an API 36 emulator (`adb shell`, ext4 under `/data/local/tmp`).
-  - **Can't say:** a power cut can't be tested here, and no real phone's flash has run it. `SDL_GetPrefPath`'s real paths are owed to `game_app`'s first run (S2, G1). The checksum catches damage, not cheating.
+  - **Can't say:** a power cut can't be tested here, and no real phone's flash has run it. `SDL_GetPrefPath`'s real paths are owed to G1, the game's first save: S2's `game_app` saves nothing. The checksum catches damage, not cheating.
 
 **`sapphire_loc`**
 

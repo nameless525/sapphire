@@ -3,25 +3,25 @@
 
 use std::fmt;
 
-use sapphire_colliders::{ColliderError, ColliderSet};
-use sapphire_moves::{MoveSet, MoveSetError};
-use sapphire_navmesh::{NavMesh, NavMeshError};
-use sapphire_strings::{StringTable, StringsError};
-use sapphire_zone::{Zone, ZoneError};
+use sapphire_colliders::{COLLIDERS_EXTENSION, ColliderError, ColliderSet};
+use sapphire_moves::{MOVE_SET_EXTENSION, MoveSet, MoveSetError};
+use sapphire_navmesh::{NAVMESH_EXTENSION, NavMesh, NavMeshError};
+use sapphire_strings::{STRINGS_EXTENSION, StringTable, StringsError};
+use sapphire_zone::{ZONE_EXTENSION, Zone, ZoneError};
 use serde::{Deserialize, Serialize};
 
 use crate::AssetId;
-use crate::clip::{Clip, ClipError};
-use crate::cue::{Cue, CueError};
-use crate::font::{Font, FontChains, FontError};
-use crate::graph::{AnimGraph, GraphError};
-use crate::material::{Material, MaterialError};
-use crate::mesh::{Mesh, MeshError};
-use crate::probes::{ProbeGrid, ProbeGridError};
-use crate::rig::{CharacterRig, RigError};
-use crate::skeleton::{Skeleton, SkeletonError};
-use crate::sound::{Sound, SoundError};
-use crate::texture::{Texture, TextureFormatError};
+use crate::clip::{CLIP_EXTENSION, Clip, ClipError};
+use crate::cue::{CUE_EXTENSION, Cue, CueError};
+use crate::font::{FONT_CHAINS_EXTENSION, FONT_EXTENSION, Font, FontChains, FontError};
+use crate::graph::{AnimGraph, GRAPH_EXTENSION, GraphError};
+use crate::material::{MATERIAL_EXTENSION, Material, MaterialError};
+use crate::mesh::{MESH_EXTENSION, Mesh, MeshError};
+use crate::probes::{PROBE_GRID_EXTENSION, ProbeGrid, ProbeGridError};
+use crate::rig::{CharacterRig, RIG_EXTENSION, RigError};
+use crate::skeleton::{SKELETON_EXTENSION, Skeleton, SkeletonError};
+use crate::sound::{SOUND_EXTENSION, Sound, SoundError};
+use crate::texture::{TEXTURE_EXTENSION, Texture, TextureFormatError};
 
 /// The kinds of cooked asset. Each is also a residency category with a budget of its own
 /// ([`AssetBudgets`](crate::AssetBudgets)).
@@ -95,6 +95,30 @@ impl AssetKind {
     /// The kind's position in [`Self::ALL`].
     pub const fn index(self) -> usize {
         self as usize - 1
+    }
+
+    /// The file extension of the kind's cooked format, by which a cook names its outputs, prunes stale
+    /// ones and tells a packer what a file is.
+    pub const fn extension(self) -> &'static str {
+        match self {
+            Self::Mesh => MESH_EXTENSION,
+            Self::Texture => TEXTURE_EXTENSION,
+            Self::Material => MATERIAL_EXTENSION,
+            Self::Rig => RIG_EXTENSION,
+            Self::ProbeGrid => PROBE_GRID_EXTENSION,
+            Self::Skeleton => SKELETON_EXTENSION,
+            Self::Clip => CLIP_EXTENSION,
+            Self::Colliders => COLLIDERS_EXTENSION,
+            Self::Sound => SOUND_EXTENSION,
+            Self::Cue => CUE_EXTENSION,
+            Self::MoveSet => MOVE_SET_EXTENSION,
+            Self::AnimGraph => GRAPH_EXTENSION,
+            Self::Zone => ZONE_EXTENSION,
+            Self::Strings => STRINGS_EXTENSION,
+            Self::Font => FONT_EXTENSION,
+            Self::FontChains => FONT_CHAINS_EXTENSION,
+            Self::NavMesh => NAVMESH_EXTENSION,
+        }
     }
 
     /// The name used in messages.
@@ -322,6 +346,19 @@ const _: () = {
         let kind = AssetKind::ALL[index];
         assert!(!kind.binds_dependencies() || kind.keeps_bytes());
         index += 1;
+    }
+};
+
+// A packer tells a kind by its extension, so no two share one.
+const _: () = {
+    let mut first = 0;
+    while first < AssetKind::ALL.len() {
+        let mut second = first + 1;
+        while second < AssetKind::ALL.len() {
+            assert!(!AssetKind::ALL[first].extension().eq_ignore_ascii_case(AssetKind::ALL[second].extension()));
+            second += 1;
+        }
+        first += 1;
     }
 };
 

@@ -295,7 +295,7 @@ pub fn pack_cooked(report: &CookReport, out: &Path, cache: Option<&Path>) -> Res
     }
     let paths: HashSet<&Path> = packs.iter().map(|pack| pack.path.as_path()).collect();
     let mut extensions = vec![PACK_EXTENSION];
-    extensions.extend_from_slice(cook::COOKED_EXTENSIONS);
+    extensions.extend(AssetKind::ALL.map(AssetKind::extension));
     let mut removed = cook::prune(out, &|path| paths.contains(path), &extensions)?;
     let notices = write_notices(out, &licenses, &mut removed)?;
     Ok(PackReport { packs, removed, notices })

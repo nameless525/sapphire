@@ -134,7 +134,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, PoisonError};
 use std::thread;
 
-use sapphire_assets::AssetId;
 use sapphire_assets::clip::{CLIP_EXTENSION, Clip};
 use sapphire_assets::cue::{CUE_EXTENSION, Cue};
 use sapphire_assets::font::{FONT_CHAINS_EXTENSION, FONT_EXTENSION, Font, FontChains};
@@ -145,6 +144,7 @@ use sapphire_assets::probes::{PROBE_GRID_EXTENSION, ProbeGrid};
 use sapphire_assets::rig::{CharacterRig, HumanBone, RIG_EXTENSION, RigError};
 use sapphire_assets::skeleton::{Joint, SKELETON_EXTENSION, Skeleton};
 use sapphire_assets::sound::{SOUND_EXTENSION, Sound};
+use sapphire_assets::{AssetId, AssetKind};
 use sapphire_assets::texture::{TEXTURE_EXTENSION, TEXTURE_VERSION};
 use sapphire_colliders::{COLLIDERS_EXTENSION, ColliderSet};
 use sapphire_moves::{BakedTables, ClipMotionDocument, MOVE_SET_EXTENSION, MoveSet};
@@ -240,26 +240,6 @@ pub struct Recipe {
 /// 4: a shared skeleton's repeated joint name is an error, where the palette aliased two joints (the
 /// review's IMP-001).
 pub const MESH_COOKER: Stage = Stage { name: "smesh", version: 4 };
-
-/// Every extension a recipe writes: stale files with these are removed from the output.
-pub(crate) const COOKED_EXTENSIONS: &[&str] = &[
-    MESH_EXTENSION,
-    TEXTURE_EXTENSION,
-    MATERIAL_EXTENSION,
-    RIG_EXTENSION,
-    PROBE_GRID_EXTENSION,
-    SKELETON_EXTENSION,
-    CLIP_EXTENSION,
-    COLLIDERS_EXTENSION,
-    SOUND_EXTENSION,
-    CUE_EXTENSION,
-    FONT_EXTENSION,
-    FONT_CHAINS_EXTENSION,
-    MOVE_SET_EXTENSION,
-    ZONE_EXTENSION,
-    STRINGS_EXTENSION,
-    NAVMESH_EXTENSION,
-];
 
 /// What a source's skeleton's ID is derived from.
 pub const SKELETON: &str = "skeleton";
@@ -926,7 +906,9 @@ fn cook_dir_through(
     }
     // Before writing, so an output whose name only changed case (on a case-insensitive file
     // system) is replaced rather than removed as stale.
-    let removed = prune(out_root, &|path| outputs.contains_key(path), COOKED_EXTENSIONS)?;
+    // A recipe writes a kind's format, as a pack refuses anything else, so this leaves none out.
+    let extensions = AssetKind::ALL.map(AssetKind::extension);
+    let removed = prune(out_root, &|path| outputs.contains_key(path), &extensions)?;
 
     let mut by_id = HashMap::with_capacity(plan.len());
     for (index, planned) in plan.iter().enumerate() {
@@ -4317,6 +4299,24 @@ mod tests {
         let report = scratch.cook();
         assert!(!output.exists());
         assert!(report.removed.contains(&output), "{:?}", report.removed);
+    }
+
+    /// The list the prune goes by once missed `.sgraph`, so a graph removed from the content stayed in
+    /// the output and in the next pack.
+    #[test]
+    fn a_stale_output_of_every_kind_is_pruned() {
+        let scratch = Scratch::new("cook_stale_of_every_kind");
+        fs::create_dir_all(scratch.source()).unwrap();
+        fs::create_dir_all(scratch.out()).unwrap();
+        let stale = AssetKind::ALL.map(|kind| scratch.out().join(format!("gone.{}", kind.extension())));
+        for path in &stale {
+            fs::write(path, b"stale").unwrap();
+        }
+        let report = scratch.cook();
+        for path in &stale {
+            assert!(!path.exists(), "{}", path.display());
+            assert!(report.removed.contains(path), "{:?}", report.removed);
+        }
     }
 
     #[test]

@@ -7,6 +7,7 @@ use sapphire_colliders::{COLLIDERS_EXTENSION, ColliderError, ColliderSet};
 use sapphire_moves::{MOVE_SET_EXTENSION, MoveSet, MoveSetError};
 use sapphire_navmesh::{NAVMESH_EXTENSION, NavMesh, NavMeshError};
 use sapphire_strings::{STRINGS_EXTENSION, StringTable, StringsError};
+use sapphire_timeline::{TIMELINE_EXTENSION, Timeline, TimelineError};
 use sapphire_zone::{ZONE_EXTENSION, Zone, ZoneError};
 use serde::{Deserialize, Serialize};
 
@@ -68,11 +69,14 @@ pub enum AssetKind {
     /// A zone's navmesh (`.snav`, M3 P1): [`NavMesh`], which the simulation reads and which never goes
     /// near a GPU.
     NavMesh = 17,
+    /// A cooked timeline (`.stimeline`, M3 Q1): [`Timeline`], which the simulation and the sequencer read.
+    /// It names what it plays by name, so it depends on nothing.
+    Timeline = 18,
 }
 
 impl AssetKind {
     /// Every kind, in a stable order.
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 18] = [
         Self::Mesh,
         Self::Texture,
         Self::Material,
@@ -90,6 +94,7 @@ impl AssetKind {
         Self::Font,
         Self::FontChains,
         Self::NavMesh,
+        Self::Timeline,
     ];
 
     /// The kind's position in [`Self::ALL`].
@@ -118,6 +123,7 @@ impl AssetKind {
             Self::Font => FONT_EXTENSION,
             Self::FontChains => FONT_CHAINS_EXTENSION,
             Self::NavMesh => NAVMESH_EXTENSION,
+            Self::Timeline => TIMELINE_EXTENSION,
         }
     }
 
@@ -141,12 +147,14 @@ impl AssetKind {
             Self::Font => "font",
             Self::FontChains => "font chains",
             Self::NavMesh => "navmesh",
+            Self::Timeline => "timeline",
         }
     }
 
     /// Whether assets of this kind go to the GPU, through the asset server's upload queue. A rig,
     /// a skeleton, a clip, a collider set, a sound, a cue, a move set, an animation graph, a zone, a
-    /// string table, a font, font chains or a navmesh is ready once it and its dependencies are decoded.
+    /// string table, a font, font chains, a navmesh or a timeline is ready once it and its dependencies
+    /// are decoded.
     pub const fn uploads(self) -> bool {
         !matches!(
             self,
@@ -163,6 +171,7 @@ impl AssetKind {
                 | Self::Font
                 | Self::FontChains
                 | Self::NavMesh
+                | Self::Timeline
         )
     }
 
@@ -170,7 +179,7 @@ impl AssetKind {
     /// textures and probe grids are GPU data, so their bytes go once uploaded (a new renderer
     /// has them read again). Materials are small and CPU code reads them (live link, the editor), and
     /// rigs, skeletons, clips, collider sets, sounds, cues, move sets, animation graphs, zones, string
-    /// tables, fonts, font chains and navmeshes are read on the CPU only, so they stay.
+    /// tables, fonts, font chains, navmeshes and timelines are read on the CPU only, so they stay.
     pub const fn keeps_bytes(self) -> bool {
         matches!(
             self,
@@ -188,6 +197,7 @@ impl AssetKind {
                 | Self::Font
                 | Self::FontChains
                 | Self::NavMesh
+                | Self::Timeline
         )
     }
 
@@ -202,10 +212,10 @@ impl AssetKind {
     /// Whether an asset of this kind may depend on one of `kind`: meshes on materials and
     /// skeletons, materials on textures, clips on skeletons, cues on sounds, animation graphs on
     /// clips, zones on collider sets and navmeshes, font chains on fonts, and textures, rigs, probe grids,
-    /// skeletons, collider sets, sounds, move sets, string tables, fonts and navmeshes on nothing. A zone's
-    /// meshes and probes aren't dependencies ([`Self::reach`]). The allowed pairs form no loop, so chains
-    /// are at most three long and cycles can't exist, whatever a pack claims. A new kind takes its place
-    /// in this order.
+    /// skeletons, collider sets, sounds, move sets, string tables, fonts, navmeshes and timelines on
+    /// nothing. A zone's meshes and probes aren't dependencies ([`Self::reach`]). The allowed pairs form no
+    /// loop, so chains are at most three long and cycles can't exist, whatever a pack claims. A new kind
+    /// takes its place in this order.
     pub const fn may_depend_on(self, kind: AssetKind) -> bool {
         matches!(
             (self, kind),
@@ -239,6 +249,7 @@ impl AssetKind {
             15 => Some(Self::Font),
             16 => Some(Self::FontChains),
             17 => Some(Self::NavMesh),
+            18 => Some(Self::Timeline),
             _ => None,
         }
     }
@@ -247,7 +258,7 @@ impl AssetKind {
     /// `Texture::from_ktx2`, `Material::read`, `CharacterRig::read`, `ProbeGrid::read`,
     /// `Skeleton::read`, `Clip::read`, `ColliderSet::read`, `Sound::read`, `Cue::read`,
     /// `MoveSet::from_cooked`, `AnimGraph::read`, `Zone::read`, `StringTable::read`, `Font::read`,
-    /// `FontChains::read`, `NavMesh::read`), and returns the assets they reference, sorted and without
+    /// `FontChains::read`, `NavMesh::read`, `Timeline::read`), and returns the assets they reference, sorted and without
     /// repeats: a mesh's material slots bound to material assets and its skeleton, a material's textures,
     /// a clip's skeleton, a cue's sounds, a graph's clips, what the simulation reads of a zone, font chains'
     /// fonts. The packer records these as the asset's dependencies, and decode jobs check that a decoded
@@ -317,6 +328,11 @@ impl AssetKind {
             // A navmesh is baked from colliders, but reads none of them.
             Self::NavMesh => {
                 NavMesh::read(bytes)?;
+                Vec::new()
+            }
+            // It plays what its stage has loaded, by name.
+            Self::Timeline => {
+                Timeline::read(bytes)?;
                 Vec::new()
             }
         };
@@ -405,4 +421,6 @@ pub enum AssetError {
     Font(#[from] FontError),
     #[error("invalid navmesh")]
     NavMesh(#[from] NavMeshError),
+    #[error("invalid timeline")]
+    Timeline(#[from] TimelineError),
 }

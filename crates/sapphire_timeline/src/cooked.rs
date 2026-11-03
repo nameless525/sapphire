@@ -122,11 +122,17 @@ impl Timeline {
     /// Reads cooked bytes, checking the envelope, the archive and every value the runtime reads
     /// ([`Self::validate`]). What it allocates, the bytes paid for.
     pub fn read(bytes: &[u8]) -> Result<Self, TimelineError> {
-        let archived = sapphire_serialize::access::<Self>(bytes)?;
-        let timeline = rkyv::deserialize::<Self, rkyv::rancor::Error>(archived)
-            .expect("an archive bytecheck accepted deserializes: it holds only plain values and strings");
+        let timeline = Self::from_archived(sapphire_serialize::access::<Self>(bytes)?);
         timeline.validate()?;
         Ok(timeline)
+    }
+
+    /// The timeline, from where the asset server holds it: it's a player and a simulation's to keep past
+    /// any handle.
+    #[must_use]
+    pub fn from_archived(archived: &ArchivedTimeline) -> Self {
+        rkyv::deserialize::<Self, rkyv::rancor::Error>(archived)
+            .expect("an archive bytecheck accepted deserializes: it holds only plain values and strings")
     }
 
     /// Everything the runtime relies on without looking, for bytes that may be anyone's.

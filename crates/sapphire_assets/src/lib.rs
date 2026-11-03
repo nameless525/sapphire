@@ -37,6 +37,8 @@
 //!   cooker writes them without linking a shaper (`sapphire_text`, which shapes with the bytes).
 //! - What a mesh's material slots draw through, as data: [`PipelineKey`], which packs list per mesh
 //!   (M3 K1) and the renderer derives its pipelines from, so the cooker needn't link the renderer.
+//! - Where timelines go (`.stimeline`, M3 Q1): [`AssetKind::Timeline`] packs and loads them. Their format
+//!   and checks are `sapphire_timeline`'s.
 //! - Sounds and cues (M2 E1, spec §5.15): [`sound`], `.ssound` Ogg Vorbis files with what their cook
 //!   learned, and the decoder cook and runtime share; [`cue`], the RON documents (cooked to `.scue`)
 //!   that say how sounds play. Both are plain data, so the cooker reads and writes them without

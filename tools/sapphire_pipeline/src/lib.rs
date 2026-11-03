@@ -43,6 +43,8 @@
 //!   per time-of-day key, ray traced on the CPU over the meshes they name.
 //! - [`colliders`]: collider documents (`.colliders.ron`) cooked to
 //!   [`ColliderSet`](sapphire_colliders::ColliderSet)s (M2 D3): a zone's static collision.
+//! - [`timeline`]: timeline documents (`.timeline.ron`) cooked to
+//!   [`Timeline`](sapphire_timeline::Timeline)s (M3 Q1): a cutscene or a cinematic.
 //! - [`cook`]: import, bake, optimize or compress, and validate for a target cook, written to
 //!   disk through the content cache; a source can cook to sub-assets beside its own (a VRM's
 //!   rig).
@@ -131,4 +133,5 @@ pub mod samples;
 #[cfg(test)]
 mod test_util;
 pub mod texture;
+pub mod timeline;
 pub mod zone;

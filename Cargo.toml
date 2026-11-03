@@ -45,6 +45,7 @@ members = [
     "crates/sapphire_gameplay",
     "crates/sapphire_script",
     "crates/sapphire_camera",
+    "crates/sapphire_sequencer",
     "crates/sapphire_save",
     # L5 what any game stands on
     "crates/sapphire_controls",
@@ -123,6 +124,7 @@ sapphire_world = { path = "crates/sapphire_world" }
 sapphire_gameplay = { path = "crates/sapphire_gameplay" }
 sapphire_script = { path = "crates/sapphire_script" }
 sapphire_camera = { path = "crates/sapphire_camera" }
+sapphire_sequencer = { path = "crates/sapphire_sequencer" }
 sapphire_save = { path = "crates/sapphire_save" }
 sapphire_controls = { path = "crates/sapphire_controls" }
 sapphire_cues = { path = "crates/sapphire_cues" }

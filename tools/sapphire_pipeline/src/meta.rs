@@ -151,6 +151,7 @@ use crate::moves::{self, MoveSetSettings};
 use crate::optimize::LodSettings;
 use crate::probes::{self, ProbeGridSettings};
 use crate::texture::{HdrSettings, TextureClass, TextureSettings};
+use crate::timeline::{self, TimelineSettings};
 use crate::zone::{self, ZoneSettings};
 
 /// Extension of sidecar files, appended to the whole source file name.
@@ -244,8 +245,10 @@ pub enum ImportSettings {
     /// to clips (M2 N1). Its map is the file's.
     Vrma(ClipSettings),
     /// A zone document (`.zone.ron`): prefabs merged into a mesh per cell, and what the simulation
-    /// reads (M3 W1). New variants go last: a key's encoding counts them.
+    /// reads (M3 W1).
     Zone(ZoneSettings),
+    /// A timeline document (`.timeline.ron`, M3 Q1). New variants go last: a key's encoding counts them.
+    Timeline(TimelineSettings),
 }
 
 impl ImportSettings {
@@ -274,6 +277,9 @@ impl ImportSettings {
         }
         if zone::is_source(source) {
             return Some(Self::Zone(ZoneSettings::default()));
+        }
+        if timeline::is_source(source) {
+            return Some(Self::Timeline(TimelineSettings::default()));
         }
         if audio::is_cue_source(source) {
             return Some(Self::Cue(CueSettings::default()));
@@ -343,7 +349,8 @@ impl ImportSettings {
             | Self::GltfClips(_)
             | Self::FbxClips(_)
             | Self::Vrma(_)
-            | Self::Zone(_) => None,
+            | Self::Zone(_)
+            | Self::Timeline(_) => None,
         }
     }
 
@@ -369,7 +376,8 @@ impl ImportSettings {
             | Self::GltfClips(_)
             | Self::FbxClips(_)
             | Self::Vrma(_)
-            | Self::Zone(_) => None,
+            | Self::Zone(_)
+            | Self::Timeline(_) => None,
         }
     }
 

@@ -9,6 +9,7 @@ use sapphire_colliders::{ArchivedColliderSet, ColliderSet};
 use sapphire_moves::{ArchivedMoveSet, MoveSet};
 use sapphire_navmesh::{ArchivedNavMesh, NavMesh};
 use sapphire_serialize::cooked::access_unchecked;
+use sapphire_timeline::{ArchivedTimeline, Timeline};
 use sapphire_zone::{ArchivedZone, Zone};
 
 use crate::clip::{ArchivedClip, Clip};
@@ -31,8 +32,8 @@ slotmap::new_key_type! {
 }
 
 /// A kind of asset handles can be typed with: [`Mesh`], [`TextureAsset`], [`Material`],
-/// [`CharacterRig`], [`ProbeGrid`], [`Skeleton`], [`Clip`], [`ColliderSet`], [`Zone`], [`Sound`], [`Cue`],
-/// [`MoveSet`], [`Font`], [`FontChains`].
+/// [`CharacterRig`], [`ProbeGrid`], [`Skeleton`], [`Clip`], [`ColliderSet`], [`Zone`], [`Timeline`], [`Sound`],
+/// [`Cue`], [`MoveSet`], [`Font`], [`FontChains`].
 pub trait Asset: sealed::Sealed + 'static {
     const KIND: AssetKind;
     /// How a loaded asset of this kind is read: in place, borrowing its bytes.
@@ -60,6 +61,7 @@ mod sealed {
     impl Sealed for sapphire_colliders::ColliderSet {}
     impl Sealed for sapphire_zone::Zone {}
     impl Sealed for sapphire_navmesh::NavMesh {}
+    impl Sealed for sapphire_timeline::Timeline {}
     impl Sealed for crate::sound::Sound {}
     impl Sealed for crate::cue::Cue {}
     impl Sealed for sapphire_moves::MoveSet {}
@@ -133,6 +135,17 @@ impl Asset for NavMesh {
         // SAFETY: as for meshes: `NavMesh::read` accepted these bytes, unchanged since.
         unsafe { access_unchecked::<NavMesh>(bytes) }
             .expect("the envelope was checked when the navmesh was decoded")
+    }
+}
+
+impl Asset for Timeline {
+    const KIND: AssetKind = AssetKind::Timeline;
+    type View<'a> = &'a ArchivedTimeline;
+
+    unsafe fn view(bytes: &[u8]) -> &ArchivedTimeline {
+        // SAFETY: as for meshes: `Timeline::read` accepted these bytes, unchanged since.
+        unsafe { access_unchecked::<Timeline>(bytes) }
+            .expect("the envelope was checked when the timeline was decoded")
     }
 }
 

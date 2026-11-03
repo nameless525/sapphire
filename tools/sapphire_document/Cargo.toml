@@ -18,6 +18,7 @@ sapphire_assets.workspace = true
 sapphire_moves.workspace = true
 sapphire_reflect.workspace = true
 sapphire_serialize.workspace = true
+sapphire_timeline.workspace = true
 sapphire_vfx.workspace = true
 serde.workspace = true
 thiserror.workspace = true

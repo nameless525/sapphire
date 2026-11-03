@@ -66,6 +66,8 @@
 //!   for its rig reads its morph targets.
 //! - **Collider documents** cook `.colliders.ron` → `.scol` (M2 D3, [`colliders`]): a zone's static
 //!   collision, checked entry by entry, reading nothing besides themselves.
+//! - **Timelines** cook `.timeline.ron` → `.stimeline` (M3 Q1, [`timeline`]), reading nothing besides
+//!   themselves: what they play, they name.
 //! - **Sounds and cues** cook `.ogg` → `.ssound` and `.cue.ron` documents → `.scue` (M2 E1,
 //!   [`audio`]). A cue holds its sounds' IDs, so it reads none of their contents, but they must be
 //!   sounds of the tree.
@@ -151,6 +153,7 @@ use sapphire_moves::{BakedTables, ClipMotionDocument, MOVE_SET_EXTENSION, MoveSe
 use sapphire_navmesh::{NAVMESH_EXTENSION, NavMesh};
 use sapphire_reflect::Versioned;
 use sapphire_strings::{STRINGS_EXTENSION, StringTable};
+use sapphire_timeline::{TIMELINE_EXTENSION, Timeline};
 use sapphire_zone::{Place, ZONE_EXTENSION, Zone};
 
 use crate::anim_graph::{self, AnimGraphCookError};
@@ -179,6 +182,7 @@ use crate::moves::{self, BakeError, MoveSetCookError, TableInput};
 use crate::nav;
 use crate::probes::{self, ProbeCookError, ProbeInput};
 use crate::texture::{self, TextureError};
+use crate::timeline::{self, TimelineCookError};
 use crate::zone::{self, CookedPlace, ZoneCookError, ZonePlan};
 use crate::{bake, optimize};
 
@@ -321,6 +325,12 @@ impl Recipe {
                 format: ColliderSet::VERSION,
                 extension: COLLIDERS_EXTENSION,
             },
+            ImportSettings::Timeline(_) => Self {
+                importer: timeline::IMPORTER,
+                cooker: timeline::COOKER,
+                format: Timeline::VERSION,
+                extension: TIMELINE_EXTENSION,
+            },
             ImportSettings::Sound(_) => Self {
                 importer: audio::SOUND_IMPORTER,
                 cooker: audio::SOUND_COOKER,
@@ -454,6 +464,8 @@ impl Recipe {
             zone::output_path(relative, self.extension)
         } else if loc::is_locale_source(relative) {
             loc::output_path(relative, self.extension)
+        } else if timeline::is_source(relative) {
+            timeline::output_path(relative, self.extension)
         } else {
             relative.with_extension(self.extension)
         }
@@ -565,6 +577,13 @@ pub enum CookError {
     },
     #[error("localized strings can't ship as they are")]
     Localization(#[from] Box<LocCheckError>),
+    #[error("failed to cook timeline {}", path.display())]
+    Timeline {
+        path: PathBuf,
+        /// Boxed, as material errors are.
+        #[source]
+        source: Box<TimelineCookError>,
+    },
     #[error("failed to cook sound or cue {}", path.display())]
     Audio {
         path: PathBuf,
@@ -1301,7 +1320,8 @@ fn sub_assets(
         | ImportSettings::MoveSet(_)
         | ImportSettings::AnimGraph(_)
         | ImportSettings::Fluent(_)
-        | ImportSettings::Locale(_) => Ok(Vec::new()),
+        | ImportSettings::Locale(_)
+        | ImportSettings::Timeline(_) => Ok(Vec::new()),
         ImportSettings::Zone(_) => {
             let plan = ZonePlan::new(meta.id, &read()?, prefabs, cache).map_err(zone_error(path))?;
             let parts = plan.places().map(|place| PlannedPart {
@@ -2134,6 +2154,8 @@ fn cook_source(
         }
         ImportSettings::Colliders(_) => colliders::cook(bytes)
             .map_err(|source| CookError::Colliders { path: path.to_owned(), source: Box::new(source) }),
+        ImportSettings::Timeline(_) => timeline::cook(bytes)
+            .map_err(|source| CookError::Timeline { path: path.to_owned(), source: Box::new(source) }),
         ImportSettings::Sound(_) => audio::cook_sound(bytes).map_err(audio_error(path)),
         ImportSettings::Cue(_) => audio::cook_cue(bytes).map_err(audio_error(path)),
         ImportSettings::Font(settings) => {
@@ -2623,10 +2645,11 @@ fn source_dependencies(
                 })
                 .collect()
         }
-        // Images and collider documents are self-contained.
-        ImportSettings::Texture(_) | ImportSettings::Colliders(_) | ImportSettings::Fluent(_) => {
-            Ok(Vec::new())
-        }
+        // Images, collider documents and timelines are self-contained.
+        ImportSettings::Texture(_)
+        | ImportSettings::Colliders(_)
+        | ImportSettings::Fluent(_)
+        | ImportSettings::Timeline(_) => Ok(Vec::new()),
         ImportSettings::Zone(_) => zone_dependencies(path, part, assets),
         // A locale's table is its sources': another locale's aren't in its key (`loc`'s docs).
         ImportSettings::Locale(_) => fluent_of(path, assets)
@@ -2945,7 +2968,8 @@ fn imported_mesh(
         | ImportSettings::GltfClips(_)
         | ImportSettings::FbxClips(_)
         | ImportSettings::Vrma(_)
-        | ImportSettings::Zone(_) => Err(CookError::UnsupportedSource { path: path.to_owned() }),
+        | ImportSettings::Zone(_)
+        | ImportSettings::Timeline(_) => Err(CookError::UnsupportedSource { path: path.to_owned() }),
     }
 }
 

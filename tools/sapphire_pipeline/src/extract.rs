@@ -305,7 +305,8 @@ pub fn extract_materials(source: &Path, options: &ExtractOptions) -> Result<Extr
         | ImportSettings::GltfClips(_)
         | ImportSettings::FbxClips(_)
         | ImportSettings::Vrma(_)
-        | ImportSettings::Zone(_) => {
+        | ImportSettings::Zone(_)
+        | ImportSettings::Timeline(_) => {
             return Err(ExtractError::NotAMesh(source.to_owned()));
         }
     };

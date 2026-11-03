@@ -301,6 +301,16 @@ fn every_property_of_a_cue_undoes_to_the_same_bytes() {
     run("hit_heavy.cue.ron", "content/audio/hit_heavy.cue.ron", kinds::cue(), false);
 }
 
+#[test]
+fn every_property_of_a_timeline_undoes_to_the_same_bytes() {
+    run(
+        "cutscene.timeline.ron",
+        "crates/sapphire_timeline/test_content/cutscene.timeline.ron",
+        kinds::timeline(),
+        false,
+    );
+}
+
 /// The library checks everything as it reads, so many values are refused here, each with the text as it
 /// was, and that's its rule at work.
 #[test]

@@ -422,6 +422,26 @@ fn a_parse_refuses_and_a_check_reports() {
     assert!(!cue.issues().is_empty());
 }
 
+/// E5's panel: a key of a real timeline moves by its property path, the file around it stays, and what `check`
+/// says of a key out of order lands to be fixed rather than being refused.
+#[test]
+fn a_timeline_is_a_document_like_any_other() {
+    let mut timeline = open("crates/sapphire_timeline/test_content/cutscene.timeline.ron", kinds::timeline());
+    assert_eq!(timeline.failure(), None);
+    assert_eq!(timeline.issues(), Vec::<String>::new());
+    let text = timeline.text().to_owned();
+    let eye = path("camera?.keys[1].eye[1]");
+    assert_eq!(timeline.set("raise the eye", &eye, &2.5_f32), Ok(Outcome::Changed));
+    assert_eq!(timeline.text(), text.replace("(1.5, 1.6, -3.0)", "(1.5, 2.5, -3.0)"));
+    assert!(timeline.undo());
+    assert_eq!(timeline.text(), text);
+
+    let at = path("camera?.keys[1].at");
+    assert_eq!(timeline.set("too late", &at, &9.0_f32), Ok(Outcome::Changed));
+    let issues = timeline.issues();
+    assert!(issues.iter().any(|issue| issue.contains("camera.keys[1]")), "{issues:?}");
+}
+
 #[test]
 fn a_value_of_the_wrong_type_is_refused() {
     let mut document = sample(LAID_OUT);

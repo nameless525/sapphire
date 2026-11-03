@@ -99,6 +99,10 @@ sapphire_script = { kind = "runtime", layer = 4 }
 # stays outside the checksum and isn't in [simulation]. It reaches no renderer or window: the app
 # turns its plain pose into a view.
 sapphire_camera = { kind = "runtime", layer = 4 }
+# The timeline player (M3 Q1): a timeline's presentation half, as plain values. Beside the camera and
+# gameplay with no edge to either: the stage hands its shot to the director and its steps come from the
+# simulation, so nothing it says can reach a checksum, and it stays out of [simulation].
+sapphire_sequencer = { kind = "runtime", layer = 4 }
 # Settings and progress on disk (M3 V1): two rotating slots, migrations, atomic writes. Its normal
 # tree holds no `sapphire_platform`, and so no SDL: an app hands it `durable_replace`, and the replay
 # runner, which may not link the platform, can still read a save.

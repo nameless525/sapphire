@@ -1,0 +1,26 @@
+[package]
+name = "sapphire_sequencer"
+description = "The timeline player: one playhead on a timeline's clock, and at each moment the shot, the post offsets, the subtitle, each character's row and place and the cues fired, as plain values for whoever draws them."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+glam.workspace = true
+profiling.workspace = true
+# Cues', roles' and rows' names.
+sapphire_core.workspace = true
+# The post parameters its tracks move: plain data, which the renderer reads.
+sapphire_look.workspace = true
+# The cost of an advance (rule R9), from the owner clock's stopwatch.
+sapphire_time.workspace = true
+sapphire_timeline.workspace = true
+
+[dev-dependencies]
+# A skip at every frame, against the simulation it holds.
+sapphire_gameplay.workspace = true
+
+[lints]
+workspace = true

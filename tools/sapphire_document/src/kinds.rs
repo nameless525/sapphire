@@ -14,6 +14,7 @@ use sapphire_assets::AssetId;
 use sapphire_assets::cue::Cue;
 use sapphire_assets::graph::AnimGraph;
 use sapphire_moves::MoveSetDocument;
+use sapphire_timeline::TimelineDocument;
 use sapphire_vfx::EffectLibrary;
 
 use crate::set::{DocumentSet, SetError};
@@ -74,6 +75,16 @@ pub fn cue() -> Schema<Cue> {
         parse: read_document,
         check: |document| document.check().err().map(|error| error.to_string()).into_iter().collect(),
         importer: Some("Cue(())"),
+    }
+}
+
+/// A `.timeline.ron`.
+#[must_use]
+pub fn timeline() -> Schema<TimelineDocument> {
+    Schema {
+        parse: read_document,
+        check: |document| document.check().err().map(|error| error.to_string()).into_iter().collect(),
+        importer: Some("Timeline(())"),
     }
 }
 

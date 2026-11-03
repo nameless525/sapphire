@@ -3430,6 +3430,7 @@ dependencies = [
  "sapphire_serialize",
  "sapphire_strings",
  "sapphire_time",
+ "sapphire_timeline",
  "sapphire_zone",
  "serde",
  "slotmap",
@@ -3582,6 +3583,7 @@ dependencies = [
  "sapphire_reflect",
  "sapphire_serialize",
  "sapphire_time",
+ "sapphire_timeline",
  "sapphire_vfx",
  "serde",
  "thiserror 2.0.21",
@@ -3828,6 +3830,7 @@ dependencies = [
  "sapphire_strings",
  "sapphire_text",
  "sapphire_time",
+ "sapphire_timeline",
  "sapphire_tod",
  "sapphire_zone",
  "serde",
@@ -3986,6 +3989,19 @@ dependencies = [
  "sapphire_math",
  "sapphire_time",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "sapphire_sequencer"
+version = "0.1.0"
+dependencies = [
+ "glam 0.33.12",
+ "profiling",
+ "sapphire_core",
+ "sapphire_gameplay",
+ "sapphire_look",
+ "sapphire_time",
+ "sapphire_timeline",
 ]
 
 [[package]]

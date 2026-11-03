@@ -34,6 +34,8 @@ const MATERIAL: AssetId = AssetId::from_bytes([2; 16]);
 const ZONE_TEXTURE: AssetId = AssetId::from_bytes([9; 16]);
 
 static EXPOSURE: Cvar<f32> = Cvar::with_range("test.exposure", 0.0, -4.0, 4.0, "Exposure, in stops.");
+/// A cvar a test has to itself: tests run at once, and this one reads what it leaves alone.
+static LISTED: Cvar<f32> = Cvar::with_range("test.listed", 0.0, -4.0, 4.0, "A value to list.");
 
 /// A cooked RGBA8 texture, `size` texels square, from `seed`: noise, so it doesn't compress.
 fn texture(size: u32, seed: u32) -> Vec<u8> {
@@ -111,6 +113,7 @@ impl App {
             LiveLink::start(LinkMode::Listen(SocketAddr::from(([127, 0, 0, 1], 0))), packs.clone()).unwrap();
         let mut cvars = CvarRegistry::new();
         cvars.register(&EXPOSURE).unwrap();
+        cvars.register(&LISTED).unwrap();
         Self {
             server,
             packs,
@@ -516,21 +519,21 @@ fn cvars_are_listed_with_what_they_take() {
         base
     });
     let list = app.serve(on_client(app.address(), |client| client.cvars().unwrap()));
-    let exposure = list.iter().find(|cvar| cvar.name == "test.exposure").expect("the cvar");
-    assert_eq!(exposure.kind, sapphire_livelink::protocol::CvarStatusKind::Float);
-    assert_eq!(exposure.value, EXPOSURE.default_value().to_string());
-    assert_eq!(exposure.default, exposure.value);
-    assert!(exposure.range.is_some());
-    assert!(!exposure.help.is_empty());
+    let listed = list.iter().find(|cvar| cvar.name == "test.listed").expect("the cvar");
+    assert_eq!(listed.kind, sapphire_livelink::protocol::CvarStatusKind::Float);
+    assert_eq!(listed.value, LISTED.default_value().to_string());
+    assert_eq!(listed.default, listed.value);
+    assert!(listed.range.is_some());
+    assert!(!listed.help.is_empty());
     assert!(list.windows(2).all(|pair| pair[0].name < pair[1].name), "in name order");
 
     let list = app.serve(on_client(app.address(), |client| {
-        client.set_cvar("test.exposure", "1.5").unwrap();
+        client.set_cvar("test.listed", "1.5").unwrap();
         client.cvars().unwrap()
     }));
-    let exposure = list.iter().find(|cvar| cvar.name == "test.exposure").expect("the cvar");
-    assert_eq!(exposure.value, "1.5");
-    EXPOSURE.reset();
+    let listed = list.iter().find(|cvar| cvar.name == "test.listed").expect("the cvar");
+    assert_eq!(listed.value, "1.5");
+    LISTED.reset();
 }
 
 #[test]

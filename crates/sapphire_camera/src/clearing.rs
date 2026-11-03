@@ -13,6 +13,9 @@
 //!   The best that's better by `better_by`, counting what the turn costs, becomes the goal, and the yaw
 //!   turns there at `half_life`, through the rigs' own pull, so it starts and stops as softly as any rig. Then
 //!   nothing new is chosen for `settle` seconds: a slow steady camera beats a twitchy correct one.
+//! - **A rig can hold it short of that goal,** as a far enemy's tight limit does. A goal that's stopped drawing
+//!   nearer ends if nothing's wrong with where the view got to, and otherwise no longer stands in the way of
+//!   a choice, which for [`HELD_FOR`] seconds looks only the ways it hasn't been held short.
 //! - **It never fights a thumb:** look input drops the goal, and for `after_look` seconds nothing's chosen.
 //!   Under lock-on, which holds the line, what it chooses is a lean off the line instead, which comes back
 //!   when the line's clear again. Up close, where `line_fade` has lock-on let go of the line, it's free.
@@ -314,9 +317,8 @@ pub(crate) struct Clearing {
     goal: Option<f32>,
     /// How far off that goal was at the last check.
     goal_left: f32,
-    /// Which way the rigs last held a goal short, and for how long that still counts.
-    held_side: f32,
-    held_for: f32,
+    /// How much longer it won't choose each way, lower yaws then higher, having been held short of a goal there.
+    held_for: [f32; 2],
     /// How much faster than `half_life` it's turning: the worse the view it left, the less there is to
     /// keep steady.
     haste: f32,
@@ -333,8 +335,7 @@ impl Clearing {
             until_free: 0.0,
             goal: None,
             goal_left: 0.0,
-            held_side: 0.0,
-            held_for: 0.0,
+            held_for: [0.0; 2],
             haste: 1.0,
             lean_goal: 0.0,
             lean: Follow::new(0.0),
@@ -349,7 +350,7 @@ impl Clearing {
     /// A thumb's on the view: it's theirs.
     pub(crate) fn hand_over(&mut self, tuning: &ClearingTuning) {
         self.goal = None;
-        self.held_for = 0.0;
+        self.held_for = [0.0; 2];
         self.troubled = 0.0;
         self.until_free = self.until_free.max(tuning.after_look);
     }
@@ -403,7 +404,7 @@ impl Clearing {
         }
         let elapsed = f32::from(periods) * tuning.check_every;
         self.until_free = (self.until_free - elapsed).max(0.0);
-        self.held_for = (self.held_for - elapsed).max(0.0);
+        self.held_for = self.held_for.map(|left| (left - elapsed).max(0.0));
         // A goal the rigs are holding the view short of.
         let mut held_short = false;
         if let Some(goal) = self.goal {
@@ -412,8 +413,7 @@ impl Clearing {
                 self.goal = None;
             } else if off.abs() > self.goal_left - STALLED * elapsed {
                 held_short = true;
-                self.held_side = off.signum();
-                self.held_for = HELD_FOR;
+                self.held_for[usize::from(off > 0.0)] = HELD_FOR;
             }
             self.goal_left = off.abs();
         }
@@ -451,10 +451,10 @@ impl Clearing {
         let from = yaw + if held { self.lean_goal } else { 0.0 };
         let mut best = (here, 0.0);
         for share in SHARES {
-            for side in [-1.0, 1.0] {
-                // What held it short that way would again. If the other way has nothing better it stays
-                // held where it is, which is at least steady.
-                if !held && self.held_for > 0.0 && side == self.held_side {
+            for (way, side) in [-1.0, 1.0].into_iter().enumerate() {
+                // What held it short that way would again. With nothing better the other way, or held short
+                // both ways, it stays held where it is, which is at least steady.
+                if !held && self.held_for[way] > 0.0 {
                     continue;
                 }
                 let turn = share * tuning.reach * side;

@@ -262,8 +262,10 @@ fn a_lean_at_its_reach_chooses_nothing_further() {
 /// more than leaving did, or it does that for as long as the fight stands there.
 #[test]
 fn a_lean_doesnt_take_turns_with_the_line() {
-    let world =
-        ground_with(&[(Shape::Box { half_extents: Vec3::new(2.85, 2.66, 1.02) }, Vec3::new(4.92, 2.66, 2.9))]);
+    let world = ground_with(&[(
+        Shape::Box { half_extents: Vec3::new(2.85, 2.66, 1.02) },
+        Vec3::new(4.92, 2.66, 2.9),
+    )]);
     let swings = choices_once_settled(lock_on_director(), &world, Vec3::new(-1.12, 0.0, -23.22));
     assert!(swings <= 1, "{swings} choices in 20 s, with nothing moving");
 }
@@ -351,7 +353,10 @@ fn it_counts_the_time_that_went_by_not_its_checks() {
     // At 5 Hz it's two checks' time a frame, and at 30 Hz, for checks of 0.01 s, more than three.
     for (check_every, rate) in [(0.1, 5), (0.1, 6), (0.01, 30), (0.01, 60), (0.02, 30)] {
         let at = first_choice(check_every, rate);
-        assert!((0.6..0.6 + 1.5 / rate as f32).contains(&at), "at {at}, checking every {check_every} s at {rate} Hz");
+        assert!(
+            (0.6..0.6 + 1.5 / rate as f32).contains(&at),
+            "at {at}, checking every {check_every} s at {rate} Hz"
+        );
     }
 }
 
@@ -375,6 +380,21 @@ fn a_view_held_short_of_what_it_chose_chooses_again() {
     let swings = camera.take_stats().swings;
     assert!(swings <= 1, "{swings} more choices with nothing moving");
     assert!(camera.pose().eye.distance(CHEST) > 2.5, "{:?}", camera.pose());
+}
+
+/// Boxed in, with a far enemy: the rig holds the view short of a goal either way. Choosing the other way each
+/// time would have it swinging across the player's chest and back, every couple of seconds, for good. It
+/// tries again when `HELD_FOR` is up, so this isn't none.
+#[test]
+fn held_short_both_ways_it_doesnt_take_turns() {
+    let world = ground_with(&[
+        (Shape::Box { half_extents: Vec3::new(4.95, 1.05, 0.46) }, Vec3::new(-4.86, 1.05, -9.31)),
+        (Shape::Box { half_extents: Vec3::new(3.28, 1.26, 2.44) }, Vec3::new(-3.73, 1.26, -1.08)),
+        (Shape::Box { half_extents: Vec3::new(3.3, 1.1, 2.97) }, Vec3::new(-0.84, 1.1, 7.2)),
+        (Shape::Box { half_extents: Vec3::new(2.73, 2.24, 2.35) }, Vec3::new(-3.35, 2.24, -1.21)),
+    ]);
+    let swings = choices_once_settled(combat_director(), &world, Vec3::new(18.95, 0.0, -1.27));
+    assert!(swings <= 6, "{swings} choices in 20 s, with nothing moving");
 }
 
 /// A view at rest that's come as far as it's let, with nothing wrong with it, isn't left being pulled on:

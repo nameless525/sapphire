@@ -151,6 +151,7 @@ impl App {
                     ..DeviceStatus::default()
                 })),
                 Push::Cvar { name, value, reply } => reply.reply(set_cvar(&self.cvars, &name, &value)),
+                Push::Cvars { reply } => reply.reply(sapphire_livelink::list_cvars(&self.cvars)),
                 Push::Document { origin, type_name, text, reply } => {
                     if type_name != "sapphire::world::TodTimeline" {
                         reply.refuse(format!("{origin}: no owner for `{type_name}`"));
@@ -504,6 +505,32 @@ fn cvars_are_set_by_name() {
     assert_eq!(EXPOSURE.get(), 1.5, "a refused value leaves the cvar as it was");
     EXPOSURE.reset();
     assert!(EXPOSURE.is_default());
+}
+
+/// A tool can list what a device has, with what it needs to draw each one, and sees what a set changed.
+#[test]
+fn cvars_are_listed_with_what_they_take() {
+    let mut app = App::new({
+        let base = MemoryPackSource::new();
+        base.insert("shared", shared([1.0; 4]));
+        base
+    });
+    let list = app.serve(on_client(app.address(), |client| client.cvars().unwrap()));
+    let exposure = list.iter().find(|cvar| cvar.name == "test.exposure").expect("the cvar");
+    assert_eq!(exposure.kind, sapphire_livelink::protocol::CvarStatusKind::Float);
+    assert_eq!(exposure.value, EXPOSURE.default_value().to_string());
+    assert_eq!(exposure.default, exposure.value);
+    assert!(exposure.range.is_some());
+    assert!(!exposure.help.is_empty());
+    assert!(list.windows(2).all(|pair| pair[0].name < pair[1].name), "in name order");
+
+    let list = app.serve(on_client(app.address(), |client| {
+        client.set_cvar("test.exposure", "1.5").unwrap();
+        client.cvars().unwrap()
+    }));
+    let exposure = list.iter().find(|cvar| cvar.name == "test.exposure").expect("the cvar");
+    assert_eq!(exposure.value, "1.5");
+    EXPOSURE.reset();
 }
 
 #[test]

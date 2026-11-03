@@ -47,8 +47,8 @@ use serde::{Deserialize, Serialize};
 /// A8 follow-up 2) the frames drawn while pushed shaders built
 /// ([`ReplyBody::ShadersApplied`]); version 4 (M2 T2) what live tuning reads in the status: the packs
 /// served from pushes, the documents the app takes and what its fighters are playing
-/// ([`DeviceStatus`]).
-pub const PROTOCOL_VERSION: u32 = 4;
+/// ([`DeviceStatus`]); version 5 (M3 E2) [`RequestBody::ListCvars`], for the editor's cvar panel.
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// The port a device listens on and the tool connects to by default.
 pub const DEFAULT_PORT: u16 = 7811;
@@ -246,6 +246,8 @@ pub enum RequestBody {
     /// The next frame the device draws, as a PNG: [`ReplyBody::Captured`]. Everything applied
     /// before the request came shows in it.
     Capture,
+    /// Every cvar the device has, for a tool's panel: [`ReplyBody::Cvars`].
+    ListCvars,
 }
 
 impl RequestBody {
@@ -260,6 +262,7 @@ impl RequestBody {
             Self::PackChunk { .. } => "pack chunk",
             Self::PackEnd => "pack end",
             Self::Capture => "capture",
+            Self::ListCvars => "list cvars",
         }
     }
 }
@@ -290,8 +293,32 @@ impl fmt::Debug for RequestBody {
             }
             Self::PackEnd => f.write_str("PackEnd"),
             Self::Capture => f.write_str("Capture"),
+            Self::ListCvars => f.write_str("ListCvars"),
         }
     }
+}
+
+/// What a cvar takes, as a tool's panel needs to know it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CvarStatusKind {
+    Bool,
+    Int,
+    UInt,
+    Float,
+    /// One of these names.
+    Choice(Vec<String>),
+}
+
+/// A cvar as a device has it now. Its values are text, as the console prints them and takes them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CvarStatus {
+    pub name: String,
+    pub help: String,
+    pub kind: CvarStatusKind,
+    pub value: String,
+    pub default: String,
+    /// The lowest and highest it takes, inclusive, if it has a range.
+    pub range: Option<(String, String)>,
 }
 
 /// A source file by name: a WGSL file of the renderer's.
@@ -336,6 +363,8 @@ pub enum ReplyBody {
     Error(String),
     /// The frame a [`RequestBody::Capture`] asked for.
     Captured(Capture),
+    /// Every cvar, in name order.
+    Cvars(Vec<CvarStatus>),
 }
 
 impl ReplyBody {
@@ -350,6 +379,7 @@ impl ReplyBody {
             Self::PackApplied(_) => "pack applied",
             Self::Error(_) => "error",
             Self::Captured(_) => "captured",
+            Self::Cvars(_) => "cvars",
         }
     }
 }
@@ -572,6 +602,7 @@ mod tests {
             RequestBody::PackChunk { offset: 300, bytes: vec![7; CHUNK_LEN] },
             RequestBody::PackEnd,
             RequestBody::Capture,
+            RequestBody::ListCvars,
         ];
         for (id, body) in requests.into_iter().enumerate() {
             let request = Request { id: id as u32, body };
@@ -591,6 +622,14 @@ mod tests {
             ..PackOutcome::default()
         };
         let replies = [
+            ReplyBody::Cvars(vec![CvarStatus {
+                name: "post.filter_strength".into(),
+                help: "How strong the filter is".into(),
+                kind: CvarStatusKind::Choice(vec!["off".into(), "on".into()]),
+                value: "on".into(),
+                default: "off".into(),
+                range: Some(("0".into(), "1".into())),
+            }]),
             ReplyBody::Status(DeviceStatus {
                 app: "Sandbox 0.1.0".into(),
                 frame: 9,

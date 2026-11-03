@@ -38,7 +38,7 @@ use sapphire_livelink::protocol::{
     Capture, DeviceStatus, MAX_CAPTURE, MoveAttempt, PushedPackStatus, ReplyBody, SourceFile,
 };
 use sapphire_livelink::{
-    LinkMode, LiveLink, LivePacks, Push, ReloadTracker, Responder, capture_refusal, set_cvar,
+    LinkMode, LiveLink, LivePacks, Push, ReloadTracker, Responder, capture_refusal, list_cvars, set_cvar,
 };
 use sapphire_platform::{App as _, DeviceClass, Os, SystemInfo};
 use sapphire_render::graph::{FrameGraph, TextureId};
@@ -204,6 +204,7 @@ impl Link {
                         reply.reply(set);
                     }
                 },
+                Push::Cvars { reply } => reply.reply(list_cvars(cvars)),
                 Push::Document { origin, type_name, text, reply } => {
                     let Some(document) = Document::of_type(&type_name) else {
                         let error = format!("{origin}: the app has no document of type `{type_name}`");

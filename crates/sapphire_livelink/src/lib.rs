@@ -113,7 +113,7 @@ pub mod protocol;
 
 pub use client::Client;
 pub use device::{
-    LinkCounters, LinkMode, LiveLink, Push, ReloadTracker, Responder, capture_refusal, set_cvar,
+    LinkCounters, LinkMode, LiveLink, Push, ReloadTracker, Responder, capture_refusal, list_cvars, set_cvar,
 };
 pub use packs::{LivePacks, PushLimits, PushedPack};
 pub use protocol::{DEFAULT_PORT, LinkError, PROTOCOL_VERSION};

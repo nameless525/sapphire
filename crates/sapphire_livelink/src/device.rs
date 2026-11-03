@@ -12,13 +12,13 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use sapphire_assets::{AssetChange, AssetStats};
-use sapphire_core::cvar::CvarRegistry;
+use sapphire_core::cvar::{CvarKind, CvarRegistry};
 
 use crate::LOG_TARGET;
 use crate::packs::{LivePacks, PackPlan, PushedPack};
 use crate::protocol::{
-    AssetFailure, AssetGeneration, DEFAULT_PORT, LinkError, MAX_FRAME, PackOutcome, Preamble, Reply,
-    ReplyBody, Request, RequestBody, SourceFile, read_frame, write_frame,
+    AssetFailure, AssetGeneration, CvarStatus, CvarStatusKind, DEFAULT_PORT, LinkError, MAX_FRAME,
+    PackOutcome, Preamble, Reply, ReplyBody, Request, RequestBody, SourceFile, read_frame, write_frame,
 };
 
 /// How long a connection to a listening device has to send its preamble.
@@ -75,6 +75,8 @@ pub enum Push {
     Status { reply: Responder },
     /// A cvar to set: [`set_cvar`] applies it.
     Cvar { name: String, value: String, reply: Responder },
+    /// Every cvar, for a tool's panel: [`list_cvars`] answers.
+    Cvars { reply: Responder },
     /// A document whose envelope names `type_name`, for the app to hand to that type's owner.
     Document { origin: String, type_name: String, text: String, reply: Responder },
     /// Shader sources by file name, for the renderer.
@@ -149,6 +151,32 @@ pub fn set_cvar(cvars: &CvarRegistry, name: &str, value: &str) -> ReplyBody {
         Ok(cvar) => ReplyBody::CvarSet { name: cvar.name().to_owned(), value: cvar.value().to_string() },
         Err(error) => ReplyBody::Error(error.to_string()),
     }
+}
+
+/// What's to be said of every cvar of `cvars`, in name order.
+#[must_use]
+pub fn list_cvars(cvars: &CvarRegistry) -> ReplyBody {
+    let mut list: Vec<CvarStatus> = cvars
+        .iter()
+        .map(|cvar| CvarStatus {
+            name: cvar.name().to_owned(),
+            help: cvar.help().to_owned(),
+            kind: match cvar.kind() {
+                CvarKind::Bool => CvarStatusKind::Bool,
+                CvarKind::Int => CvarStatusKind::Int,
+                CvarKind::UInt => CvarStatusKind::UInt,
+                CvarKind::Float => CvarStatusKind::Float,
+                CvarKind::Choice(names) => {
+                    CvarStatusKind::Choice(names.iter().map(|name| (*name).to_owned()).collect())
+                }
+            },
+            value: cvar.value().to_string(),
+            default: cvar.default_value().to_string(),
+            range: cvar.range().map(|(low, high)| (low.to_string(), high.to_string())),
+        })
+        .collect();
+    list.sort_by(|a, b| a.name.cmp(&b.name));
+    ReplyBody::Cvars(list)
 }
 
 /// The link's counters, for the debug overlay and the status.
@@ -557,6 +585,7 @@ impl Session<'_> {
         match body {
             RequestBody::Status => self.forward(Push::Status { reply }),
             RequestBody::SetCvar { name, value } => self.forward(Push::Cvar { name, value, reply }),
+            RequestBody::ListCvars => self.forward(Push::Cvars { reply }),
             // The envelope names the type: a document that doesn't even have one is refused here.
             RequestBody::Document { origin, text } => match sapphire_serialize::document::type_name(&text) {
                 Ok(type_name) if type_name.len() > MAX_NAME => reply
@@ -619,7 +648,11 @@ fn overlong(body: &RequestBody) -> Option<String> {
             ("shader file name", files.iter().map(|file| file.name.len()).max()?)
         }
         RequestBody::PackBegin { name, .. } => ("pack name", name.len()),
-        RequestBody::Status | RequestBody::PackChunk { .. } | RequestBody::PackEnd | RequestBody::Capture => {
+        RequestBody::Status
+        | RequestBody::ListCvars
+        | RequestBody::PackChunk { .. }
+        | RequestBody::PackEnd
+        | RequestBody::Capture => {
             return None;
         }
     };

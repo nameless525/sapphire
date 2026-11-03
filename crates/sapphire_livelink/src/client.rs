@@ -8,8 +8,8 @@ use sapphire_assets::pack::{PackError, PackHeader};
 use sapphire_time::Stopwatch;
 
 use crate::protocol::{
-    CHUNK_LEN, Capture, DeviceStatus, LinkError, PackOutcome, Preamble, Reply, ReplyBody, Request,
-    RequestBody, SourceFile, read_frame, write_frame,
+    CHUNK_LEN, Capture, CvarStatus, DeviceStatus, LinkError, PackOutcome, Preamble, Reply, ReplyBody,
+    Request, RequestBody, SourceFile, read_frame, write_frame,
 };
 
 /// How long a device has to answer a request, and to connect; and how long it may go without
@@ -100,6 +100,14 @@ impl Client {
         match self.request(body, TIMEOUT)? {
             ReplyBody::CvarSet { name, value } => Ok((name, value)),
             other => Err(unexpected("cvar set", &other)),
+        }
+    }
+
+    /// Every cvar the device has, in name order.
+    pub fn cvars(&mut self) -> Result<Vec<CvarStatus>, LinkError> {
+        match self.request(RequestBody::ListCvars, TIMEOUT)? {
+            ReplyBody::Cvars(list) => Ok(list),
+            other => Err(unexpected("cvars", &other)),
         }
     }
 

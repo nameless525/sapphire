@@ -48,6 +48,57 @@ fn kinsoku_holds_at_every_width() {
     assert!(breaks > 200, "only {breaks} breaks: the test isn't testing");
 }
 
+/// Where the lines of a wrapped paragraph actually fall, cell by cell: at 14 pixels in a box of 140, a
+/// line of full-width characters holds ten. These are the rules of JIS X 4051 as a reader sees them,
+/// so a segmenter that broke only at punctuation, or anywhere at all, fails here where the test above
+/// passes. Each line was read by hand when this was written.
+///
+/// None of it needs a word dictionary. In a debug build ICU4X prints `ICU4X data error: No segmentation
+/// model for complex script: Chinese/Japanese` when shaping Japanese, which is parley's word segmenter
+/// finding no `cjdict`. Word boundaries only move an editing cursor. Line breaks come from the line
+/// segmenter's rules, and building with `parley/complex-scripts` leaves the offsets above identical.
+#[test]
+fn a_wrapped_japanese_paragraph_breaks_where_a_reader_expects() {
+    let cases: &[(&str, &str, &[&str])] = &[
+        ("any two kana may part", "あいうえおかきくけこさしすせそ", &["あいうえおかきくけこ", "さしすせそ"]),
+        ("any two Han may part", "攻撃力防御力会心率会心攻撃力", &["攻撃力防御力会心率会", "心攻撃力"]),
+        ("a closing mark that fits stays", "あいうえおかきくけ。こさし", &["あいうえおかきくけ。", "こさし"]),
+        (
+            "one that doesn't brings a friend",
+            "あいうえおかきくけこ。さし",
+            &["あいうえおかきくけ", "こ。さし"],
+        ),
+        (
+            "an opening bracket never ends a line",
+            "あいうえおかきくけ「こさし",
+            &["あいうえおかきくけ", "「こさし"],
+        ),
+        ("a small kana never starts one", "あいうえおかきくけこっさし", &["あいうえおかきくけ", "こっさし"]),
+        ("nor a long vowel mark", "アイウエオカキクケコーサシ", &["アイウエオカキクケ", "コーサシ"]),
+        ("nor an iteration mark", "あいうえおかきくけ人々さし", &["あいうえおかきくけ", "人々さし"]),
+        ("nor a middle dot", "あいうえおかきくけこ・さし", &["あいうえおかきくけ", "こ・さし"]),
+        ("nor a wave dash", "あいうえおかきくけこ〜さし", &["あいうえおかきくけ", "こ〜さし"]),
+        ("nor a run of marks", "あいうえおかきくけこ！？さし", &["あいうえおかきくけ", "こ！？さし"]),
+        ("a bracket then a stop", "あいうえおかきくけこ」。さし", &["あいうえおかきくけ", "こ」。さし"]),
+        ("an ellipsis doesn't part", "あいうえおかきくけ……さし", &["あいうえおかきく", "け……さし"]),
+        ("a dash doesn't part", "あいうえおかきくけ――さし", &["あいうえおかきくけ", "――さし"]),
+        ("a number stays whole", "あいうえおかきく12,480コイン", &["あいうえおかきく", "12,480コイン"]),
+        ("a percentage too", "あいうえおかきく100%しすせそ", &["あいうえおかきく", "100%しすせそ"]),
+        ("a Latin word too", "あいうえおかきくLevelさし", &["あいうえおかきく", "Levelさし"]),
+        ("Latin parts at its space", "あいうえおかきくHP 6,240さし", &["あいうえおかきくHP ", "6,240さし"]),
+        ("a newline is a line", "あいうえお\nかきく", &["あいうえお\n", "かきく"]),
+    ];
+    let dir = common::fonts_dir();
+    let mut text = system(&dir);
+    let body = style(FAMILY_BODY, 14.0, 400.0, "ja");
+    for (what, source, expected) in cases {
+        let shaped = text.shape(source, &body, 1.0, Some(140.0));
+        let lines: Vec<&str> =
+            shaped.lines.iter().map(|line| &source[line.start as usize..line.end as usize]).collect();
+        assert_eq!(&lines, expected, "{what}");
+    }
+}
+
 #[test]
 fn a_line_breaks_between_han_and_kana_and_not_inside_latin_words() {
     let dir = common::fonts_dir();

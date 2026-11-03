@@ -243,7 +243,8 @@ impl PhysicsWorld {
     }
 
     /// Everything `shape` hits along a sweep, nearest first (ties by [`HitTarget`]), into `out`:
-    /// each collider or body once. A mesh collider reports its first triangle hit.
+    /// each collider or body once. A mesh collider reports its first triangle hit. A negative range
+    /// hits nothing, as with [`Self::cast_shape`], even in something a shape starts inside.
     pub fn cast_shape_all(
         &self,
         shape: &Shape,
@@ -255,6 +256,10 @@ impl PhysicsWorld {
     ) -> Overlaps {
         profiling::scope!("PhysicsWorld::cast_shape_all");
         Counters::add(&self.counters.shape_casts, 1);
+        // A sweep asks whether cores overlap before it looks at its range.
+        if max_distance < 0.0 {
+            return Overlaps::default();
+        }
         let Some(direction) = direction.try_normalize() else {
             return Overlaps::default();
         };

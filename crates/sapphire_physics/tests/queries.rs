@@ -282,6 +282,37 @@ fn a_range_of_nothing_says_what_a_shape_starts_in() {
     assert_eq!(hit.distance, 0.0);
 }
 
+/// A range under nothing has no path to sweep, whatever the shape starts in, and the two kinds of
+/// query say the same. Cores that overlap are where a sweep once answered anyway: it asks about them
+/// before it looks at the range.
+#[test]
+fn a_negative_range_says_nothing_even_inside_something() {
+    let ball = Shape::Sphere { radius: 1.0 };
+    let mut hits = [ShapeHit::NONE; 4];
+    // A sphere's core is its center, so at no distance the cores are one point; a box has no radius,
+    // so a sphere's center within one overlaps its core too.
+    let solid = Shape::Box { half_extents: Vec3::ONE };
+    for (target, apart, what) in [
+        (ball, 0.0, "cores overlapping"),
+        (solid, 0.5, "inside a box"),
+        (ball, 1.5, "overlapping"),
+        (ball, 2.0, "touching"),
+        (ball, 2.5, "apart"),
+    ] {
+        let at = Vec3::new(apart, 0.0, 0.0);
+        let mut body = world(Vec::new());
+        body.add_body(in_the_world(1, target, at)).expect("fits");
+        for world in [world(vec![collider(1, target, at)]), body] {
+            for range in [-1.0, -1e-3, f32::MIN] {
+                let first = world.cast_shape(&ball, Pose::IDENTITY, Vec3::X, range, &ALL);
+                assert_eq!(first, None, "first hit, {what}, range {range}");
+                let all = world.cast_shape_all(&ball, Pose::IDENTITY, Vec3::X, range, &ALL, &mut hits);
+                assert_eq!(all, Overlaps::default(), "all hits, {what}, range {range}");
+            }
+        }
+    }
+}
+
 #[test]
 fn a_move_squeezed_with_no_way_out_says_so() {
     let wall = Shape::Box { half_extents: Vec3::new(0.5, 5.0, 5.0) };

@@ -35,7 +35,7 @@ use std::path::{Path, PathBuf};
 use read_fonts_for_skera::FontRef;
 use sapphire_assets::AssetId;
 use sapphire_assets::font::{FONTS_PACK, Font, FontChains};
-use sapphire_assets::ui::{UiDocument, UiError, UiModel};
+use sapphire_assets::ui::{UiDocument, UiError, UiModel, UiText};
 use sapphire_strings::{KeyShows, StringTable, key_shows};
 use serde::{Deserialize, Serialize};
 
@@ -43,9 +43,9 @@ use crate::cache::{Dependency, Stage};
 use crate::font::{self, FontCookError};
 
 /// The UI document importer as cache keys know it.
-pub const IMPORTER: Stage = Stage { name: "UI document", version: 1 };
+pub const IMPORTER: Stage = Stage { name: "UI document", version: 2 };
 /// The UI document cooker. Bump it whenever it changes output for the same document.
-pub const COOKER: Stage = Stage { name: "sui", version: 1 };
+pub const COOKER: Stage = Stage { name: "sui", version: 2 };
 
 /// What a UI document's file name ends with.
 const SOURCE_SUFFIX: &str = ".ui.ron";
@@ -180,6 +180,23 @@ struct Shown<'a> {
     shows: Option<KeyShows>,
 }
 
+/// The keys `text` can show: its own, and if it reads one from the model, every key `chain` holds that
+/// starts with its prefix. A game choosing among them has a cook's word for each.
+fn keys_of<'a>(text: &'a UiText, chain: &[&'a StringTable]) -> Vec<&'a str> {
+    let mut keys = vec![text.key.as_str()];
+    if let Some(from) = &text.key_from {
+        for link in chain {
+            for entry in &link.entries {
+                let key = link.str(entry.key);
+                if key.starts_with(&from.prefix) && !keys.contains(&key) {
+                    keys.push(key);
+                }
+            }
+        }
+    }
+    keys
+}
+
 /// Every screen of a cooked tree and every table, as the font cook and the checks read them.
 #[derive(Debug, Default)]
 pub struct Screens {
@@ -244,18 +261,20 @@ impl Screens {
     fn shown(&self) -> impl Iterator<Item = Shown<'_>> {
         self.documents.iter().flat_map(move |(screen, document)| {
             document.texts().flat_map(move |(node, text, role)| {
-                self.tables.iter().map(move |table| {
+                self.tables.iter().flat_map(move |table| {
                     let chain = self.chain_of(table);
-                    Shown {
+                    let families = chain.iter().find_map(|link| link.font_chain(role));
+                    let args: Vec<&str> = text.args.iter().map(|arg| arg.name.as_str()).collect();
+                    keys_of(text, &chain).into_iter().map(move |key| Shown {
                         screen,
                         node: &node.name,
-                        key: &text.key,
+                        key,
                         role,
-                        args: text.args.iter().map(|arg| arg.name.as_str()).collect(),
+                        args: args.clone(),
                         locale: &table.locale,
-                        families: chain.iter().find_map(|link| link.font_chain(role)),
-                        shows: key_shows(&chain, &text.key),
-                    }
+                        families,
+                        shows: key_shows(&chain, key),
+                    })
                 })
             })
         })

@@ -155,7 +155,7 @@ pub struct Scene {
 /// and `arena-fight-telegraph`, `arena-fight-hit`, `arena-fight-cut` and `arena-fight-slash` a fight with
 /// the enemy (M2 G6), side on, so the character isn't in front of what they're there to show.
 /// `arena-party-second` and `arena-party-third` play a party's fight (M2 G7), and only they run `--party`.
-pub fn scenes() -> [Scene; 150] {
+pub fn scenes() -> [Scene; 153] {
     [
         Scene {
             name: "turntable-start",
@@ -3595,6 +3595,89 @@ pub fn scenes() -> [Scene; 150] {
             ],
             thresholds: Thresholds::default(),
         },
+        // The test menu (M3 U5): halfway through its fade and slide at a fixed time, and at rest after a
+        // walk off the end of its list, in both languages, with a shadow and a line chosen from the model.
+        Scene {
+            name: "ui-menu-fade",
+            args: &[
+                "--size",
+                "1280x720",
+                "--capture-ticks",
+                "2",
+                "--tier",
+                "desktop-high",
+                "--plain-sky",
+                "--plain-post",
+                "--aa",
+                "msaa",
+                "--ao",
+                "off",
+                "--shadows",
+                "off",
+                "--fog",
+                "off",
+                "--ui-menu",
+                "--ui-locale",
+                "ja",
+                "--ui-time",
+                "0.1",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        Scene {
+            name: "ui-menu-focus",
+            args: &[
+                "--size",
+                "1280x720",
+                "--capture-ticks",
+                "2",
+                "--tier",
+                "desktop-high",
+                "--plain-sky",
+                "--plain-post",
+                "--aa",
+                "msaa",
+                "--ao",
+                "off",
+                "--shadows",
+                "off",
+                "--fog",
+                "off",
+                "--ui-menu",
+                "--ui-locale",
+                "ja",
+                "--ui-walk",
+                "down,down,down,down,down",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        Scene {
+            name: "ui-menu-focus-en",
+            args: &[
+                "--size",
+                "1280x720",
+                "--capture-ticks",
+                "2",
+                "--tier",
+                "desktop-high",
+                "--plain-sky",
+                "--plain-post",
+                "--aa",
+                "msaa",
+                "--ao",
+                "off",
+                "--shadows",
+                "off",
+                "--fog",
+                "off",
+                "--ui-menu",
+                "--ui-locale",
+                "en",
+                "--ui-walk",
+                "down,down,down,down,down",
+            ],
+            thresholds: Thresholds::default(),
+        },
         // The retained tree's test screen (M3 U4), opaque over a plain scene, at the aspect ratios spec §5.17
         // names: Japanese with Latin, nine-slices, gradients and a mask, and English once at 16:9.
         Scene {
@@ -4438,7 +4521,7 @@ mod tests {
                 let size =
                     scene.args.windows(2).find(|pair| pair[0] == "--size").map_or(SIZE, |pair| pair[1]);
                 sizes.push(size);
-            } else if !scene.name.starts_with("ui-tree-") {
+            } else if !scene.name.starts_with("ui-tree-") && !scene.name.starts_with("ui-menu-") {
                 assert!(!scene.args.iter().any(|arg| arg.starts_with("--size")), "{}", scene.name);
             }
         }

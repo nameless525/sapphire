@@ -17,6 +17,7 @@ use sapphire_text::{TextStyle, TextSystem};
 const OXANIUM: &str = "third_party/oxanium/Oxanium[wght].ttf";
 /// In Oxanium, and not in `ui.charset.ron`: it can only be in a subset because a screen shows it.
 const ONLY_FROM_A_SCREEN: char = '\u{100}';
+const ANOTHER_FROM_A_SCREEN: char = '\u{101}';
 /// In no font of the tree.
 const IN_NO_FONT: char = '\u{d55c}';
 
@@ -41,6 +42,12 @@ fn model_file(paths: &[&str]) -> String {
 }
 
 /// A document with one text node of `key`, in the role `role`, passing `args`.
+fn model_file_of(fields: &[(&str, &str)]) -> String {
+    let fields: Vec<String> =
+        fields.iter().map(|(path, kind)| format!("(path: \"{path}\", kind: {kind})")).collect();
+    format!("(type: \"sapphire::assets::UiModel\", version: 1, data: (fields: [{}]))", fields.join(", "))
+}
+
 fn screen_file(key: &str, role: &str, args: &str) -> String {
     format!(
         "(type: \"sapphire::assets::UiDocument\", version: 2, data: (
@@ -275,6 +282,38 @@ fn a_screen_a_language_cannot_show_says_what_is_missing() {
     says(&tree.refusal(), &["`en`", "`display`", "Oxanium", "chain"]);
     tree.chains("(name: \"other\", fonts: [\"ce9360bf-ac52-4ecc-9e73-75cd14b619d5\"])");
     says(&tree.refusal(), &["`display`", "font chain"]);
+}
+
+/// The keys a screen chooses among as it runs answer as its own key does, though none is named in it.
+#[test]
+fn a_key_chosen_from_the_model_is_held_to_what_its_prefix_finds() {
+    let tree = Tree::new("ui_cook_bound_key");
+    let chooses = screen_file("greeting", "display", "")
+        .replace("args: []", "key_from: (path: \"name\", prefix: \"greeting\")");
+    tree.screen(&chooses);
+    write(&tree.content().join("ui/a.model.ron"), &model_file_of(&[("name", "Text")]));
+
+    // Only a chosen key shows this, and only one under the prefix counts.
+    tree.strings(
+        "en",
+        &format!(
+            "greeting = Hello\ngreeting-other = {ONLY_FROM_A_SCREEN}\nunused = {ANOTHER_FROM_A_SCREEN}\n"
+        ),
+    );
+    let report = tree.cook().expect("a cook");
+    assert!(font_shows(&report, "Oxanium", ONLY_FROM_A_SCREEN));
+    assert!(!font_shows(&report, "Oxanium", ANOTHER_FROM_A_SCREEN));
+
+    // Each of them needs what the node passes.
+    tree.strings("en", "greeting = Hello\ngreeting-other = Level { $level }\n");
+    says(&tree.refusal(), &["`line`", "`greeting-other`", "`en`", "$level"]);
+
+    // A path that isn't a string, and one that isn't there.
+    tree.strings("en", "greeting = Hello\n");
+    write(&tree.content().join("ui/a.model.ron"), &model_file_of(&[("name", "Number")]));
+    says(&tree.refusal(), &[".text.key_from.path", "`name`"]);
+    write(&tree.content().join("ui/a.model.ron"), &model_file_of(&[("level", "Number")]));
+    says(&tree.refusal(), &[".text.key_from.path", "`name`"]);
 }
 
 #[test]

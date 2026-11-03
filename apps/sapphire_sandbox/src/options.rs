@@ -230,7 +230,7 @@ pub(crate) struct Options {
     /// `--hud fixed|live`, `--hud-insets`, `--hud-scale` and `--hud-paused`: the combat HUD over the scene
     /// (M2 I2).
     pub hud: Option<HudOptions>,
-    /// `--ui-screen`, `--ui-locale`, `--ui-scale` and `--ui-pseudo`: the retained tree's test screen over
+    /// `--ui-screen`, `--ui-menu`, `--ui-locale`, `--ui-scale`, `--ui-pseudo`, `--ui-time` and `--ui-walk`: the retained tree's test screen over
     /// the scene (M3 U4).
     pub ui_screen: Option<ScreenOptions>,
     /// `--clip <name>`: plays that clip on the look-dev character instead of holding it (M2 N2).
@@ -623,6 +623,7 @@ impl Options {
         let mut fight = false;
         let (mut hud_mode, mut hud_insets, mut hud_scale) = (None, None, None);
         let mut hud_paused = false;
+        let (mut ui_menu, mut ui_time, mut ui_walk) = (false, None, Vec::new());
         let (mut ui_screen, mut ui_locale, mut ui_scale, mut ui_pseudo) = (false, None, None, false);
         let (mut arena_flag, mut arena_shot) = (false, None);
         let (mut sheet, mut sheet_cells) = (None, None);
@@ -796,6 +797,20 @@ impl Options {
                 "--hud-insets" => hud_insets = Some(parse_insets(&value("--hud-insets")?)?),
                 "--hud-paused" => hud_paused = true,
                 "--ui-screen" => ui_screen = true,
+                "--ui-menu" => {
+                    ui_screen = true;
+                    ui_menu = true;
+                }
+                "--ui-time" => {
+                    let seconds: f32 = number(&value("--ui-time")?, "--ui-time")?;
+                    if !(seconds >= 0.0 && seconds.is_finite()) {
+                        return Err(format!("--ui-time expects a time in seconds, got {seconds}"));
+                    }
+                    ui_time = Some(seconds);
+                }
+                "--ui-walk" => {
+                    ui_walk = value("--ui-walk")?.split(',').map(str::to_owned).collect();
+                }
                 "--ui-locale" => ui_locale = Some(value("--ui-locale")?),
                 "--ui-pseudo" => ui_pseudo = true,
                 "--ui-scale" => {
@@ -1057,8 +1072,16 @@ impl Options {
                 Some(HudOptions { mode, insets, scale: scale.unwrap_or(1.0), paused })
             }
         };
-        if !ui_screen && (ui_locale.is_some() || ui_scale.is_some() || ui_pseudo) {
-            return Err("--ui-locale, --ui-scale and --ui-pseudo need --ui-screen".to_owned());
+        let companions = ui_locale.is_some()
+            || ui_scale.is_some()
+            || ui_pseudo
+            || ui_time.is_some()
+            || !ui_walk.is_empty();
+        if !ui_screen && companions {
+            return Err(
+                "--ui-locale, --ui-scale, --ui-pseudo, --ui-time and --ui-walk need --ui-screen or --ui-menu"
+                    .to_owned(),
+            );
         }
         options.ui_screen = ui_screen.then(|| {
             let shown = ScreenOptions::default();
@@ -1066,6 +1089,9 @@ impl Options {
                 locale: ui_locale.unwrap_or(shown.locale),
                 pseudo: ui_pseudo,
                 scale: ui_scale.unwrap_or(shown.scale),
+                menu: ui_menu,
+                time: ui_time.unwrap_or(shown.time),
+                walk: ui_walk,
             }
         });
         options.faces = match (faces, face_layout) {
@@ -1932,12 +1958,24 @@ mod tests {
         assert_eq!(options.ui_screen, Some(ScreenOptions::default()));
         let (options, _) =
             parse(&["--ui-screen", "--ui-locale", "ja", "--ui-scale", "2", "--ui-pseudo"]).unwrap();
-        let shown = ScreenOptions { locale: "ja".to_owned(), pseudo: true, scale: 2.0 };
+        let shown =
+            ScreenOptions { locale: "ja".to_owned(), pseudo: true, scale: 2.0, ..ScreenOptions::default() };
+        assert_eq!(options.ui_screen, Some(shown));
+        let (options, _) = parse(&["--ui-menu", "--ui-time", "0.25", "--ui-walk", "down,confirm"]).unwrap();
+        let shown = ScreenOptions {
+            menu: true,
+            time: 0.25,
+            walk: vec!["down".to_owned(), "confirm".to_owned()],
+            ..ScreenOptions::default()
+        };
         assert_eq!(options.ui_screen, Some(shown));
         for args in [
             &["--ui-locale", "ja"][..],
             &["--ui-scale", "2"],
             &["--ui-pseudo"],
+            &["--ui-time", "1"],
+            &["--ui-walk", "down"],
+            &["--ui-menu", "--ui-time", "-1"],
             &["--ui-screen", "--ui-scale", "0"],
             &["--ui-screen", "--ui-scale", "many"],
         ] {

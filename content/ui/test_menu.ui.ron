@@ -1,0 +1,273 @@
+// The screen the motion goldens hold (M3 U5): a panel that fades and slides in under a machine, focus
+// looks, a list that scrolls, a shadow, and a line chosen from the model. Not a game's: U7 builds those.
+(
+    type: "sapphire::assets::UiDocument",
+    version: 2,
+    data: (
+        model: "test_menu.model.ron",
+        styles: [
+            (name: "title", role: "display", size: 32, weight: 700),
+            (name: "row", role: "body", size: 20, weight: 500),
+            (name: "line", role: "body", size: 16, line_height: 1.5),
+        ],
+        nodes: [
+            (
+                name: "root",
+                layout: (direction: Column, align: Center, justify: Center),
+                look: (fill: Gradient(from: (12, 18, 44, 255), to: (58, 30, 92, 255), angle: 60)),
+            ),
+            (
+                name: "panel",
+                parent: "root",
+                layout: (
+                    direction: Column,
+                    gap: 12,
+                    width: Points(520),
+                    padding: (left: 24, right: 24, top: 20, bottom: 20),
+                ),
+                look: (
+                    shape: Slice(sprite: Button, corner: 16),
+                    fill: Color((20, 26, 60, 255)),
+                    outline: (color: (120, 190, 255, 255), width: 1.5),
+                ),
+            ),
+            (
+                name: "title",
+                parent: "panel",
+                text: (
+                    key: "test-menu-title",
+                    style: "title",
+                    color: (240, 246, 255, 255),
+                    shadow: (color: (0, 0, 0, 180), offset: (2, 2)),
+                ),
+            ),
+            (
+                name: "list",
+                parent: "panel",
+                mask: true,
+                scroll: Vertical,
+                layout: (
+                    direction: Column,
+                    gap: 8,
+                    height: Points(280),
+                    padding: (left: 4, right: 4, top: 4, bottom: 4),
+                ),
+            ),
+            (
+                name: "row-sound",
+                parent: "list",
+                layout: (direction: Row, align: Center, height: Points(48), padding: (left: 16, right: 16)),
+                look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
+                focus: (
+                    focused: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Gradient(from: (64, 104, 196, 255), to: (116, 68, 188, 255), angle: 0),
+                        outline: (color: (230, 240, 255, 255), width: 2),
+                    ),
+                    pressed: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Color((180, 204, 250, 255)),
+                    ),
+                ),
+            ),
+            (
+                name: "row-sound-text",
+                parent: "row-sound",
+                text: (key: "test-menu-row-sound", style: "row", color: (236, 242, 255, 255)),
+            ),
+            (
+                name: "row-music",
+                parent: "list",
+                layout: (direction: Row, align: Center, height: Points(48), padding: (left: 16, right: 16)),
+                look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
+                focus: (
+                    focused: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Gradient(from: (64, 104, 196, 255), to: (116, 68, 188, 255), angle: 0),
+                        outline: (color: (230, 240, 255, 255), width: 2),
+                    ),
+                    pressed: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Color((180, 204, 250, 255)),
+                    ),
+                ),
+            ),
+            (
+                name: "row-music-text",
+                parent: "row-music",
+                text: (key: "test-menu-row-music", style: "row", color: (236, 242, 255, 255)),
+            ),
+            (
+                name: "row-voice",
+                parent: "list",
+                layout: (direction: Row, align: Center, height: Points(48), padding: (left: 16, right: 16)),
+                look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
+                focus: (
+                    focused: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Gradient(from: (64, 104, 196, 255), to: (116, 68, 188, 255), angle: 0),
+                        outline: (color: (230, 240, 255, 255), width: 2),
+                    ),
+                    pressed: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Color((180, 204, 250, 255)),
+                    ),
+                ),
+            ),
+            (
+                name: "row-voice-text",
+                parent: "row-voice",
+                text: (key: "test-menu-row-voice", style: "row", color: (236, 242, 255, 255)),
+            ),
+            (
+                name: "row-display",
+                parent: "list",
+                layout: (direction: Row, align: Center, height: Points(48), padding: (left: 16, right: 16)),
+                look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
+                focus: (
+                    focused: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Gradient(from: (64, 104, 196, 255), to: (116, 68, 188, 255), angle: 0),
+                        outline: (color: (230, 240, 255, 255), width: 2),
+                    ),
+                    pressed: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Color((180, 204, 250, 255)),
+                    ),
+                ),
+            ),
+            (
+                name: "row-display-text",
+                parent: "row-display",
+                text: (key: "test-menu-row-display", style: "row", color: (236, 242, 255, 255)),
+            ),
+            (
+                name: "row-brightness",
+                parent: "list",
+                layout: (direction: Row, align: Center, height: Points(48), padding: (left: 16, right: 16)),
+                look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
+                focus: (
+                    focused: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Gradient(from: (64, 104, 196, 255), to: (116, 68, 188, 255), angle: 0),
+                        outline: (color: (230, 240, 255, 255), width: 2),
+                    ),
+                    pressed: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Color((180, 204, 250, 255)),
+                    ),
+                ),
+            ),
+            (
+                name: "row-brightness-text",
+                parent: "row-brightness",
+                text: (key: "test-menu-row-brightness", style: "row", color: (236, 242, 255, 255)),
+            ),
+            (
+                name: "row-language",
+                parent: "list",
+                layout: (direction: Row, align: Center, height: Points(48), padding: (left: 16, right: 16)),
+                look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
+                focus: (
+                    focused: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Gradient(from: (64, 104, 196, 255), to: (116, 68, 188, 255), angle: 0),
+                        outline: (color: (230, 240, 255, 255), width: 2),
+                    ),
+                    pressed: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Color((180, 204, 250, 255)),
+                    ),
+                ),
+            ),
+            (
+                name: "row-language-text",
+                parent: "row-language",
+                text: (key: "test-menu-row-language", style: "row", color: (236, 242, 255, 255)),
+            ),
+            (
+                name: "row-controls",
+                parent: "list",
+                layout: (direction: Row, align: Center, height: Points(48), padding: (left: 16, right: 16)),
+                look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
+                focus: (
+                    focused: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Gradient(from: (64, 104, 196, 255), to: (116, 68, 188, 255), angle: 0),
+                        outline: (color: (230, 240, 255, 255), width: 2),
+                    ),
+                    pressed: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Color((180, 204, 250, 255)),
+                    ),
+                ),
+            ),
+            (
+                name: "row-controls-text",
+                parent: "row-controls",
+                text: (key: "test-menu-row-controls", style: "row", color: (236, 242, 255, 255)),
+            ),
+            (
+                name: "row-credits",
+                parent: "list",
+                layout: (direction: Row, align: Center, height: Points(48), padding: (left: 16, right: 16)),
+                look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
+                focus: (
+                    focused: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Gradient(from: (64, 104, 196, 255), to: (116, 68, 188, 255), angle: 0),
+                        outline: (color: (230, 240, 255, 255), width: 2),
+                    ),
+                    pressed: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Color((180, 204, 250, 255)),
+                    ),
+                ),
+            ),
+            (
+                name: "row-credits-text",
+                parent: "row-credits",
+                text: (key: "test-menu-row-credits", style: "row", color: (236, 242, 255, 255)),
+            ),
+            (
+                name: "line",
+                parent: "panel",
+                text: (
+                    key: "test-menu-line-none",
+                    style: "line",
+                    color: (200, 212, 240, 255),
+                    wrap: true,
+                    key_from: (path: "line", prefix: "test-menu-line-"),
+                ),
+            ),
+        ],
+        timelines: [
+            (name: "gone", tracks: [(node: "panel", property: Opacity, keys: [(at: 0, value: 0)])]),
+            (
+                name: "enter",
+                tracks: [
+                    (node: "panel", property: Opacity, keys: [(at: 0, value: 0), (at: 0.3, value: 1, ease: Out)]),
+                    (node: "panel", property: Y, keys: [(at: 0, value: 48), (at: 0.3, value: 0, ease: Back)]),
+                    (node: "panel", property: Scale, keys: [(at: 0, value: 0.96), (at: 0.3, value: 1, ease: Out)]),
+                ],
+            ),
+            (
+                name: "leave",
+                tracks: [
+                    (node: "panel", property: Opacity, keys: [(at: 0, value: 1), (at: 0.2, value: 0, ease: In)]),
+                    (node: "panel", property: Scale, keys: [(at: 0, value: 1), (at: 0.2, value: 0.96, ease: In)]),
+                ],
+            ),
+        ],
+        states: [
+            (name: "hidden", play: "gone"),
+            (name: "entering", play: "enter", then: "open"),
+            (name: "open", input: true),
+            (name: "leaving", play: "leave", then: "hidden"),
+        ],
+        transitions: [
+            (from: "hidden", on: "open", to: "entering"),
+            (from: "open", on: "back", to: "leaving"),
+        ],
+    ),
+)

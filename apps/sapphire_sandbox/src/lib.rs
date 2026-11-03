@@ -157,6 +157,10 @@
 //!   the scene draws, as the `ui-tree-*` goldens do. Hot reload and live link's `push_document` take edits
 //!   of its document. `--ui-locale <tag>` picks its language (`en`, by default, or `ja`), `--ui-scale
 //!   <scale>` its pixels per point, and `--ui-pseudo` turns on pseudo-localization.
+//! - `--ui-menu`: the test menu (M3 U5, `content/ui/test_menu.ui.ron`), as the `ui-menu-*` goldens show it,
+//!   with the same companions. It opens at the clock's start: `--ui-time <seconds>` is the one time it's
+//!   shown at, a capture's being byte-stable, and `--ui-walk up,down,left,right,confirm` the focus steps
+//!   taken as it opens. Input is `game_ui`'s (`sapphire_controls`' `MenuControls`), so none reaches it here.
 //! - `--hud fixed|live`: the combat HUD (`hud.rs`, M2 I2) over whatever the scene draws. `fixed` is
 //!   one frozen frame on a made-up clock, a hit landing with both thumbs down, as the `hud-*` golden
 //!   scenes capture it; `live` runs the touch zones on real touches, with a stand-in for gameplay,

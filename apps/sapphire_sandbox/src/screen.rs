@@ -1,14 +1,20 @@
-//! The sandbox's test screen (`--ui-screen`, M3 U4): `content/ui/test_screen.ui.ron` in the language asked
+//! The sandbox's test screens (`--ui-screen`, M3 U4): `content/ui/test_screen.ui.ron` in the language asked
 //! for, with fixed values to bind, which is what the tree's goldens show and what hot reload and live link
-//! reach. `game_ui::screen` shows it. It isn't a game's.
+//! reach. `--ui-menu` shows `content/ui/test_menu.ui.ron` instead (M3 U5), opened at the clock's start and
+//! read at `--ui-time`, after the steps of `--ui-walk`. `game_ui::screen` shows them, and no window's input
+//! reaches either. They aren't a game's.
 
-use bevy_reflect::Reflect;
+use bevy_reflect::{PartialReflect, Reflect};
 use game_ui::screen::{ScreenLayer, ScreenSetup};
 use sapphire_assets::AssetId;
+use sapphire_platform::Timestamp;
 use sapphire_stage::content::ScreenAssets;
+use sapphire_ui::UiStep;
 
 /// `content/ui/test_screen.ui.ron`.
 pub const TEST_SCREEN: AssetId = AssetId::from_text("0606f00f-d999-4659-9953-965ffdcfd348");
+/// `content/ui/test_menu.ui.ron`.
+pub const TEST_MENU: AssetId = AssetId::from_text("2eca009b-073e-4cab-a436-1894f36479d0");
 
 /// What the test screen's paths read. `content/ui/test_screen.model.ron` says the same for a cook, and a
 /// test holds the two together.
@@ -29,6 +35,20 @@ impl Default for TestScreenModel {
     }
 }
 
+/// What the test menu's path reads. `content/ui/test_menu.model.ron` says the same for a cook, and a test
+/// holds the two together.
+#[derive(Clone, Debug, Reflect)]
+pub struct TestMenuModel {
+    /// The key of the line under the list.
+    pub line: String,
+}
+
+impl Default for TestMenuModel {
+    fn default() -> Self {
+        Self { line: "test-menu-line-first".to_owned() }
+    }
+}
+
 /// How `--ui-screen` shows it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ScreenOptions {
@@ -38,11 +58,27 @@ pub struct ScreenOptions {
     pub pseudo: bool,
     /// `--ui-scale`: pixels per point.
     pub scale: f32,
+    /// `--ui-menu`: the test menu in place of the test screen.
+    pub menu: bool,
+    /// `--ui-time`: the seconds on the screen's clock, always this: a capture of a time is that time.
+    pub time: f32,
+    /// `--ui-walk`: steps of focus taken when it opens, as `UiTree::walk` names them.
+    pub walk: Vec<String>,
 }
+
+/// Where the screen's clock stands with no `--ui-time`: well past what the test menu does.
+const SETTLED: f32 = 60.0;
 
 impl Default for ScreenOptions {
     fn default() -> Self {
-        Self { locale: "en".to_owned(), pseudo: false, scale: 1.0 }
+        Self {
+            locale: "en".to_owned(),
+            pseudo: false,
+            scale: 1.0,
+            menu: false,
+            time: SETTLED,
+            walk: Vec::new(),
+        }
     }
 }
 
@@ -50,16 +86,25 @@ impl ScreenOptions {
     /// The document it shows.
     #[must_use]
     pub const fn document(&self) -> AssetId {
-        TEST_SCREEN
+        if self.menu { TEST_MENU } else { TEST_SCREEN }
     }
 
-    /// `assets` as these flags ask, on the test screen's model.
+    /// `assets` as these flags ask, on the model of the screen they show.
     pub fn layer(&self, assets: ScreenAssets) -> Result<ScreenLayer, String> {
+        if let Some(step) =
+            self.walk.iter().find(|step| *step != "confirm" && UiStep::from_name(step).is_none())
+        {
+            return Err(format!("--ui-walk: `{step}` isn't up, down, left, right or confirm"));
+        }
+        let model: Box<dyn PartialReflect> =
+            if self.menu { Box::new(TestMenuModel::default()) } else { Box::new(TestScreenModel::default()) };
         let setup = ScreenSetup {
             locale: self.locale.clone(),
             pseudo: self.pseudo,
             scale: self.scale,
-            model: Box::new(TestScreenModel::default()),
+            model,
+            time: Timestamp::from_nanos((f64::from(self.time) * 1e9) as u64),
+            walk: self.walk.clone(),
         };
         ScreenLayer::new(assets, setup).map_err(|error| format!("--ui-screen: {error}"))
     }
@@ -77,11 +122,14 @@ mod tests {
 
     const DOCUMENT: &str = include_str!("../../../content/ui/test_screen.ui.ron");
     const MODEL: &str = include_str!("../../../content/ui/test_screen.model.ron");
+    const MENU: &str = include_str!("../../../content/ui/test_menu.ui.ron");
+    const MENU_MODEL: &str = include_str!("../../../content/ui/test_menu.model.ron");
 
     #[test]
     fn the_ids_are_the_sidecars() {
         for (id, sidecar) in [
             (TEST_SCREEN, include_str!("../../../content/ui/test_screen.ui.ron.meta")),
+            (TEST_MENU, include_str!("../../../content/ui/test_menu.ui.ron.meta")),
             (FONT_CHAINS, include_str!("../../../content/fonts/ui.fontchains.ron.meta")),
             (LOCALES[0], include_str!("../../../content/loc/en.locale.ron.meta")),
             (LOCALES[1], include_str!("../../../content/loc/ja.locale.ron.meta")),
@@ -93,6 +141,7 @@ mod tests {
     #[test]
     fn the_model_document_is_what_the_type_has() {
         assert_eq!(UiModel::from_document(MODEL).unwrap(), UiModel::of_type(TestScreenModel::type_info()));
+        assert_eq!(UiModel::from_document(MENU_MODEL).unwrap(), UiModel::of_type(TestMenuModel::type_info()));
     }
 
     /// What the document names.
@@ -142,6 +191,52 @@ mod tests {
             fonts: Vec::new(),
         };
         ScreenOptions::default().layer(assets).unwrap()
+    }
+
+    /// The test menu at its fixed points: where a walk ends up, at every aspect a screen ships at.
+    #[test]
+    fn the_menu_opens_walks_and_reaches_all_it_holds() {
+        let document = UiDocument::from_document(MENU).unwrap();
+        let keys: Vec<(String, &str)> = document
+            .texts()
+            .map(|(_, text, _)| (text.key.clone(), "Text"))
+            .chain([("test-menu-line-first".to_owned(), "A line")])
+            .collect();
+        let keys: Vec<(&str, &str)> = keys.iter().map(|(key, text)| (key.as_str(), *text)).collect();
+        for size in [(1024, 768), (1280, 720), (2560, 1080)] {
+            let options = ScreenOptions {
+                menu: true,
+                time: 1.0,
+                walk: ["down"; 5].map(str::to_owned).to_vec(),
+                ..ScreenOptions::default()
+            };
+            let assets = ScreenAssets {
+                document: document.clone(),
+                tables: vec![table("en", &[], &keys)],
+                fonts: Vec::new(),
+            };
+            let mut layer = options.layer(assets).unwrap();
+            let mut list = UiDrawList::default();
+            layer.draw(size, &mut list);
+            assert!(layer.tree().problems().is_empty(), "{:#?}", layer.tree().problems());
+            assert_eq!(layer.tree().state(), Some("open"));
+            assert_eq!(layer.tree().focus_name(), Some("row-language"));
+            assert_eq!(layer.tree().unreachable(), Vec::<&str>::new());
+            let list_node = layer.tree().find("list").unwrap();
+            assert!(layer.tree().scroll_offset(list_node).unwrap() > 0.0, "the walk went off its end");
+        }
+    }
+
+    #[test]
+    fn a_walk_is_checked_when_it_is_asked_for() {
+        let options = ScreenOptions { walk: vec!["sideways".to_owned()], ..ScreenOptions::default() };
+        let assets = ScreenAssets {
+            document: UiDocument::from_document(DOCUMENT).unwrap(),
+            tables: vec![table("en", &[], &[])],
+            fonts: Vec::new(),
+        };
+        let refused = options.layer(assets).map(drop).unwrap_err();
+        assert!(refused.contains("sideways"), "{refused}");
     }
 
     fn nodes(layer: &ScreenLayer) -> Vec<String> {

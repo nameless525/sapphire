@@ -6,6 +6,7 @@ use bevy_reflect::PartialReflect;
 use sapphire_assets::ui::{UiDocument, UiModel};
 use sapphire_loc::{LocaleSettings, Localizer};
 use sapphire_look::{UiDrawList, UiPageState};
+use sapphire_platform::Timestamp;
 use sapphire_stage::content::ScreenAssets;
 use sapphire_ui::{Atlas, Insets, UiFonts, UiFrame, UiMetrics, UiTree};
 
@@ -19,6 +20,10 @@ pub struct ScreenSetup {
     pub scale: f32,
     /// What its paths read.
     pub model: Box<dyn PartialReflect>,
+    /// The time on its clock, which stands still: a capture of a time is that time.
+    pub time: Timestamp,
+    /// Steps of focus taken when it opens, as [`UiTree::walk`] names them.
+    pub walk: Vec<String>,
 }
 
 /// A screen, ready to draw over a scene.
@@ -30,6 +35,10 @@ pub struct ScreenLayer {
     model: Box<dyn PartialReflect>,
     scale: f32,
     pages: UiPageState,
+    /// Whether the tree's been opened and walked, which waits for its first layout.
+    opened: bool,
+    now: Timestamp,
+    walk: Vec<String>,
 }
 
 impl std::fmt::Debug for ScreenLayer {
@@ -44,7 +53,7 @@ impl std::fmt::Debug for ScreenLayer {
 impl ScreenLayer {
     /// A layer showing `assets` as `setup` says.
     pub fn new(assets: ScreenAssets, setup: ScreenSetup) -> Result<Self, String> {
-        let ScreenSetup { locale, pseudo, scale, model } = setup;
+        let ScreenSetup { locale, pseudo, scale, model, time, walk } = setup;
         let mut loc = Localizer::new(LocaleSettings { text: locale.clone(), voice: locale.clone() });
         for table in assets.tables {
             loc.install(table).map_err(|error| error.to_string())?;
@@ -63,6 +72,9 @@ impl ScreenLayer {
             model,
             scale,
             pages: UiPageState::NO_RENDERER,
+            opened: false,
+            now: time,
+            walk,
         })
     }
 
@@ -77,6 +89,7 @@ impl ScreenLayer {
             return Err(issue.to_string());
         }
         self.tree = new_tree(&document)?;
+        self.opened = false;
         Ok(())
     }
 
@@ -89,12 +102,19 @@ impl ScreenLayer {
     pub fn draw(&mut self, size: (u32, u32), list: &mut UiDrawList) {
         let metrics = UiMetrics::of_pixels(size, self.scale, Insets::default());
         self.fonts.begin_frame(self.pages, &self.loc);
-        let frame = UiFrame {
-            metrics,
-            now: sapphire_platform::Timestamp::from_nanos(0),
-            loc: &self.loc,
-            model: Some(self.model.as_partial_reflect()),
-        };
+        if !self.opened {
+            self.opened = true;
+            let start = Timestamp::from_nanos(0);
+            let frame =
+                UiFrame { metrics, now: start, loc: &self.loc, model: Some(self.model.as_partial_reflect()) };
+            self.tree.update(&frame, &mut self.fonts);
+            self.tree.fire("open", start);
+            // Checked when it was asked for, and what a test's document has isn't this one's business.
+            let walked = self.tree.walk(self.walk.iter().map(String::as_str), start);
+            debug_assert!(walked.is_ok(), "{walked:?}");
+        }
+        let frame =
+            UiFrame { metrics, now: self.now, loc: &self.loc, model: Some(self.model.as_partial_reflect()) };
         self.tree.update(&frame, &mut self.fonts);
         self.tree.draw(&mut self.fonts, &self.atlas, list);
     }

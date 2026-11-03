@@ -18,7 +18,7 @@ use super::{PointerState, focus_lost, game_event, read_touch};
 use sapphire_stage::combat::Combat;
 use sapphire_stage::combat::CombatOption;
 use sapphire_stage::hud::{HudMode, HudOptions, SandboxHud, ShownFight, show_damage};
-use sapphire_stage::input::{PLAYER, SandboxInput};
+use crate::input::{PLAYER, SandboxInput};
 use sapphire_stage::scene::Scene;
 
 const SIZE: Vec2 = Vec2::new(900.0, 400.0);

@@ -31,8 +31,8 @@ use sapphire_time::{FixedStepDriver, FixedSteps};
 use sapphire_ui::TouchActions;
 
 use crate::LOG_TARGET;
-use crate::orbit::OrbitCamera;
-use crate::scene::SceneActions;
+use sapphire_stage::orbit::OrbitCamera;
+use sapphire_stage::scene::SceneActions;
 
 /// The default bindings document.
 const BINDINGS: &str = include_str!("../default_bindings.ron");
@@ -257,6 +257,8 @@ impl SandboxInput {
     }
 }
 
+#[cfg(test)]
+mod fight_tests;
 #[cfg(test)]
 mod tests {
     use sapphire_gameplay::Buttons;

@@ -35,7 +35,7 @@ pub struct OrbitCamera {
 
 impl OrbitCamera {
     /// A camera framing the object-space bounds `[min, max]` from slightly above and in front.
-    pub(crate) fn framing(bounds: [[f32; 3]; 2]) -> Self {
+    pub fn framing(bounds: [[f32; 3]; 2]) -> Self {
         let (min, max) = (Vec3::from(bounds[0]), Vec3::from(bounds[1]));
         let radius = ((max - min).length() * 0.5).max(0.1);
         let distance = radius * 2.6;
@@ -147,7 +147,7 @@ impl OrbitCamera {
     }
 
     /// Multiplies the distance by `factor`: below 1 moves closer.
-    pub(crate) fn zoom(&mut self, factor: f32) {
+    pub fn zoom(&mut self, factor: f32) {
         self.goal_distance = (self.goal_distance * factor).clamp(self.min_distance, self.max_distance);
     }
 
@@ -183,7 +183,7 @@ impl OrbitCamera {
 
     /// Where it looks across the ground, as an actor's yaw: +Z at 0, turning toward +X. It stands
     /// on the far side of its target from there, so this is half a turn from the yaw it orbits by.
-    pub(crate) fn heading(&self) -> f32 {
+    pub fn heading(&self) -> f32 {
         self.yaw.value + PI
     }
 

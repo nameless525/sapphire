@@ -7,7 +7,7 @@ use sapphire_stage::arena::{ArenaGround, ArenaShot};
 use sapphire_stage::enemy::{self, EnemyMeshes};
 use sapphire_stage::fight::Arena;
 use sapphire_stage::hud::{HudMode, HudOptions, SandboxHud, ShownFight};
-use sapphire_stage::input::SandboxInput;
+use crate::input::SandboxInput;
 use sapphire_stage::lookdev::{self, TownMeshes};
 use sapphire_stage::scene::{Figure, LookDev, Scene};
 

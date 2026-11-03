@@ -36,7 +36,7 @@ use crate::stats::Stages;
 use sapphire_stage::combat::{Combat, SessionRecorder};
 use sapphire_stage::content::Content;
 use sapphire_stage::fight::Fight;
-use sapphire_stage::input::SandboxInput;
+use crate::input::SandboxInput;
 use sapphire_stage::scene::Scene;
 use sapphire_stage::tuning::{DocumentFrame, LiveFight, LiveTuning};
 

@@ -33,11 +33,13 @@ sapphire_assets.workspace = true
 sapphire_audio.workspace = true
 sapphire_camera.workspace = true
 sapphire_core = { workspace = true, features = ["mimalloc"] }
+sapphire_controls.workspace = true
 sapphire_crash.workspace = true
 # The scene, content and the stage's frame, which this app fills from its flags (M3 S1).
 sapphire_stage.workspace = true
 # `--replay` and `--record`: the simulation beside the renderer (M2 D2).
 sapphire_gameplay.workspace = true
+sapphire_input.workspace = true
 sapphire_jobs.workspace = true
 sapphire_math.workspace = true
 sapphire_moves.workspace = true

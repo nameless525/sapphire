@@ -334,6 +334,7 @@ mod contact_sheet;
 #[cfg(feature = "dev")]
 mod dev;
 mod fight_bench;
+mod input;
 #[cfg(feature = "dev")]
 mod link;
 mod offscreen;

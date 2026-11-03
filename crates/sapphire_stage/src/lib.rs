@@ -74,7 +74,6 @@ mod frame;
 pub mod garments;
 pub mod hud;
 pub mod ik;
-pub mod input;
 pub mod layers;
 pub mod lookdev;
 pub mod orbit;

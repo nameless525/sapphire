@@ -37,7 +37,7 @@ use sapphire_stage::environment::FOG_CARDS;
 use sapphire_stage::fight::{Arena, FightShow};
 use sapphire_stage::foliage::FoliageMeshes;
 use sapphire_stage::hud::{SandboxHud, ShownFight};
-use sapphire_stage::input::{PLAYER, SandboxInput};
+use crate::input::{PLAYER, SandboxInput};
 use sapphire_stage::lookdev::{Shot, TownMeshes};
 use sapphire_stage::party_looks::PartyLooks;
 use sapphire_stage::rims::RimRigMeshes;

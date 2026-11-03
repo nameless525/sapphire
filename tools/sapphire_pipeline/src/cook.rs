@@ -141,11 +141,11 @@ use sapphire_assets::graph::{AnimGraph, GRAPH_EXTENSION};
 use sapphire_assets::material::{MATERIAL_EXTENSION, Material};
 use sapphire_assets::mesh::{MESH_EXTENSION, Mesh, MeshError};
 use sapphire_assets::probes::{PROBE_GRID_EXTENSION, ProbeGrid};
-use sapphire_assets::rig::{CharacterRig, HumanBone, RIG_EXTENSION, RigError};
+use sapphire_assets::rig::{CharacterRig, HumanBone, RigError};
 use sapphire_assets::skeleton::{Joint, SKELETON_EXTENSION, Skeleton};
 use sapphire_assets::sound::{SOUND_EXTENSION, Sound};
-use sapphire_assets::{AssetId, AssetKind};
 use sapphire_assets::texture::{TEXTURE_EXTENSION, TEXTURE_VERSION};
+use sapphire_assets::{AssetId, AssetKind};
 use sapphire_colliders::{COLLIDERS_EXTENSION, ColliderSet};
 use sapphire_moves::{BakedTables, ClipMotionDocument, MOVE_SET_EXTENSION, MoveSet};
 use sapphire_navmesh::{NAVMESH_EXTENSION, NavMesh};
@@ -4273,7 +4273,7 @@ mod tests {
         assert_eq!(asset(&report, &source).output, output);
         let cooked = read_aligned(&output);
         assert_eq!(ColliderSet::read(&cooked).unwrap().id_of("ground"), Some(0));
-        assert_eq!(crate::pack::kind(&output), Some(sapphire_assets::AssetKind::Colliders));
+        assert_eq!(crate::pack::kind(&output), Some(AssetKind::Colliders));
 
         // Unchanged, it comes from the cache; changed, it cooks again under the same ID.
         assert_eq!(statuses(&scratch.cook()), [CookStatus::UpToDate]);

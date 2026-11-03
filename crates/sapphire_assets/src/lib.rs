@@ -124,5 +124,5 @@ pub use sapphire_serialize::{AssetId, ParseAssetIdError};
 pub use server::{
     Asset, AssetBudgets, AssetChange, AssetServer, AssetSlot, AssetStats, Handle, LoadError, LoadPriority,
     LoadState, MemoryPackSource, MountError, MountState, PackFile, PackSource, ReadDone, RemountReport,
-    TextureAsset, UnmountReport, Unloaded, UntypedHandle, Upload, UploadError, UploadReport, WeakHandle,
+    TextureAsset, Unloaded, UnmountReport, UntypedHandle, Upload, UploadError, UploadReport, WeakHandle,
 };

@@ -44,6 +44,8 @@ zstd.workspace = true
 [dev-dependencies]
 postcard.workspace = true
 ron.workspace = true
+# Deadlines in the tests that wait on a worker.
+sapphire_time.workspace = true
 
 [lints]
 workspace = true

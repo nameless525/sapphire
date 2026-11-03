@@ -53,9 +53,11 @@ pub fn scan(root: &Path) -> io::Result<Vec<CodeName>> {
     Ok(names)
 }
 
-/// The ID-shaped string literals in `text`, with their lines, from 1.
+/// The ID-shaped string literals in `text`, with their lines, from 1, leaving out whole-line comments: a
+/// doc's example names nothing an app needs.
 fn in_text(text: &str) -> impl Iterator<Item = (usize, AssetId)> + '_ {
-    text.lines().enumerate().flat_map(|(index, line)| {
+    let code = text.lines().enumerate().filter(|(_, line)| !line.trim_start().starts_with("//"));
+    code.flat_map(|(index, line)| {
         line.split('"').filter_map(move |piece| piece.parse::<AssetId>().ok().map(|id| (index + 1, id)))
     })
 }
@@ -70,7 +72,7 @@ mod tests {
     #[test]
     fn any_literal_of_an_ids_shape_counts_however_its_used() {
         let text = format!(
-            "const A: AssetId = AssetId::from_text(\"{ONE}\");\n\nlet b = AssetId::from_text(match plant {{\n    Plant::Pine => \"{TWO}\",\n}});\nlet not = \"1ff3290e\";\n// \"not an id\"\n"
+            "const A: AssetId = AssetId::from_text(\"{ONE}\");\n\nlet b = AssetId::from_text(match plant {{\n    Plant::Pine => \"{TWO}\",\n}});\nlet not = \"1ff3290e\";\n// \"not an id\"\n//! materials: {{\"timber\": \"{ONE}\"}},\n"
         );
         let found: Vec<(usize, String)> = in_text(&text).map(|(line, id)| (line, id.to_string())).collect();
         assert_eq!(found, [(1, ONE.to_owned()), (4, TWO.to_owned())]);

@@ -127,8 +127,8 @@ impl AssetServer {
         self.reads_in_flight += 1;
         let (source, sender, name) = (self.source.clone(), self.sender.clone(), name.to_owned());
         sapphire_jobs::spawn_async(move || {
-            let result =
-                std::panic::catch_unwind(AssertUnwindSafe(|| read_pack(&source, &name))).unwrap_or_else(|_| {
+            let result = std::panic::catch_unwind(AssertUnwindSafe(|| read_pack(&source, &name)))
+                .unwrap_or_else(|_| {
                     Err(MountError::Io { name, source: io::Error::other("reading the pack panicked") })
                 });
             // A closed channel means the server is gone: what was opened closes with the message.

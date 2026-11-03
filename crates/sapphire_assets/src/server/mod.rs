@@ -19,8 +19,8 @@ use slotmap::SlotMap;
 
 pub use self::handle::{Asset, Handle, TextureAsset, UntypedHandle, WeakHandle};
 use self::handle::{HandleInner, SlotKey};
-pub use self::mounts::{MountState, UnmountReport};
 use self::mounts::{Mount, MountKey, OpenPack, PendingMount};
+pub use self::mounts::{MountState, UnmountReport};
 pub use self::reload::{AssetChange, RemountReport};
 use self::reload::{Next, NextStage};
 pub use self::source::{LoadPriority, MemoryPackSource, PackFile, PackSource, ReadDone};

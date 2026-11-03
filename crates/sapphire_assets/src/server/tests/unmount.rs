@@ -3,7 +3,9 @@
 
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use sapphire_time::Stopwatch;
 
 use super::lifetime::CountedSource;
 use super::*;
@@ -23,7 +25,7 @@ fn accept(_: Upload<'_>) -> Result<(), UploadError> {
 
 /// Runs the pipeline until every read and decode has come back and nothing is left to upload.
 fn drain(server: &mut AssetServer) {
-    let start = Instant::now();
+    let start = Stopwatch::start();
     loop {
         server.update();
         let report = server.upload(accept);
@@ -37,7 +39,7 @@ fn drain(server: &mut AssetServer) {
 
 /// Runs `update` until the pack called `name` isn't mounting any more.
 fn wait_for_mount(server: &mut AssetServer, name: &str) {
-    let start = Instant::now();
+    let start = Stopwatch::start();
     while matches!(server.mount_state(name), MountState::Mounting) {
         server.wait(Duration::from_millis(5));
         assert!(start.elapsed() < Duration::from_secs(30), "the mount stalled");
@@ -161,7 +163,10 @@ fn a_mount_that_fails_says_why_and_can_be_tried_again() {
 #[test]
 fn a_mount_holding_another_packs_asset_fails_when_it_lands_and_closes_its_file() {
     let (mut server, source) = counted();
-    source.inner.insert("other", write_pack(vec![packed(id(MESH), AssetKind::Mesh, &mesh_bytes(id(MATERIAL)))]).unwrap());
+    source.inner.insert(
+        "other",
+        write_pack(vec![packed(id(MESH), AssetKind::Mesh, &mesh_bytes(id(MATERIAL)))]).unwrap(),
+    );
     server.mount("other").unwrap();
     wait_for_mount(&mut server, "other");
     assert!(matches!(server.mount_state("other"), MountState::Failed(MountError::Duplicate { .. })));
@@ -203,7 +208,7 @@ fn a_server_dropped_with_a_mount_under_way_leaves_nothing_open() {
     server.mount("zone").unwrap();
     drop(server);
     source.release();
-    let start = Instant::now();
+    let start = Stopwatch::start();
     while *source.opened.lock().unwrap() == 0 || source.open_files() > 0 {
         std::thread::sleep(Duration::from_millis(1));
         source.release();
@@ -244,7 +249,10 @@ fn an_asset_nothing_uses_goes_with_its_pack_and_a_weak_handle_finds_nothing() {
     let report = server.unmount("zone").unwrap();
     assert_eq!(report, UnmountReport { unloaded: 3, held: 0, cancelled: 0 });
     let gone = unloaded(&mut server);
-    assert!(gone.contains(&id(MESH)) && gone.contains(&id(MATERIAL)) && gone.contains(&id(TEXTURE)), "{gone:?}");
+    assert!(
+        gone.contains(&id(MESH)) && gone.contains(&id(MATERIAL)) && gone.contains(&id(TEXTURE)),
+        "{gone:?}"
+    );
     assert_eq!(server.stats().assets, 0);
     assert!(server.upgrade(weak).is_none());
     assert!(!server.contains(id(MESH)));
@@ -259,7 +267,8 @@ fn an_asset_nothing_uses_goes_with_its_pack_and_a_weak_handle_finds_nothing() {
 #[test]
 fn the_packs_left_behind_stay_where_their_assets_find_them() {
     let source = Arc::new(MemoryPackSource::new());
-    let pack_of = |n: u8| write_pack(vec![packed(id(n), AssetKind::Texture, &texture_bytes(4, 4, n))]).unwrap();
+    let pack_of =
+        |n: u8| write_pack(vec![packed(id(n), AssetKind::Texture, &texture_bytes(4, 4, n))]).unwrap();
     for (name, n) in [("a", 1), ("b", 2), ("c", 3)] {
         source.insert(name, pack_of(n));
     }
@@ -314,7 +323,7 @@ fn a_handle_that_outlives_the_unmount_keeps_what_it_held_until_it_goes() {
     assert!(server.take_unloaded().is_empty());
     let again: Handle<Mesh> = server.load(id(MESH)).unwrap();
     assert_eq!(again, mesh);
-    assert!(server.contains(id(MESH)) == false, "though no mounted pack holds it");
+    assert!(!server.contains(id(MESH)), "though no mounted pack holds it");
     drop(again);
 
     // The last user goes: no budget is over, and it unloads anyway, as no pack would bring it back.
@@ -323,7 +332,7 @@ fn a_handle_that_outlives_the_unmount_keeps_what_it_held_until_it_goes() {
     assert_eq!(server.stats().assets, 3, "the mesh still holds its material");
     let weak = mesh.downgrade();
     drop(mesh);
-    let start = Instant::now();
+    let start = Stopwatch::start();
     let mut gone = Vec::new();
     while gone.len() < 3 {
         server.update();
@@ -355,8 +364,15 @@ fn a_pin_holds_an_asset_past_its_pack_until_it_lets_go() {
 #[test]
 fn a_ready_parent_in_another_pack_keeps_what_it_binds() {
     let source = Arc::new(MemoryPackSource::new());
-    source.insert("textures", write_pack(vec![packed(id(TEXTURE), AssetKind::Texture, &texture_bytes(4, 4, 7))]).unwrap());
-    source.insert("materials", write_pack(vec![packed(id(MATERIAL), AssetKind::Material, &material_bytes(Some(id(TEXTURE))))]).unwrap());
+    source.insert(
+        "textures",
+        write_pack(vec![packed(id(TEXTURE), AssetKind::Texture, &texture_bytes(4, 4, 7))]).unwrap(),
+    );
+    source.insert(
+        "materials",
+        write_pack(vec![packed(id(MATERIAL), AssetKind::Material, &material_bytes(Some(id(TEXTURE))))])
+            .unwrap(),
+    );
     let mut server = AssetServer::new(source, unlimited());
     server.mount_now("textures").unwrap();
     server.mount_now("materials").unwrap();
@@ -393,7 +409,11 @@ fn a_load_in_flight_fails_and_its_read_comes_back_to_nothing() {
     assert!(reads > 0);
 
     let report = server.unmount("zone").unwrap();
-    assert_eq!(report, UnmountReport { unloaded: 0, held: 3, cancelled: 3 }, "held: the handle, and the links");
+    assert_eq!(
+        report,
+        UnmountReport { unloaded: 0, held: 3, cancelled: 3 },
+        "held: the handle, and the links"
+    );
     assert_eq!(server.state(&mesh), LoadState::Failed(LoadError::Removed(id(MESH))));
     assert_eq!(server.stats().reads_in_flight, reads, "nothing cancels a read: it comes back");
 
@@ -422,7 +442,7 @@ fn a_load_being_decoded_never_reaches_the_uploader() {
         // The memory source reads on this thread, so the decode jobs are on their way now.
         server.unmount("zone").unwrap();
         assert_eq!(server.state(&mesh), LoadState::Failed(LoadError::Removed(id(MESH))));
-        let start = Instant::now();
+        let start = Stopwatch::start();
         while server.stats().reads_in_flight > 0 {
             server.update();
             let report = server.upload(|upload| panic!("{} went to the uploader", upload.id()));
@@ -436,7 +456,7 @@ fn a_load_being_decoded_never_reaches_the_uploader() {
 fn a_load_queued_for_the_gpu_stays_off_it() {
     let (mut server, _) = counted();
     let texture: Handle<TextureAsset> = server.load(id(TEXTURE)).unwrap();
-    let start = Instant::now();
+    let start = Stopwatch::start();
     while server.stats().reads_in_flight > 0 {
         server.wait(Duration::from_millis(5));
         assert!(start.elapsed() < Duration::from_secs(30));
@@ -452,8 +472,15 @@ fn a_load_queued_for_the_gpu_stays_off_it() {
 #[test]
 fn what_waits_in_another_pack_fails_with_what_it_waited_for() {
     let source = Arc::new(CountedSource::default());
-    source.inner.insert("textures", write_pack(vec![packed(id(TEXTURE), AssetKind::Texture, &texture_bytes(4, 4, 7))]).unwrap());
-    source.inner.insert("materials", write_pack(vec![packed(id(MATERIAL), AssetKind::Material, &material_bytes(Some(id(TEXTURE))))]).unwrap());
+    source.inner.insert(
+        "textures",
+        write_pack(vec![packed(id(TEXTURE), AssetKind::Texture, &texture_bytes(4, 4, 7))]).unwrap(),
+    );
+    source.inner.insert(
+        "materials",
+        write_pack(vec![packed(id(MATERIAL), AssetKind::Material, &material_bytes(Some(id(TEXTURE))))])
+            .unwrap(),
+    );
     let mut server = AssetServer::new(source.clone(), unlimited());
     server.mount_now("textures").unwrap();
     server.mount_now("materials").unwrap();
@@ -461,7 +488,10 @@ fn what_waits_in_another_pack_fails_with_what_it_waited_for() {
     let material: Handle<Material> = server.load(id(MATERIAL)).unwrap();
 
     server.unmount("textures").unwrap();
-    assert_eq!(server.state(&material), LoadState::Failed(LoadError::Dependency { id: id(MATERIAL), dependency: id(TEXTURE) }));
+    assert_eq!(
+        server.state(&material),
+        LoadState::Failed(LoadError::Dependency { id: id(MATERIAL), dependency: id(TEXTURE) })
+    );
     source.release();
     drain(&mut server);
     assert!(server.get(&material).is_none());
@@ -485,7 +515,7 @@ fn a_new_version_on_its_way_is_dropped_and_the_old_one_stays() {
 
     server.unmount("zone").unwrap();
     assert_eq!(server.stats().reloading, 0);
-    let start = Instant::now();
+    let start = Stopwatch::start();
     while server.stats().reads_in_flight > 0 {
         server.update();
         let report = server.upload(|upload| panic!("{} went to the uploader", upload.id()));
@@ -612,7 +642,7 @@ fn any_order_of_mounts_unmounts_and_loads_ends_with_nothing_left_behind() {
         let _ = server.unmount(name);
     }
     source.release();
-    let start = Instant::now();
+    let start = Stopwatch::start();
     while server.stats().assets > 0 || server.stats().reads_in_flight > 0 {
         server.update();
         server.upload(accept);

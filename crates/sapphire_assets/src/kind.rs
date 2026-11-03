@@ -355,7 +355,9 @@ const _: () = {
     while first < AssetKind::ALL.len() {
         let mut second = first + 1;
         while second < AssetKind::ALL.len() {
-            assert!(!AssetKind::ALL[first].extension().eq_ignore_ascii_case(AssetKind::ALL[second].extension()));
+            assert!(
+                !AssetKind::ALL[first].extension().eq_ignore_ascii_case(AssetKind::ALL[second].extension())
+            );
             second += 1;
         }
         first += 1;

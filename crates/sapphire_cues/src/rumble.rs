@@ -57,7 +57,7 @@ struct Playing {
 pub struct RumbleMixer {
     playing: [Playing; MAX_RUMBLES],
     count: usize,
-    /// What the sink was last told, before the player's setting.
+    /// What the sink was last told, the player's setting and all: what the pad is doing.
     sent: (f32, f32),
     setting: f32,
 }
@@ -74,7 +74,8 @@ impl RumbleMixer {
         Self { playing: [Playing::default(); MAX_RUMBLES], count: 0, sent: (0.0, 0.0), setting: 1.0 }
     }
 
-    /// The player's rumble setting, 0 (none, for accessibility) to 1 (as authored).
+    /// The player's rumble setting, 0 (none, for accessibility) to 1 (as authored). What's playing takes
+    /// it at the next [`Self::update`], and 0 stops a pad that's running.
     pub fn set_setting(&mut self, setting: f32) {
         self.setting = if setting.is_finite() { setting.clamp(0.0, 1.0) } else { 0.0 };
     }
@@ -129,10 +130,13 @@ impl RumbleMixer {
             strongest.1 = strongest.1.max(playing.rumble.high);
             longest = longest.max(playing.rumble.seconds);
         }
+        let felt = (strongest.0 * self.setting, strongest.1 * self.setting);
+        let running = felt != (0.0, 0.0);
         // A rumble that changes nothing may still outlast what SDL was told.
-        if strongest != self.sent || started {
-            self.sent = strongest;
-            self.send(sink, Duration::from_secs_f32(longest));
+        if felt != self.sent || (started && running) {
+            self.sent = felt;
+            let duration = if running { Duration::from_secs_f32(longest) } else { Duration::ZERO };
+            sink.rumble(felt.0, felt.1, duration);
         }
     }
 
@@ -147,13 +151,7 @@ impl RumbleMixer {
         self.count = 0;
         if self.sent != (0.0, 0.0) {
             self.sent = (0.0, 0.0);
-            self.send(sink, Duration::ZERO);
-        }
-    }
-
-    fn send(&self, sink: &mut dyn RumbleSink, duration: Duration) {
-        if self.setting > 0.0 {
-            sink.rumble(self.sent.0 * self.setting, self.sent.1 * self.setting, duration);
+            sink.rumble(0.0, 0.0, Duration::ZERO);
         }
     }
 }
@@ -270,6 +268,92 @@ mod tests {
         mixer.start(pulse(0.8, 0.4, 0.1));
         mixer.update(FRAME, &mut pad);
         assert!(pad.0.is_empty(), "{:?}", pad.0);
+    }
+
+    /// A pad runs what it was last told until it's told otherwise, so a new setting has to reach it.
+    #[test]
+    fn a_new_setting_reaches_what_is_already_playing() {
+        let (mut mixer, mut pad) = (RumbleMixer::new(), Pad::default());
+        mixer.start(pulse(0.8, 0.4, 10.0));
+        mixer.update(FRAME, &mut pad);
+        assert_eq!(pad.0, [(0.8, 0.4, 10.0)]);
+
+        mixer.set_setting(0.5);
+        mixer.update(FRAME, &mut pad);
+        let (low, high, seconds) = pad.0[1];
+        assert_eq!((low, high), (0.4, 0.2));
+        assert!(close(seconds, 10.0 - FRAME), "only what's left of it: {seconds}");
+
+        mixer.update(FRAME, &mut pad);
+        assert_eq!(pad.0.len(), 2, "told once");
+    }
+
+    #[test]
+    fn turning_it_off_stops_a_running_pad_and_turning_it_on_takes_up_what_is_left() {
+        let (mut mixer, mut pad) = (RumbleMixer::new(), Pad::default());
+        mixer.start(pulse(0.8, 0.4, 10.0));
+        mixer.update(FRAME, &mut pad);
+
+        mixer.set_setting(0.0);
+        mixer.update(FRAME, &mut pad);
+        assert_eq!(pad.0[1], (0.0, 0.0, 0.0), "a stop, at once");
+        mixer.update(FRAME, &mut pad);
+        assert_eq!(pad.0.len(), 2, "once");
+        assert_eq!(mixer.playing(), 1, "it goes on playing, unfelt");
+
+        mixer.set_setting(1.0);
+        mixer.update(FRAME, &mut pad);
+        let (low, high, seconds) = pad.0[2];
+        assert_eq!((low, high), (0.8, 0.4));
+        assert!(close(seconds, 10.0 - 3.0 * FRAME), "only what's left of it: {seconds}");
+    }
+
+    /// Off, with the pad stopped, nothing that plays or ends needs telling it.
+    #[test]
+    fn a_pulse_that_ends_while_it_is_off_says_nothing_more() {
+        let (mut mixer, mut pad) = (RumbleMixer::new(), Pad::default());
+        mixer.start(pulse(0.8, 0.4, 0.1));
+        mixer.update(FRAME, &mut pad);
+        mixer.set_setting(0.0);
+        mixer.update(FRAME, &mut pad);
+        mixer.start(pulse(1.0, 1.0, 0.1));
+        for _ in 0..30 {
+            mixer.update(FRAME, &mut pad);
+        }
+        assert_eq!(mixer.playing(), 0);
+        assert_eq!(pad.0.len(), 2, "{:?}", pad.0);
+    }
+
+    /// Focus lost with the setting just turned off, no update between: the pad is still running.
+    #[test]
+    fn stopping_reaches_a_running_pad_whatever_the_setting() {
+        let (mut mixer, mut pad) = (RumbleMixer::new(), Pad::default());
+        mixer.start(pulse(0.8, 0.4, 10.0));
+        mixer.update(FRAME, &mut pad);
+        mixer.set_setting(0.0);
+        mixer.stop(&mut pad);
+        assert_eq!(pad.0[1], (0.0, 0.0, 0.0));
+        mixer.update(FRAME, &mut pad);
+        mixer.stop(&mut pad);
+        assert_eq!(pad.0.len(), 2, "told once");
+    }
+
+    /// Letting go for a fight's restart, with no pad to hand: the next update has one.
+    #[test]
+    fn a_release_is_scaled_and_told_like_anything_else() {
+        let (mut mixer, mut pad) = (RumbleMixer::new(), Pad::default());
+        mixer.start(pulse(0.8, 0.4, 10.0));
+        mixer.update(FRAME, &mut pad);
+        mixer.set_setting(0.5);
+        mixer.release();
+        mixer.start(pulse(0.2, 0.6, 1.0));
+        mixer.update(FRAME, &mut pad);
+        assert_eq!(pad.0[1], (0.1, 0.3, 1.0), "the new one, by the new setting");
+
+        mixer.set_setting(0.0);
+        mixer.release();
+        mixer.update(FRAME, &mut pad);
+        assert_eq!(pad.0[2], (0.0, 0.0, 0.0), "off and let go: the pad still hears it stop");
     }
 
     #[test]

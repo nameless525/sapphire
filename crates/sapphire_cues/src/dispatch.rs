@@ -332,7 +332,8 @@ impl CueDispatcher {
         self.mixer.release();
     }
 
-    /// The player's rumble setting, 0 (none, for accessibility) to 1 (as authored).
+    /// The player's rumble setting, 0 (none, for accessibility) to 1 (as authored). What's playing takes it
+    /// at the next [`Self::end_frame`], and 0 stops a pad that's running.
     pub fn set_rumble_setting(&mut self, setting: f32) {
         self.mixer.set_setting(setting);
     }

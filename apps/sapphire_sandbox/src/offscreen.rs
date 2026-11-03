@@ -193,6 +193,10 @@ impl Stage {
     pub fn new(platform: &Platform, options: &Options) -> Result<Self, AppInitError> {
         let instance = GpuInstance::new(&GpuInstanceDesc::default())?;
         let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), None)?;
+        if let Some(offscreen) = &options.offscreen {
+            let largest = gpu.device().limits().max_texture_dimension_2d;
+            target_fits(offscreen.width, offscreen.height, largest).map_err(AppInitError::msg)?;
+        }
         let profile = DeviceProfile::new(DeviceClass::Desktop, gpu.caps(), platform.system_info().ram_mib);
         let quality = Quality::new(TierTable::shipped(), &profile, options.quality_settings());
         let settings = options.render_settings(quality.render_settings());
@@ -611,6 +615,16 @@ impl Stage {
     }
 }
 
+/// Whether a `--size` target fits this device. It has to be said here: past `largest` wgpu only reports
+/// validation errors, to a handler that logs them in a release build, so a capture would go on to write
+/// a blank picture and exit 0.
+fn target_fits(width: u32, height: u32, largest: u32) -> Result<(), String> {
+    if width.max(height) > largest {
+        return Err(format!("--size {width}x{height}: this device's largest target is {largest} a side"));
+    }
+    Ok(())
+}
+
 /// TAA's persistent history gives the frame graph a root independent of the display target.
 /// Dynamic resolution and debug modes observe work/timings beyond the final image, so retain
 /// their complete frames. Use effective settings: `--aa` can override the tier.
@@ -636,6 +650,14 @@ mod tests {
         let (options, unknown) = Options::parse(&args).unwrap();
         assert!(unknown.is_empty(), "unexpected arguments: {unknown:?}");
         options
+    }
+
+    #[test]
+    fn a_target_past_the_devices_largest_is_refused_by_size() {
+        assert_eq!(target_fits(16384, 16384, 16384), Ok(()));
+        let refused = target_fits(16385, 4, 16384).expect_err("past it");
+        assert!(refused.contains("16385x4") && refused.contains("16384"), "{refused}");
+        assert!(target_fits(4, 16385, 16384).is_err());
     }
 
     #[test]

@@ -23,7 +23,7 @@ use sapphire_time::TICK_HZ;
 use crate::LOG_TARGET;
 use crate::capture::{Readback, write_png};
 use crate::offscreen::Stage;
-use crate::options::{Antialiasing, Options};
+use crate::options::{Antialiasing, CONTACT_SHEET_FLAG, Options};
 use crate::orbit::OrbitCamera;
 
 /// How many ticks across, unless `--sheet-cells` says.
@@ -48,6 +48,9 @@ const VIEW_YAWS_DEGREES: [f32; 2] = [0.0, 90.0];
 const GROUND: [u8; 3] = [255, 64, 64];
 const INK: [u8; 3] = [255, 255, 255];
 const PAPER: [u8; 3] = [0, 0, 0];
+/// The most image a sheet may hold, in bytes: a gibibyte, a cell of 16384 square or 64 by 64 cells of about
+/// 512 square, far past what anyone reads, where the next size up can ask for more than a machine has.
+const MAX_SHEET_BYTES: u128 = 1 << 30;
 /// How close the ground's marks may come, in pixels, before they run together.
 const MIN_MARK_SPACING: f32 = 4.0;
 /// A tick label's digit scale, in pixels per font pixel.
@@ -190,11 +193,27 @@ struct Sheet {
 }
 
 impl Sheet {
-    fn new(framing: Framing, columns: usize, rows: usize) -> Self {
-        let (width, height) = (framing.width as usize * columns, framing.height as usize * rows);
+    /// The size a sheet of these cells comes to, in pixels, or why it can't be made.
+    fn size(framing: Framing, columns: usize, rows: usize) -> Result<(usize, usize), String> {
+        let (width, height) =
+            (u128::from(framing.width) * columns as u128, u128::from(framing.height) * rows as u128);
+        let bytes = width * height * 4;
+        if bytes > MAX_SHEET_BYTES {
+            return Err(format!(
+                "{CONTACT_SHEET_FLAG}: {columns} by {rows} cells of {}x{} come to {bytes} bytes of image, \
+                 past the {MAX_SHEET_BYTES} a sheet may hold",
+                framing.width, framing.height
+            ));
+        }
+        // Within the limit above, so these fit.
+        Ok((width as usize, height as usize))
+    }
+
+    fn new(framing: Framing, columns: usize, rows: usize) -> Result<Self, String> {
+        let (width, height) = Self::size(framing, columns, rows)?;
         let mut pixels = vec![0; width * height * 4];
         pixels.as_chunks_mut::<4>().0.iter_mut().for_each(|pixel| pixel[3] = 255);
-        Self { framing, width, height, pixels }
+        Ok(Self { framing, width, height, pixels })
     }
 
     fn set(&mut self, x: usize, y: usize, color: [u8; 3]) {
@@ -281,7 +300,7 @@ pub(crate) fn run(
         [] => VIEW_YAWS_DEGREES.to_vec(),
         named => named.iter().map(|&yaw| yaw as f32).collect(),
     };
-    let mut sheet = Sheet::new(framing, samples.len(), yaws.len());
+    let mut sheet = Sheet::new(framing, samples.len(), yaws.len()).map_err(AppInitError::msg)?;
     let target = stage.target(framing.width, framing.height, wgpu::TextureUsages::COPY_SRC);
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
     let mut step = 0;
@@ -317,6 +336,22 @@ pub(crate) fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The size is worked out before anything's allocated, whatever `--size` and the lists ask for.
+    #[test]
+    fn a_sheet_is_refused_past_what_it_may_hold_before_it_allocates() {
+        let cell = |side| Framing::new(side, side, None);
+        assert_eq!(Sheet::size(cell(16384), 1, 1), Ok((16384, 16384)), "exactly what it may hold");
+        assert_eq!(
+            Sheet::size(Framing::new(192, 240, None), 64, 4),
+            Ok((12288, 960)),
+            "the most a tool asks"
+        );
+        let past = Sheet::size(Framing::new(16384, 16385, None), 1, 1).expect_err("a row too many");
+        assert!(past.contains("16384x16385") && past.contains(&MAX_SHEET_BYTES.to_string()), "{past}");
+        assert!(Sheet::size(cell(u32::MAX), 64, 64).is_err(), "and no overflow on the way to saying so");
+        assert!(Sheet::new(cell(u32::MAX), 64, 64).is_err());
+    }
 
     #[test]
     fn samples_cover_the_clip_evenly_and_stop_short_of_its_wrap() {
@@ -396,7 +431,7 @@ mod tests {
     #[test]
     fn a_cell_far_back_paints_its_marks() {
         let framing = Framing::new(32, 40, Some(1e6));
-        let mut sheet = Sheet::new(framing, 1, 1);
+        let mut sheet = Sheet::new(framing, 1, 1).expect("it fits");
         sheet.place(0, 0, &vec![9; 32 * 40 * 4], 0);
         let at = |x: usize, y: usize| sheet.pixels[(y * sheet.width + x) * 4];
         let row = framing.ground_row();
@@ -407,7 +442,7 @@ mod tests {
     #[test]
     fn a_cell_lands_in_its_place_with_its_marks() {
         let framing = Framing::new(32, 40, None);
-        let mut sheet = Sheet::new(framing, 2, 2);
+        let mut sheet = Sheet::new(framing, 2, 2).expect("it fits");
         let frame = vec![9; 32 * 40 * 4];
         sheet.place(1, 1, &frame, 7);
         let at = |x: usize, y: usize| sheet.pixels[(y * sheet.width + x) * 4];

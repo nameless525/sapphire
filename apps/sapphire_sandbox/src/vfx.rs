@@ -57,7 +57,7 @@ impl VfxShow {
 }
 
 /// The plain table's row for a quality tier.
-pub(crate) fn budget(tier: TierId) -> VfxBudget {
+pub fn budget(tier: TierId) -> VfxBudget {
     match tier {
         TierId::DesktopHigh => VfxBudget::DESKTOP_HIGH,
         TierId::DesktopLow => VfxBudget::DESKTOP_LOW,

@@ -140,7 +140,7 @@ pub(crate) fn placement(bounds: [[f32; 3]; 2]) -> Mat4 {
 
 /// Builds, cooks and uploads the stalk, the way content is loaded: cooked bytes read in place,
 /// with the anime character material it embeds.
-pub(crate) fn upload_stalk(renderer: &mut Renderer) -> Result<MeshHandle, RenderError> {
+pub fn upload_stalk(renderer: &mut Renderer) -> Result<MeshHandle, RenderError> {
     let bytes = stalk_mesh().to_cooked().expect("a procedural mesh cooks");
     let mesh = Mesh::read(&bytes)?;
     let materials = renderer.upload_embedded_materials(mesh)?;

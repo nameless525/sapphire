@@ -81,7 +81,7 @@ impl ShakeSink for OrbitShakes {
 /// The pad in the player's hands, if there is one: nothing on the keyboard, on touch, or on a pad with
 /// no motors, which SDL tells [`Platform::rumble_gamepad`] and nothing needs to hear. No phone's haptics
 /// here, by choice: they aren't SDL's, and a fight on touch has enough to prove first.
-pub(crate) struct PadRumble<'a> {
+pub struct PadRumble<'a> {
     pub platform: &'a mut Platform,
     pub pad: Option<GamepadId>,
 }
@@ -96,23 +96,23 @@ impl RumbleSink for PadRumble<'_> {
 
 /// What a fight asks of the audio system this frame.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct CueSounds<'a> {
-    pub requests: &'a [CueRequest],
-    pub emitters: &'a [Emitter],
+pub struct CueSounds<'a> {
+    pub(crate) requests: &'a [CueRequest],
+    pub(crate) emitters: &'a [Emitter],
     /// The simulation's world clock's speed, which its slow motion turns down.
-    pub world_time_scale: f32,
+    pub(crate) world_time_scale: f32,
     /// A new fight began this frame, so what the last one left playing ends before these start.
-    pub started_over: bool,
+    pub(crate) started_over: bool,
 }
 
 impl CueSounds<'_> {
     /// Nothing: there's no fight.
-    pub const NONE: CueSounds<'static> =
+    pub(crate) const NONE: CueSounds<'static> =
         CueSounds { requests: &[], emitters: &[], world_time_scale: 1.0, started_over: false };
 }
 
 /// What's firing, and what it fires into that the scene doesn't hold itself.
-pub(crate) struct CueShow {
+pub struct CueShow {
     table: CueTable,
     /// The sounds of the table it started with: what an app loads for it, once.
     #[cfg(any(test, feature = "dev"))]
@@ -134,7 +134,7 @@ pub(crate) struct CueShow {
 impl CueShow {
     /// The shipped table, within `budget`. An error names a row it can't resolve, and a test holds the
     /// shipped libraries to it.
-    pub fn new(budget: VfxBudget, presets: &ScreenLibrary) -> Result<Self, CueTableError> {
+    pub(crate) fn new(budget: VfxBudget, presets: &ScreenLibrary) -> Result<Self, CueTableError> {
         Self::with_table(CueTable::default_table(), VfxLibrary::default_effects(), budget, presets)
     }
 
@@ -164,7 +164,7 @@ impl CueShow {
     }
 
     /// The post variants the table's screen effects draw through.
-    pub fn post_variants(&self, presets: &ScreenLibrary) -> PostVariants {
+    pub(crate) fn post_variants(&self, presets: &ScreenLibrary) -> PostVariants {
         self.dispatcher.post_variants(presets)
     }
 
@@ -175,7 +175,7 @@ impl CueShow {
 
     /// Fires what the simulation's latest step published, and moves the effects by its clocks: call it
     /// after each step. Allocates nothing once warmed.
-    pub fn step(
+    pub(crate) fn step(
         &mut self,
         sim: &Simulation,
         screen: &mut EffectStack,
@@ -211,19 +211,19 @@ impl CueShow {
     }
 
     /// Whether a frame has a blade's trail to tell of where it's drawn.
-    pub fn trails_are_running(&self) -> bool {
+    pub(crate) fn trails_are_running(&self) -> bool {
         self.trails.are_running()
     }
 
     /// Whether the trail of the fighter at `place`, the player first, plays now.
     #[cfg(test)]
-    pub fn trail_runs_at(&self, place: usize) -> bool {
+    pub(crate) fn trail_runs_at(&self, place: usize) -> bool {
         self.trails.runs_at(place)
     }
 
     /// Takes where this frame draws each blade, the player's first, `alpha` of the way from the step
     /// before the latest to the latest, for the trails: before [`Self::write`].
-    pub fn follow_blades(&mut self, drawn: [Option<Mat4>; 2], alpha: f32) {
+    pub(crate) fn follow_blades(&mut self, drawn: [Option<Mat4>; 2], alpha: f32) {
         let stopwatch = Stopwatch::start();
         self.trails.follow_frame(drawn, alpha, &mut self.world);
         self.stepping += stopwatch.elapsed();
@@ -231,7 +231,7 @@ impl CueShow {
 
     /// Writes the effects to `frame`, `alpha` of the way from the step before the latest to the latest,
     /// with the time this frame's steps and the write took.
-    pub fn write(&mut self, frame: &mut VfxFrame, alpha: f32) {
+    pub(crate) fn write(&mut self, frame: &mut VfxFrame, alpha: f32) {
         let stopwatch = Stopwatch::start();
         self.world.write_frame(frame, alpha);
         frame.stats.simulation = self.stepping + stopwatch.elapsed();
@@ -239,7 +239,7 @@ impl CueShow {
     }
 
     /// What this frame's steps asked of the audio system.
-    pub fn sounds(&self) -> CueSounds<'_> {
+    pub(crate) fn sounds(&self) -> CueSounds<'_> {
         CueSounds {
             requests: self.dispatcher.sounds(),
             emitters: &self.emitters,
@@ -252,7 +252,7 @@ impl CueShow {
     /// forgets its sounds, tells `rumble` what changed, and returns where its shakes turn and move the
     /// view, having played them by `view_dt`, which a pause holds at zero. A pad's rumble runs on: it's in
     /// the player's hands, not on the screen.
-    pub fn end_frame(
+    pub(crate) fn end_frame(
         &mut self,
         dt: f32,
         view_dt: f32,
@@ -266,7 +266,7 @@ impl CueShow {
     }
 
     /// Stops any rumble at once: the app lost focus or the foreground.
-    pub fn stop_rumble(&mut self, rumble: &mut dyn RumbleSink) {
+    pub(crate) fn stop_rumble(&mut self, rumble: &mut dyn RumbleSink) {
         self.dispatcher.stop_rumble(rumble);
     }
 
@@ -278,7 +278,7 @@ impl CueShow {
     /// actors have left. Every screen effect goes, `--post-effect`'s among them. A rumble stops at the
     /// next [`Self::end_frame`], which has a pad to tell, and sounds at the audio system's next update,
     /// which [`Self::sounds`] tells, along with any the last fight had yet to start.
-    pub fn start_over(&mut self, screen: &mut EffectStack) {
+    pub(crate) fn start_over(&mut self, screen: &mut EffectStack) {
         self.world.clear();
         self.trails.start_over();
         self.shakes.stack.clear();
@@ -291,14 +291,14 @@ impl CueShow {
     /// Takes `presets`, or says why not: the table names a preset they don't have. Nothing changes then,
     /// and the caller keeps its presets too.
     #[cfg(any(test, feature = "dev"))]
-    pub fn take_presets(&mut self, presets: &ScreenLibrary) -> Result<(), CueTableError> {
+    pub(crate) fn take_presets(&mut self, presets: &ScreenLibrary) -> Result<(), CueTableError> {
         self.dispatcher.resolve(&self.table, self.world.library(), presets, &self.shakes.tuning)
     }
 
     /// Takes new effects, or says why not: the table names one they don't have. Every effect playing ends,
     /// since their places in the library may have moved, and a sword trail begins again at the next cut.
     #[cfg(any(test, feature = "dev"))]
-    pub fn take_effects(
+    pub(crate) fn take_effects(
         &mut self,
         effects: VfxLibrary,
         presets: &ScreenLibrary,
@@ -313,7 +313,7 @@ impl CueShow {
     /// its place in the tuning's list, so the table's are resolved again, through the dispatcher's one
     /// route for that. Shakes playing finish as they were fired.
     #[cfg(any(test, feature = "dev"))]
-    pub fn take_camera_tuning(
+    pub(crate) fn take_camera_tuning(
         &mut self,
         tuning: CameraTuning,
         presets: &ScreenLibrary,
@@ -326,7 +326,11 @@ impl CueShow {
     /// Takes a new table, or says why not: it names what its libraries don't have, or a sound that wasn't
     /// loaded as the app started, which would otherwise be dropped each time it fired.
     #[cfg(any(test, feature = "dev"))]
-    pub fn take_table(&mut self, table: CueTable, presets: &ScreenLibrary) -> Result<(), CueTableError> {
+    pub(crate) fn take_table(
+        &mut self,
+        table: CueTable,
+        presets: &ScreenLibrary,
+    ) -> Result<(), CueTableError> {
         table.check_sounds(&self.loaded_sounds)?;
         self.dispatcher.resolve(&table, self.world.library(), presets, &self.shakes.tuning)?;
         self.table = table;

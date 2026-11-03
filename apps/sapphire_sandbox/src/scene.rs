@@ -163,7 +163,7 @@ const HITSTOP_TICKS: u16 = 8;
 /// The hour the scene starts at unless `--time-of-day` says otherwise: the default day's 10:00
 /// key, which is exactly the look the sandbox drew before time of day, so golden images that
 /// don't choose a time are unchanged.
-pub(crate) const DEFAULT_TIME_OF_DAY: f32 = 10.0;
+pub const DEFAULT_TIME_OF_DAY: f32 = 10.0;
 /// The radius of a face rig head's body: a sphere around the head.
 const HEAD_BODY_RADIUS: f32 = 0.16;
 
@@ -237,33 +237,33 @@ struct SlowMotion(Option<ScaleHandle>);
 /// component on a character whose pose moves, which follows its skeleton every frame (M2 N2), and on
 /// one of another shape than the scene's character (M2 O4).
 #[derive(Component, Clone, Copy, Debug, PartialEq)]
-pub(crate) struct Figure {
+pub struct Figure {
     /// The middle of the head: face and hair GI turn toward a sphere around it, and the light
     /// rig's limits are judged around it.
-    pub head: Vec3,
+    pub(crate) head: Vec3,
     /// Where it stands.
-    pub feet: Vec3,
+    pub(crate) feet: Vec3,
     /// The radius of its body capsule (M1 R4), from its feet to its head: its torso's, which its
     /// shadow is cast from.
-    pub body_radius: f32,
+    pub(crate) body_radius: f32,
     /// How its head is turned from facing +Z upright: its face's basis (M1 C3).
-    pub face: Quat,
+    pub(crate) face: Quat,
     /// The expression its face holds: its blush and gloom weights (M1 C3).
-    pub expression: FaceExpression,
+    pub(crate) expression: FaceExpression,
 }
 
 impl Figure {
     /// The figure something held draws as, placed by `item` in this figure's space, in its own space:
     /// no body, so it adds no capsule to the holder's shadow or occlusion, and its head where the
     /// holder's is, so the light rig lights the two alike.
-    pub fn of_item_at(&self, item: Mat4) -> Self {
+    pub(crate) fn of_item_at(&self, item: Mat4) -> Self {
         let head = item.inverse().transform_point3(self.head);
         Self { head, feet: head, body_radius: 0.0, face: Quat::IDENTITY, expression: self.expression }
     }
 
     /// The sample mannequin (`sapphire_pipeline`'s samples): its head sphere 1.47 m above its
     /// 0.2 m pedestal, its torso's radius, its head turning with it.
-    pub const MANNEQUIN: Self = Self {
+    pub(crate) const MANNEQUIN: Self = Self {
         head: Vec3::new(0.0, 1.67, 0.0),
         feet: Vec3::new(0.0, 0.2, 0.0),
         body_radius: 0.24,
@@ -284,7 +284,7 @@ type Lamps = QueryState<(&'static Lamp, &'static mut RenderLight)>;
 
 /// What the look-dev stage (`--look-dev`) draws: the town, its fog cards where frames draw fog,
 /// and the character's held pose and the figure it makes.
-pub(crate) struct LookDev {
+pub struct LookDev {
     pub town: TownMeshes,
     pub fog_cards: Option<[MeshHandle; environment::FOG_CARDS.len()]>,
     pub pose: RenderPose,
@@ -293,7 +293,7 @@ pub(crate) struct LookDev {
 
 /// What the arena (`--arena`) stands on and how it's framed, around what the look-dev stage draws,
 /// and the enemy who fights there.
-pub(crate) struct Arena {
+pub struct Arena {
     pub enemy: EnemyMeshes,
     pub held: enemy::Held,
     pub shot: ArenaShot,
@@ -308,7 +308,7 @@ pub(crate) struct Arena {
 /// stage's ([`Scene::replace_day`]).
 #[cfg(any(test, feature = "dev"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Day {
+pub enum Day {
     /// The engine's default day, `crates/sapphire_world/default_day.ron`.
     Default,
     /// The look-dev stage's own (`--look-dev`), `content/lookdev/lookdev_day.ron`
@@ -327,7 +327,7 @@ impl Day {
     }
 
     /// What it is, in messages.
-    pub fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Default => "default day",
             Self::LookDev => "look-dev day",
@@ -346,7 +346,7 @@ impl Day {
 
 /// How the scene's characters fade (M1 C7; [`CharacterInstance::opacity`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) enum Fade {
+pub enum Fade {
     /// Whole.
     #[default]
     Off,
@@ -367,7 +367,7 @@ impl Fade {
     }
 }
 
-pub(crate) struct Scene {
+pub struct Scene {
     ecs: Ecs,
     character: Entity,
     /// The skinned stalk, with `--skinned`.
@@ -501,7 +501,7 @@ impl Scene {
     /// A scene around a character with the object-space `bounds`, and with the skinned stalk
     /// beside it if `skinned`. The character and stalk draw once they have meshes
     /// ([`Self::set_character_mesh`], [`Self::set_stalk_mesh`]).
-    pub fn new(bounds: [[f32; 3]; 2], skinned: bool) -> Self {
+    pub(crate) fn new(bounds: [[f32; 3]; 2], skinned: bool) -> Self {
         let mut ecs = Ecs::new();
         let world = ecs.world_mut();
         world.insert_resource(OrbitCamera::framing(bounds));
@@ -765,7 +765,7 @@ impl Scene {
     /// otherwise those [`Self::push_effect`] pushed (`--post-effect`), the only ones the sandbox
     /// fires without the overlay. A golden scene without effects so builds none of their
     /// pipelines.
-    pub fn effect_variants(&self) -> PostVariants {
+    pub(crate) fn effect_variants(&self) -> PostVariants {
         if cfg!(feature = "dev") {
             self.ecs.world().resource::<EffectLibrary>().post_variants() | self.pushed_effects
         } else {
@@ -793,7 +793,7 @@ impl Scene {
     /// Replaces the screen effect presets (hot reload, `dev` builds). Effects playing keep the
     /// layers they were pushed with. Presets that lose one a fight's cues push are refused.
     #[cfg(feature = "dev")]
-    pub fn set_effect_library(&mut self, library: EffectLibrary) -> Result<(), String> {
+    pub(crate) fn set_effect_library(&mut self, library: EffectLibrary) -> Result<(), String> {
         if let Some(cues) = &mut self.cues {
             cues.take_presets(&library).map_err(|error| error.to_string())?;
             self.pushed_effects |= cues.post_variants(&library);
@@ -805,7 +805,7 @@ impl Scene {
     /// Replaces the effects a fight's cues and sword trails play (live tuning, `dev` builds), if the table
     /// firing them finds its names there. With nothing firing cues, it says so.
     #[cfg(feature = "dev")]
-    pub fn set_vfx_effects(&mut self, effects: sapphire_vfx::EffectLibrary) -> Result<(), String> {
+    pub(crate) fn set_vfx_effects(&mut self, effects: sapphire_vfx::EffectLibrary) -> Result<(), String> {
         let presets: &EffectLibrary = self.ecs.world().resource();
         let Some(cues) = &mut self.cues else {
             return Err("nothing plays a fight's effects here: `--cues` does".to_owned());
@@ -816,7 +816,7 @@ impl Scene {
     /// Replaces the table a fight's cues fire through (live tuning, `dev` builds), if its names are all
     /// there. With nothing firing cues, it says so.
     #[cfg(feature = "dev")]
-    pub fn set_cue_table(&mut self, table: sapphire_cues::CueTable) -> Result<(), String> {
+    pub(crate) fn set_cue_table(&mut self, table: sapphire_cues::CueTable) -> Result<(), String> {
         let presets: &EffectLibrary = self.ecs.world().resource();
         let Some(cues) = &mut self.cues else {
             return Err("nothing fires a fight's cues here: `--cues` does".to_owned());
@@ -832,7 +832,7 @@ impl Scene {
     /// which; otherwise keeps them. Characters keep their preset IDs; one past the new presets' end
     /// is lit with their default. Hot reload and live link both come through here.
     #[cfg(any(test, feature = "dev"))]
-    pub fn replace_light_rigs(&mut self, origin: &str, rigs: LightRigLibrary) -> Result<Day, String> {
+    pub(crate) fn replace_light_rigs(&mut self, origin: &str, rigs: LightRigLibrary) -> Result<Day, String> {
         let day = self.day();
         let name = std::path::Path::new(origin).file_name().and_then(std::ffi::OsStr::to_str);
         if name != Some(day.light_rigs_file_name()) {
@@ -1116,7 +1116,7 @@ impl Scene {
 
     /// The hours the renderer's probe grid was baked at, which each frame's packet picks its
     /// bounce keys by: after a new grid (hot reload). Allocates nothing while they stay the same.
-    pub fn set_probe_hours(&mut self, hours: &[f32]) {
+    pub(crate) fn set_probe_hours(&mut self, hours: &[f32]) {
         if self.probe_hours != hours {
             self.probe_hours.clear();
             self.probe_hours.extend_from_slice(hours);
@@ -1291,7 +1291,7 @@ impl Scene {
 
     /// Gives the graph show a live edit of the document with this file name, if it plays that (M2 T2).
     #[cfg(feature = "dev")]
-    pub fn tune_show(
+    pub(crate) fn tune_show(
         &mut self,
         document: &str,
         set: sapphire_moves::MoveSet,
@@ -1304,7 +1304,7 @@ impl Scene {
     /// does: a value out of range, or a shake the cue table names and the tuning has lost, keeps everything
     /// as it was.
     #[cfg(feature = "dev")]
-    pub fn set_camera_tuning(&mut self, tuning: sapphire_camera::CameraTuning) -> Result<(), String> {
+    pub(crate) fn set_camera_tuning(&mut self, tuning: sapphire_camera::CameraTuning) -> Result<(), String> {
         tuning.validate().map_err(|error| error.to_string())?;
         let director = self.arena.as_deref().is_some_and(ArenaActors::has_director);
         if !director && self.cues.is_none() {
@@ -1335,7 +1335,7 @@ impl Scene {
     ///
     /// [`GraphPlayer::replace`]: sapphire_anim::GraphPlayer::replace
     #[cfg(feature = "dev")]
-    pub fn replace_graph_document(
+    pub(crate) fn replace_graph_document(
         &mut self,
         owner: GraphOwner,
         graph: sapphire_anim::AnimGraph,
@@ -1741,26 +1741,26 @@ impl Scene {
 
     /// The character's graph player, for hot reload's tests.
     #[cfg(all(test, feature = "dev"))]
-    pub fn graph_player(&self) -> Option<&sapphire_anim::GraphPlayer> {
+    pub(crate) fn graph_player(&self) -> Option<&sapphire_anim::GraphPlayer> {
         self.ecs.world().get::<GraphDriver>(self.character).map(|driver| &driver.player)
     }
 
     /// The arena's actors, for hot reload's tests.
     #[cfg(all(test, feature = "dev"))]
-    pub fn arena_mut(&mut self) -> Option<&mut ArenaActors> {
+    pub(crate) fn arena_mut(&mut self) -> Option<&mut ArenaActors> {
         self.arena.as_deref_mut()
     }
 
     /// Draws the enemy with this pose, for hot reload's tests: as a mesh that landed before its driver.
     #[cfg(all(test, feature = "dev"))]
-    pub fn set_enemy_pose(&mut self, pose: RenderPose) {
+    pub(crate) fn set_enemy_pose(&mut self, pose: RenderPose) {
         let (warrior, _) = self.enemy.expect("an enemy");
         self.ecs.world_mut().entity_mut(warrior).insert(pose);
     }
 
     /// The enemy's graph player, for hot reload's tests.
     #[cfg(all(test, feature = "dev"))]
-    pub fn enemy_graph_player(&self) -> Option<&sapphire_anim::GraphPlayer> {
+    pub(crate) fn enemy_graph_player(&self) -> Option<&sapphire_anim::GraphPlayer> {
         let (warrior, _) = self.enemy?;
         self.ecs.world().get::<GraphDriver>(warrior).map(|driver| &driver.player)
     }
@@ -1846,7 +1846,7 @@ impl Scene {
 
     /// Poses the character as [`Self::play_fighters`] does, with no arena to fight in, for tests.
     #[cfg(all(test, feature = "dev"))]
-    pub fn pose_as_fighter(&mut self, driver: GraphDriver) {
+    pub(crate) fn pose_as_fighter(&mut self, driver: GraphDriver) {
         let figure = self.figure;
         self.ecs.world_mut().entity_mut(self.character).insert((driver, figure));
         self.fighters_posed = true;
@@ -1934,7 +1934,7 @@ impl Scene {
 
     /// Gives the arena's camera director this much real time and input for its next frame, if one's
     /// on, and says whether it took them.
-    pub fn drive_arena_camera(&mut self, dt: f32, look: sapphire_math::Vec2, zoom: f32) -> bool {
+    pub(crate) fn drive_arena_camera(&mut self, dt: f32, look: sapphire_math::Vec2, zoom: f32) -> bool {
         self.arena.as_mut().is_some_and(|arena| arena.drive_camera(dt, look, zoom))
     }
 
@@ -2603,7 +2603,7 @@ impl Scene {
     /// The day time of day runs on: the look-dev stage's own once the stage is built (it sets
     /// the timeline with the town, [`Scene::spawn_look_dev`]), the default day otherwise.
     #[cfg(any(test, feature = "dev"))]
-    pub fn day(&self) -> Day {
+    pub(crate) fn day(&self) -> Day {
         if self.town.is_some() { Day::LookDev } else { Day::Default }
     }
 
@@ -2612,7 +2612,7 @@ impl Scene {
     /// and says which day it replaced; otherwise keeps the day. Hot reload and live link both
     /// come through here.
     #[cfg(any(test, feature = "dev"))]
-    pub fn replace_day(&mut self, origin: &str, timeline: tod::TodTimeline) -> Result<Day, String> {
+    pub(crate) fn replace_day(&mut self, origin: &str, timeline: tod::TodTimeline) -> Result<Day, String> {
         let day = self.day();
         let name = std::path::Path::new(origin).file_name().and_then(std::ffi::OsStr::to_str);
         if name != Some(day.file_name()) {

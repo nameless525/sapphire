@@ -53,9 +53,9 @@ pub(crate) struct RenderTransform(pub Mat4);
 /// [`sapphire_render::SkinnedInstance`]). Written in place, and only when it changes, so its
 /// vectors never reallocate and a pose that holds still isn't extracted again.
 #[derive(Component, Clone, Debug, Default, PartialEq)]
-pub(crate) struct RenderPose {
-    pub palette: Vec<Affine3A>,
-    pub morph_weights: Vec<f32>,
+pub struct RenderPose {
+    pub(crate) palette: Vec<Affine3A>,
+    pub(crate) morph_weights: Vec<f32>,
 }
 
 /// The packets extraction fills, and whether the next one resends everything, or every pose.
@@ -74,31 +74,31 @@ pub(crate) struct RenderExtract {
 
 impl RenderExtract {
     /// Starts the next frame's packet, empty.
-    pub fn begin(&mut self) -> &mut FramePacket {
+    pub(crate) fn begin(&mut self) -> &mut FramePacket {
         self.resending = std::mem::take(&mut self.resend);
         self.resending_poses = std::mem::take(&mut self.resend_poses) || self.resending;
         self.packets.begin()
     }
 
     /// The packet being extracted (after [`Self::begin`]) or last extracted.
-    pub fn packet(&self) -> &FramePacket {
+    pub(crate) fn packet(&self) -> &FramePacket {
         self.packets.current()
     }
 
-    pub fn packet_mut(&mut self) -> &mut FramePacket {
+    pub(crate) fn packet_mut(&mut self) -> &mut FramePacket {
         self.packets.current_mut()
     }
 
     /// Makes the next extraction send every instance: for a renderer that starts empty, such
     /// as one rebuilt after GPU device loss.
-    pub fn resend_all(&mut self) {
+    pub(crate) fn resend_all(&mut self) {
         self.resend = true;
     }
 
     /// Makes the next extraction send every pose, and no instance that didn't change: for a mesh
     /// replaced in place, whose instances the renderer keeps and starts over in their bind pose
     /// (`Renderer::update_mesh`).
-    pub fn resend_poses(&mut self) {
+    pub(crate) fn resend_poses(&mut self) {
         self.resend_poses = true;
     }
 }

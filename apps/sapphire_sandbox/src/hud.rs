@@ -34,7 +34,7 @@ use crate::LOG_TARGET;
 
 /// How the HUD runs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum HudMode {
+pub enum HudMode {
     #[default]
     Fixed,
     Live,
@@ -42,7 +42,7 @@ pub(crate) enum HudMode {
 
 /// `--hud` and its companions.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct HudOptions {
+pub struct HudOptions {
     pub mode: HudMode,
     /// `--hud-insets`: in place of what the window reports, in points.
     pub insets: Option<Insets>,
@@ -91,7 +91,7 @@ impl Default for LiveValues {
 }
 
 /// The HUD, its touch zones and what they show.
-pub(crate) struct SandboxHud {
+pub struct SandboxHud {
     options: HudOptions,
     atlas: Atlas,
     layout: HudLayout,
@@ -159,7 +159,7 @@ impl SandboxHud {
 
     /// What the fight says of its fighters this frame, `time` into it: live mode shows it. Offscreen
     /// there's no other clock.
-    pub fn show_fight(&mut self, values: HudValues, time: Duration) {
+    pub(crate) fn show_fight(&mut self, values: HudValues, time: Duration) {
         self.fight = Some(values);
         self.stand_in = None;
         if self.window_metrics.is_none() && self.options.mode == HudMode::Live {
@@ -169,7 +169,7 @@ impl SandboxHud {
 
     /// A new fight: the last one's numbers go with it. Offscreen they'd otherwise stay until the new
     /// fight's clock caught up with when they were born. A fixed frame's are its own.
-    pub fn start_over(&mut self) {
+    pub(crate) fn start_over(&mut self) {
         self.hits_read = None;
         if self.options.mode == HudMode::Live {
             self.hud.clear_damage();
@@ -177,34 +177,34 @@ impl SandboxHud {
     }
 
     /// Whether the step at `tick` still has hits to read: once a tick, in a fight.
-    pub fn reads_hits_of(&mut self, tick: u64) -> bool {
+    pub(crate) fn reads_hits_of(&mut self, tick: u64) -> bool {
         self.hits_read.replace(tick) != Some(tick)
     }
 
     /// Someone else came in for a fighter, `[player, enemy]`.
-    pub fn fighters_came_in(&mut self, came_in: [bool; 2]) {
+    pub(crate) fn fighters_came_in(&mut self, came_in: [bool; 2]) {
         self.hud.fighters_came_in(came_in);
     }
 
     /// Whether the frame says the fight is waiting.
-    pub fn show_pause(&mut self, shown: bool) {
+    pub(crate) fn show_pause(&mut self, shown: bool) {
         self.hud.show_pause(shown);
     }
 
     /// A platform event: whether the touch zones took it, which the rest of the input then never
     /// sees. Only live mode takes touches.
-    pub fn handle_event(&mut self, event: &Event) -> bool {
+    pub(crate) fn handle_event(&mut self, event: &Event) -> bool {
         self.options.mode == HudMode::Live && self.controls.handle_event(event)
     }
 
     /// Whether this finger holds the stick or a button.
     #[cfg(feature = "dev")]
-    pub fn holds_control(&self, finger: FingerId) -> bool {
+    pub(crate) fn holds_control(&self, finger: FingerId) -> bool {
         self.options.mode == HudMode::Live && self.controls.holds_control(finger)
     }
 
     /// `window`'s metrics, as this HUD draws on it.
-    pub fn metrics_of(&self, window: &Window) -> UiMetrics {
+    pub(crate) fn metrics_of(&self, window: &Window) -> UiMetrics {
         let mut metrics = UiMetrics::of_window(window, self.options.scale);
         if let Some(insets) = self.options.insets {
             metrics.insets = insets;
@@ -216,7 +216,7 @@ impl SandboxHud {
     /// finger brings them back, and a desktop shows them only once a finger has landed. A pad merely
     /// connected changes nothing: the iOS simulator reports one nobody holds, and with no controls and
     /// no pad there'd be no way to play. Nothing that doesn't ask has them hidden.
-    pub fn follow_devices(&mut self, desktop: bool, pad_in_hands: bool) {
+    pub(crate) fn follow_devices(&mut self, desktop: bool, pad_in_hands: bool) {
         let touching = self.controls.fingers() > 0;
         self.touched |= touching;
         self.hud.show_controls(touching || (!pad_in_hands && (!desktop || self.touched)));
@@ -225,7 +225,7 @@ impl SandboxHud {
     /// Live mode's frame on the real clock, before the frame's input is judged: the window's metrics,
     /// the touch zones and the stand-in. Returns what the zones read, which that input takes; a fixed
     /// frame has none, since its touches are made up.
-    pub fn update(&mut self, now: Timestamp, metrics: UiMetrics) -> Option<&TouchActions> {
+    pub(crate) fn update(&mut self, now: Timestamp, metrics: UiMetrics) -> Option<&TouchActions> {
         self.window_metrics = Some(metrics);
         if self.options.mode != HudMode::Live {
             return None;
@@ -268,7 +268,7 @@ impl SandboxHud {
 
     /// A hit that landed: its number where `view_projection` puts `point`, if that's in front of the
     /// camera. Only live mode shows them: a fixed frame's numbers are its own.
-    pub fn show_hit(&mut self, damage: u32, point: Vec3, weight: Weight, view_projection: Mat4) {
+    pub(crate) fn show_hit(&mut self, damage: u32, point: Vec3, weight: Weight, view_projection: Mat4) {
         if self.options.mode != HudMode::Live {
             return;
         }
@@ -278,7 +278,7 @@ impl SandboxHud {
     }
 
     /// Whatever else the frame needs, then this frame's HUD into `list`.
-    pub fn draw(&mut self, target: (u32, u32), list: &mut UiDrawList) {
+    pub(crate) fn draw(&mut self, target: (u32, u32), list: &mut UiDrawList) {
         let stopwatch = Stopwatch::start();
         let metrics = self.window_metrics.unwrap_or_else(|| {
             let insets = self.options.insets.unwrap_or_default();
@@ -428,7 +428,7 @@ impl LiveValues {
 
 /// The hit this cue says landed, once for each hit: what a broken guard or a defeat publishes after a
 /// hit's own cue carries the same hit, and doesn't land it again.
-pub(crate) fn landed(cue: &CueEvent) -> Option<HitCue> {
+pub fn landed(cue: &CueEvent) -> Option<HitCue> {
     cue.hit.filter(|_| cue.cue != POISE_BROKEN && cue.cue != DEFEATED)
 }
 

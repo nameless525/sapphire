@@ -33,7 +33,7 @@ use sapphire_rhi::GpuContext;
 use crate::content::Content;
 
 /// The samples: the four spheres top to bottom, then the leg.
-pub(crate) const SAMPLES: usize = 5;
+pub const SAMPLES: usize = 5;
 /// Spheres in the column; the leg is the last sample.
 const SPHERES: usize = 4;
 
@@ -83,7 +83,7 @@ pub(crate) fn placement(bounds: [[f32; 3]; 2], index: usize) -> Mat4 {
 
 /// Loads the samples' materials, with the textures they name, onto `renderer` through `content`,
 /// and uploads a shape drawn with each, in [`SAMPLES`] order.
-pub(crate) fn upload_samples(
+pub fn upload_samples(
     content: &mut Content,
     gpu: &GpuContext,
     renderer: &mut Renderer,

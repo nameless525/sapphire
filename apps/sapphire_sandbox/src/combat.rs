@@ -67,7 +67,7 @@ pub(crate) const RESTART_AFTER: u64 = 240;
 
 /// A combat simulation stepping beside the scene: see this module.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum CombatOption {
+pub enum CombatOption {
     /// `--replay <file>`, with `--capture` or `--bench`: play it, and check it against the recorded
     /// checksums beside it.
     Replay {
@@ -88,7 +88,7 @@ pub(crate) enum CombatOption {
 /// The frames a capture draws, the last of which it writes: one by default. Temporal AA needs
 /// earlier frames to build its history from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct CaptureFrames {
+pub struct CaptureFrames {
     /// `--capture-frames`: how many.
     pub count: u32,
     /// `--capture-step`: fixed steps between consecutive frames. 0 draws them all at the
@@ -278,7 +278,7 @@ impl LiveFight {
 }
 
 /// A simulation run alongside the scene.
-pub(crate) struct Combat {
+pub struct Combat {
     /// The replay file, read or to write. A fight with no file has none.
     path: PathBuf,
     mode: Mode,
@@ -361,7 +361,7 @@ impl Combat {
     }
 
     /// The scenario the run starts from.
-    pub fn scenario(&self) -> &str {
+    pub(crate) fn scenario(&self) -> &str {
         match &self.mode {
             Mode::Replaying { player, .. } => player.replay().scenario(),
             Mode::Recording { recording, .. } => recording.scenario(),
@@ -371,7 +371,7 @@ impl Combat {
 
     /// The set that plays the document with this file name, in this fight (M2 T2).
     #[cfg(feature = "dev")]
-    pub fn plays(&self, document: &str) -> Option<MoveSetId> {
+    pub(crate) fn plays(&self, document: &str) -> Option<MoveSetId> {
         find_scenario(SCENARIOS, self.scenario())?.set_of(document)
     }
 
@@ -380,7 +380,7 @@ impl Combat {
     /// [`Self::check`] would fail it for anything else. A recording ends its file at the first edit
     /// that changes anything.
     #[cfg(feature = "dev")]
-    pub fn tune(
+    pub(crate) fn tune(
         &mut self,
         document: &str,
         set: sapphire_moves::MoveSet,
@@ -412,7 +412,7 @@ impl Combat {
     /// has anywhere to start from: a replay plays what it recorded, and a recording's file says what it
     /// ran on.
     #[cfg(feature = "dev")]
-    pub fn start_fight_from(&mut self, document: &str, set: sapphire_moves::MoveSet) -> bool {
+    pub(crate) fn start_fight_from(&mut self, document: &str, set: sapphire_moves::MoveSet) -> bool {
         let Some(id) = self.plays(document) else { return false };
         let Mode::Fighting(fight) = &mut self.mode else { return false };
         if fight.sim.tick() != 0 || fight.sim.move_library().is_current(id, &set) {
@@ -559,7 +559,7 @@ impl Combat {
 
     /// An error if the run has left its recorded checksums, as far as it's got. Checked before a
     /// capture writes its picture, which then can't show another fight.
-    pub fn check(&self) -> Result<(), String> {
+    pub(crate) fn check(&self) -> Result<(), String> {
         let Mode::Replaying { player, name, recorded: Some(recorded) } = &self.mode else { return Ok(()) };
         match recorded.first_difference(player.trail()) {
             Some(difference) => Err(diverged(name, &self.path, difference)),
@@ -882,7 +882,7 @@ fn holds(path: &Path, bytes: &[u8]) -> bool {
 /// What a [`Combat`] is running, as the overlay shows it.
 #[cfg(any(feature = "dev", test))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum CombatStatus<'a> {
+pub enum CombatStatus<'a> {
     Replaying { name: &'a str, length: u32 },
     Recording { scenario: &'a str, path: &'a Path, at_limit: bool, scripted: bool },
     Fighting { fights: u32 },
@@ -903,7 +903,7 @@ pub(crate) enum CombatStatus<'a> {
 /// and a session is never lost to a name. Each is a replay like any other: to keep one, put it in
 /// `tests/replays/` and run `cargo xtask replay --update`.
 #[cfg(any(feature = "dev", test))]
-pub(crate) struct SessionRecorder {
+pub struct SessionRecorder {
     dir: PathBuf,
     /// How the last save went, or why the last request failed.
     note: Option<String>,
@@ -922,7 +922,7 @@ impl SessionRecorder {
 
     /// Starts `scenario` over, recording the player from its first tick. See the type's docs.
     #[cfg(test)]
-    pub fn start(&mut self, combat: &mut Option<Combat>, scenario: &str) {
+    pub(crate) fn start(&mut self, combat: &mut Option<Combat>, scenario: &str) {
         self.start_tuned(combat, scenario, &LiveMoves::default());
     }
 
@@ -993,7 +993,7 @@ fn take_recording(combat: &mut Option<Combat>) -> Option<Combat> {
 /// Asks `bindings` for one fixed step's input, exactly once: a recording of the player asks them
 /// itself, and otherwise this does, because asking is what moves a press along. `player` is who a
 /// step with no recording names.
-pub(crate) fn read_bindings(combat: Option<&mut Combat>, bindings: &mut dyn ActionSource, player: ActorId) {
+pub fn read_bindings(combat: Option<&mut Combat>, bindings: &mut dyn ActionSource, player: ActorId) {
     let asked = combat.is_some_and(|combat| combat.step(bindings));
     if !asked {
         bindings.actions(0, &[player]);

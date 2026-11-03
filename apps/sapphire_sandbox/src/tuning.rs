@@ -68,7 +68,7 @@ use crate::scene::Scene;
 
 /// A document the sandbox swaps in while it runs, from hot reload or live link.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Document {
+pub enum Document {
     /// The day's timeline (`default_day.ron`, or the look-dev day with `--look-dev`): it replaces
     /// time of day's base timeline, if it comes from the file of the day the scene runs on
     /// ([`Scene::replace_day`]), parses and is complete.
@@ -99,7 +99,7 @@ pub(crate) enum Document {
 }
 
 /// What applying a document can reach, once a document.
-pub(crate) struct DocumentFrame<'a> {
+pub struct DocumentFrame<'a> {
     pub content: &'a mut Content,
     pub renderer: &'a mut Renderer,
     pub gpu: &'a GpuContext,
@@ -190,7 +190,7 @@ impl Document {
 
 /// What a run has that live tuning follows: what decides the documents it can take.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct TunedRun<'a> {
+pub struct TunedRun<'a> {
     /// The camera's director frames it.
     pub camera_director: bool,
     /// A fight's cues fire.
@@ -225,7 +225,7 @@ const COOKED_MOVES: [(&str, AssetId); 3] = [
 ];
 
 /// What a live edit reaches: the fight in the app, wherever it runs. The sandbox has two kinds, for now.
-pub(crate) struct Fight<'a> {
+pub struct Fight<'a> {
     pub combat: Option<&'a mut Combat>,
     pub scene: &'a mut Scene,
 }
@@ -261,7 +261,7 @@ struct CookedSet {
 }
 
 /// Live tuning's state in the app. See the [module docs](self).
-pub(crate) struct LiveTuning {
+pub struct LiveTuning {
     moves: LiveMoves,
     sources: Vec<Source>,
     waiting: Vec<Waiting>,
@@ -338,7 +338,7 @@ impl LiveTuning {
 
     /// Following only this cooked set of this document, for tests of a pack's route.
     #[cfg(test)]
-    pub fn following(document: &'static str, handle: Handle<MoveSet>) -> Self {
+    pub(crate) fn following(document: &'static str, handle: Handle<MoveSet>) -> Self {
         let path = format!("content/{document}");
         let source = Source { path, document: Document::Moves, edits: 0 };
         let cooked = vec![CookedSet { document, handle }];
@@ -354,7 +354,7 @@ impl LiveTuning {
 
     /// Reading its document from `file`, for tests of a save meeting a cook.
     #[cfg(test)]
-    pub fn reading(mut self, file: PathBuf) -> Self {
+    pub(crate) fn reading(mut self, file: PathBuf) -> Self {
         self.files.push(file);
         self
     }
@@ -383,7 +383,7 @@ impl LiveTuning {
     }
 
     /// What a cook made of this document, if it's one that a cook makes.
-    pub fn cooked_set(&self, origin: &str, content: &Content) -> Option<MoveSet> {
+    pub(crate) fn cooked_set(&self, origin: &str, content: &Content) -> Option<MoveSet> {
         let document = document_file_name(origin);
         let cooked = self.cooked.iter().find(|cooked| cooked.document == document)?;
         content.move_set(&cooked.handle)?.to_owned_set().ok()
@@ -391,7 +391,7 @@ impl LiveTuning {
 
     /// Takes an edited document of moves, with what its moves that name clips read their tables from: the
     /// newest edit, or else `cooked`. Says what became of it, or why what's playing stays.
-    pub fn moves_document(
+    pub(crate) fn moves_document(
         &mut self,
         origin: &str,
         text: &str,
@@ -492,7 +492,7 @@ impl LiveTuning {
 
     /// Takes an edited cue table, for what fires a fight's cues, and has the renderer prewarm what its
     /// screen effects draw through. Says why not if a name it holds isn't there, keeping what fires.
-    pub fn cue_document(
+    pub(crate) fn cue_document(
         &mut self,
         text: &str,
         scene: &mut Scene,
@@ -507,7 +507,7 @@ impl LiveTuning {
 
     /// Takes edited effects, for what a fight's cues and sword trails play. Says why not if the cue table
     /// names one that's gone, keeping what plays.
-    pub fn effects_document(&mut self, text: &str, scene: &mut Scene) -> Result<String, String> {
+    pub(crate) fn effects_document(&mut self, text: &str, scene: &mut Scene) -> Result<String, String> {
         let effects = sapphire_vfx::EffectLibrary::from_ron(text).map_err(|error| error_chain(&error))?;
         scene.set_vfx_effects(effects)?;
         self.count_edit(document_file_name(EFFECTS_PATH));
@@ -515,7 +515,7 @@ impl LiveTuning {
     }
 
     /// Takes an edited camera tuning, for the director and for what fires a fight's cues.
-    pub fn camera_document(&mut self, text: &str, scene: &mut Scene) -> Result<String, String> {
+    pub(crate) fn camera_document(&mut self, text: &str, scene: &mut Scene) -> Result<String, String> {
         let tuning = CameraTuning::from_ron(text).map_err(|error| error_chain(&error))?;
         scene.set_camera_tuning(tuning)?;
         self.count_edit(document_file_name(CAMERA_PATH));
@@ -524,7 +524,7 @@ impl LiveTuning {
 
     /// Takes an edited animation graph: checked as a cook checks it, its clips loaded if they aren't, and
     /// bound against this character. Everything before the swap can fail, and leaves what's playing.
-    pub fn graph_document(
+    pub(crate) fn graph_document(
         &mut self,
         origin: &str,
         text: &str,
@@ -681,7 +681,7 @@ fn current_movement(sim: &Simulation, set: Option<MoveSetId>) -> Option<Controll
 }
 
 /// What `cast` is playing, for live link's status.
-pub(crate) fn attempts(sim: &Simulation, cast: &[ActorId]) -> Vec<MoveAttempt> {
+pub fn attempts(sim: &Simulation, cast: &[ActorId]) -> Vec<MoveAttempt> {
     let library = sim.move_library();
     let window = |span: &Span| TickWindow { from: span.from, to: span.to };
     cast.iter()
@@ -744,7 +744,7 @@ pub(crate) fn kind_of_file(path: &Path) -> Option<Document> {
 /// They need no GPU, but compile only in `dev` builds, which CI tests in its GPU job: run them with
 /// `cargo test -p sapphire_sandbox --features dev --lib -- --ignored tuning::`.
 /// An error and its sources, as one line.
-pub(crate) fn error_chain(error: &dyn std::error::Error) -> String {
+pub fn error_chain(error: &dyn std::error::Error) -> String {
     let mut message = error.to_string();
     let mut source = error.source();
     while let Some(cause) = source {

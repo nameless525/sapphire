@@ -37,7 +37,7 @@ pub(crate) enum Garment {
 }
 
 impl Garment {
-    pub const ALL: [Self; 3] = [Self::Collar, Self::Skirt, Self::Ribbon];
+    pub(crate) const ALL: [Self; 3] = [Self::Collar, Self::Skirt, Self::Ribbon];
 
     /// Its base color and its shade's.
     fn colors(self) -> ([f32; 3], [f32; 3]) {
@@ -53,7 +53,7 @@ impl Garment {
 }
 
 /// The samples: each garment one-sided, then each two-sided, in [`Garment::ALL`] order.
-pub(crate) const SAMPLES: usize = 2 * Garment::ALL.len();
+pub const SAMPLES: usize = 2 * Garment::ALL.len();
 
 /// Rings (along a garment's height or a ribbon's width) and segments (around it, or along the
 /// ribbon) of the shapes.
@@ -92,7 +92,7 @@ pub(crate) fn placement(bounds: [[f32; 3]; 2], index: usize) -> Mat4 {
 }
 
 /// Uploads the samples, each with its embedded material, in [`SAMPLES`] order.
-pub(crate) fn upload_samples(renderer: &mut Renderer) -> Result<[MeshHandle; SAMPLES], AppInitError> {
+pub fn upload_samples(renderer: &mut Renderer) -> Result<[MeshHandle; SAMPLES], AppInitError> {
     let mut samples = Vec::with_capacity(SAMPLES);
     for index in 0..SAMPLES {
         let (garment, two_sided) = sample(index);

@@ -43,7 +43,7 @@ const PEDESTAL_SLOT: &str = "Pedestal";
 
 /// What the stage holds besides the floor and the pedestal (`--stage`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum StageLayout {
+pub enum StageLayout {
     Floor,
     Pillar,
     /// The floor, with the pedestal in stone (M1 W5).
@@ -74,18 +74,18 @@ pub(crate) enum Piece {
 
 /// The stage's meshes on a renderer: its own, and the character split from its pedestal.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct StageMeshes {
-    pub floor: MeshHandle,
-    pub pillar: MeshHandle,
+pub struct StageMeshes {
+    pub(crate) floor: MeshHandle,
+    pub(crate) pillar: MeshHandle,
     /// The character without its pedestal, which the turntable draws on the stage.
-    pub figure: MeshHandle,
+    pub(crate) figure: MeshHandle,
     /// The pedestal alone, and its object-space bounds; `None` for a character without one.
-    pub pedestal: Option<(MeshHandle, Bounds)>,
+    pub(crate) pedestal: Option<(MeshHandle, Bounds)>,
 }
 
 impl StageMeshes {
     /// The mesh `piece` draws; a pedestal piece exists only with a pedestal mesh.
-    pub fn get(&self, piece: Piece) -> MeshHandle {
+    pub(crate) fn get(&self, piece: Piece) -> MeshHandle {
         match piece {
             Piece::Floor => self.floor,
             Piece::Pillar | Piece::Plinth => self.pillar,
@@ -99,9 +99,9 @@ impl StageMeshes {
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct CharacterCopies {
     /// The stage's figure and pedestal, with `--stage`.
-    pub stage: Option<StageMeshes>,
+    pub(crate) stage: Option<StageMeshes>,
     /// The rim rig's figure, with `--rim-rig`.
-    pub rim_figure: Option<MeshHandle>,
+    pub(crate) rim_figure: Option<MeshHandle>,
 }
 
 impl CharacterCopies {
@@ -109,7 +109,7 @@ impl CharacterCopies {
     /// draws with, its materials through `materials`. What won't convert fails first, leaving what's held
     /// as it was. A pedestal it has now and hadn't gets a new handle; one it's lost stays in the renderer,
     /// as meshes do, with nothing drawing it once the scene has placed the stage again.
-    pub fn take_character(
+    pub(crate) fn take_character(
         &mut self,
         character: &Mesh,
         materials: impl Fn(AssetId) -> Option<MaterialHandle> + Copy,
@@ -154,12 +154,12 @@ impl CharacterCopies {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Subject {
     /// The point on the floor below the subject's middle.
-    pub base: Vec3,
+    pub(crate) base: Vec3,
     /// The height (world space) the pillar's shadow covers the subject up to.
-    pub shade_height: f32,
+    pub(crate) shade_height: f32,
     /// How far from the subject the pillar stands.
-    pub pillar_distance: f32,
-    pub pillar_width: f32,
+    pub(crate) pillar_distance: f32,
+    pub(crate) pillar_width: f32,
 }
 
 /// Uploads the floor and the pillar, each with its embedded material, and the `character`
@@ -185,7 +185,7 @@ pub(crate) fn upload_figure(renderer: &mut Renderer, character: &Mesh) -> Result
 
 /// Uploads the pillar's stone box alone, for whatever else wants a block of the stage's stone
 /// (`crate::ik`).
-pub(crate) fn upload_block(renderer: &mut Renderer) -> Result<MeshHandle, AppInitError> {
+pub fn upload_block(renderer: &mut Renderer) -> Result<MeshHandle, AppInitError> {
     upload(renderer, &pillar_mesh())
 }
 

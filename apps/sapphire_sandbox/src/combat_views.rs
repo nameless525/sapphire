@@ -64,17 +64,17 @@ const START_ALPHA: u8 = 110;
 const FACING: f32 = 0.6;
 
 /// Each view's colour, and the combat panel's for the same thing: what a volume is doing.
-pub(crate) mod palette {
+pub mod palette {
     use sapphire_core::debug_draw::Color;
 
     /// A hit volume, which is only ever published while live.
-    pub(crate) const HIT: Color = Color::RED;
+    pub const HIT: Color = Color::RED;
     /// A hurtbox that can be hit.
-    pub(crate) const HURTBOX: Color = Color::GREEN;
+    pub const HURTBOX: Color = Color::GREEN;
     /// A hurtbox that's off, or invulnerable.
-    pub(crate) const OFF: Color = Color::rgb(150, 150, 160);
-    pub(crate) const PARRY: Color = Color::YELLOW;
-    pub(crate) const PERFECT_DODGE: Color = Color::MAGENTA;
+    pub const OFF: Color = Color::rgb(150, 150, 160);
+    pub const PARRY: Color = Color::YELLOW;
+    pub const PERFECT_DODGE: Color = Color::MAGENTA;
     /// The gap between a volume and what the visible character has there.
     pub(crate) const VISIBLE: Color = Color::WHITE;
     /// A character's capsule in the collider view.
@@ -99,18 +99,18 @@ static COLLIDERS: Cvar<bool> = Cvar::new(
 /// These views' cvars, for the app's registry. Their names start with
 /// `sapphire_debug::COMBAT_VIEW_CVARS`, which is how the combat panel finds them.
 #[cfg(feature = "dev")]
-pub(crate) static CVARS: [&dyn sapphire_core::cvar::AnyCvar; 2] = [&VOLUMES, &COLLIDERS];
+pub static CVARS: [&dyn sapphire_core::cvar::AnyCvar; 2] = [&VOLUMES, &COLLIDERS];
 
 /// Which views draw.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CombatViews {
-    pub volumes: bool,
-    pub colliders: bool,
+    pub(crate) volumes: bool,
+    pub(crate) colliders: bool,
 }
 
 impl CombatViews {
-    pub(crate) const VOLUMES: Self = Self { volumes: true, colliders: false };
-    pub(crate) const COLLIDERS: Self = Self { volumes: false, colliders: true };
+    pub const VOLUMES: Self = Self { volumes: true, colliders: false };
+    pub const COLLIDERS: Self = Self { volumes: false, colliders: true };
     pub(crate) const ALL: Self = Self { volumes: true, colliders: true };
 
     /// Which are on now.
@@ -322,7 +322,7 @@ fn corner_line(cast: &SubStep, side: Vec3, style: Style, canvas: &mut impl Canva
 /// What an actor's hurtbox is doing this step, the first that holds of: parrying, in a perfect dodge,
 /// out of reach, there to hit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum BodyState {
+pub enum BodyState {
     Parry,
     PerfectDodge,
     Off,
@@ -330,7 +330,7 @@ pub(crate) enum BodyState {
 }
 
 impl BodyState {
-    pub(crate) fn of(moves: &MoveRead) -> Self {
+    pub fn of(moves: &MoveRead) -> Self {
         let turned_off = moves.hurtboxes.iter().any(|hurtbox| hurtbox.state == HurtboxState::Off);
         if moves.windows.parry {
             Self::Parry
@@ -343,7 +343,7 @@ impl BodyState {
         }
     }
 
-    pub(crate) const fn color(self) -> Color {
+    pub const fn color(self) -> Color {
         match self {
             Self::Parry => palette::PARRY,
             Self::PerfectDodge => palette::PERFECT_DODGE,

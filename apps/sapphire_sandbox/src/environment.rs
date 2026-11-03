@@ -42,7 +42,7 @@ pub(crate) const COURTYARD: AssetId = AssetId::from_text("14ad5875-ec27-4866-bb2
 
 /// The fog cards' meshes, by their sidecars' IDs (`content/samples/environment/*.glb.meta`): the
 /// mist sheet, placed in the world, and the haze card, upright toward the camera.
-pub(crate) const FOG_CARDS: [AssetId; 2] = [
+pub const FOG_CARDS: [AssetId; 2] = [
     AssetId::from_text("4b217f2d-6046-4760-a4ee-cadc08d243ae"),
     AssetId::from_text("046a80c3-c224-44ec-bacf-36e1ccf62f63"),
 ];
@@ -53,10 +53,10 @@ pub(crate) const HAZE: usize = 1;
 /// meters, and its turn about the up axis in radians (a mist sheet's; haze turns toward the camera
 /// itself).
 pub(crate) struct CardPlace {
-    pub mesh: usize,
-    pub center: [f32; 3],
-    pub size: [f32; 2],
-    pub yaw: f32,
+    pub(crate) mesh: usize,
+    pub(crate) center: [f32; 3],
+    pub(crate) size: [f32; 2],
+    pub(crate) yaw: f32,
 }
 
 /// The courtyard's fog cards: mist sheets from 30 m out to the foot of the hills, and haze

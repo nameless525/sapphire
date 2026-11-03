@@ -25,7 +25,7 @@ pub(crate) struct RigJoints {
 }
 
 impl RigJoints {
-    pub fn new(rig: &ArchivedCharacterRig) -> Self {
+    pub(crate) fn new(rig: &ArchivedCharacterRig) -> Self {
         Self {
             humanoid: rig
                 .humanoid
@@ -51,17 +51,17 @@ impl RigJoints {
 
     /// A rig of these bones and no constraints: a model with no VRM rig, whose joints were found by
     /// name (M2 O4's enemy).
-    pub fn of_bones(humanoid: Vec<(HumanBone, usize)>) -> Self {
+    pub(crate) fn of_bones(humanoid: Vec<(HumanBone, usize)>) -> Self {
         Self { humanoid, constraints: Vec::new() }
     }
 
     /// The joint that is `bone`.
-    pub fn joint(&self, bone: HumanBone) -> Option<usize> {
+    pub(crate) fn joint(&self, bone: HumanBone) -> Option<usize> {
         self.humanoid.iter().find(|(entry, _)| *entry == bone).map(|&(_, joint)| joint)
     }
 
     /// The rig's constraints.
-    pub fn constraints(&self) -> &[Constraint] {
+    pub(crate) fn constraints(&self) -> &[Constraint] {
         &self.constraints
     }
 }

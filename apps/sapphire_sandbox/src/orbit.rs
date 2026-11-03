@@ -17,7 +17,7 @@ const PITCH_LIMIT: f32 = FRAC_PI_2 - 0.05;
 const HALF_LIFE: f32 = 0.06;
 
 #[derive(Resource)]
-pub(crate) struct OrbitCamera {
+pub struct OrbitCamera {
     target: Vec3,
     /// The vertical field of view, radians.
     fov_y: f32,
@@ -35,7 +35,7 @@ pub(crate) struct OrbitCamera {
 
 impl OrbitCamera {
     /// A camera framing the object-space bounds `[min, max]` from slightly above and in front.
-    pub fn framing(bounds: [[f32; 3]; 2]) -> Self {
+    pub(crate) fn framing(bounds: [[f32; 3]; 2]) -> Self {
         let (min, max) = (Vec3::from(bounds[0]), Vec3::from(bounds[1]));
         let radius = ((max - min).length() * 0.5).max(0.1);
         let distance = radius * 2.6;
@@ -58,7 +58,7 @@ impl OrbitCamera {
     /// A camera framing a flat arrangement `half_extents` (width, height) across around
     /// `target`, facing it from the default angles, so it fills a 16:9 view: rows of heads
     /// rather than one figure, which [`Self::framing`]'s bounding sphere would leave small.
-    pub fn fitting(target: Vec3, half_extents: (f32, f32)) -> Self {
+    pub(crate) fn fitting(target: Vec3, half_extents: (f32, f32)) -> Self {
         let tan = (FOV_Y * 0.5).tan();
         let distance = (half_extents.1 / tan).max(half_extents.0 / (tan * 16.0 / 9.0)) * 1.08;
         let mut camera = Self::framing([target.to_array(); 2]);
@@ -90,7 +90,7 @@ impl OrbitCamera {
 
     /// The same camera `factor` times farther from its target, at once and as its zoom's limit
     /// too: a wider shot of the same subject.
-    pub fn pulled_back(mut self, factor: f32) -> Self {
+    pub(crate) fn pulled_back(mut self, factor: f32) -> Self {
         self.goal_distance *= factor;
         self.max_distance *= factor;
         self.distance = SpringDamper::new(self.goal_distance, HALF_LIFE);
@@ -98,13 +98,13 @@ impl OrbitCamera {
     }
 
     /// Moves what it looks at up by `height`, for a subject standing higher than the shot framed it.
-    pub fn raise_target(&mut self, height: f32) {
+    pub(crate) fn raise_target(&mut self, height: f32) {
         self.target.y += height;
     }
 
     /// The camera's default angles, as a rotation turning +Z toward it: what a model facing +Z
     /// turns by to face the camera, upright.
-    pub fn facing_rotation(&self) -> Quat {
+    pub(crate) fn facing_rotation(&self) -> Quat {
         Quat::from_rotation_y(self.goal_yaw) * Quat::from_rotation_x(-self.goal_pitch)
     }
 
@@ -118,7 +118,7 @@ impl OrbitCamera {
     }
 
     /// Moves straight to `pitch` radians, keeping the yaw: a starting view.
-    pub fn set_pitch(&mut self, pitch: f32) {
+    pub(crate) fn set_pitch(&mut self, pitch: f32) {
         self.look_from(self.goal_yaw, pitch);
     }
 
@@ -147,12 +147,12 @@ impl OrbitCamera {
     }
 
     /// Multiplies the distance by `factor`: below 1 moves closer.
-    pub fn zoom(&mut self, factor: f32) {
+    pub(crate) fn zoom(&mut self, factor: f32) {
         self.goal_distance = (self.goal_distance * factor).clamp(self.min_distance, self.max_distance);
     }
 
     /// Aims at `target` from the same angles and distance: a camera that follows something.
-    pub fn set_target(&mut self, target: Vec3) {
+    pub(crate) fn set_target(&mut self, target: Vec3) {
         self.target = target;
     }
 
@@ -160,7 +160,7 @@ impl OrbitCamera {
     /// radians high, upright, at once. So everything that reads this camera (the frame, sound, what
     /// the stick turns by) reads that view. `sapphire_camera`'s director comes through here in the
     /// arena, and a shake's roll would need more than this.
-    pub fn set_view(&mut self, eye: Vec3, forward: Vec3, fov_y: f32) {
+    pub(crate) fn set_view(&mut self, eye: Vec3, forward: Vec3, fov_y: f32) {
         // Any distance gives the same view.
         const DISTANCE: f32 = 4.0;
         let forward = forward.normalize_or(Vec3::NEG_Z);
@@ -183,14 +183,14 @@ impl OrbitCamera {
 
     /// Where it looks across the ground, as an actor's yaw: +Z at 0, turning toward +X. It stands
     /// on the far side of its target from there, so this is half a turn from the yaw it orbits by.
-    pub fn heading(&self) -> f32 {
+    pub(crate) fn heading(&self) -> f32 {
         self.yaw.value + PI
     }
 
     /// What cues' shakes do to the view, as `sapphire_camera::ShakeStack::sample` gives it: radians about
     /// its right, up and backward, then metres along its right, up and forward. Input, the orbit's
     /// springs and the listener don't see it, so it can't move what the player aims by.
-    pub fn set_shake(&mut self, turn: Vec3, offset: Vec3) {
+    pub(crate) fn set_shake(&mut self, turn: Vec3, offset: Vec3) {
         self.shake = (turn, offset);
     }
 
@@ -208,7 +208,7 @@ impl OrbitCamera {
     }
 
     /// Where sound is heard from: the camera, facing what it looks at.
-    pub fn listener(&self) -> sapphire_audio::Listener {
+    pub(crate) fn listener(&self) -> sapphire_audio::Listener {
         let eye = self.eye();
         sapphire_audio::Listener { position: eye, forward: self.target - eye, up: Vec3::Y }
     }

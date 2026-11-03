@@ -37,12 +37,11 @@ static LOSE_DEVICE: Cvar<bool> = Cvar::new(
 
 /// Every sandbox cvar, for the app's registry.
 #[cfg(feature = "dev")]
-pub(crate) static CVARS: [&dyn sapphire_core::cvar::AnyCvar; 3] =
-    [&FILTER_STRENGTH, &SHARPENING, &LOSE_DEVICE];
+pub static CVARS: [&dyn sapphire_core::cvar::AnyCvar; 3] = [&FILTER_STRENGTH, &SHARPENING, &LOSE_DEVICE];
 
 /// Whether the device is to be lost now, once for each time it's asked.
 #[cfg(feature = "dev")]
-pub(crate) fn take_device_loss() -> bool {
+pub fn take_device_loss() -> bool {
     let asked = LOSE_DEVICE.get();
     if asked {
         LOSE_DEVICE.reset();

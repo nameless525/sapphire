@@ -7,7 +7,7 @@ use sapphire_rhi::{GpuContext, wgpu};
 
 /// A frame read back from the GPU: a buffer the frame's target is copied into, after the
 /// frame's passes, then mapped and stripped of its row padding.
-pub(crate) struct Readback {
+pub struct Readback {
     buffer: wgpu::Buffer,
     width: u32,
     height: u32,

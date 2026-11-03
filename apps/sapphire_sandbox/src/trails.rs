@@ -136,8 +136,8 @@ impl Offset {
 /// A stretch of a move in which its blade cuts, in ticks, its last read as well.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Cut {
-    pub from: u32,
-    pub to: u32,
+    pub(crate) from: u32,
+    pub(crate) to: u32,
 }
 
 /// The cuts of a move's playing. See the [module docs](self).

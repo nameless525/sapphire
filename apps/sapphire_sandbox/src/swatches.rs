@@ -34,7 +34,7 @@ use sapphire_rhi::GpuContext;
 use crate::content::Content;
 
 /// Spheres in the column, top to bottom.
-pub(crate) const SWATCHES: usize = 3;
+pub const SWATCHES: usize = 3;
 
 /// The swatches' materials, top to bottom, by their sidecars' IDs
 /// (`content/samples/swatch_{ramp,subsurface,bands}.material.ron.meta`).
@@ -69,7 +69,7 @@ pub(crate) fn placement(bounds: [[f32; 3]; 2], index: usize) -> Mat4 {
 
 /// Loads the swatches' materials, with their maps, onto `renderer` through `content`, and uploads
 /// a sphere drawn with each, top to bottom.
-pub(crate) fn upload_swatches(
+pub fn upload_swatches(
     content: &mut Content,
     gpu: &GpuContext,
     renderer: &mut Renderer,

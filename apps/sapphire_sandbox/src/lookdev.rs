@@ -80,23 +80,23 @@ use crate::pose::{self, RigJoints};
 use crate::scene::Figure;
 
 /// The town, by its sidecar's ID (`content/lookdev/town/town.assembly.ron.meta`).
-pub(crate) const TOWN: AssetId = AssetId::from_text("1ff3290e-5fa9-4f61-b891-2ca6d76b285f");
+pub const TOWN: AssetId = AssetId::from_text("1ff3290e-5fa9-4f61-b891-2ca6d76b285f");
 /// The character: pixiv's `VRM1_Constraint_Twist_Sample`, by its sidecar's ID
 /// (`content/third_party/vrm1_constraint_twist_sample/VRM1_Constraint_Twist_Sample.vrm.meta`).
-pub(crate) const CHARACTER: AssetId = AssetId::from_text("6f8a81b6-29c4-485f-b161-847b001d561f");
+pub const CHARACTER: AssetId = AssetId::from_text("6f8a81b6-29c4-485f-b161-847b001d561f");
 /// The character's rig: the VRM's `rig` sub-asset, whose ID the pipeline derives from the VRM's
 /// (`sapphire_pipeline::meta::sub_asset_id`; its look-dev tests pin this value).
-pub(crate) const RIG: AssetId = AssetId::from_text("4b4073fd-44c5-8437-a712-1cccad486da3");
+pub const RIG: AssetId = AssetId::from_text("4b4073fd-44c5-8437-a712-1cccad486da3");
 /// How the character's clips play (`--graph`), by its sidecar's ID
 /// (`content/lookdev/character/character.animgraph.ron.meta`).
-pub(crate) const GRAPH: AssetId = AssetId::from_text("b7f2c9a4-6e13-4d8a-a5c0-1e94d7b23f68");
+pub const GRAPH: AssetId = AssetId::from_text("b7f2c9a4-6e13-4d8a-a5c0-1e94d7b23f68");
 /// What sets the character's blinks apart from another's. Any number: a golden pins this one's.
 const GRAPH_SEED: u32 = 1;
 /// A clip the character can play (`--clip`, `--contact-sheet`): a key-pose document by its sidecar's
 /// ID, a clip retargeted at cook time by its source's, or any clip the character's skeleton fits by
 /// its ID.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ClipName {
+pub enum ClipName {
     /// A key-pose document, by its name and its sidecar's ID.
     Document(&'static str, AssetId),
     /// A clip of KayKit's, retargeted onto the character: its name, and its source's sidecar ID.
@@ -180,7 +180,7 @@ impl ClipName {
 
 /// The town's sky: the sandbox sky's maps with a teal Milky Way and a larger sun
 /// (`content/lookdev/sky/sky.material.ron`), by its sidecar's ID.
-pub(crate) const SKY: AssetId = AssetId::from_text("8c0e3b8e-9f2a-4d55-b7c1-2f6a4e1d9a73");
+pub const SKY: AssetId = AssetId::from_text("8c0e3b8e-9f2a-4d55-b7c1-2f6a4e1d9a73");
 
 /// A plant the stage places in the town (`content/lookdev/foliage/`): W6's foliage samples in the
 /// look-dev's own foliage materials, and two of the kit's trees as foliage meshes (single-piece
@@ -206,7 +206,7 @@ pub(crate) enum Plant {
 }
 
 impl Plant {
-    pub const ALL: [Self; 8] = [
+    pub(crate) const ALL: [Self; 8] = [
         Self::GreenTree,
         Self::BlossomTree,
         Self::AutumnTree,
@@ -218,7 +218,7 @@ impl Plant {
     ];
 
     /// The plant's mesh, by its sidecar's ID (`content/lookdev/foliage/*.meta`).
-    pub fn id(self) -> AssetId {
+    pub(crate) fn id(self) -> AssetId {
         AssetId::from_text(match self {
             Self::GreenTree => "0e0f2a4c-b0bb-4e0a-8688-79e9b18f7b69",
             Self::BlossomTree => "33168a54-0264-4e4c-8de5-88666f3f307a",
@@ -297,14 +297,14 @@ pub(crate) const MOUNTAINS: [AssetId; 48] = [
 /// The town's meshes on a renderer: the town, each plant's, in [`Plant::ALL`] order, and the
 /// mountains', in [`MOUNTAINS`] order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct TownMeshes {
-    pub town: MeshHandle,
-    pub plants: [MeshHandle; Plant::ALL.len()],
-    pub mountains: [MeshHandle; MOUNTAINS.len()],
+pub struct TownMeshes {
+    pub(crate) town: MeshHandle,
+    pub(crate) plants: [MeshHandle; Plant::ALL.len()],
+    pub(crate) mountains: [MeshHandle; MOUNTAINS.len()],
 }
 
 impl TownMeshes {
-    pub fn plant(&self, plant: Plant) -> MeshHandle {
+    pub(crate) fn plant(&self, plant: Plant) -> MeshHandle {
         self.plants[plant.index()]
     }
 }
@@ -422,7 +422,7 @@ pub(crate) fn light_rigs() -> LightRigLibrary {
 
 /// A look-dev camera.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Shot {
+pub enum Shot {
     /// Across the square from its open side: the pavilion, the market, the rows of halls and
     /// shops, the gate wall with the street's moon gate and the tower over the roofs, the
     /// character small in the middle ground.
@@ -483,7 +483,7 @@ impl Shot {
 
     /// Where in the town the character stands for this shot: the stage draws the town (and its
     /// lamps and cards) moved by the opposite, so the character stays at the world's origin.
-    pub fn stand(self) -> Vec3 {
+    pub(crate) fn stand(self) -> Vec3 {
         match self {
             Self::Wide
             | Self::Hero
@@ -503,7 +503,7 @@ impl Shot {
 
     /// The shot's camera: its target, yaw and pitch (radians; yaw orbits right from in front of
     /// the character, negative pitch looks up), distance in meters and vertical field of view.
-    pub fn camera(self) -> OrbitCamera {
+    pub(crate) fn camera(self) -> OrbitCamera {
         let (target, yaw, pitch, distance, fov): (Vec3, f32, f32, f32, f32) = match self {
             Self::Wide => (Vec3::new(-1.0, 2.8, -9.0), 14.0, 1.5, 20.0, 50.0),
             Self::Hero => (Vec3::new(0.0, 1.2, 0.0), 18.0, -4.0, 3.0, 32.0),
@@ -624,7 +624,7 @@ const HEAD_CENTER: Vec3 = Vec3::new(0.0, 0.09, 0.01);
 
 /// Loads the character's rig and skeleton and holds the character in its pose ([`held_pose`]), from
 /// the copy of its mesh `content` kept ([`Content::keep_character_mesh`]).
-pub(crate) fn hold(
+pub fn hold(
     content: &mut Content,
     renderer: &mut Renderer,
     gpu: &GpuContext,
@@ -645,7 +645,7 @@ pub(crate) fn held(content: &Content) -> Result<(RenderPose, Figure), String> {
 
 /// Where the character's held pose has its right hand, in its own space: what a blade is placed by
 /// when no clip plays.
-pub(crate) fn held_hand(content: &Content) -> Result<Mat4, String> {
+pub fn held_hand(content: &Content) -> Result<Mat4, String> {
     let mesh = content.character_mesh().ok_or("the look-dev character isn't loaded")?;
     let rig = content.rig().ok_or("the look-dev character's rig isn't loaded")?;
     let skeleton = content.skeleton().ok_or("the look-dev character's skeleton isn't loaded")?;
@@ -676,7 +676,7 @@ pub(crate) fn held_pose(
 /// A clip player for the character as `content` has it now, with the clip's own tracks over its
 /// rest pose and its soft expression. Fails where [`held`] does, or if the clip isn't loaded or was
 /// cooked for another skeleton.
-pub(crate) fn player(content: &Content) -> Result<ClipPlayer, String> {
+pub fn player(content: &Content) -> Result<ClipPlayer, String> {
     let mesh = content.character_mesh().ok_or("the look-dev character isn't loaded")?;
     let rig = content.rig().ok_or("the look-dev character's rig isn't loaded")?;
     let skeleton = content.skeleton().ok_or("the look-dev character's skeleton isn't loaded")?;
@@ -704,7 +704,7 @@ pub(crate) fn graph_binding_of(content: &Content, graph: &AnimGraph) -> Result<G
 
 /// A graph driver for the character as `content` has it now, over its rest pose and its soft
 /// expression. Fails where [`graph_binding`] does.
-pub(crate) fn graph_driver(content: &Content) -> Result<GraphDriver, String> {
+pub fn graph_driver(content: &Content) -> Result<GraphDriver, String> {
     let binding = graph_binding(content)?;
     let mesh = content.character_mesh().ok_or("the look-dev character isn't loaded")?;
     let rig = content.rig().ok_or("the look-dev character's rig isn't loaded")?;
@@ -750,10 +750,10 @@ fn character_pose(
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct FigureShape {
     /// From the head joint to the middle of the skull, in the model's units.
-    pub head_center: Vec3,
+    pub(crate) head_center: Vec3,
     /// The radius of its body capsule (M1 R4).
-    pub body_radius: f32,
-    pub expression: FaceExpression,
+    pub(crate) body_radius: f32,
+    pub(crate) expression: FaceExpression,
 }
 
 /// The character's.
@@ -777,7 +777,13 @@ pub(crate) struct FigureJoints {
 }
 
 impl FigureJoints {
-    pub fn new(pose: &CharacterPose, rig: &RigJoints, head: usize, floor: f32, shape: FigureShape) -> Self {
+    pub(crate) fn new(
+        pose: &CharacterPose,
+        rig: &RigJoints,
+        head: usize,
+        floor: f32,
+        shape: FigureShape,
+    ) -> Self {
         let feet =
             rig.joint(HumanBone::LeftFoot).zip(rig.joint(HumanBone::RightFoot)).map(|(left, right)| {
                 let ankle = pose.model()[left].translation.y.min(pose.model()[right].translation.y);
@@ -794,13 +800,13 @@ impl FigureJoints {
     }
 
     /// The right hand's joint, if the rig has one.
-    pub fn right_hand(&self) -> Option<usize> {
+    pub(crate) fn right_hand(&self) -> Option<usize> {
         self.right_hand
     }
 
     /// Joints as a test's small skeleton has them.
     #[cfg(test)]
-    pub fn for_test(pose: &CharacterPose, head: usize, floor: f32, feet: [usize; 2]) -> Self {
+    pub(crate) fn for_test(pose: &CharacterPose, head: usize, floor: f32, feet: [usize; 2]) -> Self {
         let ankle = pose.model()[feet[0]].translation.y.min(pose.model()[feet[1]].translation.y);
         Self {
             head,
@@ -814,7 +820,7 @@ impl FigureJoints {
 
     /// These joints, finding the right hand at `joint`.
     #[cfg(test)]
-    pub fn with_right_hand(self, joint: usize) -> Self {
+    pub(crate) fn with_right_hand(self, joint: usize) -> Self {
         Self { right_hand: Some(joint), ..self }
     }
 
@@ -836,7 +842,7 @@ impl FigureJoints {
 
     /// The figure of a pose held still, its feet under its head: what the look-dev goldens were
     /// drawn with.
-    pub fn held(&self, pose: &CharacterPose) -> Figure {
+    pub(crate) fn held(&self, pose: &CharacterPose) -> Figure {
         let (head, face) = self.head(pose);
         self.figure(head, face, Vec3::new(head.x, self.floor, head.z))
     }
@@ -844,7 +850,7 @@ impl FigureJoints {
     /// The figure of a pose in motion: its head, and its feet between the two feet's joints, risen
     /// with the lower of them, so the body capsule leans as the character does and leaves the
     /// ground in a jump.
-    pub fn moving(&self, pose: &CharacterPose) -> Figure {
+    pub(crate) fn moving(&self, pose: &CharacterPose) -> Figure {
         let (head, face) = self.head(pose);
         let feet = self.feet.map_or(Vec3::new(head.x, self.floor, head.z), |([left, right], ankle)| {
             let (left, right) = (pose.model()[left].translation, pose.model()[right].translation);

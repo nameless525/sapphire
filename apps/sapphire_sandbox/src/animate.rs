@@ -51,7 +51,7 @@ const _: () = assert!(SPRING_TICK_HZ == TICK_HZ, "springs count the ticks clocks
 const CHARACTER_REACH: f32 = 1.5;
 
 /// How a tier runs springs.
-pub(crate) fn spring_quality(tier: TierId) -> SpringQuality {
+pub fn spring_quality(tier: TierId) -> SpringQuality {
     match tier {
         TierId::DesktopHigh | TierId::DesktopLow => SpringQuality::DESKTOP,
         TierId::MobileHigh | TierId::MobileLow => SpringQuality::MOBILE,
@@ -78,7 +78,7 @@ pub(crate) struct SpringView {
 }
 
 impl SpringView {
-    pub fn new(camera: &CameraData, quality: SpringQuality) -> Self {
+    pub(crate) fn new(camera: &CameraData, quality: SpringQuality) -> Self {
         let frustum = Frustum::from_view_proj(&(camera.proj * camera.view));
         Self { frustum, eye: camera.position, quality }
     }
@@ -114,7 +114,7 @@ impl SpringView {
 
 /// Plays a clip on its entity. See the [module docs](self).
 #[derive(Component, Debug)]
-pub(crate) struct ClipPlayer {
+pub struct ClipPlayer {
     pose: CharacterPose,
     joints: FigureJoints,
     /// Where the clip started on the entity's clock, in ticks.
@@ -139,7 +139,7 @@ pub(crate) struct ClipPlayer {
 
 impl ClipPlayer {
     /// A clip player for a character with this `pose`, its figure found by `joints`.
-    pub fn new(pose: CharacterPose, joints: FigureJoints) -> Self {
+    pub(crate) fn new(pose: CharacterPose, joints: FigureJoints) -> Self {
         Self {
             pose,
             joints,
@@ -157,7 +157,7 @@ impl ClipPlayer {
 
     /// This player, simulating `springs` beside its pose.
     #[must_use]
-    pub fn with_springs(self, springs: Option<SpringBones>) -> Self {
+    pub(crate) fn with_springs(self, springs: Option<SpringBones>) -> Self {
         Self { springs, ..self }
     }
 
@@ -180,12 +180,12 @@ impl ClipPlayer {
     }
 
     /// Its IK, for whatever drives it.
-    pub fn ik_mut(&mut self) -> Option<&mut IkDriver> {
+    pub(crate) fn ik_mut(&mut self) -> Option<&mut IkDriver> {
         self.ik.as_mut()
     }
 
     /// Whether it solves IK.
-    pub fn has_ik(&self) -> bool {
+    pub(crate) fn has_ik(&self) -> bool {
         self.ik.is_some()
     }
 
@@ -195,7 +195,7 @@ impl ClipPlayer {
     }
 
     /// Starts the clip now: at `ticks` on the entity's clock, with the entity at `base`.
-    pub fn start_at(&mut self, ticks: f64, base: Mat4) {
+    pub(crate) fn start_at(&mut self, ticks: f64, base: Mat4) {
         self.start = ticks;
         self.base = base;
         self.drawn = None;
@@ -204,7 +204,7 @@ impl ClipPlayer {
 
     /// Takes over another player's start, for a new version of the character under a clip that
     /// keeps playing.
-    pub fn continue_from(&mut self, other: &Self) {
+    pub(crate) fn continue_from(&mut self, other: &Self) {
         self.start = other.start;
         self.base = other.base;
         self.root_motion = other.root_motion;
@@ -221,32 +221,32 @@ impl ClipPlayer {
     /// How many times the character has jumped rather than moved: a loop of a clip with root motion
     /// on whose lap really moves its root, which starts its motion over and resets its springs.
     /// [`GraphPlayer::teleports`](sapphire_anim::GraphPlayer::teleports) says the same of a graph.
-    pub fn teleports(&self) -> u32 {
+    pub(crate) fn teleports(&self) -> u32 {
         self.teleports
     }
 
     /// The right hand's joint in the character's space, as its pose has it now. `None` for a rig
     /// without one.
-    pub fn right_hand(&self) -> Option<Mat4> {
+    pub(crate) fn right_hand(&self) -> Option<Mat4> {
         self.joints.right_hand().map(|joint| Mat4::from(self.pose.model()[joint]))
     }
 
     /// How many joints its pose has.
-    pub fn joint_count(&self) -> usize {
+    pub(crate) fn joint_count(&self) -> usize {
         self.pose.joint_count()
     }
 
     /// Whether it can play `clip` into `render`. Neither holds for a moment when a new version of
     /// the character or the clip lands before the others: the character keeps the pose it has until
     /// they fit.
-    pub fn fits(&self, clip: &ArchivedClip, render: &RenderPose) -> bool {
+    pub(crate) fn fits(&self, clip: &ArchivedClip, render: &RenderPose) -> bool {
         clip.joint_count.to_native() as usize == self.pose.joint_count()
             && render.palette.len() == self.pose.palette_len()
             && render.morph_weights.len() == self.pose.weights().len()
     }
 
     /// What the character's pose looks like now, in the shape its [`RenderPose`] takes.
-    pub fn render_pose(&self) -> RenderPose {
+    pub(crate) fn render_pose(&self) -> RenderPose {
         let mut palette = vec![Affine3A::IDENTITY; self.pose.palette_len()];
         self.pose.write_palette(&mut palette);
         RenderPose { palette, morph_weights: self.pose.weights().to_vec() }
@@ -268,7 +268,7 @@ impl ClipPlayer {
     /// `transform`, or `None` if that is what the character already draws, so nothing need move. A
     /// loop's first frame teleports the character back to where the clip started, if root motion moved
     /// it, so its springs and its IK start over.
-    pub fn next_position(
+    pub(crate) fn next_position(
         &mut self,
         clip: &ArchivedClip,
         version: u32,
@@ -298,49 +298,54 @@ impl ClipPlayer {
     }
 
     /// Whether its springs run this frame, for a character `view` sees or doesn't.
-    pub fn springs_run(&mut self, view: &SpringView, transform: &RenderTransform, figure: &Figure) -> bool {
+    pub(crate) fn springs_run(
+        &mut self,
+        view: &SpringView,
+        transform: &RenderTransform,
+        figure: &Figure,
+    ) -> bool {
         self.springs.as_mut().is_some_and(|springs| view.decide(springs, transform, figure))
     }
 
     /// Whether running springs have anything to do at `ticks` on a frame whose pose didn't move.
-    pub fn springs_due(&self, ticks: f64, transform: &RenderTransform) -> bool {
+    pub(crate) fn springs_due(&self, ticks: f64, transform: &RenderTransform) -> bool {
         self.springs.as_ref().is_some_and(|springs| springs.is_due(ticks, &Affine3A::from_mat4(transform.0)))
     }
 
     /// How many sub-steps a tick its springs run: `None` without any.
     #[cfg(test)]
-    pub fn spring_substeps(&self) -> Option<Substeps> {
+    pub(crate) fn spring_substeps(&self) -> Option<Substeps> {
         self.springs.as_ref().map(SpringBones::substeps)
     }
 
     /// Its springs, for tests that look at their tails.
     #[cfg(test)]
-    pub fn springs(&self) -> Option<&SpringBones> {
+    pub(crate) fn springs(&self) -> Option<&SpringBones> {
         self.springs.as_ref()
     }
 }
 
 /// One character's work this frame: its player and everything that follows the skeleton.
 pub(crate) struct Evaluation<'a> {
-    pub player: Mut<'a, ClipPlayer>,
-    pub render: Mut<'a, RenderPose>,
-    pub figure: Mut<'a, Figure>,
-    pub rig: Mut<'a, CharacterLightRig>,
-    pub transform: Mut<'a, RenderTransform>,
+    pub(crate) player: Mut<'a, ClipPlayer>,
+    pub(crate) render: Mut<'a, RenderPose>,
+    pub(crate) figure: Mut<'a, Figure>,
+    pub(crate) rig: Mut<'a, CharacterLightRig>,
+    pub(crate) transform: Mut<'a, RenderTransform>,
     /// Where to evaluate the clip: `None` on a frame only the springs have work in.
-    pub position: Option<f32>,
+    pub(crate) position: Option<f32>,
     /// The time this frame draws on the entity's clock, in ticks.
-    pub ticks: f64,
+    pub(crate) ticks: f64,
     /// Whether its springs run this frame ([`ClipPlayer::springs_run`]).
-    pub springs_run: bool,
+    pub(crate) springs_run: bool,
     /// What its springs did.
-    pub spring_work: SpringWork,
-    pub spring_time: Duration,
+    pub(crate) spring_work: SpringWork,
+    pub(crate) spring_time: Duration,
 }
 
 impl Evaluation<'_> {
     /// Samples `clip`, finishes the pose, runs the springs and hands it over. Allocates nothing.
-    pub fn run(&mut self, clip: &ArchivedClip) {
+    pub(crate) fn run(&mut self, clip: &ArchivedClip) {
         let player = &mut *self.player;
         if let Some(position) = self.position {
             player.pose.sample(clip, position);

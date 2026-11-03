@@ -46,15 +46,15 @@ const FIGHT_CONTEXT: (&str, i32) = ("fight", 40);
 
 /// The actor the sandbox's ticks name when there's no scenario to say: the one a simulation spawns
 /// first.
-pub(crate) const PLAYER: ActorId = ActorId::from_raw(1).expect("not zero");
+pub const PLAYER: ActorId = ActorId::from_raw(1).expect("not zero");
 
 /// Simulation actions requested since the last fixed step.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct SimActions {
+pub struct SimActions {
     /// Flip world slow motion. Two presses before a step cancel out.
-    pub toggle_slow_motion: bool,
+    pub(crate) toggle_slow_motion: bool,
     /// Freeze the turntable for a few ticks.
-    pub hitstop: bool,
+    pub(crate) hitstop: bool,
     /// Start `--fight`'s fight over.
     pub restart_fight: bool,
 }
@@ -70,7 +70,7 @@ struct Actions {
     restart_fight: ActionId,
 }
 
-pub(crate) struct SandboxInput {
+pub struct SandboxInput {
     controls: CombatControls,
     actions: Actions,
     queued: SimActions,
@@ -143,7 +143,7 @@ impl SandboxInput {
 
     /// What the HUD's touch zones read for this frame, before [`Self::update`]: as of `now`, the same
     /// time that gets.
-    pub fn read_touch(&mut self, touch: &TouchActions, now: Timestamp) {
+    pub(crate) fn read_touch(&mut self, touch: &TouchActions, now: Timestamp) {
         self.controls.read_touch(touch, now);
     }
 
@@ -217,7 +217,7 @@ impl SandboxInput {
     }
 
     /// Applies this frame's orbit and zoom.
-    pub fn drive_camera(&self, camera: &mut OrbitCamera) {
+    pub(crate) fn drive_camera(&self, camera: &mut OrbitCamera) {
         let (orbit, zoom) = self.camera_motion();
         if orbit != Vec2::ZERO {
             camera.rotate(orbit.x, orbit.y);

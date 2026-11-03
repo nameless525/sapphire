@@ -54,14 +54,14 @@ const CUE_SEED: u64 = 0x5EED;
 
 /// `--cue <name> [--cue-repeat <seconds>]`.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct CueOption {
+pub struct CueOption {
     pub id: AssetId,
     /// Seconds between plays; once, without it.
     pub repeat: Option<f32>,
 }
 
 /// The cue `--cue` named, or an error listing the names it knows.
-pub(crate) fn named_cue(name: &str) -> Result<AssetId, String> {
+pub fn named_cue(name: &str) -> Result<AssetId, String> {
     let found = CUES.iter().find(|(known, _)| *known == name);
     found.map(|&(_, id)| id).ok_or_else(|| {
         let names = CUES.map(|(known, _)| known).join(", ");
@@ -71,14 +71,14 @@ pub(crate) fn named_cue(name: &str) -> Result<AssetId, String> {
 
 /// What the audio system hears of the scene this frame.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct SceneSound {
-    pub listener: Listener,
+pub struct SceneSound {
+    pub(crate) listener: Listener,
     /// The world clock's speed.
-    pub world_time_scale: f32,
+    pub(crate) world_time_scale: f32,
     /// Where the character stands.
-    pub character: Vec3,
+    pub(crate) character: Vec3,
     /// Whether the character's clock is held by hitstop.
-    pub hitstop: bool,
+    pub(crate) hitstop: bool,
 }
 
 /// `--cue`'s one cue, and when it's due.
@@ -90,7 +90,7 @@ struct Repeating {
 }
 
 /// The audio system on the real device, playing `--cue`'s one cue or a fight's.
-pub(crate) struct SandboxAudio {
+pub struct SandboxAudio {
     system: AudioSystem<KiraBackend<CpalOutput>>,
     random: CueRng,
     /// `--cue`'s.
@@ -263,7 +263,7 @@ const OFFLINE_RATE: u32 = 48_000;
 /// A fight's sound through the real mixer and no device (`--bench` with `--cues`, M2 Z1): the update a
 /// frame pays, and the mix a phone pays on its callback, each measured where it happens, in a run that
 /// must open no device.
-pub(crate) struct OfflineAudio {
+pub struct OfflineAudio {
     system: AudioSystem<KiraBackend<OfflineOutput>>,
     random: CueRng,
     emitters: Vec<Emitter>,
@@ -323,7 +323,7 @@ impl OfflineAudio {
 }
 
 /// An error unless a run that must open no audio device, having asked `opens` times, opened none.
-pub(crate) fn stayed_shut(opens: u64) -> Result<(), String> {
+pub fn stayed_shut(opens: u64) -> Result<(), String> {
     if opens == 0 {
         return Ok(());
     }

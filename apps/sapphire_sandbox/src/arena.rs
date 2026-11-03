@@ -104,7 +104,7 @@ pub(crate) const COLLIDERS: AssetId = AssetId::from_text("773529bf-89bd-4e37-b9c
 pub(crate) const SCENARIO: &str = "arena";
 
 /// The scenario of a fight with the enemy (M2 G6): `--fight`, and the replays made from it.
-pub(crate) const FIGHT_SCENARIO: &str = "arena-fight";
+pub const FIGHT_SCENARIO: &str = "arena-fight";
 
 /// The scenario of a party's fight with the enemy (M2 G7): `--fight --party`, and the replays made from it.
 pub(crate) const PARTY_SCENARIO: &str = "party";
@@ -128,7 +128,7 @@ const FOLLOW_FOV_DEGREES: f32 = 48.0;
 
 /// What frames the arena (`--arena-shot`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum ArenaShot {
+pub enum ArenaShot {
     /// `sapphire_camera`'s director, on its combat rig: what a player sees.
     #[default]
     Director,
@@ -157,7 +157,7 @@ impl ArenaShot {
 
     /// The camera, for a player whose feet are at `player`. `--view`, `--fov` and `--zoom` adjust it
     /// as they do a look-dev shot. The director replaces all of it on its first frame.
-    pub fn camera(self, player: Vec3) -> OrbitCamera {
+    pub(crate) fn camera(self, player: Vec3) -> OrbitCamera {
         match self {
             Self::Director | Self::Follow => OrbitCamera::shot(
                 follow_target(player),
@@ -180,7 +180,7 @@ pub(crate) fn follow_target(player: Vec3) -> Vec3 {
 
 /// Refuses a fight that doesn't start from the arena's scenarios, or with `party` the party's: its actors
 /// aren't standing here, or there aren't three looks to draw them in.
-pub(crate) fn check_scenario(combat: &crate::combat::Combat, party: bool) -> Result<(), String> {
+pub fn check_scenario(combat: &crate::combat::Combat, party: bool) -> Result<(), String> {
     let scenario = combat.scenario();
     if party {
         if scenario == PARTY_SCENARIO {
@@ -222,14 +222,14 @@ pub(crate) enum ArenaError {
 
 /// The arena's collision as the stage loaded it: the statics a replay's simulation has too, for the
 /// camera to read, and for `--debug-draw colliders` to draw while no fight has them.
-pub(crate) struct ArenaGround {
+pub struct ArenaGround {
     world: Arc<PhysicsWorld>,
 }
 
 impl ArenaGround {
     /// Builds the world from the cooked `set`, holds it to this build's own document, and checks the
     /// spawn points stand on it.
-    pub fn new(set: &ArchivedColliderSet) -> Result<Self, ArenaError> {
+    pub(crate) fn new(set: &ArchivedColliderSet) -> Result<Self, ArenaError> {
         let world = PhysicsWorld::from_cooked(set, 0)?;
         let spawns = spawns();
         check_spawn(&world, set, "player", spawns.player)?;
@@ -249,7 +249,7 @@ impl ArenaGround {
 
     /// Draws the spawn points, each a character's capsule and an arrow for which way it faces, and with
     /// `statics` every collider, as the combat views do.
-    pub fn draw(&self, statics: bool, canvas: &mut impl Canvas) {
+    pub(crate) fn draw(&self, statics: bool, canvas: &mut impl Canvas) {
         if statics {
             combat_views::statics(&self.world, canvas);
         }
@@ -340,12 +340,12 @@ impl Root {
 /// What draws the enemy: its model and its blade, which is drawn on its own.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ArenaEnemy {
-    pub warrior: Entity,
-    pub blade: Entity,
+    pub(crate) warrior: Entity,
+    pub(crate) blade: Entity,
     /// The blade's mesh in the warrior's model space, where its pose has the hand.
-    pub blade_in_model: Mat4,
+    pub(crate) blade_in_model: Mat4,
     /// The joint that holds it.
-    pub hand: usize,
+    pub(crate) hand: usize,
 }
 
 /// How high the character's eyes stand over its feet, in metres: what the warrior looks at.
@@ -447,7 +447,7 @@ pub(crate) struct ArenaActors {
 
 impl ArenaActors {
     /// The two at their spawn points, drawn by `player` and `enemy`.
-    pub fn new(player: Entity, enemy: ArenaEnemy, shot: ArenaShot, ground: ArenaGround) -> Self {
+    pub(crate) fn new(player: Entity, enemy: ArenaEnemy, shot: ArenaShot, ground: ArenaGround) -> Self {
         let spawns = spawns();
         Self {
             player: (player, Root::at(spawns.player)),
@@ -470,13 +470,13 @@ impl ArenaActors {
 
     /// The enemy's entity.
     #[cfg(test)]
-    pub fn enemy_entity(&self) -> Entity {
+    pub(crate) fn enemy_entity(&self) -> Entity {
         self.enemy.0
     }
 
     /// Who fights here, the player first, for whatever poses them: each one's entity, and what the
     /// last step said of it. Nothing's said before a fight.
-    pub fn fighters(&self) -> [(Entity, Option<&ActorView>); 2] {
+    pub(crate) fn fighters(&self) -> [(Entity, Option<&ActorView>); 2] {
         [(self.player.0, self.seen[0].as_ref()), (self.enemy.0, self.seen[1].as_ref())]
     }
 
@@ -484,7 +484,7 @@ impl ArenaActors {
     /// to its latest, as its transform draws. A frozen clock asks the same thing at every `alpha`, and
     /// a defeated fighter keeps its last move's end once that move's over (`GraphInput::defeated`).
     /// Nothing before a fight.
-    pub fn graph_input(&mut self, fighter: usize, alpha: f32) -> Option<GraphInput> {
+    pub(crate) fn graph_input(&mut self, fighter: usize, alpha: f32) -> Option<GraphInput> {
         let view = self.seen[fighter].as_ref()?;
         let signals = &mut self.signals[fighter];
         let alpha = if alpha >= 0.0 { f64::from(alpha.min(1.0)) } else { 0.0 };
@@ -502,7 +502,7 @@ impl ArenaActors {
     }
 
     /// What `fighter` looks at: the other's head, while the other's up to look at.
-    pub fn look_target(&self, fighter: usize, alpha: f32) -> Option<Vec3> {
+    pub(crate) fn look_target(&self, fighter: usize, alpha: f32) -> Option<Vec3> {
         let other = 1 - fighter;
         self.seen[other].as_ref().filter(|view| !view.fighter.is_defeated())?;
         let height = if other == 0 { PLAYER_EYES } else { enemy::EYES };
@@ -510,7 +510,7 @@ impl ArenaActors {
     }
 
     /// Where `fighter` draws, `alpha` of the way between its last two steps.
-    pub fn drawn(&self, fighter: usize, alpha: f32) -> Mat4 {
+    pub(crate) fn drawn(&self, fighter: usize, alpha: f32) -> Mat4 {
         if fighter == 0 {
             self.player.1.transform(alpha)
         } else {
@@ -519,71 +519,71 @@ impl ArenaActors {
     }
 
     /// The entity that draws the enemy's blade.
-    pub fn enemy_blade(&self) -> Entity {
+    pub(crate) fn enemy_blade(&self) -> Entity {
         self.blade.0
     }
 
     /// The enemy's joint that holds its blade.
-    pub fn blade_hand(&self) -> usize {
+    pub(crate) fn blade_hand(&self) -> usize {
         self.hand
     }
 
     /// A new version of the enemy: the joint that holds its blade, and where that is in its held pose.
-    pub fn follow_new_enemy(&mut self, hand: usize, blade_in_model: Mat4) {
+    pub(crate) fn follow_new_enemy(&mut self, hand: usize, blade_in_model: Mat4) {
         self.hand = hand;
         self.blade.1 = blade_in_model;
     }
 
     /// What the fighters stand on, for whatever casts for their feet.
-    pub fn ground(&self) -> Arc<PhysicsWorld> {
+    pub(crate) fn ground(&self) -> Arc<PhysicsWorld> {
         self.ground.share()
     }
 
     /// Tells `fighter`'s graph to cut, for hot reload's tests of when it hears.
     #[cfg(all(test, feature = "dev"))]
-    pub fn cut_next(&mut self, fighter: usize) {
+    pub(crate) fn cut_next(&mut self, fighter: usize) {
         self.signals[fighter].cut = true;
     }
 
     /// Whether `fighter`'s graph has yet to hear of a cut.
     #[cfg(all(test, feature = "dev"))]
-    pub fn has_cut_waiting(&self, fighter: usize) -> bool {
+    pub(crate) fn has_cut_waiting(&self, fighter: usize) -> bool {
         self.signals[fighter].cut
     }
 
     /// Where the enemy's pose has the hand that holds its blade, in its model space: from a pose that
     /// moves, each frame. [`Self::present`] draws the blade there.
-    pub fn hold_blade(&mut self, blade_in_model: Mat4) {
+    pub(crate) fn hold_blade(&mut self, blade_in_model: Mat4) {
         self.blade.1 = blade_in_model;
     }
 
     /// What the HUD shows of the fighters, once a fight has stepped.
-    pub fn hud_values(&self) -> Option<HudValues> {
+    pub(crate) fn hud_values(&self) -> Option<HudValues> {
         let player = self.seen[0].as_ref()?;
         let enemy = self.seen[1].as_ref().map(|enemy| fighter_values(enemy, false));
         Some(HudValues { player: fighter_values(player, true), enemy, skill: SkillValues::default() })
     }
 
     /// How long the fight's gone on, for a HUD with no clock of its own.
-    pub fn fight_time(&self) -> Duration {
+    pub(crate) fn fight_time(&self) -> Duration {
         Duration::from_nanos(self.tick.saturating_mul(1_000_000_000 / u64::from(TICK_HZ)))
     }
 
     /// The camera director, if it's on: what a fight's shakes go to.
-    pub fn director(&mut self) -> Option<&mut CameraDirector> {
+    pub(crate) fn director(&mut self) -> Option<&mut CameraDirector> {
         self.camera.as_mut().map(|camera| &mut camera.director)
     }
 
     /// The director, if it's on, and what the last step said of each fighter, the player first: what a
     /// fight's cues read together.
-    pub fn cue_stage(&mut self) -> (Option<&mut CameraDirector>, [Option<&ActorView>; 2]) {
+    pub(crate) fn cue_stage(&mut self) -> (Option<&mut CameraDirector>, [Option<&ActorView>; 2]) {
         let [player, enemy] = &self.seen;
         (self.camera.as_mut().map(|camera| &mut camera.director), [player.as_ref(), enemy.as_ref()])
     }
 
     /// Holds the line from the player to whoever the soft lock has, or lets go: the director's own rig,
     /// which blends in and out over its own half-life.
-    pub fn set_lock_on(&mut self, on: bool) {
+    pub(crate) fn set_lock_on(&mut self, on: bool) {
         self.locked_on = on;
         if let Some(camera) = &mut self.camera {
             camera.director.set_rig(Rig::LockOn, on);
@@ -594,7 +594,7 @@ impl ArenaActors {
     /// scenario's, the player first. A tick that went back is a new fight, which stands where it stands
     /// with the camera cut to it, rather than sliding back across the square. Returns whether someone else
     /// came in for each of the two.
-    pub fn follow(&mut self, simulation: &Simulation, cast: &[ActorId]) -> [bool; 2] {
+    pub(crate) fn follow(&mut self, simulation: &Simulation, cast: &[ActorId]) -> [bool; 2] {
         self.fighting = true;
         let mut came_in = [false; 2];
         let tick = simulation.tick();
@@ -642,7 +642,7 @@ impl ArenaActors {
     /// choice: nothing in a step does, since a move warps to the target its scenario gave it. So this
     /// moves no checksum, and a replay, with no device, always frames as a pad would. Whatever comes to
     /// read the choice in a step has to take these weights from the recording too.
-    pub fn set_played_on_touch(&mut self, touch: bool) {
+    pub(crate) fn set_played_on_touch(&mut self, touch: bool) {
         self.weights = if touch { TargetingWeights::TOUCH } else { TargetingWeights::SOFT_LOCK };
     }
 
@@ -665,7 +665,7 @@ impl ArenaActors {
 
     /// What the frame's clock and input give the director, if it's on: real seconds, unscaled, and the
     /// look and zoom `sapphire_controls` gives. They wait for its next frame. Says whether it took them.
-    pub fn drive_camera(&mut self, dt: f32, look: Vec2, zoom: f32) -> bool {
+    pub(crate) fn drive_camera(&mut self, dt: f32, look: Vec2, zoom: f32) -> bool {
         let Some(camera) = &mut self.camera else { return false };
         camera.dt += dt;
         camera.look += look;
@@ -675,7 +675,7 @@ impl ArenaActors {
 
     /// Whether the director frames this stage.
     #[cfg(feature = "dev")]
-    pub fn has_director(&self) -> bool {
+    pub(crate) fn has_director(&self) -> bool {
         self.camera.is_some()
     }
 
@@ -684,7 +684,7 @@ impl ArenaActors {
     /// tuning are resolved again by [`Scene::set_camera_tuning`](crate::scene::Scene::set_camera_tuning),
     /// which holds the cues' dispatcher beside this.
     #[cfg(feature = "dev")]
-    pub fn set_camera_tuning(&mut self, tuning: CameraTuning) -> Result<(), String> {
+    pub(crate) fn set_camera_tuning(&mut self, tuning: CameraTuning) -> Result<(), String> {
         let Some(camera) = &mut self.camera else {
             return Err("this shot has no camera director: `--arena-shot director` has one".to_owned());
         };
@@ -692,7 +692,7 @@ impl ArenaActors {
     }
 
     /// Which way the director looks across the ground, if it's on, for the next tick's stick.
-    pub fn heading(&self) -> Option<f32> {
+    pub(crate) fn heading(&self) -> Option<f32> {
         self.camera.as_ref().map(|camera| camera.director.heading())
     }
 
@@ -700,7 +700,7 @@ impl ArenaActors {
     /// head of a frame, as the turntable poses its own entity in `Extract`. Not a system, which would
     /// cost an allocation a frame (see [`crate::scene`]). With no `aspect` nothing draws, so the
     /// director waits.
-    pub fn present(&mut self, world: &mut World, alpha: f32, aspect: Option<f32>) {
+    pub(crate) fn present(&mut self, world: &mut World, alpha: f32, aspect: Option<f32>) {
         let warrior = self.drawn(1, alpha);
         let drawn = [
             (self.player.0, self.drawn(0, alpha)),
@@ -744,7 +744,7 @@ impl ArenaActors {
     /// The collider view's share of the arena (`combat.view_colliders`, which `--debug-draw colliders`
     /// turns on): the spawn points, and the colliders until a fight's own view draws those
     /// ([`crate::combat::Combat::draw_views`]), so the view works with no fight and draws nothing twice.
-    pub fn draw_colliders(&self, canvas: &mut impl Canvas) {
+    pub(crate) fn draw_colliders(&self, canvas: &mut impl Canvas) {
         self.ground.draw(!self.fighting, canvas);
     }
 }

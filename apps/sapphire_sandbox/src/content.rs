@@ -128,9 +128,9 @@ use crate::swatches::{self, SWATCHES};
 /// The pack the sandbox's content ships in.
 const PACK: &str = "shared";
 /// The sample character: the cooked mannequin (`samples/mannequin.glb`), by its sidecar's ID.
-pub(crate) const CHARACTER: AssetId = AssetId::from_text("8659a15c-d588-4cb6-b757-deb86adf26a1");
+pub const CHARACTER: AssetId = AssetId::from_text("8659a15c-d588-4cb6-b757-deb86adf26a1");
 /// The sandbox's sky: the sky material `samples/sky.material.ron`, by its sidecar's ID.
-pub(crate) const SKY: AssetId = AssetId::from_text("22d0ccf1-d03c-4387-a00f-42891c86866f");
+pub const SKY: AssetId = AssetId::from_text("22d0ccf1-d03c-4387-a00f-42891c86866f");
 
 /// The platform's IO thread, serving the asset server's pack reads.
 struct PlatformPacks(IoThread);
@@ -362,7 +362,7 @@ impl GpuAssets {
 
 /// What one renderer holds of loaded assets, set aside while a new renderer is tried
 /// ([`Content::renderer_rebuilt`]).
-pub(crate) struct RendererAssets(GpuAssets);
+pub struct RendererAssets(GpuAssets);
 
 /// `named`, and those of `held` that `in_use` lists: a graph still playing reads them until its next
 /// state's start, one waiting reads them from then, and each draws the rest pose without them
@@ -438,7 +438,7 @@ impl HeldGraph {
 }
 
 /// The asset server, what it has uploaded, and the character it keeps loaded.
-pub(crate) struct Content {
+pub struct Content {
     // Drop order: the uploaded GPU objects, then the server, whose IO thread joins last.
     gpu: GpuAssets,
     /// The character's ID: the mannequin's unless the scene asked for another.
@@ -701,28 +701,28 @@ impl Content {
 
     /// The stage's meshes and the character's bounds, if a new version of the character has replaced them
     /// since the last call, which the stage's pieces stand by.
-    pub fn take_new_stage(&mut self) -> Option<(StageMeshes, [[f32; 3]; 2])> {
+    pub(crate) fn take_new_stage(&mut self) -> Option<(StageMeshes, [[f32; 3]; 2])> {
         std::mem::take(&mut self.gpu.stage_replaced).then_some(())?;
         let bounds = self.gpu.meshes.get(&self.character_id)?.object.bounds;
         Some((self.gpu.copies.stage?, bounds))
     }
 
     /// The character's mesh as last uploaded, if [`Self::keep_character_mesh`] asked for it.
-    pub fn character_mesh(&self) -> Option<&Mesh> {
+    pub(crate) fn character_mesh(&self) -> Option<&Mesh> {
         self.gpu.character_mesh.as_ref()
     }
 
     /// Whether a mesh was replaced in place since the last call (hot reload, live link, or a new
     /// version sent to a renderer that was kept): the renderer starts its instances over in their
     /// bind pose. A new renderer's meshes aren't: its scene is sent everything anyway.
-    pub fn take_meshes_replaced(&mut self) -> bool {
+    pub(crate) fn take_meshes_replaced(&mut self) -> bool {
         std::mem::take(&mut self.gpu.meshes_replaced)
     }
 
     /// Whether the character's mesh, rig or skeleton has a new version since the last call or since
     /// [`Self::load_rig`], whichever way it came; they may land frames apart. Always false without
     /// a rig.
-    pub fn take_character_changed(&mut self) -> bool {
+    pub(crate) fn take_character_changed(&mut self) -> bool {
         let versions = self.current_character_versions();
         std::mem::replace(&mut self.character_versions, versions) != versions
     }
@@ -737,7 +737,7 @@ impl Content {
     /// Loads the shader swatches' materials, with the textures they name, until they are on
     /// `renderer`, and returns their handles, top to bottom: the load screen of `--swatches`.
     /// They stay loaded from then on.
-    pub fn swatch_materials(
+    pub(crate) fn swatch_materials(
         &mut self,
         renderer: &mut Renderer,
         gpu: &GpuContext,
@@ -751,7 +751,7 @@ impl Content {
     /// Loads the material layer samples' materials (M1 C7), with the textures they name, until
     /// they are on `renderer`, and returns their handles in [`layers::MATERIALS`] order: the load
     /// screen of `--materials`. They stay loaded from then on.
-    pub fn layer_materials(
+    pub(crate) fn layer_materials(
         &mut self,
         renderer: &mut Renderer,
         gpu: &GpuContext,
@@ -1029,7 +1029,7 @@ impl Content {
     /// Whether the enemy's mesh or skeleton has a new version since the last call or since [`Self::enemy`],
     /// whichever way it came; they may land frames apart. Always false with no enemy, and it allocates
     /// nothing.
-    pub fn take_enemy_changed(&mut self) -> bool {
+    pub(crate) fn take_enemy_changed(&mut self) -> bool {
         let versions = self.current_enemy_versions();
         std::mem::replace(&mut self.enemy_versions, versions) != versions
     }
@@ -1063,7 +1063,7 @@ impl Content {
     }
 
     /// The enemy's graph as it stands, bound to the enemy: the one live tuning took, or the cooked one.
-    pub fn enemy_binding(&self) -> Result<GraphBinding, AppInitError> {
+    pub(crate) fn enemy_binding(&self) -> Result<GraphBinding, AppInitError> {
         let held =
             self.enemy_graph.as_ref().ok_or_else(|| AppInitError::msg("the enemy's graph isn't loaded"))?;
         let graph = held.document(&self.server).map_err(AppInitError::msg)?;
@@ -1071,7 +1071,7 @@ impl Content {
     }
 
     /// [`Self::enemy_binding`], for `graph` rather than the one it holds.
-    pub fn enemy_binding_of(&self, graph: &AnimGraph) -> Result<GraphBinding, String> {
+    pub(crate) fn enemy_binding_of(&self, graph: &AnimGraph) -> Result<GraphBinding, String> {
         let skeleton = self.enemy_skeleton.as_ref().and_then(|skeleton| self.server.get(skeleton));
         let skeleton = skeleton.ok_or("the enemy's skeleton isn't loaded")?;
         GraphBinding::new(graph, skeleton, None, 0, &self.enemy_graph_clips())
@@ -1107,7 +1107,7 @@ impl Content {
     /// Loads the character rig `id` until it is resident, and the skeleton the character's kept
     /// mesh names ([`Self::keep_character_mesh`]): CPU data, which nothing uploads ([`Self::rig`]
     /// and [`Self::skeleton`] read them). They stay loaded from then on.
-    pub fn load_rig(
+    pub(crate) fn load_rig(
         &mut self,
         id: AssetId,
         renderer: &mut Renderer,
@@ -1143,7 +1143,7 @@ impl Content {
     /// they are resident, then hands back the cue and each sound decoded, but for those already in
     /// `decoded`, as cues sharing a sound would be, which it adds the rest to. Neither stays loaded: a
     /// mixer holds the decoded sound from then on.
-    pub fn load_cue(
+    pub(crate) fn load_cue(
         &mut self,
         id: AssetId,
         decoded: &mut HashSet<AssetId>,
@@ -1204,7 +1204,7 @@ impl Content {
 
     /// Whether the clip has a new version since the last call or since [`Self::load_clip`], which a
     /// character's player may have to be made again for. Always false without a clip.
-    pub fn take_clip_changed(&mut self) -> bool {
+    pub(crate) fn take_clip_changed(&mut self) -> bool {
         let version = self.clip.as_ref().map_or(0, |clip| self.server.generation(clip));
         std::mem::replace(&mut self.clip_version, version) != version
     }
@@ -1263,7 +1263,7 @@ impl Content {
     /// those of the character's and the enemy's that their players have `in_use`: a new version may name
     /// others. A clip one can't hold leaves the other's held all the same, and the first failure is what
     /// returns. Allocates, so only when [`Self::take_graph_changed`] says so.
-    pub fn hold_graph_clips(
+    pub(crate) fn hold_graph_clips(
         &mut self,
         (character, enemy): (&[AssetId], &[AssetId]),
     ) -> Result<(), LoadError> {
@@ -1277,14 +1277,14 @@ impl Content {
     }
 
     /// The graph a character binds: the one live tuning took, or the one [`Self::load_graph`] loaded.
-    pub fn graph_document(&self) -> Result<AnimGraph, String> {
+    pub(crate) fn graph_document(&self) -> Result<AnimGraph, String> {
         let held = self.graph.as_ref().ok_or("the character's graph isn't loaded")?;
         held.document(&self.server)
     }
 
     /// The graph the enemy binds, for hot reload's tests.
     #[cfg(all(test, feature = "dev"))]
-    pub fn enemy_graph_document(&self) -> Result<AnimGraph, String> {
+    pub(crate) fn enemy_graph_document(&self) -> Result<AnimGraph, String> {
         let held = self.enemy_graph.as_ref().ok_or("the enemy's graph isn't loaded")?;
         held.document(&self.server)
     }
@@ -1293,7 +1293,7 @@ impl Content {
     /// has `in_use`: it goes on until its next state's start. Fails on a clip nothing cooked, keeping
     /// what's held. They wait for the edit to bind or fail, and the next call lets go of what nothing reads.
     #[cfg(feature = "dev")]
-    pub fn hold_clips_of(
+    pub(crate) fn hold_clips_of(
         &mut self,
         owner: GraphOwner,
         graph: &AnimGraph,
@@ -1330,14 +1330,18 @@ impl Content {
     /// Where each fighter's graph documents are, on a machine that has them: what a cook that lands is
     /// weighed against ([`newest_saved`]).
     #[cfg(feature = "dev")]
-    pub fn read_graphs_from(&mut self, files: Vec<(GraphOwner, PathBuf)>) {
+    pub(crate) fn read_graphs_from(&mut self, files: Vec<(GraphOwner, PathBuf)>) {
         self.graph_files = files;
     }
 
     /// Binds `owner` to `graph` from now on, until a cook lands, or to the cook's with none, and returns
     /// what it replaces.
     #[cfg(feature = "dev")]
-    pub fn set_live_graph(&mut self, owner: GraphOwner, graph: Option<AnimGraph>) -> Option<AnimGraph> {
+    pub(crate) fn set_live_graph(
+        &mut self,
+        owner: GraphOwner,
+        graph: Option<AnimGraph>,
+    ) -> Option<AnimGraph> {
         let owned = match owner {
             GraphOwner::Character => &mut self.graph,
             GraphOwner::Enemy => &mut self.enemy_graph,
@@ -1376,7 +1380,7 @@ impl Content {
     /// say what live tuning refused. Returns whether it did, and then the graph names other clips, for
     /// [`Self::hold_graph_clips`] to hold.
     #[cfg(feature = "dev")]
-    pub fn let_go_of_graphs_that_never_fit(&mut self) -> bool {
+    pub(crate) fn let_go_of_graphs_that_never_fit(&mut self) -> bool {
         let mut let_go = false;
         for owner in [GraphOwner::Character, GraphOwner::Enemy] {
             let held = match owner {
@@ -1393,12 +1397,12 @@ impl Content {
     }
 
     /// The clips the graph names, as a frame's evaluation reads them. Allocates nothing.
-    pub fn graph_clips(&self) -> ClipTable<'_> {
+    pub(crate) fn graph_clips(&self) -> ClipTable<'_> {
         self.graph.as_ref().map_or_else(ClipTable::empty, |held| held.table(&self.server))
     }
 
     /// The clips the enemy's graph names, likewise.
-    pub fn enemy_graph_clips(&self) -> ClipTable<'_> {
+    pub(crate) fn enemy_graph_clips(&self) -> ClipTable<'_> {
         self.enemy_graph.as_ref().map_or_else(ClipTable::empty, |held| held.table(&self.server))
     }
 
@@ -1414,7 +1418,7 @@ impl Content {
     /// [`Self::load_graph`], which a character's graph has to be bound again for. Always false without a
     /// graph. A cook that has landed reads its graph's file, if it has one (`newest_saved`), and otherwise
     /// it allocates nothing.
-    pub fn take_graph_changed(&mut self) -> bool {
+    pub(crate) fn take_graph_changed(&mut self) -> bool {
         let version = self.graph_versions();
         #[cfg(feature = "dev")]
         {
@@ -1435,12 +1439,12 @@ impl Content {
     }
 
     /// The rig [`Self::load_rig`] loaded.
-    pub fn rig(&self) -> Option<&ArchivedCharacterRig> {
+    pub(crate) fn rig(&self) -> Option<&ArchivedCharacterRig> {
         self.rig.as_ref().and_then(|rig| self.server.get(rig))
     }
 
     /// The skeleton [`Self::load_rig`] loaded.
-    pub fn skeleton(&self) -> Option<&ArchivedSkeleton> {
+    pub(crate) fn skeleton(&self) -> Option<&ArchivedSkeleton> {
         self.skeleton.as_ref().and_then(|skeleton| self.server.get(skeleton))
     }
 
@@ -1504,13 +1508,16 @@ impl Content {
     /// [`AssetChange::Reloaded`](sapphire_assets::AssetChange) (M2 T2). It loads as anything does, and
     /// stays. Fails for an asset no pack holds.
     #[cfg(feature = "dev")]
-    pub fn hold_move_set(&mut self, id: AssetId) -> Result<Handle<sapphire_moves::MoveSet>, LoadError> {
+    pub(crate) fn hold_move_set(
+        &mut self,
+        id: AssetId,
+    ) -> Result<Handle<sapphire_moves::MoveSet>, LoadError> {
         self.server.load_with(id, LoadPriority::Normal)
     }
 
     /// A cooked set of moves [`Self::hold_move_set`] holds, if it's loaded.
     #[cfg(feature = "dev")]
-    pub fn move_set(
+    pub(crate) fn move_set(
         &self,
         set: &Handle<sapphire_moves::MoveSet>,
     ) -> Option<&sapphire_moves::ArchivedMoveSet> {

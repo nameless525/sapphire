@@ -94,7 +94,7 @@ pub(crate) struct PartyLooks {
 impl PartyLooks {
     /// A material the renderer has just taken: each look recoloring it makes its copy, or, if it's a new
     /// version (hot reload), replaces it.
-    pub fn take_material<'t>(
+    pub(crate) fn take_material<'t>(
         &mut self,
         id: AssetId,
         generation: u32,
@@ -128,7 +128,7 @@ impl PartyLooks {
 
     /// The character's mesh, which the renderer has just taken, with its materials through `materials`
     /// (the server uploads dependencies first): each look makes its copy, or replaces it.
-    pub fn take_character(
+    pub(crate) fn take_character(
         &mut self,
         generation: u32,
         mesh: &ArchivedMesh,
@@ -151,7 +151,7 @@ impl PartyLooks {
     }
 
     /// Each member's mesh, the first being `character`'s, once the character has loaded.
-    pub fn meshes(&self, character: MeshHandle) -> Option<[MeshHandle; PARTY_SLOTS]> {
+    pub(crate) fn meshes(&self, character: MeshHandle) -> Option<[MeshHandle; PARTY_SLOTS]> {
         let [second, third] = &self.looks;
         Some([character, second.mesh?.1, third.mesh?.1])
     }
@@ -175,22 +175,22 @@ pub(crate) struct Drawn {
 
 impl Drawn {
     /// Starts on the first member.
-    pub fn new(meshes: [MeshHandle; PARTY_SLOTS]) -> Self {
+    pub(crate) fn new(meshes: [MeshHandle; PARTY_SLOTS]) -> Self {
         Self { meshes, slot: 0 }
     }
 
     /// The same member's mesh on a new renderer's `meshes`, for after device loss or a tier change.
-    pub fn on_new_renderer(self, meshes: [MeshHandle; PARTY_SLOTS]) -> Self {
+    pub(crate) fn on_new_renderer(self, meshes: [MeshHandle; PARTY_SLOTS]) -> Self {
         Self { meshes, ..self }
     }
 
     /// The mesh drawing now.
-    pub fn mesh(self) -> MeshHandle {
+    pub(crate) fn mesh(self) -> MeshHandle {
         self.meshes[self.slot]
     }
 
     /// The mesh to change to, if `party`'s member on the field has changed since last asked.
-    pub fn follow(&mut self, party: &Party) -> Option<MeshHandle> {
+    pub(crate) fn follow(&mut self, party: &Party) -> Option<MeshHandle> {
         let slot = party.active_slot().filter(|&slot| slot != self.slot)?;
         self.slot = slot;
         Some(self.mesh())

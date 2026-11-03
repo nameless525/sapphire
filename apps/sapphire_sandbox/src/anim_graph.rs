@@ -72,7 +72,7 @@ const FLOOR_REACH: f32 = 2_000.0;
 
 /// Which script drives the actor (`--graph`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum GraphScript {
+pub enum GraphScript {
     /// Stands still: an idle, breathing and blinking.
     Stand,
     /// The controller's walk, 2 m/s, straight ahead.
@@ -290,11 +290,11 @@ pub(crate) struct ClipTable<'a> {
 
 impl<'a> ClipTable<'a> {
     /// No clips: what a graph that isn't loaded plays from.
-    pub fn empty() -> Self {
+    pub(crate) fn empty() -> Self {
         Self { clips: [None; MAX_HELD_CLIPS], version: 0 }
     }
 
-    pub fn new(clips: impl Iterator<Item = (AssetId, Option<&'a ArchivedClip>, u32)>) -> Self {
+    pub(crate) fn new(clips: impl Iterator<Item = (AssetId, Option<&'a ArchivedClip>, u32)>) -> Self {
         let mut table = Self { clips: [None; MAX_HELD_CLIPS], version: 0 };
         for (slot, (id, clip, generation)) in table.clips.iter_mut().zip(clips) {
             *slot = clip.map(|clip| (id, clip));
@@ -304,7 +304,7 @@ impl<'a> ClipTable<'a> {
     }
 
     /// Changes when any clip here gets a new version.
-    pub fn version(&self) -> u32 {
+    pub(crate) fn version(&self) -> u32 {
         self.version
     }
 }
@@ -317,7 +317,7 @@ impl ClipSource for ClipTable<'_> {
 
 /// A character playing a graph. See the [module docs](self).
 #[derive(Component, Debug)]
-pub(crate) struct GraphDriver {
+pub struct GraphDriver {
     pub player: GraphPlayer,
     joints: FigureJoints,
     /// Where the character stands with its actor at the origin.
@@ -335,7 +335,7 @@ pub(crate) struct GraphDriver {
 }
 
 impl GraphDriver {
-    pub fn new(player: GraphPlayer, joints: FigureJoints) -> Self {
+    pub(crate) fn new(player: GraphPlayer, joints: FigureJoints) -> Self {
         Self {
             player,
             joints,
@@ -350,20 +350,20 @@ impl GraphDriver {
 
     /// This driver, finding the right hand at `joint`.
     #[cfg(test)]
-    pub fn with_right_hand(self, joint: usize) -> Self {
+    pub(crate) fn with_right_hand(self, joint: usize) -> Self {
         Self { joints: self.joints.with_right_hand(joint), ..self }
     }
 
     /// The right hand's joint in the character's space, as its pose has it now. `None` for a rig without
     /// one, and before its graph has made a pose: until then the character holds what it has.
-    pub fn right_hand(&self) -> Option<Mat4> {
+    pub(crate) fn right_hand(&self) -> Option<Mat4> {
         let joint = self.joints.right_hand().filter(|_| self.posed)?;
         Some(Mat4::from(self.player.pose().model()[joint]))
     }
 
     /// This driver, simulating `springs` beside its pose.
     #[must_use]
-    pub fn with_springs(self, springs: Option<SpringBones>) -> Self {
+    pub(crate) fn with_springs(self, springs: Option<SpringBones>) -> Self {
         Self { springs, ..self }
     }
 
@@ -380,34 +380,34 @@ impl GraphDriver {
     }
 
     /// Its IK, for whatever drives it.
-    pub fn ik_mut(&mut self) -> Option<&mut IkDriver> {
+    pub(crate) fn ik_mut(&mut self) -> Option<&mut IkDriver> {
         self.ik.as_mut()
     }
 
     /// Whether it solves IK.
-    pub fn has_ik(&self) -> bool {
+    pub(crate) fn has_ik(&self) -> bool {
         self.ik.is_some()
     }
 
     /// Stands the character at `base` when its actor is at the origin.
-    pub fn at(self, base: Mat4) -> Self {
+    pub(crate) fn at(self, base: Mat4) -> Self {
         Self { base, ..self }
     }
 
     /// Where the character stands with its actor at the origin.
-    pub fn base(&self) -> Mat4 {
+    pub(crate) fn base(&self) -> Mat4 {
         self.base
     }
 
     /// Whether it can play into `render`. It may not for a moment, when a new version of the character
     /// lands before the others: the character keeps the pose it has until they fit.
-    pub fn fits(&self, render: &RenderPose) -> bool {
+    pub(crate) fn fits(&self, render: &RenderPose) -> bool {
         render.palette.len() == self.player.pose().palette_len()
             && render.morph_weights.len() == self.player.pose().weights().len()
     }
 
     /// What the character's pose looks like now, in the shape its [`RenderPose`] takes.
-    pub fn render_pose(&self) -> RenderPose {
+    pub(crate) fn render_pose(&self) -> RenderPose {
         let pose = self.player.pose();
         let mut palette = vec![Affine3A::IDENTITY; pose.palette_len()];
         pose.write_palette(&mut palette);
@@ -416,7 +416,7 @@ impl GraphDriver {
 
     /// Takes over another driver's place, for a new version of the character under a graph that keeps
     /// playing.
-    pub fn continue_from(&mut self, other: &Self) {
+    pub(crate) fn continue_from(&mut self, other: &Self) {
         self.player.continue_from(&other.player);
         self.base = other.base;
         self.teleports = other.teleports;
@@ -430,12 +430,17 @@ impl GraphDriver {
 
     /// The teleports its springs have started over for, for tests.
     #[cfg(test)]
-    pub fn springs_saw(&self) -> u32 {
+    pub(crate) fn springs_saw(&self) -> u32 {
         self.teleports
     }
 
     /// Whether its springs run this frame, for a character `view` sees or doesn't.
-    pub fn springs_run(&mut self, view: &SpringView, transform: &RenderTransform, figure: &Figure) -> bool {
+    pub(crate) fn springs_run(
+        &mut self,
+        view: &SpringView,
+        transform: &RenderTransform,
+        figure: &Figure,
+    ) -> bool {
         self.springs.as_mut().is_some_and(|springs| view.decide(springs, transform, figure))
     }
 
@@ -447,7 +452,7 @@ impl GraphDriver {
     /// under a clip it shows at once (`IkDriver::wants_evaluation`, which resamples). A freeze is a
     /// few frames, nothing changes grip inside one yet, and hands aren't what a hit's freeze shows.
     /// A game that needs it can ask the player to hand over again. Allocates nothing.
-    pub fn pose_frame(&mut self, input: &GraphInput, clips: &ClipTable<'_>, place: Mat4) -> bool {
+    pub(crate) fn pose_frame(&mut self, input: &GraphInput, clips: &ClipTable<'_>, place: Mat4) -> bool {
         if let Some(ik) = &mut self.ik {
             ik.take_time(input.ticks);
             let feet = if input.locomotion.grounded { 1.0 } else { 0.0 };
@@ -477,25 +482,25 @@ impl GraphDriver {
 
 /// One character's frame: its driver and everything that follows the skeleton.
 pub(crate) struct GraphEvaluation<'a> {
-    pub driver: Mut<'a, GraphDriver>,
-    pub render: Mut<'a, RenderPose>,
-    pub figure: Mut<'a, Figure>,
-    pub rig: Mut<'a, CharacterLightRig>,
-    pub input: GraphInput,
+    pub(crate) driver: Mut<'a, GraphDriver>,
+    pub(crate) render: Mut<'a, RenderPose>,
+    pub(crate) figure: Mut<'a, Figure>,
+    pub(crate) rig: Mut<'a, CharacterLightRig>,
+    pub(crate) input: GraphInput,
     /// Where the character is this frame.
-    pub world_from_model: Affine3A,
+    pub(crate) world_from_model: Affine3A,
     /// Where it stands as the ground sees it: on a treadmill, what's drawn rather than how far it's run.
-    pub place: Mat4,
+    pub(crate) place: Mat4,
     /// Whether its springs run this frame ([`GraphDriver::springs_run`]).
-    pub springs_run: bool,
-    pub evaluated: bool,
-    pub spring_work: SpringWork,
-    pub spring_time: Duration,
+    pub(crate) springs_run: bool,
+    pub(crate) evaluated: bool,
+    pub(crate) spring_work: SpringWork,
+    pub(crate) spring_time: Duration,
 }
 
 impl GraphEvaluation<'_> {
     /// Evaluates the graph, runs the springs and hands over what changed. Allocates nothing.
-    pub fn run(&mut self, clips: &ClipTable<'_>) {
+    pub(crate) fn run(&mut self, clips: &ClipTable<'_>) {
         let driver = &mut *self.driver;
         self.evaluated = driver.pose_frame(&self.input, clips, self.place);
         if self.evaluated {
@@ -525,7 +530,7 @@ impl GraphEvaluation<'_> {
 }
 
 /// The simulation a script drives, and what a frame reads of it. See the [module docs](self).
-pub(crate) struct GraphShow {
+pub struct GraphShow {
     simulation: Simulation,
     actor: ActorId,
     /// The set its moves come from.
@@ -588,7 +593,7 @@ impl GraphShow {
     /// Takes a live edit of the document with this file name, if its moves come from that (M2 T2): the
     /// move playing keeps what it started with, and the next start reads this.
     #[cfg(feature = "dev")]
-    pub fn tune(
+    pub(crate) fn tune(
         &mut self,
         document: &str,
         set: sapphire_moves::MoveSet,
@@ -601,7 +606,7 @@ impl GraphShow {
 
     /// The set that plays the document with this file name, if it plays that.
     #[cfg(feature = "dev")]
-    pub fn plays(&self, document: &str) -> Option<sapphire_gameplay::MoveSetId> {
+    pub(crate) fn plays(&self, document: &str) -> Option<sapphire_gameplay::MoveSetId> {
         (document == sapphire_gameplay::replay::document_file_name(SHOW_MOVES_PATH)).then_some(self.moves)
     }
 
@@ -618,7 +623,7 @@ impl GraphShow {
     }
 
     /// One fixed step. Allocates nothing, as a game's wouldn't.
-    pub fn step(&mut self) {
+    pub(crate) fn step(&mut self) {
         let mut actions = TickActions::NEUTRAL;
         let held = ActorActions { buttons: self.script.buttons(self.tick), stick: self.script.stick() };
         actions.set(self.actor, held).expect("room for one actor");
@@ -633,7 +638,7 @@ impl GraphShow {
 
     /// What this frame asks of the graph, `alpha` of the way from the last step to the latest. A frozen
     /// clock's latest step didn't move it, so it reads the same at every `alpha`.
-    pub fn frame(&mut self, alpha: f32) -> GraphInput {
+    pub(crate) fn frame(&mut self, alpha: f32) -> GraphInput {
         let now = time_ticks(self.current.clock_now);
         let step = now - time_ticks(self.previous.clock_now);
         let alpha = if alpha >= 0.0 { f64::from(alpha.min(1.0)) } else { 0.0 };
@@ -651,7 +656,7 @@ impl GraphShow {
     }
 
     /// Where the actor is at `alpha`, in the world, less the ground its stick has covered.
-    pub fn transform(&self, alpha: f32) -> Mat4 {
+    pub(crate) fn transform(&self, alpha: f32) -> Mat4 {
         let alpha = if alpha >= 0.0 { alpha.min(1.0) } else { 0.0 };
         let place = |view: &ActorView| {
             if self.script.travels() { Vec3::new(0.0, view.position.y, 0.0) } else { view.position }
@@ -663,7 +668,7 @@ impl GraphShow {
 
     /// The ground its stick has covered at `alpha`, which [`Self::transform`] leaves out. The treadmill is
     /// for the shot: the character's hair still feels the run.
-    pub fn travel(&self, alpha: f32) -> Vec3 {
+    pub(crate) fn travel(&self, alpha: f32) -> Vec3 {
         if !self.script.travels() {
             return Vec3::ZERO;
         }
@@ -674,7 +679,7 @@ impl GraphShow {
 
     /// The latest view of the actor.
     #[cfg(test)]
-    pub fn view(&self) -> &ActorView {
+    pub(crate) fn view(&self) -> &ActorView {
         &self.current
     }
 }

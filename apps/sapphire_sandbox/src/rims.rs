@@ -54,16 +54,16 @@ const PANEL_HEIGHT: f32 = 7.0;
 /// image's left; elevation is above the horizon.
 #[derive(Component, Clone, Copy, Debug, PartialEq)]
 pub(crate) struct RimKey {
-    pub yaw: f32,
-    pub elevation: f32,
+    pub(crate) yaw: f32,
+    pub(crate) elevation: f32,
     /// Through the figure's light rig's limits (M1 C8), as play lights a character, rather than
     /// exactly at its angles.
-    pub folded: bool,
+    pub(crate) folded: bool,
 }
 
 impl RimKey {
     /// The unit vector toward the key light for a figure at `at` seen from a camera at `eye`.
-    pub fn toward(&self, eye: Vec3, at: Vec3) -> Vec3 {
+    pub(crate) fn toward(&self, eye: Vec3, at: Vec3) -> Vec3 {
         let back = Vec3::new(at.x - eye.x, 0.0, at.z - eye.z).normalize_or(Vec3::NEG_Z);
         let right = back.cross(Vec3::Y);
         let (yaw, elevation) = (self.yaw.to_radians(), self.elevation.to_radians());
@@ -73,7 +73,7 @@ impl RimKey {
 
 /// Which keys the figures take (`--rim-rig`): see the module docs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum RimLayout {
+pub enum RimLayout {
     Angles,
     Backlit,
     Folded,
@@ -91,7 +91,7 @@ impl RimLayout {
     }
 
     /// The figures' keys, left to right as the camera sees them.
-    pub fn keys(self) -> [RimKey; FIGURES] {
+    pub(crate) fn keys(self) -> [RimKey; FIGURES] {
         let key = |yaw, elevation| RimKey { yaw, elevation, folded: false };
         let folded = |yaw, elevation| RimKey { yaw, elevation, folded: true };
         match self {
@@ -113,15 +113,15 @@ pub(crate) enum Panel {
 
 /// The rig's meshes on a renderer: the figure and the backdrop's panels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct RimRigMeshes {
-    pub figure: MeshHandle,
-    pub dark: MeshHandle,
-    pub bright: MeshHandle,
+pub struct RimRigMeshes {
+    pub(crate) figure: MeshHandle,
+    pub(crate) dark: MeshHandle,
+    pub(crate) bright: MeshHandle,
 }
 
 impl RimRigMeshes {
     /// The mesh a backdrop panel draws.
-    pub fn panel(&self, panel: Panel) -> MeshHandle {
+    pub(crate) fn panel(&self, panel: Panel) -> MeshHandle {
         match panel {
             Panel::Dark => self.dark,
             Panel::Bright => self.bright,

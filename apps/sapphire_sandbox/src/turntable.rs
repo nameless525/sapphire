@@ -22,7 +22,7 @@ pub(crate) struct Turntable {
     /// sweeps the long way round.
     previous: f32,
     /// Radians per second of turntable time.
-    pub speed: f32,
+    pub(crate) speed: f32,
 }
 
 impl Default for Turntable {
@@ -46,7 +46,7 @@ impl Turntable {
     }
 
     /// The angle to draw, `alpha` of the way from the previous step to the latest.
-    pub fn angle(&self, alpha: f32) -> f32 {
+    pub(crate) fn angle(&self, alpha: f32) -> f32 {
         self.previous + (self.angle - self.previous) * alpha
     }
 }

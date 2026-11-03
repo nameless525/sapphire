@@ -47,7 +47,7 @@ const BLOCK_REACH: f32 = 6.0;
 
 /// What the character stands on (`--ik-ground`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum IkGround {
+pub enum IkGround {
     /// The square's paving, as it is.
     #[default]
     Flat,
@@ -91,7 +91,7 @@ impl IkGround {
 
     /// Where the stage's stone box goes, for each block: the box stands on its base's middle, a unit
     /// each way before these scales.
-    pub fn blocks(self) -> Vec<Mat4> {
+    pub(crate) fn blocks(self) -> Vec<Mat4> {
         self.boxes()
             .into_iter()
             .map(|(half, middle, turn)| {
@@ -102,7 +102,7 @@ impl IkGround {
     }
 
     /// Its colliders.
-    pub fn world(self) -> PhysicsWorld {
+    pub(crate) fn world(self) -> PhysicsWorld {
         let collider = |id: u32, half: Vec3, pose: Pose| StaticCollider {
             id: sapphire_physics::ColliderId(id),
             shape: StaticShape::Convex(Shape::Box { half_extents: half }),
@@ -119,7 +119,7 @@ impl IkGround {
 
     /// How high over its surface the root of a character whose capsule stands at this place on the
     /// ground rests, in `world`: the controller's round foot, as `sapphire_gameplay` leaves it.
-    pub fn stand(world: &PhysicsWorld, x: f32, z: f32) -> f32 {
+    pub(crate) fn stand(world: &PhysicsWorld, x: f32, z: f32) -> f32 {
         let half_height = CAPSULE_HEIGHT * 0.5 - CAPSULE_RADIUS;
         let shape = Shape::Capsule { half_height, radius: CAPSULE_RADIUS };
         let from = Vec3::new(x, 8.0, z);
@@ -133,7 +133,7 @@ impl IkGround {
 
 /// `--ik on` and what goes with it.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) struct IkOptions {
+pub struct IkOptions {
     /// What the character stands on (`--ik-ground`).
     pub ground: IkGround,
     /// What it looks at (`--ik-look`).
@@ -142,7 +142,7 @@ pub(crate) struct IkOptions {
 
 /// What a character looks at (`--ik-look`).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum IkLook {
+pub enum IkLook {
     /// A place in the world (`x,y,z`), relative to where the character's feet would be on flat ground.
     Point(Vec3),
     /// Something circling it at head height, a turn every [`ORBIT_TICKS`], so it keeps crossing
@@ -170,7 +170,7 @@ impl IkLook {
     }
 
     /// Where it is at `ticks` on the character's clock, with the character standing at `height`.
-    pub fn at(self, ticks: f64, height: f32) -> Vec3 {
+    pub(crate) fn at(self, ticks: f64, height: f32) -> Vec3 {
         match self {
             Self::Point(place) => place + Vec3::Y * height,
             Self::Orbit => {
@@ -186,13 +186,13 @@ impl IkLook {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct IkControls {
     /// 0 lets the feet go as animated, 1 grounds them: in the air, or a move that wants its feet, 0.
-    pub feet: f32,
+    pub(crate) feet: f32,
     /// What to look at, in the world.
-    pub look_target: Option<Vec3>,
+    pub(crate) look_target: Option<Vec3>,
     /// How much of the look to show.
-    pub look: f32,
+    pub(crate) look: f32,
     /// What the hands hold.
-    pub weapon: Option<HeldWeapon>,
+    pub(crate) weapon: Option<HeldWeapon>,
 }
 
 impl Default for IkControls {
@@ -203,7 +203,7 @@ impl Default for IkControls {
 
 /// One character's IK. See the [module docs](self).
 #[derive(Clone)]
-pub(crate) struct IkDriver {
+pub struct IkDriver {
     ik: CharacterIk,
     ground: Arc<PhysicsWorld>,
     controls: IkControls,
@@ -223,30 +223,30 @@ impl std::fmt::Debug for IkDriver {
 
 impl IkDriver {
     /// IK for a character with `rig`'s bones, on `ground`.
-    pub fn new(rig: IkRig, ground: Arc<PhysicsWorld>, controls: IkControls) -> Self {
+    pub(crate) fn new(rig: IkRig, ground: Arc<PhysicsWorld>, controls: IkControls) -> Self {
         let ik = CharacterIk::new(rig, FootSettings::default(), LookSettings::default());
         Self { ik, ground, controls, presented: None, dt: 0.0, solved: None }
     }
 
     /// The inputs it runs on.
-    pub fn controls(&self) -> IkControls {
+    pub(crate) fn controls(&self) -> IkControls {
         self.controls
     }
 
-    pub fn set_controls(&mut self, controls: IkControls) {
+    pub(crate) fn set_controls(&mut self, controls: IkControls) {
         self.controls = controls;
     }
 
     /// Starts over, for a character that jumped rather than moved: the next solve comes up from the
     /// pose, as secondary motion does.
-    pub fn reset(&mut self) {
+    pub(crate) fn reset(&mut self) {
         self.ik.reset();
         self.solved = None;
     }
 
     /// Whether anything it answers for wants the pose evaluated again, its clock now at `ticks` and the
     /// character at `transform`. See the [module docs](self).
-    pub fn wants_evaluation(&mut self, ticks: f64, transform: Mat4) -> bool {
+    pub(crate) fn wants_evaluation(&mut self, ticks: f64, transform: Mat4) -> bool {
         self.take_time(ticks);
         let Some((controls, place)) = self.solved else { return true };
         if self.dt == 0.0 {
@@ -256,14 +256,14 @@ impl IkDriver {
     }
 
     /// Its clock is now at `ticks`: the next solve takes the time since it was last told.
-    pub fn take_time(&mut self, ticks: f64) {
+    pub(crate) fn take_time(&mut self, ticks: f64) {
         let last = self.presented.replace(ticks);
         self.dt = last.map_or(0.0, |last| ((ticks - last).max(0.0) / f64::from(TICK_HZ)) as f32);
     }
 
     /// Solves `pose`, just sampled, for a character at `transform`. [`CharacterPose::finish`] comes
     /// after. Allocates nothing.
-    pub fn solve(&mut self, pose: &mut CharacterPose, transform: Mat4) {
+    pub(crate) fn solve(&mut self, pose: &mut CharacterPose, transform: Mat4) {
         let world_from_model = Affine3A::from_mat4(transform);
         self.ik.prepare(pose);
         let mut feet = FeetInput { weight: self.controls.feet, ..FeetInput::default() };

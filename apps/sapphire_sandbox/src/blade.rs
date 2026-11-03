@@ -27,8 +27,8 @@ pub(crate) fn socket() -> Mat4 {
 /// The blade's entity, and where the held pose has the hand that holds it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct HeldBlade {
-    pub entity: Entity,
-    pub held_hand: Mat4,
+    pub(crate) entity: Entity,
+    pub(crate) held_hand: Mat4,
 }
 
 #[cfg(test)]

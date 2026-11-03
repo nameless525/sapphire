@@ -30,12 +30,11 @@ pub(crate) const GRASS: AssetId = AssetId::from_text("14d8adcb-6683-4cdd-babd-a3
 
 /// The breeze `--foliage` blows unless `--wind` says otherwise: across the courtyard, slightly
 /// toward the camera, at the strength the materials are authored at, gusting a little.
-pub(crate) const DEFAULT_WIND: Wind =
-    Wind { direction: Vec3::new(0.944, 0.0, 0.33), strength: 1.0, gustiness: 0.3 };
+pub const DEFAULT_WIND: Wind = Wind { direction: Vec3::new(0.944, 0.0, 0.33), strength: 1.0, gustiness: 0.3 };
 
 /// How the camera shows the plants (`--foliage`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum FoliageView {
+pub enum FoliageView {
     /// The grove from in front of the character, the trees whole.
     Grove,
     /// The big tree from its far side, against the key light: light through its leaves.
@@ -66,14 +65,14 @@ pub(crate) enum Plant {
 
 /// The plants' meshes on a renderer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct FoliageMeshes {
-    pub tree: MeshHandle,
-    pub bush: MeshHandle,
-    pub grass: MeshHandle,
+pub struct FoliageMeshes {
+    pub(crate) tree: MeshHandle,
+    pub(crate) bush: MeshHandle,
+    pub(crate) grass: MeshHandle,
 }
 
 impl FoliageMeshes {
-    pub fn get(&self, plant: Plant) -> MeshHandle {
+    pub(crate) fn get(&self, plant: Plant) -> MeshHandle {
         match plant {
             Plant::Tree => self.tree,
             Plant::Bush => self.bush,

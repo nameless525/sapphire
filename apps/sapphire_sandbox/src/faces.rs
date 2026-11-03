@@ -80,19 +80,19 @@ pub(crate) const HEAD: AssetId = AssetId::from_text("cff436cc-9604-4a9f-8d3a-3bc
 /// axis -1 to 1: toward the head's left (+X; the image's right, facing the camera) and up.
 #[derive(Component, Clone, Copy, Debug, PartialEq)]
 pub(crate) struct FaceRig {
-    pub yaw: f32,
-    pub elevation: f32,
-    pub expression: FaceExpression,
-    pub turn: f32,
-    pub nod: f32,
-    pub blink: f32,
-    pub look: (f32, f32),
+    pub(crate) yaw: f32,
+    pub(crate) elevation: f32,
+    pub(crate) expression: FaceExpression,
+    pub(crate) turn: f32,
+    pub(crate) nod: f32,
+    pub(crate) blink: f32,
+    pub(crate) look: (f32, f32),
 }
 
 impl FaceRig {
     /// The unit vector toward the key light for a head facing `forward` with `up` (unit and
     /// perpendicular), whose right is `forward × up`.
-    pub fn toward_key(&self, forward: Vec3, up: Vec3) -> Vec3 {
+    pub(crate) fn toward_key(&self, forward: Vec3, up: Vec3) -> Vec3 {
         let (yaw, elevation) = (self.yaw.to_radians(), self.elevation.to_radians());
         let right = forward.cross(up);
         right * (yaw.sin() * elevation.cos()) + up * elevation.sin() + forward * (yaw.cos() * elevation.cos())
@@ -107,7 +107,7 @@ impl FaceRig {
     /// The head's morph weights for its blink and look (M1 C6), by the head's targets
     /// (`samples::face::MORPH_TARGETS`): the lids half closed, then the rest of the way, which
     /// apply one after the other; then the gaze toward the head's left, right, up and down.
-    pub fn morph_weights(&self) -> [f32; MORPH_TARGETS] {
+    pub(crate) fn morph_weights(&self) -> [f32; MORPH_TARGETS] {
         let (blink, (x, y)) = (self.blink.clamp(0.0, 1.0), self.look);
         [
             (2.0 * blink).min(1.0),
@@ -120,7 +120,7 @@ impl FaceRig {
     }
 
     /// The head's pose for the renderer: no joints, its morph weights.
-    pub fn render_pose(&self) -> RenderPose {
+    pub(crate) fn render_pose(&self) -> RenderPose {
         RenderPose { palette: Vec::new(), morph_weights: self.morph_weights().to_vec() }
     }
 }
@@ -170,8 +170,8 @@ pub(crate) enum HeadLight {
 /// brightest channel), linear light.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct GiCeilings {
-    pub saturation: f32,
-    pub value: f32,
+    pub(crate) saturation: f32,
+    pub(crate) value: f32,
 }
 
 /// How many times the GI layouts raise the default preset's GI. With the key light off, the GI
@@ -187,7 +187,7 @@ pub(crate) const CLAMPED_GI: GiCeilings = GiCeilings { saturation: 0.2, value: 0
 
 /// Which heads the rig shows (`--face-layout`): see the module docs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum FaceLayout {
+pub enum FaceLayout {
     #[default]
     Lights,
     Hair,
@@ -204,7 +204,7 @@ pub(crate) enum FaceLayout {
 
 impl FaceLayout {
     #[cfg(test)]
-    pub const ALL: [Self; 11] = [
+    pub(crate) const ALL: [Self; 11] = [
         Self::Lights,
         Self::Hair,
         Self::Highlights,
@@ -252,7 +252,7 @@ impl FaceLayout {
     }
 
     /// The layout's rows, top to bottom, each left to right as the camera sees it.
-    pub fn rows(self) -> &'static [&'static [FaceRig]] {
+    pub(crate) fn rows(self) -> &'static [&'static [FaceRig]] {
         match self {
             Self::Lights => &LIGHTS,
             Self::Hair => &HAIR,
@@ -268,7 +268,7 @@ impl FaceLayout {
     }
 
     /// How the layout lights its heads: the GI layouts by their GI alone (M1 C2).
-    pub fn light(self) -> HeadLight {
+    pub(crate) fn light(self) -> HeadLight {
         match self {
             Self::Lights | Self::Hair | Self::Highlights | Self::Turn | Self::Backlit => HeadLight::Key,
             Self::Eyes | Self::EyesTurned | Self::Gaze | Self::Blink => HeadLight::Key,
@@ -288,7 +288,7 @@ impl FaceLayout {
     }
 
     /// Heads in the layout.
-    pub fn heads(self) -> usize {
+    pub(crate) fn heads(self) -> usize {
         self.rows().iter().map(|row| row.len()).sum()
     }
 }
@@ -478,7 +478,7 @@ pub(crate) fn character(
 /// materials the sandbox uploads (M1 C8): a face's bangs' shadow's soft edge and hair's light
 /// through it, each edited into a copy of the cooked material as it loads.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) struct MaterialOverrides {
+pub struct MaterialOverrides {
     /// Faces' bangs' shadow's soft edge, in meters, for faces that cast one.
     pub hair_shadow_softness: Option<f32>,
     /// Hair's transmission strength, at its sharpness (the default's, where it had none).
@@ -493,7 +493,7 @@ impl MaterialOverrides {
 
     /// Applies them to `material`, where it is a face or hair they change. Returns whether it
     /// changed.
-    pub fn apply(&self, material: &mut Material) -> bool {
+    pub(crate) fn apply(&self, material: &mut Material) -> bool {
         let mut changed = false;
         material.edit_anime_character(|params| match params.modes[2] {
             AnimeCharacterParams::SURFACE_FACE => {

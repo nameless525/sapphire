@@ -43,7 +43,7 @@ impl DebugDrawDemo {
     }
 
     /// Once, as the scene starts: what stays.
-    pub fn draw_once(self) {
+    pub(crate) fn draw_once(self) {
         match self {
             Self::Shapes => {
                 let timed = Style::new(Color::rgb(160, 120, 255)).for_seconds(LONG);
@@ -56,14 +56,14 @@ impl DebugDrawDemo {
     }
 
     /// Inside each fixed step: held until the next, whatever the frame rate.
-    pub fn draw_in_step(self) {
+    pub(crate) fn draw_in_step(self) {
         if self == Self::Shapes {
             dd::arrow(Vec3::new(-0.5, 2.25, 0.0), Vec3::new(0.5, 2.25, 0.0), Color::GREEN);
         }
     }
 
     /// Each frame.
-    pub fn draw_in_frame(self) {
+    pub(crate) fn draw_in_frame(self) {
         match self {
             Self::Shapes => shapes(),
             Self::Lines(count) => lines(count),

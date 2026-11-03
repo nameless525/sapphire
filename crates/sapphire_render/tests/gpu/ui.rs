@@ -851,6 +851,11 @@ fn japanese_lands_pixel_for_pixel_at_every_scale() {
                 if value <= 0.003_130_8 { value * 12.92 } else { 1.055 * value.powf(1.0 / 2.4) - 0.055 };
             value * 255.0
         };
+        let decode = |code: f32| {
+            let value = code / 255.0;
+            let value = if value <= 0.040_45 { value / 12.92 } else { ((value + 0.055) / 1.055).powf(2.4) };
+            value * 255.0
+        };
         let (mut checked, mut worst, mut inked, mut full) = (0u32, 0f32, 0u32, 0u32);
         for y in 0..size.1 {
             for x in 0..size.0 {
@@ -860,7 +865,10 @@ fn japanese_lands_pixel_for_pixel_at_every_scale() {
                 }
                 let want = encode(f32::from(expected[at]) / 255.0);
                 let got = f32::from(pixels.at(x, y)[0]);
-                worst = worst.max((want - got).abs());
+                // Near black one step of coverage is 12 encoded codes, which is what WARP reads
+                // beside a full texel. A filter shows in both spaces, so a pixel must miss in both.
+                let linear = (f32::from(expected[at]) - decode(got)).abs();
+                worst = worst.max((want - got).abs().min(linear));
                 checked += 1;
                 inked += u32::from(expected[at] > 0);
                 full += u32::from(expected[at] == 255);

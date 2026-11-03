@@ -77,7 +77,8 @@ pub enum RawInput {
     /// releases may never arrive. Sequences in progress are canceled too: a double tap waiting
     /// for its second press goes idle, so the first press after the return starts a new one.
     /// A run of motion ends here as well: its action keeps what it took this update, and nothing
-    /// fires when it stops.
+    /// fires when it stops. An axis away from rest may be held still, and reports only as it moves, so
+    /// its first report after this comes back as held, not as a press.
     ///
     /// [`InputSystem::handle_event`](crate::InputSystem::handle_event) also takes the key and
     /// mouse button releases queued right before it as part of the loss. Pushed directly, it

@@ -26,7 +26,8 @@ use serde::{Deserialize, Serialize};
 /// that must be triggered for the binding to fire at all.
 ///
 /// An input already held when a binding becomes active (its context was enabled, or a rebind) reads
-/// as nothing to every trigger but `Down` until it lets go. So `Down` suits levels, such as a stick
+/// as nothing to every trigger but `Down` until it lets go, as does an axis held through a loss of
+/// focus or the foreground once it reports again. So `Down` suits levels, such as a stick
 /// that should keep moving across a menu, and `DownFromPress` suits verbs: the button that closed
 /// the menu isn't also an attack, and one held through a pause isn't pressed again.
 ///

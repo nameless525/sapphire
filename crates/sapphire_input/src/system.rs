@@ -11,7 +11,7 @@ use crate::gesture::{Gestures, PressChange};
 use crate::map::{ActionId, Channel, ContextId, InputMap, MapError, SourceId, VirtualControl};
 use crate::modifier;
 use crate::raw::{PlatformAdapter, RawInput};
-use crate::source::{Key, Source};
+use crate::source::{Key, PadAxis, Source};
 use crate::trigger::{self, Abort, Memory, TriggerState};
 
 /// The longest update [`Modifier::ScaleByDeltaTime`](crate::Modifier::ScaleByDeltaTime) sees,
@@ -587,11 +587,15 @@ impl InputSystem {
                 }
             }
             RawInput::PadAxis { pad, axis, value } => {
+                let held = self.devices.take_held_through_loss(pad, axis);
                 // Captured but not swallowed: the axis must keep reading true.
-                if value.abs() >= CAPTURE_AXIS {
+                if !held && value.abs() >= CAPTURE_AXIS {
                     self.capture(|| Source::PadAxis(axis));
                 }
                 if self.devices.set_pad_axis(pad, axis, value) {
+                    if held {
+                        self.enter_held_axis(axis);
+                    }
                     self.evaluate(now, MotionPass::Keep, Abort::No);
                 }
             }
@@ -643,6 +647,26 @@ impl InputSystem {
                 // Motion bindings are judged too, on what they took so far, so the loss ends
                 // their sequences and their runs as well (`Abort::All`).
                 self.evaluate(now, MotionPass::All, Abort::All);
+            }
+        }
+    }
+
+    /// `axis` has reported for the first time since everything let go, which it was held through.
+    /// Its bindings take that as a binding becoming active takes what's held: edge triggers wait for it
+    /// to let go, and a level reads on. One that another pad keeps actuated has no edge to lose.
+    fn enter_held_axis(&mut self, axis: PadAxis) {
+        for &index in &self.active {
+            let binding = &self.map.bindings()[index];
+            let reads = match binding.source {
+                SourceId::PadAxis(read) => read == axis,
+                SourceId::PadStick(stick) => {
+                    let (x, y) = stick.axes();
+                    x == axis || y == axis
+                }
+                _ => false,
+            };
+            if reads && !self.bindings[index].memory.actuated() {
+                self.bindings[index].memory = entering(&self.map, &self.devices, index, self.frame, self.dt);
             }
         }
     }
@@ -794,10 +818,7 @@ impl InputSystem {
         for (index, state) in self.bindings.iter_mut().enumerate() {
             match (state.active, state.include) {
                 (false, true) => {
-                    let binding = &map.bindings()[index];
-                    let raw = self.devices.value(binding.source, self.frame);
-                    let value = modifier::apply_all(map.modifiers(binding), raw, self.dt);
-                    state.memory = Memory::entering(is_actuated(value, binding.threshold, false));
+                    state.memory = entering(map, &self.devices, index, self.frame, self.dt);
                     state.output = Output::default();
                     // Closed until the evaluation after this rebuild opens it.
                     state.accepted = Accepted::default();
@@ -812,6 +833,14 @@ impl InputSystem {
             state.active = state.include;
         }
     }
+}
+
+/// What a binding remembers on becoming active with its source reading as it does now.
+fn entering(map: &InputMap, devices: &Devices, index: usize, frame: u64, dt: f32) -> Memory {
+    let binding = &map.bindings()[index];
+    let raw = devices.value(binding.source, frame);
+    let value = modifier::apply_all(map.modifiers(binding), raw, dt);
+    Memory::entering(is_actuated(value, binding.threshold, false))
 }
 
 /// Whether a binding reading `value` is actuated, given whether it was: it takes `threshold` to start,

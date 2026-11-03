@@ -916,6 +916,103 @@ fn a_control_held_through_a_rebind_is_still_held_and_no_new_press() {
     assert!(fired.contains(&ev("attack", Triggered, 60)), "pressed again, it counts: {fired:?}");
 }
 
+/// An axis reports only as it moves, so one held through a loss of focus says so with its first jitter
+/// on the way back, and that's the same hold rather than a press. It's what a binding entering with it
+/// held sees: edge triggers wait for it to let go, and a level reads on.
+#[test]
+fn an_axis_held_through_a_loss_comes_back_as_held_not_pressed() {
+    let map = map(
+        r#"(name: "fire", kind: Button), (name: "walk", kind: Axis1D), (name: "look", kind: Axis2D)"#,
+        r#"(name: "main", bindings: [
+            (action: "fire", source: PadAxis(RightTrigger), trigger: DownFromPress),
+            (action: "walk", source: PadAxis(LeftX)),
+            (action: "look", source: PadStick(Right)),
+        ])"#,
+    );
+    let axis = |axis, value| RawInput::PadAxis { pad: 0, axis, value };
+    let mut rig = Rig::new(map, &["main"]);
+    rig.push(1, RawInput::GamepadAdded { pad: 0, kind: GamepadType::XboxOne });
+    rig.push(2, axis(PadAxis::RightTrigger, 0.9));
+    rig.push(3, axis(PadAxis::LeftX, 0.8));
+    rig.push(4, axis(PadAxis::RightX, 0.7));
+    assert!(rig.update(10).contains(&ev("fire", Triggered, 2)));
+
+    rig.focus_lost(20);
+    rig.update(30);
+    assert_eq!(rig.value("fire"), Vec2::ZERO);
+    assert_eq!(rig.value("walk"), Vec2::ZERO, "held or not, nothing reads through a loss");
+
+    // Back, and each axis jitters at last. Levels read as soon as they know.
+    rig.push(40, axis(PadAxis::RightTrigger, 0.89));
+    rig.push(41, axis(PadAxis::LeftX, 0.81));
+    rig.push(42, axis(PadAxis::RightX, 0.71));
+    assert_eq!(rig.update_for(50, "fire"), [], "the same hold");
+    assert_eq!(rig.value("walk"), Vec2::new(0.81, 0.0));
+    assert_eq!(rig.value("look"), Vec2::new(0.71, 0.0));
+
+    rig.push(60, axis(PadAxis::RightTrigger, 0.9));
+    assert_eq!(rig.update_for(70, "fire"), [], "and again");
+
+    // Let go, nothing fires, and the next press is a press.
+    rig.push(80, axis(PadAxis::RightTrigger, 0.0));
+    assert_eq!(rig.update_for(90, "fire"), []);
+    rig.push(100, axis(PadAxis::RightTrigger, 0.9));
+    assert!(rig.update(110).contains(&ev("fire", Triggered, 100)));
+    rig.push(120, axis(PadAxis::RightTrigger, 0.0));
+    rig.update(130);
+
+    // At rest as focus goes, a press after it counts, however suddenly it reads.
+    rig.focus_lost(140);
+    rig.update(150);
+    rig.push(160, axis(PadAxis::RightTrigger, 0.9));
+    assert!(rig.update(170).contains(&ev("fire", Triggered, 160)));
+
+    // Eased off past the threshold before its first report: that's let go, so a press follows.
+    rig.focus_lost(180);
+    rig.update(190);
+    rig.push(200, axis(PadAxis::RightTrigger, 0.2));
+    assert_eq!(rig.update_for(210, "fire"), []);
+    rig.push(220, axis(PadAxis::RightTrigger, 0.9));
+    assert!(rig.update(230).contains(&ev("fire", Triggered, 220)));
+
+    // Two losses with no report between them are still one hold.
+    rig.focus_lost(240);
+    rig.update(250);
+    rig.focus_lost(260);
+    rig.update(270);
+    rig.push(280, axis(PadAxis::RightTrigger, 0.9));
+    assert_eq!(rig.update_for(290, "fire"), []);
+
+    // A pad that went and came back has nothing held.
+    rig.focus_lost(300);
+    rig.push(310, RawInput::GamepadRemoved { pad: 0 });
+    rig.push(320, RawInput::GamepadAdded { pad: 0, kind: GamepadType::XboxOne });
+    rig.update(330);
+    rig.push(340, axis(PadAxis::RightTrigger, 0.9));
+    assert!(rig.update(350).contains(&ev("fire", Triggered, 340)));
+}
+
+/// A rebinding UI's capture is a choice, so a trigger still down from before the loss isn't one.
+#[test]
+fn an_axis_held_through_a_loss_is_not_captured() {
+    let map = map(r#"(name: "fire", kind: Button)"#, r#"(name: "main", bindings: [])"#);
+    let axis = |value| RawInput::PadAxis { pad: 0, axis: PadAxis::RightTrigger, value };
+    let mut rig = Rig::new(map, &["main"]);
+    rig.push(1, RawInput::GamepadAdded { pad: 0, kind: GamepadType::XboxOne });
+    rig.push(2, axis(0.9));
+    rig.update(10);
+    rig.focus_lost(20);
+    rig.update(30);
+    rig.input.capture_next();
+    rig.push(40, axis(0.89));
+    rig.update(50);
+    assert_eq!(rig.input.take_captured(), None);
+    rig.push(60, axis(0.0));
+    rig.push(70, axis(0.9));
+    rig.update(80);
+    assert_eq!(rig.input.take_captured(), Some(Source::PadAxis(PadAxis::RightTrigger)));
+}
+
 #[test]
 fn losing_focus_releases_everything_without_firing_releases() {
     let map = map(

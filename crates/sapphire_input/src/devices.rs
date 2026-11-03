@@ -63,6 +63,9 @@ struct Pad {
     buttons: u64,
     /// SDL's conventions: sticks −1..=1 with +y down, triggers 0..=1.
     axes: [f32; 6],
+    /// Axes away from rest when everything let go that haven't reported since. An axis reports only as
+    /// it moves, so nothing else says one is still held.
+    held_through_loss: [bool; 6],
 }
 
 /// Motion summed between updates. `frame` is the update it belongs to: the sum restarts with
@@ -176,6 +179,12 @@ impl Devices {
         old != value
     }
 
+    /// Whether this report is the first since everything let go from an axis that wasn't at rest then:
+    /// it may well be the same hold, not a press. True once per loss.
+    pub fn take_held_through_loss(&mut self, pad: usize, axis: PadAxis) -> bool {
+        self.pads.get_mut(pad).is_some_and(|slot| std::mem::take(&mut slot.held_through_loss[axis.index()]))
+    }
+
     pub fn set_press(&mut self, down: bool) -> bool {
         std::mem::replace(&mut self.press, down) != down
     }
@@ -214,6 +223,9 @@ impl Devices {
         self.mouse = 0;
         for pad in &mut self.pads {
             pad.buttons = 0;
+            for (held, axis) in pad.held_through_loss.iter_mut().zip(pad.axes) {
+                *held |= axis != 0.0;
+            }
             pad.axes = [0.0; 6];
         }
         self.press = false;

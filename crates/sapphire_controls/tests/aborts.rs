@@ -163,6 +163,29 @@ fn abort_all_losing_focus_or_the_foreground_lets_go_of_everything() {
     }
 }
 
+/// The ultimate is the right trigger's, the one verb on an axis. An axis reports only as it moves, so
+/// a trigger held through a loss says so with its first jitter on the way back.
+#[test]
+fn a_trigger_held_through_a_loss_is_no_new_press() {
+    const ULTIMATE: Buttons = Buttons::ULTIMATE;
+    let mut rig = Rig::new();
+    rig.frame(&[axis(PadAxis::RightTrigger, 1.0)]);
+    assert_eq!(rig.steps(1), [ULTIMATE]);
+    assert_eq!(rig.controls.stats().presses, 1);
+    rig.focus_lost(1, &[]);
+    rig.finish_frame();
+    assert_eq!(rig.steps(1), [N]);
+
+    rig.frame(&[axis(PadAxis::RightTrigger, 0.98)]);
+    assert_eq!(rig.steps(2), [N, N], "it was down all along");
+    assert_eq!(rig.controls.stats().presses, 1);
+
+    rig.frame(&[axis(PadAxis::RightTrigger, 0.0)]);
+    rig.frame(&[axis(PadAxis::RightTrigger, 1.0)]);
+    assert_eq!(rig.steps(1), [ULTIMATE], "let go and pressed, it counts");
+    assert_eq!(rig.controls.stats().presses, 2);
+}
+
 #[test]
 fn on_a_loss_the_stats_count_no_press_that_was_not_made() {
     let mut rig = Rig::new();

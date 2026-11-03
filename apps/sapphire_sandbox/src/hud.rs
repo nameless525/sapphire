@@ -106,6 +106,8 @@ pub(crate) struct SandboxHud {
     logged_at: Timestamp,
     /// What a fight says of its fighters.
     fight: Option<HudValues>,
+    /// The tick whose hits it last read, in this fight.
+    hits_read: Option<u64>,
     /// A window's metrics this frame, read by [`Self::update`]; offscreen frames have none.
     window_metrics: Option<UiMetrics>,
     /// The metrics the layout was made for.
@@ -141,6 +143,7 @@ impl SandboxHud {
             camera_logged: Vec2::ZERO,
             logged_at: Timestamp::default(),
             fight: None,
+            hits_read: None,
             window_metrics: None,
             metrics: None,
             touched: false,
@@ -167,9 +170,15 @@ impl SandboxHud {
     /// A new fight: the last one's numbers go with it. Offscreen they'd otherwise stay until the new
     /// fight's clock caught up with when they were born. A fixed frame's are its own.
     pub fn start_over(&mut self) {
+        self.hits_read = None;
         if self.options.mode == HudMode::Live {
             self.hud.clear_damage();
         }
+    }
+
+    /// Whether the step at `tick` still has hits to read: once a tick, in a fight.
+    pub fn reads_hits_of(&mut self, tick: u64) -> bool {
+        self.hits_read.replace(tick) != Some(tick)
     }
 
     /// Someone else came in for a fighter, `[player, enemy]`.

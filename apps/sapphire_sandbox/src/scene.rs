@@ -2372,9 +2372,13 @@ impl Scene {
         }
     }
 
-    /// The hits `sim`'s latest step landed, as the HUD's numbers.
+    /// The hits `sim`'s latest step landed, as the HUD's numbers, once: a run that's stopped takes no more
+    /// steps, and its last one's cues stand.
     pub fn show_damage(&mut self, sim: &Simulation) {
         let Some(hud) = &mut self.hud else { return };
+        if !hud.reads_hits_of(sim.tick()) {
+            return;
+        }
         let camera = self.ecs.world().resource::<OrbitCamera>().camera_data(self.view_aspect);
         let view_projection = camera.proj * camera.view;
         for cue in sim.cues() {
@@ -4653,6 +4657,54 @@ mod tests {
         assert_eq!(effects, sapphire_render::PostEffects::NONE, "no screen effect of the last fight");
         assert!(tilt < 1e-5, "no shake of the last fight: {tilt}");
         assert_eq!(numbers, 0, "no number of the last fight");
+    }
+
+    /// A step's cues stand until the next step, and a recording stopped at its limit or a replay past its
+    /// end takes none, so the frames after it read the same hits. They show once, and a new fight's show
+    /// whatever tick they land on.
+    #[test]
+    fn a_steps_hits_show_once_however_often_theyre_read() {
+        use crate::hud::{HudMode, HudOptions};
+
+        let option = crate::options::CombatOption::Fight { script: Some("idle".to_owned()), party: false };
+        let mut combat = crate::combat::Combat::new(&option).expect("sets up");
+        let cast = combat.cast().to_vec();
+        let (mut scene, _) = arena_stage(ArenaShot::Director);
+        scene.set_hud(SandboxHud::for_fight(HudOptions { mode: HudMode::Live, ..HudOptions::default() }));
+        let numbers = |scene: &mut Scene| {
+            scene.drive_arena_camera(1.0 / TICK_HZ as f32, sapphire_math::Vec2::ZERO, 0.0);
+            let _ = scene.frame_packet(1.0, Some((640, 360)));
+            let (hud, _) = scene.hud().expect("set").last_frame();
+            scene.end_frame();
+            hud.damage_numbers
+        };
+        while !combat.simulation().cues().any(|cue| cue.hit.is_some()) {
+            let _ = numbers(&mut scene);
+            combat.step(&mut crate::combat::no_bindings);
+            scene.follow_simulation(combat.simulation(), &cast);
+            assert!(combat.simulation().tick() < 2000, "someone lands a hit by now");
+        }
+
+        scene.show_damage(combat.simulation());
+        let once = numbers(&mut scene);
+        assert!(once > 0, "the number's up");
+        for _ in 0..5 {
+            scene.show_damage(combat.simulation());
+        }
+        assert_eq!(numbers(&mut scene), once, "the same tick's hits again");
+
+        // A script's fight lands the same hit on the same tick, and it's a new one.
+        let tick = combat.simulation().tick();
+        combat.restart();
+        combat.step(&mut crate::combat::no_bindings);
+        scene.follow_simulation(combat.simulation(), &cast);
+        while combat.simulation().tick() < tick {
+            let _ = numbers(&mut scene);
+            combat.step(&mut crate::combat::no_bindings);
+            scene.follow_simulation(combat.simulation(), &cast);
+        }
+        scene.show_damage(combat.simulation());
+        assert_eq!(numbers(&mut scene), once, "the new fight's");
     }
 
     /// A step's firing allocates nothing once a whole fight has warmed it (rule R6). The simulation's

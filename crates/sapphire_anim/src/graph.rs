@@ -1077,6 +1077,13 @@ impl GraphPlayer {
         self.replacement.is_some()
     }
 
+    /// The clips this player may still read: its graph's, and from the next state's start the waiting
+    /// one's. A clip source has to keep these, or what's playing draws the rest pose in their place.
+    pub fn clips_in_use(&self) -> impl Iterator<Item = AssetId> + '_ {
+        let waiting = self.replacement.iter().flat_map(|graph| graph.clips.iter());
+        self.graph.clips.iter().chain(waiting).copied()
+    }
+
     /// Takes over another player's place, for a new version of the character under a graph that keeps
     /// playing: what its layers are doing, and if the joints are the same ones, its pose and decay.
     pub fn continue_from(&mut self, other: &Self) {

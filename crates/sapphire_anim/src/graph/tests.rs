@@ -247,6 +247,21 @@ fn turn_of(player: &GraphPlayer, joint: u16) -> Quat {
     player.pose().locals()[usize::from(joint)].rotation
 }
 
+/// What a clip source has to keep: the graph playing's until the next state's start, and the waiting one's
+/// from then, with nothing of the graph that's gone.
+#[test]
+fn a_player_says_which_clips_it_may_still_read() {
+    let fixture = fixture();
+    let named =
+        |text: &str| -> Vec<AssetId> { fixture.graph(text).clips.iter().map(|clip| clip.id).collect() };
+    let mut player = fixture.player(&plain());
+    assert_eq!(player.clips_in_use().collect::<Vec<_>>(), named(&plain()));
+
+    player.replace(fixture.bind(&fixture.graph(&jumping())));
+    let both = [named(&plain()), named(&jumping())].concat();
+    assert_eq!(player.clips_in_use().collect::<Vec<_>>(), both);
+}
+
 #[test]
 fn a_frozen_clock_evaluates_nothing_and_holds_every_bit() {
     let fixture = fixture();

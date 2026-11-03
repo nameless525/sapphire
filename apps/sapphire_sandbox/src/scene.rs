@@ -1308,7 +1308,7 @@ impl Scene {
         if waits {
             return Err("a new version of this character is still landing: push again once it has".to_owned());
         }
-        content.hold_clips_of(owner, &graph, renderer, gpu)?;
+        content.hold_clips_of(owner, &graph, &self.clips_in_use(Some(entity)), renderer, gpu)?;
         let binding = match owner {
             GraphOwner::Character => lookdev::graph_binding_of(content, &graph)?,
             GraphOwner::Enemy => content.enemy_binding_of(&graph)?,
@@ -1320,6 +1320,19 @@ impl Scene {
         Ok(())
     }
 
+    /// The clips `entity`'s graph player may still read, which whatever replaces its graph has to keep.
+    fn clips_in_use(&self, entity: Option<Entity>) -> Vec<sapphire_assets::AssetId> {
+        let playing = entity.and_then(|entity| self.ecs.world().get::<GraphDriver>(entity));
+        playing.map_or_else(Vec::new, |driver| driver.player.clips_in_use().collect())
+    }
+
+    /// Has `content` hold what the graphs name now, with what their players still read.
+    fn hold_graph_clips(&self, content: &mut Content) -> Result<(), sapphire_assets::LoadError> {
+        let character = self.clips_in_use(Some(self.character));
+        let enemy = self.clips_in_use(self.enemy.map(|(warrior, _)| warrior));
+        content.hold_graph_clips((&character, &enemy))
+    }
+
     /// Takes in a new version of the character, the graph or a clip it names. A new character's joints
     /// are others, so its driver starts from where the old one was, once it can: its parts and its clips
     /// can land frames apart, so until all of them fit it keeps what it has, tries again as each lands,
@@ -1329,7 +1342,7 @@ impl Scene {
     ///
     /// [`GraphPlayer::replace`]: sapphire_anim::GraphPlayer::replace
     fn replace_graph(&mut self, content: &mut Content, character_changed: bool, graph_changed: bool) {
-        if let Err(error) = content.hold_graph_clips() {
+        if let Err(error) = self.hold_graph_clips(content) {
             tracing::warn!(target: LOG_TARGET, %error, "the character's graph lost a clip");
         }
         let character = self.character;
@@ -1385,7 +1398,7 @@ impl Scene {
     /// as each part lands.
     fn replace_enemy(&mut self, content: &mut Content) {
         let Some((warrior, blade)) = self.enemy else { return };
-        if let Err(error) = content.hold_graph_clips() {
+        if let Err(error) = self.hold_graph_clips(content) {
             tracing::warn!(target: LOG_TARGET, %error, "the enemy's graph lost a clip");
         }
         let ground = self.arena.as_ref().filter(|_| self.fighters_posed).map(|arena| arena.ground());

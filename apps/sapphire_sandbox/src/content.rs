@@ -348,15 +348,17 @@ impl GpuAssets {
 /// ([`Content::renderer_rebuilt`]).
 pub(crate) struct RendererAssets(GpuAssets);
 
-/// `named`, and those of `held` it doesn't name while there's room: a graph still playing reads them
-/// until its next state's start, and draws the rest pose without them.
+/// `named`, and those of `held` that `in_use` lists: a graph still playing reads them until its next
+/// state's start, one waiting reads them from then, and each draws the rest pose without them
+/// ([`sapphire_anim::GraphPlayer::clips_in_use`]). The rest go, so what's held is at most
+/// [`crate::anim_graph::MAX_HELD_CLIPS`], however many edits come before a state starts.
 fn keeping_held(
     mut named: Vec<(AssetId, Handle<Clip>)>,
     held: &[(AssetId, Handle<Clip>)],
+    in_use: &[AssetId],
 ) -> Vec<(AssetId, Handle<Clip>)> {
     for old in held {
-        let room = named.len() < sapphire_assets::graph::MAX_GRAPH_CLIPS;
-        if room && !named.iter().any(|(id, _)| *id == old.0) {
+        if in_use.contains(&old.0) && !named.iter().any(|(id, _)| *id == old.0) {
             named.push(old.clone());
         }
     }
@@ -377,11 +379,11 @@ struct HeldGraph {
 }
 
 impl HeldGraph {
-    /// Takes handles on the clips it names now, [keeping](keeping_held) those it held.
-    fn hold_clips(&mut self, server: &mut AssetServer) -> Result<(), LoadError> {
+    /// Takes handles on the clips it names now, [keeping](keeping_held) those of its own that are `in_use`.
+    fn hold_clips(&mut self, server: &mut AssetServer, in_use: &[AssetId]) -> Result<(), LoadError> {
         let Some(ids) = self.clip_ids(server) else { return Ok(()) };
         let clips = ids.into_iter().map(|id| Ok((id, server.load_with(id, LoadPriority::Critical)?)));
-        self.clips = keeping_held(clips.collect::<Result<_, LoadError>>()?, &self.clips);
+        self.clips = keeping_held(clips.collect::<Result<_, LoadError>>()?, &self.clips, in_use);
         Ok(())
     }
 
@@ -409,10 +411,12 @@ impl HeldGraph {
         ClipTable::new(self.clips.iter().map(|(id, clip)| (*id, server.get(clip), server.generation(clip))))
     }
 
-    /// A number that moves with any new version of it or its clips.
+    /// A number that moves with any new version of it or its clips, and as a clip first lands: a graph
+    /// that named one before it was resident can bind now.
     fn version(&self, server: &AssetServer) -> u32 {
         self.clips.iter().fold(server.generation(&self.graph), |versions, (_, clip)| {
-            versions.wrapping_add(server.generation(clip))
+            let landed = u32::from(server.get(clip).is_some());
+            versions.wrapping_add(server.generation(clip)).wrapping_add(landed)
         })
     }
 }
@@ -1200,15 +1204,21 @@ impl Content {
             self.gpu.unload(unloaded);
         }
         loaded.map_err(|error| AppInitError::msg(format!("the graph {id} didn't load: {error}")))?;
-        held.hold_clips(&mut self.server).map_err(AppInitError::msg)?;
+        held.hold_clips(&mut self.server, &[]).map_err(AppInitError::msg)?;
         Ok(held)
     }
 
-    /// Takes handles on the clips the graphs name now, which they keep loaded as their dependencies: a
-    /// new version may name others. Allocates, so only when [`Self::take_graph_changed`] says so.
-    pub fn hold_graph_clips(&mut self) -> Result<(), LoadError> {
-        for held in [&mut self.enemy_graph, &mut self.graph].into_iter().flatten() {
-            held.hold_clips(&mut self.server)?;
+    /// Takes handles on the clips the graphs name now, which they keep loaded as their dependencies, with
+    /// those of the character's and the enemy's that their players have `in_use`: a new version may name
+    /// others. Allocates, so only when [`Self::take_graph_changed`] says so.
+    pub fn hold_graph_clips(
+        &mut self,
+        (character, enemy): (&[AssetId], &[AssetId]),
+    ) -> Result<(), LoadError> {
+        for (held, in_use) in [(&mut self.enemy_graph, enemy), (&mut self.graph, character)] {
+            if let Some(held) = held {
+                held.hold_clips(&mut self.server, in_use)?;
+            }
         }
         Ok(())
     }
@@ -1226,14 +1236,15 @@ impl Content {
         held.document(&self.server)
     }
 
-    /// Loads the clips an edited graph of `owner`'s names, until they're resident, keeping those a graph
-    /// still playing reads while there's room: it goes on until its next state's start. Fails on a clip
-    /// nothing cooked, keeping what's held.
+    /// Loads the clips an edited graph of `owner`'s names, until they're resident, keeping those its player
+    /// has `in_use`: it goes on until its next state's start. Fails on a clip nothing cooked, keeping
+    /// what's held. They wait for the edit to bind or fail, and the next call lets go of what nothing reads.
     #[cfg(feature = "dev")]
     pub fn hold_clips_of(
         &mut self,
         owner: GraphOwner,
         graph: &AnimGraph,
+        in_use: &[AssetId],
         renderer: &mut Renderer,
         gpu: &GpuContext,
     ) -> Result<(), String> {
@@ -1255,7 +1266,7 @@ impl Content {
             loaded.map_err(|e| failed(&e))?;
             held.push((clip.id, handle));
         }
-        let held = keeping_held(held, current);
+        let held = keeping_held(held, current, in_use);
         if let Some(current) = owned {
             current.clips = held;
         }
@@ -1308,7 +1319,8 @@ impl Content {
         let version = self.graph_versions();
         #[cfg(feature = "dev")]
         {
-            let graphs = [(GraphOwner::Character, &mut self.graph), (GraphOwner::Enemy, &mut self.enemy_graph)];
+            let graphs =
+                [(GraphOwner::Character, &mut self.graph), (GraphOwner::Enemy, &mut self.enemy_graph)];
             for (owner, held) in graphs {
                 let Some(held) = held else { continue };
                 let cooked = self.server.generation(&held.graph);
@@ -1542,7 +1554,7 @@ mod new_renderer_tests {
 
 #[cfg(all(test, feature = "dev"))]
 mod tests {
-    use sapphire_anim::{Joint, JointTransform};
+    use sapphire_anim::{ClipSource, Joint, JointTransform};
     use sapphire_assets::material::AnimeCharacterMaterial;
     use sapphire_assets::mesh::{
         Influences, MaterialSlot, PositionFormat, Skin, SkinBind, Submesh, VERTEX_COLOR_NEUTRAL, Vertex,
@@ -1812,8 +1824,12 @@ mod tests {
 
     impl Stage {
         fn new() -> Self {
+            Self::over_pack(pack(0.0, 0))
+        }
+
+        fn over_pack(pack: Vec<u8>) -> Self {
             let source = Arc::new(MemoryPackSource::new());
-            source.insert(PACK, pack(0.0, 0));
+            source.insert(PACK, pack);
             let live_packs = Arc::new(LivePacks::new(source.clone()));
             let budgets =
                 AssetBudgets { upload_per_frame: u64::MAX, resident: [u64::MAX; AssetKind::ALL.len()] };
@@ -2134,6 +2150,231 @@ mod tests {
         assert!(furthest > 0.5, "the character went on swinging: {furthest} m at most");
     }
 
+    /// `ids`, each a clip like [`SWING`] for the character, as a pack holds them.
+    fn more_swings(ids: &[AssetId]) -> Vec<PackAsset> {
+        let clip = swing(HumanBone::REQUIRED.len());
+        let bytes = clip.to_cooked().expect("cooked");
+        ids.iter().map(|&id| packed_with(id, AssetKind::Clip, &bytes, vec![SKELETON])).collect()
+    }
+
+    /// The IDs of a whole graph's worth of clips that aren't [`SWING`].
+    fn a_graphs_worth_of_other_clips() -> Vec<AssetId> {
+        (0..sapphire_assets::graph::MAX_GRAPH_CLIPS)
+            .map(|index| AssetId::from_bytes([0x80 + index as u8; 16]))
+            .collect()
+    }
+
+    /// A graph naming `ids`, looping the first in its one state.
+    fn graph_naming(ids: &[AssetId]) -> AnimGraph {
+        let clips: Vec<String> = ids
+            .iter()
+            .enumerate()
+            .map(|(index, id)| format!(r#"(name: "clip {index}", source: "{id}")"#))
+            .collect();
+        let text = format!(
+            r#"(type: "sapphire::assets::AnimGraph", version: 1, data: (
+                clips: [{clips}],
+                locomotion: (
+                    start: "ground",
+                    states: [(name: "ground", plays: Clip(clip: "clip 0", looping: true))],
+                ),
+                combat: (decay: 5, exit: 5, moves: []),
+            ))"#,
+            clips = clips.join(", "),
+        );
+        let mut graph = AnimGraph::from_document(&text).expect("a good document");
+        graph.resolve(sapphire_assets::graph::clip_id);
+        graph
+    }
+
+    /// [`SWING`] in two states that take turns as it ends, so a state starts every [`SWING_TICKS`].
+    fn turns_graph() -> AnimGraph {
+        let text = format!(
+            r#"(type: "sapphire::assets::AnimGraph", version: 1, data: (
+                clips: [(name: "swing", source: "{SWING}")],
+                locomotion: (
+                    start: "ground",
+                    states: [
+                        (name: "ground", plays: Clip(clip: "swing", looping: false)),
+                        (name: "again", plays: Clip(clip: "swing", looping: false)),
+                    ],
+                    transitions: [
+                        (from: "ground", to: "again", when: Finished, decay: 1),
+                        (from: "again", to: "ground", when: Finished, decay: 1),
+                    ],
+                ),
+                combat: (decay: 5, exit: 5, moves: []),
+            ))"#
+        );
+        let mut graph = AnimGraph::from_document(&text).expect("a good document");
+        graph.resolve(sapphire_assets::graph::clip_id);
+        graph
+    }
+
+    /// A frame of a character still swinging: how far its root stands from the rest pose's x 0, and that
+    /// no clip it wanted was missing.
+    fn swinging(stage: &mut Stage) -> f32 {
+        stage.frame();
+        let player = stage.scene.graph_player().expect("playing");
+        assert_eq!(player.stats().missing_clips, 0, "it read every clip it wanted");
+        player.pose().model()[0].translation[0].abs()
+    }
+
+    /// A graph can name a whole table's worth of clips, none of them the old graph's, which goes on until
+    /// its next state's start and needs its own. Past that it lets them go.
+    #[cfg(feature = "dev")]
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_whole_new_graph_leaves_the_old_one_its_clips_until_it_comes_in() {
+        let others = a_graphs_worth_of_other_clips();
+        let mut assets = pack_assets(0.0, 0, turns_graph(), SWING, 0);
+        assets.extend(more_swings(&others));
+        let mut stage = Stage::over_pack(write_pack(assets).expect("a pack"));
+        stage.play_graph();
+        stage.frame();
+
+        let Stage { scene, content, renderer, gpu, .. } = &mut stage;
+        scene
+            .replace_graph_document(GraphOwner::Character, graph_naming(&others), content, renderer, gpu)
+            .expect("it binds");
+        assert!(stage.scene.graph_player().expect("playing").has_replacement());
+
+        let mut furthest = 0.0f32;
+        let mut frames = 0;
+        while stage.scene.graph_player().expect("playing").has_replacement() {
+            furthest = furthest.max(swinging(&mut stage));
+            frames += 1;
+            assert!(frames <= 2 * u32::from(SWING_TICKS), "its clip ends, and the next state starts");
+        }
+        assert!(furthest > 0.5, "it went on swinging: {furthest} m at most");
+
+        let mut furthest = 0.0f32;
+        for _ in 0..SWING_TICKS {
+            furthest = furthest.max(swinging(&mut stage));
+        }
+        assert!(furthest > 0.5, "and the new one plays its own: {furthest} m at most");
+        let playing: Vec<AssetId> = stage.scene.graph_player().expect("playing").clips_in_use().collect();
+        assert_eq!(playing, others, "the new graph's, and nothing waits");
+    }
+
+    /// The same from a pack, which names the new clips before anything has bound them.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_whole_new_graph_from_a_pack_leaves_the_old_one_its_clip() {
+        let others = a_graphs_worth_of_other_clips();
+        let mut stage = Stage::new();
+        stage.play_graph();
+        stage.frame();
+
+        let graph = graph_naming(&others);
+        let mut assets = pack_assets(0.0, 0, graph.clone(), others[0], 0);
+        assets.retain(|asset| asset.id != GRAPH);
+        // As a cook's does, it names them all as what it depends on.
+        let cooked = graph.to_cooked().expect("cooked");
+        assets.push(packed_with(GRAPH, AssetKind::AnimGraph, &cooked, others.clone()));
+        assets.extend(more_swings(&others));
+        stage.source.insert(PACK, write_pack(assets).expect("a pack"));
+        stage.content.remount(PACK).expect("the new pack");
+        stage.frames_until(|stage| stage.scene.graph_player().expect("playing").has_replacement());
+
+        let mut furthest = 0.0f32;
+        for _ in 0..SWING_TICKS {
+            furthest = furthest.max(swinging(&mut stage));
+        }
+        assert!(stage.scene.graph_player().expect("playing").has_replacement(), "and it's still waiting");
+        assert!(furthest > 0.5, "the character went on swinging: {furthest} m at most");
+    }
+
+    /// An edit that takes every clip it names and then doesn't bind changes nothing: the graph playing and
+    /// the one waiting both still have theirs, and a later edit drops what nothing reads.
+    #[cfg(feature = "dev")]
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_new_graph_that_wont_bind_leaves_every_graph_its_clips() {
+        let others = a_graphs_worth_of_other_clips();
+        let mut assets = pack_assets(0.0, 0, swing_graph(5), SWING, 0);
+        assets.extend(more_swings(&others));
+        let mut stage = Stage::over_pack(write_pack(assets).expect("a pack"));
+        stage.play_graph();
+        stage.frame();
+        let Stage { scene, content, renderer, gpu, .. } = &mut stage;
+
+        let waiting = graph_naming(&[OTHER_SWING]);
+        scene
+            .replace_graph_document(GraphOwner::Character, waiting, content, renderer, gpu)
+            .expect("it binds");
+
+        // The last it names is another skeleton's, which only binding finds.
+        let mut named = others.clone();
+        *named.last_mut().expect("some") = ENEMY_SWING;
+        let error = scene
+            .replace_graph_document(GraphOwner::Character, graph_naming(&named), content, renderer, gpu)
+            .expect_err("another skeleton's clip");
+        assert!(error.contains("clip 63"), "{error}");
+
+        let table = content.graph_clips();
+        assert!(table.clip(SWING).is_some(), "the graph playing's");
+        assert!(table.clip(OTHER_SWING).is_some(), "the graph waiting's");
+        let mut furthest = 0.0f32;
+        for _ in 0..SWING_TICKS {
+            furthest = furthest.max(swinging(&mut stage));
+        }
+        assert!(furthest > 0.5, "the character went on swinging: {furthest} m at most");
+        assert!(stage.scene.graph_player().expect("playing").has_replacement(), "and the other's waiting");
+
+        // A good edit takes the waiting graph's place, and nothing reads what the bad one named.
+        let Stage { scene, content, renderer, gpu, .. } = &mut stage;
+        scene
+            .replace_graph_document(GraphOwner::Character, graph_naming(&others[..1]), content, renderer, gpu)
+            .expect("it binds");
+        let table = content.graph_clips();
+        assert!(table.clip(SWING).is_some(), "the graph playing's");
+        assert!(table.clip(others[0]).is_some(), "the new one's");
+        assert!(table.clip(others[1]).is_none(), "nothing reads what the bad edit named");
+
+        // Nor, by the next edit, the graph that one took the place of. However many come before a state
+        // starts, what's held is what three graphs name.
+        scene
+            .replace_graph_document(
+                GraphOwner::Character,
+                graph_naming(&others[1..2]),
+                content,
+                renderer,
+                gpu,
+            )
+            .expect("it binds");
+        let table = content.graph_clips();
+        assert!(table.clip(SWING).is_some(), "the graph playing's");
+        assert!(table.clip(others[1]).is_some(), "the new one's");
+        assert!(table.clip(OTHER_SWING).is_none(), "no one's");
+    }
+
+    /// A cook that lands under a save naming a clip nothing has loaded yet: the graph binds when it lands,
+    /// which a first load's generation says nothing of.
+    #[cfg(feature = "dev")]
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_saved_graph_binds_once_a_clip_it_names_has_landed() {
+        let mut stage = Stage::new();
+        stage.play_graph();
+        stage.frame();
+        let folder =
+            std::env::temp_dir().join(format!("sapphire_sandbox_landing_graph_{}", std::process::id()));
+        std::fs::create_dir_all(&folder).expect("a folder");
+        let file = folder.join("character.animgraph.ron");
+        stage.content.read_graphs_from(vec![(GraphOwner::Character, file.clone())]);
+
+        let text = swing_document(4).replace(&SWING.to_string(), &OTHER_SWING.to_string());
+        std::fs::write(&file, text).expect("the save");
+        stage.source.insert(PACK, pack_with_decay(0.0, 0, 7));
+        stage.content.remount(PACK).expect("the new pack");
+        stage.frames_until(|stage| stage.scene.graph_player().expect("playing").has_replacement());
+        assert_eq!(stage.content.graph_document().expect("a graph").combat.decay, 4);
+        let wanted: Vec<AssetId> = stage.scene.graph_player().expect("playing").clips_in_use().collect();
+        assert_eq!(wanted, [SWING, OTHER_SWING], "the graph playing's, and the save's");
+        std::fs::remove_dir_all(&folder).expect("cleaned up");
+    }
+
     /// A pack with a new character and a new graph for the enemy, as a cook that touches both makes: the
     /// player's driver starts over for its new joints, and the enemy's graph still binds.
     #[test]
@@ -2443,7 +2684,8 @@ mod tests {
         let mut stage = Stage::new();
         stage.play_graph();
         stage.frame();
-        let folder = std::env::temp_dir().join(format!("sapphire_sandbox_older_graph_{}", std::process::id()));
+        let folder =
+            std::env::temp_dir().join(format!("sapphire_sandbox_older_graph_{}", std::process::id()));
         std::fs::create_dir_all(&folder).expect("a folder");
         let file = folder.join("character.animgraph.ron");
         stage.content.read_graphs_from(vec![(GraphOwner::Character, file.clone())]);

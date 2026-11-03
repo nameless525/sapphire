@@ -276,22 +276,26 @@ fn hold_facing(mut actors: Query<'_, '_, &mut ActorTransform>) {
     }
 }
 
+/// How many clips one character's graphs can need at once: the graph playing's, the one waiting for a
+/// state's start, and those of a newest being bound, which may fail and leave the other two as they were.
+pub(crate) const MAX_HELD_CLIPS: usize = 3 * MAX_GRAPH_CLIPS;
+
 /// The clips a frame's evaluation reads: the asset server's views of them, gathered per frame so a
 /// job can share them.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ClipTable<'a> {
-    clips: [Option<(AssetId, &'a ArchivedClip)>; MAX_GRAPH_CLIPS],
+    clips: [Option<(AssetId, &'a ArchivedClip)>; MAX_HELD_CLIPS],
     version: u32,
 }
 
 impl<'a> ClipTable<'a> {
     /// No clips: what a graph that isn't loaded plays from.
     pub fn empty() -> Self {
-        Self { clips: [None; MAX_GRAPH_CLIPS], version: 0 }
+        Self { clips: [None; MAX_HELD_CLIPS], version: 0 }
     }
 
     pub fn new(clips: impl Iterator<Item = (AssetId, Option<&'a ArchivedClip>, u32)>) -> Self {
-        let mut table = Self { clips: [None; MAX_GRAPH_CLIPS], version: 0 };
+        let mut table = Self { clips: [None; MAX_HELD_CLIPS], version: 0 };
         for (slot, (id, clip, generation)) in table.clips.iter_mut().zip(clips) {
             *slot = clip.map(|clip| (id, clip));
             table.version = table.version.wrapping_add(generation);
@@ -694,6 +698,17 @@ mod tests {
     use super::*;
 
     /// The sandbox's copy of what the cook holds of a document: it's a good one.
+    /// What a character's graphs can name at once all reads, down to the last: a graph playing draws the
+    /// rest pose in place of a clip that fell off the end.
+    #[test]
+    fn a_table_has_room_for_three_whole_graphs() {
+        let bytes = clip().to_cooked().expect("cooked");
+        let cooked = Clip::read(&bytes).expect("a valid clip");
+        let id = |index: usize| AssetId::from_bytes([index as u8; 16]);
+        let table = ClipTable::new((0..MAX_HELD_CLIPS).map(|index| (id(index), Some(cooked), 0)));
+        assert!((0..MAX_HELD_CLIPS).all(|index| table.clip(id(index)).is_some()));
+    }
+
     #[test]
     fn the_shows_moves_compile() {
         let set = show_moves();

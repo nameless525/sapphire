@@ -129,7 +129,7 @@ impl Gpu {
             AssetKind::Font | AssetKind::FontChains => unreachable!("fonts never go to the uploader"),
             AssetKind::NavMesh => unreachable!("navmeshes never go to the uploader"),
             AssetKind::Timeline => unreachable!("timelines never go to the uploader"),
-            AssetKind::Ui => unreachable!("screens never go to the uploader"),
+            AssetKind::Ui => unreachable!("UI documents never go to the uploader"),
         }
         let held = self.0.insert(upload.slot(), upload.generation());
         assert!(held.is_none_or(|held| held <= upload.generation()), "an older version was sent");

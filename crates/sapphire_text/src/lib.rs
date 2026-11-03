@@ -8,7 +8,7 @@
 //!   missing glyph.
 //! - **Shaping** ([`TextSystem::shape`]): text and a [`TextStyle`] to a flat [`ShapedText`], cached,
 //!   so text that hasn't changed costs a hash and allocates nothing. A script's fallbacks are the
-//!   style's list of families ([`family_list`]), which a project's font chains say.
+//!   style's list of families ([`family_list`]), which a locale's font chain says.
 //! - **The glyph atlas** ([`GlyphAtlas`]): coverage from `swash` in pages from `etagere`, with the
 //!   new glyphs' texels handed to the frame's [`UiDrawList`](sapphire_look::UiDrawList), which is how
 //!   they reach the renderer (rule R4).

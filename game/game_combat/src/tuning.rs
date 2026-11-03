@@ -219,6 +219,7 @@ impl Document {
             }
             Self::Ui => {
                 screen.ok_or("no screen is showing: it takes --ui-screen")?.replace(text)?;
+                tuning.count_edit(document_file_name(SCREEN_PATH));
                 Ok(self.name().to_owned())
             }
         }
@@ -244,7 +245,7 @@ pub struct TunedRun<'a> {
     pub extra_documents: &'a [PathBuf],
 }
 
-/// The test screen's document (`screen::TEST_SCREEN`).
+/// The sandbox's test screen's document.
 const SCREEN_PATH: &str = "content/ui/test_screen.ui.ron";
 /// The animation graph's document (`lookdev::GRAPH`).
 const GRAPH_PATH: &str = "content/lookdev/character/character.animgraph.ron";

@@ -1028,7 +1028,7 @@ fn cook_dir_through(
     reached(CookStage::Planned);
     cook_independent(tree, &others, workers, &mut cooked)?;
     let screens = read_screens(&cooked)?;
-    screens.check_strings().map_err(Box::new)?;
+    screens.check_strings()?;
     screen_characters.set(screens.characters_of()).expect("only set here");
     cook_independent(tree, &fonts, workers, &mut cooked)?;
     let remembered = Remembered::default();
@@ -1108,7 +1108,7 @@ fn check_localization(assets: &[CookedAsset]) -> Result<LocReport, CookError> {
 /// The tree's screens and tables, from the files as they now are.
 fn read_screens(cooked: &[Option<CookedAsset>]) -> Result<Screens, CookError> {
     let outputs = cooked.iter().flatten().map(|asset| (asset.source.as_path(), asset.output.as_path()));
-    Ok(Screens::read(outputs).map_err(Box::new)?)
+    Ok(Screens::read(outputs)?)
 }
 
 /// Checks the screens against the fonts that cooked for them. From the files as they now are, as
@@ -1139,7 +1139,7 @@ fn check_screens(screens: &Screens, assets: &[CookedAsset]) -> Result<(), CookEr
             _ => {}
         }
     }
-    Ok(screens.check_fonts(&fonts, &chains).map_err(Box::new)?)
+    Ok(screens.check_fonts(&fonts, &chains)?)
 }
 
 /// Cooks `indices` of the plan, ascending, assets that read nothing another asset cooks, on up to

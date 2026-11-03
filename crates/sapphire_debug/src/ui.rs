@@ -941,6 +941,13 @@ fn interface_text(stats: &sapphire_render::UiStats) -> String {
     if glyphs.forgot {
         text.push_str(", started over");
     }
+    let tree = &stats.tree;
+    if tree.trees > 0 {
+        text.push_str(&format!(
+            "; {} screens, {} nodes, {} layouts, {} strings, {} shaped, {} values changed, {} problems, {} µs",
+            tree.trees, tree.nodes, tree.layouts, tree.resolves, tree.shaped, tree.bound_changes, tree.problems, tree.micros,
+        ));
+    }
     text
 }
 

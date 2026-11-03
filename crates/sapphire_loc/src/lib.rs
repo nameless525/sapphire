@@ -6,7 +6,8 @@
 //!   plurals and numbers through ICU4X. The live language switch, with no restart. [`LocaleSettings`],
 //!   the text language and the voice language apart (spec §5.15), plain data for `sapphire_save` to
 //!   hold. Per-locale font family chains, as names ([`Localizer::font_chain`]), which `sapphire_text`
-//!   takes as family lists. A pseudo-localization switch ([`Localizer::set_pseudo`]).
+//!   takes as family lists and which say the order a role's families answer in (spec §5.17). A
+//!   pseudo-localization switch ([`Localizer::set_pseudo`]).
 //! - **Does not own:** the table's format and pseudo-localized form (`sapphire_strings`), `.ftl`
 //!   sources and every check across locales (`sapphire_pipeline`), packs (an app reads a table's
 //!   bytes through `sapphire_assets` and hands over a [`StringTable`]), fonts, or which voice lines

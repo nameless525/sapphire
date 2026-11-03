@@ -19,7 +19,7 @@ use sapphire_render::{
 };
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 use sapphire_ui::{
-    Atlas, Button, ButtonState, CombatHud, FighterValues, HudLayout, HudValues, Insets, Paint, Painter,
+    Atlas, Button, ButtonState, CombatHud, FighterValues, HudLayout, HudValues, Insets, Paint, Painter, Rect,
     SkillValues, TouchActions, UiMetrics,
 };
 
@@ -360,7 +360,7 @@ fn translucent_colors_blend_in_linear_light_as_the_module_docs_say() {
 fn a_bar_s_cut_follows_its_slant_and_its_corners_keep_their_shape() {
     const COLOR: [u8; 3] = [240, 120, 40];
     let size = (320, 60);
-    let rect = sapphire_ui::Rect::new(Vec2::new(40.0, 20.0), Vec2::new(280.0, 40.0));
+    let rect = Rect::new(Vec2::new(40.0, 20.0), Vec2::new(280.0, 40.0));
     let paint = Paint::fill([COLOR[0], COLOR[1], COLOR[2], 255]);
     let mut harness = Harness::new(size);
 
@@ -703,6 +703,63 @@ fn upload_block(list: &mut UiDrawList, page: u16, corner: (u16, u16), size: (u16
 fn page_quad(side: f32, corner: (f32, f32), at: (f32, f32), size: f32, color: [u8; 4]) -> UiQuad {
     let uv = [corner.0 / side, corner.1 / side, (corner.0 + size) / side, (corner.1 + size) / side];
     UiQuad::glyph([at.0, at.1], [size, size], uv, color)
+}
+
+/// A flat rectangle, min and max in points.
+fn solid(painter: &mut Painter<'_>, min: [f32; 2], max: [f32; 2], color: [u8; 4]) {
+    let rect = Rect::new(Vec2::from(min), Vec2::from(max));
+    painter.bar(rect, 0.0, (0.0, 1.0), Paint::fill(color));
+}
+
+/// The shader's half of a gradient: the share of the far color follows the quad's plane, in linear light,
+/// and all zeros leaves a fill as it was.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_gradient_mixes_along_its_plane_in_linear_light() {
+    let mut harness = Harness::new((100, 40));
+    let (red, blue) = ([255, 0, 0, 255], [0, 0, 255, 255]);
+    let mut ui = list((100, 40), |painter| {
+        solid(painter, [0.0, 0.0], [100.0, 20.0], red);
+        solid(painter, [0.0, 20.0], [100.0, 40.0], red);
+    });
+    ui.quads[0].color_end = blue;
+    ui.quads[0].gradient = [1.0, 0.0, 0.0];
+    let pixels = harness.draw(Some(&ui));
+
+    let (left, middle, right) = (pixels.at(10, 10), pixels.at(50, 10), pixels.at(90, 10));
+    assert!(left[0] > right[0] && left[2] < right[2], "it runs toward the far color: {left:?} {right:?}");
+    // Half of each in linear light is about 188 in sRGB, where a mix of the codes would be 128.
+    for channel in [middle[0], middle[2]] {
+        assert!((180..=196).contains(&channel), "{middle:?}");
+    }
+    assert_eq!(pixels.at(50, 30)[..3], [255, 0, 0], "no plane, no gradient");
+}
+
+/// Masks cut what a quad draws at their rectangle, in the list's order, and in the target's pixels when
+/// those aren't points. `None` lets everything draw again.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_mask_cuts_quads_at_its_rectangle_and_ends_when_the_list_says() {
+    let mut harness = Harness::new((200, 100));
+    let mut ui = list((200, 100), |_| {});
+    ui.viewport = [100.0, 50.0];
+    let atlas = Atlas::paint();
+    let add = |ui: &mut UiDrawList, min, max, color| {
+        solid(&mut Painter::new(&mut ui.quads, &atlas.sprites), min, max, color);
+    };
+    ui.set_mask(Some([10.0, 10.0, 30.0, 30.0]));
+    add(&mut ui, [0.0, 0.0], [50.0, 50.0], [255, 0, 0, 255]);
+    ui.set_mask(None);
+    add(&mut ui, [60.0, 0.0], [80.0, 50.0], [0, 255, 0, 255]);
+    let pixels = harness.draw(Some(&ui));
+
+    assert_eq!(pixels.at(40, 40)[..3], [255, 0, 0], "inside the mask, at two pixels a point");
+    assert_eq!(pixels.at(20, 20)[..3], [255, 0, 0], "its first pixel");
+    assert_eq!(pixels.at(19, 40)[..2], [0, 0], "left of it");
+    assert_eq!(pixels.at(60, 40)[..2], [0, 0], "right of it, where the quad went on");
+    assert_eq!(pixels.at(40, 60)[..2], [0, 0], "below it");
+    assert_eq!(pixels.at(140, 50)[..3], [0, 255, 0], "the next quad has no mask");
+    assert_eq!(harness.renderer.stats().ui.draws, 2);
 }
 
 #[test]

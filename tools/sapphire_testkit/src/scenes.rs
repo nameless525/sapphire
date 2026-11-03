@@ -4438,13 +4438,28 @@ mod tests {
                 let size =
                     scene.args.windows(2).find(|pair| pair[0] == "--size").map_or(SIZE, |pair| pair[1]);
                 sizes.push(size);
-            } else {
+            } else if !scene.name.starts_with("ui-tree-") {
                 assert!(!scene.args.iter().any(|arg| arg.starts_with("--size")), "{}", scene.name);
             }
         }
         for (ratio, size) in [("4:3", "480x360"), ("16:9", "640x360"), ("21:9", "840x360")] {
             assert!(sizes.contains(&size), "no HUD scene at {ratio}");
         }
+    }
+
+    /// Spec §5.17's aspect ratios again, for the retained tree: Japanese in all three, as exit test 4 wants.
+    #[test]
+    fn the_tree_s_scenes_cover_the_aspect_ratios_in_japanese() {
+        let size_of = |name: &str| {
+            let scene = scenes().into_iter().find(|scene| scene.name == name).expect("the scene");
+            assert!(scene.args.windows(2).any(|pair| pair == ["--ui-locale", "ja"]), "{name}");
+            let size = scene.args.windows(2).find(|pair| pair[0] == "--size").expect("a size")[1];
+            let (width, height) = size.split_once('x').expect("a size");
+            width.parse::<f32>().expect("a width") / height.parse::<f32>().expect("a height")
+        };
+        assert!((size_of("ui-tree-tablet") - 4.0 / 3.0).abs() < 0.01);
+        assert!((size_of("ui-tree-wide") - 16.0 / 9.0).abs() < 0.01);
+        assert!((size_of("ui-tree-ultrawide") - 21.0 / 9.0).abs() < 0.01);
     }
 
     #[test]

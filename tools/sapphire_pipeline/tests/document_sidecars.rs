@@ -44,9 +44,12 @@ fn resolve(root: &Path, locked: bool) -> Result<meta::Resolved, MetaError> {
 #[test]
 fn a_sidecar_from_either_side_is_the_same_bytes() {
     let id = meta::new_id().expect("an ID");
-    for (name, importer) in
-        [("a.moves.ron", "MoveSet(())"), ("a.animgraph.ron", "AnimGraph(())"), ("a.cue.ron", "Cue(())")]
-    {
+    for (name, importer) in [
+        ("a.moves.ron", "MoveSet(())"),
+        ("a.animgraph.ron", "AnimGraph(())"),
+        ("a.cue.ron", "Cue(())"),
+        ("a.ui.ron", "Ui(())"),
+    ] {
         let settings = ImportSettings::for_new_sidecar(Path::new(name)).expect("a source");
         let cooker = to_ron(&AssetMeta::new(id, settings)).expect("writes");
         assert_eq!(identity::sidecar_text(id, Some(importer)), cooker, "{name}");
@@ -60,6 +63,7 @@ fn the_kinds_say_the_importer_a_cook_would_give_them() {
         ("a.moves.ron", kinds::moves().importer),
         ("a.animgraph.ron", kinds::graph().importer),
         ("a.cue.ron", kinds::cue().importer),
+        ("a.ui.ron", kinds::ui().importer),
     ] {
         let id = meta::new_id().expect("an ID");
         let settings = ImportSettings::for_new_sidecar(Path::new(name)).expect("a source");

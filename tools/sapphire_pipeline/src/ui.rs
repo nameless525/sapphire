@@ -190,11 +190,12 @@ pub struct Screens {
 impl Screens {
     /// Reads the cooked documents and tables at `outputs`, which can hold anything else too. Each file's
     /// source goes with it, to name a screen by.
-    pub fn read<'a>(outputs: impl Iterator<Item = (&'a Path, &'a Path)>) -> Result<Self, ScreenError> {
+    pub fn read<'a>(outputs: impl Iterator<Item = (&'a Path, &'a Path)>) -> Result<Self, Box<ScreenError>> {
         let mut screens = Self::default();
         let read = |path: &Path| {
-            std::fs::read(path)
-                .map_err(|source| ScreenError::Read { path: path.to_owned(), source: Box::new(source) })
+            std::fs::read(path).map_err(|source| {
+                Box::new(ScreenError::Read { path: path.to_owned(), source: Box::new(source) })
+            })
         };
         let refused = |path: &Path, source: Box<dyn std::error::Error + Send + Sync>| ScreenError::Read {
             path: path.to_owned(),
@@ -273,32 +274,37 @@ impl Screens {
     }
 
     /// Refuses a key, a role or a variable a screen needs and a table doesn't have.
-    pub fn check_strings(&self) -> Result<(), ScreenError> {
+    pub fn check_strings(&self) -> Result<(), Box<ScreenError>> {
         if let Some((screen, _)) =
             self.documents.iter().find(|(_, document)| document.texts().next().is_some())
             && self.tables.is_empty()
         {
-            return Err(ScreenError::NoLocale { screen: screen.clone() });
+            return Err(Box::new(ScreenError::NoLocale { screen: screen.clone() }));
         }
         for shown in self.shown() {
             let names = || (shown.screen.to_owned(), shown.node.to_owned(), shown.locale.to_owned());
             let Some(shows) = &shown.shows else {
                 let (screen, node, locale) = names();
-                return Err(ScreenError::NoKey { screen, node, locale, key: shown.key.to_owned() });
+                return Err(Box::new(ScreenError::NoKey { screen, node, locale, key: shown.key.to_owned() }));
             };
             if shown.families.is_none() {
                 let (screen, node, locale) = names();
-                return Err(ScreenError::NoRole { screen, node, locale, role: shown.role.to_owned() });
+                return Err(Box::new(ScreenError::NoRole {
+                    screen,
+                    node,
+                    locale,
+                    role: shown.role.to_owned(),
+                }));
             }
             if let Some(variable) = shows.variables.iter().find(|name| !shown.args.contains(&name.as_str())) {
                 let (screen, node, locale) = names();
-                return Err(ScreenError::NoArg {
+                return Err(Box::new(ScreenError::NoArg {
                     screen,
                     node,
                     locale,
                     key: shown.key.to_owned(),
                     variable: variable.clone(),
-                });
+                }));
             }
         }
         Ok(())
@@ -306,7 +312,11 @@ impl Screens {
 
     /// Refuses a string a screen shows that its fonts can't, from the `fonts` pack's cooked `fonts`, and
     /// a family its role's chain in `chains` doesn't load. `fonts` holds each cooked font by ID.
-    pub fn check_fonts(&self, fonts: &[(AssetId, Font)], chains: &[FontChains]) -> Result<(), ScreenError> {
+    pub fn check_fonts(
+        &self,
+        fonts: &[(AssetId, Font)],
+        chains: &[FontChains],
+    ) -> Result<(), Box<ScreenError>> {
         if !self.shows_text() {
             return Ok(());
         }
@@ -315,7 +325,8 @@ impl Screens {
         let opened = fonts
             .iter()
             .map(|(_, font)| font::open(&font.file).map_err(FontCookError::from))
-            .collect::<Result<Vec<FontRef<'_>>, _>>()?;
+            .collect::<Result<Vec<FontRef<'_>>, _>>()
+            .map_err(|error| Box::new(ScreenError::from(error)))?;
         let of_family = |family: &str| -> Vec<usize> {
             fonts
                 .iter()
@@ -333,16 +344,16 @@ impl Screens {
                 let chain =
                     chains.iter().flat_map(|chains| &chains.chains).find(|chain| chain.name == shown.role);
                 let Some(chain) = chain else {
-                    return Err(ScreenError::NoChain { role: shown.role.to_owned() });
+                    return Err(Box::new(ScreenError::NoChain { role: shown.role.to_owned() }));
                 };
                 for family in list {
                     let (locale, role, name) = names(family);
                     let held = of_family(family);
                     if held.is_empty() {
-                        return Err(ScreenError::NoFont { locale, role, family: name });
+                        return Err(Box::new(ScreenError::NoFont { locale, role, family: name }));
                     }
                     if !held.iter().any(|&at| chain.fonts.contains(&fonts[at].0)) {
-                        return Err(ScreenError::NotInChain { locale, role, family: name });
+                        return Err(Box::new(ScreenError::NotInChain { locale, role, family: name }));
                     }
                 }
             }
@@ -352,7 +363,7 @@ impl Screens {
                 {
                     continue;
                 }
-                return Err(ScreenError::Uncovered {
+                return Err(Box::new(ScreenError::Uncovered {
                     screen: shown.screen.to_owned(),
                     node: shown.node.to_owned(),
                     locale: shown.locale.to_owned(),
@@ -361,7 +372,7 @@ impl Screens {
                     character,
                     code: character as u32,
                     families: list.join(", "),
-                });
+                }));
             }
         }
         Ok(())

@@ -19,7 +19,7 @@
 //! a value that moved resolves its string again or marks its box for layout, and the layout pass runs
 //! only if something is marked, or the frame's metrics or language moved. The quads are written again
 //! every frame, since drawing a glyph is also what tells the atlas it's still in use, at the cost of a
-//! hash a string (`tests/allocations.rs` holds the frame to no allocations, and spec §5.17 has its cost).
+//! hash a glyph (`tests/tree_allocations.rs` holds the frame to no allocations, and spec §5.17 has its cost).
 //!
 //! # When it's wrong
 //!

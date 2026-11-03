@@ -312,6 +312,11 @@ fn every_property_of_a_timeline_undoes_to_the_same_bytes() {
     );
 }
 
+#[test]
+fn every_property_of_a_screen_undoes_to_the_same_bytes() {
+    run("test_screen.ui.ron", "content/ui/test_screen.ui.ron", kinds::ui(), false);
+}
+
 /// The library checks everything as it reads, so many values are refused here, each with the text as it
 /// was, and that's its rule at work.
 #[test]

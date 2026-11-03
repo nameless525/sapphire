@@ -4052,7 +4052,6 @@ name = "sapphire_stage"
 version = "0.1.0"
 dependencies = [
  "bevy_ecs",
- "bevy_reflect",
  "profiling",
  "sapphire_anim",
  "sapphire_assets",

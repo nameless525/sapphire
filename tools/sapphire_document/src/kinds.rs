@@ -13,6 +13,7 @@ use bevy_reflect::{GetTypeRegistration, TypeRegistry};
 use sapphire_assets::AssetId;
 use sapphire_assets::cue::Cue;
 use sapphire_assets::graph::AnimGraph;
+use sapphire_assets::ui::UiDocument;
 use sapphire_moves::MoveSetDocument;
 use sapphire_timeline::TimelineDocument;
 use sapphire_vfx::EffectLibrary;
@@ -98,6 +99,17 @@ pub fn effects() -> Schema<EffectLibrary> {
     }
 }
 
+/// A screen, `.ui.ron`. What its paths read is its model's to say, and a cook's to check, so here only
+/// its own rules run.
+#[must_use]
+pub fn ui() -> Schema<UiDocument> {
+    Schema {
+        parse: read_document,
+        check: |document| document.issues().iter().map(ToString::to_string).collect(),
+        importer: Some("Ui(())"),
+    }
+}
+
 /// The kinds of document there are, which a browser lists and a file's name says.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Kind {
@@ -106,10 +118,11 @@ pub enum Kind {
     Cue,
     Effects,
     Timeline,
+    Ui,
 }
 
 impl Kind {
-    pub const ALL: [Self; 5] = [Self::Moves, Self::Graph, Self::Cue, Self::Effects, Self::Timeline];
+    pub const ALL: [Self; 6] = [Self::Moves, Self::Graph, Self::Cue, Self::Effects, Self::Timeline, Self::Ui];
 
     /// What a file's name says it is, if it's a document this crate knows. A library of effects has no suffix
     /// of its own beyond its name, as `default_effects.ron` shows.
@@ -126,6 +139,7 @@ impl Kind {
             Self::Cue => ".cue.ron",
             Self::Effects => "_effects.ron",
             Self::Timeline => ".timeline.ron",
+            Self::Ui => ".ui.ron",
         }
     }
 
@@ -138,6 +152,7 @@ impl Kind {
             Self::Cue => "Cues",
             Self::Effects => "Effects",
             Self::Timeline => "Timelines",
+            Self::Ui => "Screens",
         }
     }
 
@@ -149,6 +164,7 @@ impl Kind {
             Self::Cue => set.open(path, cue(), Arc::new(registry_of::<Cue>())),
             Self::Effects => set.open(path, effects(), Arc::new(registry_of::<EffectLibrary>())),
             Self::Timeline => set.open(path, timeline(), Arc::new(registry_of::<TimelineDocument>())),
+            Self::Ui => set.open(path, ui(), Arc::new(registry_of::<UiDocument>())),
         }
     }
 }

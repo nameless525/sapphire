@@ -143,7 +143,7 @@ fn round(
                     }
                     AssetKind::NavMesh => unreachable!("navmeshes never go to the uploader"),
                     AssetKind::Timeline => unreachable!("timelines never go to the uploader"),
-                    AssetKind::Ui => unreachable!("screens never go to the uploader"),
+                    AssetKind::Ui => unreachable!("UI documents never go to the uploader"),
                 }
                 Ok(())
             })

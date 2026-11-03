@@ -274,7 +274,7 @@ impl UiDrawList {
         self.tree = UiTreeStats::default();
     }
 
-    /// Quads added from now on draw only inside `rect` (points), or everywhere with `None`.
+    /// Quads added from now on draw only inside `rect` (min x, min y, max x, max y, in points), or everywhere with `None`.
     pub fn set_mask(&mut self, rect: Option<[f32; 4]>) {
         let first = self.quads.len() as u32;
         match self.masks.last_mut() {

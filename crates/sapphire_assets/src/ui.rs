@@ -1145,8 +1145,8 @@ impl UiModel {
         parse::<Self>(text)
     }
 
-    /// The model a type's reflection describes, its paths sorted. A type that holds itself stops at
-    /// [`MODEL_DEPTH`] levels, and what's past that isn't a path a screen can bind.
+    /// The model a type's reflection describes, its paths sorted. A type that holds itself stops some
+    /// levels down, and what's past that isn't a path a screen can bind.
     #[must_use]
     pub fn of_type(info: &'static TypeInfo) -> Self {
         let mut fields = Vec::new();
@@ -1303,8 +1303,6 @@ mod tests {
             other => panic!("expected a field's issue, got {other:?}"),
         }
     }
-
-    const ROOT: &str = r#"(name: "root"),"#;
 
     #[test]
     fn a_document_reads_with_its_defaults() {

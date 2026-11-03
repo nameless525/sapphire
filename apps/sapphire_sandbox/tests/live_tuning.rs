@@ -35,6 +35,8 @@ const PLAYER: &str = include_str!("../../../content/combat/player/player.moves.r
 const PLAYER_FILE: &str = "player.moves.ron";
 const WARRIOR: &str = include_str!("../../../content/combat/enemy/warrior.moves.ron");
 const WARRIOR_FILE: &str = "warrior.moves.ron";
+const SCREEN: &str = include_str!("../../../content/ui/test_screen.ui.ron");
+const SCREEN_FILE: &str = "test_screen.ui.ron";
 
 /// How long a sandbox has to build its scene's pipelines, slowly on a CPU rasterizer.
 const STARTUP: Duration = Duration::from_secs(300);
@@ -507,6 +509,59 @@ fn the_camera_and_the_graph_reach_a_running_app() {
     assert!(reply.contains("revision 1"), "{reply}");
     let refused = client.push_document("nobody.moves.ron", show.to_owned()).expect_err("no owner");
     assert!(refused.to_string().contains("nobody.moves.ron"), "{refused}");
+    drop(client);
+    app.quit();
+}
+
+/// A screen on show takes a document pushed or saved, and one that's wrong in any way a cook would refuse
+/// says where and keeps what's on show. Without `--ui-screen` there's nothing to take it.
+#[test]
+#[ignore = "needs a dev build, a GPU and cooked content"]
+fn a_screen_on_show_takes_a_pushed_and_a_saved_document() {
+    let temp = Temp::new("screen");
+    let document = temp.path(SCREEN_FILE);
+    fs::write(&document, SCREEN).expect("writes");
+    let watched = temp.text(SCREEN_FILE);
+    let args = ["--ui-screen", "--ui-locale", "ja", "--watch-document", &watched];
+    let mut app = App::start(&temp, &args);
+    let mut client = app.connect();
+
+    let edited = SCREEN.replacen("gap: 24", "gap: 32", 1);
+    assert_ne!(edited, SCREEN, "the edit is still there to make");
+    let reply = client.push_document(SCREEN_FILE, edited).expect("a good screen");
+    assert!(reply.contains("screen"), "{reply}");
+
+    // Its own check, by field, and a path its model doesn't have.
+    let refused = client
+        .push_document(SCREEN_FILE, SCREEN.replacen("parent: \"menu\"", "parent: \"nobody\"", 1))
+        .expect_err("no such parent");
+    assert!(refused.to_string().contains("nobody"), "{refused}");
+    let refused = client
+        .push_document(SCREEN_FILE, SCREEN.replacen("path: \"health\"", "path: \"mana\"", 1))
+        .expect_err("no such value");
+    assert!(refused.to_string().contains("mana"), "{refused}");
+
+    // Saved, through hot reload's watcher.
+    fs::write(&document, SCREEN.replacen("gap: 24", "gap: 40", 1)).expect("saved");
+    app.until(&mut client, "the saved screen taken", |status| {
+        (edits(status, SCREEN_FILE) == Some(2)).then_some(())
+    });
+
+    // A bad save is logged by field, and the next good one still works.
+    fs::write(&document, SCREEN.replacen("path: \"health\"", "path: \"mana\"", 1)).expect("saved");
+    app.until_logged("mana");
+    fs::write(&document, SCREEN).expect("saved");
+    app.until(&mut client, "the good save after it", |status| {
+        (edits(status, SCREEN_FILE) == Some(3)).then_some(())
+    });
+    drop(client);
+    app.quit();
+
+    let temp = Temp::new("no_screen");
+    let mut app = App::start(&temp, &["--no-hot-reload"]);
+    let mut client = app.connect();
+    let refused = client.push_document(SCREEN_FILE, SCREEN.to_owned()).expect_err("nothing on show");
+    assert!(refused.to_string().contains("--ui-screen"), "{refused}");
     drop(client);
     app.quit();
 }

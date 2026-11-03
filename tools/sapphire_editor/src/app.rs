@@ -106,6 +106,23 @@ pub struct Editor {
     quit: Quit,
     /// A document picked with edits unsaved: the top bar asks first.
     opening: Option<PathBuf>,
+    /// What's being typed in the inspector, which is on the screen and not yet in the text.
+    typed: Option<Typed>,
+}
+
+/// A value being typed in the inspector. It goes into the text when its field lets go, or sooner if
+/// anything needs the text whole, so half a name is no edit and a field's whole session is one step of
+/// undo. Meanwhile it counts as an edit ([`Editor::is_dirty`]) and the text holds still under it: every
+/// other edit, undo, redo and a save take it first, and a change on disk waits.
+#[derive(Clone, Debug)]
+struct Typed {
+    entry: EntryRef,
+    path: String,
+    field: egui::Id,
+    text: String,
+    /// Why the text wouldn't have it, the last time it tried. It stays in its field, since it's a person's
+    /// work, and nothing else goes in until it's fixed or dropped.
+    refused: Option<String>,
 }
 
 /// Where leaving stands.
@@ -154,6 +171,7 @@ impl Editor {
             last_poll: 0.0,
             quit: Quit::No,
             opening: None,
+            typed: None,
         };
         if let Some(path) = options.file {
             editor.open(&path);
@@ -168,7 +186,7 @@ impl Editor {
 
     /// A document was picked: it opens at once, unless that would lose edits, and then the top bar asks.
     pub fn request_open(&mut self, path: &Path) {
-        if self.file.as_ref().is_some_and(MovesFile::is_dirty) {
+        if self.is_dirty() {
             self.opening = Some(path.to_owned());
         } else {
             self.open(path);
@@ -186,6 +204,7 @@ impl Editor {
                 }
                 self.documents = find_documents(path);
                 self.file = Some(file);
+                self.typed = None;
                 self.selected_move = 0;
                 self.selected_entry = None;
                 self.tick = 0;
@@ -235,6 +254,12 @@ impl Editor {
     #[must_use]
     pub fn file(&self) -> Option<&MovesFile> {
         self.file.as_ref()
+    }
+
+    /// Whether there's anything here the file doesn't have: edits, or a value still being typed.
+    #[must_use]
+    pub fn is_dirty(&self) -> bool {
+        self.typed.is_some() || self.file.as_ref().is_some_and(MovesFile::is_dirty)
     }
 
     /// The open file, for edits a test makes as a person would by hand.
@@ -506,19 +531,57 @@ impl Editor {
     /// Saves, then pushes what was saved. A file with nothing new is pushed all the same: a device may have
     /// started since.
     pub fn save_and_push(&mut self) {
-        let Some(file) = &mut self.file else { return };
-        match file.save() {
+        match self.save() {
             Ok(()) => {
+                let Some(file) = &self.file else { return };
                 let (name, text) = (file.file_name(), file.text().to_owned());
                 self.notice = Some(Notice { text: format!("saved {name}"), trouble: false });
                 self.link.push(name, text);
             }
-            Err(error @ FileError::ChangedOnDisk { .. }) => {
-                self.notice = Some(Notice { text: error.to_string(), trouble: true });
+            Err(text) => self.notice = Some(Notice { text, trouble: true }),
+        }
+    }
+
+    /// Writes the file, with what's being typed in it. What goes wrong is in a notice's words.
+    fn save(&mut self) -> Result<(), String> {
+        if !self.take_typed() {
+            return Err("not saved: what's being typed can't go in".to_owned());
+        }
+        let Some(file) = &mut self.file else { return Ok(()) };
+        file.save().map_err(|error| match error {
+            FileError::ChangedOnDisk { .. } => error.to_string(),
+            error => format!("not saved: {error}"),
+        })
+    }
+
+    /// Puts what's being typed into the text, as one step of undo. False if the text won't have it: it
+    /// stays in its field, and the top bar says why.
+    fn take_typed(&mut self) -> bool {
+        let Some(typed) = self.typed.take() else { return true };
+        let Some(file) = &mut self.file else { return true };
+        let label = format!("edit {}", typed.path);
+        match file.edit(&label, |text| text.set_entry_value(typed.entry, &typed.path, &typed.text)) {
+            Ok(()) => {
+                self.notice = None;
+                self.refresh();
+                true
             }
             Err(error) => {
-                self.notice = Some(Notice { text: format!("not saved: {error}"), trouble: true });
+                self.typed = Some(Typed { refused: Some(error.0), ..typed });
+                false
             }
+        }
+    }
+
+    /// Typing is over when its field lets go, whatever took the focus: a click anywhere, Enter, or the
+    /// row going with the selection, which leaves the field no pass to see it in. A refused value waits
+    /// for someone to change it.
+    fn settle_typed(&mut self, ui: &Ui) {
+        let let_go = self.typed.as_ref().is_some_and(|typed| {
+            typed.refused.is_none() && !ui.memory(|memory| memory.has_focus(typed.field))
+        });
+        if let_go {
+            self.take_typed();
         }
     }
 
@@ -537,8 +600,7 @@ impl Editor {
 
     /// The window was asked to close: it goes at once, unless that would lose edits.
     pub fn request_quit(&mut self) {
-        let dirty = self.file.as_ref().is_some_and(MovesFile::is_dirty);
-        self.quit = if dirty { Quit::Asking } else { Quit::Yes };
+        self.quit = if self.is_dirty() { Quit::Asking } else { Quit::Yes };
     }
 
     /// Whether the window may close now.
@@ -554,6 +616,12 @@ impl Editor {
     }
 
     pub fn undo(&mut self) {
+        // What's being typed is the newest edit, so it's what goes first. Text that can't go in has no step
+        // to take back, and goes by itself.
+        if !self.take_typed() {
+            self.typed = None;
+            return;
+        }
         if let Some(file) = &mut self.file
             && file.undo()
         {
@@ -562,7 +630,8 @@ impl Editor {
     }
 
     pub fn redo(&mut self) {
-        if let Some(file) = &mut self.file
+        if self.take_typed()
+            && let Some(file) = &mut self.file
             && file.redo()
         {
             self.after_history();
@@ -591,6 +660,9 @@ impl Editor {
         label: &str,
         edit: impl FnOnce(&mut MovesText) -> Result<T, EditError>,
     ) -> Option<T> {
+        if !self.take_typed() {
+            return None;
+        }
         let file = self.file.as_mut()?;
         match file.edit(label, edit) {
             Ok(result) => {
@@ -612,9 +684,7 @@ impl Editor {
             Action::Select(entry) => self.selected_entry = entry,
             Action::BeginGesture(label) => {
                 self.stop();
-                if let Some(file) = &mut self.file {
-                    file.begin_gesture(&label);
-                }
+                self.begin_gesture(&label);
             }
             Action::EndGesture => {
                 if let Some(file) = &mut self.file {
@@ -644,6 +714,14 @@ impl Editor {
                 self.set_tick(tick);
             }
             Action::Add(track) => self.add_to_track(track),
+        }
+    }
+
+    /// Starts a gesture, with what's being typed in the text first, as a step of its own.
+    fn begin_gesture(&mut self, label: &str) {
+        self.take_typed();
+        if let Some(file) = &mut self.file {
+            file.begin_gesture(label);
         }
     }
 
@@ -707,7 +785,9 @@ impl Editor {
             return;
         }
         self.last_poll = now;
-        if let Some(file) = &mut self.file {
+        if self.typed.is_none()
+            && let Some(file) = &mut self.file
+        {
             file.poll_disk();
         }
         if self.cook_changed() {
@@ -762,6 +842,7 @@ impl Editor {
             .show(ui, |ui| self.timeline_panel(ui));
         egui::CentralPanel::default_margins().show(ui, |ui| self.preview_panel(ui, now));
         self.settle_gesture(ui);
+        self.settle_typed(ui);
     }
 
     fn keys(&mut self, ui: &Ui, now: f64) {
@@ -821,8 +902,7 @@ impl Editor {
         ui.add_space(3.0);
         ui.horizontal(|ui| {
             let name = self.file.as_ref().map_or_else(|| "no file".to_owned(), MovesFile::file_name);
-            let dirty = self.file.as_ref().is_some_and(MovesFile::is_dirty);
-            let title = if dirty { format!("{name} *") } else { name };
+            let title = if self.is_dirty() { format!("{name} *") } else { name };
             let mut open = None;
             egui::ComboBox::from_id_salt("documents").selected_text(title).width(210.0).show_ui(ui, |ui| {
                 for path in &self.documents {
@@ -888,13 +968,11 @@ impl Editor {
         if self.quit == Quit::Asking {
             ui.horizontal(|ui| {
                 ui.colored_label(Color32::from_rgb(255, 170, 90), "You have edits that aren't saved.");
-                if ui.button("Save and quit").clicked()
-                    && let Some(file) = &mut self.file
-                {
-                    match file.save() {
+                if ui.button("Save and quit").clicked() {
+                    match self.save() {
                         Ok(()) => self.quit = Quit::Yes,
-                        Err(error) => {
-                            self.notice = Some(Notice { text: format!("not saved: {error}"), trouble: true });
+                        Err(text) => {
+                            self.notice = Some(Notice { text, trouble: true });
                             self.quit = Quit::No;
                         }
                     }
@@ -910,13 +988,11 @@ impl Editor {
         if let Some(path) = self.opening.clone() {
             ui.horizontal(|ui| {
                 ui.colored_label(Color32::from_rgb(255, 170, 90), "You have edits that aren't saved.");
-                if ui.button("Save and open").clicked()
-                    && let Some(file) = &mut self.file
-                {
-                    match file.save() {
+                if ui.button("Save and open").clicked() {
+                    match self.save() {
                         Ok(()) => self.open(&path),
-                        Err(error) => {
-                            self.notice = Some(Notice { text: format!("not saved: {error}"), trouble: true });
+                        Err(text) => {
+                            self.notice = Some(Notice { text, trouble: true });
                             self.opening = None;
                         }
                     }
@@ -938,6 +1014,7 @@ impl Editor {
                 if ui.button("Take the file's").clicked()
                     && let Some(file) = &mut self.file
                 {
+                    self.typed = None;
                     file.take_disk();
                     self.refresh();
                 }
@@ -946,6 +1023,28 @@ impl Editor {
                 {
                     file.keep_mine();
                 }
+            });
+        }
+        if let Some(typed) = &self.typed
+            && let Some(why) = &typed.refused
+        {
+            let entry = typed.entry;
+            let said = format!(
+                "`{}` can't go in {} {}'s {}, and nothing else can until it's fixed or dropped: {why}",
+                typed.text,
+                timeline::title(entry.track),
+                entry.index,
+                typed.path,
+            );
+            ui.horizontal(|ui| {
+                if ui.button("Show it").clicked() {
+                    self.choose_move(entry.mv);
+                    self.selected_entry = Some(entry);
+                }
+                if ui.button("Drop it").clicked() {
+                    self.typed = None;
+                }
+                ui.colored_label(Color32::from_rgb(255, 120, 110), said);
             });
         }
         if let Some(failure) = self.file.as_ref().and_then(|file| file.moves_text().failure()) {
@@ -1280,13 +1379,13 @@ impl Editor {
     }
 
     fn number_gesture(&mut self, response: &egui::Response, label: &str) {
-        if let Some(file) = &mut self.file {
-            if response.drag_started() {
-                file.begin_gesture(label);
-            }
-            if response.drag_stopped() {
-                file.end_gesture();
-            }
+        if response.drag_started() {
+            self.begin_gesture(label);
+        }
+        if response.drag_stopped()
+            && let Some(file) = &mut self.file
+        {
+            file.end_gesture();
         }
     }
 
@@ -1310,20 +1409,32 @@ impl Editor {
                 self.edit(&label, |text| text.set_entry_value(entry, &value.path, &literal));
             }
         } else {
-            // A name or a bare word, as the file writes it: taken when focus leaves.
-            let id = ui.scope_id().with(("value", entry, &value.path, &value.literal));
-            let mut buffer: String =
-                ui.data_mut(|data| data.get_temp::<String>(id)).unwrap_or_else(|| value.literal.clone());
-            let response = ui.add(TextEdit::singleline(&mut buffer).desired_width(150.0));
-            if response.changed() {
-                ui.data_mut(|data| data.insert_temp(id, buffer.clone()));
+            // A name or a bare word, as the file writes it: see `Typed`.
+            let field = egui::Id::unique(("inspector value", entry, &value.path));
+            let typed = self.typed.as_ref();
+            let here = typed.filter(|typed| typed.field == field);
+            let waiting_elsewhere =
+                typed.is_some_and(|typed| typed.refused.is_some() && typed.field != field);
+            let mut buffer = here.map_or_else(|| value.literal.clone(), |typed| typed.text.clone());
+            let mut edit = TextEdit::singleline(&mut buffer).id(field).desired_width(150.0);
+            if here.is_some_and(|typed| typed.refused.is_some()) {
+                edit = edit.text_color(Color32::from_rgb(255, 120, 110));
             }
-            if response.lost_focus() && buffer != value.literal {
-                self.edit(&label, |text| text.set_entry_value(entry, &value.path, &buffer));
-                ui.data_mut(|data| data.remove_temp::<String>(id));
+            if ui.add_enabled(!waiting_elsewhere, edit).changed() {
+                let typed = Typed { entry, path: value.path.clone(), field, text: buffer, refused: None };
+                self.keep_typing(typed, &value.literal);
             }
         }
         ui.end_row();
+    }
+
+    /// Takes what a field holds now. Typing in another field means the last one let go, and typing back to
+    /// what the file says leaves nothing to take.
+    fn keep_typing(&mut self, typed: Typed, literal: &str) {
+        let elsewhere = self.typed.as_ref().is_some_and(|other| other.field != typed.field);
+        if !elsewhere || self.take_typed() {
+            self.typed = (typed.text != literal).then_some(typed);
+        }
     }
 
     fn move_inspector(&mut self, ui: &mut Ui) {

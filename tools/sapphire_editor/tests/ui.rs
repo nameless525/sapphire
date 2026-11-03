@@ -10,14 +10,15 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use egui::{Key, Modifiers, Pos2};
-use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+use egui::{Key, Modifiers, Pos2, Role};
+use egui_kittest::kittest::{By, Queryable};
+use egui_kittest::{Harness, Node};
 use sapphire_assets::MemoryPackSource;
 use sapphire_editor::capture::{self, Textures};
 use sapphire_editor::edits::{EntryRef, Track};
 use sapphire_editor::file::judge;
 use sapphire_editor::link::Pushed;
+use sapphire_editor::timeline::Action;
 use sapphire_editor::{Editor, Options};
 use sapphire_livelink::protocol::{DeviceStatus, MoveAttempt, ReplyBody};
 use sapphire_livelink::{LinkMode, LiveLink, LivePacks, Push};
@@ -870,6 +871,355 @@ fn a_push_with_no_device_says_so() {
     assert_same(&fs::read_to_string(&path).expect("saved"), &text_of(&harness), "the file");
     assert!(!harness.state().file().expect("a file").is_dirty());
     until(&mut harness, "the failure", |editor| matches!(editor.link().last_push(), Some(Pushed::Failed(_))));
+}
+
+/// The cue the typing tests type over, and what they type.
+const CUE_NAME: &str = "\"swing_windup\"";
+const TYPED_NAME: &str = "\"typed_name\"";
+
+fn slice_with_typed_name() -> String {
+    SLICE.replacen(CUE_NAME, TYPED_NAME, 1)
+}
+
+/// The text field showing `value`, rather than the run of text inside it that shows it too.
+fn field<'a>(harness: &'a Harness<'static, Editor>, value: &'a str) -> Node<'a> {
+    harness.get(By::new().role(Role::TextInput).value(value))
+}
+
+/// Selects the slice's first cue and types `typed` over its name, with the field left focused, as a person
+/// does before reaching for Cmd+S or the window's Close.
+fn type_over_the_cue_name(harness: &mut Harness<'static, Editor>, typed: &str) {
+    harness.run_steps(3);
+    let cue = EntryRef { mv: 0, track: Track::Cues, index: 0 };
+    harness.state_mut().apply(Action::Select(Some(cue)));
+    harness.run_steps(3);
+    field(harness, CUE_NAME).focus();
+    harness.run_steps(1);
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::A);
+    harness.run_steps(1);
+    field(harness, CUE_NAME).type_text(typed);
+    harness.run_steps(2);
+    assert!(field(harness, typed).is_focused(), "the field holds what's typed, and has the keyboard");
+    assert_same(&text_of(harness), SLICE, "half a name isn't an edit yet");
+    assert!(harness.state().is_dirty(), "and what's on screen isn't in the file");
+}
+
+/// Clicks a move's row in the list, whose click lands before the inspector draws in a pass.
+fn click_the_slices_move(harness: &Harness<'static, Editor>, index: usize) {
+    let document = parse(SLICE);
+    let mv = &document.moves[index];
+    harness.get_by_label(&format!("{}  ({})", mv.name, mv.ticks())).click();
+}
+
+fn on_device(path: &Path, device: &FakeDevice) -> Harness<'static, Editor> {
+    let options = Options {
+        file: Some(path.to_owned()),
+        content: Some(path.with_file_name("no cook here")),
+        link: Some(device.address),
+    };
+    Harness::builder()
+        .with_size((1400.0, 900.0))
+        .with_accessibility_check(false)
+        .with_step_dt(0.05)
+        .build_ui_state(|ui, editor: &mut Editor| editor.ui(ui), Editor::new(options))
+}
+
+/// Cmd+S with a field still focused saves and pushes what's on the screen, and the field keeps the keyboard.
+#[test]
+fn saving_by_key_takes_what_is_being_typed() {
+    let device = FakeDevice::start();
+    let dir = TestDir::new("typed_key");
+    let path = dir.write("slice.moves.ron", SLICE);
+    let mut harness = on_device(&path, &device);
+    type_over_the_cue_name(&mut harness, TYPED_NAME);
+    let _ = harness.get_by_value("slice.moves.ron *");
+
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::S);
+    harness.run_steps(2);
+    let typed = slice_with_typed_name();
+    assert_same(&fs::read_to_string(&path).expect("the file"), &typed, "the file");
+    assert_same(&text_of(&harness), &typed, "the text");
+    assert!(!harness.state().is_dirty());
+    let _ = harness.get_by_value("slice.moves.ron");
+    let _ = harness.get_by_label("cues typed_name at 0");
+    assert!(field(&harness, TYPED_NAME).is_focused(), "typing can go on");
+    until(&mut harness, "the reply", |editor| editor.link().last_push().is_some());
+    assert_eq!(device.documents(), [typed], "the bytes saved are the bytes pushed");
+}
+
+/// The Save button runs before the inspector in a pass, and a click takes focus only as it lands, so the
+/// save comes before the field's own letting go.
+#[test]
+fn saving_by_button_takes_what_is_being_typed() {
+    for same_pass in [false, true] {
+        let device = FakeDevice::start();
+        let dir = TestDir::new("typed_button");
+        let path = dir.write("slice.moves.ron", SLICE);
+        let mut harness = on_device(&path, &device);
+        type_over_the_cue_name(&mut harness, TYPED_NAME);
+
+        if same_pass {
+            harness.get_by_label("Save and push").click();
+        } else {
+            let save = harness.get_by_label("Save and push").rect().center();
+            harness.hover_at(save);
+            harness.run_steps(2);
+            harness.drag_at(save);
+            harness.step();
+            harness.drop_at(save);
+        }
+        harness.run_steps(3);
+        let typed = slice_with_typed_name();
+        assert_same(&fs::read_to_string(&path).expect("the file"), &typed, "the file");
+        assert!(!harness.state().is_dirty());
+        until(&mut harness, "the reply", |editor| editor.link().last_push().is_some());
+        assert_eq!(device.documents(), [typed], "same pass: {same_pass}");
+    }
+}
+
+/// What's typed counts as an edit to a closed window, and each answer does what it says.
+#[test]
+fn closing_while_typing_asks_first() {
+    let dir = TestDir::new("typed_quit");
+    let path = dir.write("slice.moves.ron", SLICE);
+    let mut harness = harness(&path);
+    type_over_the_cue_name(&mut harness, TYPED_NAME);
+
+    harness.state_mut().request_quit();
+    assert!(!harness.state().may_quit(), "it would lose what's on the screen");
+    harness.run_steps(2);
+    harness.get_by_label("Keep editing").click();
+    harness.run_steps(2);
+    assert!(!harness.state().may_quit());
+    assert_same(&fs::read_to_string(&path).expect("the file"), SLICE, "nothing's saved by asking");
+
+    harness.state_mut().request_quit();
+    harness.run_steps(2);
+    harness.get_by_label("Save and quit").click();
+    harness.run_steps(2);
+    assert!(harness.state().may_quit());
+    assert_same(&fs::read_to_string(&path).expect("the file"), &slice_with_typed_name(), "saved");
+
+    let dir = TestDir::new("typed_quit_unsaved");
+    let path = dir.write("slice.moves.ron", SLICE);
+    let mut harness = self::harness(&path);
+    type_over_the_cue_name(&mut harness, TYPED_NAME);
+    harness.state_mut().request_quit();
+    harness.run_steps(2);
+    harness.get_by_label("Quit without saving").click();
+    harness.run_steps(2);
+    assert!(harness.state().may_quit());
+    assert_same(&fs::read_to_string(&path).expect("the file"), SLICE, "not saved");
+}
+
+/// So it does to a picked document, and what's typed doesn't follow into the next one.
+#[test]
+fn opening_another_document_while_typing_asks_first() {
+    let dir = TestDir::new("typed_open");
+    dir.write("Cargo.toml", "");
+    fs::create_dir_all(dir.0.join("content")).expect("a folder");
+    let path = dir.write("content/slice.moves.ron", SLICE);
+    dir.write("content/warrior.moves.ron", WARRIOR);
+    let mut harness = harness(&path);
+    type_over_the_cue_name(&mut harness, TYPED_NAME);
+    let pick_the_warrior = |harness: &mut Harness<'static, Editor>| {
+        harness.get_by_value("slice.moves.ron *").click();
+        harness.run_steps(2);
+        harness.get_by_label("warrior.moves.ron").click();
+        harness.run_steps(2);
+    };
+
+    pick_the_warrior(&mut harness);
+    assert_eq!(harness.state().file().expect("a file").file_name(), "slice.moves.ron", "it asks");
+    harness.get_by_label("Save and open").click();
+    harness.run_steps(2);
+    assert_eq!(harness.state().file().expect("a file").file_name(), "warrior.moves.ron");
+    assert_same(&fs::read_to_string(&path).expect("the file"), &slice_with_typed_name(), "saved");
+    assert!(!harness.state().is_dirty());
+
+    fs::write(&path, SLICE).expect("the file again");
+    harness.state_mut().open(&path);
+    type_over_the_cue_name(&mut harness, TYPED_NAME);
+    pick_the_warrior(&mut harness);
+    harness.get_by_label("Open without saving").click();
+    harness.run_steps(2);
+    assert_eq!(harness.state().file().expect("a file").file_name(), "warrior.moves.ron");
+    assert_same(&fs::read_to_string(&path).expect("the file"), SLICE, "not saved");
+    assert!(!harness.state().is_dirty(), "and it didn't come along");
+}
+
+/// Text the document couldn't read stops a save rather than being saved or dropped: it stays where it was
+/// typed, the top bar says why, and fixing it or dropping it are both there.
+#[test]
+fn text_the_document_cant_read_stays_where_it_was_typed() {
+    let half = "\"half";
+    let dir = TestDir::new("typed_refused");
+    let path = dir.write("slice.moves.ron", SLICE);
+    let mut harness = harness(&path);
+    type_over_the_cue_name(&mut harness, half);
+
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::S);
+    harness.run_steps(2);
+    assert_same(&fs::read_to_string(&path).expect("the file"), SLICE, "nothing was saved");
+    assert!(harness.state().notice().is_some_and(|notice| notice.trouble), "and it says so");
+    let _ = field(&harness, half);
+    let _ = harness.get_by_label_contains("nothing else can until");
+    assert!(harness.state().is_dirty());
+
+    // Closing asks, and saving from there can't go through either.
+    harness.state_mut().request_quit();
+    assert!(!harness.state().may_quit());
+    harness.run_steps(2);
+    harness.get_by_label("Save and quit").click();
+    harness.run_steps(2);
+    assert!(!harness.state().may_quit());
+    let _ = field(&harness, half);
+
+    // Nothing else goes in meanwhile: what's typed is about the text as it stands.
+    harness.state_mut().nudge_selected(1);
+    harness.run_steps(2);
+    assert_same(&text_of(&harness), SLICE, "the nudge waits");
+
+    // Leaving the move doesn't lose it, and the top bar goes back to it.
+    click_the_slices_move(&harness, 1);
+    harness.run_steps(3);
+    assert!(harness.query(By::new().role(Role::TextInput).value(half)).is_none());
+    assert!(harness.state().is_dirty());
+    harness.get_by_label("Show it").click();
+    harness.run_steps(3);
+    let _ = field(&harness, half);
+    assert_eq!(harness.state().selected_move_name(), Some("light_1"));
+
+    // Fixed, it goes in as soon as it's left.
+    field(&harness, half).focus();
+    harness.run_steps(1);
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::A);
+    harness.run_steps(1);
+    field(&harness, half).type_text(TYPED_NAME);
+    harness.run_steps(2);
+    harness.key_press(Key::Enter);
+    harness.run_steps(3);
+    assert_same(&text_of(&harness), &slice_with_typed_name(), "the text");
+    assert!(harness.query_by_label_contains("nothing else can until").is_none());
+    harness.state_mut().undo();
+    harness.run_steps(2);
+    assert_same(&text_of(&harness), SLICE, "one step back");
+
+    // Dropped, it's gone, and there's nothing left to save.
+    type_over_the_cue_name(&mut harness, half);
+    harness.key_press(Key::Enter);
+    harness.run_steps(3);
+    harness.get_by_label("Drop it").click();
+    harness.run_steps(3);
+    assert!(!harness.state().is_dirty());
+    let _ = field(&harness, CUE_NAME);
+    assert_same(&text_of(&harness), SLICE, "the text");
+}
+
+/// A field's whole session is one step of undo, whatever it took to type and however it ended, and undo
+/// reaches what's still being typed.
+#[test]
+fn a_fields_typing_is_one_step_of_undo() {
+    let dir = TestDir::new("typed_undo");
+    let path = dir.write("slice.moves.ron", SLICE);
+    let mut harness = harness(&path);
+    type_over_the_cue_name(&mut harness, "\"typed_");
+    field(&harness, "\"typed_").type_text("name\"");
+    harness.run_steps(2);
+    let _ = field(&harness, TYPED_NAME);
+    harness.key_press(Key::Enter);
+    harness.run_steps(3);
+    let typed = slice_with_typed_name();
+    assert_same(&text_of(&harness), &typed, "taken when the field lets go");
+    assert_eq!(harness.state().file().expect("a file").undo_label(), Some("edit name"));
+
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    harness.run_steps(2);
+    assert_same(&text_of(&harness), SLICE, "one step");
+    assert!(!harness.state().is_dirty());
+    let _ = field(&harness, CUE_NAME);
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z);
+    harness.run_steps(2);
+    assert_same(&text_of(&harness), &typed, "and redo brings it back");
+    harness.state_mut().undo();
+    harness.run_steps(2);
+
+    // With the field still focused, undo takes the typing.
+    type_over_the_cue_name(&mut harness, TYPED_NAME);
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    harness.run_steps(2);
+    assert_same(&text_of(&harness), SLICE, "the text");
+    assert!(!harness.state().is_dirty());
+    let _ = field(&harness, CUE_NAME);
+    harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z);
+    harness.run_steps(2);
+    assert_same(&text_of(&harness), &typed, "and redo brings that back too");
+}
+
+/// While a value is being typed the text holds still, so it's still about the entry it was typed over: a
+/// change on disk waits, and a save sees it.
+#[test]
+fn a_change_on_disk_doesnt_land_under_what_is_being_typed() {
+    let dir = TestDir::new("typed_disk");
+    let path = dir.write("slice.moves.ron", SLICE);
+    let mut harness = harness(&path);
+    type_over_the_cue_name(&mut harness, TYPED_NAME);
+
+    let elsewhere = SLICE.replacen("startup: 5", "startup: 6", 1);
+    fs::write(&path, &elsewhere).expect("someone else's save");
+    // Past the second between looks at the file.
+    harness.run_steps(8);
+    assert_same(&text_of(&harness), SLICE, "it isn't taken over what's on the screen");
+    let _ = field(&harness, TYPED_NAME);
+
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::S);
+    harness.run_steps(2);
+    assert_same(&fs::read_to_string(&path).expect("the file"), &elsewhere, "nothing's lost");
+    assert_same(&text_of(&harness), &slice_with_typed_name(), "and neither is what was typed");
+    assert!(harness.state().file().expect("a file").conflict().is_some());
+}
+
+/// A field's row can go before it lets go: to another move, or with its entry. What was typed goes to the
+/// entry it was typed over, ahead of what took it away.
+#[test]
+fn what_is_typed_lands_on_its_own_entry_when_its_row_goes() {
+    let dir = TestDir::new("typed_row");
+    let path = dir.write("slice.moves.ron", SLICE);
+    let mut harness = harness(&path);
+    type_over_the_cue_name(&mut harness, TYPED_NAME);
+    click_the_slices_move(&harness, 1);
+    harness.run_steps(3);
+    assert_eq!(harness.state().selected_move_name(), Some("light_2"));
+    let typed = slice_with_typed_name();
+    assert_same(&text_of(&harness), &typed, "the first move's cue");
+    assert_eq!(parse(&text_of(&harness)).moves[1].cues[0].name, "swing", "and no other");
+    harness.state_mut().undo();
+    harness.run_steps(2);
+    assert_same(&text_of(&harness), SLICE, "one step");
+
+    // Deleted with its name half changed: both are steps, and it can all come back.
+    assert!(harness.state_mut().select_move("light_1"));
+    type_over_the_cue_name(&mut harness, TYPED_NAME);
+    harness.get_by_label("Delete").click();
+    harness.run_steps(3);
+    let after = parse(&text_of(&harness));
+    assert_eq!(after.moves[0].cues.len(), 1);
+    assert_eq!(after.moves[0].cues[0].name, "swing", "the entry that was there, not the next one");
+    harness.state_mut().undo();
+    harness.run_steps(2);
+    assert_same(&text_of(&harness), &typed, "the delete");
+    harness.state_mut().undo();
+    harness.run_steps(2);
+    assert_same(&text_of(&harness), SLICE, "and the name");
+
+    // A drag starts its own step: what's typed isn't part of it.
+    type_over_the_cue_name(&mut harness, TYPED_NAME);
+    let (_, end, per_tick) = handles(&harness, "hit volumes light_1_hit 5..8", 3);
+    drag(&mut harness, end, end + egui::vec2(per_tick, 0.0));
+    assert_same(&text_of(&harness), &hand_edit(&typed, "light_1", "to: 8,", "to: 9,"), "both");
+    harness.state_mut().undo();
+    harness.run_steps(2);
+    assert_same(&text_of(&harness), &typed, "the drag alone");
 }
 
 /// Runs the interface until `done`, with a real clock's patience: the link's replies come from a thread.

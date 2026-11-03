@@ -94,11 +94,13 @@
 //! (`SourceChanged`) rather than store another version's output under that key.
 //!
 //! Texture encoding is what a cold cook spends its time on, 58% of 17.6 s on the M5, in encoders that
-//! run a level on one thread and share nothing that reaches their output. astcenc comes closest: it
-//! rewrites its angle tables with the same values at every context, so a reader sees the same value
-//! either way, though it's a race as C++ counts them. Six cold cooks of each target on four workers
-//! under load matched one thread's bytes. Medians of six alternating rounds at a load of 13 to 20 take
-//! the desktop cook from 25.4 s to 12.2 s and the mobile cook from 12.3 s to 5.6 s, for the same CPU.
+//! run a level on one thread. astcenc shares two things: it rewrites its angle tables with the same
+//! values at every context, so a reader sees the same value either way, though it's a race as C++
+//! counts them; and a pointer to the preset table of a block size, whose value does reach the output,
+//! so levels of different tables never encode at once ([`texture`]'s `encode`). Six cold cooks of each
+//! target on four workers under load matched one thread's bytes. Medians of six alternating rounds at a
+//! load of 13 to 20 take the desktop cook from 25.4 s to 12.2 s and the mobile cook from 12.3 s to 5.6 s,
+//! for the same CPU.
 //!
 //! What it costs is memory: a texture's cook holds several expanded copies of its image, so besides the
 //! worker count what they hold at once is limited (`COOK_MEMORY`). Peak resident size goes from about

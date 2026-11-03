@@ -19,7 +19,9 @@ use ctt::{
     AlphaMode, ColorSpace, Container, ConvertSettings, FormatDesc, ImageRef, SurfaceRef, TargetFormat,
     TextureKind,
 };
-use sapphire_assets::texture::TextureFormat;
+use std::sync::{Condvar, Mutex, PoisonError};
+
+use sapphire_assets::texture::{AstcBlock, TextureFormat};
 
 use super::mips::Level;
 
@@ -55,12 +57,68 @@ pub(super) enum AstcUsage {
     Normal,
 }
 
+/// Which levels astcenc may encode at once. `astcenc_config_init` (`cpp/astcenc_entry.cpp`) points a
+/// function-local `static` at the preset table for its block size, then reads its tuning through that:
+/// a thread with another size between the two takes the wrong table's tuning, and encodes different
+/// bytes without a word. Built with clang at `-O2` or more the read is gone, and at `-O1` or `-O0` it
+/// isn't; other compilers are unread, and it can't be serialized from outside `ctt::convert`. So levels
+/// of one table run together, since a write of the same pointer changes nothing, and another table's
+/// wait for them to finish. Nothing holding this waits for anything else, so every wait ends.
+struct AstcPresets {
+    /// The table in use, and how many levels are using it.
+    using: Mutex<(usize, usize)>,
+    finished: Condvar,
+}
+
+/// The one astcenc reads through.
+static ASTC_PRESETS: AstcPresets = AstcPresets::new();
+
+/// Which of astcenc's preset tables a block size takes, as `astcenc_config_init` chooses.
+fn preset_table(block: AstcBlock) -> usize {
+    let (width, height) = block.dimensions();
+    match width * height {
+        ..25 => 0,
+        25..64 => 1,
+        64.. => 2,
+    }
+}
+
+impl AstcPresets {
+    const fn new() -> Self {
+        Self { using: Mutex::new((0, 0)), finished: Condvar::new() }
+    }
+
+    /// Waits until no level is using another table, and uses `table` until this drops.
+    fn enter(&self, table: usize) -> UsingPresets<'_> {
+        let mut using = self.using.lock().unwrap_or_else(PoisonError::into_inner);
+        while using.1 > 0 && using.0 != table {
+            using = self.finished.wait(using).unwrap_or_else(PoisonError::into_inner);
+        }
+        *using = (table, using.1 + 1);
+        UsingPresets(self)
+    }
+}
+
+/// A level using a preset table, a panicking one's included, until this drops.
+struct UsingPresets<'a>(&'a AstcPresets);
+
+impl Drop for UsingPresets<'_> {
+    fn drop(&mut self) {
+        self.0.using.lock().unwrap_or_else(PoisonError::into_inner).1 -= 1;
+        self.0.finished.notify_all();
+    }
+}
+
 /// Encodes one level. `level`'s texels are linear and carry the format's channels first.
 pub(super) fn encode_level(
     level: &Level,
     format: TextureFormat,
     encoding: Encoding,
 ) -> Result<Vec<u8>, ctt::Error> {
+    let _presets = match format {
+        TextureFormat::Astc { block, .. } => Some(ASTC_PRESETS.enter(preset_table(block))),
+        _ => None,
+    };
     let target = ctt::Format::new(format.vk_format()).expect("TextureFormat VkFormats are ktx2 formats");
     let target = match encoding {
         Encoding::Uncompressed => TargetFormat::Uncompressed(target),
@@ -121,4 +179,47 @@ pub(super) fn encode_level(
         });
     }
     Ok(surface.data)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::thread;
+    use std::time::Duration;
+
+    use super::*;
+
+    #[test]
+    fn block_sizes_take_the_preset_table_astcenc_gives_them() {
+        use AstcBlock::*;
+        assert_eq!([B4x4, B5x5, B6x6, B8x8].map(preset_table), [0, 1, 1, 2]);
+    }
+
+    /// One table's levels run together, and another's wait for all of them, a panicking one's too.
+    #[test]
+    fn levels_of_another_preset_table_wait_for_those_using_one() {
+        let presets = AstcPresets::new();
+        let (first, second) = (presets.enter(0), presets.enter(0));
+        let started = AtomicBool::new(false);
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                let other = presets.enter(2);
+                started.store(true, Ordering::SeqCst);
+                drop(other);
+            });
+            thread::sleep(Duration::from_millis(20));
+            assert!(!started.load(Ordering::SeqCst), "it waits for both");
+            drop(first);
+            thread::sleep(Duration::from_millis(20));
+            assert!(!started.load(Ordering::SeqCst), "it waits for the last");
+            drop(second);
+        });
+        assert!(started.load(Ordering::SeqCst));
+        let panicking = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _using = presets.enter(1);
+            panic!("an encoder's panic");
+        }));
+        assert!(panicking.is_err());
+        drop(presets.enter(0));
+    }
 }

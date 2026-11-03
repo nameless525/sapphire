@@ -2,11 +2,12 @@
 //! by what they're called and sends real pointer and key events, and everything goes through
 //! [`Editor::ui`], as the window's frames do. Edits land in temporary copies of the real documents.
 
+use std::collections::VecDeque;
 use std::fs;
 use std::net::{SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -1249,6 +1250,229 @@ fn what_is_typed_lands_on_its_own_entry_when_its_row_goes() {
     assert_same(&text_of(&harness), &typed, "the drag alone");
 }
 
+/// A small edit of the slice, as the timeline makes it.
+fn move_the_first_cue(harness: &mut Harness<'static, Editor>, at: u32) {
+    let entry = EntryRef { mv: 0, track: Track::Cues, index: 0 };
+    harness.state_mut().apply(Action::SetInstant { entry, at });
+    harness.run_steps(1);
+}
+
+fn save_by_key(harness: &mut Harness<'static, Editor>) {
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::S);
+    harness.run_steps(2);
+}
+
+/// Runs the interface until the device has had `how_many` documents.
+fn until_it_has_documents(harness: &mut Harness<'static, Editor>, device: &FakeDevice, how_many: usize) {
+    let started = Stopwatch::start();
+    while device.documents().len() < how_many {
+        assert!(started.elapsed() < Duration::from_secs(30), "never saw document {how_many}");
+        harness.run_steps(1);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // What the thread reported before sending this one has now been read.
+    harness.run_steps(1);
+}
+
+fn has_a_device_problem(editor: &Editor) -> bool {
+    editor.problems().iter().any(|problem| problem.from_device)
+}
+
+const SLICE_REFUSAL: &str = "slice.moves.ron: move `light_1`, track `cues`: the fight here can't take this";
+
+/// An answer that comes after the text moved on is about what was, whichever way it went. It doesn't mark
+/// this text with a refusal or read as this text having arrived, and the panel says which it's about.
+#[test]
+fn a_late_answer_doesnt_speak_for_newer_text() {
+    for refused in [false, true] {
+        let device = FakeDevice::start();
+        let dir = TestDir::new("late_answer");
+        let path = dir.write("slice.moves.ron", SLICE);
+        let mut harness = on_device(&path, &device);
+        harness.run_steps(3);
+        device.hold_documents();
+        if refused {
+            device.refuse_with(SLICE_REFUSAL);
+        }
+        move_the_first_cue(&mut harness, 1);
+        save_by_key(&mut harness);
+        until_it_has_documents(&mut harness, &device, 1);
+        assert!(harness.state().link().is_waiting());
+
+        move_the_first_cue(&mut harness, 2);
+        device.answer_documents(1);
+        until(&mut harness, "the answer", |editor| !editor.link().is_waiting());
+        assert_eq!(harness.state().link().last_push(), None, "refused: {refused}");
+        assert!(!has_a_device_problem(harness.state()), "refused: {refused}");
+        let _ = harness.get_by_label_contains("An earlier save of slice.moves.ron");
+        assert!(harness.query_by_label_contains("Took it in").is_none());
+
+        // The next save's answer is the one that counts, and the note goes with it.
+        device.answer_documents(1);
+        save_by_key(&mut harness);
+        until(&mut harness, "the next answer", |editor| editor.link().last_push().is_some());
+        assert!(harness.state().link().last_push().is_some());
+        assert_eq!(has_a_device_problem(harness.state()), refused);
+        assert!(harness.query_by_label_contains("An earlier save").is_none());
+    }
+}
+
+/// With saves queued, it's waiting until the last has an answer, and the last is what the panel shows.
+#[test]
+fn saves_queued_are_all_waited_for() {
+    let device = FakeDevice::start();
+    let dir = TestDir::new("queued");
+    let path = dir.write("slice.moves.ron", SLICE);
+    let mut harness = on_device(&path, &device);
+    harness.run_steps(3);
+    device.hold_documents();
+    move_the_first_cue(&mut harness, 1);
+    save_by_key(&mut harness);
+    let first = text_of(&harness);
+    move_the_first_cue(&mut harness, 2);
+    save_by_key(&mut harness);
+    let second = text_of(&harness);
+    until_it_has_documents(&mut harness, &device, 1);
+
+    device.answer_documents(1);
+    until_it_has_documents(&mut harness, &device, 2);
+    assert!(harness.state().link().is_waiting(), "the second has no answer yet");
+    let _ = harness.get_by_label("Pushing...");
+    assert_eq!(harness.state().link().last_push(), None, "and the first was of the text before");
+
+    device.answer_documents(1);
+    until(&mut harness, "the second answer", |editor| !editor.link().is_waiting());
+    assert!(matches!(harness.state().link().last_push(), Some(Pushed::Took { .. })));
+    assert_eq!(device.documents(), [first, second]);
+
+    // The same text saved twice: either answer is about this text.
+    device.hold_documents();
+    save_by_key(&mut harness);
+    save_by_key(&mut harness);
+    until_it_has_documents(&mut harness, &device, 3);
+    device.refuse_with(SLICE_REFUSAL);
+    device.answer_documents(1);
+    until(&mut harness, "its refusal", has_a_device_problem);
+    assert!(harness.state().link().is_waiting(), "the other is still out");
+    device.answer_documents(1);
+    until(&mut harness, "the last", |editor| !editor.link().is_waiting());
+    assert!(has_a_device_problem(harness.state()));
+}
+
+/// Another document isn't marked by what a device said of the last, already said or still on its way.
+#[test]
+fn another_document_starts_with_nothing_said_of_it() {
+    let device = FakeDevice::start();
+    let dir = TestDir::new("switching");
+    let path = dir.write("slice.moves.ron", SLICE);
+    let other = dir.write("warrior.moves.ron", WARRIOR);
+    let mut harness = on_device(&path, &device);
+    harness.run_steps(3);
+    device.refuse_with(SLICE_REFUSAL);
+    move_the_first_cue(&mut harness, 1);
+    save_by_key(&mut harness);
+    until(&mut harness, "the refusal", has_a_device_problem);
+    harness.state_mut().open(&other);
+    harness.run_steps(2);
+    assert_eq!(harness.state().link().last_push(), None);
+    assert!(!has_a_device_problem(harness.state()));
+
+    harness.state_mut().open(&path);
+    harness.run_steps(2);
+    device.hold_documents();
+    move_the_first_cue(&mut harness, 2);
+    save_by_key(&mut harness);
+    until_it_has_documents(&mut harness, &device, 2);
+    harness.state_mut().open(&other);
+    harness.run_steps(2);
+    device.answer_documents(1);
+    until(&mut harness, "the answer", |editor| !editor.link().is_waiting());
+    assert!(!has_a_device_problem(harness.state()));
+    let _ = harness.get_by_label_contains("An earlier save of slice.moves.ron");
+}
+
+/// What the last device says isn't taken for the next one's, however late it arrives.
+#[test]
+fn another_device_starts_with_nothing_said_of_it() {
+    let first = FakeDevice::playing(None, "first", &[(0, "light_1")]);
+    let second = FakeDevice::playing(None, "second", &[(7, "swipe")]);
+    let dir = TestDir::new("targets");
+    let path = dir.write("slice.moves.ron", SLICE);
+    let mut harness = on_device(&path, &first);
+    harness.run_steps(3);
+    let platform = |editor: &Editor| editor.link().device().map(|status| status.platform.clone());
+    until(&mut harness, "the first", |editor| platform(editor).as_deref() == Some("first"));
+
+    // A status on its way as the address changes.
+    first.hold_statuses();
+    let asked = first.statuses_asked();
+    let started = Stopwatch::start();
+    while first.statuses_asked() == asked {
+        assert!(started.elapsed() < Duration::from_secs(30), "it never asked");
+        harness.run_steps(1);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    harness.state_mut().set_link_address(second.address);
+    assert_eq!(platform(harness.state()), None);
+    assert!(harness.state().link().attempts().is_empty());
+    first.answer_statuses(1);
+    let started = Stopwatch::start();
+    while platform(harness.state()).as_deref() != Some("second") {
+        assert_ne!(platform(harness.state()).as_deref(), Some("first"), "the last device's word");
+        assert!(started.elapsed() < Duration::from_secs(30), "never saw the second");
+        harness.run_steps(1);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let attempts = harness.state().link().attempts();
+    assert_eq!(attempts.iter().map(|attempt| attempt.actor).collect::<Vec<_>>(), [7]);
+
+    // An answer on hand says nothing of the new one; the same address again is no change at all.
+    second.refuse_with(SLICE_REFUSAL);
+    move_the_first_cue(&mut harness, 1);
+    save_by_key(&mut harness);
+    until(&mut harness, "the refusal", has_a_device_problem);
+    harness.state_mut().set_link_address(second.address);
+    assert!(has_a_device_problem(harness.state()), "nothing changed");
+    assert!(harness.state().link().device().is_some());
+    harness.state_mut().set_link_address(first.address);
+    assert_eq!(harness.state().link().last_push(), None);
+    assert!(!has_a_device_problem(harness.state()));
+
+    // A push on its way as the address changes: it went to the last device, and says so.
+    first.answer_statuses(usize::MAX / 2);
+    until(&mut harness, "the first again", |editor| platform(editor).as_deref() == Some("first"));
+    first.hold_documents();
+    first.refuse_with(SLICE_REFUSAL);
+    save_by_key(&mut harness);
+    until_it_has_documents(&mut harness, &first, 1);
+    harness.state_mut().set_link_address(second.address);
+    first.answer_documents(1);
+    until(&mut harness, "the answer", |editor| !editor.link().is_waiting());
+    assert_eq!(harness.state().link().last_push(), None);
+    assert!(!has_a_device_problem(harness.state()));
+    let _ = harness.get_by_label_contains("An earlier save of slice.moves.ron");
+}
+
+/// A device that started again is a new fight, with actor numbers that mean something else.
+#[test]
+fn a_device_that_restarts_starts_its_attempts_over() {
+    let first = FakeDevice::playing(None, "here", &[(0, "light_1"), (1, "swipe")]);
+    let address = first.address;
+    let dir = TestDir::new("restart");
+    let path = dir.write("slice.moves.ron", SLICE);
+    let mut harness = on_device(&path, &first);
+    harness.run_steps(3);
+    until(&mut harness, "both", |editor| editor.link().attempts().len() == 2);
+
+    drop(first);
+    let _second = FakeDevice::playing(Some(address), "here", &[(0, "heavy")]);
+    until(&mut harness, "the new fight", |editor| {
+        editor.link().attempts().iter().any(|attempt| attempt.name == "heavy")
+    });
+    let attempts = harness.state().link().attempts();
+    assert_eq!(attempts.iter().map(|attempt| attempt.name.as_str()).collect::<Vec<_>>(), ["heavy"]);
+}
+
 /// Runs the interface until `done`, with a real clock's patience: the link's replies come from a thread.
 fn until(harness: &mut Harness<'static, Editor>, what: &str, done: impl Fn(&Editor) -> bool) {
     let started = Stopwatch::start();
@@ -1261,64 +1485,114 @@ fn until(harness: &mut Harness<'static, Editor>, what: &str, done: impl Fn(&Edit
 }
 
 /// A device of the test's own: real live link and a real socket on a private port, and a thread that
-/// answers as a fight's app does, without the fight.
+/// answers as a fight's app does, without the fight. It can sit on its answers, as a busy device does.
 struct FakeDevice {
     address: SocketAddr,
     refusal: Arc<Mutex<Option<String>>>,
     documents: Arc<Mutex<Vec<String>>>,
+    answers: Arc<Answers>,
     stop: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
+/// How many more of each it will answer, and how many of them it has been asked for.
+struct Answers {
+    documents: AtomicUsize,
+    statuses: AtomicUsize,
+    statuses_asked: AtomicUsize,
+}
+
+/// The next answer to give, if it's allowed one.
+fn next_answer<T>(allowed: &AtomicUsize, held: &mut VecDeque<T>) -> Option<T> {
+    let take_one = |left: usize| left.checked_sub(1);
+    if held.is_empty() || allowed.try_update(Ordering::Relaxed, Ordering::Relaxed, take_one).is_err() {
+        return None;
+    }
+    held.pop_front()
+}
+
 impl FakeDevice {
     fn start() -> Self {
-        let free = TcpListener::bind("127.0.0.1:0").expect("a port");
-        let address = free.local_addr().expect("its address");
-        drop(free);
-        let link =
-            LiveLink::start(LinkMode::Listen(address), Arc::new(LivePacks::new(MemoryPackSource::new())))
-                .expect("a listener");
+        Self::playing(None, "here", &[(0, "light_1")])
+    }
+
+    /// One that calls itself `platform`, playing a move on each actor it's given, at `address` if it's told
+    /// one, where a device that was there a moment ago may still be letting go.
+    fn playing(address: Option<SocketAddr>, platform: &'static str, actors: &'static [(u32, &str)]) -> Self {
+        let address = address.unwrap_or_else(|| {
+            let free = TcpListener::bind("127.0.0.1:0").expect("a port");
+            free.local_addr().expect("its address")
+        });
+        let started = Stopwatch::start();
+        let link = loop {
+            let packs = Arc::new(LivePacks::new(MemoryPackSource::new()));
+            match LiveLink::start(LinkMode::Listen(address), packs) {
+                Ok(link) => break link,
+                Err(error) => {
+                    assert!(started.elapsed() < Duration::from_secs(10), "no listener: {error}");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+        };
         let refusal = Arc::new(Mutex::new(None::<String>));
         let documents = Arc::new(Mutex::new(Vec::new()));
+        let answers = Arc::new(Answers {
+            documents: AtomicUsize::new(usize::MAX),
+            statuses: AtomicUsize::new(usize::MAX),
+            statuses_asked: AtomicUsize::new(0),
+        });
         let stop = Arc::new(AtomicBool::new(false));
         let thread = std::thread::spawn({
-            let (refusal, documents, stop) =
-                (Arc::clone(&refusal), Arc::clone(&documents), Arc::clone(&stop));
+            let (refusal, documents, answers, stop) =
+                (Arc::clone(&refusal), Arc::clone(&documents), Arc::clone(&answers), Arc::clone(&stop));
             move || {
                 let mut revision = 0;
+                let (mut statuses, mut replies) = (VecDeque::new(), VecDeque::new());
                 while !stop.load(Ordering::Relaxed) {
-                    match link.poll() {
+                    let push = link.poll();
+                    let idle = push.is_none();
+                    match push {
                         Some(Push::Status { reply }) => {
-                            let attempt = MoveAttempt {
-                                name: "light_1".to_owned(),
-                                revision,
-                                newest_revision: revision,
-                                ..MoveAttempt::default()
-                            };
-                            reply.reply(ReplyBody::Status(DeviceStatus {
-                                platform: "here".to_owned(),
-                                cook: "desktop".to_owned(),
-                                attempts: vec![attempt],
-                                ..DeviceStatus::default()
-                            }));
+                            answers.statuses_asked.fetch_add(1, Ordering::Relaxed);
+                            statuses.push_back(reply);
                         }
                         Some(Push::Document { text, reply, .. }) => {
                             documents.lock().expect("the list").push(text);
-                            if let Some(why) = refusal.lock().expect("the refusal").clone() {
-                                reply.refuse(why);
-                            } else {
-                                revision += 1;
-                                let owner = format!("the fight's moves, at revision {revision}");
-                                reply.reply(ReplyBody::DocumentApplied { owner });
-                            }
+                            replies.push_back(reply);
                         }
-                        Some(_) => {}
-                        None => std::thread::sleep(Duration::from_millis(2)),
+                        Some(_) | None => {}
+                    }
+                    while let Some(reply) = next_answer(&answers.statuses, &mut statuses) {
+                        let attempts = actors.iter().map(|(actor, name)| MoveAttempt {
+                            actor: *actor,
+                            name: (*name).to_owned(),
+                            revision,
+                            newest_revision: revision,
+                            ..MoveAttempt::default()
+                        });
+                        reply.reply(ReplyBody::Status(DeviceStatus {
+                            platform: platform.to_owned(),
+                            cook: "desktop".to_owned(),
+                            attempts: attempts.collect(),
+                            ..DeviceStatus::default()
+                        }));
+                    }
+                    while let Some(reply) = next_answer(&answers.documents, &mut replies) {
+                        if let Some(why) = refusal.lock().expect("the refusal").clone() {
+                            reply.refuse(why);
+                        } else {
+                            revision += 1;
+                            let owner = format!("the fight's moves, at revision {revision}");
+                            reply.reply(ReplyBody::DocumentApplied { owner });
+                        }
+                    }
+                    if idle {
+                        std::thread::sleep(Duration::from_millis(2));
                     }
                 }
             }
         });
-        Self { address, refusal, documents, stop, thread: Some(thread) }
+        Self { address, refusal, documents, answers, stop, thread: Some(thread) }
     }
 
     fn refuse_with(&self, why: &str) {
@@ -1327,6 +1601,27 @@ impl FakeDevice {
 
     fn documents(&self) -> Vec<String> {
         self.documents.lock().expect("the list").clone()
+    }
+
+    /// From here on it answers no document until told it may.
+    fn hold_documents(&self) {
+        self.answers.documents.store(0, Ordering::Relaxed);
+    }
+
+    fn answer_documents(&self, how_many: usize) {
+        self.answers.documents.fetch_add(how_many, Ordering::Relaxed);
+    }
+
+    fn hold_statuses(&self) {
+        self.answers.statuses.store(0, Ordering::Relaxed);
+    }
+
+    fn answer_statuses(&self, how_many: usize) {
+        self.answers.statuses.fetch_add(how_many, Ordering::Relaxed);
+    }
+
+    fn statuses_asked(&self) -> usize {
+        self.answers.statuses_asked.load(Ordering::Relaxed)
     }
 }
 

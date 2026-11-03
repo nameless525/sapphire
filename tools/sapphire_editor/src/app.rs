@@ -205,6 +205,8 @@ impl Editor {
                 self.documents = find_documents(path);
                 self.file = Some(file);
                 self.typed = None;
+                // What a device last said was about another file.
+                self.link.clear_push();
                 self.selected_move = 0;
                 self.selected_entry = None;
                 self.tick = 0;
@@ -954,6 +956,7 @@ impl Editor {
             let address = ui.add(TextEdit::singleline(&mut self.address_text).desired_width(130.0));
             if address.lost_focus() {
                 match self.address_text.parse() {
+                    // An address unchanged is no change, however often the field lets go.
                     Ok(address) => self.link.set_address(Some(address)),
                     Err(_) => {
                         self.notice = Some(Notice {
@@ -1519,6 +1522,18 @@ impl Editor {
                 ui.colored_label(Color32::from_rgb(235, 190, 110), format!("Not pushed: {why}"));
             }
             None => {}
+        }
+        if let Some(earlier) = self.link.earlier_push() {
+            let came_to = match &earlier.pushed {
+                Pushed::Took { .. } => "taken".to_owned(),
+                Pushed::Refused(refusals) => format!("refused, {} problems", refusals.len()),
+                Pushed::Failed(why) => format!("not pushed: {why}"),
+            };
+            ui.label(
+                RichText::new(format!("An earlier save of {}: {came_to}", earlier.origin))
+                    .small()
+                    .color(Color32::from_gray(150)),
+            );
         }
         let attempts: Vec<MoveAttempt> = self.link.attempts().to_vec();
         if !attempts.is_empty() {

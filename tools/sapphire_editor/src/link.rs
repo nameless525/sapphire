@@ -2,6 +2,11 @@
 //! waits on a network. It keeps a [`Client`] connected, pushes what it's given, and asks the device what
 //! it's playing twice a second, which is how the editor knows an edit reached an attempt rather than
 //! being told it should have.
+//!
+//! A reply can take seconds, and the text and the address can change meanwhile. So every push has an ID and
+//! every report says which address it's about: [`Link::last_push`] only ever speaks for the text and the
+//! device in front of the person, [`Link::earlier_push`] holds what came back too late to, and nothing an
+//! old device says lands on a new one.
 
 use std::net::SocketAddr;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
@@ -75,14 +80,41 @@ pub enum Pushed {
     Failed(String),
 }
 
+/// What an older push came to, once what it pushed had stopped being what's here.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EarlierPush {
+    /// The file it was of.
+    pub origin: String,
+    pub pushed: Pushed,
+}
+
 enum Command {
-    Address(Option<SocketAddr>),
-    Push { origin: String, text: String },
+    /// `target` is the count of addresses so far, which the reports made after this repeat.
+    Address {
+        target: u64,
+        address: Option<SocketAddr>,
+    },
+    Push {
+        id: u64,
+        origin: String,
+        text: String,
+    },
 }
 
 enum Report {
-    Connection(Result<Box<DeviceStatus>, String>),
-    Pushed(Pushed),
+    /// A new connection, which may be to a device that has started again since the last.
+    Connected {
+        target: u64,
+    },
+    Connection {
+        target: u64,
+        status: Result<Box<DeviceStatus>, String>,
+    },
+    Pushed {
+        id: u64,
+        origin: String,
+        pushed: Pushed,
+    },
 }
 
 /// A connection to a device, as the interface sees it: it never blocks.
@@ -91,14 +123,22 @@ pub struct Link {
     commands: Option<Sender<Command>>,
     reports: Receiver<Report>,
     worker: Option<JoinHandle<()>>,
+    address: Option<SocketAddr>,
+    /// Which address this is: a report of any other is about a device no longer looked at.
+    target: u64,
     /// The device's last status, while it's connected.
     device: Option<DeviceStatus>,
     /// Why there's no device, if there isn't.
     trouble: Option<String>,
-    /// A push is on its way.
-    waiting: bool,
+    /// Pushes with no answer yet. The thread takes them one at a time, so there can be several.
+    waiting: u32,
+    /// The ID the next push takes.
+    next_push: u64,
+    /// Pushes from this one on are of the text and to the device now in front of the person.
+    current_from: u64,
     last_push: Option<Pushed>,
-    /// The last attempt seen of each actor, newest revision first: a move can end between two statuses.
+    earlier_push: Option<EarlierPush>,
+    /// The last attempt seen of each actor on this connection: a move can end between two statuses.
     attempts: Vec<MoveAttempt>,
 }
 
@@ -116,31 +156,45 @@ impl Link {
             commands: Some(commands),
             reports,
             worker,
+            address,
+            target: 0,
             device: None,
             trouble: None,
-            waiting: false,
+            waiting: 0,
+            next_push: 0,
+            current_from: 0,
             last_push: None,
+            earlier_push: None,
             attempts: Vec::new(),
         }
     }
 
-    /// Points it at another device.
+    /// Points it at another device, if this one isn't it. Nothing said so far speaks for the new one.
     pub fn set_address(&mut self, address: Option<SocketAddr>) {
+        if address == self.address {
+            return;
+        }
+        self.address = address;
+        self.target += 1;
         self.device = None;
         self.attempts.clear();
-        self.send(Command::Address(address));
+        self.clear_push();
+        self.send(Command::Address { target: self.target, address });
     }
 
-    /// Pushes a document, by its file's name. [`Self::last_push`] says what became of it.
+    /// Pushes a document, by its file's name. [`Self::last_push`] says what became of it, as long as nothing
+    /// has changed by the time it's known.
     pub fn push(&mut self, origin: String, text: String) {
-        self.waiting = true;
-        self.send(Command::Push { origin, text });
+        self.waiting += 1;
+        let id = self.next_push;
+        self.next_push += 1;
+        self.send(Command::Push { id, origin, text });
     }
 
     fn send(&mut self, command: Command) {
         let sent = self.commands.as_ref().is_some_and(|commands| commands.send(command).is_ok());
         if !sent {
-            self.waiting = false;
+            self.waiting = 0;
             self.last_push = Some(Pushed::Failed("live link's thread has stopped".to_owned()));
         }
     }
@@ -149,7 +203,8 @@ impl Link {
     pub fn poll(&mut self) {
         loop {
             match self.reports.try_recv() {
-                Ok(Report::Connection(Ok(status))) => {
+                Ok(Report::Connected { target }) if target == self.target => self.attempts.clear(),
+                Ok(Report::Connection { target, status: Ok(status) }) if target == self.target => {
                     self.trouble = None;
                     for attempt in &status.attempts {
                         match self.attempts.iter_mut().find(|seen| seen.actor == attempt.actor) {
@@ -159,13 +214,19 @@ impl Link {
                     }
                     self.device = Some(*status);
                 }
-                Ok(Report::Connection(Err(why))) => {
+                Ok(Report::Connection { target, status: Err(why) }) if target == self.target => {
                     self.device = None;
                     self.trouble = Some(why);
                 }
-                Ok(Report::Pushed(pushed)) => {
-                    self.waiting = false;
-                    self.last_push = Some(pushed);
+                Ok(Report::Connected { .. } | Report::Connection { .. }) => {}
+                Ok(Report::Pushed { id, origin, pushed }) => {
+                    self.waiting = self.waiting.saturating_sub(1);
+                    if id >= self.current_from {
+                        self.last_push = Some(pushed);
+                        self.earlier_push = None;
+                    } else {
+                        self.earlier_push = Some(EarlierPush { origin, pushed });
+                    }
                 }
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => return,
             }
@@ -184,12 +245,20 @@ impl Link {
 
     #[must_use]
     pub fn is_waiting(&self) -> bool {
-        self.waiting
+        self.waiting > 0
     }
 
+    /// What became of the last push of the text and to the device there are now.
     #[must_use]
     pub fn last_push(&self) -> Option<&Pushed> {
         self.last_push.as_ref()
+    }
+
+    /// What became of a push that was overtaken while it was out: true of what it pushed, and of nothing
+    /// here now. It stays until a current answer replaces it.
+    #[must_use]
+    pub fn earlier_push(&self) -> Option<&EarlierPush> {
+        self.earlier_push.as_ref()
     }
 
     /// The last attempt seen of each actor.
@@ -198,9 +267,11 @@ impl Link {
         &self.attempts
     }
 
-    /// Forgets what the last push said: the document has changed since, and it no longer describes it.
+    /// Forgets what the last push said: the document has changed since, and it no longer describes it. Nor
+    /// does the answer to any push still out.
     pub fn clear_push(&mut self) {
         self.last_push = None;
+        self.current_from = self.next_push;
     }
 }
 
@@ -214,20 +285,23 @@ impl Drop for Link {
 
 fn work(mut address: Option<SocketAddr>, commands: &Receiver<Command>, reports: &Sender<Report>) {
     let mut client: Option<Client> = None;
+    let mut target = 0;
     let mut since_try = Stopwatch::start();
     loop {
         match commands.recv_timeout(STATUS_EVERY) {
-            Ok(Command::Address(next)) => {
+            Ok(Command::Address { target: next_target, address: next }) => {
+                target = next_target;
                 address = next;
                 client = None;
                 since_try = Stopwatch::start();
                 if address.is_none() {
-                    let _ = reports.send(Report::Connection(Err("no address".to_owned())));
+                    let status = Err("no address".to_owned());
+                    let _ = reports.send(Report::Connection { target, status });
                 }
             }
-            Ok(Command::Push { origin, text }) => {
-                let report = push(address, &mut client, &origin, text);
-                if reports.send(Report::Pushed(report)).is_err() {
+            Ok(Command::Push { id, origin, text }) => {
+                let pushed = push(address, target, &mut client, reports, &origin, text);
+                if reports.send(Report::Pushed { id, origin, pushed }).is_err() {
                     return;
                 }
             }
@@ -237,12 +311,12 @@ fn work(mut address: Option<SocketAddr>, commands: &Receiver<Command>, reports: 
                 }
                 since_try = Stopwatch::start();
                 let Some(address) = address else { continue };
-                let status = connected(address, &mut client)
+                let status = connected(address, target, &mut client, reports)
                     .and_then(|client| client.status().map(Box::new).map_err(|error| error_chain(&error)));
                 if client.as_ref().is_some_and(Client::is_closed) || status.is_err() {
                     client = None;
                 }
-                if reports.send(Report::Connection(status)).is_err() {
+                if reports.send(Report::Connection { target, status }).is_err() {
                     return;
                 }
             }
@@ -251,19 +325,32 @@ fn work(mut address: Option<SocketAddr>, commands: &Receiver<Command>, reports: 
     }
 }
 
-fn connected(address: SocketAddr, client: &mut Option<Client>) -> Result<&mut Client, String> {
+fn connected<'c>(
+    address: SocketAddr,
+    target: u64,
+    client: &'c mut Option<Client>,
+    reports: &Sender<Report>,
+) -> Result<&'c mut Client, String> {
     if client.is_none() {
         *client = Some(Client::connect(address).map_err(|error| error_chain(&error))?);
+        let _ = reports.send(Report::Connected { target });
     }
     client.as_mut().ok_or_else(|| "no connection".to_owned())
 }
 
-fn push(address: Option<SocketAddr>, client: &mut Option<Client>, origin: &str, text: String) -> Pushed {
+fn push(
+    address: Option<SocketAddr>,
+    target: u64,
+    client: &mut Option<Client>,
+    reports: &Sender<Report>,
+    origin: &str,
+    text: String,
+) -> Pushed {
     let Some(address) = address else {
         return Pushed::Failed("no device address to push to".to_owned());
     };
     let stopwatch = Stopwatch::start();
-    let connection = match connected(address, client) {
+    let connection = match connected(address, target, client, reports) {
         Ok(connection) => connection,
         Err(why) => return Pushed::Failed(format!("no device at {address}: {why}")),
     };

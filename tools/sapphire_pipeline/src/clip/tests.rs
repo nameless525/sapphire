@@ -135,6 +135,235 @@ fn rotation_bound(reach: f32, error: &ReductionError) -> f32 {
     (error.distance / reach).max(ROTATION_KEY_ERROR)
 }
 
+/// `skeleton`'s rest pose overlaid with `sampled`'s samples at `tick`: the pose as authored.
+fn source_pose(sampled: &SampledClip, skeleton: &Skeleton, tick: usize) -> Pose {
+    let rest: Vec<JointTransform> = skeleton.rest.clone();
+    let mut pose = Pose {
+        translation: rest.iter().map(|rest| Vec3::from(rest.translation)).collect(),
+        rotation: rest.iter().map(|rest| Quat::from_array(rest.rotation)).collect(),
+        scale: rest.iter().map(|rest| Vec3::from(rest.scale)).collect(),
+    };
+    for (joint, samples) in &sampled.rotations {
+        pose.rotation[usize::from(*joint)] = samples[tick];
+    }
+    for (joint, samples) in &sampled.translations {
+        pose.translation[usize::from(*joint)] = samples[tick];
+    }
+    for (joint, samples) in &sampled.scales {
+        pose.scale[usize::from(*joint)] = samples[tick];
+    }
+    pose
+}
+
+/// A clip of `ticks` ticks, with `samples` for each of a joint's tracks by what fraction of the clip
+/// has passed.
+fn ramp<T>(ticks: u16, sample: impl Fn(f32) -> T) -> Vec<T> {
+    (0..=ticks).map(|tick| sample(f32::from(tick) / f32::from(ticks))).collect()
+}
+
+/// A wobble too small to survive at rest, but not once what's above it stretches it.
+fn wobble(fraction: f32, axis: Vec3) -> Quat {
+    Quat::from_axis_angle(axis, 0.003 * (fraction * 40.0).sin())
+}
+
+/// `one track moves what it drives by at most the distance, at any tick`: however the clip stretches
+/// what's above a track or lengthens what's below it, the pose as cooked stays within what its tracks'
+/// tolerances add up to, at every joint and at the skin around it.
+#[test]
+fn the_bound_holds_under_a_clips_own_scales_and_bone_lengths() {
+    let wide = ReductionError { distance: 0.002, ..ReductionError::default() };
+    let (ticks, turned) = (240u16, Vec3::new(1.0, 0.0, 0.0));
+    // A joint with no offset of its own, under a root the clip scales: the review's IMP-002.
+    let two = Skeleton::new(&[
+        Joint { name: "root".into(), parent: None, rest: JointTransform::IDENTITY },
+        Joint { name: "child".into(), parent: Some(0), rest: JointTransform::IDENTITY },
+    ]);
+    // A joint scaled down at rest with its bones in its own units, as an armature's are.
+    let small = Skeleton::new(&[
+        Joint { name: "root".into(), parent: None, rest: JointTransform::IDENTITY },
+        Joint {
+            name: "armature".into(),
+            parent: Some(0),
+            rest: JointTransform { scale: [0.01; 3], ..JointTransform::IDENTITY },
+        },
+        Joint {
+            name: "bone".into(),
+            parent: Some(1),
+            rest: JointTransform { translation: [0.0, 20.0, 0.0], ..JointTransform::IDENTITY },
+        },
+    ]);
+    let empty = || SampledClip { name: "row".into(), rate: 60, ticks, ..SampledClip::default() };
+    let rows: Vec<(&str, Skeleton, ReductionError, SampledClip)> = vec![
+        (
+            "a tiny offset under a scale of 20",
+            two.clone(),
+            ReductionError::default(),
+            SampledClip {
+                scales: vec![(0, ramp(ticks, |_| Vec3::splat(20.0)))],
+                translations: vec![(1, ramp(ticks, |_| Vec3::new(0.000_24, 0.0, 0.0)))],
+                ..empty()
+            },
+        ),
+        (
+            "a held offset under a scale of 20",
+            chain(3),
+            wide,
+            SampledClip {
+                scales: vec![(0, ramp(ticks, |_| Vec3::splat(20.0)))],
+                translations: vec![(1, ramp(ticks, |_| Vec3::new(0.0019, 0.2, 0.0)))],
+                ..empty()
+            },
+        ),
+        (
+            "a turn under a growing scale",
+            chain(4),
+            wide,
+            SampledClip {
+                scales: vec![(0, ramp(ticks, |at| Vec3::splat(1.0 + 7.0 * at)))],
+                rotations: vec![(1, ramp(ticks, |at| wobble(at, turned)))],
+                ..empty()
+            },
+        ),
+        (
+            "a turn into one long axis of a scale",
+            chain(4),
+            wide,
+            SampledClip {
+                scales: vec![(0, ramp(ticks, |at| Vec3::new(1.0, 1.0, 1.0 + 14.0 * at)))],
+                rotations: vec![(1, ramp(ticks, |at| wobble(at, turned)))],
+                ..empty()
+            },
+        ),
+        (
+            "and under a turning ancestor",
+            chain(4),
+            wide,
+            SampledClip {
+                scales: vec![(1, ramp(ticks, |at| Vec3::new(1.0, 1.0, 1.0 + 14.0 * at)))],
+                rotations: vec![
+                    (0, ramp(ticks, |at| Quat::from_rotation_y(at * 1.5))),
+                    (2, ramp(ticks, |at| wobble(at, turned))),
+                ],
+                ..empty()
+            },
+        ),
+        (
+            "a turn above a bone the clip lengthens",
+            chain(4),
+            wide,
+            SampledClip {
+                translations: vec![(2, ramp(ticks, |at| Vec3::new(0.0, 0.2 + 6.0 * at, 0.0)))],
+                rotations: vec![(1, ramp(ticks, |at| wobble(at, Vec3::Z)))],
+                ..empty()
+            },
+        ),
+        (
+            "a scale wobbling on a joint scaled down at rest",
+            small,
+            wide,
+            SampledClip {
+                scales: vec![(1, ramp(ticks, |at| Vec3::splat(0.01 + 0.005 * (at * 40.0).sin())))],
+                ..empty()
+            },
+        ),
+    ];
+    let mut wrong = Vec::new();
+    for (name, skeleton, error, sampled) in rows {
+        let clip = cooked(&sampled, &skeleton, &error);
+        let (clip_bytes, skeleton_bytes) = (read(&clip), skeleton.to_cooked().unwrap());
+        let (clip, joints) = (Clip::read(&clip_bytes).unwrap(), Skeleton::read(&skeleton_bytes).unwrap());
+        // Each joint's bound: a distance for every track on it and above it.
+        let mut bounds = vec![0.0f32; skeleton.parents.len()];
+        for joint in 0..bounds.len() {
+            let id = joint as u16;
+            let tracks = sampled.rotations.iter().filter(|(j, _)| *j == id).count()
+                + sampled.translations.iter().filter(|(j, _)| *j == id).count()
+                + sampled.scales.iter().filter(|(j, _)| *j == id).count();
+            let above = parent_of(&skeleton, joint).map_or(0.0, |parent| bounds[parent]);
+            bounds[joint] = above + tracks as f32 * error.distance;
+        }
+        let probes = [Vec3::ZERO, Vec3::X, Vec3::NEG_X, Vec3::Y, Vec3::NEG_Y, Vec3::Z, Vec3::NEG_Z]
+            .map(|axis| axis * SKIN_REACH);
+        let mut worst = (0.0f32, 0.0f32);
+        for tick in 0..=usize::from(ticks) {
+            let drawn = model_of(&sample_pose(clip, joints, tick as f32), joints);
+            let authored = model_of(&source_pose(&sampled, &skeleton, tick), joints);
+            for (joint, (a, b)) in drawn.iter().zip(&authored).enumerate() {
+                for probe in probes {
+                    let strays = a.transform_point3(probe).distance(b.transform_point3(probe));
+                    if strays - bounds[joint] > worst.0 - worst.1 {
+                        worst = (strays, bounds[joint]);
+                    }
+                }
+            }
+        }
+        // Rounding in measuring, not in the clip.
+        if worst.0 > worst.1 + 2e-5 {
+            wrong.push(format!("{name}: strays {} over {}", worst.0, worst.1));
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// A clip that leaves its rig as it found it has the tolerances the rig's rest gives, to the bit, and so
+/// the bytes it always had: the clip's own numbers count only where they ask for more.
+#[test]
+fn a_clip_within_its_rigs_rest_keeps_the_rests_tolerances() {
+    let skeleton = chain(6);
+    let reach = reaches(&skeleton);
+    let bits = |values: &[f32]| values.iter().map(|value| value.to_bits()).collect::<Vec<u32>>();
+    let rest_reach = bits(&reach);
+    let ticks = 60;
+    let only_turns = SampledClip {
+        ticks,
+        rotations: vec![(1, ramp(ticks, Quat::from_rotation_z)), (4, ramp(ticks, |at| wobble(at, Vec3::X)))],
+        ..SampledClip::default()
+    };
+    let shrinking = SampledClip {
+        ticks,
+        scales: vec![(2, ramp(ticks, |at| Vec3::splat(1.0 - 0.5 * at)))],
+        translations: vec![(3, ramp(ticks, |at| Vec3::new(0.0, 0.2 - 0.1 * at, 0.0)))],
+        ..SampledClip::default()
+    };
+    for (name, sampled) in [("turns alone", only_turns), ("shrinking", shrinking)] {
+        let carries = Carries::of(&sampled, &skeleton);
+        assert_eq!(bits(&carries.rotation), rest_reach, "{name}");
+        assert_eq!(bits(&carries.scale), rest_reach, "{name}");
+        assert_eq!(bits(&carries.translation), bits(&[1.0; 6]), "{name}");
+    }
+
+    // A rig that holds a scale at rest: its model's own columns, as a track has always read them.
+    let scaled = Skeleton::new(&[
+        Joint {
+            name: "armature".into(),
+            parent: None,
+            rest: JointTransform { scale: [0.01; 3], ..JointTransform::IDENTITY },
+        },
+        Joint {
+            name: "bone".into(),
+            parent: Some(0),
+            rest: JointTransform { translation: [0.0, 20.0, 0.0], ..JointTransform::IDENTITY },
+        },
+    ]);
+    let carries = Carries::of(&SampledClip::default(), &scaled);
+    assert_eq!(carries.rotation, reaches(&scaled));
+    assert!((carries.translation[1] - 0.01).abs() < 1e-6, "{}", carries.translation[1]);
+
+    // Where a clip asks for more, it gets what it asks for: 20 × the bone and the skin below the root.
+    let two = chain(2);
+    let sampled = SampledClip {
+        ticks,
+        scales: vec![(0, ramp(ticks, |_| Vec3::new(1.0, 20.0, 1.0)))],
+        translations: vec![(1, ramp(ticks, |at| Vec3::new(0.0, 0.2 + 0.8 * at, 0.0)))],
+        ..SampledClip::default()
+    };
+    let carries = Carries::of(&sampled, &two);
+    assert_eq!(carries.translation[1], 20.0);
+    assert!((carries.rotation[0] - 20.0 * (1.0 + SKIN_REACH)).abs() < 1e-3, "{}", carries.rotation[0]);
+    assert!((carries.scale[0] - (1.0 + SKIN_REACH)).abs() < 1e-3, "{}", carries.scale[0]);
+    assert!((carries.rotation[1] - 20.0 * SKIN_REACH).abs() < 1e-3, "{}", carries.rotation[1]);
+}
+
 /// The bound the module docs state, read back through the runtime's own functions, at every tick
 /// and between ticks, in local space and in model space.
 #[test]
@@ -202,28 +431,10 @@ fn the_reconstruction_stays_within_the_stated_bound() {
     }
 
     // In model space, against the same pose built from the source's samples.
-    let source_pose = |tick: usize| {
-        let rest: Vec<JointTransform> = skeleton.rest.clone();
-        let mut pose = Pose {
-            translation: rest.iter().map(|rest| Vec3::from(rest.translation)).collect(),
-            rotation: rest.iter().map(|rest| Quat::from_array(rest.rotation)).collect(),
-            scale: rest.iter().map(|rest| Vec3::from(rest.scale)).collect(),
-        };
-        for (joint, samples) in &sampled.rotations {
-            pose.rotation[usize::from(*joint)] = samples[tick];
-        }
-        for (joint, samples) in &sampled.translations {
-            pose.translation[usize::from(*joint)] = samples[tick];
-        }
-        for (joint, samples) in &sampled.scales {
-            pose.scale[usize::from(*joint)] = samples[tick];
-        }
-        pose
-    };
     let mut worst: f32 = 0.0;
     for tick in 0..=600usize {
         let cooked = model_of(&sample_pose(clip, joints, tick as f32), joints);
-        let source = model_of(&source_pose(tick), joints);
+        let source = model_of(&source_pose(&sampled, &skeleton, tick), joints);
         for (joint, (a, b)) in cooked.iter().zip(&source).enumerate() {
             let strays = Vec3::from(a.translation).distance(Vec3::from(b.translation));
             worst = worst.max(strays);

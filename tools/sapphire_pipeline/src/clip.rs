@@ -47,14 +47,22 @@
 //!   [`SKIN_REACH`] for the skin past the last joint. So a track on the hips, a meter from the
 //!   fingertips, holds 0.014°, and one on a finger up to 0.14°.
 //!
+//! **A clip can ask for more than its rig's rest gives** (`Carries`): a scale above a track stretches
+//! its error, and a scale or a translation below it lengthens what a rotation swings. So each of those
+//! is taken at the tick where the clip's own samples carry an error furthest, with a stretch of each
+//! joint's largest scale component multiplied down the chain, which no rotation or shear can pass. A
+//! clip that keeps to its rig's rest has the rest's numbers to the bit, and a smaller pose never
+//! loosens them.
+//!
 //! Errors add along a chain, so a joint at depth `n` is within `3 × n × distance` of the source in
 //! model space, and in practice well under, since they'd have to peak together at one tick and in
 //! one direction. Morph weights are within [`ReductionError::weight`] (0.002). A key's own
 //! quantization counts toward each of these, except where it alone exceeds a tolerance: the
 //! tolerance then is the quantization's (a rotation key's 0.009°; half a step across a vector
-//! track's range). Between ticks a clip blends linearly, so the bound there is the source's own
-//! curvature over a tick. `clip::tests::the_reconstruction_stays_within_the_stated_bound` holds
-//! all of this.
+//! track's range; a scale goes no tighter than 1e-5). Between ticks a clip blends linearly, so the
+//! bound there is the source's own curvature over a tick.
+//! `clip::tests::the_reconstruction_stays_within_the_stated_bound` holds all of this, and
+//! `clip::tests::the_bound_holds_under_a_clips_own_scales_and_bone_lengths` what a clip asks for.
 //!
 //! A track within tolerance of the skeleton's rest (or a morph target's default) at every tick
 //! needs no track at all; within tolerance of one value, one key.
@@ -93,7 +101,8 @@ use crate::keypose;
 /// 2: normalizes and walks a skeleton in scalars, for one set of bytes on every architecture (M2 N1).
 /// 3: a shared rig's repeated joint name is an error, where its tracks landed on one joint (the review's
 /// IMP-001).
-pub const COOKER: Stage = Stage { name: "sclip", version: 3 };
+/// 4: tolerances follow what a clip's own scales and translations ask of them (the review's IMP-002).
+pub const COOKER: Stage = Stage { name: "sclip", version: 4 };
 
 /// The `.sskel` writer. Bump its version whenever it changes output for the same import.
 pub const SKELETON_COOKER: Stage = Stage { name: "sskel", version: 1 };
@@ -594,21 +603,105 @@ impl KeyArrays {
     }
 }
 
+/// How far past its rig's rest a clip must ask before it counts: above the rounding between the two ways
+/// they're worked out, well under anything a pose would show.
+const CARRY_SLACK: f32 = 1e-4;
+
+/// How far an error in each of a joint's tracks carries into model space: what its tolerances divide
+/// [`ReductionError::distance`] by. See the [module docs](self). The rig's rest values, unless a tick of
+/// the clip needs more. Walks scalars alone, as everything on a clip's path does.
+#[derive(Default)]
+struct Carries {
+    /// Meters per unit of a translation's error: the stretch of the joint's parent.
+    translation: Vec<f32>,
+    /// Meters per radian of a rotation's error: the joint's reach.
+    rotation: Vec<f32>,
+    /// Meters per unit of a scale's error.
+    scale: Vec<f32>,
+}
+
+impl Carries {
+    fn of(sampled: &SampledClip, skeleton: &Skeleton) -> Self {
+        fn by_joint(tracks: &[(u16, Vec<Vec3>)], count: usize) -> Vec<Option<&[Vec3]>> {
+            let mut joints = vec![None; count];
+            for (joint, samples) in tracks {
+                if let Some(place) = joints.get_mut(usize::from(*joint)) {
+                    *place = Some(samples.as_slice());
+                }
+            }
+            joints
+        }
+        // A rotation and a shear can't pass the product of each joint's largest scale.
+        let largest = |scale: Vec3| scale.abs().max_element();
+        let count = skeleton.parents.len();
+        let (translations, scales) =
+            (by_joint(&sampled.translations, count), by_joint(&sampled.scales, count));
+
+        let model = rest_model(skeleton);
+        // The skin past a joint, which `SKIN_REACH` gives in meters at rest, in the joint's own units.
+        let mut rest_stretch = vec![1.0f32; count];
+        let mut skin = vec![SKIN_REACH; count];
+        let mut carried =
+            Self { translation: vec![0.0; count], rotation: vec![0.0; count], scale: vec![0.0; count] };
+        for joint in 0..count {
+            let above = parent_of(skeleton, joint).map_or(1.0, |parent| rest_stretch[parent]);
+            rest_stretch[joint] = above * largest(Vec3::from(skeleton.rest[joint].scale));
+            if rest_stretch[joint] > 0.0 {
+                skin[joint] = SKIN_REACH / rest_stretch[joint];
+            }
+        }
+
+        // For each tick, down the skeleton each joint's scale and the stretch of its frame, then back up
+        // it the furthest anything below a joint gets from it, in that frame.
+        let mut scale = vec![1.0f32; count];
+        let mut stretch = vec![1.0f32; count];
+        let mut length = vec![0.0f32; count];
+        for tick in 0..=usize::from(sampled.ticks) {
+            for joint in 0..count {
+                let rest = Vec3::from(skeleton.rest[joint].scale);
+                scale[joint] = largest(scales[joint].map_or(rest, |samples| samples[tick]));
+                let above = parent_of(skeleton, joint).map_or(1.0, |parent| stretch[parent]);
+                stretch[joint] = above * scale[joint];
+                length[joint] = skin[joint];
+            }
+            for joint in (0..count).rev() {
+                let parent = parent_of(skeleton, joint);
+                let above = parent.map_or(1.0, |parent| stretch[parent]);
+                carried.translation[joint] = carried.translation[joint].max(above);
+                carried.rotation[joint] = carried.rotation[joint].max(stretch[joint] * length[joint]);
+                carried.scale[joint] = carried.scale[joint].max(above * length[joint]);
+                if let Some(parent) = parent {
+                    let rest = Vec3::from(skeleton.rest[joint].translation);
+                    let offset = translations[joint].map_or(rest, |samples| samples[tick]).length();
+                    length[parent] = length[parent].max(offset + scale[joint] * length[joint]);
+                }
+            }
+        }
+
+        // A rig at its rest takes its rest's own numbers to the bit, so its clips keep their bytes.
+        let or_rest = |worst: f32, rest: f32| if worst > rest * (1.0 + CARRY_SLACK) { worst } else { rest };
+        for (joint, &reach) in reaches(skeleton).iter().enumerate() {
+            let parent = parent_of(skeleton, joint);
+            let rest = parent.map_or(1.0, |parent| {
+                let columns = model[parent].matrix3;
+                let scale = columns.x_axis.length().max(columns.y_axis.length()).max(columns.z_axis.length());
+                if scale > 0.0 { scale } else { 1.0 }
+            });
+            carried.translation[joint] = or_rest(carried.translation[joint], rest);
+            carried.rotation[joint] = or_rest(carried.rotation[joint], reach);
+            carried.scale[joint] = or_rest(carried.scale[joint], reach);
+        }
+        carried
+    }
+}
+
 /// Reduces and packs `sampled` for `target`: see the [module docs](self).
 pub fn cook(sampled: &SampledClip, target: &ClipTarget<'_>, error: &ReductionError) -> Clip {
     let skeleton = target.skeleton.map(|(_, skeleton)| skeleton);
-    let reach = skeleton.map(reaches).unwrap_or_default();
+    let carries = skeleton.map_or_else(Carries::default, |skeleton| Carries::of(sampled, skeleton));
     let rest = |joint: u16| skeleton.map(|skeleton| skeleton.rest[usize::from(joint)]);
-    let within = |joint: u16| error.distance / reach.get(usize::from(joint)).copied().unwrap_or(SKIN_REACH);
-    let model = skeleton.map(rest_model).unwrap_or_default();
-    // A translation's tolerance in its own units: what its parent's scale at rest makes a meter.
-    let travel = |joint: u16| {
-        let parent = skeleton.and_then(|skeleton| parent_of(skeleton, usize::from(joint)));
-        parent.map_or(error.distance, |parent| {
-            let columns = model[parent].matrix3;
-            let scale = columns.x_axis.length().max(columns.y_axis.length()).max(columns.z_axis.length());
-            if scale > 0.0 { error.distance / scale } else { error.distance }
-        })
+    let tolerance = |carried: &[f32], joint: u16, otherwise: f32| {
+        error.distance / carried.get(usize::from(joint)).copied().unwrap_or(otherwise)
     };
     let mut keys = KeyArrays::default();
     let rotations = sampled
@@ -617,22 +710,23 @@ pub fn cook(sampled: &SampledClip, target: &ClipTarget<'_>, error: &ReductionErr
         .filter_map(|(joint, samples)| {
             let at_rest =
                 rest(*joint).map(|rest| det::quat_normalize(Quat::from_array(rest.rotation)).to_array());
-            keys.rotation(*joint, samples, at_rest, within(*joint))
+            keys.rotation(*joint, samples, at_rest, tolerance(&carries.rotation, *joint, SKIN_REACH))
         })
         .collect();
     let translations = sampled
         .translations
         .iter()
         .filter_map(|(joint, samples)| {
-            keys.vector(*joint, samples, rest(*joint).map(|rest| rest.translation), travel(*joint))
+            let travel = tolerance(&carries.translation, *joint, 1.0);
+            keys.vector(*joint, samples, rest(*joint).map(|rest| rest.translation), travel)
         })
         .collect();
     let scales = sampled
         .scales
         .iter()
         .filter_map(|(joint, samples)| {
-            let tolerance = within(*joint).max(MIN_SCALE_TOLERANCE);
-            keys.vector(*joint, samples, rest(*joint).map(|rest| rest.scale), tolerance)
+            let within = tolerance(&carries.scale, *joint, SKIN_REACH).max(MIN_SCALE_TOLERANCE);
+            keys.vector(*joint, samples, rest(*joint).map(|rest| rest.scale), within)
         })
         .collect();
     let weights: Vec<WeightTrack> = sampled
@@ -645,7 +739,7 @@ pub fn cook(sampled: &SampledClip, target: &ClipTarget<'_>, error: &ReductionErr
         .collect();
     let root = sampled.root.as_ref().map(|root| {
         // The whole body turns with root motion: the longest reach there is.
-        let reach = reach.iter().copied().fold(SKIN_REACH, f32::max);
+        let reach = carries.rotation.iter().copied().fold(SKIN_REACH, f32::max);
         let translation = keys.vector(root.joint, &root.translation, None, error.distance);
         let rotation = keys.rotation(root.joint, &root.rotation, None, error.distance / reach);
         RootMotion {

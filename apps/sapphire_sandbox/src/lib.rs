@@ -347,14 +347,12 @@ mod serve;
 mod shader_edits;
 mod stats;
 
-use std::cell::RefCell;
-use std::fmt::Write as _;
 use std::sync::{Mutex, Once};
 
 use sapphire_core::alloc::EngineAllocator;
-use sapphire_core::log::{LogConfig, LogLevel, LogRecord, LogSink};
+use sapphire_core::log::{LogConfig, LogSink};
 use sapphire_crash::{CrashConfig, CrashGuard};
-use sapphire_platform::{App, DeviceClass, Os};
+use sapphire_platform::{App, DeviceClass, Os, PlatformLogSink};
 
 pub use app::SandboxApp;
 pub use offscreen::OffscreenApp;
@@ -433,42 +431,6 @@ fn install_crash_capture() -> Option<CrashGuard> {
             tracing::warn!(target: LOG_TARGET, %error, "crash capture unavailable");
             None
         }
-    }
-}
-
-/// Forwards log records to the platform logger (logcat, the Apple unified log), prefixed
-/// with their target.
-struct PlatformLogSink;
-
-impl LogSink for PlatformLogSink {
-    fn log(&self, record: &LogRecord<'_>) {
-        thread_local! {
-            // Reused per thread to keep line building cheap.
-            static LINE: RefCell<String> = const { RefCell::new(String::new()) };
-        }
-        let level = tracing_level(record.level);
-        // Never panic in a log call: if the buffer is unavailable (logging from inside this
-        // sink, or during thread-local teardown), build the line on the spot.
-        let written = LINE.try_with(|line| {
-            let Ok(mut line) = line.try_borrow_mut() else { return false };
-            line.clear();
-            let _ = write!(line, "[{}] {}", record.target, record.message);
-            sapphire_platform::sdl_log(level, &line);
-            true
-        });
-        if written != Ok(true) {
-            sapphire_platform::sdl_log(level, &format!("[{}] {}", record.target, record.message));
-        }
-    }
-}
-
-fn tracing_level(level: LogLevel) -> tracing::Level {
-    match level {
-        LogLevel::Error => tracing::Level::ERROR,
-        LogLevel::Warn => tracing::Level::WARN,
-        LogLevel::Info => tracing::Level::INFO,
-        LogLevel::Debug => tracing::Level::DEBUG,
-        LogLevel::Trace => tracing::Level::TRACE,
     }
 }
 

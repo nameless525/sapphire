@@ -1,5 +1,9 @@
 //! A log sink that writes straight to the OS's native log.
 
+use std::cell::RefCell;
+use std::fmt::Write as _;
+
+use sapphire_core::log::{LogLevel, LogRecord, LogSink};
 use tracing::Level;
 
 /// Writes one line to the platform's native log: logcat on Android (tag `sapphire`, at
@@ -12,6 +16,42 @@ use tracing::Level;
 /// [`run`](crate::run), during it, and after SDL has shut down.
 pub fn sdl_log(level: Level, message: &str) {
     native::write(level, message);
+}
+
+/// Forwards log records to the platform logger (logcat, the Apple unified log), prefixed
+/// with their target.
+pub struct PlatformLogSink;
+
+impl LogSink for PlatformLogSink {
+    fn log(&self, record: &LogRecord<'_>) {
+        thread_local! {
+            // Reused per thread to keep line building cheap.
+            static LINE: RefCell<String> = const { RefCell::new(String::new()) };
+        }
+        let level = tracing_level(record.level);
+        // Never panic in a log call: if the buffer is unavailable (logging from inside this
+        // sink, or during thread-local teardown), build the line on the spot.
+        let written = LINE.try_with(|line| {
+            let Ok(mut line) = line.try_borrow_mut() else { return false };
+            line.clear();
+            let _ = write!(line, "[{}] {}", record.target, record.message);
+            sdl_log(level, &line);
+            true
+        });
+        if written != Ok(true) {
+            sdl_log(level, &format!("[{}] {}", record.target, record.message));
+        }
+    }
+}
+
+fn tracing_level(level: LogLevel) -> Level {
+    match level {
+        LogLevel::Error => Level::ERROR,
+        LogLevel::Warn => Level::WARN,
+        LogLevel::Info => Level::INFO,
+        LogLevel::Debug => Level::DEBUG,
+        LogLevel::Trace => Level::TRACE,
+    }
 }
 
 #[cfg(any(not(target_os = "android"), test))]

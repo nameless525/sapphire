@@ -1310,6 +1310,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "game_app"
+version = "0.1.0"
+dependencies = [
+ "game_combat",
+ "game_ui",
+ "png",
+ "profiling",
+ "sapphire_controls",
+ "sapphire_core",
+ "sapphire_crash",
+ "sapphire_gameplay",
+ "sapphire_input",
+ "sapphire_jobs",
+ "sapphire_platform",
+ "sapphire_render",
+ "sapphire_rhi",
+ "sapphire_stage",
+ "sapphire_time",
+ "sapphire_ui",
+ "tracing",
+]
+
+[[package]]
 name = "game_combat"
 version = "0.1.0"
 dependencies = [

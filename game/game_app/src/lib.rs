@@ -1,0 +1,103 @@
+//! The game: a title over the arena as it stands, and a press that opens its fight (M3 S2).
+//!
+//! Everything it draws is `sapphire_stage`'s and everything it plays `game_combat`'s and `game_ui`'s. This is
+//! the app around them: the window's frame (`app.rs`), what stands on the stage (`show.rs`) and what mobile
+//! links. It has one scene and no scene-building flags: those are the sandbox's, which stays the bench and the
+//! goldens' host.
+//!
+//! # Controls
+//!
+//! A press of anything opens the fight from the title, and Back or `Esc` leaves. In the fight, it's combat's
+//! bindings (`sapphire_controls`' `combat_bindings.ron`) and the HUD's touch zones.
+//!
+//! # Arguments
+//!
+//! For runs nobody's playing:
+//! - `--open-fight`: past the title at once.
+//! - `--script <name>`: the fight plays this script, not whoever's there, and logs how it's going.
+//! - `--capture <png>`, with `--size <w>x<h>` and `--ticks <n>`: draws that many steps with no window, writes
+//!   the last frame and exits.
+//!
+//! # What it doesn't do yet
+//!
+//! A lost device ends the run, where the sandbox rebuilds its stack. It stays on the tier it started on. The
+//! title has no words until the U series, and no menu.
+
+mod app;
+mod offscreen;
+mod options;
+mod show;
+
+use std::sync::{Mutex, Once};
+
+use sapphire_core::alloc::EngineAllocator;
+use sapphire_core::log::{LogConfig, LogSink};
+use sapphire_crash::{CrashConfig, CrashGuard};
+use sapphire_platform::{App, DeviceClass, Os, PlatformLogSink};
+
+pub use app::GameApp;
+pub use offscreen::OffscreenGame;
+pub use show::{GameShow, TitleAnswer};
+
+/// mimalloc, counted so the R6 check can see allocations.
+#[global_allocator]
+static GLOBAL: EngineAllocator = sapphire_core::alloc::engine_allocator();
+
+/// Log target for the game's app.
+pub(crate) const LOG_TARGET: &str = "game::app";
+
+/// Crash capture for the whole process: installed by [`startup`], released by [`shutdown`].
+static CRASH_GUARD: Mutex<Option<CrashGuard>> = Mutex::new(None);
+
+/// Process setup that runs before SDL starts, in the order `sapphire_crash` requires: logging, crash
+/// capture, then the job system (spec §5.2). Called from `main` on desktop and iOS (after
+/// `sapphire_crash::run_monitor_if_requested`), and from `SDL_main` on Android, where it must not panic. Only
+/// the first call does anything.
+pub fn startup() {
+    static STARTUP: Once = Once::new();
+    STARTUP.call_once(|| {
+        // Mobile has no visible stderr: route log lines to logcat / the unified log.
+        let mobile = Os::CURRENT.device_class() == DeviceClass::Mobile;
+        let config = LogConfig { stderr: !mobile, ..LogConfig::default() };
+        let sink = mobile.then(|| Box::new(PlatformLogSink) as Box<dyn LogSink>);
+        if let Err(error) = sapphire_core::log::init(config, sink) {
+            sapphire_platform::sdl_log(tracing::Level::WARN, &format!("logging setup failed: {error}"));
+        }
+        let guard = install_crash_capture();
+        *CRASH_GUARD.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = guard;
+        sapphire_jobs::init(sapphire_jobs::JobConfig::default());
+    });
+}
+
+/// Whether the arguments ask for [`OffscreenGame`] in the background, not the window.
+pub fn offscreen_requested() -> bool {
+    std::env::args_os().any(|arg| arg.to_str().is_some_and(options::is_offscreen_flag))
+}
+
+/// Releases process-wide resources once the platform loop has returned (desktop). iOS never returns from
+/// `run`, and Android keeps the process alive, so neither calls it.
+pub fn shutdown() {
+    drop(CRASH_GUARD.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take());
+}
+
+/// Installs crash capture into the app's cache directory, which is never backed up. Failure leaves the app
+/// running without it.
+fn install_crash_capture() -> Option<CrashGuard> {
+    let metadata = GameApp::METADATA;
+    let dir = match sapphire_platform::cache_dir(&metadata) {
+        Ok(dir) => dir.join("crashes"),
+        Err(error) => {
+            tracing::warn!(target: LOG_TARGET, %error, "no cache directory; crash capture off");
+            return None;
+        }
+    };
+    match sapphire_crash::install(CrashConfig::new(metadata.name, metadata.version, dir)) {
+        Ok(guard) => Some(guard),
+        Err(error) => {
+            tracing::warn!(target: LOG_TARGET, %error, "crash capture unavailable");
+            None
+        }
+    }
+}
+
+sapphire_platform::export_android_main!(GameApp, init = startup);

@@ -118,6 +118,8 @@ sapphire_stage = { kind = "runtime", layer = 5, features = ["dev"] }
 # edge in [allow]. `dev`: what an app's own `dev` forwards, for live tuning.
 game_combat = { kind = "runtime", layer = 6, features = ["dev"] }
 game_ui = { kind = "runtime", layer = 6, features = ["dev"] }
+# The game's app: a title that opens the arena's fight. `dev`: what the crates under it take, for CI's builds.
+game_app = { kind = "app", features = ["dev"] }
 # Dev-only (spec §4.1 places sapphire_debug in L3; as dev-only it has no layer of its own).
 sapphire_debug = { kind = "dev_only" }
 # Desktop hot reload (M1 A8). `notify`: the file-watching backend, which apps turn on for

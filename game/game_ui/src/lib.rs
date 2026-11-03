@@ -1,12 +1,13 @@
 //! The game's interface: a fight's HUD and its touch zones, over `sapphire_ui`'s quads and their atlas.
 //!
-//! [`hud::ShownFight`] is a fight with its HUD on it, as a `sapphire_stage::SceneShow`. Menus and the HUD on
-//! documents come with the U series.
+//! [`hud::ShownFight`] is a fight with its HUD on it, as a `sapphire_stage::SceneShow`, and [`title::TitleCard`]
+//! what stands over it until someone presses. Menus and the HUD on documents come with the U series.
 
 // These docs are read with `--document-private-items`, as CI renders them.
 #![allow(rustdoc::private_intra_doc_links)]
 
 pub mod hud;
+pub mod title;
 pub mod touch;
 
 /// Log target for the interface.

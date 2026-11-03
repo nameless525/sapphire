@@ -453,6 +453,16 @@ impl<S: SceneShow, H: FrameHooks<S>> Stage<S, H> {
         self.render_frame(view, false, alpha, after).map(|_| ())
     }
 
+    /// A frame with nothing to draw into, for a window whose surface gave no image: still loaded, animated
+    /// and prepared, so the renderer's persistent scene sees every packet's deltas.
+    pub fn skip_frame(&mut self, alpha: f32) {
+        self.content.update(&mut self.renderer, &self.gpu);
+        self.scene.follow_content(&mut self.content, &mut self.show);
+        self.scene.animate(&self.content, alpha, &mut self.show);
+        let packet = self.scene.frame_packet(alpha, None, &mut self.show);
+        self.renderer.prepare(&self.gpu, packet);
+    }
+
     /// Draws every persistent history update but can discard an unused display result. The
     /// graph keeps imported TAA history/depth, shadows and other persistent writes alive;
     /// only unconsumed transient passes (bloom and the final composite) may be culled.

@@ -23,6 +23,7 @@ use sapphire_gameplay::Simulation;
 use sapphire_math::{Mat4, Vec2, Vec3};
 use sapphire_physics::PhysicsWorld;
 use sapphire_platform::AppInitError;
+use sapphire_render::quality::TierId;
 use sapphire_render::{MeshHandle, PipelineInventory, Renderer, VfxFrame};
 use sapphire_rhi::GpuContext;
 use sapphire_time::{ScaleHandle, ScaleSource, Stopwatch, TICK_HZ};
@@ -34,19 +35,19 @@ use sapphire_world::screen_effects::EffectLibrary;
 use crate::LOG_TARGET;
 use crate::arena::{ArenaActors, ArenaEnemy, ArenaGround, ArenaShot, COLLIDERS};
 use crate::blade::{self, HeldBlade};
-use crate::combat::{Combat, no_bindings};
+use crate::combat::{Combat, CombatOption, no_bindings};
 use crate::combat_views::{CombatViews, Facade};
 use crate::cues::{CueShow, CueStage};
 use crate::enemy::{self, EnemyMeshes};
-use sapphire_stage::FrameLaps;
 use sapphire_stage::anim_graph::{ClipTable, GraphDriver, GraphEvaluation};
-use sapphire_stage::animate::ClipPlayer;
+use sapphire_stage::animate::{self, ClipPlayer};
 use sapphire_stage::audio::CueSounds;
 use sapphire_stage::content::{Content, GraphKey};
+use sapphire_stage::{FrameLaps, StageDesc, lookdev, vfx};
 use sapphire_stage::{RenderMesh, RenderPose, RenderTransform};
 
 use crate::party_looks::{Drawn, PartyLooks};
-use sapphire_stage::scene::{Figure, LookDev, Scene};
+use sapphire_stage::scene::{DEFAULT_TIME_OF_DAY, Figure, LookDev, Scene};
 use sapphire_stage::turntable::Turntable;
 use sapphire_stage::{ContentChanges, SceneShow};
 
@@ -850,6 +851,18 @@ impl SceneShow for FightShow {
     }
 }
 
+/// `desc`, as [`Fight::stand`] asks of a stage: the town's character and sky, the copy of its mesh its held
+/// pose comes from, and the packs' pipelines built before anything's uploaded.
+pub fn fight_stage(desc: StageDesc) -> StageDesc {
+    StageDesc {
+        character: lookdev::CHARACTER,
+        sky: lookdev::SKY,
+        keep_character_mesh: true,
+        prewarm_packs: true,
+        ..desc
+    }
+}
+
 /// A fight beside the simulation it follows.
 #[derive(Default)]
 pub struct Fight {
@@ -869,11 +882,66 @@ impl Fight {
         let Some(combat) = &mut self.combat else { return Followed::default() };
         combat.step(&mut no_bindings);
         laps.simulation += stopwatch.lap();
+        self.follow_step(scene, laps)
+    }
+
+    /// What follows a step the simulation just took, on the scene: its fighters and its cues.
+    pub fn follow_step(&mut self, scene: &mut Scene, laps: &mut FrameLaps) -> Followed {
+        let Some(combat) = &self.combat else { return Followed::default() };
+        let mut stopwatch = Stopwatch::start();
         laps.physics += combat.simulation().stats().controllers_last;
         let followed = self.show.follow_simulation(scene, combat.simulation(), combat.cast());
         self.show.show_cues(scene, combat.simulation());
         laps.cues += stopwatch.lap();
         followed
+    }
+
+    /// Stands `option`'s fight on a stage made from [`fight_stage`]: the arena in the director's view, both
+    /// fighters on their graphs, the blade in the player's hand, the day and the cues, each for a device of
+    /// `tier`. What's stood, its fighters where the simulation starts them, draws from the first frame; a bad
+    /// scenario says why before anything's loaded. The caller prewarms, once it holds all it plays
+    /// ([`Scene::prewarm`]).
+    pub fn stand(
+        &mut self,
+        option: &CombatOption,
+        scene: &mut Scene,
+        content: &mut Content,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+        tier: TierId,
+    ) -> Result<Followed, AppInitError> {
+        let combat = Combat::new(option).map_err(AppInitError::msg)?;
+        let party = matches!(option, CombatOption::Fight { party: true, .. });
+        crate::arena::check_scenario(&combat, party).map_err(AppInitError::msg)?;
+        let show = &mut self.show;
+        let town = content.town(renderer, gpu)?;
+        let fog_cards = Some(content.fog_cards(renderer, gpu)?);
+        let (pose, figure) = lookdev::hold(content, renderer, gpu)?;
+        let ground = show.load_arena_ground(content, renderer, gpu)?;
+        let world = ground.share();
+        let look = LookDev { town, fog_cards, pose, figure };
+        let enemy = show.load_enemy(content, renderer, gpu)?;
+        let held = show.held_enemy(content)?;
+        show.spawn_arena(scene, Arena { shot: ArenaShot::Director, look, ground, enemy, held });
+
+        content.load_graph(lookdev::GRAPH, renderer, gpu)?;
+        show.load_enemy_graph(content, renderer, gpu)?;
+        let player = lookdev::graph_driver(content).map_err(AppInitError::msg)?;
+        let solver =
+            scene.ik_on(world.clone(), None, content, player.player.pose()).map_err(AppInitError::msg)?;
+        let enemy = show.enemy_driver(content, world)?;
+        show.play_fighters(scene, player.with_ik(solver), enemy);
+        scene.set_spring_quality(animate::spring_quality(tier));
+
+        let sword = show.load_sword(content, renderer, gpu)?;
+        let hand = lookdev::held_hand(content).map_err(AppInitError::msg)?;
+        show.spawn_blade(scene, sword, hand);
+        scene.set_day(DEFAULT_TIME_OF_DAY, None);
+        show.play_cues(scene, vfx::budget(tier)).map_err(AppInitError::msg)?;
+        let followed = show.follow_simulation(scene, combat.simulation(), combat.cast());
+        self.combat = Some(combat);
+        scene.warm_fixed_step();
+        Ok(followed)
     }
 
     /// An error if a replay has left its recorded checksums so far.

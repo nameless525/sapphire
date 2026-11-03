@@ -49,6 +49,7 @@ members = [
     "crates/sapphire_cues",
     "crates/sapphire_stage",
     # L6 the game
+    "game/game_app",
     "game/game_combat",
     "game/game_ui",
     # Dev-only: development builds, through an app's `dev` feature

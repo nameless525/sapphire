@@ -163,7 +163,7 @@ pub use event::{
 };
 pub use frame_clock::FramePacing;
 pub use io::{ContentReader, IoFile, IoPriority, IoThread, IoTicket, ReadCallback, ReadError};
-pub use log::sdl_log;
+pub use log::{PlatformLogSink, sdl_log};
 pub use pacing::{PacingSource, PacingStats};
 pub use platform::{Platform, PlatformError};
 pub use raw_window_handle;

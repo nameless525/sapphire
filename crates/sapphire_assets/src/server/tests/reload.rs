@@ -456,7 +456,8 @@ fn a_new_version_refused_again_fails_with_the_reason_and_is_a_new_generation_whe
     server.load::<Mesh>(id(MESH)).unwrap();
     let mut renderer = NewRenderer::default();
     server.finish(&mesh, |upload| renderer.upload(upload)).unwrap();
-    assert_eq!(renderer.held.last(), Some(&(AssetKind::Mesh, id(MESH), 1)));
+    // The other assets `reupload_all` asked for are read on workers, so one may land after it.
+    assert!(renderer.held.contains(&(AssetKind::Mesh, id(MESH), 1)), "{:?}", renderer.held);
     assert_eq!(server.generation(&mesh), 1);
 }
 

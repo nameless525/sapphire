@@ -1,7 +1,7 @@
 //! Navmesh baking (M3 P0): triangles in, `sapphire_navmesh`'s plain graph out.
 //!
 //! `rerecast` bakes one tile at a time ([`bake_tile`]) and knows nothing of its neighbours;
-//! [`stitch`] joins tiles into the one flat graph the simulation reads. Tiles are this module's unit
+//! [`stitch()`] joins tiles into the one flat graph the simulation reads. Tiles are this module's unit
 //! alone, so that an edit can rebake only what it touched, and they sit on a grid anchored at the
 //! world's origin, so adding a building doesn't shift every other tile.
 //!

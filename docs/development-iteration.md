@@ -126,7 +126,7 @@ No test can show:
 - how a drag feels at speed, whether handles are easy to grab at a real pointer's precision, and whether tick snapping reads as steady;
 - whether playback looks right at 60 Hz (its timing is tested on a synthetic clock, not seen);
 - the real keyboard and mouse: each key's translation from SDL is tested, but on a real layout (a non-US one's `[`, say) it hasn't been pressed;
-- the system's own Close and Quit, which should ask first with edits unsaved;
+- the system's own Close and Quit, which should ask first with edits unsaved, and save instead while a lost GPU leaves the window black;
 - the figure against the game's own look: it's flat clay for reading a pose, with no materials, outlines, springs or IK.
 
 ## Build profiles and content

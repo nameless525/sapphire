@@ -25,6 +25,7 @@ pub mod file;
 pub mod input;
 pub mod link;
 pub mod preview;
+pub mod recovery;
 pub mod run;
 pub mod text;
 pub mod timeline;

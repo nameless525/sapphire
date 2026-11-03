@@ -1013,6 +1013,39 @@ fn closing_while_typing_asks_first() {
     assert_same(&fs::read_to_string(&path).expect("the file"), SLICE, "not saved");
 }
 
+/// A window with no GPU can't show its question, so closing it saves rather than asks, typing included. If
+/// the file won't have them it stays open once, and a second close goes.
+#[test]
+fn closing_a_window_that_cant_draw_saves_instead_of_asking() {
+    let dir = TestDir::new("unseen_clean");
+    let path = dir.write("slice.moves.ron", SLICE);
+    let mut harness = harness(&path);
+    harness.run_steps(3);
+    harness.state_mut().request_quit_unseen();
+    assert!(harness.state().may_quit(), "nothing to lose");
+
+    let dir = TestDir::new("unseen_edits");
+    let path = dir.write("slice.moves.ron", SLICE);
+    let mut harness = self::harness(&path);
+    type_over_the_cue_name(&mut harness, TYPED_NAME);
+    harness.state_mut().request_quit_unseen();
+    assert!(harness.state().may_quit());
+    assert_same(&fs::read_to_string(&path).expect("the file"), &slice_with_typed_name(), "saved");
+
+    let dir = TestDir::new("unseen_refused");
+    let path = dir.write("slice.moves.ron", SLICE);
+    let mut harness = self::harness(&path);
+    type_over_the_cue_name(&mut harness, TYPED_NAME);
+    let elsewhere = SLICE.replacen("startup: 5", "startup: 6", 1);
+    fs::write(&path, &elsewhere).expect("someone else's save");
+    harness.state_mut().request_quit_unseen();
+    assert!(!harness.state().may_quit(), "it would lose someone's save, or these edits");
+    assert_same(&fs::read_to_string(&path).expect("the file"), &elsewhere, "the file");
+    harness.state_mut().request_quit_unseen();
+    assert!(harness.state().may_quit(), "the second close is an answer");
+    assert_same(&fs::read_to_string(&path).expect("the file"), &elsewhere, "the file");
+}
+
 /// So it does to a picked document, and what's typed doesn't follow into the next one.
 #[test]
 fn opening_another_document_while_typing_asks_first() {

@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use sapphire_editor::cli::Command;
 use sapphire_editor::input::WindowInput;
+use sapphire_editor::recovery::Recovery;
 use sapphire_editor::{Editor, Options};
 use sapphire_platform::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use sapphire_platform::{
@@ -64,7 +65,7 @@ pub struct EditorApp {
     ctx: egui::Context,
     input: WindowInput,
     window: Window,
-    device: Option<Device>,
+    device: Recovery<Device>,
     clock: Stopwatch,
     /// When egui next asked for a pass, in seconds.
     next_pass: f64,
@@ -99,10 +100,15 @@ impl App for EditorApp {
     fn event(&mut self, _platform: &mut Platform, event: &Event) -> AppControl {
         match event {
             Event::Quit { .. } | Event::Window { event: WindowEvent::CloseRequested, .. } => {
-                self.editor.request_quit();
+                if self.device.ready().is_some() {
+                    self.editor.request_quit();
+                } else {
+                    self.editor.request_quit_unseen();
+                }
             }
             Event::Window { event: WindowEvent::PixelSizeChanged { width, height }, .. } => {
-                if let Some(device) = &mut self.device {
+                // With no device, the next one reads the window's size as it's made.
+                if let Some(device) = self.device.ready() {
                     device.surface.resize(*width, *height);
                 }
                 self.next_pass = 0.0;
@@ -139,7 +145,7 @@ impl EditorApp {
             ctx: egui::Context::default(),
             input: WindowInput::default(),
             window,
-            device: Some(device),
+            device: Recovery::new(device),
             clock: Stopwatch::start(),
             next_pass: 0.0,
             textures: egui::TexturesDelta::default(),
@@ -188,12 +194,14 @@ impl EditorApp {
         self.textures.append(output.textures_delta);
         let pixels_per_point = output.pixels_per_point;
         let primitives = self.ctx.tessellate(output.shapes, pixels_per_point);
-        self.draw(&primitives, pixels_per_point);
+        self.draw(now, &primitives, pixels_per_point);
     }
 
-    fn draw(&mut self, primitives: &[egui::ClippedPrimitive], pixels_per_point: f32) {
-        let Some(device) = &mut self.device else { return };
+    fn draw(&mut self, now: f64, primitives: &[egui::ClippedPrimitive], pixels_per_point: f32) {
+        let window = &self.window;
+        let Some(device) = self.device.device(now, || Device::new(window)) else { return };
         let Device { surface, renderer, gpu } = device;
+        let mut drew = false;
         let lost = match surface.acquire() {
             SurfaceAcquire::Frame(frame) => {
                 let (width, height) = frame.size();
@@ -232,21 +240,22 @@ impl EditorApp {
                 }
                 gpu.queue().submit([encoder.finish()]);
                 frame.present();
+                drew = true;
                 false
             }
             // A lost surface stays lost until it's made again from a fresh handle.
             SurfaceAcquire::Skip(reason) => matches!(reason, SkipReason::DeviceLost | SkipReason::Lost),
         };
+        if drew {
+            self.device.drew();
+        }
         if lost {
-            // Everything GPU goes, and egui's textures with it: a new context sends them again.
-            self.device = None;
+            // Everything GPU goes, and egui's textures with it: a new context sends them again, and they
+            // wait here for whichever pass finds a new device. The edits are the editor's, and stay.
+            self.device.lost(now);
             self.to_free.clear();
             self.textures.clear();
             self.ctx = egui::Context::default();
-            match Device::new(&self.window) {
-                Ok(device) => self.device = Some(device),
-                Err(error) => tracing::error!(%error, "the GPU device was lost, and no new one came"),
-            }
         }
     }
 }

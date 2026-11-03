@@ -605,6 +605,30 @@ impl Editor {
         self.quit = if self.is_dirty() { Quit::Asking } else { Quit::Yes };
     }
 
+    /// The window was asked to close and can't draw, so the question it would ask can't be seen. Edits are
+    /// saved rather than lost unseen. If the file won't take them the log says why and it stays open, in
+    /// case that's the one thing to put right, and a second close goes anyway.
+    pub fn request_quit_unseen(&mut self) {
+        if !self.is_dirty() {
+            self.quit = Quit::Yes;
+            return;
+        }
+        self.quit = match self.save() {
+            Ok(()) => Quit::Yes,
+            Err(_) if self.quit == Quit::Asking => {
+                tracing::error!(
+                    "closing with no GPU to ask on, and the edits couldn't be saved: they're lost"
+                );
+                Quit::Yes
+            }
+            Err(why) => {
+                tracing::error!(%why, "closing with no GPU to ask on, and the edits couldn't be saved: close again to lose them");
+                self.notice = Some(Notice { text: why, trouble: true });
+                Quit::Asking
+            }
+        };
+    }
+
     /// Whether the window may close now.
     #[must_use]
     pub fn may_quit(&self) -> bool {

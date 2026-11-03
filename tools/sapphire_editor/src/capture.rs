@@ -3,7 +3,9 @@
 //!
 //! egui tessellates to plain triangles with vertex colours and one font atlas, so a small software
 //! rasterizer draws them the way `egui-wgpu` does: premultiplied colours, blended in gamma space, nearest
-//! sampling at one pixel per point being all a capture needs. It isn't a golden: its job is to be read.
+//! sampling at one pixel per point being all a capture needs. It isn't a golden: its job is to be read, and
+//! a GPU window's edges and text can differ from it by a pixel. Each pixel belongs to one triangle of a
+//! shape, as it does on a GPU, so a seam in a capture is a seam in what was drawn.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -159,6 +161,8 @@ impl Canvas {
         if area == 0.0 {
             return;
         }
+        // One winding from here on, so two triangles sharing an edge walk it in opposite directions.
+        let (b, c, area) = if area > 0.0 { (b, c, area) } else { (c, b, -area) };
         let left = a.pos.x.min(b.pos.x).min(c.pos.x).max(clip.left()).max(0.0).floor() as u32;
         let right = a.pos.x.max(b.pos.x).max(c.pos.x).min(clip.right()).min(self.width as f32).ceil() as u32;
         let top = a.pos.y.min(b.pos.y).min(c.pos.y).max(clip.top()).max(0.0).floor() as u32;
@@ -167,14 +171,17 @@ impl Canvas {
         for y in top..bottom {
             for x in left..right {
                 let at = Pos2::new(x as f32 + 0.5, y as f32 + 0.5);
-                let weights = [
-                    edge(b.pos, c.pos, at) / area,
-                    edge(c.pos, a.pos, at) / area,
-                    edge(a.pos, b.pos, at) / area,
-                ];
-                if weights.iter().any(|weight| *weight < 0.0) {
+                let sides = [edge(b.pos, c.pos, at), edge(c.pos, a.pos, at), edge(a.pos, b.pos, at)];
+                let inside = |side: f32, from: Pos2, to: Pos2| {
+                    side > 0.0 || (side == 0.0 && owns_samples_on_it(from, to))
+                };
+                if !(inside(sides[0], b.pos, c.pos)
+                    && inside(sides[1], c.pos, a.pos)
+                    && inside(sides[2], a.pos, b.pos))
+                {
                     continue;
                 }
+                let weights = sides.map(|side| side / area);
                 let blend = |values: [f32; 3]| {
                     values[0] * weights[0] + values[1] * weights[1] + values[2] * weights[2]
                 };
@@ -200,15 +207,174 @@ impl Canvas {
     }
 }
 
+/// Which side of the line from `a` to `b` a point is on. It's measured from the same end whichever way
+/// round the edge is given, so two triangles sharing an edge get exactly opposite values, rounding
+/// included, and no pixel falls between them or belongs to both.
 fn edge(a: Pos2, b: Pos2, point: Pos2) -> f32 {
-    (b.x - a.x) * (point.y - a.y) - (b.y - a.y) * (point.x - a.x)
+    let side = |a: Pos2, b: Pos2| (b.x - a.x) * (point.y - a.y) - (b.y - a.y) * (point.x - a.x);
+    if (a.x, a.y) <= (b.x, b.y) { side(a, b) } else { -side(b, a) }
+}
+
+/// Whether a triangle walking an edge this way takes the pixels exactly on it, which the triangle walking
+/// it the other way then doesn't: the top-left rule GPUs fill by, so a translucent shape split into
+/// triangles isn't blended twice along its seams.
+fn owns_samples_on_it(from: Pos2, to: Pos2) -> bool {
+    to.y < from.y || (to.y == from.y && to.x > from.x)
 }
 
 #[cfg(test)]
 mod tests {
-    use egui::{CentralPanel, Frame};
+    use egui::epaint::{ClippedShape, Mesh, Vertex};
+    use egui::{CentralPanel, Frame, Shape};
 
     use super::*;
+
+    /// Half-covering white over black, premultiplied: one blend makes 128 and two make 192.
+    const HALF: Color32 = Color32::from_rgba_premultiplied(128, 128, 128, 128);
+
+    fn rasterize_mesh(mesh: Mesh, clip: Rect, width: u32, height: u32) -> Capture {
+        let output =
+            FullOutput { shapes: vec![ClippedShape::new(clip, Shape::mesh(mesh))], ..FullOutput::default() };
+        let ctx = Context::default();
+        // The tessellator wants a pass's fonts.
+        let mut warmed = ctx.run_ui(RawInput::default(), |_| {});
+        warmed.textures_delta.clear();
+        rasterize(&ctx, &mut Textures::default(), output, width, height)
+    }
+
+    /// A mesh of `points`, half-covering, with triangles by index.
+    fn half_mesh(points: &[Pos2], indices: &[u32]) -> Mesh {
+        let mut mesh = Mesh::default();
+        for pos in points {
+            mesh.vertices.push(Vertex { pos: *pos, uv: Pos2::ZERO, color: HALF });
+        }
+        mesh.indices.extend_from_slice(indices);
+        mesh
+    }
+
+    /// Whether each pixel has been covered once, by the test `inside` says it should be, and otherwise not
+    /// at all: no seam of two blends, and no hole.
+    #[track_caller]
+    fn assert_covered_once(image: &Capture, inside: impl Fn(f32, f32) -> bool) {
+        for y in 0..image.height {
+            for x in 0..image.width {
+                let want = if inside(x as f32 + 0.5, y as f32 + 0.5) { 128 } else { 0 };
+                assert_eq!(image.pixel(x, y)[0], want, "pixel {x}, {y}");
+            }
+        }
+    }
+
+    /// A quad split along a diagonal that crosses pixel centres, in either winding and along either
+    /// diagonal: each pixel on it is one triangle's.
+    #[test]
+    fn a_shared_edge_is_covered_once() {
+        let corners = [Pos2::new(0.0, 0.0), Pos2::new(8.0, 0.0), Pos2::new(8.0, 8.0), Pos2::new(0.0, 8.0)];
+        for indices in [
+            [0, 1, 2, 0, 2, 3],
+            [2, 1, 0, 3, 2, 0],
+            [0, 1, 2, 2, 3, 0],
+            [0, 2, 1, 0, 3, 2],
+            [1, 2, 3, 1, 3, 0],
+            [3, 2, 1, 0, 3, 1],
+        ] {
+            let image = rasterize_mesh(half_mesh(&corners, &indices), Rect::EVERYTHING, 8, 8);
+            assert_covered_once(&image, |_, _| true);
+        }
+    }
+
+    /// Quads side by side and one over the other share upright and flat edges through pixel centres, and
+    /// edges at thirds, where rounding differs by which end is measured from.
+    #[test]
+    fn tiled_quads_show_no_seams() {
+        for (step, tiles) in [(2.5_f32, 4_u32), (1.0 / 3.0, 30), (0.7, 14), (1.5, 6)] {
+            let mut points = Vec::new();
+            for y in 0..=tiles {
+                for x in 0..=tiles {
+                    points.push(Pos2::new(x as f32 * step, y as f32 * step));
+                }
+            }
+            let at = |x: u32, y: u32| y * (tiles + 1) + x;
+            let mut indices = Vec::new();
+            for y in 0..tiles {
+                for x in 0..tiles {
+                    let (a, b, c, d) = (at(x, y), at(x + 1, y), at(x + 1, y + 1), at(x, y + 1));
+                    indices.extend_from_slice(&[a, b, c, a, c, d]);
+                }
+            }
+            let side = tiles as f32 * step;
+            let image = rasterize_mesh(half_mesh(&points, &indices), Rect::EVERYTHING, 12, 12);
+            assert_covered_once(&image, |x, y| x < side && y < side);
+        }
+    }
+
+    /// Ends that round, on a line through pixels' centres: how far a centre is from the line then depends
+    /// on which end it's measured from, unless it's always the same one. A seam or a hole would show here.
+    #[test]
+    fn rounding_leaves_no_seam_along_a_shared_edge() {
+        let vertex = |pos| Vertex { pos, uv: Pos2::ZERO, color: HALF };
+        for before in 1..=60 {
+            for after in 1..=60 {
+                let (before, after) = (before as f32 * 0.00737, after as f32 * 0.00913);
+                let a = vertex(Pos2::new(1.5 - 3.0 * before, 1.5 - before));
+                let b = vertex(Pos2::new(7.5 + 3.0 * after, 3.5 + after));
+                let (above, below) = (vertex(Pos2::new(11.0, -3.0)), vertex(Pos2::new(-2.0, 9.0)));
+                let (width, height) = (12, 6);
+                let pixels = vec![[0, 0, 0, 255]; (width * height) as usize];
+                let mut canvas = Canvas { width, height, pixels };
+                let textures = Textures::default();
+                let texture = TextureId::Managed(0);
+                canvas.triangle(&a, &above, &b, Rect::EVERYTHING, texture, &textures);
+                canvas.triangle(&b, &below, &a, Rect::EVERYTHING, texture, &textures);
+                for (x, y) in [(1, 1), (4, 2), (7, 3)] {
+                    let pixel = canvas.pixels[(y * width + x) as usize][0];
+                    assert_eq!(pixel, 128, "pixel {x}, {y} with ends {:?} and {:?}", a.pos, b.pos);
+                }
+            }
+        }
+    }
+
+    /// Triangles around a point that's exactly a pixel's centre: that pixel is one triangle's too.
+    #[test]
+    fn a_fan_around_a_pixels_centre_covers_it_once() {
+        let centre = Pos2::new(3.5, 3.5);
+        let rim = [
+            Pos2::new(0.0, 0.0),
+            Pos2::new(3.5, 0.0),
+            Pos2::new(7.0, 0.0),
+            Pos2::new(7.0, 3.5),
+            Pos2::new(7.0, 7.0),
+            Pos2::new(3.5, 7.0),
+            Pos2::new(0.0, 7.0),
+            Pos2::new(0.0, 3.5),
+        ];
+        let mut points = vec![centre];
+        points.extend_from_slice(&rim);
+        let mut indices = Vec::new();
+        for spoke in 0..8 {
+            indices.extend_from_slice(&[0, spoke + 1, (spoke + 1) % 8 + 1]);
+        }
+        let image = rasterize_mesh(half_mesh(&points, &indices), Rect::EVERYTHING, 7, 7);
+        assert_covered_once(&image, |_, _| true);
+    }
+
+    /// A clip keeps what's inside it, covered once, and colours still come out of a triangle's own blend.
+    #[test]
+    fn a_clipped_quad_is_covered_once_inside_its_clip() {
+        let corners = [Pos2::new(0.0, 0.0), Pos2::new(8.0, 0.0), Pos2::new(8.0, 8.0), Pos2::new(0.0, 8.0)];
+        let clip = Rect::from_min_max(Pos2::new(2.0, 1.0), Pos2::new(6.0, 7.0));
+        let image = rasterize_mesh(half_mesh(&corners, &[0, 1, 2, 0, 2, 3]), clip, 8, 8);
+        assert_covered_once(&image, |x, y| (2.0..6.0).contains(&x) && (1.0..7.0).contains(&y));
+
+        // Opaque red over half-covered white: an edge's owner is no business of the colour.
+        let mut red = half_mesh(&corners, &[0, 1, 2, 0, 2, 3]);
+        for vertex in &mut red.vertices {
+            vertex.color = Color32::from_rgb(200, 10, 20);
+        }
+        let image = rasterize_mesh(red, Rect::EVERYTHING, 8, 8);
+        for (x, y) in [(2, 2), (2, 1), (1, 2), (7, 7)] {
+            assert_eq!(image.pixel(x, y), [200, 10, 20, 255], "pixel {x}, {y}");
+        }
+    }
 
     /// A filled panel comes out its colour, and text marks the pixels it covers, so a capture says something.
     #[test]

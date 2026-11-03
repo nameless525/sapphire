@@ -42,9 +42,13 @@
 //! changed asset re-encodes alone, and a pack deleted or edited by hand is rebuilt from cached
 //! encodings. A pack is written only when its bytes change, and files in the directory that no
 //! pack claims are removed (stale packs, temporary files, and the loose cooked files that shipped
-//! before packs). Keyed by bytes, an encoding can't outlive the cooked file it was made from: a
-//! file edited after its cook is refused, and so is a pack directory that holds cooked files,
-//! which pruning would delete.
+//! before packs). A pack directory that holds cooked files, which pruning would delete, is refused.
+//!
+//! **A report describes files that must still be there.** Every cooked file is hashed against its
+//! report before either cache is asked, so a file edited or gone since its cook is refused the same
+//! way, by name, however warm the cache: what a run says never hangs on what an earlier run left. It
+//! costs an unchanged pack one read of its cooked files on every worker, about 50 ms of a warm cook's
+//! 650 on the M5 under load.
 //!
 //! Missing encodings run on at most four workers, with one job per content key. Each encoder
 //! still runs serially, so neither the compressed bytes nor the pack layout depends on the
@@ -176,7 +180,7 @@ pub enum PackError {
 pub enum PackStatus {
     /// Laid out and written, or found byte-identical on disk.
     Packed,
-    /// Its recorded hash matched the file, so nothing was read or written.
+    /// Its recorded hash matched the file, so no encoding was read and nothing written.
     UpToDate,
 }
 
@@ -259,6 +263,7 @@ fn pack_group(
         })
         .collect::<Result<Vec<_>, PackError>>()?;
     packing.sort_by_key(|packing| packing.asset.id);
+    check_unchanged(&packing, workers)?;
     let keys: Vec<(AssetId, CacheKey)> =
         packing.iter().map(|packing| (packing.asset.id, packing.key)).collect();
     let pack_key = CacheKey::pack(PACKER, name, &keys);
@@ -401,6 +406,40 @@ fn file_hash(path: &Path) -> Result<Option<(blake3::Hash, u64)>, PackError> {
     let mut hasher = blake3::Hasher::new();
     hasher.update_reader(file).map_err(read_error)?;
     Ok(Some((hasher.finalize(), hasher.count())))
+}
+
+/// Refuses cooked files that aren't what their cook wrote, naming the first in asset order (see the
+/// [module docs](self)). On every worker, since an unchanged pack spends more time here than anywhere.
+fn check_unchanged(packing: &[Packing<'_>], workers: usize) -> Result<(), PackError> {
+    let unchanged = |asset: &CookedAsset| {
+        let path = &asset.output;
+        let read_error = |source| PackError::Read { path: path.clone(), source };
+        let mut hasher = blake3::Hasher::new();
+        hasher.update_reader(fs::File::open(path).map_err(read_error)?).map_err(read_error)?;
+        if hasher.finalize() == asset.output_hash {
+            Ok(())
+        } else {
+            Err(PackError::Changed { path: path.clone() })
+        }
+    };
+    let next = AtomicUsize::new(0);
+    let failures: Vec<(AssetId, PackError)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers.max(1))
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut failures = Vec::new();
+                    while let Some(item) = packing.get(next.fetch_add(1, Ordering::Relaxed)) {
+                        if let Err(error) = unchanged(item.asset) {
+                            failures.push((item.asset.id, error));
+                        }
+                    }
+                    failures
+                })
+            })
+            .collect();
+        handles.into_iter().flat_map(|handle| handle.join().expect("a freshness check panicked")).collect()
+    });
+    failures.into_iter().min_by_key(|(id, _)| *id).map_or(Ok(()), |(_, error)| Err(error))
 }
 
 /// Reads a cooked asset, checks it as the runtime will, and encodes it.

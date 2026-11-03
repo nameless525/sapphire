@@ -159,7 +159,7 @@ fn packing_is_deterministic_and_cached() {
     let path = scratch.packs(Cook::Desktop).join("shared.spack");
     let written = fs::metadata(&path).unwrap().modified().unwrap();
 
-    // Nothing changed: the pack's recorded hash matches, so nothing is read or written.
+    // Nothing changed: the pack's recorded hash matches, so no encoding is read and nothing written.
     assert_eq!(status(&scratch.pack(Cook::Desktop, true).1), (PackStatus::UpToDate, 0));
     assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), written);
 
@@ -293,6 +293,65 @@ fn packs_never_share_a_directory_with_cooked_files_or_trust_changed_ones() {
     fs::write(&texture.output, bytes).unwrap();
     let error = pack_cooked(&report, &scratch.packs(Cook::Desktop), None).unwrap_err();
     assert!(matches!(error, PackError::Changed { .. }), "{error:?}");
+}
+
+/// A cooked file edited or gone since its cook is refused the same way however warm the cache: no pack
+/// describes a report whose files aren't what it says, and what a run says doesn't hang on what an
+/// earlier one left behind.
+#[test]
+fn a_cooked_file_changed_or_gone_is_refused_on_every_path() {
+    #[derive(Clone, Copy, Debug)]
+    enum Route {
+        /// No cache: every asset encodes.
+        Cold,
+        /// The pack's recorded hash matches its file.
+        WholePack,
+        /// The pack is gone, its encodings are cached.
+        Encodings,
+    }
+    for route in [Route::Cold, Route::WholePack, Route::Encodings] {
+        for gone in [false, true] {
+            let scratch = Scratch::new(&format!("pack_fresh_{route:?}_{gone}"));
+            let (report, _) = scratch.pack(Cook::Desktop, true);
+            let packs = scratch.packs(Cook::Desktop);
+            let cache = scratch.cache();
+            let texture = report.assets.iter().find(|asset| asset.id == id(ALBEDO)).unwrap();
+            let again = || {
+                let cache = matches!(route, Route::WholePack | Route::Encodings).then_some(cache.as_path());
+                pack_cooked(&report, &packs, cache)
+            };
+            if matches!(route, Route::Encodings) {
+                fs::remove_file(packs.join("shared.spack")).unwrap();
+            }
+            // An unchanged tree takes the path this row means to test.
+            let expected = match route {
+                Route::Cold => (PackStatus::Packed, 3),
+                Route::WholePack => (PackStatus::UpToDate, 0),
+                Route::Encodings => (PackStatus::Packed, 0),
+            };
+            assert_eq!(status(&again().unwrap()), expected, "{route:?}");
+            if matches!(route, Route::Encodings) {
+                fs::remove_file(packs.join("shared.spack")).unwrap();
+            }
+
+            if gone {
+                fs::remove_file(&texture.output).unwrap();
+            } else {
+                let mut bytes = fs::read(&texture.output).unwrap();
+                *bytes.last_mut().unwrap() ^= 1;
+                fs::write(&texture.output, bytes).unwrap();
+            }
+            let error = again().unwrap_err();
+            let named = match &error {
+                PackError::Changed { path } => !gone && *path == texture.output,
+                PackError::Read { path, source } => {
+                    gone && *path == texture.output && source.kind() == io::ErrorKind::NotFound
+                }
+                _ => false,
+            };
+            assert!(named, "{route:?}, gone {gone}: {error:?}");
+        }
+    }
 }
 
 #[test]

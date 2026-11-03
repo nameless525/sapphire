@@ -97,6 +97,8 @@ pub(crate) struct Scene<'a> {
     pub target: &'a Subject,
     /// What the view looks at.
     pub pivot: Vec3,
+    /// How far up the target a shut-in eye looks, as a share of their height, as the director does.
+    pub framed_height: f32,
     pub pitch: f32,
     pub aspect: f32,
     /// The tangent of half the vertical field of view.
@@ -185,7 +187,7 @@ impl Scene<'_> {
         let eye = self.anchor + arm.normalize_or_zero() * reach;
 
         // Who's in the frame from there, looking where the director would.
-        let framed = self.target.position + UP * self.target.height * 0.55;
+        let framed = self.target.at_height(self.framed_height);
         let share = shut_in(eye, self.anchor, framed);
         let forward = looking(eye, self.pivot, axes.forward, Some(framed), share)
             .try_normalize()

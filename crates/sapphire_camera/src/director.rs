@@ -695,6 +695,7 @@ impl CameraDirector {
             player: &frame.player,
             target,
             pivot,
+            framed_height: self.tuning.explore.pivot_height,
             pitch: self.pitch.heading,
             aspect: frame.aspect,
             half_fov: (fov_y * 0.5).tan(),

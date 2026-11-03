@@ -282,10 +282,25 @@ impl Combat {
         live: &LiveMoves,
     ) -> Result<Self, String> {
         // Up front rather than after the run: it may be a session someone played, which no script
-        // makes again.
-        if path.exists() {
-            return Err(format!("--record {}: it exists; delete it first to replace it", path.display()));
+        // makes again. A script's run can come again, and what started it reads the name it gave. For
+        // someone who's come to play, a name left from last time is no reason to stop, and on a phone,
+        // where the only sign is the app closing, stopping looks like a crash.
+        let free = match script {
+            Some(_) if path.exists() => {
+                return Err(format!("--record {}: it exists; delete it first to replace it", path.display()));
+            }
+            Some(_) => path.to_owned(),
+            None => free_name(path),
+        };
+        if free != path {
+            tracing::warn!(
+                target: LOG_TARGET,
+                taken = %path.display(),
+                path = %free.display(),
+                "the recording's name is taken, so this session has the next free one",
+            );
         }
+        let path = free.as_path();
         if path.parent().is_some_and(|parent| !parent.as_os_str().is_empty() && !parent.is_dir()) {
             return Err(format!("--record {}: its directory doesn't exist", path.display()));
         }
@@ -715,6 +730,18 @@ impl SessionFiles {
             let _ = fs::remove_file(rescue);
         }
     }
+}
+
+/// `path`, or if something's there, the first free name beside it, numbered from 2.
+fn free_name(path: &Path) -> PathBuf {
+    if !path.exists() {
+        return path.to_owned();
+    }
+    let stem = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or("session");
+    (2_u32..)
+        .map(|number| path.with_file_name(format!("{stem}-{number}.sreplay")))
+        .find(|free| !free.exists())
+        .expect("fewer than 2³² recordings")
 }
 
 /// How a session failed to reach the file it was meant for.
@@ -1817,6 +1844,33 @@ mod tests {
         assert!(refused(&scratch.0, "no-such", None).contains("no-such"));
         assert!(refused(&scratch.0, SCENARIOS[0].name, Some("no-such")).contains("no-such"));
         fs::write(&scratch.0, b"a session someone played").expect("writes");
-        assert!(refused(&scratch.0, SCENARIOS[0].name, None).contains("it exists"));
+        assert!(refused(&scratch.0, SCENARIOS[0].name, Some("idle")).contains("it exists"));
+    }
+
+    /// Someone who's come to play gets to, under the next free name, and nothing is replaced. An app
+    /// that closed on a name left from last time would look like a crash on a phone.
+    #[test]
+    fn a_session_someone_plays_takes_the_next_free_name() {
+        let scratch = ScratchDir::new("reused");
+        fs::create_dir_all(&scratch.0).expect("makes");
+        let path = scratch.0.join("fight.sreplay");
+        fs::write(&path, b"last time's").expect("writes");
+        fs::write(scratch.0.join("fight-2.sreplay"), b"the time before").expect("writes");
+
+        let mut combat = recording(&path, None);
+        play(&mut combat, 2);
+        let CombatStatus::Recording { path: playing, .. } = combat.status() else { panic!("recording") };
+        let free = scratch.0.join("fight-3.sreplay");
+        assert_eq!(playing, free, "it says which, so the overlay does too");
+        combat.finish().expect("written");
+        assert_eq!(ticks_in(&free), 2);
+        assert_eq!(fs::read(&path).expect("kept"), b"last time's");
+
+        // A name no one's used is the name it was given.
+        let unused = scratch.0.join("new.sreplay");
+        assert!(matches!(
+            recording(&unused, None).status(),
+            CombatStatus::Recording { path, .. } if path == unused
+        ));
     }
 }

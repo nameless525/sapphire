@@ -217,7 +217,7 @@ Each review should end with its session kept: Z2 asks for them, because a sessio
    cargo xtask run --platform desktop --incremental --features dev -- --arena --record target/review-3.sreplay --scenario arena-fight
    ```
 
-   One fight, and it doesn't start over; quitting writes it. A name already there is refused. **A recording ends its file at the first live edit** and the fight goes on, because a replay can only answer for what it recorded. So tune first, commit, then record. That means undoing the dummy too: a session on its numbers replays only while they're in the tree, so CI refuses it. A session recorded with edits you haven't rewritten into the simulation's copy won't replay (`MovesChanged`).
+   One fight, and it doesn't start over; quitting writes it. A name already there isn't replaced: the session takes the next free one (`review-3-2.sreplay`), and the log says so. **A recording ends its file at the first live edit** and the fight goes on, because a replay can only answer for what it recorded. So tune first, commit, then record. That means undoing the dummy too: a session on its numbers replays only while they're in the tree, so CI refuses it. A session recorded with edits you haven't rewritten into the simulation's copy won't replay (`MovesChanged`).
 2. **Check it:** the log's `recorded a replay … checksum=<x>` must equal what a headless run reaches:
 
    ```bash
@@ -246,7 +246,7 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home \
 
 That cooks, builds, installs and launches it, and streams the app's log until it ends. The fight starts over 4 s after someone falls. For a session that's kept and can be checked afterwards, end the command with `-- --arena --record fight.sreplay --scenario arena-fight` instead: a recording is a single fight, so it doesn't start over, and quitting ends it.
 
-Two traps. A recording's name is refused if it's already there: the app opens, logs `it exists; delete it first to replace it` and closes, looking like a crash. So name each session (`fight-2.sreplay`), or `adb shell run-as dev.sapphire.sandbox rm cache/fight.sreplay`. And the launcher's icon starts the app with no arguments, so that's the sandbox's own scene and not a fight: rerun the command. Adding `--dry-run` to it prints the `adb shell am start … --es sapphire.args <base64>` line that starts the fight with no install.
+A recording's name isn't replaced if it's already there: the session takes the next free one (`fight-2.sreplay`), and the log says so. One trap: the launcher's icon starts the app with no arguments, so that's the sandbox's own scene and not a fight: rerun the command. Adding `--dry-run` to it prints the `adb shell am start … --es sapphire.args <base64>` line that starts the fight with no install.
 
 Back opens the pause: a tap ends it, and Back again leaves. A pause shows a veil and a two-bar mark here as on a desktop.
 

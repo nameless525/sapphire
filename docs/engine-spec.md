@@ -3254,7 +3254,7 @@ These windows are rough estimates for a small, senior team. A solo developer sho
 
 - **The decision that's open.** M2 is the go/no-go gate, and [m2-go-no-go.md](m2-go-no-go.md) is what the maintainer decides from. They were away for the whole of M2 and told the run to carry on without asking, so every package was built, phase 5 included, with none of the three feel reviews behind it, against the plan's order ([m2-plan.md](m2-plan.md) §5). [m3-handoff.md](m3-handoff.md) is what M3 would inherit.
 - **Exit test 1, feel: not judged by anyone.** Nobody has played this fight, heard its sounds, felt its rumble or opened the timeline editor. **Feel review 3 is the plan's real go/no-go check, and it hasn't run.** What's verified is that the fight runs:
-  - On a desktop, no window has ever shown it, because agents may not open one. Tests run 4,400 ticks through the renderer offscreen, holding three fights to a headless run's checksums (G6). The review made a played fight hold the pointer, pause on lost focus and show its pause (§5.18), with tests of what decides that and only SDL's source for what SDL does.
+  - On a desktop, an outside reviewer has shown a scripted fight in a native Mac window (7ee1583f), and nobody has played in one. Tests run 4,400 ticks through the renderer offscreen, holding three fights to a headless run's checksums (G6). The review made a played fight hold the pointer, pause on lost focus and show its pause (§5.18), with tests of what decides that and only SDL's source for what SDL does.
   - The window's loop has run on a headless Android emulator, played by real multi-touch events to a win and a loss, and on an iOS simulator with no touch at all (I3). That found a debug-build panic on a window's first step, fixed since. A pad has only been synthetic.
   - The pillars' stand-in numbers (plan §2) hold where they exist: a press moves the character on tick 1 (G1) and every move by 0.18–0.68 m by tick 2 (O3), one cue fires a hit's effects in one tick (E3), cancel and perfect-dodge windows are covered by replays on the test moves but not on O3's document (G4), the camera keeps both fighters inside 90% of the frame through a scripted fight (G5), and spring bones run on every tier (N5). `TargetingWeights::TOUCH` chooses who the director frames in a fight played on touch, and with one enemy only its reach shows. They catch regressions and say nothing about feel.
   - Whether the motion is good enough to judge by is the largest open question. There's no animator: poses are solved from targets (O3), and locomotion and reactions are retargeted chibi clips (O2). Both packages call their results first drafts.
@@ -3265,7 +3265,7 @@ These windows are rough estimates for a small, senior team. A solo developer sho
 - **Still open:**
   - Feel reviews 1, 2 and 3, and the go/no-go.
   - A gamepad on a desktop, with real rumble. Sound on any speaker. The pointer and focus by hand ([m2-exit-run.md](m2-exit-run.md)).
-  - A phone: touch by thumb, exit tests 2 and 4, audio on a device, and §3.5's list. iOS has never had a touch. No phone has run anything in M0, M1 or M2.
+  - A phone: touch by thumb, exit tests 2 and 4, audio on a device, and §3.5's list. iOS has had one mouse touch, an outside reviewer's, through Simulator's window. No phone has run anything in M0, M1 or M2.
   - M1's device checks, all still owed (M1 status above), Q3, Q4, Q5, Q9 and Q14 among them.
   - End-to-end input latency, press to glass (§4.2).
 

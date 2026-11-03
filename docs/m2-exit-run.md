@@ -4,7 +4,7 @@ M2 ends when its four exit tests are answered ([m2-plan.md](m2-plan.md) §1): on
 
 | Exit test | Who answers it | Needs | Takes | Where it stands |
 |---|---|---|---|---|
-| 1. Feel, gamepad | The maintainer | A gamepad | 30 minutes for review 3, 90 for all three | Not judged. Its window has never opened on a desktop |
+| 1. Feel, gamepad | The maintainer | A gamepad | 30 minutes for review 3, 90 for all three | Not judged. A scripted fight has run in a Mac window, and nobody has played in one |
 | 1. Feel, touch | The maintainer | A phone | 20 minutes | Not judged. Played by synthetic touches on an emulator |
 | 2. Iteration | Anyone | A phone for its second half | 10 minutes | Holds on the desktop, an emulator and a simulator. A phone is owed |
 | 3. Determinism | CI | Nothing | 1 minute by hand | Holds on every pull request |
@@ -21,7 +21,7 @@ cargo xtask run --platform desktop --incremental --features dev -- --arena --fig
 
 That cooks, builds, opens a window and starts a fight. In a window `--fight` turns on the cues, the live HUD, the sword and combat's bindings. It starts over 4 s after someone falls. On launch the pointer is captured, the cursor hides and the mouse turns the camera: "The pointer and focus" below says how to get it back. A first build takes about 4 minutes. `dev` is what brings hot reload, live link and the overlay, and what an edit below needs. `--incremental` is an optimized build with no LTO, so an edit to code rebuilds in seconds, not minutes, for about 0.3 ms more CPU in a frame on the same fight ("What changes what"). `--release` is what the numbers elsewhere were taken on, and plays the same fight to the same checksum.
 
-If the pad isn't seen (`cargo xtask run` starts a bare binary), try `--platform macos`, which starts an app bundle and points it at the same cook. **Not run:** an agent may not open a window, so neither command has run as written, and the desktop window's loop has never run at all. I3 ran the same loop on an emulator and a simulator, and found a panic there that a debug window would have hit, fixed since. If it misbehaves, that's the first finding: keep the log.
+If the pad isn't seen (`cargo xtask run` starts a bare binary), try `--platform macos`, which starts an app bundle and points it at the same cook. **Not run as written:** an agent here may not open a window. An outside reviewer ran a scripted fight in a native Mac window, through a hand-made app wrapper, so the window's loop has run, but no pad, mouse look or focus pause has. I3 ran the same loop on an emulator and a simulator, and found a panic there that a debug window would have hit, fixed since. If it misbehaves, that's the first finding: keep the log.
 
 ### Controls
 

@@ -8,7 +8,7 @@ Written at M2's close (Z3, 2026-11-02), on the review line's top, 7a28c828, with
 
 - **Built, with nothing judged by a person** (spec §10, "M2 status"). Every package but the feel reviews (Z2) has landed.
 - **Reviewed by agents who hadn't built it:** 31 bugs fixed ([m2-go-no-go.md](m2-go-no-go.md), "What the review found"). What they left open is below, under the device checks and the deferred list.
-- **Exit test 1 (feel):** nobody has played the fight. The window's fight loop has run on an emulator and a simulator, and never on a desktop. [m2-exit-run.md](m2-exit-run.md) has the sheet for the three reviews.
+- **Exit test 1 (feel):** nobody has played the fight. The window's fight loop has run on an emulator and a simulator, and, scripted, in an outside reviewer's native Mac window. Nobody has played it on a desktop. [m2-exit-run.md](m2-exit-run.md) has the sheet for the three reviews.
 - **Exit test 2 (iteration):** holds on the desktop, an emulator and a simulator. A phone is owed.
 - **Exit test 3 (determinism):** CI enforces it on every pull request, on three OSes.
 - **Exit test 4 (budget):** needs a phone. Z1's numbers on an Apple M5 are spec §3.5.
@@ -22,7 +22,7 @@ Nothing here has been run, for want of the device. [m2-exit-run.md](m2-exit-run.
 - **A desktop's window, by hand:** the mouse at the look scale of −0.008, no jump after capture or resume, the cursor's warp and return, focus around Cmd-Tab, minimize and clicking away, a trackpad's fingers and the HUD's zones, the veil, and Windows raw input and X11 and Wayland relative mode ([m2-exit-run.md](m2-exit-run.md), "The pointer and focus"). A live resize and a zero-size window were read, not run; fresh runs passed from 1×1 to 3456×2234 with the window's format.
 - **A gamepad on a desktop:** the window's first run on a desktop, `PadRumble` and `stop_rumble` on a real pad, `SDL_RumbleGamepad` on any pad, and whether Zenless Zone Zero's layout, written from memory in [combat_bindings.ron](../crates/sapphire_controls/combat_bindings.ron), is right.
 - **Sound, on any speaker:** nobody has heard a cue. Which sound suits which hit, the `step` and `skid` sounds, and levels (plan E3).
-- **A phone, touch:** the layout and sizes under thumbs, the stick's feel, a real thumb's drift against the tap slop's 10 points, press-to-swing latency at 30 fps, the view's drag rate, the speaker, real calls and alarms, and the OS's edge swipes ([m2-exit-run.md](m2-exit-run.md), "What only a phone can show"). iOS has never had a touch: `simctl` can't inject one.
+- **A phone, touch:** the layout and sizes under thumbs, the stick's feel, a real thumb's drift against the tap slop's 10 points, press-to-swing latency at 30 fps, the view's drag rate, the speaker, real calls and alarms, and the OS's edge swipes ([m2-exit-run.md](m2-exit-run.md), "What only a phone can show"). iOS has had one mouse touch, an outside reviewer's, through Simulator's window: `simctl` can't inject one.
 - **A phone, exit test 4:** Mobile-Low held at 30 fps, thermally throttled, after 15 minutes of combat, on an iPhone 12 and a Snapdragon 865-class phone, with every row of spec §3.5 read there.
 - **A phone, exit test 2:** a saved move on the next attempt in under 5 s over live link.
 - **A phone, the rest of §3.5's list:** parallel recording's stalls on a phone's core mix, memory on a 4 GB phone, the composite at native output on a tile GPU, the audio callback at real-time priority, a first launch's cold pipeline caches.

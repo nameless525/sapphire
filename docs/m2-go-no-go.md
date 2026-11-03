@@ -35,7 +35,7 @@ The exit tests' numbers were taken on 410cf24b, before the review's fixes, and n
 
 - **Whether it's fun, or feels right.** Nobody has played it. Pillars 1 to 7 have stand-in numbers (a press moves the character by tick 1), and the plan itself says the reviews overrule them.
 - **Whether the motion is good enough to judge the fight by.** There's no animator. The player's moves are poses solved from targets, and locomotion and reactions are chibi clips retargeted onto the character. O2 and O3 both call their results first drafts.
-- **That the window works on a desktop.** It has never opened on one, because agents may not open a window. I3 ran the same loop on an emulator and a simulator. The review added capturing the pointer, pausing on lost focus and a veil, with tests of what decides them and nothing that shows what SDL does.
+- **That the window works on a desktop by hand.** An outside reviewer ran a scripted fight in a native Mac window on 7ee1583f, near 60 fps once settled, and a resize held. Nobody has played in one: no pad, mouse look, capture or focus pause has run. Agents here may not open a window. I3 ran the same loop on an emulator and a simulator. The review added capturing the pointer, pausing on lost focus and a veil, with tests of what decides them and nothing that shows what SDL does.
 - **The timeline editor by hand.** Tests and captures run it, and its window has never opened. Two of its fixes were made by reading alone.
 - **Sound and rumble.** Nobody has heard or felt either.
 - **Anything on a phone.** After three milestones there's no phone number in this project: not a frame, not a shader compile, not a thermal state. So exit test 2's phone half, exit test 4 and touch by thumb are all open.

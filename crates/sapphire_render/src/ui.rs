@@ -4,8 +4,8 @@
 //!
 //! # A frame with no UI costs nothing
 //!
-//! Nothing here exists until a frame's list has quads and an atlas: no pipeline, texture or buffer,
-//! and no pass in the graph. The first such frame builds the one pipeline, on the calling thread,
+//! Nothing here exists until a frame's list has quads and something for them to read: no pipeline,
+//! texture or buffer, and no pass in the graph. The first such frame builds the one pipeline, on the calling thread,
 //! as a new material variant's are, and uploads the atlas; those stay. A frame with an empty list
 //! after that adds no pass either. `tests/gpu/ui.rs` holds both by counting pipelines.
 //!
@@ -24,11 +24,18 @@
 //!
 //! # Drawing
 //!
-//! One draw of `n` instances of a four-vertex strip, with the quads in a vertex buffer at slot 0, so
-//! it needs no storage binding, base instance or anything the iOS Simulator lacks. The quads are
+//! One draw of `n` instances of a four-vertex strip for each run of quads that reads one texture,
+//! with the run's quads bound as a vertex buffer at slot 0, so it needs no storage binding, base
+//! instance or anything the iOS Simulator lacks. The quads are
 //! copied at [`Ui::prepare`] and staged in the frame's uploads pass, so a frame that never runs
 //! leaves nothing behind: the next [`Ui::prepare`] writes its own. Past what a buffer holds, quads
 //! don't draw and are counted ([`UiStats::quads_over_limit`]).
+//!
+//! # Glyph pages
+//!
+//! The list's `page_uploads` go to the queue in [`Ui::prepare`], ahead of the next submit, whether or
+//! not this frame's graph runs, so a lost frame loses none. A page is made the first time a list
+//! names it. A new renderer starts with no pages, so whoever made it resets their glyph atlas.
 //!
 //! `ui.wgsl` is a program of its own ([`ShaderFile::Ui`](crate::ShaderFile::Ui)): an edit rebuilds
 //! the one pipeline, once built, on the layout it had (`shader_builds`).
@@ -85,6 +92,14 @@ pub struct UiStats {
     pub atlas_bytes: u64,
     /// Times an atlas was uploaded since the renderer was created.
     pub atlas_uploads: u32,
+    /// Glyph pages on the GPU.
+    pub pages: u32,
+    /// Rectangles of glyph pages the last prepared frame wrote.
+    pub page_uploads: u32,
+    /// Bytes of them.
+    pub page_upload_bytes: u64,
+    /// Draws in the last prepared frame.
+    pub draws: u32,
 }
 
 /// `ui.wgsl`'s uniforms.
@@ -107,6 +122,22 @@ impl std::fmt::Debug for AtlasOnGpu {
     }
 }
 
+/// A glyph page and the group that reads it.
+#[derive(Debug)]
+struct PageOnGpu {
+    texture: wgpu::Texture,
+    bind_group: wgpu::BindGroup,
+}
+
+/// A run of quads that reads one texture.
+#[derive(Clone, Copy, Debug)]
+struct UiDraw {
+    first: u32,
+    count: u32,
+    /// The page, or `None` for the atlas.
+    page: Option<u16>,
+}
+
 /// What exists once a frame has drawn quads.
 #[derive(Debug)]
 struct Built {
@@ -117,6 +148,8 @@ struct Built {
     uniforms: wgpu::Buffer,
     quads: GrowableBuffer,
     atlas: Option<AtlasOnGpu>,
+    pages: Vec<PageOnGpu>,
+    page_size: u32,
 }
 
 /// The interface's GPU half. See the module docs.
@@ -129,6 +162,8 @@ pub(crate) struct Ui {
     built: Option<Box<Built>>,
     /// This frame's quads, for the uploads pass. Its capacity stays.
     quads: Vec<UiQuad>,
+    /// How they draw, in order.
+    draws: Vec<UiDraw>,
     uniforms: UiUniforms,
     stats: UiStats,
     /// The largest buffer quads go in; lowered by tests of a full one.
@@ -165,6 +200,7 @@ impl Ui {
             labels,
             built: None,
             quads: Vec::new(),
+            draws: Vec::new(),
             uniforms: UiUniforms::default(),
             stats: UiStats::default(),
             max_bytes: device.limits().max_buffer_size,
@@ -173,13 +209,16 @@ impl Ui {
 
     /// Whether `list` draws anything.
     fn draws(list: &UiDrawList) -> bool {
-        !list.quads.is_empty() && list.atlas.is_some() && list.viewport[0] > 0.0 && list.viewport[1] > 0.0
+        !list.quads.is_empty()
+            && (list.atlas.is_some() || !list.page_runs.is_empty())
+            && list.viewport[0] > 0.0
+            && list.viewport[1] > 0.0
     }
 
     /// Builds the pipeline and what it reads, if `list` is the first that draws. The caller holds
     /// the error scopes for edited sources (`Renderer::checked_build`).
     pub(crate) fn prepare_pipeline(&mut self, list: &UiDrawList, sources: &ShaderSources) {
-        if self.built.is_some() || !Self::draws(list) {
+        if self.built.is_some() || !(Self::draws(list) || !list.page_uploads.is_empty()) {
             return;
         }
         profiling::scope!("Ui::prepare_pipeline");
@@ -249,6 +288,8 @@ impl Ui {
             uniforms,
             quads,
             atlas: None,
+            pages: Vec::new(),
+            page_size: 0,
         }));
         self.stats.pipelines = 1;
     }
@@ -257,20 +298,30 @@ impl Ui {
     /// pass. Allocates nothing once its vector has grown.
     pub(crate) fn prepare(&mut self, queue: &wgpu::Queue, list: &UiDrawList) {
         self.quads.clear();
+        self.draws.clear();
         self.stats.quads = 0;
         self.stats.quads_over_limit = 0;
+        self.stats.page_uploads = 0;
+        self.stats.page_upload_bytes = 0;
+        self.stats.draws = 0;
+        let Some(built) = self.built.as_deref_mut() else { return };
+        let (uploads, bytes) = write_pages(&self.device, queue, built, list, self.labels);
+        self.stats.page_uploads = uploads;
+        self.stats.page_upload_bytes = bytes;
+        self.stats.pages = built.pages.len() as u32;
         if !Self::draws(list) {
             return;
         }
-        let (Some(built), Some(atlas)) = (self.built.as_deref_mut(), list.atlas.as_ref()) else { return };
-        if !built.atlas.as_ref().is_some_and(|on_gpu| Arc::ptr_eq(&on_gpu.source, atlas)) {
+        if let Some(atlas) = list.atlas.as_ref()
+            && !built.atlas.as_ref().is_some_and(|on_gpu| Arc::ptr_eq(&on_gpu.source, atlas))
+        {
             built.atlas = upload_atlas(&self.device, queue, built, atlas, self.labels);
             if built.atlas.is_some() {
                 self.stats.atlas_uploads += 1;
                 self.stats.atlas_bytes = atlas.texels.len() as u64;
             }
         }
-        if built.atlas.is_none() {
+        if built.atlas.is_none() && list.page_runs.is_empty() {
             return;
         }
         let limit = built.quads.max_items(QUAD_BYTES).min(list.quads.len() as u64) as usize;
@@ -278,6 +329,8 @@ impl Ui {
         self.quads.extend_from_slice(&list.quads[..limit]);
         self.stats.quads = limit as u32;
         self.stats.quads_over_limit = (list.quads.len() - limit) as u32;
+        resolve_draws(list, limit as u32, built.atlas.is_some(), built.pages.len(), &mut self.draws);
+        self.stats.draws = self.draws.len() as u32;
         self.uniforms = UiUniforms {
             points_to_clip: [2.0 / list.viewport[0], 2.0 / list.viewport[1]],
             padding: [0.0; 2],
@@ -298,9 +351,8 @@ impl Ui {
     /// Adds the pass over `target`, if this frame draws. It keeps what's there and blends over it.
     pub(crate) fn record<'f>(&'f self, graph: &mut FrameGraph<'f>, target: TextureId) {
         let Some(built) = self.built.as_deref().filter(|_| !self.quads.is_empty()) else { return };
-        let Some(atlas) = built.atlas.as_ref() else { return };
-        let (labels, count) = (self.labels, self.quads.len() as u32);
-        let bytes = u64::from(count) * QUAD_BYTES;
+        let labels = self.labels;
+        let draws = self.draws.as_slice();
         graph.add_pass(UI_PASS).read(target).write(target).record(move |ctx| {
             let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: labels.then_some(UI_PASS),
@@ -314,9 +366,18 @@ impl Ui {
                 ..Default::default()
             });
             pass.set_pipeline(&built.pipeline);
-            pass.set_bind_group(0, &atlas.bind_group, &[]);
-            pass.set_vertex_buffer(0, built.quads.buffer().slice(..bytes));
-            pass.draw(0..4, 0..count);
+            for draw in draws {
+                let group = match (draw.page, built.atlas.as_ref()) {
+                    (Some(page), _) => &built.pages[usize::from(page)].bind_group,
+                    (None, Some(atlas)) => &atlas.bind_group,
+                    (None, None) => continue,
+                };
+                let start = u64::from(draw.first) * QUAD_BYTES;
+                let end = start + u64::from(draw.count) * QUAD_BYTES;
+                pass.set_bind_group(0, group, &[]);
+                pass.set_vertex_buffer(0, built.quads.buffer().slice(start..end));
+                pass.draw(0..4, 0..draw.count);
+            }
         });
     }
 
@@ -394,6 +455,108 @@ fn build_pipeline(
     })
 }
 
+/// Makes the pages `list` names and applies its uploads: the rectangles and bytes written.
+fn write_pages(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    built: &mut Built,
+    list: &UiDrawList,
+    labels: bool,
+) -> (u32, u64) {
+    if list.page_runs.is_empty() && list.page_uploads.is_empty() {
+        return (0, 0);
+    }
+    let side = list.page_size;
+    if side == 0 || side > device.limits().max_texture_dimension_2d {
+        tracing::warn!(target: crate::LOG_TARGET, side, "a glyph page that can't be made");
+        return (0, 0);
+    }
+    if built.page_size != side {
+        built.pages.clear();
+        built.page_size = side;
+    }
+    let named = list.page_runs.iter().map(|run| run.page).chain(list.page_uploads.iter().map(|up| up.page));
+    let count = named.max().map_or(0, |page| usize::from(page) + 1);
+    while built.pages.len() < count {
+        let page = make_page(device, built, side, labels);
+        built.pages.push(page);
+    }
+    let mut bytes = 0;
+    for upload in &list.page_uploads {
+        let (width, height) = (u32::from(upload.width), u32::from(upload.height));
+        let start = upload.offset as usize;
+        let Some(texels) = list.upload_texels.get(start..start + (width * height) as usize) else {
+            tracing::warn!(target: crate::LOG_TARGET, ?upload, "a glyph upload past its bytes");
+            continue;
+        };
+        if u32::from(upload.x) + width > side || u32::from(upload.y) + height > side {
+            tracing::warn!(target: crate::LOG_TARGET, ?upload, "a glyph upload past its page");
+            continue;
+        }
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &built.pages[usize::from(upload.page)].texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d { x: u32::from(upload.x), y: u32::from(upload.y), z: 0 },
+                aspect: wgpu::TextureAspect::All,
+            },
+            texels,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        );
+        bytes += u64::from(width * height);
+    }
+    (list.page_uploads.len() as u32, bytes)
+}
+
+fn make_page(device: &wgpu::Device, built: &Built, side: u32, labels: bool) -> PageOnGpu {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: labels.then_some("ui glyph page"),
+        size: wgpu::Extent3d { width: side, height: side, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::R8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: labels.then_some("ui glyph page"),
+        layout: &built.group_layout,
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: built.uniforms.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&view) },
+            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&built.sampler) },
+        ],
+    });
+    PageOnGpu { texture, bind_group }
+}
+
+/// The first `limit` quads of `list` as runs of one texture each, in order. Quads with nothing to
+/// read don't draw.
+fn resolve_draws(list: &UiDrawList, limit: u32, has_atlas: bool, pages: usize, draws: &mut Vec<UiDraw>) {
+    let mut at = 0;
+    let field = |first: u32, end: u32, draws: &mut Vec<UiDraw>| {
+        if has_atlas && end > first {
+            draws.push(UiDraw { first, count: end - first, page: None });
+        }
+    };
+    for run in &list.page_runs {
+        let (first, end) = (run.first.min(limit), (run.first + run.count).min(limit));
+        field(at, first, draws);
+        if usize::from(run.page) < pages && end > first {
+            draws.push(UiDraw { first, count: end - first, page: Some(run.page) });
+        }
+        at = end;
+    }
+    field(at, limit, draws);
+}
+
 /// `atlas` as a texture and the group that reads it, or `None` if its size doesn't describe its
 /// bytes or passes what the device holds: then nothing draws, rather than a validation error.
 fn upload_atlas(
@@ -445,6 +608,8 @@ fn upload_atlas(
 
 #[cfg(test)]
 mod tests {
+    use sapphire_look::UiPageRun;
+
     use super::*;
 
     #[test]
@@ -471,10 +636,36 @@ mod tests {
         ui.limit_quads(4);
         let atlas = UiAtlas { width: 1, height: 1, spread: 6.0, texels: vec![255] };
         let quad = UiQuad::new([0.0; 2], [1.0, 0.0], [0.0, 1.0], [0.0, 0.0, 1.0, 1.0], [255; 4]);
-        let list = UiDrawList { viewport: [8.0, 8.0], atlas: Some(Arc::new(atlas)), quads: vec![quad; 10] };
+        let list = UiDrawList {
+            viewport: [8.0, 8.0],
+            atlas: Some(Arc::new(atlas)),
+            quads: vec![quad; 10],
+            ..UiDrawList::default()
+        };
         ui.prepare_pipeline(&list, &ShaderSources::compiled_in());
         ui.prepare(gpu.queue(), &list);
         assert_eq!((ui.stats().quads, ui.stats().quads_over_limit), (4, 6));
         assert_eq!(ui.uploads().expect("what fits still draws").quads.len(), 4);
+    }
+
+    #[test]
+    fn runs_of_a_page_split_the_atlas_s_quads_in_order() {
+        let quad = UiQuad::new([0.0; 2], [1.0, 0.0], [0.0, 1.0], [0.0; 4], [255; 4]);
+        let list = UiDrawList {
+            quads: vec![quad; 10],
+            page_runs: vec![
+                UiPageRun { first: 2, count: 3, page: 0 },
+                UiPageRun { first: 5, count: 1, page: 1 },
+            ],
+            ..UiDrawList::default()
+        };
+        let resolved = |limit, has_atlas| {
+            let mut draws = Vec::new();
+            resolve_draws(&list, limit, has_atlas, 2, &mut draws);
+            draws.iter().map(|d| (d.first, d.count, d.page)).collect::<Vec<_>>()
+        };
+        assert_eq!(resolved(10, true), [(0, 2, None), (2, 3, Some(0)), (5, 1, Some(1)), (6, 4, None)],);
+        assert_eq!(resolved(10, false), [(2, 3, Some(0)), (5, 1, Some(1))], "no atlas, no field quads");
+        assert_eq!(resolved(3, true), [(0, 2, None), (2, 1, Some(0))], "a run cut at the buffer's limit");
     }
 }

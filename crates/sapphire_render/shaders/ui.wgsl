@@ -3,7 +3,8 @@
 // no scene data.
 //
 // A texel holds 0.5 + distance / (2 × spread), so 0.5 is a shape's edge at any scale or shear, and
-// its screen-space slope gives a one-pixel antialiased edge wherever the quad lands. Colors arrive
+// its screen-space slope gives a one-pixel antialiased edge wherever the quad lands. A glyph page's
+// texel is coverage instead, already antialiased, which a negative softness says. Colors arrive
 // display-encoded and are decoded here, so an opaque color comes out on exactly its code through
 // the target's encode, and everything blends in linear light.
 
@@ -96,8 +97,9 @@ fn fs_ui(in: UiVertex) -> @location(0) vec4<f32> {
     // A pixel's worth of field, so edges stay one pixel wide at any scale; softness widens them.
     let slope = length(vec2<f32>(dpdx(field), dpdy(field)));
     let width = max(max(slope, softness * 2.0), 1e-4);
-    let inner = ui_ramp(field, edge, width);
-    let outer = ui_ramp(field, edge - outline, width);
+    let is_coverage = softness < 0.0;
+    let inner = select(ui_ramp(field, edge, width), field, is_coverage);
+    let outer = select(ui_ramp(field, edge - outline, width), field, is_coverage);
 
     // The cut along the quad's width, along its slant. A range that reaches an end isn't cut there,
     // so a whole quad is untouched.

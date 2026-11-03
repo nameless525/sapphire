@@ -14,7 +14,7 @@ use sapphire_render::graph::{FrameGraph, GraphExecutor};
 use sapphire_render::{
     BloomParams, CameraData, ColorGrade, DirectionalLight, FramePacketRing, PostParams, RenderSettings,
     Renderer, ShaderFile, ShaderSources, ShaderUpdate, SkyGradient, ToneCurve, UI_PASS, UiAtlas, UiDrawList,
-    UiQuad, ViewData, Vignette,
+    UiPageUpload, UiQuad, ViewData, Vignette,
 };
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 use sapphire_ui::{
@@ -197,7 +197,12 @@ fn list(size: (u32, u32), paint: impl FnOnce(&mut Painter<'_>)) -> UiDrawList {
     let atlas = Atlas::paint();
     let mut quads = Vec::new();
     paint(&mut Painter::new(&mut quads, &atlas.sprites));
-    UiDrawList { viewport: [size.0 as f32, size.1 as f32], atlas: Some(atlas.image), quads }
+    UiDrawList {
+        viewport: [size.0 as f32, size.1 as f32],
+        atlas: Some(atlas.image),
+        quads,
+        ..UiDrawList::default()
+    }
 }
 
 #[test]
@@ -211,7 +216,12 @@ fn a_frame_with_no_quads_builds_nothing_and_adds_no_pass() {
     // No list, and a list with nothing in it.
     harness.draw(None);
     assert!(!harness.drew_ui_pass());
-    let empty = UiDrawList { viewport: [64.0, 64.0], atlas: Some(Atlas::paint().image), quads: Vec::new() };
+    let empty = UiDrawList {
+        viewport: [64.0, 64.0],
+        atlas: Some(Atlas::paint().image),
+        quads: Vec::new(),
+        ..UiDrawList::default()
+    };
     harness.draw(Some(&empty));
     assert!(!harness.drew_ui_pass());
     assert_eq!(pipelines(&harness.gpu), before, "nothing built for a frame without quads");
@@ -584,7 +594,7 @@ fn a_quad_list_grows_past_the_buffer_s_first_size() {
     // Past the 256 the buffer starts with: the last quad in the list is the one that shows.
     let mut quads: Vec<UiQuad> = vec![first; 1999];
     quads.push(last);
-    let ui = UiDrawList { viewport: [64.0, 64.0], atlas: Some(atlas.image), quads };
+    let ui = UiDrawList { viewport: [64.0, 64.0], atlas: Some(atlas.image), quads, ..UiDrawList::default() };
     let mut harness = Harness::new(size);
     assert_eq!(harness.draw(Some(&ui)).at(44, 44)[0], 255);
     assert_eq!(harness.renderer.stats().ui.quads, 2000);
@@ -604,7 +614,8 @@ fn debug_draw_s_lines_stay_visible_over_the_interface() {
     let mut painter = Painter::new(&mut quads, &atlas.sprites);
     let disc = painter.sprites().disc;
     painter.sprite(disc, Vec2::splat(64.5), Vec2::splat(100.0), 0.0, Paint::fill(HUD));
-    let ui = UiDrawList { viewport: [129.0, 129.0], atlas: Some(atlas.image), quads };
+    let ui =
+        UiDrawList { viewport: [129.0, 129.0], atlas: Some(atlas.image), quads, ..UiDrawList::default() };
     // Across the frame's middle row, in front of nothing, tested against nothing.
     let line = DebugLine {
         from: Vec3::new(-2.0, 0.0, 0.0),
@@ -619,4 +630,237 @@ fn debug_draw_s_lines_stay_visible_over_the_interface() {
     let (x0, y0, x1, y1) = pixels.bounds_of(LINE, 8, (40, 40, 88, 88)).expect("the line over the disc");
     assert!(x0 <= 41 && x1 >= 86, "across the disc: {x0}..{x1}");
     assert!(y0 >= 60 && y1 <= 67, "on its row: {y0}..{y1}");
+}
+
+// --- Glyph pages (M3 U1) ---
+
+/// `size` texels of `value` as a page upload at `corner`, appended to `list`.
+fn upload_block(list: &mut UiDrawList, page: u16, corner: (u16, u16), size: (u16, u16), value: u8) {
+    let offset = list.upload_texels.len() as u32;
+    list.upload_texels.resize(list.upload_texels.len() + usize::from(size.0) * usize::from(size.1), value);
+    list.page_uploads.push(UiPageUpload {
+        page,
+        x: corner.0,
+        y: corner.1,
+        width: size.0,
+        height: size.1,
+        offset,
+    });
+}
+
+/// A quad over the page's rectangle at `corner`, pixel for texel.
+fn page_quad(side: f32, corner: (f32, f32), at: (f32, f32), size: f32, color: [u8; 4]) -> UiQuad {
+    let uv = [corner.0 / side, corner.1 / side, (corner.0 + size) / side, (corner.1 + size) / side];
+    UiQuad::glyph([at.0, at.1], [size, size], uv, color)
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn glyph_pages_fill_from_the_list_s_uploads_and_draw_in_order_with_the_atlas() {
+    const SIDE: u32 = 64;
+    let mut harness = Harness::new((96, 32));
+    let before = pipelines(&harness.gpu);
+    let white = [255, 255, 255, 255];
+
+    // Coverage from two pages, full and half, with a field quad between them in the list's order.
+    let mut ui = list((96, 32), |painter| {
+        let disc = painter.sprites().disc;
+        painter.sprite(disc, Vec2::new(48.0, 16.0), Vec2::splat(20.0), 0.0, Paint::fill([255, 0, 0, 255]));
+    });
+    ui.page_size = SIDE;
+    upload_block(&mut ui, 0, (4, 4), (16, 16), 255);
+    upload_block(&mut ui, 1, (8, 8), (16, 16), 128);
+    let side = SIDE as f32;
+    let before_disc = page_quad(side, (4.0, 4.0), (8.0, 8.0), 16.0, white);
+    let after_disc = page_quad(side, (8.0, 8.0), (72.0, 8.0), 16.0, white);
+    let disc = ui.quads.pop().expect("the disc");
+    ui.push_page_quad(0, before_disc);
+    ui.quads.push(disc);
+    ui.push_page_quad(1, after_disc);
+
+    let pixels = harness.draw(Some(&ui));
+    let stats = harness.renderer.stats().ui;
+    assert_eq!(pipelines(&harness.gpu), before + 1, "pages share the interface's one pipeline");
+    assert_eq!((stats.pages, stats.page_uploads, stats.draws, stats.quads), (2, 2, 3, 3));
+    assert_eq!(stats.page_upload_bytes, 2 * 16 * 16);
+    assert_eq!(pixels.at(16, 16), [255, 255, 255, 255], "full coverage is the color's exact code");
+    assert_eq!(pixels.at(4, 16)[..3], [0, 0, 0], "outside the quad, nothing");
+    assert_eq!(pixels.at(48, 16)[..3], [255, 0, 0], "the field quad between them still draws");
+    // 128 of coverage in linear light, through the target's encode.
+    let half = pixels.at(80, 16);
+    assert!((i32::from(half[0]) - 188).abs() <= 1, "half coverage blends in linear light: {half:?}");
+
+    // The next frame names the pages and uploads nothing: they kept their texels.
+    ui.page_uploads.clear();
+    ui.upload_texels.clear();
+    let pixels = harness.draw(Some(&ui));
+    let stats = harness.renderer.stats().ui;
+    assert_eq!((stats.page_uploads, stats.page_upload_bytes), (0, 0));
+    assert_eq!(pixels.at(16, 16), [255, 255, 255, 255]);
+
+    // Writing into a page changes only that rectangle.
+    let mut update = ui.clone();
+    upload_block(&mut update, 0, (4, 4), (8, 16), 0);
+    let pixels = harness.draw(Some(&update));
+    assert_eq!(pixels.at(10, 16)[..3], [0, 0, 0], "the rectangle written");
+    assert_eq!(pixels.at(20, 16), [255, 255, 255, 255], "beside it, as it was");
+
+    // A page's uploads with no quads aren't lost.
+    let mut quiet = UiDrawList { viewport: [96.0, 32.0], page_size: SIDE, ..UiDrawList::default() };
+    upload_block(&mut quiet, 0, (4, 4), (16, 16), 255);
+    harness.draw(Some(&quiet));
+    assert_eq!(harness.renderer.stats().ui.page_uploads, 1);
+    assert!(!harness.drew_ui_pass(), "and no pass for nothing to draw");
+    let pixels = harness.draw(Some(&ui));
+    assert_eq!(pixels.at(10, 16), [255, 255, 255, 255], "the upload landed all the same");
+}
+
+/// The real stack through the real pass: Japanese from `parley` and `swash`, at the scales a phone
+/// and a desktop use, every pixel the exact coverage the atlas made, so no filter touched it. Set
+/// `SAPPHIRE_TEST_CAPTURE_DIR` to write each frame as a PNG to look at.
+#[test]
+#[ignore = "needs a GPU"]
+fn japanese_lands_pixel_for_pixel_at_every_scale() {
+    use sapphire_text::{AtlasConfig, GlyphAtlas, TextStyle, TextSystem};
+
+    let Some(dir) = std::env::var_os("SAPPHIRE_TEST_FONTS").map(std::path::PathBuf::from) else {
+        eprintln!(
+            "*** japanese_lands_pixel_for_pixel_at_every_scale SKIPPED: SAPPHIRE_TEST_FONTS isn't set ***"
+        );
+        return;
+    };
+    let font = |name: &str| Arc::new(std::fs::read(dir.join(name)).expect("the font"));
+    let mut text = TextSystem::new();
+    text.register_font(font("mplus1/MPLUS1[wght].ttf"));
+    text.register_font(font("oxanium/Oxanium[wght].ttf"));
+    text.register_font(font("dela_gothic_one/DelaGothicOne-Regular.ttf"));
+    let style =
+        |families, size, weight| TextStyle { families, size, weight, line_height: 1.3, locale: Some("ja") };
+    let lines = [
+        ("設定と記録", style("'Dela Gothic One', 'M PLUS 1'", 32.0, 400.0)),
+        ("必殺技ゲージ Level 90", style("Oxanium, 'M PLUS 1'", 20.0, 600.0)),
+        ("「まだ船は戻らないのか」と老人は海を見つめたまま尋ねた。", style("'M PLUS 1'", 14.0, 400.0)),
+        ("攻撃力 1,284　防御力 960　会心率 42%", style("'M PLUS 1'", 12.0, 500.0)),
+    ];
+    let capture = std::env::var_os("SAPPHIRE_TEST_CAPTURE_DIR").map(std::path::PathBuf::from);
+    for scale in [1.0f32, 1.5, 2.0, 3.0] {
+        let points = (440.0, 130.0);
+        let size = ((points.0 * scale).ceil() as u32, (points.1 * scale).ceil() as u32);
+        let mut harness = Harness::new(size);
+        let mut atlas = GlyphAtlas::new(AtlasConfig::default());
+        let mut ui =
+            UiDrawList { viewport: [size.0 as f32 / scale, size.1 as f32 / scale], ..UiDrawList::default() };
+        let mut y = 4.0;
+        atlas.begin_frame();
+        for (string, style) in &lines {
+            let shaped = text.shape(string, style, scale, Some(points.0 - 16.0));
+            atlas.draw(shaped, [8.0, y], scale, [255; 4], &mut ui);
+            y += shaped.height / scale;
+        }
+        let stats = atlas.take_stats();
+        assert_eq!((stats.dropped, stats.pages), (0, 1));
+        let pixels = harness.draw(Some(&ui));
+        let renderer = harness.renderer.stats().ui;
+        assert_eq!((renderer.pages, renderer.draws, renderer.quads as usize), (1, 1, ui.quads.len()));
+
+        // Rebuild the page on the CPU, and each quad from it: white on black, each pixel must be its
+        // texel's coverage, encoded. Quads don't overlap in these lines' cells beyond a stray corner,
+        // so a pixel with two quads over it is skipped.
+        let side = ui.page_size as usize;
+        let mut page = vec![0u8; side * side];
+        for upload in &ui.page_uploads {
+            let (w, h) = (usize::from(upload.width), usize::from(upload.height));
+            for row in 0..h {
+                let from = upload.offset as usize + row * w;
+                let to = (usize::from(upload.y) + row) * side + usize::from(upload.x);
+                page[to..to + w].copy_from_slice(&ui.upload_texels[from..from + w]);
+            }
+        }
+        let mut covered = vec![0u8; (size.0 * size.1) as usize];
+        let mut expected = vec![0u8; (size.0 * size.1) as usize];
+        for quad in &ui.quads {
+            let (x0, y0) = (quad.origin[0] * scale, quad.origin[1] * scale);
+            let (w, h) = (quad.axis_x[0] * scale, quad.axis_y[1] * scale);
+            assert!(
+                (x0 - x0.round()).abs() < 1e-3 && (y0 - y0.round()).abs() < 1e-3,
+                "on whole pixels: {x0}, {y0}"
+            );
+            let (u0, v0) = (quad.uv[0] * side as f32, quad.uv[1] * side as f32);
+            for row in 0..h.round() as usize {
+                for column in 0..w.round() as usize {
+                    let at = (y0.round() as usize + row) * size.0 as usize + x0.round() as usize + column;
+                    covered[at] = covered[at].saturating_add(1);
+                    expected[at] = page[(v0.round() as usize + row) * side + u0.round() as usize + column];
+                }
+            }
+        }
+        let encode = |value: f32| {
+            let value =
+                if value <= 0.003_130_8 { value * 12.92 } else { 1.055 * value.powf(1.0 / 2.4) - 0.055 };
+            value * 255.0
+        };
+        let (mut checked, mut worst, mut inked, mut full) = (0u32, 0f32, 0u32, 0u32);
+        for y in 0..size.1 {
+            for x in 0..size.0 {
+                let at = (y * size.0 + x) as usize;
+                if covered[at] != 1 {
+                    continue;
+                }
+                let want = encode(f32::from(expected[at]) / 255.0);
+                let got = f32::from(pixels.at(x, y)[0]);
+                worst = worst.max((want - got).abs());
+                checked += 1;
+                inked += u32::from(expected[at] > 0);
+                full += u32::from(expected[at] == 255);
+            }
+        }
+        eprintln!(
+            "{scale}x: {} × {} px, {} glyphs, {} of page area, {checked} pixels checked, {inked} with ink, {full} at full coverage, worst difference {worst:.2} codes",
+            size.0, size.1, stats.rasterized, stats.used_bytes,
+        );
+        assert!(worst <= 1.5, "{scale}x: a filter touched the glyphs: {worst} codes");
+        assert!(inked > 1000 && full > 100, "{scale}x: ink {inked}, full {full}");
+        if let Some(out) = &capture {
+            let file = std::fs::File::create(out.join(format!("japanese-{scale}x.png"))).expect("a file");
+            let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), size.0, size.1);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder.write_header().expect("a header").write_image_data(&pixels.rgba).expect("pixels");
+        }
+    }
+}
+
+/// What a language switch asks of the queue: `cargo test -p sapphire_render --test gpu --release
+/// glyph_uploads_cost -- --ignored --nocapture`. It holds nothing.
+#[test]
+#[ignore = "needs a GPU"]
+#[allow(clippy::disallowed_methods, reason = "timing needs the OS clock, and nothing here ships")]
+#[allow(clippy::print_stdout, reason = "printing the numbers is this test's whole job")]
+fn glyph_uploads_cost() {
+    const SIDE: u32 = 2048;
+    let mut harness = Harness::new((64, 64));
+    for (glyphs, side) in [(0u16, 24u16), (115, 24), (308, 24), (308, 48), (1500, 24), (3400, 24)] {
+        let mut times = Vec::new();
+        for _ in 0..12 {
+            let mut ui = UiDrawList { viewport: [64.0, 64.0], page_size: SIDE, ..UiDrawList::default() };
+            for index in 0..glyphs {
+                let per_row = SIDE as u16 / side;
+                let corner = ((index % per_row) * side, (index / per_row) * side);
+                upload_block(&mut ui, 0, corner, (side, side), 200);
+            }
+            ui.push_page_quad(0, page_quad(SIDE as f32, (0.0, 0.0), (0.0, 0.0), 16.0, [255; 4]));
+            dark_packet(&mut harness.ring, harness.size, Some(&ui));
+            let start = std::time::Instant::now();
+            harness.renderer.prepare(&harness.gpu, harness.ring.current());
+            times.push(start.elapsed().as_secs_f64() * 1e3);
+            // A whole frame, so the writes reach the GPU and the next prepare starts clean.
+            harness.draw(Some(&UiDrawList::default()));
+        }
+        times.sort_by(f64::total_cmp);
+        println!(
+            "prepare with {glyphs} rectangles of {side}²: p50 {:.2} ms, worst {:.2} ms",
+            times[times.len() / 2],
+            times[times.len() - 1],
+        );
+    }
 }

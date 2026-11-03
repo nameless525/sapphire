@@ -841,8 +841,9 @@ impl GraphPlayer {
         self.layers.combat = input
             .combat
             .and_then(|combat| {
-                let entry = self.graph.move_entry(combat.name)?;
-                Some(Playing { entry, serial: combat.serial, position: combat.position })
+                let entry = self.graph.move_entry(combat.name);
+                self.stats.unmapped_moves += u32::from(entry.is_none());
+                Some(Playing { entry: entry?, serial: combat.serial, position: combat.position })
             })
             .or(lying);
         self.layers.defeated = input.defeated;

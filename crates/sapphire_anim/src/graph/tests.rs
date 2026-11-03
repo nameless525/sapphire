@@ -614,6 +614,24 @@ fn a_move_with_no_clip_leaves_locomotion_playing() {
     assert_eq!(player.stats().transitions, 0);
 }
 
+/// A frame that starts over plays no clip for such a move either, and counts as any other frame does:
+/// the first a player draws, and a cut.
+#[test]
+fn a_move_with_no_clip_counts_on_a_frame_that_starts_over() {
+    let fixture = fixture();
+    let source = fixture.source();
+    let taunt = Name::new("taunt");
+    let mut player = fixture.player(&plain());
+    player.evaluate(&in_move(0.0, taunt, 1, 0.0), source.as_slice(), 0);
+    assert_eq!(player.stats().unmapped_moves, 1, "the first frame");
+    let cut = GraphInput { cut: true, ..in_move(1.0, taunt, 1, 1.0) };
+    player.evaluate(&cut, source.as_slice(), 0);
+    assert_eq!(player.stats().unmapped_moves, 2, "a cut");
+    let mapped = GraphInput { cut: true, ..in_move(2.0, JAB, 2, 0.0) };
+    player.evaluate(&mapped, source.as_slice(), 0);
+    assert_eq!(player.stats().unmapped_moves, 2, "a move with a clip");
+}
+
 /// The combat layer's morph keys come through, and decay across a cancel as joints do.
 #[test]
 fn a_clips_morph_weights_play_and_decay_too() {

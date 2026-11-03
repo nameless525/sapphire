@@ -26,9 +26,10 @@
 //!
 //! # Cost
 //!
-//! A graph costs about 10 heap allocations per frame (its node lists, plus one boxed closure
-//! per pass) and well under a microsecond to build and compile at M0's two passes; recording
-//! the passes is the real work. Parallel recording adds a job scope's allocations.
+//! A graph costs five heap allocations for its node lists, sized for a real frame so that they
+//! don't grow, plus one boxed closure per pass and two lists to execute it, and well under a
+//! microsecond to build and compile at M0's two passes; recording the passes is the real work.
+//! Parallel recording adds a job scope's allocations.
 //!
 //! # Inspection (M1 F5)
 //!
@@ -83,6 +84,11 @@ impl TextureId {
 /// Records a pass's GPU work.
 type RecordFn<'f> = Box<dyn FnOnce(&mut PassContext<'_>) + Send + 'f>;
 
+/// What [`FrameGraph::new`] makes room for. Passing them only grows a list, as it would have.
+const TYPICAL_TEXTURES: usize = 48;
+const TYPICAL_PASSES: usize = 48;
+const TYPICAL_ACCESSES: usize = 160;
+
 /// One frame's passes and textures. `'f` is how long what the passes borrow lives: the
 /// imported views and whatever the record closures capture.
 #[derive(Default)]
@@ -101,8 +107,14 @@ impl std::fmt::Debug for FrameGraph<'_> {
 }
 
 impl<'f> FrameGraph<'f> {
+    /// An empty graph, its lists sized for a whole frame's (Desktop-High's fight has 24 passes,
+    /// about 30 textures and 90 accesses), so building it doesn't grow them.
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            shape: Shape::with_capacity(TYPICAL_TEXTURES, TYPICAL_PASSES, TYPICAL_ACCESSES),
+            imports: Vec::with_capacity(TYPICAL_TEXTURES),
+            records: Vec::with_capacity(TYPICAL_PASSES),
+        }
     }
 
     /// Adds a texture the graph doesn't own, such as the swapchain image. Its contents

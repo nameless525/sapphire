@@ -37,6 +37,14 @@ pub(super) struct Access {
 }
 
 impl Shape {
+    pub fn with_capacity(textures: usize, passes: usize, accesses: usize) -> Self {
+        Self {
+            textures: Vec::with_capacity(textures),
+            passes: Vec::with_capacity(passes),
+            accesses: Vec::with_capacity(accesses),
+        }
+    }
+
     pub fn add_texture(
         &mut self,
         name: &'static str,

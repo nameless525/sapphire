@@ -60,7 +60,7 @@ const SHOW_MOVES: &str = include_str!("../../../content/lookdev/character/show.m
 
 /// That document, from the repository's root: what live tuning goes by.
 #[cfg(feature = "dev")]
-pub(crate) const SHOW_MOVES_PATH: &str = "content/lookdev/character/show.moves.ron";
+pub const SHOW_MOVES_PATH: &str = "content/lookdev/character/show.moves.ron";
 
 const STRIKE: Name = Name::new("strike");
 const DODGE: Name = Name::new("dodge");
@@ -207,7 +207,7 @@ impl GraphScript {
 /// What a move looks like to the graph, from what the simulation reads of it, at a frame `behind` ticks
 /// of its clock behind the latest step. On a whole tick (`behind` is 0, as every capture's is) this is
 /// exactly `elapsed`: the same number the move's tables are read at, so a pose and a hit volume agree.
-pub(crate) fn combat_input(view: &ActorView, behind: f64) -> Option<CombatInput> {
+pub fn combat_input(view: &ActorView, behind: f64) -> Option<CombatInput> {
     view.moves.current.map(|current| CombatInput {
         name: current.name,
         serial: current.serial,
@@ -216,19 +216,19 @@ pub(crate) fn combat_input(view: &ActorView, behind: f64) -> Option<CombatInput>
 }
 
 /// `duration` in ticks with a fraction.
-pub(crate) fn duration_ticks(duration: SimDuration) -> f64 {
+pub fn duration_ticks(duration: SimDuration) -> f64 {
     duration.as_subticks() as f64 / f64::from(SUBTICKS_PER_TICK)
 }
 
 /// `time` in ticks with a fraction.
-pub(crate) fn time_ticks(time: SimTime) -> f64 {
+pub fn time_ticks(time: SimTime) -> f64 {
     time.as_subticks() as f64 / f64::from(SUBTICKS_PER_TICK)
 }
 
 /// What an actor's feet are doing, from its controller's state as of its latest step: its velocity
 /// across the ground against its facing, and whether there's ground under it. Whether it landed is an
 /// event of a step, which [`GraphShow`] gathers for the frame.
-pub(crate) fn locomotion_of(view: &ActorView) -> LocomotionInput {
+pub fn locomotion_of(view: &ActorView) -> LocomotionInput {
     let state = &view.controller.state;
     let across = Vec3::new(state.velocity.x, 0.0, state.velocity.z);
     let speed = across.length();
@@ -283,7 +283,7 @@ pub(crate) const MAX_HELD_CLIPS: usize = 3 * MAX_GRAPH_CLIPS;
 /// The clips a frame's evaluation reads: the asset server's views of them, gathered per frame so a
 /// job can share them.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct ClipTable<'a> {
+pub struct ClipTable<'a> {
     clips: [Option<(AssetId, &'a ArchivedClip)>; MAX_HELD_CLIPS],
     version: u32,
 }
@@ -294,7 +294,7 @@ impl<'a> ClipTable<'a> {
         Self { clips: [None; MAX_HELD_CLIPS], version: 0 }
     }
 
-    pub(crate) fn new(clips: impl Iterator<Item = (AssetId, Option<&'a ArchivedClip>, u32)>) -> Self {
+    pub fn new(clips: impl Iterator<Item = (AssetId, Option<&'a ArchivedClip>, u32)>) -> Self {
         let mut table = Self { clips: [None; MAX_HELD_CLIPS], version: 0 };
         for (slot, (id, clip, generation)) in table.clips.iter_mut().zip(clips) {
             *slot = clip.map(|clip| (id, clip));
@@ -335,7 +335,7 @@ pub struct GraphDriver {
 }
 
 impl GraphDriver {
-    pub(crate) fn new(player: GraphPlayer, joints: FigureJoints) -> Self {
+    pub fn new(player: GraphPlayer, joints: FigureJoints) -> Self {
         Self {
             player,
             joints,
@@ -349,14 +349,13 @@ impl GraphDriver {
     }
 
     /// This driver, finding the right hand at `joint`.
-    #[cfg(test)]
-    pub(crate) fn with_right_hand(self, joint: usize) -> Self {
+    pub fn with_right_hand(self, joint: usize) -> Self {
         Self { joints: self.joints.with_right_hand(joint), ..self }
     }
 
     /// The right hand's joint in the character's space, as its pose has it now. `None` for a rig without
     /// one, and before its graph has made a pose: until then the character holds what it has.
-    pub(crate) fn right_hand(&self) -> Option<Mat4> {
+    pub fn right_hand(&self) -> Option<Mat4> {
         let joint = self.joints.right_hand().filter(|_| self.posed)?;
         Some(Mat4::from(self.player.pose().model()[joint]))
     }
@@ -380,12 +379,12 @@ impl GraphDriver {
     }
 
     /// Its IK, for whatever drives it.
-    pub(crate) fn ik_mut(&mut self) -> Option<&mut IkDriver> {
+    pub fn ik_mut(&mut self) -> Option<&mut IkDriver> {
         self.ik.as_mut()
     }
 
     /// Whether it solves IK.
-    pub(crate) fn has_ik(&self) -> bool {
+    pub fn has_ik(&self) -> bool {
         self.ik.is_some()
     }
 
@@ -401,7 +400,7 @@ impl GraphDriver {
 
     /// Whether it can play into `render`. It may not for a moment, when a new version of the character
     /// lands before the others: the character keeps the pose it has until they fit.
-    pub(crate) fn fits(&self, render: &RenderPose) -> bool {
+    pub fn fits(&self, render: &RenderPose) -> bool {
         render.palette.len() == self.player.pose().palette_len()
             && render.morph_weights.len() == self.player.pose().weights().len()
     }
@@ -416,7 +415,7 @@ impl GraphDriver {
 
     /// Takes over another driver's place, for a new version of the character under a graph that keeps
     /// playing.
-    pub(crate) fn continue_from(&mut self, other: &Self) {
+    pub fn continue_from(&mut self, other: &Self) {
         self.player.continue_from(&other.player);
         self.base = other.base;
         self.teleports = other.teleports;
@@ -435,12 +434,7 @@ impl GraphDriver {
     }
 
     /// Whether its springs run this frame, for a character `view` sees or doesn't.
-    pub(crate) fn springs_run(
-        &mut self,
-        view: &SpringView,
-        transform: &RenderTransform,
-        figure: &Figure,
-    ) -> bool {
+    pub fn springs_run(&mut self, view: &SpringView, transform: &RenderTransform, figure: &Figure) -> bool {
         self.springs.as_mut().is_some_and(|springs| view.decide(springs, transform, figure))
     }
 
@@ -481,8 +475,8 @@ impl GraphDriver {
 }
 
 /// One character's frame: its driver and everything that follows the skeleton.
-pub(crate) struct GraphEvaluation<'a> {
-    pub(crate) driver: Mut<'a, GraphDriver>,
+pub struct GraphEvaluation<'a> {
+    pub driver: Mut<'a, GraphDriver>,
     pub(crate) render: Mut<'a, RenderPose>,
     pub(crate) figure: Mut<'a, Figure>,
     pub(crate) rig: Mut<'a, CharacterLightRig>,
@@ -493,14 +487,40 @@ pub(crate) struct GraphEvaluation<'a> {
     pub(crate) place: Mat4,
     /// Whether its springs run this frame ([`GraphDriver::springs_run`]).
     pub(crate) springs_run: bool,
-    pub(crate) evaluated: bool,
-    pub(crate) spring_work: SpringWork,
-    pub(crate) spring_time: Duration,
+    pub evaluated: bool,
+    pub spring_work: SpringWork,
+    pub spring_time: Duration,
 }
 
-impl GraphEvaluation<'_> {
+impl<'a> GraphEvaluation<'a> {
+    /// `driver`'s frame, for a character drawn at `place` and playing `input`, where `view` sees it.
+    pub fn new(
+        mut driver: Mut<'a, GraphDriver>,
+        render: Mut<'a, RenderPose>,
+        figure: Mut<'a, Figure>,
+        rig: Mut<'a, CharacterLightRig>,
+        input: GraphInput,
+        place: Mat4,
+        view: &SpringView,
+    ) -> Self {
+        let springs_run = driver.springs_run(view, &RenderTransform(place), &figure);
+        Self {
+            driver,
+            render,
+            figure,
+            rig,
+            input,
+            world_from_model: Affine3A::from_mat4(place),
+            place,
+            springs_run,
+            evaluated: false,
+            spring_work: SpringWork::default(),
+            spring_time: Duration::ZERO,
+        }
+    }
+
     /// Evaluates the graph, runs the springs and hands over what changed. Allocates nothing.
-    pub(crate) fn run(&mut self, clips: &ClipTable<'_>) {
+    pub fn run(&mut self, clips: &ClipTable<'_>) {
         let driver = &mut *self.driver;
         self.evaluated = driver.pose_frame(&self.input, clips, self.place);
         if self.evaluated {
@@ -606,7 +626,7 @@ impl GraphShow {
 
     /// The set that plays the document with this file name, if it plays that.
     #[cfg(feature = "dev")]
-    pub(crate) fn plays(&self, document: &str) -> Option<sapphire_gameplay::MoveSetId> {
+    pub fn plays(&self, document: &str) -> Option<sapphire_gameplay::MoveSetId> {
         (document == sapphire_gameplay::replay::document_file_name(SHOW_MOVES_PATH)).then_some(self.moves)
     }
 

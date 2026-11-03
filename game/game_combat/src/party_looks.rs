@@ -11,7 +11,7 @@
 //! here would be work for nothing after M2.
 //!
 //! One entity draws whoever's on the field: [`Drawn`] gives it that member's mesh when a swap changes
-//! it, which sends its pose again (`crate::extract`). `crate::arena`'s player reads the same member, for
+//! it, which sends its pose again (`sapphire_stage`). `crate::arena`'s player reads the same member, for
 //! its place and for what its graph plays, and cuts that graph at a swap, so no pose blends from one
 //! member into another. All three share a skeleton, a graph and the character's blade, so nothing else knows
 //! there's a party.
@@ -25,7 +25,7 @@ use sapphire_gameplay::{PARTY_SLOTS, Party};
 use sapphire_render::texture::GpuTexture;
 use sapphire_render::{MaterialHandle, MeshHandle, Renderer};
 
-use crate::content::UploadWatcher;
+use sapphire_stage::content::UploadWatcher;
 
 /// The looks beyond the character's own.
 const LOOKS: usize = PARTY_SLOTS - 1;
@@ -87,7 +87,7 @@ struct Look {
     mesh: Option<(u32, MeshHandle)>,
 }
 
-/// The looks' copies on one renderer. `crate::content` shows it what it uploads.
+/// The looks' copies on one renderer. `sapphire_stage::content` shows it what it uploads.
 #[derive(Default)]
 pub struct PartyLooks {
     looks: [Look; LOOKS],

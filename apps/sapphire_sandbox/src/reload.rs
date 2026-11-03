@@ -46,8 +46,8 @@ use sapphire_time::Stopwatch;
 use crate::LOG_TARGET;
 use crate::link::cook_not_in_use;
 use crate::shader_edits::{Answered, Origin, ShaderEdits};
+use game_combat::tuning::{Document, DocumentFrame, error_chain};
 use sapphire_stage::scene::Day;
-use sapphire_stage::tuning::{Document, DocumentFrame, error_chain};
 
 /// The timeline document the scene's day comes from ([`Day`]): the default day's, or the
 /// look-dev day's with `--look-dev` (in the repository this build was compiled from, as `sources`
@@ -96,7 +96,7 @@ pub(crate) struct Reload {
 impl Reload {
     /// Watches the packs in `content_root`, the shaders, the day's timeline at `day`
     /// ([`day_source`]), the light rig presets at `light_rigs` ([`light_rigs_source`]), the
-    /// screen effect presets and the fight's documents `tuned` ([`LiveTuning::watched`](sapphire_stage::tuning::LiveTuning::watched)), unless
+    /// screen effect presets and the fight's documents `tuned` ([`LiveTuning::watched`](game_combat::tuning::LiveTuning::watched)), unless
     /// `enabled` is false. A source that can't be watched is left out, with a warning.
     pub fn start(
         enabled: bool,

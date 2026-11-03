@@ -21,7 +21,7 @@
 //! - **Sword trails** have no row, because a row keeps no handle to stop one with. [`BladeTrails`] runs
 //!   them in the same world of effects, from what the blades are doing.
 //!
-//! [`Scene::follow_simulation`]: crate::scene::Scene::follow_simulation
+//! [`Scene::follow_simulation`]: sapphire_stage::scene::Scene::follow_simulation
 
 use std::time::Duration;
 
@@ -39,8 +39,8 @@ use sapphire_time::{Stopwatch, TICK_HZ};
 use sapphire_vfx::{EffectLibrary as VfxLibrary, VfxBudget, VfxWorld};
 use sapphire_world::screen_effects::{EffectLibrary as ScreenLibrary, EffectStack};
 
-use crate::audio::CueSounds;
 use crate::trails::BladeTrails;
+use sapphire_stage::audio::CueSounds;
 
 /// Seeded, so a capture's sparks land the same way in every run, and so do its shakes.
 const SEED: u64 = 0x5EED;

@@ -19,8 +19,8 @@ use sapphire_rhi::{GpuContext, wgpu};
 
 use crate::LOG_TARGET;
 use crate::offscreen::Stage;
+use game_combat::combat::CaptureFrames;
 use sapphire_stage::Readback;
-use sapphire_stage::combat::CaptureFrames;
 use sapphire_stage::gpu_failure;
 
 /// Frames drawn before a capture with the debug overlay shown: egui sizes its windows over its

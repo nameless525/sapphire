@@ -1,7 +1,7 @@
 //! The player's sword in the character's right hand (`--blade on`, M2 O3).
 //!
 //! The mesh is `sapphire_pipeline::combat::sword`'s, and it draws as a character with no body, as the
-//! enemy's blade does ([`crate::scene::Figure::of_item_at`]). Each frame the scene places it by the
+//! enemy's blade does ([`sapphire_stage::scene::Figure::of_item_at`]). Each frame the scene places it by the
 //! hand's joint and [`socket`]: the same socket `content/combat/player/player.moves.ron` bakes its
 //! `blade` path from, so what's drawn is what the hit volumes sweep.
 

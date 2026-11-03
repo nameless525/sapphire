@@ -51,12 +51,12 @@ use crate::app::SandboxApp;
 use crate::capture::{compress, readback_fits};
 use crate::options::LiveLinkOption;
 use crate::shader_edits::{Origin, ShaderEdits};
+use game_combat::combat::Combat;
+use game_combat::fight::Fight;
+use game_combat::tuning::{Document, DocumentFrame, LiveTuning, attempts, error_chain};
 use sapphire_stage::Readback;
-use sapphire_stage::combat::Combat;
 use sapphire_stage::content::Content;
-use sapphire_stage::fight::Fight;
 use sapphire_stage::scene::Scene;
-use sapphire_stage::tuning::{Document, DocumentFrame, LiveTuning, attempts, error_chain};
 
 /// How many refusals the overlay lists.
 const SHOWN_ERRORS: usize = 4;

@@ -30,12 +30,12 @@ use sapphire_math::{Affine3A, Mat4, Quat, Vec3};
 use sapphire_physics::PhysicsWorld;
 use sapphire_render::{FaceExpression, MeshHandle};
 
-use crate::anim_graph::GraphDriver;
-use crate::extract::RenderPose;
-use crate::ik::{IkControls, IkDriver};
-use crate::lookdev::{FigureJoints, FigureShape};
-use crate::pose::{self, RigJoints};
-use crate::scene::Figure;
+use sapphire_stage::RenderPose;
+use sapphire_stage::anim_graph::GraphDriver;
+use sapphire_stage::ik::{IkControls, IkDriver};
+use sapphire_stage::lookdev::{FigureJoints, FigureShape};
+use sapphire_stage::pose::{self, RigJoints};
+use sapphire_stage::scene::Figure;
 
 /// The warrior, by its sidecar's ID (`content/combat/enemy/warrior.glb.meta`).
 pub(crate) const WARRIOR: AssetId = AssetId::from_text("322aa57e-957d-45f1-8d51-0c1d80f5d1d6");
@@ -193,7 +193,7 @@ pub(crate) fn held(skin: &Skin, skeleton: &ArchivedSkeleton) -> Result<Held, Str
 }
 
 /// A driver for the warrior on `binding`, over its rest pose: what poses it in a fight
-/// ([`crate::scene::Scene::play_fighters`]). Fails if the rig lacks a joint the pose needs.
+/// ([`sapphire_stage::scene::Scene::play_fighters`]). Fails if the rig lacks a joint the pose needs.
 pub(crate) fn driver(
     skin: &Skin,
     skeleton: &ArchivedSkeleton,

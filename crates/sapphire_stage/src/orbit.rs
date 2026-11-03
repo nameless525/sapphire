@@ -152,7 +152,7 @@ impl OrbitCamera {
     }
 
     /// Aims at `target` from the same angles and distance: a camera that follows something.
-    pub(crate) fn set_target(&mut self, target: Vec3) {
+    pub fn set_target(&mut self, target: Vec3) {
         self.target = target;
     }
 
@@ -160,7 +160,7 @@ impl OrbitCamera {
     /// radians high, upright, at once. So everything that reads this camera (the frame, sound, what
     /// the stick turns by) reads that view. `sapphire_camera`'s director comes through here in the
     /// arena, and a shake's roll would need more than this.
-    pub(crate) fn set_view(&mut self, eye: Vec3, forward: Vec3, fov_y: f32) {
+    pub fn set_view(&mut self, eye: Vec3, forward: Vec3, fov_y: f32) {
         // Any distance gives the same view.
         const DISTANCE: f32 = 4.0;
         let forward = forward.normalize_or(Vec3::NEG_Z);
@@ -190,7 +190,7 @@ impl OrbitCamera {
     /// What cues' shakes do to the view, as `sapphire_camera::ShakeStack::sample` gives it: radians about
     /// its right, up and backward, then metres along its right, up and forward. Input, the orbit's
     /// springs and the listener don't see it, so it can't move what the player aims by.
-    pub(crate) fn set_shake(&mut self, turn: Vec3, offset: Vec3) {
+    pub fn set_shake(&mut self, turn: Vec3, offset: Vec3) {
         self.shake = (turn, offset);
     }
 

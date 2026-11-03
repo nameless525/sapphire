@@ -19,10 +19,10 @@ use crate::app::SandboxApp;
 use crate::options::{OffscreenMode, Options};
 #[cfg(feature = "dev")]
 use crate::stats::Stages;
-use sapphire_stage::combat::Combat;
-use sapphire_stage::fight::{Arena, Fight, FightShow};
-use sapphire_stage::hud::ShownFight;
-use sapphire_stage::party_looks::PartyLooks;
+use game_combat::combat::Combat;
+use game_combat::fight::{Arena, Fight, FightShow};
+use game_combat::party_looks::PartyLooks;
+use game_ui::hud::ShownFight;
 use sapphire_stage::scene::LookDev;
 #[cfg(feature = "dev")]
 use sapphire_stage::scene::Scene;
@@ -63,7 +63,7 @@ impl App for OffscreenApp {
         // Before any GPU work, so a bad replay file costs nothing and says why.
         let combat = options.combat.as_ref().map(Combat::new).transpose().map_err(AppInitError::msg)?;
         if let (Some(_), Some(combat)) = (options.arena, &combat) {
-            sapphire_stage::arena::check_scenario(combat, options.party).map_err(AppInitError::msg)?;
+            game_combat::arena::check_scenario(combat, options.party).map_err(AppInitError::msg)?;
         }
         match &offscreen.mode {
             OffscreenMode::Capture { path, ticks, frames } => {
@@ -316,9 +316,9 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
     // live and a fight's bars stand behind it.
     if let Some(hud) = options.hud {
         let fighting = options.arena.is_some() && options.combat.is_some();
-        let mode = if fighting { hud.mode } else { sapphire_stage::hud::HudMode::Fixed };
-        let hud = sapphire_stage::hud::HudOptions { mode, ..hud };
-        *shown_hud = Some(sapphire_stage::hud::SandboxHud::new(hud));
+        let mode = if fighting { hud.mode } else { game_ui::hud::HudMode::Fixed };
+        let hud = game_ui::hud::HudOptions { mode, ..hud };
+        *shown_hud = Some(game_ui::hud::SandboxHud::new(hud));
     }
     // The screen effects it may push, `--post-effect`'s among them, the effects it plays, its sky and
     // its HUD show on their first frame.

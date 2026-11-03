@@ -25,21 +25,21 @@ use sapphire_time::{
 use crate::LOG_TARGET;
 #[cfg(feature = "dev")]
 use crate::dev::{DevTools, FrameState};
+use crate::input::{PLAYER, SandboxInput};
 use crate::options::Options;
 use crate::stats::{FrameStats, Stages};
+use game_combat::combat::Combat;
+use game_combat::combat::CombatOption;
+use game_combat::cues::PadRumble;
+use game_combat::enemy::EnemyMeshes;
+use game_combat::fight::{Arena, FightShow};
+use game_combat::party_looks::PartyLooks;
+use game_ui::hud::{SandboxHud, ShownFight};
 use sapphire_stage::audio::SandboxAudio;
-use sapphire_stage::combat::Combat;
-use sapphire_stage::combat::CombatOption;
 use sapphire_stage::content::Content;
-use sapphire_stage::cues::PadRumble;
-use sapphire_stage::enemy::EnemyMeshes;
 use sapphire_stage::environment::FOG_CARDS;
-use sapphire_stage::fight::{Arena, FightShow};
 use sapphire_stage::foliage::FoliageMeshes;
-use sapphire_stage::hud::{SandboxHud, ShownFight};
-use crate::input::{PLAYER, SandboxInput};
 use sapphire_stage::lookdev::{Shot, TownMeshes};
-use sapphire_stage::party_looks::PartyLooks;
 use sapphire_stage::rims::RimRigMeshes;
 use sapphire_stage::scene::{LookDev, Scene};
 use sapphire_stage::stage::StageMeshes;
@@ -194,7 +194,7 @@ impl App for SandboxApp {
         show.fight.combat =
             options.combat.as_ref().map(Combat::new).transpose().map_err(AppInitError::msg)?;
         if let (Some(_), Some(combat)) = (options.arena, &show.fight.combat) {
-            sapphire_stage::arena::check_scenario(combat, options.party).map_err(AppInitError::msg)?;
+            game_combat::arena::check_scenario(combat, options.party).map_err(AppInitError::msg)?;
         }
         let mut scene = Scene::with_character(renderer.character, renderer.character_bounds, options.skinned);
         scene.set_sky_material(renderer.sky);
@@ -757,7 +757,7 @@ impl SandboxApp {
             dev.log_tick_actions(&actions);
             actions
         };
-        sapphire_stage::combat::read_bindings(self.show.fight.combat.as_mut(), &mut read, PLAYER);
+        game_combat::combat::read_bindings(self.show.fight.combat.as_mut(), &mut read, PLAYER);
     }
 
     /// Extracts the frame, then draws and presents it if the surface gave an image. Returns

@@ -19,7 +19,7 @@ use sapphire_math::Quat;
 
 /// What the pose reads of a character's rig: its humanoid bones' joints and its constraints.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct RigJoints {
+pub struct RigJoints {
     humanoid: Vec<(HumanBone, usize)>,
     constraints: Vec<Constraint>,
 }
@@ -51,24 +51,24 @@ impl RigJoints {
 
     /// A rig of these bones and no constraints: a model with no VRM rig, whose joints were found by
     /// name (M2 O4's enemy).
-    pub(crate) fn of_bones(humanoid: Vec<(HumanBone, usize)>) -> Self {
+    pub fn of_bones(humanoid: Vec<(HumanBone, usize)>) -> Self {
         Self { humanoid, constraints: Vec::new() }
     }
 
     /// The joint that is `bone`.
-    pub(crate) fn joint(&self, bone: HumanBone) -> Option<usize> {
+    pub fn joint(&self, bone: HumanBone) -> Option<usize> {
         self.humanoid.iter().find(|(entry, _)| *entry == bone).map(|&(_, joint)| joint)
     }
 
     /// The rig's constraints.
-    pub(crate) fn constraints(&self) -> &[Constraint] {
+    pub fn constraints(&self) -> &[Constraint] {
         &self.constraints
     }
 }
 
 /// Holds `pose` by `turns` (humanoid bones' rotations in rest model space) from its rest pose,
 /// following its rig's constraints. Bones the rig doesn't have are skipped.
-pub(crate) fn hold(pose: &mut CharacterPose, rig: &RigJoints, turns: &[(HumanBone, Quat)]) {
+pub fn hold(pose: &mut CharacterPose, rig: &RigJoints, turns: &[(HumanBone, Quat)]) {
     pose.reset();
     let count = pose.joint_count();
     // Turns in rest model space, moved into each joint's local frame: the parent's rest frame

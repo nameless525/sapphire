@@ -28,17 +28,17 @@ use sapphire_render::{RenderStats, Renderer};
 use sapphire_rhi::{GpuContext, wgpu};
 
 use crate::LOG_TARGET;
+use crate::input::SandboxInput;
 use crate::link::{CaptureRequest, Link, LinkFrame};
 use crate::options::Options;
 use crate::reload::Reload;
 use crate::shader_edits::ShaderEdits;
 use crate::stats::Stages;
-use sapphire_stage::combat::{Combat, SessionRecorder};
+use game_combat::combat::{Combat, SessionRecorder};
+use game_combat::fight::Fight;
+use game_combat::tuning::{DocumentFrame, LiveFight, LiveTuning};
 use sapphire_stage::content::Content;
-use sapphire_stage::fight::Fight;
-use crate::input::SandboxInput;
 use sapphire_stage::scene::Scene;
-use sapphire_stage::tuning::{DocumentFrame, LiveFight, LiveTuning};
 
 pub(crate) struct DevTools {
     overlay: DebugOverlay,
@@ -120,7 +120,7 @@ impl DevTools {
             .and_then(|()| cvars.register_all(&sapphire_render::quality::CVARS))
             .and_then(|()| cvars.register_all(&sapphire_render::debug_view::CVARS))
             .and_then(|()| cvars.register_all(&sapphire_debug::CVARS))
-            .and_then(|()| cvars.register_all(&sapphire_stage::combat_views::CVARS))
+            .and_then(|()| cvars.register_all(&game_combat::combat_views::CVARS))
             .map_err(AppInitError::msg)?;
         let content_root = Path::new(platform.content().root());
         let tuning = LiveTuning::new(&options.tuned_run(), content);

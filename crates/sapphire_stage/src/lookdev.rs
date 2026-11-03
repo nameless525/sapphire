@@ -218,7 +218,7 @@ impl Plant {
     ];
 
     /// The plant's mesh, by its sidecar's ID (`content/lookdev/foliage/*.meta`).
-    pub(crate) fn id(self) -> AssetId {
+    pub fn id(self) -> AssetId {
         AssetId::from_text(match self {
             Self::GreenTree => "0e0f2a4c-b0bb-4e0a-8688-79e9b18f7b69",
             Self::BlossomTree => "33168a54-0264-4e4c-8de5-88666f3f307a",
@@ -334,7 +334,7 @@ const POT: f32 = 0.555;
 /// row, by the stalls and by the street's doors; climbers (green bushes drawn up thin) against the
 /// gate wall and the street's courtyard wall; and a green tree in the courtyard behind the gate
 /// wall. Planters and pots are the assembly's (`@planter`, `@pot`).
-pub(crate) const PLANTINGS: [Planting; 40] = [
+pub const PLANTINGS: [Planting; 40] = [
     // The square's corners, and beyond.
     (Plant::GreenTree, [-15.6, 0.0, -15.4], even(1.35), 20.0),
     (Plant::BlossomTree, [15.6, 0.0, -15.6], even(1.45), 40.0),
@@ -390,7 +390,7 @@ pub(crate) const PLANTINGS: [Planting; 40] = [
 ];
 
 /// Every plant with its world transform, about its root.
-pub(crate) fn plantings() -> impl Iterator<Item = (Plant, Mat4)> {
+pub fn plantings() -> impl Iterator<Item = (Plant, Mat4)> {
     PLANTINGS.into_iter().map(|(plant, at, scale, turn)| {
         let place = Mat4::from_scale_rotation_translation(
             Vec3::from(scale),
@@ -406,7 +406,7 @@ pub(crate) fn plantings() -> impl Iterator<Item = (Plant, Mat4)> {
 const DAY: &str = include_str!("../../../content/lookdev/lookdev_day.ron");
 
 /// The look-dev day's timeline: time of day's base timeline while the look-dev stage runs.
-pub(crate) fn day() -> TodTimeline {
+pub fn day() -> TodTimeline {
     TodTimeline::from_ron(DAY).expect("the look-dev day is checked by this module's tests")
 }
 
@@ -748,12 +748,12 @@ fn character_pose(
 
 /// What a [`Figure`] says that no pose moves.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct FigureShape {
+pub struct FigureShape {
     /// From the head joint to the middle of the skull, in the model's units.
-    pub(crate) head_center: Vec3,
+    pub head_center: Vec3,
     /// The radius of its body capsule (M1 R4).
-    pub(crate) body_radius: f32,
-    pub(crate) expression: FaceExpression,
+    pub body_radius: f32,
+    pub expression: FaceExpression,
 }
 
 /// The character's.
@@ -762,7 +762,7 @@ const CHARACTER_SHAPE: FigureShape =
 
 /// Where a posed character's [`Figure`] finds its parts: what follows the skeleton every frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct FigureJoints {
+pub struct FigureJoints {
     head: usize,
     /// The head's rest rotation in model space, which its face's basis turns from.
     rest_head: Quat,
@@ -777,13 +777,7 @@ pub(crate) struct FigureJoints {
 }
 
 impl FigureJoints {
-    pub(crate) fn new(
-        pose: &CharacterPose,
-        rig: &RigJoints,
-        head: usize,
-        floor: f32,
-        shape: FigureShape,
-    ) -> Self {
+    pub fn new(pose: &CharacterPose, rig: &RigJoints, head: usize, floor: f32, shape: FigureShape) -> Self {
         let feet =
             rig.joint(HumanBone::LeftFoot).zip(rig.joint(HumanBone::RightFoot)).map(|(left, right)| {
                 let ankle = pose.model()[left].translation.y.min(pose.model()[right].translation.y);
@@ -800,13 +794,12 @@ impl FigureJoints {
     }
 
     /// The right hand's joint, if the rig has one.
-    pub(crate) fn right_hand(&self) -> Option<usize> {
+    pub fn right_hand(&self) -> Option<usize> {
         self.right_hand
     }
 
-    /// Joints as a test's small skeleton has them.
-    #[cfg(test)]
-    pub(crate) fn for_test(pose: &CharacterPose, head: usize, floor: f32, feet: [usize; 2]) -> Self {
+    /// Joints named by index, for a small skeleton with no rig to find them on.
+    pub fn of_joints(pose: &CharacterPose, head: usize, floor: f32, feet: [usize; 2]) -> Self {
         let ankle = pose.model()[feet[0]].translation.y.min(pose.model()[feet[1]].translation.y);
         Self {
             head,
@@ -819,8 +812,7 @@ impl FigureJoints {
     }
 
     /// These joints, finding the right hand at `joint`.
-    #[cfg(test)]
-    pub(crate) fn with_right_hand(self, joint: usize) -> Self {
+    pub fn with_right_hand(self, joint: usize) -> Self {
         Self { right_hand: Some(joint), ..self }
     }
 

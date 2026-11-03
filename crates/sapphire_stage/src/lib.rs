@@ -55,31 +55,22 @@
 
 pub mod anim_graph;
 pub mod animate;
-pub mod arena;
 pub mod audio;
-mod blade;
-pub mod combat;
-pub mod combat_views;
 pub mod content;
-pub mod cues;
 pub mod cvars;
 pub mod debug_shapes;
-pub mod enemy;
 pub mod environment;
 mod extract;
 pub mod faces;
-pub mod fight;
 pub mod foliage;
 mod frame;
 pub mod garments;
-pub mod hud;
 pub mod ik;
 pub mod layers;
 pub mod lookdev;
 pub mod orbit;
 mod outlines;
-pub mod party_looks;
-mod pose;
+pub mod pose;
 mod readback;
 pub mod rims;
 pub mod scene;
@@ -87,10 +78,7 @@ mod show;
 pub mod skinned;
 pub mod stage;
 pub mod swatches;
-mod trails;
-#[cfg(feature = "dev")]
-pub mod tuning;
-mod turntable;
+pub mod turntable;
 pub mod vfx;
 
 pub use content::Content;

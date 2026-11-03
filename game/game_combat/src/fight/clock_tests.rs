@@ -262,7 +262,7 @@ fn watch(replay: &str, cue: &str, steps: u32) -> Watched {
 }
 
 fn time_ticks(time: sapphire_time::SimTime) -> f64 {
-    crate::anim_graph::time_ticks(time)
+    sapphire_stage::anim_graph::time_ticks(time)
 }
 
 /// A hit landing through a real fight (G3's `fight`): its first frame shows the effects and the pose at
@@ -334,9 +334,9 @@ fn the_scenes_world_clock_keeps_with_a_fights_slow_motion() {
 
     // One the scene's own controls pushed isn't the fight's to take off.
     let mut fight = Fight::new("dodge-counter", "hit_counter");
-    fight.scene.apply(crate::scene::SceneActions {
+    fight.scene.apply(sapphire_stage::scene::SceneActions {
         toggle_slow_motion: true,
-        ..crate::scene::SceneActions::default()
+        ..sapphire_stage::scene::SceneActions::default()
     });
     for _ in 0..1000 {
         fight.step();

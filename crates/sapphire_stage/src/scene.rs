@@ -310,7 +310,7 @@ impl Day {
     }
 
     /// What it is, in messages.
-    pub(crate) fn name(self) -> &'static str {
+    pub fn name(self) -> &'static str {
         match self {
             Self::Default => "default day",
             Self::LookDev => "look-dev day",
@@ -722,7 +722,7 @@ impl Scene {
     /// otherwise those [`Self::push_effect`] pushed (`--post-effect`), the only ones the sandbox
     /// fires without the overlay. A golden scene without effects so builds none of their
     /// pipelines.
-    pub(crate) fn effect_variants(&self) -> PostVariants {
+    pub fn effect_variants(&self) -> PostVariants {
         if cfg!(feature = "dev") {
             self.ecs.world().resource::<EffectLibrary>().post_variants() | self.pushed_effects
         } else {
@@ -760,7 +760,7 @@ impl Scene {
     /// which; otherwise keeps them. Characters keep their preset IDs; one past the new presets' end
     /// is lit with their default. Hot reload and live link both come through here.
     #[cfg(any(test, feature = "dev"))]
-    pub(crate) fn replace_light_rigs(&mut self, origin: &str, rigs: LightRigLibrary) -> Result<Day, String> {
+    pub fn replace_light_rigs(&mut self, origin: &str, rigs: LightRigLibrary) -> Result<Day, String> {
         let day = self.day();
         let name = std::path::Path::new(origin).file_name().and_then(std::ffi::OsStr::to_str);
         if name != Some(day.light_rigs_file_name()) {
@@ -1218,7 +1218,7 @@ impl Scene {
 
     /// Gives the graph show a live edit of the document with this file name, if it plays that (M2 T2).
     #[cfg(feature = "dev")]
-    pub(crate) fn tune_show(
+    pub fn tune_show(
         &mut self,
         document: &str,
         set: sapphire_moves::MoveSet,
@@ -1977,7 +1977,7 @@ impl Scene {
     /// and says which day it replaced; otherwise keeps the day. Hot reload and live link both
     /// come through here.
     #[cfg(any(test, feature = "dev"))]
-    pub(crate) fn replace_day(&mut self, origin: &str, timeline: tod::TodTimeline) -> Result<Day, String> {
+    pub fn replace_day(&mut self, origin: &str, timeline: tod::TodTimeline) -> Result<Day, String> {
         let day = self.day();
         let name = std::path::Path::new(origin).file_name().and_then(std::ffi::OsStr::to_str);
         if name != Some(day.file_name()) {
@@ -2479,7 +2479,7 @@ mod tests {
                 .map(|joint| SkinBind { joint, inverse_bind_matrix: Mat4::IDENTITY.to_cols_array_2d() })
                 .collect();
             let pose = CharacterPose::new(skeleton, &binds, &[], vec![0.25, 0.0]);
-            ClipPlayer::new(pose, FigureJoints::for_test(&skeleton_pose_rest(), 2, 0.0, [3, 4]))
+            ClipPlayer::new(pose, FigureJoints::of_joints(&skeleton_pose_rest(), 2, 0.0, [3, 4]))
         }
 
         fn skeleton_pose_rest() -> CharacterPose {
@@ -2585,7 +2585,7 @@ mod tests {
                 sapphire_anim::GraphBinding::new(&graph(), skeleton, None, 2, table).expect("it binds");
             let pose = CharacterPose::new(skeleton, &binds, &[], vec![0.25, 0.0]);
             let player = sapphire_anim::GraphPlayer::new(Arc::new(binding), pose, 1);
-            GraphDriver::new(player, FigureJoints::for_test(&skeleton_pose_rest(), 2, 0.0, [3, 4]))
+            GraphDriver::new(player, FigureJoints::of_joints(&skeleton_pose_rest(), 2, 0.0, [3, 4]))
         }
 
         fn graph_frame(scene: &mut Scene, table: &ClipTable<'_>, alpha: f32, id: InstanceId) -> Drawn {

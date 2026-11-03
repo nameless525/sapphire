@@ -11,7 +11,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use sapphire_anim::{AnimStats, Skeleton, SpringWork};
+use sapphire_anim::{AnimStats, Skeleton};
 use sapphire_assets::mesh::Mesh;
 use sapphire_assets::{AssetId, Handle};
 #[cfg(feature = "dev")]
@@ -20,7 +20,7 @@ use sapphire_colliders::ColliderSet;
 use sapphire_cues::RumbleSink;
 use sapphire_ecs::prelude::*;
 use sapphire_gameplay::Simulation;
-use sapphire_math::{Affine3A, Mat4, Vec2, Vec3};
+use sapphire_math::{Mat4, Vec2, Vec3};
 use sapphire_physics::PhysicsWorld;
 use sapphire_platform::AppInitError;
 use sapphire_render::{MeshHandle, PipelineInventory, Renderer, VfxFrame};
@@ -32,23 +32,23 @@ use sapphire_world::light_rig::{CharacterLightRig, LightRigId};
 use sapphire_world::screen_effects::EffectLibrary;
 
 use crate::LOG_TARGET;
-use crate::anim_graph::{ClipTable, GraphDriver, GraphEvaluation};
-use crate::animate::ClipPlayer;
 use crate::arena::{ArenaActors, ArenaEnemy, ArenaGround, ArenaShot, COLLIDERS};
-use crate::audio::CueSounds;
 use crate::blade::{self, HeldBlade};
 use crate::combat::{Combat, no_bindings};
 use crate::combat_views::{CombatViews, Facade};
-use crate::content::{Content, GraphKey};
 use crate::cues::{CueShow, CueStage};
 use crate::enemy::{self, EnemyMeshes};
-use crate::extract::{RenderMesh, RenderPose, RenderTransform};
-use crate::frame::FrameLaps;
-use crate::ik::IkControls;
+use sapphire_stage::FrameLaps;
+use sapphire_stage::anim_graph::{ClipTable, GraphDriver, GraphEvaluation};
+use sapphire_stage::animate::ClipPlayer;
+use sapphire_stage::audio::CueSounds;
+use sapphire_stage::content::{Content, GraphKey};
+use sapphire_stage::{RenderMesh, RenderPose, RenderTransform};
+
 use crate::party_looks::{Drawn, PartyLooks};
-use crate::scene::{Figure, LookDev, Scene};
-use crate::show::{ContentChanges, SceneShow};
-use crate::turntable::Turntable;
+use sapphire_stage::scene::{Figure, LookDev, Scene};
+use sapphire_stage::turntable::Turntable;
+use sapphire_stage::{ContentChanges, SceneShow};
 
 /// Whose graph is the enemy's.
 pub const ENEMY_GRAPH: GraphKey = GraphKey("enemy");
@@ -650,23 +650,9 @@ impl FightShow {
             stats.characters += 1;
             let place = arena.drawn(index, alpha);
             if let Some(ik) = driver.ik_mut() {
-                let look_target = arena.look_target(index, alpha);
-                ik.set_controls(IkControls { look_target, ..ik.controls() });
+                ik.set_look_target(arena.look_target(index, alpha));
             }
-            let springs_run = driver.springs_run(&view, &RenderTransform(place), &figure);
-            let mut job = GraphEvaluation {
-                driver,
-                render,
-                figure,
-                rig,
-                input,
-                world_from_model: Affine3A::from_mat4(place),
-                place,
-                springs_run,
-                evaluated: false,
-                spring_work: SpringWork::default(),
-                spring_time: Duration::ZERO,
-            };
+            let mut job = GraphEvaluation::new(driver, render, figure, rig, input, place, &view);
             job.run(clips);
             stats.teleports += job.driver.player.teleports();
             if job.evaluated {

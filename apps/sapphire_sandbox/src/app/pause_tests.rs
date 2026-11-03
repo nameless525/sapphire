@@ -1,13 +1,13 @@
 //! What a pause holds and says, by the app's own view of a frame ([`drive_view`]), with no GPU.
 
+use crate::input::SandboxInput;
+use game_combat::arena::{ArenaGround, ArenaShot};
+use game_combat::enemy::{self, EnemyMeshes};
+use game_combat::fight::Arena;
+use game_ui::hud::{HudMode, HudOptions, SandboxHud, ShownFight};
 use sapphire_math::{Mat4, Vec3};
 use sapphire_render::MeshHandle;
 use sapphire_stage::RenderPose;
-use sapphire_stage::arena::{ArenaGround, ArenaShot};
-use sapphire_stage::enemy::{self, EnemyMeshes};
-use sapphire_stage::fight::Arena;
-use sapphire_stage::hud::{HudMode, HudOptions, SandboxHud, ShownFight};
-use crate::input::SandboxInput;
 use sapphire_stage::lookdev::{self, TownMeshes};
 use sapphire_stage::scene::{Figure, LookDev, Scene};
 

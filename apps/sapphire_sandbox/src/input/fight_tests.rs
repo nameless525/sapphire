@@ -4,11 +4,11 @@
 use std::path::{Path, PathBuf};
 use std::{fs, process};
 
+use game_combat::combat::{Combat, CombatOption, CombatStatus, no_bindings, read_bindings};
 use sapphire_gameplay::replay::{Replay, SCENARIOS};
 use sapphire_gameplay::{ActorActions, Buttons};
 use sapphire_input::RawInput;
 use sapphire_platform::{Scancode, Size, Timestamp};
-use sapphire_stage::combat::{Combat, CombatOption, CombatStatus, no_bindings, read_bindings};
 
 use super::SandboxInput;
 
@@ -51,12 +51,8 @@ fn a_player_is_recorded_through_the_bindings() {
     let mut combat = recording(&scratch.0, None);
     let cast = SCENARIOS[0].start(SCENARIOS[0].config).expect("sets up").1;
     let mut input = SandboxInput::new(false, true, Size { width: 640, height: 360 }).expect("binds");
-    let frames: [&[(Scancode, bool)]; 4] = [
-        &[(Scancode::W, true)],
-        &[(Scancode::J, true), (Scancode::J, false)],
-        &[(Scancode::W, false)],
-        &[],
-    ];
+    let frames: [&[(Scancode, bool)]; 4] =
+        [&[(Scancode::W, true)], &[(Scancode::J, true), (Scancode::J, false)], &[(Scancode::W, false)], &[]];
     // Looking along world +X, so forward is +x in the file.
     let camera_yaw = std::f32::consts::FRAC_PI_2;
     for (index, keys) in frames.iter().enumerate() {
@@ -96,9 +92,9 @@ fn a_player_is_recorded_through_the_bindings() {
 #[test]
 fn a_fight_is_played_through_the_bindings_and_starts_over_on_its_key() {
     let mut combat = fighting(None);
-    assert_eq!(combat.scenario(), sapphire_stage::arena::FIGHT_SCENARIO);
-    sapphire_stage::arena::check_scenario(&combat, false).expect("it's the arena's");
-    assert!(sapphire_stage::arena::check_scenario(&combat, true).is_err(), "it isn't a party's");
+    assert_eq!(combat.scenario(), game_combat::arena::FIGHT_SCENARIO);
+    game_combat::arena::check_scenario(&combat, false).expect("it's the arena's");
+    assert!(game_combat::arena::check_scenario(&combat, true).is_err(), "it isn't a party's");
     let cast = combat.cast().to_vec();
     let at_start = combat.simulation().checksum();
     let enemy = |combat: &Combat| combat.simulation().actor(cast[1]).expect("alive");

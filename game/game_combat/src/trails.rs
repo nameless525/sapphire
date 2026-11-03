@@ -39,7 +39,7 @@ use sapphire_moves::{Move, PathSample};
 use sapphire_time::TICK_HZ;
 use sapphire_vfx::{EffectHandle, EffectId, EffectLibrary, Placement, VfxWorld};
 
-use crate::anim_graph::duration_ticks;
+use sapphire_stage::anim_graph::duration_ticks;
 
 /// The path a blade's hits ride.
 const BLADE: Name = Name::new("blade");

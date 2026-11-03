@@ -29,6 +29,9 @@ name = "sapphire_sandbox"
 path = "src/main.rs"
 
 [dependencies]
+# The fight it benches and its goldens draw, and the HUD on it.
+game_combat.workspace = true
+game_ui.workspace = true
 sapphire_assets.workspace = true
 sapphire_audio.workspace = true
 sapphire_camera.workspace = true
@@ -70,7 +73,7 @@ sapphire_hot_reload = { workspace = true, optional = true, features = ["notify"]
 tracy = ["profiling/profile-with-tracy"]
 # Development builds: the debug overlay (spec §5.20), hot reload (spec §5.10) and live link
 # (spec §5.29). Shipping builds leave it off.
-dev = ["dep:sapphire_debug", "dep:sapphire_hot_reload", "dep:sapphire_livelink", "sapphire_stage/dev"]
+dev = ["dep:sapphire_debug", "dep:sapphire_hot_reload", "dep:sapphire_livelink", "sapphire_stage/dev", "game_combat/dev", "game_ui/dev"]
 
 [dev-dependencies]
 sapphire_colliders.workspace = true

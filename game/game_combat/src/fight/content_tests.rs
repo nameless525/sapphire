@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use sapphire_anim::{AnimGraph, Clip, ClipSource, Joint, JointTransform};
+use sapphire_anim::{AnimGraph, Clip, Joint, JointTransform};
 use sapphire_assets::material::{AnimeCharacterMaterial, Material};
 use sapphire_assets::mesh::{
     Influences, MaterialSlot, Mesh, PositionFormat, Skin, SkinBind, Submesh, VERTEX_COLOR_NEUTRAL, Vertex,
@@ -25,11 +25,11 @@ use sapphire_render::{RenderSettings, SkinningStats};
 use sapphire_rhi::{GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 
 use super::*;
-use crate::anim_graph::{GraphScript, GraphShow};
 use crate::arena;
-use crate::content::SKY;
-use crate::lookdev::{self, Plant, Shot, TownMeshes};
-use crate::scene::{LookDev, Scene};
+use sapphire_stage::anim_graph::{GraphScript, GraphShow};
+use sapphire_stage::content::SKY;
+use sapphire_stage::lookdev::{self, Plant, Shot, TownMeshes};
+use sapphire_stage::scene::{LookDev, Scene};
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 const SIDE: u32 = 32;
@@ -300,22 +300,6 @@ fn graph_naming(ids: &[AssetId]) -> AnimGraph {
     graph
 }
 
-/// The IDs of a whole graph's worth of clips that aren't [`SWING`].
-fn a_graphs_worth_of_other_clips() -> Vec<AssetId> {
-    (0..sapphire_assets::graph::MAX_GRAPH_CLIPS)
-        .map(|index| AssetId::from_bytes([0x80 + index as u8; 16]))
-        .collect()
-}
-
-/// A frame of a character still swinging: how far its root stands from the rest pose's x 0, and that
-/// no clip it wanted was missing.
-fn swinging(stage: &mut Stage) -> f32 {
-    stage.frame();
-    let player = stage.scene.graph_player().expect("playing");
-    assert_eq!(player.stats().missing_clips, 0, "it read every clip it wanted");
-    player.pose().model()[0].translation[0].abs()
-}
-
 /// [`swing_document`] with a blink no character here can bind, though it reads and its clip is in the
 /// pack: the test rig has no expressions, and the enemy binds with no rig at all.
 #[cfg(feature = "dev")]
@@ -341,14 +325,6 @@ impl Stage {
 
     fn over_pack(pack: Vec<u8>) -> Self {
         Self::over_pack_with(pack, Self::in_town)
-    }
-
-    /// The mannequin's kind of scene: the character alone, with no rig, as `--stage` and `--rim-rig`
-    /// draw it.
-    fn mannequin_of(mesh: &Mesh) -> Self {
-        let bytes = mesh.to_cooked().expect("cooked");
-        let pack = write_pack(vec![packed(lookdev::CHARACTER, AssetKind::Mesh, &bytes)]).expect("a pack");
-        Self::over_pack_with(pack, |_, _, _, mesh, bounds| Scene::with_character(mesh, bounds, false))
     }
 
     /// The look-dev stage around the character.
@@ -434,13 +410,6 @@ impl Stage {
         stats
     }
 
-    /// Plays the swing on the character, framed so its triangle is in view whichever way it swings.
-    fn play_swing(&mut self) {
-        self.content.load_clip(SWING, &mut self.renderer, &self.gpu).expect("the clip");
-        self.scene.play_clip(lookdev::player(&self.content).expect("a player"));
-        self.frame_on_character();
-    }
-
     /// Plays the graph on the character, from a script that stands still.
     fn play_graph(&mut self) {
         self.content.load_graph(GRAPH, &mut self.renderer, &self.gpu).expect("the graph");
@@ -472,9 +441,9 @@ impl Stage {
         let held = self.show.held_enemy(&self.content).expect("the enemy's pose");
         let cooked = sapphire_gameplay::arena::cooked_colliders().expect("it cooks");
         let set = ColliderSet::read(&cooked).expect("it reads");
-        let ground = arena::ArenaGround::new(set).expect("the stage stands on it");
+        let ground = ArenaGround::new(set).expect("the stage stands on it");
         let world = ground.share();
-        let shot = arena::ArenaShot::Follow;
+        let shot = ArenaShot::Follow;
         let look = LookDev { town, fog_cards: None, pose, figure };
         let mut scene = Scene::with_character(mesh, bounds, false);
         self.show.spawn_arena(&mut scene, Arena { enemy, held, shot, look, ground });
@@ -502,35 +471,8 @@ impl Stage {
 
     /// Frames the character from the front, close enough for its triangle to fill much of the target.
     fn frame_on_character(&mut self) {
-        *self.scene.camera_mut() = crate::orbit::OrbitCamera::framing([[-1.0, 0.0, -1.0], [1.0, 2.0, 1.0]]);
-    }
-
-    /// One frame as [`Self::frame`] draws it, without a fixed step, read back.
-    fn pixels(&mut self) -> Vec<u8> {
-        let target = self.gpu.device().create_texture(&wgpu::TextureDescriptor {
-            label: None,
-            size: wgpu::Extent3d { width: SIDE, height: SIDE, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let readback = crate::readback::Readback::new(&self.gpu, SIDE, SIDE);
-        self.content.update(&mut self.renderer, &self.gpu);
-        self.scene.follow_content(&mut self.content, &mut self.show);
-        self.scene.animate(&self.content, 1.0, &mut self.show);
-        let packet = self.scene.frame_packet(1.0, Some((SIDE, SIDE)), &mut self.show);
-        self.renderer.prepare(&self.gpu, packet);
-        let view = target.create_view(&Default::default());
-        let mut graph = FrameGraph::new();
-        let imported = graph.import_texture("target", &view);
-        self.renderer.record(&mut graph, imported).expect("a view and a target");
-        readback.record(&mut graph, imported);
-        self.graph.execute(&self.gpu, graph).expect("a valid graph");
-        self.scene.end_frame();
-        readback.read(&self.gpu).expect("its pixels")
+        *self.scene.camera_mut() =
+            sapphire_stage::orbit::OrbitCamera::framing([[-1.0, 0.0, -1.0], [1.0, 2.0, 1.0]]);
     }
 
     /// The pack re-cooked, as a watched file or a push hands it over.
@@ -558,7 +500,7 @@ impl Stage {
             if landed(self) {
                 return;
             }
-            std::thread::sleep(std::time::Duration::from_millis(1));
+            std::thread::sleep(Duration::from_millis(1));
         }
         panic!("it never landed");
     }
@@ -569,7 +511,7 @@ impl Stage {
     }
 
     /// Stands the enemy in `pose`, whatever its graph last played.
-    fn set_enemy_pose(&mut self, pose: crate::extract::RenderPose) {
+    fn set_enemy_pose(&mut self, pose: RenderPose) {
         let enemy = self.show.enemy.expect("it stands there").0;
         self.scene.world_mut().entity_mut(enemy).insert(pose);
     }
@@ -592,19 +534,6 @@ impl Stage {
     /// The versions the character's mesh, rig and skeleton are at.
     fn versions(&self) -> (u32, u32, u32) {
         self.content.current_character_versions().expect("a rig")
-    }
-
-    /// Frames until the character's mesh, rig and skeleton are at `versions`, and what the last
-    /// skinned.
-    fn until(&mut self, versions: (u32, u32, u32)) -> SkinningStats {
-        for _ in 0..10_000 {
-            let stats = self.frame();
-            if self.versions() == versions {
-                return stats;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-        panic!("still at {:?}", self.versions());
     }
 }
 
@@ -701,10 +630,8 @@ fn a_cut_waits_for_a_frame_the_fighter_plays() {
     stage.play_fighters();
     let _fight = stage.start_fight();
     let fits = stage.enemy_player().pose().palette_len();
-    let pose = |joints: usize| crate::extract::RenderPose {
-        palette: vec![Affine3A::IDENTITY; joints],
-        morph_weights: Vec::new(),
-    };
+    let pose =
+        |joints: usize| RenderPose { palette: vec![Affine3A::IDENTITY; joints], morph_weights: Vec::new() };
 
     stage.set_enemy_pose(pose(fits + 1));
     stage.show.arena.as_deref_mut().expect("an arena").cut_next(1);
@@ -756,7 +683,7 @@ fn an_edited_enemy_graph_stays_until_a_pack_replaces_it() {
         if stage.content.graph_document_of(ENEMY_GRAPH).expect("a graph").combat.decay == 9 {
             return;
         }
-        std::thread::sleep(std::time::Duration::from_millis(1));
+        std::thread::sleep(Duration::from_millis(1));
     }
     panic!("the cook of the document should win over the edit it came after");
 }
@@ -965,7 +892,7 @@ fn a_fighter_waits_for_clips_that_land_after_the_new_character() {
     stage.recook_all_but(&[SWING, OTHER_SWING], 1, 5);
     stage.frames_until(|stage| stage.content.graph_versions() != versions);
     assert_eq!(stage.joints(), joints, "it keeps what it has");
-    let waiting = stage.scene.graph_player().expect("playing");
+    let waiting = stage.player_of(stage.scene.character());
     assert!(!waiting.has_replacement(), "nothing bound to the new joints yet");
     assert_eq!(stage.enemy_joints(), enemy_joints + 1, "the enemy's whole");
 

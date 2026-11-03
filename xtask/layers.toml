@@ -108,11 +108,16 @@ sapphire_controls = { kind = "runtime", layer = 5 }
 # screen effects and rumble. It needs gameplay, the camera and the world alike, so it sits above
 # them, and it reads a step's cues and feeds nothing back, so it stays out of [simulation].
 sapphire_cues = { kind = "runtime", layer = 5 }
-# L6 stage (M3 S1): a GPU, cooked content and a scene, stepped and drawn. Above all of the engine's
-# systems, since it's what runs them for a frame, and below every app, so a game and the editor's
-# viewport can share it. `dev`: what an app's own `dev` forwards, for live tuning and pushed packs; the
-# edges it needs are in [allow], and it's the one runtime crate with such a feature.
-sapphire_stage = { kind = "runtime", layer = 6, features = ["dev"] }
+# A stage (M3 S1): a GPU, cooked content and a scene, stepped and drawn. Above all of the engine's
+# systems, since it's what runs them for a frame, and below the game and every app, so they and the
+# editor's viewport can share it. Beside controls and cues with no edge to them: what plays on a stage is a
+# `SceneShow` of the game's (M3 S2). `dev`: what an app's own `dev` forwards, for pushed packs; the edges it
+# needs are in [allow].
+sapphire_stage = { kind = "runtime", layer = 5, features = ["dev"] }
+# L6 the game (M3 S2). A fight's app side, standing on the stage, and the interface that reads it, by an
+# edge in [allow]. `dev`: what an app's own `dev` forwards, for live tuning.
+game_combat = { kind = "runtime", layer = 6, features = ["dev"] }
+game_ui = { kind = "runtime", layer = 6, features = ["dev"] }
 # Dev-only (spec §4.1 places sapphire_debug in L3; as dev-only it has no layer of its own).
 sapphire_debug = { kind = "dev_only" }
 # Desktop hot reload (M1 A8). `notify`: the file-watching backend, which apps turn on for
@@ -171,8 +176,11 @@ edges = [
     ["sapphire_assets", "sapphire_navmesh"],
     # A runtime crate reaches a dev-only one only by an edge named here, through a direct optional
     # dependency. The stage's `dev` is off unless an app's `dev` turns it on.
-    ["sapphire_stage", "sapphire_hot_reload"],
     ["sapphire_stage", "sapphire_livelink"],
+    ["game_combat", "sapphire_hot_reload"],
+    ["game_combat", "sapphire_livelink"],
+    # The interface reads the fight, and the fight knows no interface.
+    ["game_ui", "game_combat"],
     # String tables are named and versioned the same way, and packs store them; the evaluator reads them.
     ["sapphire_strings", "sapphire_serialize"],
     ["sapphire_strings", "sapphire_reflect"],

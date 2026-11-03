@@ -50,10 +50,10 @@ use sapphire_time::{Stopwatch, TICK_HZ};
 use crate::LOG_TARGET;
 use crate::offscreen::Stage;
 use crate::options::Options;
+use game_combat::combat::Combat;
+use game_combat::combat::CombatOption;
 use sapphire_stage::FrameLaps;
 use sapphire_stage::audio::OfflineAudio;
-use sapphire_stage::combat::Combat;
-use sapphire_stage::combat::CombatOption;
 
 /// What a phase measures.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -447,7 +447,7 @@ impl Run<'_> {
             stage.show.fight.combat.take().map_or(Ok(()), Combat::finish).map_err(AppInitError::msg)?;
         }
         let cues_before =
-            stage.show.fight.show.cue_show().map(sapphire_stage::cues::CueShow::stats).unwrap_or_default();
+            stage.show.fight.show.cue_show().map(game_combat::cues::CueShow::stats).unwrap_or_default();
         let sim_before =
             stage.show.fight.combat.as_ref().map_or(0, |combat| combat.simulation().stats().allocations);
         let before = alloc::stats();
@@ -496,7 +496,7 @@ impl Run<'_> {
         let anim = stage.scene.anim_stats();
         let stats = stage.renderer.stats();
         let cues =
-            stage.show.fight.show.cue_show().map(sapphire_stage::cues::CueShow::stats).unwrap_or_default();
+            stage.show.fight.show.cue_show().map(game_combat::cues::CueShow::stats).unwrap_or_default();
         let (tick, sim_allocations, hitstop, world_scale) = match &stage.show.fight.combat {
             Some(combat) => {
                 let sim = combat.simulation();

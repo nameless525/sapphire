@@ -117,7 +117,7 @@ fn player(springs: bool) -> ClipPlayer {
     let rig = CharacterRig::read(&rig_bytes).expect("a valid rig");
     let made = SpringBones::new(rig, &pose);
     let rest = CharacterPose::new(skeleton, &[], &[], Vec::new());
-    ClipPlayer::new(pose, FigureJoints::for_test(&rest, 2, 0.0, [3, 4]))
+    ClipPlayer::new(pose, FigureJoints::of_joints(&rest, 2, 0.0, [3, 4]))
         .with_springs(made)
         .with_springs_on(springs)
 }

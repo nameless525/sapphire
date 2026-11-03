@@ -8,12 +8,12 @@ use sapphire_time::TICK_HZ;
 use sapphire_vfx::VfxBudget;
 
 use super::*;
-use crate::arena::{ArenaGround, ArenaShot};
-use crate::enemy::{self, EnemyMeshes};
-use crate::extract::RenderPose;
-use crate::fight::Arena;
-use crate::lookdev::{self, TownMeshes};
-use crate::scene::{Figure, LookDev};
+use game_combat::arena::{ArenaGround, ArenaShot};
+use game_combat::enemy::{self, EnemyMeshes};
+use game_combat::fight::Arena;
+use sapphire_stage::RenderPose;
+use sapphire_stage::lookdev::{self, TownMeshes};
+use sapphire_stage::scene::{Figure, LookDev};
 
 const BOUNDS: [[f32; 3]; 2] = [[-0.5, 0.0, -0.5], [0.5, 2.0, 0.5]];
 
@@ -54,16 +54,12 @@ impl Staged {
         self.show.fight.show.play_cues(&mut self.scene, budget)
     }
 
-    fn follow_simulation(
-        &mut self,
-        sim: &sapphire_gameplay::Simulation,
-        cast: &[sapphire_gameplay::ActorId],
-    ) {
+    fn follow_simulation(&mut self, sim: &Simulation, cast: &[sapphire_gameplay::ActorId]) {
         let followed = self.show.fight.show.follow_simulation(&mut self.scene, sim, cast);
         self.show.hear(followed);
     }
 
-    fn show_cues(&mut self, sim: &sapphire_gameplay::Simulation) {
+    fn show_cues(&mut self, sim: &Simulation) {
         self.show.fight.show.show_cues(&mut self.scene, sim);
     }
 
@@ -77,7 +73,7 @@ impl Staged {
         self.show.fight.show.end_cue_frame(&mut self.scene, dt, view_dt, alpha, rumble);
     }
 
-    fn drive_arena_camera(&mut self, dt: f32, look: sapphire_math::Vec2, zoom: f32) -> bool {
+    fn drive_arena_camera(&mut self, dt: f32, look: Vec2, zoom: f32) -> bool {
         self.show.fight.show.drive_camera(dt, look, zoom)
     }
 }
@@ -126,7 +122,7 @@ fn a_swap_doesnt_read_as_a_hit_on_the_huds_bar() {
     let (mut scene, _) = arena_stage(ArenaShot::Follow);
     let live = HudOptions { mode: HudMode::Live, ..HudOptions::default() };
     scene.set_hud(SandboxHud::for_fight(live));
-    let party = find_scenario(SCENARIOS, crate::arena::PARTY_SCENARIO).expect("listed");
+    let party = find_scenario(SCENARIOS, game_combat::arena::PARTY_SCENARIO).expect("listed");
     let mut fight = Recording::new(party, party.config).expect("sets up");
     let cast = fight.cast().to_vec();
     // Its schedule goes round to the first again, and pressing on brings back those the warrior hurt.
@@ -182,23 +178,23 @@ fn a_swap_doesnt_read_as_a_hit_on_the_huds_bar() {
 fn a_new_fight_shows_nothing_the_last_one_set_going() {
     use crate::hud::{HudMode, HudOptions};
 
-    let option = crate::combat::CombatOption::Fight { script: Some("idle".to_owned()), party: false };
-    let mut combat = crate::combat::Combat::new(&option).expect("sets up");
+    let option = game_combat::combat::CombatOption::Fight { script: Some("idle".to_owned()), party: false };
+    let mut combat = game_combat::combat::Combat::new(&option).expect("sets up");
     let cast = combat.cast().to_vec();
     let (mut scene, _) = arena_stage(ArenaShot::Director);
     scene.play_cues(VfxBudget::DESKTOP_LOW).expect("the shipped table resolves");
     scene.set_hud(SandboxHud::for_fight(HudOptions { mode: HudMode::Live, ..HudOptions::default() }));
-    let step = |scene: &mut Staged, combat: &mut crate::combat::Combat| {
-        combat.step(&mut crate::combat::no_bindings);
+    let step = |scene: &mut Staged, combat: &mut game_combat::combat::Combat| {
+        combat.step(&mut game_combat::combat::no_bindings);
         scene.follow_simulation(combat.simulation(), &cast);
         scene.show_cues(combat.simulation());
-        crate::hud::show_damage(scene.show.hud.as_mut().expect("a HUD"), &scene.scene, combat.simulation());
+        show_damage(scene.show.hud.as_mut().expect("a HUD"), &scene.scene, combat.simulation());
         scene.end_cue_frame(1.0 / TICK_HZ as f32, 1.0 / TICK_HZ as f32, 1.0, &mut ());
     };
     // How far the view's right has left level, whether the frame draws no effects, its screen
     // effects, and the numbers its HUD draws.
     let frame = |scene: &mut Staged| {
-        scene.drive_arena_camera(1.0 / TICK_HZ as f32, sapphire_math::Vec2::ZERO, 0.0);
+        scene.drive_arena_camera(1.0 / TICK_HZ as f32, Vec2::ZERO, 0.0);
         let packet = scene.frame_packet(1.0, Some((640, 360)));
         let view = packet.main_view().expect("a view").camera.view;
         let shown = (view.inverse().x_axis.y.abs(), packet.vfx.is_empty(), packet.post.effects);
@@ -238,13 +234,13 @@ fn a_new_fight_shows_nothing_the_last_one_set_going() {
 fn a_steps_hits_show_once_however_often_theyre_read() {
     use crate::hud::{HudMode, HudOptions};
 
-    let option = crate::combat::CombatOption::Fight { script: Some("idle".to_owned()), party: false };
-    let mut combat = crate::combat::Combat::new(&option).expect("sets up");
+    let option = game_combat::combat::CombatOption::Fight { script: Some("idle".to_owned()), party: false };
+    let mut combat = game_combat::combat::Combat::new(&option).expect("sets up");
     let cast = combat.cast().to_vec();
     let (mut scene, _) = arena_stage(ArenaShot::Director);
     scene.set_hud(SandboxHud::for_fight(HudOptions { mode: HudMode::Live, ..HudOptions::default() }));
     let numbers = |scene: &mut Staged| {
-        scene.drive_arena_camera(1.0 / TICK_HZ as f32, sapphire_math::Vec2::ZERO, 0.0);
+        scene.drive_arena_camera(1.0 / TICK_HZ as f32, Vec2::ZERO, 0.0);
         let _ = scene.frame_packet(1.0, Some((640, 360)));
         let (hud, _) = scene.hud().expect("set").last_frame();
         scene.end_frame();
@@ -252,29 +248,29 @@ fn a_steps_hits_show_once_however_often_theyre_read() {
     };
     while !combat.simulation().cues().any(|cue| cue.hit.is_some()) {
         let _ = numbers(&mut scene);
-        combat.step(&mut crate::combat::no_bindings);
+        combat.step(&mut game_combat::combat::no_bindings);
         scene.follow_simulation(combat.simulation(), &cast);
         assert!(combat.simulation().tick() < 2000, "someone lands a hit by now");
     }
 
-    crate::hud::show_damage(scene.show.hud.as_mut().expect("a HUD"), &scene.scene, combat.simulation());
+    show_damage(scene.show.hud.as_mut().expect("a HUD"), &scene.scene, combat.simulation());
     let once = numbers(&mut scene);
     assert!(once > 0, "the number's up");
     for _ in 0..5 {
-        crate::hud::show_damage(scene.show.hud.as_mut().expect("a HUD"), &scene.scene, combat.simulation());
+        show_damage(scene.show.hud.as_mut().expect("a HUD"), &scene.scene, combat.simulation());
     }
     assert_eq!(numbers(&mut scene), once, "the same tick's hits again");
 
     // A script's fight lands the same hit on the same tick, and it's a new one.
     let tick = combat.simulation().tick();
     combat.restart();
-    combat.step(&mut crate::combat::no_bindings);
+    combat.step(&mut game_combat::combat::no_bindings);
     scene.follow_simulation(combat.simulation(), &cast);
     while combat.simulation().tick() < tick {
         let _ = numbers(&mut scene);
-        combat.step(&mut crate::combat::no_bindings);
+        combat.step(&mut game_combat::combat::no_bindings);
         scene.follow_simulation(combat.simulation(), &cast);
     }
-    crate::hud::show_damage(scene.show.hud.as_mut().expect("a HUD"), &scene.scene, combat.simulation());
+    show_damage(scene.show.hud.as_mut().expect("a HUD"), &scene.scene, combat.simulation());
     assert_eq!(numbers(&mut scene), once, "the new fight's");
 }

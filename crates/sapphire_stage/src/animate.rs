@@ -71,7 +71,7 @@ fn loop_teleports(clip: &ArchivedClip) -> bool {
 }
 
 /// What decides whose springs run this frame: the view and the tier's distance.
-pub(crate) struct SpringView {
+pub struct SpringView {
     frustum: Frustum,
     eye: Vec3,
     quality: SpringQuality,
@@ -139,7 +139,7 @@ pub struct ClipPlayer {
 
 impl ClipPlayer {
     /// A clip player for a character with this `pose`, its figure found by `joints`.
-    pub(crate) fn new(pose: CharacterPose, joints: FigureJoints) -> Self {
+    pub fn new(pose: CharacterPose, joints: FigureJoints) -> Self {
         Self {
             pose,
             joints,
@@ -180,12 +180,12 @@ impl ClipPlayer {
     }
 
     /// Its IK, for whatever drives it.
-    pub(crate) fn ik_mut(&mut self) -> Option<&mut IkDriver> {
+    pub fn ik_mut(&mut self) -> Option<&mut IkDriver> {
         self.ik.as_mut()
     }
 
     /// Whether it solves IK.
-    pub(crate) fn has_ik(&self) -> bool {
+    pub fn has_ik(&self) -> bool {
         self.ik.is_some()
     }
 
@@ -204,7 +204,7 @@ impl ClipPlayer {
 
     /// Takes over another player's start, for a new version of the character under a clip that
     /// keeps playing.
-    pub(crate) fn continue_from(&mut self, other: &Self) {
+    pub fn continue_from(&mut self, other: &Self) {
         self.start = other.start;
         self.base = other.base;
         self.root_motion = other.root_motion;
@@ -227,7 +227,7 @@ impl ClipPlayer {
 
     /// The right hand's joint in the character's space, as its pose has it now. `None` for a rig
     /// without one.
-    pub(crate) fn right_hand(&self) -> Option<Mat4> {
+    pub fn right_hand(&self) -> Option<Mat4> {
         self.joints.right_hand().map(|joint| Mat4::from(self.pose.model()[joint]))
     }
 
@@ -239,7 +239,7 @@ impl ClipPlayer {
     /// Whether it can play `clip` into `render`. Neither holds for a moment when a new version of
     /// the character or the clip lands before the others: the character keeps the pose it has until
     /// they fit.
-    pub(crate) fn fits(&self, clip: &ArchivedClip, render: &RenderPose) -> bool {
+    pub fn fits(&self, clip: &ArchivedClip, render: &RenderPose) -> bool {
         clip.joint_count.to_native() as usize == self.pose.joint_count()
             && render.palette.len() == self.pose.palette_len()
             && render.morph_weights.len() == self.pose.weights().len()
@@ -298,12 +298,7 @@ impl ClipPlayer {
     }
 
     /// Whether its springs run this frame, for a character `view` sees or doesn't.
-    pub(crate) fn springs_run(
-        &mut self,
-        view: &SpringView,
-        transform: &RenderTransform,
-        figure: &Figure,
-    ) -> bool {
+    pub fn springs_run(&mut self, view: &SpringView, transform: &RenderTransform, figure: &Figure) -> bool {
         self.springs.as_mut().is_some_and(|springs| view.decide(springs, transform, figure))
     }
 
@@ -339,13 +334,13 @@ pub(crate) struct Evaluation<'a> {
     /// Whether its springs run this frame ([`ClipPlayer::springs_run`]).
     pub(crate) springs_run: bool,
     /// What its springs did.
-    pub(crate) spring_work: SpringWork,
-    pub(crate) spring_time: Duration,
+    pub spring_work: SpringWork,
+    pub spring_time: Duration,
 }
 
 impl Evaluation<'_> {
     /// Samples `clip`, finishes the pose, runs the springs and hands it over. Allocates nothing.
-    pub(crate) fn run(&mut self, clip: &ArchivedClip) {
+    pub fn run(&mut self, clip: &ArchivedClip) {
         let player = &mut *self.player;
         if let Some(position) = self.position {
             player.pose.sample(clip, position);

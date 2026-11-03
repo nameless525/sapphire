@@ -61,11 +61,11 @@ use sapphire_world::screen_effects::EffectLibrary;
 use sapphire_world::tod::TodTimeline;
 
 use crate::LOG_TARGET;
-use crate::anim_graph::SHOW_MOVES_PATH;
 use crate::combat::Combat;
-use crate::content::{Content, GraphKey, newest_text};
 use crate::fight::{ENEMY_GRAPH, Fight, FightShow};
-use crate::scene::Scene;
+use sapphire_stage::anim_graph::SHOW_MOVES_PATH;
+use sapphire_stage::content::{Content, GraphKey, newest_text};
+use sapphire_stage::scene::Scene;
 
 /// A document the sandbox swaps in while it runs, from hot reload or live link.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

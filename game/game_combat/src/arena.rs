@@ -35,14 +35,14 @@
 //!   [`ArenaActors::follow`] reads `ActorView`, whatever moved it.
 //! - **Live input (I1 and G6, in):** `--arena --fight` in a window is player against brain with no file
 //!   (`crate::combat`), played by the bindings (`crate::combat::read_bindings`), turned by
-//!   [`crate::scene::Scene::camera_heading`], and `--script` drives the same path without a window.
+//!   [`sapphire_stage::scene::Scene::camera_heading`], and `--script` drives the same path without a window.
 //!   `--arena --record <file> --scenario arena-fight` keeps one, as far as it's got at each trip to the
 //!   background. A new fight is a new simulation, and [`ArenaActors::follow`] sees its tick go back:
 //!   everything stands where it now is, and the camera cuts, which
-//!   [`crate::scene::Scene::follow_simulation`] passes on to the renderer as the view's cut, for temporal AA
+//!   [`sapphire_stage::scene::Scene::follow_simulation`] passes on to the renderer as the view's cut, for temporal AA
 //!   and the shadows. A party's swap doesn't: who comes in stands where the one who left stood.
 //! - **The camera (G5 and G6, in):** [`ArenaCamera`]. Look and zoom reach it through
-//!   [`crate::scene::Scene::drive_arena_camera`]. Its target is `sapphire_gameplay::targeting`'s soft lock,
+//!   [`sapphire_stage::scene::Scene::drive_arena_camera`]. Its target is `sapphire_gameplay::targeting`'s soft lock,
 //!   chosen each frame by [`ArenaActors::present`], so a fallen enemy, or one out of range, stops being
 //!   framed. The player's lock-on button holds the line to it, through the director's own rig
 //!   ([`ArenaActors::set_lock_on`]). Shakes are the director's own calls too, for E3, made on
@@ -52,7 +52,7 @@
 //!   `arena` scenario the test moves, and both aim warps, so a script's `Buttons` start them; the script
 //!   `arena-walk` (`replay/script.rs`) presses only jump. Hits ask the simulation's `PhysicsWorld`, in
 //!   `CombatSet::Hits`.
-//! - **Animation (N3, in):** `crate::scene::Scene::play_fighters` gives each fighter a graph, and each
+//! - **Animation (N3, in):** `sapphire_stage::scene::Scene::play_fighters` gives each fighter a graph, and each
 //!   frame [`ArenaActors::graph_input`] turns what the last step said of it into what its graph plays:
 //!   its move at the move's own ticks, its feet from its controller, on its own clock. No root motion comes
 //!   from a clip: [`ArenaActors::present`] keeps the transform, and the blade with it, through
@@ -91,11 +91,11 @@ use sapphire_physics::{ColliderSet, HitTarget, PhysicsWorld, Pose, QueryFilter, 
 use sapphire_time::TICK_HZ;
 use sapphire_ui::{FighterValues, HudValues, SkillValues};
 
-use crate::anim_graph::{combat_input, duration_ticks, locomotion_of, time_ticks};
 use crate::combat_views::{self, Canvas};
 use crate::enemy;
-use crate::extract::RenderTransform;
-use crate::orbit::OrbitCamera;
+use sapphire_stage::RenderTransform;
+use sapphire_stage::anim_graph::{combat_input, duration_ticks, locomotion_of, time_ticks};
+use sapphire_stage::orbit::OrbitCamera;
 
 /// The arena's colliders, by their sidecar's ID (`content/arena/square.colliders.ron.meta`).
 pub(crate) const COLLIDERS: AssetId = AssetId::from_text("773529bf-89bd-4e37-b9c7-1a687405b42f");
@@ -107,7 +107,7 @@ pub(crate) const SCENARIO: &str = "arena";
 pub const FIGHT_SCENARIO: &str = "arena-fight";
 
 /// The scenario of a party's fight with the enemy (M2 G7): `--fight --party`, and the replays made from it.
-pub(crate) const PARTY_SCENARIO: &str = "party";
+pub const PARTY_SCENARIO: &str = "party";
 
 /// Who a soft lock can find before a simulation says: the second actor a scenario spawns.
 const ENEMY_ID: ActorId = ActorId::from_raw(2).expect("not zero");
@@ -242,7 +242,7 @@ impl ArenaGround {
         Ok(Self { world: Arc::new(world) })
     }
 
-    /// The world, for what else reads it: IK's casts for a character's feet ([`crate::ik::IkDriver`]).
+    /// The world, for what else reads it: IK's casts for a character's feet ([`sapphire_stage::ik::IkDriver`]).
     pub fn share(&self) -> Arc<PhysicsWorld> {
         Arc::clone(&self.world)
     }
@@ -681,7 +681,7 @@ impl ArenaActors {
 
     /// Gives the director new tuning, whose goals its view eases to (M2 T2). Refuses with no director on
     /// the stage, or tuning it won't take, keeping what it has either way. Shake IDs resolved from the old
-    /// tuning are resolved again by [`Scene::set_camera_tuning`](crate::scene::Scene::set_camera_tuning),
+    /// tuning are resolved again by [`Scene::set_camera_tuning`](sapphire_stage::scene::Scene::set_camera_tuning),
     /// which holds the cues' dispatcher beside this.
     #[cfg(feature = "dev")]
     pub(crate) fn set_camera_tuning(&mut self, tuning: CameraTuning) -> Result<(), String> {
@@ -698,7 +698,7 @@ impl ArenaActors {
 
     /// Poses the entities `alpha` of the way between their last two steps, and aims the camera: at the
     /// head of a frame, as the turntable poses its own entity in `Extract`. Not a system, which would
-    /// cost an allocation a frame (see [`crate::scene`]). With no `aspect` nothing draws, so the
+    /// cost an allocation a frame (see [`sapphire_stage::scene`]). With no `aspect` nothing draws, so the
     /// director waits.
     pub(crate) fn present(&mut self, world: &mut World, alpha: f32, aspect: Option<f32>) {
         let warrior = self.drawn(1, alpha);
@@ -759,7 +759,7 @@ mod tests {
 
     use super::*;
     use crate::combat_views::{CombatViews, NoVisiblePose};
-    use crate::lookdev::{PLANTINGS, Plant};
+    use sapphire_stage::lookdev::{PLANTINGS, Plant};
 
     const DOCUMENT: &str = include_str!("../../../content/arena/square.colliders.ron");
 

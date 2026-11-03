@@ -42,7 +42,7 @@ use sapphire_gameplay::replay::{
 use sapphire_physics::{ColliderId, Group, GroupMask, RayHit, Shape, StaticCollider, StaticShape};
 
 use super::*;
-use crate::lookdev::{TOWN, plantings};
+use sapphire_stage::lookdev::{TOWN, plantings};
 
 /// A desktop's shape and a phone's: an iPhone 17 Pro's 2622 by 1206.
 const DESKTOP: f32 = 16.0 / 9.0;

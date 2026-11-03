@@ -9,15 +9,15 @@ use sapphire_render::{DebugView, LightPath, MIN_RENDER_SCALE, Msaa, PostVariants
 use sapphire_ui::Insets;
 use sapphire_world::tod::CharacterShadeKey;
 
+use game_combat::arena::ArenaShot;
+use game_combat::combat::{CaptureFrames, CombatOption};
+use game_combat::combat_views::CombatViews;
+use game_ui::hud::{HudMode, HudOptions};
 use sapphire_stage::anim_graph::GraphScript;
-use sapphire_stage::arena::ArenaShot;
 use sapphire_stage::audio::CueOption;
-use sapphire_stage::combat::{CaptureFrames, CombatOption};
-use sapphire_stage::combat_views::CombatViews;
 use sapphire_stage::debug_shapes::DebugDrawDemo;
 use sapphire_stage::faces::{FaceLayout, MaterialOverrides};
 use sapphire_stage::foliage::{DEFAULT_WIND, FoliageView};
-use sapphire_stage::hud::{HudMode, HudOptions};
 use sapphire_stage::lookdev::{self, Shot};
 use sapphire_stage::rims::RimLayout;
 use sapphire_stage::scene::{self, Fade, Scene};
@@ -57,7 +57,9 @@ impl DebugDraw {
             "colliders" => Ok(Self::Views(CombatViews::COLLIDERS)),
             "combat" => Ok(Self::Views(CombatViews::ALL)),
             _ => DebugDrawDemo::parse(value).map(Self::Demo).ok_or_else(|| {
-                format!("--debug-draw expects shapes, lines:<count>, volumes, colliders or combat, got {value:?}")
+                format!(
+                    "--debug-draw expects shapes, lines:<count>, volumes, colliders or combat, got {value:?}"
+                )
             }),
         }
     }
@@ -167,12 +169,12 @@ pub(crate) struct Options {
     /// `--springs on|off`: whether the character's spring bones run under its clip or graph (M2 N5). On
     /// unless it says off, and a character holding still has none. Needs `--clip` or `--graph`.
     pub springs: Option<bool>,
-    /// `--arena`: the combat stage (M2 O5, [`sapphire_stage::arena`]), the look-dev town's square as a place
+    /// `--arena`: the combat stage (M2 O5, [`game_combat::arena`]), the look-dev town's square as a place
     /// to fight, framed by this shot (`--arena-shot`). A scene of its own, as `--look-dev` is: it
     /// excludes what that excludes, and `--look-dev` too.
     pub arena: Option<ArenaShot>,
     /// `--party`: the arena's fight is a party's (M2 G7), so the player draws whoever's on the field, in
-    /// that member's recolor (`sapphire_stage::party_looks`). Needs the `party` scenario, which `--fight` then plays.
+    /// that member's recolor (`game_combat::party_looks`). Needs the `party` scenario, which `--fight` then plays.
     pub party: bool,
     /// `--graph`: the animation graph on the look-dev character, from this script (M2 N3).
     pub graph: Option<GraphScript>,
@@ -426,8 +428,8 @@ impl Options {
 
     /// What live tuning follows in this run.
     #[cfg(feature = "dev")]
-    pub fn tuned_run(&self) -> sapphire_stage::tuning::TunedRun<'_> {
-        sapphire_stage::tuning::TunedRun {
+    pub fn tuned_run(&self) -> game_combat::tuning::TunedRun<'_> {
+        game_combat::tuning::TunedRun {
             camera_director: self.has_camera_director(),
             cues: self.cues,
             graph_show: self.graph.is_some(),
@@ -1088,8 +1090,8 @@ impl Options {
             _ => return Err("--scenario and --script need --record".to_owned()),
         };
         // The arena has colliders to draw with no fight.
-        let arena_colliders = options.arena.is_some()
-            && options.debug_draw == Some(DebugDraw::Views(CombatViews::COLLIDERS));
+        let arena_colliders =
+            options.arena.is_some() && options.debug_draw == Some(DebugDraw::Views(CombatViews::COLLIDERS));
         if matches!(options.debug_draw, Some(DebugDraw::Views(_)))
             && options.combat.is_none()
             && !arena_colliders

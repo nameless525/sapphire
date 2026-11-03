@@ -18,9 +18,9 @@ use sapphire_vfx::VfxBudget;
 
 use super::*;
 use crate::arena::{ArenaGround, ArenaShot};
-use crate::lookdev::{self, FigureJoints, Shot, TownMeshes};
-use crate::scene::{Figure, LookDev};
-use crate::turntable::Turntable;
+use sapphire_stage::lookdev::{self, FigureJoints, Shot, TownMeshes};
+use sapphire_stage::scene::{Figure, LookDev};
+use sapphire_stage::turntable::Turntable;
 
 const HIPS: [f32; 3] = [0.0, 0.8, 0.0];
 
@@ -63,13 +63,7 @@ impl Staged {
         self.show.show_cues(&mut self.scene, sim);
     }
 
-    pub(super) fn end_cue_frame(
-        &mut self,
-        dt: f32,
-        view_dt: f32,
-        alpha: f32,
-        rumble: &mut dyn sapphire_cues::RumbleSink,
-    ) {
+    pub(super) fn end_cue_frame(&mut self, dt: f32, view_dt: f32, alpha: f32, rumble: &mut dyn RumbleSink) {
         self.show.end_cue_frame(&mut self.scene, dt, view_dt, alpha, rumble);
     }
 
@@ -117,7 +111,7 @@ impl Staged {
         self.show.cue_show()
     }
 
-    pub(super) fn cue_sounds(&self) -> crate::audio::CueSounds<'_> {
+    pub(super) fn cue_sounds(&self) -> CueSounds<'_> {
         self.show.cue_sounds()
     }
 }
@@ -226,7 +220,7 @@ fn driver(table: &ClipTable<'_>) -> GraphDriver {
     let binding = sapphire_anim::GraphBinding::new(&graph(), skeleton, None, 2, table).expect("it binds");
     let pose = CharacterPose::new(skeleton, &binds, &[], vec![0.25, 0.0]);
     let player = sapphire_anim::GraphPlayer::new(Arc::new(binding), pose, 1);
-    GraphDriver::new(player, FigureJoints::for_test(&skeleton_pose_rest(), 2, 0.0, [3, 4]))
+    GraphDriver::new(player, FigureJoints::of_joints(&skeleton_pose_rest(), 2, 0.0, [3, 4]))
 }
 
 pub(super) const GRAPH_CLIP: AssetId = AssetId::from_bytes([8; 16]);
@@ -310,7 +304,7 @@ pub(super) fn fighting(table: &ClipTable<'_>) -> (Staged, Simulation, Vec<sapphi
         mountains: [MeshHandle::from_raw(3); lookdev::MOUNTAINS.len()],
     };
     let cooked = sapphire_gameplay::arena::cooked_colliders().expect("it cooks");
-    let set = sapphire_colliders::ColliderSet::read(&cooked).expect("it reads");
+    let set = ColliderSet::read(&cooked).expect("it reads");
     let held = enemy::Held { pose: pose.clone(), figure, blade: Mat4::IDENTITY, hand: 2 };
     scene.spawn_arena(Arena {
         enemy: EnemyMeshes { warrior: MeshHandle::from_raw(4), blade: MeshHandle::from_raw(5) },
@@ -435,7 +429,7 @@ fn the_blade_follows_the_hand_and_adds_no_body() {
     // Playing: the pose's hand, with the root's place.
     let rest = skeleton_pose_rest();
     let hand = 1;
-    let joints = FigureJoints::for_test(&rest, 2, 0.0, [3, 4]).with_right_hand(hand);
+    let joints = FigureJoints::of_joints(&rest, 2, 0.0, [3, 4]).with_right_hand(hand);
     let bytes = skeleton().to_cooked().expect("cooked");
     let binds: Vec<SkinBind> = (0..5)
         .map(|joint| SkinBind { joint, inverse_bind_matrix: Mat4::IDENTITY.to_cols_array_2d() })
@@ -476,7 +470,7 @@ pub(super) fn arena_stage(shot: ArenaShot) -> (Staged, Figure) {
     let pose = RenderPose { palette: vec![Default::default(); 2], morph_weights: vec![] };
     let look = LookDev { town, fog_cards: None, pose, figure };
     let cooked = sapphire_gameplay::arena::cooked_colliders().expect("it cooks");
-    let set = sapphire_colliders::ColliderSet::read(&cooked).expect("it reads");
+    let set = ColliderSet::read(&cooked).expect("it reads");
     let ground = ArenaGround::new(set).expect("the stage stands on it");
     let mut scene = Staged::of(Scene::with_character(MeshHandle::from_raw(0), BOUNDS, false));
     let enemy = EnemyMeshes { warrior: MeshHandle::from_raw(2), blade: MeshHandle::from_raw(3) };
@@ -701,10 +695,10 @@ fn the_enemy_stands_beside_the_character_in_a_shape_of_its_own() {
 }
 
 /// G3's recording, from its start.
-fn recorded_fight() -> crate::combat::Combat {
+fn recorded_fight() -> Combat {
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/replays/fight.sreplay");
     let option = crate::combat::CombatOption::Replay { path, to_end: true };
-    crate::combat::Combat::new(&option).expect("a committed recording")
+    Combat::new(&option).expect("a committed recording")
 }
 
 /// A recorded fight fired as `--cues` does: the frame the first hit lands in draws its spark and its
@@ -720,7 +714,7 @@ fn a_fights_first_hit_reaches_the_frame_it_lands_in() {
     for _ in 0..200 {
         scene.step();
         let still = view_at(&scene);
-        combat.step(&mut crate::combat::no_bindings);
+        combat.step(&mut no_bindings);
         scene.show_cues(combat.simulation());
         let hit = combat.simulation().cues().any(|cue| cue.hit.is_some());
         scene.end_cue_frame(1.0 / TICK_HZ as f32, 1.0 / TICK_HZ as f32, 1.0, &mut ());
@@ -755,7 +749,7 @@ fn a_fights_cues_do_not_allocate_once_warmed() {
         let mut allocations = 0;
         for _ in 0..1500 {
             scene.step();
-            combat.step(&mut crate::combat::no_bindings);
+            combat.step(&mut no_bindings);
             let ((), fired) = sapphire_core::alloc::count_in_scope(|| {
                 scene.show_cues(combat.simulation());
                 scene.end_cue_frame(1.0 / TICK_HZ as f32, 1.0 / TICK_HZ as f32, 1.0, &mut ());
@@ -777,7 +771,7 @@ fn a_fight_without_the_flag_fires_nothing() {
     let mut scene = scene();
     for _ in 0..200 {
         scene.step();
-        combat.step(&mut crate::combat::no_bindings);
+        combat.step(&mut no_bindings);
         scene.show_cues(combat.simulation());
         scene.end_cue_frame(1.0 / TICK_HZ as f32, 1.0 / TICK_HZ as f32, 1.0, &mut ());
         let packet = scene.frame_packet(1.0, Some((640, 360)));

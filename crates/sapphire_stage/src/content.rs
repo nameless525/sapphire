@@ -1229,7 +1229,7 @@ impl Content {
     }
 
     /// The graph a character binds: the one live tuning took, or the one [`Self::load_graph`] loaded.
-    pub(crate) fn graph_document(&self) -> Result<AnimGraph, String> {
+    pub fn graph_document(&self) -> Result<AnimGraph, String> {
         self.graph_document_of(GraphKey::CHARACTER)
     }
 
@@ -1352,7 +1352,7 @@ impl Content {
     }
 
     /// A number that moves with any new version of a graph or its clips.
-    pub(crate) fn graph_versions(&self) -> u32 {
+    pub fn graph_versions(&self) -> u32 {
         self.graphs.iter().fold(0, |versions, (_, held)| versions.wrapping_add(held.version(&self.server)))
     }
 
@@ -1476,16 +1476,13 @@ impl Content {
     /// [`AssetChange::Reloaded`](sapphire_assets::AssetChange) (M2 T2). It loads as anything does, and
     /// stays. Fails for an asset no pack holds.
     #[cfg(feature = "dev")]
-    pub(crate) fn hold_move_set(
-        &mut self,
-        id: AssetId,
-    ) -> Result<Handle<sapphire_moves::MoveSet>, LoadError> {
+    pub fn hold_move_set(&mut self, id: AssetId) -> Result<Handle<sapphire_moves::MoveSet>, LoadError> {
         self.server.load_with(id, LoadPriority::Normal)
     }
 
     /// A cooked set of moves [`Self::hold_move_set`] holds, if it's loaded.
     #[cfg(feature = "dev")]
-    pub(crate) fn move_set(
+    pub fn move_set(
         &self,
         set: &Handle<sapphire_moves::MoveSet>,
     ) -> Option<&sapphire_moves::ArchivedMoveSet> {

@@ -15,7 +15,7 @@ use crate::extract::RenderTransform;
 pub(crate) const SPEED: f32 = 0.35;
 
 #[derive(Component, Debug)]
-pub(crate) struct Turntable {
+pub struct Turntable {
     /// Angle after the latest fixed step, kept in [0, TAU).
     angle: f32,
     /// Angle after the step before, possibly negative after wrapping, so interpolation never
@@ -62,7 +62,7 @@ pub(crate) fn spin(mut tables: Query<'_, '_, (&mut Turntable, &EntityClock)>) {
 /// Poses each turntable's entity between its last two steps. Runs at the head of `Extract`
 /// (see [`crate::scene`] for why not in `Presentation`). A table that holds still (hitstop,
 /// pause) leaves its transform unchanged, so it isn't extracted.
-pub(crate) fn pose(
+pub fn pose(
     interpolation: Res<'_, Interpolation>,
     mut tables: Query<'_, '_, (&Turntable, &mut RenderTransform)>,
 ) {

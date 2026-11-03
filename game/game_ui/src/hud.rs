@@ -31,11 +31,11 @@ use sapphire_ui::{
 };
 
 use crate::LOG_TARGET;
-use crate::content::Content;
-use crate::fight::{Fight, Followed};
-use crate::frame::FrameLaps;
-use crate::scene::Scene;
-use crate::show::{ContentChanges, SceneShow};
+use game_combat::fight::{Fight, Followed};
+use sapphire_stage::FrameLaps;
+use sapphire_stage::content::Content;
+use sapphire_stage::scene::Scene;
+use sapphire_stage::{ContentChanges, SceneShow};
 
 /// How the HUD runs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

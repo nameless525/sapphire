@@ -184,7 +184,7 @@ impl IkLook {
 
 /// The plain inputs a character's IK runs on, which a graph or a game will drive.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct IkControls {
+pub struct IkControls {
     /// 0 lets the feet go as animated, 1 grounds them: in the air, or a move that wants its feet, 0.
     pub(crate) feet: f32,
     /// What to look at, in the world.
@@ -222,18 +222,23 @@ impl std::fmt::Debug for IkDriver {
 }
 
 impl IkDriver {
+    /// What it looks at, in the world, of what the rest of its controls say.
+    pub fn set_look_target(&mut self, look_target: Option<Vec3>) {
+        self.set_controls(IkControls { look_target, ..self.controls() });
+    }
+
     /// IK for a character with `rig`'s bones, on `ground`.
-    pub(crate) fn new(rig: IkRig, ground: Arc<PhysicsWorld>, controls: IkControls) -> Self {
+    pub fn new(rig: IkRig, ground: Arc<PhysicsWorld>, controls: IkControls) -> Self {
         let ik = CharacterIk::new(rig, FootSettings::default(), LookSettings::default());
         Self { ik, ground, controls, presented: None, dt: 0.0, solved: None }
     }
 
     /// The inputs it runs on.
-    pub(crate) fn controls(&self) -> IkControls {
+    pub fn controls(&self) -> IkControls {
         self.controls
     }
 
-    pub(crate) fn set_controls(&mut self, controls: IkControls) {
+    pub fn set_controls(&mut self, controls: IkControls) {
         self.controls = controls;
     }
 
@@ -456,7 +461,7 @@ mod tests {
         let binding = GraphBinding::new(&graph, skeleton, None, 0, table).expect("it binds");
         let pose = CharacterPose::new(skeleton, &[], &[], Vec::new());
         let rig = rig_of(&pose);
-        let joints = FigureJoints::for_test(&pose, 1, 0.0, FEET);
+        let joints = FigureJoints::of_joints(&pose, 1, 0.0, FEET);
         let player = GraphPlayer::new(Arc::new(binding), pose, 1);
         GraphDriver::new(player, joints).with_ik(IkDriver::new(rig, world.clone(), IkControls::default()))
     }

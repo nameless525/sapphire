@@ -54,6 +54,9 @@ image.workspace = true
 meshopt.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# Fonts cut down to what a pack's strings use (M3 U1). A second fontations line, so tools only.
+read_fonts_for_skera.workspace = true
+skera.workspace = true
 thiserror.workspace = true
 # FBX meshes, skins, blend shapes and materials (M1 A10).
 ufbx.workspace = true
@@ -68,6 +71,9 @@ sapphire_anim.workspace = true
 sapphire_gameplay.workspace = true
 # The editor's sidecars and a cook's are one thing (`tests/document_sidecars.rs`).
 sapphire_document.workspace = true
+# Reads a subset the way the runtime will.
+sapphire_text.workspace = true
+swash.workspace = true
 
 [lints]
 workspace = true

@@ -110,6 +110,7 @@ mod color;
 pub mod combat;
 pub mod cook;
 pub mod extract;
+pub mod font_subset;
 mod gltf_writer;
 pub mod import;
 pub mod keypose;

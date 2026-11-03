@@ -8,6 +8,10 @@
 //!   of moves is the log of the total spread.
 //! - **Swipe:** a lone finger that lifts at least the swipe distance from where it landed, within
 //!   the swipe time, by its dominant direction. It must stay alone the whole time.
+//!
+//! A lift is its finger's last move, if it lifts anywhere new, for all of these. SDL writes a finger's
+//! last motion into its up, so that comes only from input pushed directly. A canceled touch is no
+//! move, wherever it says the finger was: the player didn't do that.
 
 use sapphire_math::Vec2;
 use sapphire_platform::{Timestamp, TouchPhase};
@@ -87,26 +91,11 @@ impl Gestures {
                     out.press = self.cancel_press();
                 }
             }
-            TouchPhase::Moved => {
-                let Some(moved) = self.fingers[finger] else { return out };
-                if self.count() == 1 {
-                    // Screen +y is down; gesture values are +y up.
-                    out.drag = Some(Vec2::new(position.x - moved.at.x, moved.at.y - position.y));
-                    if self.pressing && position.distance(moved.landed_at) > settings.tap_slop {
-                        out.press = self.cancel_press();
-                    }
-                } else if let Some(other) = self.pinch_partner(finger) {
-                    let before = moved.at.distance(other.at);
-                    let after = position.distance(other.at);
-                    if before >= MIN_PINCH_SPAN && after >= MIN_PINCH_SPAN {
-                        out.pinch = Some((after / before).ln());
-                    }
-                }
-                if let Some(moved) = &mut self.fingers[finger] {
-                    moved.at = position;
-                }
-            }
+            TouchPhase::Moved => self.finger_moved(finger, position, settings, &mut out),
             TouchPhase::Up => {
+                if self.fingers[finger].is_some_and(|lifting| lifting.at != position) {
+                    self.finger_moved(finger, position, settings, &mut out);
+                }
                 let Some(lifted) = self.fingers[finger].take() else { return out };
                 if self.stroke.take_if(|&mut stroke| stroke == finger).is_some() {
                     if self.pressing {
@@ -129,6 +118,34 @@ impl Gestures {
             }
         }
         out
+    }
+
+    /// A finger still down moved to `position`: a lone finger's drag, which past the slop ends the
+    /// press, or its share of a pinch.
+    fn finger_moved(
+        &mut self,
+        finger: usize,
+        position: Vec2,
+        settings: &GestureSettings,
+        out: &mut GestureOutput,
+    ) {
+        let Some(moved) = self.fingers[finger] else { return };
+        if self.count() == 1 {
+            // Screen +y is down; gesture values are +y up.
+            out.drag = Some(Vec2::new(position.x - moved.at.x, moved.at.y - position.y));
+            if self.pressing && position.distance(moved.landed_at) > settings.tap_slop {
+                out.press = self.cancel_press();
+            }
+        } else if let Some(other) = self.pinch_partner(finger) {
+            let before = moved.at.distance(other.at);
+            let after = position.distance(other.at);
+            if before >= MIN_PINCH_SPAN && after >= MIN_PINCH_SPAN {
+                out.pinch = Some((after / before).ln());
+            }
+        }
+        if let Some(moved) = &mut self.fingers[finger] {
+            moved.at = position;
+        }
     }
 
     /// Forgets every finger: the touch screen let go (focus or the foreground was lost).
@@ -208,8 +225,81 @@ mod tests {
         assert_eq!(out.press, None, "still within the tap slop");
         let out = t.touch(20, 0, TouchPhase::Moved, 120.0, 97.0);
         assert_eq!(out.press, Some(PressChange::Cancel), "past the slop it is a drag, not a press");
-        // Slow: no swipe when it lifts, and the press is already over.
-        assert_eq!(t.touch(900, 0, TouchPhase::Up, 200.0, 97.0), GestureOutput::default());
+        // Slow: no swipe when it lifts, and the press is already over. The way to where it lifted is
+        // still its drag.
+        assert_eq!(
+            t.touch(900, 0, TouchPhase::Up, 200.0, 97.0),
+            GestureOutput { drag: Some(Vec2::new(80.0, 0.0)), ..GestureOutput::default() }
+        );
+    }
+
+    /// Review PLT-003: SDL writes a finger's last motion into its up, so this only comes from input
+    /// pushed directly. It's one stroke either way, so a lift is its last move.
+    #[test]
+    fn a_lift_is_the_last_move_of_its_stroke() {
+        // No move at all: where it lifted is the whole stroke, a drag and a swipe and no tap.
+        let mut t = Touches::new();
+        t.touch(0, 0, TouchPhase::Down, 100.0, 100.0);
+        assert_eq!(
+            t.touch(30, 0, TouchPhase::Up, 200.0, 100.0),
+            GestureOutput {
+                drag: Some(Vec2::new(100.0, 0.0)),
+                press: Some(PressChange::Cancel),
+                swipe: Some(SwipeDirection::Right),
+                ..GestureOutput::default()
+            }
+        );
+
+        // Inside the slop until the lift, which leaves it: no tap, though too short to swipe.
+        let mut t = Touches::new();
+        t.touch(0, 0, TouchPhase::Down, 100.0, 100.0);
+        t.touch(10, 0, TouchPhase::Moved, 105.0, 100.0);
+        assert_eq!(
+            t.touch(20, 0, TouchPhase::Up, 115.0, 110.0),
+            GestureOutput {
+                drag: Some(Vec2::new(10.0, -10.0)),
+                press: Some(PressChange::Cancel),
+                ..GestureOutput::default()
+            }
+        );
+
+        // Inside the slop all the way: still a tap, and a drag of what little it moved.
+        let mut t = Touches::new();
+        t.touch(0, 0, TouchPhase::Down, 100.0, 100.0);
+        assert_eq!(
+            t.touch(20, 0, TouchPhase::Up, 103.0, 100.0),
+            GestureOutput {
+                drag: Some(Vec2::new(3.0, 0.0)),
+                press: Some(PressChange::Up),
+                ..GestureOutput::default()
+            }
+        );
+
+        // Lifting where the last move left it, as SDL always has it, adds nothing.
+        let mut t = Touches::new();
+        t.touch(0, 0, TouchPhase::Down, 100.0, 100.0);
+        t.touch(10, 0, TouchPhase::Moved, 103.0, 100.0);
+        assert_eq!(
+            t.touch(20, 0, TouchPhase::Up, 103.0, 100.0),
+            GestureOutput { press: Some(PressChange::Up), ..GestureOutput::default() }
+        );
+
+        // One of a pinch's pair lifts somewhere else: the spread it ends on counts, ln 2 here.
+        let mut t = Touches::new();
+        t.touch(0, 0, TouchPhase::Down, 100.0, 100.0);
+        t.touch(10, 1, TouchPhase::Down, 200.0, 100.0);
+        let out = t.touch(20, 1, TouchPhase::Up, 300.0, 100.0);
+        assert!((out.pinch.expect("pinch") - 2f32.ln()).abs() < 1e-6);
+        assert_eq!((out.drag, out.swipe), (None, None), "no lone finger's");
+
+        // And the OS taking a finger back invents no motion from where it says it was.
+        let mut t = Touches::new();
+        t.touch(0, 0, TouchPhase::Down, 100.0, 100.0);
+        t.touch(10, 1, TouchPhase::Down, 200.0, 100.0);
+        assert_eq!(
+            t.touch(20, 1, TouchPhase::Canceled, 300.0, 100.0),
+            GestureOutput { canceled: true, ..GestureOutput::default() }
+        );
     }
 
     #[test]

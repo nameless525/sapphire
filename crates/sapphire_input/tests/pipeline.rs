@@ -593,6 +593,44 @@ fn touch_gestures_drive_actions() {
     assert_eq!(rig.update_for(3600, "stop"), [ev("stop", Started, 3000), ev("stop", Triggered, 3500)]);
 }
 
+/// Review PLT-003, through the bindings: a stroke that ends past the slop with no move to get there
+/// isn't a tap, and its drag is whole.
+#[test]
+fn a_lift_ends_its_stroke_for_every_gesture() {
+    let map = map(
+        r#"(name: "tap", kind: Button), (name: "orbit", kind: Axis2D), (name: "swipe", kind: Button), (name: "zoom", kind: Axis1D)"#,
+        r#"(name: "main", bindings: [
+            (action: "tap", source: Touch(Press), trigger: Tap(seconds: 0.3)),
+            (action: "orbit", source: Touch(Drag)),
+            (action: "swipe", source: Touch(Swipe(Right)), trigger: Pressed),
+            (action: "zoom", source: Touch(Pinch)),
+        ])"#,
+    );
+    let mut rig = Rig::new(map, &["main"]);
+    rig.touch(10, 0, TouchPhase::Down, 100.0, 100.0);
+    rig.touch(20, 0, TouchPhase::Moved, 105.0, 100.0);
+    rig.touch(30, 0, TouchPhase::Up, 200.0, 100.0);
+    let events = rig.update(40);
+    assert!(!events.contains(&ev("tap", Triggered, 30)), "a 100 point stroke isn't a tap: {events:?}");
+    assert!(events.contains(&ev("swipe", Triggered, 30)), "{events:?}");
+    assert_eq!(rig.value("orbit"), Vec2::new(100.0, 0.0), "the whole way");
+    rig.update(50);
+
+    // A plain tap is still one.
+    rig.touch(60, 0, TouchPhase::Down, 100.0, 100.0);
+    rig.touch(70, 0, TouchPhase::Up, 100.0, 100.0);
+    assert!(rig.update(80).contains(&ev("tap", Triggered, 70)));
+    assert_eq!(rig.value("orbit"), Vec2::ZERO, "and no drag");
+    rig.update(90);
+
+    // A pinch's last spread.
+    rig.touch(100, 0, TouchPhase::Down, 100.0, 100.0);
+    rig.touch(110, 1, TouchPhase::Down, 200.0, 100.0);
+    rig.touch(120, 1, TouchPhase::Up, 300.0, 100.0);
+    rig.update(130);
+    assert!((rig.value("zoom").x - 2f32.ln()).abs() < 1e-5);
+}
+
 #[test]
 fn the_last_used_device_follows_the_player() {
     let map = map(r#"(name: "a", kind: Button)"#, r#"(name: "main", bindings: [])"#);

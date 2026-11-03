@@ -5,7 +5,8 @@
 //!
 //! - **The retained tree** ([`tree`]): a screen from a [`UiDocument`](sapphire_assets::ui::UiDocument):
 //!   `taffy` layout in points, strings through `sapphire_loc`, values through reflection paths,
-//!   nine-slices, gradients and masks.
+//!   nine-slices, gradients and masks. And what moves it (M3 U5): timelines, a screen's machine,
+//!   scrolling, and one focus model that a keyboard, a pad and a pointer all reach as plain [`UiInput`].
 //! - **Layout** ([`layout`]): rectangles in UI points, the frame's metrics ([`UiMetrics`]: size and
 //!   safe-area insets, from a [`Window`](sapphire_platform::Window) or made up for a capture) and
 //!   anchors. A UI point is `pixels / display scale`, so a thumb's size is the same everywhere.
@@ -26,7 +27,8 @@
 //!   for combat. No gameplay here.
 //! - **Where the numbers come from:** health and poise (G3) and the projection of a hit to the screen
 //!   reach it as plain values.
-//! - **The OS clock** (rule R2): the app passes [`Platform::now`](sapphire_platform::Platform::now).
+//! - **The OS clock** (rule R2): the app passes [`Platform::now`](sapphire_platform::Platform::now),
+//!   to the HUD and in [`UiFrame::now`] alike.
 //!   Nothing else moves the animation, so tests and captures choose their own time.
 //!
 //! # Driving it
@@ -53,7 +55,6 @@
 //!
 //! - **The HUD on documents** (U7), with [`HudLayout`]'s hand-placed rectangles going to `taffy`. Its
 //!   digits stay on the distance field atlas.
-//! - **Motion and input** (U5): tweens, screen state machines, focus and hit testing over the tree.
 
 /// Where this crate logs.
 pub(crate) const LOG_TARGET: &str = "sapphire::ui";

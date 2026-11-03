@@ -43,7 +43,7 @@ pub enum MenuError {
     Missing(&'static str),
 }
 
-/// See the [module docs](self).
+/// One menu's keyboard, gamepad, mouse and fingers, read as one [`UiInput`] a frame.
 #[derive(Debug)]
 pub struct MenuControls {
     input: InputSystem,

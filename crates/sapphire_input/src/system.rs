@@ -56,7 +56,7 @@ pub enum ActionEventKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pointer {
     Mouse,
-    /// A finger's slot, below [`MAX_FINGERS`](crate::MAX_FINGERS).
+    /// A finger's slot, below [`MAX_FINGERS`].
     Finger(usize),
 }
 

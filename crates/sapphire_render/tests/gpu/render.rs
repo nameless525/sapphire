@@ -1900,9 +1900,6 @@ fn two_slot_sphere(first: Material, second: Material) -> sapphire_assets::materi
         .expect("cook")
 }
 
-/// RA-005: an upload that fails partway takes back every material it uploaded, so retrying
-/// rejected content never uses up material slots. (A family's buffer filling up partway is
-/// `materials`' `a_full_family_takes_back_what_the_upload_took`.)
 /// A refresh of all six sky cube faces takes its pass's timestamps across render passes, the first
 /// face the start and the last the end, which validates on devices that time at their boundaries
 /// (OPT-018; an M5 reads 199 µs for the six and about 41 for one). A single frame's pair may not
@@ -2000,6 +1997,9 @@ fn a_dragged_window_keeps_few_sets_of_transients() {
     assert!(peak <= most, "peak {peak}, one frame's {settled}");
 }
 
+/// RA-005: an upload that fails partway takes back every material it uploaded, so retrying
+/// rejected content never uses up material slots. (A family's buffer filling up partway is
+/// `materials`' `a_full_family_takes_back_what_the_upload_took`.)
 #[test]
 #[ignore = "needs a GPU"]
 fn failed_material_uploads_leave_nothing_behind() {

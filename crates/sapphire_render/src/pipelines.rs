@@ -2607,13 +2607,13 @@ impl PipelineTarget {
             .then_some((override_constant::FADE_SAMPLES, f64::from(self.sample_count)))
     }
 
-    /// A prepass's constants (M1 C7): a masked one's, under MSAA, the main pass's sample count,
-    /// so it keeps the pixels where the main pass covers any sample of a fading character.
     /// Whether the scene prepass writes velocity, as its programs' pipeline constant.
     fn velocity_constant(&self) -> (&'static str, f64) {
         (override_constant::VELOCITY, f64::from(u8::from(self.velocity)))
     }
 
+    /// A prepass's constants (M1 C7): a masked one's, under MSAA, the main pass's sample count,
+    /// so it keeps the pixels where the main pass covers any sample of a fading character.
     fn prepass_constants(&self, masked: bool) -> Vec<(&'static str, f64)> {
         self.covered(Coverage::AlphaTest).filter(|_| masked).into_iter().collect()
     }

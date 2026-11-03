@@ -12,7 +12,8 @@ use crate::LOG_TARGET;
 /// a job scope costs more than recording a few passes.
 const PARALLEL_MIN_PASSES: usize = 4;
 
-/// The fewest passes recorded into each encoder when recording in parallel.
+/// How many passes it takes to make another encoder worth having when recording in parallel. An
+/// encoder itself may hold one, a pass that fills its share of the weight.
 const MIN_PASSES_PER_ENCODER: usize = 2;
 
 /// The most encoders a frame records into, whatever the workers: split by weight, six recorded a

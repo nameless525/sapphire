@@ -19,6 +19,15 @@ IPHONEOS_DEPLOYMENT_TARGET = { value = "17.0", force = true }
 # tracy-client's default features, `crash-handler` included, and Cargo can't switch a
 # dependency's feature off, so the define goes in through the flags tracy-client-sys reads.
 TRACY_CLIENT_SYS_CXXFLAGS = "-DTRACY_NO_CRASH_HANDLER"
+# The Android app is one library, so Luau's C++ runtime goes inside it rather than shipping
+# libc++_shared.so beside it (NDK's guidance for one library). mlua-sys names only this one archive, and
+# the C++ ABI half of the runtime comes from `-lc++abi` under the Android targets below.
+CXXSTDLIB_aarch64_linux_android = "c++_static"
+CXXSTDLIB_x86_64_linux_android = "c++_static"
+# Luau's `%`, `math.lerp` and vector arithmetic are C++ doing `a - floor(a / b) * b`. Clang fuses that into
+# one FMA on ARM by default, and not on x86-64, so the same script would read differently across the
+# gate's own machines. Luau's compiler folds `%` through the same code. (MSVC warns and ignores it.)
+LUAU_CXXFLAGS = "-ffp-contract=off"
 
 # Windows gives a main thread a 1 MiB stack, and d3dcompiler_47, which wgpu compiles HLSL with on
 # D3D12, needs more than that on the anime character shader once the app's own frames are counted.
@@ -35,7 +44,7 @@ rustflags = ["-C", "link-arg=/STACK:8388608"]
 # links that way by default (open question Q2, verified with r29); the flag keeps the
 # guarantee explicit.
 [target.aarch64-linux-android]
-rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384", "-C", "link-arg=-lc++abi"]
 
 [target.x86_64-linux-android]
-rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384", "-C", "link-arg=-lc++abi"]

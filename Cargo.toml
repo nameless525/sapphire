@@ -39,6 +39,7 @@ members = [
     # L4 framework
     "crates/sapphire_world",
     "crates/sapphire_gameplay",
+    "crates/sapphire_script",
     "crates/sapphire_camera",
     "crates/sapphire_save",
     # L5 game
@@ -109,6 +110,7 @@ sapphire_text = { path = "crates/sapphire_text" }
 sapphire_ui = { path = "crates/sapphire_ui" }
 sapphire_world = { path = "crates/sapphire_world" }
 sapphire_gameplay = { path = "crates/sapphire_gameplay" }
+sapphire_script = { path = "crates/sapphire_script" }
 sapphire_camera = { path = "crates/sapphire_camera" }
 sapphire_save = { path = "crates/sapphire_save" }
 sapphire_controls = { path = "crates/sapphire_controls" }
@@ -130,6 +132,9 @@ libm = "0.2.16"
 thiserror = "2.0"
 anyhow = "1.0"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
+# Luau, with no JIT and its C++ built from source through `cc` (spec §5.24). `send` so a VM can sit in a
+# combat system, which bevy holds to `Send + Sync`.
+mlua = { version = "0.12", default-features = false, features = ["luau", "send"] }
 bumpalo = "3.20"
 slotmap = "1.1"
 libc = "0.2"

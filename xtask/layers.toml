@@ -80,6 +80,10 @@ sapphire_text = { kind = "runtime", layer = 3 }
 # L4 framework.
 sapphire_world = { kind = "runtime", layer = 4 }
 sapphire_gameplay = { kind = "runtime", layer = 4 }
+# Luau hooks (spec §5.24, M3 L0): a VM and bindings above the simulation, which adds itself with
+# `Simulation::add_combat_system`. Beside gameplay rather than above it because a replay runner links it
+# and spec §4 has it in the framework; gameplay names nothing of it.
+sapphire_script = { kind = "runtime", layer = 4 }
 # The camera director (M2 G5). Above the physics, whose casts it reads, and beside gameplay with no
 # edge to it: it takes plain positions, reads interpolated transforms and feeds nothing back, so it
 # stays outside the checksum and isn't in [simulation]. It reaches no renderer or window: the app
@@ -135,6 +139,8 @@ xtask = { kind = "tool" }
 # dev-only one.
 [allow]
 edges = [
+    # Hooks read gameplay's resources and write its queues; gameplay names nothing of Luau.
+    ["sapphire_script", "sapphire_gameplay"],
     # Formats store reflection's stable names and schema versions.
     ["sapphire_serialize", "sapphire_reflect"],
     # Cooked asset formats (meshes) are rkyv archives in sapphire_serialize's cooked
@@ -179,7 +185,7 @@ edges = [
 # `runners` are the tools that run those crates in a job of their own: the same tree rule, with no
 # clippy.toml, since they read files and print, and no result goes through them.
 [simulation]
-crates = ["sapphire_colliders", "sapphire_gameplay", "sapphire_moves", "sapphire_physics", "sapphire_zone"]
+crates = ["sapphire_colliders", "sapphire_gameplay", "sapphire_moves", "sapphire_physics", "sapphire_script", "sapphire_zone"]
 runners = ["sapphire_replay"]
 forbidden = [
     "naga",

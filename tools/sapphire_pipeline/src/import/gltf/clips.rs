@@ -40,7 +40,7 @@ use sapphire_math::det;
 
 use super::{GltfImportError, SceneImport, accessors, load_buffers, parse};
 use crate::cache::Stage;
-use crate::clip::{self, ClipSettings, SampledClip};
+use crate::clip::{self, ClipSettings, JointName, SampledClip};
 use crate::import;
 use crate::import::fbx::FbxImportError;
 
@@ -122,6 +122,8 @@ pub enum ClipImportError {
     TooManyTargets(u32),
     #[error("root motion names bone {bone:?}, but the skeleton has no joint of that name")]
     UnknownRootBone { bone: String },
+    #[error("root motion names bone {bone:?}, and two joints have that name, so it says neither of them")]
+    RepeatedRootBone { bone: String },
     #[error("root motion from bone {bone:?}: {source}")]
     RootLift { bone: String, source: clip::RootLiftError },
     #[error("root motion needs a skeleton, and animation {animation:?}'s source has none")]
@@ -492,10 +494,10 @@ pub(crate) fn lift_settings_root(
         return Err(ClipImportError::NoSkeleton { animation: clip.name.clone() });
     }
     let skeleton = Skeleton::new(joints);
-    let joint = skeleton.names.iter().position(|joint| *joint == root.bone);
-    let Some(joint) = joint else {
-        return Err(ClipImportError::UnknownRootBone { bone: root.bone.clone() });
-    };
+    let joint = clip::joint_named(&skeleton, &root.bone).map_err(|fault| match fault {
+        JointName::Unknown => ClipImportError::UnknownRootBone { bone: root.bone.clone() },
+        JointName::Repeated => ClipImportError::RepeatedRootBone { bone: root.bone.clone() },
+    })?;
     clip::lift_root(clip, &skeleton, joint as u16, root.translation, root.rotation)
         .map_err(|source| ClipImportError::RootLift { bone: root.bone.clone(), source })
 }

@@ -110,7 +110,7 @@ use sapphire_assets::skeleton::{NO_PARENT, Skeleton};
 use sapphire_math::det;
 use serde::{Deserialize, Serialize};
 
-use super::{SampledClip, SampledRoot, rest_model, rest_rotation};
+use super::{JointName, SampledClip, SampledRoot, joint_named, rest_model, rest_rotation};
 use crate::cache::Stage;
 use crate::keypose::Turn;
 
@@ -171,6 +171,10 @@ impl RetargetSettings {
 pub enum HumanMapError {
     #[error("the humanoid map says {bone} is {joint:?}, but the skeleton has no joint of that name")]
     UnknownJoint { bone: &'static str, joint: String },
+    #[error(
+        "the humanoid map says {bone} is {joint:?}, and two joints have that name, so it says neither of them"
+    )]
+    RepeatedJoint { bone: &'static str, joint: String },
     #[error("the humanoid map has no {bone} bone")]
     MissingBone { bone: &'static str },
 }
@@ -188,6 +192,10 @@ pub enum RetargetError {
     NonFinite { tick: usize },
     #[error("it should follow joint {name:?}, but {which} rig has no joint of that name")]
     UnknownJoint { which: &'static str, name: String },
+    #[error(
+        "it should follow joint {name:?}, but two joints of {which} rig have that name, so it says neither"
+    )]
+    RepeatedJoint { which: &'static str, name: String },
     #[error("it should follow joint {name:?}, but the target's humanoid map already says that's {bone}")]
     FollowedBone { name: String, bone: &'static str },
 }
@@ -217,11 +225,13 @@ impl HumanMap {
     ) -> Result<Self, HumanMapError> {
         let mut joints = BTreeMap::new();
         for (bone, name) in names {
-            let joint = skeleton
-                .names
-                .iter()
-                .position(|candidate| candidate == name)
-                .ok_or_else(|| HumanMapError::UnknownJoint { bone: bone.name(), joint: name.clone() })?;
+            let joint = joint_named(skeleton, name).map_err(|fault| {
+                let (bone, joint) = (bone.name(), name.clone());
+                match fault {
+                    JointName::Unknown => HumanMapError::UnknownJoint { bone, joint },
+                    JointName::Repeated => HumanMapError::RepeatedJoint { bone, joint },
+                }
+            })?;
             joints.insert(*bone, joint as u16);
         }
         if let Some(bone) = HumanBone::REQUIRED.iter().find(|bone| !joints.contains_key(bone)) {
@@ -364,8 +374,10 @@ fn follow_by_name(
 ) -> Result<(), RetargetError> {
     for name in follow {
         let joint = |rig: Rig<'_>, which| {
-            let found = rig.skeleton.names.iter().position(|candidate| candidate == name);
-            found.ok_or_else(|| RetargetError::UnknownJoint { which, name: name.clone() })
+            joint_named(rig.skeleton, name).map_err(|fault| match fault {
+                JointName::Unknown => RetargetError::UnknownJoint { which, name: name.clone() },
+                JointName::Repeated => RetargetError::RepeatedJoint { which, name: name.clone() },
+            })
         };
         let (from, joint) = (joint(source, "the source")?, joint(target, "the target")?);
         if let Some(bone) = bone_of[joint] {

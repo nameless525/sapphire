@@ -6,7 +6,7 @@ use std::f32::consts::{FRAC_PI_2, FRAC_PI_4};
 use glam::{Affine3A, Mat4, Quat, Vec3};
 use sapphire_assets::AssetId;
 use sapphire_assets::clip::Clip;
-use sapphire_assets::skeleton::Skeleton;
+use sapphire_assets::skeleton::{JointTransform, Skeleton};
 use serde_json::json;
 
 use super::*;
@@ -706,6 +706,27 @@ fn a_root_bone_under_a_scale_of_zero_is_an_error() {
     let (document, buffers, scene) = import_scene(&writer.to_glb(), None).unwrap();
     let error = sample(&document, &buffers, scene.clip_scene(), 0, &settings).unwrap_err();
     assert!(error.to_string().contains("\"Hips\"") && error.to_string().contains("scale of zero"), "{error}");
+}
+
+/// glTF lets two joints share a name, and then the name says neither of them: root motion from whichever
+/// came first would move the wrong bone without a word.
+#[test]
+fn root_motion_from_a_name_two_joints_share_is_refused() {
+    let joint = |name: &str, parent| Joint { name: name.to_owned(), parent, rest: JointTransform::IDENTITY };
+    let joints = [joint("Root", None), joint("Twin", Some(0)), joint("Twin", Some(0))];
+    let settings = |bone: &str| ClipSettings {
+        root_motion: Some(RootMotionSettings {
+            bone: bone.to_owned(),
+            translation: RootTranslation::Ground,
+            rotation: RootRotation::Yaw,
+        }),
+        ..ClipSettings::default()
+    };
+    let mut clip = SampledClip { name: "walk".to_owned(), rate: 60, ticks: 1, ..SampledClip::default() };
+    let error = lift_settings_root(&mut clip, &joints, &settings("Twin")).unwrap_err();
+    assert!(matches!(&error, ClipImportError::RepeatedRootBone { bone } if bone == "Twin"), "{error}");
+    assert!(clip.root.is_none(), "it leaves the clip as it was");
+    assert!(lift_settings_root(&mut clip, &joints, &settings("Root")).is_ok(), "the name that's one joint's");
 }
 
 /// The length is checked before a track is sampled: a few bytes can claim a year.

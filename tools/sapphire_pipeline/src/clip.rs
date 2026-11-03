@@ -347,6 +347,22 @@ pub fn reaches(skeleton: &Skeleton) -> Vec<f32> {
     chain.iter().map(|chain| chain + SKIN_REACH).collect()
 }
 
+/// Why a name a sidecar or a document gives doesn't say which joint it means.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum JointName {
+    Unknown,
+    Repeated,
+}
+
+/// The joint of `skeleton` called `name`. glTF lets names repeat, and a skeleton of its own has no
+/// trouble with that, but a name two joints share says neither of them, and taking the first would drive
+/// the wrong one without a word.
+pub(crate) fn joint_named(skeleton: &Skeleton, name: &str) -> Result<usize, JointName> {
+    let mut found = skeleton.names.iter().enumerate().filter(|(_, candidate)| *candidate == name);
+    let (joint, _) = found.next().ok_or(JointName::Unknown)?;
+    if found.next().is_some() { Err(JointName::Repeated) } else { Ok(joint) }
+}
+
 /// A joint's rest rotation, normalized: a source writes it as it likes.
 pub(crate) fn rest_rotation(skeleton: &Skeleton, joint: usize) -> Quat {
     det::quat_normalize(Quat::from_array(skeleton.rest[joint].rotation))

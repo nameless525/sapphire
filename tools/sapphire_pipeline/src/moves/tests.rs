@@ -377,6 +377,14 @@ fn what_cant_bake_says_why() {
         matches!(refused, BakeError::NoJoint { .. }) && refused.to_string().contains("tail"),
         "{refused}"
     );
+    let mut twins = figure();
+    twins.names[usize::from(ARM)] = "hand".to_owned();
+    let refused = bake(&joint("hand"), &plain(&sampled, &twins)).unwrap_err();
+    assert!(
+        matches!(refused, BakeError::RepeatedJoint { .. }) && refused.to_string().contains("\"hand\""),
+        "two joints share the name, so it says neither: {refused}"
+    );
+    assert!(bake(&joint("hips"), &plain(&sampled, &twins)).is_ok(), "the name that's still one joint's");
 
     let mut slow = still(1);
     slow.rate = 30;

@@ -63,7 +63,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::cache::Stage;
 use crate::clip::retarget::HumanMap;
-use crate::clip::{self, ClipCookError, SampledClip};
+use crate::clip::{self, ClipCookError, JointName, SampledClip, joint_named};
 
 /// Reading the document, as cache keys know it. Bump the version whenever its output changes for the
 /// same file.
@@ -175,6 +175,10 @@ pub enum BakeError {
     #[error("path `{path}` follows joint {joint:?}, which the skeleton doesn't have")]
     NoJoint { path: String, joint: String },
     #[error(
+        "path `{path}` follows joint {joint:?}, and two joints have that name, so it says neither of them"
+    )]
+    RepeatedJoint { path: String, joint: String },
+    #[error(
         "path `{path}` goes through joint {joint:?}, which a rig constraint drives: a table has no constraints \
          in it and the pose on screen does, so they'd disagree"
     )]
@@ -218,12 +222,10 @@ fn followed_joint(path: &ClipPathDocument, input: &TableInput<'_>) -> Result<usi
             let joint = map.joint(known).ok_or_else(|| BakeError::NoBone { path: name(), bone: text() })?;
             Ok(usize::from(joint))
         }
-        Follows::Joint(joint) => input
-            .skeleton
-            .names
-            .iter()
-            .position(|candidate| candidate == joint)
-            .ok_or_else(|| BakeError::NoJoint { path: name(), joint: joint.clone() }),
+        Follows::Joint(joint) => joint_named(input.skeleton, joint).map_err(|fault| match fault {
+            JointName::Unknown => BakeError::NoJoint { path: name(), joint: joint.clone() },
+            JointName::Repeated => BakeError::RepeatedJoint { path: name(), joint: joint.clone() },
+        }),
     }
 }
 

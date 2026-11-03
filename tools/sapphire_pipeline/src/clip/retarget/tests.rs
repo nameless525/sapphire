@@ -461,7 +461,9 @@ fn retargets_that_cant_be_are_errors_that_say_why() {
         RetargetError::NoLegLength { .. } => "target",
         RetargetError::NonFinite { .. } => "finite",
         RetargetError::SharedTargetJoint { .. } => "shared",
-        RetargetError::UnknownJoint { .. } | RetargetError::FollowedBone { .. } => "follow",
+        RetargetError::UnknownJoint { .. }
+        | RetargetError::RepeatedJoint { .. }
+        | RetargetError::FollowedBone { .. } => "follow",
     };
     let expected = ["scale", "scale", "scale", "source", "target", "finite"];
     for ((name, error), expected) in cases.iter().zip(expected) {
@@ -510,6 +512,23 @@ fn a_sidecars_map_names_its_bad_entry() {
     short.remove(&LeftHand);
     let error = HumanMap::from_names(&short, &skeleton).unwrap_err();
     assert_eq!(error, HumanMapError::MissingBone { bone: "leftHand" });
+
+    // glTF lets two joints share a name, and then the name says neither of them.
+    let mut twins = skeleton.clone();
+    twins.names[6] = "HandR".to_owned();
+    let mut both = good.clone();
+    both.insert(LeftHand, "HandR".to_owned());
+    let error = HumanMap::from_names(&both, &twins).unwrap_err();
+    assert!(
+        matches!(&error, HumanMapError::RepeatedJoint { bone: "leftHand", joint } if joint == "HandR"),
+        "{error}"
+    );
+    assert!(error.to_string().contains("\"HandR\""), "{error}");
+    // A name the map doesn't read may repeat all it likes.
+    let mut spare = skeleton.clone();
+    spare.names[2] = "Extra".to_owned();
+    spare.names.push("Extra".to_owned());
+    assert_eq!(HumanMap::from_names(&good, &spare).unwrap().joint(LeftHand), Some(6));
 }
 
 // Adjustments and gains, on the small rigs.
@@ -687,6 +706,29 @@ fn a_joint_with_no_bone_follows_by_name() {
         &RetargetOptions { scale: Some(1.0), follow: vec!["Block".to_owned()], ..UNGROUNDED },
     );
     assert!(matches!(error, Err(RetargetError::UnknownJoint { which: "the target", .. })));
+}
+
+/// A name two joints share says neither of them, on either rig.
+#[test]
+fn a_joint_followed_by_a_name_two_share_is_refused() {
+    let [(source, source_map), (target, target_map)] = rigs_with_a_block();
+    let twins = |rig: &Skeleton| {
+        let mut rig = rig.clone();
+        rig.names[6] = "Block".to_owned();
+        rig
+    };
+    let cook = |source: &Skeleton, target: &Skeleton| {
+        retarget(
+            &still(2),
+            Rig { skeleton: source, map: &source_map },
+            Rig { skeleton: target, map: &target_map },
+            &RetargetOptions { scale: Some(1.0), follow: vec!["Block".to_owned()], ..UNGROUNDED },
+        )
+    };
+    assert!(cook(&source, &target).is_ok(), "one of each");
+    let repeated = |which| RetargetError::RepeatedJoint { which, name: "Block".to_owned() };
+    assert_eq!(cook(&twins(&source), &target).unwrap_err(), repeated("the source"));
+    assert_eq!(cook(&source, &twins(&target)).unwrap_err(), repeated("the target"));
 }
 
 // KayKit's real clips, read through their real sidecars, on the character.

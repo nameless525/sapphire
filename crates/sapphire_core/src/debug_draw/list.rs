@@ -52,7 +52,8 @@ impl LabelText {
     /// `text`, formatted, as much as fits.
     pub fn format(text: fmt::Arguments<'_>) -> Self {
         let mut label = Self { bytes: [0; LABEL_BYTES], len: 0 };
-        // A failing `Display` leaves what it wrote so far: it is only a label.
+        // A failing `Display`, or a cut (`write_str`), leaves what was written so far: it is only a
+        // label.
         let _ = fmt::write(&mut label, text);
         label
     }
@@ -64,6 +65,8 @@ impl LabelText {
 }
 
 impl fmt::Write for LabelText {
+    /// Takes the whole characters of `text` that fit, and fails if that isn't all of it, which ends
+    /// the formatting: the room a wide character left mustn't go to what comes after it.
     fn write_str(&mut self, text: &str) -> fmt::Result {
         let len = usize::from(self.len);
         let mut take = text.len().min(LABEL_BYTES - len);
@@ -73,7 +76,7 @@ impl fmt::Write for LabelText {
         self.bytes[len..len + take].copy_from_slice(&text.as_bytes()[..take]);
         // At most `LABEL_BYTES`.
         self.len = (len + take) as u8;
-        Ok(())
+        if take == text.len() { Ok(()) } else { Err(fmt::Error) }
     }
 }
 
@@ -515,5 +518,34 @@ mod tests {
         // Writes after the buffer is full, in several pieces, change nothing.
         let pieces = LabelText::format(format_args!("{long}{}{}", 1, "y"));
         assert_eq!(pieces.as_str(), "x".repeat(LABEL_BYTES));
+    }
+
+    /// A character too wide for the room left ends the label there, or the smaller writes after it
+    /// would fill the room and the label would read as text nobody wrote.
+    #[test]
+    fn nothing_is_written_after_a_cut() {
+        struct Pieces<'a>(&'a [&'a str]);
+        impl fmt::Display for Pieces<'_> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                self.0.iter().try_for_each(|piece| f.write_str(piece))
+            }
+        }
+        let room_for_one = "a".repeat(LABEL_BYTES - 1);
+        let wide = "字".repeat(15);
+        let full = format!("{room_for_one}b");
+        for (pieces, expected) in [
+            // One byte left, for characters of four, three and two.
+            (&[room_for_one.as_str(), "🗡", "Z"], room_for_one.as_str()),
+            (&[room_for_one.as_str(), "⚔", "Z"], room_for_one.as_str()),
+            (&[room_for_one.as_str(), "é", "Z"], room_for_one.as_str()),
+            // A piece cut partway keeps the whole characters that fit, and nothing comes after it.
+            (&[wide.as_str(), "字Z", "Y"], wide.as_str()),
+            // Exactly full is no cut, and an empty write after it changes nothing.
+            (&[room_for_one.as_str(), "b", ""], full.as_str()),
+        ] {
+            let label = LabelText::format(format_args!("{}", Pieces(pieces)));
+            assert_eq!(label.as_str(), expected, "{pieces:?}");
+            assert!(pieces.concat().starts_with(label.as_str()), "a label is a prefix of its text");
+        }
     }
 }

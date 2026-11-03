@@ -51,6 +51,10 @@ const GJK_STOP: f32 = 1.1e-3;
 /// the sweep just reports a stop a little before it. Only a near miss of a round shape comes close.
 const MAX_SWEEP_STEPS: u32 = 32;
 
+/// Two cores whose lines meet at less than this sine count as lying along one line: their cross product
+/// is too small a difference of large numbers to point anywhere useful.
+const PARALLEL_SINE: f32 = 1e-3;
+
 /// A shape as GJK measures it: a thin convex core, and a radius around it.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Core {
@@ -284,19 +288,52 @@ fn inside_contact(
         Core::Triangle { triangle } => {
             through_triangle_contact(triangle, target_pose, ends, mover.radius(), mover_pose)
         }
-        Core::Point { .. } | Core::Segment { .. } => crossing_contact(target_pose, mover_pose, radii),
+        Core::Point { .. } | Core::Segment { .. } => {
+            crossing_contact(target.ends()?, target_pose, ends, mover_pose, radii)
+        }
     })
 }
 
-/// Two thin cores that cross: out along the line between their centers, or straight up when even
-/// those meet.
-fn crossing_contact(target_pose: &ParryPose, mover_pose: &ParryPose, radii: f32) -> Contact {
+/// Two thin cores that touch: they cross, lie along one line or hold a center on the other. The shortest
+/// way out is across both, where only their radii are in the way, and along either one a whole length can
+/// be. Its depth is what clears the target's core by the radii on that side, rounding and all, which is
+/// what makes moving by it separate them whichever way it goes.
+fn crossing_contact(
+    target: [Vec3; 2],
+    target_pose: &ParryPose,
+    mover: [Vec3; 2],
+    mover_pose: &ParryPose,
+    radii: f32,
+) -> Contact {
+    let target = target.map(|end| target_pose.transform_point(end));
+    let mover = mover.map(|end| mover_pose.transform_point(end));
     let between = mover_pose.translation - target_pose.translation;
-    Contact {
-        normal: between.try_normalize().unwrap_or(Vec3::Y),
-        separation: -radii,
-        point: target_pose.translation,
+    let across = way_across(target[1] - target[0], mover[1] - mover[0], between);
+    let reach = |along: Vec3, ends: [Vec3; 2]| ends[0].dot(along).max(ends[1].dot(along));
+    let out_along = |along: Vec3| reach(along, target) + reach(-along, mover) + radii;
+    let (forward, back) = (out_along(across), out_along(-across));
+    let (normal, depth) = if back < forward { (-across, back) } else { (across, forward) };
+    Contact { normal, separation: -depth, point: target_pose.translation }
+}
+
+/// A unit vector across two cores, from each one's length along itself and the line between their centers.
+fn way_across(target: Vec3, mover: Vec3, between: Vec3) -> Vec3 {
+    let (long, short) =
+        if target.length_squared() < mover.length_squared() { (mover, target) } else { (target, mover) };
+    let cross = long.cross(short);
+    let limit = PARALLEL_SINE * PARALLEL_SINE * long.length_squared() * short.length_squared();
+    if cross.length_squared() > limit
+        && let Some(across) = cross.try_normalize()
+    {
+        return across;
     }
+    let Some(along) = long.try_normalize() else {
+        // Two points: nothing to go across, and only the line between them to tell them apart.
+        return between.try_normalize().unwrap_or(Vec3::Y);
+    };
+    // One line: any way off it will do, so one that a line's numbers can't flip from frame to frame.
+    let side = if along.x.abs() < 0.9 { Vec3::X } else { Vec3::Z };
+    (side - along * side.dot(along)).try_normalize().unwrap_or(Vec3::Y)
 }
 
 /// A round shape's core inside a box: out through whichever face takes the shortest push for both
@@ -417,12 +454,54 @@ mod tests {
     }
 
     #[test]
-    fn crossing_capsules_separate_along_their_centers() {
-        // Same place: nothing to tell them apart, so straight up, by both radii.
+    fn capsules_on_one_line_separate_off_it() {
+        // Same place: nothing to tell them apart, so off to the side, by both radii. Straight up would
+        // take both lengths as well.
         let contact =
             contact(&capsule(), &ParryPose::IDENTITY, &capsule(), &ParryPose::IDENTITY, 1.0).unwrap();
-        assert_near(contact.normal, Vec3::Y);
+        assert_near(contact.normal, Vec3::X);
         assert!((contact.separation + 0.5).abs() < 1e-5, "{}", contact.separation);
+    }
+
+    #[test]
+    fn crossing_capsules_separate_across_both() {
+        // One upright through the middle of one lying along X, and a little in front of its center: out
+        // along Z, away from the other, by both radii.
+        let lying = ParryPose::from_parts(
+            Vec3::new(0.1, 0.2, 0.0),
+            Quat::from_xyzw(0.0, 0.0, std::f32::consts::FRAC_1_SQRT_2, std::f32::consts::FRAC_1_SQRT_2),
+        );
+        let contact = contact(&capsule(), &lying, &capsule(), &ParryPose::IDENTITY, 1.0).unwrap();
+        assert!(contact.normal.dot(Vec3::Z).abs() > 0.9999, "{}", contact.normal);
+        assert!((contact.separation + 0.5).abs() < 1e-5, "{}", contact.separation);
+    }
+
+    /// The side a way across goes is the one with less to clear, so a mover a hair past a core's line
+    /// doesn't go back through it.
+    #[test]
+    fn a_way_across_goes_to_the_near_side() {
+        let thin = Core::segment(Segment::new(Vec3::new(0.0, -1.0, 0.0), Vec3::new(0.0, 1.0, 0.0)), 0.1);
+        for (x, side) in [(2e-7, Vec3::X), (-2e-7, Vec3::NEG_X)] {
+            let target = thin.ends().expect("round");
+            let contact = crossing_contact(target, &ParryPose::IDENTITY, target, &pose_at(x, 0.0, 0.0), 0.2);
+            assert_near(contact.normal, side);
+            assert!((contact.separation + 0.2 - x.abs()).abs() < 1e-6, "{}", contact.separation);
+        }
+    }
+
+    #[test]
+    fn a_way_across_never_lies_along_a_core() {
+        for along in [Vec3::X, Vec3::Y, Vec3::Z, Vec3::new(0.6, 0.8, 0.0), Vec3::new(0.95, 0.2, 0.2)] {
+            for other in [along, along * 0.5, along + Vec3::splat(1e-5), Vec3::ZERO] {
+                let across = way_across(along, other, Vec3::ZERO);
+                assert!((across.length() - 1.0).abs() < 1e-5, "{across}");
+                assert!(across.dot(along).abs() < 1e-3, "{across} along {along}");
+            }
+        }
+        // Across two that truly cross, and by the line between them for two points.
+        assert_near(way_across(Vec3::X, Vec3::Y, Vec3::ZERO), Vec3::Z);
+        assert_near(way_across(Vec3::ZERO, Vec3::ZERO, Vec3::new(0.0, 0.0, 3.0)), Vec3::Z);
+        assert_near(way_across(Vec3::ZERO, Vec3::ZERO, Vec3::ZERO), Vec3::Y);
     }
 
     #[test]

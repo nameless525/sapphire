@@ -568,7 +568,151 @@ fn penetration_takes_the_deepest_and_reads_meshes() {
     assert_near(found.point, Vec3::new(1.6, 0.0, 0.0));
 }
 
+/// What [`sapphire_physics::Penetration`] promises: moving along its normal by its depth separates the
+/// shapes, from one target, wherever they stand. `what` says which pair, and its depth is returned.
+#[track_caller]
+fn depth_separates(what: &str, target: Shape, at: Pose, shape: Shape, pose: Pose) -> f32 {
+    let collider = StaticCollider {
+        id: ColliderId(1),
+        shape: StaticShape::Convex(target),
+        pose: at,
+        memberships: Group::World.mask(),
+    };
+    let world = world(vec![collider]);
+    let found = world.penetration(&shape, pose, &ALL).unwrap_or_else(|| panic!("{what}: they overlap"));
+    assert!(found.depth > 0.0, "{what}: {found:?}");
+    assert!((found.normal.length() - 1.0).abs() < 1e-5, "{what}: {found:?}");
+    let out = Pose { position: pose.position + found.normal * (found.depth + 1e-4), ..pose };
+    let left = world.penetration(&shape, out, &ALL);
+    assert_eq!(left, None, "{what}: out by {} along {} wasn't enough", found.depth, found.normal);
+    found.depth
+}
+
+fn capsule(half_height: f32, radius: f32) -> Shape {
+    Shape::Capsule { half_height, radius }
+}
+
+/// Upright capsules on one line whose cores overlap: only their radii are in the way going sideways,
+/// and going up they'd have their whole lengths to clear.
+#[test]
+fn capsules_along_one_line_leave_sideways_by_their_radii() {
+    let character = capsule(0.5, 0.3);
+    let rows = [
+        ("thin and identical", capsule(0.55, 0.1), Vec3::ZERO, 0.2),
+        ("characters, identical", character, Vec3::ZERO, 0.6),
+        ("characters, one a little up", character, Vec3::new(0.0, 0.3, 0.0), 0.6),
+        ("characters, one a little down", character, Vec3::new(0.0, -0.3, 0.0), 0.6),
+        ("characters, cores only just overlapping", character, Vec3::new(0.0, 0.99, 0.0), 0.6),
+    ];
+    for (what, shape, offset, radii) in rows {
+        let depth = depth_separates(what, shape, Pose::IDENTITY, shape, Pose::at(offset));
+        assert_close(depth, radii);
+    }
+    // Different lengths and sizes.
+    let depth = depth_separates(
+        "long and short",
+        capsule(10.0, 0.1),
+        Pose::IDENTITY,
+        capsule(0.5, 0.3),
+        Pose::IDENTITY,
+    );
+    assert_close(depth, 0.4);
+    // Far from the origin, and lying down on one line.
+    let lying = Quat::from_xyzw(std::f32::consts::FRAC_1_SQRT_2, 0.0, 0.0, std::f32::consts::FRAC_1_SQRT_2);
+    let at = Vec3::new(40.0, -3.0, 60.0);
+    let depth = depth_separates(
+        "lying",
+        character,
+        Pose::new(at, lying),
+        character,
+        Pose::new(at + Vec3::new(0.0, 0.0, 0.2), lying),
+    );
+    assert_close(depth, 0.6);
+}
+
+/// A sphere and a capsule with a center exactly on the other's core, and spheres on one point.
+#[test]
+fn a_sphere_on_a_core_leaves_by_their_radii() {
+    let ball = Shape::Sphere { radius: 0.25 };
+    let character = capsule(0.5, 0.3);
+    let up = Pose::at(Vec3::new(0.0, 0.2, 0.0));
+    assert_close(depth_separates("a sphere in a capsule", character, Pose::IDENTITY, ball, up), 0.55);
+    assert_close(depth_separates("a capsule round a sphere", ball, up, character, Pose::IDENTITY), 0.55);
+    assert_close(depth_separates("spheres on one point", ball, up, ball, up), 0.5);
+}
+
+/// Capsules whose cores cross at any angle, anywhere along them: a way out at right angles to both
+/// takes just their radii, which no direction can better.
+#[test]
+fn crossing_capsules_leave_at_right_angles_to_both() {
+    let mut state = 0x9e37_79b9_u32;
+    let mut unit = move || {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        (state >> 8) as f32 / (1u32 << 24) as f32
+    };
+    for case in 0..2000 {
+        let mut turn = || {
+            #[allow(
+                clippy::disallowed_methods,
+                reason = "a test's random turn: its last bit matters to nothing"
+            )]
+            Quat::from_xyzw(unit() - 0.5, unit() - 0.5, unit() - 0.5, unit() - 0.5).normalize()
+        };
+        let (first, second) = (turn(), turn());
+        let (first_half, first_radius) = (0.2 + unit() * 2.0, 0.05 + unit() * 0.4);
+        let (second_half, second_radius) = (0.2 + unit() * 2.0, 0.05 + unit() * 0.4);
+        let crossing = Vec3::new(unit() * 80.0 - 40.0, unit() * 80.0 - 40.0, unit() * 80.0 - 40.0);
+        // Each center is back along its own axis from the crossing, within its core.
+        let first_along = (unit() * 2.0 - 1.0) * first_half;
+        let second_along = (unit() * 2.0 - 1.0) * second_half;
+        let at = Pose::new(crossing - first * Vec3::Y * first_along, first);
+        let pose = Pose::new(crossing - second * Vec3::Y * second_along, second);
+        let depth = depth_separates(
+            &format!("case {case}"),
+            capsule(first_half, first_radius),
+            at,
+            capsule(second_half, second_radius),
+            pose,
+        );
+        let radii = first_radius + second_radius;
+        let sine = (first * Vec3::Y).cross(second * Vec3::Y).length();
+        if sine > 0.01 {
+            assert!(depth < radii + 1e-3, "case {case}: {depth} to clear radii of {radii}");
+        }
+    }
+}
+
 // --- Moves ---
+
+/// A body whose core lies along another's clears it in one call, by one push, sideways, and doesn't pop
+/// up by four pushes that each fall short. It allocates nothing, by `tests/allocations.rs`.
+#[test]
+fn a_body_on_anothers_line_clears_it_in_one_move() {
+    let shape = capsule(0.55, 0.1);
+    let obstacle = StaticCollider {
+        id: ColliderId(1),
+        shape: StaticShape::Convex(shape),
+        pose: Pose::IDENTITY,
+        memberships: Group::World.mask(),
+    };
+    for offset in [0.0, 0.3, -0.3, 1.0] {
+        let mut world = world(vec![obstacle.clone()]);
+        let groups = CollisionGroups::new(Group::Character.mask(), Group::World.mask());
+        let start = Vec3::new(0.0, offset, 0.0);
+        let body = BodyDesc { id: BodyId(1), shape, pose: Pose::at(start), groups };
+        world.add_body(body).expect("fits");
+        let options = MoveOptions::default();
+        let outcome = world.move_and_collide(BodyId(1), Vec3::ZERO, &options).expect("moves");
+        assert!(outcome.started_overlapping(), "from {offset}");
+        assert_close(outcome.overlap_push.length(), 0.2 + options.skin);
+        assert_close(outcome.position.y, offset);
+        let others = ALL.excluding(BodyId(1));
+        assert_eq!(world.penetration(&shape, Pose::at(outcome.position), &others), None, "from {offset}");
+        assert_eq!(world.take_stats().overlaps_resolved, 1, "from {offset}");
+    }
+}
 
 fn moving_world(statics: Vec<StaticCollider>, start: Vec3) -> (PhysicsWorld, BodyId) {
     let mut world = world(statics);

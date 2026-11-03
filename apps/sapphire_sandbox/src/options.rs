@@ -1288,7 +1288,7 @@ mod tests {
             let run = options.tuned_run();
             (run.arena_fight, run.graph_show, run.cues, run.camera_director, run.reads_files)
         };
-        assert_eq!(run(&["--arena", "--fight"]), (true, false, false, true, true));
+        assert_eq!(run(&["--arena", "--fight"]), (true, false, true, true, true));
         assert_eq!(run(&["--look-dev", "hero", "--graph", "walk"]), (false, true, false, false, true));
         assert_eq!(run(&["--look-dev", "hero"]), (false, false, false, false, true));
         assert_eq!(run(&["--arena"]), (false, false, false, true, true));

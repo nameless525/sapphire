@@ -50,7 +50,7 @@ impl App for OutsideCaller {
         }
         let first = frame(&mut stage)?;
         assert_eq!(first.len(), (WIDTH * HEIGHT * 4) as usize, "the whole target, without its row padding");
-        let colors = first.chunks_exact(4).collect::<BTreeSet<_>>().len();
+        let colors = first.as_chunks::<4>().0.iter().collect::<BTreeSet<_>>().len();
         assert!(colors > 100, "a drawn scene has more than {colors} colors");
 
         for _ in 0..60 {

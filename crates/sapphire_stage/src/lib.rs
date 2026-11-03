@@ -49,6 +49,10 @@
 //! moved here whole, since [`Scene`] and [`Content`] hold their types and call them directly. `game_combat` and
 //! `game_ui` take them once a seam stands between (M3's S2).
 
+// These docs are read with `--document-private-items`, as CI renders them: a module an app reaches into keeps
+// its links to what stands behind it.
+#![allow(rustdoc::private_intra_doc_links)]
+
 pub mod anim_graph;
 pub mod animate;
 pub mod arena;
@@ -74,7 +78,7 @@ pub mod layers;
 pub mod lookdev;
 pub mod orbit;
 mod outlines;
-pub mod party_looks;
+mod party_looks;
 mod pose;
 mod readback;
 pub mod rims;

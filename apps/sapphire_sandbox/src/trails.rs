@@ -175,7 +175,7 @@ impl Cuts {
                     }
                     Cut { from: from as u32, to: (to as u32 + FOLLOW_TICKS).min(last as u32) }
                 }
-                None => Cut { from: hit.span.from, to: hit.span.to.min(last as u32) },
+                None => Cut { from: hit.span.from, to: hit.span.to },
             };
             cuts.add(cut);
         }
@@ -497,6 +497,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use sapphire_gameplay::Simulation;
+    use sapphire_moves::{BakedPath, BakedTables, RootSample, Span};
     use sapphire_render::VfxFrame;
     use sapphire_time::SimDuration;
     use sapphire_vfx::{OwnerSteps, VfxBudget};
@@ -642,6 +643,43 @@ mod tests {
         assert_eq!(of("lunge", &enemy), [cut(30, 33)]);
         assert_eq!(of("stagger_light", &enemy), []);
         assert_eq!(of("death", &enemy), []);
+    }
+
+    /// A shipped move, to hang tables and hits of a test's own on: `samples` along +X, one a tick, and a
+    /// hit on the blade for each of `hits`, as a move's hits are, sorted by when they open.
+    fn a_move_of(samples: &[f32], hits: &[(u32, u32)]) -> Move {
+        let mut bout = Bout::new("arena-fight-won");
+        while bout.views()[1].and_then(|view| view.moves.current).is_none() {
+            bout.step();
+        }
+        let current = bout.views()[1].and_then(|view| view.moves.current).expect("just seen");
+        let library = bout.simulation().move_library();
+        let set = library.current(current.at.set).expect("its set");
+        let swipe = set.moves().iter().find(|moved| moved.label() == "swipe").expect("the warrior's");
+        let mut moved = swipe.clone();
+        let path = samples.iter().map(|&x| PathSample { translation: [x, 0.0, 0.0], ..PathSample::IDENTITY });
+        let path = BakedPath::new(BLADE, path.collect());
+        moved.tables =
+            BakedTables::new(vec![RootSample::ZERO; samples.len()], vec![path]).expect("sound tables");
+        let hit = swipe.hitboxes.iter().find(|hit| hit.path() == BLADE).expect("its hit");
+        moved.hitboxes = hits
+            .iter()
+            .map(|&(from, to)| {
+                let mut one = hit.clone();
+                one.span = Span { from, to };
+                one
+            })
+            .collect();
+        moved
+    }
+
+    /// A hit's window says when for a blade that never flies, however little of the move its table has:
+    /// a pose can swing where its table holds still, and a table can be shorter than its move.
+    #[test]
+    fn a_slow_cuts_window_outlasts_a_short_table() {
+        assert_eq!(Cuts::of(&a_move_of(&[0.0], &[(10, 14)])).as_slice(), [cut(10, 14)]);
+        assert_eq!(Cuts::of(&a_move_of(&[0.0; 12], &[(10, 14)])).as_slice(), [cut(10, 14)]);
+        assert_eq!(Cuts::of(&a_move_of(&[0.0; 30], &[(10, 14)])).as_slice(), [cut(10, 14)]);
     }
 
     /// Cuts that meet are one, and a list too long joins its last.

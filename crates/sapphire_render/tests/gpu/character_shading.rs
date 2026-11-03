@@ -612,6 +612,8 @@ fn thin_hair_lets_a_back_light_through_by_its_strength_and_thinness() {
 fn two_sided_pipelines_are_built_only_for_two_sided_materials() {
     let mut harness = Harness::new();
     // Render pipelines the device holds, as wgpu counts them.
+    // The counts below hold the scene prepass's too.
+    harness.renderer.keep_scene_prepass();
     let held = |harness: &Harness| {
         let report = harness.gpu.instance().raw().generate_report().expect("a wgpu-core backend");
         report.hub.render_pipelines.num_kept_from_user

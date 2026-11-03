@@ -117,6 +117,8 @@ impl Scene {
         let mut renderer = Renderer::new(&gpu, FORMAT, settings).expect("renderer");
         let msaa = settings.msaa != Msaa::Off;
         renderer.readable_depth = !msaa;
+        // A test reads the scene prepass's depth.
+        renderer.keep_scene_prepass();
         let bytes = ball().to_cooked().expect("cook");
         let mesh = Mesh::read(&bytes).expect("valid");
         let materials = renderer.upload_embedded_materials(mesh).expect("materials");

@@ -159,6 +159,13 @@ impl RenderSettings {
     pub(crate) fn writes_velocity(&self) -> bool {
         self.temporal || self.scene_velocity
     }
+
+    /// Whether the frame reads the scene prepass, so its pipelines are worth building: temporal AA and
+    /// what draws after its resolve do, and so do GTAO and whatever asked for its velocity. A pass that
+    /// comes and goes has it built when it comes ([`Renderer::keep_scene_prepass`]).
+    pub(crate) fn reads_scene_prepass(&self) -> bool {
+        self.writes_velocity() || self.ambient_occlusion.gtao.is_some()
+    }
 }
 
 impl Default for RenderSettings {
@@ -304,6 +311,10 @@ pub const CHARACTER_PREPASS: &str = "character prepass";
 pub const SCENE_PREPASS: &str = "scene prepass";
 /// The prepasses, which spec §3.3's "Culling + prepass" row budgets.
 pub const PREPASSES: [&str; 2] = [CHARACTER_PREPASS, SCENE_PREPASS];
+
+/// What a scene prepass that runs without its pipelines says.
+const SCENE_PREPASS_READ: &str =
+    "a pass that reads the scene prepass needs Renderer::keep_scene_prepass first";
 /// The main pass's name in the frame graph: every family's opaque, alpha-tested and transparent
 /// surfaces, their outlines and the sky, forward lit. The overlay and the bench time it against
 /// spec §3.3's "Forward opaque" row (3.5 ms on Desktop-Low, 8 ms on Mobile-Low).
@@ -447,8 +458,9 @@ pub struct ShaderUpdate {
 /// scale), single-sampled, and can be sampled and copied.
 ///
 /// The scene prepass runs only if a later pass reads one of its outputs; the frame graph culls
-/// it otherwise, at no GPU cost. Temporal AA (M1 R7) reads it. The character prepass (M1 C5) runs
-/// every frame: the main pass reads it for the rim, the bangs' shadow and eyes through hair.
+/// it otherwise, at no GPU cost. Temporal AA (M1 R7) and GTAO read it, debug lines while there are
+/// any, and a pass of yours may, after [`Renderer::keep_scene_prepass`]. The character prepass (M1 C5)
+/// runs every frame: the main pass reads it for the rim, the bangs' shadow and eyes through hair.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PrepassTargets {
     /// The character prepass: depth of the characters the frame lists alone, opaque and
@@ -698,7 +710,7 @@ impl Renderer {
                             cache,
                             shaders_ref,
                             settings.shadows.as_ref(),
-                            (settings.temporal, settings.writes_velocity()),
+                            (settings.temporal, settings.writes_velocity(), settings.reads_scene_prepass()),
                             crate::ambient::constants(&settings.ambient_occlusion, None),
                         )
                     },
@@ -1512,6 +1524,17 @@ impl Renderer {
         });
     }
 
+    /// Builds the scene prepass's pipelines, on a renderer whose settings don't read that pass (no
+    /// temporal AA, GTAO or [`RenderSettings::scene_velocity`]), which doesn't build what can't run. A
+    /// caller that adds a pass reading [`PrepassTargets`]' `depth`, `normals` or `outlines` calls this
+    /// first: such a frame, without it, panics saying so.
+    pub fn keep_scene_prepass(&mut self) {
+        self.checked_build(|renderer| {
+            let on = BuildOn::sources(renderer.edited_shaders);
+            renderer.pipelines.keep_scene_prepass(&renderer.device, on);
+        });
+    }
+
     /// The shader sources the pipelines in use were built from, which pipelines built later
     /// are built from too: compiled in, until a build of new ones was swapped in
     /// ([`Self::request_shader_sources`], [`Self::set_shader_sources`]).
@@ -1761,6 +1784,8 @@ impl Renderer {
 
     /// Readies the frame's debug lines, making the pass's state with the first frame that has any.
     fn prepare_debug_draw(&mut self, lines: &[DebugLine]) {
+        // Its pass reads the scene prepass's depth, so that pass runs while there are lines.
+        self.pipelines.keep_scene_prepass(&self.device, BuildOn::sources(self.edited_shaders));
         let draw = self.debug_draw.get_or_insert_with(|| {
             let cache = self.pipeline_cache.as_ref();
             Box::new(DebugDraw::new(&self.device, self.color_format, &self.shaders, cache))
@@ -2155,7 +2180,7 @@ impl Renderer {
                 let Some(mesh) = pipelines.mesh(format) else { continue };
                 for (pipeline, kind, variants) in mesh.scene_prepasses() {
                     if variants.iter().any(|&variant| view_draws.has_static(format, variant)) {
-                        pass.set_pipeline(pipeline.expect("built with the variants' surfaces"));
+                        pass.set_pipeline(pipeline.expect(SCENE_PREPASS_READ));
                         for &variant in variants {
                             view_draws.draw_static(&mut pass, kind, format, variant, set);
                         }
@@ -2165,7 +2190,7 @@ impl Renderer {
             if let Some(mesh) = pipelines.mesh(PositionFormat::Float32) {
                 for (pipeline, kind, variants) in mesh.scene_prepasses() {
                     if variants.iter().any(|&variant| view_draws.has_deformed(variant)) {
-                        pass.set_pipeline(pipeline.expect("built with the variants' surfaces"));
+                        pass.set_pipeline(pipeline.expect(SCENE_PREPASS_READ));
                         for &variant in variants {
                             view_draws.draw_deformed(&mut pass, kind, variant, set);
                         }
@@ -2183,8 +2208,7 @@ impl Renderer {
                     if !view_draws.has_static(format, variant) {
                         continue;
                     }
-                    let pipeline =
-                        mesh.foliage_prepass(variant.coverage).expect("built with the variant's surface");
+                    let pipeline = mesh.foliage_prepass(variant.coverage).expect(SCENE_PREPASS_READ);
                     if !foliage_bound {
                         pass.set_bind_group(2, &scene_bind_groups[foliage_group], &[]);
                         foliage_bound = true;
@@ -2207,7 +2231,7 @@ impl Renderer {
                 let Some(mesh) = pipelines.mesh(format) else { continue };
                 for (pipeline, kind, variants) in mesh.outline_prepasses() {
                     if variants.iter().any(|&variant| view_draws.has_static(format, variant)) {
-                        pass.set_pipeline(pipeline.expect("built with the variants' surfaces"));
+                        pass.set_pipeline(pipeline.expect(SCENE_PREPASS_READ));
                         for &variant in variants {
                             view_draws.draw_static(&mut pass, kind, format, variant, set);
                         }
@@ -2217,7 +2241,7 @@ impl Renderer {
             if let Some(mesh) = pipelines.mesh(PositionFormat::Float32) {
                 for (pipeline, kind, variants) in mesh.outline_prepasses() {
                     if variants.iter().any(|&variant| view_draws.has_deformed(variant)) {
-                        pass.set_pipeline(pipeline.expect("built with the variants' surfaces"));
+                        pass.set_pipeline(pipeline.expect(SCENE_PREPASS_READ));
                         for &variant in variants {
                             view_draws.draw_deformed(&mut pass, kind, variant, set);
                         }

@@ -7,8 +7,9 @@
 //!
 //! A renderer holds no pipeline, buffer or bind group for this until the first frame with lines:
 //! every frame before it is one comparison, adds no pass and reads no prepass. That first frame
-//! builds the one pipeline on the calling thread (a cold Metal compile's hitch, for a tool). After
-//! it, a frame with no lines adds no pass again.
+//! builds the one pipeline on the calling thread (a cold Metal compile's hitch, for a tool), and the
+//! scene prepass's, on a tier that doesn't otherwise read that pass. After it, a frame with no lines
+//! adds no pass again.
 //!
 //! # How lines draw
 //!

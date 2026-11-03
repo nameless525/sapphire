@@ -116,6 +116,29 @@ fn passthrough() -> PostParams {
     }
 }
 
+/// With no reader, there's no scene prepass to rebuild, and the edit stays off it until one comes,
+/// which then builds it from the edited source.
+#[test]
+#[ignore = "needs a GPU"]
+fn an_edit_rebuilds_the_scene_prepass_only_once_something_reads_it() {
+    let gpu = gpu();
+    let mut renderer = Renderer::new(&gpu, FORMAT, RenderSettings::default()).expect("renderer");
+    let comment = |sources: &ShaderSources, nonce: &str| {
+        let mut edited = sources.clone();
+        edited.set(ShaderFile::Prepass, format!("{}\n// {nonce}\n", sources.get(ShaderFile::Prepass)));
+        edited
+    };
+    // The character prepass's two alone.
+    let edited = comment(&ShaderSources::compiled_in(), "unread");
+    let update = renderer.set_shader_sources(&edited).expect("a valid edit");
+    assert_eq!(update, ShaderUpdate { programs: 1, pipelines: 2 });
+    // Kept, the scene prepass's plain pipeline joins them; the hulls' are the outline program's.
+    renderer.keep_scene_prepass();
+    let edited = comment(&edited, "read");
+    let update = renderer.set_shader_sources(&edited).expect("a valid edit");
+    assert_eq!(update, ShaderUpdate { programs: 1, pipelines: 3 });
+}
+
 /// A renderer drawing into a 64×64 target, and what its frames need.
 struct Frames {
     renderer: Renderer,
@@ -137,8 +160,11 @@ impl Frames {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
+        let mut renderer = Renderer::new(gpu, FORMAT, RenderSettings::default()).expect("renderer");
+        // The counts here hold the scene prepass's, which default settings otherwise leave unbuilt.
+        renderer.keep_scene_prepass();
         Self {
-            renderer: Renderer::new(gpu, FORMAT, RenderSettings::default()).expect("renderer"),
+            renderer,
             graph: GraphExecutor::new(),
             packets: FramePacketRing::new(),
             target,

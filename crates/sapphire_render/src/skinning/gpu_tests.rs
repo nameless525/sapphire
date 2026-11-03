@@ -463,6 +463,8 @@ fn prepass_depth_equals_the_main_pass_depth() {
     let settings = RenderSettings { msaa: Msaa::Off, ..RenderSettings::default() };
     let mut renderer = Renderer::new(&gpu, wgpu::TextureFormat::Rgba8UnormSrgb, settings).expect("renderer");
     renderer.readable_depth = true;
+    // This reads the scene prepass's depth.
+    renderer.keep_scene_prepass();
     let (character, prop) = (upload(&mut renderer, &character), upload(&mut renderer, &prop));
     let mut packets = FramePacketRing::new();
     let packet = packets.begin();

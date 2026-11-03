@@ -24,6 +24,7 @@ mod outline;
 mod render;
 mod render_scale;
 mod rim_hair;
+mod scene_prepass;
 mod shadows;
 mod temporal;
 mod texture;

@@ -846,6 +846,8 @@ fn alpha_tested_and_transparent_materials() {
 #[ignore = "needs a GPU"]
 fn permutations_choose_pipelines_and_passes() {
     let mut harness = Harness::new(64);
+    // The counts below hold the scene prepass's too.
+    harness.renderer.keep_scene_prepass();
     let stats = |harness: &Harness| harness.renderer.stats();
     assert_eq!(stats(&harness).character_pipelines, 2, "opaque surface and outline, quantized meshes");
     let outlined =

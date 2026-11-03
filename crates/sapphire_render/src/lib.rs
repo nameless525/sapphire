@@ -252,7 +252,9 @@
 //!   (`Rg16Float`, texture coordinates) of every opaque instance, then of their outline hulls
 //!   (M1 C4), which also write the outline mask (`R8Unorm`, 1 where a hull is nearest). The anime
 //!   character family's alpha-tested surfaces and hulls are cut out of it as of the character
-//!   prepass (M1 C7), foliage's cards by foliage's own pipelines (M1 W6).
+//!   prepass (M1 C7), foliage's cards by foliage's own pipelines (M1 W6). Its pipelines are built
+//!   only where something reads it: temporal AA, GTAO, debug lines when they come, or a pass of
+//!   an app's ([`Renderer::keep_scene_prepass`]).
 //!   Characters move by their skinned positions, static meshes by their instance transform, and
 //!   both by the camera's, never by temporal AA's jitter; a hull moves with its surface's
 //!   vertices, so its depth is the main pass's hull's, and its velocity is its line's, the

@@ -522,7 +522,9 @@ fn a_frame_with_nothing_builds_nothing_and_adds_no_pass() {
 
     let lines = [line(Vec3::new(-1.0, 1.5, 0.0), Vec3::new(1.0, 1.5, 0.0), Depth::Tested)];
     scene.render(&gpu, &texture, &lines);
-    assert_eq!(held(), (without.0 + 1, without.1), "the first frame with lines builds its one pipeline");
+    // Its own, and the scene prepass's plain one and the hulls', which only now can run.
+    let with_lines = (without.0 + 3, without.1);
+    assert_eq!(held(), with_lines, "the first frame with lines builds what it reads");
     assert!(scene.ran(PASS));
     assert!(scene.ran(SCENE_PREPASS), "tested lines read its depth");
     let stats = scene.renderer.stats().debug_draw;
@@ -533,9 +535,9 @@ fn a_frame_with_nothing_builds_nothing_and_adds_no_pass() {
     let many = vec![lines[0]; 5_000];
     scene.render(&gpu, &texture, &many);
     assert_eq!(scene.renderer.stats().debug_draw.drawn, 5_000);
-    assert_eq!(held(), (without.0 + 1, without.1));
+    assert_eq!(held(), with_lines);
     scene.render(&gpu, &texture, &[]);
-    assert_eq!(held(), (without.0 + 1, without.1));
+    assert_eq!(held(), with_lines);
     assert!(!scene.ran(PASS));
     assert!(!scene.ran(SCENE_PREPASS));
     assert_eq!(scene.renderer.stats().debug_draw.drawn, 0);

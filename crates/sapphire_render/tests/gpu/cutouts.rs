@@ -247,6 +247,9 @@ fn render(settings: RenderSettings, card: Card, frames: u32) -> Frame {
         MeshInstance { id: InstanceId(0), mesh: wall, transform: Mat4::IDENTITY },
         MeshInstance { id: InstanceId(1), mesh: card, transform: Mat4::IDENTITY },
     ];
+    // This reads the scene prepass's depth. Kept after the uploads, it builds what they drew so far,
+    // foliage's cards too, as debug lines' first frame does.
+    renderer.keep_scene_prepass();
 
     let target = gpu.device().create_texture(&wgpu::TextureDescriptor {
         label: None,

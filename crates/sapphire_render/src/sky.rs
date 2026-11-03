@@ -553,9 +553,27 @@ impl CubePass<'_> {
         view: &wgpu::BindGroup,
         view_offset: impl Fn(u32) -> u32,
         labels: bool,
-        mut timestamps: Option<wgpu::RenderPassTimestampWrites<'_>>,
+        timestamps: Option<wgpu::RenderPassTimestampWrites<'_>>,
     ) {
         for face in self.faces.clone() {
+            // Timed as one pass, each face its own render pass: from the first's start to the
+            // last's end, where a device takes timestamps at render passes' boundaries.
+            let beginning_of_pass_write_index = timestamps
+                .as_ref()
+                .and_then(|t| t.beginning_of_pass_write_index)
+                .filter(|_| face == self.faces.start);
+            let end_of_pass_write_index = timestamps
+                .as_ref()
+                .and_then(|t| t.end_of_pass_write_index)
+                .filter(|_| face + 1 == self.faces.end);
+            let timestamp_writes = timestamps
+                .as_ref()
+                .filter(|_| beginning_of_pass_write_index.is_some() || end_of_pass_write_index.is_some())
+                .map(|t| wgpu::RenderPassTimestampWrites {
+                    query_set: t.query_set,
+                    beginning_of_pass_write_index,
+                    end_of_pass_write_index,
+                });
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: labels.then_some("sky cube face"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -569,8 +587,7 @@ impl CubePass<'_> {
                     },
                 })],
                 depth_stencil_attachment: None,
-                // Timed as one pass: the first face carries the graph pass's timestamps.
-                timestamp_writes: timestamps.take(),
+                timestamp_writes,
                 ..Default::default()
             });
             pass.set_pipeline(self.pipeline);

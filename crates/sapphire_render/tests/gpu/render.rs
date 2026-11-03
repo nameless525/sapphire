@@ -1903,6 +1903,28 @@ fn two_slot_sphere(first: Material, second: Material) -> sapphire_assets::materi
 /// RA-005: an upload that fails partway takes back every material it uploaded, so retrying
 /// rejected content never uses up material slots. (A family's buffer filling up partway is
 /// `materials`' `a_full_family_takes_back_what_the_upload_took`.)
+/// A refresh of all six sky cube faces takes its pass's timestamps across render passes, the first
+/// face the start and the last the end, which validates on devices that time at their boundaries
+/// (OPT-018; an M5 reads 199 µs for the six and about 41 for one). A single frame's pair may not
+/// come back (`graph.rs`'s test says why), so this doesn't insist on the numbers.
+#[test]
+#[ignore = "needs a GPU"]
+fn the_sky_cubes_timing_spans_all_six_faces() {
+    let gpu = gpu();
+    let settings = RenderSettings { msaa: Msaa::Off, ..RenderSettings::default() };
+    let mut frames = Frames::with_settings(&gpu, FORMAT, settings).expect("renderer");
+    if !frames.graph.set_gpu_timing(&gpu, true) {
+        return;
+    }
+    let texture = target(&gpu, FORMAT, (64, 64));
+    let view = texture.create_view(&Default::default());
+    let camera = framing_camera(38.0, (64, 64), 0.3);
+    for _ in 0..4 {
+        assert!(frames.render(&gpu, &view, camera, &[], &[]).is_none(), "validates");
+        gpu.device().poll(wgpu::PollType::wait_indefinitely()).expect("poll");
+    }
+}
+
 /// A window dragged through a size a frame leaves the pool the frame's textures and a set or two
 /// more, not the sixty sets the age alone would keep (OPT-009).
 #[test]

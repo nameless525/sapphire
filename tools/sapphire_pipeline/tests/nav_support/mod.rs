@@ -5,10 +5,10 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use sapphire_colliders::{ColliderDocument, ColliderSet, Group};
+use sapphire_colliders::{ColliderDocument, ColliderSet};
 use sapphire_pipeline::assembly::{self, Detail};
 use sapphire_pipeline::import::gltf;
-use sapphire_pipeline::nav::{Triangle, colliders_to_triangles, mesh_to_triangles};
+use sapphire_pipeline::nav::{Triangle, colliders_to_triangles, solid_groups};
 
 pub fn content() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content")
@@ -22,12 +22,12 @@ pub fn arena_colliders() -> ColliderSet {
 
 /// What stops a character in the arena.
 pub fn arena_triangles() -> Vec<Triangle> {
-    let solid = Group::World.mask().union(Group::CharacterBlocker.mask());
-    colliders_to_triangles(&arena_colliders(), solid)
+    colliders_to_triangles(&arena_colliders(), solid_groups())
 }
 
 /// The whole look-dev town, as the cook assembles it: every triangle anyone drew, roofs and all, with
-/// nothing to say what a body would really meet. The larger case.
+/// nothing to say what a body would really meet. The larger case, for what a bake costs and how paths
+/// run: no zone bakes from drawn triangles, whose low bits aren't the same on every platform.
 pub fn town_triangles() -> Vec<Triangle> {
     let dir = content().join("lookdev/town");
     let bytes = fs::read(dir.join("town.assembly.ron")).expect("the town's document");
@@ -38,7 +38,31 @@ pub fn town_triangles() -> Vec<Triangle> {
         Ok(gltf::import_slice(&bytes, path.parent()).expect("it imports"))
     })
     .expect("it assembles");
-    mesh_to_triangles(&mesh)
+    let (corners, _) = mesh.indices.as_chunks::<3>();
+    corners.iter().map(|corner| corner.map(|index| mesh.vertices[index as usize].position)).collect()
+}
+
+/// Each of the town's top-level placements, by name, with a digest of its triangles. A diff of two
+/// platforms' lines says which pieces of the town come out with other low bits.
+pub fn town_part_digests() -> Vec<(String, u32, blake3::Hash)> {
+    let dir = content().join("lookdev/town");
+    let path = dir.join("town.assembly.ron");
+    let town = assembly::read(&fs::read(&path).expect("the town's document")).expect("it reads");
+    let parts = assembly::import_parts(&path, &town, Detail::Full).expect("it imports");
+    let (corners, _) = parts.mesh.indices.as_chunks::<3>();
+    let mut hashes: Vec<(blake3::Hasher, u32)> =
+        std::iter::repeat_with(|| (blake3::Hasher::new(), 0)).take(town.place.len()).collect();
+    for (corner, owner) in corners.iter().zip(&parts.owners) {
+        let (hash, count) = &mut hashes[*owner as usize];
+        *count += 1;
+        for index in corner {
+            for value in parts.mesh.vertices[*index as usize].position {
+                hash.update(&value.to_bits().to_le_bytes());
+            }
+        }
+    }
+    let names = town.place.iter().map(|entry| entry.name().to_owned());
+    names.zip(hashes).map(|(name, (hash, count))| (name, count, hash.finalize())).collect()
 }
 
 /// A digest of triangles by their floats' bits, to tell input that moved from a bake that did.

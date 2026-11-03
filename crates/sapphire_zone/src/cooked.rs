@@ -39,8 +39,8 @@ pub struct Zone {
 }
 
 impl Versioned for Zone {
-    /// 1: M3 W1.
-    const VERSION: u32 = 1;
+    /// 1: M3 W1. 2: one navmesh in place of a list of tiles (P1).
+    const VERSION: u32 = 2;
 }
 
 /// What the simulation reads of a zone. Everything here, and everything it references, is in a
@@ -54,8 +54,8 @@ pub struct ZoneSimulation {
     pub spawners: Vec<CookedSpawner>,
     /// By ascending ID.
     pub triggers: Vec<CookedTrigger>,
-    /// Navigation tiles, ascending.
-    pub navigation: Vec<AssetId>,
+    /// The zone's navmesh, one flat graph however many tiles it baked from.
+    pub navigation: Option<AssetId>,
     /// Encounters, ascending.
     pub encounters: Vec<AssetId>,
 }
@@ -382,7 +382,7 @@ impl ArchivedZone {
         let colliders = simulation.colliders.as_ref().copied();
         let mut references: Vec<AssetId> = colliders
             .into_iter()
-            .chain(simulation.navigation.iter().copied())
+            .chain(simulation.navigation.as_ref().copied())
             .chain(simulation.encounters.iter().copied())
             .collect();
         references.sort_unstable();
@@ -457,9 +457,9 @@ impl ArchivedZone {
         if let Some(id) = simulation.colliders.as_ref() {
             referenced("collider set", *id, &mut digest)?;
         }
-        digest.u32(simulation.navigation.len() as u32);
-        for id in simulation.navigation.iter() {
-            referenced("navigation tile", *id, &mut digest)?;
+        digest.u32(u32::from(simulation.navigation.is_some()));
+        if let Some(id) = simulation.navigation.as_ref() {
+            referenced("navmesh", *id, &mut digest)?;
         }
         digest.u32(simulation.encounters.len() as u32);
         for id in simulation.encounters.iter() {
@@ -496,8 +496,6 @@ impl ArchivedZone {
             trigger.volume.to_native().check().map_err(invalid)?;
             check_name(trigger.event.as_str()).map_err(invalid)?;
         }
-        check_count("navigation", simulation.navigation.len())?;
-        check_ascending("navigation", simulation.navigation.as_slice())?;
         check_count("encounters", simulation.encounters.len())?;
         check_ascending("encounters", simulation.encounters.as_slice())
     }
@@ -741,6 +739,7 @@ mod tests {
                 ],
                 day: Some("a day's text".to_owned()),
                 rigs: None,
+                navigation: None,
             })
             .expect("cooks")
     }
@@ -824,7 +823,7 @@ mod tests {
                 z.simulation.triggers[0].volume = CookedVolume::Sphere { radius: f32::NAN };
             }),
             ("trigger event", "empty", |z| z.simulation.triggers[0].event.clear()),
-            ("navigation", "out of order", |z| z.simulation.navigation = vec![MESH, MESH]),
+            ("encounters", "out of order", |z| z.simulation.encounters = vec![MESH, MESH]),
             ("cell order", "out of order", |z| z.presentation.cells[1].coord = z.presentation.cells[0].coord),
             ("bounds", "aren't a box", |z| z.presentation.cells[0].contents.bounds_min = [f32::NAN; 3]),
             ("bounds order", "aren't a box", |z| z.presentation.cells[0].contents.bounds_min[1] = 1e3),
@@ -1036,6 +1035,6 @@ mod tests {
             std::env::consts::ARCH
         );
         std::io::stderr().write_all(line.as_bytes()).expect("stderr takes it");
-        assert_eq!(digest, 0x2a13_a22c_f777_9866, "the digest moved; {line}");
+        assert_eq!(digest, 0x0147_a8f7_85fa_8b41, "the digest moved; {line}");
     }
 }

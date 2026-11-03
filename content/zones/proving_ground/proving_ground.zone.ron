@@ -46,6 +46,8 @@
         day: Some("../../lookdev/lookdev_day.ron"),
         rigs: Some("../../lookdev/lookdev_light_rigs.ron"),
         colliders: Some("af99346e-5f08-439e-9d9b-70fa76fa0935"),
+        // The ground's whole square.
+        navigation: Some((min: (-40.0, -48.0), max: (56.0, 48.0))),
         spawners: [
             (name: "player_start", position: (1.0, 0.0, 1.0), yaw_degrees: 0.0, spawns: "player"),
             (name: "far_gate", position: (22.0, 0.0, -2.0), yaw_degrees: 225.0, spawns: "warrior"),

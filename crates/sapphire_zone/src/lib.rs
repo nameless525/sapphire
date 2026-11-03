@@ -28,7 +28,7 @@
 //!
 //! # The simulation streams nothing
 //!
-//! A zone's colliders, spawners, triggers, navigation tiles and encounters load before its first step
+//! A zone's colliders, spawners, triggers, navmesh and encounters load before its first step
 //! and stay (m3-plan §3). So they are a zone's *hard* references, which loading it loads
 //! ([`ArchivedZone::references`]), and the cells' meshes are *soft* ones, which it only names
 //! ([`ArchivedZone::presentation_references`]), for the world to ask for and let go of.
@@ -54,7 +54,7 @@ pub use cooked::{
 };
 pub use document::{
     Instance, Light, LightShape, Placement, Spawner, Spline, Split, Trigger, Volume, ZoneDocument, ZoneError,
-    ZoneGeometry,
+    ZoneGeometry, ZoneNavigation,
 };
 pub use grid::{Bounds, CellCoord, Grid, Place};
 

@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use sapphire_colliders::{ArchivedColliderSet, ColliderSet};
 use sapphire_moves::{ArchivedMoveSet, MoveSet};
+use sapphire_navmesh::{ArchivedNavMesh, NavMesh};
 use sapphire_serialize::cooked::access_unchecked;
 use sapphire_zone::{ArchivedZone, Zone};
 
@@ -58,6 +59,7 @@ mod sealed {
     impl Sealed for crate::clip::Clip {}
     impl Sealed for sapphire_colliders::ColliderSet {}
     impl Sealed for sapphire_zone::Zone {}
+    impl Sealed for sapphire_navmesh::NavMesh {}
     impl Sealed for crate::sound::Sound {}
     impl Sealed for crate::cue::Cue {}
     impl Sealed for sapphire_moves::MoveSet {}
@@ -120,6 +122,17 @@ impl Asset for Zone {
         // SAFETY: as for meshes: `Zone::read` accepted these bytes, unchanged since.
         unsafe { access_unchecked::<Zone>(bytes) }
             .expect("the envelope was checked when the zone was decoded")
+    }
+}
+
+impl Asset for NavMesh {
+    const KIND: AssetKind = AssetKind::NavMesh;
+    type View<'a> = &'a ArchivedNavMesh;
+
+    unsafe fn view(bytes: &[u8]) -> &ArchivedNavMesh {
+        // SAFETY: as for meshes: `NavMesh::read` accepted these bytes, unchanged since.
+        unsafe { access_unchecked::<NavMesh>(bytes) }
+            .expect("the envelope was checked when the navmesh was decoded")
     }
 }
 

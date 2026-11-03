@@ -76,7 +76,8 @@
 //!   the simulation reads, checked by move and track. A move that names a clip reads what that clip's
 //!   own cook read, its source and its rig (M2 N1), so a set cooks after every clip, and its key depends
 //!   on their keys.
-//! - **Zones** cook `.zone.ron` documents → `.szone` and a `.smesh` per cell (M3 W1, [`zone`]). Their
+//! - **Zones** cook `.zone.ron` documents → `.szone`, a `.smesh` per cell and, if they ask for one, a
+//!   `.snav` baked from their colliders (M3 W1 and P1, [`zone`], [`nav`]). Their
 //!   cells' meshes merge prefabs, assemblies by their sidecars' IDs, and are keyed by what's in each, so
 //!   a save to one placed piece recooks the cells it's in. A `.szone` reads its meshes' bounds, so it
 //!   cooks last of all; its key depends on those assets' keys.
@@ -147,6 +148,7 @@ use sapphire_assets::sound::{SOUND_EXTENSION, Sound};
 use sapphire_assets::texture::{TEXTURE_EXTENSION, TEXTURE_VERSION};
 use sapphire_colliders::{COLLIDERS_EXTENSION, ColliderSet};
 use sapphire_moves::{BakedTables, ClipMotionDocument, MOVE_SET_EXTENSION, MoveSet};
+use sapphire_navmesh::{NAVMESH_EXTENSION, NavMesh};
 use sapphire_reflect::Versioned;
 use sapphire_strings::{STRINGS_EXTENSION, StringTable};
 use sapphire_zone::{Place, ZONE_EXTENSION, Zone};
@@ -174,6 +176,7 @@ use crate::mesh::ImportedMesh;
 use crate::mesh::MaterialSlotError;
 use crate::meta::{self, ImportSettings, MeshSettings, MetaError, SourceAsset, SourceTree};
 use crate::moves::{self, BakeError, MoveSetCookError, TableInput};
+use crate::nav;
 use crate::probes::{self, ProbeCookError, ProbeInput};
 use crate::texture::{self, TextureError};
 use crate::zone::{self, CookedPlace, ZoneCookError, ZonePlan};
@@ -255,6 +258,7 @@ pub(crate) const COOKED_EXTENSIONS: &[&str] = &[
     MOVE_SET_EXTENSION,
     ZONE_EXTENSION,
     STRINGS_EXTENSION,
+    NAVMESH_EXTENSION,
 ];
 
 /// What a source's skeleton's ID is derived from.
@@ -409,6 +413,16 @@ impl Recipe {
             cooker: MESH_COOKER,
             format: Mesh::VERSION,
             extension: MESH_EXTENSION,
+        }
+    }
+
+    /// The recipe of a zone's navmesh.
+    fn zone_navigation() -> Self {
+        Self {
+            importer: nav::IMPORTER,
+            cooker: nav::COOKER,
+            format: NavMesh::VERSION,
+            extension: NAVMESH_EXTENSION,
         }
     }
 
@@ -903,6 +917,7 @@ fn cook_dir_through(
                     let file = format!("{}.{pack}.{}", file_stem(&source_relative), recipe.extension);
                     source_relative.with_file_name(file)
                 }
+                Part::Navigation => zone::output_path(&source_relative, recipe.extension),
                 Part::Own | Part::Rig | Part::Skeleton => recipe.output_path(&source_relative),
             };
             let output = claim(&asset.path, &relative)?;
@@ -929,10 +944,12 @@ fn cook_dir_through(
     // key-pose documents and meshes sharing a skeleton read skeletons and rigs, so those go before
     // them; key-pose documents read those meshes' morph targets, so the meshes go before clips, and
     // move sets read clips' keys, so those go before move sets; probe grids read cooked meshes and
-    // their materials, and a zone's `.szone` reads its meshes, so those cook last. `others` read none
-    // of what those cook.
+    // their materials, a navmesh reads cooked colliders, and a zone's `.szone` reads its meshes and holds
+    // its navmesh's key, so those cook last. `others` read none of what those cook.
     let (own_zones, rest): (Vec<usize>, Vec<usize>) =
         (0..plan.len()).partition(|&index| plan[index].is_own_zone());
+    let (navigation, rest): (Vec<usize>, Vec<usize>) =
+        rest.into_iter().partition(|&index| plan[index].part == Part::Navigation);
     let (probe_grids, rest): (Vec<usize>, Vec<usize>) =
         rest.into_iter().partition(|&index| plan[index].is_probe_grid());
     let (materials, rest): (Vec<usize>, Vec<usize>) =
@@ -972,7 +989,7 @@ fn cook_dir_through(
     };
     in_turn(vec![shared_meshes, clips])?;
     reached(CookStage::ClipsCooked);
-    in_turn(vec![move_sets, materials, probe_grids, own_zones])?;
+    in_turn(vec![move_sets, materials, probe_grids, navigation, own_zones])?;
     let assets: Vec<CookedAsset> =
         cooked.into_iter().map(|asset| asset.expect("every planned asset was cooked")).collect();
     let localization = check_localization(&assets)?;
@@ -1164,6 +1181,8 @@ enum Part {
     Cell(Place),
     /// A font's cut for a further pack: its entry in the sidecar's `subsets`, and that pack.
     FontSubset { index: usize, pack: String },
+    /// A zone's navmesh.
+    Navigation,
 }
 
 /// A part of a source, its ID and its recipe.
@@ -1308,7 +1327,12 @@ fn sub_assets(
                 part: Part::Cell(place),
                 recipe: Recipe::zone_cell(),
             });
-            let parts = parts.collect();
+            let navigation = plan.navigation_id().map(|id| PlannedPart {
+                id,
+                part: Part::Navigation,
+                recipe: Recipe::zone_navigation(),
+            });
+            let parts = parts.chain(navigation).collect();
             zones.insert(path.clone(), plan);
             Ok(parts)
         }
@@ -1524,6 +1548,7 @@ impl<'a> PlannedTree<'a> {
             cooked,
             sources: self.sources,
             zones: self.zones,
+            cache: self.cache,
             clip_sources: &remembered.clip_sources,
             last_source: &remembered.last_source,
             memory: self.memory,
@@ -1559,6 +1584,8 @@ struct Assets<'a> {
     /// Sources by their sidecars' IDs, whether they have an asset of that ID or not.
     sources: &'a HashMap<AssetId, &'a SourceAsset>,
     zones: &'a HashMap<PathBuf, ZonePlan>,
+    /// What a navmesh keeps its tiles in.
+    cache: Option<&'a Cache>,
     clip_sources: &'a ClipSources,
     last_source: &'a LastSource,
     memory: &'a CookMemory,
@@ -1908,9 +1935,10 @@ fn asset_key(
     let Planned { asset: SourceAsset { path, meta }, part, skeleton, recipe, .. } = planned;
     let mut dependencies = dependencies(path, &source.bytes, &meta.importer, part, assets)?;
     dependencies.extend(part_dependencies(path, part, *skeleton, &meta.importer));
-    // A cell's key holds what's in it, rather than the whole document (see `zone`).
+    // A cell's or a navmesh's key holds what's in it, rather than the whole document (see `zone`).
     let keyed_source = match part {
         Part::Cell(place) => assets.zones[path].recipe(*place),
+        Part::Navigation => assets.zones[path].navigation_recipe(),
         _ => source.hash,
     };
     Ok(CacheKey::new(&KeyInputs {
@@ -2051,6 +2079,7 @@ fn cook_source(
             };
             return cook_cell(path, *place, settings, cook, assets);
         }
+        Part::Navigation => return cook_navigation(path, assets),
         Part::Skeleton => {
             let joints = if settings.is_animation_only() {
                 assets.clip_sources.get(path, bytes, settings).map_err(clip_error)?.joints.clone()
@@ -2167,6 +2196,21 @@ fn cook_cell(
         .pack(settings.position_format, &bindings)
         .map_err(|source| CookError::MaterialSlot { path: path.to_owned(), source })?;
     Ok(cooked_bytes(path, &packed)?.into_vec())
+}
+
+/// A zone's navmesh, from the cooked colliders it names.
+fn cook_navigation(path: &Path, assets: &Assets<'_>) -> Result<Vec<u8>, CookError> {
+    let plan = &assets.zones[path];
+    let id = plan.document().colliders.expect("a document with `navigation` names `colliders`");
+    let cooked = assets.cooked(id).ok_or_else(|| CookError::ZoneReference {
+        path: path.to_owned(),
+        field: "colliders".to_owned(),
+        what: "a collider document",
+        id,
+    })?;
+    let bytes =
+        read_cooked(cooked).map_err(|source| CookError::Read { path: cooked.output.clone(), source })?;
+    zone::cook_navigation(plan, &bytes, assets.cache).map_err(zone_error(path))
 }
 
 /// A zone's `.szone`, from its plan and its cooked meshes.
@@ -2761,6 +2805,14 @@ fn zone_dependencies(path: &Path, part: &Part, assets: &Assets<'_>) -> Result<Ve
         let cooked = cooked.ok_or(CookError::ZoneReference { path: path.to_owned(), field, what, id })?;
         Ok::<Dependency, CookError>(Dependency::Asset { id, key: cooked.key })
     };
+    // Its colliders are all it reads: the rest of the document isn't its business.
+    if *part == Part::Navigation {
+        let id = document.colliders.expect("a document with `navigation` names `colliders`");
+        return Ok(vec![cooked_key(id, "colliders".to_owned(), "a collider document")?]);
+    }
+    if let Some(id) = plan.navigation_id() {
+        dependencies.push(cooked_key(id, "navigation".to_owned(), "a navmesh")?);
+    }
     for (index, instance) in document.instances.iter().enumerate() {
         let field = format!("instances[{index}].mesh");
         reference(field.clone(), "a static mesh", instance.mesh, |planned| {

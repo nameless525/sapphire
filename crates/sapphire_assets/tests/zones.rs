@@ -33,6 +33,8 @@ fn a_zone_depends_on_what_the_simulation_reads_and_reaches_the_rest() {
     reach.sort_unstable();
     assert_eq!(AssetKind::Zone.reach(&cooked).expect("good"), reach, "what must ship with it");
     assert!(AssetKind::Zone.may_depend_on(AssetKind::Colliders));
+    assert!(AssetKind::Zone.may_depend_on(AssetKind::NavMesh));
+    assert!(!AssetKind::NavMesh.uploads() && AssetKind::NavMesh.keeps_bytes());
     assert!(!AssetKind::Zone.may_depend_on(AssetKind::Mesh), "a decode job would refuse a cell's mesh");
 }
 

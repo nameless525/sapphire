@@ -85,6 +85,14 @@ impl ColliderSet {
         set.validate()?;
         Ok(set)
     }
+
+    /// [`Self::read`] into owned data, every value's bits as they were cooked: for a bake, which reads the
+    /// bytes the simulation reads.
+    pub fn from_cooked(bytes: &[u8]) -> Result<Self, ColliderError> {
+        let set = rkyv::deserialize::<Self, rkyv::rancor::Error>(Self::read(bytes)?)
+            .map_err(sapphire_serialize::CookedError::from)?;
+        Ok(set)
+    }
 }
 
 fn native3(values: &[rkyv::rend::f32_le; 3]) -> [f32; 3] {

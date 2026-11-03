@@ -68,6 +68,7 @@ const PACKED_CONTEXT: &str = "sapphire_pipeline 2026-10-25 packed asset key";
 const PACK_CONTEXT: &str = "sapphire_pipeline 2026-10-25 pack key";
 const REACH_CONTEXT: &str = "sapphire_pipeline 2026-11-03 pack reach key";
 const PARSED_CONTEXT: &str = "sapphire_pipeline 2026-11-03 parsed document key";
+const TILE_CONTEXT: &str = "sapphire_pipeline 2026-11-03 navigation tile key";
 
 /// A pipeline stage as cache keys know it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -165,6 +166,12 @@ impl CacheKey {
     /// The key a document's parse is recorded under: its bytes' hash and the stage that reads it.
     pub fn parsed(source: &blake3::Hash, reader: Stage) -> Self {
         Self::derive(PARSED_CONTEXT, &(source.as_bytes(), (reader.name, reader.version)))
+    }
+
+    /// The key a navigation tile's bake is recorded under: a hash of everything that makes it, and the
+    /// stage that bakes it.
+    pub fn tile(inputs: &blake3::Hash, baker: Stage) -> Self {
+        Self::derive(TILE_CONTEXT, &(inputs.as_bytes(), (baker.name, baker.version)))
     }
 
     /// The key a pack's hash is recorded under: the packer's stage, the pack's name, and its

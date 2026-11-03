@@ -1,11 +1,16 @@
 //! Zones through a whole cook: sidecars, the cache, cells' keys, and the runtime's reads of what they
 //! write. The document and the cooked format's own checks are `sapphire_zone`'s tests.
 
+use std::collections::BTreeSet;
 use std::error::Error;
+use std::io::Write as _;
 use std::time::Instant;
 
 use glam::Vec3;
+use sapphire_assets::AssetKind;
 use sapphire_assets::material::AnimeCharacterMaterial;
+use sapphire_assets::pack::PackReader;
+use sapphire_colliders::{ColliderDocument, ColliderEntry, ColliderShape, Group, Rotation};
 use sapphire_core::Name;
 use sapphire_zone::{CellCoord, ZoneDocument};
 use serde_json::json;
@@ -517,7 +522,6 @@ fn what_a_zone_gets_wrong_is_named() {
         (format!(r##"probes: Some("{WOOD}"),"##), "`probes`"),
         (format!(r##"instances: [(mesh: "{WOOD}")],"##), "`instances[0].mesh`"),
         (format!(r##"instances: [(mesh: "{LAMP}", scale: (99.0, 1.0, 1.0))],"##), "`instances[0]`"),
-        (format!(r##"navigation: ["{WOOD}"],"##), "no navigation tiles"),
         (format!(r##"encounters: ["{WOOD}"],"##), "no encounters"),
         (r##"day: Some("missing.ron"),"##.to_owned(), "failed to read"),
         (r##"day: Some("not_a_day.ron"),"##.to_owned(), "`day`"),
@@ -707,6 +711,335 @@ fn large_zone_costs() {
     fs::write(&document, format!("// saved\n{saved}")).unwrap();
     let (report, one_prefab) = timed(|| tree.cook());
     eprintln!("one prefab's document saved: cook {one_prefab:.0} ms; {}", cooked_counts(&report));
+}
+
+fn navigation_id() -> AssetId {
+    ZONE.sub_asset(zone::NAVIGATION_PART)
+}
+
+/// Ground 64 m a side, a table in the tile at (0, 0), and a slab up high that nothing leads to.
+const NAV_COLLIDERS: &str = r##"(type: "sapphire::colliders::ColliderDocument", version: 1, data: (colliders: [
+    (name: "ground", shape: Box(half_extents: (32.0, 0.5, 32.0)), position: (0.0, -0.5, 0.0)),
+    (name: "table", shape: Box(half_extents: (1.0, 0.5, 1.0)), position: (8.0, 0.5, 8.0)),
+    (name: "slab", shape: Box(half_extents: (3.0, 0.5, 3.0)), position: (-20.0, 6.0, -20.0)),
+]))"##;
+
+/// A document's text for that ground, with this added.
+fn nav_zone(data: &str) -> String {
+    format!(
+        r##"colliders: Some("{COLLIDERS}"),
+        navigation: Some((min: (-32.0, -32.0), max: (32.0, 32.0))),
+        {data}"##
+    )
+}
+
+const NAV_SPAWNERS: &str = r##"spawners: [(name: "start", position: (1.0, 0.0, 1.0), spawns: "player")],"##;
+
+/// A tree with colliders, and `data` as its zone.
+fn nav_tree(name: &str, data: &str) -> (Tree, PathBuf) {
+    let tree = tree(name);
+    let colliders = tree.write("arena.colliders.ron", NAV_COLLIDERS.as_bytes());
+    tree.sidecar(&colliders, COLLIDERS, ImportSettings::Colliders(Default::default()));
+    write_zone(&tree, data);
+    (tree, colliders)
+}
+
+fn file_count(dir: &Path) -> usize {
+    fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| {
+            let path = entry.unwrap().path();
+            if path.is_dir() { file_count(&path) } else { 1 }
+        })
+        .sum()
+}
+
+#[test]
+fn a_zones_navmesh_cooks_from_its_colliders_and_ships_with_it() {
+    let data = format!("{} {NAV_SPAWNERS}", nav_zone(&placements()));
+    let (tree, _) = nav_tree("zone-nav", &data);
+    let report = tree.cook();
+
+    let asset = by_id(&report, navigation_id());
+    assert!(asset.output.ends_with("town.snav"), "{}", asset.output.display());
+    let bytes = read_aligned(&asset.output);
+    let mesh = NavMesh::read(&bytes).expect("the runtime reads it");
+    assert!(mesh.polygon_count() > 0);
+    // Rows count from -1000 m, in thirty-seconds, and a span's top is the cell over it. Only the ground
+    // is left: nothing walks up to the table's top or the slab's.
+    let rows: BTreeSet<i32> = (0..mesh.vertices.len()).map(|vertex| mesh.vertex(vertex)[1]).collect();
+    assert_eq!(rows, [32_001].into(), "what's up there is pruned");
+
+    let zone_bytes = read_zone(&report);
+    let zone = Zone::read(&zone_bytes).unwrap();
+    assert_eq!(zone.simulation.navigation.as_ref().copied(), Some(navigation_id()));
+    let mut expected = vec![COLLIDERS, navigation_id()];
+    expected.sort_unstable();
+    assert_eq!(zone.references(), expected, "both load with the zone, and so are in its digest");
+    assert_eq!(AssetKind::Zone.references(&zone_bytes).unwrap(), expected);
+    assert_eq!(AssetKind::NavMesh.references(&bytes).unwrap(), []);
+    let colliders = read_aligned(&by_id(&report, COLLIDERS).output);
+    let digest_with = |navmesh: &[u8]| {
+        let read = |id: AssetId| {
+            (id == COLLIDERS).then_some(&colliders[..]).or((id == navigation_id()).then_some(navmesh))
+        };
+        zone.simulation_digest(read).unwrap()
+    };
+    assert_ne!(digest_with(&bytes), digest_with(b"another"), "a replay's digest reads the navmesh's bytes");
+
+    let packs = tree.dir.path().join("packs");
+    let packed = pack_cooked(&report, &packs, None).unwrap();
+    let holding: Vec<&str> = packed
+        .packs
+        .iter()
+        .filter(|pack| {
+            let bytes = fs::read(&pack.path).unwrap();
+            let reader = PackReader::new(&bytes).unwrap();
+            reader.toc().entries().iter().any(|entry| entry.id == navigation_id())
+        })
+        .map(|pack| pack.name.as_str())
+        .collect();
+    assert_eq!(holding, ["zone_town"], "it ships with its zone, and only there");
+}
+
+/// The whole of what the cook's own unit is for: a collider's edit bakes what it reaches, and comes to
+/// what baking everything would.
+#[test]
+fn moving_a_collider_rebakes_the_tiles_it_reaches_and_nothing_else() {
+    let data = format!("{} {NAV_SPAWNERS}", nav_zone(&placements()));
+    let (tree, colliders) = nav_tree("zone-nav-edit", &data);
+    let cache = tree.dir.path().join("cache");
+    tree.cook();
+    let cold = file_count(&cache);
+    assert_eq!(tree.cook().count(CookStatus::Cooked), 0, "a no-op bakes nothing");
+    assert_eq!(file_count(&cache), cold);
+
+    let moved = NAV_COLLIDERS.replace("(8.0, 0.5, 8.0)", "(8.0, 0.5, 9.0)");
+    tree.write_at(&colliders, moved.as_bytes());
+    let report = tree.cook();
+    assert_eq!(by_id(&report, COLLIDERS).status, CookStatus::Cooked);
+    assert_eq!(by_id(&report, navigation_id()).status, CookStatus::Cooked);
+    assert_eq!(by_id(&report, ZONE).status, CookStatus::Cooked, "it holds the navmesh's key");
+    assert_eq!(by_id(&report, cell_id(cell(0, 0))).status, CookStatus::UpToDate);
+    // One tile, the `.scol`, the `.snav`, the `.szone` and what a cache keeps beside each.
+    let added = file_count(&cache) - cold;
+    assert!(added <= 8, "{added} new entries in the cache, for one tile's edit, of 25 tiles");
+
+    let whole = nav_tree("zone-nav-whole", &data);
+    whole.0.write_at(&whole.1, moved.as_bytes());
+    let whole = whole.0.cook();
+    assert_eq!(
+        fs::read(by_id(&report, navigation_id()).output.clone()).unwrap(),
+        fs::read(by_id(&whole, navigation_id()).output.clone()).unwrap(),
+        "tiles from the cache make the bytes a whole bake makes",
+    );
+}
+
+#[test]
+fn what_doesnt_touch_a_navmesh_doesnt_bake_it() {
+    let lamps = format!("{} {NAV_SPAWNERS}", nav_zone(&placements()));
+    let (tree, _) = nav_tree("zone-nav-apart", &lamps);
+    tree.cook();
+    let unmoved = |report: &CookReport, what: &str| {
+        assert_eq!(by_id(report, navigation_id()).status, CookStatus::UpToDate, "{what}");
+    };
+
+    // A saved kit piece, and the cells that place it.
+    let piece = tree.content().join("kit/crate.glb");
+    tree.write_at(&piece, &piece_glb(2.0));
+    let report = tree.cook();
+    assert_eq!(by_id(&report, cell_id(cell(0, 0))).status, CookStatus::Cooked);
+    unmoved(&report, "a saved kit piece");
+
+    // A placement, and a spawner's name and what it spawns, none of which it reads.
+    let moved = lamps.replace("(20.0, 0.0, 4.0)", "(21.0, 0.0, 4.0)");
+    write_zone(&tree, &moved);
+    unmoved(&tree.cook(), "a moved placement");
+    write_zone(&tree, &moved.replace(r#"name: "start""#, r#"name: "begin""#));
+    let report = tree.cook();
+    assert_eq!(by_id(&report, ZONE).status, CookStatus::Cooked);
+    unmoved(&report, "a renamed spawner");
+
+    // A spawner's place is what it seeds from, and a seed the same, though it finds the same ground.
+    write_zone(&tree, &moved.replace("(1.0, 0.0, 1.0)", "(1.0, 0.0, 2.0)"));
+    let report = tree.cook();
+    assert_eq!(by_id(&report, navigation_id()).status, CookStatus::Cooked, "a moved spawner");
+}
+
+#[test]
+fn a_seed_keeps_ground_no_spawner_reaches() {
+    let polygons = |seeds: &str| {
+        let data =
+            nav_zone(NAV_SPAWNERS).replace("max: (32.0, 32.0))", &format!("max: (32.0, 32.0), {seeds})"));
+        let (tree, _) = nav_tree("zone-nav-seeds", &data);
+        let bytes = read_aligned(&by_id(&tree.cook(), navigation_id()).output);
+        NavMesh::read(&bytes).unwrap().polygon_count()
+    };
+    assert!(polygons("seeds: [(-20.0, 6.5, -20.0)]") > polygons("seeds: []"));
+}
+
+#[test]
+fn what_a_zone_gets_wrong_about_navigation_is_named() {
+    let (tree, _) = nav_tree("zone-nav-errors", "");
+    let off = r##"spawners: [
+        (name: "start", position: (1.0, 0.0, 1.0), spawns: "player"),
+        (name: "stuck", position: (8.0, 0.0, 8.0), spawns: "warrior"),
+    ],"##;
+    let bounds = "min: (-32.0, -32.0), max: (32.0, 32.0)";
+    let area = |min: &str, max: &str| {
+        format!(
+            r##"colliders: Some("{COLLIDERS}"), navigation: Some((min: {min}, max: {max})), {NAV_SPAWNERS}"##
+        )
+    };
+    let cases: Vec<(String, &str)> = vec![
+        (nav_zone(off), "`spawners[1]`"),
+        (
+            nav_zone(NAV_SPAWNERS).replace(bounds, &format!("{bounds}, seeds: [(500.0, 0.0, 0.0)]")),
+            "`navigation.seeds[0]`",
+        ),
+        (nav_zone(""), "needs a spawner"),
+        (format!("navigation: Some(({bounds})), {NAV_SPAWNERS}"), "names none"),
+        (area("(4.0, 4.0)", "(4.0, 8.0)"), "`navigation.min`"),
+        (area("(-5000.0, -5000.0)", "(5000.0, 5000.0)"), "more than the 16384"),
+        (area("(1000.0, 1000.0)", "(1032.0, 1032.0)"), "no walkable ground"),
+    ];
+    for (data, expected) in cases {
+        write_zone(&tree, &data);
+        let error = tree.try_cook(false).expect_err(&data);
+        let text = chain(&error);
+        assert!(text.contains("town.zone.ron"), "{data}: the zone's named in `{text}`");
+        assert!(text.contains(expected), "{data}: `{text}` must say `{expected}`");
+    }
+}
+
+/// Not a test of anything but what one edit costs: cold, a no-op and one collider moved, through a whole
+/// cook for the arena as it is, and through the bake for a generated level a good deal larger, each to
+/// read off its printout. As the cooker's built:
+/// `cargo test -p sapphire_pipeline --profile tools --lib nav_edit -- --ignored --nocapture`.
+#[test]
+#[ignore = "measures a navmesh's cook, for a person to read"]
+fn nav_edit_costs() {
+    let measure = |name: &str, document: ColliderDocument, half: f32, spawner: [f32; 3], moved: usize| {
+        let tree = Tree::new(&format!("nav-edit-{name}"));
+        let write = |document: &ColliderDocument| sapphire_serialize::to_ron(document).unwrap();
+        let colliders = tree.write("place.colliders.ron", write(&document).as_bytes());
+        tree.sidecar(&colliders, COLLIDERS, ImportSettings::Colliders(Default::default()));
+        let [x, y, z] = spawner;
+        let data = format!(
+            r##"colliders: Some("{COLLIDERS}"),
+            navigation: Some((min: ({low:?}, {low:?}), max: ({half:?}, {half:?}))),
+            spawners: [(name: "start", position: ({x:?}, {y:?}, {z:?}), spawns: "player")],"##,
+            low = -half,
+        );
+        write_zone(&tree, &data);
+        let (report, cold) = timed(|| tree.cook());
+        let bytes = read_aligned(&by_id(&report, navigation_id()).output);
+        let mesh = NavMesh::read(&bytes).unwrap();
+        let mut stdout = io::stderr();
+        writeln!(
+            stdout,
+            "NAV-EDIT {name}: {} colliders, {:.0} m a side, {} polygons, {} B; cold cook {cold:.0} ms; {}",
+            document.colliders.len(),
+            half * 2.0,
+            mesh.polygon_count(),
+            bytes.len(),
+            cooked_counts(&report),
+        )
+        .unwrap();
+        for round in 0..3 {
+            let (report, time) = timed(|| tree.cook());
+            writeln!(stdout, "NAV-EDIT {name}: no-op {round}: {time:.0} ms; {}", cooked_counts(&report))
+                .unwrap();
+        }
+        let mut document = document;
+        for round in 0..5 {
+            document.colliders[moved].position[0] += 0.25;
+            tree.write_at(&colliders, write(&document).as_bytes());
+            let (report, time) = timed(|| tree.cook());
+            writeln!(
+                stdout,
+                "NAV-EDIT {name}: one collider moved {round}: {time:.0} ms; {}",
+                cooked_counts(&report)
+            )
+            .unwrap();
+        }
+    };
+
+    let arena = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/arena/square.colliders.ron"),
+    )
+    .unwrap();
+    let arena = ColliderDocument::from_ron(&arena).unwrap();
+    let last = arena.colliders.len() - 1;
+    measure("arena", arena, 64.0, [0.0, 0.0, 0.0], last);
+
+    // A block of 32 boxes in each 32 m of a square 512 m a side: a large level of the size this bakes.
+    let solid = |name: String, half_extents: [f32; 3], position: [f32; 3]| ColliderEntry {
+        name,
+        shape: ColliderShape::Box { half_extents },
+        position,
+        rotation: Rotation::None,
+        groups: vec![Group::World],
+    };
+    let mut colliders = vec![solid("ground".to_owned(), [256.0, 0.5, 256.0], [0.0, -0.5, 0.0])];
+    for block_x in -8..8 {
+        for block_z in -8..8 {
+            for i in 0..32 {
+                let at = |block: i32, step: i32| block as f32 * 32.0 + 2.0 + ((i * step) % 28) as f32;
+                let (x, z) = (at(block_x, 5), at(block_z, 11));
+                let height = 0.5 + (i % 5) as f32;
+                let name = format!("box {block_x} {block_z} {i}");
+                colliders.push(solid(name, [0.75, height, 0.75], [x, height, z]));
+            }
+        }
+    }
+    let moved = colliders.len() / 2;
+    let mut document = ColliderDocument { colliders };
+
+    // The bake alone. Its document, cooked whole, is another matter, as this says: `ron`'s parse is
+    // quadratic in its numbers (`zone::parse_document`), which a collider document doesn't work around.
+    let text = sapphire_serialize::to_ron(&document).unwrap();
+    let (_, parse) = timed(|| ColliderDocument::from_ron(&text).unwrap());
+    let mut stderr = io::stderr();
+    writeln!(stderr, "NAV-EDIT large: parsing its document of {} KiB takes {parse:.0} ms", text.len() / 1024)
+        .unwrap();
+    let dir = crate::test_util::TempDir::new("nav-edit-large");
+    let cache = Cache::new(dir.path());
+    let settings = nav::BakeSettings::CHARACTER;
+    let seeds = [nav::Seed { field: "spawners[0]".to_owned(), position: [1.0, 0.0, 1.0] }];
+    let bake = |document: &ColliderDocument| {
+        let cooked = document.cook().unwrap().to_cooked().unwrap();
+        timed(|| {
+            nav::bake_colliders(&cooked, ([-256.0; 2], [256.0; 2]), &seeds, &settings, Some(&cache)).unwrap()
+        })
+    };
+    let ((baked, islands), cold) = bake(&document);
+    writeln!(
+        stderr,
+        "NAV-EDIT large: {} colliders, 512 m a side, {} polygons, {} B; cold bake {cold:.0} ms; {:?}, {islands:?}",
+        document.colliders.len(),
+        baked.mesh.polygon_count(),
+        baked.mesh.to_cooked().unwrap().len(),
+        baked.stats,
+    )
+    .unwrap();
+    let ((baked, _), warm) = bake(&document);
+    writeln!(
+        stderr,
+        "NAV-EDIT large: nothing touched: {warm:.0} ms; {} of {} tiles cached",
+        baked.stats.tiles_cached, baked.stats.tiles_read
+    )
+    .unwrap();
+    for round in 0..5 {
+        document.colliders[moved].position[0] += 0.25;
+        let ((baked, _), time) = bake(&document);
+        writeln!(
+            stderr,
+            "NAV-EDIT large: one collider moved {round}: {time:.0} ms; {} of {} tiles cached",
+            baked.stats.tiles_cached, baked.stats.tiles_read
+        )
+        .unwrap();
+    }
 }
 
 /// A no-op's plan comes from the copy of its parse, which must cook just as the text does: every bit of

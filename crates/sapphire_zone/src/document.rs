@@ -103,9 +103,9 @@ pub struct ZoneDocument {
     /// Camera rails.
     #[serde(default)]
     pub splines: Vec<Spline>,
-    /// Navigation tiles. No such asset cooks yet, so a cook refuses any.
-    #[serde(default)]
-    pub navigation: Vec<AssetId>,
+    /// What to bake a navmesh over. With this, a cook makes a `.snav` from `colliders`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub navigation: Option<ZoneNavigation>,
     /// Encounters. No such asset cooks yet, so a cook refuses any.
     #[serde(default)]
     pub encounters: Vec<AssetId>,
@@ -219,6 +219,26 @@ pub struct Spawner {
     pub spawns: String,
 }
 
+/// Where a zone's navmesh bakes, and which of what it finds is real.
+///
+/// A bake finds every flat top a character could stand on, roofs and crates too, and most of them lead
+/// nowhere. **The ground that's real is what a character can walk to from a spawner or from a seed:** a
+/// cook floods out from each and drops the rest, and a spawner off the mesh fails the cook, by its field.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Reflect)]
+#[type_path = "sapphire::zone"]
+#[serde(deny_unknown_fields)]
+pub struct ZoneNavigation {
+    /// One corner of where a character can be, as metres on X and Z. Ground drawn past this bakes no
+    /// tiles, however far it goes on.
+    pub min: [f32; 2],
+    /// The other corner.
+    pub max: [f32; 2],
+    /// Ground that's real although no spawner stands on it: somewhere a player reaches by a jump or a
+    /// cutscene, say. In metres, at a character's feet.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub seeds: Vec<[f32; 3]>,
+}
+
 /// A volume that raises an event when something enters it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Reflect)]
 #[type_path = "sapphire::zone"]
@@ -300,6 +320,8 @@ pub struct ZoneGeometry {
     pub day: Option<String>,
     /// The text of the document's `rigs`.
     pub rigs: Option<String>,
+    /// The navmesh baked for the document's `navigation`.
+    pub navigation: Option<AssetId>,
 }
 
 impl ZoneDocument {
@@ -326,7 +348,7 @@ impl ZoneDocument {
             ("spawners", self.spawners.len()),
             ("triggers", self.triggers.len()),
             ("splines", self.splines.len()),
-            ("navigation", self.navigation.len()),
+            ("navigation.seeds", self.navigation.as_ref().map_or(0, |navigation| navigation.seeds.len())),
             ("encounters", self.encounters.len()),
         ] {
             if count > MAX_ENTRIES {
@@ -391,6 +413,37 @@ impl ZoneDocument {
             let field = format!("splines[{index}].points");
             check_points(spline.points.len(), |point| spline.points[point]).map_err(invalid(field))?;
         }
+        if let Some(navigation) = &self.navigation {
+            self.check_navigation(navigation)?;
+        }
+        Ok(())
+    }
+
+    fn check_navigation(&self, navigation: &ZoneNavigation) -> Result<(), ZoneError> {
+        let field = |name: &str| format!("navigation.{name}");
+        let invalid = |field: String| move |problem: String| ZoneError::invalid(field, problem);
+        let ZoneNavigation { min, max, seeds } = navigation;
+        check_position([min[0], 0.0, min[1]]).map_err(invalid(field("min")))?;
+        check_position([max[0], 0.0, max[1]]).map_err(invalid(field("max")))?;
+        if min[0] >= max[0] || min[1] >= max[1] {
+            let problem = format!("{min:?} isn't below {max:?} on both axes");
+            return Err(ZoneError::invalid(field("min"), problem));
+        }
+        for (index, seed) in seeds.iter().enumerate() {
+            check_position(*seed).map_err(invalid(format!("navigation.seeds[{index}]")))?;
+        }
+        if self.colliders.is_none() {
+            return Err(ZoneError::invalid(
+                "navigation",
+                "a navmesh bakes from the zone's `colliders`, and it names none",
+            ));
+        }
+        if self.spawners.is_empty() && seeds.is_empty() {
+            return Err(ZoneError::invalid(
+                "navigation",
+                "nothing says which ground is real: it needs a spawner, or an entry in `seeds`",
+            ));
+        }
         Ok(())
     }
 
@@ -428,14 +481,23 @@ impl ZoneDocument {
             colliders: self.colliders,
             spawners,
             triggers,
-            navigation: sorted_set(&self.navigation),
+            navigation: None,
             encounters: sorted_set(&self.encounters),
         })
     }
 
     /// The cooked zone, from what a cook made of its geometry.
     pub fn cook(&self, geometry: ZoneGeometry) -> Result<Zone, ZoneError> {
-        let simulation = self.simulation()?;
+        let mut simulation = self.simulation()?;
+        if geometry.navigation.is_some() != self.navigation.is_some() {
+            let problem = format!(
+                "the document asks for {} and the cook made {}",
+                if self.navigation.is_some() { "a navmesh" } else { "none" },
+                if geometry.navigation.is_some() { "one" } else { "none" },
+            );
+            return Err(ZoneError::invalid("navigation", problem));
+        }
+        simulation.navigation = geometry.navigation;
         if geometry.instances.len() != self.instances.len() {
             return Err(ZoneError::invalid(
                 "instances",
@@ -852,5 +914,61 @@ mod tests {
         assert!(zone.presentation.cells.is_empty());
         let backdrop = zone.presentation.backdrop.expect("holds it");
         assert_eq!((backdrop.first_instance, backdrop.instance_count), (0, 1));
+    }
+
+    #[test]
+    fn what_a_document_gets_wrong_about_navigation_is_named() {
+        let spawner = r#"spawners: [(name: "start", position: (0.0, 0.0, 0.0), spawns: "player")],"#;
+        let colliders = format!(r#"colliders: Some("{PREFAB}"),"#);
+        let area = "min: (-8.0, -8.0), max: (8.0, 8.0)";
+        parse(&format!("{colliders} {spawner} navigation: Some(({area})),")).expect("a good one");
+        parse(&format!("{colliders} navigation: Some(({area}, seeds: [(1.0, 0.0, 1.0)])),"))
+            .expect("a seed will do");
+        let cases = [
+            (format!("{spawner} navigation: Some(({area})),"), "`navigation`"),
+            (format!("{colliders} navigation: Some(({area})),"), "`navigation`"),
+            (
+                format!("{colliders} {spawner} navigation: Some((min: (8.0, -8.0), max: (8.0, 8.0))),"),
+                "`navigation.min`",
+            ),
+            (
+                format!("{colliders} {spawner} navigation: Some((min: (-8.0, 9.0), max: (8.0, 8.0))),"),
+                "`navigation.min`",
+            ),
+            (
+                format!("{colliders} {spawner} navigation: Some((min: (-1e9, -8.0), max: (8.0, 8.0))),"),
+                "`navigation.min`",
+            ),
+            (
+                format!("{colliders} {spawner} navigation: Some((min: (-8.0, -8.0), max: (8.0, inf))),"),
+                "`navigation.max`",
+            ),
+            (
+                format!("{colliders} {spawner} navigation: Some(({area}, seeds: [(0.0, NaN, 0.0)])),"),
+                "`navigation.seeds[0]`",
+            ),
+        ];
+        for (data, expected) in cases {
+            let message = parse(&data).expect_err(&data).to_string();
+            assert!(message.contains(expected), "{data}: `{message}` must say `{expected}`");
+        }
+    }
+
+    #[test]
+    fn a_navmesh_is_there_if_and_only_if_the_document_asks() {
+        let mut document = full();
+        document.placements.clear();
+        document.lights.clear();
+        document.instances.clear();
+        document.navigation = None;
+        let id: AssetId = PREFAB.parse().expect("an ID");
+        let with = ZoneGeometry { navigation: Some(id), ..ZoneGeometry::default() };
+        assert!(document.cook(with.clone()).is_err(), "made one nobody asked for");
+        assert_eq!(document.cook(ZoneGeometry::default()).expect("cooks").simulation.navigation, None);
+
+        document.colliders = Some(id);
+        document.navigation = Some(ZoneNavigation { min: [-8.0; 2], max: [8.0; 2], seeds: vec![[0.0; 3]] });
+        assert!(document.cook(ZoneGeometry::default()).is_err(), "asked for one and none came");
+        assert_eq!(document.cook(with).expect("cooks").simulation.navigation, Some(id));
     }
 }

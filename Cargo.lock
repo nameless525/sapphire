@@ -3345,6 +3345,7 @@ dependencies = [
  "sapphire_core",
  "sapphire_jobs",
  "sapphire_moves",
+ "sapphire_navmesh",
  "sapphire_reflect",
  "sapphire_serialize",
  "sapphire_strings",

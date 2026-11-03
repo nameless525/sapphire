@@ -47,8 +47,16 @@
 //!
 //! On every cook, cached or not, since what's named can change while the zone stays the same: each
 //! material, colliders and probe reference is that kind of asset of this tree, and each instance's a
-//! static mesh. `navigation` and `encounters` have nothing to name yet, so a non-empty list fails
-//! (`check_lists_to_come` has the one line each package takes out as it adds its kind).
+//! static mesh. `encounters` have nothing to name yet, so a non-empty list fails
+//! (`check_lists_to_come` has the line the package that adds their kind takes out).
+//!
+//! # Navigation
+//!
+//! A document with `navigation` makes a `.snav` of its own, a sub-asset (`town.snav`), baked from the
+//! cooked `.scol` the zone names, with the tile bounds and seeds the document gives. Its key holds that
+//! section, its spawners' places and the colliders' key, and nothing else: a save to a kit piece, a
+//! placement or a light leaves it alone, and a moved collider rebakes the tiles it reaches
+//! ([`crate::nav`]). The zone's `.szone` holds its ID and its key.
 //!
 //! # What it doesn't do
 //!
@@ -66,6 +74,7 @@ use glam::{Mat3, Mat4, Vec3};
 use sapphire_assets::AssetId;
 use sapphire_assets::mesh::{Lod, PositionFormat, Submesh, Vertex};
 use sapphire_math::det;
+use sapphire_navmesh::NavMesh;
 use sapphire_serialize::postcard;
 use sapphire_tod::TodTimeline;
 use sapphire_zone::{Bounds, Place, Zone, ZoneDocument, ZoneError, ZoneGeometry};
@@ -77,6 +86,7 @@ use crate::cache::{Cache, CacheError, CacheKey, Stage};
 use crate::character_maps;
 use crate::mesh::{ImportedMaterial, ImportedMesh};
 use crate::meta::{ImportSettings, SourceAsset};
+use crate::nav::{self, BakeSettings, NavBakeError, Seed};
 use crate::optimize::LodSettings;
 
 /// Reads and checks the document, its prefabs' too. Bump the version whenever that changes output for
@@ -140,6 +150,8 @@ pub enum ZoneCookError {
     },
     #[error(transparent)]
     Cache(#[from] CacheError),
+    #[error("`navigation`: its bake failed")]
+    Navigation(#[source] NavBakeError),
 }
 
 impl ZoneCookError {
@@ -181,6 +193,18 @@ pub fn part_path(relative: &Path, place: Place, extension: &str) -> PathBuf {
         Place::Backdrop => format!("{stem}.backdrop.{extension}"),
         Place::Cell(cell) => format!("{stem}.cell.{}.{}.{extension}", cell.x, cell.z),
     })
+}
+
+/// What a navmesh's sub-asset is called among a zone's. Never changed: its ID is derived from it.
+pub const NAVIGATION_PART: &str = "navigation";
+
+/// What a zone's navmesh is, in place of the document (see the [module docs](self)). A spawner's place
+/// is what seeds it; its name and what it spawns don't matter.
+#[derive(Serialize)]
+struct NavigationRecipe<'a> {
+    navigation: &'a sapphire_zone::ZoneNavigation,
+    spawners: Vec<[f32; 3]>,
+    settings: BakeSettings,
 }
 
 /// A prefab a zone places.
@@ -378,6 +402,22 @@ impl ZonePlan {
             })
             .collect();
         Ok(Self { id, document, prefabs: read, materials, places })
+    }
+
+    /// The ID of the zone's navmesh, which it has if its document says so.
+    pub fn navigation_id(&self) -> Option<AssetId> {
+        self.document.navigation.as_ref().map(|_| self.id.sub_asset(NAVIGATION_PART))
+    }
+
+    /// What the key of the zone's navmesh holds in place of the document's hash.
+    pub fn navigation_recipe(&self) -> blake3::Hash {
+        let navigation = self.document.navigation.as_ref().expect("only a document with `navigation` bakes");
+        let recipe = NavigationRecipe {
+            navigation,
+            spawners: self.document.spawners.iter().map(|spawner| spawner.position).collect(),
+            settings: BakeSettings::CHARACTER,
+        };
+        blake3::hash(&postcard::to_allocvec(&recipe).expect("a navigation recipe always encodes"))
     }
 
     /// The ID of a place's mesh.
@@ -637,9 +677,6 @@ fn parse_document(bytes: &[u8], cache: Option<&Cache>) -> Result<ZoneDocument, Z
 /// Refuses what has nothing to name yet. Each package that gives one of these lists a kind of asset
 /// checks its references where the others are, and takes its line out of here.
 fn check_lists_to_come(document: &ZoneDocument) -> Result<(), ZoneCookError> {
-    if !document.navigation.is_empty() {
-        return Err(ZoneCookError::invalid("navigation", "no navigation tiles cook yet"));
-    }
     if !document.encounters.is_empty() {
         return Err(ZoneCookError::invalid("encounters", "no encounters cook yet"));
     }
@@ -691,6 +728,38 @@ pub fn placed_bounds(bounds: Bounds, at: [f32; 3], turn: f32, scale: [f32; 3]) -
     Bounds { min: min.to_array(), max: max.to_array() }
 }
 
+/// A zone's navmesh, as cooked bytes, from the `.scol` its document names.
+pub fn cook_navigation(
+    plan: &ZonePlan,
+    colliders: &[u8],
+    cache: Option<&Cache>,
+) -> Result<Vec<u8>, ZoneCookError> {
+    let document = plan.document();
+    let navigation = document.navigation.as_ref().expect("only a document with `navigation` bakes");
+    let spawners = document
+        .spawners
+        .iter()
+        .enumerate()
+        .map(|(index, spawner)| Seed { field: format!("spawners[{index}]"), position: spawner.position });
+    let seeds = navigation
+        .seeds
+        .iter()
+        .enumerate()
+        .map(|(index, position)| Seed { field: format!("navigation.seeds[{index}]"), position: *position });
+    let seeds: Vec<Seed> = spawners.chain(seeds).collect();
+    let (baked, _) = nav::bake_colliders(
+        colliders,
+        (navigation.min, navigation.max),
+        &seeds,
+        &BakeSettings::CHARACTER,
+        cache,
+    )
+    .map_err(ZoneCookError::Navigation)?;
+    let cooked = baked.mesh.to_cooked().map_err(|error| ZoneCookError::Navigation(error.into()))?;
+    NavMesh::read(&cooked).map_err(|error| ZoneCookError::Navigation(error.into()))?;
+    Ok(cooked.into_vec())
+}
+
 /// A place's mesh, as a zone's cook reads it.
 pub struct CookedPlace {
     pub place: Place,
@@ -724,7 +793,8 @@ pub fn cook(
         .map(|rigs| read_document(zone, "rigs", rigs).and_then(|(_, bytes)| rigs_text(bytes)))
         .transpose()?;
     let meshes = places.into_iter().map(|place| (place.place, (place.id, place.bounds))).collect();
-    let cooked = document.cook(ZoneGeometry { meshes, instances, day, rigs })?.to_cooked()?;
+    let navigation = plan.navigation_id();
+    let cooked = document.cook(ZoneGeometry { meshes, instances, day, rigs, navigation })?.to_cooked()?;
     Zone::read(&cooked)?;
     Ok(cooked.into_vec())
 }

@@ -1,9 +1,7 @@
-//! What a bake reads, as triangles: a collider set's solids, or an assembled mesh.
+//! What a bake reads, as triangles: a collider set's solids.
 
 use sapphire_colliders::{ColliderSet, CookedCollider, CookedShape, GroupMask};
 use sapphire_math::det;
-
-use crate::mesh::ImportedMesh;
 
 /// Three corners, in metres. A triangle faces up when its corners run so that `(b − a) × (c − a)`
 /// has a positive y.
@@ -21,12 +19,6 @@ pub fn is_walkable(triangle: &Triangle, slope_cos: f32) -> bool {
     let (nx, ny, nz) = (uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx);
     let cos = f64::from(slope_cos);
     ny > 0.0 && ny * ny > cos * cos * (nx * nx + ny * ny + nz * nz)
-}
-
-/// An assembled mesh's triangles, as it winds them.
-pub fn mesh_to_triangles(mesh: &ImportedMesh) -> Vec<Triangle> {
-    let (corners, _) = mesh.indices.as_chunks::<3>();
-    corners.iter().map(|corner| corner.map(|index| mesh.vertices[index as usize].position)).collect()
 }
 
 /// The solids of a collider set in the groups `solid` names, as triangles. Round shapes become

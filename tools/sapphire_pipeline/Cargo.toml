@@ -17,6 +17,8 @@ sapphire_assets.workspace = true
 sapphire_colliders.workspace = true
 # The navmesh bake (M3 P0). Cooks to plain tiles; the runtime never links it.
 rerecast.workspace = true
+# Where a spawner stands on a bake, when a cook prunes what no one can walk to.
+sapphire_nav.workspace = true
 sapphire_navmesh.workspace = true
 # Names of a move's baked paths.
 sapphire_core.workspace = true
@@ -77,8 +79,6 @@ sapphire_document.workspace = true
 # Reads a subset the way the runtime will.
 sapphire_text.workspace = true
 swash.workspace = true
-# Paths over what the bake made, in the bake's own tests (`tests/nav*.rs`).
-sapphire_nav.workspace = true
 sapphire_time.workspace = true
 
 [lints]

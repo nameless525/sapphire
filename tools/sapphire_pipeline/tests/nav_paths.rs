@@ -14,7 +14,7 @@ use sapphire_colliders::{
 use sapphire_nav::{FunnelEnd, Location, NavGraph, PathSearch, Reach, RouteEnd, straighten};
 use sapphire_navmesh::NavMesh;
 use sapphire_pipeline::nav::{
-    BakeSettings, Baked, TileBounds, Triangle, bake, bake_tile, colliders_to_triangles, stitch, world_rows,
+    BakeSettings, Baked, TileBounds, Triangle, bake, bake_tile, colliders_to_triangles, stitch,
 };
 
 const ARENA: TileBounds = ([-4, -4], [3, 3]);
@@ -322,11 +322,10 @@ fn two_floors_are_told_apart_by_height() {
 fn two_stitched_tiles_carry_a_path_across_their_seam() {
     let settings = BakeSettings::CHARACTER;
     let triangles = arena_triangles();
-    let rows = world_rows(&triangles, &settings).expect("rows");
-    let left = bake_tile(&triangles, [-1, -1], rows, &settings).expect("bakes").expect("has ground");
-    let right = bake_tile(&triangles, [0, -1], rows, &settings).expect("bakes").expect("has ground");
+    let left = bake_tile(&triangles, [-1, -1], &settings).expect("bakes").expect("has ground");
+    let right = bake_tile(&triangles, [0, -1], &settings).expect("bakes").expect("has ground");
     let polygons_left = left.polygons.len() as u32;
-    let (mesh, seams) = stitch(&[left, right], rows.0, &settings).expect("it stitches");
+    let (mesh, seams) = stitch(&[left, right], &settings).expect("it stitches");
     let bytes = mesh.to_cooked().expect("it writes");
     let graph = NavGraph::new(NavMesh::read(&bytes).expect("every edge is shared from both sides"));
 

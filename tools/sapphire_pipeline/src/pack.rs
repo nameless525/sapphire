@@ -25,7 +25,8 @@
 //! `zone_<stem>` ([`sapphire_zone::pack_name`]), with the zone itself. An asset named only by code (the
 //! look-dev scene's plants, say) reaches the app from nothing a pack can see: while one zone is all
 //! that names it, it would move to that zone's pack, so give the zone a copy of its own, or wait for
-//! the code to name it through a zone.
+//! the code to name it through a zone. A zone's navmesh is named by that zone alone, so it's always in
+//! that zone's pack.
 //!
 //! Sounds and cues go in [`AUDIO`] ([`group`], M2 E1). The content tree holds about 280 sounds, about
 //! 3 MB against the shared pack's 23 MB, and nothing yet says which a game needs. A pack of their own
@@ -104,6 +105,7 @@ use sapphire_assets::texture::TEXTURE_EXTENSION;
 use sapphire_assets::{AssetError, AssetId, AssetKind};
 use sapphire_colliders::COLLIDERS_EXTENSION;
 use sapphire_moves::MOVE_SET_EXTENSION;
+use sapphire_navmesh::NAVMESH_EXTENSION;
 use sapphire_serialize::cooked::AlignedVec;
 use sapphire_serialize::postcard;
 use sapphire_strings::STRINGS_EXTENSION;
@@ -167,7 +169,8 @@ pub fn codec(kind: AssetKind) -> Codec {
         | AssetKind::AnimGraph
         | AssetKind::Zone
         | AssetKind::Strings
-        | AssetKind::FontChains => Codec::Lz4,
+        | AssetKind::FontChains
+        | AssetKind::NavMesh => Codec::Lz4,
         AssetKind::Sound => Codec::None,
     }
 }
@@ -191,6 +194,7 @@ pub fn kind(output: &Path) -> Option<AssetKind> {
         STRINGS_EXTENSION => Some(AssetKind::Strings),
         FONT_EXTENSION => Some(AssetKind::Font),
         FONT_CHAINS_EXTENSION => Some(AssetKind::FontChains),
+        NAVMESH_EXTENSION => Some(AssetKind::NavMesh),
         _ => None,
     }
 }

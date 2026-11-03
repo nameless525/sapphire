@@ -5,6 +5,7 @@ use std::fmt;
 
 use sapphire_colliders::{ColliderError, ColliderSet};
 use sapphire_moves::{MoveSet, MoveSetError};
+use sapphire_navmesh::{NavMesh, NavMeshError};
 use sapphire_strings::{StringTable, StringsError};
 use sapphire_zone::{Zone, ZoneError};
 use serde::{Deserialize, Serialize};
@@ -64,11 +65,14 @@ pub enum AssetKind {
     Font = 15,
     /// Which fonts answer for each use and script (`.sfontc`, M3 U3): [`FontChains`], naming them.
     FontChains = 16,
+    /// A zone's navmesh (`.snav`, M3 P1): [`NavMesh`], which the simulation reads and which never goes
+    /// near a GPU.
+    NavMesh = 17,
 }
 
 impl AssetKind {
     /// Every kind, in a stable order.
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 17] = [
         Self::Mesh,
         Self::Texture,
         Self::Material,
@@ -85,6 +89,7 @@ impl AssetKind {
         Self::Strings,
         Self::Font,
         Self::FontChains,
+        Self::NavMesh,
     ];
 
     /// The kind's position in [`Self::ALL`].
@@ -111,12 +116,13 @@ impl AssetKind {
             Self::Strings => "string table",
             Self::Font => "font",
             Self::FontChains => "font chains",
+            Self::NavMesh => "navmesh",
         }
     }
 
     /// Whether assets of this kind go to the GPU, through the asset server's upload queue. A rig,
     /// a skeleton, a clip, a collider set, a sound, a cue, a move set, an animation graph, a zone, a
-    /// string table, a font or font chains is ready once it and its dependencies are decoded.
+    /// string table, a font, font chains or a navmesh is ready once it and its dependencies are decoded.
     pub const fn uploads(self) -> bool {
         !matches!(
             self,
@@ -132,6 +138,7 @@ impl AssetKind {
                 | Self::Strings
                 | Self::Font
                 | Self::FontChains
+                | Self::NavMesh
         )
     }
 
@@ -139,7 +146,7 @@ impl AssetKind {
     /// textures and probe grids are GPU data, so their bytes go once uploaded (a new renderer
     /// has them read again). Materials are small and CPU code reads them (live link, the editor), and
     /// rigs, skeletons, clips, collider sets, sounds, cues, move sets, animation graphs, zones, string
-    /// tables, fonts and font chains are read on the CPU only, so they stay.
+    /// tables, fonts, font chains and navmeshes are read on the CPU only, so they stay.
     pub const fn keeps_bytes(self) -> bool {
         matches!(
             self,
@@ -156,6 +163,7 @@ impl AssetKind {
                 | Self::Strings
                 | Self::Font
                 | Self::FontChains
+                | Self::NavMesh
         )
     }
 
@@ -169,10 +177,11 @@ impl AssetKind {
 
     /// Whether an asset of this kind may depend on one of `kind`: meshes on materials and
     /// skeletons, materials on textures, clips on skeletons, cues on sounds, animation graphs on
-    /// clips, zones on collider sets, font chains on fonts, and textures, rigs, probe grids, skeletons,
-    /// collider sets, sounds, move sets, string tables and fonts on nothing. A zone's meshes and probes
-    /// aren't dependencies ([`Self::reach`]). The allowed pairs form no loop, so chains are at most three
-    /// long and cycles can't exist, whatever a pack claims. A new kind takes its place in this order.
+    /// clips, zones on collider sets and navmeshes, font chains on fonts, and textures, rigs, probe grids,
+    /// skeletons, collider sets, sounds, move sets, string tables, fonts and navmeshes on nothing. A zone's
+    /// meshes and probes aren't dependencies ([`Self::reach`]). The allowed pairs form no loop, so chains
+    /// are at most three long and cycles can't exist, whatever a pack claims. A new kind takes its place
+    /// in this order.
     pub const fn may_depend_on(self, kind: AssetKind) -> bool {
         matches!(
             (self, kind),
@@ -181,7 +190,7 @@ impl AssetKind {
                 | (Self::Clip, Self::Skeleton)
                 | (Self::Cue, Self::Sound)
                 | (Self::AnimGraph, Self::Clip)
-                | (Self::Zone, Self::Colliders)
+                | (Self::Zone, Self::Colliders | Self::NavMesh)
                 | (Self::FontChains, Self::Font)
         )
     }
@@ -205,6 +214,7 @@ impl AssetKind {
             14 => Some(Self::Strings),
             15 => Some(Self::Font),
             16 => Some(Self::FontChains),
+            17 => Some(Self::NavMesh),
             _ => None,
         }
     }
@@ -213,11 +223,11 @@ impl AssetKind {
     /// `Texture::from_ktx2`, `Material::read`, `CharacterRig::read`, `ProbeGrid::read`,
     /// `Skeleton::read`, `Clip::read`, `ColliderSet::read`, `Sound::read`, `Cue::read`,
     /// `MoveSet::from_cooked`, `AnimGraph::read`, `Zone::read`, `StringTable::read`, `Font::read`,
-    /// `FontChains::read`), and returns the assets they reference, sorted and without repeats: a mesh's
-    /// material slots bound to material assets and its skeleton, a material's textures, a clip's skeleton,
-    /// a cue's sounds, a graph's clips, what the simulation reads of a zone, font chains' fonts. The packer
-    /// records these as the asset's dependencies, and decode jobs check that a decoded asset references
-    /// exactly what its pack says it does.
+    /// `FontChains::read`, `NavMesh::read`), and returns the assets they reference, sorted and without
+    /// repeats: a mesh's material slots bound to material assets and its skeleton, a material's textures,
+    /// a clip's skeleton, a cue's sounds, a graph's clips, what the simulation reads of a zone, font chains'
+    /// fonts. The packer records these as the asset's dependencies, and decode jobs check that a decoded
+    /// asset references exactly what its pack says it does.
     ///
     /// Everything but textures must start 16-byte aligned, as decoded assets do.
     pub fn references(self, bytes: &[u8]) -> Result<Vec<AssetId>, AssetError> {
@@ -280,6 +290,11 @@ impl AssetKind {
                 Vec::new()
             }
             Self::FontChains => FontChains::read(bytes)?.font_ids().collect(),
+            // A navmesh is baked from colliders, but reads none of them.
+            Self::NavMesh => {
+                NavMesh::read(bytes)?;
+                Vec::new()
+            }
         };
         references.sort_unstable();
         references.dedup();
@@ -349,4 +364,6 @@ pub enum AssetError {
     Strings(#[from] StringsError),
     #[error("invalid font or font chains")]
     Font(#[from] FontError),
+    #[error("invalid navmesh")]
+    NavMesh(#[from] NavMeshError),
 }

@@ -168,6 +168,7 @@ edges = [
     ["sapphire_zone", "sapphire_serialize"],
     ["sapphire_zone", "sapphire_reflect"],
     ["sapphire_assets", "sapphire_zone"],
+    ["sapphire_assets", "sapphire_navmesh"],
     # A runtime crate reaches a dev-only one only by an edge named here, through a direct optional
     # dependency. The stage's `dev` is off unless an app's `dev` turns it on.
     ["sapphire_stage", "sapphire_hot_reload"],

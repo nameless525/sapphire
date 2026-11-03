@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use sapphire_navmesh::{MAX_CORNERS, NO_NEIGHBOUR, NavMesh};
 
 use super::NavBakeError;
-use super::bake::{Across, BakeSettings, Seam, Tile};
+use super::bake::{Across, BakeSettings, ROWS, Seam, Tile};
 
 /// What a stitch found along its seams, in edges and in cells of length.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -60,12 +60,8 @@ struct Claim {
     other: u32,
 }
 
-/// One flat graph from `tiles`, with cell heights counted from `rows_origin`.
-pub fn stitch(
-    tiles: &[Tile],
-    rows_origin: f32,
-    settings: &BakeSettings,
-) -> Result<(NavMesh, SeamReport), NavBakeError> {
+/// One flat graph from `tiles`, with cell heights counted from the rows' start.
+pub fn stitch(tiles: &[Tile], settings: &BakeSettings) -> Result<(NavMesh, SeamReport), NavBakeError> {
     let mut report = SeamReport::default();
     let mut firsts = Vec::with_capacity(tiles.len());
     let mut total = 0u32;
@@ -153,7 +149,7 @@ pub fn stitch(
     // The flat lists: polygons in tile order, each edge cut where its claims end.
     let mut vertex_ids: BTreeMap<[i32; 3], u32> = BTreeMap::new();
     let mut mesh = NavMesh {
-        origin: [0.0, rows_origin, 0.0],
+        origin: [0.0, ROWS.0, 0.0],
         cell_size: settings.cell_size,
         cell_height: settings.cell_height,
         polygon_starts: vec![0],
@@ -266,7 +262,7 @@ mod tests {
     fn sides(left: Vec<TilePolygon>, right: Vec<TilePolygon>) -> (NavMesh, SeamReport) {
         let tile = |coord, polygons| Tile { coord, polygons, cell_exact: false, holes_lost: 0 };
         let tiles = [tile([0, 0], left), tile([1, 0], right)];
-        let (mesh, report) = stitch(&tiles, 0.0, &SETTINGS).expect("it stitches");
+        let (mesh, report) = stitch(&tiles, &SETTINGS).expect("it stitches");
         let bytes = mesh.to_cooked().expect("it writes");
         NavMesh::read(&bytes).expect("every shared edge is shared both ways");
         (mesh, report)

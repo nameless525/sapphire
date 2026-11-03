@@ -231,6 +231,7 @@ parry3d = { version = "0.31.1", default-features = false, features = ["required-
 # --- Navigation (spec §5.19) ---
 # Bakes tiles in the cooker. Never with its `libm` or `nostd-libm` feature: each names glam's own, and
 # Cargo unifies features on the workspace's one glam (the same trap as `enhanced-determinism`, M2 D3).
+# Before bumping it: `nav_bake`'s `rerecast_is_the_version_this_module_was_read_against` says what to do.
 rerecast = { version = "=0.5.0", default-features = false, features = ["std"] }
 
 # --- Jobs ---

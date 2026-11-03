@@ -12,9 +12,7 @@ mod nav_support;
 
 use std::path::PathBuf;
 
-use sapphire_pipeline::nav::{
-    BakeSettings, TileBounds, Triangle, bake, bake_tile, stitch, tile_range, world_rows,
-};
+use sapphire_pipeline::nav::{BakeSettings, TileBounds, Triangle, bake, bake_tile, stitch, tile_range};
 use sapphire_time::Stopwatch;
 
 /// The tiles covering a square of `half` metres around the origin.
@@ -62,7 +60,6 @@ fn run(name: &str, triangles: &[Triangle], half: f32, settings: &BakeSettings, o
 
 /// What an edit to one tile costs: its bake alone, and the stitch that follows, over every tile.
 fn one_tile(triangles: &[Triangle], half: f32, settings: &BakeSettings) {
-    let rows = world_rows(triangles, settings).expect("rows");
     let bounds = around_origin(half, settings);
     let mut tiles = Vec::new();
     let mut worst = (0.0, [0, 0], 0);
@@ -77,7 +74,7 @@ fn one_tile(triangles: &[Triangle], half: f32, settings: &BakeSettings) {
                 .copied()
                 .collect();
             let begun = Stopwatch::start();
-            let tile = bake_tile(&reaches, [x, z], rows, settings).expect("it bakes");
+            let tile = bake_tile(&reaches, [x, z], settings).expect("it bakes");
             let time = begun.elapsed().as_secs_f64() * 1000.0;
             if time > worst.0 {
                 worst = (time, [x, z], reaches.len());
@@ -86,7 +83,7 @@ fn one_tile(triangles: &[Triangle], half: f32, settings: &BakeSettings) {
         }
     }
     let begun = Stopwatch::start();
-    stitch(&tiles, rows.0, settings).expect("it stitches");
+    stitch(&tiles, settings).expect("it stitches");
     println!(
         "  slowest tile {:?}: {:.1} ms over {} triangles; the stitch of {} tiles {:.2} ms",
         worst.1,

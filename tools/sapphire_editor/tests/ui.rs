@@ -1045,6 +1045,24 @@ fn a_number_typed_in_the_inspector_is_one_step_of_undo() {
     assert_same(&text_of(&harness), SLICE, "two, the number");
 }
 
+/// The Undo button takes back a number being typed, as Cmd+Z does, on a file with no other step to offer:
+/// a press on a button greyed out for want of a step counts for nothing.
+#[test]
+fn the_undo_button_takes_back_a_number_being_typed() {
+    let dir = TestDir::new("typed_number_undo_button");
+    let path = dir.write("slice.moves.ron", SLICE);
+    let mut harness = harness(&path);
+    type_over_the_damage(&mut harness, &["1", "2"]);
+    let undo = harness.get_by_label("Undo").rect().center();
+    harness.hover_at(undo);
+    harness.run_steps(2);
+    harness.drag_at(undo);
+    harness.run_steps(2);
+    harness.drop_at(undo);
+    harness.run_steps(3);
+    assert_same(&text_of(&harness), SLICE, "one click");
+}
+
 /// Escape takes back a number as it does a name, though the number has already landed in the text.
 #[test]
 fn escape_takes_back_a_number_being_typed() {

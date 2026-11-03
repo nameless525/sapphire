@@ -236,10 +236,13 @@ impl MovesFile {
         }
     }
 
-    /// What undo would take back.
+    /// What undo would take back: a gesture's edits so far, which [`Self::undo`] ends first, or the last step.
     #[must_use]
     pub fn undo_label(&self) -> Option<&str> {
-        self.history.undo.last().map(|change| change.label.as_str())
+        match &self.gesture {
+            Some(gesture) if gesture.before != self.text.text() => Some(gesture.label.as_str()),
+            _ => self.history.undo.last().map(|change| change.label.as_str()),
+        }
     }
 
     /// What redo would bring back.

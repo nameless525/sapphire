@@ -14,6 +14,10 @@
 //! - **Two sidecars with one ID** is a copy. Neither opens until a person deletes the copy's sidecar, which
 //!   gives the copy a new ID.
 //!
+//! A look at the sidecars walks the roots and reads each one, so a [`crate::set::DocumentSet`] keeps its last
+//! look and asks again only when it has to. Two roots that lead to one place are one root, whatever they're
+//! called, so a directory isn't seen twice and a file doesn't claim its own ID against itself.
+//!
 //! A document no importer reads has a sidecar of [`DOCUMENT_TYPE`], holding only an ID. A cook leaves that
 //! alone, as it leaves any sidecar whose source it has no importer for.
 
@@ -23,6 +27,7 @@ use std::{fs, io};
 
 use sapphire_assets::AssetId;
 
+use crate::kinds::Kind;
 use crate::text;
 
 /// What a sidecar's name adds to its source's.
@@ -139,13 +144,16 @@ pub struct Sidecars {
     claims: BTreeMap<AssetId, Vec<PathBuf>>,
     /// Sidecars whose source doesn't exist, with the IDs they hold, if they can be read.
     orphaned: BTreeMap<PathBuf, Option<AssetId>>,
+    /// The files whose names say they're documents, sidecar or none.
+    documents: BTreeMap<PathBuf, Kind>,
 }
 
 impl Sidecars {
-    /// Walks `roots`, passing over hidden files and links: a cook is what refuses a link.
+    /// Walks `roots`, passing over hidden files and links: a cook is what refuses a link. A root that isn't
+    /// there holds nothing, and [`distinct_roots`] says which ones to walk.
     pub fn scan(roots: &[PathBuf]) -> Result<Self, IdentityError> {
         let mut sidecars = Self::default();
-        for root in roots {
+        for root in distinct_roots(roots) {
             sidecars.walk(root)?;
         }
         Ok(sidecars)
@@ -153,8 +161,13 @@ impl Sidecars {
 
     fn walk(&mut self, dir: &Path) -> Result<(), IdentityError> {
         let read_error = |source| IdentityError::Io { path: dir.to_owned(), source };
-        let mut entries =
-            fs::read_dir(dir).map_err(read_error)?.collect::<Result<Vec<_>, _>>().map_err(read_error)?;
+        // A directory that's gone since it was listed has nothing in it.
+        let listing = match fs::read_dir(dir) {
+            Ok(listing) => listing,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(read_error(error)),
+        };
+        let mut entries = listing.collect::<Result<Vec<_>, _>>().map_err(read_error)?;
         entries.sort_by_key(fs::DirEntry::path);
         for entry in entries {
             let path = entry.path();
@@ -179,6 +192,8 @@ impl Sidecars {
                 } else {
                     self.orphaned.insert(path, id);
                 }
+            } else if let Some(kind) = Kind::of(&path) {
+                self.documents.insert(path, kind);
             }
         }
         Ok(())
@@ -192,6 +207,26 @@ impl Sidecars {
             }
             _ => Ok(()),
         }
+    }
+
+    /// Whether this look saw this sidecar holding this ID, and no other sidecar holding it. It's what lets a
+    /// later look go unmade: anything else is worth another look before it's believed.
+    #[must_use]
+    pub fn knows_alone(&self, sidecar: &Path, id: AssetId) -> bool {
+        matches!(self.claims.get(&id).map(Vec::as_slice), Some([only]) if only == sidecar)
+    }
+
+    /// Adds a sidecar just written, so a look a moment old needn't be made again for it.
+    pub fn note(&mut self, sidecar: PathBuf, id: AssetId) {
+        let claims = self.claims.entry(id).or_default();
+        if !claims.contains(&sidecar) {
+            claims.push(sidecar);
+        }
+    }
+
+    /// The files whose names say they're documents, in path order, as of this look.
+    pub fn documents(&self) -> impl Iterator<Item = (&Path, Kind)> {
+        self.documents.iter().map(|(path, kind)| (path.as_path(), *kind))
     }
 
     /// The sidecars with no source.
@@ -210,6 +245,25 @@ impl Sidecars {
     }
 }
 
+/// The roots worth walking: two that lead to one directory are one, and the first spelling stands, and one
+/// inside another adds nothing to it. They're compared by where they lead, so `a/../b`, a link to `b` and, on a
+/// file system that doesn't care, `B` are all `b`. A root that isn't there yet is compared as it's written.
+#[must_use]
+pub fn distinct_roots(roots: &[PathBuf]) -> Vec<&Path> {
+    let places: Vec<PathBuf> =
+        roots.iter().map(|root| fs::canonicalize(root).unwrap_or_else(|_| root.clone())).collect();
+    let mut kept = Vec::with_capacity(roots.len());
+    for (at, place) in places.iter().enumerate() {
+        let covered = places.iter().enumerate().any(|(other, there)| {
+            other != at && if there == place { other < at } else { place.starts_with(there) }
+        });
+        if !covered {
+            kept.push(roots[at].as_path());
+        }
+    }
+    kept
+}
+
 /// The ID of the document at `path`, making its sidecar if it has none and that's safe.
 pub fn identify(path: &Path, importer: Option<&str>, sidecars: &Sidecars) -> Result<AssetId, IdentityError> {
     let sidecar = sidecar_path(path);
@@ -226,10 +280,25 @@ pub fn identify(path: &Path, importer: Option<&str>, sidecars: &Sidecars) -> Res
     existing(&sidecar, sidecars)
 }
 
+/// The ID in `sidecar`, if nothing else claims it: a second sidecar under the roots, or, for a file outside
+/// them, the one sidecar under them that does.
 fn existing(sidecar: &Path, sidecars: &Sidecars) -> Result<AssetId, IdentityError> {
     let id = read_id(sidecar)?;
     sidecars.check_one_claim(id)?;
+    if let Some(claim) = sidecars.claims.get(&id).and_then(|claims| claims.first())
+        && !same_place(claim, sidecar)
+    {
+        return Err(IdentityError::Duplicate { id, first: claim.clone(), second: sidecar.to_owned() });
+    }
     Ok(id)
+}
+
+fn same_place(a: &Path, b: &Path) -> bool {
+    a == b
+        || match (fs::canonicalize(a), fs::canonicalize(b)) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        }
 }
 
 /// Writes a new sidecar with this ID, leaving one that's already there alone.

@@ -8,6 +8,11 @@
 //! take back. [`Document::rebase_on_disk`] also lays unsaved records on top of it again by path: each lands
 //! if what it was changing still says what it said, and is refused by name if not. It's told what the file
 //! holds, and [`crate::set::DocumentSet`] does the looking.
+//!
+//! History is capped by the bytes it holds ([`HISTORY_LIMIT`]). Past the cap the oldest steps go, whole, and
+//! the newest always stays, however large. What that leaves is a document that can't undo as far back as it
+//! was, and says so ([`Document::why_no_undo`]): its text and its dirtiness are as they were, since dirty is
+//! the bytes and never the history. A rebase that can no longer find the last save says [`Rebased::beneath`].
 
 use bevy_reflect::{
     FromReflect, GetTypeRegistration, PartialReflect, Reflect, ReflectMut, ReflectRef, TypeInfo,
@@ -15,6 +20,7 @@ use bevy_reflect::{
 };
 use std::sync::Arc;
 
+use crate::blank;
 use crate::kinds::Schema;
 use crate::layout::{self, Splice};
 use crate::patch::RonPatch;
@@ -23,6 +29,11 @@ use crate::record::{Change, ChangeRecord, Guard, HistoryStep, Op, absorb};
 use crate::text::{self, Node};
 use crate::walk::{self, NoSuchPath, Property};
 use crate::write::{self, ValueTextError};
+
+/// What a document's undo and redo may hold, in bytes ([`HistoryStep::bytes`]), before the oldest steps go.
+/// A drag holds about a kilobyte however long it runs, so this is several thousand edits of the largest file
+/// there is, and a whole-file take of a large document costs at most its own size.
+pub const HISTORY_LIMIT: usize = 16 * 1024 * 1024;
 
 /// An edit that didn't land. The text is as it was.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -124,6 +135,10 @@ pub struct Document<T> {
     /// How many steps of undo there were when `disk` was the text. `None` once that can't be got back to.
     saved_at: Option<usize>,
     gesture: Option<Gesture>,
+    /// What undo and redo may hold.
+    history_limit: usize,
+    /// How many steps have gone past that, oldest first, since it opened.
+    forgotten: usize,
 }
 
 impl<T> Document<T>
@@ -145,6 +160,8 @@ where
             saved_at: Some(0),
             gesture: None,
             last_good: None,
+            history_limit: HISTORY_LIMIT,
+            forgotten: 0,
         }
     }
 
@@ -204,6 +221,32 @@ where
         (held, self.undo.len() + self.redo.len())
     }
 
+    /// How many of the oldest steps have gone past the history's cap since it opened.
+    #[must_use]
+    pub const fn forgotten(&self) -> usize {
+        self.forgotten
+    }
+
+    /// Why undo has nothing left, if it's because the cap took it: what an editor says of an undo that did
+    /// nothing, since from outside it would look as if this document had never been edited further back.
+    #[must_use]
+    pub fn why_no_undo(&self) -> Option<String> {
+        (self.undo_label().is_none() && self.forgotten > 0).then(|| {
+            format!(
+                "nothing older to undo: the oldest {} {} let go to keep this document's history under {} KiB",
+                self.forgotten,
+                if self.forgotten == 1 { "edit was" } else { "edits were" },
+                self.history_limit / 1024,
+            )
+        })
+    }
+
+    /// Sets the cap on what history holds, and lets go of what's now past it.
+    pub fn set_history_limit(&mut self, bytes: usize) {
+        self.history_limit = bytes;
+        self.forget_past_limit();
+    }
+
     /// Whether a gesture is in progress.
     #[must_use]
     pub const fn in_gesture(&self) -> bool {
@@ -217,6 +260,14 @@ where
             Ok(parsed) => walk::properties(parsed.value.as_partial_reflect(), body(&parsed.tree), &self.text),
             Err(_) => Vec::new(),
         }
+    }
+
+    /// The properties at `path` and under it, written or left out. A panel's look at one entry, which doesn't
+    /// walk the rest of the file.
+    pub fn properties_under(&self, path: &PropertyPath) -> Result<Vec<Property>, Refused> {
+        let parsed = self.ready()?;
+        let root = parsed.value.as_partial_reflect();
+        Ok(walk::properties_under(root, body(&parsed.tree), &self.text, path)?)
     }
 
     /// The registry its values go through.
@@ -476,6 +527,43 @@ where
         Ok(Outcome::Changed)
     }
 
+    /// Adds a new entry to the end of the list at `list`, made from its type alone ([`crate::blank`]): what an
+    /// inspector's "add" does. What it starts as is for a person to fill in, and the document's parser may
+    /// refuse it, as it would any edit.
+    pub fn insert_blank(&mut self, label: &str, list: &PropertyPath) -> Result<Outcome, Refused> {
+        let parsed = self.ready()?;
+        let value = walk::get(parsed.value.as_partial_reflect(), list)?;
+        let ReflectRef::List(items) = value.reflect_ref() else {
+            return Err(wrong_type(list, "it isn't a list"));
+        };
+        let at = items.len();
+        let info = value
+            .get_represented_type_info()
+            .and_then(|info| info.as_list().ok())
+            .and_then(|info| self.registry.get_type_info(info.item_ty().id()))
+            .ok_or_else(|| wrong_type(list, "its entries have no registered type"))?;
+        let entry =
+            blank::blank(info, &self.registry).map_err(|error| wrong_type(list, &error.to_string()))?;
+        self.insert(label, list, at, entry.as_ref())
+    }
+
+    /// Makes the enum at `path` its variant `name`, with that variant's fields new: what picking one in an
+    /// inspector does, and turning an `Option` on (`Some`) or off (`None`). The variant it already is stays
+    /// as it is.
+    pub fn pick_variant(&mut self, label: &str, path: &PropertyPath, name: &str) -> Result<Outcome, Refused> {
+        let parsed = self.ready()?;
+        let value = walk::get(parsed.value.as_partial_reflect(), path)?;
+        if walk::variant(value) == Some(name) {
+            return Ok(Outcome::Unchanged);
+        }
+        let info = value
+            .get_represented_type_info()
+            .ok_or_else(|| wrong_type(path, "it has no type to pick from"))?;
+        let new = blank::blank_variant(info, name, &self.registry)
+            .map_err(|error| wrong_type(path, &error.to_string()))?;
+        self.set(label, path, new.as_ref())
+    }
+
     /// Takes out the entry at `path`, a list's entry by name or place.
     pub fn remove(&mut self, label: &str, path: &PropertyPath) -> Result<Outcome, Refused> {
         let parsed = self.ready()?;
@@ -597,6 +685,35 @@ where
         }
     }
 
+    /// Runs `edit` as one edit: every set it makes lands, or none does and the text is as it was. It's a step
+    /// of its own, under `label`, or part of the gesture in progress if there's one.
+    pub fn together<R, E>(
+        &mut self,
+        label: &str,
+        edit: impl FnOnce(&mut Self) -> Result<R, E>,
+    ) -> Result<R, E> {
+        let Some(gesture) = &self.gesture else {
+            self.begin_gesture(label);
+            let result = edit(self);
+            match result {
+                Ok(_) => self.end_gesture(),
+                Err(_) => self.cancel_gesture(),
+            }
+            return result;
+        };
+        let (text, records) = (self.text.clone(), gesture.records.clone());
+        let result = edit(self);
+        if result.is_err() {
+            if let Some(gesture) = &mut self.gesture {
+                gesture.records = records;
+            }
+            if text != self.text {
+                self.set_raw_text(text);
+            }
+        }
+        result
+    }
+
     /// Starts a gesture: edits until [`Self::end_gesture`] are one step of undo. One in progress ends, as
     /// a step of its own.
     pub fn begin_gesture(&mut self, label: &str) {
@@ -623,6 +740,23 @@ where
         }
         self.undo.push(step);
         self.redo.clear();
+        self.forget_past_limit();
+    }
+
+    /// Lets go of the oldest steps until what's held fits, or only the newest is left. A save point that goes
+    /// with them can't be got back to, which is what `saved_at` being `None` says.
+    fn forget_past_limit(&mut self) {
+        let mut held: usize = self.undo.iter().chain(&self.redo).map(HistoryStep::bytes).sum();
+        let mut gone = 0;
+        while held > self.history_limit && gone + 1 < self.undo.len() {
+            held -= self.undo[gone].bytes();
+            gone += 1;
+        }
+        if gone > 0 {
+            self.undo.drain(..gone);
+            self.forgotten += gone;
+            self.saved_at = self.saved_at.and_then(|saved| saved.checked_sub(gone));
+        }
     }
 
     /// Ends a gesture by taking back what it did, leaving no step of undo.
@@ -687,8 +821,7 @@ where
     pub fn take_disk(&mut self, label: &str, disk: String) {
         self.end_gesture();
         if disk != self.text {
-            self.undo.push(external_step(label, &self.text, &disk));
-            self.redo.clear();
+            self.push_step(external_step(label, &self.text, &disk));
             self.set_raw_text(disk.clone());
         }
         self.disk = disk.into_bytes();
@@ -719,8 +852,7 @@ where
         for step in unsaved.iter().rev() {
             self.set_raw_text(step.change.undo(&self.text).expect("undo runs in the order it was done"));
         }
-        self.redo.clear();
-        self.undo.push(external_step("the file changed on disk", &self.text, &disk));
+        self.push_step(external_step("the file changed on disk", &self.text, &disk));
         self.set_raw_text(disk.clone());
         self.disk = disk.into_bytes();
         self.saved_at = Some(self.undo.len());

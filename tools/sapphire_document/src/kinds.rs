@@ -6,11 +6,17 @@
 //! drag a window somewhere wrong on the way to somewhere right, and `MoveSetDocument::check` is the
 //! timeline's red marks.
 
+use std::path::Path;
+use std::sync::Arc;
+
 use bevy_reflect::{GetTypeRegistration, TypeRegistry};
+use sapphire_assets::AssetId;
 use sapphire_assets::cue::Cue;
 use sapphire_assets::graph::AnimGraph;
 use sapphire_moves::MoveSetDocument;
 use sapphire_vfx::EffectLibrary;
+
+use crate::set::{DocumentSet, SetError};
 
 /// How a type of document reads, and what's wrong with one that does.
 pub struct Schema<T> {
@@ -78,6 +84,57 @@ pub fn effects() -> Schema<EffectLibrary> {
         parse: |text| EffectLibrary::from_ron(text).map_err(|error| error.to_string()),
         check: no_rules,
         importer: None,
+    }
+}
+
+/// The kinds of document there are, which a browser lists and a file's name says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Kind {
+    Moves,
+    Graph,
+    Cue,
+    Effects,
+}
+
+impl Kind {
+    pub const ALL: [Self; 4] = [Self::Moves, Self::Graph, Self::Cue, Self::Effects];
+
+    /// What a file's name says it is, if it's a document this crate knows. A library of effects has no suffix
+    /// of its own beyond its name, as `default_effects.ron` shows.
+    #[must_use]
+    pub fn of(path: &Path) -> Option<Self> {
+        let name = path.file_name()?.to_str()?;
+        Self::ALL.into_iter().find(|kind| name.ends_with(kind.suffix()))
+    }
+
+    const fn suffix(self) -> &'static str {
+        match self {
+            Self::Moves => ".moves.ron",
+            Self::Graph => ".animgraph.ron",
+            Self::Cue => ".cue.ron",
+            Self::Effects => "_effects.ron",
+        }
+    }
+
+    /// Its heading in a list.
+    #[must_use]
+    pub const fn title(self) -> &'static str {
+        match self {
+            Self::Moves => "Moves",
+            Self::Graph => "Animation graphs",
+            Self::Cue => "Cues",
+            Self::Effects => "Effects",
+        }
+    }
+
+    /// Opens the document at `path` as this kind.
+    pub fn open(self, set: &mut DocumentSet, path: &Path) -> Result<AssetId, SetError> {
+        match self {
+            Self::Moves => set.open(path, moves(), Arc::new(registry_of::<MoveSetDocument>())),
+            Self::Graph => set.open(path, graph(), Arc::new(registry_of::<AnimGraph>())),
+            Self::Cue => set.open(path, cue(), Arc::new(registry_of::<Cue>())),
+            Self::Effects => set.open(path, effects(), Arc::new(registry_of::<EffectLibrary>())),
+        }
     }
 }
 

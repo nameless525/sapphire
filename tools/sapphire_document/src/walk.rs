@@ -397,6 +397,20 @@ pub fn properties(root: &dyn PartialReflect, tree: &Node, source: &str) -> Vec<P
     found
 }
 
+/// The properties at `path` and under it.
+pub fn properties_under(
+    root: &dyn PartialReflect,
+    tree: &Node,
+    source: &str,
+    path: &PropertyPath,
+) -> Result<Vec<Property>, NoSuchPath> {
+    let value = get(root, path)?;
+    let (node, taken) = place(root, tree, source, &positional(root, path)?)?;
+    let mut found = Vec::new();
+    visit(value, (taken == path.steps().len()).then_some(node), source, path, &mut found);
+    Ok(found)
+}
+
 fn visit(
     value: &dyn PartialReflect,
     node: Option<&Node>,

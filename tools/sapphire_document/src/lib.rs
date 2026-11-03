@@ -31,7 +31,7 @@ pub mod write;
 
 pub use document::{Document, Outcome, ReadFailure, Rebased, Refused, RefusedRecord};
 pub use identity::IdentityError;
-pub use kinds::{Schema, registry_of};
+pub use kinds::{Kind, Schema, registry_of};
 pub use patch::RonPatch;
 pub use path::{PropertyPath, Step};
 pub use record::{Change, ChangeRecord, HistoryStep, ObjectId, Op};

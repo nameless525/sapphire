@@ -39,6 +39,21 @@ impl PropertyPath {
         &self.steps
     }
 
+    /// What it holds in memory, for a history's count.
+    #[must_use]
+    pub fn bytes(&self) -> usize {
+        self.steps
+            .iter()
+            .map(|step| {
+                size_of::<Step>()
+                    + match step {
+                        Step::Field(name) | Step::Key(name) => name.len(),
+                        Step::Index(_) | Step::Some => 0,
+                    }
+            })
+            .sum()
+    }
+
     /// This path, one step further.
     #[must_use]
     pub fn join(&self, step: Step) -> Self {

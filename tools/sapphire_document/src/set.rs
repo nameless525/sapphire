@@ -9,6 +9,11 @@
 //! [`DocumentSet::conflict`] if there is. A file that's gone is looked for by its ID, so a rename with its
 //! sidecar costs nothing. [`DocumentSet::save`] looks harder, and writes over nothing it hasn't checked.
 //!
+//! It keeps its last look at the sidecars, so opening a file walks nothing if that look knows the file's
+//! sidecar and nothing else claims its ID. Anything else that look says is checked by another before it's
+//! believed: a refusal, a new ID, a file gone. Someone calls [`DocumentSet::rescan`] on a timer, which also says
+//! when a document open here turns out to have a copy.
+//!
 //! [`AnyDocument`] is what a panel that doesn't care about the kind sees: an inspector over a walker, a list
 //! of what's unsaved.
 
@@ -38,11 +43,19 @@ pub trait AnyDocument: Any {
     fn issues(&self) -> Vec<String>;
     /// Every property the walker finds, with where the text writes it.
     fn properties(&self) -> Vec<Property>;
+    /// [`Document::properties_under`].
+    fn properties_under(&self, path: &PropertyPath) -> Result<Vec<Property>, Refused>;
     /// Its value, for a walker to read properties from.
     fn value_reflect(&self) -> Option<&dyn PartialReflect>;
     fn registry(&self) -> &TypeRegistry;
     /// [`Document::set_text`].
     fn set_ron(&mut self, label: &str, path: &PropertyPath, ron: &str) -> Result<Outcome, Refused>;
+    /// [`Document::set_literal`].
+    fn set_spelled(&mut self, label: &str, path: &PropertyPath, literal: &str) -> Result<Outcome, Refused>;
+    /// [`Document::insert_blank`].
+    fn insert_blank(&mut self, label: &str, list: &PropertyPath) -> Result<Outcome, Refused>;
+    /// [`Document::pick_variant`].
+    fn pick_variant(&mut self, label: &str, path: &PropertyPath, name: &str) -> Result<Outcome, Refused>;
     /// [`Document::remove`].
     fn remove_entry(&mut self, label: &str, path: &PropertyPath) -> Result<Outcome, Refused>;
     fn begin_gesture(&mut self, label: &str);
@@ -53,6 +66,12 @@ pub trait AnyDocument: Any {
     fn redo_label(&self) -> Option<&str>;
     fn undo(&mut self) -> bool;
     fn redo(&mut self) -> bool;
+    /// [`Document::why_no_undo`].
+    fn why_no_undo(&self) -> Option<String>;
+    /// [`Document::forgotten`].
+    fn forgotten(&self) -> usize;
+    /// [`Document::set_history_limit`].
+    fn set_history_limit(&mut self, bytes: usize);
     /// What its history holds: bytes, then steps.
     fn history(&self) -> (usize, usize);
     fn as_any(&self) -> &dyn Any;
@@ -93,6 +112,10 @@ where
         Self::properties(self)
     }
 
+    fn properties_under(&self, path: &PropertyPath) -> Result<Vec<Property>, Refused> {
+        Self::properties_under(self, path)
+    }
+
     fn value_reflect(&self) -> Option<&dyn PartialReflect> {
         self.value().map(PartialReflect::as_partial_reflect)
     }
@@ -103,6 +126,18 @@ where
 
     fn set_ron(&mut self, label: &str, path: &PropertyPath, ron: &str) -> Result<Outcome, Refused> {
         self.set_text(label, path, ron)
+    }
+
+    fn set_spelled(&mut self, label: &str, path: &PropertyPath, literal: &str) -> Result<Outcome, Refused> {
+        self.set_literal(label, path, literal)
+    }
+
+    fn insert_blank(&mut self, label: &str, list: &PropertyPath) -> Result<Outcome, Refused> {
+        Self::insert_blank(self, label, list)
+    }
+
+    fn pick_variant(&mut self, label: &str, path: &PropertyPath, name: &str) -> Result<Outcome, Refused> {
+        Self::pick_variant(self, label, path, name)
     }
 
     fn remove_entry(&mut self, label: &str, path: &PropertyPath) -> Result<Outcome, Refused> {
@@ -139,6 +174,18 @@ where
 
     fn redo(&mut self) -> bool {
         Self::redo(self)
+    }
+
+    fn why_no_undo(&self) -> Option<String> {
+        Self::why_no_undo(self)
+    }
+
+    fn forgotten(&self) -> usize {
+        Self::forgotten(self)
+    }
+
+    fn set_history_limit(&mut self, bytes: usize) {
+        Self::set_history_limit(self, bytes);
     }
 
     fn history(&self) -> (usize, usize) {
@@ -208,6 +255,9 @@ pub enum Noticed {
     Moved { id: AssetId, from: PathBuf, to: PathBuf },
     /// It's gone, and no sidecar under the roots says where. A save writes it again.
     Gone { id: AssetId },
+    /// A second sidecar holds its ID: a copy, most likely, made since it opened. What's open stays open, and
+    /// neither file opens again until a person deletes the copy's sidecar.
+    Duplicated { id: AssetId, first: PathBuf, second: PathBuf },
 }
 
 /// What the documents open cost, for a panel and a log (R9). There's no budget for it in §3.2, since a tool's
@@ -219,7 +269,11 @@ pub struct DocumentStats {
     pub conflicts: usize,
     pub steps: usize,
     pub history_bytes: usize,
+    /// Steps let go past the cap.
+    pub forgotten: usize,
     pub text_bytes: usize,
+    /// How many times it has walked the roots.
+    pub scans: u64,
 }
 
 struct OpenFile {
@@ -231,19 +285,81 @@ struct OpenFile {
     conflict: Option<Vec<u8>>,
     /// Whether [`Noticed::Gone`] has been said, so it's said once.
     gone: bool,
+    /// The same of [`Noticed::Duplicated`].
+    duplicated: bool,
 }
 
 /// The documents open, by ID.
 pub struct DocumentSet {
     roots: Vec<PathBuf>,
+    /// The last look at the sidecars under the roots.
+    sidecars: Sidecars,
+    scans: u64,
     files: BTreeMap<AssetId, OpenFile>,
 }
 
 impl DocumentSet {
     /// A set that finds a moved file, and a second claim on an ID, under `roots`.
     #[must_use]
-    pub const fn new(roots: Vec<PathBuf>) -> Self {
-        Self { roots, files: BTreeMap::new() }
+    pub fn new(roots: Vec<PathBuf>) -> Self {
+        Self { roots, sidecars: Sidecars::default(), scans: 0, files: BTreeMap::new() }
+    }
+
+    /// The roots it looks under.
+    #[must_use]
+    pub fn roots(&self) -> &[PathBuf] {
+        &self.roots
+    }
+
+    /// Looks under other roots from now on, keeping what's open.
+    pub fn set_roots(&mut self, roots: Vec<PathBuf>) {
+        if roots != self.roots {
+            self.roots = roots;
+            self.sidecars = Sidecars::default();
+        }
+    }
+
+    /// Walks the roots again, and says what that shows of the documents open: a file that's gone or moved is
+    /// [`Self::refresh`]'s to say. A walk that fails leaves the last look standing.
+    pub fn rescan(&mut self) -> Result<Vec<Noticed>, IdentityError> {
+        self.look()?;
+        let mut noticed = Vec::new();
+        for (id, file) in &mut self.files {
+            match self.sidecars.check_one_claim(*id) {
+                Err(IdentityError::Duplicate { id, first, second }) => {
+                    if !std::mem::replace(&mut file.duplicated, true) {
+                        noticed.push(Noticed::Duplicated { id, first, second });
+                    }
+                }
+                _ => file.duplicated = false,
+            }
+        }
+        Ok(noticed)
+    }
+
+    fn look(&mut self) -> Result<(), IdentityError> {
+        self.scans += 1;
+        self.sidecars = Sidecars::scan(&self.roots)?;
+        Ok(())
+    }
+
+    /// The last look at what's under the roots: [`Self::rescan`] makes a new one.
+    #[must_use]
+    pub const fn sidecars(&self) -> &Sidecars {
+        &self.sidecars
+    }
+
+    /// The ID of the file at `path`. The last look answers if it can say yes. Anything else it would say gets
+    /// another look first: it may be older than whatever it's about.
+    fn identify(&mut self, path: &Path, importer: Option<&str>) -> Result<AssetId, SetError> {
+        let sidecar = identity::sidecar_path(path);
+        let known = identity::read_id(&sidecar).is_ok_and(|id| self.sidecars.knows_alone(&sidecar, id));
+        if !known {
+            self.look()?;
+        }
+        let id = identity::identify(path, importer, &self.sidecars)?;
+        self.sidecars.note(sidecar, id);
+        Ok(id)
     }
 
     /// Opens the document at `path`, or gives the one already open there. It has a sidecar when this returns,
@@ -259,7 +375,7 @@ impl DocumentSet {
     {
         let bytes = fs::read(path).map_err(|source| SetError::Io { path: path.to_owned(), source })?;
         let text = String::from_utf8(bytes).map_err(|_| SetError::NotText { path: path.to_owned() })?;
-        let id = identity::identify(path, schema.importer, &Sidecars::scan(&self.roots)?)?;
+        let id = self.identify(path, schema.importer)?;
         if let Some(open) = self.files.get_mut(&id) {
             // The same file, or a file that has moved without a look since.
             if same_file(&open.path, path) || !open.path.exists() {
@@ -307,6 +423,7 @@ impl DocumentSet {
         if !identity::write_sidecar(&sidecar, id, schema.importer)? {
             return Err(IdentityError::SidecarWaiting { path: sidecar }.into());
         }
+        self.sidecars.note(sidecar, id);
         self.insert(id, path, schema, registry, text.to_owned());
         Ok(id)
     }
@@ -323,7 +440,14 @@ impl DocumentSet {
     {
         let importer = schema.importer;
         let document = Box::new(Document::open(text, schema, registry));
-        let open = OpenFile { path: path.to_owned(), importer, document, conflict: None, gone: false };
+        let open = OpenFile {
+            path: path.to_owned(),
+            importer,
+            document,
+            conflict: None,
+            gone: false,
+            duplicated: false,
+        };
         self.files.insert(id, open);
     }
 
@@ -382,7 +506,7 @@ impl DocumentSet {
     /// now. A save looks harder.
     pub fn refresh(&mut self) -> Vec<Noticed> {
         let mut noticed = Vec::new();
-        let scan = std::cell::OnceCell::new();
+        let mut looked = false;
         for (id, file) in &mut self.files {
             if file.document.in_gesture() {
                 continue;
@@ -390,8 +514,16 @@ impl DocumentSet {
             let on_disk = match fs::read(&file.path) {
                 Ok(on_disk) => on_disk,
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                    let sidecars = scan.get_or_init(|| Sidecars::scan(&self.roots).ok());
-                    match sidecars.as_ref().and_then(|sidecars| sidecars.source_of(*id)) {
+                    // Once when it goes, since it's most likely a rename just now. After that, the
+                    // timer's looks will find it, and a file that stays gone costs no walk a second.
+                    if !looked && !file.gone {
+                        looked = true;
+                        self.scans += 1;
+                        if let Ok(sidecars) = Sidecars::scan(&self.roots) {
+                            self.sidecars = sidecars;
+                        }
+                    }
+                    match self.sidecars.source_of(*id) {
                         Some(now) => {
                             let from = std::mem::replace(&mut file.path, now.clone());
                             noticed.push(Noticed::Moved { id: *id, from, to: now });
@@ -472,7 +604,11 @@ impl DocumentSet {
         if fs::symlink_metadata(&file.path).is_ok() {
             return;
         }
-        if let Some(now) = Sidecars::scan(&self.roots).ok().and_then(|sidecars| sidecars.source_of(id)) {
+        self.scans += 1;
+        if let Ok(sidecars) = Sidecars::scan(&self.roots) {
+            self.sidecars = sidecars;
+        }
+        if let Some(now) = self.sidecars.source_of(id) {
             file.path = now;
         }
     }
@@ -564,13 +700,15 @@ impl DocumentSet {
     /// What the open documents cost.
     #[must_use]
     pub fn stats(&self) -> DocumentStats {
-        let mut stats = DocumentStats { open: self.files.len(), ..DocumentStats::default() };
+        let mut stats =
+            DocumentStats { open: self.files.len(), scans: self.scans, ..DocumentStats::default() };
         for file in self.files.values() {
             let (history_bytes, steps) = file.document.history();
             stats.dirty += usize::from(file.document.is_dirty());
             stats.conflicts += usize::from(file.conflict.is_some());
             stats.steps += steps;
             stats.history_bytes += history_bytes;
+            stats.forgotten += file.document.forgotten();
             stats.text_bytes += file.document.text().len();
         }
         stats

@@ -131,7 +131,10 @@ impl ChangeRecord {
     }
 
     fn bytes(&self) -> usize {
-        self.old.as_ref().map_or(0, String::len)
+        size_of::<Self>()
+            + self.path.bytes()
+            + self.guard.owner.bytes()
+            + self.old.as_ref().map_or(0, String::len)
             + self.new.as_ref().map_or(0, String::len)
             + self.guard.was.as_ref().map_or(0, String::len)
     }
@@ -147,10 +150,12 @@ pub struct HistoryStep {
 }
 
 impl HistoryStep {
-    /// The bytes it holds, for what a history costs.
+    /// The bytes it holds, for what a history costs and what its cap counts: its strings, and the structs
+    /// that hold them, so a thousand small edits aren't taken for nothing.
     #[must_use]
     pub fn bytes(&self) -> usize {
-        self.label.len()
+        size_of::<Self>()
+            + self.label.len()
             + self.change.removed.len()
             + self.change.inserted.len()
             + self.records.iter().map(ChangeRecord::bytes).sum::<usize>()

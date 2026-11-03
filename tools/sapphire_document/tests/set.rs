@@ -14,8 +14,8 @@ use std::{env, fs, process};
 use sapphire_assets::AssetId;
 use sapphire_document::identity::{self, sidecar_path};
 use sapphire_document::{
-    Document, DocumentSet, IdentityError, Noticed, Outcome, PropertyKind, SetError, kinds, registry_of, walk,
-    write,
+    Document, DocumentSet, IdentityError, Kind, Noticed, Outcome, PropertyKind, SetError, kinds, registry_of,
+    walk, write,
 };
 use sapphire_moves::MoveSetDocument;
 use sapphire_vfx::EffectLibrary;
@@ -284,6 +284,239 @@ fn a_save_writes_back_what_went_missing_and_touches_nothing_else() {
     assert_eq!(identity::read_id(&sidecar_path(&path)).expect("reads"), id, "the same ID");
 }
 
+/// Opening walks nothing if the last look knows the sidecar, and walks again if there's anything else to it.
+#[test]
+fn opening_walks_the_roots_only_when_the_last_look_cant_say() {
+    let dir = TestDir::new("scan_once");
+    let first = dir.write("a/one.moves.ron", &read(PLAYER));
+    let second = dir.write("b/two.moves.ron", &read(PLAYER));
+    let mut set = dir.set();
+    assert_eq!(set.stats().scans, 0);
+
+    // Two files with no sidecars: a new ID is worth a look, each time.
+    let one = open_moves(&mut set, &first).expect("opens");
+    let two = open_moves(&mut set, &second).expect("opens");
+    assert_eq!(set.stats().scans, 2);
+
+    // Known now, and open already: no walk.
+    assert_eq!(open_moves(&mut set, &first).expect("opens"), one);
+    assert!(set.close(two));
+    assert_eq!(open_moves(&mut set, &second).expect("opens"), two);
+    assert_eq!(set.stats().scans, 2, "the look they were noted in still says");
+
+    // A new look finds the same; a refresh with nothing gone walks nothing.
+    assert_eq!(set.rescan().expect("walks"), []);
+    assert_eq!(set.stats().scans, 3);
+    let _ = set.refresh();
+    let _ = set.refresh();
+    assert_eq!(set.stats().scans, 3);
+    assert_eq!(open_moves(&mut set, &first).expect("opens"), one);
+    assert_eq!(set.stats().scans, 3);
+}
+
+/// A copy made since the last look is still a copy: opening it looks again, and the timer's look says so of the
+/// document that's open, once.
+#[test]
+fn a_copy_made_since_the_last_look_is_found() {
+    let dir = TestDir::new("scan_copy");
+    let original = dir.write("a/one.moves.ron", &read(PLAYER));
+    let mut set = dir.set();
+    let id = open_moves(&mut set, &original).expect("opens");
+    edit(&mut set, id);
+
+    let copy = dir.0.join("b/one.moves.ron");
+    fs::create_dir_all(copy.parent().expect("a parent")).expect("its folder");
+    fs::copy(&original, &copy).expect("the file");
+    fs::copy(sidecar_path(&original), sidecar_path(&copy)).expect("its sidecar");
+
+    match open_moves(&mut set, &copy) {
+        Err(SetError::Identity(IdentityError::Duplicate { id: said, .. })) => assert_eq!(said, id),
+        other => panic!("{:?}", other.map(|id| id.to_string())),
+    }
+    assert_eq!(set.rescan().ok().map(|noticed| noticed.len()), Some(1), "said of what's open");
+    assert_eq!(set.rescan().expect("walks"), [], "said once");
+    assert!(set.is_dirty(id), "what's open stays open, with its edits");
+    set.save(id).expect("saving what's open is still fine");
+
+    // Put right, it's over: and said again if it happens again.
+    fs::remove_file(sidecar_path(&copy)).expect("the copy's sidecar");
+    assert_eq!(set.rescan().expect("walks"), []);
+    let other = open_moves(&mut set, &copy).expect("a new ID");
+    assert_ne!(other, id);
+}
+
+/// A sidecar that lost its file since the last look stops a new ID as it would have, however old that look is.
+#[test]
+fn a_move_since_the_last_look_still_stops_a_new_id() {
+    let dir = TestDir::new("scan_moved");
+    let original = dir.write("a/one.moves.ron", &read(PLAYER));
+    let mut set = dir.set();
+    let id = open_moves(&mut set, &original).expect("opens");
+    assert!(set.close(id));
+    assert_eq!(set.rescan().expect("walks"), []);
+    let moved = dir.0.join("a/renamed.moves.ron");
+    fs::rename(&original, &moved).expect("moved, without its sidecar");
+    assert!(matches!(open_moves(&mut set, &moved), Err(SetError::Identity(IdentityError::Moved { .. }))));
+    assert!(!sidecar_path(&moved).exists(), "no ID was made");
+}
+
+/// A file outside the roots with an ID a file inside them holds is a copy too.
+#[test]
+fn a_copy_outside_the_roots_is_a_copy() {
+    let inside = TestDir::new("outside_in");
+    let outside = TestDir::new("outside_out");
+    let original = inside.write("one.moves.ron", &read(PLAYER));
+    let mut set = inside.set();
+    let id = open_moves(&mut set, &original).expect("opens");
+    assert!(set.close(id));
+    let copy = outside.write("one.moves.ron", &read(PLAYER));
+    fs::copy(sidecar_path(&original), sidecar_path(&copy)).expect("its sidecar");
+    assert!(matches!(open_moves(&mut set, &copy), Err(SetError::Identity(IdentityError::Duplicate { .. }))));
+}
+
+/// Roots are told apart by where they lead. However they overlap, a file claims its ID once, the walk sees it
+/// once, and the first spelling is what paths come out in.
+#[test]
+fn overlapping_roots_are_one_root() {
+    let dir = TestDir::new("overlap");
+    let file = dir.write("sub/inner/one.moves.ron", &read(PLAYER));
+    let root = dir.0.clone();
+    let sub = root.join("sub");
+    let spellings: Vec<(&str, Vec<PathBuf>)> = vec![
+        ("the same twice", vec![root.clone(), root.clone()]),
+        ("through a parent", vec![sub.clone(), sub.join("inner/..")]),
+        ("with a dot", vec![sub.clone(), sub.join(".")]),
+        ("nested, outer first", vec![root.clone(), sub.clone()]),
+        ("nested, inner first", vec![sub.clone(), root.clone()]),
+        ("one that isn't there", vec![root.join("nothing"), sub.clone()]),
+    ];
+    for (what, roots) in spellings {
+        let mut set = DocumentSet::new(roots.clone());
+        let id = open_moves(&mut set, &file).unwrap_or_else(|error| panic!("{what}: {error}"));
+        assert_eq!(set.rescan().expect("walks"), [], "{what}: no duplicate");
+        let walked: Vec<_> = set.sidecars().documents().map(|(path, _)| path.to_owned()).collect();
+        assert_eq!(walked.len(), 1, "{what}: seen once: {walked:?}");
+        assert_eq!(
+            set.sidecars().source_of(id).as_deref().map(fs::canonicalize).map(Result::ok),
+            Some(fs::canonicalize(&file).ok()),
+            "{what}"
+        );
+        assert_eq!(
+            identity::distinct_roots(&roots).len(),
+            if what.ends_with("there") { 2 } else { 1 },
+            "{what}"
+        );
+    }
+    // Each spelled as itself where they don't overlap.
+    let (left, right) = (root.join("left"), root.join("right"));
+    assert_eq!(identity::distinct_roots(&[left.clone(), right.clone()]), [left.as_path(), right.as_path()]);
+    // A name a root's name starts with is no parent of it.
+    let (near, nearer) = (root.join("near"), root.join("near_too"));
+    fs::create_dir_all(&near).expect("a folder");
+    fs::create_dir_all(&nearer).expect("a folder");
+    assert_eq!(identity::distinct_roots(&[near.clone(), nearer.clone()]).len(), 2);
+}
+
+/// A link to a root is that root, and a link inside one isn't followed.
+#[cfg(unix)]
+#[test]
+fn a_root_reached_by_a_link_is_the_same_root() {
+    let dir = TestDir::new("overlap_link");
+    let file = dir.write("real/one.moves.ron", &read(PLAYER));
+    let real = dir.0.join("real");
+    let link = dir.0.join("link");
+    std::os::unix::fs::symlink(&real, &link).expect("a link");
+    let mut set = DocumentSet::new(vec![link.clone(), real.clone()]);
+    let id = open_moves(&mut set, &link.join("one.moves.ron")).expect("opens by the link");
+    assert_eq!(set.rescan().expect("walks"), [], "no duplicate");
+    // By its other name it's the same file, not a copy.
+    assert_eq!(open_moves(&mut set, &file).expect("opens by its name"), id);
+    assert_eq!(set.ids().count(), 1);
+}
+
+/// On a file system that doesn't care about case, a root in another case is the same root.
+#[test]
+fn a_root_in_another_case_is_the_same_root_where_that_is_true() {
+    let dir = TestDir::new("overlap_case");
+    let lower = dir.0.join("folder");
+    let file = dir.write("folder/one.moves.ron", &read(PLAYER));
+    let upper = dir.0.join("FOLDER");
+    if !upper.exists() {
+        return; // This file system cares, and they're two roots if both exist.
+    }
+    let mut set = DocumentSet::new(vec![lower, upper]);
+    open_moves(&mut set, &file).expect("opens");
+    assert_eq!(set.rescan().expect("walks"), [], "no duplicate");
+}
+
+/// What a browser reads: every document by its kind, sidecar or none, and nothing hidden.
+#[test]
+fn a_look_lists_the_documents_by_kind() {
+    let dir = TestDir::new("listing");
+    dir.write("a/one.moves.ron", &read(PLAYER));
+    dir.write("a/hit.cue.ron", &read(CUE));
+    dir.write("c/default_effects.ron", &read(EFFECTS));
+    dir.write("c/other.ron", "()");
+    dir.write(".hidden/three.moves.ron", &read(PLAYER));
+    let mut set = dir.set();
+    set.rescan().expect("walks");
+    let names: Vec<(String, Kind)> = set
+        .sidecars()
+        .documents()
+        .map(|(path, kind)| (path.file_name().expect("a name").to_string_lossy().into_owned(), kind))
+        .collect();
+    assert_eq!(
+        names,
+        [
+            ("hit.cue.ron".to_owned(), Kind::Cue),
+            ("one.moves.ron".to_owned(), Kind::Moves),
+            ("default_effects.ron".to_owned(), Kind::Effects),
+        ]
+    );
+    let cue = dir.0.join("a/hit.cue.ron");
+    let id = Kind::Cue.open(&mut set, &cue).expect("opens as its kind");
+    assert!(set.get::<sapphire_assets::cue::Cue>(id).is_some());
+}
+
+/// What a look at the whole repository costs, which is why a set keeps its last one and a browser looks on a
+/// timer. Its number goes in the report: load makes any limit here a lie.
+#[test]
+fn what_a_look_at_the_repository_costs() {
+    let root = support::repository_root();
+    let roots = vec![root.join("content"), root.join("crates")];
+    let mut set = DocumentSet::new(roots);
+    let mut looks = Vec::new();
+    for _ in 0..5 {
+        let stopwatch = sapphire_time::Stopwatch::start();
+        set.rescan().expect("walks");
+        looks.push(stopwatch.elapsed().as_secs_f64() * 1000.0);
+    }
+    let documents = set.sidecars().documents().count();
+    println!("a look at the repository: {looks:.1?} ms, {documents} documents");
+    assert!(documents >= 3, "{documents}");
+}
+
+/// The cap reaches a panel, and the set's count of what went.
+#[test]
+fn what_history_let_go_shows_through_the_set() {
+    let dir = TestDir::new("cap_set");
+    let file = dir.write("one.moves.ron", &read(PLAYER));
+    let mut set = dir.set();
+    let id = open_moves(&mut set, &file).expect("opens");
+    set.any_mut(id).expect("open").set_history_limit(1);
+    edit(&mut set, id);
+    edit(&mut set, id);
+    assert_eq!(set.stats().forgotten, 1);
+    assert_eq!(set.stats().steps, 1);
+    let document = set.any_mut(id).expect("open");
+    assert!(document.undo());
+    assert!(!document.undo());
+    assert!(document.why_no_undo().expect("it says").contains("nothing older"));
+    assert!(set.is_dirty(id), "the first edit's still in the text");
+    set.save(id).expect("saves");
+    assert!(!set.is_dirty(id));
+}
+
 #[test]
 fn the_kinds_are_told_apart_and_a_panel_needs_none() {
     let dir = TestDir::new("kinds");
@@ -408,6 +641,10 @@ fn fuzz_dirty(seed: u64, steps: usize) -> Fuzzed {
             _ => set.open(&path, kinds::effects(), Arc::new(registry_of::<EffectLibrary>())),
         }
         .expect("opens");
+        // Half the seeds run at a cap they reach, so the rule is held with steps and save points going.
+        if seed % 2 == 1 {
+            set.any_mut(id).expect("open").set_history_limit(4096);
+        }
         models.push(Model { id, path, baseline: read(source).into_bytes(), conflict: None });
     }
     hold(&set, &models, "opening");

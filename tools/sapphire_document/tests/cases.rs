@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use bevy_reflect::{GetPath, PartialReflect, Reflect, ReflectDeserialize, ReflectSerialize};
 use sapphire_document::{
-    Document, Outcome, PropertyPath, ReadFailure, Refused, Schema, Step, kinds, registry_of,
+    Document, Outcome, PropertyKind, PropertyPath, ReadFailure, Refused, Schema, Step, kinds, registry_of,
 };
 use sapphire_moves::{MoveSetDocument, Shape};
 use serde::{Deserialize, Serialize};
@@ -822,5 +822,220 @@ fn a_variant_holding_an_array_can_be_picked() {
     let step = document.last_step().expect("a step");
     assert!(step.change.inserted.contains("Blend"), "{}", step.change.inserted);
     assert!(document.undo());
+    assert_eq!(document.text(), before);
+}
+
+/// An edit big enough that a few of them reach a small cap: the whole of the first move's name, replaced.
+fn long_edit(document: &mut Document<MoveSetDocument>, to: u32) {
+    let at = path("moves[0].startup");
+    assert_eq!(document.set_text("edit", &at, &to.to_string()), Ok(Outcome::Changed));
+}
+
+/// The cap, at its floor and past it: the oldest steps go whole, an undo there does nothing and says why, and
+/// what the document holds is never touched by it.
+#[test]
+fn history_past_its_cap_lets_the_oldest_go_and_says_so() {
+    let mut document = open("content/combat/player/player.moves.ron", kinds::moves());
+    let start = document.value().expect("reads").moves[0].startup;
+    assert_eq!(document.why_no_undo(), None, "nothing has been let go");
+    long_edit(&mut document, start + 1);
+    let one_step = document.history().0;
+    assert!(one_step > 0);
+    document.set_history_limit(one_step * 4);
+    let mut texts = vec![document.text().to_owned()];
+    for offset in 2..40 {
+        long_edit(&mut document, start + offset);
+        texts.push(document.text().to_owned());
+        assert!(
+            document.history().0 <= one_step * 5,
+            "{} past a cap of {}",
+            document.history().0,
+            one_step * 4
+        );
+    }
+    let (_, steps) = document.history();
+    assert!(steps >= 3 && steps <= 4, "{steps} steps fit four of them");
+    assert_eq!(document.forgotten(), 39 - steps);
+
+    // Undo goes back exactly as far as it holds, each step to the bytes it left.
+    let newest = texts.len() - 1;
+    for back in 1..=steps {
+        assert!(document.undo());
+        if back < steps {
+            assert_eq!(document.text(), texts[newest - back]);
+        }
+    }
+    let floor = document.text().to_owned();
+    assert_eq!(document.undo_label(), None);
+    let said = document.why_no_undo().expect("it says why");
+    assert!(
+        said.contains("nothing older to undo") && said.contains(&document.forgotten().to_string()),
+        "{said}"
+    );
+
+    // At the floor undo does nothing, and it's still an edit away from the file: dirty is the bytes.
+    assert!(!document.undo());
+    assert_eq!(document.text(), floor);
+    assert!(document.is_dirty(), "the file holds what the oldest edits changed");
+
+    // Redo brings it all back, and an edit from the floor is an ordinary edit.
+    for _ in 0..steps {
+        assert!(document.redo());
+    }
+    assert_eq!(document.text(), texts[newest]);
+    for _ in 0..steps {
+        assert!(document.undo());
+    }
+    long_edit(&mut document, start + 100);
+    assert_eq!(document.why_no_undo(), None, "there's an edit to undo again");
+    assert!(document.undo());
+    assert_eq!(document.text(), floor);
+    assert!(document.why_no_undo().is_some());
+}
+
+/// The newest step stays however large it is, or an edit couldn't be undone at all.
+#[test]
+fn the_newest_step_stays_whatever_the_cap() {
+    let mut document = open("content/combat/player/player.moves.ron", kinds::moves());
+    let before = document.text().to_owned();
+    document.set_history_limit(1);
+    let start = document.value().expect("reads").moves[0].startup;
+    long_edit(&mut document, start + 1);
+    assert_eq!(document.forgotten(), 0);
+    assert!(document.undo());
+    assert_eq!(document.text(), before);
+    assert!(!document.is_dirty());
+    assert!(document.redo());
+    long_edit(&mut document, start + 2);
+    assert_eq!(document.forgotten(), 1);
+    assert_eq!(document.history().1, 1);
+    assert!(document.undo());
+    assert!(!document.undo());
+    assert_ne!(document.text(), before, "the first edit went past the cap");
+    assert!(document.why_no_undo().expect("it says").contains("oldest 1 edit was"));
+}
+
+/// A save that history has let go of can't be got back to, so a rebase has no way to say what's unsaved: it
+/// lays nothing back, and says the edits are beneath the file's text, in undo, or gone past the cap.
+#[test]
+fn a_rebase_past_a_save_the_cap_let_go_says_so() {
+    let mut document = open("content/combat/player/player.moves.ron", kinds::moves());
+    let start = document.value().expect("reads").moves[0].startup;
+    document.set_history_limit(1);
+    long_edit(&mut document, start + 1);
+    long_edit(&mut document, start + 2);
+    assert!(document.is_dirty());
+    let on_disk = document.disk().to_vec();
+    let elsewhere = String::from_utf8(on_disk).expect("text").replacen("// ", "//  ", 1);
+    let rebased = document.rebase_on_disk(elsewhere.clone());
+    assert_eq!(rebased.kept, 0);
+    assert!(rebased.refused.is_empty());
+    assert!(rebased.beneath, "it says the edits weren't laid back");
+    assert_eq!(document.text(), elsewhere);
+    assert!(!document.is_dirty());
+}
+
+/// A take of a whole file counts against the cap like any other step, and past it undo says so.
+#[test]
+fn a_take_from_disk_counts_against_the_cap() {
+    let mut document = open("content/combat/player/player.moves.ron", kinds::moves());
+    document.set_history_limit(1);
+    let text = document.text().to_owned();
+    document.take_disk("first", text.replacen("// ", "//  ", 1));
+    document.take_disk("second", text.replacen("// ", "//   ", 1));
+    assert_eq!(document.forgotten(), 1);
+    assert_eq!(document.undo_label(), Some("second"));
+    assert!(!document.is_dirty());
+}
+
+/// Edits made together are one step or none: a failure halfway takes back what went before it, by itself or
+/// inside a gesture, and the gesture carries on.
+#[test]
+fn edits_made_together_land_together_or_not_at_all() {
+    let mut document = open("content/combat/player/player.moves.ron", kinds::moves());
+    let before = document.text().to_owned();
+    let startup = path("moves[0].startup");
+    let active = path("moves[0].active");
+    let start = document.value().expect("reads").moves[0].startup;
+
+    let refused = document.together("both", |document| {
+        document.set_text("x", &startup, &(start + 1).to_string())?;
+        document.set_text("x", &active, "not a number")
+    });
+    assert!(refused.is_err());
+    assert_eq!(document.text(), before);
+    assert_eq!(document.history().1, 0, "no step");
+    assert!(!document.in_gesture());
+
+    let done = document.together("both", |document| {
+        document.set_text("x", &startup, &(start + 1).to_string())?;
+        document.set_text("x", &active, "9")
+    });
+    assert_eq!(done, Ok(Outcome::Changed));
+    assert_eq!(document.history().1, 1, "one step");
+    assert_eq!(document.undo_label(), Some("both"));
+    let both = document.text().to_owned();
+
+    document.begin_gesture("drag");
+    document.set_text("x", &active, "10").expect("lands");
+    let held = document.text().to_owned();
+    let refused = document.together("ignored", |document| {
+        document.set_text("x", &startup, &(start + 2).to_string())?;
+        document.set_text("x", &active, "not a number")
+    });
+    assert!(refused.is_err());
+    assert_eq!(document.text(), held, "what the gesture had stays");
+    assert!(document.in_gesture());
+    document.end_gesture();
+    assert_eq!(document.last_step().expect("a step").records.len(), 1, "what failed left no record");
+    assert_eq!(document.undo_label(), Some("drag"));
+    assert!(document.undo());
+    assert_eq!(document.text(), both);
+}
+
+/// What a panel reads of one entry is what the whole walk says of it.
+#[test]
+fn properties_under_a_path_are_the_whole_walks() {
+    let document = open("content/combat/player/player.moves.ron", kinds::moves());
+    let entry = document.entry_path(&path("moves"), 0).expect("a move");
+    let hit = entry.join(Step::Field("hitboxes".to_owned()));
+    let hit = document.entry_path(&hit, 0).expect("a hitbox");
+    let under = document.properties_under(&hit).expect("there");
+    let prefix = hit.to_string();
+    let walked: Vec<_> = document
+        .properties()
+        .into_iter()
+        .filter(|property| property.path.to_string().starts_with(&prefix))
+        .collect();
+    assert!(under.len() > 5, "{}", under.len());
+    assert_eq!(under, walked);
+    assert!(document.properties_under(&path("moves[0].nothing")).is_err());
+}
+
+#[test]
+fn a_new_entry_and_a_picked_variant_come_from_the_type() {
+    let mut document = open("content/combat/player/player.moves.ron", kinds::moves());
+    let before = document.text().to_owned();
+    let list = path("moves[0].parry");
+    let count = document.value().expect("reads").moves[0].parry.len();
+    assert_eq!(document.insert_blank("add", &list), Ok(Outcome::Changed));
+    assert_eq!(document.value().expect("reads").moves[0].parry.len(), count + 1);
+    assert!(document.undo());
+    assert_eq!(document.text(), before);
+
+    let shape = document
+        .properties()
+        .into_iter()
+        .find(|property| property.path.to_string().ends_with(".shape") && property.kind == PropertyKind::Enum)
+        .expect("a hit volume");
+    let value =
+        sapphire_document::walk::get(document.value().expect("reads").as_partial_reflect(), &shape.path)
+            .expect("there");
+    let now = sapphire_document::walk::variant(value).expect("a variant").to_owned();
+    assert_eq!(document.pick_variant("same", &shape.path, &now), Ok(Outcome::Unchanged));
+    let other = if now == "Sphere" { "Capsule" } else { "Sphere" };
+    assert_eq!(document.pick_variant("pick", &shape.path, other), Ok(Outcome::Changed));
+    assert!(document.undo());
+    assert!(document.pick_variant("no such", &shape.path, "Nothing").is_err());
     assert_eq!(document.text(), before);
 }

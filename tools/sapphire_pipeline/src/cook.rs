@@ -971,19 +971,22 @@ fn clip_files(names: &[String]) -> Vec<String> {
             .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
             .collect()
     };
-    let files: Vec<String> = names.iter().map(safe).collect();
-    let folded: Vec<String> = files.iter().map(|file| file.to_lowercase()).collect();
-    files
-        .iter()
-        .enumerate()
-        .map(|(index, file)| {
-            if folded.iter().filter(|other| **other == folded[index]).count() > 1 {
-                format!("{file}-{index}")
-            } else {
-                file.clone()
-            }
-        })
-        .collect()
+    let mut files: Vec<String> = names.iter().map(safe).collect();
+    // A literal name can match a made-up one (`a_b-0`): suffix the clashing names until none clashes.
+    // A suffix ends in its own name's index, so two names that have each taken one never meet again,
+    // and this ends.
+    loop {
+        let folded: Vec<String> = files.iter().map(|file| file.to_lowercase()).collect();
+        let clashing: Vec<usize> = (0..files.len())
+            .filter(|&index| folded.iter().filter(|other| **other == folded[index]).count() > 1)
+            .collect();
+        if clashing.is_empty() {
+            return files;
+        }
+        for index in clashing {
+            files[index] = format!("{}-{index}", files[index]);
+        }
+    }
 }
 
 /// `path`'s file name without its extension.

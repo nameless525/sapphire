@@ -262,6 +262,49 @@ fn clips_with_names_a_filesystem_would_collapse_get_files_of_their_own() {
     assert_eq!(files, ["figure.Hit-0.sclip", "figure._3.sclip", "figure.a_b.sclip", "figure.hit-1.sclip"]);
 }
 
+/// A source's own names can match what parts two others: that's three clips and three files, each by
+/// the ID its own name gives it, not a collision to refuse.
+#[test]
+fn a_clip_named_like_a_made_up_file_gets_a_file_of_its_own() {
+    let tree = Tree::new("cook_clip_files_made_up");
+    let mut writer = figure();
+    animate(&mut writer, Some("a/b"), &[move_hips()]);
+    animate(&mut writer, Some("a?b"), &[turn_arm()]);
+    animate(&mut writer, Some("a_b-0"), &[move_hips()]);
+    let source = tree.write("figure.glb", &writer.to_glb());
+    let id = AssetId::from_bytes([0x22; 16]);
+    tree.sidecar(&source, id, clips_on(ClipSettings::default()));
+    let report = tree.try_cook(true).unwrap();
+    let rows =
+        [("a/b", "figure.a_b-0-0.sclip"), ("a?b", "figure.a_b-1.sclip"), ("a_b-0", "figure.a_b-0-2.sclip")];
+    for (name, file) in rows {
+        let asset = by_id(&report, meta::sub_asset_id(id, &format!("clip/{name}")));
+        assert_eq!(asset.output, tree.out().join(file));
+        let bytes = read_aligned(&asset.output);
+        assert_eq!(Clip::read(&bytes).unwrap().name.as_str(), name);
+    }
+}
+
+#[test]
+fn clip_files_are_their_names_unless_two_would_be_one_file() {
+    let rows: [(&[&str], &[&str]); 6] = [
+        (&["Idle", "Walk"], &["Idle", "Walk"]),
+        (&["Hit", "hit"], &["Hit-0", "hit-1"]),
+        (&["??", "//"], &["__-0", "__-1"]),
+        (&["a/b", "a?b", "a_b-0"], &["a_b-0-0", "a_b-1", "a_b-0-2"]),
+        // Each round's suffixes meet a name of their own, and case doesn't part them.
+        (
+            &["x/y", "x?y", "x_y-0", "x_y-0-0", "X_Y-0-2"],
+            &["x_y-0-0-0", "x_y-1", "x_y-0-2-2", "x_y-0-0-3", "X_Y-0-2-4"],
+        ),
+        (&["", "\u{e9}", "_"], &["", "_-1", "_-2"]),
+    ];
+    for (names, expected) in rows {
+        let names: Vec<String> = names.iter().map(|name| (*name).to_owned()).collect();
+        assert_eq!(clip_files(&names), expected, "{names:?}");
+    }
+}
+
 #[test]
 fn a_clip_the_source_no_longer_has_is_pruned() {
     let tree = Tree::new("cook_clip_pruned");

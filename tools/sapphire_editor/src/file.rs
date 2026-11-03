@@ -259,8 +259,8 @@ impl MovesFile {
     /// A file with nothing to save isn't touched. One changed on disk since it was read is refused,
     /// whatever it changed to: [`Self::conflict`] says what, and [`Self::take_disk`] or [`Self::keep_mine`]
     /// settles it. One that can't be read is refused too, since there's no telling what would be lost,
-    /// and one that's gone is written again, since nothing would be. A document that's a link stays one:
-    /// the file it leads to is what's replaced.
+    /// and one that's gone is written again, edits or none, since nothing would be and this is the only
+    /// copy. A document that's a link stays one: the file it leads to is what's replaced.
     ///
     /// The file is read as late as it can be, with the new text already written beside it. What's left is
     /// the moment before the rename, where another save lands and loses to this one whole.
@@ -269,14 +269,14 @@ impl MovesFile {
         let path = self.path.clone();
         let io_error = |source| FileError::Io { path: path.clone(), source };
         let target = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
-        let replacement = self
-            .is_dirty()
+        let gone = fs::metadata(&path).is_err_and(|error| error.kind() == io::ErrorKind::NotFound);
+        let replacement = (gone || self.is_dirty())
             .then(|| Temporary::beside(&target, self.text.text()))
             .transpose()
             .map_err(io_error)?;
-        self.check_disk()?;
+        let there = self.check_disk()?;
         if let Some(replacement) = replacement
-            && self.is_dirty()
+            && (!there || self.is_dirty())
         {
             replacement.replace(&target).map_err(io_error)?;
             self.disk = self.text.text().as_bytes().to_vec();
@@ -285,16 +285,19 @@ impl MovesFile {
     }
 
     /// What a save asks of the file before writing, which a look in passing doesn't: that nothing it can't
-    /// see goes unseen.
-    fn check_disk(&mut self) -> Result<(), FileError> {
-        match fs::read(&self.path) {
-            Ok(on_disk) => self.settle_disk(on_disk),
-            Err(source) if source.kind() == io::ErrorKind::NotFound => {}
+    /// see goes unseen. Says whether there's a file there.
+    fn check_disk(&mut self) -> Result<bool, FileError> {
+        let there = match fs::read(&self.path) {
+            Ok(on_disk) => {
+                self.settle_disk(on_disk);
+                true
+            }
+            Err(source) if source.kind() == io::ErrorKind::NotFound => false,
             Err(source) => return Err(FileError::Io { path: self.path.clone(), source }),
-        }
+        };
         match self.conflict {
             Some(_) => Err(FileError::ChangedOnDisk { path: self.path.clone() }),
-            None => Ok(()),
+            None => Ok(there),
         }
     }
 
@@ -867,6 +870,21 @@ mod tests {
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).expect("a mode");
         assert!(matches!(refused, Err(FileError::Io { .. })), "{refused:?}");
         assert_eq!(fs::read_to_string(&path).expect("reads"), by_hand);
+    }
+
+    /// With no edits here too: a save that says it saved leaves a file there, whole, and the text here was
+    /// the only copy left. A file that's there and holds the text isn't touched.
+    #[test]
+    fn a_save_with_no_edits_puts_back_a_file_thats_gone() {
+        let dir = TestDir::new("gone_clean");
+        let path = dir.write("moves.ron", PLAYER);
+        let mut file = MovesFile::open(&path).expect("opens");
+        fs::remove_file(&path).expect("removed");
+        assert!(!file.is_dirty(), "looking at the text alone");
+        file.save().expect("saves");
+        assert_eq!(fs::read_to_string(&path).expect("put back"), PLAYER);
+        assert!(!file.is_dirty());
+        assert_eq!(fs::read_dir(dir.path()).expect("lists").count(), 1, "nothing beside it");
     }
 
     /// A file that's gone has nothing to lose, and edits here are the only copy left: a save puts it back.

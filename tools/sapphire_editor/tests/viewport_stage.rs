@@ -743,7 +743,8 @@ fn documents_as_they_are(editor: &Editor) -> (String, bool, Option<String>, Opti
     )
 }
 
-/// The runtime owns all it holds: a borrow of a document couldn't be in it, nor can it call back to what isn't.
+/// The runtime borrows nothing, so no borrow of a document can be in it. A shared handle would pass this: what keeps
+/// one out is that the runtime's crates don't have `sapphire_document` in their dependency graph.
 #[test]
 fn a_stage_holds_no_borrow_of_anything() {
     fn owns_all_it_holds<T: 'static>() {}

@@ -17,7 +17,7 @@ const NO_LINE_END: &str = "（「『【〈《";
 
 /// A paragraph with a prohibited character every few cells, so most widths try to break at one.
 const PARAGRAPH: &str = "嵐が過ぎた朝、港の鐘がふたつ鳴った。「まだ船は戻らないのか」と老人は海を見つめたまま尋ねた。\
-    彼女は刀を鞘に収め、静かに首を振る。「約束は守ります。夜明けまでに北の門を開けて、街の人たちを逃がしてください。」\
+    刀を鞘に収め、静かに首を振る。「約束は守ります。夜明けまでに北の門を開けて、街の人たちを逃がしてください。」\
     ショップで買ったキャップをかぶって、ちょっとだけ外へ出よう！本当に？もちろん。";
 
 #[test]

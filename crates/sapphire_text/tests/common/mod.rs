@@ -158,15 +158,15 @@ const STATS_EN: [&str; 16] = [
 
 const DIALOGUE_JA: [&str; 5] = [
     "嵐が過ぎた朝、港の鐘がふたつ鳴った。「まだ船は戻らないのか」と老人は海を見つめたまま尋ねた。",
-    "彼女は刀を鞘に収め、静かに首を振る。潮の匂いに混じって、遠くの森が焼ける煙の気配がした。",
+    "刀を鞘に収め、静かに首を振る。潮の匂いに混じって、遠くの森が焼ける煙の気配がした。",
     "「約束は守ります。夜明けまでに北の門を開けて、街の人たちを逃がしてください。」",
     "地図によれば、谷を抜ける道は三本あるが、橋が残っているのは一本だけだ。敵の見張りを避けるには、月が沈むのを待つしかない。",
     "Lv.90 の守護者を倒すと、限定装備「蒼の残光」とスキルポイントを 1,200 獲得できます。",
 ];
 
 const DIALOGUE_EN: [&str; 5] = [
-    "On the morning after the storm, the harbor bell rang twice. \"Has the ship still not come back?\" the old man asked, his eyes on the sea.",
-    "She sheathed her sword and quietly shook her head. Under the smell of the tide came a trace of smoke from the burning forest far away.",
+    "On the morning after the storm, the harbor bell rang twice. \"Has the ship still not come back?\" the old sailor asked, eyes on the sea.",
+    "The sword went back into its sheath, with a quiet shake of the head. Under the smell of the tide came a trace of smoke from the burning forest far away.",
     "\"I'll keep my promise. Open the north gate before dawn and get the townspeople out.\"",
     "According to the map, three roads run through the valley, but only one still has its bridge. To avoid the enemy's lookouts we must wait for the moon to set.",
     "Defeat the Lv.90 guardian to earn the limited gear \"Azure Afterglow\" and 1,200 skill points.",

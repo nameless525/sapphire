@@ -2085,13 +2085,17 @@ fn cook_mesh_with_bytes(
     Ok((mesh, cooked))
 }
 
-/// The blake3 hash of the file at `path`, or `None` if there is none.
+/// The blake3 hash of the file at `path`, streamed, or `None` if there is none.
 fn file_hash(path: &Path) -> Result<Option<blake3::Hash>, CookError> {
-    match fs::read(path) {
-        Ok(bytes) => Ok(Some(blake3::hash(&bytes))),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(source) => Err(CookError::Read { path: path.to_owned(), source }),
-    }
+    let read_error = |source| CookError::Read { path: path.to_owned(), source };
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(read_error(error)),
+    };
+    let mut hasher = blake3::Hasher::new();
+    hasher.update_reader(file).map_err(read_error)?;
+    Ok(Some(hasher.finalize()))
 }
 
 /// Removes files under `out_root` with one of `extensions`, or temporary ones, that `keep`
@@ -2244,6 +2248,23 @@ mod tests {
     /// The cooked mesh at `path`.
     fn read_mesh(path: &Path) -> Mesh {
         Mesh::from_cooked(&read_aligned(path)).unwrap()
+    }
+
+    #[test]
+    fn a_cooked_files_hash_is_of_its_bytes_as_they_stand() {
+        let dir = TempDir::new("cook_file_hash");
+        let path = dir.path().join("cooked");
+        assert_eq!(file_hash(&path).unwrap(), None, "no file");
+        // Past a read's buffer, so more than one read goes into the hash.
+        let bytes: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
+        fs::write(&path, &bytes).unwrap();
+        assert_eq!(file_hash(&path).unwrap(), Some(blake3::hash(&bytes)));
+        fs::write(&path, &bytes[..1000]).unwrap();
+        assert_eq!(file_hash(&path).unwrap(), Some(blake3::hash(&bytes[..1000])), "cut short");
+        fs::write(&path, b"").unwrap();
+        assert_eq!(file_hash(&path).unwrap(), Some(blake3::hash(b"")), "empty");
+        let error = file_hash(dir.path()).unwrap_err();
+        assert!(matches!(&error, CookError::Read { path: at, .. } if at == dir.path()), "{error:?}");
     }
 
     #[test]

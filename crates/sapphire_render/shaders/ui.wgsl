@@ -30,6 +30,8 @@ struct UiQuadInput {
     @location(6) shape: vec4<f32>,
     @location(7) clip: vec2<f32>,
     @location(8) slice: f32,
+    @location(9) color_end: vec4<f32>,
+    @location(10) gradient: vec3<f32>,
 };
 
 struct UiVertex {
@@ -41,6 +43,8 @@ struct UiVertex {
     @location(3) @interpolate(flat) outline_color: vec4<f32>,
     @location(4) @interpolate(flat) shape: vec4<f32>,
     @location(5) @interpolate(flat) clip_slice: vec3<f32>,
+    @location(6) @interpolate(flat) color_end: vec4<f32>,
+    @location(7) @interpolate(flat) gradient: vec3<f32>,
 };
 
 fn ui_linear(display: vec3<f32>) -> vec3<f32> {
@@ -63,6 +67,8 @@ fn vs_ui(@builtin(vertex_index) index: u32, quad: UiQuadInput) -> UiVertex {
     out.outline_color = vec4<f32>(ui_linear(quad.outline_color.rgb), quad.outline_color.a);
     out.shape = quad.shape;
     out.clip_slice = vec3<f32>(quad.clip, quad.slice);
+    out.color_end = vec4<f32>(ui_linear(quad.color_end.rgb), quad.color_end.a);
+    out.gradient = quad.gradient;
     return out;
 }
 
@@ -118,9 +124,13 @@ fn fs_ui(in: UiVertex) -> @location(0) vec4<f32> {
         + clamp((turn - 1.0) / pixel_turn + 0.5, 0.0, 1.0);
     let swept = select(1.0, min(inside_sweep, 1.0), sweep > 0.0);
 
+    // The fill's gradient, in linear light. A share of 0 is the near color exactly.
+    let share = clamp(dot(in.gradient.xy, in.local) + in.gradient.z, 0.0, 1.0);
+    let color = mix(in.color, in.color_end, share);
+
     let mask = cut * swept;
-    let fill = in.color.a * inner;
+    let fill = color.a * inner;
     let line = in.outline_color.a * (outer - inner);
-    let rgb = in.color.rgb * fill + in.outline_color.rgb * line;
+    let rgb = color.rgb * fill + in.outline_color.rgb * line;
     return vec4<f32>(rgb, fill + line) * mask;
 }

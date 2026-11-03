@@ -54,7 +54,7 @@ use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use sapphire_look::{UiAtlas, UiDrawList, UiGlyphStats, UiPageBands, UiPageState, UiQuad};
+use sapphire_look::{UiAtlas, UiDrawList, UiGlyphStats, UiMask, UiPageBands, UiPageState, UiQuad, UiTreeStats};
 use sapphire_rhi::wgpu;
 
 use crate::buffer::{self, GrowableBuffer};
@@ -76,7 +76,7 @@ static NEXT_PAGE_STORE: AtomicU64 = AtomicU64::new(1);
 const INITIAL_QUADS: u64 = 256;
 
 /// The vertex layout of [`UiQuad`], attribute by attribute.
-const QUAD_ATTRIBUTES: [wgpu::VertexAttribute; 9] = [
+const QUAD_ATTRIBUTES: [wgpu::VertexAttribute; 11] = [
     attribute(0, offset_of!(UiQuad, origin), wgpu::VertexFormat::Float32x2),
     attribute(1, offset_of!(UiQuad, axis_x), wgpu::VertexFormat::Float32x2),
     attribute(2, offset_of!(UiQuad, axis_y), wgpu::VertexFormat::Float32x2),
@@ -87,6 +87,8 @@ const QUAD_ATTRIBUTES: [wgpu::VertexAttribute; 9] = [
     attribute(6, offset_of!(UiQuad, edge), wgpu::VertexFormat::Float32x4),
     attribute(7, offset_of!(UiQuad, clip), wgpu::VertexFormat::Float32x2),
     attribute(8, offset_of!(UiQuad, slice), wgpu::VertexFormat::Float32),
+    attribute(9, offset_of!(UiQuad, color_end), wgpu::VertexFormat::Unorm8x4),
+    attribute(10, offset_of!(UiQuad, gradient), wgpu::VertexFormat::Float32x3),
 ];
 
 const fn attribute(shader_location: u32, offset: usize, format: wgpu::VertexFormat) -> wgpu::VertexAttribute {
@@ -119,6 +121,8 @@ pub struct UiStats {
     pub draws: u32,
     /// What the glyph atlas behind the last prepared frame's list did.
     pub glyphs: UiGlyphStats,
+    /// What the retained trees behind it did.
+    pub tree: UiTreeStats,
 }
 
 /// `ui.wgsl`'s uniforms.
@@ -155,6 +159,8 @@ struct UiDraw {
     count: u32,
     /// The page, or `None` for the atlas.
     page: Option<u16>,
+    /// The mask in force, in points.
+    mask: Option<[f32; 4]>,
 }
 
 /// What exists once a frame has drawn quads.
@@ -344,6 +350,7 @@ impl Ui {
         self.stats.stale_page_quads = 0;
         self.stats.draws = 0;
         self.stats.glyphs = list.glyphs;
+        self.stats.tree = list.tree;
         // A list that names no page is nobody's, and says nothing about the pages.
         let uses_pages = !list.page_runs.is_empty() || !list.page_uploads.is_empty();
         let ours = list.page_state.store == self.page_state.store;
@@ -418,10 +425,12 @@ impl Ui {
     }
 
     /// Adds the pass over `target`, if this frame draws. It keeps what's there and blends over it.
-    pub(crate) fn record<'f>(&'f self, graph: &mut FrameGraph<'f>, target: TextureId) {
+    pub(crate) fn record<'f>(&'f self, graph: &mut FrameGraph<'f>, target: TextureId, size: (u32, u32)) {
         let Some(built) = self.built.as_deref().filter(|_| !self.quads.is_empty()) else { return };
         let labels = self.labels;
         let draws = self.draws.as_slice();
+        // A mask is in points, a scissor in the target's pixels.
+        let viewport = self.uniforms.points_to_clip.map(|to_clip| 2.0 / to_clip);
         graph.add_pass(UI_PASS).read(target).write(target).record(move |ctx| {
             let mut pass = ctx.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: labels.then_some(UI_PASS),
@@ -435,7 +444,17 @@ impl Ui {
                 ..Default::default()
             });
             pass.set_pipeline(&built.pipeline);
+            let mut scissor = None;
             for draw in draws {
+                let wanted = draw.mask.map(|mask| scissor_of(mask, viewport, size));
+                if wanted != scissor {
+                    let [x, y, width, height] = wanted.unwrap_or([0, 0, size.0, size.1]);
+                    pass.set_scissor_rect(x, y, width, height);
+                    scissor = wanted;
+                }
+                if wanted.is_some_and(|[_, _, width, height]| width == 0 || height == 0) {
+                    continue;
+                }
                 let group = match (draw.page, built.atlas.as_ref()) {
                     (Some(page), _) => &built.pages[&page].bind_group,
                     (None, Some(atlas)) => &atlas.bind_group,
@@ -627,8 +646,19 @@ fn make_page(device: &wgpu::Device, built: &Built, side: u32, labels: bool) -> P
     PageOnGpu { texture, bind_group }
 }
 
-/// The first `limit` quads of `list` as runs of one texture each, in order. Quads with nothing to
-/// read don't draw.
+/// `mask`, in points of `viewport`, as whole pixels of a target of `size` that hold it all: `x, y,
+/// width, height`, inside the target as a scissor must be.
+fn scissor_of(mask: [f32; 4], viewport: [f32; 2], size: (u32, u32)) -> [u32; 4] {
+    let (scale_x, scale_y) = (size.0 as f32 / viewport[0], size.1 as f32 / viewport[1]);
+    let x0 = ((mask[0] * scale_x).round().max(0.0) as u32).min(size.0);
+    let y0 = ((mask[1] * scale_y).round().max(0.0) as u32).min(size.1);
+    let x1 = ((mask[2] * scale_x).round().max(0.0) as u32).clamp(x0, size.0);
+    let y1 = ((mask[3] * scale_y).round().max(0.0) as u32).clamp(y0, size.1);
+    [x0, y0, x1 - x0, y1 - y0]
+}
+
+/// The first `limit` quads of `list` as runs of one texture and one mask each, in order. Quads with
+/// nothing to read don't draw.
 fn resolve_draws(
     list: &UiDrawList,
     limit: u32,
@@ -637,20 +667,44 @@ fn resolve_draws(
     draws: &mut Vec<UiDraw>,
 ) {
     let mut at = 0;
-    let field = |first: u32, end: u32, draws: &mut Vec<UiDraw>| {
+    let mut masks = Masks { list: &list.masks, next: 0, rect: None };
+    let field = |first: u32, end: u32, masks: &mut Masks<'_>, draws: &mut Vec<UiDraw>| {
         if has_atlas && end > first {
-            draws.push(UiDraw { first, count: end - first, page: None });
+            masks.split(first, end, None, draws);
         }
     };
     for run in &list.page_runs {
         let (first, end) = (run.first.min(limit), run.first.saturating_add(run.count).min(limit));
-        field(at, first, draws);
+        field(at, first, &mut masks, draws);
         if has_page(run.page) && end > first {
-            draws.push(UiDraw { first, count: end - first, page: Some(run.page) });
+            masks.split(first, end, Some(run.page), draws);
         }
         at = end;
     }
-    field(at, limit, draws);
+    field(at, limit, &mut masks, draws);
+}
+
+/// Where a walk through a list's quads is among its masks. Quads that don't draw still pass theirs.
+struct Masks<'a> {
+    list: &'a [UiMask],
+    next: usize,
+    rect: Option<[f32; 4]>,
+}
+
+impl Masks<'_> {
+    /// Quads `first..end` on one texture, as draws of one mask each.
+    fn split(&mut self, first: u32, end: u32, page: Option<u16>, draws: &mut Vec<UiDraw>) {
+        let mut at = first;
+        while at < end {
+            while let Some(mask) = self.list.get(self.next).filter(|mask| mask.first <= at) {
+                self.rect = mask.rect;
+                self.next += 1;
+            }
+            let until = self.list.get(self.next).map_or(end, |mask| mask.first.min(end));
+            draws.push(UiDraw { first: at, count: until - at, page, mask: self.rect });
+            at = until;
+        }
+    }
 }
 
 /// `atlas` as a texture and the group that reads it, or `None` if its size doesn't describe its
@@ -704,14 +758,14 @@ fn upload_atlas(
 
 #[cfg(test)]
 mod tests {
-    use sapphire_look::UiPageRun;
+    use sapphire_look::{UiMask, UiPageRun};
 
     use super::*;
 
     #[test]
     fn the_quad_s_layout_is_what_the_vertex_stage_reads() {
         // Holds `UiQuad`, an append-only layout, to the attributes: nothing skipped or overlapped.
-        assert_eq!(QUAD_BYTES, 76);
+        assert_eq!(QUAD_BYTES, 92);
         let mut end = 0;
         for attribute in QUAD_ATTRIBUTES {
             assert_eq!(attribute.offset, end, "location {}", attribute.shader_location);
@@ -792,6 +846,38 @@ mod tests {
     }
 
     #[test]
+    fn a_mask_splits_a_run_and_outlasts_quads_that_don_t_draw() {
+        let quad = UiQuad::new([0.0; 2], [1.0, 0.0], [0.0, 1.0], [0.0; 4], [255; 4]);
+        let mask = Some([1.0, 2.0, 3.0, 4.0]);
+        let list = UiDrawList {
+            quads: vec![quad; 10],
+            page_runs: vec![UiPageRun { first: 2, count: 4, page: 0 }],
+            masks: vec![UiMask { first: 1, rect: mask }, UiMask { first: 4, rect: None }],
+            ..UiDrawList::default()
+        };
+        let resolved = |has_atlas| {
+            let mut draws = Vec::new();
+            resolve_draws(&list, 10, has_atlas, |page| page < 1, &mut draws);
+            draws.iter().map(|d| (d.first, d.count, d.page, d.mask)).collect::<Vec<_>>()
+        };
+        assert_eq!(
+            resolved(true),
+            [
+                (0, 1, None, None),
+                (1, 1, None, mask),
+                (2, 2, Some(0), mask),
+                (4, 2, Some(0), None),
+                (6, 4, None, None),
+            ],
+        );
+        assert_eq!(
+            resolved(false),
+            [(2, 2, Some(0), mask), (4, 2, Some(0), None)],
+            "quads with nothing to read keep their mask's place",
+        );
+    }
+
+    #[test]
     fn malformed_page_batches_are_rejected_before_any_page_is_materialized() {
         use sapphire_look::UiPageUpload;
         let mut list = UiDrawList {
@@ -810,5 +896,15 @@ mod tests {
         assert!(!valid_page_uploads(&list, 8), "device limit");
         list.page_size = 0;
         assert!(!valid_page_uploads(&list, 16), "zero side");
+    }
+
+    #[test]
+    fn a_mask_becomes_whole_pixels_inside_the_target() {
+        let viewport = [100.0, 50.0];
+        let size = (200, 100);
+        assert_eq!(scissor_of([10.0, 5.0, 20.0, 15.0], viewport, size), [20, 10, 20, 20]);
+        assert_eq!(scissor_of([-10.0, -5.0, 500.0, 500.0], viewport, size), [0, 0, 200, 100]);
+        assert_eq!(scissor_of([20.0, 5.0, 10.0, 15.0], viewport, size), [40, 10, 0, 20], "inside out is empty");
+        assert_eq!(scissor_of([900.0, 900.0, 950.0, 950.0], viewport, size), [200, 100, 0, 0]);
     }
 }

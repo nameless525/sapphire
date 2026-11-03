@@ -75,6 +75,14 @@ pub struct UiQuad {
     /// the rest stretching the cell's middle column, so a bar's ends keep their shape at any
     /// length. 0 maps the cell across the quad.
     pub slice: f32,
+    /// The fill's far color, display-encoded like [`Self::color`], which a gradient mixes toward in
+    /// linear light. Nothing reads it while [`Self::gradient`] is all zeros.
+    pub color_end: [u8; 4],
+    /// How far along the gradient each point of the quad is: `x`, `y`, `offset`, so the share of
+    /// [`Self::color_end`] at `local` is `x * local.x + y * local.y + offset`, clamped to 0 to 1, with
+    /// `local` running 0 to 1 along the quad's own axes. A gradient across several quads gives each
+    /// its own piece. All zeros is a plain fill.
+    pub gradient: [f32; 3],
 }
 
 /// A quad's [`UiQuad::softness`] when its texels are coverage, not a field: they draw as they are.
@@ -102,6 +110,8 @@ impl UiQuad {
             sweep: 0.0,
             clip: [0.0, 1.0],
             slice: 0.0,
+            color_end: [0; 4],
+            gradient: [0.0; 3],
         }
     }
 
@@ -120,6 +130,15 @@ pub struct UiPageRun {
     pub first: u32,
     pub count: u32,
     pub page: u16,
+}
+
+/// From quad `first` of [`UiDrawList::quads`] on, until the next of these, only what's inside `rect`
+/// draws: a scissor, with no edge softer than a pixel, so a mask costs a draw call and no pipeline.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UiMask {
+    pub first: u32,
+    /// In UI points: `x0, y0, x1, y1`. `None` draws everything again.
+    pub rect: Option<[f32; 4]>,
 }
 
 /// New texels for a rectangle of a glyph page, tightly packed in [`UiDrawList::upload_texels`] from
@@ -171,6 +190,29 @@ pub struct UiGlyphStats {
     pub used_bytes: u64,
 }
 
+/// What the retained trees behind a list did this frame (rule R9), which the list carries to the
+/// renderer's stats beside [`UiGlyphStats`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct UiTreeStats {
+    /// Trees drawn.
+    pub trees: u32,
+    /// Nodes they hold.
+    pub nodes: u32,
+    /// Layout passes: 0 on a frame where nothing changed.
+    pub layouts: u32,
+    /// Strings resolved through the localizer: 0 on a frame where nothing changed.
+    pub resolves: u32,
+    /// Bound values that moved.
+    pub bound_changes: u32,
+    /// Texts the shaper had to shape, not find.
+    pub shaped: u32,
+    /// What's wrong with a tree that a person should see: a path that doesn't resolve, a role no font
+    /// chain answers. They show on screen too.
+    pub problems: u32,
+    /// How long the trees took on the frame's thread, in microseconds.
+    pub micros: u32,
+}
+
 /// [`UiDrawList::page_uploads`] joined into fewer rectangles, which is what makes a screen of new
 /// glyphs cheap: a texture write has a fixed cost much larger than its bytes'. Kept between frames
 /// for its vectors' capacity.
@@ -195,6 +237,8 @@ pub struct UiDrawList {
     pub quads: Vec<UiQuad>,
     /// The quads that read a glyph page, in order and apart. Every other quad reads `atlas`.
     pub page_runs: Vec<UiPageRun>,
+    /// Where masks start and stop, by ascending `first`. Empty is no mask at all.
+    pub masks: Vec<UiMask>,
     /// A glyph page's side in texels, all of them `R8Unorm` with one mip level.
     pub page_size: u32,
     /// What changed in the pages since the last list, to apply before this list draws. A list that
@@ -210,6 +254,8 @@ pub struct UiDrawList {
     pub page_state: UiPageState,
     /// What the glyph atlas did for this frame.
     pub glyphs: UiGlyphStats,
+    /// What the retained trees did for this frame.
+    pub tree: UiTreeStats,
 }
 
 impl UiDrawList {
@@ -219,11 +265,24 @@ impl UiDrawList {
         self.atlas = None;
         self.quads.clear();
         self.page_runs.clear();
+        self.masks.clear();
         self.page_size = 0;
         self.page_uploads.clear();
         self.upload_texels.clear();
         self.page_state = UiPageState::default();
         self.glyphs = UiGlyphStats::default();
+        self.tree = UiTreeStats::default();
+    }
+
+    /// Quads added from now on draw only inside `rect` (points), or everywhere with `None`.
+    pub fn set_mask(&mut self, rect: Option<[f32; 4]>) {
+        let first = self.quads.len() as u32;
+        match self.masks.last_mut() {
+            Some(last) if last.first == first => last.rect = rect,
+            Some(last) if last.rect == rect => {}
+            None if rect.is_none() => {}
+            _ => self.masks.push(UiMask { first, rect }),
+        }
     }
 
     /// Joins [`Self::page_uploads`] that lie side by side at one `y` of a page into `out`, with zeros
@@ -293,6 +352,26 @@ impl UiDrawList {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_mask_starts_where_the_quads_are_and_says_nothing_it_needn_t() {
+        let quad = UiQuad::new([0.0; 2], [1.0, 0.0], [0.0, 1.0], [0.0; 4], [255; 4]);
+        let rect = Some([0.0, 0.0, 8.0, 8.0]);
+        let mut list = UiDrawList::default();
+        list.set_mask(None);
+        assert!(list.masks.is_empty(), "no mask to stop");
+        list.quads.push(quad);
+        list.set_mask(Some([1.0; 4]));
+        list.set_mask(rect);
+        assert_eq!(list.masks, [UiMask { first: 1, rect }], "nothing drew under the first");
+        list.quads.push(quad);
+        list.set_mask(rect);
+        assert_eq!(list.masks.len(), 1, "the same mask goes on");
+        list.set_mask(None);
+        assert_eq!(list.masks[1], UiMask { first: 2, rect: None });
+        list.reset();
+        assert!(list.masks.is_empty());
+    }
 
     #[test]
     fn page_quads_join_a_run_only_on_its_page_and_right_after_it() {

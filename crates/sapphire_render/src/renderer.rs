@@ -2668,7 +2668,7 @@ impl Renderer {
             views.record(graph, frame);
         }
         // The interface, over the frame and any debug view (M2 I2).
-        ui.record(graph, target);
+        ui.record(graph, target, output);
         // Debug draws last, over all of it; the overlay draws over them.
         if let Some(draw) = debug_draw {
             draw.record(graph, target, targets.depth, labels);

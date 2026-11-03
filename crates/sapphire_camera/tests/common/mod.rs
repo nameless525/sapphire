@@ -106,6 +106,15 @@ pub fn lock_on_director() -> CameraDirector {
     camera
 }
 
+/// A director with clearing off, for what's stated of the rigs and the springs alone: a choice between two
+/// views can go either way, and `tests/clearing.rs` has what clearing promises.
+pub fn without_clearing(mut camera: CameraDirector) -> CameraDirector {
+    let mut tuning = camera.tuning().clone();
+    tuning.clearing.reach = 0.0;
+    camera.set_tuning(tuning).expect("reach 0 is valid");
+    camera
+}
+
 /// Runs `script` from `from` to `to` seconds at `rate` frames a second, starting on a whole frame, and
 /// calls `each` with the time and pose of every frame.
 pub fn run(

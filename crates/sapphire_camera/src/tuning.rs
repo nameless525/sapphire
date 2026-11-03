@@ -26,6 +26,9 @@ pub struct CameraTuning {
     pub lock_on: LockOnTuning,
     pub look: LookTuning,
     pub collision: CollisionTuning,
+    /// M2 G5's framing pass, so a document from before it still reads: it gets the shipped numbers.
+    #[serde(default)]
+    pub clearing: ClearingTuning,
     pub takeover: TakeoverTuning,
     pub shakes: ShakeTuning,
 }
@@ -175,6 +178,49 @@ pub struct CollisionTuning {
     /// How long stuck before the eye jumps to its place. After half of this it stops treating what's in
     /// the way as thin.
     pub stuck_time: f32,
+}
+
+/// Turning the view round what's in its way, when a framing rig is on (the `clearing` module's docs).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClearingTuning {
+    /// How often it looks at the view, in seconds.
+    pub check_every: f32,
+    /// How long a view stays bad before it looks for a better one.
+    pub patience: f32,
+    /// How long after choosing before it may choose again.
+    pub settle: f32,
+    /// How long after look input before it may choose.
+    pub after_look: f32,
+    /// How softly the view turns to what it chose.
+    pub half_life: f32,
+    /// The most it turns at, in radians a second, however bad the view it's leaving.
+    pub top_speed: f32,
+    /// The most that turn moves the eye at, in metres a second, so a long arm turns slower.
+    pub top_eye_speed: f32,
+    /// The furthest it'll turn at one choice, in radians. 0 turns all of it off.
+    pub reach: f32,
+    /// How much wrong a view may have and be left alone, as `Scene::fault` counts it.
+    pub tolerance: f32,
+    /// How much better another view must be to turn to it.
+    pub better_by: f32,
+}
+
+impl Default for ClearingTuning {
+    fn default() -> Self {
+        Self {
+            check_every: 0.1,
+            patience: 0.2,
+            settle: 0.8,
+            after_look: 1.5,
+            half_life: 0.4,
+            top_speed: 2.0,
+            top_eye_speed: 12.0,
+            reach: 2.4,
+            tolerance: 0.4,
+            better_by: 0.6,
+        }
+    }
 }
 
 /// A sequencer's takeover, which M3's cinematics drive.
@@ -358,6 +404,18 @@ impl CameraTuning {
         Check::range("collision.stuck_gap", collision.stuck_gap, 0.01, LONG_WAY)?;
         Check::range("collision.stuck_time", collision.stuck_time, 0.0, 30.0)?;
 
+        let clearing = &self.clearing;
+        Check::range("clearing.check_every", clearing.check_every, 0.01, 10.0)?;
+        Check::range("clearing.patience", clearing.patience, 0.0, 30.0)?;
+        Check::range("clearing.settle", clearing.settle, 0.0, 30.0)?;
+        Check::range("clearing.after_look", clearing.after_look, 0.0, 30.0)?;
+        half_life("clearing.half_life", clearing.half_life)?;
+        Check::range("clearing.top_speed", clearing.top_speed, 0.01, self.look.max_turn_rate)?;
+        Check::range("clearing.top_eye_speed", clearing.top_eye_speed, 0.01, LONG_WAY)?;
+        Check::range("clearing.reach", clearing.reach, 0.0, 3.1)?;
+        Check::range("clearing.tolerance", clearing.tolerance, 0.0, 10.0)?;
+        Check::range("clearing.better_by", clearing.better_by, 0.0, 10.0)?;
+
         half_life("takeover.blend_half_life", self.takeover.blend_half_life)?;
 
         let shakes = &self.shakes;
@@ -424,7 +482,7 @@ mod tests {
     #[test]
     fn each_refusal_names_its_field() {
         type Break = fn(&mut CameraTuning);
-        let cases: [(&str, Break); 25] = [
+        let cases: [(&str, Break); 35] = [
             ("explore.pivot_height", |t| t.explore.pivot_height = -1.0),
             ("explore.distance", |t| t.explore.distance = f32::NAN),
             ("explore.fov_y", |t| t.explore.fov_y = 3.2),
@@ -448,6 +506,16 @@ mod tests {
             ("collision.radius", |t| t.collision.radius = 0.0),
             ("collision.pull_in_half_life", |t| t.collision.pull_in_half_life = 0.0),
             ("collision.thin_occluder", |t| t.collision.thin_occluder = -1.0),
+            ("clearing.check_every", |t| t.clearing.check_every = 0.0),
+            ("clearing.patience", |t| t.clearing.patience = -1.0),
+            ("clearing.settle", |t| t.clearing.settle = f32::NAN),
+            ("clearing.after_look", |t| t.clearing.after_look = 100.0),
+            ("clearing.half_life", |t| t.clearing.half_life = 0.0),
+            ("clearing.top_speed", |t| t.clearing.top_speed = 100.0),
+            ("clearing.top_eye_speed", |t| t.clearing.top_eye_speed = 0.0),
+            ("clearing.reach", |t| t.clearing.reach = 4.0),
+            ("clearing.tolerance", |t| t.clearing.tolerance = -0.5),
+            ("clearing.better_by", |t| t.clearing.better_by = 100.0),
             ("takeover.blend_half_life", |t| t.takeover.blend_half_life = 0.0),
             ("shakes.rotation_limit", |t| t.shakes.rotation_limit = 1.0),
             ("shakes.presets[1].name", |t| t.shakes.presets[1].name = t.shakes.presets[0].name.clone()),
@@ -459,6 +527,12 @@ mod tests {
             let error = tuning.validate().expect_err(field);
             assert!(error.to_string().contains(&format!("`{field}`")), "{field}: {error}");
         }
+    }
+
+    /// `ClearingTuning::default` is what a document from before it gets, so it says what's shipped.
+    #[test]
+    fn a_document_with_no_clearing_gets_the_shipped_numbers() {
+        assert_eq!(CameraTuning::default_tuning().clearing, ClearingTuning::default());
     }
 
     #[test]

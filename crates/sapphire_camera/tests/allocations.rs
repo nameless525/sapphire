@@ -72,6 +72,31 @@ fn a_frame_allocates_nothing() {
     assert!(stats.shakes_replaced > 0, "the stack must have been full: {stats:?}");
 }
 
+/// A view turning round what's behind it, and comparing views to do it, allocates nothing either.
+#[test]
+fn turning_round_a_wall_allocates_nothing() {
+    assert!(alloc::is_installed());
+    if !PER_THREAD_COUNTS {
+        return;
+    }
+    let world =
+        ground_with(&[(Shape::Box { half_extents: Vec3::new(3.0, 2.5, 0.8) }, Vec3::new(0.0, 2.5, -1.8))]);
+    let mut camera = combat_director();
+    let script =
+        |t: f32| Moment::against(Vec3::new(2.0 * (t * 0.5).sin(), 0.0, 0.0), Vec3::new(0.0, 0.0, 5.0));
+
+    let ((), counts) = alloc::count_in_scope(|| {
+        for frame in 1..=3600 {
+            let pose = camera.update(&script(frame as f32 / 60.0).frame(1.0 / 60.0), &world);
+            std::hint::black_box(pose);
+        }
+    });
+
+    assert_eq!(counts.allocations, 0, "{} bytes allocated", counts.bytes);
+    let stats = camera.take_stats();
+    assert!(stats.swings > 0, "it has to have compared views: {stats:?}");
+}
+
 /// The walls and pillars of a scene that keeps the arm busy allocate nothing either.
 #[test]
 fn giving_way_allocates_nothing() {

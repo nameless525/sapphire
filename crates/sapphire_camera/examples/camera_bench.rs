@@ -80,6 +80,8 @@ enum Load {
     Explore,
     Combat,
     LockOn,
+    /// Combat with no thumb on the view, so clearing's free to compare views.
+    Turning,
 }
 
 impl Load {
@@ -88,6 +90,7 @@ impl Load {
             Self::Explore => "explore",
             Self::Combat => "combat",
             Self::LockOn => "lock-on",
+            Self::Turning => "turning",
         }
     }
 }
@@ -95,7 +98,7 @@ impl Load {
 fn camera(load: Load) -> CameraDirector {
     let mut camera =
         CameraDirector::new(CameraTuning::default_tuning(), 7).expect("the shipped tuning is valid");
-    if matches!(load, Load::Combat | Load::LockOn) {
+    if matches!(load, Load::Combat | Load::LockOn | Load::Turning) {
         camera.set_rig(Rig::Combat, true);
     }
     if matches!(load, Load::LockOn) {
@@ -114,14 +117,19 @@ fn frame(index: u32, load: Load) -> CameraFrame {
         player,
         player_yaw: 0.5 * t,
         target: if matches!(load, Load::Explore) { None } else { Some(enemy) },
-        look: Vec2::new(1.1 * (0.7 * t).sin(), 0.4 * (1.1 * t).sin()) * dt,
+        look: if matches!(load, Load::Turning) {
+            Vec2::ZERO
+        } else {
+            Vec2::new(1.1 * (0.7 * t).sin(), 0.4 * (1.1 * t).sin()) * dt
+        },
         zoom: 0.0,
         aspect: 16.0 / 9.0,
     }
 }
 
-/// One round's median, 99th percentile and worst in microseconds, casts a frame and the share pulled in.
-fn round(world: &PhysicsWorld, load: Load, frames: u32, times: &mut Vec<Duration>) -> [f64; 5] {
+/// One round's median, 99th percentile and worst in microseconds, casts a frame, the share pulled in, and
+/// times it chose to turn.
+fn round(world: &PhysicsWorld, load: Load, frames: u32, times: &mut Vec<Duration>) -> [f64; 6] {
     let mut camera = camera(load);
     let shake = camera.tuning().shake_id("hit_light").expect("a shipped preset");
     for index in 0..120 {
@@ -149,6 +157,7 @@ fn round(world: &PhysicsWorld, load: Load, frames: u32, times: &mut Vec<Duration
         micros(times[times.len() - 1]),
         per_frame(stats.casts),
         per_frame(stats.pulled_frames),
+        f64::from(stats.swings),
     ]
 }
 
@@ -157,8 +166,8 @@ fn main() {
     let world = world();
     println!("{} colliders, {frames} frames a round, {ROUNDS} alternating rounds", world.static_count());
 
-    let loads = [Load::Explore, Load::Combat, Load::LockOn];
-    let mut best = [[f64::MAX, f64::MAX, f64::MAX, 0.0, 0.0]; 3];
+    let loads = [Load::Explore, Load::Combat, Load::LockOn, Load::Turning];
+    let mut best = [[f64::MAX, f64::MAX, f64::MAX, 0.0, 0.0, 0.0]; 4];
     let mut times = Vec::with_capacity(frames as usize);
     for _ in 0..ROUNDS {
         for (index, &load) in loads.iter().enumerate() {
@@ -170,12 +179,13 @@ fn main() {
                 kept[2].min(result[2]),
                 result[3],
                 result[4],
+                result[5],
             ];
         }
     }
-    for (load, [median, p99, worst, casts, pulled]) in loads.iter().zip(best) {
+    for (load, [median, p99, worst, casts, pulled, chose]) in loads.iter().zip(best) {
         println!(
-            "{:8} median {median:6.2} µs, p99 {p99:6.2} µs, worst {worst:6.2} µs, {casts:.2} casts a frame, pulled in on {:.0}%",
+            "{:8} median {median:6.2} µs, p99 {p99:6.2} µs, worst {worst:6.2} µs, {casts:.2} casts a frame, pulled in on {:.0}%, chose {chose} times",
             load.name(),
             pulled * 100.0,
         );

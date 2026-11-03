@@ -6,7 +6,8 @@ use sapphire_math::spring::damp;
 use sapphire_math::{Mat3, Mat4, Quat, Transform, UP, Vec2, Vec3};
 use sapphire_physics::PhysicsWorld;
 
-use crate::collision::Arm;
+use crate::clearing::{Clearing, Scene};
+use crate::collision::{Arm, CRAMPED};
 use crate::rigs::{Axes, Rig, Subject, framed_distance, framed_pivot, smoothstep, yaw_limit};
 use crate::shake::{ShakeId, ShakeStack};
 use crate::spring::{Follow, chase, rate_of};
@@ -26,9 +27,11 @@ const GOAL_JUMP: f32 = 0.5;
 const MOST_PULL: f32 = 1.0;
 /// Unwrapped yaw is rewrapped past this, in radians, to stay precise.
 const YAW_REWRAP: f32 = 256.0;
-/// Below this the eye is too close to what it looks at for the direction between them to mean anything,
-/// so the rig's own direction takes over: in metres, added along that direction.
-const LOOK_STEADY: f32 = 0.25;
+/// How much of the rig's own direction is in where the view looks, in metres, added to the way from the
+/// eye to the pivot. With the eye where the rig puts it this changes nothing, since they're the same
+/// direction. With the arm pulled in the eye's off that line, and this keeps a turn of the view in hand: near
+/// the pivot, that way swings by radians for centimetres.
+pub(crate) const LOOK_STEADY: f32 = 1.5;
 /// Close enough to the goal to end a recentring, in radians.
 const RECENTERED: f32 = 0.02;
 /// How quickly the fighters' velocities are read, as a half-life: long enough to take the edge off a
@@ -37,9 +40,34 @@ const VELOCITY_HALF_LIFE: f32 = 0.05;
 /// How far a target may move in a frame and still be the same target moving, at this speed in metres a
 /// second or this far in metres, whichever is more. Past that, it's another one.
 const TARGET_JUMP: (f32, f32) = (40.0, 1.0);
+/// How far ahead clearing looks for one fighter passing behind the other, in seconds: about how long a turn
+/// takes to get going.
+const LOOK_AHEAD: f32 = 0.5;
+/// An eye this near the player's chest looks at who it's framing, in metres, as long as they're no nearer than
+/// this either. By [`CRAMPED`] it looks where the rig does.
+const SHUT_IN: f32 = 0.6;
+/// How softly a view goes over to who it's framing and back, as the arm comes and goes much faster.
+const SHUT_IN_HALF_LIFE: f32 = 0.15;
+/// A frame this long, in seconds, has no view to judge: it lands where a settled camera stands, and whatever
+/// clearing was doing is over.
+const LONG_FRAME: f32 = 0.25;
 /// How far ahead the framing rigs look for the fighters, as a share of the half-life they pull out with:
 /// half of a spring's lag behind a steady goal (`2 / rate`), since the pivot catches up with them meanwhile.
 const LEAD_PER_HALF_LIFE: f32 = 1.0 / 1.678_347;
+
+/// How shut in by the player's chest an eye is: 1 at [`SHUT_IN`] or nearer, and 0 by [`CRAMPED`]. It sees
+/// nothing where its rig looks, so this much of its view goes to who it's framing, unless they're as close.
+pub(crate) fn shut_in(eye: Vec3, anchor: Vec3, framed: Vec3) -> f32 {
+    (1.0 - smoothstep(SHUT_IN, CRAMPED, eye.distance(anchor)))
+        * smoothstep(SHUT_IN, CRAMPED, eye.distance(framed))
+}
+
+/// The way a view looks from `eye`, given where its rig looks, with `share` of it on who it's framing.
+pub(crate) fn looking(eye: Vec3, pivot: Vec3, forward: Vec3, framed: Option<Vec3>, share: f32) -> Vec3 {
+    let along = pivot - eye + forward * LOOK_STEADY;
+    let Some(framed) = framed.filter(|_| share > 0.0) else { return along };
+    along.normalize_or(forward).lerp((framed - eye).normalize_or(forward), share)
+}
 
 /// One frame's inputs: plain values the app reads from its clock, transforms and input.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -111,6 +139,8 @@ pub struct CameraStats {
     pub hops: u32,
     /// Cuts taken, including the first frame's.
     pub cuts: u32,
+    /// Times the view chose to turn round what's in its way.
+    pub swings: u32,
     pub shakes_fired: u32,
     /// Shakes that replaced another because the stack was full.
     pub shakes_replaced: u32,
@@ -153,6 +183,9 @@ pub struct CameraDirector {
     target_offset: Follow<Vec3>,
 
     arm: Arm,
+    /// How much of the view is on who it's framing, for an eye shut in: [`shut_in`], softened.
+    shut_in: Follow<f32>,
+    clearing: Clearing,
     shakes: ShakeStack,
     takeover: Option<CameraPose>,
     /// The takeover pose a fade-out blends from once the sequencer stops giving one.
@@ -296,6 +329,8 @@ impl CameraDirector {
             last_target: None,
             target_offset: Follow::new(Vec3::ZERO),
             arm: Arm::new(radius),
+            shut_in: Follow::new(0.0),
+            clearing: Clearing::new(),
             shakes: ShakeStack::new(seed),
             takeover: None,
             last_takeover: None,
@@ -438,6 +473,7 @@ impl CameraDirector {
         let shot = self.shot(anchor, target.as_ref());
         let fov_half_life = if snap { 0.0 } else { self.tuning.look.fov_half_life };
         let fov_y = self.fov_y.update(shot.fov_y, fov_half_life, dt);
+        self.step_clearing(&frame, target.as_ref(), anchor, shot.pivot, fov_y, world, dt, snap);
         self.step_angles(&frame, target.as_ref(), anchor, fov_y, dt, snap);
 
         let across = self.pivot_across.update(
@@ -466,7 +502,11 @@ impl CameraDirector {
         let eye =
             self.arm.resolve(world, anchor, eye_goal, &self.tuning.collision, dt, snap, &mut self.stats);
 
-        let rotation = look_rotation(pivot - eye + axes.forward * LOOK_STEADY, &axes);
+        let framed = target.as_ref().map(|target| target.at_height(self.tuning.explore.pivot_height));
+        let framing = self.weight(Rig::Combat).max(self.weight(Rig::LockOn));
+        let share = framed.map_or(0.0, |framed| shut_in(eye, anchor, framed) * framing);
+        let share = self.shut_in.update(share, if snap { 0.0 } else { SHUT_IN_HALF_LIFE }, dt);
+        let rotation = look_rotation(looking(eye, pivot, axes.forward, framed, share), &axes);
         let mut pose = CameraPose { eye, rotation, fov_y };
 
         let takeover = self.weight(Rig::Takeover);
@@ -607,6 +647,60 @@ impl CameraDirector {
         Some(Subject { position: subject.position + self.target_offset.value, ..subject })
     }
 
+    /// Looks at whether the framing rigs' view is any good from here, and whether another would be
+    /// better: the `clearing` module.
+    #[allow(clippy::too_many_arguments, reason = "one frame's inputs, at its one call")]
+    fn step_clearing(
+        &mut self,
+        frame: &CameraFrame,
+        target: Option<&Subject>,
+        anchor: Vec3,
+        pivot: Vec3,
+        fov_y: f32,
+        world: &PhysicsWorld,
+        dt: f32,
+        snap: bool,
+    ) {
+        let (combat, lock_on) = (self.weight(Rig::Combat), self.weight(Rig::LockOn));
+        let Some(target) = target.filter(|_| !snap && dt < LONG_FRAME && combat.max(lock_on) >= 0.5) else {
+            self.clearing.reset();
+            return;
+        };
+        let tuning = self.tuning.clearing;
+        if frame.look != Vec2::ZERO {
+            self.clearing.hand_over(&tuning);
+        }
+        let locked = lock_on >= 0.5;
+        let framing = if locked { &self.tuning.lock_on.framing } else { &self.tuning.combat.framing };
+        // Up close a line means little, so `line_fade` has lock-on let go, and the view's as free as combat's.
+        let lead = target.position - frame.player.position;
+        let gap = Vec2::new(lead.x, lead.z).length();
+        let held = locked && smoothstep(framing.line_fade[0], framing.line_fade[1], gap) >= 0.5;
+        let yaw = if held { self.lock_on_goal(frame, target) } else { self.yaw.heading };
+        let scene = Scene {
+            world,
+            arm: &self.arm,
+            anchor,
+            player: &frame.player,
+            target,
+            pivot,
+            pitch: self.pitch.heading,
+            aspect: frame.aspect,
+            half_fov: (fov_y * 0.5).tan(),
+            framing,
+            zoom: self.zoom.exp(),
+            player_soon: frame.player.position + self.player_motion.velocity * LOOK_AHEAD,
+            target_soon: target.position + self.target_motion.velocity * LOOK_AHEAD,
+        };
+        self.clearing.step(&scene, &tuning, yaw, held, dt, &mut self.stats);
+    }
+
+    /// The yaw lock-on holds, before any lean to clear what's in its way.
+    fn lock_on_goal(&self, frame: &CameraFrame, target: &Subject) -> f32 {
+        let lead = target.position - frame.player.position;
+        lead.x.atan2(lead.z) + self.side * self.tuning.lock_on.side_angle + self.lean.x
+    }
+
     /// Applies look input and the rigs' pulls to the yaw and pitch the view is heading for.
     fn step_angles(
         &mut self,
@@ -687,10 +781,19 @@ impl CameraDirector {
                     pitch.add(inside - self.pitch.heading, rate_of(framing.turn_half_life) * combat);
                 }
             }
+            if let Some(goal) = self.clearing.goal() {
+                let clearing = &self.tuning.clearing;
+                // As much as a held line leaves free.
+                let free = combat.max(lock_on) * (1.0 - lock_on * fade(&self.tuning.lock_on.framing));
+                let top =
+                    clearing.top_speed.min(clearing.top_eye_speed / self.distance.value.max(1.0)) / MOST_PULL;
+                let rate = rate_of(clearing.half_life / self.clearing.haste()).min(top) * free;
+                yaw.add(wrap_angle(goal - self.yaw.heading), rate);
+            }
             if lock_on > 0.0 {
                 let tuning = &self.tuning.lock_on;
                 let rate = rate_of(tuning.framing.turn_half_life) * lock_on;
-                let goal = line + self.side * tuning.side_angle + self.lean.x;
+                let goal = line + self.side * tuning.side_angle + self.lean.x + self.clearing.lean();
                 yaw.add(wrap_angle(goal - self.yaw.heading), rate * fade(&tuning.framing));
 
                 let rise = target_chest.y - anchor.y;

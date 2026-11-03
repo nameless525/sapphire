@@ -19,9 +19,15 @@
 //! `thin_patience` seconds, and the arm comes in front of whatever still hides the player after that.
 //!
 //! **When sliding can't get there,** as with the eye shut behind a thick wall, it counts as stuck: after
-//! `stuck_time` the eye hops to its place along the line, which is free by that line's cast. A hop
-//! jumps by design, is counted in [`CameraStats::hops`], and is the one exception to the jerk bound;
-//! leading and sliding make it rare.
+//! `stuck_time` the eye hops to its place along the line, which is free by that line's cast. Half way
+//! there, with its place still out of a straight sweep's reach, it starts walking in by the player's
+//! chest, which sees its place, so it mostly comes round the corner and has no need to. A hop jumps by
+//! design, is counted in [`CameraStats::hops`], and is the one exception to the jerk bound; leading, sliding
+//! and walking make it rare.
+//!
+//! **An eye pulled in within `CRAMPED` of the player's chest** sees neither fighter, so it comes out as
+//! quickly as it went in, with no delay: there's nothing there to keep steady. What gets it room in the first
+//! place is turning the view: the `clearing` module.
 
 use sapphire_math::Vec3;
 use sapphire_physics::{Group, PhysicsWorld, Pose, QueryFilter, Shape};
@@ -36,6 +42,8 @@ const SKIN: f32 = 0.002;
 const SLIDE_BOUNCES: u32 = 3;
 /// Motion too small to sweep, in metres.
 const NO_MOVE: f32 = 1e-5;
+/// An eye nearer the player's chest than this, in metres, is in their face.
+pub(crate) const CRAMPED: f32 = 1.5;
 /// How far the line must move over the lead time before it's worth a second cast, in metres.
 const WORTH_LEADING: f32 = 0.01;
 
@@ -164,10 +172,17 @@ impl Arm {
                     wanted = wanted.max(pull_for(soon, length, patient));
                 }
             }
-            self.pull_toward(wanted.min(length), tuning, dt);
+            self.pull_toward(wanted.min(length), length, tuning, dt);
 
             let proposed = start + direction * (length - self.pull.value);
-            let aim = proposed + self.closed_gap(tuning, dt);
+            let mut aim = proposed + self.closed_gap(tuning, dt);
+            // Slid as far as it goes, with its place round a corner: it comes round by the player's chest,
+            // which sees its place, rather than wait to hop there.
+            if self.stuck_for >= tuning.stuck_time * 0.5
+                && self.reach(world, self.eye, aim, stats) + NO_MOVE < self.eye.distance(aim)
+            {
+                aim = self.eye + (start - self.eye).clamp_length_max(tuning.max_pull_speed * dt);
+            }
             let eye = self.slide(world, self.eye, aim, stats);
             self.last_proposed = proposed;
             self.stuck_for = if eye.distance_squared(proposed) > tuning.stuck_gap * tuning.stuck_gap {
@@ -199,6 +214,33 @@ impl Arm {
         self.last_start = start;
         self.last_goal = goal;
         self.eye
+    }
+
+    /// Where the eye stands, before anything moves the drawn pose off it.
+    pub(crate) fn eye(&self) -> Vec3 {
+        self.eye
+    }
+
+    /// How far along the line from `start` to `end` the eye's sphere can stand, in metres. A start in
+    /// something counts from outside it, as [`Self::resolve`] takes it.
+    pub(crate) fn reach(&self, world: &PhysicsWorld, start: Vec3, end: Vec3, stats: &mut CameraStats) -> f32 {
+        let offset = end - start;
+        let length = offset.length();
+        if length < NO_MOVE {
+            return 0.0;
+        }
+        stats.casts += 1;
+        let direction = offset / length;
+        let front = world.cast_shape(&self.sphere, Pose::at(start), direction, length, &self.filter);
+        let Some(hit) = front else { return length };
+        if !hit.started_overlapping {
+            return (hit.distance - SKIN).max(0.0);
+        }
+        let clear = self.pushed_out(world, start, stats);
+        stats.casts += 1;
+        world
+            .cast_shape(&self.sphere, Pose::at(clear), direction, length, &self.filter)
+            .map_or(length, |hit| if hit.started_overlapping { 0.0 } else { (hit.distance - SKIN).max(0.0) })
     }
 
     /// Moves the eye by a shake's offset, stopping short of anything in the way. The result isn't
@@ -238,12 +280,15 @@ impl Arm {
         self.gap.value
     }
 
-    /// Moves the pull toward `wanted`: quickly in, and slowly out once the line has stayed clear.
-    fn pull_toward(&mut self, wanted: f32, tuning: &CollisionTuning, dt: f32) {
+    /// Moves the pull toward `wanted`: quickly in, and slowly out once the line has stayed clear. An eye in
+    /// the player's face goes out as soon as it can, as quickly as it came: it sees nothing from there, so
+    /// there's nothing to keep steady.
+    fn pull_toward(&mut self, wanted: f32, length: f32, tuning: &CollisionTuning, dt: f32) {
         let now = self.pull.value;
         let coming_in = wanted >= now - 1e-3;
         self.since_pulled = if coming_in { 0.0 } else { self.since_pulled + dt };
-        let (goal, half_life) = if coming_in {
+        let cramped = length - now < CRAMPED;
+        let (goal, half_life) = if coming_in || cramped {
             (wanted, tuning.pull_in_half_life)
         } else if self.since_pulled >= tuning.pull_out_delay {
             (wanted, tuning.pull_out_half_life)

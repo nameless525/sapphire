@@ -7,7 +7,7 @@ mod common;
 
 use common::{
     ASPECT, Moment, RATES, combat_director, director, fight, lock_on_director, open_ground, run,
-    sweeping_look,
+    sweeping_look, without_clearing,
 };
 use sapphire_camera::{CameraFrame, CameraPose};
 use sapphire_math::{Quat, Vec2, Vec3};
@@ -90,10 +90,11 @@ fn fight_then_rest(t: f32) -> Moment {
 fn thirty_sixty_and_120_hz_runs_end_together() {
     let seconds = common::FIGHT_SECONDS - 8.0;
     assert_rates_agree("explore", director, seconds, Along { eye: 0.07, turn: 0.012 }, fight_then_rest);
-    assert_rates_agree("combat", combat_director, seconds, Along { eye: 0.12, turn: 0.004 }, fight_then_rest);
+    let combat = || without_clearing(combat_director());
+    assert_rates_agree("combat", combat, seconds, Along { eye: 0.12, turn: 0.004 }, fight_then_rest);
     assert_rates_agree(
         "lock-on",
-        lock_on_director,
+        || without_clearing(lock_on_director()),
         seconds,
         Along { eye: 0.45, turn: 0.055 },
         fight_then_rest,

@@ -5,7 +5,10 @@
 
 mod common;
 
-use common::{Moment, Motion, RATES, combat_director, director, fight, lock_on_director, open_ground, run};
+use common::{
+    Moment, Motion, RATES, combat_director, director, fight, lock_on_director, open_ground, run,
+    without_clearing,
+};
 use sapphire_camera::{CameraDirector, CameraTuning, Rig};
 use sapphire_math::{Quat, Vec3};
 
@@ -24,7 +27,8 @@ struct Bound {
 
 /// Through a fight. The script's 15 m/s dash reaches 150 m/s² by itself, so the eye's acceleration is the
 /// fighters' own, smoothed. Lock-on takes most of this: the view holding the line to an enemy sprinting
-/// round the player at 1.8 m. Combat stays within 17 m/s, 1.6 rad/s, 90 m/s² and 6 rad/s².
+/// round the player at 1.8 m. Combat stays within 17 m/s, 1.6 rad/s, 90 m/s² and 6 rad/s². That's with
+/// clearing off: a turn it chooses is a view really changing, so it's held to [`SWING`].
 const FIGHT: Bound = Bound { speed: 30.0, turn: 3.2, acceleration: 190.0, turn_acceleration: 22.0 };
 
 /// A rig really changing, with its target directly behind the camera and far off: the view swings round
@@ -71,10 +75,17 @@ fn a_scripted_fight_stays_within_the_bound() {
     for rate in RATES {
         let motion = measure(director(), rate, common::FIGHT_SECONDS, fight, |_, _| {});
         assert_within(FIGHT, &format!("explore at {rate} Hz"), &motion);
-        let motion = measure(combat_director(), rate, common::FIGHT_SECONDS, fight, |_, _| {});
+        let camera = without_clearing(combat_director());
+        let motion = measure(camera, rate, common::FIGHT_SECONDS, fight, |_, _| {});
         assert_within(FIGHT, &format!("combat at {rate} Hz"), &motion);
-        let motion = measure(lock_on_director(), rate, common::FIGHT_SECONDS, fight, |_, _| {});
+        let camera = without_clearing(lock_on_director());
+        let motion = measure(camera, rate, common::FIGHT_SECONDS, fight, |_, _| {});
         assert_within(FIGHT, &format!("lock-on at {rate} Hz"), &motion);
+
+        let motion = measure(combat_director(), rate, common::FIGHT_SECONDS, fight, |_, _| {});
+        assert_within(SWING, &format!("combat, choosing, at {rate} Hz"), &motion);
+        let motion = measure(lock_on_director(), rate, common::FIGHT_SECONDS, fight, |_, _| {});
+        assert_within(SWING, &format!("lock-on, choosing, at {rate} Hz"), &motion);
     }
 }
 

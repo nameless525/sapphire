@@ -80,7 +80,10 @@
 //!
 //! `tests/frame_rate.rs` states the tolerance: at 30 and 60 Hz against 120, a settled run ends within 2 cm
 //! and 0.004 rad, and stays within 12 cm and 0.012 rad along the way. Lock-on's view, at its speed limit
-//! after an enemy sprinting round the player, stays within half a frame's turn: 0.05 rad at 30 Hz.
+//! after an enemy sprinting round the player, stays within half a frame's turn: 0.05 rad at 30 Hz. That's the
+//! rigs and springs, with `clearing.reach` at 0. Clearing's choices fall at the same moments at any rate
+//! (`tests/clearing.rs`), but a choice is a choice: where two views nearly tie, two rates can go opposite
+//! ways, so it promises the same behaviour rather than the same path.
 //!
 //! # Collision
 //!
@@ -89,6 +92,15 @@
 //! passed behind for a while rather than pumped in front of, and the rest come in early and leave
 //! slowly.
 //!
+//! # Clearing
+//!
+//! An arm alone can't get a view past a stall behind the player: it has nowhere to stand. The `clearing`
+//! module looks at what a person would call wrong with the framing rigs' view, a short arm, a fighter out
+//! of frame or hidden, the enemy over the player, and when it stays wrong turns the view, softly and not
+//! often, to the best one within reach. Look input takes it over at once, and under lock-on it's a lean
+//! off the line. It's the one place the view turns on what the world holds, not only on where the fighters
+//! are, so `sandbox`'s `arena::framing` counts it over whole fights.
+//!
 //! # Shakes
 //!
 //! See the `shake` module for E3's interface: [`CameraTuning::shake_id`], [`CameraDirector::fire_shake`]
@@ -96,8 +108,9 @@
 //!
 //! # Tuning
 //!
-//! Every number is in [`CameraTuning`], a RON document checked by field, shipped as
-//! `default_camera.ron`, and swapped in by [`CameraDirector::set_tuning`] with the camera running.
+//! Every number a person would tune is in [`CameraTuning`], a RON document checked by field, shipped as
+//! `default_camera.ron`, and swapped in by [`CameraDirector::set_tuning`] with the camera running. What a view's
+//! faults weigh against each other is `clearing`'s constants: it's one judgement, not a set of dials.
 //!
 //! # Allocation
 //!
@@ -106,9 +119,11 @@
 //! # Cost
 //!
 //! It reads no clock, so `examples/camera_bench.rs` times it. In release, on an M5 at a load average of
-//! about 20, with 227 colliders and the fighters walking among them, over 7 alternating rounds of 4,000
-//! frames: a median frame takes 0.9 µs exploring, 2.0 in combat and 1.6 in lock-on, the 99th percentile is
-//! under 4 µs, and the worst about 5 µs, for 5–6 sphere casts a frame.
+//! about 3, with 227 colliders and the fighters walking among them, over 7 alternating rounds of 4,000
+//! frames: a median frame takes 0.8 µs exploring, 2.1 in combat and 1.7 in lock-on, the 99th percentile is
+//! about 5 µs, and the worst about 7 µs, for 5–8 sphere casts a frame. With no thumb on the view, so clearing's
+//! free to compare views, the median holds and a comparing frame costs what the percentiles show: p99 25 µs,
+//! worst 43 µs, 10 casts a frame on average.
 //!
 //! # Does not own
 //!
@@ -117,6 +132,7 @@
 //! - Which cue fires which shake (E3), and input bindings (I1).
 //! - Sequencer timelines (M3): the takeover slot takes their poses.
 
+mod clearing;
 mod collision;
 mod director;
 mod rigs;
@@ -128,6 +144,6 @@ pub use director::{CameraDirector, CameraFrame, CameraPose, CameraStats};
 pub use rigs::{Rig, Subject};
 pub use shake::{MAX_SHAKES, NamedShake, Shake, ShakeId, ShakeStack};
 pub use tuning::{
-    CameraTuning, CameraTuningError, CollisionTuning, CombatTuning, ExploreTuning, FramingTuning,
-    LockOnTuning, LookTuning, ShakeTuning, TakeoverTuning,
+    CameraTuning, CameraTuningError, ClearingTuning, CollisionTuning, CombatTuning, ExploreTuning,
+    FramingTuning, LockOnTuning, LookTuning, ShakeTuning, TakeoverTuning,
 };

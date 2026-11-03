@@ -114,7 +114,9 @@ pub struct CameraFrame {
     /// transforms do. It places a shake fired since the last frame, so it starts when what's drawn gets
     /// to the step that fired it ([`ShakeStack::advance`]) and then runs on `dt`.
     pub behind: f32,
-    pub player: Subject,
+    /// Who the rigs follow. With nobody on stage, as in a cutscene with a takeover's shot and no fight, they
+    /// hold on where someone last was.
+    pub player: Option<Subject>,
     /// Which way the player faces, in radians from +Z toward +X: what recentring turns behind.
     pub player_yaw: f32,
     /// Who the framing rigs frame. Without one they let go.
@@ -127,6 +129,39 @@ pub struct CameraFrame {
     pub zoom: f32,
     /// Width over height, which the framing rigs fit their frame to.
     pub aspect: f32,
+}
+
+/// A [`CameraFrame`] with anything unusable replaced: what every step reads.
+#[derive(Clone, Copy, Debug)]
+struct Steady {
+    dt: f32,
+    behind: f32,
+    player: Subject,
+    player_yaw: f32,
+    target: Option<Subject>,
+    look: Vec2,
+    zoom: f32,
+    aspect: f32,
+}
+
+/// What a shot asks of the eye.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShotEye {
+    /// The eye is exactly where the blend has it, walls or no walls: for a cutscene, whose author placed
+    /// each shot in a zone they can see. It casts nothing.
+    Exact,
+    /// It keeps the collision's rule, stopping and sliding: for a cinematic, which plays wherever a fight
+    /// happens to be.
+    Clear,
+}
+
+/// How one takeover blends and treats the eye, in place of [`TakeoverTuning`](crate::TakeoverTuning)'s
+/// half-life and [`ShotEye::Clear`]: see [`CameraDirector::set_takeover_terms`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TakeoverTerms {
+    pub eye: ShotEye,
+    /// The half-life of the view's share going to the shot or coming back, in seconds. 0 goes at once.
+    pub blend_half_life: f32,
 }
 
 /// What the camera sees: a plain pose and field of view for the app to turn into a view.
@@ -232,9 +267,13 @@ pub struct CameraDirector {
     last_takeover: Option<CameraPose>,
     /// The eye, from a takeover's first share of the view until it's back where the rigs have theirs.
     takeover_eye: Option<TakeoverEye>,
+    /// This takeover's own terms, if it has any.
+    takeover_terms: Option<TakeoverTerms>,
+    /// Lands the takeover's eye at the next update, leaving the rigs where they are.
+    takeover_cut_pending: bool,
 
     /// The last valid inputs, which stand in for invalid ones.
-    last_frame: Option<CameraFrame>,
+    last_frame: Option<Steady>,
     cut_pending: bool,
     pose: CameraPose,
     stats: CameraStats,
@@ -378,6 +417,8 @@ impl CameraDirector {
             takeover: None,
             last_takeover: None,
             takeover_eye: None,
+            takeover_terms: None,
+            takeover_cut_pending: false,
             last_frame: None,
             cut_pending: true,
             pose: CameraPose { eye: Vec3::ZERO, rotation: Quat::IDENTITY, fov_y: 1.0 },
@@ -425,9 +466,12 @@ impl CameraDirector {
     /// in and out: it stops and slides, a shot's place in a wall means the nearest place out of it, and one it
     /// can't slide to it hops to after `stuck_time`, which [`CameraStats::hops`] counts. [`Self::cut`] goes
     /// straight there. Its rotation and field of view are always the shot's. The rigs keep running beneath
-    /// it, so the view they hand back to is current. Shakes still apply on top. A pose with a number that
-    /// isn't finite changes nothing, as with [`Self::update`]'s frames: the eye goes on from where it stands,
-    /// so it would never get over one.
+    /// it, so the view they hand back to is current, but look and zoom input don't reach them: nobody's
+    /// seeing what they'd turn, and it would turn the handing back. Shakes still apply on top. A pose with a
+    /// number that isn't finite changes nothing, as with [`Self::update`]'s frames: the eye goes on from
+    /// where it stands, so it would never get over one.
+    ///
+    /// [`Self::set_takeover_terms`] changes the half-life and takes the eye out of the collision's rule.
     pub fn set_takeover(&mut self, pose: Option<CameraPose>) {
         if pose.is_some_and(|pose| !pose.is_finite()) {
             return;
@@ -437,6 +481,22 @@ impl CameraDirector {
         if pose.is_some() {
             self.last_takeover = pose;
         }
+    }
+
+    /// Gives the takeover its own blend and eye, in place of the tuning's half-life and [`ShotEye::Clear`]. A
+    /// sequencer sets this with the blend in, and again with the blend out, before it hands back. They last
+    /// until the view is all the rigs' again, or new terms come; a half-life that isn't a finite number from
+    /// zero up changes nothing.
+    pub fn set_takeover_terms(&mut self, terms: TakeoverTerms) {
+        if terms.blend_half_life.is_finite() && terms.blend_half_life >= 0.0 {
+            self.takeover_terms = Some(terms);
+        }
+    }
+
+    /// Lands a takeover's eye on the shot at the next update: a cut between its shots, which leaves the rigs
+    /// and everything else where they are, as [`Self::cut`] wouldn't.
+    pub fn cut_takeover(&mut self) {
+        self.takeover_cut_pending = true;
     }
 
     /// Asks the view to turn behind the player and level out: a stick click, say. Any look input ends it.
@@ -565,7 +625,8 @@ impl CameraDirector {
         let looks = looking(eye, pivot, axes.forward, framed, share, &mut self.shut_in_turn);
         let rotation = look_rotation(looks, &axes);
         let mut pose = CameraPose { eye, rotation, fov_y };
-        self.step_takeover(&mut pose, world, dt, snap);
+        let snap_eye = snap || std::mem::take(&mut self.takeover_cut_pending);
+        self.step_takeover(&mut pose, world, dt, snap_eye);
 
         let forward = pose.forward();
         if forward.x.abs().max(forward.z.abs()) > 1e-3 {
@@ -576,7 +637,11 @@ impl CameraDirector {
         let (turn, offset) = self.shakes.sample(&self.tuning.shakes);
         if offset != Vec3::ZERO {
             let moved = pose.rotation * Vec3::new(-offset.x, offset.y, offset.z);
-            pose.eye = self.arm.offset_by(world, pose.eye, moved, &mut self.stats);
+            pose.eye = if self.is_eye_exact() {
+                pose.eye + moved
+            } else {
+                self.arm.offset_by(world, pose.eye, moved, &mut self.stats)
+            };
         }
         if turn != Vec3::ZERO {
             // Small angles: half of each, plus a scalar of 1, normalized.
@@ -591,8 +656,19 @@ impl CameraDirector {
 
     /// `frame` with anything unusable replaced: NaNs from upstream shouldn't reach the springs, whose state
     /// would never recover. A paused or backward `dt` is 0.
-    fn sanitized(&mut self, frame: &CameraFrame) -> CameraFrame {
-        let mut clean = *frame;
+    fn sanitized(&mut self, frame: &CameraFrame) -> Steady {
+        let CameraFrame { dt, behind, player, player_yaw, target, look, zoom, aspect } = *frame;
+        let nobody = Subject { position: Vec3::NAN, height: 1.0, radius: 0.1 };
+        let mut clean = Steady {
+            dt,
+            behind,
+            player: player.unwrap_or(nobody),
+            player_yaw,
+            target,
+            look,
+            zoom,
+            aspect,
+        };
         if !clean.dt.is_finite() || clean.dt < 0.0 {
             clean.dt = 0.0;
         }
@@ -603,6 +679,10 @@ impl CameraDirector {
             clean.look = Vec2::ZERO;
         }
         if !clean.zoom.is_finite() || clean.dt <= 0.0 {
+            clean.zoom = 0.0;
+        }
+        if self.wanted[Rig::Takeover as usize] {
+            clean.look = Vec2::ZERO;
             clean.zoom = 0.0;
         }
         if !clean.target.is_none_or(|target| target.is_valid()) {
@@ -634,19 +714,19 @@ impl CameraDirector {
     }
 
     /// Moves each rig's weight toward on or off. Rigs that frame someone need someone to frame.
-    fn step_weights(&mut self, frame: &CameraFrame, dt: f32, snap: bool) {
+    fn step_weights(&mut self, frame: &Steady, dt: f32, snap: bool) {
         let has_target = frame.target.is_some();
         let half_lives = [
             0.0,
             self.tuning.combat.framing.blend_half_life,
             self.tuning.lock_on.framing.blend_half_life,
-            self.tuning.takeover.blend_half_life,
+            self.takeover_terms.map_or(self.tuning.takeover.blend_half_life, |terms| terms.blend_half_life),
         ];
         for rig in [Rig::Combat, Rig::LockOn, Rig::Takeover] {
             let index = rig as usize;
             let usable = rig == Rig::Takeover || has_target;
             let goal = if self.wanted[index] && usable { 1.0 } else { 0.0 };
-            if snap {
+            if snap || half_lives[index] <= 0.0 {
                 self.weights[index] = goal;
                 self.weight_speeds[index] = 0.0;
                 continue;
@@ -667,6 +747,9 @@ impl CameraDirector {
     fn step_takeover(&mut self, pose: &mut CameraPose, world: &PhysicsWorld, dt: f32, snap: bool) {
         let takeover = self.weight(Rig::Takeover);
         let shot = self.takeover.or(self.last_takeover).filter(|_| takeover > 0.0);
+        if takeover <= 0.0 && !self.wanted[Rig::Takeover as usize] && self.takeover_eye.is_none() {
+            self.takeover_terms = None;
+        }
         if shot.is_none() && self.takeover_eye.is_none() {
             return;
         }
@@ -682,6 +765,11 @@ impl CameraDirector {
                 pose.fov_y += (shot.fov_y - pose.fov_y) * takeover;
             }
         }
+        if self.is_eye_exact() {
+            pose.eye = goal;
+            self.takeover_eye = None;
+            return;
+        }
         let eye = self.takeover_eye.get_or_insert_with(|| TakeoverEye::at(self.arm.eye()));
         pose.eye = eye.step(&self.arm, world, goal, &self.tuning.collision, dt, snap, &mut self.stats);
         if shot.is_none() && eye.is_there() {
@@ -689,9 +777,15 @@ impl CameraDirector {
         }
     }
 
+    /// Whether a takeover's share of the view has the eye out of the collision's rule.
+    fn is_eye_exact(&self) -> bool {
+        self.weight(Rig::Takeover) > 0.0
+            && self.takeover_terms.is_some_and(|terms| terms.eye == ShotEye::Exact)
+    }
+
     /// The target as the rigs see it: where it really is, except just after a change of target, when it
     /// comes from the old one's place. A rig fading out after the last one went keeps framing where it was.
-    fn step_target(&mut self, frame: &CameraFrame, dt: f32, snap: bool) -> Option<Subject> {
+    fn step_target(&mut self, frame: &Steady, dt: f32, snap: bool) -> Option<Subject> {
         let half_life = if snap { 0.0 } else { self.tuning.look.target_half_life };
         let framing = self.weight(Rig::Combat) > 0.0 || self.weight(Rig::LockOn) > 0.0;
         match (frame.target, self.last_target) {
@@ -722,7 +816,7 @@ impl CameraDirector {
     #[allow(clippy::too_many_arguments, reason = "one frame's inputs, at its one call")]
     fn step_clearing(
         &mut self,
-        frame: &CameraFrame,
+        frame: &Steady,
         target: Option<&Subject>,
         anchor: Vec3,
         pivot: Vec3,
@@ -773,7 +867,7 @@ impl CameraDirector {
     }
 
     /// The yaw lock-on holds, before any lean to clear what's in its way.
-    fn lock_on_goal(&self, frame: &CameraFrame, target: &Subject) -> f32 {
+    fn lock_on_goal(&self, frame: &Steady, target: &Subject) -> f32 {
         let lead = target.position - frame.player.position;
         lead.x.atan2(lead.z) + self.side * self.tuning.lock_on.side_angle + self.lean.x
     }
@@ -781,7 +875,7 @@ impl CameraDirector {
     /// Applies look input and the rigs' pulls to the yaw and pitch the view is heading for.
     fn step_angles(
         &mut self,
-        frame: &CameraFrame,
+        frame: &Steady,
         target: Option<&Subject>,
         anchor: Vec3,
         fov_y: f32,
@@ -885,7 +979,7 @@ impl CameraDirector {
     }
 
     /// Lock-on's lean: input moves it within its limits, and it returns once input lets go.
-    fn step_lean(&mut self, frame: &CameraFrame, lock_on: f32, dt: f32) {
+    fn step_lean(&mut self, frame: &Steady, lock_on: f32, dt: f32) {
         let tuning = &self.tuning.lock_on;
         let limits = Vec2::new(tuning.lean_yaw, tuning.lean_pitch);
         self.lean += frame.look * lock_on;
@@ -928,7 +1022,7 @@ impl CameraDirector {
     /// spring catches up, so a fighter running at the camera is met rather than trailed.
     fn distance_goal(
         &self,
-        frame: &CameraFrame,
+        frame: &Steady,
         target: Option<&Subject>,
         pivot: Vec3,
         axes: &Axes,

@@ -118,7 +118,7 @@ fn frame(index: u32, load: Load) -> CameraFrame {
     CameraFrame {
         dt,
         behind: 0.0,
-        player,
+        player: Some(player),
         player_yaw: 0.5 * t,
         target: if matches!(load, Load::Explore) { None } else { Some(enemy) },
         look: if matches!(load, Load::Turning) {

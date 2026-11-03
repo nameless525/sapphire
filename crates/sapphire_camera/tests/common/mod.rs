@@ -80,7 +80,7 @@ impl Moment {
         CameraFrame {
             dt,
             behind: 0.0,
-            player: self.player,
+            player: Some(self.player),
             player_yaw: self.player_yaw,
             target: self.target,
             look: self.look_rate * dt,

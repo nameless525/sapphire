@@ -26,7 +26,7 @@
 //!     &CameraFrame {
 //!         dt: 1.0 / 60.0,        // Real seconds: 0 while paused, unscaled by hitstop or slow motion.
 //!         behind: 0.0,           // How far the frame draws behind the latest step, for new shakes.
-//!         player,
+//!         player: Some(player), // Who the rigs follow, if anyone: a cutscene may have nobody.
 //!         player_yaw: 0.0,       // Which way the player faces.
 //!         target: Some(enemy),   // From `sapphire_gameplay::targeting`, or the app's own choice.
 //!         look: Vec2::ZERO,      // `CombatControls::look`: radians of yaw and pitch this frame.
@@ -141,7 +141,7 @@ mod shake;
 mod spring;
 mod tuning;
 
-pub use director::{CameraDirector, CameraFrame, CameraPose, CameraStats};
+pub use director::{CameraDirector, CameraFrame, CameraPose, CameraStats, ShotEye, TakeoverTerms};
 pub use rigs::{Rig, Subject};
 pub use shake::{MAX_SHAKES, NamedShake, Shake, ShakeId, ShakeStack};
 pub use tuning::{

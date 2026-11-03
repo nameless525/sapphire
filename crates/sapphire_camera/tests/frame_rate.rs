@@ -231,7 +231,7 @@ fn huge_frame_times_dont_explode() {
     assert_eq!(camera.update(&bad, &world), held, "a NaN step holds");
     let bad = CameraFrame {
         dt: 1.0 / 60.0,
-        player: common::player_at(Vec3::NAN),
+        player: Some(common::player_at(Vec3::NAN)),
         target: Some(common::enemy_at(Vec3::NAN)),
         ..bad
     };

@@ -173,7 +173,7 @@ impl Fight {
         let camera_frame = CameraFrame {
             dt: FRAME,
             behind: 0.0,
-            player: Subject { position: Vec3::ZERO, height: 1.7, radius: 0.35 },
+            player: Some(Subject { position: Vec3::ZERO, height: 1.7, radius: 0.35 }),
             player_yaw: 0.0,
             target: None,
             look: Vec2::ZERO,

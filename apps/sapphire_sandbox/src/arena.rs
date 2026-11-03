@@ -23,7 +23,8 @@
 //!   `--record` or `--fight`, each actor's root follows `ActorTransform` a tick at a time.
 //! - **The camera** (`--arena-shot`, [`ArenaShot`]): `sapphire_camera`'s director by default, on its
 //!   combat rig, framing both fighters and colliding with the world. `follow` is a plain fixed follow,
-//!   what the golden scenes pin, so a change of camera tuning moves none of them.
+//!   what the golden scenes pin, so a change of camera tuning moves none of them. The tests' `framing`
+//!   module counts what the director shows over whole fights, and holds it to its bounds.
 //!
 //! # The seams
 //!
@@ -731,6 +732,9 @@ impl ArenaActors {
         self.ground.draw(!self.fighting, canvas);
     }
 }
+
+#[cfg(test)]
+mod framing;
 
 #[cfg(test)]
 mod tests {

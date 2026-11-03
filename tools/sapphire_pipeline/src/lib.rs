@@ -122,6 +122,7 @@ pub mod material;
 pub mod mesh;
 pub mod meta;
 pub mod moves;
+pub mod nav;
 pub mod optimize;
 pub mod pack;
 pub mod probes;

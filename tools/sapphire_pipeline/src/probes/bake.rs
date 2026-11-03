@@ -309,32 +309,7 @@ impl Layout {
         if kept.is_empty() {
             return Err(BakeError::Empty);
         }
-        // Every probe of a kept brick, indexed in grid order (x fastest), each once.
-        let side = bricks.map(|n| n * BRICK_CELLS + 1);
-        let linear = |[x, y, z]: [u32; 3]| (x + side[0] * (y + side[1] * z)) as usize;
-        let mut index = vec![u32::MAX; side.iter().map(|&n| n as usize).product()];
-        for brick in &kept {
-            for local in brick_locals() {
-                index[linear(global(*brick, local))] = 0;
-            }
-        }
-        let mut probes = Vec::new();
-        for z in 0..side[2] {
-            for y in 0..side[1] {
-                for x in 0..side[0] {
-                    let slot = &mut index[linear([x, y, z])];
-                    if *slot == 0 {
-                        *slot = probes.len() as u32;
-                        probes.push([x, y, z]);
-                    }
-                }
-            }
-        }
-        let brick_probes = kept
-            .iter()
-            .flat_map(|&brick| brick_locals().map(move |local| global(brick, local)))
-            .map(|g| index[linear(g)])
-            .collect();
+        let (probes, brick_probes) = probes_of(bricks, &kept);
         Ok(Self { origin, spacing, bricks, table, brick_probes, probes })
     }
 
@@ -362,6 +337,26 @@ impl Layout {
             probe_data: probes.iter().map(|probe| probe.data.to_bits()).collect(),
         }
     }
+}
+
+/// Every probe of the `kept` bricks of a grid `bricks` in size, in grid order (x fastest), each once,
+/// and each kept brick's probes as indices into them. Works from the kept bricks alone: what it holds
+/// is about what the grid's brick table will, where an entry for every coordinate of the largest box
+/// would take 4 GiB however little of it holds anything.
+pub(super) fn probes_of(bricks: [u32; 3], kept: &[[u32; 3]]) -> (Vec<[u32; 3]>, Vec<u32>) {
+    let side = bricks.map(|n| n * BRICK_CELLS + 1);
+    // Fits: 1025³ at most (`MAX_BRICKS_PER_AXIS`), and it sorts in grid order.
+    let linear = |[x, y, z]: [u32; 3]| x + side[0] * (y + side[1] * z);
+    let in_bricks = || kept.iter().flat_map(|&brick| brick_locals().map(move |local| global(brick, local)));
+    let mut order: Vec<u32> = in_bricks().map(linear).collect();
+    order.sort_unstable();
+    order.dedup();
+    let probes =
+        order.iter().map(|&at| [at % side[0], at / side[0] % side[1], at / side[0] / side[1]]).collect();
+    let brick_probes = in_bricks()
+        .map(|probe| order.binary_search(&linear(probe)).expect("every kept brick's probe is listed") as u32)
+        .collect();
+    (probes, brick_probes)
 }
 
 /// A brick's probes' local coordinates, x fastest.

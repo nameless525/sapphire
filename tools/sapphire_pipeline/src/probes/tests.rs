@@ -2,11 +2,13 @@ use std::fs;
 
 use glam::{Vec2, Vec3};
 use sapphire_assets::material::{EnvironmentMaterial, FogCardMaterial, FoliageMaterial};
-use sapphire_assets::probes::{BRICK_PROBES, EMPTY_BRICK, ProbeData};
+use sapphire_assets::probes::{
+    BRICK_CELLS, BRICK_PROBES, BRICK_SIDE, EMPTY_BRICK, MAX_BRICKS_PER_AXIS, ProbeData,
+};
 use sapphire_math::sh;
 use serde_json::json;
 
-use super::bake::{BakeKey, BakeMaterial, BakeScene, BakeSettings, BakeTriangle, Cutout, bake};
+use super::bake::{BakeKey, BakeMaterial, BakeScene, BakeSettings, BakeTriangle, Cutout, bake, probes_of};
 use super::*;
 use crate::cook::{CookOptions, CookStatus, cook_dir};
 use crate::gltf_writer::{Geometry, GltfWriter};
@@ -141,6 +143,90 @@ fn bricks_are_kept_around_geometry_only() {
     unique.sort_unstable();
     unique.dedup();
     assert_eq!(unique.len(), grid.probe_data.len());
+}
+
+/// [`probes_of`] by an entry for every coordinate of the grid, as the bake's layout once was.
+fn probes_by_every_coordinate(bricks: [u32; 3], kept: &[[u32; 3]]) -> (Vec<[u32; 3]>, Vec<u32>) {
+    let side = bricks.map(|n| n * BRICK_CELLS + 1);
+    let linear = |[x, y, z]: [u32; 3]| (x + side[0] * (y + side[1] * z)) as usize;
+    let in_brick = |[bx, by, bz]: [u32; 3]| {
+        (0..BRICK_PROBES).map(move |i| {
+            let local = [i % BRICK_SIDE, (i / BRICK_SIDE) % BRICK_SIDE, i / (BRICK_SIDE * BRICK_SIDE)];
+            [bx * BRICK_CELLS + local[0], by * BRICK_CELLS + local[1], bz * BRICK_CELLS + local[2]]
+        })
+    };
+    let mut index = vec![u32::MAX; side.iter().map(|&n| n as usize).product()];
+    for &brick in kept {
+        for probe in in_brick(brick) {
+            index[linear(probe)] = 0;
+        }
+    }
+    let mut probes = Vec::new();
+    for z in 0..side[2] {
+        for y in 0..side[1] {
+            for x in 0..side[0] {
+                if index[linear([x, y, z])] == 0 {
+                    index[linear([x, y, z])] = probes.len() as u32;
+                    probes.push([x, y, z]);
+                }
+            }
+        }
+    }
+    let brick_probes = kept.iter().flat_map(|&brick| in_brick(brick)).map(|g| index[linear(g)]).collect();
+    (probes, brick_probes)
+}
+
+/// A grid's probes keep their order and indices whichever bricks it keeps, so its bytes do.
+#[test]
+fn probes_are_listed_in_grid_order_whichever_bricks_are_kept() {
+    let mut noise = 0x2545_f491_u32;
+    let mut next = move || {
+        noise ^= noise << 13;
+        noise ^= noise >> 17;
+        noise ^= noise << 5;
+        noise
+    };
+    for bricks in [[1, 1, 1], [2, 1, 1], [1, 3, 2], [8, 2, 8], [5, 7, 3], [16, 4, 9]] {
+        // One in 16, one in 2, then all of them, kept in the bake's order: x fastest.
+        for one_in in [16, 2, 1] {
+            let mut kept = Vec::new();
+            for z in 0..bricks[2] {
+                for y in 0..bricks[1] {
+                    for x in 0..bricks[0] {
+                        if next().is_multiple_of(one_in) {
+                            kept.push([x, y, z]);
+                        }
+                    }
+                }
+            }
+            if kept.is_empty() {
+                kept.push([0, 0, 0]);
+            }
+            assert_eq!(
+                probes_of(bricks, &kept),
+                probes_by_every_coordinate(bricks, &kept),
+                "{bricks:?}, {one_in}"
+            );
+        }
+    }
+}
+
+/// What the layout holds follows the bricks kept, not the box: an entry for every coordinate of this
+/// one is 4 GiB, and it holds three bricks.
+#[test]
+fn the_largest_box_costs_what_it_keeps() {
+    let (bricks, last) = ([MAX_BRICKS_PER_AXIS; 3], MAX_BRICKS_PER_AXIS - 1);
+    let (probes, brick_probes) = probes_of(bricks, &[[0, 0, 0], [128, 0, 77], [last, last, last]]);
+    let count = 3 * BRICK_PROBES as usize;
+    assert_eq!((probes.len(), brick_probes.len()), (count, count));
+    assert_eq!(probes[0], [0, 0, 0]);
+    assert_eq!(probes[count - 1], [MAX_BRICKS_PER_AXIS * BRICK_CELLS; 3]);
+    assert!(
+        probes
+            .windows(2)
+            .all(|pair| (pair[0][2], pair[0][1], pair[0][0]) < (pair[1][2], pair[1][1], pair[1][0]))
+    );
+    assert_eq!(probes[brick_probes[0] as usize], [0, 0, 0]);
 }
 
 #[test]

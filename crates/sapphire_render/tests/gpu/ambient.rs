@@ -31,8 +31,8 @@ use sapphire_render::{
     AmbientLight, AmbientOcclusion, BloomParams, CameraData, CharacterBody, CharacterFace, CharacterGi,
     CharacterInstance, CharacterLighting, ColorGrade, DirectionalLight, EnvironmentSettings,
     EnvironmentSpecular, FramePacketRing, GtaoSettings, InstanceId, MaterialHandle, MeshHandle, MeshInstance,
-    Msaa, PostParams, ProbeKeys, ProbeLookup, RenderSettings, RenderStats, Renderer, SkyGradient,
-    SkySettings, ToneCurve, ViewData, Vignette,
+    Msaa, PostParams, ProbeKeys, ProbeLookup, RenderSettings, RenderStats, Renderer, ShaderFile,
+    ShaderSources, SkyGradient, SkySettings, ToneCurve, ViewData, Vignette,
 };
 use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
 
@@ -967,6 +967,77 @@ fn gtao_leaves_scenes_too_small_for_its_mips_open() {
                 assert!(base.temporal || *first == frame.pixels, "{what}: the same frame as before");
             }
         }
+    }
+}
+
+/// The depth prefilter dispatches whole workgroups, so a side that isn't a multiple of 8 has threads
+/// past its edge. They repeat the edge's texels for the mips' reduction, and must leave storing them
+/// to the texel's own thread: more than one write to a texel in a dispatch is a data race, even of
+/// one value (review SHD-001). A store can't be counted from outside, so the edit here tells them
+/// apart: a thread past the edge that still stores marks its texel as nothing drawn, which opens
+/// the occlusion along the frame's last row or column. Writing nothing, they draw the same frame.
+#[test]
+#[ignore = "needs a GPU"]
+fn gtao_threads_past_the_edge_store_nothing() {
+    const STORE: &str = "textureStore(gtao_depth_mip0, texel, vec4<f32>(distance, 0.0, 0.0, 0.0));";
+    const MARKING: &str = "textureStore(gtao_depth_mip0, texel, \
+        vec4<f32>(select(GTAO_FAR, distance, all(id.xy < size)), 0.0, 0.0, 0.0));";
+    let occlusion = AmbientOcclusion { capsules: false, gtao: Some(GtaoSettings::DESKTOP) };
+    // Down a passage narrower than GTAO's reach, so everything in view is occluded, every edge of
+    // the frame included.
+    let scene = |occlusion| {
+        let mut harness = Harness::new(settings(occlusion));
+        for (center, half) in [
+            (Vec3::new(0.0, -0.7, 0.0), Vec3::new(0.8, 0.1, 30.0)),
+            (Vec3::new(0.0, 0.7, 0.0), Vec3::new(0.8, 0.1, 30.0)),
+            (Vec3::new(-0.7, 0.0, 0.0), Vec3::new(0.1, 0.8, 30.0)),
+            (Vec3::new(0.7, 0.0, 0.0), Vec3::new(0.1, 0.8, 30.0)),
+        ] {
+            harness.environment(cuboid(center, half));
+        }
+        harness.ambient = AmbientLight { sky: Vec3::ONE, ground: Vec3::ONE, intensity: 1.0 };
+        harness.camera = Harness::looking(Vec3::new(0.0, 0.0, 10.0), Vec3::new(0.0, 0.0, 0.0));
+        harness
+    };
+    let sources = ShaderSources::compiled_in();
+    let edit = sources.get(ShaderFile::Occlusion).replace(STORE, MARKING);
+    assert_ne!(edit, sources.get(ShaderFile::Occlusion), "the store is where the edit expects");
+    let mut marking = sources.clone();
+    marking.set(ShaderFile::Occlusion, edit);
+
+    let (mut plain, mut marked, mut open) =
+        (scene(occlusion), scene(occlusion), scene(AmbientOcclusion::OFF));
+    marked.renderer.set_shader_sources(&marking).expect("a valid edit");
+    // Half sizes 65 × 49 (past both edges), 64 × 49 (the last row, as 960 × 540 is), 65 × 48 (the
+    // last column), 9 × 9 (past both, one last texel taking 64 threads), and 64 × 48, which has no
+    // thread past an edge.
+    for (width, height) in [(130, 98), (128, 98), (130, 96), (18, 18), (128, 96)] {
+        for harness in [&mut plain, &mut marked, &mut open] {
+            harness.target = Harness::target(&harness.gpu, (width, height));
+        }
+        let what = format!("{width} × {height}");
+        let (frame, edited, unoccluded) = (plain.render(), marked.render(), open.render());
+        assert_eq!(frame.stats.ambient.gtao_size, (width.div_ceil(2), height.div_ceil(2)), "{what}");
+        let worst = frame
+            .pixels
+            .iter()
+            .zip(&edited.pixels)
+            .flat_map(|(a, b)| a.iter().zip(b).map(|(a, b)| a.abs_diff(*b)))
+            .max()
+            .expect("pixels");
+        assert!(worst <= 2, "{what}: a thread past the edge stored, up to {worst} code values off");
+        // The edit can only show where the edge's texels are occluded.
+        let darkened = |pixel: u32| {
+            let pixel = pixel as usize;
+            unoccluded.pixels[pixel][0].saturating_sub(frame.pixels[pixel][0]) >= 8
+        };
+        let last_row = (height - 1) * width;
+        assert!((last_row..last_row + width).any(darkened), "{what}: nothing occluded on the last row");
+        let last_column = (width - 1)..width * height;
+        assert!(
+            last_column.step_by(width as usize).any(darkened),
+            "{what}: nothing occluded on the last column"
+        );
     }
 }
 

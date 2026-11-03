@@ -151,7 +151,11 @@ fn cs_gtao_depths(
     let hull = textureLoad(gtao_outlines, pixel, 0).r;
     let left_out = (character > 0.0 && character >= depth) || hull > 0.5;
     let distance = select(gtao_distance(depth), GTAO_FAR, left_out);
-    textureStore(gtao_depth_mip0, texel, vec4<f32>(distance, 0.0, 0.0, 0.0));
+    // Its own thread alone stores a texel: two stores in a dispatch are a data race even of one
+    // value, and the barriers below order the tile, not textures. The reduction still needs them all.
+    if all(id.xy < size) {
+        textureStore(gtao_depth_mip0, texel, vec4<f32>(distance, 0.0, 0.0, 0.0));
+    }
     let slot = local.y * GTAO_WORKGROUP + local.x;
     gtao_tile[slot] = distance;
     // Mip m's texel is the filter of four of mip m − 1's, held by the threads 2^(m−1) apart;

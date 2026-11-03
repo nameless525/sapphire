@@ -54,7 +54,9 @@ use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use sapphire_look::{UiAtlas, UiDrawList, UiGlyphStats, UiMask, UiPageBands, UiPageState, UiQuad, UiTreeStats};
+use sapphire_look::{
+    UiAtlas, UiDrawList, UiGlyphStats, UiMask, UiPageBands, UiPageState, UiQuad, UiTreeStats,
+};
 use sapphire_rhi::wgpu;
 
 use crate::buffer::{self, GrowableBuffer};
@@ -904,7 +906,11 @@ mod tests {
         let size = (200, 100);
         assert_eq!(scissor_of([10.0, 5.0, 20.0, 15.0], viewport, size), [20, 10, 20, 20]);
         assert_eq!(scissor_of([-10.0, -5.0, 500.0, 500.0], viewport, size), [0, 0, 200, 100]);
-        assert_eq!(scissor_of([20.0, 5.0, 10.0, 15.0], viewport, size), [40, 10, 0, 20], "inside out is empty");
+        assert_eq!(
+            scissor_of([20.0, 5.0, 10.0, 15.0], viewport, size),
+            [40, 10, 0, 20],
+            "inside out is empty"
+        );
         assert_eq!(scissor_of([900.0, 900.0, 950.0, 950.0], viewport, size), [200, 100, 0, 0]);
     }
 }

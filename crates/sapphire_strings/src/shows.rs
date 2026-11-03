@@ -3,9 +3,7 @@
 
 use std::collections::{BTreeSet, HashSet};
 
-use crate::table::{
-    ArgValue, Expression, NUMBER_CHARACTERS, Part, Pattern, Span, StringTable,
-};
+use crate::table::{ArgValue, Expression, NUMBER_CHARACTERS, Part, Pattern, Span, StringTable};
 
 /// What [`key_shows`] found.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -38,9 +36,11 @@ struct Walk<'a> {
 
 impl<'a> Walk<'a> {
     fn find(&self, from: usize, key: &str) -> Option<(usize, &'a StringTable, Pattern)> {
-        self.chain.iter().enumerate().skip(from).find_map(|(link, table)| {
-            table.entry(key).map(|entry| (link, *table, entry.pattern))
-        })
+        self.chain
+            .iter()
+            .enumerate()
+            .skip(from)
+            .find_map(|(link, table)| table.entry(key).map(|entry| (link, *table, entry.pattern)))
     }
 
     fn numbers(&mut self) {

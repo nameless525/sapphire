@@ -139,7 +139,6 @@ use std::thread;
 use sapphire_assets::clip::{CLIP_EXTENSION, Clip};
 use sapphire_assets::cue::{CUE_EXTENSION, Cue};
 use sapphire_assets::font::{FONT_CHAINS_EXTENSION, FONT_EXTENSION, Font, FontChains};
-use sapphire_assets::ui::{UI_EXTENSION, UiDocument};
 use sapphire_assets::graph::{AnimGraph, GRAPH_EXTENSION};
 use sapphire_assets::material::{MATERIAL_EXTENSION, Material};
 use sapphire_assets::mesh::{MESH_EXTENSION, Mesh, MeshError};
@@ -148,6 +147,7 @@ use sapphire_assets::rig::{CharacterRig, HumanBone, RigError};
 use sapphire_assets::skeleton::{Joint, SKELETON_EXTENSION, Skeleton};
 use sapphire_assets::sound::{SOUND_EXTENSION, Sound};
 use sapphire_assets::texture::{TEXTURE_EXTENSION, TEXTURE_VERSION};
+use sapphire_assets::ui::{UI_EXTENSION, UiDocument};
 use sapphire_assets::{AssetId, AssetKind};
 use sapphire_colliders::{COLLIDERS_EXTENSION, ColliderSet};
 use sapphire_moves::{BakedTables, ClipMotionDocument, MOVE_SET_EXTENSION, MoveSet};
@@ -168,7 +168,6 @@ use crate::clip::source::{ClipSource, ClipSources, joint_remap, remap_tracks};
 use crate::clip::{self, ClipCookError, ClipSettings, ClipTarget, SampledClip};
 use crate::colliders::{self, ColliderCookError};
 use crate::font::{self, FontCookError};
-use crate::ui::{self, ScreenCharacters, ScreenError, Screens, UiCookError};
 use crate::import::fbx::{self, FbxImportError};
 use crate::import::gltf::{self, GltfImportError};
 use crate::import::image;
@@ -185,6 +184,7 @@ use crate::nav;
 use crate::probes::{self, ProbeCookError, ProbeInput};
 use crate::texture::{self, TextureError};
 use crate::timeline::{self, TimelineCookError};
+use crate::ui::{self, ScreenCharacters, ScreenError, Screens, UiCookError};
 use crate::zone::{self, CookedPlace, ZoneCookError, ZonePlan};
 use crate::{bake, optimize};
 
@@ -1130,7 +1130,11 @@ fn check_screens(screens: &Screens, assets: &[CookedAsset]) -> Result<(), CookEr
             }
             Some(FONT_CHAINS_EXTENSION) => {
                 let bytes = read_cooked(asset).map_err(|error| refused(asset, Box::new(error)))?;
-                chains.push(FontChains::read(&bytes).map_err(|error| refused(asset, Box::new(error)))?.to_owned_chains());
+                chains.push(
+                    FontChains::read(&bytes)
+                        .map_err(|error| refused(asset, Box::new(error)))?
+                        .to_owned_chains(),
+                );
             }
             _ => {}
         }
@@ -2242,7 +2246,8 @@ fn cook_source(
         ImportSettings::Sound(_) => audio::cook_sound(bytes).map_err(audio_error(path)),
         ImportSettings::Cue(_) => audio::cook_cue(bytes).map_err(audio_error(path)),
         ImportSettings::Font(settings) => {
-            font::cook(path, bytes, settings, font_subset_of(part), screens_of(assets)).map_err(font_error(path))
+            font::cook(path, bytes, settings, font_subset_of(part), screens_of(assets))
+                .map_err(font_error(path))
         }
         ImportSettings::FontChains(_) => font::cook_chains(bytes).map_err(font_error(path)),
         ImportSettings::Ui(_) => ui::cook(path, bytes).map_err(ui_error(path)),

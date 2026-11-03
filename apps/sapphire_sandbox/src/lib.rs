@@ -153,6 +153,10 @@
 //!   day; `--view`, `--fov` and `--zoom` adjust the shot. The golden scenes
 //!   `lookdev-town-day`, `-hero`, `-golden`, `-blue` and `-night`, `lookdev-street-night` and
 //!   `lookdev-face` show it.
+//! - `--ui-screen`: the retained tree's test screen (M3 U4, `content/ui/test_screen.ui.ron`) over whatever
+//!   the scene draws, as the `ui-tree-*` goldens do. Hot reload and live link's `push_document` take edits
+//!   of its document. `--ui-locale <tag>` picks its language (`en`, by default, or `ja`), `--ui-scale
+//!   <scale>` its pixels per point, and `--ui-pseudo` turns on pseudo-localization.
 //! - `--hud fixed|live`: the combat HUD (`hud.rs`, M2 I2) over whatever the scene draws. `fixed` is
 //!   one frozen frame on a made-up clock, a hit landing with both thumbs down, as the `hud-*` golden
 //!   scenes capture it; `live` runs the touch zones on real touches, with a stand-in for gameplay,
@@ -352,6 +356,7 @@ mod offscreen;
 mod options;
 #[cfg(feature = "dev")]
 mod reload;
+mod screen;
 #[cfg(feature = "dev")]
 mod serve;
 #[cfg(feature = "dev")]

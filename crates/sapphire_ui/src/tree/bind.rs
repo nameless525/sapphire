@@ -155,7 +155,8 @@ impl BoundText {
                 Ok(BoundArg {
                     name: arg.name.as_str().into(),
                     source: arg.path.as_str().into(),
-                    path: ParsedPath::parse(&arg.path).map_err(|error| UiTreeError::Layout(error.to_string()))?,
+                    path: ParsedPath::parse(&arg.path)
+                        .map_err(|error| UiTreeError::Layout(error.to_string()))?,
                     failed: false,
                     held: Held::Text,
                     text: String::new(),

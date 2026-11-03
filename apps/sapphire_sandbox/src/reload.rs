@@ -46,7 +46,7 @@ use sapphire_time::Stopwatch;
 use crate::LOG_TARGET;
 use crate::link::cook_not_in_use;
 use crate::shader_edits::{Answered, Origin, ShaderEdits};
-use game_combat::tuning::{Document, DocumentFrame, error_chain};
+use game_combat::tuning::{Document, DocumentFrame, TunedScreen, error_chain};
 use sapphire_stage::scene::Day;
 
 /// Four recent distinct failures keep the stats panel compact, matching live link's history.
@@ -200,7 +200,7 @@ impl Reload {
     /// New shader sources go to the renderer through `shaders`, which answers them once they are
     /// swapped in. Allocates nothing while nothing changed.
     pub fn update(&mut self, changes: &[AssetChange], frame: DocumentFrame<'_>, shaders: &mut ShaderEdits) {
-        let DocumentFrame { content, renderer, gpu, scene, fight, tuning } = frame;
+        let DocumentFrame { content, renderer, gpu, scene, fight, tuning, mut screen } = frame;
         let Some(hot) = &mut self.hot else { return };
         let Changes { packs, shaders: new_shaders, documents, mut errors } = hot.poll();
         if packs.is_empty() && new_shaders.is_none() && documents.is_empty() && errors.is_empty() {
@@ -242,6 +242,7 @@ impl Reload {
                 scene: &mut *scene,
                 fight: &mut *fight,
                 tuning: &mut *tuning,
+                screen: screen.as_mut().map(|screen| &mut **screen as &mut dyn TunedScreen),
             };
             match document.apply(origin, &text, frame) {
                 Ok(replaced) => {

@@ -36,7 +36,8 @@ use crate::shader_edits::ShaderEdits;
 use crate::stats::Stages;
 use game_combat::combat::{Combat, SessionRecorder};
 use game_combat::fight::Fight;
-use game_combat::tuning::{DocumentFrame, LiveFight, LiveTuning};
+use game_combat::tuning::{DocumentFrame, LiveFight, LiveTuning, TunedScreen};
+use game_ui::hud::ShownFight;
 use sapphire_stage::content::Content;
 use sapphire_stage::scene::Scene;
 
@@ -164,8 +165,9 @@ impl DevTools {
         renderer: &mut Renderer,
         gpu: &GpuContext,
         scene: &mut Scene,
-        fight: &mut Fight,
+        show: &mut ShownFight,
     ) {
+        let ShownFight { fight, screen, .. } = show;
         let mut answered = self.shaders.answer(renderer);
         self.reload.shaders_answered(&mut answered);
         self.link.shaders_refused(&mut answered.link_errors);
@@ -180,6 +182,7 @@ impl DevTools {
             scene: &mut *scene,
             fight: &mut *fight,
             tuning: &mut self.tuning,
+            screen: screen.as_mut().map(|screen| screen as &mut dyn TunedScreen),
         };
         self.reload.update(&changes, frame, &mut self.shaders);
         if !pack_errors.is_empty() {
@@ -192,6 +195,7 @@ impl DevTools {
             scene,
             fight,
             tuning: &mut self.tuning,
+            screen: screen.as_mut().map(|screen| screen as &mut dyn TunedScreen),
             cvars: &self.cvars,
             shaders: &mut self.shaders,
             frame: self.frames,

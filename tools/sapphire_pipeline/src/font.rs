@@ -288,7 +288,10 @@ pub fn dependencies(
         .collect::<Result<Vec<_>, FontCookError>>()?;
     if let Some(shown) = shown_by_screens(entry, bytes, screens)? {
         let text: String = shown.iter().collect();
-        dependencies.push(Dependency::File { path: SCREENS_DEPENDENCY.to_owned(), hash: blake3::hash(text.as_bytes()) });
+        dependencies.push(Dependency::File {
+            path: SCREENS_DEPENDENCY.to_owned(),
+            hash: blake3::hash(text.as_bytes()),
+        });
     }
     Ok(dependencies)
 }

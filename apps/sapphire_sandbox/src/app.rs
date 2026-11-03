@@ -380,6 +380,10 @@ impl App for SandboxApp {
                 None => FightHud::new(hud),
             });
         }
+        if let Some(shown) = &options.ui_screen {
+            let assets = content.load_screen(shown.document(), &mut renderer.renderer, &device.gpu)?;
+            show.screen = Some(shown.layer(assets).map_err(AppInitError::msg)?);
+        }
         // The screen effects it may push, `--post-effect`'s among them, the effects it plays, its sky
         // and its HUD show on their first frame.
         scene.prewarm(&show, &mut renderer.renderer);
@@ -532,7 +536,7 @@ impl App for SandboxApp {
                 &mut self.renderer,
                 &self.gpu,
                 &mut self.scene,
-                &mut self.show.fight,
+                &mut self.show,
             );
             // Finished reads, unloads and this frame's uploads, within the upload budget.
             self.content.update(&mut self.renderer, &self.gpu);

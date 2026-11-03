@@ -15,7 +15,6 @@ use sapphire_zone::{ArchivedZone, Zone};
 use crate::clip::{ArchivedClip, Clip};
 use crate::cue::{ArchivedCue, Cue};
 use crate::font::{ArchivedFont, ArchivedFontChains, Font, FontChains};
-use crate::ui::{ArchivedUiDocument, UiDocument};
 use crate::graph::{AnimGraph, ArchivedAnimGraph};
 use crate::material::{ArchivedMaterial, Material};
 use crate::mesh::{ArchivedMesh, Mesh};
@@ -24,6 +23,7 @@ use crate::rig::{ArchivedCharacterRig, CharacterRig};
 use crate::skeleton::{ArchivedSkeleton, Skeleton};
 use crate::sound::{ArchivedSound, Sound};
 use crate::texture::Texture;
+use crate::ui::{ArchivedUiDocument, UiDocument};
 use crate::{AssetId, AssetKind};
 
 slotmap::new_key_type! {

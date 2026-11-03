@@ -21,6 +21,7 @@
 use std::time::Duration;
 
 use sapphire_gameplay::{CueEvent, DEFEATED, HitCue, POISE_BROKEN, Simulation};
+use sapphire_look::UiPageState;
 use sapphire_math::{Mat4, Vec2, Vec3};
 use sapphire_moves::Weight;
 use sapphire_platform::{Event, FingerId, Timestamp, TouchDeviceId, TouchPhase, Window};
@@ -31,6 +32,7 @@ use sapphire_ui::{
 };
 
 use crate::LOG_TARGET;
+use crate::screen::ScreenLayer;
 use crate::touch::TouchControls;
 use game_combat::fight::{Fight, Followed};
 use sapphire_stage::FrameLaps;
@@ -473,6 +475,8 @@ pub struct ShownFight {
     pub fight: Fight,
     /// The combat HUD over the scene (`--hud`, M2 I2).
     pub hud: Option<FightHud>,
+    /// A retained screen over all of it (M3 U4).
+    pub screen: Option<ScreenLayer>,
 }
 
 impl ShownFight {
@@ -523,7 +527,7 @@ pub fn show_damage(hud: &mut FightHud, scene: &Scene, sim: &Simulation) {
 impl SceneShow for ShownFight {
     fn declare_pipelines(&self, inventory: &mut sapphire_render::PipelineInventory) {
         self.fight.declare_pipelines(inventory);
-        inventory.ui |= self.hud.is_some();
+        inventory.ui |= self.hud.is_some() || self.screen.is_some();
     }
 
     fn step(&mut self, scene: &mut Scene, laps: &mut FrameLaps) {
@@ -543,6 +547,12 @@ impl SceneShow for ShownFight {
         self.fight.animate(scene, content, alpha);
     }
 
+    fn begin_interface(&mut self, pages: UiPageState) {
+        if let Some(screen) = &mut self.screen {
+            screen.follow_pages(pages);
+        }
+    }
+
     fn present(&mut self, scene: &mut Scene, alpha: f32, aspect: Option<f32>) {
         self.fight.present(scene, alpha, aspect);
     }
@@ -556,11 +566,15 @@ impl SceneShow for ShownFight {
     }
 
     fn draw_interface(&mut self, size: (u32, u32), list: &mut UiDrawList) {
-        let Some(hud) = &mut self.hud else { return };
-        if let Some((values, time)) = self.fight.show.hud_values() {
-            hud.show_fight(values, time);
+        if let Some(hud) = &mut self.hud {
+            if let Some((values, time)) = self.fight.show.hud_values() {
+                hud.show_fight(values, time);
+            }
+            hud.draw(size, list);
         }
-        hud.draw(size, list);
+        if let Some(screen) = &mut self.screen {
+            screen.draw(size, list);
+        }
     }
 
     fn draw_debug(&mut self) {

@@ -54,7 +54,7 @@ use crate::options::LiveLinkOption;
 use crate::shader_edits::{Origin, ShaderEdits};
 use game_combat::combat::Combat;
 use game_combat::fight::Fight;
-use game_combat::tuning::{Document, DocumentFrame, LiveTuning, attempts, error_chain};
+use game_combat::tuning::{Document, DocumentFrame, LiveTuning, TunedScreen, attempts, error_chain};
 use sapphire_stage::Readback;
 use sapphire_stage::content::Content;
 use sapphire_stage::scene::Scene;
@@ -95,6 +95,7 @@ pub(crate) struct LinkFrame<'a> {
     pub scene: &'a mut Scene,
     pub fight: &'a mut Fight,
     pub tuning: &'a mut LiveTuning,
+    pub screen: Option<&'a mut dyn TunedScreen>,
     pub cvars: &'a CvarRegistry,
     pub shaders: &'a mut ShaderEdits,
     /// Frames since the app started, and the last one's length.
@@ -170,6 +171,7 @@ impl Link {
             scene,
             fight,
             tuning,
+            mut screen,
             cvars,
             shaders: edits,
             frame,
@@ -224,6 +226,7 @@ impl Link {
                         scene: &mut *scene,
                         fight: &mut *fight,
                         tuning: &mut *tuning,
+                        screen: screen.as_mut().map(|screen| &mut **screen as &mut dyn TunedScreen),
                     };
                     match document.apply(&origin, &text, frame) {
                         Ok(replaced) => {

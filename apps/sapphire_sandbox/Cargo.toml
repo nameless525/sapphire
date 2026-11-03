@@ -44,6 +44,8 @@ sapphire_stage.workspace = true
 sapphire_gameplay.workspace = true
 sapphire_input.workspace = true
 sapphire_jobs.workspace = true
+# What the test screens' models derive.
+bevy_reflect.workspace = true
 sapphire_math.workspace = true
 sapphire_moves.workspace = true
 sapphire_platform.workspace = true
@@ -78,6 +80,10 @@ dev = ["dep:sapphire_debug", "dep:sapphire_hot_reload", "dep:sapphire_livelink",
 
 [dev-dependencies]
 sapphire_colliders.workspace = true
+# The test screens' tests build their own string tables.
+sapphire_loc.workspace = true
+sapphire_look.workspace = true
+sapphire_strings.workspace = true
 
 [lints]
 workspace = true

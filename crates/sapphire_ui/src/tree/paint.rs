@@ -16,10 +16,7 @@ const PROBLEM_FRAME: f32 = 2.0;
 /// `rect` with each edge on a whole pixel.
 fn snapped(rect: Rect, scale: f32) -> Rect {
     let snap = |value: f32| (value * scale).round() / scale;
-    Rect::new(
-        Vec2::new(snap(rect.min.x), snap(rect.min.y)),
-        Vec2::new(snap(rect.max.x), snap(rect.max.y)),
-    )
+    Rect::new(Vec2::new(snap(rect.min.x), snap(rect.min.y)), Vec2::new(snap(rect.max.x), snap(rect.max.y)))
 }
 
 /// Whether anything of a node at `rect` can show. What can't costs no quads and no glyphs.
@@ -50,22 +47,11 @@ fn solid_uv(sprites: &Sprites) -> [f32; 4] {
 
 /// A quad over `piece` of the frame, reading `uv`.
 fn quad(piece: Rect, uv: [f32; 4], color: [u8; 4]) -> UiQuad {
-    UiQuad::new(
-        piece.min.to_array(),
-        [piece.width(), 0.0],
-        [0.0, piece.height()],
-        uv,
-        color,
-    )
+    UiQuad::new(piece.min.to_array(), [piece.width(), 0.0], [0.0, piece.height()], uv, color)
 }
 
 /// `from` and `to` across `rect`, for each quad pushed since `first`: its piece of the gradient.
-fn apply_gradient(
-    quads: &mut [UiQuad],
-    rect: Rect,
-    to: [u8; 4],
-    angle_degrees: f32,
-) {
+fn apply_gradient(quads: &mut [UiQuad], rect: Rect, to: [u8; 4], angle_degrees: f32) {
     let (sin, cos) = angle_degrees.to_radians().sin_cos();
     let along = Vec2::new(cos, sin);
     let length = (rect.width() * cos).abs() + (rect.height() * sin).abs();

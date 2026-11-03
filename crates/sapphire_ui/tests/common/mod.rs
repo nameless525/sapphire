@@ -25,12 +25,12 @@ pub fn localizer(text: &str) -> Localizer {
 
 /// The fonts, from where they're kept, or `SAPPHIRE_TEST_FONTS` on a device.
 pub fn fonts() -> UiFonts {
-    let dir = std::env::var_os("SAPPHIRE_TEST_FONTS").map_or_else(
-        || Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/third_party"),
-        Into::into,
-    );
+    let dir = std::env::var_os("SAPPHIRE_TEST_FONTS")
+        .map_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/third_party"), Into::into);
     let mut fonts = UiFonts::default();
-    for font in ["mplus1/MPLUS1[wght].ttf", "oxanium/Oxanium[wght].ttf", "dela_gothic_one/DelaGothicOne-Regular.ttf"] {
+    for font in
+        ["mplus1/MPLUS1[wght].ttf", "oxanium/Oxanium[wght].ttf", "dela_gothic_one/DelaGothicOne-Regular.ttf"]
+    {
         let path = dir.join(font);
         let bytes = std::fs::read(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
         fonts.register_font(Arc::new(bytes), 0.0);

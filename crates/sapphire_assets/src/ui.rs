@@ -195,7 +195,15 @@ fn opaque() -> f32 {
 /// How a node sits among its neighbours: a subset of `taffy`'s flexbox and grid, and only what a screen
 /// has needed. Lengths are in UI points, a size that's the same to a thumb on any screen.
 #[derive(
-    Reflect, Clone, Debug, PartialEq, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+    Reflect,
+    Clone,
+    Debug,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
 )]
 #[reflect(Serialize, Deserialize, Default)]
 #[rkyv(derive(Debug))]
@@ -604,7 +612,11 @@ pub enum UiFill {
     Color(UiColor),
     /// From one color to another across the node, in linear light. `angle` is in degrees clockwise from
     /// left to right, so 90 runs top to bottom.
-    Gradient { from: UiColor, to: UiColor, angle: f32 },
+    Gradient {
+        from: UiColor,
+        to: UiColor,
+        angle: f32,
+    },
 }
 
 impl Default for UiFill {
@@ -833,7 +845,10 @@ impl UiDocument {
             let depth = match (index, node.parent.as_deref()) {
                 (0, None) => 1,
                 (0, Some(parent)) => {
-                    issue(".parent", format!("the first node is the root, and has no parent, not `{parent}`"));
+                    issue(
+                        ".parent",
+                        format!("the first node is the root, and has no parent, not `{parent}`"),
+                    );
                     1
                 }
                 (_, None) => {
@@ -842,7 +857,10 @@ impl UiDocument {
                 }
                 (_, Some(parent)) => match seen.iter().find(|(name, ..)| *name == parent) {
                     Some((.., true)) => {
-                        issue(".parent", format!("`{parent}` shows text, which sizes it, so it has no children"));
+                        issue(
+                            ".parent",
+                            format!("`{parent}` shows text, which sizes it, so it has no children"),
+                        );
                         1
                     }
                     Some((_, depth, _)) => depth + 1,
@@ -876,11 +894,9 @@ impl UiDocument {
             }
         }
         if self.model.is_none()
-            && let Some((index, node)) = self
-                .nodes
-                .iter()
-                .enumerate()
-                .find(|(_, node)| !node.binds.is_empty() || node.text.as_ref().is_some_and(|t| !t.args.is_empty()))
+            && let Some((index, node)) = self.nodes.iter().enumerate().find(|(_, node)| {
+                !node.binds.is_empty() || node.text.as_ref().is_some_and(|t| !t.args.is_empty())
+            })
         {
             issues.push(UiIssue {
                 field: format!("nodes[{index}] `{}`", node.name),
@@ -903,12 +919,16 @@ impl UiDocument {
                     Some(kind) if kind == bind.to.kind() => {}
                     Some(kind) => issue(
                         format!(".binds[{at}].path"),
-                        format!("`{}` is a {kind:?}, and {:?} reads a {:?}", bind.path, bind.to, bind.to.kind()),
+                        format!(
+                            "`{}` is a {kind:?}, and {:?} reads a {:?}",
+                            bind.path,
+                            bind.to,
+                            bind.to.kind()
+                        ),
                     ),
-                    None => issue(
-                        format!(".binds[{at}].path"),
-                        format!("`{}` isn't in the model", bind.path),
-                    ),
+                    None => {
+                        issue(format!(".binds[{at}].path"), format!("`{}` isn't in the model", bind.path))
+                    }
                 }
             }
             for (at, arg) in node.text.iter().flat_map(|text| &text.args).enumerate() {
@@ -1081,17 +1101,7 @@ fn check_path(path: &str) -> Result<(), String> {
 }
 
 /// The kinds of value a bind can read.
-#[derive(
-    Reflect,
-    Clone,
-    Copy,
-    Debug,
-    Default,
-    PartialEq,
-    Eq,
-    Serialize,
-    Deserialize,
-)]
+#[derive(Reflect, Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[reflect(Serialize, Deserialize, Default)]
 pub enum UiValueKind {
     /// Any integer or float.
@@ -1182,20 +1192,21 @@ fn walk_type(info: &'static TypeInfo, path: &mut String, depth: usize, fields: &
     if depth > MODEL_DEPTH {
         return;
     }
-    let mut child = |name: &str, list: bool, info: Option<&'static TypeInfo>, fields: &mut Vec<UiModelField>| {
-        let Some(info) = info else { return };
-        let end = path.len();
-        if list {
-            path.push_str(name);
-        } else {
-            if !path.is_empty() {
-                path.push('.');
+    let mut child =
+        |name: &str, list: bool, info: Option<&'static TypeInfo>, fields: &mut Vec<UiModelField>| {
+            let Some(info) = info else { return };
+            let end = path.len();
+            if list {
+                path.push_str(name);
+            } else {
+                if !path.is_empty() {
+                    path.push('.');
+                }
+                path.push_str(name);
             }
-            path.push_str(name);
-        }
-        walk_type(info, path, depth + 1, fields);
-        path.truncate(end);
-    };
+            walk_type(info, path, depth + 1, fields);
+            path.truncate(end);
+        };
     match info {
         TypeInfo::Struct(info) => {
             for field in info.iter() {
@@ -1308,7 +1319,8 @@ mod tests {
         assert_eq!(read.nodes[1].opacity, 1.0);
         assert_eq!(read.nodes[0].layout.shrink, 1.0);
         assert_eq!(read.styles[0].weight, 400.0);
-        let texts: Vec<_> = read.texts().map(|(node, text, role)| (node.name.as_str(), text.key.as_str(), role)).collect();
+        let texts: Vec<_> =
+            read.texts().map(|(node, text, role)| (node.name.as_str(), text.key.as_str(), role)).collect();
         assert_eq!(texts, [("title", "a-key", "body")]);
     }
 
@@ -1324,7 +1336,10 @@ mod tests {
         let cases: [(&str, &str); 19] = [
             (r#"(name: "root", parent: "x"),"#, "nodes[0] `root`.parent"),
             (r#"(name: "root"),(name: "a"),"#, "nodes[1] `a`.parent"),
-            (r#"(name: "root"),(name: "a", parent: "b"),(name: "b", parent: "root"),"#, "nodes[1] `a`.parent"),
+            (
+                r#"(name: "root"),(name: "a", parent: "b"),(name: "b", parent: "root"),"#,
+                "nodes[1] `a`.parent",
+            ),
             (r#"(name: "root"),(name: "root", parent: "root"),"#, "nodes[1] `root`.name"),
             (r#"(name: ""),"#, "nodes[0] ``.name"),
             (r#"(name: "root", opacity: 2),"#, "nodes[0] `root`.opacity"),
@@ -1333,14 +1348,35 @@ mod tests {
             (r#"(name: "root", layout: (aspect: 0)),"#, "nodes[0] `root`.layout.aspect"),
             (r#"(name: "root", layout: (cell: (column: 0, row: 1))),"#, "nodes[0] `root`.layout.cell"),
             (r#"(name: "root", layout: (columns: [Fr(-1)])),"#, "nodes[0] `root`.layout.columns"),
-            (r#"(name: "root", look: (shape: Rect, fill: Color((1,2,3,4)), outline: (color: (1,2,3,4), width: 1))),"#, "nodes[0] `root`.look.outline"),
-            (r#"(name: "root", look: (shape: Slice(sprite: Bar, corner: 0), fill: Color((1,2,3,4)))),"#, "nodes[0] `root`.look.shape.corner"),
-            (r#"(name: "root", look: (shape: Rect, fill: Color((1,2,3,4)), slant: 9)),"#, "nodes[0] `root`.look.slant"),
-            (r#"(name: "root", text: (key: "", style: "label", color: (1,2,3,4))),"#, "nodes[0] `root`.text.key"),
-            (r#"(name: "root", text: (key: "k", style: "nope", color: (1,2,3,4))),"#, "nodes[0] `root`.text.style"),
-            (r#"(name: "root", text: (key: "k", style: "label", color: (1,2,3,4), args: [(name: "a", path: "x"), (name: "a", path: "y")])),"#, "nodes[0] `root`.text.args[1].name"),
+            (
+                r#"(name: "root", look: (shape: Rect, fill: Color((1,2,3,4)), outline: (color: (1,2,3,4), width: 1))),"#,
+                "nodes[0] `root`.look.outline",
+            ),
+            (
+                r#"(name: "root", look: (shape: Slice(sprite: Bar, corner: 0), fill: Color((1,2,3,4)))),"#,
+                "nodes[0] `root`.look.shape.corner",
+            ),
+            (
+                r#"(name: "root", look: (shape: Rect, fill: Color((1,2,3,4)), slant: 9)),"#,
+                "nodes[0] `root`.look.slant",
+            ),
+            (
+                r#"(name: "root", text: (key: "", style: "label", color: (1,2,3,4))),"#,
+                "nodes[0] `root`.text.key",
+            ),
+            (
+                r#"(name: "root", text: (key: "k", style: "nope", color: (1,2,3,4))),"#,
+                "nodes[0] `root`.text.style",
+            ),
+            (
+                r#"(name: "root", text: (key: "k", style: "label", color: (1,2,3,4), args: [(name: "a", path: "x"), (name: "a", path: "y")])),"#,
+                "nodes[0] `root`.text.args[1].name",
+            ),
             (r#"(name: "root", binds: [(to: Fill, path: "a..b")]),"#, "nodes[0] `root`.binds[0].path"),
-            (r#"(name: "root", binds: [(to: Fill, path: "a"), (to: Fill, path: "b")]),"#, "nodes[0] `root`.binds[1].to"),
+            (
+                r#"(name: "root", binds: [(to: Fill, path: "a"), (to: Fill, path: "b")]),"#,
+                "nodes[0] `root`.binds[1].to",
+            ),
         ];
         for (nodes, field) in cases {
             assert_eq!(one_issue(nodes).field, field, "{nodes}");
@@ -1393,8 +1429,11 @@ mod tests {
             });
         }
         assert!(document.issues().iter().any(|issue| issue.problem.contains("levels deep")));
-        document.nodes = vec![UiNode { name: "n".to_owned(), opacity: 1.0, ..UiNode::default() }; MAX_NODES + 1];
-        assert!(document.issues().iter().any(|issue| issue.field == "nodes" && issue.problem.contains("past")));
+        document.nodes =
+            vec![UiNode { name: "n".to_owned(), opacity: 1.0, ..UiNode::default() }; MAX_NODES + 1];
+        assert!(
+            document.issues().iter().any(|issue| issue.field == "nodes" && issue.problem.contains("past"))
+        );
     }
 
     #[derive(Reflect)]
@@ -1466,7 +1505,9 @@ mod tests {
     }
 
     fn cooked() -> Vec<u8> {
-        let text = document(r#"(name: "root"),(name: "title", parent: "root", text: (key: "k", style: "label", color: (1,2,3,4))),"#);
+        let text = document(
+            r#"(name: "root"),(name: "title", parent: "root", text: (key: "k", style: "label", color: (1,2,3,4))),"#,
+        );
         UiDocument::from_document(&text).expect("good").to_cooked().expect("cooks").to_vec()
     }
 

@@ -188,7 +188,7 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
     stage.graph.set_serial(options.serial_passes);
     let character = stage.character;
     let sapphire_stage::Stage { scene, content, renderer, gpu, quality, show, .. } = &mut stage;
-    let ShownFight { fight: Fight { show: fight, .. }, hud: shown_hud } = &mut *show;
+    let ShownFight { fight: Fight { show: fight, .. }, hud: shown_hud, screen: shown_screen } = &mut *show;
     if let Some(rig) = &options.character_rig {
         scene.set_character_rig(rig).map_err(AppInitError::msg)?;
     }
@@ -367,6 +367,10 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
         let hud = game_ui::hud::HudOptions { mode, ..hud };
         *shown_hud = Some(game_ui::hud::FightHud::new(hud));
     }
+    if let Some(shown) = &options.ui_screen {
+        let assets = content.load_screen(shown.document(), renderer, gpu)?;
+        *shown_screen = Some(shown.layer(assets).map_err(AppInitError::msg)?);
+    }
     // The screen effects it may push, `--post-effect`'s among them, the effects it plays, its sky and
     // its HUD show on their first frame.
     let contact_sheet = options
@@ -410,7 +414,7 @@ impl FrameHooks<ShownFight> for StageTools {
 
     fn before_loading(&mut self, frame: LoadingFrame<'_, ShownFight>) {
         let LoadingFrame { content, renderer, gpu, scene, show } = frame;
-        self.dev.reload(content, renderer, gpu, scene, &mut show.fight);
+        self.dev.reload(content, renderer, gpu, scene, show);
     }
 
     fn overlay_visible(&self) -> bool {

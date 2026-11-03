@@ -8,8 +8,13 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+# A screen's model is any reflected value.
+bevy_reflect.workspace = true
 game_combat.workspace = true
+sapphire_assets.workspace = true
 sapphire_gameplay.workspace = true
+sapphire_loc.workspace = true
+sapphire_look.workspace = true
 sapphire_math.workspace = true
 sapphire_moves.workspace = true
 sapphire_platform.workspace = true
@@ -22,8 +27,6 @@ tracing.workspace = true
 [dev-dependencies]
 sapphire_colliders.workspace = true
 sapphire_controls.workspace = true
-# Its tests read the quads the HUD draws.
-sapphire_look.workspace = true
 # The counting allocator, for the steady-state allocation test.
 sapphire_core = { workspace = true, features = ["mimalloc"] }
 sapphire_cues.workspace = true

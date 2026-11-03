@@ -54,9 +54,7 @@ use sapphire_reflect::PartialReflect;
 use sapphire_reflect::bevy_reflect::ParsedPath;
 use sapphire_text::{AtlasConfig, FaceOptions, GlyphAtlas, TextStyle, TextSystem, family_list};
 use sapphire_time::Stopwatch;
-use taffy::prelude::{
-    AvailableSpace, Display, NodeId, Size as TaffySize, Style as TaffyStyle, TaffyTree,
-};
+use taffy::prelude::{AvailableSpace, Display, NodeId, Size as TaffySize, Style as TaffyStyle, TaffyTree};
 use taffy::{LayoutInput, compute_leaf_layout};
 
 use self::bind::{BoundText, read};
@@ -314,7 +312,8 @@ impl UiTree {
                 final_opacity: 1.0,
             });
         }
-        let root = nodes.first().map(|node| node.id).ok_or_else(|| UiTreeError::Layout("no root".to_owned()))?;
+        let root =
+            nodes.first().map(|node| node.id).ok_or_else(|| UiTreeError::Layout("no root".to_owned()))?;
         Ok(Self {
             taffy,
             nodes,
@@ -480,7 +479,8 @@ impl UiTree {
                 self.problems.push(UiProblem { node: node.name.to_string(), field, problem });
                 node.failed = true;
             } else {
-                node.failed = node.binds.iter().any(|bind| bind.failed) || text.args.iter().any(|arg| arg.failed);
+                node.failed =
+                    node.binds.iter().any(|bind| bind.failed) || text.args.iter().any(|arg| arg.failed);
             }
             self.taffy.mark_dirty(node.id).expect("the tree's own node");
         }
@@ -566,34 +566,37 @@ impl UiTree {
         let (scale, size) = (self.scale, self.size);
         let UiFonts { text: system, families, locale, .. } = fonts;
         let (nodes, styles) = (&self.nodes, &self.styles);
-        let available = TaffySize {
-            width: AvailableSpace::Definite(size.x),
-            height: AvailableSpace::Definite(size.y),
-        };
+        let available =
+            TaffySize { width: AvailableSpace::Definite(size.x), height: AvailableSpace::Definite(size.y) };
         let measured = self.taffy.compute_layout_with_measure(
             self.root,
             available,
             |input: LayoutInput, _, at: Option<&mut u32>, style: &TaffyStyle| {
                 let text = at.and_then(|at| nodes[*at as usize].text.as_ref());
                 // Padding and limits are the leaf's own, and what's measured is inside them.
-                compute_leaf_layout(input, style, |_, _| 0.0, |known, available| {
-                    let Some(text) = text else { return known.unwrap_or(TaffySize::ZERO) };
-                    let Some(family) = text.family else { return known.unwrap_or(TaffySize::ZERO) };
-                    let width = text.wrap.then(|| {
-                        known.width.or(match available.width {
-                            AvailableSpace::Definite(width) => Some(width),
-                            AvailableSpace::MinContent => Some(0.0),
-                            AvailableSpace::MaxContent => None,
-                        })
-                    });
-                    let style = text_style(&styles[usize::from(text.style)], families, family, locale);
-                    let shaped = system.shape(&text.resolved, &style, scale, width.flatten());
-                    TaffySize {
-                        // Whole pixels up, so the same text fits the box it asked for.
-                        width: known.width.unwrap_or(shaped.width.ceil() / scale),
-                        height: known.height.unwrap_or(shaped.height.ceil() / scale),
-                    }
-                })
+                compute_leaf_layout(
+                    input,
+                    style,
+                    |_, _| 0.0,
+                    |known, available| {
+                        let Some(text) = text else { return known.unwrap_or(TaffySize::ZERO) };
+                        let Some(family) = text.family else { return known.unwrap_or(TaffySize::ZERO) };
+                        let width = text.wrap.then(|| {
+                            known.width.or(match available.width {
+                                AvailableSpace::Definite(width) => Some(width),
+                                AvailableSpace::MinContent => Some(0.0),
+                                AvailableSpace::MaxContent => None,
+                            })
+                        });
+                        let style = text_style(&styles[usize::from(text.style)], families, family, locale);
+                        let shaped = system.shape(&text.resolved, &style, scale, width.flatten());
+                        TaffySize {
+                            // Whole pixels up, so the same text fits the box it asked for.
+                            width: known.width.unwrap_or(shaped.width.ceil() / scale),
+                            height: known.height.unwrap_or(shaped.height.ceil() / scale),
+                        }
+                    },
+                )
             },
         );
         if let Err(error) = measured {
@@ -663,7 +666,15 @@ impl UiTree {
             }
             list.set_mask(node.own_mask);
             if let Some(look) = &node.look {
-                paint::look(look, node.rect, node.fill, node.final_opacity, scale, &atlas.sprites, &mut list.quads);
+                paint::look(
+                    look,
+                    node.rect,
+                    node.fill,
+                    node.final_opacity,
+                    scale,
+                    &atlas.sprites,
+                    &mut list.quads,
+                );
             }
             if let Some(text) = &node.text
                 && let Some(family) = text.family
@@ -715,7 +726,8 @@ impl UiTree {
 /// A node's style in full: its layout, the safe area if it asks, and what the model says of it. The
 /// root takes the frame's size whatever it says.
 fn node_style(node: &Node, root: bool, metrics: Option<UiMetrics>) -> TaffyStyle {
-    let insets = metrics.filter(|_| node.layout.safe_area).map_or_else(Insets::default, |metrics| metrics.insets);
+    let insets =
+        metrics.filter(|_| node.layout.safe_area).map_or_else(Insets::default, |metrics| metrics.insets);
     let mut style = style::taffy_style(&node.layout, insets);
     if root && let Some(metrics) = metrics {
         style.size = TaffySize {

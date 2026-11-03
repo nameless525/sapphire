@@ -10,6 +10,7 @@ use sapphire_ui::Insets;
 use sapphire_world::streaming::{StreamBudget, StreamSettings};
 use sapphire_world::tod::CharacterShadeKey;
 
+use crate::screen::ScreenOptions;
 use game_combat::arena::ArenaShot;
 use game_combat::combat::{CaptureFrames, CombatOption};
 use game_combat::combat_views::CombatViews;
@@ -229,6 +230,9 @@ pub(crate) struct Options {
     /// `--hud fixed|live`, `--hud-insets`, `--hud-scale` and `--hud-paused`: the combat HUD over the scene
     /// (M2 I2).
     pub hud: Option<HudOptions>,
+    /// `--ui-screen`, `--ui-locale`, `--ui-scale` and `--ui-pseudo`: the retained tree's test screen over
+    /// the scene (M3 U4).
+    pub ui_screen: Option<ScreenOptions>,
     /// `--clip <name>`: plays that clip on the look-dev character instead of holding it (M2 N2).
     /// Needs `--look-dev` or `--arena`, where it plays in place, since the simulation owns the root.
     pub clip: Option<lookdev::ClipName>,
@@ -518,6 +522,7 @@ impl Options {
             cues: self.cues,
             graph_show: self.graph.is_some(),
             arena_fight: self.arena.is_some() && self.combat.is_some(),
+            screen: self.ui_screen.is_some(),
             reads_files: !self.no_hot_reload,
             extra_documents: &self.watch_documents,
         }
@@ -618,6 +623,7 @@ impl Options {
         let mut fight = false;
         let (mut hud_mode, mut hud_insets, mut hud_scale) = (None, None, None);
         let mut hud_paused = false;
+        let (mut ui_screen, mut ui_locale, mut ui_scale, mut ui_pseudo) = (false, None, None, false);
         let (mut arena_flag, mut arena_shot) = (false, None);
         let (mut sheet, mut sheet_cells) = (None, None);
         let (mut sheet_ticks, mut sheet_views): (Vec<u32>, Vec<i32>) = (Vec::new(), Vec::new());
@@ -789,6 +795,16 @@ impl Options {
                 "--inventory-without" => options.inventory_without = Some(value("--inventory-without")?),
                 "--hud-insets" => hud_insets = Some(parse_insets(&value("--hud-insets")?)?),
                 "--hud-paused" => hud_paused = true,
+                "--ui-screen" => ui_screen = true,
+                "--ui-locale" => ui_locale = Some(value("--ui-locale")?),
+                "--ui-pseudo" => ui_pseudo = true,
+                "--ui-scale" => {
+                    let scale: f32 = number(&value("--ui-scale")?, "--ui-scale")?;
+                    if !(scale > 0.0 && scale.is_finite()) {
+                        return Err(format!("--ui-scale expects a positive scale, got {scale}"));
+                    }
+                    ui_scale = Some(scale);
+                }
                 "--hud-scale" => {
                     let scale: f32 = number(&value("--hud-scale")?, "--hud-scale")?;
                     if !(scale.is_finite() && scale > 0.0) {
@@ -1041,6 +1057,17 @@ impl Options {
                 Some(HudOptions { mode, insets, scale: scale.unwrap_or(1.0), paused })
             }
         };
+        if !ui_screen && (ui_locale.is_some() || ui_scale.is_some() || ui_pseudo) {
+            return Err("--ui-locale, --ui-scale and --ui-pseudo need --ui-screen".to_owned());
+        }
+        options.ui_screen = ui_screen.then(|| {
+            let shown = ScreenOptions::default();
+            ScreenOptions {
+                locale: ui_locale.unwrap_or(shown.locale),
+                pseudo: ui_pseudo,
+                scale: ui_scale.unwrap_or(shown.scale),
+            }
+        });
         options.faces = match (faces, face_layout) {
             (true, layout) => Some(layout.unwrap_or_default()),
             (false, Some(_)) => return Err("--face-layout needs --faces".to_owned()),
@@ -1895,6 +1922,26 @@ mod tests {
         assert_eq!(Options::default().camera_rim, None);
         for wrong in ["1.5", "-0.1", "NaN", "behind"] {
             assert!(parse(&["--camera-rim", wrong]).is_err(), "{wrong}");
+        }
+    }
+
+    #[test]
+    fn the_screen_s_companions_need_it() {
+        assert_eq!(Options::default().ui_screen, None);
+        let (options, _) = parse(&["--ui-screen"]).unwrap();
+        assert_eq!(options.ui_screen, Some(ScreenOptions::default()));
+        let (options, _) =
+            parse(&["--ui-screen", "--ui-locale", "ja", "--ui-scale", "2", "--ui-pseudo"]).unwrap();
+        let shown = ScreenOptions { locale: "ja".to_owned(), pseudo: true, scale: 2.0 };
+        assert_eq!(options.ui_screen, Some(shown));
+        for args in [
+            &["--ui-locale", "ja"][..],
+            &["--ui-scale", "2"],
+            &["--ui-pseudo"],
+            &["--ui-screen", "--ui-scale", "0"],
+            &["--ui-screen", "--ui-scale", "many"],
+        ] {
+            assert!(parse(args).is_err(), "{args:?}");
         }
     }
 

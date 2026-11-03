@@ -85,12 +85,14 @@ use sapphire_anim::{AnimGraph, ArchivedClip, ArchivedSkeleton, Clip, Skeleton};
 #[cfg(feature = "dev")]
 use sapphire_anim::{ClipSource, GraphBindError, GraphBinding};
 use sapphire_assets::cue::Cue;
+use sapphire_assets::font::{FONTS_PACK, Font, FontChains};
 use sapphire_assets::material::{AlignedVec, ArchivedMaterial, Material};
 use sapphire_assets::mesh::{ArchivedMesh, Mesh};
 use sapphire_assets::pack;
 use sapphire_assets::probes::ProbeGrid;
 use sapphire_assets::rig::{ArchivedCharacterRig, CharacterRig};
 use sapphire_assets::sound::{AUDIO_PACK, DecodedSound, Sound};
+use sapphire_assets::ui::{UI_PACK, UiDocument};
 use sapphire_assets::{
     Asset, AssetBudgets, AssetId, AssetKind, AssetServer, AssetSlot, AssetStats, CpuResident, Handle,
     LoadError, LoadPriority, PackFile, PackSource, ReadDone, TextureAsset, Unloaded, Upload, UploadError,
@@ -120,8 +122,28 @@ use crate::rims::{self, RimRigMeshes};
 use crate::scene;
 use crate::studio::{self, CharacterCopies, StudioMeshes};
 use crate::swatches::{self, SWATCHES};
+use sapphire_loc::StringTable;
 use sapphire_world::streaming::{StreamSettings, Streamer};
 use sapphire_zone::Zone;
+
+/// The pack string tables go in.
+const LOC_PACK: &str = "loc";
+
+/// `content/fonts/ui.fontchains.ron`: every font a screen may need.
+pub const FONT_CHAINS: AssetId = AssetId::from_text("6258611d-eb23-4958-9680-4e262a60a6ea");
+/// `content/loc/en.locale.ron` and `content/loc/ja.locale.ron`.
+pub const LOCALES: [AssetId; 2] = [
+    AssetId::from_text("536862fe-0efd-4937-a7c4-25c9b0652f62"),
+    AssetId::from_text("ef0a6207-aa10-4499-8e64-2e089c4f8b3c"),
+];
+
+/// What loading a screen hands back, as plain data ([`Content::load_screen`]).
+pub struct ScreenAssets {
+    pub document: UiDocument,
+    pub tables: Vec<StringTable>,
+    /// Each font's file and baseline shift.
+    pub fonts: Vec<(Arc<Vec<u8>>, f32)>,
+}
 
 /// The pack the sandbox's content ships in.
 const PACK: &str = "shared";
@@ -1473,6 +1495,69 @@ impl Content {
             sounds.push((sound, cooked.decode().map_err(|error| failed(&error))?));
         }
         Ok((cue, sounds))
+    }
+
+    /// Mounts the packs a screen reads, which nothing else does, and loads `screen`, the tables
+    /// of its languages and every font of the chains until they are resident, handing them back as
+    /// plain data. None of them stays loaded: the tree and the shaper hold what they need.
+    pub fn load_screen(
+        &mut self,
+        screen: AssetId,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+    ) -> Result<ScreenAssets, AppInitError> {
+        let failed = |error: &dyn std::fmt::Display| AppInitError::msg(format!("a screen: {error}"));
+        for pack in [FONTS_PACK, UI_PACK, LOC_PACK] {
+            if !self.server.is_mounted(pack) {
+                self.server
+                    .mount_now(pack)
+                    .map_err(|error| failed(&format!("the pack `{pack}`: {error}")))?;
+            }
+        }
+        let assets = &mut self.gpu;
+        let server = &mut self.server;
+        let document =
+            server.load_with::<UiDocument>(screen, LoadPriority::Critical).map_err(|error| failed(&error))?;
+        server
+            .finish(&document, |upload| assets.upload(upload, renderer, gpu))
+            .map_err(|error| failed(&error))?;
+        let document = server
+            .get(&document)
+            .ok_or_else(|| failed(&"its document isn't loaded"))?
+            .to_owned_document()
+            .map_err(|error| failed(&error))?;
+        let mut tables = Vec::with_capacity(LOCALES.len());
+        for id in LOCALES {
+            let table = server
+                .load_with::<StringTable>(id, LoadPriority::Critical)
+                .map_err(|error| failed(&error))?;
+            server
+                .finish(&table, |upload| assets.upload(upload, renderer, gpu))
+                .map_err(|error| failed(&error))?;
+            let bytes = server.get(&table).ok_or_else(|| failed(&"a table isn't loaded"))?;
+            tables.push(StringTable::read(bytes).map_err(|error| failed(&error))?);
+        }
+        let chains = server
+            .load_with::<FontChains>(FONT_CHAINS, LoadPriority::Critical)
+            .map_err(|error| failed(&error))?;
+        server
+            .finish(&chains, |upload| assets.upload(upload, renderer, gpu))
+            .map_err(|error| failed(&error))?;
+        let mut ids: Vec<AssetId> =
+            server.get(&chains).ok_or_else(|| failed(&"the chains aren't loaded"))?.font_ids().collect();
+        ids.sort_unstable();
+        ids.dedup();
+        let mut fonts = Vec::with_capacity(ids.len());
+        for id in ids {
+            let font =
+                server.load_with::<Font>(id, LoadPriority::Critical).map_err(|error| failed(&error))?;
+            server
+                .finish(&font, |upload| assets.upload(upload, renderer, gpu))
+                .map_err(|error| failed(&error))?;
+            let font = server.get(&font).ok_or_else(|| failed(&"a font isn't loaded"))?;
+            fonts.push((Arc::new(font.file.to_vec()), font.baseline_shift.to_native()));
+        }
+        Ok(ScreenAssets { document, tables, fonts })
     }
 
     /// Loads the clip `id` until it is resident: CPU data, which nothing uploads ([`Self::clip`] reads

@@ -8,6 +8,7 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+bevy_reflect.workspace = true
 sapphire_anim.workspace = true
 sapphire_assets.workspace = true
 sapphire_audio.workspace = true
@@ -17,6 +18,7 @@ sapphire_ecs.workspace = true
 # bevy's `Component` / `Resource` derives resolve the `bevy_ecs` crate by name (see sapphire_ecs).
 bevy_ecs.workspace = true
 sapphire_gameplay.workspace = true
+sapphire_loc.workspace = true
 sapphire_math.workspace = true
 sapphire_moves.workspace = true
 sapphire_physics.workspace = true

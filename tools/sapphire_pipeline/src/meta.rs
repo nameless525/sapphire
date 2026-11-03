@@ -148,13 +148,13 @@ use crate::font::{self, FontChainsSettings, FontSettings};
 use crate::import::vrm::{self, VrmSettings};
 use crate::keypose::{self, KeyPoseSettings};
 use crate::loc::{self, FluentSettings, LocaleDocumentSettings};
-use crate::ui::{self, UiSettings};
 use crate::material::{self, MaterialSettings};
 use crate::moves::{self, MoveSetSettings};
 use crate::optimize::LodSettings;
 use crate::probes::{self, ProbeGridSettings};
 use crate::texture::{HdrSettings, TextureClass, TextureSettings};
 use crate::timeline::{self, TimelineSettings};
+use crate::ui::{self, UiSettings};
 use crate::zone::{self, ZoneSettings};
 
 /// Extension of sidecar files, appended to the whole source file name.

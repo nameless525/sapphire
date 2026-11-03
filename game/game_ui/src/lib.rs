@@ -7,6 +7,7 @@
 #![allow(rustdoc::private_intra_doc_links)]
 
 pub mod hud;
+pub mod screen;
 pub mod title;
 pub mod touch;
 

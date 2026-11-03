@@ -104,7 +104,10 @@ fn the_shipped_fonts_shape_the_menu_as_the_whole_fonts_do() {
     server.finish(&chains, |upload| panic!("{} was uploaded", upload.kind())).unwrap();
     let wanted: Vec<(&str, Vec<AssetId>)> = {
         let read = server.get(&chains).expect("the chains loaded");
-        ["body", "display"].into_iter().map(|chain| (chain, read.fonts(chain).expect("a chain").to_vec())).collect()
+        ["body", "display"]
+            .into_iter()
+            .map(|chain| (chain, read.fonts(chain).expect("a chain").to_vec()))
+            .collect()
     };
 
     let mut cut = TextSystem::new();

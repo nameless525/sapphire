@@ -1,14 +1,13 @@
 //! A document's layout as `taffy` reads it.
 
-use sapphire_assets::ui::{
-    UiAlign, UiCell, UiDirection, UiDisplay, UiJustify, UiLayout, UiLength, UiTrack,
-};
+use sapphire_assets::ui::{UiAlign, UiCell, UiDirection, UiDisplay, UiJustify, UiLayout, UiLength, UiTrack};
 use taffy::prelude::{
-    AlignItems, Dimension, Display, FlexDirection, FlexWrap, GridPlacement, JustifyContent, Line,
-    LengthPercentage, LengthPercentageAuto, Position, Rect as TaffyRect, Size as TaffySize,
-    Style as TaffyStyle,
+    AlignItems, Dimension, Display, FlexDirection, FlexWrap, GridPlacement, JustifyContent, LengthPercentage,
+    LengthPercentageAuto, Line, Position, Rect as TaffyRect, Size as TaffySize, Style as TaffyStyle,
 };
-use taffy::style::{GridTemplateComponent, MaxTrackSizingFunction, MinTrackSizingFunction, TrackSizingFunction};
+use taffy::style::{
+    GridTemplateComponent, MaxTrackSizingFunction, MinTrackSizingFunction, TrackSizingFunction,
+};
 use taffy::style_helpers::{FromFr, FromLength, FromPercent, TaffyAuto, line, minmax};
 
 use crate::layout::Insets;
@@ -49,10 +48,7 @@ fn track(track: UiTrack) -> GridTemplateComponent<String> {
 }
 
 fn placement(start: u16, span: u16) -> Line<GridPlacement<String>> {
-    Line {
-        start: line(start as i16),
-        end: taffy::style_helpers::span(span),
-    }
+    Line { start: line(start as i16), end: taffy::style_helpers::span(span) }
 }
 
 /// `layout` as a style, with `insets` added to its padding.
@@ -79,7 +75,10 @@ pub(super) fn taffy_style(layout: &UiLayout, insets: Insets) -> TaffyStyle {
         },
         align_items: layout.align.map(align).unwrap_or_default(),
         align_self: layout.align_self.map(align),
-        gap: TaffySize { width: LengthPercentage::length(layout.gap), height: LengthPercentage::length(layout.gap) },
+        gap: TaffySize {
+            width: LengthPercentage::length(layout.gap),
+            height: LengthPercentage::length(layout.gap),
+        },
         padding: TaffyRect {
             left: pad(padding.left, insets.left),
             right: pad(padding.right, insets.right),

@@ -85,7 +85,8 @@ fn a_text_box_sizes_from_its_string_in_the_language_in_force() {
     ],"#
     );
     let mut tree = UiTree::new(&document(&data)).unwrap();
-    let (mut fonts, mut loc, atlas, mut list) = (fonts(), localizer("en"), Atlas::paint(), UiDrawList::default());
+    let (mut fonts, mut loc, atlas, mut list) =
+        (fonts(), localizer("en"), Atlas::paint(), UiDrawList::default());
     frame(&mut tree, &mut fonts, &loc, &Model::default(), metrics([800.0, 600.0]), &atlas, &mut list);
     let rect = |tree: &UiTree, name| tree.rect(tree.find(name).unwrap());
     let english = rect(&tree, "title");
@@ -305,7 +306,8 @@ fn pseudo_localization_finds_what_isn_t_localized() {
     ],"#
     );
     let mut tree = UiTree::new(&document(&data)).unwrap();
-    let (mut fonts, mut loc, atlas, mut list) = (fonts(), localizer("en"), Atlas::paint(), UiDrawList::default());
+    let (mut fonts, mut loc, atlas, mut list) =
+        (fonts(), localizer("en"), Atlas::paint(), UiDrawList::default());
     loc.set_pseudo(true);
     frame(&mut tree, &mut fonts, &loc, &Model::default(), metrics([800.0, 600.0]), &atlas, &mut list);
     let unframed: Vec<_> = tree.unframed().map(|(node, _)| node).collect();
@@ -367,10 +369,12 @@ fn a_gradient_runs_across_a_nine_slice_s_pieces_as_one() {
     ],"#;
     let (_, list) = run_once(data, &Model::default(), "en", [800.0, 600.0]);
     assert_eq!(list.quads.len(), 9);
-    let share = |quad: &UiQuad, x: f32, y: f32| quad.gradient[0] * x + quad.gradient[1] * y + quad.gradient[2];
+    let share =
+        |quad: &UiQuad, x: f32, y: f32| quad.gradient[0] * x + quad.gradient[1] * y + quad.gradient[2];
     for row in list.quads.chunks(3) {
         for pair in row.windows(2) {
-            let (left, right) = (share(pair.first().unwrap(), 1.0, 0.5), share(pair.last().unwrap(), 0.0, 0.5));
+            let (left, right) =
+                (share(pair.first().unwrap(), 1.0, 0.5), share(pair.last().unwrap(), 0.0, 0.5));
             assert!((left - right).abs() < 1e-5, "{left} then {right}");
         }
         // Nothing at the box's left edge, which isn't the quad's: that runs past for the field.

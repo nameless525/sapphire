@@ -23,6 +23,9 @@
 //! - **The effects** (`default_effects.ron`): what a fight's cues and sword trails play takes them if the cue
 //!   table still finds its names. What's playing ends, and a trail starts again at the next cut.
 //!
+//! - **A retained screen** (`.ui.ron`, M3 U4): a document that parses, checks and resolves against the
+//!   model replaces the screen on show, with `--ui-screen`, and one that doesn't keeps it.
+//!
 //! A document that doesn't parse or check keeps what's playing, and says why in the log, in the overlay's
 //! stats panel and, pushed, in `link push`'s non-zero exit. The next good one works.
 //!
@@ -44,6 +47,7 @@
 use std::path::{Path, PathBuf};
 
 use sapphire_assets::graph::{AnimGraph, clip_id};
+use sapphire_assets::ui::UiDocument;
 use sapphire_assets::{AssetChange, AssetId, AssetKind, Handle};
 use sapphire_camera::CameraTuning;
 use sapphire_cues::CueTable;
@@ -97,6 +101,9 @@ pub enum Document {
     /// A fighter's animation graph (`.animgraph.ron`, M2 T2): it replaces the one playing from the next
     /// state's start, if it checks and binds.
     Graph,
+    /// A retained screen (`.ui.ron`, M3 U4): it replaces the one on show, if there is one, and if it
+    /// parses, checks and resolves against its model ([`TunedScreen`]).
+    Ui,
 }
 
 /// What applying a document can reach, once a document.
@@ -107,10 +114,18 @@ pub struct DocumentFrame<'a> {
     pub scene: &'a mut Scene,
     pub fight: &'a mut Fight,
     pub tuning: &'a mut LiveTuning,
+    /// The retained screen on show, if there is one.
+    pub screen: Option<&'a mut dyn TunedScreen>,
+}
+
+/// A retained screen a document can replace. What's on show is the interface's, above this crate.
+pub trait TunedScreen {
+    /// Takes a new document, keeping what's on screen if it has anything wrong with it.
+    fn replace(&mut self, text: &str) -> Result<(), String>;
 }
 
 impl Document {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 9] = [
         Self::Day,
         Self::LightRigs,
         Self::ScreenEffects,
@@ -119,6 +134,7 @@ impl Document {
         Self::Moves,
         Self::Camera,
         Self::Graph,
+        Self::Ui,
     ];
 
     /// The document whose envelope names `type_name`, if the sandbox has one.
@@ -136,6 +152,7 @@ impl Document {
             Self::Moves => stable_name::<MoveSetDocument>(),
             Self::Camera => stable_name::<CameraTuning>(),
             Self::Graph => stable_name::<AnimGraph>(),
+            Self::Ui => stable_name::<UiDocument>(),
         }
     }
 
@@ -150,6 +167,7 @@ impl Document {
             Self::Moves => "moves",
             Self::Camera => "camera's tuning",
             Self::Graph => "animation graph",
+            Self::Ui => "screen",
         }
     }
 
@@ -160,7 +178,7 @@ impl Document {
     /// prewarm their post variants, which the overlay may fire. A fight's documents go through
     /// [`LiveTuning`].
     pub fn apply(self, origin: &str, text: &str, frame: DocumentFrame<'_>) -> Result<String, String> {
-        let DocumentFrame { content, renderer, gpu, scene, fight, tuning } = frame;
+        let DocumentFrame { content, renderer, gpu, scene, fight, tuning, screen } = frame;
         match self {
             Self::Day => {
                 let timeline = TodTimeline::from_ron(text).map_err(|error| error_chain(&error))?;
@@ -199,6 +217,10 @@ impl Document {
                 tuning.count_edit(document_file_name(path));
                 Ok(format!("{}'s animation graph, from the next state's start", owner.0))
             }
+            Self::Ui => {
+                screen.ok_or("no screen is showing: it takes --ui-screen")?.replace(text)?;
+                Ok(self.name().to_owned())
+            }
         }
     }
 }
@@ -214,12 +236,16 @@ pub struct TunedRun<'a> {
     pub graph_show: bool,
     /// A fight runs in the arena, each fighter on a graph.
     pub arena_fight: bool,
+    /// A retained screen shows (`--ui-screen`).
+    pub screen: bool,
     /// Whether anything reads saved files: off, only what's pushed comes.
     pub reads_files: bool,
     /// Documents to read outside the repository, each by its file's name.
     pub extra_documents: &'a [PathBuf],
 }
 
+/// The test screen's document (`screen::TEST_SCREEN`).
+const SCREEN_PATH: &str = "content/ui/test_screen.ui.ron";
 /// The animation graph's document (`lookdev::GRAPH`).
 const GRAPH_PATH: &str = "content/lookdev/character/character.animgraph.ron";
 /// The enemy's animation graph's document (`enemy::GRAPH`).
@@ -329,6 +355,9 @@ impl LiveTuning {
             for path in scenario.documents {
                 add(path, Document::Moves);
             }
+        }
+        if run.screen {
+            add(SCREEN_PATH, Document::Ui);
         }
         // A fight's cues fire the camera's shakes, by their places in its tuning.
         if run.camera_director || run.cues {
@@ -726,6 +755,8 @@ pub(crate) fn kind_of_file(path: &Path) -> Option<Document> {
         Some(Document::Moves)
     } else if name.ends_with(".animgraph.ron") {
         Some(Document::Graph)
+    } else if name.ends_with(".ui.ron") {
+        Some(Document::Ui)
     } else if name == document_file_name(CAMERA_PATH) {
         Some(Document::Camera)
     } else if name == document_file_name(CUES_PATH) {
@@ -1095,6 +1126,7 @@ mod tests {
     fn a_files_name_says_what_kind_of_document_it_is() {
         assert_eq!(kind_of_file(Path::new("x/fighter.moves.ron")), Some(Document::Moves));
         assert_eq!(kind_of_file(Path::new("x/character.animgraph.ron")), Some(Document::Graph));
+        assert_eq!(kind_of_file(Path::new("x/menu.ui.ron")), Some(Document::Ui));
         assert_eq!(kind_of_file(Path::new("x/default_camera.ron")), Some(Document::Camera));
         assert_eq!(kind_of_file(Path::new("x/default_cues.ron")), Some(Document::Cues));
         assert_eq!(kind_of_file(Path::new("x/default_effects.ron")), Some(Document::Effects));
@@ -1210,6 +1242,7 @@ mod tests {
         cues: false,
         graph_show: false,
         arena_fight: false,
+        screen: false,
         reads_files: true,
         extra_documents: &[],
     };

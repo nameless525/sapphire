@@ -33,9 +33,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use read_fonts_for_skera::FontRef;
+use sapphire_assets::AssetId;
 use sapphire_assets::font::{FONTS_PACK, Font, FontChains};
 use sapphire_assets::ui::{UiDocument, UiError, UiModel};
-use sapphire_assets::AssetId;
 use sapphire_strings::{KeyShows, StringTable, key_shows};
 use serde::{Deserialize, Serialize};
 
@@ -106,9 +106,13 @@ pub enum ScreenError {
         code: u32,
         families: String,
     },
-    #[error("locale `{locale}` shows the role `{role}` in `{family}`, which no font of the tree's `fonts` pack is")]
+    #[error(
+        "locale `{locale}` shows the role `{role}` in `{family}`, which no font of the tree's `fonts` pack is"
+    )]
     NoFont { locale: String, role: String, family: String },
-    #[error("locale `{locale}` shows the role `{role}` in `{family}`, and the font chain `{role}` doesn't load that")]
+    #[error(
+        "locale `{locale}` shows the role `{role}` in `{family}`, and the font chain `{role}` doesn't load that"
+    )]
     NotInChain { locale: String, role: String, family: String },
     #[error("a screen shows the role `{role}`, and no font chain loads it")]
     NoChain { role: String },
@@ -186,12 +190,11 @@ pub struct Screens {
 impl Screens {
     /// Reads the cooked documents and tables at `outputs`, which can hold anything else too. Each file's
     /// source goes with it, to name a screen by.
-    pub fn read<'a>(
-        outputs: impl Iterator<Item = (&'a Path, &'a Path)>,
-    ) -> Result<Self, ScreenError> {
+    pub fn read<'a>(outputs: impl Iterator<Item = (&'a Path, &'a Path)>) -> Result<Self, ScreenError> {
         let mut screens = Self::default();
         let read = |path: &Path| {
-            std::fs::read(path).map_err(|source| ScreenError::Read { path: path.to_owned(), source: Box::new(source) })
+            std::fs::read(path)
+                .map_err(|source| ScreenError::Read { path: path.to_owned(), source: Box::new(source) })
         };
         let refused = |path: &Path, source: Box<dyn std::error::Error + Send + Sync>| ScreenError::Read {
             path: path.to_owned(),
@@ -202,12 +205,15 @@ impl Screens {
                 Some(sapphire_assets::ui::UI_EXTENSION) => {
                     let mut bytes = sapphire_serialize::cooked::AlignedVec::<16>::new();
                     bytes.extend_from_slice(&read(output)?);
-                    let document = UiDocument::read(&bytes).map_err(|error| refused(output, Box::new(error)))?;
-                    let document = document.to_owned_document().map_err(|error| refused(output, Box::new(error)))?;
+                    let document =
+                        UiDocument::read(&bytes).map_err(|error| refused(output, Box::new(error)))?;
+                    let document =
+                        document.to_owned_document().map_err(|error| refused(output, Box::new(error)))?;
                     screens.documents.push((source.to_owned(), document));
                 }
                 Some(sapphire_strings::STRINGS_EXTENSION) => {
-                    let table = StringTable::read(&read(output)?).map_err(|error| refused(output, Box::new(error)))?;
+                    let table = StringTable::read(&read(output)?)
+                        .map_err(|error| refused(output, Box::new(error)))?;
                     screens.tables.push(table);
                 }
                 _ => {}
@@ -225,7 +231,10 @@ impl Screens {
     fn chain_of<'a>(&'a self, table: &'a StringTable) -> Vec<&'a StringTable> {
         let mut chain = vec![table];
         chain.extend(
-            table.fallback.iter().filter_map(|locale| self.tables.iter().find(|other| other.locale == *locale)),
+            table
+                .fallback
+                .iter()
+                .filter_map(|locale| self.tables.iter().find(|other| other.locale == *locale)),
         );
         chain
     }
@@ -265,7 +274,8 @@ impl Screens {
 
     /// Refuses a key, a role or a variable a screen needs and a table doesn't have.
     pub fn check_strings(&self) -> Result<(), ScreenError> {
-        if let Some((screen, _)) = self.documents.iter().find(|(_, document)| document.texts().next().is_some())
+        if let Some((screen, _)) =
+            self.documents.iter().find(|(_, document)| document.texts().next().is_some())
             && self.tables.is_empty()
         {
             return Err(ScreenError::NoLocale { screen: screen.clone() });
@@ -307,15 +317,24 @@ impl Screens {
             .map(|(_, font)| font::open(&font.file).map_err(FontCookError::from))
             .collect::<Result<Vec<FontRef<'_>>, _>>()?;
         let of_family = |family: &str| -> Vec<usize> {
-            fonts.iter().enumerate().filter(|(_, (_, font))| font.family == family).map(|(at, _)| at).collect()
+            fonts
+                .iter()
+                .enumerate()
+                .filter(|(_, (_, font))| font.family == family)
+                .map(|(at, _)| at)
+                .collect()
         };
         let mut checked: BTreeSet<(&str, &str)> = BTreeSet::new();
         for shown in self.shown() {
             let (Some(list), Some(shows)) = (shown.families, &shown.shows) else { continue };
             if checked.insert((shown.locale, shown.role)) {
-                let names = |family: &String| (shown.locale.to_owned(), shown.role.to_owned(), family.clone());
-                let chain = chains.iter().flat_map(|chains| &chains.chains).find(|chain| chain.name == shown.role);
-                let Some(chain) = chain else { return Err(ScreenError::NoChain { role: shown.role.to_owned() }) };
+                let names =
+                    |family: &String| (shown.locale.to_owned(), shown.role.to_owned(), family.clone());
+                let chain =
+                    chains.iter().flat_map(|chains| &chains.chains).find(|chain| chain.name == shown.role);
+                let Some(chain) = chain else {
+                    return Err(ScreenError::NoChain { role: shown.role.to_owned() });
+                };
                 for family in list {
                     let (locale, role, name) = names(family);
                     let held = of_family(family);
@@ -329,7 +348,8 @@ impl Screens {
             }
             let list_fonts: Vec<usize> = list.iter().flat_map(|family| of_family(family)).collect();
             for &character in &shows.characters {
-                if character.is_control() || list_fonts.iter().any(|&at| font::covers(&opened[at], character)) {
+                if character.is_control() || list_fonts.iter().any(|&at| font::covers(&opened[at], character))
+                {
                     continue;
                 }
                 return Err(ScreenError::Uncovered {

@@ -1372,13 +1372,16 @@ dependencies = [
 name = "game_ui"
 version = "0.1.0"
 dependencies = [
+ "bevy_reflect",
  "game_combat",
+ "sapphire_assets",
  "sapphire_colliders",
  "sapphire_controls",
  "sapphire_core",
  "sapphire_cues",
  "sapphire_gameplay",
  "sapphire_input",
+ "sapphire_loc",
  "sapphire_look",
  "sapphire_math",
  "sapphire_moves",
@@ -3953,6 +3956,7 @@ dependencies = [
 name = "sapphire_sandbox"
 version = "0.1.0"
 dependencies = [
+ "bevy_reflect",
  "game_combat",
  "game_ui",
  "png",
@@ -3971,6 +3975,8 @@ dependencies = [
  "sapphire_input",
  "sapphire_jobs",
  "sapphire_livelink",
+ "sapphire_loc",
+ "sapphire_look",
  "sapphire_math",
  "sapphire_moves",
  "sapphire_platform",
@@ -3978,6 +3984,7 @@ dependencies = [
  "sapphire_rhi",
  "sapphire_sequencer",
  "sapphire_stage",
+ "sapphire_strings",
  "sapphire_time",
  "sapphire_ui",
  "sapphire_world",
@@ -4045,6 +4052,7 @@ name = "sapphire_stage"
 version = "0.1.0"
 dependencies = [
  "bevy_ecs",
+ "bevy_reflect",
  "profiling",
  "sapphire_anim",
  "sapphire_assets",
@@ -4054,6 +4062,7 @@ dependencies = [
  "sapphire_ecs",
  "sapphire_gameplay",
  "sapphire_livelink",
+ "sapphire_loc",
  "sapphire_math",
  "sapphire_moves",
  "sapphire_physics",

@@ -25,7 +25,9 @@ fn repo_content() -> PathBuf {
 }
 
 fn sidecar(id: &str, importer: &str) -> String {
-    format!("(type: \"sapphire::assets::AssetMeta\", version: 1, data: (id: \"{id}\", importer: {importer}))\n")
+    format!(
+        "(type: \"sapphire::assets::AssetMeta\", version: 1, data: (id: \"{id}\", importer: {importer}))\n"
+    )
 }
 
 fn write(path: &Path, text: &str) {
@@ -76,7 +78,11 @@ impl Tree {
             fs::create_dir_all(content.join(&file).parent().unwrap()).unwrap();
             fs::copy(repo_content().join(&file), content.join(&file)).unwrap();
         }
-        fs::copy(repo_content().join("third_party/oxanium/OFL.txt"), content.join("third_party/oxanium/OFL.txt")).unwrap();
+        fs::copy(
+            repo_content().join("third_party/oxanium/OFL.txt"),
+            content.join("third_party/oxanium/OFL.txt"),
+        )
+        .unwrap();
         tree.chains("(name: \"display\", fonts: [\"ce9360bf-ac52-4ecc-9e73-75cd14b619d5\"])");
         write(
             &content.join("fonts/a.fontchains.ron.meta"),
@@ -103,7 +109,8 @@ impl Tree {
     }
 
     fn chains(&self, chains: &str) {
-        let file = format!("(type: \"sapphire::assets::FontChains\", version: 2, data: (chains: [{chains}]))");
+        let file =
+            format!("(type: \"sapphire::assets::FontChains\", version: 2, data: (chains: [{chains}]))");
         write(&self.content().join("fonts/a.fontchains.ron"), &file);
     }
 
@@ -163,7 +170,9 @@ fn font_shows(report: &CookReport, family: &str, character: char) -> bool {
     let cooked = report
         .assets
         .iter()
-        .filter(|asset| asset.output.extension().is_some_and(|found| found == sapphire_assets::font::FONT_EXTENSION))
+        .filter(|asset| {
+            asset.output.extension().is_some_and(|found| found == sapphire_assets::font::FONT_EXTENSION)
+        })
         .map(|asset| {
             let mut bytes = AlignedVec::<16>::new();
             bytes.extend_from_slice(&fs::read(&asset.output).unwrap());
@@ -329,7 +338,9 @@ fn the_test_screen_cooks_in_both_languages_and_brings_its_characters() {
         fs::create_dir_all(to.parent().unwrap()).unwrap();
         fs::copy(repo_content().join(&relative), &to).unwrap_or_else(|error| panic!("{relative}: {error}"));
     };
-    for font in ["mplus1/MPLUS1[wght].ttf", "oxanium/Oxanium[wght].ttf", "dela_gothic_one/DelaGothicOne-Regular.ttf"] {
+    for font in
+        ["mplus1/MPLUS1[wght].ttf", "oxanium/Oxanium[wght].ttf", "dela_gothic_one/DelaGothicOne-Regular.ttf"]
+    {
         copy(format!("third_party/{font}"));
         copy(format!("third_party/{font}.meta"));
         copy(format!("third_party/{}/OFL.txt", Path::new(font).parent().unwrap().to_str().unwrap()));

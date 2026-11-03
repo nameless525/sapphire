@@ -31,6 +31,10 @@ impl ContextId {
 
 /// An on-screen control: a [`Source::Virtual`] name that bindings read, driven through
 /// [`InputSystem::inject`](crate::InputSystem::inject).
+///
+/// It means that name for as long as the [`InputSystem`](crate::InputSystem) runs. A rebind keeps every
+/// control's number, even one no binding reads any more, so a handle or queued input from before it
+/// reaches that control or nobody, never another.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct VirtualControl(u16);
 
@@ -152,12 +156,18 @@ pub struct InputMap {
 impl InputMap {
     /// Compiles a bindings document.
     pub fn new(document: InputBindings) -> Result<Self, MapError> {
-        compile(document)
+        compile(document, Vec::new())
     }
 
     /// Reads and compiles a bindings document in RON.
     pub fn from_ron(text: &str) -> Result<Self, MapError> {
         Self::new(sapphire_serialize::from_ron(text)?)
+    }
+
+    /// Compiles `document`, a rebinding of this map's, keeping this map's on-screen controls: each name
+    /// keeps its number, whether or not a binding still reads it, and a new name takes the next.
+    pub(crate) fn recompiled(&self, document: InputBindings) -> Result<Self, MapError> {
+        compile(document, self.virtuals.clone())
     }
 
     /// The document this map was compiled from, including any rebinding since: what settings
@@ -174,6 +184,7 @@ impl InputMap {
         self.contexts.iter().position(|c| c.name == name).map(|i| ContextId(i as u16))
     }
 
+    /// The on-screen control of this name, once any binding has read it (see [`VirtualControl`]).
     pub fn virtual_control(&self, name: &str) -> Option<VirtualControl> {
         self.virtuals.iter().position(|v| v == name).map(|i| VirtualControl(i as u16))
     }
@@ -248,7 +259,8 @@ fn id(index: usize) -> Result<u16, MapError> {
     u16::try_from(index).map_err(|_| MapError::TooMany)
 }
 
-fn compile(document: InputBindings) -> Result<InputMap, MapError> {
+/// `virtuals`: the on-screen controls numbered already.
+fn compile(document: InputBindings, mut virtuals: Vec<String>) -> Result<InputMap, MapError> {
     document.gestures.validate().map_err(MapError::InvalidGestures)?;
 
     let mut actions = Vec::with_capacity(document.actions.len());
@@ -264,7 +276,6 @@ fn compile(document: InputBindings) -> Result<InputMap, MapError> {
     let mut contexts = Vec::with_capacity(document.contexts.len());
     let mut bindings = Vec::new();
     let mut modifiers = Vec::new();
-    let mut virtuals: Vec<String> = Vec::new();
     let mut names: Vec<&str> = Vec::new();
     for (context_index, desc) in document.contexts.iter().enumerate() {
         if contexts.iter().any(|c: &Context| c.name == desc.name) {

@@ -184,10 +184,10 @@ impl Devices {
         self.swipes[direction.index()] = on;
     }
 
-    /// Starts over with a recompiled map's on-screen controls, which may be numbered
-    /// differently.
-    pub fn reset_virtuals(&mut self, count: usize) {
-        self.virtuals = vec![Vec2::ZERO; count];
+    /// Makes room for a recompiled map's on-screen controls. Those it had keep their numbers
+    /// (`InputMap::recompiled`) and what they read.
+    pub fn grow_virtuals(&mut self, count: usize) {
+        self.virtuals.resize(count, Vec2::ZERO);
     }
 
     /// Sets an on-screen control; returns whether it changed.

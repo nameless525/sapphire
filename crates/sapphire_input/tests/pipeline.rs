@@ -776,6 +776,108 @@ fn bindings_rebind_by_name_and_capture_the_next_press() {
     assert!(matches!(rig.input.rebind("dodge", Source::Key(Key::K)), Err(RebindError::UnknownBinding(_))));
 }
 
+/// Review PLT-002: an on-screen control is its name for as long as the system runs. Attack is the map's
+/// first on-screen control and dodge its second, and rebinding attack's binding away used to make dodge
+/// the first.
+fn two_on_screen_verbs() -> Rig {
+    let map = map(
+        r#"(name: "attack", kind: Button), (name: "dodge", kind: Button), (name: "jump", kind: Button)"#,
+        r#"(name: "main", bindings: [
+            (action: "attack", source: Virtual("attack"), trigger: DownFromPress, name: "attack.touch"),
+            (action: "dodge", source: Virtual("dodge"), name: "dodge.touch"),
+            (action: "jump", source: Key(Space), trigger: Pressed, name: "jump.keyboard"),
+        ])"#,
+    );
+    Rig::new(map, &["main"])
+}
+
+#[test]
+fn input_queued_before_a_rebind_still_means_its_own_control() {
+    // A press waiting for the update, whose binding moves to a key before it comes.
+    let mut rig = two_on_screen_verbs();
+    let attack = rig.input.map().virtual_control("attack").expect("attack");
+    rig.input.inject(attack, Vec2::X, ms(10));
+    rig.input.rebind("attack.touch", Source::Key(Key::J)).expect("rebind");
+    let fired = rig.update(20);
+    assert_eq!(fired, [], "nothing reads that control now, and it isn't dodge");
+
+    // A cancel waiting for the update, with dodge held.
+    let mut rig = two_on_screen_verbs();
+    let attack = rig.input.map().virtual_control("attack").expect("attack");
+    let dodge = rig.input.map().virtual_control("dodge").expect("dodge");
+    rig.input.inject(dodge, Vec2::X, ms(10));
+    rig.update(20);
+    assert_eq!(rig.value("dodge"), Vec2::X);
+    rig.input.cancel_virtual(attack, ms(30));
+    rig.input.rebind("attack.touch", Source::Key(Key::J)).expect("rebind");
+    rig.update(40);
+    assert_eq!(rig.value("dodge"), Vec2::X, "the cancel was attack's");
+}
+
+#[test]
+fn handles_taken_before_a_rebind_keep_their_meaning() {
+    let mut rig = two_on_screen_verbs();
+    let attack = rig.input.map().virtual_control("attack").expect("attack");
+    let dodge = rig.input.map().virtual_control("dodge").expect("dodge");
+    let action = rig.action("dodge");
+    let context = rig.input.map().context("main");
+    rig.input.rebind("attack.touch", Source::Key(Key::J)).expect("rebind");
+    assert_eq!((rig.action("dodge"), rig.input.map().context("main")), (action, context));
+    rig.update(10);
+
+    rig.input.inject(dodge, Vec2::X, ms(20));
+    let fired = rig.update_for(30, "dodge");
+    assert!(fired.contains(&ev("dodge", Triggered, 20)), "{fired:?}");
+    assert_eq!(rig.input.map().virtual_control("dodge"), Some(dodge));
+    rig.input.inject(dodge, Vec2::ZERO, ms(40));
+    rig.update(50);
+
+    // Attack's handle reads nothing for now, and reaches nobody else.
+    rig.input.inject(attack, Vec2::X, ms(60));
+    assert_eq!(rig.update(70), []);
+    rig.input.inject(attack, Vec2::ZERO, ms(80));
+    rig.update(90);
+
+    // A control new to the map takes a number of its own, and the old handle stays out of it.
+    rig.input.rebind("attack.touch", Source::Virtual("strike".into())).expect("rebind");
+    let strike = rig.input.map().virtual_control("strike").expect("strike");
+    assert!(strike != attack && strike != dodge);
+    rig.update(100);
+    rig.input.inject(attack, Vec2::X, ms(110));
+    assert_eq!(rig.update(120), [], "its binding reads `strike` now");
+    rig.input.inject(attack, Vec2::ZERO, ms(130));
+    rig.input.inject(strike, Vec2::X, ms(140));
+    let fired = rig.update_for(150, "attack");
+    assert!(fired.contains(&ev("attack", Triggered, 140)), "{fired:?}");
+
+    // And back: the name it had, the number it had.
+    rig.input.rebind("attack.touch", Source::Virtual("attack".into())).expect("rebind");
+    assert_eq!(rig.input.map().virtual_control("attack"), Some(attack));
+}
+
+#[test]
+fn a_control_held_through_a_rebind_is_still_held_and_no_new_press() {
+    let mut rig = two_on_screen_verbs();
+    let attack = rig.input.map().virtual_control("attack").expect("attack");
+    let dodge = rig.input.map().virtual_control("dodge").expect("dodge");
+    rig.input.inject(attack, Vec2::X, ms(10));
+    rig.input.inject(dodge, Vec2::X, ms(11));
+    let fired = rig.update_for(20, "attack");
+    assert!(fired.contains(&ev("attack", Triggered, 10)), "{fired:?}");
+
+    // On-screen controls are injected on their edges alone, so nothing would tell it again.
+    rig.input.rebind("jump.keyboard", Source::Key(Key::K)).expect("rebind");
+    let fired = rig.update_for(30, "attack");
+    assert!(!fired.iter().any(|(_, kind, _)| *kind == Triggered), "not a new press: {fired:?}");
+    assert_eq!(rig.value("dodge"), Vec2::X, "a level reads on: a `Down` binding is the stick's shape");
+
+    rig.input.inject(attack, Vec2::ZERO, ms(40));
+    assert_eq!(rig.update_for(50, "attack"), [], "let go, it fires nothing");
+    rig.input.inject(attack, Vec2::X, ms(60));
+    let fired = rig.update_for(70, "attack");
+    assert!(fired.contains(&ev("attack", Triggered, 60)), "pressed again, it counts: {fired:?}");
+}
+
 #[test]
 fn losing_focus_releases_everything_without_firing_releases() {
     let map = map(

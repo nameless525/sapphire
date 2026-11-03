@@ -502,11 +502,13 @@ impl InputSystem {
 
     /// Makes the binding named `name` read `source`, recompiling the map, and returns the
     /// source it read before. Enabled contexts and action phases carry over; every binding
-    /// starts afresh, so anything held is ignored until released.
+    /// starts afresh, so anything held is ignored until released, as an on-screen control is:
+    /// it keeps what it reads, and its [`VirtualControl`] keeps its meaning, as does input
+    /// already queued for it.
     pub fn rebind(&mut self, name: &str, source: Source) -> Result<Source, RebindError> {
         let (document, previous) =
             self.map.rebound(name, source).ok_or_else(|| RebindError::UnknownBinding(name.to_owned()))?;
-        self.replace_map(InputMap::new(document)?);
+        self.replace_map(self.map.recompiled(document)?);
         Ok(previous)
     }
 
@@ -521,7 +523,7 @@ impl InputSystem {
         self.active = Vec::with_capacity(bindings);
         self.claimed = Vec::with_capacity(bindings);
         self.blockers = Vec::with_capacity(map.blocker_capacity());
-        self.devices.reset_virtuals(map.virtual_count());
+        self.devices.grow_virtuals(map.virtual_count());
         self.map = map;
         self.contexts_changed = true;
     }

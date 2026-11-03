@@ -6,11 +6,11 @@
 //! `--ui-turn`. `game_ui::screen` shows them, and no window's input reaches any. They aren't a game's.
 
 use bevy_reflect::{PartialReflect, Reflect};
-use game_ui::screen::{ScreenLayer, ScreenSetup};
+use game_ui::screen::{ScreenStack, StackSetup};
 use sapphire_assets::AssetId;
 use sapphire_platform::Timestamp;
 use sapphire_stage::content::ScreenAssets;
-use sapphire_ui::UiStep;
+use sapphire_ui::{Atlas, UiStep};
 
 /// `content/ui/test_screen.ui.ron`.
 pub const TEST_SCREEN: AssetId = AssetId::from_text("0606f00f-d999-4659-9953-965ffdcfd348");
@@ -106,8 +106,8 @@ impl ScreenOptions {
         }
     }
 
-    /// `assets` as these flags ask, on the model of the screen they show.
-    pub fn layer(&self, assets: ScreenAssets) -> Result<ScreenLayer, String> {
+    /// `assets` as these flags ask, on the model of the screen they show, opened at the clock's start.
+    pub fn stack(&self, assets: ScreenAssets) -> Result<ScreenStack, String> {
         if let Some(step) =
             self.walk.iter().find(|step| *step != "confirm" && UiStep::from_name(step).is_none())
         {
@@ -115,17 +115,15 @@ impl ScreenOptions {
         }
         let model: Box<dyn PartialReflect> =
             if self.menu { Box::new(TestMenuModel::default()) } else { Box::new(TestScreenModel::default()) };
-        let setup = ScreenSetup {
-            locale: self.locale.clone(),
-            pseudo: self.pseudo,
-            scale: self.scale,
-            model,
-            time: Timestamp::from_nanos((f64::from(self.time) * 1e9) as u64),
-            walk: self.walk.clone(),
-        };
-        let mut layer = ScreenLayer::new(assets, setup).map_err(|error| format!("--ui-screen: {error}"))?;
-        layer.turn_insets(self.turn);
-        Ok(layer)
+        let setup = StackSetup { locale: self.locale.clone(), pseudo: self.pseudo, scale: self.scale };
+        let shown = |error| format!("--ui-screen: {error}");
+        let mut stack =
+            ScreenStack::new(assets.tables, assets.fonts, Atlas::paint(), setup).map_err(shown)?;
+        let start = Timestamp::from_nanos(0);
+        stack.push(&assets.documents[0], model, start, self.walk.clone()).map_err(shown)?;
+        stack.set_now(Timestamp::from_nanos((f64::from(self.time) * 1e9) as u64));
+        stack.turn_insets(self.turn);
+        Ok(stack)
     }
 }
 
@@ -204,13 +202,13 @@ mod tests {
         table
     }
 
-    fn layer() -> ScreenLayer {
+    fn stack() -> ScreenStack {
         let assets = ScreenAssets {
-            document: UiDocument::from_document(DOCUMENT).unwrap(),
+            documents: vec![UiDocument::from_document(DOCUMENT).unwrap()],
             tables: vec![table("en", &[], &KEYS.map(|key| (key, "Text")))],
             fonts: Vec::new(),
         };
-        ScreenOptions::default().layer(assets).unwrap()
+        ScreenOptions::default().stack(assets).unwrap()
     }
 
     /// The test menu at its fixed points: where a walk ends up, at every aspect a screen ships at.
@@ -231,19 +229,22 @@ mod tests {
                 ..ScreenOptions::default()
             };
             let assets = ScreenAssets {
-                document: document.clone(),
+                documents: vec![document.clone()],
                 tables: vec![table("en", &[], &keys)],
                 fonts: Vec::new(),
             };
-            let mut layer = options.layer(assets).unwrap();
+            let mut stack = options.stack(assets).unwrap();
             let mut list = UiDrawList::default();
-            layer.draw(size, &mut list);
-            assert!(layer.tree().problems().is_empty(), "{:#?}", layer.tree().problems());
-            assert_eq!(layer.tree().state(), Some("open"));
-            assert_eq!(layer.tree().focus_name(), Some("row-language"));
-            assert_eq!(layer.tree().unreachable(), Vec::<&str>::new());
-            let list_node = layer.tree().find("list").unwrap();
-            assert!(layer.tree().scroll_offset(list_node).unwrap() > 0.0, "the walk went off its end");
+            stack.draw(size, &mut list);
+            assert!(stack.top().unwrap().problems().is_empty(), "{:#?}", stack.top().unwrap().problems());
+            assert_eq!(stack.top().unwrap().state(), Some("open"));
+            assert_eq!(stack.top().unwrap().focus_name(), Some("row-language"));
+            assert_eq!(stack.top().unwrap().unreachable(), Vec::<&str>::new());
+            let list_node = stack.top().unwrap().find("list").unwrap();
+            assert!(
+                stack.top().unwrap().scroll_offset(list_node).unwrap() > 0.0,
+                "the walk went off its end"
+            );
         }
     }
 
@@ -251,60 +252,60 @@ mod tests {
     fn a_walk_is_checked_when_it_is_asked_for() {
         let options = ScreenOptions { walk: vec!["sideways".to_owned()], ..ScreenOptions::default() };
         let assets = ScreenAssets {
-            document: UiDocument::from_document(DOCUMENT).unwrap(),
+            documents: vec![UiDocument::from_document(DOCUMENT).unwrap()],
             tables: vec![table("en", &[], &[])],
             fonts: Vec::new(),
         };
-        let refused = options.layer(assets).map(drop).unwrap_err();
+        let refused = options.stack(assets).map(drop).unwrap_err();
         assert!(refused.contains("sideways"), "{refused}");
     }
 
-    fn nodes(layer: &ScreenLayer) -> Vec<String> {
-        layer.tree().strings().map(|(node, _)| node.to_owned()).collect()
+    fn nodes(stack: &ScreenStack) -> Vec<String> {
+        stack.top().unwrap().strings().map(|(node, _)| node.to_owned()).collect()
     }
 
     #[test]
     fn a_document_replaces_the_tree_and_a_bad_one_keeps_it() {
-        let mut layer = layer();
+        let mut stack = stack();
         let mut list = UiDrawList::default();
-        layer.draw((640, 360), &mut list);
-        let before = nodes(&layer);
+        stack.draw((640, 360), &mut list);
+        let before = nodes(&stack);
         assert!(before.contains(&"title".to_owned()), "{before:?}");
-        assert!(layer.tree().problems().is_empty(), "{:#?}", layer.tree().problems());
+        assert!(stack.top().unwrap().problems().is_empty(), "{:#?}", stack.top().unwrap().problems());
 
         // A node renamed: what's on screen follows.
-        layer
+        stack
             .replace(&DOCUMENT.replace(
                 "name: \"title\",\n                parent: \"header\"",
                 "name: \"heading\",\n                parent: \"header\"",
             ))
             .unwrap();
-        layer.draw((640, 360), &mut list);
-        assert!(nodes(&layer).contains(&"heading".to_owned()));
+        stack.draw((640, 360), &mut list);
+        assert!(nodes(&stack).contains(&"heading".to_owned()));
 
         // Doesn't parse, doesn't check, doesn't resolve, and each says where.
-        let renamed = nodes(&layer);
+        let renamed = nodes(&stack);
         for (bad, says) in [
             ("(type: \"sapphire::assets::UiDocument\", version: 2, data: (nodes: [(nam: \"x\")]))", "line"),
             ("(type: \"sapphire::assets::UiDocument\", version: 2, data: (nodes: []))", "nodes"),
             (&*DOCUMENT.replace("path: \"health\"", "path: \"mana\""), "mana"),
         ] {
-            let error = layer.replace(bad).unwrap_err();
+            let error = stack.replace(bad).unwrap_err();
             assert!(error.contains(says), "{error}");
-            layer.draw((640, 360), &mut list);
-            assert_eq!(nodes(&layer), renamed, "the good tree stays");
+            stack.draw((640, 360), &mut list);
+            assert_eq!(nodes(&stack), renamed, "the good tree stays");
         }
     }
 
     #[test]
     fn an_unknown_language_says_which() {
         let assets = ScreenAssets {
-            document: UiDocument::from_document(DOCUMENT).unwrap(),
+            documents: vec![UiDocument::from_document(DOCUMENT).unwrap()],
             tables: vec![table("en", &[], &[])],
             fonts: Vec::new(),
         };
         let options = ScreenOptions { locale: "xx".to_owned(), ..ScreenOptions::default() };
-        let refused = options.layer(assets).unwrap_err();
+        let refused = options.stack(assets).unwrap_err();
         assert!(refused.contains("--ui-screen") && refused.contains("xx"), "{refused}");
     }
 }

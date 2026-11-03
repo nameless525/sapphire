@@ -401,8 +401,8 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
         *shown_hud = Some(game_ui::hud::FightHud::new(hud));
     }
     if let Some(shown) = &options.ui_screen {
-        let assets = content.load_screen(shown.document(), renderer, gpu)?;
-        *shown_screen = Some(shown.layer(assets).map_err(AppInitError::msg)?);
+        let assets = content.load_screens(&[shown.document()], renderer, gpu)?;
+        *shown_screen = Some(shown.stack(assets).map_err(AppInitError::msg)?);
         if shown.inset {
             scene.spawn_showcase(scene.character(), 0);
         }

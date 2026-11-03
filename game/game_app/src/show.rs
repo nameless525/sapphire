@@ -14,12 +14,13 @@ use sapphire_platform::{
     AppInitError, Event, GamepadButton, GamepadEvent, Scancode, Timestamp, TouchPhase, Window,
 };
 use sapphire_render::quality::TierId;
-use sapphire_render::{PipelineInventory, Renderer, VfxFrame};
+use sapphire_render::{PipelineInventory, Renderer, UiPageState, VfxFrame};
 use sapphire_rhi::GpuContext;
 use sapphire_stage::content::Content;
 use sapphire_stage::scene::Scene;
 use sapphire_stage::{ContentChanges, FrameLaps, SceneShow};
 use sapphire_time::{FixedStepDriver, FixedSteps, Stopwatch};
+
 use sapphire_ui::UiDrawList;
 
 use crate::LOG_TARGET;
@@ -262,6 +263,10 @@ impl SceneShow for GameShow {
 
     fn animate(&mut self, scene: &mut Scene, content: &Content, alpha: f32) {
         self.shown.animate(scene, content, alpha);
+    }
+
+    fn begin_interface(&mut self, pages: UiPageState) {
+        self.shown.begin_interface(pages);
     }
 
     fn present(&mut self, scene: &mut Scene, alpha: f32, aspect: Option<f32>) {

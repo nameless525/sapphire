@@ -1,95 +1,222 @@
-//! A retained screen over the scene (M3 U4): a tree with its own language, fonts and atlas, reading a model
-//! the caller hands in. The sandbox's test screens show through this, and `sapphire_stage` only says what
-//! loading one hands back ([`ScreenAssets`]).
+//! Retained screens over the scene (M3 U4, U7): a stack of trees sharing one language, one set of fonts and
+//! one atlas, each reading a model the caller hands in. The game's menus and the sandbox's test screens show
+//! through this, and `sapphire_stage` only says what loading some hands back
+//! ([`ScreenAssets`](sapphire_stage::content::ScreenAssets)).
+//!
+//! Every screen on the stack draws, the bottom first, and only the top one takes input. What input means is
+//! the caller's: this reads no device and no clock.
 
 use bevy_reflect::PartialReflect;
 use sapphire_assets::ui::{UiDocument, UiModel};
-use sapphire_loc::{LocaleSettings, Localizer};
+use sapphire_loc::{LocaleSettings, Localizer, StringTable};
 use sapphire_look::{UiDrawList, UiPageState};
 use sapphire_platform::Timestamp;
-use sapphire_stage::content::ScreenAssets;
-use sapphire_ui::{Atlas, Insets, UiFonts, UiFrame, UiMetrics, UiTree};
+use sapphire_ui::{Atlas, Insets, UiEvent, UiFonts, UiFrame, UiInput, UiMetrics, UiTree};
 
-/// How a [`ScreenLayer`] shows what it's handed.
-pub struct ScreenSetup {
+/// How a [`ScreenStack`] shows what it's handed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StackSetup {
     /// The language.
     pub locale: String,
     /// Whether under pseudo-localization.
     pub pseudo: bool,
-    /// Pixels per point.
+    /// Pixels per point, where no window says otherwise ([`ScreenStack::set_metrics`]).
     pub scale: f32,
-    /// What its paths read.
-    pub model: Box<dyn PartialReflect>,
-    /// The time on its clock, which stands still: a capture of a time is that time.
-    pub time: Timestamp,
-    /// Steps of focus taken when it opens, as [`UiTree::walk`] names them.
-    pub walk: Vec<String>,
 }
 
-/// A screen, ready to draw over a scene.
-pub struct ScreenLayer {
+/// One screen on the stack.
+struct Screen {
     tree: UiTree,
-    fonts: UiFonts,
-    atlas: Atlas,
-    loc: Localizer,
     model: Box<dyn PartialReflect>,
-    scale: f32,
-    pages: UiPageState,
-    /// Whether the tree's been opened and walked, which waits for its first layout.
+    /// When it opens. It waits for its first layout, so this is the first draw's business.
+    opened_at: Timestamp,
     opened: bool,
-    now: Timestamp,
+    /// Steps of focus taken as it opens, as [`UiTree::walk`] names them.
     walk: Vec<String>,
 }
 
-impl std::fmt::Debug for ScreenLayer {
+/// Screens, ready to draw over a scene: see this module.
+pub struct ScreenStack {
+    screens: Vec<Screen>,
+    fonts: UiFonts,
+    atlas: Atlas,
+    loc: Localizer,
+    scale: f32,
+    /// A window's metrics, read this frame. Offscreen there's only a target's pixels.
+    metrics: Option<UiMetrics>,
+    pages: UiPageState,
+    now: Timestamp,
+}
+
+impl std::fmt::Debug for ScreenStack {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ScreenLayer")
-            .field("tree", &self.tree)
+        f.debug_struct("ScreenStack")
+            .field("screens", &self.screens.len())
             .field("scale", &self.scale)
             .finish_non_exhaustive()
     }
 }
 
-impl ScreenLayer {
-    /// A layer showing `assets` as `setup` says.
-    pub fn new(assets: ScreenAssets, setup: ScreenSetup) -> Result<Self, String> {
-        let ScreenSetup { locale, pseudo, scale, model, time, walk } = setup;
+impl ScreenStack {
+    /// An empty stack, with the tables of its languages and each font's file and baseline shift, over
+    /// `atlas`: the one the HUD draws with, since a frame's list has one atlas.
+    pub fn new(
+        tables: Vec<StringTable>,
+        fonts: Vec<(std::sync::Arc<Vec<u8>>, f32)>,
+        atlas: Atlas,
+        setup: StackSetup,
+    ) -> Result<Self, String> {
+        let StackSetup { locale, pseudo, scale } = setup;
         let mut loc = Localizer::new(LocaleSettings { text: locale.clone(), voice: locale.clone() });
-        for table in assets.tables {
+        for table in tables {
             loc.install(table).map_err(|error| error.to_string())?;
         }
         loc.set_text_locale(&locale).map_err(|error| format!("the language `{locale}`: {error}"))?;
         loc.set_pseudo(pseudo);
-        let mut fonts = UiFonts::default();
-        for (file, baseline_shift) in assets.fonts {
-            fonts.register_font(file, baseline_shift);
+        let mut shaped = UiFonts::default();
+        for (file, baseline_shift) in fonts {
+            shaped.register_font(file, baseline_shift);
         }
         Ok(Self {
-            tree: new_tree(&assets.document)?,
-            fonts,
-            atlas: Atlas::paint(),
+            screens: Vec::new(),
+            fonts: shaped,
+            atlas,
             loc,
-            model,
             scale,
+            metrics: None,
             pages: UiPageState::NO_RENDERER,
-            opened: false,
-            now: time,
-            walk,
+            now: Timestamp::default(),
         })
     }
 
-    /// Takes a new document, keeping what's on screen if it has anything wrong with it: hot reload's and
-    /// live link's way in.
+    /// Puts `document` on top, reading `model`, opening at `at`, taking the steps of `walk` as it does.
+    pub fn push(
+        &mut self,
+        document: &UiDocument,
+        model: Box<dyn PartialReflect>,
+        at: Timestamp,
+        walk: Vec<String>,
+    ) -> Result<(), String> {
+        self.insert(self.screens.len(), document, model, at, walk)
+    }
+
+    /// Puts `document` under all the rest, for what's behind them when they go.
+    pub fn push_under(
+        &mut self,
+        document: &UiDocument,
+        model: Box<dyn PartialReflect>,
+        at: Timestamp,
+    ) -> Result<(), String> {
+        self.insert(0, document, model, at, Vec::new())
+    }
+
+    fn insert(
+        &mut self,
+        index: usize,
+        document: &UiDocument,
+        model: Box<dyn PartialReflect>,
+        opened_at: Timestamp,
+        walk: Vec<String>,
+    ) -> Result<(), String> {
+        let tree = new_tree(document)?;
+        self.screens.insert(index, Screen { tree, model, opened_at, opened: false, walk });
+        Ok(())
+    }
+
+    /// Takes off the screen at `index`, counting from the bottom.
+    pub fn remove(&mut self, index: usize) {
+        self.screens.remove(index);
+    }
+
+    /// How many screens are on it.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.screens.len()
+    }
+
+    /// Whether none are.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.screens.is_empty()
+    }
+
+    /// The time on the stack's clock, as of the next [`Self::draw`].
+    pub fn set_now(&mut self, now: Timestamp) {
+        self.now = now;
+    }
+
+    /// A window's metrics, for the next [`Self::draw`].
+    pub fn set_metrics(&mut self, metrics: UiMetrics) {
+        self.metrics = Some(metrics);
+    }
+
+    /// Pixels per point where there's no window.
+    pub fn set_scale(&mut self, scale: f32) {
+        self.scale = scale;
+    }
+
+    /// Shows every screen in `locale`, from the next frame.
+    pub fn set_locale(&mut self, locale: &str) -> Result<(), String> {
+        self.loc.set_text_locale(locale).map_err(|error| format!("the language `{locale}`: {error}"))
+    }
+
+    /// A frame's input: the top screen's, if it's open.
+    pub fn input(&mut self, input: &UiInput<'_>) {
+        if let Some(top) = self.screens.last_mut().filter(|top| top.opened) {
+            top.tree.input(input, self.now);
+        }
+    }
+
+    /// What's happened on the top screen, into `events`, which is cleared first.
+    pub fn drain_events(&mut self, events: &mut Vec<UiEvent>) {
+        events.clear();
+        if let Some(top) = self.screens.last_mut() {
+            events.extend(top.tree.drain_events());
+        }
+    }
+
+    /// The screen at `index`'s tree, counting from the bottom.
+    #[must_use]
+    pub fn tree(&self, index: usize) -> &UiTree {
+        &self.screens[index].tree
+    }
+
+    /// The same, to play or fire on.
+    pub fn tree_mut(&mut self, index: usize) -> &mut UiTree {
+        &mut self.screens[index].tree
+    }
+
+    /// The top screen's tree.
+    #[must_use]
+    pub fn top(&self) -> Option<&UiTree> {
+        self.screens.last().map(|screen| &screen.tree)
+    }
+
+    /// Whether the screen at `index` has opened and gone back to hidden, so it's done with.
+    #[must_use]
+    pub fn has_left(&self, index: usize) -> bool {
+        let screen = &self.screens[index];
+        screen.opened && !screen.tree.is_moving() && screen.tree.state() == Some("hidden")
+    }
+
+    /// The model of the screen at `index`, if it's a `T`.
+    pub fn model_mut<T: PartialReflect>(&mut self, index: usize) -> Option<&mut T> {
+        self.screens[index].model.as_mut().try_downcast_mut::<T>()
+    }
+
+    /// Takes a new document for the top screen, keeping what's on screen if it has anything wrong with it:
+    /// hot reload's and live link's way in.
     pub fn replace(&mut self, text: &str) -> Result<(), String> {
+        let top = self.screens.last_mut().ok_or("no screen is showing")?;
         let document = UiDocument::from_document(text).map_err(|error| error.to_string())?;
         // What a cook checks with the model's document, from the type itself.
-        let info = self.model.get_represented_type_info().ok_or("a model of no known type")?;
+        let info = top.model.get_represented_type_info().ok_or("a model of no known type")?;
         let model = UiModel::of_type(info);
         if let Some(issue) = document.path_issues(&model).into_iter().next() {
             return Err(issue.to_string());
         }
-        self.tree = new_tree(&document)?;
-        self.opened = false;
+        top.tree = new_tree(&document)?;
+        top.opened = false;
         Ok(())
     }
 
@@ -98,43 +225,48 @@ impl ScreenLayer {
         self.pages = pages;
     }
 
-    /// Writes the screen into `list`, for a target of `size` pixels.
+    /// Writes the screens into `list`, for a target of `size` pixels.
     pub fn draw(&mut self, size: (u32, u32), list: &mut UiDrawList) {
-        let metrics = UiMetrics::of_pixels(size, self.scale, Insets::default());
+        let metrics =
+            self.metrics.unwrap_or_else(|| UiMetrics::of_pixels(size, self.scale, Insets::default()));
         self.fonts.begin_frame(self.pages, &self.loc);
-        if !self.opened {
-            self.opened = true;
-            let start = Timestamp::from_nanos(0);
-            let frame =
-                UiFrame { metrics, now: start, loc: &self.loc, model: Some(self.model.as_partial_reflect()) };
-            self.tree.update(&frame, &mut self.fonts);
-            self.tree.fire("open", start);
-            // Checked when it was asked for, and what a test's document has isn't this one's business.
-            let walked = self.tree.walk(self.walk.iter().map(String::as_str), start);
-            debug_assert!(walked.is_ok(), "{walked:?}");
+        for screen in &mut self.screens {
+            let model = screen.model.as_partial_reflect();
+            if !screen.opened {
+                screen.opened = true;
+                let start = screen.opened_at;
+                let frame = UiFrame { metrics, now: start, loc: &self.loc, model: Some(model) };
+                screen.tree.update(&frame, &mut self.fonts);
+                screen.tree.fire("open", start);
+                // Checked when it was asked for, and what a test's document has isn't this one's business.
+                let walked = screen.tree.walk(screen.walk.iter().map(String::as_str), start);
+                debug_assert!(walked.is_ok(), "{walked:?}");
+            }
+            let frame = UiFrame { metrics, now: self.now, loc: &self.loc, model: Some(model) };
+            screen.tree.update(&frame, &mut self.fonts);
+            screen.tree.draw(&mut self.fonts, &self.atlas, list);
         }
-        let frame =
-            UiFrame { metrics, now: self.now, loc: &self.loc, model: Some(self.model.as_partial_reflect()) };
-        self.tree.update(&frame, &mut self.fonts);
-        self.tree.draw(&mut self.fonts, &self.atlas, list);
     }
 
-    /// The tree on screen.
-    #[must_use]
-    pub fn tree(&self) -> &UiTree {
-        &self.tree
-    }
-
-    /// Turns its insets as a drag `across` that share of their width would (M3 U6, `UiTree::turn_insets`).
+    /// Turns the insets of every screen on it as a drag `across` that share of their width would (M3 U6,
+    /// `UiTree::turn_insets`).
     pub fn turn_insets(&mut self, across: f32) {
-        self.tree.turn_insets(across);
+        for screen in &mut self.screens {
+            screen.tree.turn_insets(across);
+        }
     }
 
-    /// Hands `visit` each inset the last [`Self::draw`] showed, as a [`SceneShow`] does.
+    /// Whether any screen on it holds an inset, which needs the inset's pipeline declared.
+    #[must_use]
+    pub fn holds_insets(&self) -> bool {
+        self.screens.iter().any(|screen| screen.tree.holds_insets())
+    }
+
+    /// Hands `visit` each inset the last [`Self::draw`] showed, on every screen, as a [`SceneShow`] does.
     ///
     /// [`SceneShow`]: sapphire_stage::SceneShow
     pub fn inset_shots(&self, visit: &mut dyn FnMut(sapphire_stage::InsetShot<'_>)) {
-        for shot in self.tree.insets() {
+        for shot in self.screens.iter().flat_map(|screen| screen.tree.insets()) {
             visit(sapphire_stage::InsetShot {
                 inset: shot.setup.inset,
                 size: shot.size,

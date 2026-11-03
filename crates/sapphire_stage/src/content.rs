@@ -138,9 +138,10 @@ pub const LOCALES: [AssetId; 2] = [
     AssetId::from_text("ef0a6207-aa10-4499-8e64-2e089c4f8b3c"),
 ];
 
-/// What loading a screen hands back, as plain data ([`Content::load_screen`]).
+/// What loading screens hands back, as plain data ([`Content::load_screens`]).
 pub struct ScreenAssets {
-    pub document: UiDocument,
+    /// The documents, in the order they were asked for.
+    pub documents: Vec<UiDocument>,
     pub tables: Vec<StringTable>,
     /// Each font's file and baseline shift.
     pub fonts: Vec<(Arc<Vec<u8>>, f32)>,
@@ -1552,12 +1553,12 @@ impl Content {
         Ok((cue, sounds))
     }
 
-    /// Mounts the packs a screen reads, which nothing else does, and loads `screen`, the tables
-    /// of its languages and every font of the chains until they are resident, handing them back as
-    /// plain data. None of them stays loaded: the tree and the shaper hold what they need.
-    pub fn load_screen(
+    /// Mounts the packs a screen reads, which nothing else does, and loads `screens`, the tables
+    /// of their languages and every font of the chains until they are resident, handing them back as
+    /// plain data. None of them stays loaded: the trees and the shaper hold what they need.
+    pub fn load_screens(
         &mut self,
-        screen: AssetId,
+        screens: &[AssetId],
         renderer: &mut Renderer,
         gpu: &GpuContext,
     ) -> Result<ScreenAssets, AppInitError> {
@@ -1571,16 +1572,21 @@ impl Content {
         }
         let assets = &mut self.gpu;
         let server = &mut self.server;
-        let document =
-            server.load_with::<UiDocument>(screen, LoadPriority::Critical).map_err(|error| failed(&error))?;
-        server
-            .finish(&document, |upload| assets.upload(upload, renderer, gpu))
-            .map_err(|error| failed(&error))?;
-        let document = server
-            .get(&document)
-            .ok_or_else(|| failed(&"its document isn't loaded"))?
-            .to_owned_document()
-            .map_err(|error| failed(&error))?;
+        let mut documents = Vec::with_capacity(screens.len());
+        for &screen in screens {
+            let document = server
+                .load_with::<UiDocument>(screen, LoadPriority::Critical)
+                .map_err(|error| failed(&error))?;
+            server
+                .finish(&document, |upload| assets.upload(upload, renderer, gpu))
+                .map_err(|error| failed(&error))?;
+            let document = server
+                .get(&document)
+                .ok_or_else(|| failed(&"its document isn't loaded"))?
+                .to_owned_document()
+                .map_err(|error| failed(&error))?;
+            documents.push(document);
+        }
         let mut tables = Vec::with_capacity(LOCALES.len());
         for id in LOCALES {
             let table = server
@@ -1612,7 +1618,7 @@ impl Content {
             let font = server.get(&font).ok_or_else(|| failed(&"a font isn't loaded"))?;
             fonts.push((Arc::new(font.file.to_vec()), font.baseline_shift.to_native()));
         }
-        Ok(ScreenAssets { document, tables, fonts })
+        Ok(ScreenAssets { documents, tables, fonts })
     }
 
     /// Loads the clip `id` until it is resident: CPU data, which nothing uploads ([`Self::clip`] reads

@@ -32,7 +32,7 @@ use sapphire_ui::{
 };
 
 use crate::LOG_TARGET;
-use crate::screen::ScreenLayer;
+use crate::screen::ScreenStack;
 use crate::touch::TouchControls;
 use game_combat::fight::{Fight, Followed};
 use sapphire_stage::FrameLaps;
@@ -143,8 +143,9 @@ impl FightHud {
         Self::with_atlas(options, atlas)
     }
 
-    /// Uses already painted immutable shapes, shared with the screen that preceded this HUD.
-    fn with_atlas(options: HudOptions, atlas: Atlas) -> Self {
+    /// A HUD over `atlas`, already painted and shared with what shares a frame with it: a frame's list has one
+    /// atlas.
+    pub fn with_atlas(options: HudOptions, atlas: Atlas) -> Self {
         let layout = HudLayout::default();
         Self {
             options,
@@ -173,7 +174,7 @@ impl FightHud {
         Self { stand_in: None, ..Self::new(options) }
     }
 
-    /// A fight HUD using the preceding screen's atlas.
+    /// The same, over `atlas`: the screen's that preceded it, or the one it shares a frame with.
     pub fn for_fight_with_atlas(options: HudOptions, atlas: Atlas) -> Self {
         Self { stand_in: None, ..Self::with_atlas(options, atlas) }
     }
@@ -492,8 +493,9 @@ pub struct ShownFight {
     pub fight: Fight,
     /// The combat HUD over the scene (`--hud`, M2 I2).
     pub hud: Option<FightHud>,
-    /// A retained screen over all of it (M3 U4).
-    pub screen: Option<ScreenLayer>,
+    /// Retained screens over all of it (M3 U4), which only the sandbox hangs here: a game's menus take
+    /// input, and its show holds them.
+    pub screen: Option<ScreenStack>,
 }
 
 impl ShownFight {
@@ -545,7 +547,7 @@ impl SceneShow for ShownFight {
     fn declare_pipelines(&self, inventory: &mut sapphire_render::PipelineInventory) {
         self.fight.declare_pipelines(inventory);
         inventory.ui |= self.hud.is_some() || self.screen.is_some();
-        inventory.insets |= self.screen.as_ref().is_some_and(|screen| screen.tree().holds_insets());
+        inventory.insets |= self.screen.as_ref().is_some_and(ScreenStack::holds_insets);
     }
 
     fn step(&mut self, scene: &mut Scene, laps: &mut FrameLaps) {

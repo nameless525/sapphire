@@ -67,7 +67,7 @@ mod style;
 use std::any::TypeId;
 
 use sapphire_assets::ui::{
-    UiBindTarget, UiColor, UiDocument, UiLayout, UiLook, UiModel, UiTextStyle, UiValueKind,
+    UiBindTarget, UiColor, UiDocument, UiLayout, UiLook, UiModel, UiScrollAxis, UiTextStyle, UiValueKind,
 };
 use sapphire_loc::{Arg, Localizer};
 use sapphire_look::{UiDrawList, UiPageState, UiTreeStats};
@@ -261,6 +261,15 @@ struct Node {
     final_opacity: f32,
     /// Shows a 3D inset's picture over its look.
     inset: Option<inset::InsetState>,
+}
+
+/// Whether `rect` leaves `holder` by more than `slack`, along the axes asked about.
+fn outside(rect: Rect, holder: Rect, along_x: bool, along_y: bool, slack: f32) -> bool {
+    let leaves = |low: f32, high: f32, holder_low: f32, holder_high: f32| {
+        low < holder_low - slack || high > holder_high + slack
+    };
+    (along_x && leaves(rect.min.x, rect.max.x, holder.min.x, holder.max.x))
+        || (along_y && leaves(rect.min.y, rect.max.y, holder.min.y, holder.max.y))
 }
 
 /// A screen: see the [module docs](self).
@@ -538,6 +547,42 @@ impl UiTree {
     /// screen is searched for what isn't localized, and how a key missing from the tables shows.
     pub fn unframed(&self) -> impl Iterator<Item = (&str, &str)> {
         self.strings().filter(|(_, string)| !sapphire_loc::is_framed(string))
+    }
+
+    /// The shown text nodes that reach outside what holds them, or outside the frame, by more than half a
+    /// point, each with the name of what it leaves: a string too long for its screen. What a scroller holds
+    /// may run on along its axis. Goes by layout, so neither timelines nor scrolling move it.
+    #[must_use]
+    pub fn overflowing(&self) -> Vec<(&str, &str)> {
+        const SLACK: f32 = 0.5;
+        let mut found = Vec::new();
+        for node in self.nodes.iter().filter(|node| node.text.is_some() && node.visible) {
+            let rect = node.rect;
+            let (mut along_x, mut along_y) = (true, true);
+            let mut holder = node.parent;
+            let mut left = None;
+            while let Some(at) = holder {
+                let parent = &self.nodes[at as usize];
+                match parent.scroll.map(|scroll| scroll.axis) {
+                    Some(UiScrollAxis::Vertical) => along_y = false,
+                    Some(UiScrollAxis::Horizontal) => along_x = false,
+                    None => {}
+                }
+                if outside(rect, parent.rect, along_x, along_y, SLACK) {
+                    left = Some(&*parent.name);
+                    break;
+                }
+                holder = parent.parent;
+            }
+            let frame = Rect::new(Vec2::ZERO, self.size);
+            if left.is_none() && outside(rect, frame, along_x, along_y, SLACK) {
+                left = Some("the frame");
+            }
+            if let Some(left) = left {
+                found.push((&*node.name, left));
+            }
+        }
+        found
     }
 
     /// Reads the model, resolves what changed and lays out what moved. Allocates nothing if nothing did.

@@ -405,8 +405,8 @@ impl App for SandboxApp {
             });
         }
         if let Some(shown) = &options.ui_screen {
-            let assets = content.load_screen(shown.document(), &mut renderer.renderer, &device.gpu)?;
-            show.screen = Some(shown.layer(assets).map_err(AppInitError::msg)?);
+            let assets = content.load_screens(&[shown.document()], &mut renderer.renderer, &device.gpu)?;
+            show.screen = Some(shown.stack(assets).map_err(AppInitError::msg)?);
             if shown.inset {
                 scene.spawn_showcase(scene.character(), 0);
             }

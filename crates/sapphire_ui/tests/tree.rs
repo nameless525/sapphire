@@ -422,3 +422,30 @@ fn a_document_that_fails_its_checks_makes_no_tree() {
     bad.nodes.clear();
     assert!(UiTree::new(&bad).is_err());
 }
+
+/// A string too long for a row, and what a scroller lets run on.
+#[test]
+fn it_says_which_text_leaves_what_holds_it() {
+    let run = |row_width: u32, scroll: &str| {
+        let data = format!(
+            r#"styles: [(name: "body", role: "body", size: 16)], nodes: [
+                (name: "root", layout: (direction: Column)),
+                (name: "list", parent: "root", {scroll} layout: (direction: Column, height: Points(40))),
+                (
+                    name: "row",
+                    parent: "list",
+                    layout: (width: Points({row_width}), height: Points(100), shrink: 0),
+                    text: (key: "title", style: "body", color: (255, 255, 255, 255)),
+                ),
+                (name: "box", parent: "root", layout: (direction: Row, width: Points(8), height: Points(30))),
+                (name: "label", parent: "box", text: (key: "title", style: "body", color: (255, 255, 255, 255))),
+            ]"#
+        );
+        let (tree, _) = run_once(&data, &Model::default(), "en", [320.0, 240.0]);
+        tree.overflowing().into_iter().map(|(node, left)| format!("{node} leaves {left}")).collect::<Vec<_>>()
+    };
+    let (row, label) = ("row leaves list", "label leaves box");
+    assert_eq!(run(100, ""), [row, label], "too tall for its list, and too wide for its box");
+    assert_eq!(run(100, "mask: true, scroll: Vertical,"), [label], "a scroller lets it run on");
+    assert_eq!(run(400, "mask: true, scroll: Vertical,"), [row, label], "but not across");
+}

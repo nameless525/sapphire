@@ -118,7 +118,7 @@ pub(crate) struct DocumentsHere<'a> {
     /// An offscreen run has none.
     pub input: Option<&'a mut SandboxInput>,
     pub hud: Option<&'a mut game_ui::hud::FightHud>,
-    pub screen: Option<&'a mut game_ui::screen::ScreenLayer>,
+    pub screen: Option<&'a mut game_ui::screen::ScreenStack>,
 }
 
 #[cfg(feature = "dev")]

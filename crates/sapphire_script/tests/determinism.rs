@@ -14,8 +14,12 @@ use sapphire_gameplay::replay::ARCHITECTURE;
 use sapphire_math::det;
 use sapphire_script::compile::{self, CookError, DISABLED_BUILTINS};
 use sapphire_script::scan::scan;
-use sapphire_script::{HookEnd, Limits, ScriptHost, cook};
-use support::{host_running, marks, play, replay_file, run_hook};
+use std::ffi::c_int;
+
+use mlua::{ffi, lua_State};
+use sapphire_script::bindings::{BOARD_SLOTS, with_frame};
+use sapphire_script::{Binding, Frame, HookEnd, Limits, ScriptHost, ScriptVm, cook};
+use support::{marks, play, replay_file, run_hook};
 
 fn refused(source: &str) -> String {
     match cook(source) {
@@ -84,6 +88,16 @@ fn what_the_plan_removes_isnt_there() {
         "math.ldexp",
         "math.modf",
         "vector.angle",
+        "string.rep",
+        "string.char",
+        "string.byte",
+        "string.reverse",
+        "table.concat",
+        "table.clone",
+        "table.clear",
+        "table.move",
+        "table.unpack",
+        "unpack",
         "string.format",
         "string.gsub",
         "string.find",
@@ -103,8 +117,8 @@ fn what_the_plan_removes_isnt_there() {
 fn every_global_a_script_can_reach_is_on_the_list() {
     // The list is one of what stays, so a Luau upgrade's new global is gone by default. Walking what the
     // sandbox's proxy reads through says nothing else got in.
-    let vm = sapphire_script::ScriptVm::new(Limits::default()).unwrap();
-    let globals = vm.lua().globals();
+    let vm = ScriptVm::new(Limits::default()).unwrap();
+    let globals = vm.lua_for_tests().globals();
     let behind: mlua::Table = globals.metatable().expect("the sandbox's proxy").get("__index").unwrap();
     let mut names = Vec::new();
     behind
@@ -118,8 +132,7 @@ fn every_global_a_script_can_reach_is_on_the_list() {
         names,
         [
             "assert", "bit32", "error", "ipairs", "math", "pairs", "rawequal", "rawget", "rawlen", "rawset",
-            "sapphire", "select", "string", "table", "tonumber", "tostring", "type", "typeof", "unpack",
-            "vector",
+            "sapphire", "select", "string", "table", "tonumber", "tostring", "type", "typeof", "vector",
         ],
     );
 }
@@ -198,7 +211,6 @@ fn tostring_of_a_reference_raises_and_of_a_value_prints() {
     assert!(hook_fails("return tostring(sapphire.mark)").contains("address"));
     // What's left is Luau's own printer, with no C library in it.
     assert_eq!(marked("sapphire.mark(string.len(tostring(0.1)))"), [3.0]);
-    assert_eq!(marked("sapphire.mark(string.len(0.1 .. ''))"), [3.0]);
     assert_eq!(marked("sapphire.mark(string.len(tostring(1e300)))"), [6.0]);
 }
 
@@ -258,10 +270,10 @@ fn a_replaced_function_is_the_pinned_one_at_every_level() {
         )
         .unwrap();
         assert!(scan(&bytes).unwrap().fastcalls_all.is_empty(), "level {level}");
-        let vm = sapphire_script::ScriptVm::new(Limits::default()).unwrap();
+        let vm = ScriptVm::new(Limits::default()).unwrap();
         let hooks = vm.load(&bytes, "=test").unwrap();
         let hook: mlua::Function = hooks.get("hook").unwrap();
-        let mut frame = sapphire_script::Frame::new();
+        let mut frame = Frame::new();
         assert_eq!(vm.fire(&mut frame, &hook, 0.7), HookEnd::Returned);
         let x = 0.7_f64 as f32;
         assert_eq!(
@@ -283,10 +295,11 @@ fn fastcall_reaches_libm_with_the_global_replaced_unless_it_is_disabled() {
     assert!(compile::check(&bytes).unwrap_err().to_string().contains("builtin 24"));
 
     // Past the scan, it does what the scout read: the sandbox's safe env runs the C function, not ours.
-    let vm = sapphire_script::ScriptVm::new(Limits::default()).unwrap();
-    let hooks: mlua::Table = vm.lua().load(&bytes).set_mode(mlua::chunk::ChunkMode::Binary).eval().unwrap();
+    let vm = ScriptVm::new(Limits::default()).unwrap();
+    let hooks: mlua::Table =
+        vm.lua_for_tests().load(&bytes).set_mode(mlua::chunk::ChunkMode::Binary).eval().unwrap();
     let hook: mlua::Function = hooks.get("hook").unwrap();
-    let mut frame = sapphire_script::Frame::new();
+    let mut frame = Frame::new();
     assert_eq!(vm.fire(&mut frame, &hook, 0.7), HookEnd::Returned);
     #[allow(clippy::disallowed_methods, reason = "what the C library says is what's being shown")]
     let libm = 0.7_f64.sin();
@@ -304,7 +317,7 @@ fn fastcall_reaches_a_removed_function_too() {
     let bytes =
         plain.compile("return { hook = function() return setmetatable({}, {__mode = 'k'}) end }").unwrap();
     assert_eq!(scan(&bytes).unwrap().fastcalls, [61]);
-    let vm = sapphire_script::ScriptVm::new(Limits::default()).unwrap();
+    let vm = ScriptVm::new(Limits::default()).unwrap();
     assert!(vm.load(&bytes, "=test").is_err());
 }
 
@@ -384,30 +397,29 @@ fn a_budget_is_a_count_that_lands_on_one_instruction() {
     // a hook over budget leaves nothing. So read the interrupts themselves.
     let spin = "return { hook = function() while true do end end }";
     let spent = |limit: u64| {
-        let vm = sapphire_script::ScriptVm::new(Limits { interrupts: limit, ..Limits::default() }).unwrap();
+        let vm = ScriptVm::new(Limits { interrupts: limit, ..Limits::default() }).unwrap();
         let hooks = vm.load(&cook(spin).unwrap(), "=test").unwrap();
         let hook: mlua::Function = hooks.get("hook").unwrap();
-        let mut frame = sapphire_script::Frame::new();
-        let before = sapphire_script::ScriptVm::interrupts();
+        let mut frame = Frame::new();
+        let before = ScriptVm::interrupts();
         let end = vm.fire(&mut frame, &hook, ());
         assert_eq!(end, HookEnd::OverBudget);
-        sapphire_script::ScriptVm::interrupts() - before
+        ScriptVm::interrupts() - before
     };
     assert_eq!(spent(1000), spent(1000));
     assert_eq!(spent(1000), 1001, "the budget, then the interrupt that ends it");
     // A loop's cost is its shape, and level 0 is what ships.
     let counted = "return { hook = function() for i = 1, 500 do end local function f() end for i = 1, 100 do f() end end }";
-    let vm = sapphire_script::ScriptVm::new(Limits::default()).unwrap();
+    let vm = ScriptVm::new(Limits::default()).unwrap();
     let hooks = vm.load(&cook(counted).unwrap(), "=test").unwrap();
     let hook: mlua::Function = hooks.get("hook").unwrap();
-    let mut frame = sapphire_script::Frame::new();
-    let before = sapphire_script::ScriptVm::interrupts();
+    let mut frame = Frame::new();
+    let before = ScriptVm::interrupts();
     assert_eq!(vm.fire(&mut frame, &hook, ()), HookEnd::Returned);
-    let first = sapphire_script::ScriptVm::interrupts() - before;
-    let before = sapphire_script::ScriptVm::interrupts();
+    let first = ScriptVm::interrupts() - before;
+    let before = ScriptVm::interrupts();
     assert_eq!(vm.fire(&mut frame, &hook, ()), HookEnd::Returned);
-    assert_eq!(sapphire_script::ScriptVm::interrupts() - before, first);
-    writeln!(std::io::stderr(), "L0|interrupts for 500 loops and 100 calls: {first}").unwrap();
+    assert_eq!(ScriptVm::interrupts() - before, first);
 }
 
 #[test]
@@ -426,19 +438,72 @@ fn a_budget_ends_a_hook_wherever_it_spins() {
     }
 }
 
+/// A library walk spends the budget as it goes: C's `table.find` took one interrupt for 90,000 slots, so
+/// a loop of them ran 970 ms under a budget meant for 25 µs.
+#[test]
+fn a_walk_of_a_table_spends_the_budget() {
+    for body in ["table.find(t, 1)", "table.insert(t, 1, 0)", "table.remove(t, 1)"] {
+        let source = format!("return {{ hook = function() local t = table.create(9000, 0) {body} end }}");
+        let vm = ScriptVm::new(Limits { interrupts: 1_000_000, ..Limits::default() }).unwrap();
+        let hook: mlua::Function = vm.load(&cook(&source).unwrap(), "=test").unwrap().get("hook").unwrap();
+        let before = ScriptVm::interrupts();
+        assert_eq!(vm.fire(&mut Frame::new(), &hook, ()), HookEnd::Returned, "{body}");
+        assert!(ScriptVm::interrupts() - before >= 9000, "{body}: {}", ScriptVm::interrupts() - before);
+    }
+    assert_eq!(
+        marked(
+            "local t = {1, 2} table.insert(t, 3) table.insert(t, 1, 0) sapphire.mark(t[1]) sapphire.mark(t[4])"
+        ),
+        [0.0, 3.0]
+    );
+    assert_eq!(
+        marked(
+            "local t = {1, 2, 3} sapphire.mark(table.remove(t, 1)) sapphire.mark(table.remove(t)) sapphire.mark(#t)"
+        ),
+        [1.0, 3.0, 1.0]
+    );
+    assert_eq!(
+        marked(
+            "local t = {4, 5} sapphire.mark(table.find(t, 5)) sapphire.mark(table.find(t, 6) == nil and 1 or 0)"
+        ),
+        [2.0, 1.0]
+    );
+    assert_eq!(marked("local t = {} sapphire.mark(table.remove(t) == nil and 1 or 0)"), [1.0]);
+    assert!(hook_fails("table.insert({}, 9, 1)").contains("out of bounds"));
+    assert!(hook_fails("table.freeze({1}) table.insert(table.freeze({1}), 2)").contains("readonly"));
+}
+
+/// A string's only as long as a chunk spells it, so a loop over one is bounded: `..` built one of 256 KB
+/// that a loop of `string.sub` then spent 230 ms copying and comparing under one budget.
+#[test]
+fn a_string_cant_grow() {
+    assert!(refused("return { hook = function() local s = tostring(1) return s .. s end }").contains("`..`"));
+    let long = "x".repeat(sapphire_script::scan::MAX_STRING + 1);
+    assert!(refused(&format!("return {{ hook = function() return '{long}' end }}")).contains("bytes"));
+    // Interpolation is `string.format`, which is gone.
+    assert!(hook_fails("local x = 1 local s = `{x}`").contains("format"));
+    assert_eq!(
+        marked("local s = 'phase' sapphire.mark(#s) sapphire.mark(s:len()) sapphire.mark(#s:sub(2))"),
+        [5.0, 5.0, 4.0]
+    );
+}
+
 // One checksum.
 
 /// Every library a script keeps, with its answers in the marks: what Linux and Windows have to agree on.
 /// A number that differs in its last bit between C libraries or compilers reaches the checksum.
 const ATTACK: &str = r#"
 local WORDS = {'phase', 'rage', 'adds', 'timer', 'enrage', 'wave', 'door', 'seal'}
+local DIGITS = {['0'] = 0, ['1'] = 1, ['2'] = 2, ['3'] = 3, ['4'] = 4, ['5'] = 5, ['6'] = 6, ['7'] = 7, ['8'] = 8, ['9'] = 9, ['.'] = 10}
 
 local function fold(a, b)
+    sapphire.note(b)
     return (a * 31 + b) % 4294967296
 end
 
 local function attack(seed)
     local h = seed
+    seed = seed % 97
 
     -- Arithmetic the VM does itself, and %, which it does as a - floor(a / b) * b.
     local x = seed * 0.37 + 0.1
@@ -446,61 +511,63 @@ local function attack(seed)
     h = fold(h, (x ^ 2 + x ^ 3 + x ^ 0.5) * 1000)
     h = fold(h, x // 0.3)
     local mark = x % 0.77
-    sapphire.mark(mark)
+    sapphire.note(mark)
 
     -- Pinned math, through f32.
     for _, f in ipairs({math.sin, math.cos, math.tan, math.atan, math.exp, math.log}) do
         local y = f(x)
-        sapphire.mark(y)
+        sapphire.note(y)
         h = fold(h, y * 1000)
     end
-    sapphire.mark(math.atan2(x, 2.5))
-    sapphire.mark(math.pow(x, 2.5))
-    sapphire.mark(math.asin(0.25))
-    sapphire.mark(math.acos(0.25))
+    sapphire.note(math.atan2(x, 2.5))
+    sapphire.note(math.pow(x, 2.5))
+    sapphire.note(math.asin(0.25))
+    sapphire.note(math.acos(0.25))
 
     -- What's left of math.
     h = fold(h, math.floor(x) + math.ceil(x) + math.round(x) + math.abs(-x) + math.sign(x))
     h = fold(h, math.max(x, 1) + math.min(x, 1) + math.clamp(x, 0, 1) + math.sqrt(x))
-    sapphire.mark(math.sqrt(x))
-    sapphire.mark(math.lerp(x, 3.7, 0.3))
-    sapphire.mark(math.deg(x))
-    sapphire.mark(math.rad(x))
+    sapphire.note(math.sqrt(x))
+    sapphire.note(math.lerp(x, 3.7, 0.3))
+    sapphire.note(math.deg(x))
+    sapphire.note(math.rad(x))
 
     -- Vectors, which are float32 in the VM's C++, including the sums of products.
     local v = vector.create(x, x * 0.5, x * 0.25)
     local w = vector.create(0.3, x, 1.1)
-    sapphire.mark(vector.dot(v, w))
-    sapphire.mark(vector.magnitude(v))
+    sapphire.note(vector.dot(v, w))
+    sapphire.note(vector.magnitude(v))
     local n = vector.normalize(v)
-    sapphire.mark(n.x) sapphire.mark(n.y) sapphire.mark(n.z)
+    sapphire.note(n.x) sapphire.note(n.y) sapphire.note(n.z)
     local c = vector.cross(v, w)
-    sapphire.mark(c.x) sapphire.mark(c.y) sapphire.mark(c.z)
+    sapphire.note(c.x) sapphire.note(c.y) sapphire.note(c.z)
     local l = vector.lerp(v, w, 0.3)
-    sapphire.mark(l.x)
+    sapphire.note(l.x)
     local p = v * w + v / 3 - w
-    sapphire.mark(p.x) sapphire.mark(p.y) sapphire.mark(p.z)
+    sapphire.note(p.x) sapphire.note(p.y) sapphire.note(p.z)
 
     -- Bits.
     local whole = math.floor(x * 1000)
     h = fold(h, bit32.bxor(whole, 0xA5A5) + bit32.lrotate(whole, 7) + bit32.countlz(whole) + bit32.extract(whole, 3, 5))
 
-    -- Strings through Luau's own printer, and back through a byte sum.
-    local printed = tostring(x) .. '/' .. (x * 1e10) .. '/' .. (x / 1e10) .. '/' .. 1e300 .. '/' .. x ^ 2
-    for i = 1, #printed do
-        h = fold(h, string.byte(printed, i))
+    -- Numbers through Luau's own printer, read back a character at a time.
+    for _, number in ipairs({x, x * 1e10, x / 1e10, 1e300, x ^ 2}) do
+        local printed = tostring(number)
+        for i = 1, #printed do
+            h = fold(h, DIGITS[string.sub(printed, i, i)] or 11)
+        end
     end
     h = fold(h, tonumber('1234'))
 
     -- A table's walk over string keys, its size and history changing, and a sort.
     local t = {}
-    for i, word in ipairs(WORDS) do
-        t[word .. seed % 3] = i
+    for i = 1, #WORDS do
+        t[WORDS[(i * seed) % #WORDS + 1]] = i
     end
-    t[WORDS[1] .. seed % 3] = nil
+    t[WORDS[seed % #WORDS + 1]] = nil
     for k, value in pairs(t) do
         h = fold(h, value)
-        h = fold(h, string.byte(k, 1))
+        h = fold(h, #k)
     end
     local list = {}
     for i = 1, 40 do
@@ -509,7 +576,9 @@ local function attack(seed)
     table.sort(list)
     table.sort(list, function(a, b) return a > b end)
     h = fold(h, list[1] + list[20] * 2 + list[40] * 3)
-    h = fold(h, select('#', table.unpack(list)))
+    h = fold(h, table.find(list, list[7]))
+    table.insert(list, 1, h % 7)
+    h = fold(h, table.remove(list, 3) + table.remove(list))
 
     -- The simulation's randomness: it moves the simulation's checksum too.
     h = fold(h, sapphire.random() * 1000)
@@ -517,6 +586,7 @@ local function attack(seed)
 
     sapphire.set_board(0, h)
     sapphire.set_board(1, sapphire.board(1) + 1)
+    sapphire.note(h)
     sapphire.mark(h)
 end
 
@@ -554,19 +624,75 @@ end }
     reason = "to the real stderr, past the test harness's capture, so CI's logs show it"
 )]
 fn say(line: &str) {
-    writeln!(std::io::stderr(), "L0|{ARCHITECTURE}|{line}").unwrap();
+    writeln!(std::io::stderr(), "script-digest|{ARCHITECTURE}|{line}").unwrap();
+}
+
+/// A run's scenario takes its host from one static.
+fn attack_lock() -> std::sync::MutexGuard<'static, ()> {
+    static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    ONE_AT_A_TIME.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// `sapphire.note(x)`, for the attack alone: a number's bits, chained into the board's last slot, so the
+/// digest sees every number a hook works out and not only the commands that fit its queue.
+unsafe extern "C-unwind" fn note(state: *mut lua_State) -> c_int {
+    // SAFETY: Luau passes a live state, and neither call raises.
+    let value = unsafe {
+        if ffi::lua_type(state, 1) == ffi::LUA_TNUMBER {
+            ffi::lua_tonumberx(state, 1, std::ptr::null_mut())
+        } else {
+            f64::NAN
+        }
+    };
+    with_frame(|frame| {
+        let bits = if value.is_nan() { f64::NAN.to_bits() } else { value.to_bits() };
+        let chain = frame.board[BOARD_SLOTS - 1].to_bits();
+        let mixed = (chain ^ bits ^ (bits >> 52)).wrapping_mul(0x0000_0100_0000_01b3);
+        // Kept below NaN's exponent, so that the digest's reading of a NaN can't flatten it.
+        frame.board[BOARD_SLOTS - 1] = f64::from_bits(mixed & 0x000f_ffff_ffff_ffff);
+    });
+    0
+}
+
+fn attack_run_of(source: &str) -> (u64, u64, u64) {
+    let limits = Limits { interrupts: 1_000_000, ..Limits::default() };
+    let mut host =
+        ScriptHost::new_with_bindings(limits, &[Binding { name: "note", function: note }]).unwrap();
+    host.bind(&cook(source).unwrap(), "=attack").unwrap();
+    host.beat_every(30);
+    let finished = play(host, replay_file("arena-fight-won"));
+    assert_eq!(finished.stats.hooks_failed, 0, "{:?}", finished.last_error);
+    assert_eq!(finished.stats.hooks_over_budget, 0);
+    assert_eq!(finished.stats.commands_dropped, 0, "a dropped command is a number the digest didn't see");
+    assert!(finished.stats.hooks_fired > 50, "{:?}", finished.stats);
+    assert!(finished.stats.commands_applied >= finished.stats.hooks_fired, "{:?}", finished.stats);
+    assert!(finished.board[0].is_finite(), "a NaN would hide everything folded into it");
+    assert_ne!(finished.board[BOARD_SLOTS - 1], 0.0);
+    (finished.played.trail.end(), finished.digest, finished.used_memory as u64)
 }
 
 fn attack_run() -> (u64, u64, u64) {
-    let host = host_running(ATTACK, Limits { interrupts: 1_000_000, ..Limits::default() });
-    host.lock().unwrap().beat_every(30);
-    let played = play(&host, replay_file("arena-fight-won"));
-    let host = host.lock().unwrap();
-    assert_eq!(host.stats().hooks_failed, 0, "{:?}", host.last_error());
-    assert_eq!(host.stats().hooks_over_budget, 0);
-    assert!(host.stats().hooks_fired > 50, "{:?}", host.stats());
-    assert!(host.stats().commands_applied > 500, "{:?}", host.stats());
-    (played.trail.end(), host.digest(), host.vm().used_memory() as u64)
+    attack_run_of(ATTACK)
+}
+
+/// The digest has to see what the attack does, all the way to its last line, or one checksum across
+/// machines says less than it seems to.
+#[test]
+fn the_attack_s_digest_sees_every_section() {
+    let _one = attack_lock();
+    let plain = attack_run().1;
+    for (from, to) in [
+        ("x % 0.77) * 1000", "x % 0.78) * 1000"),
+        ("sapphire.note(vector.magnitude(v))", "sapphire.note(vector.magnitude(w))"),
+        ("sapphire.note(p.z)", "sapphire.note(p.y)"),
+        ("x / 1e10, 1e300", "x / 1e10, 1e299"),
+        ("h = fold(h, value)", "h = fold(h, value + 1)"),
+        ("table.sort(list, function(a, b) return a > b end)", "table.sort(list)"),
+        ("sapphire.note(h)", "sapphire.note(h + 1)"),
+    ] {
+        assert!(ATTACK.contains(from), "{from}");
+        assert_ne!(attack_run_of(&ATTACK.replace(from, to)).1, plain, "{from}");
+    }
 }
 
 fn hash_bytes(bytes: &[u8]) -> u64 {
@@ -595,7 +721,7 @@ fn child() {
         .unwrap();
     let printed = printed.replace(' ', "_");
     let cooked = hash_bytes(&cook(ATTACK).unwrap());
-    println!("L0-CHILD {sim:016x} {digest:016x} {used} {cooked:016x} {printed} {order}");
+    println!("SCRIPT-CHILD {sim:016x} {digest:016x} {used} {cooked:016x} {printed} {order}");
 }
 
 /// One hook-driven fight many times, each a process of its own, so each has its own addresses.
@@ -614,8 +740,11 @@ fn the_same_hook_reads_one_checksum_under_aslr() {
             .unwrap();
         assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
         let text = String::from_utf8_lossy(&output.stdout).into_owned();
-        let line =
-            text.lines().find_map(|line| line.strip_prefix("L0-CHILD ")).expect("a child's line").to_owned();
+        let line = text
+            .lines()
+            .find_map(|line| line.strip_prefix("SCRIPT-CHILD "))
+            .expect("a child's line")
+            .to_owned();
         seen.push(line.split(' ').map(str::to_owned).collect::<Vec<_>>());
     }
     let distinct = |column: usize| {
@@ -643,21 +772,37 @@ fn the_same_hook_reads_one_checksum_under_aslr() {
     assert!(distinct(5) > 1, "pairs over table keys never moved");
 }
 
-/// What to read from CI: one line per OS. Linux and Windows must agree with each other; they needn't
-/// agree with aarch64, which has its own file of checksums.
+/// What the attack reads on every machine, a Luau upgrade or a change to `ATTACK` moving them on purpose.
+const ATTACK_SIM: u64 = 0x4bdf_798c_11df_c65e;
+const ATTACK_DIGEST: u64 = 0x02b7_0e41_88ba_5ceb;
+const ATTACK_COOKED: u64 = 0xaeb4_3be9_564b_eb34;
+const CORPUS_COOKED: [u64; 3] = [0x5242_6308_ea97_c17b, 0x4e2e_a36b_d34f_f76d, 0x4e2e_a36b_d34f_f76d];
+
+/// What one cook means on every machine CI has: one line per OS for reading, and the same numbers held
+/// here, so a machine that differs fails rather than waits to be read.
 #[test]
 fn the_checksums_say_what_they_are() {
-    let (sim, digest, used) = attack_run();
+    let (sim, digest, used) = {
+        let _one = attack_lock();
+        attack_run()
+    };
     say(&format!("attack sim {sim:016x} digest {digest:016x} used-memory {used}"));
+    assert_eq!((sim, digest), (ATTACK_SIM, ATTACK_DIGEST), "this machine's arithmetic differs");
 
     let cooked = cook(ATTACK).unwrap();
     assert_eq!(cooked, cook(ATTACK).unwrap(), "a cook is the same bytes twice");
     say(&format!("attack cooked len {} hash {:016x}", cooked.len(), hash_bytes(&cooked)));
+    assert_eq!(hash_bytes(&cooked), ATTACK_COOKED, "this machine's cook differs");
     for level in [0, 1, 2] {
         let bytes = compile::compile_unchecked(CORPUS, level).unwrap();
         let numbers: Vec<String> =
             scan(&bytes).unwrap().numbers.iter().map(|bits| format!("{bits:016x}")).collect();
         say(&format!("corpus level {level} hash {:016x} numbers {}", hash_bytes(&bytes), numbers.join(",")));
+        assert_eq!(
+            hash_bytes(&bytes),
+            CORPUS_COOKED[level as usize],
+            "level {level}: this host folds differently"
+        );
     }
 
     // Whether this build's VM and compiler fused a multiply and an add: `%` is a - floor(a / b) * b in one

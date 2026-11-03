@@ -206,17 +206,18 @@ const CASES: &[Case] = &[
     ("VM: the memory limit in a table", || {
         survived(on_vm(
             "return { hook = function() local t = {} for i = 1, 1e7 do t[i] = {} end end }",
-            Limits { memory: 1 << 20, interrupts: u64::MAX },
+            Limits { memory: 1 << 20, interrupts: u64::MAX, ..Limits::default() },
         ))
     }),
-    ("VM: the memory limit in string.rep", || {
+    ("VM: the memory limit in table.create", || {
         survived(on_vm(
-            "return { hook = function() return string.rep('x', 1e9) end }",
-            Limits { memory: 1 << 20, interrupts: u64::MAX },
+            "return { hook = function() return table.create(1e7, 0) end }",
+            Limits { memory: 1 << 20, interrupts: u64::MAX, ..Limits::default() },
         ))
     }),
     ("VM: hooks, a load and a collection with the memory limit full", || {
-        let vm = ScriptVm::new(Limits { memory: 1 << 20, interrupts: u64::MAX }).expect("the VM starts");
+        let vm = ScriptVm::new(Limits { memory: 1 << 20, interrupts: u64::MAX, ..Limits::default() })
+            .expect("the VM starts");
         let hoard =
             cook("return { hook = function() local t = {} for i = 1, 1e7 do t[i] = {} end end }").unwrap();
         let hook: mlua::Function = vm.load(&hoard, "=case").unwrap().get("hook").unwrap();
@@ -231,15 +232,14 @@ const CASES: &[Case] = &[
             ends.push(vm.fire(&mut frame, &hook, (1.0, 2.0, 3.0)));
         }
         let step = vm.gc_step().map(|_| ());
-        vm.lua().gc_collect().expect("collects");
-        vm.lua().gc_stop();
+        while !vm.gc_step().expect("collects") {}
         let after = vm.fire(&mut frame, &hook, ());
         survived((first, loaded.is_ok(), ends.len(), step.is_ok(), after))
     }),
     ("VM: the memory limit growing the stack", || {
         survived(on_vm(
             "local function f(n) return 1 + f(n + 1) end return { hook = function() return f(1) end }",
-            Limits { memory: 256 << 10, interrupts: u64::MAX },
+            Limits { memory: 256 << 10, interrupts: u64::MAX, ..Limits::default() },
         ))
     }),
 ];

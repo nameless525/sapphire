@@ -5,15 +5,26 @@
 //! closure returning `Err`, or one handed an argument `FromLua` refuses, reaches `lua_error` from a Rust
 //! frame, and that C++ exception ends the process under `panic = "abort"`. A wrong argument here sets
 //! the frame's fault, the hook goes on with a zero, and the hook's commands are thrown away when it
-//! ends, on every run alike. L2 generates them from a declared table; these are the shape.
+//! ends, on every run alike.
+//!
+//! **The rules for a binding,** which L2's generated ones follow by construction:
+//!
+//! - It's a [`Binding`] of a raw `lua_CFunction`. Nothing here takes a `Lua::create_function`.
+//! - It takes and pushes only numbers. A number needs no allocation, so the memory limit can't raise.
+//! - Its work goes in [`with_frame`], or [`in_host`] if it needs no frame. That sends a Rust allocation
+//!   back to the thread's count, so it fails gate 4. [`crate::ScriptVm::new`] calls every binding once, with
+//!   no frame and no arguments, and refuses one that didn't go through: with the VM's count diverted, an
+//!   allocation in that binding would pass the gate unseen.
 
 use std::cell::Cell;
 use std::ffi::c_int;
 use std::ptr;
 
-use mlua::{Lua, Table, ffi, lua_State};
+use mlua::{Function, Lua, Table, ffi, lua_State};
 use sapphire_core::alloc::HostAllocations;
 use sapphire_math::{Pcg32, det};
+
+use crate::vm::VmError;
 
 /// Numbers that last between hooks: the only state a script has (spec §5.24).
 pub const BOARD_SLOTS: usize = 64;
@@ -49,8 +60,8 @@ pub struct Frame {
     pub queued: usize,
     /// Commands past the end of `queue`.
     pub dropped: u32,
-    /// The simulation's randomness, for the hook's length.
-    pub rng: *mut Pcg32,
+    /// The simulation's randomness: copied in before a step's hooks and back after them.
+    pub rng: Pcg32,
     /// A binding was handed something it can't use: this hook's commands don't count.
     pub fault: bool,
 }
@@ -58,7 +69,7 @@ pub struct Frame {
 impl Frame {
     /// A frame with nothing asked for.
     #[must_use]
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             tick: 0,
             health: [0.0; FRAME_ACTORS],
@@ -66,7 +77,7 @@ impl Frame {
             queue: [Command::None; QUEUE_LEN],
             queued: 0,
             dropped: 0,
-            rng: ptr::null_mut(),
+            rng: Pcg32::new(0, 0),
             fault: false,
         }
     }
@@ -81,10 +92,6 @@ impl Frame {
     }
 }
 
-// SAFETY: `rng`, the one thing here that isn't `Send`, is null except while a hook runs, and a hook runs
-// to its end on the thread that set it.
-unsafe impl Send for Frame {}
-
 impl Default for Frame {
     fn default() -> Self {
         Self::new()
@@ -93,6 +100,8 @@ impl Default for Frame {
 
 thread_local! {
     static FRAME: Cell<*mut Frame> = const { Cell::new(ptr::null_mut()) };
+    /// How many times [`in_host`] has been entered: what the check at a VM's start reads.
+    static HOST_ENTRIES: Cell<u64> = const { Cell::new(0) };
 }
 
 /// Puts a frame where the bindings find it, until this is dropped.
@@ -108,15 +117,22 @@ impl Drop for FrameGuard {
     }
 }
 
-/// The running hook's frame, with allocations going back to the thread's count, so a Rust allocation
-/// in a binding still fails gate 4. What every binding goes through, a test's allocating one included.
-/// Outside a hook, which can't happen, it answers `None`.
-pub fn with_frame<R>(body: impl FnOnce(&mut Frame) -> R) -> Option<R> {
+/// Runs a binding's work with allocations going back to the thread's count, so one fails gate 4.
+pub fn in_host<R>(body: impl FnOnce() -> R) -> R {
+    HOST_ENTRIES.set(HOST_ENTRIES.get().wrapping_add(1));
     let _host = HostAllocations::enter();
-    let frame = FRAME.get();
-    // SAFETY: `enter` set this from a `&mut Frame` the hook's caller holds until the guard drops, and a
-    // hook runs on this thread with nothing else reading it: no binding holds this past its return.
-    unsafe { frame.as_mut() }.map(body)
+    body()
+}
+
+/// [`in_host`], with the running hook's frame. Outside a hook, which only the check at a VM's start
+/// does, it answers `None` without running `body`.
+pub fn with_frame<R>(body: impl FnOnce(&mut Frame) -> R) -> Option<R> {
+    in_host(|| {
+        let frame = FRAME.get();
+        // SAFETY: `enter` set this from a `&mut Frame` the hook's caller holds until the guard drops, and
+        // a hook runs on this thread with nothing else reading it: no binding holds this past its return.
+        unsafe { frame.as_mut() }.map(body)
+    })
 }
 
 /// A number argument, or a fault and zero.
@@ -152,7 +168,7 @@ macro_rules! unary {
             // SAFETY: Luau passes a live state and a slot for one result, and neither call raises.
             unsafe {
                 let value = number_or_nan(state, 1);
-                ffi::lua_pushnumber(state, f64::from($function(value)));
+                ffi::lua_pushnumber(state, f64::from(in_host(|| $function(value))));
             }
             1
         }
@@ -172,7 +188,7 @@ unsafe extern "C-unwind" fn atan2(state: *mut lua_State) -> c_int {
     // SAFETY: as `unary!`'s.
     unsafe {
         let (y, x) = (number_or_nan(state, 1), number_or_nan(state, 2));
-        ffi::lua_pushnumber(state, f64::from(det::atan2(y, x)));
+        ffi::lua_pushnumber(state, f64::from(in_host(|| det::atan2(y, x))));
     }
     1
 }
@@ -181,7 +197,7 @@ unsafe extern "C-unwind" fn pow(state: *mut lua_State) -> c_int {
     // SAFETY: as `unary!`'s.
     unsafe {
         let (base, exponent) = (number_or_nan(state, 1), number_or_nan(state, 2));
-        ffi::lua_pushnumber(state, f64::from(det::pow(base, exponent)));
+        ffi::lua_pushnumber(state, f64::from(in_host(|| det::pow(base, exponent))));
     }
     1
 }
@@ -208,11 +224,7 @@ unsafe extern "C-unwind" fn health(state: *mut lua_State) -> c_int {
 
 /// `sapphire.random()`: the next of the simulation's numbers in `0..1`, so it's in the checksum.
 unsafe extern "C-unwind" fn random(state: *mut lua_State) -> c_int {
-    let value = with_frame(|frame| {
-        // SAFETY: the system that fires the hook set this from its `ResMut<SimRng>`, which it holds
-        // until the hook ends.
-        unsafe { frame.rng.as_mut() }.map_or(0.0, |rng| f64::from(rng.unit_f32()))
-    });
+    let value = with_frame(|frame| f64::from(frame.rng.unit_f32()));
     // SAFETY: Luau passes a live state and a slot for one result.
     unsafe { ffi::lua_pushnumber(state, value.unwrap_or(0.0)) };
     1
@@ -266,42 +278,67 @@ unsafe extern "C-unwind" fn mark(state: *mut lua_State) -> c_int {
     0
 }
 
-/// Registers a binding, for a test's or L2's generated table: goes in `sapphire`, before the sandbox.
-pub fn add(lua: &Lua, table: &Table, name: &str, function: ffi::lua_CFunction) -> mlua::Result<()> {
-    // SAFETY: every function passed here never raises, which is what this module holds them to; a
-    // `lua_CFunction` that did would be a C++ exception through a Rust frame.
-    let function = unsafe { lua.create_c_function(function) }?;
-    table.raw_set(name, function)
+/// One function a script can call: a row of the table L2 generates.
+#[derive(Clone, Copy, Debug)]
+pub struct Binding {
+    /// What a script calls it.
+    pub name: &'static str,
+    /// It never raises, and it goes through [`with_frame`] or [`in_host`].
+    pub function: ffi::lua_CFunction,
 }
 
-/// The pinned math and the `sapphire` table, on a state whose sandbox hasn't closed.
-pub(crate) fn install(lua: &Lua) -> mlua::Result<()> {
+const fn binding(name: &'static str, function: ffi::lua_CFunction) -> Binding {
+    Binding { name, function }
+}
+
+/// The pinned math, in `math`.
+const MATH: &[Binding] = &[
+    binding("sin", sin),
+    binding("cos", cos),
+    binding("tan", tan),
+    binding("asin", asin),
+    binding("acos", acos),
+    binding("atan", atan),
+    binding("atan2", atan2),
+    binding("exp", exp),
+    binding("log", log),
+    binding("pow", pow),
+];
+
+/// What the engine offers, in `sapphire`.
+const SAPPHIRE: &[Binding] = &[
+    binding("tick", tick),
+    binding("health", health),
+    binding("random", random),
+    binding("board", board),
+    binding("set_board", set_board),
+    binding("slow_motion", slow_motion),
+    binding("mark", mark),
+];
+
+fn add(lua: &Lua, table: &Table, row: &Binding) -> Result<(), VmError> {
+    // SAFETY: every function in a `Binding` never raises, which its type's docs hold it to. One that did
+    // would be a C++ exception through a Rust frame.
+    let function: Function = unsafe { lua.create_c_function(row.function) }?;
+    let before = HOST_ENTRIES.get();
+    let () = function.call::<mlua::MultiValue>(()).map(drop)?;
+    if HOST_ENTRIES.get() == before {
+        return Err(VmError::UnflippedBinding(row.name));
+    }
+    table.raw_set(row.name, function)?;
+    Ok(())
+}
+
+/// The pinned math and the `sapphire` table with `more` in it, on a state whose sandbox hasn't closed.
+pub(crate) fn install(lua: &Lua, more: &[Binding]) -> Result<(), VmError> {
     let math: Table = lua.globals().get("math")?;
-    for (name, function) in [
-        ("sin", sin as ffi::lua_CFunction),
-        ("cos", cos),
-        ("tan", tan),
-        ("asin", asin),
-        ("acos", acos),
-        ("atan", atan),
-        ("atan2", atan2),
-        ("exp", exp),
-        ("log", log),
-        ("pow", pow),
-    ] {
-        add(lua, &math, name, function)?;
+    for row in MATH {
+        add(lua, &math, row)?;
     }
     let sapphire = lua.create_table()?;
-    for (name, function) in [
-        ("tick", tick as ffi::lua_CFunction),
-        ("health", health),
-        ("random", random),
-        ("board", board),
-        ("set_board", set_board),
-        ("slow_motion", slow_motion),
-        ("mark", mark),
-    ] {
-        add(lua, &sapphire, name, function)?;
+    for row in SAPPHIRE.iter().chain(more) {
+        add(lua, &sapphire, row)?;
     }
-    lua.globals().raw_set("sapphire", sapphire)
+    lua.globals().raw_set("sapphire", sapphire)?;
+    Ok(())
 }

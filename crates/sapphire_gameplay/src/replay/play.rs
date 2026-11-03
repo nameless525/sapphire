@@ -162,6 +162,12 @@ impl Player {
         &self.tracked.sim
     }
 
+    /// The simulation, to change between ticks: a script's reload, say. What that moves shows in the
+    /// checksums as it would in any recording made without it.
+    pub fn simulation_mut(&mut self) -> &mut Simulation {
+        &mut self.tracked.sim
+    }
+
     /// Its checksums so far.
     #[must_use]
     pub fn trail(&self) -> &Trail {

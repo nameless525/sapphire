@@ -27,6 +27,7 @@ mod op {
     pub const FASTCALL2: u8 = 74;
     pub const FASTCALL2K: u8 = 75;
     pub const FORGPREP: u8 = 76;
+    pub const CONCAT: u8 = 49;
     pub const NEWCLASS: u8 = 90;
     pub const LAST: u8 = 90;
 }
@@ -71,12 +72,12 @@ const fn builtin_allowed(id: u8) -> bool {
             | 25 // math.sqrt
             | 28..=39 // bit32
             | 40 // type
-            | 41..=43 // string.byte, char, len
+            | 43 // string.len
             | 44 // typeof
             | 45 // string.sub
             | 46..=48 // math.clamp, sign, round
             | 49..=51 // rawset, rawget, rawequal
-            | 52 | 53 // table.insert, unpack
+            | 52 // table.insert, whose builtin is the append alone
             | 54 // vector.create
             | 55 | 56 // bit32.countlz, countrz
             | 57 // select
@@ -87,6 +88,9 @@ const fn builtin_allowed(id: u8) -> bool {
             | 91..=93 // math.isnan, isinf, isfinite
     )
 }
+
+/// The longest string a chunk may spell, which is the longest a VM can hold: see [`Findings::concats`].
+pub const MAX_STRING: usize = 1024;
 
 /// What's in a chunk that the rules speak to.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -110,6 +114,11 @@ pub struct Findings {
     pub global_writes: u32,
     /// `SETUPVAL`: a closure writing a local it shares, so state across hooks if that's a chunk's local.
     pub upvalue_writes: u32,
+    /// `CONCAT`: the one way left to build a long string, which a loop could then copy or compare far
+    /// past what the budget, which counts interrupts and not bytes, can see.
+    pub concats: u32,
+    /// The longest string a chunk spells.
+    pub longest_string: usize,
     /// Instructions read, across every function.
     pub instructions: u32,
     /// Every number in a constant table, by its bits: what a compiler left of what it folded.
@@ -131,6 +140,12 @@ impl Findings {
         }
         if self.generic_for > 0 {
             return Some("`for .. in` needs `ipairs` or `pairs`: a bare table walks its hash".to_owned());
+        }
+        if self.concats > 0 {
+            return Some("`..` builds strings a budget can't bound: hooks trade in numbers".to_owned());
+        }
+        if self.longest_string > MAX_STRING {
+            return Some(format!("a string of {} bytes: {MAX_STRING} is the most", self.longest_string));
         }
         if self.global_writes > 0 {
             return Some("a global write: the environment is read-only".to_owned());
@@ -260,16 +275,17 @@ pub fn scan(bytes: &[u8]) -> Result<Findings, ScanError> {
     if !(1..=3).contains(&types_version) {
         return Err(ScanError::TypesVersion(types_version));
     }
+    let mut findings = Findings::default();
     for _ in 0..reader.count()? {
         let length = reader.count()?;
         reader.take(length)?;
+        findings.longest_string = findings.longest_string.max(length);
     }
     if types_version == 3 {
         while reader.u8()? != 0 {
             reader.varint()?;
         }
     }
-    let mut findings = Findings::default();
     for _ in 0..reader.count()? {
         if version >= 12 {
             reader.varint()?;
@@ -335,6 +351,7 @@ fn function(reader: &mut Reader<'_>, version: u8, findings: &mut Findings) -> Re
             op::FORGPREP => findings.generic_for += 1,
             op::SETGLOBAL => findings.global_writes += 1,
             op::SETUPVAL => findings.upvalue_writes += 1,
+            op::CONCAT => findings.concats += 1,
             _ => {}
         }
         pc += if has_aux(opcode) { 2 } else { 1 };

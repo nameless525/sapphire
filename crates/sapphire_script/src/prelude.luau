@@ -4,7 +4,7 @@
 -- resume in every build. The same error from a Rust binding is a C++ exception crossing a Rust frame,
 -- which ends the process under `panic = "abort"`: that's why these check here.
 
-local next, type, error, raw_tostring, raw_tonumber = next, type, error, tostring, tonumber
+local next, type, error, select, raw_tostring, raw_tonumber = next, type, error, select, tostring, tonumber
 local byte, len = string.byte, string.len
 
 -- `pairs` only over keys whose hash comes from their value: a table, function or thread hashes by its
@@ -70,6 +70,57 @@ function tonumber(value)
 		end
 	end
 	return raw_tonumber(value)
+end
+
+-- These walk a table in Luau for the budget's sake: an interrupt fires on each back-edge, where C's walk
+-- 90,000 slots on one, which at 10,000 interrupts was 970 ms of `table.find`.
+function table.find(t, value, from)
+	for i = from or 1, #t do
+		if t[i] == value then
+			return i
+		end
+	end
+	return nil
+end
+
+-- Two arguments never get here unless the table's frozen: they compile to FASTCALL's append.
+function table.insert(t, ...)
+	local count = select("#", ...)
+	if count == 1 then
+		t[#t + 1] = (...)
+		return
+	end
+	if count ~= 2 then
+		error("wrong number of arguments to 'insert'", 2)
+	end
+	local position, value = ...
+	local size = #t
+	if position < 1 or position > size + 1 then
+		error("'insert' position out of bounds", 2)
+	end
+	for i = size, position, -1 do
+		t[i + 1] = t[i]
+	end
+	t[position] = value
+end
+
+function table.remove(t, position)
+	local size = #t
+	position = position or size
+	if size == 0 and position == 0 then
+		return nil
+	end
+	if position < 1 or position > size + 1 then
+		error("'remove' position out of bounds", 2)
+	end
+	local value = t[position]
+	for i = position, size - 1 do
+		t[i] = t[i + 1]
+	end
+	if position <= size then
+		t[size] = nil
+	end
+	return value
 end
 
 -- A sort in Luau: the C one calls its comparison across a C boundary, where a hook's budget can't end

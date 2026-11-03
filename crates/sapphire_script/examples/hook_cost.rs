@@ -14,7 +14,6 @@ use std::alloc::System;
 use std::time::Duration;
 
 use mlua::Function;
-use mlua::state::{GcIncParams, GcMode};
 use sapphire_core::alloc::{self, CountingAllocator};
 use sapphire_script::bindings::Frame;
 use sapphire_script::compile::{self, cook};
@@ -48,7 +47,7 @@ end }
 /// The same decision made carelessly: fresh tables, strings and closures on every call.
 const CARELESS: &str = r#"
 local function plan(phase)
-    return { name = "phase_" .. phase, adds = {}, slow = phase == 1 and 500 or 250 }
+    return { name = {phase, phase + 1}, adds = {}, slow = phase == 1 and 500 or 250 }
 end
 return { hook = function()
     local phase = sapphire.tick() % 3 + 1
@@ -71,8 +70,11 @@ const SPIN_CALLS: &str =
     "local function f() return 1 end return { hook = function() while true do f() end end }";
 const SPIN_MATH: &str =
     "return { hook = function() local x = 1 while true do x = math.sin(x) + sapphire.health(0) end end }";
-const SPIN_STRINGS: &str =
-    "return { hook = function() while true do local s = string.rep('x', 4096) end end }";
+const SPIN_FIND: &str =
+    "return { hook = function() local t = table.create(60000, 0) while true do table.find(t, 1) end end }";
+const SPIN_FRONT: &str = "return { hook = function() local t = table.create(60000, 0) while true do table.remove(t, 1) table.insert(t, 1, 0) end end }";
+const SPIN_FILL: &str = "return { hook = function() while true do local t = table.create(90000, 0) end end }";
+const SPIN_LITERAL: &str = "local s = 'xxxxxxxxxxxxxxxx' return { hook = function() while true do local t = string.sub(s, 2) end end }";
 const SPIN_TABLES: &str = "return { hook = function() while true do local t = {1, 2, 3, 4} end end }";
 
 fn microseconds(duration: Duration) -> f64 {
@@ -100,7 +102,7 @@ fn fire_row(name: &str, bytes: &[u8], collect: Collector) {
     let hook = load(&vm, bytes);
     let mut frame = Frame::new();
     if matches!(collect, Collector::Running) {
-        vm.lua().gc_restart();
+        vm.lua_for_tests().gc_restart();
     }
     let mut times = Vec::with_capacity(FIRES);
     let mut gc_times = Vec::with_capacity(FIRES);
@@ -159,8 +161,7 @@ fn budget_row(name: &str, source: &str, limits: Limits) {
         let stopwatch = Stopwatch::start();
         end = vm.fire(&mut frame, &hook, ());
         times.push((stopwatch.elapsed(), ScriptVm::interrupts() - before));
-        vm.lua().gc_collect().expect("collects");
-        vm.lua().gc_stop();
+        while !vm.gc_step().expect("collects") {}
     }
     times.sort_unstable();
     let (quiet, count) = times[1];
@@ -187,10 +188,11 @@ enum Held {
 
 fn gc_row(bytes: usize, step_size_kb: Option<i32>, shape: Held) {
     const CYCLES: usize = 24;
-    let vm = ScriptVm::new(Limits { memory: 256 << 20, interrupts: u64::MAX }).expect("starts");
+    let mut limits = Limits { memory: 256 << 20, interrupts: u64::MAX, ..Limits::default() };
     if let Some(size) = step_size_kb {
-        vm.lua().gc_set_mode(GcMode::Incremental(GcIncParams::default().step_size(size)));
+        limits.gc_step_kb = size;
     }
+    let vm = ScriptVm::new(limits).expect("starts");
     let held = match shape {
         Held::OneTable => "local keep = table.create(n) for i = 1, n do keep[i] = {i} end",
         Held::SmallTables => {
@@ -229,7 +231,7 @@ fn gc_row(bytes: usize, step_size_kb: Option<i32>, shape: Held) {
             }
         }
     }
-    assert!(!vm.lua().gc_is_running(), "a step left the collector stopped");
+    assert!(vm.collector_stopped(), "a step left the collector stopped");
     let cycle: Duration = quickest.iter().take(steps).sum();
     let mut sorted = quickest[..steps].to_vec();
     sorted.sort_unstable();
@@ -264,7 +266,10 @@ fn main() {
     budget_row("loop of Luau calls", SPIN_CALLS, limits);
     budget_row("loop of bindings", SPIN_MATH, limits);
     budget_row("loop of small tables", SPIN_TABLES, limits);
-    budget_row("loop of 4 KB strings", SPIN_STRINGS, limits);
+    budget_row("table.find over 60,000 slots", SPIN_FIND, limits);
+    budget_row("table.insert at the front of 60,000", SPIN_FRONT, limits);
+    budget_row("loop of table.create(90,000)", SPIN_FILL, limits);
+    budget_row("loop of string.sub", SPIN_LITERAL, limits);
     println!("the collector, in steps, with nothing else running:");
     for bytes in [64 << 10, 1 << 20, 8 << 20] {
         gc_row(bytes, None, Held::OneTable);

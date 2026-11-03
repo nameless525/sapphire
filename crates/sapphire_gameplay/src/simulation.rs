@@ -195,8 +195,9 @@ impl Simulation {
         Self { ecs, resolve, stats, physics_budget: config.physics_budget }
     }
 
-    /// Adds a system to a [`CombatSet`], for a world built to test the simulation itself, such as the
-    /// one that shows replays' allocation gate bites. What a real fight runs goes in [`Self::new`].
+    /// Adds a system to a [`CombatSet`], for a crate above gameplay (`sapphire_script` fires its hooks
+    /// this way) and for a world built to test the simulation itself, such as the one that shows
+    /// replays' allocation gate bites. What every fight runs goes in [`Self::new`].
     /// It rebuilds the schedule here, so that isn't paid inside the next step.
     pub fn add_combat_system<M>(
         &mut self,
@@ -209,6 +210,24 @@ impl Simulation {
                 panic!("the combat schedule doesn't build: {}", error.to_string(schedule.graph(), world));
             }
         });
+    }
+
+    /// Puts a resource in the world, where a system from [`Self::add_combat_system`] keeps its state.
+    /// [`Self::world`] reads it; [`Self::resource_mut`] writes it between steps.
+    pub fn insert_resource<R: Resource>(&mut self, resource: R) {
+        self.ecs.world_mut().insert_resource(resource);
+    }
+
+    /// A resource put there by [`Self::insert_resource`], or one of the simulation's own, to change
+    /// between steps. What it changes is on the caller's checksum.
+    ///
+    /// # Panics
+    ///
+    /// If the world has no such resource.
+    pub fn resource_mut<R: Resource + Component<Mutability = bevy_ecs::component::Mutable>>(
+        &mut self,
+    ) -> Mut<'_, R> {
+        self.ecs.world_mut().resource_mut::<R>()
     }
 
     /// Loads a set of moves, between steps. IDs count up from the first set added: a replay adds the

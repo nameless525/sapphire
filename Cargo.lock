@@ -3811,6 +3811,7 @@ dependencies = [
 name = "sapphire_script"
 version = "0.1.0"
 dependencies = [
+ "bevy_ecs",
  "mlua",
  "sapphire_core",
  "sapphire_ecs",

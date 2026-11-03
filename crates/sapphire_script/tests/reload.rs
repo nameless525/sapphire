@@ -5,8 +5,8 @@ mod support;
 
 use std::sync::Mutex;
 
-use sapphire_script::{Limits, SharedHost, cook};
-use support::{host_running, player_with, replay_file};
+use sapphire_script::{BOARD_SLOTS, Limits, ScriptStats, cook, host_of, host_of_mut};
+use support::{finish, host_running, player_with, replay_file};
 
 /// The first chunk. Every number it leaves goes in the digest, and the board keeps a count of hooks.
 const FIRST: &str = r#"
@@ -77,29 +77,30 @@ struct Run {
     sim: Vec<u64>,
     /// The script's digest after each tick.
     digest: Vec<u64>,
-    /// The tick of each hook that moved the board's phase count.
-    host: SharedHost,
+    board: [f64; BOARD_SLOTS],
+    stats: ScriptStats,
 }
 
 fn run(reload: Option<&str>) -> Run {
-    let host = host_running(FIRST, Limits::default());
-    host.lock().unwrap().beat_every(25);
-    let mut player = player_with(&host, replay_file("arena-fight-won"));
+    let mut host = host_running(FIRST, Limits::default());
+    host.beat_every(25);
+    let mut player = player_with(host, replay_file("arena-fight-won"));
     let (mut sim, mut digest) = (Vec::new(), Vec::new());
     let mut tick = 0;
     while player.step() {
         tick += 1;
         sim.push(player.simulation().checksum());
-        let mut host = host.lock().unwrap();
+        let host = host_of(player.simulation());
         digest.push(host.digest());
         host.gc_step().unwrap();
         if tick == RELOAD_AT
             && let Some(source) = reload
         {
-            host.bind(&cook(source).unwrap(), "=reloaded").unwrap();
+            host_of_mut(player.simulation_mut()).bind(&cook(source).unwrap(), "=reloaded").unwrap();
         }
     }
-    Run { sim, digest, host }
+    let finished = finish(player);
+    Run { sim, digest, board: finished.board, stats: finished.stats }
 }
 
 fn first_difference(a: &[u64], b: &[u64]) -> Option<usize> {
@@ -115,9 +116,8 @@ fn a_reload_of_the_same_meaning_moves_nothing() {
     let reloaded = run(Some(FIRST_REWORDED));
     assert_eq!(first_difference(&plain.sim, &reloaded.sim), None);
     assert_eq!(first_difference(&plain.digest, &reloaded.digest), None);
-    let (plain, reloaded) = (plain.host.lock().unwrap(), reloaded.host.lock().unwrap());
-    assert!(plain.stats().hooks_fired > 50);
-    assert_eq!(plain.board(), reloaded.board(), "and the board went through it");
+    assert!(plain.stats.hooks_fired > 50);
+    assert_eq!(plain.board, reloaded.board, "and the board went through it");
 }
 
 #[test]
@@ -131,12 +131,9 @@ fn a_reload_moves_only_what_it_means_to_from_when_it_means_to() {
         digest_moved < RELOAD_AT as usize + 25,
         "the first beat after it should move it, at {digest_moved}"
     );
-    {
-        // The count on the board kept going through the reload.
-        let (plain, tuned) = (plain.host.lock().unwrap(), tuned.host.lock().unwrap());
-        assert_eq!(plain.board()[1].to_bits(), tuned.board()[1].to_bits());
-        assert!(tuned.board()[1] > 10.0);
-    }
+    // The count on the board kept going through the reload.
+    assert_eq!(plain.board[1].to_bits(), tuned.board[1].to_bits());
+    assert!(tuned.board[1] > 10.0);
 
     // A beat's mark isn't the simulation's. Only a phase's slow motion can reach it, so it stays put
     // until the first phase after the reload.
@@ -145,30 +142,14 @@ fn a_reload_moves_only_what_it_means_to_from_when_it_means_to() {
     let sim_moved = first_difference(&plain.sim, &phase_only.sim);
     assert!(sim_moved.is_none_or(|tick| tick >= RELOAD_AT as usize), "{sim_moved:?}");
     assert_eq!(digest_moved, sim_moved, "the same command moved both, on the same tick");
-    writeln_stderr(&format!(
-        "L0|reload at {RELOAD_AT}: phase-only tuning moves digest at {digest_moved:?}, simulation at {sim_moved:?}, of {} ticks; hooks {:?}",
-        plain.sim.len(),
-        plain.host.lock().unwrap().stats(),
-    ));
     assert!(sim_moved.is_some(), "a phase has to come after tick {RELOAD_AT} for this to show anything");
 }
 
 #[test]
 fn a_chunk_that_breaks_a_rule_never_replaces_the_one_running() {
-    let _one = ONE_AT_A_TIME.lock().unwrap();
-    let host = host_running(FIRST, Limits::default());
-    let mut host = host.lock().unwrap();
+    let mut host = host_running(FIRST, Limits::default());
     let plain = mlua::chunk::Compiler::new().set_optimization_level(2);
     let bytes = plain.compile("return { on_beat = function(x) return math.sin(x) end }").unwrap();
     assert!(host.bind(&bytes, "=bad").is_err(), "refused at the VM, for a pushed chunk");
     assert_eq!(host.stats().hooks_fired, 0);
-}
-
-#[allow(
-    clippy::explicit_write,
-    reason = "to the real stderr, past the test harness's capture, so CI's logs show it"
-)]
-fn writeln_stderr(line: &str) {
-    use std::io::Write as _;
-    writeln!(std::io::stderr(), "{line}").unwrap();
 }

@@ -4,21 +4,20 @@
 #![allow(dead_code, reason = "each test binary uses its share")]
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use sapphire_gameplay::Simulation;
 use sapphire_gameplay::replay::{Played, Player, Replay, SCENARIOS, Scenario, arena_fight, find_scenario};
-use sapphire_script::bindings::Frame;
-use sapphire_script::{HookEnd, Limits, ScriptHost, ScriptVm, SharedHost, attach, cook};
+use sapphire_script::bindings::{BOARD_SLOTS, Frame};
+use sapphire_script::{HookEnd, Limits, ScriptHost, ScriptStats, ScriptVm, attach, cook, host_of};
 
-static WAITING: Mutex<Option<SharedHost>> = Mutex::new(None);
+static WAITING: Mutex<Option<ScriptHost>> = Mutex::new(None);
 
 fn setup(
     sim: &mut Simulation,
 ) -> Result<Vec<sapphire_gameplay::ActorId>, sapphire_gameplay::replay::ScenarioError> {
     let cast = arena_fight(sim)?;
-    let host = WAITING.lock().unwrap().take().expect("a host is waiting");
-    attach(sim, &host);
+    attach(sim, WAITING.lock().unwrap().take().expect("a host is waiting"));
     Ok(cast)
 }
 
@@ -29,28 +28,46 @@ pub fn replay_file(name: &str) -> Replay {
     Replay::decode(&std::fs::read(path).expect("the replay is there")).expect("reads")
 }
 
-/// `arena-fight`, with `host` attached. Only one may start at a time, since they share the static.
-pub fn player_with(host: &SharedHost, replay: Replay) -> Player {
+/// `arena-fight`, with `host` in it. Only one may start at a time, since they share the static.
+pub fn player_with(host: ScriptHost, replay: Replay) -> Player {
     let plain = find_scenario(SCENARIOS, "arena-fight").expect("listed");
     let scenarios = [Scenario { setup, ..*plain }];
-    *WAITING.lock().unwrap() = Some(Arc::clone(host));
+    *WAITING.lock().unwrap() = Some(host);
     Player::new(replay, &scenarios).expect("starts")
 }
 
 /// A host running `source`.
-pub fn host_running(source: &str, limits: Limits) -> SharedHost {
+pub fn host_running(source: &str, limits: Limits) -> ScriptHost {
     let mut host = ScriptHost::new(limits).expect("the VM starts");
     host.bind(&cook(source).expect("cooks"), "=test").expect("binds");
-    Arc::new(Mutex::new(host))
+    host
+}
+
+/// A run that's over, and what its host ended with.
+pub struct Finished {
+    pub played: Played,
+    pub stats: ScriptStats,
+    pub digest: u64,
+    pub board: [f64; BOARD_SLOTS],
+    pub used_memory: usize,
+    pub last_error: Option<String>,
+}
+
+/// Ends a run, reading its host before the simulation goes.
+pub fn finish(player: Player) -> Finished {
+    let host = host_of(player.simulation());
+    let (stats, digest, board) = (host.stats(), host.digest(), *host.board());
+    let (used_memory, last_error) = (host.vm().used_memory(), host.last_error().map(str::to_owned));
+    Finished { played: player.finish(), stats, digest, board, used_memory, last_error }
 }
 
 /// Plays a whole replay with `host` on it, a collection step after every tick, as a frame's would be.
-pub fn play(host: &SharedHost, replay: Replay) -> Played {
+pub fn play(host: ScriptHost, replay: Replay) -> Finished {
     let mut player = player_with(host, replay);
     while player.step() {
-        host.lock().unwrap().gc_step().expect("collects");
+        host_of(player.simulation()).gc_step().expect("collects");
     }
-    player.finish()
+    finish(player)
 }
 
 /// One hook named `hook` on a fresh VM, with a frame the test can read afterwards.

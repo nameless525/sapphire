@@ -9,13 +9,13 @@ use mlua::thread::ThreadStatus;
 use mlua::{Function, Lua, LuaOptions, StdLib, Table, Thread, Value, ffi, lua_State};
 use sapphire_core::alloc::VmAllocations;
 
-use crate::bindings::{self, Frame};
+use crate::bindings::{self, Binding, Frame};
 use crate::compile::{self, CookError};
 
 /// Globals a script may reach. Anything else, now or in a later Luau, is gone before the sandbox closes.
 const GLOBALS: &[&str] = &[
     "assert", "bit32", "error", "ipairs", "math", "pairs", "rawequal", "rawget", "rawlen", "rawset",
-    "select", "string", "table", "tonumber", "tostring", "type", "typeof", "unpack", "vector", "sapphire",
+    "select", "string", "table", "tonumber", "tostring", "type", "typeof", "vector", "sapphire",
 ];
 
 /// What stays of each library. `math`'s transcendentals here are `sapphire_math`'s, put in by [`bindings`].
@@ -28,17 +28,14 @@ const LIBRARIES: &[(&str, &[&str])] = &[
             "sin", "sqrt", "tan",
         ],
     ),
-    // No `format`, whose float conversions are the C library's, and no patterns, which backtrack with no
-    // interrupt or call back across a C boundary. No `lower` or `upper`, which go by the locale.
-    ("string", &["byte", "char", "len", "rep", "reverse", "sub"]),
-    // `sort` is the prelude's.
-    (
-        "table",
-        &[
-            "clear", "clone", "concat", "create", "find", "freeze", "insert", "isfrozen", "move", "remove",
-            "sort", "unpack",
-        ],
-    ),
+    // Strings are only what a chunk spells: with no `..` (the scan's) and nothing here that builds one,
+    // none gets long enough for a loop over it to outrun the budget, which counts interrupts and not
+    // bytes. No `format`, whose float conversions are the C library's, no patterns, which backtrack
+    // with no interrupt, and no `lower` or `upper`, which go by the locale.
+    ("string", &["len", "sub"]),
+    // `find`, `insert`, `remove` and `sort` are the prelude's, whose loops the budget counts: C's walk a
+    // whole table on one interrupt. What's gone did the same, or (`unpack`) put a table on the stack.
+    ("table", &["create", "find", "freeze", "insert", "isfrozen", "remove", "sort"]),
     (
         "vector",
         &[
@@ -71,13 +68,18 @@ pub struct Limits {
     /// Calls and loop back-edges one hook may make before it's ended. It's a count, so a budget ends a
     /// hook at the same instruction on every run.
     pub interrupts: u64,
+    /// Work in a collector's step, in Luau's KB: about 3 µs at 16. It bounds a step but for one thing: a
+    /// table is marked whole, so a table of 130,000 slots is a 360 µs step at any size. The memory limit
+    /// is what keeps a table from getting there.
+    pub gc_step_kb: i32,
 }
 
 impl Default for Limits {
     /// Read from a Mac: at 10,000 interrupts a spinning hook ends in 25 µs, or 90 µs through bindings, and
-    /// a real hook takes tens. 2 MiB holds the VM's own 520 KB and a boss's garbage between steps.
+    /// a real hook takes tens. 2 MiB holds the VM's own 520 KB and a boss's garbage between steps, and at
+    /// 16 KB a step a 2 MiB heap's cycle takes about 50 steps.
     fn default() -> Self {
-        Self { memory: 2 << 20, interrupts: 10_000 }
+        Self { memory: 2 << 20, interrupts: 10_000, gc_step_kb: 16 }
     }
 }
 
@@ -101,12 +103,9 @@ pub enum VmError {
     Cook(#[from] CookError),
     #[error("a script's chunk must return a table of hooks")]
     NotAHookTable,
+    #[error("the binding `{0}` didn't go through `with_frame`, so what it allocates wouldn't reach gate 4")]
+    UnflippedBinding(&'static str),
 }
-
-/// A collector's step, in Luau's KB of work: about 3 µs on the Mac L0 read it on, with a cycle of a 2 MiB
-/// heap in about 50 steps. It bounds a step but for one thing: a table is marked whole, so a table of
-/// 130,000 slots is a 360 µs step at any size. The memory limit is what keeps a table from getting there.
-const GC_STEP_KB: i32 = 16;
 
 thread_local! {
     /// Interrupts the running hook has left. A count kept here because the interrupt sees only a state.
@@ -147,24 +146,22 @@ pub struct ScriptVm {
 }
 
 impl ScriptVm {
-    /// A sandboxed VM with nothing loaded: the allowlist applied, the prelude run, the globals frozen
-    /// and the collector stopped, so it runs only when [`Self::gc_step`] says.
+    /// A sandboxed VM with nothing loaded, the one way to make one: the allowlist applied, the prelude
+    /// run, the globals frozen, the budget's interrupt set, the memory limit on and the collector
+    /// stopped, so it runs only when [`Self::gc_step`] says.
     pub fn new(limits: Limits) -> Result<Self, VmError> {
-        Self::with_bindings(limits, |_, _| Ok(()))
+        Self::with_bindings(limits, &[])
     }
 
     /// [`Self::new`], with more bindings put in `sapphire` before the sandbox closes: the shape L2's
-    /// generated table takes, and how a test adds one that misbehaves.
-    pub fn with_bindings(
-        limits: Limits,
-        more: impl FnOnce(&Lua, &Table) -> mlua::Result<()>,
-    ) -> Result<Self, VmError> {
+    /// generated table takes, and how a test adds one that misbehaves. Each is called once here, with no
+    /// frame and no arguments, and one that doesn't go through [`bindings::with_frame`] is refused.
+    pub fn with_bindings(limits: Limits, more: &[Binding]) -> Result<Self, VmError> {
         let lua = Lua::new_with(
             StdLib::MATH | StdLib::STRING | StdLib::TABLE | StdLib::BIT | StdLib::VECTOR,
             LuaOptions::new(),
         )?;
-        bindings::install(&lua)?;
-        more(&lua, &lua.globals().get::<Table>("sapphire")?)?;
+        bindings::install(&lua, more)?;
         let prelude = compile::compile_unchecked(PRELUDE, compile::SHIPPING_LEVEL)?;
         lua.load(prelude).set_name("=prelude").set_mode(ChunkMode::Binary).exec()?;
         keep_only(&lua.globals(), GLOBALS)?;
@@ -181,17 +178,25 @@ impl ScriptVm {
             })?;
         }
         lua.set_memory_limit(limits.memory)?;
-        lua.gc_set_mode(GcMode::Incremental(GcIncParams::default().step_size(GC_STEP_KB)));
+        lua.gc_set_mode(GcMode::Incremental(GcIncParams::default().step_size(limits.gc_step_kb)));
         lua.gc_stop();
         let nothing = lua.create_function(|_, ()| Ok(()))?;
         let thread = lua.create_thread(nothing)?;
         Ok(Self { lua, thread, limits })
     }
 
-    /// The Luau state, for tests and tools.
+    /// The Luau state, for a test to look behind the sandbox. Anything else goes through this type: what
+    /// this hands out can make a `create_function` binding or run a chunk the scan hasn't read.
+    #[doc(hidden)]
     #[must_use]
-    pub const fn lua(&self) -> &Lua {
+    pub const fn lua_for_tests(&self) -> &Lua {
         &self.lua
+    }
+
+    /// Whether the collector is stopped, as it should be whenever a step isn't asking it for work.
+    #[must_use]
+    pub fn collector_stopped(&self) -> bool {
+        !self.lua.gc_is_running()
     }
 
     /// Runs a cooked chunk, checked again here since a pushed chunk's bytes came from elsewhere, and
@@ -218,7 +223,11 @@ impl ScriptVm {
         match self.thread.resume::<()>(args) {
             Err(error) => HookEnd::Failed(error.to_string()),
             Ok(()) if matches!(self.thread.status(), ThreadStatus::Finished) => HookEnd::Returned,
-            Ok(()) => HookEnd::OverBudget,
+            Ok(()) => {
+                // A yielded thread holds its stack, and all a hook's garbage with it, until the next hook.
+                let _ = self.thread.reset(hook.clone());
+                HookEnd::OverBudget
+            }
         }
     }
 

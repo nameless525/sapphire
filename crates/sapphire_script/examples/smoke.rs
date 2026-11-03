@@ -42,7 +42,7 @@ fn fire(vm: &ScriptVm, source: &str) -> (HookEnd, Frame) {
 }
 
 fn main() -> ExitCode {
-    let vm = ScriptVm::new(Limits { memory: 1 << 20, interrupts: 100_000 }).expect("the VM starts");
+    let vm = ScriptVm::new(Limits { memory: 1 << 20, ..Limits::default() }).expect("the VM starts");
     let mut ok = true;
     let mut check = |name: &str, passed: bool, detail: String| {
         println!("{} {name}: {detail}", if passed { "pass" } else { "FAIL" });
@@ -71,8 +71,7 @@ fn main() -> ExitCode {
 
     let (end, _) = fire(&vm, "return { hook = function() local t = {} for i = 1, 1e7 do t[i] = {} end end }");
     check("a memory limit or a budget ends a hoard", end != HookEnd::Returned, format!("{end:?}"));
-    vm.lua().gc_collect().expect("collects");
-    vm.lua().gc_stop();
+    while !vm.gc_step().expect("collects") {}
 
     let (end, frame) = fire(&vm, "return { hook = function() sapphire.mark({}) end }");
     check(
@@ -82,11 +81,7 @@ fn main() -> ExitCode {
     );
 
     let finished = vm.gc_step().expect("collects");
-    check(
-        "a collection step leaves it stopped",
-        !vm.lua().gc_is_running(),
-        format!("cycle ended: {finished}"),
-    );
+    check("a collection step leaves it stopped", vm.collector_stopped(), format!("cycle ended: {finished}"));
 
     if ok {
         println!("smoke ok");

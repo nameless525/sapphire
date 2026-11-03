@@ -6,14 +6,13 @@ mod support;
 
 use std::alloc::System;
 use std::ffi::c_int;
-use std::io::Write as _;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
-use mlua::{ffi, lua_State};
+use mlua::lua_State;
 use sapphire_core::alloc::{self, CountingAllocator, PER_THREAD_COUNTS};
 use sapphire_gameplay::replay::{RecordedTrail, SCENARIOS, find_scenario};
-use sapphire_script::bindings::with_frame;
-use sapphire_script::{Limits, ScriptHost, SharedHost, cook};
+use sapphire_script::bindings::{in_host, with_frame};
+use sapphire_script::{Binding, Limits, ScriptHost, VmError, cook, host_of};
 use support::{host_running, play, player_with, replay_file};
 
 #[global_allocator]
@@ -49,7 +48,7 @@ return {
 const BOSS_PHASE_CARELESS: &str = r#"
 local function plan(phase)
     return {
-        name = "phase_" .. phase,
+        name = {phase, phase + 1},
         adds = {},
         slow = phase == 1 and 500 or 250,
     }
@@ -77,10 +76,6 @@ return {
     clippy::explicit_write,
     reason = "to the real stderr, past the test harness's capture, so CI's logs show it"
 )]
-fn say(line: &str) {
-    writeln!(std::io::stderr(), "L0|{line}").unwrap();
-}
-
 // Tests here share a global allocator's thread counts only by thread, so they can run side by side, but
 // the scenario's waiting host is one static.
 static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
@@ -92,14 +87,14 @@ fn a_hook_in_a_real_replay_passes_the_gate_and_the_vm_has_its_own_count() {
     }
     let _one = ONE_AT_A_TIME.lock().unwrap();
     assert!(alloc::is_installed());
-    let host = host_running(BOSS_PHASE, Limits::default());
-    host.lock().unwrap().beat_every(0);
-    let played = play(&host, replay_file("arena-fight-won"));
-    played.allocation_gate().expect("a hook's VM isn't gate 4's, and nothing else allocated");
-    let stats = host.lock().unwrap().stats();
+    let mut host = host_running(BOSS_PHASE, Limits::default());
+    host.beat_every(0);
+    let finished = play(host, replay_file("arena-fight-won"));
+    finished.played.allocation_gate().expect("a hook's VM isn't gate 4's, and nothing else allocated");
+    let stats = finished.stats;
     assert!(stats.hooks_fired >= 3, "{stats:?}");
     assert_eq!((stats.hooks_failed, stats.hooks_over_budget), (0, 0), "{stats:?}");
-    say(&format!("boss phase: {stats:?}, step allocations {}", played.stats.allocations));
+    assert!(stats.commands_applied > stats.hooks_fired, "{stats:?}");
 }
 
 /// A hook that asks for nothing changes nothing: a fight with one on it reaches the recorded checksums.
@@ -113,14 +108,14 @@ fn a_hook_that_commands_nothing_leaves_the_recording_alone() {
     player.run_to_end();
     let recorded = RecordedTrail::from_trail(&player.finish().trail);
 
-    let host = host_running(
+    let mut host = host_running(
         "return { on_phase = function(actor, phase) sapphire.set_board(0, actor + phase) end, on_beat = function() local t = {} t.x = 1 end }",
         Limits::default(),
     );
-    host.lock().unwrap().beat_every(7);
-    let played = play(&host, replay_file("arena-fight-won"));
-    assert_eq!(recorded.first_difference(&played.trail), None);
-    assert!(host.lock().unwrap().stats().hooks_fired > 100);
+    host.beat_every(7);
+    let finished = play(host, replay_file("arena-fight-won"));
+    assert_eq!(recorded.first_difference(&finished.played.trail), None);
+    assert!(finished.stats.hooks_fired > 100);
 }
 
 /// Allocates and returns, as a careless generated binding could.
@@ -132,46 +127,60 @@ unsafe extern "C-unwind" fn allocating(_state: *mut lua_State) -> c_int {
     0
 }
 
-/// Allocates outside `with_frame`: still the VM's count, since nothing flipped it. This is what the
-/// generated table exists to rule out: a test holds every generated binding to `with_frame`.
-unsafe extern "C-unwind" fn allocating_unflipped(_state: *mut lua_State) -> c_int {
-    let kept = std::hint::black_box(vec![0u8; 64]);
-    drop(kept);
+/// [`in_host`] with no frame: what a pure one does.
+unsafe extern "C-unwind" fn allocating_with_no_frame(_state: *mut lua_State) -> c_int {
+    in_host(|| drop(std::hint::black_box(vec![0u8; 64])));
     0
 }
 
-fn host_with_binding(name: &str, binding: ffi::lua_CFunction, source: &str) -> SharedHost {
-    let mut host = ScriptHost::new_with_bindings(Limits::default(), |lua, sapphire| {
-        sapphire_script::bindings::add(lua, sapphire, name, binding)
-    })
-    .unwrap();
+/// Allocates with the thread still on the VM's count, so gate 4 never sees it.
+unsafe extern "C-unwind" fn unflipped(_state: *mut lua_State) -> c_int {
+    drop(std::hint::black_box(vec![0u8; 64]));
+    0
+}
+
+/// Touches nothing and goes nowhere: as unflipped as the one above, whatever it does.
+unsafe extern "C-unwind" fn unflipped_empty(_state: *mut lua_State) -> c_int {
+    0
+}
+
+fn host_with_binding(function: mlua::ffi::lua_CFunction, source: &str) -> ScriptHost {
+    let mut host =
+        ScriptHost::new_with_bindings(Limits::default(), &[Binding { name: "careless", function }])
+            .expect("the binding goes through");
     host.bind(&cook(source).unwrap(), "=test").unwrap();
-    Arc::new(Mutex::new(host))
+    host
 }
 
 /// The negative: gate 4 still bites. A binding that allocates fails the very replay above, at the tick
-/// of the hook.
+/// of the hook, whichever door it goes through.
 #[test]
 fn a_binding_that_allocates_fails_the_gate_at_its_tick() {
     if !PER_THREAD_COUNTS {
         return;
     }
     let _one = ONE_AT_A_TIME.lock().unwrap();
-    let host =
-        host_with_binding("careless", allocating, "return { on_phase = function() sapphire.careless() end }");
-    let played = play(&host, replay_file("arena-fight-won"));
-    let failure = played.allocation_gate().expect_err("the binding's allocation is gate 4's");
-    assert!(failure.allocations >= 3, "{failure:?}");
-    say(&format!("allocating binding: gate fails: {failure}"));
+    for binding in [allocating as mlua::ffi::lua_CFunction, allocating_with_no_frame] {
+        let host = host_with_binding(binding, "return { on_phase = function() sapphire.careless() end }");
+        let finished = play(host, replay_file("arena-fight-won"));
+        let failure = finished.played.allocation_gate().expect_err("the binding's allocation is gate 4's");
+        assert!(failure.allocations >= 3, "{failure:?}");
+    }
+}
 
-    // And the VM's count is apart: the same binding not flipping back is the VM's, not the gate's.
-    let host = host_with_binding(
-        "careless",
-        allocating_unflipped,
-        "return { on_phase = function() sapphire.careless() end }",
-    );
-    let played = play(&host, replay_file("arena-fight-won"));
-    played.allocation_gate().expect("what shows flipping is what the gate reads");
+/// With the VM's count diverted, a binding that doesn't flip back could allocate past the gate. So one
+/// can't start a VM at all, and a generated table with such a row fails every test that starts one.
+#[test]
+fn a_binding_that_doesnt_flip_back_cant_start_a_vm() {
+    for function in [unflipped as mlua::ffi::lua_CFunction, unflipped_empty] {
+        let refused =
+            ScriptHost::new_with_bindings(Limits::default(), &[Binding { name: "careless", function }]);
+        assert!(
+            matches!(refused, Err(VmError::UnflippedBinding("careless"))),
+            "{:?}",
+            refused.err().map(|error| error.to_string()),
+        );
+    }
 }
 
 /// A VM's allocations, a hook at a time, once warm: what a budget would be set from.
@@ -181,40 +190,31 @@ fn what_hooks_allocate_once_warm() {
         return;
     }
     let _one = ONE_AT_A_TIME.lock().unwrap();
-    for (name, source) in [("boss phase", BOSS_PHASE), ("careless", BOSS_PHASE_CARELESS)] {
-        let host = host_running(source, Limits::default());
-        host.lock().unwrap().beat_every(5);
-        let mut player = player_with(&host, replay_file("arena-fight-won"));
+    for source in [BOSS_PHASE, BOSS_PHASE_CARELESS] {
+        let mut host = host_running(source, Limits::default());
+        host.beat_every(5);
+        let mut player = player_with(host, replay_file("arena-fight-won"));
         let mut seen = Vec::new();
         let mut last = alloc::vm_counts();
         let mut last_fired = 0;
         let mut with_no_hook = 0u64;
         while player.step() {
             let counts = alloc::vm_counts();
-            let fired = host.lock().unwrap().stats().hooks_fired;
+            let host = host_of(player.simulation());
+            let fired = host.stats().hooks_fired;
             let spent = counts.allocations - last.allocations;
             if fired == last_fired {
                 with_no_hook += spent;
             } else {
-                seen.push((spent, counts.bytes - last.bytes));
+                seen.push(spent);
             }
             last_fired = fired;
-            let gc = host.lock().unwrap().gc_step();
-            gc.unwrap();
+            host.gc_step().unwrap();
             last = alloc::vm_counts();
         }
         assert_eq!(with_no_hook, 0, "a step with no hook made VM allocations");
         let warm = &seen[seen.len() / 2..];
-        let total: u64 = warm.iter().map(|hook| hook.0).sum();
-        let worst = warm.iter().map(|hook| hook.0).max().unwrap_or(0);
-        let bytes: u64 = warm.iter().map(|hook| hook.1).sum();
-        say(&format!(
-            "{name}: {} hook steps; warm half {} steps: {total} VM allocations ({bytes} bytes), worst step {worst}; first step {:?}; end stats {:?}",
-            seen.len(),
-            warm.len(),
-            seen.first(),
-            host.lock().unwrap().stats(),
-        ));
+        assert_eq!(warm.iter().sum::<u64>(), 0, "a warm hook's garbage reuses the VM's pages: {seen:?}");
     }
 }
 
@@ -223,21 +223,18 @@ fn what_hooks_allocate_once_warm() {
 #[test]
 fn a_step_a_tick_keeps_up_with_a_hook_a_tick() {
     let _one = ONE_AT_A_TIME.lock().unwrap();
-    let host = host_running(BOSS_PHASE_CARELESS, Limits::default());
-    host.lock().unwrap().beat_every(1);
-    let mut player = player_with(&host, replay_file("arena-fight-won"));
+    let mut host = host_running(BOSS_PHASE_CARELESS, Limits::default());
+    host.beat_every(1);
+    let mut player = player_with(host, replay_file("arena-fight-won"));
     let mut sizes = Vec::new();
     while player.step() {
-        let mut host = host.lock().unwrap();
+        let host = host_of(player.simulation());
         host.gc_step().unwrap();
+        assert!(host.vm().collector_stopped());
         sizes.push(host.vm().used_memory());
     }
-    let half = sizes[sizes.len() / 2..].iter().copied().max().unwrap();
+    let second = sizes[sizes.len() / 2..].iter().copied().max().unwrap();
     let first = sizes[..sizes.len() / 2].iter().copied().max().unwrap();
-    say(&format!(
-        "a hook a tick: {} ticks; the most held, first half {first}, second half {half}; {:?}",
-        sizes.len(),
-        host.lock().unwrap().stats()
-    ));
-    assert!(half <= first + first / 4, "it keeps growing: {first} then {half}");
+    assert!(second <= first + first / 4, "it keeps growing: {first} then {second}");
+    assert_eq!(host_of(player.simulation()).stats().hooks_failed, 0);
 }

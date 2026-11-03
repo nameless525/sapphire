@@ -1,19 +1,18 @@
 //! A simulation's script host: which hooks are bound, what they keep and what they asked for, and the
 //! system that fires them inside a fixed step.
 //!
-//! Gameplay knows nothing of this crate: it's added with [`Simulation::add_combat_system`], reads and
-//! writes through gameplay's public resources, and adds what it keeps to the checksum beside
-//! [`Simulation::checksum`]. At L2 the plain parts ([`Command`], the board, the events) move to
-//! gameplay so that the checksum can hold them itself; nothing here needs Luau to name them.
-
-use std::sync::{Arc, Mutex, MutexGuard};
+//! Gameplay knows nothing of this crate: [`attach`] puts the host in the world as a resource and adds its
+//! system with [`Simulation::add_combat_system`]. It reads and writes through gameplay's public
+//! resources, and adds what it keeps to the checksum beside [`Simulation::checksum`]. At L2 the plain
+//! parts ([`Command`], the board, the events) move to gameplay so that the checksum can hold them
+//! itself; nothing here needs Luau to name them.
 
 use mlua::{Function, Table};
 use sapphire_core::alloc;
 use sapphire_ecs::prelude::*;
 use sapphire_gameplay::{ActorTable, CombatSet, Fighter, SimRng, Simulation, SlowMotion, StateHasher};
 
-use crate::bindings::{BOARD_SLOTS, Command, FRAME_ACTORS, Frame};
+use crate::bindings::{BOARD_SLOTS, Binding, Command, FRAME_ACTORS, Frame};
 use crate::vm::{HookEnd, Limits, ScriptVm, VmError};
 
 /// Hooks a chunk may hold, by the name it returns them under.
@@ -33,6 +32,8 @@ pub struct ScriptStats {
     pub hooks_over_budget: u64,
     pub commands_applied: u64,
     pub commands_discarded: u64,
+    /// Commands past the end of a hook's queue: the same on every run, so not a checksum's business.
+    pub commands_dropped: u64,
     /// The VM's allocations inside hooks: its own budget, not gate 4's.
     pub script_allocations: u64,
     pub script_bytes: u64,
@@ -40,7 +41,10 @@ pub struct ScriptStats {
     pub worst_hook_allocations: u64,
 }
 
-/// One simulation's VM and what its hooks keep.
+/// One simulation's VM and what its hooks keep, as a resource in its world: a system takes it by
+/// `ResMut`, so firing a hook costs no lock, and whoever swaps a chunk or steps the collector does it
+/// between steps through the simulation that owns it.
+#[derive(Resource)]
 pub struct ScriptHost {
     vm: ScriptVm,
     /// The bound hooks, by [`HOOKS`]' position; swapped whole by [`Self::bind`], between steps.
@@ -59,20 +63,14 @@ pub struct ScriptHost {
     error: Option<String>,
 }
 
-/// A host shared between the system that holds it and whoever swaps its chunks between steps.
-pub type SharedHost = Arc<Mutex<ScriptHost>>;
-
 impl ScriptHost {
     /// A host with nothing bound.
     pub fn new(limits: Limits) -> Result<Self, VmError> {
-        Self::new_with_bindings(limits, |_, _| Ok(()))
+        Self::new_with_bindings(limits, &[])
     }
 
     /// [`Self::new`], with more bindings: see [`ScriptVm::with_bindings`].
-    pub fn new_with_bindings(
-        limits: Limits,
-        more: impl FnOnce(&mlua::Lua, &Table) -> mlua::Result<()>,
-    ) -> Result<Self, VmError> {
+    pub fn new_with_bindings(limits: Limits, more: &[Binding]) -> Result<Self, VmError> {
         Ok(Self {
             vm: ScriptVm::with_bindings(limits, more)?,
             hooks: [const { None }; HOOKS.len()],
@@ -141,17 +139,17 @@ impl ScriptHost {
     }
 
     /// One piece of collection, outside a step: see [`ScriptVm::gc_step`].
-    pub fn gc_step(&mut self) -> Result<bool, VmError> {
+    pub fn gc_step(&self) -> Result<bool, VmError> {
         let _vm = alloc::VmAllocations::enter();
         self.vm.gc_step()
     }
 
     /// Runs what's due at this step, with the frame's numbers set. The commands stay in the frame for
     /// [`Self::apply_commands`].
-    fn run(&mut self, health: &[(u32, u32); FRAME_ACTORS], rng: *mut sapphire_math::Pcg32) {
+    fn run(&mut self, health: &[(u32, u32); FRAME_ACTORS], rng: &mut sapphire_math::Pcg32) {
         self.tick += 1;
         self.frame.tick = self.tick;
-        self.frame.rng = rng;
+        self.frame.rng = *rng;
         for (slot, (now, _)) in self.frame.health.iter_mut().zip(health) {
             *slot = f64::from(*now);
         }
@@ -168,7 +166,7 @@ impl ScriptHost {
         if self.beat_every > 0 && self.tick.is_multiple_of(self.beat_every) {
             self.fire(ON_BEAT, (self.tick as f64, 0.0, 0.0));
         }
-        self.frame.rng = std::ptr::null_mut();
+        *rng = self.frame.rng;
     }
 
     /// Runs one hook. A hook that doesn't end well leaves no commands, and that goes in the chain.
@@ -179,6 +177,7 @@ impl ScriptHost {
         let queued_before = self.frame.queued;
         let board_before = self.frame.board;
         let end = self.vm.fire(&mut self.frame, function, args);
+        self.stats.commands_dropped += u64::from(std::mem::take(&mut self.frame.dropped));
         let code: u8 = match (&end, self.frame.fault) {
             (HookEnd::Returned, false) => 0,
             (HookEnd::Returned, true) => 1,
@@ -247,32 +246,45 @@ fn write_f64(hash: &mut StateHasher, value: f64) {
     hash.u64(if value.is_nan() { f64::NAN.to_bits() } else { value.to_bits() });
 }
 
-/// A host's lock: a poisoned one means a hook panicked, which `panic = "abort"` wouldn't have survived.
-fn locked(host: &SharedHost) -> MutexGuard<'_, ScriptHost> {
-    host.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+/// Puts `host` in a simulation and adds the system that fires its hooks, last in the step, where
+/// everything a hook reads has settled and a slow motion it asks for starts on the next.
+pub fn attach(sim: &mut Simulation, host: ScriptHost) {
+    sim.insert_resource(host);
+    sim.add_combat_system(CombatSet::Cues, fire_hooks);
 }
 
-/// Adds the system that fires `host`'s hooks to a simulation, last in the step, where everything a
-/// hook reads has settled and a slow motion it asks for starts on the next.
-pub fn attach(sim: &mut Simulation, host: &SharedHost) {
-    let host = Arc::clone(host);
-    // A pthread mutex's first lock can allocate, and that shouldn't land on a step.
-    drop(locked(&host));
-    sim.add_combat_system(
-        CombatSet::Cues,
-        move |table: Res<'_, ActorTable>,
-              fighters: Query<'_, '_, &Fighter>,
-              mut slow_motion: ResMut<'_, SlowMotion>,
-              mut rng: ResMut<'_, SimRng>| {
-            let mut health = [(0, 0); FRAME_ACTORS];
-            for (slot, (_, entity)) in health.iter_mut().zip(table.iter()) {
-                if let Ok(fighter) = fighters.get(entity) {
-                    *slot = (fighter.health(), fighter.max_health());
-                }
-            }
-            let mut host = locked(&host);
-            host.run(&health, &raw mut rng.0);
-            host.apply_commands(&mut slow_motion);
-        },
-    );
+fn fire_hooks(
+    table: Res<'_, ActorTable>,
+    fighters: Query<'_, '_, &Fighter>,
+    mut slow_motion: ResMut<'_, SlowMotion>,
+    mut rng: ResMut<'_, SimRng>,
+    mut host: ResMut<'_, ScriptHost>,
+) {
+    let mut health = [(0, 0); FRAME_ACTORS];
+    for (slot, (_, entity)) in health.iter_mut().zip(table.iter()) {
+        if let Ok(fighter) = fighters.get(entity) {
+            *slot = (fighter.health(), fighter.max_health());
+        }
+    }
+    host.run(&health, &mut rng.0);
+    host.apply_commands(&mut slow_motion);
+}
+
+/// The host [`attach`] put in `sim`, to read: its stats, its digest, a collection step between steps.
+///
+/// # Panics
+///
+/// If nothing's been attached.
+#[must_use]
+pub fn host_of(sim: &Simulation) -> &ScriptHost {
+    sim.world().resource::<ScriptHost>()
+}
+
+/// The host [`attach`] put in `sim`, to change between steps: a reload.
+///
+/// # Panics
+///
+/// If nothing's been attached.
+pub fn host_of_mut(sim: &mut Simulation) -> Mut<'_, ScriptHost> {
+    sim.resource_mut::<ScriptHost>()
 }

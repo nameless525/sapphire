@@ -3,7 +3,7 @@
 //! The editor reads the cook's packs directly, by asset ID, as any tool can: only the tables of contents
 //! and the assets asked for, so a large town in the same pack costs nothing. It never cooks. A document's
 //! move set is what its sidecar's ID finds, and it's what a device has too, so a window checks here as it
-//! will there ([`crate::file::judge`]). With no cook, moves with clips can't be previewed and the
+//! will there ([`crate::judge`]). With no cook, moves with clips can't be previewed and the
 //! editor says so: their windows still edit, save and push.
 
 use std::fs::File;
@@ -23,7 +23,7 @@ use sapphire_math::Vec3;
 use sapphire_moves::{ClipMotionDocument, MoveSet};
 use sapphire_serialize::cooked::AlignedVec;
 
-use crate::text;
+use sapphire_document::text;
 
 /// Triangles the preview's mesh aims for: about what a clay figure needs to read, drawn by egui. The
 /// finest LOD at or under this, or the coarsest if none is.

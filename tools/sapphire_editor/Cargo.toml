@@ -1,6 +1,6 @@
 [package]
 name = "sapphire_editor"
-description = "The combat timeline editor: a `.moves.ron` on a timeline of 60 Hz ticks, scrubbed against the simulation, saved as text and pushed over live link. Desktop only, never shipped."
+description = "The editor: a docked shell over `sapphire_document`, with the combat timeline, an asset browser, a reflection inspector and a cvar panel, saved as text and pushed over live link. Desktop only, never shipped."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,10 +13,14 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+bevy_reflect.workspace = true
 egui.workspace = true
 egui-wgpu.workspace = true
+# The panes' docking.
+egui_tiles.workspace = true
 png.workspace = true
 pollster.workspace = true
+ron.workspace = true
 # The preview's pose: what the sandbox samples, read from the same cooked clips.
 sapphire_anim.workspace = true
 sapphire_assets.workspace = true
@@ -35,6 +39,8 @@ sapphire_platform.workspace = true
 sapphire_rhi.workspace = true
 sapphire_serialize.workspace = true
 sapphire_time.workspace = true
+serde.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]

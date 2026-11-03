@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-use sapphire_editor::edits::{EntryRef, Phases, Track};
+use sapphire_editor::edits::{self, EntryRef, Phases, Track};
 use sapphire_editor::link::Pushed;
 use sapphire_editor::{Editor, Options};
 use sapphire_livelink::protocol::MoveAttempt;
@@ -195,16 +195,16 @@ fn an_edit_pushed_from_the_editor_plays_on_a_real_fights_next_attempt() {
     // Its wind-up two ticks longer, its hit window with it and its recovery two shorter: the calls a drag
     // ends in, and the key's own save and push.
     let entry = hit_window();
-    let edit = editor.file_mut().expect("a file").edit("later", |text| {
-        text.set_phases(entry.mv, Phases { startup: 7, active: 3, recovery: 16 })?;
-        text.set_window(entry, 7, 10)
+    let edit = editor.moves_document_mut().expect("a file").together("later", |text| {
+        edits::set_phases(text, entry.mv, Phases { startup: 7, active: 3, recovery: 16 })?;
+        edits::set_window(text, entry, 7, 10)
     });
     edit.expect("an edit");
     editor.refresh();
     assert!(editor.problems().is_empty(), "{:?}", editor.problems());
     let save = Stopwatch::start();
     editor.save_and_push();
-    assert_eq!(fs::read_to_string(&path).expect("saved"), editor.file().expect("a file").text());
+    assert_eq!(fs::read_to_string(&path).expect("saved"), editor.current().expect("a file").text());
 
     let (owner, _) =
         sandbox.until(&mut editor, PATIENCE, "the reply", |editor| match editor.link().last_push() {
@@ -222,10 +222,13 @@ fn an_edit_pushed_from_the_editor_plays_on_a_real_fights_next_attempt() {
 
     // Past the move's end: the editor sees it too, the save still happens (the file is the person's) and the
     // device refuses, naming move and track.
-    let edit = editor.file_mut().expect("a file").edit("too far", |text| text.set_window(entry, 7, 99));
+    let edit = editor
+        .moves_document_mut()
+        .expect("a file")
+        .together("too far", |text| edits::set_window(text, entry, 7, 99));
     edit.expect("an edit");
     editor.refresh();
-    let edited = editor.file().expect("a file").text().to_owned();
+    let edited = editor.current().expect("a file").text().to_owned();
     assert_eq!(editor.problems()[0].track.as_deref(), Some("hitboxes"));
     editor.save_and_push();
     let (refusals, _) =
@@ -236,7 +239,7 @@ fn an_edit_pushed_from_the_editor_plays_on_a_real_fights_next_attempt() {
         });
     assert_eq!(refusals[0].in_move.as_deref(), Some("light_1"), "{refusals:?}");
     assert_eq!(refusals[0].track.as_deref(), Some("hitboxes"), "{refusals:?}");
-    assert_eq!(editor.file().expect("a file").text(), edited, "the edit stands");
+    assert_eq!(editor.current().expect("a file").text(), edited, "the edit stands");
 
     // The fight goes on as it was.
     let serial = after.serial;
@@ -247,7 +250,10 @@ fn an_edit_pushed_from_the_editor_plays_on_a_real_fights_next_attempt() {
 
     // One undo, one push: the next good one works.
     editor.undo();
-    let edit = editor.file_mut().expect("a file").edit("one more", |text| text.set_window(entry, 7, 9));
+    let edit = editor
+        .moves_document_mut()
+        .expect("a file")
+        .together("one more", |text| edits::set_window(text, entry, 7, 9));
     edit.expect("an edit");
     editor.refresh();
     editor.save_and_push();

@@ -1,6 +1,16 @@
 //! The editor's interface and state, everything but its window: [`Editor::ui`] draws into any `egui::Ui`,
 //! so tests and [`crate::capture`] drive exactly what a person sees, with no window.
+//!
+//! Its panes are a [`Shell`] over one [`DocumentSet`]. The timeline shows one document of moves ([`Editor`]'s
+//! `moves`), and the top bar's save and undo act on the current one, which is whichever was last opened or
+//! edited: a timeline's edit makes its document current again. Nothing is lost by opening another document,
+//! since the set holds what's unsaved in each, so only closing one or the window asks.
 
+mod browser;
+mod cvars;
+mod properties;
+
+use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -8,20 +18,27 @@ use std::time::SystemTime;
 use egui::{Color32, Key, Modifiers, RichText, Sense, TextEdit, Ui, Vec2};
 use sapphire_assets::AssetId;
 use sapphire_core::Name;
+use sapphire_document::disk::Temporary;
+use sapphire_document::{AnyDocument, DocumentSet, Kind, Noticed, PropertyPath, Rebased, SetError};
 use sapphire_livelink::protocol::MoveAttempt;
 use sapphire_moves::{MoveDocument, MoveSet, MoveSetDocument, RootSample};
+use sapphire_time::Stopwatch;
 
 use crate::cooked::{self, Cook};
-use crate::edits::{EditError, EntryRef, EntryValue, MovesText, Track};
+use crate::edits::{self, EditError, EntryRef, EntryValue, MovesDocument, Track};
 use crate::figure::{Casting, Figure, Figures};
-use crate::file::{Conflict, FileError, MovesFile, Verdict, judge};
+use crate::judge::{Verdict, judge};
 use crate::link::{Link, Pushed};
 use crate::preview::{self, FigureCache, Overlays, PosedFigure, View};
 use crate::run::{Frame, Run, Setup};
+use crate::shell::{Pane, PaneUi, Shell};
 use crate::timeline::{self, Action, Drag, Part, PhaseEdge, Problem, TimelineView};
 
 /// How often the file and the cook are looked at again.
 const POLL_SECONDS: f64 = 1.0;
+/// How often what's under the roots is looked at again, for the browser and for a copy of what's open. A look
+/// at this repository takes about 15 ms in a debug build, so it isn't for every frame, and it waits for a drag.
+const RESCAN_SECONDS: f64 = 5.0;
 /// The speeds "play" offers.
 const SPEEDS: [(f32, &str); 4] = [(1.0, "1×"), (0.5, "0.5×"), (0.25, "0.25×"), (0.1, "0.1×")];
 /// A device's live link, unless told otherwise.
@@ -67,12 +84,93 @@ struct CookState {
     tried: Option<SystemTime>,
 }
 
+/// The document the top bar acts on, as tests and the top bar read it.
+#[derive(Clone, Copy)]
+pub struct Current<'a> {
+    id: AssetId,
+    document: &'a dyn AnyDocument,
+    path: &'a Path,
+    conflict: Option<&'a [u8]>,
+}
+
+/// What the file says, where that's waiting to be settled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Conflict<'a> {
+    Text(&'a str),
+    /// It isn't text any more: there's nothing to take, and only keeping what's here gets past it.
+    NotText,
+}
+
+impl<'a> Current<'a> {
+    #[must_use]
+    pub const fn id(&self) -> AssetId {
+        self.id
+    }
+
+    #[must_use]
+    pub fn text(&self) -> &'a str {
+        self.document.text()
+    }
+
+    #[must_use]
+    pub const fn document(&self) -> &'a dyn AnyDocument {
+        self.document
+    }
+
+    #[must_use]
+    pub const fn path(&self) -> &'a Path {
+        self.path
+    }
+
+    #[must_use]
+    pub fn file_name(&self) -> String {
+        self.path.file_name().map_or_else(String::new, |name| name.to_string_lossy().into_owned())
+    }
+
+    #[must_use]
+    pub fn is_dirty(&self) -> bool {
+        self.document.is_dirty()
+    }
+
+    #[must_use]
+    pub fn in_gesture(&self) -> bool {
+        self.document.in_gesture()
+    }
+
+    #[must_use]
+    pub fn undo_label(&self) -> Option<&'a str> {
+        self.document.undo_label()
+    }
+
+    #[must_use]
+    pub fn redo_label(&self) -> Option<&'a str> {
+        self.document.redo_label()
+    }
+
+    /// What the file says, if it changed on disk and that's waiting to be settled.
+    #[must_use]
+    pub fn conflict(&self) -> Option<Conflict<'a>> {
+        let bytes = self.conflict?;
+        Some(std::str::from_utf8(bytes).map_or(Conflict::NotText, Conflict::Text))
+    }
+}
+
 /// The whole editor.
 #[derive(Debug)]
 pub struct Editor {
-    file: Option<MovesFile>,
-    documents: Vec<PathBuf>,
-    open_path: String,
+    documents: DocumentSet,
+    /// The document of moves the timeline shows.
+    moves: Option<AssetId>,
+    /// The document the top bar acts on.
+    current: Option<AssetId>,
+    shell: Shell,
+    /// Where the layout lasts, and what it last said there, or nothing until a pass has drawn it: the first
+    /// tidies the tree, which is no change anyone made.
+    layout: Option<(PathBuf, Option<egui_tiles::Tree<Pane>>)>,
+    browser: browser::Browser,
+    properties: properties::PropertiesPanel,
+    cvar_panel: cvars::CvarPanel,
+    now: f64,
     content: Option<PathBuf>,
     cook: CookState,
     /// The text [`Self::verdict`] and the run were made from.
@@ -103,26 +201,44 @@ pub struct Editor {
     address_text: String,
     notice: Option<Notice>,
     last_poll: f64,
+    next_rescan: f64,
     quit: Quit,
     /// A close the window couldn't ask about has been heard since the last pass.
     closed_unseen: bool,
-    /// A document picked with edits unsaved: the top bar asks first.
-    opening: Option<PathBuf>,
+    /// A document to close, with edits unsaved: the top bar asks first.
+    closing: Option<AssetId>,
     /// What's being typed in the inspector, which is on the screen and not yet in the text.
     typed: Option<Typed>,
-    /// The inspector's number that has the keyboard, whose typing is one gesture: unlike a name it lands
+    /// The number that has the keyboard, and its document, whose typing is one gesture: unlike a name it lands
     /// in the text key by key, since only its widget holds what's typed, and a save has to find it there.
-    typing_number: Option<egui::Id>,
+    typing_number: Option<(egui::Id, AssetId)>,
 }
 
-/// A value being typed in the inspector. It goes into the text when its field lets go, or sooner if
+/// What's being typed over.
+#[derive(Clone, Debug)]
+pub(crate) enum TypedAt {
+    /// A value of an entry on the timeline, by the path [`edits::entry_values`] gives it.
+    Entry { entry: EntryRef, path: String },
+    /// A property of any document.
+    Property { document: AssetId, path: PropertyPath, label: String },
+}
+
+impl TypedAt {
+    fn label(&self) -> &str {
+        match self {
+            Self::Entry { path, .. } => path,
+            Self::Property { label, .. } => label,
+        }
+    }
+}
+
+/// A value being typed in an inspector. It goes into the text when its field lets go, or sooner if
 /// anything needs the text whole, so half a name is no edit and a field's whole session is one step of
 /// undo. Meanwhile it counts as an edit ([`Editor::is_dirty`]) and the text holds still under it: every
 /// other edit, undo, redo and a save take it first, and a change on disk waits.
 #[derive(Clone, Debug)]
-struct Typed {
-    entry: EntryRef,
-    path: String,
+pub(crate) struct Typed {
+    at: TypedAt,
     field: egui::Id,
     text: String,
     /// Why the text wouldn't have it, the last time it tried. It stays in its field, since it's a person's
@@ -145,9 +261,15 @@ impl Editor {
     pub fn new(options: Options) -> Self {
         let address = options.link.unwrap_or_else(|| DEFAULT_LINK.parse().expect("a good default"));
         let mut editor = Self {
-            file: None,
-            documents: Vec::new(),
-            open_path: String::new(),
+            documents: DocumentSet::new(Vec::new()),
+            moves: None,
+            current: None,
+            shell: Shell::new(),
+            layout: None,
+            browser: browser::Browser::default(),
+            properties: properties::PropertiesPanel::default(),
+            cvar_panel: cvars::CvarPanel::default(),
+            now: 0.0,
             content: options.content,
             cook: CookState::default(),
             judged: None,
@@ -174,61 +296,232 @@ impl Editor {
             address_text: address.to_string(),
             notice: None,
             last_poll: 0.0,
+            next_rescan: RESCAN_SECONDS,
             quit: Quit::No,
             closed_unseen: false,
-            opening: None,
+            closing: None,
             typed: None,
             typing_number: None,
         };
         if let Some(path) = options.file {
             editor.open(&path);
         }
-        if editor.file.is_none() {
-            // With no file named, or none there, the list is the only way to one.
-            editor.documents =
-                std::env::current_dir().map_or_else(|_| Vec::new(), |dir| documents_around(&dir));
+        // With no file named, or none there, the browser is the way to one, so it looks around where it started.
+        if editor.current.is_none()
+            && let Ok(dir) = std::env::current_dir()
+        {
+            editor.add_roots_around(&dir, false);
+        }
+        if let Err(error) = editor.documents.rescan() {
+            tracing::warn!(%error, "couldn't look at what's under the roots");
         }
         editor
     }
 
-    /// A document was picked: it opens at once, unless that would lose edits, and then the top bar asks.
-    pub fn request_open(&mut self, path: &Path) {
-        if self.is_dirty() {
-            self.opening = Some(path.to_owned());
-        } else {
-            self.open(path);
+    /// Keeps the layout in a file from now on, starting from what's there. One that doesn't read is left there
+    /// until the layout changes, and the notice says so.
+    pub fn keep_layout_at(&mut self, path: PathBuf) {
+        match fs::read_to_string(&path) {
+            Ok(saved) => {
+                if let Err(error) = self.shell.restore_layout(&saved) {
+                    self.notice = Some(Notice {
+                        text: format!("{}: {error}: starting from the usual layout", path.display()),
+                        trouble: true,
+                    });
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                self.notice = Some(Notice { text: format!("{}: {error}", path.display()), trouble: true });
+            }
+        }
+        self.layout = Some((path, None));
+    }
+
+    /// Writes the layout if it's changed, whole. It's a convenience, so trouble with it is only logged.
+    fn persist_layout(&mut self) {
+        let Some((path, Some(saved))) = &mut self.layout else { return };
+        if *saved == self.shell.tree {
+            return;
+        }
+        saved.clone_from(&self.shell.tree);
+        let text = match self.shell.save_layout() {
+            Ok(text) => text,
+            Err(error) => {
+                tracing::warn!(%error, "the layout wasn't kept");
+                return;
+            }
+        };
+        if let Err(error) = Temporary::beside(path, &text).and_then(|temporary| temporary.replace(path)) {
+            tracing::warn!(%error, path = %path.display(), "the layout wasn't kept");
         }
     }
 
-    /// Opens a document, over any edits here. On failure what's open stays open, and the notice says why.
+    /// The shell, for a test to arrange.
+    pub fn shell_mut(&mut self) -> &mut Shell {
+        &mut self.shell
+    }
+
+    #[must_use]
+    pub const fn shell(&self) -> &Shell {
+        &self.shell
+    }
+
+    /// Adds the roots a document at `place` needs: the repository it's in, if it's in one, and, for a file,
+    /// its own folder, so a document anywhere has its neighbours looked at. The set says what overlaps.
+    fn add_roots_around(&mut self, place: &Path, is_file: bool) {
+        let mut roots = self.documents.roots().to_vec();
+        let add = |roots: &mut Vec<PathBuf>, root: PathBuf| {
+            if !roots.contains(&root) {
+                roots.push(root);
+            }
+        };
+        if let Some(root) = repository_around(place) {
+            for folder in REPOSITORY_ROOTS {
+                add(&mut roots, root.join(folder));
+            }
+        }
+        if is_file && let Some(folder) = place.parent() {
+            add(&mut roots, folder.to_owned());
+        }
+        self.documents.set_roots(roots);
+    }
+
+    /// Opens a document, or goes to it if it's open already. On failure what's open stays open, and the notice
+    /// says why. What's being typed goes in first, or nothing opens until it's fixed or dropped.
     pub fn open(&mut self, path: &Path) {
-        self.opening = None;
-        match MovesFile::open(path) {
-            Ok(file) => {
-                self.open_path = path.display().to_string();
-                if self.content.is_none() {
-                    self.content = find_cook(path);
-                }
-                self.documents = find_documents(path);
-                self.file = Some(file);
-                self.typed = None;
-                // What a device last said was about another file.
-                self.link.clear_push();
-                self.selected_move = 0;
-                self.selected_entry = None;
-                self.tick = 0;
-                self.play_from = 0;
-                self.playing = None;
-                self.judged = None;
-                self.set = None;
-                self.run = None;
+        if !self.take_typed() {
+            self.notice = Some(Notice {
+                text: "nothing opens until what's being typed is fixed or dropped".to_owned(),
+                trouble: true,
+            });
+            return;
+        }
+        let absolute;
+        let path = if path.is_absolute() {
+            path
+        } else {
+            // The browser lists what's under the roots, which are absolute: a row names one file once.
+            absolute = std::env::current_dir().map_or_else(|_| path.to_owned(), |dir| dir.join(path));
+            &absolute
+        };
+        self.add_roots_around(path, true);
+        let kind = Kind::of(path).unwrap_or(Kind::Moves);
+        match kind.open(&mut self.documents, path) {
+            Ok(id) => {
+                // It may be open from before, with a file that's moved on.
+                let noticed = self.documents.refresh();
+                self.say_noticed(noticed);
                 self.notice = None;
-                self.load_cook();
-                self.refresh();
+                self.go_to(id);
+                if kind == Kind::Moves {
+                    self.show_on_timeline(id, path);
+                }
             }
-            Err(error) => {
-                self.notice = Some(Notice { text: error.to_string(), trouble: true });
-            }
+            Err(error) => self.notice = Some(Notice { text: error.to_string(), trouble: true }),
+        }
+    }
+
+    /// Makes `id` the current document.
+    fn go_to(&mut self, id: AssetId) {
+        if self.current != Some(id) {
+            self.current = Some(id);
+            // What a device last said was about another file.
+            self.link.clear_push();
+        }
+    }
+
+    /// Puts a document of moves on the timeline.
+    fn show_on_timeline(&mut self, id: AssetId, path: &Path) {
+        if self.moves == Some(id) {
+            self.refresh();
+            return;
+        }
+        self.moves = Some(id);
+        if self.content.is_none() {
+            self.content = find_cook(path);
+        }
+        self.reset_timeline();
+        self.load_cook();
+        self.refresh();
+    }
+
+    fn reset_timeline(&mut self) {
+        self.selected_move = 0;
+        self.selected_entry = None;
+        self.tick = 0;
+        self.play_from = 0;
+        self.playing = None;
+        self.judged = None;
+        self.verdict = Verdict::default();
+        self.set = None;
+        self.stale = false;
+        self.run = None;
+        self.run_error = None;
+    }
+
+    /// Stops holding the current document, asking first if that would lose edits.
+    pub fn request_close(&mut self) {
+        if !self.take_typed() {
+            return;
+        }
+        let Some(id) = self.current else { return };
+        if self.documents.is_dirty(id) {
+            self.closing = Some(id);
+        } else {
+            self.close(id);
+        }
+    }
+
+    fn close(&mut self, id: AssetId) {
+        self.closing = None;
+        self.documents.close(id);
+        if self.moves == Some(id) {
+            self.moves = None;
+            self.reset_timeline();
+            self.cook.casting = None;
+            self.cook.set = None;
+        }
+        if self.current == Some(id) {
+            self.current = self.moves.or_else(|| self.documents.ids().next());
+            self.link.clear_push();
+        }
+    }
+
+    /// Says what a look at the files found, of anything that isn't shown already.
+    fn say_noticed(&mut self, noticed: Vec<Noticed>) {
+        for noticed in noticed {
+            let name_of = |id: AssetId, documents: &DocumentSet| {
+                documents
+                    .path(id)
+                    .and_then(Path::file_name)
+                    .map_or_else(|| id.to_string(), |name| name.to_string_lossy().into_owned())
+            };
+            let (text, trouble) = match &noticed {
+                Noticed::Taken { .. } => continue,
+                // The top bar shows the current document's.
+                Noticed::Conflict { id } if self.current == Some(*id) => continue,
+                Noticed::Conflict { id } => (
+                    format!("{} changed on disk, and you have edits there", name_of(*id, &self.documents)),
+                    true,
+                ),
+                Noticed::Moved { from, to, .. } => {
+                    (format!("{} is at {} now", from.display(), to.display()), false)
+                }
+                Noticed::Gone { id } => (
+                    format!("{} is gone from disk: a save writes it again", name_of(*id, &self.documents)),
+                    true,
+                ),
+                Noticed::Duplicated { first, second, .. } => (
+                    format!(
+                        "{} and {} hold the same ID: delete the sidecar of the copy",
+                        first.display(),
+                        second.display()
+                    ),
+                    true,
+                ),
+            };
+            self.notice = Some(Notice { text, trouble });
         }
     }
 
@@ -242,12 +535,12 @@ impl Editor {
         self.cook.tried = cooked::newest_pack(&dir);
         match Cook::open(&dir) {
             Ok(cook) => {
-                if let Some(file) = &self.file {
-                    match cook.move_set_of(file.path()) {
+                if let Some(path) = self.moves.and_then(|id| self.documents.path(id)) {
+                    match cook.move_set_of(path) {
                         Ok(set) => self.cook.set = set,
                         Err(why) => self.cook.why_none = Some(why),
                     }
-                    match Figures::for_document(file.path(), &cook) {
+                    match Figures::for_document(path, &cook) {
                         Ok(figures) => self.cook.figures = figures,
                         Err(why) => self.cook.why_none = Some(why),
                     }
@@ -259,21 +552,44 @@ impl Editor {
         self.judged = None;
     }
 
-    /// The open file.
+    /// The document the top bar acts on.
     #[must_use]
-    pub fn file(&self) -> Option<&MovesFile> {
-        self.file.as_ref()
+    pub fn current(&self) -> Option<Current<'_>> {
+        let id = self.current?;
+        Some(Current {
+            id,
+            document: self.documents.any(id)?,
+            path: self.documents.path(id)?,
+            conflict: self.documents.conflict(id),
+        })
     }
 
-    /// Whether there's anything here the file doesn't have: edits, or a value still being typed.
+    /// Every document open.
+    #[must_use]
+    pub const fn documents(&self) -> &DocumentSet {
+        &self.documents
+    }
+
+    /// Every document open, for what a test does as a person would by hand.
+    pub fn documents_mut(&mut self) -> &mut DocumentSet {
+        &mut self.documents
+    }
+
+    /// Whether there's anything here the files don't have: edits in any document, or a value still being typed.
     #[must_use]
     pub fn is_dirty(&self) -> bool {
-        self.typed.is_some() || self.file.as_ref().is_some_and(MovesFile::is_dirty)
+        self.typed.is_some() || !self.documents.dirty().is_empty()
     }
 
-    /// The open file, for edits a test makes as a person would by hand.
-    pub fn file_mut(&mut self) -> Option<&mut MovesFile> {
-        self.file.as_mut()
+    /// The document on the timeline.
+    #[must_use]
+    pub fn moves_document(&self) -> Option<&MovesDocument> {
+        self.documents.get(self.moves?)
+    }
+
+    /// The document on the timeline, for edits a test makes as a person would by hand.
+    pub fn moves_document_mut(&mut self) -> Option<&mut MovesDocument> {
+        self.documents.get_mut(self.moves?)
     }
 
     #[must_use]
@@ -365,8 +681,7 @@ impl Editor {
 
     /// What the text says, or what it last said while it says nothing.
     fn document(&self) -> Option<&MoveSetDocument> {
-        let text = self.file.as_ref()?.moves_text();
-        text.document().or_else(|| text.last_good())
+        self.moves_document()?.last_good()
     }
 
     /// Selects a move by name.
@@ -464,13 +779,13 @@ impl Editor {
 
     /// Runs the document's checks and the preview's run again if the text has changed.
     pub fn refresh(&mut self) {
-        let Some(file) = &self.file else { return };
+        let Some(file) = self.moves_document() else { return };
         if self.judged.as_deref() == Some(file.text()) {
             return;
         }
         let text = file.text().to_owned();
         let changed_before = self.judged.is_some();
-        match file.moves_text().document() {
+        match file.value() {
             Some(document) => {
                 self.verdict = judge(document, self.cook.set.as_ref());
                 self.stale = self.verdict.set.is_none();
@@ -537,12 +852,12 @@ impl Editor {
         }
     }
 
-    /// Saves, then pushes what was saved. A file with nothing new is pushed all the same: a device may have
-    /// started since.
+    /// Saves the current document, then pushes what was saved. A file with nothing new is pushed all the same:
+    /// a device may have started since.
     pub fn save_and_push(&mut self) {
         match self.save() {
             Ok(()) => {
-                let Some(file) = &self.file else { return };
+                let Some(file) = self.current() else { return };
                 let (name, text) = (file.file_name(), file.text().to_owned());
                 self.notice = Some(Notice { text: format!("saved {name}"), trouble: false });
                 self.link.push(name, text);
@@ -551,27 +866,51 @@ impl Editor {
         }
     }
 
-    /// Writes the file, with what's being typed in it. What goes wrong is in a notice's words.
+    /// Writes the current document, with what's being typed in it. What goes wrong is in a notice's words.
     fn save(&mut self) -> Result<(), String> {
         if !self.take_typed() {
             return Err("not saved: what's being typed can't go in".to_owned());
         }
-        let Some(file) = &mut self.file else { return Ok(()) };
-        file.save().map_err(|error| match error {
-            FileError::ChangedOnDisk { .. } => error.to_string(),
-            error => format!("not saved: {error}"),
-        })
+        let Some(id) = self.current else { return Ok(()) };
+        self.documents.save(id).map_err(|error| save_trouble(&error))
+    }
+
+    /// Writes every document with edits, with what's being typed in its own. What goes wrong is in a notice's
+    /// words, and what can be saved is.
+    fn save_all(&mut self) -> Result<(), String> {
+        if !self.take_typed() {
+            return Err("not saved: what's being typed can't go in".to_owned());
+        }
+        let mut failed = self.documents.save_all();
+        match failed.pop() {
+            None => Ok(()),
+            Some((_, error)) if failed.is_empty() => Err(save_trouble(&error)),
+            Some((_, error)) => {
+                Err(format!("{} documents weren't saved: {}", failed.len() + 1, save_trouble(&error)))
+            }
+        }
     }
 
     /// Puts what's being typed into the text, as one step of undo. False if the text won't have it: it
     /// stays in its field, and the top bar says why.
     fn take_typed(&mut self) -> bool {
         let Some(typed) = self.typed.take() else { return true };
-        let Some(file) = &mut self.file else { return true };
-        let label = format!("edit {}", typed.path);
-        match file.edit(&label, |text| text.set_entry_value(typed.entry, &typed.path, &typed.text)) {
+        let label = format!("edit {}", typed.at.label());
+        let result: Result<(), EditError> = match &typed.at {
+            TypedAt::Entry { entry, path } => {
+                let Some(document) = self.moves_document_mut() else { return true };
+                document
+                    .together(&label, |document| edits::set_entry_value(document, *entry, path, &typed.text))
+            }
+            TypedAt::Property { document, path, .. } => {
+                let Some(document) = self.documents.any_mut(*document) else { return true };
+                document.set_spelled(&label, path, &typed.text).map(|_| ()).map_err(EditError::from)
+            }
+        };
+        match result {
             Ok(()) => {
                 self.notice = None;
+                self.link.clear_push();
                 self.refresh();
                 true
             }
@@ -601,13 +940,13 @@ impl Editor {
     /// So does a number's typing, when its field lets go, which Escape takes back, or at a press, since a
     /// field keeps the keyboard until the click ends and what the click does is another step.
     fn settle_gesture(&mut self, ui: &Ui) {
-        if let Some(field) = self.typing_number {
+        if let Some((field, id)) = self.typing_number {
             if ui.memory(|memory| memory.has_focus(field)) && !ui.input(|input| input.pointer.any_pressed()) {
                 return;
             }
             self.typing_number = None;
             let taken_back = ui.input(|input| input.key_pressed(Key::Escape));
-            if let Some(file) = &mut self.file {
+            if let Some(file) = self.documents.any_mut(id) {
                 if taken_back {
                     file.cancel_gesture();
                 } else {
@@ -622,10 +961,13 @@ impl Editor {
             return;
         }
         self.drag = None;
-        if let Some(file) = &mut self.file
-            && file.in_gesture()
-        {
-            file.end_gesture();
+        let ids: Vec<AssetId> = self.documents.ids().collect();
+        for id in ids {
+            if let Some(file) = self.documents.any_mut(id)
+                && file.in_gesture()
+            {
+                file.end_gesture();
+            }
         }
     }
 
@@ -648,7 +990,7 @@ impl Editor {
         if std::mem::replace(&mut self.closed_unseen, true) {
             return;
         }
-        self.quit = match self.save() {
+        self.quit = match self.save_all() {
             Ok(()) => Quit::Yes,
             Err(_) if self.quit == Quit::Asking => {
                 tracing::error!(
@@ -683,16 +1025,18 @@ impl Editor {
             self.typed = None;
             return;
         }
-        if let Some(file) = &mut self.file
-            && file.undo()
-        {
+        let Some(file) = self.current.and_then(|id| self.documents.any_mut(id)) else { return };
+        if file.undo() {
             self.after_history();
+        } else if let Some(why) = file.why_no_undo() {
+            // At history's floor: it's not that nothing was ever done, and the file doesn't have this text.
+            self.notice = Some(Notice { text: why, trouble: false });
         }
     }
 
     pub fn redo(&mut self) {
         if self.take_typed()
-            && let Some(file) = &mut self.file
+            && let Some(file) = self.current.and_then(|id| self.documents.any_mut(id))
             && file.redo()
         {
             self.after_history();
@@ -701,6 +1045,7 @@ impl Editor {
 
     fn after_history(&mut self) {
         self.notice = None;
+        self.link.clear_push();
         self.refresh();
         self.check_selection();
     }
@@ -719,13 +1064,15 @@ impl Editor {
     fn edit<T>(
         &mut self,
         label: &str,
-        edit: impl FnOnce(&mut MovesText) -> Result<T, EditError>,
+        edit: impl FnOnce(&mut MovesDocument) -> Result<T, EditError>,
     ) -> Option<T> {
         if !self.take_typed() {
             return None;
         }
-        let file = self.file.as_mut()?;
-        match file.edit(label, edit) {
+        let id = self.moves?;
+        self.go_to(id);
+        let file = self.moves_document_mut()?;
+        match file.together(label, edit) {
             Ok(result) => {
                 self.notice = None;
                 self.refresh();
@@ -748,12 +1095,12 @@ impl Editor {
                 self.begin_gesture(&label);
             }
             Action::EndGesture => {
-                if let Some(file) = &mut self.file {
+                if let Some(file) = self.moves_document_mut() {
                     file.end_gesture();
                 }
             }
             Action::SetWindow { entry, from, to, part } => {
-                self.edit("edit a window", |text| text.set_window(entry, from, to));
+                self.edit("edit a window", |text| edits::set_window(text, entry, from, to));
                 // The preview shows the tick the drag has hold of.
                 let tick = match part {
                     Part::Start | Part::Body => from,
@@ -762,11 +1109,11 @@ impl Editor {
                 self.set_tick(tick);
             }
             Action::SetInstant { entry, at } => {
-                self.edit("move an instant", |text| text.set_instant(entry, at));
+                self.edit("move an instant", |text| edits::set_instant(text, entry, at));
                 self.set_tick(at);
             }
             Action::SetPhases { mv, phases, edge } => {
-                self.edit("edit the phases", |text| text.set_phases(mv, phases));
+                self.edit("edit the phases", |text| edits::set_phases(text, mv, phases));
                 let tick = match edge {
                     PhaseEdge::StartupEnd => phases.startup,
                     PhaseEdge::ActiveEnd => phases.startup + phases.active,
@@ -782,7 +1129,10 @@ impl Editor {
     fn begin_gesture(&mut self, label: &str) {
         self.take_typed();
         self.typing_number = None;
-        if let Some(file) = &mut self.file {
+        if let Some(id) = self.moves {
+            self.go_to(id);
+        }
+        if let Some(file) = self.moves_document_mut() {
             file.begin_gesture(label);
         }
     }
@@ -795,7 +1145,7 @@ impl Editor {
         let Some(mv) = document.moves.get(mv_index) else { return };
         let entry = default_entry(document, mv, track, tick);
         let label = format!("add to {}", timeline::title(track));
-        if let Some(added) = self.edit(&label, |text| text.insert_entry(mv_index, track, &entry)) {
+        if let Some(added) = self.edit(&label, |text| edits::insert_entry(text, mv_index, track, &entry)) {
             self.selected_entry = Some(added);
         }
     }
@@ -804,7 +1154,7 @@ impl Editor {
     pub fn delete_selected(&mut self) {
         let Some(entry) = self.selected_entry else { return };
         let label = format!("delete from {}", timeline::title(entry.track));
-        if self.edit(&label, |text| text.delete_entry(entry)).is_some() {
+        if self.edit(&label, |text| edits::delete_entry(text, entry)).is_some() {
             self.selected_entry = None;
         }
     }
@@ -816,12 +1166,12 @@ impl Editor {
         let Some(span) = entry.track.spans(mv).get(entry.index).copied() else { return };
         let tick = self.tick;
         if entry.track.is_instant() {
-            self.edit("move an instant", |text| text.set_instant(entry, tick));
+            self.edit("move an instant", |text| edits::set_instant(text, entry, tick));
         } else if start {
-            self.edit("set a window's start", |text| text.set_window(entry, tick, span.to));
+            self.edit("set a window's start", |text| edits::set_window(text, entry, tick, span.to));
         } else {
             // The playhead's tick is the window's last open tick.
-            self.edit("set a window's end", |text| text.set_window(entry, span.from, tick + 1));
+            self.edit("set a window's end", |text| edits::set_window(text, entry, span.from, tick + 1));
         }
     }
 
@@ -833,9 +1183,9 @@ impl Editor {
         let from = (i64::from(span.from) + by).max(0) as u32;
         let to = from + span.to.saturating_sub(span.from);
         if entry.track.is_instant() {
-            self.edit("nudge an instant", |text| text.set_instant(entry, from));
+            self.edit("nudge an instant", |text| edits::set_instant(text, entry, from));
         } else {
-            self.edit("nudge a window", |text| text.set_window(entry, from, to));
+            self.edit("nudge a window", |text| edits::set_window(text, entry, from, to));
         }
         self.set_tick(from);
     }
@@ -847,11 +1197,22 @@ impl Editor {
             return;
         }
         self.last_poll = now;
-        if self.typed.is_none()
-            && let Some(file) = &mut self.file
-        {
-            file.poll_disk();
+        if self.typed.is_none() {
+            let noticed = self.documents.refresh();
+            self.say_noticed(noticed);
         }
+        let in_gesture =
+            self.documents.ids().any(|id| self.documents.any(id).is_some_and(|file| file.in_gesture()));
+        if now >= self.next_rescan && !in_gesture && self.typed.is_none() {
+            let look = Stopwatch::start();
+            match self.documents.rescan() {
+                Ok(noticed) => self.say_noticed(noticed),
+                Err(error) => tracing::warn!(%error, "couldn't look at what's under the roots"),
+            }
+            // A document in a folder far larger than a repository costs far more: looks never take over 1%.
+            self.next_rescan = now + RESCAN_SECONDS.max(look.elapsed().as_secs_f64() * 100.0);
+        }
+        self.persist_layout();
         if self.cook_changed() {
             self.load_cook();
         }
@@ -866,7 +1227,7 @@ impl Editor {
             return cook.is_stale();
         }
         if self.content.is_none() {
-            self.content = self.file.as_ref().and_then(|file| find_cook(file.path()));
+            self.content = self.moves.and_then(|id| self.documents.path(id)).and_then(find_cook);
         }
         let newest = self.content.as_deref().and_then(cooked::newest_pack);
         newest.is_some() && newest != self.cook.tried
@@ -876,6 +1237,7 @@ impl Editor {
     pub fn ui(&mut self, ui: &mut Ui) {
         self.closed_unseen = false;
         let now = ui.input(|input| input.time);
+        self.now = now;
         self.poll(now);
         self.advance_playback(now);
         self.keys(ui, now);
@@ -888,22 +1250,17 @@ impl Editor {
 
         ui.painter().rect_filled(ui.max_rect(), 0.0, ui.visuals().panel_fill);
         egui::Panel::top("editor top").show(ui, |ui| self.top_bar(ui));
-        egui::Panel::left("editor moves")
-            .default_size(170.0)
-            .size_range(120.0..=300.0)
-            .show(ui, |ui| self.moves_list(ui));
-        egui::Panel::right("editor side").default_size(290.0).size_range(220.0..=460.0).show(ui, |ui| {
-            egui::ScrollArea::vertical().id_salt("side").show(ui, |ui| {
-                self.inspector(ui);
-                ui.separator();
-                self.device_panel(ui);
-            });
+        self.cvar_panel.drawn = false;
+        egui::CentralPanel::no_frame().show(ui, |ui| {
+            // Out of the way of the panes it draws, which are the rest of `self`.
+            let mut shell = std::mem::replace(&mut self.shell, Shell::taken());
+            shell.ui(ui, self);
+            self.shell = shell;
         });
-        egui::Panel::bottom("editor timeline")
-            .resizable(true)
-            .default_size(340.0)
-            .show(ui, |ui| self.timeline_panel(ui));
-        egui::CentralPanel::default_margins().show(ui, |ui| self.preview_panel(ui, now));
+        if let Some((_, saved @ None)) = &mut self.layout {
+            *saved = Some(self.shell.tree.clone());
+        }
+        self.link.want_cvars(self.cvar_panel.drawn);
         self.settle_gesture(ui);
         self.settle_typed(ui);
     }
@@ -964,23 +1321,12 @@ impl Editor {
     fn top_bar(&mut self, ui: &mut Ui) {
         ui.add_space(3.0);
         ui.horizontal(|ui| {
-            let name = self.file.as_ref().map_or_else(|| "no file".to_owned(), MovesFile::file_name);
-            let title = if self.is_dirty() { format!("{name} *") } else { name };
-            let mut open = None;
-            egui::ComboBox::from_id_salt("documents").selected_text(title).width(210.0).show_ui(ui, |ui| {
-                for path in &self.documents {
-                    let shown =
-                        path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
-                    if ui.selectable_label(false, shown).on_hover_text(path.display().to_string()).clicked() {
-                        open = Some(path.clone());
-                    }
-                }
-            });
-            if let Some(path) = open {
-                self.request_open(&path);
-            }
+            let name = self.current().map_or_else(|| "no file".to_owned(), |file| file.file_name());
+            let dirty = self.typed.is_some() || self.current().is_some_and(|file| file.is_dirty());
+            let title = if dirty { format!("{name} *") } else { name };
+            ui.label(RichText::new(title).strong());
 
-            let has_file = self.file.is_some();
+            let has_file = self.current.is_some();
             if ui
                 .add_enabled(has_file, egui::Button::new("Save and push"))
                 .on_hover_text("Cmd+S, or Ctrl+S")
@@ -988,15 +1334,18 @@ impl Editor {
             {
                 self.save_and_push();
             }
-            let undo = self.file.as_ref().and_then(MovesFile::undo_label).map(ToOwned::to_owned);
+            let undo = self.current().and_then(|file| file.undo_label()).map(ToOwned::to_owned);
+            // History's floor is worth a click: it says why there's nothing there.
+            let floor = self.current().and_then(|file| file.document().why_no_undo());
+            let hover = undo.clone().or_else(|| floor.clone()).unwrap_or_default();
             if ui
-                .add_enabled(undo.is_some(), egui::Button::new("Undo"))
-                .on_hover_text(undo.unwrap_or_default())
+                .add_enabled(undo.is_some() || floor.is_some(), egui::Button::new("Undo"))
+                .on_hover_text(hover)
                 .clicked()
             {
                 self.undo();
             }
-            let redo = self.file.as_ref().and_then(MovesFile::redo_label).map(ToOwned::to_owned);
+            let redo = self.current().and_then(|file| file.redo_label()).map(ToOwned::to_owned);
             if ui
                 .add_enabled(redo.is_some(), egui::Button::new("Redo"))
                 .on_hover_text(redo.unwrap_or_default())
@@ -1004,6 +1353,21 @@ impl Editor {
             {
                 self.redo();
             }
+            if ui.add_enabled(has_file, egui::Button::new("Close file")).clicked() {
+                self.request_close();
+            }
+            ui.menu_button("Panes", |ui| {
+                for pane in Pane::ALL {
+                    let mut open = self.shell.is_open(pane);
+                    if ui.checkbox(&mut open, pane.title()).changed() {
+                        if open {
+                            self.shell.open(pane);
+                        } else {
+                            self.shell.close(pane);
+                        }
+                    }
+                }
+            });
             ui.separator();
             let device = self.link.device();
             let (dot, words) = match device {
@@ -1033,7 +1397,7 @@ impl Editor {
             ui.horizontal(|ui| {
                 ui.colored_label(Color32::from_rgb(255, 170, 90), "You have edits that aren't saved.");
                 if ui.button("Save and quit").clicked() {
-                    match self.save() {
+                    match self.save_all() {
                         Ok(()) => self.quit = Quit::Yes,
                         Err(text) => {
                             self.notice = Some(Notice { text, trouble: true });
@@ -1049,27 +1413,27 @@ impl Editor {
                 }
             });
         }
-        if let Some(path) = self.opening.clone() {
+        if let Some(id) = self.closing {
             ui.horizontal(|ui| {
                 ui.colored_label(Color32::from_rgb(255, 170, 90), "You have edits that aren't saved.");
-                if ui.button("Save and open").clicked() {
-                    match self.save() {
-                        Ok(()) => self.open(&path),
-                        Err(text) => {
-                            self.notice = Some(Notice { text, trouble: true });
-                            self.opening = None;
+                if ui.button("Save and close").clicked() {
+                    match self.documents.save(id) {
+                        Ok(()) => self.close(id),
+                        Err(error) => {
+                            self.notice = Some(Notice { text: save_trouble(&error), trouble: true });
+                            self.closing = None;
                         }
                     }
                 }
-                if ui.button("Open without saving").clicked() {
-                    self.open(&path);
+                if ui.button("Close without saving").clicked() {
+                    self.close(id);
                 }
                 if ui.button("Keep editing").clicked() {
-                    self.opening = None;
+                    self.closing = None;
                 }
             });
         }
-        if let Some(conflict) = self.file.as_ref().and_then(MovesFile::conflict) {
+        if let (Some(id), Some(conflict)) = (self.current, self.current().and_then(|file| file.conflict())) {
             let (said, can_take) = match conflict {
                 Conflict::Text(_) => ("The file changed on disk, and you have edits here.", true),
                 Conflict::NotText => (
@@ -1079,36 +1443,56 @@ impl Editor {
             };
             ui.horizontal(|ui| {
                 ui.colored_label(Color32::from_rgb(255, 170, 90), said);
+                if can_take && ui.button("Take the file's").clicked() {
+                    self.typed = None;
+                    self.documents.take_disk(id);
+                    self.after_take();
+                }
                 if can_take
-                    && ui.button("Take the file's").clicked()
-                    && let Some(file) = &mut self.file
+                    && ui
+                        .button("Mine on top of the file's")
+                        .on_hover_text("Each edit that still fits goes back")
+                        .clicked()
                 {
                     self.typed = None;
-                    file.take_disk();
-                    self.refresh();
+                    if let Some(rebased) = self.documents.rebase(id) {
+                        self.notice = Some(rebase_notice(&rebased));
+                    }
+                    self.after_take();
                 }
-                if ui.button("Keep mine").clicked()
-                    && let Some(file) = &mut self.file
-                {
-                    file.keep_mine();
+                if ui.button("Keep mine").clicked() {
+                    self.documents.keep_mine(id);
                 }
             });
         }
         if let Some(typed) = &self.typed
             && let Some(why) = &typed.refused
         {
-            let entry = typed.entry;
-            let said = format!(
-                "`{}` can't go in {} {}'s {}, and nothing else can until it's fixed or dropped: {why}",
-                typed.text,
-                timeline::title(entry.track),
-                entry.index,
-                typed.path,
-            );
+            let entry = match &typed.at {
+                TypedAt::Entry { entry, .. } => Some(*entry),
+                TypedAt::Property { .. } => None,
+            };
+            let said = match entry {
+                Some(entry) => format!(
+                    "`{}` can't go in {} {}'s {}, and nothing else can until it's fixed or dropped: {why}",
+                    typed.text,
+                    timeline::title(entry.track),
+                    entry.index,
+                    typed.at.label(),
+                ),
+                None => format!(
+                    "`{}` can't go in {}, and nothing else can until it's fixed or dropped: {why}",
+                    typed.text,
+                    typed.at.label(),
+                ),
+            };
             ui.horizontal(|ui| {
-                if ui.button("Show it").clicked() {
+                if let Some(entry) = entry
+                    && ui.button("Show it").clicked()
+                {
                     self.choose_move(entry.mv);
                     self.selected_entry = Some(entry);
+                    self.shell.open(Pane::Inspector);
                 }
                 if ui.button("Drop it").clicked() {
                     self.typed = None;
@@ -1116,14 +1500,13 @@ impl Editor {
                 ui.colored_label(Color32::from_rgb(255, 120, 110), said);
             });
         }
-        if let Some(failure) = self.file.as_ref().and_then(|file| file.moves_text().failure()) {
-            let message = failure.message().to_owned();
+        if let Some(message) = self.current().and_then(|file| file.document().failure_message()) {
             ui.colored_label(
                 Color32::from_rgb(255, 120, 110),
                 format!("This can't be edited until the file reads again. {message}"),
             );
         }
-        if let Some(line) = self.file.as_ref().and_then(|file| generated_by(file.text())) {
+        if let Some(line) = self.current().and_then(|file| generated_by(file.text())) {
             ui.colored_label(Color32::from_rgb(235, 190, 110), line);
         }
         if let Some(notice) = &self.notice {
@@ -1134,9 +1517,14 @@ impl Editor {
         ui.add_space(2.0);
     }
 
+    /// What taking a file's text leaves to do.
+    fn after_take(&mut self) {
+        self.link.clear_push();
+        self.refresh();
+        self.check_selection();
+    }
+
     fn moves_list(&mut self, ui: &mut Ui) {
-        ui.add_space(4.0);
-        ui.label(RichText::new("Moves").strong());
         let Some(document) = self.document() else { return };
         let problems = self.problems();
         let rows: Vec<(usize, String, u32, usize)> = document
@@ -1184,7 +1572,7 @@ impl Editor {
             .run
             .as_ref()
             .map_or_else(Vec::new, |run| run.hits().filter(|hit| hit.on_dummy).map(|hit| hit.tick).collect());
-        let editable = self.file.as_ref().is_some_and(|file| file.moves_text().failure().is_none());
+        let editable = self.moves_document().is_some_and(|file| file.failure().is_none());
         let view = TimelineView {
             mv: &mv,
             mv_index: self.selected_move,
@@ -1404,35 +1792,35 @@ impl Editor {
         let Some(mv) = document.moves.get(entry.mv) else { return };
         let Some(span) = entry.track.spans(mv).get(entry.index).copied() else { return };
         let (from, to, is_instant) = (span.from, span.to, entry.track.is_instant());
-        let editable = self.file.as_ref().is_some_and(|file| file.moves_text().failure().is_none());
+        let editable = self.moves_document().is_some_and(|file| file.failure().is_none());
         ui.add_enabled_ui(editable, |ui| {
             egui::Grid::new("entry ticks").num_columns(2).show(ui, |ui| {
                 if is_instant {
                     let mut at = from;
                     ui.label("at");
                     let response = ui.add(egui::DragValue::new(&mut at).speed(0.25));
-                    self.number_gesture(&response, "move an instant");
+                    self.timeline_number_gesture(&response, "move an instant");
                     if response.changed() {
-                        self.edit("move an instant", |text| text.set_instant(entry, at));
+                        self.edit("move an instant", |text| edits::set_instant(text, entry, at));
                     }
                     ui.end_row();
                 } else {
                     let (mut new_from, mut new_to) = (from, to);
                     ui.label("from");
                     let response = ui.add(egui::DragValue::new(&mut new_from).speed(0.25));
-                    self.number_gesture(&response, "edit a window");
+                    self.timeline_number_gesture(&response, "edit a window");
                     let from_changed = response.changed();
                     ui.end_row();
                     ui.label("to");
                     let response = ui.add(egui::DragValue::new(&mut new_to).speed(0.25));
-                    self.number_gesture(&response, "edit a window");
+                    self.timeline_number_gesture(&response, "edit a window");
                     if from_changed || response.changed() {
-                        self.edit("edit a window", |text| text.set_window(entry, new_from, new_to));
+                        self.edit("edit a window", |text| edits::set_window(text, entry, new_from, new_to));
                     }
                     ui.end_row();
                 }
             });
-            let values = self.file.as_ref().and_then(|file| file.moves_text().entry_values(entry).ok());
+            let values = self.moves_document().and_then(|file| edits::entry_values(file, entry).ok());
             if let Some(values) = values {
                 egui::Grid::new("entry values").num_columns(2).show(ui, |ui| {
                     for value in values {
@@ -1447,19 +1835,36 @@ impl Editor {
         });
     }
 
-    fn number_gesture(&mut self, response: &egui::Response, label: &str) {
+    fn timeline_number_gesture(&mut self, response: &egui::Response, label: &str) {
+        if let Some(id) = self.moves {
+            self.number_gesture(response, label, id);
+        }
+    }
+
+    /// A number's drag, or its typing, is one step of undo on its document.
+    fn number_gesture(&mut self, response: &egui::Response, label: &str, id: AssetId) {
         if response.drag_started() {
-            self.begin_gesture(label);
+            self.begin_gesture_on(id, label);
         }
         if response.drag_stopped()
-            && let Some(file) = &mut self.file
+            && let Some(file) = self.documents.any_mut(id)
         {
             file.end_gesture();
         }
         let held = response.ctx.input(|input| input.pointer.any_down());
-        if response.has_focus() && !held && self.file.as_ref().is_some_and(|file| !file.in_gesture()) {
-            self.begin_gesture(label);
-            self.typing_number = Some(response.id);
+        let idle = self.documents.any(id).is_some_and(|file| !file.in_gesture());
+        if response.has_focus() && !held && idle {
+            self.begin_gesture_on(id, label);
+            self.typing_number = Some((response.id, id));
+        }
+    }
+
+    fn begin_gesture_on(&mut self, id: AssetId, label: &str) {
+        self.take_typed();
+        self.typing_number = None;
+        self.go_to(id);
+        if let Some(file) = self.documents.any_mut(id) {
+            file.begin_gesture(label);
         }
     }
 
@@ -1476,28 +1881,17 @@ impl Editor {
                 egui::DragValue::new(&mut shown).speed(0.01).fixed_decimals(decimals)
             };
             let response = ui.add(drag);
-            self.number_gesture(&response, &label);
+            self.timeline_number_gesture(&response, &label);
             if response.changed() {
                 let literal =
                     if is_int { format!("{}", shown.round() as i64) } else { format!("{shown:.decimals$}") };
-                self.edit(&label, |text| text.set_entry_value(entry, &value.path, &literal));
+                self.edit(&label, |text| edits::set_entry_value(text, entry, &value.path, &literal));
             }
         } else {
             // A name or a bare word, as the file writes it: see `Typed`.
             let field = egui::Id::unique(("inspector value", entry, &value.path));
-            let typed = self.typed.as_ref();
-            let here = typed.filter(|typed| typed.field == field);
-            let waiting_elsewhere =
-                typed.is_some_and(|typed| typed.refused.is_some() && typed.field != field);
-            let mut buffer = here.map_or_else(|| value.literal.clone(), |typed| typed.text.clone());
-            let mut edit = TextEdit::singleline(&mut buffer).id(field).desired_width(150.0);
-            if here.is_some_and(|typed| typed.refused.is_some()) {
-                edit = edit.text_color(Color32::from_rgb(255, 120, 110));
-            }
-            if ui.add_enabled(!waiting_elsewhere, edit).changed() {
-                let typed = Typed { entry, path: value.path.clone(), field, text: buffer, refused: None };
-                self.keep_typing(typed, &value.literal);
-            }
+            let at = TypedAt::Entry { entry, path: value.path.clone() };
+            self.text_field(ui, field, at, &value.literal);
         }
         ui.end_row();
     }
@@ -1507,6 +1901,15 @@ impl Editor {
     fn keep_typing(&mut self, typed: Typed, literal: &str) {
         let elsewhere = self.typed.as_ref().is_some_and(|other| other.field != typed.field);
         if !elsewhere || self.take_typed() {
+            // What's typed belongs to its document, so that's the one a save or an undo means from here on.
+            match &typed.at {
+                TypedAt::Entry { .. } => {
+                    if let Some(id) = self.moves {
+                        self.go_to(id);
+                    }
+                }
+                TypedAt::Property { document, .. } => self.go_to(*document),
+            }
             self.typed = (typed.text != literal).then_some(typed);
         }
     }
@@ -1542,11 +1945,10 @@ impl Editor {
     }
 
     fn device_panel(&mut self, ui: &mut Ui) {
-        ui.label(RichText::new("Device").strong());
         match self.link.device() {
             Some(status) => {
                 ui.label(format!("{}, cook `{}`", status.platform, status.cook));
-                let name = self.file.as_ref().map(MovesFile::file_name).unwrap_or_default();
+                let name = self.current().map(|file| file.file_name()).unwrap_or_default();
                 let taken = status.documents.iter().find(|document| document.source.ends_with(name.as_str()));
                 match taken {
                     Some(document) => {
@@ -1633,6 +2035,68 @@ impl Editor {
     }
 }
 
+impl PaneUi for Editor {
+    fn pane_ui(&mut self, ui: &mut Ui, pane: Pane) {
+        let margin = egui::Frame::new().inner_margin(4);
+        margin.show(ui, |ui| match pane {
+            Pane::Browser => self.browser_panel(ui),
+            Pane::Moves => self.moves_list(ui),
+            Pane::Timeline => self.timeline_panel(ui),
+            Pane::Preview => self.preview_panel(ui, self.now),
+            Pane::Inspector => {
+                egui::ScrollArea::vertical().id_salt("inspector").auto_shrink([false, false]).show(
+                    ui,
+                    |ui| {
+                        self.inspector(ui);
+                    },
+                );
+            }
+            Pane::Properties => self.properties_panel(ui),
+            Pane::Cvars => self.cvars_panel(ui),
+            Pane::Device => {
+                egui::ScrollArea::vertical().id_salt("device").auto_shrink([false, false]).show(ui, |ui| {
+                    self.device_panel(ui);
+                });
+            }
+        });
+    }
+}
+
+/// A save's trouble, in a notice's words.
+fn save_trouble(error: &SetError) -> String {
+    match error {
+        SetError::ChangedOnDisk { .. } => error.to_string(),
+        error => format!("not saved: {error}"),
+    }
+}
+
+/// What a rebase came to, in a notice's words.
+fn rebase_notice(rebased: &Rebased) -> Notice {
+    if rebased.beneath {
+        return Notice {
+            text: "took the file's text: history can't say which edits weren't saved, so they're in undo"
+                .to_owned(),
+            trouble: true,
+        };
+    }
+    match rebased.refused.first() {
+        None => Notice {
+            text: format!("took the file's text, and {} edits went back on top", rebased.kept),
+            trouble: false,
+        },
+        Some(first) => Notice {
+            text: format!(
+                "took the file's text: {} edits went back on top and {} didn't, the first of them `{}`: {}",
+                rebased.kept,
+                rebased.refused.len(),
+                first.label,
+                first.why,
+            ),
+            trouble: true,
+        },
+    }
+}
+
 /// Whether the current move should have had a figure and didn't.
 fn posed_missing(cook: &CookState, document: Option<&MoveSetDocument>) -> bool {
     document.is_some() && cook.casting.is_none()
@@ -1707,46 +2171,19 @@ fn find_cook(document: &Path) -> Option<PathBuf> {
     start.ancestors().skip(1).map(|dir| dir.join("target/content/desktop")).find(|dir| dir.is_dir())
 }
 
-/// Every `.moves.ron` under the repository a document is in, for the file list.
-fn find_documents(document: &Path) -> Vec<PathBuf> {
-    let start = if document.is_absolute() {
-        document.to_owned()
-    } else {
-        std::env::current_dir().map_or_else(|_| document.to_owned(), |dir| dir.join(document))
-    };
-    let mut found = documents_around(&start);
-    found.push(start);
-    found.sort();
-    found.dedup();
-    found
+/// Where documents are in a repository.
+const REPOSITORY_ROOTS: [&str; 2] = ["content", "crates"];
+
+/// The repository `place` is in, if it's in one.
+fn repository_around(place: &Path) -> Option<&Path> {
+    place.ancestors().find(|dir| dir.join("Cargo.toml").is_file() && dir.join("content").is_dir())
 }
 
-/// Every `.moves.ron` under the repository `place` is in, if it's in one.
-fn documents_around(place: &Path) -> Vec<PathBuf> {
-    let root = place.ancestors().find(|dir| dir.join("Cargo.toml").is_file() && dir.join("content").is_dir());
-    let mut found = Vec::new();
-    if let Some(root) = root {
-        for folder in ["content", "crates"] {
-            walk(&root.join(folder), &mut found);
-        }
-    }
-    found.sort();
-    found
-}
-
-fn walk(dir: &Path, found: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Ok(kind) = entry.file_type() else { continue };
-        if kind.is_dir() {
-            if !path.file_name().is_some_and(|name| name == "target" || name == "third_party") {
-                walk(&path, found);
-            }
-        } else if path.file_name().is_some_and(|name| name.to_string_lossy().ends_with(".moves.ron")) {
-            found.push(path);
-        }
-    }
+/// Where a window keeps its layout: under the build folder of the repository it was started in.
+#[must_use]
+pub fn layout_path() -> Option<PathBuf> {
+    let dir = std::env::current_dir().ok()?;
+    Some(repository_around(&dir)?.join("target/editor_layout.ron"))
 }
 
 /// The IDs a test of the preview reads.

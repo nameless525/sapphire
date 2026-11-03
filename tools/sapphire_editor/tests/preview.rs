@@ -13,12 +13,17 @@ use sapphire_core::Name;
 use sapphire_editor::app::figure_of;
 use sapphire_editor::capture::{self, Textures};
 use sapphire_editor::cooked::{Cook, sidecar_id};
-use sapphire_editor::file::judge;
+use sapphire_editor::judge::judge;
 use sapphire_editor::run::{Run, Setup};
 use sapphire_editor::{Editor, Options};
 use sapphire_gameplay::{ActorSpawn, ActorTransform, SimConfig, Simulation, TickActions, volume_pose};
 use sapphire_math::Vec3;
 use sapphire_moves::{Follows, MoveSet, MoveSetDocument};
+
+fn moves_document(text: String) -> sapphire_editor::edits::MovesDocument {
+    let registry = std::sync::Arc::new(sapphire_document::registry_of::<MoveSetDocument>());
+    sapphire_document::Document::open(text, sapphire_document::kinds::moves(), registry)
+}
 
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -214,13 +219,13 @@ fn an_edit_of_the_players_moves_compiles_over_the_cook_as_a_hand_edit_does() {
 
     let hand = source.replacen("to: 11,", "to: 13,", 1);
     assert_ne!(hand, source);
-    let mut text = sapphire_editor::edits::MovesText::new(source);
+    let mut text = moves_document(source);
     let entry =
         sapphire_editor::edits::EntryRef { mv: 0, track: sapphire_editor::edits::Track::Hitboxes, index: 0 };
-    text.set_window(entry, 7, 13).expect("an edit");
+    text.together("an edit", |text| sapphire_editor::edits::set_window(text, entry, 7, 13)).expect("an edit");
     assert_eq!(text.text(), hand, "the text");
 
-    let edited = judge(text.document().expect("it reads"), Some(&running));
+    let edited = judge(text.value().expect("it reads"), Some(&running));
     let by_hand = judge(&MoveSetDocument::parse(&hand).expect("parses"), Some(&running));
     assert!(edited.issues.is_empty(), "{:?}", edited.issues);
     let (edited, by_hand) = (edited.set.expect("compiles"), by_hand.set.expect("compiles"));
@@ -260,12 +265,13 @@ fn what_the_editor_costs() {
 
     let entry =
         sapphire_editor::edits::EntryRef { mv: 0, track: sapphire_editor::edits::Track::Hitboxes, index: 0 };
-    let mut text = sapphire_editor::edits::MovesText::new(source.clone());
+    let mut text = moves_document(source.clone());
     let mut to = 11;
     let edit = least(20, || {
         to = if to == 11 { 12 } else { 11 };
-        text.set_window(entry, 7, to).expect("an edit");
-        let verdict = judge(text.document().expect("it reads"), Some(&set));
+        text.together("an edit", |text| sapphire_editor::edits::set_window(text, entry, 7, to))
+            .expect("an edit");
+        let verdict = judge(text.value().expect("it reads"), Some(&set));
         let set = verdict.set.expect("compiles");
         drop(Run::simulate(&set, "light_1", Setup::default()).expect("runs"));
     });

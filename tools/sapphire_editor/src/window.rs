@@ -141,7 +141,13 @@ impl Drop for EditorApp {
 impl EditorApp {
     fn new(options: Options, window: Window, device: Device) -> Self {
         Self {
-            editor: Editor::new(options),
+            editor: {
+                let mut editor = Editor::new(options);
+                if let Some(path) = sapphire_editor::app::layout_path() {
+                    editor.keep_layout_at(path);
+                }
+                editor
+            },
             ctx: egui::Context::default(),
             input: WindowInput::default(),
             window,

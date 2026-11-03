@@ -2902,12 +2902,24 @@ The `resolve` module's "A perfect dodge", `moves`'s "A counter window" and `test
 - **Identity** is the ID in the `.meta` beside a file, the whole file name with `.meta` added, which a cook already gives a source. There's no second scheme, and a `.meta` keeps the bytes a cook would write. An `ObjectId` is that ID and a path. `sapphire_document::identity` follows the cooker's rules: an ID never changes, and an unreadable sidecar is an error, never replaced; one that's missing is made on opening, whole or not at all, to be committed with its source, because a locked cook refuses a source without one; a source with no sidecar while a sidecar has no source stops, as it does a cook, because a new ID would lose the old; and two sidecars with one ID open neither, until the copy's sidecar is deleted. A document no importer reads, as `default_effects.ron` isn't, has a sidecar of type `sapphire::document::DocumentMeta`, holding only an ID, which a cook leaves alone. `tools/sapphire_pipeline/tests/document_sidecars.rs` holds the two crates to one set of bytes and rules, since neither may look inside the other.
 - **`DocumentSet`** holds the documents open, by ID. Dirty is exactly the bytes differing from those of the last save or take, so an edit undone is clean and so is a file saved elsewhere with the same bytes. A look at the files takes a change if nothing here would be lost, holds it as a conflict if something would, and finds a file gone by its ID, so a rename with its sidecar costs nothing. A save writes through a temporary, checks the file as late as it can, and writes over nothing it hasn't checked. `move_to` moves a file and its sidecar together, over nothing.
 - **Stats (R9):** `DocumentSet::stats` gives documents open, dirty and in conflict, steps, and the bytes of text and history. §3.2 has no budget for a desktop tool's memory, so it's a counter with nothing to hold it to.
-- **Left:** `blank` can't make an `AssetId`, so a new entry that needs one needs a person's pick. A list of values with no names is reached by place, so a rebase holds its guard on the entry at that place. History isn't capped.
+- **Left:** `blank` can't make an `AssetId`, so a new entry that needs one needs a person's pick. A list of values with no names is reached by place, so a rebase holds its guard on the entry at that place.
+
+**As built (M3 E2):** the shell, as `sapphire_editor`, with T3's timeline a pane on the document model and `MovesFile` gone.
+
+- **Panes:** Assets, Moves, Timeline, Preview, Inspector, Properties, Cvars and Device, docked by `egui_tiles` (`shell.rs`), each with a tab to drag and close by. What a pane draws is `PaneUi`'s, so the docking is tested with nothing behind it. A closed pane comes back from the Panes menu. The layout lasts in `target/editor_layout.ron`, RON that isn't a document: `Tiles` keeps a hash map, so its bytes vary and nothing commits one. One that doesn't read is a notice and the usual layout.
+- **Which document:** the timeline shows one document of moves, and the top bar acts on the current one, whichever was last opened or edited. A timeline edit brings its document back. Opening another document doesn't ask, since the set holds what's unsaved and the browser marks it `*`, or `!` if its file changed under it. Close file and quitting ask, and quitting saves them all.
+- **Asset browser:** what's under the roots by kind, as the last look found it, with every other asset with a sidecar listed for its ID. The roots are the repository's `content` and `crates`, plus a file's own folder. A look takes about 15 ms in a debug build of this repository, on the interface's thread, every 5 s and never during a drag or while typing. A far larger folder backs off, so looks stay under 1% of the time. Opening doesn't look unless the last look can't say: before any refusal, a new ID, or a file first gone. Overlapping roots are compared by where they lead, so a nested or differently spelled one adds nothing, and a missing one is empty.
+- **Inspectors:** the timeline's Inspector is T3's, on the selected entry. Properties shows any document from its reflection alone: a number drags, a word is typed as RON, an enum picks a variant, an `Option` turns on and off, a list grows by an entry from its type and an entry can go. Fields go by the file's names. What the parser refuses stays where it was typed. A list reorders nowhere yet.
+- **Cvars:** only a device knows what it has, so live link's protocol 5 lists them (§5.29), and the panel asks once a second only while it's drawn. A set replaces any set of that name still waiting, what's shown takes it at once, and a refusal shows on its row.
+- **History's cap:** 16 MiB a document, counting the structures as well as the text. The oldest whole steps go and the newest always stays, so a large step fits. Undo at the floor does nothing and says why, dirty is untouched, and if the save point went a rebase says it can't tell which edits weren't saved.
+- **The viewport's half:** `ViewportTarget` is the texture with its two views, and `on_pixels` puts it on whole pixels, since a pane's edges fall between them. Off the grid, 58,779 pixels moved by up to 5.
+- **Stats (R9):** `DocumentStats` gains history let go and looks taken. The browser shows documents open, unsaved and history's size.
+- **Left:** E3 draws the renderer into the viewport, and Preview's figure is still the flat one. `egui_plot` isn't a dependency yet, since nothing draws a curve. The look at a folder far larger than a repository stops the interface once, however rarely. A person hasn't dragged a tab: [development-iteration.md](development-iteration.md) lists what's owed.
 
 **How**
 
 - **Document model first** (after The Machinery's "The Truth"):
-  - All editor state is typed objects with GUIDs, kept in `.meta` files, and reflected properties.
+  - All editor state is typed objects with GUIDs, kept in `.meta` files (the text is the object), and reflected properties.
   - Every edit is a change record `(object, property, old, new)`.
   - Undo and redo, copy and paste, dirty tracking and live-link sync all fall out of that one model.
   - Documents save as RON files that are friendly to git.
@@ -2915,8 +2927,8 @@ The `resolve` module's "A perfect dodge", `moves`'s "A counter window" and `test
 - **UI:**
   - `egui` 0.37 with `egui_tiles` for docking.
   - A small translate gizmo of our own. `transform-gizmo` and `egui-snarl` are still on egui 0.36, and graphs stay out until they catch up.
-  - `egui_plot` for curves.
-- **Platform:** the editor runs on `sapphire_platform` (SDL3) too. The viewport is the real engine renderer drawing through the sRGB view of an `Rgba8UnormSrgb` target whose plain `Rgba8Unorm` view egui samples, so the editor and the game share one input and windowing stack.
+  - `egui_plot` for curves (with the first pane that draws one).
+- **Platform:** the editor runs on `sapphire_platform` (SDL3) too. The viewport is the real engine renderer drawing through the sRGB view of an `Rgba8UnormSrgb` target whose plain `Rgba8Unorm` view egui samples, on whole pixels (M3 E2 above), so the editor and the game share one input and windowing stack.
 - **Play-in-editor:** creates a fresh runtime world from a snapshot of the current documents. Game code never mutates documents.
 - **Combat timeline editor**, the highest-value tool:
   - Tracks for hitboxes, hurtboxes and invulnerability, cancel windows, root motion and warp, and cues.
@@ -2936,7 +2948,7 @@ The `resolve` module's "A perfect dodge", `moves`'s "A counter window" and `test
 ### 5.29 `sapphire_livelink` (a dev-build runtime half plus its desktop tool)
 
 - **Transport:** TCP, with postcard-framed messages. The device dev build listens; the editor connects over Wi-Fi or USB (`adb reverse` / `iproxy`).
-- **Editor → device:** change records, recompiled shaders, cooked assets, cvar sets and replay files.
+- **Editor → device:** whole documents as text (not change records, as built), recompiled shaders, cooked assets, cvar sets and replay files.
 - **Device → editor:** stats, logs, screenshots and Tracy (connected directly).
 - **Why it matters:** combat feel and touch controls have to be tuned on the phone, not on the Mac.
 - **As built (M1 A8, what A9 builds on):** the device half applies what it receives through the same calls desktop hot reload uses. A pushed pack goes into a `MemoryPackSource` (or a source that serves pushed packs over the platform's) and `AssetServer::remount` reloads what changed behind the handles, which the app's uploader replaces in place by generation (§5.10); pushed WGSL text goes to `Renderer::set_shader_sources`, which checks it and keeps the old pipelines on an error (§5.12); a pushed document goes to its owner (`TimeOfDay::set_timeline`). Pushing only the changed assets, as a pack mounted over the shared one, is A9's to add.

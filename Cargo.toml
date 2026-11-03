@@ -282,6 +282,8 @@ insta = { version = "1.47", default-features = false }
 # Drives the timeline editor's interface with no window (M2 T3). No `wgpu` feature: it would turn on
 # wgpu's GLES backend for every test build of the workspace, and the editor rasterizes its own captures.
 egui_kittest = { version = "0.37.0", default-features = false }
+# The editor's docking (M3 E2): on the egui above.
+egui_tiles = "0.18.0"
 
 # --- Tools only (never in a runtime crate's dependency tree) ---
 sapphire_document = { path = "tools/sapphire_document" }

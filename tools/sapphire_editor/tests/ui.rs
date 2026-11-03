@@ -16,8 +16,8 @@ use egui_kittest::kittest::{By, NodeT, Queryable};
 use egui_kittest::{Harness, Node};
 use sapphire_assets::MemoryPackSource;
 use sapphire_editor::capture::{self, Textures};
-use sapphire_editor::edits::{EntryRef, Track};
-use sapphire_editor::file::judge;
+use sapphire_editor::edits::{self, EntryRef, Track};
+use sapphire_editor::judge::judge;
 use sapphire_editor::link::Pushed;
 use sapphire_editor::timeline::Action;
 use sapphire_editor::{Editor, Options};
@@ -114,7 +114,10 @@ fn a_capture_of_the_timeline_reads() {
     // The same with a window past the end, to read how a refusal looks.
     let swipe = parse(WARRIOR).moves.iter().position(|mv| mv.name == "swipe").expect("there");
     let entry = EntryRef { mv: swipe, track: Track::Hitboxes, index: 0 };
-    let edit = editor.file_mut().expect("a file").edit("too far", |text| text.set_window(entry, 5, 200));
+    let edit = editor
+        .moves_document_mut()
+        .expect("a file")
+        .together("too far", |text| edits::set_window(text, entry, 5, 200));
     edit.expect("an edit");
     editor.refresh();
     assert!(!editor.problems().is_empty());
@@ -159,7 +162,7 @@ fn the_ui_opens_and_names_its_tracks() {
     let _ = harness.get_by_label("cancels dodge 2..34");
     let _ = harness.get_by_label("cues swing at 7");
     assert_eq!(harness.state().selected_move_name(), Some("light_1"));
-    assert!(harness.state().file().is_some_and(|file| !file.is_dirty()));
+    assert!(harness.state().current().is_some_and(|file| !file.is_dirty()));
     // With no cook it can't preview a move with a clip, and says so; the windows are there all the same.
     assert!(harness.state().frame().is_none());
     assert_eq!(MoveSetDocument::parse(PLAYER).expect("parses").moves.len(), 12);
@@ -201,8 +204,18 @@ fn assert_same(actual: &str, expected: &str, what: &str) {
     panic!("{what}: differs at byte {at}\nactual:   {:?}\nexpected: {:?}", around(actual), around(expected));
 }
 
+/// The browser's row for a document, by what it says. The title bar can say the same words, though it's no button.
+fn browser_row<'a>(harness: &'a Harness<'static, Editor>, name: &'a str) -> Node<'a> {
+    harness.get(By::new().role(Role::Button).label(name))
+}
+
+/// The top bar's name of the current document.
+fn title_saying<'a>(harness: &'a Harness<'static, Editor>, name: &'a str) -> Node<'a> {
+    harness.get(By::new().role(Role::Label).value(name))
+}
+
 fn text_of(harness: &Harness<'static, Editor>) -> String {
-    harness.state().file().expect("a file").text().to_owned()
+    harness.state().current().expect("a file").text().to_owned()
 }
 
 /// `text` with the only `old` in `move_name`'s entry replaced, as someone in a text editor would: found
@@ -312,7 +325,7 @@ fn a_windows_body_a_cue_and_a_phase_edge_drag_in_ticks() {
         harness.state_mut().undo();
     }
     assert_same(&text_of(&harness), PLAYER, "the text");
-    assert!(!harness.state().file().expect("a file").is_dirty());
+    assert!(!harness.state().current().expect("a file").is_dirty());
 }
 
 /// Past what the document allows, a drag still goes where it's dragged: the document's own words say what's
@@ -387,7 +400,7 @@ fn undo_and_redo_keys_walk_one_gesture_at_a_time() {
     harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
     harness.run_steps(2);
     assert_same(&text_of(&harness), PLAYER, "two, the first");
-    assert!(!harness.state().file().expect("a file").is_dirty());
+    assert!(!harness.state().current().expect("a file").is_dirty());
     harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z);
     harness.run_steps(2);
     assert_same(&text_of(&harness), &once, "redo");
@@ -408,12 +421,12 @@ fn a_drag_that_loses_its_button_ends() {
     harness.step();
     harness.hover_at(end + egui::vec2(per_tick, 0.0));
     harness.step();
-    assert!(harness.state().file().expect("a file").in_gesture());
+    assert!(harness.state().current().expect("a file").in_gesture());
     // What the window does when focus goes.
     harness.ctx.input_mut_for(egui::ViewportId::ROOT, |input| input.pointer = egui::PointerState::default());
     harness.ctx.stop_dragging();
     harness.run_steps(2);
-    assert!(!harness.state().file().expect("a file").in_gesture());
+    assert!(!harness.state().current().expect("a file").in_gesture());
     let moved = text_of(&harness);
     assert_ne!(moved, PLAYER);
     harness.state_mut().undo();
@@ -592,65 +605,41 @@ fn closing_with_unsaved_edits_asks_first() {
     assert_eq!(fs::read_to_string(&path).expect("the file"), text_of(&harness));
 }
 
-/// Picking a document in the list with edits here asks first, as closing does, and each answer does what
-/// it says. The list holds the open file too, and picking that would read it over the edits.
+/// Opening another document keeps the edits here, in the set: nothing asks, nothing's written, and the row and
+/// the title say what's waiting. Going back finds them, undo and all.
 #[test]
-fn opening_a_document_with_unsaved_edits_asks_first() {
+fn opening_another_document_keeps_the_edits() {
     let dir = TestDir::new("open_dirty");
     dir.write("Cargo.toml", "");
     fs::create_dir_all(dir.0.join("content")).expect("a folder");
     let path = dir.write("content/player.moves.ron", PLAYER);
-    let other = dir.write("content/warrior.moves.ron", WARRIOR);
-    let name_of = |harness: &Harness<'static, Editor>| harness.state().file().expect("a file").file_name();
+    dir.write("content/warrior.moves.ron", WARRIOR);
+    let name_of = |harness: &Harness<'static, Editor>| harness.state().current().expect("a file").file_name();
     let mut harness = harness(&path);
     harness.run_steps(3);
     let (_, end, per_tick) = handles(&harness, "hit volumes light_1_hit 7..11", 4);
     drag(&mut harness, end, end + egui::vec2(per_tick, 0.0));
     let edited = text_of(&harness);
     assert_ne!(edited, PLAYER);
+    let _ = browser_row(&harness, "player.moves.ron *");
 
-    for picked in ["warrior.moves.ron", "player.moves.ron"] {
-        harness.get_by_value("player.moves.ron *").click();
-        harness.run_steps(2);
-        harness.get_by_label(picked).click();
-        harness.run_steps(2);
-        assert_eq!(text_of(&harness), edited, "picking {picked} lost the edits");
-        harness.get_by_label("Keep editing").click();
-        harness.run_steps(2);
-        assert_eq!(name_of(&harness), "player.moves.ron");
-        assert_eq!(text_of(&harness), edited, "keep editing kept them");
-        assert!(harness.query_by_label("Keep editing").is_none());
-    }
-
-    harness.get_by_value("player.moves.ron *").click();
-    harness.run_steps(2);
-    harness.get_by_label("warrior.moves.ron").click();
-    harness.run_steps(2);
-    harness.get_by_label("Save and open").click();
-    harness.run_steps(2);
+    browser_row(&harness, "warrior.moves.ron").click();
+    harness.run_steps(3);
     assert_eq!(name_of(&harness), "warrior.moves.ron");
-    assert_eq!(fs::read_to_string(&path).expect("the file"), edited, "saved");
+    assert!(harness.query_by_label("Keep editing").is_none(), "nothing to ask");
+    assert_eq!(harness.state().selected_move_name(), Some("swipe"));
+    assert_eq!(fs::read_to_string(&path).expect("the file"), PLAYER, "nothing's written");
+    assert!(harness.state().is_dirty(), "the other's edits count");
+    let _ = browser_row(&harness, "player.moves.ron *");
 
-    // With nothing to lose it opens at once, and the answer that throws edits away does so.
-    harness.state_mut().open(&path);
+    browser_row(&harness, "player.moves.ron *").click();
+    harness.run_steps(3);
+    assert_eq!(text_of(&harness), edited);
+    assert_eq!(harness.state().selected_move_name(), Some("light_1"));
+    harness.state_mut().undo();
     harness.run_steps(2);
-    let (_, end, per_tick) = handles(&harness, "hit volumes light_1_hit 7..12", 5);
-    drag(&mut harness, end, end + egui::vec2(per_tick, 0.0));
-    assert_ne!(text_of(&harness), edited);
-    harness.get_by_value("player.moves.ron *").click();
-    harness.run_steps(2);
-    harness.get_by_label("warrior.moves.ron").click();
-    harness.run_steps(2);
-    harness.get_by_label("Open without saving").click();
-    harness.run_steps(2);
-    assert_eq!(name_of(&harness), "warrior.moves.ron");
-    assert_eq!(text_of(&harness), fs::read_to_string(&other).expect("the file"));
-    assert_eq!(fs::read_to_string(&path).expect("the file"), edited, "not saved");
-    harness.get_by_value("warrior.moves.ron").click();
-    harness.run_steps(2);
-    harness.get_by_label("player.moves.ron").click();
-    harness.run_steps(2);
-    assert_eq!(name_of(&harness), "player.moves.ron", "nothing to lose, so nothing to ask");
+    assert_eq!(text_of(&harness), PLAYER, "and its history");
+    assert!(!harness.state().is_dirty());
 }
 
 /// What the preview says with no cook, `cargo xtask content`, works: the first cook reaches an editor
@@ -763,11 +752,9 @@ fn with_no_file_named_the_list_offers_the_repositorys_documents() {
         .with_accessibility_check(false)
         .build_ui_state(|ui, editor: &mut Editor| editor.ui(ui), Editor::new(options));
     harness.run_steps(2);
-    harness.get_by_value("no file").click();
-    harness.run_steps(2);
-    harness.get_by_label("warrior.moves.ron").click();
+    browser_row(&harness, "warrior.moves.ron").click();
     harness.run_steps(3);
-    assert_eq!(harness.state().file().expect("a file").file_name(), "warrior.moves.ron");
+    assert_eq!(harness.state().current().expect("a file").file_name(), "warrior.moves.ron");
 
     // A name that's wrong leaves the same way out, with the notice saying why.
     let options = Options {
@@ -781,11 +768,9 @@ fn with_no_file_named_the_list_offers_the_repositorys_documents() {
         .build_ui_state(|ui, editor: &mut Editor| editor.ui(ui), Editor::new(options));
     harness.run_steps(2);
     assert!(harness.state().notice().is_some());
-    harness.get_by_value("no file").click();
-    harness.run_steps(2);
-    harness.get_by_label("warrior.moves.ron").click();
+    browser_row(&harness, "warrior.moves.ron").click();
     harness.run_steps(3);
-    assert_eq!(harness.state().file().expect("a file").file_name(), "warrior.moves.ron");
+    assert_eq!(harness.state().current().expect("a file").file_name(), "warrior.moves.ron");
 }
 
 /// `Cmd+S` saves and pushes in one gesture, against a device of the test's own speaking live link's real
@@ -870,7 +855,7 @@ fn a_push_with_no_device_says_so() {
     harness.state_mut().save_and_push();
     harness.run_steps(2);
     assert_same(&fs::read_to_string(&path).expect("saved"), &text_of(&harness), "the file");
-    assert!(!harness.state().file().expect("a file").is_dirty());
+    assert!(!harness.state().current().expect("a file").is_dirty());
     until(&mut harness, "the failure", |editor| matches!(editor.link().last_push(), Some(Pushed::Failed(_))));
 }
 
@@ -939,7 +924,7 @@ fn escape_takes_back_what_is_being_typed() {
     assert_same(&text_of(&harness), SLICE, "the text");
     assert!(!harness.state().is_dirty());
     let _ = field(&harness, CUE_NAME);
-    assert_eq!(harness.state().file().expect("a file").undo_label(), None, "there's no step to take back");
+    assert_eq!(harness.state().current().expect("a file").undo_label(), None, "there's no step to take back");
 
     // What the text refused goes the same way, and Enter still puts in what it takes.
     type_over_the_cue_name(&mut harness, "\"half");
@@ -992,7 +977,7 @@ fn a_number_typed_in_the_inspector_is_one_step_of_undo() {
     let path = dir.write("slice.moves.ron", SLICE);
     let mut harness = harness(&path);
     let undo_label = |harness: &Harness<'static, Editor>| {
-        harness.state().file().expect("a file").undo_label().map(ToOwned::to_owned)
+        harness.state().current().expect("a file").undo_label().map(ToOwned::to_owned)
     };
     let (twelve, seventy) =
         (SLICE.replacen("damage: 6,", "damage: 12,", 1), SLICE.replacen("damage: 6,", "damage: 70,", 1));
@@ -1074,7 +1059,7 @@ fn escape_takes_back_a_number_being_typed() {
     harness.run_steps(3);
     assert_same(&text_of(&harness), SLICE, "the text");
     assert!(!harness.state().is_dirty());
-    let file = harness.state().file().expect("a file");
+    let file = harness.state().current().expect("a file");
     assert_eq!((file.undo_label(), file.redo_label()), (None, None), "and no step, either way");
     assert!(
         harness
@@ -1092,7 +1077,7 @@ fn saving_by_key_takes_what_is_being_typed() {
     let path = dir.write("slice.moves.ron", SLICE);
     let mut harness = on_device(&path, &device);
     type_over_the_cue_name(&mut harness, TYPED_NAME);
-    let _ = harness.get_by_value("slice.moves.ron *");
+    let _ = title_saying(&harness, "slice.moves.ron *");
 
     harness.key_press_modifiers(Modifiers::COMMAND, Key::S);
     harness.run_steps(2);
@@ -1100,7 +1085,7 @@ fn saving_by_key_takes_what_is_being_typed() {
     assert_same(&fs::read_to_string(&path).expect("the file"), &typed, "the file");
     assert_same(&text_of(&harness), &typed, "the text");
     assert!(!harness.state().is_dirty());
-    let _ = harness.get_by_value("slice.moves.ron");
+    let _ = title_saying(&harness, "slice.moves.ron");
     let _ = harness.get_by_label("cues typed_name at 0");
     assert!(field(&harness, TYPED_NAME).is_focused(), "typing can go on");
     until(&mut harness, "the reply", |editor| editor.link().last_push().is_some());
@@ -1230,9 +1215,9 @@ fn one_close_that_sdl_says_twice_isnt_a_second_close() {
     assert_same(&fs::read_to_string(&path).expect("the file"), &elsewhere, "the file");
 }
 
-/// So it does to a picked document, and what's typed doesn't follow into the next one.
+/// What's being typed goes into its own document before another opens, and text it can't take stops the open.
 #[test]
-fn opening_another_document_while_typing_asks_first() {
+fn opening_another_document_takes_what_is_being_typed() {
     let dir = TestDir::new("typed_open");
     dir.write("Cargo.toml", "");
     fs::create_dir_all(dir.0.join("content")).expect("a folder");
@@ -1240,30 +1225,17 @@ fn opening_another_document_while_typing_asks_first() {
     dir.write("content/warrior.moves.ron", WARRIOR);
     let mut harness = harness(&path);
     type_over_the_cue_name(&mut harness, TYPED_NAME);
-    let pick_the_warrior = |harness: &mut Harness<'static, Editor>| {
-        harness.get_by_value("slice.moves.ron *").click();
-        harness.run_steps(2);
-        harness.get_by_label("warrior.moves.ron").click();
-        harness.run_steps(2);
-    };
 
-    pick_the_warrior(&mut harness);
-    assert_eq!(harness.state().file().expect("a file").file_name(), "slice.moves.ron", "it asks");
-    harness.get_by_label("Save and open").click();
-    harness.run_steps(2);
-    assert_eq!(harness.state().file().expect("a file").file_name(), "warrior.moves.ron");
-    assert_same(&fs::read_to_string(&path).expect("the file"), &slice_with_typed_name(), "saved");
-    assert!(!harness.state().is_dirty());
+    browser_row(&harness, "warrior.moves.ron").click();
+    harness.run_steps(3);
+    assert_eq!(harness.state().current().expect("a file").file_name(), "warrior.moves.ron");
+    assert_same(&fs::read_to_string(&path).expect("the file"), SLICE, "nothing's written");
+    assert!(harness.state().is_dirty());
 
-    fs::write(&path, SLICE).expect("the file again");
-    harness.state_mut().open(&path);
-    type_over_the_cue_name(&mut harness, TYPED_NAME);
-    pick_the_warrior(&mut harness);
-    harness.get_by_label("Open without saving").click();
-    harness.run_steps(2);
-    assert_eq!(harness.state().file().expect("a file").file_name(), "warrior.moves.ron");
-    assert_same(&fs::read_to_string(&path).expect("the file"), SLICE, "not saved");
-    assert!(!harness.state().is_dirty(), "and it didn't come along");
+    browser_row(&harness, "slice.moves.ron *").click();
+    harness.run_steps(3);
+    assert_same(&text_of(&harness), &slice_with_typed_name(), "it went in");
+    assert_eq!(harness.state().current().expect("a file").undo_label(), Some("edit name"));
 }
 
 /// Text the document couldn't read stops a save rather than being saved or dropped: it stays where it was
@@ -1349,7 +1321,7 @@ fn a_fields_typing_is_one_step_of_undo() {
     harness.run_steps(3);
     let typed = slice_with_typed_name();
     assert_same(&text_of(&harness), &typed, "taken when the field lets go");
-    assert_eq!(harness.state().file().expect("a file").undo_label(), Some("edit name"));
+    assert_eq!(harness.state().current().expect("a file").undo_label(), Some("edit name"));
 
     harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
     harness.run_steps(2);
@@ -1394,7 +1366,7 @@ fn a_change_on_disk_doesnt_land_under_what_is_being_typed() {
     harness.run_steps(2);
     assert_same(&fs::read_to_string(&path).expect("the file"), &elsewhere, "nothing's lost");
     assert_same(&text_of(&harness), &slice_with_typed_name(), "and neither is what was typed");
-    assert!(harness.state().file().expect("a file").conflict().is_some());
+    assert!(harness.state().current().expect("a file").conflict().is_some());
 }
 
 /// A file that stopped being text can't be taken and isn't saved over, and the top bar has the way past.

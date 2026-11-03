@@ -447,22 +447,26 @@ pub struct FramePacket {
 | `sapphire_vfx` | L3 | Particles (CPU in M2, GPU later), trails, decals, screen effects | `sapphire_render` | M2–M3 |
 | `sapphire_ui` | L3 | Retained game UI and text (M3); touch controls and a quad HUD (M2) | `taffy`, `parley` (M3) | M2–M3 |
 | `sapphire_input` | L3 | Action mapping, contexts, rebinding, glyphs | `sapphire_platform`, `sapphire_serialize` | M1 |
-| `sapphire_nav` | L3 | Navmesh baking and runtime pathfinding | `rerecast`, `landmass` | M3 |
+| `sapphire_navmesh` | L2 | Navigation tiles as plain cooked data. The cooker can link it. | `rkyv` | M3 |
+| `sapphire_nav` | L3 | Runtime pathfinding in the simulation: our own, on `sapphire_navmesh` (baking is `rerecast`, in the cooker) | None | M3 |
 | `sapphire_debug` | L3 | Debug draw, stats, dev console, inspector (dev only) | `egui`, `egui-wgpu` | M1 |
 | `sapphire_hot_reload` | dev only | Desktop hot reload: watches packs, WGSL sources and documents (dev only) | `notify` | M1 |
-| `sapphire_world` | L4 | Time of day; zones, cells, prefabs, spawning, transitions | — | M1 (time of day), M3 |
+| `sapphire_zone` | L2 | Zones as plain cooked data: cells, spawners, triggers, splines, prefab references. The cooker and the simulation can both link it. | `rkyv` | M3 |
+| `sapphire_world` | L4 | Time of day; streaming and activating a zone's cells, transitions | — | M1 (time of day), M3 |
 | `sapphire_gameplay` | L4 | Controller, combat core, abilities, party, targeting, AI framework | — | M2 |
 | `sapphire_camera` | L4 | The camera director: rigs, sphere-cast collision, springs on its own clock, shakes | — | M2 |
 | `sapphire_controls` | L5 | Combat's bindings, the mapping from each frame's input to each tick's, and the pause | `sapphire_input`, `sapphire_gameplay` | M2 |
 | `sapphire_cues` | L5 | What a gameplay cue fires: effects, sound, shake, screen effects and rumble, from one table in one frame | `sapphire_gameplay`, `sapphire_audio`, `sapphire_vfx`, `sapphire_camera`, `sapphire_world` | M2 |
+| `sapphire_stage` | above L5 | What turns a simulation and cooked content into a `FramePacket`, shared by the sandbox, the game and the editor's viewport ([m3-plan.md](m3-plan.md), S1) | — | M3 |
 | `sapphire_sequencer` | L4 | Timelines for cutscenes and skill cinematics; dialogue | — | M3 |
 | `sapphire_script` | L4 | Luau VM, sandbox, generated bindings | `mlua` (`luau`) | M3 |
 | `sapphire_save` | L4 | Settings and progress saves, migrations | `postcard`, `ron` | M3 |
-| `sapphire_loc` | L4 | Strings, plurals, font fallback, pseudo-loc | `fluent`, `icu` | M3 |
+| `sapphire_loc` | L4 | Strings, plurals, font fallback, pseudo-loc | `icu_plurals`, `icu_decimal` (`fluent-syntax` at cook) | M3 |
 | `sapphire_patch` | L4 | Chunk manifests, CDN download, verification (later) | `reqwest`, `rustls`, `ed25519-dalek` | M4 |
 | `sapphire_online` | L4 | Accounts, server-authoritative economy (later) | `reqwest` | later |
 | `sapphire_pipeline` | Tools | Importers, cookers, cache, packer | `gltf`, `ufbx`, `ctt`, `ktx2`, `meshopt` | M1 |
-| `sapphire_editor` | Tools | Document-model editor, timeline editor, play-in-editor | `egui`, `egui_dock`, `transform-gizmo`, `egui-snarl` | M2–M3 |
+| `sapphire_document` | Tools | The editor's document model: typed objects, change records, undo, edits that leave untouched bytes alone | `ron`, `sapphire_reflect` | M3 |
+| `sapphire_editor` | Tools | Document-model editor, timeline editor, play-in-editor | `egui`, `egui_tiles`, `egui_plot` | M2–M3 |
 | `sapphire_livelink` | dev only, plus its tool | Live link: a dev build's socket the desktop pushes packs, documents, shaders and cvars to, and its desktop tool (dev only) | `postcard` | M1 |
 | `sapphire_replay` | Tools | The headless replay runner: `cargo xtask replay` and CI's `Replays` job (§5.22) | None | M2 |
 | `sapphire_testkit` | Tools | Golden images | `insta`, `nv-flip` | M1 |
@@ -1943,7 +1947,8 @@ At runtime, dynamic resolution adjusts the render scale from GPU timings and the
 - **Layout:** `taffy` 0.15 (flexbox and grid).
 - **Text:**
   - Shaping and layout: `parley` 0.12, built on `harfrust` and `skrifa`.
-  - Glyphs: rasterized into a dynamic atlas per size bucket, which suits CJK text. Large display text uses an MSDF atlas.
+  - Glyphs: rasterized with `swash` into a dynamic `etagere` atlas of pages per size bucket, which suits CJK text. `parley` runs with no system fonts, so every platform shapes the same. HUD digits keep M2's signed-distance atlas and bypass `parley`. Large display text uses an MSDF atlas, cooked by `fdsm` (the last M3 package, and the first to cut).
+  - Fonts: whole files under `content/third_party/`, subset at cook with `skera` ([m3-plan.md](m3-plan.md) §3 names them).
 - **Rendering:**
   - One batched quad renderer with nine-slice and SDF rounded rectangles.
   - Gradients, masks (scissor or stencil) and custom UI shaders for stylized effects.
@@ -2032,8 +2037,8 @@ At runtime, dynamic resolution adjusts the render scale from GPU timings and the
 
 ### 5.19 `sapphire_nav` (L3)
 
-- **Baking:** at cook time, `rerecast` 0.4 bakes a tiled navmesh per zone.
-- **Runtime:** `landmass` 0.9 handles pathfinding, steering and local avoidance.
+- **Baking:** at cook time, `rerecast` 0.5 bakes a tiled navmesh per zone, into plain tiles in `sapphire_navmesh` (L2).
+- **Runtime:** our own, about 1,200 lines in `[simulation]`: grid point location, A* on a preallocated pool, a funnel, corridors, a repath budget, separation. **`landmass` isn't used:** read at 0.9.3 it allocates on every update and search, iterates hash maps, calls `rand::random()` through `dodgy_2d`, uses `std`'s transcendentals and is on glam 0.30, and each of those fails gate 2 or gate 4 ([m3-plan.md](m3-plan.md) §3, P0).
 - **Arena enemies** mostly steer directly at the player. The navmesh is for chasing across a zone, patrols and exploration NPCs.
 
 ### 5.20 `sapphire_debug` (L3, dev builds only)
@@ -2117,6 +2122,7 @@ At runtime, dynamic resolution adjusts the render scale from GPU timings and the
   - Prefetch the next zone's packs while the player is in a hub.
 - **Activation budget:** at most N entities, or M µs of spawning, per frame.
 - **Encounter volumes:** entering one freezes streaming and pre-warms the encounter's enemy movesets, VFX, banks and pipelines *before* combat starts.
+- **The simulation streams nothing (Decision, [m3-plan.md](m3-plan.md) §3):** a zone's colliders, triggers, spawners and navigation tiles load before its first step and stay, and a replay pins a digest of them. Only presentation streams. A zone's cooked form is plain data in `sapphire_zone` (L2), which the cooker and the simulation can both link, and `sapphire_gameplay` owns its triggers, spawners and encounters.
 - **As built (M1 W1, `sapphire_world::tod`):** the crate starts with time of day alone (look pillar 1, M1 plan §2). Zones, prefabs and the rest come in M3.
   - **Documents** (`sapphire::world`, schema 1, RON through `sapphire_serialize`):
     - A `TodTimeline` holds `TodKey`s at hours `0 ≤ h < 24`. Each key sets groups: sun and moon (direction, color, intensity), sky (zenith, horizon, ground), ambient (sky, ground, intensity), fog (near and far layers, height fog, sun inscatter), shadow tint, character key (color, intensity), day/night, exposure, grade, bloom and vignette.
@@ -2447,6 +2453,7 @@ The `resolve` module's "A perfect dodge", `moves`'s "A counter window" and `test
   - Time scale.
   - Gameplay events.
 - **Used for** cutscenes and in-combat ultimate cinematics. Each timeline chooses its clock, blends in and out with the gameplay camera, and can be skipped.
+- **Timelines are presentation (Decision, [m3-plan.md](m3-plan.md) §3):** time scale, gameplay events and a skip go through commands a replay records, so the fight after a cutscene reaches one checksum whether someone watched or skipped.
 - **Dialogue graphs:**
   - Each line has a localization key, a VO event and a speaker. Graphs support choices and conditions (Luau expressions) and set quest flags.
   - They feed ZZZ-style dialogue panels in `game_ui`.
@@ -2456,9 +2463,12 @@ The `resolve` module's "A perfect dodge", `moves`'s "A counter window" and `test
 
 - **VM:** Luau via `mlua` 0.12 with the `luau` feature and **no JIT** on any platform (iOS forbids it, and determinism benefits). One sandboxed VM per world, with read-only globals.
 - **Calls are event hooks only:** encounter start, boss phase change, move start and hit, dialogue conditions and quest steps. Scripts never run every tick.
-- **Bindings** are generated from the `sapphire_reflect` registry, plus a `.d.luau` type-definition file for editor autocompletion.
-- **GC:** incremental, stepped once per frame with a time budget (0.2 ms desktop, 0.4 ms mobile) at a fixed point outside the simulation hot loop.
-- **Determinism:** the `os`, `time` and `random` globals are removed. The engine provides seeded RNG and clock functions.
+- **Scripts are pure decisions (Decision, [m3-plan.md](m3-plan.md) §3):** they read through queries and write typed commands into a fixed queue that one point in the step applies, each going into the checksum. Anything that lasts lives in a simulation-owned, fixed-size, numeric blackboard, hashed with the rest. Nothing relies on a VM's state between hooks.
+- **Bindings** come from one declared table of commands and queries: `xtask` generates the Rust wrappers and a `.d.luau` type-definition file for editor autocompletion, and a test holds the checked-in output to it. They don't come from the `sapphire_reflect` registry, which M3's plan changed: `bevy_reflect`'s function reflection isn't on, and the surface has to stay narrow.
+- **GC:** incremental, stepped once per frame at a fixed point outside the simulation hot loop, and stopped inside a step. `mlua` gives no time budget for a step, so the 0.2 ms desktop and 0.4 ms mobile limits are read by a counter (**Verify,** L0).
+- **Allocations (gate 4, narrowed):** zero on every step with no hook. `mlua` hardcodes `std::alloc`, so around a hook the VM's allocations go to their own count and budget, and generated bindings flip back, so a Rust allocation in a binding still fails.
+- **Determinism:** Luau has no `time` or `random` global, so what goes is `os.*`, `math.random` and `math.randomseed`, `gcinfo`, `collectgarbage`, `newproxy`, `getfenv` and `setfenv`, `debug.*`, `print`, `require`, transcendental `math.*`, `math.noise`, `vector.angle`, weak tables, float conversions in `string.format`, and `tonumber` on non-integer text. `pairs` over non-primitive keys, `tostring` of reference types, `^` except 2, 3 and 0.5, and coroutines across ticks are forbidden. The engine provides seeded RNG, clock and math functions, with libm builtins disabled at compile, and bytecode is cooked once with a pinned compiler and scanned. L0 attacks all of it.
+- **Shipping's `panic = "abort"` (Verify):** `mlua` raises a binding's `Err` and an interrupt's error from a Rust frame, which probably aborts there. L0 decides between bindings that never return `Err` with a budget ending a hook by a yield, and `panic = "unwind"`.
 - **Hot reload:** reload the chunk and rebind its hooks. On devices, pushed through live link.
 - **iOS policy:** scripts ship inside the app. Any downloadable script update needs legal and App Review sign-off first (App Store guideline 2.5.2).
 
@@ -2466,6 +2476,7 @@ The `resolve` module's "A perfect dodge", `moves`'s "A counter window" and `test
 
 **`sapphire_save`**
 
+- **Scope (Decision, [m3-plan.md](m3-plan.md) §3):** a save holds what a zone start reads (checkpoint, cleared encounters, flags, party), never a fight in progress.
 - **Settings:** RON in `user://`.
 - **Progress:** `postcard` with a versioned header and migrations.
   - Writes are atomic: write a temp file, fsync, then rename.
@@ -2474,8 +2485,8 @@ The `resolve` module's "A perfect dodge", `moves`'s "A counter window" and `test
 
 **`sapphire_loc`**
 
-- Fluent `.ftl` bundles per locale, cooked into binary tables.
-- ICU4X (`icu` 2.4) for plurals, numbers and dates.
+- Fluent `.ftl` sources per locale, parsed at cook with `fluent-syntax` into `postcard` tables and run by a small evaluator of our own. `fluent`'s own bundles can't be cooked: `FluentResource::try_new` takes a `String`.
+- ICU4X 2.4 for plurals and numbers (`icu_plurals`, `icu_decimal`). Dates wait for a menu that shows one, since `icu_datetime`'s data is large.
 - **Font fallback chains** per script: Latin, CJK, Cyrillic, Thai, and so on.
 - A **pseudo-localization mode** with expanded, accented strings for layout testing.
 
@@ -2830,9 +2841,10 @@ The `resolve` module's "A perfect dodge", `moves`'s "A counter window" and `test
   - Every edit is a change record `(object, property, old, new)`.
   - Undo and redo, copy and paste, dirty tracking and live-link sync all fall out of that one model.
   - Documents save as RON files that are friendly to git.
+- **Backing (Decision, [m3-plan.md](m3-plan.md) §3):** T3's reason for keeping text stands, so a change record is applied as a splice: find the property path's byte range, replace it, re-parse, check equal. Untouched bytes never move, and comments and layout survive. It lives in `sapphire_document`.
 - **UI:**
-  - `egui` 0.37 with `egui_dock` or `egui_tiles` for docking.
-  - `transform-gizmo` 0.11 for manipulators and `egui-snarl` 0.12 for graphs (move graphs, animation graphs).
+  - `egui` 0.37 with `egui_tiles` for docking.
+  - A small translate gizmo of our own. `transform-gizmo` and `egui-snarl` are still on egui 0.36, and graphs stay out until they catch up.
   - `egui_plot` for curves.
 - **Platform:** the editor runs on `sapphire_platform` (SDL3) too. The viewport is the real engine renderer drawing into a texture that egui displays, so the editor and the game share one input and windowing stack.
 - **Play-in-editor:** creates a fresh runtime world from a snapshot of the current documents. Game code never mutates documents.
@@ -3083,7 +3095,7 @@ engine/
 ├─ clippy.toml              # disallowed-methods (rule R2)
 ├─ deny.toml                # license policy, bans (bincode, archived crates)
 ├─ crates/                  # en_* engine and tool crates (flat)
-├─ game/                    # game_app (bin/cdylib/staticlib), game_combat, game_characters, game_ai, game_ui
+├─ game/                    # game_app (bin/cdylib/staticlib), game_combat, game_ui; game_characters and game_ai when there's something to put in them
 ├─ platform/
 │  ├─ android/              # Gradle project, GameActivity extends SDLActivity, manifest
 │  ├─ ios/                  # Xcode project, Info.plist, privacy manifest, entitlements, launch screen
@@ -3195,6 +3207,7 @@ A change can't merge if any of these fail:
 4. **Allocations:** the zero-allocation assertion (R6, simulation thread inside the fixed step) during the replay suite.
 5. **Budgets:** no budget in §3 regresses by more than 10% on the nightly device run without a recorded waiver.
 
+- **M3 narrows gate 4 for scripts:** a hook's VM allocations count against their own budget, because `mlua` allows no custom allocator ([m3-plan.md](m3-plan.md) §3, §5.24). Every other step, and every Rust allocation in a binding, still fails it.
 - **As built (M2 D2, gates 2 and 4):** CI's `Replays` job plays `tests/replays/` on Linux, Windows and macOS with no GPU: each reaches its architecture's checksums with `SimStats::allocations` at zero in every step (`cargo xtask replay`, §5.22). A test holds the gate to biting on a system that allocates, naming the first tick.
 - **As built (own review DV-2, the golden gates):**
   - **Three gates.** A capture passes when its FLIP mean is at most 0.01, its 99th percentile at most 0.12 and the mean over its worst 16 × 16 block of pixels at most 0.15 (`golden::Thresholds`). The block slides over every position, so a defect reads the same wherever it lands. The whole-image gates can't see a small defect: a flat 40 px patch passed them, and on `lookdev-face` an eye is about 30 px wide. The tile gate fails a 5 px patch on the five scenes tried (they read 0.17 to 0.24; 4 px reads 0.12 to 0.17), and scattered edge flips stay under it (two flips of about 190 code values read 0.098 on CI's noisiest such tile). The p99 gate, 0.3 until then, fails a capture that lost MSAA, the render scale or the bangs' soft shadow (their siblings read 0.135 to 0.155).
@@ -3231,7 +3244,7 @@ These windows are rough estimates for a small, senior team. A solo developer sho
 | **M0 Bring-up** | Months 0–2 | Workspace, layer rules and CI on 3 OSes. `sapphire_platform` (SDL3 main callbacks) and `sapphire_rhi` (Metal / Vulkan / DX12) on all 5 platforms. Skeletons of `sapphire_core`, `sapphire_math`, `sapphire_jobs` and `sapphire_time`. Tracy, `sapphire_crash`, and iOS Xcode / Android Gradle packaging. A glTF character with a basic two-tone character shader and hull outline. | **The same commit** runs the outlined two-tone character at target fps on Mac, Windows, Linux (including Steam Deck), an iPhone and an Android phone. Background → foreground survives on both phones, and a forced crash reaches Sentry from every platform. |
 | **M1 Data path** | Months 2–6 | ECS, reflection and serialization; the `sapphire_assets` runtime. `sapphire_pipeline`: glTF / FBX, `ctt` BC and ASTC, meshopt, packs, content-hash cache, hot reload. Renderer v1: frame graph, compute skinning, forward lighting, shadows, the anime character recipe (track C), the world look (time of day, sky, fog, ambient probes, stylized environment shader) and the post stack. VRM import and anime map tools, `sapphire_input`, `sapphire_debug`, live link, golden-image tests. The plan is [m1-plan.md](m1-plan.md). | Editing a ramp, material parameter or time-of-day key shows up on desktop *and* phone without a restart. The look-dev scene meets the tier budgets on all 5 platforms. Golden images pass on 3 backends. |
 | **M2 Combat slice** | Months 4–10 | `sapphire_anim` (our own runtime, inertialization, IK, spring bones), `sapphire_physics`, the combat core, party swap, camera director, one enemy AI, audio (`kira`), VFX v1, touch controls, live tuning, and the timeline editor v1. The plan is [m2-plan.md](m2-plan.md). | One character against one enemy **feels right** with a gamepad on desktop and with touch on a phone. Replays are deterministic in CI, and Mobile-Low holds 30 fps while thermally throttled. **This is the go/no-go gate.** If tuning still feels slow, take the off-ramp in the report: move gameplay and tools to Godot with gdext, and keep the Rust systems. |
-| **M3 World and tools** | Months 8–18 | Zones and transitions, navigation, sequencer and dialogue, Luau, `sapphire_ui` with the HUD and menus, saves, localization, the editor document model with undo and play-in-editor, and the pipeline (PSO) inventory. | A zone with 3 encounters, a boss authored with no Rust changes, one cutscene, and a full HUD and menus in 2 languages, all on 5 platforms. |
+| **M3 World and tools** | Months 8–18 | Zones and transitions, navigation, sequencer and dialogue, Luau, `sapphire_ui` with the HUD and menus, saves, localization, the editor document model with undo and play-in-editor, and the pipeline (PSO) inventory. The plan is [m3-plan.md](m3-plan.md). | A zone with 3 encounters, a boss authored with no Rust changes, one cutscene, and a full HUD and menus in 2 languages, all on 5 platforms. |
 | **M4 Ship readiness** | Month 12 onward | PSO warm-up, signed chunk manifests and `sapphire_patch`, quality tiers with dynamic resolution and thermal handling, the symbol pipeline, accessibility, and store compliance. | Zero shader hitches in a scripted playthrough. Patches download only changed chunks. Builds pass TestFlight, Play internal testing and Steam review. |
 
 **M0 status (2026-10-24):**
@@ -3269,9 +3282,11 @@ These windows are rough estimates for a small, senior team. A solo developer sho
 
 **M2 exit run:** [m2-exit-run.md](m2-exit-run.md) is the procedure for all four exit tests: a fight on a gamepad, the feel reviews' sheet with which file and field changes what, a fight on a phone, timing a saved move, checking replays by hand and a phone's soak with its pass and fail lines. Everything that needs no window and no phone was rehearsed on 2026-11-02, and its last section says what ran.
 
+**M3 status (2026-11-03): in progress.** [m3-plan.md](m3-plan.md) is the plan, and its packages' rows say what has landed.
+
 **M2 status (2026-11-02): built, and not judged.** "Done, pending devices" is true of exit tests 2 and 4 and of test 1's touch half. It isn't true of test 1 on a gamepad, which needs no device beyond a pad and has simply not been done.
 
-- **The decision that's open.** M2 is the go/no-go gate, and [m2-go-no-go.md](m2-go-no-go.md) is what the maintainer decides from. They were away for the whole of M2 and told the run to carry on without asking, so every package was built, phase 5 included, with none of the three feel reviews behind it, against the plan's order ([m2-plan.md](m2-plan.md) §5). [m3-handoff.md](m3-handoff.md) is what M3 would inherit.
+- **The decision, as of 2026-11-03.** The maintainer told the run to start M3 and carry on without asking, with nobody having played the fight, so M3 is in Rust ([m3-plan.md](m3-plan.md)) and the go/no-go's question is still unanswered. M2 is the go/no-go gate, and [m2-go-no-go.md](m2-go-no-go.md) is what the maintainer would decide from. They were away for the whole of M2 and told the run to carry on without asking, so every package was built, phase 5 included, with none of the three feel reviews behind it, against the plan's order ([m2-plan.md](m2-plan.md) §5). [m3-handoff.md](m3-handoff.md) is what M3 would inherit.
 - **Exit test 1, feel: not judged by anyone.** Nobody has played this fight, heard its sounds, felt its rumble or opened the timeline editor. **Feel review 3 is the plan's real go/no-go check, and it hasn't run.** What's verified is that the fight runs:
   - On a desktop, an outside reviewer has shown a scripted fight in a native Mac window (7ee1583f), and nobody has played in one. Tests run 4,400 ticks through the renderer offscreen, holding three fights to a headless run's checksums (G6). The review made a played fight hold the pointer, pause on lost focus and show its pause (§5.18), with tests of what decides that and only SDL's source for what SDL does.
   - The window's loop has run on a headless Android emulator, played by real multi-touch events to a win and a loss, and on an iOS simulator with no touch at all (I3). That found a debug-build panic on a window's first step, fixed since. A pad has only been synthetic.
@@ -3344,13 +3359,14 @@ Pin these in `[workspace.dependencies]`. Versions were checked against crates.io
 | `cpal` | 0.18 | `sapphire_audio` | Apache-2.0. `realtime` asks Android for low latency, and brings `audio_thread_priority` (MPL-2.0, excepted in `deny.toml`) |
 | `lewton` | 0.10 | `sapphire_assets` | MIT or Apache-2.0. Pure Rust Vorbis decoding, so `symphonia` (MPL-2.0) stays out |
 | `taffy`, `parley` | 0.15, 0.12 | `sapphire_ui` | `rustybuzz` is archived |
-| `rerecast`, `landmass` | 0.4, 0.9 | `sapphire_nav`, `sapphire_pipeline` | Vendor both (small maintainer base) |
+| `swash`, `etagere` | 0.2, 0.3 | `sapphire_ui` | Rasterizing and packing the glyph atlas (M3) |
+| `skera`, `fdsm` | 0.9, 0.8 | `sapphire_pipeline` | Subsetting fonts and MSDF, tools only (M3) |
+| `rerecast` | 0.5 | `sapphire_pipeline` | Baking only. Small maintainer base, so P1 decides on vendoring. `landmass` was rejected ([m3-plan.md](m3-plan.md) §3) |
 | `mlua` (feature `luau`) | 0.12 | `sapphire_script` | No `luau-jit` |
-| `fluent`, `icu` | 0.17, 2.4 | `sapphire_loc` | |
+| `fluent-syntax`, `icu_plurals`, `icu_decimal` | 0.12, 2.4, 2.4 | `sapphire_pipeline`, `sapphire_loc` | `fluent`'s bundles can't be cooked, so a small evaluator of our own runs the tables (M3). Versions checked when V2 adds them |
 | `reqwest`, `rustls`, `rustls-platform-verifier`, `ed25519-dalek` | latest | `sapphire_patch` (later) | **unchecked** |
 | `jni` | latest | `sapphire_platform` (Android) | **unchecked** |
-| `egui`, `egui-wgpu`, `egui_dock` / `egui_tiles`, `egui_plot` | 0.37 line | `sapphire_debug`, `sapphire_editor` | M1 F5: `egui` and `egui-wgpu` 0.37.0 (on wgpu 30); the overlay draws its own frame-time graph, without `egui_plot` |
-| `transform-gizmo`, `egui-snarl` | 0.11, 0.12 | `sapphire_editor` | |
+| `egui`, `egui-wgpu`, `egui_plot`, `egui_tiles` | 0.37 line (`egui_tiles` 0.18, `egui_plot` 0.38) | `sapphire_debug`, `sapphire_editor` | M1 F5: `egui` and `egui-wgpu` 0.37.0 (on wgpu 30); the overlay draws its own frame-time graph, without `egui_plot` |
 | `gltf`, `ufbx` | 1.4, 0.11 | `sapphire_pipeline` | |
 | `vrm-spec` | 0.1 | `sapphire_pipeline` | M1 A6. Tools only; pixiv's VRM types, without node constraints, which the pipeline types itself |
 | `ctt`, `ktx2`, `meshopt` | 0.6, 0.5, 0.7 | `sapphire_pipeline`; `ktx2` also `sapphire_assets` | `basis-universal` is stale. ctt with only the bc7enc-rdo, ISPC (prebuilt) and astcenc encoders, and no `rayon` |

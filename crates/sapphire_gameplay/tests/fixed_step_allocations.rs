@@ -588,6 +588,54 @@ fn perfect_dodges_and_counters_allocate_nothing_from_the_first_step() {
     assert!(sim.hits().stats().dodge_touches >= 3);
 }
 
+/// A warp window long enough to read its root's path from a total, across a live edit that makes that
+/// path for a new revision, between steps. Nothing in a step does (rule R6).
+#[test]
+fn a_long_warp_allocates_nothing_from_the_first_step() {
+    if !PER_THREAD_COUNTS {
+        return;
+    }
+    let set = |edge: f32| {
+        let text = format!(
+            r#"(
+                type: "sapphire::moves::MoveSetDocument",
+                version: 1,
+                data: (
+                    intents: [(name: "go", button: Light, buffer: 8, priority: 1)],
+                    neutral: [(intent: "go", move: "long")],
+                    moves: [(
+                        name: "long",
+                        startup: 0,
+                        active: 1,
+                        recovery: 599,
+                        motion: (root: [(at: 600, offset: (0.0, 0.0, {edge:?}), yaw: 0.0)]),
+                        warps: [(from: 0, to: 600, max_distance: 1.0, max_turn: 0.5, keep: 0.5)],
+                    )],
+                ),
+            )"#
+        );
+        MoveSetDocument::parse(&text).expect("parses").compile().expect("compiles")
+    };
+    let mut sim = Simulation::new(SimConfig::default());
+    let moves = sim.add_move_set(set(1.0));
+    let actor = sim.spawn(ActorSpawn { moves: Some(moves), ..ActorSpawn::default() }).expect("room");
+    sim.set_warp_target(actor, WarpTarget::Point(Vec3::new(0.5, 0.0, 3.0)));
+    sim.force_move(actor, Name::new("long"));
+    let ((), before) = alloc::count_in_scope(|| {
+        for _ in 0..100 {
+            sim.step(&TickActions::NEUTRAL);
+        }
+    });
+    sim.tune_move_set(moves, set(2.0)).expect("it's this library's");
+    let ((), after) = alloc::count_in_scope(|| {
+        for _ in 0..100 {
+            sim.step(&TickActions::NEUTRAL);
+        }
+    });
+    assert_eq!((before.allocations, after.allocations), (0, 0));
+    assert!(sim.actor(actor).expect("alive").moves.windows.warp, "it's still warping");
+}
+
 /// A brain from its first thought to its target's fall and past it: it walks, circles, draws, presses,
 /// reacts, gets up and stands, and nothing it does allocates (rule R6).
 #[test]

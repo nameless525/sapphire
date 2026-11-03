@@ -75,6 +75,13 @@ const MIN_WARP_ARC: f32 = 1e-4;
 /// Under this many metres to a target, it gives no direction to turn to or stop short along.
 const MIN_TARGET_DISTANCE: f32 = 1e-4;
 
+/// A move with a warp window longer than this, in ticks, measures what's left of its root's path from a
+/// [`RootPath`], rather than walking it each step, which over a window of `n` ticks is `n²/2` samples. Up
+/// to here a walk costs about 2 µs a step for 32 actors on an M5, and every shipped move stays on it,
+/// its longest window being 45 ticks, so what they do doesn't move by a bit. A sum in `f32` rounds
+/// differently from a difference of two in `f64`, so past here a share differs in its last bits.
+const LONG_WARP_TICKS: u32 = 120;
+
 /// Which set of moves, in a [`MoveLibrary`]. Handed out in the order sets were added, so a replay that
 /// adds them in the same order gets the same IDs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -123,6 +130,40 @@ struct Revision {
     hash: u64,
     /// What its `movement` section works out to, for a step to read.
     movement: Option<ResolvedProfile>,
+    /// By move, in the set's order: the path of each one with a long warp window.
+    root_paths: Vec<Option<RootPath>>,
+}
+
+/// How far a move's root has walked along its table by each whole tick, so that what's left of a long warp
+/// window takes no walk. Made with its revision, between steps, and nothing about it reaches state.
+#[derive(Debug)]
+struct RootPath {
+    /// Metres, one per sample. `f64`, so that the difference of two totals keeps what a short stretch adds
+    /// to a long walk.
+    walked: Box<[f64]>,
+}
+
+impl RootPath {
+    fn of(tables: &BakedTables) -> Self {
+        let mut walked = 0.0;
+        let mut previous = Vec3::ZERO;
+        let totals = tables.root_samples().iter().map(|sample| {
+            walked += f64::from((sample.offset() - previous).length());
+            previous = sample.offset();
+            walked
+        });
+        Self { walked: totals.collect() }
+    }
+
+    /// How far the root walks from one whole tick to another, as `arc` would measure. A table shorter
+    /// than its move holds its last sample, so past its end the root walks nowhere.
+    fn between(&self, from: u64, to: u64) -> f32 {
+        let at = |tick: u64| {
+            let last = self.walked.len() - 1;
+            self.walked[usize::try_from(tick).map_or(last, |tick| tick.min(last))]
+        };
+        (at(to) - at(from)) as f32
+    }
 }
 
 /// The sets a simulation has loaded. Added and replaced between steps, read in them. A move that's
@@ -140,7 +181,12 @@ fn revision(number: u32, set: MoveSet) -> Revision {
     // A set's movement is within limits tighter than this asks, whichever way it was made, so this only
     // leaves an actor on the profile it spawned with for bytes a pack damaged after they were checked.
     let movement = set.movement().and_then(|movement| ResolvedProfile::new(movement).ok());
-    Revision { number, hash: xxh3_64(&cooked), set, movement }
+    let root_paths = set.moves().iter().map(|mv| {
+        let long = |warp: &WarpWindow| warp.span.to - warp.span.from > LONG_WARP_TICKS;
+        mv.warps.iter().any(long).then(|| RootPath::of(&mv.tables))
+    });
+    let root_paths = root_paths.collect();
+    Revision { number, hash: xxh3_64(&cooked), set, movement, root_paths }
 }
 
 impl MoveLibrary {
@@ -209,6 +255,12 @@ impl MoveLibrary {
     #[must_use]
     pub fn get(&self, at: MoveRef) -> Option<&Move> {
         self.revision(at.set, at.revision)?.move_at(at.index)
+    }
+
+    /// The root's path through the move behind a reference, if it has a long warp window.
+    fn root_path(&self, at: MoveRef) -> Option<&RootPath> {
+        let revision = self.revisions(at.set).iter().rev().find(|revision| revision.number == at.revision)?;
+        revision.root_paths.get(at.index as usize)?.as_ref()
     }
 
     /// Whether `set` is byte for byte the set's current revision: a saved document that changed
@@ -1060,7 +1112,7 @@ fn bend_toward_target(
         running.warp_turn = 0.0;
     }
     let window_end = warp.span.end();
-    let share = motion_share(tables, from, to, window_end);
+    let share = motion_share(tables, stage.library.root_path(running.at), from, to, window_end);
     let output = &mut *stage.output;
     let here = stage.origin.position + output.root_delta.translation;
     let at_end = tables.root_at(window_end);
@@ -1099,17 +1151,35 @@ const fn horizontal(vector: Vec3) -> Vec3 {
 
 /// How much of what's left of a warp window, `from` to `window_end`, is `from` to `to`: by distance
 /// along the table's motion, or by time if the table is barely moving. Exactly 1 at the window's end.
-fn motion_share(tables: &BakedTables, from: SimDuration, to: SimDuration, window_end: SimDuration) -> f32 {
+fn motion_share(
+    tables: &BakedTables,
+    path: Option<&RootPath>,
+    from: SimDuration,
+    to: SimDuration,
+    window_end: SimDuration,
+) -> f32 {
     if to >= window_end {
         return 1.0;
     }
     let done = arc(tables, from, to);
-    let whole = done + arc(tables, to, window_end);
+    let whole = done + arc_left(tables, path, to, window_end);
     if whole > MIN_WARP_ARC {
         done / whole
     } else {
         let time = (window_end - from).as_subticks().max(1);
         (to - from).as_subticks() as f32 / time as f32
+    }
+}
+
+/// [`arc`] to the whole tick a warp window ends on, with no walk where there's a [`RootPath`]: only the
+/// stretch to the next whole tick falls between its samples.
+fn arc_left(tables: &BakedTables, path: Option<&RootPath>, at: SimDuration, window_end: SimDuration) -> f32 {
+    let next = at.whole_ticks() + 1;
+    match path {
+        Some(path) if SimDuration::from_ticks(next) < window_end => {
+            arc(tables, at, SimDuration::from_ticks(next)) + path.between(next, window_end.whole_ticks())
+        }
+        _ => arc(tables, at, window_end),
     }
 }
 
@@ -1125,4 +1195,78 @@ fn arc(tables: &BakedTables, from: SimDuration, to: SimDuration) -> f32 {
         tick += 1;
     }
     length + (tables.root_at(to).offset() - previous).length()
+}
+
+#[cfg(test)]
+mod warp_tests {
+    use super::*;
+
+    fn tables(ticks: u32, at: impl Fn(f32) -> [f32; 3]) -> BakedTables {
+        let sample = |tick: u32| {
+            let translation = if tick == 0 { [0.0; 3] } else { at(tick as f32 / ticks as f32) };
+            RootSample { translation, yaw: 0.0 }
+        };
+        BakedTables::new((0..=ticks).map(sample).collect(), Vec::new()).expect("good tables")
+    }
+
+    /// The roots a warp meets, over the longest window a document can hold.
+    fn roots(ticks: u32) -> [(&'static str, BakedTables); 5] {
+        [
+            ("stationary", tables(ticks, |_| [0.0; 3])),
+            ("straight", tables(ticks, |t| [0.0, 0.0, 40.0 * t])),
+            ("reversing", tables(ticks, |t| [0.0, 0.0, det::sin(t * 25.0)])),
+            ("curved", tables(ticks, |t| [det::sin(t * 9.0) * 3.0, t, det::cos(t * 9.0) * 3.0 - 3.0])),
+            ("still, then off", tables(ticks, |t| [0.0, 0.0, (t - 0.5).max(0.0) * 8.0])),
+        ]
+    }
+
+    /// A path's total says what a walk says, whole ticks and between them, wherever a step falls: at
+    /// most a few parts in a hundred thousand of what's left, from rounding that a walk's `f32` sum has
+    /// more of than the path's `f64`.
+    #[test]
+    fn a_root_paths_share_agrees_with_walking_the_table() {
+        const TICKS: u32 = 3600;
+        let window_end = SimDuration::from_ticks(u64::from(TICKS));
+        for (what, tables) in roots(TICKS) {
+            let path = RootPath::of(&tables);
+            for from in (0..u64::from(TICKS) * 1000).step_by(7919) {
+                for step in [1, 333, 1000, 1700, 5000] {
+                    let from = SimDuration::from_subticks(from);
+                    let to = from + SimDuration::from_subticks(step);
+                    let walked = motion_share(&tables, None, from, to, window_end);
+                    let read = motion_share(&tables, Some(&path), from, to, window_end);
+                    assert!(
+                        (walked - read).abs() <= walked.abs() * 5e-5 + 1e-6,
+                        "{what}, {from:?} to {to:?}: walking gives {walked}, the path {read}"
+                    );
+                }
+            }
+            let last = SimDuration::from_ticks(u64::from(TICKS) - 1);
+            assert_eq!(motion_share(&tables, Some(&path), last, window_end, window_end), 1.0, "{what}");
+        }
+    }
+
+    /// With the rest of a window a stretch to the next whole tick, there's nothing for a path to add, and
+    /// both ways are the same sum, to the bit.
+    #[test]
+    fn the_last_stretch_of_a_window_is_walked_either_way() {
+        let ticks = 200;
+        let window_end = SimDuration::from_ticks(u64::from(ticks));
+        for (what, tables) in roots(ticks) {
+            let path = RootPath::of(&tables);
+            let from = SimDuration::from_subticks(198_500);
+            let to = SimDuration::from_subticks(199_250);
+            let walked = motion_share(&tables, None, from, to, window_end);
+            assert_eq!(walked, motion_share(&tables, Some(&path), from, to, window_end), "{what}");
+        }
+    }
+
+    #[test]
+    fn past_a_short_tables_end_the_root_walks_nowhere() {
+        let tables = tables(10, |t| [0.0, 0.0, 10.0 * t]);
+        let path = RootPath::of(&tables);
+        assert_eq!(path.between(0, 10), 10.0);
+        assert_eq!(path.between(10, 500), 0.0);
+        assert_eq!(path.between(5, u64::MAX), 5.0);
+    }
 }

@@ -1164,6 +1164,88 @@ fn warp_reaches_a_still_target_at_any_speed() {
     }
 }
 
+/// One move, `ticks` long, whose root walks there and partly back and has two warp windows, the first as
+/// long as `window`, for a target `offset` from the start.
+fn winding(ticks: u32, window: u32) -> MoveSet {
+    let half = ticks / 2;
+    let recovery = ticks - 1;
+    compile(&format!(
+        r#"(
+            type: "sapphire::moves::MoveSetDocument",
+            version: 1,
+            data: (
+                intents: [(name: "go", button: Light, buffer: 8, priority: 1)],
+                neutral: [(intent: "go", move: "wind")],
+                moves: [(
+                    name: "wind",
+                    startup: 0,
+                    active: 1,
+                    recovery: {recovery},
+                    motion: (root: [
+                        (at: {half}, offset: (1.0, 0.0, 2.0), yaw: 0.0),
+                        (at: {ticks}, offset: (0.5, 0.0, 1.0), yaw: 0.0),
+                    ]),
+                    warps: [
+                        (from: 0, to: {window}, max_distance: 9.0, max_turn: 2.0, keep: 1.0),
+                        (from: {window}, to: {last}, max_distance: 9.0, max_turn: 2.0, keep: 1.0),
+                    ],
+                )],
+            ),
+        )"#,
+        last = window + 10,
+    ))
+}
+
+/// Where a target stands for [`winding`]'s windows to warp toward.
+const WINDING_TARGET: Vec3 = Vec3::new(4.0, 0.0, 9.0);
+
+/// Where the root stands at the end of the first window under a clock at `per_mille`, with `edit` a new
+/// revision of the set at its first step in the window.
+fn warped_end(set: MoveSet, window: u32, per_mille: u32, edit: Option<MoveSet>) -> Vec3 {
+    let (mut sim, actor) = lone(set.clone());
+    sim.set_warp_target(actor, WarpTarget::Point(WINDING_TARGET));
+    sim.clock_mut(actor).expect("alive").0.push_scale(ScaleSource::Debug, per_mille).expect("room");
+    sim.force_move(actor, Name::new("wind"));
+    sim.step(&TickActions::NEUTRAL);
+    if let Some(edit) = edit {
+        let id = sim.actor(actor).expect("alive").moves.set.expect("it has a set");
+        sim.tune_move_set(id, edit).expect("it takes it");
+    }
+    loop {
+        let mv = current(&sim, actor).expect("running");
+        if mv.elapsed >= ticks(u64::from(window)) {
+            let view = sim.actor(actor).expect("alive");
+            let table = &set.find(Name::new("wind")).expect("in the set").1.tables;
+            let beyond =
+                table.root_at(mv.elapsed).offset() - table.root_at(ticks(u64::from(window))).offset();
+            return view.position - det::rotate_y(beyond, mv.frame_yaw);
+        }
+        sim.step(&TickActions::NEUTRAL);
+    }
+}
+
+/// A window long enough to read a root's path from its total goes where a walk does, at any speed, and
+/// so does a move still running on the revision it began in while a new one takes over: each revision
+/// has a path of its own.
+#[test]
+fn a_long_warp_window_ends_where_a_short_one_does() {
+    for window in [40, 120, 121, 900, 3500] {
+        let set = winding(3590, window);
+        let tuned = winding(1000, 300);
+        let ends = [
+            ("at 1×", warped_end(set.clone(), window, 1000, None)),
+            ("at 0.3×", warped_end(set.clone(), window, 300, None)),
+            ("at 1.7×", warped_end(set.clone(), window, 1700, None)),
+            ("through an edit", warped_end(set.clone(), window, 1000, Some(tuned))),
+        ];
+        for (what, end) in ends {
+            // Its stand-off from the target, whatever the table was doing.
+            let distance = Vec3::new(WINDING_TARGET.x - end.x, 0.0, WINDING_TARGET.z - end.z).length();
+            assert!((distance - 1.0).abs() < 1e-2, "window {window} {what}: {distance} m away, at {end}");
+        }
+    }
+}
+
 /// A warp window can open partway through one big step. The table's motion up to its edge is walked in
 /// the frame the move had; only what follows turns.
 #[test]

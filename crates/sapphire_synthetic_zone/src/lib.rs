@@ -13,7 +13,7 @@ use sapphire_assets::mesh::{
     MaterialSlot, Mesh, PositionFormat, SlotMaterial, Submesh, VERTEX_COLOR_NEUTRAL, Vertex, VertexFlags,
 };
 use sapphire_assets::pack::{Codec, PackAsset, PackError, write_pack};
-use sapphire_assets::texture::Swizzle;
+use sapphire_assets::texture::{Swizzle, Texture, TextureDesc, TextureFormat};
 use sapphire_assets::{AssetId, AssetKind};
 use sapphire_serialize::cooked::AlignedVec;
 use sapphire_zone::{
@@ -34,15 +34,20 @@ pub struct SyntheticZone {
     pub lights: u32,
     /// A side of the grid a merged mesh is, in quads: `2 * quads * quads` triangles.
     pub quads: u32,
+    /// A side of the RGBA8 texture each cell's mesh draws with, through a material of its own, so that
+    /// a walk has textures and materials to give back as well as meshes. 0 has them all share one
+    /// untextured material.
+    pub texture: u32,
 }
 
 impl SyntheticZone {
     /// A large one: 32 x 32 cells of 64 m, about 2 km a side, of 2,048 triangles a cell, 8 instances and
     /// 2 lights.
-    pub const LARGE: Self = Self { side: 32, cell_size: 64.0, instances: 8, lights: 2, quads: 32 };
+    pub const LARGE: Self =
+        Self { side: 32, cell_size: 64.0, instances: 8, lights: 2, quads: 32, texture: 0 };
 
     /// A small one for tests that look at every cell.
-    pub const SMALL: Self = Self { side: 8, cell_size: 32.0, instances: 2, lights: 1, quads: 2 };
+    pub const SMALL: Self = Self { side: 8, cell_size: 32.0, instances: 2, lights: 1, quads: 2, texture: 0 };
 
     /// The zone's ID.
     #[must_use]
@@ -54,6 +59,12 @@ impl SyntheticZone {
     #[must_use]
     pub fn cell_mesh(x: i32, z: i32) -> AssetId {
         ROOT.sub_asset(&format!("cell/{x}/{z}"))
+    }
+
+    /// The texture of cell `(x, z)`, for a zone with [`Self::texture`].
+    #[must_use]
+    pub fn cell_texture(x: i32, z: i32) -> AssetId {
+        ROOT.sub_asset(&format!("cell texture/{x}/{z}"))
     }
 
     /// The backdrop's mesh.
@@ -76,7 +87,7 @@ impl SyntheticZone {
     pub fn pack(self, extra: Vec<PackAsset>) -> Result<Vec<u8>, PackError> {
         let material_id = ROOT.sub_asset("material");
         let mut assets = extra;
-        assets.push(asset(material_id, AssetKind::Material, &material_bytes()));
+        assets.push(asset(material_id, AssetKind::Material, &material_bytes(None)));
         assets.push(asset(Self::instance_mesh(), AssetKind::Mesh, &patch([0.0; 3], 1.0, 1, material_id)));
         let backdrop = self.cell_size * self.side as f32;
         assets.push(asset(
@@ -92,10 +103,19 @@ impl SyntheticZone {
             for z in 0..self.side {
                 let corner = [x as f32 * self.cell_size, 0.0, z as f32 * self.cell_size];
                 let mesh = Self::cell_mesh(x, z);
+                let material = if self.texture == 0 {
+                    material_id
+                } else {
+                    let texture = Self::cell_texture(x, z);
+                    let material = ROOT.sub_asset(&format!("cell material/{x}/{z}"));
+                    assets.push(asset(texture, AssetKind::Texture, &texture_bytes(self.texture, x, z)));
+                    assets.push(asset(material, AssetKind::Material, &material_bytes(Some(texture))));
+                    material
+                };
                 assets.push(asset(
                     mesh,
                     AssetKind::Mesh,
-                    &patch(corner, self.cell_size, self.quads, material_id),
+                    &patch(corner, self.cell_size, self.quads, material),
                 ));
                 let first_instance = instances.len() as u32;
                 let first_light = lights.len() as u32;
@@ -172,8 +192,22 @@ fn asset(id: AssetId, kind: AssetKind, bytes: &[u8]) -> PackAsset {
     PackAsset::encode(id, kind, Codec::Lz4, bytes, dependencies, 3).expect("a synthetic asset encodes")
 }
 
-fn material_bytes() -> Vec<u8> {
-    let document = AnimeCharacterMaterial::default();
+/// A square of one color, a cell's own, so that it costs a real texture's GPU memory and a pack little.
+fn texture_bytes(side: u32, x: i32, z: i32) -> Vec<u8> {
+    let desc = TextureDesc {
+        format: TextureFormat::Rgba8UnormSrgb,
+        width: side,
+        height: side,
+        mip_level_count: 1,
+        swizzle: Swizzle::IDENTITY,
+    };
+    let texel = [x as u8, z as u8, 128, 255];
+    let texels = texel.repeat((side * side) as usize);
+    Texture { desc, levels: vec![&texels] }.to_ktx2().expect("a synthetic texture is a valid one")
+}
+
+fn material_bytes(base_color_map: Option<AssetId>) -> Vec<u8> {
+    let document = AnimeCharacterMaterial { base_color_map, ..AnimeCharacterMaterial::default() };
     let swizzles = [Swizzle::IDENTITY; AnimeCharacterMaterial::TEXTURE_SLOTS.len()];
     let material = Material::from_document(&document, &swizzles).expect("the default material is valid");
     material.to_cooked().expect("the default material cooks").into_vec()

@@ -86,13 +86,33 @@ impl Walk {
         keys: Vec<PipelineKey>,
         left_out: Option<String>,
     ) -> Self {
+        let budgets = AssetBudgets { upload_per_frame: u64::MAX, resident: [u64::MAX; AssetKind::ALL.len()] };
+        Self::over(zone, settings, start, budgets, keys, left_out)
+    }
+
+    fn with_budgets(
+        zone: SyntheticZone,
+        settings: StreamSettings,
+        start: Vec3,
+        budgets: AssetBudgets,
+    ) -> Self {
+        Self::over(zone, settings, start, budgets, Vec::new(), None)
+    }
+
+    fn over(
+        zone: SyntheticZone,
+        settings: StreamSettings,
+        start: Vec3,
+        budgets: AssetBudgets,
+        keys: Vec<PipelineKey>,
+        left_out: Option<String>,
+    ) -> Self {
         let mut listed = PackAsset::encode(LISTS_KEYS, AssetKind::Mesh, Codec::Lz4, &[0; 64], Vec::new(), 3)
             .expect("an asset");
         listed.pipeline_keys = keys;
         let source = Arc::new(MemoryPackSource::new());
         source.insert(PACK, zone.pack(vec![character(), listed]).expect("a pack"));
         let live_packs = Arc::new(LivePacks::new(source));
-        let budgets = AssetBudgets { upload_per_frame: u64::MAX, resident: [u64::MAX; AssetKind::ALL.len()] };
         let mut server = AssetServer::new(live_packs.clone(), budgets);
         server.mount_now(PACK).expect("the pack");
         let character = server.load_with(CHARACTER, LoadPriority::Critical).expect("loading");
@@ -130,21 +150,29 @@ impl Walk {
     }
 
     /// One frame as the app runs it. Returns how many instances and how many lights its packet changed
-    /// and removed, and how many lights it has, and the time the content's uploads took.
+    /// and removed, how many lights it has, and what the content's uploads and the renderer's prepare
+    /// took and did.
     fn frame(&mut self) -> Frame {
+        let before = self.renderer.stats();
         let stopwatch = Stopwatch::start();
         self.content.update(&mut self.renderer, &self.gpu);
         let uploads = stopwatch.elapsed();
+        let grew = self.renderer.stats().buffer_growths != before.buffer_growths;
         self.scene.follow_content(&mut self.content, &mut ());
         self.scene.step();
         let packet = self.scene.frame_packet(1.0, Some((SIDE, SIDE)), &mut ());
-        let frame = Frame {
+        let mut frame = Frame {
             changed: packet.instances.changed.len(),
             removed: packet.instances.removed.len(),
             lights: packet.lights.len(),
             uploads,
+            grew,
+            ..Frame::default()
         };
+        let stopwatch = Stopwatch::start();
         self.renderer.prepare(&self.gpu, packet);
+        frame.prepare = stopwatch.elapsed();
+        frame.rebuilt = self.renderer.stats().draw_list_builds != before.draw_list_builds;
         let view = self.target.create_view(&Default::default());
         let mut graph = FrameGraph::new();
         let target = graph.import_texture("target", &view);
@@ -152,6 +180,25 @@ impl Walk {
         self.graph.execute(&self.gpu, graph).expect("a valid graph");
         self.scene.end_frame();
         frame
+    }
+
+    /// Frames until what's been let go of has gone from the renderer: what's left is what the scene
+    /// draws and what the server still holds.
+    fn drain(&mut self) {
+        for _ in 0..1_000 {
+            self.frame();
+            if self.renderer.stats().retiring == 0 {
+                return;
+            }
+            self.gpu.device().poll(wgpu::PollType::wait_indefinitely()).expect("poll");
+        }
+        panic!("it never drained: {:?}", self.renderer.stats().retiring);
+    }
+
+    /// The textures that live on the GPU, ours and the renderer's.
+    fn gpu_textures(&self) -> usize {
+        let report = self.gpu.instance().raw().generate_report().expect("a wgpu-core backend");
+        report.hub.textures.num_kept_from_user
     }
 
     /// How many entities draw a mesh: before the first frame, those the scene has of its own.
@@ -188,10 +235,16 @@ struct Frame {
     removed: usize,
     lights: usize,
     uploads: Duration,
+    prepare: Duration,
+    /// The uploads grew a buffer.
+    grew: bool,
+    /// Prepare rebuilt the draw list.
+    rebuilt: bool,
 }
 
 /// A little of everything, near enough to see all at once.
-const SMALL: SyntheticZone = SyntheticZone { side: 4, cell_size: 32.0, instances: 2, lights: 1, quads: 2 };
+const SMALL: SyntheticZone =
+    SyntheticZone { side: 4, cell_size: 32.0, instances: 2, lights: 1, quads: 2, texture: 0 };
 
 fn small_settings() -> StreamSettings {
     StreamSettings {
@@ -319,6 +372,258 @@ fn closing_a_zone_takes_its_instances_away_and_lets_its_pack_go() {
     // Frames go on, with nothing left of it. And closing again is nothing to do.
     walk.frame();
     assert!(walk.scene.close_zone(&mut walk.content).is_none());
+    // Its meshes, materials and textures came back: the character's, and the sky's, are what's left.
+    walk.drain();
+    let stats = walk.renderer.stats();
+    assert_eq!(stats.meshes, 1, "{stats:?}");
+    assert!(stats.meshes_freed > 0);
+    assert_eq!(walk.content.texture_bytes(), 0);
+}
+
+/// Budgets of next to nothing, so that a server unloads whatever nothing holds as soon as nothing does.
+fn nothing_cached() -> AssetBudgets {
+    AssetBudgets { upload_per_frame: u64::MAX, resident: [1; AssetKind::ALL.len()] }
+}
+
+/// What a visit to one place holds on the renderer: the same on each visit, or something's leaking.
+#[derive(Debug, PartialEq)]
+struct Holds {
+    draws: u32,
+    instances: u32,
+    meshes: u32,
+    mesh_pool_bytes: u64,
+    materials: u32,
+    material_bytes: u64,
+    texture_bytes: u64,
+    gpu_textures: usize,
+}
+
+/// A walk out to the zone's far corner and back, over and over, with each cell evicted when it's left:
+/// every return draws the same from the same room, and the buffers stop growing after the first.
+#[test]
+#[ignore = "needs a GPU"]
+fn cells_evicted_and_entered_again_cost_nothing_more_each_time() {
+    let zone = SyntheticZone { texture: 4, ..SMALL };
+    let (home, away) = (Vec3::new(16.0, 0.0, 16.0), Vec3::new(112.0, 0.0, 112.0));
+    let mut walk = Walk::with_budgets(zone, small_settings(), home, nothing_cached());
+    let visit = |walk: &mut Walk, place: Vec3| {
+        walk.look_from(place);
+        walk.settle();
+        walk.drain();
+        let stats = walk.scene.stream_stats().expect("a zone is open");
+        assert_eq!((stats.pending, stats.loading, stats.failed), (0, 0, 0), "{stats:?}");
+        let stats = walk.renderer.stats();
+        Holds {
+            draws: stats.draws,
+            instances: stats.instances,
+            meshes: stats.meshes,
+            mesh_pool_bytes: stats.mesh_pool_bytes,
+            materials: stats.materials,
+            material_bytes: stats.material_bytes,
+            texture_bytes: walk.content.texture_bytes(),
+            gpu_textures: walk.gpu_textures(),
+        }
+    };
+    let at_home = visit(&mut walk, home);
+    let at_away = visit(&mut walk, away);
+    assert!(at_home.texture_bytes > 0, "{at_home:?}");
+    let (capacity, growths) = {
+        let stats = walk.renderer.stats();
+        (stats.mesh_pool_capacity, stats.buffer_growths)
+    };
+    let mut freed = walk.renderer.stats().meshes_freed;
+    assert!(freed > 0, "the first cells left");
+    for lap in 0..6 {
+        assert_eq!(visit(&mut walk, home), at_home, "lap {lap}");
+        assert_eq!(visit(&mut walk, away), at_away, "lap {lap}");
+        let stats = walk.renderer.stats();
+        assert_eq!(stats.mesh_pool_capacity, capacity, "lap {lap}: the pool grew");
+        assert_eq!(stats.buffer_growths, growths, "lap {lap}: a buffer grew");
+        assert!(stats.meshes_freed > freed, "lap {lap}: the cells it left stayed");
+        freed = stats.meshes_freed;
+    }
+}
+
+/// The renderer set aside for a trial, and kept in the end, was told nothing of what the server unloaded
+/// meanwhile: it gives those back all the same.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_renderer_kept_after_a_trial_gives_back_what_was_unloaded_during_it() {
+    let zone = SyntheticZone { texture: 4, ..SMALL };
+    let mut walk = Walk::new(zone, small_settings(), Vec3::new(16.0, 0.0, 16.0));
+    walk.settle();
+    walk.drain();
+    let stats = walk.renderer.stats();
+    assert!(stats.meshes > 1 && walk.content.texture_bytes() > 0, "{stats:?}");
+
+    let old = walk.content.renderer_rebuilt();
+    let mut trial = Renderer::new(&walk.gpu, FORMAT, RenderSettings::default()).expect("renderer");
+    walk.scene.close_zone(&mut walk.content).expect("a zone is open").expect("it unmounts");
+    walk.content.update(&mut trial, &walk.gpu);
+    assert_eq!(trial.stats().meshes, 0, "the server's unloads went to the trial, which held none of it");
+
+    // The trial fails. Back on the first renderer, what it holds of them goes.
+    drop(trial);
+    walk.content.keep_renderer(old);
+    assert_eq!(walk.content.texture_bytes(), 0);
+    walk.drain();
+    let stats = walk.renderer.stats();
+    assert_eq!(stats.meshes, 1, "only the character's: {stats:?}");
+    assert!(stats.meshes_freed > 0, "{stats:?}");
+}
+
+/// A walk that takes in every cell of a zone bigger than its budgets, there and back, on each class of
+/// device's settings and budgets: what's on the GPU stays in them, and a return costs no more room than
+/// the way out. `--nocapture` in release reports it, with what uploads and the draw list's rebuilds
+/// cost; a debug build, as CI's, walks a small zone on small budgets and holds the same.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_walk_over_a_whole_zone_keeps_what_it_holds_within_its_budgets() {
+    let tiers = if cfg!(debug_assertions) {
+        let zone = SyntheticZone { side: 8, quads: 4, texture: 8, ..SyntheticZone::LARGE };
+        let settings =
+            StreamSettings { activate: 64.0, load: 96.0, release: 128.0, ..StreamSettings::DESKTOP };
+        let mut budgets = AssetBudgets::DESKTOP;
+        budgets.resident[AssetKind::Mesh.index()] = 64 * 1024;
+        budgets.resident[AssetKind::Texture.index()] = 16 * 1024;
+        vec![("debug", zone, settings, budgets)]
+    } else {
+        let desktop = SyntheticZone { quads: 128, texture: 1024, ..SyntheticZone::LARGE };
+        let mobile = SyntheticZone { quads: 64, texture: 512, ..SyntheticZone::LARGE };
+        vec![
+            ("Desktop-Low", desktop, StreamSettings::DESKTOP, AssetBudgets::DESKTOP),
+            ("Mobile-Low", mobile, StreamSettings::MOBILE, AssetBudgets::MOBILE),
+        ]
+    };
+    for (name, zone, settings, budgets) in tiers {
+        let width = zone.cell_size * zone.side as f32;
+        // Up and down lanes close enough that every cell is loaded from one or another.
+        let spacing = 2.0 * settings.load;
+        let lanes = (width / spacing).ceil() as usize;
+        let mut path = Vec::new();
+        for lane in 0..lanes {
+            let z = (lane as f32 + 0.5) * spacing;
+            let (from, to) = if lane % 2 == 0 { (0.0, width) } else { (width, 0.0) };
+            path.push(Vec3::new(from, 0.0, z));
+            path.push(Vec3::new(to, 0.0, z));
+        }
+        let back: Vec<Vec3> = path.iter().rev().copied().collect();
+        path.extend(back);
+        // 40 m/s, at 60 frames a second.
+        let step = 40.0 / 60.0;
+        let (mesh_budget, texture_budget) =
+            (budgets.resident(AssetKind::Mesh), budgets.resident(AssetKind::Texture));
+        let mut walk = Walk::with_budgets(zone, settings, path[0], budgets);
+
+        let mut frames = 0u32;
+        let mut most_textures = 0;
+        let mut most_mesh_bytes = 0;
+        let mut most_resident_meshes = 0;
+        let mut most_resident_textures = 0;
+        let mut most_meshes = 0;
+        let mut most_retiring = 0;
+        let mut most_materials = 0;
+        let mut half = None;
+        let mut rebuilt = Vec::new();
+        let mut steady = Vec::new();
+        let mut grown = Vec::new();
+        let mut plain = Vec::new();
+        // The longest uploads, and the bytes they uploaded.
+        let mut worst_uploads = (Duration::ZERO, 0);
+        for (at, (&from, &to)) in path.iter().zip(&path[1..]).enumerate() {
+            if at == path.len() / 2 {
+                let stats = walk.renderer.stats();
+                half = Some((stats.mesh_pool_capacity, stats.buffer_growths, stats.meshes_freed));
+            }
+            let steps = (from.distance(to) / step).ceil().max(1.0) as u32;
+            for n in 0..steps {
+                walk.look_from(from.lerp(to, n as f32 / steps as f32));
+                let frame = walk.frame();
+                frames += 1;
+                let stats = walk.renderer.stats();
+                most_textures = most_textures.max(walk.content.texture_bytes());
+                most_mesh_bytes = most_mesh_bytes.max(stats.mesh_pool_bytes);
+                let assets = walk.content.stats();
+                let resident = assets.resident;
+                if frames > 1 && frame.uploads > worst_uploads.0 {
+                    worst_uploads = (frame.uploads, assets.last_upload.bytes);
+                }
+                most_resident_meshes = most_resident_meshes.max(resident[AssetKind::Mesh.index()]);
+                most_resident_textures = most_resident_textures.max(resident[AssetKind::Texture.index()]);
+                most_meshes = most_meshes.max(stats.meshes);
+                most_retiring = most_retiring.max(stats.retiring);
+                most_materials = most_materials.max(stats.materials);
+                if frames > 1 {
+                    (if frame.rebuilt { &mut rebuilt } else { &mut steady }).push(frame.prepare);
+                    (if frame.grew { &mut grown } else { &mut plain }).push(frame.uploads);
+                }
+            }
+        }
+        let stats = walk.renderer.stats();
+        let streaming = walk.scene.stream_stats().expect("a zone is open");
+        assert_eq!(streaming.failed, 0, "{streaming:?}");
+        let (capacity, growths, freed_out) = half.expect("it got halfway");
+        assert!(freed_out > 0, "{name}: nothing was given back on the way out");
+        assert!(stats.meshes_freed > freed_out, "{name}: nothing was given back on the way home");
+        assert!(most_textures <= texture_budget, "{name}: {most_textures} of textures, of {texture_budget}");
+        // The server counts loads on their way, and trims at its next update; the pool's bytes lag it by
+        // what's on its way back through a frame. Either can pass a budget by that much, and no more.
+        let near = |budget: u64| budget + budget / 8;
+        assert!(
+            most_resident_textures <= near(texture_budget),
+            "{name}: {most_resident_textures}, of {texture_budget}"
+        );
+        assert!(
+            most_resident_meshes <= near(mesh_budget),
+            "{name}: {most_resident_meshes}, of {mesh_budget}"
+        );
+        assert!(
+            most_mesh_bytes <= near(mesh_budget),
+            "{name}: {most_mesh_bytes} of meshes, of {mesh_budget}"
+        );
+        assert_eq!(stats.mesh_pool_capacity, capacity, "{name}: the way back grew the pool");
+        for list in [&mut rebuilt, &mut steady, &mut grown, &mut plain] {
+            list.push(Duration::ZERO);
+            list.sort_unstable();
+        }
+        let at =
+            |list: &[Duration], percent: usize| list[(list.len() - 1) * percent / 100].as_secs_f64() * 1e6;
+        println!(
+            "{name} memory: {frames} frames over {} cells; textures most {:.0} MiB of {:.0}; meshes resident most \
+             {:.0} MiB (textures {most_resident_textures}), in the pool most {:.0} MiB, of {:.0} (pool capacity {:.0} MiB, {} growths in all, {growths} on the way out); most meshes {most_meshes}, \
+             materials {most_materials}, retiring {most_retiring}; freed {}; streaming over its budget in {} \
+             frames, peak {:.0} us; the longest uploads were {:.1} MiB; prepare us with a rebuild ({}) p50 {:.0} \
+             p99 {:.0} worst {:.0}, without ({}) p50 {:.0} p99 {:.0} worst {:.0}; uploads us with growth ({}) p50 \
+             {:.0} worst {:.0}, without ({}) p50 {:.0} p99 {:.0} worst {:.0}",
+            zone.side * zone.side,
+            most_textures as f64 / 1048576.0,
+            texture_budget as f64 / 1048576.0,
+            most_resident_meshes as f64 / 1048576.0,
+            most_mesh_bytes as f64 / 1048576.0,
+            mesh_budget as f64 / 1048576.0,
+            stats.mesh_pool_capacity as f64 / 1048576.0,
+            stats.buffer_growths,
+            stats.meshes_freed,
+            streaming.over_budget_frames,
+            streaming.peak_time.as_secs_f64() * 1e6,
+            worst_uploads.1 as f64 / 1048576.0,
+            rebuilt.len() - 1,
+            at(&rebuilt, 50),
+            at(&rebuilt, 99),
+            at(&rebuilt, 100),
+            steady.len() - 1,
+            at(&steady, 50),
+            at(&steady, 99),
+            at(&steady, 100),
+            grown.len() - 1,
+            at(&grown, 50),
+            at(&grown, 100),
+            plain.len() - 1,
+            at(&plain, 50),
+            at(&plain, 99),
+            at(&plain, 100),
+        );
+    }
 }
 
 /// A sprint across a zone, on each class of device's settings: what §3.2's row reads, with what the

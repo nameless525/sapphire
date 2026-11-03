@@ -186,6 +186,8 @@ struct GpuMesh {
 /// What the renderer holds of loaded assets, by asset ID.
 struct GpuAssets {
     textures: HashMap<AssetId, Held<GpuTexture>>,
+    /// The bytes of [`Self::textures`], against the zone texture pool's budget (spec §3.4).
+    texture_bytes: u64,
     materials: HashMap<AssetId, Held<MaterialHandle>>,
     /// Meshes, with their bounds.
     meshes: HashMap<AssetId, Held<GpuMesh>>,
@@ -209,6 +211,9 @@ struct GpuAssets {
     studio_replaced: bool,
     /// The probe grid the renderer holds (it holds one), as its key hours.
     probe_grid: Option<Held<Vec<f32>>>,
+    /// Meshes and materials of assets unloaded, for the next [`Self::free_stale`].
+    stale_meshes: Vec<MeshHandle>,
+    stale_materials: Vec<MaterialHandle>,
 }
 
 impl GpuAssets {
@@ -216,6 +221,7 @@ impl GpuAssets {
     fn new(character: AssetId, keep_character: bool) -> Self {
         Self {
             textures: HashMap::new(),
+            texture_bytes: 0,
             materials: HashMap::new(),
             meshes: HashMap::new(),
             character,
@@ -228,6 +234,48 @@ impl GpuAssets {
             copies: CharacterCopies::default(),
             studio_replaced: false,
             probe_grid: None,
+            stale_meshes: Vec::new(),
+            stale_materials: Vec::new(),
+        }
+    }
+
+    /// Lets go of what's held of any asset `resident` no longer says is: this renderer was set aside
+    /// while a new one was tried, and only the new one heard of what the server unloaded meanwhile.
+    fn take_stale(&mut self, resident: impl Fn(AssetId) -> bool) {
+        let mut texture_bytes = self.texture_bytes;
+        self.textures.retain(|&id, held| {
+            let kept = resident(id);
+            if !kept {
+                texture_bytes -= held.object.bytes();
+            }
+            kept
+        });
+        self.texture_bytes = texture_bytes;
+        let stale_materials = &mut self.stale_materials;
+        self.materials.retain(|&id, held| {
+            let kept = resident(id);
+            if !kept {
+                stale_materials.push(held.object);
+            }
+            kept
+        });
+        let stale_meshes = &mut self.stale_meshes;
+        self.meshes.retain(|&id, held| {
+            let kept = resident(id);
+            if !kept {
+                stale_meshes.push(held.object.handle);
+            }
+            kept
+        });
+    }
+
+    /// Frees what's been let go of, on the renderer it's held on.
+    fn free_stale(&mut self, renderer: &mut Renderer) {
+        for mesh in self.stale_meshes.drain(..) {
+            renderer.free_mesh(mesh);
+        }
+        for material in self.stale_materials.drain(..) {
+            renderer.free_material(material);
         }
     }
 
@@ -269,7 +317,10 @@ impl GpuAssets {
                 return Ok(());
             }
             let object = GpuTexture::upload(gpu, &texture, "texture asset")?;
-            self.textures.insert(id, Held { slot, generation, object });
+            self.texture_bytes += object.bytes();
+            if let Some(old) = self.textures.insert(id, Held { slot, generation, object }) {
+                self.texture_bytes -= old.object.bytes();
+            }
         } else if let Some(material) = upload.get::<Material>() {
             let overridden = self.overridden(material)?;
             let material = match &overridden {
@@ -286,7 +337,10 @@ impl GpuAssets {
                 }
                 None => {
                     let object = renderer.upload_material(material, resolve)?;
-                    self.materials.insert(id, Held { slot, generation, object });
+                    // Another slot's: an asset that was unloaded while this renderer was set aside.
+                    if let Some(old) = self.materials.insert(id, Held { slot, generation, object }) {
+                        renderer.free_material(old.object);
+                    }
                 }
             }
             if let Some(watcher) = &mut self.watcher {
@@ -314,7 +368,11 @@ impl GpuAssets {
                 None => {
                     // All or nothing, so a mesh the renderer rejects leaves no materials behind.
                     let handle = renderer.upload_mesh_with_slots(mesh, resolve)?;
-                    self.meshes.insert(id, Held { slot, generation, object: GpuMesh { handle, bounds } });
+                    let held = Held { slot, generation, object: GpuMesh { handle, bounds } };
+                    // Another slot's: an asset that was unloaded while this renderer was set aside.
+                    if let Some(old) = self.meshes.insert(id, held) {
+                        renderer.free_mesh(old.object.handle);
+                    }
                 }
             }
             if id == self.character
@@ -338,21 +396,28 @@ impl GpuAssets {
         Ok(())
     }
 
-    /// Forgets an unloaded asset. Textures are freed; the renderer keeps mesh and material slots
-    /// for its lifetime until it gains residency of its own (`sapphire_render`'s later
-    /// milestones).
+    /// Gives an unloaded asset's GPU objects back. A texture's is let go of here, and goes when the last
+    /// material bound to it has (its `wgpu::Texture` is shared with their bind groups). A mesh or
+    /// material goes to the next [`Self::free_stale`], and from there when nothing draws it and no frame
+    /// can be reading it, which the renderer sees to.
     fn unload(&mut self, unloaded: Unloaded) {
         let Unloaded { id, slot, .. } = unloaded;
-        if self.textures.get(&id).is_some_and(|held| held.slot == slot) {
-            self.textures.remove(&id);
+        if self.textures.get(&id).is_some_and(|held| held.slot == slot)
+            && let Some(held) = self.textures.remove(&id)
+        {
+            self.texture_bytes -= held.object.bytes();
         }
-        if self.materials.get(&id).is_some_and(|held| held.slot == slot) {
-            self.materials.remove(&id);
+        if self.materials.get(&id).is_some_and(|held| held.slot == slot)
+            && let Some(held) = self.materials.remove(&id)
+        {
+            self.stale_materials.push(held.object);
         }
-        if self.meshes.get(&id).is_some_and(|held| held.slot == slot) {
-            self.meshes.remove(&id);
+        if self.meshes.get(&id).is_some_and(|held| held.slot == slot)
+            && let Some(held) = self.meshes.remove(&id)
+        {
+            self.stale_meshes.push(held.object.handle);
         }
-        // The renderer keeps the grid, as it keeps meshes, until another replaces it.
+        // The renderer keeps the grid until another replaces it: it holds one.
         if self.probe_grid.as_ref().is_some_and(|held| held.slot == slot) {
             self.probe_grid = None;
         }
@@ -646,6 +711,7 @@ impl Content {
         for unloaded in self.server.take_unloaded() {
             self.gpu.unload(unloaded);
         }
+        self.gpu.free_stale(renderer);
         let assets = &mut self.gpu;
         self.server.upload(|upload| assets.upload(upload, renderer, gpu));
     }
@@ -1513,7 +1579,15 @@ impl Content {
     /// uploaded twice and the handles the scene draws with stay valid.
     pub fn keep_renderer(&mut self, previous: RendererAssets) {
         self.gpu = previous.0;
+        let server = &self.server;
+        self.gpu.take_stale(|id| server.is_resident(id));
         self.server.reupload_all();
+    }
+
+    /// The bytes of textures on the renderer, against the zone texture pool's budget (spec §3.4).
+    #[must_use]
+    pub fn texture_bytes(&self) -> u64 {
+        self.gpu.texture_bytes
     }
 
     /// Reads pack `name` again after its file changed and reloads what changed (hot reload,
@@ -1575,9 +1649,8 @@ impl Content {
     /// Unloads every asset nothing holds or pins and frees the textures uploaded for them at once,
     /// rather than at the next [`Self::update`]: the response to a system memory warning (review
     /// PA-004, spec §6.3). What the scene draws stays, since the sandbox holds a handle to all of
-    /// it; what goes is what reloads and rebuilds left behind. The renderer keeps mesh and
-    /// material slots for its lifetime (see `GpuAssets::unload`). Returns the server's counters
-    /// before and after.
+    /// it; what goes is what reloads and rebuilds left behind. Their meshes and materials go from the
+    /// next [`Self::update`] (see `GpuAssets::unload`). Returns the server's counters before and after.
     pub fn trim(&mut self) -> (AssetStats, AssetStats) {
         let before = self.server.stats();
         self.server.unload_unused();

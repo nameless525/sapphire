@@ -23,7 +23,7 @@
 //!
 //! The streamer's handles, which is all it holds. A released mesh stays cached in the server until a
 //! budget needs the room or its pack is unmounted, as anything unused does. What the renderer holds for
-//! a mesh is the app's to free when the server unloads it (M3 W3).
+//! it goes when the server unloads it, which the app sees to (`GpuAssets`, M3 W3).
 
 use std::time::Duration;
 

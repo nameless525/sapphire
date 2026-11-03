@@ -284,7 +284,7 @@ fn walking_up_and_down_a_radius_doesnt_flap() {
 fn a_place_that_cant_load_is_counted_and_comes_back_with_its_pack() {
     // A pack with the zone and only some of its meshes: the rest live in a pack that isn't there yet.
     let source = Arc::new(MemoryPackSource::new());
-    let zone = SyntheticZone { side: 1, cell_size: 32.0, instances: 0, lights: 0, quads: 1 };
+    let zone = SyntheticZone { side: 1, cell_size: 32.0, instances: 0, lights: 0, quads: 1, texture: 0 };
     let whole = zone.pack(Vec::new()).unwrap();
     source.insert(PACK, whole.clone());
     let mut server = AssetServer::new(source.clone(), unlimited());

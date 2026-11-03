@@ -171,6 +171,10 @@ pub(crate) fn run(
             removed = stream.total_removed,
             peak_us = format_args!("{:.1}", micros(stream.peak_time)),
             over_budget_frames = stream.over_budget_frames,
+            texture_bytes = stage.content.texture_bytes(),
+            mesh_pool_bytes = stage.renderer.stats().mesh_pool_bytes,
+            mesh_pool_capacity = stage.renderer.stats().mesh_pool_capacity,
+            meshes_freed = stage.renderer.stats().meshes_freed,
             "streaming"
         );
     }

@@ -1,0 +1,11 @@
+// What `title.ui.ron`'s paths can read, generated from `game_ui::menus::TitleModel`, which a test holds
+// this to. A cook refuses a path that isn't here.
+(
+    type: "sapphire::assets::UiModel",
+    version: 1,
+    data: (
+        fields: [
+            (path: "can_leave", kind: Bool),
+        ],
+    ),
+)

@@ -1,0 +1,387 @@
+// The character screen (M3 U7), drawn flat: the plate is where U6's live character goes.
+(
+    type: "sapphire::assets::UiDocument",
+    version: 2,
+    data: (
+        model: "character.model.ron",
+        styles: [
+            (name: "name", role: "display", size: 24, weight: 700),
+            (name: "heading", role: "display", size: 20, weight: 700),
+            (name: "value", role: "body", size: 18, weight: 700),
+            (name: "stat", role: "body", size: 16, weight: 500),
+            (name: "detail", role: "body", size: 14, line_height: 1.4),
+        ],
+        nodes: [
+            (
+                name: "root",
+                layout: (direction: Column, align: Center, justify: Center, safe_area: true),
+                look: (fill: Color((6, 8, 14, 190))),
+            ),
+            (
+                name: "panel",
+                parent: "root",
+                layout: (direction: Row, gap: 20, width: Percent(94), max_width: Points(1000), height: Percent(90), padding: (left: 24, right: 24, top: 16, bottom: 16)),
+                look: (shape: Slice(sprite: Button, corner: 16),
+                    fill: Color((20, 26, 60, 255)),
+                    outline: (color: (120, 190, 255, 255), width: 1.5),),
+            ),
+            (
+                name: "plate",
+                parent: "panel",
+                layout: (direction: Column, align: Center, justify: Center, gap: 8, width: Percent(28), shrink: 0, padding: (left: 8, right: 8)),
+                look: (shape: Slice(sprite: Button, corner: 12),
+                    fill: Gradient(from: (14, 34, 92, 255), to: (58, 30, 92, 255), angle: 70),),
+            ),
+            (
+                name: "sigil",
+                parent: "plate",
+                layout: (width: Points(72), height: Points(72)),
+                look: (shape: Sprite(Spark), fill: Color((96, 243, 212, 255))),
+            ),
+            (
+                name: "name",
+                parent: "plate",
+                layout: (max_width: Percent(100)),
+                text: (
+                    key: "character-name-wanderer",
+                    style: "name",
+                    color: (240, 246, 255, 255),
+                    wrap: true,
+                    key_from: (path: "name", prefix: "character-name-"),
+                    shadow: (color: (0, 0, 0, 180), offset: (2, 2)),
+                ),
+            ),
+            (
+                name: "level",
+                parent: "plate",
+                text: (
+                    key: "character-level",
+                    style: "value",
+                    color: (255, 192, 56, 255),
+                    args: [(name: "level", path: "level")],
+                ),
+            ),
+            (
+                name: "side",
+                parent: "panel",
+                layout: (direction: Column, gap: 8, grow: 1, shrink: 1, min_width: Points(0)),
+            ),
+            (
+                name: "title",
+                parent: "side",
+                text: (
+                    key: "character-title",
+                    style: "heading",
+                    color: (240, 246, 255, 255),
+                ),
+            ),
+            (
+                name: "stats",
+                parent: "side",
+                layout: (direction: Column, gap: 2, shrink: 0),
+            ),
+            (
+                name: "hp",
+                parent: "stats",
+                layout: (direction: Row, justify: SpaceBetween, gap: 8, width: Percent(100), shrink: 0),
+            ),
+            (
+                name: "hp-label",
+                parent: "hp",
+                text: (
+                    key: "character-hp",
+                    style: "stat",
+                    color: (200, 212, 240, 255),
+                ),
+            ),
+            (
+                name: "hp-value",
+                parent: "hp",
+                text: (
+                    key: "character-hp-value",
+                    style: "stat",
+                    color: (240, 246, 255, 255),
+                    args: [(name: "hp", path: "hp"), (name: "max", path: "max_hp")],
+                ),
+            ),
+            (
+                name: "attack",
+                parent: "stats",
+                layout: (direction: Row, justify: SpaceBetween, gap: 8, width: Percent(100), shrink: 0),
+            ),
+            (
+                name: "attack-label",
+                parent: "attack",
+                text: (
+                    key: "character-attack",
+                    style: "stat",
+                    color: (200, 212, 240, 255),
+                ),
+            ),
+            (
+                name: "attack-value",
+                parent: "attack",
+                text: (
+                    key: "character-number",
+                    style: "stat",
+                    color: (240, 246, 255, 255),
+                    args: [(name: "value", path: "attack")],
+                ),
+            ),
+            (
+                name: "defense",
+                parent: "stats",
+                layout: (direction: Row, justify: SpaceBetween, gap: 8, width: Percent(100), shrink: 0),
+            ),
+            (
+                name: "defense-label",
+                parent: "defense",
+                text: (
+                    key: "character-defense",
+                    style: "stat",
+                    color: (200, 212, 240, 255),
+                ),
+            ),
+            (
+                name: "defense-value",
+                parent: "defense",
+                text: (
+                    key: "character-number",
+                    style: "stat",
+                    color: (240, 246, 255, 255),
+                    args: [(name: "value", path: "defense")],
+                ),
+            ),
+            (
+                name: "crit",
+                parent: "stats",
+                layout: (direction: Row, justify: SpaceBetween, gap: 8, width: Percent(100), shrink: 0),
+            ),
+            (
+                name: "crit-label",
+                parent: "crit",
+                text: (
+                    key: "character-crit",
+                    style: "stat",
+                    color: (200, 212, 240, 255),
+                ),
+            ),
+            (
+                name: "crit-value",
+                parent: "crit",
+                text: (
+                    key: "character-percent",
+                    style: "stat",
+                    color: (240, 246, 255, 255),
+                    args: [(name: "value", path: "crit")],
+                ),
+            ),
+            (
+                name: "skills",
+                parent: "side",
+                layout: (direction: Column, gap: 6, grow: 1, shrink: 1, min_height: Points(44), padding: (left: 2, right: 2, top: 2, bottom: 2)),
+                mask: true,
+                scroll: Vertical,
+            ),
+            (
+                name: "skill-attack",
+                parent: "skills",
+                layout: (
+                    direction: Row,
+                    align: Center,
+                    justify: SpaceBetween,
+                    gap: 16,
+                    min_height: Points(40),
+                    padding: (left: 16, right: 16, top: 4, bottom: 4),
+                    shrink: 0,
+                ),
+                look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
+                focus: (
+                    first: true,
+                    down: "skill-dodge",
+                    focused: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Gradient(from: (64, 104, 196, 255), to: (116, 68, 188, 255), angle: 0),
+                        outline: (color: (230, 240, 255, 255), width: 2),
+                    ),
+                    pressed: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Color((180, 204, 250, 255)),
+                    ),
+                ),
+            ),
+            (
+                name: "skill-attack-text",
+                parent: "skill-attack",
+                text: (
+                    key: "character-skill-attack",
+                    style: "stat",
+                    color: (240, 246, 255, 255),
+                ),
+            ),
+            (
+                name: "skill-dodge",
+                parent: "skills",
+                layout: (
+                    direction: Row,
+                    align: Center,
+                    justify: SpaceBetween,
+                    gap: 16,
+                    min_height: Points(40),
+                    padding: (left: 16, right: 16, top: 4, bottom: 4),
+                    shrink: 0,
+                ),
+                look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
+                focus: (
+                    up: "skill-attack",
+                    down: "skill-art",
+                    focused: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Gradient(from: (64, 104, 196, 255), to: (116, 68, 188, 255), angle: 0),
+                        outline: (color: (230, 240, 255, 255), width: 2),
+                    ),
+                    pressed: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Color((180, 204, 250, 255)),
+                    ),
+                ),
+            ),
+            (
+                name: "skill-dodge-text",
+                parent: "skill-dodge",
+                text: (
+                    key: "character-skill-dodge",
+                    style: "stat",
+                    color: (240, 246, 255, 255),
+                ),
+            ),
+            (
+                name: "skill-art",
+                parent: "skills",
+                layout: (
+                    direction: Row,
+                    align: Center,
+                    justify: SpaceBetween,
+                    gap: 16,
+                    min_height: Points(40),
+                    padding: (left: 16, right: 16, top: 4, bottom: 4),
+                    shrink: 0,
+                ),
+                look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
+                focus: (
+                    up: "skill-dodge",
+                    down: "back",
+                    focused: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Gradient(from: (64, 104, 196, 255), to: (116, 68, 188, 255), angle: 0),
+                        outline: (color: (230, 240, 255, 255), width: 2),
+                    ),
+                    pressed: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Color((180, 204, 250, 255)),
+                    ),
+                ),
+            ),
+            (
+                name: "skill-art-text",
+                parent: "skill-art",
+                text: (
+                    key: "character-skill-art",
+                    style: "stat",
+                    color: (240, 246, 255, 255),
+                ),
+            ),
+            (
+                name: "detail",
+                parent: "side",
+                layout: (shrink: 0),
+                text: (
+                    key: "character-detail-attack",
+                    style: "detail",
+                    color: (200, 212, 240, 255),
+                    wrap: true,
+                    key_from: (path: "detail", prefix: "character-detail-"),
+                ),
+            ),
+            (
+                name: "back",
+                parent: "side",
+                layout: (
+                    direction: Row,
+                    align: Center,
+                    justify: SpaceBetween,
+                    gap: 16,
+                    min_height: Points(40),
+                    padding: (left: 16, right: 16, top: 4, bottom: 4),
+                    shrink: 0,
+                ),
+                look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
+                focus: (
+                    up: "skill-art",
+                    fires: "back",
+                    focused: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Gradient(from: (64, 104, 196, 255), to: (116, 68, 188, 255), angle: 0),
+                        outline: (color: (230, 240, 255, 255), width: 2),
+                    ),
+                    pressed: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Color((180, 204, 250, 255)),
+                    ),
+                ),
+            ),
+            (
+                name: "back-text",
+                parent: "back",
+                text: (
+                    key: "character-back",
+                    style: "stat",
+                    color: (240, 246, 255, 255),
+                ),
+            ),
+        ],
+        timelines: [
+            (name: "gone", tracks: [(node: "panel", property: Opacity, keys: [(at: 0, value: 0)])]),
+            (
+                name: "enter",
+                tracks: [
+                    (node: "panel", property: Opacity, keys: [(at: 0, value: 0), (at: 0.22, value: 1, ease: Out)]),
+                    (node: "panel", property: Y, keys: [(at: 0, value: 24), (at: 0.22, value: 0, ease: Back)]),
+                ],
+            ),
+            (
+                name: "leave",
+                tracks: [
+                    (node: "panel", property: Opacity, keys: [(at: 0, value: 1), (at: 0.16, value: 0, ease: In)]),
+                ],
+            ),
+            (
+                name: "focus-skill-attack",
+                tracks: [(node: "skill-attack", property: Scale, keys: [(at: 0, value: 1.03), (at: 0.14, value: 1, ease: Out)])],
+            ),
+            (
+                name: "focus-skill-dodge",
+                tracks: [(node: "skill-dodge", property: Scale, keys: [(at: 0, value: 1.03), (at: 0.14, value: 1, ease: Out)])],
+            ),
+            (
+                name: "focus-skill-art",
+                tracks: [(node: "skill-art", property: Scale, keys: [(at: 0, value: 1.03), (at: 0.14, value: 1, ease: Out)])],
+            ),
+            (
+                name: "focus-back",
+                tracks: [(node: "back", property: Scale, keys: [(at: 0, value: 1.03), (at: 0.14, value: 1, ease: Out)])],
+            ),
+        ],
+        states: [
+            (name: "hidden", play: "gone"),
+            (name: "entering", play: "enter", then: "open"),
+            (name: "open", input: true),
+            (name: "leaving", play: "leave", then: "hidden"),
+        ],
+        transitions: [
+            (from: "hidden", on: "open", to: "entering"),
+            (from: "open", on: "back", to: "leaving"),
+            (from: "open", on: "close", to: "leaving"),
+        ],
+    ),
+)

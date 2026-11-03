@@ -1,0 +1,285 @@
+// The dialogue panel (M3 U7): who's speaking, what they say, and up to four answers. Q2's graph fills the model.
+(
+    type: "sapphire::assets::UiDocument",
+    version: 2,
+    data: (
+        model: "dialogue.model.ron",
+        styles: [
+            (name: "speaker", role: "display", size: 18, weight: 700),
+            (name: "line", role: "body", size: 18, line_height: 1.5),
+            (name: "choice", role: "body", size: 16, weight: 500),
+        ],
+        nodes: [
+            (
+                name: "root",
+                layout: (direction: Column, align: Center, justify: End, gap: 8, padding: (left: 16, right: 16, top: 8, bottom: 12), safe_area: true),
+            ),
+            (
+                name: "choices",
+                parent: "root",
+                layout: (direction: Column, align: End, gap: 6, width: Percent(100), max_width: Points(1040)),
+            ),
+            (
+                name: "first",
+                parent: "choices",
+                layout: (
+                    direction: Row,
+                    align: Center,
+                    justify: SpaceBetween,
+                    gap: 16,
+                    min_height: Points(40),
+                    padding: (left: 16, right: 16, top: 4, bottom: 4),
+                    shrink: 0,
+                ),
+                binds: [(to: Shown, path: "first.shown")],
+                look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
+                focus: (
+                    focused: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Gradient(from: (64, 104, 196, 255), to: (116, 68, 188, 255), angle: 0),
+                        outline: (color: (230, 240, 255, 255), width: 2),
+                    ),
+                    pressed: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Color((180, 204, 250, 255)),
+                    ),
+                ),
+            ),
+            (
+                name: "first-text",
+                parent: "first",
+                text: (
+                    key: "dialogue-sample-stay",
+                    key_from: (path: "first.line", prefix: "dialogue-"),
+                    style: "choice",
+                    color: (240, 246, 255, 255),
+                ),
+            ),
+            (
+                name: "second",
+                parent: "choices",
+                layout: (
+                    direction: Row,
+                    align: Center,
+                    justify: SpaceBetween,
+                    gap: 16,
+                    min_height: Points(40),
+                    padding: (left: 16, right: 16, top: 4, bottom: 4),
+                    shrink: 0,
+                ),
+                binds: [(to: Shown, path: "second.shown")],
+                look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
+                focus: (
+                    focused: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Gradient(from: (64, 104, 196, 255), to: (116, 68, 188, 255), angle: 0),
+                        outline: (color: (230, 240, 255, 255), width: 2),
+                    ),
+                    pressed: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Color((180, 204, 250, 255)),
+                    ),
+                ),
+            ),
+            (
+                name: "second-text",
+                parent: "second",
+                text: (
+                    key: "dialogue-sample-stay",
+                    key_from: (path: "second.line", prefix: "dialogue-"),
+                    style: "choice",
+                    color: (240, 246, 255, 255),
+                ),
+            ),
+            (
+                name: "third",
+                parent: "choices",
+                layout: (
+                    direction: Row,
+                    align: Center,
+                    justify: SpaceBetween,
+                    gap: 16,
+                    min_height: Points(40),
+                    padding: (left: 16, right: 16, top: 4, bottom: 4),
+                    shrink: 0,
+                ),
+                binds: [(to: Shown, path: "third.shown")],
+                look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
+                focus: (
+                    focused: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Gradient(from: (64, 104, 196, 255), to: (116, 68, 188, 255), angle: 0),
+                        outline: (color: (230, 240, 255, 255), width: 2),
+                    ),
+                    pressed: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Color((180, 204, 250, 255)),
+                    ),
+                ),
+            ),
+            (
+                name: "third-text",
+                parent: "third",
+                text: (
+                    key: "dialogue-sample-stay",
+                    key_from: (path: "third.line", prefix: "dialogue-"),
+                    style: "choice",
+                    color: (240, 246, 255, 255),
+                ),
+            ),
+            (
+                name: "fourth",
+                parent: "choices",
+                layout: (
+                    direction: Row,
+                    align: Center,
+                    justify: SpaceBetween,
+                    gap: 16,
+                    min_height: Points(40),
+                    padding: (left: 16, right: 16, top: 4, bottom: 4),
+                    shrink: 0,
+                ),
+                binds: [(to: Shown, path: "fourth.shown")],
+                look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
+                focus: (
+                    focused: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Gradient(from: (64, 104, 196, 255), to: (116, 68, 188, 255), angle: 0),
+                        outline: (color: (230, 240, 255, 255), width: 2),
+                    ),
+                    pressed: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Color((180, 204, 250, 255)),
+                    ),
+                ),
+            ),
+            (
+                name: "fourth-text",
+                parent: "fourth",
+                text: (
+                    key: "dialogue-sample-stay",
+                    key_from: (path: "fourth.line", prefix: "dialogue-"),
+                    style: "choice",
+                    color: (240, 246, 255, 255),
+                ),
+            ),
+            (
+                name: "panel",
+                parent: "root",
+                layout: (direction: Column, gap: 6, width: Percent(100), max_width: Points(1040), padding: (left: 24, right: 24, top: 16, bottom: 16)),
+                look: (shape: Slice(sprite: Button, corner: 16),
+                    fill: Color((20, 26, 60, 255)),
+                    outline: (color: (120, 190, 255, 255), width: 1.5),),
+            ),
+            (
+                name: "speaker",
+                parent: "panel",
+                text: (
+                    key: "dialogue-sample-keeper",
+                    style: "speaker",
+                    color: (255, 192, 56, 255),
+                    key_from: (path: "speaker", prefix: "dialogue-"),
+                ),
+            ),
+            (
+                name: "line",
+                parent: "panel",
+                layout: (shrink: 0),
+                text: (
+                    key: "dialogue-sample-line",
+                    style: "line",
+                    color: (240, 246, 255, 255),
+                    wrap: true,
+                    key_from: (path: "line", prefix: "dialogue-"),
+                ),
+            ),
+            (
+                name: "foot",
+                parent: "panel",
+                layout: (direction: Row, justify: End),
+            ),
+            (
+                name: "next",
+                parent: "foot",
+                layout: (
+                    direction: Row,
+                    align: Center,
+                    justify: SpaceBetween,
+                    gap: 16,
+                    min_height: Points(40),
+                    padding: (left: 16, right: 16, top: 4, bottom: 4),
+                    shrink: 0,
+                ),
+                binds: [(to: Shown, path: "next")],
+                look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
+                focus: (
+                    first: true,
+                    focused: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Gradient(from: (64, 104, 196, 255), to: (116, 68, 188, 255), angle: 0),
+                        outline: (color: (230, 240, 255, 255), width: 2),
+                    ),
+                    pressed: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Color((180, 204, 250, 255)),
+                    ),
+                ),
+            ),
+            (
+                name: "next-text",
+                parent: "next",
+                text: (
+                    key: "dialogue-next",
+                    style: "choice",
+                    color: (240, 246, 255, 255),
+                ),
+            ),
+        ],
+        timelines: [
+            (name: "gone", tracks: [(node: "root", property: Opacity, keys: [(at: 0, value: 0)])]),
+            (
+                name: "enter",
+                tracks: [
+                    (node: "root", property: Opacity, keys: [(at: 0, value: 0), (at: 0.22, value: 1, ease: Out)]),
+                    (node: "root", property: Y, keys: [(at: 0, value: 24), (at: 0.22, value: 0, ease: Back)]),
+                ],
+            ),
+            (
+                name: "leave",
+                tracks: [
+                    (node: "root", property: Opacity, keys: [(at: 0, value: 1), (at: 0.16, value: 0, ease: In)]),
+                ],
+            ),
+            (
+                name: "focus-first",
+                tracks: [(node: "first", property: Scale, keys: [(at: 0, value: 1.03), (at: 0.14, value: 1, ease: Out)])],
+            ),
+            (
+                name: "focus-second",
+                tracks: [(node: "second", property: Scale, keys: [(at: 0, value: 1.03), (at: 0.14, value: 1, ease: Out)])],
+            ),
+            (
+                name: "focus-third",
+                tracks: [(node: "third", property: Scale, keys: [(at: 0, value: 1.03), (at: 0.14, value: 1, ease: Out)])],
+            ),
+            (
+                name: "focus-fourth",
+                tracks: [(node: "fourth", property: Scale, keys: [(at: 0, value: 1.03), (at: 0.14, value: 1, ease: Out)])],
+            ),
+            (
+                name: "focus-next",
+                tracks: [(node: "next", property: Scale, keys: [(at: 0, value: 1.03), (at: 0.14, value: 1, ease: Out)])],
+            ),
+        ],
+        states: [
+            (name: "hidden", play: "gone"),
+            (name: "entering", play: "enter", then: "open"),
+            (name: "open", input: true),
+            (name: "leaving", play: "leave", then: "hidden"),
+        ],
+        transitions: [
+            (from: "hidden", on: "open", to: "entering"),
+            (from: "open", on: "close", to: "leaving"),
+        ],
+    ),
+)

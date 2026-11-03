@@ -1378,6 +1378,7 @@ version = "0.1.0"
 dependencies = [
  "bevy_reflect",
  "game_combat",
+ "profiling",
  "sapphire_assets",
  "sapphire_colliders",
  "sapphire_controls",
@@ -1389,12 +1390,15 @@ dependencies = [
  "sapphire_look",
  "sapphire_math",
  "sapphire_moves",
+ "sapphire_pipeline",
  "sapphire_platform",
+ "sapphire_reflect",
  "sapphire_render",
  "sapphire_stage",
  "sapphire_time",
  "sapphire_ui",
  "sapphire_vfx",
+ "serde",
  "tracing",
 ]
 

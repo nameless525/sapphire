@@ -1,0 +1,21 @@
+// What `dialogue.ui.ron`'s paths can read, generated from `game_ui::menus::DialogueModel`, which a test holds
+// this to. A cook refuses a path that isn't here.
+(
+    type: "sapphire::assets::UiModel",
+    version: 1,
+    data: (
+        fields: [
+            (path: "first.line", kind: Text),
+            (path: "first.shown", kind: Bool),
+            (path: "fourth.line", kind: Text),
+            (path: "fourth.shown", kind: Bool),
+            (path: "line", kind: Text),
+            (path: "next", kind: Bool),
+            (path: "second.line", kind: Text),
+            (path: "second.shown", kind: Bool),
+            (path: "speaker", kind: Text),
+            (path: "third.line", kind: Text),
+            (path: "third.shown", kind: Bool),
+        ],
+    ),
+)

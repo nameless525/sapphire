@@ -1,0 +1,192 @@
+// The title (M3 U7): the game's name and where to go from it, over the stage as it stands.
+(
+    type: "sapphire::assets::UiDocument",
+    version: 2,
+    data: (
+        model: "title.model.ron",
+        styles: [
+            (name: "name", role: "display", size: 48, weight: 700),
+            (name: "tagline", role: "display", size: 18, weight: 500),
+            (name: "row", role: "body", size: 20, weight: 500),
+        ],
+        nodes: [
+            (
+                name: "root",
+                layout: (direction: Column, justify: End, padding: (left: 48, right: 48, top: 24, bottom: 32), safe_area: true),
+                look: (fill: Gradient(from: (6, 14, 44, 245), to: (6, 14, 44, 0), angle: 0)),
+            ),
+            (
+                name: "head",
+                parent: "root",
+                layout: (direction: Column, gap: 4, margin: (bottom: 16)),
+            ),
+            (
+                name: "name",
+                parent: "head",
+                text: (
+                    key: "title-name",
+                    style: "name",
+                    color: (240, 246, 255, 255),
+                    shadow: (color: (0, 0, 0, 180), offset: (2, 2)),
+                ),
+            ),
+            (
+                name: "tagline",
+                parent: "head",
+                text: (
+                    key: "title-tagline",
+                    style: "tagline",
+                    color: (200, 212, 240, 255),
+                ),
+            ),
+            (
+                name: "menu",
+                parent: "root",
+                layout: (direction: Column, gap: 8, width: Points(320), max_width: Percent(100)),
+            ),
+            (
+                name: "start",
+                parent: "menu",
+                layout: (
+                    direction: Row,
+                    align: Center,
+                    justify: SpaceBetween,
+                    gap: 16,
+                    min_height: Points(48),
+                    padding: (left: 16, right: 16, top: 4, bottom: 4),
+                    shrink: 0,
+                ),
+                look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
+                focus: (
+                    first: true,
+                    fires: "close",
+                    focused: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Gradient(from: (64, 104, 196, 255), to: (116, 68, 188, 255), angle: 0),
+                        outline: (color: (230, 240, 255, 255), width: 2),
+                    ),
+                    pressed: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Color((180, 204, 250, 255)),
+                    ),
+                ),
+            ),
+            (
+                name: "start-text",
+                parent: "start",
+                text: (
+                    key: "title-start",
+                    style: "row",
+                    color: (240, 246, 255, 255),
+                ),
+            ),
+            (
+                name: "settings",
+                parent: "menu",
+                layout: (
+                    direction: Row,
+                    align: Center,
+                    justify: SpaceBetween,
+                    gap: 16,
+                    min_height: Points(48),
+                    padding: (left: 16, right: 16, top: 4, bottom: 4),
+                    shrink: 0,
+                ),
+                look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
+                focus: (
+                    focused: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Gradient(from: (64, 104, 196, 255), to: (116, 68, 188, 255), angle: 0),
+                        outline: (color: (230, 240, 255, 255), width: 2),
+                    ),
+                    pressed: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Color((180, 204, 250, 255)),
+                    ),
+                ),
+            ),
+            (
+                name: "settings-text",
+                parent: "settings",
+                text: (
+                    key: "title-settings",
+                    style: "row",
+                    color: (240, 246, 255, 255),
+                ),
+            ),
+            (
+                name: "leave",
+                parent: "menu",
+                layout: (
+                    direction: Row,
+                    align: Center,
+                    justify: SpaceBetween,
+                    gap: 16,
+                    min_height: Points(48),
+                    padding: (left: 16, right: 16, top: 4, bottom: 4),
+                    shrink: 0,
+                ),
+                binds: [(to: Shown, path: "can_leave")],
+                look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
+                focus: (
+                    focused: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Gradient(from: (64, 104, 196, 255), to: (116, 68, 188, 255), angle: 0),
+                        outline: (color: (230, 240, 255, 255), width: 2),
+                    ),
+                    pressed: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Color((180, 204, 250, 255)),
+                    ),
+                ),
+            ),
+            (
+                name: "leave-text",
+                parent: "leave",
+                text: (
+                    key: "title-leave",
+                    style: "row",
+                    color: (240, 246, 255, 255),
+                ),
+            ),
+        ],
+        timelines: [
+            (name: "gone", tracks: [(node: "root", property: Opacity, keys: [(at: 0, value: 0)])]),
+            (
+                name: "enter",
+                tracks: [
+                    (node: "root", property: Opacity, keys: [(at: 0, value: 0), (at: 0.22, value: 1, ease: Out)]),
+                    (node: "root", property: Y, keys: [(at: 0, value: 24), (at: 0.22, value: 0, ease: Back)]),
+                ],
+            ),
+            (
+                name: "leave",
+                tracks: [
+                    (node: "root", property: Opacity, keys: [(at: 0, value: 1), (at: 0.16, value: 0, ease: In)]),
+                ],
+            ),
+            (
+                name: "focus-start",
+                tracks: [(node: "start", property: Scale, keys: [(at: 0, value: 1.03), (at: 0.14, value: 1, ease: Out)])],
+            ),
+            (
+                name: "focus-settings",
+                tracks: [(node: "settings", property: Scale, keys: [(at: 0, value: 1.03), (at: 0.14, value: 1, ease: Out)])],
+            ),
+            (
+                name: "focus-leave",
+                tracks: [(node: "leave", property: Scale, keys: [(at: 0, value: 1.03), (at: 0.14, value: 1, ease: Out)])],
+            ),
+        ],
+        states: [
+            (name: "hidden", play: "gone"),
+            (name: "entering", play: "enter", then: "open"),
+            (name: "open", input: true),
+            (name: "leaving", play: "leave", then: "hidden"),
+        ],
+        transitions: [
+            (from: "hidden", on: "open", to: "entering"),
+            (from: "open", on: "close", to: "leaving"),
+        ],
+    ),
+)

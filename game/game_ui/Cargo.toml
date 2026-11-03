@@ -1,6 +1,6 @@
 [package]
 name = "game_ui"
-description = "The game's interface: a fight's HUD and its touch zones."
+description = "The game's interface: a fight's HUD, its touch zones and the menus."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,26 +11,31 @@ license.workspace = true
 # A screen's model is any reflected value.
 bevy_reflect.workspace = true
 game_combat.workspace = true
+profiling.workspace = true
 sapphire_assets.workspace = true
+sapphire_controls.workspace = true
 sapphire_gameplay.workspace = true
 sapphire_loc.workspace = true
 sapphire_look.workspace = true
 sapphire_math.workspace = true
 sapphire_moves.workspace = true
 sapphire_platform.workspace = true
+sapphire_reflect.workspace = true
 sapphire_render.workspace = true
 sapphire_stage.workspace = true
 sapphire_time.workspace = true
 sapphire_ui.workspace = true
+serde.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
 sapphire_colliders.workspace = true
-sapphire_controls.workspace = true
 # The counting allocator, for the steady-state allocation test.
 sapphire_core = { workspace = true, features = ["mimalloc"] }
 sapphire_cues.workspace = true
 sapphire_input.workspace = true
+# Real string tables from the real sources, for what the menus' tests hold.
+sapphire_pipeline.workspace = true
 sapphire_vfx.workspace = true
 
 [features]

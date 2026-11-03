@@ -1,0 +1,106 @@
+// What the HUD says in words (M3 U7): names, the objective and a pause for what has no key to press. Its bars, buttons
+// and numbers animate every frame, and `sapphire_ui::CombatHud` draws those.
+(
+    type: "sapphire::assets::UiDocument",
+    version: 2,
+    data: (
+        model: "hud.model.ron",
+        styles: [
+            (name: "name", role: "body", size: 16, weight: 700),
+            (name: "small", role: "body", size: 14, weight: 700),
+        ],
+        nodes: [
+            (
+                name: "root",
+                layout: (safe_area: true),
+            ),
+            (
+                name: "player",
+                parent: "root",
+                layout: (anchored: (left: Points(16), top: Points(76)), direction: Row, align: Center, gap: 8),
+            ),
+            (
+                name: "player-name",
+                parent: "player",
+                text: (
+                    key: "character-name-wanderer",
+                    style: "name",
+                    color: (240, 246, 255, 255),
+                    key_from: (path: "player", prefix: "character-name-"),
+                    shadow: (color: (0, 0, 0, 180), offset: (2, 2)),
+                ),
+            ),
+            (
+                name: "player-level",
+                parent: "player",
+                text: (
+                    key: "hud-level",
+                    style: "name",
+                    color: (255, 192, 56, 255),
+                    args: [(name: "level", path: "level")],
+                    shadow: (color: (0, 0, 0, 180), offset: (2, 2)),
+                ),
+            ),
+            (
+                name: "enemy",
+                parent: "root",
+                layout: (anchored: (left: Points(0), right: Points(0), top: Points(58)), direction: Column, align: Center),
+                binds: [(to: Shown, path: "has_enemy")],
+            ),
+            (
+                name: "enemy-name",
+                parent: "enemy",
+                text: (
+                    key: "character-name-skeleton",
+                    style: "name",
+                    color: (240, 246, 255, 255),
+                    key_from: (path: "enemy", prefix: "character-name-"),
+                    shadow: (color: (0, 0, 0, 180), offset: (2, 2)),
+                ),
+            ),
+            (
+                name: "objective",
+                parent: "root",
+                layout: (anchored: (right: Points(16), top: Points(64)), direction: Column, align: End, gap: 2, max_width: Percent(38)),
+            ),
+            (
+                name: "objective-label",
+                parent: "objective",
+                text: (
+                    key: "hud-objective",
+                    style: "small",
+                    color: (255, 192, 56, 255),
+                    shadow: (color: (0, 0, 0, 180), offset: (2, 2)),
+                ),
+            ),
+            (
+                name: "objective-text",
+                parent: "objective",
+                text: (
+                    key: "hud-objective-arena",
+                    style: "name",
+                    color: (240, 246, 255, 255),
+                    key_from: (path: "objective", prefix: "hud-objective-"),
+                    shadow: (color: (0, 0, 0, 180), offset: (2, 2)),
+                ),
+            ),
+            (
+                name: "pause",
+                parent: "root",
+                layout: (anchored: (right: Points(16), top: Points(14)), direction: Row, align: Center, justify: Center, min_width: Points(72), height: Points(44), padding: (left: 12, right: 12)),
+                look: (shape: Slice(sprite: Button, corner: 8), fill: Color((9, 12, 20, 235)), outline: (color: (226, 234, 240, 255), width: 1.5)),
+                binds: [(to: Shown, path: "touch")],
+                focus: (focused: (shape: Slice(sprite: Button, corner: 8), fill: Color((9, 12, 20, 235)), outline: (color: (255, 192, 56, 255), width: 2)), pressed: (shape: Slice(sprite: Button, corner: 8), fill: Color((180, 204, 250, 255)))),
+            ),
+            (
+                name: "pause-text",
+                parent: "pause",
+                text: (
+                    key: "hud-pause",
+                    style: "small",
+                    color: (240, 246, 255, 255),
+                ),
+            ),
+        ],
+    ),
+)

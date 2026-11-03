@@ -1,0 +1,219 @@
+// The pause (M3 U7): the fight waits under a veil, and this is what to do about it.
+(
+    type: "sapphire::assets::UiDocument",
+    version: 2,
+    data: (
+        model: "pause.model.ron",
+        styles: [
+            (name: "title", role: "display", size: 32, weight: 700),
+            (name: "row", role: "body", size: 20, weight: 500),
+        ],
+        nodes: [
+            (
+                name: "root",
+                layout: (direction: Column, align: Center, justify: Center, safe_area: true),
+                look: (fill: Color((6, 8, 14, 190))),
+            ),
+            (
+                name: "panel",
+                parent: "root",
+                layout: (direction: Column, gap: 8, width: Points(420), max_width: Percent(92), padding: (left: 24, right: 24, top: 16, bottom: 16)),
+                look: (shape: Slice(sprite: Button, corner: 16),
+                    fill: Color((20, 26, 60, 255)),
+                    outline: (color: (120, 190, 255, 255), width: 1.5),),
+            ),
+            (
+                name: "title",
+                parent: "panel",
+                text: (
+                    key: "pause-title",
+                    style: "title",
+                    color: (240, 246, 255, 255),
+                    shadow: (color: (0, 0, 0, 180), offset: (2, 2)),
+                ),
+            ),
+            (
+                name: "resume",
+                parent: "panel",
+                layout: (
+                    direction: Row,
+                    align: Center,
+                    justify: SpaceBetween,
+                    gap: 16,
+                    min_height: Points(48),
+                    padding: (left: 16, right: 16, top: 4, bottom: 4),
+                    shrink: 0,
+                ),
+                look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
+                focus: (
+                    first: true,
+                    fires: "close",
+                    focused: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Gradient(from: (64, 104, 196, 255), to: (116, 68, 188, 255), angle: 0),
+                        outline: (color: (230, 240, 255, 255), width: 2),
+                    ),
+                    pressed: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Color((180, 204, 250, 255)),
+                    ),
+                ),
+            ),
+            (
+                name: "resume-text",
+                parent: "resume",
+                text: (
+                    key: "pause-resume",
+                    style: "row",
+                    color: (240, 246, 255, 255),
+                ),
+            ),
+            (
+                name: "character",
+                parent: "panel",
+                layout: (
+                    direction: Row,
+                    align: Center,
+                    justify: SpaceBetween,
+                    gap: 16,
+                    min_height: Points(48),
+                    padding: (left: 16, right: 16, top: 4, bottom: 4),
+                    shrink: 0,
+                ),
+                look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
+                focus: (
+                    focused: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Gradient(from: (64, 104, 196, 255), to: (116, 68, 188, 255), angle: 0),
+                        outline: (color: (230, 240, 255, 255), width: 2),
+                    ),
+                    pressed: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Color((180, 204, 250, 255)),
+                    ),
+                ),
+            ),
+            (
+                name: "character-text",
+                parent: "character",
+                text: (
+                    key: "pause-character",
+                    style: "row",
+                    color: (240, 246, 255, 255),
+                ),
+            ),
+            (
+                name: "settings",
+                parent: "panel",
+                layout: (
+                    direction: Row,
+                    align: Center,
+                    justify: SpaceBetween,
+                    gap: 16,
+                    min_height: Points(48),
+                    padding: (left: 16, right: 16, top: 4, bottom: 4),
+                    shrink: 0,
+                ),
+                look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
+                focus: (
+                    focused: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Gradient(from: (64, 104, 196, 255), to: (116, 68, 188, 255), angle: 0),
+                        outline: (color: (230, 240, 255, 255), width: 2),
+                    ),
+                    pressed: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Color((180, 204, 250, 255)),
+                    ),
+                ),
+            ),
+            (
+                name: "settings-text",
+                parent: "settings",
+                text: (
+                    key: "pause-settings",
+                    style: "row",
+                    color: (240, 246, 255, 255),
+                ),
+            ),
+            (
+                name: "leave",
+                parent: "panel",
+                layout: (
+                    direction: Row,
+                    align: Center,
+                    justify: SpaceBetween,
+                    gap: 16,
+                    min_height: Points(48),
+                    padding: (left: 16, right: 16, top: 4, bottom: 4),
+                    shrink: 0,
+                ),
+                binds: [(to: Shown, path: "can_leave")],
+                look: (shape: Slice(sprite: Button, corner: 8), fill: Color((36, 44, 92, 255))),
+                focus: (
+                    focused: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Gradient(from: (64, 104, 196, 255), to: (116, 68, 188, 255), angle: 0),
+                        outline: (color: (230, 240, 255, 255), width: 2),
+                    ),
+                    pressed: (
+                        shape: Slice(sprite: Button, corner: 8),
+                        fill: Color((180, 204, 250, 255)),
+                    ),
+                ),
+            ),
+            (
+                name: "leave-text",
+                parent: "leave",
+                text: (
+                    key: "pause-leave",
+                    style: "row",
+                    color: (240, 246, 255, 255),
+                ),
+            ),
+        ],
+        timelines: [
+            (name: "gone", tracks: [(node: "panel", property: Opacity, keys: [(at: 0, value: 0)])]),
+            (
+                name: "enter",
+                tracks: [
+                    (node: "panel", property: Opacity, keys: [(at: 0, value: 0), (at: 0.22, value: 1, ease: Out)]),
+                    (node: "panel", property: Y, keys: [(at: 0, value: 24), (at: 0.22, value: 0, ease: Back)]),
+                ],
+            ),
+            (
+                name: "leave",
+                tracks: [
+                    (node: "panel", property: Opacity, keys: [(at: 0, value: 1), (at: 0.16, value: 0, ease: In)]),
+                ],
+            ),
+            (
+                name: "focus-resume",
+                tracks: [(node: "resume", property: Scale, keys: [(at: 0, value: 1.03), (at: 0.14, value: 1, ease: Out)])],
+            ),
+            (
+                name: "focus-character",
+                tracks: [(node: "character", property: Scale, keys: [(at: 0, value: 1.03), (at: 0.14, value: 1, ease: Out)])],
+            ),
+            (
+                name: "focus-settings",
+                tracks: [(node: "settings", property: Scale, keys: [(at: 0, value: 1.03), (at: 0.14, value: 1, ease: Out)])],
+            ),
+            (
+                name: "focus-leave",
+                tracks: [(node: "leave", property: Scale, keys: [(at: 0, value: 1.03), (at: 0.14, value: 1, ease: Out)])],
+            ),
+        ],
+        states: [
+            (name: "hidden", play: "gone"),
+            (name: "entering", play: "enter", then: "open"),
+            (name: "open", input: true),
+            (name: "leaving", play: "leave", then: "hidden"),
+        ],
+        transitions: [
+            (from: "hidden", on: "open", to: "entering"),
+            (from: "open", on: "back", to: "leaving"),
+            (from: "open", on: "close", to: "leaving"),
+        ],
+    ),
+)

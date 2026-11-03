@@ -13,17 +13,20 @@
 //! - **A whole step:** `Simulation::step`, and the part of it `SimStats` says went to controllers. A
 //!   tick holds input for 8 actors, so past that the rest stand idle.
 //!
-//! Reports each size's minimum median, 99th percentile and worst step across rounds. Each round warms
-//! up first, though nothing here needs it for allocation: only for the CPU's caches.
+//! Reports each size's rounds as the `rounds` module reads them. Each round warms up first, though
+//! nothing here needs it for allocation: only for the CPU's caches.
 
 #![allow(clippy::print_stdout, reason = "a bench's output is what it's for")]
 
 #[path = "../tests/support/mesh_arena.rs"]
 mod mesh_arena;
+#[path = "../../sapphire_physics/examples/support/rounds.rs"]
+mod rounds;
 
 use std::alloc::System;
 use std::time::Duration;
 
+use rounds::Rounds;
 use sapphire_core::alloc::{self, CountingAllocator};
 use sapphire_gameplay::{
     ActorId, ActorSpawn, ActorTransform, ControllerInput, ControllerState, GroundMode, ResolvedProfile,
@@ -39,41 +42,14 @@ const WARM_STEPS: u64 = 300;
 const SIZES: [usize; 2] = [2, 16];
 const ROUNDS: usize = 7;
 
-#[derive(Clone, Copy)]
-struct Figure {
-    median: Duration,
-    p99: Duration,
-    worst: Duration,
-}
-
-impl Figure {
-    fn of(mut times: Vec<Duration>) -> Self {
-        times.sort_unstable();
-        Self {
-            median: times[times.len() / 2],
-            p99: times[times.len() * 99 / 100],
-            worst: times[times.len() - 1],
-        }
-    }
-
-    fn at_least(self, other: Option<Self>) -> Self {
-        let Some(other) = other else { return self };
-        Self {
-            median: self.median.min(other.median),
-            p99: self.p99.min(other.p99),
-            worst: self.worst.min(other.worst),
-        }
-    }
-}
-
 struct Character {
     transform: ActorTransform,
     state: ControllerState,
     profile: ResolvedProfile,
 }
 
-/// `size` characters stepped directly: the figure for §3.2's line.
-fn direct_round(size: usize, steps: u64) -> (Figure, Tally) {
+/// `size` characters stepped directly: the figure for §3.2's line. A round's steps, and what they did.
+fn direct_round(size: usize, steps: u64) -> (Vec<Duration>, Tally) {
     let profiles =
         mesh_arena::profiles().map(|profile| ResolvedProfile::new(&profile).expect("a good profile"));
     let mut world = PhysicsWorld::new(mesh_arena::statics(), size).expect("the arena builds");
@@ -120,7 +96,7 @@ fn direct_round(size: usize, steps: u64) -> (Figure, Tally) {
     }
     tally.physics = world.take_stats();
     tally.steps = steps;
-    (Figure::of(times), tally)
+    (times, tally)
 }
 
 const fn body(index: usize) -> BodyId {
@@ -134,8 +110,8 @@ struct Tally {
     physics: PhysicsStats,
 }
 
-/// `size` characters in a simulation, the whole step and its controllers' part of it.
-fn simulation_round(size: usize, steps: u64) -> (Figure, Figure) {
+/// `size` characters in a simulation: a round's whole steps, and its controllers' part of each.
+fn simulation_round(size: usize, steps: u64) -> (Vec<Duration>, Vec<Duration>) {
     let mut sim = Simulation::new(SimConfig { seed: 1, max_actors: 16, ..SimConfig::default() });
     let world = PhysicsWorld::new(mesh_arena::statics(), sim.body_capacity()).expect("the arena builds");
     sim.set_physics_world(world).expect("it has room");
@@ -158,48 +134,34 @@ fn simulation_round(size: usize, steps: u64) -> (Figure, Figure) {
         controllers.push(sim.stats().controllers_last);
     }
     assert_eq!(sim.stats().allocations, 0, "rule R6");
-    (Figure::of(whole), Figure::of(controllers))
-}
-
-fn micros(duration: Duration) -> f64 {
-    duration.as_secs_f64() * 1e6
+    (whole, controllers)
 }
 
 fn main() {
     assert!(alloc::is_installed(), "the step's allocation count would read 0 whatever it did");
     let steps = std::env::args().nth(1).and_then(|steps| steps.parse().ok()).unwrap_or(2_000);
-    let mut direct: [Option<Figure>; SIZES.len()] = [None; SIZES.len()];
-    let mut whole: [Option<Figure>; SIZES.len()] = [None; SIZES.len()];
-    let mut part: [Option<Figure>; SIZES.len()] = [None; SIZES.len()];
+    let mut direct = SIZES.map(|_| Rounds::new("p99", 990));
+    let mut whole = SIZES.map(|_| Rounds::new("p99", 990));
+    let mut part = SIZES.map(|_| Rounds::new("p99", 990));
     let mut tallies = [Tally::default(); SIZES.len()];
     for _ in 0..ROUNDS {
         for (slot, &size) in SIZES.iter().enumerate() {
-            let (figure, tally) = direct_round(size, steps);
-            direct[slot] = Some(figure.at_least(direct[slot]));
+            let (times, tally) = direct_round(size, steps);
+            direct[slot].add(times);
             tallies[slot] = tally;
             let (step, controllers) = simulation_round(size, steps);
-            whole[slot] = Some(step.at_least(whole[slot]));
-            part[slot] = Some(controllers.at_least(part[slot]));
+            whole[slot].add(step);
+            part[slot].add(controllers);
         }
     }
 
     println!(
-        "{steps} steps, {ROUNDS} rounds, minimums across rounds. Budget: 700 µs on Desktop-Low, 1,200 on Mobile-Low."
+        "{steps} steps a round, {ROUNDS} alternating rounds, in µs. Budget: 700 µs on Desktop-Low, 1,200 on Mobile-Low."
     );
-    println!("actors  what                     median       p99      worst");
-    let row = |size: usize, what: &str, figure: Option<Figure>| {
-        let figure = figure.expect("every size ran");
-        println!(
-            "{size:6}  {what:<22} {:7.1} µs {:7.1} µs {:7.1} µs",
-            micros(figure.median),
-            micros(figure.p99),
-            micros(figure.worst),
-        );
-    };
     for (slot, &size) in SIZES.iter().enumerate() {
-        row(size, "controllers, direct", direct[slot]);
-        row(size, "controllers, in a step", part[slot]);
-        row(size, "whole step", whole[slot]);
+        println!("{size:2} actors, controllers, direct: {}", direct[slot].summary());
+        println!("{size:2} actors, controllers, in a step: {}", part[slot].summary());
+        println!("{size:2} actors, whole step: {}", whole[slot].summary());
         let tally = tallies[slot];
         let per = |count: u32| f64::from(count) / tally.steps as f64 / size as f64;
         println!(

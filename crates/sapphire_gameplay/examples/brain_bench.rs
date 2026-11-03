@@ -4,21 +4,27 @@
 //! cargo run --release -p sapphire_gameplay --example brain_bench [steps]
 //! ```
 //!
-//! Three answers, in alternating rounds, each reporting its minimum across rounds:
+//! Three answers, in alternating rounds:
 //!
-//! - **A fight:** whole steps of the shipped warrior's moves and brain. Everyone but the first actor
-//!   thinks, each fighting the next, on a floor, with health enough that nobody falls, so hits land and
-//!   reactions cut moves off for the whole run. A duel is what the slice ships.
+//! - **A fight:** whole steps of the shipped warrior's moves and brain, as the `rounds` module reads
+//!   them. Everyone but the first actor thinks, each fighting the next, on a floor, with health enough that
+//!   nobody falls, so hits land and reactions cut moves off for the whole run. A duel is what the slice
+//!   ships.
 //! - **Thinking alone:** brains that have nothing to do but stand and face, in a world where nothing else
-//!   moves, against the same world with their brains off: the difference is `think`'s own cost.
-//! - **One call:** `step_brain` by itself, on the tick it's busiest (scoring every attack and drawing)
-//!   and an ordinary one (pacing).
+//!   moves, against the same world with their brains off: the difference between the quietest rounds'
+//!   medians is `think`'s own cost.
+//! - **One call:** `step_brain` by itself, the least of its rounds, on the tick it's busiest (scoring every
+//!   attack and drawing) and an ordinary one (pacing).
 
 #![allow(clippy::print_stdout, reason = "a bench's output is what it's for")]
+
+#[path = "../../sapphire_physics/examples/support/rounds.rs"]
+mod rounds;
 
 use std::alloc::System;
 use std::time::Duration;
 
+use rounds::Rounds;
 use sapphire_core::alloc::{self, CountingAllocator};
 use sapphire_gameplay::brain::{Seen, SeenTarget, step_brain};
 use sapphire_gameplay::{ActorId, ActorSpawn, Brain, ControllerProfile, SimConfig, Simulation, TickActions};
@@ -69,39 +75,18 @@ fn give_brains(sim: &mut Simulation, ids: &[ActorId], from: usize) {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-struct Round {
-    median: Duration,
-    p999: Duration,
-    worst: Duration,
-}
-
-impl Round {
-    fn best(self, other: Self) -> Self {
-        Self {
-            median: self.median.min(other.median),
-            p999: self.p999.min(other.p999),
-            worst: self.worst.min(other.worst),
-        }
-    }
-}
-
-fn run(sim: &mut Simulation, steps: u64) -> Round {
+/// A round's steps.
+fn run(sim: &mut Simulation, steps: u64) -> Vec<Duration> {
     let mut times = Vec::with_capacity(steps as usize);
     for _ in 0..steps {
         sim.step(&TickActions::NEUTRAL);
         times.push(sim.stats().last_step);
     }
-    times.sort_unstable();
     assert_eq!(sim.stats().allocations, 0, "rule R6");
-    Round {
-        median: times[times.len() / 2],
-        p999: times[times.len() * 999 / 1000],
-        worst: sim.stats().longest_step,
-    }
+    times
 }
 
-fn fight(actors: u32, steps: u64) -> (Round, u64) {
+fn fight(actors: u32, steps: u64) -> (Vec<Duration>, u64) {
     let (mut sim, ids) = world(actors, 2.0, warrior(|_| {}));
     give_brains(&mut sim, &ids, usize::from(ids.len() > 1));
     let round = run(&mut sim, steps);
@@ -114,7 +99,7 @@ fn fight(actors: u32, steps: u64) -> (Round, u64) {
 }
 
 /// Brains standing in their bands facing each other, or the same world with them off.
-fn standing(actors: u32, steps: u64, thinking: bool) -> Round {
+fn standing(actors: u32, steps: u64, thinking: bool) -> Vec<Duration> {
     let quiet = warrior(|document| {
         let brain = document.brain.as_mut().expect("the warrior has one");
         brain.patience = TickRange { min: 3600, max: 3600 };
@@ -173,41 +158,33 @@ fn main() {
     const SIZES: [u32; 3] = [2, 16, 64];
     const ROUNDS: usize = 7;
 
-    let mut fights: [Option<(Round, u64)>; SIZES.len()] = [None; SIZES.len()];
-    let mut idle: [[Option<Round>; 2]; SIZES.len()] = [[None; 2]; SIZES.len()];
+    let mut fights = SIZES.map(|_| (Rounds::new("p99.9", 999), 0));
+    let mut idle = SIZES.map(|_| [false, true].map(|_| Rounds::new("p99.9", 999)));
     let (mut deciding, mut pacing) = (f64::MAX, f64::MAX);
     for _ in 0..ROUNDS {
         for (index, &size) in SIZES.iter().enumerate() {
             let (this, hits) = fight(size, steps);
-            let kept = fights[index].map_or(this, |(best, _)| best.best(this));
-            fights[index] = Some((kept, hits));
+            fights[index].0.add(this);
+            fights[index].1 = hits;
             for (slot, thinking) in [(0, false), (1, true)] {
-                let this = standing(size, steps, thinking);
-                idle[index][slot] = Some(idle[index][slot].map_or(this, |best| best.best(this)));
+                idle[index][slot].add(standing(size, steps, thinking));
             }
         }
         deciding = deciding.min(one_call(true, 200_000));
         pacing = pacing.min(one_call(false, 200_000));
     }
 
-    println!("{steps} steps, {ROUNDS} rounds, minimums across rounds");
+    println!("{steps} steps a round, {ROUNDS} alternating rounds, in µs");
     println!("a fight: everyone but the first thinks (a duel: one brain)");
-    println!("actors  median step  99.9% step  worst step   hits");
-    for (size, best) in SIZES.iter().zip(&fights) {
-        let (best, hits) = best.expect("every size ran");
-        println!(
-            "{size:6}  {:9.2} µs  {:7.2} µs  {:7.2} µs  {hits:5}",
-            best.median.as_secs_f64() * 1e6,
-            best.p999.as_secs_f64() * 1e6,
-            best.worst.as_secs_f64() * 1e6,
-        );
+    for (size, (rounds, hits)) in SIZES.iter().zip(&mut fights) {
+        println!("{size:2} actors, {hits} hits: {}", rounds.summary());
     }
     println!("thinking alone: brains that stand and face, against the same world with them off");
-    println!("actors    off median    on median   each brain");
-    for (size, best) in SIZES.iter().zip(&idle) {
-        let (off, on) = (best[0].expect("ran"), best[1].expect("ran"));
-        let (off, on) = (off.median.as_secs_f64() * 1e6, on.median.as_secs_f64() * 1e6);
-        println!("{size:6}  {off:9.2} µs  {on:8.2} µs  {:7.3} µs", (on - off) / f64::from(*size),);
+    println!("actors  off's quietest median  on's  each brain");
+    for (size, [off, on]) in SIZES.iter().zip(&mut idle) {
+        let median = |rounds: &mut Rounds| rounds.summary().quietest.1.median.as_secs_f64() * 1e6;
+        let (off, on) = (median(off), median(on));
+        println!("{size:6}  {off:9.2} µs  {on:8.2} µs  {:7.3} µs", (on - off) / f64::from(*size));
     }
     println!("one call of step_brain: {deciding:.0} ns choosing among 3 attacks, {pacing:.0} ns pacing");
     println!("budget: 1000 µs a step on Desktop-Low, 1500 µs on Mobile-Low");

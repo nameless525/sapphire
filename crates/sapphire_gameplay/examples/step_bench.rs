@@ -5,8 +5,8 @@
 //! ```
 //!
 //! Runs the test content's moves at a duel's size, a busy fight's and a full pool's, in alternating
-//! rounds, and reports each size's minimum median, 99.9th percentile and worst step across rounds. The
-//! worst is mostly the scheduler while the machine's busy, on a different tick each run, so read the
+//! rounds, and reports each size's rounds as the `rounds` module reads them. The worst is mostly the
+//! scheduler while the machine's busy, on a different tick each run, so read the quietest round's
 //! percentile for what a step's work costs. Every actor plays
 //! strings, dodge cancels and dash attacks with a warp target and its ring in use, with its neighbours
 //! in reach and a capsule on a floor, so hits land, reactions cut moves off, and hurtboxes and capsules
@@ -24,9 +24,13 @@
 
 #![allow(clippy::print_stdout, reason = "a bench's output is what it's for")]
 
+#[path = "../../sapphire_physics/examples/support/rounds.rs"]
+mod rounds;
+
 use std::alloc::System;
 use std::time::Duration;
 
+use rounds::Rounds;
 use sapphire_core::alloc::{self, CountingAllocator};
 use sapphire_gameplay::replay::{PARTY_TUNING, party_document};
 use sapphire_gameplay::{
@@ -122,13 +126,24 @@ fn actions(tick: u64, ids: &[ActorId]) -> TickActions {
 }
 
 struct Round {
-    median: Duration,
-    p999: Duration,
-    worst: Duration,
+    times: Vec<Duration>,
     checksum: Duration,
     /// Moves started, cancels fired, cues published, hits applied, perfect dodges fired and counters
     /// started, to show the steps did the work.
     work: (u64, u64, u64, u64, u64, u64),
+}
+
+/// What a row's rounds came to.
+struct Row {
+    rounds: Rounds,
+    checksum: Duration,
+    work: (u64, u64, u64, u64, u64, u64),
+}
+
+impl Default for Row {
+    fn default() -> Self {
+        Self { rounds: Rounds::new("p99.9", 999), checksum: Duration::MAX, work: (0, 0, 0, 0, 0, 0) }
+    }
 }
 
 /// A party's tick: [`actions`], and a swap press every second and a half.
@@ -173,7 +188,6 @@ fn run(
         sim.step(&input);
         times.push(sim.stats().last_step);
     }
-    times.sort_unstable();
     let stopwatch = Stopwatch::start();
     let checksum = sim.checksum();
     let checksum_time = stopwatch.elapsed();
@@ -190,9 +204,7 @@ fn run(
         assert!(stats.counters_fired > 0, "or starting counters: {stats:?}");
     }
     Round {
-        median: times[times.len() / 2],
-        p999: times[times.len() * 999 / 1000],
-        worst: stats.longest_step,
+        times,
         checksum: checksum_time,
         work: (
             stats.moves_started,
@@ -211,23 +223,16 @@ fn main() {
     const SIZES: [u32; 3] = [2, 16, 64];
     const ROUNDS: usize = 7;
 
-    let keep = |best: &mut Option<Round>, this: Round| {
-        *best = Some(match best.take() {
-            None => this,
-            Some(other) => Round {
-                median: other.median.min(this.median),
-                p999: other.p999.min(this.p999),
-                worst: other.worst.min(this.worst),
-                checksum: other.checksum.min(this.checksum),
-                work: this.work,
-            },
-        });
+    let keep = |row: &mut Row, round: Round| {
+        row.rounds.add(round.times);
+        row.checksum = row.checksum.min(round.checksum);
+        row.work = round.work;
     };
-    let mut best: [Option<Round>; SIZES.len()] = [const { None }; SIZES.len()];
-    let mut party = None;
+    let mut rows = SIZES.map(|_| Row::default());
+    let mut party = Row::default();
     for _ in 0..ROUNDS {
-        for (size, best) in SIZES.iter().zip(&mut best) {
-            keep(best, round(*size, steps));
+        for (size, row) in SIZES.iter().zip(&mut rows) {
+            keep(row, round(*size, steps));
         }
         keep(&mut party, party_round(steps));
     }
@@ -238,26 +243,21 @@ fn main() {
     drop(created);
 
     println!("creating a simulation with 128 pooled actors: {:.0} µs", creation.as_secs_f64() * 1e6);
-    println!("{steps} steps, {ROUNDS} rounds, minimums across rounds");
-    println!(
-        "actors  median step  99.9% step  worst step  checksum  moves  cancels   cues   hits  perfect  counters"
-    );
-    let rows = SIZES.iter().map(|size| format!("{size:6}")).zip(&best);
-    let party_row = std::iter::once(("party4".to_owned(), &party));
-    for (size, best) in rows.chain(party_row) {
-        let best = best.as_ref().expect("every size ran");
+    println!("{steps} steps a round, {ROUNDS} alternating rounds, in µs, with the least checksum of them");
+    let rows = SIZES.iter().map(|size| format!("{size:6}")).zip(&mut rows);
+    let party_row = std::iter::once(("party4".to_owned(), &mut party));
+    for (size, row) in rows.chain(party_row) {
+        let work = row.work;
         println!(
-            "{size}  {:9.2} µs  {:7.2} µs  {:7.2} µs  {:5.2} µs  {:5}  {:7}  {:5}  {:5}  {:7}  {:8}",
-            best.median.as_secs_f64() * 1e6,
-            best.p999.as_secs_f64() * 1e6,
-            best.worst.as_secs_f64() * 1e6,
-            best.checksum.as_secs_f64() * 1e6,
-            best.work.0,
-            best.work.1,
-            best.work.2,
-            best.work.3,
-            best.work.4,
-            best.work.5,
+            "{size}: {}; checksum {:.2}; {} moves, {} cancels, {} cues, {} hits, {} perfect, {} counters",
+            row.rounds.summary(),
+            row.checksum.as_secs_f64() * 1e6,
+            work.0,
+            work.1,
+            work.2,
+            work.3,
+            work.4,
+            work.5,
         );
     }
     println!("budget: 1000 µs on Desktop-Low, 1500 µs on Mobile-Low");

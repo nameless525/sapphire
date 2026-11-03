@@ -8,7 +8,7 @@
 //! Runs the scene R6's test and the checksum share (225 convex colliders and an 8,192-triangle mesh
 //! the capsules walk on; 2 moves and 20 queries a step, as M2 D3's spike ran them over Rapier) with
 //! a few sizes of hurtbox crowd, since bodies are scanned, in alternating rounds, and reports each
-//! size's minimum median, 99th percentile and worst step across rounds. Each round warms up first.
+//! size's rounds as the `rounds` module reads them. Each round warms up first.
 //!
 //! Given a collider document, it runs the same moves and queries on that document's world instead:
 //! what a stage's own collider set costs (`content/arena/square.colliders.ron`, M2 O5).
@@ -17,12 +17,15 @@
 
 #[path = "../tests/common/mod.rs"]
 mod common;
+#[path = "support/rounds.rs"]
+mod rounds;
 
 use std::hint::black_box;
 use std::time::Duration;
 
 use common::{Script, bodies, statics};
 use glam::Vec3;
+use rounds::Rounds;
 use sapphire_colliders::{ColliderDocument, ColliderSet};
 use sapphire_physics::{BodyDesc, BodyId, CollisionGroups, Group, GroupMask, PhysicsWorld, Pose, Shape};
 use sapphire_time::Stopwatch;
@@ -61,14 +64,8 @@ fn world(document: Option<&ColliderSet>, extra_hurtboxes: u32) -> PhysicsWorld {
     world
 }
 
-#[derive(Clone, Copy)]
-struct Round {
-    median: Duration,
-    p99: Duration,
-    worst: Duration,
-}
-
-fn round(document: Option<&ColliderSet>, extra_hurtboxes: u32, steps: u32) -> Round {
+/// A round's steps.
+fn round(document: Option<&ColliderSet>, extra_hurtboxes: u32, steps: u32) -> Vec<Duration> {
     let mut world = world(document, extra_hurtboxes);
     let mut script = Script::default();
     let mut log = |bytes: &[u8]| {
@@ -83,12 +80,7 @@ fn round(document: Option<&ColliderSet>, extra_hurtboxes: u32, steps: u32) -> Ro
         script.step(&mut world, tick, &mut log);
         times.push(stopwatch.elapsed());
     }
-    times.sort_unstable();
-    Round {
-        median: times[times.len() / 2],
-        p99: times[times.len() * 99 / 100],
-        worst: times[times.len() - 1],
-    }
+    times
 }
 
 fn micros(duration: Duration) -> f64 {
@@ -111,33 +103,17 @@ fn main() {
     let colliders = built.static_count();
     drop(built);
 
-    let mut best: [Option<Round>; CROWDS.len()] = [None; CROWDS.len()];
+    let mut rows = CROWDS.map(|_| Rounds::new("p99", 990));
     for _ in 0..ROUNDS {
-        for (crowd, best) in CROWDS.iter().zip(&mut best) {
-            let this = round(document, *crowd, steps);
-            *best = Some(match *best {
-                None => this,
-                Some(other) => Round {
-                    median: other.median.min(this.median),
-                    p99: other.p99.min(this.p99),
-                    worst: other.worst.min(this.worst),
-                },
-            });
+        for (crowd, row) in CROWDS.iter().zip(&mut rows) {
+            row.add(round(document, *crowd, steps));
         }
     }
 
     println!("building the world of {colliders} colliders: {:.0} µs", micros(build));
-    println!("{steps} steps, {ROUNDS} rounds, minimums across rounds");
-    println!("bodies  median step  99th percentile  worst step");
-    for (crowd, best) in CROWDS.iter().zip(&best) {
-        let best = best.expect("every size ran");
-        println!(
-            "{:6}  {:8.1} µs  {:12.1} µs  {:7.1} µs",
-            bodies().len() as u32 + crowd,
-            micros(best.median),
-            micros(best.p99),
-            micros(best.worst),
-        );
+    println!("{steps} steps a round, {ROUNDS} alternating rounds, in µs");
+    for (crowd, row) in CROWDS.iter().zip(&mut rows) {
+        println!("{:4} bodies: {}", bodies().len() as u32 + crowd, row.summary());
     }
     println!(
         "budget: {} µs on Desktop-Low, {} µs on Mobile-Low",

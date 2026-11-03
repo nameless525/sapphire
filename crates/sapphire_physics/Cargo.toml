@@ -25,5 +25,10 @@ sapphire_serialize.workspace = true
 # The bench's clock: rule R2 keeps this crate itself off the OS's.
 sapphire_time.workspace = true
 
+[[example]]
+name = "physics_bench"
+# Its `rounds` module's tests, which `sapphire_gameplay`'s benches read through too.
+test = true
+
 [lints]
 workspace = true

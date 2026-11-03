@@ -10,15 +10,19 @@
 //! casts a tick, as the sub-step rule asks of a blade that fast) and a fist running straight out (one).
 //! Their reach takes in their neighbours, so hits land, records fill and retire and queues sort. The
 //! world holds 225 static boxes, which sweeps' trees walk past. Rows run in alternating rounds, with a
-//! warm-up each, and report the minimum median, 99th percentile and worst step across rounds, so
-//! other work on the machine shows up as little as it can.
+//! warm-up each, and report them as the `rounds` module reads them, with the quietest round's median
+//! against the budgets, so other work on the machine shows up there as little as it can.
 
 #![allow(clippy::print_stdout, reason = "a bench's output is what it's for")]
+
+#[path = "../../sapphire_physics/examples/support/rounds.rs"]
+mod rounds;
 
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 use std::hint::black_box;
 use std::time::Duration;
 
+use rounds::Rounds;
 use sapphire_core::Name;
 use sapphire_gameplay::{ActorId, ActorTransform, HitQuery, HurtboxId, OwnerStep, VolumeSweep};
 use sapphire_math::{Vec3, det};
@@ -179,11 +183,8 @@ impl Scene {
     }
 }
 
-#[derive(Clone, Copy)]
 struct Round {
-    median: Duration,
-    p99: Duration,
-    worst: Duration,
+    times: Vec<Duration>,
     casts_per_step: f64,
     hits_per_step: f64,
 }
@@ -204,11 +205,8 @@ fn round(load: Load, steps: u32) -> Round {
     assert_eq!(after.results_dropped, 0, "the crowd must fit a cast");
     assert_eq!(after.events_dropped + after.contacts_dropped + after.hits_refused, 0, "and the queues");
     assert!(after.events > before.events, "and hits must land, or this measures too little: {after:?}");
-    times.sort_unstable();
     Round {
-        median: times[times.len() / 2],
-        p99: times[times.len() * 99 / 100],
-        worst: times[times.len() - 1],
+        times,
         casts_per_step: (after.sub_steps - before.sub_steps) as f64 / f64::from(steps),
         hits_per_step: (after.events - before.events) as f64 / f64::from(steps),
     }
@@ -232,32 +230,24 @@ fn main() {
         load("16 attackers at 3x", 16, 16, 3, false),
         load("16 attackers, walls can stop", 16, 16, 1, true),
     ];
-    let mut best: Vec<Option<Round>> = vec![None; loads.len()];
+    let mut rows: Vec<(Rounds, f64, f64)> =
+        loads.iter().map(|_| (Rounds::new("p99", 990), 0.0, 0.0)).collect();
 
     for _ in 0..ROUNDS {
-        for (slot, &load) in loads.iter().enumerate() {
+        for (row, &load) in rows.iter_mut().zip(&loads) {
             let round = round(load, steps);
-            let best = best[slot].get_or_insert(round);
-            best.median = best.median.min(round.median);
-            best.p99 = best.p99.min(round.p99);
-            best.worst = best.worst.min(round.worst);
+            row.0.add(round.times);
+            (row.1, row.2) = (round.casts_per_step, round.hits_per_step);
         }
     }
 
-    println!("hit queries: minimums across {ROUNDS} alternating rounds of {steps} steps each");
-    println!(
-        "load                            casts  hits  median µs  p99 µs  worst µs  of 700 µs  of 1000 µs"
-    );
-    for (load, round) in loads.iter().zip(&best) {
-        let round = round.expect("every load ran");
-        let median = round.median.as_secs_f64() * 1e6;
+    println!("hit queries: {ROUNDS} alternating rounds of {steps} steps each, in µs");
+    for (load, (rounds, casts, hits)) in loads.iter().zip(&mut rows) {
+        let summary = rounds.summary();
+        let median = summary.quietest.1.median.as_secs_f64() * 1e6;
         println!(
-            "{:<30} {:>6.1} {:>5.2} {median:>10.1} {:>7.1} {:>9.1} {:>9.1}% {:>10.1}%",
+            "{:<30} {casts:.1} casts, {hits:.2} hits; {summary}; quietest median is {:.1}% of 700 µs, {:.1}% of 1000 µs",
             load.what,
-            round.casts_per_step,
-            round.hits_per_step,
-            round.p99.as_secs_f64() * 1e6,
-            round.worst.as_secs_f64() * 1e6,
             median / 7.0,
             median / 10.0,
         );

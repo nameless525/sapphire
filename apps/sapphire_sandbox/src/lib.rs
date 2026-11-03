@@ -360,6 +360,7 @@ mod orbit;
 mod outlines;
 mod party_looks;
 mod pose;
+mod readback;
 #[cfg(feature = "dev")]
 mod reload;
 mod rims;

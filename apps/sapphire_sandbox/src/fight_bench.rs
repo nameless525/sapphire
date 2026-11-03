@@ -46,8 +46,9 @@ use sapphire_time::{Stopwatch, TICK_HZ};
 use crate::LOG_TARGET;
 use crate::audio::OfflineAudio;
 use crate::combat::Combat;
+use crate::combat::CombatOption;
 use crate::offscreen::{FrameLaps, Stage};
-use crate::options::{CombatOption, Options};
+use crate::options::Options;
 
 /// What a phase measures.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

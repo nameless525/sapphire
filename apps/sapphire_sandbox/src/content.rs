@@ -2097,7 +2097,7 @@ mod tests {
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
                 view_formats: &[],
             });
-            let readback = crate::capture::Readback::new(&self.gpu, SIDE, SIDE);
+            let readback = crate::readback::Readback::new(&self.gpu, SIDE, SIDE);
             self.content.update(&mut self.renderer, &self.gpu);
             self.scene.follow_content(&mut self.content);
             self.scene.animate(&self.content, 1.0);

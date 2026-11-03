@@ -57,7 +57,6 @@ use sapphire_gameplay::{ActorId, Buttons, Simulation, TickActions};
 use sapphire_gameplay::{MoveSetId, Tuned};
 
 use crate::LOG_TARGET;
-use crate::options::{CaptureFrames, CombatOption};
 
 /// A script's actions: a function of the tick.
 type ScriptActions = fn(u64, &[ActorId]) -> TickActions;
@@ -65,6 +64,51 @@ type ScriptActions = fn(u64, &[ActorId]) -> TickActions;
 /// How long a fight goes on after someone falls before it starts over, in ticks: long enough to see
 /// them fall. The warrior's death lasts 150.
 pub(crate) const RESTART_AFTER: u64 = 240;
+
+/// A combat simulation stepping beside the scene: see this module.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum CombatOption {
+    /// `--replay <file>`, with `--capture` or `--bench`: play it, and check it against the recorded
+    /// checksums beside it.
+    Replay {
+        path: PathBuf,
+        /// A capture with no `--capture-ticks` stops at the replay's end, which isn't known yet.
+        to_end: bool,
+    },
+    /// `--record <file> --scenario <name>`: run the scenario and write the replay. With `--script
+    /// <name>` and `--capture` or `--bench`, on the script's actions. In the windowed app, on the
+    /// actions of whoever's playing, so it's `None` there.
+    Record { path: PathBuf, scenario: String, script: Option<String> },
+    /// `--arena --fight`: player against brain, with no file, starting over when someone falls. In the
+    /// windowed app, on the actions of whoever's playing, so it's `None` there. With `--script <name>`
+    /// and `--capture`, `--bench` or `--offscreen`, on the script's.
+    Fight { script: Option<String>, party: bool },
+}
+
+/// The frames a capture draws, the last of which it writes: one by default. Temporal AA needs
+/// earlier frames to build its history from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CaptureFrames {
+    /// `--capture-frames`: how many.
+    pub count: u32,
+    /// `--capture-step`: fixed steps between consecutive frames. 0 draws them all at the
+    /// capture's tick (the scene holds still while TAA converges); 1 plays the scene at 60 fps
+    /// up to it.
+    pub step: u32,
+}
+
+impl Default for CaptureFrames {
+    fn default() -> Self {
+        Self { count: 1, step: 0 }
+    }
+}
+
+impl CaptureFrames {
+    /// The ticks to simulate before the first frame, so the last lands on tick `ticks`.
+    pub fn first_tick(&self, ticks: u32) -> Option<u32> {
+        ticks.checked_sub(self.step * (self.count - 1))
+    }
+}
 
 /// Where a recording's actions come from: the one seam between what drives a fight and the file.
 ///

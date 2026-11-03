@@ -25,6 +25,7 @@ use sapphire_time::{
 use crate::LOG_TARGET;
 use crate::audio::SandboxAudio;
 use crate::combat::Combat;
+use crate::combat::CombatOption;
 use crate::content::Content;
 use crate::cues::PadRumble;
 #[cfg(feature = "dev")]
@@ -34,7 +35,7 @@ use crate::environment::FOG_CARDS;
 use crate::foliage::FoliageMeshes;
 use crate::input::{PLAYER, SandboxInput};
 use crate::lookdev::{Shot, TownMeshes};
-use crate::options::{CombatOption, Options};
+use crate::options::Options;
 use crate::rims::RimRigMeshes;
 use crate::scene::{Arena, LookDev, Scene};
 use crate::stage::StageMeshes;
@@ -940,7 +941,7 @@ impl SandboxApp {
                 // Field order matters even here: the renderer goes before the old context.
                 #[cfg(feature = "dev")]
                 self.dev.recreate_gpu(&device.gpu, device.format);
-                self.scene.set_meshes(&renderer);
+                set_meshes(&mut self.scene, &renderer);
                 self.renderer = renderer.renderer;
                 #[cfg(feature = "dev")]
                 self.dev.renderer_created(&mut self.renderer);
@@ -980,7 +981,7 @@ impl SandboxApp {
         match create_renderer(&mut self.content, &self.gpu, self.format, settings, &self.options) {
             Ok(renderer) => {
                 self.losses.built();
-                self.scene.set_meshes(&renderer);
+                set_meshes(&mut self.scene, &renderer);
                 self.renderer = renderer.renderer;
                 #[cfg(feature = "dev")]
                 self.dev.renderer_created(&mut self.renderer);
@@ -1243,63 +1244,61 @@ pub(crate) struct SceneRenderer {
     sky: MaterialHandle,
 }
 
-impl Scene {
-    /// Draws the meshes of a new `renderer`: after device loss or for a new quality tier.
-    pub(crate) fn set_meshes(&mut self, renderer: &SceneRenderer) {
-        self.set_character_mesh(renderer.character);
-        if let Some(meshes) = renderer.party {
-            self.set_party_meshes(meshes);
-        }
-        self.set_sky_material(renderer.sky);
-        if let Some(stalk) = renderer.stalk {
-            self.set_stalk_mesh(stalk);
-        }
-        if let Some(meshes) = renderer.swatches {
-            self.set_swatch_meshes(meshes);
-        }
-        if let Some(meshes) = renderer.layer_samples {
-            self.set_layer_sample_meshes(meshes);
-        }
-        if let Some(meshes) = renderer.garments {
-            self.set_garment_meshes(meshes);
-        }
-        if let Some(head) = renderer.face_head {
-            self.set_face_mesh(head);
-        }
-        if let Some(meshes) = renderer.rim_rig {
-            self.set_rim_rig_meshes(meshes);
-        }
-        if let Some(courtyard) = renderer.courtyard {
-            self.set_courtyard_mesh(courtyard);
-        }
-        if let Some(meshes) = renderer.fog_cards {
-            self.set_fog_card_meshes(meshes);
-        }
-        if let Some(meshes) = renderer.foliage {
-            self.set_foliage_meshes(meshes);
-        }
-        if let Some(arcade) = renderer.arcade {
-            self.set_arcade_mesh(arcade);
-        }
-        self.set_outline_row_mesh(renderer.character);
-        if let Some(mesh) = renderer.hard_edges {
-            self.set_hard_edges_mesh(mesh);
-        }
-        if let Some(meshes) = renderer.stage {
-            self.set_stage_meshes(meshes);
-        }
-        if let Some(block) = renderer.ik_block {
-            self.set_ik_block_mesh(block);
-        }
-        if let Some(town) = renderer.town {
-            self.set_town_mesh(town);
-        }
-        if let Some(meshes) = renderer.enemy {
-            self.set_enemy_meshes(meshes);
-        }
-        if let Some(sword) = renderer.sword {
-            self.set_blade_mesh(sword);
-        }
+/// Draws the meshes of a new `renderer`: after device loss or for a new quality tier.
+pub(crate) fn set_meshes(scene: &mut Scene, renderer: &SceneRenderer) {
+    scene.set_character_mesh(renderer.character);
+    if let Some(meshes) = renderer.party {
+        scene.set_party_meshes(meshes);
+    }
+    scene.set_sky_material(renderer.sky);
+    if let Some(stalk) = renderer.stalk {
+        scene.set_stalk_mesh(stalk);
+    }
+    if let Some(meshes) = renderer.swatches {
+        scene.set_swatch_meshes(meshes);
+    }
+    if let Some(meshes) = renderer.layer_samples {
+        scene.set_layer_sample_meshes(meshes);
+    }
+    if let Some(meshes) = renderer.garments {
+        scene.set_garment_meshes(meshes);
+    }
+    if let Some(head) = renderer.face_head {
+        scene.set_face_mesh(head);
+    }
+    if let Some(meshes) = renderer.rim_rig {
+        scene.set_rim_rig_meshes(meshes);
+    }
+    if let Some(courtyard) = renderer.courtyard {
+        scene.set_courtyard_mesh(courtyard);
+    }
+    if let Some(meshes) = renderer.fog_cards {
+        scene.set_fog_card_meshes(meshes);
+    }
+    if let Some(meshes) = renderer.foliage {
+        scene.set_foliage_meshes(meshes);
+    }
+    if let Some(arcade) = renderer.arcade {
+        scene.set_arcade_mesh(arcade);
+    }
+    scene.set_outline_row_mesh(renderer.character);
+    if let Some(mesh) = renderer.hard_edges {
+        scene.set_hard_edges_mesh(mesh);
+    }
+    if let Some(meshes) = renderer.stage {
+        scene.set_stage_meshes(meshes);
+    }
+    if let Some(block) = renderer.ik_block {
+        scene.set_ik_block_mesh(block);
+    }
+    if let Some(town) = renderer.town {
+        scene.set_town_mesh(town);
+    }
+    if let Some(meshes) = renderer.enemy {
+        scene.set_enemy_meshes(meshes);
+    }
+    if let Some(sword) = renderer.sword {
+        scene.set_blade_mesh(sword);
     }
 }
 

@@ -5,9 +5,9 @@
 //! applied:
 //!
 //! - a rewritten pack (`cargo xtask content` after an edit) is remounted: the asset server
-//!   reloads the assets that changed behind their handles, and [`Content`] uploads the new
+//!   reloads the assets that changed behind their handles, and [`Content`](crate::content::Content) uploads the new
 //!   versions within the frame's upload budget, in place, and the scene poses what a replaced mesh
-//!   starts over ([`Scene::follow_content`]). A pack live link pushed is read from the push until
+//!   starts over ([`Scene::follow_content`](crate::scene::Scene::follow_content)). A pack live link pushed is read from the push until
 //!   another push or a restart, so the file is left alone, and the log and the overlay say its
 //!   new version isn't in use;
 //! - WGSL files whose text changed on disk since hot reload's last swap replace those files in
@@ -16,10 +16,10 @@
 //!   in once they are all built, or keeps the ones it has if they don't compile, and they are
 //!   built again with the next save (`shader_edits.rs`);
 //! - an edited timeline replaces time of day's base timeline if it is the file of the day the
-//!   scene runs on ([`Scene::replace_day`]);
+//!   scene runs on ([`Scene::replace_day`](crate::scene::Scene::replace_day));
 //! - edited presets replace the scene's (the `LightRigLibrary` resource) if they are the file of
 //!   the presets the scene runs on (the shipped ones, or with `--look-dev` the look-dev stage's,
-//!   `content/lookdev/lookdev_light_rigs.ron`; [`Scene::replace_light_rigs`]); characters keep
+//!   `content/lookdev/lookdev_light_rigs.ron`; [`Scene::replace_light_rigs`](crate::scene::Scene::replace_light_rigs)); characters keep
 //!   their preset IDs;
 //! - edited screen effect presets replace the scene's (the `EffectLibrary` resource, M1 P3);
 //!   effects playing keep the layers they were pushed with, and the renderer prewarms the post
@@ -37,150 +37,17 @@
 
 use std::path::{Path, PathBuf};
 
-use sapphire_anim::AnimGraph;
 use sapphire_assets::AssetChange;
-use sapphire_camera::CameraTuning;
-use sapphire_cues::CueTable;
 use sapphire_debug::HotReloadStatus;
 use sapphire_hot_reload::{Changes, DEBOUNCE, DocumentId, HotReload, sources};
-use sapphire_moves::MoveSetDocument;
-use sapphire_reflect::stable_name;
 use sapphire_render::{Renderer, ShaderFile, ShaderSources};
-use sapphire_rhi::GpuContext;
 use sapphire_time::Stopwatch;
-use sapphire_world::light_rig::LightRigLibrary;
-use sapphire_world::screen_effects::EffectLibrary;
-use sapphire_world::tod::TodTimeline;
 
 use crate::LOG_TARGET;
-use crate::combat::Combat;
-use crate::content::Content;
 use crate::link::cook_not_in_use;
-use crate::scene::{Day, Scene};
+use crate::scene::Day;
 use crate::shader_edits::{Answered, Origin, ShaderEdits};
-use crate::tuning::{Fight, LiveTuning};
-
-/// A document the sandbox swaps in while it runs, from hot reload or live link.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Document {
-    /// The day's timeline (`default_day.ron`, or the look-dev day with `--look-dev`): it replaces
-    /// time of day's base timeline, if it comes from the file of the day the scene runs on
-    /// ([`Scene::replace_day`]), parses and is complete.
-    Day,
-    /// The character light rig presets (`default_light_rigs.ron`, or the look-dev stage's with
-    /// `--look-dev`): they replace the scene's library, if they come from the file of the presets
-    /// the scene runs on ([`Scene::replace_light_rigs`]), parse and are valid; characters keep
-    /// their preset IDs.
-    LightRigs,
-    /// The screen effect presets (`default_screen_effects.ron`, M1 P3): they replace the scene's
-    /// library, if they parse and are valid.
-    ScreenEffects,
-    /// The cue table (`default_cues.ron`, M2 E3): it replaces the one a fight's cues fire through, if
-    /// there's a fight, it parses and the names it holds are all there.
-    Cues,
-    /// The effects a fight's cues and sword trails play (`default_effects.ron`): they replace what's
-    /// playing's, if there's a fight, they parse and the cue table's names are all there.
-    Effects,
-    /// A fight's moves and fighter (`.moves.ron`, M2 T2): they replace the set of that file's name, for
-    /// the next attempt, if they compile.
-    Moves,
-    /// The camera's tuning (`default_camera.ron`, M2 T2): it replaces the director's, if there is one and
-    /// it's in range.
-    Camera,
-    /// A fighter's animation graph (`.animgraph.ron`, M2 T2): it replaces the one playing from the next
-    /// state's start, if it checks and binds.
-    Graph,
-}
-
-/// What applying a document can reach, once a document.
-pub(crate) struct DocumentFrame<'a> {
-    pub content: &'a mut Content,
-    pub renderer: &'a mut Renderer,
-    pub gpu: &'a GpuContext,
-    pub scene: &'a mut Scene,
-    pub combat: Option<&'a mut Combat>,
-    pub tuning: &'a mut LiveTuning,
-}
-
-impl Document {
-    const ALL: [Self; 8] = [
-        Self::Day,
-        Self::LightRigs,
-        Self::ScreenEffects,
-        Self::Cues,
-        Self::Effects,
-        Self::Moves,
-        Self::Camera,
-        Self::Graph,
-    ];
-
-    /// The document whose envelope names `type_name`, if the sandbox has one.
-    pub fn of_type(type_name: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|document| document.type_name() == type_name)
-    }
-
-    fn type_name(self) -> &'static str {
-        match self {
-            Self::Day => stable_name::<TodTimeline>(),
-            Self::LightRigs => stable_name::<LightRigLibrary>(),
-            Self::ScreenEffects => stable_name::<EffectLibrary>(),
-            Self::Cues => stable_name::<CueTable>(),
-            Self::Effects => stable_name::<sapphire_vfx::EffectLibrary>(),
-            Self::Moves => stable_name::<MoveSetDocument>(),
-            Self::Camera => stable_name::<CameraTuning>(),
-            Self::Graph => stable_name::<AnimGraph>(),
-        }
-    }
-
-    /// What it is, in messages.
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Day => "day",
-            Self::LightRigs => "light rigs",
-            Self::ScreenEffects => "screen effects",
-            Self::Cues => "cue table",
-            Self::Effects => "effects",
-            Self::Moves => "moves",
-            Self::Camera => "camera's tuning",
-            Self::Graph => "animation graph",
-        }
-    }
-
-    /// Parses `text`, read from `origin` (a path or a file name), and swaps it into its owner,
-    /// returning what it replaced, or says why it keeps what it has. A timeline replaces the day
-    /// only from the file of the day the scene runs on, so the default day can't replace the
-    /// look-dev stage's ([`Scene::replace_day`]). New screen effect presets have the renderer
-    /// prewarm their post variants, which the overlay may fire. A fight's documents go through
-    /// [`LiveTuning`].
-    pub fn apply(self, origin: &str, text: &str, frame: DocumentFrame<'_>) -> Result<String, String> {
-        let DocumentFrame { content, renderer, gpu, scene, combat, tuning } = frame;
-        match self {
-            Self::Day => {
-                let timeline = TodTimeline::from_ron(text).map_err(|error| error_chain(&error))?;
-                Ok(scene.replace_day(origin, timeline)?.name().to_owned())
-            }
-            Self::LightRigs => {
-                let rigs = LightRigLibrary::from_ron(text).map_err(|error| error_chain(&error))?;
-                scene.replace_light_rigs(origin, rigs)?;
-                Ok(self.name().to_owned())
-            }
-            Self::ScreenEffects => {
-                let effects = EffectLibrary::from_ron(text).map_err(|error| error_chain(&error))?;
-                scene.set_effect_library(effects)?;
-                renderer.prewarm_post(scene.effect_variants());
-                Ok(self.name().to_owned())
-            }
-            Self::Cues => tuning.cue_document(text, scene, renderer),
-            Self::Effects => tuning.effects_document(text, scene),
-            Self::Moves => {
-                let cooked = tuning.cooked_set(origin, content);
-                tuning.moves_document(origin, text, cooked.as_ref(), Fight { combat, scene })
-            }
-            Self::Camera => tuning.camera_document(text, scene),
-            Self::Graph => tuning.graph_document(origin, text, content, scene, renderer, gpu),
-        }
-    }
-}
+use crate::tuning::{Document, DocumentFrame, error_chain};
 
 /// The timeline document the scene's day comes from ([`Day`]): the default day's, or the
 /// look-dev day's with `--look-dev` (in the repository this build was compiled from, as `sources`
@@ -229,7 +96,7 @@ pub(crate) struct Reload {
 impl Reload {
     /// Watches the packs in `content_root`, the shaders, the day's timeline at `day`
     /// ([`day_source`]), the light rig presets at `light_rigs` ([`light_rigs_source`]), the
-    /// screen effect presets and the fight's documents `tuned` ([`LiveTuning::watched`]), unless
+    /// screen effect presets and the fight's documents `tuned` ([`LiveTuning::watched`](crate::tuning::LiveTuning::watched)), unless
     /// `enabled` is false. A source that can't be watched is left out, with a warning.
     pub fn start(
         enabled: bool,
@@ -432,16 +299,4 @@ impl Reload {
             errors: &self.errors,
         }
     }
-}
-
-/// An error and its sources, as one line.
-pub(crate) fn error_chain(error: &dyn std::error::Error) -> String {
-    let mut message = error.to_string();
-    let mut source = error.source();
-    while let Some(cause) = source {
-        message.push_str(": ");
-        message.push_str(&cause.to_string());
-        source = cause.source();
-    }
-    message
 }

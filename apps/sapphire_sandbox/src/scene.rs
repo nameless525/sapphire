@@ -4720,7 +4720,7 @@ mod tests {
     fn recorded_fight() -> crate::combat::Combat {
         let path =
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/replays/fight.sreplay");
-        let option = crate::options::CombatOption::Replay { path, to_end: true };
+        let option = crate::combat::CombatOption::Replay { path, to_end: true };
         crate::combat::Combat::new(&option).expect("a committed recording")
     }
 
@@ -4769,7 +4769,7 @@ mod tests {
     fn a_new_fight_shows_nothing_the_last_one_set_going() {
         use crate::hud::{HudMode, HudOptions};
 
-        let option = crate::options::CombatOption::Fight { script: Some("idle".to_owned()), party: false };
+        let option = crate::combat::CombatOption::Fight { script: Some("idle".to_owned()), party: false };
         let mut combat = crate::combat::Combat::new(&option).expect("sets up");
         let cast = combat.cast().to_vec();
         let (mut scene, _) = arena_stage(ArenaShot::Director);
@@ -4853,7 +4853,7 @@ mod tests {
     fn a_steps_hits_show_once_however_often_theyre_read() {
         use crate::hud::{HudMode, HudOptions};
 
-        let option = crate::options::CombatOption::Fight { script: Some("idle".to_owned()), party: false };
+        let option = crate::combat::CombatOption::Fight { script: Some("idle".to_owned()), party: false };
         let mut combat = crate::combat::Combat::new(&option).expect("sets up");
         let cast = combat.cast().to_vec();
         let (mut scene, _) = arena_stage(ArenaShot::Director);

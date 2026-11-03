@@ -33,11 +33,11 @@ use crate::content::Content;
 use crate::input::SandboxInput;
 use crate::link::{CaptureRequest, Link, LinkFrame};
 use crate::options::Options;
-use crate::reload::{DocumentFrame, Reload};
+use crate::reload::Reload;
 use crate::scene::Scene;
 use crate::shader_edits::ShaderEdits;
 use crate::stats::Stages;
-use crate::tuning::{Fight, LiveTuning};
+use crate::tuning::{DocumentFrame, Fight, LiveTuning};
 
 pub(crate) struct DevTools {
     overlay: DebugOverlay,
@@ -122,7 +122,7 @@ impl DevTools {
             .and_then(|()| cvars.register_all(&crate::combat_views::CVARS))
             .map_err(AppInitError::msg)?;
         let content_root = Path::new(platform.content().root());
-        let tuning = LiveTuning::new(options, content);
+        let tuning = LiveTuning::new(&options.tuned_run(), content);
         Ok(Self {
             overlay: DebugOverlay::new(gpu, format, config),
             cvars,
@@ -131,7 +131,7 @@ impl DevTools {
                 content_root,
                 &crate::reload::day_source(options),
                 &crate::reload::light_rigs_source(options),
-                tuning.watched(options),
+                tuning.watched(&options.watch_documents),
             ),
             link: Link::start(options.live_link, content.live_packs(), platform.system_info()),
             tuning,

@@ -216,7 +216,15 @@ mod tests {
     use sapphire_gameplay::{ActorActions, Buttons, TickActions};
 
     use super::*;
-    use crate::options::CombatOption;
+    use crate::combat::CombatOption;
+
+    #[test]
+    #[ignore = "runs with CI's dev tests, which take --ignored"]
+    fn the_panel_finds_these_cvars_by_their_prefix() {
+        for cvar in &crate::combat_views::CVARS {
+            assert!(cvar.name().starts_with(sapphire_debug::COMBAT_VIEW_CVARS), "{}", cvar.name());
+        }
+    }
 
     fn recorder() -> SessionRecorder {
         SessionRecorder::new(std::env::temp_dir().join("sapphire-sandbox-combat-panel-unused"))

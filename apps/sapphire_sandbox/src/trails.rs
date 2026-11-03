@@ -517,8 +517,8 @@ mod tests {
     use sapphire_vfx::{OwnerSteps, VfxBudget};
 
     use super::*;
+    use crate::combat::CombatOption;
     use crate::combat::{Combat, no_bindings};
-    use crate::options::CombatOption;
 
     /// A frame's reads between two steps, in the order frames come.
     const ALPHAS: [f32; 3] = [0.25, 0.5, 1.0];

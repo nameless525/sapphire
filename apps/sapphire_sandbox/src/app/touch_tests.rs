@@ -16,9 +16,9 @@ use sapphire_ui::{HudLayout, Insets, UiMetrics};
 
 use super::{PointerState, focus_lost, game_event};
 use crate::combat::Combat;
+use crate::combat::CombatOption;
 use crate::hud::{HudMode, HudOptions, SandboxHud};
 use crate::input::{PLAYER, SandboxInput};
-use crate::options::CombatOption;
 use crate::scene::Scene;
 
 const SIZE: Vec2 = Vec2::new(900.0, 400.0);

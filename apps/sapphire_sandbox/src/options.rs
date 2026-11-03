@@ -11,6 +11,7 @@ use sapphire_world::tod::CharacterShadeKey;
 use crate::anim_graph::GraphScript;
 use crate::arena::ArenaShot;
 use crate::audio::CueOption;
+use crate::combat::{CaptureFrames, CombatOption};
 use crate::combat_views::CombatViews;
 use crate::debug_shapes::DebugDrawDemo;
 use crate::faces::{FaceLayout, MaterialOverrides};
@@ -229,26 +230,6 @@ pub(crate) struct Options {
     pub live_link: Option<LiveLinkOption>,
 }
 
-/// A combat simulation stepping beside the scene: see [`crate::combat`].
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum CombatOption {
-    /// `--replay <file>`, with `--capture` or `--bench`: play it, and check it against the recorded
-    /// checksums beside it.
-    Replay {
-        path: PathBuf,
-        /// A capture with no `--capture-ticks` stops at the replay's end, which isn't known yet.
-        to_end: bool,
-    },
-    /// `--record <file> --scenario <name>`: run the scenario and write the replay. With `--script
-    /// <name>` and `--capture` or `--bench`, on the script's actions. In the windowed app, on the
-    /// actions of whoever's playing, so it's `None` there.
-    Record { path: PathBuf, scenario: String, script: Option<String> },
-    /// `--arena --fight`: player against brain, with no file, starting over when someone falls. In the
-    /// windowed app, on the actions of whoever's playing, so it's `None` there. With `--script <name>`
-    /// and `--capture`, `--bench` or `--offscreen`, on the script's.
-    Fight { script: Option<String>, party: bool },
-}
-
 /// How live link takes connections (`--live-link`), in `dev` builds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LiveLinkOption {
@@ -310,31 +291,6 @@ pub(crate) enum OffscreenMode {
     /// changes and live link's pushes, and answering live link's captures. The desktop's way to
     /// run what a device runs, without a window.
     Serve,
-}
-
-/// The frames a capture draws, the last of which it writes: one by default. Temporal AA needs
-/// earlier frames to build its history from.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct CaptureFrames {
-    /// `--capture-frames`: how many.
-    pub count: u32,
-    /// `--capture-step`: fixed steps between consecutive frames. 0 draws them all at the
-    /// capture's tick (the scene holds still while TAA converges); 1 plays the scene at 60 fps
-    /// up to it.
-    pub step: u32,
-}
-
-impl Default for CaptureFrames {
-    fn default() -> Self {
-        Self { count: 1, step: 0 }
-    }
-}
-
-impl CaptureFrames {
-    /// The ticks to simulate before the first frame, so the last lands on tick `ticks`.
-    pub fn first_tick(&self, ticks: u32) -> Option<u32> {
-        ticks.checked_sub(self.step * (self.count - 1))
-    }
 }
 
 /// An antialiasing technique (`--aa`), over the quality tier's.
@@ -430,6 +386,19 @@ impl Options {
     #[cfg(feature = "dev")]
     pub fn has_camera_director(&self) -> bool {
         self.arena == Some(ArenaShot::Director)
+    }
+
+    /// What live tuning follows in this run.
+    #[cfg(feature = "dev")]
+    pub fn tuned_run(&self) -> crate::tuning::TunedRun<'_> {
+        crate::tuning::TunedRun {
+            camera_director: self.has_camera_director(),
+            cues: self.cues,
+            graph_show: self.graph.is_some(),
+            arena_fight: self.arena.is_some() && self.combat.is_some(),
+            reads_files: !self.no_hot_reload,
+            extra_documents: &self.watch_documents,
+        }
     }
 
     /// Whether the scene is the look-dev town: `--look-dev`, or `--arena`, which fights in it.
@@ -1306,6 +1275,26 @@ mod tests {
         let args: Vec<String> =
             std::iter::once("sandbox").chain(args.iter().copied()).map(String::from).collect();
         Options::parse(&args)
+    }
+
+    /// What live tuning follows comes from the flags: a fight needs the arena as well as a simulation, and
+    /// `--no-hot-reload` reads no saved document.
+    #[cfg(feature = "dev")]
+    #[test]
+    #[ignore = "runs with CI's dev tests, which take --ignored"]
+    fn a_run_tells_live_tuning_what_it_holds() {
+        let run = |args: &[&str]| {
+            let (options, _) = parse(args).expect("good arguments");
+            let run = options.tuned_run();
+            (run.arena_fight, run.graph_show, run.cues, run.camera_director, run.reads_files)
+        };
+        assert_eq!(run(&["--arena", "--fight"]), (true, false, false, true, true));
+        assert_eq!(run(&["--look-dev", "hero", "--graph", "walk"]), (false, true, false, false, true));
+        assert_eq!(run(&["--look-dev", "hero"]), (false, false, false, false, true));
+        assert_eq!(run(&["--arena"]), (false, false, false, true, true));
+        assert_eq!(run(&["--no-hot-reload"]), (false, false, false, false, false));
+        let cues = ["--offscreen", "--record", "a", "--scenario", "duel", "--script", "attempts", "--cues"];
+        assert_eq!(run(&cues), (false, false, true, false, true));
     }
 
     /// Spec §5.15: a capture or a bench can't be asked to open an audio device.

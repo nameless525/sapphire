@@ -21,10 +21,11 @@ use sapphire_rhi::wgpu;
 use sapphire_time::TICK_HZ;
 
 use crate::LOG_TARGET;
-use crate::capture::{Readback, write_png};
+use crate::capture::write_png;
 use crate::offscreen::Stage;
 use crate::options::{Antialiasing, CONTACT_SHEET_FLAG, Options};
 use crate::orbit::OrbitCamera;
+use crate::readback::Readback;
 
 /// How many ticks across, unless `--sheet-cells` says.
 pub(crate) const DEFAULT_CELLS: u32 = 8;

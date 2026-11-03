@@ -1,5 +1,5 @@
 //! Live tuning in `dev` builds (M2 T2, exit test 2): a saved change to a fight plays on the next attempt,
-//! with no restart. Hot reload and live link both bring documents here (`reload.rs`'s [`Document`]):
+//! with no restart. Hot reload and live link both bring documents here ([`Document`]):
 //!
 //! - **Moves and fighters** (`.moves.ron`): the document compiles on the device, its issues naming the
 //!   move and the track, and replaces its set in whichever simulation plays it, by file name. A running
@@ -51,18 +51,159 @@ use sapphire_gameplay::replay::{LiveMoves, SCENARIOS, compile_document, document
 use sapphire_gameplay::{ActorId, MoveSetId, Simulation, Tuned};
 use sapphire_hot_reload::sources;
 use sapphire_livelink::protocol::{LiveDocument, MoveAttempt, TickWindow};
-use sapphire_moves::{ControllerProfile, MoveSet, Span};
+use sapphire_moves::{ControllerProfile, MoveSet, MoveSetDocument, Span};
+use sapphire_reflect::stable_name;
 use sapphire_render::Renderer;
 use sapphire_rhi::GpuContext;
 use sapphire_time::Stopwatch;
+use sapphire_world::light_rig::LightRigLibrary;
+use sapphire_world::screen_effects::EffectLibrary;
+use sapphire_world::tod::TodTimeline;
 
 use crate::LOG_TARGET;
 use crate::anim_graph::SHOW_MOVES_PATH;
 use crate::combat::Combat;
 use crate::content::{Content, GraphOwner};
-use crate::options::Options;
-use crate::reload::{Document, error_chain};
 use crate::scene::Scene;
+
+/// A document the sandbox swaps in while it runs, from hot reload or live link.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Document {
+    /// The day's timeline (`default_day.ron`, or the look-dev day with `--look-dev`): it replaces
+    /// time of day's base timeline, if it comes from the file of the day the scene runs on
+    /// ([`Scene::replace_day`]), parses and is complete.
+    Day,
+    /// The character light rig presets (`default_light_rigs.ron`, or the look-dev stage's with
+    /// `--look-dev`): they replace the scene's library, if they come from the file of the presets
+    /// the scene runs on ([`Scene::replace_light_rigs`]), parse and are valid; characters keep
+    /// their preset IDs.
+    LightRigs,
+    /// The screen effect presets (`default_screen_effects.ron`, M1 P3): they replace the scene's
+    /// library, if they parse and are valid.
+    ScreenEffects,
+    /// The cue table (`default_cues.ron`, M2 E3): it replaces the one a fight's cues fire through, if
+    /// there's a fight, it parses and the names it holds are all there.
+    Cues,
+    /// The effects a fight's cues and sword trails play (`default_effects.ron`): they replace what's
+    /// playing's, if there's a fight, they parse and the cue table's names are all there.
+    Effects,
+    /// A fight's moves and fighter (`.moves.ron`, M2 T2): they replace the set of that file's name, for
+    /// the next attempt, if they compile.
+    Moves,
+    /// The camera's tuning (`default_camera.ron`, M2 T2): it replaces the director's, if there is one and
+    /// it's in range.
+    Camera,
+    /// A fighter's animation graph (`.animgraph.ron`, M2 T2): it replaces the one playing from the next
+    /// state's start, if it checks and binds.
+    Graph,
+}
+
+/// What applying a document can reach, once a document.
+pub(crate) struct DocumentFrame<'a> {
+    pub content: &'a mut Content,
+    pub renderer: &'a mut Renderer,
+    pub gpu: &'a GpuContext,
+    pub scene: &'a mut Scene,
+    pub combat: Option<&'a mut Combat>,
+    pub tuning: &'a mut LiveTuning,
+}
+
+impl Document {
+    const ALL: [Self; 8] = [
+        Self::Day,
+        Self::LightRigs,
+        Self::ScreenEffects,
+        Self::Cues,
+        Self::Effects,
+        Self::Moves,
+        Self::Camera,
+        Self::Graph,
+    ];
+
+    /// The document whose envelope names `type_name`, if the sandbox has one.
+    pub fn of_type(type_name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|document| document.type_name() == type_name)
+    }
+
+    fn type_name(self) -> &'static str {
+        match self {
+            Self::Day => stable_name::<TodTimeline>(),
+            Self::LightRigs => stable_name::<LightRigLibrary>(),
+            Self::ScreenEffects => stable_name::<EffectLibrary>(),
+            Self::Cues => stable_name::<CueTable>(),
+            Self::Effects => stable_name::<sapphire_vfx::EffectLibrary>(),
+            Self::Moves => stable_name::<MoveSetDocument>(),
+            Self::Camera => stable_name::<CameraTuning>(),
+            Self::Graph => stable_name::<AnimGraph>(),
+        }
+    }
+
+    /// What it is, in messages.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Day => "day",
+            Self::LightRigs => "light rigs",
+            Self::ScreenEffects => "screen effects",
+            Self::Cues => "cue table",
+            Self::Effects => "effects",
+            Self::Moves => "moves",
+            Self::Camera => "camera's tuning",
+            Self::Graph => "animation graph",
+        }
+    }
+
+    /// Parses `text`, read from `origin` (a path or a file name), and swaps it into its owner,
+    /// returning what it replaced, or says why it keeps what it has. A timeline replaces the day
+    /// only from the file of the day the scene runs on, so the default day can't replace the
+    /// look-dev stage's ([`Scene::replace_day`]). New screen effect presets have the renderer
+    /// prewarm their post variants, which the overlay may fire. A fight's documents go through
+    /// [`LiveTuning`].
+    pub fn apply(self, origin: &str, text: &str, frame: DocumentFrame<'_>) -> Result<String, String> {
+        let DocumentFrame { content, renderer, gpu, scene, combat, tuning } = frame;
+        match self {
+            Self::Day => {
+                let timeline = TodTimeline::from_ron(text).map_err(|error| error_chain(&error))?;
+                Ok(scene.replace_day(origin, timeline)?.name().to_owned())
+            }
+            Self::LightRigs => {
+                let rigs = LightRigLibrary::from_ron(text).map_err(|error| error_chain(&error))?;
+                scene.replace_light_rigs(origin, rigs)?;
+                Ok(self.name().to_owned())
+            }
+            Self::ScreenEffects => {
+                let effects = EffectLibrary::from_ron(text).map_err(|error| error_chain(&error))?;
+                scene.set_effect_library(effects)?;
+                renderer.prewarm_post(scene.effect_variants());
+                Ok(self.name().to_owned())
+            }
+            Self::Cues => tuning.cue_document(text, scene, renderer),
+            Self::Effects => tuning.effects_document(text, scene),
+            Self::Moves => {
+                let cooked = tuning.cooked_set(origin, content);
+                tuning.moves_document(origin, text, cooked.as_ref(), Fight { combat, scene })
+            }
+            Self::Camera => tuning.camera_document(text, scene),
+            Self::Graph => tuning.graph_document(origin, text, content, scene, renderer, gpu),
+        }
+    }
+}
+
+/// What a run has that live tuning follows: what decides the documents it can take.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct TunedRun<'a> {
+    /// The camera's director frames it.
+    pub camera_director: bool,
+    /// A fight's cues fire.
+    pub cues: bool,
+    /// The animation graph plays from a script.
+    pub graph_show: bool,
+    /// A fight runs in the arena, each fighter on a graph.
+    pub arena_fight: bool,
+    /// Whether anything reads saved files: off, only what's pushed comes.
+    pub reads_files: bool,
+    /// Documents to read outside the repository, each by its file's name.
+    pub extra_documents: &'a [PathBuf],
+}
 
 /// The animation graph's document (`lookdev::GRAPH`).
 const GRAPH_PATH: &str = "content/lookdev/character/character.animgraph.ron";
@@ -131,11 +272,11 @@ pub(crate) struct LiveTuning {
 }
 
 impl LiveTuning {
-    /// The documents `options` runs can take: every scenario's, which the overlay's recorder can start,
+    /// The documents `run` can take: every scenario's, which the overlay's recorder can start,
     /// and the camera's, the cue table's, the graph's and the graph show's where those run. The cooked sets
     /// among them are loaded and kept (a few kilobytes each), so a pack's new version of one is told of.
-    pub fn new(options: &Options, content: &mut Content) -> Self {
-        let sources = Self::sources_of(options);
+    pub fn new(run: &TunedRun<'_>, content: &mut Content) -> Self {
+        let sources = Self::sources_of(run);
         let mut cooked = Vec::new();
         for (document, id) in COOKED_MOVES {
             if !sources.iter().any(|source| document_file_name(&source.path) == document) {
@@ -150,9 +291,9 @@ impl LiveTuning {
             }
         }
         let mut files: Vec<PathBuf> = Vec::new();
-        if !options.no_hot_reload {
+        if run.reads_files {
             files.extend(sources.iter().map(|source| sources::repository_file(&source.path)));
-            files.extend(options.watch_documents.iter().cloned());
+            files.extend(run.extra_documents.iter().cloned());
         }
         let graph_owner = |file: &PathBuf| Some(graph_of(file.to_str()?).ok()?.0);
         content.read_graphs_from(
@@ -161,8 +302,8 @@ impl LiveTuning {
         Self { moves: LiveMoves::default(), sources, waiting: Vec::new(), moving: Vec::new(), cooked, files }
     }
 
-    /// The documents `options` runs can take.
-    fn sources_of(options: &Options) -> Vec<Source> {
+    /// The documents `run` can take.
+    fn sources_of(run: &TunedRun<'_>) -> Vec<Source> {
         let mut sources: Vec<Source> = Vec::new();
         let mut add = |path: &str, document| {
             if !sources.iter().any(|source| source.path == path) {
@@ -175,22 +316,21 @@ impl LiveTuning {
             }
         }
         // A fight's cues fire the camera's shakes, by their places in its tuning.
-        if options.has_camera_director() || options.cues {
+        if run.camera_director || run.cues {
             add(CAMERA_PATH, Document::Camera);
         }
-        if options.cues {
+        if run.cues {
             add(CUES_PATH, Document::Cues);
             add(EFFECTS_PATH, Document::Effects);
         }
-        if options.graph.is_some() {
+        if run.graph_show {
             add(SHOW_MOVES_PATH, Document::Moves);
         }
         // A fight's player plays the character's graph too, and its enemy its own (`Scene::play_fighters`).
-        let fights = options.arena.is_some() && options.combat.is_some();
-        if options.graph.is_some() || fights {
+        if run.graph_show || run.arena_fight {
             add(GRAPH_PATH, Document::Graph);
         }
-        if fights {
+        if run.arena_fight {
             add(ENEMY_GRAPH_PATH, Document::Graph);
         }
         sources
@@ -219,10 +359,10 @@ impl LiveTuning {
         self
     }
 
-    /// What hot reload watches for it: each document, and each `--watch-document`, by its file's name.
-    pub fn watched(&self, options: &Options) -> Vec<(Document, PathBuf)> {
+    /// What hot reload watches for it: each document, and each of `extra`, by its file's name.
+    pub fn watched(&self, extra: &[PathBuf]) -> Vec<(Document, PathBuf)> {
         let own = self.sources.iter().map(|source| (source.document, sources::repository_file(&source.path)));
-        let extra = options.watch_documents.iter().filter_map(|path| match kind_of_file(path) {
+        let extra = extra.iter().filter_map(|path| match kind_of_file(path) {
             Some(document) => Some((document, path.clone())),
             None => {
                 tracing::warn!(
@@ -603,16 +743,27 @@ pub(crate) fn kind_of_file(path: &Path) -> Option<Document> {
 
 /// They need no GPU, but compile only in `dev` builds, which CI tests in its GPU job: run them with
 /// `cargo test -p sapphire_sandbox --features dev --lib -- --ignored tuning::`.
+/// An error and its sources, as one line.
+pub(crate) fn error_chain(error: &dyn std::error::Error) -> String {
+    let mut message = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        message.push_str(": ");
+        message.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    message
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
 
-    use sapphire_moves::MoveSetDocument;
     use sapphire_render::MeshHandle;
 
     use super::*;
+    use crate::combat::CombatOption;
     use crate::combat::no_bindings;
-    use crate::options::CombatOption;
 
     const SLICE: &str = include_str!("../../../crates/sapphire_moves/test_content/slice.moves.ron");
     const SLICE_FILE: &str = "slice.moves.ron";
@@ -1042,21 +1193,29 @@ mod tests {
         assert_eq!(sapphire_vfx::EffectLibrary::from_ron(&effects).expect("reads"), shipped);
     }
 
+    /// A run with nothing live in it but the scenarios' moves.
+    const QUIET: TunedRun<'static> = TunedRun {
+        camera_director: false,
+        cues: false,
+        graph_show: false,
+        arena_fight: false,
+        reads_files: true,
+        extra_documents: &[],
+    };
+
     /// A real fight's fighters each play a graph, so a run of one watches both and lists them for
     /// `link watch`. A graph show has no enemy, and a graph that's neither's never lands on either.
     #[test]
     #[ignore = "runs with CI's dev tests, which take --ignored"]
     fn a_fight_takes_both_its_fighters_graphs_and_no_other() {
-        let graphs = |args: &[&str]| {
-            let args: Vec<String> = ["sandbox"].iter().chain(args).map(ToString::to_string).collect();
-            let (options, _) = Options::parse(&args).expect("good arguments");
-            let sources = LiveTuning::sources_of(&options);
+        let graphs = |run: TunedRun<'_>| {
+            let sources = LiveTuning::sources_of(&run);
             let found = sources.iter().filter(|source| source.document == Document::Graph);
             found.map(|source| source.path.clone()).collect::<Vec<_>>()
         };
-        assert_eq!(graphs(&["--arena", "--fight"]), [GRAPH_PATH, ENEMY_GRAPH_PATH]);
-        assert_eq!(graphs(&["--look-dev", "hero", "--graph", "walk"]), [GRAPH_PATH]);
-        assert_eq!(graphs(&["--look-dev", "hero"]), Vec::<String>::new());
+        assert_eq!(graphs(TunedRun { arena_fight: true, ..QUIET }), [GRAPH_PATH, ENEMY_GRAPH_PATH]);
+        assert_eq!(graphs(TunedRun { graph_show: true, ..QUIET }), [GRAPH_PATH]);
+        assert_eq!(graphs(QUIET), Vec::<String>::new());
         assert_eq!(graph_of("x/character.animgraph.ron").map(|(owner, _)| owner), Ok(GraphOwner::Character));
         assert_eq!(graph_of("warrior.animgraph.ron").map(|(owner, _)| owner), Ok(GraphOwner::Enemy));
         let refused = graph_of("slime.animgraph.ron").expect_err("nobody plays it");
@@ -1068,20 +1227,14 @@ mod tests {
     #[test]
     #[ignore = "runs with CI's dev tests, which take --ignored"]
     fn the_cue_table_is_a_document_of_a_run_that_fires_cues() {
-        let sources = |extra: &[&str]| {
-            let run =
-                ["sandbox", "--offscreen", "--record", "a", "--scenario", "duel", "--script", "attempts"];
-            let args: Vec<String> = run.iter().chain(extra).map(|arg| (*arg).to_owned()).collect();
-            LiveTuning::sources_of(&Options::parse(&args).expect("options").0)
-        };
         let has = |sources: &[Source], document, path: &str| {
             sources.iter().any(|source| source.document == document && source.path == path)
         };
-        let firing = sources(&["--cues"]);
+        let firing = LiveTuning::sources_of(&TunedRun { cues: true, ..QUIET });
         assert!(has(&firing, Document::Cues, CUES_PATH));
         assert!(has(&firing, Document::Effects, EFFECTS_PATH), "its sparks and trails read them");
         assert!(has(&firing, Document::Camera, CAMERA_PATH), "its shakes read the camera's tuning");
-        let quiet = sources(&[]);
+        let quiet = LiveTuning::sources_of(&QUIET);
         assert!(!has(&quiet, Document::Cues, CUES_PATH));
         assert!(!has(&quiet, Document::Effects, EFFECTS_PATH));
         assert!(!has(&quiet, Document::Camera, CAMERA_PATH));

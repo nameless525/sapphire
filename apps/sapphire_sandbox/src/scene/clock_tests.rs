@@ -15,9 +15,9 @@ use sapphire_vfx::{EffectLibrary as VfxLibrary, VfxBudget};
 use super::tests::arena_stage;
 use super::tests::clips::{GRAPH_CLIP, clip, fighting};
 use super::*;
+use crate::combat::CombatOption;
 use crate::combat::{Combat, no_bindings};
 use crate::cues::CueShow;
-use crate::options::CombatOption;
 
 const TICK: f32 = 1.0 / TICK_HZ as f32;
 

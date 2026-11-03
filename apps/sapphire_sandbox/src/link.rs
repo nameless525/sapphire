@@ -48,14 +48,14 @@ use sapphire_time::Stopwatch;
 
 use crate::LOG_TARGET;
 use crate::app::SandboxApp;
-use crate::capture::{Readback, compress, readback_fits};
+use crate::capture::{compress, readback_fits};
 use crate::combat::Combat;
 use crate::content::Content;
 use crate::options::LiveLinkOption;
-use crate::reload::{Document, DocumentFrame, error_chain};
+use crate::readback::Readback;
 use crate::scene::Scene;
 use crate::shader_edits::{Origin, ShaderEdits};
-use crate::tuning::{LiveTuning, attempts};
+use crate::tuning::{Document, DocumentFrame, LiveTuning, attempts, error_chain};
 
 /// How many refusals the overlay lists.
 const SHOWN_ERRORS: usize = 4;

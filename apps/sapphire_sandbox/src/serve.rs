@@ -188,7 +188,7 @@ impl Serving {
         let settings = self.options.render_settings(stage.quality.render_settings());
         match create_renderer(&mut stage.content, &stage.gpu, FORMAT, settings, &self.options) {
             Ok(renderer) => {
-                stage.scene.set_meshes(&renderer);
+                crate::app::set_meshes(&mut stage.scene, &renderer);
                 stage.renderer = renderer.renderer;
                 stage.dev.renderer_created(&mut stage.renderer);
                 stage.scene.prewarm(&mut stage.renderer);

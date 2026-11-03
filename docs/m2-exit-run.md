@@ -459,7 +459,7 @@ Phone model, OS, build commit, room temperature, on charge or not. A line every 
 
 ## Rehearsal
 
-Run on 2026-11-02 on an Apple M5 (24 GB, macOS 27.0.1, AC power), with other agents building beside it, on 410cf24b, which is before WA-3's clocks and the review's fixes. Those numbers weren't taken again. The second table says what ran on 7a28c828, the review's top. "Load" is the 1-minute load average. Builds are release `dev` unless a row says otherwise. The emulator is a private headless `sapphire_api36` and the simulator a private iPhone one, deleted afterwards. **Both draw on this Mac's GPU, and neither says what a phone does.** Nobody played anything: every press came from a script or a synthetic touch.
+Run on 2026-11-02 on an Apple M5 (24 GB, macOS 27.0.1, AC power), with other agents building beside it, on 410cf24b, which is before WA-3's clocks and the review's fixes. The second table says what ran on 7a28c828, the review's top, and the third what ran on `main` at 69d58dc2 once the outside review's fixes had landed: the same procedures, taken again. "Load" is the 1-minute load average. Builds are release `dev` unless a row says otherwise. The emulator is a private headless `sapphire_api36` and the simulator a private iPhone one, deleted afterwards. **Both draw on this Mac's GPU, and neither says what a phone does.** Nobody played anything: every press came from a script or a synthetic touch.
 
 ### What ran
 
@@ -509,6 +509,40 @@ Offscreen at 640×360, `--incremental`, Desktop-Low, load about 5. These ran bef
 
 A last check of this page against the code ran the first command with `--dry-run` on a clean checkout, with 3 build jobs: it cooked, built and printed the launch in 4 min 23 s and changed no tracked file, and that's how `tee` was found to keep nothing while `target/` doesn't exist.
 
+### What ran on main at 69d58dc2
+
+Run on 2026-11-03 on the same M5, after the outside review's 48 fixes and the optimization work, with six or more other agents building beside it. Load ran from 4.5 to 670 through the day, and each row says what it was. Builds and rounds are as in the first table, and files were saved and put back the same way, by a harness kept outside the tree. Rounds were spaced at random. To tell the tree from the machine, 410cf24b was exported, built with its own target directory and benched in alternation with this one.
+
+| Exit test | What | Saw |
+|---|---|---|
+| 3 | `cargo xtask replay`, five times and five more | 11 replays, 19,318 ticks, every checksum, no allocation, all ten. The first five, load 40–119: mean step 2.9–8.7 µs, longest 70–7,870 µs, 0.07–0.11 s of steps in all. The second five, load about 56: mean 3.0–104 µs, longest 37–73 ms on three different replays, 0.24–0.49 s of steps |
+| 3 | `cargo --locked xtask --locked replay` and `cargo test -p sapphire_sandbox --test replays --locked -- --ignored --test-threads=1` | Both pass. CI's Linux and Windows `Replays` passed at this commit, and its macOS jobs were cancelled after 15 minutes without a result, so macOS's word is this Mac's |
+| 3 | An offscreen recording checked by hand, as in the first table | 1,200 ticks. Log and checker agree on `2daca18247149e94`. Longest step 66 µs |
+| 1, 3 | A fight by real multi-touch on the emulator, recorded, fetched with `run-as` and checked on the Mac | 1,626 ticks, 100 button events, 31 hits. Back, Back left it cleanly (`main returned status=0`). Device and Mac both `2089106aef403899`, no allocation. Not added to the suite |
+| 2 | A real save of `player.moves.ron` on the Mac, Desktop-Low at 1280×720, `--offscreen --arena --fight --script attempts`, moving `light_1`'s `hitstop` | Warm over 50 rounds in two runs: median 497 ms, p90 879, most 1,133. Fresh process's first edit, over 8: median 519, most 824. `since_ms` median 364. The first move on the new data was the edited one in 27 of 58. Load 6–12, longest frame 38 ms |
+| 2 | `link push` to the same | Warm over 50: median 397 ms, p90 976, most 1,052. First edit, over 8: median 445, most 854. Tool 5–27 ms, median 12. Load 7–10, longest frame 55 ms |
+| 2 | `link push` to the emulator, Mobile-Low, `adb forward` to a private port | Over 20 rounds: median 420 ms, p90 742, most 966. Tool median 29 ms, most 58. 30 fps, longest frame 100 ms. Load 34–38 |
+| 2 | `link watch` on `player.moves.ron` on the emulator | Save to attempt 186, 641, 251, 199, 322 and 399 ms. Load about 35 |
+| 2 | `link push` to the simulator, Mobile-Low, on a private port | Over 16 rounds: median 289 ms, p90 778, most 878. Tool median 22 ms, most 37. Load 361–476. `link capture` of 2622×1206 took 404 ms |
+| 2 | A cook, then a push, on the emulator (`cargo xtask content --cook mobile`, `link push`, the enemy's graph) | 0.72–0.92 s and 0.13–0.17 s, 1.0 KB sent, after a first cook that had the cooker to rebuild. Load 33–35 |
+| 1, 2 | The save and cook rows of "What changes what" that have a time, on a running fight at 640×360 | `default_camera.ron` median 127 ms (123–135), `character.animgraph.ron` 125 (114–136), `warrior.animgraph.ron` 122 (115–142), each of 7. Pushes of the graphs 2–18 and 1–16 ms. `cancles:` refused in 132 (114–142), naming the line, the field and `MoveDocument`. A material, a graph and a pose: a cook of 0.63–0.75 s, then `asset swapped in` 124–166 ms later. Load 4.5–7.4 |
+| 2 | A restart, the command from the first table to a `status` reply, nothing changed | `--incremental` 1.38–1.58 s, and one of 8.4 in 5. `--release` 1.46–1.55 s. Load about 24 |
+| 2 | The same command after a one-line edit (`swing_limit` in `sapphire_anim`, since `run_speed` is a document now) | 4.3–4.6 s, and one of 10.4 in 4. Load 24–27 |
+| 2 | `run_speed` in `player.moves.ron`, as in the first table | Median 142 ms, p90 152, most 164 over 50 saves in two runs, and 132–154 ms as a fresh process's first edit, over 8. Take to step a median of 12.9 ms. The first step logs 7.5 m/s while running, one tick's change. Longest frame 39 ms. Load 7–13 |
+| 2 | One-line edits, the build alone, with 3 jobs, three of each | `--incremental`: 1.8–2.1 s (a spring's limit), 3.3–3.6 s (a line in the sandbox's HUD), 3.8–4.0 s (a function in the renderer), 5.2–6.7 s (a function added to `sapphire_core`, 24 crates), 10.8–11.4 s (a function added to `sapphire_math`, 29 crates). Load 25–45. `--release`, a spring's limit, four times: 85–154 s. Load 17–30 |
+| 2 | One whole fight on three `dev` builds, `--release`, `--incremental` and debug (`--bench 1 --tier desktop-low --size 1920x1080 --arena --replay tests/replays/arena-fight-won.sreplay --cues --hud live --blade on --time-of-day 10`), alternating, least of 3 rounds after a discarded one | CPU frame p50 0.94 ms, 0.94 ms and 2.28 ms. GPU frame p50 7.48, 7.70 and 8.59 ms, p99 10.64, 11.12 and 15.55 ms. Load 34–75, and the machine's GPU was busy: the same tier read 4.2 ms in a quieter set. All three, and a `--release` build with no `dev`, end this replay on `7c587273e63e74a9` |
+| 4 | Its Android command as written, no `dev`, on the emulator | 8.5 minutes, 20 fights, one checksum (`f316c16f9817df40`), no allocation in a step. `live_bytes` 21.36–21.45 MB, PSS 167 MB at 5 minutes and 174 at 8.5, `thermal=Nominal`. Load reached 670 and fps fell as low as 2.0 for it, then came back to 30, so it times nothing |
+| 4 | Its script on the simulator (a `dev` bundle from `cargo xtask bundle --platform ios-sim --release --features dev`) | 3 fights, the same checksum as the emulator and the Mac. 30 fps on the display link, `live_bytes` 23.0 MB, `thermal=Nominal`. Load 360–670 |
+| 4 | `cargo xtask bundle --platform ios --release`, and `--platform macos --incremental --features dev` | Both build and bundle. Neither launched |
+| 4 | The thermal reading, by `adb shell cmd thermalservice override-status 3`, then `reset` | `thermal=Serious`, then back |
+| 4 | Spec §3.5's fight bench and soak | Spec §3.5 has them. `arena-fight-won` took 20 rounds of each desktop tier and 25 of each mobile one, and the soak ran twice |
+| 1 | `--debug-draw combat --cues --hud live`, `--springs off`, `--debug-overlay=combat`, `--party --script party-swap`, `--time-of-day 19.75`, each with a capture | All exit 0 and write their pictures |
+| 1 | `sapphire_editor content/combat/player/player.moves.ron --capture <png>` | Exit 0 |
+
+**Not taken again:** the dummy recipe's health after 75 s, T2's `slice.moves.ron` duel path, the second table's rows that have no time, and the fuzz run the go/no-go page cites, whose harness is gone.
+
+**The two trees.** `fight-back` ends on `f316c16f9817df40` here against `0dfb07dd0da45a9c` before: the camera's new colliders moved every arena checksum (cef661e5). Between 410cf24b's binary and this one, alternating at load 16–33: CPU frame p50 1.07 to 0.83 ms on Desktop-Low and 0.84 to 0.76 on Mobile-Low, `record` 841 to 608 µs and 600 to 520, allocations 799.3 to 745.6 and 483.0 to 480.8, Mobile-High's prepasses 0.29 to 0.14 ms, and no GPU frame that moves past what either binary does by itself. A `--replay`'s new `Combat` went the other way, a median of 6.9 to 8.8 ms and about 600 more allocations.
+
 ### What didn't run, and why
 
 - **Any desktop window,** because agents may not open one. So `cargo xtask run --platform desktop` and `--platform macos` without `--offscreen`, `--arena --record` in a window, the pointer's capture, the pause on losing focus, the veil on a real window, the overlay's keys and everything in the three reviews.
@@ -528,3 +562,6 @@ A last check of this page against the code ran the first command with `--dry-run
 - **The attempt line doesn't always name the edited move.** It names the first move to start on the new data, 86 times in 124 rounds the edited one. The numbers here are to that line.
 - **Fights after an edit end on another checksum,** because they start from the edit, and a relaunch goes back to the cook. Compare checksums only across fights with no edit.
 - **A one-line edit took 76–152 s under `--release`,** with its thin LTO and no incremental compilation. `cargo xtask run --incremental` is new, and the sheet's commands use it.
+- **A timing harness's saves reach everything that watches that checkout.** The retake's second soak ran beside its emulator rounds, and took their edits of `warrior.animgraph.ron`: three fights ended on other checksums for it, which is the rule above and not a divergence. Give a soak its own checkout, or don't save beside one.
+- **A round's GPU p50 says more about the machine than the tree on the mobile tiers.** On the retake's day Mobile-Low's rounds read 1.4–3.8 ms and 410cf24b's 2.7–3.1 beside them, against 1.35 on a quieter day, while each tick's least across rounds came back to where it was. Read the worst moments' table, or pair a base binary, before believing a GPU row moved.
+- **The fight's first step allocates, outside the simulation.** `step_allocations` reads 3 on a first fight's first tick and 25 on a later fight's, on both trees, and `sim_allocations`, R6's count, stays 0. Not chased.

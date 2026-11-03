@@ -2122,16 +2122,17 @@ impl Scene {
     pub fn apply(&mut self, actions: SimActions) {
         let world = self.ecs.world_mut();
         if actions.toggle_slow_motion {
-            world.resource_scope(|world, mut slow_motion: Mut<'_, SlowMotion>| {
-                let mut clock = world.resource_mut::<WorldClock>();
-                match slow_motion.0.take() {
-                    Some(handle) => {
-                        clock.0.pop_scale(handle);
-                    }
-                    None => slow_motion.0 = clock.0.push_scale(ScaleSource::PerfectDodge, SLOW_MOTION).ok(),
+            let held = world.resource_mut::<SlowMotion>().0.take();
+            let mut clock = world.resource_mut::<WorldClock>();
+            let pushed = match held {
+                Some(handle) => {
+                    clock.0.pop_scale(handle);
+                    None
                 }
-                tracing::info!(target: LOG_TARGET, world_scale = clock.0.effective_scale(), "slow motion toggled");
-            });
+                None => clock.0.push_scale(ScaleSource::PerfectDodge, SLOW_MOTION).ok(),
+            };
+            tracing::info!(target: LOG_TARGET, world_scale = clock.0.effective_scale(), "slow motion toggled");
+            world.resource_mut::<SlowMotion>().0 = pushed;
         }
         if actions.hitstop
             && let Some(mut clock) = world.get_mut::<EntityClock>(self.character)
@@ -4781,6 +4782,22 @@ mod tests {
             assert_eq!(scene.ecs.world().removed::<RenderExtract>().count(), 0);
             scene.end_frame();
         }
+    }
+
+    /// A toggle of slow motion borrows its handle where it is, as extract does: it comes just before the
+    /// frame's steps, which must not allocate, and archetypes a scope makes are there for their queries.
+    #[test]
+    fn toggling_slow_motion_leaves_its_resource_where_it_is() {
+        let mut scene = scene();
+        let scale = |scene: &Scene| scene.ecs.world().resource::<WorldClock>().0.effective_scale();
+        let normal = scale(&scene);
+        let archetypes = scene.ecs.world().archetypes().len();
+        scene.apply(SimActions { toggle_slow_motion: true, ..SimActions::default() });
+        assert!(scale(&scene) < normal, "it slows");
+        scene.apply(SimActions { toggle_slow_motion: true, ..SimActions::default() });
+        assert_eq!(scale(&scene), normal, "and comes back");
+        assert_eq!(scene.ecs.world().removed::<SlowMotion>().count(), 0);
+        assert_eq!(scene.ecs.world().archetypes().len(), archetypes, "no new shape for a step to meet");
     }
 
     /// A step's cues stand until the next step, and a recording stopped at its limit or a replay past its

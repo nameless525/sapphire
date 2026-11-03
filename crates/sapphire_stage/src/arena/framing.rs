@@ -14,7 +14,7 @@
 //!
 //! ```text
 //! cargo xtask content
-//! SAPPHIRE_FRAMING_REPLAYS=<dir> cargo test -p sapphire_sandbox --lib framing_report -- --ignored --nocapture
+//! SAPPHIRE_FRAMING_REPLAYS=<dir> cargo test -p sapphire_stage --lib framing_report -- --ignored --nocapture
 //! ```
 //!
 //! With that variable set, each scripted fight is also written there as a replay, so a moment it reports can

@@ -4,7 +4,7 @@
 //! (`content/arena/square.colliders.ron`) and its spawn points the document beside it
 //! (`content/arena/square.spawns.ron`). This module compiles both in, so a replay needs no assets and
 //! no path: a headless runner on any OS has them, and [`crate::replay::SCENARIOS`]' `arena` builds its
-//! world from them. The app's stage (`apps/sapphire_sandbox/src/arena.rs`) reads the same document,
+//! world from them. The app's stage (`crates/sapphire_stage/src/arena.rs`) reads the same document,
 //! cooked into its pack.
 //!
 //! **The same on every OS:** the document's numbers are parsed exactly, and a collider's turn goes

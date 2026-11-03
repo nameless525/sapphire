@@ -1,6 +1,6 @@
 // The look-dev day (M1 X1 part 2): the time of day `--look-dev` runs on instead of the default
 // day, so the default day and every scene that isn't the look-dev town stay as they are. The
-// sandbox compiles it in (`apps/sapphire_sandbox/src/lookdev.rs`); it is a `TodTimeline` document
+// sandbox compiles it in (`crates/sapphire_stage/src/lookdev.rs`); it is a `TodTimeline` document
 // (`sapphire_world::tod`, whose module docs say how keys blend), and hot reload watches it in dev
 // builds while `--look-dev` runs. The cooker leaves it alone: no importer reads a bare `.ron`.
 //

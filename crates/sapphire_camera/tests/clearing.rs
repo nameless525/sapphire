@@ -2,7 +2,7 @@
 //! it gives way to. Every scene runs against the same thing with clearing off, so each test shows it's
 //! clearing that made the difference.
 //!
-//! `sapphire_sandbox`'s `arena::framing` counts what it comes to over whole fights in the real arena.
+//! `sapphire_stage`'s `arena::framing` counts what it comes to over whole fights in the real arena.
 
 mod common;
 

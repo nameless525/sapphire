@@ -1099,7 +1099,7 @@ mod tests {
         );
     }
 
-    /// The look-dev stage loads the character's rig by this ID (`sapphire_sandbox`'s
+    /// The look-dev stage loads the character's rig by this ID (`sapphire_stage`'s
     /// `lookdev::RIG`), derived from the VRM's sidecar ID.
     #[test]
     fn the_character_rig_id_is_the_vrm_sub_asset() {

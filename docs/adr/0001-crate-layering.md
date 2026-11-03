@@ -19,6 +19,7 @@ The engine spec (§4.1) put the platform crate at L0, with `core` / `math` / `jo
   | L2 Services | `sapphire_assets`, `sapphire_rhi` (later `sapphire_ecs`, `sapphire_reflect`, `sapphire_serialize`) |
   | L3 Subsystems | `sapphire_render` (later animation, physics, audio, VFX, UI, input, navigation, debug) |
   | L4 Framework, L5 Game | as in the spec |
+  | L6 Stage | `sapphire_stage` |
   | Apps | `apps/` (`sapphire_sandbox` now; the game app later) |
   | Tools | `tools/` and `xtask/` |
 
@@ -26,7 +27,7 @@ The engine spec (§4.1) put the platform crate at L0, with `core` / `math` / `jo
 - `xtask/layers.toml` is the source of truth, and `cargo xtask check-layers` enforces it in CI.
   - Every workspace member and every vendored (path) crate must be placed there. Git dependencies are third-party code like registry crates: `deny.toml`'s `[sources]` admits each one, and the tool-only and dev-only lists police their reach.
   - Each entry lists the cargo features the crate may declare (rule R8: features select platform or backend only).
-  - `kind = "dev_only"` marks crates such as M1's `sapphire_debug` that only an app may use, through an optional dependency, so they never ship by accident.
+  - `kind = "dev_only"` marks crates such as M1's `sapphire_debug` that only an app may use, through an optional dependency, so they never ship by accident. A runtime crate reaches one only if `[allow]` names the edge, and still only through a direct optional dependency, as `sapphire_stage`'s `dev` does.
 - **Rule R7 exceptions.** Platform `cfg` is confined to `sapphire_platform`, `sapphire_crash` and the backend selection in `sapphire_rhi`, plus two documented exceptions:
   - `sapphire_jobs::topology` detects CPU topology (sysfs, `sysctl`, `GetLogicalProcessorInformationEx`) before SDL starts.
   - `sapphire_core` classifies the target (`FormFactor`) and the thread-local storage model the counting allocator relies on.

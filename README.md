@@ -84,7 +84,7 @@ For an app you're editing, `cargo xtask run --platform desktop --incremental` bu
 | `Esc` (desktop) | Quit |
 | `` ` `` (the key below `Esc`), or hold two fingers still for a second | Show or hide the debug overlay (`dev` builds) |
 
-The bindings are `sapphire_input` documents: [`apps/sapphire_sandbox/default_bindings.ron`](apps/sapphire_sandbox/default_bindings.ron), over combat's own in [`crates/sapphire_controls/combat_bindings.ron`](crates/sapphire_controls/combat_bindings.ron). `--combat-input` leaves combat's alone: every verb on the pad and the keyboard.
+The bindings are `sapphire_input` documents: [`crates/sapphire_stage/default_bindings.ron`](crates/sapphire_stage/default_bindings.ron), over combat's own in [`crates/sapphire_controls/combat_bindings.ron`](crates/sapphire_controls/combat_bindings.ron). `--combat-input` leaves combat's alone: every verb on the pad and the keyboard.
 
 ### Debug overlay
 

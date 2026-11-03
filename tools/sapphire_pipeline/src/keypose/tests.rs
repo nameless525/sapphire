@@ -165,7 +165,7 @@ fn anticipation_and_overshoot_reach_past_the_keys_by_their_share() {
     assert_eq!(KeyEase::Anticipate(0.0).weight(0.5), 0.125, "no share is a plain ease in");
 }
 
-/// As the held pose does, and as its tests measure (`sapphire_sandbox::pose`).
+/// As the held pose does, and as its tests measure (`sapphire_stage`'s `pose`).
 #[test]
 fn a_turn_is_in_rest_model_space_whatever_a_joints_own_axes() {
     let (skeleton, rig) = figure();
@@ -527,7 +527,7 @@ fn names_and_paths_come_from_the_compound_extension() {
     assert_eq!(output_path(Path::new("moves/swing.keypose.ron"), "sclip"), Path::new("moves/swing.sclip"));
 }
 
-/// The document's first key is `sapphire_sandbox`'s held pose, as `lookdev::turns` has it.
+/// The document's first key is `sapphire_stage`'s held pose, as `lookdev::turns` has it.
 const HELD: &[(HumanBone, Turn)] = &[
     (HumanBone::LeftUpperArm, Turn { x: 0.0, y: -4.0, z: -76.0 }),
     (HumanBone::RightUpperArm, Turn { x: 0.0, y: 4.0, z: 76.0 }),

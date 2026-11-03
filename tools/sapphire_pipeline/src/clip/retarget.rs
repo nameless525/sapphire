@@ -323,7 +323,7 @@ fn parent_of(skeleton: &Skeleton, joint: usize) -> Option<usize> {
 }
 
 /// Each joint's model-space rest rotation, from normalized local rotations, so a parent's scale
-/// doesn't reach a bone's frame (as the held pose builds them, `sapphire_sandbox::pose`).
+/// doesn't reach a bone's frame (as the held pose builds them, `sapphire_stage`'s `pose`).
 pub(crate) fn rest_rotations(skeleton: &Skeleton) -> Vec<Quat> {
     let mut model: Vec<Quat> = Vec::with_capacity(skeleton.rest.len());
     for joint in 0..skeleton.rest.len() {

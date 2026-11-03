@@ -5,7 +5,7 @@
 // its market's stalls and cart (`#stall`, `#cart`, X1 part 2f); the Chinese pavilion is a piece
 // of the town's own (`pieces/`); Kenney's Fantasy Town Kit gives the hills beyond the town,
 // re-materialed. The far mountains are meshes of their own (`../mountains/`, X1 part 2d). See
-// `sapphire_pipeline::assembly` for the format and `apps/sapphire_sandbox/src/lookdev.rs` for the
+// `sapphire_pipeline::assembly` for the format and `crates/sapphire_stage/src/lookdev.rs` for the
 // stage that draws it.
 //
 // World space: meters, +Y up. The character stands at the origin facing +Z, where the cameras
@@ -456,7 +456,7 @@
                 (piece: "#box", at: (-0.62, 0.2, 0.0), scale: (0.08, 0.4, 0.3), slot: Some("wood")),
                 (piece: "#box", at: (0.62, 0.2, 0.0), scale: (0.08, 0.4, 0.3), slot: Some("wood")),
             ],
-            // A planter for the stage's plants (`apps/sapphire_sandbox/src/lookdev.rs`): a stone
+            // A planter for the stage's plants (`crates/sapphire_stage/src/lookdev.rs`): a stone
             // curb 0.38 m tall, a unit square here, and a lawn of soil and turf just over its top,
             // inset 12 cm, whose bottom sits inside the stone so no face of one lies in a plane of
             // the other's. Placed scaled in x and z only: the plants stand on its top at 0.4 m.
@@ -538,7 +538,7 @@
             (piece: "@jz_lantern_post", at: (14.5, 0.0, -14.0)),
 
             // Planters and pots for the stage's trees, flowers and grass beds (the trees themselves
-            // are foliage instances the stage places, `apps/sapphire_sandbox/src/lookdev.rs`): one
+            // are foliage instances the stage places, `crates/sapphire_stage/src/lookdev.rs`): one
             // under a tree framing the wide shot, beds before the back row and beside the left row,
             // and pots between the back row's doors.
             (piece: "@planter", at: (-3.0, 0.0, 5.2), scale: (3.4, 1.0, 3.4)),

@@ -1,7 +1,7 @@
 // The look-dev stage's character light rig presets (M1 C8): the light rigs `--look-dev` runs on
 // instead of the shipped ones (`crates/sapphire_world/default_light_rigs.ron`), so every scene
 // that isn't the look-dev town lights its characters as before. The sandbox compiles it in
-// (`apps/sapphire_sandbox/src/lookdev.rs`, whose tests hold its presets to the shipped ones in
+// (`crates/sapphire_stage/src/lookdev.rs`, whose tests hold its presets to the shipped ones in
 // everything but what this file adds); it is a `LightRigLibrary` document
 // (`sapphire_world::light_rig`), and hot reload watches it in dev builds while `--look-dev` runs.
 // The cooker leaves it alone: no importer reads a bare `.ron`.

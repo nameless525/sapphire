@@ -32,7 +32,7 @@
 //!   changes: **a bone or value a key doesn't name keeps what the key before it held**, so between
 //!   two keys everything named moves together, and blocking stays short. A first key's unnamed
 //!   bones are at rest. `ticks` makes the clip longer than its last key, which it then holds.
-//! - **A turn** is what `sapphire_sandbox`'s held pose calls one: a bone's rotation in the model's
+//! - **A turn** is what `sapphire_stage`'s held pose calls one: a bone's rotation in the model's
 //!   rest space, about its own joint, in degrees. `leftUpperArm` turned −76° about +Z lowers that
 //!   arm whatever the joint's local axes are, and a bone under a turned bone turns with it, then by
 //!   its own turn. Axes apply X, then Y, then Z. Being in rest space and not in a joint's axes, one

@@ -11,7 +11,7 @@
 //!   invisible wall where it was.
 //!
 //! The stage plants its trees, so they aren't in the assembly: their colliders are the stage's to
-//! check (`apps/sapphire_sandbox/src/arena.rs`).
+//! check (`crates/sapphire_stage/src/arena.rs`).
 
 use std::fs;
 use std::path::{Path, PathBuf};

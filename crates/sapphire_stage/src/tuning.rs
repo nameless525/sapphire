@@ -742,7 +742,7 @@ pub(crate) fn kind_of_file(path: &Path) -> Option<Document> {
 }
 
 /// They need no GPU, but compile only in `dev` builds, which CI tests in its GPU job: run them with
-/// `cargo test -p sapphire_sandbox --features dev --lib -- --ignored tuning::`.
+/// `cargo test -p sapphire_stage --features dev --lib -- --ignored tuning::`.
 /// An error and its sources, as one line.
 pub fn error_chain(error: &dyn std::error::Error) -> String {
     let mut message = error.to_string();

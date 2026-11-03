@@ -1,6 +1,6 @@
 // The arena's static collision (M2 O5): what a character or a camera can hit in the look-dev town's
 // square. World space is the town's: meters, +Y up, the square's open side toward +Z. The stage is
-// `apps/sapphire_sandbox/src/arena.rs`; the spawn points are beside this file, in
+// `crates/sapphire_stage/src/arena.rs`; the spawn points are beside this file, in
 // `square.spawns.ron`.
 //
 // The space is the square's paving between its three rows: the rows' fronts bound it on the left
@@ -12,7 +12,7 @@
 // there: `tools/sapphire_pipeline/tests/arena.rs` assembles each placement of
 // `lookdev/town/town.assembly.ron` near the square and fails if something drawn at a character's
 // height is in no collider, or a collider stands where nothing is drawn, so moving a building fails
-// a test instead of leaving an invisible wall. `apps/sapphire_sandbox/src/arena.rs`'s tests hold the
+// a test instead of leaving an invisible wall. `crates/sapphire_stage/src/arena.rs`'s tests hold the
 // trees to the stage's plantings, which aren't in the assembly.
 //
 // A `camera_` box is what a camera can't stand in or see through and a body never reaches: the blockers'

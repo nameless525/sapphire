@@ -203,14 +203,23 @@ impl MovesFile {
         Ok(result)
     }
 
-    /// Starts a gesture: edits until [`Self::end_gesture`] are one step of undo.
+    /// Starts a gesture: edits until [`Self::end_gesture`] are one step of undo. One in progress ends, as a
+    /// step of its own.
     pub fn begin_gesture(&mut self, label: &str) {
+        self.end_gesture();
         self.gesture = Some(Gesture { label: label.to_owned(), before: self.text.text().to_owned() });
     }
 
     pub fn end_gesture(&mut self) {
         if let Some(gesture) = self.gesture.take() {
             self.record(&gesture.before, &gesture.label);
+        }
+    }
+
+    /// Ends a gesture by taking back what it did, leaving no step of undo.
+    pub fn cancel_gesture(&mut self) {
+        if let Some(gesture) = self.gesture.take() {
+            self.text.set_text(gesture.before);
         }
     }
 

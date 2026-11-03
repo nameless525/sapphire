@@ -110,6 +110,9 @@ pub struct Editor {
     opening: Option<PathBuf>,
     /// What's being typed in the inspector, which is on the screen and not yet in the text.
     typed: Option<Typed>,
+    /// The inspector's number that has the keyboard, whose typing is one gesture: unlike a name it lands
+    /// in the text key by key, since only its widget holds what's typed, and a save has to find it there.
+    typing_number: Option<egui::Id>,
 }
 
 /// A value being typed in the inspector. It goes into the text when its field lets go, or sooner if
@@ -175,6 +178,7 @@ impl Editor {
             closed_unseen: false,
             opening: None,
             typed: None,
+            typing_number: None,
         };
         if let Some(path) = options.file {
             editor.open(&path);
@@ -594,7 +598,26 @@ impl Editor {
     }
 
     /// A drag whose button went away with the window's focus ends here, so the next edit isn't part of it.
+    /// So does a number's typing, when its field lets go, which Escape takes back, or at a press, since a
+    /// field keeps the keyboard until the click ends and what the click does is another step.
     fn settle_gesture(&mut self, ui: &Ui) {
+        if let Some(field) = self.typing_number {
+            if ui.memory(|memory| memory.has_focus(field)) && !ui.input(|input| input.pointer.any_pressed()) {
+                return;
+            }
+            self.typing_number = None;
+            let taken_back = ui.input(|input| input.key_pressed(Key::Escape));
+            if let Some(file) = &mut self.file {
+                if taken_back {
+                    file.cancel_gesture();
+                } else {
+                    file.end_gesture();
+                }
+            }
+            if taken_back {
+                self.after_history();
+            }
+        }
         if ui.input(|input| input.pointer.any_down()) {
             return;
         }
@@ -758,6 +781,7 @@ impl Editor {
     /// Starts a gesture, with what's being typed in the text first, as a step of its own.
     fn begin_gesture(&mut self, label: &str) {
         self.take_typed();
+        self.typing_number = None;
         if let Some(file) = &mut self.file {
             file.begin_gesture(label);
         }
@@ -1431,6 +1455,11 @@ impl Editor {
             && let Some(file) = &mut self.file
         {
             file.end_gesture();
+        }
+        let held = response.ctx.input(|input| input.pointer.any_down());
+        if response.has_focus() && !held && self.file.as_ref().is_some_and(|file| !file.in_gesture()) {
+            self.begin_gesture(label);
+            self.typing_number = Some(response.id);
         }
     }
 

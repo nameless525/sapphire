@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use egui::{Key, Modifiers, Pos2, Role};
-use egui_kittest::kittest::{By, Queryable};
+use egui_kittest::kittest::{By, NodeT, Queryable};
 use egui_kittest::{Harness, Node};
 use sapphire_assets::MemoryPackSource;
 use sapphire_editor::capture::{self, Textures};
@@ -954,6 +954,116 @@ fn escape_takes_back_what_is_being_typed() {
     harness.key_press(Key::Enter);
     harness.run_steps(3);
     assert_same(&text_of(&harness), &slice_with_typed_name(), "the text");
+}
+
+/// Takes the keyboard to the slice's first hit volume's damage, and types `keys` a key at a time, as a person
+/// does, with the field left focused.
+fn type_over_the_damage(harness: &mut Harness<'static, Editor>, keys: &[&str]) {
+    harness.run_steps(3);
+    let volume = EntryRef { mv: 0, track: Track::Hitboxes, index: 0 };
+    harness.state_mut().apply(Action::Select(Some(volume)));
+    harness.run_steps(3);
+    harness
+        .get_all(By::new().role(Role::SpinButton))
+        .find(|number| number.accesskit_node().numeric_value() == Some(6.0))
+        .expect("damage: 6")
+        .focus();
+    harness.run_steps(3);
+    type_keys(harness, keys);
+}
+
+/// Types into the number with the keyboard, which stays a spin button to accessibility as it takes text.
+fn type_keys(harness: &mut Harness<'static, Editor>, keys: &[&str]) {
+    for key in keys {
+        harness
+            .get_all(By::new().role(Role::SpinButton))
+            .find(|number| number.is_focused())
+            .expect("a number has the keyboard")
+            .type_text(key);
+        harness.run_steps(2);
+    }
+}
+
+/// A number's typed a key at a time and lands in the text as it goes, so a save or a close has it, but its
+/// whole session is one step of undo, as a name's is: typing 12 isn't a 1 and then a 12 to take back.
+#[test]
+fn a_number_typed_in_the_inspector_is_one_step_of_undo() {
+    let dir = TestDir::new("typed_number");
+    let path = dir.write("slice.moves.ron", SLICE);
+    let mut harness = harness(&path);
+    let undo_label = |harness: &Harness<'static, Editor>| {
+        harness.state().file().expect("a file").undo_label().map(ToOwned::to_owned)
+    };
+    let (twelve, seventy) =
+        (SLICE.replacen("damage: 6,", "damage: 12,", 1), SLICE.replacen("damage: 6,", "damage: 70,", 1));
+    type_over_the_damage(&mut harness, &["1", "2"]);
+    assert_same(&text_of(&harness), &twelve, "it lands as it's typed");
+    assert!(harness.state().is_dirty(), "so a save or a close has it");
+
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    harness.run_steps(2);
+    assert_same(&text_of(&harness), SLICE, "one undo takes back all of it");
+    assert!(!harness.state().is_dirty());
+    assert_eq!(undo_label(&harness), None);
+    harness.key_press(Key::Enter);
+    harness.run_steps(3);
+    assert_same(&text_of(&harness), SLICE, "letting go of it after that changes nothing");
+
+    // Letting go ends the step, and the next session is a step of its own.
+    type_over_the_damage(&mut harness, &["1", "2"]);
+    harness.key_press(Key::Enter);
+    harness.run_steps(3);
+    assert_same(&text_of(&harness), &twelve, "Enter keeps it");
+    harness
+        .get_all(By::new().role(Role::SpinButton))
+        .find(|number| number.accesskit_node().numeric_value() == Some(12.0))
+        .expect("damage: 12")
+        .focus();
+    harness.run_steps(3);
+    type_keys(&mut harness, &["7", "0"]);
+    harness.key_press(Key::Enter);
+    harness.run_steps(3);
+    assert_same(&text_of(&harness), &seventy, "the second session");
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    harness.run_steps(2);
+    assert_same(&text_of(&harness), &twelve, "one undo, the second session");
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    harness.run_steps(2);
+    assert_same(&text_of(&harness), SLICE, "two, the first");
+
+    // A drag elsewhere ends a session, so neither is lost in the other. A press lands before a drag starts.
+    type_over_the_damage(&mut harness, &["1", "2"]);
+    let (_, end, per_tick) = handles(&harness, "hit volumes light_1_hit 5..8", 3);
+    drag(&mut harness, end, end + egui::vec2(2.0 * per_tick, 0.0));
+    let dragged = hand_edit(&twelve, "light_1", "to: 8,", "to: 10,");
+    assert_same(&text_of(&harness), &dragged, "both landed");
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    harness.run_steps(2);
+    assert_same(&text_of(&harness), &twelve, "one undo, the drag");
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    harness.run_steps(2);
+    assert_same(&text_of(&harness), SLICE, "two, the number");
+}
+
+/// Escape takes back a number as it does a name, though the number has already landed in the text.
+#[test]
+fn escape_takes_back_a_number_being_typed() {
+    let dir = TestDir::new("typed_number_escape");
+    let path = dir.write("slice.moves.ron", SLICE);
+    let mut harness = harness(&path);
+    type_over_the_damage(&mut harness, &["1", "2"]);
+    harness.key_press(Key::Escape);
+    harness.run_steps(3);
+    assert_same(&text_of(&harness), SLICE, "the text");
+    assert!(!harness.state().is_dirty());
+    let file = harness.state().file().expect("a file");
+    assert_eq!((file.undo_label(), file.redo_label()), (None, None), "and no step, either way");
+    assert!(
+        harness
+            .get_all(By::new().role(Role::SpinButton))
+            .any(|number| number.accesskit_node().numeric_value() == Some(6.0)),
+        "it shows what it was"
+    );
 }
 
 /// Cmd+S with a field still focused saves and pushes what's on the screen, and the field keeps the keyboard.

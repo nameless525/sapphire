@@ -633,8 +633,8 @@ const WORKER_STACK: usize = 8 << 20;
 /// [`image::SOURCE_BUDGET`], whose cook holds several GiB, makes the others wait.
 const COOK_MEMORY: u64 = 4 << 30;
 
-/// What a map document's cook is taken to hold, since only reading the document says which images it
-/// reads: its images, as large as the largest committed, and the texture they make.
+/// What a map document's cook is taken to hold at least, for a document whose inputs don't say, as one of
+/// constants doesn't: its images, as large as the largest committed, and the texture they make.
 const MAP_MEMORY: u64 = 1 << 30;
 
 /// Memory the assets cooking at once share.
@@ -1794,7 +1794,7 @@ fn cook_source(
                 .map_err(|source| CookError::Texture { path: path.to_owned(), source: Box::new(source) })
         }
         ImportSettings::CharacterMap(settings) => {
-            let _held = assets.memory.hold(MAP_MEMORY);
+            let _held = assets.memory.hold(map_memory(path, bytes, settings));
             character_maps::cook_source(path, bytes, settings, cook).map_err(map_error(path))
         }
         ImportSettings::Material(_) => material::read(bytes)
@@ -1816,6 +1816,17 @@ fn cook_source(
         ImportSettings::AnimGraph(_) => anim_graph::cook(bytes)
             .map_err(|source| CookError::AnimGraph { path: path.to_owned(), source: Box::new(source) }),
     }
+}
+
+/// About what cooking the map document in `bytes` holds at its peak: a texture of its first input's size,
+/// since a map is its inputs' size and they must share it, and [`MAP_MEMORY`] at least. An input that
+/// doesn't read counts for nothing here: its cook is about to say so.
+fn map_memory(path: &Path, bytes: &[u8], settings: &character_maps::MapSettings) -> u64 {
+    let first =
+        character_maps::inputs(settings.kind(), bytes).ok().and_then(|inputs| inputs.into_iter().next());
+    let input = first.and_then(|input| character_maps::resolve_input(path, &input).ok());
+    let holds = input.and_then(|input| Some(texture::cook_memory(&input, &fs::read(&input).ok()?)));
+    holds.unwrap_or(0).max(MAP_MEMORY)
 }
 
 /// Cooks the document in `bytes` for the rig of source `rig`.
@@ -2716,6 +2727,27 @@ mod tests {
         fs::write(&path, b"saved since").unwrap();
         let error = LastSource::default().read_as(&path, hash).err().expect("it changed");
         assert!(matches!(&error, CookError::SourceChanged { path: at } if *at == path), "{error:?}");
+    }
+
+    /// A map at the size limit holds what a texture of that size does, not what a small one holds.
+    #[test]
+    fn a_maps_cook_says_what_it_holds_from_its_inputs() {
+        let scratch = Scratch::new("cook_map_memory");
+        fs::create_dir_all(scratch.source()).unwrap();
+        let map = scratch.source().join("body.ilm.ron");
+        let bytes = ilm_document("bias.png");
+        let settings = MapKind::Ilm.default_settings();
+        let memory = || map_memory(&map, bytes.as_bytes(), &settings);
+        assert_eq!(memory(), MAP_MEMORY, "an input that doesn't read is the cook's to report");
+        let input = scratch.source().join("bias.png");
+        ::image::GrayImage::new(8, 8).save(&input).unwrap();
+        assert_eq!(memory(), MAP_MEMORY, "a small map is taken to hold that much anyway");
+        ::image::GrayImage::new(8192, 8192).save(&input).unwrap();
+        let large = texture::cook_memory(&input, &fs::read(&input).unwrap());
+        assert!(large > MAP_MEMORY);
+        assert_eq!(memory(), large);
+        let constants = br#"(type: "sapphire::pipeline::IlmMap", version: 1, data: (size: Some((4, 4))))"#;
+        assert_eq!(map_memory(&map, constants, &settings), MAP_MEMORY);
     }
 
     /// Keys the source at `path`, runs `save`, and finishes it, as a worker reaches an asset long after

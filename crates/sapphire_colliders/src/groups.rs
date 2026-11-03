@@ -8,13 +8,15 @@
 //! kind of query reads, such as hurtboxes (M2 D4), is effectively a broadphase of its own: every
 //! other query rejects each member before looking at its geometry.
 
+use bevy_reflect::{Reflect, ReflectDeserialize, ReflectSerialize};
 use std::ops::{BitOr, BitOrAssign};
 
 use serde::{Deserialize, Serialize};
 
 /// A named collision group. Each is a bit of a [`GroupMask`], and documents name them, so a new
 /// group takes the next free bit and no existing one ever moves.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Reflect, Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 #[repr(u8)]
 pub enum Group {
     /// Scenery: blocks characters and casts alike.

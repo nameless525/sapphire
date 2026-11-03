@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use bevy_reflect::TypePath;
+use bevy_reflect::{Reflect, ReflectDeserialize, ReflectSerialize, TypePath};
 use sapphire_colliders::GroupMask;
 use sapphire_core::Name;
 use sapphire_reflect::Versioned;
@@ -66,6 +66,7 @@ pub enum Phase {
 /// A verb on the input side: one of the simulation's `Buttons`, for a document to name. Its bit is
 /// the same as that button's, which `sapphire_gameplay` tests.
 #[derive(
+    Reflect,
     Clone,
     Copy,
     Debug,
@@ -78,6 +79,7 @@ pub enum Phase {
     rkyv::Serialize,
     rkyv::Deserialize,
 )]
+#[reflect(Serialize, Deserialize)]
 #[repr(u8)]
 pub enum Button {
     Light,
@@ -101,8 +103,18 @@ impl Button {
 /// A shape riding a path. A capsule's axis and a box's axes are the path's own, in its local space,
 /// centred on the path's point.
 #[derive(
-    Clone, Copy, Debug, PartialEq, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+    Reflect,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
 )]
+#[reflect(Serialize, Deserialize)]
 pub enum Shape {
     Sphere {
         radius: f32,
@@ -306,6 +318,7 @@ impl IntentDef {
 
 /// How a press has to arrive for a window to take it.
 #[derive(
+    Reflect,
     Clone,
     Copy,
     Debug,
@@ -321,6 +334,7 @@ impl IntentDef {
     rkyv::Serialize,
     rkyv::Deserialize,
 )]
+#[reflect(Serialize, Deserialize)]
 pub enum CancelMode {
     /// Pressed any time its buffer still lasts: it fires as the window opens, or at once if open.
     #[default]
@@ -375,6 +389,7 @@ pub struct CancelWindow {
 /// How heavy a hit is: which reaction it asks of its target ([`Reactions`]), lightest first. When two
 /// hits land on one target in one step, the heavier's reaction plays.
 #[derive(
+    Reflect,
     Clone,
     Copy,
     Debug,
@@ -390,6 +405,7 @@ pub struct CancelWindow {
     rkyv::Serialize,
     rkyv::Deserialize,
 )]
+#[reflect(Serialize, Deserialize)]
 #[repr(u8)]
 pub enum Weight {
     #[default]
@@ -401,6 +417,7 @@ pub enum Weight {
 /// A push away from the attacker, on the target's own clock, so hitstop delays it and costs it nothing.
 /// It eases out: quick at first, slowing to a stop.
 #[derive(
+    Reflect,
     Clone,
     Copy,
     Debug,
@@ -412,6 +429,7 @@ pub enum Weight {
     rkyv::Serialize,
     rkyv::Deserialize,
 )]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Knockback {
     /// Metres. Zero is no push.
@@ -515,8 +533,18 @@ impl Hitbox {
 
 /// What a hurtbox becomes while a window is open.
 #[derive(
-    Clone, Copy, Debug, PartialEq, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+    Reflect,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
 )]
+#[reflect(Serialize, Deserialize)]
 pub enum HurtboxState {
     /// Nothing can hit it.
     Off,

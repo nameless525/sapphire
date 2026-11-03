@@ -67,8 +67,8 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
-use bevy_reflect::TypePath;
-use sapphire_reflect::Versioned;
+use bevy_reflect::{Reflect, ReflectDeserialize, ReflectSerialize};
+use sapphire_reflect::{SerdeName, Versioned};
 use sapphire_serialize::DocumentError;
 use sapphire_serialize::cooked::{AlignedVec, CookedError};
 use serde::{Deserialize, Serialize};
@@ -102,16 +102,17 @@ pub const MAX_DECAY_TICKS: u32 = 120;
 
 /// An animation graph. See the [module docs](self).
 #[derive(
+    Reflect,
     Clone,
     Debug,
     PartialEq,
     Serialize,
     Deserialize,
-    TypePath,
     rkyv::Archive,
     rkyv::Serialize,
     rkyv::Deserialize,
 )]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[type_path = "sapphire::assets"]
 pub struct AnimGraph {
@@ -137,8 +138,18 @@ impl Versioned for AnimGraph {
 
 /// A clip a graph plays, and the name the rest of its document calls it by.
 #[derive(
-    Clone, Debug, PartialEq, Eq, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+    Reflect,
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
 )]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GraphClip {
     pub name: String,
@@ -155,6 +166,7 @@ pub struct GraphClip {
     /// The clip's asset ID, which a person can't write since it's a hash of the other three. The cook
     /// fills this in ([`AnimGraph::resolve`]).
     #[serde(skip, default = "no_id")]
+    #[reflect(ignore, default = "no_id")]
     pub id: AssetId,
 }
 
@@ -178,8 +190,17 @@ pub fn clip_id(clip: &GraphClip) -> AssetId {
 /// Which joints a layer touches: named humanoid bones, each with everything under it, later entries
 /// over earlier ones. A joint it doesn't name takes no part.
 #[derive(
-    Clone, Debug, PartialEq, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+    Reflect,
+    Clone,
+    Debug,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
 )]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GraphMask {
     pub name: String,
@@ -188,8 +209,17 @@ pub struct GraphMask {
 
 /// One entry of a [`GraphMask`].
 #[derive(
-    Clone, Debug, PartialEq, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+    Reflect,
+    Clone,
+    Debug,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
 )]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MaskBone {
     /// A humanoid bone, by its variant: `Spine`, `RightUpperArm`.
@@ -200,8 +230,17 @@ pub struct MaskBone {
 
 /// The base layer: a state machine over what a character's feet are doing.
 #[derive(
-    Clone, Debug, PartialEq, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+    Reflect,
+    Clone,
+    Debug,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
 )]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LocomotionLayer {
     /// The state it starts in.
@@ -221,8 +260,17 @@ fn default_smoothing() -> f32 {
 
 /// A state of the locomotion layer.
 #[derive(
-    Clone, Debug, PartialEq, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+    Reflect,
+    Clone,
+    Debug,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
 )]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LocomotionState {
     pub name: String,
@@ -231,8 +279,17 @@ pub struct LocomotionState {
 
 /// What a state plays.
 #[derive(
-    Clone, Debug, PartialEq, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+    Reflect,
+    Clone,
+    Debug,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
 )]
+#[reflect(Serialize, Deserialize)]
 pub enum StateMotion {
     /// One clip from its start: holding its last pose, or looping.
     Clip {
@@ -247,8 +304,17 @@ pub enum StateMotion {
 /// Clips placed by the velocity they play at. Gradient-band weights, so the clips that weigh in stay
 /// few, every sample is exact at its place, and weights change smoothly between.
 #[derive(
-    Clone, Debug, PartialEq, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+    Reflect,
+    Clone,
+    Debug,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
 )]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BlendSpace {
     pub samples: Vec<BlendSample>,
@@ -263,8 +329,17 @@ fn default_rate() -> [f32; 2] {
 
 /// One clip of a [`BlendSpace`].
 #[derive(
-    Clone, Debug, PartialEq, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+    Reflect,
+    Clone,
+    Debug,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
 )]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BlendSample {
     pub clip: String,
@@ -286,8 +361,17 @@ fn yes() -> bool {
 
 /// What moves the locomotion layer from one state to another.
 #[derive(
-    Clone, Debug, PartialEq, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+    Reflect,
+    Clone,
+    Debug,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
 )]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LocomotionTransition {
     pub from: String,
@@ -299,8 +383,18 @@ pub struct LocomotionTransition {
 
 /// When a [`LocomotionTransition`] fires.
 #[derive(
-    Clone, Copy, Debug, PartialEq, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+    Reflect,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
 )]
+#[reflect(Serialize, Deserialize)]
 pub enum Condition {
     /// The character has left the ground.
     Airborne,
@@ -318,6 +412,7 @@ pub enum Condition {
 
 /// The layer the simulation's moves drive.
 #[derive(
+    Reflect,
     Clone,
     Debug,
     Default,
@@ -328,6 +423,7 @@ pub enum Condition {
     rkyv::Serialize,
     rkyv::Deserialize,
 )]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct CombatLayer {
     /// Ticks a move's start takes to decay the pose before it, cancels included.
@@ -339,12 +435,23 @@ pub struct CombatLayer {
 
 /// What plays for a move.
 #[derive(
-    Clone, Debug, PartialEq, Eq, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+    Reflect,
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
 )]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MoveClip {
     /// The move's name in its move set.
     #[serde(rename = "move")]
+    #[reflect(@SerdeName("move"))]
     pub name: String,
     pub clip: String,
     /// The joints it takes, for an upper-body override over locomotion. Every joint without one.
@@ -358,8 +465,17 @@ pub struct MoveClip {
 /// A clip added over everything below it, always: the difference between it and its own first tick,
 /// looping on the owner's clock.
 #[derive(
-    Clone, Debug, PartialEq, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+    Reflect,
+    Clone,
+    Debug,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
 )]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AdditiveLayer {
     pub name: String,
@@ -374,8 +490,17 @@ pub struct AdditiveLayer {
 /// A clip added once when the game asks: the difference from its own first tick, so it starts with
 /// nothing to fade in, and fading out over its last ticks, so it ends with nothing left.
 #[derive(
-    Clone, Debug, PartialEq, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+    Reflect,
+    Clone,
+    Debug,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
 )]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReactionLayer {
     pub name: String,
@@ -399,8 +524,17 @@ fn default_restart() -> u32 {
 
 /// A procedural blink: a morph expression, on the owner's clock, so hitstop holds it.
 #[derive(
-    Clone, Debug, PartialEq, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+    Reflect,
+    Clone,
+    Debug,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
 )]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Blink {
     /// The rig's expression that closes the eyes: `blink` on a VRM.

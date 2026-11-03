@@ -3,6 +3,8 @@
 use std::fmt;
 use std::str::FromStr;
 
+use bevy_reflect::{ReflectDeserialize, ReflectSerialize};
+
 use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -43,7 +45,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 )]
 #[rkyv(as = AssetId)]
 #[bytecheck(crate = rkyv::bytecheck)]
-#[reflect(opaque, Clone, Debug, PartialEq, Hash)]
+#[reflect(opaque, Clone, Debug, PartialEq, Hash, Serialize, Deserialize)]
 #[type_path = "sapphire::assets"]
 #[repr(transparent)]
 pub struct AssetId([u8; 16]);

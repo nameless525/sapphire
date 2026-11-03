@@ -8,6 +8,7 @@
 //! The arithmetic here is division and multiplication of authored numbers, which rounds the same on
 //! every target, so no reading needs `sapphire_math::det`.
 
+use bevy_reflect::{Reflect, ReflectDeserialize, ReflectSerialize};
 use sapphire_core::Name;
 use sapphire_time::SimDuration;
 use serde::{Deserialize, Serialize};
@@ -19,6 +20,7 @@ pub const MAX_BRAIN_ATTACKS: usize = 8;
 /// How long a brain stays at something, drawn when it starts: from `min` to `max` ticks of its own
 /// clock, both included.
 #[derive(
+    Reflect,
     Clone,
     Copy,
     Debug,
@@ -30,6 +32,7 @@ pub const MAX_BRAIN_ATTACKS: usize = 8;
     rkyv::Serialize,
     rkyv::Deserialize,
 )]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TickRange {
     pub min: u32,
@@ -39,8 +42,18 @@ pub struct TickRange {
 /// How far from its target a brain wants to stand, in metres across the ground: it walks in from past
 /// `far`, backs off from inside `near`, and stays between them.
 #[derive(
-    Clone, Copy, Debug, PartialEq, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+    Reflect,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
 )]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Spacing {
     pub near: f32,
@@ -50,8 +63,18 @@ pub struct Spacing {
 /// How a brain moves, as a player's thumb would: how far it tilts the stick. The controller's profile
 /// says how fast a tilt goes.
 #[derive(
-    Clone, Copy, Debug, PartialEq, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+    Reflect,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
 )]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BrainPace {
     /// Walking in, from past [`Spacing::far`]. Within 0..=1, as are the others.
@@ -70,8 +93,18 @@ pub struct BrainPace {
 /// The distances an attack suits: nothing at `near`, the most at `best` and nothing again at `far`, in
 /// metres across the ground, in straight lines between.
 #[derive(
-    Clone, Copy, Debug, PartialEq, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+    Reflect,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
 )]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Reach {
     pub near: f32,
@@ -115,8 +148,18 @@ pub enum TargetDoing {
 
 /// What an attack's score is multiplied by, for what its target is doing. Each left out is 1.
 #[derive(
-    Clone, Copy, Debug, PartialEq, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+    Reflect,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
 )]
+#[reflect(Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Against {
     pub free: f32,
@@ -150,6 +193,7 @@ impl Against {
 /// `floor` straight after, climbing in a straight line back to 1 over `ticks` of the brain's clock.
 /// Left out, ticks 0: no memory at all.
 #[derive(
+    Reflect,
     Clone,
     Copy,
     Debug,
@@ -161,6 +205,7 @@ impl Against {
     rkyv::Serialize,
     rkyv::Deserialize,
 )]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Recent {
     pub ticks: u32,

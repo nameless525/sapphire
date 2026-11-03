@@ -1,6 +1,8 @@
 //! Values over an age: a [`Curve`] of keys, linear between them.
 
+use bevy_reflect::Reflect;
 use glam::Vec3;
+use sapphire_reflect::Transparent;
 use serde::{Deserialize, Serialize};
 
 /// The most keys a curve holds: enough to shape a flash, and few enough that sampling one stays a
@@ -10,7 +12,8 @@ pub const MAX_KEYS: usize = 8;
 /// A value over a particle's or a trail point's life, `(t, value)` keys with `t` from 0 (born) to
 /// 1 (gone), linear between them and level beyond the first and the last. A document writes it as
 /// a list: `size: [(0.0, 0.05), (0.2, 0.3), (1.0, 0.0)]`, and one key is a constant.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Reflect, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[reflect(@Transparent)]
 #[serde(transparent)]
 pub struct Curve<T>(pub Vec<(f32, T)>);
 

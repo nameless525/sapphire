@@ -29,7 +29,7 @@
 //! source's, and its file sits beside the mesh's and the skeleton's (`alicia.smesh`,
 //! `alicia.sskel`, `alicia.srig`). A character definition (M2) names them by ID.
 
-use bevy_reflect::TypePath;
+use bevy_reflect::{ReflectDeserialize, ReflectSerialize, TypePath};
 use sapphire_reflect::Versioned;
 use sapphire_serialize::cooked::{AlignedVec, CookedError};
 
@@ -88,9 +88,11 @@ macro_rules! human_bones {
             rkyv::Deserialize,
             rkyv::Portable,
             rkyv::bytecheck::CheckBytes,
+            bevy_reflect::Reflect,
         )]
         #[rkyv(as = HumanBone)]
         #[bytecheck(crate = rkyv::bytecheck)]
+        #[reflect(Serialize, Deserialize)]
         #[repr(u8)]
         pub enum HumanBone {
             $($bone,)+

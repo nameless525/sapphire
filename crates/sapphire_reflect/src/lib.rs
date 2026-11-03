@@ -63,6 +63,17 @@ pub use bevy_reflect::{
 };
 use serde::de::DeserializeOwned;
 
+/// What serde's `#[serde(rename)]` says, for what reads a value and its text together: the name a field
+/// goes by in a file. Serde's attribute is invisible to reflection, so a renamed field says this too:
+/// `#[reflect(@SerdeName("move"))]`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Reflect)]
+pub struct SerdeName(pub &'static str);
+
+/// What serde's `#[serde(transparent)]` says, likewise: a wrapper a file doesn't write, its one field
+/// standing where it stands. `#[reflect(@Transparent)]`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Reflect)]
+pub struct Transparent;
+
 /// A serialized type's schema version, and how data from earlier versions loads.
 pub trait Versioned: Sized {
     /// The version written with new data. Starts at 1 and goes up by one whenever the

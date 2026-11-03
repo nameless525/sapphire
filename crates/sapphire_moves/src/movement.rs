@@ -4,6 +4,7 @@
 //! This holds the plain numbers and their checks, so a cook and a running app refuse the same document.
 //! Running on them, and what's worked out from them once, is `sapphire_gameplay`'s `controller` module.
 
+use bevy_reflect::{Reflect, ReflectDeserialize, ReflectSerialize};
 use serde::{Deserialize, Serialize};
 
 use crate::set::MIN_SHAPE_EXTENT;
@@ -17,8 +18,18 @@ use crate::set::MIN_SHAPE_EXTENT;
 /// it's at full speed from tick 4. The clips' run stride comes later (M2 N3), so nothing here assumes
 /// one.
 #[derive(
-    Clone, Copy, Debug, PartialEq, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+    Reflect,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
 )]
+#[reflect(Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ControllerProfile {
     /// The capsule's whole height.

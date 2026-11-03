@@ -2,7 +2,7 @@
 //! and curves and at most one trail, checked whole however they were made, so what plays is valid
 //! and an author's mistake names its field.
 
-use bevy_reflect::TypePath;
+use bevy_reflect::{Reflect, ReflectDeserialize, ReflectSerialize};
 use glam::Vec3;
 use sapphire_look::{VfxLight, VfxShape};
 use sapphire_reflect::Versioned;
@@ -34,7 +34,8 @@ pub(crate) const MAX_RATE: f32 = 245_760.0;
 pub type Range = (f32, f32);
 
 /// When an emitter's particles appear.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Reflect, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 pub enum Spawn {
     /// `count` all at once.
     Burst { count: u32 },
@@ -44,7 +45,8 @@ pub enum Spawn {
 }
 
 /// Where in the effect's space its particles are born. Fixed in the world from then on.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Reflect, Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 pub enum Source {
     /// At the effect's position.
     #[default]
@@ -56,7 +58,8 @@ pub enum Source {
 }
 
 /// How an emitter's particles move.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Reflect, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Motion {
     /// Meters per second at birth.
@@ -87,7 +90,8 @@ impl Default for Motion {
 }
 
 /// How an emitter's quads turn.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Reflect, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 pub enum Facing {
     /// Toward the camera, turning at `spin` radians per second, each from a random angle.
     Camera { spin: Range },
@@ -103,7 +107,8 @@ impl Default for Facing {
 }
 
 /// A quad's shape, by the generated map's layers ([`VfxShape`]).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Reflect, Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 pub enum Shape {
     #[default]
     SoftDot,
@@ -124,7 +129,8 @@ impl From<Shape> for VfxShape {
 }
 
 /// Where a quad's light comes from ([`VfxLight`]).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Reflect, Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 pub enum Light {
     #[default]
     Emissive,
@@ -157,7 +163,8 @@ fn one_share() -> f32 {
 
 /// An emitter: its modules (when, from where, how they move, how they look) and its curves over a
 /// particle's life.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Reflect, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EmitterDesc {
     pub name: String,
@@ -200,7 +207,8 @@ fn same_size() -> Range {
 }
 
 /// A trail's crisp bright band across the strip (`VfxRibbonPoint::core`).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Reflect, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TrailCore {
     /// Where its middle sits across the strip: 0 at the base socket, 1 at the tip.
@@ -214,7 +222,8 @@ pub struct TrailCore {
 /// A sword trail: a strip between two sockets' paths, sampled by the caller
 /// ([`VfxWorld::sample_trail`](crate::VfxWorld::sample_trail)), smoothed through the samples, whose
 /// look follows each point's age.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Reflect, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TrailDesc {
     /// Seconds on the owner's clock a point lasts.
@@ -249,7 +258,8 @@ pub struct TrailDesc {
 }
 
 /// A named effect: what a spawn plays.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Reflect, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Effect {
     pub name: String,
@@ -301,7 +311,8 @@ pub enum EffectLibraryError {
 ///
 /// A library has at least one effect, its names are distinct and not empty, and every emitter and
 /// trail is valid: it is valid however it was made, deserialization included.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TypePath)]
+#[derive(Reflect, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 #[type_path = "sapphire::vfx"]
 #[serde(try_from = "UncheckedLibrary")]
 pub struct EffectLibrary {

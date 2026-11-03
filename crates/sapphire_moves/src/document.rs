@@ -5,11 +5,11 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
-use bevy_reflect::TypePath;
+use bevy_reflect::{Reflect, ReflectDeserialize, ReflectSerialize};
 use sapphire_colliders::{Group, GroupMask};
 use sapphire_core::Name;
 use sapphire_math::{Quat, det};
-use sapphire_reflect::Versioned;
+use sapphire_reflect::{SerdeName, Versioned};
 use sapphire_time::NORMAL_SPEED;
 use serde::{Deserialize, Serialize};
 
@@ -47,7 +47,8 @@ impl fmt::Display for Issue {
 }
 
 /// A document of moves. See the [crate docs](crate) for the format.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TypePath)]
+#[derive(Reflect, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 #[type_path = "sapphire::moves"]
 #[serde(deny_unknown_fields)]
 pub struct MoveSetDocument {
@@ -72,7 +73,8 @@ impl Versioned for MoveSetDocument {
 }
 
 /// A kind of intent. See [`IntentDef`].
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Reflect, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IntentDocument {
     pub name: String,
@@ -87,7 +89,8 @@ pub struct IntentDocument {
 }
 
 /// A fighter: its numbers, its hurtboxes and its reactions. See [`FighterDef`].
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Reflect, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FighterDocument {
     pub health: u32,
@@ -109,7 +112,8 @@ pub struct FighterDocument {
 }
 
 /// One of a fighter's own hurtboxes. See [`FighterHurtbox`].
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Reflect, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FighterHurtboxDocument {
     pub name: String,
@@ -123,7 +127,8 @@ pub struct FighterHurtboxDocument {
 }
 
 /// Which moves a fighter's reactions play. See [`Reactions`].
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Reflect, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct ReactionsDocument {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -139,7 +144,8 @@ pub struct ReactionsDocument {
 }
 
 /// How an enemy fights. See [`BrainDef`].
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Reflect, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BrainDocument {
     pub spacing: Spacing,
@@ -153,7 +159,8 @@ pub struct BrainDocument {
 }
 
 /// One attack a brain can choose. See [`BrainAttack`].
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Reflect, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BrainAttackDocument {
     pub intent: String,
@@ -172,7 +179,8 @@ fn one() -> f32 {
 }
 
 /// When a brain gets up. See [`BrainRise`].
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Reflect, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BrainRiseDocument {
     pub intent: String,
@@ -182,12 +190,14 @@ pub struct BrainRiseDocument {
 }
 
 /// An intent starting a move. See [`Allow`].
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Reflect, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AllowDocument {
     pub intent: String,
     /// The move it starts.
     #[serde(rename = "move")]
+    #[reflect(@SerdeName("move"))]
     pub target: String,
     /// How the press has to arrive: buffered unless it says otherwise.
     #[serde(default, skip_serializing_if = "is_buffered")]
@@ -199,7 +209,8 @@ fn is_buffered(mode: &CancelMode) -> bool {
 }
 
 /// One move. Its length is its three phases, end to end.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Reflect, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MoveDocument {
     pub name: String,
@@ -230,7 +241,8 @@ pub struct MoveDocument {
 }
 
 /// A window with nothing else to say: open on ticks `from` to `to − 1`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Reflect, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SpanDocument {
     pub from: u32,
@@ -238,7 +250,8 @@ pub struct SpanDocument {
 }
 
 /// A hit volume. See [`Hitbox`].
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Reflect, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HitboxDocument {
     pub name: String,
@@ -260,7 +273,8 @@ pub struct HitboxDocument {
 }
 
 /// What a hit volume does. See [`Attack`].
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Reflect, Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct AttackDocument {
     pub damage: u32,
@@ -282,7 +296,8 @@ fn is_zero(value: &u16) -> bool {
 }
 
 /// A hurtbox change. See [`HurtboxChange`].
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Reflect, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HurtboxDocument {
     pub name: String,
@@ -292,7 +307,8 @@ pub struct HurtboxDocument {
 }
 
 /// A window of super armour. See [`ArmourWindow`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Reflect, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ArmourDocument {
     pub from: u32,
@@ -301,7 +317,8 @@ pub struct ArmourDocument {
 }
 
 /// A perfect-dodge window. See [`PerfectDodgeWindow`].
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Reflect, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PerfectDodgeDocument {
     pub from: u32,
@@ -320,7 +337,8 @@ pub struct PerfectDodgeDocument {
 }
 
 /// What a live swing has to touch. See [`DodgeVolume`].
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Reflect, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DodgeVolumeDocument {
     /// Metres from the root, in the root's space.
@@ -333,7 +351,8 @@ pub struct DodgeVolumeDocument {
 }
 
 /// How a perfect dodge slows the world. See [`WorldSlowMotion`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Reflect, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SlowMotionDocument {
     /// Thousandths of the world's speed, below 1000, and a divisor of 1,000,000: 500, 250, 200, 125, 100…
@@ -343,7 +362,8 @@ pub struct SlowMotionDocument {
 }
 
 /// What a perfect dodge lets an intent start. See [`CounterWindow`].
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Reflect, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CounterDocument {
     /// Ticks of the dodger's clock it stays open, from 1 to [`MAX_MOVE_TICKS`].
@@ -352,7 +372,8 @@ pub struct CounterDocument {
 }
 
 /// A cancel window. See [`CancelWindow`].
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Reflect, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CancelDocument {
     pub from: u32,
@@ -361,7 +382,8 @@ pub struct CancelDocument {
 }
 
 /// A warp window. See [`WarpWindow`].
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Reflect, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WarpDocument {
     pub from: u32,
@@ -375,7 +397,8 @@ pub struct WarpDocument {
 }
 
 /// A cue. See [`Cue`].
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Reflect, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CueDocument {
     pub name: String,
@@ -392,7 +415,8 @@ pub struct CueDocument {
 /// [`clip`]: Self::clip
 /// [`root`]: Self::root
 /// [`paths`]: Self::paths
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Reflect, Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MotionDocument {
     /// The clip this move plays, and what its tables take from it.
@@ -415,7 +439,8 @@ impl MotionDocument {
 /// `source`, `name` and `rig` say which clip by what a person can read, as a sidecar names it, rather
 /// than by the ID a cook derives from them. They are text here because this crate knows nothing of
 /// assets: the cook reads them.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Reflect, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ClipMotionDocument {
     /// The sidecar ID of a key-pose document or an animation source.
@@ -436,7 +461,8 @@ pub struct ClipMotionDocument {
 }
 
 /// Where a move with a clip takes its root motion from.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Reflect, Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 pub enum RootSource {
     /// The clip's root track: what its sidecar lifted, or a key-pose document's `root` and
     /// `root_turn`. None at all if it has no such track.
@@ -453,7 +479,8 @@ impl RootSource {
 }
 
 /// A named hit path along a joint of the clip's skeleton: a socket, with an offset. See [`BakedPath`].
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Reflect, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ClipPathDocument {
     pub name: String,
@@ -467,7 +494,8 @@ pub struct ClipPathDocument {
 }
 
 /// What a clip's path follows.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Reflect, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 pub enum Follows {
     /// A humanoid bone, as a key-pose document spells it (`RightHand`), whichever joint the rig's
     /// map says it is, so a document fits any rig with a map.
@@ -478,7 +506,8 @@ pub enum Follows {
 }
 
 /// The root at one tick. See [`RootSample`].
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Reflect, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RootKey {
     pub at: u32,
@@ -491,7 +520,8 @@ pub struct RootKey {
 }
 
 /// A named hit path, keyed. See [`BakedPath`].
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Reflect, Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PathDocument {
     pub name: String,
@@ -499,7 +529,8 @@ pub struct PathDocument {
 }
 
 /// A path at one tick. See [`PathSample`].
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Reflect, Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[reflect(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PathKey {
     pub at: u32,

@@ -28,7 +28,7 @@
 //! A cue names what is authored. Picking among its sounds and ranges, placing the voice and mixing
 //! it are `sapphire_audio`'s.
 
-use bevy_reflect::TypePath;
+use bevy_reflect::{Reflect, ReflectDeserialize, ReflectSerialize};
 use sapphire_reflect::Versioned;
 use sapphire_serialize::DocumentError;
 use sapphire_serialize::cooked::{AlignedVec, CookedError};
@@ -50,16 +50,17 @@ const PITCH_RANGE: std::ops::RangeInclusive<f32> = 0.1..=8.0;
 
 /// A cue. See the [module docs](self).
 #[derive(
+    Reflect,
     Clone,
     Debug,
     PartialEq,
     Serialize,
     Deserialize,
-    TypePath,
     rkyv::Archive,
     rkyv::Serialize,
     rkyv::Deserialize,
 )]
+#[reflect(Serialize, Deserialize)]
 #[rkyv(derive(Debug))]
 #[serde(deny_unknown_fields)]
 #[type_path = "sapphire::assets"]
@@ -96,8 +97,18 @@ impl Versioned for Cue {
 
 /// How a placed cue fades with distance.
 #[derive(
-    Clone, Copy, Debug, PartialEq, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+    Reflect,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
 )]
+#[reflect(Serialize, Deserialize)]
 #[rkyv(derive(Debug))]
 #[serde(deny_unknown_fields)]
 pub struct Attenuation {
@@ -138,6 +149,7 @@ impl Attenuation {
 
 /// See [`Attenuation::gain_db`].
 #[derive(
+    Reflect,
     Clone,
     Copy,
     Debug,
@@ -150,6 +162,7 @@ impl Attenuation {
     rkyv::Serialize,
     rkyv::Deserialize,
 )]
+#[reflect(Serialize, Deserialize)]
 #[rkyv(derive(Debug))]
 pub enum AttenuationCurve {
     /// Evenly in decibels from full to silent: a designer's fade.
@@ -161,6 +174,7 @@ pub enum AttenuationCurve {
 
 /// A mixer bus. The world's buses follow the world clock's snapshot; interface sounds don't.
 #[derive(
+    Reflect,
     Clone,
     Copy,
     Debug,
@@ -174,6 +188,7 @@ pub enum AttenuationCurve {
     rkyv::Serialize,
     rkyv::Deserialize,
 )]
+#[reflect(Serialize, Deserialize)]
 #[rkyv(derive(Debug))]
 pub enum Bus {
     /// Combat and everything else that happens in the world.
@@ -202,6 +217,7 @@ impl Bus {
 
 /// What a voice does while the actor it is attached to is in hitstop.
 #[derive(
+    Reflect,
     Clone,
     Copy,
     Debug,
@@ -213,6 +229,7 @@ impl Bus {
     rkyv::Serialize,
     rkyv::Deserialize,
 )]
+#[reflect(Serialize, Deserialize)]
 #[rkyv(derive(Debug))]
 pub enum HitstopResponse {
     /// Plays on: the hit itself.

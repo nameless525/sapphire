@@ -169,7 +169,9 @@ const HEAD_BODY_RADIUS: f32 = 0.16;
 
 /// The characters the light rig lights: instances drawn with a [`CharacterLightRig`], and the
 /// rim rig's key, if one is a figure of it.
-type Characters = QueryState<
+type Characters = Query<
+    'static,
+    'static,
     (
         Entity,
         &'static CharacterLightRig,
@@ -200,7 +202,26 @@ type GraphPlayers = QueryState<(
 )>;
 
 /// The face rig's heads, each a character lit from its own angles (see [`crate::faces`]).
-type FaceHeads = QueryState<(Entity, &'static FaceRig, &'static RenderTransform), With<RenderMesh>>;
+type FaceHeads =
+    Query<'static, 'static, (Entity, &'static FaceRig, &'static RenderTransform), With<RenderMesh>>;
+
+/// What a frame's packet starts from, borrowed together in place, as [`ScreenEffects`] says why.
+type FrameStart = SystemState<(
+    ResMut<'static, RenderExtract>,
+    Res<'static, OrbitCamera>,
+    Res<'static, WorldClock>,
+    ResMut<'static, TimeOfDay>,
+    ResMut<'static, EffectStack>,
+)>;
+
+/// What a frame's packet lists its characters from, likewise.
+type FrameCharacters = SystemState<(
+    ResMut<'static, RenderExtract>,
+    Res<'static, TimeOfDay>,
+    Res<'static, LightRigLibrary>,
+    Characters,
+    FaceHeads,
+)>;
 
 /// The effect stack and its presets, borrowed together in place. `World::resource_scope` would
 /// take the stack off its resource entity and put it back, two archetype moves whose first use
@@ -439,8 +460,8 @@ pub(crate) struct Scene {
     /// placed around.
     bounds: [[f32; 3]; 2],
     /// Made once: a query made each frame would allocate.
-    characters: Characters,
-    heads: FaceHeads,
+    frame_start: FrameStart,
+    frame_characters: FrameCharacters,
     /// Made once, like the queries: [`Self::with_screen_effects`] runs inside fixed steps.
     screen_effects: ScreenEffects,
     lamps: Lamps,
@@ -516,8 +537,8 @@ impl Scene {
             );
         }
         ecs.startup();
-        let characters = ecs.world_mut().query_filtered();
-        let heads = ecs.world_mut().query_filtered();
+        let frame_start = SystemState::new(ecs.world_mut());
+        let frame_characters = SystemState::new(ecs.world_mut());
         let screen_effects = SystemState::new(ecs.world_mut());
         let lamps = ecs.world_mut().query();
         let players = ecs.world_mut().query();
@@ -569,8 +590,8 @@ impl Scene {
             ik_look: None,
             poses: skinned,
             bounds,
-            characters,
-            heads,
+            frame_start,
+            frame_characters,
             screen_effects,
             lamps,
             sky_material: None,
@@ -2218,7 +2239,11 @@ impl Scene {
         if let Some(aspect) = drawable_aspect(target_size) {
             self.view_aspect = aspect;
         }
-        self.ecs.world_mut().resource_scope(|world, mut extract: Mut<'_, RenderExtract>| {
+        {
+            let (mut extract, camera, clock, mut time_of_day, mut effects) = self
+                .frame_start
+                .get_mut(self.ecs.world_mut())
+                .expect("the scene inserts what a frame starts from");
             let packet = extract.begin();
             if let Some(vfx) = vfx {
                 vfx.write(&mut packet.vfx, alpha);
@@ -2226,18 +2251,16 @@ impl Scene {
             if let Some(cues) = cues {
                 cues.write(&mut packet.vfx, alpha);
             }
-            let camera = world.resource::<OrbitCamera>();
             if let Some(aspect) = drawable_aspect(target_size) {
                 let cut = std::mem::take(view_cut);
                 packet.views.push(ViewData { cut, ..ViewData::new(camera.camera_data(aspect)) });
             }
             let probe = camera.eye();
-            let clock = &world.resource::<WorldClock>().0;
             // Interpolated like everything else drawn this frame.
-            packet.time_seconds = clock.presented_ticks(alpha) / f64::from(TICK_HZ);
-            world.resource_mut::<TimeOfDay>().resolve(probe, alpha).write(packet);
+            packet.time_seconds = clock.0.presented_ticks(alpha) / f64::from(TICK_HZ);
+            time_of_day.resolve(probe, alpha).write(packet);
             // The probe grid's bounce keys for the hour (M1 W5): none without a grid.
-            packet.probe_keys = world.resource::<TimeOfDay>().probe_keys(probe_hours);
+            packet.probe_keys = time_of_day.probe_keys(probe_hours);
             packet.post.filter_strength = crate::cvars::filter_strength();
             packet.post.sharpening = sharpening.unwrap_or_else(crate::cvars::sharpening);
             packet.sky_material = sky_material;
@@ -2256,8 +2279,8 @@ impl Scene {
             }
             packet.wind = wind;
             // The effects gameplay pushed, over whatever post's look is (M1 P3).
-            packet.post.effects = world.resource_mut::<EffectStack>().resolve(alpha);
-        });
+            packet.post.effects = effects.resolve(alpha);
+        }
         // Lamps by night, before extraction writes the lights.
         let day_night = self.ecs.world().resource::<TimeOfDay>().frame().look.day_night;
         for (lamp, mut light) in self.lamps.iter_mut(self.ecs.world_mut()) {
@@ -2265,15 +2288,16 @@ impl Scene {
         }
         self.ecs.extract();
         let scene_figure = self.figure;
-        let (characters, heads, face_layout, fade) =
-            (&mut self.characters, &mut self.heads, self.face_layout, self.fade);
-        self.ecs.world_mut().resource_scope(|world, mut extract: Mut<'_, RenderExtract>| {
-            let packet = extract.packet_mut();
-            // The rigs are resolved for the camera; without one nothing draws.
-            let Some(camera) = packet.main_view().map(|view| view.camera) else { return };
-            let frame = world.resource::<TimeOfDay>().frame();
-            let rigs = world.resource::<LightRigLibrary>();
-            for (entity, character, transform, key, figure) in characters.iter(world) {
+        let (face_layout, fade) = (self.face_layout, self.fade);
+        let (mut extract, time_of_day, rigs, characters, heads) = self
+            .frame_characters
+            .get_mut(self.ecs.world_mut())
+            .expect("the scene inserts what a frame lists its characters from");
+        let packet = extract.packet_mut();
+        // The rigs are resolved for the camera; without one nothing draws.
+        if let Some(camera) = packet.main_view().map(|view| view.camera) {
+            let frame = time_of_day.frame();
+            for (entity, character, transform, key, figure) in &characters {
                 let figure = figure.copied().unwrap_or(scene_figure);
                 let head = transform.0.transform_point3(character.head);
                 let mut lighting = frame.character_lighting(rigs.rig(character.rig), &camera, head);
@@ -2311,7 +2335,7 @@ impl Scene {
             // The face rig's heads, in the default preset turned to each head's angles, or by its
             // GI alone in the GI layouts.
             let preset = rigs.rig(LightRigId::DEFAULT);
-            for (entity, rig, transform) in heads.iter(world) {
+            for (entity, rig, transform) in &heads {
                 let center = transform.0.transform_point3(Vec3::ZERO);
                 let lighting = frame.character_lighting(preset, &camera, center);
                 let (lighting, face) = faces::character(face_layout, rig, transform.0, lighting);
@@ -2324,7 +2348,7 @@ impl Scene {
                     opacity: 1.0,
                 });
             }
-        });
+        }
         if let (Some(hud), Some(size)) = (&mut self.hud, target_size) {
             if let Some(arena) = &self.arena
                 && let Some(values) = arena.hud_values()
@@ -4692,6 +4716,18 @@ mod tests {
         assert_eq!(effects, sapphire_render::PostEffects::NONE, "no screen effect of the last fight");
         assert!(tilt < 1e-5, "no shake of the last fight: {tilt}");
         assert_eq!(numbers, 0, "no number of the last fight");
+    }
+
+    /// A frame's extract borrows what it reads where it is. `World::resource_scope` takes a resource off
+    /// its entity and puts it back, two archetype moves each time for nothing, on a path rule R6 can't see.
+    #[test]
+    fn a_frames_extract_leaves_its_resources_where_they_are() {
+        let mut scene = scene();
+        for _ in 0..2 {
+            let _ = scene.frame_packet(1.0, Some((640, 360)));
+            assert_eq!(scene.ecs.world().removed::<RenderExtract>().count(), 0);
+            scene.end_frame();
+        }
     }
 
     /// A step's cues stand until the next step, and a recording stopped at its limit or a replay past its

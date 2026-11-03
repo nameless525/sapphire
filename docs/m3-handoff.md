@@ -198,7 +198,6 @@ XPBD cloth, ragdolls, Luau, navigation, decals, GPU particles, music, lip-sync, 
   - Add footprint to the windowed `frame stats` (Z3 added live heap, not footprint).
 - **CPU rows move together** by ×2.6–3 between runs on identical code, and nobody has shown why (spec §3.5). `sim_dropped_ms` read 33–199 on rebuilds under load. Paused captures differ on 0.6% of pixels, also unexplained.
 - **Smaller code notes:**
-  - `apps/sapphire_sandbox/src/scene.rs`: `Scene`'s extract runs two `resource_scope`s a frame (lines 2090 and 2139), which R6 doesn't reach, outside a step.
   - [scenario.rs](../crates/sapphire_gameplay/src/replay/scenario.rs)'s `arena_fight` compiles documents at every start: a fight's restart takes 4.3–6.5 ms and about 6,000 allocations (§3.5). A game would hold its tables.
   - `gpu-tests-warp.yml` doesn't run the app's replay tests.
 

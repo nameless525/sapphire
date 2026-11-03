@@ -1,0 +1,20 @@
+[package]
+name = "sapphire_nav"
+description = "Paths over a zone's navmesh inside the fixed step: point location, a search on a preallocated pool and a funnel, with no heap and no platform maths."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+glam.workspace = true
+sapphire_navmesh.workspace = true
+
+[dev-dependencies]
+sapphire_serialize.workspace = true
+# `nav_bench`'s clock.
+sapphire_time.workspace = true
+
+[lints]
+workspace = true

@@ -53,7 +53,13 @@ sapphire_strings = { kind = "runtime", layer = 2 }
 # than the L4 the spec first gave it: `sapphire_ui` (L3) binds its text through it, and it reads only
 # `sapphire_strings`, so nothing asks it to be higher, and no L3 crate needs an edge to reach it.
 sapphire_loc = { kind = "runtime", layer = 2 }
+# A zone's walkable polygons as plain data, which the cooker writes and the simulation reads (M3 P0):
+# no baker and no search, so tools can link it.
+sapphire_navmesh = { kind = "runtime", layer = 2 }
 # L3 subsystems.
+# Paths in the fixed step (M3 P0): point location, a search on a preallocated pool and a funnel over
+# `sapphire_navmesh`'s format. Beside physics, reaching no renderer, world or platform.
+sapphire_nav = { kind = "runtime", layer = 3 }
 # Animation: samples, blends and solves (M2). Its cooked formats sit below it, in sapphire_assets,
 # which checks every kind's bytes; it has no edge to the renderer or the world.
 sapphire_anim = { kind = "runtime", layer = 3 }
@@ -171,6 +177,9 @@ edges = [
     ["sapphire_strings", "sapphire_reflect"],
     ["sapphire_assets", "sapphire_strings"],
     ["sapphire_loc", "sapphire_strings"],
+    # Cooked navmeshes are named and versioned the same way.
+    ["sapphire_navmesh", "sapphire_serialize"],
+    ["sapphire_navmesh", "sapphire_reflect"],
 ]
 
 # The simulation's crates: what a replay job links (m2-plan §3, "Crate edges"). None of `forbidden`
@@ -185,7 +194,7 @@ edges = [
 # `runners` are the tools that run those crates in a job of their own: the same tree rule, with no
 # clippy.toml, since they read files and print, and no result goes through them.
 [simulation]
-crates = ["sapphire_colliders", "sapphire_gameplay", "sapphire_moves", "sapphire_physics", "sapphire_script", "sapphire_zone"]
+crates = ["sapphire_colliders", "sapphire_gameplay", "sapphire_moves", "sapphire_nav", "sapphire_navmesh", "sapphire_physics", "sapphire_script", "sapphire_zone"]
 runners = ["sapphire_replay"]
 forbidden = [
     "naga",

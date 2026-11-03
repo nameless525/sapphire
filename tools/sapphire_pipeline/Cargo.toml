@@ -15,6 +15,9 @@ path = "src/main.rs"
 sapphire_assets.workspace = true
 # Collider documents' checks and cooked format. Plain data: the tool links no collision library.
 sapphire_colliders.workspace = true
+# The navmesh bake (M3 P0). Cooks to plain tiles; the runtime never links it.
+rerecast.workspace = true
+sapphire_navmesh.workspace = true
 # Names of a move's baked paths.
 sapphire_core.workspace = true
 # The probe bake lights the sky as the renderer relights it (`sky::sky_radiance`), under time of
@@ -74,6 +77,9 @@ sapphire_document.workspace = true
 # Reads a subset the way the runtime will.
 sapphire_text.workspace = true
 swash.workspace = true
+# Paths over what the bake made, in the bake's own tests (`tests/nav*.rs`).
+sapphire_nav.workspace = true
+sapphire_time.workspace = true
 
 [lints]
 workspace = true

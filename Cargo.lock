@@ -3167,6 +3167,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
+name = "rerecast"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e800c409bdb4f5762360b647a4ccfa3793a630ab2258a5d8d6c027c83b02317"
+dependencies = [
+ "anyhow",
+ "bevy_reflect",
+ "bitflags",
+ "glam 0.33.12",
+ "slotmap",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
 name = "rkyv"
 version = "0.8.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3658,6 +3673,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "sapphire_nav"
+version = "0.1.0"
+dependencies = [
+ "glam 0.33.12",
+ "sapphire_navmesh",
+ "sapphire_serialize",
+ "sapphire_time",
+]
+
+[[package]]
+name = "sapphire_navmesh"
+version = "0.1.0"
+dependencies = [
+ "bevy_reflect",
+ "rkyv",
+ "sapphire_reflect",
+ "sapphire_serialize",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "sapphire_physics"
 version = "0.1.0"
 dependencies = [
@@ -3690,6 +3726,7 @@ dependencies = [
  "image",
  "meshopt",
  "read-fonts 0.46.0",
+ "rerecast",
  "sapphire_anim",
  "sapphire_assets",
  "sapphire_colliders",
@@ -3699,10 +3736,13 @@ dependencies = [
  "sapphire_look",
  "sapphire_math",
  "sapphire_moves",
+ "sapphire_nav",
+ "sapphire_navmesh",
  "sapphire_reflect",
  "sapphire_serialize",
  "sapphire_strings",
  "sapphire_text",
+ "sapphire_time",
  "sapphire_tod",
  "sapphire_zone",
  "serde",

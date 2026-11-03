@@ -26,6 +26,8 @@ members = [
     "crates/sapphire_zone",
     "crates/sapphire_strings",
     "crates/sapphire_loc",
+    "crates/sapphire_nav",
+    "crates/sapphire_navmesh",
     # L3 subsystems
     "crates/sapphire_anim",
     "crates/sapphire_input",
@@ -103,6 +105,8 @@ sapphire_colliders = { path = "crates/sapphire_colliders" }
 sapphire_zone = { path = "crates/sapphire_zone" }
 sapphire_strings = { path = "crates/sapphire_strings" }
 sapphire_loc = { path = "crates/sapphire_loc" }
+sapphire_nav = { path = "crates/sapphire_nav" }
+sapphire_navmesh = { path = "crates/sapphire_navmesh" }
 sapphire_physics = { path = "crates/sapphire_physics" }
 sapphire_audio = { path = "crates/sapphire_audio" }
 sapphire_vfx = { path = "crates/sapphire_vfx" }
@@ -223,6 +227,11 @@ ktx2 = "0.5.0"
 # would lose their alignment and the renderer its goldens (M2 D3). These features leave glam's
 # behavior alone: `nostd-libm` does nothing beside `std`, and `approx` only adds trait impls.
 parry3d = { version = "0.31.1", default-features = false, features = ["required-features", "std", "alloc"] }
+
+# --- Navigation (spec §5.19) ---
+# Bakes tiles in the cooker. Never with its `libm` or `nostd-libm` feature: each names glam's own, and
+# Cargo unifies features on the workspace's one glam (the same trap as `enhanced-determinism`, M2 D3).
+rerecast = { version = "=0.5.0", default-features = false, features = ["std"] }
 
 # --- Jobs ---
 bevy_tasks = { version = "0.20.0", features = ["multi_threaded"] }

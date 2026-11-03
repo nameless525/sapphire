@@ -349,7 +349,7 @@ fn skeletons_and_clips_pack_and_load_by_their_ids() {
     let packs = Arc::new(MemoryPackSource::new());
     packs.insert(SHARED, bytes);
     let mut server = AssetServer::new(packs, AssetBudgets::DESKTOP);
-    server.mount(SHARED).unwrap();
+    server.mount_now(SHARED).unwrap();
     let clip: Handle<Clip> = server.load(walk).unwrap();
     server.finish(&clip, |_| Err("clips need no upload".into())).unwrap();
     assert_eq!(server.get(&clip).unwrap().name.as_str(), "Walk");

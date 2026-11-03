@@ -576,7 +576,7 @@ impl Content {
         let mut server = AssetServer::new(live_packs.clone(), budgets);
         #[cfg(not(feature = "dev"))]
         let mut server = AssetServer::new(packs, budgets);
-        server.mount(PACK).map_err(|error| missing(&error))?;
+        server.mount_now(PACK).map_err(|error| missing(&error))?;
         let character_id = character;
         let character = server.load_with(character_id, LoadPriority::Critical).map_err(AppInitError::msg)?;
         tracing::info!(target: LOG_TARGET, pack = PACK, elapsed = ?stopwatch.elapsed(), ?budgets, "content mounted");
@@ -1085,7 +1085,7 @@ impl Content {
     ) -> Result<(Cue, Vec<(AssetId, DecodedSound)>), AppInitError> {
         let failed = |error: &dyn std::fmt::Display| AppInitError::msg(format!("the cue {id}: {error}"));
         if !self.server.is_mounted(AUDIO_PACK) {
-            self.server.mount(AUDIO_PACK).map_err(|error| failed(&error))?;
+            self.server.mount_now(AUDIO_PACK).map_err(|error| failed(&error))?;
         }
         let assets = &mut self.gpu;
         let handle =
@@ -1586,7 +1586,7 @@ mod new_renderer_tests {
         let source = live_packs.clone();
         let budgets = AssetBudgets { upload_per_frame: u64::MAX, resident: [u64::MAX; AssetKind::ALL.len()] };
         let mut server = AssetServer::new(source, budgets);
-        server.mount(PACK).expect("the pack");
+        server.mount_now(PACK).expect("the pack");
         let character = server.load_with(CHARACTER, LoadPriority::Critical).expect("loading");
         Content::over_server(
             server,
@@ -1911,7 +1911,7 @@ mod tests {
             let budgets =
                 AssetBudgets { upload_per_frame: u64::MAX, resident: [u64::MAX; AssetKind::ALL.len()] };
             let mut server = AssetServer::new(live_packs.clone(), budgets);
-            server.mount(PACK).expect("the pack");
+            server.mount_now(PACK).expect("the pack");
             let character = server.load_with(lookdev::CHARACTER, LoadPriority::Critical).expect("loading");
             let mut content = Content::over_server(server, lookdev::CHARACTER, character, SKY, live_packs);
             content.keep_character_mesh();

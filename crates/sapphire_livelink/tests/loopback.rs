@@ -108,7 +108,7 @@ impl App {
     fn with_limits(base: MemoryPackSource, limits: PushLimits) -> Self {
         let packs = Arc::new(LivePacks::with_limits(base, limits));
         let mut server = AssetServer::new(packs.clone(), AssetBudgets::DESKTOP);
-        server.mount("shared").unwrap();
+        server.mount_now("shared").unwrap();
         let link =
             LiveLink::start(LinkMode::Listen(SocketAddr::from(([127, 0, 0, 1], 0))), packs.clone()).unwrap();
         let mut cvars = CvarRegistry::new();
@@ -378,7 +378,7 @@ fn a_pack_streams_in_chunks_and_serves_later_mounts() {
     assert_eq!(app.link.counters().received, outcome.received);
 
     // Mounting it later reads the pushed version.
-    app.server.mount("zone").unwrap();
+    app.server.mount_now("zone").unwrap();
     let handle =
         app.server.load_with::<sapphire_assets::TextureAsset>(ZONE_TEXTURE, LoadPriority::Critical).unwrap();
     app.server.finish(&handle, |_| Ok(())).unwrap();
@@ -393,7 +393,7 @@ fn a_refused_pack_keeps_the_version_the_device_had() {
         write_pack(vec![packed(ZONE_TEXTURE, AssetKind::Texture, &texture(8, 3), Vec::new())]).unwrap(),
     );
     let mut app = App::new(base);
-    app.server.mount("other").unwrap();
+    app.server.mount_now("other").unwrap();
     // `other` taking the shared pack's texture is refused by the server: the device goes on serving
     // the `other` it had.
     let clash = write_pack(vec![packed(TEXTURE, AssetKind::Texture, &texture(8, 3), Vec::new())]).unwrap();

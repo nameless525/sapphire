@@ -231,7 +231,7 @@ fn hot_reload_leaks_no_handles_or_memory() {
         ],
     };
     let mut server = AssetServer::new(source.clone(), budgets);
-    server.mount("shared").unwrap();
+    server.mount_now("shared").unwrap();
     let mut rng = Rng(0xa8a8);
     let mut version = 0;
     let mut kept = Vec::new();

@@ -9,7 +9,8 @@ use sapphire_serialize::cooked::AlignedVec;
 
 use super::handle::{SlotKey, UntypedHandle};
 use super::{
-    AssetServer, AssetSlot, Handle, LOG_TARGET, LoadError, MountError, Slot, SlotState, Version, error_chain,
+    AssetServer, AssetSlot, Handle, LOG_TARGET, LoadError, MountError, MountKey, Slot, SlotState, Version,
+    error_chain, mounts,
 };
 use crate::pack::{Entry, Toc};
 use crate::{Asset, AssetId, AssetKind};
@@ -92,20 +93,17 @@ impl AssetServer {
         let mount = self
             .mounts
             .iter()
-            .position(|mount| mount.name == name)
-            .ok_or_else(|| MountError::NotMounted(name.to_owned()))? as u32;
-        let (file, toc) = self.read_pack(name)?;
-        let old = &self.mounts[mount as usize];
+            .find(|(_, mount)| mount.name == name)
+            .map(|(key, _)| key)
+            .ok_or_else(|| MountError::NotMounted(name.to_owned()))?;
+        let (file, toc) = mounts::read_pack(&self.source, name)?;
+        let old = &self.mounts[mount];
         // The header holds the table of contents' hash, so an equal one is the same pack, laid out
         // the same: reads in flight from the earlier file stay good.
         if toc.header() == old.toc.header() {
-            self.source.close(file);
             return Ok(RemountReport::default());
         }
-        if let Err(error) = self.check_duplicates(name, &toc, Some(mount)) {
-            self.source.close(file);
-            return Err(error);
-        }
+        self.check_duplicates(name, &toc, Some(mount))?;
         let mut report = RemountReport::default();
         for entry in toc.entries() {
             report.changed += u32::from(old.toc.find(entry.id).is_none_or(|old| old.hash != entry.hash));
@@ -113,14 +111,14 @@ impl AssetServer {
         report.removed = old.toc.entries().iter().filter(|entry| toc.find(entry.id).is_none()).count() as u32;
 
         let toc = Arc::new(toc);
-        let old_file = std::mem::replace(&mut self.mounts[mount as usize].file, file);
-        self.mounts[mount as usize].toc = toc.clone();
+        let old_file = std::mem::replace(&mut self.mounts[mount].file, file);
+        self.mounts[mount].toc = toc.clone();
         self.index.retain(|_, &mut (other, _)| other != mount);
         self.index
             .extend(toc.entries().iter().enumerate().map(|(index, entry)| (entry.id, (mount, index as u32))));
         report.reloading = self.settle_mount(mount, &toc);
         // Reads still queued for the earlier file are superseded, so their failures are ignored.
-        self.source.close(old_file);
+        drop(old_file);
         tracing::info!(
             target: LOG_TARGET,
             pack = name,
@@ -136,7 +134,7 @@ impl AssetServer {
     /// the mount's assets move to their entries there, assets that left their packs and that `toc`
     /// holds join them, and what changed starts loading. Returns how many assets are now loading
     /// a new version, or loading again.
-    pub(super) fn settle_mount(&mut self, mount: u32, toc: &Toc) -> u32 {
+    pub(super) fn settle_mount(&mut self, mount: MountKey, toc: &Toc) -> u32 {
         // An ID under another kind isn't this asset: `gone` reported it when it left.
         let keys: Vec<SlotKey> = self
             .slots
@@ -192,7 +190,7 @@ impl AssetServer {
     /// Tries again the assets in `pending`, which failed on a dependency mount `mount` now holds,
     /// and those that failed above them: only assets of other packs that are still in use, since
     /// the mount's own were tried as they moved. Returns how many it tried.
-    fn retry_dependents(&mut self, mount: u32, mut pending: Vec<SlotKey>) -> u32 {
+    fn retry_dependents(&mut self, mount: MountKey, mut pending: Vec<SlotKey>) -> u32 {
         let mut seen = HashSet::new();
         let mut retried = 0;
         while let Some(key) = pending.pop() {

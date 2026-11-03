@@ -11,6 +11,7 @@ use crate::texture::{Swizzle, Texture, TextureDesc, TextureFormat};
 mod lifetime;
 mod moves;
 mod reload;
+mod unmount;
 
 fn id(n: u8) -> AssetId {
     AssetId::from_bytes([n; 16])
@@ -84,7 +85,7 @@ fn serve(assets: Vec<PackAsset>, budgets: AssetBudgets) -> (AssetServer, Arc<Mem
     let source = Arc::new(MemoryPackSource::new());
     source.insert("shared", write_pack(assets).unwrap());
     let mut server = AssetServer::new(source.clone(), budgets);
-    server.mount("shared").unwrap();
+    server.mount_now("shared").unwrap();
     (server, source)
 }
 
@@ -414,7 +415,7 @@ fn failures_reach_every_asset_waiting_on_them() {
     let source = Arc::new(MemoryPackSource::new());
     source.insert("shared", bytes);
     let mut server = AssetServer::new(source, unlimited());
-    server.mount("shared").unwrap();
+    server.mount_now("shared").unwrap();
     let mesh: Handle<Mesh> = server.load(id(MESH)).unwrap();
     // Taken before the failure: loading a failed asset tries it again.
     let texture: Handle<TextureAsset> = server.load(id(TEXTURE)).unwrap();
@@ -477,7 +478,7 @@ fn read_errors_and_bad_references_fail_loads() {
     inner.insert("shared", write_pack(character()).unwrap());
     let source = Arc::new(FailingReads { inner, fail: false.into() });
     let mut server = AssetServer::new(source.clone(), unlimited());
-    server.mount("shared").unwrap();
+    server.mount_now("shared").unwrap();
     source.fail.store(true, std::sync::atomic::Ordering::Relaxed);
     let texture: Handle<TextureAsset> = server.load(id(TEXTURE)).unwrap();
     assert_eq!(
@@ -546,7 +547,7 @@ fn failed_assets_load_again_when_asked_again() {
     inner.insert("shared", write_pack(character()).unwrap());
     let source = Arc::new(FailingReads { inner, fail: false.into() });
     let mut server = AssetServer::new(source.clone(), unlimited());
-    server.mount("shared").unwrap();
+    server.mount_now("shared").unwrap();
     // The texture's read fails, which fails the material and the mesh.
     source.fail.store(true, std::sync::atomic::Ordering::Relaxed);
     let mesh: Handle<Mesh> = server.load(id(MESH)).unwrap();
@@ -728,12 +729,12 @@ fn mounting_checks_packs() {
     corrupt[0] = b'X';
     source.insert("corrupt", corrupt);
     let mut server = AssetServer::new(source, unlimited());
-    server.mount("shared").unwrap();
+    server.mount_now("shared").unwrap();
     assert!(server.contains(id(MESH)));
-    assert!(matches!(server.mount("shared"), Err(MountError::AlreadyMounted(_))));
-    assert!(matches!(server.mount("missing"), Err(MountError::Io { .. })));
-    assert!(matches!(server.mount("corrupt"), Err(MountError::Pack { source: PackError::NotAPack, .. })));
+    assert!(matches!(server.mount_now("shared"), Err(MountError::AlreadyMounted(_))));
+    assert!(matches!(server.mount_now("missing"), Err(MountError::Io { .. })));
+    assert!(matches!(server.mount_now("corrupt"), Err(MountError::Pack { source: PackError::NotAPack, .. })));
     // Texture 1 is in both.
-    assert!(matches!(server.mount("zone"), Err(MountError::Duplicate { .. })));
+    assert!(matches!(server.mount_now("zone"), Err(MountError::Duplicate { .. })));
     assert!(!server.contains(id(4)));
 }

@@ -1743,7 +1743,7 @@ fn packed_meshes_draw_with_the_materials_and_textures_their_slots_name() {
     let source = Arc::new(MemoryPackSource::new());
     source.insert("shared", pack);
     let mut server = AssetServer::new(source, AssetBudgets::DESKTOP);
-    server.mount("shared").unwrap();
+    server.mount_now("shared").unwrap();
 
     // The app's side of uploads: renderer objects by asset ID, each kind through the renderer's
     // own upload, resolving references through what is already uploaded.

@@ -2,6 +2,7 @@
 //! queue and residency, all of which [`AssetServer`]'s docs describe.
 
 mod handle;
+mod mounts;
 mod reload;
 mod source;
 
@@ -18,10 +19,12 @@ use slotmap::SlotMap;
 
 pub use self::handle::{Asset, Handle, TextureAsset, UntypedHandle, WeakHandle};
 use self::handle::{HandleInner, SlotKey};
+pub use self::mounts::{MountState, UnmountReport};
+use self::mounts::{Mount, MountKey, OpenPack, PendingMount};
 pub use self::reload::{AssetChange, RemountReport};
 use self::reload::{Next, NextStage};
 pub use self::source::{LoadPriority, MemoryPackSource, PackFile, PackSource, ReadDone};
-use crate::pack::{Decoder, Entry, HEADER_LEN, PackError, PackHeader, Toc};
+use crate::pack::{Decoder, Entry, PackError, Toc};
 use crate::{AssetId, AssetKind, PipelineKey};
 
 const LOG_TARGET: &str = "sapphire::assets";
@@ -154,7 +157,7 @@ pub enum LoadError {
     Panicked { id: AssetId },
     #[error("loading asset {id} can't make progress")]
     Stalled { id: AssetId },
-    #[error("asset {0} was removed from its pack")]
+    #[error("asset {0} left its pack, or its pack was unmounted, before it could be read")]
     Removed(AssetId),
 }
 
@@ -285,6 +288,9 @@ pub struct AssetStats {
     pub resident: [u64; AssetKind::ALL.len()],
     pub budgets: AssetBudgets,
     pub reads_in_flight: u32,
+    /// Packs mounted, and packs still having their header read ([`AssetServer::mount`]).
+    pub mounts: u32,
+    pub mounting: u32,
     /// The last [`AssetServer::upload`] call.
     pub last_upload: UploadReport,
     /// Since the server started.
@@ -299,21 +305,15 @@ pub struct AssetStats {
     pub reload_failures: u64,
 }
 
-/// A mounted pack.
-struct Mount {
-    name: String,
-    file: PackFile,
-    toc: Arc<Toc>,
-}
-
 /// One asset's place in the server.
 struct Slot {
     /// The server's own reference: while its count is 1, nothing else uses the asset.
     handle: UntypedHandle,
     /// Where it is: a mount, and its entry in the mount's table of contents, which a remount
-    /// moves to the new table's, or `None` once its pack no longer holds it (hot reload), until a
-    /// pack mounted or remounted later holds it: that pack's mount takes it over.
-    mount: u32,
+    /// moves to the new table's, or `None` once its pack no longer holds it (hot reload) or was
+    /// unmounted, until a pack mounted or remounted later holds it: that pack's mount takes it over.
+    /// The mount is live while there's an entry, and means nothing otherwise.
+    mount: MountKey,
     entry: Option<u32>,
     /// The size and hash of the version `state` holds or is loading.
     size: u64,
@@ -372,11 +372,12 @@ enum Version {
     Next,
 }
 
-/// A decode job's result.
-struct Completion {
-    key: SlotKey,
-    request: u32,
-    result: Result<Arc<AlignedVec>, LoadError>,
+/// Something that finished off the server's thread.
+enum Completion {
+    /// A decode job's result.
+    Asset { key: SlotKey, request: u32, result: Result<Arc<AlignedVec>, LoadError> },
+    /// A pack opened, with its header and table of contents read and checked ([`AssetServer::mount`]).
+    Mount { request: u64, result: Result<(OpenPack, Toc), MountError> },
 }
 
 /// Mounts packs and loads the assets in them (spec §5.10).
@@ -420,6 +421,49 @@ struct Completion {
 /// index and a generation, `Copy`, that resolves to nothing once its asset is unloaded. Dropping
 /// handles allocates nothing and sends nothing, so it is allowed in the fixed step (rule R6); the
 /// server sees an asset's last user go on its next [`AssetServer::update`].
+///
+/// A strong handle is always safe to hold, read and drop, whatever has happened to the pack its asset
+/// came from: see [unmounting](AssetServer#unmounting).
+///
+/// # Mounting
+///
+/// [`AssetServer::mount`] returns at once. A worker opens the pack and reads and checks its header and
+/// table of contents, so a frame never waits on a disk for them; the pack's assets become loadable on
+/// the [`AssetServer::update`] after that, and [`AssetServer::mount_state`] says when, or why not. A
+/// load screen or a tool that has nothing to do until then calls [`AssetServer::mount_now`].
+/// [`AssetServer::remount`] still waits for the file on the calling thread: it runs when a pack was just
+/// rewritten on a development machine or pushed to a device, and never in a shipped frame.
+///
+/// # Unmounting
+///
+/// [`AssetServer::unmount`] closes a pack, at a zone change say, and hands back what nothing wants of
+/// it. From that call on, for each asset the pack held:
+///
+/// - **Nothing uses or pins it:** it's unloaded there and then, and [`AssetServer::take_unloaded`]
+///   reports it. A [`WeakHandle`] to it resolves to nothing. Its dependencies in the same pack go with
+///   it, and those in other packs lose a user and stay cached, as any unused asset does.
+/// - **A handle or a pin holds it, and it's ready:** it stays ready, for as long as that lasts. The
+///   handle reads what it read ([`AssetServer::get`] for a kind that keeps its bytes), the app's uploaded
+///   copy stays valid, and its dependencies stay loaded. It's unloaded on the first
+///   [`AssetServer::update`] after the last user goes, without waiting for its kind's budget, since its
+///   bytes can't come back from any pack mounted now.
+/// - **A handle holds it, and it's still loading** (a read queued or running, a decode running, waiting
+///   for a dependency or for the GPU): it fails with [`LoadError::Removed`], at once, and so does
+///   whatever was waiting for it. It never reaches the uploader. The read or decode in flight finishes
+///   and is ignored.
+/// - **A new version of it was on its way** (hot reload): that's dropped, and the asset keeps the version
+///   it has.
+/// - **A [`AssetServer::reupload_all`] later,** for a new renderer, an asset that kept its bytes goes
+///   again from them, and one that didn't fails with [`LoadError::Removed`], there being nowhere to read
+///   it from.
+/// - **Mounting a pack that holds it again** takes it back as a remount would: the same bytes stay ready
+///   behind the same handles, other bytes load as a new version, and a failed asset something still
+///   wants loads again.
+///
+/// Nothing dangles either way: a strong handle owns its slot, and a slot owns its bytes. Asking for an
+/// ID the pack held gives the live asset while there is one, and [`LoadError::NotFound`] after. An asset
+/// of another pack that depends on one of this pack's keeps its dependency while it's ready, and fails
+/// while it's still waiting for it. Unmounting while the pack is still mounting cancels it.
 ///
 /// # Residency
 ///
@@ -472,13 +516,21 @@ struct Completion {
 ///
 /// The server lives on one thread (the main thread in apps) and takes `&mut self`. Handles are
 /// `Send + Sync`. Reads complete on the IO thread and decodes on workers; neither touches the
-/// server.
+/// server. Dropping the server closes the packs it holds open, without waiting for reads still in
+/// flight: those may fail on the closed file, and their results go nowhere. A source may outlive it (an
+/// `Arc` the app keeps, as live link's is), holding nothing open for it.
 pub struct AssetServer {
-    source: Box<dyn PackSource>,
+    source: Arc<dyn PackSource>,
     budgets: AssetBudgets,
-    mounts: Vec<Mount>,
+    mounts: SlotMap<MountKey, Mount>,
+    /// Packs a worker is opening, oldest first.
+    pending_mounts: Vec<PendingMount>,
+    /// Packs that couldn't be mounted, until they're asked for again or unmounted.
+    failed_mounts: Vec<(String, MountError)>,
+    /// Numbers [`Self::mount`]'s jobs, so the end of a cancelled one finds nothing.
+    mount_requests: u64,
     /// Every mounted asset: its mount and entry.
-    index: HashMap<AssetId, (u32, u32)>,
+    index: HashMap<AssetId, (MountKey, u32)>,
     slots: SlotMap<SlotKey, Slot>,
     by_id: HashMap<AssetId, SlotKey>,
     upload_queue: VecDeque<(SlotKey, Version)>,
@@ -502,7 +554,7 @@ pub struct AssetServer {
 
 impl fmt::Debug for AssetServer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let packs: Vec<&str> = self.mounts.iter().map(|mount| mount.name.as_str()).collect();
+        let packs: Vec<&str> = self.mounts.values().map(|mount| mount.name.as_str()).collect();
         f.debug_struct("AssetServer")
             .field("packs", &packs)
             .field("stats", &self.stats())
@@ -515,9 +567,12 @@ impl AssetServer {
     pub fn new(source: impl PackSource + 'static, budgets: AssetBudgets) -> Self {
         let (sender, receiver) = mpsc::channel();
         Self {
-            source: Box::new(source),
+            source: Arc::new(source),
             budgets,
-            mounts: Vec::new(),
+            mounts: SlotMap::with_key(),
+            pending_mounts: Vec::new(),
+            failed_mounts: Vec::new(),
+            mount_requests: 0,
             index: HashMap::new(),
             slots: SlotMap::with_key(),
             by_id: HashMap::new(),
@@ -550,79 +605,7 @@ impl AssetServer {
     /// What the meshes of every mounted pack draw through, each key once: what a load prewarms (M3 K1). A pack
     /// mounted later adds its own.
     pub fn pipeline_keys(&self) -> BTreeSet<PipelineKey> {
-        self.mounts.iter().flat_map(|mount| mount.toc.pipeline_keys().iter().copied()).collect()
-    }
-
-    /// Mounts the pack called `name` ([`crate::pack::file_name`] in the source): reads and checks its
-    /// header and table of contents, blocking until they are read, and makes its assets loadable.
-    /// An asset may be in one mounted pack only. Loaded assets that lost their pack and that this
-    /// one holds move to it, and failed assets that need what it holds load again (see
-    /// [hot reload](AssetServer#hot-reload)).
-    pub fn mount(&mut self, name: &str) -> Result<(), MountError> {
-        profiling::scope!("AssetServer::mount");
-        if self.is_mounted(name) {
-            return Err(MountError::AlreadyMounted(name.to_owned()));
-        }
-        let (file, toc) = self.read_pack(name)?;
-        if let Err(error) = self.check_duplicates(name, &toc, None) {
-            self.source.close(file);
-            return Err(error);
-        }
-        let mount = self.mounts.len() as u32;
-        self.index
-            .extend(toc.entries().iter().enumerate().map(|(index, entry)| (entry.id, (mount, index as u32))));
-        let toc = Arc::new(toc);
-        self.mounts.push(Mount { name: name.to_owned(), file, toc: toc.clone() });
-        let reloading = self.settle_mount(mount, &toc);
-        tracing::info!(
-            target: LOG_TARGET,
-            pack = name,
-            assets = toc.entries().len(),
-            bytes = toc.header().file_len(),
-            reloading,
-            "pack mounted"
-        );
-        Ok(())
-    }
-
-    /// Whether the pack called `name` is mounted.
-    pub fn is_mounted(&self, name: &str) -> bool {
-        self.mounts.iter().any(|mount| mount.name == name)
-    }
-
-    /// Opens the pack called `name` and reads and checks its header and table of contents,
-    /// blocking until they are read. The file stays open for the caller.
-    fn read_pack(&self, name: &str) -> Result<(PackFile, Toc), MountError> {
-        let io_error = |source| MountError::Io { name: name.to_owned(), source };
-        let pack_error = |source| MountError::Pack { name: name.to_owned(), source };
-        let (file, len) = self.source.open(name).map_err(io_error)?;
-        let read = || {
-            let header = self.read_now(file, 0, HEADER_LEN.min(len as usize)).map_err(io_error)?;
-            let header = PackHeader::read(&header).map_err(pack_error)?;
-            let toc_range = header.toc_range();
-            if toc_range.end > len {
-                return Err(pack_error(PackError::Truncated { expected: header.file_len(), found: len }));
-            }
-            let toc = self
-                .read_now(file, toc_range.start, (toc_range.end - toc_range.start) as usize)
-                .map_err(io_error)?;
-            Toc::read(header, &toc, len).map_err(pack_error)
-        };
-        read().map(|toc| (file, toc)).inspect_err(|_| self.source.close(file))
-    }
-
-    /// Fails if pack `name`'s `toc` holds an asset another mounted pack holds, besides mount
-    /// `except` (the one a remount replaces).
-    fn check_duplicates(&self, name: &str, toc: &Toc, except: Option<u32>) -> Result<(), MountError> {
-        for entry in toc.entries() {
-            if let Some(&(other, _)) = self.index.get(&entry.id)
-                && Some(other) != except
-            {
-                let first = self.mounts[other as usize].name.clone();
-                return Err(MountError::Duplicate { id: entry.id, first, second: name.to_owned() });
-            }
-        }
-        Ok(())
+        self.mounts.values().flat_map(|mount| mount.toc.pipeline_keys().iter().copied()).collect()
     }
 
     /// Whether a mounted pack holds asset `id`.
@@ -657,14 +640,15 @@ impl AssetServer {
             let slot = &mut self.slots[key];
             slot.last_used = self.frame;
             let handle = slot.handle.clone();
-            if matches!(slot.state, SlotState::Failed(_)) {
+            // One that no mounted pack holds has nothing to try again.
+            if matches!(slot.state, SlotState::Failed(_)) && slot.entry.is_some() {
                 slot.priority = priority;
                 self.resolve(key);
             }
             return Ok(handle);
         }
         let &(mount, entry_index) = self.index.get(&id).ok_or(LoadError::NotFound(id))?;
-        let toc = self.mounts[mount as usize].toc.clone();
+        let toc = self.mounts[mount].toc.clone();
         let entry = toc.entries()[entry_index as usize];
         let key = self.slots.insert_with_key(|key| Slot {
             handle: UntypedHandle { inner: Arc::new(HandleInner { key, id, kind: entry.kind }) },
@@ -703,7 +687,7 @@ impl AssetServer {
             self.fail(key, LoadError::Removed(id));
             return;
         };
-        let toc = self.mounts[slot.mount as usize].toc.clone();
+        let toc = self.mounts[slot.mount].toc.clone();
         let entry = toc.entries()[entry as usize];
         match self.load_dependencies(key, toc.dependencies(&entry)) {
             Ok(children) => {
@@ -794,7 +778,7 @@ impl AssetServer {
             return Some(self.slots[key].handle.kind());
         }
         let &(mount, entry) = self.index.get(&id)?;
-        Some(self.mounts[mount as usize].toc.entries()[entry as usize].kind)
+        Some(self.mounts[mount].toc.entries()[entry as usize].kind)
     }
 
     /// A strong handle from a weak one, if its asset is still loaded. A weak handle is only an
@@ -967,7 +951,7 @@ impl AssetServer {
             } else if slot.data.is_some() {
                 slot.state = SlotState::Waiting;
             } else if let Some(entry) = slot.entry {
-                let entry = self.mounts[slot.mount as usize].toc.entries()[entry as usize];
+                let entry = self.mounts[slot.mount].toc.entries()[entry as usize];
                 if entry.hash == slot.hash { self.request_read(key) } else { self.resolve(key) }
             } else {
                 let id = slot.handle.id();
@@ -1008,6 +992,8 @@ impl AssetServer {
             assets: self.slots.len() as u32,
             budgets: self.budgets,
             reads_in_flight: self.reads_in_flight,
+            mounts: self.mounts.len() as u32,
+            mounting: self.pending_mounts.len() as u32,
             last_upload: self.last_upload,
             loads: self.loads,
             unloads: self.unloads,
@@ -1033,17 +1019,6 @@ impl AssetServer {
         stats
     }
 
-    /// Reads a range of `file` and waits for it.
-    fn read_now(&self, file: PackFile, offset: u64, len: usize) -> io::Result<Vec<u8>> {
-        let (sender, receiver) = mpsc::sync_channel(1);
-        let done = Box::new(move |result| {
-            // The receiver waits below, so the send can't fail.
-            let _ = sender.send(result);
-        });
-        self.source.read(file, offset, len, LoadPriority::Critical, done);
-        receiver.recv().unwrap_or_else(|_| Err(io::Error::other("the pack source dropped a read")))
-    }
-
     /// Starts reading and decoding the asset in `key` into its main state.
     fn request_read(&mut self, key: SlotKey) {
         let slot = &mut self.slots[key];
@@ -1058,8 +1033,8 @@ impl AssetServer {
         let slot = &mut self.slots[key];
         slot.request = slot.request.wrapping_add(1);
         let (request, priority) = (slot.request, slot.priority);
-        let mount = &self.mounts[slot.mount as usize];
-        let (file, toc) = (mount.file, mount.toc.clone());
+        let mount = &self.mounts[slot.mount];
+        let (file, toc) = (mount.file.file(), mount.toc.clone());
         let entry = toc.entries()[slot.entry.expect("only assets their pack holds are read") as usize];
         let range = toc.stored_range(&entry);
         let sender = self.sender.clone();
@@ -1069,11 +1044,11 @@ impl AssetServer {
                 let result = std::panic::catch_unwind(AssertUnwindSafe(|| decode(&toc, &entry, &stored)))
                     .unwrap_or(Err(LoadError::Panicked { id: entry.id }));
                 // A closed channel means the server is gone, and the result with it.
-                let _ = sender.send(Completion { key, request, result });
+                let _ = sender.send(Completion::Asset { key, request, result });
             }),
             Err(error) => {
                 let result = Err(LoadError::Io { id: entry.id, message: error.to_string() });
-                let _ = sender.send(Completion { key, request, result });
+                let _ = sender.send(Completion::Asset { key, request, result });
             }
         });
         match usize::try_from(range.end - range.start) {
@@ -1082,11 +1057,18 @@ impl AssetServer {
         }
     }
 
-    /// Applies a decode job's result, to the main state or the next version, whichever waits
-    /// for it.
+    /// Applies what finished off the thread.
     fn complete(&mut self, completion: Completion) {
         self.reads_in_flight -= 1;
-        let Completion { key, request, result } = completion;
+        match completion {
+            Completion::Asset { key, request, result } => self.complete_read(key, request, result),
+            Completion::Mount { request, result } => self.complete_mount(request, result),
+        }
+    }
+
+    /// Applies a decode job's result, to the main state or the next version, whichever waits
+    /// for it.
+    fn complete_read(&mut self, key: SlotKey, request: u32, result: Result<Arc<AlignedVec>, LoadError>) {
         // A newer read replaced this one, or the version it was for failed or went meanwhile (a
         // dependency failed, a remount superseded it, the asset was unloaded).
         let Some(slot) = self.slots.get_mut(key).filter(|slot| slot.request == request) else { return };
@@ -1181,8 +1163,9 @@ impl AssetServer {
         slot.users() == 0 && slot.pins == 0 && matches!(slot.state, SlotState::Ready | SlotState::Failed(_))
     }
 
-    /// Refreshes the use of assets in use, drops failed ones nothing uses, and trims each kind over
-    /// budget, least recently used first.
+    /// Refreshes the use of assets in use, drops failed ones nothing uses and ones no mounted pack
+    /// holds, whose bytes no pack would bring back, and trims each kind over budget, least recently
+    /// used first.
     fn collect(&mut self) {
         let mut resident = [0u64; AssetKind::ALL.len()];
         let mut failed = Vec::new();
@@ -1200,6 +1183,7 @@ impl AssetServer {
             match slot.state {
                 SlotState::Failed(_) if evictable => failed.push(key),
                 SlotState::Failed(_) => {}
+                _ if evictable && slot.entry.is_none() => failed.push(key),
                 _ => resident[slot.handle.kind().index()] += slot.size,
             }
         }
@@ -1257,18 +1241,6 @@ impl AssetServer {
         self.unloads += 1;
         self.unloaded.push(Unloaded { id, kind, slot: AssetSlot(key) });
         tracing::debug!(target: LOG_TARGET, %id, %kind, size = slot.size, "asset unloaded");
-    }
-}
-
-impl Drop for AssetServer {
-    /// Closes every pack file still mounted: the source may outlive the server (an `Arc` the
-    /// app keeps, as live link's is), and would otherwise hold them open. Each mount owns one
-    /// open file (remounts close the one they replace), so none is closed twice. Reads still in
-    /// flight aren't waited for: they may fail on the closed file, and their results go nowhere.
-    fn drop(&mut self) {
-        for mount in self.mounts.drain(..) {
-            self.source.close(mount.file);
-        }
     }
 }
 

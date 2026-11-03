@@ -171,7 +171,7 @@ fn loading_and_unloading_leaks_no_handles_or_memory() {
         ],
     };
     let mut server = AssetServer::new(source, budgets);
-    server.mount("shared").unwrap();
+    server.mount_now("shared").unwrap();
     let mut rng = Rng(0x5eed);
     let (mut kept, mut weak) = (Vec::new(), Vec::new());
 

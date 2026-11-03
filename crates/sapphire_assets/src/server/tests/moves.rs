@@ -33,8 +33,8 @@ fn serve_two(a: Vec<PackAsset>, b: Vec<PackAsset>) -> (AssetServer, Arc<MemoryPa
     source.insert(A, pack(a));
     source.insert(B, pack(b));
     let mut server = AssetServer::new(source.clone(), unlimited());
-    server.mount(A).unwrap();
-    server.mount(B).unwrap();
+    server.mount_now(A).unwrap();
+    server.mount_now(B).unwrap();
     (server, source)
 }
 
@@ -135,7 +135,7 @@ fn a_newly_mounted_pack_takes_over_the_assets_it_holds_that_lost_their_pack() {
     // Ready, with the version it had: a new renderer reads it from the new pack.
     let (mut server, source, handle) = removed_from_a();
     source.insert("c", pack(vec![texture(1, 7)]));
-    server.mount("c").unwrap();
+    server.mount_now("c").unwrap();
     server.reupload_all();
     let mut uploads = Vec::new();
     server.finish(&handle, recording(&mut uploads)).unwrap();
@@ -147,7 +147,7 @@ fn a_newly_mounted_pack_takes_over_the_assets_it_holds_that_lost_their_pack() {
     settle(&mut server, |_| Ok(()));
     assert_eq!(server.state(&handle), LoadState::Failed(LoadError::Removed(id(1))));
     source.insert("c", pack(vec![texture(1, 7)]));
-    server.mount("c").unwrap();
+    server.mount_now("c").unwrap();
     assert_eq!(server.state(&handle), LoadState::Loading, "something still wants it");
     let mut uploads = Vec::new();
     settle(&mut server, recording(&mut uploads));
@@ -157,7 +157,7 @@ fn a_newly_mounted_pack_takes_over_the_assets_it_holds_that_lost_their_pack() {
     // With other bytes, it reloads behind its handle.
     let (mut server, source, handle) = removed_from_a();
     source.insert("c", pack(vec![texture(1, 9)]));
-    server.mount("c").unwrap();
+    server.mount_now("c").unwrap();
     let mut uploads = Vec::new();
     settle(&mut server, recording(&mut uploads));
     assert_eq!(uploads, [(id(1), 1)]);
@@ -217,7 +217,7 @@ fn a_moved_asset_stays_under_residency() {
 fn an_asset_of_another_kind_under_the_same_id_takes_nothing_over() {
     let (mut server, source, handle) = removed_from_a();
     source.insert("c", pack(vec![packed(id(1), AssetKind::Material, &material_bytes(None))]));
-    server.mount("c").unwrap();
+    server.mount_now("c").unwrap();
     assert!(server.take_changes().is_empty(), "already reported as removed");
     assert_eq!((server.state(&handle), server.generation(&handle)), (LoadState::Ready, 0));
     // Still no pack holds the texture, so a new renderer can't get it.
@@ -315,11 +315,11 @@ fn a_parent_that_failed_for_a_dependency_no_pack_held_loads_when_one_does() {
     let source = Arc::new(MemoryPackSource::new());
     source.insert(A, pack(material_pack()));
     let mut server = AssetServer::new(source.clone(), unlimited());
-    server.mount(A).unwrap();
+    server.mount_now(A).unwrap();
     let material: Handle<Material> = server.load(id(MATERIAL)).unwrap();
     assert!(matches!(server.state(&material), LoadState::Failed(_)));
     source.insert(B, pack(vec![texture(1, 7)]));
-    server.mount(B).unwrap();
+    server.mount_now(B).unwrap();
     settle(&mut server, |_| Ok(()));
     assert_eq!(server.state(&material), LoadState::Ready);
 }
@@ -346,7 +346,7 @@ fn a_parent_that_failed_for_itself_or_for_another_pack_is_left_alone() {
     // Its dependency in a third pack is what failed, and stays failed.
     let (mut server, source) = serve_two(material_pack(), vec![texture(6, 6)]);
     source.insert("c", pack(vec![texture(1, 7)]));
-    server.mount("c").unwrap();
+    server.mount_now("c").unwrap();
     let material: Handle<Material> = server.load(id(MATERIAL)).unwrap();
     assert!(server.finish(&material, |_| Err("out of memory".into())).is_err());
     source.insert(B, pack(vec![texture(6, 9)]));

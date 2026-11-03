@@ -95,9 +95,8 @@
 //!   assembled on the device from the changed assets it received and the rest of the pack it had.)
 //! - Pack signatures checked against a signed manifest (`sapphire_patch`, M4), which lets
 //!   verified packs skip bytecheck (spec §5.9); the header reserves their place.
-//! - Memory-mapped packs, so raw blocks are read in place; unmounting packs at zone changes;
-//!   cancelling the reads of assets dropped before they load; pinning by group (party,
-//!   encounter) rather than by handle.
+//! - Memory-mapped packs, so raw blocks are read in place; cancelling the reads of assets dropped
+//!   before they load; pinning by group (party, encounter) rather than by handle.
 //! - Texture mip streaming within the upload budget, so a large texture uploads over several
 //!   frames, lowest mips first: a [`texture::Texture`] already exposes each level on its own,
 //!   smallest last in the list and first in the file.
@@ -124,6 +123,6 @@ pub use pipeline_key::PipelineKey;
 pub use sapphire_serialize::{AssetId, ParseAssetIdError};
 pub use server::{
     Asset, AssetBudgets, AssetChange, AssetServer, AssetSlot, AssetStats, Handle, LoadError, LoadPriority,
-    LoadState, MemoryPackSource, MountError, PackFile, PackSource, ReadDone, RemountReport, TextureAsset,
-    Unloaded, UntypedHandle, Upload, UploadError, UploadReport, WeakHandle,
+    LoadState, MemoryPackSource, MountError, MountState, PackFile, PackSource, ReadDone, RemountReport,
+    TextureAsset, UnmountReport, Unloaded, UntypedHandle, Upload, UploadError, UploadReport, WeakHandle,
 };

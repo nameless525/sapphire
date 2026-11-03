@@ -202,7 +202,7 @@ mod tests {
         let source = Arc::new(MemoryPackSource::new());
         source.insert(pack::AUDIO, bytes);
         let mut server = AssetServer::new(source, AssetBudgets::DESKTOP);
-        server.mount(pack::AUDIO).unwrap();
+        server.mount_now(pack::AUDIO).unwrap();
         // Asking for the cue loads its sound: neither ever reaches the uploader.
         let cue: Handle<Cue> = server.load(cue_id).unwrap();
         server.finish(&cue, |upload| panic!("{} was sent to the uploader", upload.kind())).unwrap();

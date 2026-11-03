@@ -572,7 +572,7 @@ fn remounting_checks_the_pack_and_keeps_the_mounted_one_on_failure() {
         "zone",
         write_pack(vec![packed(id(9), AssetKind::Texture, &texture_bytes(4, 4, 1))]).unwrap(),
     );
-    server.mount("zone").unwrap();
+    server.mount_now("zone").unwrap();
     let mut assets = character();
     assets.push(packed(id(9), AssetKind::Texture, &texture_bytes(4, 4, 2)));
     source.insert("shared", write_pack(assets).unwrap());
@@ -647,7 +647,7 @@ fn a_failed_asset_retried_by_a_remount_finds_its_dependencies_in_the_new_pack() 
     let source = Arc::new(MemoryPackSource::new());
     source.insert("shared", corrupt(write_pack(assets).unwrap(), id(TEXTURE)));
     let mut server = AssetServer::new(source.clone(), unlimited());
-    server.mount("shared").unwrap();
+    server.mount_now("shared").unwrap();
     let mesh: Handle<Mesh> = server.load(id(MESH)).unwrap();
     assert!(server.finish(&mesh, |_| Ok(())).is_err());
     source.insert("shared", write_pack(character()).unwrap());
@@ -716,7 +716,7 @@ fn a_probe_grid_uploads_and_reloads_in_place() {
     let source = Arc::new(MemoryPackSource::new());
     source.insert("shared", grid_pack(2));
     let mut server = AssetServer::new(source.clone(), unlimited());
-    server.mount("shared").unwrap();
+    server.mount_now("shared").unwrap();
     let grid: Handle<ProbeGrid> = server.load(id(30)).unwrap();
     let mut seen = Vec::new();
     server

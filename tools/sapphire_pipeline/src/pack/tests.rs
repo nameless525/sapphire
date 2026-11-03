@@ -131,7 +131,7 @@ fn packs_hold_every_cooked_asset_as_cooked() {
     let source = Arc::new(MemoryPackSource::new());
     source.insert(SHARED, bytes);
     let mut server = AssetServer::new(source, AssetBudgets::DESKTOP);
-    server.mount(SHARED).unwrap();
+    server.mount_now(SHARED).unwrap();
     let mesh: Handle<Mesh> = server.load(id(MANNEQUIN)).unwrap();
     let mut order = Vec::new();
     server
@@ -381,7 +381,7 @@ fn sub_assets_are_packed_and_load_by_their_own_ids() {
     let source = Arc::new(MemoryPackSource::new());
     source.insert(SHARED, bytes);
     let mut server = AssetServer::new(source, AssetBudgets::DESKTOP);
-    server.mount(SHARED).unwrap();
+    server.mount_now(SHARED).unwrap();
     let rig: Handle<CharacterRig> = server.load(rig_id).unwrap();
     server.finish(&rig, |_| Err("rigs need no upload".into())).unwrap();
     let mesh: Handle<Mesh> = server.load(mesh_id).unwrap();
@@ -576,6 +576,27 @@ fn zones_leave_fonts_in_the_packs_their_sidecars_name() {
     assert!(fs::read_to_string(notices).unwrap().contains("Oxanium"));
 }
 
+/// The trap W1 left: a constant in the stage, and the one zone that also reaches the asset takes it away
+/// from every app that doesn't mount that zone.
+#[test]
+fn what_code_names_cant_leave_for_one_zones_pack() {
+    let scratch = two_zones("pack-code-names");
+    let (report, _) = scratch.pack(Cook::Desktop, true);
+    let name = |text| CodeName { id: id(text), path: "crates/stage/src/lookdev.rs".into(), line: 7 };
+
+    // Shared, by one route or another, and the zone itself: an app opens it by name, with its pack.
+    let fine = [name(COMMON_PROP), name(WOOD), name(MANNEQUIN), name(ALBEDO), name(TOWN), name(VILLAGE)];
+    check_code_names(&report, None, &fine).unwrap();
+    check_code_names(&report, None, &[]).unwrap();
+
+    let error = check_code_names(&report, None, &[name(OWN_PROP)]).unwrap_err().to_string();
+    assert!(error.contains("zone_town"), "{error}");
+    assert!(error.contains("own_prop"), "{error}");
+    assert!(error.contains("lookdev.rs:7"), "{error}");
+    // What a zone loads with it counts as well.
+    assert!(check_code_names(&report, None, &[name(TOWN_COLLIDERS)]).is_err());
+}
+
 /// What the app's packs are must not move when a zone comes along that reaches nothing of theirs but
 /// shared things: W1's promise to every pack before it.
 #[test]
@@ -600,8 +621,8 @@ fn loading_a_zone_loads_what_the_simulation_reads_and_not_its_meshes() {
     source.insert(SHARED, pack_named(&scratch, SHARED));
     source.insert("zone_town", pack_named(&scratch, "zone_town"));
     let mut server = AssetServer::new(source, AssetBudgets::DESKTOP);
-    server.mount(SHARED).unwrap();
-    server.mount("zone_town").unwrap();
+    server.mount_now(SHARED).unwrap();
+    server.mount_now("zone_town").unwrap();
     let zone: Handle<sapphire_zone::Zone> = server.load(id(TOWN)).unwrap();
     let mut uploaded = Vec::new();
     server

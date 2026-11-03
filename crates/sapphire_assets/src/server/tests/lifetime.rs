@@ -14,25 +14,27 @@ type HeldRead = (PackFile, u64, usize, LoadPriority, ReadDone);
 
 /// Packs in memory, counting the files open now, and holding reads back while asked to.
 #[derive(Default)]
-struct CountedSource {
-    inner: MemoryPackSource,
+pub(super) struct CountedSource {
+    pub(super) inner: MemoryPackSource,
     /// The files open now. The inner source gives a closed file's number out again, so a file
     /// closed twice closes whatever file has its number by then, which shows in this count;
     /// [`Self::bad_closes`] counts closes of numbers no file has.
     open: Mutex<BTreeSet<u64>>,
-    opened: Mutex<u32>,
-    bad_closes: Mutex<u32>,
-    hold: AtomicBool,
+    pub(super) opened: Mutex<u32>,
+    pub(super) bad_closes: Mutex<u32>,
+    pub(super) hold: AtomicBool,
+    /// Holds a file's opening back while set, as a slow disk does.
+    pub(super) hold_open: AtomicBool,
     held: Mutex<Vec<HeldRead>>,
 }
 
 impl CountedSource {
-    fn open_files(&self) -> usize {
+    pub(super) fn open_files(&self) -> usize {
         self.open.lock().unwrap().len()
     }
 
     /// Runs the reads held back, in order, as an IO thread does after its server has gone.
-    fn release(&self) {
+    pub(super) fn release(&self) {
         self.hold.store(false, Ordering::SeqCst);
         let held = std::mem::take(&mut *self.held.lock().unwrap());
         for (file, offset, len, priority, done) in held {
@@ -43,6 +45,9 @@ impl CountedSource {
 
 impl PackSource for CountedSource {
     fn open(&self, name: &str) -> io::Result<(PackFile, u64)> {
+        while self.hold_open.load(Ordering::SeqCst) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
         let (file, len) = self.inner.open(name)?;
         assert!(self.open.lock().unwrap().insert(file.0), "a file number is given out once while open");
         *self.opened.lock().unwrap() += 1;
@@ -78,10 +83,10 @@ fn dropping_a_server_closes_every_pack_it_holds_open() {
     // Texture 1 is in `shared` too.
     source.inner.insert("zone", write_pack(textures(1)).unwrap());
     let mut server = AssetServer::new(source.clone(), unlimited());
-    server.mount("shared").unwrap();
-    server.mount("extra").unwrap();
+    server.mount_now("shared").unwrap();
+    server.mount_now("extra").unwrap();
     // A mount that fails closes what it opened at once.
-    assert!(matches!(server.mount("zone"), Err(MountError::Duplicate { .. })));
+    assert!(matches!(server.mount_now("zone"), Err(MountError::Duplicate { .. })));
     assert_eq!(source.open_files(), 2);
     // So do remounts: an unchanged pack's new file, a changed pack's old one.
     server.remount("extra").unwrap();
@@ -92,7 +97,7 @@ fn dropping_a_server_closes_every_pack_it_holds_open() {
 
     // A second server on the same source, with a pack of its own open.
     let mut other = AssetServer::new(source.clone(), unlimited());
-    other.mount("extra").unwrap();
+    other.mount_now("extra").unwrap();
     assert_eq!(source.open_files(), 3);
 
     // The first goes with reads still in flight: it closes its two files without waiting.
@@ -193,7 +198,7 @@ fn a_pack_file_can_be_deleted_or_replaced_once_its_server_is_gone() {
     fs::write(&path, extra(1)).unwrap();
     let source = Arc::new(FilePacks { root: scratch.path().to_owned(), ..FilePacks::default() });
     let mut server = AssetServer::new(source.clone(), unlimited());
-    server.mount("extra").unwrap();
+    server.mount_now("extra").unwrap();
     let texture: Handle<TextureAsset> = server.load(id(9)).unwrap();
     server.finish(&texture, |_| Ok(())).unwrap();
     assert_eq!(source.open_files(), 1);
@@ -205,7 +210,7 @@ fn a_pack_file_can_be_deleted_or_replaced_once_its_server_is_gone() {
     fs::remove_file(&path).unwrap();
     fs::write(&path, extra(3)).unwrap();
     let mut server = AssetServer::new(source.clone(), unlimited());
-    server.mount("extra").unwrap();
+    server.mount_now("extra").unwrap();
     let texture: Handle<TextureAsset> = server.load(id(9)).unwrap();
     server
         .finish(&texture, |upload| {

@@ -111,7 +111,9 @@ use crate::keypose;
 /// 4: tolerances follow what a clip's own scales and translations ask of them (the review's IMP-002).
 /// 5: reduction's work is bounded, which keeps more keys on a long track that spends it all (the
 /// review's IMP-003).
-pub const COOKER: Stage = Stage { name: "sclip", version: 5 };
+/// 6: root motion's turn holds its bound on a rig off the origin, and a joint named by a name two joints
+/// share is an error, where it took the first.
+pub const COOKER: Stage = Stage { name: "sclip", version: 6 };
 
 /// The `.sskel` writer. Bump its version whenever it changes output for the same import.
 pub const SKELETON_COOKER: Stage = Stage { name: "sskel", version: 1 };

@@ -48,7 +48,8 @@ use crate::import::fbx::FbxImportError;
 /// same file.
 ///
 /// 2: normalizes in scalars, for one set of bytes on every architecture (M2 N1).
-pub const IMPORTER: Stage = Stage { name: "gltf clips", version: 2 };
+/// 3: root motion naming a bone two joints share is an error, where it took the first.
+pub const IMPORTER: Stage = Stage { name: "gltf clips", version: 3 };
 
 /// How much of an animation one source may bring into a cook, checked before data is read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

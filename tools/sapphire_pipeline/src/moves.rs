@@ -71,7 +71,7 @@ pub const IMPORTER: Stage = Stage { name: "move set document", version: 1 };
 
 /// Checking and resolving it, and baking its keyed tables. Bump the version whenever they change
 /// output for the same document.
-pub const COOKER: Stage = Stage { name: "smoves", version: 5 };
+pub const COOKER: Stage = Stage { name: "smoves", version: 6 };
 
 /// What a move set source's file name ends with.
 pub const SOURCE_SUFFIX: &str = ".moves.ron";

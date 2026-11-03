@@ -118,7 +118,8 @@ use crate::keypose::Turn;
 /// the high bits whenever retargeting changes output for the same samples and rigs.
 ///
 /// 2: in scalars, for one set of bytes on every architecture (M2 N1).
-pub const COOKER: Stage = Stage { name: "sclip retarget", version: (2 << 16) | super::COOKER.version };
+/// 3: a bone named by a name two joints share is an error, where it took the first.
+pub const COOKER: Stage = Stage { name: "sclip retarget", version: (3 << 16) | super::COOKER.version };
 
 /// One entry of a sidecar's `retarget`: which clips of the source to carry onto which rig.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

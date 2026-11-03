@@ -1,7 +1,7 @@
 //! Adapter selection and device creation.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use wgpu::{Adapter, Backend, Device, DeviceType, Queue, TextureFormat};
 
@@ -19,6 +19,11 @@ pub struct GpuContextDesc {
     /// wgpu validates against what a device asked for, so this tries a smaller device's limit on a
     /// larger one, as tests do. `None` takes what the adapter offers.
     pub max_texture_side: Option<u32>,
+    /// Holds the first uncaptured error on a live device for [`GpuContext::first_error`], in every
+    /// build, instead of stopping a development build. For a run with no one watching (a capture, a
+    /// bench): it fails with the error's text once it asks, rather than hand on what it drew. Off,
+    /// which is what an app in a window wants, an error is logged and a shipping build keeps running.
+    pub hold_errors: bool,
 }
 
 /// The GPU device the engine renders with: adapter, device, queue and probed capabilities.
@@ -37,7 +42,8 @@ pub struct GpuContextDesc {
 /// GPU work issued meanwhile does nothing. wgpu drops the loss's own errors, but objects created
 /// after the loss are invalid, and it reports using them as validation errors. Those follow from
 /// the loss, so the error handler logs the first of them as a warning and lets the rest go,
-/// where on a live device every uncaptured error is logged and stops a development build. Code
+/// where on a live device every uncaptured error is logged and stops a development build, or is
+/// held for [`Self::first_error`] with [`GpuContextDesc::hold_errors`]. Code
 /// that builds a stack checks [`Self::is_lost`] when it is done, rather than hand on objects made
 /// on a dead device.
 #[derive(Debug)]
@@ -49,6 +55,7 @@ pub struct GpuContext {
     caps: GpuCaps,
     pipeline_cache: Option<PersistentPipelineCache>,
     lost: Arc<AtomicBool>,
+    first_error: Arc<OnceLock<String>>,
 }
 
 impl GpuContext {
@@ -72,7 +79,9 @@ impl GpuContext {
             };
             caps.log();
             let lost = Arc::new(AtomicBool::new(false));
-            install_error_handlers(&device, Arc::clone(&lost));
+            let first_error = Arc::new(OnceLock::new());
+            let held = desc.hold_errors.then(|| Arc::clone(&first_error));
+            install_error_handlers(&device, Arc::clone(&lost), held);
             let pipeline_cache = match (&desc.pipeline_cache, caps.pipeline_cache) {
                 (Some(cache), true) => PersistentPipelineCache::open(&device, &caps.adapter, cache),
                 _ => None,
@@ -85,6 +94,7 @@ impl GpuContext {
                 caps,
                 pipeline_cache,
                 lost,
+                first_error,
             });
         }
         Err(RhiError::NoUsableAdapter { tried: instance.backends().to_vec() })
@@ -134,6 +144,13 @@ impl GpuContext {
     /// graph pass, say, that must not touch a device lost since the pass was added.
     pub fn lost_flag(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.lost)
+    }
+
+    /// The text of the first uncaptured error on the live device, with
+    /// [`GpuContextDesc::hold_errors`]; `None` without it, or until one comes. wgpu reports validation
+    /// errors as the call that made them runs, so after a frame's submit its errors are here.
+    pub fn first_error(&self) -> Option<&str> {
+        self.first_error.get().map(String::as_str)
     }
 
     /// The cache to pass as `cache` in pipeline descriptors, when persistence is enabled.
@@ -225,7 +242,8 @@ fn performance_rank(device_type: DeviceType) -> u8 {
     }
 }
 
-fn install_error_handlers(device: &Device, lost: Arc<AtomicBool>) {
+/// `held`: where the first error on a live device goes, rather than stopping a development build.
+fn install_error_handlers(device: &Device, lost: Arc<AtomicBool>, held: Option<Arc<OnceLock<String>>>) {
     let is_lost = Arc::clone(&lost);
     let warned = AtomicBool::new(false);
     device.on_uncaptured_error(Arc::new(move |error: wgpu::Error| {
@@ -241,9 +259,11 @@ fn install_error_handlers(device: &Device, lost: Arc<AtomicBool>) {
             return;
         }
         tracing::error!(target: LOG_TARGET, %error, "uncaptured GPU error");
-        // Development builds stop at the first error, like wgpu's default handler; shipping
-        // builds log and keep running.
-        if cfg!(debug_assertions) {
+        // A run with no one watching fails by it when it asks. Otherwise development builds stop at
+        // the first error, like wgpu's default handler; shipping builds log and keep running.
+        if let Some(held) = &held {
+            let _ = held.set(error.to_string());
+        } else if cfg!(debug_assertions) {
             panic!("uncaptured GPU error: {error}");
         }
     }));
@@ -344,5 +364,26 @@ mod tests {
         });
         // Past the buffer's end.
         gpu.queue().write_buffer(&buffer, 0, &[0; 8]);
+    }
+
+    /// Held, the same error stops no build and waits for whoever asks, the first of them whole. Needs
+    /// a GPU. Run with `cargo test -p sapphire_rhi -- --ignored`.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_held_error_waits_for_whoever_asks() {
+        let instance = GpuInstance::new(&crate::GpuInstanceDesc::default()).expect("instance");
+        let desc = GpuContextDesc { hold_errors: true, ..GpuContextDesc::default() };
+        let gpu = GpuContext::new(&instance, &desc, None).expect("device");
+        assert_eq!(gpu.first_error(), None);
+        let buffer = gpu.device().create_buffer(&wgpu::BufferDescriptor {
+            label: Some("too small"),
+            size: 4,
+            usage: wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        gpu.queue().write_buffer(&buffer, 0, &[0; 8]);
+        let first = gpu.first_error().expect("held").to_owned();
+        gpu.queue().write_buffer(&buffer, 4, &[0; 16]);
+        assert_eq!(gpu.first_error(), Some(first.as_str()), "the first stays");
     }
 }

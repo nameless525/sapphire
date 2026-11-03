@@ -20,7 +20,7 @@ use sapphire_render::graph::{FrameGraph, TextureId};
 use sapphire_rhi::{GpuContext, wgpu};
 
 use crate::LOG_TARGET;
-use crate::offscreen::Stage;
+use crate::offscreen::{Stage, gpu_failure};
 use crate::options::CaptureFrames;
 
 /// Frames drawn before a capture with the debug overlay shown: egui sizes its windows over its
@@ -75,8 +75,7 @@ pub(crate) fn run(
     // Every step has run: a world that isn't the recorded one doesn't become a picture.
     stage.check_combat()?;
     let pixels = render(stage, width, height)?;
-    write_png(path, width, height, &pixels)?;
-    write_adapter_info(path, &stage.gpu.caps().adapter)?;
+    write_capture(&stage.gpu, path, (width, height), &pixels)?;
     stage.finish_combat()?;
     tracing::info!(
         target: LOG_TARGET,
@@ -92,6 +91,19 @@ pub(crate) fn run(
     Ok(())
 }
 
+/// Writes `pixels` and the adapter's note beside them, unless the GPU has reported an error: then there's
+/// no picture, whatever the pixels look like, and a golden can't take one on trust.
+fn write_capture(
+    gpu: &GpuContext,
+    path: &Path,
+    (width, height): (u32, u32),
+    pixels: &[u8],
+) -> Result<(), AppInitError> {
+    gpu_failure(gpu).map_err(AppInitError::msg)?;
+    write_png(path, width, height, pixels)?;
+    write_adapter_info(path, &gpu.caps().adapter)
+}
+
 /// Renders one frame of the scene and reads it back as tightly packed RGBA8 rows.
 fn render(stage: &mut Stage, width: u32, height: u32) -> Result<Vec<u8>, AppInitError> {
     let target = stage.target(width, height, wgpu::TextureUsages::COPY_SRC);
@@ -102,8 +114,8 @@ fn render(stage: &mut Stage, width: u32, height: u32) -> Result<Vec<u8>, AppInit
 }
 
 /// Whether a `width` by `height` frame can be read back, where a buffer holds at most `largest` bytes.
-/// It has to be said before the frame is drawn: past `largest` wgpu only reports a validation error, a
-/// panic in a build with debug assertions and a log line in a release build.
+/// It has to be said before the frame is drawn: past `largest` wgpu only reports a validation error,
+/// which says less about why.
 pub(crate) fn readback_fits(width: u32, height: u32, largest: u64) -> Result<(), String> {
     let bytes = u128::from(padded_row_bytes(width)) * u128::from(height);
     if bytes > u128::from(largest) {
@@ -269,6 +281,53 @@ fn halve(width: u32, height: u32, rgba: &[u8]) -> (u32, u32, Vec<u8>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A device that holds its errors, as a stage's does.
+    fn holding_gpu() -> GpuContext {
+        use sapphire_rhi::{GpuContextDesc, GpuInstance, GpuInstanceDesc};
+        let instance = GpuInstance::new(&GpuInstanceDesc::default()).expect("instance");
+        let desc = GpuContextDesc { hold_errors: true, ..GpuContextDesc::default() };
+        GpuContext::new(&instance, &desc, None).expect("device")
+    }
+
+    /// A frame whose pixels look fine isn't a picture once the GPU has reported an error, in a build of
+    /// any kind. Needs a GPU. Run with `cargo test -p sapphire_sandbox --lib capture -- --ignored`.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_capture_past_a_gpu_error_fails_with_its_text_and_writes_nothing() {
+        let gpu = holding_gpu();
+        let dir = std::env::temp_dir().join(format!("sapphire_gpu_error_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a directory");
+        let (clean, failed) = (dir.join("clean.png"), dir.join("failed.png"));
+        let pixels = [255_u8; 16];
+
+        write_capture(&gpu, &clean, (2, 2), &pixels).expect("no error yet");
+        assert!(clean.exists() && clean.with_extension("adapter.txt").exists());
+
+        let buffer = gpu.device().create_buffer(&wgpu::BufferDescriptor {
+            label: Some("too small"),
+            size: 4,
+            usage: wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        gpu.queue().write_buffer(&buffer, 0, &[0; 8]);
+        let error = write_capture(&gpu, &failed, (2, 2), &pixels).expect_err("past an error");
+        let held = gpu.first_error().expect("held");
+        assert!(error.to_string().contains(held), "{error}");
+        assert!(!failed.exists() && !failed.with_extension("adapter.txt").exists(), "no picture");
+        std::fs::remove_dir_all(&dir).expect("removed");
+    }
+
+    /// A lost device's frames did nothing, and the errors that follow from it aren't held. Needs a GPU.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_capture_past_a_lost_device_fails() {
+        let gpu = holding_gpu();
+        assert_eq!(gpu_failure(&gpu), Ok(()));
+        gpu.device().destroy();
+        let _ = gpu.device().poll(wgpu::PollType::wait_indefinitely());
+        assert_eq!(gpu_failure(&gpu), Err("the GPU device was lost".to_owned()));
+    }
 
     #[test]
     fn a_frame_past_the_largest_buffer_is_refused_by_size() {

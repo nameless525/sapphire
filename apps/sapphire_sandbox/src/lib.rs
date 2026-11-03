@@ -309,6 +309,9 @@
 //!   `--capture` and `--bench` exit with an error on an argument they don't know, so a misspelled
 //!   pin can't render another picture; the windowed app and `--offscreen` log a warning.
 //!
+//!   An uncaptured GPU error fails all of these, in every build, with a failing exit and the error's
+//!   text, and a capture writes no picture; a shipping app in a window logs it and keeps running.
+//!
 //! Desktop runs need cooked content: `cargo xtask run --platform macos` cooks and launches.
 //!
 //! # The sky

@@ -360,6 +360,7 @@ pub(crate) fn run(
             .map_err(|error| AppInitError::msg(format!("--bench-trace {}: {error}", path.display())))?;
     }
     tracing::info!(target: LOG_TARGET, ?measured, "frames measured by phase: first, cpu, gpu");
+    stage.check_gpu()?;
     stage.finish_combat()
 }
 

@@ -223,6 +223,7 @@ pub(crate) fn run(
         tracing::warn!(target: LOG_TARGET, "no counting allocator: allocation counts are zero");
     }
     gpu_times(&mut stage, &view, settings.bloom_levels)?;
+    stage.check_gpu()?;
     stage.finish_combat()
 }
 

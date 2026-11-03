@@ -192,7 +192,9 @@ impl Stage {
     /// The scene and renderer `options` ask for. Offscreen modes run on desktops only.
     pub fn new(platform: &Platform, options: &Options) -> Result<Self, AppInitError> {
         let instance = GpuInstance::new(&GpuInstanceDesc::default())?;
-        let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), None)?;
+        // No one's watching: an error fails the run (`gpu_failure`), in every build.
+        let desc = GpuContextDesc { hold_errors: true, ..GpuContextDesc::default() };
+        let gpu = GpuContext::new(&instance, &desc, None)?;
         if let Some(offscreen) = &options.offscreen {
             let limits = gpu.device().limits();
             target_fits(offscreen.width, offscreen.height, limits.max_texture_dimension_2d)
@@ -445,6 +447,11 @@ impl Stage {
         self.combat.as_ref().map_or(Ok(()), Combat::check).map_err(AppInitError::msg)
     }
 
+    /// An error if the GPU has reported one since the stage was made: see [`gpu_failure`].
+    pub fn check_gpu(&self) -> Result<(), AppInitError> {
+        gpu_failure(&self.gpu).map_err(AppInitError::msg)
+    }
+
     /// Ends the replay or recording, if there is one: see [`Combat::finish`].
     pub fn finish_combat(&mut self) -> Result<(), AppInitError> {
         if let Some(cues) = self.scene.cue_show() {
@@ -620,9 +627,21 @@ impl Stage {
     }
 }
 
-/// Whether a `--size` target fits this device. It has to be said here: past `largest` wgpu only reports
-/// validation errors, to a handler that logs them in a release build, so a capture would go on to write
-/// a blank picture and exit 0.
+/// Why a run on `gpu`, made with `GpuContextDesc::hold_errors`, can't stand: the first error it held, or
+/// a device lost, whose frames since did nothing. What it drew can't be trusted, whatever its pixels look
+/// like, so a capture writes no picture past this and a bench no result.
+pub(crate) fn gpu_failure(gpu: &GpuContext) -> Result<(), String> {
+    if let Some(error) = gpu.first_error() {
+        return Err(format!("the GPU reported an error: {error}"));
+    }
+    if gpu.is_lost() {
+        return Err("the GPU device was lost".to_owned());
+    }
+    Ok(())
+}
+
+/// Whether a `--size` target fits this device. It has to be said here, before anything is drawn: past
+/// `largest` wgpu only reports validation errors, which say less about why.
 fn target_fits(width: u32, height: u32, largest: u32) -> Result<(), String> {
     if width.max(height) > largest {
         return Err(format!("--size {width}x{height}: this device's largest target is {largest} a side"));

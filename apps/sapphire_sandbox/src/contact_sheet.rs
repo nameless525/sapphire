@@ -320,6 +320,7 @@ pub(crate) fn run(
             sheet.place(column, row, &frame, sample.tick);
         }
     }
+    stage.check_gpu()?;
     write_png(path, sheet.width as u32, sheet.height as u32, &sheet.pixels)?;
     tracing::info!(
         target: LOG_TARGET,

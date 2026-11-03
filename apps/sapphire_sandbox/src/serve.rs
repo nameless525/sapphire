@@ -146,6 +146,10 @@ impl Serving {
 
     /// Ends the fight, if there is one, and says how the app should leave.
     pub fn finish(&mut self) -> AppControl {
+        if let Err(error) = self.stage.check_gpu() {
+            tracing::error!(target: LOG_TARGET, %error, "offscreen frame failed");
+            return AppControl::Fail;
+        }
         match self.stage.finish_combat() {
             Ok(()) => AppControl::Exit,
             Err(error) => {
@@ -222,6 +226,8 @@ impl Serving {
             Some(request) => {
                 let capture = FrameCapture::new(&stage.gpu, self.size, FORMAT, request);
                 stage.render(capture.view(), 1.0, |graph, target| capture.record(graph, target))?;
+                // No picture past a GPU error: the error's the answer, and it ends the run.
+                stage.check_gpu()?;
                 capture.finish(&stage.gpu, stage.dev.frames());
             }
             None => {
@@ -231,6 +237,6 @@ impl Serving {
             }
         }
         stage.scene.end_frame();
-        Ok(())
+        stage.check_gpu()
     }
 }

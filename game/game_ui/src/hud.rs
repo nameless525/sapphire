@@ -406,11 +406,13 @@ impl FightHud {
             player: FighterValues { hp: 0.78, poise: 0.82, hp_points: Some(5054) },
             enemy: Some(FighterValues { hp: 0.83, poise: 0.35, hp_points: None }),
             skill: SkillValues { cooldown: 0.7, seconds: Some(5) },
+            ..HudValues::default()
         };
         let after = HudValues {
             player: FighterValues { hp: 0.64, poise: 0.46, hp_points: Some(4147) },
             enemy: Some(FighterValues { hp: 0.71, poise: 0.62, hp_points: None }),
             skill: SkillValues { cooldown: 0.62, seconds: Some(4) },
+            ..HudValues::default()
         };
         let actions = self.controls.update(ms(900));
         self.hud.update(ms(900), &before, actions);
@@ -487,6 +489,7 @@ impl LiveValues {
             },
             enemy: Some(FighterValues { hp: self.enemy_hp, poise: self.enemy_poise, hp_points: None }),
             skill: SkillValues { cooldown: cooldown.0, seconds: cooldown.1 },
+            ..HudValues::default()
         }
     }
 }
@@ -651,6 +654,7 @@ mod tests {
             player: FighterValues { hp: 0.5, poise: 0.25, hp_points: Some(150) },
             enemy: Some(FighterValues { hp: 0.75, poise: 1.0, hp_points: None }),
             skill: SkillValues::default(),
+            ..HudValues::default()
         };
         hud.show_fight(values, Duration::from_secs(2));
         hud.draw((640, 360), &mut list);

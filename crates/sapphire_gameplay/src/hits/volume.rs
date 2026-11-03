@@ -283,7 +283,7 @@ mod boundary_tests {
         let root = ActorTransform::default();
         let sweep = VolumeSweep {
             attacker: ActorId::from_raw(1).expect("valid"),
-            faction: crate::faction::Faction::NONE,
+            faction: Faction::NONE,
             instance: 1,
             volume: 0,
             group: Name::new("hit"),

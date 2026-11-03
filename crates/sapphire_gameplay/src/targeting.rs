@@ -165,7 +165,7 @@ pub struct SoftLock {
 
 impl SoftLock {
     /// On, with nobody chosen yet: its first step chooses.
-    pub(crate) const ON: Self = Self { on: true, target: None };
+    pub const ON: Self = Self { on: true, target: None };
 
     /// Whether this actor chooses at all.
     #[must_use]

@@ -235,26 +235,33 @@ fn touch_walks_the_player_where_the_view_looks_and_starts_a_move() {
     assert_eq!(rig.player().moves.current.expect("running").serial, serial, "one press, held");
 }
 
-/// A thumb on the zones says a thumb is playing, for what chooses a target by that, until another device
-/// is used. Frames with nobody playing say nothing, and zeros from the zones count as nobody.
+/// A thumb on the zones says a thumb is playing, in what the next step's player reads, until another device
+/// is used. Frames with nobody playing say nothing, and zeros from the zones count as nobody. It goes in a
+/// recording with the rest, which is how a soft lock hears (`Buttons::TOUCH`).
 #[test]
 fn the_zones_say_a_thumb_is_playing_until_another_device_is_used() {
+    use sapphire_gameplay::replay::ActionSource;
+    let reads_touch = |rig: &mut Rig| {
+        let cast = rig.combat.cast().to_vec();
+        let actions = rig.input.source(0.0).actions(0, &cast);
+        actions.get(cast[0]).buttons.contains(sapphire_gameplay::Buttons::TOUCH)
+    };
     let mut rig = Rig::fight();
     for _ in 0..3 {
         rig.frame();
     }
-    assert!(!rig.input.played_on_touch(), "nobody's playing yet");
+    assert!(!reads_touch(&mut rig), "nobody's playing yet");
     rig.push_stick(THUMB, Vec2::new(0.0, 1.0));
     rig.frame();
-    assert!(rig.input.played_on_touch());
+    assert!(reads_touch(&mut rig));
     rig.touch(1, THUMB, TouchPhase::Up, rig.layout.stick.rest);
     for _ in 0..3 {
         rig.frame();
     }
-    assert!(rig.input.played_on_touch(), "it lasts with the thumb off the screen");
+    assert!(reads_touch(&mut rig), "it lasts with the thumb off the screen");
     rig.tap_key(Scancode::J);
     rig.frame();
-    assert!(!rig.input.played_on_touch(), "a key takes it back");
+    assert!(!reads_touch(&mut rig), "a key takes it back");
 }
 
 /// What a desktop's window has in its player's hands: the keyboard and the mouse, under the live HUD's
@@ -465,7 +472,11 @@ fn a_canceled_touch_and_the_background_let_go() {
         rig.event(loss);
         rig.frame();
         let read = rig.read();
-        assert_eq!((read.buttons, read.stick), (sapphire_gameplay::Buttons::NONE, Stick::CENTER), "{loss:?}");
+        assert_eq!(
+            (read.buttons.minus(sapphire_gameplay::Buttons::TOUCH), read.stick),
+            (sapphire_gameplay::Buttons::NONE, Stick::CENTER),
+            "{loss:?}"
+        );
     }
 
     let mut rig = Rig::fight();
@@ -476,7 +487,8 @@ fn a_canceled_touch_and_the_background_let_go() {
     rig.touch(1, OTHER_THUMB, TouchPhase::Canceled, rig.layout.attack.center);
     rig.frame();
     let read = rig.read();
-    assert_eq!(read.buttons, sapphire_gameplay::Buttons::NONE, "the attack's finger was taken back");
+    let buttons = read.buttons.minus(sapphire_gameplay::Buttons::TOUCH);
+    assert_eq!(buttons, sapphire_gameplay::Buttons::NONE, "the attack's finger was taken back");
     assert_ne!(read.stick, Stick::CENTER, "and the stick's wasn't");
 }
 
@@ -505,7 +517,10 @@ fn a_tap_ends_the_pause_and_a_thumb_held_through_it_still_lifts() {
     assert!(!rig.frame());
     assert!(!rig.input.is_paused(), "the tap ended it");
     let read = rig.read();
-    assert_eq!((read.buttons, read.stick), (sapphire_gameplay::Buttons::NONE, Stick::CENTER));
+    assert_eq!(
+        (read.buttons.minus(sapphire_gameplay::Buttons::TOUCH), read.stick),
+        (sapphire_gameplay::Buttons::NONE, Stick::CENTER)
+    );
 
     // Back into it, and Back again leaves.
     rig.back();

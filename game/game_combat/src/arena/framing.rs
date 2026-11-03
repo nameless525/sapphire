@@ -34,11 +34,11 @@ use std::path::{Path, PathBuf};
 use sapphire_assets::mesh::{ArchivedMesh, Mesh};
 use sapphire_assets::pack::PackReader;
 use sapphire_camera::{CameraPose, CameraStats};
-use sapphire_gameplay::ActorActions;
 use sapphire_gameplay::TickActions;
 use sapphire_gameplay::replay::{
     Player, Recording, Replay, SCENARIOS, Scenario, fight_back, find_scenario, find_script,
 };
+use sapphire_gameplay::{ActorActions, Stick};
 use sapphire_physics::{ColliderId, Group, GroupMask, RayHit, Shape, StaticCollider, StaticShape};
 
 use super::*;
@@ -1030,7 +1030,7 @@ fn run_fight(
         actors.drive_camera(dt, look, 0.0);
         actors.present(&mut world, 1.0, Some(condition.aspect));
 
-        let framed = actors.target.is_some();
+        let framed = actors.framed().is_some();
         let (player_feet, enemy_feet) =
             (actors.drawn(0, 1.0).w_axis.truncate(), actors.drawn(1, 1.0).w_axis.truncate());
         let director = actors.director().expect("this shot has one");

@@ -102,7 +102,7 @@ impl AuthoredHeadLook {
 
 /// One turn step is triggered by a rapid change of presented facing. The root and all action
 /// decisions still come from the controller. The chest catches up after the hips begin to turn.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct GroundTurn {
     previous: Option<(f64, f32, f32)>,
     started: Option<f64>,

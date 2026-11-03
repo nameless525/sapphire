@@ -332,7 +332,7 @@ impl ClipSource for ClipTable<'_> {
 }
 
 /// A character playing a graph. See the [module docs](self).
-#[derive(Component, Debug)]
+#[derive(Component, Clone, Debug)]
 pub struct GraphDriver {
     pub player: GraphPlayer,
     joints: FigureJoints,

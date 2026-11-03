@@ -263,7 +263,9 @@ impl Simulation {
     /// Adds a system to a [`CombatSet`], for a crate above gameplay (`sapphire_script` fires its hooks
     /// this way) and for a world built to test the simulation itself, such as the one that shows
     /// replays' allocation gate bites. What every fight runs goes in [`Self::new`].
-    /// It rebuilds the schedule here, so that isn't paid inside the next step.
+    /// It rebuilds the schedule here, so that isn't paid inside the next step. Say its order against what's
+    /// in that set (`.after(...)`) if it could matter: left to the schedule, that order can change when any
+    /// other system is added, and the checksums with it.
     pub fn add_combat_system<M>(
         &mut self,
         set: CombatSet,

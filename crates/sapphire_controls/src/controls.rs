@@ -5,8 +5,8 @@ use std::time::Duration;
 use sapphire_gameplay::replay::ActionSource;
 use sapphire_gameplay::{ActorActions, ActorId, Buttons, Stick, TickActions};
 use sapphire_input::{
-    ActionEventKind, ActionId, ActionKind, ContextId, InputBindings, InputMap, InputSystem, MapError,
-    RebindError,
+    ActionEventKind, ActionId, ActionKind, ContextId, DeviceKind, InputBindings, InputMap, InputSystem,
+    MapError, RebindError,
 };
 use sapphire_math::{Vec2, Vec3, det};
 use sapphire_platform::{Event, Timestamp};
@@ -475,7 +475,11 @@ impl ActionSource for ControlsSource<'_> {
     /// The next step's input for the player, who is first in `cast`, with everyone else neutral. A
     /// cast with no one in it leaves no one to hand it to, and the step still moves presses along.
     fn actions(&mut self, _tick: u64, cast: &[ActorId]) -> TickActions {
-        let actions = self.controls.next_actions(self.camera_yaw);
+        let mut actions = self.controls.next_actions(self.camera_yaw);
+        // A thumb can't aim, so a soft lock weighs what it's given otherwise, and the replay has to know.
+        if self.controls.input.last_device() == Some(DeviceKind::Touch) {
+            actions.buttons = actions.buttons | Buttons::TOUCH;
+        }
         let mut tick = TickActions::NEUTRAL;
         if let Some(&player) = cast.first() {
             tick.set(player, actions).expect("an empty tick has room for one actor");

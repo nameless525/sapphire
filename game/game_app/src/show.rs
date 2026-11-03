@@ -12,7 +12,7 @@ use game_ui::menus::{
 use sapphire_controls::{CombatControls, ControlsError};
 use sapphire_ecs::prelude::Entity;
 use sapphire_gameplay::ActorId;
-use sapphire_input::{DeviceKind, InputMap};
+use sapphire_input::InputMap;
 use sapphire_platform::{AppInitError, Event, GamepadEvent, Os, Timestamp, TouchPhase, Window};
 use sapphire_render::quality::TierId;
 use sapphire_render::{PipelineInventory, Renderer, UiPageState, VfxFrame};
@@ -249,8 +249,6 @@ impl GameShow {
             }
         }
         controls.update(now);
-        let touch = controls.input().last_device() == Some(DeviceKind::Touch);
-        self.shown.fight.show.set_played_on_touch(touch);
         self.follow_pause();
         self.show_fight_on_menus();
         left || self.controls.wants_to_leave()

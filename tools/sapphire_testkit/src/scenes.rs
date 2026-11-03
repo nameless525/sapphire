@@ -193,7 +193,8 @@ macro_rules! game_scene {
 /// `cutscene-gate-*` stand the arena's stage in the Lantern Ward's court for a replay that watches its gate
 /// cutscene (M3 Q3), and only they play a cutscene from a fight. `arena-ultimate-chop` plays the player's
 /// ultimate (M3 Q3b) on the arena's own stage, the only scene in a move's cinematic.
-pub fn scenes() -> [Scene; 190] {
+/// `arena-skirmish` plays eight fighters (M3 B1), on the director.
+pub fn scenes() -> [Scene; 191] {
     [
         Scene {
             name: "turntable-start",
@@ -2561,6 +2562,33 @@ pub fn scenes() -> [Scene; 190] {
         // metallic stripes; leather, darker toward its rim, with a soft GGX highlight; a dark suit
         // with cyan light lines; and a leg in a thigh-high black stocking, sheer facing the
         // camera, near black at its silhouette, bare above its top.
+        // Eight in one fight (M3 B1), in what a player sees: a warrior for each, and the HUD with the foe the
+        // player has and a small bar for each other one. The only arena scene on the director, since how
+        // it stands back for those near the player is what this is here to show.
+        Scene {
+            name: "arena-skirmish",
+            args: &[
+                "--capture-ticks",
+                "240",
+                "--cues",
+                "--hud",
+                "live",
+                "--arena",
+                "--replay",
+                "tests/replays/arena-skirmish.sreplay",
+                "--time-of-day",
+                "10",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--blade",
+                "on",
+                "--capture-frames",
+                "32",
+            ],
+            thresholds: Thresholds::default(),
+        },
         Scene {
             name: "materials-day",
             args: &[
@@ -4603,10 +4631,10 @@ mod tests {
         let mut sizes = Vec::new();
         for scene in scenes() {
             let hud = scene.args.contains(&"--hud");
-            // `arena-fight-hit` shows the bars reading a real fight.
+            // `arena-fight-hit` and `arena-skirmish` show the bars reading a real fight.
             let expected = scene.name.starts_with("hud-")
                 || scene.name.starts_with("game-hud-")
-                || scene.name == "arena-fight-hit";
+                || ["arena-fight-hit", "arena-skirmish"].contains(&scene.name);
             assert_eq!(hud, expected, "{}", scene.name);
             if scene.name.starts_with("game-") {
                 continue;

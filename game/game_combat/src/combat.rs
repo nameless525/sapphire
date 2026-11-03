@@ -62,6 +62,33 @@ use crate::LOG_TARGET;
 /// A script's actions: a function of the tick.
 type ScriptActions = fn(u64, &[ActorId]) -> TickActions;
 
+/// Whether `cast`'s player has fallen in `sim`, or all there was to fight has. A party falls with its last
+/// member: until then, a fall only brings in the next.
+fn is_over(sim: &Simulation, cast: &[ActorId]) -> bool {
+    let party = sim.party();
+    let Some(&first) = cast.first() else { return false };
+    if party.input_actor() == Some(first) {
+        return party.is_down() || foes_have_fallen(sim, party.on_field(first));
+    }
+    foes_have_fallen(sim, first) || sim.actor(first).is_some_and(|player| player.fighter.is_defeated())
+}
+
+/// Whether anyone stood against `player`, and all of them have fallen.
+fn foes_have_fallen(sim: &Simulation, player: ActorId) -> bool {
+    let Some(side) = sim.actor(player).map(|player| player.fighter.faction()) else { return false };
+    let mut felled = false;
+    for actor in sim.actors() {
+        if actor.id == player || actor.off_field || !actor.fighter.is_fighter() {
+            continue;
+        }
+        if actor.fighter.is_foe_of(side) {
+            return false;
+        }
+        felled |= actor.fighter.faction().is_hostile_to(side);
+    }
+    felled
+}
+
 /// How long a fight goes on after someone falls before it starts over, in ticks: long enough to see
 /// them fall. The warrior's death lasts 150.
 pub(crate) const RESTART_AFTER: u64 = 240;
@@ -215,7 +242,7 @@ impl LiveFight {
         self.sim.step(&actions);
         let tick = self.sim.tick();
         match self.fell_at {
-            None if self.someone_fell() => self.fell_at = Some(tick),
+            None if self.is_over() => self.fell_at = Some(tick),
             Some(at) if tick - at >= RESTART_AFTER => self.start_over(),
             _ => {}
         }
@@ -228,22 +255,17 @@ impl LiveFight {
     fn hide_held_over(&mut self, actions: &mut TickActions) {
         let Some(&player) = self.sim.cast().first() else { return };
         let mut read = actions.get(player);
-        self.held = read.buttons;
+        // Which device played isn't a button held, and a thumb goes on being one.
+        self.held = read.buttons.minus(Buttons::TOUCH);
         // What's in `held_over` and still down: `Buttons` has no intersection.
         self.held_over = self.held_over.minus(self.held_over.minus(read.buttons));
         read.buttons = read.buttons.minus(self.held_over);
         actions.set(player, read).expect("the bindings just gave this actor a place");
     }
 
-    /// A party falls with its last member: until then, a fall only brings in the next.
-    fn someone_fell(&self) -> bool {
-        let party = self.sim.party();
-        self.sim.cast().iter().any(|id| {
-            if party.input_actor() == Some(*id) {
-                return party.is_down();
-            }
-            self.sim.actor(*id).is_some_and(|actor| actor.fighter.is_defeated())
-        })
+    /// Whether the player's fallen, or all there was to fight has ([`is_over`]).
+    fn is_over(&self) -> bool {
+        is_over(&self.sim, self.sim.cast())
     }
 
     /// Reports this fight and makes the next. If it can't, because a live edit took something the scenario
@@ -1204,7 +1226,7 @@ mod tests {
     use std::path::PathBuf;
 
     use sapphire_gameplay::replay::{Replay, find_script};
-    use sapphire_gameplay::{ActorActions, Buttons};
+    use sapphire_gameplay::{ActorActions, Buttons, Stick};
 
     use super::*;
 
@@ -1332,6 +1354,32 @@ mod tests {
     fn fighting(script: Option<&str>) -> Combat {
         Combat::new(&CombatOption::Fight { script: script.map(str::to_owned), party: false })
             .expect("sets up")
+    }
+
+    /// One foe falling among several is no end of a fight: the rest are still there.
+    #[test]
+    fn a_fight_goes_on_while_a_foe_stands() {
+        // A live fight is always the arena's two or a party, so this runs the skirmish's own world.
+        let scenario = find_scenario(SCENARIOS, crate::arena::SKIRMISH_SCENARIO).expect("listed");
+        let (mut sim, cast) = scenario.start(scenario.config).expect("it starts");
+        // The player runs for it, so the warriors' fight with each other is what fells someone first.
+        let mut away = TickActions::NEUTRAL;
+        let actions = ActorActions { buttons: Buttons::NONE, stick: Stick::new(0, -127) };
+        away.set(cast[0], actions).expect("room");
+        let standing =
+            |sim: &Simulation, id: &ActorId| sim.actor(*id).is_some_and(|actor| !actor.fighter.is_defeated());
+        for _ in 0..6000 {
+            sim.step(&away);
+            if !standing(&sim, &cast[0]) {
+                break;
+            }
+            let foes = cast[1..].iter().filter(|id| standing(&sim, id)).count();
+            if foes < cast.len() - 1 {
+                assert!(!is_over(&sim, &cast), "{foes} left");
+                return;
+            }
+        }
+        panic!("nobody fell before the player did");
     }
 
     /// Whoever falls, it goes on long enough to see, starts over from the same first tick, and plays

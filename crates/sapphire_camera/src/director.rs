@@ -103,6 +103,9 @@ fn turned_toward(from: Vec3, to: Vec3, share: f32, turn: &mut f32) -> Vec3 {
     Vec3::new(sin_yaw * cos_pitch, sin_pitch, cos_yaw * cos_pitch)
 }
 
+/// How many besides its target a frame can ask the combat rig to keep in the shot.
+pub const MAX_BYSTANDERS: usize = 3;
+
 /// One frame's inputs: plain values the app reads from its clock, transforms and input.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CameraFrame {
@@ -121,6 +124,10 @@ pub struct CameraFrame {
     pub player_yaw: f32,
     /// Who the framing rigs frame. Without one they let go.
     pub target: Option<Subject>,
+    /// Who else stands against the player, the nearest first. The combat rig stands back to keep those near
+    /// the player in the shot, and never turns for them (`CombatTuning::bystander_reach`). With no target
+    /// nobody frames them either.
+    pub bystanders: [Option<Subject>; MAX_BYSTANDERS],
     /// Look input for this frame, in radians, as `sapphire_controls`' `CombatControls::look` gives it:
     /// added to the view's yaw (toward +X, so turning left) and pitch (above zero looks down).
     pub look: Vec2,
@@ -139,6 +146,7 @@ struct Steady {
     player: Subject,
     player_yaw: f32,
     target: Option<Subject>,
+    bystanders: [Option<Subject>; MAX_BYSTANDERS],
     look: Vec2,
     zoom: f32,
     aspect: f32,
@@ -664,10 +672,10 @@ impl CameraDirector {
     /// `frame` with anything unusable replaced: NaNs from upstream shouldn't reach the springs, whose state
     /// would never recover. A paused or backward `dt` is 0.
     fn sanitized(&mut self, frame: &CameraFrame) -> Steady {
-        let CameraFrame { dt, behind, player, player_yaw, target, look, zoom, aspect } = *frame;
+        let CameraFrame { dt, behind, player, player_yaw, target, bystanders, look, zoom, aspect } = *frame;
         let nobody = Subject { position: Vec3::NAN, height: 1.0, radius: 0.1 };
-        let mut clean =
-            Steady { dt, behind, player: player.unwrap_or(nobody), player_yaw, target, look, zoom, aspect };
+        let player = player.unwrap_or(nobody);
+        let mut clean = Steady { dt, behind, player, player_yaw, target, bystanders, look, zoom, aspect };
         if !clean.dt.is_finite() || clean.dt < 0.0 {
             clean.dt = 0.0;
         }
@@ -686,6 +694,11 @@ impl CameraDirector {
         }
         if !clean.target.is_none_or(|target| target.is_valid()) {
             clean.target = None;
+        }
+        for bystander in &mut clean.bystanders {
+            if !bystander.is_none_or(|bystander| bystander.is_valid()) {
+                *bystander = None;
+            }
         }
         if let Some(last) = &self.last_frame {
             if !clean.player.is_valid() {
@@ -1055,9 +1068,41 @@ impl CameraDirector {
                             tan_y,
                             framing.min_depth,
                         ))
-                        .max(framing.distance * zoom)
-                        .min(framing.max_distance);
+                        .max(framing.distance * zoom);
+                let fitted = if rig == Rig::Combat {
+                    self.with_bystanders(frame, fitted, pivot, axes, tan_x, tan_y, framing.min_depth)
+                } else {
+                    fitted
+                };
+                let fitted = fitted.min(framing.max_distance);
                 goal += (fitted - goal) * weight;
+            }
+        }
+        goal
+    }
+
+    /// `fitted`, the distance that fits the fighters, or further to keep the frame's bystanders in the shot:
+    /// each asks for its share of what it takes, by how close it stands to the player. Whoever's behind the
+    /// pivot is left out, since pulling back toward them only makes everyone smaller. With none, `fitted`.
+    #[allow(clippy::too_many_arguments)]
+    fn with_bystanders(
+        &self,
+        frame: &Steady,
+        fitted: f32,
+        pivot: Vec3,
+        axes: &Axes,
+        tan_x: f32,
+        tan_y: f32,
+        min_depth: f32,
+    ) -> f32 {
+        let [near, far] = self.tuning.combat.bystander_reach;
+        let mut goal = fitted;
+        for bystander in frame.bystanders.iter().flatten() {
+            let across = (bystander.position - frame.player.position).with_y(0.0).length();
+            let share = 1.0 - smoothstep(near, far, across);
+            if share > 0.0 && (bystander.position - pivot).dot(axes.forward) >= 0.0 {
+                let wanted = framed_distance([bystander, bystander], pivot, axes, tan_x, tan_y, min_depth);
+                goal = goal.max(fitted + (wanted - fitted) * share);
             }
         }
         goal

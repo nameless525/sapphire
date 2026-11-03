@@ -34,8 +34,8 @@ pub struct CameraTuning {
 }
 
 impl Versioned for CameraTuning {
-    /// 1: M2 G5.
-    const VERSION: u32 = 1;
+    /// 1: M2 G5. 2: M3 B1, `combat.bystander_reach`.
+    const VERSION: u32 = 2;
 }
 
 /// Following one character around.
@@ -102,6 +102,10 @@ pub struct CombatTuning {
     pub framing: FramingTuning,
     pub pitch_min: f32,
     pub pitch_max: f32,
+    /// Across the ground from the player, in metres: at the first of these or closer a bystander
+    /// (`CameraFrame::bystanders`) asks for all the distance it takes to keep it in the shot, and at the
+    /// second or further it asks for none.
+    pub bystander_reach: [f32; 2],
 }
 
 /// Lock-on: the view holds the line from player to target, with the player a little to one side.
@@ -366,6 +370,10 @@ impl CameraTuning {
         Check::range("combat.pitch_min", self.combat.pitch_min, NEAR_LEVEL.0, NEAR_LEVEL.1)?;
         Check::range("combat.pitch_max", self.combat.pitch_max, NEAR_LEVEL.0, NEAR_LEVEL.1)?;
         Check::order("combat.pitch_min", self.combat.pitch_min, "combat.pitch_max", self.combat.pitch_max)?;
+        let [near, far] = self.combat.bystander_reach;
+        Check::range("combat.bystander_reach[0]", near, 0.0, 100.0)?;
+        Check::range("combat.bystander_reach[1]", far, 0.0, 100.0)?;
+        Check::order("combat.bystander_reach[0]", near, "combat.bystander_reach[1]", far)?;
 
         let lock = &self.lock_on;
         lock.framing.validate("lock_on")?;
@@ -501,6 +509,7 @@ mod tests {
                 t.combat.framing.line_fade[1] = t.combat.framing.line_fade[0]
             }),
             ("combat.pitch_max", |t| t.combat.pitch_max = t.combat.pitch_min - 0.1),
+            ("combat.bystander_reach[1]", |t| t.combat.bystander_reach[1] = -1.0),
             ("lock_on.framing.turn_half_life", |t| t.lock_on.framing.turn_half_life = f32::INFINITY),
             ("lock_on.side_angle", |t| t.lock_on.side_angle = 2.0),
             ("lock_on.pitch_follow", |t| t.lock_on.pitch_follow = 1.5),

@@ -506,13 +506,13 @@ impl Stage {
 
     /// Stands the enemy in `pose`, whatever its graph last played.
     fn set_enemy_pose(&mut self, pose: RenderPose) {
-        let enemy = self.show.enemy.expect("it stands there").0;
+        let enemy = self.show.warriors[0].0;
         self.scene.world_mut().entity_mut(enemy).insert(pose);
     }
 
     /// What plays the enemy's graph.
     fn enemy_player(&self) -> &sapphire_anim::GraphPlayer {
-        self.player_of(self.show.enemy.expect("it stands there").0)
+        self.player_of(self.show.warriors[0].0)
     }
 
     /// How many joints the pose the character's graph plays has.
@@ -665,12 +665,7 @@ fn an_edited_enemy_graph_stays_until_a_pack_replaces_it() {
         .expect_err("another skeleton's clip");
     assert!(error.contains("swing"), "{error}");
     let player = |scene: &Scene, show: &FightShow| {
-        scene
-            .world()
-            .get::<GraphDriver>(show.enemy.expect("it stands there").0)
-            .expect("playing")
-            .player
-            .has_replacement()
+        scene.world().get::<GraphDriver>(show.warriors[0].0).expect("playing").player.has_replacement()
     };
     assert!(!player(scene, show));
 

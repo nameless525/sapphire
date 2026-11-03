@@ -69,6 +69,7 @@ fn frame(frame: u64, controls: &mut TouchControls, hud: &mut CombatHud, list: &m
         player: FighterValues { hp: 1.0 - share, poise: share, hp_points: Some(6480 - frame as u32 % 100) },
         enemy: Some(FighterValues { hp: share, poise: 1.0 - share, hp_points: Some(frame as u32 % 100) }),
         skill: SkillValues { cooldown: 1.0 - share, seconds: Some(frame as u32 % 7) },
+        ..HudValues::default()
     };
     hud.update(now, &values, actions);
     if frame.is_multiple_of(3) {

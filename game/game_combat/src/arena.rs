@@ -19,7 +19,8 @@
 //! - **Spawn points:** `sapphire_gameplay::arena`, read from `content/arena/square.spawns.ron`.
 //! - **Who stands there:** [`ArenaActors`]: the character, in the look-dev stage's held pose, at the
 //!   player's spawn point, and the enemy (`crate::enemy`) and its blade at the enemy's. With `--replay`,
-//!   `--record` or `--fight`, each actor's root follows `ActorTransform` a tick at a time.
+//!   `--record` or `--fight`, each actor's root follows `ActorTransform` a tick at a time, and whoever
+//!   else a simulation has comes on as another warrior ([`ArenaActors::next_change`]).
 //! - **The camera** (`--arena-shot`, [`ArenaShot`]): `sapphire_camera`'s director by default, on its
 //!   combat rig, framing both fighters and colliding with the world. `follow` is a plain fixed follow,
 //!   what the golden scenes pin, so a change of camera tuning moves none of them. The tests' `framing`
@@ -41,9 +42,11 @@
 //!   [`crate::fight::FightShow::follow_simulation`] passes on to the renderer as the view's cut, for temporal AA
 //!   and the shadows. A party's swap doesn't: who comes in stands where the one who left stood.
 //! - **The camera (G5 and G6, in):** [`ArenaCamera`]. Look and zoom reach it through
-//!   [`crate::fight::FightShow::drive_camera`]. Its target is `sapphire_gameplay::targeting`'s soft lock,
-//!   chosen each frame by [`ArenaActors::present`], so a fallen enemy, or one out of range, stops being
-//!   framed. The player's lock-on button holds the line to it, through the director's own rig
+//!   [`crate::fight::FightShow::drive_camera`]. Its target is the player's soft lock, chosen in the step
+//!   (`sapphire_gameplay::SoftLock`), so a fallen enemy, or one out of range, stops being framed, and the
+//!   foes nearest the player besides it stand in the shot as long as they're close
+//!   (`sapphire_camera::CameraFrame::bystanders`). The player's lock-on button holds the line to it,
+//!   through the director's own rig
 //!   ([`ArenaActors::set_lock_on`]). Shakes are the director's own calls too, for E3, made on
 //!   [`ArenaCamera::director`], which [`ArenaActors::director`] hands to `crate::cues`. `OrbitCamera::set_view`
 //!   keeps the view upright, so a shake's roll goes through `OrbitCamera::set_shake` ([`roll_of`]).
@@ -57,7 +60,7 @@
 //!   from a clip: [`ArenaActors::present`] keeps the transform, and the blade with it, through
 //!   [`ArenaActors::hold_blade`].
 //! - **IK (N4, in):** each fighter's graph driver casts for its feet in this world
-//!   ([`ArenaGround::share`]), the same `Arc` the camera reads, and looks at the other
+//!   ([`ArenaGround::share`]), the same `Arc` the camera reads, and looks at who it's fighting
 //!   ([`ArenaActors::look_target`]). `--clip <name> --ik on` casts here too.
 //! - **The enemy (O4 and G6, in):** `crate::enemy`'s model and blade, in `spawn_arena`, and its brain in
 //!   the `arena-fight` scenario. The `arena` scenario's opponent draws as the same warrior and has no
@@ -67,7 +70,8 @@
 //!   member's recolor.
 //! - **Effects and cues (E2, E3, in):** `--cues` fires a fight's cues where the simulation has its
 //!   actors (`crate::cues::CueStage::Actors`), and `--vfx` draws over whatever scene is up.
-//! - **The HUD (I2, in):** `--hud live` shows what [`ArenaActors::hud_values`] reads of the fighters.
+//! - **The HUD (I2, in):** `--hud live` shows what [`ArenaActors::hud_values`] reads of the fighters: the
+//!   foe the player has, whole, and a small bar for each other one standing.
 //! - **Touch (I3, in):** the HUD's zones reach `TickActions` through combat's bindings
 //!   (`sapphire_controls::CombatControls::read_touch`), so a fight in a window is played on touch, a
 //!   pad or a keyboard (`docs/m2-exit-run.md` has a phone's run).
@@ -78,20 +82,19 @@ use std::time::Duration;
 
 use sapphire_anim::{AuthoredFootMotion, GraphInput, ReactionInput};
 use sapphire_assets::AssetId;
-use sapphire_camera::{CameraDirector, CameraFrame, CameraTuning, Rig, Subject};
+use sapphire_camera::{CameraDirector, CameraFrame, CameraTuning, MAX_BYSTANDERS, Rig, Subject};
 use sapphire_colliders::{ArchivedColliderSet, ColliderError, Group};
 use sapphire_core::debug_draw::{Color, Shape, Style};
 use sapphire_ecs::bevy_ecs::world::WorldId;
 use sapphire_ecs::prelude::*;
 use sapphire_gameplay::arena::{ArenaSpawns, SpawnPoint, cooked_colliders, profile, spawns};
 use sapphire_gameplay::replay::{WARD_COURT, ZoneFight, zone_fight};
-use sapphire_gameplay::targeting::{TargetCandidate, TargetQuery, TargetingTuning, choose_target};
-use sapphire_gameplay::{ActorId, ActorView, Buttons, MoveLibrary, Simulation, Stick};
+use sapphire_gameplay::{ActorId, ActorView, Buttons, Faction, MoveLibrary, Simulation};
 use sapphire_math::{Affine3A, Mat4, Quat, Vec2, Vec3};
 use sapphire_moves::RootSample;
 use sapphire_physics::{ColliderSet, HitTarget, PhysicsWorld, Pose, QueryFilter, WorldError};
 use sapphire_time::TICK_HZ;
-use sapphire_ui::{FighterValues, HudValues, SkillValues};
+use sapphire_ui::{FighterValues, HudValues, OtherFoes, SkillValues};
 
 use crate::combat_views::{self, Canvas};
 use crate::enemy;
@@ -121,8 +124,8 @@ pub const FIGHT_SCENARIO: &str = "arena-fight";
 /// The scenario of a party's fight with the enemy (M2 G7): `--fight --party`, and the replays made from it.
 pub const PARTY_SCENARIO: &str = "party";
 
-/// Who a soft lock can find before a simulation says: the second actor a scenario spawns.
-const ENEMY_ID: ActorId = ActorId::from_raw(2).expect("not zero");
+/// The scenario of a fight with two sides of warriors (M3 B1): the replays made from it.
+pub const SKIRMISH_SCENARIO: &str = "arena-skirmish";
 
 /// Which noise the director's shakes draw from.
 const CAMERA_SEED: u64 = 7;
@@ -203,12 +206,12 @@ pub fn check_scenario(combat: &crate::combat::Combat, party: bool) -> Result<(),
              `{scenario}`"
         ));
     }
-    if [SCENARIO, FIGHT_SCENARIO, WARD_COURT].contains(&scenario) {
+    if [SCENARIO, FIGHT_SCENARIO, SKIRMISH_SCENARIO, WARD_COURT].contains(&scenario) {
         return Ok(());
     }
     Err(format!(
-        "--arena plays a fight of the `{SCENARIO}` scenario, of `{FIGHT_SCENARIO}` or of `{WARD_COURT}`, and \
-         this one starts from `{scenario}`",
+        "--arena plays a fight of the `{SCENARIO}` scenario, of `{FIGHT_SCENARIO}`, `{SKIRMISH_SCENARIO}` or \
+         `{WARD_COURT}`, and this one starts from `{scenario}`",
     ))
 }
 
@@ -286,6 +289,9 @@ impl ArenaGround {
         let spawns = place.spawns;
         check_spawn(&world, set, "player", spawns.player)?;
         check_spawn(&world, set, "enemy", spawns.enemy)?;
+        for spawn in spawns.crowd {
+            check_spawn(&world, set, "crowd", spawn)?;
+        }
         if place.statics != world.statics_digest() {
             return Err(ArenaError::StaleCook);
         }
@@ -310,7 +316,10 @@ impl ArenaGround {
         }
         let spawns = self.spawns;
         let profile = profile();
-        for (spawn, color) in [(spawns.player, Color::GREEN), (spawns.enemy, Color::RED)] {
+        let crowd = spawns.crowd.map(|spawn| (spawn, Color::YELLOW));
+        for (spawn, color) in
+            [(spawns.player, Color::GREEN), (spawns.enemy, Color::RED)].into_iter().chain(crowd)
+        {
             let style = Style::new(color).on_top();
             let feet = spawn.position();
             let from = feet + Vec3::new(0.0, profile.radius, 0.0);
@@ -403,6 +412,11 @@ pub(crate) struct ArenaEnemy {
     pub(crate) hand: usize,
 }
 
+/// A warrior whose feet are at `position`, as the camera frames one.
+fn warrior_subject(position: Vec3) -> Subject {
+    Subject { position, height: enemy::CROWN, radius: enemy::FRAMED_RADIUS }
+}
+
 /// How high the character's eyes stand over its feet, in metres: what the warrior looks at.
 pub(crate) const PLAYER_EYES: f32 = 1.5;
 
@@ -422,6 +436,11 @@ fn roll_of(rotation: Quat) -> f32 {
     let upright = right.cross(forward);
     let up = rotation * Vec3::Y;
     (-up.dot(right)).atan2(up.dot(upright))
+}
+
+/// Whether `view` is someone to fight, for someone of `side`: up, and not of that side.
+fn stands_against(view: &ActorView, side: Faction) -> bool {
+    !view.fighter.is_defeated() && view.fighter.faction().is_hostile_to(side)
 }
 
 /// One fighter's bars, for the HUD: `points` asks for its health in digits.
@@ -472,27 +491,39 @@ impl ArenaCamera {
     }
 }
 
-/// The player's and the enemy's entities and where the simulation has them: what the scene carries
-/// from the simulation to the frame (rule R4).
+/// One who fights on the stage: the character, or a warrior.
+#[derive(Clone, Copy, Debug)]
+struct StageFighter {
+    entity: Entity,
+    root: Root,
+    /// What its graph has yet to hear.
+    signals: FighterSignals,
+    /// A warrior's blade, which is drawn on its own, and where that is in the warrior's model space. The
+    /// character's is `crate::blade`'s.
+    blade: Option<(Entity, Mat4)>,
+}
+
+/// What a simulation has that the stage doesn't yet: [`ArenaActors::next_change`].
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum RosterChange {
+    /// This actor needs a warrior to draw it: [`ArenaActors::stand`].
+    Arrived(ActorId),
+    /// This warrior's actor is gone, and it's off the roster: nothing's left to draw it for.
+    Left { warrior: Entity, blade: Option<Entity> },
+}
+
+/// Everyone on the stage and where the simulation has them: what the scene carries from the simulation
+/// to the frame (rule R4). A fighter's place is its number here: the character is 0 and the warriors
+/// follow, in the order of their actors' IDs. Each frame walks them all, with no list to make.
 pub struct ArenaActors {
-    player: (Entity, Root),
-    enemy: (Entity, Root),
-    /// Its blade, and where that is in the enemy's model space.
-    blade: (Entity, Mat4),
-    /// The enemy's joint that holds its blade.
-    hand: usize,
+    fighters: Vec<StageFighter>,
     /// What the last step said of each of them, for what poses them to read. Nothing before a fight.
-    seen: [Option<ActorView>; 2],
-    /// What each one's graph has yet to hear.
-    signals: [FighterSignals; 2],
-    /// The enemy, as the simulation calls it.
-    enemy_id: ActorId,
-    /// Who the soft lock has now.
-    target: Option<ActorId>,
-    /// The weights the fight's simulation holds, as of its last step.
-    targeting: TargetingTuning,
-    /// Whether the soft lock weighs them for a thumb ([`Self::set_played_on_touch`]).
-    played_on_touch: bool,
+    /// Beside [`Self::fighters`] rather than in it, so a fight's cues can read it as it stands.
+    seen: Vec<Option<ActorView>>,
+    /// A warrior's joint that holds its blade.
+    hand: usize,
+    /// The foe the player has now, which the HUD shows and the character looks at.
+    shown: Option<ActorId>,
     /// Whether the player's lock-on is on.
     locked_on: bool,
     /// The world, retained-storage run and tick last followed. None before observing a fight.
@@ -510,17 +541,18 @@ impl ArenaActors {
     /// The two at their spawn points, drawn by `player` and `enemy`.
     pub(crate) fn new(player: Entity, enemy: ArenaEnemy, shot: ArenaShot, ground: ArenaGround) -> Self {
         let spawns = ground.spawns();
+        let fighter = |entity, spawn, blade| StageFighter {
+            entity,
+            root: Root::at(spawn),
+            signals: FighterSignals::default(),
+            blade,
+        };
+        let blade = Some((enemy.blade, enemy.blade_in_model));
         Self {
-            player: (player, Root::at(spawns.player)),
-            enemy: (enemy.warrior, Root::at(spawns.enemy)),
-            blade: (enemy.blade, enemy.blade_in_model),
+            fighters: vec![fighter(player, spawns.player, None), fighter(enemy.warrior, spawns.enemy, blade)],
+            seen: vec![None; 2],
             hand: enemy.hand,
-            seen: [None; 2],
-            signals: [FighterSignals::default(); 2],
-            enemy_id: ENEMY_ID,
-            target: None,
-            targeting: TargetingTuning::shipped(),
-            played_on_touch: false,
+            shown: None,
             locked_on: false,
             followed_run: None,
             follows: shot == ArenaShot::Follow,
@@ -530,16 +562,68 @@ impl ArenaActors {
         }
     }
 
-    /// The enemy's entity.
-    #[cfg(test)]
-    pub(crate) fn enemy_entity(&self) -> Entity {
-        self.enemy.0
+    /// How many fight here, the player among them.
+    pub(crate) fn fighter_count(&self) -> usize {
+        self.fighters.len()
     }
 
-    /// Who fights here, the player first, for whatever poses them: each one's entity, and what the
-    /// last step said of it. Nothing's said before a fight.
+    /// The entity that draws `fighter`, the player being 0.
+    pub(crate) fn entity(&self, fighter: usize) -> Entity {
+        self.fighters[fighter].entity
+    }
+
+    /// The player and the first warrior, each one's entity and what the last step said of it: the two a
+    /// fight's simulation-owned bodies pose. Nothing's said before a fight.
     pub(crate) fn fighters(&self) -> [(Entity, Option<&ActorView>); 2] {
-        [(self.player.0, self.seen[0].as_ref()), (self.enemy.0, self.seen[1].as_ref())]
+        [0, 1].map(|place| (self.fighters[place].entity, self.seen[place].as_ref()))
+    }
+
+    /// The next change a simulation asks of who's on the stage, after each of its steps and before
+    /// [`Self::follow`], until there's none. Allocates nothing.
+    pub(crate) fn next_change(&mut self, simulation: &Simulation, cast: &[ActorId]) -> Option<RosterChange> {
+        let gone = (1..self.fighters.len())
+            .find(|&place| self.seen[place].is_some_and(|seen| simulation.actor(seen.id).is_none()));
+        if let Some(place) = gone {
+            let fighter = self.fighters.remove(place);
+            self.seen.remove(place);
+            let blade = fighter.blade.map(|(blade, _)| blade);
+            return Some(RosterChange::Left { warrior: fighter.entity, blade });
+        }
+        self.bind_free_warriors(simulation, cast);
+        self.unseated(simulation, cast).map(|actor| RosterChange::Arrived(actor.id))
+    }
+
+    /// The first actor who needs a warrior to draw it: anyone with a capsule who isn't the player, one of a
+    /// party or already drawn.
+    fn unseated(&self, simulation: &Simulation, cast: &[ActorId]) -> Option<ActorView> {
+        let party = simulation.party();
+        let mut actors = simulation.actors();
+        actors.find(|actor| {
+            actor.controller.is_active()
+                && cast.first() != Some(&actor.id)
+                && !party.slots().any(|slot| slot.actor == actor.id)
+                && !self.seen.iter().flatten().any(|seen| seen.id == actor.id)
+        })
+    }
+
+    /// Gives a warrior no actor has yet to the first who needs one, so a fight starts on those who stood
+    /// here before it.
+    fn bind_free_warriors(&mut self, simulation: &Simulation, cast: &[ActorId]) {
+        while let Some(free) = self.seen.iter().skip(1).position(Option::is_none) {
+            let Some(actor) = self.unseated(simulation, cast) else { return };
+            self.seen[free + 1] = Some(actor);
+        }
+    }
+
+    /// Stands `warrior` on the stage for an actor [`Self::next_change`] named, where it stands now.
+    pub(crate) fn stand(&mut self, warrior: ArenaEnemy, actor: ActorView) {
+        self.fighters.push(StageFighter {
+            entity: warrior.warrior,
+            root: Root::standing(actor.position, actor.yaw),
+            signals: FighterSignals { cut: true, ..Default::default() },
+            blade: Some((warrior.blade, warrior.blade_in_model)),
+        });
+        self.seen.push(Some(actor));
     }
 
     /// What `fighter`'s graph plays this frame, the player being 0, `alpha` of the way from its last step
@@ -548,7 +632,7 @@ impl ArenaActors {
     /// Nothing before a fight.
     pub(crate) fn graph_input(&mut self, fighter: usize, alpha: f32) -> Option<GraphInput> {
         let view = self.seen[fighter].as_ref()?;
-        let signals = &mut self.signals[fighter];
+        let signals = &mut self.fighters[fighter].signals;
         let alpha = if alpha >= 0.0 { f64::from(alpha.min(1.0)) } else { 0.0 };
         let behind = (1.0 - alpha) * duration_ticks(view.clock_delta);
         let locomotion = signals.locomotion.input(view);
@@ -586,37 +670,47 @@ impl ArenaActors {
         })
     }
 
-    /// What `fighter` looks at: the other's head, while the other's up to look at.
+    /// What `fighter` looks at: the head of whoever it's fighting, while they're up to look at. The player's
+    /// is the foe it has, and a warrior's is who its brain's after, or the player with no brain.
     pub(crate) fn look_target(&self, fighter: usize, alpha: f32) -> Option<Vec3> {
-        let other = 1 - fighter;
+        let other = if fighter == 0 {
+            self.place_of(self.shown?)?
+        } else {
+            let foe = self.seen[fighter].as_ref()?.brain.target();
+            foe.and_then(|foe| self.place_of(foe)).unwrap_or(0)
+        };
         self.seen[other].as_ref().filter(|view| !view.fighter.is_defeated())?;
         let height = if other == 0 { PLAYER_EYES } else { enemy::EYES };
         Some(self.drawn(other, alpha).w_axis.truncate() + Vec3::Y * height)
     }
 
+    /// The place of `actor`, if it's on the stage.
+    fn place_of(&self, actor: ActorId) -> Option<usize> {
+        self.seen.iter().position(|seen| seen.is_some_and(|seen| seen.id == actor))
+    }
+
     /// Where `fighter` draws, `alpha` of the way between its last two steps.
     pub(crate) fn drawn(&self, fighter: usize, alpha: f32) -> Mat4 {
-        if fighter == 0 {
-            self.player.1.transform(alpha)
-        } else {
-            self.enemy.1.transform(alpha) * Mat4::from_scale(Vec3::splat(enemy::SCALE))
-        }
+        let root = self.fighters[fighter].root.transform(alpha);
+        if fighter == 0 { root } else { root * Mat4::from_scale(Vec3::splat(enemy::SCALE)) }
     }
 
-    /// The entity that draws the enemy's blade.
-    pub(crate) fn enemy_blade(&self) -> Entity {
-        self.blade.0
+    /// The entities that draw each fighter's own blade, the player first, which has none here.
+    pub(crate) fn blades(&self) -> impl Iterator<Item = Option<Entity>> + '_ {
+        self.fighters.iter().map(|fighter| fighter.blade.map(|(blade, _)| blade))
     }
 
-    /// The enemy's joint that holds its blade.
+    /// A warrior's joint that holds its blade.
     pub(crate) fn blade_hand(&self) -> usize {
         self.hand
     }
 
-    /// A new version of the enemy: the joint that holds its blade, and where that is in its held pose.
+    /// A new version of the warrior: the joint that holds its blade, and where that is in its held pose.
     pub(crate) fn follow_new_enemy(&mut self, hand: usize, blade_in_model: Mat4) {
         self.hand = hand;
-        self.blade.1 = blade_in_model;
+        for (_, held) in self.fighters.iter_mut().filter_map(|fighter| fighter.blade.as_mut()) {
+            *held = blade_in_model;
+        }
     }
 
     /// What the fighters stand on, for whatever casts for their feet.
@@ -627,26 +721,39 @@ impl ArenaActors {
     /// Tells `fighter`'s graph to cut, for hot reload's tests of when it hears.
     #[cfg(all(test, feature = "dev"))]
     pub(crate) fn cut_next(&mut self, fighter: usize) {
-        self.signals[fighter].cut = true;
+        self.fighters[fighter].signals.cut = true;
     }
 
     /// Whether `fighter`'s graph has yet to hear of a cut.
     #[cfg(all(test, feature = "dev"))]
     pub(crate) fn has_cut_waiting(&self, fighter: usize) -> bool {
-        self.signals[fighter].cut
+        self.fighters[fighter].signals.cut
     }
 
-    /// Where the enemy's pose has the hand that holds its blade, in its model space: from a pose that
+    /// Where `fighter`'s pose has the hand that holds its blade, in its model space: from a pose that
     /// moves, each frame. [`Self::present`] draws the blade there.
-    pub(crate) fn hold_blade(&mut self, blade_in_model: Mat4) {
-        self.blade.1 = blade_in_model;
+    pub(crate) fn hold_blade(&mut self, fighter: usize, blade_in_model: Mat4) {
+        if let Some((_, held)) = &mut self.fighters[fighter].blade {
+            *held = blade_in_model;
+        }
     }
 
-    /// What the HUD shows of the fighters, once a fight has stepped.
+    /// What the HUD shows of the fighters, once a fight has stepped: the foe the player has whole, and of
+    /// the others standing against it, as many bars as it has room for, in their places' order.
     pub(crate) fn hud_values(&self) -> Option<HudValues> {
         let player = self.seen[0].as_ref()?;
-        let enemy = self.seen[1].as_ref().map(|enemy| fighter_values(enemy, false));
-        Some(HudValues { player: fighter_values(player, true), enemy, skill: SkillValues::default() })
+        let shown = self.shown.and_then(|shown| self.place_of(shown));
+        let enemy =
+            shown.and_then(|shown| self.seen[shown].as_ref()).map(|enemy| fighter_values(enemy, false));
+        let mut others = OtherFoes::default();
+        let side = player.fighter.faction();
+        for (place, view) in self.seen.iter().enumerate().skip(1) {
+            let Some(view) = view.as_ref().filter(|view| stands_against(view, side)) else { continue };
+            if Some(place) != shown {
+                others.push(fighter_values(view, false).hp);
+            }
+        }
+        Some(HudValues { player: fighter_values(player, true), enemy, others, skill: SkillValues::default() })
     }
 
     /// How long the fight's gone on, for a HUD with no clock of its own.
@@ -662,9 +769,8 @@ impl ArenaActors {
 
     /// The director, if it's on, and what the last step said of each fighter, the player first: what a
     /// fight's cues read together.
-    pub(crate) fn cue_stage(&mut self) -> (Option<&mut CameraDirector>, [Option<&ActorView>; 2]) {
-        let [player, enemy] = &self.seen;
-        (self.camera.as_mut().map(|camera| &mut camera.director), [player.as_ref(), enemy.as_ref()])
+    pub(crate) fn cue_stage(&mut self) -> (Option<&mut CameraDirector>, &[Option<ActorView>]) {
+        (self.camera.as_mut().map(|camera| &mut camera.director), &self.seen)
     }
 
     /// Holds the line from the player to whoever the soft lock has, or lets go: the director's own rig,
@@ -676,28 +782,34 @@ impl ArenaActors {
         }
     }
 
-    /// Takes the fixed step's roots from `simulation`, after each of its steps. `cast` is the
-    /// scenario's, the player first. A tick that went back or a changed run generation is a new fight, which stands where it stands
-    /// with the camera cut to it, rather than sliding back across the square. Returns whether someone else
-    /// came in for each of the two.
+    /// Takes the fixed step's roots from `simulation`, after each of its steps and [`Self::next_change`]'s.
+    /// `cast` is the scenario's, the player first. A tick that went back or a changed run generation is a
+    /// new fight, which stands where it stands with the camera cut to it, rather than sliding back across
+    /// the square. Returns whether someone else came in for the player, and for the foe it has.
     pub(crate) fn follow(&mut self, simulation: &Simulation, cast: &[ActorId]) -> [bool; 2] {
         self.fighting = true;
-        self.targeting = simulation.targeting();
+        self.bind_free_warriors(simulation, cast);
         let mut came_in = [false; 2];
         let run = (simulation.world().id(), simulation.run_generation(), simulation.tick());
         let started_over = self
             .followed_run
             .is_some_and(|(world, generation, tick)| world != run.0 || generation != run.1 || run.2 < tick);
         self.followed_run = Some(run);
-        for (index, (id, (_, root))) in cast.iter().zip([&mut self.player, &mut self.enemy]).enumerate() {
+        for (place, fighter) in self.fighters.iter_mut().enumerate() {
             // A cast names a party by its first member: the player is whoever's on the field.
-            let actor = simulation.actor(simulation.party().on_field(*id));
+            let id = match place {
+                0 => cast.first().map(|player| simulation.party().on_field(*player)),
+                _ => self.seen[place].map(|seen| seen.id),
+            };
+            let actor = id.and_then(|id| simulation.actor(id));
             // Someone else came in: what's drawn starts on them, with no blend from who left.
-            let swapped = self.seen[index].zip(actor).is_some_and(|(seen, actor)| seen.id != actor.id);
-            came_in[index] = swapped;
-            self.seen[index] = actor;
+            let swapped = self.seen[place].zip(actor).is_some_and(|(seen, actor)| seen.id != actor.id);
+            if place == 0 {
+                came_in[0] = swapped;
+            }
+            self.seen[place] = actor;
             let Some(actor) = actor else { continue };
-            let signals = &mut self.signals[index];
+            let signals = &mut fighter.signals;
             if started_over || swapped {
                 *signals = FighterSignals { cut: true, ..Default::default() };
             }
@@ -705,20 +817,17 @@ impl ArenaActors {
                 signals.locomotion.observe(&actor);
             }
             if started_over {
-                *root = Root::standing(actor.position, actor.yaw);
+                fighter.root = Root::standing(actor.position, actor.yaw);
             } else {
-                root.advance(actor.position, actor.yaw);
+                fighter.root.advance(actor.position, actor.yaw);
             }
         }
-        if let Some(enemy) = cast.get(1) {
-            self.enemy_id = *enemy;
+        if started_over && let Some(camera) = &mut self.camera {
+            camera.start_over();
         }
-        if started_over {
-            self.target = None;
-            if let Some(camera) = &mut self.camera {
-                camera.start_over();
-            }
-        }
+        let shown = self.foe_to_show(started_over);
+        came_in[1] = self.shown.zip(shown).is_some_and(|(was, is)| was != is);
+        self.shown = shown;
         // The press rather than the hold: a button that's held stays locked, and pressing again lets go.
         let pressed = self.seen[0].is_some_and(|player| player.controls.pressed().contains(Buttons::LOCK_ON));
         if pressed {
@@ -727,31 +836,65 @@ impl ArenaActors {
         came_in
     }
 
-    /// Says whether a thumb is what's playing this fight (`InputSystem::last_device`), so the soft lock
-    /// weighs [`TargetingTuning::touch`] rather than a pad's aim (pillar 7). Only the camera reads the
-    /// choice: nothing in a step does, since a move warps to the target its scenario gave it. So this
-    /// moves no checksum, and a replay, with no device, always frames as a pad would. Whatever comes to
-    /// read the choice in a step has to take these weights from the recording too.
-    pub(crate) fn set_played_on_touch(&mut self, touch: bool) {
-        self.played_on_touch = touch;
+    /// Who the HUD shows and the character looks at: who the soft lock has; while it has nobody, the same
+    /// one as long as they stand, unless it's `anew`; then the first who stands against the player; and with
+    /// nobody left, the last one, whose bar has run out.
+    fn foe_to_show(&self, anew: bool) -> Option<ActorId> {
+        let player = self.seen[0]?;
+        let side = player.fighter.faction();
+        let view = |id| self.place_of(id).and_then(|place| self.seen[place]);
+        let last = self.shown.filter(|_| !anew).filter(|shown| view(*shown).is_some());
+        let foes = || self.seen.iter().skip(1).flatten();
+        player
+            .soft_lock
+            .target()
+            .filter(|target| view(*target).is_some())
+            .or_else(|| last.filter(|shown| view(*shown).is_some_and(|view| stands_against(&view, side))))
+            .or_else(|| foes().find(|foe| stands_against(foe, side)).map(|foe| foe.id))
+            .or(last)
+            .or_else(|| foes().next().map(|foe| foe.id))
     }
 
-    /// Who the player's soft lock has at this frame: [`choose_target`], from where the player stands and
-    /// points, among those still standing.
-    fn choose_target(&mut self, alpha: f32) -> Option<Vec3> {
-        let standing = self.seen[1].is_none_or(|enemy| !enemy.fighter.is_defeated());
-        let enemy = TargetCandidate { id: self.enemy_id, position: self.enemy.1.position(alpha) };
-        let candidates = standing.then_some(enemy);
-        let query = TargetQuery {
-            position: self.player.1.position(alpha),
-            yaw: self.player.1.yaw(alpha),
-            stick: self.seen[0].map_or(Stick::CENTER, |player| player.controls.current.stick),
-            current: self.target,
-            candidates: candidates.as_slice(),
+    /// Who the framing rigs frame: who the player's soft lock has, while they stand. A player with no soft
+    /// lock frames the first who stands against it, and before a fight, the first warrior there.
+    fn framed(&self) -> Option<usize> {
+        let Some(player) = self.seen[0].as_ref() else {
+            return (self.fighters.len() > 1).then_some(1);
         };
-        let weights = if self.played_on_touch { &self.targeting.touch } else { &self.targeting.soft_lock };
-        self.target = choose_target(&query, weights);
-        self.target.map(|_| enemy.position)
+        let side = player.fighter.faction();
+        let stands = |place: &usize| self.seen[*place].is_some_and(|view| stands_against(&view, side));
+        if player.soft_lock.is_on() {
+            return self.place_of(player.soft_lock.target()?).filter(stands);
+        }
+        (1..self.fighters.len()).find(stands)
+    }
+
+    /// What the director keeps in the shot besides who it frames: the foes standing nearest the player
+    /// across the ground, the nearest first.
+    fn bystanders(&self, framed: Option<usize>, alpha: f32) -> [Option<Subject>; MAX_BYSTANDERS] {
+        let mut nearest = [None; MAX_BYSTANDERS];
+        let Some(side) = self.seen[0].as_ref().map(|player| player.fighter.faction()) else { return nearest };
+        let feet = self.fighters[0].root.position(alpha);
+        let mut distances = [f32::INFINITY; MAX_BYSTANDERS];
+        for place in 1..self.fighters.len() {
+            if Some(place) == framed || !self.seen[place].is_some_and(|view| stands_against(&view, side)) {
+                continue;
+            }
+            let mut at = self.fighters[place].root.position(alpha);
+            let mut distance = (at - feet).with_y(0.0).length_squared();
+            for (kept, far) in nearest.iter_mut().zip(&mut distances) {
+                if distance < *far {
+                    let subject = warrior_subject(at);
+                    let was = kept.replace(subject);
+                    std::mem::swap(far, &mut distance);
+                    match was {
+                        Some(was) => at = was.position,
+                        None => break,
+                    }
+                }
+            }
+        }
+        nearest
     }
 
     /// What the frame's clock and input give the director, if it's on: real seconds, unscaled, and the
@@ -797,10 +940,11 @@ impl ArenaActors {
     /// cost an allocation a frame (see [`sapphire_stage::scene`]). With no `aspect` nothing draws, so the
     /// director waits.
     pub(crate) fn present(&mut self, world: &mut World, alpha: f32, aspect: Option<f32>) {
-        self.present_with_warrior_root(world, alpha, aspect, self.drawn(1, alpha));
+        self.present_roots(world, alpha, aspect, None);
     }
 
-    /// Presents the warrior and its held blade from an authoritative root sample.
+    /// [`Self::present`], with the first warrior and its held blade drawn from `warrior`, an authoritative
+    /// root sample from the simulation's body.
     pub(crate) fn present_with_warrior_root(
         &mut self,
         world: &mut World,
@@ -808,21 +952,31 @@ impl ArenaActors {
         aspect: Option<f32>,
         warrior: Mat4,
     ) {
-        let drawn = [
-            (self.player.0, self.drawn(0, alpha)),
-            (self.enemy.0, warrior),
-            (self.blade.0, warrior * self.blade.1),
-        ];
-        for (entity, drawn) in drawn {
-            if let Some(mut transform) = world.get_mut::<RenderTransform>(entity) {
-                transform.set_if_neq(RenderTransform(drawn));
+        self.present_roots(world, alpha, aspect, Some(warrior));
+    }
+
+    fn present_roots(&mut self, world: &mut World, alpha: f32, aspect: Option<f32>, warrior: Option<Mat4>) {
+        for place in 0..self.fighters.len() {
+            let fighter = self.fighters[place];
+            let drawn = match warrior {
+                Some(root) if place == 1 => root,
+                _ => self.drawn(place, alpha),
+            };
+            let blade = fighter.blade.map(|(blade, held)| (blade, drawn * held));
+            for (entity, drawn) in [(fighter.entity, drawn)].into_iter().chain(blade) {
+                if let Some(mut transform) = world.get_mut::<RenderTransform>(entity) {
+                    transform.set_if_neq(RenderTransform(drawn));
+                }
             }
         }
-        let feet = self.player.1.position(alpha);
-        let target = self.choose_target(alpha);
+        let feet = self.fighters[0].root.position(alpha);
         if self.follows {
             world.resource_mut::<OrbitCamera>().set_target(follow_target(feet));
         }
+        let framed = self.framed();
+        let target = framed.map(|place| warrior_subject(self.fighters[place].root.position(alpha)));
+        let bystanders = self.bystanders(framed, alpha);
+        let player_yaw = self.fighters[0].root.yaw(alpha);
         if let (Some(camera), Some(aspect)) = (&mut self.camera, aspect) {
             let profile = profile();
             let radius = profile.radius;
@@ -830,12 +984,9 @@ impl ArenaActors {
                 dt: std::mem::take(&mut camera.dt),
                 behind: crate::cues::behind_latest(alpha),
                 player: Some(Subject { position: feet, height: profile.height, radius }),
-                player_yaw: self.player.1.yaw(alpha),
-                target: target.map(|position| Subject {
-                    position,
-                    height: enemy::CROWN,
-                    radius: enemy::FRAMED_RADIUS,
-                }),
+                player_yaw,
+                target,
+                bystanders,
                 look: std::mem::take(&mut camera.look),
                 zoom: std::mem::take(&mut camera.zoom),
                 aspect,
@@ -861,6 +1012,7 @@ mod framing;
 #[cfg(test)]
 mod tests {
     use sapphire_colliders::{ColliderDocument, ColliderEntry, ColliderSet, ColliderShape};
+    use sapphire_gameplay::Stick;
     use sapphire_gameplay::replay::{SCENARIOS, find_scenario};
     use sapphire_stage::lookdev::{PLANTINGS, Plant};
 
@@ -1001,7 +1153,37 @@ mod tests {
 
     /// A fight of the `arena-fight` scenario, on a director, and what it does first.
     fn fight() -> (ArenaActors, World, Simulation, Vec<ActorId>) {
-        let scenario = find_scenario(SCENARIOS, FIGHT_SCENARIO).expect("listed");
+        fight_of(FIGHT_SCENARIO)
+    }
+
+    /// Takes every change `sim` asks of who's on the stage, each new warrior an entity of `world`'s, then
+    /// what it says of them.
+    fn follow_all(
+        actors: &mut ArenaActors,
+        world: &mut World,
+        sim: &Simulation,
+        cast: &[ActorId],
+    ) -> [bool; 2] {
+        while let Some(change) = actors.next_change(sim, cast) {
+            match change {
+                RosterChange::Arrived(id) => {
+                    let warrior = world.spawn(RenderTransform::default()).id();
+                    let blade = world.spawn(RenderTransform::default()).id();
+                    let parts = ArenaEnemy { warrior, blade, blade_in_model: Mat4::IDENTITY, hand: 0 };
+                    actors.stand(parts, sim.actor(id).expect("it just arrived"));
+                }
+                RosterChange::Left { warrior, blade } => {
+                    world.despawn(warrior);
+                    blade.map(|blade| world.despawn(blade));
+                }
+            }
+        }
+        actors.follow(sim, cast)
+    }
+
+    /// A fight of `name`, on a director, and what it does first.
+    fn fight_of(name: &str) -> (ArenaActors, World, Simulation, Vec<ActorId>) {
+        let scenario = find_scenario(SCENARIOS, name).expect("listed");
         let (sim, cast) = scenario.start(scenario.config).expect("it starts");
         let (mut actors, mut world) = actors_on(built(), ArenaShot::Director);
         world.insert_resource(ArenaShot::Director.camera(spawns().player.position()));
@@ -1174,77 +1356,120 @@ mod tests {
         }
     }
 
-    /// The soft lock's choice is what the camera frames: the enemy from the first frame, and nobody once
-    /// it's fallen or the player's run out of range, and back again on the way in.
+    /// The soft lock's choice is what the camera frames: the first warrior before a fight says, then who
+    /// the step chose, and nobody while it's chosen nobody.
     #[test]
     fn the_camera_frames_who_the_soft_lock_chooses() {
-        let (mut actors, _, _, cast) = fight();
-        assert_eq!(actors.target, Some(cast[1]));
-        let mut world = World::new();
-        world.insert_resource(ArenaShot::Director.camera(spawns().player.position()));
-
-        // Out of range: the keep range is 16 m, and coming back in it takes 12 m to be chosen again.
-        let enemy = spawns().enemy.position();
-        let away = |metres: f32| enemy + Vec3::new(metres, 0.0, 0.0);
-        let mut stand_at = |actors: &mut ArenaActors, position| {
-            actors.player.1 = Root::standing(position, 0.0);
-            actors.present(&mut world, 1.0, None);
-            actors.target
-        };
-        assert_eq!(stand_at(&mut actors, away(15.0)), Some(cast[1]), "kept out to its keep range");
-        assert_eq!(stand_at(&mut actors, away(17.0)), None);
-        assert_eq!(stand_at(&mut actors, away(15.0)), None, "not chosen again yet");
-        assert_eq!(stand_at(&mut actors, away(11.0)), Some(cast[1]));
-    }
-
-    /// A thumb doesn't aim, so a fight played on touch chooses by `TOUCH`, whose reach is longer, even
-    /// with one enemy to choose from. A pad's or a key's press goes back to the soft lock's.
-    #[test]
-    fn a_thumb_chooses_with_touchs_weights_and_anything_else_with_the_soft_locks() {
-        let (mut actors, _, _, cast) = fight();
-        let mut world = World::new();
-        world.insert_resource(ArenaShot::Director.camera(spawns().player.position()));
-        let enemy = spawns().enemy.position();
-        let away = |metres: f32| enemy + Vec3::new(metres, 0.0, 0.0);
-        let mut stand_at = |actors: &mut ArenaActors, metres| {
-            actors.player.1 = Root::standing(away(metres), 0.0);
-            actors.present(&mut world, 1.0, None);
-            actors.target
-        };
-
-        assert_eq!(stand_at(&mut actors, 17.0), None, "past the soft lock's keep range");
-        assert_eq!(stand_at(&mut actors, 13.0), None, "and not within its reach");
-
-        actors.set_played_on_touch(true);
-        assert_eq!(stand_at(&mut actors, 13.0), Some(cast[1]), "within a thumb's reach");
-        assert_eq!(stand_at(&mut actors, 17.0), Some(cast[1]), "and kept further");
-        assert_eq!(stand_at(&mut actors, 19.0), None, "past a thumb's keep range");
-
-        actors.set_played_on_touch(false);
-        assert_eq!(stand_at(&mut actors, 13.0), None, "a pad's reach again");
-    }
-
-    /// What frames who is the weights the simulation holds, so a game's own document reaches it.
-    #[test]
-    fn the_soft_lock_weighs_what_the_simulation_holds() {
-        let (mut actors, _, mut sim, cast) = fight();
-        let mut world = World::new();
-        world.insert_resource(ArenaShot::Director.camera(spawns().player.position()));
-        let seventeen_away = spawns().enemy.position() + Vec3::new(17.0, 0.0, 0.0);
-        let mut framed = |actors: &mut ArenaActors| {
-            actors.player.1 = Root::standing(seventeen_away, 0.0);
-            actors.present(&mut world, 1.0, None);
-            actors.target
-        };
-        assert_eq!(framed(&mut actors), None, "past the shipped soft lock's keep range");
-
-        let mut longer = sim.targeting();
-        longer.soft_lock.range = 20.0;
-        longer.soft_lock.keep_range = 24.0;
-        sim.tune_targeting(longer);
+        let (mut actors, mut world, mut sim, cast) = fight_of(SKIRMISH_SCENARIO);
+        assert_eq!(actors.framed(), Some(1), "before a fight");
         sim.step(&sapphire_gameplay::TickActions::NEUTRAL);
-        actors.follow(&sim, &cast);
-        assert_eq!(framed(&mut actors), Some(cast[1]), "within this game's");
+        follow_all(&mut actors, &mut world, &sim, &cast);
+        assert_eq!(actors.fighter_count(), cast.len());
+        let lock = sim.actor(cast[0]).expect("alive").soft_lock;
+        assert!(lock.is_on());
+        let framed = actors.framed().expect("someone's in reach");
+        assert_eq!(actors.seen[framed].map(|view| view.id), lock.target());
+
+        let mut player = actors.seen[0].expect("there");
+        player.soft_lock = sapphire_gameplay::SoftLock::ON;
+        actors.seen[0] = Some(player);
+        assert_eq!(actors.framed(), None, "the step chose nobody");
+    }
+
+    /// A warrior comes on for whoever a simulation has beyond the first, in their IDs' order, and goes
+    /// when its actor does. The first stays who it was, at its place in the first fight.
+    #[test]
+    fn a_warrior_stands_for_each_actor_and_leaves_with_it() {
+        let (mut actors, mut world, mut sim, cast) = fight_of(SKIRMISH_SCENARIO);
+        let first = actors.entity(1);
+        assert_eq!(actors.fighter_count(), 2);
+        sim.step(&sapphire_gameplay::TickActions::NEUTRAL);
+        follow_all(&mut actors, &mut world, &sim, &cast);
+        assert_eq!(actors.fighter_count(), 8);
+        assert_eq!(actors.entity(1), first);
+        for (place, &actor) in cast.iter().enumerate() {
+            assert_eq!(actors.seen[place].map(|view| view.id), Some(actor), "at {place}");
+            let spot = sim.actor(actor).expect("alive").position;
+            assert!(actors.drawn(place, 1.0).w_axis.truncate().distance(spot) < 1e-5, "at {place}");
+        }
+
+        let (leaving, stays) = (actors.entity(3), actors.entity(4));
+        assert!(sim.despawn(cast[3]));
+        sim.step(&sapphire_gameplay::TickActions::NEUTRAL);
+        follow_all(&mut actors, &mut world, &sim, &cast);
+        assert_eq!(actors.fighter_count(), 7);
+        assert_eq!(actors.entity(3), stays);
+        assert!(world.get_entity(leaving).is_err());
+        assert_eq!(actors.blades().flatten().count(), 6);
+        assert_eq!(actors.blades().next(), Some(None), "the player's isn't the stage's");
+    }
+
+    /// Who the HUD shows is the player's lock's, and everyone else standing against it has a small bar. One
+    /// who falls loses theirs, and someone else coming in for the big one is a change for its trail.
+    #[test]
+    fn the_hud_shows_the_foe_the_player_has_and_a_bar_for_the_rest() {
+        let (mut actors, mut world, mut sim, cast) = fight_of(SKIRMISH_SCENARIO);
+        sim.step(&sapphire_gameplay::TickActions::NEUTRAL);
+        let came_in = follow_all(&mut actors, &mut world, &sim, &cast);
+        assert_eq!(came_in, [false, false]);
+        let locked = sim.actor(cast[0]).expect("alive").soft_lock.target();
+        assert_eq!(actors.shown, locked);
+        let values = actors.hud_values().expect("a fight");
+        assert_eq!(values.enemy.map(|enemy| enemy.hp), Some(1.0));
+        assert_eq!(values.others.bars(), &[1.0; 6]);
+
+        // With nobody locked it stays on the one it has, as long as they stand.
+        let mut player = actors.seen[0].expect("there");
+        player.soft_lock = sapphire_gameplay::SoftLock::ON;
+        actors.seen[0] = Some(player);
+        let was = actors.shown.expect("one");
+        let other = cast[1..].iter().copied().find(|foe| *foe != was).expect("seven of them");
+        actors.shown = Some(other);
+        assert_eq!(actors.foe_to_show(false), Some(other));
+
+        let down = fallen_fighter(&mut sim, &cast);
+        let place = actors.place_of(other).expect("on the stage");
+        let mut fallen = actors.seen[place].expect("there");
+        fallen.fighter = down;
+        actors.seen[place] = Some(fallen);
+        let next = actors.foe_to_show(false).expect("six more");
+        assert_ne!(next, other, "it moves on to someone standing");
+
+        actors.shown = Some(next);
+        let values = actors.hud_values().expect("a fight");
+        assert_eq!(values.others.bars().len(), 5, "and the fallen has no bar");
+    }
+
+    /// The nearest foes stand in the shot, those who aren't who it frames: never more than it has room
+    /// for, and none in a one-on-one, so a duel's framing is what it was.
+    #[test]
+    fn the_nearest_foes_stand_in_the_shot() {
+        let (mut actors, mut world, mut sim, cast) = fight_of(SKIRMISH_SCENARIO);
+        sim.step(&sapphire_gameplay::TickActions::NEUTRAL);
+        follow_all(&mut actors, &mut world, &sim, &cast);
+        let framed = actors.framed();
+        let kept = actors.bystanders(framed, 1.0);
+        let feet = actors.fighters[0].root.position(1.0);
+        let reach = |subject: &Subject| (subject.position - feet).with_y(0.0).length();
+        let reaches: Vec<f32> = kept.iter().flatten().map(reach).collect();
+        assert_eq!(reaches.len(), MAX_BYSTANDERS);
+        assert!(reaches.windows(2).all(|pair| pair[0] <= pair[1]), "{reaches:?}");
+        let framed_at = actors.fighters[framed.expect("one")].root.position(1.0);
+        assert!(kept.iter().flatten().all(|subject| subject.position != framed_at));
+        let furthest = reaches.last().copied().expect("some");
+        for place in 1..actors.fighter_count() {
+            let at = (actors.fighters[place].root.position(1.0) - feet).with_y(0.0).length();
+            let shot = kept
+                .iter()
+                .flatten()
+                .any(|subject| subject.position == actors.fighters[place].root.position(1.0));
+            assert!(shot || Some(place) == framed || at >= furthest, "{place} at {at}");
+        }
+
+        let (mut actors, mut world, mut sim, cast) = fight();
+        sim.step(&sapphire_gameplay::TickActions::NEUTRAL);
+        follow_all(&mut actors, &mut world, &sim, &cast);
+        assert_eq!(actors.bystanders(actors.framed(), 1.0), [None; MAX_BYSTANDERS]);
     }
 
     /// Nobody stands to frame once the enemy's fallen, and a new fight stands it up again.
@@ -1252,16 +1477,16 @@ mod tests {
     fn a_fallen_enemy_stops_being_framed() {
         let (mut actors, mut world, mut sim, cast) = fight();
         sim.step(&sapphire_gameplay::TickActions::NEUTRAL);
-        actors.follow(&sim, &cast);
+        follow_all(&mut actors, &mut world, &sim, &cast);
         actors.present(&mut world, 1.0, None);
-        assert_eq!(actors.target, Some(cast[1]));
+        assert_eq!(actors.framed(), Some(1));
 
         let mut fallen = actors.seen[1].expect("it's there");
         assert!(!fallen.fighter.is_defeated());
         fallen.fighter = fallen_fighter(&mut sim, &cast);
         actors.seen[1] = Some(fallen);
         actors.present(&mut world, 1.0, None);
-        assert_eq!(actors.target, None);
+        assert_eq!(actors.framed(), None);
     }
 
     /// The warrior, felled through real hits: the player's fists on the fight's first thousands of
@@ -1271,8 +1496,8 @@ mod tests {
         for _ in 0..4000 {
             let actions = sapphire_gameplay::replay::ActionSource::actions(&mut source, sim.tick(), cast);
             sim.step(&actions);
-            let enemy = sim.actor(cast[1]).expect("alive");
-            if enemy.fighter.is_defeated() {
+            let down = cast[1..].iter().filter_map(|id| sim.actor(*id)).find(|foe| foe.fighter.is_defeated());
+            if let Some(enemy) = down {
                 return enemy.fighter;
             }
         }
@@ -1288,12 +1513,12 @@ mod tests {
         for _ in 0..200 {
             let actions = sapphire_gameplay::replay::ActionSource::actions(&mut source, sim.tick(), &cast);
             sim.step(&actions);
-            actors.follow(&sim, &cast);
+            follow_all(&mut actors, &mut world, &sim, &cast);
         }
-        let moved = actors.player.1.position(1.0);
+        let moved = actors.fighters[0].root.position(1.0);
         assert!(moved.distance(spawns().player.position()) > 0.5, "it fought: {moved}");
         actors.follow(&sim, &cast);
-        assert_eq!(actors.player.1.previous_position, moved, "the same tick again is no new fight");
+        assert_eq!(actors.fighters[0].root.previous_position, moved, "the same tick again is no new fight");
 
         let scenario = find_scenario(SCENARIOS, FIGHT_SCENARIO).expect("listed");
         let (fresh, cast) = scenario.start(scenario.config).expect("it starts");
@@ -1304,9 +1529,9 @@ mod tests {
         assert_eq!(allocations.allocations, 0, "following a new world retains camera preparation");
         assert_eq!(allocations.bytes, 0);
         let start = spawns().player.position();
-        assert_eq!(actors.player.1.position(0.0), start, "it doesn't slide back across the square");
-        assert_eq!(actors.player.1.position(1.0), start);
-        assert_eq!(actors.enemy.1.position(0.0), spawns().enemy.position());
+        assert_eq!(actors.fighters[0].root.position(0.0), start, "it doesn't slide back across the square");
+        assert_eq!(actors.fighters[0].root.position(1.0), start);
+        assert_eq!(actors.fighters[1].root.position(0.0), spawns().enemy.position());
 
         // The cut lands the view behind the player, at once, however far off it was.
         actors.drive_camera(1.0 / 60.0, Vec2::ZERO, 0.0);
@@ -1363,7 +1588,7 @@ mod tests {
     /// own view has them: the stage adds only its spawn points, so nothing draws twice.
     #[test]
     fn the_colliders_draw_once_with_or_without_a_fight() {
-        const SPAWN_SHAPES: usize = 4;
+        const SPAWN_SHAPES: usize = 16;
         let cooked = cooked_colliders().expect("it cooks");
         let ground = ArenaGround::new(ColliderSet::read(&cooked).expect("it reads")).expect("it stands");
         let colliders = ground.world.statics().len();

@@ -45,6 +45,7 @@ fn values() -> HudValues {
         player: FighterValues { hp: 0.8, poise: 0.5, hp_points: Some(6480) },
         enemy: Some(FighterValues { hp: 0.6, poise: 0.3, hp_points: None }),
         skill: SkillValues { cooldown: 0.5, seconds: Some(3) },
+        ..HudValues::default()
     }
 }
 

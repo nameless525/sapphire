@@ -5,7 +5,7 @@
 mod common;
 
 use common::{Moment, combat_director, director, fight, lock_on_director, open_ground, run};
-use sapphire_camera::{CameraDirector, CameraPose, CameraTuning, Rig};
+use sapphire_camera::{CameraDirector, CameraFrame, CameraPose, CameraTuning, MAX_BYSTANDERS, Rig};
 use sapphire_math::{Vec2, Vec3};
 
 /// The view's yaw: from +Z toward +X.
@@ -126,7 +126,7 @@ fn zoom_scales_the_distance_within_its_limits() {
         let moment = Moment::alone(Vec3::ZERO);
         for frame in 0..240 {
             let zoom = if frame < 60 { zoom / 60.0 } else { 0.0 };
-            let frame = sapphire_camera::CameraFrame { zoom, ..moment.frame(1.0 / 60.0) };
+            let frame = CameraFrame { zoom, ..moment.frame(1.0 / 60.0) };
             camera.update(&frame, &world);
         }
         camera.pose().eye.distance(Vec3::Y * 1.7 * tuning.explore.pivot_height)
@@ -153,7 +153,7 @@ fn zoom_stays_inside_what_fits_both_fighters() {
     let mut worst = Vec2::ZERO;
     for frame in 1..=300 {
         let zoom = if frame < 60 { -1.0 / 60.0 } else { 0.0 };
-        let pose = camera.update(&sapphire_camera::CameraFrame { zoom, ..moment.frame(1.0 / 60.0) }, &world);
+        let pose = camera.update(&CameraFrame { zoom, ..moment.frame(1.0 / 60.0) }, &world);
         worst = worst
             .max(common::frame_use(&pose, &moment.player))
             .max(common::frame_use(&pose, &moment.target.expect("it has one")));
@@ -433,4 +433,45 @@ fn stats_count_the_work() {
     assert_eq!(stats.cuts, 1);
     assert!(stats.casts >= 60, "{stats:?}");
     assert_eq!(camera.take_stats().frames, 0);
+}
+
+/// Who else stands near the player keeps the combat rig back, as far as its limit lets it, so a foe beside
+/// the two it frames is in the shot. Nobody, somebody far off or behind the view leaves it where it was,
+/// and lock-on holds its line whoever's there.
+#[test]
+fn the_combat_rig_stands_back_for_a_bystander_near_the_player() {
+    let world = open_ground();
+    let moment = Moment::against(Vec3::ZERO, Vec3::new(0.0, 0.0, 3.0));
+    let settled = |camera: &mut CameraDirector, bystander: Option<Vec3>| {
+        let mut bystanders = [None; MAX_BYSTANDERS];
+        bystanders[0] = bystander.map(common::enemy_at);
+        let frame = CameraFrame { bystanders, ..moment.frame(1.0 / 60.0) };
+        let mut pose = camera.update(&frame, &world);
+        for _ in 0..900 {
+            pose = camera.update(&frame, &world);
+        }
+        pose
+    };
+    let alone = settled(&mut combat_director(), None);
+    let beside = Vec3::new(6.2, 0.0, 3.0);
+    let by = |subject| common::frame_use(&alone, &common::enemy_at(subject)).max_element();
+    assert!(by(beside) > 1.0, "the shot has to move for this to prove anything: {}", by(beside));
+
+    let pose = settled(&mut combat_director(), Some(beside));
+    assert!(common::frame_use(&pose, &common::enemy_at(beside)).max_element() < 1.0, "it's in the shot");
+    assert!(
+        pose.eye.distance(moment.player.position) > alone.eye.distance(moment.player.position),
+        "{pose:?}"
+    );
+
+    for (who, nobody) in [
+        ("too far off", Vec3::new(30.0, 0.0, 30.0)),
+        ("behind the view", Vec3::new(4.0, 0.0, -9.0)),
+        ("not a number", Vec3::NAN),
+    ] {
+        assert_eq!(settled(&mut combat_director(), Some(nobody)), alone, "{who}");
+    }
+
+    let held = settled(&mut lock_on_director(), None);
+    assert_eq!(settled(&mut lock_on_director(), Some(beside)).eye, held.eye, "lock-on holds its line");
 }

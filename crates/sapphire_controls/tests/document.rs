@@ -31,7 +31,8 @@ fn the_table_covers_every_button() {
         assert!(!all.contains(button), "{button:?} is listed twice");
         all = all | button;
     }
-    assert_eq!(all, Buttons::ALL, "a new button needs an action");
+    // A thumb's no button anyone presses: which device played goes through the source.
+    assert_eq!(all, Buttons::ALL.minus(Buttons::TOUCH), "a new button needs an action");
 }
 
 /// The names a binding of this kind goes by in the default document.

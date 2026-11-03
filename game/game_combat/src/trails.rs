@@ -432,34 +432,42 @@ impl FighterTrail {
     }
 }
 
-/// Both fighters' blades, the player first.
-#[derive(Clone, Copy, Debug)]
+/// Every fighter's blade, the player first. It starts with room for a duel, grows as it's told of more, and
+/// they stay.
+#[derive(Clone, Debug)]
 pub(crate) struct BladeTrails {
-    fighters: [FighterTrail; 2],
+    fighters: Vec<FighterTrail>,
+    /// What a warrior's blade draws, for those who come later.
+    warrior: Option<EffectId>,
 }
 
 impl BladeTrails {
-    /// The trails `effects` has for a fight's two blades. A library without them, as a test's may be,
-    /// plays none.
+    /// The trails `effects` has for a fight's blades. A library without them, as a test's may be, plays
+    /// none.
     pub(crate) fn new(effects: &EffectLibrary) -> Self {
         Self {
-            fighters: [
+            fighters: vec![
                 FighterTrail::new(effects.find(PLAYER_TRAIL), Rails::PLAYER, true),
                 FighterTrail::new(effects.find(WARRIOR_TRAIL), Rails::WARRIOR, false),
             ],
+            warrior: effects.find(WARRIOR_TRAIL),
         }
     }
 
-    /// What the latest step said of each fighter, `None` for one with no blade drawn: call it after each
-    /// step, before the effects' clocks move, so a cut's first tick ages from its start. Allocates nothing.
-    pub(crate) fn read_step(
+    /// What the latest step said of each fighter, the player first, `None` for one with no blade drawn:
+    /// call it after each step, before the effects' clocks move, so a cut's first tick ages from its start.
+    /// Allocates nothing, but for a fighter it hasn't been told of before.
+    pub(crate) fn read_step<'a>(
         &mut self,
-        fighters: [Option<&ActorView>; 2],
+        fighters: impl IntoIterator<Item = Option<&'a ActorView>>,
         library: &MoveLibrary,
         world: &mut VfxWorld,
     ) {
-        for (trail, view) in self.fighters.iter_mut().zip(fighters) {
-            trail.read_step(view, library, world);
+        for (place, view) in fighters.into_iter().enumerate() {
+            if place == self.fighters.len() {
+                self.fighters.push(FighterTrail::new(self.warrior, Rails::WARRIOR, false));
+            }
+            self.fighters[place].read_step(view, library, world);
         }
     }
 
@@ -477,7 +485,12 @@ impl BladeTrails {
     /// The frame's blades as drawn, `alpha` of the way from the step before the latest to the latest, as
     /// each one's transform and pose are: call it after they're placed and before the frame's effects are
     /// written. Allocates nothing.
-    pub(crate) fn follow_frame(&mut self, drawn: [Option<Mat4>; 2], alpha: f32, world: &mut VfxWorld) {
+    pub(crate) fn follow_frame(
+        &mut self,
+        drawn: impl IntoIterator<Item = Option<Mat4>>,
+        alpha: f32,
+        world: &mut VfxWorld,
+    ) {
         // Written so that NaN draws the previous state, as `VfxWorld::write_frame` reads it.
         let unplayed = 1.0 - if alpha >= 0.0 { alpha.min(1.0) } else { 0.0 };
         for (trail, place) in self.fighters.iter_mut().zip(drawn) {
@@ -498,8 +511,9 @@ impl BladeTrails {
     /// none of that trail until it has again.
     #[cfg(any(test, feature = "dev"))]
     pub(crate) fn take_effects(&mut self, effects: &EffectLibrary) {
-        for (trail, name) in self.fighters.iter_mut().zip([PLAYER_TRAIL, WARRIOR_TRAIL]) {
-            trail.effect = effects.find(name);
+        self.warrior = effects.find(WARRIOR_TRAIL);
+        for (place, trail) in self.fighters.iter_mut().enumerate() {
+            trail.effect = if place == 0 { effects.find(PLAYER_TRAIL) } else { self.warrior };
             trail.running = None;
         }
     }
@@ -1077,6 +1091,25 @@ mod tests {
 
     /// A fight's frames allocate nothing, nor do its steps, once warm: a whole fight's, in its own world,
     /// with its trails running.
+    /// A warrior who wasn't there when the trails were made has a blade of its own, whichever place it's in.
+    #[test]
+    fn every_warrior_has_a_blade_of_its_own() {
+        let mut bout = Bout::new("arena-skirmish");
+        let cast = bout.combat.cast().to_vec();
+        let mut cut = vec![false; cast.len()];
+        for _ in 0..1200 {
+            bout.combat.step(&mut no_bindings);
+            let sim = bout.combat.simulation();
+            let views: Vec<_> = cast.iter().map(|id| sim.actor(*id)).collect();
+            bout.trails.read_step(views.iter().map(Option::as_ref), sim.move_library(), &mut bout.world);
+            for (place, cut) in cut.iter_mut().enumerate() {
+                *cut |= bout.trails.runs_at(place);
+            }
+        }
+        assert_eq!(bout.trails.fighters.len(), cast.len());
+        assert!(cut[1..].iter().filter(|cut| **cut).count() >= 3, "{cut:?}");
+    }
+
     #[test]
     fn trails_allocate_nothing() {
         let mut bout = Bout::new("arena-fight-won");

@@ -88,6 +88,7 @@ impl Moment {
             player: Some(self.player),
             player_yaw: self.player_yaw,
             target: self.target,
+            bystanders: [None; sapphire_camera::MAX_BYSTANDERS],
             look: self.look_rate * dt,
             zoom: 0.0,
             aspect: ASPECT,

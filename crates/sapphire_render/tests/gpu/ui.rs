@@ -426,6 +426,7 @@ fn hud_list(metrics: UiMetrics, held: &[Button]) -> (HudLayout, UiDrawList) {
         player: FighterValues { hp: 0.5, poise: 0.5, hp_points: Some(1234) },
         enemy: Some(FighterValues { hp: 0.5, poise: 0.5, hp_points: None }),
         skill: SkillValues { cooldown: 0.0, seconds: None },
+        ..HudValues::default()
     };
     let mut hud = CombatHud::new();
     hud.update(timestamp, &values, &actions);

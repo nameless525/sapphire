@@ -46,6 +46,8 @@
                 digits_along: 0.5,
                 digit_height: 15.0,
             ),
+            others_top: 29.0,
+            others_bottom: 34.0,
         ),
     ),
 )

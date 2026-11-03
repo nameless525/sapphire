@@ -176,6 +176,7 @@ impl Fight {
             player: Some(Subject { position: Vec3::ZERO, height: 1.7, radius: 0.35 }),
             player_yaw: 0.0,
             target: None,
+            bystanders: [None; sapphire_camera::MAX_BYSTANDERS],
             look: Vec2::ZERO,
             zoom: 0.0,
             aspect: 16.0 / 9.0,

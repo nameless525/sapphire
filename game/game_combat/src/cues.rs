@@ -63,8 +63,9 @@ pub(crate) enum CueStage<'a> {
     /// On the one character that stands here, whichever actor they name ([`on_stage`]).
     OneCharacter { stand: Vec3 },
     /// Where the simulation has its actors, which are drawn there: the arena. With a director on, it plays
-    /// their shakes. `fighters` are those with a blade drawn to leave a trail, the player first.
-    Actors { director: Option<&'a mut CameraDirector>, fighters: [Option<&'a ActorView>; 2] },
+    /// their shakes. `fighters` are those drawn, the player first, each a warrior's blade to leave a trail,
+    /// and the player only with `player_blade`.
+    Actors { director: Option<&'a mut CameraDirector>, fighters: &'a [Option<ActorView>], player_blade: bool },
 }
 
 /// The camera's shakes, for a view that plays them itself.
@@ -198,17 +199,23 @@ impl CueShow {
         }
         self.tick = Some(run);
         let stopwatch = Stopwatch::start();
-        let (stand, shakes, fighters): (Option<Vec3>, &mut dyn ShakeSink, _) = match stage {
-            CueStage::OneCharacter { stand } => (Some(stand), &mut self.shakes, [None; 2]),
-            CueStage::Actors { director: Some(director), fighters } => (None, director, fighters),
-            CueStage::Actors { director: None, fighters } => (None, &mut self.shakes, fighters),
+        let (stand, shakes, fighters, player_blade): (Option<Vec3>, &mut dyn ShakeSink, _, _) = match stage {
+            CueStage::OneCharacter { stand } => (Some(stand), &mut self.shakes, &[][..], false),
+            CueStage::Actors { director: Some(director), fighters, player_blade } => {
+                (None, director, fighters, player_blade)
+            }
+            CueStage::Actors { director: None, fighters, player_blade } => {
+                (None, &mut self.shakes, fighters, player_blade)
+            }
         };
         let root_of = |id| stand.or_else(|| sim.actor(id).map(|actor| actor.position));
         let mut step =
             CueStep { vfx: &mut self.world, screen, presets, shakes, view_projection, root_of: &root_of };
         let cues = sim.cues().map(|cue| stand.map_or(cue, |stand| on_stage(cue, sim, stand)));
         self.dispatcher.read_step(tick, cues, &mut step);
-        self.trails.read_step(fighters, sim.move_library(), &mut self.world);
+        let blades = fighters.iter().enumerate();
+        let blades = blades.map(|(place, view)| view.as_ref().filter(|_| place > 0 || player_blade));
+        self.trails.read_step(blades, sim.move_library(), &mut self.world);
         self.dispatcher.advance_effects(sim, &mut self.world);
         self.emitters.clear();
         self.emitters.extend(sim.actors().map(|actor| {
@@ -265,7 +272,7 @@ impl CueShow {
 
     /// Takes where this frame draws each blade, the player's first, `alpha` of the way from the step
     /// before the latest to the latest, for the trails: before [`Self::write`].
-    pub(crate) fn follow_blades(&mut self, drawn: [Option<Mat4>; 2], alpha: f32) {
+    pub(crate) fn follow_blades(&mut self, drawn: impl IntoIterator<Item = Option<Mat4>>, alpha: f32) {
         let stopwatch = Stopwatch::start();
         self.trails.follow_frame(drawn, alpha, &mut self.world);
         self.stepping += stopwatch.elapsed();
@@ -561,7 +568,7 @@ mod tests {
                 if tick == 150 {
                     show.start_over(&mut screen);
                 }
-                let stage = CueStage::Actors { director: None, fighters: [None; 2] };
+                let stage = CueStage::Actors { director: None, fighters: &[None; 2], player_blade: false };
                 show.step(&sim, &mut screen, &presets, Mat4::IDENTITY, stage);
                 let _ = show.end_frame(1.0 / 60.0, 1.0 / 60.0, 1.0, &mut ());
             });
@@ -671,7 +678,11 @@ mod tests {
             let mut director = director;
             for _ in 0..140 {
                 sim.step(&sapphire_gameplay::TickActions::NEUTRAL);
-                let stage = CueStage::Actors { director: director.as_deref_mut(), fighters: [None; 2] };
+                let stage = CueStage::Actors {
+                    director: director.as_deref_mut(),
+                    fighters: &[],
+                    player_blade: false,
+                };
                 show.step(&sim, &mut screen, &presets, Mat4::IDENTITY, stage);
             }
             let places: Vec<Vec3> = sim.actors().map(|actor| actor.position).collect();
@@ -718,7 +729,7 @@ mod tests {
         let until_a_sound = |sim: &mut Simulation, show: &mut CueShow, screen: &mut EffectStack| {
             for _ in 0..600 {
                 sim.step(&sapphire_gameplay::TickActions::NEUTRAL);
-                let stage = CueStage::Actors { director: None, fighters: [None; 2] };
+                let stage = CueStage::Actors { director: None, fighters: &[], player_blade: false };
                 show.step(sim, screen, &presets, Mat4::IDENTITY, stage);
                 if !show.sounds().requests.is_empty() {
                     return;

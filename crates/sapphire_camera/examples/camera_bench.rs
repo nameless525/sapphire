@@ -121,6 +121,7 @@ fn frame(index: u32, load: Load) -> CameraFrame {
         player: Some(player),
         player_yaw: 0.5 * t,
         target: if matches!(load, Load::Explore) { None } else { Some(enemy) },
+        bystanders: [None; sapphire_camera::MAX_BYSTANDERS],
         look: if matches!(load, Load::Turning) {
             Vec2::ZERO
         } else {

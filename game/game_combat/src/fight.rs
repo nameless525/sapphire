@@ -1,6 +1,6 @@
 //! A fight on a scene: what carries a simulation to the frame.
 //!
-//! [`FightShow`] holds what a fight has on the stage: the arena's actors, the enemy and the blades, who the
+//! [`FightShow`] holds what a fight has on the stage: the arena's actors, its warriors and the blades, who the
 //! party has on the field, the cues firing and the world clock's share of a fight's slow motion. All of it is
 //! ordinary entities in the scene's world, placed from what the simulation says of its actors, so the scene
 //! itself knows nothing of a fight (`sapphire_stage::SceneShow`).
@@ -42,7 +42,9 @@ use sapphire_world::light_rig::{CharacterLightRig, LightRigId};
 use sapphire_world::screen_effects::EffectLibrary;
 
 use crate::LOG_TARGET;
-use crate::arena::{ArenaActors, ArenaEnemy, ArenaGround, ArenaShot, COLLIDERS, FightPlace, PLAYER_EYES};
+use crate::arena::{
+    ArenaActors, ArenaEnemy, ArenaGround, ArenaShot, COLLIDERS, FightPlace, PLAYER_EYES, RosterChange,
+};
 use crate::blade::{self, HeldBlade};
 #[cfg(feature = "dev")]
 use crate::combat::SessionRecorder;
@@ -120,7 +122,7 @@ struct FightAssets {
 /// What a step of a fight did that an interface drawn over it has to hear.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Followed {
-    /// Someone else came in for each of the two.
+    /// Someone else came in for the player, and for the foe the player has.
     pub came_in: [bool; 2],
     /// A new fight began, and everything stands somewhere else.
     pub started_over: bool,
@@ -250,12 +252,23 @@ impl ImpactPair {
     }
 }
 
+/// What stands another warrior on the stage, as a simulation asks for one.
+struct WarriorStock {
+    meshes: EnemyMeshes,
+    held: enemy::Held,
+    /// What it plays, in a fight whose fighters play graphs: never itself played.
+    driver: Option<GraphDriver>,
+}
+
 /// What a fight has on the scene. Empty, it plays nothing and costs a few branches a frame.
 #[derive(Default)]
 pub struct FightShow {
     assets: FightAssets,
-    /// The enemy and its blade, with `--look-dev enemy` or `--arena`.
-    enemy: Option<(Entity, Entity)>,
+    /// The warriors and their blades: one with `--look-dev enemy`, and with `--arena` as many as the fight
+    /// has actors for.
+    warriors: Vec<(Entity, Entity)>,
+    /// What stands the next, with `--arena`.
+    stock: Option<WarriorStock>,
     /// The character's blade, with `--blade on`.
     blade: Option<HeldBlade>,
     /// The arena's actors, with `--arena`.
@@ -483,8 +496,9 @@ impl FightShow {
         let character = scene.character();
         scene.world_mut().entity_mut(character).remove::<Turntable>();
         let (blade_in_model, hand) = (held.blade, held.hand);
+        self.stock = Some(WarriorStock { meshes: enemy, held: held.clone(), driver: None });
         self.spawn_enemy(scene, enemy, held);
-        let (warrior, blade) = self.enemy.expect("it just stood there");
+        let (warrior, blade) = self.warriors[0];
         let enemy = ArenaEnemy { warrior, blade, blade_in_model, hand };
         self.arena = Some(Box::new(ArenaActors::new(character, enemy, shot, ground)));
     }
@@ -493,14 +507,17 @@ impl FightShow {
     /// ([`crate::arena`]). They hold what they have until a fight steps. Nothing without `--arena`.
     pub fn play_fighters(&mut self, scene: &mut Scene, player: GraphDriver, enemy: GraphDriver) {
         let Some(arena) = &self.arena else { return };
-        let [(_, _), (enemy_entity, _)] = arena.fighters();
+        let warrior = arena.entity(1);
         let player = player
             .with_ground_turn()
             // The two-handed finisher spots through its rising hilt before its arms descend.
             .with_authored_head_look(HERO_HEAD.movement, HERO_HEAD.retained, HERO_HEAD.source_ticks);
         scene.pose_character_by_graph(player);
         let world = scene.world_mut();
-        world.entity_mut(enemy_entity).insert(enemy);
+        world.entity_mut(warrior).insert(enemy.clone());
+        if let Some(stock) = &mut self.stock {
+            stock.driver = Some(enemy);
+        }
         self.graph_players = Some(world.query());
         self.fighters_posed = true;
     }
@@ -528,12 +545,13 @@ impl FightShow {
         if let Some(show) = &mut self.timeline {
             show.follow(simulation);
         }
+        self.follow_roster(scene, simulation, cast);
         let mut followed = Followed { started_over, ..Followed::default() };
         if let Some(arena) = &mut self.arena {
             followed.came_in = arena.follow(simulation, cast);
             for (index, fixed) in self.fixed_fighters.iter_mut().enumerate() {
                 if let Some(fixed) = fixed
-                    && (started_over || followed.came_in[index])
+                    && (started_over || (index == 0 && followed.came_in[0]))
                 {
                     fixed.renderer.discontinuity();
                 }
@@ -552,6 +570,40 @@ impl FightShow {
             scene.set_character_mesh(mesh);
         }
         followed
+    }
+
+    /// Stands a warrior for each actor `simulation` has that needs one, and takes off those whose actors
+    /// have gone. It costs a walk of the actors a step, and what it allocates only when someone comes.
+    fn follow_roster(
+        &mut self,
+        scene: &mut Scene,
+        simulation: &Simulation,
+        cast: &[sapphire_gameplay::ActorId],
+    ) {
+        let Some(arena) = &mut self.arena else { return };
+        while let Some(change) = arena.next_change(simulation, cast) {
+            let world = scene.world_mut();
+            match change {
+                RosterChange::Left { warrior, blade } => {
+                    world.despawn(warrior);
+                    if let Some(blade) = blade {
+                        world.despawn(blade);
+                    }
+                    self.warriors.retain(|(standing, _)| *standing != warrior);
+                }
+                RosterChange::Arrived(id) => {
+                    let stock = self.stock.as_ref().expect("an arena has what stands its warriors");
+                    let actor = simulation.actor(id).expect("it just arrived");
+                    let (warrior, blade) = spawn_warrior(world, stock.meshes, &stock.held);
+                    if let Some(driver) = &stock.driver {
+                        world.entity_mut(warrior).insert(driver.clone());
+                    }
+                    self.warriors.push((warrior, blade));
+                    let (blade_in_model, hand) = (stock.held.blade, stock.held.hand);
+                    arena.stand(ArenaEnemy { warrior, blade, blade_in_model, hand }, actor);
+                }
+            }
+        }
     }
 
     /// Keeps the scene's world clock with a fight's slow motion (M2 G4) and a timeline's time scale (M3 Q1),
@@ -743,48 +795,23 @@ impl FightShow {
         self.arena.as_deref().and_then(ArenaActors::heading).unwrap_or_else(|| scene.camera().heading())
     }
 
-    /// Says whether a thumb is what's playing, for who a fight's soft lock chooses
-    /// ([`crate::arena::ArenaActors::set_played_on_touch`]).
-    pub fn set_played_on_touch(&mut self, touch: bool) {
-        if let Some(arena) = &mut self.arena {
-            arena.set_played_on_touch(touch);
-        }
-    }
-
     /// Stands the enemy on the look-dev stage (`--look-dev enemy`, [`crate::enemy`]): the warrior
     /// held in its pose beside the character, and its blade at its hand. Neither moves, so they are
     /// extracted once. Call after `Scene::spawn_look_dev`, whose light rigs they take.
     pub fn spawn_enemy(&mut self, scene: &mut Scene, meshes: EnemyMeshes, held: enemy::Held) {
         scene.extract_poses();
-        let place = enemy::place();
-        let rig = LightRigId::DEFAULT;
-        let blade_figure = enemy::blade_figure(&held);
-        let world = scene.world_mut();
-        let warrior = world
-            .spawn((
-                RenderMesh(meshes.warrior),
-                RenderTransform(place),
-                CharacterLightRig { rig, head: held.figure.head },
-                held.figure,
-                held.pose,
-            ))
-            .id();
-        let blade = world
-            .spawn((
-                RenderMesh(meshes.blade),
-                RenderTransform(place * held.blade),
-                CharacterLightRig { rig, head: blade_figure.head },
-                blade_figure,
-            ))
-            .id();
-        self.enemy = Some((warrior, blade));
+        let warrior = spawn_warrior(scene.world_mut(), meshes, &held);
+        self.warriors.push(warrior);
     }
 
-    /// Sets the meshes the enemy draws again: after GPU device loss.
+    /// Sets the meshes the warriors draw again: after GPU device loss.
     pub fn set_enemy_meshes(&mut self, scene: &mut Scene, meshes: EnemyMeshes) {
-        if let Some((warrior, blade)) = self.enemy {
+        for &(warrior, blade) in &self.warriors {
             scene.world_mut().entity_mut(warrior).insert(RenderMesh(meshes.warrior));
             scene.world_mut().entity_mut(blade).insert(RenderMesh(meshes.blade));
+        }
+        if let Some(stock) = &mut self.stock {
+            stock.meshes = meshes;
         }
     }
 
@@ -848,8 +875,9 @@ impl FightShow {
         let world = scene.world();
         let drawn = |entity| world.get::<RenderTransform>(entity).map(|transform| transform.0);
         let player = self.blade.and_then(|held| drawn(held.entity));
-        let enemy = self.arena.as_ref().and_then(|arena| drawn(arena.enemy_blade()));
-        cues.follow_blades([player, enemy], alpha);
+        let warriors = self.arena.iter().flat_map(|arena| arena.blades().skip(1));
+        let blades = std::iter::once(player).chain(warriors.map(|blade| blade.and_then(drawn)));
+        cues.follow_blades(blades, alpha);
     }
 
     /// Fires a fight's cues from now on (`--cues`, M2 E3), within `budget`, and has the scene prewarm
@@ -893,12 +921,12 @@ impl FightShow {
         let view_projection = camera.proj * camera.view;
         let place = scene.world().get::<RenderTransform>(scene.character());
         let stand = place.map_or(Vec3::ZERO, |place| place.0.w_axis.truncate());
-        let (posed, sword) = (self.fighters_posed, self.blade.is_some());
+        let (posed, player_blade) = (self.fighters_posed, self.blade.is_some());
         let stage = match &mut self.arena {
             Some(arena) => {
-                let (director, [player, enemy]) = arena.cue_stage();
-                let fighters = [player.filter(|_| posed && sword), enemy.filter(|_| posed)];
-                CueStage::Actors { director, fighters }
+                let (director, fighters) = arena.cue_stage();
+                let fighters = if posed { fighters } else { &[] };
+                CueStage::Actors { director, fighters, player_blade }
             }
             None => CueStage::OneCharacter { stand },
         };
@@ -958,17 +986,51 @@ impl FightShow {
         content: &mut Content,
     ) -> Result<(), sapphire_assets::LoadError> {
         let character = scene.clips_in_use(Some(scene.character()));
-        let enemy = scene.clips_in_use(self.enemy.map(|(warrior, _)| warrior));
-        content.hold_graph_clips(&[(ENEMY_GRAPH, &enemy), (GraphKey::CHARACTER, &character)])
+        let warriors = self.warrior_clips_in_use(scene);
+        content.hold_graph_clips(&[(ENEMY_GRAPH, &warriors), (GraphKey::CHARACTER, &character)])
     }
 
-    /// Takes in a new version of the enemy's mesh or skeleton, whose joints may be others: the pose it
-    /// holds, the hand its blade follows, what lights them, and in a fight a driver that starts now from
-    /// where the old one was, as the character's does (`Scene::replace_graph`). Those can land frames
-    /// apart and its clips later still, so until all of it fits it keeps everything it has, and tries again
-    /// as each part lands.
+    /// The clips any warrior's player may still read. Allocates, so only as a graph changes.
+    fn warrior_clips_in_use(&self, scene: &Scene) -> Vec<AssetId> {
+        let mut clips = Vec::new();
+        for (warrior, _) in &self.warriors {
+            for clip in scene.clips_in_use(Some(*warrior)) {
+                if !clips.contains(&clip) {
+                    clips.push(clip);
+                }
+            }
+        }
+        clips
+    }
+
+    /// What a warrior who comes on from here plays: the graph as it stands. What can't bind leaves what it
+    /// had, with those already standing.
+    fn renew_stock_driver(&mut self, content: &Content) {
+        let Some(ground) = self.arena.as_ref().filter(|_| self.fighters_posed).map(|arena| arena.ground())
+        else {
+            return;
+        };
+        match self.enemy_driver(content, ground) {
+            Ok(driver) => {
+                if let Some(stock) = &mut self.stock {
+                    stock.driver = Some(driver);
+                }
+            }
+            Err(error) => {
+                tracing::warn!(target: LOG_TARGET, %error, "the next warrior plays the graph the last one did")
+            }
+        }
+    }
+
+    /// Takes in a new version of the enemy's mesh or skeleton, whose joints may be others: for each warrior
+    /// the pose it holds, the hand its blade follows, what lights them, and in a fight a driver that starts
+    /// now from where its old one was, as the character's does (`Scene::replace_graph`). Those can land
+    /// frames apart and its clips later still, so until all of it fits it keeps everything it has, and tries
+    /// again as each part lands.
     fn replace_enemy(&mut self, scene: &mut Scene, content: &mut Content) {
-        let Some((warrior, blade)) = self.enemy else { return };
+        if self.warriors.is_empty() {
+            return;
+        }
         if let Err(error) = self.hold_graph_clips(scene, content) {
             tracing::warn!(target: LOG_TARGET, %error, "a fighter's graph lost a clip");
         }
@@ -988,29 +1050,48 @@ impl FightShow {
         self.enemy_waits = false;
         let carried = enemy::blade_figure(&held);
         let world = scene.world_mut();
-        let place = world.get::<RenderTransform>(warrior).map_or(Mat4::IDENTITY, |transform| transform.0);
-        let mut character = world.entity_mut(warrior);
-        if let (Some(mut playing), Some(mut driver)) = (character.get_mut::<GraphDriver>(), driver) {
-            driver.continue_from(&playing);
-            *playing = driver;
+        for &(warrior, blade) in &self.warriors {
+            let place = world.get::<RenderTransform>(warrior).map_or(Mat4::IDENTITY, |transform| transform.0);
+            let mut character = world.entity_mut(warrior);
+            if let (Some(mut playing), Some(driver)) = (character.get_mut::<GraphDriver>(), &driver) {
+                let mut driver = driver.clone();
+                driver.continue_from(&playing);
+                *playing = driver;
+            }
+            if let Some(mut rig) = character.get_mut::<CharacterLightRig>() {
+                rig.head = held.figure.head;
+            }
+            character.insert((held.pose.clone(), held.figure));
+            let mut item = world.entity_mut(blade);
+            if let Some(mut rig) = item.get_mut::<CharacterLightRig>() {
+                rig.head = carried.head;
+            }
+            item.insert((carried, RenderTransform(place * held.blade)));
         }
-        if let Some(mut rig) = character.get_mut::<CharacterLightRig>() {
-            rig.head = held.figure.head;
-        }
-        character.insert((held.pose, held.figure));
-        let mut item = world.entity_mut(blade);
-        if let Some(mut rig) = item.get_mut::<CharacterLightRig>() {
-            rig.head = carried.head;
-        }
-        item.insert((carried, RenderTransform(place * held.blade)));
         if let Some(arena) = &mut self.arena {
             arena.follow_new_enemy(held.hand, held.blade);
+        }
+        if let Some(stock) = &mut self.stock {
+            stock.held = held;
+            if driver.is_some() {
+                stock.driver = driver;
+            }
+        }
+    }
+
+    /// Gives every warrior `binding`, from its next state's start (`GraphPlayer::replace`).
+    fn replace_warriors_graph(&self, scene: &mut Scene, binding: &Arc<sapphire_anim::GraphBinding>) {
+        let world = scene.world_mut();
+        for (warrior, _) in &self.warriors {
+            if let Some(mut playing) = world.get_mut::<GraphDriver>(*warrior) {
+                playing.player.replace(Arc::clone(binding));
+            }
         }
     }
 
     /// Plays each fighter's graph for this frame, from what the last step said of it, solves its feet
-    /// and its look at the other, and moves the enemy's blade to its hand. Two run in turn on this
-    /// thread, so there's no list of jobs to make, and this allocates nothing; a crowd would want
+    /// and its look at who it's fighting, and moves each warrior's blade to its hand. They run in turn on
+    /// this thread, so there's no list of jobs to make, and this allocates nothing; a crowd would want
     /// `evaluate_all`'s jobs and a retained list. A fighter whose mesh is changing keeps the pose it has
     /// until it fits.
     fn animate_fighters(
@@ -1038,19 +1119,19 @@ impl FightShow {
         let (Some(arena), Some(graph_players)) = (&mut self.arena, &mut self.graph_players) else { return };
         let view = scene.spring_view();
         let world = scene.world_mut();
-        let fighters = arena.fighters();
-        let stick_released = fighters[0]
+        let stick_released = arena.fighters()[0]
             .1
             .is_some_and(|actor| actor.controls.current.stick == sapphire_gameplay::Stick::CENTER);
-        let entities = fighters.map(|(entity, _)| entity);
-        for (index, (entity, clips)) in entities.into_iter().zip([player, enemy]).enumerate() {
-            let Ok((mut driver, render, figure, rig, _)) = graph_players.get_mut(world, entity) else {
+        for index in 0..arena.fighter_count() {
+            let Ok((mut driver, render, figure, rig, _)) = graph_players.get_mut(world, arena.entity(index))
+            else {
                 continue;
             };
+            let clips = if index == 0 { player } else { enemy };
             if !driver.fits(&render) {
                 continue;
             }
-            if let Some(fixed) = &mut self.fixed_fighters[index] {
+            if let Some(fixed) = self.fixed_fighters.get_mut(index).and_then(Option::as_mut) {
                 let (content, _) = presentation.expect("fixed body presentation needs its source");
                 let versions =
                     if index == 0 { content.current_character_versions() } else { warrior_versions };
@@ -1083,7 +1164,7 @@ impl FightShow {
                         stats.joints += driver.player.pose().joint_count() as u32;
                         if index == 1 {
                             let hand = driver.player.pose().model()[arena.blade_hand()];
-                            arena.hold_blade(Mat4::from(hand));
+                            arena.hold_blade(index, Mat4::from(hand));
                         }
                     }
                     stats.springs += u32::from(springs.wrote_pose);
@@ -1139,9 +1220,9 @@ impl FightShow {
                 stats.evaluated += 1;
                 stats.joints += job.driver.player.pose().joint_count() as u32;
                 stats.ik += u32::from(job.driver.has_ik());
-                if index == 1 {
+                if index > 0 {
                     let hand = job.driver.player.pose().model()[arena.blade_hand()];
-                    arena.hold_blade(Mat4::from(hand));
+                    arena.hold_blade(index, Mat4::from(hand));
                 }
             }
             stats.springs += u32::from(job.spring_work.wrote_pose);
@@ -1265,13 +1346,13 @@ impl FightShow {
         if owner == GraphKey::CHARACTER {
             return scene.replace_graph_document(graph, content, renderer, gpu);
         }
-        let entity = self.enemy.map(|(warrior, _)| warrior);
-        let playing = entity
-            .filter(|&entity| self.fighters_posed && scene.world().get::<GraphDriver>(entity).is_some());
-        let Some(entity) = playing else {
+        let first = self.warriors.first().map(|(warrior, _)| *warrior);
+        let playing =
+            first.filter(|&entity| self.fighters_posed && scene.world().get::<GraphDriver>(entity).is_some());
+        if playing.is_none() {
             return Err("no enemy here plays a graph: `--arena --fight` has one".to_owned());
-        };
-        content.hold_clips_of(owner, &graph, &scene.clips_in_use(Some(entity)), renderer, gpu)?;
+        }
+        content.hold_clips_of(owner, &graph, &self.warrior_clips_in_use(scene), renderer, gpu)?;
         let binding = self.enemy_binding_of(content, &graph);
         if self.enemy_waits {
             return content.end_wait_on(owner, graph, binding.map(drop), |content| {
@@ -1279,13 +1360,38 @@ impl FightShow {
                 self.enemy_waits
             });
         }
-        let binding = binding?;
+        let binding = Arc::new(binding?);
         content.set_live_graph(owner, Some(graph));
-        if let Some(mut playing) = scene.world_mut().get_mut::<GraphDriver>(entity) {
-            playing.player.replace(Arc::new(binding));
-        }
+        self.replace_warriors_graph(scene, &binding);
+        self.renew_stock_driver(content);
         Ok(())
     }
+}
+
+/// Stands a warrior and its blade as `held` has them, on the look-dev stage's spot until something places
+/// them: its light rigs are those the stage has.
+fn spawn_warrior(world: &mut World, meshes: EnemyMeshes, held: &enemy::Held) -> (Entity, Entity) {
+    let place = enemy::place();
+    let rig = LightRigId::DEFAULT;
+    let blade_figure = enemy::blade_figure(held);
+    let warrior = world
+        .spawn((
+            RenderMesh(meshes.warrior),
+            RenderTransform(place),
+            CharacterLightRig { rig, head: held.figure.head },
+            held.figure,
+            held.pose.clone(),
+        ))
+        .id();
+    let blade = world
+        .spawn((
+            RenderMesh(meshes.blade),
+            RenderTransform(place * held.blade),
+            CharacterLightRig { rig, head: blade_figure.head },
+            blade_figure,
+        ))
+        .id();
+    (warrior, blade)
 }
 
 impl SceneShow for FightShow {
@@ -1308,11 +1414,14 @@ impl SceneShow for FightShow {
         if !changes.graphs || self.enemy_waits {
             return;
         }
-        let Some(enemy) = self.enemy.map(|(warrior, _)| warrior) else { return };
-        let binding = self.enemy_binding(content);
-        let Some(mut playing) = scene.world_mut().get_mut::<GraphDriver>(enemy) else { return };
-        match binding {
-            Ok(binding) => playing.player.replace(Arc::new(binding)),
+        if self.warriors.is_empty() {
+            return;
+        }
+        match self.enemy_binding(content) {
+            Ok(binding) => {
+                self.replace_warriors_graph(scene, &Arc::new(binding));
+                self.renew_stock_driver(content);
+            }
             Err(error) => tracing::warn!(target: LOG_TARGET, %error, "the enemy keeps the graph it has"),
         }
     }

@@ -149,6 +149,7 @@ fn values() -> HudValues {
         player: FighterValues { hp: 0.8, poise: 0.5, hp_points: Some(6480) },
         enemy: Some(FighterValues { hp: 0.6, poise: 0.3, hp_points: None }),
         skill: SkillValues { cooldown: 0.5, seconds: Some(3) },
+        ..HudValues::default()
     }
 }
 
@@ -191,6 +192,34 @@ fn a_fighter_with_no_enemy_draws_fewer_bars() {
     let with = draw(&layout, &values()).quads.len();
     let alone = draw(&layout, &HudValues { enemy: None, ..values() }).quads.len();
     assert!(alone < with);
+}
+
+/// A small bar for each other foe, in a row under the enemy's, each inside it however narrow the frame. With
+/// none, it draws what it always drew.
+#[test]
+fn other_foes_get_a_small_bar_each() {
+    let drawn = |metrics: UiMetrics, count: usize| {
+        let layout = HudLayout::new(metrics);
+        let mut others = OtherFoes::default();
+        for _ in 0..count {
+            others.push(0.5);
+        }
+        let list = draw(&layout, &HudValues { others, ..values() });
+        (layout, list.quads)
+    };
+    for size in [Vec2::new(640.0, 360.0), Vec2::new(480.0, 360.0), Vec2::new(2000.0, 900.0)] {
+        let metrics = UiMetrics::new(size, Insets::default());
+        let (layout, none) = drawn(metrics, 0);
+        assert!(layout.others.min.y >= layout.enemy.poise.max.y, "it's under the bars");
+        let (_, full) = drawn(metrics, MAX_OTHER_FOES);
+        assert_eq!(full.len(), none.len() + 2 * MAX_OTHER_FOES, "{size}: a case and its fill");
+    }
+
+    let mut foes = OtherFoes::default();
+    for _ in 0..MAX_OTHER_FOES + 3 {
+        foes.push(1.0);
+    }
+    assert_eq!(foes.bars().len(), MAX_OTHER_FOES, "what it has no room for isn't shown");
 }
 
 /// A pause adds a veil over all of the frame and two bars in its middle, on top of what was there and
@@ -505,8 +534,15 @@ fn values_outside_their_ranges_clamp_and_nan_reads_as_zero() {
         player: FighterValues { hp: f32::NAN, poise: 7.0, hp_points: None },
         enemy: Some(FighterValues { hp: -1.0, poise: f32::INFINITY, hp_points: None }),
         skill: SkillValues { cooldown: f32::NAN, seconds: None },
+        others: {
+            let mut others = OtherFoes::default();
+            others.push(f32::NAN);
+            others.push(7.0);
+            others
+        },
     };
     let good = sanitized(&bad);
+    assert_eq!(good.others.bars(), &[0.0, 1.0]);
     assert_eq!((good.player.hp, good.player.poise), (0.0, 1.0));
     let enemy = good.enemy.unwrap();
     assert_eq!((enemy.hp, enemy.poise), (0.0, 1.0));

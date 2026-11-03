@@ -225,7 +225,8 @@ fn each_spawn_point_stands_on_the_ground() {
     let world = world(&bytes);
     let filter = QueryFilter::new(Group::World.mask());
     let spawns = spawns();
-    for (who, spawn) in [("player", spawns.player), ("enemy", spawns.enemy)] {
+    let crowd = spawns.crowd.map(|spawn| ("crowd", spawn));
+    for (who, spawn) in [("player", spawns.player), ("enemy", spawns.enemy)].into_iter().chain(crowd) {
         let over = spawn.position() + Vec3::Y * 2.0;
         let hit = world
             .cast_ray(over, Vec3::NEG_Y, 4.0, &filter)
@@ -242,7 +243,8 @@ fn a_capsule_of_the_characters_size_fits_at_each_spawn_point() {
     let world = world(&bytes);
     let filter = QueryFilter::new(character_filter());
     let spawns = spawns();
-    for (who, spawn) in [("player", spawns.player), ("enemy", spawns.enemy)] {
+    let crowd = spawns.crowd.map(|spawn| ("crowd", spawn));
+    for (who, spawn) in [("player", spawns.player), ("enemy", spawns.enemy)].into_iter().chain(crowd) {
         let mut hits = [HitTarget::Body(BodyId(0)); 8];
         let found = world.overlap(&capsule(), capsule_pose(spawn.position()), &filter, &mut hits);
         let names: Vec<String> = hits[..found.written].iter().map(|&hit| name_of(cooked, hit)).collect();

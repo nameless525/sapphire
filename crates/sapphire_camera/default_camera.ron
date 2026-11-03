@@ -2,7 +2,7 @@
 // `tuning.rs` says what each field means and the range it's held to.
 (
     type: "sapphire::camera::CameraTuning",
-    version: 1,
+    version: 2,
     data: (
         explore: (
             pivot_height: 0.8,
@@ -34,6 +34,7 @@
             ),
             pitch_min: -0.1,
             pitch_max: 0.55,
+            bystander_reach: (6.0, 12.0),
         ),
         lock_on: (
             framing: (

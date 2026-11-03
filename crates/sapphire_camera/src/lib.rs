@@ -29,6 +29,7 @@
 //!         player: Some(player), // Who the rigs follow, if anyone: a cutscene may have nobody.
 //!         player_yaw: 0.0,       // Which way the player faces.
 //!         target: Some(enemy),   // From `sapphire_gameplay::targeting`, or the app's own choice.
+//!         bystanders: [None; sapphire_camera::MAX_BYSTANDERS],
 //!         look: Vec2::ZERO,      // `CombatControls::look`: radians of yaw and pitch this frame.
 //!         zoom: 0.0,             // `CombatControls::camera_zoom`: the log of a factor on the distance.
 //!         aspect: 16.0 / 9.0,
@@ -56,6 +57,8 @@
 //!   the safe frame: past that limit the view turns back at `turn_half_life`, no faster than
 //!   `max_turn_rate`. The distance is the least that fits both fighters' heads and feet, from the view as
 //!   it stands, within the tuning's range. It pulls out quickly and pushes in slowly.
+//! - **Bystanders** (`CameraFrame::bystanders`) are who else stands against the player. The combat rig stands
+//!   back to keep those near the player in the shot, and doesn't turn for them.
 //! - **Lock-on** holds the line from player to target, off to whichever side the view was on. **Look input
 //!   only leans it**, within `lean_yaw` and `lean_pitch`, and the lean returns when input lets go. The
 //!   game's stick and its target choice don't change: flicking to another target is the app asking
@@ -141,7 +144,9 @@ mod shake;
 mod spring;
 mod tuning;
 
-pub use director::{CameraDirector, CameraFrame, CameraPose, CameraStats, ShotEye, TakeoverTerms};
+pub use director::{
+    CameraDirector, CameraFrame, CameraPose, CameraStats, MAX_BYSTANDERS, ShotEye, TakeoverTerms,
+};
 pub use rigs::{Rig, Subject};
 pub use shake::{MAX_SHAKES, NamedShake, Shake, ShakeId, ShakeStack};
 pub use tuning::{

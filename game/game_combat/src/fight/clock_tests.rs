@@ -443,7 +443,7 @@ fn trail_frame(scene: &mut Staged, table: &ClipTable<'_>, alpha: f32) -> TrailFr
     let world = scene.world();
     let drawn = |entity| world.get::<RenderTransform>(entity).map(|transform| transform.0);
     let player = scene.show.blade.and_then(|held| drawn(held.entity));
-    let enemy = scene.show.arena.as_ref().and_then(|arena| drawn(arena.enemy_blade()));
+    let enemy = scene.show.arena.as_ref().and_then(|arena| arena.blades().nth(1).flatten().and_then(drawn));
     TrailFrame { heads, blades: [player, enemy], points }
 }
 

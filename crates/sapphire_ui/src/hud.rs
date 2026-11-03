@@ -70,6 +70,10 @@ const DAMAGE_RISE: f32 = 30.0;
 /// The share of its life it stays whole before fading.
 const DAMAGE_WHOLE: f32 = 0.55;
 
+/// How wide each of the other foes' small bars stands in its row, gap and all, and the gap, in points.
+const OTHER_BAR_WIDTH: f32 = 44.0;
+const OTHER_BAR_GAP: f32 = 8.0;
+
 /// How long a health bar's trailing segment holds before it catches up, in seconds.
 const TRAIL_HOLD: f32 = 0.35;
 /// How fast it catches up, in bars a second.
@@ -134,6 +138,8 @@ pub struct HudLayout {
     pub skill: ButtonLayout,
     pub player: BarsLayout,
     pub enemy: BarsLayout,
+    /// The row under the enemy's bars that the other foes' small ones share, from its middle out.
+    pub others: Rect,
     /// Everything scales by this: 1 unless the frame is smaller than a phone.
     pub scale: f32,
 }
@@ -183,6 +189,10 @@ impl HudLayout {
         let enemy_width = free.min(points(design.enemy.max_width)).max(0.0);
         let top = Anchor::TOP_CENTER.place(safe, Vec2::new(-enemy_width * 0.5, top_margin));
         let enemy = design.enemy.bars.place(top, enemy_width, Align::Center, &points);
+        let others = Rect::new(
+            top + Vec2::new(0.0, points(design.enemy.others_top)),
+            top + Vec2::new(enemy_width, points(design.enemy.others_bottom)),
+        );
 
         Self {
             metrics,
@@ -193,6 +203,7 @@ impl HudLayout {
             skill,
             player,
             enemy,
+            others,
             scale,
         }
     }
@@ -293,12 +304,15 @@ pub struct PlayerBarsDesign {
     pub bars: BarsDesign,
 }
 
-/// The enemy's bars, in what's left of the middle, up to `max_width`.
+/// The enemy's bars, in what's left of the middle, up to `max_width`, with the row the other foes' small ones
+/// share between `others_top` and `others_bottom` under where they hang.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EnemyBarsDesign {
     pub max_width: f32,
     pub bars: BarsDesign,
+    pub others_top: f32,
+    pub others_bottom: f32,
 }
 
 impl Versioned for HudDesign {
@@ -381,6 +395,8 @@ impl HudDesign {
             ("enemy.poise_top", enemy.bars.poise_top),
             ("enemy.poise_bottom", enemy.bars.poise_bottom),
             ("enemy.digits_top", enemy.bars.digits_top),
+            ("enemy.others_top", enemy.others_top),
+            ("enemy.others_bottom", enemy.others_bottom),
         ];
         for (field, value) in places {
             if !value.is_finite() {
@@ -427,11 +443,40 @@ pub struct SkillValues {
     pub seconds: Option<u32>,
 }
 
+/// How many foes besides the one it shows whole the HUD has bars for.
+pub const MAX_OTHER_FOES: usize = 7;
+
+/// The foes a fight has besides [`HudValues::enemy`], each a small bar of its health. No list: the values
+/// are copied each frame, and no fight here has more than the bars have room for.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct OtherFoes {
+    hp: [f32; MAX_OTHER_FOES],
+    count: u8,
+}
+
+impl OtherFoes {
+    /// One more, its health left from 0 to 1. Past [`MAX_OTHER_FOES`], it isn't shown.
+    pub fn push(&mut self, hp: f32) {
+        if let Some(bar) = self.hp.get_mut(usize::from(self.count)) {
+            *bar = hp;
+            self.count += 1;
+        }
+    }
+
+    /// Each one's health left.
+    pub fn bars(&self) -> &[f32] {
+        &self.hp[..usize::from(self.count)]
+    }
+}
+
 /// What the HUD shows, from the app each frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct HudValues {
     pub player: FighterValues,
+    /// The foe the player has now.
     pub enemy: Option<FighterValues>,
+    /// Who else stands against the player.
+    pub others: OtherFoes,
     pub skill: SkillValues,
 }
 
@@ -649,6 +694,7 @@ impl CombatHud {
         if let Some(enemy) = &self.values.enemy {
             self.draw_fighter(&mut painter, &layout.enemy, enemy, &self.enemy_trail, ROSE, layout.scale);
         }
+        self.draw_others(&mut painter, layout);
         let scale = layout.scale;
         if self.controls_shown {
             draw_stick(&mut painter, layout, &actions.stick);
@@ -698,6 +744,28 @@ impl CombatHud {
         if let Some(points) = values.hp_points {
             let digits = Paint::outlined(WHITE, OUTLINE, 1.6 * scale);
             painter.digits(points, bars.digits, bars.digit_height, bars.digits_align, SLANT, digits);
+        }
+    }
+
+    /// A small bar for each other foe, side by side about the row's middle, with no trail: what it's for is
+    /// to say how many are left and how they stand, and the big one says what a hit did.
+    fn draw_others(&self, painter: &mut Painter<'_>, layout: &HudLayout) {
+        let bars = self.values.others.bars();
+        let scale = layout.scale;
+        let row = layout.others;
+        let (pitch, gap) = (OTHER_BAR_WIDTH * scale, OTHER_BAR_GAP * scale);
+        // A frame too narrow for a whole row gets thinner bars rather than bars over the player's.
+        let pitch = pitch.min(row.width() / MAX_OTHER_FOES as f32);
+        let across = pitch * bars.len() as f32;
+        let edge = row.min.x + (row.width() - across) * 0.5;
+        for (index, hp) in bars.iter().enumerate() {
+            let left = edge + pitch * index as f32;
+            let bar = Rect::new(
+                Vec2::new(left + gap * 0.5, row.min.y),
+                Vec2::new(left + pitch - gap * 0.5, row.max.y),
+            );
+            painter.bar(bar, SLANT, (0.0, 1.0), Paint::outlined(INK, faded(PALE, 0.7), scale));
+            painter.bar(bar, SLANT, (0.0, *hp), Paint::fill(ROSE));
         }
     }
 
@@ -761,6 +829,10 @@ fn sanitized(values: &HudValues) -> HudValues {
     HudValues {
         player: fighter(&values.player),
         enemy: values.enemy.as_ref().map(fighter),
+        others: OtherFoes {
+            hp: values.others.hp.map(share),
+            count: values.others.count.min(MAX_OTHER_FOES as u8),
+        },
         skill: SkillValues { cooldown: share(values.skill.cooldown), ..values.skill },
     }
 }

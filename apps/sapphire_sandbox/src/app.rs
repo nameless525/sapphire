@@ -539,7 +539,6 @@ impl App for SandboxApp {
         if self.input.update(now) {
             return AppControl::Exit;
         }
-        self.show.fight.show.set_played_on_touch(self.input.played_on_touch());
         self.follow_pointer();
         self.stages.input = stopwatch.lap();
         if self.suspended {

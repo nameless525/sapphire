@@ -353,6 +353,37 @@ fn nothing_touch_does_passes_through_the_pause() {
     assert_eq!(phone.rig.next().buttons, L);
 }
 
+/// A thumb's press reaches the bindings after the frame's pump, whenever it happened. It keeps to its
+/// own side of a Back in that frame by its time, as a pad's press does ("presses keep to their side of
+/// the pause"), not by which road got there first.
+#[test]
+fn a_thumb_and_back_in_one_frame_keep_to_their_sides_of_the_pause() {
+    // The thumb first: it arrives, on the first step after the pause, as if no time had passed.
+    let mut phone = Phone::new();
+    phone.press(1, THUMB, Button::Attack);
+    phone.rig.controls.input_mut().push(ms(phone.rig.now + 3), key(BACK, true));
+    phone.rig.controls.input_mut().push(ms(phone.rig.now + 4), key(BACK, false));
+    phone.frame();
+    assert!(phone.rig.controls.is_paused());
+    assert_eq!(phone.presses(), 1, "pressed before the pause");
+    phone.rig.controls.set_paused(false);
+    phone.frame();
+    assert!(!phone.rig.controls.is_paused());
+    assert_eq!(phone.rig.next().buttons, L);
+
+    // Back first: the thumb's is the pause's, however the frame's input is put together.
+    let mut phone = Phone::new();
+    phone.rig.controls.input_mut().push(ms(phone.rig.now + 1), key(BACK, true));
+    phone.rig.controls.input_mut().push(ms(phone.rig.now + 2), key(BACK, false));
+    phone.press(3, THUMB, Button::Attack);
+    phone.frame();
+    assert!(phone.rig.controls.is_paused());
+    assert_eq!(phone.presses(), 0, "pressed after the pause");
+    phone.rig.controls.set_paused(false);
+    phone.frame();
+    assert_eq!(phone.rig.steps(2), [N, N], "and held on, it isn't pressed now");
+}
+
 /// The camera's drag is the bindings' too, at the rate of `Touch(Drag)`: 0.006 rad a point, dragging
 /// right turning toward negative yaw. It lasts the update it arrived in.
 #[test]

@@ -814,6 +814,43 @@ fn bindings_rebind_by_name_and_capture_the_next_press() {
     assert!(matches!(rig.input.rebind("dodge", Source::Key(Key::K)), Err(RebindError::UnknownBinding(_))));
 }
 
+/// On-screen controls and device events take two roads to the queue, so what's pushed later can have
+/// happened earlier. An update plays it all in time order, and pushes at one instant as they came.
+#[test]
+fn an_update_plays_its_input_in_time_order() {
+    let map = map(
+        r#"(name: "thumb", kind: Button), (name: "key", kind: Button)"#,
+        r#"(name: "main", bindings: [
+            (action: "thumb", source: Virtual("thumb"), trigger: Pressed),
+            (action: "key", source: Key(J), trigger: Pressed),
+        ])"#,
+    );
+    let mut rig = Rig::new(map, &["main"]);
+    let thumb = rig.input.map().virtual_control("thumb").expect("thumb");
+    rig.key(30, Scancode::J, true);
+    rig.input.inject(thumb, Vec2::X, ms(20));
+    assert_eq!(
+        rig.update(40),
+        [
+            ev("thumb", Started, 20),
+            ev("thumb", Triggered, 20),
+            ev("thumb", Completed, 20),
+            ev("key", Started, 30),
+            ev("key", Triggered, 30),
+            ev("key", Completed, 30),
+        ]
+    );
+
+    // Off, on and off at one instant are still that, in that order: one press.
+    rig.input.inject(thumb, Vec2::ZERO, ms(50));
+    rig.input.inject(thumb, Vec2::X, ms(50));
+    rig.input.inject(thumb, Vec2::ZERO, ms(50));
+    assert_eq!(
+        rig.update(60),
+        [ev("thumb", Started, 50), ev("thumb", Triggered, 50), ev("thumb", Completed, 50)]
+    );
+}
+
 /// Review PLT-002: an on-screen control is its name for as long as the system runs. Attack is the map's
 /// first on-screen control and dodge its second, and rebinding attack's binding away used to make dodge
 /// the first.

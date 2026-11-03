@@ -39,7 +39,7 @@
 //! The crate never reads a clock (rule R2). Input time is the platform's event clock
 //! ([`Timestamp`], SDL's nanoseconds): every raw input carries its device event's timestamp,
 //! and the app passes [`Platform::now`](sapphire_platform::Platform::now) to
-//! [`InputSystem::update`] once per frame. The update replays the frame's input in order and
+//! [`InputSystem::update`] once per frame. The update replays the frame's input in time order and
 //! judges every binding at each input's own timestamp, and at every trigger deadline in between,
 //! so:
 //!

@@ -250,7 +250,7 @@ impl Combined {
 /// 1. Feed every platform event to [`handle_event`](Self::handle_event) (or raw input to
 ///    [`push`](Self::push)). Nothing is evaluated yet.
 /// 2. Call [`update`](Self::update) once with the current time on the platform's event clock
-///    (`Platform::now`). It plays the queued input back in order, judging every binding at each
+///    (`Platform::now`). It plays the queued input back in time order, judging every binding at each
 ///    input's own timestamp, so a press and release within one frame both count and holds
 ///    complete at their exact instant. Motion is summed per update, each motion binding taking
 ///    only what arrives while its chord is held (see the crate docs).
@@ -425,7 +425,8 @@ impl InputSystem {
         self.push(timestamp, RawInput::ReleaseAll);
     }
 
-    /// Processes the queued input, then brings time-driven triggers up to `now`, a time on the
+    /// Processes the queued input by its timestamps, whatever order it was pushed in, inputs at one
+    /// instant as they were pushed. Then brings time-driven triggers up to `now`, a time on the
     /// platform's event clock no earlier than the queued input's.
     ///
     /// Allocates nothing, unless more input was queued, or more action events happened, than
@@ -448,6 +449,7 @@ impl InputSystem {
 
         // Taken out so `apply` can borrow the system; put back to keep its capacity.
         let mut queue = std::mem::take(&mut self.queue);
+        sort_by_time(&mut queue);
         for &(timestamp, input) in &queue {
             let at = timestamp.max(self.time);
             self.run_deadlines(at);
@@ -831,6 +833,20 @@ impl InputSystem {
                 _ => {}
             }
             state.active = state.include;
+        }
+    }
+}
+
+/// Puts the queue in time order, inputs at one instant as they were pushed. On-screen controls come by
+/// another road from the pump's events and are pushed after them, so a thumb's press can follow a Back
+/// that came later. Those few inputs move past what they're behind and the rest stay put, so this is
+/// nearly a pass over the queue, in place: std's stable sort allocates for a long queue.
+fn sort_by_time(queue: &mut [(Timestamp, RawInput)]) {
+    for next in 1..queue.len() {
+        let mut at = next;
+        while at > 0 && queue[at - 1].0 > queue[at].0 {
+            queue.swap(at - 1, at);
+            at -= 1;
         }
     }
 }

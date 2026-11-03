@@ -189,10 +189,11 @@ A move in progress finishes on what it started with. A bad document changes noth
 | Sparks and how a trail looks | [default_effects.ron](../crates/sapphire_vfx/default_effects.ron): `blade_trail` and `warrior_trail` for a trail's `lifetime`, `width`, `color`, `alpha` and `core`. It's the `--vfx` show's too, which reads what it compiled in. A save ends every effect playing, and a trail starts again at the next cut. Names the cue table fires can't go, and are refused | Save |
 | When a trail runs | `CUTTING_SPEED` and `FOLLOW_TICKS` in [trails.rs](../game/game_combat/src/trails.rs). It follows the blade on its own: a cooked pose moves it for the next playing, while a hitbox's `from` and `to` only say which of a move's fast runs of ticks is a cut | Rebuild |
 | Whether the warrior's blade has a trail | Rename `warrior_trail` in `default_effects.ron`: with no effect of that name it plays none, and the same goes for the player's `blade_trail` | Save |
-| Stick dead zones, look speed, bindings | [combat_bindings.ron](../crates/sapphire_controls/combat_bindings.ron): `DeadZone`, `Scale`. Compiled in | Rebuild |
-| Hair's swing and limits | `SpringTuning::ACTION` in [springs.rs](../crates/sapphire_anim/src/springs.rs): `root_inertia`, `anchor_inertia`, `swing_limit`, `bend_limit` | Rebuild |
-| HUD layout, colours, damage numbers | Constants in [hud.rs](../crates/sapphire_ui/src/hud.rs). `--hud live --hud-scale <n>` and `--hud live --hud-insets l,t,r,b` on the command | Rebuild |
-| Touch layout, stick radius | [touch.rs](../game/game_ui/src/touch.rs), [hud.rs](../crates/sapphire_ui/src/hud.rs) | Rebuild |
+| Stick dead zones, look speed, bindings | [combat_bindings.ron](../crates/sapphire_controls/combat_bindings.ron): `DeadZone`, `Scale` | Save |
+| Hair's swing and limits | [default_character_motion.ron](../crates/sapphire_anim/default_character_motion.ron): `root_inertia`, `anchor_inertia`, `swing_limit`, `bend_limit` | Save |
+| HUD layout | [default_hud.ron](../crates/sapphire_ui/default_hud.ron). `--hud live --hud-scale <n>` and `--hud live --hud-insets l,t,r,b` on the command | Save |
+| HUD colours, damage numbers | Constants in [hud.rs](../crates/sapphire_ui/src/hud.rs) | Rebuild |
+| Touch layout, stick radius | [default_hud.ron](../crates/sapphire_ui/default_hud.ron): `stick`, and each button's `hit` | Save |
 
 ### Keeping what you tuned
 

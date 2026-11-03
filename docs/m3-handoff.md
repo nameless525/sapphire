@@ -111,7 +111,7 @@ From the bottom up. Spec §5.13–§5.18 and §5.22 are the reference, and each 
 
 To the player, on a clip of its own:
 
-1. **Pose it:** a function in [tools/motion/moves.py](../tools/motion/moves.py), added to its `MOVES`, and an ID of its own in `frames.py`'s `IDS`. `--write` writes `<name>.keypose.ron` and its sidecar, naming `rig`. Read a sheet with `sheet.py`, by that ID until `PLAYER_DOCUMENTS` in [lookdev.rs](../crates/sapphire_stage/src/lookdev.rs) gives it a name.
+1. **Pose it:** a function in [tools/motion/moves.py](../tools/motion/moves.py), added to its `MOVES`, and an ID of its own in `frames.py`'s `IDS`. `--write` writes `<name>.keypose.ron` and its sidecar, naming `rig`. Read a sheet with `sheet.py`, by its name once it has cooked (M3 S3).
 2. **Frame it:** a row in [player.moves.ron](../content/combat/player/player.moves.ron), last in `moves`, so no other move's place in the set changes. Startup, active and recovery must add up to the clip's length. Name its intent, cancels, hit volumes on path `blade`, warps and cues. `frames.py` has the same numbers for a first draft; once tuned, the file owns them. Add it to `MOVES` in [player_moves.rs](../tools/sapphire_pipeline/tests/player_moves.rs), or `each_move_plays_the_clip_of_its_name` fails.
 3. **Give it a row in the graph:** [character.animgraph.ron](../content/lookdev/character/character.animgraph.ron), `clips` and `combat.moves`. `every_move_a_fighter_has_is_in_its_graph` fails without it.
 4. **Give any new cue a row:** [default_cues.ron](../crates/sapphire_cues/default_cues.ron). `every_cue_the_recordings_publish_has_a_row` fails without it.
@@ -124,11 +124,11 @@ A new `Fighter` or actor field goes in several places, and tests hold them toget
 
 Follow [content/combat/enemy/](../content/combat/enemy/) and [enemy.rs](../game/game_combat/src/enemy.rs):
 
-1. **A mesh with its own skeleton,** in the anime character family. The warrior is generated (`sapphire_pipeline gen-combat`, and a new generated file goes in xtask's `COMBAT_SOURCES`) because the pack's chibi figure couldn't read as a threat under any material (O4).
+1. **A mesh with its own skeleton,** in the anime character family. The warrior is generated (`sapphire_pipeline gen-combat`, and a new generated file is a row in its table in `combat.rs`) because the pack's chibi figure couldn't read as a threat under any material (O4).
 2. **Clips, through N1's retarget:** add the mesh's ID as a `retarget:` target in the pack's sidecars. Sidecars only, no code.
 3. **`<name>.moves.ron`:** `intents` with no buttons, `fighter`, `brain`, `moves`. The warrior's hit volumes are hand-keyed and reach further than its clips' hands, so they want retuning against the pose.
 4. **`<name>.animgraph.ron`:** a row for every move and every reaction.
-5. **Code, today:** a row in `COOKED_MOVES` (`game/game_combat/src/tuning.rs`), a `SCENARIOS` row in [scenario.rs](../crates/sapphire_gameplay/src/replay/scenario.rs) that loads it and spawns it, and a change to `enemy.rs`, which spawns the one warrior. There's no data-driven encounter.
+5. **Code, today:** a `SCENARIOS` row in [scenario.rs](../crates/sapphire_gameplay/src/replay/scenario.rs) that loads it and spawns it, and a change to `enemy.rs`, which spawns the one warrior. There's no data-driven encounter.
 
 ### How to add a stage
 
@@ -166,9 +166,9 @@ XPBD cloth, ragdolls, Luau, navigation, decals, GPU particles, music, lip-sync, 
 
 - **Compile-time iteration:** spec §7.2's `sapphire_dylib` and `subsecond` hot-patching were never built. `cargo xtask run --incremental` makes a code edit's build 1.4–5.5 s, but the app restarts and the fight starts over. Move the numbers below into data, or build hot-patching, before people tune there at length.
 - **Numbers that are code:**
-  - `SpringTuning::ACTION` ([springs.rs](../crates/sapphire_anim/src/springs.rs)), `IkControls` ([ik.rs](../crates/sapphire_stage/src/ik.rs)), `TargetingWeights` ([targeting.rs](../crates/sapphire_gameplay/src/targeting.rs)).
+  - Springs and IK ([default_character_motion.ron](../crates/sapphire_anim/default_character_motion.ron)) and targeting's weights ([default_targeting.ron](../crates/sapphire_gameplay/default_targeting.ron)) are documents since M3 S3.
   - The HUD's and touch controls' layout ([hud.rs](../crates/sapphire_ui/src/hud.rs), [touch.rs](../game/game_ui/src/touch.rs)).
-  - `combat_bindings.ron` and `default_effects.ron` are data, compiled in, with no reload route. `VfxWorld::set_library` is the hook; nothing calls it for a fight. `VfxWorld` has no `set_budget`.
+  - `combat_bindings.ron` and `default_effects.ron` reload through live tuning's route since M3 S3. `VfxWorld` has no `set_budget`.
 - **Sound isn't hot-reloaded:** the mixer holds what it decoded at startup, and a live table naming a sound not loaded then is refused. A stream rebuild keeps its state at Running, so cues queue and play in a small burst. A NaN emitter or listener position would poison a bus: no route to one was found, and it isn't hardened.
 - **G1:** no per-move `Ground | Flight` field (every move is a `strike`), and no teleport API. Capsules block but don't push. Spec §5.22.
 - **D3:** statics are fixed once built, a box can't `move_and_collide`, a document's meshes are inline, and there are no dynamic bodies or triggers. A `parry3d` upgrade re-pins `tests/checksum.rs` and reruns `tests/allocations.rs`.
@@ -176,7 +176,7 @@ XPBD cloth, ragdolls, Luau, navigation, decals, GPU particles, music, lip-sync, 
 - **G3:** no factions, so everyone hits everyone. A defeated actor's capsule stays as an obstacle. The ability system above resolve waits for a fight that needs it (spec §5.22).
 - **G6:** one enemy, steering directly with no navigation. Its target is a fixed foe, with no director of several enemies.
 - **G7:** no HUD slot for party members (`Simulation::party_ready_in` is what one would read), no touch button for swap, and recolors made at load. A decision from the review: once someone saves away `swap_in`, a running party fight goes on, and the next fight won't start until it's restored, as a build with that document would do.
-- **G5:** sequencer takeovers are a pose slot with nothing driving it. Nothing in a step reads a soft lock's choice: a move warps to the target its scenario gave it, and `choose_target` only tells the director who to frame, by `TargetingWeights::TOUCH` while a thumb is playing ([arena.rs](../game/game_combat/src/arena.rs), `set_played_on_touch`). A second enemy makes the choice matter, and if a step comes to read it, its weights have to come from the recording, not from the device.
+- **G5:** sequencer takeovers are a pose slot with nothing driving it. Nothing in a step reads a soft lock's choice: a move warps to the target its scenario gave it, and `choose_target` only tells the director who to frame, by the touch weights while a thumb is playing ([arena.rs](../game/game_combat/src/arena.rs), `set_played_on_touch`). A second enemy makes the choice matter, and if a step comes to read it, its weights come from the simulation's `TargetingTuning`, which `tables_hash` holds (M3 S3).
 - **N3:** `Jump_Start` and the side dodges cook and aren't played. The arena's two fighters animate in turn on one thread, with no list and no allocation, and a crowd would want `evaluate_all`'s jobs with a retained list ([scene.rs](../crates/sapphire_stage/src/scene.rs), `animate_fighters`). Breathing adds on top of O2's `idle`, which may already breathe: nobody has judged whether that doubles.
 - **N4:** no get-up clip, so a knockdown rises by a decay alone. Hands on a weapon are tested, and the graph's grip hasn't been looked at.
 - **N5:** a clip's root-motion loop teleports with no view cut, which may leave a one-frame velocity streak (unverified). Limits beat colliders, so an arm can pass through a strand by up to 7.2 cm. Springs have no floor, so hair passes through paving. `AnimStats` isn't in the overlay.

@@ -182,14 +182,25 @@ impl Cuts {
         cuts
     }
 
+    /// Adds a cut in its place by when it starts, which isn't always when its hit does: a long hit's
+    /// fastest run can come after a shorter hit's that opens later.
     fn add(&mut self, cut: Cut) {
-        if self.len > 0 && (self.len == MAX_CUTS || cut.from <= self.cuts[self.len - 1].to) {
-            let last = &mut self.cuts[self.len - 1];
-            last.to = last.to.max(cut.to);
-            return;
+        let count = self.len;
+        let place = self.as_slice().partition_point(|other| other.from <= cut.from);
+        let mut all = [Cut::default(); MAX_CUTS + 1];
+        all[..place].copy_from_slice(&self.cuts[..place]);
+        all[place] = cut;
+        all[place + 1..=count].copy_from_slice(&self.cuts[place..count]);
+        self.len = 0;
+        for next in all.into_iter().take(count + 1) {
+            if self.len > 0 && (self.len == MAX_CUTS || next.from <= self.cuts[self.len - 1].to) {
+                let last = &mut self.cuts[self.len - 1];
+                last.to = last.to.max(next.to);
+            } else {
+                self.cuts[self.len] = next;
+                self.len += 1;
+            }
         }
-        self.cuts[self.len] = cut;
-        self.len += 1;
     }
 
     /// The list, in the move's order.
@@ -680,6 +691,23 @@ mod tests {
         assert_eq!(Cuts::of(&a_move_of(&[0.0], &[(10, 14)])).as_slice(), [cut(10, 14)]);
         assert_eq!(Cuts::of(&a_move_of(&[0.0; 12], &[(10, 14)])).as_slice(), [cut(10, 14)]);
         assert_eq!(Cuts::of(&a_move_of(&[0.0; 30], &[(10, 14)])).as_slice(), [cut(10, 14)]);
+    }
+
+    /// A long hit's fastest run can come after a shorter hit's that opens later, and each has its cut.
+    #[test]
+    fn a_later_hits_earlier_cut_is_kept() {
+        let mut samples = vec![0.0_f32; 31];
+        let mut x = 0.0;
+        for (tick, sample) in samples.iter_mut().enumerate() {
+            *sample = x;
+            x += match tick {
+                5..8 => 0.5,
+                20..24 => 1.0,
+                _ => 0.0,
+            };
+        }
+        let moved = a_move_of(&samples, &[(4, 26), (5, 8)]);
+        assert_eq!(Cuts::of(&moved).as_slice(), [cut(5, 9), cut(20, 25)]);
     }
 
     /// Cuts that meet are one, and a list too long joins its last.

@@ -1,3 +1,4 @@
+use crate::CharacterMotion;
 use sapphire_assets::rig::{
     CharacterRig, Collider as RigCollider, ColliderGroup, ColliderShape, Spring, SpringJoint, SpringTip,
 };
@@ -422,7 +423,8 @@ fn worst_shape(tuning: SpringTuning, substeps: Substeps, motion: Motion) -> (f32
 fn the_limits_keep_a_strand_in_shape() {
     let (free_swing, free_bend) = worst_shape(SpringTuning::VRM, Substeps::Two, a_bob);
     assert!(free_swing > 1.5 && free_bend > 1.0, "VRM's step: {free_swing} and {free_bend} rad");
-    let tuning = SpringTuning { root_inertia: 1.0, anchor_inertia: 1.0, ..SpringTuning::ACTION };
+    let tuning =
+        SpringTuning { root_inertia: 1.0, anchor_inertia: 1.0, ..CharacterMotion::shipped().springs };
     for substeps in [Substeps::One, Substeps::Two, Substeps::Four] {
         let (swing, bend) = worst_shape(tuning, substeps, a_bob);
         assert!(swing <= tuning.swing_limit + 0.02, "{substeps:?}: {swing} rad off the pose");
@@ -449,7 +451,7 @@ fn the_anchor_inertia_is_the_share_of_the_anchors_motion_chains_feel() {
         }
         most
     };
-    let (none, some, all) = (most(0.0), most(SpringTuning::ACTION.anchor_inertia), most(1.0));
+    let (none, some, all) = (most(0.0), most(CharacterMotion::shipped().springs.anchor_inertia), most(1.0));
     assert!(none < 1e-3, "with none it is carried with the pose: {none} m off");
     assert!(some > 0.03, "with some it swings: {some} m");
     assert!(all > some * 1.2, "and with all it swings more: {all} m against {some}");
@@ -463,7 +465,7 @@ fn the_tuning_keeps_to_the_rates() {
     {
         let path = |hz| {
             let mut character = Character::new(&hair(), Substeps::Two);
-            character.springs.set_tuning(SpringTuning::ACTION);
+            character.springs.set_tuning(CharacterMotion::shipped().springs);
             let mut path = Vec::new();
             for frame in 0..=3 * hz {
                 let ticks = f64::from(frame) * f64::from(SPRING_TICK_HZ) / f64::from(hz);
@@ -504,7 +506,7 @@ fn the_root_inertia_is_the_share_of_the_characters_motion_chains_feel() {
             }
             most
         };
-        let (none, some, all) = (most(0.0), most(SpringTuning::ACTION.root_inertia), most(1.0));
+        let (none, some, all) = (most(0.0), most(CharacterMotion::shipped().springs.root_inertia), most(1.0));
         assert!(none < 5e-4, "with none it hangs as the pose has it: {none} m off");
         assert!(some > 0.03, "with some it swings: {some} m");
         assert!(all > 2.0 * some, "and with all it swings much more: {all} m against {some}");
@@ -716,7 +718,8 @@ fn a_fast_pass_stays_out(shape: ColliderShape, reach: f32) {
 #[test]
 fn the_limits_have_the_last_word_over_a_collider() {
     let rig = collided(ColliderShape::Sphere { offset: [0.0; 3], radius: 0.06 });
-    let tuning = SpringTuning { root_inertia: 1.0, anchor_inertia: 1.0, ..SpringTuning::ACTION };
+    let tuning =
+        SpringTuning { root_inertia: 1.0, anchor_inertia: 1.0, ..CharacterMotion::shipped().springs };
     for substeps in [Substeps::One, Substeps::Two, Substeps::Four] {
         let mut character = Character::new(&rig, substeps);
         character.springs.set_tuning(tuning);

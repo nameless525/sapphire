@@ -3,9 +3,11 @@
 //! Re-exports the shared CPU pose evaluator and owns the jobs and secondary motion that surround it.
 
 mod character;
+mod motion;
 mod springs;
 
 pub use character::{AnimStats, evaluate_all};
+pub use motion::{CharacterMotion, CharacterMotionError};
 pub use sapphire_body_pose::graph::{FixedGraphHistory, GraphStepStamp};
 pub use sapphire_body_pose::{
     AimGoal, AnimGraph, ArchivedAnimGraph, ArchivedClip, ArchivedJointTransform, ArchivedRootMotion,

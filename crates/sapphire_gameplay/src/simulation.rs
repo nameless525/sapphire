@@ -37,6 +37,7 @@ use crate::navigation::SimNavigation;
 use crate::party::{self, Party, PartyError, PartySlot, PartyTuning};
 use crate::resolve::{self, AppliedHits, Fighter, ResolveStats, SlowMotion};
 use crate::stats::{BUDGET_DESKTOP_LOW, PHYSICS_BUDGET_DESKTOP_LOW, SimStats};
+use crate::targeting::TargetingTuning;
 use crate::timeline::{
     self, TimelineEvent, TimelineId, TimelineLibrary, TimelinePlayError, TimelineProgress, TimelineRun,
 };
@@ -155,6 +156,7 @@ impl Simulation {
         world.insert_resource(Party::default());
         world.insert_resource(TimelineLibrary::default());
         world.insert_resource(TimelineRun::default());
+        world.insert_resource(TargetingTuning::shipped());
         let empty = PhysicsWorld::new(Vec::new(), actors::body_capacity(config.max_actors))
             .expect("a world with no colliders has nothing to refuse");
         world.insert_resource(CharacterWorld::new(empty));
@@ -383,6 +385,7 @@ impl Simulation {
             world.get_resource::<SimNavigation>(),
             world.resource::<TimelineLibrary>(),
             &self.standing_jump_actors,
+            world.resource::<TargetingTuning>(),
         );
         let Some(body) = world.get_resource::<BodyAuthority>() else { return tables };
         let mut hash = checksum::StateHasher::new();
@@ -470,6 +473,22 @@ impl Simulation {
             return None;
         }
         world.get_resource::<BodyAuthority>()?.receipt(actor)
+    }
+
+    /// The weights a soft lock is chosen by in this simulation, [`TargetingTuning::shipped`] until told
+    /// otherwise. Whatever reads a choice, in a step or out, reads them here.
+    #[must_use]
+    pub fn targeting(&self) -> TargetingTuning {
+        *self.ecs.world().resource::<TargetingTuning>()
+    }
+
+    /// Makes `tuning` the weights, between steps. Says whether that changed anything: if it did, so did
+    /// [`Self::tables_hash`], so a file recording this run has to end ([`crate::replay::Recording`]).
+    pub fn tune_targeting(&mut self, tuning: TargetingTuning) -> bool {
+        let mut current = self.ecs.world_mut().resource_mut::<TargetingTuning>();
+        let changed = *current != tuning;
+        *current = tuning;
+        changed
     }
 
     /// Gives this simulation a zone's navmesh, from a cook's bytes, which must start 16-byte aligned,

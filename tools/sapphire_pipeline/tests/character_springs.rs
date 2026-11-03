@@ -22,6 +22,11 @@ use sapphire_pipeline::keypose;
 use sapphire_pipeline::meta::{self, sidecar_path};
 use sapphire_serialize::cooked::AlignedVec;
 
+/// What a character in a fight runs on.
+fn action() -> SpringTuning {
+    sapphire_anim::CharacterMotion::shipped().springs
+}
+
 /// The character, cooked in memory, as the app reads it.
 struct Character {
     rig: AlignedVec,
@@ -199,7 +204,7 @@ fn the_characters_hair_stays_out_of_its_colliders_through_a_fast_strike() {
     let clip = character.clip();
     let settings = SpringQuality::SHIPPED
         .into_iter()
-        .flat_map(|quality| [SpringTuning::ACTION.root_inertia, 1.0].map(|share| (quality.substeps, share)));
+        .flat_map(|quality| [action().root_inertia, 1.0].map(|share| (quality.substeps, share)));
     for (substeps, share) in settings {
         let count = substeps.count();
         for fast in [1.0_f32, 3.0, 7.0] {
@@ -427,11 +432,11 @@ fn worst_of_every_clip(character: &Character, tuning: SpringTuning) -> [Shape; 2
 #[test]
 fn the_characters_chains_keep_their_shape_through_a_fight() {
     let character = Character::load();
-    let [hair, cloth] = worst_of_every_clip(&character, SpringTuning::ACTION);
+    let [hair, cloth] = worst_of_every_clip(&character, action());
     println!("as it ships: hair {hair:?}, cloth {cloth:?}");
     // What the drawn frame shows, between two sub-steps that each hold to the limits.
-    let swing_limit = SpringTuning::ACTION.swing_limit.to_degrees() + 1.0;
-    let bend_limit = SpringTuning::ACTION.bend_limit.to_degrees() + 1.0;
+    let swing_limit = action().swing_limit.to_degrees() + 1.0;
+    let bend_limit = action().bend_limit.to_degrees() + 1.0;
     // At rest what holds hair off the pose is the body: a strand lying over an arm the walk ends across it.
     for (name, shape, off, settled) in [("hair", hair, 0.35, 0.25), ("cloth", cloth, 0.07, 0.01)] {
         assert!(shape.swing <= swing_limit, "{name} swung {}° off the pose", shape.swing);
@@ -525,9 +530,9 @@ fn vrms_step_alone_flings_the_characters_hair_on_the_run() {
     let character = Character::load();
     let bytes = character.kaykit_clip("MovementBasic", "Running_B");
     let run = Clip::read(&bytes).expect("a valid clip");
-    let vrm = SpringTuning { root_inertia: SpringTuning::ACTION.root_inertia, ..SpringTuning::VRM };
+    let vrm = SpringTuning { root_inertia: action().root_inertia, ..SpringTuning::VRM };
     let [hair, cloth] = shape_of(&character, run, Substeps::Two, vrm, 0.0, 4);
-    let [tuned_hair, tuned_cloth] = shape_of(&character, run, Substeps::Two, SpringTuning::ACTION, 0.0, 4);
+    let [tuned_hair, tuned_cloth] = shape_of(&character, run, Substeps::Two, action(), 0.0, 4);
     println!("VRM's step: hair {hair:?}, cloth {cloth:?}");
     println!("tuned: hair {tuned_hair:?}, cloth {tuned_cloth:?}");
     assert!(hair.swing > 150.0 && hair.curl > 90.0 && hair.off > 0.5, "{hair:?}");

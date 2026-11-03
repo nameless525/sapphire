@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use game_combat::cues::PadRumble;
+use game_combat::documents::FightDocuments;
 use game_combat::fight::fight_stage;
 use sapphire_platform::raw_window_handle::HandleError;
 use sapphire_platform::{
@@ -90,9 +91,10 @@ impl App for GameApp {
         let format =
             surface.format().ok_or_else(|| AppInitError::msg("configured surface reports no format"))?;
 
+        let documents = FightDocuments::read(platform.content()).map_err(AppInitError::msg)?;
         let desc = fight_stage(StageDesc::new(platform.host(), &gpu, format, QualitySettings::default()));
         let mut content = Content::new(platform.host(), desc.character, desc.sky)?;
-        let mut show = GameShow::new()?;
+        let mut show = GameShow::new(documents)?;
         let combat = show.shown.fight.prepare_stock_combat(&options.fight(), &mut content)?;
         let mut stage = Stage::new_with_content(gpu, desc, content)?.with_show(show);
         // Frames are paced to the tier's rate (spec §6.2).

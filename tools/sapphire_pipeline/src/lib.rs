@@ -113,6 +113,7 @@ pub mod colliders;
 mod color;
 pub mod combat;
 pub mod cook;
+pub mod documents;
 pub mod extract;
 pub mod font;
 pub mod font_subset;

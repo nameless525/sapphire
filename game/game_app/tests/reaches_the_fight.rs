@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use game_app::{GameApp, GameShow, TitleAnswer};
 use game_combat::combat::CombatOption;
+use game_combat::documents::FightDocuments;
 use game_combat::fight::fight_stage;
 use sapphire_platform::{
     App, AppControl, AppInitError, AppMetadata, Event, FingerId, Platform, RunOptions, Timestamp,
@@ -56,9 +57,10 @@ impl App for OutsideCaller {
 
     fn init(platform: &mut Platform) -> Result<Self, AppInitError> {
         let gpu = headless_gpu()?;
+        let documents = FightDocuments::read(platform.content()).map_err(AppInitError::msg)?;
         let desc = fight_stage(StageDesc::new(platform.host(), &gpu, FORMAT, QualitySettings::default()));
         let mut content = Content::new(platform.host(), desc.character, desc.sky)?;
-        let mut show = GameShow::new()?;
+        let mut show = GameShow::new(documents)?;
         let option = CombatOption::Fight { script: Some("fight-back".to_owned()), party: false };
         let combat = show.shown.fight.prepare_stock_combat(&option, &mut content)?;
         assert!(combat.simulation().overhead_presentation_pair().is_some());

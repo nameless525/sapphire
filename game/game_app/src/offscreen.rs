@@ -6,6 +6,7 @@ use std::io::BufWriter;
 use std::path::Path;
 use std::time::Duration;
 
+use game_combat::documents::FightDocuments;
 use game_combat::fight::fight_stage;
 use sapphire_platform::{App, AppControl, AppInitError, AppMetadata, Event, Platform};
 use sapphire_render::quality::QualitySettings;
@@ -30,9 +31,10 @@ impl App for OffscreenGame {
         let options = Options::parse(platform.args()).map_err(AppInitError::msg)?;
         let path = options.capture.clone().ok_or_else(|| AppInitError::msg("no --capture"))?;
         let gpu = headless_gpu()?;
+        let documents = FightDocuments::read(platform.content()).map_err(AppInitError::msg)?;
         let desc = fight_stage(StageDesc::new(platform.host(), &gpu, FORMAT, QualitySettings::default()));
         let mut content = Content::new(platform.host(), desc.character, desc.sky)?;
-        let mut show = GameShow::new()?;
+        let mut show = GameShow::new(documents)?;
         let combat = show.shown.fight.prepare_stock_combat(&options.fight(), &mut content)?;
         let mut stage = Stage::new_with_content(gpu, desc, content)?.with_show(show);
         let Stage { show, scene, content, renderer, gpu, quality, .. } = &mut stage;

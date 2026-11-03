@@ -8,6 +8,8 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+# The layout's document derives `Reflect`, which finds the crate by this name.
+bevy_reflect.workspace = true
 profiling.workspace = true
 # The documents screens are built from, which the cooker reads too.
 sapphire_assets.workspace = true
@@ -18,19 +20,19 @@ sapphire_look.workspace = true
 sapphire_math.workspace = true
 # Touch events, the event clock and the window's metrics.
 sapphire_platform.workspace = true
-# Bound values, read through reflection paths.
+# Bound values, read through reflection paths, and the layout's document.
 sapphire_reflect.workspace = true
+sapphire_serialize.workspace = true
 # Fonts, shaping and the glyph atlas.
 sapphire_text.workspace = true
 # What a tree costs a frame, which its stats carry.
 sapphire_time.workspace = true
+serde.workspace = true
 taffy.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-# A test's model derives `Reflect`, which finds the crate by this name.
-bevy_reflect.workspace = true
 # A test holds a frame to its bytes.
 bytemuck.workspace = true
 # The counting allocator, for the steady-state allocation test.

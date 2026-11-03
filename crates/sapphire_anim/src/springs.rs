@@ -59,9 +59,9 @@
 //!   in a curve and never curls. These are plain cones, which take a square root only where a joint
 //!   leaves one, and hold at any sub-step count.
 //!
-//! [`SpringTuning::ACTION`] is the one a new [`SpringBones`] takes, tuned by eye on the character's
-//! run, walk, idle, hit, dodge and strike against the reference games, where hair lags and swings and
-//! keeps its shape.
+//! A new [`SpringBones`] takes [`CharacterMotion::shipped`](crate::CharacterMotion::shipped)'s, tuned by eye
+//! on the character's run, walk, idle, hit, dodge and strike against the reference games, where hair lags and
+//! swings and keeps its shape. A game's own come through [`SpringBones::set_tuning`].
 //!
 //! # What the parameters mean
 //!
@@ -202,7 +202,8 @@ impl SpringQuality {
 
 /// How a character's chains take a game's motion, on top of what VRM's parameters say. Off
 /// ([`Self::VRM`]) it is VRM's step exactly. See the `springs` module's docs.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SpringTuning {
     /// The share of the character's travel and turning through the world its chains feel, 0 to 1.
     pub root_inertia: f32,
@@ -223,13 +224,6 @@ impl SpringTuning {
         anchor_inertia: 1.0,
         swing_limit: std::f32::consts::PI,
         bend_limit: std::f32::consts::PI,
-    };
-    /// For a character in a fight, whose hair lags and swings and keeps its shape.
-    pub const ACTION: Self = Self {
-        root_inertia: 0.25,
-        anchor_inertia: 0.4,
-        swing_limit: 50.0 * std::f32::consts::PI / 180.0,
-        bend_limit: 20.0 * std::f32::consts::PI / 180.0,
     };
 }
 
@@ -788,7 +782,7 @@ impl SpringBones {
                 }
             })
             .collect();
-        let tuning = SpringTuning::ACTION;
+        let tuning = crate::CharacterMotion::shipped().springs;
         for (joint, whole) in center_joints {
             let slot = anchor(&mut anchors, joint);
             centers.push(Center { slot, whole, carried: carried(whole, &tuning) });

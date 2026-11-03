@@ -59,6 +59,7 @@ use sapphire_stage::content::{Content, GraphKey};
 use sapphire_stage::{FrameLaps, StageDesc, lookdev, vfx};
 use sapphire_stage::{RenderMesh, RenderPose, RenderTransform};
 
+use crate::documents::FightDocuments;
 use crate::party_looks::{Drawn, PartyLooks};
 use crate::timeline::TimelineShow;
 use sapphire_stage::scene::{DEFAULT_TIME_OF_DAY, Figure, LookDev, Scene, stream_settings};
@@ -344,7 +345,8 @@ impl FightShow {
         let (Some(skin), Some(skeleton)) = (skin, skeleton) else {
             return Err(AppInitError::msg("the enemy isn't loaded"));
         };
-        enemy::driver(skin, skeleton, Arc::new(binding), ground).map_err(AppInitError::msg)
+        enemy::driver(skin, skeleton, Arc::new(binding), ground, content.character_motion())
+            .map_err(AppInitError::msg)
     }
 
     /// The enemy's graph as it stands, bound to the enemy: the one live tuning took, or the cooked one.
@@ -712,8 +714,23 @@ impl FightShow {
     /// Fires a fight's cues from now on (`--cues`, M2 E3), within `budget`, and has the scene prewarm
     /// what they draw through. An error names what its table can't find.
     pub fn play_cues(&mut self, scene: &mut Scene, budget: VfxBudget) -> Result<(), String> {
+        self.play_cues_with(scene, budget, None)
+    }
+
+    /// [`Self::play_cues`], firing a game's own `effects` if it has them. An error names a row of the table
+    /// they don't have.
+    pub fn play_cues_with(
+        &mut self,
+        scene: &mut Scene,
+        budget: VfxBudget,
+        effects: Option<sapphire_vfx::EffectLibrary>,
+    ) -> Result<(), String> {
         let (show, variants) = scene.with_screen_effects(|_, presets| {
-            let show = CueShow::new(budget, presets).map_err(|error| error.to_string())?;
+            let show = match effects {
+                Some(effects) => CueShow::with_effects(effects, budget, presets),
+                None => CueShow::new(budget, presets),
+            }
+            .map_err(|error| error.to_string())?;
             let variants = show.post_variants(presets);
             Ok::<_, String>((show, variants))
         })?;
@@ -1222,6 +1239,8 @@ pub struct Fight {
     /// What it has on the scene.
     pub show: FightShow,
     stock_arena: Option<stock_arena::StockArenaAssets>,
+    /// The numbers [`Self::stand`] stands it on: Sapphire's, unless a game's said otherwise.
+    pub documents: FightDocuments,
 }
 
 impl Fight {
@@ -1263,7 +1282,8 @@ impl Fight {
     ) -> Result<Combat, AppInitError> {
         #[cfg(feature = "dev")]
         let mut bound_content = None;
-        let combat = Combat::new_with_setup(option, moves, |scenario, simulation, cast| {
+        let live = self.documents.live();
+        let combat = Combat::from_live_with_setup(option, &live, moves, |scenario, simulation, cast| {
             if scenario.name != crate::arena::FIGHT_SCENARIO {
                 return Ok(());
             }
@@ -1489,7 +1509,7 @@ impl Fight {
         gpu: &GpuContext,
         tier: TierId,
     ) -> Result<Followed, AppInitError> {
-        let combat = Combat::new(option).map_err(AppInitError::msg)?;
+        let combat = Combat::from_live(option, &self.documents.live()).map_err(AppInitError::msg)?;
         let party = matches!(option, CombatOption::Fight { party: true, .. });
         crate::arena::check_scenario(&combat, party).map_err(AppInitError::msg)?;
         self.stand_prepared(combat, scene, content, renderer, gpu, tier)
@@ -1507,6 +1527,7 @@ impl Fight {
     ) -> Result<Followed, AppInitError> {
         crate::arena::check_scenario(&combat, combat.simulation().party().is_formed())
             .map_err(AppInitError::msg)?;
+        content.set_character_motion(self.documents.motion);
         let show = &mut self.show;
         let town = content.town(renderer, gpu)?;
         let fog_cards = Some(content.fog_cards(renderer, gpu)?);
@@ -1532,7 +1553,8 @@ impl Fight {
         let hand = lookdev::held_hand(content).map_err(AppInitError::msg)?;
         show.spawn_blade(scene, sword, hand);
         scene.set_day(DEFAULT_TIME_OF_DAY, None);
-        show.play_cues(scene, vfx::budget(tier)).map_err(AppInitError::msg)?;
+        show.play_cues_with(scene, vfx::budget(tier), self.documents.effects.clone())
+            .map_err(AppInitError::msg)?;
         let followed = show.follow_simulation(scene, combat.simulation(), combat.cast());
         self.attach_prepared_combat(combat, scene, content)?;
         scene.warm_fixed_step();

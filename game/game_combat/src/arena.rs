@@ -84,7 +84,7 @@ use sapphire_core::debug_draw::{Color, Shape, Style};
 use sapphire_ecs::bevy_ecs::world::WorldId;
 use sapphire_ecs::prelude::*;
 use sapphire_gameplay::arena::{SpawnPoint, cooked_colliders, profile, spawns};
-use sapphire_gameplay::targeting::{TargetCandidate, TargetQuery, TargetingWeights, choose_target};
+use sapphire_gameplay::targeting::{TargetCandidate, TargetQuery, TargetingTuning, choose_target};
 use sapphire_gameplay::{ActorId, ActorView, Buttons, MoveLibrary, Simulation, Stick};
 use sapphire_math::{Affine3A, Mat4, Quat, Vec2, Vec3};
 use sapphire_moves::RootSample;
@@ -445,8 +445,10 @@ pub struct ArenaActors {
     enemy_id: ActorId,
     /// Who the soft lock has now.
     target: Option<ActorId>,
-    /// What the soft lock weighs ([`Self::set_played_on_touch`]).
-    weights: TargetingWeights,
+    /// The weights the fight's simulation holds, as of its last step.
+    targeting: TargetingTuning,
+    /// Whether the soft lock weighs them for a thumb ([`Self::set_played_on_touch`]).
+    played_on_touch: bool,
     /// Whether the player's lock-on is on.
     locked_on: bool,
     /// The world, retained-storage run and tick last followed. None before observing a fight.
@@ -473,7 +475,8 @@ impl ArenaActors {
             signals: [FighterSignals::default(); 2],
             enemy_id: ENEMY_ID,
             target: None,
-            weights: TargetingWeights::SOFT_LOCK,
+            targeting: TargetingTuning::shipped(),
+            played_on_touch: false,
             locked_on: false,
             followed_run: None,
             follows: shot == ArenaShot::Follow,
@@ -635,6 +638,7 @@ impl ArenaActors {
     /// came in for each of the two.
     pub(crate) fn follow(&mut self, simulation: &Simulation, cast: &[ActorId]) -> [bool; 2] {
         self.fighting = true;
+        self.targeting = simulation.targeting();
         let mut came_in = [false; 2];
         let run = (simulation.world().id(), simulation.run_generation(), simulation.tick());
         let started_over = self
@@ -680,12 +684,12 @@ impl ArenaActors {
     }
 
     /// Says whether a thumb is what's playing this fight (`InputSystem::last_device`), so the soft lock
-    /// weighs [`TargetingWeights::TOUCH`] rather than a pad's aim (pillar 7). Only the camera reads the
+    /// weighs [`TargetingTuning::touch`] rather than a pad's aim (pillar 7). Only the camera reads the
     /// choice: nothing in a step does, since a move warps to the target its scenario gave it. So this
     /// moves no checksum, and a replay, with no device, always frames as a pad would. Whatever comes to
     /// read the choice in a step has to take these weights from the recording too.
     pub(crate) fn set_played_on_touch(&mut self, touch: bool) {
-        self.weights = if touch { TargetingWeights::TOUCH } else { TargetingWeights::SOFT_LOCK };
+        self.played_on_touch = touch;
     }
 
     /// Who the player's soft lock has at this frame: [`choose_target`], from where the player stands and
@@ -701,7 +705,8 @@ impl ArenaActors {
             current: self.target,
             candidates: candidates.as_slice(),
         };
-        self.target = choose_target(&query, &self.weights);
+        let weights = if self.played_on_touch { &self.targeting.touch } else { &self.targeting.soft_lock };
+        self.target = choose_target(&query, weights);
         self.target.map(|_| enemy.position)
     }
 
@@ -1173,6 +1178,29 @@ mod tests {
 
         actors.set_played_on_touch(false);
         assert_eq!(stand_at(&mut actors, 13.0), None, "a pad's reach again");
+    }
+
+    /// What frames who is the weights the simulation holds, so a game's own document reaches it.
+    #[test]
+    fn the_soft_lock_weighs_what_the_simulation_holds() {
+        let (mut actors, _, mut sim, cast) = fight();
+        let mut world = World::new();
+        world.insert_resource(ArenaShot::Director.camera(spawns().player.position()));
+        let seventeen_away = spawns().enemy.position() + Vec3::new(17.0, 0.0, 0.0);
+        let mut framed = |actors: &mut ArenaActors| {
+            actors.player.1 = Root::standing(seventeen_away, 0.0);
+            actors.present(&mut world, 1.0, None);
+            actors.target
+        };
+        assert_eq!(framed(&mut actors), None, "past the shipped soft lock's keep range");
+
+        let mut longer = sim.targeting();
+        longer.soft_lock.range = 20.0;
+        longer.soft_lock.keep_range = 24.0;
+        sim.tune_targeting(longer);
+        sim.step(&sapphire_gameplay::TickActions::NEUTRAL);
+        actors.follow(&sim, &cast);
+        assert_eq!(framed(&mut actors), Some(cast[1]), "within this game's");
     }
 
     /// Nobody stands to frame once the enemy's fallen, and a new fight stands it up again.

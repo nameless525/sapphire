@@ -689,7 +689,7 @@ pub fn player(content: &Content) -> Result<ClipPlayer, String> {
     clip.check_skeleton(skeleton).map_err(|error| error.to_string())?;
     let (pose, joints) = character_pose(mesh, rig, skeleton)?;
     let springs =
-        SpringBones::new(rig, &pose).map(|springs| springs.with_heroine_clearance(mesh, skeleton, rig));
+        springs_of(content, rig, &pose).map(|springs| springs.with_heroine_clearance(mesh, skeleton, rig));
     Ok(ClipPlayer::new(pose, joints).with_springs(springs))
 }
 
@@ -717,8 +717,15 @@ pub fn graph_driver(content: &Content) -> Result<GraphDriver, String> {
     let skeleton = content.skeleton().ok_or("the look-dev character's skeleton isn't loaded")?;
     let (pose, joints) = character_pose(mesh, rig, skeleton)?;
     let springs =
-        SpringBones::new(rig, &pose).map(|springs| springs.with_heroine_clearance(mesh, skeleton, rig));
+        springs_of(content, rig, &pose).map(|springs| springs.with_heroine_clearance(mesh, skeleton, rig));
     Ok(GraphDriver::new(GraphPlayer::new(Arc::new(binding), pose, GRAPH_SEED), joints).with_springs(springs))
+}
+
+/// The character's hair and cloth, if it has any, by what `content` says a character's motion is.
+fn springs_of(content: &Content, rig: &ArchivedCharacterRig, pose: &CharacterPose) -> Option<SpringBones> {
+    let mut springs = SpringBones::new(rig, pose)?;
+    springs.set_tuning(content.character_motion().springs);
+    Some(springs)
 }
 
 /// What IK reads of the character as `content` has it now, for `pose`, a pose of it.

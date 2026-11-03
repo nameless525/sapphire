@@ -1323,9 +1323,11 @@ dependencies = [
  "sapphire_gameplay",
  "sapphire_input",
  "sapphire_jobs",
+ "sapphire_math",
  "sapphire_platform",
  "sapphire_render",
  "sapphire_rhi",
+ "sapphire_serialize",
  "sapphire_stage",
  "sapphire_time",
  "sapphire_ui",
@@ -1348,6 +1350,7 @@ dependencies = [
  "sapphire_ecs",
  "sapphire_gameplay",
  "sapphire_hot_reload",
+ "sapphire_input",
  "sapphire_livelink",
  "sapphire_math",
  "sapphire_moves",
@@ -1357,6 +1360,7 @@ dependencies = [
  "sapphire_render",
  "sapphire_rhi",
  "sapphire_sequencer",
+ "sapphire_serialize",
  "sapphire_stage",
  "sapphire_time",
  "sapphire_timeline",
@@ -3401,11 +3405,16 @@ dependencies = [
 name = "sapphire_anim"
 version = "0.1.0"
 dependencies = [
+ "bevy_reflect",
  "sapphire_assets",
  "sapphire_body_pose",
  "sapphire_core",
  "sapphire_jobs",
  "sapphire_math",
+ "sapphire_reflect",
+ "sapphire_serialize",
+ "serde",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -3466,6 +3475,7 @@ dependencies = [
  "sapphire_math",
  "sapphire_serialize",
  "sapphire_time",
+ "serde",
  "thiserror 2.0.21",
 ]
 
@@ -4174,8 +4184,10 @@ dependencies = [
  "sapphire_math",
  "sapphire_platform",
  "sapphire_reflect",
+ "sapphire_serialize",
  "sapphire_text",
  "sapphire_time",
+ "serde",
  "taffy",
  "thiserror 2.0.21",
  "tracing",

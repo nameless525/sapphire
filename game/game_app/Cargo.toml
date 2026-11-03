@@ -46,6 +46,10 @@ png.workspace = true
 profiling.workspace = true
 tracing.workspace = true
 
+[dev-dependencies]
+sapphire_math.workspace = true
+sapphire_serialize.workspace = true
+
 [features]
 # What the crates under it have for development builds. The game adds no tools of its own.
 dev = ["sapphire_stage/dev", "game_combat/dev", "game_ui/dev"]

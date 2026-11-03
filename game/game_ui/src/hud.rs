@@ -27,8 +27,8 @@ use sapphire_moves::Weight;
 use sapphire_platform::{Event, FingerId, Timestamp, TouchDeviceId, TouchPhase, Window};
 use sapphire_time::Stopwatch;
 use sapphire_ui::{
-    Atlas, Button, ButtonEventKind, CombatHud, DamageKind, FighterValues, HudLayout, HudStats, HudValues,
-    Insets, SkillValues, TouchActions, UiDrawList, UiMetrics,
+    Atlas, Button, ButtonEventKind, CombatHud, DamageKind, FighterValues, HudDesign, HudLayout, HudStats,
+    HudValues, Insets, SkillValues, TouchActions, UiDrawList, UiMetrics,
 };
 
 use crate::LOG_TARGET;
@@ -101,6 +101,8 @@ impl Default for LiveValues {
 /// The HUD, its touch zones and what they show.
 pub struct FightHud {
     options: HudOptions,
+    /// Where its pieces go ([`Self::set_design`]).
+    design: HudDesign,
     atlas: Atlas,
     layout: HudLayout,
     controls: TouchControls,
@@ -146,6 +148,7 @@ impl FightHud {
         let layout = HudLayout::default();
         Self {
             options,
+            design: *HudDesign::shipped(),
             layout,
             controls: TouchControls::new(layout),
             hud: CombatHud::with_atlas(atlas.clone()),
@@ -340,13 +343,27 @@ impl FightHud {
         (self.last_stats, self.last_cost)
     }
 
+    /// Where its pieces are.
+    pub fn layout(&self) -> &HudLayout {
+        &self.layout
+    }
+
+    /// Lays the HUD out by `design` from now on: a game's own, or an edit of it. A fixed frame poses itself
+    /// again on it.
+    pub fn set_design(&mut self, design: HudDesign) {
+        self.design = design;
+        if let Some(metrics) = self.metrics.take() {
+            self.relayout(metrics);
+        }
+    }
+
     /// A new layout, if the metrics moved. A fixed frame poses itself again on it.
     fn relayout(&mut self, metrics: UiMetrics) {
         if self.metrics == Some(metrics) {
             return;
         }
         self.metrics = Some(metrics);
-        self.layout = HudLayout::new(metrics);
+        self.layout = HudLayout::designed(metrics, &self.design);
         tracing::info!(target: LOG_TARGET, size = %metrics.size, insets = ?metrics.insets, scale = self.layout.scale, "hud layout");
         match self.options.mode {
             HudMode::Fixed => self.pose_fixed(),

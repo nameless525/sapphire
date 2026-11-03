@@ -14,6 +14,7 @@ use sapphire_moves::{MoveSet, MoveSetDocument, MoveSetError};
 use super::scenario::{Scenario, ScenarioError, document_file_name};
 use crate::actors::ActorId;
 use crate::simulation::{SimConfig, Simulation};
+use crate::targeting::TargetingTuning;
 
 /// What an edited document became.
 #[derive(Clone, Debug)]
@@ -40,12 +41,15 @@ pub fn compile_document(text: &str, running: Option<&MoveSet>) -> Result<LiveSet
     Ok(LiveSet { set, motion_as_cooked: document.names_clips() })
 }
 
-/// The newest edit of each document that has been edited since the app started: what a new fight starts
-/// from, so starting one doesn't quietly go back to what the build compiled in.
+/// What a new fight starts from when it isn't only what the build compiled in: the game's targeting weights,
+/// and the newest edit of each document of moves that has been edited since the app started, so starting
+/// one doesn't quietly go back.
 #[derive(Clone, Debug, Default)]
 pub struct LiveMoves {
     /// By file name. A handful at most, so a list.
     latest: Vec<(String, MoveSet)>,
+    /// `None` runs on [`TargetingTuning::shipped`].
+    targeting: Option<TargetingTuning>,
 }
 
 impl LiveMoves {
@@ -63,6 +67,11 @@ impl LiveMoves {
         self.latest.iter().find(|(name, _)| name == document).map(|(_, set)| set)
     }
 
+    /// Makes `tuning` the weights a new fight starts on: a game's own, or the newest edit of them.
+    pub fn set_targeting(&mut self, tuning: TargetingTuning) {
+        self.targeting = Some(tuning);
+    }
+
     /// A new simulation of `scenario` with `config`, as a build with these edits in its documents would
     /// make one: each edited set is revision 0, and all the setup does runs on it, so what it spawns has
     /// its numbers and a brain's first wait is drawn from it. As in that build, the setup can refuse an
@@ -73,6 +82,9 @@ impl LiveMoves {
         config: SimConfig,
     ) -> Result<(Simulation, Vec<ActorId>), ScenarioError> {
         let mut sim = Simulation::new(config);
+        if let Some(tuning) = self.targeting {
+            sim.tune_targeting(tuning);
+        }
         for path in scenario.documents {
             let name = document_file_name(path);
             if let (Some(id), Some(set)) = (scenario.set_of(name), self.latest(name)) {
@@ -522,5 +534,61 @@ mod tests {
                 assert!(library.is_current(id, &set), "{}: {path}", scenario.name);
             }
         }
+    }
+
+    fn other_weights() -> TargetingTuning {
+        let mut tuning = TargetingTuning::shipped();
+        tuning.touch.range += 3.0;
+        tuning.touch.keep_range += 3.0;
+        tuning
+    }
+
+    /// A game with its own weights records on them, its file says so, and that file plays back on those
+    /// weights and on nothing else. A document's numbers used to be constants, so nothing had to catch this.
+    #[test]
+    fn a_fight_on_other_weights_plays_back_only_on_those_weights() {
+        let shipped = Recording::new(duel(), duel().config).expect("sets up");
+        let mut live = LiveMoves::default();
+        live.set_targeting(other_weights());
+        let mut recording = Recording::tuned(duel(), duel().config, &live).expect("sets up");
+        let hash = recording.simulation().tables_hash();
+        assert_eq!(recording.simulation().targeting(), other_weights());
+        assert_ne!(hash, shipped.simulation().tables_hash(), "the weights are in the tables' hash");
+
+        let mut source = fight;
+        for _ in 0..40 {
+            recording.step(&mut source).expect("short");
+        }
+        let (replay, played) = recording.finish();
+        assert_eq!(replay.tables_hash(), hash);
+
+        let refused = Player::new(replay.clone(), SCENARIOS).err().expect("not on the shipped weights");
+        assert!(matches!(refused, PlayError::MovesChanged { .. }), "{refused}");
+        let mut player = Player::tuned(replay, SCENARIOS, &live).expect("on its own");
+        player.run_to_end();
+        assert_eq!(player.finish().trail, played.trail);
+    }
+
+    /// An edit of the weights ends a file as an edit of moves does, and saving them again is no edit.
+    #[test]
+    fn a_live_edit_of_the_weights_ends_the_file() {
+        const EDIT_AT: u32 = 20;
+        let mut source = fight;
+        let mut recording = Recording::new(duel(), duel().config).expect("sets up");
+        for _ in 0..EDIT_AT {
+            recording.step(&mut source).expect("short");
+        }
+        let before = recording.simulation().tables_hash();
+        assert!(!recording.tune_targeting(TargetingTuning::shipped()), "nothing changed");
+        assert_eq!(recording.edited_at(), None);
+        assert_eq!(recording.simulation().tables_hash(), before);
+
+        assert!(recording.tune_targeting(other_weights()));
+        assert_eq!(recording.edited_at(), Some(EDIT_AT));
+        assert_ne!(recording.simulation().tables_hash(), before);
+        recording.step(&mut source).expect("the fight goes on");
+        let (replay, _) = recording.finish();
+        assert_eq!(replay.ticks(), EDIT_AT);
+        assert_eq!(replay.tables_hash(), before, "what those ticks ran on");
     }
 }

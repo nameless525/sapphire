@@ -1,0 +1,51 @@
+// Where the combat HUD's pieces go: `sapphire_ui::hud::HudDesign`, compiled in as `HudDesign::shipped`.
+// All in points on a phone's frame, and the whole HUD shrinks when the safe area is under `full_size`.
+// An offset's y below 0 is up the frame.
+(
+    type: "sapphire::ui::HudDesign",
+    version: 1,
+    data: (
+        // Below this the whole HUD shrinks to fit: a phone's frame, wide and short.
+        full_size: (470.0, 330.0),
+        // Space between the safe area's edge and what sits on it.
+        margin: 16.0,
+        // The right thumb's cluster: the attack in the corner, the others around it.
+        attack: (offset: (0.0, 0.0), half: 46.0, hit: 62.0),
+        dodge: (offset: (-22.0, -100.0), half: 30.0, hit: 38.0),
+        skill: (offset: (-104.0, -30.0), half: 30.0, hit: 38.0),
+        // The left thumb's zone: its rest from the bottom left, and how much of the safe area it takes,
+        // from under the bars' share of the height across the width's.
+        stick: (radius: 52.0, rest: (92.0, -84.0), zone_top: 0.28, zone_width: 0.46),
+        // The bars, on the safe area's top. `width` is a share of the safe area's for the player, in its
+        // corner, up to `max_width`; the enemy's has what's left of the middle after `gap`, up to its own.
+        bars_top: 14.0,
+        bars_gap: 26.0,
+        player: (
+            width: 0.27,
+            max_width: 210.0,
+            bars: (
+                hp_height: 13.0,
+                poise_top: 19.0,
+                poise_bottom: 25.0,
+                poise_from: 0.0,
+                poise_to: 0.72,
+                digits_top: 40.0,
+                digits_along: 0.0,
+                digit_height: 16.0,
+            ),
+        ),
+        enemy: (
+            max_width: 360.0,
+            bars: (
+                hp_height: 11.0,
+                poise_top: 17.0,
+                poise_bottom: 23.0,
+                poise_from: 0.14,
+                poise_to: 0.86,
+                digits_top: 38.0,
+                digits_along: 0.5,
+                digit_height: 15.0,
+            ),
+        ),
+    ),
+)

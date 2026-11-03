@@ -490,6 +490,12 @@ impl FightWorld {
         self.simulation.tune_move_set(id, set)
     }
 
+    /// Makes `tuning` the weights a soft lock is chosen by, between steps. A restart keeps them, as it keeps
+    /// tuned moves. Says whether that changed anything ([`Simulation::tune_targeting`]).
+    pub fn tune_targeting(&mut self, tuning: crate::targeting::TargetingTuning) -> bool {
+        self.simulation.tune_targeting(tuning)
+    }
+
     /// Start again at revision zero of the current moves, allocating no new storage. A live edit
     /// that no longer supports this party is refused before changing any state, allowing recovery.
     pub fn restart(&mut self) -> Result<(), ScenarioError> {

@@ -16,6 +16,13 @@
 //! [`Platform::now`](sapphire_platform::Platform::now) to [`CombatHud::update`], and a test or a
 //! capture passes any time it likes, which makes a frame's animation exact and repeatable.
 
+use std::sync::OnceLock;
+
+use bevy_reflect::TypePath;
+use sapphire_reflect::Versioned;
+use sapphire_serialize::DocumentError;
+use serde::{Deserialize, Serialize};
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -37,6 +44,9 @@ const WHITE: [u8; 4] = [255, 255, 255, 255];
 const MINT: [u8; 4] = [96, 243, 212, 255];
 const ROSE: [u8; 4] = [255, 66, 92, 255];
 const AMBER: [u8; 4] = [255, 192, 56, 255];
+/// The shipped layout (see [`HudDesign::shipped`]).
+const SHIPPED_DESIGN: &str = include_str!("../default_hud.ron");
+
 const EMBER: [u8; 4] = [255, 112, 58, 255];
 const SHADOW: [u8; 4] = [0, 0, 0, 170];
 const OUTLINE: [u8; 4] = [8, 10, 18, 255];
@@ -48,12 +58,6 @@ const VEIL: [u8; 4] = [6, 8, 14, 190];
 const PAUSE_BAR_LENGTH: f32 = 76.0;
 const PAUSE_BAR_WIDTH: f32 = 24.0;
 const PAUSE_BAR_APART: f32 = 24.0;
-
-/// A phone's short side in points, below which the whole HUD shrinks to fit (a small window).
-const FULL_HEIGHT: f32 = 330.0;
-const FULL_WIDTH: f32 = 470.0;
-/// Space between the safe area's edge and what sits on it.
-const MARGIN: f32 = 16.0;
 
 /// Damage numbers alive at once: a new one past this replaces the oldest.
 pub const MAX_DAMAGE_NUMBERS: usize = 16;
@@ -135,59 +139,50 @@ pub struct HudLayout {
 }
 
 impl HudLayout {
+    /// Places the HUD by [`HudDesign::shipped`].
     pub fn new(metrics: UiMetrics) -> Self {
+        Self::designed(metrics, HudDesign::shipped())
+    }
+
+    /// Places the HUD by `design`.
+    pub fn designed(metrics: UiMetrics, design: &HudDesign) -> Self {
         let safe = metrics.safe();
-        let scale = (safe.height() / FULL_HEIGHT).min(safe.width() / FULL_WIDTH).clamp(0.01, 1.0);
+        let [full_width, full_height] = design.full_size;
+        let scale = (safe.height() / full_height).min(safe.width() / full_width).clamp(0.01, 1.0);
         let points = |value: f32| value * scale;
+        let margin = points(design.margin);
 
         // The right thumb's cluster: the attack in the corner, the others on an arc around it.
-        let attack_half = points(46.0);
-        let attack_center = Anchor::BOTTOM_RIGHT.place(safe, Vec2::splat(-(points(MARGIN) + attack_half)));
-        let attack = ButtonLayout { center: attack_center, half: attack_half, hit: points(62.0) };
-        let around = |x: f32, y: f32, half: f32| ButtonLayout {
-            center: attack_center + Vec2::new(points(x), points(y)),
-            half: points(half),
-            hit: points(38.0),
+        let attack_half = points(design.attack.half);
+        let attack_center = Anchor::BOTTOM_RIGHT.place(safe, Vec2::splat(-(margin + attack_half)));
+        let around = |button: &ButtonDesign| ButtonLayout {
+            center: attack_center + Vec2::new(points(button.offset[0]), points(button.offset[1])),
+            half: points(button.half),
+            hit: points(button.hit),
         };
-        let dodge = around(-22.0, -100.0, 30.0);
-        let skill = around(-104.0, -30.0, 30.0);
+        let attack = around(&design.attack);
+        let dodge = around(&design.dodge);
+        let skill = around(&design.skill);
 
         // The left thumb's zone: the frame's left side, under the bars.
-        let radius = points(52.0);
-        let rest = Anchor::BOTTOM_LEFT.place(safe, Vec2::new(points(92.0), -points(84.0)));
+        let radius = points(design.stick.radius);
+        let [rest_x, rest_y] = design.stick.rest;
+        let rest = Anchor::BOTTOM_LEFT.place(safe, Vec2::new(points(rest_x), points(rest_y)));
         let zone = Rect::new(
-            Vec2::new(safe.min.x, safe.min.y + safe.height() * 0.28),
-            Vec2::new(safe.min.x + safe.width() * 0.46, safe.max.y),
+            Vec2::new(safe.min.x, safe.min.y + safe.height() * design.stick.zone_top),
+            Vec2::new(safe.min.x + safe.width() * design.stick.zone_width, safe.max.y),
         );
 
         // The bars, on the safe area's top: the player's in the corner, the enemy's in what's left
         // of the middle, so they can't meet at 4:3.
-        let top_margin = points(14.0);
-        let player_width = (safe.width() * 0.27).min(points(210.0));
-        let left = Anchor::TOP_LEFT.place(safe, Vec2::new(points(MARGIN), top_margin));
-        let player = BarsLayout {
-            hp: Rect::new(left, left + Vec2::new(player_width, points(13.0))),
-            poise: Rect::new(
-                left + Vec2::new(0.0, points(19.0)),
-                left + Vec2::new(player_width * 0.72, points(25.0)),
-            ),
-            digits: left + Vec2::new(0.0, points(40.0)),
-            digits_align: Align::Left,
-            digit_height: points(16.0),
-        };
-        let free = safe.width() - 2.0 * (points(MARGIN) + player_width + points(26.0));
-        let enemy_width = free.min(points(360.0)).max(0.0);
+        let top_margin = points(design.bars_top);
+        let player_width = (safe.width() * design.player.width).min(points(design.player.max_width));
+        let left = Anchor::TOP_LEFT.place(safe, Vec2::new(margin, top_margin));
+        let player = design.player.bars.place(left, player_width, Align::Left, &points);
+        let free = safe.width() - 2.0 * (margin + player_width + points(design.bars_gap));
+        let enemy_width = free.min(points(design.enemy.max_width)).max(0.0);
         let top = Anchor::TOP_CENTER.place(safe, Vec2::new(-enemy_width * 0.5, top_margin));
-        let enemy = BarsLayout {
-            hp: Rect::new(top, top + Vec2::new(enemy_width, points(11.0))),
-            poise: Rect::new(
-                top + Vec2::new(enemy_width * 0.14, points(17.0)),
-                top + Vec2::new(enemy_width * 0.86, points(23.0)),
-            ),
-            digits: top + Vec2::new(enemy_width * 0.5, points(38.0)),
-            digits_align: Align::Center,
-            digit_height: points(15.0),
-        };
+        let enemy = design.enemy.bars.place(top, enemy_width, Align::Center, &points);
 
         Self {
             metrics,
@@ -209,6 +204,206 @@ impl HudLayout {
             Button::Dodge => &self.dodge,
             Button::Skill => &self.skill,
         }
+    }
+}
+
+/// Where the combat HUD's pieces go, in points on a phone's frame (a `HudDesign` document, schema 1). It's
+/// [`HudLayout`]'s numbers and no more: what a piece is and how it's drawn stay code until the retained tree
+/// takes the HUD over.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, TypePath)]
+#[type_path = "sapphire::ui"]
+#[serde(deny_unknown_fields)]
+pub struct HudDesign {
+    /// A safe area smaller than this, either way, shrinks the whole HUD to fit (a small window).
+    pub full_size: [f32; 2],
+    /// Between the safe area's edge and what sits on it.
+    pub margin: f32,
+    /// Stands in the bottom right corner, moved by its offset.
+    pub attack: ButtonDesign,
+    /// Around the attack.
+    pub dodge: ButtonDesign,
+    pub skill: ButtonDesign,
+    pub stick: StickDesign,
+    /// How far under the safe area's top the bars hang.
+    pub bars_top: f32,
+    /// What stays between the player's bars and the enemy's.
+    pub bars_gap: f32,
+    pub player: PlayerBarsDesign,
+    pub enemy: EnemyBarsDesign,
+}
+
+/// A button: where it stands from the attack's corner place, how far it's drawn and how far it takes a touch.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ButtonDesign {
+    pub offset: [f32; 2],
+    pub half: f32,
+    pub hit: f32,
+}
+
+/// The left thumb's stick.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StickDesign {
+    pub radius: f32,
+    /// Where it rests, from the safe area's bottom left.
+    pub rest: [f32; 2],
+    /// The zone it lands in starts this share of the safe area's height down, and takes this share of its
+    /// width.
+    pub zone_top: f32,
+    pub zone_width: f32,
+}
+
+/// A fighter's bars, under where they hang: heights in points, and what runs along them as shares of their
+/// width.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BarsDesign {
+    pub hp_height: f32,
+    pub poise_top: f32,
+    pub poise_bottom: f32,
+    pub poise_from: f32,
+    pub poise_to: f32,
+    pub digits_top: f32,
+    pub digits_along: f32,
+    pub digit_height: f32,
+}
+
+impl BarsDesign {
+    fn place(&self, at: Vec2, width: f32, align: Align, points: &impl Fn(f32) -> f32) -> BarsLayout {
+        BarsLayout {
+            hp: Rect::new(at, at + Vec2::new(width, points(self.hp_height))),
+            poise: Rect::new(
+                at + Vec2::new(width * self.poise_from, points(self.poise_top)),
+                at + Vec2::new(width * self.poise_to, points(self.poise_bottom)),
+            ),
+            digits: at + Vec2::new(width * self.digits_along, points(self.digits_top)),
+            digits_align: align,
+            digit_height: points(self.digit_height),
+        }
+    }
+}
+
+/// The player's bars, in the corner: `width` is a share of the safe area's, up to `max_width`.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlayerBarsDesign {
+    pub width: f32,
+    pub max_width: f32,
+    pub bars: BarsDesign,
+}
+
+/// The enemy's bars, in what's left of the middle, up to `max_width`.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnemyBarsDesign {
+    pub max_width: f32,
+    pub bars: BarsDesign,
+}
+
+impl Versioned for HudDesign {
+    /// 1: M3 S3.
+    const VERSION: u32 = 1;
+}
+
+/// A HUD design document that can't be used.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum HudDesignError {
+    #[error(transparent)]
+    Document(#[from] DocumentError),
+    #[error("{field}: {value} {wanted}")]
+    Field { field: &'static str, value: f32, wanted: &'static str },
+}
+
+impl HudDesign {
+    /// Sapphire's layout (`default_hud.ron` beside this crate's manifest), compiled in.
+    #[must_use]
+    pub fn shipped() -> &'static Self {
+        static PARSED: OnceLock<HudDesign> = OnceLock::new();
+        PARSED.get_or_init(|| {
+            Self::from_ron(SHIPPED_DESIGN).expect("this module's tests read the shipped layout")
+        })
+    }
+
+    /// Reads a HUD design document and checks it.
+    pub fn from_ron(text: &str) -> Result<Self, HudDesignError> {
+        let design: Self = sapphire_serialize::from_ron(text)?;
+        design.check()?;
+        Ok(design)
+    }
+
+    /// Says which number can't be laid out: a size is more than 0, a place is any finite number, and a share
+    /// of a width stays inside it.
+    fn check(&self) -> Result<(), HudDesignError> {
+        const SIZE: &str = "isn't a size above 0";
+        const PLACE: &str = "isn't a finite number";
+        const SHARE: &str = "isn't a share, 0 to 1";
+        let fail = |field, value, wanted| Err(HudDesignError::Field { field, value, wanted });
+        let Self { full_size, margin, attack, dodge, skill, stick, bars_top, bars_gap, player, enemy } = self;
+        let sizes = [
+            ("full_size.0", full_size[0]),
+            ("full_size.1", full_size[1]),
+            ("attack.half", attack.half),
+            ("attack.hit", attack.hit),
+            ("dodge.half", dodge.half),
+            ("dodge.hit", dodge.hit),
+            ("skill.half", skill.half),
+            ("skill.hit", skill.hit),
+            ("stick.radius", stick.radius),
+            ("player.max_width", player.max_width),
+            ("player.hp_height", player.bars.hp_height),
+            ("player.digit_height", player.bars.digit_height),
+            ("enemy.max_width", enemy.max_width),
+            ("enemy.hp_height", enemy.bars.hp_height),
+            ("enemy.digit_height", enemy.bars.digit_height),
+        ];
+        for (field, value) in sizes {
+            if !value.is_finite() || value <= 0.0 {
+                return fail(field, value, SIZE);
+            }
+        }
+        let places = [
+            ("margin", *margin),
+            ("attack.offset.0", attack.offset[0]),
+            ("attack.offset.1", attack.offset[1]),
+            ("dodge.offset.0", dodge.offset[0]),
+            ("dodge.offset.1", dodge.offset[1]),
+            ("skill.offset.0", skill.offset[0]),
+            ("skill.offset.1", skill.offset[1]),
+            ("stick.rest.0", stick.rest[0]),
+            ("stick.rest.1", stick.rest[1]),
+            ("bars_top", *bars_top),
+            ("bars_gap", *bars_gap),
+            ("player.poise_top", player.bars.poise_top),
+            ("player.poise_bottom", player.bars.poise_bottom),
+            ("player.digits_top", player.bars.digits_top),
+            ("enemy.poise_top", enemy.bars.poise_top),
+            ("enemy.poise_bottom", enemy.bars.poise_bottom),
+            ("enemy.digits_top", enemy.bars.digits_top),
+        ];
+        for (field, value) in places {
+            if !value.is_finite() {
+                return fail(field, value, PLACE);
+            }
+        }
+        let shares = [
+            ("stick.zone_top", stick.zone_top),
+            ("stick.zone_width", stick.zone_width),
+            ("player.width", player.width),
+            ("player.poise_from", player.bars.poise_from),
+            ("player.poise_to", player.bars.poise_to),
+            ("player.digits_along", player.bars.digits_along),
+            ("enemy.poise_from", enemy.bars.poise_from),
+            ("enemy.poise_to", enemy.bars.poise_to),
+            ("enemy.digits_along", enemy.bars.digits_along),
+        ];
+        for (field, value) in shares {
+            if !(0.0..=1.0).contains(&value) {
+                return fail(field, value, SHARE);
+            }
+        }
+        Ok(())
     }
 }
 

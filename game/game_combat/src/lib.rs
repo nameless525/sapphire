@@ -16,6 +16,7 @@ mod blade;
 pub mod combat;
 pub mod combat_views;
 pub mod cues;
+pub mod documents;
 pub mod enemy;
 pub mod fight;
 pub mod party_looks;

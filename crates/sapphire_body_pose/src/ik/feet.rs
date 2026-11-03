@@ -220,7 +220,8 @@ impl FootPlacement {
     }
 }
 /// How foot placement behaves. Lengths in metres, times in seconds.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FootSettings {
     /// How far above and below an ankle the caller should look for ground.
     pub reach_up: f32,
@@ -539,6 +540,11 @@ impl FootPlacement {
 
     pub(super) fn set_moving_takeoff(&mut self, phase: Option<f32>) {
         self.takeoff_phase = phase.filter(|phase| phase.is_finite()).map(|phase| phase.clamp(0.0, 1.0));
+    }
+
+    /// Runs by `settings` from now on, wherever the feet have got to.
+    pub fn set_settings(&mut self, settings: FootSettings) {
+        self.settings = settings;
     }
 
     /// The settings it runs by, for whoever casts for it.

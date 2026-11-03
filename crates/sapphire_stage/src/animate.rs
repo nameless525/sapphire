@@ -155,6 +155,16 @@ impl ClipPlayer {
         }
     }
 
+    /// Runs its hair and cloth and its IK by `motion` from now on, wherever they've got to.
+    pub(crate) fn set_motion(&mut self, motion: &sapphire_anim::CharacterMotion) {
+        if let Some(springs) = &mut self.springs {
+            springs.set_tuning(motion.springs);
+        }
+        if let Some(ik) = &mut self.ik {
+            ik.set_motion(motion);
+        }
+    }
+
     /// This player, simulating `springs` beside its pose.
     #[must_use]
     pub(crate) fn with_springs(self, springs: Option<SpringBones>) -> Self {

@@ -1170,7 +1170,9 @@ impl Scene {
         content: &Content,
         pose: &sapphire_anim::CharacterPose,
     ) -> Result<IkDriver, String> {
-        let driver = IkDriver::new(lookdev::ik_rig(content, pose)?, ground.clone(), IkControls::default());
+        let motion = content.character_motion();
+        let driver =
+            IkDriver::new(lookdev::ik_rig(content, pose)?, ground.clone(), IkControls::of(motion), motion);
         self.ik_ground = Some(ground);
         self.ik_look = look;
         Ok(driver)
@@ -1195,7 +1197,10 @@ impl Scene {
                 player.continue_from(&playing);
                 if let (Some(ground), Some(controls)) = (ground, playing.ik_mut().map(|ik| ik.controls())) {
                     match lookdev::ik_rig(content, player.pose()) {
-                        Ok(rig) => player = player.with_ik(IkDriver::new(rig, ground, controls)),
+                        Ok(rig) => {
+                            let motion = content.character_motion();
+                            player = player.with_ik(IkDriver::new(rig, ground, controls, motion));
+                        }
                         Err(error) => {
                             tracing::warn!(target: LOG_TARGET, error, "the look-dev character's new rig has no IK");
                         }
@@ -1318,7 +1323,10 @@ impl Scene {
                     if let (Some(ground), Some(controls)) = (ground, playing.ik_mut().map(|ik| ik.controls()))
                     {
                         match lookdev::ik_rig(content, driver.player.pose()) {
-                            Ok(rig) => driver = driver.with_ik(IkDriver::new(rig, ground, controls)),
+                            Ok(rig) => {
+                                let motion = content.character_motion();
+                                driver = driver.with_ik(IkDriver::new(rig, ground, controls, motion));
+                            }
                             Err(error) => {
                                 tracing::warn!(target: LOG_TARGET, error, "the look-dev character's new rig has no IK");
                             }
@@ -1488,6 +1496,18 @@ impl Scene {
     /// Runs spring bones as a quality tier does, from the next frame on.
     pub fn set_spring_quality(&mut self, quality: SpringQuality) {
         self.spring_quality = quality;
+    }
+
+    /// Runs everything standing here by `motion` from now on: its hair and cloth and its IK, wherever
+    /// they've got to. What's built later takes it from `Content::character_motion`.
+    pub fn set_character_motion(&mut self, motion: &sapphire_anim::CharacterMotion) {
+        let world = self.ecs.world_mut();
+        for mut player in world.query::<&mut ClipPlayer>().iter_mut(world) {
+            player.set_motion(motion);
+        }
+        for mut driver in world.query::<&mut GraphDriver>().iter_mut(world) {
+            driver.set_motion(motion);
+        }
     }
 
     /// The character's entity, which a show may place and pose as it does its own.
@@ -2970,7 +2990,7 @@ mod tests {
             let rig = sapphire_anim::IkRig::new(plain.pose(), &bones, Vec3::ZERO, None, 0.0);
             let ground = Arc::new(IkGround::Flat.world());
             let controls = IkControls { look_target: Some(target), ..IkControls::default() };
-            plain.with_ik(IkDriver::new(rig, ground, controls))
+            plain.with_ik(IkDriver::new(rig, ground, controls, sapphire_anim::CharacterMotion::shipped()))
         }
 
         /// Tells the character's IK to look at `target`.

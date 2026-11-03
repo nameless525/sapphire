@@ -302,26 +302,32 @@ impl Combat {
     /// Reads what `option` names and sets up the world, before any GPU work, so a bad file costs
     /// nothing and says why.
     pub fn new(option: &CombatOption) -> Result<Self, String> {
-        Self::new_with_setup(option, None, |_, _, _| Ok(()))
+        Self::from_live(option, &LiveMoves::default())
     }
 
-    /// `option`, set up by `setup` before its first tick. A fight takes `moves` in place of what the build
-    /// compiled in, if they're given: what a build with those edits in its documents would fight, and its own
-    /// from here, so whatever made them can go on changing. Only a [`CombatOption::Fight`] can: the others are
-    /// their files'.
-    pub(crate) fn new_with_setup(
+    /// [`Self::new`], starting from `live` rather than only what the build compiled in: a game's targeting
+    /// document, and in a dev build whatever's been edited.
+    pub fn from_live(option: &CombatOption, live: &LiveMoves) -> Result<Self, String> {
+        Self::from_live_with_setup(option, live, None, |_, _, _| Ok(()))
+    }
+
+    /// `option` from `live`, set up by `setup` before its first tick. A fight takes `edits` in place of `live`,
+    /// if they're given: what a build with those edits in its documents would fight, and its own from here, so
+    /// whatever made them can go on changing. Only a [`CombatOption::Fight`] can: the others are their files'.
+    pub(crate) fn from_live_with_setup(
         option: &CombatOption,
-        moves: Option<LiveMoves>,
+        live: &LiveMoves,
+        edits: Option<LiveMoves>,
         setup: impl FnOnce(&Scenario, &mut Simulation, &[ActorId]) -> Result<(), String>,
     ) -> Result<Self, String> {
         match option {
             CombatOption::Fight { script, party } => {
-                Self::fighting(script.as_deref(), *party, moves.unwrap_or_default(), setup)
+                Self::fighting(script.as_deref(), *party, edits.unwrap_or_else(|| live.clone()), setup)
             }
-            _ if moves.is_some() => Err("only a fight starts from edits".to_owned()),
-            CombatOption::Replay { path, .. } => Self::replaying(path, setup),
+            _ if edits.is_some() => Err("only a fight starts from edits".to_owned()),
+            CombatOption::Replay { path, .. } => Self::replaying(path, live, setup),
             CombatOption::Record { path, scenario, script } => {
-                Self::recording_with_setup(path, scenario, script.as_deref(), &LiveMoves::default(), setup)
+                Self::recording_with_setup(path, scenario, script.as_deref(), live, setup)
             }
         }
     }
@@ -346,12 +352,14 @@ impl Combat {
 
     fn replaying(
         path: &Path,
+        live: &LiveMoves,
         setup: impl FnOnce(&Scenario, &mut Simulation, &[ActorId]) -> Result<(), String>,
     ) -> Result<Self, String> {
         let fail = |error: &dyn std::fmt::Display| format!("--replay {}: {error}", path.display());
         let bytes = fs::read(path).map_err(|error| fail(&error))?;
         let replay = Replay::decode(&bytes).map_err(|error| fail(&error))?;
-        let player = Player::new_with_setup(replay, SCENARIOS, setup).map_err(|error| fail(&error))?;
+        let player =
+            Player::tuned_with_setup(replay, SCENARIOS, live, setup).map_err(|error| fail(&error))?;
         let name = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or_default().to_owned();
         let recorded = recorded_trail(path, &name).map_err(|error| fail(&error))?;
         let mode = Mode::Replaying { player, name, recorded };
@@ -447,6 +455,29 @@ impl Combat {
                 Ok(tuned.map(|tuned| (id, tuned)))
             }
             Mode::Fighting(fight) => Ok(fight.tune(document, id, set).map(|tuned| (id, tuned))),
+        }
+    }
+
+    /// Gives this fight new targeting weights, between steps. A replay refuses, as it does any edit: a file
+    /// on other weights wouldn't start. A recording ends its file if they change anything.
+    #[cfg(feature = "dev")]
+    pub(crate) fn tune_targeting(
+        &mut self,
+        weights: sapphire_gameplay::targeting::TargetingTuning,
+    ) -> Result<(), String> {
+        match &mut self.mode {
+            Mode::Replaying { name, .. } => {
+                Err(format!("`{name}` is a replay, which plays what it recorded: it takes no live edits"))
+            }
+            Mode::Recording { recording, .. } => {
+                recording.tune_targeting(weights);
+                Ok(())
+            }
+            Mode::Fighting(fight) => {
+                fight.sim.tune_targeting(weights);
+                fight.live.set_targeting(weights);
+                Ok(())
+            }
         }
     }
 

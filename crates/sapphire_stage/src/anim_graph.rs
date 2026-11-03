@@ -392,6 +392,16 @@ impl GraphDriver {
         Some(Mat4::from(self.player.pose().model()[joint]))
     }
 
+    /// Runs its hair and cloth and its IK by `motion` from now on, wherever they've got to.
+    pub(crate) fn set_motion(&mut self, motion: &sapphire_anim::CharacterMotion) {
+        if let Some(springs) = &mut self.springs {
+            springs.set_tuning(motion.springs);
+        }
+        if let Some(ik) = &mut self.ik {
+            ik.set_motion(motion);
+        }
+    }
+
     /// This driver, simulating `springs` beside its pose.
     #[must_use]
     pub(crate) fn with_springs(self, springs: Option<SpringBones>) -> Self {
@@ -534,7 +544,7 @@ impl GraphDriver {
         }
         if let Some(ik) = &mut self.ik {
             ik.take_time(input.ticks);
-            let feet = if input.locomotion.grounded { 1.0 } else { 0.0 };
+            let feet = if input.locomotion.grounded { ik.feet_weight() } else { 0.0 };
             ik.set_controls(IkControls { feet, ..ik.controls() });
             if let Some(turn) = &mut self.turn {
                 (turning, receiving) = turn.prepare(&self.player, clips, input, place, || ik.turn_support());

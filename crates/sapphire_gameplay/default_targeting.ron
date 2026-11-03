@@ -1,0 +1,27 @@
+// Who a soft lock picks: `sapphire_gameplay::targeting`, compiled in as `TargetingTuning::shipped`. That
+// module's docs say how the weights add up. A simulation holds these, so a change moves `tables_hash` and a
+// replay of a fight on other numbers refuses to start.
+(
+    type: "sapphire::gameplay::TargetingTuning",
+    version: 1,
+    data: (
+        // A gamepad's: the stick says who, and closeness decides what's left.
+        soft_lock: (
+            direction: 1.6,
+            facing: 0.5,
+            distance: 1.0,
+            range: 12.0,
+            keep_range: 16.0,
+            hysteresis: 0.12,
+        ),
+        // Auto-target on touch: thumbs don't aim, so whoever's closest, mostly, with a longer reach.
+        touch: (
+            direction: 0.3,
+            facing: 0.15,
+            distance: 1.5,
+            range: 14.0,
+            keep_range: 18.0,
+            hysteresis: 0.15,
+        ),
+    ),
+)

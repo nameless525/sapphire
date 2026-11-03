@@ -124,6 +124,15 @@ impl CueShow {
         Self::with_table(CueTable::default_table(), VfxLibrary::default_effects(), budget, presets)
     }
 
+    /// The shipped table, firing `effects` within `budget`. An error names a row they don't have.
+    pub(crate) fn with_effects(
+        effects: VfxLibrary,
+        budget: VfxBudget,
+        presets: &ScreenLibrary,
+    ) -> Result<Self, CueTableError> {
+        Self::with_table(CueTable::default_table(), effects, budget, presets)
+    }
+
     /// `table`, firing `effects` within `budget`. An error names a row it can't resolve.
     pub(crate) fn with_table(
         table: CueTable,

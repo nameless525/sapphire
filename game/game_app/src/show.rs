@@ -4,11 +4,12 @@
 use std::time::Duration;
 
 use game_combat::combat::{Combat, read_bindings};
+use game_combat::documents::FightDocuments;
 use game_ui::hud::{FightHud, HudMode, HudOptions, ShownFight};
 use game_ui::title::TitleCard;
 use sapphire_controls::{CombatControls, ControlsError};
 use sapphire_gameplay::ActorId;
-use sapphire_input::DeviceKind;
+use sapphire_input::{DeviceKind, InputMap};
 use sapphire_platform::{
     AppInitError, Event, GamepadButton, GamepadEvent, Scancode, Timestamp, TouchPhase, Window,
 };
@@ -55,12 +56,18 @@ pub struct GameShow {
 }
 
 impl GameShow {
-    /// A show with nothing on the scene yet, at the title.
-    pub fn new() -> Result<Self, ControlsError> {
+    /// A show with nothing on the scene yet, at the title, on `documents`: the game's own, or Sapphire's.
+    pub fn new(documents: FightDocuments) -> Result<Self, ControlsError> {
+        let controls = match &documents.bindings {
+            Some(bindings) => CombatControls::new(InputMap::new(bindings.clone())?)?,
+            None => CombatControls::with_default_bindings()?,
+        };
+        let mut shown = ShownFight::default();
+        shown.fight.documents = documents;
         Ok(Self {
-            shown: ShownFight::default(),
+            shown,
             title: Some(TitleCard::new()),
-            controls: CombatControls::with_default_bindings()?,
+            controls,
             camera_yaw: 0.0,
             report_in: Duration::ZERO,
             first_uses: 0,
@@ -111,7 +118,9 @@ impl GameShow {
     pub fn open_fight(&mut self) {
         if let Some(title) = self.title.take() {
             let options = HudOptions { mode: HudMode::Live, ..HudOptions::default() };
-            self.shown.hud = Some(FightHud::for_fight_with_atlas(options, title.into_atlas()));
+            let mut hud = FightHud::for_fight_with_atlas(options, title.into_atlas());
+            hud.set_design(self.shown.fight.documents.hud);
+            self.shown.hud = Some(hud);
             tracing::info!(target: LOG_TARGET, "the fight opens");
         }
     }
@@ -321,7 +330,7 @@ mod tests {
 
     #[test]
     fn opening_the_fight_transfers_the_titles_immutable_atlas() {
-        let mut show = GameShow::new().expect("bindings parse");
+        let mut show = GameShow::new(FightDocuments::shipped()).expect("bindings parse");
         let mut list = UiDrawList::default();
         show.draw_interface((640, 360), &mut list);
         let image = list.atlas.clone().expect("title atlas");
@@ -341,7 +350,7 @@ mod tests {
 
     #[test]
     fn the_press_that_opens_the_fight_doesnt_also_swing() {
-        let mut show = GameShow::new().expect("the bindings parse");
+        let mut show = GameShow::new(FightDocuments::shipped()).expect("the bindings parse");
         assert!(show.on_title());
         assert_eq!(show.handle_event(&key(Scancode::J, true, false)), TitleAnswer::Open);
         assert!(!show.on_title());
@@ -349,5 +358,48 @@ mod tests {
         show.controls.update(Timestamp::from_nanos(1));
         let actions = show.controls.next_actions(0.0);
         assert_eq!(actions.buttons, sapphire_gameplay::Buttons::default());
+    }
+
+    /// A game's own bindings are what its show reads, and a document that lacks what combat reads stops it,
+    /// saying what's missing.
+    #[test]
+    fn a_games_bindings_play_its_show() {
+        let own = sapphire_controls::DEFAULT_BINDINGS.replace("source: Key(J)", "source: Key(U)");
+        let documents = FightDocuments {
+            bindings: Some(sapphire_serialize::from_ron(&own).expect("reads")),
+            ..FightDocuments::shipped()
+        };
+        let mut show = GameShow::new(documents).expect("they hold what combat reads");
+        let light = |show: &mut GameShow, scancode, at| {
+            show.controls.handle_event(&key(scancode, true, false));
+            show.controls.update(Timestamp::from_nanos(at));
+            show.controls.next_actions(0.0).buttons.contains(sapphire_gameplay::Buttons::LIGHT)
+        };
+        assert!(!light(&mut show, Scancode::J, 1), "the shipped key does nothing");
+        assert!(light(&mut show, Scancode::U, 2), "its own does");
+
+        let mut lacking: sapphire_input::InputBindings =
+            sapphire_serialize::from_ron(sapphire_controls::DEFAULT_BINDINGS).expect("reads");
+        lacking.contexts.retain(|context| context.name != sapphire_controls::PAUSE_CONTEXT);
+        let documents = FightDocuments { bindings: Some(lacking), ..FightDocuments::shipped() };
+        let refused = GameShow::new(documents).err().expect("it can't pause");
+        assert!(refused.to_string().contains(sapphire_controls::PAUSE_CONTEXT), "{refused}");
+    }
+
+    /// The fight's HUD opens laid out by the game's design.
+    #[test]
+    fn a_games_design_lays_its_hud_out() {
+        let mut documents = FightDocuments::shipped();
+        documents.hud.dodge.offset = [-30.0, -150.0];
+        let mut show = GameShow::new(documents).expect("the bindings parse");
+        show.open_fight();
+        let hud = show.shown.hud.as_mut().expect("it's open");
+        let metrics = sapphire_ui::UiMetrics::new(
+            sapphire_math::Vec2::new(874.0, 402.0),
+            sapphire_ui::Insets::default(),
+        );
+        let _ = hud.update(Timestamp::from_nanos(1), metrics);
+        let layout = hud.layout();
+        assert_eq!(layout.dodge.center, layout.attack.center + sapphire_math::Vec2::new(-30.0, -150.0));
     }
 }

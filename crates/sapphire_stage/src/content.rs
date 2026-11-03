@@ -695,6 +695,8 @@ impl HeldGraph {
 pub struct Content {
     // Drop order: the uploaded GPU objects, then the server, whose IO thread joins last.
     gpu: GpuAssets,
+    /// What a character built from here moves by ([`Self::set_character_motion`]).
+    character_motion: sapphire_anim::CharacterMotion,
     /// The character's ID: the mannequin's unless the scene asked for another.
     character_id: AssetId,
     character: Handle<Mesh>,
@@ -799,6 +801,17 @@ impl Content {
         self.left_out_of_zones = entry;
     }
 
+    /// What a character built from here moves by: the shipped document, unless a game said otherwise.
+    pub fn character_motion(&self) -> &sapphire_anim::CharacterMotion {
+        &self.character_motion
+    }
+
+    /// Makes `motion` what a character built from here moves by. What stands already takes it from
+    /// `Scene::set_character_motion`.
+    pub fn set_character_motion(&mut self, motion: sapphire_anim::CharacterMotion) {
+        self.character_motion = motion;
+    }
+
     /// Starts the IO thread on the app's content root, mounts the shared pack and starts loading
     /// the character (`character`, a mesh's ID: [`CHARACTER`] unless the scene wants another),
     /// within the budgets of the device's class. The scene's sky is the sky material `sky`
@@ -845,6 +858,7 @@ impl Content {
     ) -> Self {
         Self {
             gpu: GpuAssets::new(character_id, false),
+            character_motion: *sapphire_anim::CharacterMotion::shipped(),
             character_id,
             character,
             swatches: Vec::new(),

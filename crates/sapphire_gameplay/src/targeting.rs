@@ -10,14 +10,30 @@
 //! A candidate scores by how near it is to where the player is pointing and how close it is:
 //! `direction · (1 − angle / π) + distance · (1 − metres / range)`. Pointing means the stick, or the actor's
 //! facing with the stick at rest, at the `facing` weight. Auto-target on touch (pillar 7) is the same
-//! function with [`TargetingWeights::TOUCH`], where closeness counts for most.
+//! function with [`TargetingTuning::touch`], where closeness counts for most.
 //!
 //! The camera doesn't choose anything: it's handed the chosen target's position.
+//!
+//! **The weights are a document** (`default_targeting.ron`, [`TargetingTuning`]), compiled in because a
+//! replay needs no assets. A [`Simulation`](crate::Simulation) holds the resolved value and its
+//! [`tables_hash`](crate::Simulation::tables_hash) takes it, so a fight on other weights can't pass for one
+//! on these.
 
+use std::sync::OnceLock;
+
+use bevy_reflect::TypePath;
+use sapphire_ecs::prelude::Resource;
 use sapphire_math::{Vec3, det};
+use sapphire_reflect::Versioned;
+use sapphire_serialize::DocumentError;
+use serde::{Deserialize, Serialize};
 
 use crate::actions::Stick;
 use crate::actors::ActorId;
+use crate::checksum::StateHasher;
+
+/// The shipped weights (see [`TargetingTuning::shipped`]).
+const SHIPPED: &str = include_str!("../default_targeting.ron");
 
 /// A stick shorter than this, of a full 1, isn't pointing anywhere: it's a thumb at rest.
 const STICK_AT_REST: f32 = 0.2;
@@ -30,7 +46,8 @@ pub struct TargetCandidate {
 }
 
 /// How a choice is weighed. See the [module docs](self).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TargetingWeights {
     /// How much it matters where the stick points.
     pub direction: f32,
@@ -48,13 +65,86 @@ pub struct TargetingWeights {
 }
 
 impl TargetingWeights {
-    /// A gamepad's soft lock: the stick says who, and closeness decides what's left.
-    pub const SOFT_LOCK: Self =
-        Self { direction: 1.6, facing: 0.5, distance: 1.0, range: 12.0, keep_range: 16.0, hysteresis: 0.12 };
+    /// Says what's wrong with these, as `section.field`. A weight may be 0 and never negative, and a range is
+    /// a distance, so a choice can't divide by zero or keep less than it picks.
+    fn check(&self, section: &'static str) -> Result<(), TargetingError> {
+        let Self { direction, facing, distance, range, keep_range, hysteresis } = *self;
+        let fail = |field, reason| Err(TargetingError::Field { section, field, reason });
+        for (field, value) in
+            [("direction", direction), ("facing", facing), ("distance", distance), ("hysteresis", hysteresis)]
+        {
+            if !value.is_finite() || value < 0.0 {
+                return fail(field, format!("{value} isn't a weight, 0 or more"));
+            }
+        }
+        if !range.is_finite() || range <= 0.0 {
+            return fail("range", format!("{range} isn't a distance above 0"));
+        }
+        if !keep_range.is_finite() || keep_range < range {
+            return fail("keep_range", format!("{keep_range} is short of `range`, {range}"));
+        }
+        Ok(())
+    }
 
-    /// Auto-target on touch: thumbs don't aim, so whoever's closest, mostly, with a longer reach.
-    pub const TOUCH: Self =
-        Self { direction: 0.3, facing: 0.15, distance: 1.5, range: 14.0, keep_range: 18.0, hysteresis: 0.15 };
+    fn write_canonical(self, hasher: &mut StateHasher) {
+        let Self { direction, facing, distance, range, keep_range, hysteresis } = self;
+        for value in [direction, facing, distance, range, keep_range, hysteresis] {
+            hasher.f32(value);
+        }
+    }
+}
+
+/// Every way a soft lock is weighed (a `TargetingTuning` document, schema 1).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, TypePath, Resource)]
+#[type_path = "sapphire::gameplay"]
+#[serde(deny_unknown_fields)]
+pub struct TargetingTuning {
+    /// A gamepad's or a keyboard's.
+    pub soft_lock: TargetingWeights,
+    /// Auto-target on touch (pillar 7).
+    pub touch: TargetingWeights,
+}
+
+impl Versioned for TargetingTuning {
+    /// 1: M3 S3.
+    const VERSION: u32 = 1;
+}
+
+/// A targeting document that can't be used.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum TargetingError {
+    #[error(transparent)]
+    Document(#[from] DocumentError),
+    #[error("{section}.{field}: {reason}")]
+    Field { section: &'static str, field: &'static str, reason: String },
+}
+
+impl TargetingTuning {
+    /// Sapphire's weights (`default_targeting.ron` beside this crate's manifest), compiled in.
+    #[must_use]
+    pub fn shipped() -> Self {
+        static PARSED: OnceLock<TargetingTuning> = OnceLock::new();
+        *PARSED.get_or_init(|| Self::from_ron(SHIPPED).expect("this module's tests read the shipped weights"))
+    }
+
+    /// Reads a targeting document and checks it.
+    pub fn from_ron(text: &str) -> Result<Self, TargetingError> {
+        let tuning: Self = sapphire_serialize::from_ron(text)?;
+        tuning.soft_lock.check("soft_lock")?;
+        tuning.touch.check("touch")?;
+        Ok(tuning)
+    }
+
+    /// What [`crate::Simulation::tables_hash`] takes of them: their numbers by their bits, the same on every
+    /// architecture.
+    #[must_use]
+    pub(crate) fn digest(&self) -> u64 {
+        let mut hasher = StateHasher::new();
+        self.soft_lock.write_canonical(&mut hasher);
+        self.touch.write_canonical(&mut hasher);
+        hasher.finish()
+    }
 }
 
 /// What a choice is made from: one tick's plain values.
@@ -199,7 +289,7 @@ mod tests {
             ("and past what's kept", 0.0, at_rest, Some(1), &[at(1, 0.0, 17.0)], None),
         ];
         for (what, yaw, stick, current, candidates, answer) in scenes {
-            let got = choose(yaw, stick, current, candidates, &TargetingWeights::SOFT_LOCK);
+            let got = choose(yaw, stick, current, candidates, &TargetingTuning::shipped().soft_lock);
             assert_eq!(got, answer.map(id), "{what}");
         }
     }
@@ -207,7 +297,7 @@ mod tests {
     /// Touch's table: closeness first, so where the player faces hardly counts.
     #[test]
     fn auto_target_on_touch_scenes() {
-        let touch = TargetingWeights::TOUCH;
+        let touch = TargetingTuning::shipped().touch;
         let at_rest = Stick::CENTER;
         let scenes: [Scene<'_>; 5] = [
             (
@@ -240,7 +330,7 @@ mod tests {
         for (what, yaw, stick, current, candidates, answer) in scenes {
             assert_eq!(choose(yaw, stick, current, candidates, &touch), answer.map(id), "{what}");
         }
-        let soft = choose(0.0, pushed(0.0, 1.0), None, scenes[1].4, &TargetingWeights::SOFT_LOCK);
+        let soft = choose(0.0, pushed(0.0, 1.0), None, scenes[1].4, &TargetingTuning::shipped().soft_lock);
         assert_eq!(soft, Some(id(1)), "the two weights must differ on that scene");
     }
 
@@ -251,7 +341,7 @@ mod tests {
         let (a, b, c) = (at(3, 4.0, 3.0), at(7, -4.0, 3.0), at(9, 0.0, -11.0));
         let orders = [[a, b, c], [a, c, b], [b, a, c], [b, c, a], [c, a, b], [c, b, a]];
         for order in &orders {
-            for weights in [TargetingWeights::SOFT_LOCK, TargetingWeights::TOUCH] {
+            for weights in [TargetingTuning::shipped().soft_lock, TargetingTuning::shipped().touch] {
                 assert_eq!(choose(0.0, Stick::CENTER, None, order, &weights), Some(id(3)), "{order:?}");
             }
         }
@@ -261,7 +351,7 @@ mod tests {
     /// holds who it has. Without the hysteresis it would change every tick.
     #[test]
     fn hysteresis_holds_the_target_between_two_at_equal_angles() {
-        let weights = TargetingWeights::SOFT_LOCK;
+        let weights = TargetingTuning::shipped().soft_lock;
         let wobble = |tick: u32| if tick.is_multiple_of(2) { 0.03 } else { -0.03 };
         let scene = |tick: u32| [at(1, 3.0 + wobble(tick), 4.0), at(2, -3.0 + wobble(tick), 4.0)];
 
@@ -295,7 +385,7 @@ mod tests {
     /// once, at one angle on the way there, and swung back changes it back at another, past the middle.
     #[test]
     fn a_deliberate_swing_still_changes_the_target_once() {
-        let weights = TargetingWeights::SOFT_LOCK;
+        let weights = TargetingTuning::shipped().soft_lock;
         let scene = [at(1, 3.0, 4.0), at(2, -3.0, 4.0)];
         let aim_at = |tick: i32| {
             // Swinging from well toward 1 (+X) to well toward 2, a degree a tick.
@@ -335,7 +425,7 @@ mod tests {
     /// ground: both still score, and a NaN from upstream is just not a candidate.
     #[test]
     fn degenerate_positions() {
-        let weights = TargetingWeights::SOFT_LOCK;
+        let weights = TargetingTuning::shipped().soft_lock;
         let on_top = TargetCandidate { id: id(1), position: Vec3::ZERO };
         let overhead = TargetCandidate { id: id(2), position: Vec3::new(0.0, 3.0, 0.0) };
         let broken = TargetCandidate { id: id(3), position: Vec3::NAN };
@@ -343,5 +433,54 @@ mod tests {
         assert_eq!(choose(0.0, Stick::CENTER, None, &[overhead], &weights), Some(id(2)));
         assert_eq!(choose(0.0, Stick::CENTER, None, &[broken], &weights), None);
         assert_eq!(choose(0.0, Stick::CENTER, None, &[broken, overhead], &weights), Some(id(2)));
+    }
+
+    #[test]
+    fn the_shipped_document_holds_what_a_soft_lock_and_a_thumb_weigh() {
+        let shipped = TargetingTuning::shipped();
+        assert_eq!(TargetingTuning::from_ron(SHIPPED).expect("reads"), shipped);
+        // A gamepad's stick says who, and on touch closeness counts for most.
+        assert!(shipped.soft_lock.direction > shipped.soft_lock.distance);
+        assert!(shipped.touch.distance > shipped.touch.direction);
+        assert!(shipped.touch.range > shipped.soft_lock.range, "a thumb's reach is longer");
+    }
+
+    /// A typo would otherwise leave a number at whatever it was with nothing to say so.
+    #[test]
+    fn a_document_with_a_field_it_doesnt_know_or_a_bad_number_is_refused_by_name() {
+        let unknown = SHIPPED.replacen("hysteresis:", "hystresis:", 1);
+        let refused = TargetingTuning::from_ron(&unknown).expect_err("a typo");
+        assert!(refused.to_string().contains("hystresis"), "{refused}");
+        for (from, to, named) in [
+            ("direction: 1.6", "direction: -1.6", "soft_lock.direction"),
+            ("range: 14.0", "range: 0.0", "touch.range"),
+            ("keep_range: 16.0", "keep_range: 1.0", "soft_lock.keep_range"),
+            ("hysteresis: 0.15", "hysteresis: NaN", "touch.hysteresis"),
+        ] {
+            let refused = TargetingTuning::from_ron(&SHIPPED.replacen(from, to, 1)).expect_err(from);
+            assert!(refused.to_string().contains(named), "{from}: {refused}");
+        }
+    }
+
+    /// Whichever of them moved, the digest says so: this is what stands between other weights and a replay.
+    #[test]
+    fn the_digest_takes_every_number_of_both_sets_of_weights() {
+        let shipped = TargetingTuning::shipped();
+        let moves: [fn(&mut TargetingWeights); 6] = [
+            |weights| weights.direction += 0.25,
+            |weights| weights.facing += 0.25,
+            |weights| weights.distance += 0.25,
+            |weights| weights.range += 0.25,
+            |weights| weights.keep_range += 0.25,
+            |weights| weights.hysteresis += 0.25,
+        ];
+        for moved in moves {
+            let (mut soft, mut touch) = (shipped, shipped);
+            moved(&mut soft.soft_lock);
+            moved(&mut touch.touch);
+            assert_ne!(soft.digest(), shipped.digest());
+            assert_ne!(touch.digest(), shipped.digest());
+            assert_ne!(soft.digest(), touch.digest(), "which of them it was counts too");
+        }
     }
 }

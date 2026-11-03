@@ -13,6 +13,7 @@ use crate::actors::ActorId;
 use crate::moves::{MoveSetId, Tuned};
 use crate::simulation::{SimConfig, Simulation};
 use crate::stats::SimStats;
+use crate::targeting::TargetingTuning;
 use crate::timeline::{TimelineCommand, TimelineId, TimelinePlayError};
 
 /// A replay that can't start, or a recording that can't.
@@ -139,13 +140,29 @@ impl Player {
         scenarios: &[Scenario],
         setup: impl FnOnce(&Scenario, &mut Simulation, &[ActorId]) -> Result<(), String>,
     ) -> Result<Self, PlayError> {
+        Self::tuned_with_setup(replay, scenarios, &LiveMoves::default(), setup)
+    }
+
+    /// [`Self::new`], from what `live` starts a fight from: what plays back a fight of a game with its own
+    /// numbers, on those numbers.
+    pub fn tuned(replay: Replay, scenarios: &[Scenario], live: &LiveMoves) -> Result<Self, PlayError> {
+        Self::tuned_with_setup(replay, scenarios, live, |_, _, _| Ok(()))
+    }
+
+    /// [`Self::new_with_setup`] from what `live` starts a fight from.
+    pub fn tuned_with_setup(
+        replay: Replay,
+        scenarios: &[Scenario],
+        live: &LiveMoves,
+        setup: impl FnOnce(&Scenario, &mut Simulation, &[ActorId]) -> Result<(), String>,
+    ) -> Result<Self, PlayError> {
         let name = replay.scenario();
         let Some(scenario) = find_scenario(scenarios, name) else {
             let names: Vec<&str> = scenarios.iter().map(|scenario| scenario.name).collect();
             return Err(PlayError::UnknownScenario { name: name.to_owned(), known: names.join(", ") });
         };
-        let (mut sim, cast) = scenario
-            .start(replay.config())
+        let (mut sim, cast) = live
+            .start(scenario, replay.config())
             .map_err(|source| PlayError::Setup { name: name.to_owned(), source })?;
         let recorded = replay.tables_hash();
         if sim.tables_hash() != recorded {
@@ -295,6 +312,16 @@ impl Recording {
             self.edited_at = Some(self.recorder.ticks());
         }
         Some(tuned)
+    }
+
+    /// Changes the weights a soft lock is chosen by, between steps, and ends the file if that changed
+    /// anything, as [`Self::tune_move_set`] does. Says whether it did.
+    pub fn tune_targeting(&mut self, tuning: TargetingTuning) -> bool {
+        let changed = self.tracked.sim.tune_targeting(tuning);
+        if changed && self.edited_at.is_none() {
+            self.edited_at = Some(self.recorder.ticks());
+        }
+        changed
     }
 
     /// The tick a live edit ended the file at, if one did: it holds this many ticks.

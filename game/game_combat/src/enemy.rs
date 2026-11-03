@@ -22,6 +22,7 @@
 
 use std::sync::Arc;
 
+use sapphire_anim::CharacterMotion;
 use sapphire_anim::{ArchivedSkeleton, CharacterPose, GraphBinding, GraphPlayer, IkRig};
 use sapphire_assets::AssetId;
 use sapphire_assets::mesh::Skin;
@@ -200,13 +201,14 @@ pub(crate) fn driver(
     skeleton: &ArchivedSkeleton,
     binding: Arc<GraphBinding>,
     ground: Arc<PhysicsWorld>,
+    motion: &CharacterMotion,
 ) -> Result<GraphDriver, String> {
     check_counts(skin, skeleton)?;
     let joints = rig_joints(skeleton)?;
     let head = joints.joint(HumanBone::Head).ok_or("the warrior's rig has no head")?;
     let pose = CharacterPose::new(skeleton, &skin.binds, joints.constraints(), Vec::new());
     let figure = FigureJoints::new(&pose, &joints, head, 0.0, SHAPE);
-    let ik = IkDriver::new(ik_rig(skeleton, &pose)?, ground, IkControls::default());
+    let ik = IkDriver::new(ik_rig(skeleton, &pose)?, ground, IkControls::of(motion), motion);
     Ok(GraphDriver::new(GraphPlayer::new(binding, pose, GRAPH_SEED), figure).with_ik(ik))
 }
 

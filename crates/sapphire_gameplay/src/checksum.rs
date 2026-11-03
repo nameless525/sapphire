@@ -27,6 +27,7 @@ use crate::navigation::SimNavigation;
 use crate::party::Party;
 use crate::resolve::{Fighter, HitOutcome, Slide, SlowMotion};
 use crate::simulation::SimRng;
+use crate::targeting::TargetingTuning;
 use crate::timeline::{TimelineLibrary, TimelineRun};
 
 /// Goes up when [`state_checksum`] starts writing something different, so a recorded checksum can't
@@ -36,6 +37,13 @@ use crate::timeline::{TimelineLibrary, TimelineRun};
 /// 8: M2 G7's party, which writes nothing without one. M3 P2's paths write nothing without a navmesh
 /// either, and none of what's recorded before them has one, so they left this where it was.
 const CHECKSUM_LAYOUT: u32 = 8;
+
+/// The digest of the targeting weights every replay on disk ran on, when they were constants and couldn't
+/// change: those write nothing into [`tables_hash`], as a world with no party does, so those files keep their
+/// hashes, and any other weights, the shipped document's after an edit included, move it. It's not a name for
+/// "shipped", so an edit of `default_targeting.ron` doesn't change this: `xtask replay --update` does what it
+/// does for any change of tables. B1, which records every file again, removes this and hashes the digest always.
+const WEIGHTS_REPLAYS_RAN_ON: u64 = 0xbb91_ef7d_8b40_6bb7;
 
 /// A hasher over canonical bytes: XXH3-64, a published, frozen algorithm, unlike `DefaultHasher`,
 /// so a recorded checksum stays good.
@@ -438,7 +446,8 @@ pub(crate) fn legacy_state(world: &World) -> StateHasher {
 /// collision world's statics. It hashes a set's cooked bytes, so no field can be forgotten here, and
 /// those are the same on every target, as the statics' digest is: authored numbers, by their bits. A party's
 /// tuning goes in too, if there's a party, a navmesh's digest if there's one of those, and every loaded
-/// timeline's simulation half, if there are any. Opted-in standing jump preparation contributes the
+/// timeline's simulation half, if there are any, and targeting's weights unless they're
+/// [`WEIGHTS_REPLAYS_RAN_ON`]. Opted-in standing jump preparation contributes the
 /// policy and setup actor IDs independently of any jump's live countdown.
 pub(crate) fn tables_hash(
     library: &MoveLibrary,
@@ -447,6 +456,7 @@ pub(crate) fn tables_hash(
     navigation: Option<&SimNavigation>,
     timelines: &TimelineLibrary,
     standing_jump_actors: &[ActorId],
+    targeting: &TargetingTuning,
 ) -> u64 {
     let mut hasher = StateHasher::new();
     let hashes = library.current_hashes();
@@ -477,7 +487,42 @@ pub(crate) fn tables_hash(
             hasher.u32(actor.raw());
         }
     }
+    let weights = targeting.digest();
+    if weights != WEIGHTS_REPLAYS_RAN_ON {
+        hasher.u64(weights);
+    }
     hasher.finish()
+}
+
+#[cfg(test)]
+mod weights_tests {
+    use super::*;
+    use crate::targeting::TargetingWeights;
+
+    /// `WEIGHTS_REPLAYS_RAN_ON` is what M2's constants were, whatever the shipped document says by now: if
+    /// it followed the document, an edit of the document would pass every replay.
+    #[test]
+    fn the_weights_replays_ran_on_are_the_constants_they_ran_on() {
+        let ran_on = TargetingTuning {
+            soft_lock: TargetingWeights {
+                direction: 1.6,
+                facing: 0.5,
+                distance: 1.0,
+                range: 12.0,
+                keep_range: 16.0,
+                hysteresis: 0.12,
+            },
+            touch: TargetingWeights {
+                direction: 0.3,
+                facing: 0.15,
+                distance: 1.5,
+                range: 14.0,
+                keep_range: 18.0,
+                hysteresis: 0.15,
+            },
+        };
+        assert_eq!(ran_on.digest(), WEIGHTS_REPLAYS_RAN_ON, "their digest is {:#x}", ran_on.digest());
+    }
 }
 
 #[cfg(test)]

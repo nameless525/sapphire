@@ -1,0 +1,45 @@
+// How a character's hair and cloth take a fight, and how its IK places its feet and turns its head:
+// `sapphire_anim::motion`, compiled in as `CharacterMotion::shipped`. Each field's docs are on its struct, in
+// `springs.rs`, `ik/feet.rs` and `ik/look.rs`. Angles are in radians, with degrees in comments.
+(
+    type: "sapphire::anim::CharacterMotion",
+    version: 1,
+    data: (
+        // Tuned by eye on the character's run, walk, idle, hit, dodge and strike against the reference
+        // games, where hair lags and swings and keeps its shape.
+        springs: (
+            root_inertia: 0.25,
+            anchor_inertia: 0.4,
+            swing_limit: 0.87266463, // 50°
+            bend_limit: 0.34906587, // 20°
+        ),
+        // How much of each IK shows, from when a character starts: 0 to 1.
+        feet_weight: 1.0,
+        look_weight: 1.0,
+        feet: (
+            reach_up: 0.5,
+            reach_down: 0.4,
+            min_normal_y: 0.5,
+            max_tilt: 0.6981317, // 40°
+            plant_height: 0.12,
+            max_drop: 0.3,
+            max_raise: 0.08,
+            ground_half_life: 0.04,
+            hips_half_life: 0.06,
+            fade: 0.12,
+            pop_speed: 5.5,
+            soften: 0.985,
+        ),
+        look: (
+            yaw_limit: 1.2217305, // 70°
+            up_limit: 0.5235988, // 30°
+            down_limit: 0.6981317, // 40°
+            hold: 1.9198622, // 110°
+            rate: 4.5,
+            half_life: 0.07,
+            eye_rate: 14.0,
+            eye_half_life: 0.02,
+            fade: 0.25,
+        ),
+    ),
+)

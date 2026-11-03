@@ -106,6 +106,7 @@
 pub mod character_maps;
 pub mod clip;
 pub mod cue;
+pub mod documents;
 pub mod font;
 pub mod graph;
 mod kind;

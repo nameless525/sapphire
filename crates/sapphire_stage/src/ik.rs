@@ -24,8 +24,8 @@
 use std::sync::Arc;
 
 use sapphire_anim::{
-    CharacterIk, CharacterPose, FeetInput, FootContact, FootSettings, HeldWeapon, IkInput, IkRig, LookInput,
-    LookSettings,
+    CharacterIk, CharacterMotion, CharacterPose, FeetInput, FootContact, HeldWeapon, IkInput, IkRig,
+    LookInput,
 };
 use sapphire_math::{Affine3A, Mat4, Quat, Vec3};
 use sapphire_physics::{Group, PhysicsWorld, Pose, QueryFilter, Shape, StaticCollider, StaticShape};
@@ -197,9 +197,17 @@ pub struct IkControls {
     pub(crate) weapon: Option<HeldWeapon>,
 }
 
+impl IkControls {
+    /// What a character starts on under `motion`.
+    pub fn of(motion: &CharacterMotion) -> Self {
+        Self { feet: motion.feet_weight, look_target: None, look: motion.look_weight, weapon: None }
+    }
+}
+
 impl Default for IkControls {
+    /// What a character starts on under the shipped document.
     fn default() -> Self {
-        Self { feet: 1.0, look_target: None, look: 1.0, weapon: None }
+        Self::of(CharacterMotion::shipped())
     }
 }
 
@@ -210,6 +218,8 @@ pub struct IkDriver {
     ground: Arc<PhysicsWorld>,
     controls: IkControls,
     foot_contact: FootContact,
+    /// How much of the feet shows on the ground, which a graph takes back in the air.
+    feet_weight: f32,
     /// Presented ticks on the character's clock when last asked.
     presented: Option<f64>,
     /// Seconds of its clock since then, which the next solve takes.
@@ -235,18 +245,36 @@ impl IkDriver {
         self.set_controls(IkControls { look_target, ..self.controls() });
     }
 
-    /// IK for a character with `rig`'s bones, on `ground`.
-    pub fn new(rig: IkRig, ground: Arc<PhysicsWorld>, controls: IkControls) -> Self {
-        let ik = arena_ik(rig);
+    /// IK for a character with `rig`'s bones, on `ground`, by `motion`'s numbers.
+    pub fn new(
+        rig: IkRig,
+        ground: Arc<PhysicsWorld>,
+        controls: IkControls,
+        motion: &CharacterMotion,
+    ) -> Self {
         Self {
-            ik,
+            ik: CharacterIk::new(rig, motion.feet, motion.look),
             ground,
             controls,
             foot_contact: FootContact::default(),
+            feet_weight: motion.feet_weight,
             presented: None,
             dt: 0.0,
             solved: None,
         }
+    }
+
+    /// Runs by `motion`'s numbers from now on: an edit of its document, on a character already standing.
+    pub(crate) fn set_motion(&mut self, motion: &CharacterMotion) {
+        self.ik.set_settings(motion.feet, motion.look);
+        self.feet_weight = motion.feet_weight;
+        self.controls.feet = motion.feet_weight;
+        self.controls.look = motion.look_weight;
+    }
+
+    /// How much of the feet shows on the ground.
+    pub(crate) fn feet_weight(&self) -> f32 {
+        self.feet_weight
     }
 
     /// The inputs it runs on.
@@ -331,10 +359,6 @@ impl IkDriver {
         // A later solve in the same presented time, for a grip, must not take this time again.
         self.dt = 0.0;
     }
-}
-
-fn arena_ik(rig: IkRig) -> CharacterIk {
-    CharacterIk::new(rig, FootSettings::default(), LookSettings::default())
 }
 
 /// What a foot's probe finds: the world's scenery, from a little above it to a little below. Something
@@ -422,7 +446,7 @@ mod tests {
     /// Solves `pose` on `world` for a character at `transform`, long enough for everything to settle.
     fn stand(world: &Arc<PhysicsWorld>, transform: Mat4) -> (CharacterPose, IkDriver) {
         let (mut pose, rig) = character();
-        let mut driver = IkDriver::new(rig, world.clone(), IkControls::default());
+        let mut driver = IkDriver::new(rig, world.clone(), IkControls::default(), CharacterMotion::shipped());
         for tick in 0..120 {
             pose.reset();
             assert!(driver.wants_evaluation(f64::from(tick), transform) || driver.ik.is_settled());
@@ -497,7 +521,12 @@ mod tests {
         let rig = rig_of(&pose);
         let joints = FigureJoints::of_joints(&pose, 1, 0.0, FEET);
         let player = GraphPlayer::new(Arc::new(binding), pose, 1);
-        GraphDriver::new(player, joints).with_ik(IkDriver::new(rig, world.clone(), IkControls::default()))
+        GraphDriver::new(player, joints).with_ik(IkDriver::new(
+            rig,
+            world.clone(),
+            IkControls::default(),
+            CharacterMotion::shipped(),
+        ))
     }
 
     /// `--graph` with `--ik on`: the graph's pose takes a solve each frame it moves, over what the graph
@@ -657,7 +686,7 @@ mod tests {
         let curb = block(1, Vec3::new(2.0, 0.08, 2.0), Vec3::new(0.0, 0.08, 2.5), Quat::IDENTITY);
         let world = world_from(vec![floor(), curb]);
         let (mut pose, rig) = character();
-        let mut driver = IkDriver::new(rig, world.clone(), IkControls::default());
+        let mut driver = IkDriver::new(rig, world.clone(), IkControls::default(), CharacterMotion::shipped());
         let mut last = None;
         for tick in 0..240 {
             let z = tick as f32 * (2.0 / 60.0);
@@ -683,7 +712,7 @@ mod tests {
         let (mut pose, rig) = character();
         let target = Vec3::new(1.0, 1.5, 2.0);
         let controls = IkControls { look_target: Some(target), ..IkControls::default() };
-        let mut driver = IkDriver::new(rig, world, controls);
+        let mut driver = IkDriver::new(rig, world, controls, CharacterMotion::shipped());
         let place = Mat4::IDENTITY;
         assert!(driver.wants_evaluation(0.0, place), "its first");
         for tick in 1..240 {

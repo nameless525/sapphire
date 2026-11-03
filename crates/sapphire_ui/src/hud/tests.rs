@@ -512,3 +512,36 @@ fn values_outside_their_ranges_clamp_and_nan_reads_as_zero() {
     assert_eq!((enemy.hp, enemy.poise), (0.0, 1.0));
     assert_eq!(good.skill.cooldown, 0.0);
 }
+
+#[test]
+fn a_design_with_a_field_it_doesnt_know_or_a_number_it_cant_lay_out_is_refused_by_name() {
+    let shipped = include_str!("../../default_hud.ron");
+    assert_eq!(&HudDesign::from_ron(shipped).expect("reads"), HudDesign::shipped());
+    let refused = HudDesign::from_ron(&shipped.replacen("margin:", "marginn:", 1)).expect_err("a typo");
+    assert!(refused.to_string().contains("marginn"), "{refused}");
+    let refused = HudDesign::from_ron(&shipped.replacen("hp_height:", "hp_hieght:", 1)).expect_err("a typo");
+    assert!(refused.to_string().contains("hp_hieght"), "{refused}");
+    for (from, to, named) in [
+        ("attack: (offset: (0.0, 0.0), half: 46.0", "attack: (offset: (0.0, 0.0), half: 0.0", "attack.half"),
+        ("rest: (92.0, -84.0)", "rest: (NaN, -84.0)", "stick.rest.0"),
+        ("poise_to: 0.86", "poise_to: 1.86", "enemy.poise_to"),
+    ] {
+        let refused = HudDesign::from_ron(&shipped.replacen(from, to, 1)).expect_err(from);
+        assert!(refused.to_string().contains(named), "{from}: {refused}");
+    }
+}
+
+/// A game moves a button by a document, and what's drawn and what takes a touch move with it.
+#[test]
+fn a_design_moves_what_it_says_and_nothing_else() {
+    let metrics = UiMetrics::new(Vec2::new(874.0, 402.0), Insets::default());
+    let shipped = HudLayout::new(metrics);
+    let mut design = *HudDesign::shipped();
+    design.dodge.offset = [-40.0, -140.0];
+    design.dodge.hit = 50.0;
+    let moved = HudLayout::designed(metrics, &design);
+    assert_eq!(moved.dodge.center, shipped.attack.center + Vec2::new(-40.0, -140.0));
+    assert_eq!(moved.dodge.hit, 50.0);
+    assert_eq!((moved.attack, moved.skill, moved.stick), (shipped.attack, shipped.skill, shipped.stick));
+    assert_eq!((moved.player, moved.enemy), (shipped.player, shipped.enemy));
+}

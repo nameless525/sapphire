@@ -150,6 +150,16 @@ impl CharacterIk {
         }
     }
 
+    /// Runs by these from now on, wherever the feet and the gaze have got to.
+    pub fn set_settings(&mut self, feet: FootSettings, look: LookSettings) {
+        if let Some(placement) = &mut self.feet {
+            placement.set_settings(feet);
+        }
+        if let Some(gaze) = &mut self.look {
+            gaze.set_settings(look);
+        }
+    }
+
     pub(crate) fn matches_body(&self, pose: &CharacterPose) -> bool {
         self.math == pose.math() && Arc::ptr_eq(&self.layout, &pose.joint_layout())
     }

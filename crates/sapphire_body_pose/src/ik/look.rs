@@ -24,7 +24,8 @@ use crate::ik::solve::{SolvePose, weighted};
 use crate::pose_math::PoseMath;
 
 /// How a character's look-at behaves. Angles in radians, times in seconds.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LookSettings {
     /// How far the head turns from the body, either way.
     pub yaw_limit: f32,
@@ -162,6 +163,11 @@ impl LookAt {
             fade: 0.0,
             fade_goal: 0.0,
         }
+    }
+
+    /// Runs by `settings` from now on, wherever the gaze has got to.
+    pub fn set_settings(&mut self, settings: LookSettings) {
+        self.settings = settings;
     }
 
     /// The share of its look the character is showing, 0 to 1.

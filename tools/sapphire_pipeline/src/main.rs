@@ -13,6 +13,7 @@ use sapphire_pipeline::character_maps::{self, MapKind};
 use sapphire_pipeline::code_names;
 use sapphire_pipeline::combat;
 use sapphire_pipeline::cook::{self, Cook, CookOptions, CookReport, CookStatus};
+use sapphire_pipeline::documents;
 use sapphire_pipeline::extract::{self, ExtractOptions};
 use sapphire_pipeline::loc::{Stale, Untranslated};
 use sapphire_pipeline::lookdev;
@@ -57,6 +58,8 @@ Usage:
       sidecars next to the sources, then pack the cooked
       assets into --packs (shared.spack, audio.spack, fonts.spack, NOTICES.txt). Outputs are written only when they change, and
       stale cooked files under --out, and files no pack claims under --packs, are removed.
+      The game's documents (game.documents.ron under --source, if there's one) go beside the packs, under
+      documents/.
 
 Options:
   --all                      extract-materials: every material, not only textured ones.
@@ -211,6 +214,13 @@ fn run(command: Command) -> anyhow::Result<()> {
                 }
                 let packed = pack::pack_cooked(&report, &packs, cache.as_deref())?;
                 print_packs(&packed, cook);
+                let shipped = documents::ship_documents(&source, &packs)?;
+                for path in &shipped.written {
+                    println!("  shipped {}", path.display());
+                }
+                for path in &shipped.removed {
+                    println!("  removed {}", path.display());
+                }
             }
         }
         Command::Help => println!("{USAGE}"),

@@ -63,7 +63,8 @@ mod tests {
 
     use super::*;
 
-    const CUTSCENE: &[u8] = include_bytes!("../../../crates/sapphire_timeline/test_content/cutscene.timeline.ron");
+    const CUTSCENE: &[u8] =
+        include_bytes!("../../../crates/sapphire_timeline/test_content/cutscene.timeline.ron");
 
     #[test]
     fn a_source_is_known_by_its_whole_suffix() {

@@ -3,16 +3,13 @@
 //! same with a player in front of it, skipped at every frame.
 
 use sapphire_gameplay::replay::{
-    CINEMATIC, CUTSCENE, FORMAT_VERSION, PLAIN_FORMAT_VERSION, Player, Recording, Replay, ReplayError, SCENARIOS, Scenario,
-    arena_fight, find_scenario, find_script, melee_sweep,
+    CINEMATIC, CUTSCENE, FORMAT_VERSION, PLAIN_FORMAT_VERSION, Player, Recording, Replay, ReplayError,
+    SCENARIOS, Scenario, arena_fight, find_scenario, find_script, melee_sweep,
 };
-use sapphire_gameplay::{
-    ActorId, Simulation, TickActions, TimelineCommand, TimelineId, TimelinePlayError,
-};
+use sapphire_gameplay::{ActorId, Simulation, TickActions, TimelineCommand, TimelineId, TimelinePlayError};
 use sapphire_timeline::{Beat, BeatKind, TimelineDocument, TimelineSimulation};
 
-const CINEMATIC_DOCUMENT: &str =
-    include_str!("../../sapphire_timeline/test_content/cinematic.timeline.ron");
+const CINEMATIC_DOCUMENT: &str = include_str!("../../sapphire_timeline/test_content/cinematic.timeline.ron");
 
 /// When the tests below start a timeline, after enough of a fight that things are going on.
 const PLAY_AT: u32 = 120;
@@ -201,7 +198,9 @@ fn the_scripts_pairs_reach_one_trail() {
         played.allocation_gate().expect("no allocation");
         (replay.commands().len(), trail_of(&played.trail))
     };
-    for (watched, skipped) in [("cinematic-watched", "cinematic-skipped"), ("cutscene-watched", "cutscene-skipped")] {
+    for (watched, skipped) in
+        [("cinematic-watched", "cinematic-skipped"), ("cutscene-watched", "cutscene-skipped")]
+    {
         let (watched, skipped) = (trail(watched), trail(skipped));
         assert_eq!((watched.0, skipped.0), (1, 2));
         assert_eq!(watched.1, skipped.1);
@@ -248,6 +247,9 @@ fn command_file(ticks: u32) -> Vec<u8> {
     recording.finish().0.encode()
 }
 
+/// What's wrong with a file, how to make it so, and what's said of it.
+type Crafted = (&'static str, fn(&mut Vec<u8>, usize), fn(&ReplayError) -> bool);
+
 #[test]
 fn crafted_commands_are_refused_by_name() {
     let good = command_file(200);
@@ -255,23 +257,43 @@ fn crafted_commands_are_refused_by_name() {
     assert_eq!(u32::from_le_bytes(good[at..at + 4].try_into().unwrap()), 2, "two commands");
     assert!(Replay::decode(&good).is_ok());
 
-    let cases: &[(&str, fn(&mut Vec<u8>, usize), fn(&ReplayError) -> bool)] = &[
-        ("no commands, in the version that has them", |bytes, at| {
-            bytes[at..at + 4].fill(0);
-        }, |e| matches!(e, ReplayError::EmptyCommands)),
-        ("more than there's room for", |bytes, at| {
-            bytes[at..at + 4].copy_from_slice(&u32::MAX.to_le_bytes());
-        }, |e| matches!(e, ReplayError::Truncated { .. })),
-        ("a kind nobody knows", |bytes, at| bytes[at + 4 + 4] = 9, |e| matches!(e, ReplayError::BadCommand { index: 0, kind: 9 })),
-        ("out of order", |bytes, at| {
-            let earlier = (at + 4, at + 4 + 9);
-            bytes[earlier.0..earlier.0 + 4].copy_from_slice(&50_u32.to_le_bytes());
-            bytes[earlier.1..earlier.1 + 4].copy_from_slice(&40_u32.to_le_bytes());
-        }, |e| matches!(e, ReplayError::CommandOutOfOrder { index: 1, tick: 40, .. })),
-        ("past the file's end", |bytes, at| {
-            let second = at + 4 + 9;
-            bytes[second..second + 4].copy_from_slice(&100_000_u32.to_le_bytes());
-        }, |e| matches!(e, ReplayError::CommandOutOfOrder { index: 1, tick: 100_000, .. })),
+    let cases: &[Crafted] = &[
+        (
+            "no commands, in the version that has them",
+            |bytes, at| {
+                bytes[at..at + 4].fill(0);
+            },
+            |e| matches!(e, ReplayError::EmptyCommands),
+        ),
+        (
+            "more than there's room for",
+            |bytes, at| {
+                bytes[at..at + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+            },
+            |e| matches!(e, ReplayError::Truncated { .. }),
+        ),
+        (
+            "a kind nobody knows",
+            |bytes, at| bytes[at + 4 + 4] = 9,
+            |e| matches!(e, ReplayError::BadCommand { index: 0, kind: 9 }),
+        ),
+        (
+            "out of order",
+            |bytes, at| {
+                let earlier = (at + 4, at + 4 + 9);
+                bytes[earlier.0..earlier.0 + 4].copy_from_slice(&50_u32.to_le_bytes());
+                bytes[earlier.1..earlier.1 + 4].copy_from_slice(&40_u32.to_le_bytes());
+            },
+            |e| matches!(e, ReplayError::CommandOutOfOrder { index: 1, tick: 40, .. }),
+        ),
+        (
+            "past the file's end",
+            |bytes, at| {
+                let second = at + 4 + 9;
+                bytes[second..second + 4].copy_from_slice(&100_000_u32.to_le_bytes());
+            },
+            |e| matches!(e, ReplayError::CommandOutOfOrder { index: 1, tick: 100_000, .. }),
+        ),
     ];
     for &(what, tamper, is_right) in cases {
         let mut bytes = good.clone();

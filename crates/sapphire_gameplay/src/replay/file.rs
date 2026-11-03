@@ -78,7 +78,9 @@ pub enum ReplayError {
     RunsEndShort { found: u64, ticks: u32 },
     #[error("the run at tick {tick}: {source}")]
     Actions { tick: u64, source: ActionsError },
-    #[error("the file is in format version {FORMAT_VERSION} and holds no commands, which is version {PLAIN_FORMAT_VERSION}")]
+    #[error(
+        "the file is in format version {FORMAT_VERSION} and holds no commands, which is version {PLAIN_FORMAT_VERSION}"
+    )]
     EmptyCommands,
     #[error("command {index} has kind {kind}, which this build doesn't know")]
     BadCommand { index: u32, kind: u8 },
@@ -338,7 +340,14 @@ impl Replay {
         validate_body(reader.0, ticks)?;
 
         let config = SimConfig { seed, max_actors, step_budget, ..SimConfig::default() };
-        Ok(Self { scenario: scenario.to_owned(), config, tables_hash, ticks, commands, body: reader.0.to_vec() })
+        Ok(Self {
+            scenario: scenario.to_owned(),
+            config,
+            tables_hash,
+            ticks,
+            commands,
+            body: reader.0.to_vec(),
+        })
     }
 
     /// The file's bytes. Decoding them gives this replay back.

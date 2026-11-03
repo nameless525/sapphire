@@ -19,7 +19,8 @@ use xxhash_rust::xxh3::Xxh3;
 
 use crate::document::{
     CameraTrack, MAX_LENGTH, MAX_PER_MILLE, PlaceKey, PostTrack, SubtitleKey, TimelineClock, TimelineError,
-    check_camera, check_count, check_places, check_position, check_post, check_subtitles, check_times, tick_of,
+    check_camera, check_count, check_places, check_position, check_post, check_subtitles, check_times,
+    tick_of,
 };
 
 /// Conventional file extension for cooked timelines.
@@ -374,7 +375,12 @@ mod tests {
             (CUTSCENE, "from: 3.0, to: 5.0", "from: 2.0, to: 5.0", "subtitles[1].from"),
             (CUTSCENE, "from: 3.0, to: 5.0", "from: 3.0, to: 3.0", "subtitles[1].to"),
             (CUTSCENE, "role: \"villain\"", "role: \"hero\"", "characters[1].role"),
-            (CUTSCENE, "row: \"bow\", from: 0.5, to: 2.0", "row: \"bow\", from: 2.0, to: 1.0", "characters[0].plays[0].to"),
+            (
+                CUTSCENE,
+                "row: \"bow\", from: 0.5, to: 2.0",
+                "row: \"bow\", from: 2.0, to: 1.0",
+                "characters[0].plays[0].to",
+            ),
             (CUTSCENE, "row: \"wave\", from: 2.5", "row: \"wave\", from: 1.5", "characters[0].plays[1].from"),
             (CUTSCENE, "yaw_degrees: 180.0", "yaw_degrees: inf", "characters[0].places[0].yaw_degrees"),
             (CUTSCENE, "(at: 5.0, value: 0.0)", "(at: 5.0, value: 1.0)", "post[0].keys[2].value"),
@@ -437,7 +443,8 @@ mod tests {
     #[test]
     fn values_a_document_cant_hold_a_pack_cant_either() {
         let good = cook(CINEMATIC);
-        let cases: &[(&str, fn(&mut Timeline))] = &[
+        type Case = (&'static str, fn(&mut Timeline));
+        let cases: &[Case] = &[
             ("length", |t| t.presentation.length = f32::NAN),
             ("length", |t| t.presentation.length = f32::INFINITY),
             ("ticks", |t| t.simulation.ticks = 1 << 30),

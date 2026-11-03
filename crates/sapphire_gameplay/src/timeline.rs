@@ -166,7 +166,11 @@ impl TimelineRun {
 
     #[must_use]
     pub fn progress(&self) -> Option<TimelineProgress> {
-        self.playing.map(|playing| TimelineProgress { id: playing.id, tick: playing.tick, ticks: playing.ticks })
+        self.playing.map(|playing| TimelineProgress {
+            id: playing.id,
+            tick: playing.tick,
+            ticks: playing.ticks,
+        })
     }
 
     /// How many timelines have started.
@@ -190,16 +194,20 @@ impl TimelineRun {
     /// What the current step told gameplay, for a system of a later [`CombatSet`](crate::CombatSet) to read,
     /// or what the latest one did, between steps.
     pub fn events<'a>(&self, library: &'a TimelineLibrary) -> impl Iterator<Item = TimelineEvent> + 'a {
-        let beats = self.latest.map_or::<&[Beat], _>(&[], |(id, from, to)| {
-            &library.beats(id)[from as usize..to as usize]
-        });
+        let beats = self
+            .latest
+            .map_or::<&[Beat], _>(&[], |(id, from, to)| &library.beats(id)[from as usize..to as usize]);
         beats.iter().filter_map(|beat| match beat.what {
             BeatKind::Event { event, value } => Some(TimelineEvent { event, value }),
             BeatKind::Scale { .. } => None,
         })
     }
 
-    pub(crate) fn start(&mut self, library: &TimelineLibrary, id: TimelineId) -> Result<(), TimelinePlayError> {
+    pub(crate) fn start(
+        &mut self,
+        library: &TimelineLibrary,
+        id: TimelineId,
+    ) -> Result<(), TimelinePlayError> {
         if let Some(playing) = self.playing {
             return Err(TimelinePlayError::Busy(playing.id));
         }
@@ -248,7 +256,8 @@ pub(crate) fn advance_timeline(
             BeatKind::Scale { per_mille } => {
                 world_clock.0.remove_source(ScaleSource::Cinematic);
                 // Refused, it's counted, and the same on every run: the stack's contents are in the checksum.
-                run.scales_refused += u64::from(world_clock.0.push_scale(ScaleSource::Cinematic, per_mille).is_err());
+                run.scales_refused +=
+                    u64::from(world_clock.0.push_scale(ScaleSource::Cinematic, per_mille).is_err());
             }
             BeatKind::Event { event, value } => {
                 run.events_fired += 1;

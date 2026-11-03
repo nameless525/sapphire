@@ -256,7 +256,12 @@ fn a_blend_out_lands_exactly_on_a_rig_that_kept_up_with_the_fight() {
         assert!(pose.eye.is_finite() && pose.rotation.is_finite());
         if frame >= 340 {
             landed = Some((pose, plain_pose));
-            assert!(pose.eye.distance(plain_pose.eye) < 0.02, "at {frame}: {:?} {:?}", pose.eye, plain_pose.eye);
+            assert!(
+                pose.eye.distance(plain_pose.eye) < 0.02,
+                "at {frame}: {:?} {:?}",
+                pose.eye,
+                plain_pose.eye
+            );
             assert!((pose.fov_y - plain_pose.fov_y).abs() < 1e-3);
         }
     }

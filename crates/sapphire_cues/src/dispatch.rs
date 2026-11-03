@@ -545,10 +545,8 @@ mod tests {
     #[test]
     fn a_placed_cue_needs_no_actor() {
         let place = Vec3::new(4.0, 2.0, -1.0);
-        let row = CueRow {
-            sounds: vec![SOUND],
-            ..with_effect("bell", EffectPlace::Feet, EffectOwner::Actor)
-        };
+        let row =
+            CueRow { sounds: vec![SOUND], ..with_effect("bell", EffectPlace::Feet, EffectOwner::Actor) };
         let mut dispatcher = dispatcher(vec![row]);
         let mut sinks = Sinks::new();
         let root_of = |_| panic!("a placed cue asks for no actor");
@@ -563,7 +561,10 @@ mod tests {
         dispatcher.fire_at(Name::new("bell"), place, &mut step);
         dispatcher.fire_at(Name::new("nothing"), place, &mut step);
         assert_eq!(dispatcher.sounds(), &[CueRequest { cue: SOUND, target: CueTarget::At(place) }]);
-        assert_eq!((dispatcher.stats().cues, dispatcher.stats().unmatched, dispatcher.stats().effects), (2, 1, 1));
+        assert_eq!(
+            (dispatcher.stats().cues, dispatcher.stats().unmatched, dispatcher.stats().effects),
+            (2, 1, 1)
+        );
         // An owner in hitstop holds nothing of it.
         assert!(sinks.sprites_after(&[(owner_of(ATTACKER), 0.0)]) > 0);
     }

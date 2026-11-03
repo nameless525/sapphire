@@ -8,8 +8,8 @@ use sapphire_core::Name;
 use sapphire_look::PostParams;
 use sapphire_time::{Stopwatch, TICK_HZ};
 use sapphire_timeline::{
-    CameraKey, CameraTrack, CookedCharacter, CookedCue, Ease, EyeRule, PlaceKey, PostParameter, ScalarKey, Timeline,
-    TimelineClock,
+    CameraKey, CameraTrack, CookedCharacter, CookedCue, Ease, EyeRule, PlaceKey, PostParameter, ScalarKey,
+    Timeline, TimelineClock,
 };
 
 /// Where a timeline's own space sits in the world: a cutscene's is the zone's own, and a cinematic's sits on
@@ -308,7 +308,10 @@ impl TimelinePlayer {
     fn cue_of(&self, character: &CookedCharacter) -> CharacterCue {
         let at = self.playhead;
         let index = character.plays.partition_point(|play| play.from <= at);
-        let playing = index.checked_sub(1).map(|index| (index, &character.plays[index])).filter(|(_, play)| at < play.to);
+        let playing = index
+            .checked_sub(1)
+            .map(|index| (index, &character.plays[index]))
+            .filter(|(_, play)| at < play.to);
         let placed = (!character.places.is_empty()).then(|| {
             let (position, yaw) = sample_place(&character.places, at);
             Placed { position: self.origin.point(position), yaw: self.origin.yaw + yaw.to_radians() }
@@ -341,8 +344,8 @@ fn key_before<K>(keys: &[K], at: f32, time: impl Fn(&K) -> f32) -> usize {
     keys.partition_point(|key| time(key) <= at).saturating_sub(1)
 }
 
-/// How far from `keys[index]` to the next, and the next, eased; or `None` past the last.
-fn between<'a, K>(keys: &'a [K], at: f32, time: impl Fn(&K) -> f32, ease: impl Fn(&K) -> Ease) -> (&'a K, &'a K, f32) {
+/// The keys around `at` and how far from the first to the second, eased: past the last, that key twice.
+fn between<K>(keys: &[K], at: f32, time: impl Fn(&K) -> f32, ease: impl Fn(&K) -> Ease) -> (&K, &K, f32) {
     let index = key_before(keys, at, &time);
     let from = &keys[index];
     let Some(to) = keys.get(index + 1) else { return (from, from, 0.0) };
@@ -359,7 +362,8 @@ fn lerp3(from: [f32; 3], to: [f32; 3], share: f32) -> [f32; 3] {
 }
 
 fn sample_camera(camera: &CameraTrack, at: f32) -> ([f32; 3], [f32; 3], f32, f32) {
-    let (from, to, share): (&CameraKey, &CameraKey, f32) = between(&camera.keys, at, |key| key.at, |key| key.ease);
+    let (from, to, share): (&CameraKey, &CameraKey, f32) =
+        between(&camera.keys, at, |key| key.at, |key| key.ease);
     (
         lerp3(from.eye, to.eye, share),
         lerp3(from.look_at, to.look_at, share),

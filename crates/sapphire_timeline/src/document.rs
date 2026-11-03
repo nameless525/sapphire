@@ -79,8 +79,19 @@ pub const MAX_POST_VALUE: f32 = 32.0;
 const NORMAL_PER_MILLE: u32 = 1000;
 
 /// Which clock a timeline's playhead reads. See the [crate docs](crate).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Reflect)]
-#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    Reflect,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 #[rkyv(derive(Debug, PartialEq, Eq))]
 #[type_path = "sapphire::timeline"]
 pub enum TimelineClock {
@@ -91,8 +102,20 @@ pub enum TimelineClock {
 }
 
 /// How a key is arrived at, from the key before it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Reflect)]
-#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    Reflect,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 #[rkyv(derive(Debug, PartialEq, Eq))]
 #[type_path = "sapphire::timeline"]
 pub enum Ease {
@@ -117,8 +140,20 @@ impl Ease {
 }
 
 /// What an authored shot asks of the eye.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Reflect)]
-#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    Reflect,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 #[rkyv(derive(Debug, PartialEq, Eq))]
 #[type_path = "sapphire::timeline"]
 pub enum EyeRule {
@@ -165,8 +200,17 @@ impl Versioned for TimelineDocument {
 }
 
 /// The camera's shots, and how they blend with the gameplay camera.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Reflect)]
-#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    Reflect,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 #[rkyv(derive(Debug))]
 #[type_path = "sapphire::timeline"]
 #[serde(deny_unknown_fields)]
@@ -184,8 +228,18 @@ pub struct CameraTrack {
 }
 
 /// One key of a camera's shot.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Reflect)]
-#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    Reflect,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 #[rkyv(derive(Debug))]
 #[type_path = "sapphire::timeline"]
 #[serde(deny_unknown_fields)]
@@ -232,8 +286,18 @@ pub struct PlayRange {
 }
 
 /// Where a character stands.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Reflect)]
-#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    Reflect,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 #[rkyv(derive(Debug))]
 #[type_path = "sapphire::timeline"]
 #[serde(deny_unknown_fields)]
@@ -262,8 +326,19 @@ pub struct CueKey {
 
 /// What a post track moves. Each animates for free: nothing here bakes a grading LUT, whose inputs are
 /// meant to change at keys of a day rather than every frame.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Reflect)]
-#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    Reflect,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 #[rkyv(derive(Debug, PartialEq, Eq))]
 #[type_path = "sapphire::timeline"]
 pub enum PostParameter {
@@ -279,8 +354,17 @@ pub enum PostParameter {
 
 /// One parameter's track: how far it stands from what the look resolved. Offsets rather than values, so
 /// a track reads the same over any hour, and the look has nothing to jump back from where one ends on 0.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Reflect)]
-#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    Reflect,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 #[rkyv(derive(Debug))]
 #[type_path = "sapphire::timeline"]
 #[serde(deny_unknown_fields)]
@@ -292,8 +376,18 @@ pub struct PostTrack {
 }
 
 /// A number at a time.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, Reflect)]
-#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    Reflect,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 #[rkyv(derive(Debug))]
 #[type_path = "sapphire::timeline"]
 #[serde(deny_unknown_fields)]
@@ -305,8 +399,17 @@ pub struct ScalarKey {
 }
 
 /// A line of subtitles. It carries keys, which `sapphire_loc` resolves, and no text.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Reflect)]
-#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    Reflect,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
 #[rkyv(derive(Debug))]
 #[type_path = "sapphire::timeline"]
 #[serde(deny_unknown_fields)]
@@ -370,7 +473,11 @@ pub(crate) fn tick_of(seconds: f32) -> u32 {
 }
 
 /// `value`, if it's a number, within `0..=limit`.
-pub(crate) fn check_time(field: impl FnOnce() -> String, value: f32, limit: f32) -> Result<(), TimelineError> {
+pub(crate) fn check_time(
+    field: impl FnOnce() -> String,
+    value: f32,
+    limit: f32,
+) -> Result<(), TimelineError> {
     if !value.is_finite() {
         return Err(TimelineError::invalid(field(), "not a number"));
     }
@@ -380,7 +487,10 @@ pub(crate) fn check_time(field: impl FnOnce() -> String, value: f32, limit: f32)
     Ok(())
 }
 
-pub(crate) fn check_position(field: impl FnOnce() -> String, position: [f32; 3]) -> Result<(), TimelineError> {
+pub(crate) fn check_position(
+    field: impl FnOnce() -> String,
+    position: [f32; 3],
+) -> Result<(), TimelineError> {
     if position.iter().any(|value| !value.is_finite() || value.abs() > MAX_COORDINATE) {
         return Err(TimelineError::invalid(field(), format!("{position:?} is no place")));
     }
@@ -410,7 +520,10 @@ fn check_key(field: impl FnOnce() -> String, key: &str) -> Result<(), TimelineEr
     if good {
         Ok(())
     } else {
-        Err(TimelineError::invalid(field(), format!("{key:?} is no localization key: subtitles carry keys, not text")))
+        Err(TimelineError::invalid(
+            field(),
+            format!("{key:?} is no localization key: subtitles carry keys, not text"),
+        ))
     }
 }
 
@@ -436,7 +549,10 @@ pub(crate) fn check_times(
 
 pub(crate) fn check_count(list: &str, count: usize) -> Result<(), TimelineError> {
     if count > MAX_ENTRIES {
-        return Err(TimelineError::invalid(list, format!("{count} entries, past the limit of {MAX_ENTRIES}")));
+        return Err(TimelineError::invalid(
+            list,
+            format!("{count} entries, past the limit of {MAX_ENTRIES}"),
+        ));
     }
     Ok(())
 }
@@ -515,7 +631,10 @@ pub(crate) fn check_subtitles(subtitles: &[SubtitleKey], length: f32) -> Result<
         check_time(|| format!("subtitles[{index}].from"), line.from, length)?;
         check_time(|| format!("subtitles[{index}].to"), line.to, length)?;
         if line.to <= line.from {
-            return Err(TimelineError::invalid(format!("subtitles[{index}].to"), "a line ends after it starts"));
+            return Err(TimelineError::invalid(
+                format!("subtitles[{index}].to"),
+                "a line ends after it starts",
+            ));
         }
         if line.from < last {
             let problem = format!("{} starts before the line before it ends, at {last}", line.from);
@@ -600,7 +719,10 @@ impl TimelineDocument {
                 check_time(|| format!("{plays}[{at}].from"), play.from, self.length)?;
                 check_time(|| format!("{plays}[{at}].to"), play.to, self.length)?;
                 if play.to <= play.from {
-                    return Err(TimelineError::invalid(format!("{plays}[{at}].to"), "it ends after it starts"));
+                    return Err(TimelineError::invalid(
+                        format!("{plays}[{at}].to"),
+                        "it ends after it starts",
+                    ));
                 }
                 if last.is_some_and(|last| play.from < last) {
                     let problem = "it starts before the one before it ends";
@@ -630,7 +752,8 @@ impl TimelineDocument {
             }
             let (at, ramp) = (tick_of(key.at), tick_of(key.ramp));
             if at < free_from {
-                let problem = format!("step {at} is before the key before it has finished, at step {free_from}");
+                let problem =
+                    format!("step {at} is before the key before it has finished, at step {free_from}");
                 return Err(TimelineError::invalid(format!("time_scale[{index}].at"), problem));
             }
             let end = at + ramp;
@@ -664,7 +787,10 @@ impl TimelineDocument {
         for key in &self.events {
             // A timeline of no steps has one place for them: the first step after it.
             let tick = if self.ticks() == 0 { 0 } else { tick_of(key.at) };
-            beats.push(Beat { tick, what: BeatKind::Event { event: Name::new(&key.event).as_u64(), value: key.value } });
+            beats.push(Beat {
+                tick,
+                what: BeatKind::Event { event: Name::new(&key.event).as_u64(), value: key.value },
+            });
         }
         // Stable, which is what keeps a step's time scale first and its events in order.
         beats.sort_by_key(|beat| beat.tick);

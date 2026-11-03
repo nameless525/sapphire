@@ -1057,7 +1057,9 @@ impl Options {
             (false, None) => None,
         };
         if options.timeline.is_some() && options.arena != Some(ArenaShot::Director) {
-            return Err("--timeline's shots go to the director: it needs --arena, on the director's shot".to_owned());
+            return Err(
+                "--timeline's shots go to the director: it needs --arena, on the director's shot".to_owned()
+            );
         }
         if options.arena.is_some()
             && (options.look_dev.is_some()

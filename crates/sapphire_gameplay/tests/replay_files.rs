@@ -9,8 +9,7 @@ use std::time::Duration;
 use sapphire_core::alloc::{self, CountingAllocator};
 use sapphire_gameplay::replay::{
     FORMAT_VERSION, MAX_ACTORS, MAX_NAME_LEN, MAX_TICKS, PLAIN_FORMAT_VERSION, Recorder, Recording, Replay,
-    ReplayError, SCENARIOS,
-    Script, find_script,
+    ReplayError, SCENARIOS, Script, find_script,
 };
 use sapphire_gameplay::{ActionsError, ActorActions, ActorId, Buttons, SimConfig, Stick, TickActions};
 use xxhash_rust::xxh3::xxh3_64;

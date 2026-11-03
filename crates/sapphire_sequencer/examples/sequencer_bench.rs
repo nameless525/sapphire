@@ -3,6 +3,8 @@
 //! A timeline well past any cutscene's size (a minute, 32 camera keys, 8 characters with 16 plays and places
 //! each, 256 cues, 4 post tracks, 64 subtitles), a frame asking everything it can.
 
+#![allow(clippy::print_stdout, reason = "a bench's output is what it's for")]
+
 use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::Duration;

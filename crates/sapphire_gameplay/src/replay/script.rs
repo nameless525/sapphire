@@ -158,10 +158,7 @@ pub const SCRIPTS: &[Script] = &[
         about: "`cinematic-watched`, with the cinematic skipped 50 steps in: it must reach all the same checksums",
         ticks: 600,
         actions: melee_sweep,
-        commands: &[
-            (120, TimelineCommand::Play(CINEMATIC)),
-            (170, TimelineCommand::Skip { at_ms: 833 }),
-        ],
+        commands: &[(120, TimelineCommand::Play(CINEMATIC)), (170, TimelineCommand::Skip { at_ms: 833 })],
     },
     Script {
         name: "cutscene-watched",
@@ -175,10 +172,7 @@ pub const SCRIPTS: &[Script] = &[
         about: "`cutscene-watched`, skipped 2.5 s in: it must reach all the same checksums",
         ticks: 300,
         actions: melee_sweep,
-        commands: &[
-            (120, TimelineCommand::Play(CUTSCENE)),
-            (120, TimelineCommand::Skip { at_ms: 2500 }),
-        ],
+        commands: &[(120, TimelineCommand::Play(CUTSCENE)), (120, TimelineCommand::Skip { at_ms: 2500 })],
     },
     Script {
         name: "chase-laps",

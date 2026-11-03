@@ -659,16 +659,8 @@ impl CameraDirector {
     fn sanitized(&mut self, frame: &CameraFrame) -> Steady {
         let CameraFrame { dt, behind, player, player_yaw, target, look, zoom, aspect } = *frame;
         let nobody = Subject { position: Vec3::NAN, height: 1.0, radius: 0.1 };
-        let mut clean = Steady {
-            dt,
-            behind,
-            player: player.unwrap_or(nobody),
-            player_yaw,
-            target,
-            look,
-            zoom,
-            aspect,
-        };
+        let mut clean =
+            Steady { dt, behind, player: player.unwrap_or(nobody), player_yaw, target, look, zoom, aspect };
         if !clean.dt.is_finite() || clean.dt < 0.0 {
             clean.dt = 0.0;
         }

@@ -66,7 +66,18 @@ pub(crate) fn shut_in(eye: Vec3, anchor: Vec3, framed: Vec3) -> f32 {
 pub(crate) fn looking(eye: Vec3, pivot: Vec3, forward: Vec3, framed: Option<Vec3>, share: f32) -> Vec3 {
     let along = pivot - eye + forward * LOOK_STEADY;
     let Some(framed) = framed.filter(|_| share > 0.0) else { return along };
-    along.normalize_or(forward).lerp((framed - eye).normalize_or(forward), share)
+    turned_toward(along.normalize_or(forward), (framed - eye).normalize_or(forward), share)
+}
+
+/// The way `share` of the turn from `from` to `to`, both of length 1: round and up or down at an even pace. A
+/// straight line between two ways nearly opposite passes close to nothing half way along, so the view would
+/// cross nearly all of the turn in a frame or two there, and an arc can pass overhead, where it has no level.
+fn turned_toward(from: Vec3, to: Vec3, share: f32) -> Vec3 {
+    let angles = |way: Vec3| (way.x.atan2(way.z), way.y.atan2(Vec2::new(way.x, way.z).length()));
+    let ((from_yaw, from_pitch), (to_yaw, to_pitch)) = (angles(from), angles(to));
+    let (sin_yaw, cos_yaw) = (from_yaw + wrap_angle(to_yaw - from_yaw) * share).sin_cos();
+    let (sin_pitch, cos_pitch) = (from_pitch + (to_pitch - from_pitch) * share).sin_cos();
+    Vec3::new(sin_yaw * cos_pitch, sin_pitch, cos_yaw * cos_pitch)
 }
 
 /// One frame's inputs: plain values the app reads from its clock, transforms and input.

@@ -82,6 +82,31 @@ fn an_eye_shut_in_looks_at_who_its_framing() {
     assert!(forward.dot(to) > 0.95, "looking along {forward}, with the enemy along {to}");
 }
 
+/// With who it's framing right behind it, across a wall, going over to them is a half turn, and it's as soft
+/// as any other: nearly opposite, a straight line between the two ways crosses it all in a frame or two.
+/// Never exactly opposite here: which way round is then up to a float's last bits.
+#[test]
+fn an_eye_shut_in_goes_over_to_someone_behind_it_evenly() {
+    let world =
+        ground_with(&[(Shape::Box { half_extents: Vec3::new(4.0, 2.5, 0.2) }, Vec3::new(0.0, 2.5, -1.0))]);
+    for across in [0.05, 0.2, 0.5, -0.05, -0.2] {
+        let enemy = Vec3::new(across, 0.0, -2.5);
+        let mut camera = without_clearing(combat_director());
+        // Facing away from where they'll be, on the first frame.
+        camera.update(&Moment::alone(PLAYER).frame(1.0 / 60.0), &world);
+        let mut last = camera.pose();
+        let mut most = 0.0_f32;
+        for _ in 0..600 {
+            let pose = camera.update(&Moment::against(PLAYER, enemy).frame(1.0 / 60.0), &world);
+            most = most.max(pose.rotation.angle_between(last.rotation));
+            last = pose;
+        }
+        assert!(most < 0.2, "with the enemy {across} m across, {most} rad in a frame");
+        let to = (enemy + Vec3::Y * 1.6 - last.eye).normalize();
+        assert!(last.forward().dot(to) > 0.9, "it should have got there: {} and {to}", last.forward());
+    }
+}
+
 /// Having turned, it stays: a settled good view isn't re-judged into another.
 #[test]
 fn a_good_view_stays_where_it_is() {

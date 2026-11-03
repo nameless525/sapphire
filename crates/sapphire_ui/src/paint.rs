@@ -56,7 +56,7 @@ impl Paint {
     }
 
     /// The quad's field values, for a shape drawn at `points_per_texel`.
-    fn apply(&self, quad: &mut UiQuad, points_per_texel: f32) {
+    pub(crate) fn apply(&self, quad: &mut UiQuad, points_per_texel: f32) {
         let value = |points: f32| points / points_per_texel / (2.0 * SPREAD);
         quad.color = self.color;
         quad.outline_color = self.outline_color;

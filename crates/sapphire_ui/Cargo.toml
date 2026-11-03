@@ -1,6 +1,6 @@
 [package]
 name = "sapphire_ui"
-description = "The game's on-screen interface, first slice: anchored quads over a generated distance field atlas, the combat HUD and its touch zones."
+description = "The game's on-screen interface: a retained tree from documents, laid out by taffy and bound by reflection paths, and the combat HUD and touch zones, all as plain quads and glyphs."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,13 +9,28 @@ license.workspace = true
 
 [dependencies]
 profiling.workspace = true
+# The documents screens are built from, which the cooker reads too.
+sapphire_assets.workspace = true
+# A text node's string, from its key.
+sapphire_loc.workspace = true
 # The draw list the frame packet carries.
 sapphire_look.workspace = true
 sapphire_math.workspace = true
 # Touch events, the event clock and the window's metrics.
 sapphire_platform.workspace = true
+# Bound values, read through reflection paths.
+sapphire_reflect.workspace = true
+# Fonts, shaping and the glyph atlas.
+sapphire_text.workspace = true
+# What a tree costs a frame, which its stats carry.
+sapphire_time.workspace = true
+taffy.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
+# A test's model derives `Reflect`, which finds the crate by this name.
+bevy_reflect.workspace = true
 # The counting allocator, for the steady-state allocation test.
 sapphire_core.workspace = true
 

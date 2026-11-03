@@ -23,9 +23,8 @@
 //!
 //! # Why a crate of its own
 //!
-//! `sapphire_ui` is plain quads that link next to nothing. `parley` brings 60 crates, ICU's data
-//! among them, which a tool checking a font or a test of a touch zone shouldn't have to build. Only
-//! `sapphire_ui`'s text and an app need it.
+//! `parley` brings 60 crates, ICU's data among them, which a tool reading a font shouldn't take the
+//! interface along with. `sapphire_ui`'s tree shapes through this, over a same-layer edge.
 //!
 //! # The clock
 //!

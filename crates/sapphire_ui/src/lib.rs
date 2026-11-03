@@ -1,9 +1,11 @@
-//! The game's on-screen interface, first slice (spec §5.17, M2 I2): a combat HUD as quads over a
-//! generated atlas, drawn after post. `taffy`, `parley`, UI documents and menus stay
-//! in M3 (M2 plan §3); this is what a fight needs on a phone.
+//! The game's on-screen interface (spec §5.17): the retained tree every screen stands on (M3 U4), and
+//! what a HUD is drawn with: quads over a generated atlas, drawn after post.
 //!
 //! # Owns
 //!
+//! - **The retained tree** ([`tree`]): a screen from a [`UiDocument`](sapphire_assets::ui::UiDocument):
+//!   `taffy` layout in points, strings through `sapphire_loc`, values through reflection paths,
+//!   nine-slices, gradients and masks.
 //! - **Layout** ([`layout`]): rectangles in UI points, the frame's metrics ([`UiMetrics`]: size and
 //!   safe-area insets, from a [`Window`](sapphire_platform::Window) or made up for a capture) and
 //!   anchors. A UI point is `pixels / display scale`, so a thumb's size is the same everywhere.
@@ -49,20 +51,19 @@
 //!
 //! # What M3 adds to go further
 //!
-//! - **Layout:** `taffy` boxes in place of [`HudLayout`]'s hand-placed rectangles, with anchors and
-//!   safe areas as they are.
-//! - **Text:** `parley` and a dynamic glyph atlas (several atlas pages, so a list names a page per
-//!   batch); this slice draws digits alone.
-//! - **More of the quad:** nine-slice on both axes (this has a horizontal three-slice), images and
-//!   gradients, and masks or scissors.
-//! - **Retained widgets, UI documents and hot reload,** with data bound by reflection paths;
-//!   gamepad focus navigation and hiding the controls when a gamepad connects (spec §6.6).
+//! - **The HUD on documents** (U7), with [`HudLayout`]'s hand-placed rectangles going to `taffy`. Its
+//!   digits stay on the distance field atlas.
+//! - **Motion and input** (U5): tweens, screen state machines, focus and hit testing over the tree.
+
+/// Where this crate logs.
+pub(crate) const LOG_TARGET: &str = "sapphire::ui";
 
 pub mod atlas;
 pub mod hud;
 pub mod layout;
 pub mod paint;
 pub mod touch;
+pub mod tree;
 
 pub use atlas::{Atlas, Sprite, Sprites};
 pub use hud::{
@@ -73,3 +74,4 @@ pub use layout::{Anchor, Insets, Rect, UiMetrics};
 pub use paint::{Align, Paint, Painter};
 pub use sapphire_look::{UiAtlas, UiDrawList, UiQuad};
 pub use touch::{Button, ButtonEvent, ButtonEventKind, ButtonState, StickState, TouchActions};
+pub use tree::{PROBLEM_COLOR, UiFonts, UiFrame, UiNodeId, UiProblem, UiTree, UiTreeError};

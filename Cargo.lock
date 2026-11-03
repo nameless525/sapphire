@@ -4153,11 +4153,20 @@ dependencies = [
 name = "sapphire_ui"
 version = "0.1.0"
 dependencies = [
+ "bevy_reflect",
  "profiling",
+ "sapphire_assets",
  "sapphire_core",
+ "sapphire_loc",
  "sapphire_look",
  "sapphire_math",
  "sapphire_platform",
+ "sapphire_reflect",
+ "sapphire_text",
+ "sapphire_time",
+ "taffy",
+ "thiserror 2.0.21",
+ "tracing",
 ]
 
 [[package]]

@@ -942,6 +942,11 @@ impl Options {
             if options.look_dev.is_some() || options.view.is_some() {
                 return Err(format!("{CONTACT_SHEET_FLAG} has its own cameras: drop --look-dev and --view"));
             }
+            let range = crate::contact_sheet::ZOOM_RANGE;
+            if let Some(zoom) = options.zoom.filter(|zoom| !range.contains(zoom)) {
+                let (least, most) = range.into_inner();
+                return Err(format!("{CONTACT_SHEET_FLAG}: --zoom expects {least} to {most}, got {zoom}"));
+            }
             crate::contact_sheet::pin_defaults(&mut options);
         }
         if options.look_dev.is_some()
@@ -1417,6 +1422,17 @@ mod tests {
         assert_eq!((offscreen.width, offscreen.height), crate::contact_sheet::DEFAULT_CELL);
         let OffscreenMode::ContactSheet { path, cells, .. } = offscreen.mode else { panic!("a sheet") };
         assert_eq!((path, cells), (PathBuf::from("sheet.png"), crate::contact_sheet::DEFAULT_CELLS));
+
+        // A camera past any use refuses, and says what it takes.
+        let sheet_at =
+            |zoom: &str| parse(&["--contact-sheet", "idle", "sheet.png", "--zoom", zoom]).map(drop);
+        assert!(sheet_at("1.6").is_ok() && sheet_at("0.01").is_ok() && sheet_at("1000").is_ok());
+        for zoom in ["1e30", "1000.5", "0.009"] {
+            let refused = sheet_at(zoom).expect_err("past any use");
+            assert!(refused.contains("--zoom expects 0.01 to 1000"), "{refused}");
+        }
+        // Only a sheet's: an orbit camera's zoom has its own limits.
+        assert!(parse(&["--zoom", "1e30"]).is_ok());
 
         // Told otherwise, it does as it's told.
         let (options, _) = parse(&[

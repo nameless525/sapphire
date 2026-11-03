@@ -1,8 +1,9 @@
 //! `--contact-sheet <clip> <png>` (M2 O2): a clip on the look-dev character at evenly spaced ticks,
 //! seen from the front and the side through a long lens, as one image to read motion from. It draws
 //! through the renderer as every frame does, in one process, and everything drawn over the frames
-//! (each cell's tick, a ground line with a mark every half meter) is plain pixels afterwards, so it
-//! asks nothing of the renderer. No window, and no golden depends on it.
+//! (each cell's tick, a ground line with a mark every half meter, or further apart where a large zoom
+//! would run those together, as the log says) is plain pixels afterwards, so it asks nothing of the
+//! renderer. No window, and no golden depends on it.
 //!
 //! The camera stays put, so root motion shows as travel: `--clip-in-place` leaves it out, and
 //! `--zoom <factor>` pulls back for a clip that leaves the frame. `--sheet-cells` is how many ticks
@@ -29,6 +30,10 @@ use crate::orbit::OrbitCamera;
 pub(crate) const DEFAULT_CELLS: u32 = 8;
 /// One cell's size, unless `--size` says: eight of them across fit what an image reader shows whole.
 pub(crate) const DEFAULT_CELL: (u32, u32) = (192, 240);
+/// What `--zoom` may be on a sheet. Closer, the camera is inside its own near plane; further, a character
+/// is under a pixel of any cell. Past either there's nothing to read, and far enough out the camera's
+/// distance stops being a number.
+pub(crate) const ZOOM_RANGE: std::ops::RangeInclusive<f32> = 0.01..=1000.0;
 
 /// What the camera looks at, at the character's middle.
 const LOOK_HEIGHT: f32 = 0.92;
@@ -43,6 +48,8 @@ const VIEW_YAWS_DEGREES: [f32; 2] = [0.0, 90.0];
 const GROUND: [u8; 3] = [255, 64, 64];
 const INK: [u8; 3] = [255, 255, 255];
 const PAPER: [u8; 3] = [0, 0, 0];
+/// How close the ground's marks may come, in pixels, before they run together.
+const MIN_MARK_SPACING: f32 = 4.0;
 /// A tick label's digit scale, in pixels per font pixel.
 const DIGIT_SCALE: usize = 2;
 
@@ -95,6 +102,28 @@ impl Framing {
     /// How many pixels a meter takes at the character's distance.
     fn pixels_per_meter(&self) -> f32 {
         self.height as f32 / self.shown_height
+    }
+
+    /// How far apart the ground's marks are, in meters: half a meter, or past where those would run
+    /// together, the first of 1, 2, 5, 10, 20, 50 and on that a reader can still tell apart.
+    fn mark_meters(&self) -> f32 {
+        let pixels_per_meter = self.pixels_per_meter();
+        let mut steps = [2.0, 2.0, 2.5].into_iter().cycle();
+        let mut meters = 0.5;
+        // It ends, since `meters` grows to infinity at worst, and no comparison with NaN holds.
+        while meters * pixels_per_meter < MIN_MARK_SPACING {
+            meters *= steps.next().expect("it cycles");
+        }
+        meters
+    }
+
+    /// The columns of a cell's marks on the ground, from its middle out. They're at least
+    /// [`MIN_MARK_SPACING`] apart, so the work is the cell's width's, however far back it stands.
+    fn mark_columns(&self) -> impl Iterator<Item = usize> {
+        let middle = self.width as f32 * 0.5;
+        let spacing = self.mark_meters() * self.pixels_per_meter();
+        let marks = (middle / spacing) as i32;
+        (-marks..=marks).map(move |mark| (middle + mark as f32 * spacing).round() as usize)
     }
 
     /// The row where the ground at the character's distance falls.
@@ -189,7 +218,7 @@ impl Sheet {
         }
     }
 
-    /// A line where the ground falls, with a mark every half meter from the cell's middle.
+    /// A line where the ground falls, with marks out from the cell's middle ([`Framing::mark_meters`]).
     fn ground(&mut self, left: usize, top: usize) {
         let framing = self.framing;
         let (cell_width, cell_height) = (framing.width as usize, framing.height as usize);
@@ -200,11 +229,7 @@ impl Sheet {
         for x in 0..cell_width {
             self.set(left + x, top + row, GROUND);
         }
-        let middle = cell_width as f32 * 0.5;
-        let half_meter = framing.pixels_per_meter() * 0.5;
-        let marks = (middle / half_meter) as i32;
-        for mark in -marks..=marks {
-            let x = (middle + mark as f32 * half_meter).round() as usize;
+        for x in framing.mark_columns() {
             for y in row.saturating_sub(3)..=(row + 3).min(cell_height - 1) {
                 self.set(left + x.min(cell_width - 1), top + y, GROUND);
             }
@@ -283,6 +308,7 @@ pub(crate) fn run(
         ticks,
         rate,
         cells = samples.len(),
+        marks_every_m = framing.mark_meters(),
         "wrote contact sheet"
     );
     Ok(())
@@ -325,6 +351,57 @@ mod tests {
         let half_height = camera.eye().distance(Vec3::new(0.0, LOOK_HEIGHT, 0.0))
             * (FOV_Y_DEGREES.to_radians() * 0.5).tan();
         assert!((half_height * 2.0 - SHOWN_HEIGHT).abs() < 1e-3, "the lens shows what it says");
+    }
+
+    /// However far back a cell stands, what it marks is what its width can show: the work follows the
+    /// pixels, where marks at a fixed distance would pile up in their billions at a large zoom.
+    #[test]
+    fn a_cells_marks_are_as_many_as_its_width_can_show() {
+        for zoom in [1e-30, 0.01, 0.6, 1.0, 13.0, 14.0, 100.0, 1e3, 1e6, 1e30, f32::MAX] {
+            for (width, height) in [(192, 240), (32, 40), (1, 1), (4096, 16)] {
+                let framing = Framing::new(width, height, Some(zoom));
+                let most = (width as usize / 4 + 1) | 1;
+                let (_, marks) = framing.mark_columns().size_hint();
+                assert!(marks.is_some_and(|marks| marks <= most), "{width} wide at {zoom}: {marks:?}");
+                for x in framing.mark_columns() {
+                    assert!(x <= width as usize, "{width} wide at {zoom}: at {x}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn marks_stay_half_a_meter_apart_until_they_would_run_together() {
+        let columns = |zoom| Framing::new(192, 240, zoom).mark_columns().collect::<Vec<_>>();
+        // 109 pixels to the meter.
+        assert_eq!(columns(None), [41, 96, 151]);
+        // 8 and a bit to the meter: half a meter is still 4 pixels.
+        let spacing = |columns: Vec<usize>| columns[1] - columns[0];
+        assert!((4..=5).contains(&spacing(columns(Some(13.0)))));
+        // Then 1, 2 and 5 meters, and on through the decades, in steps a reader can count.
+        assert!((5..=6).contains(&spacing(columns(Some(20.0)))));
+        assert!((5..=6).contains(&spacing(columns(Some(40.0)))));
+        assert!((4..=5).contains(&spacing(columns(Some(120.0)))));
+        assert!((4..=11).contains(&spacing(columns(Some(1e3)))));
+        assert_eq!(Framing::new(192, 240, None).mark_meters(), 0.5);
+        assert_eq!(Framing::new(192, 240, Some(20.0)).mark_meters(), 1.0);
+        assert_eq!(Framing::new(192, 240, Some(40.0)).mark_meters(), 2.0);
+        assert_eq!(Framing::new(192, 240, Some(120.0)).mark_meters(), 5.0);
+        assert_eq!(Framing::new(192, 240, Some(240.0)).mark_meters(), 10.0);
+        // A cell too narrow for the next mark has its middle.
+        assert_eq!(Framing::new(8, 40, None).mark_columns().collect::<Vec<_>>(), [4]);
+    }
+
+    /// Painted over a whole cell, far back: quick, since the work is the width's, and the line's there.
+    #[test]
+    fn a_cell_far_back_paints_its_marks() {
+        let framing = Framing::new(32, 40, Some(1e6));
+        let mut sheet = Sheet::new(framing, 1, 1);
+        sheet.place(0, 0, &vec![9; 32 * 40 * 4], 0);
+        let at = |x: usize, y: usize| sheet.pixels[(y * sheet.width + x) * 4];
+        let row = framing.ground_row();
+        assert_eq!(at(16, row), GROUND[0], "the ground line");
+        assert_eq!(at(16, row - 3), GROUND[0], "a mark");
     }
 
     #[test]

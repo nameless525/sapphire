@@ -490,6 +490,138 @@ fn a_name_two_joints_share_cant_share_a_rig() {
     }
 }
 
+/// `simplify` with no limit on its work: what a limit must leave alone.
+fn simplify_exhaustively(
+    count: usize,
+    tolerance: f32,
+    error: impl Fn(usize, usize, usize) -> f32,
+) -> Vec<usize> {
+    if (0..count).all(|sample| error(0, 0, sample) <= tolerance) {
+        return vec![0];
+    }
+    let mut keep = vec![false; count];
+    keep[0] = true;
+    keep[count - 1] = true;
+    let mut spans = vec![(0, count - 1)];
+    while let Some((first, last)) = spans.pop() {
+        let mut worst = (tolerance, None);
+        for sample in first + 1..last {
+            let strays = error(first, last, sample);
+            if strays > worst.0 {
+                worst = (strays, Some(sample));
+            }
+        }
+        if let (_, Some(sample)) = worst {
+            keep[sample] = true;
+            spans.push((first, sample));
+            spans.push((sample, last));
+        }
+    }
+    (0..count).filter(|&sample| keep[sample]).collect()
+}
+
+/// How far from the line between its neighbors a sample lies in `samples`.
+fn off_the_line(samples: &[f32]) -> impl Fn(usize, usize, usize) -> f32 + '_ {
+    |first, last, sample| {
+        let (from, to) = (samples[first], samples[last]);
+        (from + (to - from) * blend(first, last, sample) - samples[sample]).abs()
+    }
+}
+
+/// A track that swings every tick keeps every key, and its furthest sample is always beside the end of
+/// its span, so each scan leaves all but one of what it read. Doubling the samples quadrupled the work,
+/// about two billion evaluations at the longest clip, however little memory they took.
+#[test]
+fn reduction_does_bounded_work_on_a_track_that_swings_every_tick() {
+    for count in [1024, 2048, 4096, 8192, 65535] {
+        let samples: Vec<f32> =
+            (0..count).map(|sample: usize| if sample.is_multiple_of(2) { 0.0 } else { 1.0 }).collect();
+        let line = off_the_line(&samples);
+        let evaluations = std::cell::Cell::new(0usize);
+        let kept = simplify(count, 0.001, |first, last, sample| {
+            evaluations.set(evaluations.get() + 1);
+            line(first, last, sample)
+        });
+        assert_eq!(kept.len(), count, "every sample is a corner");
+        // Besides reading each sample once, to see if it needs more than one key.
+        let limit = reduction_work(count) + count;
+        assert!(evaluations.get() <= limit, "{count} samples: {} evaluations", evaluations.get());
+    }
+    // A track this short can't reach the limit, whatever its shape, so its keys can't have moved.
+    let worst = |count: usize| (count - 2) * (count - 1) / 2;
+    assert!(worst(2050) <= reduction_work(2050));
+}
+
+/// Tracks that aren't working against the scan never reach the limit: the same keys, to the sample, as
+/// with no limit at all, and on one that does, every sample still within tolerance.
+#[test]
+fn a_limit_on_reductions_work_costs_keys_only_where_it_must() {
+    let count = 40_000;
+    let mut noise = 0x2545_f491_u32;
+    let mut next = move || {
+        noise ^= noise << 13;
+        noise ^= noise >> 17;
+        noise ^= noise << 5;
+        noise as f32 / u32::MAX as f32
+    };
+    let noisy: Vec<f32> = (0..count).map(|_| next()).collect();
+    let rows: Vec<(&str, Vec<f32>, f32)> = vec![
+        ("a slow curve", (0..count).map(|sample| (sample as f32 * 0.001).sin()).collect(), 0.001),
+        (
+            "two speeds of wave",
+            (0..count)
+                .map(|sample| (sample as f32 * 0.002).sin() + 0.1 * (sample as f32 * 0.09).sin())
+                .collect(),
+            0.0005,
+        ),
+        ("steps a second apart", (0..count).map(|sample| (sample / 60 % 7) as f32).collect(), 0.001),
+        ("noise", noisy, 0.0001),
+    ];
+    for (name, samples, tolerance) in &rows {
+        let line = off_the_line(samples);
+        assert_eq!(
+            simplify(samples.len(), *tolerance, &line),
+            simplify_exhaustively(samples.len(), *tolerance, &line),
+            "{name}"
+        );
+    }
+
+    // Half the track swings every tick and half lies flat: the limit runs out inside the swings, and
+    // what was left keeps all its samples, which is the worst it can do.
+    let tolerance = 0.001;
+    let samples: Vec<f32> =
+        (0..count).map(|sample| if sample < count / 2 && sample % 2 == 1 { 1.0 } else { 0.0 }).collect();
+    let line = off_the_line(&samples);
+    let kept = simplify(count, tolerance, &line);
+    assert!(kept.len() >= count / 2, "{} keys", kept.len());
+    for pair in kept.windows(2) {
+        for sample in pair[0] + 1..pair[1] {
+            let strays = line(pair[0], pair[1], sample);
+            assert!(strays <= tolerance, "{sample} strays {strays}");
+        }
+    }
+}
+
+/// Through a whole cook: a clip as long as a clip can be, with a joint that swings every tick, keeps
+/// every key, in well under the 20 s one such track took.
+#[test]
+fn a_long_track_that_swings_every_tick_cooks_to_every_key() {
+    let ticks = sapphire_assets::clip::MAX_TICKS;
+    let skeleton = chain(2);
+    let swinging = |tick: u16| if tick.is_multiple_of(2) { 0.2 } else { 0.3 };
+    let sampled = SampledClip {
+        name: "swinging".into(),
+        rate: 60,
+        ticks,
+        translations: vec![(1, (0..=ticks).map(|tick| Vec3::new(0.0, swinging(tick), 0.0)).collect())],
+        ..SampledClip::default()
+    };
+    let clip = cooked(&sampled, &skeleton, &ReductionError::default());
+    assert_eq!(clip.translations.len(), 1);
+    assert_eq!(usize::from(clip.translations[0].count), usize::from(ticks) + 1, "every sample is a corner");
+    read(&clip);
+}
+
 /// Same samples, same bytes: reduction reads nothing else.
 #[test]
 fn reduction_is_deterministic() {

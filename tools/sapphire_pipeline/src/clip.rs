@@ -36,6 +36,13 @@
 //! authored action, whose key poses are exactly those. It is deterministic: it reads only the
 //! samples, in order, and on a tie keeps the earliest.
 //!
+//! **Its work is bounded.** A track that swings every tick keeps every key, and its furthest sample is
+//! always beside the end of its span, so each scan leaves all but one of what it read: about two
+//! billion evaluations at the longest clip, around 20 s for one track. A track gets a budget by its
+//! length (`reduction_work`), counted in samples read, never in time, so the answer stays one answer,
+//! and a span it can't pay for keeps all its samples. That can't break the bound below, and costs only
+//! bytes, on tracks that were keeping most of their keys anyway.
+//!
 //! **The stated bound.** [`ReductionError::distance`] (0.25 mm by default) is how far one track may
 //! move what it drives, at any tick:
 //!
@@ -102,7 +109,9 @@ use crate::keypose;
 /// 3: a shared rig's repeated joint name is an error, where its tracks landed on one joint (the review's
 /// IMP-001).
 /// 4: tolerances follow what a clip's own scales and translations ask of them (the review's IMP-002).
-pub const COOKER: Stage = Stage { name: "sclip", version: 4 };
+/// 5: reduction's work is bounded, which keeps more keys on a long track that spends it all (the
+/// review's IMP-003).
+pub const COOKER: Stage = Stage { name: "sclip", version: 5 };
 
 /// The `.sskel` writer. Bump its version whenever it changes output for the same import.
 pub const SKELETON_COOKER: Stage = Stage { name: "sskel", version: 1 };
@@ -462,6 +471,14 @@ fn set_track<T>(tracks: &mut Vec<(u16, Vec<T>)>, joint: u16, samples: Vec<T>) {
     }
 }
 
+/// How many samples one track's reduction may read across its spans: its own, 1,024 times over (see the
+/// [module docs](self)). No track of up to 2,050 samples, 34 s at 60 Hz, can reach that whatever its
+/// shape, and a long one can still chip off a thousand-odd holds a scan at a time, as an 11-minute track
+/// of steps a second apart does.
+fn reduction_work(count: usize) -> usize {
+    1024 * count
+}
+
 /// The keys of `count` samples to keep, and the most any strays by. `error(a, b, i)` is how far
 /// sample `i` lies from the blend between kept keys `a` and `b` (see the [module docs](self)).
 fn simplify(count: usize, tolerance: f32, error: impl Fn(usize, usize, usize) -> f32) -> Vec<usize> {
@@ -472,9 +489,16 @@ fn simplify(count: usize, tolerance: f32, error: impl Fn(usize, usize, usize) ->
     keep[0] = true;
     keep[count - 1] = true;
     let mut spans = vec![(0, count - 1)];
+    let mut work = reduction_work(count);
     while let Some((first, last)) = spans.pop() {
+        let between = first + 1..last;
+        if between.len() > work {
+            keep[between].fill(true);
+            continue;
+        }
+        work -= between.len();
         let mut worst = (tolerance, None);
-        for sample in first + 1..last {
+        for sample in between {
             let strays = error(first, last, sample);
             if strays > worst.0 {
                 worst = (strays, Some(sample));

@@ -8,6 +8,9 @@
 //! finished running. Another run waits, saying so. A bundle is assembled and signed aside and only
 //! then moved into place, so what's at that path is always whole.
 //!
+//! The host's platforms and `golden` share one executable path across their builds, so each run launches
+//! or bundles a copy of its own ([`HostExecutable`]).
+//!
 //! Store packaging (`xtask package`, M4) is not here yet. It must decide how debug info
 //! reaches Sentry and leaves the shipped binaries: split DWARF (`split-debuginfo`, `.dwp`)
 //! or `objcopy --only-keep-debug` on Linux and Android, dSYMs on Apple, PDBs on Windows,
@@ -17,6 +20,7 @@
 mod android;
 mod apple;
 mod desktop;
+mod host;
 mod ios;
 mod ios_sim;
 mod macos;
@@ -33,6 +37,8 @@ use serde::Deserialize;
 
 use crate::content;
 use crate::workspace::{self, BuildProfile, CargoBuild};
+
+pub use host::HostExecutable;
 
 /// A deployment target.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -183,8 +189,8 @@ impl App {
 pub const CONTENT_DIR_ENV: &str = "SAPPHIRE_CONTENT_DIR";
 
 /// Cooks for desktop and builds the app for the host, for commands that launch it themselves
-/// (`golden`). Keep the [`content::Cooked`] alive while the app runs.
-pub fn desktop_build(app: &App, options: &Options) -> anyhow::Result<(content::Cooked, PathBuf)> {
+/// (`golden`). Keep both alive while the app runs.
+pub fn desktop_build(app: &App, options: &Options) -> anyhow::Result<(content::Cooked, HostExecutable)> {
     desktop::prepare(app, options)
 }
 
@@ -228,7 +234,7 @@ pub struct Bundle {
 /// them shares (Android's generated sources and Gradle's outputs, say). Taken before building, since
 /// two builds of one target with different features or profiles replace each other's executables as
 /// well, and before cooking, never while holding content, so this and the content's locks can't wait
-/// on each other.
+/// on each other. Host builds share an executable with another platform too: [`HostExecutable`].
 #[derive(Debug)]
 struct BundleClaim {
     dir: PathBuf,

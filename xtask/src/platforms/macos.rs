@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use super::apple::{self, BundleLayout};
-use super::{App, Bundle, BundleClaim, CONTENT_DIR_ENV, Options, Platform};
+use super::{App, Bundle, BundleClaim, CONTENT_DIR_ENV, HostExecutable, Options, Platform};
 use crate::content::{self, Cook};
 use crate::workspace;
 
@@ -15,14 +15,15 @@ pub fn bundle(app: &App, options: &Options) -> anyhow::Result<Bundle> {
     super::require_macos_host(Platform::MacOs)?;
     let claim = BundleClaim::take(Platform::MacOs)?;
     let content = content::cook(Cook::Desktop)?;
-    let executable = super::executable(app, None, &build_env()?, options)?;
+    let executable = HostExecutable::for_app(app, options)?;
+    let executable = executable.path();
     let (template_path, template) = super::info_plist_template("macos")?;
-    apple::verify_minimum_os(&executable, &template, "LSMinimumSystemVersion")?;
+    apple::verify_minimum_os(executable, &template, "LSMinimumSystemVersion")?;
     let info_plist = apple::render_info_plist(&template, app)
         .map_err(|e| e.context(format!("in {}", template_path.display())))?;
 
     let layout = BundleLayout::macos(claim.staging(&format!("{}.app", app.bundle_name))?);
-    apple::assemble(&layout, app, &info_plist, &executable, &content.dir)?;
+    apple::assemble(&layout, app, &info_plist, executable, &content.dir)?;
     apple::codesign_ad_hoc(&layout.root)?;
     claim.publish(&layout.root)
 }

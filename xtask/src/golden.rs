@@ -23,7 +23,8 @@ pub struct Golden<'a> {
 }
 
 pub fn run(golden: &Golden<'_>) -> anyhow::Result<()> {
-    // Held while the sandbox runs, so no other xtask run recooks the content under it.
+    // Held while the sandbox runs, so no other xtask run recooks the content under it, and the copy of
+    // the sandbox every scene launches stays what this built.
     let (content, sandbox) = platforms::desktop_build(&App::load(SANDBOX)?, &Options::default())?;
     let env = platforms::host_build_env()?;
     let testkit = workspace::build_binary(
@@ -34,7 +35,7 @@ pub fn run(golden: &Golden<'_>) -> anyhow::Result<()> {
     command
         .arg("golden")
         .arg("--sandbox")
-        .arg(&sandbox)
+        .arg(sandbox.path())
         .arg("--content")
         .arg(&content.dir)
         .arg("--goldens")

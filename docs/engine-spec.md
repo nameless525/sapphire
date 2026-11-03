@@ -461,7 +461,7 @@ pub struct FramePacket {
 | `sapphire_loc` | L4 | Strings, plurals, font fallback, pseudo-loc | `fluent`, `icu` | M3 |
 | `sapphire_patch` | L4 | Chunk manifests, CDN download, verification (later) | `reqwest`, `rustls`, `ed25519-dalek` | M4 |
 | `sapphire_online` | L4 | Accounts, server-authoritative economy (later) | `reqwest` | later |
-| `sapphire_pipeline` | Tools | Importers, cookers, cache, packer | `gltf`, `ufbx`, `ctt`, `ktx2`, `meshopt`, `rayon` | M1 |
+| `sapphire_pipeline` | Tools | Importers, cookers, cache, packer | `gltf`, `ufbx`, `ctt`, `ktx2`, `meshopt` | M1 |
 | `sapphire_editor` | Tools | Document-model editor, timeline editor, play-in-editor | `egui`, `egui_dock`, `transform-gizmo`, `egui-snarl` | M2–M3 |
 | `sapphire_livelink` | dev only, plus its tool | Live link: a dev build's socket the desktop pushes packs, documents, shaders and cvars to, and its desktop tool (dev only) | `postcard` | M1 |
 | `sapphire_replay` | Tools | The headless replay runner: `cargo xtask replay` and CI's `Replays` job (§5.22) | None | M2 |
@@ -2490,7 +2490,7 @@ The `resolve` module's "A perfect dodge", `moves`'s "A counter window" and `test
 - **Stages:** importer (source → engine-neutral intermediate) → cooker (intermediate → platform blob) → packer.
 - **Cache key:** blake3 of the source bytes, the importer and cooker versions, the settings, the target cook (`desktop` / `mobile`) and the dependency keys. The local cache comes first; a shared cache can be added *later*.
 - **Identity:** every source asset has a `.meta` sidecar holding its GUID and import settings, and references always go by GUID.
-- **Parallelism:** `rayon` is fine here.
+- **Parallelism:** the `cook` module docs say what runs on threads. Nothing here uses `rayon`.
 - **As built (M1 A1, `sapphire_pipeline::{meta, cache, cook}`):**
   - A sidecar is `<source file name>.meta` (`content/samples/mannequin.glb.meta`): a `sapphire::assets::AssetMeta` RON document holding the `id` and the `importer`, an enum whose variant names the importer and holds its typed settings (`Gltf((outline: (weld_tolerance: 0.0001)))`). Left-out settings take their defaults.
   - A cook creates missing sidecars and never rewrites an existing one. `--locked` (xtask's, so CI) fails instead, because an ID made there would be thrown away. Two sidecars with one ID are an error, and so is a source without a sidecar next to a sidecar without a source: a move that left the sidecar behind would otherwise lose the ID.
@@ -3341,7 +3341,7 @@ Pin these in `[workspace.dependencies]`. Versions were checked against crates.io
 | `gltf`, `ufbx` | 1.4, 0.11 | `sapphire_pipeline` | |
 | `vrm-spec` | 0.1 | `sapphire_pipeline` | M1 A6. Tools only; pixiv's VRM types, without node constraints, which the pipeline types itself |
 | `ctt`, `ktx2`, `meshopt` | 0.6, 0.5, 0.7 | `sapphire_pipeline`; `ktx2` also `sapphire_assets` | `basis-universal` is stale. ctt with only the bc7enc-rdo, ISPC (prebuilt) and astcenc encoders, and no `rayon` |
-| `image`, `exr`, `rayon` | 0.25, 1.74, latest | `sapphire_pipeline` | Tools only. `image` with only its PNG, TGA and EXR decoders, and JPEG for VRM images (M1 A6); `exr` comes through it |
+| `image`, `exr` | 0.25, 1.74 | `sapphire_pipeline` | Tools only. `image` with only its PNG, TGA and EXR decoders, and JPEG for VRM images (M1 A6); `exr` comes through it |
 | `insta`, `nv-flip`, `criterion` | latest | `sapphire_testkit` | `dssim` is AGPL, so avoid it |
 | `cargo-ndk`, `sccache`, `cargo-hakari`, `cargo-nextest`, `cargo-deny` | 4.1, 0.18, –, –, – | Tooling | `bacon` is AGPL (fine as a local tool, not as a dependency) |
 

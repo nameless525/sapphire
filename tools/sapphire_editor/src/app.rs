@@ -14,7 +14,7 @@ use sapphire_moves::{MoveDocument, MoveSet, MoveSetDocument, RootSample};
 use crate::cooked::{self, Cook};
 use crate::edits::{EditError, EntryRef, EntryValue, MovesText, Track};
 use crate::figure::{Casting, Figure, Figures};
-use crate::file::{FileError, MovesFile, Verdict, judge};
+use crate::file::{Conflict, FileError, MovesFile, Verdict, judge};
 use crate::link::{Link, Pushed};
 use crate::preview::{self, FigureCache, Overlays, PosedFigure, View};
 use crate::run::{Frame, Run, Setup};
@@ -1005,13 +1005,18 @@ impl Editor {
                 }
             });
         }
-        if self.file.as_ref().and_then(MovesFile::conflict).is_some() {
+        if let Some(conflict) = self.file.as_ref().and_then(MovesFile::conflict) {
+            let (said, can_take) = match conflict {
+                Conflict::Text(_) => ("The file changed on disk, and you have edits here.", true),
+                Conflict::NotText => (
+                    "The file on disk isn't text any more. Keeping yours replaces it at the next save.",
+                    false,
+                ),
+            };
             ui.horizontal(|ui| {
-                ui.colored_label(
-                    Color32::from_rgb(255, 170, 90),
-                    "The file changed on disk, and you have edits here.",
-                );
-                if ui.button("Take the file's").clicked()
+                ui.colored_label(Color32::from_rgb(255, 170, 90), said);
+                if can_take
+                    && ui.button("Take the file's").clicked()
                     && let Some(file) = &mut self.file
                 {
                     self.typed = None;

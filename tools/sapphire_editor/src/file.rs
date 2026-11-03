@@ -2,7 +2,9 @@
 //!
 //! The file on disk is a person's too. Opening and saving with no edit leaves it byte for byte as it
 //! was, a save writes exactly the editor's text, and a change made elsewhere while it's open is noticed:
-//! taken if there's nothing here to lose, and asked about if there is ([`MovesFile::conflict`]).
+//! taken if there's nothing here to lose, and asked about if there is ([`MovesFile::conflict`]). Looking
+//! in passing is tolerant, since a file can be mid-save in someone's editor; a save isn't, and writes over
+//! nothing it hasn't checked ([`MovesFile::save`]).
 //!
 //! Undo keeps change records, one per gesture, whatever the gesture did to the text
 //! ([`History`]): the smallest splice that takes one text to the other, so a drag across twenty ticks is
@@ -119,12 +121,22 @@ struct Gesture {
 pub struct MovesFile {
     path: PathBuf,
     text: MovesText,
-    /// What the file held when last read or written.
-    disk: String,
+    /// What the file held when last read or written, as bytes: what's there now needn't be text.
+    disk: Vec<u8>,
     history: History,
     gesture: Option<Gesture>,
-    /// The file's text, when it changed on disk while there were edits here.
-    conflict: Option<String>,
+    /// What the file held when it changed on disk while there were edits here, or changed to something
+    /// that can't be taken.
+    conflict: Option<Vec<u8>>,
+}
+
+/// A change on disk waiting to be settled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Conflict<'a> {
+    /// What the file says now, which [`MovesFile::take_disk`] can take.
+    Text(&'a str),
+    /// It isn't text any more, so all a person can do here is keep what they have.
+    NotText,
 }
 
 impl MovesFile {
@@ -136,7 +148,7 @@ impl MovesFile {
         Ok(Self {
             text: MovesText::new(disk.clone()),
             path,
-            disk,
+            disk: disk.into_bytes(),
             history: History::default(),
             gesture: None,
             conflict: None,
@@ -167,13 +179,14 @@ impl MovesFile {
     /// Whether the text holds edits the file doesn't.
     #[must_use]
     pub fn is_dirty(&self) -> bool {
-        self.text.text() != self.disk
+        self.text.text().as_bytes() != self.disk
     }
 
-    /// What the file changed to on disk, while there are edits here to lose.
+    /// What the file changed to on disk, while there are edits here to lose or it can't be taken.
     #[must_use]
-    pub fn conflict(&self) -> Option<&str> {
-        self.conflict.as_deref()
+    pub fn conflict(&self) -> Option<Conflict<'_>> {
+        let on_disk = self.conflict.as_deref()?;
+        Some(std::str::from_utf8(on_disk).map_or(Conflict::NotText, Conflict::Text))
     }
 
     /// One edit, as one step of undo. Inside a gesture, the gesture's step takes it.
@@ -243,52 +256,94 @@ impl MovesFile {
     }
 
     /// Writes the text if it holds edits, in one step, so a watcher or a crash never sees half a file.
-    /// A file with nothing to save isn't touched. One changed on disk since it was read is refused:
-    /// [`Self::conflict`] says what changed, and [`Self::take_disk`] or [`Self::keep_mine`] settles it.
+    /// A file with nothing to save isn't touched. One changed on disk since it was read is refused,
+    /// whatever it changed to: [`Self::conflict`] says what, and [`Self::take_disk`] or [`Self::keep_mine`]
+    /// settles it. One that can't be read is refused too, since there's no telling what would be lost,
+    /// and one that's gone is written again, since nothing would be. A document that's a link stays one:
+    /// the file it leads to is what's replaced.
+    ///
+    /// The file is read as late as it can be, with the new text already written beside it. What's left is
+    /// the moment before the rename, where another save lands and loses to this one whole.
     pub fn save(&mut self) -> Result<(), FileError> {
         self.end_gesture();
-        self.poll_disk();
-        if self.conflict.is_some() {
-            return Err(FileError::ChangedOnDisk { path: self.path.clone() });
-        }
-        if self.is_dirty() {
-            write_whole(&self.path, self.text.text())?;
-            self.disk = self.text.text().to_owned();
+        let path = self.path.clone();
+        let io_error = |source| FileError::Io { path: path.clone(), source };
+        let target = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+        let replacement = self
+            .is_dirty()
+            .then(|| Temporary::beside(&target, self.text.text()))
+            .transpose()
+            .map_err(io_error)?;
+        self.check_disk()?;
+        if let Some(replacement) = replacement
+            && self.is_dirty()
+        {
+            replacement.replace(&target).map_err(io_error)?;
+            self.disk = self.text.text().as_bytes().to_vec();
         }
         Ok(())
     }
 
+    /// What a save asks of the file before writing, which a look in passing doesn't: that nothing it can't
+    /// see goes unseen.
+    fn check_disk(&mut self) -> Result<(), FileError> {
+        match fs::read(&self.path) {
+            Ok(on_disk) => self.settle_disk(on_disk),
+            Err(source) if source.kind() == io::ErrorKind::NotFound => {}
+            Err(source) => return Err(FileError::Io { path: self.path.clone(), source }),
+        }
+        match self.conflict {
+            Some(_) => Err(FileError::ChangedOnDisk { path: self.path.clone() }),
+            None => Ok(()),
+        }
+    }
+
     /// Looks at the file again. A change made elsewhere is taken as an edit that undo can take back,
-    /// unless there are edits here too: then it waits in [`Self::conflict`]. A missing or unreadable
-    /// file changes nothing: it may be mid-save in someone's editor.
+    /// unless there are edits here too: then it waits in [`Self::conflict`]. A file that's missing,
+    /// unreadable or not text changes nothing here: it may be mid-save in someone's editor. A save looks
+    /// harder.
     pub fn poll_disk(&mut self) {
         if self.gesture.is_some() {
             return;
         }
         let Ok(on_disk) = read_text(&self.path) else { return };
+        self.settle_disk(on_disk.into_bytes());
+    }
+
+    fn settle_disk(&mut self, on_disk: Vec<u8>) {
         if on_disk == self.disk {
             self.conflict = None;
-        } else if on_disk == self.text.text() {
+        } else if on_disk == self.text.text().as_bytes() {
             self.disk = on_disk;
             self.conflict = None;
         } else if self.is_dirty() {
             self.conflict = Some(on_disk);
         } else {
-            let before = self.text.text().to_owned();
-            self.text.set_text(on_disk.clone());
-            self.disk = on_disk;
-            self.conflict = None;
-            self.record(&before, "the file changed on disk");
+            match String::from_utf8(on_disk) {
+                Ok(on_disk) => {
+                    let before = self.text.text().to_owned();
+                    self.text.set_text(on_disk.clone());
+                    self.disk = on_disk.into_bytes();
+                    self.conflict = None;
+                    self.record(&before, "the file changed on disk");
+                }
+                Err(error) => self.conflict = Some(error.into_bytes()),
+            }
         }
     }
 
-    /// Settles a conflict by taking the file's text, as an edit undo can take back.
+    /// Settles a conflict by taking the file's text, as an edit undo can take back. Bytes that aren't
+    /// text can't be taken, and wait.
     pub fn take_disk(&mut self) {
-        if let Some(on_disk) = self.conflict.take() {
-            let before = self.text.text().to_owned();
-            self.text.set_text(on_disk.clone());
-            self.disk = on_disk;
-            self.record(&before, "took the file's text from disk");
+        let Some(on_disk) = self.conflict.take() else { return };
+        match String::from_utf8(on_disk) {
+            Ok(on_disk) => {
+                let before = self.text.text().to_owned();
+                self.text.set_text(on_disk.clone());
+                self.disk = on_disk.into_bytes();
+                self.record(&before, "took the file's text from disk");
+            }
+            Err(error) => self.conflict = Some(error.into_bytes()),
         }
     }
 
@@ -305,17 +360,11 @@ fn read_text(path: &Path) -> Result<String, FileError> {
     String::from_utf8(bytes).map_err(|_| FileError::NotText { path: path.to_owned() })
 }
 
-/// Writes `text` beside `path` and renames it over: all of it or none of it, keeping the file's mode.
-fn write_whole(path: &Path, text: &str) -> Result<(), FileError> {
-    let io_error = |source| FileError::Io { path: path.to_owned(), source };
-    Temporary::beside(path, text).and_then(|temporary| temporary.replace(path)).map_err(io_error)
-}
-
 /// How many names a save tries for its temporary. Each one taken is someone else's file.
 const TEMPORARY_NAMES: u32 = 1024;
 
-/// A file of one save's own, written whole beside the one it's to replace. Only a name nothing's at will
-/// do, so whatever is there already, another save's temporary, a person's file or a link to anything, is
+/// A file of one save's own, written whole beside the one it's to replace and renamed over it: all of it
+/// or none of it, keeping the file's mode. Only a name nothing's at will do, so whatever is there already, another save's temporary, a person's file or a link to anything, is
 /// left alone, and another editor's save can't write into this one or rename it away. Dropped before it
 /// replaces anything, it's gone, and only it.
 #[derive(Debug)]
@@ -704,7 +753,7 @@ mod tests {
         let by_hand = PLAYER.replacen("startup: 7", "startup: 8", 1);
         fs::write(&path, &by_hand).expect("writes");
         file.poll_disk();
-        assert_eq!(file.conflict(), Some(by_hand.as_str()));
+        assert_eq!(file.conflict(), Some(Conflict::Text(by_hand.as_str())));
         assert_eq!(file.text(), mine);
 
         let refused = file.save().expect_err("would lose the hand edit");
@@ -722,6 +771,153 @@ mod tests {
         assert_eq!(file.text(), by_hand);
         assert!(!file.is_dirty());
         assert_eq!(file.undo_label(), Some("took the file's text from disk"));
+    }
+
+    const NOT_TEXT: [u8; 3] = [0xff, 0xfe, 0x42];
+
+    /// Bytes that aren't text are still a change. Looking in passing leaves them be, since someone may be
+    /// halfway through a save; a save won't write over what it couldn't read, unless it's told to.
+    #[test]
+    fn a_save_wont_replace_a_file_that_stopped_being_text() {
+        let dir = TestDir::new("not_text");
+        let path = dir.write("moves.ron", PLAYER);
+        let mut file = MovesFile::open(&path).expect("opens");
+        file.edit("move a cue", |text| text.set_instant(cue(0), 3)).expect("the edit");
+        let mine = file.text().to_owned();
+        fs::write(&path, NOT_TEXT).expect("someone else's save");
+
+        file.poll_disk();
+        assert!(file.conflict().is_none(), "looking in passing says nothing yet");
+        let refused = file.save().expect_err("it would lose those bytes");
+        assert!(matches!(refused, FileError::ChangedOnDisk { .. }), "{refused}");
+        assert_eq!(fs::read(&path).expect("reads"), NOT_TEXT);
+        assert_eq!(file.text(), mine);
+        assert!(file.is_dirty());
+        assert_eq!(fs::read_dir(dir.path()).expect("lists").count(), 1, "nothing left beside it");
+        assert_eq!(file.conflict(), Some(Conflict::NotText));
+
+        // It can't be taken, and it still can't be saved over, until someone says so.
+        file.take_disk();
+        assert_eq!(file.conflict(), Some(Conflict::NotText));
+        assert_eq!(file.text(), mine);
+        assert!(file.save().is_err());
+        file.keep_mine();
+        file.poll_disk();
+        assert_eq!(file.conflict(), None, "looking in passing doesn't bring it back");
+        file.save().expect("told to");
+        assert_eq!(fs::read_to_string(&path).expect("reads"), mine);
+        assert!(!file.is_dirty());
+    }
+
+    /// With nothing to write it's no save either, and it doesn't say it saved.
+    #[test]
+    fn a_save_with_no_edits_says_so_of_a_file_that_stopped_being_text() {
+        let dir = TestDir::new("not_text_clean");
+        let path = dir.write("moves.ron", PLAYER);
+        let mut file = MovesFile::open(&path).expect("opens");
+        fs::write(&path, NOT_TEXT).expect("someone else's save");
+        let refused = file.save().expect_err("the text here isn't what's there");
+        assert!(matches!(refused, FileError::ChangedOnDisk { .. }), "{refused}");
+        assert_eq!(fs::read(&path).expect("reads"), NOT_TEXT);
+        assert_eq!(file.text(), PLAYER);
+
+        // Put right, the conflict goes by itself, and no edit stands in the way of a save.
+        fs::write(&path, PLAYER).expect("put right");
+        file.poll_disk();
+        assert_eq!(file.conflict(), None);
+        file.save().expect("nothing to refuse");
+    }
+
+    /// A directory in the file's place is no place to write, and a look in passing doesn't mind it.
+    #[test]
+    fn a_save_refuses_a_directory_in_the_files_place() {
+        let dir = TestDir::new("directory");
+        let path = dir.write("moves.ron", PLAYER);
+        let mut file = MovesFile::open(&path).expect("opens");
+        file.edit("move a cue", |text| text.set_instant(cue(0), 3)).expect("the edit");
+        fs::remove_file(&path).expect("removed");
+        fs::create_dir(&path).expect("a directory");
+        fs::write(path.join("inside"), "someone's").expect("a file in it");
+        file.poll_disk();
+        assert!(file.conflict().is_none());
+        assert!(matches!(file.save(), Err(FileError::Io { .. })));
+        assert_eq!(fs::read_to_string(path.join("inside")).expect("reads"), "someone's");
+        assert!(file.is_dirty());
+    }
+
+    /// A file that can't be read can't be checked, so it isn't replaced: renaming over it needs no leave
+    /// from the file itself.
+    #[cfg(unix)]
+    #[test]
+    fn a_save_refuses_a_file_it_cant_read() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = TestDir::new("unreadable");
+        let path = dir.write("moves.ron", PLAYER);
+        let mut file = MovesFile::open(&path).expect("opens");
+        file.edit("move a cue", |text| text.set_instant(cue(0), 3)).expect("the edit");
+        let by_hand = PLAYER.replacen("startup: 7", "startup: 8", 1);
+        fs::write(&path, &by_hand).expect("someone else's save");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).expect("a mode");
+        if fs::read(&path).is_ok() {
+            return; // Root reads anything, so there's nothing to test.
+        }
+        file.poll_disk();
+        assert!(file.conflict().is_none());
+        let refused = file.save();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).expect("a mode");
+        assert!(matches!(refused, Err(FileError::Io { .. })), "{refused:?}");
+        assert_eq!(fs::read_to_string(&path).expect("reads"), by_hand);
+    }
+
+    /// A file that's gone has nothing to lose, and edits here are the only copy left: a save puts it back.
+    /// Looking in passing keeps quiet, since a rename may be about to bring it back.
+    #[test]
+    fn a_save_puts_back_a_file_thats_gone() {
+        let dir = TestDir::new("gone");
+        let path = dir.write("moves.ron", PLAYER);
+        let mut file = MovesFile::open(&path).expect("opens");
+        file.edit("move a cue", |text| text.set_instant(cue(0), 3)).expect("the edit");
+        let mine = file.text().to_owned();
+        fs::remove_file(&path).expect("removed");
+        file.poll_disk();
+        assert_eq!(file.text(), mine);
+        assert!(file.conflict().is_none());
+        file.save().expect("saves");
+        assert_eq!(fs::read_to_string(&path).expect("reads"), mine);
+    }
+
+    /// A link in the file's place is read through like any other change: what it leads to is what's on disk.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_to_other_text_in_the_files_place_is_a_change() {
+        let dir = TestDir::new("link_replaced");
+        let path = dir.write("moves.ron", PLAYER);
+        let by_hand = PLAYER.replacen("startup: 7", "startup: 8", 1);
+        let other = dir.write("other", &by_hand);
+        let mut file = MovesFile::open(&path).expect("opens");
+        file.edit("move a cue", |text| text.set_instant(cue(0), 3)).expect("the edit");
+        fs::remove_file(&path).expect("removed");
+        std::os::unix::fs::symlink(&other, &path).expect("a link");
+        assert!(matches!(file.save(), Err(FileError::ChangedOnDisk { .. })));
+        assert_eq!(fs::read_to_string(&other).expect("reads"), by_hand);
+        assert!(fs::symlink_metadata(&path).expect("the link").is_symlink());
+    }
+
+    /// A document that is a link stays one: a save writes where it leads, and the link and whatever else
+    /// reads that file see it.
+    #[cfg(unix)]
+    #[test]
+    fn a_save_writes_through_a_document_that_is_a_link() {
+        let dir = TestDir::new("link_document");
+        let other = dir.write("elsewhere", PLAYER);
+        let path = dir.path().join("moves.ron");
+        std::os::unix::fs::symlink(&other, &path).expect("a link");
+        let mut file = MovesFile::open(&path).expect("opens");
+        file.edit("move a cue", |text| text.set_instant(cue(0), 3)).expect("the edit");
+        file.save().expect("saves");
+        assert!(fs::symlink_metadata(&path).expect("the link").is_symlink(), "it's still a link");
+        assert_eq!(fs::read_to_string(&other).expect("reads"), file.text());
+        assert!(!file.is_dirty());
     }
 
     #[test]

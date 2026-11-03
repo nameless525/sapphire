@@ -1179,6 +1179,33 @@ fn a_change_on_disk_doesnt_land_under_what_is_being_typed() {
     assert!(harness.state().file().expect("a file").conflict().is_some());
 }
 
+/// A file that stopped being text can't be taken and isn't saved over, and the top bar has the way past.
+#[test]
+fn a_file_that_stopped_being_text_needs_saying_so_before_a_save() {
+    let not_text = [0xff, 0xfe, 0x42];
+    let dir = TestDir::new("not_text");
+    let path = dir.write("slice.moves.ron", SLICE);
+    let mut harness = harness(&path);
+    harness.run_steps(3);
+    let (_, end, per_tick) = handles(&harness, "hit volumes light_1_hit 5..8", 3);
+    drag(&mut harness, end, end + egui::vec2(per_tick, 0.0));
+    let edited = text_of(&harness);
+    fs::write(&path, not_text).expect("someone else's save");
+
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::S);
+    harness.run_steps(2);
+    assert_eq!(fs::read(&path).expect("the file"), not_text);
+    assert!(harness.state().notice().is_some_and(|notice| notice.trouble));
+    assert!(harness.query_by_label("Take the file's").is_none());
+
+    harness.get_by_label("Keep mine").click();
+    harness.run_steps(8);
+    assert_eq!(fs::read(&path).expect("the file"), not_text, "not until the next save");
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::S);
+    harness.run_steps(2);
+    assert_same(&fs::read_to_string(&path).expect("the file"), &edited, "saved");
+}
+
 /// A field's row can go before it lets go: to another move, or with its entry. What was typed goes to the
 /// entry it was typed over, ahead of what took it away.
 #[test]

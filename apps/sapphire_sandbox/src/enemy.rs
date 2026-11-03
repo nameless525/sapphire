@@ -59,6 +59,11 @@ pub(crate) const SCALE: f32 = 0.8;
 /// How far its crown stands over its feet, in metres, once it's at [`SCALE`]: what a camera frames.
 pub(crate) const CROWN: f32 = 2.33 * SCALE;
 
+/// How wide it stands from its middle, in metres, shoulders and all, what a camera fits in its frame. Its
+/// capsule, which a body meets, is narrower. Clearing takes everyone to draw a tenth wider, for arms and
+/// blades, which comes to what `arena::framing` reads it as.
+pub(crate) const FRAMED_RADIUS: f32 = 0.45;
+
 /// How high its eyes stand over its feet, in metres: what the character looks at in a fight.
 pub(crate) const EYES: f32 = CROWN - 0.2;
 

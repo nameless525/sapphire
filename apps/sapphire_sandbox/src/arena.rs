@@ -713,7 +713,11 @@ impl ArenaActors {
                 behind: crate::cues::behind_latest(alpha),
                 player: Subject { position: feet, height: profile.height, radius },
                 player_yaw: self.player.1.yaw(alpha),
-                target: target.map(|position| Subject { position, height: enemy::CROWN, radius }),
+                target: target.map(|position| Subject {
+                    position,
+                    height: enemy::CROWN,
+                    radius: enemy::FRAMED_RADIUS,
+                }),
                 look: std::mem::take(&mut camera.look),
                 zoom: std::mem::take(&mut camera.zoom),
                 aspect,

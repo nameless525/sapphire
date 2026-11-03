@@ -81,7 +81,8 @@ struct Figure {
 }
 
 const PLAYER: Figure = Figure { head: 1.5, hips: 0.85, half_width: 0.3 };
-const WARRIOR: Figure = Figure { head: enemy::CROWN - 0.1, hips: 1.0, half_width: 0.55 };
+const WARRIOR: Figure =
+    Figure { head: enemy::CROWN - 0.1, hips: 1.0, half_width: enemy::FRAMED_RADIUS + 0.1 };
 
 /// What each frame is checked for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

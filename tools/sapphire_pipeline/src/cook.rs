@@ -84,12 +84,14 @@
 //! Assets cook one after another. Cooking in parallel (rayon) waits for content that makes it
 //! worth it.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::fs;
 use std::io;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::str::FromStr;
 
 use sapphire_assets::AssetId;
@@ -714,6 +716,7 @@ pub fn cook_dir(
         sources.entry(planned.asset.meta.id).or_insert(&planned.asset);
     }
     let clip_sources = ClipSources::default();
+    let last_source = LastSource::default();
     let mut cooked: Vec<Option<CookedAsset>> = vec![None; plan.len()];
     let order = others
         .into_iter()
@@ -729,6 +732,7 @@ pub fn cook_dir(
             cooked: &cooked,
             sources: &sources,
             clip_sources: &clip_sources,
+            last_source: &last_source,
         };
         let asset = guarded(&plan[index].asset.path, || {
             cook_asset(&plan[index], &assets, cache.as_ref(), options.cook)
@@ -1049,6 +1053,7 @@ struct Assets<'a> {
     /// Sources by their sidecars' IDs, whether they have an asset of that ID or not.
     sources: &'a HashMap<AssetId, &'a SourceAsset>,
     clip_sources: &'a ClipSources,
+    last_source: &'a LastSource,
 }
 
 /// A source's rig as other assets read it: its cooked skeleton and where its humanoid map comes
@@ -1310,6 +1315,35 @@ fn clip_samples(planned: &Planned, bytes: &[u8], assets: &Assets<'_>) -> Result<
     key_pose_samples(path, bytes, rig, assets)
 }
 
+/// A source's contents and their hash.
+struct SourceBytes {
+    bytes: Vec<u8>,
+    hash: blake3::Hash,
+}
+
+/// The source read last: a source's parts cook one after another, so a file of 100 clips is read and
+/// hashed once rather than 100 times, on every cook, and all its parts read one version of it. Only
+/// one source's bytes are ever held, as [`ClipSources`] holds one source's import.
+#[derive(Default)]
+struct LastSource(RefCell<Option<(PathBuf, Rc<SourceBytes>)>>);
+
+impl LastSource {
+    /// The source at `path`.
+    fn read(&self, path: &Path) -> Result<Rc<SourceBytes>, CookError> {
+        if let Some((last, source)) = &*self.0.borrow()
+            && last == path
+        {
+            return Ok(Rc::clone(source));
+        }
+        // Before the read, so two sources are never held at once.
+        *self.0.borrow_mut() = None;
+        let bytes = fs::read(path).map_err(|source| CookError::Read { path: path.to_owned(), source })?;
+        let source = Rc::new(SourceBytes { hash: blake3::hash(&bytes), bytes });
+        *self.0.borrow_mut() = Some((path.to_owned(), Rc::clone(&source)));
+        Ok(source)
+    }
+}
+
 /// Runs `cook` for the source at `path`, a panic becoming an error that names it. Importers and
 /// cookers report what they find wrong themselves; this is the last line of defence, for what
 /// slips past them or panics inside a crate they call, so that the file is named all the same.
@@ -1329,11 +1363,12 @@ fn cook_asset(
     cook: Cook,
 ) -> Result<CookedAsset, CookError> {
     let Planned { asset: SourceAsset { path, meta }, id, part, skeleton, recipe, output } = planned;
-    let bytes = fs::read(path).map_err(|source| CookError::Read { path: path.clone(), source })?;
-    let mut dependencies = dependencies(path, &bytes, &meta.importer, part, assets)?;
+    let source = assets.last_source.read(path)?;
+    let bytes = &source.bytes;
+    let mut dependencies = dependencies(path, bytes, &meta.importer, part, assets)?;
     dependencies.extend(part_dependencies(path, part, *skeleton, &meta.importer));
     let key = CacheKey::new(&KeyInputs {
-        source: blake3::hash(&bytes),
+        source: source.hash,
         recipe,
         settings: &meta.importer,
         cook,
@@ -1361,7 +1396,7 @@ fn cook_asset(
     let (status, cooked) = match cached {
         Some(cooked) => (CookStatus::Cached, cooked),
         None => {
-            let cooked = cook_source(path, &bytes, &meta.importer, part, *skeleton, cook, assets)?;
+            let cooked = cook_source(path, bytes, &meta.importer, part, *skeleton, cook, assets)?;
             if let Some(cache) = cache {
                 cache.put(&key, &cooked)?;
             }
@@ -2265,6 +2300,26 @@ mod tests {
         assert_eq!(file_hash(&path).unwrap(), Some(blake3::hash(b"")), "empty");
         let error = file_hash(dir.path()).unwrap_err();
         assert!(matches!(&error, CookError::Read { path: at, .. } if at == dir.path()), "{error:?}");
+    }
+
+    #[test]
+    fn a_sources_parts_read_it_once() {
+        let dir = TempDir::new("cook_last_source");
+        let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+        fs::write(&a, b"first").unwrap();
+        fs::write(&b, b"other").unwrap();
+        let last = LastSource::default();
+        let read = last.read(&a).unwrap();
+        assert_eq!((read.bytes.as_slice(), read.hash), (&b"first"[..], blake3::hash(b"first")));
+        // One version of it serves all its parts.
+        fs::write(&a, b"saved since").unwrap();
+        assert!(Rc::ptr_eq(&read, &last.read(&a).unwrap()));
+        // The next source replaces it, so a later read of it sees the file as it stands.
+        assert_eq!(last.read(&b).unwrap().bytes, b"other");
+        assert_eq!(last.read(&a).unwrap().bytes, b"saved since");
+        fs::remove_file(&b).unwrap();
+        let error = last.read(&b).err().expect("the file is gone");
+        assert!(matches!(&error, CookError::Read { path, .. } if *path == b), "{error:?}");
     }
 
     #[test]

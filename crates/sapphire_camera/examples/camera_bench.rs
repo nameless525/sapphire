@@ -6,9 +6,11 @@
 //!
 //! Runs a director through the scripted fight, with look input and a stream of shakes, at 60 Hz in a world
 //! of 227 colliders (a ground, 225 pillars and crates on a 4 m grid the fighters walk through, and an
-//! 8,192-triangle mesh, the size of `sapphire_physics`' own bench scene), in alternating rounds of three
-//! loads. It reports each load's minimum median, 99th percentile and worst frame across the rounds, how
-//! many sphere casts a frame took, and on what share of frames the arm was pulled in.
+//! 8,192-triangle mesh, the size of `sapphire_physics`' own bench scene), in alternating rounds of four
+//! loads, each after `WARM_UP` frames it doesn't time. For each load it reports every round's frames
+//! taken together, so `worst` is the slowest frame of them all, with how far the rounds' medians spread; the
+//! quietest round, the one with the least median, whole, as what the code costs with the least else going
+//! on; how many sphere casts a frame took; and on what share of frames the arm was pulled in.
 
 #![allow(clippy::print_stdout, reason = "a bench's output is what it's for")]
 
@@ -21,6 +23,8 @@ use sapphire_physics::{ColliderId, Group, PhysicsWorld, Pose, Shape, StaticColli
 use sapphire_time::Stopwatch;
 
 const ROUNDS: u32 = 7;
+/// Frames a round runs before it starts timing, in which a fight gets going.
+const WARM_UP: u32 = 120;
 
 fn collider(id: u32, shape: StaticShape, position: Vec3) -> StaticCollider {
     StaticCollider { id: ColliderId(id), shape, pose: Pose::at(position), memberships: Group::World.mask() }
@@ -127,67 +131,179 @@ fn frame(index: u32, load: Load) -> CameraFrame {
     }
 }
 
-/// One round's median, 99th percentile and worst in microseconds, casts a frame, the share pulled in, and
-/// times it chose to turn.
-fn round(world: &PhysicsWorld, load: Load, frames: u32, times: &mut Vec<Duration>) -> [f64; 6] {
+/// A set of frames' median, 99th percentile and slowest, in microseconds, all of the same frames.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Times {
+    median: f64,
+    p99: f64,
+    worst: f64,
+}
+
+impl Times {
+    /// Sorts `times` to read them.
+    fn of(times: &mut [Duration]) -> Self {
+        times.sort_unstable();
+        let micros = |time: Duration| time.as_secs_f64() * 1e6;
+        Self {
+            median: micros(times[times.len() / 2]),
+            p99: micros(times[times.len() * 99 / 100]),
+            worst: micros(times[times.len() - 1]),
+        }
+    }
+}
+
+/// What one round came to.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Round {
+    times: Times,
+    casts: f64,
+    pulled: f64,
+    chose: u32,
+}
+
+/// What a load's rounds came to.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Summary {
+    /// Every frame of every round, as one set.
+    all: Times,
+    frames: usize,
+    /// The least and most of the rounds' medians.
+    medians: (f64, f64),
+    /// The round with the least median, counting from 1, and that round's own numbers.
+    quietest: (usize, Round),
+}
+
+impl Summary {
+    /// `all` holds every frame of `rounds`, which can't be empty.
+    fn of(rounds: &[Round], all: &mut [Duration]) -> Self {
+        let median = |round: &Round| round.times.median;
+        let (index, quietest) = rounds
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| median(a).total_cmp(&median(b)))
+            .expect("a round ran");
+        Self {
+            all: Times::of(all),
+            frames: all.len(),
+            medians: (
+                median(quietest),
+                rounds.iter().map(median).max_by(f64::total_cmp).expect("a round ran"),
+            ),
+            quietest: (index + 1, *quietest),
+        }
+    }
+}
+
+/// Runs a round, adding its frames' times to `all`.
+fn round(world: &PhysicsWorld, load: Load, frames: u32, all: &mut Vec<Duration>) -> Round {
     let mut camera = camera(load);
     let shake = camera.tuning().shake_id("hit_light").expect("a shipped preset");
-    for index in 0..120 {
+    for index in 0..WARM_UP {
         black_box(camera.update(&frame(index, load), world));
     }
     camera.take_stats();
 
-    times.clear();
+    let first = all.len();
     for index in 0..frames {
         if index % 20 == 0 {
             camera.fire_shake(shake, 1.0);
         }
-        let input = frame(120 + index, load);
+        let input = frame(WARM_UP + index, load);
         let clock = Stopwatch::start();
         black_box(camera.update(&input, world));
-        times.push(clock.elapsed());
+        all.push(clock.elapsed());
     }
-    times.sort_unstable();
-    let micros = |time: Duration| time.as_secs_f64() * 1e6;
     let stats = camera.take_stats();
     let per_frame = |count: u32| f64::from(count) / f64::from(frames);
-    [
-        micros(times[times.len() / 2]),
-        micros(times[times.len() * 99 / 100]),
-        micros(times[times.len() - 1]),
-        per_frame(stats.casts),
-        per_frame(stats.pulled_frames),
-        f64::from(stats.swings),
-    ]
+    Round {
+        times: Times::of(&mut all[first..]),
+        casts: per_frame(stats.casts),
+        pulled: per_frame(stats.pulled_frames),
+        chose: stats.swings,
+    }
 }
 
 fn main() {
     let frames: u32 = std::env::args().nth(1).and_then(|text| text.parse().ok()).unwrap_or(4000);
     let world = world();
-    println!("{} colliders, {frames} frames a round, {ROUNDS} alternating rounds", world.static_count());
+    println!(
+        "{} colliders, {frames} frames a round after {WARM_UP} to warm up, {ROUNDS} alternating rounds, in µs",
+        world.static_count()
+    );
 
     let loads = [Load::Explore, Load::Combat, Load::LockOn, Load::Turning];
-    let mut best = [[f64::MAX, f64::MAX, f64::MAX, 0.0, 0.0, 0.0]; 4];
-    let mut times = Vec::with_capacity(frames as usize);
+    let mut rounds: [Vec<Round>; 4] = std::array::from_fn(|_| Vec::with_capacity(ROUNDS as usize));
+    let mut all: [Vec<Duration>; 4] = std::array::from_fn(|_| Vec::with_capacity((ROUNDS * frames) as usize));
     for _ in 0..ROUNDS {
         for (index, &load) in loads.iter().enumerate() {
-            let result = round(&world, load, frames, &mut times);
-            let kept = &mut best[index];
-            *kept = [
-                kept[0].min(result[0]),
-                kept[1].min(result[1]),
-                kept[2].min(result[2]),
-                result[3],
-                result[4],
-                result[5],
-            ];
+            rounds[index].push(round(&world, load, frames, &mut all[index]));
         }
     }
-    for (load, [median, p99, worst, casts, pulled, chose]) in loads.iter().zip(best) {
+    for (index, load) in loads.iter().enumerate() {
+        let Summary { all, frames, medians, quietest: (number, quietest) } =
+            Summary::of(&rounds[index], &mut all[index]);
         println!(
-            "{:8} median {median:6.2} µs, p99 {p99:6.2} µs, worst {worst:6.2} µs, {casts:.2} casts a frame, pulled in on {:.0}%, chose {chose} times",
+            "{:8} all {frames} frames: median {:.2} ({:.2} to {:.2} by round), p99 {:.2}, worst {:.2}; \
+             quietest round, {number}: median {:.2}, p99 {:.2}, worst {:.2}; \
+             {:.2} casts a frame, pulled in on {:.0}%, chose {} times",
             load.name(),
-            pulled * 100.0,
+            all.median,
+            medians.0,
+            medians.1,
+            all.p99,
+            all.worst,
+            quietest.times.median,
+            quietest.times.p99,
+            quietest.times.worst,
+            quietest.casts,
+            quietest.pulled * 100.0,
+            quietest.chose,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn micros(values: &[u64]) -> Vec<Duration> {
+        values.iter().copied().map(Duration::from_micros).collect()
+    }
+
+    fn round_of(times: &[u64]) -> Round {
+        Round { times: Times::of(&mut micros(times)), casts: 5.0, pulled: 0.1, chose: 0 }
+    }
+
+    /// One slow frame in a round that isn't the quietest is still the worst there was, and nothing from
+    /// another round gets into the quietest round's numbers.
+    #[test]
+    fn the_worst_is_the_slowest_of_every_frame_and_the_quietest_round_is_one_round() {
+        let (first, second, third): (Vec<u64>, Vec<u64>, Vec<u64>) = (
+            (0..100).map(|_| 4).chain([500]).collect(),
+            (0..100).map(|_| 2).chain([90]).collect(),
+            (0..100).map(|_| 3).chain([7]).collect(),
+        );
+        let rounds = [round_of(&first), round_of(&second), round_of(&third)];
+        let mut all = micros(&[first, second, third].concat());
+        let summary = Summary::of(&rounds, &mut all);
+
+        assert_eq!(summary.all.worst, 500.0, "the slowest frame of them all");
+        assert_eq!(summary.frames, 303);
+        assert_eq!(summary.medians, (2.0, 4.0));
+        assert_eq!(summary.all.median, 3.0);
+        assert_eq!(summary.quietest.0, 2, "the second, counting from 1");
+        assert_eq!(summary.quietest.1, rounds[1]);
+        assert_eq!(summary.quietest.1.times.worst, 90.0, "its own worst, not the least of the rounds' 7");
+    }
+
+    /// A round's percentile is of that round's frames, and adding them to the whole set loses none.
+    #[test]
+    fn rounds_keep_their_frames() {
+        let world = world();
+        let mut all = vec![Duration::from_secs(1)];
+        let done = round(&world, Load::Explore, 8, &mut all);
+        assert_eq!(all.len(), 9);
+        assert!(done.times.worst < 1e6, "{done:?}: the frame already there isn't this round's");
+        assert_eq!(all[0], Duration::from_secs(1));
     }
 }

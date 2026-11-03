@@ -26,5 +26,10 @@ sapphire_core.workspace = true
 # The bench's clock: rule R2 keeps this crate itself off the OS's.
 sapphire_time.workspace = true
 
+# Its summary has tests: what a bench says it measured is worth holding to.
+[[example]]
+name = "camera_bench"
+test = true
+
 [lints]
 workspace = true

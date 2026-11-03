@@ -119,11 +119,12 @@
 //! # Cost
 //!
 //! It reads no clock, so `examples/camera_bench.rs` times it. In release, on an M5 at a load average of
-//! about 3, with 227 colliders and the fighters walking among them, over 7 alternating rounds of 4,000
-//! frames: a median frame takes 0.8 µs exploring, 2.1 in combat and 1.7 in lock-on, the 99th percentile is
-//! about 5 µs, and the worst about 7 µs, for 5–8 sphere casts a frame. With no thumb on the view, so clearing's
-//! free to compare views, the median holds and a comparing frame costs what the percentiles show: p99 25 µs,
-//! worst 43 µs, 10 casts a frame on average.
+//! about 20, with 227 colliders and the fighters walking among them, in each load's quietest of 7 alternating
+//! rounds of 4,000 frames: a median frame takes 0.9 µs exploring, 2.3 in combat and 1.8 in lock-on, the 99th
+//! percentile is about 5 µs, and the slowest about 7 µs, for 5–8 sphere casts a frame. With no thumb on the
+//! view, so clearing's free to compare views, the median holds and a comparing frame costs what the percentile
+//! shows: p99 28 µs, 10 casts a frame on average. Across all the rounds' frames the slowest are 10–25 ms, the
+//! scheduler's at that load: this says what the code costs, not how long a frame can be held up.
 //!
 //! # Does not own
 //!

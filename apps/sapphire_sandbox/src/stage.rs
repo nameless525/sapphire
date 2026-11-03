@@ -19,7 +19,9 @@
 //!   across it: on the character from its feet to its chest, so the edge crosses its body; over
 //!   every head of the face rig, from far enough away to stay out of the rig's view.
 //! - **Placed once,** for the key light at the hour the scene starts (`--time-of-day`): a running
-//!   day moves the sun, and the shadows with it.
+//!   day moves the sun, and the shadows with it. A new version of the character (hot reload) replaces
+//!   the figure and the pedestal under their handles ([`CharacterCopies`]) and stands the pieces where
+//!   its bounds now say, for that same key light.
 //! - **Materials:** the environment family (W4), a warm floor and grey stone with a soft wrap and
 //!   no highlight, so shadows on them keep time of day's tint. The pedestal keeps the
 //!   mannequin's anime character material: an environment instance drawn with that family.
@@ -29,9 +31,10 @@ use sapphire_assets::mesh::{
     Bounds, MaterialSlot, Mesh, PositionFormat, Submesh, VERTEX_COLOR_NEUTRAL, Vertex, VertexFlags,
 };
 use sapphire_assets::texture::Swizzle;
+use sapphire_assets::{AssetId, UploadError};
 use sapphire_math::{Mat4, Quat, Vec3};
 use sapphire_platform::AppInitError;
-use sapphire_render::{MeshHandle, Renderer};
+use sapphire_render::{MaterialHandle, MeshHandle, Renderer};
 
 /// The floor's side, in meters: long sunset shadows stay on it.
 pub(crate) const FLOOR_SIZE: f32 = 64.0;
@@ -88,6 +91,61 @@ impl StageMeshes {
             Piece::Pillar | Piece::Plinth => self.pillar,
             Piece::Pedestal => self.pedestal.expect("a pedestal piece is placed only with a pedestal").0,
         }
+    }
+}
+
+/// What a renderer draws that was made from the character's mesh, and so doesn't follow a new version
+/// of it by itself, where the character's own handle does. Kept per renderer, as what it holds is.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct CharacterCopies {
+    /// The stage's figure and pedestal, with `--stage`.
+    pub stage: Option<StageMeshes>,
+    /// The rim rig's figure, with `--rim-rig`.
+    pub rim_figure: Option<MeshHandle>,
+}
+
+impl CharacterCopies {
+    /// Takes a new version of `character`, which the renderer has just taken, under the handles the scene
+    /// draws with, its materials through `materials`. What won't convert fails first, leaving what's held
+    /// as it was. A pedestal it has now and hadn't gets a new handle; one it's lost stays in the renderer,
+    /// as meshes do, with nothing drawing it once the scene has placed the stage again.
+    pub fn take_character(
+        &mut self,
+        character: &Mesh,
+        materials: impl Fn(AssetId) -> Option<MaterialHandle> + Copy,
+        renderer: &mut Renderer,
+    ) -> Result<(), UploadError> {
+        if self.stage.is_none() && self.rim_figure.is_none() {
+            return Ok(());
+        }
+        let (figure, pedestal) = split_pedestal(character);
+        let figure = figure.to_cooked()?;
+        let figure = Mesh::read(&figure)?;
+        let pedestal = match pedestal {
+            Some(mesh) => Some((mesh.to_cooked()?, drawn_bounds(&mesh))),
+            None => None,
+        };
+        let pedestal = match &pedestal {
+            Some((bytes, bounds)) => Some((Mesh::read(bytes)?, *bounds)),
+            None => None,
+        };
+        if let Some(rim_figure) = self.rim_figure {
+            renderer.update_mesh(rim_figure, figure, materials)?;
+        }
+        if let Some(stage) = &mut self.stage {
+            renderer.update_mesh(stage.figure, figure, materials)?;
+            stage.pedestal = match (stage.pedestal, pedestal) {
+                (Some((handle, _)), Some((mesh, bounds))) => {
+                    renderer.update_mesh(handle, mesh, materials)?;
+                    Some((handle, bounds))
+                }
+                (None, Some((mesh, bounds))) => {
+                    Some((renderer.upload_mesh_with_slots(mesh, materials)?, bounds))
+                }
+                (_, None) => None,
+            };
+        }
+        Ok(())
     }
 }
 

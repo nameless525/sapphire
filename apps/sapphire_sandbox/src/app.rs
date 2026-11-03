@@ -40,7 +40,7 @@ use crate::scene::{Arena, LookDev, Scene};
 use crate::stage::StageMeshes;
 use crate::stats::{FrameStats, Stages};
 use crate::swatches::SWATCHES;
-use crate::{garments, layers, lookdev, rims, skinned, stage, swatches};
+use crate::{garments, layers, lookdev, skinned, stage, swatches};
 
 /// Loop period while nothing can be presented (occluded, minimized, backgrounded).
 const IDLE_FRAME: Duration = Duration::from_millis(33);
@@ -1370,15 +1370,7 @@ pub(crate) fn create_renderer(
             options.materials.then(|| layers::upload_samples(content, gpu, &mut renderer)).transpose()?;
         let garments = options.two_sided.then(|| garments::upload_samples(&mut renderer)).transpose()?;
         let face_head = options.faces.map(|_| content.face_head(&mut renderer, gpu)).transpose()?;
-        let rim_rig = match options.rim_rig {
-            Some(_) => {
-                let character = content
-                    .character_mesh()
-                    .ok_or_else(|| AppInitError::msg("the character isn't loaded"))?;
-                Some(rims::upload_rig(&mut renderer, character)?)
-            }
-            None => None,
-        };
+        let rim_rig = options.rim_rig.map(|_| content.rim_rig_meshes(&mut renderer)).transpose()?;
         let courtyard = options.environment.then(|| content.courtyard(&mut renderer, gpu)).transpose()?;
         let fog_cards = ((options.environment || options.in_town()) && !options.fog_off)
             .then(|| content.fog_cards(&mut renderer, gpu))
@@ -1391,15 +1383,7 @@ pub(crate) fn create_renderer(
             .then(|| content.enemy(&mut renderer, gpu))
             .transpose()?;
         let sword = options.blade().then(|| content.sword(&mut renderer, gpu)).transpose()?;
-        let stage = match options.stage {
-            Some(_) => {
-                let figure = content
-                    .character_mesh()
-                    .ok_or_else(|| AppInitError::msg("the character isn't loaded"))?;
-                Some(stage::upload_stage(&mut renderer, figure)?)
-            }
-            None => None,
-        };
+        let stage = options.stage.map(|_| content.stage_meshes(&mut renderer)).transpose()?;
         let ik_block = options
             .ik
             .as_ref()

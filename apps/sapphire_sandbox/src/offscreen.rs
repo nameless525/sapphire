@@ -231,9 +231,7 @@ impl Stage {
             scene.spawn_face_rig(content.face_head(&mut renderer, &gpu)?, layout);
         }
         if let Some(layout) = options.rim_rig {
-            let figure =
-                content.character_mesh().ok_or_else(|| AppInitError::msg("the character isn't loaded"))?;
-            scene.spawn_rim_rig(layout, crate::rims::upload_rig(&mut renderer, figure)?);
+            scene.spawn_rim_rig(layout, content.rim_rig_meshes(&mut renderer)?);
         }
         if options.environment {
             scene.spawn_environment(content.courtyard(&mut renderer, &gpu)?);
@@ -356,9 +354,7 @@ impl Stage {
         scene.prewarm(&mut renderer);
         // The stage after the hour, which places its pillars.
         if let Some(layout) = options.stage {
-            let character =
-                content.character_mesh().ok_or_else(|| AppInitError::msg("the character isn't loaded"))?;
-            scene.spawn_stage(layout, crate::stage::upload_stage(&mut renderer, character)?);
+            scene.spawn_stage(layout, content.stage_meshes(&mut renderer)?);
         }
         // Offscreen there are no touches: the HUD is its fixed frame, in either mode, unless it's
         // live and a fight's bars stand behind it.

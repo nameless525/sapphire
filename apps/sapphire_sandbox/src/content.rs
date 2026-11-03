@@ -65,7 +65,9 @@
 //! streams under its handle, which starts its instances over in their bind pose, so the scene
 //! sends their poses again in the frame that happens ([`Content::take_meshes_replaced`],
 //! `Scene::follow_content`). A new version of the look-dev character's mesh, rig or skeleton holds
-//! the character anew ([`Content::take_character_changed`]).
+//! the character anew ([`Content::take_character_changed`]). What the stage and the rim rig made from
+//! the character's mesh are replaced with it, so they're as new as it is
+//! ([`crate::stage::CharacterCopies`]).
 //!
 //! In `dev` builds the server reads packs through live link's source (M1 A9,
 //! `sapphire_livelink::LivePacks`), which serves packs pushed from the desktop in place of the
@@ -116,7 +118,9 @@ use crate::layers;
 use crate::lookdev::{self, Plant, TownMeshes};
 use crate::outlines;
 use crate::party_looks::PartyLooks;
+use crate::rims::{self, RimRigMeshes};
 use crate::scene;
+use crate::stage::{self, CharacterCopies, StageMeshes};
 use crate::swatches::{self, SWATCHES};
 
 /// The pack the sandbox's content ships in.
@@ -201,6 +205,10 @@ struct GpuAssets {
     overrides: MaterialOverrides,
     /// The party's recolors of what it uploads, with `--party`.
     party: Option<PartyLooks>,
+    /// What the stage and the rim rig made of the character on this renderer.
+    copies: CharacterCopies,
+    /// A new version of the character has replaced the stage's copies, since the scene last asked.
+    stage_replaced: bool,
     /// The probe grid the renderer holds (it holds one), as its key hours.
     probe_grid: Option<Held<Vec<f32>>>,
 }
@@ -219,6 +227,8 @@ impl GpuAssets {
             meshes_replaced: false,
             overrides: MaterialOverrides::default(),
             party: None,
+            copies: CharacterCopies::default(),
+            stage_replaced: false,
             probe_grid: None,
         }
     }
@@ -297,6 +307,10 @@ impl GpuAssets {
                     renderer.update_mesh(held.object.handle, mesh, resolve)?;
                     *held = Held { slot, generation, object: GpuMesh { handle: held.object.handle, bounds } };
                     self.meshes_replaced = true;
+                    if let Some(character) = &copy {
+                        self.copies.take_character(character, resolve, renderer)?;
+                        self.stage_replaced = self.copies.stage.is_some();
+                    }
                 }
                 None => {
                     // All or nothing, so a mesh the renderer rejects leaves no materials behind.
@@ -656,6 +670,34 @@ impl Content {
     /// look-dev character's. Call before loading them.
     pub fn override_materials(&mut self, overrides: MaterialOverrides) {
         self.gpu.overrides = overrides;
+    }
+
+    /// Makes the stage's meshes from the character, on `renderer`: a new version of it replaces them, and
+    /// the scene hears of that ([`Self::take_new_stage`]).
+    pub fn stage_meshes(&mut self, renderer: &mut Renderer) -> Result<StageMeshes, AppInitError> {
+        let character =
+            self.character_mesh().ok_or_else(|| AppInitError::msg("the character isn't loaded"))?;
+        let meshes = stage::upload_stage(renderer, character)?;
+        self.gpu.copies.stage = Some(meshes);
+        Ok(meshes)
+    }
+
+    /// Makes the rim rig's meshes from the character, on `renderer`: a new version of it replaces its
+    /// figure. The row stays where it stands, for the camera framing it.
+    pub fn rim_rig_meshes(&mut self, renderer: &mut Renderer) -> Result<RimRigMeshes, AppInitError> {
+        let character =
+            self.character_mesh().ok_or_else(|| AppInitError::msg("the character isn't loaded"))?;
+        let meshes = rims::upload_rig(renderer, character)?;
+        self.gpu.copies.rim_figure = Some(meshes.figure);
+        Ok(meshes)
+    }
+
+    /// The stage's meshes and the character's bounds, if a new version of the character has replaced them
+    /// since the last call, which the stage's pieces stand by.
+    pub fn take_new_stage(&mut self) -> Option<(StageMeshes, [[f32; 3]; 2])> {
+        std::mem::take(&mut self.gpu.stage_replaced).then_some(())?;
+        let bounds = self.gpu.meshes.get(&self.character_id)?.object.bounds;
+        Some((self.gpu.copies.stage?, bounds))
     }
 
     /// The character's mesh as last uploaded, if [`Self::keep_character_mesh`] asked for it.
@@ -1575,6 +1617,7 @@ mod tests {
     use crate::anim_graph::{GraphScript, GraphShow};
     use crate::lookdev::Shot;
     use crate::scene::{Arena, LookDev, Scene};
+    use crate::stage::StageLayout;
 
     const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
     const SIDE: u32 = 32;
@@ -1828,6 +1871,45 @@ mod tests {
         }
 
         fn over_pack(pack: Vec<u8>) -> Self {
+            Self::over_pack_with(pack, Self::in_town)
+        }
+
+        /// The mannequin's kind of scene: the character alone, with no rig, as `--stage` and `--rim-rig`
+        /// draw it.
+        fn mannequin_of(mesh: &Mesh) -> Self {
+            let bytes = mesh.to_cooked().expect("cooked");
+            let pack = write_pack(vec![packed(lookdev::CHARACTER, AssetKind::Mesh, &bytes)]).expect("a pack");
+            Self::over_pack_with(pack, |_, _, _, mesh, bounds| Scene::with_character(mesh, bounds, false))
+        }
+
+        /// The look-dev stage around the character.
+        fn in_town(
+            content: &mut Content,
+            renderer: &mut Renderer,
+            gpu: &GpuContext,
+            mesh: MeshHandle,
+            bounds: [[f32; 3]; 2],
+        ) -> Scene {
+            let (pose, figure) = lookdev::hold(content, renderer, gpu).expect("the character's pose");
+            // What the town draws doesn't matter here.
+            let bytes = triangle(0.0).to_cooked().expect("cooked");
+            let plain = Mesh::read(&bytes).expect("a valid mesh");
+            let materials = renderer.upload_embedded_materials(plain).expect("materials");
+            let plain = renderer.upload_mesh(plain, &materials).expect("a mesh");
+            let town = TownMeshes {
+                town: plain,
+                plants: Plant::ALL.map(|_| plain),
+                mountains: lookdev::MOUNTAINS.map(|_| plain),
+            };
+            let mut scene = Scene::with_character(mesh, bounds, false);
+            scene.spawn_look_dev(Shot::Hero, LookDev { town, fog_cards: None, pose, figure });
+            scene
+        }
+
+        fn over_pack_with(
+            pack: Vec<u8>,
+            scene: impl FnOnce(&mut Content, &mut Renderer, &GpuContext, MeshHandle, [[f32; 3]; 2]) -> Scene,
+        ) -> Self {
             let source = Arc::new(MemoryPackSource::new());
             source.insert(PACK, pack);
             let live_packs = Arc::new(LivePacks::new(source.clone()));
@@ -1842,20 +1924,7 @@ mod tests {
             let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), None).expect("device");
             let mut renderer = Renderer::new(&gpu, FORMAT, RenderSettings::default()).expect("renderer");
             let (mesh, bounds) = content.character(&mut renderer, &gpu).expect("the character");
-            let (pose, figure) =
-                lookdev::hold(&mut content, &mut renderer, &gpu).expect("the character's pose");
-            // What the town draws doesn't matter here.
-            let bytes = triangle(0.0).to_cooked().expect("cooked");
-            let plain = Mesh::read(&bytes).expect("a valid mesh");
-            let materials = renderer.upload_embedded_materials(plain).expect("materials");
-            let plain = renderer.upload_mesh(plain, &materials).expect("a mesh");
-            let town = TownMeshes {
-                town: plain,
-                plants: Plant::ALL.map(|_| plain),
-                mountains: lookdev::MOUNTAINS.map(|_| plain),
-            };
-            let mut scene = Scene::with_character(mesh, bounds, false);
-            scene.spawn_look_dev(Shot::Hero, LookDev { town, fog_cards: None, pose, figure });
+            let scene = scene(&mut content, &mut renderer, &gpu, mesh, bounds);
             let target = gpu.device().create_texture(&wgpu::TextureDescriptor {
                 label: None,
                 size: wgpu::Extent3d { width: SIDE, height: SIDE, depth_or_array_layers: 1 },
@@ -2148,6 +2217,142 @@ mod tests {
         }
         assert!(stage.scene.graph_player().expect("playing").has_replacement(), "and it's still waiting");
         assert!(furthest > 0.5, "the character went on swinging: {furthest} m at most");
+    }
+
+    /// The mannequin's kind of character: a triangle in `color`, and with `pedestal` one at its feet in a
+    /// slot of its own, the size given, which a stage splits off.
+    fn mannequin(x: f32, color: [f32; 4], pedestal: Option<f32>) -> Mesh {
+        let vertex = |position: [f32; 3]| Vertex {
+            position,
+            normal: [0.0, 0.0, 1.0],
+            outline_normal: [0.0, 0.0, 1.0],
+            uv: [0.0, 0.0],
+            color: VERTEX_COLOR_NEUTRAL,
+            flags: VertexFlags::NONE,
+        };
+        let swizzles = [Swizzle::IDENTITY; AnimeCharacterMaterial::TEXTURE_SLOTS.len()];
+        let material = |color| {
+            let document = AnimeCharacterMaterial { base_color: color, ..AnimeCharacterMaterial::default() };
+            Material::from_document(&document, &swizzles).expect("a valid material")
+        };
+        let mut vertices = vec![vertex([x, 0.25, 0.0]), vertex([1.0, 0.25, 0.0]), vertex([0.0, 2.0, 0.0])];
+        let mut indices = vec![0, 1, 2];
+        let mut submeshes = vec![Submesh { first_index: 0, index_count: 3, material: 0 }];
+        let mut slots = vec![MaterialSlot::embedded("skin", material(color))];
+        if let Some(size) = pedestal {
+            vertices.extend([vertex([-size, 0.0, 0.0]), vertex([size, 0.0, 0.0]), vertex([0.0, 0.25, 0.0])]);
+            indices.extend([3, 4, 5]);
+            submeshes.push(Submesh { first_index: 3, index_count: 3, material: 1 });
+            slots.push(MaterialSlot::embedded("Pedestal", material([0.1, 0.8, 0.2, 1.0])));
+        }
+        Mesh::from_vertices(&vertices, indices, submeshes, slots, PositionFormat::Unorm16)
+    }
+
+    const PALE: [f32; 4] = [0.9, 0.9, 0.9, 1.0];
+
+    /// The character's mesh on a new version, drawn until it has landed, with no steps between.
+    fn land_mannequin(stage: &mut Stage, mesh: &Mesh) {
+        let generation = stage.content.server.generation(&stage.content.character);
+        let bytes = mesh.to_cooked().expect("cooked");
+        let pack = write_pack(vec![packed(lookdev::CHARACTER, AssetKind::Mesh, &bytes)]).expect("a pack");
+        stage.source.insert(PACK, pack);
+        stage.content.remount(PACK).expect("the new pack");
+        for _ in 0..10_000 {
+            stage.pixels();
+            if stage.content.server.generation(&stage.content.character) != generation {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        panic!("it never landed");
+    }
+
+    /// `mesh` on a stage of `layout`, framed.
+    fn on_a_stage(mesh: &Mesh, layout: StageLayout) -> Stage {
+        let mut stage = Stage::mannequin_of(mesh);
+        let meshes = stage.content.stage_meshes(&mut stage.renderer).expect("the stage's meshes");
+        stage.scene.spawn_stage(layout, meshes);
+        stage.frame_on_character();
+        stage
+    }
+
+    /// `mesh` in the rim rig, framed.
+    fn in_a_rim_rig(mesh: &Mesh) -> Stage {
+        let mut stage = Stage::mannequin_of(mesh);
+        let meshes = stage.content.rim_rig_meshes(&mut stage.renderer).expect("the rig's meshes");
+        stage.scene.spawn_rim_rig(rims::RimLayout::Angles, meshes);
+        stage
+    }
+
+    /// Whether two frames show the same thing: a fresh renderer and a replaced one have drawn different
+    /// numbers of frames, so a code value or two is nothing.
+    fn same_picture(a: &[u8], b: &[u8]) -> bool {
+        difference(a, b).0 == 0
+    }
+
+    /// A stage draws a copy of the character, split from its pedestal when it was made, so a new version
+    /// of the character has to reach that as well, with no rig to say so: its geometry and its embedded
+    /// material, under the same handles, as a stage made from it would draw.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_new_character_reaches_the_figure_on_a_stage() {
+        let first = mannequin(-1.0, PALE, Some(1.0));
+        let moved = mannequin(0.5, PALE, Some(1.0));
+        let recolored = mannequin(0.5, [0.8, 0.1, 0.1, 1.0], Some(1.0));
+        let mut stage = on_a_stage(&first, StageLayout::Floor);
+        let before = stage.pixels();
+
+        land_mannequin(&mut stage, &moved);
+        let after = stage.pixels();
+        assert!(!same_picture(&before, &after), "its new shape shows");
+        assert!(same_picture(&after, &on_a_stage(&moved, StageLayout::Floor).pixels()));
+
+        land_mannequin(&mut stage, &recolored);
+        let colored = stage.pixels();
+        assert!(!same_picture(&after, &colored), "its new color shows");
+        assert!(same_picture(&colored, &on_a_stage(&recolored, StageLayout::Floor).pixels()));
+    }
+
+    /// The rim rig's figures are a copy of their own.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_new_character_reaches_the_figures_of_a_rim_rig() {
+        let first = mannequin(-1.0, PALE, Some(1.0));
+        let new = mannequin(0.5, [0.8, 0.1, 0.1, 1.0], Some(1.0));
+        let mut stage = in_a_rim_rig(&first);
+        let before = stage.pixels();
+
+        land_mannequin(&mut stage, &new);
+        let after = stage.pixels();
+        assert!(!same_picture(&before, &after), "the new version shows");
+        assert!(same_picture(&after, &in_a_rim_rig(&new).pixels()));
+    }
+
+    /// A pedestal can come and go with a new version, and a plinth stands where the pedestal's bounds say.
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_new_character_brings_its_pedestal_or_leaves_it_out() {
+        let with = mannequin(-1.0, PALE, Some(1.0));
+        let without = mannequin(-1.0, PALE, None);
+        let mut stage = on_a_stage(&with, StageLayout::Floor);
+        let before = stage.pixels();
+        land_mannequin(&mut stage, &without);
+        let gone = stage.pixels();
+        assert!(!same_picture(&before, &gone), "the pedestal's gone");
+        assert!(same_picture(&gone, &on_a_stage(&without, StageLayout::Floor).pixels()));
+        land_mannequin(&mut stage, &with);
+        assert!(
+            same_picture(&stage.pixels(), &on_a_stage(&with, StageLayout::Floor).pixels()),
+            "and it's back"
+        );
+
+        let mut stage = on_a_stage(&with, StageLayout::Plinth);
+        let narrow = mannequin(-1.0, PALE, Some(0.25));
+        let before = stage.pixels();
+        land_mannequin(&mut stage, &narrow);
+        let after = stage.pixels();
+        assert!(!same_picture(&before, &after), "the plinth takes the pedestal's size");
+        assert!(same_picture(&after, &on_a_stage(&narrow, StageLayout::Plinth).pixels()));
     }
 
     /// `ids`, each a clip like [`SWING`] for the character, as a pack holds them.

@@ -383,6 +383,8 @@ pub(crate) struct Scene {
     hard_edges: Option<Entity>,
     /// The stage's pieces, with `--stage`.
     stage: Vec<(Entity, Piece)>,
+    /// How the stage is laid out, and toward the key light it was built for.
+    stage_layout: Option<(StageLayout, Vec3)>,
     /// The look-dev town, with `--look-dev`, its plants and its mountains.
     town: Option<Entity>,
     town_plants: Vec<(Entity, lookdev::Plant)>,
@@ -541,6 +543,7 @@ impl Scene {
             outline_row: None,
             hard_edges: None,
             stage: Vec::new(),
+            stage_layout: None,
             town: None,
             town_plants: Vec::new(),
             town_mountains: Vec::new(),
@@ -935,6 +938,18 @@ impl Scene {
     /// Call after the hour is set. The pieces never move, so they are extracted once.
     pub fn spawn_stage(&mut self, layout: StageLayout, meshes: StageMeshes) {
         self.set_character_mesh(meshes.figure);
+        let mut packet = FramePacket::default();
+        let eye = self.ecs.world().resource::<OrbitCamera>().eye();
+        self.time_of_day_mut().resolve(eye, 1.0).write(&mut packet);
+        self.stage_layout = Some((layout, -packet.sun.direction));
+        self.place_stage(meshes);
+    }
+
+    /// Stands the stage's pieces for `meshes`, in place of any it has, around the subject as it is now,
+    /// for the key light it was built for. A piece's placement can follow the pedestal, which a new
+    /// version of the character may have made another size, or given or taken away.
+    fn place_stage(&mut self, meshes: StageMeshes) {
+        let Some((layout, toward_light)) = self.stage_layout else { return };
         let floor = self.bounds[0][1];
         let subject = match self.faces.is_empty() {
             // Every head's shadow from far enough to stay out of the rig's view.
@@ -955,24 +970,22 @@ impl Scene {
                 pillar_width: 0.5,
             },
         };
-        let mut packet = FramePacket::default();
-        let eye = self.ecs.world().resource::<OrbitCamera>().eye();
-        self.time_of_day_mut().resolve(eye, 1.0).write(&mut packet);
         let world = self.ecs.world_mut();
+        for (entity, _) in self.stage.drain(..) {
+            world.despawn(entity);
+        }
         let pedestal = meshes.pedestal.map(|(_, bounds)| bounds);
-        for (piece, place) in stage::placements(layout, &subject, pedestal, -packet.sun.direction) {
+        for (piece, place) in stage::placements(layout, &subject, pedestal, toward_light) {
             let entity = world.spawn((RenderMesh(meshes.get(piece)), RenderTransform(place))).id();
             self.stage.push((entity, piece));
         }
     }
 
-    /// Sets the meshes the stage draws again, the character's figure among them: after GPU device
-    /// loss.
+    /// Sets the meshes the stage draws again, the character's figure among them, its pieces standing
+    /// where they say: after GPU device loss, and for a new version of the character.
     pub fn set_stage_meshes(&mut self, meshes: StageMeshes) {
         self.set_character_mesh(meshes.figure);
-        for &(entity, piece) in &self.stage {
-            self.ecs.world_mut().entity_mut(entity).insert(RenderMesh(meshes.get(piece)));
-        }
+        self.place_stage(meshes);
     }
 
     /// Sets the mesh the face rig's heads draw again: after GPU device loss.
@@ -1086,11 +1099,20 @@ impl Scene {
     /// joints, and a new version of them or of the clip gives the clip a new pose to play on. While
     /// only some have landed the character may not fit: it keeps the pose it has, which the renderer
     /// ignores if the new mesh's palette is another length, until the others land. The enemy's mesh and
-    /// skeleton do the same for it (`Self::replace_enemy`). Allocates nothing while nothing changed.
+    /// skeleton do the same for it (`Self::replace_enemy`). A stage's pieces stand again for a new
+    /// version of the character it copied (`Content::take_new_stage`). Allocates nothing while nothing
+    /// changed.
     pub fn follow_content(&mut self, content: &mut Content) {
         self.set_probe_hours(content.probe_hours());
         if content.take_meshes_replaced() {
             self.ecs.world_mut().resource_mut::<RenderExtract>().resend_poses();
+        }
+        if let Some((meshes, bounds)) = content.take_new_stage() {
+            // A face rig stands where the bounds it was placed by put it, and the stage goes round that.
+            if self.faces.is_empty() {
+                self.bounds = bounds;
+            }
+            self.set_stage_meshes(meshes);
         }
         let clip_changed = content.take_clip_changed();
         let character_changed = content.take_character_changed();

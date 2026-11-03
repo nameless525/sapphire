@@ -194,8 +194,13 @@ impl Stage {
         let instance = GpuInstance::new(&GpuInstanceDesc::default())?;
         let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), None)?;
         if let Some(offscreen) = &options.offscreen {
-            let largest = gpu.device().limits().max_texture_dimension_2d;
-            target_fits(offscreen.width, offscreen.height, largest).map_err(AppInitError::msg)?;
+            let limits = gpu.device().limits();
+            target_fits(offscreen.width, offscreen.height, limits.max_texture_dimension_2d)
+                .map_err(AppInitError::msg)?;
+            if matches!(offscreen.mode, OffscreenMode::Capture { .. } | OffscreenMode::ContactSheet { .. }) {
+                crate::capture::readback_fits(offscreen.width, offscreen.height, limits.max_buffer_size)
+                    .map_err(AppInitError::msg)?;
+            }
         }
         let profile = DeviceProfile::new(DeviceClass::Desktop, gpu.caps(), platform.system_info().ram_mib);
         let quality = Quality::new(TierTable::shipped(), &profile, options.quality_settings());

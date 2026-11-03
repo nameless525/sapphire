@@ -101,6 +101,24 @@ fn render(stage: &mut Stage, width: u32, height: u32) -> Result<Vec<u8>, AppInit
     readback.read(&stage.gpu).map_err(AppInitError::msg)
 }
 
+/// Whether a `width` by `height` frame can be read back, where a buffer holds at most `largest` bytes.
+/// It has to be said before the frame is drawn: past `largest` wgpu only reports a validation error, a
+/// panic in a build with debug assertions and a log line in a release build.
+pub(crate) fn readback_fits(width: u32, height: u32, largest: u64) -> Result<(), String> {
+    let bytes = u128::from(padded_row_bytes(width)) * u128::from(height);
+    if bytes > u128::from(largest) {
+        return Err(format!(
+            "a {width}x{height} frame takes {bytes} bytes to read back: this device's largest buffer is {largest}"
+        ));
+    }
+    Ok(())
+}
+
+/// A row of 4 byte pixels, as a copy into a buffer lays it out.
+fn padded_row_bytes(width: u32) -> u64 {
+    (u64::from(width) * 4).next_multiple_of(u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT))
+}
+
 /// A frame read back from the GPU: a buffer the frame's target is copied into, after the
 /// frame's passes, then mapped and stripped of its row padding.
 pub(crate) struct Readback {
@@ -113,10 +131,11 @@ pub(crate) struct Readback {
 impl Readback {
     /// For a `width` by `height` target of 4 bytes a pixel.
     pub fn new(gpu: &GpuContext, width: u32, height: u32) -> Self {
-        let padded_row_bytes = (width * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+        let row_bytes = padded_row_bytes(width);
+        let padded_row_bytes = u32::try_from(row_bytes).expect("a target's side is a device's at most");
         let buffer = gpu.device().create_buffer(&wgpu::BufferDescriptor {
             label: gpu.label("capture readback"),
-            size: u64::from(padded_row_bytes) * u64::from(height),
+            size: row_bytes * u64::from(height),
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -250,6 +269,16 @@ fn halve(width: u32, height: u32, rgba: &[u8]) -> (u32, u32, Vec<u8>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_frame_past_the_largest_buffer_is_refused_by_size() {
+        const LARGEST: u64 = 256 << 20;
+        assert_eq!(readback_fits(8192, 8192, LARGEST), Ok(()), "exactly the largest");
+        let refused = readback_fits(8200, 8200, LARGEST).expect_err("past it");
+        assert!(refused.contains("8200x8200") && refused.contains("268435456"), "{refused}");
+        assert!(readback_fits(8193, 8187, LARGEST).is_err(), "its rows' padding counts");
+        assert!(readback_fits(u32::MAX, u32::MAX, LARGEST).is_err(), "and no overflow on the way");
+    }
 
     #[test]
     fn history_only_switch_is_explicit_and_rejects_mistakes() {

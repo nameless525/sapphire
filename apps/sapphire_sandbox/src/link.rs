@@ -48,7 +48,7 @@ use sapphire_time::Stopwatch;
 
 use crate::LOG_TARGET;
 use crate::app::SandboxApp;
-use crate::capture::{Readback, compress};
+use crate::capture::{Readback, compress, readback_fits};
 use crate::combat::Combat;
 use crate::content::Content;
 use crate::options::LiveLinkOption;
@@ -350,14 +350,17 @@ pub(crate) struct CaptureRequest {
 
 impl CaptureRequest {
     /// Starts drawing the captures into a `size` frame in `format`. A frame with no pixels (a
-    /// minimized window's) has nothing to capture: they are all refused, and there is `None`.
+    /// minimized window's) has nothing to capture, and one past the device's largest buffer can't
+    /// be read back: they are all refused, and there is `None`.
     pub fn start(
         self,
         gpu: &GpuContext,
         size: (u32, u32),
         format: wgpu::TextureFormat,
     ) -> Option<FrameCapture> {
-        let Some(error) = capture_refusal(size) else {
+        let largest = gpu.device().limits().max_buffer_size;
+        let refusal = capture_refusal(size).or_else(|| readback_fits(size.0, size.1, largest).err());
+        let Some(error) = refusal else {
             return Some(FrameCapture::new(gpu, size, format, self));
         };
         tracing::warn!(target: LOG_TARGET, error, "live link refused a capture");

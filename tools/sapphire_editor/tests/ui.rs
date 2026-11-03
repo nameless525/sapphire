@@ -1375,7 +1375,8 @@ fn a_late_answer_doesnt_speak_for_newer_text() {
     }
 }
 
-/// With saves queued, it's waiting until the last has an answer, and the last is what the panel shows.
+/// With a save behind another, it's waiting until the last has an answer, and the last is what the panel
+/// shows. One waiting is replaced by a newer save, which says so: the device gets the newest, not each.
 #[test]
 fn saves_queued_are_all_waited_for() {
     let device = FakeDevice::start();
@@ -1387,10 +1388,14 @@ fn saves_queued_are_all_waited_for() {
     move_the_first_cue(&mut harness, 1);
     save_by_key(&mut harness);
     let first = text_of(&harness);
+    until_it_has_documents(&mut harness, &device, 1);
     move_the_first_cue(&mut harness, 2);
     save_by_key(&mut harness);
+    move_the_first_cue(&mut harness, 3);
+    save_by_key(&mut harness);
     let second = text_of(&harness);
-    until_it_has_documents(&mut harness, &device, 1);
+    harness.run_steps(1);
+    let _ = harness.get_by_label_contains("An earlier save of slice.moves.ron");
 
     device.answer_documents(1);
     until_it_has_documents(&mut harness, &device, 2);
@@ -1406,8 +1411,8 @@ fn saves_queued_are_all_waited_for() {
     // The same text saved twice: either answer is about this text.
     device.hold_documents();
     save_by_key(&mut harness);
-    save_by_key(&mut harness);
     until_it_has_documents(&mut harness, &device, 3);
+    save_by_key(&mut harness);
     device.refuse_with(SLICE_REFUSAL);
     device.answer_documents(1);
     until(&mut harness, "its refusal", has_a_device_problem);

@@ -7,9 +7,15 @@
 //! every report says which address it's about: [`Link::last_push`] only ever speaks for the text and the
 //! device in front of the person, [`Link::earlier_push`] holds what came back too late to, and nothing an
 //! old device says lands on a new one.
+//!
+//! Nothing piles up behind a slow device or a missing one, where each push can take the connection's whole
+//! deadline: the thread holds one push of each file at most, the newest save, and a new address sends back
+//! what was waiting for the old one. So the newest text waits for what's already out and no more, and what
+//! never went says so in [`Link::earlier_push`].
 
 use std::net::SocketAddr;
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -24,6 +30,10 @@ use crate::edits::error_chain;
 const STATUS_EVERY: Duration = Duration::from_millis(250);
 /// How often to try for a device that isn't there.
 const RECONNECT_EVERY: Duration = Duration::from_secs(1);
+/// What a save that never went came to, when a newer save of its file took its place.
+const REPLACED: &str = "a newer save went in its place";
+/// What a save that never went came to, when the link moved to another device first.
+const ADDRESS_MOVED: &str = "the device changed before it went";
 
 /// One thing wrong with a pushed document, by the words of its refusal.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -88,17 +98,99 @@ pub struct EarlierPush {
     pub pushed: Pushed,
 }
 
-enum Command {
-    /// `target` is the count of addresses so far, which the reports made after this repeat.
-    Address {
+/// A push the thread hasn't begun.
+#[derive(Debug)]
+struct WaitingPush {
+    id: u64,
+    origin: String,
+    text: String,
+}
+
+/// What waits for the thread, and all that can.
+#[derive(Debug, Default)]
+struct Waiting {
+    /// The address to move to, with the count of addresses so far, which the reports made after this repeat.
+    address: Option<(u64, Option<SocketAddr>)>,
+    /// To the newest address, oldest first, one of each file.
+    pushes: Vec<WaitingPush>,
+    /// The link has gone.
+    closed: bool,
+}
+
+impl Waiting {
+    fn has_work(&self) -> bool {
+        self.closed || self.address.is_some() || !self.pushes.is_empty()
+    }
+}
+
+/// What the thread does next.
+enum Next {
+    Move {
         target: u64,
         address: Option<SocketAddr>,
     },
-    Push {
-        id: u64,
-        origin: String,
-        text: String,
-    },
+    Push(WaitingPush),
+    /// Nothing came in time.
+    Quiet,
+    Stop,
+}
+
+/// Where the interface leaves work for the thread: held only to put something in or take it out, so the
+/// interface never waits on it for longer than that, whatever the thread is waiting on.
+#[derive(Debug, Default)]
+struct Mailbox {
+    waiting: Mutex<Waiting>,
+    wake: Condvar,
+}
+
+impl Mailbox {
+    fn lock(&self) -> MutexGuard<'_, Waiting> {
+        self.waiting.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Leaves `push`, returning the push of its file it takes the place of, if one was waiting.
+    fn put_push(&self, push: WaitingPush) -> Option<WaitingPush> {
+        let mut waiting = self.lock();
+        let replaced = waiting
+            .pushes
+            .iter()
+            .position(|other| other.origin == push.origin)
+            .map(|index| waiting.pushes.remove(index));
+        waiting.pushes.push(push);
+        self.wake.notify_one();
+        replaced
+    }
+
+    /// Leaves a new address, returning the pushes that were waiting for the old one.
+    fn put_address(&self, target: u64, address: Option<SocketAddr>) -> Vec<WaitingPush> {
+        let mut waiting = self.lock();
+        waiting.address = Some((target, address));
+        self.wake.notify_one();
+        std::mem::take(&mut waiting.pushes)
+    }
+
+    fn close(&self) {
+        self.lock().closed = true;
+        self.wake.notify_one();
+    }
+
+    /// The next thing to do, waiting up to `wait` for one. Going to another device comes first.
+    fn next(&self, wait: Duration) -> Next {
+        let waiting = self.lock();
+        let (mut waiting, _) = self
+            .wake
+            .wait_timeout_while(waiting, wait, |waiting| !waiting.has_work())
+            .unwrap_or_else(PoisonError::into_inner);
+        if waiting.closed {
+            Next::Stop
+        } else if let Some((target, address)) = waiting.address.take() {
+            Next::Move { target, address }
+        } else if waiting.pushes.is_empty() {
+            Next::Quiet
+        } else {
+            Next::Push(waiting.pushes.remove(0))
+        }
+    }
 }
 
 enum Report {
@@ -120,7 +212,7 @@ enum Report {
 /// A connection to a device, as the interface sees it: it never blocks.
 #[derive(Debug)]
 pub struct Link {
-    commands: Option<Sender<Command>>,
+    mailbox: Arc<Mailbox>,
     reports: Receiver<Report>,
     worker: Option<JoinHandle<()>>,
     address: Option<SocketAddr>,
@@ -130,7 +222,7 @@ pub struct Link {
     device: Option<DeviceStatus>,
     /// Why there's no device, if there isn't.
     trouble: Option<String>,
-    /// Pushes with no answer yet. The thread takes them one at a time, so there can be several.
+    /// Pushes with no answer yet: the one the thread is on, and those waiting for it.
     waiting: u32,
     /// The ID the next push takes.
     next_push: u64,
@@ -146,14 +238,17 @@ impl Link {
     /// A link talking to `address`, or to nothing yet.
     #[must_use]
     pub fn new(address: Option<SocketAddr>) -> Self {
-        let (commands, commands_in) = mpsc::channel();
+        let mailbox = Arc::new(Mailbox::default());
         let (reports_out, reports) = mpsc::channel();
         let worker = thread::Builder::new()
             .name("live link".to_owned())
-            .spawn(move || work(address, &commands_in, &reports_out))
+            .spawn({
+                let mailbox = mailbox.clone();
+                move || work(address, &mailbox, &reports_out)
+            })
             .ok();
         Self {
-            commands: Some(commands),
+            mailbox,
             reports,
             worker,
             address,
@@ -179,24 +274,46 @@ impl Link {
         self.device = None;
         self.attempts.clear();
         self.clear_push();
-        self.send(Command::Address { target: self.target, address });
+        if !self.thread_runs() {
+            return;
+        }
+        for push in self.mailbox.put_address(self.target, address) {
+            self.waiting = self.waiting.saturating_sub(1);
+            self.never_went(push.origin, ADDRESS_MOVED);
+        }
     }
 
-    /// Pushes a document, by its file's name. [`Self::last_push`] says what became of it, as long as nothing
-    /// has changed by the time it's known.
+    /// Pushes a document, by its file's name, in place of any save of that file still waiting for the
+    /// thread. [`Self::last_push`] says what became of it, as long as nothing has changed by the time it's
+    /// known.
     pub fn push(&mut self, origin: String, text: String) {
-        self.waiting += 1;
         let id = self.next_push;
         self.next_push += 1;
-        self.send(Command::Push { id, origin, text });
+        if !self.thread_runs() {
+            return;
+        }
+        self.waiting += 1;
+        if let Some(replaced) = self.mailbox.put_push(WaitingPush { id, origin, text }) {
+            self.waiting = self.waiting.saturating_sub(1);
+            // The same text needs no word: this push answers for it.
+            if replaced.id < self.current_from {
+                self.never_went(replaced.origin, REPLACED);
+            }
+        }
     }
 
-    fn send(&mut self, command: Command) {
-        let sent = self.commands.as_ref().is_some_and(|commands| commands.send(command).is_ok());
-        if !sent {
+    fn never_went(&mut self, origin: String, why: &str) {
+        self.earlier_push = Some(EarlierPush { origin, pushed: Pushed::Failed(why.to_owned()) });
+    }
+
+    /// Whether the thread is there to take work. If it isn't, nothing out will be answered, and this says so.
+    fn thread_runs(&mut self) -> bool {
+        let runs = self.worker.as_ref().is_some_and(|worker| !worker.is_finished());
+        if !runs {
             self.waiting = 0;
             self.last_push = Some(Pushed::Failed("live link's thread has stopped".to_owned()));
         }
+        runs
     }
 
     /// Takes what the thread has reported. Call it once a frame.
@@ -277,19 +394,19 @@ impl Link {
 
 impl Drop for Link {
     fn drop(&mut self) {
-        self.commands = None;
+        self.mailbox.close();
         // Its longest wait is a connection's deadline, so it isn't waited for.
         drop(self.worker.take());
     }
 }
 
-fn work(mut address: Option<SocketAddr>, commands: &Receiver<Command>, reports: &Sender<Report>) {
+fn work(mut address: Option<SocketAddr>, mailbox: &Mailbox, reports: &Sender<Report>) {
     let mut client: Option<Client> = None;
     let mut target = 0;
     let mut since_try = Stopwatch::start();
     loop {
-        match commands.recv_timeout(STATUS_EVERY) {
-            Ok(Command::Address { target: next_target, address: next }) => {
+        match mailbox.next(STATUS_EVERY) {
+            Next::Move { target: next_target, address: next } => {
                 target = next_target;
                 address = next;
                 client = None;
@@ -299,13 +416,13 @@ fn work(mut address: Option<SocketAddr>, commands: &Receiver<Command>, reports: 
                     let _ = reports.send(Report::Connection { target, status });
                 }
             }
-            Ok(Command::Push { id, origin, text }) => {
+            Next::Push(WaitingPush { id, origin, text }) => {
                 let pushed = push(address, target, &mut client, reports, &origin, text);
                 if reports.send(Report::Pushed { id, origin, pushed }).is_err() {
                     return;
                 }
             }
-            Err(RecvTimeoutError::Timeout) => {
+            Next::Quiet => {
                 if client.is_none() && since_try.elapsed() < RECONNECT_EVERY {
                     continue;
                 }
@@ -320,7 +437,7 @@ fn work(mut address: Option<SocketAddr>, commands: &Receiver<Command>, reports: 
                     return;
                 }
             }
-            Err(RecvTimeoutError::Disconnected) => return,
+            Next::Stop => return,
         }
     }
 }
@@ -366,9 +483,142 @@ fn push(
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write as _;
+    use std::net::TcpListener;
+
+    use sapphire_livelink::protocol::{
+        Preamble, Reply, ReplyBody, Request, RequestBody, read_frame, write_frame,
+    };
     use sapphire_moves::{Issue, MoveSetError};
 
     use super::*;
+
+    /// A device of a test's own: each document it's sent goes to `seen`, and it answers once told to.
+    fn device() -> (SocketAddr, Receiver<String>, Sender<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("a port");
+        let address = listener.local_addr().expect("its address");
+        let (seen_out, seen) = mpsc::channel();
+        let (answer, answers) = mpsc::channel();
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("a connection");
+            stream.write_all(&Preamble::CURRENT.to_bytes()).expect("a preamble");
+            Preamble::read(&mut stream).expect("its preamble").check().expect("the same version");
+            while let Ok(request) = read_frame::<Request>(&mut stream) {
+                let body = match request.body {
+                    RequestBody::Document { text, .. } => {
+                        let _ = seen_out.send(text);
+                        let _ = answers.recv_timeout(Duration::from_secs(5));
+                        ReplyBody::DocumentApplied { owner: "moves".to_owned() }
+                    }
+                    _ => ReplyBody::Status(DeviceStatus::default()),
+                };
+                if write_frame(&mut stream, &Reply { id: request.id, body }).is_err() {
+                    return;
+                }
+            }
+        });
+        (address, seen, answer)
+    }
+
+    fn document_at(seen: &Receiver<String>) -> String {
+        seen.recv_timeout(Duration::from_secs(5)).expect("the device was sent a document")
+    }
+
+    fn settle(link: &mut Link) {
+        let since = Stopwatch::start();
+        loop {
+            link.poll();
+            if !link.is_waiting() {
+                return;
+            }
+            assert!(since.elapsed() < Duration::from_secs(5), "a push never came back");
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    /// 30 saves behind a device busy with the first: it was sent all 30 in turn, 6.1 s before the newest
+    /// took at 200 ms a document, where now it's sent the first and the newest.
+    #[test]
+    fn saves_behind_a_slow_device_wait_as_the_newest_alone() {
+        let (address, seen, answer) = device();
+        let mut link = Link::new(Some(address));
+        link.push("a.moves.ron".to_owned(), "save 0".to_owned());
+        assert_eq!(document_at(&seen), "save 0");
+        for save in 1..30 {
+            link.push("a.moves.ron".to_owned(), format!("save {save}"));
+        }
+        assert!(link.is_waiting());
+        answer.send(()).expect("the device");
+        assert_eq!(document_at(&seen), "save 29");
+        answer.send(()).expect("the device");
+        settle(&mut link);
+        assert!(matches!(link.last_push(), Some(Pushed::Took { owner, .. }) if owner == "moves"));
+        assert_eq!(link.earlier_push(), None, "these were all of the text there still is");
+        assert!(seen.try_recv().is_err(), "nothing else went");
+    }
+
+    #[test]
+    fn a_save_that_never_went_says_what_took_its_place() {
+        let (address, seen, answer) = device();
+        let mut link = Link::new(Some(address));
+        link.push("a.moves.ron".to_owned(), "out".to_owned());
+        assert_eq!(document_at(&seen), "out");
+        link.clear_push();
+        link.push("a.moves.ron".to_owned(), "waits".to_owned());
+        link.clear_push();
+        link.push("a.moves.ron".to_owned(), "newest".to_owned());
+        let earlier = link.earlier_push().expect("the one that never went");
+        assert_eq!(
+            (earlier.origin.as_str(), &earlier.pushed),
+            ("a.moves.ron", &Pushed::Failed(REPLACED.to_owned()))
+        );
+        answer.send(()).expect("the device");
+        assert_eq!(document_at(&seen), "newest");
+        answer.send(()).expect("the device");
+        settle(&mut link);
+        assert!(matches!(link.last_push(), Some(Pushed::Took { .. })));
+    }
+
+    #[test]
+    fn each_file_keeps_its_newest_save() {
+        let (address, seen, answer) = device();
+        let mut link = Link::new(Some(address));
+        link.push("a.moves.ron".to_owned(), "a 0".to_owned());
+        assert_eq!(document_at(&seen), "a 0");
+        link.push("a.moves.ron".to_owned(), "a 1".to_owned());
+        link.push("b.moves.ron".to_owned(), "b 0".to_owned());
+        link.push("a.moves.ron".to_owned(), "a 2".to_owned());
+        for expected in ["b 0", "a 2"] {
+            answer.send(()).expect("the device");
+            assert_eq!(document_at(&seen), expected);
+        }
+        answer.send(()).expect("the device");
+        settle(&mut link);
+    }
+
+    /// What was waiting for the old device doesn't go there, and doesn't hold up the new one.
+    #[test]
+    fn a_new_address_goes_ahead_of_what_waited_for_the_old_one() {
+        let (old, seen_old, answer_old) = device();
+        let (new, seen_new, answer_new) = device();
+        let mut link = Link::new(Some(old));
+        link.push("a.moves.ron".to_owned(), "out".to_owned());
+        assert_eq!(document_at(&seen_old), "out");
+        link.push("b.moves.ron".to_owned(), "waits".to_owned());
+        link.set_address(Some(new));
+        let earlier = link.earlier_push().expect("the one that never went");
+        assert_eq!(
+            (earlier.origin.as_str(), &earlier.pushed),
+            ("b.moves.ron", &Pushed::Failed(ADDRESS_MOVED.to_owned()))
+        );
+        link.push("a.moves.ron".to_owned(), "to the new one".to_owned());
+        answer_old.send(()).expect("the device");
+        assert_eq!(document_at(&seen_new), "to the new one");
+        answer_new.send(()).expect("the device");
+        settle(&mut link);
+        assert!(matches!(link.last_push(), Some(Pushed::Took { .. })));
+        assert!(seen_old.try_recv().is_err(), "nothing else went to the old one");
+    }
 
     /// The words a refusal comes in are `Issue`'s own, held here to what it writes.
     #[test]

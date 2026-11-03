@@ -3458,6 +3458,7 @@ dependencies = [
  "sapphire_look",
  "sapphire_reflect",
  "sapphire_serialize",
+ "sapphire_time",
  "serde",
  "thiserror 2.0.21",
 ]

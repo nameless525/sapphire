@@ -23,6 +23,8 @@ thiserror.workspace = true
 [dev-dependencies]
 # The counting allocator (`tests/allocations.rs`).
 sapphire_core.workspace = true
+# The clock of the test that drops are counted, not walked: rule R2 keeps this crate itself off the OS's.
+sapphire_time.workspace = true
 
 [lints]
 workspace = true

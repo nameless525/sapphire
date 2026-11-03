@@ -1,12 +1,16 @@
 //! The simulation's contracts: owners' clocks, caps, seeds, and what a trail resolves to.
 
+use std::time::Duration;
+
 use glam::{Quat, Vec3};
 use sapphire_look::{VfxFrame, VfxShape, VfxSprite};
+use sapphire_time::Stopwatch;
 
 use crate::curve::Curve;
+use crate::document::MAX_RATE;
 use crate::{
-    Effect, EffectId, EffectLibrary, EmitterDesc, Facing, Light, Motion, OwnerId, OwnerSteps, Placement,
-    Shape, Source, Spawn, TrailCore, TrailDesc, VfxBudget, VfxWorld,
+    Effect, EffectId, EffectLibrary, EmitterDesc, Facing, Light, MAX_EMITTERS, Motion, OwnerId, OwnerSteps,
+    Placement, Shape, Source, Spawn, TrailCore, TrailDesc, VfxBudget, VfxWorld,
 };
 
 const TICK: f32 = 1.0 / 60.0;
@@ -299,6 +303,123 @@ fn past_the_particle_cap_it_counts_whats_dropped_and_keeps_drawing() {
     assert_eq!(frame.sprites.len(), 10, "as many as fit still draw");
     assert_eq!(frame.stats.particles, 10);
     assert_eq!(frame.stats.dropped_particles, 6);
+}
+
+/// A cap has to bound the work as well as the storage: a long step at the highest rate a document may
+/// hold asks each emitter for more than a count can hold, and walked one at a time that's minutes of a
+/// frame. It costs what fits.
+#[test]
+fn what_a_step_cant_fit_is_counted_without_being_walked() {
+    let stream = |name: &str| dots(name, Spawn::Rate { per_second: MAX_RATE, duration: 0.0 });
+    let flood = Effect {
+        name: "flood".to_owned(),
+        emitters: vec![stream("a"), stream("b"), stream("c"), stream("d")],
+        trail: None,
+    };
+    for max_particles in [0, 512] {
+        let budget = VfxBudget { max_particles, ..VfxBudget::MOBILE_LOW };
+        let mut world = world_of(vec![flood.clone()], budget);
+        for _ in 0..2 {
+            world.spawn(EffectId(0), OwnerId(1), Placement::default()).expect("spawned");
+        }
+        let stopwatch = Stopwatch::start();
+        world.advance(&OwnerSteps { world: 1e6, owners: &[] });
+        let took = stopwatch.elapsed();
+        assert!(took < Duration::from_secs(5), "{max_particles} places took {took:?} to fill");
+        let stats = world.stats();
+        assert_eq!(stats.particles, max_particles);
+        let asked = 8 * u64::from(u32::MAX);
+        assert_eq!(stats.dropped_particles, asked - u64::from(max_particles), "{max_particles} places");
+    }
+}
+
+/// Every effect the budget holds, each with as many of the largest burst as an effect may have.
+#[test]
+fn overlapping_bursts_past_the_cap_count_what_didnt_fit() {
+    let full = Effect {
+        name: "full".to_owned(),
+        emitters: (0..MAX_EMITTERS).map(|_| dots("dots", Spawn::Burst { count: 4096 })).collect(),
+        trail: None,
+    };
+    let budget = VfxBudget::DESKTOP_HIGH;
+    let mut world = world_of(vec![full], budget);
+    for _ in 0..budget.max_effects {
+        world.spawn(EffectId(0), OwnerId(1), Placement::default()).expect("spawned");
+    }
+    world.advance(&ALL_RUN);
+    let dropped =
+        u64::from(budget.max_effects) * MAX_EMITTERS as u64 * 4096 - u64::from(budget.max_particles);
+    assert_eq!(world.stats().particles, budget.max_particles);
+    assert_eq!(world.stats().dropped_particles, dropped);
+    // A burst fires once, so what didn't fit isn't asked for again.
+    world.advance(&ALL_RUN);
+    assert_eq!(world.stats().dropped_particles, dropped);
+}
+
+/// A world that runs out of room holds exactly what one with room made first: a drop takes no random
+/// numbers, so what's kept doesn't move.
+#[test]
+fn what_a_full_world_keeps_is_what_it_would_have_made_first() {
+    let effect = Effect {
+        name: "mixed".to_owned(),
+        emitters: vec![
+            dots("burst", Spawn::Burst { count: 40 }),
+            dots("rate", Spawn::Rate { per_second: 6_000.0, duration: 0.25 }),
+            dots("late", Spawn::Burst { count: 7 }),
+        ],
+        trail: None,
+    };
+    let sprites = |max_particles| {
+        let budget = VfxBudget { max_particles, ..VfxBudget::DESKTOP_LOW };
+        let mut world = world_of(vec![effect.clone()], budget);
+        world.spawn(EffectId(0), OwnerId(1), Placement::at(Vec3::Y)).expect("spawned");
+        world.advance(&ALL_RUN);
+        let dropped = world.stats().dropped_particles;
+        (frame_of(&mut world).sprites, dropped)
+    };
+    let (roomy, none) = sprites(1024);
+    assert_eq!(none, 0);
+    let (full, dropped) = sprites(64);
+    assert_eq!(dropped, roomy.len() as u64 - 64);
+    assert_eq!(full[..], roomy[..64]);
+}
+
+/// A rate's fractions add up to what it owes, however its particles are kept or dropped.
+#[test]
+fn a_rate_owes_the_same_with_room_or_without() {
+    let stream = Effect {
+        name: "stream".to_owned(),
+        emitters: vec![dots("dots", Spawn::Rate { per_second: 37.5, duration: 0.5 })],
+        trail: None,
+    };
+    let owed = |max_particles| {
+        let budget = VfxBudget { max_particles, ..VfxBudget::DESKTOP_LOW };
+        let mut world = world_of(vec![stream.clone()], budget);
+        world.spawn(EffectId(0), OwnerId(1), Placement::default()).expect("spawned");
+        for _ in 0..30 {
+            world.advance(&ALL_RUN);
+        }
+        u64::from(world.stats().particles) + world.stats().dropped_particles
+    };
+    let with_room = owed(1024);
+    assert!((18..=19).contains(&with_room), "half a second at 37.5: {with_room}");
+    assert_eq!(owed(4), with_room);
+    assert_eq!(owed(0), with_room);
+}
+
+/// A step too long to count owes as much as a count holds.
+#[test]
+fn a_step_too_long_to_count_owes_what_a_count_holds() {
+    let stream = Effect {
+        name: "stream".to_owned(),
+        emitters: vec![dots("dots", Spawn::Rate { per_second: 60.0, duration: 0.0 })],
+        trail: None,
+    };
+    let mut world = world_of(vec![stream], VfxBudget { max_particles: 8, ..VfxBudget::DESKTOP_LOW });
+    let handle = world.spawn(EffectId(0), OwnerId(1), Placement::default()).expect("spawned");
+    world.advance(&OwnerSteps { world: f32::MAX, owners: &[] });
+    assert_eq!(world.stats().dropped_particles, u64::from(u32::MAX) - 8);
+    assert!(world.is_playing(handle));
 }
 
 #[test]

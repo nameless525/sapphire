@@ -25,6 +25,10 @@ pub const MAX_TRAIL_SAMPLES: usize = 64;
 /// The most particles a burst fires at once.
 const MAX_BURST: u32 = 4096;
 
+/// The most particles a rate fires a second: a burst's worth every tick at 60 Hz, which fills the
+/// largest budget in one. Past this it's a typo.
+pub(crate) const MAX_RATE: f32 = 245_760.0;
+
 /// An inclusive range a particle draws from at birth: a document writes `(low, high)`, and equal
 /// ends fix it.
 pub type Range = (f32, f32);
@@ -34,7 +38,7 @@ pub type Range = (f32, f32);
 pub enum Spawn {
     /// `count` all at once.
     Burst { count: u32 },
-    /// `per_second` for `duration` seconds, or until the effect is
+    /// `per_second`, at most 245,760, for `duration` seconds, or until the effect is
     /// [stopped](crate::VfxWorld::stop) where `duration` is 0.
     Rate { per_second: f32, duration: f32 },
 }
@@ -419,6 +423,7 @@ impl EmitterDesc {
             }
             Spawn::Rate { per_second, duration } => {
                 require(per_second.is_finite() && per_second > 0.0, "spawn", "a rate must be above 0")?;
+                require(per_second <= MAX_RATE, "spawn", "a rate fires at most 245760 a second")?;
                 require(duration.is_finite() && duration >= 0.0, "spawn", "a duration can't be negative")?;
             }
         }
@@ -611,6 +616,10 @@ mod tests {
         assert_eq!(emitter_error(|e| e.spawn = rate), "spawn");
         let rate = Spawn::Rate { per_second: 1.0, duration: -1.0 };
         assert_eq!(emitter_error(|e| e.spawn = rate), "spawn");
+        let rate = Spawn::Rate { per_second: 1e12, duration: 0.0 };
+        assert_eq!(emitter_error(|e| e.spawn = rate), "spawn");
+        let rate = Spawn::Rate { per_second: MAX_RATE, duration: 0.0 };
+        assert!(library_of(EmitterDesc { spawn: rate, ..emitter() }).is_ok(), "the most it may hold");
         assert_eq!(emitter_error(|e| e.delay = -1.0), "delay");
         assert_eq!(emitter_error(|e| e.source = Source::Sphere(-1.0)), "source");
         assert_eq!(emitter_error(|e| e.source = Source::Disc(f32::NAN)), "source");

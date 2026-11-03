@@ -6,7 +6,7 @@
 /// starts: past a cap the simulation counts what it dropped and keeps drawing, never growing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VfxBudget {
-    /// Live particles.
+    /// Live particles, and so the most births a step does: what doesn't fit is only counted.
     pub max_particles: u32,
     /// Ribbon points a frame, after smoothing. A ribbon over the cap loses its oldest points.
     pub max_ribbon_points: u32,

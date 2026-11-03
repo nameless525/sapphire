@@ -398,15 +398,16 @@ impl VfxWorld {
             let Some(effect) = library.effect(EffectId(slot.effect)) else { continue };
             for (place, emitter) in effect.emitters.iter().enumerate() {
                 let count = owed_particles(emitter, &mut slot.emitters[place], slot.age, slot.step);
-                for _ in 0..count {
-                    if particles.len() >= budget.max_particles as usize {
-                        *dropped_particles += 1;
-                        continue;
-                    }
+                // Only what fits is walked, so a step costs the budget at most, however much a long
+                // one's rate owes. A drop takes no random numbers, so what's kept doesn't move.
+                let room = (budget.max_particles as usize).saturating_sub(particles.len());
+                let born = room.min(count as usize);
+                for _ in 0..born {
                     let particle = birth(emitter, slot, index as u16, place as u8);
                     particles.push(particle);
                     slot.particles += 1;
                 }
+                *dropped_particles = dropped_particles.saturating_add(u64::from(count) - born as u64);
             }
         }
     }

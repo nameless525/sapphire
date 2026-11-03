@@ -433,6 +433,68 @@ fn damage_numbers_past_the_limit_replace_the_oldest() {
     assert!(hud.damage.iter().flatten().all(|number| number.value >= 3), "the first three went");
 }
 
+/// The numbers alive, by value.
+fn numbers_alive(hud: &CombatHud) -> Vec<u32> {
+    let mut alive: Vec<u32> = hud.damage.iter().flatten().map(|number| number.value).collect();
+    alive.sort_unstable();
+    alive
+}
+
+fn spawn(hud: &mut CombatHud, values: impl IntoIterator<Item = u32>) {
+    for value in values {
+        hud.spawn_damage(value, Vec2::new(100.0, 100.0), DamageKind::Normal);
+    }
+}
+
+/// Review PLT-004: which slot a number is in says nothing of its age once one has expired and its slot
+/// has been taken again.
+#[test]
+fn the_oldest_number_goes_whatever_slot_it_is_in() {
+    let actions = TouchActions::default();
+    let values = HudValues::default();
+    let expired = ms(960);
+    assert!(seconds_since(expired, ms(0)) >= DAMAGE_LIFE && seconds_since(expired, ms(100)) < DAMAGE_LIFE);
+
+    // The first slot's number expires and a new one takes its place. The next past the limit replaces
+    // the oldest left, and not the new one.
+    let mut hud = CombatHud::new();
+    hud.update(ms(0), &values, &actions);
+    spawn(&mut hud, [0]);
+    hud.update(ms(100), &values, &actions);
+    spawn(&mut hud, 1..16);
+    hud.update(expired, &values, &actions);
+    assert_eq!(numbers_alive(&hud), (1..16).collect::<Vec<_>>());
+    spawn(&mut hud, [100]);
+    spawn(&mut hud, [101]);
+    assert_eq!(numbers_alive(&hud), (2..16).chain([100, 101]).collect::<Vec<_>>());
+
+    // Slots in the middle expire, some of them, and their refills outlive everything older.
+    let mut hud = CombatHud::new();
+    hud.update(ms(100), &values, &actions);
+    spawn(&mut hud, 0..16);
+    for number in hud.damage.iter_mut().flatten().filter(|number| (5..8).contains(&number.value)) {
+        number.born = ms(0);
+    }
+    hud.update(expired, &values, &actions);
+    assert_eq!(hud.damage.iter().flatten().count(), 13);
+    spawn(&mut hud, [100, 101, 102]);
+    spawn(&mut hud, [103, 104]);
+    let kept: Vec<u32> = (2..5).chain(8..16).chain(100..105).collect();
+    assert_eq!(numbers_alive(&hud), kept);
+
+    // Numbers spawned in one frame have one time, and go in the order they came, however far past the
+    // limit, round and round the slots.
+    let mut hud = CombatHud::new();
+    hud.update(ms(0), &values, &actions);
+    spawn(&mut hud, 0..50);
+    assert_eq!(numbers_alive(&hud), (34..50).collect::<Vec<_>>());
+
+    // Clearing starts over from nothing.
+    hud.clear_damage();
+    spawn(&mut hud, 0..17);
+    assert_eq!(numbers_alive(&hud), (1..17).collect::<Vec<_>>());
+}
+
 #[test]
 fn clearing_takes_the_numbers_off_and_a_new_one_shows() {
     let actions = TouchActions::default();

@@ -254,6 +254,8 @@ struct DamageNumber {
     kind: DamageKind,
     position: Vec2,
     born: Timestamp,
+    /// Its place among the numbers spawned: a frame's all have one `born`.
+    order: u64,
 }
 
 /// A health bar's trailing "damage taken" segment: when the value drops the segment holds at the
@@ -313,8 +315,8 @@ pub struct CombatHud {
     /// When the skill last came off cooldown.
     ready_at: Option<Timestamp>,
     damage: [Option<DamageNumber>; MAX_DAMAGE_NUMBERS],
-    /// Where the next damage number goes if none is free: the oldest.
-    next_damage: usize,
+    /// The next damage number's `order`.
+    next_damage: u64,
 }
 
 impl Default for CombatHud {
@@ -403,13 +405,12 @@ impl CombatHud {
     /// the real clock from the last [`Self::update`]'s time, so a number born in hitstop still
     /// floats away. Past [`MAX_DAMAGE_NUMBERS`] it replaces the oldest.
     pub fn spawn_damage(&mut self, value: u32, position: Vec2, kind: DamageKind) {
-        let free = self.damage.iter().position(Option::is_none);
-        let slot = free.unwrap_or_else(|| {
-            let oldest = self.next_damage;
-            self.next_damage = (oldest + 1) % MAX_DAMAGE_NUMBERS;
-            oldest
-        });
-        self.damage[slot] = Some(DamageNumber { value, kind, position, born: self.now });
+        // An empty slot sorts before any number, and then the lowest `order` is the oldest.
+        let by_age = |&slot: &usize| self.damage[slot].map(|number| number.order);
+        let slot = (0..MAX_DAMAGE_NUMBERS).min_by_key(by_age).unwrap_or(0);
+        let order = self.next_damage;
+        self.next_damage += 1;
+        self.damage[slot] = Some(DamageNumber { value, kind, position, born: self.now, order });
     }
 
     /// Someone else came in for a fighter, `[player, enemy]`: what they have isn't what the last one
@@ -426,7 +427,6 @@ impl CombatHud {
     /// Takes every damage number off at once: the fight they came from is over.
     pub fn clear_damage(&mut self) {
         self.damage = [None; MAX_DAMAGE_NUMBERS];
-        self.next_damage = 0;
     }
 
     /// Appends this frame's HUD to `list`, naming its atlas and viewport. Allocates nothing once

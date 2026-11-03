@@ -2457,6 +2457,12 @@ impl Renderer {
         (TransientDesc { usage, ..desc }, wgpu::StoreOp::Store)
     }
 
+    /// What this renderer's glyph pages hold, which a glyph atlas must be handed to start a frame
+    /// ([`UiPageState`](sapphire_look::UiPageState)).
+    pub fn ui_page_state(&self) -> sapphire_look::UiPageState {
+        self.ui.page_state()
+    }
+
     /// Counters from the last [`Self::prepare`] plus pool totals, and the last recorded scene
     /// size, sky cube faces and ambient textures.
     pub fn stats(&self) -> RenderStats {

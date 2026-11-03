@@ -460,6 +460,7 @@ fn stats(ui: &mut Ui, view: &View<'_>) {
             )
         };
         row(ui, "Skinning", skinned);
+        row(ui, "Interface", interface_text(&render.ui));
         row(ui, "Sky", sky_text(&render.sky));
         row(ui, "Post layers", post_text(&render.post));
         row(ui, "Screen effects", effects_text(&render.post.effects, view.frame.screen_effects));
@@ -878,6 +879,28 @@ fn ambient_text(ambient: &sapphire_render::AmbientStats) -> String {
         "; no pass".to_owned()
     };
     format!("{grid}; {occlusion}{reflections}{pass}")
+}
+
+/// The interface's line (rule R9): its quads and draws, and the glyph atlas behind them.
+fn interface_text(stats: &sapphire_render::UiStats) -> String {
+    let glyphs = &stats.glyphs;
+    let mut text = format!(
+        "{} quads in {} draws; {} glyph pages, {} glyphs, {} rasterized, {} of uploads, {} dropped",
+        stats.quads,
+        stats.draws,
+        stats.pages,
+        glyphs.glyphs,
+        glyphs.rasterized,
+        format_bytes(stats.page_upload_bytes),
+        glyphs.dropped,
+    );
+    if stats.stale_page_quads > 0 {
+        text.push_str(&format!(", {} for another renderer's pages", stats.stale_page_quads));
+    }
+    if glyphs.forgot {
+        text.push_str(", started over");
+    }
+    text
 }
 
 fn sky_text(sky: &sapphire_render::SkyStats) -> String {

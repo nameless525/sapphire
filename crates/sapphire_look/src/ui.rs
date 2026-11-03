@@ -134,6 +134,54 @@ pub struct UiPageUpload {
     pub offset: u32,
 }
 
+/// What a renderer's glyph pages hold, which a glyph atlas reads at the start of every frame: the
+/// way back from the renderer that the frame packet can't be. A new renderer has a new `store`, so
+/// an atlas sees that everything it handed over is gone; a frame whose list was never prepared
+/// leaves `batch` behind, so it sees that that frame's uploads are.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct UiPageState {
+    /// Whose pages. A renderer's is unique in the process and never 0.
+    pub store: u64,
+    /// The last batch of uploads applied.
+    pub batch: u64,
+}
+
+impl UiPageState {
+    /// For an atlas with nothing behind it, as in a test or a tool that reads the list itself:
+    /// nothing is ever lost. A renderer draws nothing from a list made this way.
+    pub const NO_RENDERER: Self = Self { store: 0, batch: u64::MAX };
+}
+
+/// What a glyph atlas did this frame and holds now (rule R9), which the list carries to the
+/// renderer's stats.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct UiGlyphStats {
+    pub rasterized: u32,
+    pub upload_bytes: u64,
+    pub evicted: u32,
+    /// Glyphs that didn't fit anywhere and didn't draw.
+    pub dropped: u32,
+    /// Whether it started over this frame, because the pages it knew were gone.
+    pub forgot: bool,
+    /// Pages that exist now.
+    pub pages: u32,
+    /// Glyphs held now.
+    pub glyphs: u32,
+    /// Bytes of the pages' area in use now, padding included.
+    pub used_bytes: u64,
+}
+
+/// [`UiDrawList::page_uploads`] joined into fewer rectangles, which is what makes a screen of new
+/// glyphs cheap: a texture write has a fixed cost much larger than its bytes'. Kept between frames
+/// for its vectors' capacity.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct UiPageBands {
+    order: Vec<u32>,
+    /// With `offset` into [`Self::texels`].
+    pub bands: Vec<UiPageUpload>,
+    pub texels: Vec<u8>,
+}
+
 /// What the frame draws over itself after post: the frame packet's `ui`, kept between frames for
 /// its vector's capacity. `sapphire_ui` writes it; nothing above the renderer reads it back.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -151,9 +199,17 @@ pub struct UiDrawList {
     pub page_size: u32,
     /// What changed in the pages since the last list, to apply before this list draws. A list that
     /// names a page the renderer doesn't have makes it, empty.
+    ///
+    /// Two rectangles at one `y` of a page, side by side, may be written as one as tall as the taller,
+    /// so whoever fills this keeps nothing they need under the shorter ([`Self::page_bands`]).
     pub page_uploads: Vec<UiPageUpload>,
     /// The bytes [`Self::page_uploads`] name.
     pub upload_texels: Vec<u8>,
+    /// What the pages hold once this list is applied. A renderer whose [`UiPageState::store`] this
+    /// isn't draws none of the list's page quads and applies none of its uploads.
+    pub page_state: UiPageState,
+    /// What the glyph atlas did for this frame.
+    pub glyphs: UiGlyphStats,
 }
 
 impl UiDrawList {
@@ -166,6 +222,61 @@ impl UiDrawList {
         self.page_size = 0;
         self.page_uploads.clear();
         self.upload_texels.clear();
+        self.page_state = UiPageState::default();
+        self.glyphs = UiGlyphStats::default();
+    }
+
+    /// Joins [`Self::page_uploads`] that lie side by side at one `y` of a page into `out`, with zeros
+    /// under the shorter ones, and leaves out any whose bytes aren't there: how many it left out.
+    /// Allocates nothing once `out` has grown.
+    pub fn page_bands(&self, out: &mut UiPageBands) -> u32 {
+        out.order.clear();
+        out.bands.clear();
+        out.texels.clear();
+        let bytes = |upload: &UiPageUpload| usize::from(upload.width) * usize::from(upload.height);
+        let present = |upload: &UiPageUpload| {
+            let start = upload.offset as usize;
+            start.checked_add(bytes(upload)).is_some_and(|end| end <= self.upload_texels.len())
+        };
+        let uploads = &self.page_uploads;
+        out.order.extend((0..uploads.len() as u32).filter(|&at| present(&uploads[at as usize])));
+        let left_out = (uploads.len() - out.order.len()) as u32;
+        out.order.sort_unstable_by_key(|&at| {
+            let upload = &uploads[at as usize];
+            (upload.page, upload.y, upload.x)
+        });
+        let mut next = 0;
+        while next < out.order.len() {
+            let first = uploads[out.order[next] as usize];
+            let (mut end, mut height, mut x_end) =
+                (next + 1, first.height, u32::from(first.x) + u32::from(first.width));
+            while let Some(upload) = out.order.get(end).map(|&at| &uploads[at as usize]) {
+                let joins = upload.page == first.page && upload.y == first.y && u32::from(upload.x) == x_end;
+                if !joins || x_end + u32::from(upload.width) > u32::from(u16::MAX) {
+                    break;
+                }
+                x_end += u32::from(upload.width);
+                height = height.max(upload.height);
+                end += 1;
+            }
+            let width = (x_end - u32::from(first.x)) as usize;
+            let offset = out.texels.len();
+            out.texels.resize(offset + width * usize::from(height), 0);
+            let mut x = 0;
+            for &at in &out.order[next..end] {
+                let upload = &uploads[at as usize];
+                let (w, start) = (usize::from(upload.width), upload.offset as usize);
+                for row in 0..usize::from(upload.height) {
+                    let from = start + row * w;
+                    let to = offset + row * width + x;
+                    out.texels[to..to + w].copy_from_slice(&self.upload_texels[from..from + w]);
+                }
+                x += w;
+            }
+            out.bands.push(UiPageUpload { width: width as u16, height, offset: offset as u32, ..first });
+            next = end;
+        }
+        left_out
     }
 
     /// Adds a quad over a glyph page, joining the run before it if that's on the same page.
@@ -203,5 +314,60 @@ mod tests {
         );
         list.reset();
         assert!(list.page_runs.is_empty() && list.quads.is_empty());
+    }
+
+    fn with_uploads(uploads: &[(u16, u16, u16, u16, u16, u8)]) -> UiDrawList {
+        let mut list = UiDrawList::default();
+        for &(page, x, y, width, height, value) in uploads {
+            let offset = list.upload_texels.len() as u32;
+            list.upload_texels.resize(offset as usize + usize::from(width) * usize::from(height), value);
+            list.page_uploads.push(UiPageUpload { page, x, y, width, height, offset });
+        }
+        list
+    }
+
+    #[test]
+    fn rectangles_side_by_side_join_with_zeros_under_the_shorter() {
+        // In the order an atlas might hand them over, which isn't the page's.
+        let list = with_uploads(&[(0, 3, 8, 1, 2, 7), (0, 0, 8, 2, 1, 5), (0, 2, 8, 1, 3, 6)]);
+        let mut out = UiPageBands::default();
+        assert_eq!(list.page_bands(&mut out), 0);
+        assert_eq!(out.bands, [UiPageUpload { page: 0, x: 0, y: 8, width: 4, height: 3, offset: 0 }]);
+        #[rustfmt::skip]
+        assert_eq!(out.texels, [
+            5, 5, 6, 7,
+            0, 0, 6, 7,
+            0, 0, 6, 0,
+        ]);
+    }
+
+    #[test]
+    fn a_gap_a_row_or_a_page_keeps_rectangles_apart() {
+        let list =
+            with_uploads(&[(0, 0, 0, 2, 1, 1), (0, 3, 0, 2, 1, 2), (0, 5, 4, 2, 1, 3), (1, 5, 0, 2, 1, 4)]);
+        let mut out = UiPageBands::default();
+        assert_eq!(list.page_bands(&mut out), 0);
+        assert_eq!(out.bands.len(), 4);
+        assert_eq!(out.texels, [1, 1, 2, 2, 3, 3, 4, 4]);
+    }
+
+    #[test]
+    fn a_rectangle_past_its_bytes_is_left_out_and_counted() {
+        let mut list = with_uploads(&[(0, 0, 0, 2, 2, 1), (0, 8, 0, 2, 2, 2)]);
+        list.upload_texels.truncate(6);
+        let mut out = UiPageBands::default();
+        assert_eq!(list.page_bands(&mut out), 1);
+        assert_eq!(out.bands.len(), 1);
+        assert_eq!(out.texels, [1; 4]);
+    }
+
+    #[test]
+    fn nothing_to_join_costs_nothing_once_it_has_grown() {
+        let mut out = UiPageBands::default();
+        with_uploads(&[(0, 0, 0, 8, 8, 1)]).page_bands(&mut out);
+        let capacity = out.texels.capacity();
+        UiDrawList::default().page_bands(&mut out);
+        assert!(out.bands.is_empty() && out.texels.is_empty());
+        assert_eq!(out.texels.capacity(), capacity);
     }
 }

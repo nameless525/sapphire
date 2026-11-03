@@ -9,7 +9,7 @@ use std::alloc::System;
 use std::sync::Arc;
 
 use sapphire_core::alloc::{self, CountingAllocator, PER_THREAD_COUNTS};
-use sapphire_look::UiDrawList;
+use sapphire_look::{UiDrawList, UiPageState};
 use sapphire_text::{AtlasConfig, GlyphAtlas, TextStyle, TextSystem};
 
 #[global_allocator]
@@ -31,7 +31,7 @@ fn a_frame_that_changed_nothing_allocates_nothing() {
     let mut list = UiDrawList::default();
     let frame = |text: &mut TextSystem, atlas: &mut GlyphAtlas, list: &mut UiDrawList| {
         text.begin_frame();
-        atlas.begin_frame();
+        atlas.begin_frame(UiPageState::NO_RENDERER);
         list.reset();
         list.viewport = [640.0, 360.0];
         for (line, string) in STRINGS.iter().enumerate() {
@@ -51,5 +51,5 @@ fn a_frame_that_changed_nothing_allocates_nothing() {
     let after = alloc::thread_counts();
     assert_eq!(after.allocations - before.allocations, 0, "{} bytes", after.bytes - before.bytes);
     assert_eq!(text.take_stats().misses, 6, "shaped once each");
-    assert_eq!(atlas.take_stats().evicted, 0);
+    assert_eq!(atlas.stats().evicted, 0);
 }

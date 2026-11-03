@@ -45,6 +45,7 @@ sapphire_pipeline.workspace = true
 sapphire_platform.workspace = true
 # Real Japanese through the pass, with a font the test is given.
 sapphire_text.workspace = true
+epaint_default_fonts.workspace = true
 sapphire_ui.workspace = true
 tracing-subscriber.workspace = true
 

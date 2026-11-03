@@ -3,28 +3,44 @@
 //!
 //! A glyph lives at one pixel size, so a quad maps it one to one and the page's filter never blurs
 //! it. Baselines snap to whole pixels, and across a line a glyph snaps to a share of a pixel
-//! ([`AtlasConfig::subpixel_bins`]).
+//! ([`AtlasConfig::subpixel_bins`]). There are no pages per size: glyphs of every size share pages,
+//! and sizes come from a type scale ([`TYPE_SCALE`](crate::TYPE_SCALE)), since a size that moves would
+//! fill them. A tween scales quads.
+//!
+//! # What's in the renderer's pages
+//!
+//! Nothing here keeps a page's texels, which would be a second copy of up to 16 MiB on a phone to
+//! save what a loss costs about once a run. [`GlyphAtlas::begin_frame`] takes the renderer's
+//! [`UiPageState`] instead, so it can't be called without one: a new renderer, or a frame whose
+//! uploads never reached one, makes the atlas forget what it placed, and the frames after rasterize
+//! what they draw again.
 //!
 //! # Eviction
 //!
 //! A glyph drawn in the last [`AtlasConfig::keep_frames`] frames is never taken out, so what's on
 //! screen can't thrash. When every page is full, the least recently drawn glyphs go until an eighth
 //! of a page has been freed, so one eviction pays for many glyphs. An atlas with nothing left to give
-//! leaves the glyph undrawn this frame and counts it ([`AtlasStats::dropped`]), and rasterizes
+//! leaves the glyph undrawn this frame and counts it ([`UiGlyphStats::dropped`]), and rasterizes
 //! nothing else this frame, so a screen bigger than the atlas costs no more than a full one.
+//!
+//! # Warming
+//!
+//! A full screen of new text costs more than a frame on a phone. [`GlyphAtlas::warm`] rasterizes a
+//! screen's glyphs and hands them over without drawing them, up to a budget a frame, for a fade or a
+//! loading frame to spend, so the frame that shows the screen has nothing left to do.
 
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 use etagere::{AllocId, BucketedAtlasAllocator, size2};
-use sapphire_look::{UiDrawList, UiPageUpload, UiQuad};
+use sapphire_look::{UiDrawList, UiGlyphStats, UiPageState, UiPageUpload, UiQuad};
 use swash::scale::image::Image;
 use swash::scale::{Render, ScaleContext, Source};
 use swash::zeno::{Format, Vector};
 use swash::{CacheKey, FontRef};
 
-use crate::shape::ShapedText;
+use crate::shape::{ShapedGlyph, ShapedText};
 
 /// Empty texels around each glyph, so a page's filter never reads a neighbour.
 const PADDING: u32 = 1;
@@ -48,22 +64,6 @@ impl Default for AtlasConfig {
     fn default() -> Self {
         Self { page_size: 2048, max_pages: 4, subpixel_bins: 4, keep_frames: 2 }
     }
-}
-
-/// What the atlas has done since the last [`GlyphAtlas::take_stats`] (rule R9).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct AtlasStats {
-    pub rasterized: u32,
-    pub upload_bytes: u64,
-    pub evicted: u32,
-    /// Glyphs that didn't fit anywhere and didn't draw.
-    pub dropped: u32,
-    /// Pages that exist now.
-    pub pages: u32,
-    /// Glyphs held now.
-    pub glyphs: u32,
-    /// Bytes of the pages' area in use now, padding included.
-    pub used_bytes: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -112,7 +112,13 @@ pub struct GlyphAtlas {
     /// Nothing more fits this frame.
     full: bool,
     frame: u64,
-    stats: AtlasStats,
+    /// Whose pages this has been filling.
+    store: u64,
+    /// The last batch of uploads handed over.
+    sent: u64,
+    /// Whether this frame has opened a batch.
+    sending: bool,
+    stats: UiGlyphStats,
 }
 
 impl std::fmt::Debug for GlyphAtlas {
@@ -136,7 +142,10 @@ impl GlyphAtlas {
             oldest: Vec::new(),
             full: false,
             frame: 0,
-            stats: AtlasStats::default(),
+            store: 0,
+            sent: 0,
+            sending: false,
+            stats: UiGlyphStats::default(),
         }
     }
 
@@ -144,25 +153,76 @@ impl GlyphAtlas {
         &self.config
     }
 
-    /// Moves to the next frame.
-    pub fn begin_frame(&mut self) {
+    /// Moves to the next frame, given what the renderer's pages hold now. If what this handed over
+    /// isn't there, it starts over: see the module docs.
+    pub fn begin_frame(&mut self, pages: UiPageState) {
         self.frame += 1;
         self.full = false;
+        self.sending = false;
+        self.stats = UiGlyphStats::default();
+        if pages.store != self.store || pages.batch < self.sent {
+            self.stats.forgot = !self.glyphs.is_empty();
+            self.pages.clear();
+            self.glyphs.clear();
+        }
+        self.store = pages.store;
     }
 
-    /// Forgets every glyph, for a renderer that has lost its pages: device loss or a new tier. The
-    /// next frames rasterize what they draw again.
-    pub fn reset(&mut self) {
-        self.pages.clear();
-        self.glyphs.clear();
+    /// What it did this frame, and how full it is.
+    pub fn stats(&self) -> UiGlyphStats {
+        UiGlyphStats {
+            pages: self.pages.len() as u32,
+            glyphs: self.glyphs.len() as u32,
+            used_bytes: self.pages.iter().map(|page| page.allocated_space() as u64).sum(),
+            ..self.stats
+        }
     }
 
-    /// What it did since the last call, and how full it is.
-    pub fn take_stats(&mut self) -> AtlasStats {
-        self.stats.pages = self.pages.len() as u32;
-        self.stats.glyphs = self.glyphs.len() as u32;
-        self.stats.used_bytes = self.pages.iter().map(|page| page.allocated_space() as u64).sum();
-        std::mem::take(&mut self.stats)
+    /// Rasterizes what `text` will need and adds it to `list`'s uploads without drawing it, spending
+    /// `budget`, which is glyphs rasterized and can be shared across texts. Whether all of `text` is
+    /// in the atlas now: if not, call again next frame. `text` must have been shaped at the scale it
+    /// will be drawn at.
+    pub fn warm(&mut self, text: &ShapedText, budget: &mut u32, list: &mut UiDrawList) -> bool {
+        let mut done = true;
+        'runs: for run in &text.runs {
+            let coords = coords_key(&run.coords);
+            for glyph in &text.glyphs[run.glyphs.start as usize..run.glyphs.end as usize] {
+                let (_, share, key) = self.key(run, coords, glyph, glyph.x);
+                let known = self.glyphs.contains_key(&key);
+                if !known && *budget == 0 {
+                    done = false;
+                    break 'runs;
+                }
+                let before = self.stats.rasterized;
+                self.entry(key, run, share, list);
+                *budget -= (self.stats.rasterized - before).min(*budget);
+                done &= !self.full;
+            }
+        }
+        self.publish(list);
+        done
+    }
+
+    /// Where a glyph at `x` pixels lands: its whole pixel, its share of one, and its key.
+    fn key(&self, run: &crate::ShapedRun, coords: u64, glyph: &ShapedGlyph, x: f32) -> (f32, f32, GlyphKey) {
+        let bins = f32::from(self.config.subpixel_bins.max(1));
+        let snapped = (x * bins).round() / bins;
+        let (whole, share) = (snapped.floor(), snapped - snapped.floor());
+        let key = GlyphKey {
+            font: (run.font.data.id(), run.font.index),
+            coords,
+            glyph: glyph.id,
+            ppem: (run.ppem * 64.0) as u32,
+            subpixel: (share * bins) as u8,
+        };
+        (whole, share, key)
+    }
+
+    /// Tells `list` what it now carries.
+    fn publish(&self, list: &mut UiDrawList) {
+        list.page_size = self.config.page_size;
+        list.page_state = UiPageState { store: self.store, batch: self.sent };
+        list.glyphs = self.stats();
     }
 
     /// Adds `text` to `list` with its top-left at `origin` points, `scale` pixels to a point, and any
@@ -175,24 +235,13 @@ impl GlyphAtlas {
         color: [u8; 4],
         list: &mut UiDrawList,
     ) {
-        list.page_size = self.config.page_size;
         let side = self.config.page_size as f32;
         // The whole text snaps first, so every quad lands on whole pixels.
         let origin_px = [(origin[0] * scale).round(), (origin[1] * scale).round()];
-        let bins = f32::from(self.config.subpixel_bins.max(1));
         for run in &text.runs {
             let coords = coords_key(&run.coords);
             for glyph in &text.glyphs[run.glyphs.start as usize..run.glyphs.end as usize] {
-                let x = origin_px[0] + glyph.x;
-                let snapped = (x * bins).round() / bins;
-                let (whole, share) = (snapped.floor(), snapped - snapped.floor());
-                let key = GlyphKey {
-                    font: (run.font.data.id(), run.font.index),
-                    coords,
-                    glyph: glyph.id,
-                    ppem: (run.ppem * 64.0) as u32,
-                    subpixel: (share * bins) as u8,
-                };
+                let (whole, share, key) = self.key(run, coords, glyph, origin_px[0] + glyph.x);
                 let Some(place) = self.entry(key, run, share, list) else { continue };
                 let (x0, y0) =
                     (whole + f32::from(place.left), (origin_px[1] + glyph.y).round() + f32::from(place.top));
@@ -207,6 +256,7 @@ impl GlyphAtlas {
                 list.push_page_quad(place.page, quad);
             }
         }
+        self.publish(list);
     }
 
     /// Where `key` is, rasterizing it if it's new. `None` for a glyph with no ink or no room.
@@ -273,6 +323,10 @@ impl GlyphAtlas {
             self.full = true;
             return None;
         };
+        if !self.sending {
+            self.sending = true;
+            self.sent += 1;
+        }
         let offset = list.upload_texels.len() as u32;
         write_padded(&mut list.upload_texels, &self.image.data, placement.width, placement.height);
         list.page_uploads.push(UiPageUpload {

@@ -17,8 +17,8 @@ use common::{
     DELA, FAMILY_BODY, Item, MPLUS1, OXANIUM, distinct_japanese, menu_screen, percentile, read_font, style,
 };
 use sapphire_core::alloc::{self, CountingAllocator};
-use sapphire_look::UiDrawList;
-use sapphire_text::{AtlasConfig, AtlasStats, GlyphAtlas, TextSystem};
+use sapphire_look::{UiDrawList, UiGlyphStats, UiPageBands, UiPageState};
+use sapphire_text::{AtlasConfig, GlyphAtlas, TextSystem};
 
 #[global_allocator]
 static GLOBAL: CountingAllocator<System> = CountingAllocator::new(System);
@@ -189,10 +189,11 @@ fn costs_2_shaping_a_screen() {
 /// One frame of a screen through the atlas; what it cost.
 struct Frame {
     ms: f64,
-    stats: AtlasStats,
+    stats: UiGlyphStats,
     runs: usize,
     quads: usize,
     uploads: usize,
+    writes: usize,
 }
 
 fn draw_frame(
@@ -203,7 +204,7 @@ fn draw_frame(
     list: &mut UiDrawList,
 ) -> Frame {
     text.begin_frame();
-    atlas.begin_frame();
+    atlas.begin_frame(UiPageState::NO_RENDERER);
     list.reset();
     let shaped: Vec<_> =
         screen.iter().map(|item| text.shape(item.text, &item.style, scale, item.max_width).clone()).collect();
@@ -216,10 +217,15 @@ fn draw_frame(
     let ms = ms(start);
     Frame {
         ms,
-        stats: atlas.take_stats(),
+        stats: atlas.stats(),
         runs: list.page_runs.len(),
         quads: list.quads.len(),
         uploads: list.page_uploads.len(),
+        writes: {
+            let mut bands = UiPageBands::default();
+            list.page_bands(&mut bands);
+            bands.bands.len()
+        },
     }
 }
 
@@ -261,9 +267,9 @@ fn costs_3_atlas_on_a_full_screen() {
             let held = back.stats;
             let (worst, worst_items) = worst_screen(&mplus, points);
             let worst_frame = draw_frame(&mut text, &mut atlas, &worst_items, scale, &mut list);
-            let end = atlas.take_stats();
+            let end = atlas.stats();
             println!(
-                "bins {bins}: menu {} quads in {} runs, {} glyphs rasterized in {:.2} ms ({:.1} µs each), {} uploads of {:.0} KB; a frame after, {} rasterized in {:.3} ms",
+                "bins {bins}: menu {} quads in {} runs, {} glyphs rasterized in {:.2} ms ({:.1} µs each), {} uploads of {:.0} KB in {} writes; a frame after, {} rasterized in {:.3} ms",
                 first.quads,
                 first.runs,
                 first.stats.rasterized,
@@ -271,6 +277,7 @@ fn costs_3_atlas_on_a_full_screen() {
                 first.ms * 1e3 / f64::from(first.stats.rasterized.max(1)),
                 first.uploads,
                 first.stats.upload_bytes as f64 / 1e3,
+                first.writes,
                 again.stats.rasterized,
                 again.ms,
             );
@@ -319,7 +326,7 @@ fn costs_4_page_sizes_and_eviction() {
             let menu = draw_frame(&mut text, &mut atlas, &ja, scale, &mut list).stats;
             let both = draw_frame(&mut text, &mut atlas, &en, scale, &mut list).stats;
             let worst = draw_frame(&mut text, &mut atlas, &hard, scale, &mut list).stats;
-            let fill = |stats: &AtlasStats| {
+            let fill = |stats: &UiGlyphStats| {
                 stats.used_bytes as f64 / (f64::from(stats.pages) * f64::from(page_size * page_size))
             };
             println!(

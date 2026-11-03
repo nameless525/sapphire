@@ -3667,6 +3667,7 @@ version = "0.1.0"
 dependencies = [
  "bevy_reflect",
  "bytemuck",
+ "epaint_default_fonts",
  "glam 0.33.12",
  "half",
  "png",

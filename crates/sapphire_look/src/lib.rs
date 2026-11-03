@@ -63,5 +63,7 @@ pub use post::{
     PostParams, RadialBlur, SpeedLines, ToneCurve, Vignette,
 };
 pub use sky::{CloudLight, Nebula, SkyDisc, SkyGradient, SkyLayers};
-pub use ui::{UI_COVERAGE, UiAtlas, UiDrawList, UiPageRun, UiPageUpload, UiQuad};
+pub use ui::{
+    UI_COVERAGE, UiAtlas, UiDrawList, UiGlyphStats, UiPageBands, UiPageRun, UiPageState, UiPageUpload, UiQuad,
+};
 pub use vfx::{VfxFrame, VfxLight, VfxRibbonPoint, VfxShape, VfxSprite, VfxStats};

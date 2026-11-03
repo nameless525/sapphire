@@ -1,7 +1,8 @@
 //! The on-screen interface (M2 I2, the `ui` module): a frame with no quads builds and draws nothing,
 //! the first with quads builds one pipeline, a widget's pixels land where its anchors put them at
 //! every aspect ratio and inside any insets, colors land on their codes, edits to `ui.wgsl` rebuild
-//! it, a new renderer brings its atlas along, and debug draw's lines stay visible over it. They need
+//! it, a new renderer brings its atlas along and gets its glyph pages filled again, and debug draw's
+//! lines stay visible over it. They need
 //! a GPU: run with `cargo test -p
 //! sapphire_render --test gpu ui:: -- --ignored`.
 
@@ -668,6 +669,7 @@ fn glyph_pages_fill_from_the_list_s_uploads_and_draw_in_order_with_the_atlas() {
         painter.sprite(disc, Vec2::new(48.0, 16.0), Vec2::splat(20.0), 0.0, Paint::fill([255, 0, 0, 255]));
     });
     ui.page_size = SIDE;
+    ui.page_state = harness.renderer.ui_page_state();
     upload_block(&mut ui, 0, (4, 4), (16, 16), 255);
     upload_block(&mut ui, 1, (8, 8), (16, 16), 128);
     let side = SIDE as f32;
@@ -706,7 +708,12 @@ fn glyph_pages_fill_from_the_list_s_uploads_and_draw_in_order_with_the_atlas() {
     assert_eq!(pixels.at(20, 16), [255, 255, 255, 255], "beside it, as it was");
 
     // A page's uploads with no quads aren't lost.
-    let mut quiet = UiDrawList { viewport: [96.0, 32.0], page_size: SIDE, ..UiDrawList::default() };
+    let mut quiet = UiDrawList {
+        viewport: [96.0, 32.0],
+        page_size: SIDE,
+        page_state: harness.renderer.ui_page_state(),
+        ..UiDrawList::default()
+    };
     upload_block(&mut quiet, 0, (4, 4), (16, 16), 255);
     harness.draw(Some(&quiet));
     assert_eq!(harness.renderer.stats().ui.page_uploads, 1);
@@ -754,13 +761,13 @@ fn japanese_lands_pixel_for_pixel_at_every_scale() {
         let mut ui =
             UiDrawList { viewport: [size.0 as f32 / scale, size.1 as f32 / scale], ..UiDrawList::default() };
         let mut y = 4.0;
-        atlas.begin_frame();
+        atlas.begin_frame(harness.renderer.ui_page_state());
         for (string, style) in &lines {
             let shaped = text.shape(string, style, scale, Some(points.0 - 16.0));
             atlas.draw(shaped, [8.0, y], scale, [255; 4], &mut ui);
             y += shaped.height / scale;
         }
-        let stats = atlas.take_stats();
+        let stats = atlas.stats();
         assert_eq!((stats.dropped, stats.pages), (0, 1));
         let pixels = harness.draw(Some(&ui));
         let renderer = harness.renderer.stats().ui;
@@ -845,7 +852,12 @@ fn glyph_uploads_cost() {
     for (glyphs, side) in [(0u16, 24u16), (115, 24), (308, 24), (308, 48), (1500, 24), (3400, 24)] {
         let mut times = Vec::new();
         for _ in 0..12 {
-            let mut ui = UiDrawList { viewport: [64.0, 64.0], page_size: SIDE, ..UiDrawList::default() };
+            let mut ui = UiDrawList {
+                viewport: [64.0, 64.0],
+                page_size: SIDE,
+                page_state: harness.renderer.ui_page_state(),
+                ..UiDrawList::default()
+            };
             for index in 0..glyphs {
                 let per_row = SIDE as u16 / side;
                 let corner = ((index % per_row) * side, (index / per_row) * side);
@@ -866,4 +878,153 @@ fn glyph_uploads_cost() {
             times[times.len() - 1],
         );
     }
+}
+
+/// Two lines of text as a frame of `harness`'s draws them, from `atlas`.
+fn text_frame(
+    harness: &Harness,
+    text: &mut sapphire_text::TextSystem,
+    atlas: &mut sapphire_text::GlyphAtlas,
+    string: &str,
+) -> UiDrawList {
+    let style = sapphire_text::TextStyle {
+        families: "Ubuntu",
+        size: 20.0,
+        weight: 400.0,
+        line_height: 1.3,
+        locale: Some("en"),
+    };
+    let mut ui =
+        UiDrawList { viewport: [harness.size.0 as f32, harness.size.1 as f32], ..UiDrawList::default() };
+    atlas.begin_frame(harness.renderer.ui_page_state());
+    atlas.draw(text.shape(string, &style, 1.0, None), [8.0, 8.0], 1.0, [255; 4], &mut ui);
+    ui
+}
+
+/// Fonts every checkout has, and an atlas of a size that keeps a read-back small.
+fn text_stack() -> (sapphire_text::TextSystem, sapphire_text::GlyphAtlas) {
+    let mut text = sapphire_text::TextSystem::new();
+    text.register_font(Arc::new(epaint_default_fonts::UBUNTU_LIGHT.to_vec()));
+    let config = sapphire_text::AtlasConfig { page_size: 512, ..sapphire_text::AtlasConfig::default() };
+    (text, sapphire_text::GlyphAtlas::new(config))
+}
+
+fn lit_pixels(pixels: &Pixels) -> usize {
+    pixels.rgba.as_chunks::<4>().0.iter().filter(|pixel| pixel[0] > 128).count()
+}
+
+/// The way a renderer used to draw holes: it starts with no pages, and nothing told the atlas.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_new_renderer_gets_the_glyphs_its_pages_lack() {
+    let (mut text, mut atlas) = text_stack();
+    let mut first = Harness::new((160, 48));
+    let ui = text_frame(&first, &mut text, &mut atlas, "Attack");
+    let drawn = first.draw(Some(&ui));
+    assert!(lit_pixels(&drawn) > 100, "the test must draw something");
+    let held = text_frame(&first, &mut text, &mut atlas, "Attack");
+    assert!(held.page_uploads.is_empty());
+    assert_eq!(first.draw(Some(&held)).rgba, drawn.rgba);
+
+    // A new renderer, as a tier change or a recreated device makes.
+    let mut second = Harness::new((160, 48));
+    assert_ne!(second.renderer.ui_page_state().store, first.renderer.ui_page_state().store);
+    let ui = text_frame(&second, &mut text, &mut atlas, "Attack");
+    assert!(ui.glyphs.forgot);
+    assert!(!ui.page_uploads.is_empty(), "the atlas sends it all again");
+    assert_eq!(second.draw(Some(&ui)).rgba, drawn.rgba);
+    assert_eq!(second.renderer.stats().ui.stale_page_quads, 0);
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn a_device_lost_on_a_frame_of_new_glyphs_costs_nothing_on_the_next_renderer() {
+    let (mut text, mut atlas) = text_stack();
+    let mut first = Harness::new((160, 48));
+    let ui = text_frame(&first, &mut text, &mut atlas, "Attack");
+    let drawn = first.draw(Some(&ui));
+
+    first.gpu.device().destroy();
+    let _ = first.gpu.device().poll(wgpu::PollType::wait_indefinitely());
+    assert!(first.gpu.is_lost());
+    let ui = text_frame(&first, &mut text, &mut atlas, "Defend");
+    dark_packet(&mut first.ring, first.size, Some(&ui));
+    first.renderer.prepare(&first.gpu, first.ring.current());
+    drop(first);
+
+    let mut second = Harness::new((160, 48));
+    let ui = text_frame(&second, &mut text, &mut atlas, "Attack");
+    assert_eq!(second.draw(Some(&ui)).rgba, drawn.rgba);
+}
+
+/// A frame the app built and never prepared took its uploads with it, and the pages don't have them.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_list_that_never_reached_the_renderer_is_sent_again() {
+    let (mut text, mut atlas) = text_stack();
+    let mut harness = Harness::new((160, 48));
+    let mut other = Harness::new((160, 48));
+    let ui = text_frame(&other, &mut text, &mut atlas, "Attack");
+    let expected = other.draw(Some(&ui));
+    let (mut text, mut atlas) = text_stack();
+
+    let lost = text_frame(&harness, &mut text, &mut atlas, "Attack");
+    assert!(!lost.page_uploads.is_empty());
+    let ui = text_frame(&harness, &mut text, &mut atlas, "Attack");
+    assert!(ui.glyphs.forgot);
+    assert_eq!(harness.draw(Some(&ui)).rgba, expected.rgba);
+}
+
+/// A prepared frame that never runs still took its uploads, so nothing starts over.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_frame_prepared_and_never_recorded_loses_no_glyphs() {
+    let (mut text, mut atlas) = text_stack();
+    let mut harness = Harness::new((160, 48));
+    let ui = text_frame(&harness, &mut text, &mut atlas, "Attack");
+    dark_packet(&mut harness.ring, harness.size, Some(&ui));
+    harness.renderer.prepare(&harness.gpu, harness.ring.current());
+
+    let ui = text_frame(&harness, &mut text, &mut atlas, "Attack");
+    assert!(!ui.glyphs.forgot);
+    assert!(ui.page_uploads.is_empty());
+    assert!(lit_pixels(&harness.draw(Some(&ui))) > 100);
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn a_list_made_for_another_renderer_draws_no_glyphs_and_says_so() {
+    let (mut text, mut atlas) = text_stack();
+    let first = Harness::new((160, 48));
+    let mut second = Harness::new((160, 48));
+    let ui = text_frame(&first, &mut text, &mut atlas, "Attack");
+    let pixels = second.draw(Some(&ui));
+    let stats = second.renderer.stats().ui;
+    assert_eq!(stats.stale_page_quads, ui.quads.len() as u32);
+    assert_eq!((stats.page_uploads, stats.draws), (0, 0));
+    assert_eq!(lit_pixels(&pixels), 0);
+    assert!(!second.drew_ui_pass());
+
+    let ui = text_frame(&second, &mut text, &mut atlas, "Attack");
+    assert!(lit_pixels(&second.draw(Some(&ui))) > 100, "the next frame heals it");
+    assert_eq!(second.renderer.stats().ui.stale_page_quads, 0);
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn a_screen_of_glyphs_is_far_fewer_writes_than_glyphs() {
+    let (mut text, mut atlas) = text_stack();
+    let mut harness = Harness::new((960, 48));
+    let ui = text_frame(
+        &harness,
+        &mut text,
+        &mut atlas,
+        "The quick brown fox jumps over the lazy dog, 0123456789",
+    );
+    let drawn = harness.draw(Some(&ui));
+    let stats = harness.renderer.stats().ui;
+    assert!(lit_pixels(&drawn) > 100);
+    assert!(u32::try_from(ui.page_uploads.len()).unwrap() > 20);
+    assert!(stats.page_uploads * 4 <= ui.page_uploads.len() as u32, "{} writes", stats.page_uploads);
+    assert_eq!(stats.glyphs, ui.glyphs, "the atlas's stats reach the renderer's");
 }

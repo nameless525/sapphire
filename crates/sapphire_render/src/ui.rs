@@ -35,7 +35,15 @@
 //!
 //! The list's `page_uploads` go to the queue in [`Ui::prepare`], ahead of the next submit, whether or
 //! not this frame's graph runs, so a lost frame loses none. A page is made the first time a list
-//! names it. A new renderer starts with no pages, so whoever made it resets their glyph atlas.
+//! names it. A write has a fixed cost much larger than its bytes', so glyphs side by side go as one
+//! ([`UiDrawList::page_bands`]).
+//!
+//! There is no copy of a page on the CPU, so a renderer can't rebuild its pages as it does the atlas
+//! from its `Arc`. It says what it holds instead: [`Ui::page_state`], which a glyph atlas must be
+//! handed to start a frame, names this renderer and the last batch it applied. A new renderer or a
+//! list that never reached [`Ui::prepare`] makes the atlas start over. A list made for another
+//! renderer draws none of its glyphs and writes nothing, and is counted
+//! ([`UiStats::stale_page_quads`]), rather than draw another's page layout from empty pages.
 //!
 //! `ui.wgsl` is a program of its own ([`ShaderFile::Ui`](crate::ShaderFile::Ui)): an edit rebuilds
 //! the one pipeline, once built, on the layout it had (`shader_builds`).
@@ -43,8 +51,9 @@
 use std::mem::{offset_of, size_of};
 use std::num::NonZeroU64;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use sapphire_look::{UiAtlas, UiDrawList, UiQuad};
+use sapphire_look::{UiAtlas, UiDrawList, UiGlyphStats, UiPageBands, UiPageState, UiQuad};
 use sapphire_rhi::wgpu;
 
 use crate::buffer::{self, GrowableBuffer};
@@ -57,6 +66,9 @@ pub const UI_PASS: &str = "ui";
 
 /// Bytes of a quad, as the vertex stage reads it.
 const QUAD_BYTES: u64 = size_of::<UiQuad>() as u64;
+
+/// The next renderer's [`UiPageState::store`]. Never 0, which is no renderer's.
+static NEXT_PAGE_STORE: AtomicU64 = AtomicU64::new(1);
 
 /// Quads the buffer holds before it first grows: more than a combat HUD draws.
 const INITIAL_QUADS: u64 = 256;
@@ -94,12 +106,17 @@ pub struct UiStats {
     pub atlas_uploads: u32,
     /// Glyph pages on the GPU.
     pub pages: u32,
-    /// Rectangles of glyph pages the last prepared frame wrote.
+    /// Rectangles of glyph pages the last prepared frame wrote, once joined.
     pub page_uploads: u32,
     /// Bytes of them.
     pub page_upload_bytes: u64,
+    /// Quads of the last prepared frame's list that didn't draw, because it was made for another
+    /// renderer's pages. The frame after it draws them, once the atlas has seen this renderer.
+    pub stale_page_quads: u32,
     /// Draws in the last prepared frame.
     pub draws: u32,
+    /// What the glyph atlas behind the last prepared frame's list did.
+    pub glyphs: UiGlyphStats,
 }
 
 /// `ui.wgsl`'s uniforms.
@@ -168,6 +185,10 @@ pub(crate) struct Ui {
     stats: UiStats,
     /// The largest buffer quads go in; lowered by tests of a full one.
     max_bytes: u64,
+    /// This renderer's pages, and the last batch of uploads they took.
+    page_state: UiPageState,
+    /// This frame's uploads, joined. Its capacity stays.
+    bands: UiPageBands,
 }
 
 /// What the uploads pass writes for the interface.
@@ -204,7 +225,14 @@ impl Ui {
             uniforms: UiUniforms::default(),
             stats: UiStats::default(),
             max_bytes: device.limits().max_buffer_size,
+            page_state: UiPageState { store: NEXT_PAGE_STORE.fetch_add(1, Ordering::Relaxed), batch: 0 },
+            bands: UiPageBands::default(),
         }
+    }
+
+    /// What this renderer's pages hold. See the module docs.
+    pub(crate) fn page_state(&self) -> UiPageState {
+        self.page_state
     }
 
     /// Whether `list` draws anything.
@@ -303,11 +331,29 @@ impl Ui {
         self.stats.quads_over_limit = 0;
         self.stats.page_uploads = 0;
         self.stats.page_upload_bytes = 0;
+        self.stats.stale_page_quads = 0;
         self.stats.draws = 0;
+        self.stats.glyphs = list.glyphs;
+        // A list that names no page is nobody's, and says nothing about the pages.
+        let uses_pages = !list.page_runs.is_empty() || !list.page_uploads.is_empty();
+        let ours = list.page_state.store == self.page_state.store;
+        if ours {
+            self.page_state.batch = list.page_state.batch;
+        } else if uses_pages {
+            self.stats.stale_page_quads = list.page_runs.iter().map(|run| run.count).sum();
+            tracing::debug!(
+                target: crate::LOG_TARGET,
+                quads = self.stats.stale_page_quads,
+                "a list made for another renderer's glyph pages"
+            );
+        }
         let Some(built) = self.built.as_deref_mut() else { return };
-        let (uploads, bytes) = write_pages(&self.device, queue, built, list, self.labels);
-        self.stats.page_uploads = uploads;
-        self.stats.page_upload_bytes = bytes;
+        if ours {
+            let (uploads, bytes) =
+                write_pages(&self.device, queue, built, list, &mut self.bands, self.labels);
+            self.stats.page_uploads = uploads;
+            self.stats.page_upload_bytes = bytes;
+        }
         self.stats.pages = built.pages.len() as u32;
         if !Self::draws(list) {
             return;
@@ -329,8 +375,12 @@ impl Ui {
         self.quads.extend_from_slice(&list.quads[..limit]);
         self.stats.quads = limit as u32;
         self.stats.quads_over_limit = (list.quads.len() - limit) as u32;
-        resolve_draws(list, limit as u32, built.atlas.is_some(), built.pages.len(), &mut self.draws);
+        let pages = if ours { built.pages.len() } else { 0 };
+        resolve_draws(list, limit as u32, built.atlas.is_some(), pages, &mut self.draws);
         self.stats.draws = self.draws.len() as u32;
+        if self.draws.is_empty() {
+            self.quads.clear();
+        }
         self.uniforms = UiUniforms {
             points_to_clip: [2.0 / list.viewport[0], 2.0 / list.viewport[1]],
             padding: [0.0; 2],
@@ -461,6 +511,7 @@ fn write_pages(
     queue: &wgpu::Queue,
     built: &mut Built,
     list: &UiDrawList,
+    bands: &mut UiPageBands,
     labels: bool,
 ) -> (u32, u64) {
     if list.page_runs.is_empty() && list.page_uploads.is_empty() {
@@ -481,26 +532,26 @@ fn write_pages(
         let page = make_page(device, built, side, labels);
         built.pages.push(page);
     }
-    let mut bytes = 0;
-    for upload in &list.page_uploads {
-        let (width, height) = (u32::from(upload.width), u32::from(upload.height));
-        let start = upload.offset as usize;
-        let Some(texels) = list.upload_texels.get(start..start + (width * height) as usize) else {
-            tracing::warn!(target: crate::LOG_TARGET, ?upload, "a glyph upload past its bytes");
-            continue;
-        };
-        if u32::from(upload.x) + width > side || u32::from(upload.y) + height > side {
-            tracing::warn!(target: crate::LOG_TARGET, ?upload, "a glyph upload past its page");
+    let left_out = list.page_bands(bands);
+    if left_out > 0 {
+        tracing::warn!(target: crate::LOG_TARGET, left_out, "glyph uploads past their bytes");
+    }
+    let (mut written, mut bytes) = (0, 0);
+    for band in &bands.bands {
+        let (width, height) = (u32::from(band.width), u32::from(band.height));
+        if u32::from(band.x) + width > side || u32::from(band.y) + height > side {
+            tracing::warn!(target: crate::LOG_TARGET, ?band, "a glyph upload past its page");
             continue;
         }
+        let start = band.offset as usize;
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
-                texture: &built.pages[usize::from(upload.page)].texture,
+                texture: &built.pages[usize::from(band.page)].texture,
                 mip_level: 0,
-                origin: wgpu::Origin3d { x: u32::from(upload.x), y: u32::from(upload.y), z: 0 },
+                origin: wgpu::Origin3d { x: u32::from(band.x), y: u32::from(band.y), z: 0 },
                 aspect: wgpu::TextureAspect::All,
             },
-            texels,
+            &bands.texels[start..start + (width * height) as usize],
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(width),
@@ -508,9 +559,10 @@ fn write_pages(
             },
             wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
         );
+        written += 1;
         bytes += u64::from(width * height);
     }
-    (list.page_uploads.len() as u32, bytes)
+    (written, bytes)
 }
 
 fn make_page(device: &wgpu::Device, built: &Built, side: u32, labels: bool) -> PageOnGpu {

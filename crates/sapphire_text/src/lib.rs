@@ -32,6 +32,8 @@
 mod atlas;
 mod shape;
 
-pub use atlas::{AtlasConfig, AtlasStats, GlyphAtlas};
+pub use atlas::{AtlasConfig, GlyphAtlas};
 pub use parley::fontique::{FamilyId, Script};
-pub use shape::{ShapeStats, ShapedGlyph, ShapedRun, ShapedText, TextStyle, TextSystem};
+pub use shape::{
+    FaceOptions, ShapeStats, ShapedGlyph, ShapedRun, ShapedText, TYPE_SCALE, TextStyle, TextSystem,
+};

@@ -297,6 +297,65 @@ fn it_counts_the_time_that_went_by_not_its_checks() {
     }
 }
 
+/// A far enemy gives the rig a tight limit, and what clearing first chooses here is past it, so the rig holds
+/// the view short of it, with the eye shut in by the wall. Waiting for that goal would be waiting for good:
+/// it has to choose again, and there's a good view the other way.
+#[test]
+fn a_view_held_short_of_what_it_chose_chooses_again() {
+    let world = ground_with(&[
+        (Shape::Box { half_extents: Vec3::new(1.98, 2.36, 1.56) }, Vec3::new(-3.3, 2.36, 2.93)),
+        (Shape::Box { half_extents: Vec3::new(0.69, 2.22, 0.3) }, Vec3::new(-1.19, 2.22, -0.41)),
+        (Shape::Box { half_extents: Vec3::new(4.28, 1.99, 1.04) }, Vec3::new(6.36, 1.99, 2.06)),
+    ]);
+    let script = |_: f32| Moment::against(PLAYER, Vec3::new(17.94, 0.0, -6.43));
+    let mut camera = combat_director();
+    settle(&mut camera, &world, 20.0, script);
+    let pose = camera.pose();
+    assert!(pose.eye.distance(CHEST) > 2.5, "still shut in after 20 s: {pose:?}");
+    camera.take_stats();
+    settle(&mut camera, &world, 20.0, script);
+    let swings = camera.take_stats().swings;
+    assert!(swings <= 1, "{swings} more choices with nothing moving");
+    assert!(camera.pose().eye.distance(CHEST) > 2.5, "{:?}", camera.pose());
+}
+
+/// A view at rest that's come as far as it's let, with nothing wrong with it, isn't left being pulled on:
+/// what the view does next is the rig's alone, however long it's been since that goal was chosen.
+#[test]
+fn a_goal_held_short_of_ends_once_nothing_is_wrong() {
+    let world = wall_behind();
+    // Walks off the wall and round to where the rig keeps the view well short of what was chosen for it.
+    let script = |t: f32| {
+        let walk = t.clamp(0.0, 1.0);
+        let away = Vec3::new(0.0, 0.0, 6.0) * walk;
+        let enemy = Vec3::new(0.479, 0.0, 0.878) * 8.0 * walk + ENEMY * (1.0 - walk);
+        Moment::against(away, away + enemy)
+    };
+    let mut camera = combat_director();
+    for _ in 0..180 {
+        camera.update(&facing_the_enemy(0.0).frame(1.0 / 60.0), &world);
+        if camera.take_stats().swings > 0 {
+            break;
+        }
+    }
+    settle(&mut camera, &world, 20.0, script);
+    let enemy = script(20.0).target.expect("there's an enemy");
+    // Held on the rig's limit, the enemy's on the safe frame's edge, and the view stands turned. Let go, a look
+    // at the view pulled nowhere shows the two the same: moving a hair of the way on the rig's own.
+    let used = frame_use(&camera.pose(), &enemy).x;
+    let next = camera.update(&script(20.0).frame(1.0 / 60.0), &world);
+    let moved = next.forward().angle_between(camera.pose().forward());
+    assert!(moved < 1e-3, "still turning by {moved} a frame, with the enemy at {used} of the frame");
+    let free = camera.heading();
+    let mut touched = camera.clone();
+    let touch = Moment { look_rate: Vec2::new(1e-4, 0.0), ..script(20.0) };
+    touched.update(&touch.frame(1.0 / 60.0), &world);
+    settle(&mut touched, &world, 5.0, script);
+    settle(&mut camera, &world, 5.0, script);
+    let apart = sapphire_math::det::wrap_angle(camera.heading() - touched.heading()).abs();
+    assert!(apart < 0.01, "{free}: a thumb's touch moved it by {apart}, so a goal was still pulling");
+}
+
 /// A reach of 0 turns all of it off, and the framing rigs never ask for it when they're off.
 #[test]
 fn it_only_runs_under_a_framing_rig() {

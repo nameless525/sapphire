@@ -58,6 +58,12 @@ const TURNING: f32 = 0.2;
 const HASTE: f32 = 1.5;
 /// How near its goal counts as there, in radians.
 const THERE: f32 = 0.03;
+/// Drawing nearer its goal slower than this, in radians a second, is as near as it's getting: a rig's own pull
+/// is holding it short, and standing by that goal would be waiting there for good.
+const STALLED: f32 = 0.02;
+/// How long, in seconds, it doesn't choose again the way the rigs held it short. Long enough that turning back
+/// and forth doesn't become a habit, and short enough that a fight that's moved on isn't kept from that side.
+const HELD_FOR: f32 = 5.0;
 /// How near a check's moment counts as it, in seconds: frames only add up to it to within rounding.
 const ON_TIME: f32 = 1e-4;
 /// How wide someone is taken to draw, on top of their radius, in metres. A fighter's arms and weapon reach
@@ -303,6 +309,11 @@ pub(crate) struct Clearing {
     until_free: f32,
     /// Where a free view is turning: its yaw.
     goal: Option<f32>,
+    /// How far off that goal was at the last check.
+    goal_left: f32,
+    /// Which way the rigs last held a goal short, and for how long that still counts.
+    held_side: f32,
+    held_for: f32,
     /// How much faster than `half_life` it's turning: the worse the view it left, the less there is to
     /// keep steady.
     haste: f32,
@@ -318,6 +329,9 @@ impl Clearing {
             troubled: 0.0,
             until_free: 0.0,
             goal: None,
+            goal_left: 0.0,
+            held_side: 0.0,
+            held_for: 0.0,
             haste: 1.0,
             lean_goal: 0.0,
             lean: Follow::new(0.0),
@@ -332,6 +346,7 @@ impl Clearing {
     /// A thumb's on the view: it's theirs.
     pub(crate) fn hand_over(&mut self, tuning: &ClearingTuning) {
         self.goal = None;
+        self.held_for = 0.0;
         self.troubled = 0.0;
         self.until_free = self.until_free.max(tuning.after_look);
     }
@@ -385,16 +400,29 @@ impl Clearing {
         }
         let elapsed = f32::from(periods) * tuning.check_every;
         self.until_free = (self.until_free - elapsed).max(0.0);
-        if let Some(goal) = self.goal
-            && wrap_angle(goal - yaw).abs() < THERE
-        {
-            self.goal = None;
+        self.held_for = (self.held_for - elapsed).max(0.0);
+        // A goal the rigs are holding the view short of.
+        let mut held_short = false;
+        if let Some(goal) = self.goal {
+            let off = wrap_angle(goal - yaw);
+            if off.abs() < THERE {
+                self.goal = None;
+            } else if off.abs() > self.goal_left - STALLED * elapsed {
+                held_short = true;
+                self.held_side = off.signum();
+                self.held_for = HELD_FOR;
+            }
+            self.goal_left = off.abs();
         }
 
         let faults = scene.faults(yaw + if held { self.lean_goal } else { 0.0 }, stats);
         let here = faults.total();
         if faults.troubling() <= tuning.tolerance {
             self.troubled = 0.0;
+            // Nothing's wrong with as far as it's got, so that's far enough.
+            if held_short {
+                self.goal = None;
+            }
             // The line's clear again: back to it, once it's clear from the line itself.
             if held && self.lean_goal != 0.0 && scene.faults(yaw, stats).troubling() <= tuning.tolerance {
                 self.lean_goal = 0.0;
@@ -408,6 +436,7 @@ impl Clearing {
 
         // Past a goal already on its way, it stands by that one unless it's gone bad too.
         if !held
+            && !held_short
             && let Some(goal) = self.goal
             && scene.fault(goal, stats) <= here
         {
@@ -417,6 +446,11 @@ impl Clearing {
         let mut best = (here, 0.0);
         for share in SHARES {
             for side in [-1.0, 1.0] {
+                // What held it short that way would again. If the other way has nothing better it stays
+                // held where it is, which is at least steady.
+                if !held && self.held_for > 0.0 && side == self.held_side {
+                    continue;
+                }
                 let turn = share * tuning.reach * side;
                 let fault = scene.fault(from + turn, stats) + TURNING * turn.abs();
                 if fault < best.0 {
@@ -434,6 +468,7 @@ impl Clearing {
                 self.lean_goal = self.lean_goal.clamp(-tuning.reach, tuning.reach);
             } else {
                 self.goal = Some(from + best.1);
+                self.goal_left = best.1.abs();
             }
         }
     }

@@ -30,6 +30,7 @@ use sapphire_camera::{CameraDirector, CameraTuning, ShakeId, ShakeStack};
 use sapphire_cues::{
     CueDispatcher, CueStats, CueStep, CueTable, CueTableError, RumbleSink, ShakeSink, actor_emitter,
 };
+use sapphire_ecs::bevy_ecs::world::WorldId;
 use sapphire_ecs::prelude::WorldClock;
 use sapphire_gameplay::{ActorView, CueEvent, Simulation};
 use sapphire_math::{Mat4, Quat, Vec3};
@@ -108,8 +109,8 @@ pub struct CueShow {
     shakes: OrbitShakes,
     emitters: Vec<Emitter>,
     world_time_scale: f32,
-    /// The simulation's tick when it last stepped, so a replay past its end stops as it does.
-    tick: Option<u64>,
+    /// The world, retained-storage run and tick last presented: one boundary is read once.
+    tick: Option<(WorldId, u64, u64)>,
     /// The time spent in steps since the last frame was written.
     stepping: Duration,
     /// A new fight began since the last frame ended.
@@ -148,6 +149,13 @@ impl CueShow {
         })
     }
 
+    /// Reserves actor-owned presentation storage before the first fixed step.
+    pub(crate) fn prepare(&mut self, sim: &Simulation) {
+        let capacity = sim.world().resource::<sapphire_gameplay::ActorRequests>().capacity() as usize;
+        self.emitters.reserve(capacity.saturating_sub(self.emitters.len()));
+        self.dispatcher.reserve_actors(capacity);
+    }
+
     /// The post variants the table's screen effects draw through.
     pub(crate) fn post_variants(&self, presets: &ScreenLibrary) -> PostVariants {
         self.dispatcher.post_variants(presets)
@@ -169,10 +177,17 @@ impl CueShow {
         stage: CueStage<'_>,
     ) {
         let tick = sim.tick();
-        if self.tick == Some(tick) {
+        let run = (sim.world().id(), sim.run_generation(), tick);
+        if self
+            .tick
+            .is_some_and(|(world, generation, tick)| world != run.0 || generation != run.1 || run.2 < tick)
+        {
+            self.start_over(screen);
+        }
+        if self.tick == Some(run) {
             return;
         }
-        self.tick = Some(tick);
+        self.tick = Some(run);
         let stopwatch = Stopwatch::start();
         let (stand, shakes, fighters): (Option<Vec3>, &mut dyn ShakeSink, _) = match stage {
             CueStage::OneCharacter { stand } => (Some(stand), &mut self.shakes, [None; 2]),
@@ -297,13 +312,15 @@ impl CueShow {
     /// next [`Self::end_frame`], which has a pad to tell, and sounds at the audio system's next update,
     /// which [`Self::sounds`] tells, along with any the last fight had yet to start.
     pub(crate) fn start_over(&mut self, screen: &mut EffectStack) {
-        self.world.clear();
+        self.world.start_over();
         self.trails.start_over();
-        self.shakes.stack.clear();
-        self.dispatcher.release_rumble();
-        self.dispatcher.forget_sounds();
+        self.shakes.stack = ShakeStack::new(SEED);
+        self.dispatcher.start_over();
+        self.emitters.clear();
+        self.world_time_scale = 1.0;
+        self.tick = None;
         self.started_over = true;
-        screen.clear();
+        screen.start_over();
     }
 
     /// Takes `presets`, or says why not: the table names a preset they don't have. Nothing changes then,
@@ -374,6 +391,189 @@ mod tests {
     use sapphire_time::{SimDuration, SimTime};
 
     use super::*;
+
+    /// Restarting at the same public tick must fire the new fight's cues and use its actors.
+    #[test]
+    fn restarting_at_the_same_tick_matches_a_fresh_show() {
+        use sapphire_gameplay::replay::{SCENARIOS, find_scenario};
+
+        let presets = ScreenLibrary::default_effects();
+        let scenario = find_scenario(SCENARIOS, "arena-fight").expect("listed");
+        let (mut sim, _) = scenario.start(scenario.config).expect("sets up");
+        for _ in 0..600 {
+            sim.step(&sapphire_gameplay::TickActions::NEUTRAL);
+            if sim.cues().any(|cue| cue.hit.is_some()) {
+                break;
+            }
+        }
+        assert!(sim.cues().any(|cue| cue.hit.is_some()), "the fixture reaches a hit");
+        let screen = || EffectStack::new(sapphire_time::ScaledClock::new().new_local_clock());
+        let (mut old_screen, mut fresh_screen) = (screen(), screen());
+        let mut show = CueShow::new(VfxBudget::DESKTOP_LOW, &presets).expect("resolves");
+        let mut fresh = CueShow::new(VfxBudget::DESKTOP_LOW, &presets).expect("resolves");
+        show.prepare(&sim);
+        fresh.prepare(&sim);
+        let fire = |show: &mut CueShow, screen: &mut EffectStack, stand| {
+            show.step(&sim, screen, &presets, Mat4::IDENTITY, CueStage::OneCharacter { stand });
+        };
+        fire(&mut show, &mut old_screen, Vec3::ZERO);
+        assert!(!show.sounds().requests.is_empty(), "the old fight published sound");
+        show.start_over(&mut old_screen);
+        assert!(show.sounds().emitters.is_empty(), "no positions from the old fight");
+        assert!(show.sounds().requests.is_empty());
+        assert!(old_screen.is_empty());
+        fire(&mut show, &mut old_screen, Vec3::X);
+        fire(&mut fresh, &mut fresh_screen, Vec3::X);
+        assert_eq!(show.sounds().requests, fresh.sounds().requests);
+        assert!(!show.sounds().requests.is_empty(), "the same tick fired again after reset");
+        assert!(show.emitters.iter().all(|emitter| emitter.position == Vec3::X));
+        let (mut a, mut b) = (VfxFrame::default(), VfxFrame::default());
+        show.write(&mut a, 1.0);
+        fresh.write(&mut b, 1.0);
+        assert!(!a.is_empty(), "the hit made effects");
+        assert_eq!(a.sprites, b.sprites, "the reset uses the original random stream");
+        assert_eq!(a.ribbon_points, b.ribbon_points);
+        assert_eq!(old_screen.resolve(1.0), fresh_screen.resolve(1.0));
+        for _ in 0..2 {
+            assert_eq!(
+                show.end_frame(1.0 / 60.0, 1.0 / 60.0, 1.0, &mut ()),
+                fresh.end_frame(1.0 / 60.0, 1.0 / 60.0, 1.0, &mut ())
+            );
+        }
+    }
+
+    #[test]
+    fn an_independent_simulation_at_the_same_tick_starts_fresh_cues() {
+        use sapphire_gameplay::replay::{SCENARIOS, find_scenario};
+
+        let presets = ScreenLibrary::default_effects();
+        let scenario = find_scenario(SCENARIOS, "arena-fight").expect("listed");
+        let (mut previous, _) = scenario.start(scenario.config).expect("sets up");
+        for _ in 0..600 {
+            previous.step(&sapphire_gameplay::TickActions::NEUTRAL);
+            if previous.cues().any(|cue| cue.hit.is_some()) {
+                break;
+            }
+        }
+        assert!(previous.cues().any(|cue| cue.hit.is_some()));
+        let boundary = (previous.world().id(), previous.run_generation(), previous.tick());
+        let screen = || EffectStack::new(sapphire_time::ScaledClock::new().new_local_clock());
+        let (mut old_screen, mut fresh_screen) = (screen(), screen());
+        let mut show = CueShow::new(VfxBudget::DESKTOP_LOW, &presets).expect("resolves");
+        let mut fresh = CueShow::new(VfxBudget::DESKTOP_LOW, &presets).expect("resolves");
+        show.prepare(&previous);
+        show.step(
+            &previous,
+            &mut old_screen,
+            &presets,
+            Mat4::IDENTITY,
+            CueStage::OneCharacter { stand: Vec3::ZERO },
+        );
+        assert!(!show.sounds().requests.is_empty());
+        drop(previous);
+
+        let (mut replacement, _) = scenario.start(scenario.config).expect("sets up");
+        for _ in 0..boundary.2 {
+            replacement.step(&sapphire_gameplay::TickActions::NEUTRAL);
+        }
+        assert_ne!(replacement.world().id(), boundary.0);
+        assert_eq!((replacement.run_generation(), replacement.tick()), (boundary.1, boundary.2));
+        fresh.prepare(&replacement);
+        let fire = |show: &mut CueShow, screen: &mut EffectStack| {
+            show.step(
+                &replacement,
+                screen,
+                &presets,
+                Mat4::IDENTITY,
+                CueStage::OneCharacter { stand: Vec3::X },
+            );
+        };
+        fire(&mut show, &mut old_screen);
+        fire(&mut fresh, &mut fresh_screen);
+        assert!(show.sounds().started_over);
+        assert!(!show.sounds().requests.is_empty());
+        assert_eq!(show.sounds().requests, fresh.sounds().requests);
+        assert!(show.emitters.iter().all(|emitter| emitter.position == Vec3::X));
+        let fired = show.stats();
+        fire(&mut show, &mut old_screen);
+        assert_eq!(show.stats(), fired, "the replacement's first cues fire exactly once");
+        let (mut a, mut b) = (VfxFrame::default(), VfxFrame::default());
+        show.write(&mut a, 1.0);
+        fresh.write(&mut b, 1.0);
+        assert!(!a.is_empty());
+        assert_eq!(a.sprites, b.sprites);
+        assert_eq!(a.ribbon_points, b.ribbon_points);
+        assert_eq!(old_screen.resolve(1.0), fresh_screen.resolve(1.0));
+    }
+
+    #[test]
+    fn a_rewound_simulation_clears_cues_without_an_arena() {
+        use sapphire_gameplay::replay::{SCENARIOS, find_scenario};
+
+        let presets = ScreenLibrary::default_effects();
+        let scenario = find_scenario(SCENARIOS, "arena-fight").expect("listed");
+        let (mut previous, _) = scenario.start(scenario.config).expect("sets up");
+        let (mut next, _) = scenario.start(scenario.config).expect("sets up");
+        for _ in 0..140 {
+            previous.step(&sapphire_gameplay::TickActions::NEUTRAL);
+        }
+        next.step(&sapphire_gameplay::TickActions::NEUTRAL);
+        let mut show = CueShow::new(VfxBudget::DESKTOP_LOW, &presets).expect("resolves");
+        let mut screen = EffectStack::new(sapphire_time::ScaledClock::new().new_local_clock());
+        show.step(
+            &previous,
+            &mut screen,
+            &presets,
+            Mat4::IDENTITY,
+            CueStage::OneCharacter { stand: Vec3::X },
+        );
+        show.step(&next, &mut screen, &presets, Mat4::IDENTITY, CueStage::OneCharacter { stand: Vec3::Y });
+        assert!(show.sounds().started_over);
+        assert_eq!(show.tick, Some((next.world().id(), next.run_generation(), next.tick())));
+        assert!(show.emitters.iter().all(|emitter| emitter.position == Vec3::Y));
+        assert!(show.sounds().requests.is_empty(), "the first step has no old hit sounds");
+        assert!(screen.is_empty(), "the old fight's screen effects are gone");
+    }
+
+    #[test]
+    fn a_prepared_show_and_its_restart_do_not_allocate_in_a_step() {
+        use sapphire_gameplay::replay::{SCENARIOS, find_scenario};
+
+        assert!(sapphire_core::alloc::is_installed());
+        let scenario = find_scenario(SCENARIOS, "arena-fight").expect("listed");
+        let (mut sim, _) = scenario.start(scenario.config).expect("sets up");
+        let presets = ScreenLibrary::default_effects();
+        let mut show = CueShow::new(VfxBudget::DESKTOP_LOW, &presets).expect("resolves");
+        let mut screen = EffectStack::new(sapphire_time::ScaledClock::new().new_local_clock());
+        show.prepare(&sim);
+        for tick in 0..300 {
+            sim.step(&sapphire_gameplay::TickActions::NEUTRAL);
+            let ((), counts) = sapphire_core::alloc::count_in_scope(|| {
+                if tick == 150 {
+                    show.start_over(&mut screen);
+                }
+                let stage = CueStage::Actors { director: None, fighters: [None; 2] };
+                show.step(&sim, &mut screen, &presets, Mat4::IDENTITY, stage);
+                let _ = show.end_frame(1.0 / 60.0, 1.0 / 60.0, 1.0, &mut ());
+            });
+            assert_eq!(counts.allocations, 0, "presentation step {tick}");
+        }
+    }
+
+    #[test]
+    fn preparing_a_larger_actor_pool_survives_effect_reload() {
+        assert!(sapphire_core::alloc::is_installed());
+        let small = Simulation::new(sapphire_gameplay::SimConfig { max_actors: 8, ..Default::default() });
+        let large = Simulation::new(sapphire_gameplay::SimConfig { max_actors: 128, ..Default::default() });
+        let presets = ScreenLibrary::default_effects();
+        let mut show = CueShow::new(VfxBudget::DESKTOP_LOW, &presets).expect("resolves");
+        show.prepare(&small);
+        show.prepare(&large);
+        assert!(show.emitters.capacity() >= 128);
+        show.take_effects(VfxLibrary::default_effects(), &presets).expect("the same names");
+        let ((), counts) = sapphire_core::alloc::count_in_scope(|| show.prepare(&large));
+        assert_eq!(counts.allocations, 0);
+    }
 
     /// New effects reach what plays a fight's, as long as the table still finds its names.
     #[test]

@@ -450,6 +450,12 @@ impl crate::shake::Shake {
         Check::range(&field("duration"), self.duration, 0.01, 30.0)?;
         Check::range(&field("attack"), self.attack, 0.001, 30.0)?;
         Check::order(&field("attack"), self.attack, &field("duration"), self.duration)?;
+        if self.attack == self.duration {
+            return Err(CameraTuningError::Invalid {
+                field: field("attack"),
+                problem: "must leave time to decay before duration".to_owned(),
+            });
+        }
         Check::range(&field("falloff"), self.falloff, 0.1, 8.0)?;
         Check::range(&field("frequency"), self.frequency, 0.1, 120.0)?;
         for (axis, value) in self.rotation.into_iter().enumerate() {
@@ -482,7 +488,7 @@ mod tests {
     #[test]
     fn each_refusal_names_its_field() {
         type Break = fn(&mut CameraTuning);
-        let cases: [(&str, Break); 35] = [
+        let cases: &[(&str, Break)] = &[
             ("explore.pivot_height", |t| t.explore.pivot_height = -1.0),
             ("explore.distance", |t| t.explore.distance = f32::NAN),
             ("explore.fov_y", |t| t.explore.fov_y = 3.2),
@@ -520,8 +526,11 @@ mod tests {
             ("shakes.rotation_limit", |t| t.shakes.rotation_limit = 1.0),
             ("shakes.presets[1].name", |t| t.shakes.presets[1].name = t.shakes.presets[0].name.clone()),
             ("shakes.presets[0].attack", |t| t.shakes.presets[0].shake.attack = 100.0),
+            ("shakes.presets[0].attack", |t| {
+                t.shakes.presets[0].shake.attack = t.shakes.presets[0].shake.duration;
+            }),
         ];
-        for (field, break_it) in cases {
+        for &(field, break_it) in cases {
             let mut tuning = CameraTuning::default_tuning();
             break_it(&mut tuning);
             let error = tuning.validate().expect_err(field);

@@ -180,7 +180,11 @@ impl Document {
             Self::Cues => tuning.cue_document(text, &mut fight.show, scene, renderer),
             Self::Effects => tuning.effects_document(text, &mut fight.show, scene),
             Self::Moves => {
-                let cooked = tuning.cooked_set(origin, content);
+                let cooked = if tuning.moves.latest(document_file_name(origin)).is_none() {
+                    tuning.cooked_set(origin, content)
+                } else {
+                    None
+                };
                 let combat = fight.combat.as_mut();
                 tuning.moves_document(origin, text, cooked.as_ref(), LiveFight { combat, scene })
             }

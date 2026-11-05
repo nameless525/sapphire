@@ -154,7 +154,8 @@ fn zoom_stays_inside_what_fits_both_fighters() {
     for frame in 1..=300 {
         let zoom = if frame < 60 { -1.0 / 60.0 } else { 0.0 };
         let pose = camera.update(&sapphire_camera::CameraFrame { zoom, ..moment.frame(1.0 / 60.0) }, &world);
-        worst = common::frame_use(&pose, &moment.player)
+        worst = worst
+            .max(common::frame_use(&pose, &moment.player))
             .max(common::frame_use(&pose, &moment.target.expect("it has one")));
     }
     assert!(worst.max_element() < 0.9, "{worst}");

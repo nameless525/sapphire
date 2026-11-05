@@ -204,18 +204,18 @@ impl VolumeSweep<'_> {
             // With one cast left, it goes all the way.
             let last = left <= 1 && stretches > 1;
             capped |= last;
-            let end = if last { to } else { ((at / SUBTICKS + 1) * SUBTICKS).min(to) };
+            let end = if last { to } else { at.saturating_add(SUBTICKS - at % SUBTICKS).min(to) };
             let (wanted, turn) = self.wanted_sub_steps(at, end, reach, thickness);
             let room = left.saturating_sub(stretches - 1).max(1);
             capped |= wanted > room;
             let count = wanted.min(room).min(end - at);
 
             for index in 1..=count {
-                let time = if index == count { end } else { at + (end - at) * index / count };
+                let time = if index == count { end } else { at + portion(end - at, index, count) };
                 let time = SimDuration::from_subticks(time);
                 let next = self.pose_at(time);
                 let motion = (next.position - pose.position).length() + reach * turn / count as f32;
-                let previous = SimDuration::from_subticks(at + (end - at) * (index - 1) / count);
+                let previous = SimDuration::from_subticks(at + portion(end - at, index - 1, count));
                 visit(&SubStep { from: previous, to: time, start: pose, end: next, motion });
                 pose = next;
             }
@@ -257,5 +257,58 @@ fn extent(shape: &Shape) -> (f32, f32) {
         Shape::Sphere { radius } => (0.0, radius),
         Shape::Capsule { half_height, radius } => (half_height, radius),
         Shape::Box { half_extents } => (half_extents.length(), half_extents.min_element()),
+    }
+}
+
+// A capped last stretch can span the full public duration range. Keep ordinary divisions in u64,
+// widening only when multiplying its numerator would overflow.
+fn portion(length: u64, index: u64, count: u64) -> u64 {
+    length.checked_mul(index).map_or_else(
+        || ((u128::from(length) * u128::from(index)) / u128::from(count)) as u64,
+        |product| product / count,
+    )
+}
+
+#[cfg(test)]
+mod boundary_tests {
+    use super::*;
+
+    #[test]
+    fn a_sweep_reaches_the_saturating_duration_boundary() {
+        let path = BakedPath::new(Name::new("fixed"), vec![PathSample::IDENTITY]);
+        let from = u64::MAX - 8;
+        let root = ActorTransform::default();
+        let sweep = VolumeSweep {
+            attacker: ActorId::from_raw(1).expect("valid"),
+            instance: 1,
+            volume: 0,
+            group: Name::new("hit"),
+            rearm: &[],
+            shape: Shape::Sphere { radius: 0.1 },
+            path: &path,
+            blocked_by: GroupMask::NONE,
+            dodgeable: false,
+            owner: OwnerStep {
+                delta: SimDuration::from_subticks(8),
+                reading: SimDuration::from_subticks(u64::MAX),
+                root_before: root,
+                root_after: root,
+            },
+            from: SimDuration::from_subticks(from),
+            to: SimDuration::from_subticks(u64::MAX),
+        };
+        let mut end = from;
+        let mut count = 0;
+        assert!(!sweep.walk(|step| {
+            assert_eq!(step.from.as_subticks(), end);
+            end = step.to.as_subticks();
+            assert!(step.start.position.is_finite() && step.end.position.is_finite());
+            count += 1;
+        }));
+        assert_eq!(end, u64::MAX);
+        assert!(count > 0 && count <= MAX_SUB_STEPS);
+        for index in 0..=64 {
+            assert_eq!(portion(u64::MAX, index, 64), (u128::from(u64::MAX) * u128::from(index) / 64) as u64);
+        }
     }
 }

@@ -73,7 +73,7 @@ pub(crate) fn run(
     }
     let startup = Stopwatch::start();
     let mut stage = crate::offscreen::stage(platform, options)?;
-    stage.show.fight.combat = combat;
+    stage.show.fight.attach_combat(combat);
     let startup = startup.elapsed();
     if let Some(fight @ (CombatOption::Replay { .. } | CombatOption::Fight { .. })) = &options.combat {
         return crate::fight_bench::run(&mut stage, fight, options, (frames, width, height), startup);
@@ -100,7 +100,7 @@ pub(crate) fn run(
     let mut anim_ik = 0_u64;
     // GPU pass spans of the measured frames that came back: (newest frame, total, count).
     let (mut timed_frame, mut gpu_span, mut timed) = (0, Duration::ZERO, 0_u32);
-    for frame in 0..WARMUP_FRAMES + frames {
+    for frame in 0..u64::from(WARMUP_FRAMES) + u64::from(frames) {
         let before = alloc::stats();
         let mut stopwatch = Stopwatch::start();
         stage.step();
@@ -110,7 +110,7 @@ pub(crate) fn run(
         stage.gpu.device().poll(wgpu::PollType::wait_indefinitely()).map_err(AppInitError::msg)?;
         let wait = stopwatch.lap();
         let after = alloc::stats();
-        if frame >= WARMUP_FRAMES {
+        if frame >= u64::from(WARMUP_FRAMES) {
             cpu.push(frame_cpu);
             gpu_wait += wait;
             allocations += after.total_allocations - before.total_allocations;

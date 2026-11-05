@@ -86,13 +86,19 @@ fn look_input_cant_lose_the_target() {
     assert_framed(worst, "under look input");
 }
 
-/// The narrow screen of a phone held upright keeps both on it too, if not quite inside the safe frame: the
-/// solve takes the aspect.
+/// The solve accepts a narrow aspect when its authored distance budget leaves room for it. The
+/// shipped game is landscape-only; retain its horizontal reach for this portrait stress fixture.
 #[test]
 fn a_narrow_screen_frames_them_too() {
     let world = open_ground();
-    let mut camera = combat_director();
     let aspect = 9.0 / 16.0;
+    let mut camera = combat_director();
+    let mut tuning = camera.tuning().clone();
+    // A fixed vertical FOV narrows horizontal coverage in proportion to aspect. Keep the
+    // landscape fixture's horizontal pullback budget rather than silently requiring it to
+    // exceed its authored hard cap; every original frame and the full-screen bound remain.
+    tuning.combat.framing.max_distance *= common::ASPECT / aspect;
+    camera.set_tuning(tuning).expect("the portrait fixture's pullback range is valid");
     let mut worst = 0.0_f32;
     for frame in 1..=600 {
         let t = frame as f32 / 60.0;
@@ -106,10 +112,35 @@ fn a_narrow_screen_frames_them_too() {
             for point in [subject.position, subject.position + Vec3::Y * subject.height] {
                 let (x, _, depth) = common::screen_of(&pose, point);
                 let half = (pose.fov_y * 0.5).tan();
-                worst = worst.max((x * common::ASPECT + subject.radius / (depth * half)).abs() / aspect);
+                assert!(depth > 0.05, "subject behind the eye: {pose:?}");
+                worst = worst.max((x.abs() * common::ASPECT + subject.radius / (depth * half)) / aspect);
             }
         }
     }
     println!("upright: {worst}");
     assert!(worst <= 1.0, "{worst}");
+}
+
+/// Fitting both fighters is subordinate to the authored hard pullback cap. A budget too small
+/// to fit even the player must not make the solver zoom out forever.
+#[test]
+fn framing_respects_the_authored_cap_when_both_subjects_cannot_fit() {
+    let world = open_ground();
+    let mut camera = combat_director();
+    let mut tuning = camera.tuning().clone();
+    tuning.clearing.reach = 0.0;
+    tuning.combat.framing.pivot_bias = 0.0;
+    tuning.combat.framing.distance = 1.0;
+    tuning.combat.framing.max_distance = 1.0;
+    camera.set_tuning(tuning.clone()).unwrap();
+    let moment = Moment::against(Vec3::ZERO, Vec3::Z * 20.0);
+    let mut pose = camera.pose();
+    run(&mut camera, &world, 60, (0.0, 3.0), |_| moment, |_, current, _| pose = *current);
+    let anchor = moment.player.position + Vec3::Y * (moment.player.height * tuning.explore.pivot_height);
+    let pivot = anchor; // With zero bias, the authored pivot is exactly the player's anchor.
+    assert!((pose.eye.distance(pivot) - 1.0).abs() < 1e-3, "{pose:?}, pivot {pivot}");
+    assert!(
+        frame_use(&pose, &moment.player).max_element() > 1.0,
+        "this capped fixture cannot frame the player"
+    );
 }

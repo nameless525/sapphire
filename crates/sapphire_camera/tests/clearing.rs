@@ -493,8 +493,9 @@ fn a_goal_held_short_of_ends_once_nothing_is_wrong() {
     // Held on the rig's limit, the enemy's on the safe frame's edge, and the view stands turned. Let go, a look
     // at the view pulled nowhere shows the two the same: moving a hair of the way on the rig's own.
     let used = frame_use(&camera.pose(), &enemy).x;
+    let before = camera.pose();
     let next = camera.update(&script(20.0).frame(1.0 / 60.0), &world);
-    let moved = next.forward().angle_between(camera.pose().forward());
+    let moved = next.forward().angle_between(before.forward());
     assert!(moved < 1e-3, "still turning by {moved} a frame, with the enemy at {used} of the frame");
     let free = camera.heading();
     let mut touched = camera.clone();
@@ -565,4 +566,30 @@ fn a_reach_of_0_brings_a_lean_back() {
     settle(&mut never, &world, 10.0, facing_the_enemy);
     assert!((leant.heading() - never.heading()).abs() < 0.05, "{} from {}", leant.heading(), never.heading());
     assert_eq!(leant.take_stats().swings, 0);
+}
+
+#[test]
+fn clearing_treats_a_translated_floor_the_same_way() {
+    let run_at = |height| {
+        let offset = Vec3::Y * height;
+        let world = common::ground_with_at(&[], height);
+        let mut camera = combat_director();
+        camera.look_from(0.4, 0.9);
+        let mut poses = Vec::new();
+        for _ in 0..600 {
+            let moment = Moment::against(offset, offset + Vec3::new(0.0, 0.0, 8.0));
+            let pose = camera.update(&moment.frame(1.0 / 60.0), &world);
+            common::assert_finite_pose(&pose);
+            poses.push((pose.eye - offset, pose.rotation, camera.take_stats().swings));
+        }
+        poses
+    };
+    let original = run_at(0.0);
+    for height in [-10.0, 10.0] {
+        for (frame, (one, two)) in original.iter().zip(run_at(height)).enumerate() {
+            assert!(one.0.distance(two.0) < 1e-3, "frame {frame}, height {height}: {one:?} vs {two:?}");
+            assert!(one.1.abs_diff_eq(two.1, 1e-4));
+            assert_eq!(one.2, two.2, "frame {frame}, height {height}");
+        }
+    }
 }

@@ -34,6 +34,7 @@ pub struct StepClock {
     /// Steps the run has taken.
     pub taken: u32,
     /// How far this frame draws between the last step and the next, as poses do.
+    /// Clamped to 0–1; a nonfinite value draws the previous step (0).
     pub alpha: f32,
 }
 
@@ -170,7 +171,10 @@ impl TimelinePlayer {
                 TimelineClock::Real => self.playhead + if real_dt > 0.0 { real_dt } else { 0.0 },
                 // What's drawn is between the last two steps, as poses are.
                 TimelineClock::Steps => match steps {
-                    Some(steps) => (steps.taken as f32 - 1.0 + steps.alpha.clamp(0.0, 1.0)) / TICK_HZ as f32,
+                    Some(steps) => {
+                        let alpha = if steps.alpha.is_finite() { steps.alpha.clamp(0.0, 1.0) } else { 0.0 };
+                        (steps.taken as f32 - 1.0 + alpha) / TICK_HZ as f32
+                    }
                     None => length,
                 },
             };
@@ -249,9 +253,9 @@ impl TimelinePlayer {
         let (eye, look_at, roll, fov) = sample_camera(camera, self.playhead);
         let eye = self.origin.point(eye);
         let look_at = self.origin.point(look_at);
-        let cut = key_before(&camera.keys, self.before, |key| key.at)
-            != key_before(&camera.keys, self.playhead, |key| key.at)
-            && camera.keys[key_before(&camera.keys, self.playhead, |key| key.at)].ease == Ease::Cut;
+        let from = camera.keys.partition_point(|key| key.at <= self.before);
+        let to = camera.keys.partition_point(|key| key.at <= self.playhead);
+        let cut = camera.keys[from..to].iter().any(|key| key.ease == Ease::Cut);
         Some(Shot { eye, rotation: looking(eye, look_at, roll), fov_y: fov.to_radians(), cut })
     }
 
@@ -465,6 +469,51 @@ mod tests {
         assert!(player.shot().unwrap().cut);
         player.advance(0.1, None);
         assert!(!player.shot().unwrap().cut);
+    }
+
+    #[test]
+    fn a_cut_is_retained_when_the_frame_also_crosses_a_smooth_key() {
+        let mut document = TimelineDocument::from_ron(CUTSCENE).unwrap();
+        let keys = &mut document.camera.as_mut().unwrap().keys;
+        let mut smooth = *keys.last().unwrap();
+        smooth.at = 3.5;
+        smooth.ease = Ease::Smooth;
+        keys.push(smooth);
+        let mut cut = *keys.last().unwrap();
+        cut.at = 4.0;
+        cut.ease = Ease::Cut;
+        keys.push(cut);
+        let mut smooth = *keys.last().unwrap();
+        smooth.at = 4.5;
+        smooth.ease = Ease::Smooth;
+        keys.push(smooth);
+        let timeline = Arc::new(document.cook().unwrap());
+        for delta in [0.1, 0.8, 1.8] {
+            let mut player = TimelinePlayer::new(timeline.clone(), Origin::default());
+            player.advance(2.9, None);
+            assert!(!player.shot().unwrap().cut);
+            player.advance(delta, None);
+            assert!(player.shot().unwrap().cut);
+            player.advance(0.0, None);
+            assert!(!player.shot().unwrap().cut);
+            player.advance(10.0, None);
+            assert_eq!(player.shot(), None, "completion hands back the shot");
+        }
+    }
+
+    #[test]
+    fn invalid_step_interpolation_cannot_poison_the_playhead() {
+        for (alpha, expected) in
+            [(f32::NAN, 0.0), (f32::INFINITY, 0.0), (f32::NEG_INFINITY, 0.0), (-1.0, 0.0), (2.0, 1.0)]
+        {
+            let mut player = TimelinePlayer::new(timeline(CINEMATIC), Origin::default());
+            player.advance(0.0, Some(StepClock { taken: 0, alpha }));
+            assert_eq!(player.playhead(), 0.0);
+            player.advance(0.0, Some(StepClock { taken: 31, alpha }));
+            assert!((player.playhead() - (30.0 + expected) / 60.0).abs() < 1e-5);
+            player.advance(0.0, Some(StepClock { taken: 32, alpha: 0.5 }));
+            assert!((player.playhead() - 31.5 / 60.0).abs() < 1e-5);
+        }
     }
 
     #[test]

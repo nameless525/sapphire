@@ -490,25 +490,28 @@ fn at_two_steps_a_frame_a_press_lands_exactly_once() {
 
     // The whole string, one step per tick or two per frame, gives the same state: frames are nothing
     // to the simulation. The press reaches a moving frame inside the frame it lands in.
-    let frames: Vec<Buttons> =
-        (0..40).map(|frame| if frame % 6 == 0 { Buttons::LIGHT } else { Buttons::NONE }).collect();
-    let run = |per_frame: usize| {
+    let ticks: Vec<Buttons> =
+        (0..80).map(|tick| if (tick / 2) % 6 == 0 { Buttons::LIGHT } else { Buttons::NONE }).collect();
+    let run = |per_frame: usize, ticks: &[Buttons]| {
         let (mut sim, actor) = lone(slice());
-        for buttons in &frames {
-            for _ in 0..per_frame {
-                sim.step(&press(actor, *buttons));
+        let mut trail = Vec::with_capacity(ticks.len());
+        for frame in ticks.chunks(per_frame) {
+            for &buttons in frame {
+                sim.step(&press(actor, buttons));
+                trail.push(sim.checksum());
             }
         }
-        (
-            sim.tick(),
-            sim.stats().moves_started,
-            sim.stats().cancels_fired,
-            sim.actor(actor).expect("alive").position,
-        )
+        (sim.tick(), sim.stats().cancels_fired, trail)
     };
-    let two_a_frame = run(2);
+    let one_a_frame = run(1, &ticks);
+    let two_a_frame = run(2, &ticks);
     assert_eq!(two_a_frame.0, 80);
-    assert!(two_a_frame.2 >= 2, "the string chained: {two_a_frame:?}");
+    assert!(two_a_frame.1 >= 2, "the string chained: {two_a_frame:?}");
+    assert_eq!(one_a_frame, two_a_frame, "every tick consumes the same input");
+    let mut missed_press = ticks.clone();
+    missed_press[0] = Buttons::NONE;
+    missed_press[1] = Buttons::NONE;
+    assert_ne!(run(2, &missed_press).2, two_a_frame.2, "a lost press changes the trail");
 
     let (mut sim, actor) = lone(slice());
     let start = sim.actor(actor).expect("alive").position;
@@ -576,7 +579,6 @@ fn a_string_a_dodge_cancel_and_a_dash_attack_play_from_a_cooked_document() {
     assert_eq!((stats.moves_started, stats.cancels_fired), (6, 5));
     assert_eq!(stats.intents_pressed, 6);
     assert_eq!((stats.intents_expired, stats.intents_overwritten), (0, 0));
-    assert_eq!(stats.allocations, 0);
     // The last dodge ran out, 22 ticks long, and nothing followed.
     assert_eq!(current(&sim, actor), None);
 }

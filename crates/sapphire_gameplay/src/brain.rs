@@ -215,10 +215,39 @@ fn choose_attack(
 ) -> Option<usize> {
     let mut scores = [0.0_f32; MAX_BRAIN_ATTACKS];
     let mut total = 0.0;
+    let mut underflowed = false;
     for (index, (attack, score)) in def.attacks.iter().zip(&mut scores).enumerate() {
         let since = brain.last_used[index].map(|used| now.since(used));
         *score = attack.score(distance, doing, since);
         total += *score;
+        underflowed |= *score == 0.0 && attack.score_wide(distance, doing, since) > 0.0;
+    }
+    // Keep ordinary replay arithmetic unchanged. Exceptional authored magnitudes need a wider
+    // product and total: infinity minus infinity would otherwise always fall through to the end,
+    // while a subnormal total rounds the random draw to too few distinct positions.
+    if !total.is_finite() || total.is_subnormal() || underflowed {
+        let mut wide = [0.0_f64; MAX_BRAIN_ATTACKS];
+        let mut total_wide = 0.0;
+        for (index, attack) in def.attacks.iter().enumerate() {
+            let since = brain.last_used[index].map(|used| now.since(used));
+            wide[index] = attack.score_wide(distance, doing, since);
+            total_wide += wide[index];
+        }
+        if total_wide <= 0.0 {
+            return None;
+        }
+        let mut left = f64::from(rng.unit_f32()) * total_wide;
+        let mut chosen = None;
+        for (index, &score) in wide.iter().enumerate().take(def.attacks.len()) {
+            if score > 0.0 {
+                chosen = Some(index);
+                left -= score;
+                if left < 0.0 {
+                    break;
+                }
+            }
+        }
+        return chosen;
     }
     if total <= 0.0 {
         return None;
@@ -246,7 +275,8 @@ fn pacing_stick(def: &BrainDef, circle: i8, to_target: Vec3, distance: f32) -> S
     } else if distance < near {
         (-to_target.x * def.pace.retreat, -to_target.z * def.pace.retreat)
     } else if circle != 0 {
-        let middle = (near + far) * 0.5;
+        let sum = near + far;
+        let middle = if sum.is_finite() { sum * 0.5 } else { near * 0.5 + far * 0.5 };
         let lean = (distance - middle) / (far - near) * 2.0;
         let round = f32::from(circle);
         // To the left of the way to the target, with 0 yaw facing +Z and +X on its left: (z, −x).
@@ -463,6 +493,71 @@ pub(crate) fn think(
         if let Some(intent) = output.press.and_then(|at| set.intents().get(at as usize)) {
             stats.intents_overwritten += u64::from(ring.press(intent, &clock.0));
             stats.intents_pressed += 1;
+        }
+    }
+}
+
+#[cfg(test)]
+mod numeric_tests {
+    use super::*;
+    use sapphire_moves::{MoveSetDocument, Reach};
+
+    #[test]
+    fn a_finite_spacing_band_keeps_its_circling_midpoint_finite() {
+        let mut document =
+            MoveSetDocument::parse(include_str!("../../../content/combat/enemy/warrior.moves.ron"))
+                .expect("parses");
+        document.brain.as_mut().expect("brain").spacing =
+            sapphire_moves::Spacing { near: 1.0e38, far: 3.0e38 };
+        let set = document.compile().expect("finite ordered spacing is valid");
+        let def = set.brain().expect("brain");
+        assert_eq!(pacing_stick(def, 1, Vec3::Z, 2.0e38), Stick::from_axes(def.pace.circle, 0.0));
+    }
+
+    #[test]
+    fn extreme_finite_weights_sample_in_proportion_with_the_same_rng_draw() {
+        let mut document =
+            MoveSetDocument::parse(include_str!("../../../content/combat/enemy/warrior.moves.ron"))
+                .expect("parses");
+        let brain = document.brain.as_mut().expect("brain");
+        brain.attacks.truncate(2);
+        for attack in &mut brain.attacks {
+            attack.weight = 1.0;
+            attack.reach = Reach { near: 0.0, best: 2.0, far: 4.0 };
+            attack.against = sapphire_moves::Against::default();
+        }
+        let ordinary = document.compile().expect("ordinary weights");
+        for (weight, multiplier) in [
+            (f32::MAX, 1.0),           // finite scores overflow only when summed
+            (f32::MAX, f32::MAX),      // individual score products overflow
+            (f32::from_bits(1), 0.25), // individual products underflow
+            (f32::from_bits(1), 1.0),  // positive subnormal total quantizes the draw
+        ] {
+            for attack in &mut document.brain.as_mut().expect("brain").attacks {
+                attack.weight = weight;
+                attack.against.free = multiplier;
+            }
+            let extreme = document.compile().expect("valid finite weights");
+            let mut selected = [false; 2];
+            for seed in 0..64 {
+                let mut a = Pcg32::new(seed, 7);
+                let mut b = a;
+                let mut one_draw = a;
+                one_draw.unit_f32();
+                let choose = |def, rng: &mut Pcg32| {
+                    choose_attack(&Brain::default(), def, SimTime::ZERO, 2.0, TargetDoing::Free, rng)
+                };
+                let expected = choose(ordinary.brain().expect("brain"), &mut a);
+                if seed == 1 {
+                    assert_eq!(expected, Some(0), "fixed replayable selection");
+                }
+                assert_eq!(a.state(), one_draw.state(), "ordinary selection draws once");
+                let actual = choose(extreme.brain().expect("brain"), &mut b);
+                assert_eq!(actual, expected, "weight={weight}, multiplier={multiplier}, seed={seed}");
+                assert_eq!(a.state(), b.state(), "exactly one draw");
+                selected[actual.expect("both score")] = true;
+            }
+            assert_eq!(selected, [true, true]);
         }
     }
 }

@@ -316,6 +316,18 @@ impl HitQuery {
         }
     }
 
+    /// A new fight over retained bounded storage, including delivery history and query scratch.
+    pub(crate) fn reset(&mut self) {
+        self.records.entries.clear();
+        self.stopped.entries.clear();
+        self.contacts.clear();
+        self.events.clear();
+        self.swings.clear();
+        self.dodged.clear();
+        self.results.fill(ShapeHit::NONE);
+        self.stats = HitStats::default();
+    }
+
     /// Sweeps one volume through this step's span and notes what it touches. See the
     /// [type's docs](Self) for the order to call this in.
     pub fn sweep(&mut self, world: &PhysicsWorld, volume: &VolumeSweep<'_>) {

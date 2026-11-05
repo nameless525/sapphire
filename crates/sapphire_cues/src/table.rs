@@ -1,6 +1,8 @@
 //! The cue table as a document: what each of the simulation's cues fires, by name. It holds names and
 //! IDs only: [`crate::CueDispatcher`] resolves them against the libraries they name at load.
 
+use std::collections::BTreeSet;
+
 use bevy_reflect::TypePath;
 use sapphire_assets::AssetId;
 use sapphire_moves::Weight;
@@ -218,11 +220,12 @@ impl CueTable {
         if rows.len() > usize::from(u16::MAX) {
             return Err(CueTableError::TooMany);
         }
+        let mut names = BTreeSet::new();
         for (index, row) in rows.iter().enumerate() {
             if row.cue.is_empty() {
                 return Err(CueTableError::EmptyName(index));
             }
-            if rows[..index].iter().any(|other| other.cue == row.cue && other.weight == row.weight) {
+            if !names.insert((row.cue.as_str(), row.weight)) {
                 return Err(CueTableError::Duplicate(row.label()));
             }
             row.validate()?;
@@ -287,6 +290,18 @@ mod tests {
             screen: None,
             rumble: None,
         }
+    }
+
+    #[test]
+    fn duplicate_rows_keep_validation_precedence() {
+        let mut invalid = row("same");
+        invalid.sounds = vec![AssetId::from_text("11111111-2222-4333-8444-555555555555"); MAX_ROW_SOUNDS + 1];
+        assert!(matches!(CueTable::new(vec![row("same"), invalid.clone()]),
+            Err(CueTableError::Duplicate(name)) if name == "same"));
+        assert!(matches!(
+            CueTable::new(vec![invalid, row("same")]),
+            Err(CueTableError::Invalid { field: "sounds", .. })
+        ));
     }
 
     #[test]

@@ -773,3 +773,46 @@ fn a_fight_with_hits_landing_allocates_nothing_from_the_first_step() {
     });
     assert_eq!(counts.allocations, 0, "a despawn gives room back and takes none");
 }
+
+/// Built-in reset has a sealed mutation contract and keeps its full lifecycle inside this scope.
+#[test]
+fn restarting_a_builtin_fight_reuses_capacity_and_matches_a_fresh_world() {
+    if !PER_THREAD_COUNTS {
+        return;
+    }
+    assert!(alloc::is_installed());
+    for party in [false, true] {
+        let prepared = sapphire_gameplay::replay::PreparedFight::new(party).expect("prepares");
+        let live = sapphire_gameplay::replay::LiveMoves::default();
+        let scenario = find_scenario(SCENARIOS, if party { "party" } else { "arena-fight" }).expect("listed");
+        let mut world = prepared.start_resettable(scenario.config, &live).expect("starts");
+        for length in [37, 400, 2000] {
+            let (mut fresh, cast) = scenario.start(scenario.config).expect("independent constructor");
+            assert_eq!(world.cast(), cast);
+            for tick in 0..length {
+                assert_eq!(world.checksum(), fresh.checksum(), "party={party}, tick={tick}");
+                let actions = sapphire_gameplay::replay::fight_back(tick, &cast);
+                world.step(&actions);
+                fresh.step(&actions);
+            }
+            let scope = alloc::AllocScope::begin();
+            world.restart().expect("unchanged valid sets");
+            let counts = scope.counts();
+            assert_eq!(counts.allocations, 0, "party={party}, length={length}: {counts:?}");
+            assert_eq!(world.tick(), 0);
+            let (fresh, _) = scenario.start(scenario.config).expect("fresh initial resource counters");
+            assert_eq!(world.stats(), fresh.stats());
+            assert_eq!(world.hits().stats(), fresh.hits().stats());
+            assert_eq!(world.physics().body_count(), fresh.physics().body_count());
+            assert_eq!(world.physics().static_count(), fresh.physics().static_count());
+            assert_eq!(world.physics().body_capacity(), fresh.physics().body_capacity());
+            assert_eq!(world.physics().take_stats(), fresh.physics().take_stats());
+            assert_eq!(
+                world.move_library().current_revision(
+                    world.actor(world.cast()[0]).expect("alive").moves.set.expect("the player has a set")
+                ),
+                Some(0)
+            );
+        }
+    }
+}

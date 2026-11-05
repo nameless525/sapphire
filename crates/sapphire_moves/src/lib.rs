@@ -416,6 +416,10 @@ pub enum TablesError {
 }
 
 impl BakedTables {
+    pub(crate) fn into_parts(self) -> (Vec<RootSample>, Vec<BakedPath>) {
+        (self.root, self.paths)
+    }
+
     /// Tables from one root sample per tick and any named paths, each with as many samples. Paths
     /// may come in any order. See the [crate docs](crate) for what a sample means.
     pub fn new(root: Vec<RootSample>, mut paths: Vec<BakedPath>) -> Result<Self, TablesError> {

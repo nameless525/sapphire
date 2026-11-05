@@ -165,6 +165,12 @@ impl Scene<'_> {
 
     /// What's wrong with a view from `yaw`. See the constants for how each part counts.
     fn faults(&self, yaw: f32, stats: &mut CameraStats) -> Faults {
+        self.faults_below(yaw, stats, f32::INFINITY, 0.0)
+    }
+
+    /// A candidate may stop at a lower bound once it cannot beat the current view. The current
+    /// view itself is always scored completely, as are goals used for hysteresis.
+    fn faults_below(&self, yaw: f32, stats: &mut CameraStats, best: f32, turning: f32) -> Faults {
         let axes = Axes::of(yaw, self.pitch);
         let framing = self.framing;
         let (tan_x, tan_y) =
@@ -248,6 +254,12 @@ impl Scene<'_> {
             faults.in_front = IN_FRONT * ((player.depth - target.depth) / IN_FRONT_RANGE).clamp(0.0, 1.0);
         }
 
+        // The remaining terms are nonnegative. Keep the full score's addition order, strict
+        // tie rule and candidate order; NaN bounds fall through to the complete evaluation.
+        if best.is_finite() && faults.total() + turning >= best {
+            return faults;
+        }
+
         // What's standing between the eye and them: a stall's side across half the frame, say.
         let nearest = match (&player, &target) {
             (Some(player), Some(target)) => player.depth.min(target.depth),
@@ -263,7 +275,11 @@ impl Scene<'_> {
                 let along = forward + right * (x * half * aspect) + up * (y * half);
                 stats.casts += 1;
                 let far = nearest * along.length();
-                if self.world.cast_ray(eye, along, far, &sees).is_some_and(|hit| hit.point.y > LOW) {
+                if self
+                    .world
+                    .cast_ray(eye, along, far, &sees)
+                    .is_some_and(|hit| hit.point.y - self.player.position.y.min(self.target.position.y) > LOW)
+                {
                     blocked += 1;
                 }
             }
@@ -470,7 +486,8 @@ impl Clearing {
                 if held && (self.lean_goal + turn).abs() > tuning.reach {
                     continue;
                 }
-                let fault = scene.fault(from + turn, stats) + TURNING * turn.abs();
+                let turning = TURNING * turn.abs();
+                let fault = scene.faults_below(from + turn, stats, best.0, turning).total() + turning;
                 if fault < best.0 {
                     best = (fault, turn);
                 }
@@ -489,5 +506,85 @@ impl Clearing {
                 self.goal_left = best.1.abs();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use sapphire_physics::{ColliderId, Pose, Shape, StaticCollider, StaticShape};
+
+    use super::*;
+    use crate::CameraTuning;
+
+    fn with_floor_scene<T>(height: f32, check: impl FnOnce(&Scene<'_>) -> T) -> T {
+        let tuning = CameraTuning::default_tuning();
+        let offset = Vec3::Y * height;
+        let world = PhysicsWorld::new(
+            vec![StaticCollider {
+                id: ColliderId(0),
+                shape: StaticShape::Convex(Shape::Box { half_extents: Vec3::new(100.0, 1.0, 100.0) }),
+                pose: Pose::at(offset - Vec3::Y),
+                memberships: Group::World.mask(),
+            }],
+            0,
+        )
+        .unwrap();
+        let player = Subject { position: offset, height: 1.7, radius: 0.35 };
+        let target = Subject { position: offset + Vec3::Z * 8.0, height: 2.0, radius: 0.45 };
+        let arm = Arm::new(tuning.collision.radius);
+        check(&Scene {
+            world: &world,
+            arm: &arm,
+            anchor: offset + Vec3::Y * 1.3,
+            player: &player,
+            target: &target,
+            pivot: offset + Vec3::new(0.0, 1.3, 4.0),
+            framed_height: tuning.explore.pivot_height,
+            pitch: 0.9,
+            aspect: 16.0 / 9.0,
+            half_fov: 0.3,
+            framing: &tuning.combat.framing,
+            zoom: 1.0,
+            player_soon: player.position,
+            target_soon: target.position,
+        })
+    }
+
+    #[test]
+    fn foreground_floor_classification_is_relative_to_the_fighters() {
+        for height in [-10.0, 0.0, 10.0] {
+            let foreground =
+                with_floor_scene(height, |scene| scene.faults(0.0, &mut CameraStats::default()).foreground);
+            assert_eq!(foreground, 0.0, "a floor at {height} is still the floor");
+        }
+    }
+
+    #[test]
+    fn candidate_bounds_preserve_scores_that_could_win_and_the_strict_tie_rule() {
+        with_floor_scene(0.0, |scene| {
+            for yaw in [-2.0, -0.6, 0.0, 0.6, 2.0] {
+                let mut full_stats = CameraStats::default();
+                let full = scene.faults(yaw, &mut full_stats).total();
+                for turning in [0.0, 0.2, 1.0] {
+                    for best in [0.0, full * 0.5, full + turning, full + turning + 1.0, f32::NAN] {
+                        let mut bounded_stats = CameraStats::default();
+                        let bounded =
+                            scene.faults_below(yaw, &mut bounded_stats, best, turning).total() + turning;
+                        let complete = full + turning;
+                        assert_eq!(bounded < best, complete < best);
+                        if complete < best || best.is_nan() {
+                            assert_eq!(bounded.to_bits(), complete.to_bits());
+                        }
+                        assert!(bounded_stats.casts <= full_stats.casts);
+                        if best == 0.0 {
+                            assert!(
+                                bounded_stats.casts < full_stats.casts,
+                                "noncompetitive view skips later queries"
+                            );
+                        }
+                    }
+                }
+            }
+        });
     }
 }

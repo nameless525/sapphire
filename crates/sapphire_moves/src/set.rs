@@ -38,7 +38,8 @@ pub const MAX_MOVE_REACH: f32 = 1000.0;
 /// thinner, which would leave a fighter nobody can hit, with nothing to say so but a counter.
 pub const MIN_SHAPE_EXTENT: f32 = 0.001;
 
-/// Most hurtboxes one fighter has: `sapphire_gameplay`'s hurtbox IDs hold four bits of index.
+/// Most hurtboxes one fighter has: `sapphire_gameplay` reserves their indices and one extra for its
+/// perfect-dodge volume in each actor's body-ID range.
 pub const MAX_HURTBOXES: usize = 16;
 
 /// Longest one hit may freeze anyone, in ticks (two seconds): past this it's a typo.
@@ -954,6 +955,10 @@ pub enum MoveSetError {
     Damaged(String),
 }
 
+fn ordered_by<T>(values: &[T], at: impl Fn(&T) -> u32) -> bool {
+    values.windows(2).all(|pair| at(&pair[0]) <= at(&pair[1]))
+}
+
 fn list(issues: &[Issue]) -> String {
     let lines: Vec<String> = issues.iter().map(ToString::to_string).collect();
     lines.join("\n")
@@ -963,8 +968,10 @@ impl ArchivedMoveSet {
     /// The set as plain data, for a simulation to take: what an app does with a new version of a cooked
     /// set, which live tuning reloads through a pack.
     pub fn to_owned_set(&self) -> Result<MoveSet, MoveSetError> {
-        rkyv::deserialize::<MoveSet, rkyv::rancor::Error>(self)
-            .map_err(|error| MoveSetError::Cooked(CookedError::from(error)))
+        let set = rkyv::deserialize::<MoveSet, rkyv::rancor::Error>(self)
+            .map_err(|error| MoveSetError::Cooked(CookedError::from(error)))?;
+        set.check()?;
+        Ok(set)
     }
 }
 
@@ -990,9 +997,7 @@ impl MoveSet {
     /// in the fixed step.
     pub fn from_cooked(bytes: &[u8]) -> Result<Self, MoveSetError> {
         let archived = cooked::access::<Self>(bytes)?;
-        let set = rkyv::deserialize::<Self, rkyv::rancor::Error>(archived).map_err(CookedError::from)?;
-        set.check()?;
-        Ok(set)
+        archived.to_owned_set()
     }
 
     /// Writes a cooked set: the same bytes for the same set, every time.
@@ -1238,6 +1243,21 @@ impl MoveSet {
         if !mv.cues.iter().all(|cue| cue.at < ticks) {
             return damaged(format!("a cue of move `{label}` is past its last tick"));
         }
+        for (track, ordered) in [
+            ("hitboxes", ordered_by(&mv.hitboxes, |v| v.span.from)),
+            ("hurtboxes", ordered_by(&mv.hurtboxes, |v| v.span.from)),
+            ("invulnerable", ordered_by(&mv.invulnerable, |v| v.from)),
+            ("perfect_dodge", ordered_by(&mv.perfect_dodge, |v| v.span.from)),
+            ("parry", ordered_by(&mv.parry, |v| v.from)),
+            ("armour", ordered_by(&mv.armour, |v| v.span.from)),
+            ("cancels", ordered_by(&mv.cancels, |v| v.span.from)),
+            ("cues", ordered_by(&mv.cues, |v| v.at)),
+        ] {
+            if !ordered {
+                return damaged(format!("move `{label}`'s {track} are out of order"));
+            }
+        }
+
         Ok(())
     }
 
@@ -1801,6 +1821,36 @@ mod tests {
             }
         }
         assert!(unrefused.is_empty(), "{unrefused:#?}");
+    }
+
+    #[test]
+    fn every_archive_conversion_checks_semantics_and_track_order() {
+        let good = whole();
+        type Damage = fn(&mut MoveSet);
+        let cases: &[Damage] = &[
+            |set| set.intents[0].buffer_ticks = 0,
+            |set| light(set).cues = vec![Cue::new(Name::new("later"), 2), Cue::new(Name::new("earlier"), 1)],
+            |set| light(set).invulnerable = vec![Span { from: 2, to: 3 }, Span { from: 1, to: 2 }],
+        ];
+        for damage in cases {
+            let mut set = good.clone();
+            damage(&mut set);
+            let cooked = set.to_cooked().expect("structurally valid archive");
+            let archived = cooked::access::<MoveSet>(&cooked).expect("valid pointers");
+            assert!(archived.to_owned_set().is_err(), "owned views must not bypass validation");
+            assert!(MoveSet::from_cooked(&cooked).is_err());
+        }
+        let cooked = good.to_cooked().expect("writes");
+        assert_eq!(
+            cooked::access::<MoveSet>(&cooked).expect("valid").to_owned_set().expect("semantic"),
+            good
+        );
+        let mut equal = good;
+        light(&mut equal).cues = vec![Cue::new(Name::new("first"), 1), Cue::new(Name::new("second"), 1)];
+        assert!(
+            MoveSet::from_cooked(&equal.to_cooked().expect("writes")).is_ok(),
+            "equal-start authored order is valid"
+        );
     }
 
     /// A root that runs out of the world is what the controller's arithmetic can't carry, by a cook's

@@ -770,3 +770,54 @@ fn prepared_timeline_matches_public_easing_bits() {
         }
     }
 }
+
+/// The graph show's simulation root and its authored strike must travel together.
+/// MotionDocument interpolates linearly, so nonlinear clip intervals need tick samples.
+#[test]
+fn graph_show_strike_root_follows_the_key_pose() {
+    let document = read(include_bytes!("../../../../content/lookdev/character/strike.keypose.ron"))
+        .expect("the authored strike");
+    let (skeleton, rig) = figure();
+    let sampled = sample(&document, "strike", &skeleton, &rig).expect("the strike samples");
+    let root = sampled.root.as_ref().expect("the strike travels");
+    let show = sapphire_moves::MoveSetDocument::parse(include_str!(
+        "../../../../content/lookdev/character/show.moves.ron"
+    ))
+    .expect("the live-editable show document")
+    .compile()
+    .expect("the show compiles without loading or baking a clip");
+    let strike = show.find(sapphire_core::Name::new("strike")).expect("the strike").1;
+    assert_eq!(root.translation.len(), 61, "the authored 60-tick fixture");
+    assert_eq!(strike.tables.root_samples().len(), root.translation.len());
+    let target =
+        ClipTarget { skeleton: Some((AssetId::from_bytes([1; 16]), &skeleton)), morph_defaults: &[] };
+    let bytes = cook(&sampled, &target, &ReductionError::default()).to_cooked().expect("the runtime clip");
+    let clip = Clip::read(&bytes).expect("the runtime clip reads");
+    // Keep regeneration usable from a normal checkout, without an external authoring tool.
+    // Every mismatched coordinate is a copyable per-tick MotionDocument root key.
+    let mut drift = Vec::new();
+    for (tick, (expected, actual)) in root.translation.iter().zip(strike.tables.root_samples()).enumerate() {
+        let offset = actual.offset();
+        // Decimal serialization/pointwise arithmetic only: one micrometre.
+        if !expected.is_finite() || !offset.is_finite() || expected.distance(offset) >= 1e-6 {
+            drift.push(format!("(at: {tick}, offset: ({}, {}, {})),", expected.x, expected.y, expected.z));
+        }
+    }
+    assert!(
+        drift.is_empty(),
+        "show.moves.ron's strike root drifted from strike.keypose.ron. Insert/replace these sampled root keys, then rerun graph_show_strike_root_follows_the_key_pose:\n{}",
+        drift.join("\n")
+    );
+    for (tick, actual) in strike.tables.root_samples().iter().enumerate() {
+        let drawn = sapphire_anim::root_motion(clip, tick as f32).expect("the drawn root");
+        // The shipped default reduction permits 0.25 mm, plus packed-vector rounding.
+        assert!(
+            drawn.translation.distance(actual.offset()) < 0.000_26,
+            "tick {tick}: show {:?}, runtime {:?}",
+            actual.offset(),
+            drawn.translation
+        );
+        assert_eq!(actual.yaw, 0.0);
+        assert!(drawn.rotation.angle_between(Quat::IDENTITY) < 0.009f32.to_radians());
+    }
+}

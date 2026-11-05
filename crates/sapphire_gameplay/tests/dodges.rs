@@ -863,7 +863,6 @@ fn more_swings_than_the_list_holds_are_counted() {
     assert_eq!(sim.hits().stats().swings_dropped, 2);
     assert_eq!(sim.hits().dodged().len(), 64);
     assert_eq!(perfect(&sim), 64);
-    assert_eq!(sim.stats().allocations, 0);
     assert!(!sim.actor(dodgers[65]).unwrap().moves.current.unwrap().dodged, "the last didn't fire");
     assert_eq!(health(&sim, dodgers[65]), 100, "and its i-frames still hold");
 }
@@ -1411,7 +1410,6 @@ fn a_counter_lands() {
     assert_eq!(health(&sim, attacker), 80, "riposte_hit, on its tick 1");
     assert_eq!(health(&sim, dodger), 100);
     assert_eq!(sim.hits().events()[0].group, name("riposte_hit"));
-    assert_eq!(sim.stats().allocations, 0);
 }
 
 /// A swing's window runs on its owner's clock, so slow motion stretches it: `tap`'s one live tick lasts five
@@ -1557,7 +1555,6 @@ fn the_replay_suites_dodge_counter_plays_what_it_says() {
     assert_eq!(stats.counters_fired, 2);
     assert!(slowed_steps >= 3 * 20, "{slowed_steps}");
     assert!(at_speed_while_slowed, "the player ran at speed through every slowdown");
-    assert_eq!(stats.allocations, 0);
     assert_eq!(sim.slow_motion().refused(), 0);
 }
 

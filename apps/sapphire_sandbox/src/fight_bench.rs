@@ -460,7 +460,8 @@ impl Run<'_> {
         if start_over {
             match self.option {
                 CombatOption::Replay { .. } => {
-                    stage.show.fight.combat = Some(Combat::new(self.option).map_err(AppInitError::msg)?);
+                    let combat = Combat::new(self.option).map_err(AppInitError::msg)?;
+                    stage.show.fight.attach_combat(Some(combat));
                 }
                 _ => {
                     if let Some(combat) = &mut stage.show.fight.combat {

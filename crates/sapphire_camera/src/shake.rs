@@ -42,7 +42,7 @@ pub struct ShakeId(pub u16);
 pub struct Shake {
     /// Seconds from firing to nothing.
     pub duration: f32,
-    /// Seconds to reach its peak, so firing doesn't jump.
+    /// Seconds to reach its peak, so firing doesn't jump. Less than `duration`, leaving time to decay.
     pub attack: f32,
     /// The fall from peak to nothing: 1 is a straight line, more falls away sooner.
     pub falloff: f32,
@@ -64,7 +64,7 @@ impl Shake {
             let rise = age / self.attack;
             return rise * rise * (3.0 - 2.0 * rise);
         }
-        let left = 1.0 - (age - self.attack) / (self.duration - self.attack).max(1e-3);
+        let left = 1.0 - (age - self.attack) / (self.duration - self.attack);
         det::pow(left.clamp(0.0, 1.0), self.falloff)
     }
 }
@@ -163,6 +163,12 @@ impl ShakeStack {
         self.count = 0;
     }
 
+    /// Stops all shakes and restarts their seeded sequence, preserving the player's shake setting.
+    pub fn start_over(&mut self, seed: u64) {
+        self.clear();
+        self.rng = Pcg32::new(seed, Self::STREAM);
+    }
+
     /// Starts a shake, and says if another had to make way for it.
     pub fn fire(&mut self, shake: Shake, strength: f32) -> bool {
         let mut phases = [0.0; PHASES];
@@ -250,6 +256,37 @@ mod tests {
                 stack.sample(&tuning())
             })
             .collect()
+    }
+
+    #[test]
+    fn starting_over_replays_the_seeded_sequence_and_keeps_the_setting() {
+        let mut fresh = ShakeStack::new(11);
+        fresh.set_setting(0.25);
+        let mut used = fresh.clone();
+        for _ in 0..12 {
+            used.fire(THUMP, 1.0);
+            used.advance(0.05, 0.0);
+        }
+        used.start_over(11);
+        assert_eq!(used.playing(), 0);
+        assert_eq!(used.setting, 0.25);
+        for frame in 0..120 {
+            if frame % 20 == 0 {
+                used.fire(THUMP, 1.0);
+                fresh.fire(THUMP, 1.0);
+            }
+            used.advance(1.0 / 60.0, 0.0);
+            fresh.advance(1.0 / 60.0, 0.0);
+            assert_eq!(used.sample(&tuning()), fresh.sample(&tuning()));
+        }
+    }
+
+    #[test]
+    fn a_short_decay_reaches_zero_continuously() {
+        let shake = Shake { duration: 0.02, attack: 0.0195, falloff: 1.0, ..THUMP };
+        assert!((shake.envelope(0.01975) - 0.5).abs() < 1e-4);
+        assert!(shake.envelope(0.019999) < 0.003);
+        assert_eq!(shake.envelope(shake.duration), 0.0);
     }
 
     #[test]

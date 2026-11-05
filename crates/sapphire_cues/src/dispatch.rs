@@ -201,6 +201,21 @@ impl CueDispatcher {
         Ok(dispatcher)
     }
 
+    /// Reserves the simulation's complete actor pool before fixed stepping begins.
+    pub fn reserve_actors(&mut self, capacity: usize) {
+        self.owners.reserve(capacity.saturating_sub(self.owners.len()));
+    }
+
+    /// Begins another fight without discarding resolved rows or their allocated storage.
+    /// Pending rumble is released at the next frame, where a pad is available. Lifetime
+    /// statistics remain cumulative, so callers can count cues across restart boundaries.
+    pub fn start_over(&mut self) {
+        self.read_tick = None;
+        self.owners.clear();
+        self.sounds.clear();
+        self.mixer.release();
+    }
+
     /// Takes a new table, or new libraries for this one: IDs hold for the libraries they came from, so
     /// a reload of either comes through here. On an error it keeps what it has, which holds only for
     /// the libraries it had.

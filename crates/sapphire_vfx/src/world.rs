@@ -72,6 +72,8 @@ struct EmitterState {
     fired: bool,
     /// Fractions of a particle a rate has owed since its last one.
     owed: f32,
+    delay_left: f32,
+    time_left: f32,
 }
 
 /// An effect's place in the world.
@@ -223,6 +225,20 @@ impl VfxWorld {
         self.effects = 0;
     }
 
+    /// Starts the seeded sequence over, as a fresh world with this library and budget would.
+    /// Ends every effect and clears drop counters, preserving all pool capacities. Old handles
+    /// stay invalid, including when their slots are reused. Allocates nothing.
+    pub fn start_over(&mut self) {
+        self.clear();
+        self.free_slots.clear();
+        self.free_slots.extend((0..self.slots.len() as u16).rev());
+        self.spawned = 0;
+        self.dropped_particles = 0;
+        self.dropped_ribbon_points = 0;
+        self.dropped_effects = 0;
+        self.dropped_trails = 0;
+    }
+
     /// Starts `effect` at `placement` on `owner`'s clock. `None` if the library has no such effect
     /// or the budget's cap on effects is full, which is counted. An effect whose trail didn't fit
     /// spawns without it, also counted.
@@ -287,6 +303,12 @@ impl VfxWorld {
             trail,
             ..Slot::new()
         };
+        for (state, emitter) in slot.emitters.iter_mut().zip(&desc.emitters) {
+            state.delay_left = emitter.delay;
+            if let Spawn::Rate { duration, .. } = emitter.spawn {
+                state.time_left = duration;
+            }
+        }
         self.effects += 1;
         Some(EffectHandle { slot: index, generation: slot.generation })
     }
@@ -360,7 +382,7 @@ impl VfxWorld {
         profiling::scope!("VfxWorld::advance");
         for slot in self.slots.iter_mut().filter(|slot| slot.live) {
             slot.step = steps.of(slot.owner);
-            slot.age += slot.step;
+            slot.age = (slot.age + slot.step).min(f32::MAX);
         }
         self.update_particles();
         self.retire_samples();
@@ -535,14 +557,15 @@ impl VfxWorld {
     }
 }
 
-/// How many particles `emitter` owes in the step of `step` seconds that ends at the effect's `age`.
+/// How many particles `emitter` owes in this step. Rates use remaining intervals rather than
+/// subtracting large absolute ages; bursts retain their existing absolute-clock admission boundary.
 fn owed_particles(emitter: &EmitterDesc, state: &mut EmitterState, age: f32, step: f32) -> u32 {
-    let since_start = age - emitter.delay;
-    if since_start < 0.0 {
-        return 0;
-    }
     match emitter.spawn {
         Spawn::Burst { count } => {
+            let since_start = age - emitter.delay;
+            if since_start < 0.0 {
+                return 0;
+            }
             if state.fired {
                 return 0;
             }
@@ -550,13 +573,25 @@ fn owed_particles(emitter: &EmitterDesc, state: &mut EmitterState, age: f32, ste
             count
         }
         Spawn::Rate { per_second, duration } => {
-            // The share of the step inside the emitter's time.
-            let began = (since_start - step).max(0.0);
-            let ended = if duration > 0.0 { since_start.min(duration) } else { since_start };
-            state.owed += per_second * (ended - began).max(0.0);
-            let whole = state.owed.floor();
-            state.owed -= whole;
-            whole as u32
+            let active = (step - state.delay_left).max(0.0);
+            state.delay_left = (state.delay_left - step).max(0.0);
+            if state.delay_left > 0.0 {
+                return 0;
+            }
+            let elapsed = if duration > 0.0 { active.min(state.time_left) } else { active };
+            state.time_left = (state.time_left - elapsed).max(0.0);
+            let owed = state.owed + per_second * elapsed;
+            // Keep a finite fractional remainder even when the count saturates. Every finite
+            // f32 rate/step product fits in f64; ordinary counts stay on the f32 path.
+            if owed.is_finite() {
+                let whole = owed.floor();
+                state.owed = owed - whole;
+                whole as u32
+            } else {
+                let owed = f64::from(state.owed) + f64::from(per_second) * f64::from(elapsed);
+                state.owed = (owed - owed.floor()) as f32;
+                u32::MAX
+            }
         }
     }
 }
@@ -565,7 +600,7 @@ fn owed_particles(emitter: &EmitterDesc, state: &mut EmitterState, age: f32, ste
 fn emitters_done(effect: &Effect, slot: &Slot) -> bool {
     effect.emitters.iter().zip(&slot.emitters).all(|(emitter, state)| match emitter.spawn {
         Spawn::Burst { .. } => state.fired,
-        Spawn::Rate { duration, .. } => duration > 0.0 && slot.age - emitter.delay >= duration,
+        Spawn::Rate { duration, .. } => duration > 0.0 && state.delay_left == 0.0 && state.time_left == 0.0,
     })
 }
 

@@ -260,6 +260,16 @@ impl BrainAttack {
     pub fn score(&self, distance: f32, doing: TargetDoing, since: Option<SimDuration>) -> f32 {
         self.weight * self.reach.at(distance) * self.against.of(doing) * self.recent.at(since)
     }
+
+    /// The same factors in a range wide enough for any validated finite weights and multipliers.
+    /// Use this when single-precision scores or their total overflow or underflow.
+    #[must_use]
+    pub fn score_wide(&self, distance: f32, doing: TargetDoing, since: Option<SimDuration>) -> f64 {
+        f64::from(self.weight)
+            * f64::from(self.reach.at(distance))
+            * f64::from(self.against.of(doing))
+            * f64::from(self.recent.at(since))
+    }
 }
 
 /// When a brain gets up: it presses `intent` once, while `during` plays, at a tick drawn between `from`

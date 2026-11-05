@@ -45,7 +45,7 @@ pub struct SimStats {
     pub peak_actors: u32,
     /// Spawns refused so far, because the pool was full.
     pub spawns_refused: u64,
-    /// Presses of intents from buttons so far. Those a brain makes itself aren't counted.
+    /// Presses of intents from buttons and brains so far.
     pub intents_pressed: u64,
     /// Presses whose buffer ran out with no window taking them so far.
     pub intents_expired: u64,

@@ -1,8 +1,10 @@
 //! What audio costs, for spec §3.2's budget and the plan's "As built": prints the numbers, and fails
 //! on none of them, since a loaded machine would fail it. `#[ignore]`d, and only meaningful optimized:
 //! `cargo test -p sapphire_audio --release --test costs -- --ignored --nocapture --test-threads=1`.
-//! Each line gives the minimum and the median over several rounds: other work on the machine only
-//! ever adds, and Apple's clock ticks every 42 ns.
+//! Update/mix lines give the observed minimum and median pooled across all rounds; decoding gives
+//! the observed minimum. These describe this instrumented workload, not stable tail estimates.
+//! One immutable tone is synthesized per process; mixer construction and PCM conversion still
+//! happen independently for every round, outside the timed update/mix scopes.
 //! Silent: it renders into a buffer, and opens no device.
 
 #![allow(clippy::print_stdout, reason = "printing the numbers is this test's whole job")]
@@ -34,10 +36,10 @@ fn sound() -> DecodedSound {
     DecodedSound { sample_rate: RATE, channels: 1, samples }
 }
 
-fn system() -> AudioSystem<KiraBackend<OfflineOutput>> {
+fn system(sound: &DecodedSound) -> AudioSystem<KiraBackend<OfflineOutput>> {
     let Ok(backend) = KiraBackend::<OfflineOutput>::new(RATE);
     let mut system = AudioSystem::new(backend);
-    system.add_sound(SOUND, &sound());
+    system.add_sound(SOUND, sound);
     system.add_cue(
         CUE,
         Cue {
@@ -73,6 +75,7 @@ fn min_and_median(times: &mut [Duration]) -> (Duration, Duration) {
 #[test]
 #[ignore = "prints what audio costs: run it optimized, by hand"]
 fn what_audio_costs() {
+    let sound = sound();
     let requests = [CueRequest { cue: CUE, target: CueTarget::On(ACTOR) }];
     let start = [Emitter { id: ACTOR, position: Vec3::ZERO, hitstop: false }];
 
@@ -80,7 +83,7 @@ fn what_audio_costs() {
     for voices in [0, 1, 8, MAX_VOICES] {
         let mut times = Vec::new();
         for _ in 0..ROUNDS {
-            let mut system = system();
+            let mut system = system(&sound);
             let mut random = CueRng::new(7);
             let mut emitters = start;
             for _ in 0..voices {
@@ -107,7 +110,7 @@ fn what_audio_costs() {
     // A frame that also starts a cue: what a hit costs the frame it lands on.
     let mut times = Vec::new();
     for _ in 0..ROUNDS {
-        let mut system = system();
+        let mut system = system(&sound);
         let mut random = CueRng::new(7);
         let mut emitters = start;
         for tick in 0..16 {
@@ -118,14 +121,18 @@ fn what_audio_costs() {
         assert_eq!(system.stats().cues_played, 16, "{:?}", system.stats());
     }
     let (fastest, median) = min_and_median(&mut times);
-    println!("update, starting one cue: {:.2} us, median {:.2} us", micros(fastest), micros(median));
+    println!(
+        "update, starting one cue with 0..15 voices live: {:.2} us, median {:.2} us",
+        micros(fastest),
+        micros(median)
+    );
 
     // The mix, on the callback, against the block's length in real time.
     let length = Duration::from_secs_f64(BLOCK as f64 / f64::from(RATE));
     for voices in [1, 8, MAX_VOICES] {
         let mut times = Vec::new();
         for _ in 0..ROUNDS {
-            let mut system = system();
+            let mut system = system(&sound);
             let mut random = CueRng::new(7);
             let mut emitters = start;
             for _ in 0..voices {
@@ -163,7 +170,7 @@ fn what_audio_costs() {
             seconds = decoded.frames() as f64 / f64::from(decoded.sample_rate);
         }
         println!(
-            "decode {name}: {} bytes, {seconds:.3} s of sound in {:.0} us, 1/{:.0} of its length",
+            "decode {name}: {} bytes, {seconds:.3} s of sound in minimum {:.0} us, 1/{:.0} of its length",
             vorbis.len(),
             micros(best),
             seconds / best.as_secs_f64()

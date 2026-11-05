@@ -181,8 +181,8 @@ impl Default for ToneCurve {
 /// A color grade. [`ColorGrade::NEUTRAL`] changes nothing.
 ///
 /// The scene-referred stages run before the tone curve, on exposed linear color: white
-/// balance, the color filter, contrast and saturation. Lift, gamma and gain run after it, on
-/// display values (sRGB-encoded, as color-wheel grading tools apply them).
+/// balance, the color filter and contrast. Saturation, lift, gain and gamma run after it, in
+/// that order, on display values (sRGB-encoded, as color-wheel grading tools apply them).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ColorGrade {
     /// White balance, about -1 to 1: positive warms the picture toward amber, negative cools it

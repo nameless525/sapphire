@@ -256,12 +256,14 @@ impl Frame {
     }
 
     /// The world-space ray through pixel `(x, y)`'s center: the eye and a unit direction.
-    fn ray(&self, x: u32, y: u32) -> (Vec3, Vec3) {
+    fn rays(&self) -> impl Fn(u32, u32) -> (Vec3, Vec3) + '_ {
         let inverse = (self.camera.proj * self.camera.view).inverse();
-        let ndc_x = (x as f32 + 0.5) / SIDE as f32 * 2.0 - 1.0;
-        let ndc_y = 1.0 - (y as f32 + 0.5) / SIDE as f32 * 2.0;
-        let far = inverse.project_point3(Vec3::new(ndc_x, ndc_y, 0.5));
-        (self.camera.position, (far - self.camera.position).normalize())
+        move |x, y| {
+            let ndc_x = (x as f32 + 0.5) / SIDE as f32 * 2.0 - 1.0;
+            let ndc_y = 1.0 - (y as f32 + 0.5) / SIDE as f32 * 2.0;
+            let far = inverse.project_point3(Vec3::new(ndc_x, ndc_y, 0.5));
+            (self.camera.position, (far - self.camera.position).normalize())
+        }
     }
 
     /// The pixel `point` projects into.
@@ -277,17 +279,21 @@ impl Frame {
         surface: impl Fn(Vec3, Vec3) -> Option<(Vec3, Vec3)>,
         expected: impl Fn(Vec3, Vec3) -> Vec3,
     ) -> (f32, (u32, u32), usize) {
+        let ray = self.rays();
+        let linear: [f32; 256] = std::array::from_fn(|value| srgb_to_linear(value as u8));
         let mut worst = (0.0f32, (0, 0));
         let mut compared = 0;
         for y in 0..SIDE {
             for x in 0..SIDE {
-                let (eye, direction) = self.ray(x, y);
+                let (eye, direction) = ray(x, y);
                 let Some((point, normal)) = surface(eye, direction) else { continue };
                 if normal.dot(-direction) < 0.3 {
                     continue;
                 }
                 compared += 1;
-                let error = (self.linear(x, y) - expected(point, normal)).abs().max_element();
+                let pixel = self.pixels[(y * SIDE + x) as usize];
+                let color = Vec3::from_array([0, 1, 2].map(|c| linear[usize::from(pixel[c])]));
+                let error = (color - expected(point, normal)).abs().max_element();
                 if error > worst.0 {
                     worst = (error, (x, y));
                 }
@@ -565,6 +571,21 @@ impl Harness {
 
     /// Draws one frame, also copying the prepass targets `reads` picks into their readbacks.
     fn render_reading(&mut self, reads: &[Read<'_>]) -> Frame {
+        self.draw(reads);
+        let target = Readback::new(&self.gpu, (SIDE, SIDE), 4);
+        let mut encoder = self.gpu.device().create_command_encoder(&Default::default());
+        target.copy(&mut encoder, &self.target);
+        self.gpu.queue().submit([encoder.finish()]);
+        let pixels = target.texels(&self.gpu);
+        Frame { pixels, camera: self.camera }
+    }
+
+    fn complete(&mut self) {
+        self.draw(&[]);
+        self.gpu.device().poll(wgpu::PollType::wait_indefinitely()).expect("frame complete");
+    }
+
+    fn draw(&mut self, reads: &[Read<'_>]) {
         let packet = self.packets.begin();
         packet.views.push(ViewData::new(self.camera));
         packet.sun = self.sun;
@@ -597,23 +618,13 @@ impl Harness {
         self.graph.execute(&self.gpu, graph).expect("a valid graph");
         let error = pollster::block_on(scope.pop());
         assert!(error.is_none(), "{error:?}");
-        let target = Readback::new(&self.gpu, (SIDE, SIDE), 4);
-        let mut encoder = self.gpu.device().create_command_encoder(&Default::default());
-        target.copy(&mut encoder, &self.target);
-        self.gpu.queue().submit([encoder.finish()]);
-        let pixels = target
-            .texels(&self.gpu)
-            .into_iter()
-            .map(|texel| [texel[0], texel[1], texel[2], texel[3]])
-            .collect();
-        Frame { pixels, camera: self.camera }
     }
 }
 
 /// A prepass target to read back after a frame, and where to.
 type Read<'a> = (fn(&PrepassTargets) -> TextureId, &'a Readback);
 
-/// A buffer a texture of up to 8 bytes per texel is copied into, row by row.
+/// A buffer a four-byte texture is copied into, row by row.
 struct Readback {
     buffer: wgpu::Buffer,
     size: (u32, u32),
@@ -654,16 +665,17 @@ impl Readback {
     }
 
     /// Each texel's bytes, rows top to bottom.
-    fn texels(&self, gpu: &GpuContext) -> Vec<Vec<u8>> {
+    fn texels(&self, gpu: &GpuContext) -> Vec<[u8; 4]> {
+        assert_eq!(self.texel, 4);
         self.buffer.map_async(wgpu::MapMode::Read, .., |result| result.expect("map"));
         gpu.device().poll(wgpu::PollType::wait_indefinitely()).expect("poll");
         let texels = {
             let mapped = self.buffer.get_mapped_range(..).expect("mapped");
-            mapped
-                .chunks_exact(self.padded as usize)
-                .flat_map(|row| row[..(self.size.0 * self.texel) as usize].chunks_exact(self.texel as usize))
-                .map(<[u8]>::to_vec)
-                .collect()
+            let mut texels = Vec::with_capacity((self.size.0 * self.size.1) as usize);
+            for row in mapped.chunks_exact(self.padded as usize) {
+                texels.extend_from_slice(row[..(self.size.0 * self.texel) as usize].as_chunks::<4>().0);
+            }
+            texels
         };
         self.buffer.unmap();
         texels
@@ -1250,14 +1262,14 @@ fn the_prepass_holds_the_world_and_temporal_aa_converges_on_it() {
     assert!(read[1].iter().all(|texel| rg16f(texel) == [0.0, 0.0]), "still: no velocity");
 
     // Converged, the frame holds still under the jitter.
-    let mut frames = Vec::new();
-    for _ in 0..48 {
-        frames.push(harness.render().pixels);
+    for _ in 0..46 {
+        harness.complete();
     }
-    let (last, before) = (&frames[47], &frames[46]);
+    let before = harness.render().pixels;
+    let last = harness.render().pixels;
     let differences: Vec<u8> = last
         .iter()
-        .zip(before)
+        .zip(&before)
         .map(|(a, b)| (0..3).map(|c| a[c].abs_diff(b[c])).max().unwrap_or(0))
         .collect();
     let mean = differences.iter().map(|&d| f64::from(d)).sum::<f64>() / differences.len() as f64;

@@ -15,6 +15,7 @@
 //! still in flight, a frame simply isn't timed. Steady frames allocate only wgpu's own map
 //! callback; nothing here runs unless timing is turned on.
 
+use std::ops::Range;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
@@ -26,9 +27,8 @@ use sapphire_rhi::{GpuContext, wgpu};
 const READBACKS: usize = 3;
 /// Pairs the first query set holds; it grows to fit the graph.
 const INITIAL_PAIRS: u32 = 32;
-/// Each pair resolves to its own 256-byte slot: `resolve_query_set` writes at aligned offsets,
-/// and only the pairs that were written may be resolved.
-const PAIR_STRIDE: u64 = wgpu::QUERY_RESOLVE_BUFFER_ALIGNMENT;
+/// Each timestamp pair owns one resolve slot at the required alignment.
+const RESOLVE_ALIGNMENT: u64 = wgpu::QUERY_RESOLVE_BUFFER_ALIGNMENT;
 
 /// Readback states, in an `AtomicU8` the map callback writes.
 const FREE: u8 = 0;
@@ -58,8 +58,9 @@ pub struct GpuTimings {
     pub frame: u64,
     /// Timed passes in the order they ran. A pass that took no timestamps is absent.
     pub passes: Vec<PassTime>,
-    /// Whether every pass is timed (timestamps between passes); otherwise only passes that
-    /// begin a render pass with [`PassContext::timestamp_writes`](super::PassContext).
+    /// Whether every pass has a valid decoded timestamp pair from encoder timestamps.
+    /// Otherwise the sample may omit invalid pairs or include only passes that begin a
+    /// render pass with [`PassContext::timestamp_writes`](super::PassContext).
     pub every_pass: bool,
 }
 
@@ -127,8 +128,40 @@ struct Readback {
     state: Arc<AtomicU8>,
     /// The execute call it holds.
     frame: u64,
-    /// Per pair: the pass and whether its timestamps were written.
-    passes: Vec<(&'static str, bool)>,
+    /// All graph passes expected for this frame, including any without timestamps.
+    expected: usize,
+    /// Written pairs only, in graph order, with their original slot indices.
+    passes: Vec<ResolvedPass>,
+}
+
+/// A written pair's location in the readback; unwritten queries are never resolved or decoded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ResolvedPass {
+    name: &'static str,
+    pair: u32,
+}
+
+impl ResolvedPass {
+    fn queries(&self) -> Range<u32> {
+        let first = 2 * self.pair;
+        first..first + 2
+    }
+
+    fn offset(&self) -> u64 {
+        u64::from(self.pair) * RESOLVE_ALIGNMENT
+    }
+}
+
+fn written_passes(input: impl Iterator<Item = (&'static str, bool)>) -> impl Iterator<Item = ResolvedPass> {
+    // begin has already checked the pass count against the query-set limit.
+    input
+        .enumerate()
+        .filter_map(|(pair, (name, written))| written.then_some(ResolvedPass { name, pair: pair as u32 }))
+}
+
+/// Copy and map through the last written slot. Holes are never decoded.
+fn readback_size(passes: &[ResolvedPass]) -> u64 {
+    passes.last().map_or(0, |pass| pass.offset() + RESOLVE_ALIGNMENT)
 }
 
 /// What the executor asks of a GPU timer, once per frame. The executor holds its timer as a
@@ -202,11 +235,18 @@ impl PassTimer {
                 continue;
             }
             if readback.frame > self.latest.frame {
-                let used = readback.passes.len() as u64 * PAIR_STRIDE;
+                let used = readback_size(&readback.passes);
                 // The buffer mapped successfully, so the range is available.
                 if let Ok(bytes) = readback.buffer.get_mapped_range(..used) {
                     self.latest.frame = readback.frame;
-                    decode(&bytes, &readback.passes, self.period, &mut self.latest.passes);
+                    let complete = decode(
+                        &bytes,
+                        &readback.passes,
+                        readback.expected,
+                        self.period,
+                        &mut self.latest.passes,
+                    );
+                    self.latest.every_pass = self.encoder_writes && complete;
                 }
             }
             readback.buffer.unmap();
@@ -222,7 +262,11 @@ impl FrameTimer for PassTimer {
 
     fn begin(&mut self, device: &wgpu::Device, frame: u64, passes: usize) -> Option<FrameQueries<'_>> {
         self.collect();
-        let passes = u32::try_from(passes).unwrap_or(u32::MAX);
+        self.current = None;
+        let passes = u32::try_from(passes).ok()?;
+        if passes > wgpu::QUERY_SET_MAX_QUERIES / 2 {
+            return None;
+        }
         if passes > self.capacity {
             // Frames still in flight lose their timings; their buffers are dropped with them.
             self.capacity = passes.next_power_of_two().min(wgpu::QUERY_SET_MAX_QUERIES / 2);
@@ -234,6 +278,7 @@ impl FrameTimer for PassTimer {
         let index =
             self.readbacks.iter().position(|readback| readback.state.load(Ordering::Acquire) == FREE)?;
         self.readbacks[index].frame = frame;
+        self.readbacks[index].expected = passes as usize;
         self.readbacks[index].passes.clear();
         self.current = Some(index);
         Some(FrameQueries { query_set: &self.query_set, encoder_writes: self.encoder_writes })
@@ -245,19 +290,13 @@ impl FrameTimer for PassTimer {
         passes: &mut dyn Iterator<Item = (&'static str, bool)>,
     ) -> Option<wgpu::CommandBuffer> {
         let readback = &mut self.readbacks[self.current?];
-        readback.passes.extend(passes);
+        readback.passes.extend(written_passes(passes));
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("pass timings") });
-        for (pair, _) in readback.passes.iter().enumerate().filter(|(_, (_, written))| *written) {
-            let first = 2 * pair as u32;
-            encoder.resolve_query_set(
-                &self.query_set,
-                first..first + 2,
-                &self.resolve,
-                pair as u64 * PAIR_STRIDE,
-            );
+        for pass in &readback.passes {
+            encoder.resolve_query_set(&self.query_set, pass.queries(), &self.resolve, pass.offset());
         }
-        let used = readback.passes.len() as u64 * PAIR_STRIDE;
+        let used = readback_size(&readback.passes);
         if used > 0 {
             encoder.copy_buffer_to_buffer(&self.resolve, 0, &readback.buffer, 0, used);
         }
@@ -268,11 +307,14 @@ impl FrameTimer for PassTimer {
         let Some(index) = self.current.take() else { return };
         let readback = &self.readbacks[index];
         if readback.passes.is_empty() {
+            self.latest.frame = readback.frame;
+            self.latest.passes.clear();
+            self.latest.every_pass = self.encoder_writes && readback.expected == 0;
             return;
         }
         readback.state.store(MAPPING, Ordering::Release);
         let state = Arc::clone(&readback.state);
-        let used = readback.passes.len() as u64 * PAIR_STRIDE;
+        let used = readback_size(&readback.passes);
         readback.buffer.map_async(wgpu::MapMode::Read, ..used, move |result| {
             // A failed map (device lost, buffer dropped) frees the readback with nothing read.
             state.store(if result.is_ok() { MAPPED } else { FREE }, Ordering::Release);
@@ -280,23 +322,30 @@ impl FrameTimer for PassTimer {
     }
 }
 
-/// Fills `out` with the timed passes' times from resolved `bytes` (one pair per
-/// [`PAIR_STRIDE`]), at `period` nanoseconds per tick. Pairs a backend left invalid (an end
-/// before the start, or an error value) are dropped.
-fn decode(bytes: &[u8], passes: &[(&'static str, bool)], period: f32, out: &mut Vec<PassTime>) {
+/// Fills `out` with the timed passes' times from resolved `bytes` at `period` nanoseconds
+/// per tick. Pairs a backend left invalid (an end
+/// before the start, or an error value) are dropped. Returns whether all expected graph
+/// passes produced a valid pair.
+fn decode(
+    bytes: &[u8],
+    passes: &[ResolvedPass],
+    expected: usize,
+    period: f32,
+    out: &mut Vec<PassTime>,
+) -> bool {
     out.clear();
     let ticks = |offset: usize| {
         let word: [u8; 8] = bytes[offset..offset + 8].try_into().expect("8 bytes");
         u64::from_le_bytes(word)
     };
     let timed = || {
-        passes.iter().enumerate().filter_map(move |(pair, &(name, written))| {
-            let offset = pair * PAIR_STRIDE as usize;
+        passes.iter().filter_map(move |pass| {
+            let offset = pass.offset() as usize;
             let (start, end) = (ticks(offset), ticks(offset + 8));
-            (written && end >= start && end != u64::MAX).then_some((name, start, end))
+            (end >= start && end != u64::MAX).then_some((pass.name, start, end))
         })
     };
-    let Some(origin) = timed().map(|(_, start, _)| start).min() else { return };
+    let Some(origin) = timed().map(|(_, start, _)| start).min() else { return expected == 0 };
     let nanos = |ticks: u64| Duration::from_nanos((ticks as f64 * f64::from(period)) as u64);
     let mut latest_end = origin;
     out.extend(timed().map(|(name, start, end)| {
@@ -309,6 +358,7 @@ fn decode(bytes: &[u8], passes: &[(&'static str, bool)], period: f32, out: &mut 
             exclusive: nanos(exclusive),
         }
     }));
+    out.len() == expected
 }
 
 fn create(device: &wgpu::Device, pairs: u32) -> (wgpu::QuerySet, wgpu::Buffer, Vec<Readback>) {
@@ -317,7 +367,7 @@ fn create(device: &wgpu::Device, pairs: u32) -> (wgpu::QuerySet, wgpu::Buffer, V
         ty: wgpu::QueryType::Timestamp,
         count: 2 * pairs,
     });
-    let size = u64::from(pairs) * PAIR_STRIDE;
+    let size = u64::from(pairs) * RESOLVE_ALIGNMENT;
     let resolve = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("pass timestamp resolve"),
         size,
@@ -334,6 +384,7 @@ fn create(device: &wgpu::Device, pairs: u32) -> (wgpu::QuerySet, wgpu::Buffer, V
             }),
             state: Arc::new(AtomicU8::new(FREE)),
             frame: 0,
+            expected: 0,
             passes: Vec::with_capacity(pairs as usize),
         })
         .collect();
@@ -344,10 +395,59 @@ fn create(device: &wgpu::Device, pairs: u32) -> (wgpu::QuerySet, wgpu::Buffer, V
 mod tests {
     use super::*;
 
+    #[test]
+    fn written_pairs_keep_their_aligned_slots() {
+        let mut passes = Vec::new();
+        for mask in 0u32..256 {
+            passes.clear();
+            let input = (0..8).map(|pair| ("pass", mask & (1 << pair) != 0));
+            passes.extend(written_passes(input));
+            let queries: Vec<_> = passes.iter().map(ResolvedPass::queries).collect();
+            let written: Vec<_> = (0..8).filter(|pair| mask & (1 << pair) != 0).collect();
+            let expected: Vec<_> = written.iter().map(|pair| 2 * pair..2 * pair + 2).collect();
+            assert_eq!(queries, expected, "mask {mask:#x}");
+            assert_eq!(passes.len(), mask.count_ones() as usize);
+            let offsets: Vec<_> = passes.iter().map(ResolvedPass::offset).collect();
+            let expected: Vec<_> = written.iter().map(|&pair| u64::from(pair) * RESOLVE_ALIGNMENT).collect();
+            assert_eq!(offsets, expected, "mask {mask:#x}");
+            assert_eq!(
+                readback_size(&passes),
+                u64::from(u32::BITS - mask.leading_zeros()) * RESOLVE_ALIGNMENT
+            );
+        }
+        let empty: Vec<_> = written_passes(std::iter::empty()).collect();
+        assert!(empty.is_empty());
+        assert_eq!(readback_size(&empty), 0);
+    }
+
+    #[test]
+    fn decode_reads_sparse_aligned_offsets_and_drops_invalid_pairs() {
+        let passes: Vec<_> = written_passes(
+            [
+                ("first", true),
+                ("unused", false),
+                ("next", true),
+                ("invalid", true),
+                ("unused", false),
+                ("last", true),
+            ]
+            .into_iter(),
+        )
+        .collect();
+        assert_eq!(passes.iter().map(ResolvedPass::offset).collect::<Vec<_>>(), [0, 512, 768, 1280]);
+        // Valid-looking data in unwritten slots must not appear in the sample.
+        let bytes = resolved(&[(100, 200), (0, 0), (150, 400), (300, u64::MAX), (0, 0), (500, 600)]);
+        let mut out = Vec::new();
+        assert!(!decode(&bytes, &passes, 6, 1.0, &mut out));
+        assert_eq!(out.iter().map(|pass| pass.name).collect::<Vec<_>>(), ["first", "next", "last"]);
+        assert_eq!(out[1].exclusive, Duration::from_nanos(200));
+        assert_eq!(out[2].start, Duration::from_nanos(400));
+    }
+
     fn resolved(pairs: &[(u64, u64)]) -> Vec<u8> {
-        let mut bytes = vec![0; pairs.len() * PAIR_STRIDE as usize];
+        let mut bytes = vec![0xaa; pairs.len() * RESOLVE_ALIGNMENT as usize];
         for (pair, &(start, end)) in pairs.iter().enumerate() {
-            let offset = pair * PAIR_STRIDE as usize;
+            let offset = pair * RESOLVE_ALIGNMENT as usize;
             bytes[offset..offset + 8].copy_from_slice(&start.to_le_bytes());
             bytes[offset + 8..offset + 16].copy_from_slice(&end.to_le_bytes());
         }
@@ -355,13 +455,36 @@ mod tests {
     }
 
     #[test]
+    fn completeness_requires_every_expected_pair_to_decode() {
+        let passes = [ResolvedPass { name: "first", pair: 0 }, ResolvedPass { name: "second", pair: 1 }];
+        let valid = resolved(&[(10, 20), (30, 40)]);
+        let mut out = Vec::new();
+        assert!(decode(&valid, &passes, 2, 1.0, &mut out));
+        assert_eq!(out.len(), 2);
+        assert!(decode(&resolved(&[(0, 0), (30, 30)]), &passes, 2, 1.0, &mut out));
+        assert_eq!(out.len(), 2, "zero timestamps and zero durations are valid");
+        assert!(!decode(&valid, &passes, 3, 1.0, &mut out), "one graph pass was unwritten");
+        for invalid in [(40, 30), (30, u64::MAX)] {
+            assert!(!decode(&resolved(&[(10, 20), invalid]), &passes, 2, 1.0, &mut out));
+            assert_eq!(out.len(), 1, "a partial sample remains available");
+        }
+        assert!(!decode(&[], &[], 1, 1.0, &mut out), "all expected pairs were unwritten");
+        assert!(out.is_empty());
+        assert!(decode(&[], &[], 0, 1.0, &mut out), "an empty graph is complete");
+    }
+
+    #[test]
     fn decodes_written_pairs_relative_to_the_first_start() {
         // Post starts before main ends, as on a tile-based GPU; bloom ends while post runs.
-        let bytes = resolved(&[(1000, 1500), (0, 0), (1200, 4200), (5000, 4000), (1300, 2000)]);
-        let passes = [("main", true), ("uploads", false), ("post", true), ("broken", true), ("bloom", true)];
+        let bytes = resolved(&[(1000, 1500), (1200, 4200), (5000, 4000), (1300, 2000)]);
+        let passes: Vec<_> = ["main", "post", "broken", "bloom"]
+            .into_iter()
+            .enumerate()
+            .map(|(pair, name)| ResolvedPass { name, pair: pair as u32 })
+            .collect();
         let mut out = Vec::new();
         // 2 ns per tick.
-        decode(&bytes, &passes, 2.0, &mut out);
+        assert!(!decode(&bytes, &passes, 4, 2.0, &mut out));
         let ns = Duration::from_nanos;
         assert_eq!(
             out,
@@ -377,9 +500,15 @@ mod tests {
         assert_eq!(timings.get("post").map(|post| post.exclusive), Some(ns(5400)));
         assert_eq!(timings.get("uploads"), None);
 
-        decode(&resolved(&[(10, 5)]), &[("only broken", true)], 1.0, &mut Vec::new());
+        decode(
+            &resolved(&[(10, 5)]),
+            &[ResolvedPass { name: "only broken", pair: 0 }],
+            1,
+            1.0,
+            &mut Vec::new(),
+        );
         let mut empty = vec![PassTime { name: "stale", start: ns(0), duration: ns(1), exclusive: ns(1) }];
-        decode(&[], &[], 1.0, &mut empty);
+        assert!(decode(&[], &[], 0, 1.0, &mut empty));
         assert!(empty.is_empty(), "an empty frame clears the old timings");
     }
 }

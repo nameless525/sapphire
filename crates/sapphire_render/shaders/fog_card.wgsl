@@ -32,8 +32,19 @@ const FOG_CARD_TIME_PERIOD: f32 = 3600.0;
 // Cards fade against the scene prepass's depth (`fog::FogCards`).
 override FOG_CARD_DEPTH_FADE: bool = false;
 
+// A private word view of the unchanged FogCardParams storage bytes. Keeping tint words
+// intact here lets the multiplication below retain subnormal tint on flushing backends.
+// Offsets and size match FogCardParams; the shared material source and archive stay unchanged.
+struct FogCardWords {
+    color: vec4<u32>,
+    fade: vec4<f32>,
+    scroll: vec4<f32>,
+    modes: vec4<u32>,
+    swizzles: vec4<u32>,
+}
+
 // The fog card family's blocks, by the draw record's material slot.
-@group(2) @binding(1) var<storage, read> fog_card_materials: array<FogCardParams>;
+@group(2) @binding(1) var<storage, read> fog_card_materials: array<FogCardWords>;
 // The scene prepass's depth where cards fade against it, else a 1×1 stand-in nothing reads.
 @group(2) @binding(2) var scene_depth: texture_depth_2d;
 
@@ -91,6 +102,47 @@ fn card_fade(start: f32, end: f32, x: f32) -> f32 {
     return t * t * (3.0 - 2.0 * t);
 }
 
+// Multiply a tint word without first materializing a subnormal float. A subnormal tint
+// is signed_fraction * 2^-149. Construct the two normal factors by shifting their integer
+// exponent fields: this cannot reassociate floating-point scale multiplies back into a tint
+// that the backend flushes. Derived nonfinite lighting keeps the original operation.
+fn card_tint_channel(word: u32, light: f32) -> f32 {
+    let magnitude = word & 0x7fffffffu;
+    let light_word = bitcast<u32>(light);
+    let light_exponent = (light_word >> 23u) & 0xffu;
+    var result: f32;
+    if magnitude > 0u && magnitude < 0x00800000u && light_exponent > 64u && light_exponent < 255u {
+        // Integer m in [1, 2^23) converts exactly to a normal float. Its exponent minus 85
+        // remains normal, as does finite light's exponent minus 64 under this branch.
+        let fraction_word = bitcast<u32>(f32(magnitude));
+        let tint_scaled = bitcast<f32>((fraction_word - (85u << 23u)) | (word & 0x80000000u));
+        let light_scaled = bitcast<f32>(light_word - (64u << 23u));
+        result = light_scaled * tint_scaled;
+    } else {
+        // For finite light exponent <= 64, even the largest subnormal tint yields a value
+        // below the smallest representable f32 subnormal. Normal tint/zero/nonfinite light
+        // also retain their original multiplication here.
+        result = bitcast<f32>(word) * light;
+    }
+    return result;
+}
+
+fn card_tinted_light(words: vec3<u32>, light: vec3<f32>) -> vec3<f32> {
+    let magnitude = words & vec3<u32>(0x7fffffffu);
+    var result: vec3<f32>;
+    if any((magnitude > vec3<u32>(0u)) & (magnitude < vec3<u32>(0x00800000u))) {
+        result = vec3<f32>(
+            card_tint_channel(words.x, light.x),
+            card_tint_channel(words.y, light.y),
+            card_tint_channel(words.z, light.z),
+        );
+    } else {
+        // Preserve the ordinary vector expression and order, including signed and zero words.
+        result = bitcast<vec3<f32>>(words) * light;
+    }
+    return result;
+}
+
 @fragment
 fn fs_fog_card(in: FogCardVaryings) -> @location(0) vec4<f32> {
     let card = fog_card_materials[in.material];
@@ -108,7 +160,7 @@ fn fs_fog_card(in: FogCardVaryings) -> @location(0) vec4<f32> {
     let offset = in.world_position - view.position.xyz;
     let distance = length(offset);
     let dir = offset / max(distance, 1e-6);
-    var coverage = card.color.a * density * card_fade(card.fade.y, card.fade.z, distance);
+    var coverage = bitcast<f32>(card.color.a) * density * card_fade(card.fade.y, card.fade.z, distance);
     if FOG_CARD_DEPTH_FADE {
         // Reverse-Z with an infinite far plane: view depth is near / depth, and a pixel nothing
         // covered (depth 0) is as far as the sky.
@@ -119,7 +171,7 @@ fn fs_fog_card(in: FogCardVaryings) -> @location(0) vec4<f32> {
         coverage *= saturate((scene - card_depth) / max(card.fade.x, 1e-4));
     }
     let ray = fog_ray(view.position.xyz, dir, distance, 1.0);
-    let lit = card.color.rgb * (ray.light + card.fade.w * ray.sun);
+    let lit = card_tinted_light(card.color.rgb, ray.light + card.fade.w * ray.sun);
     // The fog in front covers the card as any surface (`fogged`, from the ray in hand).
     var color = lit;
     if fog_on() {

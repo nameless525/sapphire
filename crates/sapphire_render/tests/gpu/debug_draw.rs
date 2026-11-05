@@ -150,6 +150,17 @@ impl Scene {
     /// Draws one frame with `lines` into `texture`, checks it raised no validation error and
     /// returns its pixels, row by row.
     fn render(&mut self, gpu: &GpuContext, texture: &wgpu::Texture, lines: &[DebugLine]) -> Pixels {
+        self.record(gpu, texture, lines);
+        read_back(gpu, texture)
+    }
+
+    /// Runs and completes a frame whose pixels are not inspected.
+    fn complete(&mut self, gpu: &GpuContext, texture: &wgpu::Texture, lines: &[DebugLine]) {
+        self.record(gpu, texture, lines);
+        gpu.device().poll(wgpu::PollType::wait_indefinitely()).expect("frame complete");
+    }
+
+    fn record(&mut self, gpu: &GpuContext, texture: &wgpu::Texture, lines: &[DebugLine]) {
         let packet = self.packets.begin();
         let aspect = self.size.0 as f32 / self.size.1 as f32;
         packet.views.push(ViewData::new(CameraData::look_at(EYE, Vec3::ZERO, Vec3::Y, FOV, aspect, NEAR)));
@@ -176,7 +187,6 @@ impl Scene {
         self.graph.execute(gpu, graph).expect("a valid graph");
         let error = pollster::block_on(scope.pop());
         assert!(error.is_none(), "{error:?}");
-        read_back(gpu, texture)
     }
 
     fn report(&self) -> &GraphReport {
@@ -427,7 +437,7 @@ fn depth_tested_hides_behind_a_surface_and_on_top_doesnt() {
         scene.renderer.set_render_scale(scale);
         // Temporal AA settles first, as a frame that isn't its first would.
         for _ in 0..8 {
-            scene.render(&gpu, &texture, &[]);
+            scene.complete(&gpu, &texture, &[]);
         }
         assert_eq!(scene.render(&gpu, &texture, &[]).line_pixels(), 0, "{mode}: nothing drawn");
 
@@ -457,7 +467,7 @@ fn a_line_on_a_surface_shows_and_one_just_inside_it_doesnt() {
         let mut scene = Scene::new(&gpu, settings, SIZE);
         scene.renderer.set_render_scale(scale);
         for _ in 0..8 {
-            scene.render(&gpu, &texture, &[]);
+            scene.complete(&gpu, &texture, &[]);
         }
         // Short, so it stays against the sphere's near pole.
         let across = |z: f32| line(Vec3::new(-0.05, 0.0, z), Vec3::new(0.05, 0.0, z), Depth::Tested);
@@ -481,9 +491,11 @@ fn lines_hold_still_under_temporal_aa() {
         line(Vec3::new(-0.3, 0.3, 2.0), Vec3::new(0.3, 0.2, 2.0), Depth::Tested),
         line(Vec3::new(-0.2, -0.2, -0.5), Vec3::new(2.0, -0.2, -0.5), Depth::Tested),
     ];
-    let mut frames = (0..16).map(|_| scene.render(&gpu, &texture, &lines).rgba).collect::<Vec<_>>();
-    let last = frames.pop().expect("frames");
-    let previous = frames.pop().expect("frames");
+    for _ in 0..14 {
+        scene.complete(&gpu, &texture, &lines);
+    }
+    let previous = scene.render(&gpu, &texture, &lines).rgba;
+    let last = scene.render(&gpu, &texture, &lines).rgba;
     // Where the line is whole, whatever the jitter does to the frame under it.
     let solid = |pixel: &[u8; 4]| i32::from(pixel[2]) - i32::from(pixel[1]) > 150;
     let solid_pixels = last.iter().filter(|pixel| solid(pixel)).count();

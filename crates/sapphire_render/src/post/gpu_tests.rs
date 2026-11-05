@@ -25,7 +25,7 @@ use super::effects::GpuEffects;
 use super::layers::{DEFAULT_LENS, FlareKind, Layers};
 use crate::graph::{FrameGraph, GraphExecutor};
 use crate::quality::{TierId, TierTable};
-use crate::shaders::evaluate_on_gpu;
+use crate::shaders::{GpuEvaluator, evaluate_on_gpu};
 use crate::{
     AmbientLight, BloomParams, CameraData, CharacterBloom, CharacterBody, CharacterFace, CharacterInstance,
     CharacterLighting, ChromaticAberration, ColorGrade, Diffusion, DirectionalLight, FramePacket,
@@ -294,6 +294,53 @@ fn max_step(a: &[[u8; 4]], b: &[[u8; 4]]) -> u8 {
     a.iter().zip(b).flat_map(|(a, b)| (0..3).map(move |c| a[c].abs_diff(b[c]))).max().unwrap_or(0)
 }
 
+#[test]
+#[ignore = "needs a GPU"]
+fn disabling_bloom_releases_only_its_dormant_bindings() {
+    let instance = GpuInstance::new(&GpuInstanceDesc::default()).expect("instance");
+    let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), None).expect("device");
+    let settings = RenderSettings::default();
+    let mut post = super::PostProcess::new(
+        &gpu,
+        FORMAT,
+        settings.bloom_levels,
+        settings.post_effects,
+        settings.post_variants,
+        &crate::pipeline_builds::PipelineBuilds::new(None),
+        &ShaderSources::compiled_in(),
+    )
+    .expect("post");
+    let layout = gpu.device().create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: None,
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        }],
+    });
+    let bind = |cache: &mut super::CachedBindGroup| {
+        cache.get(gpu.device(), None, &layout, &[&post.no_bloom]).clone()
+    };
+    let prefilter = bind(&mut post.bind_groups.prefilter);
+    bind(&mut post.bind_groups.down[0]);
+    bind(&mut post.bind_groups.up[0]);
+    bind(&mut post.bind_groups.composite);
+    let enabled =
+        PostParams { bloom: BloomParams { intensity: 1.0, ..BloomParams::default() }, ..passthrough() };
+    post.prepare(gpu.queue(), &enabled, None, None);
+    assert_eq!(post.bind_groups.prefilter.get(gpu.device(), None, &layout, &[&post.no_bloom]), &prefilter);
+    post.prepare(gpu.queue(), &passthrough(), None, None);
+    assert!(post.bind_groups.prefilter.is_empty());
+    assert!(post.bind_groups.down.iter().all(super::CachedBindGroup::is_empty));
+    assert!(post.bind_groups.up.iter().all(super::CachedBindGroup::is_empty));
+    assert!(!post.bind_groups.composite.is_empty(), "the active composite keeps its binding");
+}
+
 /// The mean difference of the channels between two images, in display steps.
 fn mean_step(a: &[[u8; 4]], b: &[[u8; 4]]) -> f64 {
     let sum: u64 =
@@ -402,25 +449,26 @@ fn bloom_taps_stay_finite_on_infinite_scene_color() {
         ("a character's edge", "character_tap(input.rgb, 0.5, input.a)"),
         ("the world's, in the character mask's variant", "character_tap(input.rgb, 1.0, input.a)"),
     ];
-    for exposure in [-1.0, 0.0, 0.9, 3.0] {
-        // What this exposure takes exactly to the ceiling.
-        let at_ceiling = ceiling / 2f32.powf(exposure);
-        let inputs = [
-            [infinite, infinite, infinite, 1.0],
-            [at_ceiling, at_ceiling, at_ceiling, 1.0],
-            [infinite, 1.0, 0.0, 4.0],
-            [at_ceiling, 1.0, 0.0, 4.0],
-        ];
-        let params = PostParams {
-            exposure,
-            bloom: BloomParams { threshold: 1.0, knee: 0.5, intensity: 1.0, scatter: 0.7 },
-            character_bloom: CharacterBloom { threshold: 1.5, strength: 4.0 },
-            ..passthrough()
-        };
-        let uniforms = PostUniforms::new(&params, &Layers::new(&params), GpuEffects::default());
-        for (tap, expression) in taps {
+    for (tap, expression) in taps {
+        let evaluator = GpuEvaluator::new(wgsl, Some(size_of::<PostUniforms>()), expression, 4);
+        for exposure in [-1.0, 0.0, 0.9, 3.0] {
+            // What this exposure takes exactly to the ceiling.
+            let at_ceiling = ceiling / 2f32.powf(exposure);
+            let inputs = [
+                [infinite, infinite, infinite, 1.0],
+                [at_ceiling, at_ceiling, at_ceiling, 1.0],
+                [infinite, 1.0, 0.0, 4.0],
+                [at_ceiling, 1.0, 0.0, 4.0],
+            ];
+            let params = PostParams {
+                exposure,
+                bloom: BloomParams { threshold: 1.0, knee: 0.5, intensity: 1.0, scatter: 0.7 },
+                character_bloom: CharacterBloom { threshold: 1.5, strength: 4.0 },
+                ..passthrough()
+            };
+            let uniforms = PostUniforms::new(&params, &Layers::new(&params, 1.0), GpuEffects::default());
             let bytes = bytemuck::bytes_of(&uniforms);
-            let results = evaluate_on_gpu(wgsl, Some(bytes), expression, &inputs);
+            let results = evaluator.evaluate(Some(bytes), &inputs);
             for (result, input) in results.iter().zip(inputs) {
                 let finite = result.iter().all(|c| c.is_finite());
                 assert!(finite, "{tap} at {exposure} EV: {input:?} gives {result:?}");
@@ -457,12 +505,13 @@ fn sharpening_stays_finite_on_infinite_scene_color() {
         ("compress", "vec4<f32>(compress(input.rgb), 1.0)"),
         ("expand", "vec4<f32>(expand(compress(input.rgb)), 1.0)"),
     ];
-    for exposure in [-1.0, 0.0, 0.9, 16.0] {
-        let params = PostParams { exposure, sharpening: 0.5, ..passthrough() };
-        let uniforms = PostUniforms::new(&params, &Layers::new(&params), GpuEffects::default());
-        for (step, expression) in steps {
+    for (step, expression) in steps {
+        let evaluator = GpuEvaluator::new(wgsl, Some(size_of::<PostUniforms>()), expression, 4);
+        for exposure in [-1.0, 0.0, 0.9, 16.0] {
+            let params = PostParams { exposure, sharpening: 0.5, ..passthrough() };
+            let uniforms = PostUniforms::new(&params, &Layers::new(&params, 1.0), GpuEffects::default());
             let bytes = bytemuck::bytes_of(&uniforms);
-            let results = evaluate_on_gpu(wgsl, Some(bytes), expression, &inputs);
+            let results = evaluator.evaluate(Some(bytes), &inputs);
             for (result, input) in results.iter().zip(inputs) {
                 let finite = result.iter().all(|c| c.is_finite());
                 assert!(finite, "{step} at {exposure} EV: {input:?} gives {result:?}");
@@ -1000,4 +1049,49 @@ fn editing_post_wgsl_rebuilds_the_pipelines_built_and_builds_later_ones_from_the
     assert_ne!(inverted, red);
     assert_eq!(harness.render(flash), inverted);
     assert_eq!(harness.render(composited()), before);
+}
+
+/// Extreme finite positions still have a defined screen-space ramp. Exercise the actual
+/// PostProcess camera aspect/packing/uniform path, rather than a CPU-only expression mirror.
+#[test]
+#[ignore = "needs a GPU"]
+fn extreme_gradients_preserve_their_intended_tint_on_the_actual_frame() {
+    use sapphire_look::post::{GradientBlend, GradientLayer, GradientShape};
+
+    let mut harness = Harness::new(RenderSettings::default(), (80, 160));
+    harness.sky =
+        SkyGradient { zenith: Vec3::splat(0.3), horizon: Vec3::splat(0.3), ground: Vec3::splat(0.3) };
+    let plain = harness.render(passthrough());
+    let layer = |shape, start, end| GradientLayer {
+        shape,
+        start,
+        end,
+        blend: GradientBlend::Normal,
+        color: Vec3::ONE,
+        opacity: 1.0,
+    };
+    let mut render = |layer| {
+        let mut post = passthrough();
+        post.gradients[0] = layer;
+        harness.render(post)
+    };
+
+    let linear = GradientShape::Linear { edge: 0.0 };
+    let half = render(layer(linear, f32::MAX, -f32::MAX));
+    for (actual, baseline) in half.iter().zip(&plain) {
+        for channel in 0..3 {
+            let expected = 0.5 + 0.5 * f32::from(baseline[channel]) / 255.0;
+            assert!((f32::from(actual[channel]) / 255.0 - expected).abs() < 2.5 / 255.0);
+        }
+    }
+    let hidden = render(layer(linear, f32::MAX, f32::MAX));
+    assert!(max_step(&plain, &hidden) <= 1, "the distant positive hard edge is outside the frame");
+    let full = render(layer(linear, -f32::MAX, -f32::MAX));
+    assert!(full.iter().all(|texel| texel[..3].iter().all(|value| *value >= 254)));
+
+    // For the actual aspect0.5, the normalized distance to(MAX,0) is below MAX throughout
+    // the viewport. The old squared length overflowed and made this a full white layer.
+    let radial = GradientShape::Radial { center: Vec2::new(f32::MAX, 0.0) };
+    let hidden = render(layer(radial, f32::MAX, f32::MAX));
+    assert!(max_step(&plain, &hidden) <= 1, "packing and shader use the same actual aspect");
 }

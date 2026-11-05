@@ -141,12 +141,14 @@ impl Frame {
     }
 
     /// The world-space ray through pixel `(x, y)`'s center: the eye and a unit direction.
-    fn ray(&self, x: u32, y: u32) -> (Vec3, Vec3) {
+    fn rays(&self) -> impl Fn(u32, u32) -> (Vec3, Vec3) + '_ {
         let inverse = (self.camera.proj * self.camera.view).inverse();
-        let ndc_x = (x as f32 + 0.5) / SIDE as f32 * 2.0 - 1.0;
-        let ndc_y = 1.0 - (y as f32 + 0.5) / SIDE as f32 * 2.0;
-        let far = inverse.project_point3(Vec3::new(ndc_x, ndc_y, 0.5));
-        (self.camera.position, (far - self.camera.position).normalize())
+        move |x, y| {
+            let ndc_x = (x as f32 + 0.5) / SIDE as f32 * 2.0 - 1.0;
+            let ndc_y = 1.0 - (y as f32 + 0.5) / SIDE as f32 * 2.0;
+            let far = inverse.project_point3(Vec3::new(ndc_x, ndc_y, 0.5));
+            (self.camera.position, (far - self.camera.position).normalize())
+        }
     }
 
     /// The pixel `point` projects into.
@@ -265,6 +267,7 @@ struct Harness {
     sky: SkyGradient,
     ambient: AmbientLight,
     fog: Fog,
+    exposure: f32,
     characters: Vec<CharacterInstance>,
     added: Vec<MeshInstance>,
     next_id: u64,
@@ -303,6 +306,7 @@ impl Harness {
             // None: black surfaces stay black, their ambient reflection too.
             ambient: AmbientLight { sky: Vec3::ZERO, ground: Vec3::ZERO, intensity: 0.0 },
             fog: Fog::default(),
+            exposure: 0.0,
             characters: Vec::new(),
             added: Vec::new(),
             next_id: 0,
@@ -357,6 +361,12 @@ impl Harness {
         Frame { pixels: self.read_back(), camera: self.camera }
     }
 
+    /// Runs and completes a frame whose pixels are not inspected.
+    fn complete(&mut self) {
+        self.draw(&self.target.clone());
+        self.gpu.device().poll(wgpu::PollType::wait_indefinitely()).expect("frame complete");
+    }
+
     /// Draws one frame into `target`. Fails on any validation error.
     fn draw(&mut self, target: &wgpu::Texture) {
         let packet = self.packets.begin();
@@ -366,6 +376,7 @@ impl Harness {
         packet.ambient = self.ambient;
         packet.fog = self.fog;
         packet.post = passthrough();
+        packet.post.exposure = self.exposure;
         packet.characters.extend_from_slice(&self.characters);
         packet.instances.changed.append(&mut self.added);
         let scope = self.gpu.device().push_error_scope(wgpu::ErrorFilter::Validation);
@@ -467,8 +478,9 @@ fn the_world_and_the_sky_take_the_model_s_fog() {
     let frame = harness.render();
     let (fog, toward_key) = (harness.fog, harness.toward_key());
     let (mut floors, mut walls, mut skies) = (0, 0, 0);
+    let ray = frame.rays();
     let (worst, at, compared) = compare(&frame, |x, y| {
-        let (eye, dir) = frame.ray(x, y);
+        let (eye, dir) = ray(x, y);
         // Clear of the edges by a pixel's footprint, where a pixel center may fall either side.
         let margin = 0.6;
         let floor = FLOOR.hit(eye, dir, margin).map(|distance| (distance, floor_glow));
@@ -586,9 +598,10 @@ fn characters_take_their_share_of_the_fog() {
     harness.fog = thick_fog();
     let fogged = harness.render();
     let (fog, toward_key) = (harness.fog, harness.toward_key());
+    let ray = fogged.rays();
     for (center, share) in [(left, fog.characters), (right, 1.0)] {
         let (worst, at, compared) = compare(&fogged, |x, y| {
-            let (eye, dir) = fogged.ray(x, y);
+            let (eye, dir) = ray(x, y);
             let to_center = center - eye;
             let along = to_center.dot(dir);
             let miss = (to_center - dir * along).length();
@@ -662,8 +675,9 @@ fn fog_cards_fade_toward_the_lens_and_face_as_they_are_made_to() {
     let frame = harness.render();
 
     // The sheet: its opacity × the camera fade at each pixel's distance, over black.
+    let ray = frame.rays();
     let (worst, at, compared) = compare(&frame, |x, y| {
-        let (eye, dir) = frame.ray(x, y);
+        let (eye, dir) = ray(x, y);
         let distance = sheet.hit(eye, dir, 0.1)?;
         Some(horizon * 0.8 * smoothstep(2.0, 12.0, distance))
     });
@@ -689,7 +703,7 @@ fn fog_cards_fade_toward_the_lens_and_face_as_they_are_made_to() {
         let mut covered = 0;
         for y in 0..SIDE {
             for x in 0..SIDE {
-                let (eye, dir) = frame.ray(x, y);
+                let (eye, dir) = ray(x, y);
                 let inside = expected.hit(eye, dir, 0.08).is_some();
                 let outside = expected.hit(eye, dir, -0.08).is_none();
                 let drawn = frame.linear(x, y).max_element() > 0.25;
@@ -738,10 +752,10 @@ fn fog_cards_soften_where_they_meet_geometry_under_temporal_aa() {
         let world = harness.mesh(&mesh(vec![wall.part(), close.part(), clear.part()]), &[black, soft, soft]);
         harness.add(world, Mat4::IDENTITY);
         harness.camera = CameraData::look_at(Vec3::ZERO, Vec3::NEG_Z, Vec3::Y, 0.8, 1.0, 0.05);
-        let mut frame = harness.render();
         for _ in 0..24 {
-            frame = harness.render();
+            harness.complete();
         }
+        let frame = harness.render();
         let at = |point: Vec3| {
             let (x, y) = frame.pixel_of(point);
             frame.linear(x, y)
@@ -986,4 +1000,80 @@ fn cards_at_one_depth_keep_the_draw_lists_order() {
         let expected = card_over(over.tint, under.tint);
         assert!((drawn - expected).abs().max_element() < TOLERANCE, "{drawn} against {expected}");
     }
+}
+
+/// Subnormal authored tint can produce normal half-float light beside a finite HDR sun.
+/// A mixed block must keep its tiny, ordinary and zero channels independently.
+#[test]
+#[ignore = "needs a GPU"]
+fn subnormal_card_tint_stays_visible_with_normal_half_float_scene_color() {
+    let tiny = f32::from_bits(256);
+    for (sun, tint) in [
+        (Vec3::splat(f32::MAX), Vec3::splat(tiny)),
+        (Vec3::new(f32::MAX, 0.5, f32::MAX), Vec3::new(tiny, 0.25, 0.0)),
+    ] {
+        let mut harness = Harness::exact();
+        harness.sky = SkyGradient { zenith: Vec3::ZERO, horizon: Vec3::ZERO, ground: Vec3::ZERO };
+        harness.sun.direction = Vec3::Z;
+        harness.fog.sun_inscatter = sun;
+        // MAX*tiny is about2^-13, normal in the HDR attachment. Supported EV8 exposes it.
+        harness.exposure = 8.0;
+        let material =
+            harness.material(&FogCardMaterial { sun_scatter: 1.0, ..card(tint, 1.0, CardFacing::World) });
+        let rect = Rect {
+            center: Vec3::new(0.0, 0.0, -5.0),
+            normal: Vec3::Z,
+            across: Vec3::X,
+            width: 4.0,
+            height: 4.0,
+        };
+        let sheet = harness.mesh(&mesh(vec![rect.part()]), &[material]);
+        harness.add(sheet, Mat4::IDENTITY);
+        let frame = harness.render();
+        let (x, y) = (SIDE / 2, SIDE / 2);
+        let (_, direction) = frame.rays()(x, y);
+        let lobe = f64::from(direction.dot(Vec3::NEG_Z).clamp(0.0, 1.0)).powi(8);
+        let red = f64::from(tint.x) * f64::from(sun.x) * lobe * 256.0;
+        assert!((0.03..0.032).contains(&red), "independent exposed product {red}");
+        let expected = Vec3::from_array(std::array::from_fn(|i| {
+            (f64::from(tint[i]) * f64::from(sun[i]) * lobe * 256.0).clamp(0.0, 1.0) as f32
+        }));
+        let actual = frame.linear(x, y);
+        assert!(
+            actual.is_finite() && actual.x > 0.02 && (actual - expected).abs().max_element() < 0.001,
+            "tint {tint}: {actual}, expected {expected}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn unsupported_volume_and_card_light_degrade_at_their_owners() {
+    let mut harness = Harness::exact();
+    let horizon = Vec3::splat(0.2);
+    harness.sky = SkyGradient { zenith: horizon, horizon, ground: horizon };
+    let clear = harness.render();
+    harness.fog = Fog {
+        near: FogLayer { color: Vec3::ONE, density: f32::MAX, start: 0.0 },
+        characters: f32::from_bits(1),
+        ..Fog::default()
+    };
+    assert_eq!(harness.render().pixels, clear.pixels);
+    assert!(harness.renderer.stats().fog.unsupported_profile);
+    assert_eq!(harness.renderer.stats().fog.layers, 0);
+
+    let sheet =
+        Rect { center: Vec3::new(0.0, 0.0, -5.0), normal: Vec3::Z, across: Vec3::X, width: 4.0, height: 4.0 };
+    let unsafe_card = harness.material(&card(Vec3::splat(f32::MAX), 1.0, CardFacing::World));
+    let mesh = harness.mesh(&mesh(vec![sheet.part()]), &[unsafe_card]);
+    harness.add(mesh, Mat4::IDENTITY);
+    harness.fog = Fog::default();
+    assert_eq!(harness.render().pixels, clear.pixels);
+    let fog = harness.renderer.stats().fog;
+    assert!(!fog.unsupported_profile);
+    assert_eq!((fog.cards, fog.unsupported_cards), (0, 1));
+
+    harness.fog.near = FogLayer { color: Vec3::splat(0.6), density: 0.2, start: 0.0 };
+    assert!(harness.render().pixels != clear.pixels);
+    assert_eq!(harness.renderer.stats().fog.layers, 1);
 }

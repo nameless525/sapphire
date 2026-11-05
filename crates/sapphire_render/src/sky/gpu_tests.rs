@@ -140,24 +140,34 @@ impl Harness {
         self.graph.execute(&self.gpu, graph).expect("a valid graph");
         assert!(pollster::block_on(scope.pop()).is_none(), "no validation errors");
         let texels = read_texture(&self.gpu, &self.target, 0, 4);
+        let linear: [f32; 256] = std::array::from_fn(|value| srgb_to_linear(value as u8));
         texels
             .as_chunks::<4>()
             .0
             .iter()
-            .map(|t| Vec3::new(srgb_to_linear(t[0]), srgb_to_linear(t[1]), srgb_to_linear(t[2])))
+            .map(|t| {
+                Vec3::new(linear[usize::from(t[0])], linear[usize::from(t[1])], linear[usize::from(t[2])])
+            })
             .collect()
     }
 
     /// The direction through pixel `(x, y)`'s center, as the sky shader unprojects it.
+    fn directions(&self) -> impl Fn(u32, u32) -> Vec3 + '_ {
+        let inverse = (self.camera.proj * self.camera.view).inverse();
+        move |x, y| {
+            let ndc = Vec4::new(
+                (x as f32 + 0.5) / self.size.0 as f32 * 2.0 - 1.0,
+                1.0 - (y as f32 + 0.5) / self.size.1 as f32 * 2.0,
+                1.0,
+                1.0,
+            );
+            let near = inverse * ndc;
+            (near.truncate() / near.w - self.camera.position).normalize()
+        }
+    }
+
     fn direction(&self, x: u32, y: u32) -> Vec3 {
-        let ndc = Vec4::new(
-            (x as f32 + 0.5) / self.size.0 as f32 * 2.0 - 1.0,
-            1.0 - (y as f32 + 0.5) / self.size.1 as f32 * 2.0,
-            1.0,
-            1.0,
-        );
-        let near = (self.camera.proj * self.camera.view).inverse() * ndc;
-        (near.truncate() / near.w - self.camera.position).normalize()
+        self.directions()(x, y)
     }
 
     /// Where direction `dir` lands on the target, in pixels from the top left.
@@ -214,42 +224,60 @@ impl Harness {
     }
 }
 
-/// Copies layer `layer` of `texture` (`bytes` per texel) back.
-fn read_texture(gpu: &GpuContext, texture: &wgpu::Texture, layer: u32, bytes: u32) -> Vec<u8> {
+/// Copies the named layers in order, with one submission and map wait.
+fn read_layers(gpu: &GpuContext, texture: &wgpu::Texture, layers: &[u32], bytes: u32) -> Vec<Vec<u8>> {
     let (width, height) = (texture.width(), texture.height());
     let padded = (width * bytes).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+    let layer_bytes = u64::from(padded) * u64::from(height);
     let buffer = gpu.device().create_buffer(&wgpu::BufferDescriptor {
         label: None,
-        size: u64::from(padded * height),
+        size: layer_bytes * layers.len() as u64,
         usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
     let mut encoder = gpu.device().create_command_encoder(&Default::default());
-    encoder.copy_texture_to_buffer(
-        wgpu::TexelCopyTextureInfo {
-            texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d { x: 0, y: 0, z: layer },
-            aspect: wgpu::TextureAspect::All,
-        },
-        wgpu::TexelCopyBufferInfo {
-            buffer: &buffer,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(padded),
-                rows_per_image: Some(height),
+    for (index, &layer) in layers.iter().enumerate() {
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d { x: 0, y: 0, z: layer },
+                aspect: wgpu::TextureAspect::All,
             },
-        },
-        wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
-    );
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: layer_bytes * index as u64,
+                    bytes_per_row: Some(padded),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        );
+    }
     gpu.queue().submit([encoder.finish()]);
     buffer.map_async(wgpu::MapMode::Read, .., |result| result.expect("map"));
     gpu.device().poll(wgpu::PollType::wait_indefinitely()).expect("poll");
-    let mapped = buffer.get_mapped_range(..).expect("mapped");
-    mapped
-        .chunks_exact(padded as usize)
-        .flat_map(|row| row[..(width * bytes) as usize].iter().copied())
-        .collect()
+    let layers = {
+        let mapped = buffer.get_mapped_range(..).expect("mapped");
+        mapped
+            .chunks_exact(layer_bytes as usize)
+            .map(|layer| {
+                let mut texels = Vec::with_capacity((width * height * bytes) as usize);
+                for row in layer.chunks_exact(padded as usize) {
+                    texels.extend_from_slice(&row[..(width * bytes) as usize]);
+                }
+                texels
+            })
+            .collect()
+    };
+    buffer.unmap();
+    layers
+}
+
+/// Copies one layer of `texture` (`bytes` per texel) back.
+fn read_texture(gpu: &GpuContext, texture: &wgpu::Texture, layer: u32, bytes: u32) -> Vec<u8> {
+    read_layers(gpu, texture, &[layer], bytes).pop().expect("one layer")
 }
 
 /// A gradient with a different color at each stop, so any change to the mix shows.
@@ -292,9 +320,10 @@ fn the_gradient_is_unchanged_by_layers_that_draw_nothing_here() {
     assert_eq!(plain, idle, "exactly the gradient");
     // And the gradient is `sky_color`'s, to within the grading LUT's precision.
     let sky = tricolor();
+    let direction = harness.directions();
     for (index, color) in plain.iter().enumerate() {
         let (x, y) = (index as u32 % harness.size.0, index as u32 / harness.size.0);
-        let expected = sky_color(&sky, harness.direction(x, y));
+        let expected = sky_color(&sky, direction(x, y));
         let error = (color.to_array().map(linear_to_srgb), expected.to_array().map(linear_to_srgb));
         let worst = (0..3).map(|c| (error.0[c] - error.1[c]).abs()).fold(0.0, f32::max);
         assert!(worst < 2.5 / 255.0, "pixel ({x}, {y}): {color} vs {expected}");
@@ -645,10 +674,6 @@ fn cirrus_drifts_with_time_without_jumping_late_in_a_session() {
     // Where the block shows, in the cirrus plane's coordinates before drift: its centroid in u,
     // each pixel weighted by its coverage and by the plane area it spans (pixels away from the
     // zenith span more of it).
-    let plane = |harness: &Harness, x: u32, y: u32| {
-        let dir = harness.direction(x, y);
-        glam::Vec2::new(dir.x, dir.z) * (0.5 / (dir.y + 0.15))
-    };
     let mut center = |seconds: f64, cirrus: f32| {
         let image = harness.render(|packet| {
             packet.time_seconds = seconds;
@@ -656,11 +681,16 @@ fn cirrus_drifts_with_time_without_jumping_late_in_a_session() {
             packet.sky_layers.clouds = CloudLight { lit: Vec3::X, cirrus, ..CloudLight::default() };
         });
         let (mut sum, mut weight) = (0.0, 0.0);
+        let direction = harness.directions();
+        let plane = |x, y| {
+            let dir = direction(x, y);
+            glam::Vec2::new(dir.x, dir.z) * (0.5 / (dir.y + 0.15))
+        };
         for (index, color) in image.iter().enumerate() {
             let (x, y) = (index as u32 % 256, index as u32 / 256);
             if color.x > 0.01 && x < 255 && y < 255 {
-                let at = plane(&harness, x, y);
-                let area = (plane(&harness, x + 1, y) - at).perp_dot(plane(&harness, x, y + 1) - at).abs();
+                let at = plane(x, y);
+                let area = (plane(x + 1, y) - at).perp_dot(plane(x, y + 1) - at).abs();
                 sum += at.x * color.x * area;
                 weight += color.x * area;
             }
@@ -760,7 +790,8 @@ fn skipping_what_cannot_reach_a_pixel_changes_nothing() {
     let read_faces = |harness: &Harness| {
         let cube = harness.renderer.sky().cube_texture();
         let bytes = cube.format().block_copy_size(None).expect("an uncompressed format");
-        (0..CUBE_FACES).map(|face| read_texture(&harness.gpu, cube, face, bytes)).collect::<Vec<_>>()
+        let faces = std::array::from_fn::<_, { CUBE_FACES as usize }, _>(|face| face as u32);
+        read_layers(&harness.gpu, cube, &faces, bytes)
     };
     let mut frames = Vec::new();
     for (handle, name) in [(painted, "painted clouds"), (lit, "lit clouds and a nebula")] {
@@ -1047,4 +1078,63 @@ fn a_handle_that_is_no_sky_material_draws_the_default_sky() {
     let unknown = harness.render(|packet| packet.sky_material = Some(MaterialHandle::from_raw(999)));
     assert_eq!(plain, unknown);
     assert_eq!(harness.renderer.stats().sky.ignored_materials, 1);
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn fog_light_respects_the_actual_sky_cube_format() {
+    let settings = RenderSettings {
+        sky: SkySettings { cube_size: 32, cube_interval: 1, ..SkySettings::default() },
+        ..RenderSettings::default()
+    };
+    let mut harness = Harness::new(settings, (64, 64));
+    let format = harness.renderer.sky().cube_texture().format();
+    let packed = format == wgpu::TextureFormat::Rg11b10Ufloat;
+    let render = |harness: &mut Harness, color: f32| {
+        harness.render(|packet| {
+            packet.fog.near = crate::FogLayer { color: Vec3::splat(color), density: 0.001, start: 0.0 };
+        });
+    };
+    let read_face = |harness: &Harness, face| {
+        let cube = harness.renderer.sky().cube_texture();
+        let bytes = format.block_copy_size(None).expect("an uncompressed format");
+        read_texture(&harness.gpu, cube, face, bytes)
+    };
+    let check_finite_lit = |harness: &Harness| {
+        for face in 0..CUBE_FACES {
+            let bytes = read_face(harness, face);
+            // Inspect raw exponent fields. The existing display decoder is not a finite oracle
+            // for exponent 31 in the packed format.
+            if packed {
+                let texels = bytes.as_chunks::<4>().0;
+                assert!(texels.iter().any(|&texel| u32::from_le_bytes(texel) != 0));
+                assert!(texels.iter().all(|&texel| {
+                    let word = u32::from_le_bytes(texel);
+                    ((word >> 6) & 31) != 31 && ((word >> 17) & 31) != 31 && (word >> 27) != 31
+                }));
+            } else {
+                let texels = bytes.as_chunks::<8>().0;
+                let rgb = |texel: &[u8; 8], channel: usize| {
+                    u16::from_le_bytes([texel[2 * channel], texel[2 * channel + 1]])
+                };
+                assert!(texels.iter().any(|texel| rgb(texel, 0) != 0));
+                assert!(texels.iter().all(|texel| (0..3).all(|i| rgb(texel, i) & 0x7c00 != 0x7c00)));
+            }
+        }
+    };
+    render(&mut harness, 65_500.0);
+    assert_eq!(harness.renderer.stats().fog.unsupported_profile, packed);
+    if packed {
+        // The first frame writes all faces. On the packed target, admission substituted
+        // clear atmosphere over the black sky before any of those faces were drawn.
+        assert!((0..CUBE_FACES).all(|face| read_face(&harness, face).iter().all(|&b| b == 0)));
+    } else {
+        check_finite_lit(&harness);
+    }
+    // Recover to an accepted profile and refresh each face using the existing schedule.
+    for _ in 0..CUBE_FACES {
+        render(&mut harness, 64_000.0);
+        assert!(!harness.renderer.stats().fog.unsupported_profile);
+    }
+    check_finite_lit(&harness);
 }

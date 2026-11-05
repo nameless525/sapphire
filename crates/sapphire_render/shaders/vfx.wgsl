@@ -102,10 +102,20 @@ fn vfx_clip(world: vec3<f32>) -> vec4<f32> {
 // what comes through it, and its own light. A quad's light adds to what's behind, which has its
 // fog already, so only the share of it that covers what's behind brings the fog's own light.
 fn vfx_fogged(out: ptr<function, VfxVaryings>, world: vec3<f32>, color: vec3<f32>, core: vec3<f32>, additive: f32) {
-    let air = fogged(vec3<f32>(0.0), world, 1.0);
-    let through = fogged(vec3<f32>(1.0), world, 1.0) - air;
-    (*out).color = vec4<f32>(color * through, (*out).color.a);
-    (*out).core = vec4<f32>(core * through, 1.0 - additive);
+    var transmittance = 1.0;
+    var air = vec3<f32>(0.0);
+    if fog_on() {
+        let offset = world - view.position.xyz;
+        let distance = length(offset);
+        let dir = offset / max(distance, 1e-6);
+        let ray = fog_ray(view.position.xyz, dir, distance, 1.0);
+        transmittance = ray.transmittance;
+        air = apply_fog(vec3<f32>(0.0), ray);
+    }
+    // Subtracting two rounded fogged colors can erase T beside bright air. Read the one
+    // ray's T directly for both sprite/ribbon color and ribbon core, before HDR multiplication.
+    (*out).color = vec4<f32>(color * transmittance, (*out).color.a);
+    (*out).core = vec4<f32>(core * transmittance, 1.0 - additive);
     (*out).air = vec4<f32>(air * (1.0 - additive), (*out).air.a);
 }
 

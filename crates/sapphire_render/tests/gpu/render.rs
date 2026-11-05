@@ -2067,3 +2067,111 @@ fn failed_material_uploads_leave_nothing_behind() {
     renderer.upload_mesh_with_slots(Mesh::read(&bytes).unwrap(), |_| None).expect("upload");
     assert_eq!(material_counts(&renderer).0, start.0 + 2);
 }
+
+#[test]
+#[ignore = "needs a GPU"]
+fn each_asset_material_slot_is_resolved_once() {
+    use sapphire_assets::AssetId;
+    use sapphire_assets::mesh::SlotMaterial;
+    use std::cell::Cell;
+
+    let gpu = gpu();
+    let mut renderer = Renderer::new(&gpu, FORMAT, RenderSettings::default()).expect("renderer");
+    let document = cooked(&white(0.0));
+    let bytes = document.to_cooked().expect("cook material");
+    let handle =
+        renderer.upload_material(Material::read(&bytes).expect("read material"), |_| None).expect("material");
+    let asset = AssetId::from_bytes([7; 16]);
+    let mut mesh = sphere(white(0.0));
+    mesh.materials[0].material = SlotMaterial::Asset(asset);
+    let bytes = mesh.to_cooked().expect("cook mesh");
+    let calls = Cell::new(0);
+    let slots = renderer
+        .upload_slot_materials(Mesh::read(&bytes).expect("read mesh"), |id| {
+            assert_eq!(id, asset);
+            let call = calls.get();
+            calls.set(call + 1);
+            (call == 0).then_some(handle)
+        })
+        .expect("one successful resolution is sufficient");
+    assert_eq!(calls.get(), 1);
+    assert_eq!(slots, [handle]);
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn prepared_meshes_publish_atomically_under_the_existing_handle() {
+    let gpu = gpu();
+    let size = (96, 96);
+    let texture = target(&gpu, FORMAT, size);
+    let view = texture.create_view(&Default::default());
+    let camera = framing_camera(38.0, size, 0.6);
+    let mut frames = Frames::new(&gpu, FORMAT, Msaa::Off).expect("renderer");
+    let existing = upload(&mut frames.renderer, &sphere(colored([0.8, 0.05, 0.05])));
+    let prepared = upload(&mut frames.renderer, &sphere(colored([0.05, 0.8, 0.05])));
+    assert!(frames.render(&gpu, &view, camera, &[instance(0, existing, Mat4::IDENTITY)], &[]).is_none());
+    let before = read_back(&gpu, &texture);
+    assert!(matches!(
+        frames.renderer.adopt_meshes(&[(existing, prepared), (existing, prepared)]),
+        Err(RenderError::RepeatedMeshAdoption)
+    ));
+    assert!(frames.render(&gpu, &view, camera, &[], &[]).is_none());
+    assert_eq!(read_back(&gpu, &texture), before, "failed preflight changes no existing instance");
+    frames.renderer.adopt_meshes(&[(existing, prepared)]).expect("publish the prepared mesh");
+    assert!(frames.render(&gpu, &view, camera, &[], &[]).is_none());
+    let after = read_back(&gpu, &texture);
+    let center = (size.0 * (size.1 / 2) + size.0 / 2) as usize;
+    assert!(before[center][0] > before[center][1] + 64);
+    assert!(after[center][1] > after[center][0] + 64, "the unchanged instance draws the replacement");
+    assert_eq!(frames.renderer.stats().instances, 1);
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn prepared_materials_preflight_the_whole_batch_and_keep_mesh_references() {
+    use sapphire_assets::material::EnvironmentMaterial;
+
+    let gpu = gpu();
+    let size = (96, 96);
+    let texture = target(&gpu, FORMAT, size);
+    let view = texture.create_view(&Default::default());
+    let camera = framing_camera(38.0, size, 0.6);
+    let mut frames = Frames::new(&gpu, FORMAT, Msaa::Off).expect("renderer");
+    let mut material = |document: &AnimeCharacterMaterial| {
+        let bytes = cooked(document).to_cooked().expect("cook");
+        frames.renderer.upload_material(Material::read(&bytes).expect("read"), |_| None).expect("upload")
+    };
+    let existing = material(&colored([0.8, 0.05, 0.05]));
+    let prepared = material(&colored([0.05, 0.8, 0.05]));
+    let other = material(&colored([0.05, 0.05, 0.8]));
+    let wall = Material::from_document(
+        &EnvironmentMaterial::default(),
+        &[Swizzle::IDENTITY; EnvironmentMaterial::TEXTURE_SLOTS.len()],
+    )
+    .expect("material")
+    .to_cooked()
+    .expect("cook");
+    let wrong_family =
+        frames.renderer.upload_material(Material::read(&wall).expect("read"), |_| None).expect("upload");
+    let mesh = sphere(white(0.0)).to_cooked().expect("cook mesh");
+    let mesh =
+        frames.renderer.upload_mesh(Mesh::read(&mesh).expect("read mesh"), &[existing]).expect("upload mesh");
+    assert!(frames.render(&gpu, &view, camera, &[instance(0, mesh, Mat4::IDENTITY)], &[]).is_none());
+    let before = read_back(&gpu, &texture);
+    assert!(matches!(
+        frames.renderer.adopt_materials(&[(existing, prepared), (other, wrong_family)]),
+        Err(RenderError::MaterialFamilyChanged { .. })
+    ));
+    assert!(matches!(
+        frames.renderer.adopt_materials(&[(existing, prepared), (other, prepared)]),
+        Err(RenderError::RepeatedMaterialAdoption)
+    ));
+    assert!(frames.render(&gpu, &view, camera, &[], &[]).is_none());
+    assert_eq!(read_back(&gpu, &texture), before, "the valid first pair cannot publish before a later error");
+    frames.renderer.adopt_materials(&[(existing, prepared)]).expect("publish the prepared material");
+    assert!(frames.render(&gpu, &view, camera, &[], &[]).is_none());
+    let after = read_back(&gpu, &texture);
+    let center = (size.0 * (size.1 / 2) + size.0 / 2) as usize;
+    assert!(before[center][0] > before[center][1] + 64);
+    assert!(after[center][1] > after[center][0] + 64, "the mesh keeps its handle and parameter slot");
+}

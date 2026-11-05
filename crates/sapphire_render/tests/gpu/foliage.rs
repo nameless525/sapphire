@@ -194,12 +194,14 @@ impl Frame {
     }
 
     /// The world-space ray through pixel `(x, y)`'s center: the eye and a unit direction.
-    fn ray(&self, x: u32, y: u32) -> (Vec3, Vec3) {
+    fn rays(&self) -> impl Fn(u32, u32) -> (Vec3, Vec3) + '_ {
         let inverse = (self.camera.proj * self.camera.view).inverse();
-        let ndc_x = (x as f32 + 0.5) / SIDE as f32 * 2.0 - 1.0;
-        let ndc_y = 1.0 - (y as f32 + 0.5) / SIDE as f32 * 2.0;
-        let far = inverse.project_point3(Vec3::new(ndc_x, ndc_y, 0.5));
-        (self.camera.position, (far - self.camera.position).normalize())
+        move |x, y| {
+            let ndc_x = (x as f32 + 0.5) / SIDE as f32 * 2.0 - 1.0;
+            let ndc_y = 1.0 - (y as f32 + 0.5) / SIDE as f32 * 2.0;
+            let far = inverse.project_point3(Vec3::new(ndc_x, ndc_y, 0.5));
+            (self.camera.position, (far - self.camera.position).normalize())
+        }
     }
 
     /// The pixel `point` projects into.
@@ -367,11 +369,7 @@ impl Harness {
         let mut encoder = self.gpu.device().create_command_encoder(&Default::default());
         target.copy(&mut encoder, &self.target);
         self.gpu.queue().submit([encoder.finish()]);
-        let pixels = target
-            .texels(&self.gpu)
-            .into_iter()
-            .map(|texel| [texel[0], texel[1], texel[2], texel[3]])
-            .collect();
+        let pixels = target.texels(&self.gpu);
         Frame { pixels, camera: self.camera }
     }
 }
@@ -379,7 +377,7 @@ impl Harness {
 /// A prepass target to read back after a frame, and where to.
 type Read<'a> = (fn(&PrepassTargets) -> TextureId, &'a Readback);
 
-/// A buffer a texture of up to 8 bytes per texel is copied into, row by row.
+/// A buffer a four-byte texture is copied into, row by row.
 struct Readback {
     buffer: wgpu::Buffer,
     size: (u32, u32),
@@ -420,16 +418,17 @@ impl Readback {
     }
 
     /// Each texel's bytes, rows top to bottom.
-    fn texels(&self, gpu: &GpuContext) -> Vec<Vec<u8>> {
+    fn texels(&self, gpu: &GpuContext) -> Vec<[u8; 4]> {
+        assert_eq!(self.texel, 4);
         self.buffer.map_async(wgpu::MapMode::Read, .., |result| result.expect("map"));
         gpu.device().poll(wgpu::PollType::wait_indefinitely()).expect("poll");
         let texels = {
             let mapped = self.buffer.get_mapped_range(..).expect("mapped");
-            mapped
-                .chunks_exact(self.padded as usize)
-                .flat_map(|row| row[..(self.size.0 * self.texel) as usize].chunks_exact(self.texel as usize))
-                .map(<[u8]>::to_vec)
-                .collect()
+            let mut texels = Vec::with_capacity((self.size.0 * self.size.1) as usize);
+            for row in mapped.chunks_exact(self.padded as usize) {
+                texels.extend_from_slice(row[..(self.size.0 * self.texel) as usize].as_chunks::<4>().0);
+            }
+            texels
         };
         self.buffer.unmap();
         texels
@@ -785,9 +784,10 @@ fn the_frame_s_fog_covers_foliage_as_the_world() {
     // Lit head on by a white key light, without wrap or terminator: the tone is `grey × N·L`.
     let lit = grey * Vec3::Z.dot(toward_key);
     let mut worst = (0.0f32, (0, 0));
+    let ray = frame.rays();
     for y in 0..SIDE {
         for x in 0..SIDE {
-            let (eye, dir) = frame.ray(x, y);
+            let (eye, dir) = ray(x, y);
             let distance = (eye.z + 12.0) / -dir.z;
             let expected = harness
                 .fog

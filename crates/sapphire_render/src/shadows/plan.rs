@@ -132,7 +132,7 @@ impl ShadowPlan {
         }
         self.plan_cascades(settings, camera, light);
         self.classify(characters, slots, (meshes, wind_margin), settings, camera, light);
-        self.skip_empty();
+        self.skip_empty(list);
         self.uniforms = self.pack(settings, camera, light, characters.count, atlas);
         self.count_draws(list, settings);
     }
@@ -291,8 +291,23 @@ impl ShadowPlan {
     /// Leaves out the cascades picked this frame that nothing casts into while their maps hold
     /// nothing already: an empty map reads the same under any fit, so the new fit is kept as if
     /// it had been drawn. The others remember whether they hold anything.
-    fn skip_empty(&mut self) {
-        let cast = self.casters.iter().fold(0u8, |bits, caster| bits | caster.cascades);
+    fn skip_empty(&mut self, list: &DrawList) {
+        // Slot bounds remain conservative, but only slots in the depth command stream can
+        // populate a map. Transparent-only and disowned instances cast no depth.
+        let mut cast = 0u8;
+        let mut include = |slot: u32| {
+            cast |= self.casters.get(slot as usize).map_or(0, |caster| caster.cascades);
+        };
+        for variant in SurfaceVariant::DEPTH_WRITING {
+            for commands in &list.commands {
+                for command in &commands[variant.index()] {
+                    include(command.slot);
+                }
+            }
+            for command in &list.deformed[variant.index()] {
+                include(command.slot);
+            }
+        }
         for (index, drawn) in self.drawn.iter_mut().enumerate() {
             if drawn.is_none() {
                 continue;
@@ -460,6 +475,7 @@ mod tests {
             slots: Vec::new(),
             bounds: Sphere::around([[-0.5; 3], [0.5; 3]]),
             palette_reach: Vec::new(),
+            morph_reach: Vec::new(),
             foliage: None,
         };
         vec![
@@ -516,8 +532,52 @@ mod tests {
     ) {
         let mut list = CharacterList::default();
         list.update(packet, slots, false);
-        let (meshes, list_of_draws) = (meshes(), DrawList::default());
+        let meshes = meshes();
+        // These planning fixtures represent one opaque depth draw per live instance.
+        let mut list_of_draws = DrawList::default();
+        for (slot, _) in slots.live() {
+            list_of_draws.commands[0][SurfaceVariant::OPAQUE.index()].push(crate::scene::DrawCommand {
+                indices: 0..3,
+                first_vertex: 0,
+                slot,
+                draw_id: slot,
+                material: crate::materials::MaterialHandle::from_raw(0),
+                outline: false,
+                foliage: 0,
+            });
+        }
         plan.update(settings, packet, slots, &meshes, &|_| 0.0, &list_of_draws, list.table(), (4096, 2048));
+    }
+
+    #[test]
+    fn live_slots_without_depth_commands_clear_once_then_remain_empty() {
+        let mut slots = slots(&[instance(1, 0, Vec3::ZERO)]);
+        let packet = packet(Vec::new());
+        let mut characters = CharacterList::default();
+        characters.update(&packet, &mut slots, false);
+        let meshes = meshes();
+        let mut list = DrawList::default();
+        let transparent = SurfaceVariant::ALL
+            .into_iter()
+            .find(|variant| variant.coverage == crate::pipelines::Coverage::Transparent)
+            .expect("transparent variant");
+        list.commands[0][transparent.index()].push(crate::scene::DrawCommand {
+            indices: 0..3,
+            first_vertex: 0,
+            slot: 0,
+            draw_id: 0,
+            material: crate::materials::MaterialHandle::from_raw(0),
+            outline: false,
+            foliage: 0,
+        });
+        let mut plan = ShadowPlan::default();
+        plan.update(&SETTINGS, &packet, &slots, &meshes, &|_| 0.0, &list, characters.table(), (4096, 2048));
+        assert_eq!(plan.drawn_mask(), 0b1111, "new maps must be cleared");
+        plan.update(&SETTINGS, &packet, &slots, &meshes, &|_| 0.0, &list, characters.table(), (4096, 2048));
+        assert_eq!(plan.drawn_mask(), 0, "transparent geometry writes no shadow depth");
+        list.commands[0][transparent.index()].clear();
+        plan.update(&SETTINGS, &packet, &slots, &meshes, &|_| 0.0, &list, characters.table(), (4096, 2048));
+        assert_eq!(plan.drawn_mask(), 0, "a disowned slot also writes no depth");
     }
 
     #[test]

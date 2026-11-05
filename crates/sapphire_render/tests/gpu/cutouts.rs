@@ -309,7 +309,7 @@ fn render(settings: RenderSettings, card: Card, frames: u32) -> Frame {
     colors.copy(&mut encoder, &target);
     gpu.queue().submit([encoder.finish()]);
     Frame {
-        pixels: colors.texels(&gpu).into_iter().map(|t| [t[0], t[1], t[2], t[3]]).collect(),
+        pixels: colors.texels(&gpu),
         depth: depths
             .texels(&gpu)
             .into_iter()
@@ -358,16 +358,17 @@ impl Readback {
     }
 
     /// Each texel's bytes, rows top to bottom.
-    fn texels(&self, gpu: &GpuContext) -> Vec<Vec<u8>> {
+    fn texels(&self, gpu: &GpuContext) -> Vec<[u8; 4]> {
+        assert_eq!(self.texel, 4);
         self.buffer.map_async(wgpu::MapMode::Read, .., |result| result.expect("map"));
         gpu.device().poll(wgpu::PollType::wait_indefinitely()).expect("poll");
         let texels = {
             let mapped = self.buffer.get_mapped_range(..).expect("mapped");
-            mapped
-                .chunks_exact(self.padded as usize)
-                .flat_map(|row| row[..(SIDE * self.texel) as usize].chunks_exact(self.texel as usize))
-                .map(<[u8]>::to_vec)
-                .collect()
+            let mut texels = Vec::with_capacity((SIDE * SIDE) as usize);
+            for row in mapped.chunks_exact(self.padded as usize) {
+                texels.extend_from_slice(row[..(SIDE * self.texel) as usize].as_chunks::<4>().0);
+            }
+            texels
         };
         self.buffer.unmap();
         texels

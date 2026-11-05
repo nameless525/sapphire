@@ -16,8 +16,8 @@
 //! Every box lies inside the box the mesh was cooked with, so at rest every corner is inside its
 //! sphere. While they stay inside the answer is `None`, and every decision made on the bounds is the
 //! bind pose's, bit for bit. A pose past it grows the sphere only by the corners that leave, so it
-//! grows from the cooked sphere with no jump. Morph deltas aren't counted, as the cooked bounds don't
-//! count them.
+//! grows from the cooked sphere with no jump. Morphs add their weighted displacement bound,
+//! stretched by the palette's largest linear stretch, before any bounds consumer sees the pose.
 
 use glam::{Affine3A, Mat4, Vec3, Vec3A};
 use sapphire_assets::mesh::{ArchivedMesh, VertexInfluence};
@@ -75,6 +75,37 @@ pub(crate) fn palette_reach(mesh: &ArchivedMesh) -> Vec<PaletteReach> {
     boxes(skin.binds.len(), streams.len(), |vertex| {
         Some((Vec3::from(streams.position(vertex)?), skin.influences.get(vertex)?))
     })
+}
+
+/// The largest displacement of each morph target in bind space, read once at upload. Absolute
+/// weighted sums bound simultaneous morphs, including negative weights and weights above one.
+pub(crate) fn morph_reach(mesh: &ArchivedMesh) -> Vec<f32> {
+    mesh.morph_targets
+        .iter()
+        .map(|target| {
+            let first = target.first_delta.to_native() as usize;
+            let end = first + target.delta_count.to_native() as usize;
+            mesh.morph_deltas[first..end]
+                .iter()
+                .map(|delta| Vec3::from(delta.position()).length())
+                .fold(0.0, f32::max)
+        })
+        .collect()
+}
+
+/// The radius needed around an unmorphed pose for its morphs. A skinned delta is a weighted
+/// mean of palette-transformed deltas, so the largest palette stretch bounds every influence.
+pub(crate) fn morph_radius(reach: &[f32], weights: &[f32], palette: &[Affine3A]) -> f32 {
+    let displacement: f32 = reach.iter().zip(weights).map(|(radius, weight)| radius * weight.abs()).sum();
+    if displacement == 0.0 {
+        return 0.0;
+    }
+    let stretch = if palette.is_empty() {
+        1.0
+    } else {
+        palette.iter().map(|matrix| max_stretch(Mat4::from(*matrix))).fold(0.0, f32::max)
+    };
+    displacement * stretch * INSIDE
 }
 
 /// [`palette_reach`] over `vertices` vertices, each one's position and influences from `vertex`.
@@ -170,6 +201,32 @@ mod tests {
 
     use super::*;
     use crate::CharacterBody;
+
+    #[test]
+    fn weighted_morph_bound_contains_signed_multi_target_displacements_after_skinning() {
+        let targets = [Vec3::new(1.5, -0.5, 0.25), Vec3::new(-0.25, 2.0, 1.0)];
+        let reach = targets.map(Vec3::length);
+        let shear = Affine3A::from_mat4(Mat4::from_cols(
+            Vec4::new(1.0, 0.0, 0.0, 0.0),
+            Vec4::new(1.5, 2.0, 0.0, 0.0),
+            Vec4::new(0.0, -0.5, 0.5, 0.0),
+            Vec4::W,
+        ));
+        let palette = [Affine3A::from_scale(Vec3::new(0.5, 3.0, 1.5)), shear];
+        for weights in [[-2.0, 0.5], [1.2, -0.7], [0.0, 0.0]] {
+            let delta = targets[0] * weights[0] + targets[1] * weights[1];
+            let radius = morph_radius(&reach, &weights, &palette);
+            for blend in 0..=255 {
+                let blend = blend as f32 / 255.0;
+                let moved = palette[0].transform_vector3(delta) * blend
+                    + palette[1].transform_vector3(delta) * (1.0 - blend);
+                assert!(moved.length() <= radius + 1e-6, "{weights:?}, {blend}: {moved} outside {radius}");
+            }
+            assert!(delta.length() <= morph_radius(&reach, &weights, &[]));
+        }
+        assert_eq!(morph_radius(&reach, &[0.0, 0.0], &palette), 0.0);
+        assert_eq!(morph_radius(&[], &[f32::MAX], &palette), 0.0);
+    }
 
     #[test]
     fn spheres_follow_their_transforms() {

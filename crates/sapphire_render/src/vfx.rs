@@ -80,6 +80,9 @@
 
 use std::ops::Range;
 
+#[cfg(test)]
+mod gpu_tests;
+
 use bytemuck::{Pod, Zeroable};
 use glam::Vec3;
 use sapphire_look::{VfxFrame, VfxLight, VfxRibbonPoint, VfxShape, VfxSprite, VfxStats};
@@ -850,7 +853,12 @@ impl Vfx {
         self.stats.bytes = 0;
         self.stats.color_draws = 0;
         self.stats.simulation = frame.stats;
-        let Some(camera) = camera.filter(|_| !frame.is_empty()) else { return };
+        let Some(camera) = camera.filter(|_| !frame.is_empty()) else {
+            if let Some(gpu) = &mut self.gpu {
+                gpu.depth_groups = CachedBindGroup::default();
+            }
+            return;
+        };
         self.build(sources, mask, on);
         let gpu = self.gpu.as_mut().expect("just built");
         self.emissive = 1.0 / exposure.max(1e-6);

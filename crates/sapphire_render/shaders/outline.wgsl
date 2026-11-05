@@ -334,8 +334,7 @@ struct OutlineDebugVaryings {
     @location(6) occlusion: f32,
     // The line's width at the vertex in pixels on a 1080-row target, as its extrusion takes it:
     // the material's, the region's and the vertex's scales × the distance curve (`outline_clip`,
-    // without the target's own height; the cutoff's fade, which fades the line rather than
-    // narrowing it, is left out).
+    // without the target's own height, including the cutoff's fade).
     @location(7) width: f32,
 }
 

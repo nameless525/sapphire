@@ -21,24 +21,26 @@
 //! # Handles
 //!
 //! A mesh's or material's handle carries a generation, so one freed never names what's later given
-//! its index. Generations start at a number of their renderer's own ([`new_epoch`]), so a handle from
+//! its index. Generations start at a number of their renderer's own ([`new_generation`]), so a handle from
 //! a renderer lost to the device names nothing on the next one, and freeing it there frees nothing.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use sapphire_rhi::wgpu;
 
-/// What one renderer's epochs step by: the frees of one index before a generation runs into the next
-/// renderer's. A handle would have to survive that many frees of its index to match by accident.
-const EPOCH_STEP: u32 = 1 << 20;
+/// Every pool and retired slot draws from one identity space, so no renderer's initial
+/// generation can collide with a recycled slot's. Zero belongs only to `from_raw` handles.
+static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
 
-static NEXT_EPOCH: AtomicU32 = AtomicU32::new(EPOCH_STEP);
+pub(crate) fn new_generation() -> u64 {
+    take_generation(&NEXT_GENERATION)
+}
 
-/// The first generation of a new pool's handles: never 0, which `from_raw`'s handles have.
-pub(crate) fn new_epoch() -> u32 {
-    NEXT_EPOCH.fetch_add(EPOCH_STEP, Ordering::Relaxed)
+fn take_generation(next: &AtomicU64) -> u64 {
+    next.try_update(Ordering::Relaxed, Ordering::Relaxed, |value| value.checked_add(1))
+        .expect("renderer handle generations exhausted")
 }
 
 /// Which of the renderer's frames the GPU has finished. Frames are numbered from 1 by
@@ -171,8 +173,17 @@ mod tests {
     }
 
     #[test]
+    fn generation_exhaustion_cannot_publish_zero_or_reuse_an_identity() {
+        let next = AtomicU64::new(u64::MAX - 1);
+        assert_eq!(take_generation(&next), u64::MAX - 1);
+        assert!(std::panic::catch_unwind(|| take_generation(&next)).is_err());
+        assert_eq!(next.load(Ordering::Relaxed), u64::MAX);
+        assert!(std::panic::catch_unwind(|| take_generation(&next)).is_err());
+    }
+
+    #[test]
     fn no_two_renderers_start_at_one_generation_nor_at_from_raws() {
-        let (a, b) = (new_epoch(), new_epoch());
+        let (a, b) = (new_generation(), new_generation());
         assert_ne!(a, b);
         assert_ne!(a, 0);
         assert_ne!(b, 0);

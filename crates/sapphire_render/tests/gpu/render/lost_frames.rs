@@ -200,8 +200,24 @@ fn a_lost_pose_still_lands_and_velocity_follows_the_pose_last_drawn() {
     for loss in LOSSES {
         let lost = run(Some(loss));
         assert_eq!(difference(&whole.0, &lost.0, 0).1, 0, "the color after {loss:?}");
-        assert_eq!(difference(&whole.1, &lost.1, 0).1, 0, "the velocity after {loss:?}");
+        assert_velocity_eq(&whole.1, &lost.1, &format!("after {loss:?}"));
     }
+}
+
+/// RG16Float stores data in all four bytes, including the vertical component's sign/exponent.
+fn assert_velocity_eq(expected: &[[u8; 4]], actual: &[[u8; 4]], what: &str) {
+    assert_eq!(expected.len(), actual.len(), "the velocity {what}: texel count");
+    if let Some((index, (expected, actual))) =
+        expected.iter().zip(actual).enumerate().find(|(_, (a, b))| a != b)
+    {
+        panic!("the velocity {what}: texel {index}: expected {expected:?}, actual {actual:?}");
+    }
+}
+
+#[test]
+#[should_panic(expected = "the velocity high byte control")]
+fn velocity_equality_checks_the_vertical_high_byte() {
+    assert_velocity_eq(&[[0, 0, 0, 0]], &[[0, 0, 0, 128]], "high byte control");
 }
 
 /// RC-4: a lost first frame claimed a history nothing wrote, and the first frame that ran read it

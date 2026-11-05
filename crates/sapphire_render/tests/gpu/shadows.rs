@@ -500,6 +500,17 @@ impl Harness {
     /// Prepares, records and submits one frame and reads the target back. Fails on any
     /// validation error.
     fn render(&mut self) -> Frame {
+        self.draw();
+        Frame { pixels: self.read_back(), camera: self.camera, stats: self.renderer.stats() }
+    }
+
+    /// Runs and completes a frame whose pixels are not inspected.
+    fn complete(&mut self) {
+        self.draw();
+        self.gpu.device().poll(wgpu::PollType::wait_indefinitely()).expect("frame complete");
+    }
+
+    fn draw(&mut self) {
         let scope = self.gpu.device().push_error_scope(wgpu::ErrorFilter::Validation);
         self.prepare();
         let view = self.target.create_view(&Default::default());
@@ -509,7 +520,6 @@ impl Harness {
         self.graph.execute(&self.gpu, graph).expect("a valid graph");
         let error = pollster::block_on(scope.pop());
         assert!(error.is_none(), "{error:?}");
-        Frame { pixels: self.read_back(), camera: self.camera, stats: self.renderer.stats() }
     }
 
     fn read_back(&self) -> Vec<[u8; 4]> {
@@ -926,11 +936,16 @@ fn a_pose_past_its_bounds_keeps_its_shadow() {
     assert!(frame.lit_at(under), "and none where it was: {:?}", frame.at(under));
     assert_eq!(frame.stats.skinning.past_bounds, 1, "its pose left its bounds");
 
-    // A pose back inside hands the bounds back.
+    // A shrink keeps conservative bounds through admission, while the recorded frame
+    // already draws its new geometry. Its successful execution commits on the next prepare.
     harness.poses.push((id, vec![Affine3A::IDENTITY]));
     let back = harness.render();
-    assert_eq!(back.stats.skinning.past_bounds, 0);
+    assert_eq!(back.stats.skinning.past_bounds, 1, "the old drawn bound remains through admission");
     assert!(back.shaded_at(under), "its shadow back at rest: {:?}", back.at(under));
+    assert!(back.lit_at(shadow), "the extended pose no longer draws: {:?}", back.at(shadow));
+    let committed = harness.render();
+    assert_eq!(committed.stats.skinning.past_bounds, 0, "the executed shrink commits next prepare");
+    assert!(committed.shaded_at(under), "its committed shadow at rest: {:?}", committed.at(under));
 }
 
 #[test]
@@ -1237,15 +1252,15 @@ fn shadows_hold_still_under_temporal_aa() {
     );
     harness.sun_toward(toward(35.0, 40.0));
     harness.camera = looking(Vec3::new(1.0, 2.5, 5.0), Vec3::new(0.0, 0.5, -2.0));
-    let mut frames: Vec<Vec<[u8; 4]>> = Vec::new();
-    for _ in 0..48 {
-        frames.push(harness.render().pixels);
+    for _ in 0..46 {
+        harness.complete();
     }
-    let (a, b) = (&frames[46], &frames[47]);
+    let a = harness.render().pixels;
+    let b = harness.render().pixels;
     let steps: Vec<u32> =
-        a.iter().zip(b).flat_map(|(a, b)| (0..3).map(move |c| u32::from(a[c].abs_diff(b[c])))).collect();
+        a.iter().zip(&b).flat_map(|(a, b)| (0..3).map(move |c| u32::from(a[c].abs_diff(b[c])))).collect();
     let mean = steps.iter().sum::<u32>() as f32 / steps.len() as f32;
-    let moving = a.iter().zip(b).filter(|(a, b)| (0..3).any(|c| a[c].abs_diff(b[c]) > 2)).count();
+    let moving = a.iter().zip(&b).filter(|(a, b)| (0..3).any(|c| a[c].abs_diff(b[c]) > 2)).count();
     eprintln!("converged frame-to-frame change: mean {mean:.4} steps, {moving} pixels over 2");
     assert!(mean < 0.06, "mean change {mean} steps");
     assert!(moving < (SIZE * SIZE / 400) as usize, "{moving} pixels change by more than 2 steps");

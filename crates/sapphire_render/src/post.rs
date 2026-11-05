@@ -311,7 +311,7 @@ pub fn frame_passes(bloom_levels: u32, bloom_chain: bool) -> impl Iterator<Item 
     let ups = MAX_BLOOM_LEVELS as usize;
     PASSES[..levels]
         .iter()
-        .chain(&PASSES[ups..ups + levels.saturating_sub(1)])
+        .chain(PASSES[ups..ups + levels.saturating_sub(1)].iter().rev())
         .chain([&COMPOSITE_PASS])
         .copied()
 }
@@ -754,7 +754,8 @@ impl PostProcess {
         sun: Option<SunOnScreen>,
     ) {
         profiling::scope!("PostProcess::prepare");
-        let layers = Layers::new(params);
+        let aspect = camera.map_or(1.0, |camera| layers::aspect(&camera.proj));
+        let layers = Layers::new(params, aspect);
         let (effects, drawn) = GpuEffects::new(&params.effects);
         let mut uniforms = PostUniforms::new(params, &layers, effects);
         let key = |grade| LutKey::new(&params.tone_curve, grade, params.filter_strength);
@@ -778,11 +779,9 @@ impl PostProcess {
         }
         self.bound = assignment.slots;
         let flare_sun = sun.filter(|_| layers.lens_flare());
-        if let Some(camera) = camera {
-            uniforms.frame[0] = layers::aspect(&camera.proj);
-        }
+        uniforms.frame[0] = aspect;
         if let Some(sun) = flare_sun {
-            let visible = sun.luminance * uniforms.composite[0] * FLARE_VISIBLE_SHARE;
+            let visible = flare_threshold(sun.luminance, uniforms.composite[0]);
             uniforms.flare_sun = [sun.uv.x, sun.uv.y, sun.radius, visible];
         }
         self.bloom = self.bloom_levels > 0 && (uniforms.composite[1] > 0.0 || layers.diffusion());
@@ -793,6 +792,11 @@ impl PostProcess {
             color_effects: drawn.color(),
             ..layers.variant
         };
+        if !self.bloom {
+            self.bind_groups.prefilter = CachedBindGroup::default();
+            self.bind_groups.down = Default::default();
+            self.bind_groups.up = Default::default();
+        }
         self.stats = PostStats {
             bloom_chain: self.bloom,
             diffusion: layers.diffusion() && self.bloom,
@@ -800,7 +804,7 @@ impl PostProcess {
             gradient_layers: layers.gradient_count,
             lens_flare: flare_sun.is_some(),
             vignette_tint: layers.vignette_color[..3] != [0.0; 3],
-            sharpening: layers.variant.sharpen,
+            sharpening: self.variant.sharpen && !self.variant.lens_effects,
             effects: drawn,
             ..PostStats::default()
         };
@@ -962,6 +966,18 @@ impl PostProcess {
     }
 }
 
+/// Preserve ordinary packing arithmetic; recover a finite result when an intermediate
+/// overflows, saturating only a threshold that itself cannot fit the GPU uniform.
+fn flare_threshold(luminance: f32, exposure: f32) -> f32 {
+    let visible = luminance * exposure * FLARE_VISIBLE_SHARE;
+    if visible.is_finite() {
+        visible
+    } else {
+        (f64::from(luminance) * f64::from(exposure) * f64::from(FLARE_VISIBLE_SHARE)).min(f64::from(f32::MAX))
+            as f32
+    }
+}
+
 /// Adds a pass that draws one fullscreen triangle into `output`, sampling `inputs` through
 /// group 1.
 fn add_fullscreen<'f, const N: usize>(
@@ -1012,6 +1028,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn extreme_finite_sun_thresholds_preserve_representable_results_and_saturate_at_upload() {
+        assert_eq!(flare_threshold(f32::MAX, 1.5), f32::MAX * 0.75);
+        assert_eq!(flare_threshold(f32::MAX, 4.0), f32::MAX);
+        for luminance in [0.1, 1.0, 10.0, 1e10] {
+            for exposure in [0.125, 1.0, 4.0, 16.0] {
+                assert_eq!(flare_threshold(luminance, exposure), luminance * exposure * FLARE_VISIBLE_SHARE);
+            }
+        }
+    }
+
+    #[test]
     fn uniforms_clamp_every_parameter() {
         let params = PostParams {
             exposure: f32::NAN,
@@ -1022,7 +1049,7 @@ mod tests {
             sharpening: 7.0,
             ..PostParams::default()
         };
-        let uniforms = PostUniforms::new(&params, &Layers::new(&params), GpuEffects::default());
+        let uniforms = PostUniforms::new(&params, &Layers::new(&params, 1.0), GpuEffects::default());
         assert_eq!(uniforms.composite[0], 1.0, "NaN exposure falls back to ×1");
         assert_eq!(uniforms.bloom[1], params.bloom.threshold, "the knee is at most the threshold");
         assert_eq!((uniforms.bloom[3], uniforms.composite[2]), (0.0, 1.0));
@@ -1040,7 +1067,7 @@ mod tests {
         // NaN, until the clamp.
         for exposure in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, f32::MAX, f32::MIN, 1e9, -1e9, 0.0] {
             let params = PostParams { exposure, ..PostParams::default() };
-            let uniforms = PostUniforms::new(&params, &Layers::new(&params), GpuEffects::default());
+            let uniforms = PostUniforms::new(&params, &Layers::new(&params, 1.0), GpuEffects::default());
             let multiplier = uniforms.composite[0];
             let range = 2f32.powi(-16)..=2f32.powi(16);
             assert!(range.contains(&multiplier), "{exposure} EV multiplies by {multiplier}");
@@ -1050,7 +1077,7 @@ mod tests {
     #[test]
     fn the_shader_shaper_matches_the_baked_one() {
         let params = PostParams::default();
-        let uniforms = PostUniforms::new(&params, &Layers::new(&params), GpuEffects::default());
+        let uniforms = PostUniforms::new(&params, &Layers::new(&params, 1.0), GpuEffects::default());
         // Above the shaper's maximum the sampler clamps, so the shader needn't.
         for x in [0.0, 0.001, 0.18, 1.0, 10.0, lut::SHAPER_MAX] {
             let shader = (1.0 + x * uniforms.lut[0]).log2() * uniforms.lut[1];
@@ -1074,9 +1101,9 @@ mod tests {
             "bloom 1/4",
             "bloom 1/8",
             "bloom 1/16",
-            "bloom up 1/2",
-            "bloom up 1/4",
             "bloom up 1/8",
+            "bloom up 1/4",
+            "bloom up 1/2",
         ];
         assert_eq!(passes(4, true)[..7], four);
         assert_eq!(passes(MAX_BLOOM_LEVELS, true).len(), PASSES.len());

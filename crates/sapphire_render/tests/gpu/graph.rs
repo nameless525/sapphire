@@ -14,6 +14,43 @@ fn gpu() -> GpuContext {
     GpuContext::new(&instance, &GpuContextDesc::default(), None).expect("device")
 }
 
+#[test]
+#[ignore = "needs a GPU"]
+fn large_pass_weights_record_every_pass_and_serial_reports_replace_the_previous_frame() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    let gpu = gpu();
+    let mut executor = GraphExecutor::new();
+    executor.set_report(true);
+    let recorded = AtomicU32::new(0);
+    let mut graph = FrameGraph::new();
+    for (index, name) in ["first", "second", "third", "fourth"].into_iter().enumerate() {
+        let recorded = &recorded;
+        graph.add_pass(name).side_effect().weight(1 << 31).record(move |_| {
+            recorded.fetch_or(1 << index, Ordering::Relaxed);
+        });
+    }
+    executor.execute(&gpu, graph).expect("large weights are valid");
+    gpu.device().poll(wgpu::PollType::wait_indefinitely()).expect("complete");
+    assert_eq!(recorded.load(Ordering::Relaxed), 0b1111);
+    assert_eq!(executor.report().expect("on").running().count(), 4);
+
+    executor.set_serial(true);
+    let mut graph = FrameGraph::new();
+    graph.add_pass("serial first").side_effect().record(|_| {});
+    graph.add_pass("serial second").side_effect().record(|_| {});
+    executor.execute(&gpu, graph).expect("a serial graph");
+    let report: Vec<_> = executor
+        .report()
+        .expect("on")
+        .passes
+        .iter()
+        .map(|pass| (pass.name, pass.order, pass.command_buffer))
+        .collect();
+    assert_eq!(report, [("serial first", Some(0), Some(0)), ("serial second", Some(1), Some(1))]);
+    assert_eq!(executor.stats().command_buffers, 2);
+}
+
 fn desc() -> TransientDesc {
     TransientDesc { width: SIZE, height: SIZE, format: FORMAT, sample_count: 1, usage: USAGE }
 }
@@ -116,14 +153,19 @@ fn graphs_cull_share_pooled_textures_and_record_in_parallel() {
 }
 
 /// What must hold for any frame's timings from [`reports_and_gpu_timings_describe_the_executed_graph`].
-fn check_timings(timings: &GpuTimings, frames: u64) {
+fn check_timings(timings: &GpuTimings, frames: u64, encoder_writes: bool) {
     assert!(timings.frame > 0 && timings.frame <= frames);
-    assert!(timings.passes.iter().all(|pass| pass.name != "clear unused"), "culled passes aren't timed");
-    // The copy takes no render pass, so only devices that time between passes see it; a device
-    // that does may still drop an invalid pair, so only the converse is checked.
-    if !timings.every_pass {
-        assert!(timings.get("to target").is_none(), "{timings:?}");
+    let clear_timed = timings.get("clear source").is_some();
+    let copy_timed = timings.get("to target").is_some();
+    assert_eq!(
+        timings.passes.len(),
+        usize::from(clear_timed) + usize::from(copy_timed),
+        "only the executed passes can be timed, once each: {timings:?}"
+    );
+    if !encoder_writes {
+        assert!(!copy_timed, "the copy needs encoder timestamps: {timings:?}");
     }
+    assert_eq!(timings.every_pass, encoder_writes && clear_timed && copy_timed, "{timings:?}");
     let exclusive: std::time::Duration = timings.passes.iter().map(|pass| pass.exclusive).sum();
     assert!(timings.passes.iter().all(|pass| pass.exclusive <= pass.duration), "{timings:?}");
     // Up to a nanosecond per pass of rounding from ticks.
@@ -155,6 +197,7 @@ fn reports_and_gpu_timings_describe_the_executed_graph() {
     executor.set_report(true);
     let timing = executor.set_gpu_timing(&gpu, true);
     assert_eq!(timing, gpu.caps().timestamp_query, "timing is on wherever timestamps are");
+    let encoder_writes = gpu.caps().features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS);
     // Whether any frame came back with the clear pass timed. Not every frame does: Apple GPUs
     // sometimes report a pass that only clears with its end before its start, and the decoder
     // drops such pairs as invalid.
@@ -172,7 +215,7 @@ fn reports_and_gpu_timings_describe_the_executed_graph() {
         assert!(pollster::block_on(scope.pop()).is_none(), "timestamp queries validate");
         gpu.device().poll(wgpu::PollType::wait_indefinitely()).expect("poll");
         if let Some(timings) = executor.gpu_timings() {
-            check_timings(timings, executor.frames());
+            check_timings(timings, executor.frames(), encoder_writes);
             clear_timed |= timings.get("clear source").is_some();
         }
     }
@@ -187,7 +230,7 @@ fn reports_and_gpu_timings_describe_the_executed_graph() {
         return;
     }
     let timings = executor.gpu_timings().expect("frames came back after waiting on the GPU");
-    check_timings(timings, executor.frames());
+    check_timings(timings, executor.frames(), encoder_writes);
     assert!(clear_timed, "the clear pass was timed in some frame: {timings:?}");
     executor.set_gpu_timing(&gpu, false);
     assert!(executor.gpu_timings().is_none(), "turning timing off drops it");

@@ -220,7 +220,7 @@ use sapphire_rhi::wgpu;
 use serde::{Deserialize, Serialize};
 
 use crate::buffer;
-use crate::characters::GpuCharacter;
+use crate::characters::{CharacterTable, GpuCharacter};
 use crate::environment::ProbeLookup;
 use crate::gpu_types::FrameUniforms;
 use crate::graph::{FrameGraph, TextureId};
@@ -295,6 +295,11 @@ impl GtaoSettings {
         }
         if !(self.radius.is_finite() && self.radius > 0.0 && self.radius <= 8.0) {
             return Err(("ambient_occlusion.gtao.radius", "must be above 0 and at most 8 meters"));
+        }
+        // The depth mip filter uses a 0.75-radius neighborhood and reciprocates its final
+        // 40%. Keep that denominator normal even on GPUs that flush subnormal arithmetic.
+        if !(0.4 * (0.75 * self.radius)).is_normal() {
+            return Err(("ambient_occlusion.gtao.radius", "is too small for the depth filter's falloff"));
         }
         Ok(())
     }
@@ -1652,22 +1657,18 @@ impl Ambient {
         self.pipelines = pipelines;
     }
 
-    /// The CPU half of a frame: the capsules the environment reads (the valid bodies of
-    /// `packet`'s characters, one per character, nearest its main view first), the keys the
-    /// relight blends, and `entries`, the character entries the character pass reads. Allocates
+    /// The CPU half of a frame: the capsules the environment reads (the resolved live
+    /// `characters`, one per body, nearest its main view first), the keys the
+    /// relight blends, and the character entries the character pass reads. Allocates
     /// nothing once its scratch has grown.
-    pub(crate) fn prepare(&mut self, packet: &FramePacket, entries: u32) {
+    pub(crate) fn prepare(&mut self, packet: &FramePacket, characters: CharacterTable<'_>) {
         profiling::scope!("Ambient::prepare");
         let mut capsules = 0;
         if self.occlusion.capsules
             && let Some(view) = packet.main_view()
         {
             let eye = view.camera.position;
-            select_capsules(
-                packet.characters.iter().filter(|character| character.is_valid()).map(|c| c.body),
-                eye,
-                &mut self.candidates,
-            );
+            select_capsules(characters.bodies.iter().copied(), eye, &mut self.candidates);
             for (gpu, (_, body)) in self.block.ambient.capsules.iter_mut().zip(&self.candidates) {
                 *gpu = GpuAmbientCapsule {
                     base: body.base.extend(body.radius).to_array(),
@@ -1676,7 +1677,7 @@ impl Ambient {
                 capsules += 1;
             }
         }
-        self.block.ambient.counts = [capsules, entries, 0, 0];
+        self.block.ambient.counts = [capsules, characters.count, 0, 0];
         self.stats.capsules = capsules;
         // The projection's sky, with a grid or for a reflective character's cube.
         self.sky = packet.ambient.sky * packet.ambient.intensity;
@@ -2534,6 +2535,8 @@ mod tests {
             GtaoSettings { steps: 9, ..GtaoSettings::DESKTOP },
             GtaoSettings { radius: f32::NAN, ..GtaoSettings::DESKTOP },
             GtaoSettings { radius: 0.0, ..GtaoSettings::DESKTOP },
+            GtaoSettings { radius: f32::from_bits(1), ..GtaoSettings::DESKTOP },
+            GtaoSettings { radius: f32::MIN_POSITIVE, ..GtaoSettings::DESKTOP },
         ];
         for settings in bad {
             assert!(settings.validate().is_err(), "{settings:?}");

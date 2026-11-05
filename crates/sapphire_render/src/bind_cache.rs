@@ -52,6 +52,11 @@ impl<const N: usize> Default for CachedBindGroup<N> {
 }
 
 impl<const N: usize> CachedBindGroup<N> {
+    #[cfg(test)]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.entries.iter().all(|entry| entry.bind_group.is_none())
+    }
+
     /// A bind group of `views` at bindings 0, 1, …, reused while they stay the same. `views`
     /// holds at least one and at most `N` views, in the order `layout` binds them; each set
     /// keeps its own layout, so a cache serves one pass position.

@@ -273,6 +273,17 @@ impl Scene {
     /// Draws one frame showing `view` into `texture`, checks it raised no validation error and
     /// returns its pixels.
     fn render(&mut self, gpu: &GpuContext, texture: &wgpu::Texture, view: DebugView) -> Vec<[u8; 4]> {
+        self.record(gpu, texture, view);
+        read_back(gpu, texture)
+    }
+
+    /// Runs and completes a frame whose pixels are not inspected.
+    fn complete(&mut self, gpu: &GpuContext, texture: &wgpu::Texture, view: DebugView) {
+        self.record(gpu, texture, view);
+        gpu.device().poll(wgpu::PollType::wait_indefinitely()).expect("frame complete");
+    }
+
+    fn record(&mut self, gpu: &GpuContext, texture: &wgpu::Texture, view: DebugView) {
         let packet = self.packets.begin();
         packet.views.push(ViewData::new(camera()));
         let key = DirectionalLight { direction: Vec3::NEG_Z, color: Vec3::ONE, intensity: 1.0 };
@@ -312,7 +323,6 @@ impl Scene {
         self.graph.execute(gpu, graph).expect("a valid graph");
         let error = pollster::block_on(scope.pop());
         assert!(error.is_none(), "{view:?}: {error:?}");
-        read_back(gpu, texture)
     }
 
     fn report(&self) -> &GraphReport {
@@ -564,10 +574,10 @@ fn light_lists_show_the_lights_each_pixel_walks() {
             // Under temporal AA the frame converges, and the view blends over it: compare once it
             // holds still.
             let frames = if settings.temporal { 12 } else { 1 };
-            let mut frame = Vec::new();
-            for _ in 0..frames {
-                frame = scene.render(&gpu, &texture, DebugView::Off);
+            for _ in 1..frames {
+                scene.complete(&gpu, &texture, DebugView::Off);
             }
+            let frame = scene.render(&gpu, &texture, DebugView::Off);
             let pixels = scene.render(&gpu, &texture, DebugView::Lights);
             let capacity = scene.renderer.stats().lights.list_capacity;
             assert_eq!(scene.stats().scale, capacity, "{path:?}");

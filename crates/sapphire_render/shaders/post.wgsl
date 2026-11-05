@@ -559,18 +559,61 @@ fn blended(a: vec3<f32>, layer: GradientLayer) -> vec3<f32> {
     }
 }
 
-// One gradient layer over `color` at `uv`.
-fn gradient_layer(color: vec3<f32>, uv: vec2<f32>, layer: GradientLayer) -> vec3<f32> {
+// Packed gradient geometry modes (layers::GradientRamp).
+const RAMP_DIRECT: u32 = 0u;
+const RAMP_NORMALIZED: u32 = 1u;
+const RAMP_REVERSED: u32 = 2u;
+const RAMP_CONSTANT: u32 = 3u;
+const RAMP_RADIAL: u32 = 4u;
+
+fn gradient_ramp(uv: vec2<f32>, layer: GradientLayer) -> f32 {
+    if layer.mode.z == RAMP_CONSTANT {
+        return layer.geometry.z;
+    }
+    if layer.mode.z == RAMP_RADIAL {
+        // Aspect is incorporated before CPU narrowing. Coordinates are bounded, so their
+        // norm cannot overflow. Compare before dividing a narrow normalized span.
+        let position = length(uv * vec2<f32>(layer.scale.w, layer.offset.w) - layer.geometry.xy);
+        var difference = position - layer.geometry.z;
+        if layer.mode.w != 0u {
+            difference = -difference;
+        }
+        if difference <= 0.0 {
+            return 0.0;
+        }
+        let width = layer.geometry.w;
+        if width < 1.1754943508222875e-38 || difference >= width {
+            return 1.0;
+        }
+        return difference / width;
+    }
+    if layer.mode.z != RAMP_DIRECT {
+        var normalized: f32;
+        if layer.mode.x == GRADIENT_RADIAL {
+            let basis = vec2<f32>(layer.scale.w, layer.offset.w);
+            normalized = length((uv * layer.geometry.w - layer.geometry.xy) * basis);
+        } else {
+            normalized = (dot(uv - 0.5, layer.geometry.xy) + 0.5) * layer.geometry.w;
+        }
+        if layer.mode.z == RAMP_REVERSED {
+            return saturate(layer.geometry.z - normalized);
+        }
+        return saturate(layer.geometry.z + normalized);
+    }
     let aspect = post.frame.x;
     var position: f32;
     if layer.mode.x == GRADIENT_RADIAL {
-        // In half the frame's diagonal, measured in frame heights.
         let half_diagonal = 0.5 * sqrt(aspect * aspect + 1.0);
         position = length((uv - layer.geometry.xy) * vec2<f32>(aspect, 1.0)) / half_diagonal;
     } else {
         position = dot(uv - 0.5, layer.geometry.xy) + 0.5;
     }
-    let ramp = saturate((position - layer.geometry.z) * layer.geometry.w);
+    return saturate((position - layer.geometry.z) * layer.geometry.w);
+}
+
+// One gradient layer over `color` at `uv`.
+fn gradient_layer(color: vec3<f32>, uv: vec2<f32>, layer: GradientLayer) -> vec3<f32> {
+    let ramp = gradient_ramp(uv, layer);
     let weight = ramp * ramp * (3.0 - 2.0 * ramp) * layer.color.a;
     return mix(color, blended(color, layer), weight);
 }

@@ -400,36 +400,50 @@ mod gpu_tests {
         }
     }
 
-    /// `file`'s compiled-in text with `apply_fog` renamed. Only `frame.wgsl`, which defines it, and
-    /// `fog_card.wgsl` call it, so the two edits compile together and neither compiles alone.
+    /// Rename the exact function token in a real consumer/definition file. The staged-edit
+    /// test discovers those files from the compiled source inventory.
     fn apply_fog_renamed(file: ShaderFile) -> String {
         let text = file.compiled_in();
         assert!(text.contains("apply_fog("), "{} calls apply_fog", file.file_name());
         text.replace("apply_fog(", "apply_fog_renamed(")
     }
 
-    /// Review DV-1, trigger A: a rename across two files, saved more than a build apart. Each
-    /// save alone doesn't compile, but after the last the disk holds a pair that does.
+    /// Review DV-1, trigger A: a rename across its real source consumers, saved more than a
+    /// build apart. Partial saves fail; the last save publishes the coherent group.
     #[test]
     #[ignore = "needs a GPU"]
     fn a_rename_saved_a_file_at_a_time_lands_with_the_last_save() {
         let mut editing = Editing::new();
 
-        assert_eq!(editing.save(ShaderFile::Frame, &apply_fog_renamed(ShaderFile::Frame)), 0);
-        assert!(editing.errors()[0].contains("apply_fog"), "{:?}", editing.errors());
-
-        let reloaded = editing.save(ShaderFile::FogCard, &apply_fog_renamed(ShaderFile::FogCard));
-        assert!(reloaded > 0, "the disk holds a pair that compiles: {:?}", editing.errors());
-        editing.assert_in_use(&[ShaderFile::Frame, ShaderFile::FogCard]);
+        let files: Vec<_> =
+            ShaderFile::ALL.into_iter().filter(|file| file.compiled_in().contains("apply_fog(")).collect();
+        let (&last, partial) = files.split_last().expect("the shader defines apply_fog");
+        assert!(!partial.is_empty(), "the rename must cross actual shader files");
+        let original = editing.renderer.shader_sources().clone();
+        for &file in partial {
+            let builds = editing.builds_started();
+            assert_eq!(editing.save(file, &apply_fog_renamed(file)), 0, "partial save of {file}");
+            assert_eq!(editing.builds_started(), builds + 1, "partial save of {file} was built");
+            assert!(editing.renderer.shader_sources() == &original, "a partial save changed active shaders");
+            assert!(
+                editing.errors().last().is_some_and(|error| error.contains("apply_fog")),
+                "{:?}",
+                editing.errors()
+            );
+        }
+        let reloaded = editing.save(last, &apply_fog_renamed(last));
+        assert!(reloaded > 0, "the last save completes the group: {:?}", editing.errors());
+        editing.assert_in_use(&files);
 
         // Swapped in, the edit is done: a save of the same text asks for nothing, and an edit of
         // another file keeps it.
         let builds = editing.builds_started();
-        assert_eq!(editing.save(ShaderFile::FogCard, &apply_fog_renamed(ShaderFile::FogCard)), 0);
+        assert_eq!(editing.save(last, &apply_fog_renamed(last)), 0);
         assert_eq!(editing.builds_started(), builds);
         let saved = commented(ShaderFile::Post, "saved on disk");
         assert!(editing.save(ShaderFile::Post, &saved) > 0);
-        editing.assert_in_use(&[ShaderFile::Frame, ShaderFile::FogCard, ShaderFile::Post]);
+        editing.assert_in_use(&files);
+        editing.assert_in_use(&[ShaderFile::Post]);
     }
 
     /// Review DV-1, trigger B: a typo in `frame.wgsl`, an edit of `fog_card.wgsl` that needs what

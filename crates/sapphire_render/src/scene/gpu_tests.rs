@@ -118,11 +118,10 @@ struct Limits {
 /// A frame of `count` quads (split into two submeshes each where `split`) under `limits`,
 /// lit by a point light on the per-object path: its pixels and the renderer's stats. Fails on
 /// any validation error.
-fn render(count: u32, split: bool, limits: Option<Limits>) -> (Vec<u8>, RenderStats) {
-    let gpu = gpu();
+fn render(gpu: &GpuContext, count: u32, split: bool, limits: Option<Limits>) -> (Vec<u8>, RenderStats) {
     let settings =
         RenderSettings { light_path: LightPath::PerObject, max_lights: 8, ..RenderSettings::default() };
-    let mut renderer = Renderer::new(&gpu, FORMAT, settings).expect("renderer");
+    let mut renderer = Renderer::new(gpu, FORMAT, settings).expect("renderer");
     if let Some(limits) = limits {
         renderer.limit_buffers(limits.instances, limits.draws, Some(limits.light_lists), None);
     }
@@ -171,15 +170,15 @@ fn render(count: u32, split: bool, limits: Option<Limits>) -> (Vec<u8>, RenderSt
         packet.post = passthrough();
         packet.instances.changed.append(&mut added);
         let scope = gpu.device().push_error_scope(wgpu::ErrorFilter::Validation);
-        renderer.prepare(&gpu, packets.current());
+        renderer.prepare(gpu, packets.current());
         let mut graph = FrameGraph::new();
         let output = graph.import_texture("target", &view);
         renderer.record(&mut graph, output).expect("a view and a target");
-        executor.execute(&gpu, graph).expect("a valid graph");
+        executor.execute(gpu, graph).expect("a valid graph");
         let error = pollster::block_on(scope.pop());
         assert!(error.is_none(), "{error:?}");
     }
-    (read(&gpu, &target), renderer.stats())
+    (read(gpu, &target), renderer.stats())
 }
 
 /// `texture`'s texels, row by row.
@@ -214,11 +213,12 @@ fn read(gpu: &GpuContext, texture: &wgpu::Texture) -> Vec<u8> {
 #[test]
 #[ignore = "needs a GPU"]
 fn instances_past_the_instance_buffers_limit_dont_draw() {
+    let gpu = gpu();
     // Each scene's instances fill the lists' limit too, as on any device: a list is 16 times
     // smaller than an instance.
     let limits = |slots| Limits { instances: slots, draws: 1024, light_lists: slots };
     for (count, limit) in [(7, 8), (8, 8), (9, 8), (12, 8)] {
-        let (pixels, stats) = render(count, false, Some(limits(u64::from(limit))));
+        let (pixels, stats) = render(&gpu, count, false, Some(limits(u64::from(limit))));
         let over = count.saturating_sub(limit);
         assert_eq!(
             (stats.instances, stats.instances_over_limit, stats.lights.lists_over_limit),
@@ -227,10 +227,10 @@ fn instances_past_the_instance_buffers_limit_dont_draw() {
         );
         assert_eq!(stats.draws, count.min(limit));
         // The instances that fit draw exactly as they would alone, and the rest would show.
-        let (alone, _) = render(count.min(limit), false, None);
+        let (alone, _) = render(&gpu, count.min(limit), false, None);
         assert!(pixels == alone, "{count} instances, room for {limit}: the first {limit} differ");
         if over > 0 {
-            assert!(render(count, false, None).0 != alone, "the instances left out are in view");
+            assert!(render(&gpu, count, false, None).0 != alone, "the instances left out are in view");
         }
     }
 }
@@ -238,19 +238,20 @@ fn instances_past_the_instance_buffers_limit_dont_draw() {
 #[test]
 #[ignore = "needs a GPU"]
 fn instances_whose_draws_pass_the_records_limit_dont_draw() {
+    let gpu = gpu();
     // Two draws an instance: five records hold two whole instances, not the third's first draw.
     for (count, records, drawn) in [(2, 5, 2), (3, 5, 2), (3, 6, 3), (4, 6, 3)] {
         let limits = Limits { instances: 64, draws: records, light_lists: 64 };
-        let (pixels, stats) = render(count, true, Some(limits));
+        let (pixels, stats) = render(&gpu, count, true, Some(limits));
         assert_eq!(
             (stats.draws, stats.draws_over_limit),
             (2 * drawn, 2 * (count - drawn)),
             "{count} instances, room for {records} draws"
         );
-        let (alone, _) = render(drawn, true, None);
+        let (alone, _) = render(&gpu, drawn, true, None);
         assert!(pixels == alone, "{count} instances, room for {records} draws: the first {drawn} differ");
         if drawn < count {
-            assert!(render(count, true, None).0 != alone, "the instances left out are in view");
+            assert!(render(&gpu, count, true, None).0 != alone, "the instances left out are in view");
         }
     }
 }

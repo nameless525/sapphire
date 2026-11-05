@@ -216,6 +216,7 @@ struct Frames {
     layers: Option<(Celestial, SkyLayers)>,
     /// The instances each frame lists as characters.
     characters: Vec<InstanceId>,
+    character_opacity: f32,
 }
 
 impl Frames {
@@ -234,6 +235,7 @@ impl Frames {
             },
             layers: None,
             characters: Vec::new(),
+            character_opacity: 1.0,
         }
     }
 
@@ -262,6 +264,23 @@ impl Frames {
         changed: &[MeshInstance],
         reads: &[Read<'_>],
     ) -> Vec<[u8; 4]> {
+        self.record_frame(gpu, view, changed, reads);
+        read_back(gpu, &self.target)
+    }
+
+    /// Runs the same frame and waits for completion when its color pixels are unobserved.
+    fn complete(&mut self, gpu: &GpuContext, view: ViewData, changed: &[MeshInstance], reads: &[Read<'_>]) {
+        self.record_frame(gpu, view, changed, reads);
+        gpu.device().poll(wgpu::PollType::wait_indefinitely()).expect("frame complete");
+    }
+
+    fn record_frame(
+        &mut self,
+        gpu: &GpuContext,
+        view: ViewData,
+        changed: &[MeshInstance],
+        reads: &[Read<'_>],
+    ) {
         let packet = self.packets.begin();
         packet.views.push(view);
         // Along the view, so everything the camera sees is lit.
@@ -280,7 +299,7 @@ impl Frames {
             lighting,
             face: CharacterFace::default(),
             body: CharacterBody::default(),
-            opacity: 1.0,
+            opacity: self.character_opacity,
         }));
 
         let scope = gpu.device().push_error_scope(wgpu::ErrorFilter::Validation);
@@ -307,7 +326,6 @@ impl Frames {
         self.graph.execute(gpu, graph).expect("a valid graph");
         let error = pollster::block_on(scope.pop());
         assert!(error.is_none(), "{error:?}");
-        read_back(gpu, &self.target)
     }
 
     /// Resizes the target, as a window resize does.
@@ -316,7 +334,7 @@ impl Frames {
     }
 }
 
-/// A buffer a texture of up to 8 bytes per texel is copied into, row by row.
+/// A buffer a texture is copied into, row by row.
 struct Readback {
     buffer: wgpu::Buffer,
     size: (u32, u32),
@@ -357,16 +375,17 @@ impl Readback {
     }
 
     /// Each texel's bytes, rows top to bottom.
-    fn texels(&self, gpu: &GpuContext) -> Vec<Vec<u8>> {
+    fn texels<const N: usize>(&self, gpu: &GpuContext) -> Vec<[u8; N]> {
+        assert_eq!(self.texel as usize, N);
         self.buffer.map_async(wgpu::MapMode::Read, .., |result| result.expect("map"));
         gpu.device().poll(wgpu::PollType::wait_indefinitely()).expect("poll");
         let texels = {
             let mapped = self.buffer.get_mapped_range(..).expect("mapped");
-            mapped
-                .chunks_exact(self.padded as usize)
-                .flat_map(|row| row[..(self.size.0 * self.texel) as usize].chunks_exact(self.texel as usize))
-                .map(<[u8]>::to_vec)
-                .collect()
+            let mut texels = Vec::with_capacity((self.size.0 * self.size.1) as usize);
+            for row in mapped.chunks_exact(self.padded as usize) {
+                texels.extend_from_slice(row[..(self.size.0 * self.texel) as usize].as_chunks::<N>().0);
+            }
+            texels
         };
         self.buffer.unmap();
         texels
@@ -378,7 +397,7 @@ fn read_back(gpu: &GpuContext, texture: &wgpu::Texture) -> Vec<[u8; 4]> {
     let mut encoder = gpu.device().create_command_encoder(&Default::default());
     readback.copy(&mut encoder, texture);
     gpu.queue().submit([encoder.finish()]);
-    readback.texels(gpu).into_iter().map(|texel| [texel[0], texel[1], texel[2], texel[3]]).collect()
+    readback.texels::<4>(gpu)
 }
 
 fn f16_to_f32(bits: u16) -> f32 {
@@ -422,13 +441,66 @@ struct Difference {
     over: usize,
 }
 
+impl Difference {
+    /// Each metric may reach its maximum on a different frame.
+    fn include(&mut self, other: Self) {
+        self.mean = self.mean.max(other.mean);
+        self.p99 = self.p99.max(other.p99);
+        self.over = self.over.max(other.over);
+    }
+}
+
+#[test]
+fn temporal_worst_metrics_survive_crossed_maxima() {
+    let mut worst = Difference { mean: 0.2, p99: 8, over: 1 };
+    worst.include(Difference { mean: 0.01, p99: 2, over: 50 });
+    worst.include(Difference { mean: 0.1, p99: 16, over: 2 });
+    assert_eq!((worst.mean, worst.p99, worst.over), (0.2, 16, 50));
+}
+
 fn difference(a: &[[u8; 4]], b: &[[u8; 4]], threshold: u8) -> Difference {
-    let mut differences: Vec<u8> =
-        a.iter().zip(b).map(|(a, b)| (0..3).map(|c| a[c].abs_diff(b[c])).max().unwrap_or(0)).collect();
-    let mean = differences.iter().map(|&d| f64::from(d)).sum::<f64>() / differences.len() as f64;
-    let over = differences.iter().filter(|&&d| d > threshold).count();
-    differences.sort_unstable();
-    Difference { mean, p99: differences[differences.len() * 99 / 100], over }
+    assert_eq!(a.len(), b.len());
+    assert!(!a.is_empty());
+    let mut counts = [0usize; 256];
+    let mut sum = 0u64;
+    let mut over = 0;
+    for (a, b) in a.iter().zip(b) {
+        let d = (0..3).map(|c| a[c].abs_diff(b[c])).max().expect("three color channels");
+        counts[usize::from(d)] += 1;
+        sum += u64::from(d);
+        over += usize::from(d > threshold);
+    }
+    let rank = a.len() * 99 / 100;
+    let mut seen = 0;
+    let p99 = counts
+        .iter()
+        .position(|count| {
+            seen += count;
+            seen > rank
+        })
+        .expect("the percentile is within the image") as u8;
+    Difference { mean: sum as f64 / a.len() as f64, p99, over }
+}
+
+#[test]
+fn temporal_difference_matches_sorted_pixel_errors() {
+    // Uneven lengths exercise percentile boundaries; alpha must remain irrelevant to RGB.
+    for length in [1, 2, 99, 100, 101, 1024] {
+        let a: Vec<_> = (0..length).map(|i| [(i % 256) as u8, 32, 200, 0]).collect();
+        let b: Vec<_> = (0..length).map(|i| [17, (i * 73 % 256) as u8, 0, 255]).collect();
+        let mut sorted: Vec<_> = a
+            .iter()
+            .zip(&b)
+            .map(|(a, b)| a[..3].iter().zip(&b[..3]).map(|(a, b)| a.abs_diff(*b)).max().expect("RGB"))
+            .collect();
+        sorted.sort_unstable();
+        for threshold in [0, 32, 200, 255] {
+            let actual = difference(&a, &b, threshold);
+            assert_eq!(actual.mean, sorted.iter().map(|&d| f64::from(d)).sum::<f64>() / length as f64);
+            assert_eq!(actual.p99, sorted[length * 99 / 100]);
+            assert_eq!(actual.over, sorted.iter().filter(|&&d| d > threshold).count());
+        }
+    }
 }
 
 /// Pixels within `radius` of an edge of `reference`: where its neighborhood spans more than
@@ -517,8 +589,13 @@ fn the_projection_moves_by_the_jitter_sequence() {
     let phases = jitter_phases(size.1, size.1);
     for frame in 0..2 * u64::from(phases) {
         let changed = [instance(0, quad, Mat4::IDENTITY)];
-        frames.frame(&gpu, view, if frame == 0 { &changed } else { &[] }, &[(|t| Some(t.depth), &readback)]);
-        let texels = readback.texels(&gpu);
+        frames.complete(
+            &gpu,
+            view,
+            if frame == 0 { &changed } else { &[] },
+            &[(|t| Some(t.depth), &readback)],
+        );
+        let texels = readback.texels::<4>(&gpu);
         let covered = |x: u32, y: u32| depth(&texels[(y * size.0 + x) as usize]) > 0.0;
         // Pixel p samples p + 0.5 - jitter of the unjittered image: x = 100 is covered when
         // 100.5 - jitter < 100.3, row 60 when 60.5 - jitter < 60.3.
@@ -544,8 +621,8 @@ fn velocity_ignores_the_jitter() {
     let velocity = Readback::new(&gpu, size, 4);
     for frame in 0..10 {
         let changed = [instance(0, ball, translate(-0.5, 0.0, 0.4))];
-        frames.frame(&gpu, view, if frame == 0 { &changed } else { &[] }, &[(|t| t.velocity, &velocity)]);
-        let texels = velocity.texels(&gpu);
+        frames.complete(&gpu, view, if frame == 0 { &changed } else { &[] }, &[(|t| t.velocity, &velocity)]);
+        let texels = velocity.texels::<4>(&gpu);
         // Zero up to the target's smallest step: WARP rounds a few texels to 6e-8, 1e-5 of a pixel.
         assert!(
             texels.iter().flat_map(|texel| rg16f(texel)).all(|axis| axis.abs() < 1e-6),
@@ -557,14 +634,41 @@ fn velocity_ignores_the_jitter() {
     let step = 3.0 / 45.0;
     for frame in 0..10 {
         let at = Mat4::from_translation(Vec3::new(0.5 + step * frame as f32, 0.0, 0.0));
-        frames.frame(&gpu, view, &[instance(1, quad, at)], &[(|t| t.velocity, &velocity)]);
+        frames.complete(&gpu, view, &[instance(1, quad, at)], &[(|t| t.velocity, &velocity)]);
         if frame == 0 {
             continue;
         }
-        let texels = velocity.texels(&gpu);
+        let texels = velocity.texels::<4>(&gpu);
         let center = ((size.1 / 2) * size.0 + size.0 / 2 + 22 + 3 * frame) as usize;
         let [vx, vy] = rg16f(&texels[center]);
         assert!((vx * size.0 as f32 - 3.0).abs() < 5e-3 && vy.abs() < 1e-6, "frame {frame}: {vx} {vy}");
+    }
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn completing_unobserved_frames_preserves_the_next_image() {
+    let gpu = gpu();
+    let size = (96, 54);
+    let mut read_every_frame = Frames::taa(&gpu, size);
+    let mut read_observed_frames = Frames::taa(&gpu, size);
+    let mesh = sphere(&flat([0.9, 0.6, 0.3], 5.5));
+    let reference_mesh = upload(&mut read_every_frame.renderer, &mesh);
+    let observed_mesh = upload(&mut read_observed_frames.renderer, &mesh);
+    let view = ViewData::new(camera(size, Vec3::ZERO, 2.0));
+    for frame in 0..20 {
+        let at = translate(frame as f32 * 0.01, 0.0, 0.5);
+        let reference = read_every_frame.frame(&gpu, view, &[instance(0, reference_mesh, at)], &[]);
+        let changed = [instance(0, observed_mesh, at)];
+        if frame % 4 == 3 {
+            let observed = read_observed_frames.frame(&gpu, view, &changed, &[]);
+            assert_eq!(observed, reference, "frame {frame}");
+        } else {
+            read_observed_frames.complete(&gpu, view, &changed, &[]);
+        }
+        let reference = read_every_frame.renderer.stats().temporal;
+        let observed = read_observed_frames.renderer.stats().temporal;
+        assert_eq!((observed.resets, observed.jitter()), (reference.resets, reference.jitter()));
     }
 }
 
@@ -586,7 +690,15 @@ fn a_still_scene_converges_to_msaa_and_holds_still() {
             instance(1, comb, Mat4::from_translation(Vec3::new(0.0, 0.0, -1.0))),
         ];
         (0..frames)
-            .map(|frame| renderer.frame(&gpu, view, if frame == 0 { &changed } else { &[] }, &[]))
+            .map(|frame| {
+                let changed = if frame == 0 { &changed[..] } else { &[] };
+                if frame == 0 || frame >= 31 {
+                    renderer.frame(&gpu, view, changed, &[])
+                } else {
+                    renderer.complete(&gpu, view, changed, &[]);
+                    Vec::new()
+                }
+            })
             .collect()
     };
     // The truth: 64 samples a pixel, 4× MSAA at four times the size, averaged down.
@@ -646,7 +758,11 @@ fn render_both(
             let view = ViewData::new(view(frame));
             let comb_at = Mat4::from_translation(Vec3::new(0.0, 0.0, -0.5));
             let changed = [instance(0, ball_mesh, ball(frame)), instance(1, comb_handle, comb_at)];
-            pixels = frames_of.frame(gpu, view, &changed, &[]);
+            if frame + 1 == frames {
+                pixels = frames_of.frame(gpu, view, &changed, &[]);
+            } else {
+                frames_of.complete(gpu, view, &changed, &[]);
+            }
         }
         if last.0.is_empty() {
             last.0 = pixels;
@@ -724,11 +840,13 @@ fn outlines_keep_their_place_and_darkness_in_motion() {
     let mut sides = [(0.0f32, 0.0f32, 0.0f32); 2];
     for frame in 0..24 {
         let at = translate(-0.6 + speed * frame as f32, 0.0, 0.5);
-        let taa = taa_frames.frame(&gpu, view, &[instance(0, taa_ball, at)], &[]);
-        let msaa = msaa_frames.frame(&gpu, view, &[instance(0, msaa_ball, at)], &[]);
         if frame < 16 {
+            taa_frames.complete(&gpu, view, &[instance(0, taa_ball, at)], &[]);
+            msaa_frames.complete(&gpu, view, &[instance(0, msaa_ball, at)], &[]);
             continue;
         }
+        let taa = taa_frames.frame(&gpu, view, &[instance(0, taa_ball, at)], &[]);
+        let msaa = msaa_frames.frame(&gpu, view, &[instance(0, msaa_ball, at)], &[]);
         dump("outline_taa", size, &taa);
         dump("outline_msaa", size, &msaa);
         let center = (size.0 as f32 / 2.0 + (-0.6 + speed * frame as f32) * 270.0) as usize;
@@ -778,8 +896,13 @@ fn moving_lines_leave_no_trail() {
         let (mut taa_pixels, mut msaa_pixels) = (Vec::new(), Vec::new());
         for frame in 0..24 {
             let (view, at) = scene(frame);
-            taa_pixels = taa.frame(&gpu, ViewData::new(view), &[instance(0, taa_ball, at)], &[]);
-            msaa_pixels = msaa.frame(&gpu, ViewData::new(view), &[instance(0, msaa_ball, at)], &[]);
+            if frame == 23 {
+                taa_pixels = taa.frame(&gpu, ViewData::new(view), &[instance(0, taa_ball, at)], &[]);
+                msaa_pixels = msaa.frame(&gpu, ViewData::new(view), &[instance(0, msaa_ball, at)], &[]);
+            } else {
+                taa.complete(&gpu, ViewData::new(view), &[instance(0, taa_ball, at)], &[]);
+                msaa.complete(&gpu, ViewData::new(view), &[instance(0, msaa_ball, at)], &[]);
+            }
         }
         dump(&format!("trail_{name}_taa"), size, &taa_pixels);
         dump(&format!("trail_{name}_msaa"), size, &msaa_pixels);
@@ -815,8 +938,8 @@ fn the_responsive_mask_marks_visible_characters_and_lines() {
         // Above the static sphere, its line a few pixels wide.
         instance(3, outlined, translate(0.5, 0.6, 0.2)),
     ];
-    frames.frame(&gpu, view, &changed, &[(|t| t.responsive, &mask)]);
-    let texels = mask.texels(&gpu);
+    frames.complete(&gpu, view, &changed, &[(|t| t.responsive, &mask)]);
+    let texels = mask.texels::<1>(&gpu);
     let at = |x: f32, y: f32| {
         let pixel = (size.0 as f32 / 2.0 + x * 67.5, size.1 as f32 / 2.0 - y * 67.5);
         texels[pixel.1 as usize * size.0 as usize + pixel.0 as usize][0]
@@ -840,6 +963,52 @@ fn the_responsive_mask_marks_visible_characters_and_lines() {
 
 #[test]
 #[ignore = "needs a GPU"]
+fn a_nearer_two_sided_surface_replaces_a_fading_surfaces_mask() {
+    use sapphire_assets::material::AlphaMode;
+
+    let gpu = gpu();
+    let size = (160, 90);
+    let mut frames = Frames::taa(&gpu, size);
+    frames.character_opacity = 0.5;
+    let rear = upload(&mut frames.renderer, &character_sphere(&flat([0.8; 3], 0.0)));
+    frames.characters.push(InstanceId(0));
+    let view = ViewData::new(camera(size, Vec3::ZERO, 2.0));
+    let mask = Readback::new(&gpu, size, 1);
+    let responsive = Readback::new(&gpu, size, 1);
+    let reads: [Read<'_>; 2] = [(|t| Some(t.outlines), &mask), (|t| t.responsive, &responsive)];
+    frames.complete(&gpu, view, &[instance(0, rear, Mat4::from_scale(Vec3::splat(0.4)))], &reads);
+    assert!(
+        mask.texels::<1>(&gpu).iter().filter(|texel| texel[0] != 0).count() > 100,
+        "the fading rear surface writes its code"
+    );
+
+    let front_material = AnimeCharacterMaterial { double_sided: true, ..flat([0.4, 0.6, 0.8], 0.0) };
+    let front = upload(&mut frames.renderer, &rectangles(&[[[-3.0, -3.0], [3.0, 3.0]]], &front_material));
+    frames.complete(&gpu, view, &[instance(1, front, Mat4::from_translation(Vec3::Z))], &reads);
+    assert!(
+        mask.texels::<1>(&gpu).iter().all(|texel| texel[0] == 0),
+        "the nearest ordinary surface clears the rear code"
+    );
+    assert!(
+        responsive.texels::<1>(&gpu).iter().all(|texel| texel[0] == 0),
+        "the resolve sees ordinary geometry"
+    );
+
+    let cut_material = AnimeCharacterMaterial {
+        alpha: AlphaMode::Mask { cutoff: 0.5 },
+        base_color: [0.4, 0.6, 0.8, 0.0],
+        ..front_material
+    };
+    let cut = upload(&mut frames.renderer, &rectangles(&[[[-3.0, -3.0], [3.0, 3.0]]], &cut_material));
+    frames.complete(&gpu, view, &[instance(1, cut, Mat4::from_translation(Vec3::Z))], &reads);
+    assert!(
+        mask.texels::<1>(&gpu).iter().filter(|texel| texel[0] != 0).count() > 100,
+        "cut-out pixels retain the rear surface's provenance"
+    );
+}
+
+#[test]
+#[ignore = "needs a GPU"]
 fn upsampling_restores_the_detail_a_bilinear_upscale_loses() {
     let gpu = gpu();
     let size = (480, 270);
@@ -857,9 +1026,14 @@ fn upsampling_restores_the_detail_a_bilinear_upscale_loses() {
             instance(0, meshes[0], translate(0.0, 0.0, 0.6)),
             instance(1, meshes[1], Mat4::from_translation(Vec3::new(0.0, 0.0, -1.0))),
         ];
-        let mut pixels = renderer.frame(&gpu, view, &changed, &[]);
-        for _ in 1..frames {
-            pixels = renderer.frame(&gpu, view, &[], &[]);
+        let mut pixels = Vec::new();
+        for frame in 0..frames {
+            let changed = if frame == 0 { &changed[..] } else { &[] };
+            if frame + 1 == frames {
+                pixels = renderer.frame(&gpu, view, changed, &[]);
+            } else {
+                renderer.complete(&gpu, view, changed, &[]);
+            }
         }
         (pixels, renderer)
     };
@@ -897,28 +1071,28 @@ fn history_resets_on_start_resize_and_cut_but_not_on_rescale() {
         let stats = frames.renderer.stats().temporal;
         (stats.resets, stats.reset)
     };
-    frames.frame(&gpu, view, &[instance(0, ball, translate(0.0, 0.0, 0.5))], &[]);
+    frames.complete(&gpu, view, &[instance(0, ball, translate(0.0, 0.0, 0.5))], &[]);
     assert_eq!(reset(&frames), (1, Some(HistoryReset::Start)));
     for _ in 0..4 {
-        frames.frame(&gpu, view, &[], &[]);
+        frames.complete(&gpu, view, &[], &[]);
         assert_eq!(reset(&frames), (1, None));
     }
     // A render-scale change keeps the history: it is at the output's size.
     frames.renderer.set_render_scale(0.75);
-    frames.frame(&gpu, view, &[], &[]);
+    frames.complete(&gpu, view, &[], &[]);
     assert_eq!(reset(&frames), (1, None), "a new render scale");
-    frames.frame(&gpu, ViewData { cut: true, ..view }, &[], &[]);
+    frames.complete(&gpu, ViewData { cut: true, ..view }, &[], &[]);
     assert_eq!(reset(&frames), (2, Some(HistoryReset::Cut)));
-    frames.frame(&gpu, view, &[], &[]);
+    frames.complete(&gpu, view, &[], &[]);
     assert_eq!(reset(&frames), (2, None), "a cut resets one frame");
     frames.resize(&gpu, (200, 100));
     let view = ViewData::new(camera(frames.size(), Vec3::ZERO, 2.0));
-    frames.frame(&gpu, view, &[], &[]);
+    frames.complete(&gpu, view, &[], &[]);
     assert_eq!(reset(&frames), (3, Some(HistoryReset::Resize)));
     // A renderer made again (device loss, a tier change) starts over.
     let mut again = Frames::taa(&gpu, (200, 100));
     let ball = upload(&mut again.renderer, &sphere(&flat([0.8, 0.4, 0.2], 5.5)));
-    again.frame(&gpu, view, &[instance(0, ball, translate(0.0, 0.0, 0.5))], &[]);
+    again.complete(&gpu, view, &[instance(0, ball, translate(0.0, 0.0, 0.5))], &[]);
     assert_eq!(reset(&again), (1, Some(HistoryReset::Start)));
 }
 
@@ -930,10 +1104,11 @@ fn a_render_scale_step_keeps_the_image_steady() {
     let mut frames = Frames::taa(&gpu, size);
     let ball = upload(&mut frames.renderer, &sphere(&two_tone([0.9, 0.55, 0.3], 5.5)));
     let view = ViewData::new(camera(size, Vec3::ZERO, 2.0));
-    let mut converged = frames.frame(&gpu, view, &[instance(0, ball, translate(0.0, 0.0, 0.6))], &[]);
-    for _ in 1..40 {
-        converged = frames.frame(&gpu, view, &[], &[]);
+    frames.complete(&gpu, view, &[instance(0, ball, translate(0.0, 0.0, 0.6))], &[]);
+    for _ in 1..39 {
+        frames.complete(&gpu, view, &[], &[]);
     }
+    let converged = frames.frame(&gpu, view, &[], &[]);
     // Dynamic resolution's step: the next frame stays antialiased instead of starting over.
     frames.renderer.set_render_scale(0.85);
     let stepped = frames.frame(&gpu, view, &[], &[]);
@@ -954,7 +1129,7 @@ fn mobile_tiers_keep_msaa_in_tile_memory() {
         let mut frames = Frames::new(&gpu, table.get(id).render_settings(), (320, 180));
         let ball = upload(&mut frames.renderer, &character_sphere(&flat([0.8; 3], 5.5)));
         let view = ViewData::new(camera(frames.size(), Vec3::ZERO, 2.0));
-        frames.frame(&gpu, view, &[instance(0, ball, translate(0.0, 0.0, 0.5))], &[]);
+        frames.complete(&gpu, view, &[instance(0, ball, translate(0.0, 0.0, 0.5))], &[]);
         let report = frames.report();
         for name in ["msaa color", "depth"] {
             let texture = report.textures.iter().find(|texture| texture.name == name).expect(name);
@@ -998,7 +1173,7 @@ fn temporal_aa_runs_at_any_size_scale_and_msaa() {
                 frames.renderer.set_render_scale(scale);
                 let view = ViewData::new(camera(size, Vec3::ZERO, 2.0));
                 let changed = [instance(0, ball, translate(0.0, 0.0, 0.5))];
-                frames.frame(&gpu, view, if first { &changed } else { &[] }, &[]);
+                frames.complete(&gpu, view, if first { &changed } else { &[] }, &[]);
                 first = false;
             }
         }
@@ -1017,7 +1192,12 @@ fn draw_sphere(
     let mut pixels = Vec::new();
     for frame in 0..count {
         let view = ViewData { cut: cut && frame == 0, ..view };
-        pixels = frames.frame(gpu, view, &[instance(0, ball, translate(0.0, 0.0, 0.5))], &[]);
+        let changed = [instance(0, ball, translate(0.0, 0.0, 0.5))];
+        if frame + 1 == count {
+            pixels = frames.frame(gpu, view, &changed, &[]);
+        } else {
+            frames.complete(gpu, view, &changed, &[]);
+        }
     }
     pixels
 }
@@ -1135,9 +1315,7 @@ fn stars_and_the_moon_hold_still_and_follow_a_turning_camera() {
             let light = total_light(&pixels);
             (lowest, highest) = (lowest.min(light), highest.max(light));
             let change = difference(&pixels, &last, 4);
-            if change.over > worst.over || change.mean > worst.mean {
-                worst = change;
-            }
+            worst.include(change);
         }
         last = pixels;
     }

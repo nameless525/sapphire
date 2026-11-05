@@ -99,7 +99,7 @@
 
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3};
-use sapphire_assets::material::CardFacing;
+use sapphire_assets::material::{CardFacing, FogCardParams};
 use sapphire_assets::mesh::PositionFormat;
 pub use sapphire_look::fog::{
     CEILING, FogRay, HORIZON_WEIGHT, MAX_EXPONENT, MIN_DENSITY, MIX_DEPTH, SERIES_BELOW, SKY_DISTANCE,
@@ -107,11 +107,14 @@ pub use sapphire_look::fog::{
 use sapphire_rhi::wgpu;
 
 use crate::draw::DrawRef;
-use crate::materials::{MaterialHandle, Materials};
+use crate::materials::Materials;
 use crate::mesh_pool::MeshRecord;
 use crate::pipelines::{DEPTH_FORMAT, FOG_CARD_DEPTH_BINDING, SurfaceVariant};
 use crate::scene::{DrawList, InstanceSlots};
 use crate::{CameraData, Fog};
+
+#[cfg(test)]
+mod gpu_tests;
 
 /// The frame's fog as the shaders read it (WGSL `FogUniforms`, the last field of
 /// `FrameUniforms`). 80 bytes.
@@ -132,7 +135,7 @@ pub(crate) struct GpuFog {
 }
 
 impl GpuFog {
-    /// `fog`, made safe for the shaders ([`Fog::sanitized`]: non-finite or negative densities,
+    /// `fog`, sanitized before scalar range admission ([`Fog::sanitized`]: non-finite or negative densities,
     /// colors, starts and falloff are 0, a non-finite base 0, and the characters' share within
     /// 0..=1), which [`Fog::ray`] evaluates on the CPU.
     pub(crate) fn new(fog: &Fog) -> Self {
@@ -154,6 +157,155 @@ impl GpuFog {
     }
 }
 
+/// A finite squared length in the world shaders gives a distance below 2^64 meters.
+const MAX_RAY_DISTANCE: f64 = (1_u128 << 64) as f64;
+/// Headroom for rounded f32 products and sums in the scalar fog shader.
+const FOG_ARITHMETIC_LIMIT: f64 = f32::MAX as f64 / 8.0;
+/// The maximum scene color in the renderer's Rgba16Float HDR target.
+const MAX_FOG_SCENE_LIGHT: f64 = 65_504.0;
+/// Room for the f32 rounded products, weighted sum and normalization of a fog color.
+const FOG_LIGHT_ROUNDING: f64 = 1.0 + 32.0 * f32::EPSILON as f64;
+
+/// The scalar fog shader's inputs for one frame and a bound on its card lighting.
+#[derive(Clone, Copy)]
+pub(crate) struct FogAdmission {
+    pub(crate) uniforms: GpuFog,
+    pub(crate) profile_issue: Option<&'static str>,
+    light_bound: Option<[f64; 3]>,
+}
+
+impl FogAdmission {
+    pub(crate) fn new(fog: &Fog, horizon: Vec3, eye_y: f32, cube_format: wgpu::TextureFormat) -> Self {
+        let uniforms = GpuFog::new(fog);
+        let target_limit = if cube_format == wgpu::TextureFormat::Rg11b10Ufloat {
+            // With six or five fraction bits and the top finite exponent, the largest
+            // values are (2 - 1/64) * 2^15 and (2 - 1/32) * 2^15, respectively.
+            [65_024.0, 65_024.0, 64_512.0]
+        } else {
+            debug_assert_eq!(cube_format, wgpu::TextureFormat::Rgba16Float);
+            [MAX_FOG_SCENE_LIGHT; 3]
+        };
+        match fog_light_bound(uniforms, horizon, eye_y, target_limit) {
+            Ok(light_bound) => Self { uniforms, profile_issue: None, light_bound: Some(light_bound) },
+            Err(reason) => {
+                // Preserve the card sun lobe and the horizon for a clear atmosphere. The
+                // card check below still guards their sum and the final tinted light.
+                let clear = GpuFog { light: uniforms.light, ..GpuFog::default() };
+                Self {
+                    uniforms: clear,
+                    profile_issue: Some(reason),
+                    light_bound: fog_light_bound(clear, horizon, eye_y, target_limit).ok(),
+                }
+            }
+        }
+    }
+
+    fn allows_card(&self, params: &FogCardParams) -> bool {
+        let Some(light) = self.light_bound else { return false };
+        let scatter = f64::from(params.fade[3]);
+        (0.0..=1.0).contains(&scatter)
+            && (0..3).all(|i| {
+                let sun = f64::from(self.uniforms.light[i]);
+                let tint = f64::from(params.color[i]).abs();
+                let lit = light[i] + scatter * sun;
+                // The shader adds light and scatter before it applies tint. Check both
+                // the intermediate and the final color, per channel, so a tiny tint
+                // can still safely use the full finite range of a clear-frame sun.
+                lit <= f64::from(f32::MAX)
+                    && sun * tint <= f64::from(f32::MAX)
+                    && lit * tint * FOG_LIGHT_ROUNDING <= MAX_FOG_SCENE_LIGHT
+            })
+    }
+}
+
+fn fog_light_bound(
+    fog: GpuFog,
+    horizon: Vec3,
+    eye_y: f32,
+    target_limit: [f64; 3],
+) -> Result<[f64; 3], &'static str> {
+    if !horizon.is_finite() || !eye_y.is_finite() {
+        return Err("fog needs a finite view height and horizon");
+    }
+    let falloff = f64::from(fog.shape[2]);
+    let base = f64::from(fog.shape[3]);
+    let mut height_start = 1.0_f64;
+    // The main view and the sky cube's origin both consume the same profile.
+    for eye in [0.0, f64::from(eye_y)] {
+        let delta = eye - base;
+        let exponent = -falloff * delta;
+        let exponent_products = falloff * (eye.abs() + base.abs());
+        if delta.abs() > f64::from(f32::MAX) || exponent_products > FOG_ARITHMETIC_LIMIT {
+            return Err("height exponent exceeds the scalar fog range");
+        }
+        // Allow for cancellation if the compiler multiplies eye and base separately.
+        let upper_exponent = exponent + 4.0 * f64::from(f32::EPSILON) * exponent_products;
+        if upper_exponent > 0.0 {
+            height_start = height_start.max(2.0 * upper_exponent.min(f64::from(MAX_EXPONENT)).exp());
+        }
+    }
+    if 2.0 * falloff * MAX_RAY_DISTANCE > FOG_ARITHMETIC_LIMIT {
+        return Err("height falloff exceeds the scalar ray range");
+    }
+    // Bound the integral's numerator, reciprocal and their product, so multiplying
+    // either factor into another height term also fits. exp(30) < 2^44, the reciprocal
+    // is at most 1000 outside the small-x series, and the ratio peaks at x = -30.
+    let integral_factor = if falloff == 0.0 { 1.0 } else { (1_u64 << 44) as f64 };
+    let near = f64::from(fog.near[3]);
+    let far = f64::from(fog.far[3]);
+    let height = f64::from(fog.height[3]);
+    let height_factor = height.max(1.0) * height_start * integral_factor;
+    let optical_depth = (near + far + height_factor) * MAX_RAY_DISTANCE;
+    if optical_depth > FOG_ARITHMETIC_LIMIT {
+        return Err("optical depth exceeds the scalar ray range");
+    }
+    let horizon = horizon.to_array().map(|x| f64::from(x).abs());
+    // Both color-mix paths use a segment no longer than the stretch. Max with 1
+    // also bounds subsets of the products after inlining or reassociation.
+    let mix_length = 2.0 * f64::from(MIX_DEPTH) / f64::from(MIN_DENSITY);
+    let mut light = horizon;
+    let volume = fog.layers() != 0;
+    for i in 0..3 {
+        let near_color = f64::from(fog.near[i]);
+        let far_tint = f64::from(fog.far[i]);
+        let height_color = f64::from(fog.height[i]);
+        if volume {
+            // The weighted average cannot exceed its brightest input. The shader mixes
+            // over at most MIX_DEPTH / density at the eye, so its total mixed weight
+            // stays near MIX_DEPTH * ratio. The scene light bound also keeps this
+            // unnormalized numerator well inside f32.
+            let mut bound = horizon[i];
+            if near > 0.0 {
+                bound = bound.max(near_color);
+            }
+            if far > 0.0 {
+                bound = bound.max(far_tint * horizon[i]);
+            }
+            if height > 0.0 {
+                bound = bound.max(height_color);
+            }
+            light[i] = bound * FOG_LIGHT_ROUNDING;
+            if (light[i] + f64::from(fog.light[i])) * FOG_LIGHT_ROUNDING > target_limit[i] {
+                return Err("volume light and sun scatter exceed the HDR target range");
+            }
+        } else {
+            light[i] *= FOG_LIGHT_ROUNDING;
+            if light[i] > f64::from(f32::MAX) {
+                return Err("clear fog horizon exceeds the scalar card light range");
+            }
+        }
+        if mix_length
+            * (near_color.max(1.0) * near.max(1.0)
+                + far_tint.max(1.0) * horizon[i].max(1.0) * far.max(1.0)
+                + height_color.max(1.0) * height_factor)
+            > FOG_ARITHMETIC_LIMIT
+        {
+            return Err("fog color products exceed the scalar mix range");
+        }
+    }
+    Ok(light)
+}
+
 /// The name of the fog card shader's depth fade constant (`fog_card.wgsl`).
 pub(crate) const DEPTH_FADE_CONSTANT: &str = "FOG_CARD_DEPTH_FADE";
 
@@ -173,7 +325,7 @@ pub(crate) struct FogCards {
     /// The scene groups with the prepass's depth, the two used last (cards read it only under
     /// temporal AA, where the prepass's depth is the history pair's, alternating frame by frame),
     /// made again only when the depth texture or the buffers they bind change, which steady frames
-    /// never do. Since the depth alternates, a new size or buffer replaces both within two frames.
+    /// never do. Incompatible entries go at the first miss; an empty card list releases both.
     depth_groups: [Option<DepthGroup>; 2],
     /// Which of `depth_groups` the last frame bound.
     last_group: usize,
@@ -226,6 +378,12 @@ impl FogCards {
         &self.stand_in
     }
 
+    /// A frame without a view has no readers that can reuse retained depth bindings.
+    pub(crate) fn no_view(&mut self) {
+        self.draws.clear();
+        self.depth_groups = [None, None];
+    }
+
     /// Orders the frame's card draws back to front from `camera`, each by how far it lies as its
     /// facing has it (the fog cards docs above have why); ties keep the draw list's order.
     pub(crate) fn sort(
@@ -235,15 +393,15 @@ impl FogCards {
         slots: &InstanceSlots,
         meshes: &[MeshRecord],
         materials: &Materials,
-    ) {
+        fog: &FogAdmission,
+    ) -> u32 {
         let variant = SurfaceVariant::FOG_CARD.index();
-        let depth = |slot: u32, material: MaterialHandle| {
+        let depth = |slot: u32, facing: u32| {
             let transform = slots.transform(slot).unwrap_or(Mat4::IDENTITY);
             let origin = transform.w_axis.truncate();
-            let facing = materials.fog_card_facing(material);
-            if facing == Some(CardFacing::Camera.code()) {
+            if facing == CardFacing::Camera.code() {
                 camera.view_depth(origin)
-            } else if facing == Some(CardFacing::Upright.code()) {
+            } else if facing == CardFacing::Upright.code() {
                 camera.view_depth(origin.with_y(camera.position.y))
             } else {
                 let center = slots
@@ -254,22 +412,34 @@ impl FogCards {
             }
         };
         self.order.clear();
+        let mut unsupported = 0;
+        let mut push = |slot, material, draw| {
+            if let Some(params) = materials.fog_card_params(material).filter(|p| fog.allows_card(p)) {
+                self.order.push((depth(slot, params.modes[1]), self.order.len() as u32, draw));
+            } else {
+                unsupported += 1;
+            }
+        };
         for format in PositionFormat::ALL {
             let commands = &list.commands[crate::pipelines::format_index(format)][variant];
             for (index, command) in commands.iter().enumerate() {
                 let draw = DrawRef::Static { format, index: index as u32 };
-                self.order.push((depth(command.slot, command.material), self.order.len() as u32, draw));
+                push(command.slot, command.material, draw);
             }
         }
         for (index, command) in list.deformed[variant].iter().enumerate() {
             let draw = DrawRef::Deformed { index: index as u32 };
-            self.order.push((depth(command.slot, command.material), self.order.len() as u32, draw));
+            push(command.slot, command.material, draw);
         }
         // Ties keep the draw list's order, so the order holds frame to frame; unstable, so sorting
         // never allocates.
         self.order.sort_unstable_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
         self.draws.clear();
         self.draws.extend(self.order.iter().map(|(_, _, draw)| *draw));
+        if self.draws.is_empty() {
+            self.depth_groups = [None, None];
+        }
+        unsupported
     }
 
     /// The frame's card draws, back to front, and the cache of the scene group with the prepass's
@@ -298,6 +468,15 @@ impl<'a> CardGroupCache<'a> {
         materials: &wgpu::Buffer,
         depth: &wgpu::TextureView,
     ) -> &'a wgpu::BindGroup {
+        for group in self.groups.iter_mut() {
+            if group.as_ref().is_some_and(|group| {
+                group.depth.texture().size() != depth.texture().size()
+                    || group.instances != *instances
+                    || group.materials != *materials
+            }) {
+                *group = None;
+            }
+        }
         let holds = |group: &Option<DepthGroup>| {
             group.as_ref().is_some_and(|group| {
                 group.depth == *depth && group.instances == *instances && group.materials == *materials
@@ -339,6 +518,10 @@ pub struct FogStats {
     pub layers: u32,
     /// Fog card draws in the last prepared frame (of `RenderStats::transparent_draws`).
     pub cards: u32,
+    /// The frame's fog exceeded the supported GPU arithmetic range. Its atmosphere draws clear.
+    pub unsupported_profile: bool,
+    /// Cards omitted because their fog light could exceed the scalar or HDR scene range.
+    pub unsupported_cards: u32,
     /// Fog card pipelines built, across position formats.
     pub card_pipelines: u32,
 }
@@ -347,6 +530,80 @@ pub struct FogStats {
 mod tests {
     use super::*;
     use crate::{FogLayer, HeightFog};
+
+    #[test]
+    fn ordinary_fog_upload_is_exact_and_extreme_profiles_are_explicitly_refused() {
+        let ordinary = Fog {
+            near: FogLayer { color: Vec3::splat(0.4), density: 0.03, start: 1.0 },
+            height: HeightFog { color: Vec3::splat(0.2), density: 0.01, falloff: 0.02, base: 5.0 },
+            sun_inscatter: Vec3::splat(0.1),
+            characters: 0.5,
+            ..Fog::default()
+        };
+        let horizon = Vec3::splat(0.3);
+        let supported = FogAdmission::new(&ordinary, horizon, 2.0, wgpu::TextureFormat::Rgba16Float);
+        assert_eq!(supported.profile_issue, None);
+        assert_eq!(supported.uniforms, GpuFog::new(&ordinary));
+        let too_dense = Fog {
+            near: FogLayer { density: f32::MAX, ..ordinary.near },
+            characters: f32::from_bits(1),
+            ..ordinary
+        };
+        let delta =
+            Fog { height: HeightFog { base: -f32::MAX, falloff: 0.0, ..ordinary.height }, ..ordinary };
+        let too_bright = Fog {
+            near: FogLayer { color: Vec3::splat(0.75 * f32::MAX), density: 0.125, start: 0.0 },
+            sun_inscatter: Vec3::splat(0.75 * f32::MAX),
+            ..Fog::default()
+        };
+        for (fog, eye, reason) in [
+            (too_dense, 2.0, "optical depth exceeds the scalar ray range"),
+            (delta, f32::MAX, "height exponent exceeds the scalar fog range"),
+            (too_bright, 0.0, "volume light and sun scatter exceed the HDR target range"),
+        ] {
+            let refused = FogAdmission::new(&fog, horizon, eye, wgpu::TextureFormat::Rgba16Float);
+            assert_eq!(refused.profile_issue, Some(reason));
+            assert_eq!(refused.uniforms.layers(), 0);
+            assert_eq!(refused.uniforms.light, GpuFog::new(&fog).light);
+        }
+    }
+
+    #[test]
+    fn clear_cards_admit_tiny_tint_of_hdr_sun_and_refuse_unsafe_composition() {
+        let fog = Fog { sun_inscatter: Vec3::splat(f32::MAX), ..Fog::default() };
+        let admission = FogAdmission::new(&fog, Vec3::ZERO, 0.0, wgpu::TextureFormat::Rg11b10Ufloat);
+        assert_eq!(admission.profile_issue, None);
+        let mut params = sapphire_assets::material::FogCardMaterial {
+            color: [f32::from_bits(256), f32::from_bits(256), 0.0, 1.0],
+            sun_scatter: 1.0,
+            ..sapphire_assets::material::FogCardMaterial::default()
+        }
+        .gpu_params(&[sapphire_assets::texture::Swizzle::IDENTITY]);
+        assert!(admission.allows_card(&params));
+        params.color[0] = 1.0;
+        assert!(!admission.allows_card(&params));
+    }
+
+    #[test]
+    fn fog_admission_accounts_for_packed_cube_lanes_and_far_mix_products() {
+        let admit = |color, format| {
+            let fog = Fog { near: FogLayer { color, density: 0.001, start: 0.0 }, ..Fog::default() };
+            FogAdmission::new(&fog, Vec3::ZERO, 0.0, format)
+        };
+        let packed = wgpu::TextureFormat::Rg11b10Ufloat;
+        let half = wgpu::TextureFormat::Rgba16Float;
+        assert!(admit(Vec3::splat(65_500.0), half).profile_issue.is_none());
+        assert!(admit(Vec3::splat(65_500.0), packed).profile_issue.is_some());
+        assert!(admit(Vec3::new(64_750.0, 64_750.0, 64_000.0), packed).profile_issue.is_none());
+        assert!(admit(Vec3::new(64_000.0, 64_000.0, 64_750.0), packed).profile_issue.is_some());
+
+        let fog = Fog {
+            far: FogLayer { color: Vec3::splat(f32::MAX), density: 0.001, start: 0.0 },
+            ..Fog::default()
+        };
+        let admitted = FogAdmission::new(&fog, Vec3::splat(1e-36), 0.0, half);
+        assert_eq!(admitted.profile_issue, Some("fog color products exceed the scalar mix range"));
+    }
 
     #[test]
     fn bad_values_reach_the_shaders_safe() {

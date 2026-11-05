@@ -914,6 +914,7 @@ mod tests {
             slots: Vec::new(),
             bounds: cooked,
             palette_reach: Vec::new(),
+            morph_reach: Vec::new(),
             foliage: None,
         };
         let meshes = [record.clone(), record];
@@ -1152,6 +1153,7 @@ mod tests {
             slots: Vec::new(),
             bounds: Sphere { center: Vec3::ZERO, radius: 1.0 },
             palette_reach: Vec::new(),
+            morph_reach: Vec::new(),
             foliage: None,
         };
         // One draw, then two.
@@ -1202,6 +1204,7 @@ mod tests {
             slots: Vec::new(),
             bounds: Sphere { center: Vec3::ZERO, radius: 1.0 },
             palette_reach: Vec::new(),
+            morph_reach: Vec::new(),
             foliage: None,
         };
         let meshes = [
@@ -1351,6 +1354,7 @@ mod tests {
                 slots: Vec::new(),
                 bounds: Sphere { center: Vec3::ZERO, radius: 1.0 },
                 palette_reach: Vec::new(),
+                morph_reach: Vec::new(),
                 foliage: None,
             },
             MeshRecord {
@@ -1362,6 +1366,7 @@ mod tests {
                 slots: Vec::new(),
                 bounds: Sphere { center: Vec3::ZERO, radius: 1.0 },
                 palette_reach: Vec::new(),
+                morph_reach: Vec::new(),
                 foliage: None,
             },
         ];
@@ -1444,6 +1449,7 @@ mod tests {
             slots: Vec::new(),
             bounds: Sphere { center: Vec3::ZERO, radius: 1.0 },
             palette_reach: Vec::new(),
+            morph_reach: Vec::new(),
             foliage,
         };
         // A tree (opaque wood and alpha-tested leaves), a patch of grass, and a rock.

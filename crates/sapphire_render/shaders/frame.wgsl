@@ -355,11 +355,15 @@ struct ScenePrepassTargets {
     // Motion since the last drawn frame in texture coordinates (x right, y down): the pixel was
     // at `uv - velocity`.
     @location(1) velocity: vec2<f32>,
+    // Every nearest surface replaces the previous mask, including opaque surfaces drawn
+    // after a fading surface in another format or two-sided variant.
+    @location(2) outline: f32,
 }
 
 // The scene prepass's targets for a pixel of a surface or hull.
 fn scene_prepass_targets(in: ScenePrepassVaryings) -> ScenePrepassTargets {
     var out: ScenePrepassTargets;
+    out.outline = 0.0;
     out.normal = oct_encode(safe_normalize(in.world_normal));
     if SCENE_PREPASS_VELOCITY {
         let current = in.current.xy / in.current.w;
@@ -565,19 +569,29 @@ fn fog_share(character: u32) -> f32 {
 // `rise` per meter, `start` the height layer's density at the eye over its density at its base.
 fn fog_depths(rise: f32, length: f32, start: f32) -> vec3<f32> {
     // The distance layers end where the ray has risen FOG_CEILING above the eye.
-    let reach = select(length, min(length, FOG_CEILING / rise), rise > 0.0);
+    var reach = length;
+    // Below this rise, the ceiling is beyond any renderable ray. Guard the division itself.
+    if rise >= 0x1p-122f {
+        reach = min(length, FOG_CEILING / rise);
+    }
     let near = frame.fog.near.a * max(reach - frame.fog.shape.x, 0.0);
     let far = frame.fog.far.a * max(reach - frame.fog.shape.y, 0.0);
     // The height layer: density × ∫ exp(−k (h0 + rise·t)) dt over the ray, which is
     // density × exp(−k h0) × length × (1 − exp(−x)) / x with x = k · rise · length.
     let x = frame.fog.shape.z * rise * length;
-    let ratio = select((1.0 - exp(min(-x, FOG_MAX_EXPONENT))) / x, 1.0 - 0.5 * x, abs(x) < FOG_SERIES_BELOW);
+    var ratio = 1.0 - 0.5 * x;
+    if abs(x) >= FOG_SERIES_BELOW {
+        ratio = (1.0 - exp(min(-x, FOG_MAX_EXPONENT))) / x;
+    }
     return vec3<f32>(near, far, frame.fog.height.a * start * length * ratio);
 }
 
 // The fog over the ray from `eye` along the unit vector `dir` to what lies `distance` meters
 // along it, `share` of it.
 fn fog_ray(eye: vec3<f32>, dir: vec3<f32>, distance: f32, share: f32) -> FogRay {
+    if share == 0.0 {
+        return FogRay(1.0, vec3<f32>(0.0), vec3<f32>(0.0));
+    }
     let rise = dir.y;
     let start = exp(min(-frame.fog.shape.z * (eye.y - frame.fog.shape.w), FOG_MAX_EXPONENT));
     let depths = fog_depths(rise, distance, start);
@@ -602,6 +616,7 @@ fn fog_ray(eye: vec3<f32>, dir: vec3<f32>, distance: f32, share: f32) -> FogRay 
     let c2 = c * c;
     let c4 = c2 * c2;
     ray.sun = frame.fog.light.rgb * (c4 * c4);
+
     return ray;
 }
 

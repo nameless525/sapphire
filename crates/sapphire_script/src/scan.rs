@@ -195,7 +195,7 @@ fn literal(word: u32, register: u8, constants: &[Option<f64>]) -> Option<f64> {
     }
 }
 
-/// Bytes that aren't a chunk this reader knows.
+/// Bytes this reader cannot admit under the chunk format and compile policy.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ScanError {
     #[error("the chunk ends early")]
@@ -210,6 +210,8 @@ pub enum ScanError {
     Constant(u8),
     #[error("a compile error: {0}")]
     Compile(String),
+    #[error("the chunk requests native compile options")]
+    NativeOptions,
     #[error("{0} bytes are left over")]
     Trailing(usize),
 }
@@ -305,6 +307,9 @@ pub fn scan(bytes: &[u8]) -> Result<Findings, ScanError> {
 fn function(reader: &mut Reader<'_>, version: u8, findings: &mut Findings) -> Result<(), ScanError> {
     reader.take(4)?; // max stack, parameters, upvalues, varargs
     let flags = reader.u8()?;
+    if flags & NATIVE_OPTIONS != 0 {
+        return Err(ScanError::NativeOptions);
+    }
     let type_bytes = reader.count()?;
     reader.take(type_bytes)?;
 
@@ -404,6 +409,9 @@ fn function(reader: &mut Reader<'_>, version: u8, findings: &mut Findings) -> Re
     Ok(())
 }
 
+/// `LPF_NATIVE_MODULE` and `LPF_NATIVE_FUNCTION`. The compiler also marks ordinary entry points
+/// as `LPF_NATIVE_COLD`, which is a hint rather than a request for native compilation.
+const NATIVE_OPTIONS: u8 = (1 << 0) | (1 << 2);
 /// `LPF_INLINABLE`, which says a function carries a cost.
 const INLINABLE: u8 = 1 << 3;
 
@@ -486,6 +494,16 @@ mod tests {
     fn function_prefix() -> Vec<u8> {
         // Version 9, types 1, no strings, one function, four header bytes, flags, no type bytes.
         vec![9, 1, 0, 1, 0, 0, 0, 0, 0, 0]
+    }
+
+    #[test]
+    fn the_native_cold_hint_is_allowed() {
+        let mut cold = function_prefix();
+        cold[8] = 1 << 1; // LPF_NATIVE_COLD
+        cold.push(1);
+        cold.extend(22u32.to_le_bytes()); // RETURN
+        cold.extend([0; 7]); // constants, children, line, name, line info, debug info, main
+        assert_eq!(scan(&cold).unwrap().instructions, 1);
     }
 
     #[test]

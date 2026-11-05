@@ -5,7 +5,9 @@ use std::alloc::System;
 use mlua::Table;
 use sapphire_core::alloc::{self, CountingAllocator, VmAllocations};
 use sapphire_script::bindings::{in_host, with_frame};
-use sapphire_script::{Frame, Hook, HookArgs, HookEnd, Limits, ScriptVm, VmError, cook};
+use sapphire_script::compile::{CookError, check, compile_unchecked};
+use sapphire_script::scan::ScanError;
+use sapphire_script::{CookedScript, Frame, Hook, HookArgs, HookEnd, Limits, ScriptVm, VmError, cook};
 
 #[global_allocator]
 static GLOBAL: CountingAllocator<System> = CountingAllocator::new(System);
@@ -302,6 +304,51 @@ fn budgeted_table_walks_reject_non_tables_even_when_they_would_do_no_work() {
     for operation in ["table.find('', 1)", "table.remove('')", "table.sort('')"] {
         let body = hook(&vm, &format!("return {{hook = function() {operation} end}}"));
         assert!(matches!(vm.fire(&mut Frame::new(), &body, ()), HookEnd::Failed(_)), "{operation}");
+    }
+}
+
+#[test]
+fn cook_reserves_compile_markers_even_in_comments_and_strings() {
+    let cases = [
+        "return {hook = @native function() return 2 ^ 2.5 end}",
+        "return {hook = @[ -- attribute trivia\n native] function() return 2 ^ 2.5 end}",
+        "return {hook = @[checked] function() end}",
+    ];
+    fn assert_reserved(source: &str) {
+        assert!(
+            matches!(cook(source), Err(CookError::Refused(reason)) if reason.contains("compile options")),
+            "{source}"
+        );
+    }
+    for source in cases {
+        assert_reserved(source);
+    }
+    for marker in ["--!optimize", "--!native", "@native", "@["] {
+        assert_reserved(&format!("-- example: {marker}\nreturn {{}}"));
+        assert_reserved(&format!("return {{hook = function() return '{marker}' end}}"));
+    }
+    assert!(cook("return {hook = function() return '@ ordinary text' end}").is_ok());
+}
+
+#[test]
+fn native_compiler_options_are_refused_when_restoring_trusted_bytes() {
+    let vm = ScriptVm::new(Limits::default()).unwrap();
+    for source in [
+        "--!native\nreturn {}",
+        "return {hook = @native function() return 2 ^ 2.5 end}",
+        "return {hook = @[native] function() return 2 ^ 2.5 end}",
+    ] {
+        let bytes = compile_unchecked(source, 0).expect("the pinned compiler accepts native directives");
+        assert!(matches!(check(&bytes), Err(CookError::Unreadable(ScanError::NativeOptions))), "{source}");
+        // SAFETY: these are complete and unchanged bytes just produced by the pinned compiler.
+        let restored = unsafe { CookedScript::from_trusted_bytes(bytes) };
+        assert!(
+            matches!(
+                vm.load(&restored, "=native"),
+                Err(VmError::Cook(CookError::Unreadable(ScanError::NativeOptions)))
+            ),
+            "{source}"
+        );
     }
 }
 

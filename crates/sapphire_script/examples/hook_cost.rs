@@ -13,11 +13,10 @@
 use std::alloc::System;
 use std::time::Duration;
 
-use mlua::Function;
 use sapphire_core::alloc::{self, CountingAllocator};
 use sapphire_script::bindings::Frame;
 use sapphire_script::compile::{self, cook};
-use sapphire_script::{HookEnd, Limits, ScriptVm};
+use sapphire_script::{CookedScript, Hook, HookEnd, Limits, ScriptVm};
 use sapphire_time::Stopwatch;
 
 #[global_allocator]
@@ -81,8 +80,8 @@ fn microseconds(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1e6
 }
 
-fn load(vm: &ScriptVm, bytes: &[u8]) -> Function {
-    vm.load(bytes, "=bench").expect("loads").get("hook").expect("has a hook")
+fn load(vm: &ScriptVm, bytes: &CookedScript) -> Hook {
+    vm.load(bytes, "=bench").expect("loads").hook("hook").expect("hook type").expect("has a hook")
 }
 
 /// The quietest tenth, the median and the slowest of `times`, in µs.
@@ -95,14 +94,15 @@ fn read(times: &mut [Duration]) -> (f64, f64, f64) {
     )
 }
 
-fn fire_row(name: &str, bytes: &[u8], collect: Collector) {
+fn fire_row(name: &str, bytes: &CookedScript, collect: Collector) {
     const WARM: usize = 2_000;
     const FIRES: usize = 20_000;
     let vm = ScriptVm::new(Limits { memory: 1 << 30, ..Limits::default() }).expect("starts");
     let hook = load(&vm, bytes);
     let mut frame = Frame::new();
     if matches!(collect, Collector::Running) {
-        vm.lua_for_tests().gc_restart();
+        // SAFETY: this diagnostic only changes collector scheduling; it executes no binary bytecode.
+        unsafe { vm.lua_for_tests() }.gc_restart();
     }
     let mut times = Vec::with_capacity(FIRES);
     let mut gc_times = Vec::with_capacity(FIRES);
@@ -151,34 +151,37 @@ enum Collector {
 }
 
 fn budget_row(name: &str, source: &str, limits: Limits) {
+    const WARM: usize = 2;
+    const SAMPLES: usize = 24;
     let vm = ScriptVm::new(limits).expect("starts");
     let hook = load(&vm, &cook(source).expect("cooks"));
     let mut frame = Frame::new();
-    let mut times = Vec::new();
-    let mut end = HookEnd::Returned;
-    for _ in 0..12 {
+    let mut times = Vec::with_capacity(SAMPLES);
+    for sample in 0..WARM + SAMPLES {
         let before = ScriptVm::interrupts();
         let stopwatch = Stopwatch::start();
-        end = vm.fire(&mut frame, &hook, ());
-        times.push((stopwatch.elapsed(), ScriptVm::interrupts() - before));
+        let end = vm.fire(&mut frame, &hook, ());
+        let elapsed = stopwatch.elapsed();
+        let count = ScriptVm::interrupts() - before;
+        if sample >= WARM {
+            println!(
+                "budget_sample name={name:?} sample={} whole_hook_us={:.3} interrupts={count} end={end:.90?}",
+                sample - WARM,
+                microseconds(elapsed)
+            );
+            times.push((elapsed, count));
+        }
         while !vm.gc_step().expect("collects") {}
     }
     times.sort_unstable();
-    let (quiet, count) = times[1];
-    let end = match end {
-        HookEnd::Failed(_) => "failed",
-        HookEnd::OverBudget => "over budget",
-        HookEnd::Returned => "returned",
-    };
+    let observed = [50, 95, 99, 100].map(|p| microseconds(times[(times.len() * p).div_ceil(100) - 1].0));
+    let (median, count) = times[(SAMPLES - 1) / 2];
     println!(
-        "{name:<34} {:9.1} µs to end ({end}), {count} interrupts, {:.1} ns an interrupt",
-        microseconds(quiet),
-        quiet.as_secs_f64() * 1e9 / count.max(1) as f64,
+        "{name:<34} samples={SAMPLES} whole_hook_us[p50,p95,p99,max]={observed:?}; median sample {count} interrupts, {:.1} ns whole-hook/interrupt quotient",
+        median.as_secs_f64() * 1e9 / count.max(1) as f64,
     );
 }
 
-/// A heap of about `bytes` live, then the collection steps of whole cycles over it, with garbage made in
-/// between as a hook would.
 /// What a heap is held in: a table is marked whole, so one big one is a step no step size can cut.
 #[derive(Clone, Copy, Debug)]
 enum Held {
@@ -186,7 +189,10 @@ enum Held {
     SmallTables,
 }
 
-fn gc_row(bytes: usize, step_size_kb: Option<i32>, shape: Held) {
+/// Whole observed cycles over a fixed live graph, optionally with newly unreachable tables before
+/// each cycle. Cycle work is the sum of timed `gc_step` calls in that observed cycle, excluding the
+/// harness work between calls. Raw samples preserve correlations; no independent minima are combined.
+fn gc_row(bytes: usize, step_size_kb: Option<i32>, shape: Held, allocating: bool) {
     const CYCLES: usize = 24;
     let mut limits = Limits { memory: 256 << 20, interrupts: u64::MAX, ..Limits::default() };
     if let Some(size) = step_size_kb {
@@ -206,42 +212,65 @@ fn gc_row(bytes: usize, step_size_kb: Option<i32>, shape: Held) {
         ))
         .expect("cooks"),
     );
-    // Held live by a registry reference rather than a hook's stack.
-    let keep: mlua::Value = hook.call((bytes / 64) as f64).unwrap_or(mlua::Value::Nil);
+    // These direct calls deliberately measure heap/collection work, outside a fixed step. Both the
+    // live graph and garbage have n one-element tables, with shape-specific container tables.
+    let n = bytes / 64;
+    // SAFETY: this diagnostic calls only the finite compiler-created graph function, without custom
+    // conversions or binary execution, outside the simulation's fixed step.
+    let keep: mlua::Value = unsafe { hook.function_for_tests() }.call(n).expect("live graph created");
+    let garbage = allocating.then(|| {
+        load(
+            &vm,
+            &cook("return {hook = function(n) local t = {} for i = 1, n do t[i] = {i} end end}")
+                .expect("cooks"),
+        )
+    });
     let used = vm.used_memory();
-    // A cycle's steps come in the same order each time, so each step's quickest over many cycles is its
-    // own cost with the scheduler taken out, on a machine that isn't idle. The first cycle only warms.
-    while !vm.gc_step().expect("collects") {}
-    let mut quickest: Vec<Duration> = Vec::new();
-    let mut steps = 0;
-    for _ in 0..CYCLES {
-        steps = 0;
+    let workload = if allocating { "new-garbage" } else { "static-live-graph" };
+    let mut cycles = Vec::with_capacity(CYCLES);
+    let mut all_steps = Vec::new();
+    for cycle in 0..CYCLES + 1 {
+        if let Some(garbage) = &garbage {
+            // SAFETY: this finite compiler-created function receives a built-in numeric argument;
+            // the diagnostic intentionally measures collector work outside the fixed step.
+            unsafe { garbage.function_for_tests() }.call::<()>(n).expect("garbage created");
+        }
+        let before_gc = vm.used_memory();
+        let mut steps = Vec::new();
         loop {
             let stopwatch = Stopwatch::start();
             let finished = vm.gc_step().expect("collects");
-            let time = stopwatch.elapsed();
-            if steps == quickest.len() {
-                quickest.push(time);
-            } else {
-                quickest[steps] = quickest[steps].min(time);
-            }
-            steps += 1;
+            steps.push(stopwatch.elapsed());
             if finished {
                 break;
             }
         }
+        if cycle != 0 {
+            let elapsed: Duration = steps.iter().sum();
+            println!(
+                "gc_sample workload={workload} shape={shape:?} n={n} new_tables={} step_kb={step_size_kb:?} cycle={} before_bytes={before_gc} after_bytes={} cycle_step_sum_us={:.3} steps_us={:?}",
+                if allocating { n + 1 } else { 0 },
+                cycle - 1,
+                vm.used_memory(),
+                microseconds(elapsed),
+                steps.iter().copied().map(microseconds).collect::<Vec<_>>()
+            );
+            cycles.push(elapsed);
+            all_steps.extend(steps);
+        }
     }
     assert!(vm.collector_stopped(), "a step left the collector stopped");
-    let cycle: Duration = quickest.iter().take(steps).sum();
-    let mut sorted = quickest[..steps].to_vec();
-    sorted.sort_unstable();
+    cycles.sort_unstable();
+    all_steps.sort_unstable();
+    let percentiles = |times: &[Duration]| {
+        [50, 95, 99, 100].map(|p| microseconds(times[(times.len() * p).div_ceil(100) - 1]))
+    };
     println!(
-        "{shape:?} heap {:>7} KB, now {:>7} KB, step size {step_size_kb:>5?}: {steps:>6} steps a cycle, median step {:6.2}, the slowest step {:8.2} µs; a cycle {:8.1} µs",
-        used >> 10,
-        vm.used_memory() >> 10,
-        microseconds(sorted[steps / 2]),
-        microseconds(sorted[steps - 1]),
-        microseconds(cycle),
+        "{shape:?} {workload} initial_live_bytes={used} n={n} step_kb={step_size_kb:?} cycles={} steps={} cycle_step_sum_us[p50,p95,p99,max]={:?} step_us[p50,p95,p99,max]={:?}",
+        cycles.len(),
+        all_steps.len(),
+        percentiles(&cycles),
+        percentiles(&all_steps)
     );
     drop(keep);
 }
@@ -254,6 +283,8 @@ fn main() {
         fire_row(&format!("{name}, level 1, gc step each"), &cooked, Collector::StepEachFire);
         fire_row(&format!("{name}, level 1, gc running"), &cooked, Collector::Running);
         let level2 = compile::compile_unchecked(source, 2).expect("compiles");
+        // SAFETY: these are the unmodified bytes just emitted by this crate's pinned compiler.
+        let level2 = unsafe { CookedScript::from_trusted_bytes(level2) };
         fire_row(&format!("{name}, level 2, gc step each"), &level2, Collector::StepEachFire);
     }
     let limits = Limits::default();
@@ -271,15 +302,17 @@ fn main() {
     budget_row("loop of table.create(90,000)", SPIN_FILL, limits);
     budget_row("loop of string.sub", SPIN_LITERAL, limits);
     println!("the collector, in steps, with nothing else running:");
-    for bytes in [64 << 10, 1 << 20, 8 << 20] {
-        gc_row(bytes, None, Held::OneTable);
+    for allocating in [false, true] {
+        for bytes in [64 << 10, 1 << 20, 8 << 20] {
+            gc_row(bytes, None, Held::OneTable, allocating);
+        }
+        for size in [1, 4, 16] {
+            gc_row(1 << 20, Some(size), Held::OneTable, allocating);
+        }
+        for size in [4, 16, 64] {
+            gc_row(8 << 20, Some(size), Held::OneTable, allocating);
+            gc_row(8 << 20, Some(size), Held::SmallTables, allocating);
+        }
+        gc_row(1 << 20, Some(16), Held::SmallTables, allocating);
     }
-    for size in [1, 4, 16] {
-        gc_row(1 << 20, Some(size), Held::OneTable);
-    }
-    for size in [4, 16, 64] {
-        gc_row(8 << 20, Some(size), Held::OneTable);
-        gc_row(8 << 20, Some(size), Held::SmallTables);
-    }
-    gc_row(1 << 20, Some(16), Held::SmallTables);
 }

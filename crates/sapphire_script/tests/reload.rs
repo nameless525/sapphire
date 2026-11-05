@@ -5,7 +5,7 @@ mod support;
 
 use std::sync::Mutex;
 
-use sapphire_script::{BOARD_SLOTS, Limits, ScriptStats, cook, host_of, host_of_mut};
+use sapphire_script::{BOARD_SLOTS, CookedScript, Limits, ScriptStats, cook, host_of, host_of_mut};
 use support::{finish, host_running, player_with, replay_file};
 
 /// The first chunk. Every number it leaves goes in the digest, and the board keeps a count of hooks.
@@ -150,6 +150,8 @@ fn a_chunk_that_breaks_a_rule_never_replaces_the_one_running() {
     let mut host = host_running(FIRST, Limits::default());
     let plain = mlua::chunk::Compiler::new().set_optimization_level(2);
     let bytes = plain.compile("return { on_beat = function(x) return math.sin(x) end }").unwrap();
-    assert!(host.bind(&bytes, "=bad").is_err(), "refused at the VM, for a pushed chunk");
+    // SAFETY: the unchanged bytes came from the same pinned compiler, without its builtin restrictions.
+    let compiled = unsafe { CookedScript::from_trusted_bytes(bytes) };
+    assert!(host.bind(&compiled, "=bad").is_err(), "refused at the VM, for a pushed chunk");
     assert_eq!(host.stats().hooks_fired, 0);
 }

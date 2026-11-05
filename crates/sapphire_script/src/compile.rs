@@ -62,12 +62,53 @@ pub fn compile_unchecked(source: &str, level: u8) -> Result<Vec<u8>, CookError> 
     compiler(level).compile(source).map_err(|error| CookError::Refused(error.to_string()))
 }
 
+/// Immutable bytecode produced by the pinned compiler. Safe execution accepts this provenance-bearing
+/// type rather than arbitrary bytes: Luau's binary loader assumes structurally valid bytecode.
+/// Deterministic instruction/library rules are still checked whenever the script is loaded.
+///
+/// ```compile_fail
+/// use sapphire_script::{Limits, ScriptVm};
+/// let vm = ScriptVm::new(Limits::default()).unwrap();
+/// vm.load(&[9, 1, 0, 0, 0], "=untrusted");
+/// ```
+///
+/// ```compile_fail
+/// let script = sapphire_script::cook("return {}").unwrap();
+/// script.as_ref()[0] = 0;
+/// ```
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CookedScript {
+    bytes: Vec<u8>,
+}
+
+impl CookedScript {
+    /// Restores bytecode whose compiler provenance the caller has independently established.
+    /// Instruction/library policy is checked by [`crate::ScriptVm::load`], not by this constructor.
+    ///
+    /// # Safety
+    ///
+    /// `bytes` must be complete, unmodified, structurally valid output of the exact pinned Luau
+    /// compiler linked into this crate. A version tag or a successful [`check`] alone does not prove
+    /// this: that scan enforces deterministic operations, not every bytecode reference/register
+    /// invariant. Untrusted, corrupted or edited bytes must not be admitted this way.
+    #[must_use]
+    pub unsafe fn from_trusted_bytes(bytes: Vec<u8>) -> Self {
+        Self { bytes }
+    }
+}
+
+impl AsRef<[u8]> for CookedScript {
+    fn as_ref(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
 /// What a cook does: refuses a script that breaks a rule, and returns the bytes to run.
 ///
 /// Powers are read at level 0, whatever level ships, because that's where nothing has been folded yet:
 /// `2 ^ 2.5` is a `POW` there and a plain number above it. A `--!optimize` comment would choose its own
 /// level, so it's refused.
-pub fn cook(source: &str) -> Result<Vec<u8>, CookError> {
+pub fn cook(source: &str) -> Result<CookedScript, CookError> {
     if source.contains("--!optimize") || source.contains("--!native") {
         return Err(CookError::Refused("a script doesn't choose its own compile options".to_owned()));
     }
@@ -77,10 +118,11 @@ pub fn cook(source: &str) -> Result<Vec<u8>, CookError> {
     }
     let bytes = compile_unchecked(source, SHIPPING_LEVEL)?;
     check(&bytes)?;
-    Ok(bytes)
+    Ok(CookedScript { bytes })
 }
 
-/// Reads a chunk and refuses it if it breaks a rule: what the VM does to everything it loads.
+/// Reads a chunk and refuses it if it breaks a deterministic instruction/library rule. This is not a
+/// complete bytecode verifier or proof of compiler provenance; success cannot admit bytes to execution.
 pub fn check(bytes: &[u8]) -> Result<Findings, CookError> {
     let findings = scan::scan(bytes)?;
     match findings.violation() {

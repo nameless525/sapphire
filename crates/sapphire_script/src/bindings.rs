@@ -58,7 +58,7 @@ pub struct Frame {
     pub queue: [Command; QUEUE_LEN],
     /// How much of `queue` is in use.
     pub queued: usize,
-    /// Commands past the end of `queue`.
+    /// Commands past the end of `queue`, saturating at `u32::MAX`.
     pub dropped: u32,
     /// The simulation's randomness: copied in before a step's hooks and back after them.
     pub rng: Pcg32,
@@ -87,7 +87,7 @@ impl Frame {
             *slot = command;
             self.queued += 1;
         } else {
-            self.dropped += 1;
+            self.dropped = self.dropped.saturating_add(1);
         }
     }
 }
@@ -111,6 +111,11 @@ pub(crate) fn enter(frame: &mut Frame) -> FrameGuard {
     FrameGuard(FRAME.replace(frame))
 }
 
+/// Initializers and startup validation must not inherit a calling hook's frame.
+pub(crate) fn without_frame() -> FrameGuard {
+    FrameGuard(FRAME.replace(ptr::null_mut()))
+}
+
 impl Drop for FrameGuard {
     fn drop(&mut self) {
         FRAME.set(self.0);
@@ -124,14 +129,15 @@ pub fn in_host<R>(body: impl FnOnce() -> R) -> R {
     body()
 }
 
-/// [`in_host`], with the running hook's frame. Outside a hook, which only the check at a VM's start
-/// does, it answers `None` without running `body`.
+/// [`in_host`], with exclusive access to the running hook's frame. Outside a hook, or during another
+/// `with_frame` call on that frame, it answers `None` without running `body`. A nested VM may install
+/// its own frame; when it returns, the outer frame remains borrowed until `body` returns.
 pub fn with_frame<R>(body: impl FnOnce(&mut Frame) -> R) -> Option<R> {
     in_host(|| {
-        let frame = FRAME.get();
-        // SAFETY: `enter` set this from a `&mut Frame` the hook's caller holds until the guard drops, and
-        // a hook runs on this thread with nothing else reading it: no binding holds this past its return.
-        unsafe { frame.as_mut() }.map(body)
+        let guard = without_frame();
+        // SAFETY: `enter` set this from a live exclusive borrow. Removing the pointer before making
+        // the reference refuses reentry, and the guard restores it only after `body` returns/unwinds.
+        unsafe { guard.0.as_mut() }.map(body)
     })
 }
 
@@ -145,6 +151,17 @@ unsafe fn number(state: *mut lua_State, index: c_int, frame: &mut Frame) -> f64 
             frame.fault = true;
             0.0
         }
+    }
+}
+
+/// A numeric index must name one whole slot. Rust's saturating float cast would otherwise turn
+/// negative/NaN inputs into slot zero and truncate a fractional input into another actor's state.
+fn index_slot(value: f64, length: usize) -> Option<usize> {
+    if value >= 0.0 && value < length as f64 {
+        let index = value as usize;
+        (index as f64 == value).then_some(index)
+    } else {
+        None
     }
 }
 
@@ -215,7 +232,7 @@ unsafe extern "C-unwind" fn health(state: *mut lua_State) -> c_int {
     let value = with_frame(|frame| {
         // SAFETY: Luau passes a live state.
         let index = unsafe { number(state, 1, frame) };
-        frame.health.get(index as usize).copied().unwrap_or(0.0)
+        index_slot(index, FRAME_ACTORS).map_or(0.0, |index| frame.health[index])
     });
     // SAFETY: Luau passes a live state and a slot for one result.
     unsafe { ffi::lua_pushnumber(state, value.unwrap_or(0.0)) };
@@ -235,10 +252,13 @@ unsafe extern "C-unwind" fn board(state: *mut lua_State) -> c_int {
     let value = with_frame(|frame| {
         // SAFETY: Luau passes a live state.
         let slot = unsafe { number(state, 1, frame) };
-        frame.board.get(slot as usize).copied().unwrap_or_else(|| {
-            frame.fault = true;
-            0.0
-        })
+        match index_slot(slot, BOARD_SLOTS) {
+            Some(slot) => frame.board[slot],
+            None => {
+                frame.fault = true;
+                0.0
+            }
+        }
     });
     // SAFETY: Luau passes a live state and a slot for one result.
     unsafe { ffi::lua_pushnumber(state, value.unwrap_or(0.0)) };
@@ -250,8 +270,8 @@ unsafe extern "C-unwind" fn set_board(state: *mut lua_State) -> c_int {
     with_frame(|frame| {
         // SAFETY: Luau passes a live state.
         let (slot, value) = unsafe { (number(state, 1, frame), number(state, 2, frame)) };
-        match frame.board.get_mut(slot as usize) {
-            Some(cell) => *cell = value,
+        match index_slot(slot, BOARD_SLOTS) {
+            Some(slot) => frame.board[slot] = value,
             None => frame.fault = true,
         }
     });
@@ -279,16 +299,46 @@ unsafe extern "C-unwind" fn mark(state: *mut lua_State) -> c_int {
 }
 
 /// One function a script can call: a row of the table L2 generates.
+///
+/// ```compile_fail
+/// fn unchecked(function: mlua::ffi::lua_CFunction) {
+///     let _ = sapphire_script::Binding { name: "unchecked", function };
+/// }
+/// ```
+///
+/// ```compile_fail
+/// fn unchecked(function: mlua::ffi::lua_CFunction) {
+///     let _ = sapphire_script::Binding::new("unchecked", function);
+/// }
+/// ```
 #[derive(Clone, Copy, Debug)]
 pub struct Binding {
     /// What a script calls it.
     pub name: &'static str,
-    /// It never raises, and it goes through [`with_frame`] or [`in_host`].
-    pub function: ffi::lua_CFunction,
+    function: ffi::lua_CFunction,
+}
+
+impl Binding {
+    /// Registers a raw callback implementation. Rust work goes through [`with_frame`] or [`in_host`];
+    /// startup probes that participation, but cannot prove the callback's safety for every input.
+    ///
+    /// # Safety
+    ///
+    /// `function` must accept any live Luau state supplied by the VM, including startup's no-frame,
+    /// no-argument probe. It must validate argument types before access, preserve Lua stack/value
+    /// invariants, and return the correct number of initialized results. It must never raise a Lua
+    /// error, yield across a Rust frame, or let a panic/foreign exception cross the callback boundary.
+    /// Any binary code it executes must be complete, unmodified, structurally valid output of the
+    /// exact linked compiler; it must preserve the VM's sandbox and execution invariants.
+    #[must_use]
+    pub const unsafe fn new(name: &'static str, function: ffi::lua_CFunction) -> Self {
+        Self { name, function }
+    }
 }
 
 const fn binding(name: &'static str, function: ffi::lua_CFunction) -> Binding {
-    Binding { name, function }
+    // SAFETY: these rows contain only this module's validated numeric, nonraising callbacks.
+    unsafe { Binding::new(name, function) }
 }
 
 /// The pinned math, in `math`.
@@ -341,4 +391,31 @@ pub(crate) fn install(lua: &Lua, more: &[Binding]) -> Result<(), VmError> {
     }
     lua.globals().raw_set("sapphire", sapphire)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frame_access_is_exclusive_and_restored_after_unwind() {
+        assert!(with_frame(|_| panic!("no frame")).is_none());
+        let mut frame = Frame::new();
+        {
+            let _entered = enter(&mut frame);
+            with_frame(|outer| {
+                outer.board[0] = 7.0;
+                assert!(with_frame(|_| panic!("already borrowed")).is_none());
+                outer.board[0] += 1.0;
+            })
+            .unwrap();
+            let panic = std::panic::catch_unwind(|| {
+                with_frame(|_| panic!("a host callback unwinds"));
+            });
+            assert!(panic.is_err());
+            assert_eq!(with_frame(|frame| frame.board[0]), Some(8.0));
+        }
+        assert!(with_frame(|_| ()).is_none());
+        assert_eq!(frame.board[0], 8.0);
+    }
 }

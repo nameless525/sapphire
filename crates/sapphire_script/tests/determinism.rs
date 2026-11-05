@@ -18,7 +18,7 @@ use std::ffi::c_int;
 
 use mlua::{ffi, lua_State};
 use sapphire_script::bindings::{BOARD_SLOTS, with_frame};
-use sapphire_script::{Binding, Frame, HookEnd, Limits, ScriptHost, ScriptVm, cook};
+use sapphire_script::{Binding, CookedScript, Frame, HookEnd, Limits, ScriptHost, ScriptVm, cook};
 use support::{marks, play, replay_file, run_hook};
 
 fn refused(source: &str) -> String {
@@ -118,7 +118,8 @@ fn every_global_a_script_can_reach_is_on_the_list() {
     // The list is one of what stays, so a Luau upgrade's new global is gone by default. Walking what the
     // sandbox's proxy reads through says nothing else got in.
     let vm = ScriptVm::new(Limits::default()).unwrap();
-    let globals = vm.lua_for_tests().globals();
+    // SAFETY: inspecting globals executes no bytecode or callbacks.
+    let globals = unsafe { vm.lua_for_tests() }.globals();
     let behind: mlua::Table = globals.metatable().expect("the sandbox's proxy").get("__index").unwrap();
     let mut names = Vec::new();
     behind
@@ -271,8 +272,10 @@ fn a_replaced_function_is_the_pinned_one_at_every_level() {
         .unwrap();
         assert!(scan(&bytes).unwrap().fastcalls_all.is_empty(), "level {level}");
         let vm = ScriptVm::new(Limits::default()).unwrap();
-        let hooks = vm.load(&bytes, "=test").unwrap();
-        let hook: mlua::Function = hooks.get("hook").unwrap();
+        // SAFETY: `compile_unchecked` just produced these unchanged bytes with the pinned compiler.
+        let compiled = unsafe { CookedScript::from_trusted_bytes(bytes) };
+        let hooks = vm.load(&compiled, "=test").unwrap();
+        let hook = hooks.hook("hook").unwrap().unwrap();
         let mut frame = Frame::new();
         assert_eq!(vm.fire(&mut frame, &hook, 0.7), HookEnd::Returned);
         let x = 0.7_f64 as f32;
@@ -297,10 +300,13 @@ fn fastcall_reaches_libm_with_the_global_replaced_unless_it_is_disabled() {
     // Past the scan, it does what the scout read: the sandbox's safe env runs the C function, not ours.
     let vm = ScriptVm::new(Limits::default()).unwrap();
     let hooks: mlua::Table =
-        vm.lua_for_tests().load(&bytes).set_mode(mlua::chunk::ChunkMode::Binary).eval().unwrap();
+        // SAFETY: the unchanged bytes came directly from the same pinned compiler above.
+        unsafe { vm.lua_for_tests() }.load(&bytes).set_mode(mlua::chunk::ChunkMode::Binary).eval().unwrap();
     let hook: mlua::Function = hooks.get("hook").unwrap();
     let mut frame = Frame::new();
-    assert_eq!(vm.fire(&mut frame, &hook, 0.7), HookEnd::Returned);
+    // SAFETY: the raw function was just compiled by the pinned compiler above; this control
+    // deliberately bypasses the allowlist, with only numeric conversion and no new bytecode.
+    assert_eq!(unsafe { vm.fire_trusted(&mut frame, &hook, 0.7) }, HookEnd::Returned);
     #[allow(clippy::disallowed_methods, reason = "what the C library says is what's being shown")]
     let libm = 0.7_f64.sin();
     assert_eq!(marks(&frame), [libm], "a FASTCALL reached the C library");
@@ -318,7 +324,9 @@ fn fastcall_reaches_a_removed_function_too() {
         plain.compile("return { hook = function() return setmetatable({}, {__mode = 'k'}) end }").unwrap();
     assert_eq!(scan(&bytes).unwrap().fastcalls, [61]);
     let vm = ScriptVm::new(Limits::default()).unwrap();
-    assert!(vm.load(&bytes, "=test").is_err());
+    // SAFETY: the plain compiler above is the same linked Luau compiler; only allowlist settings differ.
+    let compiled = unsafe { CookedScript::from_trusted_bytes(bytes) };
+    assert!(vm.load(&compiled, "=test").is_err());
 }
 
 #[test]
@@ -351,7 +359,7 @@ fn a_power_reaches_c_only_where_the_scan_says() {
     // it with the host's `pow`. It's bytes, so the run's still one run; `tables_hash` is what would show
     // a cook on another host differing.
     let carried = cook("local base = 1.5 return { hook = function() return base ^ 0.5 end }").unwrap();
-    assert_eq!(scan(&carried).unwrap().pow, 0);
+    assert_eq!(scan(carried.as_ref()).unwrap().pow, 0);
 }
 
 #[test]
@@ -399,7 +407,7 @@ fn a_budget_is_a_count_that_lands_on_one_instruction() {
     let spent = |limit: u64| {
         let vm = ScriptVm::new(Limits { interrupts: limit, ..Limits::default() }).unwrap();
         let hooks = vm.load(&cook(spin).unwrap(), "=test").unwrap();
-        let hook: mlua::Function = hooks.get("hook").unwrap();
+        let hook = hooks.hook("hook").unwrap().unwrap();
         let mut frame = Frame::new();
         let before = ScriptVm::interrupts();
         let end = vm.fire(&mut frame, &hook, ());
@@ -408,11 +416,11 @@ fn a_budget_is_a_count_that_lands_on_one_instruction() {
     };
     assert_eq!(spent(1000), spent(1000));
     assert_eq!(spent(1000), 1001, "the budget, then the interrupt that ends it");
-    // A loop's cost is its shape, and level 0 is what ships.
+    // A loop's cost is its shape, measured at the pinned shipping level.
     let counted = "return { hook = function() for i = 1, 500 do end local function f() end for i = 1, 100 do f() end end }";
     let vm = ScriptVm::new(Limits::default()).unwrap();
     let hooks = vm.load(&cook(counted).unwrap(), "=test").unwrap();
-    let hook: mlua::Function = hooks.get("hook").unwrap();
+    let hook = hooks.hook("hook").unwrap().unwrap();
     let mut frame = Frame::new();
     let before = ScriptVm::interrupts();
     assert_eq!(vm.fire(&mut frame, &hook, ()), HookEnd::Returned);
@@ -445,7 +453,7 @@ fn a_walk_of_a_table_spends_the_budget() {
     for body in ["table.find(t, 1)", "table.insert(t, 1, 0)", "table.remove(t, 1)"] {
         let source = format!("return {{ hook = function() local t = table.create(9000, 0) {body} end }}");
         let vm = ScriptVm::new(Limits { interrupts: 1_000_000, ..Limits::default() }).unwrap();
-        let hook: mlua::Function = vm.load(&cook(&source).unwrap(), "=test").unwrap().get("hook").unwrap();
+        let hook = vm.load(&cook(&source).unwrap(), "=test").unwrap().hook("hook").unwrap().unwrap();
         let before = ScriptVm::interrupts();
         assert_eq!(vm.fire(&mut Frame::new(), &hook, ()), HookEnd::Returned, "{body}");
         assert!(ScriptVm::interrupts() - before >= 9000, "{body}: {}", ScriptVm::interrupts() - before);
@@ -656,8 +664,10 @@ unsafe extern "C-unwind" fn note(state: *mut lua_State) -> c_int {
 
 fn attack_run_of(source: &str) -> (u64, u64, u64) {
     let limits = Limits { interrupts: 1_000_000, ..Limits::default() };
-    let mut host =
-        ScriptHost::new_with_bindings(limits, &[Binding { name: "note", function: note }]).unwrap();
+    // SAFETY: `note` takes only checked numbers from the supplied live state, preserves its stack,
+    // returns zero results, enters host attribution, and never raises or executes new bytecode.
+    let binding = unsafe { Binding::new("note", note) };
+    let mut host = ScriptHost::new_with_bindings(limits, &[binding]).unwrap();
     host.bind(&cook(source).unwrap(), "=attack").unwrap();
     host.beat_every(30);
     let finished = play(host, replay_file("arena-fight-won"));
@@ -720,7 +730,7 @@ fn child() {
         .eval()
         .unwrap();
     let printed = printed.replace(' ', "_");
-    let cooked = hash_bytes(&cook(ATTACK).unwrap());
+    let cooked = hash_bytes(cook(ATTACK).unwrap().as_ref());
     println!("SCRIPT-CHILD {sim:016x} {digest:016x} {used} {cooked:016x} {printed} {order}");
 }
 
@@ -791,8 +801,8 @@ fn the_checksums_say_what_they_are() {
 
     let cooked = cook(ATTACK).unwrap();
     assert_eq!(cooked, cook(ATTACK).unwrap(), "a cook is the same bytes twice");
-    say(&format!("attack cooked len {} hash {:016x}", cooked.len(), hash_bytes(&cooked)));
-    assert_eq!(hash_bytes(&cooked), ATTACK_COOKED, "this machine's cook differs");
+    say(&format!("attack cooked len {} hash {:016x}", cooked.as_ref().len(), hash_bytes(cooked.as_ref())));
+    assert_eq!(hash_bytes(cooked.as_ref()), ATTACK_COOKED, "this machine's cook differs");
     for level in [0, 1, 2] {
         let bytes = compile::compile_unchecked(CORPUS, level).unwrap();
         let numbers: Vec<String> =

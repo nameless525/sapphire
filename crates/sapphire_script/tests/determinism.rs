@@ -670,13 +670,17 @@ fn say(line: &str) {
     writeln!(std::io::stderr(), "script-digest|{ARCHITECTURE}|{line}").unwrap();
 }
 
-/// One safely baked non-finite result, whose raw byte representation can vary by host.
+/// The compiler can serialize a non-finite result. Its raw representation remains diagnostic.
 #[test]
 fn folded_nan_cook_diagnostic() {
-    let cooked = cook("return { hook = function() return 1e309 - 1e309 end }").unwrap();
-    let numbers = scan(cooked.as_ref()).unwrap().numbers;
+    let bytes = compile::compile_unchecked(
+        "return { hook = function() return 1e309 - 1e309 end }",
+        compile::SHIPPING_LEVEL,
+    )
+    .unwrap();
+    let numbers = scan(&bytes).unwrap().numbers;
     let bits = numbers.into_iter().find(|bits| f64::from_bits(*bits).is_nan()).expect("the fold baked NaN");
-    let bytes: String = cooked.as_ref().iter().map(|byte| format!("{byte:02x}")).collect();
+    let bytes: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
     say(&format!("baked-nan-v1 {bits:016x} {bytes}"));
 }
 

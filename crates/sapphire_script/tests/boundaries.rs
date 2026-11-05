@@ -5,8 +5,8 @@ use std::alloc::System;
 use mlua::Table;
 use sapphire_core::alloc::{self, CountingAllocator, VmAllocations};
 use sapphire_script::bindings::{in_host, with_frame};
-use sapphire_script::compile::{CookError, check, compile_unchecked};
-use sapphire_script::scan::ScanError;
+use sapphire_script::compile::{CookError, SHIPPING_LEVEL, check, compile_unchecked};
+use sapphire_script::scan::{ScanError, scan};
 use sapphire_script::{CookedScript, Frame, Hook, HookArgs, HookEnd, Limits, ScriptVm, VmError, cook};
 
 #[global_allocator]
@@ -242,31 +242,25 @@ fn initialization_has_no_frame_even_when_a_calling_hooks_frame_is_available() {
 #[test]
 fn invalid_numeric_indices_cannot_alias_slot_zero_or_another_actor() {
     let vm = ScriptVm::new(Limits::default()).unwrap();
-    for expression in ["-1", "0 / 0", "0.5", "math.huge", "64"] {
-        let writing =
-            hook(&vm, &format!("return {{hook = function() sapphire.set_board({expression}, 99) end}}"));
+    let writing = hook(&vm, "return {hook = function(index) sapphire.set_board(index, 99) end}");
+    let reading_board = hook(&vm, "return {hook = function(index) sapphire.mark(sapphire.board(index)) end}");
+    let reading_health =
+        hook(&vm, "return {hook = function(index) sapphire.mark(sapphire.health(index)) end}");
+    for index in [-1.0, f64::NAN, 0.5, f64::INFINITY, 64.0] {
         let mut frame = Frame::new();
         frame.board[0] = 7.0;
-        assert_eq!(vm.fire(&mut frame, &writing, ()), HookEnd::Returned);
-        assert!(frame.fault, "{expression}");
+        assert_eq!(vm.fire(&mut frame, &writing, index), HookEnd::Returned);
+        assert!(frame.fault, "{index}");
         assert_eq!(frame.board[0], 7.0);
-        let reading = hook(
-            &vm,
-            &format!("return {{hook = function() sapphire.mark(sapphire.board({expression})) end}}"),
-        );
         frame.fault = false;
-        assert_eq!(vm.fire(&mut frame, &reading, ()), HookEnd::Returned);
-        assert!(frame.fault, "{expression}");
+        assert_eq!(vm.fire(&mut frame, &reading_board, index), HookEnd::Returned);
+        assert!(frame.fault, "{index}");
         assert_eq!(frame.queue[0], sapphire_script::Command::Mark(0.0));
     }
-    for expression in ["-1", "0 / 0", "0.5", "math.huge", "16"] {
-        let reading = hook(
-            &vm,
-            &format!("return {{hook = function() sapphire.mark(sapphire.health({expression})) end}}"),
-        );
+    for index in [-1.0, f64::NAN, 0.5, f64::INFINITY, 16.0] {
         let mut frame = Frame::new();
         frame.health[0] = 123.0;
-        assert_eq!(vm.fire(&mut frame, &reading, ()), HookEnd::Returned);
+        assert_eq!(vm.fire(&mut frame, &reading_health, index), HookEnd::Returned);
         assert_eq!(frame.queue[0], sapphire_script::Command::Mark(0.0));
     }
 }
@@ -285,15 +279,22 @@ fn a_preseeded_full_drop_counter_stays_saturated() {
 #[test]
 fn table_walk_positions_are_finite_whole_array_indices() {
     let vm = ScriptVm::new(Limits::default()).unwrap();
-    for position in ["1.5", "0 / 0", "math.huge", "false"] {
+    for (position, inputs) in [("position", &[1.5, f64::NAN, f64::INFINITY][..]), ("false", &[0.0][..])] {
         for operation in [
             format!("table.insert(t, {position}, 9)"),
             format!("table.remove(t, {position})"),
             format!("table.find(t, 2, {position})"),
         ] {
-            let body =
-                hook(&vm, &format!("return {{hook = function() local t = {{1, 2, 3}} {operation} end}}"));
-            assert!(matches!(vm.fire(&mut Frame::new(), &body, ()), HookEnd::Failed(_)), "{operation}");
+            let body = hook(
+                &vm,
+                &format!("return {{hook = function(position) local t = {{1, 2, 3}} {operation} end}}"),
+            );
+            for &input in inputs {
+                assert!(
+                    matches!(vm.fire(&mut Frame::new(), &body, input), HookEnd::Failed(_)),
+                    "{operation} {input}"
+                );
+            }
         }
     }
 }
@@ -353,11 +354,51 @@ fn native_compiler_options_are_refused_when_restoring_trusted_bytes() {
 }
 
 #[test]
+fn nonfinite_baked_constants_are_refused_even_in_trusted_compiler_output() {
+    let vm = ScriptVm::new(Limits::default()).unwrap();
+    for expression in ["1e309 - 1e309", "1e309", "-1e309"] {
+        let source = format!("return {{hook = function() return {expression} end}}");
+        let bytes = compile_unchecked(&source, SHIPPING_LEVEL).unwrap();
+        let findings = scan(&bytes).unwrap();
+        assert!(findings.numbers.iter().any(|&bits| !f64::from_bits(bits).is_finite()), "{expression}");
+        assert!(
+            matches!(check(&bytes), Err(CookError::Refused(reason)) if reason.contains("must be finite"))
+        );
+        assert!(
+            matches!(cook(&source), Err(CookError::Refused(reason)) if reason.contains("must be finite"))
+        );
+        // SAFETY: these are complete and unchanged bytes just produced by the pinned compiler.
+        let restored = unsafe { CookedScript::from_trusted_bytes(bytes) };
+        assert!(
+            matches!(vm.load(&restored, "=nonfinite"), Err(VmError::Cook(CookError::Refused(reason))) if reason.contains("must be finite"))
+        );
+    }
+}
+
+#[test]
+fn runtime_numbers_can_still_be_nonfinite() {
+    let vm = ScriptVm::new(Limits::default()).unwrap();
+    let marking = hook(&vm, "return {hook = function(value) sapphire.mark(value) end}");
+    for number in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -0.0] {
+        let mut frame = Frame::new();
+        assert_eq!(vm.fire(&mut frame, &marking, number), HookEnd::Returned);
+        let sapphire_script::Command::Mark(mark) = frame.queue[0] else {
+            panic!("the hook must mark its argument");
+        };
+        if number.is_nan() {
+            assert!(mark.is_nan());
+        } else {
+            assert_eq!(mark.to_bits(), number.to_bits());
+        }
+    }
+}
+
+#[test]
 fn trusted_compiler_output_round_trips_without_changing_bytes() {
     let original = cook("return {hook = function() sapphire.mark(17) end}").unwrap();
     let bytes = original.as_ref().to_vec();
     // SAFETY: this is an exact copy of the immutable output just produced by the pinned compiler.
-    let restored = unsafe { sapphire_script::CookedScript::from_trusted_bytes(bytes) };
+    let restored = unsafe { CookedScript::from_trusted_bytes(bytes) };
     assert_eq!(restored, original);
     let vm = ScriptVm::new(Limits::default()).unwrap();
     let hooks = vm.load(&restored, "=restored").unwrap();

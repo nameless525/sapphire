@@ -123,12 +123,17 @@ pub struct Findings {
     pub instructions: u32,
     /// Every number in a constant table, by its bits: what a compiler left of what it folded.
     pub numbers: Vec<u64>,
+    /// A non-finite scalar or vector component refused by the cook policy.
+    pub nonfinite_constants: bool,
 }
 
 impl Findings {
     /// The first rule this chunk breaks, read from its bytes as they ship.
     #[must_use]
     pub fn violation(&self) -> Option<String> {
+        if self.nonfinite_constants {
+            return Some("a baked numeric constant must be finite".to_owned());
+        }
         if self.pow > 0 {
             return Some("`^` by anything but the literals 2, 3 and 0.5 reaches the C library".to_owned());
         }
@@ -433,8 +438,10 @@ fn constants(reader: &mut Reader<'_>, findings: &mut Findings) -> Result<Vec<Opt
             }
             2 => {
                 let bits = reader.u64()?;
+                let value = f64::from_bits(bits);
                 findings.numbers.push(bits);
-                Some(f64::from_bits(bits))
+                findings.nonfinite_constants |= !value.is_finite();
+                Some(value)
             }
             3 | 6 => {
                 reader.varint()?;
@@ -451,7 +458,9 @@ fn constants(reader: &mut Reader<'_>, findings: &mut Findings) -> Result<Vec<Opt
                 None
             }
             7 => {
-                reader.take(16)?;
+                for _ in 0..4 {
+                    findings.nonfinite_constants |= !f32::from_bits(reader.u32()?).is_finite();
+                }
                 None
             }
             8 => {
@@ -467,7 +476,9 @@ fn constants(reader: &mut Reader<'_>, findings: &mut Findings) -> Result<Vec<Opt
                 None
             }
             11 => {
-                reader.take(32)?;
+                for _ in 0..4 {
+                    findings.nonfinite_constants |= !f64::from_bits(reader.u64()?).is_finite();
+                }
                 None
             }
             tag => return Err(ScanError::Constant(tag)),
@@ -504,6 +515,36 @@ mod tests {
         cold.extend(22u32.to_le_bytes()); // RETURN
         cold.extend([0; 7]); // constants, children, line, name, line info, debug info, main
         assert_eq!(scan(&cold).unwrap().instructions, 1);
+    }
+
+    #[test]
+    fn all_vector_constant_lanes_must_be_finite() {
+        fn vector_findings(
+            tag: u8,
+            lanes: impl IntoIterator<Item = impl IntoIterator<Item = u8>>,
+        ) -> Findings {
+            let mut bytes = vec![1, tag];
+            bytes.extend(lanes.into_iter().flatten());
+            let mut reader = Reader { bytes: &bytes, at: 0 };
+            let mut findings = Findings::default();
+            assert_eq!(constants(&mut reader, &mut findings).unwrap(), [None]);
+            assert_eq!(reader.at, bytes.len());
+            assert!(findings.numbers.is_empty(), "the scalar diagnostic stays scalar");
+            findings
+        }
+
+        let finite_f32 = [1.0_f32, -0.0, 0.0, f32::MAX];
+        let finite_f64 = [1.0_f64, -0.0, 0.0, f64::MAX];
+        assert!(vector_findings(7, finite_f32.map(f32::to_le_bytes)).violation().is_none());
+        assert!(vector_findings(11, finite_f64.map(f64::to_le_bytes)).violation().is_none());
+        for lane in 0..4 {
+            let mut single = finite_f32;
+            single[lane] = f32::NAN;
+            assert!(vector_findings(7, single.map(f32::to_le_bytes)).violation().is_some(), "{lane}");
+            let mut double = finite_f64;
+            double[lane] = f64::INFINITY;
+            assert!(vector_findings(11, double.map(f64::to_le_bytes)).violation().is_some(), "{lane}");
+        }
     }
 
     #[test]

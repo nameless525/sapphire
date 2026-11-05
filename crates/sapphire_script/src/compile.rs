@@ -109,6 +109,9 @@ impl AsRef<[u8]> for CookedScript {
 /// attributes can override that level. The cook reserves `--!optimize`, `--!native`, `@native` and
 /// `@[` anywhere in source, including inside comments and strings. Listed attributes are reserved
 /// as a group because they can contain a native attribute separated by whitespace or comments.
+///
+/// Baked scalar and vector constants must be finite. Scripts can still compute non-finite values
+/// at runtime or receive them as hook arguments.
 pub fn cook(source: &str) -> Result<CookedScript, CookError> {
     if ["--!optimize", "--!native", "@native", "@["].into_iter().any(|marker| source.contains(marker)) {
         return Err(CookError::Refused("a script doesn't choose its own compile options".to_owned()));

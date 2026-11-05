@@ -24,7 +24,7 @@ pub use self::mounts::{MountState, UnmountReport};
 pub use self::reload::{AssetChange, RemountReport};
 use self::reload::{Next, NextStage};
 pub use self::source::{LoadPriority, MemoryPackSource, PackFile, PackSource, ReadDone};
-use crate::pack::{Decoder, Entry, PackError, Toc};
+use crate::pack::{Decoder, Entry, PackError, PackMetadataBudget, PackMetadataRead, Toc};
 use crate::{AssetId, AssetKind, PipelineKey};
 
 const LOG_TARGET: &str = "sapphire::assets";
@@ -177,7 +177,7 @@ pub enum MountError {
         #[source]
         source: io::Error,
     },
-    #[error("pack {name:?} is invalid")]
+    #[error("pack {name:?} could not be loaded")]
     Pack {
         name: String,
         #[source]
@@ -391,7 +391,7 @@ enum Completion {
     /// A decode job's result.
     Asset { key: SlotKey, request: u32, result: Result<Arc<AlignedVec>, LoadError> },
     /// A pack opened, with its header and table of contents read and checked ([`AssetServer::mount`]).
-    Mount { request: u64, result: Result<(OpenPack, Toc), MountError> },
+    Mount { request: u64, result: Result<(OpenPack, Toc), MountError>, metadata: PackMetadataRead },
 }
 
 /// Mounts packs and loads the assets in them (spec §5.10).
@@ -536,6 +536,7 @@ enum Completion {
 pub struct AssetServer {
     source: Arc<dyn PackSource>,
     budgets: AssetBudgets,
+    metadata_budget: PackMetadataBudget,
     mounts: SlotMap<MountKey, Mount>,
     /// Packs a worker is opening, oldest first.
     pending_mounts: Vec<PendingMount>,
@@ -579,10 +580,21 @@ impl fmt::Debug for AssetServer {
 impl AssetServer {
     /// A server reading packs from `source`, within `budgets`.
     pub fn new(source: impl PackSource + 'static, budgets: AssetBudgets) -> Self {
+        Self::with_metadata_budget(source, budgets, PackMetadataBudget::default())
+    }
+
+    /// Reads packs with an explicit transient metadata budget. Pass clones of one budget to
+    /// readers whose queued and in-flight metadata work should share capacity.
+    pub fn with_metadata_budget(
+        source: impl PackSource + 'static,
+        budgets: AssetBudgets,
+        metadata_budget: PackMetadataBudget,
+    ) -> Self {
         let (sender, receiver) = mpsc::channel();
         Self {
             source: Arc::new(source),
             budgets,
+            metadata_budget,
             mounts: SlotMap::with_key(),
             pending_mounts: Vec::new(),
             failed_mounts: Vec::new(),
@@ -1085,7 +1097,10 @@ impl AssetServer {
         self.reads_in_flight -= 1;
         match completion {
             Completion::Asset { key, request, result } => self.complete_read(key, request, result),
-            Completion::Mount { request, result } => self.complete_mount(request, result),
+            Completion::Mount { request, result, metadata } => {
+                self.complete_mount(request, result);
+                drop(metadata);
+            }
         }
     }
 

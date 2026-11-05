@@ -11,7 +11,7 @@ use super::handle::SlotKey;
 use super::{
     AssetServer, Completion, LOG_TARGET, LoadError, LoadPriority, MountError, PackFile, PackSource, SlotState,
 };
-use crate::pack::{HEADER_LEN, PackError, PackHeader, Toc};
+use crate::pack::{HEADER_LEN, PackHeader, PackMetadataRead, Toc};
 
 slotmap::new_key_type! {
     /// A mounted pack. A slot's mount outlasts the pack only while the slot has no entry, which no read
@@ -88,19 +88,19 @@ fn read_now(source: &dyn PackSource, file: PackFile, offset: u64, len: usize) ->
 
 /// Opens the pack called `name` and reads and checks its header and table of contents, waiting for them
 /// on the calling thread.
-pub(super) fn read_pack(source: &Arc<dyn PackSource>, name: &str) -> Result<(OpenPack, Toc), MountError> {
+pub(super) fn read_pack(
+    source: &Arc<dyn PackSource>,
+    name: &str,
+    metadata: &mut PackMetadataRead,
+) -> Result<(OpenPack, Toc), MountError> {
     let io_error = |source| MountError::Io { name: name.to_owned(), source };
     let pack_error = |source| MountError::Pack { name: name.to_owned(), source };
     let (file, len) = source.open(name).map_err(io_error)?;
     let open = OpenPack { source: source.clone(), file };
     let header = read_now(&**source, file, 0, len.min(HEADER_LEN as u64) as usize).map_err(io_error)?;
     let header = PackHeader::read(&header).map_err(pack_error)?;
-    // Reject an inconsistent extent before asking the source to allocate the TOC buffer.
-    header.check_file_len(len).map_err(pack_error)?;
-    let toc_range = header.toc_range();
-    let toc_len = usize::try_from(toc_range.end - toc_range.start)
-        .map_err(|_| pack_error(PackError::Header("the table of contents is too large for this platform")))?;
-    let toc = read_now(&**source, file, toc_range.start, toc_len).map_err(io_error)?;
+    let toc_len = metadata.toc_read_len(&header, len).map_err(pack_error)?;
+    let toc = read_now(&**source, file, HEADER_LEN as u64, toc_len).map_err(io_error)?;
     let toc = Toc::read(header, &toc, len).map_err(pack_error)?;
     Ok((open, toc))
 }
@@ -113,13 +113,17 @@ impl AssetServer {
     /// mounted pack only. Loaded assets that lost their pack and that this one holds move to it, and
     /// failed assets that need what it holds load again (see [hot reload](AssetServer#hot-reload)).
     ///
-    /// Fails here only if the pack is mounted or mounting already. Anything else that stops it shows in
-    /// [`Self::mount_state`].
+    /// Fails here if the pack is mounted or mounting already, or the metadata budget cannot admit
+    /// its header. A refusal leaves the request unqueued. Later failures show in [`Self::mount_state`].
     pub fn mount(&mut self, name: &str) -> Result<(), MountError> {
         profiling::scope!("AssetServer::mount");
         if self.is_mounted(name) || self.pending_mounts.iter().any(|pending| pending.name == name) {
             return Err(MountError::AlreadyMounted(name.to_owned()));
         }
+        let mut metadata = self
+            .metadata_budget
+            .begin()
+            .map_err(|source| MountError::Pack { name: name.to_owned(), source })?;
         self.failed_mounts.retain(|(failed, _)| failed != name);
         self.mount_requests += 1;
         let request = self.mount_requests;
@@ -127,12 +131,13 @@ impl AssetServer {
         self.reads_in_flight += 1;
         let (source, sender, name) = (self.source.clone(), self.sender.clone(), name.to_owned());
         sapphire_jobs::spawn_async(move || {
-            let result = std::panic::catch_unwind(AssertUnwindSafe(|| read_pack(&source, &name)))
-                .unwrap_or_else(|_| {
-                    Err(MountError::Io { name, source: io::Error::other("reading the pack panicked") })
-                });
+            let result =
+                std::panic::catch_unwind(AssertUnwindSafe(|| read_pack(&source, &name, &mut metadata)))
+                    .unwrap_or_else(|_| {
+                        Err(MountError::Io { name, source: io::Error::other("reading the pack panicked") })
+                    });
             // A closed channel means the server is gone: what was opened closes with the message.
-            let _ = sender.send(Completion::Mount { request, result });
+            let _ = sender.send(Completion::Mount { request, result, metadata });
         });
         Ok(())
     }

@@ -32,7 +32,9 @@ use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use sapphire_assets::pack::{Block, HEADER_LEN, PackError, PackHeader, Toc};
+use sapphire_assets::pack::{
+    Block, HEADER_LEN, PackError, PackHeader, PackMetadataBudget, PackMetadataRead, Toc,
+};
 use sapphire_assets::{AssetServer, LoadPriority, MountError, PackFile, PackSource, ReadDone};
 
 use crate::protocol::{ByteRange, PackOutcome};
@@ -79,6 +81,7 @@ const COPY_IN_PLACE: usize = 256 << 10;
 pub struct LivePacks {
     base: Arc<dyn PackSource>,
     limits: PushLimits,
+    metadata_budget: PackMetadataBudget,
     /// Shared with the pushes being received, which give back what they reserved when dropped.
     state: Arc<Mutex<State>>,
 }
@@ -142,7 +145,16 @@ impl LivePacks {
 
     /// Serves the packs of `base` until packs are pushed, which may hold at most `limits`.
     pub fn with_limits(base: impl PackSource + 'static, limits: PushLimits) -> Self {
-        Self { base: Arc::new(base), limits, state: Arc::default() }
+        Self::with_metadata_budget(base, limits, PackMetadataBudget::default())
+    }
+
+    /// Serves the base and pushed packs with explicit push and base metadata budgets.
+    pub fn with_metadata_budget(
+        base: impl PackSource + 'static,
+        limits: PushLimits,
+        metadata_budget: PackMetadataBudget,
+    ) -> Self {
+        Self { base: Arc::new(base), limits, metadata_budget, state: Arc::default() }
     }
 
     pub fn limits(&self) -> PushLimits {
@@ -240,14 +252,15 @@ impl LivePacks {
         if let Some((_, version)) = self.lock().pushed.iter().find(|(pushed, _)| pushed == name) {
             return Some(Current::Pushed(version.clone()));
         }
+        let mut metadata = self.metadata_budget.begin().ok()?;
         let (file, len) = self.base.open(name).ok()?;
         let file = Arc::new(BaseFile { source: self.base.clone(), file });
         let read = |offset, len| read_blocking(&*self.base, file.file, offset, len);
         let header = PackHeader::read(&read(0, HEADER_LEN as u64).ok()?).ok()?;
-        let toc_range = header.toc_range();
-        let toc = read(toc_range.start, toc_range.end - toc_range.start).ok()?;
+        let toc_len = metadata.toc_read_len(&header, len).ok()?;
+        let toc = read(HEADER_LEN as u64, toc_len as u64).ok()?;
         let toc = Toc::read(header, &toc, len).ok()?;
-        Some(Current::Base { file, toc })
+        Some(Current::Base { file, toc, _metadata: metadata })
     }
 
     /// Serves `version` as pack `name` from now on, and returns the version it replaces.
@@ -589,7 +602,7 @@ impl Gather {
 /// The version of a pack served before a push.
 enum Current {
     Pushed(Arc<Version>),
-    Base { file: Arc<BaseFile>, toc: Toc },
+    Base { file: Arc<BaseFile>, toc: Toc, _metadata: PackMetadataRead },
 }
 
 impl Current {
@@ -891,6 +904,49 @@ mod tests {
         let bytes = read_blocking(packs, file, 0, len).unwrap();
         packs.close(file);
         bytes
+    }
+
+    #[test]
+    fn push_planning_refuses_base_toc_io_without_credit_and_reuses_it_with_room() {
+        #[derive(Default)]
+        struct RecordingSource {
+            inner: MemoryPackSource,
+            reads: Mutex<Vec<(u64, usize)>>,
+        }
+
+        impl PackSource for RecordingSource {
+            fn open(&self, name: &str) -> io::Result<(PackFile, u64)> {
+                self.inner.open(name)
+            }
+
+            fn read(&self, file: PackFile, offset: u64, len: usize, priority: LoadPriority, done: ReadDone) {
+                self.reads.lock().unwrap().push((offset, len));
+                self.inner.read(file, offset, len, priority, done);
+            }
+
+            fn close(&self, file: PackFile) {
+                self.inner.close(file);
+            }
+        }
+
+        let source = Arc::new(RecordingSource::default());
+        let bytes = pack(vec![asset(1, 8, 3)]);
+        source.inner.insert("shared", bytes.clone());
+        let limited = LivePacks::with_metadata_budget(
+            source.clone(),
+            PushLimits::DEFAULT,
+            PackMetadataBudget::new(HEADER_LEN as u64),
+        );
+        let header = PackHeader::read(&bytes).unwrap();
+        let plan = limited.plan("shared", bytes.len() as u64, head(&bytes)).unwrap();
+        assert_eq!(plan.needed(), &[ByteRange { offset: header.data_offset, len: header.data_len }]);
+        assert_eq!(*source.reads.lock().unwrap(), [(0, HEADER_LEN)]);
+        drop(plan);
+        source.reads.lock().unwrap().clear();
+        let admitted = LivePacks::new(source.clone());
+        let plan = admitted.plan("shared", bytes.len() as u64, head(&bytes)).unwrap();
+        assert!(plan.needed().is_empty());
+        assert!(source.reads.lock().unwrap().contains(&(HEADER_LEN as u64, header.toc_len() as usize)));
     }
 
     #[test]

@@ -15,7 +15,7 @@ use std::time::SystemTime;
 use sapphire_assets::AssetId;
 use sapphire_assets::AssetKind;
 use sapphire_assets::mesh::{ArchivedMesh, Mesh, SkinBind, VertexInfluence};
-use sapphire_assets::pack::{Decoder, HEADER_LEN, PackHeader, Toc};
+use sapphire_assets::pack::{Decoder, HEADER_LEN, PackHeader, PackMetadataBudget, Toc};
 use sapphire_assets::rig::{
     ArchivedCharacterRig, ArchivedConstraintKind, CharacterRig, Constraint, ConstraintKind, HumanBone,
 };
@@ -82,12 +82,18 @@ pub(crate) fn pack_stamp(dir: &Path) -> Result<Vec<PackStamp>, String> {
 impl Cook {
     /// The cook in `dir`: `target/content/desktop`. `Err` says why there's none to read.
     pub fn open(dir: &Path) -> Result<Self, String> {
+        Self::open_with_metadata_budget(dir, PackMetadataBudget::default())
+    }
+
+    /// Opens a cook with an explicit transient metadata budget.
+    pub fn open_with_metadata_budget(dir: &Path, metadata: PackMetadataBudget) -> Result<Self, String> {
         let stamp = pack_stamp(dir)?;
         let mut packs = Vec::new();
         for entry in &stamp {
             let path = entry.path.clone();
             let mut file = File::open(&path).map_err(|error| format!("{}: {error}", path.display()))?;
-            let toc = read_toc(&mut file).map_err(|error| format!("{}: {error}", path.display()))?;
+            let toc =
+                read_toc(&mut file, &metadata).map_err(|error| format!("{}: {error}", path.display()))?;
             packs.push(OpenPack { path, file: Mutex::new(file), toc });
         }
         if packs.is_empty() {
@@ -149,12 +155,14 @@ impl Cook {
     }
 }
 
-fn read_toc(file: &mut File) -> Result<Toc, String> {
+fn read_toc(file: &mut File, budget: &PackMetadataBudget) -> Result<Toc, String> {
+    let mut metadata = budget.begin().map_err(|error| error.to_string())?;
     let file_len = file.metadata().map_err(|error| error.to_string())?.len();
     let mut head = [0; HEADER_LEN];
     file.read_exact(&mut head).map_err(|error| error.to_string())?;
     let header = PackHeader::read(&head).map_err(|error| error.to_string())?;
-    let mut toc = vec![0; header.toc_len() as usize];
+    let len = metadata.toc_read_len(&header, file_len).map_err(|error| error.to_string())?;
+    let mut toc = vec![0; len];
     file.read_exact(&mut toc).map_err(|error| error.to_string())?;
     Toc::read(header, &toc, file_len).map_err(|error| error.to_string())
 }
@@ -350,5 +358,20 @@ mod tests {
         assert!(fresh.is_stale());
         drop((cook, fresh));
         fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn opening_a_cook_honors_the_metadata_budget_and_accepts_the_same_pack_with_room() {
+        let dir = std::env::temp_dir().join(format!("sapphire_editor_pack_budget_{}", std::process::id()));
+        fs::create_dir(&dir).expect("new scratch directory");
+        let id = AssetId::from_bytes([1; 16]);
+        fs::write(dir.join("small.spack"), pack(id, 3)).unwrap();
+        let limited = PackMetadataBudget::new(HEADER_LEN as u64);
+        let error = Cook::open_with_metadata_budget(&dir, limited).unwrap_err();
+        assert!(error.contains("pack metadata needs"), "{error}");
+        let cook = Cook::open(&dir).unwrap();
+        assert_eq!(&cook.read(id).unwrap().unwrap()[..], &[3; 8]);
+        drop(cook);
+        fs::remove_dir_all(dir).unwrap();
     }
 }

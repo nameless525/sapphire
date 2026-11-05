@@ -78,6 +78,7 @@
 //! [`PackReader`] reads packs held in memory (tools and tests). The runtime reads ranges through
 //! the asset server's IO ([`crate::PackSource`]) and decodes them with [`Toc::decode_asset`].
 
+mod metadata;
 mod write;
 
 use std::fmt;
@@ -88,6 +89,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{AssetId, AssetKind, PipelineKey};
 
+pub use metadata::{PackMetadataBudget, PackMetadataRead};
 pub use write::{PackAsset, StoredBlock, write_pack};
 
 /// Conventional file extension for packs.
@@ -172,6 +174,8 @@ pub enum PackError {
     UnsupportedSignature(u32),
     #[error("the pack is truncated: {found} bytes, but its header describes {expected}")]
     Truncated { expected: u64, found: u64 },
+    #[error("pack metadata needs {additional} bytes with {reserved} of {limit} bytes already reserved")]
+    MetadataBudget { additional: u64, reserved: u64, limit: u64 },
     #[error("the pack's table of contents doesn't match its hash: the file is corrupt")]
     TocHash,
     #[error("the pack's table of contents is inconsistent at {part} {index}: {reason}")]
@@ -282,9 +286,13 @@ impl PackHeader {
 
     /// Checks the opened file's extent before a reader requests the table of contents.
     pub(crate) fn check_file_len(&self, file_len: u64) -> Result<(), PackError> {
-        if file_len < self.file_len() {
-            Err(PackError::Truncated { expected: self.file_len(), found: file_len })
-        } else if file_len > self.file_len() {
+        let expected = self
+            .data_offset
+            .checked_add(self.data_len)
+            .ok_or(PackError::Header("the data's extent overflows"))?;
+        if file_len < expected {
+            Err(PackError::Truncated { expected, found: file_len })
+        } else if file_len > expected {
             Err(PackError::Header("the file is longer than the pack it holds"))
         } else {
             Ok(())
@@ -384,23 +392,17 @@ impl Toc {
         let (block_table, rest) = rest.split_at(block_bytes);
         let (dependency_table, key_table) = rest.split_at(header.dependency_count as usize * DEPENDENCY_LEN);
 
-        let dependencies: Vec<AssetId> = dependency_table
-            .as_chunks::<DEPENDENCY_LEN>()
-            .0
-            .iter()
-            .map(|id| AssetId::from_bytes(*id))
-            .collect();
+        let mut dependencies = Vec::with_capacity(header.dependency_count as usize);
+        for id in dependency_table.as_chunks::<DEPENDENCY_LEN>().0 {
+            dependencies.push(AssetId::from_bytes(*id));
+        }
         let toc_error =
             |part: &'static str, index: usize, reason: &'static str| PackError::Toc { part, index, reason };
-        let pipeline_keys = key_table
-            .as_chunks::<PIPELINE_KEY_LEN>()
-            .0
-            .iter()
-            .enumerate()
-            .map(|(index, row)| {
-                PipelineKey::from_row(row).map_err(|reason| toc_error("pipeline key", index, reason))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let mut pipeline_keys = Vec::with_capacity(header.pipeline_key_count as usize);
+        for (index, row) in key_table.as_chunks::<PIPELINE_KEY_LEN>().0.iter().enumerate() {
+            pipeline_keys
+                .push(PipelineKey::from_row(row).map_err(|reason| toc_error("pipeline key", index, reason))?);
+        }
 
         let mut entries = Vec::with_capacity(header.entry_count as usize);
         let (mut next_block, mut next_dependency, mut next_key) = (0u32, 0u32, 0u32);

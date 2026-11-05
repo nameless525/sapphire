@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use super::*;
 use crate::material::{AnimeCharacterMaterial, Material};
@@ -12,6 +12,8 @@ mod lifetime;
 mod moves;
 mod reload;
 mod unmount;
+
+use lifetime::CountedSource;
 
 fn id(n: u8) -> AssetId {
     AssetId::from_bytes([n; 16])
@@ -836,33 +838,29 @@ fn mounting_checks_packs() {
     assert!(!server.contains(id(4)));
 }
 
+struct SizedSource {
+    inner: CountedSource,
+    file_len: u64,
+    reads: Mutex<Vec<(u64, usize)>>,
+}
+
+impl PackSource for SizedSource {
+    fn open(&self, name: &str) -> io::Result<(PackFile, u64)> {
+        self.inner.open(name).map(|(file, _)| (file, self.file_len))
+    }
+
+    fn read(&self, file: PackFile, offset: u64, len: usize, priority: LoadPriority, done: ReadDone) {
+        self.reads.lock().unwrap().push((offset, len));
+        self.inner.read(file, offset, len, priority, done);
+    }
+
+    fn close(&self, file: PackFile) {
+        self.inner.close(file);
+    }
+}
+
 #[test]
 fn mounting_rejects_inconsistent_file_extents_before_reading_the_toc() {
-    use std::sync::Mutex;
-
-    use lifetime::CountedSource;
-
-    struct SizedSource {
-        inner: CountedSource,
-        file_len: u64,
-        reads: Mutex<Vec<(u64, usize)>>,
-    }
-
-    impl PackSource for SizedSource {
-        fn open(&self, name: &str) -> io::Result<(PackFile, u64)> {
-            self.inner.open(name).map(|(file, _)| (file, self.file_len))
-        }
-
-        fn read(&self, file: PackFile, offset: u64, len: usize, priority: LoadPriority, done: ReadDone) {
-            self.reads.lock().unwrap().push((offset, len));
-            self.inner.read(file, offset, len, priority, done);
-        }
-
-        fn close(&self, file: PackFile) {
-            self.inner.close(file);
-        }
-    }
-
     let bytes = write_pack(character()).unwrap();
     let expected = bytes.len() as u64;
     for file_len in [expected - 1, expected + 1] {
@@ -891,4 +889,115 @@ fn mounting_rejects_inconsistent_file_extents_before_reading_the_toc() {
         assert_eq!(*source.inner.opened.lock().unwrap(), 1);
         assert_eq!(*source.inner.bad_closes.lock().unwrap(), 0);
     }
+}
+
+#[test]
+fn mounting_rejects_giant_exact_extent_before_reading_the_toc() {
+    use crate::pack::{HEADER_LEN, PackHeader};
+
+    let mut bytes = write_pack(character()).unwrap();
+    bytes.truncate(HEADER_LEN);
+    let count = u32::MAX;
+    let toc_len = u64::from(count) * (80 + 48);
+    let data_len = (u64::from(count) - 1) * 16 + 1;
+    bytes[20..24].copy_from_slice(&count.to_le_bytes());
+    bytes[24..28].copy_from_slice(&count.to_le_bytes());
+    bytes[28..32].copy_from_slice(&0u32.to_le_bytes());
+    bytes[32..40].copy_from_slice(&toc_len.to_le_bytes());
+    bytes[40..48].copy_from_slice(&(HEADER_LEN as u64 + toc_len).to_le_bytes());
+    bytes[48..56].copy_from_slice(&data_len.to_le_bytes());
+    bytes[56..60].copy_from_slice(&0u32.to_le_bytes());
+    let hash = blake3::hash(&bytes[..128]);
+    bytes[128..160].copy_from_slice(hash.as_bytes());
+    let file_len = PackHeader::read(&bytes).unwrap().file_len();
+    let source = Arc::new(SizedSource { inner: CountedSource::default(), file_len, reads: Mutex::default() });
+    // The source stores only the header. Even a regressed TOC request cannot allocate the claimed size.
+    source.inner.inner.insert("huge", bytes);
+    let mut server = AssetServer::new(source.clone(), unlimited());
+    let error = server.mount_now("huge").unwrap_err();
+    assert!(matches!(
+        error,
+        MountError::Pack {
+            source: PackError::MetadataBudget { .. }
+                | PackError::Header("pack metadata is too large for this platform"),
+            ..
+        }
+    ));
+    assert_eq!(*source.reads.lock().unwrap(), [(0, HEADER_LEN)]);
+    assert_eq!(source.inner.open_files(), 0);
+}
+
+#[test]
+fn metadata_budget_holds_queued_and_cancelled_mounts_until_completion_delivery() {
+    use crate::pack::HEADER_LEN;
+
+    let mut server = AssetServer::with_metadata_budget(
+        MemoryPackSource::new(),
+        unlimited(),
+        PackMetadataBudget::new(HEADER_LEN as u64),
+    );
+    server.mount("missing").unwrap();
+    server.unmount("missing").unwrap();
+    assert!(matches!(
+        server.mount("another"),
+        Err(MountError::Pack { source: PackError::MetadataBudget { .. }, .. })
+    ));
+    assert!(server.wait(Duration::from_secs(2)));
+    assert_eq!(server.stats().reads_in_flight, 0);
+    server.mount("another").unwrap();
+}
+
+#[test]
+fn completed_toc_holds_metadata_credit_until_delivery_and_remount_can_retry() {
+    let source = Arc::new(CountedSource::default());
+    source.inner.insert("shared", write_pack(textures(1)).unwrap());
+    source.inner.insert(
+        "extra",
+        write_pack(vec![packed(id(9), AssetKind::Texture, &texture_bytes(4, 4, 7))]).unwrap(),
+    );
+    // Two headers fit, while one parsed single-block pack and another header do not.
+    let budget = PackMetadataBudget::new(640);
+    let mut server = AssetServer::with_metadata_budget(source.clone(), unlimited(), budget);
+    server.mount_now("shared").unwrap();
+    server.mount("extra").unwrap();
+    // Synchronize with the worker without applying the completed table to the server.
+    let completion = server.receiver.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert!(matches!(&completion, Completion::Mount { result: Ok(_), .. }));
+    assert!(matches!(
+        server.remount("shared"),
+        Err(MountError::Pack { source: PackError::MetadataBudget { .. }, .. })
+    ));
+    assert_eq!(*source.opened.lock().unwrap(), 2, "refusal occurs before opening the remount file");
+    assert!(server.contains(id(TEXTURE)));
+    server.complete(completion);
+    assert!(server.contains(id(9)));
+    server.remount("shared").unwrap();
+    assert!(server.contains(id(TEXTURE)));
+    assert_eq!(source.open_files(), 2);
+}
+
+#[test]
+fn metadata_credit_returns_after_toc_failure_and_receiver_drop() {
+    let bytes = write_pack(textures(1)).unwrap();
+    let mut bad = bytes.clone();
+    bad[crate::pack::HEADER_LEN] ^= 1;
+    let source = Arc::new(CountedSource::default());
+    source.inner.insert("shared", bad);
+    let budget = PackMetadataBudget::new(640);
+    let mut server = AssetServer::with_metadata_budget(source.clone(), unlimited(), budget.clone());
+    assert!(matches!(server.mount_now("shared"), Err(MountError::Pack { source: PackError::TocHash, .. })));
+    assert_eq!(source.open_files(), 0);
+
+    source.inner.insert("shared", bytes);
+    server.mount("shared").unwrap();
+    let completion = server.receiver.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert!(matches!(&completion, Completion::Mount { result: Ok(_), .. }));
+    // Leave the real worker completion queued when the receiver is dropped.
+    assert!(server.sender.send(completion).is_ok());
+    drop(server);
+    assert_eq!(source.open_files(), 0);
+    let mut retry = AssetServer::with_metadata_budget(source.clone(), unlimited(), budget);
+    retry.mount_now("shared").unwrap();
+    assert!(retry.contains(id(TEXTURE)));
+    assert_eq!(*source.bad_closes.lock().unwrap(), 0);
 }

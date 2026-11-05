@@ -213,19 +213,21 @@ pub fn bake(
 ) -> Result<(), FoliageError> {
     let all = Extent::of(mesh.vertices.iter().map(|v| Vec3::from(v.position)));
     let transferred = transferred_vertices(mesh, &settings.slots)?;
+    // Positions do not change during this bake; membership-specific connectivity does.
+    let welded = weld(&mesh.vertices, weld_tolerance);
     let floor = all.min.y + settings.canopy_from * all.size().y;
-    let transferred = canopy_only(mesh, transferred, floor, weld_tolerance);
+    let transferred = canopy_only(mesh, transferred, floor, &welded);
     let canopy = Extent::of(
         mesh.vertices.iter().zip(&transferred).filter(|(_, t)| **t).map(|(v, _)| Vec3::from(v.position)),
     );
     let volume = match settings.normals {
         NormalTransfer::Sphere => Volume::Ellipsoid,
         NormalTransfer::Up => Volume::Up,
-        NormalTransfer::Clumps { count } => Volume::Clumps(clumps(mesh, &transferred, count, weld_tolerance)),
-        NormalTransfer::Hull { count } => Volume::Hull(clumps(mesh, &transferred, count, weld_tolerance)),
+        NormalTransfer::Clumps { count } => Volume::Clumps(clumps(mesh, &transferred, count, &welded)),
+        NormalTransfer::Hull { count } => Volume::Hull(clumps(mesh, &transferred, count, &welded)),
     };
     transfer_normals(mesh, &transferred, &volume, &canopy, settings.blend);
-    let phases = phases(mesh, &transferred, &volume, weld_tolerance);
+    let phases = phases(mesh, &transferred, &volume, &welded);
     let up = settings.normals == NormalTransfer::Up;
     let reach = mesh.vertices.iter().map(|v| horizontal(Vec3::from(v.position)).length()).fold(0.0, f32::max);
     mesh.foliage = mesh
@@ -342,10 +344,15 @@ fn phase_at(p: Vec3) -> f32 {
 /// Each vertex's branch phase (see the [module docs](self)): a canopy clump's (the whole
 /// canopy's for a sphere) at its centroid, a blade's at its centroid, a piece of wood around the
 /// axis at its centroid, and other wood per vertex.
-fn phases(mesh: &ImportedMesh, transferred: &[bool], volume: &Volume, weld_tolerance: f32) -> Vec<f32> {
+fn phases(
+    mesh: &ImportedMesh,
+    transferred: &[bool],
+    volume: &Volume,
+    welded: &(Vec<usize>, usize),
+) -> Vec<f32> {
     let positions: Vec<Vec3> = mesh.vertices.iter().map(|v| Vec3::from(v.position)).collect();
     let everything = vec![true; positions.len()];
-    let (piece_of_vertex, pieces) = pieces(mesh, &everything, weld_tolerance);
+    let (piece_of_vertex, pieces) = pieces(mesh, &everything, welded);
     let pieces = Groups::of(&positions, &piece_of_vertex, pieces);
     let (clump_of_vertex, clumps) = match volume {
         Volume::Clumps(clumps) | Volume::Hull(clumps) => (clumps.of_vertex.clone(), clumps.clumps.len()),
@@ -353,15 +360,17 @@ fn phases(mesh: &ImportedMesh, transferred: &[bool], volume: &Volume, weld_toler
         Volume::Up => (vec![usize::MAX; positions.len()], 0),
     };
     let clumps = Groups::of(&positions, &clump_of_vertex, clumps);
+    let clump_phases: Vec<f32> = clumps.centroids.iter().copied().map(phase_at).collect();
+    let piece_phases: Vec<f32> = pieces.centroids.iter().copied().map(phase_at).collect();
     positions
         .iter()
         .enumerate()
         .map(|(index, &p)| {
             let (clump, piece) = (clump_of_vertex[index], piece_of_vertex[index]);
             if clump != usize::MAX {
-                phase_at(clumps.centroids[clump])
+                clump_phases[clump]
             } else if transferred[index] || pieces.around_axis[piece] {
-                phase_at(pieces.centroids[piece])
+                piece_phases[piece]
             } else {
                 phase_at(p)
             }
@@ -428,11 +437,16 @@ fn transferred_vertices(mesh: &ImportedMesh, slots: &[String]) -> Result<Vec<boo
 
 /// `transferred` without the pieces whose lowest point is below `floor`: the trunk of a mesh that
 /// models trunk and canopy in one slot ([`FoliageSettings::canopy_from`]).
-fn canopy_only(mesh: &ImportedMesh, transferred: Vec<bool>, floor: f32, weld_tolerance: f32) -> Vec<bool> {
+fn canopy_only(
+    mesh: &ImportedMesh,
+    transferred: Vec<bool>,
+    floor: f32,
+    welded: &(Vec<usize>, usize),
+) -> Vec<bool> {
     if transferred.iter().zip(&mesh.vertices).all(|(&t, v)| !t || v.position[1] >= floor) {
         return transferred;
     }
-    let (piece_of_vertex, pieces) = pieces(mesh, &transferred, weld_tolerance);
+    let (piece_of_vertex, pieces) = pieces(mesh, &transferred, welded);
     let mut lowest = vec![f32::INFINITY; pieces];
     for (vertex, &piece) in mesh.vertices.iter().zip(&piece_of_vertex) {
         if piece != usize::MAX {
@@ -443,11 +457,11 @@ fn canopy_only(mesh: &ImportedMesh, transferred: Vec<bool>, floor: f32, weld_tol
 }
 
 /// The connected pieces (cards, blobs, a trunk) of the triangles whose vertices are all
-/// `transferred`, welded by position at `weld_tolerance`: each transferred vertex's piece,
+/// `transferred`, using the bake's precomputed positional weld groups: each transferred vertex's piece,
 /// numbered in vertex order (`usize::MAX` for the rest), and how many there are.
-fn pieces(mesh: &ImportedMesh, transferred: &[bool], weld_tolerance: f32) -> (Vec<usize>, usize) {
-    let (group_of, groups) = weld(&mesh.vertices, weld_tolerance);
-    let mut connected = UnionFind::new(groups);
+fn pieces(mesh: &ImportedMesh, transferred: &[bool], welded: &(Vec<usize>, usize)) -> (Vec<usize>, usize) {
+    let (group_of, groups) = welded;
+    let mut connected = UnionFind::new(*groups);
     for triangle in mesh.indices.as_chunks::<3>().0 {
         let [a, b, c] = triangle.map(|i| i as usize);
         if transferred[a] && transferred[b] && transferred[c] {
@@ -561,9 +575,9 @@ fn field_normal(clumps: &[Clump], p: Vec3) -> Option<Vec3> {
 /// Groups the transferred vertices' cards into at most `count` clumps: cards are the connected
 /// pieces of the transferred triangles, welded by position; their centroids are clustered by
 /// k-means from a farthest-point start, deterministically.
-fn clumps(mesh: &ImportedMesh, transferred: &[bool], count: u32, weld_tolerance: f32) -> Clumps {
+fn clumps(mesh: &ImportedMesh, transferred: &[bool], count: u32, welded: &(Vec<usize>, usize)) -> Clumps {
     // Each card's centroid, cards numbered in vertex order.
-    let (card_of_vertex, cards) = pieces(mesh, transferred, weld_tolerance);
+    let (card_of_vertex, cards) = pieces(mesh, transferred, welded);
     let mut sums = vec![(Vec3::ZERO, 0.0f32); cards];
     for (vertex, &card) in mesh.vertices.iter().zip(&card_of_vertex) {
         if card != usize::MAX {
@@ -623,16 +637,23 @@ fn kmeans(points: &[Vec3], k: usize) -> Vec<usize> {
         return Vec::new();
     }
     let k = k.clamp(1, points.len());
+    if k == 1 {
+        return vec![0; points.len()];
+    }
     let centroid = points.iter().sum::<Vec3>() / points.len() as f32;
-    let farthest_from = |chosen: &[Vec3]| {
-        let distance = |p: Vec3| chosen.iter().map(|c| c.distance_squared(p)).fold(f32::INFINITY, f32::min);
-        (0..points.len())
-            .fold(0, |best, i| if distance(points[i]) > distance(points[best]) { i } else { best })
+    let farthest = |distances: &[f32]| {
+        (0..points.len()).fold(0, |best, i| if distances[i] > distances[best] { i } else { best })
     };
-    let mut centers = vec![points[farthest_from(&[centroid])]];
+    let mut distances: Vec<f32> =
+        points.iter().map(|p| f32::INFINITY.min(centroid.distance_squared(*p))).collect();
+    let mut centers = vec![points[farthest(&distances)]];
+    distances.fill(f32::INFINITY);
     while centers.len() < k {
-        let next = points[farthest_from(&centers)];
-        centers.push(next);
+        let center = *centers.last().expect("the first center is present");
+        for (distance, &point) in distances.iter_mut().zip(points) {
+            *distance = distance.min(center.distance_squared(point));
+        }
+        centers.push(points[farthest(&distances)]);
     }
     let nearest = |centers: &[Vec3], p: Vec3| {
         (0..centers.len()).fold(0, |best, i| {
@@ -640,8 +661,10 @@ fn kmeans(points: &[Vec3], k: usize) -> Vec<usize> {
         })
     };
     let mut assignment: Vec<usize> = points.iter().map(|&p| nearest(&centers, p)).collect();
+    let mut sums = vec![(Vec3::ZERO, 0.0f32); centers.len()];
+    let mut next = Vec::with_capacity(points.len());
     for _ in 0..KMEANS_ITERATIONS {
-        let mut sums = vec![(Vec3::ZERO, 0.0f32); centers.len()];
+        sums.fill((Vec3::ZERO, 0.0));
         for (p, &cluster) in points.iter().zip(&assignment) {
             sums[cluster].0 += *p;
             sums[cluster].1 += 1.0;
@@ -651,11 +674,12 @@ fn kmeans(points: &[Vec3], k: usize) -> Vec<usize> {
                 *center = *sum / *n;
             }
         }
-        let next: Vec<usize> = points.iter().map(|&p| nearest(&centers, p)).collect();
+        next.clear();
+        next.extend(points.iter().map(|&p| nearest(&centers, p)));
         if next == assignment {
             break;
         }
-        assignment = next;
+        std::mem::swap(&mut assignment, &mut next);
     }
     // Renumber by first appearance, dropping empty clusters.
     let mut renumber = vec![usize::MAX; centers.len()];
@@ -701,6 +725,73 @@ mod tests {
     use crate::bake::DEFAULT_WELD_TOLERANCE;
 
     use super::*;
+
+    #[test]
+    fn incremental_clustering_preserves_the_original_assignments_and_ties() {
+        for count in [0, 1, 2, 5, 31, 128] {
+            let points: Vec<Vec3> = (0..count)
+                .map(|i| Vec3::new((i % 7) as f32, ((i * 13) % 11) as f32, (i % 3) as f32))
+                .collect();
+            for k in [1, 2, 5, 64] {
+                assert_eq!(kmeans(&points, k), reference_kmeans(&points, k), "{count} points, {k} clusters");
+            }
+        }
+        let duplicates = vec![Vec3::ONE; 32];
+        assert_eq!(kmeans(&duplicates, 64), reference_kmeans(&duplicates, 64));
+    }
+
+    fn reference_kmeans(points: &[Vec3], k: usize) -> Vec<usize> {
+        if points.is_empty() {
+            return Vec::new();
+        }
+        let k = k.clamp(1, points.len());
+        let centroid = points.iter().sum::<Vec3>() / points.len() as f32;
+        let farthest_from = |chosen: &[Vec3]| {
+            let distance =
+                |p: Vec3| chosen.iter().map(|c| c.distance_squared(p)).fold(f32::INFINITY, f32::min);
+            (0..points.len())
+                .fold(0, |best, i| if distance(points[i]) > distance(points[best]) { i } else { best })
+        };
+        let mut centers = vec![points[farthest_from(&[centroid])]];
+        while centers.len() < k {
+            let next = points[farthest_from(&centers)];
+            centers.push(next);
+        }
+        let nearest = |centers: &[Vec3], p: Vec3| {
+            (0..centers.len()).fold(0, |best, i| {
+                if centers[i].distance_squared(p) < centers[best].distance_squared(p) { i } else { best }
+            })
+        };
+        let mut assignment: Vec<usize> = points.iter().map(|&p| nearest(&centers, p)).collect();
+        for _ in 0..KMEANS_ITERATIONS {
+            let mut sums = vec![(Vec3::ZERO, 0.0f32); centers.len()];
+            for (p, &cluster) in points.iter().zip(&assignment) {
+                sums[cluster].0 += *p;
+                sums[cluster].1 += 1.0;
+            }
+            for (center, (sum, n)) in centers.iter_mut().zip(&sums) {
+                if *n > 0.0 {
+                    *center = *sum / *n;
+                }
+            }
+            let next: Vec<usize> = points.iter().map(|&p| nearest(&centers, p)).collect();
+            if next == assignment {
+                break;
+            }
+            assignment = next;
+        }
+        // Renumber by first appearance, dropping empty clusters.
+        let mut renumber = vec![usize::MAX; centers.len()];
+        let mut next = 0;
+        for cluster in &mut assignment {
+            if renumber[*cluster] == usize::MAX {
+                renumber[*cluster] = next;
+                next += 1;
+            }
+            *cluster = renumber[*cluster];
+        }
+        assignment
+    }
 
     /// The bake at the default weld tolerance, as most tests' meshes need.
     fn bake(mesh: &mut ImportedMesh, settings: &FoliageSettings) -> Result<(), FoliageError> {
@@ -862,7 +953,8 @@ mod tests {
         // normal by under 3°.
         let mesh = tree(&cards);
         let transferred = transferred_vertices(&mesh, &["Leaves".to_owned()]).unwrap();
-        let fitted = clumps(&mesh, &transferred, 2, DEFAULT_WELD_TOLERANCE).clumps;
+        let welded = weld(&mesh.vertices, DEFAULT_WELD_TOLERANCE);
+        let fitted = clumps(&mesh, &transferred, 2, &welded).clumps;
         assert_eq!(fitted.len(), 2);
         let mut previous = field_normal(&fitted, Vec3::new(-1.5, 2.45, 0.1)).unwrap();
         for step in 1..=300 {

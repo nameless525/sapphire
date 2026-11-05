@@ -536,6 +536,9 @@ fn light_surfels(
         material.albedo * (key_light(rays, &keys[key], material, origin, surfel.normal) + sky)
             + material.emission_under(&keys[key])
     });
+    if settings.bounces <= 1 {
+        return SurfelLight { surfels: direct, keys: keys.len() };
+    }
     let far: Vec<Vec<Vec3>> = parallel_map(surfels.surfels.len(), |index| {
         found[index]
             .far

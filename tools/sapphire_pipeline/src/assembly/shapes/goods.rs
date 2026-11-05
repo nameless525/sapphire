@@ -149,6 +149,12 @@ impl Goods {
     }
 }
 
+/// The fullest basket includes five fruit meshes. This covers every kind at its
+/// maximum 12 sides without allocating its geometry.
+pub(super) fn geometry_triangles(goods: &[Goods]) -> f64 {
+    goods.iter().map(|row| 2048.0 * f64::from(row.count)).sum()
+}
+
 /// Checks goods: their numbers, that each row stands on a surface `place` finds (failing with
 /// its message where the shape has none), inside it and with room over it, apart from the
 /// rows on the same surface, and on the ground clear of `keep_out` (least and greatest corners
@@ -158,6 +164,9 @@ pub(super) fn validate_goods(
     place: &dyn Fn(Surface) -> Result<Place, String>,
     keep_out: (Vec2, Vec2),
 ) -> Result<(), String> {
+    // The fullest basket includes five fruit meshes; 2048 triangles per item
+    // covers every kind at its maximum 12 sides, with room for the parent frame.
+    super::geometry_budget(4096.0 + geometry_triangles(goods))?;
     for (index, row) in goods.iter().enumerate() {
         check(finite(&[row.size, row.at[0], row.at[1]]) && row.size > 0.05 && row.count >= 1, || {
             format!("goods {index} need a size over 5 cm, finite places and a count of at least 1")

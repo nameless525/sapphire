@@ -111,8 +111,9 @@ pub use shapes::{
 
 /// This importer, as cache keys know it, with the glTF importer's version in its low 16 bits:
 /// pieces are imported by it, so a bump there must recook assemblies too. Bump the high bits
-/// whenever assembly output changes for the same document and pieces.
-pub const IMPORTER: Stage = Stage { name: "assembly", version: (3 << 16) | gltf::IMPORTER.version };
+/// whenever assembly output changes for the same document and pieces. Version 4 rechecks
+/// procedural geometry admission and texture agreement throughout coplanar overlaps.
+pub const IMPORTER: Stage = Stage { name: "assembly", version: (4 << 16) | gltf::IMPORTER.version };
 
 /// The end of an assembly document's file name, lowercase.
 pub const SOURCE_SUFFIX: &str = ".assembly.ron";
@@ -859,6 +860,27 @@ struct Emit {
     placed: usize,
 }
 
+/// Placement-invariant facts shared by all of its triangles.
+struct PreparedTransform {
+    matrix: Mat4,
+    normals: Mat3,
+    mirrored: bool,
+    meters_scale: f32,
+}
+
+impl PreparedTransform {
+    fn new(matrix: Mat4) -> Self {
+        let linear = Mat3::from_mat4(matrix);
+        let determinant = linear.determinant();
+        Self {
+            matrix,
+            normals: linear.inverse().transpose(),
+            mirrored: determinant < 0.0,
+            meters_scale: determinant.abs().cbrt(),
+        }
+    }
+}
+
 /// Collects placed triangles by slot.
 struct Builder<'a> {
     assembly: &'a Assembly,
@@ -981,25 +1003,32 @@ impl<'a> Builder<'a> {
         }
         let placed = self.placements.len();
         self.placements.push(Placed { placement, path: path.clone() });
+        let prepared = PreparedTransform::new(transform);
         if let Some(shape) = &placement.shape {
             let triangles = shape.triangles(self.detail).map_err(|message| AssemblyError::Shape {
                 shape: shape.name().to_owned(),
                 path: self.placements[placed].path_text(),
                 message,
             })?;
+            // Resolve lazily in triangle order, preserving the first unclaimed-part error.
+            let mut part_slots = [slot; Part::ALL.len()];
             for triangle in &triangles {
                 let part = Part::ALL[triangle.material].name();
-                let slot = match slot {
+                let slot = match part_slots[triangle.material] {
                     Some(slot) => slot,
-                    None => self.rule_slot(shape.name(), [0, 0], part, variant).ok_or_else(|| {
-                        AssemblyError::UnclaimedPart {
-                            shape: shape.name().to_owned(),
-                            part: part.to_owned(),
-                            variant: variant.map(str::to_owned),
-                        }
-                    })?,
+                    None => {
+                        let slot = self.rule_slot(shape.name(), [0, 0], part, variant).ok_or_else(|| {
+                            AssemblyError::UnclaimedPart {
+                                shape: shape.name().to_owned(),
+                                part: part.to_owned(),
+                                variant: variant.map(str::to_owned),
+                            }
+                        })?;
+                        part_slots[triangle.material] = Some(slot);
+                        slot
+                    }
                 };
-                self.emit(triangle, transform, slot, Emit { gradient: false, wrap: true, placed });
+                self.emit(triangle, &prepared, slot, Emit { gradient: false, wrap: true, placed });
             }
             return Ok(());
         }
@@ -1007,7 +1036,7 @@ impl<'a> Builder<'a> {
             let slot = slot.ok_or_else(|| AssemblyError::BuiltinWithoutSlot(placement.piece.clone()))?;
             let piece = builtin(&placement.piece, transform)?;
             for triangle in &piece.triangles {
-                self.emit(triangle, transform, slot, Emit { gradient: false, wrap: true, placed });
+                self.emit(triangle, &prepared, slot, Emit { gradient: false, wrap: true, placed });
             }
             return Ok(());
         }
@@ -1027,7 +1056,7 @@ impl<'a> Builder<'a> {
                 })?,
             };
             let gradient = self.assembly.palette.gradient_columns.contains(&triangle.cell[0]);
-            self.emit(triangle, transform, slot, Emit { gradient, wrap: false, placed });
+            self.emit(triangle, &prepared, slot, Emit { gradient, wrap: false, placed });
         }
         Ok(())
     }
@@ -1048,16 +1077,14 @@ impl<'a> Builder<'a> {
     }
 
     /// Places one triangle in `slot`.
-    fn emit(&mut self, triangle: &PieceTriangle, transform: Mat4, slot: usize, how: Emit) {
-        let linear = Mat3::from_mat4(transform);
-        let normal_matrix = linear.inverse().transpose();
-        let mut positions = triangle.positions.map(|p| transform.transform_point3(p));
-        let mut normals = triangle.normals.map(|n| (normal_matrix * n).normalize_or_zero());
+    fn emit(&mut self, triangle: &PieceTriangle, transform: &PreparedTransform, slot: usize, how: Emit) {
+        let mut positions = triangle.positions.map(|p| transform.matrix.transform_point3(p));
+        let mut normals = triangle.normals.map(|n| (transform.normals * n).normalize_or_zero());
         let mut down = triangle.down;
         let mut own_uv = triangle.uv;
         let mut own_occlusion = triangle.occlusion;
         // A mirroring transform turns the winding inside out.
-        if linear.determinant() < 0.0 {
+        if transform.mirrored {
             positions.swap(1, 2);
             normals.swap(1, 2);
             down.swap(1, 2);
@@ -1091,7 +1118,7 @@ impl<'a> Builder<'a> {
             }
             ShapeUv::Meters(uv) => {
                 // The placement's scale, as one factor (a uniform scale's).
-                let scale = linear.determinant().abs().cbrt();
+                let scale = transform.meters_scale;
                 uv.map(|uv| [uv.x * scale / spec.tile[0], uv.y * scale / spec.tile[1]])
             }
             ShapeUv::Tiles(uv) => uv.map(|uv| uv.to_array()),
@@ -1256,8 +1283,7 @@ pub(crate) fn matches_pattern(pattern: &str, name: &str) -> bool {
     let mut parts = pattern.split('*');
     let first = parts.next().unwrap_or_default();
     let Some(mut rest) = name.strip_prefix(first) else { return false };
-    let mut parts: Vec<&str> = parts.collect();
-    let Some(last) = parts.pop() else { return rest.is_empty() };
+    let Some(last) = parts.next_back() else { return rest.is_empty() };
     for part in parts {
         match rest.find(part) {
             Some(at) => rest = &rest[at + part.len()..],

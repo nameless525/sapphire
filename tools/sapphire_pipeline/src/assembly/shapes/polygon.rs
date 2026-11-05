@@ -216,14 +216,23 @@ impl HalfPlane {
 /// The convex polygon `polygon` clipped to every one of `planes` (Sutherland–Hodgman). Corners
 /// within a hair of a line count as on it, so cells that meet a line along an edge keep that
 /// edge's corners exactly.
+#[cfg(test)]
 pub fn clip(polygon: &[Vec2], planes: &[HalfPlane]) -> Vec<Vec2> {
+    let mut current = Vec::new();
+    clip_into(polygon, planes, &mut current, &mut Vec::new());
+    current
+}
+
+/// Clips using two call-local buffers whose capacity can be reused for the next cell.
+pub fn clip_into(polygon: &[Vec2], planes: &[HalfPlane], current: &mut Vec<Vec2>, next: &mut Vec<Vec2>) {
     const HAIR: f32 = 1e-6;
-    let mut current = polygon.to_vec();
+    current.clear();
+    current.extend_from_slice(polygon);
     for &plane in planes {
         if current.is_empty() {
             break;
         }
-        let mut next = Vec::with_capacity(current.len() + 2);
+        next.clear();
         for k in 0..current.len() {
             let (a, b) = (current[k], current[(k + 1) % current.len()]);
             let (da, db) = (plane.distance(a), plane.distance(b));
@@ -240,9 +249,11 @@ pub fn clip(polygon: &[Vec2], planes: &[HalfPlane]) -> Vec<Vec2> {
         if next.len() > 1 && next[0].distance_squared(next[next.len() - 1]) < HAIR * HAIR {
             next.pop();
         }
-        current = next;
+        std::mem::swap(current, next);
     }
-    if current.len() < 3 { Vec::new() } else { current }
+    if current.len() < 3 {
+        current.clear();
+    }
 }
 
 /// Twice the signed area of a polygon: positive counter-clockwise.

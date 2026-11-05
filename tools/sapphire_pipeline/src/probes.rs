@@ -107,7 +107,8 @@ pub const IMPORTER: Stage = Stage { name: "probe grid document", version: 1 };
 ///
 /// 3: color maps read as their textures' cook reads them, past one and at their own depth (the
 /// review's AST-003).
-pub const COOKER: Stage = Stage { name: "sprobe bake", version: 3 };
+/// 4: equal-distance ray hits consistently choose the lowest accepted triangle index.
+pub const COOKER: Stage = Stage { name: "sprobe bake", version: 4 };
 
 /// What a probe grid source's file name ends with.
 pub const SOURCE_SUFFIX: &str = ".probes.ron";

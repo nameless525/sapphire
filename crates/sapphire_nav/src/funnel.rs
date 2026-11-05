@@ -111,7 +111,7 @@ impl Corners<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::tests::{graph, squares};
+    use crate::graph::tests::{graph, scaled_squares, squares};
     use crate::graph::{Location, Reach};
     use crate::search::{PathSearch, RouteEnd};
 
@@ -135,6 +135,23 @@ mod tests {
         );
         assert_eq!(end, FunnelEnd::Whole);
         corners[..count as usize].to_vec()
+    }
+
+    #[test]
+    fn a_wide_turning_funnel_keeps_the_wall_corners() {
+        let scale = 1e38_f32;
+        let bytes = scaled_squares(3, 3, &[(0, 1), (1, 1)], scale);
+        let from = (0.5 * scale, 0.5 * scale);
+        let to = (0.5 * scale, 2.5 * scale);
+        assert_eq!(
+            route(&bytes, from, to),
+            [
+                Vec3::new(from.0, 0.0, from.1),
+                Vec3::new(2.0 * scale, 0.0, scale),
+                Vec3::new(2.0 * scale, 0.0, 2.0 * scale),
+                Vec3::new(to.0, 0.0, to.1),
+            ]
+        );
     }
 
     #[test]

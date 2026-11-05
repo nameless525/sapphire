@@ -114,10 +114,27 @@ pub(crate) struct BodyEntry {
 }
 
 impl BodyEntry {
-    pub(crate) fn set_pose(&mut self, pose: Pose) {
+    pub(crate) fn accepts_position(&self, position: Vec3) -> bool {
+        if !position.is_finite() {
+            return false;
+        }
+        let pose = ParryPose::from_parts(position, self.parry_pose.rotation);
+        let aabb = self.convex.aabb(&pose);
+        aabb.mins.is_finite() && aabb.maxs.is_finite()
+    }
+
+    /// The caller validates the pose's components before deriving geometry. Commit all fields
+    /// together only after the derived bounds are checked, reusing those bounds for storage.
+    pub(crate) fn set_pose(&mut self, pose: Pose) -> Result<(), WorldError> {
+        let parry_pose = pose.to_parry();
+        let aabb = self.convex.aabb(&parry_pose);
+        if !aabb.mins.is_finite() || !aabb.maxs.is_finite() {
+            return Err(WorldError::InvalidBody(self.id));
+        }
         self.pose = pose;
-        self.parry_pose = pose.to_parry();
-        self.aabb = self.convex.aabb(&self.parry_pose);
+        self.parry_pose = parry_pose;
+        self.aabb = aabb;
+        Ok(())
     }
 }
 
@@ -144,7 +161,7 @@ impl PhysicsWorld {
         let mut digest = Xxh3::new();
         let mut entries = Vec::with_capacity(statics.len());
         let mut aabbs = Vec::with_capacity(statics.len());
-        for collider in &statics {
+        for collider in statics {
             let entry = build_static(collider, &mut digest)?;
             aabbs.push(entry.aabb);
             entries.push(entry);
@@ -262,6 +279,9 @@ impl PhysicsWorld {
             groups: desc.groups,
             aabb: convex.aabb(&parry_pose),
         };
+        if !entry.aabb.mins.is_finite() || !entry.aabb.maxs.is_finite() {
+            return Err(WorldError::InvalidBody(desc.id));
+        }
         self.bodies.insert(slot, entry);
         Ok(())
     }
@@ -293,8 +313,7 @@ impl PhysicsWorld {
             return Err(WorldError::InvalidBody(id));
         }
         let slot = self.body_slot(id).map_err(|_| WorldError::UnknownBody(id))?;
-        self.bodies[slot].set_pose(pose);
-        Ok(())
+        self.bodies[slot].set_pose(pose)
     }
 
     /// The world's size and the work done since this was last called, which it resets.
@@ -346,7 +365,7 @@ fn check_tree_depth(tree: &Bvh) -> Result<(), WorldError> {
     Ok(())
 }
 
-fn build_static(collider: &StaticCollider, digest: &mut Xxh3) -> Result<StaticEntry, WorldError> {
+fn build_static(collider: StaticCollider, digest: &mut Xxh3) -> Result<StaticEntry, WorldError> {
     let id = collider.id;
     let invalid = |problem: String| WorldError::InvalidCollider { id, problem };
     check_position(collider.pose.position.to_array()).map_err(invalid)?;
@@ -364,38 +383,45 @@ fn build_static(collider: &StaticCollider, digest: &mut Xxh3) -> Result<StaticEn
     write_floats(&collider.pose.rotation.to_array(), &mut sink);
 
     let pose = collider.pose.to_parry();
-    let (geometry, aabb) = match &collider.shape {
+    let (geometry, aabb) = match collider.shape {
         StaticShape::Convex(shape) => {
             if !shape.is_valid() {
                 return Err(invalid(format!("{shape:?} isn't finite or is too small")));
             }
-            write_shape(shape, &mut sink);
+            write_shape(&shape, &mut sink);
             let convex = shape.to_convex();
             let aabb = convex.aabb(&pose);
             (StaticGeometry::Convex(convex), aabb)
         }
-        StaticShape::Mesh { vertices, indices } => {
+        StaticShape::Mesh { mut vertices, mut indices } => {
             let flat: Vec<[f32; 3]> = vertices.iter().map(|v| v.to_array()).collect();
-            check_mesh(&flat, indices).map_err(invalid)?;
+            check_mesh(&flat, &indices).map_err(invalid)?;
             sink(&2_000u32.to_le_bytes());
             sink(&(flat.len() as u32).to_le_bytes());
             sink(&(indices.len() as u32).to_le_bytes());
             for vertex in &flat {
                 write_floats(vertex, &mut sink);
             }
-            for triangle in indices {
+            for triangle in &indices {
                 for corner in triangle {
                     sink(&corner.to_le_bytes());
                 }
             }
             // No flags: pseudo-normals and topology build through hash maps and trigonometry, and
             // only contact manifolds, which nothing here uses, read them.
-            let mesh = TriMesh::with_flags(vertices.clone(), indices.clone(), TriMeshFlags::empty())
+            drop(flat);
+            // The immutable mesh doesn't need caller spare capacity.
+            vertices.shrink_to_fit();
+            indices.shrink_to_fit();
+            let mesh = TriMesh::with_flags(vertices, indices, TriMeshFlags::empty())
                 .map_err(|error| invalid(format!("the mesh won't build: {error}")))?;
             let aabb = mesh.aabb(&pose);
             (StaticGeometry::Mesh(Box::new(mesh)), aabb)
         }
     };
+    if !aabb.mins.is_finite() || !aabb.maxs.is_finite() {
+        return Err(invalid("world bounds aren't finite".to_owned()));
+    }
     Ok(StaticEntry { id, geometry, pose, memberships: collider.memberships, aabb })
 }
 

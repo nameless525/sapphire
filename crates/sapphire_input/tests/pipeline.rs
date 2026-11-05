@@ -1831,3 +1831,143 @@ fn gestures_measure_points_whatever_a_window_coordinate_is() {
         assert!(logged.contains(&ev("dodge", Triggered, 2100)), "{what}: 70 points is: {logged:?}");
     }
 }
+
+#[test]
+fn motion_timers_advance_at_their_deadline_without_replaying_pulses() {
+    for source in ["MouseMotion", "MouseWheel", "MouseWheelHorizontal", "Touch(Drag)", "Touch(Pinch)"] {
+        for (trigger, event) in [
+            ("Hold(seconds: 0.2)", Triggered),
+            ("Tap(seconds: 0.2)", Canceled),
+            ("DoubleTap(seconds: 0.2)", Canceled),
+        ] {
+            let bindings = format!(
+                r#"(name: "main", bindings: [
+                (action: "timed", source: {source}, trigger: {trigger}),
+                (action: "pulse", source: {source}, trigger: Pressed),
+            ])"#
+            );
+            let mut rig = Rig::new(
+                map(
+                    r#"(name: "timed", kind: Button, consume: false), (name: "pulse", kind: Button, consume: false)"#,
+                    &bindings,
+                ),
+                &["main"],
+            );
+            if source.starts_with("Touch") {
+                rig.touch(1, 0, TouchPhase::Down, 0.0, 0.0);
+                if source == "Touch(Pinch)" {
+                    rig.touch(1, 1, TouchPhase::Down, 10.0, 0.0);
+                }
+            }
+            for t in [2, 100, 190] {
+                match source {
+                    "MouseMotion" => rig.mouse(t, 1.0),
+                    "MouseWheel" | "MouseWheelHorizontal" => {
+                        rig.push(t, RawInput::MouseWheel { delta: Vec2::ONE })
+                    }
+                    "Touch(Drag)" => rig.touch(t, 0, TouchPhase::Moved, t as f32, 0.0),
+                    _ => rig.touch(t, 1, TouchPhase::Moved, 10.0 + t as f32 * 20.0, 0.0),
+                }
+                rig.update(t + 1);
+            }
+            let events = rig.update(250);
+            assert!(events.contains(&ev("timed", event, 202)), "{source}, {trigger}: {events:?}");
+            assert!(
+                !events.iter().any(|(name, kind, _)| name == "pulse" && *kind == Triggered),
+                "no repeated pulse: {events:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn captured_axes_wait_for_rest_before_dispatching_any_trigger() {
+    for trigger in ["Pressed", "Down", "Hold(seconds: 0.2)"] {
+        let bindings = format!(
+            r#"(name: "main", bindings: [(action: "fire", source: PadAxis(RightTrigger), trigger: {trigger})])"#
+        );
+        let mut rig = Rig::new(map(r#"(name: "fire", kind: Button)"#, &bindings), &["main"]);
+        rig.push(1, RawInput::GamepadAdded { pad: 0, kind: GamepadType::XboxOne });
+        rig.update(1);
+        rig.input.capture_next();
+        let axis = |value| RawInput::PadAxis { pad: 0, axis: PadAxis::RightTrigger, value };
+        rig.push(2, axis(0.9));
+        assert_eq!(rig.update(10), [], "{trigger}");
+        assert_eq!(rig.input.take_captured(), Some(Source::PadAxis(PadAxis::RightTrigger)));
+        assert_eq!(rig.update(250), [], "{trigger}: held capture");
+        rig.push(260, axis(0.0));
+        assert_eq!(rig.update(270), []);
+        rig.push(280, axis(0.9));
+        let events = rig.update(500);
+        assert!(events.iter().any(|(_, kind, _)| *kind == Triggered), "{trigger}: {events:?}");
+    }
+}
+
+#[test]
+fn a_lift_moves_under_the_press_gate_before_releasing_it() {
+    for moved_first in [false, true] {
+        for same_update in [false, true] {
+            for x in [5.0, 10.0, 11.0] {
+                let mut rig = Rig::new(
+                    map(
+                        r#"(name: "press", kind: Button), (name: "drag", kind: Axis2D)"#,
+                        r#"(name: "main", bindings: [(action: "press", source: Touch(Press)), (action: "drag", source: Touch(Drag), chord: "press")])"#,
+                    ),
+                    &["main"],
+                );
+                rig.touch(1, 0, TouchPhase::Down, 0.0, 0.0);
+                if !same_update {
+                    rig.update(2);
+                }
+                if moved_first {
+                    rig.touch(3, 0, TouchPhase::Moved, x, 0.0);
+                }
+                rig.touch(3, 0, TouchPhase::Up, x, 0.0);
+                rig.update(4);
+                assert_eq!(
+                    rig.value("drag"),
+                    Vec2::new(if x <= 10.0 { x } else { 0.0 }, 0.0),
+                    "moved first {moved_first}, same update {same_update}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn nonfinite_input_and_overflowing_binding_values_do_not_escape_as_actions() {
+    let mut rig = Rig::new(
+        map(
+            r#"(name: "look", kind: Axis2D), (name: "scaled", kind: Axis2D), (name: "sum", kind: Axis2D), (name: "pulse", kind: Axis2D)"#,
+            r#"(name: "main", bindings: [
+            (action: "look", source: MouseMotion),
+            (action: "scaled", source: Virtual("scale"), modifiers: [Scale((3.0e38, 1.0))]),
+            (action: "sum", source: Virtual("one")), (action: "sum", source: Virtual("two")),
+            (action: "pulse", source: Virtual("one")), (action: "pulse", source: Virtual("two"), trigger: Pressed),
+        ])"#,
+        ),
+        &["main"],
+    );
+    for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        rig.mouse(1, value);
+    }
+    let control = |rig: &Rig, name| rig.input.map().virtual_control(name).expect("control");
+    rig.input.inject(control(&rig, "scale"), Vec2::new(2.0, 0.0), ms(2));
+    rig.input.inject(control(&rig, "one"), Vec2::new(f32::MAX, 0.0), ms(2));
+    rig.input.inject(control(&rig, "two"), Vec2::new(f32::MAX, 0.0), ms(2));
+    rig.update(3);
+    assert_eq!(rig.value("look"), Vec2::ZERO);
+    assert_eq!(rig.value("scaled"), Vec2::ZERO);
+    assert_eq!(rig.value("sum"), Vec2::new(f32::MAX, 0.0));
+    assert!(rig.input.events().iter().all(|event| event.value.is_finite()));
+}
+
+#[test]
+fn os_touch_cancellation_does_not_require_a_finite_unused_position() {
+    let mut rig = touch_rig("Touch(Press)", "Released");
+    rig.touch(1, 0, TouchPhase::Down, 0.0, 0.0);
+    rig.update(2);
+    rig.touch(3, 0, TouchPhase::Canceled, f32::NAN, f32::INFINITY);
+    assert_eq!(rig.update(4), [ev("flick", Canceled, 3)]);
+    assert_eq!(rig.update(5), []);
+}

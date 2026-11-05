@@ -106,7 +106,9 @@ impl Shape {
         }
     }
 
-    /// Checks its parameters: sizes positive and the parts fitting together.
+    /// Checks sizes, part fit and a per-shape logical triangle-count budget
+    /// equivalent to 64 MiB of raw triangles. This does not cap vector capacity
+    /// or peak process memory. Shapes exceeding the count budget must be split.
     pub fn validate(&self) -> Result<(), String> {
         match self {
             Self::Roof(roof) => roof.validate(),
@@ -567,12 +569,13 @@ impl Mesh {
                 }
                 let out = normal(0.5 * (d0 + d1));
                 // A band shrinking to a point has one triangle.
-                let mut order: Vec<usize> = vec![0, 1, 2, 3];
-                if r0 <= 0.0 {
-                    order = vec![0, 2, 3];
+                let order: &[usize] = if r0 <= 0.0 {
+                    &[0, 2, 3]
                 } else if r1 <= 0.0 {
-                    order = vec![0, 1, 2];
-                }
+                    &[0, 1, 2]
+                } else {
+                    &[0, 1, 2, 3]
+                };
                 let mut push = |i: usize, j: usize, l: usize| {
                     let mut tri = [i, j, l];
                     let p = tri.map(|m| corners[m]);
@@ -682,6 +685,21 @@ pub(super) fn circle(center: Vec2, radius: f32, count: usize) -> Vec<Vec2> {
 pub(super) fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
     let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
+}
+
+/// Logical triangle-count admission budget before welding/optimization, expressed
+/// as 64 MiB divided by the raw triangle size. This limits admitted triangle count,
+/// not Vec capacity or process peak memory. Callers supply conservative upper
+/// bounds, evaluated in f64 before count casts.
+const MAX_SHAPE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_SHAPE_TRIANGLES: usize = MAX_SHAPE_BYTES / size_of::<PieceTriangle>();
+
+pub(super) fn geometry_budget(triangles: f64) -> Result<(), String> {
+    check(triangles.is_finite() && triangles >= 0.0 && triangles <= MAX_SHAPE_TRIANGLES as f64, || {
+        format!(
+            "shape geometry exceeds the {MAX_SHAPE_BYTES}-byte raw triangle budget ({MAX_SHAPE_TRIANGLES} triangles); reduce counts or split the shape"
+        )
+    })
 }
 
 /// A parameter check's failure message, if `ok` fails.

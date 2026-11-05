@@ -13,7 +13,7 @@ pub const MAX_GAMEPADS: usize = 8;
 pub const MAX_FINGERS: usize = 10;
 
 /// Scancodes tracked: SDL's range.
-const KEY_COUNT: usize = 512;
+pub(crate) const KEY_COUNT: usize = 512;
 
 /// The kind of device the player used last, for prompt glyphs (spec §5.18, §6.6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -208,7 +208,10 @@ impl Devices {
     pub fn add_motion(&mut self, channel: Channel, delta: Vec2, frame: u64) -> bool {
         let motion = &mut self.motion[channel.index()];
         if motion.live && motion.frame == frame {
-            motion.sum += delta;
+            let sum = motion.sum + delta;
+            if sum.is_finite() {
+                motion.sum = sum;
+            }
             false
         } else {
             *motion = Motion { sum: delta, frame, live: true };

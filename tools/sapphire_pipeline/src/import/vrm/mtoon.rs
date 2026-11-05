@@ -348,9 +348,7 @@ impl TextureCheck<'_> {
         scale: f32,
     ) -> Result<ShadingShift, VrmImportError> {
         let texture = self.reference(property, texture, Channel::R)?;
-        let mask = self.images.mask(self.images.image_of(texture.texture), texture.channel)?;
-        let sum: f64 = mask.values.iter().map(|&value| f64::from(value)).sum();
-        let mean = if mask.values.is_empty() { 0.0 } else { (sum / mask.values.len() as f64) as f32 };
+        let mean = self.images.mean_red(self.images.image_of(texture.texture))?;
         Ok(ShadingShift { texture, scale, mean })
     }
 
@@ -368,20 +366,20 @@ impl TextureCheck<'_> {
 /// The MToon defaults with a glTF material's core properties, which VRM 1.0's MToon keeps
 /// there: base color, alpha and the normal texture. Emission is MToon's alone
 /// ([`Mtoon::from_v1`]).
-fn core(material: &gltf::Material<'_>) -> Mtoon {
+fn core(material: &gltf::Material<'_>) -> Result<Mtoon, VrmImportError> {
     let pbr = material.pbr_metallic_roughness();
-    Mtoon {
+    Ok(Mtoon {
         base_color: pbr.base_color_factor(),
         base_color_texture: pbr
             .base_color_texture()
             .map(|info| TextureRef { texture: info.texture().index(), channel: Channel::Rgba }),
-        alpha: crate::import::gltf::alpha_mode(material),
+        alpha: crate::import::gltf::alpha_mode(material)?,
         normal_texture: material
             .normal_texture()
             .map(|normal| TextureRef { texture: normal.texture().index(), channel: Channel::Rgba }),
         double_sided: material.double_sided(),
         ..Mtoon::UNSHADED
-    }
+    })
 }
 
 /// `KHR_materials_emissive_strength`'s extension object.
@@ -480,7 +478,7 @@ impl Mtoon {
         }
         // The core material's textures were checked when gltf parsed the document; the
         // extension's are checked here.
-        let mut mtoon = core(material);
+        let mut mtoon = core(material)?;
         let texture = |property: &str, info: &Option<gltf::json::texture::Info>, channel| {
             info.as_ref().map(|info| check.reference(property, info.index.value(), channel)).transpose()
         };
@@ -530,15 +528,15 @@ impl Mtoon {
 
     /// An unlit material (`KHR_materials_unlit`, or a VRM 0.x unlit shader): its shade side is
     /// its lit side, with no rim, no outline and no glow (unlit shades its base color alone).
-    pub(super) fn unlit(material: &gltf::Material<'_>) -> Self {
-        let mtoon = core(material);
+    pub(super) fn unlit(material: &gltf::Material<'_>) -> Result<Self, VrmImportError> {
+        let mtoon = core(material)?;
         let [r, g, b, _] = mtoon.base_color;
-        Self {
+        Ok(Self {
             shade_color: [r, g, b],
             shade_multiply_texture: mtoon.base_color_texture,
             shading_toony: 1.0,
             ..mtoon
-        }
+        })
     }
 
     /// A VRM 0.x `VRM/MToon` material, migrated to 1.0 semantics from its Unity material

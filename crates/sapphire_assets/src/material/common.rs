@@ -174,8 +174,8 @@ pub(crate) fn bound_bits(textures: &[Option<crate::AssetId>]) -> u32 {
 
 /// What validating a cooked material reads from its family's GPU block.
 pub(crate) trait GpuBlock: Pod {
-    /// Every float vector of the block.
-    fn vectors(&self) -> Vec<[f32; 4]>;
+    /// Every float vector of the block is finite, without allocating a copy of it.
+    fn is_finite(&self) -> bool;
     /// x: the bound-slot bits, then the family's flags.
     fn modes(&self) -> [u32; 4];
     /// Each slot's swizzle code, two to a word.
@@ -187,8 +187,8 @@ pub(crate) trait GpuBlock: Pod {
 macro_rules! gpu_block {
     ($block:ty { $($vector:ident),+ $(,)? }) => {
         impl $crate::material::common::GpuBlock for $block {
-            fn vectors(&self) -> Vec<[f32; 4]> {
-                vec![$(self.$vector),+]
+            fn is_finite(&self) -> bool {
+                [$(self.$vector),+].into_iter().flatten().all(f32::is_finite)
             }
 
             fn modes(&self) -> [u32; 4] {

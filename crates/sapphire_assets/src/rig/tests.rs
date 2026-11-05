@@ -295,3 +295,25 @@ fn names_follow_vrm_1_0() {
     assert_eq!(AimAxis::from_name("NegativeY"), Some(AimAxis::NegativeY));
     assert_eq!(MaterialColor::from_name("shadeColor"), Some(MaterialColor::Shade));
 }
+
+#[test]
+fn cycle_errors_name_the_earliest_member_not_a_tail() {
+    let constraint =
+        |joint, source| Constraint { joint, source, weight: 1.0, kind: ConstraintKind::Rotation };
+    // Index zero feeds a cycle at indices two and three; a separate later cycle is also present.
+    let rig = CharacterRig {
+        joint_count: 8,
+        constraints: vec![
+            constraint(0, 2),
+            constraint(1, 7),
+            constraint(2, 3),
+            constraint(3, 2),
+            constraint(4, 5),
+            constraint(5, 4),
+        ],
+        ..CharacterRig::default()
+    };
+    let bytes = rig.to_cooked().unwrap();
+    let error = CharacterRig::read(&bytes).unwrap_err();
+    assert_eq!(error.to_string(), "constraint 2 is part of a cycle of constraints");
+}

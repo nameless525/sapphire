@@ -295,11 +295,28 @@ pub fn check_code_names(
 }
 
 /// Packs every asset of `report` into `out` (see the [module docs](self)), caching encodings in
-/// the content cache at `cache` if given.
+/// the content cache at `cache` if given. The caller serializes cooks and packs targeting
+/// the same output tree (xtask holds that tree's content lock). Publication is atomic per
+/// file; the directory is not a transaction across packs, notices and pruning.
 pub fn pack_cooked(report: &CookReport, out: &Path, cache: Option<&Path>) -> Result<PackReport, PackError> {
-    // Pruning the pack directory would delete loose cooked files kept in it.
+    // Pruning the pack directory would delete loose cooked files kept in it, including
+    // symlink names whose targets lie elsewhere.
     if let Some(asset) = report.assets.iter().find(|asset| asset.output.starts_with(out)) {
         return Err(PackError::Overlap { packs: out.to_owned(), output: asset.output.clone() });
+    }
+    let resolved_out =
+        resolved_path(out).map_err(|source| PackError::Read { path: out.to_owned(), source })?;
+    for asset in &report.assets {
+        let resolved_input = fs::canonicalize(&asset.output)
+            .map_err(|source| PackError::Read { path: asset.output.clone(), source })?;
+        let parent =
+            asset.output.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or(Path::new("."));
+        let input_location = fs::canonicalize(parent)
+            .map_err(|source| PackError::Read { path: asset.output.clone(), source })?
+            .join(asset.output.file_name().expect("cooked outputs have file names"));
+        if resolved_input.starts_with(&resolved_out) || input_location.starts_with(&resolved_out) {
+            return Err(PackError::Overlap { packs: out.to_owned(), output: asset.output.clone() });
+        }
     }
     let cache = cache.map(Cache::new);
     let ids: HashMap<AssetId, &CookedAsset> = report.assets.iter().map(|asset| (asset.id, asset)).collect();
@@ -316,6 +333,21 @@ pub fn pack_cooked(report: &CookReport, out: &Path, cache: Option<&Path>) -> Res
     let mut removed = cook::prune(out, &|path| paths.contains(path), &extensions)?;
     let notices = write_notices(out, &licenses, &mut removed)?;
     Ok(PackReport { packs, removed, notices })
+}
+
+/// Resolves existing ancestors too, so an output directory that has not been created yet
+/// still cannot alias a cooked input through a symlink in one of its parents.
+fn resolved_path(path: &Path) -> io::Result<PathBuf> {
+    match fs::canonicalize(path) {
+        Ok(path) => Ok(path),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let parent =
+                path.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or(Path::new("."));
+            let name = path.file_name().ok_or(error)?;
+            Ok(resolved_path(parent)?.join(name))
+        }
+        Err(error) => Err(error),
+    }
 }
 
 /// Brings the notices beside the packs up to date: a family's license, for each of `licenses`.
@@ -674,6 +706,16 @@ fn encode_jobs(
         }
         Ok((packed, true))
     };
+    encode_jobs_with(packing, jobs, workers, encode_job)
+}
+
+/// Keeps job-indexed results even when the size-based schedule completes in another order.
+fn encode_jobs_with(
+    packing: &[Packing<'_>],
+    jobs: &[usize],
+    workers: usize,
+    encode_job: impl Fn(usize) -> Encoded + Sync,
+) -> Vec<Option<Encoded>> {
     let workers = workers.max(1).min(jobs.len());
     if workers <= 1 {
         return (0..jobs.len()).map(|job| Some(encode_job(job))).collect();

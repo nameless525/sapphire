@@ -226,6 +226,45 @@ fn a_new_version_that_fails_keeps_the_old_one_and_is_reported() {
 }
 
 #[test]
+fn residency_includes_a_replacement_until_it_is_cancelled_or_committed() {
+    let (mut server, source) = serve(character(), unlimited());
+    let (_mesh, _) = loaded_character(&mut server);
+    let kind = AssetKind::Texture.index();
+    let before = server.stats().resident[kind];
+    let new_bytes = texture_bytes(8, 8, 9);
+    let mut assets = character();
+    assets[0] = packed(id(TEXTURE), AssetKind::Texture, &new_bytes);
+    source.insert("shared", write_pack(assets).unwrap());
+    server.remount("shared").unwrap();
+    assert_eq!(server.stats().resident[kind], before + new_bytes.len() as u64);
+    // Undo the edit before its replacement completes; cancelled work no longer reserves bytes.
+    source.insert("shared", write_pack(character()).unwrap());
+    server.remount("shared").unwrap();
+    assert_eq!(server.stats().resident[kind], before);
+    let mut assets = character();
+    assets[0] = packed(id(TEXTURE), AssetKind::Texture, &new_bytes);
+    source.insert("shared", write_pack(assets).unwrap());
+    server.remount("shared").unwrap();
+    settle(&mut server, |_| Ok(()));
+    assert_eq!(server.stats().resident[kind], new_bytes.len() as u64);
+}
+
+#[test]
+fn retained_assets_report_removal_only_when_they_leave() {
+    let (mut server, source) = serve(character(), unlimited());
+    let (_mesh, _) = loaded_character(&mut server);
+    let mut remaining = character();
+    remaining.pop();
+    source.insert("shared", write_pack(remaining.clone()).unwrap());
+    server.remount("shared").unwrap();
+    assert_eq!(server.take_changes(), [AssetChange::Removed { id: id(MESH), kind: AssetKind::Mesh }]);
+    remaining[0] = packed(id(TEXTURE), AssetKind::Texture, &texture_bytes(4, 4, 9));
+    source.insert("shared", write_pack(remaining).unwrap());
+    server.remount("shared").unwrap();
+    assert!(server.take_changes().iter().all(|change| !matches!(change, AssetChange::Removed { .. })));
+}
+
+#[test]
 fn assets_removed_from_their_pack_keep_their_version_until_they_are_back() {
     let (mut server, source) = serve(character(), unlimited());
     let (mesh, _) = loaded_character(&mut server);

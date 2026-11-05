@@ -93,14 +93,14 @@ pub(super) fn read_pack(source: &Arc<dyn PackSource>, name: &str) -> Result<(Ope
     let pack_error = |source| MountError::Pack { name: name.to_owned(), source };
     let (file, len) = source.open(name).map_err(io_error)?;
     let open = OpenPack { source: source.clone(), file };
-    let header = read_now(&**source, file, 0, HEADER_LEN.min(len as usize)).map_err(io_error)?;
+    let header = read_now(&**source, file, 0, len.min(HEADER_LEN as u64) as usize).map_err(io_error)?;
     let header = PackHeader::read(&header).map_err(pack_error)?;
+    // Reject an inconsistent extent before asking the source to allocate the TOC buffer.
+    header.check_file_len(len).map_err(pack_error)?;
     let toc_range = header.toc_range();
-    if toc_range.end > len {
-        return Err(pack_error(PackError::Truncated { expected: header.file_len(), found: len }));
-    }
-    let toc = read_now(&**source, file, toc_range.start, (toc_range.end - toc_range.start) as usize)
-        .map_err(io_error)?;
+    let toc_len = usize::try_from(toc_range.end - toc_range.start)
+        .map_err(|_| pack_error(PackError::Header("the table of contents is too large for this platform")))?;
+    let toc = read_now(&**source, file, toc_range.start, toc_len).map_err(io_error)?;
     let toc = Toc::read(header, &toc, len).map_err(pack_error)?;
     Ok((open, toc))
 }

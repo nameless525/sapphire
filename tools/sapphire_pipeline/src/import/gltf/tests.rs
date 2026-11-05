@@ -247,7 +247,7 @@ fn slot_names_stay_unique_when_names_look_made_up() {
     let mut writer = GltfWriter::default();
     let materials = [
         json!({ "name": "Plain" }),
-        json!({ "name": "Plain", "alphaMode": "MASK", "alphaCutoff": 3.0 }),
+        json!({ "name": "Plain", "alphaMode": "MASK", "alphaCutoff": 1.0 }),
         json!({ "name": "Plain#1" }),
         json!({ "name": "#default" }),
     ]
@@ -261,7 +261,7 @@ fn slot_names_stay_unique_when_names_look_made_up() {
     let imported = import_slice(&writer.to_glb(), None).unwrap();
     let names: Vec<&str> = imported.materials.iter().map(|m| m.name.as_str()).collect();
     assert_eq!(names, ["Plain#0", "Plain#1#1", "Plain#1#2", "#default#3", "#default"]);
-    // glTF allows any cutoff from 0; above 1 is the same as 1.
+    // The largest supported cutoff retains fully opaque texels.
     assert_eq!(imported.materials[1].generated.alpha, AlphaMode::Mask { cutoff: 1.0 });
 }
 
@@ -753,4 +753,41 @@ fn rejects_two_morph_targets_with_one_name_in_a_primitive() {
     writer.add_root(node);
     let err = import_slice(&writer.to_glb(), None).unwrap_err();
     assert!(matches!(&err, GltfImportError::DuplicateMorphTarget { name, .. } if name == "blink"), "{err:?}");
+}
+
+#[test]
+fn refuses_alpha_cutoffs_that_cannot_preserve_coverage() {
+    let mut writer = GltfWriter::default();
+    let material =
+        writer.add_material(json!({ "name": "Invisible", "alphaMode": "MASK", "alphaCutoff": 1.01 }));
+    let mesh = writer.add_mesh("Mesh", &[(&slanted_triangle(true), Some(material))]);
+    let node = writer.add_node(json!({ "mesh": mesh }));
+    writer.add_root(node);
+    assert!(
+        matches!(import_slice(&writer.to_glb(), None), Err(GltfImportError::AlphaCutoff { cutoff, .. }) if cutoff == 1.01)
+    );
+}
+
+#[test]
+fn a_generated_instance_name_cannot_take_a_later_authored_target() {
+    let triangle = Geometry {
+        positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+        normals: vec![[0.0, 1.0, 0.0]; 3],
+        indices: vec![0, 2, 1],
+        targets: vec![MorphGeometry { positions: vec![[0.0, 1.0, 0.0]; 3], normals: Vec::new() }],
+        ..Geometry::default()
+    };
+    let mut writer = GltfWriter::default();
+    let mesh = writer.add_mesh("Panel", &[(&triangle, None)]);
+    writer.set_mesh_field(mesh, "extras", json!({ "targetNames": ["raise"] }));
+    let later = writer.add_mesh("Authored", &[(&triangle, None)]);
+    writer.set_mesh_field(later, "extras", json!({ "targetNames": ["raise@Right"] }));
+    for (mesh, name, weight) in [(mesh, "Left", 0.0), (mesh, "Right", 1.0), (later, "Authored", 0.5)] {
+        let node = writer.add_node(json!({ "name": name, "mesh": mesh, "weights": [weight] }));
+        writer.add_root(node);
+    }
+    let imported = import_slice(&writer.to_glb(), None).unwrap();
+    let targets: Vec<_> =
+        imported.morph_targets.iter().map(|t| (t.name.as_str(), t.default_weight, t.deltas.len())).collect();
+    assert_eq!(targets, [("raise", 0.0, 3), ("raise@Right#2", 1.0, 3), ("raise@Right", 0.5, 3)]);
 }

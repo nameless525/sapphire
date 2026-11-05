@@ -234,6 +234,12 @@ fn a_stack_runs_over_its_own_range_or_its_keys() {
     let (_, samples) = &clip.translations[0];
     assert!(samples[0].distance(Vec3::new(50.0, 0.0, 0.0)) < 1e-2, "{}", samples[0]);
     assert!(samples[15].distance(Vec3::new(75.0, 0.0, 0.0)) < 1e-2, "{}", samples[15]);
+    // A rounded-up last tick must not evaluate a later source key past LocalStop.
+    let clips = FbxClips::import(&one_node(&objects, &connections, Some((1.0, 1.251))), false).unwrap();
+    let clip = clips.sample(0, &ClipSettings::default()).unwrap();
+    assert_eq!(clip.ticks, 16);
+    let endpoint = clip.translations[0].1.last().unwrap();
+    assert!(endpoint.distance(Vec3::new(75.1, 0.0, 0.0)) < 1e-2, "{endpoint}");
 }
 
 #[test]
@@ -428,4 +434,25 @@ fn the_importer_names_the_locked_ufbx_version() {
         .and_then(|rest| rest.split('"').next())
         .expect("ufbx in Cargo.lock");
     assert_eq!(IMPORTER.name, format!("fbx clips (ufbx {version})"));
+}
+
+#[test]
+fn unnamed_blend_channels_keep_their_imported_target_identity() {
+    let source = String::from_utf8(morphing_mesh(&[(0.0, 0.0), (1.0, 50.0)])).unwrap();
+    let unnamed = source.replace("SubDeformer::Smile", "SubDeformer::");
+    let clips = FbxClips::import(unnamed.as_bytes(), true).unwrap();
+    assert_eq!(clips.morph_defaults(), [0.0]);
+    let sampled = clips.sample(0, &ClipSettings::default()).unwrap();
+    let [(0, weights)] = &sampled.weights[..] else { panic!("{:?}", sampled.weights) };
+    assert!((weights[30] - 0.25).abs() < 1e-4);
+    assert!((weights[60] - 0.5).abs() < 1e-5);
+}
+
+#[test]
+fn nonfinite_blend_offsets_cannot_disappear_as_noise() {
+    let source = String::from_utf8(morphing_mesh(&[(0.0, 0.0), (1.0, 50.0)])).unwrap();
+    let invalid = source.replace("a: 0,0,0.5", "a: NaN,0,0.5");
+    assert_ne!(invalid, source);
+    let error = FbxClips::import(invalid.as_bytes(), true).err().expect("invalid morph");
+    assert!(error.to_string().contains("morph target"), "{error}");
 }

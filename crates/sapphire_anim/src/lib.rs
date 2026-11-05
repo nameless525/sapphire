@@ -61,7 +61,7 @@ mod springs;
 pub use blend::{JointMask, add, blend, make_delta};
 pub use blend_space::{BlendPoint, blend_weights};
 pub use character::{AnimStats, CharacterPose, evaluate_all};
-pub use constraints::Constraints;
+pub use constraints::{ConstraintCycle, Constraints};
 pub use graph::{
     ClipSource, CombatInput, GraphBindError, GraphBinding, GraphInput, GraphPlayer, GraphStats,
     LocomotionInput, ReactionInput,

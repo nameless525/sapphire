@@ -48,8 +48,10 @@ use crate::import::fbx::FbxImportError;
 /// same file.
 ///
 /// 2: normalizes in scalars, for one set of bytes on every architecture (M2 N1).
+/// 4: morph channels address selected-scene instances; sample relative to the time origin and
+/// refuse nonfinite derived samples.
 /// 3: root motion naming a bone two joints share is an error, where it took the first.
-pub const IMPORTER: Stage = Stage { name: "gltf clips", version: 3 };
+pub const IMPORTER: Stage = Stage { name: "gltf clips", version: 4 };
 
 /// How much of an animation one source may bring into a cook, checked before data is read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -104,6 +106,10 @@ pub enum ClipImportError {
     OutputCount { at: ChannelRef, found: usize, keys: usize, expected: usize },
     #[error("{at}: an output value of key {key} isn't finite")]
     NonFinite { at: ChannelRef, key: usize },
+    #[error("{at}: a sampled value or its rotation length isn't finite at tick {tick}")]
+    NonFiniteChannelSample { at: ChannelRef, tick: usize },
+    #[error("{at}: key {key}'s rotation length isn't finite")]
+    RotationLength { at: ChannelRef, key: usize },
     #[error("{at}: key {key}'s rotation has no length")]
     ZeroRotation { at: ChannelRef, key: usize },
     #[error("{at}: animates morph weights on a node whose mesh has no morph targets")]
@@ -190,7 +196,7 @@ pub(crate) fn import_scene(
 pub(crate) struct ClipScene<'a> {
     pub joints: &'a [Joint],
     pub joint_of_node: &'a HashMap<usize, u16>,
-    pub targets_of_morph: &'a HashMap<(usize, usize), Vec<u32>>,
+    pub targets_of_node: &'a HashMap<(usize, usize), u32>,
 }
 
 #[cfg(test)]
@@ -200,7 +206,7 @@ impl SceneImport {
         ClipScene {
             joints: self.mesh.skin.as_ref().map_or(&[], |skin| skin.joints.as_slice()),
             joint_of_node: &self.joint_of_node,
-            targets_of_morph: &self.targets_of_morph,
+            targets_of_node: &self.targets_of_node,
         }
     }
 }
@@ -311,7 +317,7 @@ impl Keys {
                         + (-2.0 * u3 + 3.0 * u2) * to[component]
                         + (u3 - u2) * span * arriving[component];
                 }
-                if rotation {
+                if rotation && length_squared(out).is_finite() {
                     // A segment through the origin has no direction there: hold the key before.
                     let turned =
                         if length_squared(out) > 1e-12 { det::quat_normalize(quat(out)) } else { quat(from) };
@@ -337,9 +343,9 @@ enum Driven {
     Rotation(u16),
     Translation(u16),
     Scale(u16),
-    /// A mesh's morph weights; its channel's keys hold one per target.
+    /// One selected node's morph weights; its channel's keys hold one per target.
     Weights {
-        mesh: usize,
+        node: usize,
     },
 }
 
@@ -369,7 +375,7 @@ fn sample_within(
     if animation.channels().next().is_none() {
         return Err(ClipImportError::NoChannels { animation: name });
     }
-    let mut tracks: Vec<(Driven, Keys)> = Vec::new();
+    let mut tracks: Vec<(Driven, Keys, ChannelRef)> = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let mut floats_read = 0;
     for channel in animation.channels() {
@@ -388,21 +394,23 @@ fn sample_within(
                 if targets == 0 {
                     return Err(ClipImportError::NoMorphTargets { at });
                 }
-                // Only a mesh the scene instantiates has targets to drive.
-                node.mesh()
-                    .filter(|mesh| scene.targets_of_morph.contains_key(&(mesh.index(), 0)))
-                    .map(|mesh| Driven::Weights { mesh: mesh.index() })
+                // A shared mesh does not make an excluded node part of this scene. Each
+                // selected instance drives only the targets carrying its own defaults.
+                scene
+                    .targets_of_node
+                    .contains_key(&(node.index(), 0))
+                    .then_some(Driven::Weights { node: node.index() })
             }
         };
         // Read even if it drives nothing, so a bad channel is reported whatever it targets.
         let keys = read_keys(&channel, &at, buffers, budget, &mut floats_read)?;
         if let Some(driven) = driven {
-            tracks.push((driven, keys));
+            tracks.push((driven, keys, at));
         }
     }
 
-    let start = tracks.iter().map(|(_, keys)| keys.times[0]).fold(f32::INFINITY, f32::min);
-    let end = tracks.iter().map(|(_, keys)| keys.times[keys.times.len() - 1]).fold(0.0, f32::max);
+    let start = tracks.iter().map(|(_, keys, _)| keys.times[0]).fold(f32::INFINITY, f32::min);
+    let end = tracks.iter().map(|(_, keys, _)| keys.times[keys.times.len() - 1]).fold(0.0, f32::max);
     let seconds = if tracks.is_empty() { 0.0 } else { end - start };
     let rate = f64::from(settings.rate);
     // A hair over a whole tick is the source's rounding, not a tick more.
@@ -414,11 +422,11 @@ fn sample_within(
     let count = usize::from(ticks) + 1;
     let per_tick: usize = tracks
         .iter()
-        .map(|(driven, keys)| match driven {
+        .map(|(driven, keys, _)| match driven {
             // The channel's, and then those of every target its mesh's weights merged into.
-            Driven::Weights { mesh } => {
-                let merged = (0..keys.width).filter_map(|morph| scene.targets_of_morph.get(&(*mesh, morph)));
-                keys.width.saturating_add(merged.map(Vec::len).sum())
+            Driven::Weights { node } => {
+                let merged = (0..keys.width).filter_map(|morph| scene.targets_of_node.get(&(*node, morph)));
+                keys.width.saturating_add(merged.count())
             }
             Driven::Rotation(_) | Driven::Translation(_) | Driven::Scale(_) => keys.width,
         })
@@ -432,17 +440,29 @@ fn sample_within(
         });
     }
 
-    let time_of = |tick: usize| start + (tick as f64 / rate) as f32;
+    // Sampling uses time since the clip's origin. Adding sub-tick offsets to a large source
+    // timestamp can round whole groups of ticks to the same f32 before interpolation sees them.
+    for (_, keys, _) in &mut tracks {
+        for time in &mut keys.times {
+            *time -= start;
+        }
+    }
+    let time_of = |tick: usize| (tick as f64 / rate) as f32;
     let mut rotations = BTreeMap::new();
     let mut translations = BTreeMap::new();
     let mut scales = BTreeMap::new();
     let mut weights = BTreeMap::new();
-    for (driven, keys) in tracks {
+    for (driven, keys, at) in tracks {
         let mut cursor = 0;
         let rotation = matches!(driven, Driven::Rotation(_));
         let mut sampled = vec![0.0; count * keys.width];
         for (tick, value) in sampled.chunks_exact_mut(keys.width).enumerate() {
             keys.sample(time_of(tick), &mut cursor, rotation, value);
+            if !value.iter().all(|value| value.is_finite())
+                || (rotation && !length_squared(value).is_finite())
+            {
+                return Err(ClipImportError::NonFiniteChannelSample { at, tick });
+            }
         }
         let values = || sampled.chunks_exact(keys.width);
         match driven {
@@ -455,15 +475,13 @@ fn sample_within(
             Driven::Scale(joint) => {
                 scales.insert(joint, values().map(Vec3::from_slice).collect());
             }
-            Driven::Weights { mesh } => {
+            Driven::Weights { node } => {
                 for morph in 0..keys.width {
-                    let Some(merged) = scene.targets_of_morph.get(&(mesh, morph)) else { continue };
-                    for &target in merged {
-                        let target =
-                            u16::try_from(target).map_err(|_| ClipImportError::TooManyTargets(target))?;
-                        if let Entry::Vacant(free) = weights.entry(target) {
-                            free.insert(values().map(|value| value[morph]).collect());
-                        }
+                    let Some(&target) = scene.targets_of_node.get(&(node, morph)) else { continue };
+                    let target =
+                        u16::try_from(target).map_err(|_| ClipImportError::TooManyTargets(target))?;
+                    if let Entry::Vacant(free) = weights.entry(target) {
+                        free.insert(values().map(|value| value[morph]).collect());
                     }
                 }
             }
@@ -597,6 +615,9 @@ fn read_keys(
                 Interpolation::CubicSpline => &mut chunk[4..8],
                 Interpolation::Linear | Interpolation::Step => &mut chunk[..4],
             };
+            if !length_squared(value).is_finite() {
+                return Err(ClipImportError::RotationLength { at: at.clone(), key });
+            }
             if length_squared(value) < 1e-6 {
                 return Err(ClipImportError::ZeroRotation { at: at.clone(), key });
             }

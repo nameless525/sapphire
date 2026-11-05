@@ -242,13 +242,16 @@ pub fn import(bytes: &[u8], version: Option<VrmVersion>) -> Result<VrmImport, Vr
     let Read { document, buffers, version, data, v0, scene } = read(bytes, version)?;
     let rig = rig::build(&document, &data, &scene)?;
     let SceneImport { mut mesh, slot_of_material, .. } = scene;
-    let images = Images { document: &document, buffers: &buffers };
-    let materials = match &v0 {
-        None => document
-            .materials()
-            .map(|material| material_v1(images, &material))
-            .collect::<Result<Vec<_>, _>>()?,
-        Some(vrm) => materials_v0(images, vrm)?,
+    let materials = {
+        let stats = ImageStats::default();
+        let images = Images { document: &document, buffers: &buffers, stats: Some(&stats) };
+        match &v0 {
+            None => document
+                .materials()
+                .map(|material| material_v1(images, &material))
+                .collect::<Result<Vec<_>, _>>()?,
+            Some(vrm) => materials_v0(images, vrm)?,
+        }
     };
     let mut slots = vec![None; mesh.materials.len()];
     for (material, slot) in slot_of_material {
@@ -414,7 +417,7 @@ fn material_v1(images: Images<'_>, material: &gltf::Material<'_>) -> Result<Opti
         let check = TextureCheck { material: &name, images };
         return Mtoon::from_v1(material, &schema, &check).map(Some);
     }
-    Ok(material.extension_value(UNLIT).map(|_| Mtoon::unlit(material)))
+    material.extension_value(UNLIT).map(|_| Mtoon::unlit(material)).transpose()
 }
 
 /// VRM 0.x's materials: each glTF material's `materialProperties` entry (by index) says its
@@ -435,9 +438,9 @@ fn materials_v0(images: Images<'_>, vrm: &VRM0Schema) -> Result<Vec<Option<Mtoon
                     Mtoon::from_v0(&properties[index], &check).map(Some)
                 }
                 Some(shader) if shader.starts_with("VRM/Unlit") || shader == "UniGLTF/UniUnlit" => {
-                    Ok(Some(Mtoon::unlit(&material)))
+                    Mtoon::unlit(&material).map(Some)
                 }
-                _ => Ok(material.extension_value(UNLIT).map(|_| Mtoon::unlit(&material))),
+                _ => material.extension_value(UNLIT).map(|_| Mtoon::unlit(&material)).transpose(),
             }
         })
         .collect()
@@ -448,6 +451,17 @@ fn materials_v0(images: Images<'_>, vrm: &VRM0Schema) -> Result<Vec<Option<Mtoon
 struct Images<'a> {
     document: &'a Document,
     buffers: &'a [Vec<u8>],
+    stats: Option<&'a ImageStats>,
+}
+
+/// An image's linear RGB mean and texel dimensions.
+type ImageColorMean = ([f32; 3], [u32; 2]);
+
+/// Successful scalar measurements live only for one import; decoded pixel buffers stay transient.
+#[derive(Default)]
+struct ImageStats {
+    colors: std::cell::RefCell<HashMap<usize, ImageColorMean>>,
+    red: std::cell::RefCell<HashMap<usize, f32>>,
 }
 
 impl<'a> Images<'a> {
@@ -525,7 +539,10 @@ impl<'a> Images<'a> {
     }
 
     /// The mean color of image `index` as color (sRGB decoded to linear), and its size.
-    fn mean_color(self, index: usize) -> Result<([f32; 3], [u32; 2]), VrmImportError> {
+    fn mean_color(self, index: usize) -> Result<ImageColorMean, VrmImportError> {
+        if let Some(value) = self.stats.and_then(|stats| stats.colors.borrow().get(&index).copied()) {
+            return Ok(value);
+        }
         let decoded = self.decode(index)?.into_rgba32f();
         let mut sum = [0.0f64; 3];
         for pixel in decoded.pixels() {
@@ -534,7 +551,26 @@ impl<'a> Images<'a> {
             }
         }
         let texels = (decoded.width() as usize * decoded.height() as usize).max(1) as f64;
-        Ok((sum.map(|total| (total / texels) as f32), [decoded.width(), decoded.height()]))
+        let result = (sum.map(|total| (total / texels) as f32), [decoded.width(), decoded.height()]);
+        if let Some(stats) = self.stats {
+            stats.colors.borrow_mut().insert(index, result);
+        }
+        Ok(result)
+    }
+
+    /// The shading-shift mean, with the same ordered f64 sum as the mask path, without its copy.
+    fn mean_red(self, index: usize) -> Result<f32, VrmImportError> {
+        if let Some(value) = self.stats.and_then(|stats| stats.red.borrow().get(&index).copied()) {
+            return Ok(value);
+        }
+        let decoded = self.decode(index)?.into_rgba32f();
+        let sum: f64 = decoded.pixels().map(|pixel| f64::from(pixel.0[0])).sum();
+        let count = decoded.width() as usize * decoded.height() as usize;
+        let mean = if count == 0 { 0.0 } else { (sum / count as f64) as f32 };
+        if let Some(stats) = self.stats {
+            stats.red.borrow_mut().insert(index, mean);
+        }
+        Ok(mean)
     }
 
     /// One channel of image `index`, decoded (linear: data textures aren't sRGB).
@@ -552,7 +588,7 @@ impl<'a> Images<'a> {
 
 impl VrmImport {
     fn images(&self) -> Images<'_> {
-        Images { document: &self.document, buffers: &self.buffers }
+        Images { document: &self.document, buffers: &self.buffers, stats: None }
     }
 
     /// The document's image that texture `texture` shows.

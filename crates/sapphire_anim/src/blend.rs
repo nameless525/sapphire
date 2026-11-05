@@ -115,17 +115,21 @@ fn mixed(from: &Transform, to: &Transform, weight: f32) -> Transform {
 /// scale's ratio (1 where `reference`'s axis is zero). A joint past the end of any of them is left
 /// alone. Allocates nothing.
 pub fn make_delta(pose: &[Transform], reference: &[Transform], delta: &mut [Transform]) {
-    let ratio = |value: f32, of: f32| if of == 0.0 { 1.0 } else { value / of };
     for ((delta, pose), reference) in delta.iter_mut().zip(pose).zip(reference) {
-        *delta = Transform {
-            translation: pose.translation - reference.translation,
-            rotation: (pose.rotation * reference.rotation.inverse()).normalize(),
-            scale: Vec3::new(
-                ratio(pose.scale.x, reference.scale.x),
-                ratio(pose.scale.y, reference.scale.y),
-                ratio(pose.scale.z, reference.scale.z),
-            ),
-        };
+        *delta = transform_delta(pose, reference);
+    }
+}
+
+fn transform_delta(pose: &Transform, reference: &Transform) -> Transform {
+    let ratio = |value: f32, of: f32| if of == 0.0 { 1.0 } else { value / of };
+    Transform {
+        translation: pose.translation - reference.translation,
+        rotation: (pose.rotation * reference.rotation.inverse()).normalize(),
+        scale: Vec3::new(
+            ratio(pose.scale.x, reference.scale.x),
+            ratio(pose.scale.y, reference.scale.y),
+            ratio(pose.scale.z, reference.scale.z),
+        ),
     }
 }
 

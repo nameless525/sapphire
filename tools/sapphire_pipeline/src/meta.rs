@@ -477,6 +477,8 @@ pub fn sub_asset_id(parent: AssetId, name: &str) -> AssetId {
 /// Sidecars that can't be read, written or trusted.
 #[derive(Debug, thiserror::Error)]
 pub enum MetaError {
+    #[error("{} is not a regular source file", path.display())]
+    NotFile { path: PathBuf },
     #[error("failed to read {}", path.display())]
     Read {
         path: PathBuf,
@@ -561,28 +563,66 @@ fn create_with(
     bytes: &[u8],
     write: impl FnOnce(&mut File, &[u8]) -> io::Result<()>,
 ) -> Result<bool, MetaError> {
-    let write_error = |source| MetaError::Write { path: path.to_owned(), source };
-    let staged = staging_path(path);
-    let linked = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(&staged)
-        .and_then(|mut file| write(&mut file, bytes))
-        .map(|()| fs::hard_link(&staged, path));
-    // The staged file is only ever a copy: its link, if any, now holds the bytes.
-    let _ = fs::remove_file(&staged);
-    match linked.map_err(write_error)? {
+    create_file_with(path, |file| write(file, bytes), |from, to| fs::hard_link(from, to))
+        .map_err(|source| MetaError::Write { path: path.to_owned(), source })
+}
+
+/// Publishes complete bytes without replacing a concurrent winner. Filesystems must support
+/// hard links: an unsupported publication fails without exposing a partial destination.
+pub(crate) fn create_file(path: &Path, bytes: &[u8]) -> io::Result<bool> {
+    create_file_with(path, |file| file.write_all(bytes), |from, to| fs::hard_link(from, to))
+}
+
+fn create_file_with(
+    path: &Path,
+    write: impl FnOnce(&mut File) -> io::Result<()>,
+    publish: impl FnOnce(&Path, &Path) -> io::Result<()>,
+) -> io::Result<bool> {
+    let (staged, mut file) = staged_file(path)?;
+    let written = write(&mut file);
+    drop(file);
+    let result = written.and_then(|()| match publish(&staged, path) {
         Ok(()) => Ok(true),
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(false),
-        // A file system without hard links (FAT, exFAT): claim the name with `create_new`, which
-        // never replaces a file either but shows it before its bytes are written.
-        Err(_) => match OpenOptions::new().write(true).create_new(true).open(path) {
-            Ok(mut file) => file.write_all(bytes).map(|()| true).map_err(write_error),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(false),
-            Err(error) => Err(write_error(error)),
-        },
+        Err(error) => Err(error),
+    });
+    let _ = fs::remove_file(staged);
+    result
+}
+
+/// Reserves a unique sibling. `create_new` also protects against files left by an earlier
+/// process whose PID has since been reused, including hard links to published files.
+pub(crate) fn staged_file(path: &Path) -> io::Result<(PathBuf, File)> {
+    staged_file_with(path, staging_path)
+}
+
+fn staged_file_with(path: &Path, mut next: impl FnMut(&Path) -> PathBuf) -> io::Result<(PathBuf, File)> {
+    loop {
+        let staged = next(path);
+        match OpenOptions::new().write(true).create_new(true).open(&staged) {
+            Ok(file) => return Ok((staged, file)),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
     }
+}
+
+/// Atomically replaces a file using a uniquely reserved sibling.
+pub(crate) fn replace_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    replace_file_with(path, |file| file.write_all(bytes))
+}
+
+/// Replaces a file after the complete staged write succeeds, cleaning up on every error.
+pub(crate) fn replace_file_with(
+    path: &Path,
+    write: impl FnOnce(&mut File) -> io::Result<()>,
+) -> io::Result<()> {
+    let (staged, mut file) = staged_file(path)?;
+    let written = write(&mut file);
+    drop(file);
+    let result = written.and_then(|()| fs::rename(&staged, path));
+    let _ = fs::remove_file(staged);
+    result
 }
 
 /// A hidden sibling of `path` to stage a new file in before it takes `path`'s name:
@@ -602,13 +642,7 @@ pub(crate) fn staging_path(path: &Path) -> PathBuf {
 pub(crate) fn rewrite(path: &Path, meta: &AssetMeta) -> Result<(), MetaError> {
     let text = to_ron(meta).expect("an AssetMeta always serializes");
     let write_error = |source| MetaError::Write { path: path.to_owned(), source };
-    // Staged as `create` stages, so two writers never share a temporary file.
-    let staged = staging_path(path);
-    let written = fs::write(&staged, text).and_then(|()| fs::rename(&staged, path));
-    if written.is_err() {
-        let _ = fs::remove_file(&staged);
-    }
-    written.map_err(write_error)
+    replace_file(path, text.as_bytes()).map_err(write_error)
 }
 
 /// The source assets and sidecars under a content root.
@@ -653,6 +687,10 @@ impl SourceTree {
             }
             if kind.is_dir() {
                 self.walk(&path)?;
+            } else if !kind.is_file() {
+                if is_sidecar(&path) || ImportSettings::for_source(&path).is_some() {
+                    return Err(MetaError::NotFile { path });
+                }
             } else if is_sidecar(&path) {
                 self.sidecars.push(path);
             } else if ImportSettings::for_source(&path).is_some() {
@@ -1070,6 +1108,83 @@ mod tests {
         let alias = dir.path().join("alias");
         std::os::unix::fs::symlink("content", &alias).unwrap();
         assert_eq!(SourceTree::scan(&alias).unwrap().sources, [alias.join("nested/a.glb")]);
+    }
+
+    #[test]
+    fn a_reused_staging_name_never_truncates_a_published_inode() {
+        let dir = TempDir::new("meta_stale_link");
+        let published = dir.path().join("published.meta");
+        let stale = dir.path().join(".stale.tmp");
+        let fresh = dir.path().join(".fresh.tmp");
+        fs::write(&published, b"published identity").unwrap();
+        fs::hard_link(&published, &stale).unwrap();
+        let mut paths = [stale.clone(), fresh.clone()].into_iter();
+        let (staged, mut file) = staged_file_with(&published, |_| paths.next().unwrap()).unwrap();
+        assert_eq!(staged, fresh);
+        file.write_all(b"new identity").unwrap();
+        drop(file);
+        assert_eq!(fs::read(&published).unwrap(), b"published identity");
+        assert_eq!(fs::read(&stale).unwrap(), b"published identity");
+    }
+
+    #[test]
+    fn unsupported_no_replace_publication_leaves_no_partial_destination() {
+        let dir = TempDir::new("meta_unsupported_link");
+        let path = dir.path().join("new.meta");
+        let error = create_file_with(
+            &path,
+            |file| file.write_all(b"complete"),
+            |staged, target| {
+                assert_eq!(fs::read(staged).unwrap(), b"complete");
+                assert!(!target.exists());
+                Err(io::Error::from(io::ErrorKind::Unsupported))
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        assert!(!path.exists());
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn overlapping_replacements_publish_only_complete_distinct_stages() {
+        let dir = TempDir::new("meta_overlapping_replace");
+        let path = dir.path().join("output");
+        fs::write(&path, b"old").unwrap();
+        let staged = std::sync::Barrier::new(3);
+        let publish = std::sync::Barrier::new(3);
+        std::thread::scope(|scope| {
+            for byte in [1, 2] {
+                let (path, staged, publish) = (&path, &staged, &publish);
+                scope.spawn(move || {
+                    replace_file_with(path, |file| {
+                        file.write_all(&[byte; 32])?;
+                        staged.wait();
+                        publish.wait();
+                        file.write_all(&[byte; 32])
+                    })
+                    .unwrap()
+                });
+            }
+            staged.wait();
+            assert_eq!(fs::read(&path).unwrap(), b"old");
+            publish.wait();
+        });
+        let output = fs::read(&path).unwrap();
+        assert!(output == [1; 64] || output == [2; 64]);
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recognized_non_regular_sources_are_rejected_during_scan() {
+        let dir = TempDir::new("sock");
+        let path = dir.path().join("a.glb");
+        let _listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        assert!(
+            matches!(SourceTree::scan(dir.path()), Err(MetaError::NotFile { path: found }) if found == path)
+        );
+        assert!(!sidecar_path(&path).exists());
     }
 
     #[test]

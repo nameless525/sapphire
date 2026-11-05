@@ -200,8 +200,8 @@ fn a_clip_is_named_as_its_sidecar_says() {
     let human = tree.write("moves/human.glb", &human_with_a_mesh());
     tree.sidecar(&human, HUMAN, clips_of(to_the_character(&["Lower"])));
     let report = tree.cook();
-    let own = meta::sub_asset_id(HUMAN, "clip/Lower");
-    let retargeted = meta::sub_asset_id(HUMAN, &format!("clip/Lower@{CHARACTER}"));
+    let own = sapphire_assets::graph::imported_clip_id(HUMAN, "Lower", None);
+    let retargeted = sapphire_assets::graph::imported_clip_id(HUMAN, "Lower", Some(CHARACTER));
     let own_ticks = ticks_of(&report, own);
     assert_eq!(ticks_of(&report, retargeted), own_ticks);
 

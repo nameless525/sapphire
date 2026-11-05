@@ -208,7 +208,10 @@ fn clips_cook_beside_their_skeleton_each_an_asset_of_its_own() {
     // `--locked` only needs the sidecar: nothing is written to the tree.
     let report = tree.try_cook(true).unwrap();
     let skeleton_id = meta::sub_asset_id(id, SKELETON);
-    let (walk, hit) = (meta::sub_asset_id(id, "clip/Walk"), meta::sub_asset_id(id, "clip/Hit"));
+    let (walk, hit) = (
+        sapphire_assets::graph::imported_clip_id(id, "Walk", None),
+        sapphire_assets::graph::imported_clip_id(id, "Hit", None),
+    );
     let out = tree.out().join("characters");
     assert_eq!(by_id(&report, walk).output, out.join("figure.Walk.sclip"));
     assert_eq!(by_id(&report, hit).output, out.join("figure.Hit.sclip"));
@@ -285,7 +288,7 @@ fn a_clip_named_like_a_made_up_file_gets_a_file_of_its_own() {
     let rows =
         [("a/b", "figure.a_b-0-0.sclip"), ("a?b", "figure.a_b-1.sclip"), ("a_b-0", "figure.a_b-0-2.sclip")];
     for (name, file) in rows {
-        let asset = by_id(&report, meta::sub_asset_id(id, &format!("clip/{name}")));
+        let asset = by_id(&report, sapphire_assets::graph::imported_clip_id(id, name, None));
         assert_eq!(asset.output, tree.out().join(file));
         let bytes = read_aligned(&asset.output);
         assert_eq!(Clip::read(&bytes).unwrap().name.as_str(), name);
@@ -340,7 +343,8 @@ fn skeletons_and_clips_pack_and_load_by_their_ids() {
     let packs = tree.dir.path().join("packs");
     pack_cooked(&report, &packs, None).unwrap();
     let bytes = fs::read(packs.join("shared.spack")).unwrap();
-    let (skeleton_id, walk) = (meta::sub_asset_id(id, SKELETON), meta::sub_asset_id(id, "clip/Walk"));
+    let (skeleton_id, walk) =
+        (meta::sub_asset_id(id, SKELETON), sapphire_assets::graph::imported_clip_id(id, "Walk", None));
     {
         let reader = PackReader::new(&bytes).unwrap();
         assert_eq!(reader.toc().find(skeleton_id).expect("packed").kind, AssetKind::Skeleton);

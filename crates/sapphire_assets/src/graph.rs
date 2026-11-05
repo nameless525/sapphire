@@ -180,11 +180,21 @@ fn no_id() -> AssetId {
 #[must_use]
 pub fn clip_id(clip: &GraphClip) -> AssetId {
     match (&clip.clip, clip.target) {
-        (Some(name), Some(target)) => clip.source.sub_asset(&format!("clip/{name}@{target}")),
-        (Some(name), None) => clip.source.sub_asset(&format!("clip/{name}")),
+        (Some(name), target) => imported_clip_id(clip.source, name, target),
         (None, Some(target)) => clip.source.sub_asset(&format!("rig/{target}")),
         (None, None) => clip.source,
     }
+}
+
+/// Derives an imported animation's ID from its source, UTF-8 name and optional retarget rig.
+///
+/// The versioned, length-prefixed name and explicit target tag keep arbitrary source names from
+/// aliasing a different tuple. This replaces the original delimiter-only IDs: existing imported
+/// clips and graphs must be recooked together. Key-pose document IDs are unchanged.
+#[must_use]
+pub fn imported_clip_id(source: AssetId, name: &str, target: Option<AssetId>) -> AssetId {
+    let target = target.map_or_else(|| "none".to_owned(), |id| format!("target/{id}"));
+    source.sub_asset(&format!("clip-v2/{}:{name}/{target}", name.len()))
 }
 
 /// Which joints a layer touches: named humanoid bones, each with everything under it, later entries
@@ -907,6 +917,22 @@ mod tests {
     ),
 )"#
         )
+    }
+
+    #[test]
+    fn imported_clip_identity_encodes_the_entire_tuple() {
+        let source = AssetId::from_bytes([1; 16]);
+        let target = AssetId::from_bytes([2; 16]);
+        assert_ne!(
+            imported_clip_id(source, &format!("walk@{target}"), None),
+            imported_clip_id(source, "walk", Some(target))
+        );
+        let mut ids = BTreeSet::new();
+        for name in ["", "walk", "歩く/none", "4:walk/target", "walk@target", "none"] {
+            for target in [None, Some(target), Some(source)] {
+                assert!(ids.insert(imported_clip_id(source, name, target)));
+            }
+        }
     }
 
     fn graph() -> AnimGraph {

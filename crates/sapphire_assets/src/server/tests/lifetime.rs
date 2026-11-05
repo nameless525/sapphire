@@ -33,10 +33,26 @@ impl CountedSource {
         self.open.lock().unwrap().len()
     }
 
+    /// Rechecks the gate under the queue lock: release may have drained it after the
+    /// reader first observed `hold`.
+    fn read_held(&self, read: HeldRead) {
+        let mut held = self.held.lock().unwrap();
+        if self.hold.load(Ordering::SeqCst) {
+            held.push(read);
+        } else {
+            drop(held);
+            let (file, offset, len, priority, done) = read;
+            self.inner.read(file, offset, len, priority, done);
+        }
+    }
+
     /// Runs the reads held back, in order, as an IO thread does after its server has gone.
     pub(super) fn release(&self) {
-        self.hold.store(false, Ordering::SeqCst);
-        let held = std::mem::take(&mut *self.held.lock().unwrap());
+        let held = {
+            let mut held = self.held.lock().unwrap();
+            self.hold.store(false, Ordering::SeqCst);
+            std::mem::take(&mut *held)
+        };
         for (file, offset, len, priority, done) in held {
             self.inner.read(file, offset, len, priority, done);
         }
@@ -56,7 +72,7 @@ impl PackSource for CountedSource {
 
     fn read(&self, file: PackFile, offset: u64, len: usize, priority: LoadPriority, done: ReadDone) {
         if self.hold.load(Ordering::SeqCst) {
-            self.held.lock().unwrap().push((file, offset, len, priority, done));
+            self.read_held((file, offset, len, priority, done));
         } else {
             self.inner.read(file, offset, len, priority, done);
         }
@@ -68,6 +84,33 @@ impl PackSource for CountedSource {
         }
         self.inner.close(file);
     }
+}
+
+#[test]
+fn a_reader_that_observed_hold_before_release_is_not_stranded() {
+    let source = Arc::new(CountedSource::default());
+    source.inner.insert("gate", b"complete".as_slice());
+    let (file, _) = source.open("gate").unwrap();
+    source.hold.store(true, Ordering::SeqCst);
+    // Pause the reader at read's branch, then let the sole release finish first.
+    assert!(source.hold.load(Ordering::SeqCst));
+    source.release();
+    let (sent, received) = mpsc::channel();
+    let reentrant = source.clone();
+    source.read_held((
+        file,
+        0,
+        8,
+        LoadPriority::Normal,
+        Box::new(move |bytes| {
+            // Dispatching with the queue lock held would deadlock here.
+            reentrant.release();
+            sent.send(bytes.unwrap()).unwrap();
+        }),
+    ));
+    assert_eq!(received.recv_timeout(Duration::from_secs(1)).unwrap(), b"complete");
+    assert!(source.held.lock().unwrap().is_empty());
+    source.close(file);
 }
 
 /// A pack of one texture, `id(9)`, every byte `fill`.

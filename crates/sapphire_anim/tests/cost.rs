@@ -179,7 +179,11 @@ fn a_character_frame_step_by_step() {
     mask.set_subtree(cooked, 1, 1.0);
 
     println!(
-        "{JOINTS} joints, {} constraints, a rotation key every 2 ticks on every joint:",
+        "{JOINTS} joints, {} active constraints ({} authored), a rotation key every 2 ticks on every joint:",
+        constraints
+            .iter()
+            .filter(|c| usize::from(c.joint) < JOINTS && usize::from(c.source) < JOINTS)
+            .count(),
         constraints.len()
     );
     let sampled = time("sample the clip", |position| {

@@ -280,6 +280,17 @@ impl PackHeader {
         self.data_offset + self.data_len
     }
 
+    /// Checks the opened file's extent before a reader requests the table of contents.
+    pub(crate) fn check_file_len(&self, file_len: u64) -> Result<(), PackError> {
+        if file_len < self.file_len() {
+            Err(PackError::Truncated { expected: self.file_len(), found: file_len })
+        } else if file_len > self.file_len() {
+            Err(PackError::Header("the file is longer than the pack it holds"))
+        } else {
+            Ok(())
+        }
+    }
+
     /// The header's bytes, with its hash, unsigned.
     fn to_bytes(self) -> [u8; HEADER_LEN] {
         let mut header = [0; HEADER_LEN];
@@ -360,13 +371,7 @@ impl Toc {
     /// Checks `toc`, the bytes [`PackHeader::toc_range`] names, against `header`, and the pack's
     /// extent against `file_len`, the length of the whole file (see the module docs).
     pub fn read(header: PackHeader, toc: &[u8], file_len: u64) -> Result<Self, PackError> {
-        if file_len != header.file_len() {
-            return if file_len < header.file_len() {
-                Err(PackError::Truncated { expected: header.file_len(), found: file_len })
-            } else {
-                Err(PackError::Header("the file is longer than the pack it holds"))
-            };
-        }
+        header.check_file_len(file_len)?;
         if toc.len() as u64 != header.toc_len() {
             return Err(PackError::Truncated { expected: header.toc_len(), found: toc.len() as u64 });
         }
@@ -662,10 +667,7 @@ impl<'a> PackReader<'a> {
     pub fn new(bytes: &'a [u8]) -> Result<Self, PackError> {
         let header = PackHeader::read(bytes)?;
         let toc_range = header.toc_range();
-        // Within `bytes` once the header is known to describe at most `bytes.len()`.
-        if header.file_len() > bytes.len() as u64 {
-            return Err(PackError::Truncated { expected: header.file_len(), found: bytes.len() as u64 });
-        }
+        header.check_file_len(bytes.len() as u64)?;
         let toc =
             Toc::read(header, &bytes[toc_range.start as usize..toc_range.end as usize], bytes.len() as u64)?;
         Ok(Self { bytes, toc })

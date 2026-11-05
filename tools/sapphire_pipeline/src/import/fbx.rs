@@ -106,8 +106,9 @@ pub(crate) mod tests;
 /// step with `Cargo.lock`: a ufbx upgrade can change what a file imports to. Bump the version
 /// whenever import output changes for the same file.
 ///
+/// 3: reject nonfinite morph deltas before noise filtering.
 /// 2: generated materials take a material's double-sided feature (M1 C8).
-pub const IMPORTER: Stage = Stage { name: "fbx (ufbx 0.11.5)", version: 2 };
+pub const IMPORTER: Stage = Stage { name: "fbx (ufbx 0.11.5)", version: 3 };
 
 /// Joints and palette entries are addressed by u16.
 const MAX_JOINTS: usize = 1 << 16;
@@ -128,6 +129,8 @@ pub enum FbxImportError {
     MultipleSkins { mesh: String, count: usize },
     #[error("mesh {mesh} has two blend shape channels named {name:?}")]
     DuplicateMorphTarget { mesh: String, name: String },
+    #[error("mesh {mesh} morph target {target:?} at vertex {vertex} isn't finite")]
+    NonFiniteMorph { mesh: String, target: String, vertex: u32 },
     #[error("node {node}'s transform has no inverse")]
     DegenerateTransform { node: String },
     #[error("the skeleton has more than {MAX_JOINTS} joints or palette entries")]
@@ -612,11 +615,22 @@ impl Builder {
             for (offset, source) in sources.iter().enumerate() {
                 let Some(&(position, normal_offset)) = offsets.get(&source.vertex) else { continue };
                 let position = (linear * position).as_vec3();
+                let invalid = || FbxImportError::NonFiniteMorph {
+                    mesh: mesh_name.to_owned(),
+                    target: name.clone(),
+                    vertex: source.vertex,
+                };
+                if !position.is_finite() {
+                    return Err(invalid());
+                }
                 let normal = match (source.source_normal, normal_offset) {
                     // The difference of the transformed, normalized full-weight and base normals:
                     // exact at full weight once the shader renormalizes.
                     (Some(source_normal), Some(normal_offset)) => {
                         let morphed = normal_matrix * (source_normal + normal_offset);
+                        if !morphed.is_finite() {
+                            return Err(invalid());
+                        }
                         (morphed.normalize_or(source.normal) - source.normal).as_vec3()
                     }
                     _ => glam::Vec3::ZERO,

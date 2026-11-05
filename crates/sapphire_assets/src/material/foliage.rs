@@ -11,7 +11,7 @@ use sapphire_serialize::ReflectDocument;
 use serde::{Deserialize, Serialize};
 
 use super::common::{
-    DistanceStylization, bound_bits, color, gpu_block, non_negative, pack_swizzles, rgb_w, unit,
+    DistanceStylization, bound_bits, color, finite, gpu_block, non_negative, pack_swizzles, rgb_w, unit,
 };
 use super::{MaterialDocument, MaterialError, MaterialFamily, MaterialFlags, TextureSlot, TextureUsage};
 use crate::AssetId;
@@ -216,6 +216,9 @@ impl MaterialDocument for FoliageMaterial {
         unit("canopy_occlusion", self.canopy_occlusion)?;
         color("translucency.color", &self.translucency.color)?;
         non_negative("translucency.strength", self.translucency.strength)?;
+        for channel in self.translucency.color {
+            finite("translucency.color × strength", channel * self.translucency.strength)?;
+        }
         non_negative("translucency.power", self.translucency.power)?;
         color("gradient.root", &self.gradient.root)?;
         color("gradient.tip", &self.gradient.tip)?;

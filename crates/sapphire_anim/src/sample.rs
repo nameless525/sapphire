@@ -92,3 +92,26 @@ pub fn root_motion(clip: &ArchivedClip, position: f32) -> Option<Transform> {
         Quat::from_array(clip.rotation(&root.rotation, position)),
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use sapphire_assets::skeleton::{Joint, JointTransform, Skeleton};
+
+    use super::*;
+
+    #[test]
+    fn accepted_rest_rotations_become_finite_unit_rotations() {
+        for rotation in [[0.0, 0.0, 0.0, 1.0], [0.2, -0.3, 0.1, 2.0], [1e18; 4]] {
+            let bytes = Skeleton::new(&[Joint {
+                name: "root".into(),
+                parent: None,
+                rest: JointTransform { rotation, ..JointTransform::IDENTITY },
+            }])
+            .to_cooked()
+            .unwrap();
+            let pose = rest_pose(Skeleton::read(&bytes).unwrap());
+            assert!(pose[0].rotation.is_finite() && pose[0].rotation.is_normalized());
+            assert!(pose[0].to_affine3a().is_finite());
+        }
+    }
+}

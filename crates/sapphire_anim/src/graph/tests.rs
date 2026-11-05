@@ -177,7 +177,11 @@ impl Fixture {
     }
 
     fn pose(&self) -> CharacterPose {
-        CharacterPose::new(self.skeleton(), &[], &[], vec![0.0, 0.0, 0.25])
+        CharacterPose::new(self.skeleton(), &[], &[], vec![0.0, 0.0, 0.25]).with_morph_names(vec![
+            "smile".into(),
+            "blink".into(),
+            "rest".into(),
+        ])
     }
 
     fn player(&self, text: &str) -> GraphPlayer {
@@ -1469,4 +1473,83 @@ fn a_defeat_with_no_row_is_counted_and_keeps_no_other_move() {
     assert_eq!(player.stats().unmapped_moves, 1);
     assert!(player.evaluate(&defeated(100.0, None), source.as_slice(), 0));
     assert_eq!(turn_of(&player, ARM), fixture.pose().rest()[usize::from(ARM)].rotation);
+}
+
+#[test]
+fn a_settled_defeated_rewind_resets_secondary_motion() {
+    let fixture = fixture();
+    let source = fixture.source();
+    let mut player = fixture.player(&a_body_that_falls());
+    player.evaluate(
+        &defeated(0.0, Some(CombatInput { name: JAB, serial: 1, position: 0.0 })),
+        source.as_slice(),
+        0,
+    );
+    player.evaluate(&defeated(100.0, None), source.as_slice(), 0);
+    assert!(!player.evaluate(&defeated(101.0, None), source.as_slice(), 0));
+    let teleports = player.teleports();
+    assert!(player.evaluate(&defeated(50.0, None), source.as_slice(), 0));
+    assert_eq!(player.teleports(), teleports + 1);
+    assert!(!player.evaluate(&defeated(50.0, None), source.as_slice(), 0));
+}
+
+#[test]
+fn a_reloaded_joint_identity_does_not_inherit_another_joints_decay() {
+    let old_fixture = fixture();
+    let mut new_fixture = fixture();
+    let mut skeleton = Skeleton::from_cooked(&new_fixture.skeleton).expect("skeleton");
+    skeleton.names[usize::from(ARM)] = "different arm".into();
+    new_fixture.skeleton = skeleton.to_cooked().expect("cooked");
+    let old_source = old_fixture.source();
+    let source = new_fixture.source();
+    let mut old = old_fixture.player(&plain());
+    old.evaluate(&idle(0.0), old_source.as_slice(), 0);
+    old.evaluate(&in_move(1.0, JAB, 1, 0.0), old_source.as_slice(), 0);
+    assert!(old.is_decaying());
+    let mut new = new_fixture.player(&plain());
+    new.continue_from(&old);
+    assert!(!new.is_decaying());
+    assert_eq!(new.state(), old.state());
+    assert!(new.evaluate(&in_move(2.0, JAB, 1, 1.0), source.as_slice(), 1));
+}
+
+#[test]
+fn additive_reference_tracks_the_live_clip_version() {
+    let original = fixture();
+    let mut replacement = fixture();
+    let breath = replacement.clips.iter_mut().find(|(name, _, _)| *name == "breath").expect("breath");
+    breath.2 = turning(60, SPINE, Vec3::Y, 0.8, 1.0).to_cooked().expect("cooked");
+    let source = original.source();
+    let replacement_source = replacement.source();
+    let mut player = original.player(&layered());
+    player.evaluate(&idle(30.0), source.as_slice(), 0);
+    player.evaluate(&idle(30.0), replacement_source.as_slice(), 1);
+    // Both clips describe the same 0.2-radian additive motion over their duration, despite
+    // different first keys. The reference must change with the live source.
+    let turn = turn_of(&player, SPINE);
+    assert!(turn.abs_diff_eq(Quat::from_rotation_y(0.05), 2e-3), "{turn}");
+}
+
+#[test]
+fn references_inactive_during_generation_changes_do_not_reuse_old_data() {
+    let original = fixture();
+    let mut replacement = fixture();
+    let breath = replacement.clips.iter_mut().find(|(name, _, _)| *name == "breath").unwrap();
+    breath.2 = turning(60, SPINE, Vec3::Y, 0.8, 1.0).to_cooked().unwrap();
+    let original_source = original.source();
+    let replacement_source = replacement.source();
+    let mut player = original.player(&layered());
+    player.evaluate(&idle(27.0), original_source.as_slice(), 0);
+    // A version is an identity, not an ordering. Observe two changes while additive layers are
+    // inactive, ending at the old numeric value; the inactive reference must still be invalid.
+    for (ticks, version) in [(28.0, 1), (29.0, 0)] {
+        player.evaluate(
+            &GraphInput { ticks, defeated: true, ..GraphInput::default() },
+            replacement_source.as_slice(),
+            version,
+        );
+    }
+    player.evaluate(&idle(30.0), replacement_source.as_slice(), 0);
+    let spine = turn_of(&player, SPINE);
+    assert!(spine.abs_diff_eq(Quat::from_rotation_y(0.05), 2e-3), "{spine}");
 }

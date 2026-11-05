@@ -731,3 +731,42 @@ fn the_deaths_end_lying_on_the_floor() {
         assert!(start[hand].translation.y > 0.7, "{name}: it starts on its feet");
     }
 }
+
+#[test]
+fn prepared_timeline_matches_public_easing_bits() {
+    for ease in [
+        KeyEase::Linear,
+        KeyEase::Smooth,
+        KeyEase::Hold,
+        KeyEase::In,
+        KeyEase::Out,
+        KeyEase::Anticipate(0.0),
+        KeyEase::Anticipate(MAX_BACK),
+        KeyEase::Overshoot(0.25),
+        KeyEase::Overshoot(MAX_BACK),
+        KeyEase::Curve(0.2, -0.3, 0.8, 1.2),
+    ] {
+        for end in [1, 17, 3600] {
+            let key = |tick, ease| PoseKey {
+                tick,
+                ease,
+                root: None,
+                root_turn: None,
+                hips: None,
+                pose: BTreeMap::new(),
+                morphs: BTreeMap::new(),
+            };
+            let keys = [key(0, KeyEase::Linear), key(end, ease), key(end + 2, KeyEase::Overshoot(0.1))];
+            for (tick, moment) in timeline(&keys, end + 4).into_iter().enumerate() {
+                let expected = if tick < usize::from(end) {
+                    ease.weight(tick as f32 / f32::from(end))
+                } else if tick < usize::from(end + 2) {
+                    keys[2].ease.weight((tick as f32 - f32::from(end)) / 2.0)
+                } else {
+                    0.0
+                };
+                assert_eq!(moment.weight.to_bits(), expected.to_bits(), "{ease:?} tick {tick}");
+            }
+        }
+    }
+}

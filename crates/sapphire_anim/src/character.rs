@@ -1,6 +1,7 @@
 //! One character's pose, as a frame evaluates it, allocating nothing, and [`evaluate_all`], which
 //! gives each character its own job.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use sapphire_assets::clip::ArchivedClip;
@@ -14,6 +15,14 @@ use crate::ik::SolvePose;
 use crate::model::{self, Bind};
 use crate::sample;
 
+/// Immutable joint identities and rest data, shared with secondary motion for reload checks.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct JointLayout {
+    parents: Vec<u16>,
+    names: Vec<String>,
+    rest: Vec<Transform>,
+}
+
 /// One character's pose: the rig data it reads, copied out of its assets once, and the buffers each
 /// step writes.
 ///
@@ -22,8 +31,8 @@ use crate::sample;
 /// [`Self::write_palette`] fills what the renderer reads.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CharacterPose {
-    parents: Vec<u16>,
-    rest: Vec<Transform>,
+    layout: Arc<JointLayout>,
+    morph_names: Option<Vec<String>>,
     /// Each joint's rest rotation in model space.
     rest_world: Vec<Quat>,
     binds: Vec<Bind>,
@@ -39,6 +48,10 @@ pub struct CharacterPose {
 impl CharacterPose {
     /// A pose at rest for `skeleton`, skinned by `binds`, following `constraints`, with
     /// `rest_weights` for its morph targets. Allocates; the rest of a frame's work doesn't.
+    ///
+    /// # Panics
+    ///
+    /// If the rig and skeleton have a dependency cycle. Use [`Self::try_new`] for authored assets.
     #[must_use]
     pub fn new(
         skeleton: &ArchivedSkeleton,
@@ -46,6 +59,17 @@ impl CharacterPose {
         constraints: &[Constraint],
         rest_weights: Vec<f32>,
     ) -> Self {
+        Self::try_new(skeleton, binds, constraints, rest_weights)
+            .expect("constraints and skeleton must have no dependency cycle")
+    }
+
+    /// Builds a pose, refusing cycles in the combined skeleton and constraint graph.
+    pub fn try_new(
+        skeleton: &ArchivedSkeleton,
+        binds: &[SkinBind],
+        constraints: &[Constraint],
+        rest_weights: Vec<f32>,
+    ) -> Result<Self, crate::constraints::ConstraintCycle> {
         let parents: Vec<u16> = skeleton.parents.iter().map(|parent| parent.to_native()).collect();
         let rest = sample::rest_pose(skeleton);
         let mut rest_world: Vec<Quat> = Vec::with_capacity(rest.len());
@@ -56,25 +80,56 @@ impl CharacterPose {
         }
         let count = rest.len();
         let mut pose = Self {
-            constraints: Constraints::new(&parents, constraints),
+            constraints: Constraints::try_new(&parents, constraints)?,
             binds: Bind::from_skin(binds),
-            parents,
             locals: rest.clone(),
+            layout: Arc::new(JointLayout {
+                parents,
+                names: skeleton.names.iter().map(|name| name.as_str().to_owned()).collect(),
+                rest,
+            }),
+            morph_names: None,
             world: rest_world.clone(),
             rest_world,
-            rest,
             weights: rest_weights.clone(),
             rest_weights,
             model: vec![Affine3A::IDENTITY; count],
         };
         pose.finish();
-        pose
+        Ok(pose)
+    }
+
+    /// Records the mesh's ordered morph identities for reload compatibility. Call when a pose
+    /// has morph targets; counts alone cannot establish that indices name the same targets.
+    ///
+    /// # Panics
+    ///
+    /// If `names` does not have one entry per morph target.
+    #[must_use]
+    pub fn with_morph_names(mut self, names: Vec<String>) -> Self {
+        assert_eq!(names.len(), self.rest_weights.len(), "one name per morph target");
+        self.morph_names = Some(names);
+        self
+    }
+
+    /// Whether pose history can be copied by index across a character reload. Unknown morph
+    /// identities conservatively refuse transfer when either pose has morph targets.
+    #[must_use]
+    pub fn compatible_with(&self, other: &Self) -> bool {
+        self.layout == other.layout
+            && self.rest_weights == other.rest_weights
+            && (self.rest_weights.is_empty()
+                || self.morph_names.as_ref().zip(other.morph_names.as_ref()).is_some_and(|(a, b)| a == b))
+    }
+
+    pub(crate) fn joint_layout(&self) -> Arc<JointLayout> {
+        self.layout.clone()
     }
 
     /// How many joints it has.
     #[must_use]
     pub fn joint_count(&self) -> usize {
-        self.parents.len()
+        self.layout.parents.len()
     }
 
     /// How many entries its palette has.
@@ -86,13 +141,13 @@ impl CharacterPose {
     /// The skeleton's rest pose.
     #[must_use]
     pub fn rest(&self) -> &[Transform] {
-        &self.rest
+        &self.layout.rest
     }
 
     /// `joint`'s parent, or `None` for a root.
     #[must_use]
     pub fn parent(&self, joint: usize) -> Option<usize> {
-        let parent = self.parents[joint];
+        let parent = self.layout.parents[joint];
         (parent != NO_PARENT).then_some(usize::from(parent))
     }
 
@@ -104,14 +159,14 @@ impl CharacterPose {
 
     /// Back to the rest pose and rest weights, before [`Self::finish`].
     pub fn reset(&mut self) {
-        self.locals.copy_from_slice(&self.rest);
+        self.locals.copy_from_slice(&self.layout.rest);
         self.weights.copy_from_slice(&self.rest_weights);
     }
 
     /// `clip` at `position` over the rest pose and rest weights ([`sample()`],
     /// [`sample::overlay_weights`]), before [`Self::finish`]. Allocates nothing.
     pub fn sample(&mut self, clip: &ArchivedClip, position: f32) {
-        sample(clip, position, &self.rest, &mut self.locals);
+        sample(clip, position, &self.layout.rest, &mut self.locals);
         self.weights.copy_from_slice(&self.rest_weights);
         sample::overlay_weights(clip, position, &mut self.weights);
     }
@@ -146,18 +201,24 @@ impl CharacterPose {
     /// sampling and [`Self::finish`]. Nothing in it is up to date until it's refreshed
     /// ([`SolvePose::refresh`]), except what the last `finish` left.
     pub fn solving(&mut self) -> SolvePose<'_> {
-        SolvePose::new(&self.parents, &mut self.locals, &mut self.model)
+        SolvePose::new(&self.layout.parents, &mut self.locals, &mut self.model)
     }
 
     /// [`Self::solving`], with the morph weights being made beside it.
     pub(crate) fn solving_with_weights(&mut self) -> (SolvePose<'_>, &mut [f32]) {
-        (SolvePose::new(&self.parents, &mut self.locals, &mut self.model), &mut self.weights)
+        (SolvePose::new(&self.layout.parents, &mut self.locals, &mut self.model), &mut self.weights)
     }
 
     /// Runs the rig's constraints, then local-to-model. Allocates nothing.
     pub fn finish(&mut self) {
-        self.constraints.apply(&self.parents, &self.rest, &mut self.locals, &mut self.world, &mut self.model);
-        model::walk(self.parents.iter().copied(), &self.locals, &mut self.model);
+        self.constraints.apply(
+            &self.layout.parents,
+            &self.layout.rest,
+            &mut self.locals,
+            &mut self.world,
+            &mut self.model,
+        );
+        model::walk(self.layout.parents.iter().copied(), &self.locals, &mut self.model);
     }
 
     /// Every joint's transform in the model's space, as of the last [`Self::finish`]: the sockets
@@ -337,6 +398,23 @@ mod tests {
         }
         bits.extend(pose.weights().iter().map(|weight| weight.to_bits()));
         bits
+    }
+
+    #[test]
+    fn reload_compatibility_requires_joint_and_morph_identities() {
+        let bytes = Skeleton::new(&arm_joints()).to_cooked().unwrap();
+        let skeleton = Skeleton::read(&bytes).unwrap();
+        let build = || CharacterPose::new(skeleton, &[], &[], vec![0.0, 0.0]);
+        assert!(!build().compatible_with(&build()), "unknown morph layouts cannot prove identity");
+        let named = || build().with_morph_names(vec!["smile".into(), "blink".into()]);
+        assert!(named().compatible_with(&named()));
+        assert!(!named().compatible_with(&build().with_morph_names(vec!["blink".into(), "smile".into()])));
+        let mut reordered = Skeleton::new(&arm_joints());
+        reordered.names.swap(0, 1);
+        let bytes = reordered.to_cooked().unwrap();
+        let changed = CharacterPose::new(Skeleton::read(&bytes).unwrap(), &[], &[], vec![0.0, 0.0])
+            .with_morph_names(vec!["smile".into(), "blink".into()]);
+        assert!(!named().compatible_with(&changed));
     }
 
     #[test]

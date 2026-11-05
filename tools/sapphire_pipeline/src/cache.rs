@@ -49,9 +49,8 @@
 
 use std::fmt;
 use std::fs;
-use std::io::{self, Read as _};
+use std::io::{self, Read as _, Write as _};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use sapphire_assets::AssetId;
 use sapphire_assets::pack::Codec;
@@ -261,48 +260,51 @@ impl Cache {
     /// (the next [`put`](Self::put) replaces it).
     pub fn get(&self, key: &CacheKey) -> Result<Option<Vec<u8>>, CacheError> {
         let path = self.entry_path(key);
-        let mut entry = match fs::read(&path) {
-            Ok(entry) => entry,
+        let mut file = match fs::File::open(&path) {
+            Ok(file) => file,
             Err(error) if is_absent(&error) => return Ok(None),
             Err(source) => return Err(CacheError { path, source }),
         };
-        let Some((header, payload)) = entry.split_first_chunk::<ENTRY_HEADER_LEN>() else {
-            return Ok(None);
+        let mut read = || -> io::Result<Option<Vec<u8>>> {
+            let mut header = [0; ENTRY_HEADER_LEN];
+            file.read_exact(&mut header)?;
+            let Some((len, hash)) = parse_header(&header) else { return Ok(None) };
+            // Validate against the file before allocating from an untrusted length.
+            if len.checked_add(ENTRY_HEADER_LEN as u64) != Some(file.metadata()?.len()) {
+                return Ok(None);
+            }
+            let Ok(len) = usize::try_from(len) else { return Ok(None) };
+            let mut payload = vec![0; len];
+            file.read_exact(&mut payload)?;
+            let mut trailing = [0];
+            if file.read(&mut trailing)? != 0 || blake3::hash(&payload) != hash {
+                return Ok(None);
+            }
+            Ok(Some(payload))
         };
-        let Some((len, hash)) = parse_header(header) else {
-            return Ok(None);
-        };
-        if payload.len() as u64 != len || blake3::hash(payload) != hash {
-            return Ok(None);
+        match read() {
+            Ok(output) => Ok(output),
+            Err(error) if is_absent(&error) => Ok(None),
+            Err(source) => Err(CacheError { path, source }),
         }
-        Ok(Some(entry.split_off(ENTRY_HEADER_LEN)))
     }
 
     /// Stores `output` under `key`, replacing any entry there.
     pub fn put(&self, key: &CacheKey, output: &[u8]) -> Result<(), CacheError> {
-        /// Distinguishes the temporary files of one process's writes.
-        static WRITES: AtomicU64 = AtomicU64::new(0);
-
         let path = self.entry_path(key);
         let error = |source| CacheError { path: path.clone(), source };
-        let mut entry = Vec::with_capacity(ENTRY_HEADER_LEN + output.len());
-        entry.extend_from_slice(&ENTRY_MAGIC);
-        entry.extend_from_slice(&ENTRY_FORMAT.to_le_bytes());
-        entry.extend_from_slice(&(output.len() as u64).to_le_bytes());
-        entry.extend_from_slice(blake3::hash(output).as_bytes());
-        entry.extend_from_slice(output);
-
+        let mut header = [0; ENTRY_HEADER_LEN];
+        header[..4].copy_from_slice(&ENTRY_MAGIC);
+        header[4..8].copy_from_slice(&ENTRY_FORMAT.to_le_bytes());
+        header[8..16].copy_from_slice(&(output.len() as u64).to_le_bytes());
+        header[16..].copy_from_slice(blake3::hash(output).as_bytes());
         let dir = path.parent().expect("entries live in a fan-out directory");
         fs::create_dir_all(dir).map_err(error)?;
-        let write = WRITES.fetch_add(1, Ordering::Relaxed);
-        let mut temp = path.as_os_str().to_owned();
-        temp.push(format!(".{}-{write}.tmp", std::process::id()));
-        let temp = PathBuf::from(temp);
-        fs::write(&temp, &entry).map_err(error)?;
-        fs::rename(&temp, &path).map_err(|source| {
-            let _ = fs::remove_file(&temp);
-            error(source)
+        crate::meta::replace_file_with(&path, |file| {
+            file.write_all(&header)?;
+            file.write_all(output)
         })
+        .map_err(error)
     }
 }
 
@@ -501,5 +503,27 @@ mod tests {
         assert_eq!((cache.get(&key).unwrap(), cache.output_hash(&key).unwrap()), (None, None));
         cache.put(&key, b"cooked again").unwrap();
         assert_eq!(cache.get(&key).unwrap().as_deref(), Some(&b"cooked again"[..]));
+    }
+
+    #[test]
+    fn payload_length_is_checked_before_allocation_and_empty_entries_work() {
+        let dir = TempDir::new("cache_exact_length");
+        let cache = Cache::new(dir.path());
+        let key = CacheKey([0xee; 32]);
+        cache.put(&key, b"").unwrap();
+        assert_eq!(cache.get(&key).unwrap(), Some(Vec::new()));
+        let path = cache.entry_path(&key);
+        let mut entry = fs::read(&path).unwrap();
+        entry[8..16].copy_from_slice(&u64::MAX.to_le_bytes());
+        fs::write(&path, &entry).unwrap();
+        assert_eq!(cache.get(&key).unwrap(), None);
+        cache.put(&key, b"payload").unwrap();
+        let mut entry = fs::read(&path).unwrap();
+        entry.push(0);
+        fs::write(&path, &entry).unwrap();
+        assert_eq!(cache.get(&key).unwrap(), None, "trailing bytes are corruption");
+        entry.truncate(ENTRY_HEADER_LEN + 3);
+        fs::write(&path, &entry).unwrap();
+        assert_eq!(cache.get(&key).unwrap(), None, "valid header, truncated payload");
     }
 }

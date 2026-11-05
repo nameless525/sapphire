@@ -62,6 +62,8 @@ pub enum AccessorFault {
     Empty,
     #[error("has {sparse} sparse elements for its {count}; it may have from one up to all of them")]
     SparseCount { sparse: usize, count: usize },
+    #[error("sparse index {element} is {index}; indices must increase strictly and stay below {count}")]
+    SparseIndex { element: usize, index: u32, count: usize },
     #[error("has a stride of {stride} bytes for elements of {size} bytes")]
     Stride { stride: usize, size: usize },
     #[error("reaches past the end of buffer view {view}")]
@@ -93,6 +95,28 @@ pub(super) fn check(accessor: &Accessor<'_>, kind: &Kind, buffers: &[Vec<u8>]) -
         check_span(&indices.view(), indices.offset(), sparse_count, indices.index_type().size(), buffers)?;
         let values = sparse.values();
         check_span(&values.view(), values.offset(), sparse_count, size, buffers)?;
+        let view = indices.view();
+        let index_size = indices.index_type().size();
+        let stride = view.stride().unwrap_or(index_size);
+        // Both spans are proven inside their actual buffers above, including these offsets
+        // and strides. Match the pinned reader's byte stepping when checking the payload.
+        let buffer = &buffers[view.buffer().index()];
+        let start = view.offset() + indices.offset();
+        let mut previous = None;
+        for element in 0..sparse_count {
+            let at = start + element * stride;
+            let bytes = &buffer[at..at + index_size];
+            let index = match index_size {
+                1 => u32::from(bytes[0]),
+                2 => u32::from(u16::from_le_bytes(bytes.try_into().expect("two index bytes"))),
+                4 => u32::from_le_bytes(bytes.try_into().expect("four index bytes")),
+                _ => unreachable!("glTF sparse indices are u8, u16 or u32"),
+            };
+            if index as usize >= count || previous.is_some_and(|previous| index <= previous) {
+                return Err(AccessorFault::SparseIndex { element, index, count });
+            }
+            previous = Some(index);
+        }
     }
     Ok(())
 }

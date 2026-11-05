@@ -748,3 +748,155 @@ fn a_clip_too_long_for_a_u16_of_ticks_is_refused() {
     let error = sample(&document, &buffers, scene.clip_scene(), 0, &ClipSettings::default()).unwrap_err();
     assert!(matches!(error, ClipImportError::TooLong { .. }), "{error}");
 }
+
+#[test]
+fn morph_channels_follow_selected_nodes_and_their_split_defaults() {
+    for excluded_first in [false, true] {
+        let mut writer = GltfWriter::default();
+        let geometry = Geometry {
+            positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            targets: vec![MorphGeometry { positions: vec![[0.0, 0.1, 0.0]; 3], normals: Vec::new() }],
+            indices: vec![0, 1, 2],
+            ..Geometry::default()
+        };
+        let mesh = writer.add_mesh("Face", &[(&geometry, None)]);
+        let excluded = writer.add_node(json!({ "name": "Excluded", "mesh": mesh }));
+        let first = writer.add_node(json!({ "name": "First", "mesh": mesh, "weights": [0.0] }));
+        let second = writer.add_node(json!({ "name": "Second", "mesh": mesh, "weights": [0.5] }));
+        writer.add_root(first);
+        writer.add_root(second);
+        let track = |node, values| Track {
+            node,
+            path: "weights",
+            interpolation: "LINEAR",
+            times: &[0.0, 1.0],
+            values,
+        };
+        let mut tracks = vec![track(first, &[0.0, 0.25]), track(second, &[0.5, 0.75])];
+        if excluded_first {
+            tracks.insert(0, track(excluded, &[0.0, 1.0]));
+        } else {
+            tracks.push(track(excluded, &[0.0, 1.0]));
+        }
+        animate(&mut writer, Some("Expression"), &tracks);
+        let cooked = Cooked::new(&writer.to_glb(), 0, &exact());
+        let clip = cooked.clip();
+        assert_eq!(clip.weights.len(), 2);
+        assert!((clip.weight(&clip.weights[0], 60.0) - 0.25).abs() < 1e-3);
+        assert!((clip.weight(&clip.weights[1], 60.0) - 0.75).abs() < 1e-3);
+    }
+}
+
+#[test]
+fn finite_keys_cannot_publish_nonfinite_samples() {
+    let mut writer = figure();
+    animate(
+        &mut writer,
+        Some("Overflow"),
+        &[Track {
+            node: HIPS,
+            path: "translation",
+            interpolation: "LINEAR",
+            times: &[0.0, 1.0],
+            values: &[-f32::MAX, 0.0, 0.0, f32::MAX, 0.0, 0.0],
+        }],
+    );
+    let (document, buffers, scene) = import_scene(&writer.to_glb(), None).unwrap();
+    let error = sample(&document, &buffers, scene.clip_scene(), 0, &exact()).unwrap_err();
+    assert!(matches!(error, ClipImportError::NonFiniteChannelSample { tick: 1, .. }));
+}
+
+#[test]
+fn shifting_a_clip_to_a_large_source_time_preserves_subtick_motion() {
+    let sampled = |start: f32| {
+        let mut writer = figure();
+        animate(
+            &mut writer,
+            Some("Shifted"),
+            &[Track {
+                node: HIPS,
+                path: "translation",
+                interpolation: "LINEAR",
+                times: &[start, start + 2.0],
+                values: &[0.0, 0.0, 0.0, 120.0, 0.0, 0.0],
+            }],
+        );
+        let (document, buffers, scene) = import_scene(&writer.to_glb(), None).unwrap();
+        sample(&document, &buffers, scene.clip_scene(), 0, &exact()).unwrap()
+    };
+    let reference = sampled(0.0);
+    for start in [1.0, 4096.0, 16_777_216.0] {
+        let shifted = sampled(start);
+        assert_eq!(shifted.ticks, reference.ticks);
+        assert_eq!(shifted.translations, reference.translations);
+    }
+}
+
+#[test]
+fn equal_default_mesh_instances_keep_independent_animation_and_static_siblings() {
+    for (animate_first, animate_second) in [(false, false), (true, false), (false, true), (true, true)] {
+        let mut writer = GltfWriter::default();
+        let geometry = Geometry {
+            positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            targets: vec![MorphGeometry { positions: vec![[0.0, 0.1, 0.0]; 3], normals: Vec::new() }],
+            indices: vec![0, 1, 2],
+            ..Geometry::default()
+        };
+        // Both primitives of a node must reuse its one target, while another node's channel
+        // must never animate these vertices, including when that other node is excluded.
+        let mesh = writer.add_mesh("Face", &[(&geometry, None), (&geometry, None)]);
+        let excluded = writer.add_node(json!({ "name": "Excluded", "mesh": mesh }));
+        let first = writer.add_node(json!({ "name": "First", "mesh": mesh, "weights": [0.0] }));
+        let second = writer.add_node(json!({ "name": "Second", "mesh": mesh, "weights": [0.0] }));
+        writer.add_root(first);
+        writer.add_root(second);
+        let track = |node, values| Track {
+            node,
+            path: "weights",
+            interpolation: "LINEAR",
+            times: &[0.0, 1.0],
+            values,
+        };
+        let mut tracks = vec![track(excluded, &[0.0, 0.5])];
+        if animate_first {
+            tracks.push(track(first, &[0.0, 1.0]));
+        }
+        if animate_second {
+            tracks.push(track(second, &[0.0, -1.0]));
+        }
+        animate(&mut writer, Some("Independent"), &tracks);
+        let (document, buffers, scene) = import_scene(&writer.to_glb(), None).unwrap();
+        let first_target = scene.targets_of_node[&(first, 0)];
+        let second_target = scene.targets_of_node[&(second, 0)];
+        assert!(!scene.targets_of_node.contains_key(&(excluded, 0)));
+        let animated = animate_first || animate_second;
+        assert_eq!(first_target != second_target, animated);
+        assert_eq!(scene.mesh.morph_targets.len(), if animated { 2 } else { 1 });
+        assert_eq!(scene.targets_of_morph[&(mesh, 0)].len(), if animated { 2 } else { 1 });
+        if animated {
+            let first_deltas = &scene.mesh.morph_targets[first_target as usize].deltas;
+            let second_deltas = &scene.mesh.morph_targets[second_target as usize].deltas;
+            assert_eq!(
+                first_deltas.iter().map(|delta| delta.vertex).collect::<Vec<_>>(),
+                (0..6).collect::<Vec<_>>()
+            );
+            assert_eq!(
+                second_deltas.iter().map(|delta| delta.vertex).collect::<Vec<_>>(),
+                (6..12).collect::<Vec<_>>()
+            );
+        } else {
+            assert_eq!(scene.mesh.morph_targets[0].deltas.len(), 12, "unanimated equal defaults still merge");
+        }
+        let sampled = sample(&document, &buffers, scene.clip_scene(), 0, &exact()).unwrap();
+        for (target, animated, end) in
+            [(first_target, animate_first, 1.0), (second_target, animate_second, -1.0)]
+        {
+            let track = sampled.weights.iter().find(|(index, _)| u32::from(*index) == target);
+            if animated {
+                assert_eq!(*track.unwrap().1.last().unwrap(), end);
+            } else {
+                assert!(track.is_none(), "a static instance has no animation track");
+            }
+        }
+    }
+}

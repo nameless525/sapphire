@@ -19,9 +19,9 @@ use ctt::{
     AlphaMode, ColorSpace, Container, ConvertSettings, FormatDesc, ImageRef, SurfaceRef, TargetFormat,
     TextureKind,
 };
-use std::sync::{Condvar, Mutex, PoisonError};
+use std::sync::{Mutex, PoisonError};
 
-use sapphire_assets::texture::{AstcBlock, TextureFormat};
+use sapphire_assets::texture::TextureFormat;
 
 use super::mips::Level;
 
@@ -57,57 +57,10 @@ pub(super) enum AstcUsage {
     Normal,
 }
 
-/// Which levels astcenc may encode at once. `astcenc_config_init` (`cpp/astcenc_entry.cpp`) points a
-/// function-local `static` at the preset table for its block size, then reads its tuning through that:
-/// a thread with another size between the two takes the wrong table's tuning, and encodes different
-/// bytes without a word. Built with clang at `-O2` or more the read is gone, and at `-O1` or `-O0` it
-/// isn't; other compilers are unread, and it can't be serialized from outside `ctt::convert`. So levels
-/// of one table run together, since a write of the same pointer changes nothing, and another table's
-/// wait for them to finish. Nothing holding this waits for anything else, so every wait ends.
-struct AstcPresets {
-    /// The table in use, and how many levels are using it.
-    using: Mutex<(usize, usize)>,
-    finished: Condvar,
-}
-
-/// The one astcenc reads through.
-static ASTC_PRESETS: AstcPresets = AstcPresets::new();
-
-/// Which of astcenc's preset tables a block size takes, as `astcenc_config_init` chooses.
-fn preset_table(block: AstcBlock) -> usize {
-    let (width, height) = block.dimensions();
-    match width * height {
-        ..25 => 0,
-        25..64 => 1,
-        64.. => 2,
-    }
-}
-
-impl AstcPresets {
-    const fn new() -> Self {
-        Self { using: Mutex::new((0, 0)), finished: Condvar::new() }
-    }
-
-    /// Waits until no level is using another table, and uses `table` until this drops.
-    fn enter(&self, table: usize) -> UsingPresets<'_> {
-        let mut using = self.using.lock().unwrap_or_else(PoisonError::into_inner);
-        while using.1 > 0 && using.0 != table {
-            using = self.finished.wait(using).unwrap_or_else(PoisonError::into_inner);
-        }
-        *using = (table, using.1 + 1);
-        UsingPresets(self)
-    }
-}
-
-/// A level using a preset table, a panicking one's included, until this drops.
-struct UsingPresets<'a>(&'a AstcPresets);
-
-impl Drop for UsingPresets<'_> {
-    fn drop(&mut self) {
-        self.0.using.lock().unwrap_or_else(PoisonError::into_inner).1 -= 1;
-        self.0.finished.notify_all();
-    }
-}
+/// The pinned astcenc writes a function-local static preset pointer during config initialization.
+/// Even calls choosing the same table conflict in C++, so the complete conversion boundary is
+/// serialized until the dependency owns that pointer per invocation.
+static ASTC_PRESETS: Mutex<()> = Mutex::new(());
 
 /// Encodes one level. `level`'s texels are linear and carry the format's channels first.
 pub(super) fn encode_level(
@@ -116,7 +69,7 @@ pub(super) fn encode_level(
     encoding: Encoding,
 ) -> Result<Vec<u8>, ctt::Error> {
     let _presets = match format {
-        TextureFormat::Astc { block, .. } => Some(ASTC_PRESETS.enter(preset_table(block))),
+        TextureFormat::Astc { .. } => Some(ASTC_PRESETS.lock().unwrap_or_else(PoisonError::into_inner)),
         _ => None,
     };
     let target = ctt::Format::new(format.vk_format()).expect("TextureFormat VkFormats are ktx2 formats");
@@ -183,43 +136,32 @@ pub(super) fn encode_level(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::thread;
-    use std::time::Duration;
-
     use super::*;
 
     #[test]
-    fn block_sizes_take_the_preset_table_astcenc_gives_them() {
-        use AstcBlock::*;
-        assert_eq!([B4x4, B5x5, B6x6, B8x8].map(preset_table), [0, 1, 1, 2]);
-    }
-
-    /// One table's levels run together, and another's wait for all of them, a panicking one's too.
-    #[test]
-    fn levels_of_another_preset_table_wait_for_those_using_one() {
-        let presets = AstcPresets::new();
-        let (first, second) = (presets.enter(0), presets.enter(0));
-        let started = AtomicBool::new(false);
-        thread::scope(|scope| {
-            scope.spawn(|| {
-                let other = presets.enter(2);
-                started.store(true, Ordering::SeqCst);
-                drop(other);
-            });
-            thread::sleep(Duration::from_millis(20));
-            assert!(!started.load(Ordering::SeqCst), "it waits for both");
-            drop(first);
-            thread::sleep(Duration::from_millis(20));
-            assert!(!started.load(Ordering::SeqCst), "it waits for the last");
-            drop(second);
+    fn concurrent_astc_conversions_match_serial_output_for_all_tables() {
+        use sapphire_assets::texture::AstcBlock;
+        let level = Level {
+            width: 8,
+            height: 8,
+            pixels: (0..64).map(|i| [((i * 7) % 31) as f32 / 31.0, i as f32 / 64.0, 0.25, 1.0]).collect(),
+        };
+        let formats = [AstcBlock::B4x4, AstcBlock::B5x5, AstcBlock::B6x6, AstcBlock::B8x8]
+            .map(|block| TextureFormat::Astc { block, srgb: true });
+        let serial =
+            formats.map(|format| encode_level(&level, format, Encoding::Astc(AstcUsage::Color)).unwrap());
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..8)
+                .map(|i| {
+                    let level = &level;
+                    scope.spawn(move || {
+                        encode_level(level, formats[i % 4], Encoding::Astc(AstcUsage::Color)).unwrap()
+                    })
+                })
+                .collect();
+            for (i, handle) in handles.into_iter().enumerate() {
+                assert_eq!(handle.join().unwrap(), serial[i % 4]);
+            }
         });
-        assert!(started.load(Ordering::SeqCst));
-        let panicking = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _using = presets.enter(1);
-            panic!("an encoder's panic");
-        }));
-        assert!(panicking.is_err());
-        drop(presets.enter(0));
     }
 }

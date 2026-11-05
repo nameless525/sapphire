@@ -152,11 +152,12 @@ impl AssetServer {
         for key in keys {
             let slot = &mut self.slots[key];
             let (id, kind) = (slot.handle.id(), slot.handle.kind());
+            let was_present = slot.entry.is_some();
             slot.mount = mount;
             let found = toc.entries().binary_search_by(|entry| entry.id.cmp(&id)).ok();
             let found_kind = found.map(|index| toc.entries()[index].kind);
             slot.entry = found.filter(|_| found_kind == Some(kind)).map(|index| index as u32);
-            moved.push((key, found_kind));
+            moved.push((key, found_kind, was_present));
         }
         // Found before any load starts: the loads below retry some of them, but not all they hold up.
         let failed_on_this_pack: Vec<SlotKey> = self
@@ -166,18 +167,20 @@ impl AssetServer {
             .map(|(key, _)| key)
             .collect();
         let mut reloading = 0;
-        for &(key, found_kind) in &moved {
+        for &(key, found_kind, was_present) in &moved {
             // Loading one asset never unloads another, but stay safe against it.
             let Some(slot) = self.slots.get(key) else { continue };
             if slot.entry.is_none() {
-                self.gone(key, found_kind);
+                if was_present {
+                    self.gone(key, found_kind);
+                }
             } else if self.relocate(key, toc) {
                 reloading += 1;
             }
         }
         // New versions waiting on one that was dropped (an edit undone, an asset gone from the
         // pack, a reload that couldn't start) go on with the version it has.
-        for &(key, _) in &moved {
+        for &(key, _, _) in &moved {
             if self.slots.get(key).is_some_and(|slot| slot.next.is_none()) {
                 for parent in self.parents(key) {
                     self.try_queue_next(parent);

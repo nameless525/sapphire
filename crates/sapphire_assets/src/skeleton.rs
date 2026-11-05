@@ -104,6 +104,8 @@ pub enum SkeletonError {
     NonFinite { joint: usize },
     #[error("joint {joint}'s rest rotation has no length")]
     ZeroRotation { joint: usize },
+    #[error("joint {joint}'s rest rotation is too large to normalize")]
+    RotationOverflow { joint: usize },
 }
 
 impl Skeleton {
@@ -159,7 +161,11 @@ impl ArchivedSkeleton {
             if !rest.translation.iter().chain(&rest.rotation).chain(&rest.scale).all(|c| c.is_finite()) {
                 return Err(SkeletonError::NonFinite { joint });
             }
-            if rest.rotation.iter().map(|c| c * c).sum::<f32>() < MIN_ROTATION_LENGTH_SQUARED {
+            let length_squared = rest.rotation.iter().map(|c| c * c).sum::<f32>();
+            if !length_squared.is_finite() {
+                return Err(SkeletonError::RotationOverflow { joint });
+            }
+            if length_squared < MIN_ROTATION_LENGTH_SQUARED {
                 return Err(SkeletonError::ZeroRotation { joint });
             }
         }
@@ -253,6 +259,22 @@ mod tests {
             }
         }
         assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    #[test]
+    fn rest_rotations_must_have_a_normalizable_finite_length() {
+        for rotation in [[f32::MAX; 4], [f32::MAX, 0.0, 0.0, 0.0]] {
+            let mut skeleton = Skeleton::new(&joints());
+            skeleton.rest[0].rotation = rotation;
+            let bytes = skeleton.to_cooked().unwrap();
+            assert!(matches!(Skeleton::read(&bytes), Err(SkeletonError::RotationOverflow { joint: 0 })));
+        }
+        for rotation in [[0.0, 0.0, 0.0, 2.0], [1e18; 4]] {
+            let mut skeleton = Skeleton::new(&joints());
+            skeleton.rest[0].rotation = rotation;
+            let bytes = skeleton.to_cooked().unwrap();
+            assert!(Skeleton::read(&bytes).is_ok());
+        }
     }
 
     #[test]

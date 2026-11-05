@@ -51,7 +51,8 @@ impl Figure {
 
     fn pose(&self) -> Result<CharacterPose, String> {
         let binds = self.mesh.as_ref().map_or(&[][..], |mesh| &mesh.binds);
-        Ok(CharacterPose::new(read_skeleton(&self.skeleton)?, binds, &self.rig.constraints, Vec::new()))
+        CharacterPose::try_new(read_skeleton(&self.skeleton)?, binds, &self.rig.constraints, Vec::new())
+            .map_err(|error| error.to_string())
     }
 
     /// The model transforms of `clip`, one list per tick up to and including its last.

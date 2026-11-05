@@ -792,6 +792,82 @@ fn an_image_another_material_binds_keeps_its_class() {
 }
 
 #[test]
+fn material_reference_matching_decodes_escapes_and_ignores_comments() {
+    for (name, refers) in [("escaped", true), ("comment", false)] {
+        let scratch = TempDir::new(&format!("extract_reference_{name}"));
+        let source = fbx_tree(&scratch, "textured_external.fbx", true);
+        let bumps = source.parent().unwrap().join("textures/bumps.png");
+        let texture = id(&bumps);
+        let document = AnimeCharacterMaterial {
+            base_color_map: refers.then_some(texture),
+            ..AnimeCharacterMaterial::default()
+        };
+        let mut text = sapphire_serialize::to_ron(&document).unwrap();
+        let uuid = texture.to_string();
+        if name == "escaped" {
+            let escaped = format!("\\u{{{:x}}}{}", uuid.as_bytes()[0], &uuid[1..]);
+            text = text.replace(&uuid, &escaped);
+        } else {
+            text.push_str(&format!("\n// unused UUID {uuid}\n"));
+        }
+        fs::write(source.with_file_name("painted.material.ron"), text).unwrap();
+        let extraction = extract_materials(&source, &ExtractOptions::default()).unwrap();
+        if refers {
+            assert_eq!(extraction.conflicts, [conflict("Stone", &bumps, "normal", "color")]);
+        } else {
+            assert!(extraction.conflicts.is_empty());
+            assert_eq!(texture_class(&bumps), TextureClass::Normal(NormalSettings::default()));
+        }
+    }
+}
+
+#[test]
+fn noncanonical_material_ids_are_refused_before_changing_texture_roles() {
+    let scratch = TempDir::new("extract_reference_uppercase");
+    let source = fbx_tree(&scratch, "textured_external.fbx", true);
+    let bumps = source.parent().unwrap().join("textures/bumps.png");
+    let sidecar = meta::sidecar_path(&bumps);
+    let mut texture_meta = meta::read(&sidecar).unwrap();
+    texture_meta.id = AssetId::from_bytes([0xab; 16]);
+    meta::rewrite(&sidecar, &texture_meta).unwrap();
+    let texture = texture_meta.id;
+    let document =
+        AnimeCharacterMaterial { base_color_map: Some(texture), ..AnimeCharacterMaterial::default() };
+    let text = sapphire_serialize::to_ron(&document).unwrap();
+    let uuid = texture.to_string();
+    let uppercase = uuid.to_uppercase();
+    let invalid = text.replace(&uuid, &uppercase);
+    let painted = source.with_file_name("painted.material.ron");
+    fs::write(&painted, &invalid).unwrap();
+    let before = fs::read(&sidecar).unwrap();
+
+    // AssetId intentionally accepts lowercase canonical UUIDs only. Escaping those
+    // lowercase characters is valid RON; changing them to uppercase is not.
+    assert!(crate::material::read(invalid.as_bytes()).is_err());
+    let error = extract_materials(&source, &ExtractOptions::default()).unwrap_err();
+    let expected = fs::canonicalize(&painted).unwrap();
+    assert!(matches!(&error, ExtractError::Material { path, .. } if path == &expected), "{error:?}");
+    assert_eq!(fs::read(&sidecar).unwrap(), before);
+    assert_eq!(texture_class(&bumps), TextureClass::Color(ColorSettings::default()));
+    assert!(!source.with_extension("").exists(), "invalid material preflight publishes nothing");
+}
+
+#[test]
+fn a_file_created_after_extraction_preflight_keeps_the_winners_bytes() {
+    let scratch = TempDir::new("extract_publish_winner");
+    let path = scratch.path().join("artist.material.ron");
+    let mut writer = Writer { written: Vec::new() };
+    writer
+        .file(&path, || {
+            fs::write(&path, b"artist saved this after preflight").unwrap();
+            Ok(b"generated material".to_vec())
+        })
+        .unwrap();
+    assert_eq!(fs::read(&path).unwrap(), b"artist saved this after preflight");
+    assert!(writer.written.is_empty());
+}
+
+#[test]
 fn embedded_images_used_in_two_roles_are_written_once_a_role() {
     let scratch = TempDir::new("extract_fbx_shared_embedded");
     let source = fbx_tree(&scratch, "textured_shared_embedded.fbx", false);

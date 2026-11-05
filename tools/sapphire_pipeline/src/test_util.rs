@@ -51,7 +51,7 @@ impl Drop for TempDir {
 /// committed generated files with their generator's output allow float rounding and nothing more:
 /// they take this, or a tolerance of their own that their content needs, as `agree`.
 pub(crate) fn floats_agree(a: f64, b: f64) -> bool {
-    (a - b).abs() <= 1e-6 * a.abs().max(b.abs()).max(1.0)
+    a.is_finite() && b.is_finite() && (a - b).abs() <= 1e-6 * a.abs().max(b.abs()).max(1.0)
 }
 
 /// What a float of a generated GLB holds, which decides how far another platform's libm can
@@ -97,7 +97,7 @@ pub(crate) fn assert_json_matches(
     match (committed, generated) {
         (Value::Number(a), Value::Number(b)) if a.is_f64() || b.is_f64() => {
             let (a, b) = (a.as_f64().unwrap(), b.as_f64().unwrap());
-            assert!(agree(a, b), "{path}: committed {a}, generated {b}");
+            assert!(a.is_finite() && b.is_finite() && agree(a, b), "{path}: committed {a}, generated {b}");
         }
         (Value::Array(a), Value::Array(b)) => {
             assert_eq!(a.len(), b.len(), "{path}: array length");
@@ -146,33 +146,46 @@ pub(crate) fn assert_glb_matches(
     }
     let (a, b) = (a.bin.expect("a binary chunk"), b.bin.expect("a binary chunk"));
     assert_eq!(a.len(), b.len(), "{name}: binary chunk length");
-    // Which accessor's floats each byte holds.
-    let mut float = vec![None; b.len()];
+    // Which accessor owns each aligned f32 word. Generated accessors are dense and four-byte
+    // aligned: prove that before replacing the original byte-coverage map with word coverage.
+    let mut float = vec![None; b.len().div_ceil(4)];
     for accessor in document.accessors() {
         if accessor.data_type() != gltf::accessor::DataType::F32 {
             continue;
         }
         let view = accessor.view().expect("generated accessors are dense");
         let stride = view.stride().unwrap_or(accessor.size());
+        assert!(accessor.sparse().is_none(), "generated accessors are dense");
+        assert_eq!(view.offset() % 4, 0, "{name}: float view alignment");
+        assert_eq!(accessor.offset() % 4, 0, "{name}: float accessor alignment");
+        assert_eq!(stride % 4, 0, "{name}: float stride alignment");
+        assert_eq!(accessor.size() % 4, 0, "{name}: float element alignment");
         for element in 0..accessor.count() {
-            let start = view.offset() + accessor.offset() + element * stride;
-            float[start..start + accessor.size()].fill(Some(accessor.index()));
+            let start = element
+                .checked_mul(stride)
+                .and_then(|offset| offset.checked_add(view.offset()))
+                .and_then(|offset| offset.checked_add(accessor.offset()))
+                .expect("float offset fits");
+            let end = start.checked_add(accessor.size()).expect("float span fits");
+            assert!(end <= b.len(), "{name}: float accessor lies past its binary chunk");
+            float[start / 4..end / 4].fill(Some(accessor.index()));
         }
     }
     // F32 elements are 4-byte aligned in the chunk, so its words line up with their floats.
     let (mut disagree, mut furthest) = (0, None::<(f64, usize, f64, f64)>);
     for (index, (a, b)) in a.chunks(4).zip(b.chunks(4)).enumerate() {
+        let at = index * 4;
         if a == b {
+            if float[index].is_some() {
+                let value = f32::from_le_bytes(a.try_into().expect("float words have four bytes"));
+                assert!(value.is_finite(), "{name}: non-finite float at byte {at}");
+            }
             continue;
         }
-        let at = index * 4;
-        assert!(
-            float[at..at + a.len()].iter().all(Option::is_some),
-            "{name}: byte {at} differs outside the floats"
-        );
+        assert!(float[index].is_some(), "{name}: byte {at} differs outside the floats");
         let word = |bytes: &[u8]| f64::from(f32::from_le_bytes(bytes.try_into().unwrap()));
         let (a, b) = (word(a), word(b));
-        if !agree(kinds[float[at].expect("checked above")], a, b) {
+        if !(a.is_finite() && b.is_finite() && agree(kinds[float[index].expect("checked above")], a, b)) {
             disagree += 1;
             if furthest.is_none_or(|(off, ..)| (a - b).abs() > off) {
                 furthest = Some(((a - b).abs(), at, a, b));
@@ -180,7 +193,7 @@ pub(crate) fn assert_glb_matches(
         }
     }
     if let Some((off, at, a, b)) = furthest {
-        let accessor = float[at].expect("checked above");
+        let accessor = float[at / 4].expect("checked above");
         let kind = kinds[accessor];
         panic!(
             "{name}: {disagree} floats disagree; the furthest, {off:e} off, at byte {at} (accessor \
@@ -195,14 +208,16 @@ pub(crate) fn assert_png_matches(name: &str, committed: &[u8], generated: &[u8])
     let decode = |bytes: &[u8]| image::load_from_memory(bytes).unwrap().to_rgba8();
     let (a, b) = (decode(committed), decode(generated));
     assert_eq!(a.dimensions(), b.dimensions(), "{name}: size");
-    let offs: Vec<u8> = a.as_raw().iter().zip(b.as_raw()).map(|(&a, &b)| a.abs_diff(b)).collect();
-    let off = offs.iter().copied().max().unwrap_or(0);
-    let beyond = offs.iter().filter(|&&off| off > 1).count();
+    let (off, beyond) = a.as_raw().iter().zip(b.as_raw()).fold((0u8, 0usize), |(worst, count), (&a, &b)| {
+        let off = a.abs_diff(b);
+        (worst.max(off), count + usize::from(off > 1))
+    });
     assert!(off <= 1, "{name}: {beyond} channels more than one code value off, the furthest {off}");
 }
 
 /// Asserts two text documents (RON) are the same but for float rounding: the text between their
-/// numbers exactly, and the numbers as `agree` allows.
+/// floating tokens exactly, and floating tokens as `agree` allows. Quoted identities, comments
+/// and integer fields remain exact.
 pub(crate) fn assert_text_matches(
     name: &str,
     committed: &[u8],
@@ -212,20 +227,89 @@ pub(crate) fn assert_text_matches(
     let (a, b) = (std::str::from_utf8(committed).unwrap(), std::str::from_utf8(generated).unwrap());
     let (a, b) = (numbers_and_text(a), numbers_and_text(b));
     for (index, (a, b)) in a.iter().zip(&b).enumerate() {
-        match (a.parse::<f64>(), b.parse::<f64>()) {
-            (Ok(x), Ok(y)) => assert!(agree(x, y), "{name}: number {index}: committed {a}, generated {b}"),
+        match (a, b) {
+            (TextPiece::Float(a), TextPiece::Float(b)) => match (a.parse::<f64>(), b.parse::<f64>()) {
+                (Ok(x), Ok(y)) => assert!(
+                    x.is_finite() && y.is_finite() && agree(x, y),
+                    "{name}: number {index}: committed {a}, generated {b}"
+                ),
+                _ => assert_eq!(a, b, "{name}: the documents differ"),
+            },
             _ => assert_eq!(a, b, "{name}: the documents differ"),
         }
     }
     assert_eq!(a.len(), b.len(), "{name}: one document goes on where the other ends");
 }
 
-/// `text` cut into numbers and the text between them. A number starts at a digit, or a minus
-/// sign before one, that doesn't continue a word (`h_010`, a UUID's `8a3d`).
-fn numbers_and_text(text: &str) -> Vec<&str> {
+#[derive(Debug, PartialEq, Eq)]
+enum TextPiece<'a> {
+    Float(&'a str),
+    Exact(&'a str),
+}
+
+/// `text` cut into floating tokens and exact text. Quoted strings (including RON raw
+/// strings), comments and integers never participate in tolerant numeric comparison.
+fn numbers_and_text(text: &str) -> Vec<TextPiece<'_>> {
     let bytes = text.as_bytes();
     let (mut pieces, mut start, mut index) = (Vec::new(), 0, 0);
     while index < bytes.len() {
+        // Quoted identities and comments are exact text, including numeric-looking contents.
+        if bytes[index] == b'r' {
+            let mut quote = index + 1;
+            while bytes.get(quote) == Some(&b'#') {
+                quote += 1;
+            }
+            if bytes.get(quote) == Some(&b'"') {
+                let hashes = quote - index - 1;
+                index = quote + 1;
+                while index < bytes.len() {
+                    if bytes[index] == b'"'
+                        && bytes
+                            .get(index + 1..index + 1 + hashes)
+                            .is_some_and(|tail| tail.iter().all(|&b| b == b'#'))
+                    {
+                        index += hashes + 1;
+                        break;
+                    }
+                    index += 1;
+                }
+                continue;
+            }
+        }
+        if bytes[index] == b'"' {
+            index += 1;
+            while index < bytes.len() {
+                match bytes[index] {
+                    b'\\' => index = (index + 2).min(bytes.len()),
+                    b'"' => {
+                        index += 1;
+                        break;
+                    }
+                    _ => index += 1,
+                }
+            }
+            continue;
+        }
+        if bytes[index..].starts_with(b"//") {
+            index += bytes[index..].iter().position(|&b| b == b'\n').unwrap_or(bytes.len() - index);
+            continue;
+        }
+        if bytes[index..].starts_with(b"/*") {
+            let mut depth = 1;
+            index += 2;
+            while index < bytes.len() && depth > 0 {
+                if bytes[index..].starts_with(b"/*") {
+                    depth += 1;
+                    index += 2;
+                } else if bytes[index..].starts_with(b"*/") {
+                    depth -= 1;
+                    index += 2;
+                } else {
+                    index += 1;
+                }
+            }
+            continue;
+        }
         let after_word = index > 0 && (bytes[index - 1].is_ascii_alphanumeric() || bytes[index - 1] == b'_');
         let digit_at = |i: usize| bytes.get(i).is_some_and(u8::is_ascii_digit);
         let starts = !after_word && (digit_at(index) || (bytes[index] == b'-' && digit_at(index + 1)));
@@ -233,7 +317,6 @@ fn numbers_and_text(text: &str) -> Vec<&str> {
             index += 1;
             continue;
         }
-        pieces.push(&text[start..index]);
         let number = index;
         index += 1;
         while index < bytes.len() && (bytes[index].is_ascii_digit() || b".eE+-".contains(&bytes[index])) {
@@ -243,10 +326,14 @@ fn numbers_and_text(text: &str) -> Vec<&str> {
             }
             index += 1;
         }
-        pieces.push(&text[number..index]);
-        start = index;
+        // Integer fields describe counts and identities; only floating tokens admit rounding.
+        if bytes[number..index].iter().any(|b| b".eE".contains(b)) {
+            pieces.push(TextPiece::Exact(&text[start..number]));
+            pieces.push(TextPiece::Float(&text[number..index]));
+            start = index;
+        }
     }
-    pieces.push(&text[start..]);
+    pieces.push(TextPiece::Exact(&text[start..]));
     pieces
 }
 
@@ -297,6 +384,15 @@ fn glbs_match_by_float_kind() {
         |kind, a: f64, b: f64| (a - b).abs() <= if kind == FloatKind::Direction { 1e-2 } else { 1e-6 };
     let committed = glb(0.0, 0.0, 0.0);
     assert_glb_matches("directions", &committed, &glb(0.005, 0.0, 0.005), agree);
+    for value in [f32::INFINITY, f32::NEG_INFINITY, f32::NAN] {
+        let invalid = glb(value, 0.0, 0.0);
+        for reference in [&committed, &invalid] {
+            assert!(
+                std::panic::catch_unwind(|| assert_glb_matches("nonfinite", reference, &invalid, agree))
+                    .is_err()
+            );
+        }
+    }
     // A position moved more than a millionth fails, as do directions moved more than a hundredth.
     // The position's move also moves its accessor's bounds.
     for (normal, position, morph) in [(0.0, 1e-5, 0.0), (0.0, -1e-5, 0.0), (0.02, 0.0, 0.0), (0.0, 0.0, 0.02)]
@@ -305,5 +401,23 @@ fn glbs_match_by_float_kind() {
             assert_glb_matches("moved", &committed, &glb(normal, position, morph), agree);
         });
         assert!(caught.is_err(), "normal {normal}, position {position}, morph {morph}");
+    }
+}
+
+#[test]
+fn generated_comparison_refuses_nonfinite_and_numeric_identities() {
+    for (a, b) in
+        [(0.0, f64::INFINITY), (f64::NEG_INFINITY, 0.0), (f64::NAN, 0.0), (f64::INFINITY, f64::INFINITY)]
+    {
+        assert!(!floats_agree(a, b));
+    }
+    for (a, b) in [
+        (br#"(id: "123456780000")"#.as_slice(), br#"(id: "123456780001")"#.as_slice()),
+        (b"(count: 123456780000)", b"(count: 123456780001)"),
+        (b"123456780000", b"123456780001"),
+        (br##"(id: r#"value "123456780000.0""#)"##, br##"(id: r#"value "123456780001.0""#)"##),
+        (b"(value: 1.0 /*123456780000*/)", b"(value: 1.0 /*123456780001*/)"),
+    ] {
+        assert!(std::panic::catch_unwind(|| assert_text_matches("identity", a, b, floats_agree)).is_err());
     }
 }

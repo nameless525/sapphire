@@ -29,20 +29,20 @@ impl Editor {
         let shows = |path: &std::path::Path| {
             filter.is_empty() || path.to_string_lossy().to_lowercase().contains(&filter)
         };
-        let mut rows: Vec<(Kind, PathBuf)> = self
+        let mut rows: Vec<(Kind, &std::path::Path)> = self
             .documents
             .sidecars()
             .documents()
             .filter(|(path, _)| shows(path))
-            .map(|(path, kind)| (kind, path.to_owned()))
+            .map(|(path, kind)| (kind, path))
             .collect();
         // What's open is listed even if it's outside the roots, or the last look is older than it.
         for id in self.documents.ids() {
             if let Some(path) = self.documents.path(id)
-                && !rows.iter().any(|(_, listed)| listed == path)
+                && !rows.iter().any(|(_, listed)| *listed == path)
                 && shows(path)
             {
-                rows.push((Kind::of(path).unwrap_or(Kind::Moves), path.to_owned()));
+                rows.push((Kind::of(path).unwrap_or(Kind::Moves), path));
             }
         }
         let others: Vec<(PathBuf, AssetId)> = self
@@ -61,8 +61,8 @@ impl Editor {
             .max_height((ui.available_height() - bottom).max(40.0))
             .show(ui, |ui| {
                 for kind in Kind::ALL {
-                    let mut listed: Vec<&PathBuf> =
-                        rows.iter().filter(|(of, _)| *of == kind).map(|(_, path)| path).collect();
+                    let mut listed: Vec<&std::path::Path> =
+                        rows.iter().filter(|(of, _)| *of == kind).map(|(_, path)| *path).collect();
                     if listed.is_empty() {
                         continue;
                     }
@@ -73,7 +73,7 @@ impl Editor {
                         let response =
                             ui.selectable_label(current, text).on_hover_text(path.display().to_string());
                         if response.clicked() {
-                            open = Some(path.clone());
+                            open = Some(path.to_owned());
                         }
                     }
                 }

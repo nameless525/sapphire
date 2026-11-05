@@ -26,7 +26,7 @@ pub struct View {
     pub yaw: f32,
     /// Above the horizon.
     pub pitch: f32,
-    /// How close, where 1 fits a character on its feet in the frame's height.
+    /// Scale relative to the reference height. Initial/reset editor views fit the selected pose.
     pub zoom: f32,
     /// What's in the middle of the frame.
     pub focus: Vec3,
@@ -39,6 +39,48 @@ impl Default for View {
 }
 
 impl View {
+    /// Fits the selected pose and current interaction, with space around every edge. Call on selection or
+    /// explicit reset, rather than while scrubbing: a moving camera obscures the motion being inspected.
+    pub fn fit(&mut self, rect: Rect, frame: &Frame, posed: Option<PosedFigure<'_>>) {
+        if rect.width() <= 0.0 || rect.height() <= 0.0 {
+            return;
+        }
+        let mut bounds = Rect::NOTHING;
+        if let Some(posed) = posed {
+            let model = posed.figure.model_at(posed.clip, frame.tick);
+            let points = if posed.figure.triangles().is_empty() {
+                model.iter().map(|joint| Vec3::from(joint.translation)).collect()
+            } else {
+                posed.figure.skinned(model)
+            };
+            for point in points {
+                let point = frame.root.position + det::rotate_y(point, frame.root.yaw);
+                bounds.extend_with(self.project(point, rect));
+            }
+        }
+        for body in frame.bodies.iter().chain(&frame.dummy_bodies) {
+            for point in silhouette(self, rect, body.shape, body.pose) {
+                bounds.extend_with(point);
+            }
+        }
+        for volume in &frame.volumes {
+            for point in silhouette(self, rect, volume.shape, volume.pose) {
+                bounds.extend_with(point);
+            }
+        }
+        bounds.extend_with(self.project(frame.root.position, rect));
+        bounds.extend_with(self.project(frame.dummy_root.position, rect));
+        if !bounds.is_finite() {
+            return;
+        }
+        let (right, up, _) = self.axes();
+        let offset = (bounds.center() - rect.center()) / self.scale(rect);
+        self.focus += right * offset.x - up * offset.y;
+        let fit =
+            (rect.width() / bounds.width().max(1.0)).min(rect.height() / bounds.height().max(1.0)) * 0.9;
+        self.zoom *= fit;
+    }
+
     /// From the character's right, a little ahead and above, so the blade's hand is near the viewer and the
     /// dummy to the right of the character.
     #[must_use]
@@ -101,6 +143,8 @@ impl View {
 #[derive(Debug, Default)]
 pub struct FigureCache {
     key: Option<CacheKey>,
+    // Holding the identity prevents address reuse after a figure is replaced.
+    figure_identity: Option<Arc<()>>,
     mesh: Arc<Mesh>,
 }
 
@@ -136,7 +180,7 @@ pub struct PosedFigure<'a> {
     pub generation: u64,
 }
 
-/// How many metres a frame's height shows at a zoom of 1: a tall character with its arm up.
+/// Metres per frame height at zoom 1; [`View::fit`] supplies the figure-specific scale.
 const SHOWN_HEIGHT: f32 = 2.7;
 
 const GRID: Color32 = Color32::from_gray(52);
@@ -338,23 +382,41 @@ fn figure_mesh(
         clip: posed.clip,
         generation: posed.generation,
     };
-    if cache.key == Some(key) {
+    if cache.key == Some(key)
+        && cache
+            .figure_identity
+            .as_ref()
+            .is_some_and(|identity| Arc::ptr_eq(identity, posed.figure.identity()))
+    {
         return Arc::clone(&cache.mesh);
     }
+    let (sin_yaw, cos_yaw) = det::sin_cos(frame.root.yaw);
     let world: Vec<Vec3> = posed
         .figure
         .skinned(model)
         .into_iter()
-        .map(|point| frame.root.position + det::rotate_y(point, frame.root.yaw))
+        .map(|point| {
+            frame.root.position
+                + Vec3::new(
+                    point.x * cos_yaw + point.z * sin_yaw,
+                    point.y,
+                    point.z * cos_yaw - point.x * sin_yaw,
+                )
+        })
         .collect();
     let (right, up, into) = view.axes();
+    let scale = view.scale(rect);
+    let project = |point: Vec3| {
+        let from_focus = point - view.focus;
+        rect.center() + Vec2::new(from_focus.dot(right), -from_focus.dot(up)) * scale
+    };
     let light = (up * 0.7 - into * 0.6 - right * 0.3).normalize();
     let mut order: Vec<(f32, [u32; 3])> = posed
         .figure
         .triangles()
         .iter()
         .map(|tri| {
-            let depth = tri.iter().map(|index| view.depth(world[*index as usize])).sum::<f32>();
+            let depth = tri.iter().map(|index| (world[*index as usize] - view.focus).dot(into)).sum::<f32>();
             (depth, *tri)
         })
         .collect();
@@ -370,12 +432,13 @@ fn figure_mesh(
         let ink = Color32::from_rgb(shade(CLAY[0]), shade(CLAY[1]), shade(CLAY[2]));
         let first = mesh.vertices.len() as u32;
         for point in [pa, pb, pc] {
-            mesh.colored_vertex(view.project(point, rect), ink);
+            mesh.colored_vertex(project(point), ink);
         }
         mesh.add_triangle(first, first + 1, first + 2);
     }
     let mesh = Arc::new(mesh);
     cache.key = Some(key);
+    cache.figure_identity = Some(Arc::clone(posed.figure.identity()));
     cache.mesh = Arc::clone(&mesh);
     mesh
 }

@@ -318,7 +318,7 @@ pub fn insert_entry(
 ) -> Result<EntryRef, EditError> {
     let list = list_path(document, mv, track)?;
     let count = document.value().and_then(|value| value.moves.get(mv)).map_or(0, |mv| track.spans(mv).len());
-    // A clip plays this move: the root is the clip's, and there's nothing here to add a key to.
+    // The timeline extends an authored root track. The generic property inspector can create one first.
     if track == Track::RootKeys
         && document.properties_under(&list)?.first().is_none_or(|list| list.written.is_none())
     {

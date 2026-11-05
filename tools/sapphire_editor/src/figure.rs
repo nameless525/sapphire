@@ -12,6 +12,7 @@
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::path::Path;
+use std::sync::Arc;
 
 use sapphire_anim::{CharacterPose, Clip};
 use sapphire_assets::AssetId;
@@ -26,25 +27,49 @@ use crate::cooked::{Cook, FigureMesh, FigureRig, clip_id, read_skeleton, sidecar
 /// A character to pose: what a cook made of its mesh, and its skeleton's parents, for its bones.
 #[derive(Debug)]
 pub struct Figure {
+    identity: Arc<()>,
     mesh: Option<FigureMesh>,
     rig: FigureRig,
     skeleton: AlignedVec,
     parents: Vec<u16>,
-    /// Each clip's model transforms, tick by tick.
-    poses: HashMap<AssetId, Vec<Vec<Affine3A>>>,
+    /// Each clip's model transforms, tick by tick in one joint-strided allocation.
+    poses: HashMap<AssetId, SampledPose>,
     /// The skeleton's rest pose, for a move with no clip.
     rest: Vec<Affine3A>,
 }
 
+#[derive(Debug)]
+struct SampledPose {
+    joints: usize,
+    model: Vec<Affine3A>,
+}
+
 impl Figure {
     /// The figure on skeleton `id`, with the largest mesh a cook made for it.
-    fn on_skeleton(cook: &Cook, id: AssetId, mesh: Option<AssetId>) -> Result<Option<Self>, String> {
+    fn on_skeleton(
+        cook: &Cook,
+        id: AssetId,
+        mesh: Option<(AssetId, FigureMesh)>,
+    ) -> Result<Option<Self>, String> {
         let Some(skeleton) = cook.read(id)? else { return Ok(None) };
-        let mesh_id = mesh.or_else(|| cook.mesh_on_skeleton(id));
-        let mesh = mesh_id.map(|mesh| FigureMesh::read(cook, mesh)).transpose()?.flatten();
+        let (mesh_id, mesh) = match mesh {
+            Some((id, mesh)) => (Some(id), Some(mesh)),
+            None => {
+                let id = cook.mesh_on_skeleton(id);
+                (id, id.map(|mesh| FigureMesh::read(cook, mesh)).transpose()?.flatten())
+            }
+        };
         let rig = mesh_id.map_or(Ok(FigureRig::default()), |mesh| FigureRig::read(cook, mesh))?;
         let parents = read_skeleton(&skeleton)?.parents.iter().map(|parent| parent.to_native()).collect();
-        let mut figure = Self { mesh, rig, skeleton, parents, poses: HashMap::new(), rest: Vec::new() };
+        let mut figure = Self {
+            identity: Arc::new(()),
+            mesh,
+            rig,
+            skeleton,
+            parents,
+            poses: HashMap::new(),
+            rest: Vec::new(),
+        };
         figure.rest = figure.pose()?.model().to_vec();
         Ok(Some(figure))
     }
@@ -56,22 +81,22 @@ impl Figure {
     }
 
     /// The model transforms of `clip`, one list per tick up to and including its last.
-    fn sample_clip(&mut self, cook: &Cook, clip: AssetId) -> Result<bool, String> {
+    fn sample_clip(&mut self, clip: AssetId, bytes: &AlignedVec) -> Result<(), String> {
         if self.poses.contains_key(&clip) {
-            return Ok(true);
+            return Ok(());
         }
-        let Some(bytes) = cook.read(clip)? else { return Ok(false) };
-        let archived = Clip::read(&bytes).map_err(|error| format!("clip {clip}: {error}"))?;
+        let archived = Clip::read(bytes).map_err(|error| format!("clip {clip}: {error}"))?;
         let mut pose = self.pose()?;
         let ticks = u32::from(archived.ticks.to_native());
-        let mut model = Vec::with_capacity(ticks as usize + 1);
+        let joints = pose.model().len();
+        let mut model = Vec::with_capacity((ticks as usize + 1) * joints);
         for tick in 0..=ticks {
             pose.sample(archived, tick as f32);
             pose.finish();
-            model.push(pose.model().to_vec());
+            model.extend_from_slice(pose.model());
         }
-        self.poses.insert(clip, model);
-        Ok(true)
+        self.poses.insert(clip, SampledPose { joints, model });
+        Ok(())
     }
 
     /// Every joint's model transform in `clip` at `tick`, or at rest with no clip. Past a clip's end it
@@ -79,10 +104,19 @@ impl Figure {
     #[must_use]
     pub fn model_at(&self, clip: Option<AssetId>, tick: u32) -> &[Affine3A] {
         let Some(ticks) = clip.and_then(|clip| self.poses.get(&clip)) else { return &self.rest };
-        ticks.get(tick as usize).or_else(|| ticks.last()).map_or(&self.rest, |model| model.as_slice())
+        if ticks.joints == 0 {
+            return &self.rest;
+        }
+        let tick = (tick as usize).min(ticks.model.len() / ticks.joints - 1);
+        &ticks.model[tick * ticks.joints..(tick + 1) * ticks.joints]
     }
 
-    /// Lines from each joint to its parent, in model space.
+    pub(crate) fn identity(&self) -> &Arc<()> {
+        &self.identity
+    }
+
+    /// Lines from each joint to its parent, in model space. `model` must come from this figure's
+    /// [`Self::model_at`], so it has the complete, compatible skeleton.
     pub fn bones<'a>(&'a self, model: &'a [Affine3A]) -> impl Iterator<Item = (Vec3, Vec3)> + 'a {
         self.parents.iter().zip(model).filter(|(parent, _)| **parent != NO_PARENT).map(|(parent, joint)| {
             (Vec3::from(model[usize::from(*parent)].translation), Vec3::from(joint.translation))
@@ -101,7 +135,8 @@ impl Figure {
         self.mesh.as_ref().map_or(&[], |mesh| &mesh.triangles)
     }
 
-    /// Every vertex posed by `model`, in model space. Empty with no mesh.
+    /// Every vertex posed by `model`, in model space. Empty with no mesh. `model` must come from this
+    /// figure's [`Self::model_at`], so every skin bind addresses a compatible joint.
     #[must_use]
     pub fn skinned(&self, model: &[Affine3A]) -> Vec<Vec3> {
         let Some(mesh) = &self.mesh else { return Vec::new() };
@@ -134,8 +169,8 @@ impl Figure {
 #[derive(Debug, Default)]
 pub struct Figures {
     by_skeleton: HashMap<AssetId, Figure>,
-    /// The figure for a document's moves that name no clip: the mesh beside its file, if there is one.
-    beside: Option<AssetId>,
+    /// Skeleton of the beside-document figure used by moves that name no clip.
+    beside_skeleton: Option<AssetId>,
 }
 
 /// What a move poses with: which figure, and which of its clips.
@@ -152,13 +187,13 @@ impl Figures {
         let stem =
             path.file_name().and_then(|name| name.to_str()).and_then(|name| name.strip_suffix(".moves.ron"));
         let glb = stem.map(|stem| path.with_file_name(format!("{stem}.glb")));
-        figures.beside = glb.and_then(|glb| sidecar_id(&glb));
-        if let Some(mesh_id) = figures.beside
+        if let Some(mesh_id) = glb.and_then(|glb| sidecar_id(&glb))
             && let Some(mesh) = FigureMesh::read(cook, mesh_id)?
         {
             let skeleton = mesh.skeleton;
-            if let Some(figure) = Figure::on_skeleton(cook, skeleton, Some(mesh_id))? {
+            if let Some(figure) = Figure::on_skeleton(cook, skeleton, Some((mesh_id, mesh)))? {
                 figures.by_skeleton.insert(skeleton, figure);
+                figures.beside_skeleton = Some(skeleton);
             }
         }
         Ok(figures)
@@ -168,8 +203,7 @@ impl Figures {
     pub fn cast(&mut self, mv: &MoveDocument, cook: &Cook) -> Result<Option<Casting>, String> {
         if let Some(clip) = mv.motion.clip.as_ref().and_then(clip_id) {
             let clip = self.existing_clip(cook, mv, clip)?;
-            if let Some(clip) = clip {
-                let Some(bytes) = cook.read(clip)? else { return Ok(None) };
+            if let Some((clip, bytes)) = clip {
                 let skeleton = Clip::read(&bytes)
                     .map_err(|error| format!("clip {clip}: {error}"))?
                     .skeleton
@@ -185,13 +219,12 @@ impl Figures {
                         new.insert(figure)
                     }
                 };
-                if figure.sample_clip(cook, clip)? {
-                    return Ok(Some(Casting { skeleton, clip: Some(clip) }));
-                }
+                figure.sample_clip(clip, &bytes)?;
+                return Ok(Some(Casting { skeleton, clip: Some(clip) }));
             }
         }
         // No clip, or none in this cook: at rest, if there's a mesh to rest.
-        Ok(self.by_skeleton.keys().min().map(|skeleton| Casting { skeleton: *skeleton, clip: None }))
+        Ok(self.beside_skeleton.map(|skeleton| Casting { skeleton, clip: None }))
     }
 
     /// The clip a block names, in this cook: a key-pose document's own rig is the document's ID.
@@ -200,13 +233,13 @@ impl Figures {
         cook: &Cook,
         mv: &MoveDocument,
         clip: AssetId,
-    ) -> Result<Option<AssetId>, String> {
-        if cook.read(clip)?.is_some() {
-            return Ok(Some(clip));
+    ) -> Result<Option<(AssetId, AlignedVec)>, String> {
+        if let Some(bytes) = cook.read(clip)? {
+            return Ok(Some((clip, bytes)));
         }
         let source = mv.motion.clip.as_ref().and_then(|clip| clip.source.parse().ok());
         match source {
-            Some(source) if cook.read(source)?.is_some() => Ok(Some(source)),
+            Some(source) => Ok(cook.read(source)?.map(|bytes| (source, bytes))),
             _ => Ok(None),
         }
     }

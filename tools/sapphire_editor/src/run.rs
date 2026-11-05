@@ -19,15 +19,14 @@ use sapphire_gameplay::{
     ActorId, ActorSpawn, ActorTransform, ControllerProfile, HurtboxId, MAX_HURTBOXES, MoveSetId, SimConfig,
     Simulation, TickActions, WarpTarget, actor_body, hit_shape, volume_pose,
 };
-use sapphire_math::Vec3;
+use sapphire_math::{Vec3, det};
 use sapphire_moves::{MoveSet, Phase};
 use sapphire_physics::{
     ColliderId, Group, PhysicsWorld, Pose, Shape as BodyShape, StaticCollider, StaticShape,
 };
 use sapphire_time::SimDuration;
 
-/// How long past a move's end a run keeps going, in steps, for hitstop that outlasts it.
-const AFTER_END: u32 = 90;
+const STAGE_HALF_EXTENT: f32 = 200.0;
 
 /// How a move is played.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -133,7 +132,24 @@ impl Run {
         let mv_name = Name::intern(name);
         let (_, mv) = set.find(mv_name).ok_or_else(|| RunError(format!("the set has no move `{name}`")))?;
         let ticks = mv.ticks();
-        let tables = mv.tables.clone();
+        let tables = &mv.tables;
+        if !setup.dummy_distance.is_finite() || setup.dummy_distance.abs() > STAGE_HALF_EXTENT {
+            return Err(RunError(format!(
+                "the dummy must be within the preview ground's {STAGE_HALF_EXTENT} m extent"
+            )));
+        }
+        // A group can hit this one dummy once initially and once after each authored rearm. Local and
+        // defeat freezes can both delay the clock. Include a final step to observe the move ending.
+        let budget = mv
+            .hitboxes
+            .iter()
+            .try_fold(u64::from(ticks) + 1, |steps, hitbox| {
+                let freeze = hitbox
+                    .attack
+                    .map_or(0, |attack| u64::from(attack.hitstop) + u64::from(attack.finish_freeze));
+                freeze.checked_mul(hitbox.rearm.len() as u64 + 1).and_then(|freeze| steps.checked_add(freeze))
+            })
+            .ok_or_else(|| RunError("the preview's step budget overflows".to_owned()))?;
         let hitboxes: Vec<_> =
             mv.hitboxes.iter().map(|hitbox| (hitbox.name(), hitbox.path(), hitbox.shape)).collect();
 
@@ -144,13 +160,15 @@ impl Run {
         sim.force_move(player, mv_name);
 
         let mut frames: Vec<Frame> = Vec::with_capacity(ticks as usize + 16);
-        for _ in 0..ticks.saturating_add(AFTER_END) {
+        let mut ended = false;
+        for _ in 0..budget {
             sim.step(&TickActions::NEUTRAL);
             let view = sim.actor(player).ok_or_else(|| RunError("the character went".to_owned()))?;
             let Some(current) = view.moves.current.filter(|current| current.name == mv_name) else {
                 if frames.is_empty() {
                     return Err(RunError(format!("`{name}` didn't start")));
                 }
+                ended = true;
                 break;
             };
             let dummy_view = sim.actor(dummy).ok_or_else(|| RunError("the dummy went".to_owned()))?;
@@ -186,18 +204,23 @@ impl Run {
                         pose: volume_pose(start, volume.start),
                     })
                     .collect();
-                let live = |name: Name| first.iter().any(|volume| volume.name == name.to_string());
+                let live = |name: Name| {
+                    view.moves
+                        .volumes
+                        .iter()
+                        .any(|volume| volume.from == SimDuration::ZERO && volume.name == name)
+                };
                 frames.push(Frame {
                     tick: 0,
                     elapsed: SimDuration::ZERO,
                     phase: mv.phase_at(SimDuration::ZERO),
                     frozen: false,
                     root: start,
-                    dummy_root,
+                    dummy_root: dummy_view.moves.previous,
                     ghosts: ghost(start, SimDuration::ZERO, &live),
                     volumes: first,
-                    bodies: bodies_of(&sim, player),
-                    dummy_bodies: bodies_of(&sim, dummy),
+                    bodies: bodies_at_root(&sim, player, start),
+                    dummy_bodies: bodies_at_root(&sim, dummy, dummy_view.moves.previous),
                     hits: Vec::new(),
                     invulnerable: mv.invulnerable.iter().any(|span| span.contains(SimDuration::ZERO)),
                     cancel_open: mv.cancels.iter().any(|window| window.span.contains(SimDuration::ZERO)),
@@ -214,7 +237,7 @@ impl Run {
                     pose: volume_pose(root, volume.end),
                 })
                 .collect();
-            let live = |name: Name| volumes.iter().any(|volume| volume.name == name.to_string());
+            let live = |name: Name| view.moves.volumes.iter().any(|volume| volume.name == name);
             let ghosts = ghost(root, current.elapsed, &live);
             let hits = sim
                 .hits()
@@ -244,6 +267,9 @@ impl Run {
                 cancel_open: view.moves.windows.cancel,
             });
         }
+        if !ended {
+            return Err(RunError("the move exceeded its preview step budget".to_owned()));
+        }
         Ok(Self { move_name: name.to_owned(), ticks, frames, setup })
     }
 
@@ -268,7 +294,9 @@ impl Run {
 fn stage(sim: &mut Simulation, set: MoveSet, setup: Setup) -> Result<(ActorId, ActorId), RunError> {
     let floor = StaticCollider {
         id: ColliderId(0),
-        shape: StaticShape::Convex(BodyShape::Box { half_extents: Vec3::new(200.0, 0.5, 200.0) }),
+        shape: StaticShape::Convex(BodyShape::Box {
+            half_extents: Vec3::new(STAGE_HALF_EXTENT, 0.5, STAGE_HALF_EXTENT),
+        }),
         pose: Pose::at(Vec3::new(0.0, -0.5, 0.0)),
         memberships: Group::World.mask(),
     };
@@ -319,6 +347,22 @@ fn bodies_of(sim: &Simulation, actor: ActorId) -> Vec<FrameBody> {
     bodies
 }
 
+/// The synthetic tick-zero frame uses the first step's published shapes at that step's starting roots.
+fn bodies_at_root(sim: &Simulation, actor: ActorId, root: ActorTransform) -> Vec<FrameBody> {
+    let mut bodies = bodies_of(sim, actor);
+    let Some(current) = sim.actor(actor) else { return bodies };
+    if current.position == root.position && current.yaw == root.yaw {
+        return bodies;
+    }
+    let rotation = det::quat_from_rotation_y(root.yaw - current.yaw);
+    for body in &mut bodies {
+        let local = det::rotate_y(body.pose.position - current.position, -current.yaw);
+        body.pose.position = root.point(local);
+        body.pose.rotation = det::quat_mul(rotation, body.pose.rotation);
+    }
+    bodies
+}
+
 #[cfg(test)]
 mod tests {
     use sapphire_moves::{MoveSet, MoveSetDocument};
@@ -328,6 +372,22 @@ mod tests {
 
     fn slice() -> MoveSet {
         MoveSetDocument::parse(SLICE).expect("parses").compile().expect("compiles")
+    }
+
+    #[test]
+    fn the_synthetic_first_frames_body_is_at_its_starting_root() {
+        let run = Run::simulate(&slice(), "light_1", Setup { dummy_distance: 30.0, warp_to_dummy: false })
+            .expect("plays");
+        let first = &run.frames[0];
+        assert_eq!(first.tick, 0);
+        assert!(
+            run.frames[1].root.position.distance(first.root.position) > 0.01,
+            "the fixture must move on its first step"
+        );
+        for body in &first.bodies {
+            let expected = first.root.point(Vec3::new(0.0, 0.9, 0.0));
+            assert!(body.pose.position.distance(expected) < 1e-5, "{body:?} versus {expected:?}");
+        }
     }
 
     #[test]
@@ -373,6 +433,29 @@ mod tests {
             let index = run.frame_at_tick(tick).expect("a frame");
             assert_eq!(run.frames[index].tick, tick, "tick {tick}");
             assert!(index == 0 || run.frames[index - 1].tick < tick, "tick {tick}");
+        }
+    }
+
+    #[test]
+    fn the_longest_valid_hitstop_does_not_truncate_the_rest_of_the_move() {
+        let mut document = MoveSetDocument::parse(WARRIOR).expect("parses");
+        let swipe = document.moves.iter_mut().find(|mv| mv.name == "swipe").expect("swipe");
+        for volume in &mut swipe.hitboxes {
+            volume.attack.as_mut().expect("attack").hitstop = sapphire_moves::MAX_HITSTOP_TICKS;
+        }
+        let run =
+            Run::simulate(&document.compile().expect("compiles"), "swipe", Setup::default()).expect("plays");
+        assert!(run.frames.iter().filter(|frame| frame.frozen).count() >= 100);
+        assert_eq!(run.frames.last().expect("last frame").tick, run.ticks - 1);
+    }
+
+    #[test]
+    fn a_dummy_beyond_the_stages_ground_is_refused_before_simulation() {
+        for distance in [f32::MAX, f32::NAN, f32::INFINITY] {
+            let error =
+                Run::simulate(&slice(), "light_1", Setup { dummy_distance: distance, warp_to_dummy: false })
+                    .expect_err("outside the stage");
+            assert!(error.0.contains("preview ground"), "{error}");
         }
     }
 

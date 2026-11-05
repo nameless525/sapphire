@@ -284,3 +284,21 @@ fn blank_glyphs_draw_nothing_and_cost_one_try() {
     assert_eq!((stats.rasterized, list.quads.len(), stats.pages), (0, 0, 0));
     assert_eq!(stats.glyphs, 1, "remembered, so it isn't scaled again");
 }
+
+#[test]
+fn page_dimensions_are_checked_before_any_glyph_or_gpu_work() {
+    for page_size in [0, 46341, 65536, u32::MAX] {
+        assert!(
+            std::panic::catch_unwind(|| {
+                GlyphAtlas::new(AtlasConfig { page_size, ..AtlasConfig::default() })
+            })
+            .is_err(),
+            "{page_size} cannot fit the allocator's area and upload coordinates"
+        );
+    }
+    for page_size in [1, 2048, 46340] {
+        let atlas = GlyphAtlas::new(AtlasConfig { page_size, ..AtlasConfig::default() });
+        assert_eq!(atlas.config().page_size, page_size);
+        assert_eq!(atlas.stats().pages, 0, "construction allocates no page texels");
+    }
+}

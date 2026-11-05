@@ -7,8 +7,10 @@ use std::hash::{Hash, Hasher};
 use std::ops::Range;
 use std::sync::Arc;
 
+use crate::families::font_families;
+
 use parley::fontique::{Blob, Collection, CollectionOptions, FamilyId, SourceCache};
-use parley::style::{FontFamily, FontWeight, LineHeight, StyleProperty};
+use parley::style::{FontWeight, LineHeight, StyleProperty};
 use parley::{
     Alignment, AlignmentOptions, FontContext, FontData, Layout, LayoutContext, PositionedLayoutItem,
 };
@@ -35,8 +37,8 @@ pub struct FaceOptions {
 /// How a string looks.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TextStyle<'a> {
-    /// A CSS font family list, in order: `"Oxanium, 'M PLUS 1'"`, which [`family_list`] makes. This is
-    /// how a script gets its fallbacks: the shaper's own table has no entry for hiragana or katakana
+    /// A CSS font family list, in order: `"Oxanium, 'M PLUS 1'"`, which
+    /// [`family_list`](crate::family_list) makes. This is how a script gets its fallbacks: the shaper's own table has no entry for hiragana or katakana
     /// with a locale, and a list answers for any script. Past its end a character draws as the first
     /// font's missing glyph, and nothing comes from the OS.
     pub families: &'a str,
@@ -58,13 +60,6 @@ impl TextStyle<'_> {
         self.line_height.to_bits().hash(state);
         self.locale.hash(state);
     }
-}
-
-/// Family names, in the order they answer, as [`TextStyle::families`] takes them. A font chain's
-/// fonts say their families, and this is what a style is made from.
-pub fn family_list<'a>(families: impl IntoIterator<Item = &'a str>) -> String {
-    let quoted: Vec<String> = families.into_iter().map(|family| format!("'{family}'")).collect();
-    quoted.join(", ")
 }
 
 /// A run of glyphs from one font at one size. Nothing in it needs `parley` to read.
@@ -137,7 +132,8 @@ pub struct TextSystem {
 
 impl std::fmt::Debug for TextSystem {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TextSystem").field("stats", &self.stats).finish_non_exhaustive()
+        let stats = ShapeStats { cached: self.cache.len() as u32, ..self.stats };
+        f.debug_struct("TextSystem").field("stats", &stats).finish_non_exhaustive()
     }
 }
 
@@ -238,7 +234,6 @@ impl TextSystem {
             };
             self.cache.insert(key, layout);
         }
-        self.stats.cached = self.cache.len() as u32;
         let layout = self.cache.get_mut(&key).expect("just found or inserted");
         layout.last_used = self.frame;
         &layout.shaped
@@ -246,8 +241,7 @@ impl TextSystem {
 
     /// What shaping did since the last call.
     pub fn take_stats(&mut self) -> ShapeStats {
-        let cached = self.stats.cached;
-        std::mem::replace(&mut self.stats, ShapeStats { hits: 0, misses: 0, cached })
+        ShapeStats { cached: self.cache.len() as u32, ..std::mem::take(&mut self.stats) }
     }
 
     /// Empties the layout cache, for measuring a first layout.
@@ -264,7 +258,7 @@ impl TextSystem {
     ) -> ShapedText {
         // Laid out in pixels, at a whole pixel size, so every scale gets glyphs made for it.
         let mut builder = self.layouts.ranged_builder(&mut self.fonts, text, 1.0, true);
-        builder.push_default(StyleProperty::FontFamily(FontFamily::Source(style.families.into())));
+        builder.push_default(StyleProperty::FontFamily(font_families(style.families)));
         builder.push_default(StyleProperty::FontSize((style.size * scale).round().max(1.0)));
         builder.push_default(StyleProperty::FontWeight(FontWeight::new(style.weight)));
         builder.push_default(StyleProperty::LineHeight(LineHeight::FontSizeRelative(style.line_height)));
@@ -307,4 +301,54 @@ fn flatten(layout: &Layout<()>, shifts: &HashMap<u64, f32>) -> ShapedText {
         shaped.baselines.push(line.metrics().baseline + shift.unwrap_or(0.0));
     }
     shaped
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const STYLE: TextStyle<'static> =
+        TextStyle { families: "Ubuntu", size: 16.0, weight: 400.0, line_height: 1.3, locale: Some("en") };
+
+    #[test]
+    fn cache_residency_is_current_without_another_shape() {
+        let mut text = TextSystem::new();
+        let font = Arc::new(epaint_default_fonts::UBUNTU_LIGHT.to_vec());
+        text.register_font(Arc::clone(&font));
+        text.shape("one", &STYLE, 1.0, None);
+        text.shape("one", &STYLE, 1.0, None);
+        assert_eq!(text.take_stats(), ShapeStats { hits: 1, misses: 1, cached: 1 });
+        assert_eq!(text.take_stats(), ShapeStats { cached: 1, ..ShapeStats::default() });
+        text.clear_cache();
+        assert_eq!(text.take_stats(), ShapeStats::default());
+        text.shape("two", &STYLE, 1.0, None);
+        text.register_font(font);
+        assert_eq!(text.take_stats(), ShapeStats { misses: 1, ..ShapeStats::default() });
+        text.shape("three", &STYLE, 1.0, None);
+        text.take_stats();
+        // The eviction policy needs a full cache; reuse one actual layout to keep this a bounded
+        // gauge test rather than shaping thousands of unrelated strings.
+        let key = *text.cache.keys().next().unwrap();
+        let layout = text.cache.remove(&key).unwrap();
+        for key in 0..=MAX_LAYOUTS as u64 {
+            text.cache.insert(
+                key,
+                CachedLayout {
+                    text: layout.text.clone(),
+                    families: layout.families.clone(),
+                    size: layout.size,
+                    weight: layout.weight,
+                    line_height: layout.line_height,
+                    locale: layout.locale.clone(),
+                    scale: layout.scale,
+                    max_width: layout.max_width,
+                    last_used: 0,
+                    shaped: ShapedText::default(),
+                },
+            );
+        }
+        text.frame = LAYOUT_KEEP_FRAMES;
+        text.begin_frame();
+        assert_eq!(text.take_stats(), ShapeStats::default());
+    }
 }

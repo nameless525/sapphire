@@ -19,7 +19,7 @@ pub(super) struct CvarPanel {
 impl Editor {
     pub(super) fn cvars_panel(&mut self, ui: &mut Ui) {
         self.cvar_panel.drawn = true;
-        let Some(list) = self.link.cvars().map(<[CvarStatus]>::to_vec) else {
+        let Some(list) = self.link.cvars() else {
             let why = self.link.trouble().unwrap_or("looking");
             ui.label(
                 RichText::new(if self.link.device().is_some() {

@@ -24,11 +24,12 @@ pub struct Capture {
 impl Capture {
     /// Writes it as a PNG.
     pub fn write_png(&self, path: &Path) -> anyhow::Result<()> {
-        let file = std::io::BufWriter::new(std::fs::File::create(path)?);
-        let mut encoder = png::Encoder::new(file, self.width, self.height);
+        let mut bytes = Vec::new();
+        let mut encoder = png::Encoder::new(&mut bytes, self.width, self.height);
         encoder.set_color(png::ColorType::Rgba);
         encoder.set_depth(png::BitDepth::Eight);
         encoder.write_header()?.write_image_data(&self.pixels)?;
+        sapphire_document::disk::Temporary::beside_bytes(path, &bytes)?.replace(path)?;
         Ok(())
     }
 
@@ -53,7 +54,7 @@ struct Atlas {
 }
 
 impl Textures {
-    /// Takes a pass's changes.
+    /// Applies uploads before painting. Call [`Self::free`] after the pass's last use.
     pub fn apply(&mut self, delta: &TexturesDelta) {
         for (id, changes) in &delta.set {
             for change in changes {
@@ -75,17 +76,40 @@ impl Textures {
                 }
             }
         }
+    }
+
+    /// Releases textures after painting the pass that last uses them.
+    pub fn free(&mut self, delta: &TexturesDelta) {
         for id in &delta.free {
             self.images.remove(id);
         }
     }
+}
 
-    fn sample(&self, id: TextureId, uv: Pos2) -> Color32 {
-        let Some(atlas) = self.images.get(&id) else { return Color32::WHITE };
+impl Atlas {
+    fn sample(&self, uv: Pos2) -> Color32 {
+        let atlas = self;
         let x = ((uv.x * atlas.size[0] as f32) as usize).min(atlas.size[0] - 1);
         let y = ((uv.y * atlas.size[1] as f32) as usize).min(atlas.size[1] - 1);
         atlas.pixels[y * atlas.size[0] + x]
     }
+}
+
+/// Validates a software image before UI work or allocation. Captures have a 256 MiB RGBA budget.
+pub fn validate_size(width: u32, height: u32) -> Result<usize, String> {
+    let pixels = u64::from(width) * u64::from(height);
+    if width == 0 || height == 0 || pixels > 64 * 1024 * 1024 {
+        return Err("capture size must be nonzero and fit the 256 MiB RGBA budget".to_owned());
+    }
+    usize::try_from(pixels).map_err(|_| "capture size exceeds this host's address space".to_owned())
+}
+
+/// Finishes an unconsumed settling pass, including tessellation and texture lifetime changes.
+pub fn settle(ctx: &Context, textures: &mut Textures, mut output: FullOutput) {
+    textures.apply(&output.textures_delta);
+    let _ = ctx.tessellate(output.shapes, 1.0);
+    textures.free(&output.textures_delta);
+    output.textures_delta.clear();
 }
 
 /// Input for a frame of `width` × `height` points, `dt` seconds after the last.
@@ -112,6 +136,10 @@ pub fn draw(
 }
 
 /// Rasterizes a finished pass, at one pixel per point.
+///
+/// # Panics
+///
+/// Dimensions must satisfy [`validate_size`]; command-line callers validate them before running UI work.
 #[must_use]
 pub fn rasterize(
     ctx: &Context,
@@ -120,15 +148,22 @@ pub fn rasterize(
     width: u32,
     height: u32,
 ) -> Capture {
+    let pixels = validate_size(width, height);
+    if pixels.is_err() {
+        // An invalid direct API call must not panic again while dropping egui's unapplied delta.
+        output.textures_delta.clear();
+    }
+    let pixels = pixels.expect("a bounded nonzero software capture");
     textures.apply(&output.textures_delta);
-    // Taken: epaint asserts that no texture change is dropped by accident.
-    output.textures_delta.clear();
     let primitives = ctx.tessellate(output.shapes, 1.0);
-    let mut canvas = Canvas { width, height, pixels: vec![[0u8, 0, 0, 255]; (width * height) as usize] };
+    let mut canvas = Canvas { width, height, pixels: vec![[0u8, 0, 0, 255]; pixels] };
     for primitive in &primitives {
         canvas.primitive(primitive, textures);
     }
-    Capture { width, height, pixels: canvas.pixels.iter().flatten().copied().collect() }
+    textures.free(&output.textures_delta);
+    // Taken: epaint asserts that no texture change is dropped by accident.
+    output.textures_delta.clear();
+    Capture { width, height, pixels: canvas.pixels.into_flattened() }
 }
 
 struct Canvas {
@@ -141,9 +176,10 @@ impl Canvas {
     fn primitive(&mut self, primitive: &ClippedPrimitive, textures: &Textures) {
         let Primitive::Mesh(mesh) = &primitive.primitive else { return };
         let clip = primitive.clip_rect;
+        let texture = textures.images.get(&mesh.texture_id);
         for triangle in mesh.indices.as_chunks::<3>().0 {
             let [a, b, c] = triangle.map(|index| &mesh.vertices[index as usize]);
-            self.triangle(a, b, c, clip, mesh.texture_id, textures);
+            self.triangle(a, b, c, clip, texture);
         }
     }
 
@@ -154,8 +190,7 @@ impl Canvas {
         b: &egui::epaint::Vertex,
         c: &egui::epaint::Vertex,
         clip: Rect,
-        texture: TextureId,
-        textures: &Textures,
+        texture: Option<&Atlas>,
     ) {
         let area = edge(a.pos, b.pos, c.pos);
         if area == 0.0 {
@@ -163,6 +198,11 @@ impl Canvas {
         }
         // One winding from here on, so two triangles sharing an edge walk it in opposite directions.
         let (b, c, area) = if area > 0.0 { (b, c, area) } else { (c, b, -area) };
+        let owned = [
+            owns_samples_on_it(b.pos, c.pos),
+            owns_samples_on_it(c.pos, a.pos),
+            owns_samples_on_it(a.pos, b.pos),
+        ];
         let left = a.pos.x.min(b.pos.x).min(c.pos.x).max(clip.left()).max(0.0).floor() as u32;
         let right = a.pos.x.max(b.pos.x).max(c.pos.x).min(clip.right()).min(self.width as f32).ceil() as u32;
         let top = a.pos.y.min(b.pos.y).min(c.pos.y).max(clip.top()).max(0.0).floor() as u32;
@@ -172,13 +212,8 @@ impl Canvas {
             for x in left..right {
                 let at = Pos2::new(x as f32 + 0.5, y as f32 + 0.5);
                 let sides = [edge(b.pos, c.pos, at), edge(c.pos, a.pos, at), edge(a.pos, b.pos, at)];
-                let inside = |side: f32, from: Pos2, to: Pos2| {
-                    side > 0.0 || (side == 0.0 && owns_samples_on_it(from, to))
-                };
-                if !(inside(sides[0], b.pos, c.pos)
-                    && inside(sides[1], c.pos, a.pos)
-                    && inside(sides[2], a.pos, b.pos))
-                {
+                let inside = |side: f32, owned: bool| side > 0.0 || (side == 0.0 && owned);
+                if !(inside(sides[0], owned[0]) && inside(sides[1], owned[1]) && inside(sides[2], owned[2])) {
                     continue;
                 }
                 let weights = sides.map(|side| side / area);
@@ -186,7 +221,7 @@ impl Canvas {
                     values[0] * weights[0] + values[1] * weights[1] + values[2] * weights[2]
                 };
                 let uv = Pos2::new(blend([a.uv.x, b.uv.x, c.uv.x]), blend([a.uv.y, b.uv.y, c.uv.y]));
-                let sampled = textures.sample(texture, uv);
+                let sampled = texture.map_or(Color32::WHITE, |atlas| atlas.sample(uv));
                 let channel = |index: usize| {
                     blend([
                         f32::from(a.color.to_array()[index]),
@@ -196,7 +231,7 @@ impl Canvas {
                         / 255.0
                 };
                 let source = [channel(0), channel(1), channel(2), channel(3)];
-                let pixel = &mut self.pixels[(y * self.width + x) as usize];
+                let pixel = &mut self.pixels[y as usize * self.width as usize + x as usize];
                 let keep = 1.0 - source[3] / 255.0;
                 for index in 0..3 {
                     pixel[index] =
@@ -231,6 +266,84 @@ mod tests {
 
     /// Half-covering white over black, premultiplied: one blend makes 128 and two make 192.
     const HALF: Color32 = Color32::from_rgba_premultiplied(128, 128, 128, 128);
+
+    #[test]
+    fn capture_sizes_are_bounded_before_allocation() {
+        assert!(validate_size(0, 32).is_err());
+        assert!(validate_size(32, 0).is_err());
+        assert!(validate_size(u32::MAX, u32::MAX).is_err());
+        assert!(validate_size(16384, 16384).is_err());
+        assert_eq!(validate_size(8192, 8192), Ok(64 * 1024 * 1024));
+        assert_eq!(validate_size(1400, 900), Ok(1_260_000));
+    }
+
+    #[test]
+    fn publishing_a_png_does_not_truncate_a_hardlinked_source() {
+        let dir = std::env::temp_dir().join(format!("sapphire_capture_alias_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("directory");
+        let source = dir.join("source.ron");
+        let png = dir.join("capture.png");
+        std::fs::write(&source, b"authored source").expect("source");
+        std::fs::hard_link(&source, &png).expect("a hardlink alias");
+        Capture { width: 1, height: 1, pixels: vec![10, 20, 30, 255] }.write_png(&png).expect("capture");
+        assert_eq!(std::fs::read(&source).expect("source"), b"authored source");
+        assert!(std::fs::read(&png).expect("PNG").starts_with(b"\x89PNG\r\n\x1a\n"));
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn settling_without_rasterizing_preserves_the_final_pixels_and_ui_state() {
+        let run = |skip: bool| {
+            let ctx = Context::default();
+            let mut textures = Textures::default();
+            let mut state = 0;
+            let mut last = None;
+            for pass in 0..4 {
+                let output = ctx.run_ui(raw_input(240, 100, f64::from(pass) * 0.05), |ui| {
+                    state += 1;
+                    CentralPanel::default().show(ui, |ui| {
+                        egui::Grid::new("settling").show(ui, |ui| {
+                            ui.label(format!("pass {state}"));
+                            ui.label("text and layout");
+                            ui.end_row();
+                        });
+                    });
+                });
+                if skip && pass < 3 {
+                    settle(&ctx, &mut textures, output);
+                } else {
+                    last = Some(rasterize(&ctx, &mut textures, output, 240, 100));
+                }
+            }
+            (state, last.expect("the final capture"))
+        };
+        assert_eq!(run(false), run(true));
+    }
+
+    #[test]
+    fn a_texture_freed_in_a_pass_survives_its_last_draw() {
+        let ctx = Context::default();
+        let mut warmed = ctx.run_ui(RawInput::default(), |_| {});
+        warmed.textures_delta.clear();
+        let id = TextureId::User(7);
+        let mut mesh = half_mesh(&[Pos2::ZERO, Pos2::new(4.0, 0.0), Pos2::new(0.0, 4.0)], &[0, 1, 2]);
+        mesh.texture_id = id;
+        for vertex in &mut mesh.vertices {
+            vertex.color = Color32::WHITE;
+        }
+        let mut textures = Textures::default();
+        textures.images.insert(id, Atlas { size: [1, 1], pixels: vec![Color32::RED] });
+        let mut delta = TexturesDelta::default();
+        delta.free.insert(id);
+        let output = FullOutput {
+            shapes: vec![ClippedShape::new(Rect::EVERYTHING, Shape::mesh(mesh))],
+            textures_delta: delta,
+            ..FullOutput::default()
+        };
+        let image = rasterize(&ctx, &mut textures, output, 4, 4);
+        assert_eq!(image.pixel(0, 0), [255, 0, 0, 255]);
+        assert!(!textures.images.contains_key(&id));
+    }
 
     fn rasterize_mesh(mesh: Mesh, clip: Rect, width: u32, height: u32) -> Capture {
         let output =
@@ -321,10 +434,8 @@ mod tests {
                 let (width, height) = (12, 6);
                 let pixels = vec![[0, 0, 0, 255]; (width * height) as usize];
                 let mut canvas = Canvas { width, height, pixels };
-                let textures = Textures::default();
-                let texture = TextureId::Managed(0);
-                canvas.triangle(&a, &above, &b, Rect::EVERYTHING, texture, &textures);
-                canvas.triangle(&b, &below, &a, Rect::EVERYTHING, texture, &textures);
+                canvas.triangle(&a, &above, &b, Rect::EVERYTHING, None);
+                canvas.triangle(&b, &below, &a, Rect::EVERYTHING, None);
                 for (x, y) in [(1, 1), (4, 2), (7, 3)] {
                     let pixel = canvas.pixels[(y * width + x) as usize][0];
                     assert_eq!(pixel, 128, "pixel {x}, {y} with ends {:?} and {:?}", a.pos, b.pos);

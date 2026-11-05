@@ -111,8 +111,37 @@ impl TouchControls {
         }
     }
 
-    /// Takes a new layout: from the next landing on. Fingers down keep what they hold.
+    /// Takes a new layout: from the next landing on. Fingers down keep what they hold, with
+    /// positions rebased to the new frame's points so a stationary normalized touch stays still.
+    /// An empty frame (for example while minimized) keeps the last usable layout.
     pub fn set_layout(&mut self, layout: HudLayout) {
+        let old = self.layout.metrics.size;
+        let new = layout.metrics.size;
+        if !new.is_finite() || new.min_element() <= 0.0 {
+            return;
+        }
+        let old = Vec2::new(if old.x > 0.0 { old.x } else { 1.0 }, if old.y > 0.0 { old.y } else { 1.0 });
+        let rebase = |point: Vec2| if old == new { point } else { point / old * new };
+        for touch in self.touches.iter_mut().flatten() {
+            touch.landed = rebase(touch.landed);
+            touch.at = rebase(touch.at);
+        }
+        let stick = &mut self.pending.stick;
+        // An inactive stick keeps its default state, including before the first usable layout.
+        // A held stick's virtual center preserves its input when the frame and radius scale
+        // differently, provided the previous layout had a usable radius.
+        if stick.active && self.layout.stick.radius.is_finite() && self.layout.stick.radius > 0.0 {
+            let offset = (stick.thumb - stick.center) * (layout.stick.radius / self.layout.stick.radius);
+            stick.thumb = rebase(stick.thumb);
+            stick.center = stick.thumb - offset;
+        }
+        self.pending.camera_delta = rebase(self.pending.camera_delta);
+        for button in &mut self.pending.buttons {
+            button.drag = rebase(button.drag);
+        }
+        for event in &mut self.pending.events {
+            event.drag = rebase(event.drag);
+        }
         self.layout = layout;
     }
 

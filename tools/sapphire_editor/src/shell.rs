@@ -9,6 +9,7 @@
 
 use egui_tiles::{Container, LinearDir, Tile, TileId, Tiles, Tree, UiResponse};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 /// What a pane shows. There's one of each.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -71,6 +72,8 @@ pub enum LayoutError {
     Write(#[from] ron::Error),
     #[error("reading the layout: {0}")]
     Read(#[from] ron::error::SpannedError),
+    #[error("invalid layout: {0}")]
+    Invalid(&'static str),
 }
 
 /// The docked panes.
@@ -176,7 +179,28 @@ impl Shell {
 
     /// Takes a layout saved by [`Self::save_layout`]. One that doesn't read leaves this one.
     pub fn restore_layout(&mut self, layout: &str) -> Result<(), LayoutError> {
-        self.tree = ron::from_str(layout)?;
+        let tree: Tree<Pane> = ron::from_str(layout)?;
+        let mut visited = HashSet::new();
+        let mut panes = HashSet::new();
+        let mut pending: Vec<TileId> = tree.root().into_iter().collect();
+        while let Some(id) = pending.pop() {
+            if !visited.insert(id) {
+                return Err(LayoutError::Invalid("a tile has more than one parent or forms a cycle"));
+            }
+            match tree.tiles.get(id) {
+                None => return Err(LayoutError::Invalid("a referenced tile is missing")),
+                Some(Tile::Pane(pane)) => {
+                    if !panes.insert(*pane) {
+                        return Err(LayoutError::Invalid("a pane occurs more than once"));
+                    }
+                }
+                Some(Tile::Container(container)) => pending.extend(container.children().copied()),
+            }
+        }
+        if visited.len() != tree.tiles.iter().count() {
+            return Err(LayoutError::Invalid("some tiles aren't reachable from the root"));
+        }
+        self.tree = tree;
         Ok(())
     }
 

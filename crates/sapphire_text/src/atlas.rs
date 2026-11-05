@@ -50,7 +50,8 @@ const EVICT_SHARE: i32 = 8;
 /// How the atlas is laid out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AtlasConfig {
-    /// A page's side in texels.
+    /// A page's side in texels, in `1..=46340`: its square must fit the allocator's signed
+    /// 32-bit area, and its coordinates and uploads must fit 16 bits.
     pub page_size: u32,
     /// The most pages it makes, one R8 texture each.
     pub max_pages: u16,
@@ -131,7 +132,12 @@ impl std::fmt::Debug for GlyphAtlas {
 }
 
 impl GlyphAtlas {
+    /// Creates an atlas.
+    ///
+    /// # Panics
+    /// If `page_size` is outside `1..=46340`, which cannot be represented by the allocator.
     pub fn new(config: AtlasConfig) -> Self {
+        assert!((1..=46340).contains(&config.page_size), "atlas page size must be in 1..=46340");
         Self {
             config,
             pages: Vec::new(),

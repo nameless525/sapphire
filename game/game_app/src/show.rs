@@ -109,9 +109,9 @@ impl GameShow {
 
     /// The title goes and the fight begins, with its HUD on.
     pub fn open_fight(&mut self) {
-        if self.title.take().is_some() {
+        if let Some(title) = self.title.take() {
             let options = HudOptions { mode: HudMode::Live, ..HudOptions::default() };
-            self.shown.hud = Some(FightHud::for_fight(options));
+            self.shown.hud = Some(FightHud::for_fight_with_atlas(options, title.into_atlas()));
             tracing::info!(target: LOG_TARGET, "the fight opens");
         }
     }
@@ -317,6 +317,26 @@ mod tests {
         };
         assert_eq!(title_answer(&touch(TouchPhase::Down)), TitleAnswer::Open);
         assert_eq!(title_answer(&touch(TouchPhase::Moved)), TitleAnswer::Nothing);
+    }
+
+    #[test]
+    fn opening_the_fight_transfers_the_titles_immutable_atlas() {
+        let mut show = GameShow::new().expect("bindings parse");
+        let mut list = UiDrawList::default();
+        show.draw_interface((640, 360), &mut list);
+        let image = list.atlas.clone().expect("title atlas");
+        let pixels = image.texels.clone();
+        show.open_fight();
+        list.reset();
+        show.draw_interface((640, 360), &mut list);
+        assert!(std::sync::Arc::ptr_eq(&image, list.atlas.as_ref().expect("HUD atlas")));
+        assert_eq!(image.texels, pixels);
+        let first = list.quads.clone();
+        show.open_fight();
+        list.reset();
+        show.draw_interface((640, 360), &mut list);
+        assert_eq!(first, list.quads, "opening twice keeps the live HUD");
+        assert!(std::sync::Arc::ptr_eq(&image, list.atlas.as_ref().unwrap()));
     }
 
     #[test]

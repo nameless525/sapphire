@@ -267,7 +267,6 @@ fn costs_3_atlas_on_a_full_screen() {
             let held = back.stats;
             let (worst, worst_items) = worst_screen(&mplus, points);
             let worst_frame = draw_frame(&mut text, &mut atlas, &worst_items, scale, &mut list);
-            let end = atlas.stats();
             println!(
                 "bins {bins}: menu {} quads in {} runs, {} glyphs rasterized in {:.2} ms ({:.1} µs each), {} uploads of {:.0} KB in {} writes; a frame after, {} rasterized in {:.3} ms",
                 first.quads,
@@ -302,8 +301,8 @@ fn costs_3_atlas_on_a_full_screen() {
                 worst_frame.stats.glyphs,
                 worst_frame.stats.used_bytes as f64 / 1e6,
                 worst_frame.stats.pages,
-                worst_frame.stats.evicted + end.evicted,
-                worst_frame.stats.dropped + end.dropped,
+                worst_frame.stats.evicted,
+                worst_frame.stats.dropped,
             );
         }
     }

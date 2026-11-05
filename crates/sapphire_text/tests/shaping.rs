@@ -197,3 +197,41 @@ fn a_chain_is_a_list_of_families() {
     text.shape(samples[0], &sapphire_text::TextStyle { families: &again, ..alone }, 1.0, None);
     assert_eq!(text.take_stats().hits, 1, "the cache keeps its own copy of what a style says");
 }
+
+#[test]
+fn punctuation_in_an_imported_family_selects_that_exact_font_before_its_fallback() {
+    let dir = common::fonts_dir();
+    let mut renamed = (*read_font(&dir, OXANIUM)).clone();
+    // Keep every name record's length/offset unchanged. A valid font can name its family with
+    // punctuation; all matching Unicode name records use seven UTF-16 code units here.
+    let family = "A'B\",\\C";
+    let old: Vec<_> = "Oxanium".encode_utf16().flat_map(u16::to_be_bytes).collect();
+    let new: Vec<_> = family.encode_utf16().flat_map(u16::to_be_bytes).collect();
+    assert_eq!(old.len(), new.len());
+    let tables = u16::from_be_bytes(renamed[4..6].try_into().unwrap()) as usize;
+    let name = (0..tables)
+        .map(|index| &renamed[12 + index * 16..12 + (index + 1) * 16])
+        .find(|record| &record[..4] == b"name")
+        .unwrap();
+    let start = u32::from_be_bytes(name[8..12].try_into().unwrap()) as usize;
+    let len = u32::from_be_bytes(name[12..16].try_into().unwrap()) as usize;
+    let names = &mut renamed[start..start + len];
+    let mut replaced = 0;
+    for index in 0..=names.len() - old.len() {
+        if names[index..index + old.len()] == old {
+            names[index..index + old.len()].copy_from_slice(&new);
+            replaced += 1;
+        }
+    }
+    assert!(replaced > 0);
+    let renamed = std::sync::Arc::new(renamed);
+    let mut text = TextSystem::new();
+    text.register_font(read_font(&dir, MPLUS1));
+    text.register_font(std::sync::Arc::clone(&renamed));
+    assert!(text.family_names().iter().any(|name| name == family));
+    let families = family_list([family, "M PLUS 1"]);
+    let style = sapphire_text::TextStyle { families: &families, ..style(FAMILY_BODY, 24.0, 400.0, "en") };
+    let shaped = text.shape("Attack", &style, 1.0, None);
+    assert!(!shaped.runs.is_empty());
+    assert!(shaped.runs.iter().all(|run| run.font.data.as_ref() == renamed.as_slice()));
+}

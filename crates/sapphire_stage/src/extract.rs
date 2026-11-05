@@ -156,13 +156,17 @@ type Posed<'a> = (Entity, &'a RenderPose);
 
 /// Poses that changed, or whose entity was added, changed mesh or got its transform back: the
 /// renderer starts a new instance, or a new mesh, in its bind pose.
-type Reposed = (With<RenderMesh>, Or<(Changed<RenderPose>, Changed<RenderMesh>, Added<RenderTransform>)>);
+type Reposed = (
+    With<RenderMesh>,
+    With<RenderTransform>,
+    Or<(Changed<RenderPose>, Changed<RenderMesh>, Added<RenderTransform>)>,
+);
 
 /// Writes this frame's poses. Runs in `Extract`, after the poses are written.
 pub(crate) fn extract_poses(
     mut extract: ResMut<'_, RenderExtract>,
     changed: Query<'_, '_, Posed<'_>, Reposed>,
-    all: Query<'_, '_, Posed<'_>, With<RenderMesh>>,
+    all: Query<'_, '_, Posed<'_>, (With<RenderMesh>, With<RenderTransform>)>,
 ) {
     let resend = extract.resending_poses;
     let packet = extract.packet_mut();
@@ -350,7 +354,7 @@ mod tests {
         let mut ecs = ecs();
         let lifted = Affine3A::from_translation(Vec3::Y);
         let pose = RenderPose { palette: vec![Affine3A::IDENTITY, lifted], morph_weights: vec![0.25] };
-        let posed = ecs.world_mut().spawn((mesh(0), pose.clone())).id();
+        let posed = ecs.world_mut().spawn((mesh(0), RenderTransform::default(), pose.clone())).id();
         // Not drawn: a pose alone is not a render proxy.
         ecs.world_mut().spawn(pose.clone());
         let id = instance_id(posed);
@@ -372,6 +376,12 @@ mod tests {
         // Losing the transform stops the instance; getting it back starts it over.
         ecs.world_mut().entity_mut(posed).remove::<RenderTransform>();
         assert!(poses(&mut ecs).is_empty());
+        ecs.world_mut().resource_mut::<RenderExtract>().resend_all();
+        assert!(poses(&mut ecs).is_empty(), "no pose for an absent instance, even on full resend");
+        ecs.world_mut().resource_mut::<RenderExtract>().resend_poses();
+        assert!(poses(&mut ecs).is_empty(), "or on pose resend");
+        ecs.world_mut().get_mut::<RenderPose>(posed).expect("posed").morph_weights[0] = 0.75;
+        assert!(poses(&mut ecs).is_empty(), "changing a rootless pose cannot draw it");
         ecs.world_mut().entity_mut(posed).insert(RenderTransform::default());
         assert_eq!(poses(&mut ecs).len(), 1);
     }

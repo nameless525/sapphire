@@ -57,6 +57,20 @@ fn portrait() -> LightRig {
 }
 
 #[test]
+fn name_lookup_preserves_row_and_field_error_precedence() {
+    let good = NamedLightRig { name: "same".to_owned(), rig: LightRig::default() };
+    let mut bad = good.clone();
+    bad.rig.key.max_azimuth = 200.0;
+    assert!(matches!(
+        LightRigLibrary::new(vec![bad.clone(), good.clone()]),
+        Err(LightRigError::Invalid { .. })
+    ));
+    assert!(
+        matches!(LightRigLibrary::new(vec![good, bad]), Err(LightRigError::DuplicateName(name)) if name == "same")
+    );
+}
+
+#[test]
 fn the_shipped_presets_are_valid_and_round_trip() {
     let rigs = LightRigLibrary::default_rigs();
     assert_eq!(rigs.names().collect::<Vec<_>>(), ["gameplay", "portrait"]);

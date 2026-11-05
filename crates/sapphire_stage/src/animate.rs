@@ -211,7 +211,9 @@ impl ClipPlayer {
         self.lap = other.lap;
         self.springs_on = other.springs_on;
         match (&mut self.springs, &other.springs) {
-            (Some(springs), Some(old)) => springs.continue_from(old),
+            (Some(springs), Some(old)) if self.pose.compatible_with(&other.pose) => {
+                springs.continue_from(old)
+            }
             (springs, _) if !other.springs_on => *springs = None,
             _ => {}
         }
@@ -243,6 +245,11 @@ impl ClipPlayer {
         clip.joint_count.to_native() as usize == self.pose.joint_count()
             && render.palette.len() == self.pose.palette_len()
             && render.morph_weights.len() == self.pose.weights().len()
+    }
+
+    /// The lighting/capsule shape of the same pose published with `render_pose`.
+    pub(crate) fn render_figure(&self) -> Figure {
+        self.joints.moving(&self.pose)
     }
 
     /// What the character's pose looks like now, in the shape its [`RenderPose`] takes.
@@ -349,8 +356,9 @@ impl Evaluation<'_> {
         let player = &mut *self.player;
         if let Some(position) = self.position {
             player.pose.sample(clip, position);
-            if let Some(root) = root_motion(clip, position).filter(|_| player.root_motion) {
-                self.transform.set_if_neq(RenderTransform(player.base * root.to_mat4()));
+            if player.root_motion {
+                let root = root_motion(clip, position).map_or(Mat4::IDENTITY, |root| root.to_mat4());
+                self.transform.set_if_neq(RenderTransform(player.base * root));
             }
             if let Some(ik) = &mut player.ik {
                 ik.solve(&mut player.pose, self.transform.0);

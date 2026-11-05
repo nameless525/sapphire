@@ -454,7 +454,7 @@ fn trail_frame(scene: &mut Staged, table: &ClipTable<'_>, alpha: f32) -> TrailFr
 fn a_trail_leaves_the_sword_as_drawn_and_a_hitstop_holds_it() {
     let bytes = clip().to_cooked().expect("cooked");
     let cooked = sapphire_anim::Clip::read(&bytes).expect("a valid clip");
-    let clips = ClipTable::new([(GRAPH_CLIP, Some(cooked), 0)].into_iter());
+    let clips = ClipTable::new(0, [(GRAPH_CLIP, Some(cooked))].into_iter());
     let (mut scene, mut combat) = armed("arena-fight-won", &clips);
     let (mut drawn_on, mut began, mut held) = ([0; 2], [None; 2], 0);
     for _ in 0..combat.ticks_left().expect("a recording") {

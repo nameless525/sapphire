@@ -28,7 +28,8 @@
 //! desktop, the iOS Simulator and USB forwards reach; `--live-link` listens elsewhere, dials a
 //! tool (`connect=<addr>`, behind `adb reverse`) or turns it off.
 
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use sapphire_assets::AssetChange;
@@ -81,6 +82,9 @@ pub(crate) struct Link {
     errors: Vec<String>,
     /// Captures waiting for the next frame drawn.
     captures: Vec<Responder>,
+    /// Holds the readback/encoder slot through reply enqueueing. Pending replies and socket writes
+    /// retain separate live-link request permits.
+    encoding: Arc<AtomicBool>,
 }
 
 /// What applying pushes reads and changes, once a frame.
@@ -126,6 +130,7 @@ impl Link {
             },
             errors: Vec::new(),
             captures: Vec::new(),
+            encoding: Arc::default(),
         };
         let mode = match option {
             Some(LiveLinkOption::Off) => {
@@ -280,7 +285,17 @@ impl Link {
 
     /// The captures waiting for a frame, if any. Allocates nothing while none wait.
     pub fn take_capture(&mut self) -> Option<CaptureRequest> {
-        (!self.captures.is_empty()).then(|| CaptureRequest { replies: std::mem::take(&mut self.captures) })
+        if self.captures.is_empty() {
+            return None;
+        }
+        let replies = std::mem::take(&mut self.captures);
+        let Some(permit) = CapturePermit::acquire(self.encoding.clone()) else {
+            for reply in replies {
+                reply.refuse("a capture is still being encoded".to_owned());
+            }
+            return None;
+        };
+        Some(CaptureRequest { replies, permit })
     }
 
     /// What the overlay shows.
@@ -348,9 +363,32 @@ fn refuse(errors: &mut Vec<String>, reply: Responder, error: String) {
 /// Captures live link asked for, which the next frame drawn answers ([`FrameCapture`]).
 pub(crate) struct CaptureRequest {
     replies: Vec<Responder>,
+    permit: CapturePermit,
+}
+
+/// A single frame's capacity, released on every completion or cancellation path.
+struct CapturePermit(Arc<AtomicBool>);
+
+impl CapturePermit {
+    fn acquire(active: Arc<AtomicBool>) -> Option<Self> {
+        active.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).ok()?;
+        Some(Self(active))
+    }
+}
+
+impl Drop for CapturePermit {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 impl CaptureRequest {
+    pub fn refuse(self, error: String) {
+        for reply in self.replies {
+            reply.refuse(error.clone());
+        }
+    }
+
     /// Starts drawing the captures into a `size` frame in `format`. A frame with no pixels (a
     /// minimized window's) has nothing to capture, and one past the device's largest buffer can't
     /// be read back: they are all refused, and there is `None`.
@@ -360,15 +398,28 @@ impl CaptureRequest {
         size: (u32, u32),
         format: wgpu::TextureFormat,
     ) -> Option<FrameCapture> {
-        let largest = gpu.device().limits().max_buffer_size;
-        let refusal = capture_refusal(size).or_else(|| readback_fits(size.0, size.1, largest).err());
+        let limits = gpu.device().limits();
+        let refusal = capture_refusal(size)
+            .or_else(|| {
+                (size.0 > limits.max_texture_dimension_2d || size.1 > limits.max_texture_dimension_2d)
+                    .then(|| "the capture is larger than the device's texture limit".to_owned())
+            })
+            .or_else(|| {
+                (!matches!(
+                    format,
+                    wgpu::TextureFormat::Rgba8Unorm
+                        | wgpu::TextureFormat::Rgba8UnormSrgb
+                        | wgpu::TextureFormat::Bgra8Unorm
+                        | wgpu::TextureFormat::Bgra8UnormSrgb
+                ))
+                .then(|| "the capture needs an 8-bit RGBA or BGRA target".to_owned())
+            })
+            .or_else(|| readback_fits(size.0, size.1, limits.max_buffer_size).err());
         let Some(error) = refusal else {
             return Some(FrameCapture::new(gpu, size, format, self));
         };
         tracing::warn!(target: LOG_TARGET, error, "live link refused a capture");
-        for reply in self.replies {
-            reply.refuse(error.clone());
-        }
+        self.refuse(error);
         None
     }
 }
@@ -386,12 +437,7 @@ pub(crate) struct FrameCapture {
 impl FrameCapture {
     /// A `size` frame, with no side of 0, in `format`, an 8-bit RGBA or BGRA format as surfaces
     /// and offscreen targets are.
-    pub fn new(
-        gpu: &GpuContext,
-        size: (u32, u32),
-        format: wgpu::TextureFormat,
-        request: CaptureRequest,
-    ) -> Self {
+    fn new(gpu: &GpuContext, size: (u32, u32), format: wgpu::TextureFormat, request: CaptureRequest) -> Self {
         let (width, height) = size;
         let texture = gpu.device().create_texture(&wgpu::TextureDescriptor {
             label: gpu.label("live link capture"),
@@ -426,8 +472,19 @@ impl FrameCapture {
     /// waiting for the GPU, and answers the captures from a thread of its own, which compresses
     /// the PNG.
     pub fn finish(self, gpu: &GpuContext, frame: u64) {
-        let Self { request: CaptureRequest { replies }, size: (width, height), format, readback, .. } = self;
-        let mut pixels = match readback.read(gpu) {
+        let Self {
+            request: CaptureRequest { replies, permit }, size: (width, height), format, readback, ..
+        } = self;
+        let read = readback.read(gpu).and_then(|pixels| {
+            if gpu.is_lost() {
+                return Err("the GPU device was lost".to_owned());
+            }
+            if let Some(error) = gpu.first_error() {
+                return Err(error.to_owned());
+            }
+            Ok(pixels)
+        });
+        let mut pixels = match read {
             Ok(pixels) => pixels,
             Err(error) => {
                 for reply in replies {
@@ -441,7 +498,12 @@ impl FrameCapture {
                 pixel.swap(0, 2);
             }
         }
+        // Keep ownership available on spawn failure so every accepted request gets a reply.
+        let job = Arc::new(Mutex::new(Some((replies, pixels, permit))));
+        let worker = job.clone();
         let spawned = std::thread::Builder::new().name("sapphire-capture".into()).spawn(move || {
+            let (replies, pixels, _permit) = worker.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take().expect("one worker takes the capture");
             let stopwatch = Stopwatch::start();
             match compress(width, height, pixels, MAX_CAPTURE) {
                 Ok((halved, png)) => {
@@ -464,9 +526,13 @@ impl FrameCapture {
                 }
             }
         });
-        // The captures, dropped unanswered, time out on the tool's side.
         if let Err(error) = spawned {
-            tracing::warn!(target: LOG_TARGET, %error, "live link couldn't compress a capture");
+            let job = job.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+            if let Some((replies, _, _permit)) = job {
+                for reply in replies {
+                    reply.refuse(format!("the capture worker couldn't start: {error}"));
+                }
+            }
         }
     }
 }
@@ -496,7 +562,10 @@ mod gpu_tests {
             }
             std::thread::sleep(Duration::from_millis(1));
         };
-        let request = CaptureRequest { replies: vec![reply] };
+        let request = CaptureRequest {
+            replies: vec![reply],
+            permit: CapturePermit::acquire(Arc::default()).expect("available"),
+        };
         assert!(request.start(gpu, size, wgpu::TextureFormat::Rgba8UnormSrgb).is_none());
         tool.join().expect("the tool's thread").map(|_| ())
     }
@@ -526,6 +595,15 @@ mod tests {
     use sapphire_livelink::Client;
 
     use super::*;
+
+    #[test]
+    fn capture_capacity_includes_work_until_completion() {
+        let active = Arc::default();
+        let permit = CapturePermit::acquire(Arc::clone(&active)).expect("first frame");
+        assert!(CapturePermit::acquire(Arc::clone(&active)).is_none());
+        drop(permit);
+        assert!(CapturePermit::acquire(active).is_some());
+    }
 
     #[test]
     #[ignore = "runs with CI's dev tests, which take --ignored"]

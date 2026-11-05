@@ -614,7 +614,7 @@ impl Frame {
 struct Key {
     input: GraphInput,
     /// The clips' version: a new clip under a frozen clock still shows.
-    clips: u32,
+    clips: u64,
     /// How many replacements it's adopted.
     revision: u32,
 }
@@ -705,12 +705,13 @@ impl GraphPlayer {
 
     /// Evaluates a frame. Returns whether the pose changed: `false` means the character holds what it
     /// has, bit for bit, so there's nothing to [`Self::finish`] or hand over. `clips_version` must
-    /// change when any clip gets a new version. Allocates nothing.
+    /// change when clip data, membership or availability in the source view changes. It is an owner
+    /// revision of that view; summing independent asset generations can cancel changes. Allocates nothing.
     pub fn evaluate(
         &mut self,
         input: &GraphInput,
         clips: &(impl ClipSource + ?Sized),
-        clips_version: u32,
+        clips_version: u64,
     ) -> bool {
         let input = input.sanitized(self.drawn.unwrap_or(0.0));
         let key = Key { input, clips: clips_version, revision: self.revision };
@@ -820,7 +821,7 @@ impl GraphPlayer {
     /// Whether a defeated character has nothing left to move: a whole-body move has played to the end
     /// of its clip, and nothing's decaying or waiting. Its clock runs on, but no frame of it can change
     /// a bit, so it costs what a frozen clock costs.
-    fn lies_still(&self, input: &GraphInput, clips: &(impl ClipSource + ?Sized), clips_version: u32) -> bool {
+    fn lies_still(&self, input: &GraphInput, clips: &(impl ClipSource + ?Sized), clips_version: u64) -> bool {
         let Some(playing) = self.layers.combat else { return false };
         let entry = self.graph.moves[usize::from(playing.entry)];
         input.defeated

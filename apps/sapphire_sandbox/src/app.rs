@@ -792,7 +792,12 @@ impl SandboxApp {
             Some(size) => {
                 self.dev.take_capture().and_then(|request| request.start(&self.gpu, size, self.format))
             }
-            None => None,
+            None => {
+                if let Some(request) = self.dev.take_capture() {
+                    request.refuse("there is no drawable surface to capture".to_owned());
+                }
+                None
+            }
         };
         #[cfg(feature = "dev")]
         let acquire = capture.is_none();

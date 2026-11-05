@@ -160,7 +160,9 @@ impl IkLook {
         if raw == "orbit" {
             return Ok(Self::Orbit);
         }
-        let numbers: Vec<f32> = raw.split(',').filter_map(|part| part.parse().ok()).collect();
+        let invalid = || format!("--ik-look expects x,y,z or orbit, got {raw:?}");
+        let numbers =
+            raw.split(',').map(str::parse::<f32>).collect::<Result<Vec<_>, _>>().map_err(|_| invalid())?;
         match numbers[..] {
             [x, y, z] if numbers.iter().all(|number| number.is_finite()) => {
                 Ok(Self::Point(Vec3::new(x, y, z)))
@@ -486,7 +488,7 @@ mod tests {
         let clip_bytes = clip.to_cooked().expect("cooked");
         let id = AssetId::from_bytes([8; 16]);
         let table =
-            ClipTable::new([(id, Some(Clip::read(&clip_bytes).expect("a valid clip")), 0)].into_iter());
+            ClipTable::new(0, [(id, Some(Clip::read(&clip_bytes).expect("a valid clip")))].into_iter());
         let mut driver = on_a_graph(&world, skeleton, &table, id);
         let place = Mat4::IDENTITY;
         let frame = |ticks: f64| GraphInput { ticks, ..GraphInput::default() };
@@ -539,7 +541,7 @@ mod tests {
         let clip_bytes = clip.to_cooked().expect("cooked");
         let id = AssetId::from_bytes([8; 16]);
         let table =
-            ClipTable::new([(id, Some(Clip::read(&clip_bytes).expect("a valid clip")), 0)].into_iter());
+            ClipTable::new(0, [(id, Some(Clip::read(&clip_bytes).expect("a valid clip")))].into_iter());
         let mut driver = on_a_graph(&world, skeleton, &table, id);
         let place = Mat4::IDENTITY;
         let foot = |driver: &GraphDriver| driver.player.pose().model()[FEET[0]].translation.y;
@@ -689,6 +691,14 @@ mod tests {
         fn sync_and_send<T: Sync + Send>() {}
         sync_and_send::<PhysicsWorld>();
         sync_and_send::<IkDriver>();
+    }
+
+    #[test]
+    fn look_rejects_every_invalid_token() {
+        for raw in ["1,bad,2,3", "1,,2,3", "1,2,3,", "NaN,2,3", "1,2"] {
+            assert!(IkLook::parse(raw).is_err(), "{raw}");
+        }
+        assert!(matches!(IkLook::parse("1,2,3"), Ok(IkLook::Point(v)) if v == Vec3::new(1.0, 2.0, 3.0)));
     }
 
     #[test]

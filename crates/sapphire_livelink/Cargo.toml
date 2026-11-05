@@ -23,6 +23,7 @@ sapphire_jobs.workspace = true
 sapphire_serialize.workspace = true
 # The tool times each request, from sending it to its reply.
 sapphire_time.workspace = true
+blake3.workspace = true
 postcard.workspace = true
 serde.workspace = true
 thiserror.workspace = true

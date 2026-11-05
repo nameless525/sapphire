@@ -285,7 +285,7 @@ pub(crate) const MAX_HELD_CLIPS: usize = 3 * MAX_GRAPH_CLIPS;
 #[derive(Clone, Copy, Debug)]
 pub struct ClipTable<'a> {
     clips: [Option<(AssetId, &'a ArchivedClip)>; MAX_HELD_CLIPS],
-    version: u32,
+    version: u64,
 }
 
 impl<'a> ClipTable<'a> {
@@ -294,17 +294,18 @@ impl<'a> ClipTable<'a> {
         Self { clips: [None; MAX_HELD_CLIPS], version: 0 }
     }
 
-    pub fn new(clips: impl Iterator<Item = (AssetId, Option<&'a ArchivedClip>, u32)>) -> Self {
-        let mut table = Self { clips: [None; MAX_HELD_CLIPS], version: 0 };
-        for (slot, (id, clip, generation)) in table.clips.iter_mut().zip(clips) {
+    /// A borrowed source view at an owner-issued revision. The owner must change the revision
+    /// when IDs/order, generations or availability change, including first residency at generation
+    /// zero. A different source owner requires revision continuity or a newly bound/reset driver.
+    pub fn new(revision: u64, clips: impl Iterator<Item = (AssetId, Option<&'a ArchivedClip>)>) -> Self {
+        let mut table = Self { clips: [None; MAX_HELD_CLIPS], version: revision };
+        for (slot, (id, clip)) in table.clips.iter_mut().zip(clips) {
             *slot = clip.map(|clip| (id, clip));
-            table.version = table.version.wrapping_add(generation);
         }
         table
     }
 
-    /// Changes when any clip here gets a new version.
-    pub(crate) fn version(&self) -> u32 {
+    pub(crate) fn version(&self) -> u64 {
         self.version
     }
 }
@@ -405,6 +406,11 @@ impl GraphDriver {
             && render.morph_weights.len() == self.player.pose().weights().len()
     }
 
+    /// The lighting/capsule shape of the same pose published with `render_pose`.
+    pub(crate) fn render_figure(&self) -> Figure {
+        self.joints.moving(self.player.pose())
+    }
+
     /// What the character's pose looks like now, in the shape its [`RenderPose`] takes.
     pub(crate) fn render_pose(&self) -> RenderPose {
         let pose = self.player.pose();
@@ -421,7 +427,9 @@ impl GraphDriver {
         self.teleports = other.teleports;
         self.springs_on = other.springs_on;
         match (&mut self.springs, &other.springs) {
-            (Some(springs), Some(old)) => springs.continue_from(old),
+            (Some(springs), Some(old)) if self.player.pose().compatible_with(other.player.pose()) => {
+                springs.continue_from(old)
+            }
             (springs, _) if !other.springs_on => *springs = None,
             _ => {}
         }
@@ -735,7 +743,7 @@ mod tests {
         let bytes = clip().to_cooked().expect("cooked");
         let cooked = Clip::read(&bytes).expect("a valid clip");
         let id = |index: usize| AssetId::from_bytes([index as u8; 16]);
-        let table = ClipTable::new((0..MAX_HELD_CLIPS).map(|index| (id(index), Some(cooked), 0)));
+        let table = ClipTable::new(0, (0..MAX_HELD_CLIPS).map(|index| (id(index), Some(cooked))));
         assert!((0..MAX_HELD_CLIPS).all(|index| table.clip(id(index)).is_some()));
     }
 
@@ -980,7 +988,7 @@ mod tests {
         let clip_bytes = clip().to_cooked().expect("cooked");
         let cooked_clip = Clip::read(&clip_bytes).expect("a valid clip");
         let id = AssetId::from_bytes([8; 16]);
-        let table = ClipTable::new([(id, Some(cooked_clip), 0)].into_iter());
+        let table = ClipTable::new(0, [(id, Some(cooked_clip))].into_iter());
         let mut graph = AnimGraph::from_document(
             r#"(type: "sapphire::assets::AnimGraph", version: 1, data: (
                 clips: [(name: "strike", source: "15af86bb-67b3-4208-bc54-1618aabf450b")],
@@ -1125,7 +1133,7 @@ mod tests {
         let clip_bytes = clip().to_cooked().expect("cooked");
         let cooked_clip = Clip::read(&clip_bytes).expect("a valid clip");
         let id = AssetId::from_bytes([8; 16]);
-        let table = ClipTable::new([(id, Some(cooked_clip), 0)].into_iter());
+        let table = ClipTable::new(0, [(id, Some(cooked_clip))].into_iter());
         let mut graph = AnimGraph::from_document(
             r#"(type: "sapphire::assets::AnimGraph", version: 1, data: (
                 clips: [(name: "strike", source: "15af86bb-67b3-4208-bc54-1618aabf450b")],

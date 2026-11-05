@@ -605,7 +605,7 @@ fn live_link(ui: &mut Ui, status: &LiveLinkStatus<'_>) {
     }
 }
 
-/// Hot reload's state and the last change's errors (M1 A8).
+/// Hot reload's state and recent failure history (M1 A8).
 fn hot_reload(ui: &mut Ui, frame: &OverlayFrame<'_>, status: &HotReloadStatus<'_>) {
     egui::Grid::new("hot reload").num_columns(2).show(ui, |ui| {
         ui.label("Hot reload");
@@ -622,6 +622,9 @@ fn hot_reload(ui: &mut Ui, frame: &OverlayFrame<'_>, status: &HotReloadStatus<'_
         ));
         ui.end_row();
     });
+    if !status.errors.is_empty() {
+        ui.label("Recent reload failures");
+    }
     for error in status.errors {
         ui.label(RichText::new(error).monospace().color(OVER));
     }

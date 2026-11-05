@@ -127,9 +127,8 @@ enum Open {
 
 impl std::fmt::Debug for LivePacks {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let state = self.lock();
-        let pushed: Vec<(&str, u64)> =
-            state.pushed.iter().map(|(name, version)| (name.as_str(), version.len)).collect();
+        // Formatting can call arbitrary writer code, including this source again.
+        let pushed = self.pushed();
         f.debug_struct("LivePacks").field("pushed", &pushed).finish_non_exhaustive()
     }
 }
@@ -617,6 +616,16 @@ impl Current {
         Some(match self {
             Self::Pushed(version) => version.slice(range.start, range.end - range.start),
             Self::Base { file, .. } => {
+                // The TOC proves the expected identity, not the integrity of the app's file.
+                // Failed/corrupt local bytes must be requested again so a push can repair them.
+                for block in old_blocks {
+                    let bytes =
+                        read_blocking(&*file.source, file.file, block.offset, u64::from(block.stored_len))
+                            .ok()?;
+                    if blake3::hash(&bytes).as_bytes() != &block.hash {
+                        return None;
+                    }
+                }
                 vec![(range.end - range.start, Backing::Base { file: file.clone(), offset: range.start })]
             }
         })
@@ -712,6 +721,22 @@ impl PackPlan {
             let rest: u64 = self.needed[self.filling + 1..].iter().map(|range| range.len).sum();
             return Err(PushError::Incomplete(range.len - sent + rest));
         }
+        // A valid TOC describes the bytes; it does not prove the payload arrived intact.
+        // Only verified stored blocks may become the source of a later unchanged-asset push.
+        for entry in self.toc.entries() {
+            let range = self.toc.stored_range(entry);
+            let Ok(received) = self.needed.binary_search_by_key(&range.start, |range| range.offset) else {
+                continue;
+            };
+            let bytes = &self.received[received];
+            for (index, block) in self.toc.blocks(entry).iter().enumerate() {
+                let start = (block.offset - range.start) as usize;
+                let stored = &bytes[start..start + block.stored_len as usize];
+                if blake3::hash(stored).as_bytes() != &block.hash {
+                    return Err(PackError::BlockHash { id: entry.id, block: index as u32 }.into());
+                }
+            }
+        }
         let mut pieces = self.pieces;
         let mut reservation = self.reservation;
         let mut received = 0;
@@ -770,8 +795,18 @@ impl PushedPack {
     /// the assets whose bytes changed load their new versions behind their handles, as A8's hot
     /// reload does (`AssetServer::remount`). A pack the server refuses (one holding another
     /// mounted pack's asset, say) is served no more: `packs` goes back to the version before, as
-    /// the server keeps it.
+    /// the server keeps it. `packs` must be the source that received this push, and `server`
+    /// must read through that source.
     pub fn apply(self, packs: &LivePacks, server: &mut AssetServer) -> Result<PackOutcome, MountError> {
+        if !Arc::ptr_eq(&self._reservation.state, &packs.state) {
+            return Err(MountError::Io {
+                name: self.name.clone(),
+                source: io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "the push belongs to a different live pack source",
+                ),
+            });
+        }
         let previous = packs.install(&self.name, self.version.clone());
         let mut outcome =
             PackOutcome { received: self.received, len: self.version.len, ..PackOutcome::default() };
@@ -963,6 +998,70 @@ mod tests {
         let mut extra = plan();
         extra.receive(range.offset, at(range.offset, range.len as usize)).unwrap();
         assert!(matches!(extra.receive(range.end(), vec![1]), Err(PushError::Unrequested(_))));
+    }
+
+    #[test]
+    fn corrupt_payload_cannot_poison_an_identical_corrected_push() {
+        let packs = LivePacks::new(MemoryPackSource::new());
+        let bytes = pack(vec![asset(1, 5_000, 1)]);
+        let mut corrupt = bytes.clone();
+        let data = PackHeader::read(&bytes).unwrap().data_offset as usize;
+        corrupt[data] ^= 1;
+        assert!(matches!(
+            push_and_serve(&packs, "zone", &corrupt),
+            Err(PushError::Pack(PackError::BlockHash { .. }))
+        ));
+        assert!(packs.pushed().is_empty());
+        assert_eq!(packs.held(), 0);
+        let plan = packs.plan("zone", bytes.len() as u64, head(&bytes)).unwrap();
+        assert!(!plan.needed().is_empty());
+        drop(plan);
+        push_and_serve(&packs, "zone", &bytes).unwrap();
+        assert_eq!(read_all(&packs, "zone"), bytes);
+    }
+
+    #[test]
+    fn a_push_cannot_install_into_another_sources_budget() {
+        let bytes = pack(vec![asset(1, 5_000, 1)]);
+        let first = LivePacks::new(MemoryPackSource::new());
+        let (_, pushed) = push(&first, "zone", &bytes, 1024);
+        let other =
+            Arc::new(LivePacks::with_limits(MemoryPackSource::new(), PushLimits { packs: 0, resident: 0 }));
+        let mut server = AssetServer::new(other.clone(), sapphire_assets::AssetBudgets::DESKTOP);
+        assert!(matches!(pushed.apply(&other, &mut server), Err(MountError::Io { .. })));
+        assert!(other.pushed().is_empty());
+        assert_eq!(other.held(), 0);
+        assert_eq!(first.held(), 0);
+    }
+
+    #[test]
+    fn corrupt_base_payload_is_requested_again() {
+        let bytes = pack(vec![asset(1, 5_000, 1)]);
+        let mut corrupt = bytes.clone();
+        let data = PackHeader::read(&bytes).unwrap().data_offset as usize;
+        corrupt[data] ^= 1;
+        let source = MemoryPackSource::new();
+        source.insert("zone", corrupt);
+        let packs = LivePacks::new(source);
+        let plan = packs.plan("zone", bytes.len() as u64, head(&bytes)).unwrap();
+        assert!(!plan.needed().is_empty());
+        drop(plan);
+        push_and_serve(&packs, "zone", &bytes).unwrap();
+        assert_eq!(read_all(&packs, "zone"), bytes);
+    }
+
+    #[test]
+    fn debug_writer_can_reenter_the_source() {
+        struct Writer<'a>(&'a LivePacks);
+        impl std::fmt::Write for Writer<'_> {
+            fn write_str(&mut self, _: &str) -> std::fmt::Result {
+                assert!(self.0.state.try_lock().is_ok(), "formatter called under the state lock");
+                assert!(self.0.pushed().is_empty());
+                Ok(())
+            }
+        }
+        let packs = LivePacks::new(MemoryPackSource::new());
+        std::fmt::write(&mut Writer(&packs), format_args!("{packs:?}")).unwrap();
     }
 
     #[test]

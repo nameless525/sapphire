@@ -70,9 +70,27 @@ impl ZoneStage {
 }
 
 impl Scene {
-    /// Draws `zone` from the next frame on, moved so that its focus at opening is at the origin.
-    pub fn open_zone(&mut self, zone: ZoneStage) {
+    /// Draws an already opened `zone` from the next frame on, moved so its opening focus is at
+    /// the origin. Replacing a zone removes its entities and releases its pack; reopening the
+    /// same pack keeps it mounted for the new streamer's preloaded dependencies.
+    ///
+    /// Open the replacement successfully before calling this. An unmount failure leaves the
+    /// prior scene intact.
+    pub fn open_zone(&mut self, zone: ZoneStage, content: &mut Content) -> Result<(), MountError> {
+        let (server, _) = content.streaming_parts();
+        if let Some(previous) = &self.zone
+            && previous.pack != zone.pack
+            && server.is_mounted(&previous.pack)
+        {
+            server.unmount(&previous.pack)?;
+        }
+        if let Some(previous) = self.zone.take() {
+            let mut host = Host { world: self.ecs.world_mut(), find: &|_| None, to_world: Mat4::IDENTITY };
+            previous.streamer.close(&mut host);
+            server.update();
+        }
         self.zone = Some(zone);
+        Ok(())
     }
 
     /// Opens the look-dev town's zone around where the character stands in it: all of the town's cells
@@ -88,8 +106,7 @@ impl Scene {
         let stand = self.town_stand.ok_or_else(|| AppInitError::msg("the town isn't spawned"))?;
         let zone =
             ZoneStage::open(content, lookdev::TOWN_ZONE, lookdev::TOWN_STEM, stand, settings, renderer, gpu)?;
-        self.open_zone(zone);
-        Ok(())
+        self.open_zone(zone, content).map_err(AppInitError::msg)
     }
 
     /// Takes the zone down, entities and handles at once, and unmounts its pack: a zone change, under a

@@ -49,6 +49,18 @@ use crate::shader_edits::{Answered, Origin, ShaderEdits};
 use game_combat::tuning::{Document, DocumentFrame, error_chain};
 use sapphire_stage::scene::Day;
 
+/// Four recent distinct failures keep the stats panel compact, matching live link's history.
+const SHOWN_ERRORS: usize = 4;
+
+fn remember_errors(known: &mut Vec<String>, incoming: impl IntoIterator<Item = String>) {
+    for error in incoming {
+        known.retain(|previous| previous != &error);
+        known.push(error);
+        let excess = known.len().saturating_sub(SHOWN_ERRORS);
+        known.drain(..excess);
+    }
+}
+
 /// The timeline document the scene's day comes from ([`Day`]): the default day's, or the
 /// look-dev day's with `--look-dev` (in the repository this build was compiled from, as `sources`
 /// finds the engine's own).
@@ -89,7 +101,7 @@ pub(crate) struct Reload {
     /// Edits of the shaders swapped in.
     shader_rebuilds: u32,
     reloaded_documents: u32,
-    /// The errors of the last round that changed something.
+    /// Recent failures, newest last. Successful unrelated changes do not erase diagnostics.
     errors: Vec<String>,
 }
 
@@ -165,7 +177,7 @@ impl Reload {
     }
 
     /// Takes in what became of the shader edits it asked for: those swapped in, and the errors
-    /// of those that failed, which replace the last change's.
+    /// of those that failed, retained with the other recent reload failures.
     pub fn shaders_answered(&mut self, answered: &mut Answered) {
         self.shader_rebuilds += answered.reloaded;
         // Swapped in, so they are in use. Requests are made after answers are taken, and an answer
@@ -173,9 +185,7 @@ impl Reload {
         if answered.reloaded > 0 {
             self.shaders_changed.clear();
         }
-        if !answered.reload_errors.is_empty() {
-            self.errors = std::mem::take(&mut answered.reload_errors);
-        }
+        remember_errors(&mut self.errors, answered.reload_errors.drain(..));
     }
 
     /// Adds what a pack's new version of something went wrong with, which the overlay lists.
@@ -183,7 +193,7 @@ impl Reload {
         for error in &errors {
             tracing::warn!(target: LOG_TARGET, error, "hot reload");
         }
-        self.errors.extend(errors);
+        remember_errors(&mut self.errors, errors);
     }
 
     /// Applies what changed since the last frame; `changes` are the asset server's since then.
@@ -192,23 +202,9 @@ impl Reload {
     pub fn update(&mut self, changes: &[AssetChange], frame: DocumentFrame<'_>, shaders: &mut ShaderEdits) {
         let DocumentFrame { content, renderer, gpu, scene, fight, tuning } = frame;
         let Some(hot) = &mut self.hot else { return };
-        // Reloads land frames after their pack changed, so they are told of as they come: the
-        // moment an edit shows.
-        for change in changes {
-            match change {
-                AssetChange::Reloaded { id, kind, generation, .. } => {
-                    tracing::info!(target: LOG_TARGET, %id, %kind, generation, "asset swapped in");
-                }
-                AssetChange::ReloadFailed { id, kind, error } => {
-                    let error = format!("{kind} {id}: {}", error_chain(error));
-                    tracing::warn!(target: LOG_TARGET, error, "hot reload");
-                    self.errors.push(error);
-                }
-                AssetChange::Removed { .. } => {}
-            }
-        }
         let Changes { packs, shaders: new_shaders, documents, mut errors } = hot.poll();
         if packs.is_empty() && new_shaders.is_none() && documents.is_empty() && errors.is_empty() {
+            self.complete_round(changes, errors);
             return;
         }
         profiling::scope!("hot reload");
@@ -255,10 +251,28 @@ impl Reload {
                 Err(error) => errors.push(format!("{origin}: {error}")),
             }
         }
-        for error in &errors {
-            tracing::warn!(target: LOG_TARGET, error, "hot reload");
+        self.complete_round(changes, errors);
+    }
+
+    /// Asset completions and disk changes belong to the same diagnostic round. An unrelated
+    /// successful disk change has no errors, and must not erase a failure that landed this frame.
+    fn complete_round(&mut self, changes: &[AssetChange], errors: Vec<String>) {
+        // Reloads land frames after their pack changed, so they are told of as they come: the
+        // moment an edit shows.
+        for change in changes {
+            match change {
+                AssetChange::Reloaded { id, kind, generation, .. } => {
+                    tracing::info!(target: LOG_TARGET, %id, %kind, generation, "asset swapped in");
+                }
+                AssetChange::ReloadFailed { id, kind, error } => {
+                    let error = format!("{kind} {id}: {}", error_chain(error));
+                    tracing::warn!(target: LOG_TARGET, error, "hot reload");
+                    remember_errors(&mut self.errors, std::iter::once(error));
+                }
+                AssetChange::Removed { .. } => {}
+            }
         }
-        self.errors = errors;
+        self.add_errors(errors);
     }
 
     /// Asks `renderer`, through `shaders`, to build the files of `read` (every shader file, as
@@ -298,5 +312,51 @@ impl Reload {
             documents: self.reloaded_documents,
             errors: &self.errors,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn reload() -> Reload {
+        Reload::start(false, Path::new("."), Path::new("day.ron"), Path::new("rigs.ron"), Vec::new())
+    }
+
+    #[test]
+    fn fresh_asset_failures_survive_an_unrelated_successful_disk_round() {
+        use sapphire_assets::{AssetId, AssetKind, LoadError};
+        let mut reload = reload();
+        let id = AssetId::from_bytes([7; 16]);
+        let failed =
+            AssetChange::ReloadFailed { id, kind: AssetKind::Mesh, error: LoadError::Stalled { id } };
+        // This is the same reducer update uses after applying an unrelated successful document
+        // or shader save: a fresh asynchronous asset failure, with no disk-round errors.
+        reload.complete_round(&[failed], Vec::new());
+        assert_eq!(reload.status().errors.len(), 1);
+        let asset_error = reload.status().errors[0].clone();
+        assert!(asset_error.contains(&id.to_string()) && asset_error.contains("can't make progress"));
+        reload.complete_round(&[], Vec::new());
+        assert_eq!(reload.status().errors, std::slice::from_ref(&asset_error));
+        let mut answered =
+            Answered { reload_errors: vec!["shader parse refused".to_owned()], ..Answered::default() };
+        reload.shaders_answered(&mut answered);
+        assert!(answered.reload_errors.is_empty(), "the answer is consumed once");
+        assert_eq!(reload.status().errors, [asset_error.clone(), "shader parse refused".to_owned()]);
+        let mut swapped = Answered { reloaded: 1, ..Answered::default() };
+        reload.shaders_answered(&mut swapped);
+        assert_eq!(reload.status().errors, [asset_error, "shader parse refused".to_owned()]);
+        assert_eq!(reload.status().shader_rebuilds, 1);
+    }
+
+    #[test]
+    fn recent_reload_failures_are_bounded_and_repeats_become_newest() {
+        let mut reload = reload();
+        for index in 0..8 {
+            reload.add_errors(vec![format!("failure {index}")]);
+        }
+        assert_eq!(reload.status().errors, ["failure 4", "failure 5", "failure 6", "failure 7"]);
+        reload.add_errors(vec!["failure 5".to_owned()]);
+        assert_eq!(reload.status().errors, ["failure 4", "failure 6", "failure 7", "failure 5"]);
     }
 }

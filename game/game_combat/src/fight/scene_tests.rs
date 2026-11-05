@@ -322,7 +322,7 @@ pub(super) fn fighting(table: &ClipTable<'_>) -> (Staged, Simulation, Vec<sapphi
 fn a_graphs_hand_says_nothing_until_it_has_a_pose() {
     let bytes = clip().to_cooked().expect("cooked");
     let cooked = Clip::read(&bytes).expect("a valid clip");
-    let table = ClipTable::new([(GRAPH_CLIP, Some(cooked), 0)].into_iter());
+    let table = ClipTable::new(0, [(GRAPH_CLIP, Some(cooked))].into_iter());
     let (mut scene, mut sim, cast) = fighting(&table);
     let character = scene.character();
     let hand = |scene: &Staged| scene.world().get::<GraphDriver>(character).expect("on").right_hand();
@@ -340,7 +340,7 @@ fn a_graphs_hand_says_nothing_until_it_has_a_pose() {
 fn both_fighters_play_their_graphs_and_the_blade_stays_in_hand() {
     let bytes = clip().to_cooked().expect("cooked");
     let cooked = Clip::read(&bytes).expect("a valid clip");
-    let table = ClipTable::new([(GRAPH_CLIP, Some(cooked), 0)].into_iter());
+    let table = ClipTable::new(0, [(GRAPH_CLIP, Some(cooked))].into_iter());
     let (mut scene, mut sim, cast) = fighting(&table);
     let (warrior, blade) = scene.show.enemy.expect("it stands there");
     let palette =

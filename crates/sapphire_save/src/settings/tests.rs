@@ -331,3 +331,121 @@ fn a_write_stopped_at_any_step_leaves_a_whole_file() {
         }
     }
 }
+
+#[test]
+fn a_comment_before_a_damaged_envelope_cannot_hide_intact_fields() {
+    let dir = TestDir::new("settings_lexical_boundary");
+    let file = file(&dir);
+    let text = edited(&file, |text| {
+        format!("/* data: (fake: 9) */\n{}", text.replace("volume: 0.25", "volume: broken"))
+    });
+    let (value, dropped) = repaired(&dir, &file, text.as_bytes());
+    assert_eq!(value, Options { volume: 1.0, ..played() });
+    assert_eq!(dropped, ["volume"]);
+}
+
+#[test]
+fn exhausted_aside_numbering_still_returns_and_persists_usable_settings() {
+    let dir = TestDir::new("settings_aside_exhausted");
+    let file = file(&dir);
+    edited(&file, |text| text.replace("volume: 0.25", "volume: broken"));
+    let aside = dir.path().join(format!("settings.ron.bad.{}", u64::MAX));
+    fs::write(&aside, "retained").expect("aside");
+    let loaded = file.load();
+    assert!(matches!(loaded.outcome, SettingsOutcome::Repaired { kept_aside: None, .. }));
+    assert_eq!(loaded.value, Options { volume: 1.0, ..played() });
+    assert!(matches!(file.load().outcome, SettingsOutcome::Read));
+    assert_eq!(fs::read_to_string(aside).expect("retained"), "retained");
+}
+
+#[test]
+fn a_repair_rereads_after_a_writer_finishes_its_transaction() {
+    use std::cell::RefCell;
+    use std::sync::mpsc;
+
+    thread_local! {
+        static AFTER_PARSE: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::new(None);
+    }
+    #[derive(Debug, PartialEq, TypePath, Serialize)]
+    #[type_path = "sapphire::save_test"]
+    struct Concurrent {
+        a: u32,
+        b: u32,
+    }
+    impl Default for Concurrent {
+        fn default() -> Self {
+            Self { a: 1, b: 2 }
+        }
+    }
+    impl<'de> Deserialize<'de> for Concurrent {
+        fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            let result = Strict::deserialize(deserializer).map(|value| Self { a: value.a, b: value.b });
+            AFTER_PARSE.with(|hook| {
+                let hook = hook.borrow_mut().take();
+                if let Some(hook) = hook {
+                    hook();
+                }
+            });
+            result
+        }
+    }
+    impl Versioned for Concurrent {
+        const VERSION: u32 = 1;
+    }
+
+    let dir = TestDir::new("settings_repair_transaction");
+    let file = SettingsFile::<Concurrent>::new(dir.path(), "settings", durable_replace);
+    fs::write(
+        file.path(),
+        "(type: \"sapphire::save_test::Concurrent\", version: 1, data: (a: 7, b: broken))",
+    )
+    .expect("damaged");
+    let (read_tx, read_rx) = mpsc::channel();
+    let (written_tx, written_rx) = mpsc::channel();
+    let reader = file.clone();
+    let thread = std::thread::spawn(move || {
+        AFTER_PARSE.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                read_tx.send(()).expect("tell writer");
+                written_rx.recv().expect("writer finished");
+            }))
+        });
+        reader.load()
+    });
+    read_rx.recv().expect("reader has parsed the old damaged bytes");
+    file.write(&file.snapshot(&Concurrent { a: 99, b: 88 }).expect("snapshot")).expect("write newer");
+    written_tx.send(()).expect("release reader");
+    let loaded = thread.join().expect("load finished");
+    assert_eq!(loaded.value, Concurrent { a: 99, b: 88 });
+    assert!(matches!(loaded.outcome, SettingsOutcome::Read));
+    assert!(!dir.listing().iter().any(|name| name.contains(".bad.")), "a valid writer's file needs no aside");
+
+    // Two repairers start from the same damaged snapshot. The second must reread the first's
+    // committed repair rather than labelling repaired bytes as damaged.
+    let damaged = "(type: \"sapphire::save_test::Concurrent\", version: 1, data: (a: 7, b: broken))";
+    fs::write(file.path(), damaged).expect("damage again");
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let readers: Vec<_> = (0..2)
+        .map(|_| {
+            let reader = file.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                AFTER_PARSE.with(|hook| {
+                    *hook.borrow_mut() = Some(Box::new(move || {
+                        barrier.wait();
+                    }))
+                });
+                reader.load()
+            })
+        })
+        .collect();
+    let loaded: Vec<_> = readers.into_iter().map(|thread| thread.join().expect("load")).collect();
+    assert!(loaded.iter().all(|loaded| loaded.value == Concurrent { a: 7, b: 2 }));
+    assert_eq!(
+        loaded.iter().filter(|loaded| matches!(loaded.outcome, SettingsOutcome::Repaired { .. })).count(),
+        1
+    );
+    let asides: Vec<_> = dir.listing().into_iter().filter(|name| name.contains(".bad.")).collect();
+    assert_eq!(asides.len(), 1);
+    assert_eq!(fs::read_to_string(dir.path().join(&asides[0])).expect("damaged aside"), damaged);
+}

@@ -13,7 +13,7 @@ pub struct Splice {
     pub text: String,
 }
 
-/// `text` with `splices` applied, or `None` if two overlap. Those at one place go in the order given.
+/// `text` with `splices` applied, or `None` if ranges overlap or aren't valid UTF-8 byte ranges. Those at one place go in the order given.
 #[must_use]
 pub fn apply(text: &str, splices: &[Splice]) -> Option<String> {
     let mut sorted: Vec<&Splice> = splices.iter().collect();
@@ -21,7 +21,7 @@ pub fn apply(text: &str, splices: &[Splice]) -> Option<String> {
     let mut out = String::with_capacity(text.len() + 64);
     let mut at = 0;
     for splice in sorted {
-        if splice.range.start < at {
+        if splice.range.start < at || text.get(splice.range.clone()).is_none() {
             return None;
         }
         out.push_str(&text[at..splice.range.start]);
@@ -136,7 +136,11 @@ pub fn into_empty(source: &str, inside: Range<usize>, entry: &str) -> Splice {
 pub fn removal(source: &str, start: usize, end: usize, previous_end: Option<usize>) -> Splice {
     let comma = comma_after(source, end);
     let after = comma.unwrap_or(end);
-    if starts_its_line(source, start) {
+    // A comma may follow comments. They belong to the surrounding layout, not the removed
+    // value, and must survive even when one contiguous splice spans them.
+    let trailing = comma.map_or("", |after| &source[end..after - 1]);
+    let keep_trailing = !text::comments(trailing).is_empty();
+    if starts_its_line(source, start) && !keep_trailing {
         let rest = source[after..].find('\n').map_or(source.len(), |newline| after + newline);
         if source[after..rest].trim().is_empty() {
             let line_end = (rest + 1).min(source.len());
@@ -145,11 +149,24 @@ pub fn removal(source: &str, start: usize, end: usize, previous_end: Option<usiz
     }
     if comma.is_some() {
         let spaces = source[after..].len() - source[after..].trim_start_matches(' ').len();
-        return Splice { range: start..after + spaces, text: String::new() };
+        return Splice {
+            range: start..after + spaces,
+            text: if keep_trailing { trailing.to_owned() } else { String::new() },
+        };
     }
     // The last in its list, with no comma of its own: the one before it goes too.
     match previous_end {
-        Some(previous_end) => Splice { range: previous_end..end, text: String::new() },
+        Some(previous_end) => {
+            let between = &source[previous_end..start];
+            let kept = if text::comments(between).is_empty() {
+                String::new()
+            } else if let Some(comma) = comma_after(source, previous_end) {
+                format!("{}{}", &source[previous_end..comma - 1], &source[comma..start])
+            } else {
+                between.to_owned()
+            };
+            Splice { range: previous_end..end, text: kept }
+        }
         None => Splice { range: start..end, text: String::new() },
     }
 }

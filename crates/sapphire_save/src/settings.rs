@@ -110,25 +110,34 @@ impl<T: Versioned + Serialize + DeserializeOwned + TypePath + Default> SettingsF
 
     /// Reads the settings, repairing the file if it needs it. See the type's docs for every case.
     pub fn load(&self) -> LoadedSettings<T> {
-        let bytes = match fs::read(&self.path) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                return LoadedSettings { value: T::default(), outcome: SettingsOutcome::Missing };
+        // Whole files can be read without exclusion. Once a repair is needed, reread under the
+        // writer's lock: the source, aside and replacement must describe the same transaction.
+        let mut lock = None;
+        loop {
+            let bytes = match fs::read(&self.path) {
+                Ok(bytes) => bytes,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    return LoadedSettings { value: T::default(), outcome: SettingsOutcome::Missing };
+                }
+                Err(error) => {
+                    tracing::error!(
+                        target: LOG_TARGET,
+                        file = %self.path.display(),
+                        %error,
+                        "couldn't read the settings; using the defaults"
+                    );
+                    return LoadedSettings {
+                        value: T::default(),
+                        outcome: SettingsOutcome::Unreadable(error),
+                    };
+                }
+            };
+            let text = String::from_utf8_lossy(&bytes);
+            match from_ron::<T>(&text) {
+                Ok(value) => return LoadedSettings { value, outcome: SettingsOutcome::Read },
+                Err(error) if lock.is_some() => return self.repair(&text, &error.to_string()),
+                Err(_) => lock = Some(WriteLock::take(&self.lock_path)),
             }
-            Err(error) => {
-                tracing::error!(
-                    target: LOG_TARGET,
-                    file = %self.path.display(),
-                    %error,
-                    "couldn't read the settings; using the defaults"
-                );
-                return LoadedSettings { value: T::default(), outcome: SettingsOutcome::Unreadable(error) };
-            }
-        };
-        let text = String::from_utf8_lossy(&bytes);
-        match from_ron::<T>(&text) {
-            Ok(value) => LoadedSettings { value, outcome: SettingsOutcome::Read },
-            Err(error) => self.repair(&text, &error.to_string()),
         }
     }
 
@@ -146,6 +155,7 @@ impl<T: Versioned + Serialize + DeserializeOwned + TypePath + Default> SettingsF
     }
 
     /// Takes every field `text` still holds, keeps the file aside and replaces it with them.
+    /// The caller holds the writer's lock, acquired before reading `text`.
     fn repair(&self, text: &str, error: &str) -> LoadedSettings<T> {
         let (value, dropped) = salvage_fields::<T>(text);
         tracing::warn!(
@@ -160,7 +170,7 @@ impl<T: Versioned + Serialize + DeserializeOwned + TypePath + Default> SettingsF
         // costs another copy aside: this launch has its value either way.
         match self.snapshot(&value) {
             Ok(snapshot) => {
-                if let Err(error) = self.write(&snapshot) {
+                if let Err(error) = (self.replace)(&self.path, &snapshot.bytes) {
                     tracing::warn!(target: LOG_TARGET, file = %self.path.display(), %error, "couldn't write the repaired settings");
                 }
             }

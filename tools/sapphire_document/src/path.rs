@@ -104,8 +104,14 @@ impl fmt::Display for PropertyPath {
                 Step::Field(name) => write!(f, ".{name}")?,
                 Step::Index(index) => write!(f, "[{index}]")?,
                 Step::Key(name) => {
-                    let escaped = name.replace('\\', "\\\\").replace('"', "\\\"");
-                    write!(f, "[\"{escaped}\"]")?;
+                    f.write_str("[\"")?;
+                    for c in name.chars() {
+                        if matches!(c, '\\' | '"') {
+                            f.write_str("\\")?;
+                        }
+                        write!(f, "{c}")?;
+                    }
+                    f.write_str("\"]")?;
                 }
                 Step::Some => f.write_str("?")?,
             }

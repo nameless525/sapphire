@@ -32,6 +32,7 @@ use crate::{LOG_TARGET, Replace, Snapshot, check_name};
 /// | Both damaged | [`LoadError::AllSlotsDamaged`] | Generation 1, each kept aside as it's replaced |
 /// | Any whole slot from a newer build | [`LoadError::Newer`] | [`WriteError::Newer`]; the file stays byte for byte |
 /// | A slot from an older schema | Upgraded by the type's [`Versioned`] chain | As for any whole slot |
+/// | A whole slot at generation `u64::MAX` | That slot, as usual | [`WriteError::GenerationExhausted`]; both slots stay byte for byte |
 ///
 /// A damaged slot can't say how new it was, so a fall-back may have cost the last save or nothing.
 /// A newer build's slot refuses even when the other slot would load: a player who plays on with
@@ -131,6 +132,9 @@ fn describe(fault: &Option<SlotFault>) -> String {
 pub enum WriteError {
     #[error(transparent)]
     Newer(#[from] NewerSave),
+    /// A valid slot already has the largest generation; neither slot was changed.
+    #[error("save generation is exhausted; the existing slots are left alone")]
+    GenerationExhausted,
     #[error("writing {}: {source}", path.display())]
     Io { path: PathBuf, source: io::Error },
 }
@@ -214,7 +218,10 @@ impl<T: Versioned + Serialize + DeserializeOwned + TypePath> ProgressStore<T> {
             (Some(_), None) => (Slot::B, &b),
             _ => (Slot::A, &a),
         };
-        let generation = a_generation.max(b_generation).map_or(1, |newest| newest + 1);
+        let generation = a_generation
+            .max(b_generation)
+            .map_or(Some(1), |newest| newest.checked_add(1))
+            .ok_or(WriteError::GenerationExhausted)?;
 
         let path = self.slot_path(target);
         if let SlotRead::Damaged(fault) = target_read {

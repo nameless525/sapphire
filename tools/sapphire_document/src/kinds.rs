@@ -105,10 +105,11 @@ pub enum Kind {
     Graph,
     Cue,
     Effects,
+    Timeline,
 }
 
 impl Kind {
-    pub const ALL: [Self; 4] = [Self::Moves, Self::Graph, Self::Cue, Self::Effects];
+    pub const ALL: [Self; 5] = [Self::Moves, Self::Graph, Self::Cue, Self::Effects, Self::Timeline];
 
     /// What a file's name says it is, if it's a document this crate knows. A library of effects has no suffix
     /// of its own beyond its name, as `default_effects.ron` shows.
@@ -124,6 +125,7 @@ impl Kind {
             Self::Graph => ".animgraph.ron",
             Self::Cue => ".cue.ron",
             Self::Effects => "_effects.ron",
+            Self::Timeline => ".timeline.ron",
         }
     }
 
@@ -135,6 +137,7 @@ impl Kind {
             Self::Graph => "Animation graphs",
             Self::Cue => "Cues",
             Self::Effects => "Effects",
+            Self::Timeline => "Timelines",
         }
     }
 
@@ -145,6 +148,7 @@ impl Kind {
             Self::Graph => set.open(path, graph(), Arc::new(registry_of::<AnimGraph>())),
             Self::Cue => set.open(path, cue(), Arc::new(registry_of::<Cue>())),
             Self::Effects => set.open(path, effects(), Arc::new(registry_of::<EffectLibrary>())),
+            Self::Timeline => set.open(path, timeline(), Arc::new(registry_of::<TimelineDocument>())),
         }
     }
 }

@@ -444,3 +444,19 @@ fn a_job_writes_a_snapshot_while_the_game_changes_its_state() {
 fn a_name_cant_climb_out_of_the_directory() {
     let _ = ProgressStore::<ZoneStart>::new("user", "../progress", durable_replace);
 }
+
+#[test]
+fn the_largest_generation_is_readable_but_refuses_another_write() {
+    let dir = TestDir::new("generation_exhausted");
+    let store = store(&dir);
+    let old = store.snapshot(&zone(1)).expect("snapshot");
+    fs::write(store.slot_path(Slot::A), slot::encode(u64::MAX - 1, ZoneStart::VERSION, &old.bytes))
+        .expect("seed");
+    let new = store.snapshot(&zone(2)).expect("snapshot");
+    let written = store.write(&new).expect("the last generation fits");
+    assert_eq!((written.slot, written.generation), (Slot::B, u64::MAX));
+    assert_eq!((load(&store).value, load(&store).generation), (zone(2), u64::MAX));
+    let before = Slot::BOTH.map(|slot| fs::read(store.slot_path(slot)).expect("read"));
+    assert!(matches!(store.write(&old), Err(WriteError::GenerationExhausted)));
+    assert_eq!(before, Slot::BOTH.map(|slot| fs::read(store.slot_path(slot)).expect("unchanged")));
+}

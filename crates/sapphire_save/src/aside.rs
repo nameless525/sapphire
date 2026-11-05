@@ -50,7 +50,10 @@ fn copy_aside(file: &Path) -> io::Result<PathBuf> {
         .filter_map(|entry| entry.file_name().to_str()?.strip_prefix(&prefix)?.parse().ok())
         .collect();
     numbers.sort_unstable();
-    let number = numbers.last().map_or(1, |last| last + 1);
+    let number = numbers
+        .last()
+        .map_or(Some(1), |last| last.checked_add(1))
+        .ok_or_else(|| io::Error::other("damaged-file numbering is exhausted"))?;
     let aside = dir.join(format!("{prefix}{number}"));
     fs::copy(file, &aside)?;
     // This new one and the newest before it make up the kept.
@@ -103,5 +106,26 @@ mod tests {
     fn a_file_that_cant_be_copied_is_only_logged() {
         let dir = TestDir::new("aside_missing");
         assert_eq!(keep_aside(&dir.path().join("gone"), "test"), None);
+    }
+}
+
+#[cfg(test)]
+mod exhaustion_tests {
+    use super::*;
+    use crate::test_support::TestDir;
+
+    #[test]
+    fn exhausted_numbering_leaves_all_existing_copies_alone() {
+        let dir = TestDir::new("aside_exhausted");
+        let file = dir.path().join("settings.ron");
+        let maximum = dir.path().join(format!("settings.ron.bad.{}", u64::MAX));
+        let first = dir.path().join("settings.ron.bad.0");
+        for (path, bytes) in [(&file, "damaged"), (&maximum, "retained max"), (&first, "retained zero")] {
+            fs::write(path, bytes).expect("seed");
+        }
+        assert_eq!(keep_aside(&file, "test"), None);
+        assert_eq!(fs::read_to_string(file).expect("source"), "damaged");
+        assert_eq!(fs::read_to_string(maximum).expect("max"), "retained max");
+        assert_eq!(fs::read_to_string(first).expect("zero"), "retained zero");
     }
 }

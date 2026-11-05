@@ -7,7 +7,6 @@
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::{fs, io};
 
 /// How many names a save tries for its temporary. Each one taken is someone else's file.
@@ -26,11 +25,16 @@ pub struct Temporary {
 impl Temporary {
     /// Writes `text` beside `target`.
     pub fn beside(target: &Path, text: &str) -> io::Result<Self> {
+        Self::beside_bytes(target, text.as_bytes())
+    }
+
+    /// Writes arbitrary bytes beside `target`, under the same ownership and replacement rules.
+    pub fn beside_bytes(target: &Path, bytes: &[u8]) -> io::Result<Self> {
         let (mut file, temporary) = Self::create(target)?;
         if let Ok(metadata) = fs::metadata(target) {
             file.set_permissions(metadata.permissions())?;
         }
-        file.write_all(text.as_bytes())?;
+        file.write_all(bytes)?;
         file.sync_all()?;
         Ok(temporary)
     }
@@ -72,41 +76,64 @@ pub fn temporary_path(target: &Path, attempt: u32) -> PathBuf {
 }
 
 /// A new file holding `bytes`, whole or not at all, which never replaces one: `false` if something's there
-/// already. Killed mid-write, it leaves at most a hidden file, which scans pass over.
+/// already. Killed mid-write, it leaves at most a hidden file, which scans pass over. Requires hard
+/// links: a filesystem without atomic no-replace publication fails without exposing a partial file.
 pub fn create_whole(path: &Path, bytes: &[u8]) -> io::Result<bool> {
-    static COUNT: AtomicU64 = AtomicU64::new(0);
-    let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
-    let count = COUNT.fetch_add(1, Ordering::Relaxed);
-    let staged = path.with_file_name(format!(".{name}.{}-{count}.tmp", std::process::id()));
-    let linked = fs::write(&staged, bytes).map(|()| fs::hard_link(&staged, path));
-    // The staged file is only ever a copy: its link, if any, now holds the bytes.
-    let _ = fs::remove_file(&staged);
-    match linked? {
+    create_whole_with(path, bytes, |source, destination| fs::hard_link(source, destination))
+}
+
+fn create_whole_with(
+    path: &Path,
+    bytes: &[u8],
+    publish: impl FnOnce(&Path, &Path) -> io::Result<()>,
+) -> io::Result<bool> {
+    let (mut file, temporary) = Temporary::create(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    drop(file);
+    match publish(&temporary.path, path) {
         Ok(()) => Ok(true),
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(false),
-        // A file system without hard links: `create_new` never replaces a file either, but shows it before
-        // its bytes are written.
-        Err(_) => match fs::OpenOptions::new().write(true).create_new(true).open(path) {
-            Ok(mut file) => file.write_all(bytes).map(|()| true),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(false),
-            Err(error) => Err(error),
-        },
+        // Without atomic no-replace publication, fail with the original destination untouched.
+        // A create_new/write fallback would expose partial bytes to another editor or cook.
+        Err(error) => Err(error),
     }
 }
 
-/// Moves a file to a name nothing's at: `false`, and nothing moved, if something's there.
+/// Moves a regular file to a name nothing's at: `false`, and nothing moved, if something's there.
+/// Requires hard links in the same filesystem; unsupported moves fail without a replacing rename.
+/// If removing the source fails after linking, both names remain and the error is returned.
 pub fn move_whole(from: &Path, to: &Path) -> io::Result<bool> {
-    let is_link = fs::symlink_metadata(from)?.is_symlink();
-    if !is_link {
-        match fs::hard_link(from, to) {
-            Ok(()) => return fs::remove_file(from).map(|()| true),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => return Ok(false),
-            Err(_) => {}
-        }
+    let kind = fs::symlink_metadata(from)?.file_type();
+    if !kind.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "only regular files can be moved without replacement",
+        ));
     }
-    // A link stays a link, and a file system without hard links has only this: a look, then a rename.
-    if fs::symlink_metadata(to).is_ok() {
-        return Ok(false);
+    match fs::hard_link(from, to) {
+        Ok(()) => fs::remove_file(from).map(|()| true),
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(false),
+        // A check followed by rename could overwrite a file created between the two operations.
+        Err(error) => Err(error),
     }
-    fs::rename(from, to).map(|()| true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_publication_leaves_no_partial_destination_or_owned_temporary() {
+        let target =
+            std::env::temp_dir().join(format!("sapphire_document_publication_{}.ron", std::process::id()));
+        let result = create_whole_with(&target, b"whole bytes", |staged, target| {
+            assert_eq!(fs::read(staged).expect("staged"), b"whole bytes");
+            assert!(!target.exists(), "no partially written destination");
+            Err(io::Error::new(io::ErrorKind::Unsupported, "no hard links"))
+        });
+        assert_eq!(result.expect_err("publication refused").kind(), io::ErrorKind::Unsupported);
+        assert!(!target.exists());
+        assert!(!temporary_path(&target, 0).exists());
+    }
 }

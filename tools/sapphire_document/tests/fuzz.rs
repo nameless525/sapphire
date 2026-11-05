@@ -32,7 +32,7 @@ fn run_length() -> usize {
 }
 
 /// Everything that must hold of one edit that landed.
-fn hold_to_the_edit<T>(document: &Document<T>, before: &str, property: &Property)
+fn hold_to_the_edit<T>(document: &Document<T>, old: &[&str], property: &Property)
 where
     T: Reflect + FromReflect + Typed + GetTypeRegistration + Clone + PartialEq,
 {
@@ -54,18 +54,18 @@ where
         _ => {}
     }
     // A comment goes only with what's replaced around it, and the record says so.
-    let (old, new) = (comments(before), comments(after));
+    let new = comments(after);
     assert_eq!(old.len(), new.len() + record.comments_lost, "{path}: lost a comment and didn't say");
     if record.comments_lost == 0 {
-        assert_eq!(old, new, "{path}: comments changed");
+        assert_eq!(old, new.as_slice(), "{path}: comments changed");
     }
 }
 
-fn last_record<T>(document: &Document<T>) -> sapphire_document::ChangeRecord
+fn last_record<T>(document: &Document<T>) -> &sapphire_document::ChangeRecord
 where
     T: Reflect + FromReflect + Typed + GetTypeRegistration + Clone + PartialEq,
 {
-    document.last_step().expect("a step").records.last().expect("a record").clone()
+    document.last_step().expect("a step").records.last().expect("a record")
 }
 
 /// Each property, with each of its values, then undone: what the design's whole claim comes to.
@@ -75,6 +75,7 @@ where
 {
     assert_eq!(document.failure(), None, "a real file opens for editing");
     let original = document.text().to_owned();
+    let original_comments = comments(&original);
     let mut tally = Tally::default();
     let properties = document.properties();
     assert!(!properties.is_empty());
@@ -91,7 +92,7 @@ where
                     if property.written.is_none() {
                         tally.wrote_absent += 1;
                     }
-                    hold_to_the_edit(&document, &original, property);
+                    hold_to_the_edit(&document, &original_comments, property);
                     let record = last_record(&document);
                     tally.rewrote_whole += usize::from(record.rewrote_whole);
                     assert!(document.is_dirty(), "{}", property.path);
@@ -369,11 +370,12 @@ fn every_cue_and_graph_and_moves_file_opens_for_editing() {
 fn what_an_edit_costs() {
     let mut document = open("content/combat/player/player.moves.ron", kinds::moves());
     let path: PropertyPath = "moves[0].startup".parse().expect("a path");
+    let original = document.text().to_owned();
     let clock = Stopwatch::start();
     const EDITS: u32 = 200;
     for tick in 0..EDITS {
         let value = (tick % 40 + 1).to_string();
-        let _ = document.set_text("edit", &path, &value);
+        assert_eq!(document.set_text("edit", &path, &value), Ok(Outcome::Changed));
     }
     let edit = clock.elapsed().as_secs_f64() / f64::from(EDITS);
     let clock = Stopwatch::start();
@@ -382,6 +384,8 @@ fn what_an_edit_costs() {
         undone += 1;
     }
     let undo = clock.elapsed().as_secs_f64() / f64::from(undone);
+    assert_eq!(undone, EDITS);
+    assert_eq!(document.text(), original);
     println!(
         "player.moves.ron, {} bytes: {:.2} ms an edit, {:.2} ms an undo",
         document.text().len(),

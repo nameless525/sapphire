@@ -2,9 +2,14 @@
 
 use std::alloc::System;
 use std::hint::black_box;
+use std::sync::Mutex;
+
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use sapphire_core::alloc::{self, AllocScope, CountingAllocator};
+
+// These two scenarios observe/reset process-wide counters, unlike AllocScope.
+static PROCESS_STATS: Mutex<()> = Mutex::new(());
 
 #[global_allocator]
 static GLOBAL: CountingAllocator<System> = CountingAllocator::new(System);
@@ -64,6 +69,7 @@ fn other_threads_are_not_counted() {
 
 #[test]
 fn process_stats_add_up_across_threads() {
+    let _guard = PROCESS_STATS.lock().expect("process stats test guard");
     // Each thread counts on a shard of its own, so this frees on another shard than it allocated.
     const SIZE: usize = 1 << 24;
     let before = alloc::stats();
@@ -79,6 +85,7 @@ fn process_stats_add_up_across_threads() {
 
 #[test]
 fn process_stats_track_live_and_peak() {
+    let _guard = PROCESS_STATS.lock().expect("process stats test guard");
     let before = alloc::stats();
     let block = black_box(vec![0u8; 1 << 20]);
     let during = alloc::stats();

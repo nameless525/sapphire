@@ -10,7 +10,7 @@ use std::num::NonZeroU32;
 use std::panic::{self, AssertUnwindSafe};
 use std::process::ExitCode;
 
-use sapphire_platform::raw_window_handle::{HandleError, HasDisplayHandle, HasWindowHandle};
+use sapphire_platform::raw_window_handle::HandleError;
 use sapphire_platform::{
     App, AppControl, AppInitError, AppMetadata, Event, LifecycleEvent, PacingSource, Platform, Size,
     SurfaceHandle, Window, WindowDesc, run,
@@ -210,7 +210,7 @@ impl App for KeepsWindow {
             Ok(window) => {
                 let handle = window.surface_handle();
                 if let Ok(handle) = &handle {
-                    assert!(handle.window_handle().is_ok(), "a live handle borrows");
+                    assert!(handle.raw_window_handle().is_ok(), "a live handle borrows");
                 }
                 record(if handle.is_ok() { "kept window and handle" } else { "kept window" });
                 KEPT.with_borrow_mut(|kept| *kept = Some((window, handle)));
@@ -260,8 +260,8 @@ fn check_kept_window(when: &str) {
         assert_eq!(window.size(), Size::default(), "{when}");
         assert_eq!(window.pixel_size(), Size::default(), "{when}");
         if let Ok(handle) = handle {
-            assert!(matches!(handle.window_handle(), Err(HandleError::Unavailable)), "{when}");
-            assert!(matches!(handle.display_handle(), Err(HandleError::Unavailable)), "{when}");
+            assert!(matches!(handle.raw_window_handle(), Err(HandleError::Unavailable)), "{when}");
+            assert!(matches!(handle.raw_display_handle(), Err(HandleError::Unavailable)), "{when}");
             assert_eq!(handle.metal_layer(), None, "{when}");
         }
     });

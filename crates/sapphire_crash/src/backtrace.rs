@@ -218,6 +218,8 @@ mod imp {
     }
 
     const NT_GNU_BUILD_ID: u32 = 3;
+    // ELF program-header read permission. libc does not export this on Android.
+    const PF_R: u32 = 1 << 2;
 
     unsafe extern "C" fn collect(
         info: *mut libc::dl_phdr_info,
@@ -251,21 +253,70 @@ mod imp {
     /// `info` must be a valid `dl_phdr_info` as delivered by `dl_iterate_phdr`.
     unsafe fn build_id(info: &libc::dl_phdr_info) -> Option<String> {
         // SAFETY: by this function's contract `info` is valid, so `dlpi_phdr`/`dlpi_phnum`
-        // describe the object's program-header array, and each `PT_NOTE` segment is mapped at
-        // `dlpi_addr + p_vaddr` for `p_memsz` bytes.
+        // describe the object's program-header array. PT_NOTE alone does not imply mapping;
+        // only scan bytes covered by a readable PT_LOAD segment.
         unsafe {
             let phdrs = std::slice::from_raw_parts(info.dlpi_phdr, info.dlpi_phnum as usize);
             for phdr in phdrs {
                 if phdr.p_type != libc::PT_NOTE {
                     continue;
                 }
-                let addr = (info.dlpi_addr as usize).wrapping_add(phdr.p_vaddr as usize);
-                if let Some(id) = scan_notes(addr as *const u8, phdr.p_memsz as usize) {
+                let Some((addr, len)) = readable_note(info.dlpi_addr, phdr, phdrs) else {
+                    continue;
+                };
+                if let Some(id) = scan_notes(addr as *const u8, len) {
                     return Some(id);
                 }
             }
         }
         None
+    }
+
+    /// ELF only maps PT_LOAD entries; auxiliary notes may live solely in the file.
+    fn readable_note(
+        base: u64,
+        note: &libc::Elf64_Phdr,
+        phdrs: &[libc::Elf64_Phdr],
+    ) -> Option<(usize, usize)> {
+        let start = base.checked_add(note.p_vaddr)?;
+        let end = start.checked_add(note.p_filesz)?;
+        let readable = phdrs.iter().any(|load| {
+            if load.p_type != libc::PT_LOAD || load.p_flags & PF_R == 0 {
+                return false;
+            }
+            let Some(load_start) = base.checked_add(load.p_vaddr) else { return false };
+            let Some(load_end) = load_start.checked_add(load.p_memsz) else { return false };
+            load_start <= start && end <= load_end
+        });
+        if !readable || note.p_filesz > isize::MAX as u64 {
+            return None;
+        }
+        Some((usize::try_from(start).ok()?, usize::try_from(note.p_filesz).ok()?))
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn notes_require_complete_readable_load_coverage() {
+        // SAFETY: an ELF program header consists entirely of integer fields.
+        let mut load: libc::Elf64_Phdr = unsafe { std::mem::zeroed() };
+        load.p_type = libc::PT_LOAD;
+        load.p_flags = PF_R;
+        load.p_vaddr = 0x1000;
+        load.p_memsz = 0x100;
+        let mut note = load;
+        note.p_type = libc::PT_NOTE;
+        note.p_vaddr = 0x1020;
+        note.p_filesz = 0x20;
+        assert_eq!(readable_note(0x10000, &note, &[load]), Some((0x11020, 0x20)));
+        note.p_vaddr = 0x2000;
+        assert_eq!(readable_note(0, &note, &[load]), None);
+        note.p_vaddr = 0x10f0;
+        assert_eq!(readable_note(0, &note, &[load]), None);
+        note.p_vaddr = 0x1020;
+        load.p_flags = 0;
+        assert_eq!(readable_note(0, &note, &[load]), None);
+        load.p_flags = PF_R;
+        assert_eq!(readable_note(u64::MAX - 1, &note, &[load]), None);
     }
 
     /// An ELF note header. Each note is this header, then a 4-byte-aligned name, then a

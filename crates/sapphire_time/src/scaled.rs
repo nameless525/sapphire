@@ -61,6 +61,8 @@ impl ScaledClock {
     }
 
     /// Pushes a scale; the clock runs at the product of all pushed scales from the next tick.
+    /// Products are evaluated in insertion order, rounding down and capping at 10⁹× after
+    /// each factor. A later slowdown scales the capped intermediate, not its lost excess.
     pub fn push_scale(&mut self, source: ScaleSource, per_mille: u32) -> Result<ScaleHandle, ScaleStackFull> {
         self.scales.push(source, per_mille)
     }
@@ -97,7 +99,11 @@ impl ScaledClock {
     /// Advances one fixed step and returns how much world time passed.
     pub fn tick(&mut self) -> SimDuration {
         let delta = SimDuration::from_subticks(scale::advance(self.scales.factor(), &mut self.remainder));
+        let before = self.now;
         self.now += delta;
+        // At the saturating timeline horizon only the representable advance occurred.
+        // Presentation must not repeatedly interpolate a step that the clock cannot take.
+        let delta = self.now - before;
         self.last_delta = delta;
         self.ticks += 1;
         delta
@@ -202,6 +208,18 @@ mod tests {
         expected.extend_from_slice(&1u64.to_le_bytes()); // ticks
         expected.extend_from_slice(&2u32.to_le_bytes()); // next entity clock's id
         assert_eq!(bytes, expected);
+    }
+
+    #[test]
+    fn presentation_stops_at_the_saturating_timeline_horizon() {
+        let mut clock = ScaledClock::new();
+        clock.now = SimTime::from_subticks(u64::MAX - 500);
+        assert_eq!(clock.tick().as_subticks(), 500);
+        assert_eq!(clock.now().as_subticks(), u64::MAX);
+        assert_eq!(clock.tick(), SimDuration::ZERO);
+        let end = clock.now().as_secs_f64() * 60.0;
+        assert!((clock.presented_ticks(0.0) - end).abs() <= 4.0);
+        assert_eq!(clock.presented_ticks(0.0), clock.presented_ticks(1.0));
     }
 
     #[test]

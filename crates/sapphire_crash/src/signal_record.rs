@@ -415,10 +415,7 @@ mod tests {
         #[test]
         fn write_failures_are_reported() {
             // A descriptor that isn't open (EBADF).
-            let (read_end, write_end) = pipe();
-            close(read_end);
-            close(write_end);
-            assert!(!write_all(write_end, b"x"));
+            assert!(!write_all(-1, b"x"));
 
             // A pipe nobody reads any more (EPIPE; Rust programs ignore SIGPIPE).
             let (read_end, write_end) = pipe();

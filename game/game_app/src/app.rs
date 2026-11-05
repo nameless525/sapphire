@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use game_combat::cues::PadRumble;
 use game_combat::fight::fight_stage;
-use sapphire_platform::raw_window_handle::{HandleError, HasDisplayHandle, HasWindowHandle};
+use sapphire_platform::raw_window_handle::HandleError;
 use sapphire_platform::{
     App, AppControl, AppInitError, AppMetadata, DeviceClass, Event, LifecycleEvent, Os, Platform,
     SurfaceHandle, Window, WindowDesc, WindowEvent,
@@ -74,7 +74,8 @@ impl App for GameApp {
         let instance = GpuInstance::new(&GpuInstanceDesc { debug, ..GpuInstanceDesc::default() })?;
         let handle = window.surface_handle()?;
         let target = surface_target(&handle)?;
-        // SAFETY: the surface owns `handle`, which keeps the native window alive, and drops it right after
+        // SAFETY: this app owns the surface and drops it before SDL ends the run. The surface
+        // owns `handle`, which keeps the native window alive within that run, and drops it right after
         // itself.
         let mut surface = unsafe { RenderSurface::new(&instance, target, handle)? };
         let pipeline_cache = PipelineCacheDesc {
@@ -328,7 +329,8 @@ impl GameApp {
         let gpu = &self.stage.gpu;
         let result = self.window.surface_handle().map_err(|error| error.to_string()).and_then(|handle| {
             let target = surface_target(&handle).map_err(|error| error.to_string())?;
-            // SAFETY: the surface owns `handle`, which keeps the native window alive, and drops it right
+            // SAFETY: this app owns the surface and drops it before SDL ends the run. The surface
+            // owns `handle`, which keeps the native window alive within that run, and drops it right
             // after itself.
             let mut surface = unsafe { RenderSurface::new(gpu.instance(), target, handle) }
                 .map_err(|error| error.to_string())?;
@@ -357,10 +359,7 @@ fn surface_target(handle: &SurfaceHandle) -> Result<SurfaceTarget, HandleError> 
     if let Some(layer) = handle.metal_layer() {
         return Ok(SurfaceTarget::CoreAnimationLayer(layer));
     }
-    Ok(SurfaceTarget::Raw {
-        window: handle.window_handle()?.as_raw(),
-        display: handle.display_handle()?.as_raw(),
-    })
+    Ok(SurfaceTarget::Raw { window: handle.raw_window_handle()?, display: handle.raw_display_handle()? })
 }
 
 #[cfg(test)]

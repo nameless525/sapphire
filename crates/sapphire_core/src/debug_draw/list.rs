@@ -196,6 +196,11 @@ impl DebugDrawList {
             self.stats.dropped += 1;
             return;
         }
+        if self.lines.len() >= MAX_LINES {
+            self.stats.lines = self.lines.len() as u32;
+            self.stats.dropped += 1;
+            return;
+        }
         let before = self.lines.len();
         let mut complete = true;
         tessellate(&shape, color, &mut |from, to, color| {

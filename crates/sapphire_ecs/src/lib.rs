@@ -45,7 +45,7 @@
 //! second [`Ecs::cleanup`] after it, so a system that reads it must run every frame;
 //! extraction does (spec §4.6).
 
-use bevy_ecs::schedule::{ScheduleLabel, SingleThreadedExecutor, SystemSet};
+use bevy_ecs::schedule::{ScheduleCleanupPolicy, ScheduleLabel, SingleThreadedExecutor, SystemSet};
 use bevy_ecs::system::ScheduleSystem;
 
 pub use bevy_ecs;
@@ -204,6 +204,22 @@ impl Ecs {
                 }
             });
         }
+    }
+
+    /// Prepares the clock system's entity query after assembling the world or adding new
+    /// clock-bearing shapes. Call before the next fixed step. Rebuilding [`FixedFirst`] can
+    /// allocate here. This does not prepare other systems' queries, run [`Startup`], or advance time.
+    pub fn prepare_clock_query(&mut self) {
+        self.world.schedule_scope(FixedFirst, |world, schedule| {
+            let removed = schedule
+                .remove_systems_in_set(tick_clocks, world, ScheduleCleanupPolicy::RemoveSystemsOnly)
+                .expect("the fixed-first clock system can be replaced");
+            assert_eq!(removed, 1, "the engine installs one clock system");
+            schedule.add_systems(tick_clocks.in_set(SimSet::Clocks));
+            if let Err(error) = schedule.initialize(world) {
+                panic!("FixedFirst doesn't build: {}", error.to_string(schedule.graph(), world));
+            }
+        });
     }
 
     /// Runs one fixed step: [`FixedFirst`], [`FixedCombat`], [`FixedPhysics`], [`FixedPost`].

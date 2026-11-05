@@ -7,10 +7,10 @@ use crate::TICK_HZ;
 /// Accumulator units per tick. The accumulator counts nanoseconds × [`TICK_HZ`], so one tick is
 /// exactly 10⁹ units and the 60 Hz rate never drifts against the wall clock (a tick is not a
 /// whole number of nanoseconds).
-const TICK_UNITS: i64 = 1_000_000_000;
+const TICK_UNITS: i128 = 1_000_000_000;
 
 /// Upper limit for [`FixedStepConfig::snap_tolerance`]: an eighth of a tick (about 2.08 ms).
-const MAX_SNAP_UNITS: i64 = TICK_UNITS / 8;
+const MAX_SNAP_UNITS: i128 = TICK_UNITS / 8;
 
 /// The largest `f32` below 1, so `alpha` stays in [0, 1) even when rounding would reach 1.
 const ALPHA_MAX: f32 = 1.0 - f32::EPSILON / 2.0;
@@ -64,10 +64,10 @@ pub struct FixedSteps {
 pub struct FixedStepDriver {
     config: FixedStepConfig,
     /// [`FixedStepConfig::snap_tolerance`] in accumulator units.
-    snap_units: i64,
+    snap_units: i128,
     /// Real time not yet simulated, in accumulator units: in `[-snap_units, TICK_UNITS)`. A
     /// negative value is time borrowed by a step that ran early, repaid by the next frames.
-    accumulator: i64,
+    accumulator: i128,
     ticks: u64,
 }
 
@@ -96,13 +96,13 @@ impl FixedStepDriver {
         let clamped = real_delta.min(self.config.max_frame_delta);
         let mut dropped = real_delta - clamped;
 
-        self.accumulator = self.accumulator.saturating_add(to_units(clamped));
+        self.accumulator += to_units(clamped);
         // The invariant `accumulator >= -snap_units` keeps this non-negative.
-        let available = self.accumulator.saturating_add(self.snap_units) / TICK_UNITS;
+        let available = (self.accumulator + self.snap_units) / TICK_UNITS;
         let count = u32::try_from(available).unwrap_or(u32::MAX).min(self.config.max_steps_per_frame);
         // Consume every available tick: the ones run, and the ones beyond the cap, which are dropped.
         self.accumulator -= available * TICK_UNITS;
-        dropped += from_units((available - i64::from(count)) * TICK_UNITS);
+        dropped += from_units((available - i128::from(count)) * TICK_UNITS);
         self.ticks += u64::from(count);
 
         FixedSteps { count, alpha: self.alpha(), dropped }
@@ -128,14 +128,15 @@ impl Default for FixedStepDriver {
     }
 }
 
-/// Accumulator units in `duration`, saturating.
-fn to_units(duration: Duration) -> i64 {
-    i64::try_from(duration.as_nanos().saturating_mul(u128::from(TICK_HZ))).unwrap_or(i64::MAX)
+/// Accumulator units in `duration`. Even Duration::MAX times TICK_HZ fits i128.
+fn to_units(duration: Duration) -> i128 {
+    duration.as_nanos() as i128 * i128::from(TICK_HZ)
 }
 
 /// The duration of a non-negative number of accumulator units, rounded down to the nanosecond.
-fn from_units(units: i64) -> Duration {
-    Duration::from_nanos(u64::try_from(units / i64::from(TICK_HZ)).unwrap_or(0))
+fn from_units(units: i128) -> Duration {
+    let nanos = (units.max(0) / i128::from(TICK_HZ)) as u128;
+    Duration::new((nanos / 1_000_000_000) as u64, (nanos % 1_000_000_000) as u32)
 }
 
 #[cfg(test)]
@@ -161,7 +162,25 @@ mod tests {
     fn units_round_trip() {
         assert_eq!(to_units(Duration::from_secs(1)), 60 * TICK_UNITS);
         assert_eq!(from_units(60 * TICK_UNITS), Duration::from_secs(1));
-        assert_eq!(to_units(Duration::MAX), i64::MAX);
+        assert_eq!(from_units(to_units(Duration::MAX)), Duration::MAX);
+    }
+
+    #[test]
+    fn extreme_deltas_conserve_elapsed_time() {
+        for delta in [Duration::from_secs(200_000_000), Duration::MAX] {
+            let mut driver = FixedStepDriver::new(FixedStepConfig {
+                max_frame_delta: Duration::MAX,
+                snap_tolerance: Duration::ZERO,
+                ..Default::default()
+            });
+            let steps = driver.advance(delta);
+            // Integer units are an independent exact oracle; Duration floors less than 1 ns.
+            let accounted =
+                to_units(steps.dropped) + i128::from(steps.count) * TICK_UNITS + driver.accumulator;
+            assert!((0..i128::from(TICK_HZ)).contains(&(to_units(delta) - accounted)));
+            assert_eq!(steps.count, 4);
+            assert!(steps.alpha < 1.0);
+        }
     }
 
     #[test]

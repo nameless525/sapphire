@@ -158,7 +158,9 @@ impl<const N: usize> ScaleStack<N> {
         self.entries[..self.len].iter().map(|entry| entry.expect("slots below len are occupied").1)
     }
 
-    /// The product of every scale, as a fixed-point factor of [`FACTOR_ONE`].
+    /// Product in insertion order, rounding down and saturating at each multiplication.
+    /// Once a large intermediate hits the cap, a later slowdown scales that capped value.
+    /// This order is canonical state behavior, not an algebraically reassociated product.
     pub(crate) fn factor(&self) -> u128 {
         self.factor
     }

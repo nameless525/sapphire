@@ -219,18 +219,21 @@ impl RenderSurface {
     /// Creates an unconfigured surface for `target`. Pass it to [`GpuContext::new`] so the
     /// chosen adapter can present to it, then call [`Self::configure`].
     ///
-    /// `keep_alive` is whatever keeps `target`'s native objects alive, such as the platform
-    /// layer's surface handle. The surface holds it and drops it right after the wgpu surface,
-    /// so the app stores only the surface. Pass `()` if something else guarantees the lifetime.
+    /// `keep_alive` holds any owner guard the target needs and drops it right after the wgpu
+    /// surface. This guard does not extend an external platform event loop's lifetime: the app
+    /// must still drop the surface before that loop releases the native window or display.
+    /// Pass `()` if the caller guarantees the entire native lifetime separately.
     ///
     /// # Safety
     ///
     /// - `target` must name a live native object: for [`SurfaceTarget::CoreAnimationLayer`], a
     ///   valid `CAMetalLayer`; for [`SurfaceTarget::Raw`], a window and the display it belongs
     ///   to, such as an Android `ANativeWindow` the platform layer has not yet released.
-    /// - That object must stay valid until `keep_alive` is dropped (or longer). On Android,
-    ///   drop the surface as soon as the platform reports the native window is being
-    ///   destroyed.
+    /// - The native object and its display must stay valid for the entire `RenderSurface`
+    ///   lifetime, including destruction. For an SDL app, drop the surface before the owning
+    ///   app run ends; retaining a platform surface handle alone does not extend that run.
+    ///   On Android, drop the surface as soon as the platform reports the native window is
+    ///   being destroyed.
     /// - On Apple platforms, call this on the main thread.
     pub unsafe fn new(
         instance: &GpuInstance,
@@ -252,9 +255,9 @@ impl RenderSurface {
                 raw_window_handle: window,
             },
         };
-        // SAFETY: this function's contract is wgpu's: the target is valid for surface
-        // creation and outlives the surface, because `keep_alive` keeps it valid and is dropped
-        // after the surface (field order).
+        // SAFETY: the caller guarantees the native target and display outlive this surface,
+        // including any externally owned platform run. Field order also keeps the optional
+        // owner guard alive until after the wgpu surface is destroyed.
         let surface = unsafe { instance.raw().create_surface_unsafe(raw_target)? };
         Ok(Self { surface, state: None, _keep_alive: Box::new(keep_alive) })
     }

@@ -1,8 +1,8 @@
 //! Merging what every thread drew into a frame's list, and keeping what lasts longer than a frame.
 
+use super::Lifetime;
 use super::buffer::{self, Command, What};
 use super::list::DebugDrawList;
-use super::{Lifetime, enabled};
 
 /// The most timed shapes and labels alive at once; more are dropped and counted.
 pub const MAX_PERSISTENT: usize = 1 << 14;
@@ -26,9 +26,8 @@ pub struct Collector {
     now: f64,
     /// Calls lost to a full store this frame.
     dropped: u32,
-    /// Whether it holds anything or may find anything waiting, which a disabled collect must
-    /// clear once. While nothing ever enabled drawing, a collect is one load and an empty list.
-    active: bool,
+    /// Drawing session last collected. A changed generation invalidates all retained commands.
+    generation: u64,
 }
 
 impl Collector {
@@ -40,7 +39,7 @@ impl Collector {
             persistent: Vec::new(),
             now: 0.0,
             dropped: 0,
-            active: false,
+            generation: 0,
         }
     }
 
@@ -53,17 +52,25 @@ impl Collector {
     /// all it was holding. Allocates only as its stores and the list grow to what a frame draws.
     pub fn collect(&mut self, now: f64, list: &mut DebugDrawList) {
         list.clear();
-        if !enabled() {
-            if self.active {
-                buffer::drain_all(&mut |_| {});
-                self.clear();
-                self.active = false;
+        let generation = super::generation();
+        if self.generation != generation {
+            self.clear();
+            self.generation = generation;
+        }
+        if generation & 1 == 0 {
+            // Never-enabled shipping frames take no registry lock. Once drawing has been
+            // enabled, keep reclaiming late publications and ended producer rings while off.
+            if generation != 0 {
+                buffer::drain_all(generation, &mut |_| {});
             }
             return;
         }
-        self.active = true;
         self.set_clock(now);
-        let dropped = buffer::drain_all(&mut |command| self.take(command, list));
+        let dropped = buffer::drain_all(generation, &mut |command| {
+            if command.generation == generation {
+                self.take(command, list, buffer::current_step());
+            }
+        });
         self.finish(buffer::current_step(), list);
         list.stats.dropped += dropped.saturating_add(self.dropped);
         self.dropped = 0;
@@ -72,6 +79,7 @@ impl Collector {
     /// Forgets timed draws and what a step holds, as when a scene is replaced.
     pub fn clear(&mut self) {
         self.held.clear();
+        self.held_step = 0;
         self.persistent.clear();
     }
 
@@ -81,29 +89,37 @@ impl Collector {
             self.clear();
         }
         self.now = now;
+        self.persistent.retain(|(_, ends)| *ends > now);
     }
 
     /// One call a thread made: drawn now if it lasts this frame alone, or kept for
     /// [`Self::finish`].
-    fn take(&mut self, command: Command, list: &mut DebugDrawList) {
+    fn take(&mut self, command: Command, list: &mut DebugDrawList, step: u32) {
         match command.lifetime {
             Lifetime::Seconds(seconds) => {
-                if self.persistent.len() < MAX_PERSISTENT {
-                    self.persistent.push((command, self.now + f64::from(seconds)));
-                } else {
-                    self.dropped += 1;
+                let ends = self.now + f64::from(seconds);
+                // Keep the previous behavior for directly constructed nonpositive/NaN
+                // lifetimes, and for durations below this clock value's resolution.
+                if ends > self.now {
+                    if self.persistent.len() < MAX_PERSISTENT {
+                        self.persistent.push((command, ends));
+                    } else {
+                        self.dropped += 1;
+                    }
                 }
             }
             Lifetime::Frame if command.step != 0 => {
-                // Each thread's steps arrive in order, and so a later step's draws replace an
-                // earlier one's, even in one frame (wrapping, as the numbers do).
-                let ahead = command.step.wrapping_sub(self.held_step) as i32;
-                if ahead > 0 {
+                // Compare ages against the most recently begun step, rather than a signed
+                // distance from the last draw. This also handles an inactive gap beyond 2^31
+                // steps. Commands must still be collected within one full counter cycle.
+                let newer = self.held_step == 0
+                    || step.wrapping_sub(command.step) < step.wrapping_sub(self.held_step);
+                if newer {
                     self.held.clear();
                     self.held_step = command.step;
                     self.held_at = self.now;
                 }
-                if ahead >= 0 {
+                if command.step == self.held_step {
                     if self.held.len() < MAX_HELD {
                         self.held.push(command);
                     } else {
@@ -122,8 +138,6 @@ impl Collector {
         if step != self.held_step && self.now > self.held_at {
             self.held.clear();
         }
-        let now = self.now;
-        self.persistent.retain(|(_, ends)| *ends > now);
         for command in &self.held {
             draw(command, list);
         }
@@ -158,6 +172,7 @@ mod tests {
             depth: Depth::Tested,
             lifetime,
             step,
+            generation: 1,
         }
     }
 
@@ -179,7 +194,7 @@ mod tests {
             let mut list = DebugDrawList::default();
             self.collector.set_clock(now);
             for &command in commands {
-                self.collector.take(command, &mut list);
+                self.collector.take(command, &mut list, self.step);
             }
             self.collector.finish(self.step, &mut list);
             list.lines.iter().map(|line| line.from.x).collect()
@@ -223,16 +238,35 @@ mod tests {
         let timed = command(1.0, Lifetime::Seconds(1.0), 0);
         let mut list = DebugDrawList::default();
         for _ in 0..MAX_PERSISTENT + 3 {
-            frames.collector.take(timed, &mut list);
+            frames.collector.take(timed, &mut list, frames.step);
         }
         assert_eq!(frames.collector.persistent.len(), MAX_PERSISTENT);
         assert_eq!(frames.collector.dropped, 3);
         let step = command(2.0, Lifetime::Frame, 1);
         for _ in 0..MAX_HELD + 2 {
-            frames.collector.take(step, &mut list);
+            frames.collector.take(step, &mut list, frames.step);
         }
         assert_eq!(frames.collector.held.len(), MAX_HELD);
         assert_eq!(frames.collector.dropped, 5);
+    }
+
+    #[test]
+    fn expired_draws_release_capacity_before_accepting_replacements() {
+        let mut frames = Frames::new();
+        let commands = vec![command(1.0, Lifetime::Seconds(1.0), 0); MAX_PERSISTENT];
+        frames.frame(0.0, &commands);
+        assert_eq!(frames.frame(1.0, &[command(2.0, Lifetime::Seconds(1.0), 0)]), [2.0]);
+        assert_eq!(frames.collector.dropped, 0);
+        assert_eq!(frames.frame(1.5, &[]), [2.0]);
+        assert!(frames.frame(2.0, &[]).is_empty());
+    }
+
+    #[test]
+    fn a_new_draw_that_has_already_expired_is_not_shown() {
+        let mut frames = Frames::new();
+        for seconds in [0.0, -1.0, f32::NAN, f32::from_bits(1)] {
+            assert!(frames.frame(100.0, &[command(1.0, Lifetime::Seconds(seconds), 0)]).is_empty());
+        }
     }
 
     #[test]
@@ -311,6 +345,17 @@ mod tests {
     }
 
     #[test]
+    fn a_long_inactive_gap_does_not_reject_new_step_draws() {
+        let mut frames = Frames::new();
+        frames.step = 1;
+        assert_eq!(frames.frame(0.0, &[command(1.0, Lifetime::Frame, 1)]), [1.0]);
+        frames.step = (1 << 31) + 2;
+        let step = frames.step;
+        assert_eq!(frames.frame(1.0, &[command(2.0, Lifetime::Frame, step)]), [2.0]);
+        assert_eq!(frames.frame(1.0, &[]), [2.0]);
+    }
+
+    #[test]
     fn a_timed_draw_in_a_step_is_timed_and_not_held() {
         let mut frames = Frames::new();
         frames.step = 1;
@@ -329,7 +374,7 @@ mod tests {
         };
         let mut list = DebugDrawList::default();
         frames.collector.now = 3.0;
-        frames.collector.take(label, &mut list);
+        frames.collector.take(label, &mut list, frames.step);
         frames.collector.finish(0, &mut list);
         assert_eq!(list.labels.len(), 1);
         assert_eq!(list.labels[0].text.as_str(), "hit");

@@ -82,9 +82,11 @@ pub struct AppMetadata {
 ///
 /// Every method runs on the main thread (on Android, SDL's thread). Calls never overlap: if the OS
 /// delivers a lifecycle event while another callback is running (iOS can, for example, from inside
-/// a modal system dialog), the platform queues it and delivers it as soon as that callback returns.
+/// a modal system dialog), the platform queues it for delivery after that callback returns.
 /// An event another thread raises through SDL waits the same way for the next callback, so it can
-/// arrive after the moment it was raised for.
+/// arrive after the moment it was raised for. Event/frame callbacks deliver bounded snapshots of
+/// this inbox: a continuous or reentrant producer cannot prevent the main loop from progressing.
+/// Events arriving during delivery may therefore wait for a later snapshot or callback.
 ///
 /// A panic in any callback ends the app: SDL shuts down, dropping the app without
 /// calling [`quit`](Self::quit). On desktop [`run`] then resumes the panic. On iOS and
@@ -97,7 +99,10 @@ pub trait App: Sized + 'static {
     /// Called once, after SDL has initialized. Create the window here.
     fn init(platform: &mut Platform) -> Result<Self, AppInitError>;
 
-    /// Called for each event, in order, before the next [`iterate`](Self::iterate).
+    /// Called for each event in arrival order. Events already held when SDL enters a frame
+    /// callback are delivered before its [`iterate`](Self::iterate). Arrivals during that
+    /// delivery may be observed after the frame, or in the next callback: inbox snapshots are
+    /// bounded so reentrant or continuous producers cannot keep the callback from returning.
     fn event(&mut self, platform: &mut Platform, event: &Event) -> AppControl;
 
     /// Called once per frame. On iOS and Android the engine starts each frame on a vsync at the
@@ -492,10 +497,6 @@ thread_local! {
 /// app, or an iOS app in the background.
 const MOST_HELD: usize = 4096;
 
-/// The most held events one callback delivers, so a thread raising events without pause can't keep
-/// the app's thread in its callback. The rest wait for the next one, in order.
-const HELD_PER_CALLBACK: usize = 1024;
-
 /// An event waiting for the app's thread, owning what it says.
 enum HeldEvent {
     /// SDL frees text at the next pump of the thread that took it off the queue, and a pushed event's
@@ -609,23 +610,29 @@ impl<A: App> Runtime<A> {
             INBOX.hold(HeldEvent::of(raw));
             return SDL_APP_CONTINUE;
         }
-        self.exclusive(|state| state.dispatch(raw))
+        // Queue even a main-thread event behind the older held events. Otherwise a bounded
+        // drain can let this newer callback overtake a backlog.
+        INBOX.hold(HeldEvent::of(raw));
+        self.exclusive(|_| AppControl::Continue)
     }
 
-    /// Runs `f` with the only reference to the state, after the events held so far, so events reach
-    /// the app in the order they came, then delivers those held meanwhile.
+    /// Runs `f` with the only reference to the state, after all events held at entry, then
+    /// delivers one more snapshot of events held meanwhile. Each snapshot is bounded by the
+    /// inbox capacity, so a continuous producer cannot keep this callback from returning.
     fn exclusive(&self, f: impl FnOnce(&mut State<A>) -> AppControl) -> SDL_AppResult {
         self.busy.set(true);
         // SAFETY: this runs on the app's thread alone (`app_event` keeps other threads out), and
         // every path that reaches the state checks `busy` first, so this is the only live
         // reference until `busy` is cleared below.
         let state = unsafe { &mut *self.state.get() };
-        let mut result = state.deliver_held(HELD_PER_CALLBACK);
+        let pending = INBOX.queue().events.len();
+        let mut result = state.deliver_held(pending);
         if result == SDL_APP_CONTINUE {
             result = guarded(|| f(state));
         }
         if result == SDL_APP_CONTINUE {
-            result = state.deliver_held(HELD_PER_CALLBACK);
+            let pending = INBOX.queue().events.len();
+            result = state.deliver_held(pending);
         }
         if result != SDL_APP_CONTINUE {
             self.stopped.set(true);
@@ -775,6 +782,55 @@ mod tests {
         assert!(!inbox.queue().overflowed);
         inbox.clear();
         assert!(inbox.next().is_none());
+    }
+
+    #[test]
+    fn a_backlog_cannot_be_overtaken_by_a_new_event_or_callback() {
+        use std::rc::Rc;
+
+        struct Ordered(Rc<RefCell<Vec<u64>>>);
+        impl App for Ordered {
+            const METADATA: AppMetadata = AppMetadata {
+                name: "callback order test",
+                organization: "Sapphire",
+                identifier: "dev.sapphire.callback_order",
+                version: "0",
+            };
+            fn init(_: &mut Platform) -> Result<Self, AppInitError> {
+                unreachable!("plain fixture")
+            }
+            fn event(&mut self, _: &mut Platform, event: &Event) -> AppControl {
+                if let Event::Lifecycle { timestamp, .. } = event {
+                    self.0.borrow_mut().push(timestamp.as_nanos());
+                }
+                AppControl::Continue
+            }
+            fn iterate(&mut self, _: &mut Platform) -> AppControl {
+                unreachable!("plain fixture")
+            }
+        }
+        // No other unit test touches the global inbox. These 2048 ordinary low-memory
+        // events exceed the former 1024 pre-callback drain without reaching queue capacity.
+        for new_event in [true, false] {
+            INBOX.clear();
+            let seen = Rc::new(RefCell::new(Vec::new()));
+            let runtime = Runtime::new(Ordered(Rc::clone(&seen)), Platform::for_callback_test());
+            for stamp in 1..=2048 {
+                INBOX.hold(low_memory_at(stamp));
+            }
+            let result = if new_event {
+                let HeldEvent::Plain(raw) = low_memory_at(2049) else { unreachable!() };
+                runtime.event(&raw)
+            } else {
+                runtime.exclusive(|state| {
+                    state.app.0.borrow_mut().push(2049);
+                    AppControl::Continue
+                })
+            };
+            assert_eq!(result.0, SDL_APP_CONTINUE.0);
+            assert_eq!(*seen.borrow(), (1..=2049).collect::<Vec<_>>());
+            assert!(INBOX.next().is_none());
+        }
     }
 
     #[test]

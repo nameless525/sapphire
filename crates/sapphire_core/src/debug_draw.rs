@@ -77,7 +77,7 @@ mod collect;
 mod list;
 
 use std::fmt;
-use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
 use glam::{Quat, Vec3};
 
@@ -89,20 +89,28 @@ pub use self::list::{
 };
 
 /// Whether calls draw. Only development tools write it; see the [module docs](self).
-static ENABLED: AtomicBool = AtomicBool::new(false);
+// Low bit enables writes; the other bits distinguish drawing sessions. A producer can
+// finish formatting after a toggle, so commands carry the state sampled before formatting.
+// Zero is reserved for the never-enabled shipping fast path. Wrapping requires 2^63 sessions.
+static ENABLED: AtomicU64 = AtomicU64::new(0);
+
+fn generation() -> u64 {
+    ENABLED.load(Relaxed)
+}
 
 /// Whether calls draw: one relaxed load, the whole cost of a call while they don't. For guarding
 /// work done only to draw.
 #[inline]
 pub fn enabled() -> bool {
-    ENABLED.load(Relaxed)
+    generation() & 1 != 0
 }
 
 /// Turns drawing on or off, from any thread. Development tools alone call this, so a shipping
 /// build's calls stay no-ops. Turning it on [warms](warm_thread) the calling thread; turning it
 /// off drops what is waiting at the next [`Collector::collect`], and what it holds.
 pub fn set_enabled(on: bool) {
-    ENABLED.store(on, Relaxed);
+    let _ = ENABLED
+        .try_update(Relaxed, Relaxed, |state| (state & 1 != u64::from(on)).then(|| state.wrapping_add(1)));
     if on {
         warm_thread();
     }
@@ -127,9 +135,8 @@ pub fn begin_step() {
 /// Ends what [`begin_step`] began.
 #[inline]
 pub fn end_step() {
-    if enabled() {
-        buffer::end_step();
-    }
+    // A tool may have disabled drawing inside this step. Clear its marker regardless.
+    buffer::end_step();
 }
 
 /// A display color for debug draws: sRGB-encoded with straight alpha, drawn as is, past exposure

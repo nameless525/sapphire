@@ -6,10 +6,9 @@ use std::ptr::{self, NonNull};
 use std::rc::Rc;
 
 use raw_window_handle::{
-    AndroidDisplayHandle, AndroidNdkWindowHandle, AppKitDisplayHandle, AppKitWindowHandle, DisplayHandle,
-    HandleError, HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle, UiKitDisplayHandle,
-    UiKitWindowHandle, WaylandDisplayHandle, WaylandWindowHandle, Win32WindowHandle, WindowHandle,
-    WindowsDisplayHandle, XlibDisplayHandle, XlibWindowHandle,
+    AndroidDisplayHandle, AndroidNdkWindowHandle, AppKitDisplayHandle, AppKitWindowHandle, HandleError,
+    RawDisplayHandle, RawWindowHandle, UiKitDisplayHandle, UiKitWindowHandle, WaylandDisplayHandle,
+    WaylandWindowHandle, Win32WindowHandle, WindowsDisplayHandle, XlibDisplayHandle, XlibWindowHandle,
 };
 use sdl3_sys::init::{SDL_INIT_VIDEO, SDL_WasInit};
 use sdl3_sys::keyboard::{
@@ -424,7 +423,8 @@ impl Drop for WindowInner {
     }
 }
 
-/// The native objects a GPU surface is created from, kept alive while this value exists.
+/// The native objects a GPU surface is created from, retained within the app run while this
+/// value exists. SDL destroys them when that run ends regardless of remaining Rust owners.
 ///
 /// Take one with [`Window::surface_handle`], create the surface from it, and keep it for
 /// exactly as long as that surface: drop the surface first, then the handle. Never keep
@@ -436,7 +436,7 @@ impl Drop for WindowInner {
 /// # use std::{ffi::c_void, ptr::NonNull};
 /// # use sapphire_platform::SurfaceHandle;
 /// # use sapphire_platform::raw_window_handle::{
-/// #     HandleError, HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle,
+/// #     HandleError, RawDisplayHandle, RawWindowHandle,
 /// # };
 /// # enum SurfaceTarget {
 /// #     CoreAnimationLayer(NonNull<c_void>),
@@ -446,8 +446,8 @@ impl Drop for WindowInner {
 ///     Ok(match handle.metal_layer() {
 ///         Some(layer) => SurfaceTarget::CoreAnimationLayer(layer),
 ///         None => SurfaceTarget::Raw {
-///             window: handle.window_handle()?.as_raw(),
-///             display: handle.display_handle()?.as_raw(),
+///             window: handle.raw_window_handle()?,
+///             display: handle.raw_display_handle()?,
 ///         },
 ///     })
 /// }
@@ -455,9 +455,9 @@ impl Drop for WindowInner {
 ///
 /// - **Apple:** [`metal_layer`](Self::metal_layer) is the `CAMetalLayer` of the SDL Metal
 ///   view created with the window. It is the same layer for the window's whole life,
-///   including across background / foreground. The handle traits report that view as an
-///   AppKit / UIKit handle, for tools that want a view.
-/// - **Windows, Linux:** `metal_layer` is `None`; the traits report the Win32
+///   including across background / foreground. The raw accessors report that view as an
+///   AppKit / UIKit raw handle, for tools that want a view.
+/// - **Windows, Linux:** `metal_layer` is `None`; the raw accessors report the Win32
 ///   `HWND` / `HINSTANCE`, the Wayland `wl_surface` / `wl_display`, or the Xlib `Window` /
 ///   `Display` (SDL picks Wayland or X11 at startup).
 /// - **Android:** the window handle is the `ANativeWindow`, and the `SurfaceHandle`
@@ -476,8 +476,18 @@ impl Drop for WindowInner {
 /// It can't keep them past the app's run: SDL destroys every window, view and display
 /// connection as it shuts down. A handle kept past its run (in a thread-local, say) reports
 /// [`HandleError::Unavailable`] and no layer from then on, also in a later run (review PA-005).
-/// A handle already borrowed from it ([`WindowHandle`], [`DisplayHandle`]) can't be called
-/// back, so never keep one past the run either.
+/// Raw values copied from it cannot be revoked: the consumer must stop using them before the
+/// run ends, and keep this owner until any GPU surface is destroyed. These snapshots deliberately
+/// do not implement `HasWindowHandle` / `HasDisplayHandle`: a Rust borrow of an escaped owner
+/// cannot keep SDL's app run alive, as those traits' borrowed-handle safety contracts require.
+/// Surface creation therefore crosses the renderer's explicit unsafe lifetime boundary.
+///
+/// ```compile_fail
+/// use sapphire_platform::{SurfaceHandle, raw_window_handle::HasWindowHandle};
+/// fn safe_borrow(handle: &SurfaceHandle) {
+///     let _ = HasWindowHandle::window_handle(handle);
+/// }
+/// ```
 #[derive(Debug)]
 pub struct SurfaceHandle {
     window: RawWindowHandle,
@@ -493,29 +503,24 @@ impl SurfaceHandle {
     pub fn metal_layer(&self) -> Option<NonNull<c_void>> {
         self.metal_layer.filter(|_| self.owner.is_live())
     }
-}
 
-impl HasWindowHandle for SurfaceHandle {
-    fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
+    /// Copies the raw window handle if this app run is still live. This is an instant snapshot,
+    /// not a borrowed validity guarantee. Any unsafe consumer must keep this owner alive and
+    /// stop using the native objects before the app run ends.
+    pub fn raw_window_handle(&self) -> Result<RawWindowHandle, HandleError> {
         if !self.owner.is_live() {
             return Err(HandleError::Unavailable);
         }
-        // SAFETY: the run is still going, so SDL hasn't destroyed anything, and `self` keeps
-        // every object the handle names alive: the SDL window (and with it the Metal view,
-        // HWND or wl_surface) through `owner`, and on Android the ANativeWindow through its
-        // own reference.
-        Ok(unsafe { WindowHandle::borrow_raw(self.window) })
+        Ok(self.window)
     }
-}
 
-impl HasDisplayHandle for SurfaceHandle {
-    fn display_handle(&self) -> Result<DisplayHandle<'_>, HandleError> {
+    /// Copies the raw display handle if this app run is still live. Display connections belong
+    /// to SDL and are destroyed when the run ends, regardless of this owner's Rust lifetime.
+    pub fn raw_display_handle(&self) -> Result<RawDisplayHandle, HandleError> {
         if !self.owner.is_live() {
             return Err(HandleError::Unavailable);
         }
-        // SAFETY: display connections belong to SDL's video subsystem, which shuts down only
-        // once the run has ended.
-        Ok(unsafe { DisplayHandle::borrow_raw(self.display) })
+        Ok(self.display)
     }
 }
 
@@ -816,13 +821,13 @@ mod tests {
             owner: Rc::clone(&inner),
         };
         let window = Window { inner };
-        assert!(handle.window_handle().is_ok() && handle.display_handle().is_ok(), "the run goes on");
+        assert!(handle.raw_window_handle().is_ok() && handle.raw_display_handle().is_ok(), "the run goes on");
         assert_eq!(handle.metal_layer(), fake(0x80));
 
         // The app quits: SDL is about to shut down.
         crate::app::end_run();
-        assert!(matches!(handle.window_handle(), Err(HandleError::Unavailable)));
-        assert!(matches!(handle.display_handle(), Err(HandleError::Unavailable)));
+        assert!(matches!(handle.raw_window_handle(), Err(HandleError::Unavailable)));
+        assert!(matches!(handle.raw_display_handle(), Err(HandleError::Unavailable)));
         assert_eq!(handle.metal_layer(), None);
         assert!(matches!(window.surface_handle(), Err(HandleError::Unavailable)));
         assert_eq!((window.size(), window.pixel_size()), (Size::default(), Size::default()));

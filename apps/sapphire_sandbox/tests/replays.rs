@@ -51,6 +51,8 @@ fn workspace() -> PathBuf {
 fn sandbox(args: &[&str], content: &Path) -> Output {
     Command::new(env!("CARGO_BIN_EXE_sapphire_sandbox"))
         .args(args)
+        .env("SAPPHIRE_LOG", "info")
+        .env_remove("RUST_LOG")
         .env("SAPPHIRE_CONTENT_DIR", content)
         .output()
         .expect("the sandbox starts")
@@ -495,10 +497,17 @@ fn a_bench_of_a_fight_plays_it_whole_beside_the_renderer() {
     for row in rows.iter().filter(|row| row[phase] != "first") {
         assert_eq!(row[step_allocations], "0", "rule R6, at tick {}", row[tick]);
     }
-    // A row needs frames, and an adapter with no timestamps has no timed ones.
-    let timed = column("gpu_timed");
-    if rows.iter().any(|row| row[timed] == "1") {
-        assert!(log.contains("row=\"gpu frame\""), "{log}");
+    // A timing flag can accompany partial pass timings without a complete frame span.
+    // This fixture plays one fight per phase. GPU frame 0 restarts it and is excluded from the summary.
+    let (frame, timed, span) = (column("frame"), column("gpu_timed"), column("gpu_span"));
+    let span_samples = rows
+        .iter()
+        .filter(|row| row[phase] == "gpu" && row[frame] != "0" && row[timed] == "1" && !row[span].is_empty())
+        .count();
+    let frame_row = log.lines().find(|line| line.contains("row=\"gpu frame\""));
+    assert_eq!(frame_row.is_some(), span_samples > 0, "{log}");
+    if let Some(frame_row) = frame_row {
+        assert!(frame_row.contains(&format!(" samples={span_samples} ")), "{log}");
     }
 }
 

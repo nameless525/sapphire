@@ -56,6 +56,12 @@ class WritingNumbers(Folder):
         self.assertIn('startup: 7', written)
         self.assertFalse(frames.write_numbers(self.folder, clips(), self.stamp), 'a clean checkout changes nothing')
         self.assertEqual((self.read(), self.read(self.stamp)), (written, stamped))
+        paths = (self.numbers, self.stamp, self.numbers + '.meta')
+        # A fixed old timestamp proves a no-op does not publish any companion output either.
+        for path in paths:
+            os.utime(path, ns=(1000000000, 1000000000))
+        frames.write_numbers(self.folder, clips(), self.stamp)
+        self.assertEqual([os.stat(path).st_mtime_ns for path in paths], [1000000000] * 3)
 
     def test_it_refuses_a_file_changed_since_it_last_wrote_it(self):
         frames.write_numbers(self.folder, clips(), self.stamp)
@@ -185,8 +191,55 @@ class TheMovementSection(Folder):
         self.assertIsNone(frames._movement_span('(data: (moves: [(movement: 1)]))'))
         self.assertIsNone(frames._movement_span('// movement: (no)\n'))
 
+    def test_block_comments_literals_and_crlf_preserve_authored_movement(self):
+        noises = [
+            '/* [ /* nested ) */ movement: ( */',
+            'noise: r###" [ \" movement: ( "###,',
+            "noise: '[', other: '\\u{28}',",
+            'noise: b"[", other: br#" ) "#,',
+        ]
+        for noise in noises:
+            with self.subTest(noise=noise):
+                text = self.written.replace('run_speed: 6.0', 'run_speed: 7.5')
+                text = text.replace('        fighter: (', '        fighter: (\n            ' + noise)
+                text = text.replace('\n', '\r\n')
+                with open(self.numbers, 'w', newline='') as f:
+                    f.write(text)
+                section = frames._movement_of(text)
+                frames.write_numbers(self.folder, clips(), self.stamp, force=True)
+                self.assertIn(section, self.read())
+                self.assertIn('run_speed: 7.5', self.read())
+
+    def test_malformed_or_ambiguous_input_refuses_even_with_force(self):
+        malformed = [self.written + suffix for suffix in ('/* [', 'r#"[', "'x", ']')]
+        malformed += [self.written.replace('movement: (', replacement)
+                      for replacement in ('movement: (), movement: (', 'movement (', 'movement: [')]
+        for text in malformed:
+            with self.subTest(text=text):
+                with open(self.numbers, 'w', newline='') as f:
+                    f.write(text)
+                stamped = self.read(self.stamp)
+                with self.assertRaises(SystemExit) as refused:
+                    frames.write_numbers(self.folder, clips(), self.stamp, force=True)
+                self.assertIn('cannot preserve movement', str(refused.exception))
+                self.assertEqual(self.read(), text)
+                self.assertEqual(self.read(self.stamp), stamped)
+
+    def test_a_neighboring_inline_field_is_not_part_of_movement(self):
+        text = '(data: (fighter: (\nmovement: (run_speed: 7.5), brain: (),\n)))'
+        start, end = frames._movement_span(text)
+        self.assertEqual(text[start:end], 'movement: (run_speed: 7.5),')
+
 
 class TheTool(Folder):
+    def test_repeated_pose_writes_publish_nothing(self):
+        self.run_tool('--write')
+        paths = [os.path.join(self.folder, name) for name in os.listdir(self.folder)]
+        for path in paths:
+            os.utime(path, ns=(1000000000, 1000000000))
+        self.run_tool('--write')
+        self.assertTrue(all(os.stat(path).st_mtime_ns == 1000000000 for path in paths))
+
     def test_write_leaves_the_numbers_alone_and_says_when_they_differ(self):
         tuned = self.tune()
         said = self.run_tool('--write')
@@ -208,6 +261,13 @@ class TheTool(Folder):
             self.run_tool('--write-numbers')
         self.run_tool('--write-numbers', '--force')
         self.assertEqual(self.read(), written)
+
+    def test_unknown_names_and_flags_fail_before_any_source_write(self):
+        for argument in ('--wriet', 'light_9'):
+            with self.subTest(argument=argument), self.assertRaises(SystemExit) as refused:
+                self.run_tool('--write', argument)
+            self.assertIn(argument, str(refused.exception))
+            self.assertEqual(os.listdir(self.folder), [])
 
     def test_force_alone_means_nothing(self):
         with self.assertRaises(SystemExit):

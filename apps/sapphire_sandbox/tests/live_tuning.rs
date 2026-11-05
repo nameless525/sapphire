@@ -88,6 +88,8 @@ impl App {
             .args(["--offscreen", "--size", "160x90", "--frames", "72000", "--live-link"])
             .arg(address.to_string())
             .args(args)
+            .env("SAPPHIRE_LOG", "info")
+            .env_remove("RUST_LOG")
             .env("SAPPHIRE_CONTENT_DIR", workspace.join("target/content/desktop"))
             .stdout(file.try_clone().expect("the log"))
             .stderr(Stdio::from(file))

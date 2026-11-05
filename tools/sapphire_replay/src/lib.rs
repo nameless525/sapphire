@@ -13,6 +13,8 @@
 //! The binary installs the counting allocator, and the suite refuses to run without one, because
 //! gate 4 reads zero then, whatever the steps do.
 
+mod output_paths;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -33,7 +35,8 @@ const PRINTED_LINES: usize = 200;
 pub struct Suite<'a> {
     /// The directory of replays and checksum files: `tests/replays/`.
     pub dir: &'a Path,
-    /// Where this architecture's file goes as it should be, for CI to upload.
+    /// Where this architecture's file goes as it should be, for CI to upload. Must be
+    /// disjoint from `dir`, including existing symlink aliases.
     pub out: &'a Path,
     /// Take this run's values, rather than comparing with what's recorded.
     pub update: bool,
@@ -123,9 +126,12 @@ fn play_one(suite: &Suite<'_>, name: &str) -> Result<Played, String> {
     }
     let path = replay_path(suite.dir, name);
     let bytes = fs::read(&path).map_err(|error| format!("reading it: {error}"))?;
-    let mut replay = Replay::decode(&bytes).map_err(|error| error.to_string())?;
-    let started = match Player::new(replay.clone(), suite.scenarios) {
+    let replay = Replay::decode(&bytes).map_err(|error| error.to_string())?;
+    let started = match Player::new(replay, suite.scenarios) {
         Err(PlayError::MovesChanged { current, .. }) if suite.update => {
+            // Only the exceptional migration path needs the replay again. Normal checks move
+            // its action stream into the player without a second full copy.
+            let mut replay = Replay::decode(&bytes).map_err(|error| error.to_string())?;
             replay.set_tables_hash(current);
             fs::write(&path, replay.encode()).map_err(|error| format!("writing it: {error}"))?;
             eprintln!(
@@ -145,8 +151,10 @@ fn play_one(suite: &Suite<'_>, name: &str) -> Result<Played, String> {
 /// Runs the suite and reports what it found. An `Err` is a suite that couldn't run at all.
 pub fn check(suite: &Suite<'_>) -> anyhow::Result<Outcome> {
     fail_without_counting()?;
+    output_paths::disjoint(suite.out, &[suite.dir]).map_err(anyhow::Error::msg)?;
     let mut outcome = Outcome::default();
     let file_name = checksums_file_name(suite.architecture);
+    output_paths::disjoint(&suite.out.join(&file_name), &[suite.dir]).map_err(anyhow::Error::msg)?;
     let file_path = suite.dir.join(&file_name);
     // One that doesn't read is a failure, until an update replaces it.
     let recorded = read_recorded(&file_path, suite.architecture)?.unwrap_or_else(|problem| {
@@ -167,7 +175,7 @@ pub fn check(suite: &Suite<'_>) -> anyhow::Result<Outcome> {
     }
     ensure!(!selected.is_empty(), "no replays in {}", suite.dir.display());
 
-    let mut current = recorded.clone();
+    let mut current = recorded;
     for name in selected {
         let played = match play_one(suite, name) {
             Ok(played) => played,
@@ -177,6 +185,7 @@ pub fn check(suite: &Suite<'_>) -> anyhow::Result<Outcome> {
             }
         };
         outcome.played += 1;
+        let verdict = compare(suite, name, current.get(name), &played);
         current.set(name, RecordedTrail::from_trail(&played.trail));
         let summary = format!(
             "{} ticks, ends at {:016x}, {}",
@@ -185,7 +194,6 @@ pub fn check(suite: &Suite<'_>) -> anyhow::Result<Outcome> {
             describe_steps(&played)
         );
 
-        let verdict = compare(suite, name, recorded.get(name), &played);
         match verdict {
             Verdict::Same => eprintln!("ok {name}: {summary}"),
             Verdict::Moved(how) => eprintln!("moved {name}: {how}; {summary}"),
@@ -201,7 +209,7 @@ pub fn check(suite: &Suite<'_>) -> anyhow::Result<Outcome> {
 
     // A checksum with no replay behind it is one nobody is checking.
     if suite.only.is_none() {
-        let stale: Vec<String> = recorded
+        let stale: Vec<String> = current
             .names()
             .filter(|name| !names.iter().any(|other| other == name))
             .map(str::to_owned)
@@ -323,6 +331,7 @@ pub fn values_help(outcome: &Outcome, out: &Path, architecture: &str) -> String 
 /// What [`record`] makes.
 pub struct Record<'a> {
     pub dir: &'a Path,
+    /// A directory disjoint from `dir`, for this architecture's output checksum file.
     pub out: &'a Path,
     /// The new replay's name.
     pub name: &'a str,
@@ -340,7 +349,10 @@ pub struct Record<'a> {
 /// that's taken: a replay may be a session someone played, which no script can make again.
 pub fn record(request: &Record<'_>) -> anyhow::Result<()> {
     fail_without_counting()?;
+    output_paths::disjoint(request.out, &[request.dir]).map_err(anyhow::Error::msg)?;
     let Record { dir, out, name, scenario, script, ticks, seed, scenarios, architecture } = *request;
+    output_paths::disjoint(&out.join(checksums_file_name(architecture)), &[dir])
+        .map_err(anyhow::Error::msg)?;
     ensure!(is_valid_name(name), "{name:?} can't name a replay: 1 to 64 of a-z, 0-9, - and _");
     let path = replay_path(dir, name);
     ensure!(!path.exists(), "{} exists: delete it first to replace it", path.display());

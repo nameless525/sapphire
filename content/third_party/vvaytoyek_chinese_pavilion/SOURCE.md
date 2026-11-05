@@ -27,7 +27,7 @@ To check, extract `四角亭.fbx` from the archive and compare its SHA-256 with 
 
 ## The model
 
-Sapphire's cooker doesn't read FBX, so the file isn't cooked as it is. Its derived glTF is listed in [MODIFIED.md](MODIFIED.md).
+The FBX sidecar sets `cook: false`: the town uses the converted glTF piece rather than cooking the source model directly. Its derived glTF is listed in [MODIFIED.md](MODIFIED.md).
 
 **Scale.** Blender's FBX import gives 38.9 × 38.9 units in plan and 35.7 units to the finial. The benches (seat at 3 units) and the bay between columns (22 units) suggest about 0.15 m per unit. That's a 3.3 m bay and 5.4 m to the finial, a garden pavilion's size. This is our estimate; the page doesn't give units.
 

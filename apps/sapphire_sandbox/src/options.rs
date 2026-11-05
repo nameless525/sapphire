@@ -25,6 +25,36 @@ use sapphire_stage::scene::{self, Fade, Scene};
 use sapphire_stage::studio::StudioLayout;
 use sapphire_stage::vfx::VfxShow;
 
+pub(crate) const USAGE: &str = "\
+Usage: sapphire_sandbox [options]
+
+Modes (offscreen modes never open a window):
+  --capture <file.png>       Capture a scene and exit
+  --bench <frames>           Benchmark a scene offscreen
+  --offscreen               Run the scene without a window
+  --contact-sheet <move> <file.png>  Capture animation samples
+
+Common options:
+  --help, -h                Print this help and exit before platform initialization
+  --frames <count>          Exit after this many frames
+  --size <width>x<height>    Offscreen image size
+  --tier <tier>             desktop-high, desktop-low, mobile-high or mobile-low
+  --aa off|msaa|taa         Antialiasing override
+  --render-scale <0.25..1>   Render scale override
+  --look-dev <scene>        Select a look-development scene
+  --replay <file>           Play a recorded simulation
+  --record <file>           Record a simulation
+  --scenario <name>         Scenario for a recording or fight
+  --script <name>           Script driving a recording or fight
+  --fight                   Run a scripted fight
+
+The sapphire_sandbox crate's Arguments documentation lists all scene, capture,
+benchmark, animation, HUD and development options (cargo doc -p sapphire_sandbox).";
+
+pub(crate) fn is_help_flag(arg: &str) -> bool {
+    matches!(arg, "--help" | "-h")
+}
+
 /// The flags that select an offscreen mode; see [`Offscreen`].
 pub(crate) const CAPTURE_FLAG: &str = "--capture";
 pub(crate) const BENCH_FLAG: &str = "--bench";
@@ -970,7 +1000,13 @@ impl Options {
                     options.watch_documents.push(path);
                 }
                 "--fight" => fight = true,
-                _ => unknown.push(arg.clone()),
+                _ => {
+                    unknown.push(arg.clone());
+                    continue;
+                }
+            }
+            if let Some(value) = inline {
+                return Err(format!("{name} takes no value, got {value:?}"));
             }
         }
         options.hud = match (hud_mode, hud_insets, hud_scale, hud_paused) {
@@ -1033,9 +1069,9 @@ impl Options {
         if cue_repeat.is_some() && cue.is_none() {
             return Err("--cue-repeat needs --cue".to_owned());
         }
-        if cue.is_some() && (capture.is_some() || bench.is_some() || serve) {
+        if cue.is_some() && (capture.is_some() || bench.is_some() || serve || sheet.is_some()) {
             return Err(format!(
-                "--cue plays on the audio device, which {CAPTURE_FLAG}, {BENCH_FLAG} and {OFFSCREEN_FLAG} never open"
+                "--cue plays on the audio device, which {CAPTURE_FLAG}, {BENCH_FLAG}, {OFFSCREEN_FLAG} and {CONTACT_SHEET_FLAG} never open"
             ));
         }
         options.cue = cue.map(|id| CueOption { id, repeat: cue_repeat });
@@ -2257,6 +2293,22 @@ mod tests {
         let (options, _) = parse(&["--spin", "3"]).unwrap();
         assert_eq!(options.spin, Some(3.0));
         assert!(parse(&["--spin", "inf"]).is_err());
+    }
+
+    #[test]
+    fn boolean_flags_refuse_inline_values() {
+        for flag in ["--lights=false", "--no-hot-reload=false", "--offscreen=false", "--fight=true"] {
+            let error = parse(&[flag]).unwrap_err();
+            assert!(error.contains("takes no value"), "{flag}: {error}");
+        }
+        let (_, unknown) = parse(&["--platform-option=false"]).unwrap();
+        assert_eq!(unknown, ["--platform-option=false"]);
+    }
+
+    #[test]
+    fn a_contact_sheet_cannot_play_a_device_cue() {
+        let error = parse(&["--contact-sheet", "light_1", "sheet.png", "--cue", "hit"]).unwrap_err();
+        assert!(error.contains("--cue") && error.contains("--contact-sheet"), "{error}");
     }
 
     #[test]

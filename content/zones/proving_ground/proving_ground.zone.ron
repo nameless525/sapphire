@@ -1,7 +1,7 @@
 // The proving ground (M3 W1): a small zone of kit pieces, for what reads zones to be tested on, the
 // runtime that streams them above all (M3 W2). No scene or stage draws it. Its pack is
 // `zone_proving_ground`, and it costs the other packs nothing: its materials are the town's, which stay
-// shared, and everything else here is its alone. Four cells 16 m wide hold a dozen placed pieces, the
+// shared, and everything else here is its alone. Five cells 16 m wide hold a dozen placed pieces, the
 // backdrop holds the ground, and one of each thing a zone can hold stands somewhere.
 (
     type: "sapphire::zone::ZoneDocument",

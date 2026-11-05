@@ -344,48 +344,106 @@ def _read(path):
 
 
 def _code(text):
-    """Each character of `text` outside its comments and strings, with where it is."""
+    """Characters outside RON comments and literals, retaining their original offsets.
+
+    An incomplete literal/comment is an error: guessing here could discard authored movement,
+    even when the caller explicitly permits replacing the generated numbers.
+    """
     at = 0
     while at < len(text):
         if text.startswith('//', at):
-            at = text.find('\n', at)
-            if at < 0:
-                return
-        elif text[at] == '"':
-            at += 1
-            while at < len(text) and text[at] != '"':
-                at += 2 if text[at] == '\\' else 1
-            at += 1
+            end = text.find('\n', at)
+            at = len(text) if end < 0 else end
+        elif text.startswith('/*', at):
+            at += 2
+            depth = 1
+            while depth and at < len(text):
+                if text.startswith('/*', at):
+                    depth += 1
+                    at += 2
+                elif text.startswith('*/', at):
+                    depth -= 1
+                    at += 2
+                else:
+                    at += 1
+            if depth:
+                raise ValueError('unterminated block comment')
         else:
-            yield at, text[at]
-            at += 1
+            # Raw strings: r"...", r#"..."#, and the corresponding byte strings.
+            raw = at + (1 if text.startswith('br', at) else 0)
+            end = raw + 1
+            if text[raw:raw + 1] == 'r':
+                while text[end:end + 1] == '#':
+                    end += 1
+            if text[raw:raw + 1] == 'r' and text[end:end + 1] == '"':
+                closing = '"' + text[raw + 1:end]
+                finish = text.find(closing, end + 1)
+                if finish < 0:
+                    raise ValueError('unterminated raw string')
+                at = finish + len(closing)
+            elif text[at] in "\"'":
+                quote = text[at]
+                at += 1
+                while at < len(text) and text[at] != quote:
+                    at += 2 if text[at] == '\\' else 1
+                if at >= len(text):
+                    raise ValueError('unterminated literal')
+                at += 1
+            else:
+                yield at, text[at]
+                at += 1
 
 
 def _movement_span(text):
-    """Where the fighter's `movement` section sits, from the comments right above it through the end of
-    its line, whatever its layout: `(start, end)` by character, or None for a file with no such section.
-    It's the only field of that name three brackets in: the file's, `data`'s and `fighter`'s."""
-    depth = 0
+    """The fighter's movement field, with its own line comments, or None if absent.
+
+    Validate the complete delimiter/literal structure before returning a span. A malformed or
+    duplicate section must never look like an absent one and silently acquire default tuning.
+    """
+    code = list(_code(text))
+    stack = []
+    found = []
     opened = None
-    closed = None
-    for at, c in _code(text):
+    for index, (at, c) in enumerate(code):
         if c in '([{':
-            depth += 1
+            stack.append(c)
         elif c in ')]}':
-            depth -= 1
-            if opened is not None and depth == 3:
-                closed = at + 1
-                break
-        elif opened is None and depth == 3 and text.startswith('movement', at) and not text[at - 1].isalnum() \
-                and text[at + len('movement'):].lstrip().startswith(':'):
+            if not stack or stack.pop() != {')': '(', ']': '[', '}': '{'}[c]:
+                raise ValueError('unbalanced delimiters')
+            if opened is not None and len(stack) == 3:
+                found.append((opened, at + 1))
+                opened = None
+        elif len(stack) == 3 and text.startswith('movement', at) and \
+                (at == 0 or not (text[at - 1].isalnum() or text[at - 1] == '_')):
+            after = index + len('movement')
+            if after < len(code) and (code[after][1].isalnum() or code[after][1] == '_'):
+                continue
+            while after < len(code) and code[after][1].isspace():
+                after += 1
+            if after == len(code) or code[after][1] != ':':
+                raise ValueError('movement needs a colon')
+            after += 1
+            while after < len(code) and code[after][1].isspace():
+                after += 1
+            if after == len(code) or code[after][1] != '(':
+                raise ValueError('movement must be a parenthesized section')
             opened = at
-    if closed is None:
+    if stack or opened is not None:
+        raise ValueError('unbalanced delimiters')
+    if len(found) > 1:
+        raise ValueError('multiple movement sections')
+    if not found:
         return None
+    opened, closed = found[0]
     rest = len(text) - len(text[closed:].lstrip(' \t'))
     if text[rest:rest + 1] == ',':
         closed = rest + 1
+    # A neighboring field on the same line belongs to the generator, not to movement.
     line_end = text.find('\n', closed)
     end = len(text) if line_end < 0 else line_end + 1
+    tail = text[closed:end].strip()
+    if tail and not tail.startswith('//'):
+        end = closed
     start = text.rfind('\n', 0, opened) + 1
     if text[start:opened].strip():
         return opened, closed
@@ -431,6 +489,8 @@ def numbers_note(folder, clips):
     held = _read(os.path.join(folder, NUMBERS))
     try:
         text = numbers_text(clips, _movement_of(held))
+    except ValueError as error:
+        return f'{NUMBERS}: cannot preserve movement: {error}; --write left it alone.'
     except AssertionError as error:
         name, numbers, ticks = error.args[0]
         return (f'frames.py has {name} at {numbers} ticks and its clip at {ticks}. If {NUMBERS} does too, the cook '
@@ -446,7 +506,10 @@ def write_numbers(folder, clips, stamp, force=False):
     changed the file. The digest leaves out the `movement` section, which stays whatever this does."""
     path = os.path.join(folder, NUMBERS)
     held = _read(path)
-    text = numbers_text(clips, _movement_of(held))
+    try:
+        text = numbers_text(clips, _movement_of(held))
+    except ValueError as error:
+        sys.exit(f'{path}: cannot preserve movement: {error}; nothing was written')
     edited = held is not None and held != text and _digest(held) != _last_written(stamp)
     if edited and not force:
         sys.exit(f'{path} has changed since this tool last wrote it, so nothing was written.\n'
@@ -455,11 +518,10 @@ def write_numbers(folder, clips, stamp, force=False):
     if held != text:
         with open(path, 'w', newline='') as f:
             f.write(text)
-    with open(stamp, 'w', newline='') as f:
-        f.write(f'# What tools/motion/moves.py --write-numbers last wrote to {NUMBERS}. A file that no longer '
-                f'matches has been edited since, and it\'s not replaced unless forced.\n{_digest(text)}\n')
-    with open(os.path.join(folder, NUMBERS + '.meta'), 'w', newline='') as f:
-        f.write(f'''(
+    stamp_text = (f'# What tools/motion/moves.py --write-numbers last wrote to {NUMBERS}. A file that no longer '
+                  f'matches has been edited since, and it\'s not replaced unless forced.\n{_digest(text)}\n')
+    write_changed(stamp, stamp_text)
+    write_changed(os.path.join(folder, NUMBERS + '.meta'), f'''(
     type: "sapphire::assets::AssetMeta",
     version: 1,
     data: (
@@ -469,6 +531,13 @@ def write_numbers(folder, clips, stamp, force=False):
 )
 ''')
     return held != text
+
+
+def write_changed(path, text):
+    """Publish tool-owned text only when its bytes change, preserving no-op mtimes."""
+    if _read(path) != text:
+        with open(path, 'w', newline='') as f:
+            f.write(text)
 
 
 def move_text(d, clips):

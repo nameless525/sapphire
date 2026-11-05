@@ -397,6 +397,12 @@ pub fn startup() {
     });
 }
 
+/// Command-line help requested by `--help` or `-h`. The desktop entry point prints this
+/// before startup or platform initialization, so help needs neither content nor a display.
+pub fn command_help() -> Option<&'static str> {
+    std::env::args_os().any(|arg| arg.to_str().is_some_and(options::is_help_flag)).then_some(options::USAGE)
+}
+
 /// Whether the arguments ask for an offscreen mode (`--capture`, `--bench` or `--offscreen`),
 /// which `main` runs as [`OffscreenApp`] in the background instead of opening the windowed app.
 pub fn offscreen_requested() -> bool {

@@ -1116,7 +1116,7 @@ impl SandboxApp {
         if self.presented_frames >= limit {
             return Some(AppControl::Exit);
         }
-        let deadline = FRAME_LIMIT_MIN_DEADLINE.max(Duration::from_millis(50).saturating_mul(limit as u32));
+        let deadline = FRAME_LIMIT_MIN_DEADLINE.max(Duration::from_millis(limit.saturating_mul(50)));
         if self.real.elapsed() > deadline {
             tracing::error!(
                 target: LOG_TARGET,

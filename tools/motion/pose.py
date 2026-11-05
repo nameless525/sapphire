@@ -301,7 +301,7 @@ def back_strength(share):
         else:
             high = m
     return (low + high) * 0.5
-def weight(ease, u):
+def weight(ease, u, strength=None):
     u = max(0.0, min(1.0, u))
     if u <= 0.0:
         return 0.0
@@ -319,9 +319,9 @@ def weight(ease, u):
     if kind == 'Hold':
         return 0.0
     if kind == 'Anticipate':
-        return back(u, back_strength(ease[1]))
+        return back(u, back_strength(ease[1]) if strength is None else strength)
     if kind == 'Overshoot':
-        return 1.0 - back(1.0 - u, back_strength(ease[1]))
+        return 1.0 - back(1.0 - u, back_strength(ease[1]) if strength is None else strength)
     if kind == 'Curve':
         _, x1, y1, x2, y2 = ease
         bez = lambda t, a, b: 3 * (1 - t) * (1 - t) * t * a + 3 * (1 - t) * t * t * b + t * t * t
@@ -429,8 +429,12 @@ class Move:
             pose.turns[bone] = turn(*values)
         pose.fk()
         euler = {b: to_euler(pose.turns[b]) for b in ORDER}
+        rounded = {bone: turn(*(round(v, 1) for v in euler[bone])) for bone in ORDER}
+        strength = (back_strength(ease[1])
+                    if isinstance(ease, tuple) and ease[0] in ('Anticipate', 'Overshoot') else None)
         self.keys.append(dict(tick=tick, say=say, ease=ease, root=root, root_turn=root_turn, pose=pose, L=L, R=R,
-                              knee_L=knee_L, knee_R=knee_R, euler=euler, fingers=fingers or {}))
+                              knee_L=knee_L, knee_R=knee_R, euler=euler, fingers=fingers or {},
+                              rounded=rounded, strength=strength))
         for p in problems:
             print(f"  ! {self.name} tick {tick}: {p}")
         return pose
@@ -449,13 +453,13 @@ class Move:
             return pose.fk(), a['root'], a['root_turn']
         a, b = keys[i], keys[i + 1]
         u = (t - a['tick']) / (b['tick'] - a['tick'])
-        w = weight(b['ease'], u)
+        w = weight(b['ease'], u, b['strength'])
         pose = Pose()
         pose.hips = lerp(a['pose'].hips, b['pose'].hips, w)
         for bone in ORDER:
             # What the document holds: rounded Euler turns.
-            qa = turn(*[round(v, 1) for v in a['euler'][bone]])
-            qb = turn(*[round(v, 1) for v in b['euler'][bone]])
+            qa = a['rounded'][bone]
+            qb = b['rounded'][bone]
             pose.turns[bone] = slerp(qa, qb, w)
         return pose.fk(), lerp(a['root'], b['root'], w), a['root_turn'] + (b['root_turn'] - a['root_turn']) * w
 

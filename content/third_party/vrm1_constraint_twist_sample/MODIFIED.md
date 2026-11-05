@@ -5,7 +5,7 @@
 
 ## Made at load
 
-The sandbox's `--party` (M2 G7, `apps/sapphire_sandbox/src/party_looks.rs`) draws the model in two more palettes by multiplying the `base_color` of five materials as they load. It writes no file and changes nothing here: the maps stay the model's and are shared.
+The sandbox's `--party` (M2 G7, `game/game_combat/src/party_looks.rs`) draws the model in two more palettes by multiplying the `base_color` of five materials as they load. It writes no file and changes nothing here: the maps stay the model's and are shared.
 
 ## Extracted files
 

@@ -22,8 +22,8 @@ Clicks, confirmations, errors and other interface sounds. 100 Ogg Vorbis files.
 
 Not committed: the archive's `.url` shortcuts.
 
-Every committed file is byte-identical to the archive's. To check, extract the archive and compare:
+Every committed upstream file is byte-identical to the archive's. To check, extract the archive and compare:
 
 ```bash
-diff -r "<extracted>/Audio" content/third_party/kenney_interface_sounds/Audio
+diff -r -x '*.meta' "<extracted>/Audio" content/third_party/kenney_interface_sounds/Audio
 ```

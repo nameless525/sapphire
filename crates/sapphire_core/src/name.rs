@@ -92,9 +92,9 @@ impl fmt::Debug for Name {
 #[cfg(debug_assertions)]
 mod debug_table {
     use std::collections::HashMap;
-    use std::sync::{OnceLock, PoisonError, RwLock};
+    use std::sync::{Arc, OnceLock, PoisonError, RwLock};
 
-    type Table = RwLock<HashMap<u64, Box<str>>>;
+    type Table = RwLock<HashMap<u64, Arc<str>>>;
 
     fn table() -> &'static Table {
         static TABLE: OnceLock<Table> = OnceLock::new();
@@ -117,10 +117,16 @@ mod debug_table {
         panic!("Name hash collision: {existing:?} and {text:?} both hash to {hash:#018x}; rename one");
     }
 
+    #[cfg(test)]
+    pub(super) fn write_lock_available() -> bool {
+        table().try_write().is_ok()
+    }
+
     /// Runs `f` with the interned text, or returns `None` if `hash` was never interned.
     pub(super) fn with_text<R>(hash: u64, f: impl FnOnce(&str) -> R) -> Option<R> {
-        let map = table().read().unwrap_or_else(PoisonError::into_inner);
-        map.get(&hash).map(|text| f(text))
+        let text = table().read().unwrap_or_else(PoisonError::into_inner).get(&hash).cloned();
+        // A formatter calls its writer, which may itself intern or format a name.
+        text.map(|text| f(&text))
     }
 }
 
@@ -170,6 +176,39 @@ mod tests {
         // A const name prints as text once the same text has been interned.
         const DODGE: Name = Name::new("dodge");
         assert_eq!(DODGE.to_string(), "dodge");
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn formatting_can_reenter_the_name_table() {
+        use std::fmt::Write as _;
+
+        // The reverse table is global. Run the writer alone so its nonblocking lock check
+        // cannot mistake a parallel interning test for a formatter retaining the lock.
+        if std::env::var_os("SAPPHIRE_NAME_FORMAT_CHILD").is_none() {
+            let status = std::process::Command::new(std::env::current_exe().expect("test executable"))
+                .args(["--exact", "name::tests::formatting_can_reenter_the_name_table"])
+                .env("SAPPHIRE_NAME_FORMAT_CHILD", "1")
+                .status()
+                .expect("run isolated formatter test");
+            assert!(status.success(), "formatter child failed: {status}");
+            return;
+        }
+
+        struct Writer(String);
+        impl fmt::Write for Writer {
+            fn write_str(&mut self, text: &str) -> fmt::Result {
+                // Try first so a regression fails promptly instead of deadlocking the suite.
+                assert!(debug_table::write_lock_available(), "formatter retained the table lock");
+                let _ = Name::intern("interned by the name writer");
+                self.0.push_str(text);
+                Ok(())
+            }
+        }
+        let name = Name::intern("reentrant name");
+        let mut writer = Writer(String::new());
+        write!(writer, "{name} {name:?}").expect("format");
+        assert_eq!(writer.0, "reentrant name Name(\"reentrant name\")");
     }
 
     #[test]

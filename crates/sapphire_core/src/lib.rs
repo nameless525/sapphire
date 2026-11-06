@@ -6,6 +6,7 @@
 //! - [`name`]: [`Name`], a const-constructible 64-bit string ID.
 //! - [`guid`]: [`Guid`], 128-bit asset and document identity.
 //! - [`alloc`]: [`alloc::CountingAllocator`] and per-thread allocation scopes for rule R6.
+//! - [`path`]: existing-prefix filesystem identity; callers own output overlap/publication policy.
 //! - [`target`]: [`target::FormFactor`], the one definition of desktop versus mobile.
 //! - [`cvar`]: console variables, typed statics that runtime crates declare and dev tools set by
 //!   name (the facade of spec §5.20: only development builds link a console).
@@ -22,6 +23,7 @@ pub mod debug_draw;
 pub mod guid;
 pub mod log;
 pub mod name;
+pub mod path;
 pub mod target;
 
 pub use guid::Guid;

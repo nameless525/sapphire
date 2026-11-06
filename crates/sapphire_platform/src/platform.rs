@@ -71,6 +71,29 @@ pub struct Platform {
 }
 
 impl Platform {
+    /// A plain callback-test fixture. It initializes no SDL subsystem or directories; tests
+    /// using it must dispatch only events whose translation needs no native resource.
+    #[cfg(test)]
+    pub(crate) fn for_callback_test() -> Self {
+        Self {
+            args: Vec::new(),
+            user_dir: PathBuf::new(),
+            cache_dir: PathBuf::new(),
+            content: ContentFs::new(String::new()),
+            system_info: SystemInfo {
+                os: crate::system::Os::CURRENT,
+                device_class: crate::system::Os::CURRENT.device_class(),
+                ram_mib: 0,
+                logical_cores: 1,
+                is_emulator: false,
+            },
+            gamepads: Vec::new(),
+            last_background_transition: None,
+            frame_clock: FrameClock::new(),
+            _main_thread_only: PhantomData,
+        }
+    }
+
     /// Configures and initializes SDL. Runs inside `SDL_AppInit` on the main thread.
     pub(crate) fn new(metadata: &AppMetadata, args: Vec<String>) -> Result<Self, PlatformError> {
         apply_hints();

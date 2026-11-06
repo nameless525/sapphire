@@ -65,7 +65,8 @@ impl SimDuration {
     #[must_use]
     pub fn to_duration(self) -> Duration {
         let nanos = u128::from(self.0) * NANOS_PER_SECOND / u128::from(SUBTICKS_PER_SECOND);
-        Duration::from_nanos(u64::try_from(nanos).unwrap_or(u64::MAX))
+        // All u64 sub-tick counts fit in Duration's seconds range.
+        Duration::new((nanos / NANOS_PER_SECOND) as u64, (nanos % NANOS_PER_SECOND) as u32)
     }
 }
 
@@ -186,6 +187,17 @@ mod tests {
         assert_eq!(SimDuration::from_duration(Duration::MAX).as_subticks(), u64::MAX);
         assert_eq!(SimDuration::from_ticks(60).to_duration(), Duration::from_secs(1));
         assert_eq!(SimDuration::from_subticks(1).to_duration(), Duration::from_nanos(16_666));
+    }
+
+    #[test]
+    fn duration_conversion_preserves_the_full_subtick_range() {
+        for subticks in [0, 1, 60_000, u64::MAX / 1_000_000, u64::MAX - 1, u64::MAX] {
+            let sim = SimDuration::from_subticks(subticks);
+            let duration = sim.to_duration();
+            let expected = u128::from(subticks) * 1_000_000_000 / 60_000;
+            assert_eq!(duration.as_nanos(), expected);
+            assert!(subticks - SimDuration::from_duration(duration).as_subticks() <= 1);
+        }
     }
 
     #[test]

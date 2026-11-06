@@ -130,7 +130,7 @@ mod desktop {
     }
 
     /// A run that keeps panicking stops asking for dumps at the cap, keeps writing panic
-    /// reports, and keeps native capture up. Its monitor exits with it.
+    /// reports in a bounded rolling slot, and keeps native capture up. Its monitor exits with it.
     fn panic_dumps_stop_at_the_cap() {
         let dir = ScratchDir::new("panic-cap");
         let run = run_child("panic-cap", dir.path());
@@ -311,7 +311,7 @@ mod desktop {
 
     fn panic_cap(dir: &Path) {
         let guard = install(dir);
-        for index in 0..=MAX_PANIC_DUMPS {
+        for index in 0..MAX_PANIC_DUMPS + 4 {
             recovered_panic(index);
         }
         report("capture", &format!("{:?}", guard.native_capture()));

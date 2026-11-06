@@ -20,33 +20,80 @@ const HALF_LIFE_RATE: f32 = 1.678_347;
 pub trait SpringValue: Copy + Add<Output = Self> + Sub<Output = Self> + Mul<f32, Output = Self> {
     /// The zero value, used for an initial velocity of rest.
     const ZERO: Self;
+
+    /// Advances a spring for positive `half_life` and `dt`, returning its value and velocity.
+    /// The default uses wide coefficients with generic vector-space arithmetic: differences,
+    /// scaled terms and the result must be representable. Built-in scalar/vector values retain
+    /// ordinary f32 arithmetic and use componentwise f64 arithmetic at numeric extremes.
+    fn damped(self, target: Self, velocity: Self, half_life: f32, dt: f32) -> (Self, Self) {
+        let (rate, u, decay) = coefficients(half_life, dt);
+        if decay == 0.0 {
+            return (target, Self::ZERO);
+        }
+        let offset = self - target;
+        (
+            target + scale(offset, (1.0 + u) * decay) + scale(velocity, f64::from(dt) * decay),
+            scale(velocity, (1.0 - u) * decay) - scale(offset, rate * u * decay),
+        )
+    }
 }
 
 impl SpringValue for f32 {
     const ZERO: Self = 0.0;
+
+    #[inline]
+    fn damped(self, target: Self, velocity: Self, half_life: f32, dt: f32) -> (Self, Self) {
+        let result = damp_f32(self, target, velocity, half_life, dt);
+        if result.0.is_finite() && result.1.is_finite() {
+            return result;
+        }
+        let (rate, u, decay) = coefficients(half_life, dt);
+        if decay == 0.0 {
+            return (target, 0.0);
+        }
+        damp_component(self, target, velocity, rate, u, decay)
+    }
 }
 
-impl SpringValue for Vec2 {
-    const ZERO: Self = Vec2::ZERO;
+// Keep the original vector arithmetic on ordinary updates, and use the same scalar fallback
+// per component only at extremes. Opposite near-f32::MAX endpoints then subtract in f64.
+macro_rules! spring_vector {
+    ($ty:ty, $components:literal) => {
+        impl SpringValue for $ty {
+            const ZERO: Self = Self::ZERO;
+
+            #[inline]
+            fn damped(self, target: Self, velocity: Self, half_life: f32, dt: f32) -> (Self, Self) {
+                let result = damp_f32(self, target, velocity, half_life, dt);
+                if result.0.is_finite() && result.1.is_finite() {
+                    return result;
+                }
+                let (rate, u, decay) = coefficients(half_life, dt);
+                if decay == 0.0 {
+                    return (target, Self::ZERO);
+                }
+                let (current, target, velocity) = (self.to_array(), target.to_array(), velocity.to_array());
+                let result: [(f32, f32); $components] = std::array::from_fn(|i| {
+                    damp_component(current[i], target[i], velocity[i], rate, u, decay)
+                });
+                (Self::from_array(result.map(|pair| pair.0)), Self::from_array(result.map(|pair| pair.1)))
+            }
+        }
+    };
 }
 
-impl SpringValue for Vec3 {
-    const ZERO: Self = Vec3::ZERO;
-}
-
-impl SpringValue for Vec3A {
-    const ZERO: Self = Vec3A::ZERO;
-}
-
-impl SpringValue for Vec4 {
-    const ZERO: Self = Vec4::ZERO;
-}
+spring_vector!(Vec2, 2);
+spring_vector!(Vec3, 3);
+spring_vector!(Vec3A, 3);
+spring_vector!(Vec4, 4);
 
 /// Advances a critically damped spring from `current` toward `target` by `dt` seconds and
 /// returns the new value, updating `velocity` (units per second) in place.
 ///
 /// `half_life` is the time, in seconds, a spring at rest takes to close half the gap. A
 /// `half_life` of zero or less snaps to the target; a `dt` of zero or less changes nothing.
+/// Finite positive times, including subnormal values, are supported. Results whose true
+/// magnitude exceeds the value type's range can still overflow.
 #[must_use]
 pub fn damp<T: SpringValue>(current: T, target: T, velocity: &mut T, half_life: f32, dt: f32) -> T {
     if half_life <= 0.0 {
@@ -56,12 +103,48 @@ pub fn damp<T: SpringValue>(current: T, target: T, velocity: &mut T, half_life: 
     if dt <= 0.0 {
         return current;
     }
+    let (value, next_velocity) = current.damped(target, *velocity, half_life, dt);
+    *velocity = next_velocity;
+    value
+}
+
+/// Original operation order for bit-identical ordinary presentation updates. Overflowing
+/// candidates are local and never committed by the built-in implementations.
+fn damp_f32<T: SpringValue>(current: T, target: T, velocity: T, half_life: f32, dt: f32) -> (T, T) {
     let rate = HALF_LIFE_RATE / half_life;
     let offset = current - target;
-    let j1 = *velocity + offset * rate;
+    let j1 = velocity + offset * rate;
     let decay = (-rate * dt).exp();
-    *velocity = (*velocity - j1 * (rate * dt)) * decay;
-    target + (offset + j1 * dt) * decay
+    (target + (offset + j1 * dt) * decay, (velocity - j1 * (rate * dt)) * decay)
+}
+
+fn coefficients(half_life: f32, dt: f32) -> (f64, f64, f64) {
+    // Form the dimensionless time ratio in f64: an overflowing f32 rate alone does not
+    // imply settling when dt is comparably tiny.
+    let rate = f64::from(HALF_LIFE_RATE) / f64::from(half_life);
+    let u = rate * f64::from(dt);
+    (rate, u, (-u).exp())
+}
+
+fn damp_component(current: f32, target: f32, velocity: f32, rate: f64, u: f64, decay: f64) -> (f32, f32) {
+    let offset = f64::from(current) - f64::from(target);
+    let velocity = f64::from(velocity);
+    let value = f64::from(target) + offset * ((1.0 + u) * decay) + velocity * (u / rate * decay);
+    let velocity = velocity * ((1.0 - u) * decay) - offset * (rate * u * decay);
+    (value as f32, velocity as f32)
+}
+
+/// Applies a wide coefficient without first rounding it to zero or infinity.
+fn scale<T: SpringValue>(value: T, coefficient: f64) -> T {
+    if coefficient == 0.0 {
+        T::ZERO
+    } else if coefficient.abs() > f64::from(f32::MAX) {
+        (value * f32::MAX) * (coefficient / f64::from(f32::MAX)) as f32
+    } else if coefficient.abs() < f64::from(f32::MIN_POSITIVE) {
+        (value * f32::MIN_POSITIVE) * (coefficient / f64::from(f32::MIN_POSITIVE)) as f32
+    } else {
+        value * coefficient as f32
+    }
 }
 
 /// A value that follows a moving target through a critically damped spring.
@@ -152,6 +235,75 @@ mod tests {
         let value = damp(0.0_f32, 1.0, &mut velocity, 0.1, 1.0e6);
         assert_eq!(value, 1.0);
         assert_eq!(velocity, 0.0);
+    }
+
+    #[test]
+    fn ordinary_updates_preserve_the_original_f32_solution() {
+        for index in 1..=2048 {
+            let current = (index % 113) as f32 - 51.0;
+            let target = (index % 79) as f32 - 35.0;
+            let initial_velocity = (index % 67) as f32 - 25.0;
+            let half_life = 0.001 + (index % 100) as f32 * 0.025;
+            let dt = 0.001 + (index % 32) as f32 * 0.001;
+            let rate = HALF_LIFE_RATE / half_life;
+            let offset = current - target;
+            let j1 = initial_velocity + offset * rate;
+            let decay = (-rate * dt).exp();
+            let expected_velocity = (initial_velocity - j1 * (rate * dt)) * decay;
+            let expected_value = target + (offset + j1 * dt) * decay;
+            let mut velocity = initial_velocity;
+            let value = damp(current, target, &mut velocity, half_life, dt);
+            assert_eq!(value.to_bits(), expected_value.to_bits());
+            assert_eq!(velocity.to_bits(), expected_velocity.to_bits());
+        }
+    }
+
+    #[test]
+    fn extreme_finite_time_scales_match_a_wide_reference() {
+        for (half_life, dt, offset, initial_velocity) in [
+            (1e-40_f32, 1.0 / 60.0, 1.0_f32, 2.0_f32),
+            (0.1, f32::MAX, 1.0, 2.0),
+            (1e-40, 1e-40, 1e-10, 1e20),
+            (f32::from_bits(1), f32::from_bits(1), 1e-20, 0.0),
+            (0.25, 0.01, 1.0, 2.0),
+        ] {
+            let rate = f64::from(HALF_LIFE_RATE) / f64::from(half_life);
+            let u = rate * f64::from(dt);
+            let e = (-u).exp();
+            // Independent scalar closed form, evaluated entirely in f64.
+            let j = f64::from(initial_velocity) + f64::from(offset) * rate;
+            let expected_value = (f64::from(offset) + j * f64::from(dt)) * e;
+            let expected_velocity = (f64::from(initial_velocity) - j * u) * e;
+            let mut velocity = initial_velocity;
+            let value = damp(offset, 0.0, &mut velocity, half_life, dt);
+            let close = |a: f32, b: f64| {
+                assert!(a.is_finite(), "{a}, half-life={half_life}, dt={dt}");
+                assert!((f64::from(a) - b).abs() <= b.abs() * 2e-6 + 1e-35, "{a} vs {b}");
+            };
+            close(value, expected_value);
+            close(velocity, expected_velocity);
+            let mut vector_velocity = Vec3::splat(initial_velocity);
+            let vector = damp(Vec3::splat(offset), Vec3::ZERO, &mut vector_velocity, half_life, dt);
+            assert_eq!(vector, Vec3::splat(value));
+            assert_eq!(vector_velocity, Vec3::splat(velocity));
+        }
+    }
+
+    #[test]
+    fn finite_endpoints_do_not_need_a_representable_f32_difference() {
+        let mut velocity = 0.0;
+        let value = damp(f32::MAX, -f32::MAX, &mut velocity, 100.0, 100.0);
+        let u = f64::from(HALF_LIFE_RATE);
+        let gap = 2.0 * f64::from(f32::MAX);
+        let expected = -f64::from(f32::MAX) + gap * (1.0 + u) * (-u).exp();
+        let expected_velocity = -gap * (u / 100.0) * u * (-u).exp();
+        assert!(value.is_finite() && velocity.is_finite());
+        assert!((f64::from(value) - expected).abs() <= f64::from(f32::MAX) * 1e-7);
+        assert!((f64::from(velocity) - expected_velocity).abs() <= expected_velocity.abs() * 1e-6);
+        let mut vector_velocity = Vec4::ZERO;
+        let vector = damp(Vec4::splat(f32::MAX), Vec4::splat(-f32::MAX), &mut vector_velocity, 100.0, 100.0);
+        assert_eq!(vector, Vec4::splat(value));
+        assert_eq!(vector_velocity, Vec4::splat(velocity));
     }
 
     #[test]

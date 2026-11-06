@@ -219,13 +219,16 @@ mod tests {
         const ROWS: u32 = 400;
         const COLUMNS: u32 = 800;
         let weight = 4.0 * PI / (ROWS * COLUMNS) as f32;
+        let longitude: [(f32, f32); COLUMNS as usize] = std::array::from_fn(|column| {
+            let phi = 2.0 * PI * (column as f32 + 0.5) / COLUMNS as f32;
+            (phi.cos(), phi.sin())
+        });
         let mut sum = 0.0f64;
         for row in 0..ROWS {
             let y = 1.0 - 2.0 * (row as f32 + 0.5) / ROWS as f32;
             let radius = (1.0 - y * y).sqrt();
-            for column in 0..COLUMNS {
-                let phi = 2.0 * PI * (column as f32 + 0.5) / COLUMNS as f32;
-                sum += f64::from(f(Vec3::new(radius * phi.cos(), y, radius * phi.sin())) * weight);
+            for &(cos, sin) in &longitude {
+                sum += f64::from(f(Vec3::new(radius * cos, y, radius * sin)) * weight);
             }
         }
         sum as f32

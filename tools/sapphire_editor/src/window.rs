@@ -8,7 +8,6 @@ use sapphire_editor::cli::Command;
 use sapphire_editor::input::WindowInput;
 use sapphire_editor::recovery::Recovery;
 use sapphire_editor::{Editor, Options};
-use sapphire_platform::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use sapphire_platform::{
     App, AppControl, AppInitError, AppMetadata, Event, Platform, TextInputKind, Window, WindowDesc,
     WindowEvent,
@@ -37,13 +36,10 @@ impl Device {
         let target = if let Some(layer) = handle.metal_layer() {
             SurfaceTarget::CoreAnimationLayer(layer)
         } else {
-            SurfaceTarget::Raw {
-                window: handle.window_handle()?.as_raw(),
-                display: handle.display_handle()?.as_raw(),
-            }
+            SurfaceTarget::Raw { window: handle.raw_window_handle()?, display: handle.raw_display_handle()? }
         };
-        // SAFETY: the surface owns `handle`, which keeps the native window alive, and drops it right after
-        // itself.
+        // SAFETY: the surface owns `handle`, which keeps the native window alive. The app state (and this
+        // surface) drops on quit before SDL's run ends; the handle alone cannot extend that run.
         let mut surface = unsafe { RenderSurface::new(&instance, target, handle)? };
         let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), Some(&surface))?;
         let size = window.pixel_size();

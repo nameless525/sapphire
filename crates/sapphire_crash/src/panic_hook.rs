@@ -3,8 +3,8 @@
 use std::backtrace::Backtrace;
 use std::panic::{self, PanicHookInfo};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex, TryLockError};
 use std::time::Instant;
 
 use crate::report::{self, PanicReport};
@@ -19,13 +19,17 @@ pub(crate) struct HookContext {
 
 /// How many panics per run get a native minidump. Panics the app recovers from (an IO callback,
 /// a decode worker, an off-thread shader build) each ask for one, so a panic loop would otherwise
-/// fill the disk; every panic still gets its text report.
+/// fill the disk. Keep these first full reports plus one rolling raw report for the latest
+/// recovered panic; later panics do not repeat expensive symbolization.
 const MAX_PANIC_DUMPS: u32 = 8;
 
 /// The backtrace section of a report written before its backtrace was symbolized. A report that
 /// still says this on disk is one whose process ended while symbolizing.
 const NOT_SYMBOLIZED: &str =
     "<not symbolized: the process ended while symbolizing; the frames and modules above locate the panic>\n";
+
+const REPORT_BUDGET_EXHAUSTED: &str =
+    "<not symbolized: full-report budget exhausted; this raw report replaces earlier overflow panics>\n";
 
 /// Turns a captured backtrace into text. Tests swap it to observe the report's order of work.
 type Symbolizer = Box<dyn Fn(Backtrace) -> String + Send + Sync>;
@@ -34,8 +38,8 @@ struct HookState {
     context: HookContext,
     armed: AtomicBool,
     next_seq: AtomicU32,
-    /// Native minidumps requested for panics so far, up to [`MAX_PANIC_DUMPS`].
-    panic_dumps: AtomicU32,
+    /// Serializes the rolling report without making another panic wait on a panicking thread.
+    latest_report: Mutex<()>,
     started: Instant,
     symbolize: Symbolizer,
 }
@@ -67,7 +71,7 @@ fn install_with(context: HookContext, symbolize: Symbolizer) -> Registration {
         context,
         armed: AtomicBool::new(true),
         next_seq: AtomicU32::new(0),
-        panic_dumps: AtomicU32::new(0),
+        latest_report: Mutex::new(()),
         started,
         symbolize,
     });
@@ -85,15 +89,33 @@ fn install_with(context: HookContext, symbolize: Symbolizer) -> Registration {
 
 impl HookState {
     fn report(&self, info: &PanicHookInfo<'_>) {
+        let seq = self
+            .next_seq
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |seq| Some((seq + 1).min(MAX_PANIC_DUMPS)))
+            .expect("the bounded sequence update always succeeds");
+        // First reports have unique names. Once those are exhausted, replace one raw report.
+        // Concurrent panics may skip this rolling slot while another writer owns it, rather
+        // than racing on its .partial file or blocking inside a panic hook.
+        let _latest = if seq == MAX_PANIC_DUMPS {
+            Some(match self.latest_report.try_lock() {
+                Ok(guard) => guard,
+                Err(TryLockError::Poisoned(error)) => error.into_inner(),
+                Err(TryLockError::WouldBlock) => return,
+            })
+        } else {
+            None
+        };
         // Everything in the first version of the report is read without symbolizing: the message,
         // where and when, the raw frame IPs and the modules they are in.
         let mut report = self.describe(info);
+        if seq == MAX_PANIC_DUMPS {
+            report.backtrace = REPORT_BUDGET_EXHAUSTED.to_owned();
+        }
 
         // Write the file before logging or symbolizing anything. Under `panic = "abort"` (the
         // shipping profile) the process aborts as soon as the hook chain returns, so the report
         // must be on disk by then, and a panic raised inside the logging stack could deadlock a
         // hook that logs first.
-        let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
         let name = report::panic_file_name(&self.context.run_id, seq);
         let written = report::write_atomically(&self.context.dump_dir, &name, report.render().as_bytes());
 
@@ -103,7 +125,7 @@ impl HookState {
         // terminates through `__fastfail` and bypasses the structured-exception handler. The
         // monitor outlives the dump, since the app may recover from this panic, and a run asks
         // for at most `MAX_PANIC_DUMPS` of them.
-        if self.claim_panic_dump() {
+        if seq < MAX_PANIC_DUMPS {
             crate::request_native_panic_dump();
         }
 
@@ -111,10 +133,15 @@ impl HookState {
         // debug info from disk and walks the process's loaded images, on Apple platforms through
         // dyld's image list, which another thread unloading a library can pull from under it
         // (review PA-002). A fault or a hang there now costs only the names.
-        report.backtrace = (self.symbolize)(Backtrace::force_capture());
-        let symbolized = report::write_atomically(&self.context.dump_dir, &name, report.render().as_bytes());
-        // If the rewrite fails, the first version is still on disk.
-        let written = symbolized.or(written);
+        let written = if seq < MAX_PANIC_DUMPS {
+            report.backtrace = (self.symbolize)(Backtrace::force_capture());
+            let symbolized =
+                report::write_atomically(&self.context.dump_dir, &name, report.render().as_bytes());
+            // If the rewrite fails, the first version is still on disk.
+            symbolized.or(written)
+        } else {
+            written
+        };
 
         match written {
             Ok(path) => tracing::error!(
@@ -133,15 +160,6 @@ impl HookState {
                 report.message,
             ),
         }
-    }
-
-    /// Counts a panic dump against the run's [`MAX_PANIC_DUMPS`]; `false` once they are used up.
-    fn claim_panic_dump(&self) -> bool {
-        self.panic_dumps
-            .try_update(Ordering::Relaxed, Ordering::Relaxed, |dumps| {
-                (dumps < MAX_PANIC_DUMPS).then_some(dumps + 1)
-            })
-            .is_ok()
     }
 
     /// The report without its symbolized backtrace, which [`NOT_SYMBOLIZED`] stands in for.
@@ -197,9 +215,12 @@ mod tests {
         // report must already be on disk. The symbolizer records what the directory held. It
         // runs inside the hook, where a panic would abort the test binary, so it only records.
         let on_disk_when_symbolizing = Arc::new(Mutex::new(None));
+        let symbolizations = Arc::new(AtomicU32::new(0));
         let symbolize: Symbolizer = {
             let (dir, seen) = (dir.path().to_owned(), Arc::clone(&on_disk_when_symbolizing));
+            let count = Arc::clone(&symbolizations);
             Box::new(move |backtrace| {
+                count.fetch_add(1, Ordering::Relaxed);
                 let report = pending_reports(&dir)
                     .ok()
                     .filter(|reports| reports.len() == 1)
@@ -254,8 +275,22 @@ mod tests {
             );
         }
 
+        // Recovered panic loops retain the first full reports and one latest raw report.
+        for index in 1..=MAX_PANIC_DUMPS + 4 {
+            let _ = std::thread::spawn(move || panic!("recovered panic {index}")).join();
+        }
+        let reports = pending_reports(dir.path()).expect("list");
+        assert_eq!(reports.len(), MAX_PANIC_DUMPS as usize + 1);
+        let latest = dir.path().join(report::panic_file_name(&run_id, MAX_PANIC_DUMPS));
+        let latest =
+            PanicReport::parse(&std::fs::read_to_string(latest).expect("read latest")).expect("parse latest");
+        assert_eq!(latest.message, format!("recovered panic {}", MAX_PANIC_DUMPS + 4));
+        assert_eq!(latest.backtrace, REPORT_BUDGET_EXHAUSTED);
+        assert_eq!(symbolizations.load(Ordering::Relaxed), MAX_PANIC_DUMPS);
+        assert!(on_disk_when_symbolizing.lock().expect("lock").as_ref().is_some_and(Option::is_none));
+
         drop(registration);
         let _ = std::thread::spawn(|| panic!("after disarm")).join();
-        assert_eq!(pending_reports(dir.path()).expect("list").len(), 1);
+        assert_eq!(pending_reports(dir.path()).expect("list").len(), MAX_PANIC_DUMPS as usize + 1);
     }
 }

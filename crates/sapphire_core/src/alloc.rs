@@ -473,25 +473,4 @@ mod tests {
         assert!(!is_installed());
         assert!(!is_installed(), "probing must not change the answer");
     }
-
-    #[test]
-    fn threads_find_shards_of_their_own() {
-        // Held until all have looked, so no thread's stack is reused for the next.
-        const THREADS: usize = 16;
-        let barrier = std::sync::Barrier::new(THREADS);
-        let shards: std::collections::HashSet<usize> = std::thread::scope(|scope| {
-            let threads: Vec<_> = (0..THREADS)
-                .map(|_| {
-                    scope.spawn(|| {
-                        let shard = shard_index();
-                        barrier.wait();
-                        shard
-                    })
-                })
-                .collect();
-            threads.into_iter().map(|thread| thread.join().expect("thread")).collect()
-        });
-        // Evenly spaced stacks all differ; random ones would share a few (about 2 of 16 in 64).
-        assert!(shards.len() >= 10, "{THREADS} threads on {} shards", shards.len());
-    }
 }

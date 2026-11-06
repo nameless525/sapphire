@@ -23,6 +23,7 @@ pub(super) struct Command {
     pub color: Color,
     pub depth: Depth,
     pub lifetime: Lifetime,
+    pub generation: u64,
     /// The fixed step it was drawn in ([`begin_step`]), or 0 outside one.
     pub step: u32,
 }
@@ -86,7 +87,7 @@ impl Ring {
 
     /// The reader's side: gives `take` every command published so far, oldest first. Only one
     /// reader may run at a time, which `RINGS`' lock assures.
-    fn drain(&self, take: &mut dyn FnMut(Command)) {
+    fn drain(&self, generation: u64, take: &mut dyn FnMut(Command)) -> bool {
         let head = self.head.load(Ordering::Acquire);
         let mut tail = self.tail.load(Ordering::Relaxed);
         while tail != head {
@@ -94,10 +95,17 @@ impl Ring {
             // SAFETY: this slot is inside `tail..head`: the writer initialized it before its
             // release store of `head`, which the acquire load above saw, and won't touch it until
             // the store below hands it back.
-            take(unsafe { (*slot.get()).assume_init() });
+            let command = unsafe { (*slot.get()).assume_init() };
+            // A toggle raced the collector's state snapshot. Leave later-session commands
+            // for its next enabled collect instead of discarding a future session's work.
+            if command.generation > generation {
+                break;
+            }
+            take(command);
             tail = tail.wrapping_add(1);
         }
         self.tail.store(tail, Ordering::Release);
+        tail == head
     }
 }
 
@@ -114,20 +122,20 @@ static LATE: AtomicU32 = AtomicU32::new(0);
 /// A thread's way to its ring.
 struct Local {
     ring: Arc<Ring>,
-    /// The step this thread is running, or 0.
-    step: Cell<u32>,
 }
 
 impl Local {
     fn new() -> Self {
         let ring = Arc::new(Ring::new(THREAD_BUFFER));
         RINGS.lock().unwrap_or_else(PoisonError::into_inner).push(Arc::clone(&ring));
-        Self { ring, step: Cell::new(0) }
+        Self { ring }
     }
 }
 
 thread_local! {
     static LOCAL: Local = Local::new();
+    // Separate from the ring so ending a disabled step never initializes/allocates a ring.
+    static LOCAL_STEP: Cell<u32> = const { Cell::new(0) };
 }
 
 /// Runs `with` on this thread's ring state, or counts the call as dropped if the thread is ending
@@ -142,13 +150,20 @@ pub(super) fn warm() {
     local(|_| {});
 }
 
+fn next_step(step: u32) -> u32 {
+    step.wrapping_add(1).max(1)
+}
+
 pub(super) fn begin_step() {
-    let step = STEP.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
-    local(|local| local.step.set(step));
+    let previous = STEP
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |step| Some(next_step(step)))
+        .expect("the update always succeeds");
+    let step = next_step(previous);
+    LOCAL_STEP.with(|local| local.set(step));
 }
 
 pub(super) fn end_step() {
-    local(|local| local.step.set(0));
+    LOCAL_STEP.with(|local| local.set(0));
 }
 
 /// The number of the step begun last.
@@ -156,10 +171,14 @@ pub(super) fn current_step() -> u32 {
     STEP.load(Ordering::Relaxed)
 }
 
-fn write(what: What, style: Style) {
+fn write(what: What, style: Style, generation: u64) {
+    if generation & 1 == 0 {
+        return;
+    }
     local(|local| {
         let Style { color, depth, lifetime } = style;
-        local.ring.push(Command { what, color, depth, lifetime, step: local.step.get() });
+        let step = LOCAL_STEP.with(Cell::get);
+        local.ring.push(Command { what, color, depth, lifetime, step, generation });
     });
 }
 
@@ -167,19 +186,22 @@ fn write(what: What, style: Style) {
 #[cold]
 #[inline(never)]
 pub(super) fn write_shape(shape: Shape, style: Style) {
-    write(What::Shape(shape), style);
+    write(What::Shape(shape), style, super::generation());
 }
 
 /// Out of line, as [`write_shape`] is.
 #[cold]
 #[inline(never)]
 pub(super) fn write_label(position: Vec3, style: Style, text: fmt::Arguments<'_>) {
-    write(What::Label { position, text: LabelText::format(text) }, style);
+    let generation = super::generation();
+    if generation & 1 != 0 {
+        write(What::Label { position, text: LabelText::format(text) }, style, generation);
+    }
 }
 
 /// Hands every thread's waiting commands to `take`, each thread's in order, and returns how many
 /// calls were lost since the last time. Rings whose threads have ended go once they are empty.
-pub(super) fn drain_all(take: &mut dyn FnMut(Command)) -> u32 {
+pub(super) fn drain_all(generation: u64, take: &mut dyn FnMut(Command)) -> u32 {
     let mut rings = RINGS.lock().unwrap_or_else(PoisonError::into_inner);
     let mut dropped = LATE.swap(0, Ordering::Relaxed);
     rings.retain(|ring| {
@@ -189,9 +211,9 @@ pub(super) fn drain_all(take: &mut dyn FnMut(Command)) -> u32 {
         if ended {
             fence(Ordering::Acquire);
         }
-        ring.drain(take);
+        let empty = ring.drain(generation, take);
         dropped = dropped.saturating_add(ring.dropped.swap(0, Ordering::Relaxed));
-        !ended
+        !ended || !empty
     });
     dropped
 }
@@ -210,13 +232,21 @@ mod tests {
             depth: Depth::Tested,
             lifetime: Lifetime::Frame,
             step: index,
+            generation: 1,
         }
     }
 
     fn drained(ring: &Ring) -> Vec<u32> {
         let mut steps = Vec::new();
-        ring.drain(&mut |command| steps.push(command.step));
+        ring.drain(u64::MAX, &mut |command| steps.push(command.step));
         steps
+    }
+
+    #[test]
+    fn step_wrap_skips_the_reserved_frame_marker() {
+        assert_eq!(next_step(0), 1);
+        assert_eq!(next_step(u32::MAX - 1), u32::MAX);
+        assert_eq!(next_step(u32::MAX), 1);
     }
 
     #[test]
@@ -255,6 +285,53 @@ mod tests {
     }
 
     #[test]
+    fn a_drain_snapshot_leaves_future_session_commands_waiting() {
+        let ring = Ring::new(4);
+        ring.push(command(1));
+        ring.push(Command { generation: 3, ..command(2) });
+        let mut seen = Vec::new();
+        assert!(!ring.drain(2, &mut |command| seen.push(command.step)));
+        assert_eq!(seen, [1]);
+        assert_eq!(drained(&ring), [2]);
+    }
+
+    #[test]
+    fn disabled_collect_reclaims_a_late_publishing_ended_producer() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        use super::super::{Collector, DebugDrawList, label, set_enabled};
+
+        struct WaitingLabel(mpsc::Sender<()>, mpsc::Receiver<()>);
+        impl fmt::Display for WaitingLabel {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                self.0.send(()).expect("collector waits for formatter");
+                self.1.recv_timeout(Duration::from_secs(10)).expect("release formatter");
+                f.write_str("late old-session label")
+            }
+        }
+        // This is the only unit test using global producers; other buffer/collector tests use
+        // standalone rings/commands, and the public integration suite has its own process.
+        set_enabled(true);
+        let registered = RINGS.lock().expect("rings").len();
+        let (started, wait_started) = mpsc::channel();
+        let (release, wait_release) = mpsc::channel();
+        let producer = std::thread::spawn(move || {
+            label(Vec3::ZERO, Color::RED, format_args!("{}", WaitingLabel(started, wait_release)));
+        });
+        wait_started.recv_timeout(Duration::from_secs(10)).expect("formatter started");
+        let (mut collector, mut list) = (Collector::new(), DebugDrawList::default());
+        set_enabled(false);
+        collector.collect(0.0, &mut list);
+        release.send(()).expect("formatter waits");
+        producer.join().expect("late producer ended");
+        assert_eq!(RINGS.lock().expect("rings").len(), registered + 1, "late ring is registered");
+        collector.collect(0.0, &mut list);
+        assert!(list.labels.is_empty(), "the old session stays invisible");
+        assert_eq!(RINGS.lock().expect("rings").len(), registered, "ended ring is reclaimed while still off");
+    }
+
+    #[test]
     fn a_reader_racing_the_writer_sees_every_command_once_in_order() {
         const COMMANDS: u32 = 200_000;
         let ring = Ring::new(64);
@@ -275,7 +352,7 @@ mod tests {
             });
             loop {
                 let finished = done.load(Ordering::Acquire);
-                ring.drain(&mut |command| seen.push(command.step));
+                ring.drain(u64::MAX, &mut |command| seen.push(command.step));
                 if finished {
                     break;
                 }

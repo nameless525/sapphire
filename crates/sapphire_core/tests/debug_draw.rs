@@ -317,6 +317,68 @@ fn turning_it_off_drops_what_waits_and_what_it_held() {
     assert!(drawing.collect(0.0).lines.is_empty(), "nothing carried over");
 }
 
+#[test]
+fn toggling_before_the_first_collect_or_between_collectors_discards_old_draws() {
+    let mut drawing = Drawing::new(true);
+    dd::line(Vec3::ZERO, Vec3::X, Color::RED);
+    dd::set_enabled(false);
+    assert!(drawing.collect(0.0).lines.is_empty());
+    dd::set_enabled(true);
+    assert!(drawing.collect(0.0).lines.is_empty());
+    dd::line(Vec3::ZERO, Vec3::X, Style::new(Color::RED).for_seconds(100.0));
+    assert_eq!(drawing.collect(0.0).lines.len(), 1);
+    dd::set_enabled(false);
+    let mut replacement = Collector::new();
+    replacement.collect(0.0, &mut drawing.list);
+    dd::set_enabled(true);
+    assert!(drawing.collect(0.0).lines.is_empty());
+    replacement.collect(0.0, &mut drawing.list);
+    assert!(drawing.list.lines.is_empty());
+}
+
+#[test]
+fn a_label_published_after_disable_belongs_to_its_original_session() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    struct WaitingLabel(mpsc::Sender<()>, mpsc::Receiver<()>);
+    impl std::fmt::Display for WaitingLabel {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            self.0.send(()).expect("test is waiting");
+            self.1.recv_timeout(Duration::from_secs(10)).expect("release formatter");
+            f.write_str("old session")
+        }
+    }
+    let mut drawing = Drawing::new(true);
+    let (started, wait_started) = mpsc::channel();
+    let (release, wait_release) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        dd::label(Vec3::ZERO, Color::RED, format_args!("{}", WaitingLabel(started, wait_release)));
+    });
+    wait_started.recv_timeout(Duration::from_secs(10)).expect("formatter started");
+    dd::set_enabled(false);
+    drawing.collect(0.0);
+    dd::set_enabled(true);
+    release.send(()).expect("formatter waits");
+    worker.join().expect("label producer");
+    dd::label(Vec3::ZERO, Color::GREEN, format_args!("new session"));
+    let list = drawing.collect(0.0);
+    assert_eq!(list.labels.len(), 1);
+    assert_eq!(list.labels[0].text.as_str(), "new session");
+}
+
+#[test]
+fn ending_a_step_while_disabled_clears_the_thread_marker() {
+    let mut drawing = Drawing::new(true);
+    dd::begin_step();
+    dd::set_enabled(false);
+    dd::end_step();
+    dd::set_enabled(true);
+    dd::line(Vec3::ZERO, Vec3::X, Color::RED);
+    assert_eq!(drawing.collect(0.0).stats.held, 0);
+    assert!(drawing.collect(0.0).lines.is_empty());
+}
+
 /// What the disabled path costs a call, on this machine: run it in release, alone, with
 /// `cargo test -p sapphire_core --release --test debug_draw disabled_path_cost -- --ignored --nocapture`.
 /// The least of many short batches, taken in turn, which a loaded machine disturbs least.

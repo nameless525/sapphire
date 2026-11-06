@@ -9,6 +9,7 @@ fn join_waits_for_b_before_propagating_a_panic() {
     static B_STARTED: AtomicBool = AtomicBool::new(false);
     static B_FINISHED: AtomicBool = AtomicBool::new(false);
 
+    let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {}));
     let result = std::panic::catch_unwind(|| {
         let borrowed = [1u64; 4];
@@ -29,7 +30,7 @@ fn join_waits_for_b_before_propagating_a_panic() {
         )
     });
     let finished_before_unwind_completed = B_FINISHED.load(SeqCst);
-    let _ = std::panic::take_hook();
+    std::panic::set_hook(previous);
     assert!(result.is_err(), "the panic from `a` propagates");
     assert!(finished_before_unwind_completed, "`b` finished before `join` unwound past its borrows");
 }

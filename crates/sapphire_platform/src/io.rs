@@ -218,7 +218,8 @@ impl Shared {
 /// constant time.
 ///
 /// Dropping it cancels queued reads (their callbacks run with [`ReadError::Cancelled`]) and joins
-/// the thread after the read in progress.
+/// the thread after the read in progress. If its last owner is dropped in an IO callback,
+/// shutdown finishes after that callback returns; the worker never joins itself.
 pub struct IoThread {
     content: ContentFs,
     shared: Arc<Shared>,
@@ -227,11 +228,14 @@ pub struct IoThread {
 
 impl std::fmt::Debug for IoThread {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let state = self.shared.lock();
+        let (queued, files) = {
+            let state = self.shared.lock();
+            (state.queue.len(), state.files.iter().filter(|file| file.is_some()).count())
+        };
         f.debug_struct("IoThread")
             .field("content", &self.content)
-            .field("queued", &state.queue.len())
-            .field("files", &state.files.iter().filter(|file| file.is_some()).count())
+            .field("queued", &queued)
+            .field("files", &files)
             .finish()
     }
 }
@@ -324,6 +328,7 @@ impl Drop for IoThread {
             call_back(request.done, Err(ReadError::Cancelled));
         }
         if let Some(thread) = self.thread.take()
+            && thread.thread().id() != std::thread::current().id()
             && thread.join().is_err()
         {
             tracing::error!(target: LOG_TARGET, "the IO thread panicked");
@@ -499,6 +504,89 @@ mod tests {
                 9_999 => assert!(result.unwrap_err().contains("past the end")),
                 _ => assert_eq!(result.unwrap(), expected[offset as usize..][..4]),
             }
+        }
+    }
+
+    #[test]
+    fn debug_formatting_can_query_the_same_io_thread() {
+        use std::fmt::Write as _;
+
+        struct Writer<'a> {
+            io: &'a IoThread,
+            text: String,
+        }
+        impl std::fmt::Write for Writer<'_> {
+            fn write_str(&mut self, text: &str) -> std::fmt::Result {
+                // Fail without blocking on a regressed formatter. The worker is gated inside
+                // a callback below, so no other thread can be holding this mutex.
+                assert!(self.io.shared.state.try_lock().is_ok(), "formatter retained IO state");
+                assert_eq!(self.io.queued(), 0);
+                self.text.push_str(text);
+                Ok(())
+            }
+        }
+        let content = Content::new("debug-reentrant");
+        let io = IoThread::start(content.fs.clone()).expect("start");
+        let (file, _) = io.open("data.bin").expect("open");
+        let (started, wait_started) = mpsc::channel();
+        let (release, wait_release) = mpsc::channel();
+        io.read(
+            file,
+            0,
+            1,
+            IoPriority::Normal,
+            Box::new(move |_| {
+                started.send(()).expect("test waits");
+                let _ = wait_release.recv_timeout(Duration::from_secs(10));
+            }),
+        );
+        wait_started.recv_timeout(Duration::from_secs(10)).expect("callback started");
+        let mut writer = Writer { io: &io, text: String::new() };
+        write!(writer, "{io:?}").expect("format");
+        assert!(writer.text.contains("queued: 0"));
+        assert!(writer.text.contains("files: 1"));
+        release.send(()).expect("callback waits");
+    }
+
+    #[test]
+    fn the_last_owner_can_drop_inside_a_completion_callback() {
+        for (name, offset, succeeds) in [("self-drop-ok", 0, true), ("self-drop-error", 10_000, false)] {
+            let content = Content::new(name);
+            let io = Arc::new(IoThread::start(content.fs.clone()).expect("start"));
+            let (file, _) = io.open("data.bin").expect("open");
+            let owner = Arc::clone(&io);
+            let (started, wait_started) = mpsc::channel();
+            let (release, wait_release) = mpsc::channel();
+            let (finished, wait_finished) = mpsc::channel();
+            io.read(
+                file,
+                offset,
+                1,
+                IoPriority::Critical,
+                Box::new(move |result| {
+                    assert_eq!(result.is_ok(), succeeds);
+                    started.send(()).expect("test waits");
+                    wait_release.recv_timeout(Duration::from_secs(10)).expect("release owner");
+                    drop(owner);
+                    // A caught self-join panic used to skip this remainder of the callback.
+                    finished.send(()).expect("test waits for callback remainder");
+                }),
+            );
+            wait_started.recv_timeout(Duration::from_secs(10)).expect("callback started");
+            let (cancelled, wait_cancelled) = mpsc::channel();
+            io.read(
+                file,
+                1,
+                1,
+                IoPriority::Normal,
+                Box::new(move |result| {
+                    cancelled.send(matches!(result, Err(ReadError::Cancelled))).expect("test waits");
+                }),
+            );
+            drop(io);
+            release.send(()).expect("callback waits");
+            assert!(wait_cancelled.recv_timeout(Duration::from_secs(10)).expect("queued cancellation"));
+            wait_finished.recv_timeout(Duration::from_secs(10)).expect("callback completed after drop");
         }
     }
 

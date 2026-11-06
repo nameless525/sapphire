@@ -106,7 +106,11 @@ impl LocalClock {
         } else {
             SimDuration::from_subticks(scale::advance(self.factor(world), &mut self.remainder))
         };
+        let before = self.now;
         self.now += delta;
+        // At the saturating timeline horizon only the representable advance occurred.
+        // Presentation must not repeatedly interpolate a step that the clock cannot take.
+        let delta = self.now - before;
         self.last_delta = delta;
         delta
     }
@@ -271,6 +275,18 @@ mod tests {
         assert_eq!(scale, b.scales.factor());
         a.remainder = 1;
         assert_ne!(bytes(&a)[4..], bytes(&b)[4..], "the carry counts");
+    }
+
+    #[test]
+    fn presentation_stops_at_the_saturating_timeline_horizon() {
+        let world = ScaledClock::new();
+        let mut clock = LocalClock::new(ClockId(1));
+        clock.now = SimTime::from_subticks(u64::MAX - 500);
+        assert_eq!(clock.tick(&world).as_subticks(), 500);
+        assert_eq!(clock.now().as_subticks(), u64::MAX);
+        assert_eq!(clock.tick(&world), SimDuration::ZERO);
+        assert_eq!(clock.last_delta(), SimDuration::ZERO);
+        assert_eq!(clock.presented_ticks(0.0), clock.presented_ticks(1.0));
     }
 
     #[test]

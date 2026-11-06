@@ -13,7 +13,6 @@
 use std::process::ExitCode;
 use std::time::Duration;
 
-use sapphire_platform::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use sapphire_platform::{
     App, AppControl, AppInitError, AppMetadata, Event, Platform, Window, WindowDesc, WindowEvent, sdl_log,
 };
@@ -49,11 +48,7 @@ impl App for Smoke {
         let handle = window.surface_handle()?;
         let surface = match handle.metal_layer() {
             Some(layer) => format!("CAMetalLayer at {layer:p}"),
-            None => format!(
-                "{:?} / {:?}",
-                handle.window_handle().map(|h| h.as_raw()),
-                handle.display_handle().map(|h| h.as_raw()),
-            ),
+            None => format!("{:?} / {:?}", handle.raw_window_handle(), handle.raw_display_handle(),),
         };
         info!(
             target: LOG_TARGET,

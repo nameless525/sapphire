@@ -6,7 +6,7 @@ use std::time::Duration;
 use sapphire_assets::AssetStats;
 use sapphire_gameplay::ActorId;
 use sapphire_gameplay::replay::ActionSource;
-use sapphire_platform::raw_window_handle::{HandleError, HasDisplayHandle, HasWindowHandle};
+use sapphire_platform::raw_window_handle::HandleError;
 use sapphire_platform::{
     App, AppControl, AppInitError, AppMetadata, DeviceClass, Event, LifecycleEvent, Os, Platform,
     SurfaceHandle, Window, WindowDesc, WindowEvent,
@@ -979,8 +979,8 @@ impl SandboxApp {
         let size = self.window.pixel_size();
         let result = self.window.surface_handle().map_err(|error| error.to_string()).and_then(|handle| {
             let target = surface_target(&handle).map_err(|error| error.to_string())?;
-            // SAFETY: the surface owns `handle`, which keeps the native window alive, and drops
-            // it right after itself.
+            // SAFETY: the surface owns `handle`, retaining the native window. App state drops
+            // the surface before the SDL run ends; the handle cannot extend that run.
             let mut surface = unsafe { RenderSurface::new(self.gpu.instance(), target, handle) }
                 .map_err(|error| error.to_string())?;
             surface
@@ -1414,8 +1414,8 @@ fn create_device(platform: &Platform, window: &Window, debug: GpuDebug) -> Resul
     let instance = GpuInstance::new(&GpuInstanceDesc { debug, ..GpuInstanceDesc::default() })?;
     let handle = window.surface_handle()?;
     let target = surface_target(&handle)?;
-    // SAFETY: the surface owns `handle`, which keeps the native window alive, and drops it
-    // right after itself.
+    // SAFETY: the surface owns `handle`, retaining the native window. App state drops the
+    // surface before the SDL run ends; the handle cannot extend that run.
     let mut surface = unsafe { RenderSurface::new(&instance, target, handle)? };
     let pipeline_cache = PipelineCacheDesc {
         dir: platform.cache_dir().join("pipeline_cache"),
@@ -1585,10 +1585,7 @@ fn surface_target(handle: &SurfaceHandle) -> Result<SurfaceTarget, HandleError> 
     if let Some(layer) = handle.metal_layer() {
         return Ok(SurfaceTarget::CoreAnimationLayer(layer));
     }
-    Ok(SurfaceTarget::Raw {
-        window: handle.window_handle()?.as_raw(),
-        display: handle.display_handle()?.as_raw(),
-    })
+    Ok(SurfaceTarget::Raw { window: handle.raw_window_handle()?, display: handle.raw_display_handle()? })
 }
 
 #[cfg(test)]

@@ -1015,12 +1015,14 @@ impl Checker {
                 return None;
             }
         }
-        let root = (0..=ticks).map(|tick| keyed_root(&motion.root, tick)).collect();
+        let mut root_next = 0;
+        let root = (0..=ticks).map(|tick| keyed_root(&motion.root, tick, &mut root_next)).collect();
         let paths = motion
             .paths
             .iter()
             .map(|path| {
-                let samples = (0..=ticks).map(|tick| keyed_path(&path.keys, tick)).collect();
+                let mut path_next = 0;
+                let samples = (0..=ticks).map(|tick| keyed_path(&path.keys, tick, &mut path_next)).collect();
                 BakedPath::new(Name::intern(&path.name), samples)
             })
             .collect();
@@ -1073,7 +1075,7 @@ impl Checker {
     fn with_clip(
         &mut self,
         baked: BakedTables,
-        keyed: &BakedTables,
+        keyed: BakedTables,
         motion: &MotionDocument,
     ) -> Option<BakedTables> {
         let (clip_ticks, ticks) = (baked.ticks(), keyed.ticks());
@@ -1087,9 +1089,11 @@ impl Checker {
             );
             return None;
         }
-        let tables = if motion.root.is_empty() { baked.root_samples() } else { keyed.root_samples() };
-        let paths = baked.paths().iter().chain(keyed.paths()).cloned().collect();
-        match BakedTables::new(tables.to_vec(), paths) {
+        let (baked_root, mut paths) = baked.into_parts();
+        let (keyed_root, keyed_paths) = keyed.into_parts();
+        let root = if motion.root.is_empty() { baked_root } else { keyed_root };
+        paths.extend(keyed_paths);
+        match BakedTables::new(root, paths) {
             Ok(tables) => Some(tables),
             Err(error) => {
                 self.add("motion", error.to_string());
@@ -1121,13 +1125,22 @@ pub(crate) fn runs_cover(runs: &[Span], from: u32, to: u32) -> bool {
     from >= to || after.checked_sub(1).is_some_and(|run| to <= runs[run].to)
 }
 
+// A curve's samples advance from tick zero only after strict key-order validation.
+// Each root/path owns its next-key index for this one bake; no state escapes it.
+fn next_key<K>(keys: &[K], at: impl Fn(&K) -> u32, tick: u32, next: &mut usize) -> usize {
+    while keys.get(*next).is_some_and(|key| at(key) <= tick) {
+        *next += 1;
+    }
+    *next
+}
+
 /// The keys around `tick`, and how far between them. `None` if there are none at all.
-fn around<K: Copy>(keys: &[K], at: impl Fn(&K) -> u32, tick: u32) -> Option<(K, K, f32)> {
-    let after = keys.iter().position(|key| at(key) > tick);
+fn around<K: Copy>(keys: &[K], at: impl Fn(&K) -> u32, tick: u32, next: &mut usize) -> Option<(K, K, f32)> {
+    let after = next_key(keys, &at, tick, next);
     match after {
-        None => keys.last().map(|&key| (key, key, 0.0)),
-        Some(0) => keys.first().map(|&key| (key, key, 0.0)),
-        Some(index) => {
+        index if index == keys.len() => keys.last().map(|&key| (key, key, 0.0)),
+        0 => keys.first().map(|&key| (key, key, 0.0)),
+        index => {
             let (a, b) = (keys[index - 1], keys[index]);
             let t = (tick - at(&a)) as f32 / (at(&b) - at(&a)) as f32;
             Some((a, b, t))
@@ -1139,14 +1152,15 @@ fn lerp3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
     std::array::from_fn(|i| a[i] + (b[i] - a[i]) * t)
 }
 
-fn keyed_root(keys: &[RootKey], tick: u32) -> RootSample {
+fn keyed_root(keys: &[RootKey], tick: u32, next: &mut usize) -> RootSample {
     if tick == 0 {
         return RootSample::ZERO;
     }
     // The root's implicit key at tick 0.
     let at_zero = RootKey { at: 0, offset: [0.0; 3], yaw: 0.0 };
-    let before = keys.iter().rev().find(|key| key.at <= tick).copied().unwrap_or(at_zero);
-    let Some(after) = keys.iter().find(|key| key.at > tick).copied() else {
+    let after = next_key(keys, |key| key.at, tick, next);
+    let before = after.checked_sub(1).map_or(at_zero, |index| keys[index]);
+    let Some(&after) = keys.get(after) else {
         return RootSample { translation: before.offset, yaw: before.yaw };
     };
     let t = (tick - before.at) as f32 / (after.at - before.at) as f32;
@@ -1156,8 +1170,8 @@ fn keyed_root(keys: &[RootKey], tick: u32) -> RootSample {
     }
 }
 
-fn keyed_path(keys: &[PathKey], tick: u32) -> PathSample {
-    let Some((a, b, t)) = around(keys, |key| key.at, tick) else {
+fn keyed_path(keys: &[PathKey], tick: u32, next: &mut usize) -> PathSample {
+    let Some((a, b, t)) = around(keys, |key| key.at, tick, next) else {
         return PathSample::IDENTITY;
     };
     if t == 0.0 {
@@ -1352,7 +1366,7 @@ fn compile_motion(
     // A clip's block and the keys beside it are checked before a cook is asked for anything.
     let keyed = check.motion(motion, ticks)?;
     match tables(mv) {
-        Ok(Some(baked)) => check.with_clip(baked, &keyed, motion),
+        Ok(Some(baked)) => check.with_clip(baked, keyed, motion),
         Ok(None) => {
             check.add("motion", "this names a clip, which only a cook can bake".to_owned());
             None
@@ -2275,8 +2289,9 @@ mod tests {
                 &["`brain`", "rise window 12..12 is empty"],
             ),
         ];
+        let baseline = slice();
         for (what, edit, expected) in cases {
-            let mut document = slice();
+            let mut document = baseline.clone();
             edit(&mut document);
             let Err(MoveSetError::Invalid(issues)) = document.compile() else {
                 panic!("{what}: compiled");
@@ -2421,8 +2436,9 @@ mod tests {
             ((1, 2), &[(1, 2)], true),
             ((1, 2), &[(0, 1), (2, 3)], false),
         ];
+        let baseline = slice();
         for &((from, to), iframes, covered) in rows {
-            let mut document = slice();
+            let mut document = baseline.clone();
             let dodge = document.moves.iter_mut().find(|mv| mv.name == "dodge").expect("in the content");
             (dodge.perfect_dodge[0].from, dodge.perfect_dodge[0].to) = (from, to);
             dodge.invulnerable = iframes.iter().map(|&(from, to)| SpanDocument { from, to }).collect();
@@ -2658,6 +2674,54 @@ mod tests {
                  slow_motion: (per_mille: {per_mille}, steps: 1))"
             );
             assert_eq!(compiled(&text)[0].slow_motion.unwrap().per_mille, per_mille);
+        }
+    }
+
+    #[test]
+    fn ordered_key_lookup_preserves_linear_scan_bits() {
+        for count in [0, 1, 2, 16, 128, 3601] {
+            let keys: Vec<RootKey> = (0..count)
+                .map(|index| RootKey {
+                    at: index * 3,
+                    offset: [index as f32 * 0.125, -0.0, index as f32 * -0.03125],
+                    yaw: index as f32 * 0.0625,
+                })
+                .collect();
+            let paths: Vec<PathKey> = keys
+                .iter()
+                .map(|key| PathKey { at: key.at, offset: key.offset, rotation: identity() })
+                .collect();
+            let end = keys.last().map_or(3, |key| key.at + 3);
+            let mut root_next = 0;
+            let mut path_next = 0;
+            for tick in 0..=end {
+                let zero = RootKey { at: 0, offset: [0.0; 3], yaw: 0.0 };
+                let before = keys.iter().rev().find(|key| key.at <= tick).copied().unwrap_or(zero);
+                let root = if tick == 0 {
+                    RootSample::ZERO
+                } else if let Some(after) = keys.iter().find(|key| key.at > tick) {
+                    let t = (tick - before.at) as f32 / (after.at - before.at) as f32;
+                    RootSample {
+                        translation: lerp3(before.offset, after.offset, t),
+                        yaw: before.yaw + (after.yaw - before.yaw) * t,
+                    }
+                } else {
+                    RootSample { translation: before.offset, yaw: before.yaw }
+                };
+                let actual = keyed_root(&keys, tick, &mut root_next);
+                assert_eq!(actual.translation.map(f32::to_bits), root.translation.map(f32::to_bits));
+                assert_eq!(actual.yaw.to_bits(), root.yaw.to_bits());
+                let linear = paths.iter().position(|key| key.at > tick);
+                let reference = match linear {
+                    None => paths.last().map(|&key| (key, key, 0.0)),
+                    Some(0) => paths.first().map(|&key| (key, key, 0.0)),
+                    Some(index) => {
+                        let (a, b) = (paths[index - 1], paths[index]);
+                        Some((a, b, (tick - a.at) as f32 / (b.at - a.at) as f32))
+                    }
+                };
+                assert_eq!(around(&paths, |key| key.at, tick, &mut path_next), reference);
+            }
         }
     }
 

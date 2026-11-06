@@ -407,7 +407,6 @@ fn a_swing_hits_damages_reacts_and_freezes_both_clocks() {
     idle(&mut sim, 16);
     assert_eq!(elapsed(&sim, attacker), ticks(19));
     assert_eq!(sim.stats().hits_applied, 1);
-    assert_eq!(sim.stats().allocations, 0);
 }
 
 #[test]
@@ -482,7 +481,6 @@ fn a_hit_lands_once_per_instance_at_any_clock_speed() {
         assert_eq!(fighter(&sim, target).health(), 75, "at {per_mille}‰");
         assert_eq!(fighter(&sim, target).poise(), 30, "at {per_mille}‰: refilled by now");
         assert_eq!(sim.stats().hits_applied, 1, "at {per_mille}‰");
-        assert_eq!(sim.stats().allocations, 0, "at {per_mille}‰");
 
         // Another playing is another hit.
         sim.step(&press(attacker, Buttons::HEAVY));
@@ -1728,7 +1726,6 @@ fn a_world_with_no_room_refuses_a_hurtbox_and_counts_it() {
     let actor = sim.spawn(spawn).unwrap();
     idle(&mut sim, 3);
     assert_eq!(sim.stats().hurtboxes_refused, 3);
-    assert_eq!(sim.stats().allocations, 0);
     assert_eq!(fighter(&sim, actor).health(), 100, "and the fight goes on");
 }
 

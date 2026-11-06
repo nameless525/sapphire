@@ -35,7 +35,12 @@ fn collider(id: u32, shape: Shape, position: Vec3) -> StaticCollider {
 
 /// A ground wide enough never to leave, its top at y = 0, and `extra` boxes and capsules.
 pub fn ground_with(extra: &[(Shape, Vec3)]) -> PhysicsWorld {
-    let ground = (Shape::Box { half_extents: Vec3::new(400.0, 1.0, 400.0) }, Vec3::new(0.0, -1.0, 0.0));
+    ground_with_at(extra, 0.0)
+}
+
+pub fn ground_with_at(extra: &[(Shape, Vec3)], height: f32) -> PhysicsWorld {
+    let ground =
+        (Shape::Box { half_extents: Vec3::new(400.0, 1.0, 400.0) }, Vec3::new(0.0, height - 1.0, 0.0));
     let colliders = std::iter::once(&ground)
         .chain(extra)
         .enumerate()
@@ -132,12 +137,22 @@ pub fn run(
         let time = (start + frame) as f32 / rate as f32;
         let moment = script(time);
         let pose = camera.update(&moment.frame(dt), world);
+        assert_finite_pose(&pose);
         each(time, &pose, &moment);
     }
 }
 
+/// Reject invalid poses before a physics query or numeric reduction can conceal them.
+pub fn assert_finite_pose(pose: &CameraPose) {
+    assert!(pose.eye.is_finite() && pose.rotation.is_finite() && pose.fov_y.is_finite(), "{pose:?}");
+    assert!((pose.rotation.length_squared() - 1.0).abs() < 1e-3, "{pose:?}");
+    assert!(pose.fov_y > 0.0 && pose.fov_y < std::f32::consts::PI, "{pose:?}");
+}
+
 /// Where `point` lands on the screen: −1 to 1 each way, and its depth along the view.
 pub fn screen_of(pose: &CameraPose, point: Vec3) -> (f32, f32, f32) {
+    assert_finite_pose(pose);
+    assert!(point.is_finite(), "{point:?}");
     let offset = point - pose.eye;
     let forward = pose.rotation * Vec3::Z;
     let right = pose.rotation * Vec3::NEG_X;
@@ -158,6 +173,7 @@ pub fn frame_use(pose: &CameraPose, subject: &Subject) -> Vec2 {
         }
         let half = (pose.fov_y * 0.5).tan();
         let across = x.abs() + subject.radius / (depth * half * ASPECT);
+        assert!(across.is_finite() && y.is_finite(), "{pose:?}, {subject:?}");
         worst = worst.max(Vec2::new(across, y.abs()));
     }
     worst
@@ -165,6 +181,7 @@ pub fn frame_use(pose: &CameraPose, subject: &Subject) -> Vec2 {
 
 /// The filter and sphere the camera's own collision uses.
 pub fn eye_overlaps(world: &PhysicsWorld, pose: &CameraPose, radius: f32) -> Option<f32> {
+    assert_finite_pose(pose);
     let filter = QueryFilter::new(Group::World.mask() | Group::CameraBlocker.mask());
     world.penetration(&Shape::Sphere { radius }, Pose::at(pose.eye), &filter).map(|deep| deep.depth)
 }
@@ -187,6 +204,8 @@ pub struct Motion {
 
 impl Motion {
     pub fn add(&mut self, pose: &CameraPose, dt: f32) {
+        assert_finite_pose(pose);
+        assert!(dt.is_finite() && dt > 0.0, "dt={dt}");
         let now = (pose.eye, pose.rotation);
         if let Some((eye, rotation)) = self.last {
             let speed = (now.0 - eye) / dt;
@@ -194,6 +213,7 @@ impl Motion {
             let change = now.1 * rotation.inverse();
             let change = if change.w < 0.0 { -change } else { change };
             let turn = Vec3::new(change.x, change.y, change.z) * (2.0 / dt);
+            assert!(speed.is_finite() && turn.is_finite(), "{pose:?}, dt={dt}");
             self.top_speed = self.top_speed.max(speed.length());
             self.top_turn = self.top_turn.max(turn.length());
             if let Some((last_speed, last_turn)) = self.last_speed {

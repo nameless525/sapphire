@@ -191,9 +191,8 @@ impl App for SandboxApp {
             input.listen_for_fight_restart()?;
         }
         // Before any GPU work, so a bad scenario or a file in the way costs nothing and says why.
-        show.fight.combat =
-            options.combat.as_ref().map(Combat::new).transpose().map_err(AppInitError::msg)?;
-        if let (Some(_), Some(combat)) = (options.arena, &show.fight.combat) {
+        let combat = options.combat.as_ref().map(Combat::new).transpose().map_err(AppInitError::msg)?;
+        if let (Some(_), Some(combat)) = (options.arena, &combat) {
             game_combat::arena::check_scenario(combat, options.party).map_err(AppInitError::msg)?;
         }
         let mut scene = Scene::with_character(renderer.character, renderer.character_bounds, options.skinned);
@@ -346,6 +345,7 @@ impl App for SandboxApp {
                 .play_cues(&mut scene, sapphire_stage::vfx::budget(quality.active().id))
                 .map_err(AppInitError::msg)?;
         }
+        show.fight.attach_combat(combat);
         // The stage after the hour, which places its pillars.
         if let (Some(layout), Some(meshes)) = (options.stage, renderer.stage) {
             scene.spawn_studio(layout, meshes);

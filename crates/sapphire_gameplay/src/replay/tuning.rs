@@ -191,6 +191,28 @@ mod tests {
         assert_eq!(player.finish().trail, played.trail);
     }
 
+    #[test]
+    fn a_script_cannot_extend_a_recording_ended_by_an_edit() {
+        let mut recording = Recording::new(duel(), duel().config).expect("sets up");
+        let script = super::super::find_script("idle").expect("listed");
+        recording.run_script(script, 3).expect("records");
+        let id = duel().set_of(SLICE).expect("its document");
+        assert_eq!(
+            recording.tune_move_set(id, test_moves().expect("compiles")),
+            Some(Tuned::Unchanged { revision: 0 })
+        );
+        recording.run_script(script, 4).expect("an unchanged save leaves it recording");
+        recording.tune_move_set(id, slower_light()).expect("its set");
+        let before = recording.simulation().checksum();
+        for target in [0, 3, 4] {
+            recording.run_script(script, target).expect("already retained");
+        }
+        assert!(matches!(recording.run_script(script, 5), Err(PlayError::RecordingEnded { tick: 4 })));
+        assert_eq!(recording.simulation().tick(), 4);
+        assert_eq!(recording.recorded_ticks(), 4);
+        assert_eq!(recording.simulation().checksum(), before, "refusal consumed nothing");
+    }
+
     fn moving_at(run_speed: f32) -> MoveSet {
         let mut document = slower_document();
         document.moves =

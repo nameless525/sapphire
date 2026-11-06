@@ -190,6 +190,18 @@ fn revision(number: u32, set: MoveSet) -> Revision {
 }
 
 impl MoveLibrary {
+    /// Start a fresh fight on each latest set. Hashes, resolved profiles and root paths are immutable
+    /// preparation; old pinned revisions have no users after the actor pool is reset.
+    pub(crate) fn restart(&mut self) {
+        self.stand_ins.clear();
+        for revisions in &mut self.sets {
+            let mut latest = revisions.pop().expect("a loaded set has a current revision");
+            revisions.clear();
+            latest.number = 0;
+            revisions.push(latest);
+        }
+    }
+
     pub(crate) fn add(&mut self, set: MoveSet) -> MoveSetId {
         let id = MoveSetId(u32::try_from(self.sets.len()).expect("fewer than 2³² sets"));
         let stand_in = self.stand_ins.iter().position(|(stands_for, _)| *stands_for == id);

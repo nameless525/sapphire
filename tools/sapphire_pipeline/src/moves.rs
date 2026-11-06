@@ -267,6 +267,10 @@ pub fn bake(clip: &ClipMotionDocument, input: &TableInput<'_>) -> Result<BakedTa
         RootSource::InPlace => vec![RootSample::ZERO; count],
     };
 
+    if clip.paths.is_empty() {
+        return Ok(BakedTables::new(root, Vec::new())?);
+    }
+
     let joints = skeleton.parents.len();
     let mut followed = Vec::with_capacity(clip.paths.len());
     // Only joints on the way to a followed one need walking: a VRM's hair and skirts don't.
@@ -290,18 +294,19 @@ pub fn bake(clip: &ClipMotionDocument, input: &TableInput<'_>) -> Result<BakedTa
         });
     }
 
+    let needed: Vec<usize> = (0..joints).filter(|&joint| needed[joint]).collect();
+    let rest_rotations: Vec<Quat> =
+        needed.iter().map(|&joint| clip::rest_rotation(skeleton, joint)).collect();
     let rotations = joint_tracks(&sampled.rotations, joints);
     let translations = joint_tracks(&sampled.translations, joints);
     let scales = joint_tracks(&sampled.scales, joints);
     let mut model = vec![(Affine3::IDENTITY, Quat::IDENTITY); joints];
-    let mut samples: Vec<Vec<PathSample>> = vec![Vec::with_capacity(count); followed.len()];
+    let mut samples: Vec<Vec<PathSample>> = (0..followed.len()).map(|_| Vec::with_capacity(count)).collect();
     for tick in 0..count {
-        for joint in (0..joints).filter(|&joint| needed[joint]) {
+        for (&joint, &rest_rotation) in needed.iter().zip(&rest_rotations) {
             let rest = &skeleton.rest[joint];
-            let rotation = rotations[joint].map_or_else(
-                || clip::rest_rotation(skeleton, joint),
-                |track| det::quat_normalize(track[tick]),
-            );
+            let rotation =
+                rotations[joint].map_or_else(|| rest_rotation, |track| det::quat_normalize(track[tick]));
             let local = Affine3::from_scale_rotation_translation(
                 scales[joint].map_or(Vec3::from(rest.scale), |track| track[tick]),
                 rotation,

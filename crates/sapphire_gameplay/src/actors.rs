@@ -298,6 +298,56 @@ pub(crate) fn resolve_actor_requests(
     }
 }
 
+/// Reset the built-in fight's complete pool without structural ECS changes. This is deliberately
+/// separate from despawn: a fresh fight restarts actor and clock identities and refusal history.
+pub(crate) fn restart_pool(
+    mut requests: ResMut<'_, ActorRequests>,
+    mut table: ResMut<'_, ActorTable>,
+    mut world_clock: ResMut<'_, WorldClock>,
+    mut characters: ResMut<'_, CharacterWorld>,
+    mut actors: Query<'_, '_, ActorState<'_>>,
+) {
+    for (id, entity) in table.live.drain(..) {
+        characters.despawned(id);
+        requests.free.push(entity);
+    }
+    let requests = &mut *requests;
+    requests.free.extend(requests.spawns.drain(..).map(|pending| pending.entity));
+    requests.despawns.clear();
+    requests.next_id = 1;
+    requests.refused = 0;
+    debug_assert_eq!(requests.free.len(), requests.capacity as usize);
+    // new() issues a clock to every pooled entity before the first real spawn does the same.
+    for (
+        mut clock,
+        mut controls,
+        mut transform,
+        mut runner,
+        mut ring,
+        mut output,
+        mut target,
+        mut controller,
+        mut fighter,
+        mut brain,
+    ) in &mut actors
+    {
+        *clock = world_clock.new_entity_clock();
+        *controls = Controls::default();
+        *transform = ActorTransform::default();
+        *runner = MoveRunner::default();
+        ring.reset();
+        *output = MoveOutput::default();
+        *target = WarpTarget::default();
+        *controller = CharacterController::default();
+        *fighter = Fighter::default();
+        *brain = Brain::default();
+    }
+    characters.refused = 0;
+    characters.last_time = std::time::Duration::ZERO;
+    let _ = characters.physics().take_stats();
+    debug_assert_eq!(characters.physics().body_count(), 0);
+}
+
 /// Makes a pooled entity a new actor. Clock IDs come from the world clock in spawn order, so a replay
 /// gets the same ones (and a reused entity's old scale handles can't touch its new clock).
 fn reset_actor(

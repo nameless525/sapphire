@@ -74,7 +74,7 @@ impl App for OffscreenApp {
                     _ => *ticks,
                 };
                 let mut stage = stage(platform, &options)?;
-                stage.show.fight.combat = combat;
+                stage.show.fight.attach_combat(combat);
                 crate::capture::run(&mut stage, path, ticks, *frames, width, height)?;
             }
             OffscreenMode::Bench { frames } => {
@@ -89,7 +89,7 @@ impl App for OffscreenApp {
             #[cfg(feature = "dev")]
             OffscreenMode::Serve => {
                 let mut stage = stage(platform, &options)?;
-                stage.show.fight.combat = combat;
+                stage.show.fight.attach_combat(combat);
                 if let Some(combat) = &mut stage.show.fight.combat {
                     stage.hooks.dev.start_fight_from_cooks(combat, &stage.content);
                 }
@@ -337,6 +337,7 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
         declared.remove(entry);
     }
     renderer.prewarm(&declared);
+    scene.prepare_clock_query();
     #[cfg(feature = "dev")]
     let tools = StageTools { dev: crate::dev::DevTools::new(gpu, FORMAT, options, platform, content)? };
     #[cfg(not(feature = "dev"))]

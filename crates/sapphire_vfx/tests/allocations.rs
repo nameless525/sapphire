@@ -98,3 +98,20 @@ fn a_new_world_needs_only_its_frames_capacity() {
     assert_eq!(counts.allocations, 0);
     assert!(!frame.sprites.is_empty());
 }
+
+#[test]
+fn starting_over_reuses_the_effect_pools() {
+    let library = EffectLibrary::default_effects();
+    let spark = library.find("hit_spark").expect("an effect");
+    let mut world = VfxWorld::new(library, VfxBudget::DESKTOP_LOW, 7);
+    let old = world.spawn(spark, OwnerId::WORLD, Placement::default()).unwrap();
+    world.advance(&OwnerSteps { world: TICK, owners: &[] });
+    let ((), counts) = count_in_scope(|| {
+        world.start_over();
+        world.spawn(spark, OwnerId::WORLD, Placement::default());
+        world.advance(&OwnerSteps { world: TICK, owners: &[] });
+    });
+    assert_eq!(counts.allocations, 0);
+    assert!(!world.is_playing(old));
+    assert!(world.stats().particles > 0);
+}

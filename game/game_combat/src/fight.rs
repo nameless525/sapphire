@@ -18,6 +18,7 @@ use sapphire_assets::{AssetId, Handle};
 use sapphire_camera::CameraTuning;
 use sapphire_colliders::ColliderSet;
 use sapphire_cues::RumbleSink;
+use sapphire_ecs::bevy_ecs::world::WorldId;
 use sapphire_ecs::prelude::*;
 use sapphire_gameplay::Simulation;
 use sapphire_math::{Mat4, Vec2, Vec3};
@@ -128,6 +129,8 @@ pub struct FightShow {
     draws_latest: bool,
     /// Made once: a query made each frame would allocate.
     graph_players: Option<GraphPlayers>,
+    /// Last world, retained-storage run and simulation tick followed.
+    followed_run: Option<(WorldId, u64, u64)>,
     /// How long the last frame's camera took: the arena's director or plain follow.
     camera_time: Duration,
 }
@@ -300,24 +303,27 @@ impl FightShow {
         simulation: &Simulation,
         cast: &[sapphire_gameplay::ActorId],
     ) -> Followed {
+        let run = (simulation.world().id(), simulation.run_generation(), simulation.tick());
+        let started_over = self
+            .followed_run
+            .is_some_and(|(world, generation, tick)| world != run.0 || generation != run.1 || run.2 < tick);
+        self.followed_run = Some(run);
         self.follow_slow_motion(scene, simulation);
+        if let Some(cues) = &mut self.cues {
+            cues.prepare(simulation);
+        }
         self.draws_latest = self.holds_simulation();
         if let Some(show) = &mut self.timeline {
             show.follow(simulation);
         }
-        let mut followed = Followed::default();
+        let mut followed = Followed { started_over, ..Followed::default() };
         if let Some(arena) = &mut self.arena {
-            let fought = arena.fight_time();
             followed.came_in = arena.follow(simulation, cast);
-            // A clock that went back is a new fight, and everything stands somewhere else: the frame
-            // draws nothing of the last one. A party's swap needs none of this, since who comes in
-            // stands where the one who left stood, and the camera goes on.
-            if arena.fight_time() < fought {
-                followed.started_over = true;
-                scene.cut_view();
-                if let Some(cues) = &mut self.cues {
-                    scene.with_screen_effects(|stack, _| cues.start_over(stack));
-                }
+        }
+        if started_over {
+            scene.cut_view();
+            if let Some(cues) = &mut self.cues {
+                scene.with_screen_effects(|stack, _| cues.start_over(stack));
             }
         }
         if let Some(mesh) = self.party_looks.as_mut().and_then(|drawn| drawn.follow(simulation.party())) {
@@ -956,6 +962,14 @@ pub struct Fight {
 }
 
 impl Fight {
+    /// Attaches a combat after the show is built, preparing its actor-owned cue storage without following it.
+    pub fn attach_combat(&mut self, combat: Option<Combat>) {
+        if let (Some(cues), Some(combat)) = (&mut self.show.cues, &combat) {
+            cues.prepare(combat.simulation());
+        }
+        self.combat = combat;
+    }
+
     /// One step of the fight with no one playing it, after the scene's: the simulation, then what follows
     /// it. What's frame-rate here is the director's: a step of time is what a frame shows.
     pub fn step_alone(&mut self, scene: &mut Scene, laps: &mut FrameLaps) -> Followed {
@@ -1026,7 +1040,7 @@ impl Fight {
         scene.set_day(DEFAULT_TIME_OF_DAY, None);
         show.play_cues(scene, vfx::budget(tier)).map_err(AppInitError::msg)?;
         let followed = show.follow_simulation(scene, combat.simulation(), combat.cast());
-        self.combat = Some(combat);
+        self.attach_combat(Some(combat));
         scene.warm_fixed_step();
         Ok(followed)
     }

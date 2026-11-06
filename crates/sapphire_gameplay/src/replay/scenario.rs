@@ -28,7 +28,7 @@ use crate::actors::{ActorId, ActorRequests, ActorSpawn, ActorTable, SpawnError};
 use crate::controller::{ControllerProfile, PhysicsWorldError, ProfileError, ProfileId};
 use crate::movement::ActorTransform;
 use crate::moves::{MoveRunner, MoveSetId, WarpTarget};
-use crate::party::{PARTY_SLOTS, PartyError, PartyTuning};
+use crate::party::{PARTY_SLOTS, Party, PartyError, PartyTuning};
 use crate::resolve::SlowMotion;
 use crate::simulation::{CombatSet, SimConfig, SimRng, Simulation};
 use crate::stats::{BUDGET_DESKTOP_LOW, PHYSICS_BUDGET_DESKTOP_LOW};
@@ -411,67 +411,290 @@ pub fn arena_fight(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> 
     arena_fight_on(sim, warrior_moves()?)
 }
 
+/// Immutable inputs for repeated arena fights. Each start builds a fresh simulation and collision
+/// world; preparation belongs to the combat session, so a restart never reparses its built-in content.
+pub struct PreparedFight {
+    player: MoveSet,
+    warrior: MoveSet,
+    colliders: AlignedVec,
+    spawns: crate::arena::ArenaSpawns,
+    party: bool,
+}
+
+impl PreparedFight {
+    pub fn new(party: bool) -> Result<Self, ScenarioError> {
+        Ok(Self {
+            player: player_moves()?,
+            warrior: warrior_moves()?,
+            colliders: crate::arena::cooked_colliders()?,
+            spawns: crate::arena::spawns(),
+            party,
+        })
+    }
+
+    /// Starts at revision zero of the latest edits, before spawning or drawing a brain's first wait.
+    pub fn start(
+        &self,
+        config: SimConfig,
+        live: &super::LiveMoves,
+    ) -> Result<(Simulation, Vec<ActorId>), ScenarioError> {
+        let mut sim = Simulation::new(config);
+        let player = live.latest(document_file_name(PLAYER_MOVES_PATH)).unwrap_or(&self.player);
+        let warrior = live.latest(document_file_name(WARRIOR_MOVES_PATH)).unwrap_or(&self.warrior);
+        let cast =
+            fight_on(&mut sim, player.clone(), warrior.clone(), &self.colliders, self.spawns, self.party)?;
+        Ok((sim, cast))
+    }
+}
+
+/// A built-in fight with an explicitly resettable lifetime. It exposes only stepping, move tuning
+/// and immutable simulation views: arbitrary systems, resources and world edits cannot enter this
+/// reset contract. Use a plain Simulation for custom scenarios instead.
+///
+/// Arbitrary simulation mutation cannot enter the reset boundary:
+/// ```compile_fail
+/// use sapphire_gameplay::{SimConfig, replay::{LiveMoves, PreparedFight}};
+/// let prepared = PreparedFight::new(false).unwrap();
+/// let mut fight = prepared.start_resettable(SimConfig::default(), &LiveMoves::default()).unwrap();
+/// fight.world_clock_mut(); // mutable Simulation access is deliberately unavailable
+/// ```
+pub struct FightWorld {
+    simulation: Simulation,
+    cast: [ActorId; 2],
+    config: SimConfig,
+    actors: FightActors,
+    initial_party: Party,
+}
+
+impl std::ops::Deref for FightWorld {
+    type Target = Simulation;
+
+    fn deref(&self) -> &Simulation {
+        &self.simulation
+    }
+}
+
+impl FightWorld {
+    pub fn cast(&self) -> &[ActorId] {
+        &self.cast
+    }
+
+    pub fn step(&mut self, actions: &crate::TickActions) {
+        self.simulation.step(actions);
+    }
+
+    pub fn tune_move_set(&mut self, id: MoveSetId, set: MoveSet) -> Option<crate::Tuned> {
+        self.simulation.tune_move_set(id, set)
+    }
+
+    /// Start again at revision zero of the current moves, allocating no new storage. A live edit
+    /// that no longer supports this party is refused before changing any state, allowing recovery.
+    pub fn restart(&mut self) -> Result<(), ScenarioError> {
+        let party = self.initial_party.is_formed();
+        if party {
+            crate::party::check_member_set(
+                self.cast[0],
+                self.simulation.move_library().current(self.actors.player),
+            )?;
+        }
+        self.simulation.restart_builtin_fight(self.config);
+        self.cast = self
+            .actors
+            .spawn(&mut self.simulation, party, Some(self.initial_party))
+            .expect("the configured pool and preflighted move sets can spawn this fight");
+        Ok(())
+    }
+}
+
+impl PreparedFight {
+    /// Retains immutable inputs as above, and seals the built-in world's mutation boundary so reset
+    /// can preserve capacities without retaining gameplay state.
+    pub fn start_resettable(
+        &self,
+        config: SimConfig,
+        live: &super::LiveMoves,
+    ) -> Result<FightWorld, ScenarioError> {
+        let (simulation, cast) = self.start(config, live)?;
+        let initial_party = *simulation.party();
+        let player = simulation.actor(cast[0]).expect("the player was spawned");
+        let warrior = simulation.actor(cast[1]).expect("the warrior was spawned");
+        let actors = FightActors {
+            spawns: self.spawns,
+            player: player.moves.set.expect("the player has a set"),
+            warrior: warrior.moves.set.expect("the warrior has a set"),
+            controller: player.controller.profile().expect("the player has a controller"),
+        };
+        Ok(FightWorld {
+            simulation,
+            cast: cast.try_into().expect("a built-in fight's cast has two actors"),
+            config,
+            actors,
+            initial_party,
+        })
+    }
+}
+
 /// [`arena_fight`], with `warrior` for the warrior's moves.
 pub(super) fn arena_fight_on(sim: &mut Simulation, warrior: MoveSet) -> Result<Vec<ActorId>, ScenarioError> {
     let cooked = crate::arena::cooked_colliders()?;
-    let set = ColliderSet::read(&cooked)?;
-    sim.set_physics_world(PhysicsWorld::from_cooked(set, sim.body_capacity())?)?;
-    let controller = Some(sim.add_controller_profile(&crate::arena::profile())?);
-    let player_moves = Some(sim.add_move_set(player_moves()?));
-    let warrior = Some(sim.add_move_set(warrior));
-    let spawns = crate::arena::spawns();
-    let player = sim.spawn(ActorSpawn {
-        position: spawns.player.position(),
-        yaw: spawns.player.yaw(),
-        moves: player_moves,
-        controller,
-    })?;
-    let enemy = sim.spawn(ActorSpawn {
-        position: spawns.enemy.position(),
-        yaw: spawns.enemy.yaw(),
-        moves: warrior,
-        controller,
-    })?;
-    sim.set_warp_target(player, WarpTarget::Actor(enemy));
-    // An edit may have taken its brain away (`LiveMoves::start`), and then it stands there.
-    sim.give_brain(enemy, player);
-    Ok(vec![player, enemy])
+    fight_on(sim, player_moves()?, warrior, &cooked, crate::arena::spawns(), false)
 }
 
-/// [`arena_fight`] with a party (`crate::party`): three members on the player's moves at its spawn point, the
-/// first on the field. They share a set, so a live edit of the document reaches all three. The cast is who
-/// a tick names: the party, by its first member's ID whoever's on the field, then the warrior. Each
-/// actor's ID is what it is in an `arena-fight`, and the other two members come after.
+/// [`arena_fight`] with a party (`crate::party`): three members on the player's moves at its spawn point,
+/// the first on the field. The other two members come after the warrior in actor ID order.
 pub fn party(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
     let cooked = crate::arena::cooked_colliders()?;
-    let set = ColliderSet::read(&cooked)?;
+    fight_on(sim, player_moves()?, warrior_moves()?, &cooked, crate::arena::spawns(), true)
+}
+
+fn fight_on(
+    sim: &mut Simulation,
+    player: MoveSet,
+    warrior: MoveSet,
+    cooked: &[u8],
+    spawns: crate::arena::ArenaSpawns,
+    party: bool,
+) -> Result<Vec<ActorId>, ScenarioError> {
+    let set = ColliderSet::read(cooked)?;
     sim.set_physics_world(PhysicsWorld::from_cooked(set, sim.body_capacity())?)?;
-    let controller = Some(sim.add_controller_profile(&crate::arena::profile())?);
-    let moves = Some(sim.add_move_set(player_moves()?));
-    let warrior = Some(sim.add_move_set(warrior_moves()?));
-    let spawns = crate::arena::spawns();
-    let (position, yaw) = (spawns.player.position(), spawns.player.yaw());
-    let member = ActorSpawn { position, yaw, moves, controller };
-    let first = sim.spawn(member)?;
-    let enemy = sim.spawn(ActorSpawn {
-        position: spawns.enemy.position(),
-        yaw: spawns.enemy.yaw(),
-        moves: warrior,
-        controller,
-    })?;
-    let members = [first, sim.spawn(member)?, sim.spawn(member)?];
-    sim.form_party(&members, PARTY_TUNING)?;
-    for member in members {
-        sim.set_warp_target(member, WarpTarget::Actor(enemy));
+    let actors = FightActors {
+        spawns,
+        controller: sim.add_controller_profile(&crate::arena::profile())?,
+        player: sim.add_move_set(player),
+        warrior: sim.add_move_set(warrior),
+    };
+    Ok(actors.spawn(sim, party, None)?.to_vec())
+}
+
+#[derive(Clone, Copy)]
+struct FightActors {
+    spawns: crate::arena::ArenaSpawns,
+    player: MoveSetId,
+    warrior: MoveSetId,
+    controller: ProfileId,
+}
+
+impl FightActors {
+    fn spawn(
+        self,
+        sim: &mut Simulation,
+        party: bool,
+        initial_party: Option<Party>,
+    ) -> Result<[ActorId; 2], ScenarioError> {
+        let Self { spawns, player, warrior, controller } = self;
+        let (moves, warrior, controller) = (Some(player), Some(warrior), Some(controller));
+        let member =
+            ActorSpawn { position: spawns.player.position(), yaw: spawns.player.yaw(), moves, controller };
+        let first = sim.spawn(member)?;
+        let enemy = sim.spawn(ActorSpawn {
+            position: spawns.enemy.position(),
+            yaw: spawns.enemy.yaw(),
+            moves: warrior,
+            controller,
+        })?;
+        if party {
+            let members = [first, sim.spawn(member)?, sim.spawn(member)?];
+            if let Some(formation) = initial_party {
+                sim.restore_builtin_party(formation);
+            } else {
+                sim.form_party(&members, PARTY_TUNING)?;
+            }
+            for member in members {
+                sim.set_warp_target(member, WarpTarget::Actor(enemy));
+            }
+        } else {
+            sim.set_warp_target(first, WarpTarget::Actor(enemy));
+        }
+        // An edit can take the brain away, in which case the enemy stands there.
+        sim.give_brain(enemy, first);
+        Ok([first, enemy])
     }
-    sim.give_brain(enemy, first);
-    Ok(vec![first, enemy])
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::is_valid_name;
     use super::*;
+
+    #[test]
+    fn reset_preflights_party_edits_and_restarts_from_the_latest_valid_revisions() {
+        let prepared = PreparedFight::new(true).expect("prepares");
+        let scenario = find_scenario(SCENARIOS, "party").expect("listed");
+        let mut live = super::super::LiveMoves::default();
+        let mut world = prepared.start_resettable(scenario.config, &live).expect("starts");
+        for tick in 0..120 {
+            let actions = super::super::script::fight_back(tick, world.cast());
+            world.step(&actions);
+        }
+        let running_player = player_moves().expect("loads");
+        // Removing an assist is supported live; forming the next party must still refuse it.
+        let mut document =
+            MoveSetDocument::parse(include_str!("../../../../content/combat/player/player.moves.ron"))
+                .expect("parses");
+        document.moves.retain(|mv| mv.name != "swap_in");
+        let no_assist = document.compile_over(&running_player).expect("compiles without the assist");
+        assert!(matches!(world.tune_move_set(MoveSetId(0), no_assist), Some(crate::Tuned::Replaced { .. })));
+        let before = world.checksum();
+        let tick = world.tick();
+        assert!(matches!(world.restart(), Err(ScenarioError::Party(PartyError::NoSwapInMove { .. }))));
+        assert_eq!(world.checksum(), before, "failed restart is atomic");
+        assert_eq!(world.tick(), tick);
+
+        let mut warrior = MoveSetDocument::parse(WARRIOR_MOVES).expect("parses");
+        warrior.brain = None;
+        let warrior = warrior.compile().expect("compiles");
+        world.tune_move_set(MoveSetId(1), warrior.clone()).expect("warrior's set");
+        live.remember("warrior.moves.ron", warrior);
+        let player = player_moves().expect("loads");
+        world.tune_move_set(MoveSetId(0), player).expect("restored player's set");
+        world.restart().expect("the repair is taken");
+        let (mut fresh, cast) = live.start(scenario, scenario.config).expect("independent fresh setup");
+        for tick in 0..300 {
+            assert_eq!(world.checksum(), fresh.checksum(), "tick={tick}");
+            let actions = super::super::script::fight_back(tick, &cast);
+            world.step(&actions);
+            fresh.step(&actions);
+        }
+        world.restart().expect("starts over again");
+        let (fresh, _) = live.start(scenario, scenario.config).expect("fresh");
+        assert_eq!(world.checksum(), fresh.checksum());
+        assert_eq!(world.move_library().current_revision(MoveSetId(0)), Some(0));
+        assert_eq!(world.move_library().current_revision(MoveSetId(1)), Some(0));
+    }
+
+    #[test]
+    fn prepared_fights_make_independent_worlds_on_the_latest_edits() {
+        for (name, party) in [("arena-fight", false), ("party", true)] {
+            let scenario = find_scenario(SCENARIOS, name).expect("listed");
+            let prepared = PreparedFight::new(party).expect("prepares");
+            let mut live = super::super::LiveMoves::default();
+            for edited in [false, true] {
+                if edited {
+                    let mut document = MoveSetDocument::parse(WARRIOR_MOVES).expect("parses");
+                    document.brain.as_mut().expect("brain").patience =
+                        sapphire_moves::TickRange { min: 500, max: 500 };
+                    live.remember("warrior.moves.ron", document.compile().expect("compiles"));
+                }
+                let (mut expected, cast) = live.start(scenario, scenario.config).expect("fresh setup");
+                let (mut actual, prepared_cast) = prepared.start(scenario.config, &live).expect("starts");
+                assert_eq!(prepared_cast, cast);
+                for tick in 0..300 {
+                    assert_eq!(actual.checksum(), expected.checksum(), "{name} edited={edited} tick={tick}");
+                    let actions = super::super::script::fight_back(tick, &cast);
+                    expected.step(&actions);
+                    actual.step(&actions);
+                }
+                let (again, _) = prepared.start(scenario.config, &live).expect("starts again");
+                let (fresh, _) = live.start(scenario, scenario.config).expect("fresh setup");
+                assert_eq!(again.tick(), 0);
+                assert_eq!(
+                    again.checksum(),
+                    fresh.checksum(),
+                    "the previous mutable world carries nothing over"
+                );
+            }
+        }
+    }
 
     #[test]
     fn every_scenario_has_a_good_unique_name_and_sets_up_from_its_own_config() {

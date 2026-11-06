@@ -922,11 +922,11 @@ impl Stepper {
         match self {
             Self::Played(player) => player.step(),
             Self::Recorded { recording, script } => {
-                let cast = recording.cast().to_vec();
+                let cast = recording.cast();
                 let tick = recording.simulation().tick();
                 let actions = match (script, walker) {
-                    (Some(script), _) => script(tick, &cast),
-                    (None, Some(walker)) => walker.actions(tick, recording.simulation(), &cast),
+                    (Some(script), _) => script(tick, cast),
+                    (None, Some(walker)) => walker.actions(tick, recording.simulation(), cast),
                     (None, None) => TickActions::NEUTRAL,
                 };
                 recording.step(&mut |_: u64, _: &[ActorId]| actions).expect("within a file's limit");

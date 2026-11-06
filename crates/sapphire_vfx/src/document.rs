@@ -2,6 +2,8 @@
 //! and curves and at most one trail, checked whole however they were made, so what plays is valid
 //! and an author's mistake names its field.
 
+use std::collections::BTreeSet;
+
 use bevy_reflect::{Reflect, ReflectDeserialize, ReflectSerialize};
 use glam::Vec3;
 use sapphire_look::{VfxLight, VfxShape};
@@ -347,11 +349,12 @@ impl EffectLibrary {
         if effects.len() > usize::from(u16::MAX) + 1 {
             return Err(EffectLibraryError::TooMany);
         }
+        let mut names = BTreeSet::new();
         for (index, effect) in effects.iter().enumerate() {
             if effect.name.is_empty() {
                 return Err(EffectLibraryError::EmptyName(index));
             }
-            if effects[..index].iter().any(|earlier| earlier.name == effect.name) {
+            if !names.insert(effect.name.as_str()) {
                 return Err(EffectLibraryError::DuplicateName(effect.name.clone()));
             }
             if effect.emitters.is_empty() && effect.trail.is_none() {
@@ -603,6 +606,21 @@ mod tests {
             }
             other => panic!("expected an invalid trail, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn duplicate_names_keep_row_validation_precedence() {
+        let first = Effect { name: "same".to_owned(), emitters: vec![emitter()], trail: None };
+        let mut duplicate = first.clone();
+        duplicate.emitters.clear();
+        duplicate.trail = None;
+        assert!(matches!(EffectLibrary::new(vec![first.clone(), duplicate]),
+            Err(EffectLibraryError::DuplicateName(name)) if name == "same"));
+        let mut invalid = first;
+        invalid.emitters.clear();
+        invalid.trail = None;
+        assert!(matches!(EffectLibrary::new(vec![invalid.clone(), invalid]),
+            Err(EffectLibraryError::Nothing(name)) if name == "same"));
     }
 
     #[test]

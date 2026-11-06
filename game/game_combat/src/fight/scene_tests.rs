@@ -823,6 +823,26 @@ fn recorded_fight() -> Combat {
     Combat::new(&option).expect("a committed recording")
 }
 
+#[test]
+fn attaching_combat_prepares_cues_without_following_a_tick() {
+    assert!(sapphire_core::alloc::is_installed());
+    let mut staged = scene();
+    staged.play_cues(VfxBudget::DESKTOP_LOW).expect("the shipped table resolves");
+    let mut fight = Fight { combat: None, show: std::mem::take(&mut staged.show) };
+    let combat = recorded_fight();
+    let checksum = combat.simulation().checksum();
+
+    fight.attach_combat(Some(combat));
+    let combat = fight.combat.as_ref().expect("attached");
+    assert_eq!(combat.simulation().tick(), 0);
+    assert_eq!(combat.simulation().checksum(), checksum);
+    assert!(fight.show.followed_run.is_none());
+    let (_, first) = sapphire_core::alloc::count_in_scope(|| {
+        fight.show.follow_simulation(&mut staged.scene, combat.simulation(), combat.cast())
+    });
+    assert_eq!(first.allocations, 0);
+}
+
 /// A recorded fight fired as `--cues` does: the frame the first hit lands in draws its spark and its
 /// screen effect and fires its shake, which moves the view from the next, the frames before it draw
 /// none of them, and the simulation still reaches its recorded checksums.
@@ -903,4 +923,89 @@ fn a_fight_without_the_flag_fires_nothing() {
     }
     assert!(scene.cue_show().is_none());
     assert!(scene.cue_sounds().requests.is_empty());
+}
+
+/// Reused storage can restart at the same tick as the last presentation, including zero.
+#[test]
+fn a_same_tick_restart_cuts_history_and_fighter_poses_once() {
+    for tick in [0, 2] {
+        let mut combat = Combat::new(&CombatOption::Fight { script: None, party: false }).expect("sets up");
+        let (mut scene, _) = arena_stage(ArenaShot::Follow);
+        let mut walk = |_: u64, cast: &[sapphire_gameplay::ActorId]| {
+            let mut actions = sapphire_gameplay::TickActions::NEUTRAL;
+            actions
+                .set(
+                    cast[0],
+                    sapphire_gameplay::ActorActions {
+                        buttons: sapphire_gameplay::Buttons::NONE,
+                        stick: sapphire_gameplay::Stick::new(127, 0),
+                    },
+                )
+                .expect("room");
+            actions
+        };
+        for _ in 0..tick {
+            combat.step(&mut walk);
+        }
+        scene.follow_simulation(combat.simulation(), combat.cast());
+        let _ = scene.frame_packet(1.0, Some((16, 9)));
+        scene.end_frame();
+        combat.restart();
+        for _ in 0..tick {
+            combat.step(&mut no_bindings);
+        }
+        let followed = scene.show.follow_simulation(&mut scene.scene, combat.simulation(), combat.cast());
+        assert!(followed.started_over, "same tick {tick}, fresh run generation");
+        let arena = scene.show.arena.as_ref().expect("an arena");
+        assert_eq!(arena.drawn(0, 0.0), arena.drawn(0, 1.0), "no pose interpolation from the last fight");
+        assert!(scene.frame_packet(0.0, Some((16, 9))).main_view().expect("a view").cut);
+        scene.end_frame();
+        let followed = scene.show.follow_simulation(&mut scene.scene, combat.simulation(), combat.cast());
+        assert!(!followed.started_over, "the same boundary is followed only once");
+        assert!(!scene.frame_packet(1.0, Some((16, 9))).main_view().expect("a view").cut);
+        scene.end_frame();
+    }
+}
+
+#[test]
+fn an_independent_simulation_at_the_same_tick_cuts_and_snaps_once() {
+    use sapphire_gameplay::replay::{Recording, SCENARIOS, arena_walk, find_scenario};
+
+    let scenario = find_scenario(SCENARIOS, crate::arena::SCENARIO).expect("listed");
+    for tick in [0, 20] {
+        let (mut scene, _) = arena_stage(ArenaShot::Follow);
+        let mut previous = Recording::new(scenario, scenario.config).expect("sets up");
+        for _ in 0..tick {
+            previous.step(&mut arena_walk).expect("short");
+        }
+        let old_world = previous.simulation().world().id();
+        let old_position = previous.simulation().actor(previous.cast()[0]).expect("player").position;
+        scene.follow_simulation(previous.simulation(), previous.cast());
+        assert!(!scene.frame_packet(1.0, Some((16, 9))).main_view().expect("view").cut);
+        scene.end_frame();
+        drop(previous);
+        let mut next = Recording::new(scenario, scenario.config).expect("sets up");
+        for _ in 0..tick {
+            next.step(&mut no_bindings).expect("short");
+        }
+        if tick > 0 {
+            assert_ne!(
+                next.simulation().actor(next.cast()[0]).expect("player").position,
+                old_position,
+                "the first fight walked, the second stood still"
+            );
+        }
+        assert_ne!(next.simulation().world().id(), old_world);
+        assert_eq!(next.simulation().tick(), tick);
+        let followed = scene.show.follow_simulation(&mut scene.scene, next.simulation(), next.cast());
+        assert!(followed.started_over, "fresh world at the same public tick");
+        let arena = scene.show.arena.as_ref().expect("arena");
+        assert_eq!(arena.drawn(0, 0.0), arena.drawn(0, 1.0), "the new root is snapped");
+        assert!(scene.frame_packet(0.0, Some((16, 9))).main_view().expect("view").cut);
+        scene.end_frame();
+        let followed = scene.show.follow_simulation(&mut scene.scene, next.simulation(), next.cast());
+        assert!(!followed.started_over, "the same new boundary is followed once");
+        assert!(!scene.frame_packet(1.0, Some((16, 9))).main_view().expect("view").cut);
+        scene.end_frame();
+    }
 }

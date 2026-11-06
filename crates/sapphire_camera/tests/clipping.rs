@@ -102,8 +102,7 @@ fn pillar_world() -> PhysicsWorld {
 }
 
 /// The eye's distance from where the arm starts on a player at the origin.
-fn arm_length(pose: &CameraPose) -> f32 {
-    let anchor = Vec3::Y * 1.7 * CameraTuning::default_tuning().explore.pivot_height;
+fn arm_length(pose: &CameraPose, anchor: Vec3) -> f32 {
     pose.eye.distance(anchor)
 }
 
@@ -136,6 +135,7 @@ fn a_thin_pillar_crossing_the_line_doesnt_snap_back_and_forth() {
     for rate in RATES {
         let mut camera = director();
         camera.look_from(-0.6, 0.2);
+        let anchor = Vec3::Y * 1.7 * camera.tuning().explore.pivot_height;
         let mut lengths = Vec::new();
         let mut top_step = 0.0_f32;
         let mut last_eye = None;
@@ -144,7 +144,7 @@ fn a_thin_pillar_crossing_the_line_doesnt_snap_back_and_forth() {
                 top_step = top_step.max(pose.eye.distance(last) * rate as f32);
             }
             last_eye = Some(pose.eye);
-            lengths.push(arm_length(pose));
+            lengths.push(arm_length(pose, anchor));
         });
         let stats = camera.take_stats();
         let (short, long) = lengths[30..].iter().fold((f32::MAX, 0.0_f32), |(a, b), &l| (a.min(l), b.max(l)));
@@ -201,6 +201,7 @@ fn a_pillar_that_stays_in_the_way_is_rounded_once() {
     let mut camera = director();
     camera.look_from(-0.8, 0.2);
     let radius = camera.tuning().collision.radius;
+    let anchor = Vec3::Y * 1.7 * camera.tuning().explore.pivot_height;
     let mut lengths = Vec::new();
     let mut top_step = 0.0_f32;
     let mut last_eye = None;
@@ -210,7 +211,7 @@ fn a_pillar_that_stays_in_the_way_is_rounded_once() {
             top_step = top_step.max(pose.eye.distance(last) * 60.0);
         }
         last_eye = Some(pose.eye);
-        lengths.push(arm_length(pose));
+        lengths.push(arm_length(pose, anchor));
     });
     let stats = camera.take_stats();
     let shortest = lengths.iter().copied().fold(f32::MAX, f32::min);
@@ -251,12 +252,13 @@ fn a_wall_pulls_the_arm_in_smoothly_and_it_eases_out_slower() {
         let mut camera = director();
         camera.look_from(std::f32::consts::FRAC_PI_2, 0.2);
         let radius = camera.tuning().collision.radius;
+        let anchor = Vec3::Y * 1.7 * camera.tuning().explore.pivot_height;
         let mut lengths = Vec::new();
         let mut times = Vec::new();
         let mut top_change = 0.0_f32;
         run(&mut camera, &world, rate, (0.0, 12.0), script, |time, pose, _| {
             assert!(eye_overlaps(&world, pose, radius).is_none(), "{time}: {:?}", pose.eye);
-            let length = arm_length(pose);
+            let length = arm_length(pose, anchor);
             if let Some(last) = lengths.last() {
                 let last: f32 = *last;
                 top_change = top_change.max((length - last).abs() * rate as f32);
@@ -411,17 +413,24 @@ fn clear_through(
     script: impl Fn(f32) -> Moment,
 ) -> (u32, f32) {
     let radius = camera.tuning().collision.radius;
-    let mut steps = Vec::new();
+    let mut hops = camera.take_stats().hops;
+    let mut top_step = 0.0_f32;
     let mut last = camera.pose().eye;
-    run(camera, world, 60, times, script, |time, pose, _| {
-        let overlap = eye_overlaps(world, pose, radius);
+    let frames = ((times.1 - times.0) * 60.0).round() as u32;
+    let start = (times.0 * 60.0).round() as u32;
+    for frame in 1..=frames {
+        let time = (start + frame) as f32 / 60.0;
+        let pose = camera.update(&script(time).frame(1.0 / 60.0), world);
+        let overlap = eye_overlaps(world, &pose, radius);
         assert!(overlap.is_none(), "{what} at {time} s: {:?} in by {overlap:?}", pose.eye);
-        steps.push(pose.eye.distance(last));
+        let frame_hops = camera.take_stats().hops;
+        hops += frame_hops;
+        if frame_hops == 0 {
+            top_step = top_step.max(pose.eye.distance(last));
+        }
         last = pose.eye;
-    });
-    steps.sort_by(f32::total_cmp);
-    let hops = camera.take_stats().hops;
-    (hops, steps[steps.len() - 1 - hops as usize] * 60.0)
+    }
+    (hops, top_step * 60.0)
 }
 
 /// A shot whose eye stands in a wall is drawn from the nearest place the eye's sphere fits, as its author
@@ -615,4 +624,23 @@ fn the_sphere_covers_the_near_planes_corners() {
     let half_y = (tuning.combat.framing.fov_y * 0.5).tan();
     let corner = near * (1.0 + half_y * half_y * (1.0 + common::ASPECT * common::ASPECT)).sqrt();
     assert!(tuning.collision.radius > corner * 2.0, "{} vs {corner}", tuning.collision.radius);
+}
+
+#[test]
+fn an_ordinary_arm_recovers_from_two_overlaps_at_a_feasible_corner() {
+    let world = ground_with(&[
+        (Shape::Box { half_extents: Vec3::new(0.1, 5.0, 5.0) }, Vec3::new(-0.2, 5.0, 0.0)),
+        (Shape::Box { half_extents: Vec3::new(5.0, 5.0, 0.1) }, Vec3::new(0.0, 5.0, -0.2)),
+    ]);
+    let mut camera = director();
+    for (index, radius) in [camera.tuning().collision.radius, 0.3].into_iter().enumerate() {
+        let mut tuning = camera.tuning().clone();
+        tuning.collision.radius = radius;
+        camera.set_tuning(tuning).unwrap();
+        let first_dt = if index == 0 { 0.0 } else { 1.0 / 60.0 };
+        for dt in [first_dt, 1.0 / 60.0] {
+            let pose = camera.update(&Moment::alone(Vec3::ZERO).frame(dt), &world);
+            assert!(eye_overlaps(&world, &pose, radius).is_none(), "{pose:?}, radius {radius}");
+        }
+    }
 }

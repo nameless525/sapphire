@@ -288,3 +288,22 @@ fn a_shake_moves_an_exact_shot_without_casting() {
     }
     assert!(moved, "the shake reached it");
 }
+
+#[test]
+fn simultaneous_cuts_are_consumed_on_the_same_frame() {
+    let wall = (Shape::Box { half_extents: Vec3::new(0.5, 5.0, 60.0) }, Vec3::new(-1.5, 5.0, 0.0));
+    let world = ground_with(&[wall]);
+    let mut camera = director();
+    camera.set_takeover_terms(TakeoverTerms { eye: ShotEye::Clear, blend_half_life: 0.0 });
+    camera.set_takeover(Some(shot_at(Vec3::new(3.0, 2.0, 0.0))));
+    camera.cut();
+    camera.cut_takeover();
+    camera.update(&alone(), &world);
+    let next = shot_at(Vec3::new(-6.0, 2.0, 2.0));
+    camera.set_takeover(Some(next));
+    let moved = camera.update(&alone(), &world);
+    assert!(moved.eye.distance(next.eye) > 1.0, "no second cut: {moved:?}");
+    camera.cut_takeover();
+    let paused = camera.update(&CameraFrame { dt: 0.0, ..alone() }, &world);
+    assert_eq!(paused.eye, next.eye, "an explicit cut also works while paused");
+}

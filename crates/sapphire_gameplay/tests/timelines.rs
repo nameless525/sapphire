@@ -336,3 +336,24 @@ fn a_replay_refuses_a_timeline_that_changed() {
     let error = Player::new(stale, SCENARIOS).err().expect("refused");
     assert!(matches!(error, sapphire_gameplay::replay::PlayError::MovesChanged { .. }), "{error}");
 }
+
+/// The format's after-last command boundary also exists when a replay has no action ticks.
+#[test]
+fn a_terminal_play_is_applied_once_without_an_extra_tick() {
+    for ticks in [0, 3] {
+        let mut recording = recording();
+        run_to(&mut recording, ticks);
+        recording.play_timeline(CINEMATIC).expect("loaded");
+        let expected = recording.simulation().checksum();
+        let (replay, played) = recording.finish();
+        let mut player =
+            Player::new(Replay::decode(&replay.encode()).expect("reads"), SCENARIOS).expect("starts");
+        player.run_to_end();
+        assert_eq!(player.simulation().tick(), u64::from(ticks));
+        assert!(player.simulation().timeline().is_some());
+        assert_eq!(player.simulation().checksum(), expected);
+        assert_eq!(player.trail(), &played.trail, "no checksum tick was invented");
+        assert!(!player.step());
+        assert_eq!(player.simulation().checksum(), expected);
+    }
+}

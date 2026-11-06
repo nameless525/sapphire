@@ -35,22 +35,23 @@
 //! **A fight with no file** (`--arena --fight`, M2 G6): [`Mode::Fighting`] asks the same
 //! [`action_source`] for its ticks and writes nothing, so it can go on for as long as anyone plays. When
 //! someone falls it waits [`RESTART_AFTER`], logs how it went and makes the scenario again, and the key
-//! that starts it over does the same at once ([`Combat::restart`]). A new fight is a new [`Simulation`],
-//! from the same first tick: nothing carries over, and a script plays it exactly as it played the one
+//! that starts it over does the same at once ([`Combat::restart`]). A new fight has the state of a new
+//! [`Simulation`], from the same first tick: nothing carries over, and a script plays it exactly as it played the one
 //! before. That's what the app's own test leans on (`tests/replays.rs`): each fight's checksum in the log
 //! is the one a headless run of the same script reaches at that tick. Only the player's hands outlast a
-//! fight, so a button still down from the last one reads as up until it lets go. Making one allocates,
-//! between steps, outside what rule R6 counts ([`read_bindings`]'s caller keeps it so). A script plays one
-//! in a window too, so a phone can fight for as long as exit test 4 asks with no one holding it (M2 Z1).
+//! fight, so a button still down from the last one reads as up until it lets go. Immutable arena inputs
+//! are prepared once per session. Its sealed built-in world resets complete gameplay state into retained
+//! storage, so automatic restart stays inside the allocation-free public step. A script plays one in a
+//! window too, so a phone can fight for as long as exit test 4 asks with no one holding it (M2 Z1).
 
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use sapphire_gameplay::replay::{
-    ARCHITECTURE, ActionSource, ChecksumFile, Divergence, LiveMoves, Played, Player, RecordedTrail,
-    Recording, Replay, ReplayError, SCENARIOS, SCRIPTS, Scenario, checksums_file_name, find_scenario,
-    find_script,
+    ARCHITECTURE, ActionSource, ChecksumFile, Divergence, FightWorld, LiveMoves, Played, Player,
+    PreparedFight, RecordedTrail, Recording, Replay, ReplayError, SCENARIOS, SCRIPTS, Scenario,
+    checksums_file_name, find_scenario, find_script,
 };
 use sapphire_gameplay::{ActorId, Buttons, Simulation, TickActions};
 #[cfg(feature = "dev")]
@@ -106,7 +107,8 @@ impl Default for CaptureFrames {
 impl CaptureFrames {
     /// The ticks to simulate before the first frame, so the last lands on tick `ticks`.
     pub fn first_tick(&self, ticks: u32) -> Option<u32> {
-        ticks.checked_sub(self.step * (self.count - 1))
+        let intervals = self.count.checked_sub(1)?;
+        ticks.checked_sub(self.step.checked_mul(intervals)?)
     }
 }
 
@@ -154,10 +156,12 @@ enum Mode {
 /// A fight with no file: see the [module docs](self).
 struct LiveFight {
     scenario: &'static Scenario,
-    /// The edits it's taken: what the next fight starts from.
+    #[cfg(feature = "dev")]
+    prepared: Box<PreparedFight>,
+    /// The edits it's taken: what a transactional startup replacement starts from.
+    #[cfg(feature = "dev")]
     live: LiveMoves,
-    sim: Simulation,
-    cast: Vec<ActorId>,
+    sim: FightWorld,
     /// The script it plays. With none, it plays the bindings it's given.
     script: Option<ScriptActions>,
     /// The tick someone fell at.
@@ -175,14 +179,18 @@ impl LiveFight {
         scenario: &'static Scenario,
         script: Option<ScriptActions>,
         live: LiveMoves,
+        party: bool,
     ) -> Result<Self, String> {
-        let (sim, cast) =
-            live.start(scenario, scenario.config).map_err(|error| format!("--fight: {error}"))?;
+        let prepared = PreparedFight::new(party).map_err(|error| format!("--fight: {error}"))?;
+        let sim =
+            prepared.start_resettable(scenario.config, &live).map_err(|error| format!("--fight: {error}"))?;
         Ok(Self {
             scenario,
+            #[cfg(feature = "dev")]
+            prepared: Box::new(prepared),
+            #[cfg(feature = "dev")]
             live,
             sim,
-            cast,
             script,
             fell_at: None,
             fights: 1,
@@ -194,7 +202,7 @@ impl LiveFight {
     /// One tick, and whatever it ended. Returns whether it asked `bindings`.
     fn step(&mut self, bindings: &mut dyn ActionSource) -> bool {
         let asks = self.script.is_none();
-        let mut actions = action_source(&mut self.script, bindings).actions(self.sim.tick(), &self.cast);
+        let mut actions = action_source(&mut self.script, bindings).actions(self.sim.tick(), self.sim.cast());
         if asks {
             self.hide_held_over(&mut actions);
         }
@@ -212,7 +220,7 @@ impl LiveFight {
     /// a button down that wasn't on the tick before, and a new one has no tick before, so to it a button
     /// held across the restart is a press nobody made. The stick is a level, so a thumb walks straight on.
     fn hide_held_over(&mut self, actions: &mut TickActions) {
-        let Some(&player) = self.cast.first() else { return };
+        let Some(&player) = self.sim.cast().first() else { return };
         let mut read = actions.get(player);
         self.held = read.buttons;
         // What's in `held_over` and still down: `Buttons` has no intersection.
@@ -224,7 +232,7 @@ impl LiveFight {
     /// A party falls with its last member: until then, a fall only brings in the next.
     fn someone_fell(&self) -> bool {
         let party = self.sim.party();
-        self.cast.iter().any(|id| {
+        self.sim.cast().iter().any(|id| {
             if party.input_actor() == Some(*id) {
                 return party.is_down();
             }
@@ -237,9 +245,8 @@ impl LiveFight {
     fn start_over(&mut self) {
         self.report();
         self.fell_at = None;
-        match self.live.start(self.scenario, self.scenario.config) {
-            Ok((sim, cast)) => {
-                (self.sim, self.cast) = (sim, cast);
+        match self.sim.restart() {
+            Ok(()) => {
                 self.fights += 1;
                 self.held_over = self.held;
             }
@@ -260,7 +267,7 @@ impl LiveFight {
     /// Says how this fight went.
     fn report(&self) {
         let health = |index: usize| {
-            let id = self.cast.get(index).map(|id| self.sim.party().on_field(*id));
+            let id = self.sim.cast().get(index).map(|id| self.sim.party().on_field(*id));
             id.and_then(|id| self.sim.actor(id)).map_or(0, |actor| actor.fighter.health())
         };
         tracing::info!(
@@ -284,6 +291,7 @@ pub struct Combat {
     mode: Mode,
     /// Fixed steps taken after a replay's last tick.
     steps_past_end: u64,
+    last_step_allocations: u64,
 }
 
 impl Combat {
@@ -303,8 +311,14 @@ impl Combat {
         let name = if party { crate::arena::PARTY_SCENARIO } else { crate::arena::FIGHT_SCENARIO };
         let scenario =
             find_scenario(SCENARIOS, name).ok_or_else(|| format!("--fight: no scenario `{name}`"))?;
-        let fight = LiveFight::new(scenario, script.map(script_actions).transpose()?, LiveMoves::default())?;
-        Ok(Self { path: PathBuf::new(), mode: Mode::Fighting(fight), steps_past_end: 0 })
+        let fight =
+            LiveFight::new(scenario, script.map(script_actions).transpose()?, LiveMoves::default(), party)?;
+        Ok(Self {
+            path: PathBuf::new(),
+            mode: Mode::Fighting(fight),
+            steps_past_end: 0,
+            last_step_allocations: 0,
+        })
     }
 
     fn replaying(path: &Path) -> Result<Self, String> {
@@ -315,7 +329,7 @@ impl Combat {
         let name = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or_default().to_owned();
         let recorded = recorded_trail(path, &name).map_err(|error| fail(&error))?;
         let mode = Mode::Replaying { player, name, recorded };
-        Ok(Self { path: path.to_owned(), mode, steps_past_end: 0 })
+        Ok(Self { path: path.to_owned(), mode, steps_past_end: 0, last_step_allocations: 0 })
     }
 
     /// Sets up a recording of `scenario`, from `live`'s edits of its documents.
@@ -357,7 +371,7 @@ impl Combat {
             .map_err(|error| format!("--record: {error}"))?;
         let files = SessionFiles::new(std::env::temp_dir());
         let mode = Mode::Recording { recording, script, stopped: None, files };
-        Ok(Self { path: path.to_owned(), mode, steps_past_end: 0 })
+        Ok(Self { path: path.to_owned(), mode, steps_past_end: 0, last_step_allocations: 0 })
     }
 
     /// The scenario the run starts from.
@@ -420,8 +434,8 @@ impl Combat {
         }
         let mut live = fight.live.clone();
         live.remember(document, set);
-        match live.start(fight.scenario, fight.scenario.config) {
-            Ok((sim, cast)) => (fight.sim, fight.cast, fight.live) = (sim, cast, live),
+        match fight.prepared.start_resettable(fight.scenario.config, &live) {
+            Ok(sim) => (fight.sim, fight.live) = (sim, live),
             Err(error) => {
                 tracing::error!(target: LOG_TARGET, %error, "the fight keeps the moves it has");
                 return false;
@@ -453,7 +467,7 @@ impl Combat {
         match &self.mode {
             Mode::Replaying { player, .. } => player.cast(),
             Mode::Recording { recording, .. } => recording.cast(),
-            Mode::Fighting(fight) => &fight.cast,
+            Mode::Fighting(fight) => fight.sim.cast(),
         }
     }
 
@@ -497,6 +511,19 @@ impl Combat {
     /// One tick, with whatever else this fixed step does. Past a replay's end, or a recording's
     /// limit, it does nothing and counts. Returns whether it asked `bindings`.
     pub fn step(&mut self, bindings: &mut dyn ActionSource) -> bool {
+        let scope = sapphire_core::alloc::AllocScope::begin();
+        let asks = self.step_inner(bindings);
+        self.last_step_allocations = scope.counts().allocations;
+        asks
+    }
+
+    /// Allocations in the complete last public step, including an automatic restart's reset.
+    /// As with simulation counters, this requires an installed counting allocator.
+    pub fn last_step_allocations(&self) -> u64 {
+        self.last_step_allocations
+    }
+
+    fn step_inner(&mut self, bindings: &mut dyn ActionSource) -> bool {
         match &mut self.mode {
             Mode::Replaying { player, .. } => {
                 if !player.step() {
@@ -618,7 +645,7 @@ impl Combat {
     /// Logs where the run got to. A recording says so only if its file was `written`: what became of it
     /// otherwise is the error's to say.
     fn report_end(self, written: bool) {
-        let Self { path, mode, steps_past_end } = self;
+        let Self { path, mode, steps_past_end, .. } = self;
         match mode {
             Mode::Replaying { player, name, recorded } => {
                 let length = player.replay().ticks();
@@ -1160,6 +1187,15 @@ mod tests {
         assert_eq!(count(Some(&mut replaying)), 1, "a replay");
     }
 
+    #[test]
+    fn capture_frames_refuse_zero_count_and_overflowing_tick_spans() {
+        assert_eq!(CaptureFrames { count: 0, step: 0 }.first_tick(0), None);
+        assert_eq!(CaptureFrames { count: u32::MAX, step: u32::MAX }.first_tick(u32::MAX), None);
+        assert_eq!(CaptureFrames { count: 3, step: 2 }.first_tick(4), Some(0));
+        assert_eq!(CaptureFrames { count: 3, step: 2 }.first_tick(3), None);
+        assert_eq!(CaptureFrames { count: 1, step: u32::MAX }.first_tick(7), Some(7));
+    }
+
     fn fighting(script: Option<&str>) -> Combat {
         Combat::new(&CombatOption::Fight { script: script.map(str::to_owned), party: false })
             .expect("sets up")
@@ -1186,16 +1222,27 @@ mod tests {
             trail.push(combat.simulation().checksum());
         }
         assert_eq!(combat.simulation().tick(), fallen + RESTART_AFTER - 1, "still the same fight");
+        let scope = sapphire_core::alloc::AllocScope::begin();
         combat.step(&mut no_bindings);
+        let allocations = scope.counts().allocations;
         let CombatStatus::Fighting { fights } = combat.status() else { panic!("{:?}", combat.status()) };
         assert_eq!(fights, 2);
         assert_eq!(combat.simulation().tick(), 0, "it starts over");
+        assert!(sapphire_core::alloc::is_installed());
+        assert_eq!(combat.last_step_allocations(), allocations, "the public counter includes the restart");
+        if sapphire_core::alloc::PER_THREAD_COUNTS {
+            assert_eq!(allocations, 0, "the complete automatic restart is allocation-free");
+        }
 
         for expected in &trail {
             assert_eq!(combat.simulation().checksum(), *expected, "at tick {}", combat.simulation().tick());
             combat.step(&mut no_bindings);
         }
-        assert_eq!(combat.simulation().stats().allocations, 0, "rule R6");
+        assert_eq!(
+            combat.simulation().stats().allocations,
+            0,
+            "simulation steps only; restart is counted above"
+        );
     }
 
     /// `--fight --party`: the swap button works, through the same bindings' path, and the fight goes on past

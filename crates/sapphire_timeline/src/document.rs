@@ -699,7 +699,7 @@ impl TimelineDocument {
                 return Err(TimelineError::invalid(format!("events[{index}].at"), problem));
             }
         }
-        self.beats().map(|_| ())
+        self.beat_count().map(|_| ())
     }
 
     fn check_characters(&self) -> Result<(), TimelineError> {
@@ -766,10 +766,23 @@ impl TimelineDocument {
         Ok(())
     }
 
+    /// Called after temporal validation, so each ramp is bounded by the timeline's tick count.
+    fn beat_count(&self) -> Result<usize, TimelineError> {
+        let count = self
+            .time_scale
+            .iter()
+            .fold(self.events.len(), |count, key| count + tick_of(key.ramp).max(1) as usize);
+        if count > MAX_BEATS {
+            let problem = format!("{count} beats, past the limit of {MAX_BEATS}");
+            return Err(TimelineError::invalid("time_scale", problem));
+        }
+        Ok(count)
+    }
+
     /// The beats by step, a step's time scale before its events and events in the document's order, with
     /// a refusal if there are more than a run should walk past.
     fn beats(&self) -> Result<Vec<Beat>, TimelineError> {
-        let mut beats = Vec::new();
+        let mut beats = Vec::with_capacity(self.beat_count()?);
         let mut speed = NORMAL_PER_MILLE;
         for key in &self.time_scale {
             let (at, ramp) = (tick_of(key.at), tick_of(key.ramp));
@@ -794,10 +807,6 @@ impl TimelineDocument {
         }
         // Stable, which is what keeps a step's time scale first and its events in order.
         beats.sort_by_key(|beat| beat.tick);
-        if beats.len() > MAX_BEATS {
-            let problem = format!("{} beats, past the limit of {MAX_BEATS}", beats.len());
-            return Err(TimelineError::invalid("time_scale", problem));
-        }
         Ok(beats)
     }
 

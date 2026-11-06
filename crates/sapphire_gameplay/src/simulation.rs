@@ -129,6 +129,8 @@ pub struct Simulation {
     resolve: SystemState<ResolveParams>,
     stats: SimStats,
     physics_budget: Duration,
+    /// Presentation identity for a fresh run over retained storage; never simulation state.
+    run_generation: u64,
 }
 
 impl Simulation {
@@ -204,7 +206,34 @@ impl Simulation {
 
         let resolve = SystemState::new(ecs.world_mut());
         let stats = SimStats { budget: config.step_budget, ..SimStats::default() };
-        Self { ecs, resolve, stats, physics_budget: config.physics_budget }
+        Self { ecs, resolve, stats, physics_budget: config.physics_budget, run_generation: 0 }
+    }
+
+    /// Only `FightWorld` calls this: its private Simulation cannot gain arbitrary systems, resources,
+    /// navigation or timelines. Keep this list aligned with new() and the canonical state writer.
+    /// Schedules/queries have no gameplay Local state or change-detection filters to reset.
+    pub(crate) fn restart_builtin_fight(&mut self, config: SimConfig) {
+        self.run_generation = self.run_generation.wrapping_add(1);
+        let world = self.ecs.world_mut();
+        debug_assert!(world.get_resource::<SimNavigation>().is_none());
+        *world.resource_mut::<WorldClock>() = WorldClock::default();
+        *world.resource_mut::<SimRng>() = SimRng(Pcg32::new(config.seed, COMBAT_STREAM));
+        *world.resource_mut::<CurrentActions>() = CurrentActions::default();
+        *world.resource_mut::<MoveStats>() = MoveStats::default();
+        *world.resource_mut::<CueQueue>() = CueQueue::default();
+        world.resource_mut::<HitQuery>().reset();
+        world.resource_mut::<AppliedHits>().0.clear();
+        *world.resource_mut::<ResolveStats>() = ResolveStats::default();
+        *world.resource_mut::<SlowMotion>() = SlowMotion::default();
+        *world.resource_mut::<Party>() = Party::default();
+        *world.resource_mut::<TimelineRun>() = TimelineRun::default();
+        *world.resource_mut::<Interpolation>() = Interpolation::default();
+        let (requests, table, clock, _, _, actors, characters) =
+            self.resolve.get_mut(world).expect(ACTORS_EXIST);
+        actors::restart_pool(requests, table, clock, characters, actors);
+        self.ecs.world_mut().resource_mut::<MoveLibrary>().restart();
+        self.stats = SimStats { budget: config.step_budget, ..SimStats::default() };
+        self.physics_budget = config.physics_budget;
     }
 
     /// Adds a system to a [`CombatSet`], for a crate above gameplay (`sapphire_script` fires its hooks
@@ -615,6 +644,16 @@ impl Simulation {
         party::form(self.ecs.world_mut(), members, tuning)
     }
 
+    /// The formation was validated before resetting. Newly spawned off-field actors already have
+    /// the neutral component state that form() establishes; only their bodies need removing.
+    pub(crate) fn restore_builtin_party(&mut self, party: Party) {
+        let mut characters = self.ecs.world_mut().resource_mut::<CharacterWorld>();
+        for slot in party.slots().filter(|slot| party.is_off_field(slot.actor)) {
+            characters.despawned(slot.actor);
+        }
+        *self.ecs.world_mut().resource_mut::<Party>() = party;
+    }
+
     /// The party, if it's formed: who's on the field, and each slot's readiness.
     #[must_use]
     pub fn party(&self) -> &Party {
@@ -696,6 +735,14 @@ impl Simulation {
     #[must_use]
     pub fn hits(&self) -> &HitQuery {
         self.ecs.world().resource::<HitQuery>()
+    }
+
+    /// Which run occupies this world's retained storage, for presentation to detect a restart even
+    /// at the same tick. Starts at zero and changes only on a built-in fight reset; it is not hashed.
+    /// Replacing the Simulation entirely is a separate owner lifecycle, requiring its own reset.
+    #[must_use]
+    pub fn run_generation(&self) -> u64 {
+        self.run_generation
     }
 
     /// The simulation's counters (rule R9).

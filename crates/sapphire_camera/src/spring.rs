@@ -58,12 +58,29 @@ impl<T: SpringValue> Follow<T> {
         let held = decay * (1.0 + u);
         let ramp_gain = t - 2.0 * (1.0 - decay) / rate + t * decay;
 
-        let ramp = (target - self.target) * (1.0 / dt);
+        let delta = target - self.target;
+        let inverse_step = 1.0 / dt;
+        let (ramp_position, ramp_velocity) = if u >= 1e-3 && inverse_step.is_finite() {
+            // Preserve ordinary-step rounding, including the target's f32 velocity.
+            let ramp = delta * inverse_step;
+            (ramp * ramp_gain as f32, ramp * (1.0 - held) as f32)
+        } else {
+            // Forming the target's velocity first overflows for tiny positive steps, including
+            // 0 * infinity at rest. Divide the scalar gains before multiplying the target delta.
+            let (share, velocity_gain) = if u < 1e-3 {
+                // Taylor forms avoid cancellation in the two gains near zero.
+                let share = u * u * (1.0 / 6.0 + u * (-1.0 / 12.0 + u * (1.0 / 40.0 - u / 180.0)));
+                let velocity = rate * u * (0.5 + u * (-1.0 / 3.0 + u * (1.0 / 8.0 - u / 30.0)));
+                (share, velocity)
+            } else {
+                (ramp_gain / t, (1.0 - held) / t)
+            };
+            (delta * share as f32, delta * velocity_gain as f32)
+        };
         let offset = self.value - self.target;
-        self.value =
-            self.target + offset * held as f32 + self.velocity * (t * decay) as f32 + ramp * ramp_gain as f32;
-        self.velocity = self.velocity * (decay * (1.0 - u)) as f32 - offset * (rate * u * decay) as f32
-            + ramp * (1.0 - held) as f32;
+        self.value = self.target + offset * held as f32 + self.velocity * (t * decay) as f32 + ramp_position;
+        self.velocity =
+            self.velocity * (decay * (1.0 - u)) as f32 - offset * (rate * u * decay) as f32 + ramp_velocity;
         self.target = target;
         self.value
     }
@@ -100,6 +117,21 @@ mod tests {
     use sapphire_math::{Vec2, Vec3};
 
     use super::*;
+
+    #[test]
+    fn tiny_positive_steps_preserve_finite_state_and_recover() {
+        for dt in [f32::from_bits(1), f32::MIN_POSITIVE, 1e-30, 1e-8] {
+            for target in [Vec3::ZERO, Vec3::ONE] {
+                let mut follow = Follow::new(Vec3::ZERO);
+                let pose = follow.update(target, 0.1, dt);
+                assert!(pose.is_finite() && follow.velocity.is_finite(), "dt={dt}, {follow:?}");
+                for _ in 0..120 {
+                    follow.update(target, 0.1, 1.0 / 60.0);
+                }
+                assert!(follow.value.distance(target) < 1e-3, "dt={dt}, {follow:?}");
+            }
+        }
+    }
 
     #[test]
     fn a_target_at_rest_matches_sapphire_maths_damp() {

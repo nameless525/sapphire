@@ -868,10 +868,21 @@ mod sensitivity_tests {
             move_time: SimDuration::ZERO,
             hit: None,
         };
+        // world() advances a busy fight and already published cues; this oracle starts from the
+        // same empty queue history that each field-specific sample below reconstructs.
+        *sim.ecs_mut().world_mut().resource_mut::<CueQueue>() = CueQueue::default();
         let before = sim.checksum();
         sim.ecs_mut().world_mut().resource_mut::<CueQueue>().push(event);
         let published = sim.checksum();
         assert_ne!(published, before);
+        // Replace the complete queue for each sample: clear preserves published/dropped history.
+        let with_event = |sim: &mut Simulation, event| {
+            let mut queue = CueQueue::default();
+            queue.push(event);
+            *sim.ecs_mut().world_mut().resource_mut::<CueQueue>() = queue;
+            sim.checksum()
+        };
+        assert_eq!(with_event(&mut sim, event), published);
         // Each field of an event, in a queue of one.
         for (what, other) in [
             ("its actor", crate::cues::CueEvent { actor: ActorId::from_raw(99).unwrap(), ..event }),
@@ -880,10 +891,7 @@ mod sensitivity_tests {
             ("its local time", crate::cues::CueEvent { local_time: SimTime::from_subticks(1), ..event }),
             ("its move time", crate::cues::CueEvent { move_time: SimDuration::from_subticks(1), ..event }),
         ] {
-            let mut world_cues = sim.ecs_mut().world_mut().resource_mut::<CueQueue>();
-            world_cues.clear();
-            world_cues.push(other);
-            assert_ne!(sim.checksum(), published, "{what}");
+            assert_ne!(with_event(&mut sim, other), published, "{what}");
         }
 
         // A hit's cue carries what it landed with, each field of which counts.
@@ -898,14 +906,11 @@ mod sensitivity_tests {
             hitstop: 1,
             outcome: HitOutcome::Flinched,
         };
-        let with = |sim: &mut Simulation, hit| {
-            let mut world_cues = sim.ecs_mut().world_mut().resource_mut::<CueQueue>();
-            world_cues.clear();
-            world_cues.push(crate::cues::CueEvent { hit: Some(hit), ..event });
-            sim.checksum()
-        };
+        let with =
+            |sim: &mut Simulation, hit| with_event(sim, crate::cues::CueEvent { hit: Some(hit), ..event });
         let plain = with(&mut sim, hit);
         assert_ne!(plain, published);
+        assert_eq!(with(&mut sim, hit), plain);
         use crate::resolve::HitOutcome::{Absorbed, Defeated, PoiseBroken};
         for (what, other) in [
             ("its target", crate::cues::HitCue { target: ActorId::from_raw(99).unwrap(), ..hit }),

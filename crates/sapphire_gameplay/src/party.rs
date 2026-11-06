@@ -520,6 +520,13 @@ pub(crate) fn settle_swaps(
     cues.push(CueEvent { actor: coming.actor, cue: PARTY_SWAP, tick, local_time: now, move_time, hit: None });
 }
 
+pub(crate) fn check_member_set(actor: ActorId, set: Option<&MoveSet>) -> Result<(), PartyError> {
+    let set = set.ok_or(PartyError::NoSwapIntent { actor })?;
+    set.intent(SWAP_INTENT).ok_or(PartyError::NoSwapIntent { actor })?;
+    set.find(SWAP_IN_MOVE).ok_or(PartyError::NoSwapInMove { actor })?;
+    Ok(())
+}
+
 /// Forms the party: its first member on the field, where it stands, and the others off it. See
 /// `Simulation::form_party`.
 pub(crate) fn form(world: &mut World, members: &[ActorId], tuning: PartyTuning) -> Result<(), PartyError> {
@@ -538,9 +545,7 @@ pub(crate) fn form(world: &mut World, members: &[ActorId], tuning: PartyTuning) 
         let library = world.resource::<MoveLibrary>();
         let set: Option<&MoveSet> =
             world.get::<MoveRunner>(entity).and_then(MoveRunner::set).and_then(|set| library.current(set));
-        let set = set.ok_or(PartyError::NoSwapIntent { actor })?;
-        set.intent(SWAP_INTENT).ok_or(PartyError::NoSwapIntent { actor })?;
-        set.find(SWAP_IN_MOVE).ok_or(PartyError::NoSwapInMove { actor })?;
+        check_member_set(actor, set)?;
         slots[index] = Some(PartySlot { actor, ready_at: SimTime::ZERO });
     }
     let mut query = world.query::<Member<'_>>();

@@ -277,22 +277,18 @@ fn slow_motion_doesnt_slow_the_camera() {
     let world = open_ground();
     let lag_at = |slowed: f32| {
         let mut camera = director();
+        let explore = &camera.tuning().explore;
+        let distance = explore.distance * explore.pitch.cos();
         let script = move |t: f32| Moment::alone(Vec3::new(0.0, 0.0, 5.0 * slowed * t));
         let mut lag = 0.0;
         run(&mut camera, &world, 60, (0.0, 4.0), script, |time, pose, _| {
-            lag = 5.0 * slowed * time - (pose.eye.z + camera_distance());
+            lag = 5.0 * slowed * time - (pose.eye.z + distance);
         });
         lag
     };
     let (full, slowed) = (lag_at(1.0), lag_at(0.2));
     println!("lag {full} m at full speed, {slowed} m at a fifth");
     assert!((slowed - full * 0.2).abs() < 0.01, "{full} and {slowed}");
-}
-
-/// How far back the shipped explore rig stands across the ground.
-fn camera_distance() -> f32 {
-    let tuning = sapphire_camera::CameraTuning::default_tuning();
-    tuning.explore.distance * tuning.explore.pitch.cos()
 }
 
 /// A pause holds the pose exactly, shakes included, and when it ends the run carries on as if it had never

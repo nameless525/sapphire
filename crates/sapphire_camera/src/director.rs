@@ -523,6 +523,12 @@ impl CameraDirector {
         self.shakes.clear();
     }
 
+    /// Stops every shake and starts its random sequence over at `seed`, for a fresh fight.
+    /// Keeps the player's shake setting, camera tuning and all rig state.
+    pub fn reset_shakes(&mut self, seed: u64) {
+        self.shakes.start_over(seed);
+    }
+
     /// Fires a shake (see the `shake` module for E3's interface). `strength` scales this firing; the
     /// player's setting scales them all. An ID from another tuning, past this one's list, does nothing.
     pub fn fire_shake(&mut self, id: ShakeId, strength: f32) {
@@ -566,7 +572,7 @@ impl CameraDirector {
         let frame = self.sanitized(frame);
         let snap = std::mem::take(&mut self.cut_pending);
         let dt = frame.dt.min(MAX_STEP);
-        if dt <= 0.0 && !snap {
+        if dt <= 0.0 && !snap && !self.takeover_cut_pending {
             return self.pose;
         }
         self.stats.frames += 1;
@@ -625,7 +631,8 @@ impl CameraDirector {
         let looks = looking(eye, pivot, axes.forward, framed, share, &mut self.shut_in_turn);
         let rotation = look_rotation(looks, &axes);
         let mut pose = CameraPose { eye, rotation, fov_y };
-        let snap_eye = snap || std::mem::take(&mut self.takeover_cut_pending);
+        let takeover_cut = std::mem::take(&mut self.takeover_cut_pending);
+        let snap_eye = snap || takeover_cut;
         self.step_takeover(&mut pose, world, dt, snap_eye);
 
         let forward = pose.forward();

@@ -423,6 +423,50 @@ fn a_step_too_long_to_count_owes_what_a_count_holds() {
 }
 
 #[test]
+fn a_continuous_emitter_recovers_after_large_finite_steps() {
+    for step in [1e8, f32::MAX] {
+        let mut emitter = dots("dots", Spawn::Rate { per_second: 60.0, duration: 0.0 });
+        emitter.lifetime = (0.25, 0.25);
+        let stream = Effect { name: "stream".to_owned(), emitters: vec![emitter], trail: None };
+        let mut world = world_of(vec![stream], VfxBudget { max_particles: 8, ..VfxBudget::DESKTOP_LOW });
+        let handle = world.spawn(EffectId(0), OwnerId::WORLD, Placement::default()).unwrap();
+        world.advance(&OwnerSteps { world: step, owners: &[] });
+        assert_eq!(world.stats().particles, 8);
+        for _ in 0..3 {
+            let dropped = world.stats().dropped_particles;
+            world.advance(&OwnerSteps { world: 1.0, owners: &[] });
+            assert_eq!(world.stats().particles, 8, "after {step}");
+            assert_eq!(world.stats().dropped_particles - dropped, 52);
+            assert!(world.is_playing(handle));
+        }
+    }
+}
+
+#[test]
+fn a_large_step_respects_delayed_finite_emission_and_pauses() {
+    for step in [1e8, f32::MAX] {
+        let mut emitter = dots("dots", Spawn::Rate { per_second: 60.0, duration: 0.5 });
+        emitter.delay = 1.0;
+        emitter.lifetime = (0.25, 0.25);
+        let stream = Effect { name: "stream".to_owned(), emitters: vec![emitter], trail: None };
+        let mut world = world_of(vec![stream], VfxBudget { max_particles: 8, ..VfxBudget::DESKTOP_LOW });
+        let handle = world.spawn(EffectId(0), OwnerId::WORLD, Placement::default()).unwrap();
+        world.advance(&OwnerSteps { world: 0.0, owners: &[] });
+        assert_eq!(world.stats().particles, 0);
+        world.advance(&OwnerSteps { world: step, owners: &[] });
+        assert_eq!(world.stats().particles, 8);
+        assert_eq!(world.stats().dropped_particles, 22);
+        let paused = frame_of(&mut world);
+        world.advance(&OwnerSteps { world: 0.0, owners: &[] });
+        assert_eq!(frame_of(&mut world), paused);
+        world.advance(&OwnerSteps { world: 1.0, owners: &[] });
+        assert_eq!(world.stats().particles, 0);
+        assert_eq!(world.stats().dropped_particles, 22);
+        assert!(!world.is_playing(handle));
+    }
+}
+
+#[test]
 fn past_the_effect_cap_a_spawn_is_counted_and_refused() {
     let budget = VfxBudget { max_effects: 2, ..VfxBudget::DESKTOP_LOW };
     let mut world = world_of(vec![burst(1)], budget);
@@ -648,6 +692,29 @@ fn an_effect_is_endless_exactly_when_it_never_ends_by_itself() {
 }
 
 #[test]
+fn a_delayed_burst_keeps_its_absolute_clock_boundary_through_pauses() {
+    for pause in [false, true] {
+        let mut effect = burst(1);
+        effect.emitters[0].delay = 0.1;
+        let mut world = world_of(vec![effect], VfxBudget::DESKTOP_LOW);
+        world.spawn(EffectId(0), OwnerId::WORLD, Placement::default()).unwrap();
+        world.advance(&OwnerSteps { world: 0.0, owners: &[] });
+        assert_eq!(world.stats().particles, 0, "a zero step cannot fire it early");
+        for step in 1..=6 {
+            if pause {
+                let held = frame_of(&mut world);
+                world.advance(&OwnerSteps { world: 0.0, owners: &[] });
+                assert_eq!(frame_of(&mut world), held);
+            }
+            world.advance(&ALL_RUN);
+            assert_eq!(world.stats().particles, u32::from(step == 6), "positive step {step}, pause={pause}");
+        }
+        world.advance(&OwnerSteps { world: 0.0, owners: &[] });
+        assert_eq!(world.stats().particles, 1, "holding the boundary never fires twice");
+    }
+}
+
+#[test]
 fn a_delay_waits_on_the_owners_clock() {
     let mut effect = burst(1);
     effect.emitters[0].delay = 0.5;
@@ -815,6 +882,32 @@ fn bad_sockets_are_ignored() {
     // Older than the newest it has: out of order.
     world.sample_trail(blade, Vec3::Z, Vec3::Y, 1.0);
     assert!(frame_of(&mut world).ribbon_points.is_empty(), "one sample draws no strip");
+}
+
+#[test]
+fn starting_over_matches_a_fresh_world_and_invalidates_handles() {
+    let budget = VfxBudget { max_effects: 3, max_particles: 8, ..VfxBudget::DESKTOP_LOW };
+    let mut world = world_of(vec![burst(12)], budget);
+    let mut fresh = world.clone();
+    let old = world.spawn(EffectId(0), OwnerId::WORLD, Placement::default()).unwrap();
+    world.advance(&ALL_RUN);
+    world.spawn(EffectId(0), OwnerId::WORLD, Placement::default());
+    world.spawn(EffectId(0), OwnerId::WORLD, Placement::default());
+    world.spawn(EffectId(0), OwnerId::WORLD, Placement::default());
+    assert!(world.stats().dropped_particles > 0 && world.stats().dropped_effects > 0);
+    world.start_over();
+    assert!(!world.is_playing(old));
+    assert_eq!(world.stats(), fresh.stats());
+    for index in 0..3 {
+        let placement = Placement::at(Vec3::X * index as f32);
+        world.spawn(EffectId(0), OwnerId::WORLD, placement);
+        fresh.spawn(EffectId(0), OwnerId::WORLD, placement);
+        world.stop(old);
+        world.advance(&ALL_RUN);
+        fresh.advance(&ALL_RUN);
+        assert_eq!(frame_of(&mut world).sprites, frame_of(&mut fresh).sprites);
+        assert_eq!(world.stats(), fresh.stats());
+    }
 }
 
 #[test]

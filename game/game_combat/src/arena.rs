@@ -81,6 +81,7 @@ use sapphire_assets::AssetId;
 use sapphire_camera::{CameraDirector, CameraFrame, CameraTuning, Rig, Subject};
 use sapphire_colliders::{ArchivedColliderSet, ColliderError, Group};
 use sapphire_core::debug_draw::{Color, Shape, Style};
+use sapphire_ecs::bevy_ecs::world::WorldId;
 use sapphire_ecs::prelude::*;
 use sapphire_gameplay::arena::{SpawnPoint, cooked_colliders, profile, spawns};
 use sapphire_gameplay::targeting::{TargetCandidate, TargetQuery, TargetingWeights, choose_target};
@@ -383,6 +384,8 @@ fn fighter_values(view: &ActorView, points: bool) -> FighterValues {
 /// `sapphire_camera`'s director as the arena runs it (M2 G5), and what the frame's clock and input
 /// have given it since its last frame.
 struct ArenaCamera {
+    /// The authored scene spawn, prepared with the arena and retained across fight worlds.
+    spawn_yaw: f32,
     director: CameraDirector,
     dt: f32,
     look: Vec2,
@@ -392,23 +395,26 @@ struct ArenaCamera {
 impl ArenaCamera {
     /// On its combat rig, behind the player, as it faces at its spawn point. Its first frame is a cut,
     /// so it opens settled.
-    fn new() -> Self {
+    fn new(spawn_yaw: f32) -> Self {
         let tuning = CameraTuning::default_tuning();
         let pitch = tuning.explore.pitch;
         let mut director =
             CameraDirector::new(tuning, CAMERA_SEED).expect("the shipped tuning is checked by its own test");
         director.set_rig(Rig::Combat, true);
-        director.look_from(spawns().player.yaw(), pitch);
-        Self { director, dt: 0.0, look: Vec2::ZERO, zoom: 0.0 }
+        director.look_from(spawn_yaw, pitch);
+        Self { spawn_yaw, director, dt: 0.0, look: Vec2::ZERO, zoom: 0.0 }
     }
 
     /// Behind the player again and settled, for a new fight, whatever rigs are on, with no shake of the
     /// last one.
     fn start_over(&mut self) {
         let pitch = self.director.tuning().explore.pitch;
-        self.director.look_from(spawns().player.yaw(), pitch);
+        self.director.look_from(self.spawn_yaw, pitch);
         self.director.cut();
-        self.director.stop_shakes();
+        self.director.reset_shakes(CAMERA_SEED);
+        self.dt = 0.0;
+        self.look = Vec2::ZERO;
+        self.zoom = 0.0;
     }
 }
 
@@ -433,8 +439,8 @@ pub struct ArenaActors {
     weights: TargetingWeights,
     /// Whether the player's lock-on is on.
     locked_on: bool,
-    /// The simulation's tick when it last stepped: going back, it's a new fight.
-    tick: u64,
+    /// The world, retained-storage run and tick last followed. None before observing a fight.
+    followed_run: Option<(WorldId, u64, u64)>,
     /// The plain camera follows the player, unless another shot holds still.
     follows: bool,
     /// The director, on its own shot.
@@ -459,9 +465,9 @@ impl ArenaActors {
             target: None,
             weights: TargetingWeights::SOFT_LOCK,
             locked_on: false,
-            tick: 0,
+            followed_run: None,
             follows: shot == ArenaShot::Follow,
-            camera: (shot == ArenaShot::Director).then(ArenaCamera::new),
+            camera: (shot == ArenaShot::Director).then(|| ArenaCamera::new(spawns.player.yaw())),
             ground,
             fighting: false,
         }
@@ -565,7 +571,8 @@ impl ArenaActors {
 
     /// How long the fight's gone on, for a HUD with no clock of its own.
     pub(crate) fn fight_time(&self) -> Duration {
-        Duration::from_nanos(self.tick.saturating_mul(1_000_000_000 / u64::from(TICK_HZ)))
+        let tick = self.followed_run.map_or(0, |(_, _, tick)| tick);
+        Duration::from_nanos(tick.saturating_mul(1_000_000_000 / u64::from(TICK_HZ)))
     }
 
     /// The camera director, if it's on: what a fight's shakes go to.
@@ -590,15 +597,17 @@ impl ArenaActors {
     }
 
     /// Takes the fixed step's roots from `simulation`, after each of its steps. `cast` is the
-    /// scenario's, the player first. A tick that went back is a new fight, which stands where it stands
+    /// scenario's, the player first. A tick that went back or a changed run generation is a new fight, which stands where it stands
     /// with the camera cut to it, rather than sliding back across the square. Returns whether someone else
     /// came in for each of the two.
     pub(crate) fn follow(&mut self, simulation: &Simulation, cast: &[ActorId]) -> [bool; 2] {
         self.fighting = true;
         let mut came_in = [false; 2];
-        let tick = simulation.tick();
-        let started_over = tick < self.tick;
-        self.tick = tick;
+        let run = (simulation.world().id(), simulation.run_generation(), simulation.tick());
+        let started_over = self
+            .followed_run
+            .is_some_and(|(world, generation, tick)| world != run.0 || generation != run.1 || run.2 < tick);
+        self.followed_run = Some(run);
         for (index, (id, (_, root))) in cast.iter().zip([&mut self.player, &mut self.enemy]).enumerate() {
             // A cast names a party by its first member: the player is whoever's on the field.
             let actor = simulation.actor(simulation.party().on_field(*id));
@@ -1158,7 +1167,12 @@ mod tests {
 
         let scenario = find_scenario(SCENARIOS, FIGHT_SCENARIO).expect("listed");
         let (fresh, cast) = scenario.start(scenario.config).expect("it starts");
+        assert!(sapphire_core::alloc::is_installed(), "this regression requires counting");
+        let scope = sapphire_core::alloc::AllocScope::begin();
         actors.follow(&fresh, &cast);
+        let allocations = scope.counts();
+        assert_eq!(allocations.allocations, 0, "following a new world retains camera preparation");
+        assert_eq!(allocations.bytes, 0);
         let start = spawns().player.position();
         assert_eq!(actors.player.1.position(0.0), start, "it doesn't slide back across the square");
         assert_eq!(actors.player.1.position(1.0), start);

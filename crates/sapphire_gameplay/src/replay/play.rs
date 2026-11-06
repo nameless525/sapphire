@@ -35,6 +35,8 @@ pub enum PlayError {
     File(#[from] ReplayError),
     #[error(transparent)]
     Timeline(#[from] TimelinePlayError),
+    #[error("the recording ended at tick {tick} after a live edit; it cannot record more ticks")]
+    RecordingEnded { tick: u32 },
 }
 
 /// Rule R6, broken: the fixed step allocated during a run (spec §9, gate 4).
@@ -136,14 +138,18 @@ impl Player {
         if current != replay.tables_hash() {
             return Err(PlayError::MovesChanged { recorded: replay.tables_hash(), current });
         }
-        Ok(Self {
+        let mut player = Self {
             tracked: Tracked::new(sim, replay.ticks()),
             replay,
             cursor: Cursor::START,
             next_command: 0,
             played: 0,
             cast,
-        })
+        };
+        if player.replay.ticks() == 0 {
+            player.apply_commands();
+        }
+        Ok(player)
     }
 
     /// The actors the scenario's input drives, the player first: who presentation stands where.
@@ -155,6 +161,18 @@ impl Player {
     /// Plays one tick. Returns `false`, and does nothing, once the replay has ended.
     pub fn step(&mut self) -> bool {
         let Some(actions) = self.cursor.next(&self.replay) else { return false };
+        self.apply_commands();
+        self.played += 1;
+        self.tracked.step(&actions);
+        if self.played == self.replay.ticks() {
+            self.apply_commands();
+        }
+        true
+    }
+
+    // The format permits commands at the boundary after the last tick. Apply them without an
+    // extra simulation step, including a zero-tick replay's initial/final boundary.
+    fn apply_commands(&mut self) {
         while let Some(&(tick, command)) = self.replay.commands().get(self.next_command)
             && tick == self.played
         {
@@ -165,9 +183,6 @@ impl Player {
             }
             self.next_command += 1;
         }
-        self.played += 1;
-        self.tracked.step(&actions);
-        true
     }
 
     /// Plays every tick left.
@@ -300,7 +315,13 @@ impl Recording {
     }
 
     /// Runs `script`, its commands included, until the file holds at least `ticks` ticks.
+    /// Refuses to extend a file ended by a live edit, without consuming any actions or commands.
     pub fn run_script(&mut self, script: &Script, ticks: u32) -> Result<(), PlayError> {
+        if self.recorded_ticks() < ticks
+            && let Some(tick) = self.edited_at
+        {
+            return Err(PlayError::RecordingEnded { tick });
+        }
         let mut source = script.actions;
         let mut commands = script.commands.iter().peekable();
         while self.recorded_ticks() < ticks {

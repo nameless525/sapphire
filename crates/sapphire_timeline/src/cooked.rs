@@ -267,6 +267,27 @@ mod tests {
     }
 
     #[test]
+    fn beat_limit_counts_ramp_steps_and_events_before_materializing() {
+        let mut document = TimelineDocument::from_ron(CINEMATIC).unwrap();
+        document.length = 3600.0;
+        document.camera = None;
+        document.cues.clear();
+        document.time_scale = vec![crate::ScaleKey { at: 0.0, per_mille: 250, ramp: 4095.0 / 60.0 }];
+        document.events = vec![crate::EventKey { at: 0.0, event: "first".to_owned(), value: 1 }];
+        let timeline = document.cook().unwrap();
+        assert_eq!(timeline.simulation.beats.len(), MAX_BEATS);
+        document.events.push(crate::EventKey { at: 0.0, event: "second".to_owned(), value: 2 });
+        let error = document.check().unwrap_err();
+        assert!(error.to_string().contains("4097 beats, past the limit of 4096"), "{error}");
+        document.events[1].event.clear();
+        assert_eq!(
+            field_of(document.check().unwrap_err()),
+            "events[1].event",
+            "field errors still precede the beat limit"
+        );
+    }
+
+    #[test]
     fn a_cook_is_repeatable_and_reads_back() {
         for text in [CINEMATIC, CUTSCENE] {
             let (one, two) = (cook(text).to_cooked().unwrap(), cook(text).to_cooked().unwrap());

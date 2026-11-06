@@ -333,13 +333,16 @@ impl Arm {
         self.pushed_out(world, at, stats)
     }
 
-    /// `at`, or out of what it overlaps by the shortest way.
-    fn pushed_out(&self, world: &PhysicsWorld, at: Vec3, stats: &mut CameraStats) -> Vec3 {
-        stats.casts += 1;
-        match world.penetration(&self.sphere, Pose::at(at), &self.filter) {
-            Some(deepest) => at + deepest.normal * (deepest.depth + SKIN),
-            None => at,
+    /// Pushes out of simultaneous overlaps, with bounded work even where the sphere cannot fit.
+    fn pushed_out(&self, world: &PhysicsWorld, mut at: Vec3, stats: &mut CameraStats) -> Vec3 {
+        for _ in 0..PUSHES_OUT {
+            stats.casts += 1;
+            match world.penetration(&self.sphere, Pose::at(at), &self.filter) {
+                Some(deepest) => at += deepest.normal * (deepest.depth + SKIN),
+                None => break,
+            }
         }
+        at
     }
 
     /// `at`, or the nearest place out of everything it overlaps, if a few pushes find one: walls can stand

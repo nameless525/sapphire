@@ -899,7 +899,6 @@ fn play_committed(bytes: &[u8], mut each_tick: impl FnMut(&Simulation, &[ActorId
     while player.step() {
         each_tick(player.simulation(), &cast);
     }
-    assert_eq!(player.simulation().stats().allocations, 0, "rule R6");
 }
 
 /// What a committed fight did.

@@ -924,6 +924,46 @@ fn rates_on_the_shaders_clock_pack_as_whole_cycles_an_hour() {
     assert_eq!(Emission { period: 0.0, ..Emission::default() }.breaths(), 0.0);
 }
 
+#[test]
+fn accepted_material_documents_have_representable_derived_gpu_values() {
+    let mut foliage = FoliageMaterial::default();
+    foliage.translucency.color = [f32::MAX, 0.0, 1.0];
+    foliage.translucency.strength = 2.0;
+    assert!(matches!(foliage.validate(), Err(MaterialError::Invalid { .. })));
+    assert!(Material::from_document(&foliage, &[Swizzle::IDENTITY; 2]).is_err());
+    foliage.translucency.strength = 1.0;
+    let material = Material::from_document(&foliage, &[Swizzle::IDENTITY; 2]).expect("finite product");
+    Material::read(&material.to_cooked().expect("serialize")).expect("accepted block roundtrips");
+
+    let mut character = AnimeCharacterMaterial::default();
+    for period in [f32::from_bits(1), f32::MIN_POSITIVE] {
+        character.emission.period = period;
+        assert!(matches!(character.validate(), Err(MaterialError::Invalid { .. })), "{period}");
+        assert!(Material::from_document(&character, &[Swizzle::IDENTITY; 8]).is_err());
+    }
+    for period in [0.0, 0.001, 4.0, f32::MAX] {
+        character.emission.period = period;
+        let material = Material::from_document(&character, &[Swizzle::IDENTITY; 8]).expect("usable phase");
+        Material::read(&material.to_cooked().expect("serialize")).expect("accepted block roundtrips");
+        assert!(character.emission.level(3599.0, 0.0).is_finite());
+    }
+    let limit = (f64::from(std::f32::consts::TAU) * SHADER_TIME_PERIOD / f64::from(f32::MAX)) as f32;
+    let mut accepted = 0;
+    let mut rejected = 0;
+    for bits in limit.to_bits() - 8..=limit.to_bits() + 8 {
+        character.emission.period = f32::from_bits(bits);
+        if character.validate().is_ok() {
+            accepted += 1;
+            for seconds in [0.0, 1.0, 3599.0, 3599.9998] {
+                assert!(character.emission.level(seconds, 0.0).is_finite());
+            }
+        } else {
+            rejected += 1;
+        }
+    }
+    assert!(accepted > 0 && rejected > 0, "the representability boundary is exercised");
+}
+
 /// The CPU references of motion on the shaders' clock (`Emission::level`, the eye mask's
 /// `highlight_drift` and `highlight_sparkle`) read the clock wrapped as shaders do, at the packed
 /// rates, so across the wrap (an hour in, two, and just before 0) they follow the same motion on

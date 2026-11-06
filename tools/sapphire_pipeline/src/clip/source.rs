@@ -41,7 +41,7 @@ struct GltfAnimations {
     document: Document,
     buffers: Vec<Vec<u8>>,
     joint_of_node: HashMap<usize, u16>,
-    targets_of_morph: HashMap<(usize, usize), Vec<u32>>,
+    targets_of_node: HashMap<(usize, usize), u32>,
 }
 
 impl ClipSource {
@@ -63,7 +63,7 @@ impl ClipSource {
                         document,
                         buffers,
                         joint_of_node: scene.joint_of_node,
-                        targets_of_morph: scene.targets_of_morph,
+                        targets_of_node: scene.targets_of_node,
                     })),
                 })
             }
@@ -82,7 +82,7 @@ impl ClipSource {
                         document: rig.document,
                         buffers: rig.buffers,
                         joint_of_node: rig.joint_of_node,
-                        targets_of_morph: HashMap::new(),
+                        targets_of_node: HashMap::new(),
                     })),
                 })
             }
@@ -107,7 +107,7 @@ impl ClipSource {
                 let scene = ClipScene {
                     joints: &self.joints,
                     joint_of_node: &gltf.joint_of_node,
-                    targets_of_morph: &gltf.targets_of_morph,
+                    targets_of_node: &gltf.targets_of_node,
                 };
                 Ok(gltf_clips::sample(&gltf.document, &gltf.buffers, scene, index, settings)?)
             }

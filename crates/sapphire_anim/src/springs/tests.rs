@@ -984,3 +984,24 @@ fn a_substep_count_keeps_the_speed_where_drag_balances_a_push() {
     assert!((none.force - 1.0 / 240.0).abs() < 1e-7);
     assert_eq!(none.carry, 0.5);
 }
+
+#[test]
+fn spring_reload_refuses_changed_joint_identity_even_when_counts_match() {
+    let mut old = Character::new(&hair(), Substeps::One);
+    for tick in 0..20 {
+        old.frame(sway, f64::from(tick));
+    }
+    assert!(!old.springs.settling);
+    let mut changed = joints();
+    changed[usize::from(STRAND[0])].name = "different strand".into();
+    let bytes = Skeleton::new(&changed).to_cooked().unwrap();
+    let pose = CharacterPose::new(Skeleton::read(&bytes).unwrap(), &[], &[], Vec::new());
+    let bytes = hair().to_cooked().unwrap();
+    let mut springs = SpringBones::new(CharacterRig::read(&bytes).unwrap(), &pose).unwrap();
+    springs.continue_from(&old.springs);
+    assert!(springs.settling, "new joint identities must settle rather than inherit old tails");
+    let mut compatible = Character::new(&hair(), Substeps::One);
+    compatible.springs.continue_from(&old.springs);
+    assert!(!compatible.springs.settling);
+    assert_eq!(compatible.springs.tails, old.springs.tails);
+}

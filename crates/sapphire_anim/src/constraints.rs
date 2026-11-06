@@ -19,6 +19,13 @@ use sapphire_math::{Affine3A, Quat, Transform, Vec3};
 
 use crate::model::model_of;
 
+/// A rig and skeleton whose constraint dependencies cannot be evaluated in one pass.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("constraint on joint {joint} has a cyclic skeleton dependency")]
+pub struct ConstraintCycle {
+    pub joint: u16,
+}
+
 /// A rig's constraints, ordered for a skeleton.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Constraints {
@@ -39,11 +46,21 @@ struct Step {
 }
 
 impl Constraints {
-    /// `constraints` over a skeleton with `parents`, in the order they must run: each after every
-    /// other that moves its source, its source's ancestors or its own ancestors, whose transforms
-    /// it reads (a rig has no cycles). One naming a joint past the skeleton's end is dropped.
+    /// Orders constraints for a known-valid skeleton and rig. Out-of-range joints are dropped.
+    ///
+    /// # Panics
+    ///
+    /// If the combined hierarchy and constraint graph has a cycle. Use [`Self::try_new`] when
+    /// binding authored assets so that the author can receive the error.
     #[must_use]
     pub fn new(parents: &[u16], constraints: &[Constraint]) -> Self {
+        Self::try_new(parents, constraints).expect("constraints and skeleton must have no dependency cycle")
+    }
+
+    /// Orders a rig's actual read/write dependencies. Roll and rotation read their source's local
+    /// rotation; aim also reads model-space positions and the destination parent's orientation.
+    /// `parents` must be a valid skeleton hierarchy. Out-of-range constraints are dropped.
+    pub fn try_new(parents: &[u16], constraints: &[Constraint]) -> Result<Self, ConstraintCycle> {
         let count = parents.len();
         let within = |ancestor: usize, mut joint: usize| loop {
             if joint == ancestor {
@@ -58,19 +75,28 @@ impl Constraints {
             let (joint, source) = (usize::from(constraint.joint), usize::from(constraint.source));
             pending.iter().any(|other| {
                 let moved = usize::from(other.joint);
-                moved != joint && (within(moved, source) || within(moved, joint))
+                if matches!(constraint.kind, ConstraintKind::Aim { .. }) {
+                    // Its own rotation moves a descendant source, creating feedback even if no
+                    // other constraint is present. It does not move its own model-space origin.
+                    within(moved, source) || (moved != joint && within(moved, joint))
+                } else {
+                    moved == source
+                }
             })
         };
         let mut steps = Vec::with_capacity(constraints.len());
         let mut chains = Vec::new();
-        let mut pending: Vec<&Constraint> = constraints.iter().collect();
+        let mut pending: Vec<&Constraint> = constraints
+            .iter()
+            .filter(|c| usize::from(c.joint) < count && usize::from(c.source) < count)
+            .collect();
         while !pending.is_empty() {
-            let ready = pending.iter().position(|constraint| !waits(constraint, &pending)).unwrap_or(0);
+            let ready = pending
+                .iter()
+                .position(|constraint| !waits(constraint, &pending))
+                .ok_or_else(|| ConstraintCycle { joint: pending[0].joint })?;
             let constraint = pending.remove(ready);
             let (joint, source) = (usize::from(constraint.joint), usize::from(constraint.source));
-            if joint >= count || source >= count {
-                continue;
-            }
             let start = chains.len() as u32;
             if matches!(constraint.kind, ConstraintKind::Aim { .. }) {
                 // In joint order, which is parents first.
@@ -88,7 +114,7 @@ impl Constraints {
                 chain: start..chains.len() as u32,
             });
         }
-        Self { steps, chains }
+        Ok(Self { steps, chains })
     }
 
     /// How many run.
@@ -186,6 +212,24 @@ fn aim_axis(axis: AimAxis) -> Vec3 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hierarchy_feedback_is_refused_but_local_dependencies_are_allowed() {
+        let parents = [NO_PARENT, 0, NO_PARENT, 2];
+        let aim = |joint, source| Constraint {
+            joint,
+            source,
+            weight: 1.0,
+            kind: ConstraintKind::Aim { axis: AimAxis::PositiveX },
+        };
+        for constraints in [vec![aim(0, 3), aim(2, 1)], vec![aim(2, 1), aim(0, 3)], vec![aim(0, 1)]] {
+            assert!(Constraints::try_new(&parents, &constraints).is_err());
+        }
+        let local = |joint, source| Constraint { joint, source, weight: 1.0, kind: ConstraintKind::Rotation };
+        // Ancestor transforms do not affect a local rotation/roll read.
+        assert!(Constraints::try_new(&parents, &[local(0, 3), local(2, 1)]).is_ok());
+        assert!(Constraints::try_new(&parents, &[local(0, 2), local(2, 0)]).is_err());
+    }
 
     #[test]
     fn twist_keeps_only_the_rotation_about_the_axis() {

@@ -607,15 +607,15 @@ impl ArchivedCharacterRig {
         self.validate_expressions()?;
 
         if let Some(look_at) = self.look_at.as_ref() {
-            finite_all("look-at offset", &look_at.offset_from_head.map(|v| v.to_native()))?;
+            finite_all(|| "look-at offset".to_owned(), &look_at.offset_from_head.map(|v| v.to_native()))?;
             for (name, range) in [
                 ("horizontal inner", &look_at.horizontal_inner),
                 ("horizontal outer", &look_at.horizontal_outer),
                 ("vertical down", &look_at.vertical_down),
                 ("vertical up", &look_at.vertical_up),
             ] {
-                non_negative(&format!("look-at {name} input"), range.input_max_degrees.to_native())?;
-                finite(&format!("look-at {name} output"), range.output_scale.to_native())?;
+                non_negative(|| format!("look-at {name} input"), range.input_max_degrees.to_native())?;
+                finite(|| format!("look-at {name} output"), range.output_scale.to_native())?;
             }
         }
 
@@ -628,9 +628,9 @@ impl ArchivedCharacterRig {
             for (k, entry) in spring.joints.iter().enumerate() {
                 joint(&|| what(&format!("joint {k}")), entry.joint.to_native())?;
                 let field = |name: &str| what(&format!("joint {k} {name}"));
-                non_negative(&field("hit radius"), entry.hit_radius.to_native())?;
-                non_negative(&field("stiffness"), entry.stiffness.to_native())?;
-                non_negative(&field("gravity power"), entry.gravity_power.to_native())?;
+                non_negative(|| field("hit radius"), entry.hit_radius.to_native())?;
+                non_negative(|| field("stiffness"), entry.stiffness.to_native())?;
+                non_negative(|| field("gravity power"), entry.gravity_power.to_native())?;
                 let gravity = entry.gravity_dir.map(|v| v.to_native());
                 let length = gravity.iter().map(|c| c * c).sum::<f32>().sqrt();
                 if length.is_nan() || (length - 1.0).abs() > 1e-3 {
@@ -668,10 +668,10 @@ impl ArchivedCharacterRig {
                 ArchivedColliderShape::Sphere { offset, radius } => (offset, radius, None),
                 ArchivedColliderShape::Capsule { offset, radius, tail } => (offset, radius, Some(tail)),
             };
-            finite_all(&format!("{} offset", what()), &offset.map(|v| v.to_native()))?;
-            non_negative(&format!("{} radius", what()), radius.to_native())?;
+            finite_all(|| format!("{} offset", what()), &offset.map(|v| v.to_native()))?;
+            non_negative(|| format!("{} radius", what()), radius.to_native())?;
             if let Some(tail) = tail {
-                finite_all(&format!("{} tail", what()), &tail.map(|v| v.to_native()))?;
+                finite_all(|| format!("{} tail", what()), &tail.map(|v| v.to_native()))?;
             }
         }
         let colliders = self.colliders.len();
@@ -685,7 +685,7 @@ impl ArchivedCharacterRig {
             }
         }
 
-        let mut constrained = std::collections::HashSet::new();
+        let mut constrained = std::collections::HashMap::new();
         for (index, constraint) in self.constraints.iter().enumerate() {
             let what = |detail: &str| format!("constraint {index} {detail}");
             joint(&|| what("joint"), constraint.joint.to_native())?;
@@ -693,7 +693,7 @@ impl ArchivedCharacterRig {
             if constraint.joint == constraint.source {
                 return Err(invalid(format!("constraint {index}"), "follows its own joint"));
             }
-            if !constrained.insert(constraint.joint.to_native()) {
+            if constrained.insert(constraint.joint.to_native(), index).is_some() {
                 return Err(invalid(
                     format!("constraint {index}"),
                     "constrains a joint another constraint does",
@@ -704,7 +704,7 @@ impl ArchivedCharacterRig {
                 return Err(invalid(what("weight"), "must be between 0 and 1"));
             }
         }
-        self.check_constraint_cycles()
+        self.check_constraint_cycles(&constrained)
     }
 
     fn validate_expressions(&self) -> Result<(), RigError> {
@@ -753,31 +753,55 @@ impl ArchivedCharacterRig {
             }
             for bind in expression.texture_transforms.iter() {
                 slot(bind.slot.to_native())?;
-                finite_all(&what("UV scale"), &bind.scale.map(|v| v.to_native()))?;
-                finite_all(&what("UV offset"), &bind.offset.map(|v| v.to_native()))?;
+                finite_all(|| what("UV scale"), &bind.scale.map(|v| v.to_native()))?;
+                finite_all(|| what("UV offset"), &bind.offset.map(|v| v.to_native()))?;
             }
         }
         Ok(())
     }
 
-    /// A cycle would make the evaluation order undefined. Each joint has at most one constraint
-    /// (checked before), so following sources from a joint is a single path.
-    fn check_constraint_cycles(&self) -> Result<(), RigError> {
-        let source_of = |joint: u16| {
-            self.constraints.iter().find(|c| c.joint.to_native() == joint).map(|c| c.source.to_native())
-        };
-        for (index, constraint) in self.constraints.iter().enumerate() {
-            let mut current = constraint.source.to_native();
-            // A path longer than the constraint count has repeated a joint.
-            for _ in 0..=self.constraints.len() {
-                if current == constraint.joint.to_native() {
-                    return Err(invalid(format!("constraint {index}"), "is part of a cycle of constraints"));
+    /// Checks the asset-local source graph. Skeleton-bound aim dependencies are checked by
+    /// `sapphire_anim` when it pairs the rig with its hierarchy.
+    fn check_constraint_cycles(
+        &self,
+        constrained: &std::collections::HashMap<u16, usize>,
+    ) -> Result<(), RigError> {
+        const UNSEEN: usize = usize::MAX;
+        const DONE: usize = usize::MAX - 1;
+        let mut marks = vec![UNSEEN; self.constraints.len()];
+        let next = |index: usize| constrained.get(&self.constraints[index].source.to_native()).copied();
+        let mut earliest = None;
+        for start in 0..marks.len() {
+            let mut current = Some(start);
+            while let Some(index) = current {
+                if marks[index] != UNSEEN {
+                    if marks[index] == start {
+                        // Only cycle members, not the tail leading to them, own this diagnostic.
+                        let mut member = index;
+                        loop {
+                            earliest = Some(earliest.map_or(member, |first: usize| first.min(member)));
+                            member = next(member).expect("a cycle member has a constrained source");
+                            if member == index {
+                                break;
+                            }
+                        }
+                    }
+                    break;
                 }
-                match source_of(current) {
-                    Some(next) => current = next,
-                    None => break,
-                }
+                marks[index] = start;
+                current = next(index);
             }
+            let mut current = Some(start);
+            while let Some(index) = current {
+                if marks[index] != start {
+                    break;
+                }
+                marks[index] = DONE;
+                current = next(index);
+            }
+        }
+        if let Some(index) = earliest {
+            return Err(invalid(format!("constraint {index}"), "is part of a cycle of constraints"));
         }
         Ok(())
     }
@@ -809,19 +833,19 @@ impl ArchivedCharacterRig {
     }
 }
 
-fn finite(what: &str, value: f32) -> Result<(), RigError> {
-    if value.is_finite() { Ok(()) } else { Err(invalid(what, "must be finite")) }
+fn finite(what: impl FnOnce() -> String, value: f32) -> Result<(), RigError> {
+    if value.is_finite() { Ok(()) } else { Err(invalid(what(), "must be finite")) }
 }
 
-fn finite_all(what: &str, values: &[f32]) -> Result<(), RigError> {
-    if values.iter().all(|v| v.is_finite()) { Ok(()) } else { Err(invalid(what, "must be finite")) }
+fn finite_all(what: impl FnOnce() -> String, values: &[f32]) -> Result<(), RigError> {
+    if values.iter().all(|v| v.is_finite()) { Ok(()) } else { Err(invalid(what(), "must be finite")) }
 }
 
-fn non_negative(what: &str, value: f32) -> Result<(), RigError> {
+fn non_negative(what: impl FnOnce() -> String, value: f32) -> Result<(), RigError> {
     if value.is_finite() && value >= 0.0 {
         Ok(())
     } else {
-        Err(invalid(what, "must be finite and at least 0"))
+        Err(invalid(what(), "must be finite and at least 0"))
     }
 }
 

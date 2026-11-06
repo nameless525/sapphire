@@ -276,12 +276,15 @@ impl FootPlacement {
         // fade itself still eases.
         let fresh = !self.started;
         let snap = fresh || (self.fade == 0.0 && self.fade_goal > 0.0);
+        let advance = fresh || dt != 0.0;
         self.started = true;
-        self.fade = if fresh {
-            self.fade_goal
-        } else {
-            approach(self.fade, self.fade_goal, dt / self.settings.fade.max(1e-3))
-        };
+        // On a frozen solve, reapply the held offsets to the sampled pose. Only a fresh solve
+        // initializes them without time passing.
+        if fresh {
+            self.fade = self.fade_goal;
+        } else if advance {
+            self.fade = approach(self.fade, self.fade_goal, dt / self.settings.fade.max(1e-3));
+        }
         let probes = self.probes(pose, world_from_model);
         let scale = world_from_model.matrix3.y_axis.length().max(1e-6);
         let model_turn = rotation_of(world_from_model).inverse();
@@ -294,12 +297,17 @@ impl FootPlacement {
         for (side, leg) in self.legs.iter().enumerate() {
             let foot = &mut self.feet[side];
             foot.goal = supporting(&input.ground[side], &probes[side], self.settings.min_normal_y);
-            if let Some(goal) = foot.goal {
-                foot.plane =
-                    if snap || foot.presence == 0.0 { goal } else { ease_plane(foot.plane, goal, ease) };
-                foot.presence = if snap { 1.0 } else { ease_to(foot.presence, 1.0, ease) };
-            } else {
-                foot.presence = if snap { 0.0 } else { ease_to(foot.presence, 0.0, ease) };
+            if advance {
+                if let Some(goal) = foot.goal {
+                    foot.plane = if snap || foot.presence == 0.0 {
+                        goal
+                    } else {
+                        ease_plane(foot.plane, goal, ease, probes[side].ankle)
+                    };
+                    foot.presence = if snap { 1.0 } else { ease_to(foot.presence, 1.0, ease) };
+                } else {
+                    foot.presence = if snap { 0.0 } else { ease_to(foot.presence, 0.0, ease) };
+                }
             }
             if foot.presence == 0.0 || self.fade == 0.0 {
                 continue;
@@ -340,17 +348,20 @@ impl FootPlacement {
         let root_height = world_from_model.translation.y;
         let rise = root_height - self.root_height;
         self.root_height = root_height;
-        if !snap && dt > 0.0 && rise.abs() > self.settings.pop_speed * dt {
-            self.drop = (self.drop - rise / scale).clamp(-self.settings.max_drop, self.settings.max_raise);
+        if advance {
+            if !snap && dt > 0.0 && rise.abs() > self.settings.pop_speed * dt {
+                self.drop =
+                    (self.drop - rise / scale).clamp(-self.settings.max_drop, self.settings.max_raise);
+            }
+            self.drop = if fresh || (snap && self.drop == 0.0) {
+                self.drop_goal
+            } else {
+                let ease = 1.0 - 0.5f32.powf(dt / self.settings.hips_half_life.max(1e-4));
+                let eased = self.drop + (self.drop_goal - self.drop) * ease;
+                let eased = if (self.drop_goal - eased).abs() < 1e-4 { self.drop_goal } else { eased };
+                eased.min(reachable).max(lowest)
+            };
         }
-        self.drop = if fresh || (snap && self.drop == 0.0) {
-            self.drop_goal
-        } else {
-            let ease = 1.0 - 0.5f32.powf(dt / self.settings.hips_half_life.max(1e-4));
-            let eased = self.drop + (self.drop_goal - self.drop) * ease;
-            let eased = if (self.drop_goal - eased).abs() < 1e-4 { self.drop_goal } else { eased };
-            eased.min(reachable).max(lowest)
-        };
         if self.drop != 0.0 {
             pose.translate(usize::from(self.hips), Vec3::Y * self.drop);
             pose.refresh(reads);
@@ -383,14 +394,21 @@ fn ease_to(value: f32, goal: f32, ease: f32) -> f32 {
     if (goal - eased).abs() < 1e-3 { goal } else { eased }
 }
 
-fn ease_plane(plane: Plane, goal: Plane, ease: f32) -> Plane {
-    if plane.normal.abs_diff_eq(goal.normal, 1e-4) && (plane.offset - goal.offset).abs() < 1e-4 {
+fn ease_plane(plane: Plane, goal: Plane, ease: f32, probe: Vec3) -> Plane {
+    // The height difference beneath the foot is translation-invariant, even when the normals differ.
+    if plane == goal
+        || (plane.normal.abs_diff_eq(goal.normal, 1e-4)
+            && (plane.height_at(probe) - goal.height_at(probe)).abs() < 1e-4)
+    {
         return goal;
     }
-    Plane {
-        normal: plane.normal.lerp(goal.normal, ease).normalize_or(goal.normal),
-        offset: plane.offset + (goal.offset - plane.offset) * ease,
+    let normal = plane.normal.lerp(goal.normal, ease);
+    let length = normal.length();
+    if !length.is_finite() || length <= f32::EPSILON {
+        return goal;
     }
+    // A plane's normal and offset are homogeneous coefficients: normalize both together.
+    Plane { normal: normal / length, offset: (plane.offset + (goal.offset - plane.offset) * ease) / length }
 }
 
 /// The turn from up to `normal`, no more than `max` radians of it.
@@ -422,6 +440,37 @@ mod tests {
         });
         assert!((slope.height_at(Vec3::new(1.0, 99.0, -4.0)) - 2.0).abs() < 1e-5);
         assert!((slope.height_at(Vec3::new(2.0, 0.0, 3.0)) - 2.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn nearly_equal_ground_planes_snap_at_the_same_height_after_translation() {
+        let probe = Vec3::new(0.1, 0.12, 0.12);
+        let normal = Vec3::new(0.00005, 1.0, 0.0).normalize();
+        for translation in [Vec3::ZERO, Vec3::new(12.0, 100.0, -25.0), Vec3::new(-100.0, -50.0, 80.0)] {
+            let plane = Plane::of(GroundHit { point: translation, normal });
+            let goal = Plane::of(GroundHit { point: translation, normal: Vec3::Y });
+            assert_eq!(ease_plane(plane, goal, 0.5, probe + translation), goal);
+        }
+        // Equal heights at the probe must not skip a visible change of tilt.
+        let plane = Plane::of(GroundHit { point: Vec3::ZERO, normal: Vec3::new(0.1, 1.0, 0.0).normalize() });
+        let goal = Plane::of(GroundHit { point: Vec3::ZERO, normal: Vec3::Y });
+        assert_ne!(ease_plane(plane, goal, 0.5, Vec3::ZERO), goal);
+    }
+
+    #[test]
+    fn changing_ground_planes_are_translation_invariant() {
+        let normals = [Vec3::Y, Vec3::new(-0.3, 1.0, 0.2).normalize()];
+        for translation in [Vec3::ZERO, Vec3::new(12.0, 100.0, -25.0), Vec3::new(-100.0, -50.0, 80.0)] {
+            for ease in [0.0, 0.1, 0.5, 1.0] {
+                let planes = normals.map(|normal| Plane::of(GroundHit { point: translation, normal }));
+                let eased = ease_plane(planes[0], planes[1], ease, translation);
+                assert!(
+                    (eased.height_at(translation) - translation.y).abs() < 2e-5,
+                    "{translation:?} {ease}: {eased:?}"
+                );
+                assert!((eased.normal.length() - 1.0).abs() < 1e-6);
+            }
+        }
     }
 
     /// A foot facing a step stands on it, a foot overhanging an edge stays on top, and a slope seen

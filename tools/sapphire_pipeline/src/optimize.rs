@@ -284,7 +284,12 @@ fn lod_chain(
                 Part {
                     material: submesh.material,
                     lod0_indices: indices.len(),
-                    weights: attribute_weights(poses, spacing(mesh, &indices, scale)),
+                    weights: if settings.levels.is_empty() {
+                        Vec::new()
+                    } else {
+                        let spacing = if poses == 0 { 1.0 } else { spacing(mesh, &indices, scale) };
+                        attribute_weights(poses, spacing)
+                    },
                     indices,
                     error: 0.0,
                 }
@@ -323,7 +328,13 @@ fn lod_chain(
                     options,
                     Some(&mut step_error),
                 );
-                Part { indices, error: part.error + step_error, ..part.clone() }
+                Part {
+                    indices,
+                    error: part.error + step_error,
+                    material: part.material,
+                    lod0_indices: part.lod0_indices,
+                    weights: part.weights.clone(),
+                }
             })
             .collect();
         // Before parts that simplified away are dropped: their error still counts, and so does

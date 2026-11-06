@@ -354,6 +354,15 @@ impl Slot {
     fn users(&self) -> usize {
         Arc::strong_count(&self.handle.inner) - 1
     }
+
+    /// A replacement reserves its decoded bytes while the current version stays live.
+    /// Rebinding identical bytes shares the existing allocation and counts it once.
+    fn resident_size(&self) -> u64 {
+        if matches!(self.state, SlotState::Failed(_)) {
+            return 0;
+        }
+        self.size + self.next.as_ref().filter(|next| next.hash != self.hash).map_or(0, |next| next.size)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1025,9 +1034,7 @@ impl AssetServer {
                 SlotState::Ready => stats.ready += 1,
                 SlotState::Failed(_) => stats.failed += 1,
             }
-            if !matches!(slot.state, SlotState::Failed(_)) {
-                stats.resident[slot.handle.kind().index()] += slot.size;
-            }
+            stats.resident[slot.handle.kind().index()] += slot.resident_size();
             stats.unused += u32::from(slot.users() == 0);
             stats.pinned += u32::from(slot.pins > 0);
             stats.reloading += u32::from(slot.next.is_some());
@@ -1198,7 +1205,7 @@ impl AssetServer {
                 SlotState::Failed(_) if evictable => failed.push(key),
                 SlotState::Failed(_) => {}
                 _ if evictable && slot.entry.is_none() => failed.push(key),
-                _ => resident[slot.handle.kind().index()] += slot.size,
+                _ => resident[slot.handle.kind().index()] += slot.resident_size(),
             }
         }
         // Removal can drop the last dependency handle, which makes a candidate of what wasn't one, so
@@ -1209,6 +1216,16 @@ impl AssetServer {
             self.remove(key);
         }
         for kind in AssetKind::ALL {
+            // An earlier kind's eviction can also remove holders of this kind. Keep the
+            // initial one-pass snapshot on frames that have removed nothing.
+            if removed {
+                resident[kind.index()] = self
+                    .slots
+                    .values()
+                    .filter(|slot| slot.handle.kind() == kind)
+                    .map(Slot::resident_size)
+                    .sum();
+            }
             let excess = resident[kind.index()].saturating_sub(self.budgets.resident(kind));
             if excess > 0 && (removed || has_candidates) {
                 removed |= self.evict(kind, excess);
@@ -1233,7 +1250,7 @@ impl AssetServer {
             if excess == 0 {
                 break;
             }
-            excess = excess.saturating_sub(self.slots[key].size);
+            excess = excess.saturating_sub(self.slots[key].resident_size());
             self.remove(key);
             removed = true;
         }
@@ -1306,7 +1323,7 @@ impl AssetServer {
         while let Some(key) = stack.pop() {
             let slot = &self.slots[key];
             if slot.handle.kind() == kind {
-                bytes += slot.size;
+                bytes += slot.resident_size();
             }
             let next_children = slot.next.iter().flat_map(|next| &next.children);
             let children: Vec<SlotKey> =

@@ -104,7 +104,15 @@ impl SkinWeights {
     /// index and ignoring weights that aren't positive, then renormalizes them to sum to 1.
     /// Ties keep the lower index. Returns `None` when no weight is positive.
     pub fn strongest(influences: impl IntoIterator<Item = (u16, f32)>) -> Option<Self> {
-        let mut merged: Vec<(u16, f32)> = Vec::with_capacity(MAX_INFLUENCES);
+        Self::strongest_with_scratch(influences, &mut Vec::with_capacity(MAX_INFLUENCES))
+    }
+
+    /// Reuses merge storage across a primitive's vertices without changing accumulation order.
+    pub(crate) fn strongest_with_scratch(
+        influences: impl IntoIterator<Item = (u16, f32)>,
+        merged: &mut Vec<(u16, f32)>,
+    ) -> Option<Self> {
+        merged.clear();
         for (bind, weight) in influences {
             if weight.is_nan() || weight <= 0.0 {
                 continue;
@@ -121,7 +129,7 @@ impl SkinWeights {
             return None;
         }
         let mut result = Self::default();
-        for (slot, (bind, weight)) in merged.into_iter().enumerate() {
+        for (slot, &(bind, weight)) in merged.iter().enumerate() {
             result.binds[slot] = bind;
             result.weights[slot] = weight / sum;
         }

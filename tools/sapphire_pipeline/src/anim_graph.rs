@@ -24,7 +24,8 @@ pub const IMPORTER: Stage = Stage { name: "animation graph document", version: 1
 ///
 /// 2: a `target` on a key-pose document names that rig's clip, where it was ignored for the first rig's
 /// (the review's AST-001).
-pub const COOKER: Stage = Stage { name: "sgraph", version: 2 };
+/// 3: imported clips use the unambiguous v2 name/target identity encoding.
+pub const COOKER: Stage = Stage { name: "sgraph", version: 3 };
 
 /// What a graph source's file name ends with.
 pub const SOURCE_SUFFIX: &str = ".animgraph.ron";
@@ -203,9 +204,12 @@ mod tests {
         };
         assert_eq!(
             clip_id(&clip(Some("Hit_A"), Some(target))),
-            meta::sub_asset_id(source, &format!("clip/Hit_A@{target}"))
+            sapphire_assets::graph::imported_clip_id(source, "Hit_A", Some(target))
         );
-        assert_eq!(clip_id(&clip(Some("Hit_A"), None)), meta::sub_asset_id(source, "clip/Hit_A"));
+        assert_eq!(
+            clip_id(&clip(Some("Hit_A"), None)),
+            sapphire_assets::graph::imported_clip_id(source, "Hit_A", None)
+        );
         assert_eq!(clip_id(&clip(None, None)), source);
         assert_eq!(clip_id(&clip(None, Some(target))), meta::sub_asset_id(source, &format!("rig/{target}")));
     }

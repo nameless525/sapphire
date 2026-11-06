@@ -45,8 +45,9 @@ use crate::mesh::ImportedMesh;
 /// name does (a test keeps it in step with `Cargo.lock`). Bump the version whenever sampling changes
 /// output for the same file.
 ///
+/// 3: clamp the last sample to LocalStop and retain unnamed morph channels.
 /// 2: root motion lifts in scalars, which can move a lifted track's last bit (M2 N1).
-pub const IMPORTER: Stage = Stage { name: "fbx clips (ufbx 0.11.5)", version: 2 };
+pub const IMPORTER: Stage = Stage { name: "fbx clips (ufbx 0.11.5)", version: 3 };
 
 /// The transform properties whose curves move a node.
 const TRANSFORM_PROPS: [&str; 3] = ["Lcl Translation", "Lcl Rotation", "Lcl Scaling"];
@@ -139,12 +140,27 @@ impl FbxClips {
         if with_mesh {
             let mesh = import_scene_with(&scene, &animated).map_err(boxed)?.mesh;
             morph_defaults = mesh.morph_targets.iter().map(|target| target.default_weight).collect();
-            let by_name: HashMap<String, u32> = scene
+            let mut by_name: HashMap<String, u32> = scene
                 .blend_channels
                 .iter()
                 .rev()
                 .map(|c| (name_of(&c.element), c.element.typed_id))
                 .collect();
+            // An unnamed channel's generated name is local to its mesh, just as it is in
+            // the geometry importer; its element ID is not the imported target's name.
+            for mesh in scene.meshes.iter() {
+                let mesh_name = name_of(&mesh.element);
+                for (index, channel) in
+                    mesh.blend_deformers.iter().flat_map(|deformer| deformer.channels.iter()).enumerate()
+                {
+                    if channel.element.name.is_empty() && channel.target_shape.is_some() {
+                        by_name
+                            .entry(format!("{mesh_name}/{index}"))
+                            .and_modify(|seen| *seen = (*seen).min(channel.element.typed_id))
+                            .or_insert(channel.element.typed_id);
+                    }
+                }
+            }
             for (target, morph) in mesh.morph_targets.iter().enumerate() {
                 let target =
                     u16::try_from(target).map_err(|_| ClipImportError::TooManyTargets(target as u32))?;
@@ -225,7 +241,7 @@ impl FbxClips {
             });
         }
 
-        let time_of = |tick: usize| begin + tick as f64 / rate;
+        let time_of = |tick: usize| (begin + tick as f64 / rate).min(end);
         let anim: &ufbx::Anim = &stack.anim;
         let mut clip = SampledClip {
             name: name.clone(),

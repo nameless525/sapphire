@@ -233,19 +233,75 @@ fn parallel_packing_keeps_bytes_and_shared_encoding_counts() {
 #[test]
 fn parallel_encoding_reports_the_first_error_in_asset_order() {
     let scratch = Scratch::new("pack_parallel_errors");
-    let report = scratch.cook(Cook::Desktop);
+    let mut report = scratch.cook(Cook::Desktop);
+    // Exclude meshes: their pipeline-key preparation reads them before encoding workers.
+    report.assets.retain(|asset| kind(&asset.output) != Some(AssetKind::Mesh));
+    report.assets.sort_by_key(|asset| asset.id);
+    for (index, asset) in report.assets.iter_mut().enumerate() {
+        // Valid report hashes make freshness pass; invalid format bytes fail only inside
+        // encode. The later asset is larger and is scheduled first on parallel workers.
+        let bytes = vec![0; 64 * (index + 1)];
+        fs::write(&asset.output, &bytes).unwrap();
+        asset.output_hash = blake3::hash(&bytes);
+    }
     let assets: Vec<_> = report.assets.iter().collect();
     let ids = report.assets.iter().map(|asset| (asset.id, asset)).collect();
-    for asset in &report.assets {
-        fs::write(&asset.output, b"changed after cooking").unwrap();
-    }
-    let first = report.assets.iter().min_by_key(|asset| asset.id).unwrap();
+    let first = &report.assets[0];
     for workers in [1, 2, 4] {
         let out = scratch.dir.path().join(format!("workers-{workers}"));
         let error = pack_group(SHARED, &assets, &ids, &out, None, workers).unwrap_err();
-        assert!(matches!(error, PackError::Changed { path } if path == first.output));
+        assert!(matches!(error, PackError::Invalid { path, .. } if path == first.output));
         assert!(!out.join(format::file_name(SHARED)).exists(), "an unsuccessful pack is never published");
     }
+}
+
+#[test]
+fn worker_results_keep_asset_order_when_a_later_failure_finishes_first() {
+    let scratch = Scratch::new("pack_worker_order");
+    let report = scratch.cook(Cook::Desktop);
+    let mut assets: Vec<_> = report.assets.iter().take(2).collect();
+    assets.sort_by_key(|asset| asset.id);
+    let packing: Vec<_> = assets
+        .iter()
+        .map(|&asset| Packing {
+            asset,
+            kind: kind(&asset.output).unwrap(),
+            codec: Codec::None,
+            key: CacheKey::packed(&asset.output_hash, PACKER, Codec::None, ZSTD_LEVEL),
+            pipeline_keys: Vec::new(),
+        })
+        .collect();
+    let (sent, received) = std::sync::mpsc::channel();
+    let received = std::sync::Mutex::new(received);
+    let completion = std::sync::Mutex::new(Vec::new());
+    let results = encode_jobs_with(&packing, &[0, 1], 2, |job| {
+        if job == 0 {
+            received.lock().unwrap().recv_timeout(std::time::Duration::from_secs(1)).unwrap();
+            completion.lock().unwrap().push(job);
+        } else {
+            completion.lock().unwrap().push(job);
+            sent.send(()).unwrap();
+        }
+        Err(PackError::Changed { path: packing[job].asset.output.clone() })
+    });
+    assert_eq!(*completion.lock().unwrap(), [1, 0], "forced worker completion order");
+    for (index, result) in results.into_iter().enumerate() {
+        assert!(matches!(result.unwrap(), Err(PackError::Changed { path }) if path == assets[index].output));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn an_aliased_pack_directory_is_rejected_before_pruning_inputs() {
+    use std::os::unix::fs::symlink;
+    let scratch = Scratch::new("pack_alias");
+    let report = scratch.cook(Cook::Desktop);
+    let loose = report.assets[0].output.parent().unwrap();
+    let alias = scratch.dir.path().join("alias");
+    symlink(loose, &alias).unwrap();
+    let before = fs::read(&report.assets[0].output).unwrap();
+    assert!(matches!(pack_cooked(&report, &alias, None), Err(PackError::Overlap { .. })));
+    assert_eq!(fs::read(&report.assets[0].output).unwrap(), before);
 }
 
 #[test]

@@ -450,12 +450,31 @@ impl Material {
             .zip(&swizzles)
             .map(|(&texture, swizzle)| TextureBinding { texture, swizzle: swizzle.to_ktx() })
             .collect();
-        Ok(Self {
-            family,
-            flags: document.flags().bits(),
-            params: document.params(&swizzles),
-            textures: bindings,
-        })
+        let params = document.params(&swizzles);
+        // MaterialDocument is public: even custom implementations must obey the same finite
+        // GPU-block invariant as cooked materials, before an authoring edit is accepted.
+        let expected = family.params_size();
+        if params.len() != expected {
+            return Err(MaterialError::ParamsSize { family, expected, found: params.len() });
+        }
+        match family {
+            MaterialFamily::AnimeCharacter => {
+                check_finite_block::<AnimeCharacterParams>(&params)?;
+            }
+            MaterialFamily::Environment => {
+                check_finite_block::<EnvironmentParams>(&params)?;
+            }
+            MaterialFamily::Foliage => {
+                check_finite_block::<FoliageParams>(&params)?;
+            }
+            MaterialFamily::Sky => {
+                check_finite_block::<SkyParams>(&params)?;
+            }
+            MaterialFamily::FogCard => {
+                check_finite_block::<FogCardParams>(&params)?;
+            }
+        }
+        Ok(Self { family, flags: document.flags().bits(), params, textures: bindings })
     }
 
     /// The material as cooked bytes: the envelope header, then the archive.
@@ -541,10 +560,7 @@ impl ArchivedMaterial {
     /// and its bound-slot bits and swizzle codes are the bindings', which the renderer checks
     /// against the textures it binds.
     fn check_block<B: GpuBlock>(&self, params: &[u8]) -> Result<(), MaterialError> {
-        let block: B = bytemuck::pod_read_unaligned(params);
-        if block.vectors().iter().flatten().any(|c| !c.is_finite()) {
-            return Err(MaterialError::NonFinite);
-        }
+        let block = check_finite_block::<B>(params)?;
         let textures: Vec<Option<AssetId>> =
             self.textures.iter().map(ArchivedTextureBinding::texture).collect();
         if block.modes()[0] & 0xff != bound_bits(&textures) {
@@ -565,6 +581,15 @@ impl ArchivedMaterial {
     pub fn params(&self) -> &[u8] {
         self.params.as_slice()
     }
+}
+
+/// `params` has already been checked against its family's block size.
+fn check_finite_block<B: GpuBlock>(params: &[u8]) -> Result<B, MaterialError> {
+    let block: B = bytemuck::pod_read_unaligned(params);
+    if !block.is_finite() {
+        return Err(MaterialError::NonFinite);
+    }
+    Ok(block)
 }
 
 /// A document of any family, as read from a `.material.ron` source.

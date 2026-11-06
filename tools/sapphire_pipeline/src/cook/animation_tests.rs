@@ -84,7 +84,7 @@ fn a_file_saved_after_its_plan_fails_rather_than_cook_another_animation_under_a_
         [(ImportSettings::GltfClips(settings()), bare_rig as fn() -> GltfWriter), (mesh, figure)]
     {
         let (before, after) = (clips(walk(), hit(), rig()), clips(hit(), walk(), rig()));
-        let walk_id = meta::sub_asset_id(OWNER, "clip/Walk");
+        let walk_id = sapphire_assets::graph::imported_clip_id(OWNER, "Walk", None);
 
         let tree = Tree::new("cook_plan_changed");
         let source = tree.write("anims.glb", &before);
@@ -108,7 +108,8 @@ fn a_file_saved_after_its_plan_fails_rather_than_cook_another_animation_under_a_
         assert_eq!(again, fs::read(&by_id(&report, walk_id).output).unwrap());
         assert_ne!(
             again,
-            fs::read(&by_id(&report, meta::sub_asset_id(OWNER, "clip/Hit")).output).unwrap(),
+            fs::read(&by_id(&report, sapphire_assets::graph::imported_clip_id(OWNER, "Hit", None)).output)
+                .unwrap(),
             "the two animations are two clips, or this holds nothing"
         );
     }
@@ -253,7 +254,9 @@ fn sources_sharing_a_rig_cook_one_skeleton_and_index_it() {
     let names: Vec<&str> = skeleton.names.iter().map(|name| name.as_str()).collect();
     assert_eq!(names, ["Root", "Hips", "Arm"], "the owner's order");
 
-    let clip_bytes = read_aligned(&by_id(&report, meta::sub_asset_id(FOLLOWER, "clip/Swing")).output);
+    let clip_bytes = read_aligned(
+        &by_id(&report, sapphire_assets::graph::imported_clip_id(FOLLOWER, "Swing", None)).output,
+    );
     let clip = Clip::read(&clip_bytes).unwrap();
     assert_eq!(clip.skeleton.as_ref().copied(), Some(skeleton_id));
     clip.check_skeleton(skeleton).unwrap();
@@ -432,7 +435,8 @@ fn a_rig_two_joints_name_alike_cooks_alone_and_cant_be_shared() {
     let owner = tree.write("owner.glb", &rig_of_twins());
     tree.sidecar(&owner, OWNER, clips_of(ClipSettings::default()));
     let report = tree.try_cook(true).unwrap();
-    let bytes = read_aligned(&by_id(&report, meta::sub_asset_id(OWNER, "clip/Part")).output);
+    let bytes =
+        read_aligned(&by_id(&report, sapphire_assets::graph::imported_clip_id(OWNER, "Part", None)).output);
     let moved: Vec<u16> =
         Clip::read(&bytes).unwrap().translations.iter().map(|t| t.joint.to_native()).collect();
     assert_eq!(moved, [1, 2], "each its own track");
@@ -698,12 +702,12 @@ fn a_retarget_cooks_a_clip_of_its_own_for_the_targets_skeleton() {
     let (tree, source) = retarget_tree("cook_retarget", settings.clone());
     let report = tree.try_cook(true).unwrap();
     let (native, onto) = (
-        meta::sub_asset_id(HUMAN, "clip/Lower"),
-        meta::sub_asset_id(HUMAN, &format!("clip/Lower@{CHARACTER}")),
+        sapphire_assets::graph::imported_clip_id(HUMAN, "Lower", None),
+        sapphire_assets::graph::imported_clip_id(HUMAN, "Lower", Some(CHARACTER)),
     );
     let out = tree.out().join("moves");
     assert_eq!(by_id(&report, native).output, out.join("human.Lower.sclip"));
-    assert_eq!(by_id(&report, onto).output, out.join("human.Lower.92929292.sclip"));
+    assert_eq!(by_id(&report, onto).output, out.join(format!("human.Lower.{CHARACTER}.sclip")));
 
     let target_skeleton_id = meta::sub_asset_id(CHARACTER, SKELETON);
     let target_bytes = read_aligned(&by_id(&report, target_skeleton_id).output);
@@ -805,7 +809,7 @@ fn a_source_sharing_a_rig_retargets_by_the_owners_map() {
         ClipSettings { rig: Some(HUMAN), humanoid: BTreeMap::new(), ..to_the_character(&["Lower"]) };
     tree.sidecar(&follower, FOLLOWER, clips_of(settings));
     let report = tree.try_cook(true).unwrap();
-    let clip = by_id(&report, meta::sub_asset_id(FOLLOWER, &format!("clip/Lower@{CHARACTER}")));
+    let clip = by_id(&report, sapphire_assets::graph::imported_clip_id(FOLLOWER, "Lower", Some(CHARACTER)));
     let bytes = read_aligned(&clip.output);
     assert!(!Clip::read(&bytes).unwrap().rotations.is_empty());
     // Its own (none) and the rig's skeleton, and the character's.
@@ -824,7 +828,7 @@ fn a_source_sharing_a_rig_retargets_by_the_owners_map() {
     };
     tree.sidecar(&owner, HUMAN, clips_of(names_only));
     let second = tree.cook();
-    let clip = by_id(&second, meta::sub_asset_id(FOLLOWER, &format!("clip/Lower@{CHARACTER}")));
+    let clip = by_id(&second, sapphire_assets::graph::imported_clip_id(FOLLOWER, "Lower", Some(CHARACTER)));
     assert_eq!(clip.status, CookStatus::Cooked);
 }
 
@@ -906,7 +910,7 @@ fn a_vrma_cooks_its_own_skeleton_and_retargets_by_its_own_map() {
         ClipSettings { names: Some(Vec::new()), humanoid: BTreeMap::new(), ..to_the_character(&["Lower"]) };
     tree.sidecar(&source, HUMAN, ImportSettings::Vrma(settings.clone()));
     let report = tree.try_cook(true).unwrap();
-    let clip = by_id(&report, meta::sub_asset_id(HUMAN, &format!("clip/Lower@{CHARACTER}")));
+    let clip = by_id(&report, sapphire_assets::graph::imported_clip_id(HUMAN, "Lower", Some(CHARACTER)));
     let clip_bytes = read_aligned(&clip.output);
     let clip = Clip::read(&clip_bytes).unwrap();
     let target = meta::sub_asset_id(CHARACTER, SKELETON);
@@ -1031,7 +1035,7 @@ fn a_key_pose_document_cooks_for_each_rig_it_names() {
 
     let on_character = by_id(&report, FOLLOWER);
     let on_human = by_id(&report, meta::sub_asset_id(FOLLOWER, &format!("rig/{HUMAN}")));
-    assert_eq!(on_human.output, tree.out().join("swing.93939393.sclip"));
+    assert_eq!(on_human.output, tree.out().join(format!("swing.{HUMAN}.sclip")));
 
     let tracks_on = |clip: &CookedAsset, skeleton: AssetId| {
         let bytes = read_aligned(&clip.output);

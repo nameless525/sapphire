@@ -673,6 +673,73 @@ fn a_frozen_clock_moves_nothing_however_the_target_moves_and_thawing_never_snaps
     assert!(turned > 0.0 && turned <= rate * TICK * 1.02, "thawed: {turned}");
 }
 
+/// A paused re-solve reapplies the feet and look without completing a near-goal snap.
+#[test]
+fn a_frozen_clock_keeps_foot_placement_in_flight() {
+    let (mut pose, mut ik) = character();
+    let target = Vec3::new(2.0, 1.6, 2.0);
+    let slope = Vec3::new(-0.3, 1.0, 0.2).normalize();
+    let request =
+        |dt, target| IkInput { dt, look: LookInput { target: Some(target), weight: 1.0 }, ..input() };
+    let run = |pose: &mut CharacterPose, ik: &mut CharacterIk, mut request: IkInput, point, normal| {
+        pose.reset();
+        ik.prepare(pose);
+        let probes = ik.foot_probes(pose, &request.world_from_model).expect("it has feet");
+        let ground = probes.map(|probe| FootGround {
+            ankle: Some(on_plane(probe.ankle, point, normal)),
+            ball: probe.ball.map(|ball| on_plane(ball, point, normal)),
+        });
+        request.feet = FeetInput { weight: 1.0, ground };
+        ik.solve(pose, &request);
+        pose.finish();
+    };
+    for frame in 0..58 {
+        let normal = if frame < 30 { Vec3::Y } else { slope };
+        run(&mut pose, &mut ik, request(TICK, target), Vec3::ZERO, normal);
+    }
+    let held = bits(&pose);
+    assert!(!ik.feet().expect("it has feet").is_settled());
+    let mut unpaused = ik.clone();
+    run(&mut pose, &mut ik, request(0.0, -target), Vec3::ZERO, slope);
+    assert_eq!(bits(&pose), held);
+    run(&mut pose, &mut ik, request(TICK, target), Vec3::ZERO, slope);
+    let thawed = bits(&pose);
+    assert_ne!(thawed, held);
+    run(&mut pose, &mut unpaused, request(TICK, target), Vec3::ZERO, slope);
+    assert_eq!(bits(&pose), thawed);
+
+    let gripping = |dt, x| IkInput {
+        weapon: Some(HeldWeapon {
+            place: WeaponPlace::Model(Affine3A::from_translation(Vec3::new(x, 1.2, 0.3))),
+            main: Hand::Right,
+            main_grip: None,
+            off_grip: Some(Grip { on_weapon: Transform::IDENTITY, in_hand: palm(), pole: None, weight: 1.0 }),
+        }),
+        ..request(dt, target)
+    };
+    let foot_bits = |pose: &CharacterPose| {
+        [HIPS, LEFT_LOWER_LEG, LEFT_FOOT, RIGHT_LOWER_LEG, RIGHT_FOOT]
+            .map(|joint| pose.model()[joint].to_cols_array().map(f32::to_bits))
+    };
+
+    // The first solve after a cut takes its new ground even at zero dt.
+    ik.reset();
+    run(&mut pose, &mut ik, gripping(0.0, 0.0), Vec3::Y * 0.08, Vec3::Y);
+    assert!(pose.model()[LEFT_FOOT].translation.y > ANKLE + 0.04);
+    assert_eq!(ik.look().expect("it has a look").fade(), 0.0);
+    assert!(ik.feet().expect("it has feet").is_settled());
+    let feet = foot_bits(&pose);
+    let hand = palm_of(&pose, LEFT_HAND).translation;
+
+    // A changed grip takes effect now. The new ground is a goal for when the clock runs again.
+    run(&mut pose, &mut ik, gripping(0.0, 0.1), Vec3::ZERO, Vec3::Y);
+    assert!(palm_of(&pose, LEFT_HAND).translation.distance(hand) > 0.05);
+    assert_eq!(foot_bits(&pose), feet);
+    assert!(!ik.feet().expect("it has feet").is_settled());
+    run(&mut pose, &mut ik, gripping(TICK, 0.1), Vec3::ZERO, Vec3::Y);
+    assert_ne!(foot_bits(&pose), feet);
+}
+
 // Hands.
 
 fn palm() -> Transform {
@@ -1035,4 +1102,101 @@ fn a_cut_ends_the_hips_way_home() {
     pose.finish();
     assert_eq!(solved, bits(&pose), "off after a cut is no solve at all");
     assert!(ik.feet().expect("it has feet").is_settled());
+}
+
+#[test]
+fn changing_slope_contacts_solve_the_same_pose_after_world_translation() {
+    let simulate = |translation: Vec3| {
+        let (mut pose, mut ik) = character();
+        let world = Affine3A::from_translation(translation);
+        let mut samples = Vec::new();
+        for normal in [Vec3::Y, Vec3::new(-0.3, 1.0, 0.2).normalize(), Vec3::Y] {
+            for _ in 0..4 {
+                step(&mut pose, &mut ik, world, 1.0, &|probe| Some(on_plane(probe, translation, normal)));
+                samples
+                    .push(pose.model().iter().map(|model| Vec3::from(model.translation)).collect::<Vec<_>>());
+            }
+        }
+        samples
+    };
+    let origin = simulate(Vec3::ZERO);
+    for translation in [Vec3::new(12.0, 100.0, -25.0), Vec3::new(-100.0, -50.0, 80.0)] {
+        let shifted = simulate(translation);
+        for (frame, (origin, shifted)) in origin.iter().zip(&shifted).enumerate() {
+            for (joint, (a, b)) in origin.iter().zip(shifted).enumerate() {
+                assert!(a.distance(*b) < 2e-4, "{translation:?} frame {frame} joint {joint}: {a:?} != {b:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn changing_slope_contacts_settle_and_pause_after_world_translation() {
+    let simulate = |translation: Vec3| {
+        let (mut pose, mut ik) = character();
+        let world = Affine3A::from_translation(translation);
+        let mut samples = Vec::new();
+        let mut held = None;
+        for frame in 0..300 {
+            let normal =
+                if (30..75).contains(&frame) { Vec3::new(-0.3, 1.0, 0.2).normalize() } else { Vec3::Y };
+            let paused = (240..245).contains(&frame);
+            let airborne = (245..255).contains(&frame);
+            pose.reset();
+            ik.prepare(&mut pose);
+            let probes = ik.foot_probes(&mut pose, &world).expect("the fixture has feet");
+            let ground = probes.map(|probe| {
+                if airborne {
+                    FootGround::default()
+                } else {
+                    FootGround {
+                        ankle: Some(on_plane(probe.ankle, translation, normal)),
+                        ball: probe.ball.map(|ball| on_plane(ball, translation, normal)),
+                    }
+                }
+            });
+            let mut input = input();
+            input.dt = if paused { 0.0 } else { TICK };
+            input.world_from_model = world;
+            input.feet = FeetInput { weight: if airborne { 0.0 } else { 1.0 }, ground };
+            ik.solve(&mut pose, &input);
+            pose.finish();
+            if frame == 239 {
+                assert!(ik.is_settled(), "held ground must finish easing");
+                held = Some(bits(&pose));
+            }
+            if paused {
+                assert_eq!(&bits(&pose), held.as_ref().expect("the held pose"), "a pause keeps every bit");
+            }
+            if frame == 299 {
+                assert!(ik.is_settled(), "returned ground must finish easing");
+            }
+            samples.push((
+                pose.model().iter().map(|model| Vec3::from(model.translation)).collect::<Vec<_>>(),
+                pose.locals().iter().map(|local| local.rotation).collect::<Vec<_>>(),
+            ));
+        }
+        samples
+    };
+    let origin = simulate(Vec3::ZERO);
+    // A quaternion chord retains small differences that acos(dot) loses near one in f32.
+    let max_rotation_chord = 2.0 * (0.05_f32.to_radians() / 4.0).sin();
+    for translation in [Vec3::new(12.0, 100.0, -25.0), Vec3::new(-100.0, -50.0, 80.0)] {
+        let shifted = simulate(translation);
+        for (frame, ((positions, rotations), (shifted_positions, shifted_rotations))) in
+            origin.iter().zip(&shifted).enumerate()
+        {
+            for (joint, (a, b)) in positions.iter().zip(shifted_positions).enumerate() {
+                assert!(a.distance(*b) < 2e-4, "{translation:?} frame {frame} joint {joint}: {a:?} != {b:?}");
+            }
+            for (joint, (a, b)) in rotations.iter().zip(shifted_rotations).enumerate() {
+                let (a, b) = (a.normalize(), b.normalize());
+                let chord = (a - b).length().min((a + b).length());
+                assert!(
+                    chord < max_rotation_chord,
+                    "{translation:?} frame {frame} joint {joint}: rotations {a:?} != {b:?}"
+                );
+            }
+        }
+    }
 }

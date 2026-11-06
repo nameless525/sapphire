@@ -176,7 +176,9 @@ impl ClipName {
     pub fn id(self) -> AssetId {
         match self {
             Self::Document(_, id) | Self::Id(id) => id,
-            Self::Retargeted(name, source) => source.sub_asset(&format!("clip/{name}@{CHARACTER}")),
+            Self::Retargeted(name, source) => {
+                sapphire_assets::graph::imported_clip_id(source, name, Some(CHARACTER))
+            }
         }
     }
 }
@@ -741,7 +743,9 @@ fn character_pose(
             }
         }
     }
-    let pose = CharacterPose::new(skeleton, &skin.binds, rig_joints.constraints(), morph_weights);
+    let pose = CharacterPose::try_new(skeleton, &skin.binds, rig_joints.constraints(), morph_weights)
+        .map_err(|error| error.to_string())?
+        .with_morph_names(mesh.morph_targets.iter().map(|target| target.name.clone()).collect());
     let head = rig_joints.joint(HumanBone::Head).ok_or("the look-dev character's rig has no head")?;
     let floor = mesh.streams.bounds.min[1].max(0.0);
     let joints = FigureJoints::new(&pose, &rig_joints, head, floor, CHARACTER_SHAPE);

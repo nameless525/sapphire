@@ -364,6 +364,36 @@ fn budget_collection_rescans_dependencies_released_by_an_earlier_kind() {
     assert_eq!(server.stats().assets, 0);
 }
 
+#[test]
+fn removing_texture_holders_does_not_over_evict_the_next_kind() {
+    let mut assets = Vec::new();
+    for n in [10, 20] {
+        assets.push(packed(id(n), AssetKind::Texture, &texture_bytes(8, 8, n)));
+        assets.extend(tree(n, n));
+    }
+    let texture_size = assets[0].size;
+    let material_size = assets[1].size;
+    let (mut server, _) = serve(assets, unlimited());
+    for n in [12, 22] {
+        let mesh: Handle<Mesh> = server.load(id(n)).unwrap();
+        server.finish(&mesh, |_| Ok(())).unwrap();
+        drop(mesh);
+        server.update();
+    }
+    let mut budgets = unlimited();
+    budgets.resident[AssetKind::Texture.index()] = texture_size;
+    budgets.resident[AssetKind::Material.index()] = material_size;
+    server.set_budgets(budgets);
+    server.update();
+    assert!(!server.is_resident(id(10)));
+    for n in [20, 21, 22] {
+        assert!(server.is_resident(id(n)), "the remaining tree fits both budgets: {n}");
+    }
+    let stats = server.stats();
+    assert_eq!(stats.resident[AssetKind::Material.index()], material_size);
+    assert_eq!(stats.resident[AssetKind::Texture.index()], texture_size);
+}
+
 /// Mesh `n + 2` draws with material `n + 1`, which binds texture `n`, each with an ID of its own.
 fn tree(n: u8, texture: u8) -> Vec<PackAsset> {
     vec![
@@ -804,4 +834,61 @@ fn mounting_checks_packs() {
     // Texture 1 is in both.
     assert!(matches!(server.mount_now("zone"), Err(MountError::Duplicate { .. })));
     assert!(!server.contains(id(4)));
+}
+
+#[test]
+fn mounting_rejects_inconsistent_file_extents_before_reading_the_toc() {
+    use std::sync::Mutex;
+
+    use lifetime::CountedSource;
+
+    struct SizedSource {
+        inner: CountedSource,
+        file_len: u64,
+        reads: Mutex<Vec<(u64, usize)>>,
+    }
+
+    impl PackSource for SizedSource {
+        fn open(&self, name: &str) -> io::Result<(PackFile, u64)> {
+            self.inner.open(name).map(|(file, _)| (file, self.file_len))
+        }
+
+        fn read(&self, file: PackFile, offset: u64, len: usize, priority: LoadPriority, done: ReadDone) {
+            self.reads.lock().unwrap().push((offset, len));
+            self.inner.read(file, offset, len, priority, done);
+        }
+
+        fn close(&self, file: PackFile) {
+            self.inner.close(file);
+        }
+    }
+
+    let bytes = write_pack(character()).unwrap();
+    let expected = bytes.len() as u64;
+    for file_len in [expected - 1, expected + 1] {
+        let source = Arc::new(SizedSource {
+            inner: CountedSource::default(),
+            file_len,
+            reads: Mutex::new(Vec::new()),
+        });
+        source.inner.inner.insert("bad_extent", bytes.clone());
+        let mut server = AssetServer::new(source.clone(), unlimited());
+        let error = server.mount_now("bad_extent").unwrap_err();
+        let MountError::Pack { name, source: error } = error else {
+            panic!("expected a pack extent error, got {error:?}");
+        };
+        assert_eq!(name, "bad_extent");
+        assert_eq!(
+            error,
+            if file_len < expected {
+                PackError::Truncated { expected, found: file_len }
+            } else {
+                PackError::Header("the file is longer than the pack it holds")
+            }
+        );
+        assert_eq!(*source.reads.lock().unwrap(), [(0, crate::pack::HEADER_LEN)]);
+        assert_eq!(source.inner.open_files(), 0);
+        assert_eq!(*source.inner.opened.lock().unwrap(), 1);
+        assert_eq!(*source.inner.bad_closes.lock().unwrap(), 0);
+    }
 }

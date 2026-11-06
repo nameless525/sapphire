@@ -145,6 +145,17 @@ fn triangles(mesh: &ImportedMesh) -> BTreeMap<String, Vec<[Corner; 3]>> {
 /// Blender writes the change of its vertex normal, which is the change of its corners' normals
 /// only where they are all one.
 fn distance(a: &Corner, b: &Corner) -> f32 {
+    let finite = |corner: &Corner| {
+        corner.position.is_finite()
+            && corner.normal.is_finite()
+            && corner.uv.is_finite()
+            && corner.skinned.is_finite()
+            && corner.influences.iter().all(|(_, weight)| weight.is_finite())
+            && corner.morphs.iter().all(|(position, normal)| position.is_finite() && normal.is_finite())
+    };
+    if !finite(a) || !finite(b) {
+        return f32::INFINITY;
+    }
     let mut worst = (a.position - b.position).abs().max_element() / 2e-5;
     worst = worst.max((a.normal - b.normal).abs().max_element() / 1e-4);
     worst = worst.max((a.uv - b.uv).abs().max_element() / 1e-6);

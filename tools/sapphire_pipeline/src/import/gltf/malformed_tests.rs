@@ -387,6 +387,24 @@ fn broken_sparse_accessors_are_errors() {
         case("sparse_no_elements", |f| f.sparse(|f| f.attribute("POSITION"), 0), "POSITION"),
         case("sparse_more_than_its_accessor", |f| f.sparse(|f| f.attribute("POSITION"), 4), "POSITION"),
         case("sparse_count_huge", |f| f.sparse(|f| f.attribute("POSITION"), HUGE), "POSITION"),
+        case("sparse_duplicate_indices", |f| f.sparse(|f| f.attribute("POSITION"), 2), "sparse index"),
+        case(
+            "sparse_out_of_range_index",
+            |f| {
+                f.sparse(|f| f.attribute("POSITION"), 1);
+                f.bin[0..2].copy_from_slice(&3u16.to_le_bytes());
+            },
+            "sparse index",
+        ),
+        case(
+            "sparse_descending_indices",
+            |f| {
+                f.sparse(|f| f.attribute("POSITION"), 2);
+                f.bin[0..2].copy_from_slice(&1u16.to_le_bytes());
+                f.bin[2..4].copy_from_slice(&0u16.to_le_bytes());
+            },
+            "sparse index",
+        ),
         case(
             "sparse_indices_float",
             |f| {
@@ -895,6 +913,11 @@ fn bad_keys_are_errors() {
         case("translation_nan", |f| f.poison(|f| f.output(TRANSLATION), 3, f32::NAN), "isn't finite"),
         case("scale_infinite", |f| f.poison(|f| f.output(SCALE), 5, f32::NEG_INFINITY), "isn't finite"),
         case("rotation_nan", |f| f.poison(|f| f.output(ROTATION), 7, f32::NAN), "isn't finite"),
+        case(
+            "rotation_length_overflow",
+            |f| f.poison(|f| f.output(ROTATION), 4, f32::MAX),
+            "rotation length isn't finite",
+        ),
         case("weight_nan", |f| f.poison(|f| f.output(WEIGHTS), 1, f32::NAN), "isn't finite"),
         case(
             "rotation_with_no_length",
@@ -1109,4 +1132,16 @@ fn a_clip_cook_names_the_file_and_the_problem() {
     assert!(error.to_string().contains("walk.gltf"), "{error}");
     let CookError::Clip { source, .. } = &error else { panic!("{error:?}") };
     assert!(source.to_string().contains("isn't finite"), "{source}");
+}
+
+#[test]
+fn nonfinite_morph_values_cannot_disappear_as_noise() {
+    assert_all_fail(&[
+        case(
+            "morph_position_nan",
+            |f| f.poison(|f| f.target("POSITION"), 0, f32::NAN),
+            "morph target 0 POSITION",
+        ),
+        case("morph_normal_nan", |f| f.poison(|f| f.target("NORMAL"), 0, f32::NAN), "morph target 0 NORMAL"),
+    ]);
 }

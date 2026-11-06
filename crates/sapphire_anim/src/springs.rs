@@ -118,11 +118,13 @@
 //! - Colliders read the pose the animation made, so a collider on a spring joint doesn't follow that
 //!   joint's swing.
 
+use std::sync::Arc;
+
 use sapphire_assets::rig::{ArchivedCharacterRig, ArchivedColliderShape, ArchivedSpringTip};
 use sapphire_assets::skeleton::NO_PARENT;
 use sapphire_math::{Affine3A, Quat, Vec3};
 
-use crate::character::CharacterPose;
+use crate::character::{CharacterPose, JointLayout};
 use crate::model::model_of;
 
 /// Ticks a second on the clocks springs run on (`sapphire_time::TICK_HZ`), and the rate VRM's
@@ -558,6 +560,7 @@ fn clear_of(head: Vec3, length: f32, out: Vec3, placed: &Placed, reach: f32, fal
 /// module's docs say how they run.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SpringBones {
+    layout: Arc<JointLayout>,
     /// The joints the pose places for the simulation: parents of the chains, colliders' joints and
     /// center joints; [`NO_PARENT`] is the model's origin. Each has a slot, then each [`Step`].
     anchors: Vec<u16>,
@@ -810,6 +813,7 @@ impl SpringBones {
         let step_count = steps.len();
         let slot_count = anchor_count + step_count;
         Some(Self {
+            layout: pose.joint_layout(),
             rates: swings.iter().map(|swing| Rate::new(swing.drag, substeps)).collect(),
             anchors,
             steps,
@@ -929,7 +933,8 @@ impl SpringBones {
     /// Takes over `other`'s motion for a new version of the character: its tails and clock, when it
     /// swings the same joints the same way. Otherwise this settles at its next update.
     pub fn continue_from(&mut self, other: &Self) {
-        let same = self.steps == other.steps
+        let same = self.layout == other.layout
+            && self.steps == other.steps
             && self.anchors == other.anchors
             && self.colliders.len() == other.colliders.len()
             && self.centers.len() == other.centers.len();

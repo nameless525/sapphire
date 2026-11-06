@@ -56,7 +56,7 @@
 //!   another source's instead (`skeleton:`, `rig:`).
 //! - **Clips** cook a glTF's or an FBX's animations and a VRMA's → `.sclip` when its sidecar asks
 //!   (M2 N1, [`clip`]), one per animation chosen (`run.glb` → `run.Walk.sclip`) and one more per rig
-//!   it retargets to, its target's ID in the file name (`run.Walk.6f8a81b6.sclip`). Sources wanted
+//!   it retargets to, its target's ID in the file name (`run.Walk.6f8a81b6-29c4-485f-b161-847b001d561f.sclip`). Sources wanted
 //!   for their animations alone cook no asset of their own.
 //! - **Key-pose documents** cook `.keypose.ron` → `.sclip` (M2 N1, [`keypose`]), for the rigs
 //!   their sidecar names.
@@ -243,7 +243,8 @@ pub struct Recipe {
 /// AP-005): what morph targets move is locked, and skinned meshes simplify in test poses too.
 /// 4: a shared skeleton's repeated joint name is an error, where the palette aliased two joints (the
 /// review's IMP-001).
-pub const MESH_COOKER: Stage = Stage { name: "smesh", version: 4 };
+/// 5: reject non-finite UV components and overflowing UV extents before quantization.
+pub const MESH_COOKER: Stage = Stage { name: "smesh", version: 5 };
 
 /// What a source's skeleton's ID is derived from.
 pub const SKELETON: &str = "skeleton";
@@ -475,6 +476,8 @@ impl Recipe {
 /// Errors from cooking. Each names the file it concerns.
 #[derive(Debug, thiserror::Error)]
 pub enum CookError {
+    #[error("{} has non-finite UV coordinates at vertex {vertex}", path.display())]
+    NonFiniteUv { path: PathBuf, vertex: usize },
     #[error("{} is not a supported mesh source (expected .gltf, .glb, .fbx or .vrm)", path.display())]
     UnsupportedSource { path: PathBuf },
     #[error(transparent)]
@@ -759,11 +762,27 @@ struct CookMemory {
     limit: u64,
     free: Mutex<u64>,
     freed: Condvar,
+    #[cfg(test)]
+    on_wait: Mutex<Option<std::sync::mpsc::Sender<()>>>,
 }
 
 impl CookMemory {
     fn new(limit: u64) -> Self {
-        Self { limit, free: Mutex::new(limit), freed: Condvar::new() }
+        Self {
+            limit,
+            free: Mutex::new(limit),
+            freed: Condvar::new(),
+            #[cfg(test)]
+            on_wait: Mutex::new(None),
+        }
+    }
+
+    /// A one-shot witness that a worker reached the budget's blocking branch.
+    #[cfg(test)]
+    fn observe_wait(&self) -> std::sync::mpsc::Receiver<()> {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        *self.on_wait.lock().unwrap() = Some(sender);
+        receiver
     }
 
     /// Waits until `bytes` are free and holds them. A cook needing more than the limit waits for all of
@@ -772,6 +791,10 @@ impl CookMemory {
         let bytes = bytes.min(self.limit);
         let mut free = self.free.lock().unwrap_or_else(PoisonError::into_inner);
         while *free < bytes {
+            #[cfg(test)]
+            if let Some(waiting) = self.on_wait.lock().unwrap().take() {
+                let _ = waiting.send(());
+            }
             free = self.freed.wait(free).unwrap_or_else(PoisonError::into_inner);
         }
         *free -= bytes;
@@ -1290,7 +1313,7 @@ fn sub_assets(
             .iter()
             .map(|&rig| PlannedPart {
                 id: meta::sub_asset_id(meta.id, &format!("rig/{rig}")),
-                part: Part::KeyPose { rig, file: short_id(rig) },
+                part: Part::KeyPose { rig, file: rig.to_string() },
                 recipe: own,
             })
             .collect()),
@@ -1339,11 +1362,6 @@ fn sub_assets(
             Ok(parts)
         }
     }
-}
-
-/// What stands for an asset in a file name: the start of its ID.
-fn short_id(id: AssetId) -> String {
-    id.to_string().chars().take(8).collect()
 }
 
 /// An animation source's parts: its skeleton, unless it shares a rig, and its clips.
@@ -1407,7 +1425,7 @@ fn clip_parts(
             return Err(ClipCookError::DuplicateClip { name });
         }
         parts.push(PlannedPart {
-            id: meta::sub_asset_id(id, &format!("clip/{name}")),
+            id: sapphire_assets::graph::imported_clip_id(id, &name, None),
             part: Part::Clip { index, name, file: files[index].clone(), target: None },
             recipe,
         });
@@ -1419,11 +1437,11 @@ fn clip_parts(
                 return Err(ClipCookError::DuplicateClip { name: name.clone() });
             }
             parts.push(PlannedPart {
-                id: meta::sub_asset_id(id, &format!("clip/{name}@{}", retarget.target)),
+                id: sapphire_assets::graph::imported_clip_id(id, name, Some(retarget.target)),
                 part: Part::Clip {
                     index,
                     name: name.clone(),
-                    file: format!("{}.{}", files[index], short_id(retarget.target)),
+                    file: format!("{}.{}", files[index], retarget.target),
                     target: Some(entry),
                 },
                 recipe: recipe.retargeted(),
@@ -1762,10 +1780,7 @@ impl<'a> Assets<'a> {
             }
             importer if importer.clips().is_some() => {
                 let name = clip.name.as_deref().ok_or(BakeError::NoName)?;
-                match rig {
-                    Some(rig) => meta::sub_asset_id(source_id, &format!("clip/{name}@{rig}")),
-                    None => meta::sub_asset_id(source_id, &format!("clip/{name}")),
-                }
+                sapphire_assets::graph::imported_clip_id(source_id, name, rig)
             }
             _ => return Err(BakeError::NotAClipSource { id: source_id }),
         };
@@ -2045,6 +2060,9 @@ fn part_dependencies(
         dependencies.push(marker(format!("#skeleton {id}")));
     }
     if let Part::Clip { name, target, .. } = part {
+        // Imported clip IDs changed with the unambiguous v2 tuple encoding. Recook those
+        // outputs together with graphs, while source and key-pose identities remain stable.
+        dependencies.push(marker("#clip identity 2".to_owned()));
         dependencies.push(marker(format!("#clip {name}")));
         if let (Some(entry), Some(clips)) = (target, settings.clips()) {
             dependencies.push(marker(format!("#target {}", clips.retarget[*entry].target)));
@@ -2188,12 +2206,7 @@ fn cook_cell(
     let plan = &assets.zones[path];
     let _held = assets.memory.hold(plan.source_bytes_in(place) * MESH_MEMORY_PER_SOURCE_BYTE);
     let (mut mesh, bindings) = plan.merge(place, assembly_detail(cook)).map_err(zone_error(path))?;
-    if let Some(vertex) = mesh.vertices.iter().position(|v| !v.position.iter().all(|c| c.is_finite())) {
-        return Err(CookError::Invalid {
-            path: path.to_owned(),
-            source: MeshError::NonFinitePosition { vertex },
-        });
-    }
+    validate_mesh_inputs(path, &mesh)?;
     bake::outline_normals(&mut mesh, &settings.outline);
     optimize::optimize(&mut mesh, &settings.lods, settings.outline.weld_tolerance(), cook);
     let packed = mesh
@@ -2901,12 +2914,7 @@ fn import_mesh(
     let settings = importer.mesh().expect("only mesh importers import a mesh");
     // Packing would quantize a NaN to a corner of the bounds. glTF's importer says which primitive;
     // this holds for the others.
-    if let Some(vertex) = mesh.vertices.iter().position(|v| !v.position.iter().all(|c| c.is_finite())) {
-        return Err(CookError::Invalid {
-            path: path.to_owned(),
-            source: MeshError::NonFinitePosition { vertex },
-        });
-    }
+    validate_mesh_inputs(path, &mesh)?;
     bake::outline_normals(&mut mesh, &settings.outline);
     if let Some(foliage) = &settings.foliage {
         bake::foliage::bake(&mut mesh, foliage, settings.outline.weld_tolerance())
@@ -2923,6 +2931,24 @@ fn import_mesh(
         }
     }
     Ok(packed)
+}
+
+/// Rejects values quantization would otherwise hide, for imported meshes and merged zone cells.
+fn validate_mesh_inputs(path: &Path, mesh: &ImportedMesh) -> Result<(), CookError> {
+    if let Some(vertex) = mesh.vertices.iter().position(|v| !v.position.iter().all(|c| c.is_finite())) {
+        return Err(CookError::Invalid {
+            path: path.to_owned(),
+            source: MeshError::NonFinitePosition { vertex },
+        });
+    }
+    if let Some(vertex) = mesh.vertices.iter().position(|v| !v.uv.iter().all(|c| c.is_finite())) {
+        return Err(CookError::NonFiniteUv { path: path.to_owned(), vertex });
+    }
+    let bounds = sapphire_assets::mesh::UvBounds::enclosing(mesh.vertices.iter().map(|v| v.uv));
+    if !bounds.is_valid() {
+        return Err(CookError::Invalid { path: path.to_owned(), source: MeshError::InvalidUvBounds });
+    }
+    Ok(())
 }
 
 /// The mesh a mesh importer reads from `bytes`, before anything derived from it. A glTF that cooks
@@ -3095,12 +3121,7 @@ pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> Result<(), CookErro
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(write_error)?;
     }
-    let mut temp = path.as_os_str().to_owned();
-    temp.push(".");
-    temp.push(TEMP_EXTENSION);
-    let temp = PathBuf::from(temp);
-    fs::write(&temp, bytes).map_err(write_error)?;
-    fs::rename(&temp, path).map_err(write_error)
+    meta::replace_file(path, bytes).map_err(write_error)
 }
 
 #[cfg(test)]
@@ -3124,6 +3145,96 @@ mod tests {
     use crate::texture::{
         ColorSettings, MaskChannels, MaskSettings, RampSettings, TextureClass, TextureSettings,
     };
+
+    #[test]
+    fn mesh_cooks_reject_non_finite_uvs_before_quantization() {
+        for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut writer = GltfWriter::default();
+            let triangle = Geometry {
+                positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                normals: vec![[0.0, 0.0, 1.0]; 3],
+                uvs: vec![[0.0, 0.0], [invalid, 0.5], [1.0, 1.0]],
+                indices: vec![0, 1, 2],
+                ..Geometry::default()
+            };
+            let mesh = writer.add_mesh("invalid UV", &[(&triangle, None)]);
+            let node = writer.add_node(json!({ "mesh": mesh }));
+            writer.add_root(node);
+            let error = import_mesh(
+                Path::new("bad.glb"),
+                &writer.to_glb(),
+                &ImportSettings::Gltf(MeshSettings::default()),
+                Cook::Desktop,
+                None,
+            )
+            .unwrap_err();
+            assert!(matches!(error, CookError::NonFiniteUv { vertex: 1, .. }), "{error}");
+        }
+    }
+
+    #[test]
+    fn mesh_cooks_reject_finite_uvs_with_an_overflowing_extent() {
+        let mut mesh = imported_mesh(
+            Path::new("sample.glb"),
+            &samples::mannequin_glb(),
+            &ImportSettings::Gltf(MeshSettings::default()),
+            Cook::Desktop,
+        )
+        .unwrap();
+        mesh.vertices[0].uv = [-f32::MAX, 0.0];
+        mesh.vertices[1].uv = [f32::MAX, 1.0];
+        assert!(matches!(
+            validate_mesh_inputs(Path::new("sample.glb"), &mesh),
+            Err(CookError::Invalid { source: MeshError::InvalidUvBounds, .. })
+        ));
+    }
+
+    #[test]
+    fn imported_clip_planning_uses_unambiguous_ids_and_full_target_names() {
+        let source = AssetId::from_bytes([1; 16]);
+        let first = AssetId::from_bytes([2; 16]);
+        let mut second = [2; 16];
+        second[15] = 3;
+        let second = AssetId::from_bytes(second);
+        let name = format!("walk@{first}");
+        let names = ["walk".to_owned(), name.clone()];
+        let settings = ClipSettings {
+            retarget: vec![
+                retarget::RetargetSettings {
+                    target: first,
+                    names: vec!["walk".to_owned()],
+                    scale: None,
+                    ground: true,
+                    adjust: Default::default(),
+                    gain: Default::default(),
+                    follow: Vec::new(),
+                },
+                retarget::RetargetSettings {
+                    target: second,
+                    names: vec!["walk".to_owned()],
+                    scale: None,
+                    ground: true,
+                    adjust: Default::default(),
+                    gain: Default::default(),
+                    follow: Vec::new(),
+                },
+            ],
+            ..ClipSettings::default()
+        };
+        let parts = clip_parts(source, &settings, true, &names, &[], Recipe::gltf_clip()).unwrap();
+        let ids: HashSet<_> = parts.iter().map(|part| part.id).collect();
+        assert_eq!(ids.len(), 4);
+        assert!(ids.contains(&sapphire_assets::graph::imported_clip_id(source, &name, None)));
+        assert!(ids.contains(&sapphire_assets::graph::imported_clip_id(source, "walk", Some(first))));
+        let files: HashSet<_> = parts
+            .iter()
+            .map(|part| match &part.part {
+                Part::Clip { file, .. } => file.as_str(),
+                _ => unreachable!(),
+            })
+            .collect();
+        assert_eq!(files.len(), 4, "equal eight-digit prefixes must not collide");
+    }
 
     /// A source tree, an output directory and a cache, all in one scratch directory.
     struct Scratch {
@@ -3293,6 +3404,7 @@ mod tests {
         drop(more);
 
         let started = std::sync::atomic::AtomicBool::new(false);
+        let waiting = memory.observe_wait();
         thread::scope(|scope| {
             scope.spawn(|| {
                 // Past the limit: it waits for all of it.
@@ -3300,9 +3412,11 @@ mod tests {
                 started.store(true, Ordering::SeqCst);
                 drop(large);
             });
-            thread::sleep(std::time::Duration::from_millis(20));
-            assert!(!started.load(Ordering::SeqCst), "it waits for what's held");
+            let observed = waiting.recv_timeout(std::time::Duration::from_secs(1));
+            let premature = started.load(Ordering::SeqCst);
             drop(some);
+            observed.expect("worker reached the budget wait");
+            assert!(!premature, "it waits for what's held");
         });
         assert!(started.load(Ordering::SeqCst));
         assert_eq!(free(), 100, "all of it comes back");
@@ -3444,6 +3558,7 @@ mod tests {
             let keyed = tree.key(0, &tree.assets(&[], &remembered)).unwrap();
             let held = memory.hold(COOK_MEMORY);
             let finished = std::sync::atomic::AtomicBool::new(false);
+            let waiting = memory.observe_wait();
             thread::scope(|scope| {
                 let cook = scope.spawn(|| {
                     let remembered = Remembered::default();
@@ -3451,9 +3566,11 @@ mod tests {
                     finished.store(true, Ordering::SeqCst);
                     result
                 });
-                thread::sleep(std::time::Duration::from_millis(200));
-                assert!(!finished.load(Ordering::SeqCst), "{part:?} of {path:?} waits for what's held");
+                let observed = waiting.recv_timeout(std::time::Duration::from_secs(1));
+                let premature = finished.load(Ordering::SeqCst);
                 drop(held);
+                observed.expect("cook reached the budget wait");
+                assert!(!premature, "{part:?} of {path:?} waits for what's held");
                 assert_eq!(cook.join().unwrap().unwrap().status, CookStatus::Cooked);
             });
             assert_eq!(*memory.free.lock().unwrap(), COOK_MEMORY, "and gives it back");

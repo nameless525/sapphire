@@ -239,6 +239,17 @@ impl KeyEase {
     /// The weight of the arriving pose at progress `u`, from 0 to 1. Exactly 0 and 1 at the ends.
     #[must_use]
     pub fn weight(self, u: f32) -> f32 {
+        self.weight_prepared(u, None)
+    }
+
+    fn back_strength(self) -> Option<f32> {
+        match self {
+            Self::Anticipate(share) | Self::Overshoot(share) => Some(back_strength(share)),
+            _ => None,
+        }
+    }
+
+    fn weight_prepared(self, u: f32, strength: Option<f32>) -> f32 {
         let u = u.clamp(0.0, 1.0);
         if u <= 0.0 {
             return 0.0;
@@ -252,8 +263,8 @@ impl KeyEase {
             Self::In => Ease::In.apply(u),
             Self::Out => Ease::Out.apply(u),
             Self::Hold => Ease::Hold.apply(u),
-            Self::Anticipate(share) => back(u, back_strength(share)),
-            Self::Overshoot(share) => 1.0 - back(1.0 - u, back_strength(share)),
+            Self::Anticipate(share) => back(u, strength.unwrap_or_else(|| back_strength(share))),
+            Self::Overshoot(share) => 1.0 - back(1.0 - u, strength.unwrap_or_else(|| back_strength(share))),
             Self::Curve(x1, y1, x2, y2) => {
                 let bezier = |t: f32, a: f32, b: f32| {
                     3.0 * (1.0 - t) * (1.0 - t) * t * a + 3.0 * (1.0 - t) * t * t * b + t * t * t
@@ -422,16 +433,18 @@ struct Moment {
 fn timeline(keys: &[PoseKey], ticks: u16) -> Vec<Moment> {
     let mut moments = Vec::with_capacity(usize::from(ticks) + 1);
     let mut from = 0;
+    let mut strength = keys.get(1).and_then(|key| key.ease.back_strength());
     for tick in 0..=ticks {
         while from + 1 < keys.len() && keys[from + 1].tick <= tick {
             from += 1;
+            strength = keys.get(from + 1).and_then(|key| key.ease.back_strength());
         }
         moments.push(if from + 1 == keys.len() {
             Moment { from, to: from, weight: 0.0 }
         } else {
             let (start, end) = (keys[from].tick, keys[from + 1].tick);
             let u = f32::from(tick - start) / f32::from(end - start);
-            Moment { from, to: from + 1, weight: keys[from + 1].ease.weight(u) }
+            Moment { from, to: from + 1, weight: keys[from + 1].ease.weight_prepared(u, strength) }
         });
     }
     moments

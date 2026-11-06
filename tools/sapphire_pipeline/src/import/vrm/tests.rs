@@ -1381,3 +1381,33 @@ fn an_image_view_that_overflows_is_an_error() {
         );
     }
 }
+
+#[test]
+fn image_statistics_reuse_only_exact_successful_import_local_scalars() {
+    let source = samples::vrm1();
+    let Read { document, buffers, .. } = read(&source.to_glb(), None).unwrap();
+    let stats = ImageStats::default();
+    let images = Images { document: &document, buffers: &buffers, stats: Some(&stats) };
+    for index in [image::SHIFT, image::RIM, image::MATCAP] {
+        let decoded = images.decode(index).unwrap().into_rgba32f();
+        let mut sum = [0.0f64; 3];
+        for pixel in decoded.pixels() {
+            for (total, &value) in sum.iter_mut().zip(&pixel.0) {
+                *total += f64::from(srgb_to_linear(value));
+            }
+        }
+        let count = (decoded.width() as usize * decoded.height() as usize) as f64;
+        let expected = sum.map(|value| (value / count) as f32);
+        for _ in 0..2 {
+            assert_eq!(images.mean_color(index).unwrap().0.map(f32::to_bits), expected.map(f32::to_bits));
+            let mask = images.mask(index, Channel::R).unwrap();
+            let mean =
+                (mask.values.iter().map(|&v| f64::from(v)).sum::<f64>() / mask.values.len() as f64) as f32;
+            assert_eq!(images.mean_red(index).unwrap().to_bits(), mean.to_bits());
+        }
+    }
+    assert_eq!(stats.colors.borrow().len(), 3);
+    assert_eq!(stats.red.borrow().len(), 3);
+    assert!(images.mean_color(usize::MAX).is_err());
+    assert_eq!(stats.colors.borrow().len(), 3);
+}

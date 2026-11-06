@@ -148,8 +148,10 @@ pub fn sidecar_id(path: &Path) -> Option<AssetId> {
 pub fn clip_id(clip: &ClipMotionDocument) -> Option<AssetId> {
     let source: AssetId = clip.source.parse().ok()?;
     Some(match (&clip.name, &clip.rig) {
-        (Some(name), Some(rig)) => source.sub_asset(&format!("clip/{name}@{rig}")),
-        (Some(name), None) => source.sub_asset(&format!("clip/{name}")),
+        (Some(name), Some(rig)) => {
+            sapphire_assets::graph::imported_clip_id(source, name, Some(rig.parse().ok()?))
+        }
+        (Some(name), None) => sapphire_assets::graph::imported_clip_id(source, name, None),
         (None, Some(rig)) => source.sub_asset(&format!("rig/{rig}")),
         (None, None) => source,
     })

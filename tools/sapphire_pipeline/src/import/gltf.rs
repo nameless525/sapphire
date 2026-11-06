@@ -72,7 +72,10 @@
 //! (the review's AP-003): one target can't hold both, so the mesh's first instance merges as
 //! above, and each other default gets a target of its own, named `<name>@<node>` (the node's
 //! name, or `#<index>`; suffixed `#2`, `#3`… if taken), which that mesh's instances at that
-//! default share. Every instance then rests as its node says, whatever the scene's order;
+//! default share. If any selected instance of a mesh has a weights channel in any animation,
+//! all of that mesh's selected instances instead get their own targets, even at equal defaults:
+//! a node's channel must not animate a sibling instance. Every instance then rests as its node
+//! says, whatever the scene's order;
 //! which one keeps the plain name follows the order. The scene import lists the targets each
 //! mesh's target went to (`SceneImport::targets_of_morph`), so a VRM expression binding a
 //! mesh's target drives it on every instance.
@@ -134,14 +137,16 @@ pub use self::accessors::AccessorFault;
 pub mod clips;
 
 /// This importer, as cache keys know it. Bump the version whenever import output changes
-/// for the same file. 9: instances of one mesh resting a morph target at different weights
+/// for the same file. 11: isolate instances of meshes with selected-node morph animation.
+/// 10: validate cutoff/morph/sparse data and reserve authored morph names before splitting.
+/// 9: instances of one mesh resting a morph target at different weights
 /// get a target each (the review's AP-003). 8: generated materials take the material's
 /// `doubleSided` (M1 C8). 7:
 /// generated materials carry the depth-offset rim's settings and per-region rim scales from
 /// material extras (M1 C5). 6: generated materials carry outlines v2's settings,
 /// and VRM's MToon maps its outline widths onto the width's curve and its outline lighting mix
 /// (M1 C4).
-pub const IMPORTER: Stage = Stage { name: "gltf", version: 9 };
+pub const IMPORTER: Stage = Stage { name: "gltf", version: 11 };
 
 /// Morph deltas whose position moves less than this (meters, on every axis) and whose normal
 /// changes less than [`MORPH_NORMAL_EPSILON`] are dropped as noise: a micrometer is far below
@@ -235,10 +240,14 @@ pub enum GltfImportError {
          share one ID (split vertices at region borders, as a face-corner attribute does)"
     )]
     MixedMaterialIds { at: PrimitiveRef, triangle: usize, ids: [u8; 3] },
+    #[error("{at}: morph target {target} {semantic} at vertex {vertex} isn't finite")]
+    NonFiniteMorph { at: PrimitiveRef, target: usize, semantic: &'static str, vertex: usize },
     #[error("{at}: index count {count} is not a multiple of 3")]
     NotTriangles { at: PrimitiveRef, count: usize },
     #[error("{at}: index {index} is out of range for {vertex_count} vertices")]
     IndexOutOfRange { at: PrimitiveRef, index: u32, vertex_count: usize },
+    #[error("material {material}: alpha cutoff {cutoff} is outside Sapphire's supported range 0 to 1")]
+    AlphaCutoff { material: String, cutoff: f32 },
     #[error("material {material}: invalid material extras")]
     MaterialExtras {
         material: String,
@@ -357,6 +366,8 @@ pub(crate) struct SceneImport {
     /// Per glTF mesh and morph target index, the merged targets its instances took, in
     /// increasing order: one, unless instances rest at different weights.
     pub targets_of_morph: HashMap<(usize, usize), Vec<u32>>,
+    /// Per selected-scene node and morph target, the target that instance drives.
+    pub targets_of_node: HashMap<(usize, usize), u32>,
 }
 
 /// Imports the default scene of a parsed document whose buffers are loaded. Nodes in
@@ -386,6 +397,23 @@ fn import_scene_within(
     // converts from its +Z-up space, so source coordinates pass through unchanged.
     let nodes = flatten(document, &scene)?;
     let skeleton = Skeleton::build(document, &nodes, buffers, extra_joints)?;
+    let mut selected_nodes = vec![false; document.nodes().len()];
+    for visit in &nodes {
+        selected_nodes[visit.node] = true;
+    }
+    let mut animated_morph_meshes = std::collections::HashSet::new();
+    for animation in document.animations() {
+        for channel in animation.channels() {
+            let target = channel.target();
+            let node = target.node();
+            if matches!(target.property(), ::gltf::animation::Property::MorphTargetWeights)
+                && selected_nodes[node.index()]
+                && let Some(mesh) = node.mesh()
+            {
+                animated_morph_meshes.insert(mesh.index());
+            }
+        }
+    }
     let mut builder = Builder {
         buffers,
         mesh: ImportedMesh { lods: vec![Lod::default()], ..ImportedMesh::default() },
@@ -393,7 +421,18 @@ fn import_scene_within(
         slot_names: slot_names(document),
         skeleton,
         targets: HashMap::new(),
+        reserved_targets: nodes
+            .iter()
+            .filter_map(|visit| document.nodes().nth(visit.node)?.mesh())
+            .flat_map(|mesh| {
+                let names = morph_target_names(&mesh);
+                let count = mesh.primitives().map(|p| p.morph_targets().len()).max().unwrap_or(0);
+                (0..count).map(move |k| morph_target_name(&mesh, &names, k))
+            })
+            .collect(),
         instances: HashMap::new(),
+        animated_morph_meshes,
+        targets_of_node: HashMap::new(),
         budget,
         morph_deltas: 0,
     };
@@ -412,13 +451,20 @@ fn import_scene_within(
         .instances
         .iter()
         .map(|(&morph, instances)| {
-            let mut targets: Vec<u32> = instances.iter().map(|&(_, target)| target as u32).collect();
+            let mut targets: Vec<u32> = instances.iter().map(|instance| instance.target as u32).collect();
             targets.sort_unstable();
             targets.dedup();
             (morph, targets)
         })
         .collect();
-    Ok(SceneImport { mesh: builder.finish()?, joint_of_node, slot_of_material, targets_of_morph })
+    let targets_of_node = std::mem::take(&mut builder.targets_of_node);
+    Ok(SceneImport {
+        mesh: builder.finish()?,
+        joint_of_node,
+        slot_of_material,
+        targets_of_morph,
+        targets_of_node,
+    })
 }
 
 /// A scene's joints, parents first, and the joint of each node that is one.
@@ -832,6 +878,13 @@ pub(crate) fn morph_target_name(mesh: &Mesh<'_>, names: &[String], k: usize) -> 
     })
 }
 
+/// One merged default, or one node of a mesh whose instances may animate independently.
+struct MorphInstance {
+    default: u32,
+    node: Option<usize>,
+    target: usize,
+}
+
 struct Builder<'a> {
     buffers: &'a [Vec<u8>],
     mesh: ImportedMesh,
@@ -842,9 +895,14 @@ struct Builder<'a> {
     skeleton: Option<Skeleton>,
     /// Morph target name → index into `mesh.morph_targets`.
     targets: HashMap<String, usize>,
-    /// Per glTF mesh and morph target index: each default weight (its bits) the mesh's instances
-    /// give the target, and the merged target that takes it.
-    instances: HashMap<(usize, usize), Vec<(u32, usize)>>,
+    /// Authored names of all selected-scene targets, including those imported later.
+    reserved_targets: std::collections::HashSet<String>,
+    /// Per selected-scene node and morph target index, its merged target.
+    targets_of_node: HashMap<(usize, usize), u32>,
+    /// Per glTF mesh and morph target index, each merged default or independent node.
+    instances: HashMap<(usize, usize), Vec<MorphInstance>>,
+    /// A selected node's weight channel makes every selected instance of its mesh independent.
+    animated_morph_meshes: std::collections::HashSet<usize>,
     budget: MeshBudget,
     /// In `mesh.morph_targets`, all together.
     morph_deltas: usize,
@@ -937,7 +995,7 @@ impl Builder<'_> {
         };
         let total_indices = self.mesh.indices.len().saturating_add(index_count);
         within_budget(&at, "indices", total_indices, self.budget.indices)?;
-        let indices: Vec<u32> = match (primitive.indices(), reader.read_indices()) {
+        let mut indices: Vec<u32> = match (primitive.indices(), reader.read_indices()) {
             (_, Some(iter)) => iter.into_u32().collect(),
             (Some(_), None) => {
                 return Err(GltfImportError::UnreadableAccessor {
@@ -962,12 +1020,12 @@ impl Builder<'_> {
         // A negative determinant mirrors the geometry, which turns counter-clockwise front
         // faces clockwise; swap two corners to restore the winding (glTF 2.0 §3.7.4).
         let mirrored = transform.determinant() < 0.0;
-        let triangles: Vec<[u32; 3]> = indices
-            .as_chunks::<3>()
-            .0
-            .iter()
-            .map(|&[a, b, c]| if mirrored { [a, c, b] } else { [a, b, c] })
-            .collect();
+        if mirrored {
+            for triangle in indices.as_chunks_mut::<3>().0 {
+                triangle.swap(1, 2);
+            }
+        }
+        let triangles = indices.as_chunks::<3>().0;
         if let Some(ids) = &data.material_ids {
             let corner_ids = |triangle: &[u32; 3]| triangle.map(|i| ids[i as usize].get());
             if let Some((triangle, corners)) =
@@ -979,26 +1037,25 @@ impl Builder<'_> {
 
         // `sources[i]` is the primitive vertex that new vertex `i` comes from, and `normals[i]`
         // its shading normal.
-        let (sources, normals, local_indices): (Vec<u32>, Vec<Vec3>, Vec<u32>) = match &data.normals {
-            Some(normals) => ((0..vertex_count as u32).collect(), normals.clone(), triangles.concat()),
+        let (sources, normals): (Vec<u32>, std::borrow::Cow<'_, [Vec3]>) = match &data.normals {
+            Some(normals) => ((0..vertex_count as u32).collect(), normals.as_slice().into()),
             None => {
                 // Flat shading needs a normal per face corner, so the primitive is unwelded.
                 let mut sources = Vec::with_capacity(3 * triangles.len());
                 let mut normals = Vec::with_capacity(3 * triangles.len());
-                for &[a, b, c] in &triangles {
+                for &[a, b, c] in triangles {
                     let [pa, pb, pc] = [a, b, c].map(|i| data.positions[i as usize]);
                     let normal = (pb - pa).cross(pc - pa).normalize_or(Vec3::Y);
                     sources.extend([a, b, c]);
                     normals.extend([normal; 3]);
                 }
-                let corners = (0..sources.len() as u32).collect();
-                (sources, normals, corners)
+                (sources, normals.into())
             }
         };
 
         let base = u32::try_from(self.mesh.vertices.len()).map_err(|_| GltfImportError::TooLarge)?;
         let first_index = u32::try_from(self.mesh.indices.len()).map_err(|_| GltfImportError::TooLarge)?;
-        for (&source, &normal) in sources.iter().zip(&normals) {
+        for (&source, &normal) in sources.iter().zip(normals.iter()) {
             let s = source as usize;
             let outline = data.outline_normals.as_ref().map_or(normal, |outline| outline[s]);
             self.mesh.vertices.push(Vertex {
@@ -1015,7 +1072,11 @@ impl Builder<'_> {
         }
         let authored = data.outline_normals.is_some();
         self.mesh.authored_outline.extend(std::iter::repeat_n(authored, sources.len()));
-        self.mesh.indices.extend(local_indices.iter().map(|i| base + i));
+        if data.normals.is_some() {
+            self.mesh.indices.extend(indices.iter().map(|i| base + i));
+        } else {
+            self.mesh.indices.extend((0..sources.len() as u32).map(|i| base + i));
+        }
         u32::try_from(self.mesh.indices.len()).map_err(|_| GltfImportError::TooLarge)?;
 
         if let Some(skeleton) = self.skeleton.as_mut() {
@@ -1096,22 +1157,52 @@ impl Builder<'_> {
             };
             let positions = read("POSITION", target.positions())?;
             let normal_deltas = read("NORMAL", target.normals())?;
+            for (semantic, values) in [("POSITION", &positions), ("NORMAL", &normal_deltas)] {
+                if let Some(vertex) = values
+                    .as_ref()
+                    .and_then(|values| values.iter().position(|v| !v.iter().all(|c| c.is_finite())))
+                {
+                    return Err(GltfImportError::NonFiniteMorph {
+                        at: at.clone(),
+                        target: k,
+                        semantic,
+                        vertex,
+                    });
+                }
+            }
             let name = morph_target_name(mesh, &names, k);
             // Two of one primitive's targets under one name would move the same vertices twice.
             if used.contains(&name) {
                 return Err(GltfImportError::DuplicateMorphTarget { at: at.clone(), name });
             }
             let target = self.morph_target(node, mesh, k, &name, defaults.get(k).copied().unwrap_or(0.0));
+            self.targets_of_node.insert((node.index(), k), target as u32);
             used.push(name);
             for (offset, &source) in sources.iter().enumerate() {
                 let s = source as usize;
                 let position = positions.as_ref().map_or(Vec3::ZERO, |p| linear * Vec3::from(p[s]));
+                if !position.is_finite() {
+                    return Err(GltfImportError::NonFiniteMorph {
+                        at: at.clone(),
+                        target: k,
+                        semantic: "POSITION",
+                        vertex: s,
+                    });
+                }
                 // Normals are per face corner without a NORMAL attribute; they don't morph then.
                 let normal = match (&data.normals, &data.source_normals, &normal_deltas) {
                     (Some(normals), Some(source_normals), Some(deltas)) => {
                         // The difference of the transformed, normalized full-weight and base
                         // normals: exact at full weight once the shader renormalizes.
                         let morphed = normal_matrix * (source_normals[s] + Vec3::from(deltas[s]));
+                        if !morphed.is_finite() {
+                            return Err(GltfImportError::NonFiniteMorph {
+                                at: at.clone(),
+                                target: k,
+                                semantic: "NORMAL",
+                                vertex: s,
+                            });
+                        }
                         morphed.normalize_or(normals[s]) - normals[s]
                     }
                     _ => Vec3::ZERO,
@@ -1135,8 +1226,9 @@ impl Builder<'_> {
 
     /// The merged target that morph target `k` (named `name`) of `mesh`, instanced by `node` at
     /// rest at `default`, adds its deltas to, made if there is none yet (see the module docs):
-    /// the target its mesh's instances at that default share, else for the mesh's first
-    /// instance the target of that name, else a target of its own.
+    /// the target its unanimated mesh's instances at that default share, else for the mesh's
+    /// first instance the target of that name, else a target of its own. Instances of a mesh
+    /// with selected-node weight animation each keep their own target across primitives.
     fn morph_target(
         &mut self,
         node: &Node<'_>,
@@ -1147,20 +1239,23 @@ impl Builder<'_> {
     ) -> usize {
         // `+ 0.0` makes -0 and 0 one default.
         let bits = (default + 0.0).to_bits();
+        let instance_node = self.animated_morph_meshes.contains(&mesh.index()).then_some(node.index());
         let instances = self.instances.entry((mesh.index(), k)).or_default();
-        if let Some(&(_, target)) = instances.iter().find(|&&(seen, _)| seen == bits) {
-            return target;
+        if let Some(instance) =
+            instances.iter().find(|seen| seen.default == bits && seen.node == instance_node)
+        {
+            return instance.target;
         }
         let name = if instances.is_empty() {
             name.to_owned()
         } else {
-            // Another instance of the mesh, at rest at another weight: one target can't hold both
-            // defaults, so this instance's is a target of its own, named after its node.
+            // Different defaults or node animation need independent weights. Reuse this node's
+            // target across its primitives, but keep it separate from the mesh's other instances.
             let node = node.name().map_or_else(|| format!("#{}", node.index()), str::to_owned);
             let split = format!("{name}@{node}");
             let mut unique = split.clone();
             for n in 2.. {
-                if !self.targets.contains_key(&unique) {
+                if !self.targets.contains_key(&unique) && !self.reserved_targets.contains(&unique) {
                     break;
                 }
                 unique = format!("{split}#{n}");
@@ -1175,7 +1270,11 @@ impl Builder<'_> {
             });
             self.mesh.morph_targets.len() - 1
         });
-        self.instances.entry((mesh.index(), k)).or_default().push((bits, target));
+        self.instances.entry((mesh.index(), k)).or_default().push(MorphInstance {
+            default: bits,
+            node: instance_node,
+            target,
+        });
         target
     }
 
@@ -1341,7 +1440,7 @@ where
             let id = (value.fract() == 0.0 && (0.0..f32::from(MATERIAL_IDS)).contains(&value))
                 .then(|| MaterialId::new(value as u8))
                 .flatten();
-            id.ok_or(GltfImportError::MaterialIdOutOfRange { at: at.clone(), vertex, value })
+            id.ok_or_else(|| GltfImportError::MaterialIdOutOfRange { at: at.clone(), vertex, value })
         })
         .collect::<Result<_, _>>()
         .map(Some)
@@ -1360,7 +1459,7 @@ where
     F: Clone + Fn(::gltf::Buffer<'a>) -> Option<&'s [u8]>,
 {
     let (at, vertex_count) = (attributes.at, attributes.vertex_count);
-    let mut influences: Vec<Vec<(u16, f32)>> = vec![Vec::new(); vertex_count];
+    let mut influences = Vec::new();
     for set in 0.. {
         let Some(joints) = primitive.get(&Semantic::Joints(set)) else { break };
         let sets = (set as usize + 1).saturating_mul(vertex_count);
@@ -1369,7 +1468,7 @@ where
         let weights = primitive.get(&Semantic::Weights(set)).ok_or_else(|| {
             GltfImportError::UnreadableAccessor { at: at.clone(), semantic: weights_name.clone() }
         })?;
-        let joints = attributes
+        let mut joints = attributes
             .read(&joints_name, Some(joints), &accessors::JOINTS, |_| {
                 reader.read_joints(set).map(|iter| iter.into_u16().collect::<Vec<_>>())
             })?
@@ -1379,23 +1478,34 @@ where
                 reader.read_weights(set).map(|iter| iter.into_f32().collect::<Vec<_>>())
             })?
             .expect("an accessor that's there reads or fails");
-        for (vertex, (joints, weights)) in joints.iter().zip(&weights).enumerate() {
-            for (&joint, &weight) in joints.iter().zip(weights) {
+        for (vertex, (joints, weights)) in joints.iter_mut().zip(&weights).enumerate() {
+            for (joint, &weight) in joints.iter_mut().zip(weights) {
                 // Exporters pad unused slots with weight 0 and any joint; only real ones count.
                 if weight.is_nan() || weight <= 0.0 {
                     continue;
                 }
-                let bind = *binds.get(usize::from(joint)).ok_or_else(|| {
-                    GltfImportError::JointOutOfRange { at: at.clone(), vertex, joint, joints: binds.len() }
+                *joint = *binds.get(usize::from(*joint)).ok_or_else(|| GltfImportError::JointOutOfRange {
+                    at: at.clone(),
+                    vertex,
+                    joint: *joint,
+                    joints: binds.len(),
                 })?;
-                influences[vertex].push((bind, weight));
             }
         }
+        influences.push((joints, weights));
     }
     // A skin has at least one joint (`Skeleton::build` checks), whose entry takes unweighted
     // vertices.
     let fallback = SkinWeights::rigid(binds.first().copied().unwrap_or(0));
-    Ok(influences.into_iter().map(|list| SkinWeights::strongest(list).unwrap_or(fallback)).collect())
+    let mut scratch = Vec::new();
+    Ok((0..vertex_count)
+        .map(|vertex| {
+            let weights = influences
+                .iter()
+                .flat_map(|(joints, weights)| joints[vertex].into_iter().zip(weights[vertex]));
+            SkinWeights::strongest_with_scratch(weights, &mut scratch).unwrap_or(fallback)
+        })
+        .collect())
 }
 
 /// glTF `COLOR_0` is linear, as the cooked vertex color's data channels are. Alpha is unused.
@@ -1410,22 +1520,29 @@ fn slot_names(document: &Document) -> Vec<String> {
 }
 
 /// A glTF material's `alphaMode` and `alphaCutoff`.
-pub(crate) fn alpha_mode(material: &Material<'_>) -> AlphaMode {
-    match material.alpha_mode() {
+pub(crate) fn alpha_mode(material: &Material<'_>) -> Result<AlphaMode, GltfImportError> {
+    Ok(match material.alpha_mode() {
         ::gltf::material::AlphaMode::Opaque => AlphaMode::Opaque,
         ::gltf::material::AlphaMode::Mask => {
-            // glTF allows any cutoff from 0; above 1 everything is discarded either way.
-            AlphaMode::Mask { cutoff: material.alpha_cutoff().unwrap_or(0.5).clamp(0.0, 1.0) }
+            let cutoff = material.alpha_cutoff().unwrap_or(0.5);
+            // A cutoff above 1 cuts even alpha 1; clamping would silently retain those texels.
+            if !(0.0..=1.0).contains(&cutoff) {
+                return Err(GltfImportError::AlphaCutoff {
+                    material: describe(material.name(), material.index()),
+                    cutoff,
+                });
+            }
+            AlphaMode::Mask { cutoff }
         }
         ::gltf::material::AlphaMode::Blend => AlphaMode::Blend,
-    }
+    })
 }
 
 /// The anime character material a glTF material describes.
 fn generated_material(material: &Material<'_>) -> Result<AnimeCharacterMaterial, GltfImportError> {
     let mut generated = AnimeCharacterMaterial {
         base_color: material.pbr_metallic_roughness().base_color_factor(),
-        alpha: alpha_mode(material),
+        alpha: alpha_mode(material)?,
         double_sided: material.double_sided(),
         ..AnimeCharacterMaterial::default()
     };

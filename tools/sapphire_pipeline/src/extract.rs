@@ -162,6 +162,12 @@ pub enum ExtractError {
         #[source]
         source: io::Error,
     },
+    #[error("invalid material document {}", path.display())]
+    Material {
+        path: PathBuf,
+        #[source]
+        source: crate::material::MaterialCookError,
+    },
     #[error("failed to write {}", path.display())]
     Write {
         path: PathBuf,
@@ -598,7 +604,6 @@ impl<'a> FbxImages<'a> {
 
     /// Whether a material document under the FBX's folder binds asset `id`.
     fn bound_elsewhere(&self, id: AssetId) -> Result<bool, ExtractError> {
-        let text = id.to_string();
         let read_error = |path: &Path| {
             let path = path.to_owned();
             move |source| ExtractError::Read { path, source }
@@ -615,11 +620,15 @@ impl<'a> FbxImages<'a> {
                 let kind = entry.file_type().map_err(read_error(&path))?;
                 if kind.is_dir() {
                     dirs.push(path);
-                } else if kind.is_file()
-                    && crate::material::is_source(&path)
-                    && fs::read_to_string(&path).map_err(read_error(&path))?.contains(&text)
-                {
-                    return Ok(true);
+                } else if kind.is_file() && crate::material::is_source(&path) {
+                    let bytes = fs::read(&path).map_err(read_error(&path))?;
+                    // Parse real references, including RON escapes of canonical IDs. An
+                    // invalid material cannot safely authorize changing a texture's role.
+                    let document = crate::material::read(&bytes)
+                        .map_err(|source| ExtractError::Material { path, source })?;
+                    if document.textures().contains(&Some(id)) {
+                        return Ok(true);
+                    }
                 }
             }
         }
@@ -1010,8 +1019,9 @@ impl Writer {
         let write_error = |source| ExtractError::Write { path: path.to_owned(), source };
         fs::create_dir_all(path.parent().expect("extracted files are in a directory"))
             .map_err(write_error)?;
-        fs::write(path, bytes).map_err(write_error)?;
-        self.written.push(path.to_owned());
+        if meta::create_file(path, &bytes).map_err(write_error)? {
+            self.written.push(path.to_owned());
+        }
         Ok(())
     }
 

@@ -2,7 +2,7 @@
 //! plain and allocation-free once built, evaluated on its owner's clock.
 //!
 //! [`GraphBinding`] is a [document](sapphire_assets::graph) resolved for one skeleton and rig: indices
-//! where the document has names, masks, and additive layers' reference poses. [`GraphPlayer`] plays a
+//! where the document has names and masks. [`GraphPlayer`] plays a
 //! binding: each frame the app hands it a plain [`GraphInput`] and it writes a [`CharacterPose`].
 //!
 //! # The layers, bottom to top
@@ -72,7 +72,9 @@ use std::sync::Arc;
 
 use sapphire_assets::AssetId;
 use sapphire_assets::clip::{ArchivedClip, ClipError, DEFAULT_RATE};
-use sapphire_assets::graph::{AnimGraph, Condition, GraphMask, MAX_BLEND_SAMPLES, StateMotion};
+use sapphire_assets::graph::{
+    AnimGraph, Condition, GraphMask, MAX_ADDITIVE_LAYERS, MAX_BLEND_SAMPLES, StateMotion,
+};
 use sapphire_assets::rig::{ArchivedCharacterRig, HumanBone};
 use sapphire_assets::skeleton::ArchivedSkeleton;
 use sapphire_core::Name;
@@ -265,8 +267,6 @@ struct Added {
     weight: f32,
     fade_out: f32,
     restart: f32,
-    /// The clip's first tick, which it's the difference from.
-    reference: Vec<Transform>,
 }
 
 #[derive(Clone, Debug)]
@@ -395,16 +395,6 @@ impl GraphBinding {
             });
         }
         moves.sort_unstable_by_key(|entry| entry.name);
-        let reference = |clip_name: &str| -> Result<Vec<Transform>, GraphBindError> {
-            let clip = &graph.clips[usize::from(clip_index(clip_name)?)];
-            let cooked = clips
-                .clip(clip.id)
-                .ok_or_else(|| GraphBindError::MissingClip { name: clip.name.clone(), id: clip.id })?;
-            let rest = sample::rest_pose(skeleton);
-            let mut pose = rest.clone();
-            sample::sample(cooked, 0.0, &rest, &mut pose);
-            Ok(pose)
-        };
         let mut additive = Vec::with_capacity(graph.additive.len());
         for layer in &graph.additive {
             additive.push(Added {
@@ -414,7 +404,6 @@ impl GraphBinding {
                 weight: layer.weight,
                 fade_out: 0.0,
                 restart: 0.0,
-                reference: reference(&layer.clip)?,
             });
         }
         let mut reactions = Vec::with_capacity(graph.reactions.len());
@@ -426,7 +415,6 @@ impl GraphBinding {
                 weight: layer.weight,
                 fade_out: layer.fade_out as f32,
                 restart: layer.restart as f32,
-                reference: reference(&layer.clip)?,
             });
         }
         let blink = graph.blink.as_ref().map(|blink| bind_blink(blink, rig, morph_targets)).transpose()?;
@@ -651,6 +639,7 @@ pub struct GraphPlayer {
     pose: CharacterPose,
     layers: Layers,
     inertia: Inertia,
+    references: LayerReferences,
     /// The pose drawn last, with no blink: at `drawn`.
     output: Frame,
     /// The pose drawn before it, `earlier_step` ticks earlier: what the drawn pose's velocity comes from.
@@ -692,6 +681,7 @@ impl GraphPlayer {
         };
         Self {
             inertia: Inertia::new(joints, frame.weights.len()),
+            references: LayerReferences::new(joints),
             output: frame.clone(),
             earlier: frame.clone(),
             earlier_step: 0.0,
@@ -727,10 +717,8 @@ impl GraphPlayer {
         if self.key == Some(key) {
             return false;
         }
-        if self.lies_still(&input, clips, clips_version) {
-            self.drawn = Some(input.ticks);
-            self.key = Some(key);
-            return false;
+        if self.key.is_none_or(|previous| previous.clips != clips_version) {
+            self.references.keys.fill(None);
         }
         let now = input.ticks;
         let Some(drawn) = self.drawn.filter(|&drawn| !input.cut && now >= drawn) else {
@@ -740,6 +728,11 @@ impl GraphPlayer {
             self.key = Some(Key { revision: self.revision, ..key });
             return true;
         };
+        if self.lies_still(&input, clips, clips_version) {
+            self.drawn = Some(now);
+            self.key = Some(key);
+            return false;
+        }
         let dt = (now - drawn) as f32;
         self.layers.follow(&input.locomotion, self.graph.smoothing, dt);
         let phase_then = self.layers.phase;
@@ -755,7 +748,12 @@ impl GraphPlayer {
             clips,
             &self.pose,
             now_moment,
-            Scratch { sampled: &mut self.sampled, delta: &mut self.delta, out: &mut self.target },
+            Scratch {
+                sampled: &mut self.sampled,
+                delta: &mut self.delta,
+                references: &mut self.references,
+                out: &mut self.target,
+            },
         );
         self.stats.missing_clips += u32::from(missing);
         if let Some(decay) = decay {
@@ -766,7 +764,12 @@ impl GraphPlayer {
                 clips,
                 &self.pose,
                 at_drawn,
-                Scratch { sampled: &mut self.sampled, delta: &mut self.delta, out: &mut self.then },
+                Scratch {
+                    sampled: &mut self.sampled,
+                    delta: &mut self.delta,
+                    references: &mut self.references,
+                    out: &mut self.then,
+                },
             );
             let later = Moment {
                 ticks: drawn + f64::from(VELOCITY_STEP),
@@ -778,7 +781,12 @@ impl GraphPlayer {
                 clips,
                 &self.pose,
                 later,
-                Scratch { sampled: &mut self.sampled, delta: &mut self.delta, out: &mut self.later },
+                Scratch {
+                    sampled: &mut self.sampled,
+                    delta: &mut self.delta,
+                    references: &mut self.references,
+                    out: &mut self.later,
+                },
             );
             self.inertia.begin(&Transition {
                 at: drawn,
@@ -855,7 +863,12 @@ impl GraphPlayer {
             clips,
             &self.pose,
             moment,
-            Scratch { sampled: &mut self.sampled, delta: &mut self.delta, out: &mut self.target },
+            Scratch {
+                sampled: &mut self.sampled,
+                delta: &mut self.delta,
+                references: &mut self.references,
+                out: &mut self.target,
+            },
         );
         self.inertia.clear();
         self.output.copy(&self.target);
@@ -1097,8 +1110,7 @@ impl GraphPlayer {
         self.teleports = other.teleports;
         self.stats = other.stats;
         self.key = None;
-        let same = self.output.joints.len() == other.output.joints.len()
-            && self.output.weights.len() == other.output.weights.len();
+        let same = self.pose.compatible_with(&other.pose);
         if same {
             self.output.copy(&other.output);
             self.earlier.copy(&other.earlier);
@@ -1136,8 +1148,39 @@ fn looped_position(clip: &ArchivedClip, ticks: f64) -> f32 {
     clip_position(clip, ticks).rem_euclid(end) as f32
 }
 
+/// Four additive slots and the one reaction that can be active. The fixed per-player budget is
+/// `(MAX_ADDITIVE_LAYERS + 1) * joints * size_of::<Transform>()` bytes, plus keys. All storage is
+/// allocated at construction so even replacement graphs cannot allocate during evaluation.
+#[derive(Clone, Debug)]
+struct LayerReferences {
+    joints: usize,
+    poses: Vec<Transform>,
+    keys: [Option<AssetId>; MAX_ADDITIVE_LAYERS + 1],
+}
+
+impl LayerReferences {
+    fn new(joints: usize) -> Self {
+        Self {
+            joints,
+            poses: vec![Transform::IDENTITY; joints * (MAX_ADDITIVE_LAYERS + 1)],
+            keys: [None; MAX_ADDITIVE_LAYERS + 1],
+        }
+    }
+
+    fn get(&mut self, slot: usize, id: AssetId, clip: &ArchivedClip, rest: &[Transform]) -> &[Transform] {
+        let range = slot * self.joints..(slot + 1) * self.joints;
+        let reference = &mut self.poses[range];
+        if self.keys[slot] != Some(id) {
+            sample::sample(clip, 0.0, rest, reference);
+            self.keys[slot] = Some(id);
+        }
+        reference
+    }
+}
+
 /// The buffers a target writes into.
 struct Scratch<'a> {
+    references: &'a mut LayerReferences,
     sampled: &'a mut [Transform],
     delta: &'a mut [Transform],
     out: &'a mut Frame,
@@ -1224,7 +1267,7 @@ impl Layers {
         moment: Moment,
         scratch: Scratch<'_>,
     ) -> bool {
-        let Scratch { sampled, delta, out } = scratch;
+        let Scratch { sampled, delta, out, references } = scratch;
         let rest = pose.rest();
         let mut missing = false;
         out.weights.copy_from_slice(pose.rest_weights());
@@ -1255,7 +1298,7 @@ impl Layers {
                 }
             }
         }
-        for layer in graph.additive.iter().filter(|_| !self.defeated) {
+        for (slot, layer) in graph.additive.iter().enumerate().filter(|_| !self.defeated) {
             match graph.clip(clips, layer.clip) {
                 Some(clip) => {
                     let position = looped_position(clip, moment.ticks);
@@ -1264,6 +1307,8 @@ impl Layers {
                         clip,
                         position,
                         layer,
+                        references,
+                        slot,
                         layer.weight,
                         rest,
                         sampled,
@@ -1287,7 +1332,19 @@ impl Layers {
                     };
                     let weight = layer.weight * fade * fade * (3.0 - 2.0 * fade);
                     let position = clip_position(clip, elapsed) as f32;
-                    add_layer(graph, clip, position, layer, weight, rest, sampled, delta, &mut out.joints);
+                    add_layer(
+                        graph,
+                        clip,
+                        position,
+                        layer,
+                        references,
+                        MAX_ADDITIVE_LAYERS,
+                        weight,
+                        rest,
+                        sampled,
+                        delta,
+                        &mut out.joints,
+                    );
                 }
                 None => missing = true,
             }
@@ -1368,6 +1425,8 @@ fn add_layer(
     clip: &ArchivedClip,
     position: f32,
     layer: &Added,
+    references: &mut LayerReferences,
+    slot: usize,
     weight: f32,
     rest: &[Transform],
     sampled: &mut [Transform],
@@ -1378,7 +1437,8 @@ fn add_layer(
         return;
     }
     sample::sample(clip, position, rest, sampled);
-    make_delta(sampled, &layer.reference, delta);
+    let reference = references.get(slot, graph.clips[usize::from(layer.clip)], clip, rest);
+    make_delta(sampled, reference, delta);
     let mask = layer.mask.map(|mask| &graph.masks[usize::from(mask)]);
     add(pose, delta, weight, mask);
 }

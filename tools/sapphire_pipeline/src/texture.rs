@@ -526,20 +526,39 @@ pub fn prepare(
     settings: &TextureSettings,
     cook: Cook,
 ) -> Result<PreparedTexture, TextureError> {
-    let plan = plan(&settings.class, cook, image.layout)?;
-    let mip_level_count = if settings.class.mips() { full_mip_count(image.width, image.height) } else { 1 };
-    let desc = TextureDesc {
-        format: plan.format,
-        width: image.width,
-        height: image.height,
-        mip_level_count,
-        swizzle: plan.swizzle,
-    };
+    prepare_pixels(image.width, image.height, image.layout, settings, cook, |texel| {
+        image.pixels.iter().map(|&pixel| prepare_texel(texel, image.layout, pixel)).collect()
+    })
+}
+
+/// The source cook already owns the decoded storage; transform it in place before mip filtering.
+fn prepare_owned(
+    mut image: SourceImage,
+    settings: &TextureSettings,
+    cook: Cook,
+) -> Result<PreparedTexture, TextureError> {
+    prepare_pixels(image.width, image.height, image.layout, settings, cook, |texel| {
+        for pixel in &mut image.pixels {
+            *pixel = prepare_texel(texel, image.layout, *pixel);
+        }
+        image.pixels
+    })
+}
+
+fn prepare_pixels(
+    width: u32,
+    height: u32,
+    layout: ChannelLayout,
+    settings: &TextureSettings,
+    cook: Cook,
+    pixels: impl FnOnce(Texel) -> Vec<[f32; 4]>,
+) -> Result<PreparedTexture, TextureError> {
+    let plan = plan(&settings.class, cook, layout)?;
+    let mip_level_count = if settings.class.mips() { full_mip_count(width, height) } else { 1 };
+    let desc = TextureDesc { format: plan.format, width, height, mip_level_count, swizzle: plan.swizzle };
     // Before any work: a size the format can't hold fails here, not after encoding.
     desc.validate().map_err(|error| TextureError::Shape(desc, error))?;
-
-    let pixels = image.pixels.iter().map(|&pixel| prepare_texel(plan.texel, image.layout, pixel)).collect();
-    let level0 = Level { width: image.width, height: image.height, pixels };
+    let level0 = Level { width, height, pixels: pixels(plan.texel) };
     let mut levels = mips::chain(level0, plan.filter, mip_level_count);
     if let Texel::Normal { .. } = plan.texel {
         // Back from unit vectors to the stored X and Y.
@@ -584,10 +603,10 @@ pub fn import(path: &Path, bytes: &[u8], settings: &TextureSettings) -> Result<S
     Ok(image_import::import_slice(bytes, format, settings.class.transfer())?)
 }
 
-/// What cooking a color map holds a texel at its peak, measured: 411 MiB for 2048 × 2048, on either
-/// cook. The source image and its prepared level 0 at 16 bytes each, the widened level 0 at 28, the
-/// largest level's intermediate at 14 and its result at 7, the chain so far at about 5, and an encoder's
-/// input. Other classes hold less.
+/// Conservative scheduling estimate from the borrowed color cook's measured 411 MiB peak at
+/// 2048 × 2048: source and level 0 at 16 bytes each, widened level 0 at 28, largest intermediate at
+/// 14 and result at 7, chain so far at about 5, plus encoder input. The source cook now transfers
+/// level 0's storage; keep the estimate conservative until complete-cook peaks justify a lower one.
 const COOK_BYTES_PER_TEXEL: u64 = 100;
 
 /// About what cooking the texture source in `bytes` holds at its peak, from its header: nothing if that
@@ -608,7 +627,7 @@ pub fn cook_source(
     cook: Cook,
 ) -> Result<Vec<u8>, TextureError> {
     let image = import(path, bytes, settings)?;
-    Ok(self::cook(&image, settings, cook)?.to_ktx2())
+    Ok(prepare_owned(image, settings, cook)?.encode()?.to_ktx2())
 }
 
 fn prepare_texel(texel: Texel, layout: ChannelLayout, pixel: [f32; 4]) -> [f32; 4] {
@@ -1094,5 +1113,57 @@ mod tests {
         fs::write(&path, b"not a png").unwrap();
         let error = texture_error(tree.try_cook(Cook::Desktop, false).unwrap_err());
         assert!(matches!(error, TextureError::Import(ImageImportError::Decode(_))), "{error:?}");
+    }
+    #[test]
+    fn owned_preparation_preserves_every_planned_level() {
+        for class in [
+            TextureClass::default(),
+            TextureClass::Normal(Default::default()),
+            TextureClass::Mask(Default::default()),
+            TextureClass::Ramp(Default::default()),
+            TextureClass::Ilm(Default::default()),
+            TextureClass::Sdf(Default::default()),
+            TextureClass::Hdr(Default::default()),
+        ] {
+            for cook in [Cook::Desktop, Cook::Mobile] {
+                let (target, _) = format(class, cook, ChannelLayout::Rgba);
+                let (block_width, block_height) = target.block_dimensions();
+                // Compressed bases must contain whole blocks, although their lower mips need
+                // not. 12 × 20 reaches an odd 3 × 5 mip; uncompressed classes also accept 1 × 1
+                // and 7 × 5 bases. Keep refusal parity alongside every successful texel comparison.
+                for (width, height) in [(1, 1), (7, 5), (12, 20), (16, 16)] {
+                    let source = gradient(width, height);
+                    let settings = settings(class);
+                    let borrowed = prepare(&source, &settings, cook);
+                    let owned = prepare_owned(source.clone(), &settings, cook);
+                    if !width.is_multiple_of(block_width) || !height.is_multiple_of(block_height) {
+                        for result in [borrowed, owned] {
+                            assert!(
+                                matches!(result,
+                                    Err(TextureError::Shape(desc, TextureFormatError::NotWholeBlocks {
+                                        width: found_width, height: found_height, format,
+                                    })) if desc.width == width && desc.height == height
+                                        && desc.format == target && found_width == width
+                                        && found_height == height && format == target
+                                ),
+                                "{class:?} {cook:?}: {width} × {height} must refuse partial base blocks"
+                            );
+                        }
+                        continue;
+                    }
+                    let borrowed = borrowed.unwrap();
+                    let owned = owned.unwrap();
+                    assert_eq!(owned.desc, borrowed.desc);
+                    assert_eq!(owned.levels.len(), borrowed.levels.len());
+                    for (a, b) in owned.levels.iter().zip(&borrowed.levels) {
+                        assert_eq!((a.width, a.height), (b.width, b.height));
+                        let bits = |level: &Level| {
+                            level.pixels.iter().map(|p| p.map(f32::to_bits)).collect::<Vec<_>>()
+                        };
+                        assert_eq!(bits(a), bits(b));
+                    }
+                }
+            }
+        }
     }
 }

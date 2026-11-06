@@ -1128,6 +1128,12 @@ impl Emission {
 
     fn validate(&self) -> Result<(), MaterialError> {
         non_negative("emission.period", self.period)?;
+        // The shader multiplies the packed rate by TAU, then its wrapped seconds. A finite
+        // reciprocal alone is insufficient: the resulting phase must also be representable.
+        let phase = std::f32::consts::TAU * self.breaths() * super::SHADER_TIME_PERIOD as f32;
+        if !phase.is_finite() {
+            return Err(invalid("emission.period", "is too short for the shader's phase"));
+        }
         unit("emission.depth", self.depth)?;
         unit("emission.bloom", self.bloom)
     }
@@ -1395,7 +1401,7 @@ pub struct AnimeCharacterRegion {
 }
 
 impl GpuBlock for AnimeCharacterParams {
-    fn vectors(&self) -> Vec<[f32; 4]> {
+    fn is_finite(&self) -> bool {
         let header = [self.base_color, self.split, self.edges, self.terms, self.surface, self.surface_color];
         let regions = self
             .regions
@@ -1414,7 +1420,8 @@ impl GpuBlock for AnimeCharacterParams {
             .chain(self.rim_regions)
             .chain(c7)
             .chain(layer_regions)
-            .collect()
+            .flatten()
+            .all(f32::is_finite)
     }
 
     fn modes(&self) -> [u32; 4] {

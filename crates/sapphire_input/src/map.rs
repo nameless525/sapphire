@@ -64,7 +64,7 @@ pub enum MapError {
     ChordCycle(String),
     #[error("{0}")]
     InvalidGestures(&'static str),
-    #[error("more than {} actions, contexts or on-screen controls", u16::MAX)]
+    #[error("more than {} actions, contexts or on-screen controls", usize::from(u16::MAX) + 1)]
     TooMany,
 }
 
@@ -101,6 +101,18 @@ impl Channel {
 }
 
 impl SourceId {
+    /// Whether the source reads this axis, directly or as part of a stick.
+    pub fn reads_axis(self, axis: PadAxis) -> bool {
+        match self {
+            Self::PadAxis(read) => read == axis,
+            Self::PadStick(stick) => {
+                let (x, y) = stick.axes();
+                x == axis || y == axis
+            }
+            _ => false,
+        }
+    }
+
     /// The motion accumulator this source reads, if it is one.
     pub fn channel(self) -> Option<Channel> {
         match self {
@@ -302,6 +314,11 @@ fn compile(document: InputBindings, mut virtuals: Vec<String>) -> Result<InputMa
                 }
                 names.push(name);
             }
+            if let Source::Key(key) = &binding.source
+                && usize::from(key.scancode().0) >= crate::devices::KEY_COUNT
+            {
+                return Err(invalid("key HID usage is outside the supported 0..512 scancode range"));
+            }
             for modifier in &binding.modifiers {
                 modifier.validate().map_err(invalid)?;
             }
@@ -417,6 +434,22 @@ mod tests {
             actions,
             contexts: vec![ContextDesc { name: "main".to_owned(), bindings }],
             gestures: GestureSettings::default(),
+        }
+    }
+
+    #[test]
+    fn handle_capacity_and_key_support_match_the_diagnostics() {
+        assert_eq!(id(65_535).expect("last handle"), u16::MAX);
+        assert!(id(65_536).expect_err("past the last handle").to_string().contains("65536"));
+        for usage in [511, 512, u16::MAX] {
+            let result = InputMap::new(document(
+                vec![action("a", ActionKind::Button)],
+                vec![BindingDesc::new("a", Source::Key(Key::Hid(usage)))],
+            ));
+            assert_eq!(result.is_ok(), usage < 512);
+            if usage >= 512 {
+                assert!(matches!(result, Err(MapError::InvalidBinding { .. })));
+            }
         }
     }
 

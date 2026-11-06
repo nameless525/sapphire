@@ -125,6 +125,7 @@ impl Path {
     pub fn clear(&mut self) {
         self.searched = Searched::Never;
         self.corridor_len = 0;
+        self.at = 0;
         self.corner_count = 0;
         self.next_corner = 0;
     }
@@ -375,7 +376,12 @@ impl Navigation {
 fn walk_toward(from: Vec3, to: Vec3) -> Option<Vec3> {
     let (x, z) = (to.x - from.x, to.z - from.z);
     let length = (x * x + z * z).sqrt();
-    (length > CORNER_RADIUS).then(|| Vec3::new(x / length, 0.0, z / length))
+    if length.is_finite() {
+        return (length > CORNER_RADIUS).then(|| Vec3::new(x / length, 0.0, z / length));
+    }
+    let (x, z) = (f64::from(to.x) - f64::from(from.x), f64::from(to.z) - f64::from(from.z));
+    let length = (x * x + z * z).sqrt();
+    (length > f64::from(CORNER_RADIUS)).then(|| Vec3::new((x / length) as f32, 0.0, (z / length) as f32))
 }
 
 #[cfg(test)]
@@ -411,6 +417,36 @@ mod tests {
 
     fn at(x: f32) -> Vec3 {
         Vec3::new(x, 0.0, 0.5)
+    }
+
+    #[test]
+    fn finite_far_endpoints_still_produce_a_unit_steering_direction() {
+        assert_eq!(walk_toward(Vec3::ZERO, Vec3::new(1e20, 0.0, 0.0)), Some(Vec3::X));
+        assert_eq!(
+            walk_toward(Vec3::new(f32::MAX, 0.0, 0.0), Vec3::new(f32::MIN, 0.0, 0.0)),
+            Some(Vec3::NEG_X)
+        );
+    }
+
+    #[test]
+    fn clearing_a_progressed_path_forgets_every_cursor() {
+        let mut nav = navigation(&strip(3));
+        let mut path = Path::new();
+        nav.begin_tick();
+        nav.follow(&mut path, at(0.5), at(2.5));
+        nav.begin_tick();
+        nav.follow(&mut path, at(1.5), at(2.5));
+        assert_eq!(path.corridor(), &[1, 2]);
+        for _ in 0..2 {
+            path.clear();
+            assert!(path.corridor().is_empty());
+            assert!(path.corners().is_empty());
+            assert_eq!(path.route_end(), None);
+            assert!(path.wants_search(at(2.5), Some(2)));
+        }
+        nav.begin_tick();
+        assert!(matches!(nav.follow(&mut path, at(1.5), at(2.5)), Steer::Walk(_)));
+        assert_eq!(path.route_end(), Some(RouteEnd::Reached));
     }
 
     #[test]

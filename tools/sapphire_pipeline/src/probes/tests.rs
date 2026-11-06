@@ -751,3 +751,27 @@ fn foliage_cards_bake_through_their_maps() {
     assert!(leaves != open, "leaves shade the grid");
     assert!(leaves != bake(Wall::Stone, "stone"), "as leaves, not stone");
 }
+
+#[test]
+fn earlier_probe_bakes_miss_the_repaired_tie_semantics() {
+    use crate::cache::{Cache, CacheKey, KeyInputs, Stage};
+    use crate::cook::{Cook, Recipe};
+    use crate::meta::ImportSettings;
+    let dir = TempDir::new("probe_tie_version");
+    let cache = Cache::new(dir.path().join("cache"));
+    let recipe = Recipe { importer: IMPORTER, cooker: COOKER, format: 1, extension: "sprobe" };
+    let old = Recipe { cooker: Stage { version: 3, ..COOKER }, ..recipe };
+    let settings = ImportSettings::ProbeGrid(Default::default());
+    let inputs = KeyInputs {
+        source: blake3::hash(b"same probes"),
+        recipe: &recipe,
+        settings: &settings,
+        cook: Cook::Desktop,
+        dependencies: &[],
+    };
+    let key = CacheKey::new(&inputs);
+    cache.put(&CacheKey::new(&KeyInputs { recipe: &old, ..inputs }), b"old tie winner").unwrap();
+    assert!(cache.get(&key).unwrap().is_none());
+    cache.put(&key, b"new tie winner").unwrap();
+    assert_eq!(cache.get(&key).unwrap().unwrap(), b"new tie winner");
+}

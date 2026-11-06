@@ -508,3 +508,96 @@ fn files_are_the_pieces_placed_anywhere() {
     .unwrap();
     assert_eq!(assembly.files().unwrap(), ["pieces/a.glb", "pieces/b.glb"]);
 }
+
+#[test]
+fn wildcard_iterator_matches_the_original_algorithm_exhaustively() {
+    fn original(pattern: &str, name: &str) -> bool {
+        let mut parts = pattern.split('*');
+        let first = parts.next().unwrap_or_default();
+        let Some(mut rest) = name.strip_prefix(first) else { return false };
+        let mut parts: Vec<_> = parts.collect();
+        let Some(last) = parts.pop() else { return rest.is_empty() };
+        for part in parts {
+            let Some(at) = rest.find(part) else { return false };
+            rest = &rest[at + part.len()..];
+        }
+        rest.len() >= last.len() && rest.ends_with(last)
+    }
+    fn strings(alphabet: &[char], depth: usize) -> Vec<String> {
+        let mut all = vec![String::new()];
+        let mut previous = vec![String::new()];
+        for _ in 0..depth {
+            let next: Vec<String> = previous
+                .iter()
+                .flat_map(|prefix| alphabet.iter().map(move |c| format!("{prefix}{c}")))
+                .collect();
+            all.extend(next.iter().cloned());
+            previous = next;
+        }
+        all
+    }
+    for pattern in strings(&['a', 'é', '*'], 5) {
+        for name in strings(&['a', 'é'], 5) {
+            assert_eq!(matches_pattern(&pattern, &name), original(&pattern, &name), "{pattern:?} {name:?}");
+        }
+    }
+}
+
+#[test]
+fn earlier_assembly_successes_do_not_bypass_new_validation() {
+    use crate::cache::{Cache, CacheKey, KeyInputs};
+    use crate::cook::{Cook, MESH_COOKER, Recipe};
+    use crate::meta::{ImportSettings, MeshSettings};
+    let dir = crate::test_util::TempDir::new("assembly_validation_version");
+    let cache = Cache::new(dir.path().join("cache"));
+    let recipe = Recipe { importer: IMPORTER, cooker: MESH_COOKER, format: 1, extension: "smesh" };
+    let old =
+        Recipe { importer: Stage { version: (3 << 16) | gltf::IMPORTER.version, ..IMPORTER }, ..recipe };
+    let settings = ImportSettings::Assembly(MeshSettings::default());
+    let inputs = KeyInputs {
+        source: blake3::hash(b"same assembly"),
+        recipe: &recipe,
+        settings: &settings,
+        cook: Cook::Desktop,
+        dependencies: &[],
+    };
+    let new_key = CacheKey::new(&inputs);
+    let old_key = CacheKey::new(&KeyInputs { recipe: &old, ..inputs });
+    cache.put(&old_key, b"earlier unchecked success").unwrap();
+    assert!(cache.get(&new_key).unwrap().is_none());
+    cache.put(&new_key, b"validated output").unwrap();
+    assert_eq!(cache.get(&new_key).unwrap().unwrap(), b"validated output");
+}
+
+#[test]
+fn assembly_rejects_a_textured_overlap_that_only_agrees_at_integer_uv_corners() {
+    let assembly = assembly(
+        r##"surfaces: [], place: [
+        (piece: "#box", slot: Some("Plaster")),
+        (piece: "#box", slot: Some("Plaster")),
+    ]"##,
+    )
+    .unwrap();
+    let mut builder = Builder::new(&assembly, Detail::Full);
+    for (index, placement) in assembly.place.iter().enumerate() {
+        builder.placements.push(Placed { placement, path: vec![(PLACE, index)] });
+    }
+    let outer = PieceTriangle {
+        positions: [Vec3::ZERO, Vec3::Z * 2.0, Vec3::X * 2.0],
+        normals: [Vec3::Y; 3],
+        cell: [0; 2],
+        down: [0.0; 3],
+        material: 0,
+        uv: ShapeUv::Tiles([Vec2::ZERO; 3]),
+        occlusion: [1.0; 3],
+    };
+    let inner = PieceTriangle {
+        positions: [Vec3::ZERO, Vec3::Z, Vec3::X],
+        uv: ShapeUv::Tiles([Vec2::ZERO, Vec2::X, Vec2::ZERO]),
+        ..outer
+    };
+    let transform = PreparedTransform::new(Mat4::IDENTITY);
+    builder.emit(&outer, &transform, 0, Emit { gradient: false, wrap: true, placed: 0 });
+    builder.emit(&inner, &transform, 0, Emit { gradient: false, wrap: true, placed: 1 });
+    assert!(matches!(builder.finish(), Err(AssemblyError::Coplanar(_))));
+}

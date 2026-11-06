@@ -111,7 +111,9 @@ impl Bvh {
         let mut best: Option<Hit> = None;
         let mut limit = t_max;
         self.walk(origin, dir, &mut limit, &mut |triangle, limit| {
-            if let Some(hit) = intersect(&self.triangles[triangle as usize], origin, dir, *limit) {
+            // Keep the caller's strict range separate from the inclusive best-hit pruning:
+            // an equally near lower-index triangle must still reach the tie comparison.
+            if let Some(hit) = intersect(&self.triangles[triangle as usize], origin, dir, t_max) {
                 let hit = Hit { triangle, ..hit };
                 // Ties go to the lower index, so the walk's order never decides a hit.
                 let better =
@@ -385,6 +387,21 @@ mod tests {
             let hit = bvh.closest(origin, Vec3::X, f32::INFINITY, &|_| true).expect("a hit");
             assert_eq!(hit.triangle, i as u32);
         }
+    }
+
+    #[test]
+    fn equal_distance_hits_choose_the_lowest_accepted_index() {
+        let triangle = square(0.0, 0.0, 0.0)[0];
+        let mut bvh = Bvh::new(vec![triangle; 6]);
+        // Visit the high-index leaf first, including ties split across leaves.
+        bvh.order.reverse();
+        let origin = Vec3::new(0.25, 1.0, 0.25);
+        for first in 0..6 {
+            let hit = bvh.closest(origin, Vec3::NEG_Y, 2.0, &|hit| hit.triangle >= first);
+            assert_eq!(hit.map(|hit| hit.triangle), Some(first));
+        }
+        assert!(bvh.closest(origin, Vec3::NEG_Y, 1.0, &|_| true).is_none());
+        assert!(!bvh.occluded(origin, Vec3::NEG_Y, 1.0, &|_| true));
     }
 
     #[test]

@@ -198,12 +198,15 @@ pub(crate) fn sweep(
             Measure::Closest { on_target, normal, distance } => {
                 let gap = distance - radii;
                 let approach = -normal.dot(local_direction);
+                // Queries admit every positive closing slope. Only moving bodies apply the
+                // angular anti-snag policy; a shallow query may still reach the face in range.
+                let closing = approach > 0.0 && (!separating_passes || approach >= GRAZE);
                 let on_surface = on_target + normal * target.radius();
                 last_hit = Some((on_surface, normal));
                 start = normal;
                 if gap < TOUCHING {
                     let overlapping = step == 0 && gap < 0.0;
-                    if approach < GRAZE && (separating_passes || !overlapping) {
+                    if !closing && (separating_passes || gap > 0.0) {
                         return None;
                     }
                     let corrected = if !overlapping && approach > MIN_CORRECTED_APPROACH {
@@ -217,7 +220,7 @@ pub(crate) fn sweep(
                     return Some(world_sweep(target_pose, corrected, on_surface, normal, overlapping));
                 }
                 // The gap can't shrink past here if it has stopped closing: it's convex.
-                if approach < GRAZE {
+                if !closing {
                     return None;
                 }
                 let error = distance * GJK_STOP;

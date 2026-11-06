@@ -114,7 +114,17 @@ impl Modifier {
 
 /// Applies `modifiers` in order.
 pub(crate) fn apply_all(modifiers: &[Modifier], value: Vec2, dt: f32) -> Vec2 {
-    modifiers.iter().fold(value, |value, modifier| modifier.apply(value, dt))
+    if !value.is_finite() {
+        return Vec2::ZERO;
+    }
+    let mut value = value;
+    for modifier in modifiers {
+        value = modifier.apply(value, dt);
+        if !value.is_finite() {
+            return Vec2::ZERO;
+        }
+    }
+    value
 }
 
 #[cfg(test)]

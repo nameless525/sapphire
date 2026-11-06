@@ -263,25 +263,37 @@ pub fn clouds_png() -> io::Result<Vec<u8>> {
     let (width, height) = BAND_SIZE;
     let cards = band_cards();
     let band = width as f32;
-    let image = image::RgbaImage::from_fn(width, height, |x, y| {
-        let (px, up) = (x as f32 + 0.5, height as f32 - (y as f32 + 0.5));
-        let (mut distance, mut lit) = (CLOUD_DISTANCE_RANGE, 0.0);
+    let mut eligible = Vec::with_capacity(cards.len());
+    let mut image = image::RgbaImage::new(width, height);
+    for x in 0..width {
+        let px = x as f32 + 0.5;
+        eligible.clear();
         for card in &cards {
-            // The band repeats around the horizon: measure across the seam.
             let dx = (px - card.center_x + 0.5 * band).rem_euclid(band) - 0.5 * band;
-            if dx.abs() > card.reach || up > card.top + CLOUD_DISTANCE_RANGE {
+            if dx.abs() > card.reach {
                 continue;
             }
-            let (d, l) = card.sample(Vec2::new(card.center_x + dx, up));
-            if d < distance {
-                (distance, lit) = (d, l);
-            }
+            // Keep the unwrapped sample coordinate across the repeating band seam.
+            eligible.push((card, card.center_x + dx));
         }
-        let b = dissolve_field(distance);
-        let r = 0.5 + (lit - CLOUD_TERMINATOR) * 1.25;
-        let g = 1.0 - smoothstep(0.0, CLOUD_RIM_TEXELS, -distance);
-        image::Rgba([unorm8(r), unorm8(g), unorm8(b), 255])
-    });
+        for y in 0..height {
+            let up = height as f32 - (y as f32 + 0.5);
+            let (mut distance, mut lit) = (CLOUD_DISTANCE_RANGE, 0.0);
+            for &(card, px) in &eligible {
+                if up > card.top + CLOUD_DISTANCE_RANGE {
+                    continue;
+                }
+                let (d, l) = card.sample(Vec2::new(px, up));
+                if d < distance {
+                    (distance, lit) = (d, l);
+                }
+            }
+            let b = dissolve_field(distance);
+            let r = 0.5 + (lit - CLOUD_TERMINATOR) * 1.25;
+            let g = 1.0 - smoothstep(0.0, CLOUD_RIM_TEXELS, -distance);
+            image.put_pixel(x, y, image::Rgba([unorm8(r), unorm8(g), unorm8(b), 255]));
+        }
+    }
     png(image)
 }
 

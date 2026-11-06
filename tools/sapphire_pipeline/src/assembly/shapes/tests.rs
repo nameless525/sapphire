@@ -22,6 +22,7 @@ fn build(shape: &Shape) -> (Vec<PieceTriangle>, BTreeSet<&'static str>) {
 fn build_in(shape: &Shape, detail: Detail) -> (Vec<PieceTriangle>, BTreeSet<&'static str>) {
     let triangles = shape.triangles(detail).unwrap();
     assert!(!triangles.is_empty());
+    assert!(triangles.len() <= MAX_SHAPE_TRIANGLES, "admitted shapes stay inside their raw geometry budget");
     let mut parts = BTreeSet::new();
     for (index, triangle) in triangles.iter().enumerate() {
         let [a, b, c] = triangle.positions;
@@ -560,4 +561,45 @@ fn ray_triangle(origin: Vec3, direction: Vec3, [a, b, c]: [Vec3; 3]) -> Option<f
     let v = direction.dot(q) / det;
     let distance = e2.dot(q) / det;
     (u >= 0.0 && v >= 0.0 && u + v <= 1.0 && distance > 0.0).then_some(distance)
+}
+
+#[test]
+fn lattice_admission_bounds_both_axes_and_the_sum_of_openings() {
+    let opening = Opening {
+        side: Side::Front,
+        kind: OpeningKind::Window,
+        at: [0.0, 1.0],
+        size: [1.0; 2],
+        lattice: [0; 2],
+    };
+    let mut hall = Hall { openings: vec![opening.clone()], ..Hall::default() };
+    for axis in 0..2 {
+        for count in [0, 2, ((MAX_SHAPE_TRIANGLES - 128 - 1024) / 12) as u32] {
+            hall.openings[0].lattice = [0; 2];
+            hall.openings[0].lattice[axis] = count;
+            hall.validate().unwrap();
+        }
+        hall.openings[0].lattice[axis] += 1;
+        assert!(hall.validate().unwrap_err().contains("raw triangle budget"));
+        hall.openings[0].lattice[axis] = u32::MAX;
+        assert!(hall.validate().unwrap_err().contains("raw triangle budget"));
+    }
+    hall.openings = vec![
+        Opening { lattice: [20_000, 0], ..opening.clone() },
+        Opening { side: Side::Back, lattice: [20_000, 0], ..opening },
+    ];
+    assert!(hall.validate().unwrap_err().contains("raw triangle budget"), "aggregate, not an axis cap");
+    hall.openings.truncate(1);
+    hall.openings[0].lattice = [2, 2];
+    build(&Shape::Hall(hall));
+}
+
+#[test]
+fn derived_subdivisions_are_refused_before_generation() {
+    let roof = Roof { size: [f32::MAX; 2], ..Roof::default() };
+    assert!(roof.validate().unwrap_err().contains("raw triangle budget"));
+    let hall = Hall { posts: Some(Posts { bays: [u32::MAX; 2], ..Posts::default() }), ..Hall::default() };
+    assert!(hall.validate().unwrap_err().contains("raw triangle budget"));
+    let stall = Stall { goods: vec![Goods { count: u32::MAX, ..Goods::default() }], ..Stall::default() };
+    assert!(stall.validate().unwrap_err().contains("raw triangle budget"));
 }

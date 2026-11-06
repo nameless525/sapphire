@@ -641,14 +641,14 @@ fn penetration_takes_the_deepest_and_reads_meshes() {
 /// What [`sapphire_physics::Penetration`] promises: moving along its normal by its depth separates the
 /// shapes, from one target, wherever they stand. `what` says which pair, and its depth is returned.
 #[track_caller]
-fn depth_separates(what: &str, target: Shape, at: Pose, shape: Shape, pose: Pose) -> f32 {
+fn depth_separates(what: impl std::fmt::Display, target: Shape, at: Pose, shape: Shape, pose: Pose) -> f32 {
     let collider = StaticCollider {
         id: ColliderId(1),
         shape: StaticShape::Convex(target),
         pose: at,
         memberships: Group::World.mask(),
     };
-    let world = world(vec![collider]);
+    let world = PhysicsWorld::new(vec![collider], 0).expect("the test collider builds");
     let found = world.penetration(&shape, pose, &ALL).unwrap_or_else(|| panic!("{what}: they overlap"));
     assert!(found.depth > 0.0, "{what}: {found:?}");
     assert!((found.normal.length() - 1.0).abs() < 1e-5, "{what}: {found:?}");
@@ -742,7 +742,7 @@ fn crossing_capsules_leave_at_right_angles_to_both() {
         let at = Pose::new(crossing - first * Vec3::Y * first_along, first);
         let pose = Pose::new(crossing - second * Vec3::Y * second_along, second);
         let depth = depth_separates(
-            &format!("case {case}"),
+            format_args!("case {case}"),
             capsule(first_half, first_radius),
             at,
             capsule(second_half, second_radius),
@@ -781,9 +781,15 @@ fn capsules_nearly_along_one_line_leave_by_a_way_that_clears_them() {
                             reason = "a test's lean: its last bit matters to nothing"
                         )]
                         let pose = Pose::new(at, Quat::from_rotation_x(lean));
-                        let what = format!("{target:?} and {shape:?}, {lateral} off along {side}");
-                        let what = format!("{what}, {along} along it, leaning by {lean}");
-                        depth_separates(&what, target, Pose::IDENTITY, shape, pose);
+                        depth_separates(
+                            format_args!(
+                                "{target:?} and {shape:?}, {lateral} off along {side}, {along} along it, leaning by {lean}"
+                            ),
+                            target,
+                            Pose::IDENTITY,
+                            shape,
+                            pose,
+                        );
                         checked += 1;
                     }
                 }
@@ -1334,4 +1340,80 @@ fn a_world_can_be_shared_between_threads() {
             });
         }
     });
+}
+
+#[test]
+fn shallow_approaching_shape_queries_reach_the_face() {
+    let world = world(vec![collider(
+        1,
+        Shape::Box { half_extents: Vec3::new(20.0, 0.5, 20.0) },
+        Vec3::new(0.0, -0.5, 0.0),
+    )]);
+    let pose = Pose::at(Vec3::new(0.0, 0.501, 0.0));
+    for slope in [0.01_f32, 0.002, 0.001, 0.0005, 0.0001] {
+        let direction = Vec3::new(1.0, -slope, 0.0);
+        // Use the represented starting gap, rather than rounding it to an authored 0.001.
+        let expected = (pose.position.y - 0.5) * direction.length() / slope;
+        let hit =
+            world.cast_shape(&SPHERE, pose, direction, 15.0, &ALL).expect("the face closes within range");
+        assert!((hit.distance - expected).abs() < 0.005, "slope {slope}: {hit:?}, expected {expected}");
+        let mut all = [hit; 2];
+        let found = world.cast_shape_all(&SPHERE, pose, direction, 15.0, &ALL, &mut all);
+        assert_eq!(found.written, 1);
+        assert_eq!(all[0], hit);
+        assert!(world.cast_shape(&SPHERE, pose, direction, expected * 0.5, &ALL).is_none());
+    }
+    assert!(world.cast_shape(&SPHERE, pose, Vec3::X, 15.0, &ALL).is_none());
+    assert!(world.cast_shape(&SPHERE, pose, Vec3::new(1.0, 0.0001, 0.0), 15.0, &ALL).is_none());
+}
+
+#[test]
+fn invalid_moves_leave_the_stored_pose_unchanged() {
+    let mut world = world(vec![collider(1, UNIT_BOX, Vec3::ZERO)]);
+    let id = BodyId(1);
+    let desc = BodyDesc {
+        id,
+        shape: SPHERE,
+        pose: Pose::IDENTITY,
+        groups: CollisionGroups::new(Group::Character.mask(), Group::World.mask()),
+    };
+    world.add_body(desc).expect("valid body");
+    for skin in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, f32::MAX] {
+        assert!(matches!(
+            world.move_and_collide(id, Vec3::ZERO, &MoveOptions { skin, ..MoveOptions::default() }),
+            Err(WorldError::InvalidBody(_))
+        ));
+        assert_eq!(world.body_pose(id), Some(desc.pose));
+    }
+    world.set_body_pose(id, Pose::at(Vec3::new(f32::MAX, 0.0, 0.0))).expect("finite pose");
+    let before = world.body_pose(id);
+    for motion in
+        [Vec3::new(f32::MAX, 0.0, 0.0), Vec3::new(f32::NAN, 0.0, 0.0), Vec3::new(f32::INFINITY, 0.0, 0.0)]
+    {
+        assert!(matches!(
+            world.move_and_collide(id, motion, &MoveOptions::default()),
+            Err(WorldError::InvalidBody(_))
+        ));
+        assert_eq!(world.body_pose(id), before);
+    }
+}
+
+#[test]
+fn touching_query_shapes_report_zero_even_when_tangent_or_separating() {
+    let ball = Shape::Sphere { radius: 1.0 };
+    let at = Vec3::new(2.0, 0.0, 0.0);
+    let mut body_world = world(Vec::new());
+    body_world.add_body(in_the_world(1, ball, at)).expect("fits");
+    for world in [world(vec![collider(1, ball, at)]), body_world] {
+        for direction in [Vec3::X, Vec3::NEG_X, Vec3::Y] {
+            let first =
+                world.cast_shape(&ball, Pose::IDENTITY, direction, 0.0, &ALL).expect("starts touching");
+            assert_eq!(first.distance, 0.0);
+            assert!(!first.started_overlapping);
+            let mut hits = [ShapeHit::NONE; 2];
+            let found = world.cast_shape_all(&ball, Pose::IDENTITY, direction, 0.0, &ALL, &mut hits);
+            assert_eq!(found.written, 1);
+            assert_eq!(hits[0], first);
+        }
+    }
 }

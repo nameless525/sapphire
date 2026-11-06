@@ -224,7 +224,7 @@ impl PhysicsWorld {
     }
 
     /// The first thing `shape` hits, swept from `pose` along `direction` for `max_distance`. A
-    /// shape starting in something hits it at distance zero, whichever way it's headed.
+    /// shape starting in or touching something hits it at distance zero, whichever way it's headed.
     /// `direction` needn't be unit length; a zero one hits nothing.
     pub fn cast_shape(
         &self,

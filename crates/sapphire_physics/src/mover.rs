@@ -104,6 +104,9 @@ impl PhysicsWorld {
     /// it, and returns what happened. The sweeps are continuous, so no speed tunnels through
     /// anything, however thin. Rotation is the caller's, through [`Self::set_body_pose`].
     ///
+    /// Motion, skin, derived sweep lengths and resulting bounds must be finite and representable.
+    /// An invalid move returns [`WorldError::InvalidBody`] without changing the stored pose.
+    ///
     /// Boxes can't move this way: resolving an overlap measures from a shape's core, which a box
     /// has none of ([`WorldError::CannotMove`]).
     pub fn move_and_collide(
@@ -118,14 +121,20 @@ impl PhysicsWorld {
         if matches!(body.shape, Shape::Box { .. }) {
             return Err(WorldError::CannotMove(id));
         }
-        if !motion.is_finite() {
+        let total = motion.length();
+        let skin = options.skin.max(0.0);
+        if !motion.is_finite()
+            || !total.is_finite()
+            || !options.skin.is_finite()
+            || !(total + 4.0 * skin).is_finite()
+            || !(body.pose.position + motion).is_finite()
+        {
             return Err(WorldError::InvalidBody(id));
         }
         Counters::add(&self.counters.moves, 1);
 
         let selector = Selector::Mover { id, groups: body.groups };
         let start = body.pose.position;
-        let skin = options.skin.max(0.0);
         let mut position = start;
         let mut outcome = MoveOutcome {
             position,
@@ -147,6 +156,9 @@ impl PhysicsWorld {
             && let Some(Penetration { normal, depth, .. }) = overlap_at(position)
         {
             position += normal * (depth + skin);
+            if !body.accepts_position(position) {
+                return Err(WorldError::InvalidBody(id));
+            }
             pushes += 1;
         }
         outcome.overlap_push = position - start;
@@ -159,7 +171,6 @@ impl PhysicsWorld {
             Counters::add(&self.counters.overlaps_resolved, 1);
         }
 
-        let total = motion.length();
         let sweeps = options.max_sweeps.clamp(1, MAX_MOVE_HITS as u32);
         let mut remaining = motion;
         let mut travelled = 0.0;
@@ -167,6 +178,9 @@ impl PhysicsWorld {
         let mut sweeps_made = 0;
         for sweep_index in 0..sweeps {
             let length = remaining.length();
+            if !length.is_finite() || !body.accepts_position(position) {
+                return Err(WorldError::InvalidBody(id));
+            }
             if length < MIN_MOTION {
                 remaining = Vec3::ZERO;
                 break;
@@ -216,7 +230,14 @@ impl PhysicsWorld {
         outcome.position = position;
         outcome.moved = position - start;
         outcome.remaining = remaining;
-        self.bodies[slot].set_pose(Pose::new(position, body.pose.rotation));
+        if !position.is_finite()
+            || !outcome.moved.is_finite()
+            || !remaining.is_finite()
+            || !outcome.overlap_push.is_finite()
+        {
+            return Err(WorldError::InvalidBody(id));
+        }
+        self.bodies[slot].set_pose(Pose::new(position, body.pose.rotation))?;
         Ok(outcome)
     }
 

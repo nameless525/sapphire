@@ -74,6 +74,8 @@ pub enum NavMeshError {
     Cells { size: f32, height: f32 },
     #[error("the origin isn't finite")]
     Origin,
+    #[error("vertex {vertex} does not have a finite world position")]
+    Position { vertex: usize },
     #[error("polygon {polygon}'s corners don't run in order inside the list")]
     Starts { polygon: usize },
     #[error("polygon {polygon} has {corners} corners, not 3 to {MAX_CORNERS}")]
@@ -141,6 +143,16 @@ impl ArchivedNavMesh {
         if !self.origin().iter().all(|v| v.is_finite()) {
             return Err(NavMeshError::Origin);
         }
+        let origin = self.origin();
+        for index in 0..self.vertices.len() {
+            let cell = self.vertex(index);
+            if !(0..3).all(|axis| {
+                let scale = if axis == 1 { height } else { size };
+                (origin[axis] + cell[axis] as f32 * scale).is_finite()
+            }) {
+                return Err(NavMeshError::Position { vertex: index });
+            }
+        }
         if self.corners.len() != self.neighbours.len() {
             return Err(NavMeshError::Lengths {
                 corners: self.corners.len(),
@@ -168,7 +180,9 @@ impl ArchivedNavMesh {
             }
             self.check_winding(polygon, start, corners)?;
         }
-        if polygons > 0 && previous_end != self.corners.len() {
+        if previous_end != self.corners.len()
+            || self.polygon_starts.first().is_some_and(|v| v.to_native() != 0)
+        {
             return Err(NavMeshError::Starts { polygon: polygons });
         }
         for polygon in 0..polygons {
@@ -180,9 +194,22 @@ impl ArchivedNavMesh {
                 if neighbour as usize >= polygons {
                     return Err(NavMeshError::Neighbour { polygon, neighbour, polygons });
                 }
-                let back = self
-                    .corner_range(neighbour as usize)
-                    .any(|other| self.neighbours[other].to_native() == polygon as u32);
+                let range = self.corner_range(polygon);
+                let next = if corner + 1 == range.end { range.start } else { corner + 1 };
+                let a = self.vertex(self.corners[corner].to_native() as usize);
+                let b = self.vertex(self.corners[next].to_native() as usize);
+                // A baked step can have different heights on the two sides. Its projected edge
+                // still agrees exactly; climb acceptance belongs to the baker.
+                let projected = |v: [i32; 3]| [v[0], v[2]];
+                let other_range = self.corner_range(neighbour as usize);
+                let back = neighbour as usize != polygon
+                    && other_range.clone().any(|other| {
+                        let next = if other + 1 == other_range.end { other_range.start } else { other + 1 };
+                        self.neighbours[other].to_native() == polygon as u32
+                            && projected(self.vertex(self.corners[other].to_native() as usize))
+                                == projected(b)
+                            && projected(self.vertex(self.corners[next].to_native() as usize)) == projected(a)
+                    });
                 if !back {
                     return Err(NavMeshError::OneWay { polygon, neighbour });
                 }
@@ -193,13 +220,27 @@ impl ArchivedNavMesh {
 
     fn check_winding(&self, polygon: usize, start: usize, corners: usize) -> Result<(), NavMeshError> {
         let at = |i: usize| self.vertex(self.corners[start + i % corners].to_native() as usize);
+        let cross = |a: [i32; 3], b: [i32; 3], c: [i32; 3]| {
+            let dx = i128::from(b[0]) - i128::from(a[0]);
+            let dz = i128::from(b[2]) - i128::from(a[2]);
+            dz * (i128::from(c[0]) - i128::from(a[0])) - dx * (i128::from(c[2]) - i128::from(a[2]))
+        };
+        let mut area = 0i128;
         for i in 0..corners {
-            let (a, b, c) = (at(i), at(i + 1), at(i + 2));
-            let cross = i64::from(b[2] - a[2]) * i64::from(c[0] - a[0])
-                - i64::from(b[0] - a[0]) * i64::from(c[2] - a[2]);
-            if cross < 0 {
-                return Err(NavMeshError::Winding { polygon });
+            let (a, b) = (at(i), at(i + 1));
+            // Distinct projected corners rule out zero edges and polygons that walk an outline
+            // more than once. Checking every corner against every edge also rejects star polygons
+            // whose consecutive turns alone can all have the expected sign.
+            for j in 0..corners {
+                let c = at(j);
+                if (j != i && a[0] == c[0] && a[2] == c[2]) || cross(a, b, c) < 0 {
+                    return Err(NavMeshError::Winding { polygon });
+                }
             }
+            area += cross(at(0), a, b);
+        }
+        if area == 0 {
+            return Err(NavMeshError::Winding { polygon });
         }
         Ok(())
     }
@@ -229,6 +270,91 @@ mod tests {
                 NO_NEIGHBOUR,
             ],
         }
+    }
+
+    #[test]
+    fn a_neighbour_must_share_this_edge_and_cannot_be_itself() {
+        for self_link in [false, true] {
+            let mut mesh = two_squares();
+            if self_link {
+                mesh.neighbours[2] = 0;
+            } else {
+                mesh.neighbours[4] = NO_NEIGHBOUR;
+                mesh.neighbours[5] = 0;
+            }
+            assert!(matches!(
+                NavMesh::read(&mesh.to_cooked().expect("write")),
+                Err(NavMeshError::OneWay { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn shared_edges_agree_in_projection_even_across_a_step() {
+        let mut mesh = two_squares();
+        mesh.vertices.extend([[1, 1, 0], [1, 1, 1]]);
+        mesh.corners[4] = 6;
+        mesh.corners[5] = 7;
+        assert!(NavMesh::read(&mesh.to_cooked().expect("write")).is_ok());
+        mesh.vertices[6][0] += 9;
+        mesh.vertices[7][0] += 9;
+        mesh.vertices[4][0] += 9;
+        mesh.vertices[5][0] += 9;
+        assert!(matches!(NavMesh::read(&mesh.to_cooked().expect("write")), Err(NavMeshError::OneWay { .. })));
+    }
+
+    #[test]
+    fn polygons_need_a_distinct_convex_outline_with_area() {
+        for vertices in [
+            vec![[0, 0, 0], [0, 0, 0], [0, 0, 0]],
+            vec![[0, 0, 0], [1, 0, 0], [2, 0, 0]],
+            vec![[0, 0, 0], [1, 0, 1], [0, 0, 1], [1, 0, 0]],
+            vec![[0, 0, 0], [0, 0, 1], [1, 0, 1], [0, 0, 0], [1, 0, 0]],
+        ] {
+            let count = vertices.len() as u32;
+            let mesh = NavMesh {
+                vertices,
+                cell_size: 1.0,
+                cell_height: 1.0,
+                polygon_starts: vec![0, count],
+                corners: (0..count).collect(),
+                neighbours: vec![NO_NEIGHBOUR; count as usize],
+                ..NavMesh::default()
+            };
+            assert!(matches!(
+                NavMesh::read(&mesh.to_cooked().expect("write")),
+                Err(NavMeshError::Winding { .. })
+            ));
+        }
+        // A seam may split a straight edge without making the polygon degenerate.
+        let mut mesh = two_squares();
+        mesh.neighbours.fill(NO_NEIGHBOUR);
+        mesh.polygon_starts = vec![0, 5];
+        mesh.vertices = vec![[0, 0, 0], [0, 0, 1], [0, 0, 2], [1, 0, 2], [1, 0, 0]];
+        mesh.corners = vec![0, 1, 2, 3, 4];
+        mesh.neighbours.truncate(5);
+        assert!(NavMesh::read(&mesh.to_cooked().expect("write")).is_ok());
+    }
+
+    #[test]
+    fn exact_cell_orientation_widens_before_subtracting() {
+        let mut mesh = two_squares();
+        mesh.vertices = vec![
+            [i32::MIN, 0, i32::MIN],
+            [i32::MIN, 0, i32::MAX],
+            [i32::MAX, 0, i32::MAX],
+            [i32::MAX, 0, i32::MIN],
+        ];
+        mesh.cell_size = 1e-8;
+        mesh.polygon_starts = vec![0, 4];
+        mesh.corners = vec![0, 1, 2, 3];
+        mesh.neighbours = vec![NO_NEIGHBOUR; 4];
+        assert!(NavMesh::read(&mesh.to_cooked().expect("write")).is_ok());
+        mesh.cell_size = f32::MAX;
+        assert!(matches!(
+            NavMesh::read(&mesh.to_cooked().expect("write")),
+            Err(NavMeshError::Position { .. })
+        ));
     }
 
     #[test]

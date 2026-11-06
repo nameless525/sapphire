@@ -290,7 +290,12 @@ impl Roof {
                 "a hip-and-gable's gable must stand clear of the middle".to_owned()
             })?;
         }
+        super::geometry_budget(plan.geometry_triangles())?;
         Ok(())
+    }
+
+    pub(super) fn geometry_triangles(&self) -> f64 {
+        Plan::new(self, Vec3::ZERO, Detail::Full).geometry_triangles()
     }
 
     /// Builds the roof with its origin at `origin`.
@@ -311,6 +316,25 @@ impl Roof {
 }
 
 impl<'a> Plan<'a> {
+    fn geometry_triangles(&self) -> f64 {
+        // Count in f64 before the grid's float-to-integer conversions. A half-plane
+        // can add one fan triangle in each of at most columns + rows + 1 cells;
+        // all remaining cells need at most two. Include tiles, three soffit pieces
+        // and the fixed-size gables/ridges/edge strips.
+        let mut triangles = 4096.0;
+        for slope in self.slopes() {
+            for region in slope.parts {
+                let span = f64::from(region.c[1]) - f64::from(region.c[0]);
+                let columns = 3.0 * ((span / f64::from(self.roof.tiles.period)).ceil() + 5.0) + 2.0;
+                let rows = (f64::from(self.run) / f64::from(ROW_RUN)).ceil() + EAVE_ROWS as f64 + 4.0;
+                let planes = region.planes.len() as f64 + 2.0;
+                triangles += 4.0 * (2.0 * columns * rows + planes * (columns + rows + 1.0));
+                triangles += 16.0 * (columns + rows);
+            }
+        }
+        triangles
+    }
+
     fn new(roof: &'a Roof, origin: Vec3, detail: Detail) -> Self {
         let [width, depth] = roof.size;
         let o = roof.overhang;
@@ -567,6 +591,8 @@ impl<'a> Plan<'a> {
     /// Fills `region` on a grid of `columns` × `rows`, each cell cut to the region, its corners
     /// placed by `place` (c, s, the cell's column index) and the cell triangulated as a fan.
     fn grid(&self, region: &Region, columns: &[f32], rows: &[f32], place: &mut dyn FnMut(&[Vec2], usize)) {
+        let mut cut = Vec::new();
+        let mut scratch = Vec::new();
         for i in 0..columns.len().saturating_sub(1) {
             let (c0, c1) = (columns[i], columns[i + 1]);
             if c1 <= region.c[0] || c0 >= region.c[1] {
@@ -575,7 +601,7 @@ impl<'a> Plan<'a> {
             for j in 0..rows.len().saturating_sub(1) {
                 let (s0, s1) = (rows[j], rows[j + 1]);
                 let cell = [Vec2::new(c0, s0), Vec2::new(c1, s0), Vec2::new(c1, s1), Vec2::new(c0, s1)];
-                let cut = polygon::clip(&cell, &region.planes);
+                polygon::clip_into(&cell, &region.planes, &mut cut, &mut scratch);
                 if cut.len() >= 3 && polygon::signed_area(&cut) > 1e-8 {
                     place(&cut, i);
                 }
@@ -585,6 +611,7 @@ impl<'a> Plan<'a> {
 
     /// A slope's tiles.
     fn tiles(&self, mesh: &mut Mesh, slope: &Slope) {
+        let mut corners = Vec::new();
         let depth = self.roof.tiles.depth;
         for region in &slope.parts {
             let columns = self.columns(region.c[0], region.c[1], self.phases());
@@ -602,13 +629,16 @@ impl<'a> Plan<'a> {
                     let shade = CHANNEL_SHADE + (1.0 - CHANNEL_SHADE) * self.wave(p.x);
                     (position, normal, uv, shade)
                 };
-                fan(mesh, Part::Tiles, cell, &corner, false, ShapeUv::Tiles);
+                corners.clear();
+                corners.extend(cell.iter().map(|&p| corner(p)));
+                fan(mesh, Part::Tiles, &corners, false, ShapeUv::Tiles);
             });
         }
     }
 
     /// A slope's soffit: under the eaves band and wherever its underside shows past the walls.
     fn soffit(&self, mesh: &mut Mesh, slope: &Slope) {
+        let mut corners = Vec::new();
         let thickness = self.roof.thickness;
         let open = slope.open_beyond;
         for region in &slope.parts {
@@ -629,7 +659,9 @@ impl<'a> Plan<'a> {
                         let shade = if p.y <= self.wall { 0.85 - 0.3 * p.y / self.wall } else { 0.6 };
                         (position, normal, uv, shade)
                     };
-                    fan(mesh, Part::Eaves, cell, &corner, true, ShapeUv::Meters);
+                    corners.clear();
+                    corners.extend(cell.iter().map(|&p| corner(p)));
+                    fan(mesh, Part::Eaves, &corners, true, ShapeUv::Meters);
                 });
             }
         }
@@ -825,18 +857,16 @@ impl<'a> Plan<'a> {
     }
 }
 
-/// Fans a convex cell of a slope's grid, each corner placed by `corner` (position, normal,
-/// texture coordinates, occlusion), the coordinates read as `uv` says (meters or tiles);
+/// Fans a convex cell's prepared corners (position, normal, texture coordinates,
+/// occlusion), the coordinates read as `uv` says (meters or tiles);
 /// `under` faces it down.
 fn fan(
     mesh: &mut Mesh,
     part: Part,
-    cell: &[Vec2],
-    corner: &dyn Fn(Vec2) -> (Vec3, Vec3, Vec2, f32),
+    corners: &[(Vec3, Vec3, Vec2, f32)],
     under: bool,
     uv: fn([Vec2; 3]) -> ShapeUv,
 ) {
-    let corners: Vec<(Vec3, Vec3, Vec2, f32)> = cell.iter().map(|&p| corner(p)).collect();
     for k in 1..corners.len() - 1 {
         let mut tri = [0, k, k + 1];
         if under {

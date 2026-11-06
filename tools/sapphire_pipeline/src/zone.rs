@@ -217,7 +217,7 @@ struct Prefab {
     /// Its sidecar's materials, by slot.
     bindings: BTreeMap<String, AssetId>,
     /// What an import made of it, once a cell has asked: every cell that places it shares one import.
-    geometry: Mutex<Option<Arc<PrefabGeometry>>>,
+    geometry: Mutex<[Option<Arc<PrefabGeometry>>; 2]>,
 }
 
 /// A prefab's triangles, by which of its own top-level placements made them.
@@ -235,7 +235,7 @@ struct SlotTriangles {
 }
 
 impl PrefabGeometry {
-    fn new(mesh: &ImportedMesh, owners: &[u32], parts: usize) -> Self {
+    fn new(mesh: ImportedMesh, owners: &[u32], parts: usize) -> Self {
         let mut by_part: Vec<BTreeMap<usize, Vec<u32>>> = vec![BTreeMap::new(); parts];
         for submesh in &mesh.lods[0].submeshes {
             let first = submesh.first_index as usize;
@@ -246,8 +246,8 @@ impl PrefabGeometry {
             }
         }
         Self {
-            vertices: mesh.vertices.clone(),
-            slots: mesh.materials.iter().map(|material| material.name.clone()).collect(),
+            vertices: mesh.vertices,
+            slots: mesh.materials.into_iter().map(|material| material.name).collect(),
             parts: by_part
                 .into_iter()
                 .map(|slots| {
@@ -630,7 +630,7 @@ impl Prefab {
             path,
             assembly,
             bindings,
-            geometry: Mutex::new(None),
+            geometry: Mutex::new([None, None]),
         })
     }
 
@@ -641,11 +641,15 @@ impl Prefab {
     /// What it's made of, imported by whichever cell asks first while the others wait.
     fn geometry(&self, detail: Detail) -> Result<Arc<PrefabGeometry>, AssemblyError> {
         let mut geometry = self.geometry.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(geometry) = &*geometry {
+        let geometry = &mut geometry[match detail {
+            Detail::Full => 0,
+            Detail::Light => 1,
+        }];
+        if let Some(geometry) = geometry {
             return Ok(Arc::clone(geometry));
         }
         let parts = assembly::import_parts(&self.path, &self.assembly, detail)?;
-        let imported = Arc::new(PrefabGeometry::new(&parts.mesh, &parts.owners, self.assembly.place.len()));
+        let imported = Arc::new(PrefabGeometry::new(parts.mesh, &parts.owners, self.assembly.place.len()));
         *geometry = Some(Arc::clone(&imported));
         Ok(imported)
     }
@@ -797,4 +801,34 @@ pub fn cook(
     let cooked = document.cook(ZoneGeometry { meshes, instances, day, rigs, navigation })?.to_cooked()?;
     Zone::read(&cooked)?;
     Ok(cooked.into_vec())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_prefabs_geometry_is_cached_separately_for_each_detail() {
+        let document = br##"(
+            type: "sapphire::pipeline::Assembly", version: 1,
+            data: (kits: {}, slots: [(name: "stone")], surfaces: [],
+                   place: [(shape: Some(Column(())), slot: Some("stone"))]),
+        )"##;
+        for order in [[Detail::Full, Detail::Light], [Detail::Light, Detail::Full]] {
+            let prefab = Prefab {
+                path: PathBuf::from("prefab.assembly.ron"),
+                hash: blake3::hash(document),
+                document_bytes: document.len() as u64,
+                assembly: assembly::read(document).unwrap(),
+                bindings: BTreeMap::new(),
+                geometry: Mutex::new([None, None]),
+            };
+            let first = prefab.geometry(order[0]).unwrap();
+            let second = prefab.geometry(order[1]).unwrap();
+            assert!(!Arc::ptr_eq(&first, &second));
+            assert_ne!(first.vertices.len(), second.vertices.len());
+            assert!(Arc::ptr_eq(&first, &prefab.geometry(order[0]).unwrap()));
+            assert!(Arc::ptr_eq(&second, &prefab.geometry(order[1]).unwrap()));
+        }
+    }
 }

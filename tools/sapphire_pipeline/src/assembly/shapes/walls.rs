@@ -14,7 +14,7 @@ use glam::{Vec2, Vec3};
 use serde::{Deserialize, Serialize};
 
 use super::roof::{Ridge, Roof, RoofKind, Tiles};
-use super::{Detail, Frame, Mesh, PLASTER_REPEAT, Part, check, finite};
+use super::{Detail, Frame, Mesh, PLASTER_REPEAT, Part, check, finite, geometry_budget};
 
 /// Margin kept between openings, and between them and their face's edges, in meters.
 const MARGIN: f32 = 0.05;
@@ -447,8 +447,10 @@ impl Wall {
         check(thickness > 2.0 * self.frame[1] + 2.0 * BAR[1], || {
             format!("a wall {thickness} m thick is too thin for its frames and lattices")
         })?;
-        self.coping.roof(length, thickness).validate()?;
-        validate_body(&self.body(), &self.openings, true)
+        let roof = self.coping.roof(length, thickness);
+        roof.validate()?;
+        validate_body(&self.body(), &self.openings, true)?;
+        geometry_budget(body_geometry_triangles(&self.body(), &self.openings) + roof.geometry_triangles())
     }
 
     fn body(&self) -> Body<'_> {
@@ -481,6 +483,15 @@ impl Wall {
     }
 }
 
+/// Upper bound for closed bars/posts and the cut faces, round reveals/frames,
+/// plinths and beams on both sides, without emitting triangle storage.
+fn body_geometry_triangles(body: &Body<'_>, openings: &[Opening]) -> f64 {
+    let bars: f64 =
+        openings.iter().map(|opening| f64::from(opening.lattice[0]) + f64::from(opening.lattice[1])).sum();
+    let bays = body.posts.map_or(0.0, |posts| 2.0 * (f64::from(posts.bays[0]) + f64::from(posts.bays[1])));
+    128.0 + 12.0 * (bars + bays) + 1024.0 * openings.len() as f64 + 64.0 * body.beams.len() as f64
+}
+
 /// Checks a body's parts and openings fit: plinth, posts and beams in order of how proud they
 /// stand, and openings inside their faces, clear of the plinth and of each other.
 fn validate_body(body: &Body<'_>, openings: &[Opening], through: bool) -> Result<(), String> {
@@ -503,6 +514,7 @@ fn validate_body(body: &Body<'_>, openings: &[Opening], through: bool) -> Result
                 .to_owned()
         })?;
     }
+    geometry_budget(body_geometry_triangles(body, openings))?;
     for beam in body.beams {
         check(finite(&[beam.at, beam.height, beam.proud]) && beam.height > 0.0 && beam.proud > 0.0, || {
             format!("beam {beam:?} needs a height and to stand proud")

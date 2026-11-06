@@ -206,9 +206,16 @@ pub fn fight(a: &Face, b: &Face) -> Option<Vec3> {
         return None;
     }
     let points = &region.points[..region.len];
-    // Attributes interpolate linearly over the region: alike at its corners, alike throughout.
+    // UV differences are affine: the same integer offset at every corner repeats the
+    // texture throughout. Different integers at different corners do not agree inside.
+    let mut uv_offset = None;
     if a.slot == b.slot
-        && points.iter().all(|&q| alike(shade(&a.shading, a_flat, q), shade(&b.shading, b_flat, q)))
+        && points.iter().all(|&q| {
+            let first = shade(&a.shading, a_flat, q);
+            let second = shade(&b.shading, b_flat, q);
+            let offset = *uv_offset.get_or_insert_with(|| (first.uv - second.uv).round());
+            alike(first, second, offset)
+        })
     {
         return None;
     }
@@ -235,11 +242,11 @@ fn shade(shading: &[Shading; 3], flat: [Vec2; 3], q: Vec2) -> Shading {
 }
 
 /// Whether two points shade alike (see [`OCCLUSION`]).
-fn alike(a: Shading, b: Shading) -> bool {
+fn alike(a: Shading, b: Shading, uv_offset: Vec2) -> bool {
     let uv = a.uv - b.uv;
     (a.occlusion - b.occlusion).abs() <= OCCLUSION
         && a.normal.dot(b.normal) >= NORMAL.to_radians().cos()
-        && (uv - uv.round()).abs().max_element() <= TEXTURE
+        && (uv - uv_offset).abs().max_element() <= TEXTURE
 }
 
 /// A convex polygon: a triangle clipped by at most five lines.
@@ -354,6 +361,20 @@ mod tests {
         }
         assert!(every_pair.len() > 100, "the case has fights to find: {}", every_pair.len());
         assert_eq!(overlaps(&faces), every_pair);
+    }
+
+    #[test]
+    fn repeating_uvs_need_one_offset_over_the_whole_overlap() {
+        let a = face(Vec3::ZERO, Vec3::Y, 1.0, 0.0, 0, 0);
+        let mut b = Face { placement: 1, ..a };
+        for corner in &mut b.shading {
+            corner.uv = Vec2::new(2.0, -3.0);
+        }
+        assert!(fight(&a, &b).is_none(), "a constant whole-tile offset agrees");
+        b.shading[1].uv.x += 1.0;
+        assert!(fight(&a, &b).is_some(), "different integer offsets disagree between corners");
+        b.shading[1].uv.x -= 0.5;
+        assert!(fight(&a, &b).is_some(), "fractional corner offsets disagree too");
     }
 
     #[test]

@@ -5,7 +5,12 @@ use sapphire_navmesh::{ArchivedNavMesh, NO_NEIGHBOUR};
 
 /// Polygons are filed in cells of this size on the XZ plane, in metres. About a building's side: a
 /// cell holds a handful in the open and a few dozen around clutter.
-const GRID_CELL: f32 = 4.0;
+const GRID_CELL: f64 = 4.0;
+/// Bound empty-space storage independently of a zone's world extent. Coarsening preserves every
+/// candidate and its ID order; it only trades lookup work for bounded load memory.
+const MAX_GRID_CELLS: usize = 65_536;
+const MIN_GRID_REFERENCES: usize = 1024;
+const REFERENCES_PER_POLYGON: usize = 16;
 
 /// Which polygon a point is on, and the point on it.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -50,6 +55,7 @@ pub struct NavGraph {
 struct Grid {
     min: [f32; 2],
     cells: [i32; 2],
+    cell_size: f64,
     /// Where each cell's polygons start in `polygons`, with one more entry at the end.
     starts: Vec<u32>,
     /// By cell, then ascending polygon ID.
@@ -83,7 +89,8 @@ impl NavGraph {
             for corner in start..end {
                 let next = if corner + 1 == end { start } else { corner + 1 };
                 let (a, b) = (positions[corners[corner] as usize], positions[corners[next] as usize]);
-                middles[corner] = (a + b) * 0.5;
+                let sum = a + b;
+                middles[corner] = if sum.is_finite() { sum * 0.5 } else { a * 0.5 + b * 0.5 };
                 bound = [bound[0].min(a.x), bound[1].min(a.z), bound[2].max(a.x), bound[3].max(a.z)];
             }
             bounds.push(bound);
@@ -130,7 +137,18 @@ impl NavGraph {
             sum += corner;
             count += 1.0;
         }
-        sum / count
+        if sum.is_finite() {
+            return sum / count;
+        }
+        let mut wide = [0.0f64; 3];
+        for corner in self.polygon(polygon) {
+            for (sum, value) in wide.iter_mut().zip(corner.to_array()) {
+                *sum += f64::from(value);
+            }
+        }
+        Vec3::from_array(std::array::from_fn(|axis| {
+            if sum[axis].is_finite() { sum[axis] / count } else { (wide[axis] / f64::from(count)) as f32 }
+        }))
     }
 
     /// The polygons across a polygon's edges, for tools and tests.
@@ -160,12 +178,42 @@ impl NavGraph {
         for corner in range.start + 1..range.end - 1 {
             let b = self.positions[self.corners[corner] as usize];
             let c = self.positions[self.corners[corner + 1] as usize];
-            let (d1, d2) = (cross_xz(first, b, point), cross_xz(b, c, point));
-            let d3 = cross_xz(c, first, point);
+            let (d1, d2) = (cross_xz_f32(first, b, point), cross_xz_f32(b, c, point));
+            let d3 = cross_xz_f32(c, first, point);
+            if !(d1.is_finite() && d2.is_finite() && d3.is_finite()) {
+                return self.height_over_wide(polygon, point);
+            }
             if d1 >= 0.0 && d2 >= 0.0 && d3 >= 0.0 {
                 let area = d1 + d2 + d3;
                 if area > 0.0 {
-                    return (c.y * d1 + first.y * d2 + b.y * d3) / area;
+                    let numerator = c.y * d1 + first.y * d2 + b.y * d3;
+                    let height = numerator / area;
+                    if area.is_finite() && numerator.is_finite() && height.is_finite() {
+                        return height;
+                    }
+                    return self.height_over_wide(polygon, point);
+                }
+            }
+        }
+        first.y
+    }
+
+    /// Recompute the whole fan in the wider domain; mixing a wide area with narrow products
+    /// would still overflow and would change ordinary rounding even when no overflow occurs.
+    fn height_over_wide(&self, polygon: u32, point: Vec3) -> f32 {
+        let range = self.corner_range(polygon);
+        let first = self.positions[self.corners[range.start] as usize];
+        for corner in range.start + 1..range.end - 1 {
+            let b = self.positions[self.corners[corner] as usize];
+            let c = self.positions[self.corners[corner + 1] as usize];
+            let d1 = cross_xz_wide(first, b, point);
+            let d2 = cross_xz_wide(b, c, point);
+            let d3 = cross_xz_wide(c, first, point);
+            if d1 >= 0.0 && d2 >= 0.0 && d3 >= 0.0 {
+                let area = d1 + d2 + d3;
+                if area > 0.0 {
+                    return ((f64::from(c.y) * d1 + f64::from(first.y) * d2 + f64::from(b.y) * d3) / area)
+                        as f32;
                 }
             }
         }
@@ -174,22 +222,31 @@ impl NavGraph {
 
     /// The closest point of a polygon's outline to `point`, on the XZ plane, and its squared
     /// distance there.
-    fn closest_on_outline(&self, polygon: u32, point: Vec3) -> (Vec3, f32) {
+    fn closest_on_outline(&self, polygon: u32, point: Vec3) -> (Vec3, f64) {
         let range = self.corner_range(polygon);
-        let mut best = (Vec3::ZERO, f32::MAX);
+        let mut best = (Vec3::ZERO, f64::INFINITY);
         let mut a = self.positions[self.corners[range.end - 1] as usize];
         for corner in range {
             let b = self.positions[self.corners[corner] as usize];
             let (dx, dz) = (b.x - a.x, b.z - a.z);
             let length = dx * dx + dz * dz;
-            let t = if length > 0.0 {
-                (((point.x - a.x) * dx + (point.z - a.z) * dz) / length).clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
+            let numerator = (point.x - a.x) * dx + (point.z - a.z) * dz;
+            let parameter = if length > 0.0 { numerator / length } else { 0.0 };
+            let t = parameter.clamp(0.0, 1.0);
             let on = a + (b - a) * t;
             let (ox, oz) = (point.x - on.x, point.z - on.z);
             let distance = ox * ox + oz * oz;
+            // Check before clamping: an overflowed ratio can clamp to a plausible endpoint.
+            let (on, distance) = if length.is_finite()
+                && numerator.is_finite()
+                && parameter.is_finite()
+                && on.is_finite()
+                && distance.is_finite()
+            {
+                (on, f64::from(distance))
+            } else {
+                closest_on_edge_wide(a, b, point)
+            };
             if distance < best.1 {
                 best = (on, distance);
             }
@@ -222,8 +279,13 @@ impl NavGraph {
             return Some(Location { polygon, position });
         }
 
-        let limit = reach.across * reach.across;
-        let mut nearest: Option<(f32, Location)> = None;
+        let narrow_limit = reach.across * reach.across;
+        let limit = if narrow_limit.is_finite() {
+            f64::from(narrow_limit)
+        } else {
+            f64::from(reach.across) * f64::from(reach.across)
+        };
+        let mut nearest: Option<(f64, Location)> = None;
         let (low, high) = self.grid.span(point, reach.across);
         for z in low[1]..=high[1] {
             for x in low[0]..=high[0] {
@@ -257,8 +319,73 @@ impl NavGraph {
 
 /// How far `c` is to one side of the line from `a` to `b` on the XZ plane, times the line's length:
 /// zero or more for a point inside a polygon wound as `sapphire_navmesh` documents.
-pub(crate) fn cross_xz(a: Vec3, b: Vec3, c: Vec3) -> f32 {
+pub(crate) fn cross_xz(a: Vec3, b: Vec3, c: Vec3) -> f64 {
+    let narrow = cross_xz_f32(a, b, c);
+    if narrow.is_finite() { f64::from(narrow) } else { cross_xz_wide(a, b, c) }
+}
+
+fn cross_xz_f32(a: Vec3, b: Vec3, c: Vec3) -> f32 {
     (b.z - a.z) * (c.x - a.x) - (b.x - a.x) * (c.z - a.z)
+}
+
+fn cross_xz_wide(a: Vec3, b: Vec3, c: Vec3) -> f64 {
+    (f64::from(b.z) - f64::from(a.z)) * (f64::from(c.x) - f64::from(a.x))
+        - (f64::from(b.x) - f64::from(a.x)) * (f64::from(c.z) - f64::from(a.z))
+}
+
+fn closest_on_edge_wide(a: Vec3, b: Vec3, point: Vec3) -> (Vec3, f64) {
+    let (dx, dz) = (f64::from(b.x) - f64::from(a.x), f64::from(b.z) - f64::from(a.z));
+    let length = dx * dx + dz * dz;
+    let t = if length > 0.0 {
+        (((f64::from(point.x) - f64::from(a.x)) * dx + (f64::from(point.z) - f64::from(a.z)) * dz) / length)
+            .clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let on = Vec3::from_array(std::array::from_fn(|axis| {
+        (f64::from(a[axis]) + (f64::from(b[axis]) - f64::from(a[axis])) * t) as f32
+    }));
+    // The closest point may need wide projection while its final distance does not. Match
+    // locate's reach-squared policy so finite f32 rounding keeps exact-limit inclusivity.
+    let (ox, oz) = (point.x - on.x, point.z - on.z);
+    let narrow_distance = ox * ox + oz * oz;
+    let distance = if narrow_distance.is_finite() {
+        f64::from(narrow_distance)
+    } else {
+        let (ox, oz) = (f64::from(point.x) - f64::from(on.x), f64::from(point.z) - f64::from(on.z));
+        ox * ox + oz * oz
+    };
+    (on, distance)
+}
+
+/// Keep every legacy f32 result when it is finite, widening only the exceptional norm.
+/// A finite f32 endpoint pair has a finite f64 distance, even across opposite extrema.
+pub(crate) fn distance(a: Vec3, b: Vec3) -> f64 {
+    let narrow = a.distance(b);
+    if narrow.is_finite() {
+        return f64::from(narrow);
+    }
+    let dx = f64::from(a.x) - f64::from(b.x);
+    let dy = f64::from(a.y) - f64::from(b.y);
+    let dz = f64::from(a.z) - f64::from(b.z);
+    (dx * dx + dy * dy + dz * dz).sqrt()
+}
+
+/// An operation-level hybrid rule: exact f32 operands and a finite f32 sum keep legacy rounding.
+/// Otherwise add in f64 without discarding an inexact wider operand. No provenance state is needed.
+pub(crate) fn add_distances(a: f64, b: f64) -> f64 {
+    let (narrow_a, narrow_b) = (a as f32, b as f32);
+    let sum = narrow_a + narrow_b;
+    if narrow_a.is_finite()
+        && narrow_b.is_finite()
+        && sum.is_finite()
+        && f64::from(narrow_a) == a
+        && f64::from(narrow_b) == b
+    {
+        f64::from(sum)
+    } else {
+        a + b
+    }
 }
 
 impl Grid {
@@ -273,14 +400,44 @@ impl Grid {
             low = [0.0; 2];
             high = [0.0; 2];
         }
-        let cells =
-            [((high[0] - low[0]) / GRID_CELL) as i32 + 1, ((high[1] - low[1]) / GRID_CELL) as i32 + 1];
-        let mut grid = Self {
-            min: low,
-            cells,
-            starts: vec![0; (cells[0] * cells[1]) as usize + 1],
-            polygons: Vec::new(),
-        };
+        let reference_budget = (bounds.len() as u64)
+            .saturating_mul(REFERENCES_PER_POLYGON as u64)
+            .max(MIN_GRID_REFERENCES as u64)
+            .min(u64::from(u32::MAX));
+        let mut cell_size = GRID_CELL;
+        let mut grid;
+        loop {
+            // Widen before subtracting: finite f32 endpoints can have an infinite f32 span.
+            let dimensions = [
+                (f64::from(high[0]) - f64::from(low[0])) / cell_size,
+                (f64::from(high[1]) - f64::from(low[1])) / cell_size,
+            ];
+            if dimensions.iter().any(|&d| d >= MAX_GRID_CELLS as f64) {
+                cell_size *= 2.0;
+                continue;
+            }
+            let cells = [dimensions[0] as i32 + 1, dimensions[1] as i32 + 1];
+            let count = cells[0] as u64 * cells[1] as u64;
+            if count > MAX_GRID_CELLS as u64 {
+                cell_size *= 2.0;
+                continue;
+            }
+            grid = Self { min: low, cells, cell_size, starts: Vec::new(), polygons: Vec::new() };
+            let mut references = 0u64;
+            for bound in bounds {
+                let (from, to) = (grid.clamped(bound[0], bound[1]), grid.clamped(bound[2], bound[3]));
+                let covered = (to[0] - from[0] + 1) as usize * (to[1] - from[1] + 1) as usize;
+                references = references.saturating_add(covered as u64);
+                if references > reference_budget {
+                    break;
+                }
+            }
+            if references <= reference_budget {
+                grid.starts = vec![0; count as usize + 1];
+                break;
+            }
+            cell_size *= 2.0;
+        }
 
         // Count, then fill: polygons go in ascending ID within each cell.
         for bound in bounds {
@@ -316,8 +473,8 @@ impl Grid {
 
     fn clamped(&self, x: f32, z: f32) -> [i32; 2] {
         [
-            (((x - self.min[0]) / GRID_CELL) as i32).clamp(0, self.cells[0] - 1),
-            (((z - self.min[1]) / GRID_CELL) as i32).clamp(0, self.cells[1] - 1),
+            (((f64::from(x) - f64::from(self.min[0])) / self.cell_size) as i32).clamp(0, self.cells[0] - 1),
+            (((f64::from(z) - f64::from(self.min[1])) / self.cell_size) as i32).clamp(0, self.cells[1] - 1),
         ]
     }
 
@@ -345,10 +502,14 @@ pub(crate) mod tests {
 
     /// A hand-made cooked mesh: `rows` by `columns` unit squares, on the ground.
     pub(crate) fn squares(columns: i32, rows: i32, walled: &[(i32, i32)]) -> AlignedVec {
+        scaled_squares(columns, rows, walled, 1.0)
+    }
+
+    pub(crate) fn scaled_squares(columns: i32, rows: i32, walled: &[(i32, i32)], size: f32) -> AlignedVec {
         let vertex = |x: i32, z: i32| (x + z * (columns + 1)) as u32;
         let square = |x: i32, z: i32| z * columns + x;
         let mut mesh =
-            NavMesh { cell_size: 1.0, cell_height: 1.0, polygon_starts: vec![0], ..NavMesh::default() };
+            NavMesh { cell_size: size, cell_height: 1.0, polygon_starts: vec![0], ..NavMesh::default() };
         for z in 0..=rows {
             for x in 0..=columns {
                 mesh.vertices.push([x, 0, z]);
@@ -388,6 +549,99 @@ pub(crate) mod tests {
 
     pub(crate) fn graph(bytes: &AlignedVec) -> NavGraph {
         NavGraph::new(NavMesh::read(bytes).expect("it reads"))
+    }
+
+    fn exceptional_quad(size: f32, height: f32, origin: [f32; 3], vertices: Vec<[i32; 3]>) -> NavMesh {
+        NavMesh {
+            cell_size: size,
+            cell_height: height,
+            origin,
+            vertices,
+            polygon_starts: vec![0, 4],
+            corners: vec![0, 1, 2, 3],
+            neighbours: vec![NO_NEIGHBOUR; 4],
+        }
+    }
+
+    #[test]
+    fn representable_centres_and_heights_survive_intermediate_overflow() {
+        let unit = vec![[0, 0, 0], [0, 0, 1], [1, 0, 1], [1, 0, 0]];
+        let mesh = exceptional_quad(2.0, 1.0, [0.0, 2e38, 0.0], unit);
+        let graph = graph(&mesh.to_cooked().expect("write"));
+        assert_eq!(graph.centre(0), Vec3::new(1.0, 2e38, 1.0));
+        let point = Vec3::new(1.0, 2e38, 1.0);
+        assert_eq!(graph.locate(point, Reach::CHARACTER).expect("over the floor").position, point);
+
+        let mesh =
+            exceptional_quad(2e38, 1e38, [0.0; 3], vec![[-1, 0, -1], [-1, 0, 1], [1, 1, 1], [1, 1, -1]]);
+        let graph = self::graph(&mesh.to_cooked().expect("write"));
+        let found = graph
+            .locate(Vec3::ZERO, Reach { across: 0.0, vertical: f32::MAX })
+            .expect("over the sloped floor");
+        assert_eq!(found.position, Vec3::new(0.0, 5e37, 0.0));
+        assert_eq!(graph.centre(0), Vec3::new(0.0, 5e37, 0.0));
+    }
+
+    #[test]
+    fn wide_outline_projection_keeps_inclusive_limits_and_id_ties() {
+        let size = 1e20_f32;
+        let mut mesh =
+            exceptional_quad(size, 1.0, [0.0; 3], vec![[0, 0, 0], [0, 0, 1], [1, 0, 1], [1, 0, 0]]);
+        // Equal outlines remain a lowest-ID tie even when projection needs a wider domain.
+        mesh.corners.extend([0, 1, 2, 3]);
+        mesh.neighbours.extend([NO_NEIGHBOUR; 4]);
+        mesh.polygon_starts.push(8);
+        let graph = graph(&mesh.to_cooked().expect("write"));
+        // The non-power-of-two gap detects a wide-distance versus rounded-f32-limit mismatch.
+        for ulps in [1, 5001] {
+            let point = Vec3::new(f32::from_bits(size.to_bits() + ulps), 0.0, size * 0.5);
+            let gap = point.x - size;
+            let found =
+                graph.locate(point, Reach { across: gap, vertical: 1.0 }).expect("right on the reach limit");
+            assert_eq!(found.polygon, 0);
+            assert_eq!(found.position, Vec3::new(size, 0.0, size * 0.5));
+            assert!(graph.locate(point, Reach { across: gap.next_down(), vertical: 1.0 }).is_none());
+        }
+    }
+
+    #[test]
+    fn distance_and_cost_helpers_keep_legacy_bits_or_preserve_wider_operands() {
+        for (a, b) in [
+            (Vec3::ZERO, Vec3::new(1.0, 2.0, 3.0)),
+            (Vec3::new(-10.0, 2.0, 4.0), Vec3::new(300.0, 4.0, -12.0)),
+        ] {
+            assert_eq!(distance(a, b), f64::from(a.distance(b)));
+        }
+        assert_eq!(distance(Vec3::ZERO, Vec3::new(1e20, 0.0, 0.0)), f64::from(1e20_f32));
+        assert!(distance(Vec3::splat(f32::MIN), Vec3::splat(f32::MAX)).is_finite());
+        for (a, b) in [(1.0_f32, 0.1_f32), (2.0, f32::EPSILON * 0.5), (1e10, 3.0)] {
+            assert_eq!(add_distances(f64::from(a), f64::from(b)), f64::from(a + b));
+        }
+        assert_eq!(add_distances(16_777_216.0, 1.0), 16_777_216.0, "legacy rounded tie stays a tie");
+        let inexact = 1.0 + 1.0 / (1u64 << 30) as f64;
+        assert_ne!(f64::from(inexact as f32), inexact);
+        assert_eq!(add_distances(inexact, 1.0), inexact + 1.0);
+        let max = f64::from(f32::MAX);
+        assert_eq!(add_distances(max, max), max + max);
+        assert!(add_distances(max + max, max).is_finite());
+    }
+
+    #[test]
+    fn sparse_extents_and_large_polygons_have_bounded_index_storage() {
+        for bounds in [
+            vec![[0.0, 0.0, 1.0, 1.0], [1e20, 1e20, 1e20, 1e20]],
+            vec![[-f32::MAX, -f32::MAX, f32::MAX, f32::MAX]],
+            vec![[0.0, 0.0, 100_000.0, 100_000.0]; 8],
+        ] {
+            let grid = Grid::new(&bounds);
+            assert!(grid.starts.len() <= MAX_GRID_CELLS + 1);
+            assert!(grid.polygons.len() <= (bounds.len() * REFERENCES_PER_POLYGON).max(MIN_GRID_REFERENCES));
+            for (id, bound) in bounds.iter().enumerate() {
+                for point in [Vec3::new(bound[0], 0.0, bound[1]), Vec3::new(bound[2], 0.0, bound[3])] {
+                    assert!(grid.cell_at(point).contains(&(id as u32)));
+                }
+            }
+        }
     }
 
     #[test]

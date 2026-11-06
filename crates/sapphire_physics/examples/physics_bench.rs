@@ -87,8 +87,11 @@ fn micros(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1e6
 }
 
-fn main() {
-    let steps = std::env::args().nth(1).and_then(|steps| steps.parse().ok()).unwrap_or(2_000);
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let steps = std::env::args().nth(1).map(|steps| steps.parse::<u32>()).transpose()?.unwrap_or(2_000);
+    if steps == 0 || steps.checked_add(WARM_STEPS).is_none() {
+        return Err("steps must be positive and leave room for warmup in a u32 tick counter".into());
+    }
     let document = std::env::args().nth(2).map(|path| {
         let text = std::fs::read_to_string(&path).expect("the collider document");
         ColliderDocument::from_ron(&text).expect("it reads").cook().expect("it cooks")
@@ -120,4 +123,5 @@ fn main() {
         sapphire_physics::STEP_BUDGET_DESKTOP_LOW_US,
         sapphire_physics::STEP_BUDGET_MOBILE_LOW_US,
     );
+    Ok(())
 }

@@ -305,12 +305,14 @@ impl Stall {
         check(back + AISLE <= front, || {
             "the counter and the shelves must leave an aisle between them".to_owned()
         })?;
-        match self.awning {
+        let awning_triangles = match self.awning {
             Awning::Tiles(tiles) => {
                 check(!matches!(tiles.kind, RoofKind::Skirt(_)), || {
                     "a stall's tiled awning is a hip, hip-and-gable or gable roof".to_owned()
                 })?;
-                tiles.roof(self.size).validate()?;
+                let roof = tiles.roof(self.size);
+                roof.validate()?;
+                roof.geometry_triangles()
             }
             Awning::Cloth(cloth) => {
                 let ClothAwning { overhang, rise, sag, sweep, sweep_reach, valance, .. } = cloth;
@@ -327,12 +329,19 @@ impl Stall {
                 check(drop >= 0.0 && (drop == 0.0 || scallop >= 0.05), || {
                     "a valance needs a drop of 0 or more, and scallops 5 cm wide or more".to_owned()
                 })?;
+                // Both slopes and faces, edge strips and scalloped valances.
+                let span = f64::from(width) + 2.0 * f64::from(overhang);
+                let columns = (span / f64::from(CLOTH_COLUMN)).ceil().max(2.0);
+                let scallops = if drop > 0.0 { (span / f64::from(scallop)).round().max(1.0) } else { 0.0 };
+                let triangles = 1024.0 + 128.0 * columns + 48.0 * scallops;
+                super::geometry_budget(triangles)?;
                 let drape = Drape::new(self, cloth, Detail::Full);
                 check(drape.underside(0.0, 0.0) - drop > 0.5 * self.height, || {
                     "a cloth awning's eaves and valance must hang in the stall's upper half".to_owned()
                 })?;
+                triangles
             }
-        }
+        };
         if let Some(sign) = self.sign {
             let [sign_width, sign_height] = sign.size;
             check(sign_width > 0.0 && sign_height > 0.0 && sign.drop >= 0.0, || {
@@ -346,7 +355,8 @@ impl Stall {
                 "a sign must hang clear over the counter".to_owned()
             })?;
         }
-        validate_goods(&self.goods, &|surface| self.place(surface), (-plan.footprint(), plan.footprint()))
+        validate_goods(&self.goods, &|surface| self.place(surface), (-plan.footprint(), plan.footprint()))?;
+        super::geometry_budget(4096.0 + awning_triangles + super::goods::geometry_triangles(&self.goods))
     }
 
     /// The stall's numbers, worked out once.
@@ -726,11 +736,13 @@ impl Drape {
             for i in 0..columns.len() - 1 {
                 for j in 0..rows.len() - 1 {
                     let cell = [(i, j), (i + 1, j), (i + 1, j + 1), (i, j + 1)];
+                    let base = cell.map(|(i, j)| {
+                        let (x, s) = (columns[i], rows[j]);
+                        (x, s, self.underside(x, s), self.normal(x, s, side), Vec2::new(x, s * self.run))
+                    });
                     for (over, up, shade) in [(CLOTH, 1.0, 1.0), (0.0, -1.0, 0.8)] {
-                        let corners = cell.map(|(i, j)| {
-                            let (x, s) = (columns[i], rows[j]);
-                            let uv = Vec2::new(x, s * self.run);
-                            (point(x, s, over), self.normal(x, s, side) * up, uv, shade)
+                        let corners = base.map(|(x, s, y, normal, uv)| {
+                            (Vec3::new(x, y + over, self.z(s, side)), normal * up, uv, shade)
                         });
                         smooth_quad(mesh, Part::Cloth, corners);
                     }

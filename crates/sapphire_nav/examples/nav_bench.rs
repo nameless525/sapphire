@@ -241,13 +241,16 @@ fn node_limits(side: i32) {
     }
 }
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::env::args().nth(1).expect("the path of a cooked .snav");
     let bytes = std::fs::read(&path).expect("it reads");
     let mut aligned: AlignedVec = AlignedVec::with_capacity(bytes.len());
     aligned.extend_from_slice(&bytes);
     let watch = Stopwatch::start();
     let mesh = NavMesh::read(&aligned).expect("a navmesh");
+    if mesh.polygon_count() == 0 {
+        return Err("the navigation benchmark needs a nonempty mesh".into());
+    }
     let checked = watch.elapsed();
     let watch = Stopwatch::start();
     let graph = NavGraph::new(mesh);
@@ -263,6 +266,9 @@ fn main() {
     let short = pairs(&graph, (1.0, 16.0), 1);
     let middle = pairs(&graph, (16.0, 64.0), 2);
     let long = pairs(&graph, (64.0, 1000.0), 3);
+    if short.is_empty() {
+        return Err("the navigation benchmark needs a connected pair 1 to 16 metres apart".into());
+    }
     queries(&graph, "short, under 16 m", &short);
     queries(&graph, "middling, 16 to 64 m", &middle);
     queries(&graph, "crossing, over 64 m", &long);
@@ -288,4 +294,5 @@ fn main() {
 
     node_limits(100);
     node_limits(400);
+    Ok(())
 }

@@ -189,14 +189,40 @@ pub fn files() -> io::Result<Vec<(String, Vec<u8>)>> {
         (path(IRIS_FILE_NAME), eye_map_png(iris)?),
         (path(HIGHLIGHT_FILE_NAME), eye_map_png(highlight)?),
     ];
-    for angle in HORIZONTAL_ANGLES {
-        files.push((
-            path(&horizontal_mask_name(angle)),
-            threshold_mask_png(angle as f32, horizontal_threshold)?,
-        ));
-    }
-    for angle in VERTICAL_ANGLES {
-        files.push((path(&vertical_mask_name(angle)), threshold_mask_png(angle as f32, vertical_threshold)?));
+    // Threshold fields do not depend on the selected light angle. Keep one family
+    // at a time so its bounded scratch is released before preparing the next.
+    for (angles, field, name) in [
+        (
+            &HORIZONTAL_ANGLES[..],
+            horizontal_threshold as fn(f32, f32) -> Option<f32>,
+            horizontal_mask_name as fn(u32) -> String,
+        ),
+        (
+            &VERTICAL_ANGLES[..],
+            vertical_threshold as fn(f32, f32) -> Option<f32>,
+            vertical_mask_name as fn(u32) -> String,
+        ),
+    ] {
+        let mut thresholds = Vec::with_capacity((SIZE * SIZE) as usize);
+        thresholds.extend((0..SIZE).flat_map(|y| {
+            (0..SIZE).map(move |x| {
+                let center = |i: u32| (i as f32 + 0.5) / SIZE as f32;
+                let (x, y) = point(center(x), center(y));
+                field(x, y)
+            })
+        }));
+        for &angle in angles {
+            let image = image::GrayImage::from_fn(SIZE, SIZE, |x, y| {
+                image::Luma([
+                    if thresholds[(y * SIZE + x) as usize].is_some_and(|threshold| threshold > angle as f32) {
+                        255
+                    } else {
+                        0
+                    },
+                ])
+            });
+            files.push((path(&name(angle)), encode(image)?));
+        }
     }
     Ok(files)
 }
@@ -327,6 +353,7 @@ pub fn vertical_threshold(x: f32, y: f32) -> Option<f32> {
 }
 
 /// The face's lit region with the light `angle` degrees along `field`: white where lit.
+#[cfg(test)]
 fn threshold_mask_png(angle: f32, field: fn(f32, f32) -> Option<f32>) -> io::Result<Vec<u8>> {
     gray_png(|u, v| {
         let (x, y) = point(u, v);
@@ -1032,26 +1059,26 @@ impl EyeLayerBuilder {
         self.geometry.positions.push(position);
         self.geometry.normals.push(normal);
         self.geometry.uvs.push(uv);
-        let lids = |closed: f32| match motion {
-            Motion::Lids { s, follow } => (x, y + follow * (lid_edge(s, closed) - lid_edge(s, 0.0))),
-            _ => (x, y),
+        let base = (position, normal);
+        let face_at = |(x, y): (f32, f32)| on_face(x, y, self.lift);
+        let poses = match motion {
+            Motion::Still => [(base, base); MORPH_TARGETS.len()],
+            Motion::Lids { s, follow } => {
+                let edge = lid_edge(s, 0.0);
+                let half = face_at((x, y + follow * (lid_edge(s, 0.5) - edge)));
+                let closed = face_at((x, y + follow * (lid_edge(s, 1.0) - edge)));
+                [(base, half), (half, closed), (base, base), (base, base), (base, base), (base, base)]
+            }
+            Motion::Gaze => [
+                (base, base),
+                (base, base),
+                (base, face_at((x + LOOK.0, y + 0.0))),
+                (base, face_at((x + -LOOK.0, y + 0.0))),
+                (base, face_at((x + 0.0, y + LOOK.1))),
+                (base, face_at((x + 0.0, y + -LOOK.1))),
+            ],
         };
-        let look = |dx: f32, dy: f32| match motion {
-            Motion::Gaze => (x + dx, y + dy),
-            _ => (x, y),
-        };
-        // Each target from the pose it applies over: the lids' second step over their first.
-        let poses = [
-            ((x, y), lids(0.5)),
-            (lids(0.5), lids(1.0)),
-            ((x, y), look(LOOK.0, 0.0)),
-            ((x, y), look(-LOOK.0, 0.0)),
-            ((x, y), look(0.0, LOOK.1)),
-            ((x, y), look(0.0, -LOOK.1)),
-        ];
-        for (target, (from, to)) in self.geometry.targets.iter_mut().zip(poses) {
-            let (p0, n0) = on_face(from.0, from.1, self.lift);
-            let (p1, n1) = on_face(to.0, to.1, self.lift);
+        for (target, ((p0, n0), (p1, n1))) in self.geometry.targets.iter_mut().zip(poses) {
             target.positions.push(sub(p1, p0));
             target.normals.push(sub(n1, n0));
         }
@@ -1369,6 +1396,7 @@ fn normalize(v: [f32; 3]) -> [f32; 3] {
 }
 
 /// An 8-bit gray PNG [`SIZE`] square, each texel `value(u, v)` at its center.
+#[cfg(test)]
 fn gray_png(value: impl Fn(f32, f32) -> f32) -> io::Result<Vec<u8>> {
     let center = |i: u32| (i as f32 + 0.5) / SIZE as f32;
     let image = image::GrayImage::from_fn(SIZE, SIZE, |x, y| {
@@ -1521,10 +1549,33 @@ mod tests {
         assert_eq!(read.streams.len() as u32, face + cap + bangs + brows + eyes);
     }
 
+    #[test]
+    fn prepared_threshold_fields_match_independent_per_angle_generation() {
+        let generated = files().unwrap();
+        for (angles, field, name) in [
+            (
+                &HORIZONTAL_ANGLES[..],
+                horizontal_threshold as fn(f32, f32) -> Option<f32>,
+                horizontal_mask_name as fn(u32) -> String,
+            ),
+            (
+                &VERTICAL_ANGLES[..],
+                vertical_threshold as fn(f32, f32) -> Option<f32>,
+                vertical_mask_name as fn(u32) -> String,
+            ),
+        ] {
+            for &angle in angles {
+                let path = format!("{DIR}/{}", name(angle));
+                let actual = &generated.iter().find(|(name, _)| *name == path).unwrap().1;
+                assert_eq!(actual, &threshold_mask_png(angle as f32, field).unwrap(), "{path}");
+            }
+        }
+    }
+
     /// The eyes' layer in [`EYE_SLOTS`] named `slot`.
-    fn eye_layer(slot: &str) -> Geometry {
+    fn eye_layer<'a>(layers: &'a [Geometry; 6], slot: &str) -> &'a Geometry {
         let index = EYE_SLOTS.iter().position(|&(name, _)| name == slot).expect("an eye slot");
-        eyes()[index].clone()
+        &layers[index]
     }
 
     /// `layer`'s positions with `weights` of [`MORPH_TARGETS`] applied.
@@ -1570,7 +1621,7 @@ mod tests {
         // Each layer off the face by its lift, in order: white, iris, highlights, shadow, lower
         // lash, lids, upper lash.
         let lift = |slot: &str| {
-            let layer = eye_layer(slot);
+            let layer = eye_layer(&layers, slot);
             let centered =
                 layer.positions.iter().filter(|p| (p[0].abs() - EYE_CENTER.0).abs() < 0.005).count();
             assert!(centered > 0, "{slot} crosses the eye's middle");
@@ -1584,22 +1635,24 @@ mod tests {
             "{iris} {highlight} {shadow} {lids}"
         );
         // The iris fills most of the eye's height, its top cut by the lid line.
-        let iris_top = eye_layer("Iris").positions.iter().map(|p| p[1]).fold(f32::NEG_INFINITY, f32::max);
+        let iris_top =
+            eye_layer(&layers, "Iris").positions.iter().map(|p| p[1]).fold(f32::NEG_INFINITY, f32::max);
         assert!(iris_top > eye_top(0.0) - 0.002 && iris_top < eye_top(0.0) + 0.002, "{iris_top}");
     }
 
     #[test]
     fn the_lids_close_over_the_eyes_in_two_steps_staying_in_front() {
-        let lids = eye_layer("Lids");
-        let shadow = eye_layer("EyeShadow");
-        let lashes = eye_layer("Lashes");
+        let layers = eyes();
+        let lids = eye_layer(&layers, "Lids");
+        let shadow = eye_layer(&layers, "EyeShadow");
+        let lashes = eye_layer(&layers, "Lashes");
         // The middle of the lowest row of the head's left lid (built after the right one).
         let middle = (LID_ROWS * EYE_COLUMNS + (LID_ROWS - 1) * EYE_COLUMNS + EYE_COLUMNS / 2) as usize;
         for (blink, expected) in
             [(0.0f32, lid_edge(0.0, 0.0)), (0.5, lid_edge(0.0, 0.5)), (1.0, lid_edge(0.0, 1.0))]
         {
             let weights = [(2.0 * blink).min(1.0), (2.0 * blink - 1.0).max(0.0), 0.0, 0.0, 0.0, 0.0];
-            let y = posed(&lids, weights)[middle][1];
+            let y = posed(lids, weights)[middle][1];
             // Lifted off the face, the lid's y grows by about a sixtieth.
             assert!(
                 (y - expected).abs() < 0.001,
@@ -1612,7 +1665,7 @@ mod tests {
         for step in 0..=20 {
             let blink = step as f32 / 20.0;
             let weights = [(2.0 * blink).min(1.0), (2.0 * blink - 1.0).max(0.0), 0.0, 0.0, 0.0, 0.0];
-            for (layer, margin) in [(&lids, 0.001), (&shadow, 0.00005), (&lashes, 0.001)] {
+            for (layer, margin) in [(lids, 0.001), (shadow, 0.00005), (lashes, 0.001)] {
                 let nearest = posed(layer, weights)
                     .into_iter()
                     .filter(|p| sphere_point(p[0], p[1]).is_some())
@@ -1625,13 +1678,14 @@ mod tests {
 
     #[test]
     fn the_gaze_carries_the_irises_and_highlights_across_the_eyes() {
+        let layers = eyes();
         let center = |layer: &Geometry, weights: [f32; 6]| {
             let points = posed(layer, weights);
             let n = points.len() as f32;
             [0, 1].map(|c| points.iter().map(|p| p[c]).sum::<f32>() / n)
         };
         for slot in ["Iris", "EyeHighlight"] {
-            let layer = eye_layer(slot);
+            let layer = eye_layer(&layers, slot);
             // Only the head's left eye, whose x is positive: the right mirrors it.
             let left = Geometry {
                 positions: layer.positions.iter().copied().filter(|p| p[0] > 0.0).collect(),
@@ -1668,7 +1722,9 @@ mod tests {
             // The lids don't move it.
             assert_eq!(center(&left, [1.0, 1.0, 0.0, 0.0, 0.0, 0.0]), rest, "{slot}");
         }
-        assert!(eye_layer("EyeWhite").targets.iter().flat_map(|t| &t.positions).all(|d| *d == [0.0; 3]));
+        assert!(
+            eye_layer(&layers, "EyeWhite").targets.iter().flat_map(|t| &t.positions).all(|d| *d == [0.0; 3])
+        );
     }
 
     #[test]

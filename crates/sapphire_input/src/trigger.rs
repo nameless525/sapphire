@@ -164,10 +164,6 @@ fn after(time: Timestamp, nanos: u64) -> Timestamp {
     Timestamp::from_nanos(time.as_nanos().saturating_add(nanos))
 }
 
-fn since(now: Timestamp, earlier: Timestamp) -> u64 {
-    now.as_nanos().saturating_sub(earlier.as_nanos())
-}
-
 /// How an evaluation takes a drop in actuation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Abort {
@@ -218,7 +214,6 @@ pub(crate) fn evaluate(
         }
     }
     let released = falling && abort == Abort::No;
-    let held = since(now, memory.pressed_at);
     match spec {
         TriggerSpec::Down | TriggerSpec::DownFromPress => {
             if actuated {
@@ -242,7 +237,7 @@ pub(crate) fn evaluate(
         TriggerSpec::Hold(duration) => {
             if !actuated {
                 Fire::IDLE
-            } else if held >= duration {
+            } else if now >= after(memory.pressed_at, duration) {
                 memory.spent = true;
                 Fire::TRIGGERED
             } else {
@@ -251,20 +246,20 @@ pub(crate) fn evaluate(
         }
         TriggerSpec::Tap(duration) => {
             if actuated {
-                if memory.spent || held >= duration {
+                if memory.spent || now >= after(memory.pressed_at, duration) {
                     memory.spent = true;
                     Fire::IDLE
                 } else {
                     Fire::ONGOING
                 }
-            } else if released && !memory.spent && held < duration {
+            } else if released && !memory.spent && now < after(memory.pressed_at, duration) {
                 Fire::PULSE
             } else {
                 Fire::IDLE
             }
         }
         TriggerSpec::DoubleTap(window) => {
-            if memory.armed_at.is_some_and(|at| since(now, at) >= window) {
+            if memory.armed_at.is_some_and(|at| now >= after(at, window)) {
                 memory.armed_at = None;
             }
             if rising && memory.armed_at.take().is_some() {
@@ -272,14 +267,14 @@ pub(crate) fn evaluate(
                 return Fire::PULSE;
             }
             if actuated {
-                if memory.spent || held >= window {
+                if memory.spent || now >= after(memory.pressed_at, window) {
                     memory.spent = true;
                     Fire::IDLE
                 } else {
                     Fire::ONGOING
                 }
             } else {
-                if released && !memory.spent && held < window {
+                if released && !memory.spent && now < after(memory.pressed_at, window) {
                     memory.armed_at = Some(now);
                 }
                 if memory.armed_at.is_some() { Fire::ONGOING } else { Fire::IDLE }
@@ -329,6 +324,19 @@ mod tests {
     const O: Fire = Fire::ONGOING;
     const T: Fire = Fire::TRIGGERED;
     const P: Fire = Fire::PULSE;
+
+    #[test]
+    fn deadlines_at_the_end_of_the_clock_retire() {
+        let end = Timestamp::from_nanos(u64::MAX);
+        let start = Timestamp::from_nanos(u64::MAX - 1000);
+        for spec in [TriggerSpec::Hold(2000), TriggerSpec::Tap(2000), TriggerSpec::DoubleTap(2000)] {
+            let mut memory = Memory::default();
+            evaluate(spec, &mut memory, true, start, Abort::No);
+            assert_eq!(deadline(spec, &memory), Some(end));
+            evaluate(spec, &mut memory, true, end, Abort::No);
+            assert_eq!(deadline(spec, &memory), None);
+        }
+    }
 
     #[test]
     fn down_follows_actuation() {

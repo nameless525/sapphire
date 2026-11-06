@@ -149,6 +149,8 @@ struct BindingState {
     /// A motion binding's share of its channel's motion this update.
     accepted: Accepted,
     active: bool,
+    /// A captured analog source remains physical state, but cannot dispatch until rest.
+    captured: bool,
     /// Scratch for rebuilding the active set.
     include: bool,
     /// The chords that block it, a range of `InputSystem::blockers`.
@@ -203,6 +205,8 @@ impl Accepted {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MotionPass {
     Keep,
+    /// Advance only due motion timers, retaining their last judged actuation and value.
+    Deadlines,
     Channel(Channel),
     All,
     /// The OS took a finger back: touch's motion bindings are judged and their runs end there, as
@@ -214,7 +218,7 @@ enum MotionPass {
 impl MotionPass {
     fn judges(self, channel: Channel) -> bool {
         match self {
-            Self::Keep => false,
+            Self::Keep | Self::Deadlines => false,
             Self::Channel(fresh) => channel == fresh,
             Self::All => true,
             Self::TouchCanceled => matches!(channel, Channel::Drag | Channel::Pinch),
@@ -235,13 +239,19 @@ impl Combined {
     fn add(&mut self, output: Output) {
         self.state = self.state.max(output.state);
         if output.state == TriggerState::Triggered {
-            self.value += output.value;
+            self.value = finite_sum(self.value, output.value);
         }
         if output.pulse {
             self.pulse = true;
-            self.pulse_value += output.value;
+            self.pulse_value = finite_sum(self.pulse_value, output.value);
         }
     }
+}
+
+/// Preserve the earlier accepted contribution if adding another would overflow.
+fn finite_sum(held: Vec2, more: Vec2) -> Vec2 {
+    let sum = held + more;
+    if sum.is_finite() { sum } else { held }
 }
 
 /// The input pipeline: an [`InputMap`], the contexts enabled from it, and device state.
@@ -396,8 +406,21 @@ impl InputSystem {
         self.push(timestamp, input);
     }
 
-    /// Queues raw input for the next update.
+    /// Queues raw input for the next update. Nonfinite numeric payloads are ignored. Motion,
+    /// modifier and binding sums that overflow are ignored at the boundary that combines them,
+    /// so action values stay finite even for synthetic input or extreme authored scales.
     pub fn push(&mut self, timestamp: Timestamp, input: RawInput) {
+        let finite = match input {
+            RawInput::MouseMotion { delta } | RawInput::MouseWheel { delta } => delta.is_finite(),
+            RawInput::Touch { phase: TouchPhase::Canceled, .. } => true,
+            RawInput::Touch { position, .. } => position.is_finite(),
+            RawInput::Virtual { value, .. } => value.is_finite(),
+            RawInput::PadAxis { value, .. } => value.is_finite(),
+            _ => true,
+        };
+        if !finite {
+            return;
+        }
         self.queue.push((timestamp, input));
     }
 
@@ -590,11 +613,15 @@ impl InputSystem {
             }
             RawInput::PadAxis { pad, axis, value } => {
                 let held = self.devices.take_held_through_loss(pad, axis);
-                // Captured but not swallowed: the axis must keep reading true.
-                if !held && value.abs() >= CAPTURE_AXIS {
-                    self.capture(|| Source::PadAxis(axis));
-                }
-                if self.devices.set_pad_axis(pad, axis, value) {
+                let captured = !held && value.abs() >= CAPTURE_AXIS && self.capture(|| Source::PadAxis(axis));
+                let changed = self.devices.set_pad_axis(pad, axis, value);
+                if changed || captured {
+                    if captured {
+                        for &index in &self.active {
+                            let reads = self.map.bindings()[index].source.reads_axis(axis);
+                            self.bindings[index].captured |= reads;
+                        }
+                    }
                     if held {
                         self.enter_held_axis(axis);
                     }
@@ -606,6 +633,16 @@ impl InputSystem {
                     self.devices.used(DeviceKind::Touch);
                 }
                 let out = self.gestures.touch(now, finger, phase, position, self.map.gestures());
+                // An up can carry the last move: settle it under the press's existing chord gate.
+                // Slop cancellation and OS cancellation keep their existing gate-first policy.
+                if out.press == Some(PressChange::Up) {
+                    if let Some(drag) = out.drag {
+                        self.add_motion(Channel::Drag, drag, now);
+                    }
+                    if let Some(pinch) = out.pinch {
+                        self.add_motion(Channel::Pinch, Vec2::new(pinch, 0.0), now);
+                    }
+                }
                 if let Some(change) = out.press
                     && self.devices.set_press(change == PressChange::Down)
                 {
@@ -615,11 +652,13 @@ impl InputSystem {
                 if out.canceled {
                     self.evaluate(now, MotionPass::TouchCanceled, Abort::Release);
                 }
-                if let Some(drag) = out.drag {
-                    self.add_motion(Channel::Drag, drag, now);
-                }
-                if let Some(pinch) = out.pinch {
-                    self.add_motion(Channel::Pinch, Vec2::new(pinch, 0.0), now);
+                if out.press != Some(PressChange::Up) {
+                    if let Some(drag) = out.drag {
+                        self.add_motion(Channel::Drag, drag, now);
+                    }
+                    if let Some(pinch) = out.pinch {
+                        self.add_motion(Channel::Pinch, Vec2::new(pinch, 0.0), now);
+                    }
                 }
                 if let Some(direction) = out.swipe {
                     // A swipe is an instant: it presses and releases at the same timestamp.
@@ -659,14 +698,7 @@ impl InputSystem {
     fn enter_held_axis(&mut self, axis: PadAxis) {
         for &index in &self.active {
             let binding = &self.map.bindings()[index];
-            let reads = match binding.source {
-                SourceId::PadAxis(read) => read == axis,
-                SourceId::PadStick(stick) => {
-                    let (x, y) = stick.axes();
-                    x == axis || y == axis
-                }
-                _ => false,
-            };
+            let reads = binding.source.reads_axis(axis);
             if reads && !self.bindings[index].memory.actuated() {
                 self.bindings[index].memory = entering(&self.map, &self.devices, index, self.frame, self.dt);
             }
@@ -677,6 +709,9 @@ impl InputSystem {
     /// opens, is judged at once, so the action starts at that motion's timestamp. The rest only
     /// add up until the update's final evaluation.
     fn add_motion(&mut self, channel: Channel, delta: Vec2, now: Timestamp) {
+        if !delta.is_finite() {
+            return;
+        }
         let first = self.devices.add_motion(channel, delta, self.frame);
         if first || self.waiting[channel.index()] {
             self.evaluate(now, MotionPass::Channel(channel), Abort::No);
@@ -695,7 +730,7 @@ impl InputSystem {
                 return;
             }
             rounds -= 1;
-            self.evaluate(deadline.max(self.time), MotionPass::Keep, Abort::No);
+            self.evaluate(deadline.max(self.time), MotionPass::Deadlines, Abort::No);
         }
     }
 
@@ -725,6 +760,17 @@ impl InputSystem {
                         if state.accepted.waiting(accepted) {
                             self.waiting[channel.index()] = true;
                         }
+                        if pass == MotionPass::Deadlines
+                            && trigger::deadline(binding.trigger, &state.memory).is_some_and(|at| at <= now)
+                        {
+                            let actuated = state.memory.actuated();
+                            let fire =
+                                trigger::evaluate(binding.trigger, &mut state.memory, actuated, now, abort);
+                            state.output.state = fire.state;
+                            state.output.pulse = fire.pulse;
+                            combined.add(state.output);
+                            continue;
+                        }
                         if !pass.judges(channel) {
                             // The pulse fired in the evaluation that produced it; replaying it
                             // would fire again for every unrelated input (review FI-006).
@@ -736,6 +782,13 @@ impl InputSystem {
                 };
                 let value = modifier::apply_all(map.modifiers(binding), raw, self.dt);
                 let actuated = is_actuated(value, binding.threshold, state.memory.actuated());
+                if state.captured {
+                    state.captured = actuated;
+                    state.memory = Memory::entering(actuated);
+                    state.output = Output::default();
+                    combined.add(state.output);
+                    continue;
+                }
                 // Motion can't let go, so a cancel ends its run. In this pass the only motion to get
                 // here is touch's, and another device's held key or armed double tap keeps `abort`.
                 let abort =
@@ -908,7 +961,7 @@ fn transition(
         if previous == ActionPhase::Idle {
             emit(Started, value);
         }
-        emit(Triggered, shaped(kind, combined.value + combined.pulse_value, true));
+        emit(Triggered, shaped(kind, finite_sum(combined.value, combined.pulse_value), true));
         state.fired += 1;
         state.triggered_since_start = true;
         if next == ActionPhase::Idle {

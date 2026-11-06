@@ -26,11 +26,15 @@ use crate::faces::MaterialOverrides;
 use crate::scene::Scene;
 use crate::show::SceneShow;
 
-/// Where a frame's CPU time went, as [`Stage`] measures it, for whoever reads and resets it each frame.
-/// Two clock reads a stage cost nothing a frame can see.
+/// CPU stage measurements, for a caller that reads and resets them each frame. These are
+/// scoped observations, not an end-to-end frame or presentation latency: caller input/events,
+/// surface acquisition/presentation and explicit GPU waits lie outside them. Hooks are included
+/// in their owning stage, except `FrameHooks::tools` when `FrameHooks::TOOLS` is true.
+/// Physics is within simulation; camera/HUD and other presentation work are within packet.
+/// Duration fields accumulate until reset; allocation fields describe the latest measured call.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FrameLaps {
-    /// The scene's fixed-step systems.
+    /// The before-fixed-step hook and the scene's fixed-step systems.
     pub scene_step: Duration,
     /// The simulation's steps.
     pub simulation: Duration,
@@ -38,7 +42,7 @@ pub struct FrameLaps {
     pub physics: Duration,
     /// The arena following the steps, and their cues fired: effects spawned and moved.
     pub cues: Duration,
-    /// `Content::update` and `Scene::follow_content`.
+    /// The before-loading hook, `Content::update` and `Scene::follow_content`.
     pub content: Duration,
     /// `Scene::animate`.
     pub(crate) animation: Duration,
@@ -46,7 +50,8 @@ pub struct FrameLaps {
     pub packet: Duration,
     /// `Renderer::prepare`.
     pub prepare: Duration,
-    /// `Renderer::record` and the frame graph's execution, its submit included.
+    /// Work after prepare through graph submission, including pass callbacks, excluding the
+    /// tools hook when `FrameHooks::TOOLS` is true.
     pub record: Duration,
     /// What each drew on the heap, on this thread: the workers that record passes count apart.
     pub animation_allocations: AllocCounts,

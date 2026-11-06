@@ -67,8 +67,7 @@ impl Client {
         stream.set_nodelay(true)?;
         stream.set_write_timeout(Some(TIMEOUT))?;
         (&stream).write_all(&Preamble::CURRENT.to_bytes())?;
-        let mut reader =
-            DeadlineReader { stream: stream.try_clone()?, deadline: Some((Stopwatch::start(), TIMEOUT)) };
+        let mut reader = DeadlineReader::new(stream.try_clone()?, Some(TIMEOUT));
         Preamble::read(&mut reader)?.check()?;
         reader.deadline = None;
         Ok(Self {
@@ -256,10 +255,16 @@ fn unexpected(expected: &'static str, found: &ReplyBody) -> LinkError {
 /// from the socket, the socket's timeout is set to the time the request has left. A timeout per
 /// read alone lets a device that drips its reply, a byte within each, take as long as it likes.
 #[derive(Debug)]
-struct DeadlineReader {
+pub(crate) struct DeadlineReader {
     stream: TcpStream,
     /// When the request started reading, and how long it may take.
     deadline: Option<(Stopwatch, Duration)>,
+}
+
+impl DeadlineReader {
+    pub(crate) fn new(stream: TcpStream, timeout: Option<Duration>) -> Self {
+        Self { stream, deadline: timeout.map(|timeout| (Stopwatch::start(), timeout)) }
+    }
 }
 
 impl Read for DeadlineReader {

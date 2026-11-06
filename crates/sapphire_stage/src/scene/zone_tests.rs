@@ -128,7 +128,7 @@ impl Walk {
         scene.ecs.world_mut().entity_mut(character).remove::<Turntable>();
         let opened =
             ZoneStage::open(&mut content, SyntheticZone::id(), STEM, start, settings, &mut renderer, &gpu);
-        scene.open_zone(opened.expect("the zone"));
+        scene.open_zone(opened.expect("the zone"), &mut content).expect("installed");
         let target = gpu.device().create_texture(&wgpu::TextureDescriptor {
             label: None,
             size: wgpu::Extent3d { width: SIDE, height: SIDE, depth_or_array_layers: 1 },
@@ -256,6 +256,33 @@ fn small_settings() -> StreamSettings {
         release: 64.0,
         budget: StreamBudget { entities: 1_000, micros: 1_000_000 },
     }
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn replacing_a_zone_does_not_orphan_its_entities_or_unmount_its_new_handles() {
+    let mut walk = Walk::new(SyntheticZone::SMALL, StreamSettings::DESKTOP, Vec3::ZERO);
+    walk.settle();
+    let drawing = walk.drawing();
+    for _ in 0..4 {
+        let next = ZoneStage::open(
+            &mut walk.content,
+            SyntheticZone::id(),
+            STEM,
+            Vec3::ZERO,
+            StreamSettings::DESKTOP,
+            &mut walk.renderer,
+            &walk.gpu,
+        )
+        .expect("replacement loaded");
+        walk.scene.open_zone(next, &mut walk.content).expect("replacement installed");
+        walk.settle();
+        assert_eq!(walk.drawing(), drawing);
+        assert!(walk.content.streaming_parts().0.is_mounted(PACK));
+        assert_eq!(walk.scene.stream_stats().expect("zone").failed, 0);
+    }
+    walk.scene.close_zone(&mut walk.content).expect("open").expect("closed");
+    assert_eq!(walk.drawing(), 1, "only the character remains");
 }
 
 /// A pack mounted after the load's prewarm builds its own keys before a cell of it arrives, unless told not

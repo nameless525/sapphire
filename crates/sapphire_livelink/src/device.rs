@@ -7,7 +7,7 @@ use std::io::{self, BufReader, BufWriter, Write};
 use std::net::{Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -28,9 +28,11 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const RETRY: Duration = Duration::from_secs(1);
 /// Pushes waiting for the app. A full queue holds a connection's reader back, never the app.
 const PUSH_QUEUE: usize = 16;
-/// Replies waiting to be written to one connection. A tool that doesn't read its replies loses
-/// those past this rather than growing the queue.
+/// Replies waiting to be written to one connection. The global accepted-request capacity is
+/// smaller, so accepted replies fit even when their tool stops reading.
 const REPLY_QUEUE: usize = 64;
+/// Accepted requests across all connections, including app work and replies not yet written.
+const IN_FLIGHT_REQUESTS: usize = 16;
 /// Connections served at once; more are closed as they come.
 const MAX_CONNECTIONS: u32 = 8;
 /// The longest name a connection hands the app (a cvar's and its value, a document's origin
@@ -94,8 +96,49 @@ pub enum Push {
 /// tool waits until its timeout.
 pub struct Responder {
     id: u32,
-    replies: SyncSender<Reply>,
+    replies: SyncSender<PendingReply>,
     shared: Arc<Shared>,
+    permit: Option<RequestPermit>,
+}
+
+/// Backpressure spans asynchronous app work, not only the transport's waiting queue.
+#[derive(Default)]
+struct InFlight {
+    count: Mutex<usize>,
+    available: Condvar,
+}
+
+struct RequestPermit(Arc<InFlight>);
+
+impl RequestPermit {
+    fn acquire(pending: Arc<InFlight>, closing: &AtomicBool) -> Option<Self> {
+        let mut count = pending.count.lock().unwrap_or_else(PoisonError::into_inner);
+        while *count >= IN_FLIGHT_REQUESTS {
+            if closing.load(Ordering::Relaxed) {
+                return None;
+            }
+            count = pending
+                .available
+                .wait_timeout(count, Duration::from_millis(100))
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+        *count += 1;
+        drop(count);
+        Some(Self(pending))
+    }
+}
+
+impl Drop for RequestPermit {
+    fn drop(&mut self) {
+        *self.0.count.lock().unwrap_or_else(PoisonError::into_inner) -= 1;
+        self.0.available.notify_one();
+    }
+}
+
+struct PendingReply {
+    reply: Reply,
+    _permit: Option<RequestPermit>,
 }
 
 impl fmt::Debug for Responder {
@@ -119,13 +162,18 @@ impl Responder {
         match &body {
             ReplyBody::Error(_) => self.shared.refused.fetch_add(1, Ordering::Relaxed),
             // Reads, which change nothing.
-            ReplyBody::Status(_) | ReplyBody::PackNeed { .. } | ReplyBody::Captured(_) => 0,
+            ReplyBody::Status(_)
+            | ReplyBody::Cvars(_)
+            | ReplyBody::PackNeed { .. }
+            | ReplyBody::Captured(_) => 0,
             _ => self.shared.applied.fetch_add(1, Ordering::Relaxed),
         };
-        // A closed connection no longer wants it; one whose tool reads none of its replies has it
-        // dropped rather than queued without end.
-        if let Err(TrySendError::Full(reply)) = self.replies.try_send(Reply { id: self.id, body }) {
-            tracing::warn!(target: LOG_TARGET, id = reply.id, "live link reply dropped: the tool isn't reading");
+        // A closed connection no longer wants it. The request permit stays with the queued
+        // reply through the socket write, so production requests cannot fill this queue.
+        if let Err(TrySendError::Full(reply)) =
+            self.replies.try_send(PendingReply { reply: Reply { id: self.id, body }, _permit: self.permit })
+        {
+            tracing::warn!(target: LOG_TARGET, id = reply.reply.id, "live link reply dropped: the tool isn't reading");
         }
     }
 
@@ -195,6 +243,7 @@ pub struct LinkCounters {
 #[derive(Default)]
 struct Shared {
     closing: AtomicBool,
+    pending: Arc<InFlight>,
     /// Connections being served, handshakes included.
     serving: AtomicU32,
     /// Connections past their handshake.
@@ -507,8 +556,8 @@ fn serve(stream: TcpStream, context: &Context, handshake: Option<Duration>) -> R
     // Each side sends its preamble first, so a tool of another version learns this one's even as
     // the connection is refused.
     (&stream).write_all(&Preamble::CURRENT.to_bytes())?;
-    stream.set_read_timeout(handshake)?;
-    Preamble::read(&mut &stream)?.check()?;
+    let mut preamble = crate::client::DeadlineReader::new(stream.try_clone()?, handshake);
+    Preamble::read(&mut preamble)?.check()?;
     stream.set_read_timeout(None)?;
 
     let (replies, outgoing) = mpsc::sync_channel(REPLY_QUEUE);
@@ -535,10 +584,11 @@ fn serve(stream: TcpStream, context: &Context, handshake: Option<Duration>) -> R
 /// Writes replies as they come, until every responder of the connection is gone or it closes.
 /// A reply too large for a frame is answered with an error instead: it is refused before any of
 /// it is written, so the connection goes on in step.
-fn write_replies(stream: TcpStream, replies: &Receiver<Reply>) {
+fn write_replies(stream: TcpStream, replies: &Receiver<PendingReply>) {
     let mut writer = BufWriter::new(&stream);
-    while let Ok(reply) = replies.recv() {
-        let written = match write_frame(&mut writer, &reply) {
+    while let Ok(pending) = replies.recv() {
+        let reply = &pending.reply;
+        let written = match write_frame(&mut writer, reply) {
             Err(LinkError::FrameTooLarge(len)) => {
                 let name = reply.body.name();
                 tracing::warn!(target: LOG_TARGET, id = reply.id, name, len, "live link reply too large for a frame");
@@ -558,14 +608,21 @@ fn write_replies(stream: TcpStream, replies: &Receiver<Reply>) {
 /// One connection's requests.
 struct Session<'a> {
     context: &'a Context,
-    replies: SyncSender<Reply>,
+    replies: SyncSender<PendingReply>,
     /// The pack being pushed, or why its push failed.
     push: Option<Result<PackPlan, String>>,
 }
 
 impl Session<'_> {
-    fn responder(&self, id: u32) -> Responder {
-        Responder { id, replies: self.replies.clone(), shared: self.context.shared.clone() }
+    fn responder(&self, id: u32) -> Option<Responder> {
+        let permit =
+            RequestPermit::acquire(self.context.shared.pending.clone(), &self.context.shared.closing)?;
+        Some(Responder {
+            id,
+            replies: self.replies.clone(),
+            shared: self.context.shared.clone(),
+            permit: Some(permit),
+        })
     }
 
     /// For the app's thread, waiting while it has [`PUSH_QUEUE`] pushes to apply.
@@ -576,7 +633,7 @@ impl Session<'_> {
 
     fn handle(&mut self, request: Request) {
         let Request { id, body } = request;
-        let reply = self.responder(id);
+        let Some(reply) = self.responder(id) else { return };
         if let Some(error) = overlong(&body) {
             tracing::debug!(target: LOG_TARGET, id, request = body.name(), error, "live link request refused");
             return reply.refuse(error);
@@ -697,6 +754,9 @@ impl ReloadTracker {
                 }
                 AssetChange::ReloadFailed { id, kind, error } => {
                     for (_, outcome) in &mut self.pending {
+                        // The reply summarizes each asset, rather than retaining an unbounded
+                        // history if the same failed asset is retried while another still loads.
+                        outcome.failed.retain(|known| known.id != *id);
                         outcome.failed.push(AssetFailure { id: *id, kind: *kind, error: error_chain(error) });
                     }
                 }
@@ -753,8 +813,76 @@ mod tests {
     /// The reply `respond` sends through a responder of its own.
     fn replied(respond: impl FnOnce(Responder)) -> Reply {
         let (replies, outgoing) = mpsc::sync_channel(1);
-        respond(Responder { id: 7, replies, shared: Arc::default() });
-        outgoing.try_recv().expect("a reply")
+        respond(Responder { id: 7, replies, shared: Arc::default(), permit: None });
+        outgoing.try_recv().expect("a reply").reply
+    }
+
+    #[test]
+    fn request_capacity_is_held_until_the_reply_is_written_or_cancelled() {
+        let pending = Arc::<InFlight>::default();
+        let closing = AtomicBool::new(false);
+        let permit = RequestPermit::acquire(pending.clone(), &closing).unwrap();
+        let (replies, outgoing) = mpsc::sync_channel(REPLY_QUEUE);
+        Responder { id: 1, replies, shared: Arc::default(), permit: Some(permit) }.refuse("a result");
+        assert_eq!(*pending.count.lock().unwrap(), 1);
+        let queued = outgoing.recv().unwrap();
+        assert_eq!(*pending.count.lock().unwrap(), 1);
+        drop(queued);
+        assert_eq!(*pending.count.lock().unwrap(), 0);
+        let permits: Vec<_> = (0..IN_FLIGHT_REQUESTS)
+            .map(|_| RequestPermit::acquire(pending.clone(), &closing).unwrap())
+            .collect();
+        closing.store(true, Ordering::Relaxed);
+        assert!(RequestPermit::acquire(pending.clone(), &closing).is_none());
+        drop(permits);
+        assert_eq!(*pending.count.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn pipelined_requests_wait_for_capacity_and_keep_every_accepted_reply() {
+        let packs = Arc::new(LivePacks::new(sapphire_assets::MemoryPackSource::new()));
+        let link = LiveLink::start(LinkMode::Listen(SocketAddr::from(([127, 0, 0, 1], 0))), packs).unwrap();
+        let address = link.address();
+        let tool = thread::spawn(move || {
+            let mut socket = TcpStream::connect(address).unwrap();
+            socket.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            socket.write_all(&Preamble::CURRENT.to_bytes()).unwrap();
+            Preamble::read(&mut socket).unwrap().check().unwrap();
+            for id in 0..=IN_FLIGHT_REQUESTS as u32 {
+                write_frame(&mut socket, &Request { id, body: RequestBody::Status }).unwrap();
+            }
+            let mut answered = std::collections::BTreeSet::new();
+            for _ in 0..=IN_FLIGHT_REQUESTS {
+                let reply: Reply = read_frame(&mut socket).unwrap();
+                assert!(answered.insert(reply.id));
+                assert!(matches!(reply.body, ReplyBody::Cvars(_)));
+            }
+            assert_eq!(answered.len(), IN_FLIGHT_REQUESTS + 1);
+        });
+        let next = || {
+            let timer = sapphire_time::Stopwatch::start();
+            loop {
+                if let Some(push) = link.poll() {
+                    break push;
+                }
+                assert!(timer.elapsed() < Duration::from_secs(10), "reader did not make progress");
+                thread::sleep(Duration::from_millis(1));
+            }
+        };
+        let mut held = Vec::new();
+        for _ in 0..IN_FLIGHT_REQUESTS {
+            let Push::Status { reply } = next() else { panic!("status request") };
+            held.push(reply);
+        }
+        assert_eq!(*link.shared.pending.count.lock().unwrap(), IN_FLIGHT_REQUESTS);
+        held.pop().unwrap().reply(ReplyBody::Cvars(Vec::new()));
+        let Push::Status { reply } = next() else { panic!("last status request") };
+        held.push(reply);
+        for reply in held {
+            reply.reply(ReplyBody::Cvars(Vec::new()));
+        }
+        tool.join().unwrap();
+        assert_eq!(link.counters().applied, 0, "listing cvars is read only");
     }
 
     #[test]

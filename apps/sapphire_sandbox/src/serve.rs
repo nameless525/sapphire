@@ -38,7 +38,6 @@ use sapphire_time::{Stopwatch, TICK_HZ};
 use crate::LOG_TARGET;
 use crate::app::create_renderer;
 use crate::fight_bench::{frame_length, steps_a_frame};
-use crate::link::FrameCapture;
 use crate::offscreen::{FORMAT, Stage};
 use crate::options::Options;
 use sapphire_stage::audio::OfflineAudio;
@@ -235,9 +234,9 @@ impl Serving {
         stage.show.fight.show.end_cue_frame(&mut stage.scene, dt, dt, 1.0, &mut ());
         // Captures asked for while the last frame was drawn: this one answers them, drawn into a
         // target that can be read back.
-        match stage.hooks.dev.take_capture() {
-            Some(request) => {
-                let capture = FrameCapture::new(&stage.gpu, self.size, FORMAT, request);
+        match stage.hooks.dev.take_capture().and_then(|request| request.start(&stage.gpu, self.size, FORMAT))
+        {
+            Some(capture) => {
                 stage.render(capture.view(), 1.0, |graph, target| capture.record(graph, target))?;
                 // No picture past a GPU error: the error's the answer, and it ends the run.
                 stage.check_gpu()?;

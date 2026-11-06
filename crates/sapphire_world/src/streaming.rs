@@ -25,6 +25,7 @@
 //! budget needs the room or its pack is unmounted, as anything unused does. What the renderer holds for
 //! it goes when the server unloads it, which the app sees to (`GpuAssets`, M3 W3).
 
+use std::collections::BTreeSet;
 use std::time::Duration;
 
 use sapphire_assets::mesh::Mesh;
@@ -167,7 +168,21 @@ impl<P> StreamPlace<P> {
         let instances = contents.instances();
         let whole = contents.mesh.as_ref().copied();
         let of_instances = instances.clone().map(|index| zone.instances[index].mesh);
-        let mesh_ids: Box<[AssetId]> = whole.into_iter().chain(of_instances).collect();
+        let count = whole.is_some() as usize + instances.len();
+        // Keep first occurrence order, including which missing dependency is diagnosed first.
+        let ids = whole.into_iter().chain(of_instances);
+        let mesh_ids = if count <= 8 {
+            let mut unique = Vec::with_capacity(count);
+            for id in ids {
+                if !unique.contains(&id) {
+                    unique.push(id);
+                }
+            }
+            unique.into_boxed_slice()
+        } else {
+            let mut seen = BTreeSet::new();
+            ids.filter(|id| seen.insert(*id)).collect()
+        };
         let items = whole.is_some() as usize + instances.len() + contents.lights().len();
         Self {
             index,
@@ -221,6 +236,7 @@ pub struct Streamer<P> {
     /// The next update places everything it can, after a load screen ([`Self::preload`]).
     unbudgeted: bool,
     stats: StreamStats,
+    stats_dirty: bool,
 }
 
 impl<P> Streamer<P> {
@@ -237,6 +253,7 @@ impl<P> Streamer<P> {
             scanned: None,
             unbudgeted: false,
             stats: StreamStats::default(),
+            stats_dirty: true,
         }
     }
 
@@ -260,7 +277,9 @@ impl<P> Streamer<P> {
     /// The load screen's half: loads until the meshes of everything within the activation radius of
     /// `focus` (in the zone's space) are ready, sending what lands through `upload`, so that the next
     /// [`Self::update`] places all of them in one frame. Call with the zone ready. A mesh that doesn't
-    /// load shows in [`StreamStats::failed`] with a warning, like any other.
+    /// load shows in [`StreamStats::failed`] with a warning, like any other. If the zone has
+    /// changed while old entities still exist, this returns without preloading: call the hosted
+    /// [`Self::update`] to remove/rebuild the old version, then preload the replacement.
     pub fn preload(
         &mut self,
         focus: [f32; 3],
@@ -338,7 +357,7 @@ impl<P> Streamer<P> {
             }
             self.work(&stopwatch, server, host);
         }
-        self.publish(stopwatch.elapsed());
+        self.publish(&stopwatch);
     }
 
     /// Takes everything down at once and lets go of what it holds, the zone's handle aside: a zone
@@ -356,6 +375,14 @@ impl<P> Streamer<P> {
         self.pending.clear();
         self.built = None;
         self.scanned = None;
+        self.unbudgeted = false;
+        self.stats_dirty = true;
+        self.stats.places = 0;
+        self.stats.active = 0;
+        self.stats.loading = 0;
+        self.stats.loaded = 0;
+        self.stats.failed = 0;
+        self.stats.pending = 0;
         self.stats.entities = 0;
     }
 
@@ -372,7 +399,11 @@ impl<P> Streamer<P> {
             return false;
         };
         if self.built != Some(generation) {
-            debug_assert!(self.places.iter().all(|place| place.placed.is_empty()));
+            // Preloading has no host with which to remove an older version's entities.
+            // Let the next hosted update rebuild it before another preload is attempted.
+            if self.places.iter().any(|place| !place.placed.is_empty()) {
+                return false;
+            }
             self.build(generation, server);
         }
         true
@@ -405,6 +436,7 @@ impl<P> Streamer<P> {
             .map(|(index, cell)| StreamPlace::new(index as u32, &cell.contents, zone));
         self.places = backdrop.into_iter().chain(cells).collect();
         self.pending = Vec::with_capacity(self.places.len());
+        self.stats_dirty = true;
         self.built = Some(generation);
         self.scanned = None;
     }
@@ -413,6 +445,7 @@ impl<P> Streamer<P> {
     /// makes, nearest first.
     fn rescan(&mut self, focus: [f32; 2]) {
         profiling::scope!("Streamer::rescan");
+        self.stats_dirty = true;
         self.scanned = Some(focus);
         let StreamSettings { activate, load, release, .. } = self.settings;
         for place in &mut self.places {
@@ -457,6 +490,7 @@ impl<P> Streamer<P> {
         server: &mut AssetServer,
         host: &mut H,
     ) {
+        self.stats_dirty |= !self.pending.is_empty();
         let budget = self.settings.budget;
         let unbudgeted = std::mem::take(&mut self.unbudgeted);
         let limit = Duration::from_micros(u64::from(budget.micros));
@@ -541,22 +575,26 @@ impl<P> Streamer<P> {
         self.pending.retain(|&index| !places[index as usize].settled());
     }
 
-    fn publish(&mut self, time: Duration) {
+    fn publish(&mut self, stopwatch: &Stopwatch) {
         let stats = &mut self.stats;
-        stats.places = self.places.len() as u32;
-        (stats.active, stats.loading, stats.loaded, stats.failed) = (0, 0, 0, 0);
-        stats.entities = 0;
-        for place in &self.places {
-            stats.entities += place.placed.len() as u32;
-            match &place.meshes {
-                Meshes::None => {}
-                Meshes::Loading(_) => stats.loading += 1,
-                Meshes::Failed => stats.failed += 1,
-                Meshes::Loaded(_) if place.placed.len() == place.items as usize => stats.active += 1,
-                Meshes::Loaded(_) => stats.loaded += 1,
+        if std::mem::take(&mut self.stats_dirty) {
+            stats.places = self.places.len() as u32;
+            (stats.active, stats.loading, stats.loaded, stats.failed) = (0, 0, 0, 0);
+            stats.entities = 0;
+            for place in &self.places {
+                stats.entities += place.placed.len() as u32;
+                match &place.meshes {
+                    Meshes::None => {}
+                    Meshes::Loading(_) => stats.loading += 1,
+                    Meshes::Failed => stats.failed += 1,
+                    Meshes::Loaded(_) if place.placed.len() == place.items as usize => stats.active += 1,
+                    Meshes::Loaded(_) => stats.loaded += 1,
+                }
             }
+            stats.pending = self.pending.len() as u32;
         }
-        stats.pending = self.pending.len() as u32;
+        // Include accounting and readiness polling in the reported update, even when idle.
+        let time = stopwatch.elapsed();
         stats.time = time;
         stats.peak_time = stats.peak_time.max(time);
         if time > Duration::from_micros(u64::from(self.settings.budget.micros)) {

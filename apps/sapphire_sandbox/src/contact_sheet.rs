@@ -304,6 +304,7 @@ pub(crate) fn run(
     let mut sheet = Sheet::new(framing, samples.len(), yaws.len()).map_err(AppInitError::msg)?;
     let target = stage.target(framing.width, framing.height, wgpu::TextureUsages::COPY_SRC);
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+    let readback = Readback::new(&stage.gpu, framing.width, framing.height);
     let mut step = 0;
     for (column, sample) in samples.iter().enumerate() {
         while step < sample.step {
@@ -314,7 +315,6 @@ pub(crate) fn run(
         }
         for (row, &yaw) in yaws.iter().enumerate() {
             *stage.scene.camera_mut() = framing.camera(yaw);
-            let readback = Readback::new(&stage.gpu, framing.width, framing.height);
             stage.render(&view, 1.0, |graph, target| readback.record(graph, target))?;
             let frame = readback.read(&stage.gpu).map_err(AppInitError::msg)?;
             stage.scene.end_frame();

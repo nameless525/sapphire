@@ -409,3 +409,77 @@ fn no_mesh_reaches_a_host_before_the_server_says_its_ready() {
     settle(&mut streamer, focus, &mut server, &mut host);
     assert!(host.live() > 0);
 }
+
+#[test]
+fn shared_dependencies_are_held_once_but_every_instance_is_placed() {
+    // The merged mesh makes these input counts 7, 8, 9 and 26.
+    for instances in [6, 7, 8, 25] {
+        let zone = SyntheticZone { side: 1, instances, lights: 0, ..SMALL };
+        let (mut server, _) = server_over(zone);
+        let mut streamer = streamer(&mut server, settings());
+        let mut host = Ledger::default();
+        settle(&mut streamer, [16.0, 0.0, 16.0], &mut server, &mut host);
+        let cell = streamer.places.iter().find(|place| place.index == 0).unwrap();
+        assert_eq!(
+            cell.mesh_ids.as_ref(),
+            &[SyntheticZone::cell_mesh(0, 0), SyntheticZone::instance_mesh()],
+            "first occurrence order is also the order missing dependencies are diagnosed"
+        );
+        assert_eq!(
+            host.meshes.iter().filter(|(_, mesh, _)| *mesh == SyntheticZone::instance_mesh()).count(),
+            instances as usize
+        );
+        let before = streamer.stats();
+        for _ in 0..4 {
+            frame(&mut streamer, [16.0, 0.0, 16.0], &mut server, &mut host);
+        }
+        let after = streamer.stats();
+        assert_eq!(
+            (after.active, after.loaded, after.loading, after.failed, after.entities, after.pending),
+            (before.active, before.loaded, before.loading, before.failed, host.live() as u32, 0)
+        );
+        streamer.clear(&mut host);
+        let cleared = streamer.stats();
+        assert_eq!(
+            (
+                cleared.places,
+                cleared.active,
+                cleared.loaded,
+                cleared.loading,
+                cleared.failed,
+                cleared.entities,
+                cleared.pending
+            ),
+            (0, 0, 0, 0, 0, 0, 0)
+        );
+        assert_eq!(host.live(), 0);
+    }
+}
+
+#[test]
+fn preload_after_a_zone_reload_does_not_abandon_existing_entities() {
+    let (mut server, source) = server_over(SMALL);
+    let mut streamer = streamer(&mut server, settings());
+    let mut host = Ledger::default();
+    let focus = [16.0, 0.0, 16.0];
+    settle(&mut streamer, focus, &mut server, &mut host);
+    let before = host.live();
+    let next = SyntheticZone { side: 2, instances: 5, lights: 0, ..SMALL };
+    source.insert(PACK, next.pack(Vec::new()).unwrap());
+    server.remount(PACK).unwrap();
+    let timer = Stopwatch::start();
+    while ready_generation(streamer.zone(), &server)
+        .is_none_or(|generation| streamer.built == Some(generation))
+    {
+        server.update();
+        server.upload(accept);
+        server.wait(Duration::from_millis(1));
+        assert!(timer.elapsed() < Duration::from_secs(30), "the replacement did not arrive");
+    }
+    assert_ne!(streamer.built, ready_generation(streamer.zone(), &server));
+    streamer.preload(focus, &mut server, accept);
+    assert_eq!(host.live(), before, "preload cannot remove entities without a host");
+    settle(&mut streamer, focus, &mut server, &mut host);
+    assert_eq!(host.live(), 1 + 4 + 4 * 5);
+    assert!(host.removed >= before as u64);
+}

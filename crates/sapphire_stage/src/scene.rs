@@ -1081,7 +1081,10 @@ impl Scene {
         }
         let clip_changed = content.take_clip_changed();
         let character_changed = content.take_character_changed();
-        if character_changed {
+        if character_changed
+            && self.ecs.world().get::<ClipPlayer>(self.character).is_none()
+            && self.ecs.world().get::<GraphDriver>(self.character).is_none()
+        {
             match lookdev::held(content) {
                 Ok((pose, figure)) => self.hold_character(pose, figure),
                 Err(error) => {
@@ -1105,6 +1108,9 @@ impl Scene {
     /// as it stands, with its turntable gone, since root motion writes its transform now. The clip
     /// runs on its clock: hitstop and pause freeze its pose.
     pub fn play_clip(&mut self, player: ClipPlayer) {
+        self.graph_show = None;
+        self.character_plays_graph = false;
+        self.character_waits = false;
         self.start_clip(self.character, player);
     }
 
@@ -1118,6 +1124,7 @@ impl Scene {
         player.start_at(start, base);
         let pose = player.render_pose();
         character.remove::<Turntable>();
+        character.remove::<GraphDriver>();
         character.insert((player, pose, figure));
         self.animating = true;
         self.extract_poses();
@@ -1191,7 +1198,9 @@ impl Scene {
                         }
                     }
                 }
-                *playing = player;
+                let pose = player.render_pose();
+                let figure = player.render_figure();
+                self.publish_character_driver(player, pose, figure);
             }
             Err(error) => {
                 tracing::warn!(target: LOG_TARGET, error, "the look-dev character keeps its clip's pose");
@@ -1211,7 +1220,11 @@ impl Scene {
         let driver = driver.at(base);
         let pose = driver.render_pose();
         character.remove::<Turntable>();
+        character.remove::<ClipPlayer>();
         character.insert((driver, pose, figure));
+        self.animating = self.players.iter(world).next().is_some();
+        self.character_plays_graph = false;
+        self.character_waits = false;
         self.graph_show = Some(Box::new(show));
         self.extract_poses();
     }
@@ -1272,7 +1285,6 @@ impl Scene {
     }
 
     /// The clips `entity`'s graph player may still read, which whatever replaces its graph has to keep.
-    /// The clips `entity`'s graph player may still read, which whatever replaces its graph has to keep.
     pub fn clips_in_use(&self, entity: Option<Entity>) -> Vec<sapphire_assets::AssetId> {
         let playing = entity.and_then(|entity| self.ecs.world().get::<GraphDriver>(entity));
         playing.map_or_else(Vec::new, |driver| driver.player.clips_in_use().collect())
@@ -1309,7 +1321,9 @@ impl Scene {
                             }
                         }
                     }
-                    *playing = driver;
+                    let pose = driver.render_pose();
+                    let figure = driver.render_figure();
+                    self.publish_character_driver(driver, pose, figure);
                 }
                 Err(error) => {
                     self.character_waits = true;
@@ -1522,6 +1536,17 @@ impl Scene {
         self.pushed_effects |= variants;
     }
 
+    /// Publishes a prepared driver and the palette, morph weights and lighting shape that fit
+    /// it. Binding and continuation preparation must finish before any of these change.
+    fn publish_character_driver(&mut self, driver: impl Bundle, pose: RenderPose, figure: Figure) {
+        self.figure = figure;
+        let mut character = self.ecs.world_mut().entity_mut(self.character);
+        character.insert((driver, pose, figure));
+        if let Some(mut rig) = character.get_mut::<CharacterLightRig>() {
+            rig.head = figure.head;
+        }
+    }
+
     /// Holds the character in `pose`, making `figure`: `Extract` sends it if it differs from the
     /// one the character has.
     fn hold_character(&mut self, pose: RenderPose, figure: Figure) {
@@ -1529,6 +1554,9 @@ impl Scene {
         let mut character = self.ecs.world_mut().entity_mut(self.character);
         if let Some(mut held) = character.get_mut::<RenderPose>() {
             held.set_if_neq(pose);
+        }
+        if let Some(mut held) = character.get_mut::<Figure>() {
+            held.set_if_neq(figure);
         }
         if let Some(mut rig) = character.get_mut::<CharacterLightRig>() {
             rig.head = figure.head;
@@ -1560,7 +1588,13 @@ impl Scene {
     /// itself and of its graph from then on, as it does with [`Self::play_graph`].
     pub fn pose_character_by_graph(&mut self, driver: GraphDriver) {
         let figure = self.figure;
-        self.ecs.world_mut().entity_mut(self.character).insert((driver, figure));
+        let mut character = self.ecs.world_mut().entity_mut(self.character);
+        character.remove::<ClipPlayer>();
+        character.remove::<Turntable>();
+        character.insert((driver, figure));
+        self.animating = self.players.iter(self.ecs.world()).next().is_some();
+        self.graph_show = None;
+        self.character_waits = false;
         self.character_plays_graph = true;
     }
 
@@ -1694,6 +1728,12 @@ impl Scene {
             show.step();
         }
         debug_draw::end_step();
+    }
+
+    /// Prepares the entity clock query after assembling the scene, before the first step.
+    /// This may allocate during setup. It leaves the scene at its current time.
+    pub fn prepare_clock_query(&mut self) {
+        self.ecs.prepare_clock_query();
     }
 
     /// Runs the schedules of a fixed step once, when everything's spawned and before the first step
@@ -2593,6 +2633,46 @@ mod tests {
             GraphDriver::new(player, FigureJoints::of_joints(&skeleton_pose_rest(), 2, 0.0, [3, 4]))
         }
 
+        #[test]
+        fn replacing_a_rooted_clip_with_a_rootless_clip_restores_its_base() {
+            let bytes = clip().to_cooked().expect("cooked");
+            let rooted = Clip::read(&bytes).expect("rooted clip");
+            let mut rootless = clip();
+            rootless.root = None;
+            rootless.rotation_ticks.truncate(4);
+            rootless.rotation_keys.truncate(4);
+            rootless.vector_ticks.truncate(2);
+            rootless.vector_keys.truncate(2);
+            let bytes = rootless.to_cooked().expect("cooked");
+            let rootless = Clip::read(&bytes).expect("rootless clip");
+            let mut scene = stage();
+            scene.play_clip(player().with_root_motion(true));
+            let character = scene.character;
+            let base = scene.ecs.world().get::<RenderTransform>(character).expect("transform").0;
+            for _ in 0..15 {
+                scene.step();
+            }
+            scene.animate_clip(Some((rooted, 0)), 1.0);
+            assert_ne!(scene.ecs.world().get::<RenderTransform>(character).expect("transform").0, base);
+            scene.animate_clip(Some((rootless, 1)), 1.0);
+            assert_eq!(scene.ecs.world().get::<RenderTransform>(character).expect("transform").0, base);
+        }
+
+        #[test]
+        fn switching_animation_modes_leaves_one_driver() {
+            let clip = clip().to_cooked().expect("cooked");
+            let clip = Clip::read(&clip).expect("clip");
+            let table = ClipTable::new(0, [(GRAPH_CLIP, Some(clip))].into_iter());
+            let mut scene = stage();
+            scene.play_graph(driver(&table), GraphShow::new(GraphScript::Stand));
+            scene.play_clip(player());
+            assert!(scene.ecs.world().get::<GraphDriver>(scene.character).is_none());
+            assert!(scene.graph_show.is_none());
+            scene.play_graph(driver(&table), GraphShow::new(GraphScript::Stand));
+            assert!(scene.ecs.world().get::<ClipPlayer>(scene.character).is_none());
+            assert!(!scene.animating);
+        }
+
         fn graph_frame(scene: &mut Scene, table: &ClipTable<'_>, alpha: f32, id: InstanceId) -> Drawn {
             scene.animate_graph(table, alpha);
             let drawn = drawn(scene, alpha, id);
@@ -2606,7 +2686,7 @@ mod tests {
         fn a_graph_poses_the_character_and_its_actor_places_it() {
             let bytes = clip().to_cooked().expect("cooked");
             let cooked = Clip::read(&bytes).expect("a valid clip");
-            let table = ClipTable::new([(GRAPH_CLIP, Some(cooked), 0)].into_iter());
+            let table = ClipTable::new(0, [(GRAPH_CLIP, Some(cooked))].into_iter());
             let mut scene = stage();
             scene.play_graph(driver(&table), GraphShow::new(GraphScript::Cancel));
             let id = extract::instance_id(scene.character);
@@ -2638,7 +2718,7 @@ mod tests {
         fn a_stopped_clock_costs_a_graph_nothing() {
             let bytes = clip().to_cooked().expect("cooked");
             let cooked = Clip::read(&bytes).expect("a valid clip");
-            let table = ClipTable::new([(GRAPH_CLIP, Some(cooked), 0)].into_iter());
+            let table = ClipTable::new(0, [(GRAPH_CLIP, Some(cooked))].into_iter());
             let mut scene = stage();
             scene.play_graph(driver(&table), GraphShow::new(GraphScript::Hitstop));
             let id = extract::instance_id(scene.character);
@@ -2663,7 +2743,7 @@ mod tests {
         fn a_graph_costs_nothing_unasked_and_allocates_nothing_when_it_plays() {
             let bytes = clip().to_cooked().expect("cooked");
             let cooked = Clip::read(&bytes).expect("a valid clip");
-            let table = ClipTable::new([(GRAPH_CLIP, Some(cooked), 0)].into_iter());
+            let table = ClipTable::new(0, [(GRAPH_CLIP, Some(cooked))].into_iter());
 
             let mut unasked = stage();
             unasked.animate_graph(&table, 1.0);
@@ -2676,7 +2756,7 @@ mod tests {
             let ((), counts) = sapphire_core::alloc::count_in_scope(|| {
                 for _ in 0..70 {
                     scene.step();
-                    scene.animate_graph(&ClipTable::new([(GRAPH_CLIP, Some(cooked), 0)].into_iter()), 0.5);
+                    scene.animate_graph(&ClipTable::new(0, [(GRAPH_CLIP, Some(cooked))].into_iter()), 0.5);
                 }
             });
             if sapphire_core::alloc::PER_THREAD_COUNTS {
@@ -2690,7 +2770,7 @@ mod tests {
         fn a_graphs_springs_run_on_its_clock() {
             let bytes = clip().to_cooked().expect("cooked");
             let cooked = Clip::read(&bytes).expect("a valid clip");
-            let table = ClipTable::new([(GRAPH_CLIP, Some(cooked), 0)].into_iter());
+            let table = ClipTable::new(0, [(GRAPH_CLIP, Some(cooked))].into_iter());
             let rig = CharacterRig {
                 joint_count: 5,
                 springs: vec![Spring {

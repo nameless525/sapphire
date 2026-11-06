@@ -1553,3 +1553,21 @@ fn references_inactive_during_generation_changes_do_not_reuse_old_data() {
     let spine = turn_of(&player, SPINE);
     assert!(spine.abs_diff_eq(Quat::from_rotation_y(0.05), 2e-3), "{spine}");
 }
+
+#[test]
+fn a_source_revision_keeps_all_u64_bits_on_a_frozen_clock() {
+    let original = fixture();
+    let mut replacement = fixture();
+    let breath = replacement.clips.iter_mut().find(|(name, _, _)| *name == "breath").unwrap();
+    breath.2 = turning(60, SPINE, Vec3::Y, 0.8, 1.4).to_cooked().unwrap();
+    let original_source = original.source();
+    let replacement_source = replacement.source();
+    let input = idle(30.0);
+    let mut player = original.player(&layered());
+    player.evaluate(&input, original_source.as_slice(), 0);
+    let revision = 1_u64 << 32;
+    assert!(player.evaluate(&input, replacement_source.as_slice(), revision));
+    let mut fresh = replacement.player(&layered());
+    fresh.evaluate(&input, replacement_source.as_slice(), revision);
+    assert_eq!(bits(player.pose().locals()), bits(fresh.pose().locals()));
+}

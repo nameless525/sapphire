@@ -91,65 +91,115 @@ struct Look {
 #[derive(Default)]
 pub struct PartyLooks {
     looks: [Look; LOOKS],
+    prepared_material: Option<PreparedMaterial>,
+    prepared_character: Option<PreparedCharacter>,
+}
+
+/// Only handles created for this upload are owned here; published copies remain untouched.
+struct PreparedMaterial {
+    id: AssetId,
+    generation: u32,
+    materials: [Option<MaterialHandle>; LOOKS],
+}
+
+/// Uploads stay private until the primary character and every copy can be adopted together.
+struct PreparedCharacter {
+    generation: u32,
+    meshes: [Option<MeshHandle>; LOOKS],
 }
 
 impl UploadWatcher for PartyLooks {
-    /// A material the renderer has just taken: each look recoloring it makes its copy, or, if it's a new
-    /// version (hot reload), replaces it.
-    fn take_material<'t>(
+    fn prepare_material<'t>(
         &mut self,
         id: AssetId,
         generation: u32,
         material: &ArchivedMaterial,
         textures: &dyn Fn(AssetId) -> Option<&'t GpuTexture>,
         renderer: &mut Renderer,
-    ) -> Result<(), UploadError> {
-        for (look, tint) in self.looks.iter_mut().zip(&TINTS) {
+    ) -> Result<Vec<(MaterialHandle, MaterialHandle)>, UploadError> {
+        self.discard_material(renderer);
+        self.prepared_material = Some(PreparedMaterial { id, generation, materials: [None; LOOKS] });
+        let prepared = self.prepared_material.as_mut().expect("preparation began above");
+        let mut replacements = Vec::with_capacity(LOOKS);
+        for ((look, tint), pending) in self.looks.iter().zip(&TINTS).zip(&mut prepared.materials) {
             let Some(tint) = tint.of(id) else { continue };
-            let held = look.materials.get_mut(&id);
-            if held.as_ref().is_some_and(|held| held.0 >= generation) {
+            let held = look.materials.get(&id);
+            if held.is_some_and(|held| held.0 >= generation) {
                 continue;
             }
             let mut copy = material.to_material()?;
             recolor(&mut copy, tint);
             let bytes = copy.to_cooked()?;
             let copy = Material::read(&bytes)?;
-            match held {
-                Some(held) => {
-                    renderer.update_material(held.1, copy, textures)?;
-                    held.0 = generation;
-                }
-                None => {
-                    let handle = renderer.upload_material(copy, textures)?;
-                    look.materials.insert(id, (generation, handle));
-                }
+            let handle = renderer.upload_material(copy, textures)?;
+            *pending = Some(handle);
+            if let Some((_, existing)) = held {
+                replacements.push((*existing, handle));
             }
         }
-        Ok(())
+        Ok(replacements)
     }
 
-    /// The character's mesh, which the renderer has just taken, with its materials through `materials`
-    /// (the server uploads dependencies first): each look makes its copy, or replaces it.
-    fn take_character(
+    fn commit_material(&mut self) {
+        let Some(prepared) = self.prepared_material.take() else { return };
+        for (look, pending) in self.looks.iter_mut().zip(prepared.materials) {
+            if let Some(handle) = pending {
+                let stable = look.materials.get(&prepared.id).map_or(handle, |held| held.1);
+                look.materials.insert(prepared.id, (prepared.generation, stable));
+            }
+        }
+    }
+
+    fn discard_material(&mut self, renderer: &mut Renderer) {
+        if let Some(prepared) = self.prepared_material.take() {
+            for handle in prepared.materials.into_iter().flatten() {
+                renderer.free_material(handle);
+            }
+        }
+    }
+
+    fn prepare_character(
         &mut self,
         generation: u32,
         mesh: &ArchivedMesh,
         materials: &dyn Fn(AssetId) -> Option<MaterialHandle>,
         renderer: &mut Renderer,
-    ) -> Result<(), UploadError> {
-        for look in &mut self.looks {
-            let own = &look.materials;
-            let resolve = |material| own.get(&material).map(|held| held.1).or_else(|| materials(material));
-            match &mut look.mesh {
-                Some(held) if held.0 >= generation => {}
-                Some(held) => {
-                    renderer.update_mesh(held.1, mesh, resolve)?;
-                    held.0 = generation;
-                }
-                None => look.mesh = Some((generation, renderer.upload_mesh_with_slots(mesh, resolve)?)),
+    ) -> Result<Vec<(MeshHandle, MeshHandle)>, UploadError> {
+        self.discard_character(renderer);
+        self.prepared_character = Some(PreparedCharacter { generation, meshes: [None; LOOKS] });
+        let prepared = self.prepared_character.as_mut().expect("preparation began above");
+        let mut replacements = Vec::with_capacity(LOOKS);
+        for (look, pending) in self.looks.iter().zip(&mut prepared.meshes) {
+            if look.mesh.is_some_and(|held| held.0 >= generation) {
+                continue;
+            }
+            let resolve =
+                |material| look.materials.get(&material).map(|held| held.1).or_else(|| materials(material));
+            let handle = renderer.upload_mesh_with_slots(mesh, resolve)?;
+            *pending = Some(handle);
+            if let Some((_, existing)) = look.mesh {
+                replacements.push((existing, handle));
             }
         }
-        Ok(())
+        Ok(replacements)
+    }
+
+    fn commit_character(&mut self) {
+        let Some(prepared) = self.prepared_character.take() else { return };
+        for (look, pending) in self.looks.iter_mut().zip(prepared.meshes) {
+            if let Some(handle) = pending {
+                let stable = look.mesh.map_or(handle, |held| held.1);
+                look.mesh = Some((prepared.generation, stable));
+            }
+        }
+    }
+
+    fn discard_character(&mut self, renderer: &mut Renderer) {
+        if let Some(prepared) = self.prepared_character.take() {
+            for handle in prepared.meshes.into_iter().flatten() {
+                renderer.free_mesh(handle);
+            }
+        }
     }
 
     /// A new renderer holds none of the looks' copies, and they come again as it uploads.
@@ -212,6 +262,138 @@ mod tests {
     use sapphire_gameplay::{ActorActions, Buttons, Stick, TickActions};
 
     use super::*;
+
+    /// A later copy's validation/upload failure leaves both published copies at the old version.
+    #[test]
+    #[ignore = "needs a GPU; cargo test -p game_combat prepared_party_copies_publish_together -- --ignored"]
+    fn prepared_party_copies_publish_together() {
+        use std::cell::Cell;
+
+        use sapphire_assets::material::AnimeCharacterMaterial;
+        use sapphire_assets::mesh::{
+            MaterialSlot, Mesh, PositionFormat, SlotMaterial, Submesh, VERTEX_COLOR_NEUTRAL, Vertex,
+            VertexFlags,
+        };
+        use sapphire_assets::texture::Swizzle;
+        use sapphire_math::Vec3;
+        use sapphire_render::RenderSettings;
+        use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgpu};
+
+        let instance = GpuInstance::new(&GpuInstanceDesc::default()).expect("instance");
+        let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), None).expect("device");
+        let mut renderer =
+            Renderer::new(&gpu, wgpu::TextureFormat::Rgba8UnormSrgb, RenderSettings::default())
+                .expect("renderer");
+        let mut packets = sapphire_render::FramePacketRing::new();
+        let target = gpu.device().create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d { width: 16, height: 16, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let view = target.create_view(&Default::default());
+        let mut executor = sapphire_render::graph::GraphExecutor::new();
+        let mut settle = |renderer: &mut Renderer| {
+            // Free requests retire through ordinary frame fences, including material uses
+            // released by a discarded mesh; wait and prepare again before counting slots.
+            for _ in 0..3 {
+                let camera =
+                    sapphire_render::CameraData::look_at(Vec3::Z, Vec3::ZERO, Vec3::Y, 0.9, 1.0, 0.05);
+                packets.begin().views.push(sapphire_render::ViewData::new(camera));
+                renderer.prepare(&gpu, packets.current());
+                let mut graph = sapphire_render::graph::FrameGraph::new();
+                let output = graph.import_texture("target", &view);
+                renderer.record(&mut graph, output);
+                executor.execute(&gpu, graph).expect("empty frame");
+                gpu.device().poll(wgpu::PollType::wait_indefinitely()).expect("finished frame");
+            }
+        };
+        let material = |green| {
+            Material::from_document(
+                &AnimeCharacterMaterial { base_color: [1.0, green, 1.0, 1.0], ..Default::default() },
+                &[Swizzle::IDENTITY; AnimeCharacterMaterial::TEXTURE_SLOTS.len()],
+            )
+            .expect("finite source material")
+            .to_cooked()
+            .expect("cooked")
+        };
+        let bytes = material(1.0);
+        let source = Material::read(&bytes).expect("valid");
+        let mut looks = PartyLooks::default();
+        assert!(
+            looks.prepare_material(SHOES, 1, source, &|_| None, &mut renderer).expect("copies").is_empty()
+        );
+        assert!(looks.looks.iter().all(|look| look.materials.is_empty()), "preparation is private");
+        looks.commit_material();
+        let stable = looks.looks.each_ref().map(|look| look.materials[&SHOES].1);
+        let materials = renderer.stats().materials;
+
+        // The silver look's green multiplier is 1; the violet look's is 3.6.
+        let overflowing = material(f32::MAX / 2.0);
+        let overflowing = Material::read(&overflowing).expect("the original is valid");
+        assert!(looks.prepare_material(SHOES, 2, overflowing, &|_| None, &mut renderer).is_err());
+        let pending = &looks.prepared_material.as_ref().expect("pending cleanup").materials;
+        assert!(pending[0].is_some() && pending[1].is_none(), "the second copy fails");
+        assert_eq!(looks.looks.each_ref().map(|look| look.materials[&SHOES]), stable.map(|h| (1, h)));
+        looks.discard_material(&mut renderer);
+        settle(&mut renderer);
+        assert_eq!(renderer.stats().materials, materials, "the temporary copy is freed");
+        let replacements = looks.prepare_material(SHOES, 2, source, &|_| None, &mut renderer).expect("retry");
+        renderer.adopt_materials(&replacements).expect("compatible prepared copies");
+        looks.commit_material();
+        settle(&mut renderer);
+        assert_eq!(looks.looks.each_ref().map(|look| look.materials[&SHOES]), stable.map(|h| (2, h)));
+        assert_eq!(renderer.stats().materials, materials);
+
+        let external = AssetId::from_text("00000000-0000-4000-8000-000000000001");
+        let vertex = |position| Vertex {
+            position,
+            normal: [0.0, 0.0, 1.0],
+            outline_normal: [0.0, 0.0, 1.0],
+            uv: [0.0; 2],
+            color: VERTEX_COLOR_NEUTRAL,
+            flags: VertexFlags::NONE,
+        };
+        let mesh = Mesh::from_vertices(
+            &[vertex([0.0, 0.0, 0.0]), vertex([1.0, 0.0, 0.0]), vertex([0.0, 1.0, 0.0])],
+            vec![0, 1, 2],
+            vec![Submesh { first_index: 0, index_count: 3, material: 0 }],
+            vec![MaterialSlot { name: "external".into(), material: SlotMaterial::Asset(external) }],
+            PositionFormat::Unorm16,
+        )
+        .to_cooked()
+        .expect("cooked mesh");
+        let mesh = Mesh::read(&mesh).expect("valid mesh");
+        looks.prepare_character(1, mesh, &|_| Some(stable[0]), &mut renderer).expect("initial meshes");
+        assert!(looks.meshes(MeshHandle::from_raw(0)).is_none());
+        looks.commit_character();
+        let meshes = looks.looks.each_ref().map(|look| look.mesh.expect("published").1);
+        let count = renderer.stats().meshes;
+        let calls = Cell::new(0);
+        let fail_second = |_| {
+            let call = calls.get();
+            calls.set(call + 1);
+            (call == 0).then_some(stable[0])
+        };
+        assert!(looks.prepare_character(2, mesh, &fail_second, &mut renderer).is_err());
+        let pending = &looks.prepared_character.as_ref().expect("pending cleanup").meshes;
+        assert!(pending[0].is_some() && pending[1].is_none());
+        assert_eq!(looks.looks.each_ref().map(|look| look.mesh), meshes.map(|h| Some((1, h))));
+        looks.discard_character(&mut renderer);
+        settle(&mut renderer);
+        assert_eq!(renderer.stats().meshes, count);
+        let replacements =
+            looks.prepare_character(2, mesh, &|_| Some(stable[0]), &mut renderer).expect("retry");
+        renderer.adopt_meshes(&replacements).expect("prepared meshes");
+        looks.commit_character();
+        settle(&mut renderer);
+        assert_eq!(looks.looks.each_ref().map(|look| look.mesh), meshes.map(|h| Some((2, h))));
+        assert_eq!(renderer.stats().meshes, count);
+    }
 
     /// A material's sidecar moving its ID would leave a look's tint matching nothing, with no error.
     #[test]

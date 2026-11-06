@@ -1,5 +1,7 @@
 //! [`EffectLibrary`]: named effect presets, as a document.
 
+use std::collections::BTreeSet;
+
 use bevy_ecs::prelude::Resource;
 use bevy_reflect::TypePath;
 use sapphire_reflect::Versioned;
@@ -99,11 +101,12 @@ impl EffectLibrary {
         if presets.len() > usize::from(u16::MAX) + 1 {
             return Err(EffectLibraryError::TooMany);
         }
+        let mut names = BTreeSet::new();
         for (index, EffectPreset { name, layers }) in presets.iter().enumerate() {
             if name.is_empty() {
                 return Err(EffectLibraryError::EmptyName(index));
             }
-            if presets[..index].iter().any(|earlier| earlier.name == *name) {
+            if !names.insert(name.as_str()) {
                 return Err(EffectLibraryError::DuplicateName(name.clone()));
             }
             if layers.is_empty() || layers.len() > MAX_PRESET_LAYERS {

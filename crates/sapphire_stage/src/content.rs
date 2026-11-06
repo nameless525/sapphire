@@ -74,6 +74,7 @@
 //! `sapphire_livelink::LivePacks`), which serves packs pushed from the desktop in place of the
 //! platform's; a pushed pack is remounted the same way (`Content::apply_pack`).
 
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::io;
 #[cfg(feature = "dev")]
@@ -108,7 +109,7 @@ use sapphire_time::Stopwatch;
 use sapphire_timeline::Timeline;
 
 use crate::LOG_TARGET;
-use crate::anim_graph::ClipTable;
+use crate::anim_graph::{ClipTable, MAX_HELD_CLIPS};
 use crate::environment;
 use crate::faces::{self, MaterialOverrides};
 use crate::foliage::{self, FoliageMeshes};
@@ -322,6 +323,10 @@ impl GpuAssets {
                 self.texture_bytes -= old.object.bytes();
             }
         } else if let Some(material) = upload.get::<Material>() {
+            if self.materials.get(&id).is_some_and(|held| held.slot == slot && held.generation >= generation)
+            {
+                return Ok(());
+            }
             let overridden = self.overridden(material)?;
             let material = match &overridden {
                 Some(bytes) => Material::read(bytes)?,
@@ -329,58 +334,118 @@ impl GpuAssets {
             };
             let textures = &self.textures;
             let resolve = |texture| textures.get(&texture).map(|held| &held.object);
-            match self.materials.get_mut(&id).filter(|held| held.slot == slot) {
-                Some(held) if held.generation >= generation => {}
-                Some(held) => {
-                    renderer.update_material(held.object, material, resolve)?;
-                    held.generation = generation;
+            let old = self.materials.get(&id).filter(|held| held.slot == slot).map(|held| held.object);
+            let object = if let Some(watcher) = &mut self.watcher {
+                let prepared = renderer.upload_material(material, resolve)?;
+                let mut adoptions: Vec<_> = old.into_iter().map(|old| (old, prepared)).collect();
+                let staged = (|| {
+                    adoptions.extend(watcher.prepare_material(id, generation, material, &resolve, renderer)?);
+                    renderer.adopt_materials(&adoptions)?;
+                    Ok::<_, UploadError>(())
+                })();
+                if let Err(error) = staged {
+                    watcher.discard_material(renderer);
+                    renderer.free_material(prepared);
+                    return Err(error);
                 }
-                None => {
-                    let object = renderer.upload_material(material, resolve)?;
-                    // Another slot's: an asset that was unloaded while this renderer was set aside.
-                    if let Some(old) = self.materials.insert(id, Held { slot, generation, object }) {
-                        renderer.free_material(old.object);
-                    }
-                }
-            }
-            if let Some(watcher) = &mut self.watcher {
-                watcher.take_material(id, generation, material, &resolve, renderer)?;
+                watcher.commit_material();
+                old.unwrap_or(prepared)
+            } else if let Some(old) = old {
+                renderer.update_material(old, material, resolve)?;
+                old
+            } else {
+                renderer.upload_material(material, resolve)?
+            };
+            if let Some(previous) = self.materials.insert(id, Held { slot, generation, object })
+                && previous.object != object
+            {
+                renderer.free_material(previous.object);
             }
         } else if let Some(mesh) = upload.get::<Mesh>() {
-            let copy = (id == self.character && self.keep_character).then(|| mesh.to_mesh()).transpose()?;
-            if let Some((_, kept)) = self.kept_meshes.iter_mut().find(|(kept, _)| *kept == id) {
-                *kept = Some(mesh.to_mesh()?);
+            if self.meshes.get(&id).is_some_and(|held| held.slot == slot && held.generation >= generation) {
+                return Ok(());
             }
+            let copy = (id == self.character && self.keep_character).then(|| mesh.to_mesh()).transpose()?;
+            let kept_copy =
+                self.kept_meshes.iter().any(|(kept, _)| *kept == id).then(|| mesh.to_mesh()).transpose()?;
             let materials = &self.materials;
             let resolve = |material| materials.get(&material).map(|held| held.object);
             let bounds = scene::mesh_bounds(mesh);
-            match self.meshes.get_mut(&id).filter(|held| held.slot == slot) {
-                Some(held) if held.generation >= generation => {}
-                Some(held) => {
-                    renderer.update_mesh(held.object.handle, mesh, resolve)?;
-                    *held = Held { slot, generation, object: GpuMesh { handle: held.object.handle, bounds } };
-                    self.meshes_replaced = true;
-                    if let Some(character) = &copy {
-                        self.copies.take_character(character, resolve, renderer)?;
-                        self.studio_replaced = self.copies.studio.is_some();
+            let old = self.meshes.get(&id).filter(|held| held.slot == slot).map(|held| held.object.handle);
+            let derived =
+                copy.is_some() && (self.copies.studio.is_some() || self.copies.rim_figure.is_some());
+            let watched = id == self.character && self.watcher.is_some();
+            let (handle, copies) = if !derived && !watched {
+                // A single renderer replacement is already atomic and reuses embedded materials.
+                let handle = if let Some(old) = old {
+                    renderer.update_mesh(old, mesh, resolve)?;
+                    old
+                } else {
+                    renderer.upload_mesh_with_slots(mesh, resolve)?
+                };
+                (handle, None)
+            } else {
+                let prepared = renderer.upload_mesh_with_slots(mesh, resolve)?;
+                let copies = match copy
+                    .as_ref()
+                    .filter(|_| derived)
+                    .map(|character| self.copies.prepare_character(character, resolve, renderer))
+                    .transpose()
+                {
+                    Ok(copies) => copies,
+                    Err(error) => {
+                        renderer.free_mesh(prepared);
+                        return Err(error);
                     }
+                };
+                let mut adoptions: Vec<_> = old.into_iter().map(|old| (old, prepared)).collect();
+                if let Some(copies) = &copies {
+                    adoptions.extend(copies.adoptions());
                 }
-                None => {
-                    // All or nothing, so a mesh the renderer rejects leaves no materials behind.
-                    let handle = renderer.upload_mesh_with_slots(mesh, resolve)?;
-                    let held = Held { slot, generation, object: GpuMesh { handle, bounds } };
-                    // Another slot's: an asset that was unloaded while this renderer was set aside.
-                    if let Some(old) = self.meshes.insert(id, held) {
-                        renderer.free_mesh(old.object.handle);
+                let staged = (|| {
+                    if id == self.character
+                        && let Some(watcher) = &mut self.watcher
+                    {
+                        adoptions.extend(watcher.prepare_character(generation, mesh, &resolve, renderer)?);
                     }
+                    renderer.adopt_meshes(&adoptions)?;
+                    Ok::<_, UploadError>(())
+                })();
+                if let Err(error) = staged {
+                    if id == self.character
+                        && let Some(watcher) = &mut self.watcher
+                    {
+                        watcher.discard_character(renderer);
+                    }
+                    if let Some(copies) = copies {
+                        copies.discard(renderer);
+                    }
+                    renderer.free_mesh(prepared);
+                    return Err(error);
                 }
+                (old.unwrap_or(prepared), copies)
+            };
+            if let Some(previous) =
+                self.meshes.insert(id, Held { slot, generation, object: GpuMesh { handle, bounds } })
+                && previous.object.handle != handle
+            {
+                renderer.free_mesh(previous.object.handle);
+            }
+            self.meshes_replaced |= old.is_some();
+            if let Some(copies) = copies {
+                copies.commit(&mut self.copies, renderer);
+                self.studio_replaced = self.copies.studio.is_some();
             }
             if id == self.character
                 && let Some(watcher) = &mut self.watcher
             {
-                watcher.take_character(generation, mesh, &resolve, renderer)?;
+                watcher.commit_character();
             }
-            // Only what the renderer took: the held pose is derived from it.
+            if let Some(copy) = kept_copy
+                && let Some((_, kept)) = self.kept_meshes.iter_mut().find(|(kept, _)| *kept == id)
+            {
+                *kept = Some(copy);
+            }
             if copy.is_some() {
                 self.character_mesh = copy;
             }
@@ -428,25 +493,42 @@ impl GpuAssets {
 /// recolors of its character. Given to [`crate::StageDesc`], or to [`Content::watch_uploads`] before the character
 /// loads.
 pub trait UploadWatcher: std::any::Any {
-    /// A material the renderer has just taken, with what it found its maps through.
-    fn take_material<'t>(
+    /// Prepares material copies without changing published handles or generations. The caller
+    /// adopts the returned `(existing, prepared)` pairs together with the primary material.
+    fn prepare_material<'t>(
         &mut self,
         id: AssetId,
         generation: u32,
         material: &ArchivedMaterial,
         textures: &dyn Fn(AssetId) -> Option<&'t GpuTexture>,
         renderer: &mut Renderer,
-    ) -> Result<(), UploadError>;
+    ) -> Result<Vec<(MaterialHandle, MaterialHandle)>, UploadError>;
 
-    /// The character's mesh, which the renderer has just taken, with its materials (the server uploads
-    /// dependencies first).
-    fn take_character(
+    /// Publishes prepared material handles and generations after successful adoption.
+    fn commit_material(&mut self);
+
+    /// Gives back all temporary material copies after a refused preparation.
+    fn discard_material(&mut self, renderer: &mut Renderer);
+
+    /// Prepares copies of a character without changing any published mesh or generation.
+    /// Return `(existing, prepared)` pairs for copies that retain an existing handle; newly
+    /// uploaded copies stay private until `commit_character`. Every fallible operation belongs
+    /// here. The caller discards all preparations on failure or adopts every pair together.
+    fn prepare_character(
         &mut self,
         generation: u32,
         mesh: &ArchivedMesh,
         materials: &dyn Fn(AssetId) -> Option<MaterialHandle>,
         renderer: &mut Renderer,
-    ) -> Result<(), UploadError>;
+    ) -> Result<Vec<(MeshHandle, MeshHandle)>, UploadError>;
+
+    /// Publishes the prepared handles and generations after all renderer adoptions succeeded.
+    /// This must not allocate GPU resources or perform fallible work.
+    fn commit_character(&mut self);
+
+    /// Gives back all temporary character meshes without changing the published copies.
+    /// Called even if preparation failed partway through.
+    fn discard_character(&mut self, renderer: &mut Renderer);
 
     /// One with nothing made yet, for a new renderer.
     fn for_new_renderer(&self) -> Box<dyn UploadWatcher>;
@@ -473,10 +555,59 @@ fn keeping_held(
     named
 }
 
+/// Exact identity of one visible source: generation zero can be either pending or resident.
+type SourceStamp = (AssetId, u32, bool);
+
+/// A graph owner's last exposed source view. The fixed snapshot follows exactly the bounded
+/// prefix ClipTable exposes, retaining duplicate order and first-match lookup semantics.
+struct SourceRevision {
+    graph: Option<SourceStamp>,
+    clips: Box<[Option<SourceStamp>; MAX_HELD_CLIPS]>,
+    len: usize,
+    revision: u64,
+}
+
+impl SourceRevision {
+    fn new() -> Self {
+        Self { graph: None, clips: Box::new([None; MAX_HELD_CLIPS]), len: 0, revision: 0 }
+    }
+
+    fn observe(
+        &mut self,
+        graph: SourceStamp,
+        clips: impl ExactSizeIterator<Item = SourceStamp> + Clone,
+        clock: &Cell<u64>,
+    ) -> u64 {
+        let clips = clips.take(MAX_HELD_CLIPS);
+        let len = clips.len();
+        if self.graph == Some(graph)
+            && self.len == len
+            && self.clips[..len].iter().copied().eq(clips.clone().map(Some))
+        {
+            return self.revision;
+        }
+        // Revisions never alias an earlier exposed view, even if an owner is replaced. Exhaustion
+        // is a fatal invariant failure before publishing a changed snapshot or reusing an ID.
+        let revision = clock.get().checked_add(1).expect("Content source revisions exhausted");
+        clock.set(revision);
+        self.graph = Some(graph);
+        for (slot, stamp) in self.clips.iter_mut().zip(clips) {
+            *slot = Some(stamp);
+        }
+        if len < self.len {
+            self.clips[len..self.len].fill(None);
+        }
+        self.len = len;
+        self.revision = revision;
+        revision
+    }
+}
+
 /// A graph and the clips it names, kept resident.
 struct HeldGraph {
     graph: Handle<AnimGraph>,
     clips: Vec<(AssetId, Handle<Clip>)>,
+    source_revision: RefCell<SourceRevision>,
     /// What it binds against, for anyone but the character, who has a rig and a mesh besides.
     #[cfg_attr(not(feature = "dev"), allow(dead_code))]
     skeleton: Option<Handle<Skeleton>>,
@@ -517,22 +648,27 @@ impl HeldGraph {
         graph.to_owned_graph().map_err(|error| error.to_string())
     }
 
-    /// Its clips, as a frame's evaluation reads them. Allocates nothing.
-    fn table<'a>(&self, server: &'a AssetServer) -> ClipTable<'a> {
-        ClipTable::new(self.clips.iter().map(|(id, clip)| (*id, server.get(clip), server.generation(clip))))
+    /// Its clips, as a frame's evaluation reads them. Allocates nothing. The revision refresh
+    /// stays at this exposure boundary: blocking loaders can advance the server outside update.
+    fn table<'a>(&self, server: &'a AssetServer, clock: &Cell<u64>) -> ClipTable<'a> {
+        let revision = self.version(server, clock);
+        ClipTable::new(revision, self.clips.iter().map(|(id, clip)| (*id, server.get(clip))))
     }
 
-    /// A number that moves with any new version of it or its clips, and as a clip first lands: a graph
-    /// that named one before it was resident can bind now.
-    fn version(&self, server: &AssetServer) -> u32 {
-        self.clips.iter().fold(server.generation(&self.graph), |versions, (_, clip)| {
-            let landed = u32::from(server.get(clip).is_some());
-            versions.wrapping_add(server.generation(clip)).wrapping_add(landed)
-        })
+    fn version(&self, server: &AssetServer, clock: &Cell<u64>) -> u64 {
+        let graph = (self.graph.id(), server.generation(&self.graph), server.get(&self.graph).is_some());
+        let clips =
+            self.clips.iter().map(|(id, clip)| (*id, server.generation(clip), server.get(clip).is_some()));
+        self.source_revision.borrow_mut().observe(graph, clips, clock)
     }
 }
 
 /// The asset server, what it has uploaded, and the character it keeps loaded.
+///
+/// Graph source revisions belong to this Content lifetime. Replacing the whole asset owner
+/// requires rebinding its scene assets and animation drivers; a newly bound driver can use
+/// `continue_from` to keep playback while resetting its cached source view. Renderer rebuilds
+/// keep this owner and its source revision clock.
 pub struct Content {
     // Drop order: the uploaded GPU objects, then the server, whose IO thread joins last.
     gpu: GpuAssets,
@@ -573,7 +709,9 @@ pub struct Content {
     /// The graphs loaded, by whose they are: the character's once asked for (`--graph`, `--arena`), and
     /// whatever a game named. And the versions the scene last knew of ([`Self::take_graph_changed`]).
     graphs: Vec<(GraphKey, HeldGraph)>,
-    graph_version: u32,
+    graph_version: u64,
+    /// Shared issuer for every held owner, including replacements under the same GraphKey.
+    source_revision_clock: Cell<u64>,
     /// The sky material the scene draws: [`SKY`] unless the scene wants another.
     sky_id: AssetId,
     /// The sky material, once asked for.
@@ -694,6 +832,7 @@ impl Content {
             clip_version: 0,
             graphs: Vec::new(),
             graph_version: 0,
+            source_revision_clock: Cell::new(0),
             sky_id,
             sky: None,
             server,
@@ -1340,6 +1479,7 @@ impl Content {
             cooked: self.server.generation(&graph),
             graph,
             clips: Vec::new(),
+            source_revision: RefCell::new(SourceRevision::new()),
             skeleton: None,
             #[cfg(feature = "dev")]
             live: None,
@@ -1490,7 +1630,8 @@ impl Content {
 
     /// The clips `key`'s graph names, likewise.
     pub fn graph_clips_of(&self, key: GraphKey) -> ClipTable<'_> {
-        self.held_graph(key).map_or_else(ClipTable::empty, |held| held.table(&self.server))
+        self.held_graph(key)
+            .map_or_else(ClipTable::empty, |held| held.table(&self.server, &self.source_revision_clock))
     }
 
     /// Whether `key`'s graph holds the clip `id`, landed or not.
@@ -1499,9 +1640,17 @@ impl Content {
         self.held_graph(key).is_some_and(|held| held.clips.iter().any(|(clip, _)| *clip == id))
     }
 
-    /// A number that moves with any new version of a graph or its clips.
-    pub fn graph_versions(&self) -> u32 {
-        self.graphs.iter().fold(0, |versions, (_, held)| versions.wrapping_add(held.version(&self.server)))
+    /// An opaque revision that changes with the exposed graph/clip source views. This is not
+    /// a sum of generations or a count of reload events.
+    pub fn graph_versions(&self) -> u64 {
+        // Graph owners are only added or replaced, never removed. Every changed/replaced owner
+        // draws from the same clock, so the newest held revision remains monotonic. A future
+        // removal API must issue a revision rather than silently removing the maximum.
+        self.graphs
+            .iter()
+            .map(|(_, held)| held.version(&self.server, &self.source_revision_clock))
+            .max()
+            .unwrap_or(0)
     }
 
     /// An edit for one that waits for the rest of a new version of itself. This edit may be all it waits
@@ -1878,6 +2027,17 @@ mod tests {
 
     /// What [`pack_of_graph`] packs.
     fn pack_assets(x: f32, extra: usize, graph: AnimGraph, clip: AssetId, recovery: u32) -> Vec<PackAsset> {
+        pack_assets_with_morphs(x, extra, graph, clip, recovery, 0)
+    }
+
+    fn pack_assets_with_morphs(
+        x: f32,
+        extra: usize,
+        graph: AnimGraph,
+        clip: AssetId,
+        recovery: u32,
+        morphs: usize,
+    ) -> Vec<PackAsset> {
         let count = HumanBone::REQUIRED.len() + extra;
         let at = |joint: usize| [joint as f32 * 0.1, 1.0, 0.0];
         let joints: Vec<Joint> = (0..count)
@@ -1904,6 +2064,26 @@ mod tests {
             binds,
             influences: Influences::pack(&[held; 3], count),
         });
+        mesh.morph_targets = (0..morphs)
+            .map(|index| sapphire_assets::mesh::MorphTarget {
+                name: format!("shape {index}"),
+                default_weight: 0.0,
+                first_delta: index as u32,
+                delta_count: 1,
+            })
+            .collect();
+        mesh.morph_deltas = (0..morphs)
+            .map(|_| sapphire_assets::mesh::MorphDelta::new(0, [0.0, 0.1, 0.0], [0.0; 3]))
+            .collect();
+        let mut playing = swing(count);
+        playing.morph_target_count = morphs as u32;
+        if morphs > 0 {
+            let range = sapphire_assets::clip::WeightRange::enclosing([0.0, 1.0]);
+            playing.weights =
+                vec![sapphire_assets::clip::WeightTrack { target: 0, count: 2, first: 0, range }];
+            playing.weight_ticks = vec![0, SWING_TICKS];
+            playing.weight_keys = vec![range.encode(0.0), range.encode(1.0)];
+        }
         let mut humanoid: Vec<_> = HumanBone::REQUIRED
             .iter()
             .enumerate()
@@ -1912,6 +2092,7 @@ mod tests {
         humanoid.sort_by_key(|entry| entry.bone);
         let rig = CharacterRig {
             joint_count: count as u32,
+            morph_target_count: morphs as u32,
             material_slot_count: 1,
             humanoid,
             ..CharacterRig::default()
@@ -1925,13 +2106,8 @@ mod tests {
             ),
             packed(lookdev::RIG, AssetKind::Rig, &rig.to_cooked().expect("cooked")),
             packed(SKELETON, AssetKind::Skeleton, &Skeleton::new(&joints).to_cooked().expect("cooked")),
-            packed_with(SWING, AssetKind::Clip, &swing(count).to_cooked().expect("cooked"), vec![SKELETON]),
-            packed_with(
-                OTHER_SWING,
-                AssetKind::Clip,
-                &swing(count).to_cooked().expect("cooked"),
-                vec![SKELETON],
-            ),
+            packed_with(SWING, AssetKind::Clip, &playing.to_cooked().expect("cooked"), vec![SKELETON]),
+            packed_with(OTHER_SWING, AssetKind::Clip, &playing.to_cooked().expect("cooked"), vec![SKELETON]),
             packed_with(GRAPH, AssetKind::AnimGraph, &graph.to_cooked().expect("cooked"), vec![clip]),
             packed(MOVES, AssetKind::MoveSet, &show_moves(recovery).to_cooked().expect("cooked")),
             // A swing that binds to none of this character's joints.
@@ -2247,6 +2423,142 @@ mod tests {
         assert_eq!(stage.frame().palette_bytes, 0, "held again");
     }
 
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn animation_reload_publishes_matching_joint_and_morph_buffers() {
+        use crate::extract::RenderPose;
+        for graph in [false, true] {
+            for (extra, morphs) in [(1, 0), (0, 1)] {
+                let mut stage = Stage::new();
+                if graph {
+                    stage.play_graph();
+                } else {
+                    stage.play_swing();
+                }
+                let initial = stage.frame();
+                assert!(stage.scene.anim_stats().evaluated > 0 && initial.palette_bytes > 0);
+                let joints = HumanBone::REQUIRED.len() + extra;
+                let assets = pack_assets_with_morphs(0.0, extra, swing_graph(5), SWING, 0, morphs);
+                stage.source.insert(PACK, write_pack(assets).expect("replacement pack"));
+                stage.content.remount(PACK).expect("replacement remounted");
+                let versions = (1, 1, u32::from(extra > 0));
+                stage.frames_until(|stage| {
+                    let matches = |clip: &ArchivedClip| {
+                        clip.joint_count.to_native() as usize == joints
+                            && clip.morph_target_count.to_native() as usize == morphs
+                    };
+                    stage.versions() == versions
+                        && if graph {
+                            stage.content.graph_clips().clip(SWING).is_some_and(matches)
+                        } else {
+                            stage.content.clip().is_some_and(|(clip, _)| matches(clip))
+                        }
+                });
+                let stats = stage.renderer.stats().skinning;
+                assert_eq!(stats.ignored_poses, 0, "graph={graph} extra={extra} morphs={morphs}: {stats:?}");
+                assert_eq!(
+                    stats.palette_bytes as usize,
+                    joints * 48,
+                    "the first complete replacement is posed"
+                );
+                assert_eq!(
+                    stage.scene.anim_stats().evaluated,
+                    1,
+                    "a successful replacement must keep evaluating"
+                );
+                let entity = stage.scene.character();
+                let mut previous =
+                    stage.scene.world().get::<RenderPose>(entity).expect("render pose").clone();
+                assert_eq!((previous.palette.len(), previous.morph_weights.len()), (joints, morphs));
+                for _ in 0..4 {
+                    let stats = stage.frame();
+                    assert_eq!(stats.ignored_poses, 0);
+                    assert_eq!(stats.palette_bytes as usize, joints * 48);
+                    assert_eq!(stage.scene.anim_stats().evaluated, 1);
+                    let pose = stage.scene.world().get::<RenderPose>(entity).expect("render pose");
+                    assert_ne!(pose.palette, previous.palette, "the clip continues moving after reload");
+                    assert_eq!(pose.morph_weights.len(), morphs);
+                    if morphs > 0 {
+                        assert_ne!(pose.morph_weights, previous.morph_weights, "morph motion continues too");
+                    }
+                    previous = pose.clone();
+                    let figure = stage.scene.world().get::<scene::Figure>(entity).expect("figure");
+                    let rig = stage
+                        .scene
+                        .world()
+                        .get::<sapphire_world::light_rig::CharacterLightRig>(entity)
+                        .expect("light rig");
+                    assert_eq!(rig.head, figure.head);
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn incomplete_animation_reload_keeps_the_published_pose_and_figure() {
+        use crate::extract::RenderPose;
+        for graph in [false, true] {
+            let mut stage = Stage::new();
+            if graph {
+                stage.play_graph();
+            } else {
+                stage.play_swing();
+            }
+            stage.frame();
+            let entity = stage.scene.character();
+            let pose = stage.scene.world().get::<RenderPose>(entity).expect("render pose").clone();
+            let figure = *stage.scene.world().get::<scene::Figure>(entity).expect("figure");
+            let default_figure = stage.scene.figure();
+            let light_head = stage
+                .scene
+                .world()
+                .get::<sapphire_world::light_rig::CharacterLightRig>(entity)
+                .expect("light rig")
+                .head;
+            stage.recook_all_but(&[SWING, OTHER_SWING], 1, 5);
+            // Drive the real frame's loading/follow-content prefix without advancing either
+            // animation clock: a failed preparation itself must publish no component changes.
+            let timer = Stopwatch::start();
+            loop {
+                stage.content.update(&mut stage.renderer, &stage.gpu);
+                stage.scene.follow_content(&mut stage.content, &mut ());
+                if stage.versions() == (1, 1, 1) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+                assert!(
+                    timer.elapsed() < std::time::Duration::from_secs(30),
+                    "replacement parts did not arrive"
+                );
+            }
+            assert_eq!(stage.scene.world().get::<RenderPose>(entity), Some(&pose), "graph={graph}");
+            assert_eq!(stage.scene.world().get::<scene::Figure>(entity), Some(&figure));
+            assert_eq!(stage.scene.figure(), default_figure);
+            assert_eq!(
+                stage
+                    .scene
+                    .world()
+                    .get::<sapphire_world::light_rig::CharacterLightRig>(entity)
+                    .expect("light rig")
+                    .head,
+                light_head
+            );
+            let joints = if graph {
+                stage.scene.graph_player().expect("driver").pose().joint_count()
+            } else {
+                stage
+                    .scene
+                    .world()
+                    .get::<crate::animate::ClipPlayer>(entity)
+                    .expect("driver")
+                    .pose()
+                    .joint_count()
+            };
+            assert_eq!(joints, HumanBone::REQUIRED.len(), "failed preparation keeps the prior driver");
+        }
+    }
+
     /// A new graph binds at once and takes effect at the next state's start (T2's seam), with the
     /// character drawn on every frame between. A state's start here is the swing's own: nothing in the
     /// script changes state, so the new graph waits.
@@ -2420,6 +2732,91 @@ mod tests {
         let after = stage.pixels();
         assert!(!same_picture(&before, &after), "the new version shows");
         assert!(same_picture(&after, &in_a_rim_rig(&new).pixels()));
+    }
+
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn repeated_pedestal_changes_release_obsolete_meshes() {
+        let with = mannequin(-1.0, PALE, Some(1.0));
+        let without = mannequin(-1.0, PALE, None);
+        let mut stage = on_a_studio_floor(&with, StudioLayout::Floor);
+        for _ in 0..8 {
+            stage.pixels();
+        }
+        let initial = stage.renderer.stats();
+        for _ in 0..4 {
+            land_mannequin(&mut stage, &without);
+            land_mannequin(&mut stage, &with);
+        }
+        for _ in 0..16 {
+            stage.pixels();
+        }
+        let final_stats = stage.renderer.stats();
+        assert_eq!(final_stats.retiring, 0, "{final_stats:?}");
+        assert_eq!(final_stats.meshes, initial.meshes, "{final_stats:?}");
+        assert_eq!(final_stats.materials, initial.materials, "{final_stats:?}");
+    }
+
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn failed_watcher_preparation_keeps_the_primary_and_all_derived_meshes() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        struct Reject(Arc<AtomicU32>);
+        impl UploadWatcher for Reject {
+            fn prepare_material<'t>(
+                &mut self,
+                _: AssetId,
+                _: u32,
+                _: &ArchivedMaterial,
+                _: &dyn Fn(AssetId) -> Option<&'t GpuTexture>,
+                _: &mut Renderer,
+            ) -> Result<Vec<(MaterialHandle, MaterialHandle)>, UploadError> {
+                Ok(Vec::new())
+            }
+            fn commit_material(&mut self) {}
+            fn discard_material(&mut self, _: &mut Renderer) {}
+            fn prepare_character(
+                &mut self,
+                _: u32,
+                _: &ArchivedMesh,
+                _: &dyn Fn(AssetId) -> Option<MaterialHandle>,
+                _: &mut Renderer,
+            ) -> Result<Vec<(MeshHandle, MeshHandle)>, UploadError> {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                Err(io::Error::other("injected watcher refusal").into())
+            }
+            fn commit_character(&mut self) {
+                panic!("a refused upload cannot commit");
+            }
+            fn discard_character(&mut self, _: &mut Renderer) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+            fn for_new_renderer(&self) -> Box<dyn UploadWatcher> {
+                Box::new(Self(self.0.clone()))
+            }
+        }
+        let first = mannequin(-1.0, PALE, Some(1.0));
+        let changed = mannequin(0.5, PALE, None);
+        let mut stage = on_a_studio_floor(&first, StudioLayout::Floor);
+        let before = stage.pixels();
+        let held = stage.content.character_mesh().expect("kept").clone();
+        let old_handles = stage.content.gpu.copies.studio;
+        let calls = Arc::new(AtomicU32::new(0));
+        stage.content.watch_uploads(Box::new(Reject(calls.clone())));
+        let bytes = changed.to_cooked().expect("cooked");
+        let pack = write_pack(vec![packed(lookdev::CHARACTER, AssetKind::Mesh, &bytes)]).expect("pack");
+        stage.source.insert(PACK, pack);
+        stage.content.remount(PACK).expect("remounted");
+        let timer = Stopwatch::start();
+        while calls.load(Ordering::Relaxed) == 0 {
+            stage.pixels();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            assert!(timer.elapsed() < std::time::Duration::from_secs(30));
+        }
+        assert_eq!(calls.load(Ordering::Relaxed), 2, "prepared and discarded");
+        assert_eq!(stage.content.character_mesh(), Some(&held));
+        assert_eq!(stage.content.gpu.copies.studio, old_handles);
+        assert!(same_picture(&before, &stage.pixels()), "the failed edit changed no drawn mesh");
     }
 
     /// A pedestal can come and go with a new version, and a plinth stands where the pedestal's bounds say.
@@ -3111,5 +3508,282 @@ mod tests {
             assert_eq!(frame.ignored_poses, 0, "{frame:?}");
             assert_eq!(frame.palette_bytes, (joints + 1) * per_joint, "the new palette: {frame:?}");
         }
+    }
+    mod owner_exposure {
+        use super::*;
+        use sapphire_anim::GraphInput;
+
+        struct Cpu {
+            content: Content,
+            source: Arc<MemoryPackSource>,
+        }
+
+        fn source_pack(offset: f32) -> Vec<u8> {
+            let mut assets = pack_assets(0.0, 0, swing_graph(5), SWING, 0);
+            assets.retain(|asset| asset.id != SWING && asset.id != OTHER_SWING);
+            let mut clip = swing(HumanBone::REQUIRED.len());
+            clip.translations[0].joint = 1; // A non-root joint; graph root-motion extraction cannot hide it.
+            let from = [offset, 1.0, 0.0];
+            let to = [offset + 1.0, 1.0, 0.0];
+            let range = sapphire_anim::VectorRange::enclosing([from, to]);
+            clip.translations[0].range = range;
+            clip.vector_keys = vec![range.encode(from), range.encode(to)];
+            for id in [SWING, OTHER_SWING] {
+                assets.push(packed_with(
+                    id,
+                    AssetKind::Clip,
+                    &clip.to_cooked().expect("clip"),
+                    vec![SKELETON],
+                ));
+            }
+            write_pack(assets).expect("pack")
+        }
+
+        impl Cpu {
+            fn new(pending_last: bool) -> Self {
+                let source = Arc::new(MemoryPackSource::new());
+                source.insert(PACK, source_pack(0.0));
+                let live_packs = Arc::new(LivePacks::new(source.clone()));
+                let budgets =
+                    AssetBudgets { upload_per_frame: u64::MAX, resident: [u64::MAX; AssetKind::ALL.len()] };
+                let mut server = AssetServer::new(live_packs.clone(), budgets);
+                server.mount_now(PACK).expect("mounted");
+                let character =
+                    server.load_with(lookdev::CHARACTER, LoadPriority::Critical).expect("character");
+                let mut mesh = None;
+                server
+                    .finish(&character, |upload| {
+                        if let Some(value) = upload.get::<Mesh>() {
+                            mesh = Some(value.to_mesh()?);
+                        }
+                        Ok(())
+                    })
+                    .expect("CPU character decode");
+                let mut content =
+                    Content::over_server(server, lookdev::CHARACTER, character, SKY, live_packs);
+                content.gpu.character_mesh = mesh;
+                let rig = content.server.load_with(lookdev::RIG, LoadPriority::Critical).expect("rig");
+                content.server.finish(&rig, |_| Ok(())).expect("rig ready");
+                content.rig = Some(rig);
+                let skeleton = content.server.load_with(SKELETON, LoadPriority::Critical).expect("skeleton");
+                content.server.finish(&skeleton, |_| Ok(())).expect("skeleton ready");
+                content.skeleton = Some(skeleton);
+                let graph = content.server.load_with(GRAPH, LoadPriority::Critical).expect("graph");
+                content.server.finish(&graph, |_| Ok(())).expect("graph ready");
+                let mut held = Vec::new();
+                for (index, id) in [SWING, OTHER_SWING].into_iter().enumerate() {
+                    let handle = content.server.load_with(id, LoadPriority::Critical).expect("clip");
+                    if !pending_last || index != 1 {
+                        content.server.finish(&handle, |_| Ok(())).expect("clip ready");
+                    }
+                    held.push((id, handle));
+                }
+                content.graphs.push((
+                    GraphKey::CHARACTER,
+                    HeldGraph {
+                        graph,
+                        clips: held,
+                        skeleton: None,
+                        source_revision: RefCell::new(SourceRevision::new()),
+                        live: None,
+                        cooked: 0,
+                    },
+                ));
+                content.graph_version = content.graph_versions();
+                Self { content, source }
+            }
+
+            fn finish_clips(&mut self) {
+                let clips = self.content.graphs[0].1.clips.clone();
+                for (_, clip) in clips {
+                    self.content.server.finish(&clip, |_| Ok(())).expect("clip ready");
+                }
+            }
+
+            fn remount(&mut self, offset: f32) {
+                let targets: Vec<_> = self.content.graphs[0]
+                    .1
+                    .clips
+                    .iter()
+                    .map(|(_, clip)| (clip.clone(), self.content.server.generation(clip) + 1))
+                    .collect();
+                self.source.insert(PACK, source_pack(offset));
+                self.content.remount(PACK).expect("remounted");
+                // finish sees an old resident payload as Ready while a replacement decodes.
+                // Wait on the exact expected generations instead of that old readiness state.
+                for _ in 0..10_000 {
+                    self.content.server.update();
+                    self.content.server.upload(|_| Ok(()));
+                    if targets
+                        .iter()
+                        .all(|(clip, generation)| self.content.server.generation(clip) == *generation)
+                    {
+                        return;
+                    }
+                    self.content.server.wait(std::time::Duration::from_millis(1));
+                }
+                panic!("clip replacements never became resident");
+            }
+        }
+
+        #[test]
+        fn content_residency_at_generation_zero_invalidates_a_frozen_driver() {
+            let mut cpu = Cpu::new(true);
+            let mut driver = lookdev::graph_driver(&cpu.content).expect("driver");
+            let input = GraphInput { ticks: 5.0, ..GraphInput::default() };
+            let before_revision = {
+                let before = cpu.content.graph_clips();
+                assert!(before.clip(OTHER_SWING).is_none());
+                assert!(driver.pose_frame(&input, &before, Mat4::IDENTITY));
+                assert!(!driver.pose_frame(&input, &before, Mat4::IDENTITY));
+                before.version()
+            };
+            cpu.finish_clips();
+            let revision = cpu.content.graph_versions();
+            assert!(cpu.content.take_graph_changed(), "observing a revision must not acknowledge it");
+            assert!(!cpu.content.take_graph_changed());
+            let after = cpu.content.graph_clips();
+            assert!(after.version() > before_revision);
+            assert_eq!(cpu.content.graph_versions(), revision);
+            assert!(after.clip(OTHER_SWING).is_some());
+            assert!(driver.pose_frame(&input, &after, Mat4::IDENTITY), "same clock must see first residency");
+            assert!(!driver.pose_frame(&input, &after, Mat4::IDENTITY));
+        }
+
+        #[test]
+        fn content_membership_cannot_cancel_reload_for_frozen_and_forward_frames() {
+            let mut cpu = Cpu::new(false);
+            cpu.remount(2.0);
+            assert!(
+                cpu.content.graphs[0]
+                    .1
+                    .clips
+                    .iter()
+                    .all(|(_, clip)| cpu.content.server.generation(clip) == 1)
+            );
+            assert!(cpu.content.take_graph_changed());
+            let mut driver = lookdev::graph_driver(&cpu.content).expect("driver");
+            let input = GraphInput { ticks: 5.0, ..GraphInput::default() };
+            let before_revision = cpu.content.graph_clips().version();
+            assert!(driver.pose_frame(&input, &cpu.content.graph_clips(), Mat4::IDENTITY));
+            let before = driver.player.pose().model()[1].translation.x;
+            cpu.remount(4.0);
+            cpu.content.graphs[0].1.clips.retain(|(id, _)| *id == SWING);
+            assert_eq!(cpu.content.server.generation(&cpu.content.graphs[0].1.clips[0].1), 2);
+            assert!(cpu.content.graph_versions() > before_revision, "old sums: 1+1 and 2");
+            assert!(cpu.content.take_graph_changed(), "graph_versions must not consume the change");
+            assert!(!cpu.content.take_graph_changed());
+            let after = cpu.content.graph_clips();
+            assert!(driver.pose_frame(&input, &after, Mat4::IDENTITY));
+            assert!(!driver.pose_frame(&input, &after, Mat4::IDENTITY));
+            for tick in 6..=35 {
+                assert!(driver.pose_frame(
+                    &GraphInput { ticks: f64::from(tick), ..input },
+                    &after,
+                    Mat4::IDENTITY
+                ));
+            }
+            assert!(
+                driver.player.pose().model()[1].translation.x > before + 0.5,
+                "forward frames must sample the changed clip through the same driver"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod source_revision_tests {
+    use super::*;
+
+    fn id(index: u8) -> AssetId {
+        AssetId::from_bytes([index; 16])
+    }
+    fn graph() -> SourceStamp {
+        (id(1), 0, true)
+    }
+
+    #[test]
+    fn membership_changes_cannot_cancel_a_reload_generation() {
+        let clock = Cell::new(0);
+        let mut view = SourceRevision::new();
+        let before = view.observe(graph(), [(id(2), 1, true), (id(3), 1, true)].into_iter(), &clock);
+        let after = view.observe(graph(), [(id(2), 2, true)].into_iter(), &clock);
+        assert!(after > before, "the old generation sums were both two");
+        assert_eq!(view.observe(graph(), [(id(2), 2, true)].into_iter(), &clock), after);
+    }
+
+    #[test]
+    fn first_residency_departure_and_return_have_distinct_revisions() {
+        let clock = Cell::new(0);
+        let mut view = SourceRevision::new();
+        let missing = view.observe(graph(), [(id(2), 0, false)].into_iter(), &clock);
+        let landed = view.observe(graph(), [(id(2), 0, true)].into_iter(), &clock);
+        let departed = view.observe(graph(), [(id(2), 0, false)].into_iter(), &clock);
+        let returned = view.observe(graph(), [(id(2), 0, true)].into_iter(), &clock);
+        assert!(missing < landed && landed < departed && departed < returned);
+    }
+
+    #[test]
+    fn duplicate_order_and_graph_identity_are_observed_exactly() {
+        let clock = Cell::new(0);
+        let mut view = SourceRevision::new();
+        let first = view.observe(graph(), [(id(2), 1, true), (id(2), 2, true)].into_iter(), &clock);
+        let reordered = view.observe(graph(), [(id(2), 2, true), (id(2), 1, true)].into_iter(), &clock);
+        let other_graph =
+            view.observe((id(4), 0, true), [(id(2), 2, true), (id(2), 1, true)].into_iter(), &clock);
+        assert!(first < reordered && reordered < other_graph);
+    }
+
+    #[test]
+    fn replacement_owners_share_the_content_revision_clock() {
+        let clock = Cell::new(0);
+        let first = SourceRevision::new().observe(graph(), [(id(2), 0, true)].into_iter(), &clock);
+        let second = SourceRevision::new().observe((id(3), 0, true), [(id(4), 0, true)].into_iter(), &clock);
+        let replacement = SourceRevision::new().observe(graph(), [(id(2), 0, true)].into_iter(), &clock);
+        assert!(first < second && second < replacement);
+    }
+
+    #[test]
+    fn only_the_same_bounded_prefix_as_clip_table_is_observed() {
+        let clock = Cell::new(0);
+        let mut view = SourceRevision::new();
+        let entries: Vec<_> = (0..=MAX_HELD_CLIPS).map(|index| (id(index as u8), 0, true)).collect();
+        let first = view.observe(graph(), entries.iter().copied(), &clock);
+        let mut beyond = entries.clone();
+        beyond[MAX_HELD_CLIPS].1 = 1;
+        assert_eq!(view.observe(graph(), beyond.iter().copied(), &clock), first);
+        let shorter = view.observe(graph(), entries[..2].iter().copied(), &clock);
+        assert!(shorter > first);
+        assert!(view.clips[2..].iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn unchanged_source_comparisons_allocate_nothing() {
+        let clock = Cell::new(0);
+        let mut view = SourceRevision::new();
+        let entries = [(id(2), 0, true), (id(3), 1, true)];
+        let revision = view.observe(graph(), entries.into_iter(), &clock);
+        assert!(sapphire_core::alloc::is_installed());
+        let ((), counts) = sapphire_core::alloc::count_in_scope(|| {
+            for _ in 0..1024 {
+                assert_eq!(
+                    view.observe(graph(), std::hint::black_box(entries).into_iter(), &clock),
+                    revision
+                );
+            }
+        });
+        assert_eq!(counts.allocations, 0);
+    }
+
+    #[test]
+    fn revision_exhaustion_does_not_publish_an_alias() {
+        let clock = Cell::new(u64::MAX);
+        let mut view = SourceRevision::new();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            view.observe(graph(), [(id(2), 0, true)].into_iter(), &clock)
+        }));
+        assert!(result.is_err());
+        assert_eq!((view.graph, view.len, view.revision), (None, 0, 0));
+        assert_eq!(clock.get(), u64::MAX);
     }
 }

@@ -18,7 +18,7 @@
 //!   prepass's draws and readers (M1 C5), temporal AA's sizes, jitter and history resets, the
 //!   compositing layers post drew and the fog's layers and cards (M1 W3),
 //!   `GraphStats` and the transient pool, the last-used input device, the asset server's
-//!   `AssetStats` against its budgets, hot reload's state and the errors of its last change,
+//!   `AssetStats` against its budgets, hot reload's state and its recent failure history,
 //!   M1 A8, and live link's, M1 A9), the
 //!   frame-time graph, the frame graph (passes in order, culled passes, transients and their
 //!   pooled textures, command buffers) with per-pass GPU timings, a cvar list and dev console,

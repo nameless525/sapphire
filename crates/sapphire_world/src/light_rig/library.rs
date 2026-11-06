@@ -1,5 +1,7 @@
 //! [`LightRigLibrary`]: named presets, as a document.
 
+use std::collections::BTreeSet;
+
 use bevy_ecs::prelude::Resource;
 use bevy_reflect::TypePath;
 use sapphire_reflect::Versioned;
@@ -84,11 +86,12 @@ impl LightRigLibrary {
         if rigs.len() > usize::from(u16::MAX) + 1 {
             return Err(LightRigError::TooMany);
         }
+        let mut names = BTreeSet::new();
         for (index, NamedLightRig { name, rig }) in rigs.iter().enumerate() {
             if name.is_empty() {
                 return Err(LightRigError::EmptyName(index));
             }
-            if rigs[..index].iter().any(|earlier| earlier.name == *name) {
+            if !names.insert(name.as_str()) {
                 return Err(LightRigError::DuplicateName(name.clone()));
             }
             rig.validate().map_err(|(field, problem)| LightRigError::Invalid {

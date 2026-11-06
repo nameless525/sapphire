@@ -183,7 +183,7 @@ impl VfxPlayer {
     /// it shows on this tick's frame, and sockets are sampled after, back from the clock's new time.
     pub(crate) fn step(&mut self, world_step: f32, character_step: f32) -> Option<u16> {
         let stopwatch = Stopwatch::start();
-        let hitstop = self.start_what_starts(character_step);
+        let hitstop = self.start_what_starts(world_step, character_step);
         let owners = [(ATTACKER, character_step), (VICTIM, character_step)];
         self.world.advance(&OwnerSteps { world: world_step, owners: &owners });
         if character_step > 0.0 {
@@ -198,7 +198,7 @@ impl VfxPlayer {
     }
 
     /// This tick's spawns, by each clock's schedule.
-    fn start_what_starts(&mut self, character_step: f32) -> Option<u16> {
+    fn start_what_starts(&mut self, world_step: f32, character_step: f32) -> Option<u16> {
         let swing_tick = self.character_ticks % SWING_PERIOD;
         let moving = character_step > 0.0;
         match self.show {
@@ -213,11 +213,11 @@ impl VfxPlayer {
                 self.world.spawn(self.dust, OwnerId::WORLD, Placement::at(DUST_SPOT));
                 Some(HIT_STOP_TICKS)
             }
-            VfxShow::Dust if self.world_ticks.is_multiple_of(30) => {
+            VfxShow::Dust if world_step > 0.0 && self.world_ticks.is_multiple_of(30) => {
                 self.world.spawn(self.dust, OwnerId::WORLD, Placement::at(DUST_SPOT));
                 None
             }
-            VfxShow::Duel => {
+            VfxShow::Duel if world_step > 0.0 => {
                 self.start_duels_moment();
                 None
             }
@@ -311,6 +311,32 @@ fn facing_camera(at: Vec3) -> Placement {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paused_world_does_not_repeat_scheduled_births() {
+        for show in [VfxShow::Dust, VfxShow::Duel] {
+            let mut player = VfxPlayer::new(show, VfxBudget::DESKTOP_HIGH);
+            let mut frame = VfxFrame::default();
+            for _ in 0..4 {
+                player.step(0.0, 0.0);
+            }
+            player.write(&mut frame, 1.0);
+            assert!(frame.is_empty(), "paused activation at tick zero: {show:?}");
+            let ticks = if show == VfxShow::Dust { 30 } else { 36 };
+            for _ in 0..ticks {
+                player.step(1.0 / 60.0, 1.0 / 60.0);
+            }
+            player.write(&mut frame, 1.0);
+            assert!(frame.stats.particles > 0, "positive activity control: {show:?}");
+            let before = frame.stats;
+            for _ in 0..20 {
+                player.step(0.0, 0.0);
+            }
+            player.write(&mut frame, 1.0);
+            assert_eq!(frame.stats.particles, before.particles, "{show:?}");
+            assert_eq!(frame.stats.dropped_particles, before.dropped_particles, "{show:?}");
+        }
+    }
 
     /// A simulation tick, seconds.
     const TICK: f32 = 1.0 / 60.0;

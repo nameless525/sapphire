@@ -104,48 +104,88 @@ pub(crate) struct CharacterCopies {
     pub(crate) rim_figure: Option<MeshHandle>,
 }
 
+/// A replacement owns temporary meshes until the caller adopts all of them together.
+pub(crate) struct PreparedCopies {
+    copies: CharacterCopies,
+    meshes: Vec<(Option<MeshHandle>, MeshHandle)>,
+    retire: Option<MeshHandle>,
+}
+
+impl PreparedCopies {
+    pub(crate) fn discard(self, renderer: &mut Renderer) {
+        for (_, mesh) in self.meshes {
+            renderer.free_mesh(mesh);
+        }
+    }
+
+    pub(crate) fn adoptions(&self) -> impl Iterator<Item = (MeshHandle, MeshHandle)> + '_ {
+        self.meshes.iter().filter_map(|&(target, prepared)| target.map(|target| (target, prepared)))
+    }
+
+    /// All adoptions have succeeded, so the temporary handles now hold retired old records.
+    pub(crate) fn commit(self, copies: &mut CharacterCopies, renderer: &mut Renderer) {
+        if let Some(mesh) = self.retire {
+            renderer.free_mesh(mesh);
+        }
+        *copies = self.copies;
+    }
+}
+
 impl CharacterCopies {
-    /// Takes a new version of `character`, which the renderer has just taken, under the handles the scene
-    /// draws with, its materials through `materials`. What won't convert fails first, leaving what's held
-    /// as it was. A pedestal it has now and hadn't gets a new handle; one it's lost stays in the renderer,
-    /// as meshes do, with nothing drawing it once the scene has placed the studio again.
-    pub(crate) fn take_character(
-        &mut self,
+    /// Prepares every derived copy without changing its current handles or records. Conversion
+    /// and upload failures discard the temporary copies; publication is one renderer adoption.
+    pub(crate) fn prepare_character(
+        &self,
         character: &Mesh,
         materials: impl Fn(AssetId) -> Option<MaterialHandle> + Copy,
         renderer: &mut Renderer,
-    ) -> Result<(), UploadError> {
+    ) -> Result<PreparedCopies, UploadError> {
+        let mut prepared = PreparedCopies { copies: *self, meshes: Vec::new(), retire: None };
         if self.studio.is_none() && self.rim_figure.is_none() {
-            return Ok(());
+            return Ok(prepared);
         }
         let (figure, pedestal) = split_pedestal(character);
         let figure = figure.to_cooked()?;
         let figure = Mesh::read(&figure)?;
-        let pedestal = match pedestal {
-            Some(mesh) => Some((mesh.to_cooked()?, drawn_bounds(&mesh))),
-            None => None,
-        };
-        let pedestal = match &pedestal {
-            Some((bytes, bounds)) => Some((Mesh::read(bytes)?, *bounds)),
-            None => None,
-        };
-        if let Some(rim_figure) = self.rim_figure {
-            renderer.update_mesh(rim_figure, figure, materials)?;
+        let pedestal = pedestal
+            .map(|mesh| Ok::<_, UploadError>((mesh.to_cooked()?, drawn_bounds(&mesh))))
+            .transpose()?;
+        let pedestal = pedestal
+            .as_ref()
+            .map(|(bytes, bounds)| Ok::<_, UploadError>((Mesh::read(bytes)?, *bounds)))
+            .transpose()?;
+        let result = (|| {
+            if let Some(target) = self.rim_figure {
+                let mesh = renderer.upload_mesh_with_slots(figure, materials)?;
+                prepared.meshes.push((Some(target), mesh));
+            }
+            if let Some(studio) = &mut prepared.copies.studio {
+                let mesh = renderer.upload_mesh_with_slots(figure, materials)?;
+                prepared.meshes.push((Some(studio.figure), mesh));
+                studio.pedestal = match (studio.pedestal, pedestal) {
+                    (old, Some((mesh, bounds))) => {
+                        let uploaded = renderer.upload_mesh_with_slots(mesh, materials)?;
+                        let target = old.map(|(target, _)| target);
+                        prepared.meshes.push((target, uploaded));
+                        let handle = target.unwrap_or(uploaded);
+                        Some((handle, bounds))
+                    }
+                    (Some((old, _)), None) => {
+                        prepared.retire = Some(old);
+                        None
+                    }
+                    (None, None) => None,
+                };
+            }
+            Ok::<_, UploadError>(())
+        })();
+        match result {
+            Ok(()) => Ok(prepared),
+            Err(error) => {
+                prepared.discard(renderer);
+                Err(error)
+            }
         }
-        if let Some(studio) = &mut self.studio {
-            renderer.update_mesh(studio.figure, figure, materials)?;
-            studio.pedestal = match (studio.pedestal, pedestal) {
-                (Some((handle, _)), Some((mesh, bounds))) => {
-                    renderer.update_mesh(handle, mesh, materials)?;
-                    Some((handle, bounds))
-                }
-                (None, Some((mesh, bounds))) => {
-                    Some((renderer.upload_mesh_with_slots(mesh, materials)?, bounds))
-                }
-                (_, None) => None,
-            };
-        }
-        Ok(())
     }
 }
 

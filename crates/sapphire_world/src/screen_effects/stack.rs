@@ -101,6 +101,8 @@ pub struct EffectStack {
     instances: [Option<Instance>; STACK_CAPACITY],
     len: usize,
     next_push: u32,
+    /// The first push of the current run, separate from the lifetime identity of handles.
+    seed_origin: u32,
     /// Seconds the last fixed step moved each clock's layers.
     world_step: f32,
     real_step: f32,
@@ -120,6 +122,7 @@ impl EffectStack {
             instances: [None; STACK_CAPACITY],
             len: 0,
             next_push: 0,
+            seed_origin: 0,
             world_step: 0.0,
             real_step: 0.0,
             weights: [0.0; STACK_CAPACITY],
@@ -152,7 +155,9 @@ impl EffectStack {
             if let Some(center) = center {
                 layer.effect = layer.effect.centered(center);
             }
-            let seed = push.0.wrapping_mul(0x9e37_79b9) ^ index as u32;
+            // Push identities continue across resets; only the run's seeded sequence starts over.
+            // Subtraction is modulo u32, like the existing push and redraw seed sequences.
+            let seed = push.0.wrapping_sub(self.seed_origin).wrapping_mul(0x9e37_79b9) ^ index as u32;
             let instance =
                 Instance { layer, push, seed, time: -layer.delay, released: None, held: false, shown: false };
             self.stats.pushed += 1;
@@ -214,6 +219,20 @@ impl EffectStack {
         self.instances = [None; STACK_CAPACITY];
         self.len = 0;
         self.stats.depth = 0;
+    }
+
+    /// Ends the previous run and starts its deterministic screen pattern sequence over.
+    /// Old handles remain invalid: their lifetime push identities are never reset here.
+    /// Keeps the scene clock and cumulative statistics, but forgets the old frame's samples.
+    /// Allocates nothing.
+    pub fn start_over(&mut self) {
+        self.clear();
+        self.seed_origin = self.next_push;
+        self.world_step = 0.0;
+        self.real_step = 0.0;
+        self.weights.fill(0.0);
+        self.frameless_steps = 0;
+        self.stats.active = 0;
     }
 
     /// Moves `handle`'s layers to `seconds` after their push (each layer's own delay still
@@ -370,4 +389,34 @@ fn seconds(duration: SimDuration) -> f32 {
 /// `SimSet::Clocks`, so it sees the step's world scales.
 pub fn tick_screen_effects(world: Res<'_, WorldClock>, mut stack: ResMut<'_, EffectStack>) {
     stack.tick(&world.0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::screen_effects::{ScreenEffect, SpeedLinesEffect};
+
+    #[test]
+    fn a_run_seed_sequence_crosses_the_push_identity_wrap() {
+        let preset = EffectPreset {
+            name: "lines".to_owned(),
+            layers: vec![EffectLayer {
+                effect: ScreenEffect::SpeedLines(SpeedLinesEffect::default()),
+                envelope: Envelope::Pulse { attack: 0.0, hold: 1.0, release: 0.0 },
+                delay: 0.0,
+                clock: EffectClock::World,
+            }],
+        };
+        let make = || EffectStack::new(ScaledClock::new().new_local_clock());
+        let (mut restarted, mut fresh) = (make(), make());
+        restarted.next_push = u32::MAX - 1;
+        restarted.start_over();
+        let mut identities = [0; 4];
+        for identity in &mut identities {
+            *identity = restarted.push(&preset).0;
+            fresh.push(&preset);
+            assert_eq!(restarted.resolve(1.0), fresh.resolve(1.0));
+        }
+        assert_eq!(identities, [u32::MAX - 1, u32::MAX, 0, 1]);
+    }
 }

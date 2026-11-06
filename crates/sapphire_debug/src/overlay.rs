@@ -112,8 +112,9 @@ pub struct HotReloadStatus<'a> {
     pub shader_rebuilds: u32,
     /// Documents reloaded (the default day, the light rig presets).
     pub documents: u32,
-    /// What failed in the last change: shaders that don't compile, assets whose new version
-    /// didn't load. Each keeps what it had.
+    /// Recent reload failures, newest last, retained across unrelated successful changes.
+    /// Each failed update kept its prior version; these are historical diagnostics, not a
+    /// statement that the latest source still fails.
     pub errors: &'a [String],
 }
 

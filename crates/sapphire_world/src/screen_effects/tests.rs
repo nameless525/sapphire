@@ -46,6 +46,20 @@ fn close(a: f32, b: f32) -> bool {
 }
 
 #[test]
+fn name_lookup_preserves_row_and_layer_error_precedence() {
+    let good = preset(&[blur(0.1, [0.5, 0.5], pulse(0.0, 0.1, 0.1))]);
+    let mut bad = good.clone();
+    bad.layers.clear();
+    assert!(matches!(
+        EffectLibrary::new(vec![bad.clone(), good.clone()]),
+        Err(EffectLibraryError::LayerCount(_))
+    ));
+    assert!(
+        matches!(EffectLibrary::new(vec![good, bad]), Err(EffectLibraryError::DuplicateName(name)) if name == "test")
+    );
+}
+
+#[test]
 fn the_sample_presets_load_and_round_trip() {
     let library = EffectLibrary::default_effects();
     let names: Vec<&str> = library.names().collect();
@@ -431,6 +445,38 @@ fn speed_lines_are_redrawn_at_their_rate() {
     two.push(&preset(&[lines]));
     two.push(&preset(&[lines]));
     assert_ne!(one.resolve(1.0).speed_lines.seed, two.resolve(1.0).speed_lines.seed);
+}
+
+#[test]
+fn a_new_run_matches_fresh_patterns_and_old_handles_cannot_change_it() {
+    let lines = preset(&[EffectLayer {
+        effect: ScreenEffect::SpeedLines(SpeedLinesEffect { rate: 10.0, ..Default::default() }),
+        ..blur(0.0, [0.5, 0.5], pulse(0.0, 1.0, 0.1))
+    }]);
+    let (mut world, mut restarted) = stack();
+    let (mut fresh_world, mut fresh) = stack();
+    let old = restarted.push(&lines);
+    run(&mut world, &mut restarted, 3);
+    assert!(restarted.resolve(1.0).speed_lines.opacity > 0.0);
+    let pushed = restarted.stats().pushed;
+    restarted.start_over();
+    assert_eq!(restarted.stats().active, 0);
+    assert_eq!(restarted.stats().pushed, pushed, "lifetime telemetry remains cumulative");
+    assert!(restarted.is_empty());
+    let current = restarted.push(&lines);
+    fresh.push(&lines);
+    assert_ne!(old, current, "a reset never reuses a handle");
+    restarted.hold(old, Some(0.7));
+    restarted.release(old);
+    restarted.stop(old);
+    assert_eq!(restarted.len(), 1, "stale handles leave the new run alone");
+    for _ in 0..12 {
+        for alpha in [0.0, 0.5, 1.0] {
+            assert_eq!(restarted.resolve(alpha), fresh.resolve(alpha));
+        }
+        run(&mut world, &mut restarted, 1);
+        run(&mut fresh_world, &mut fresh, 1);
+    }
 }
 
 #[test]

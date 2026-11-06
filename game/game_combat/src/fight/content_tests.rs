@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use sapphire_anim::{AnimGraph, Clip, Joint, JointTransform};
+use sapphire_anim::{AnimGraph, Clip, ClipSource, Joint, JointTransform};
 use sapphire_assets::material::{AnimeCharacterMaterial, Material};
 use sapphire_assets::mesh::{
     Influences, MaterialSlot, Mesh, PositionFormat, Skin, SkinBind, Submesh, VERTEX_COLOR_NEUTRAL, Vertex,
@@ -593,10 +593,22 @@ fn an_enemy_waits_for_the_rest_of_a_new_version_to_land() {
 
     stage.recook_all_but(&[enemy::WARRIOR, SWING, OTHER_SWING, GRAPH, ENEMY_SWING, enemy::GRAPH], 1, 7);
     stage.frames_until(|stage| stage.show.enemy_versions(&stage.content) == Some((0, 1)));
-    let versions = stage.content.graph_versions();
     stage.recook_all_but(&[enemy::WARRIOR], 1, 7);
-    // Each graph and the clip it names.
-    stage.frames_until(|stage| stage.content.graph_versions() >= versions + 4);
+    // Revisions identify changed views; readiness is the actual new graph and clip data.
+    stage.frames_until(|stage| {
+        stage.content.graph_document().is_ok_and(|graph| graph.combat.decay == 7)
+            && stage.content.graph_document_of(ENEMY_GRAPH).is_ok_and(|graph| graph.combat.decay == 7)
+            && stage
+                .content
+                .graph_clips()
+                .clip(SWING)
+                .is_some_and(|clip| clip.joint_count.to_native() as usize == HumanBone::REQUIRED.len() + 1)
+            && stage
+                .content
+                .graph_clips_of(ENEMY_GRAPH)
+                .clip(ENEMY_SWING)
+                .is_some_and(|clip| clip.joint_count.to_native() as usize == joints + 1)
+    });
     assert_eq!(stage.enemy_joints(), joints, "it keeps what it has");
     let waiting = stage.enemy_player();
     assert!(!waiting.has_replacement(), "a graph bound to other joints waits with it");

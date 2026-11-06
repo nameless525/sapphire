@@ -24,7 +24,9 @@ use crate::cache::Stage;
 /// keeps in step with `Cargo.lock`: a new decoder could find a different length.
 pub const SOUND_IMPORTER: Stage = Stage { name: "ogg (lewton 0.10.2)", version: 1 };
 /// The sound cooker. Bump it whenever it changes output for the same file.
-pub const SOUND_COOKER: Stage = Stage { name: "ssound", version: 1 };
+// Version 2 preserves complete same-format Ogg chains; version 1 could cache truncated PCM
+// frame counts from the decoder's chained-stream granule handling. The archive layout is unchanged.
+pub const SOUND_COOKER: Stage = Stage { name: "ssound", version: 2 };
 /// The cue importer as cache keys know it.
 pub const CUE_IMPORTER: Stage = Stage { name: "cue document", version: 1 };
 /// The cue cooker. Bump it whenever it changes output for the same document.

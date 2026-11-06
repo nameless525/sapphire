@@ -362,6 +362,41 @@ fn a_power_reaches_c_only_where_the_scan_says() {
     assert_eq!(scan(carried.as_ref()).unwrap().pow, 0);
 }
 
+/// These are baked numeric tokens and a carried power. Dynamic string coercion is tested separately.
+#[test]
+fn baked_numbers_cross_target_corpus() {
+    let body = r#"
+        local base = 1.5
+        sapphire.mark(.1)
+        sapphire.mark(1.)
+        sapphire.mark(1_234.5)
+        sapphire.mark(0x20_0000_0000_0001)
+        sapphire.mark(0b1010_0101)
+        sapphire.mark(1.00000000000000011102230246251565404236316680908203125)
+        sapphire.mark(4.9406564584124654e-324)
+        sapphire.mark(1.7976931348623157e308)
+        sapphire.mark(-0.0)
+        sapphire.mark(base ^ 0.5)
+    "#;
+    let expected = [
+        0x3fb9_9999_9999_999a,
+        0x3ff0_0000_0000_0000,
+        0x4093_4a00_0000_0000,
+        0x4340_0000_0000_0000,
+        0x4064_a000_0000_0000,
+        0x3ff0_0000_0000_0000,
+        0x0000_0000_0000_0001,
+        0x7fef_ffff_ffff_ffff,
+        0x8000_0000_0000_0000,
+        0x3ff3_988e_1409_212e,
+    ];
+    let source = format!("return {{ hook = function() {body} end }}");
+    let cooked = cook(&source).expect("baked numbers cook");
+    let bytes: String = cooked.as_ref().iter().map(|byte| format!("{byte:02x}")).collect();
+    say(&format!("baked-numbers-v1 {bytes}"));
+    assert_eq!(marked(body).into_iter().map(f64::to_bits).collect::<Vec<_>>(), expected);
+}
+
 #[test]
 fn a_script_cant_choose_its_own_level() {
     assert!(refused("--!optimize 2\nreturn {}").contains("compile options"));
@@ -633,6 +668,20 @@ end }
 )]
 fn say(line: &str) {
     writeln!(std::io::stderr(), "script-digest|{ARCHITECTURE}|{line}").unwrap();
+}
+
+/// The compiler can serialize a non-finite result. Its raw representation remains diagnostic.
+#[test]
+fn folded_nan_cook_diagnostic() {
+    let bytes = compile::compile_unchecked(
+        "return { hook = function() return 1e309 - 1e309 end }",
+        compile::SHIPPING_LEVEL,
+    )
+    .unwrap();
+    let numbers = scan(&bytes).unwrap().numbers;
+    let bits = numbers.into_iter().find(|bits| f64::from_bits(*bits).is_nan()).expect("the fold baked NaN");
+    let bytes: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    say(&format!("baked-nan-v1 {bits:016x} {bytes}"));
 }
 
 /// A run's scenario takes its host from one static.

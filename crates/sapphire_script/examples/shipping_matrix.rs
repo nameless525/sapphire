@@ -19,7 +19,7 @@ use std::time::Duration;
 use mlua::thread::ThreadStatus;
 use mlua::{Lua, VmState, ffi, lua_State};
 use sapphire_script::bindings::Frame;
-use sapphire_script::{HookEnd, Limits, ScriptVm, VmError, cook};
+use sapphire_script::{HookArgs, HookEnd, Limits, ScriptVm, VmError, cook};
 
 /// Exits 0 only by reaching the line after the failure: the process lived.
 fn survived(what: impl std::fmt::Debug) -> ExitCode {
@@ -33,12 +33,16 @@ fn plain_lua() -> Lua {
 
 /// A hook on the sandboxed VM, the shape the crate ships.
 fn on_vm(source: &str, limits: Limits) -> HookEnd {
+    on_vm_with_args(source, limits, ())
+}
+
+fn on_vm_with_args(source: &str, limits: Limits, args: impl Into<HookArgs>) -> HookEnd {
     let vm = ScriptVm::new(limits).expect("the VM starts");
     let cooked = cook(source).expect("cooks");
     let hooks = vm.load(&cooked, "=case").expect("loads");
     let hook = hooks.hook("hook").expect("hook type").expect("has a hook");
     let mut frame = Frame::new();
-    vm.fire(&mut frame, &hook, ())
+    vm.fire(&mut frame, &hook, args)
 }
 
 /// The raw callback scouts intentionally exercise unsupported foreign-unwind paths.
@@ -308,10 +312,17 @@ const CASES: &[Case] = &[
         survived(vm.load(&cook("return {hook = function() end}").unwrap(), "=finite").map(|_| ()))
     }),
     ("VM: invalid table positions raise only in Luau", Expected::Survives, || {
-        for body in ["table.insert({1}, 1.5, 9)", "table.remove({1}, 0 / 0)", "table.find({1}, 1, math.huge)"]
-        {
+        for (body, position) in [
+            ("table.insert({1}, position, 9)", 1.5),
+            ("table.remove({1}, position)", f64::NAN),
+            ("table.find({1}, 1, position)", f64::INFINITY),
+        ] {
             expect_hook(
-                on_vm(&format!("return {{hook = function() {body} end}}"), Limits::default()),
+                on_vm_with_args(
+                    &format!("return {{hook = function(position) {body} end}}"),
+                    Limits::default(),
+                    position,
+                ),
                 HookOutcome::Failed,
             );
         }

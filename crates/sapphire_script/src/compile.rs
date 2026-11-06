@@ -105,11 +105,15 @@ impl AsRef<[u8]> for CookedScript {
 
 /// What a cook does: refuses a script that breaks a rule, and returns the bytes to run.
 ///
-/// Powers are read at level 0, whatever level ships, because that's where nothing has been folded yet:
-/// `2 ^ 2.5` is a `POW` there and a plain number above it. A `--!optimize` comment would choose its own
-/// level, so it's refused.
+/// Powers are read at level 0, where folding cannot hide them. Luau's compile directives and native
+/// attributes can override that level. The cook reserves `--!optimize`, `--!native`, `@native` and
+/// `@[` anywhere in source, including inside comments and strings. Listed attributes are reserved
+/// as a group because they can contain a native attribute separated by whitespace or comments.
+///
+/// Baked scalar and vector constants must be finite. Scripts can still compute non-finite values
+/// at runtime or receive them as hook arguments.
 pub fn cook(source: &str) -> Result<CookedScript, CookError> {
-    if source.contains("--!optimize") || source.contains("--!native") {
+    if ["--!optimize", "--!native", "@native", "@["].into_iter().any(|marker| source.contains(marker)) {
         return Err(CookError::Refused("a script doesn't choose its own compile options".to_owned()));
     }
     let unfolded = scan::scan(&compile_unchecked(source, 0)?)?;

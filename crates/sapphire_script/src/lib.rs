@@ -5,8 +5,10 @@
 //!
 //! - [`ScriptVm`]: the VM. An allowlist of libraries, a prelude, frozen globals, a budget counted in
 //!   interrupts and ended by a yield, a memory limit, a collector that only runs when asked.
-//! - [`cook`] and [`scan`]: compiling at one pinned level with libm's builtins off, and refusing bytes that
-//!   reach the C library, wherever they came from.
+//! - [`cook`] and [`scan`]: compiling at one pinned level with libm's builtins off, and refusing the
+//!   instruction/library paths covered by the deterministic policy. Luau's implicit arithmetic text
+//!   coercion and compiler folding through constant locals remain documented portability limits;
+//!   the pinned cross-platform corpus checks samples rather than proving every source equivalent.
 //! - [`bindings`]: what a script can call, as Rust that never raises and sends what it allocates to gate 4.
 //! - [`ScriptHost`]: which hooks are bound, what lasts between them, and the system that fires them.
 //!
@@ -20,6 +22,6 @@ pub mod scan;
 pub mod vm;
 
 pub use bindings::{BOARD_SLOTS, Binding, Command, Frame};
-pub use compile::{CookError, cook};
+pub use compile::{CookError, CookedScript, cook};
 pub use host::{HOOKS, ScriptHost, ScriptStats, attach, host_of, host_of_mut};
-pub use vm::{HookEnd, Limits, ScriptVm, VmError};
+pub use vm::{Hook, HookArgs, HookEnd, HookTable, Limits, ScriptVm, VmError};

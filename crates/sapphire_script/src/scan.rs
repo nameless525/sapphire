@@ -219,14 +219,14 @@ struct Reader<'a> {
     at: usize,
 }
 
-impl Reader<'_> {
+impl<'a> Reader<'a> {
     fn u8(&mut self) -> Result<u8, ScanError> {
         let byte = *self.bytes.get(self.at).ok_or(ScanError::Short)?;
         self.at += 1;
         Ok(byte)
     }
 
-    fn take(&mut self, count: usize) -> Result<&[u8], ScanError> {
+    fn take(&mut self, count: usize) -> Result<&'a [u8], ScanError> {
         let end = self.at.checked_add(count).ok_or(ScanError::Short)?;
         let bytes = self.bytes.get(self.at..end).ok_or(ScanError::Short)?;
         self.at = end;
@@ -248,6 +248,9 @@ impl Reader<'_> {
         let mut value = 0u64;
         for shift in (0..64).step_by(7) {
             let byte = self.u8()?;
+            if shift == 63 && byte > 1 {
+                return Err(ScanError::Short);
+            }
             value |= u64::from(byte & 0x7f) << shift;
             if byte & 0x80 == 0 {
                 return Ok(value);
@@ -306,18 +309,24 @@ fn function(reader: &mut Reader<'_>, version: u8, findings: &mut Findings) -> Re
     reader.take(type_bytes)?;
 
     let code_len = reader.count()?;
-    let mut code = Vec::with_capacity(code_len);
-    for _ in 0..code_len {
-        code.push(reader.u32()?);
-    }
+    // Admit the complete encoded region before allocating or inspecting any claimed instructions.
+    let code = reader.take(code_len.checked_mul(4).ok_or(ScanError::Short)?)?;
+    let word_at = |pc: usize| {
+        let at = pc * 4;
+        u32::from_le_bytes([code[at], code[at + 1], code[at + 2], code[at + 3]])
+    };
     let constants = constants(reader, findings)?;
 
     let mut pc = 0;
-    while pc < code.len() {
-        let word = code[pc];
+    while pc < code_len {
+        let word = word_at(pc);
         let opcode = (word & 0xff) as u8;
         if opcode > op::LAST {
             return Err(ScanError::Opcode(opcode));
+        }
+        let length = if has_aux(opcode) { 2 } else { 1 };
+        if length > code_len - pc {
+            return Err(ScanError::Short);
         }
         let a = ((word >> 8) & 0xff) as u8;
         let c = (word >> 24) as usize;
@@ -325,8 +334,8 @@ fn function(reader: &mut Reader<'_>, version: u8, findings: &mut Findings) -> Re
         match opcode {
             op::POW | op::MOD => {
                 let b = ((word >> 16) & 0xff) as u8;
-                let exponent = pc.checked_sub(1).and_then(|at| literal(code[at], c as u8, &constants));
-                let base = pc.checked_sub(2).and_then(|at| literal(code[at], b, &constants));
+                let exponent = pc.checked_sub(1).and_then(|at| literal(word_at(at), c as u8, &constants));
+                let base = pc.checked_sub(2).and_then(|at| literal(word_at(at), b, &constants));
                 if exponent.is_some() && base.is_some() {
                     findings.folded += 1;
                 }
@@ -354,7 +363,7 @@ fn function(reader: &mut Reader<'_>, version: u8, findings: &mut Findings) -> Re
             op::CONCAT => findings.concats += 1,
             _ => {}
         }
-        pc += if has_aux(opcode) { 2 } else { 1 };
+        pc += length;
     }
 
     for _ in 0..reader.count()? {
@@ -365,8 +374,12 @@ fn function(reader: &mut Reader<'_>, version: u8, findings: &mut Findings) -> Re
     if reader.u8()? != 0 {
         let gap_log2 = reader.u8()?;
         reader.take(code_len)?;
+        // Luau indexes line intervals with a 32-bit instruction offset.
+        if gap_log2 >= u32::BITS as u8 {
+            return Err(ScanError::Short);
+        }
         let intervals = (code_len.saturating_sub(1) >> gap_log2) + 1;
-        reader.take(intervals * 4)?;
+        reader.take(intervals.checked_mul(4).ok_or(ScanError::Short)?)?;
     }
     if reader.u8()? != 0 {
         for _ in 0..reader.count()? {
@@ -397,6 +410,10 @@ const INLINABLE: u8 = 1 << 3;
 /// A function's constants: the numbers by position, with `None` for anything else.
 fn constants(reader: &mut Reader<'_>, findings: &mut Findings) -> Result<Vec<Option<f64>>, ScanError> {
     let count = reader.count()?;
+    // Every constant has at least its one-byte tag. Reject impossible counts before reserving.
+    if count > reader.bytes.len() - reader.at {
+        return Err(ScanError::Short);
+    }
     let mut numbers = Vec::with_capacity(count);
     for _ in 0..count {
         let tag = reader.u8()?;
@@ -450,4 +467,57 @@ fn constants(reader: &mut Reader<'_>, findings: &mut Findings) -> Result<Vec<Opt
         numbers.push(number);
     }
     Ok(numbers)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn varint(mut value: u64) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        while value >= 128 {
+            bytes.push(value as u8 | 128);
+            value >>= 7;
+        }
+        bytes.push(value as u8);
+        bytes
+    }
+
+    fn function_prefix() -> Vec<u8> {
+        // Version 9, types 1, no strings, one function, four header bytes, flags, no type bytes.
+        vec![9, 1, 0, 1, 0, 0, 0, 0, 0, 0]
+    }
+
+    #[test]
+    fn impossible_code_and_constant_counts_are_rejected_before_reserving() {
+        let mut code = function_prefix();
+        code.extend(varint(u64::from(u32::MAX)));
+        assert_eq!(scan(&code), Err(ScanError::Short));
+        let mut constants = function_prefix();
+        constants.push(0); // no code
+        constants.extend(varint(u64::from(u32::MAX)));
+        assert_eq!(scan(&constants), Err(ScanError::Short));
+    }
+
+    #[test]
+    fn missing_auxiliary_words_and_invalid_line_shifts_are_rejected() {
+        let mut aux = function_prefix();
+        aux.push(1);
+        aux.extend(u32::from(op::GETGLOBAL).to_le_bytes());
+        aux.push(0); // no constants
+        aux.extend([0; 6]); // complete children/line/name/debug metadata and main function
+        assert_eq!(scan(&aux), Err(ScanError::Short));
+
+        let mut lines = function_prefix();
+        lines.push(1);
+        lines.extend(22u32.to_le_bytes()); // RETURN
+        lines.extend([0, 0, 0, 0, 1, 255, 0]); // constants, children, line, name, line info
+        assert_eq!(scan(&lines), Err(ScanError::Short));
+    }
+
+    #[test]
+    fn a_varint_must_fit_without_discarding_high_bits() {
+        let mut reader = Reader { bytes: &[255, 255, 255, 255, 255, 255, 255, 255, 255, 2], at: 0 };
+        assert_eq!(reader.varint(), Err(ScanError::Short));
+    }
 }

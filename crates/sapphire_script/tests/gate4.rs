@@ -145,9 +145,11 @@ unsafe extern "C-unwind" fn unflipped_empty(_state: *mut lua_State) -> c_int {
 }
 
 fn host_with_binding(function: mlua::ffi::lua_CFunction, source: &str) -> ScriptHost {
+    // SAFETY: these test callbacks validate access through with_frame/in_host, never raise, and
+    // return zero results on the supplied live state; their deliberate allocation is the gate probe.
+    let binding = unsafe { Binding::new("careless", function) };
     let mut host =
-        ScriptHost::new_with_bindings(Limits::default(), &[Binding { name: "careless", function }])
-            .expect("the binding goes through");
+        ScriptHost::new_with_bindings(Limits::default(), &[binding]).expect("the binding goes through");
     host.bind(&cook(source).unwrap(), "=test").unwrap();
     host
 }
@@ -173,8 +175,10 @@ fn a_binding_that_allocates_fails_the_gate_at_its_tick() {
 #[test]
 fn a_binding_that_doesnt_flip_back_cant_start_a_vm() {
     for function in [unflipped as mlua::ffi::lua_CFunction, unflipped_empty] {
-        let refused =
-            ScriptHost::new_with_bindings(Limits::default(), &[Binding { name: "careless", function }]);
+        // SAFETY: both callbacks preserve the live stack, return no results and never raise. Their
+        // missing host-attribution entry is deliberately rejected by the separate startup policy check.
+        let binding = unsafe { Binding::new("careless", function) };
+        let refused = ScriptHost::new_with_bindings(Limits::default(), &[binding]);
         assert!(
             matches!(refused, Err(VmError::UnflippedBinding("careless"))),
             "{:?}",

@@ -75,7 +75,7 @@ pub fn run_hook(source: &str) -> Result<(HookEnd, Frame), String> {
     let vm = ScriptVm::new(Limits::default()).expect("the VM starts");
     let cooked = cook(source).map_err(|error| error.to_string())?;
     let hooks = vm.load(&cooked, "=test").map_err(|error| error.to_string())?;
-    let hook: mlua::Function = hooks.get("hook").map_err(|error| error.to_string())?;
+    let hook = hooks.hook("hook").map_err(|error| error.to_string())?.expect("has a hook");
     let mut frame = Frame::new();
     let end = vm.fire(&mut frame, &hook, ());
     Ok((end, frame))

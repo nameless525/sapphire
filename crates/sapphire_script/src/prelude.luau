@@ -74,8 +74,27 @@ end
 
 -- These walk a table in Luau for the budget's sake: an interrupt fires on each back-edge, where C's walk
 -- 90,000 slots on one, which at 10,000 interrupts was 970 ms of `table.find`.
+-- The sandbox's table walks accept array positions, never fractional/hash keys. Refuse an invalid
+-- position before shifting elements; allowing one could silently change which values survive.
+local function array_position(position)
+	if type(position) ~= "number" or position % 1 ~= 0 then
+		error("table position must be a finite integer", 3)
+	end
+	return position
+end
+
 function table.find(t, value, from)
-	for i = from or 1, #t do
+	if type(t) ~= "table" then
+		error("table.find takes a table", 2)
+	end
+	if from == nil then
+		from = 1
+	end
+	from = array_position(from)
+	if from < 1 then
+		error("'find' position out of bounds", 2)
+	end
+	for i = from, #t do
 		if t[i] == value then
 			return i
 		end
@@ -85,6 +104,9 @@ end
 
 -- Two arguments never get here unless the table's frozen: they compile to FASTCALL's append.
 function table.insert(t, ...)
+	if type(t) ~= "table" then
+		error("table.insert takes a table", 2)
+	end
 	local count = select("#", ...)
 	if count == 1 then
 		t[#t + 1] = (...)
@@ -94,6 +116,7 @@ function table.insert(t, ...)
 		error("wrong number of arguments to 'insert'", 2)
 	end
 	local position, value = ...
+	position = array_position(position)
 	local size = #t
 	if position < 1 or position > size + 1 then
 		error("'insert' position out of bounds", 2)
@@ -105,8 +128,14 @@ function table.insert(t, ...)
 end
 
 function table.remove(t, position)
+	if type(t) ~= "table" then
+		error("table.remove takes a table", 2)
+	end
 	local size = #t
-	position = position or size
+	if position == nil then
+		position = size
+	end
+	position = array_position(position)
 	if size == 0 and position == 0 then
 		return nil
 	end
@@ -145,6 +174,9 @@ local function ascending(a, b)
 end
 
 function table.sort(t, less)
+	if type(t) ~= "table" then
+		error("table.sort takes a table", 2)
+	end
 	less = less or ascending
 	local size = #t
 	for first = size // 2, 1, -1 do

@@ -12,7 +12,6 @@
 
 use std::process::ExitCode;
 
-use mlua::Function;
 use sapphire_script::bindings::Frame;
 use sapphire_script::{Command, HookEnd, Limits, ScriptVm, cook};
 
@@ -35,7 +34,7 @@ end }
 
 fn fire(vm: &ScriptVm, source: &str) -> (HookEnd, Frame) {
     let hooks = vm.load(&cook(source).expect("cooks"), "=smoke").expect("loads");
-    let hook: Function = hooks.get("hook").expect("has a hook");
+    let hook = hooks.hook("hook").expect("hook type").expect("has a hook");
     let mut frame = Frame::new();
     let end = vm.fire(&mut frame, &hook, ());
     (end, frame)
@@ -56,7 +55,11 @@ fn main() -> ExitCode {
     };
     check(
         "a hook runs and pinned math reads",
-        end == HookEnd::Returned,
+        end == HookEnd::Returned
+            && !frame.fault
+            && frame.queued == 1
+            && value.to_bits() == 0x41e9_64a7_9620_0000
+            && frame.board[0].to_bits() == value.to_bits(),
         format!("{end:?} {:016x}", value.to_bits()),
     );
 

@@ -7,13 +7,15 @@
 //! parts ([`Command`], the board, the events) move to gameplay so that the checksum can hold them
 //! itself; nothing here needs Luau to name them.
 
-use mlua::{Function, Table};
 use sapphire_core::alloc;
 use sapphire_ecs::prelude::*;
-use sapphire_gameplay::{ActorTable, CombatSet, Fighter, SimRng, Simulation, SlowMotion, StateHasher};
+use sapphire_gameplay::{
+    ActorId, ActorTable, CombatSet, Fighter, SimRng, Simulation, SlowMotion, StateHasher,
+};
 
 use crate::bindings::{BOARD_SLOTS, Binding, Command, FRAME_ACTORS, Frame};
-use crate::vm::{HookEnd, Limits, ScriptVm, VmError};
+use crate::compile::CookedScript;
+use crate::vm::{Hook, HookEnd, Limits, ScriptVm, VmError};
 
 /// Hooks a chunk may hold, by the name it returns them under.
 pub const HOOKS: [&str; 2] = ["on_phase", "on_beat"];
@@ -21,7 +23,8 @@ pub const HOOKS: [&str; 2] = ["on_phase", "on_beat"];
 const ON_PHASE: usize = 0;
 const ON_BEAT: usize = 1;
 
-/// Health a phase lasts, as a fraction: `on_phase` fires as an actor's health crosses each quarter.
+/// `on_phase` reports the latest quarter reached. Several quarters crossed in one step coalesce into
+/// one event, so obsolete phase commands do not run after an actor has already passed that phase.
 const PHASES: u32 = 4;
 
 /// A script host's counters (rule R9).
@@ -48,10 +51,11 @@ pub struct ScriptStats {
 pub struct ScriptHost {
     vm: ScriptVm,
     /// The bound hooks, by [`HOOKS`]' position; swapped whole by [`Self::bind`], between steps.
-    hooks: [Option<Function>; HOOKS.len()],
+    hooks: [Option<Hook>; HOOKS.len()],
     frame: Frame,
-    /// The phase each actor last fired for, by the order the system sees them.
-    phases: [u8; FRAME_ACTORS],
+    /// Highest phase already reported for each observed stable actor ID. Table slots can move when
+    /// another actor despawns; history belongs to the actor, while hook arguments stay slot indices.
+    phases: [(Option<ActorId>, u8); FRAME_ACTORS],
     /// `on_beat` fires every this many ticks, or never at 0.
     beat_every: u64,
     tick: u64,
@@ -75,7 +79,7 @@ impl ScriptHost {
             vm: ScriptVm::with_bindings(limits, more)?,
             hooks: [const { None }; HOOKS.len()],
             frame: Frame::new(),
-            phases: [0; FRAME_ACTORS],
+            phases: [(None, 0); FRAME_ACTORS],
             beat_every: 0,
             tick: 0,
             commands_hash: 0,
@@ -92,11 +96,11 @@ impl ScriptHost {
 
     /// Runs a cooked chunk and binds what it returns, replacing every hook, on the next step's terms:
     /// the reload. The board stays, and so does anything else outside the VM.
-    pub fn bind(&mut self, cooked: &[u8], name: &str) -> Result<(), VmError> {
-        let table: Table = self.vm.load(cooked, name)?;
+    pub fn bind(&mut self, cooked: &CookedScript, name: &str) -> Result<(), VmError> {
+        let table = self.vm.load(cooked, name)?;
         let mut hooks = [const { None }; HOOKS.len()];
         for (slot, hook) in hooks.iter_mut().zip(HOOKS) {
-            *slot = table.get::<Option<Function>>(hook)?;
+            *slot = table.hook(hook)?;
         }
         self.hooks = hooks;
         Ok(())
@@ -146,20 +150,26 @@ impl ScriptHost {
 
     /// Runs what's due at this step, with the frame's numbers set. The commands stay in the frame for
     /// [`Self::apply_commands`].
-    fn run(&mut self, health: &[(u32, u32); FRAME_ACTORS], rng: &mut sapphire_math::Pcg32) {
+    fn run(&mut self, health: &[(Option<ActorId>, u32, u32); FRAME_ACTORS], rng: &mut sapphire_math::Pcg32) {
         self.tick += 1;
         self.frame.tick = self.tick;
         self.frame.rng = *rng;
-        for (slot, (now, _)) in self.frame.health.iter_mut().zip(health) {
+        for (slot, (_, now, _)) in self.frame.health.iter_mut().zip(health) {
             *slot = f64::from(*now);
         }
-        for (actor, &(now, max)) in health.iter().enumerate() {
+        let previous = self.phases;
+        self.phases = [(None, 0); FRAME_ACTORS];
+        for (actor, &(id, now, max)) in health.iter().enumerate() {
+            let Some(id) = id else { continue };
             if max == 0 {
                 continue;
             }
-            let phase = ((max - now.min(max)) * PHASES / max) as u8;
-            if phase > self.phases[actor] {
-                self.phases[actor] = phase;
+            let last =
+                previous.iter().find_map(|&(old, phase)| (old == Some(id)).then_some(phase)).unwrap_or(0);
+            self.phases[actor] = (Some(id), last);
+            let phase = (u64::from(max - now.min(max)) * u64::from(PHASES) / u64::from(max)) as u8;
+            if phase > last {
+                self.phases[actor].1 = phase;
                 self.fire(ON_PHASE, (actor as f64, f64::from(phase), f64::from(now)));
             }
         }
@@ -247,11 +257,20 @@ fn write_f64(hash: &mut StateHasher, value: f64) {
 }
 
 /// Puts `host` in a simulation and adds the system that fires its hooks, last in the step, where
-/// everything a hook reads has settled and a slow motion it asks for starts on the next.
+/// everything a hook reads has settled and a slow motion it asks for starts on the next. Attaching
+/// again replaces the host while retaining the single installed system.
 pub fn attach(sim: &mut Simulation, host: ScriptHost) {
+    let installed = sim.world().contains_resource::<ScriptAttached>();
     sim.insert_resource(host);
-    sim.add_combat_system(CombatSet::Cues, fire_hooks);
+    if !installed {
+        sim.insert_resource(ScriptAttached);
+        sim.add_combat_system(CombatSet::Cues, fire_hooks);
+    }
 }
+
+/// Installation belongs to the simulation, even when the host resource is replaced.
+#[derive(Resource)]
+struct ScriptAttached;
 
 fn fire_hooks(
     table: Res<'_, ActorTable>,
@@ -260,10 +279,10 @@ fn fire_hooks(
     mut rng: ResMut<'_, SimRng>,
     mut host: ResMut<'_, ScriptHost>,
 ) {
-    let mut health = [(0, 0); FRAME_ACTORS];
-    for (slot, (_, entity)) in health.iter_mut().zip(table.iter()) {
+    let mut health = [(None, 0, 0); FRAME_ACTORS];
+    for (slot, (id, entity)) in health.iter_mut().zip(table.iter()) {
         if let Ok(fighter) = fighters.get(entity) {
-            *slot = (fighter.health(), fighter.max_health());
+            *slot = (Some(id), fighter.health(), fighter.max_health());
         }
     }
     host.run(&health, &mut rng.0);
@@ -287,4 +306,95 @@ pub fn host_of(sim: &Simulation) -> &ScriptHost {
 /// If nothing's been attached.
 pub fn host_of_mut(sim: &mut Simulation) -> Mut<'_, ScriptHost> {
     sim.resource_mut::<ScriptHost>()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cook;
+    use sapphire_math::Pcg32;
+
+    fn phases() -> ScriptHost {
+        let mut host = ScriptHost::new(Limits::default()).unwrap();
+        host.bind(
+            &cook("return {on_phase = function(actor, phase) sapphire.mark(actor * 10 + phase) end}")
+                .unwrap(),
+            "=phases",
+        )
+        .unwrap();
+        host
+    }
+
+    #[test]
+    fn phase_arithmetic_covers_all_u32_health_and_coalesces_skipped_quarters() {
+        let mut host = phases();
+        let mut health = [(None, 0, 0); FRAME_ACTORS];
+        health[0] = (ActorId::from_raw(1), 0, u32::MAX);
+        host.run(&health, &mut Pcg32::new(0, 0));
+        assert_eq!(host.frame.queued, 1);
+        assert_eq!(host.frame.queue[0], Command::Mark(4.0));
+        assert_eq!(host.stats.hooks_fired, 1, "latest phase only, rather than four obsolete phases");
+    }
+
+    #[test]
+    fn phase_history_follows_actor_ids_when_table_slots_shift_or_are_reused() {
+        let mut host = phases();
+        let a = ActorId::from_raw(1);
+        let b = ActorId::from_raw(2);
+        let c = ActorId::from_raw(3);
+        let mut health = [(None, 0, 0); FRAME_ACTORS];
+        health[0] = (a, 25, 100); // phase 3
+        health[1] = (b, 75, 100); // phase 1
+        let mut rng = Pcg32::new(0, 0);
+        host.run(&health, &mut rng);
+        host.frame.queued = 0;
+        // Removing A shifts B into slot zero; B's second phase must not inherit A's third.
+        health[0] = (b, 50, 100);
+        health[1] = (c, 75, 100); // a fresh actor in the reused slot still reports phase 1
+        host.run(&health, &mut rng);
+        assert_eq!(host.frame.queued, 2);
+        assert_eq!(&host.frame.queue[..2], &[Command::Mark(2.0), Command::Mark(11.0)]);
+        host.frame.queued = 0;
+        host.run(&health, &mut rng);
+        assert_eq!(host.frame.queued, 0, "already reported phases do not repeat");
+    }
+
+    #[test]
+    fn failed_reloads_preserve_old_hooks_and_nonzero_board_state() {
+        let mut host = ScriptHost::new(Limits { interrupts: 20, ..Limits::default() }).unwrap();
+        host.bind(
+            &cook("return {on_beat = function() sapphire.set_board(0, sapphire.board(0) + 1) end}").unwrap(),
+            "=old",
+        )
+        .unwrap();
+        host.fire(ON_BEAT, (0.0, 0.0, 0.0));
+        assert_eq!(host.board()[0], 1.0);
+        for source in ["return {on_phase = function() end, on_beat = 42}", "while true do end return {}"] {
+            assert!(host.bind(&cook(source).unwrap(), "=bad").is_err());
+            host.fire(ON_BEAT, (0.0, 0.0, 0.0));
+        }
+        assert_eq!(host.board()[0], 3.0);
+        assert_eq!(host.stats.hooks_fired, 3);
+    }
+
+    #[test]
+    fn attaching_twice_replaces_the_host_without_firing_twice_per_step() {
+        use sapphire_gameplay::{SimConfig, TickActions};
+
+        let mut sim = Simulation::new(SimConfig::default());
+        for _ in 0..2 {
+            let mut host = ScriptHost::new(Limits::default()).unwrap();
+            host.bind(
+                &cook("return {on_beat = function() sapphire.set_board(0, sapphire.board(0) + 1) end}")
+                    .unwrap(),
+                "=beat",
+            )
+            .unwrap();
+            host.beat_every(1);
+            attach(&mut sim, host);
+        }
+        sim.step(&TickActions::default());
+        assert_eq!(host_of(&sim).board()[0], 1.0);
+        assert_eq!(host_of(&sim).stats.hooks_fired, 1);
+    }
 }

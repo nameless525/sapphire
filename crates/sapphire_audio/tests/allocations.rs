@@ -3,11 +3,11 @@
 //! One test, since the counts are of this thread and a harness thread of its own keeps them honest.
 
 use sapphire_assets::AssetId;
-use sapphire_assets::cue::{Bus, Cue, HitstopResponse};
+use sapphire_assets::cue::{Attenuation, AttenuationCurve, Bus, Cue, HitstopResponse};
 use sapphire_assets::sound::DecodedSound;
 use sapphire_audio::{
     AudioFrame, AudioSystem, CueRequest, CueRng, CueTarget, Emitter, EmitterId, KiraBackend, Listener,
-    MockBackend, OfflineOutput,
+    MockBackend, MockCall, OfflineOutput,
 };
 use sapphire_core::alloc::{EngineAllocator, PER_THREAD_COUNTS, count_in_scope, engine_allocator};
 use sapphire_math::Vec3;
@@ -35,7 +35,7 @@ fn cue() -> Cue {
         sounds: vec![SOUND],
         volume_db: [-3.0, 0.0],
         pitch: [0.9, 1.1],
-        attenuation: None,
+        attenuation: Some(Attenuation { near: 1.0, far: 20.0, curve: AttenuationCurve::Linear }),
         bus: Bus::Sfx,
         hitstop: HitstopResponse::Ignore,
     }
@@ -74,6 +74,15 @@ fn what_a_cue_allocates_on_the_calling_thread() {
     });
     assert_eq!(system_alone.allocations, 0, "AudioSystem::update allocated on its own account");
 
+    // A positive oracle for the same movement measured on kira below: a non-spatial cue would
+    // make movement a no-op and accidentally omit the parameter-command path from the gate.
+    let moved = [Emitter { position: Vec3::new(-1.0, 0.0, 0.0), ..emitters[0] }];
+    system.backend_mut().take_calls();
+    system.update(&frame(&moved, &[]), &mut rng);
+    let calls = system.backend_mut().take_calls();
+    assert_eq!(calls.len(), system.stats().voices as usize);
+    assert!(calls.iter().all(|call| matches!(call, MockCall::SetVoice { params, .. } if params.pan == -1.0)));
+
     // On kira: warmed by a few plays, so its free lists and ours are at their working size.
     let mut system = AudioSystem::new(KiraBackend::<OfflineOutput>::new(RATE).unwrap());
     system.add_sound(SOUND, &sound());
@@ -93,7 +102,6 @@ fn what_a_cue_allocates_on_the_calling_thread() {
     // A warmed play.
     let ((), play) = count_in_scope(|| system.update(&frame(&emitters, &requests), &mut rng));
     // A frame with a voice live and moving, and no cue.
-    let moved = [Emitter { position: Vec3::new(-1.0, 0.0, 0.0), ..emitters[0] }];
     let ((), moving) = count_in_scope(|| system.update(&frame(&moved, &[]), &mut rng));
     // What the audio callback does, with that voice playing.
     let ((), mixing) = count_in_scope(|| mix(&mut system));

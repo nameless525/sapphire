@@ -9,11 +9,13 @@
 //! kira on an offline output holding the real sounds, decoded from the real `.ogg` files, so the cue
 //! documents are read as they ship. The simulation's own steps aren't timed.
 //!
-//! It sorts frames by what's happening: none of the effects alive and nothing landing (`quiet`), effects
-//! playing out (`effects live`), and a hit landing (`a hit`). For each it reports the dispatcher's time
-//! (`read_step`, `advance_effects`, `write_frame` and `end_frame`) and the audio system's (`update`), as
-//! the lowest median and the lowest 99th percentile over the rounds, since other work on the machine only
-//! ever adds. It then counts allocations per frame on the calling thread, once warmed.
+//! Each round starts a fresh dispatcher, effects world, camera, audio mixer and seeded RNG.
+//! Libraries are read-only during each round. The first frame's dispatcher allocation is included and reported;
+//! a process warmup fight does not imply that newly constructed objects are warmed. Frame categories
+//! use this frame's produced sprites and hits. Every round reports its own distribution, without
+//! selecting independent minima. `--raw PATH` exports all per-frame observations as CSV.
+//! Timings include clocks and allocation-counter scopes, and exclude simulation, emitter gathering,
+//! offline mixing and setup. These are instrumented calling-thread costs, not device callback times.
 
 #![allow(clippy::print_stdout, reason = "a bench's output is what it's for")]
 
@@ -117,9 +119,12 @@ struct Sample {
     /// Cues this frame asked the audio system to start.
     sounds: usize,
     sprites: usize,
+    tick: u64,
+    checksum: u64,
+    audio_fingerprint: u64,
 }
 
-/// Everything a fight fires into, kept across its rounds so they all count as warmed.
+/// Immutable libraries and one round's mutable sinks. Reconstructed between independent fights.
 struct Sinks {
     table: CueTable,
     effects: VfxLibrary,
@@ -150,14 +155,6 @@ fn fight(sinks: &mut Sinks, samples: &mut Vec<Sample>) {
         let sim = player.simulation();
         let hit = sim.cues().any(|cue| cue.hit.is_some());
         let root_of = |actor| sim.actor(actor).map(|view| view.position);
-        let live = !sinks.frame.sprites.is_empty();
-        let kind = if hit {
-            Kind::Hit
-        } else if live {
-            Kind::Live
-        } else {
-            Kind::Quiet
-        };
         let timer = Stopwatch::start();
         let ((), step) = count_in_scope(|| {
             cues.read_step(
@@ -196,6 +193,18 @@ fn fight(sinks: &mut Sinks, samples: &mut Vec<Sample>) {
         let ((), end) = count_in_scope(|| cues.end_frame(FRAME, &mut pad));
         dispatch += timer.elapsed();
 
+        let kind = if hit {
+            Kind::Hit
+        } else if !sinks.frame.sprites.is_empty() {
+            Kind::Live
+        } else {
+            Kind::Quiet
+        };
+        // Outside measured scopes: retain a deterministic witness that every round rendered the
+        // same audio, rather than trusting only cue counts while mixer/RNG state drifts.
+        let audio_fingerprint = sinks.block.iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, sample| {
+            (hash ^ u64::from(sample.to_bits())).wrapping_mul(0x100_0000_01b3)
+        });
         samples.push(Sample {
             kind,
             dispatch,
@@ -204,6 +213,9 @@ fn fight(sinks: &mut Sinks, samples: &mut Vec<Sample>) {
             audio_allocations: update.allocations,
             sounds,
             sprites: sinks.frame.sprites.len(),
+            tick: sim.tick(),
+            checksum: player.trail().end(),
+            audio_fingerprint,
         });
     }
 }
@@ -217,8 +229,8 @@ fn micros(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1e6
 }
 
-fn main() {
-    let mut sinks = Sinks {
+fn fresh_sinks() -> Sinks {
+    Sinks {
         table: CueTable::default_table(),
         effects: VfxLibrary::default_effects(),
         presets: ScreenLibrary::default_effects(),
@@ -228,53 +240,116 @@ fn main() {
         random: CueRng::new(7),
         frame: VfxFrame::default(),
         emitters: Vec::with_capacity(16),
-    };
-    let mut samples = Vec::with_capacity(4096);
-    // A first fight to warm what's grown once.
-    fight(&mut sinks, &mut samples);
-    let mut best: HashMap<&str, [Duration; 4]> = HashMap::new();
-    for _ in 0..ROUNDS {
-        fight(&mut sinks, &mut samples);
-        for kind in Kind::ALL {
-            let of_kind = || samples.iter().filter(|sample| sample.kind == kind);
-            let mut dispatch: Vec<_> = of_kind().map(|sample| sample.dispatch).collect();
-            let mut audio: Vec<_> = of_kind().map(|sample| sample.audio).collect();
-            if dispatch.is_empty() {
-                continue;
-            }
-            let now = [
-                percentile(&mut dispatch, 0.5),
-                percentile(&mut dispatch, 0.99),
-                percentile(&mut audio, 0.5),
-                percentile(&mut audio, 0.99),
-            ];
-            let entry = best.entry(kind.name()).or_insert(now);
-            for (kept, new) in entry.iter_mut().zip(now) {
-                *kept = (*kept).min(new);
-            }
-        }
     }
-    println!("over {ROUNDS} rounds of `fight`, {} frames each:", samples.len());
+}
+
+fn report(round: usize, samples: &[Sample]) {
+    let first = samples.first().expect("the fight has frames");
+    println!(
+        "round {round}: {} frames, checksum {:016x}; first frame dispatch {:.2} us / {} allocations, audio {:.2} us / {} allocations",
+        samples.len(),
+        samples.last().expect("frames").checksum,
+        micros(first.dispatch),
+        first.dispatch_allocations,
+        micros(first.audio),
+        first.audio_allocations
+    );
     for kind in Kind::ALL {
         let of_kind: Vec<_> = samples.iter().filter(|sample| sample.kind == kind).collect();
         if of_kind.is_empty() {
             continue;
         }
-        let times = best[kind.name()];
         let dispatch_allocations: u64 = of_kind.iter().map(|sample| sample.dispatch_allocations).sum();
         let audio_allocations: u64 = of_kind.iter().map(|sample| sample.audio_allocations).sum();
         let sounds: usize = of_kind.iter().map(|sample| sample.sounds).sum();
         let sprites = of_kind.iter().map(|sample| sample.sprites).max().unwrap_or(0);
         println!(
-            "{:>12} ({:>4} frames, at most {sprites:>3} sprites): dispatch {:>6.2} us, p99 {:>6.2} us; audio \
-             {:>6.2} us, p99 {:>6.2} us; allocations: dispatch {dispatch_allocations}, audio \
-             {audio_allocations} for {sounds} cues",
+            "  {}: {} frames, at most {sprites} sprites, {sounds} cues; allocations dispatch {dispatch_allocations}, audio {audio_allocations}",
             kind.name(),
-            of_kind.len(),
-            micros(times[0]),
-            micros(times[1]),
-            micros(times[2]),
-            micros(times[3]),
+            of_kind.len()
         );
+        for (name, mut times) in [
+            ("dispatch", of_kind.iter().map(|sample| sample.dispatch).collect::<Vec<_>>()),
+            ("audio", of_kind.iter().map(|sample| sample.audio).collect::<Vec<_>>()),
+        ] {
+            let misses = times.iter().filter(|time| time.as_secs_f64() > f64::from(FRAME)).count();
+            let p50 = percentile(&mut times, 0.5);
+            let p95 = percentile(&mut times, 0.95);
+            let p99 = percentile(&mut times, 0.99);
+            let max = *times.last().expect("nonempty category");
+            println!(
+                "    {name}: p50 {:.2}, p95 {:.2}, p99 {:.2}, max {:.2} us; {misses} frame-budget misses",
+                micros(p50),
+                micros(p95),
+                micros(p99),
+                micros(max)
+            );
+        }
+    }
+}
+
+fn main() {
+    use std::io::Write as _;
+
+    let mut args = std::env::args().skip(1);
+    let mut raw = args.next().map(|flag| {
+        assert_eq!(flag, "--raw", "usage: cue_bench [--raw PATH]");
+        let path = args.next().expect("--raw requires a CSV path");
+        assert!(args.next().is_none(), "usage: cue_bench [--raw PATH]");
+        let mut file = std::io::BufWriter::new(fs::File::create(path).expect("creates raw CSV"));
+        writeln!(file, "round,tick,kind,dispatch_ns,audio_ns,dispatch_allocations,audio_allocations,cues,sprites,checksum,audio_fingerprint").expect("writes CSV");
+        file
+    });
+    let mut samples = Vec::with_capacity(4096);
+    // Warm process/code caches only. Every measured round constructs its own mutable state.
+    fight(&mut fresh_sinks(), &mut samples);
+    let expected: Vec<_> = samples
+        .iter()
+        .map(|sample| (sample.tick, sample.checksum, sample.sounds, sample.sprites, sample.audio_fingerprint))
+        .collect();
+    let mut overhead = Vec::with_capacity(2048);
+    for _ in 0..2048 {
+        let timer = Stopwatch::start();
+        std::hint::black_box(count_in_scope(|| std::hint::black_box(())));
+        overhead.push(timer.elapsed());
+    }
+    let p50 = percentile(&mut overhead, 0.5);
+    let p99 = percentile(&mut overhead, 0.99);
+    println!(
+        "empty clock/allocation scope: p50 {:.3}, p99 {:.3} us (not subtracted); allocator instrumentation overhead remains included",
+        micros(p50),
+        micros(p99)
+    );
+    for round in 1..=ROUNDS {
+        fight(&mut fresh_sinks(), &mut samples);
+        assert_eq!(samples.len(), expected.len(), "same replay length every round");
+        for (sample, expected) in samples.iter().zip(&expected) {
+            assert_eq!(
+                (sample.tick, sample.checksum, sample.sounds, sample.sprites, sample.audio_fingerprint),
+                *expected,
+                "rounds must run identical work"
+            );
+            if let Some(raw) = &mut raw {
+                writeln!(
+                    raw,
+                    "{round},{},{},{},{},{},{},{},{},{:016x},{:016x}",
+                    sample.tick,
+                    sample.kind.name(),
+                    sample.dispatch.as_nanos(),
+                    sample.audio.as_nanos(),
+                    sample.dispatch_allocations,
+                    sample.audio_allocations,
+                    sample.sounds,
+                    sample.sprites,
+                    sample.checksum,
+                    sample.audio_fingerprint
+                )
+                .expect("writes CSV");
+            }
+        }
+        report(round, &samples);
+    }
+    if let Some(raw) = &mut raw {
+        raw.flush().expect("flushes CSV");
     }
 }

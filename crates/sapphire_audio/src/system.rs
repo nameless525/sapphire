@@ -267,10 +267,10 @@ impl<B: AudioBackend> AudioSystem<B> {
         let suspended = self.background || self.interrupted;
         let state = if suspended { DeviceState::Suspended } else { self.stats.device.state };
 
-        self.track_emitters(frame.emitters);
         if state == DeviceState::Running {
             self.reap_voices();
         }
+        self.track_emitters(frame.emitters);
         self.step_snapshot(frame);
         for request in frame.cues {
             if state.plays() {
@@ -299,8 +299,6 @@ impl<B: AudioBackend> AudioSystem<B> {
         for &emitter in emitters {
             if let Some(tracked) = self.emitters.iter_mut().find(|tracked| tracked.emitter.id == emitter.id) {
                 *tracked = Tracked { emitter, reported: true };
-            } else if self.emitters.len() < MAX_EMITTERS {
-                self.emitters.push(Tracked { emitter, reported: true });
             }
         }
         // Out of the frame's list: gone, though its voices ring on where it stood, unfrozen.
@@ -311,6 +309,17 @@ impl<B: AudioBackend> AudioSystem<B> {
             }
             tracked.reported || voices.iter().any(|voice| voice.place == Place::On(tracked.emitter.id))
         });
+        // Reclaim retired entries before admitting replacements. Preserve request order under
+        // overload and update existing entries above even when no new entries will fit.
+        for &emitter in emitters {
+            if let Some(tracked) = self.emitters.iter_mut().find(|tracked| tracked.emitter.id == emitter.id) {
+                // Repeated IDs retain the existing last-report-wins position/hitstop policy,
+                // including newly admitted entries and reports later in an overloaded frame.
+                *tracked = Tracked { emitter, reported: true };
+            } else if self.emitters.len() < MAX_EMITTERS {
+                self.emitters.push(Tracked { emitter, reported: true });
+            }
+        }
     }
 
     fn reap_voices(&mut self) {
@@ -652,6 +661,72 @@ mod tests {
         system.update(&frame(&[], &play(CueTarget::On(ACTOR))), &mut rng);
         assert_eq!(system.stats().voices, 0);
         assert_eq!(system.stats().dropped_unknown, 1);
+    }
+
+    fn emitter_set(start: u32) -> Vec<Emitter> {
+        (start..start + MAX_EMITTERS as u32)
+            .map(|id| Emitter { id: EmitterId(id), position: Vec3::X, hitstop: false })
+            .collect()
+    }
+
+    #[test]
+    fn replacement_emitters_can_play_on_their_first_frame_at_capacity() {
+        for overlap in [0, 32] {
+            let mut system = system_with(plain_cue());
+            let mut rng = CueRng::new(1);
+            system.update(&frame(&emitter_set(0), &[]), &mut rng);
+            let replacement = emitter_set(MAX_EMITTERS as u32 - overlap);
+            system
+                .update(&frame(&replacement, &play(CueTarget::On(replacement.last().unwrap().id))), &mut rng);
+            assert_eq!((system.stats().cues_played, system.stats().dropped_unknown), (1, 0));
+            assert_eq!(system.emitters.len(), MAX_EMITTERS);
+        }
+    }
+
+    #[test]
+    fn ringing_emitters_keep_their_slots_until_the_voice_can_be_reaped() {
+        let mut system = system_with(plain_cue());
+        let mut rng = CueRng::new(1);
+        let old = emitter_set(0);
+        system.update(&frame(&old, &play(CueTarget::On(old[0].id))), &mut rng);
+        let replacement = emitter_set(MAX_EMITTERS as u32);
+        system.update(&frame(&replacement, &[]), &mut rng);
+        assert!(system.emitters.iter().any(|tracked| tracked.emitter.id == old[0].id));
+        assert!(!system.emitters.iter().any(|tracked| tracked.emitter.id == replacement.last().unwrap().id));
+        system.backend_mut().finish(VoiceSlot(0));
+        system.backend_mut().set_state(DeviceState::Suspended);
+        system.update(&frame(&replacement, &[]), &mut rng);
+        assert!(system.emitters.iter().any(|tracked| tracked.emitter.id == old[0].id));
+        system.backend_mut().set_state(DeviceState::Running);
+        system.update(&frame(&replacement, &play(CueTarget::On(replacement.last().unwrap().id))), &mut rng);
+        assert_eq!((system.stats().cues_played, system.stats().dropped_unknown), (2, 0));
+        assert!(!system.emitters.iter().any(|tracked| tracked.emitter.id == old[0].id));
+    }
+
+    #[test]
+    fn repeated_emitter_reports_keep_the_last_state_even_at_capacity() {
+        let mut system = system_with(placed_cue());
+        let mut rng = CueRng::new(1);
+        let mut emitters = emitter_set(0);
+        let last = Emitter { position: Vec3::NEG_X, hitstop: true, ..emitters[0] };
+        emitters.push(last);
+        system.update(&frame(&emitters, &play(CueTarget::On(last.id))), &mut rng);
+        assert_eq!(started(&mut system).pan, -1.0);
+        assert_eq!(
+            system.emitters.iter().find(|tracked| tracked.emitter.id == last.id).unwrap().emitter,
+            last
+        );
+    }
+
+    #[test]
+    fn excess_emitters_are_admitted_in_frame_order() {
+        let mut system = system_with(plain_cue());
+        let mut rng = CueRng::new(1);
+        let mut emitters = emitter_set(0);
+        emitters.push(Emitter { id: EmitterId(1000), ..emitters[0] });
+        system.update(&frame(&emitters, &play(CueTarget::On(EmitterId(1000)))), &mut rng);
+        assert_eq!(system.stats().dropped_unknown, 1);
+        assert_eq!(system.emitters.len(), MAX_EMITTERS);
     }
 
     #[test]

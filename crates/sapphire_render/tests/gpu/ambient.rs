@@ -435,7 +435,14 @@ impl Harness {
         self.environment(square(Vec3::ZERO, Vec3::Y, 3.0))
     }
 
-    /// Lists `id` (with or without an instance) as a character with `body`, lit by its GI alone.
+    /// A live marker outside the view, so body-only AO tests add no rasterized surface.
+    fn body_marker(&mut self, body: CharacterBody) -> InstanceId {
+        let id = self.environment(square(Vec3::new(0.0, -10.0, 0.0), Vec3::Y, 0.01));
+        self.character(id, body);
+        id
+    }
+
+    /// Lists `id` as a character with `body`, lit by its GI alone.
     fn character(&mut self, id: InstanceId, body: CharacterBody) {
         let key = DirectionalLight { direction: Vec3::NEG_Y, color: Vec3::ZERO, intensity: 1.0 };
         let lighting = CharacterLighting { gi: CharacterGi::default(), ..CharacterLighting::unstyled(key) };
@@ -459,6 +466,17 @@ impl Harness {
     /// Prepares, records and submits one frame and reads the target back. Fails on any
     /// validation error.
     fn render(&mut self) -> Frame {
+        self.draw();
+        Frame { pixels: self.read_back(), camera: self.camera, stats: self.renderer.stats() }
+    }
+
+    /// Runs and completes a frame whose pixels are not inspected.
+    fn complete(&mut self) {
+        self.draw();
+        self.gpu.device().poll(wgpu::PollType::wait_indefinitely()).expect("frame complete");
+    }
+
+    fn draw(&mut self) {
         let scope = self.gpu.device().push_error_scope(wgpu::ErrorFilter::Validation);
         self.prepare();
         let view = self.target.create_view(&Default::default());
@@ -468,7 +486,6 @@ impl Harness {
         self.graph.execute(&self.gpu, graph).expect("a valid graph");
         let error = pollster::block_on(scope.pop());
         assert!(error.is_none(), "{error:?}");
-        Frame { pixels: self.read_back(), camera: self.camera, stats: self.renderer.stats() }
     }
 
     /// Prepares one frame of the scene.
@@ -497,7 +514,7 @@ impl Harness {
     /// Renders `frames` frames and returns the last.
     fn settle(&mut self, frames: u32) -> Frame {
         for _ in 1..frames {
-            self.render();
+            self.complete();
         }
         self.render()
     }
@@ -798,7 +815,7 @@ fn per_vertex_lookups_read_the_grid_at_the_vertices() {
 #[test]
 #[ignore = "needs a GPU"]
 fn capsule_ao_darkens_the_ground_only_near_a_body() {
-    // A body standing on the ground (its capsule alone, no mesh), under white sky light from
+    // A body standing on the ground (its live marker outside the view), under white sky light from
     // above: the ground beneath it darkens most, less and less away from it as the sphere at
     // its base occludes less of the sky, and not at all a few radii out, where the frame
     // matches one without capsule AO exactly.
@@ -809,7 +826,7 @@ fn capsule_ao_darkens_the_ground_only_near_a_body() {
         let mut harness = Harness::new(settings(occlusion));
         harness.ground();
         harness.ambient = ambient;
-        harness.character(InstanceId(100), body);
+        harness.body_marker(body);
         harness.camera = Harness::looking(Vec3::new(0.0, 4.0, 2.0), Vec3::new(0.8, 0.0, 0.0));
         harness.render()
     };
@@ -835,6 +852,35 @@ fn capsule_ao_darkens_the_ground_only_near_a_body() {
             "{x} m out"
         );
     }
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn capsule_ao_uses_only_the_body_a_live_instance_resolves() {
+    let mut harness = Harness::new(settings(AmbientOcclusion { capsules: true, gtao: None }));
+    harness.ground();
+    harness.ambient = AmbientLight { sky: Vec3::ONE, ground: Vec3::ZERO, intensity: 1.0 };
+    harness.camera = Harness::looking(Vec3::new(0.0, 4.0, 2.0), Vec3::new(0.8, 0.0, 0.0));
+    let plain = harness.render();
+    let body = CharacterBody::capsule(Vec3::new(0.0, 0.25, 0.0), Vec3::new(0.0, 1.5, 0.0), 0.25);
+    harness.character(InstanceId(100), body);
+    let missing = harness.render();
+    assert_eq!(missing.stats.ambient.capsules, 0);
+    assert_eq!(missing.pixels, plain.pixels, "missing instances cannot cast capsule AO");
+
+    harness.characters.clear();
+    harness.body_marker(body);
+    let casting = harness.render();
+    assert_eq!(casting.stats.ambient.capsules, 1);
+    assert!(casting.at(Vec3::ZERO).x < plain.at(Vec3::ZERO).x * 0.5, "the live body casts");
+
+    // Raw listings contain a casting body first, but the same instance resolves the final one.
+    let mut final_listing = harness.characters[0];
+    final_listing.body = CharacterBody::default();
+    harness.characters.push(final_listing);
+    let replaced = harness.render();
+    assert_eq!(replaced.stats.ambient.capsules, 0);
+    assert_eq!(replaced.pixels, plain.pixels, "a replaced body cannot leave a phantom occluder");
 }
 
 /// What the ground `x` meters from a body's axis shows under white sky light of 1 from above:
@@ -1184,7 +1230,7 @@ fn foliage_takes_the_grid_and_ambient_occlusion_as_the_environment() {
         harness.camera = Harness::looking(Vec3::new(0.0, 4.0, 0.01), Vec3::ZERO);
     };
     let capsule = |harness: &mut Harness| {
-        harness.character(InstanceId(100), body);
+        harness.body_marker(body);
         harness.camera = Harness::looking(Vec3::new(0.0, 4.0, 2.0), Vec3::new(0.8, 0.0, 0.0));
     };
     let crease = |harness: &mut Harness| {
@@ -1246,7 +1292,7 @@ fn capsule_ao_survives_a_lost_graph() {
         let mut harness = Harness::new(settings(AmbientOcclusion { capsules: true, gtao: None }));
         harness.ground();
         harness.ambient = AmbientLight { sky: Vec3::ONE, ground: Vec3::ZERO, intensity: 1.0 };
-        harness.character(InstanceId(100), body);
+        harness.body_marker(body);
         harness.camera = Harness::looking(Vec3::new(0.0, 4.0, 2.0), Vec3::new(0.8, 0.0, 0.0));
         if lost {
             harness.drop_a_frame();

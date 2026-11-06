@@ -76,7 +76,7 @@ fn srgb_to_linear(value: u8) -> f32 {
     if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
 }
 
-fn assert_near(actual: [f32; 3], expected: [f32; 3], what: &str) {
+fn assert_near(actual: [f32; 3], expected: [f32; 3], what: impl std::fmt::Display) {
     let close = actual.iter().zip(expected).all(|(a, e)| (a - e).abs() < TOLERANCE);
     assert!(close, "{what}: {actual:?}, expected {expected:?}");
 }
@@ -649,8 +649,8 @@ fn a_parallax_eye_cuts_out_where_its_surface_does() {
             let frame = harness.render();
             let what = format!("{msaa:?} at {angle}°");
             let (iris, hole) = (frame.at(Vec3::new(0.2, 0.0, 0.01)), frame.at(Vec3::new(-0.2, 0.0, 0.01)));
-            assert_near(iris, over_eye, &format!("{what}: the iris over the eye"));
-            assert_near(hole, BACKDROP, &format!("{what}: the eye's hole"));
+            assert_near(iris, over_eye, format_args!("{what}: the iris over the eye"));
+            assert_near(hole, BACKDROP, format_args!("{what}: the eye's hole"));
             // The cut stays at u = 0.5: on the row above the iris, the eye starts at x = 0.
             let (cut, row) = frame.project(Vec3::new(0.0, 0.45, 0.0));
             let first = (0..SIDE as usize).find(|&x| near(frame.linear(x, row as usize), WHITE));
@@ -699,7 +699,11 @@ fn highlights_drift_and_sparkle_on_the_frames_clock() {
         let [dx, dy] = eye_mask::highlight_drift(motion.drift, motion.drift_rate, seconds, phase);
         let center = Vec3::new(dx, dy, 0.01);
         let glint = eye_mask::highlight_sparkle(motion.sparkle, motion.sparkle_rate, seconds, phase);
-        assert_near(frame.at(center), scale(color, glint), &format!("the highlight's glint at {seconds} s"));
+        assert_near(
+            frame.at(center),
+            scale(color, glint),
+            format_args!("the highlight's glint at {seconds} s"),
+        );
         let (seen, _) = frame.centroid(Vec3::ZERO, 30.0, |c| c[0] > 0.1);
         let expected = frame.project(center);
         let off = ((seen.0 - expected.0).powi(2) + (seen.1 - expected.1).powi(2)).sqrt();
@@ -754,6 +758,7 @@ fn eye_through_hair(color: [f32; 3], alpha: AlphaMode, double_sided: bool) -> An
 #[test]
 #[ignore = "needs a GPU adapter"]
 fn two_sided_eyes_through_hair_stay_under_their_layers() {
+    let linear: [f32; 256] = std::array::from_fn(|value| srgb_to_linear(value as u8));
     // Review WI-001. Through hair an eye and its layers all lie at the hair's depth, blended
     // without writing it, so their drawing order alone puts the iris over the eye white. A
     // two-sided eye (M1 C8) draws its front through its one-sided twin's pipeline and must draw
@@ -786,16 +791,23 @@ fn two_sided_eyes_through_hair_stay_under_their_layers() {
             if opacity == 1.0 {
                 for (frame, sides) in [(&one, "one side"), (&two, "both sides")] {
                     let white = frame.at(Vec3::new(0.35, 0.0, 0.1));
-                    assert_near(white, over_hair, &format!("{what}, {sides}: the eye white over the hair"));
+                    assert_near(
+                        white,
+                        over_hair,
+                        format_args!("{what}, {sides}: the eye white over the hair"),
+                    );
                     let iris = frame.at(Vec3::new(0.0, 0.0, 0.1));
-                    assert_near(iris, iris_over, &format!("{what}, {sides}: the iris over it"));
+                    assert_near(iris, iris_over, format_args!("{what}, {sides}: the iris over it"));
                 }
             }
             // Pixel for pixel, the fading ones' dither included.
             for y in 0..SIDE as usize {
                 for x in 0..SIDE as usize {
-                    let (one, two) = (one.linear(x, y), two.linear(x, y));
-                    assert_near(two, one, &format!("{what}: pixel ({x}, {y}) on both sides against one"));
+                    let pixel = y * SIDE as usize + x;
+                    let (one, two) = (one.pixels[pixel], two.pixels[pixel]);
+                    let one = [0, 1, 2].map(|c| linear[usize::from(one[c])]);
+                    let two = [0, 1, 2].map(|c| linear[usize::from(two[c])]);
+                    assert_near(two, one, format_args!("{what}: pixel ({x}, {y}) on both sides against one"));
                 }
             }
         }
@@ -825,11 +837,11 @@ fn eyes_through_hair_keep_their_coverages_order_on_either_side() {
         let id = harness.character(mesh);
         let frame = harness.render();
         let what = format!("the white two-sided {white_sides}, the line {line_sides}");
-        assert_near(frame.at(Vec3::new(0.2, 0.0, 0.1)), over_hair, &format!("{what}: the eye white"));
+        assert_near(frame.at(Vec3::new(0.2, 0.0, 0.1)), over_hair, format_args!("{what}: the eye white"));
         assert_near(
             frame.at(Vec3::new(0.2, 0.375, 0.1)),
             mix(over_hair, LINE, 0.5),
-            &format!("{what}: the eye line over it"),
+            format_args!("{what}: the eye line over it"),
         );
         harness.remove(id);
     }

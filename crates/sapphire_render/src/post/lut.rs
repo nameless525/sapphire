@@ -267,6 +267,8 @@ impl Lut {
     }
 
     /// The baked value for scene-linear `rgb`: sRGB-encoded display color in [0, 1].
+    /// Kept as the independent scalar reference for the table-driven bake.
+    #[cfg(test)]
     pub(crate) fn evaluate(&self, rgb: Vec3) -> Vec3 {
         let rgb = rgb.max(Vec3::ZERO);
         let neutral = self.display(rgb);
@@ -283,6 +285,7 @@ impl Lut {
         rgb.map(|x| srgb_encode(self.curve.apply(x)))
     }
 
+    #[cfg(test)]
     fn graded(&self, rgb: Vec3) -> Vec3 {
         let grade = &self.grade;
         let mut color = match self.gains {
@@ -323,13 +326,57 @@ impl Lut {
         let size = LUT_SIZE as usize;
         let inputs: [f32; LUT_SIZE as usize] =
             std::array::from_fn(|index| unshape(index as f32 / (LUT_SIZE - 1) as f32));
+        // Only 32 inputs per channel reach the separable prefix. Keep its operation order
+        // identical to scalar evaluation; saturation is the first stage that mixes channels.
+        let neutral = inputs.map(|input| self.display(Vec3::splat(input)).x);
+        let prefix = inputs.map(|input| {
+            let mut color = Vec3::splat(input);
+            if let Some(gains) = self.gains {
+                color *= gains;
+            }
+            if self.grade.contrast != 1.0 {
+                color = color.map(|x| MIDDLE_GREY * (x / MIDDLE_GREY).powf(self.grade.contrast));
+            }
+            self.display(color)
+        });
         sapphire_jobs::par_for_each_chunk_mut(texels, size * size, |start, slice| {
-            let blue = inputs[start / (size * size)];
+            let blue = start / (size * size);
             for (index, texel) in slice.iter_mut().enumerate() {
-                let rgb = Vec3::new(inputs[index % size], inputs[index / size], blue);
-                *texel = pack_rgb10a2(self.evaluate(rgb));
+                let (red, green) = (index % size, index / size);
+                let plain = Vec3::new(neutral[red], neutral[green], neutral[blue]);
+                let value = if self.strength == 0.0 {
+                    plain
+                } else {
+                    let display = Vec3::new(prefix[red].x, prefix[green].y, prefix[blue].z);
+                    let graded = self.finish_grade(display);
+                    (plain * (1.0 - self.strength) + graded * self.strength).clamp(Vec3::ZERO, Vec3::ONE)
+                };
+                *texel = pack_rgb10a2(value);
             }
         });
+    }
+
+    /// The nonseparable suffix. The scalar reference above intentionally evaluates its own
+    /// copy, so the full packed-byte comparison also protects this operation order.
+    fn finish_grade(&self, mut display: Vec3) -> Vec3 {
+        let grade = &self.grade;
+        if grade.saturation != 1.0 {
+            let luma = Vec3::splat(display.dot(LUMA));
+            display = luma + (display - luma) * grade.saturation;
+        }
+        if grade.lift != Vec3::ZERO {
+            display += grade.lift * (Vec3::ONE - display);
+        }
+        if grade.gain != Vec3::ONE {
+            display *= grade.gain;
+        }
+        display = display.clamp(Vec3::ZERO, Vec3::ONE);
+        if grade.gamma != Vec3::ONE {
+            let exponent = grade.gamma.recip();
+            display =
+                Vec3::new(display.x.powf(exponent.x), display.y.powf(exponent.y), display.z.powf(exponent.z));
+        }
+        display
     }
 }
 
@@ -452,6 +499,91 @@ impl<K: Copy + PartialEq> LutSlots<K> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn table_bake_matches_every_scalar_texel_for_sanitized_parameters() {
+        // A deterministic finite/nonfinite sweep, all strength cases and all 32768 texels.
+        // Compare packed words rather than a tolerance that could hide quantization changes.
+        let mut state = 0x3a57_91edu32;
+        let mut next = || {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            f32::from_bits(state)
+        };
+        let mut texels = vec![0; LUT_TEXELS];
+        for case in 0..24 {
+            let mut grade = if case == 0 {
+                ColorGrade::NEUTRAL
+            } else if case == 1 {
+                crate::post::PostParams::default().grade_a
+            } else {
+                ColorGrade {
+                    temperature: next(),
+                    tint: next(),
+                    filter: Vec3::new(next(), next(), next()),
+                    contrast: next(),
+                    saturation: next(),
+                    lift: Vec3::new(next(), next(), next()),
+                    gamma: Vec3::new(next(), next(), next()),
+                    gain: Vec3::new(next(), next(), next()),
+                }
+            };
+            let mut curve = if case < 2 {
+                ToneCurve::default()
+            } else {
+                ToneCurve {
+                    max_brightness: next(),
+                    contrast: next(),
+                    linear_start: next(),
+                    linear_length: next(),
+                    black_tightness: next(),
+                }
+            };
+            if (2..12).contains(&case) {
+                // Raw float bits mostly sanitize to endpoints. Also cover ordinary authored
+                // values in the interior, where changing one operation can cross a pack boundary.
+                let range = |value: f32, low: f32, high: f32| {
+                    low + (high - low) * (value.to_bits() & 0x00ff_ffff) as f32 / 0x00ff_ffff as f32
+                };
+                let vector = |value: Vec3, low, high| value.map(|x| range(x, low, high));
+                grade = ColorGrade {
+                    temperature: range(grade.temperature, -1.0, 1.0),
+                    tint: range(grade.tint, -1.0, 1.0),
+                    filter: vector(grade.filter, 0.2, 2.0),
+                    contrast: range(grade.contrast, 0.5, 1.5),
+                    saturation: range(grade.saturation, 0.2, 2.0),
+                    lift: vector(grade.lift, -0.1, 0.1),
+                    gamma: vector(grade.gamma, 0.5, 2.0),
+                    gain: vector(grade.gain, 0.5, 2.0),
+                };
+                curve = ToneCurve {
+                    max_brightness: range(curve.max_brightness, 0.8, 1.2),
+                    contrast: range(curve.contrast, 0.5, 1.5),
+                    linear_start: range(curve.linear_start, 0.1, 0.4),
+                    linear_length: range(curve.linear_length, 0.3, 0.9),
+                    black_tightness: range(curve.black_tightness, 1.0, 2.0),
+                };
+            }
+            for strength in [0.0, 0.5, 1.0, next()] {
+                let lut = lut(curve, grade, strength);
+                lut.bake(&mut texels);
+                let size = LUT_SIZE as usize;
+                let inputs: [f32; LUT_SIZE as usize] =
+                    std::array::from_fn(|i| unshape(i as f32 / (LUT_SIZE - 1) as f32));
+                for (index, &actual) in texels.iter().enumerate() {
+                    let rgb = Vec3::new(
+                        inputs[index % size],
+                        inputs[index / size % size],
+                        inputs[index / size / size],
+                    );
+                    assert_eq!(
+                        actual,
+                        pack_rgb10a2(lut.evaluate(rgb)),
+                        "case {case}, strength {strength}, texel {index}"
+                    );
+                }
+            }
+        }
+    }
 
     fn lut(curve: ToneCurve, grade: ColorGrade, strength: f32) -> Lut {
         Lut::new(&LutKey::new(&curve, &grade, strength))

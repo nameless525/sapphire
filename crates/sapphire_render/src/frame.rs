@@ -94,6 +94,12 @@ pub struct FramePacket {
     pub probe_keys: ProbeKeys,
     /// Distance and height fog over the world and the sky (M1 W3), which fog cards take their
     /// light from. The default has none.
+    ///
+    /// GPU fog uses the scalar shader's finite range for renderable rays. Their world
+    /// offsets and squared lengths must be finite, and their incoming colors must fit
+    /// the HDR target. If the profile can exceed that range, the renderer draws a clear
+    /// atmosphere and reports it in [`crate::FogStats`]. Cards are checked separately.
+    /// The wider CPU evaluator is available through [`Fog::ray`].
     pub fog: Fog,
     /// Linear RGB the key light keeps inside cast shadows, so shadows are colored rather than
     /// black (look pillar 4): black is a physical shadow, a dim blue-violet the anime one. Read
@@ -398,8 +404,9 @@ impl InstanceDeltas {
 /// An instance that has never been posed draws in its bind pose with every weight at 0. The
 /// renderer ignores, and counts, a pose for an instance it doesn't draw with a skinned or
 /// morphed mesh, one whose palette length differs from the mesh's, and one with a non-finite
-/// matrix or weight. A palette may take the mesh past its cooked bounds: the renderer sees that
-/// from the palette, and bounds the instance accordingly ([`SkinningStats::past_bounds`](crate::SkinningStats)).
+/// matrix or weight, or whose derived bounds cannot stay finite. A palette or morph may take
+/// the mesh past its cooked bounds: the renderer includes both when bounding the instance
+/// ([`SkinningStats::past_bounds`](crate::SkinningStats)).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SkinnedInstance {
     pub id: InstanceId,

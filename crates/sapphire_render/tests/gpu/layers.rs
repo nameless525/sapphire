@@ -381,6 +381,17 @@ impl Harness {
     /// Prepares, records and submits a frame and reads the target back. Fails on any
     /// validation error.
     fn render(&mut self) -> Frame {
+        self.draw();
+        Frame { pixels: self.read_back(), camera: self.camera, stats: self.renderer.stats() }
+    }
+
+    /// Runs and completes a frame whose pixels are not inspected.
+    fn complete(&mut self) {
+        self.draw();
+        self.gpu.device().poll(wgpu::PollType::wait_indefinitely()).expect("frame complete");
+    }
+
+    fn draw(&mut self) {
         let packet = self.packets.begin();
         packet.views.push(ViewData::new(self.camera));
         packet.sun = DirectionalLight { direction: Vec3::NEG_Z, color: Vec3::ONE, intensity: 1.0 };
@@ -399,7 +410,6 @@ impl Harness {
         self.graph.execute(&self.gpu, graph).expect("a valid graph");
         let error = pollster::block_on(scope.pop());
         assert!(error.is_none(), "{error:?}");
-        Frame { pixels: self.read_back(), camera: self.camera, stats: self.renderer.stats() }
     }
 
     fn read_back(&self) -> Vec<[u8; 4]> {
@@ -995,10 +1005,10 @@ fn temporal_aa_resolves_the_fades_dither_into_a_blend() {
             Harness::with(RenderSettings { msaa: Msaa::Off, temporal: true, ..RenderSettings::default() });
         let character = fade_scene(&mut harness, 0.0);
         harness.opacity(character, opacity);
-        let mut frame = harness.render();
         for _ in 0..64 {
-            frame = harness.render();
+            harness.complete();
         }
+        let frame = harness.render();
         let pixels = frame.around(Vec3::new(0.0, 0.0, 0.5), 12);
         let greens: Vec<f32> = pixels.iter().map(|p| p[1]).collect();
         let mean = greens.iter().sum::<f32>() / greens.len() as f32;
@@ -1020,13 +1030,15 @@ fn temporal_aa_resolves_a_moving_fades_dither_too() {
     // The camera circles the ball, so every pixel of it moves: a character's moving pixels would
     // give up most of their history (its reactivity), keeping each frame's screen door. A fading
     // one takes the world's, so the pattern still resolves into the blend, its lines too.
-    let mut frame = harness.render();
+    harness.complete();
     for step in 1..=40 {
         let angle = (step as f32 * 0.6).to_radians();
         let eye = Vec3::new(3.0 * angle.sin(), 0.0, 3.0 * angle.cos());
         harness.camera = CameraData::look_at(eye, Vec3::ZERO, Vec3::Y, 0.66, 1.0, 0.05);
-        frame = harness.render();
+        harness.complete();
     }
+    let frame =
+        Frame { pixels: harness.read_back(), camera: harness.camera, stats: harness.renderer.stats() };
     let pixels = frame.around(Vec3::new(0.0, 0.0, 0.5), 12);
     let greens: Vec<f32> = pixels.iter().map(|p| p[1]).collect();
     let mean = greens.iter().sum::<f32>() / greens.len() as f32;

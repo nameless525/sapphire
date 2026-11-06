@@ -68,7 +68,7 @@ use crate::buffer::{GrowableBuffer, RangeAllocator};
 use crate::gpu_types::Dequantize;
 use crate::materials::MaterialHandle;
 use crate::pipelines::format_index;
-use crate::retire::{Retiring, new_epoch};
+use crate::retire::{Retiring, new_generation};
 
 const SHADING_BYTES: u64 = size_of::<VertexShading>() as u64;
 const SURFACE_BYTES: u64 = size_of::<VertexSurface>() as u64;
@@ -89,7 +89,7 @@ const INITIAL_QUANTIZED_VERTICES: u64 = 1 << 15;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct MeshHandle {
     index: u32,
-    generation: u32,
+    generation: u64,
 }
 
 impl MeshHandle {
@@ -148,6 +148,8 @@ pub(crate) struct MeshRecord {
     /// What each palette entry's vertices fill in the bind pose (the `bounds` module): empty without
     /// a skin.
     pub palette_reach: Vec<PaletteReach>,
+    /// Maximum bind-space displacement per morph target, for conservative posed bounds.
+    pub morph_reach: Vec<f32>,
     /// A static mesh's foliage stream (M1 W6): its first element in the pool's foliage buffer,
     /// if it has one.
     pub foliage: Option<u32>,
@@ -216,6 +218,7 @@ impl MeshRecord {
             slots: Vec::new(),
             bounds: Sphere::around([[0.0; 3], [0.0; 3]]),
             palette_reach: Vec::new(),
+            morph_reach: Vec::new(),
             foliage: None,
         }
     }
@@ -371,9 +374,9 @@ pub(crate) struct MeshPool {
     /// Per handle: freed ones hold [`MeshRecord::gone`].
     records: Vec<MeshRecord>,
     /// Each record's current generation: a handle of any other names nothing.
-    generations: Vec<u32>,
+    generations: Vec<u64>,
     /// Where a new mesh's record starts counting from: this pool's own (the `retire` module).
-    epoch: u32,
+    epoch: u64,
     /// Indices of [`Self::records`] that are free.
     free_records: Vec<u32>,
     /// Meshes asked to be freed that an instance may still draw.
@@ -425,7 +428,7 @@ impl MeshPool {
             foliage_used: 0,
             records: Vec::new(),
             generations: Vec::new(),
-            epoch: new_epoch(),
+            epoch: new_generation(),
             free_records: Vec::new(),
             dying: Vec::new(),
             retired: Retiring::default(),
@@ -459,6 +462,11 @@ impl MeshPool {
     /// Whether `handle` names a mesh of this pool: one uploaded and not yet retired.
     pub(crate) fn is_current(&self, handle: MeshHandle) -> bool {
         self.generations.get(handle.index()).is_some_and(|&generation| generation == handle.generation)
+    }
+
+    /// Both handles were checked current and distinct by the renderer's adoption preflight.
+    pub(crate) fn swap_records(&mut self, existing: MeshHandle, prepared: MeshHandle) {
+        self.records.swap(existing.index(), prepared.index());
     }
 
     /// Asks for mesh `handle` to be given back, once nothing draws it. Returns whether that's news: not
@@ -500,7 +508,7 @@ impl MeshPool {
                 return true;
             }
             let record = std::mem::replace(&mut self.records[handle.index()], MeshRecord::gone());
-            self.generations[handle.index()] = self.generations[handle.index()].wrapping_add(1);
+            self.generations[handle.index()] = new_generation();
             self.free_records.push(handle.index);
             self.retired.push(last_read, RetiredRanges::of(&record));
             self.freed += 1;
@@ -577,31 +585,27 @@ impl MeshPool {
         let (position_offset, position_scale) = streams.position_transform();
         let (uv_offset, uv_scale) = streams.uv_transform();
         let uv_transform = [uv_offset[0], uv_offset[1], uv_scale[0], uv_scale[1]];
-        let region = deformable.then(|| deformable_region(mesh));
 
         // Room first: the ranges are taken back if any buffer can't grow to hold them.
         let index_len = count(mesh.indices.len(), "indices")?;
-        let vertex_len = match &region {
-            Some((bytes, _)) => count(bytes.len() / 4, "deformable mesh sources")?,
-            None => count(vertices, "vertices")?,
-        };
+        let vertex_len = if deformable { deformable_words(mesh)? } else { count(vertices, "vertices")? };
         // Skinned and morphed meshes draw no foliage (uploads refuse foliage materials on them).
         let foliage_bytes = if deformable { &[][..] } else { streams.foliage_bytes() };
         let foliage_len = count(foliage_bytes.len() / FOLIAGE_BYTES as usize, "foliage")?;
         let format = streams.position_format();
         let slab = format_index(format);
-        let vertices_end_before = match region {
-            Some(_) => self.deformable_words.end(),
-            None => self.slabs[slab].vertices.end(),
-        };
+        let vertices_end_before =
+            if deformable { self.deformable_words.end() } else { self.slabs[slab].vertices.end() };
         let indices_end_before = self.index_ranges.end();
         let foliage_end_before = self.foliage_ranges.end();
         let lens = (vertex_len, index_len, foliage_len);
-        let Some((first_vertex, first_index, first_foliage)) = self.allocate(region.is_some(), slab, lens)
-        else {
+        let Some((first_vertex, first_index, first_foliage)) = self.allocate(deformable, slab, lens) else {
             return Err(RenderError::MeshPoolFull("vertices or indices"));
         };
 
+        // Admission precedes regrouping: a valid but oversized morph mesh must not allocate
+        // its CPU copy and per-vertex scratch before a guaranteed storage-buffer refusal.
+        let region = deformable.then(|| deformable_region(mesh));
         let mut moves = PoolMoves::default();
         let (record_streams, dequantize) = match region {
             Some((bytes, mut source)) => {
@@ -686,6 +690,7 @@ impl MeshPool {
                 Sphere::around([bounds.min, bounds.max])
             },
             palette_reach: palette_reach(mesh),
+            morph_reach: crate::bounds::morph_reach(mesh),
             foliage: (foliage_len > 0).then_some(first_foliage),
         };
         Ok((record, moves))
@@ -885,6 +890,28 @@ fn deformable_region(mesh: &ArchivedMesh) -> (Vec<u8>, DeformSource) {
         morphs,
     };
     (bytes, source)
+}
+
+/// Exact source-region size, before allocating morph regrouping scratch or copying streams.
+fn deformable_words(mesh: &ArchivedMesh) -> Result<u32, RenderError> {
+    let streams = &mesh.streams;
+    let skin = mesh.skin.as_ref().map_or(0, |skin| skin.influences.as_bytes().len() as u64);
+    let morphs = if mesh.morph_targets.is_empty() {
+        0
+    } else {
+        (streams.len() as u64 + 1) * 4 + mesh.morph_deltas.len() as u64 * 16
+    };
+    let bytes = [
+        streams.position_bytes().len() as u64,
+        streams.shading_bytes().len() as u64,
+        streams.surface_bytes().len() as u64,
+        skin,
+        morphs,
+    ]
+    .into_iter()
+    .try_fold(0u64, u64::checked_add)
+    .ok_or(RenderError::MeshPoolFull("deformable mesh sources"))?;
+    u32::try_from(bytes / 4).map_err(|_| RenderError::MeshPoolFull("deformable mesh sources"))
 }
 
 /// Regroups morph deltas, cooked target by target (`targets` are their ranges of `deltas`), by

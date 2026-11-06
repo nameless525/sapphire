@@ -212,7 +212,7 @@
 //!   [`SkinBind`](sapphire_assets::mesh::SkinBind), in the mesh's object space, and morph
 //!   weights. Instances that hold still send none and keep their last pose; one never posed
 //!   draws in its bind pose with every weight 0. A pose reaching past the mesh's cooked bounds
-//!   carries its own (the `bounds` module), found from the palette alone, for the character's shadow
+//!   carries its own (the `bounds` module), found from the palette and morph displacement, for the character's shadow
 //!   map, its hulls' cutoff and its light list.
 //! - **The skinning pass** runs once a frame, before everything that draws, as one dispatch
 //!   over every instance posed since the last recorded frame: it decodes the bind pose to f32,

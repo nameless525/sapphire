@@ -12,7 +12,8 @@
 //!   predicted time is under the low-water mark (85% of the budget), at most three steps at
 //!   once, so one bad estimate can't throw the picture to the floor.
 //! - **Up** one step at a time, only when the step up is predicted to stay under the low-water
-//!   mark, and only after the scale has held for half a second. A step up that fits the band
+//!   mark, and only after the scale has held for 30 rendered frames (half a second at 60 Hz,
+//!   one second at 30 Hz). A step up that fits the band
 //!   can't trigger the next step down, which is why the controller doesn't oscillate: time also
 //!   has a part that doesn't scale with pixels (fixed per-pass costs), which makes every
 //!   prediction of a step up pessimistic and of a step down optimistic, so it settles from above

@@ -23,11 +23,13 @@
 //! (`renderer::draw_main_pass`), with copies of the main pass's own pipelines
 //! (`Pipelines::build_replay`): the same vertex and fragment stages, constants, layouts and
 //! vertex streams, single-sampled and writing no color, with depth, stencil and primitive state
-//! of the view's (`pipelines::Replay`). A replay therefore draws exactly the fragments the main
-//! pass draws: compute skinning, foliage's wind, the eye layers and their highlights' drift,
+//! of the view's (`pipelines::Replay`). A replay therefore follows the main pass's shading and
+//! coverage rules: compute skinning, foliage's wind, the eye layers and their highlights' drift,
 //! alpha tests, and every later change to a surface shader, with no shader of its own to keep in
-//! step. It draws through the main view without temporal AA's jitter and tests its own depth, so
-//! a view holds still under TAA. Copies are made for the variants the frame draws, as the main
+//! step. It draws through the main view without temporal AA's jitter and tests its own depth.
+//! Character depth/ID inputs still come from the main frame's prepass, so eye/hair mask edges can
+//! vary by the prepass's subpixel jitter; fading coverage also follows that frame's dither turn.
+//! Copies are made for the variants the frame draws, as the main
 //! pass's own are, and made again when those are (new shader sources, a probe grid's
 //! constants); its 32-bit float depth is the main pass's precision where the device has
 //! `DEPTH32FLOAT_STENCIL8` (24-bit elsewhere).
@@ -91,14 +93,15 @@
 //!   anime character pixel shades with. One replay serves all three (`Replay::Values`): first
 //!   the other families' surfaces that write depth, whatever their order in the main pass, then
 //!   every anime character pipeline (surfaces of every coverage, outline hulls, eyes through
-//!   hair), writing values into a color target (`Rgba16Float`, exact for these integers) where
+//!   hair), writing values into a color target (`Rgba16Float`, exact for the bounded integer
+//!   codes; material slots wrap modulo 2048, widths have half-float precision) where
 //!   the main pass draws them: what drew the pixel (a surface or a line); the region it shades
 //!   with (its control map's material ID or its vertices', clamped to the material's regions as
 //!   the shader clamps it); its ramp rows (day and night in one value) or, for a material
 //!   without a ramp, its band mode; and its material's slot or, on a line, the line's width in
 //!   pixels on a 1080-row target (the material's width × its region's × the vertex color's G ×
-//!   the model scale × the width curve at the line's effective distance; the cutoff's fade is
-//!   left out). The character and outline shaders write them from debug entry points
+//!   the model scale × the width curve at the line's effective distance, including the cutoff's
+//!   fade). The character and outline shaders write them from debug entry points
 //!   (`fs_anime_character_debug`, `fs_through_hair_debug`, `vs_outline_debug`,
 //!   `fs_outline_debug`) that run the same shading functions to their single exit, so they cut
 //!   the same pixels, alpha tests and fades included; transparent surfaces show where they cover

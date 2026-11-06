@@ -56,7 +56,12 @@ pub(crate) struct FrameUniforms {
 }
 
 impl FrameUniforms {
-    pub(crate) fn new(frame: &FramePacket, lights: LightUniforms, outline_distance: f32) -> Self {
+    pub(crate) fn new(
+        frame: &FramePacket,
+        lights: LightUniforms,
+        outline_distance: f32,
+        fog: GpuFog,
+    ) -> Self {
         let toward_sun = (-frame.sun.direction).try_normalize().unwrap_or(Vec3::Y);
         Self {
             sun_direction: toward_sun.extend(0.0).to_array(),
@@ -76,7 +81,7 @@ impl FrameUniforms {
             ambient_ground: (frame.ambient.ground * frame.ambient.intensity).extend(0.0).to_array(),
             shadow_tint: frame.shadow_tint.extend(0.0).to_array(),
             weather: [frame.weather.wetness, frame.weather.puddles, 0.0, 0.0],
-            fog: GpuFog::new(&frame.fog),
+            fog,
         }
     }
 }
@@ -255,7 +260,7 @@ mod tests {
     fn the_emission_scale_reaches_shaders_finite_and_never_negative() {
         let uniforms = |scale: f32| {
             let frame = FramePacket { emission_scale: scale, ..FramePacket::default() };
-            FrameUniforms::new(&frame, LightUniforms::default(), 1.0).emission_scale
+            FrameUniforms::new(&frame, LightUniforms::default(), 1.0, GpuFog::default()).emission_scale
         };
         assert_eq!(uniforms(1.0), 1.0, "the default: as authored");
         assert_eq!((uniforms(0.15), uniforms(2.5), uniforms(0.0)), (0.15, 2.5, 0.0));

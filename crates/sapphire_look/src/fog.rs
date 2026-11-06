@@ -3,7 +3,7 @@
 //! renderer's `frame.wgsl`), for tests and tools. How the renderer draws it, and why the layers
 //! reach a ceiling and mix over the stretch of a ray the camera sees, is `sapphire_render::fog`'s
 //! to say. The constants here are the shaders' too: the renderer's tests hold its WGSL to them,
-//! and its fog to [`Fog::ray`].
+//! and compare ordinary fog with [`Fog::ray`].
 
 use glam::Vec3;
 
@@ -95,10 +95,13 @@ impl Fog {
         [self.near.density, self.far.density, self.height.density].iter().any(|density| *density > 0.0)
     }
 
-    /// The fog as the renderer draws it: densities, colors, starts and the falloff that are
-    /// negative or not finite are 0, a base that isn't finite is 0, and the characters' share is
-    /// held to 0..=1 (0 where it isn't finite). The renderer uploads this, and [`Self::ray`]
-    /// evaluates it.
+    /// The coefficients shared by GPU admission and [`Self::ray`]. Negative or nonfinite
+    /// densities, colors, starts and falloff become 0, as does a nonfinite base. The characters'
+    /// share is held to 0..=1 (0 where it isn't finite).
+    ///
+    /// After sanitization the renderer checks its scalar arithmetic and HDR target range. A
+    /// profile outside that GPU range draws a clear atmosphere, with card lighting checked
+    /// separately. The CPU ray evaluator retains its wider arithmetic range.
     pub fn sanitized(&self) -> Self {
         let amount = |value: f32| if value.is_finite() { value.max(0.0) } else { 0.0 };
         let color = |color: Vec3| Vec3::from_array(color.to_array().map(amount));
@@ -129,7 +132,14 @@ impl Fog {
     /// the unit vector toward the key light. [`FogRay::CLEAR`] where the fog has no density.
     ///
     /// The values are made safe as the renderer makes them for the GPU ([`Self::sanitized`]), so
-    /// this is exactly what the shaders compute, to `f32` rounding.
+    /// ordinary GPU inputs use the same capped analytic model, to `f32` rounding. The CPU
+    /// additionally uses wider arithmetic for finite inputs outside the scalar range; extreme
+    /// GPU height/depth and mixed HDR arithmetic remain unsupported by that shader path. Finite
+    /// eye/horizon values, nonnegative finite distance, a share in `[0, 1]`, and unit direction
+    /// and key vectors use wider exceptional arithmetic when needed. Each stored light
+    /// component saturates at signed `f32::MAX` if its final value is unrepresentable.
+    /// Signed cancellation retains ordinary floating-point conditioning; no fixed relative
+    /// error is promised for a residual of large opposing terms.
     pub fn ray(
         &self,
         eye: Vec3,
@@ -140,8 +150,21 @@ impl Fog {
         toward_key: Vec3,
     ) -> FogRay {
         let fog = self.sanitized();
-        if !fog.is_visible() {
+        if !fog.is_visible() || share == 0.0 {
             return FogRay::CLEAR;
+        }
+        let finite_domain = eye.is_finite()
+            && direction.is_finite()
+            && horizon.is_finite()
+            && toward_key.is_finite()
+            && distance.is_finite()
+            && distance >= 0.0
+            && share.is_finite()
+            && (0.0..=1.0).contains(&share)
+            && direction.abs().max_element() <= 1.0
+            && toward_key.abs().max_element() <= 1.0;
+        if finite_domain && !scalar_ray_inputs(&fog, eye, distance, share, horizon) {
+            return wide_ray(&fog, eye, direction, distance, share, horizon, toward_key);
         }
         let (near, far, height) = (fog.near, fog.far, fog.height);
         let rise = direction.y;
@@ -174,6 +197,103 @@ impl Fog {
     }
 }
 
+// Conservative precision selectors, not authoring limits: every other finite unit-ray input
+// uses wide_ray rather than being rejected. With components <= 2^8, positions/distances <= 2^24
+// bound eye-base by 2^25 and its falloff product by 2^33. Height start stays in [exp(-16),exp(30)].
+// The 2^-16 floor limits ordinary coefficient magnitudes; direction components and attenuated
+// T can still be subnormal. Tiny amplified inputs use the wide route; bounded mixed-ray weights
+// keep the ordinary color numerator finite even when the full optical depth is large.
+const SCALAR_COEFFICIENT_MIN: f32 = 1.0 / 65536.0;
+const SCALAR_COEFFICIENT_MAX: f32 = 256.0;
+const SCALAR_POSITION_MAX: f32 = 16777216.0;
+const SCALAR_HEIGHT_EXPONENT_MIN: f32 = -16.0;
+// For T in [0, 1], these bounded components make both the lighting sum and final scalar blend
+// finite. Larger finite values use wider composition without changing the stored-ray model.
+const SCALAR_APPLY_MAX: f32 = 131072.0;
+
+/// Called only after finite_domain establishes finite eye/horizon/distance/share, unit-vector
+/// component bounds and distance >= 0 and share in [0, 1]. Fog fields have already been sanitized.
+fn scalar_ray_inputs(fog: &Fog, eye: Vec3, distance: f32, share: f32, horizon: Vec3) -> bool {
+    let coefficient = |value: f32| {
+        value.abs() <= SCALAR_COEFFICIENT_MAX && (value == 0.0 || value.abs() >= SCALAR_COEFFICIENT_MIN)
+    };
+    if !fog.near.color.to_array().into_iter().all(coefficient)
+        || !fog.far.color.to_array().into_iter().all(coefficient)
+        || !fog.height.color.to_array().into_iter().all(coefficient)
+        || !fog.sun_inscatter.to_array().into_iter().all(coefficient)
+        || !horizon.to_array().into_iter().all(coefficient)
+        || ![fog.near.density, fog.far.density, fog.height.density, fog.height.falloff]
+            .into_iter()
+            .all(coefficient)
+        || ![fog.near.start, fog.far.start, eye.y, fog.height.base]
+            .into_iter()
+            .all(|value| value.abs() <= SCALAR_POSITION_MAX)
+        || ![fog.near.start, fog.far.start]
+            .into_iter()
+            .all(|value| value == 0.0 || value >= SCALAR_COEFFICIENT_MIN)
+        || distance > SCALAR_POSITION_MAX
+        || (distance != 0.0 && distance < SCALAR_COEFFICIENT_MIN)
+        || (share != 0.0 && share < SCALAR_COEFFICIENT_MIN)
+    {
+        return false;
+    }
+    // Input bounds above dominate subtraction/product before the final precision choice.
+    -fog.height.falloff * (eye.y - fog.height.base) >= SCALAR_HEIGHT_EXPONENT_MIN
+}
+
+fn finite_component(value: f64) -> f32 {
+    value.clamp(-f64::from(f32::MAX), f64::from(f32::MAX)) as f32
+}
+
+// Finite f32 inputs and unit-vector components conservatively bound products below 2^610,
+// within f64. Eye and ray exponent caps remain separate; an underflowed f64 height start is
+// below final f32 significance even after all later bounded density/distance/HDR factors.
+fn wide_ray(fog: &Fog, eye: Vec3, dir: Vec3, distance: f32, share: f32, horizon: Vec3, key: Vec3) -> FogRay {
+    let start = (-f64::from(fog.height.falloff) * (f64::from(eye.y) - f64::from(fog.height.base)))
+        .min(f64::from(MAX_EXPONENT))
+        .exp();
+    let slope = f64::from(fog.height.falloff) * f64::from(dir.y);
+    let depths = |length: f64| {
+        let reach = if dir.y > 0.0 { length.min(f64::from(CEILING) / f64::from(dir.y)) } else { length };
+        let x = slope * length;
+        let ratio = if x.abs() < f64::from(SERIES_BELOW) {
+            1.0 - 0.5 * x
+        } else {
+            (1.0 - (-x).min(f64::from(MAX_EXPONENT)).exp()) / x
+        };
+        [
+            f64::from(fog.near.density) * (reach - f64::from(fog.near.start)).max(0.0),
+            f64::from(fog.far.density) * (reach - f64::from(fog.far.start)).max(0.0),
+            f64::from(fog.height.density) * start * length * ratio,
+        ]
+    };
+    let total = depths(f64::from(distance)).into_iter().sum::<f64>();
+    let around =
+        f64::from(fog.near.density) + f64::from(fog.far.density) + f64::from(fog.height.density) * start;
+    let stretch = f64::from(MIX_DEPTH) / around.max(f64::from(MIN_DENSITY));
+    let mixed = depths(f64::from(distance).min(stretch));
+    let denominator = mixed.into_iter().sum::<f64>() + f64::from(HORIZON_WEIGHT);
+    let light = Vec3::from_array(std::array::from_fn(|i| {
+        finite_component(
+            (f64::from(fog.near.color[i]) * mixed[0]
+                + f64::from(fog.far.color[i]) * f64::from(horizon[i]) * mixed[1]
+                + f64::from(fog.height.color[i]) * mixed[2]
+                + f64::from(horizon[i]) * f64::from(HORIZON_WEIGHT))
+                / denominator,
+        )
+    }));
+    let c = (f64::from(dir.x) * f64::from(key.x)
+        + f64::from(dir.y) * f64::from(key.y)
+        + f64::from(dir.z) * f64::from(key.z))
+    .clamp(0.0, 1.0);
+    let c2 = c * c;
+    let c4 = c2 * c2;
+    let sun = Vec3::from_array(std::array::from_fn(|i| {
+        finite_component(f64::from(fog.sun_inscatter[i]) * (c4 * c4))
+    }));
+    FogRay { transmittance: (-f64::from(share) * total).exp() as f32, light, sun }
+}
+
 /// The fog over one view ray ([`Fog::ray`]), as the shaders evaluate it (`fog_ray` in the
 /// renderer's `frame.wgsl`).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -193,7 +313,27 @@ impl FogRay {
     pub const CLEAR: Self = Self { transmittance: 1.0, light: Vec3::ZERO, sun: Vec3::ZERO };
 
     /// `color` seen through the fog: what reaches the camera of it, plus the fog's own light.
+    /// With finite scene components and transmittance in `[0, 1]`, wider composition saturates
+    /// only the final component at signed `f32::MAX` when necessary. Nonfinite or nonphysical
+    /// stored-ray fields retain the original scalar behavior.
     pub fn apply(&self, color: Vec3) -> Vec3 {
+        let finite = color.is_finite()
+            && self.light.is_finite()
+            && self.sun.is_finite()
+            && self.transmittance.is_finite();
+        let bounded = |value: Vec3| value.abs().max_element() <= SCALAR_APPLY_MAX;
+        let valid_t = (0.0..=1.0).contains(&self.transmittance);
+        if finite && valid_t && !(bounded(color) && bounded(self.light) && bounded(self.sun)) {
+            let t = f64::from(self.transmittance);
+            let amount = f64::from(1.0 - self.transmittance);
+            return Vec3::from_array(std::array::from_fn(|i| {
+                finite_component(
+                    f64::from(color[i]) * t + (f64::from(self.light[i]) + f64::from(self.sun[i])) * amount,
+                )
+            }));
+        }
+        // Nonfinite fields and nonphysical T are outside this repair. Ordinary physical rays
+        // share the same original scalar expression with those historical fallback inputs.
         color * self.transmittance + (self.light + self.sun) * (1.0 - self.transmittance)
     }
 }
@@ -435,5 +575,49 @@ mod tests {
         assert!(safe.is_visible());
         let ray = bad.ray(Vec3::ZERO, Vec3::Z, 100.0, 1.0, HORIZON, Vec3::Z);
         assert!(ray.transmittance.is_finite() && ray.light.is_finite() && ray.sun.is_finite());
+    }
+
+    #[test]
+    fn zero_share_is_clear_even_when_finite_density_overflows_optical_depth() {
+        let fog =
+            Fog { near: FogLayer { color: Vec3::ONE, density: f32::MAX, start: 0.0 }, ..Fog::default() };
+        let ray = fog.ray(Vec3::ZERO, Vec3::Z, 2.0, 0.0, HORIZON, Vec3::Y);
+        assert_eq!(ray, FogRay::CLEAR);
+        assert_eq!(ray.apply(Vec3::new(0.2, 0.5, 0.8)), Vec3::new(0.2, 0.5, 0.8));
+    }
+
+    #[test]
+    fn positive_extreme_depth_keeps_a_tiny_positive_share() {
+        let fog =
+            Fog { near: FogLayer { color: Vec3::ONE, density: f32::MAX, start: 0.0 }, ..Fog::default() };
+        let share = f32::from_bits(1);
+        let ray = fog.ray(Vec3::ZERO, Vec3::Z, 2.0, share, HORIZON, Vec3::Y);
+        let expected = (-f64::from(f32::MAX) * 2.0 * f64::from(share)).exp() as f32;
+        assert_eq!(ray.transmittance, expected);
+        assert!(ray.light.is_finite());
+        assert!(ray.transmittance < 1.0 && ray.transmittance > 0.99);
+    }
+
+    #[test]
+    fn extreme_eye_and_base_keep_zero_falloff_and_capped_height_distinct() {
+        let mut fog = height_fog(f32::MAX, 0.0, -f32::MAX);
+        let eye = Vec3::new(0.0, f32::MAX, 0.0);
+        let dense = fog.ray(eye, Vec3::Z, 2.0, 1.0, HORIZON, Vec3::Y);
+        assert_eq!(dense.transmittance, 0.0);
+        assert!(dense.light.is_finite());
+        fog.height.falloff = 1.0;
+        let clear = fog.ray(eye, Vec3::Z, 2.0, 1.0, HORIZON, Vec3::Y);
+        assert_eq!(clear.transmittance, 1.0);
+        assert!((clear.light - HORIZON).abs().max_element() < 1e-6);
+    }
+
+    #[test]
+    fn stored_subnormal_transmittance_can_reach_a_finite_hdr_color() {
+        let ray = FogRay { transmittance: (-90.0f32).exp(), light: Vec3::ZERO, sun: Vec3::ZERO };
+        let expected = (f64::from(ray.transmittance) * f64::from(f32::MAX)) as f32;
+        assert!(expected > 0.27 && expected < 0.29);
+        assert_eq!(ray.apply(Vec3::splat(f32::MAX)), Vec3::splat(expected));
+        let ray = FogRay { transmittance: 0.75, light: Vec3::splat(f32::MAX), sun: Vec3::splat(f32::MAX) };
+        assert_eq!(ray.apply(Vec3::ZERO), Vec3::splat(f32::MAX * 0.5));
     }
 }

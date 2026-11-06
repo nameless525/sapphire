@@ -35,13 +35,13 @@ pub(super) struct PassNode {
 /// How many of the next passes, of `weights`, go into the next of `runs` runs in order: about a
 /// fair share of the `left` weight still to place, at least one pass. A pass goes in while at
 /// least half of it fits, so a heavy pass doesn't start a run early for a sliver of the share.
-pub(super) fn run_length(weights: impl Iterator<Item = u32>, left: u32, runs: usize) -> usize {
-    let (left, runs) = (u64::from(left), runs.max(1) as u64);
+pub(super) fn run_length(weights: impl Iterator<Item = u32>, left: u64, runs: usize) -> usize {
+    let runs = runs.max(1) as u128;
     let mut taken = 0_u64;
     let mut length = 0;
     for weight in weights {
         let weight = u64::from(weight);
-        if length > 0 && (2 * taken + weight) * runs > 2 * left {
+        if length > 0 && (2 * u128::from(taken) + u128::from(weight)) * runs > 2 * u128::from(left) {
             break;
         }
         taken += weight;
@@ -220,13 +220,13 @@ mod tests {
 
     /// `weights` split into `runs` runs: each run's weights.
     fn split(weights: &[u32], runs: usize) -> Vec<Vec<u32>> {
-        let mut left: u32 = weights.iter().sum();
+        let mut left: u64 = weights.iter().map(|&weight| u64::from(weight)).sum();
         let mut rest = weights;
         let mut out = Vec::new();
         for run in 0..runs {
             let length = run_length(rest.iter().copied(), left, runs - run);
             let (chunk, tail) = rest.split_at(length);
-            left -= chunk.iter().sum::<u32>();
+            left -= chunk.iter().map(|&weight| u64::from(weight)).sum::<u64>();
             rest = tail;
             if !chunk.is_empty() {
                 out.push(chunk.to_vec());
@@ -249,6 +249,8 @@ mod tests {
         assert_eq!(split(&[8, 8, 8], 8), [vec![8], vec![8], vec![8]], "fewer passes than runs");
         assert_eq!(split(&[1, 2, 3], 1), [vec![1, 2, 3]], "one run takes everything");
         assert_eq!(split(&[], 3), Vec::<Vec<u32>>::new());
+        assert_eq!(split(&[1 << 31; 4], 2), [vec![1 << 31; 2], vec![1 << 31; 2]]);
+        assert_eq!(split(&[u32::MAX; 6], 3), vec![vec![u32::MAX; 2]; 3]);
     }
 
     /// A fight's frame on Desktop-High, in its passes' weights: six encoders, the heaviest with no

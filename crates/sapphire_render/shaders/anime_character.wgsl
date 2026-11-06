@@ -1597,7 +1597,7 @@ const DEBUG_COVERS: f32 = 0.5;
 // Material slots as the values' w holds them: modulo this, exact in a half float.
 const DEBUG_MATERIALS: u32 = 2048u;
 
-// A pixel's values (`debug_view::VALUES_FORMAT`, whole numbers exact in its half floats): x what
+// A pixel's values (`debug_view::VALUES_FORMAT`, bounded integer codes exact in half floats): x what
 // drew it, y its region, z the ramp rows its shadow side reads in ramp mode (the day row +
 // RAMP_ROWS × the night row; time of day blends the two), or the band mode's code, and w
 // `extra`: a surface's material slot, or a line's width.

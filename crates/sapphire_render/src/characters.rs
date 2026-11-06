@@ -391,11 +391,6 @@ impl Characters {
         self.buffer.buffer()
     }
 
-    /// Entries the last frame with a view wrote: the fallback, then one per character.
-    pub(crate) fn entries(&self) -> u32 {
-        u32::try_from(self.list.entries.len()).expect("fewer than 2³² characters")
-    }
-
     /// Instances the last frame with a view lit with their own rigs.
     pub(crate) fn lit(&self) -> u32 {
         self.list.lit
@@ -554,6 +549,8 @@ pub(crate) struct CharacterList {
     occluders: Vec<CharacterBody>,
     /// Per occluder: what capsule AO from the others leaves of the ambient light around it.
     visibilities: Vec<f32>,
+    /// The complete ordered inputs of `visibilities`; lighting and expressions do not affect AO.
+    visibility_bodies: Vec<CharacterBody>,
     /// Per instance slot: how far its character has faded this frame, 0 for none (M1 C7).
     fades: Vec<f32>,
     /// Instances the last frame lit with their own rigs, and the entries it ignored.
@@ -630,8 +627,11 @@ impl CharacterList {
             // Each character's body occludes once, however many instances list it (M1 review
             // RS-002), and every entry with one body sees the same others.
             let occluders = &self.occluders;
-            self.visibilities.clear();
-            self.visibilities.extend(occluders.iter().map(|body| capsule_visibility(body, occluders)));
+            if self.visibility_bodies != *occluders {
+                self.visibilities.clear();
+                self.visibilities.extend(occluders.iter().map(|body| capsule_visibility(body, occluders)));
+                self.visibility_bodies.clone_from(occluders);
+            }
             for (entry, gpu) in self.entries.iter_mut().enumerate().skip(1) {
                 let visibility = match self.groups[entry] {
                     NO_GROUP => capsule_visibility(&self.bodies[entry], occluders),

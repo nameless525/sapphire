@@ -41,128 +41,145 @@ fn sample(@builtin(global_invocation_id) id: vec3<u32>) {
 }
 ";
 
-/// Every level of `texture`, as the GPU samples it.
-fn sample_levels(gpu: &GpuContext, texture: &GpuTexture) -> Vec<Vec<[f32; 4]>> {
-    let device = gpu.device();
-    let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: None,
-        entries: &[
-            wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 1,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 2,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: false },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 3,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-        ],
-    });
-    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: None,
-        source: wgpu::ShaderSource::Wgsl(SAMPLE_SHADER.into()),
-    });
-    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: None,
-        layout: Some(&device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: None,
-            bind_group_layouts: &[Some(&layout)],
-            immediate_size: 0,
-        })),
-        module: &module,
-        entry_point: Some("sample"),
-        compilation_options: Default::default(),
-        cache: None,
-    });
-    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-        mag_filter: wgpu::FilterMode::Linear,
-        min_filter: wgpu::FilterMode::Linear,
-        ..Default::default()
-    });
+/// The immutable sampling pipeline shared by the cases in one test.
+struct LevelSampler {
+    layout: wgpu::BindGroupLayout,
+    pipeline: wgpu::ComputePipeline,
+    sampler: wgpu::Sampler,
+}
 
-    let raw = texture.texture();
-    let mut encoder = device.create_command_encoder(&Default::default());
-    let mut readbacks = Vec::new();
-    for level in 0..raw.mip_level_count() {
-        let (width, height) = ((raw.width() >> level).max(1), (raw.height() >> level).max(1));
-        let size = u64::from(width * height) * 16;
-        let output = device.create_buffer(&wgpu::BufferDescriptor {
+impl LevelSampler {
+    fn new(gpu: &GpuContext) -> Self {
+        let device = gpu.device();
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: None,
-            size,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-        let readback = device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size,
-            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let params = device.create_buffer(&wgpu::BufferDescriptor {
-            label: None,
-            size: 16,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        gpu.queue().write_buffer(&params, 0, bytemuck::cast_slice(&[level, width, height, 0]));
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &layout,
             entries: &[
-                wgpu::BindGroupEntry {
+                wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(texture.view()),
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
                 },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
-                wgpu::BindGroupEntry { binding: 2, resource: output.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: params.as_entire_binding() },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
-        {
-            let mut pass = encoder.begin_compute_pass(&Default::default());
-            pass.set_pipeline(&pipeline);
-            pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups(width.div_ceil(8), height.div_ceil(8), 1);
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: None,
+            source: wgpu::ShaderSource::Wgsl(SAMPLE_SHADER.into()),
+        });
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: None,
+            layout: Some(&device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: None,
+                bind_group_layouts: &[Some(&layout)],
+                immediate_size: 0,
+            })),
+            module: &module,
+            entry_point: Some("sample"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+
+        Self { layout, pipeline, sampler }
+    }
+
+    /// Every level of `texture`, as the GPU samples it.
+    fn sample(&self, gpu: &GpuContext, texture: &GpuTexture) -> Vec<Vec<[f32; 4]>> {
+        let device = gpu.device();
+        let raw = texture.texture();
+        let mut encoder = device.create_command_encoder(&Default::default());
+        let mut readbacks = Vec::new();
+        for level in 0..raw.mip_level_count() {
+            let (width, height) = ((raw.width() >> level).max(1), (raw.height() >> level).max(1));
+            let size = u64::from(width * height) * 16;
+            let output = device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            });
+            let readback = device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size,
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let params = device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: 16,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            gpu.queue().write_buffer(&params, 0, bytemuck::cast_slice(&[level, width, height, 0]));
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &self.layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(texture.view()),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                    wgpu::BindGroupEntry { binding: 2, resource: output.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 3, resource: params.as_entire_binding() },
+                ],
+            });
+            {
+                let mut pass = encoder.begin_compute_pass(&Default::default());
+                pass.set_pipeline(&self.pipeline);
+                pass.set_bind_group(0, &bind_group, &[]);
+                pass.dispatch_workgroups(width.div_ceil(8), height.div_ceil(8), 1);
+            }
+            encoder.copy_buffer_to_buffer(&output, 0, &readback, 0, size);
+            readbacks.push(readback);
         }
-        encoder.copy_buffer_to_buffer(&output, 0, &readback, 0, size);
-        readbacks.push(readback);
+        gpu.queue().submit([encoder.finish()]);
+        for readback in &readbacks {
+            readback.map_async(wgpu::MapMode::Read, .., |result| result.expect("map"));
+        }
+        gpu.device().poll(wgpu::PollType::wait_indefinitely()).expect("poll");
+        readbacks
+            .iter()
+            .map(|readback| bytemuck::pod_collect_to_vec(&readback.get_mapped_range(..).expect("mapped")))
+            .collect()
     }
-    gpu.queue().submit([encoder.finish()]);
-    for readback in &readbacks {
-        readback.map_async(wgpu::MapMode::Read, .., |result| result.expect("map"));
-    }
-    gpu.device().poll(wgpu::PollType::wait_indefinitely()).expect("poll");
-    readbacks
-        .iter()
-        .map(|readback| bytemuck::pod_collect_to_vec(&readback.get_mapped_range(..).expect("mapped")))
-        .collect()
 }
 
 fn srgb_to_linear(c: f32) -> f32 {
@@ -245,10 +262,17 @@ struct Case {
 }
 
 fn errors(case: &Case, format: TextureFormat, expected: &[[f32; 4]], sampled: &[[f32; 4]]) -> (f32, f32) {
+    assert_eq!(expected.len(), sampled.len(), "{}: texel count", case.name);
+    assert!(!expected.is_empty(), "{}: no texels", case.name);
     let srgb = format.is_srgb();
     let mut worst = 0.0f32;
     let mut sum = 0.0f32;
     for (e, s) in expected.iter().zip(sampled) {
+        assert!(
+            e.iter().chain(s).all(|value| value.is_finite()),
+            "{}: nonfinite texel: expected {e:?}, sampled {s:?}",
+            case.name
+        );
         let scale = e[..3].iter().fold(1.0f32 / 16.0, |m, &v| m.max(v));
         for c in 0..4 {
             let (e, s) =
@@ -262,6 +286,31 @@ fn errors(case: &Case, format: TextureFormat, expected: &[[f32; 4]], sampled: &[
         }
     }
     (worst, sum / (expected.len() * 4) as f32)
+}
+
+#[test]
+fn texture_error_oracle_accepts_finite_values() {
+    let case = &cases()[0];
+    assert_eq!(errors(case, TextureFormat::Rgba16Float, &[[0.25; 4]], &[[0.5; 4]]), (0.25, 0.25));
+}
+
+#[test]
+fn texture_error_oracle_rejects_nonfinite_values_and_missing_texels() {
+    let case = &cases()[0];
+    for format in [TextureFormat::Rgba16Float, TextureFormat::Bc7RgbaUnormSrgb] {
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            for channel in 0..4 {
+                let mut bad = [0.25; 4];
+                bad[channel] = value;
+                for (expected, sampled) in [([bad], [[0.25; 4]]), ([[0.25; 4]], [bad])] {
+                    assert!(std::panic::catch_unwind(|| errors(case, format, &expected, &sampled)).is_err());
+                }
+            }
+        }
+    }
+    assert!(
+        std::panic::catch_unwind(|| errors(case, TextureFormat::Rgba16Float, &[[0.25; 4]], &[])).is_err()
+    );
 }
 
 fn cases() -> Vec<Case> {
@@ -312,6 +361,7 @@ fn cases() -> Vec<Case> {
 #[ignore = "needs a GPU"]
 fn every_class_samples_back_within_tolerance() {
     let gpu = gpu();
+    let sampler = LevelSampler::new(&gpu);
     let mut skipped = Vec::new();
     let mut failures = Vec::new();
     for case in cases() {
@@ -329,7 +379,7 @@ fn every_class_samples_back_within_tolerance() {
             }
             Err(error) => panic!("{}: {error}", case.name),
         };
-        let sampled = sample_levels(&gpu, &uploaded);
+        let sampled = sampler.sample(&gpu, &uploaded);
         assert!(pollster::block_on(scope.pop()).is_none(), "{}: validation error", case.name);
         assert_eq!(sampled.len(), prepared.levels.len(), "{}", case.name);
         // Every level, down to 1×1, which ctt's own BC7 chains got wrong (its issue #114).

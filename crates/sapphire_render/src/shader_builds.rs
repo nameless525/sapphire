@@ -385,6 +385,7 @@ impl ShaderBuilds {
         let Some(running) = &mut self.running else { return Some(request) };
         if self.waiting.is_none() && running.request.sources == request.sources {
             running.request.id = request.id;
+            running.request.frames = request.frames;
             return None;
         }
         if !running.cancel.is_set() {
@@ -533,3 +534,46 @@ impl Gate {
 
 #[cfg(test)]
 mod gpu_tests;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_joined_request_counts_only_frames_since_that_request() {
+        let mut builds = ShaderBuilds::default();
+        let first = builds.request(ShaderSources::compiled_in());
+        let (_sender, finished) = mpsc::channel();
+        builds.running = Some(Running {
+            request: first,
+            built: Built {
+                sources: 0,
+                mesh: (0, 0),
+                sky: 0,
+                post: 0,
+                skinning: false,
+                shadows: 0,
+                ambient: 0,
+                debug_views: None,
+                debug_draw: false,
+                vfx: 0,
+                ui: false,
+            },
+            cancel: Cancel::default(),
+            finished,
+        });
+        for _ in 0..7 {
+            assert!(builds.poll().is_none());
+        }
+        let joined = builds.request(ShaderSources::compiled_in());
+        let id = joined.id;
+        assert!(builds.supersede(joined).is_none());
+        let running = builds.running.as_ref().expect("still the same worker");
+        assert_eq!(running.request.id, id);
+        assert_eq!(running.request.frames, 0);
+        assert!(builds.poll().is_none());
+        assert_eq!(builds.running.as_ref().expect("worker").request.frames, 1);
+        // No worker was spawned; remove the state before Drop's join path.
+        builds.running = None;
+    }
+}

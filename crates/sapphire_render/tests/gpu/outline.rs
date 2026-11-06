@@ -321,6 +321,24 @@ impl Frames {
         changed: &[MeshInstance],
         reads: &[PrepassRead<'_>],
     ) -> Vec<[u8; 4]> {
+        self.record(gpu, camera, changed, reads, true);
+        self.color.texels(gpu)
+    }
+
+    /// Runs and completes a frame whose pixels are not inspected.
+    fn complete(&mut self, gpu: &GpuContext, camera: CameraData, changed: &[MeshInstance]) {
+        self.record(gpu, camera, changed, &[], false);
+        gpu.device().poll(wgpu::PollType::wait_indefinitely()).expect("frame complete");
+    }
+
+    fn record(
+        &mut self,
+        gpu: &GpuContext,
+        camera: CameraData,
+        changed: &[MeshInstance],
+        reads: &[PrepassRead<'_>],
+        read_color: bool,
+    ) {
         let packet = self.packets.begin();
         packet.views.push(ViewData::new(camera));
         packet.sun = self.sun;
@@ -341,20 +359,26 @@ impl Frames {
         let reads: Vec<(TextureId, &Readback)> =
             reads.iter().map(|(target, readback)| (target(&targets), *readback)).collect();
         let (texture, color) = (&self.texture, &self.color);
-        let mut pass = graph.add_pass("read back").side_effect().read(target);
-        for (texture, _) in &reads {
-            pass = pass.read(*texture);
-        }
-        pass.record(move |ctx| {
-            color.copy(ctx.encoder, texture);
-            for (texture, readback) in reads {
-                readback.copy(ctx.encoder, ctx.texture(texture));
+        if read_color || !reads.is_empty() {
+            let mut pass = graph.add_pass("read back").side_effect();
+            if read_color {
+                pass = pass.read(target);
             }
-        });
+            for (texture, _) in &reads {
+                pass = pass.read(*texture);
+            }
+            pass.record(move |ctx| {
+                if read_color {
+                    color.copy(ctx.encoder, texture);
+                }
+                for (texture, readback) in reads {
+                    readback.copy(ctx.encoder, ctx.texture(texture));
+                }
+            });
+        }
         self.graph.execute(gpu, graph).expect("a valid graph");
         let error = pollster::block_on(scope.pop());
         assert!(error.is_none(), "{error:?}");
-        self.color.texels(gpu)
     }
 
     fn stats(&self) -> RenderStats {
@@ -1000,11 +1024,14 @@ fn compare_lines(
     for frame in 0..frames {
         let at = transform(frame);
         taa.renderer.set_render_scale(scale(frame));
-        let taa_pixels = taa.render(gpu, view(frame), &[instance(1, taa_ball, at)], &[]);
-        let msaa_pixels = msaa.render(gpu, view(frame), &[instance(1, msaa_ball, at)], &[]);
         if frame + 8 >= frames {
+            let taa_pixels = taa.render(gpu, view(frame), &[instance(1, taa_ball, at)], &[]);
+            let msaa_pixels = msaa.render(gpu, view(frame), &[instance(1, msaa_ball, at)], &[]);
             taa_lines.push(Lines::of(&taa_pixels, radius_px));
             msaa_lines.push(Lines::of(&msaa_pixels, radius_px));
+        } else {
+            taa.complete(gpu, view(frame), &[instance(1, taa_ball, at)]);
+            msaa.complete(gpu, view(frame), &[instance(1, msaa_ball, at)]);
         }
     }
     let total = |lines: &[Lines], measure: fn(&Lines) -> f32| lines.iter().map(measure).sum::<f32>();

@@ -135,6 +135,7 @@ mod tests {
             slots: Vec::new(),
             bounds,
             palette_reach: Vec::new(),
+            morph_reach: Vec::new(),
             foliage: None,
         }
     }

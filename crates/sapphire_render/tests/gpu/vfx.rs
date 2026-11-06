@@ -1081,3 +1081,91 @@ fn buffers_grow_with_the_list() {
         assert!((middle - (GREY + 0.6)).abs() < 0.05, "{path}: {middle}");
     }
 }
+
+/// Bright air can round (air + T) back to air even though an admitted HDR effect times T is
+/// visible. Cover the sprite color and both ribbon inputs, before and after the temporal resolve.
+#[test]
+#[ignore = "needs a GPU"]
+fn additive_hdr_effects_keep_transmittance_below_the_air_lights_ulp() {
+    for (path, settings) in paths() {
+        let mut harness = Harness::new(settings);
+        let material = harness.material(&AnimeCharacterMaterial {
+            base_color: [0.0, 0.0, 0.0, 1.0],
+            rim: Rim { strength: 0.0, ..Rim::default() },
+            outline: Outline { width: 0.0, ..Outline::default() },
+            ..AnimeCharacterMaterial::default()
+        });
+        let mesh = harness.mesh(&wall(-2.0, 20.0), material);
+        let id = harness.add(mesh);
+        let character = CharacterInstance {
+            id,
+            lighting: CharacterLighting::unstyled(DirectionalLight {
+                intensity: 0.0,
+                ..DirectionalLight::default()
+            }),
+            face: CharacterFace::default(),
+            body: CharacterBody::default(),
+            opacity: 1.0,
+        };
+        let fog = Fog {
+            near: FogLayer { color: Vec3::splat(256.0), density: 12.5, start: 0.0 },
+            characters: 0.0,
+            ..Fog::default()
+        };
+        let fill = |packet: &mut FramePacket| {
+            packet.fog = fog;
+            packet.characters.push(character);
+        };
+        let background = harness.render(fill).middle();
+        // The four vertices lie at (+/-0.08,+/-0.08,-1), so T is constant over each quad.
+        let half = f64::from(0.08f32);
+        let distance = (1.0 + 2.0 * half * half).sqrt();
+        let transmitted = 1024.0 * (-12.5 * distance).exp();
+        let ray = fog.ray(Vec3::ZERO, Vec3::NEG_Z, distance as f32, 1.0, Vec3::splat(GREY), Vec3::Z);
+        assert_eq!(ray.apply(Vec3::ONE) - ray.apply(Vec3::ZERO), Vec3::ZERO);
+        for consumer in ["sprite", "ribbon color", "ribbon core"] {
+            let mut ribbon = strip(-1.0, Vec3::ZERO, Vec3::ZERO);
+            for (index, point) in ribbon.iter_mut().enumerate() {
+                let x = if index == 0 { -0.08 } else { 0.08 };
+                point.base = Vec3::new(x, -0.08, -1.0);
+                point.tip = Vec3::new(x, 0.08, -1.0);
+                point.core_position = 0.5;
+                point.core_half_width = 1.0;
+                point.glow_reach = 1.0;
+                if consumer == "ribbon color" {
+                    point.color = Vec3::splat(1024.0);
+                } else {
+                    point.core = Vec3::splat(1024.0);
+                }
+            }
+            // At the central pixel of the 90-degree view, world y=-1/SIDE. The broad core
+            // covers this pixel fully; the ribbon glow falls away quadratically from its center.
+            let across = (half - 1.0 / f64::from(SIDE)) / (2.0 * half);
+            let shape = if consumer == "ribbon color" { (1.0 - (across - 0.5).abs()).powi(2) } else { 1.0 };
+            let expected = transmitted * shape;
+            assert!((0.003..0.004).contains(&expected));
+            let frame = harness.render(|packet| {
+                fill(packet);
+                if consumer == "sprite" {
+                    packet.vfx.sprites.push(dot(Vec3::NEG_Z, 0.08, Vec3::splat(1024.0)));
+                } else {
+                    packet.vfx.ribbon_points.extend_from_slice(&ribbon);
+                }
+            });
+            let actual = frame.middle() - background;
+            assert!(
+                actual.is_finite()
+                    && actual.min_element() > 0.0025
+                    && (actual - Vec3::splat(expected as f32)).abs().max_element() < 0.001,
+                "{consumer}, {path}: {actual}, expected {expected}"
+            );
+            let stats = harness.renderer.stats().vfx;
+            assert_eq!(
+                (stats.sprites, stats.ribbon_points),
+                if consumer == "sprite" { (1, 0) } else { (0, 2) }
+            );
+            assert_eq!(stats.rejected, 0);
+            assert_eq!(stats.after_resolve, settings.temporal);
+        }
+    }
+}

@@ -7,7 +7,8 @@
 //!   same set that reads a light rig (rule R4), static or skinned. An unlisted instance, a skinned
 //!   prop's or an anime-shaded pedestal's, stays out, so nothing takes it for a character.
 //!   Position-only, through the instance's own clip position (invariant, as every pass's), so its
-//!   depth is the main pass's bit for bit.
+//!   depth is the main pass's bit for bit. Masked variants also bind the material's base-color
+//!   texture and UVs, cutting the same alpha-test and proximity-fade holes as the main pass.
 //! - **Targets:** persistent textures the renderer owns at the scene's size, made again when the
 //!   size changes, single-sampled, and imported into each frame's graph. The depth is
 //!   `Depth32Float` (reverse-Z, cleared to 0); the IDs are `Rg16Uint`, two IDs ([`encode_id`]):
@@ -34,8 +35,6 @@
 //!
 //! # Later milestones
 //!
-//! - Alpha-tested materials cut out of the prepass (a variant binding group 3, with UVs): today
-//!   it holds their whole geometry, so a cutout hair card's holes still rim and shadow.
 //! - On tilers, packing the depth into the ID target as linear depth (one `Rg16Float`-sized
 //!   texel) and keeping the depth attachment transient, if the store shows up in captures.
 

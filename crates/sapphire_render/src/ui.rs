@@ -48,6 +48,7 @@
 //! `ui.wgsl` is a program of its own ([`ShaderFile::Ui`](crate::ShaderFile::Ui)): an edit rebuilds
 //! the one pipeline, once built, on the layout it had (`shader_builds`).
 
+use std::collections::BTreeMap;
 use std::mem::{offset_of, size_of};
 use std::num::NonZeroU64;
 use std::sync::Arc;
@@ -166,7 +167,7 @@ struct Built {
     uniforms: wgpu::Buffer,
     quads: GrowableBuffer,
     atlas: Option<AtlasOnGpu>,
-    pages: Vec<PageOnGpu>,
+    pages: BTreeMap<u16, PageOnGpu>,
     page_size: u32,
 }
 
@@ -325,7 +326,7 @@ impl Ui {
             uniforms,
             quads,
             atlas: None,
-            pages: Vec::new(),
+            pages: BTreeMap::new(),
             page_size: 0,
         }));
         self.stats.pipelines = 1;
@@ -346,10 +347,9 @@ impl Ui {
         // A list that names no page is nobody's, and says nothing about the pages.
         let uses_pages = !list.page_runs.is_empty() || !list.page_uploads.is_empty();
         let ours = list.page_state.store == self.page_state.store;
-        if ours {
-            self.page_state.batch = list.page_state.batch;
-        } else if uses_pages {
-            self.stats.stale_page_quads = list.page_runs.iter().map(|run| run.count).sum();
+        if !ours && uses_pages {
+            self.stats.stale_page_quads =
+                list.page_runs.iter().fold(0u32, |count, run| count.saturating_add(run.count));
             tracing::debug!(
                 target: crate::LOG_TARGET,
                 quads = self.stats.stale_page_quads,
@@ -357,12 +357,15 @@ impl Ui {
             );
         }
         let Some(built) = self.built.as_deref_mut() else { return };
-        if ours {
-            let (uploads, bytes) =
-                write_pages(&self.device, queue, built, list, &mut self.bands, self.labels);
-            self.stats.page_uploads = uploads;
-            self.stats.page_upload_bytes = bytes;
-        }
+        let applied = ours
+            && write_pages(&self.device, queue, built, list, &mut self.bands, self.labels).is_some_and(
+                |(uploads, bytes)| {
+                    self.stats.page_uploads = uploads;
+                    self.stats.page_upload_bytes = bytes;
+                    self.page_state.batch = list.page_state.batch;
+                    true
+                },
+            );
         self.stats.pages = built.pages.len() as u32;
         if !Self::draws(list) {
             return;
@@ -371,12 +374,14 @@ impl Ui {
             && !built.atlas.as_ref().is_some_and(|on_gpu| Arc::ptr_eq(&on_gpu.source, atlas))
         {
             built.atlas = upload_atlas(&self.device, queue, built, atlas, self.labels);
+            self.stats.atlas_bytes = 0;
             if built.atlas.is_some() {
                 self.stats.atlas_uploads += 1;
                 self.stats.atlas_bytes = atlas.texels.len() as u64;
             }
         }
-        if built.atlas.is_none() && list.page_runs.is_empty() {
+        let has_atlas = list.atlas.is_some() && built.atlas.is_some();
+        if !has_atlas && list.page_runs.is_empty() {
             return;
         }
         let limit = built.quads.max_items(QUAD_BYTES).min(list.quads.len() as u64) as usize;
@@ -384,8 +389,13 @@ impl Ui {
         self.quads.extend_from_slice(&list.quads[..limit]);
         self.stats.quads = limit as u32;
         self.stats.quads_over_limit = (list.quads.len() - limit) as u32;
-        let pages = if ours { built.pages.len() } else { 0 };
-        resolve_draws(list, limit as u32, built.atlas.is_some(), pages, &mut self.draws);
+        resolve_draws(
+            list,
+            limit as u32,
+            has_atlas,
+            |page| applied && built.pages.contains_key(&page),
+            &mut self.draws,
+        );
         self.stats.draws = self.draws.len() as u32;
         if self.draws.is_empty() {
             self.quads.clear();
@@ -427,7 +437,7 @@ impl Ui {
             pass.set_pipeline(&built.pipeline);
             for draw in draws {
                 let group = match (draw.page, built.atlas.as_ref()) {
-                    (Some(page), _) => &built.pages[usize::from(page)].bind_group,
+                    (Some(page), _) => &built.pages[&page].bind_group,
                     (None, Some(atlas)) => &atlas.bind_group,
                     (None, None) => continue,
                 };
@@ -526,29 +536,28 @@ fn write_pages(
     list: &UiDrawList,
     bands: &mut UiPageBands,
     labels: bool,
-) -> (u32, u64) {
+) -> Option<(u32, u64)> {
     if list.page_runs.is_empty() && list.page_uploads.is_empty() {
-        return (0, 0);
+        return Some((0, 0));
     }
     let side = list.page_size;
-    if side == 0 || side > device.limits().max_texture_dimension_2d {
-        tracing::warn!(target: crate::LOG_TARGET, side, "a glyph page that can't be made");
-        return (0, 0);
+    if !valid_page_uploads(list, device.limits().max_texture_dimension_2d) {
+        tracing::warn!(target: crate::LOG_TARGET, side, "invalid glyph page uploads; batch not acknowledged");
+        return None;
     }
     if built.page_size != side {
         built.pages.clear();
         built.page_size = side;
     }
     let named = list.page_runs.iter().map(|run| run.page).chain(list.page_uploads.iter().map(|up| up.page));
-    let count = named.max().map_or(0, |page| usize::from(page) + 1);
-    while built.pages.len() < count {
-        let page = make_page(device, built, side, labels);
-        built.pages.push(page);
+    for page in named {
+        if !built.pages.contains_key(&page) {
+            let on_gpu = make_page(device, built, side, labels);
+            built.pages.insert(page, on_gpu);
+        }
     }
     let left_out = list.page_bands(bands);
-    if left_out > 0 {
-        tracing::warn!(target: crate::LOG_TARGET, left_out, "glyph uploads past their bytes");
-    }
+    debug_assert_eq!(left_out, 0, "upload bounds checked before mutating pages");
     let (mut written, mut bytes) = (0, 0);
     for band in &bands.bands {
         let (width, height) = (u32::from(band.width), u32::from(band.height));
@@ -559,7 +568,7 @@ fn write_pages(
         let start = band.offset as usize;
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
-                texture: &built.pages[usize::from(band.page)].texture,
+                texture: &built.pages[&band.page].texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d { x: u32::from(band.x), y: u32::from(band.y), z: 0 },
                 aspect: wgpu::TextureAspect::All,
@@ -575,7 +584,23 @@ fn write_pages(
         written += 1;
         bytes += u64::from(width * height);
     }
-    (written, bytes)
+    Some((written, bytes))
+}
+
+/// Validate the complete batch before allocating pages or acknowledging any of its writes.
+fn valid_page_uploads(list: &UiDrawList, max_side: u32) -> bool {
+    let side = list.page_size;
+    side > 0
+        && side <= max_side
+        && list.page_uploads.iter().all(|upload| {
+            let (width, height) = (u32::from(upload.width), u32::from(upload.height));
+            width > 0
+                && height > 0
+                && u32::from(upload.x) + width <= side
+                && u32::from(upload.y) + height <= side
+                && u64::from(upload.offset) + u64::from(width) * u64::from(height)
+                    <= list.upload_texels.len() as u64
+        })
 }
 
 fn make_page(device: &wgpu::Device, built: &Built, side: u32, labels: bool) -> PageOnGpu {
@@ -604,7 +629,13 @@ fn make_page(device: &wgpu::Device, built: &Built, side: u32, labels: bool) -> P
 
 /// The first `limit` quads of `list` as runs of one texture each, in order. Quads with nothing to
 /// read don't draw.
-fn resolve_draws(list: &UiDrawList, limit: u32, has_atlas: bool, pages: usize, draws: &mut Vec<UiDraw>) {
+fn resolve_draws(
+    list: &UiDrawList,
+    limit: u32,
+    has_atlas: bool,
+    has_page: impl Fn(u16) -> bool,
+    draws: &mut Vec<UiDraw>,
+) {
     let mut at = 0;
     let field = |first: u32, end: u32, draws: &mut Vec<UiDraw>| {
         if has_atlas && end > first {
@@ -612,9 +643,9 @@ fn resolve_draws(list: &UiDrawList, limit: u32, has_atlas: bool, pages: usize, d
         }
     };
     for run in &list.page_runs {
-        let (first, end) = (run.first.min(limit), (run.first + run.count).min(limit));
+        let (first, end) = (run.first.min(limit), run.first.saturating_add(run.count).min(limit));
         field(at, first, draws);
-        if usize::from(run.page) < pages && end > first {
+        if has_page(run.page) && end > first {
             draws.push(UiDraw { first, count: end - first, page: Some(run.page) });
         }
         at = end;
@@ -727,11 +758,57 @@ mod tests {
         };
         let resolved = |limit, has_atlas| {
             let mut draws = Vec::new();
-            resolve_draws(&list, limit, has_atlas, 2, &mut draws);
+            resolve_draws(&list, limit, has_atlas, |page| page < 2, &mut draws);
             draws.iter().map(|d| (d.first, d.count, d.page)).collect::<Vec<_>>()
         };
         assert_eq!(resolved(10, true), [(0, 2, None), (2, 3, Some(0)), (5, 1, Some(1)), (6, 4, None)],);
         assert_eq!(resolved(10, false), [(2, 3, Some(0)), (5, 1, Some(1))], "no atlas, no field quads");
         assert_eq!(resolved(3, true), [(0, 2, None), (2, 1, Some(0))], "a run cut at the buffer's limit");
+    }
+
+    #[test]
+    fn overflowing_trailing_page_range_does_not_duplicate_or_hide_valid_quads() {
+        let quad = UiQuad::new([0.0; 2], [1.0, 0.0], [0.0, 1.0], [0.0; 4], [255; 4]);
+        let list = UiDrawList {
+            quads: vec![quad; 10],
+            page_runs: vec![
+                UiPageRun { first: 2, count: 3, page: 0 },
+                UiPageRun { first: u32::MAX, count: 1, page: 1 },
+            ],
+            ..UiDrawList::default()
+        };
+        let mut draws = Vec::new();
+        resolve_draws(&list, 10, true, |_| true, &mut draws);
+        assert_eq!(
+            draws.iter().map(|draw| (draw.first, draw.count, draw.page)).collect::<Vec<_>>(),
+            [(0, 2, None), (2, 3, Some(0)), (5, 5, None)]
+        );
+        draws.clear();
+        resolve_draws(&list, 4, true, |_| true, &mut draws);
+        assert_eq!(
+            draws.iter().map(|draw| (draw.first, draw.count, draw.page)).collect::<Vec<_>>(),
+            [(0, 2, None), (2, 2, Some(0))]
+        );
+    }
+
+    #[test]
+    fn malformed_page_batches_are_rejected_before_any_page_is_materialized() {
+        use sapphire_look::UiPageUpload;
+        let mut list = UiDrawList {
+            page_size: 16,
+            page_uploads: vec![UiPageUpload { page: u16::MAX, x: 0, y: 0, width: 2, height: 2, offset: 0 }],
+            upload_texels: vec![255; 4],
+            ..UiDrawList::default()
+        };
+        assert!(valid_page_uploads(&list, 16), "a sparse identifier names just one page");
+        list.upload_texels.pop();
+        assert!(!valid_page_uploads(&list, 16), "short bytes");
+        list.upload_texels.push(255);
+        list.page_uploads[0].x = 15;
+        assert!(!valid_page_uploads(&list, 16), "outside page");
+        list.page_uploads[0].x = 0;
+        assert!(!valid_page_uploads(&list, 8), "device limit");
+        list.page_size = 0;
+        assert!(!valid_page_uploads(&list, 16), "zero side");
     }
 }

@@ -473,26 +473,36 @@ impl BuildOn {
     }
 }
 
-/// Runs `expression`, a `vec4<f32>` of `input`, over `inputs` in a compute shader appended to
-/// `wgsl`, and returns its results: for tests of a shader's own functions on values only the GPU
-/// sees, which no compiler can fold. `uniforms` bind at group 0, binding 0, as `post.wgsl` declares
-/// them; `wgsl`'s other bindings stay unbound, so `expression` must not reach them.
+/// A test-local compute expression, with fixed input/uniform sizes and reusable buffers.
+/// Bindings not reached by `expression` remain unbound. Inputs arrive through storage writes,
+/// preventing the compiler from folding the values under test.
 #[cfg(test)]
-pub(crate) fn evaluate_on_gpu(
-    wgsl: &str,
-    uniforms: Option<&[u8]>,
-    expression: &str,
-    inputs: &[[f32; 4]],
-) -> Vec<[f32; 4]> {
-    use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc};
-    use wgpu::util::DeviceExt;
+pub(crate) struct GpuEvaluator {
+    gpu: sapphire_rhi::GpuContext,
+    pipeline: wgpu::ComputePipeline,
+    input_buffer: wgpu::Buffer,
+    result_buffer: wgpu::Buffer,
+    read_buffer: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+    uniforms: Option<(wgpu::Buffer, wgpu::BindGroup)>,
+}
 
-    let instance = GpuInstance::new(&GpuInstanceDesc::default()).expect("instance");
-    let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), None).expect("device");
-    let device = gpu.device();
-    let group = u32::from(uniforms.is_some());
-    let source = format!(
-        "{wgsl}
+#[cfg(test)]
+impl GpuEvaluator {
+    pub(crate) fn new(
+        wgsl: &str,
+        uniform_bytes: Option<usize>,
+        expression: &str,
+        input_count: usize,
+    ) -> Self {
+        use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc};
+        assert!(input_count > 0);
+        let instance = GpuInstance::new(&GpuInstanceDesc::default()).expect("instance");
+        let gpu = GpuContext::new(&instance, &GpuContextDesc::default(), None).expect("device");
+        let device = gpu.device();
+        let group = u32::from(uniform_bytes.is_some());
+        let source = format!(
+            "{wgsl}
 @group({group}) @binding(14) var<storage, read> evaluate_inputs: array<vec4<f32>>;
 @group({group}) @binding(15) var<storage, read_write> evaluate_results: array<vec4<f32>>;
 @compute @workgroup_size(1)
@@ -501,63 +511,94 @@ fn cs_evaluate(@builtin(global_invocation_id) id: vec3<u32>) {{
     evaluate_results[id.x] = {expression};
 }}
 "
-    );
-    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: None,
-        source: wgpu::ShaderSource::Wgsl(source.into()),
-    });
-    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: None,
-        layout: None,
-        module: &module,
-        entry_point: Some("cs_evaluate"),
-        compilation_options: Default::default(),
-        cache: None,
-    });
-    let bytes: &[u8] = bytemuck::cast_slice(inputs);
-    let storage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC;
-    let init = |contents: &[u8], usage| {
-        device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents, usage })
-    };
-    let (input_buffer, result_buffer) = (init(bytes, storage), init(bytes, storage));
-    let read_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: None,
-        size: bytes.len() as u64,
-        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: None,
-        layout: &pipeline.get_bind_group_layout(group),
-        entries: &[
-            wgpu::BindGroupEntry { binding: 14, resource: input_buffer.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 15, resource: result_buffer.as_entire_binding() },
-        ],
-    });
-    let uniform_group = uniforms.map(|uniforms| {
-        let buffer = init(uniforms, wgpu::BufferUsages::UNIFORM);
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
+        );
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: None,
-            layout: &pipeline.get_bind_group_layout(0),
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() }],
-        })
-    });
-    let mut encoder = device.create_command_encoder(&Default::default());
-    {
-        let mut pass = encoder.begin_compute_pass(&Default::default());
-        pass.set_pipeline(&pipeline);
-        if let Some(uniform_group) = &uniform_group {
-            pass.set_bind_group(0, uniform_group, &[]);
-        }
-        pass.set_bind_group(group, &bind_group, &[]);
-        pass.dispatch_workgroups(inputs.len() as u32, 1, 1);
+            source: wgpu::ShaderSource::Wgsl(source.into()),
+        });
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: None,
+            layout: None,
+            module: &module,
+            entry_point: Some("cs_evaluate"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+        let size = (input_count * size_of::<[f32; 4]>()) as u64;
+        let buffer = |size, usage| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size,
+                usage,
+                mapped_at_creation: false,
+            })
+        };
+        let input_buffer = buffer(size, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST);
+        let result_buffer = buffer(size, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC);
+        let read_buffer = buffer(size, wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST);
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &pipeline.get_bind_group_layout(group),
+            entries: &[
+                wgpu::BindGroupEntry { binding: 14, resource: input_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 15, resource: result_buffer.as_entire_binding() },
+            ],
+        });
+        let uniforms = uniform_bytes.map(|size| {
+            let buffer = buffer(size as u64, wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST);
+            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &pipeline.get_bind_group_layout(0),
+                entries: &[wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() }],
+            });
+            (buffer, group)
+        });
+        Self { gpu, pipeline, input_buffer, result_buffer, read_buffer, bind_group, uniforms }
     }
-    encoder.copy_buffer_to_buffer(&result_buffer, 0, &read_buffer, 0, bytes.len() as u64);
-    gpu.queue().submit([encoder.finish()]);
-    read_buffer.map_async(wgpu::MapMode::Read, .., |result| result.expect("map"));
-    device.poll(wgpu::PollType::wait_indefinitely()).expect("poll");
-    let mapped = read_buffer.get_mapped_range(..).expect("mapped");
-    bytemuck::pod_collect_to_vec(&mapped[..])
+
+    pub(crate) fn evaluate(&self, uniforms: Option<&[u8]>, inputs: &[[f32; 4]]) -> Vec<[f32; 4]> {
+        let gpu = &self.gpu;
+        let device = gpu.device();
+        let bytes = bytemuck::cast_slice(inputs);
+        assert_eq!(bytes.len() as u64, self.input_buffer.size());
+        assert_eq!(uniforms.is_some(), self.uniforms.is_some());
+        if let (Some(bytes), Some((buffer, _))) = (uniforms, &self.uniforms) {
+            assert_eq!(bytes.len() as u64, buffer.size());
+            gpu.queue().write_buffer(buffer, 0, bytes);
+        }
+        gpu.queue().write_buffer(&self.input_buffer, 0, bytes);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_compute_pass(&Default::default());
+            pass.set_pipeline(&self.pipeline);
+            if let Some((_, group)) = &self.uniforms {
+                pass.set_bind_group(0, group, &[]);
+            }
+            pass.set_bind_group(u32::from(self.uniforms.is_some()), &self.bind_group, &[]);
+            pass.dispatch_workgroups(inputs.len() as u32, 1, 1);
+        }
+        encoder.copy_buffer_to_buffer(&self.result_buffer, 0, &self.read_buffer, 0, bytes.len() as u64);
+        gpu.queue().submit([encoder.finish()]);
+        self.read_buffer.map_async(wgpu::MapMode::Read, .., |result| result.expect("map"));
+        device.poll(wgpu::PollType::wait_indefinitely()).expect("poll");
+        let results = {
+            let mapped = self.read_buffer.get_mapped_range(..).expect("mapped");
+            bytemuck::pod_collect_to_vec(&mapped[..])
+        };
+        self.read_buffer.unmap();
+        results
+    }
+}
+
+/// One-shot convenience for tests with a single expression/input case.
+#[cfg(test)]
+pub(crate) fn evaluate_on_gpu(
+    wgsl: &str,
+    uniforms: Option<&[u8]>,
+    expression: &str,
+    inputs: &[[f32; 4]],
+) -> Vec<[f32; 4]> {
+    GpuEvaluator::new(wgsl, uniforms.map(<[u8]>::len), expression, inputs.len()).evaluate(uniforms, inputs)
 }
 
 #[cfg(test)]
@@ -719,6 +760,19 @@ mod tests {
             ShaderError::Invalid { ref report, .. } => panic!("{error}\n{report}"),
             ShaderError::Pipeline { .. } => unreachable!("validation builds no pipelines"),
         })
+    }
+
+    #[test]
+    #[ignore = "needs a GPU"]
+    fn a_reused_evaluator_reads_new_uniforms_and_inputs() {
+        let source = "struct Uniforms { scale: vec4<f32>, }\n\
+            @group(0) @binding(0) var<uniform> uniforms: Uniforms;";
+        let evaluator = GpuEvaluator::new(source, Some(16), "input * uniforms.scale", 1);
+        for (input, scale) in [([1.0, 2.0, 3.0, 4.0], 2.0f32), ([-5.0, 6.0, -7.0, 8.0], -3.0)] {
+            let uniform = [scale; 4];
+            let actual = evaluator.evaluate(Some(bytemuck::bytes_of(&uniform)), &[input]);
+            assert_eq!(actual, [input.map(|value| value * scale)]);
+        }
     }
 
     #[test]
@@ -924,6 +978,7 @@ mod tests {
 
     #[test]
     fn vertex_inputs_match_rust_vertex_layouts() {
+        let mut modules = std::collections::HashMap::new();
         for format in PositionFormat::ALL {
             for (program, vertex_entry, pass) in MESH_ENTRY_POINTS {
                 let attributes: BTreeMap<u32, naga::TypeInner> = pass
@@ -933,12 +988,12 @@ mod tests {
                     .flat_map(|buffer| buffer.attributes)
                     .map(|attribute| (attribute.shader_location, shader_input_type(attribute.format)))
                     .collect();
-                let module = validate(program);
+                let module = modules.entry(program).or_insert_with(|| validate(program));
                 let entry_point =
                     module.entry_points.iter().find(|ep| ep.name == vertex_entry).expect("entry point");
                 let mut inputs = BTreeMap::new();
                 for argument in &entry_point.function.arguments {
-                    collect_locations(&module, argument.ty, argument.binding.as_ref(), &mut inputs);
+                    collect_locations(module, argument.ty, argument.binding.as_ref(), &mut inputs);
                 }
                 for (location, shader) in &inputs {
                     let attribute = attributes.get(location).unwrap_or_else(|| {
@@ -1058,10 +1113,14 @@ mod tests {
             (Program::Vfx, "VfxUniforms", size_of::<GpuVfxUniforms>()),
             (Program::Ui, "UiUniforms", size_of::<crate::ui::UiUniforms>()),
         ];
+        let mut layouts = std::collections::HashMap::new();
         for (program, name, rust_size) in expected {
-            let module = validate(program);
-            let mut layouter = naga::proc::Layouter::default();
-            layouter.update(module.to_ctx()).expect("layout");
+            let (module, layouter) = layouts.entry(program).or_insert_with(|| {
+                let module = validate(program);
+                let mut layouter = naga::proc::Layouter::default();
+                layouter.update(module.to_ctx()).expect("layout");
+                (module, layouter)
+            });
             let (handle, _) = module
                 .types
                 .iter()
@@ -2242,6 +2301,49 @@ mod tests {
                         .unwrap_or_else(|error| panic!("{file} {}: {error}", entry_point.name));
                 }
             }
+        }
+    }
+
+    #[test]
+    fn fog_card_storage_word_view_matches_the_material_block() {
+        use naga::{Scalar, TypeInner, VectorSize};
+
+        let module = validate(Program::FogCard);
+        let (storage_handle, storage) = module
+            .global_variables
+            .iter()
+            .find(|(_, global)| global.name.as_deref() == Some("fog_card_materials"))
+            .expect("fog card material storage binding");
+        let binding = storage.binding.as_ref().expect("fog card storage has a binding");
+        assert_eq!((binding.group, binding.binding), (2, 1));
+        for name in ["vs_fog_card", "fs_fog_card"] {
+            let entry =
+                module.entry_points.iter().find(|entry| entry.name == name).expect("card entry point");
+            assert!(entry.function.expressions.iter().any(|(_, expression)| {
+                matches!(expression, naga::Expression::GlobalVariable(handle) if *handle == storage_handle)
+            }), "{name} reads the card storage view");
+        }
+        assert_eq!(storage.space, naga::AddressSpace::Storage { access: naga::StorageAccess::LOAD });
+        let TypeInner::Array { base, stride, size } = module.types[storage.ty].inner else {
+            panic!("fog card material binding is an array");
+        };
+        assert!(matches!(size, naga::ArraySize::Dynamic));
+        assert_eq!(stride as usize, size_of::<FogCardParams>());
+        let block = &module.types[base];
+        assert_eq!(block.name.as_deref(), Some("FogCardWords"));
+        let TypeInner::Struct { members, span } = &block.inner else {
+            panic!("fog card word view is a struct");
+        };
+        assert_eq!(*span as usize, size_of::<FogCardParams>());
+        let fields: Vec<_> = members
+            .iter()
+            .map(|member| (member.name.as_deref().unwrap_or_default(), member.offset as usize))
+            .collect();
+        assert_eq!(fields, offsets!(FogCardParams { color, fade, scroll, modes, swizzles }));
+        for (member, scalar) in
+            members.iter().zip([Scalar::U32, Scalar::F32, Scalar::F32, Scalar::U32, Scalar::U32])
+        {
+            assert_eq!(module.types[member.ty].inner, TypeInner::Vector { size: VectorSize::Quad, scalar });
         }
     }
 }

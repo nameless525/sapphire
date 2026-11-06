@@ -113,6 +113,9 @@ impl GraphExecutor {
         if self.serial {
             self.execute_serially(gpu, &textures, &shape.accesses, &mut jobs);
             self.stats = self.frame_stats(shape.passes.len(), jobs.len());
+            if let Some(report) = &mut self.report {
+                report.fill(&shape, &self.plan, |order| jobs[order as usize].command_buffer);
+            }
             return Ok(());
         }
 
@@ -138,7 +141,7 @@ impl GraphExecutor {
             vec![recorder.record(&mut jobs)]
         } else {
             sapphire_jobs::scope(|scope| {
-                let mut left: u32 = jobs.iter().map(|job| job.pass.weight).sum();
+                let mut left: u64 = jobs.iter().map(|job| u64::from(job.pass.weight)).sum();
                 let mut rest = jobs.as_mut_slice();
                 for encoder in 0..encoders {
                     if rest.is_empty() {
@@ -150,7 +153,7 @@ impl GraphExecutor {
                     rest = tail;
                     for job in chunk.iter_mut() {
                         job.command_buffer = encoder as u32;
-                        left -= job.pass.weight;
+                        left -= u64::from(job.pass.weight);
                     }
                     let recorder = &recorder;
                     scope.spawn(move || recorder.record(chunk));
@@ -203,7 +206,8 @@ impl GraphExecutor {
             queries: None,
         };
         let frame = self.frames;
-        for job in jobs.iter_mut() {
+        for (index, job) in jobs.iter_mut().enumerate() {
+            job.command_buffer = index as u32;
             let pass = job.pass.name;
             tracing::debug!(target: LOG_TARGET, frame, pass, "pass: recording and submitting");
             let buffer = recorder.record(std::slice::from_mut(job));

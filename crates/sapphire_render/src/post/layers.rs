@@ -178,8 +178,10 @@ pub(crate) struct GpuGradient {
     pub color: [f32; 4],
     /// xy: a linear layer's direction into the frame, over the frame's extent along it, or a
     /// radial one's center; z: where it has faded out; w: 1 / (start − end).
+    /// Exceptional modes store bounded normalized center/end/span coefficients instead.
     pub geometry: [f32; 4],
-    /// x: the shape (0 linear, 1 radial); y: how it blends ([`BlendKind`]).
+    /// x: the shape (0 linear, 1 radial); y: how it blends ([`BlendKind`]); z: [`GradientRamp`];
+    /// w: the radial normalized span's sign. The unused scale/offset w hold its UV factors.
     pub mode: [u32; 4],
     /// rgb: the affine modes' scale and offset of the frame's value, `a × scale + offset`.
     pub scale: [f32; 4],
@@ -197,22 +199,33 @@ pub(crate) enum BlendKind {
     SoftLight = 2,
 }
 
+/// How the shader evaluates a gradient's packed geometry (WGSL RAMP_*).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+enum GradientRamp {
+    Direct = 0,
+    Normalized = 1,
+    Reversed = 2,
+    Constant = 3,
+    Radial = 4,
+}
+
 impl GpuGradient {
     /// `layer` with its opacity scaled by `strength`, if it shows at all.
-    fn new(layer: &GradientLayer, strength: f32) -> Option<Self> {
+    fn new(layer: &GradientLayer, strength: f32, aspect: f32) -> Option<Self> {
         let opacity = finite(layer.opacity, 0.0).clamp(0.0, 1.0) * strength;
         if opacity <= 0.0 {
             return None;
         }
-        let (shape, xy) = match layer.shape {
+        let (radial, xy) = match layer.shape {
             GradientShape::Linear { edge } => {
                 let edge = finite(edge, 0.0);
                 // From the edge into the frame, y down: the top's is (0, 1).
                 let inward = Vec2::new(-edge.sin(), edge.cos());
-                (0, inward / (inward.x.abs() + inward.y.abs()))
+                (false, inward / (inward.x.abs() + inward.y.abs()))
             }
             GradientShape::Radial { center } => {
-                (1, if center.is_finite() { center } else { Vec2::splat(0.5) })
+                (true, if center.is_finite() { center } else { Vec2::splat(0.5) })
             }
         };
         let start = finite(layer.start, 0.0);
@@ -220,6 +233,26 @@ impl GpuGradient {
         if (start - end).abs() < MIN_RAMP {
             end = start - MIN_RAMP.copysign(start - end);
         }
+        let span = start - end;
+        // At large finite magnitudes subtracting MIN_RAMP can round back to start. Keep the
+        // hard-edge slope finite; shape-specific packing below checks the viewport arithmetic.
+        let inverse_span = if span == 0.0 { MIN_RAMP.copysign(span).recip() } else { span.recip() };
+        // Wide spans use normalized coefficients. Their sign is explicit because the tiny
+        // positive reciprocal may flush to zero on the GPU; ordinary packing stays exact.
+        let exceptional = !span.is_finite() || (span != 0.0 && !inverse_span.is_normal());
+        let (xy, end, inverse_span, ramp_mode) = if exceptional {
+            let span64 = f64::from(start) - f64::from(end);
+            let inverse = (1.0 / span64.abs()) as f32;
+            let bias = (-f64::from(end) / span64) as f32;
+            let xy = if radial {
+                Vec2::new((f64::from(xy.x) / span64.abs()) as f32, (f64::from(xy.y) / span64.abs()) as f32)
+            } else {
+                xy
+            };
+            (xy, bias, inverse, if span64 < 0.0 { GradientRamp::Reversed } else { GradientRamp::Normalized })
+        } else {
+            (xy, end, inverse_span, GradientRamp::Direct)
+        };
         let color = encoded(layer.color);
         let (kind, scale, offset) = match layer.blend {
             GradientBlend::Normal => (BlendKind::Affine, Vec3::ZERO, color),
@@ -229,14 +262,120 @@ impl GpuGradient {
             GradientBlend::Overlay => (BlendKind::Overlay, Vec3::ONE, Vec3::ZERO),
             GradientBlend::SoftLight => (BlendKind::SoftLight, Vec3::ONE, Vec3::ZERO),
         };
+        let geometry = GradientGeometry {
+            values: [xy.x, xy.y, end, inverse_span],
+            ramp: ramp_mode,
+            span_negative: false,
+            uv_factors: [0.0; 2],
+        };
+        let geometry = if radial {
+            pack_radial_gradient(geometry, start, aspect)
+        } else {
+            pack_linear_gradient(geometry)
+        };
         Some(Self {
             color: color.extend(opacity).to_array(),
-            geometry: [xy.x, xy.y, end, (start - end).recip()],
-            mode: [shape, kind as u32, 0, 0],
-            scale: scale.extend(0.0).to_array(),
-            offset: offset.extend(0.0).to_array(),
+            geometry: geometry.values,
+            mode: [u32::from(radial), kind as u32, geometry.ramp as u32, u32::from(geometry.span_negative)],
+            scale: scale.extend(geometry.uv_factors[0]).to_array(),
+            offset: offset.extend(geometry.uv_factors[1]).to_array(),
         })
     }
+}
+
+/// CPU geometry retains typed routing until the final GPU mode words are written.
+struct GradientGeometry {
+    values: [f32; 4],
+    ramp: GradientRamp,
+    span_negative: bool,
+    uv_factors: [f32; 2],
+}
+
+/// Conservative radial direct-route bounds: 2^30 for aspect, center and endpoint, 2^16 for slope.
+/// These select arithmetic, without restricting the accepted authored values.
+const DIRECT_RADIAL_COMPONENT_BOUND: f32 = 1_073_741_824.0;
+const DIRECT_RADIAL_INVERSE_SPAN_BOUND: f32 = 65_536.0;
+
+/// A linear position lies in [-1,2] after L1 direction normalization, including f32 rounding.
+/// Unsafe direct arithmetic therefore saturates throughout the viewport and can be packed once.
+fn pack_linear_gradient(mut packed: GradientGeometry) -> GradientGeometry {
+    if packed.ramp != GradientRamp::Direct {
+        return packed;
+    }
+    let end = f64::from(packed.values[2]);
+    let inverse = f64::from(packed.values[3]);
+    let difference = 2.0 + end.abs();
+    let safe = f64::from(f32::MAX) * 0.5;
+    if difference > safe || difference * inverse.abs() > safe {
+        let a = (-1.0 - end) * inverse;
+        let b = (2.0 - end) * inverse;
+        // Both operands came from finite f32 coefficients, so this f64 clamp is total and finite.
+        let ramp = a.clamp(0.0, 1.0);
+        debug_assert!(
+            a.is_finite() && b.is_finite() && (ramp == 0.0 || ramp == 1.0) && b.clamp(0.0, 1.0) == ramp,
+            "unsafe linear arithmetic must saturate throughout in-frame position [-1,2]"
+        );
+        packed.ramp = GradientRamp::Constant;
+        packed.values = [0.0, 0.0, ramp as f32, 0.0];
+    }
+    packed
+}
+
+/// Keep ordinary radial arithmetic byte-exact; normalize only when its viewport intermediates
+/// cannot stay finite. The same camera aspect is used for packing and the shader's frame uniform.
+fn pack_radial_gradient(mut packed: GradientGeometry, start: f32, aspect: f32) -> GradientGeometry {
+    let aspect = if aspect.is_finite() && aspect > 0.0 { aspect } else { 1.0 };
+    if packed.ramp != GradientRamp::Direct {
+        let diagonal = f64::from(aspect).hypot(1.0);
+        packed.uv_factors[0] = (2.0 * f64::from(aspect) / diagonal) as f32;
+        packed.uv_factors[1] = (2.0 / diagonal) as f32;
+        return packed;
+    }
+    // Conservative ordinary route: comparisons only, no per-layer hypot/log/powi.
+    // Position<=2^33, difference<=2^34, slope<=2^16, metric square<2^123.
+    if !aspect.is_subnormal()
+        && aspect <= DIRECT_RADIAL_COMPONENT_BOUND
+        && packed.values[0].abs() <= DIRECT_RADIAL_COMPONENT_BOUND
+        && packed.values[1].abs() <= DIRECT_RADIAL_COMPONENT_BOUND
+        && packed.values[2].abs() <= DIRECT_RADIAL_COMPONENT_BOUND
+        && packed.values[3].abs() <= DIRECT_RADIAL_INVERSE_SPAN_BOUND
+    {
+        return packed;
+    }
+    let x = (f64::from(packed.values[0]).abs() + 1.0) * f64::from(aspect);
+    let y = f64::from(packed.values[1]).abs() + 1.0;
+    let square = x * x + y * y;
+    let diagonal = f64::from(aspect).hypot(1.0);
+    let position = 2.0 * square.sqrt() / diagonal;
+    let difference = position + f64::from(packed.values[2]).abs();
+    let safe = f64::from(f32::MAX) * 0.5;
+    if !aspect.is_subnormal()
+        && square <= safe
+        && f64::from(aspect) * f64::from(aspect) + 1.0 <= safe
+        && difference <= safe
+        && difference * f64::from(packed.values[3]).abs() <= safe
+    {
+        return packed;
+    }
+    let basis_x = 2.0 * f64::from(aspect) / diagonal;
+    let basis_y = 2.0 / diagonal;
+    let center_x = f64::from(packed.values[0]) * basis_x;
+    let center_y = f64::from(packed.values[1]) * basis_y;
+    let end = f64::from(packed.values[2]);
+    let start = f64::from(start);
+    let span = if start == end { f64::from(MIN_RAMP.copysign((start - end) as f32)) } else { start - end };
+    let scale = center_x.abs().max(center_y.abs()).max(end.abs()).max(start.abs()).max(1.0);
+    packed.values = [
+        (center_x / scale) as f32,
+        (center_y / scale) as f32,
+        (end / scale) as f32,
+        (span.abs() / scale) as f32,
+    ];
+    packed.uv_factors[0] = (basis_x / scale) as f32;
+    packed.uv_factors[1] = (basis_y / scale) as f32;
+    packed.ramp = GradientRamp::Radial;
+    packed.span_negative = span < 0.0;
+    packed
 }
 
 /// One lens flare element as the fused pass reads it (WGSL `FlareElement`).
@@ -329,7 +468,7 @@ impl Variant {
 
 impl Layers {
     /// The layers of `params`, clamped to working ranges so no input can produce NaN.
-    pub(crate) fn new(params: &PostParams) -> Self {
+    pub(crate) fn new(params: &PostParams, aspect: f32) -> Self {
         let vignette = finite_color(params.vignette.color);
         let tinted = vignette != Vec3::ZERO;
         let character = character_bloom(&params.character_bloom, params);
@@ -337,11 +476,14 @@ impl Layers {
         let diffusion_intensity = finite(intensity, 0.0).clamp(0.0, 64.0);
         let diffusion_threshold = finite(threshold, 0.0).clamp(0.0, 64.0);
         let LensFlare { intensity: flare_intensity, color: flare_color } = params.lens_flare;
-        let flare = finite_color(flare_color) * finite(flare_intensity, 0.0).clamp(0.0, 64.0);
+        // Packing is the finite conversion boundary: authored HDR colors remain unrestricted,
+        // but an unrepresentable color × intensity saturates rather than uploading infinity.
+        let flare = (finite_color(flare_color) * finite(flare_intensity, 0.0).clamp(0.0, 64.0))
+            .min(Vec3::splat(f32::MAX));
         let strength = finite(params.filter_strength, 1.0).clamp(0.0, 1.0);
         let mut gradients = [GpuGradient::default(); MAX_GRADIENT_LAYERS];
         let mut gradient_count = 0;
-        for layer in params.gradients.iter().filter_map(|layer| GpuGradient::new(layer, strength)) {
+        for layer in params.gradients.iter().filter_map(|layer| GpuGradient::new(layer, strength, aspect)) {
             gradients[gradient_count] = layer;
             gradient_count += 1;
         }
@@ -409,7 +551,7 @@ pub(super) fn finite(value: f32, fallback: f32) -> f32 {
     if value.is_finite() { value } else { fallback }
 }
 
-/// `color` with negative and non-finite channels replaced by 0.
+/// Makes `color` nonnegative, falling back to black if the result is not finite.
 pub(super) fn finite_color(color: Vec3) -> Vec3 {
     let color = color.max(Vec3::ZERO);
     if color.is_finite() { color } else { Vec3::ZERO }
@@ -431,11 +573,84 @@ mod tests {
     use glam::Vec3;
 
     use super::*;
+
+    #[test]
+    fn ordinary_gradient_block_remains_the_direct_shader_layout() {
+        let layer = GradientLayer {
+            shape: GradientShape::Linear { edge: 0.0 },
+            blend: GradientBlend::Normal,
+            color: Vec3::ONE,
+            opacity: 0.75,
+            start: 0.0,
+            end: 1.0,
+        };
+        let packed = GpuGradient::new(&layer, 1.0, 16.0 / 9.0).expect("visible layer");
+        // Frozen ordinary scalar packing, including its encoded-white rounding and -0.
+        let white = f32::from_bits(0x3f7fffff);
+        let expected = GpuGradient {
+            color: [white, white, white, 0.75],
+            geometry: [-0.0, 1.0, 1.0, -1.0],
+            mode: [0, BlendKind::Affine as u32, GradientRamp::Direct as u32, 0],
+            scale: [0.0; 4],
+            offset: [white, white, white, 0.0],
+        };
+        assert_eq!(bytemuck::bytes_of(&packed), bytemuck::bytes_of(&expected));
+    }
+
+    #[test]
+    fn finite_radial_center_and_subnormal_aspect_are_normalized_before_gpu_arithmetic() {
+        let layer = GradientLayer {
+            shape: GradientShape::Radial { center: Vec2::new(f32::MAX, 0.0) },
+            blend: GradientBlend::Normal,
+            color: Vec3::ONE,
+            opacity: 1.0,
+            start: MIN_RAMP,
+            end: 0.0,
+        };
+        let packed = GpuGradient::new(&layer, 1.0, f32::from_bits(0x7fffff)).expect("visible layer");
+        assert_eq!(packed.mode[2], GradientRamp::Radial as u32);
+        assert!(packed.geometry[..3].iter().all(|value| value.abs() <= 1.0));
+        assert!(packed.geometry[3].is_normal());
+        assert!(bytemuck::cast_slice::<GpuGradient, f32>(&[packed]).iter().all(|value| value.is_finite()));
+    }
+
+    #[test]
+    fn finite_linear_hard_edges_outside_the_frame_are_constant() {
+        for (endpoint, ramp) in [(f32::MAX, 0.0), (-f32::MAX, 1.0)] {
+            let layer = GradientLayer {
+                shape: GradientShape::Linear { edge: 0.0 },
+                blend: GradientBlend::Normal,
+                color: Vec3::ONE,
+                opacity: 1.0,
+                start: endpoint,
+                end: endpoint,
+            };
+            let packed = GpuGradient::new(&layer, 1.0, 1.0).expect("visible layer");
+            assert_eq!(packed.mode[2], GradientRamp::Constant as u32);
+            assert_eq!(packed.geometry[2], ramp);
+        }
+    }
+
+    #[test]
+    fn finite_derived_layer_values_are_representable_when_packed() {
+        let params = PostParams {
+            lens_flare: LensFlare { color: Vec3::splat(f32::MAX), intensity: 64.0 },
+            ..PostParams::default()
+        };
+        let layers = Layers::new(&params, 1.0);
+        assert!(layers.flare.iter().all(|x| x.is_finite()));
+        assert_eq!(layers.flare[0], f32::MAX);
+        for at in [f32::MAX, -f32::MAX, 1e20] {
+            let layer = GradientLayer { start: at, end: at, opacity: 1.0, ..GradientLayer::NONE };
+            let packed = GpuGradient::new(&layer, 1.0, 1.0).expect("visible layer");
+            assert!(packed.geometry.iter().all(|x| x.is_finite()), "{at}: {packed:?}");
+        }
+    }
     use sapphire_look::post::{BloomParams, Vignette};
 
     #[test]
     fn plain_parameters_need_only_the_plain_variants() {
-        let layers = Layers::new(&PostParams::default());
+        let layers = Layers::new(&PostParams::default(), 1.0);
         assert_eq!(layers.variant, Variant::default());
         let plain = PostParams {
             vignette: Vignette { color: Vec3::new(0.0, 0.0, 0.3), ..Vignette::default() },
@@ -444,21 +659,21 @@ mod tests {
             ..PostParams::default()
         }
         .plain();
-        assert_eq!(Layers::new(&plain).variant, Variant::default());
+        assert_eq!(Layers::new(&plain, 1.0).variant, Variant::default());
         let tinted = PostParams {
             vignette: Vignette { color: Vec3::new(0.0, 0.0, 0.3), ..Vignette::default() },
             ..PostParams::default()
         };
-        assert_eq!(Layers::new(&tinted).variant, Variant { layers: true, ..Variant::default() });
+        assert_eq!(Layers::new(&tinted, 1.0).variant, Variant { layers: true, ..Variant::default() });
         let sharp = PostParams { sharpening: 0.4, ..PostParams::default() };
-        assert_eq!(Layers::new(&sharp).variant, Variant { sharpen: true, ..Variant::default() });
+        assert_eq!(Layers::new(&sharp, 1.0).variant, Variant { sharpen: true, ..Variant::default() });
         // A diffusion without color, or a flare without intensity, draws nothing.
         let dark = PostParams {
             diffusion: Diffusion { intensity: 3.0, threshold: 0.0, color: Vec3::ZERO },
             lens_flare: LensFlare { intensity: 0.0, color: Vec3::ONE },
             ..PostParams::default()
         };
-        assert_eq!(Layers::new(&dark).variant, Variant::default());
+        assert_eq!(Layers::new(&dark, 1.0).variant, Variant::default());
     }
 
     #[test]
@@ -485,17 +700,17 @@ mod tests {
             character_bloom: CharacterBloom { threshold: 1.5, strength: 0.25 },
             ..PostParams::default()
         };
-        let layers = Layers::new(&params);
+        let layers = Layers::new(&params, 1.0);
         assert!(layers.variant.characters);
         let [threshold, knee, _, strength] = layers.character_bloom;
         assert!((threshold - 1.2).abs() < 1e-6 && (knee - 0.6).abs() < 1e-6 && strength == 0.25);
         let neutral = PostParams { character_bloom: CharacterBloom::NEUTRAL, ..params };
-        assert!(!Layers::new(&neutral).variant.characters);
+        assert!(!Layers::new(&neutral, 1.0).variant.characters);
         let broken = PostParams {
             character_bloom: CharacterBloom { threshold: f32::NAN, strength: f32::INFINITY },
             ..params
         };
-        assert!(!Layers::new(&broken).variant.characters, "non-finite values fall back to neutral");
+        assert!(!Layers::new(&broken, 1.0).variant.characters, "non-finite values fall back to neutral");
     }
 
     #[test]
@@ -522,7 +737,7 @@ mod tests {
             filter_strength: 0.5,
             ..PostParams::default()
         };
-        let layers = Layers::new(&params);
+        let layers = Layers::new(&params, 1.0);
         assert_eq!(layers.gradient_count, 3);
         assert!(layers.variant.layers);
         let [top, right, diagonal, _] = layers.gradients;
@@ -535,11 +750,11 @@ mod tests {
         // Corner to corner: the direction over the frame's extent along it.
         let [x, y, ..] = diagonal.geometry;
         assert!((x.abs() + y.abs() - 1.0).abs() < 1e-6 && x < 0.0 && y < 0.0, "{diagonal:?}");
-        let radial = Layers::new(&PostParams { gradients: [glow; MAX_GRADIENT_LAYERS], ..params });
+        let radial = Layers::new(&PostParams { gradients: [glow; MAX_GRADIENT_LAYERS], ..params }, 1.0);
         let ramp = radial.gradients[0].geometry;
         assert!(ramp[3].is_finite() && ramp[3].abs() >= 1.0 / MIN_RAMP * 0.99, "a hard edge: {ramp:?}");
         let none = PostParams { filter_strength: 0.0, ..params };
-        assert_eq!(Layers::new(&none).gradient_count, 0, "filter strength 0 leaves the frame untinted");
+        assert_eq!(Layers::new(&none, 1.0).gradient_count, 0, "filter strength 0 leaves the frame untinted");
     }
 
     #[test]

@@ -707,6 +707,66 @@ fn page_quad(side: f32, corner: (f32, f32), at: (f32, f32), size: f32, color: [u
 
 #[test]
 #[ignore = "needs a GPU"]
+fn a_sparse_glyph_page_allocates_only_the_page_named() {
+    let mut harness = Harness::new((32, 32));
+    let mut ui = UiDrawList {
+        viewport: [32.0, 32.0],
+        page_size: 16,
+        page_state: harness.renderer.ui_page_state(),
+        ..UiDrawList::default()
+    };
+    upload_block(&mut ui, u16::MAX, (0, 0), (16, 16), 255);
+    ui.push_page_quad(u16::MAX, page_quad(16.0, (0.0, 0.0), (8.0, 8.0), 16.0, [255; 4]));
+    assert_eq!(harness.draw(Some(&ui)).at(16, 16), [255; 4]);
+    assert_eq!(harness.renderer.stats().ui.pages, 1);
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn an_invalid_glyph_batch_is_not_acknowledged_and_can_be_retried() {
+    let mut harness = Harness::new((32, 32));
+    let initial = harness.renderer.ui_page_state();
+    let mut ui = UiDrawList {
+        viewport: [32.0, 32.0],
+        page_size: 16,
+        page_state: sapphire_look::UiPageState { batch: initial.batch + 1, ..initial },
+        ..UiDrawList::default()
+    };
+    upload_block(&mut ui, 0, (0, 0), (16, 16), 255);
+    upload_block(&mut ui, 1, (0, 0), (16, 16), 255);
+    ui.push_page_quad(0, page_quad(16.0, (0.0, 0.0), (8.0, 8.0), 16.0, [255; 4]));
+    let last = ui.upload_texels.pop().expect("two complete rectangles");
+    assert_eq!(harness.draw(Some(&ui)).at(16, 16)[..3], [0; 3]);
+    assert_eq!(harness.renderer.ui_page_state(), initial);
+    assert_eq!(harness.renderer.stats().ui.pages, 0, "no partial page allocation");
+    ui.upload_texels.push(last);
+    assert_eq!(harness.draw(Some(&ui)).at(16, 16), [255; 4]);
+    assert_eq!(harness.renderer.ui_page_state(), ui.page_state);
+    assert_eq!(harness.renderer.stats().ui.pages, 2);
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn glyph_only_lists_do_not_draw_field_quads_from_an_earlier_atlas() {
+    let mut harness = Harness::new((64, 32));
+    let mut ui = list((64, 32), |painter| {
+        let disc = painter.sprites().disc;
+        painter.sprite(disc, Vec2::new(16.0, 16.0), Vec2::splat(16.0), 0.0, Paint::fill([255, 0, 0, 255]));
+    });
+    assert_eq!(harness.draw(Some(&ui)).at(16, 16)[..3], [255, 0, 0]);
+    ui.atlas = None;
+    ui.page_size = 16;
+    ui.page_state = harness.renderer.ui_page_state();
+    upload_block(&mut ui, 0, (0, 0), (16, 16), 255);
+    ui.push_page_quad(0, page_quad(16.0, (0.0, 0.0), (40.0, 8.0), 16.0, [255; 4]));
+    let pixels = harness.draw(Some(&ui));
+    assert_eq!(pixels.at(16, 16)[..3], [0; 3]);
+    assert_eq!(pixels.at(48, 16), [255; 4]);
+    assert_eq!(harness.renderer.stats().ui.draws, 1);
+}
+
+#[test]
+#[ignore = "needs a GPU"]
 fn glyph_pages_fill_from_the_list_s_uploads_and_draw_in_order_with_the_atlas() {
     const SIDE: u32 = 64;
     let mut harness = Harness::new((96, 32));

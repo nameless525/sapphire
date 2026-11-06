@@ -38,7 +38,7 @@ use sapphire_rhi::wgpu;
 use crate::RenderError;
 use crate::buffer::{self, GrowableBuffer};
 use crate::pipelines::material_binding;
-use crate::retire::{Retiring, new_epoch};
+use crate::retire::{Retiring, new_generation};
 use crate::texture::GpuTexture;
 
 /// A material uploaded with [`crate::Renderer::upload_material`], until it's freed
@@ -46,7 +46,7 @@ use crate::texture::GpuTexture;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct MaterialHandle {
     index: u32,
-    generation: u32,
+    generation: u64,
 }
 
 impl MaterialHandle {
@@ -94,7 +94,7 @@ pub(crate) struct Materials {
     /// Per handle: a freed one's has no group 3.
     records: Vec<MaterialRecord>,
     /// Where a new material's record starts counting from: this pool's own (the `retire` module).
-    epoch: u32,
+    epoch: u64,
     /// Indices of [`Self::records`] that are free.
     free_records: Vec<u32>,
     /// Materials asked to be freed that a mesh may still draw with.
@@ -137,7 +137,7 @@ pub(crate) struct MaterialRecord {
     /// Group 3: `None` once it's freed, which lets go of its textures.
     bind_group: Option<wgpu::BindGroup>,
     /// Its handle's generation: another names nothing.
-    generation: u32,
+    generation: u64,
     /// Meshes drawing with it, whose draws name its slot.
     uses: u32,
     /// Which upload it was.
@@ -190,9 +190,35 @@ impl FamilyBuffer {
             self.dirty.push(slot);
         }
     }
+
+    fn swap(&mut self, a: u32, b: u32) {
+        let stride = self.stride();
+        let (first, second) = (a.min(b) as usize * stride, a.max(b) as usize * stride);
+        let (head, tail) = self.mirror.split_at_mut(second);
+        head[first..first + stride].swap_with_slice(&mut tail[..stride]);
+        for slot in [a, b] {
+            if !self.dirty.contains(&slot) {
+                self.dirty.push(slot);
+            }
+        }
+    }
 }
 
 impl Materials {
+    /// The renderer checked distinct current handles in the same family. Identity, parameter
+    /// slot and mesh-use counts stay attached to each handle; only authored payload moves.
+    pub(crate) fn swap_payloads(&mut self, existing: MaterialHandle, prepared: MaterialHandle) {
+        let (a, b) = (existing.index(), prepared.index());
+        let (first, second) = (a.min(b), a.max(b));
+        let (head, tail) = self.records.split_at_mut(second);
+        let (left, right) = (&mut head[first], &mut tail[0]);
+        self.families[left.family.index()].swap(left.slot, right.slot);
+        std::mem::swap(&mut left.flags, &mut right.flags);
+        std::mem::swap(&mut left.layer, &mut right.layer);
+        std::mem::swap(&mut left.reflects, &mut right.reflects);
+        std::mem::swap(&mut left.bind_group, &mut right.bind_group);
+    }
+
     pub(crate) fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
         let max = device.limits().max_storage_buffer_binding_size.min(device.limits().max_buffer_size);
         let families = MaterialFamily::ALL.map(|family| FamilyBuffer {
@@ -253,7 +279,7 @@ impl Materials {
         Self {
             families,
             records: Vec::new(),
-            epoch: new_epoch(),
+            epoch: new_generation(),
             free_records: Vec::new(),
             dying: Vec::new(),
             retired: Retiring::default(),
@@ -353,7 +379,7 @@ impl Materials {
             if record.uses > 0 {
                 return true;
             }
-            record.generation = record.generation.wrapping_add(1);
+            record.generation = new_generation();
             retired.push(last_read, handle.index);
             false
         });
@@ -483,7 +509,7 @@ impl Materials {
         for index in (0..self.records.len()).rev() {
             let record = &mut self.records[index];
             if record.upload > mark.uploads && record.bind_group.is_some() {
-                record.generation = record.generation.wrapping_add(1);
+                record.generation = new_generation();
                 self.take_back(index as u32);
             }
         }
@@ -516,15 +542,12 @@ impl Materials {
         Some(params.wind)
     }
 
-    /// How fog card material `handle` faces (`FogCardParams::modes`' y, `CardFacing::code`), as the
-    /// GPU will read it; `None` for another family's.
-    pub(crate) fn fog_card_facing(&self, handle: MaterialHandle) -> Option<u32> {
+    /// The fog card block as the GPU reads it. Returns `None` for other families.
+    pub(crate) fn fog_card_params(&self, handle: MaterialHandle) -> Option<FogCardParams> {
         let record = self.record(handle).filter(|record| record.family == MaterialFamily::FogCard)?;
         let buffer = &self.families[record.family.index()];
         let start = record.slot as usize * buffer.stride();
-        let params: FogCardParams =
-            bytemuck::pod_read_unaligned(buffer.mirror.get(start..start + buffer.stride())?);
-        Some(params.modes[1])
+        Some(bytemuck::pod_read_unaligned(buffer.mirror.get(start..start + buffer.stride())?))
     }
 
     /// The anime character block in `slot` of that family's buffer, as the GPU will hold it: what

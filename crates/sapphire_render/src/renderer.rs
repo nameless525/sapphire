@@ -27,7 +27,7 @@ use crate::debug_draw::{self, DebugDraw, DebugDrawPassStats, DebugDrawUniforms};
 use crate::debug_view::{DebugFrame, DebugView, DebugViewStats, DebugViews};
 use crate::draw::{DrawRef, DrawSet, MeshDraws};
 use crate::environment::EnvironmentSettings;
-use crate::fog::{FogCards, FogStats, GpuFog};
+use crate::fog::{FogAdmission, FogCards, FogStats, GpuFog};
 use crate::foliage::{self, FoliageSettings, FoliageWind};
 use crate::gpu_types::{FrameUniforms, ViewUniforms};
 use crate::graph::{FrameGraph, PassContext, TextureId};
@@ -269,6 +269,10 @@ pub enum RenderError {
     UnknownMaterial(MaterialHandle),
     #[error("{0:?} was not uploaded to this renderer")]
     UnknownMesh(MeshHandle),
+    #[error("a mesh adoption names one handle more than once")]
+    RepeatedMeshAdoption,
+    #[error("a material adoption names one handle more than once")]
+    RepeatedMaterialAdoption,
     #[error("a {from} material can't be updated into a {to} one")]
     MaterialFamilyChanged { from: MaterialFamily, to: MaterialFamily },
     #[error("the {0} family's material buffer is full")]
@@ -487,8 +491,10 @@ pub struct PrepassTargets {
     /// body, 1 face, 2 hair, 3 eye or brow; `AnimeCharacterParams::SURFACE_*`): R the nearest
     /// surface's, G the nearest but for hair, the eye depth mask (M1 C6).
     pub character_ids: TextureId,
-    /// The scene prepass: depth of every opaque instance and its outline hull (`Depth32Float`),
-    /// bit for bit the main pass's. Under temporal AA it is one of a pair of persistent
+    /// The scene prepass: depth of opaque/alpha-tested instances and their outline hulls
+    /// (`Depth32Float`). Character and foliage cutouts match the main pass; environment
+    /// alpha-tested surfaces still contribute their whole geometry (the documented prepass
+    /// limitation). Under temporal AA it is one of a pair of persistent
     /// textures, since the next frame reads it as its last.
     pub depth: TextureId,
     /// The scene prepass: world-space unit normals, octahedral (`Rg16Float`, cleared to 0); a
@@ -995,9 +1001,52 @@ impl Renderer {
         let before =
             self.materials.record(handle).map(|record| (record.flags, record.layer, record.reflects));
         self.materials.update(&self.device, &self.layouts.materials, handle, material, textures)?;
-        let flags = material.flags();
-        let (layer, reflects) =
-            self.materials.record(handle).map_or((0, false), |record| (record.layer, record.reflects));
+        self.material_changed(handle, before);
+        Ok(())
+    }
+
+    /// Publishes prepared material payloads under existing handles, all or nothing. Families
+    /// must match, as with `update_material`, and each handle may occur only once. The target's
+    /// parameter slot and mesh references stay fixed; temporary handles own the displaced
+    /// texture bindings until their ordinary deferred retirement.
+    ///
+    /// Call between frames before `prepare`. Prepared handles must not have been published to
+    /// meshes or packets. A failed preparatory upload can free its temporaries without changing
+    /// existing materials. All validation precedes mutation.
+    pub fn adopt_materials(
+        &mut self,
+        replacements: &[(MaterialHandle, MaterialHandle)],
+    ) -> Result<(), RenderError> {
+        let handles = || replacements.iter().flat_map(|&(existing, prepared)| [existing, prepared]);
+        for (index, handle) in handles().enumerate() {
+            if self.materials.record(handle).is_none() {
+                return Err(RenderError::UnknownMaterial(handle));
+            }
+            if handles().take(index).any(|previous| previous == handle) {
+                return Err(RenderError::RepeatedMaterialAdoption);
+            }
+        }
+        for &(existing, prepared) in replacements {
+            let from = self.materials.record(existing).expect("checked above").family;
+            let to = self.materials.record(prepared).expect("checked above").family;
+            if from != to {
+                return Err(RenderError::MaterialFamilyChanged { from, to });
+            }
+        }
+        for &(existing, prepared) in replacements {
+            let before = self.materials.record(existing).map(|r| (r.flags, r.layer, r.reflects));
+            self.materials.swap_payloads(existing, prepared);
+            self.material_changed(existing, before);
+            self.materials.free(prepared);
+        }
+        self.update_pool_stats();
+        Ok(())
+    }
+
+    /// Refreshes draw order and pipelines after changing a current material's payload.
+    fn material_changed(&mut self, handle: MaterialHandle, before: Option<(MaterialFlags, u32, bool)>) {
+        let record = self.materials.record(handle).expect("updated material is current");
+        let (family, flags, layer, reflects) = (record.family, record.flags, record.layer, record.reflects);
         // An eye that moves to another layer keeps its pipelines, but its draws move among the
         // variant's (M1 C6). A material that starts or stops reflecting changes whether the
         // ambient pass prefilters the reflection cube, which the draw list's rebuild decides
@@ -1009,7 +1058,7 @@ impl Renderer {
         }
         // Only the families meshes draw with pick pipelines by their flags.
         if before.map(|(flags, ..)| flags) != Some(flags)
-            && let Some(variant) = SurfaceVariant::of_material(material.family, flags)
+            && let Some(variant) = SurfaceVariant::of_material(family, flags)
         {
             // A new static permutation: its draws move to other pipelines, built for every
             // format already drawn (meshes in another format build theirs when uploaded); and
@@ -1027,7 +1076,6 @@ impl Renderer {
             });
             self.scene.meshes_changed();
         }
-        Ok(())
     }
 
     /// Uploads the materials `mesh` embeds, one handle per material slot, for
@@ -1054,21 +1102,25 @@ impl Renderer {
         mesh: &ArchivedMesh,
         assets: impl Fn(AssetId) -> Option<MaterialHandle>,
     ) -> Result<Vec<MaterialHandle>, RenderError> {
+        let mut resolved = Vec::with_capacity(mesh.materials.len());
         for slot in mesh.materials.iter() {
-            match &slot.material {
-                ArchivedSlotMaterial::Embedded(material) => check_embedded(material)?,
-                ArchivedSlotMaterial::Asset(id) if assets(*id).is_none() => {
-                    return Err(RenderError::UnresolvedMaterial { slot: slot.name.to_string(), id: *id });
+            resolved.push(match &slot.material {
+                ArchivedSlotMaterial::Embedded(material) => {
+                    check_embedded(material)?;
+                    None
                 }
-                ArchivedSlotMaterial::Asset(_) => {}
-            }
+                ArchivedSlotMaterial::Asset(id) => Some(assets(*id).ok_or_else(|| {
+                    RenderError::UnresolvedMaterial { slot: slot.name.to_string(), id: *id }
+                })?),
+            });
         }
         self.all_or_nothing(|renderer| {
             mesh.materials
                 .iter()
-                .map(|slot| match &slot.material {
+                .zip(resolved)
+                .map(|(slot, resolved)| match &slot.material {
                     ArchivedSlotMaterial::Embedded(material) => renderer.upload_material(material, |_| None),
-                    ArchivedSlotMaterial::Asset(id) => Ok(assets(*id).expect("resolved above")),
+                    ArchivedSlotMaterial::Asset(_) => Ok(resolved.expect("asset slot resolved above")),
                 })
                 .collect()
         })
@@ -1301,6 +1353,36 @@ impl Renderer {
         self.lights.mesh_replaced();
         self.scene.mesh_replaced(handle);
         self.update_pool_stats();
+        Ok(())
+    }
+
+    /// Publishes already uploaded meshes under existing handles, all or nothing. Upload every
+    /// replacement first; a preparation failure can then free those temporary handles while
+    /// leaving all existing meshes intact. Each handle may occur only once in the batch.
+    ///
+    /// Call between frames, before `prepare`. The temporary `prepared` handles must not have
+    /// been given to instances. On success they own the displaced records and are freed through
+    /// the usual deferred retirement, preserving their material uses and unfinished GPU readers.
+    /// Existing handles keep their identity; pipelines were built by the preparatory uploads.
+    pub fn adopt_meshes(&mut self, replacements: &[(MeshHandle, MeshHandle)]) -> Result<(), RenderError> {
+        let handles = || replacements.iter().flat_map(|&(existing, prepared)| [existing, prepared]);
+        for (index, handle) in handles().enumerate() {
+            if !self.meshes.is_current(handle) {
+                return Err(RenderError::UnknownMesh(handle));
+            }
+            if handles().take(index).any(|previous| previous == handle) {
+                return Err(RenderError::RepeatedMeshAdoption);
+            }
+        }
+        for &(existing, prepared) in replacements {
+            self.meshes.swap_records(existing, prepared);
+            self.scene.mesh_replaced(existing);
+            self.meshes.free(prepared);
+        }
+        if !replacements.is_empty() {
+            self.lights.mesh_replaced();
+            self.update_pool_stats();
+        }
         Ok(())
     }
 
@@ -1727,6 +1809,10 @@ impl Renderer {
     /// ([`SkinningStats::deferred_poses`]), and deformed instances whose outputs don't fit don't
     /// draw ([`SkinningStats::unplaced`]). The limits are storage bindings, at least 128 MiB:
     /// hundreds of thousands of instances.
+    ///
+    /// A fog profile outside the GPU's scalar and HDR target range draws a clear atmosphere.
+    /// Cards whose light could exceed the supported range are omitted independently. The
+    /// frame's [`FogStats`] report both decisions. Cube faces keep their normal update schedule.
     pub fn prepare(&mut self, gpu: &GpuContext, packet: &FramePacket) {
         profiling::scope!("Renderer::prepare");
         debug_assert!(
@@ -1792,8 +1878,7 @@ impl Renderer {
         if lists_replaced || characters_replaced {
             self.rebuild_frame_bind_group();
         }
-        let entries = self.characters.entries();
-        self.ambient.prepare(packet, entries);
+        self.ambient.prepare(packet, self.characters.table());
         let materials = &self.materials;
         let margin = |record: &MeshRecord| wind_margin(materials, record, &packet.wind);
         self.shadows.prepare(
@@ -1814,20 +1899,41 @@ impl Renderer {
 
         // Without a main view the frame has nothing to draw.
         let lights = self.lights.uniforms();
-        self.pending_cut |= packet.main_view().is_some_and(|view| view.cut);
-        self.prepared = packet.main_view().map(|view| PreparedFrame {
+        let main_view = packet.main_view();
+        let fog = main_view.map(|view| {
+            FogAdmission::new(
+                &packet.fog,
+                packet.sky.horizon,
+                view.camera.position.y,
+                self.sky.cube_view().texture().format(),
+            )
+        });
+        let profile_issue = fog.as_ref().and_then(|fog| fog.profile_issue);
+        if let Some(reason) = profile_issue.filter(|_| !self.stats.fog.unsupported_profile) {
+            tracing::warn!(target: LOG_TARGET, reason, "unsupported GPU fog profile draws clear");
+        }
+        self.stats.fog.unsupported_profile = profile_issue.is_some();
+        self.pending_cut |= main_view.is_some_and(|view| view.cut);
+        self.prepared = main_view.zip(fog.as_ref()).map(|(view, fog)| PreparedFrame {
             camera: view.camera,
-            constants: FrameUniforms::new(packet, lights, self.outline_distance),
+            constants: FrameUniforms::new(packet, lights, self.outline_distance, fog.uniforms),
             wind: packet.wind,
         });
-        if let Some(view) = packet.main_view() {
+        let unsupported_cards = if let Some((view, fog)) = main_view.zip(fog.as_ref()) {
             let materials = &self.materials;
             let params = |slot| materials.anime_character(slot);
             let (list, slots) = (self.scene.draw_list(), self.scene.slots());
             let meshes = self.meshes.records();
             self.outlines.prepare(&view.camera, self.outline_distance, list, slots, meshes, params);
-            self.fog_cards.sort(&view.camera, list, slots, meshes, materials);
+            self.fog_cards.sort(&view.camera, list, slots, meshes, materials, fog)
+        } else {
+            self.fog_cards.no_view();
+            0
+        };
+        if unsupported_cards != 0 && self.stats.fog.unsupported_cards == 0 {
+            tracing::warn!(target: LOG_TARGET, unsupported_cards, "unsupported GPU fog cards were skipped");
         }
+        self.stats.fog.unsupported_cards = unsupported_cards;
         // A sky material with a nebula or lit clouds builds its variants the first time it draws.
         self.checked_build(|renderer| {
             let on = BuildOn::sources(renderer.edited_shaders);
@@ -1860,8 +1966,9 @@ impl Renderer {
         self.stats.hair_draws = draws(|variant| variant.shading == Shading::Character(Part::Hair));
         self.stats.eye_draws = draws(|variant| variant.shading == Shading::Character(Part::Eye));
         self.stats.environment_draws = draws(|variant| variant.shading == Shading::Environment);
-        self.stats.fog.cards = draws(|variant| variant == SurfaceVariant::FOG_CARD);
-        self.stats.fog.layers = GpuFog::new(&packet.fog).layers();
+        self.stats.fog.cards = draws(|variant| variant == SurfaceVariant::FOG_CARD) - unsupported_cards;
+        self.stats.fog.layers =
+            fog.map_or_else(|| GpuFog::new(&packet.fog).layers(), |fog| fog.uniforms.layers());
         self.stats.foliage_draws = draws(|variant| variant.shading == Shading::Foliage);
         self.stats.foliage_instances = self.scene.draw_list().foliage_instances;
         let outlines = self.outlines.counts();

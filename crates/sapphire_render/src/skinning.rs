@@ -123,7 +123,7 @@ pub struct SkinningStats {
     /// normals.
     pub output_bytes: u64,
     /// Poses in the last packet that were ignored: for an instance without a skinned or morphed
-    /// mesh, with a palette of the wrong length, or not finite.
+    /// mesh, with a palette of the wrong length, not finite, or whose derived bounds overflow.
     pub ignored_poses: u32,
     /// Skinned or morphed instances that don't draw because their outputs don't fit: the output
     /// buffer is bound whole as storage, so it is capped at a storage binding (128 MiB on the
@@ -135,8 +135,9 @@ pub struct SkinningStats {
     /// poses of 1 000 joints on the device floor). Their instances keep drawing their last pose,
     /// or nothing before their first.
     pub deferred_poses: u32,
-    /// Skinned instances whose last pose reaches past their mesh's cooked bounds, which then bound
-    /// them no longer (M2 N4; a character's shadow map, its hull's cutoff and its lights follow).
+    /// Skinned instances exposing conservative posed bounds beyond their mesh's cooked bounds
+    /// (M2 N4; shadow maps, hull cutoffs and lights follow). Before admission these cover both
+    /// last drawn and pending geometry; a successfully executed shrink commits next prepare.
     pub past_bounds: u32,
 }
 
@@ -194,6 +195,10 @@ struct Deformed {
     moved: bool,
     /// The skin the next recorded frame applies.
     pending: Option<Pending>,
+    /// Bounds of the last pose whose graph ran, and of the next pending pose. Preparation
+    /// exposes their union until admission is known, so a deferred shrink cannot cull old geometry.
+    drawn_bounds: Option<crate::bounds::Sphere>,
+    pending_bounds: Option<crate::bounds::Sphere>,
 }
 
 impl Deformed {
@@ -233,6 +238,7 @@ struct Taken {
     pending: Pending,
     /// [`Deformed::drawn`] before.
     drawn: bool,
+    bounds: Option<crate::bounds::Sphere>,
 }
 
 /// The deformed instances, their output buffer and the skinning pass.
@@ -357,6 +363,7 @@ impl Skinning {
     /// The mesh pool's deformable buffer was replaced.
     pub(crate) fn sources_moved(&mut self) {
         self.stale = true;
+        self.bind_group = None;
     }
 
     /// Follows the scene's instance changes (`slots` has the packet's deltas applied) and
@@ -370,7 +377,8 @@ impl Skinning {
         meshes: &[MeshRecord],
     ) {
         profiling::scope!("Skinning::prepare");
-        if std::mem::take(&mut self.recorded) {
+        let recorded = std::mem::take(&mut self.recorded);
+        if recorded {
             // What the recorded frame uploaded goes: everything, unless it left poses waiting,
             // whose palettes and weights follow (review RA-004) and move to the front.
             let (palettes, weights) = std::mem::take(&mut self.uploaded);
@@ -403,6 +411,21 @@ impl Skinning {
             let mesh = slots.mesh(slot).expect("unplaced slots are live");
             let source = meshes[mesh.index()].deform().expect("unplaced instances have deformable meshes");
             self.add(device, queue, slot, mesh, source, true);
+        }
+        if recorded {
+            for taken in &self.taken {
+                // Removed/remeshed/reused slots have just lost their old state. A new state
+                // has never drawn, even if it happens to name the same mesh in the same slot.
+                if let Some(state) = self
+                    .instances
+                    .get_mut(taken.slot as usize)
+                    .and_then(Option::as_mut)
+                    .filter(|state| state.drawn)
+                {
+                    state.drawn_bounds = taken.bounds;
+                    slots.set_posed(taken.slot, taken.bounds);
+                }
+            }
         }
         let mut ignored = 0;
         for skinned in &packet.skinned {
@@ -481,6 +504,8 @@ impl Skinning {
             drawn: false,
             moved: false,
             pending: Some(Pending::Rest),
+            drawn_bounds: None,
+            pending_bounds: None,
         });
         self.live.push(slot);
         self.queued.push(slot);
@@ -520,7 +545,24 @@ impl Skinning {
         {
             return false;
         }
-        slots.set_posed(slot, posed_bounds(record.bounds, &record.palette_reach, palette));
+        let mut bounds = posed_bounds(record.bounds, &record.palette_reach, palette);
+        let radius = crate::bounds::morph_radius(&record.morph_reach, weights, palette);
+        if radius > 0.0 {
+            let mut expanded = bounds.unwrap_or(record.bounds);
+            expanded.radius += radius;
+            bounds = Some(expanded);
+        }
+        if !radius.is_finite()
+            || bounds.is_some_and(|bound| !bound.center.is_finite() || !bound.radius.is_finite())
+        {
+            return false;
+        }
+        let conservative = pending_pose_bounds(record.bounds, state.drawn_bounds, bounds);
+        if conservative.is_some_and(|bound| !bound.center.is_finite() || !bound.radius.is_finite()) {
+            return false;
+        }
+        state.pending_bounds = bounds;
+        slots.set_posed(slot, conservative);
         let morphs = weights.iter().any(|&weight| weight != 0.0);
         // A pose already pending since the last record is overwritten in place: the mesh, and so
         // the sizes, are the same.
@@ -569,7 +611,7 @@ impl Skinning {
             let Some(pending) = state.pending.take() else { continue };
             let Some(source) = state.source(records) else { continue };
             let vertex_count = records[state.mesh.index()].lod_vertices[DRAWN_LOD];
-            self.taken.push(Taken { slot, pending, drawn: state.drawn });
+            self.taken.push(Taken { slot, pending, drawn: state.drawn, bounds: state.pending_bounds });
             // Write the half the last drawn pose isn't in.
             state.current ^= 1;
             state.moved = state.drawn;
@@ -747,6 +789,19 @@ impl Skinning {
     pub(crate) fn limit_frame(&mut self, device: &wgpu::Device, bytes: u64) {
         self.frame = self.frame.limited(device, 0, bytes);
         self.stale = true;
+    }
+}
+
+/// Admission happens after shadow/light/outline planning, so the published bounds must hold
+/// either the old geometry or the pending geometry until the recorded frame is known to run.
+fn pending_pose_bounds(
+    cooked: crate::bounds::Sphere,
+    drawn: Option<crate::bounds::Sphere>,
+    pending: Option<crate::bounds::Sphere>,
+) -> Option<crate::bounds::Sphere> {
+    match (drawn, pending) {
+        (None, None) => None,
+        (drawn, pending) => Some(drawn.unwrap_or(cooked).union(pending.unwrap_or(cooked))),
     }
 }
 
@@ -1005,7 +1060,24 @@ mod gpu_tests;
 
 #[cfg(test)]
 mod tests {
+    use glam::Vec3;
+
     use super::*;
+
+    #[test]
+    fn pending_shrinks_keep_the_last_drawn_geometry_inside_published_bounds() {
+        use crate::bounds::Sphere;
+        let cooked = Sphere { center: Vec3::ZERO, radius: 1.0 };
+        let drawn = Sphere { center: Vec3::new(8.0, 1.0, -2.0), radius: 3.0 };
+        let held = pending_pose_bounds(cooked, Some(drawn), None).expect("old geometry still draws");
+        for sphere in [cooked, drawn] {
+            for direction in [Vec3::X, Vec3::NEG_X, Vec3::Y, Vec3::NEG_Y, Vec3::Z, Vec3::NEG_Z] {
+                let point = sphere.center + direction * sphere.radius;
+                assert!(point.distance(held.center) <= held.radius + 1e-5);
+            }
+        }
+        assert_eq!(pending_pose_bounds(cooked, None, None), None, "committed bind pose uses cooked bounds");
+    }
 
     #[test]
     fn jobs_are_five_rows_and_palettes_their_rows() {
@@ -1039,6 +1111,8 @@ mod tests {
             drawn: false,
             moved: false,
             pending: None,
+            drawn_bounds: None,
+            pending_bounds: None,
         };
         let base = 10 * OUTPUT_VERTEX_BYTES;
         let skin = |state: &mut Deformed| {

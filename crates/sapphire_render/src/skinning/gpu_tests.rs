@@ -136,6 +136,23 @@ fn gpu() -> GpuContext {
     GpuContext::new(&instance, &GpuContextDesc::default(), None).expect("device")
 }
 
+#[test]
+#[ignore = "needs a GPU"]
+fn moved_sources_release_the_old_skinning_binding_before_another_pose() {
+    let gpu = gpu();
+    let device = gpu.device();
+    let mut skinning = super::Skinning::new(device);
+    let layout =
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: None, entries: &[] });
+    skinning.bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &layout,
+        entries: &[],
+    }));
+    skinning.sources_moved();
+    assert!(skinning.bind_group.is_none(), "a dormant instance must not retain moved source buffers");
+}
+
 fn target(gpu: &GpuContext, (width, height): (u32, u32)) -> wgpu::Texture {
     gpu.device().create_texture(&wgpu::TextureDescriptor {
         label: None,
@@ -694,6 +711,61 @@ fn poses_past_the_frame_limit_wait_for_the_next_frame() {
             assert!(error < 2e-6, "limit {limit}, instance {slot}: {error}");
         }
     }
+}
+
+#[test]
+#[ignore = "needs a GPU"]
+fn a_deferred_or_lost_shrink_keeps_the_bounds_of_the_pose_still_drawn() {
+    let mut rng = Rng(53);
+    let mesh = random_mesh(&mut rng, 200, 40, PositionFormat::Unorm16);
+    let mut skinner = Skinner::new(2032); // One 40-joint pose fits; two must take turns.
+    let handle = upload(&mut skinner.renderer, &mesh);
+    let compact: Pose = (vec![Affine3A::IDENTITY; 40], vec![0.0; 3]);
+    let extended: Pose = (vec![Affine3A::from_translation(Vec3::X * 100.0); 40], vec![0.0; 3]);
+    // Independent scalar skinning confirms that the compact pose fits the cooked box.
+    let cooked = mesh.streams.bounds;
+    for vertex in reference::deform(&mesh, &compact.0, &compact.1) {
+        for axis in 0..3 {
+            assert!(vertex.position[axis] >= cooked.min[axis] - 1e-6);
+            assert!(vertex.position[axis] <= cooked.max[axis] + 1e-6);
+        }
+    }
+    skinner.frame(&[(0, handle), (1, handle)], &[(0, &compact), (1, &extended)]);
+    skinner.frame(&[], &[]);
+    skinner.prepare(&[], &[(0, &compact), (1, &compact)]);
+    let bounds = |skinner: &Skinner| {
+        let state = skinner.renderer.skinning().instances[1].as_ref().expect("instance 1");
+        (state.drawn_bounds, state.pending_bounds, state.pending.is_some())
+    };
+    let (old, pending, queued) = bounds(&skinner);
+    assert!(queued, "the compact pose is pending despite needing no expanded bound");
+    // The production bound grows from the cooked sphere, so its center need not follow
+    // the translated geometry. Check its actual containment against scalar-deformed vertices.
+    let drawn = old.expect("the extended pose needs a bound beyond the cooked box");
+    for vertex in reference::deform(&mesh, &extended.0, &extended.1) {
+        let position = Vec3::from(vertex.position);
+        assert!(position.x > cooked.max[0] + 90.0, "the fixture leaves the cooked box");
+        assert!(
+            position.distance(drawn.center) <= drawn.radius + 1e-4 * (1.0 + drawn.radius),
+            "the drawn bound {drawn:?} must contain extended vertex {position:?}"
+        );
+    }
+    assert_eq!(pending, None, "None selects the independently checked cooked bound");
+    let (_, words) = skinner.run();
+    assert!(skinner.error(&words, 1, &mesh, &extended).is_some_and(|error| error < 2e-6));
+    skinner.prepare(&[], &[]);
+    assert_eq!(bounds(&skinner).0, old, "the deferred shrink has not run");
+    assert!(bounds(&skinner).2, "the deferred compact pose is still pending");
+
+    // Admission into a graph that is dropped still cannot claim the smaller bounds.
+    skinner.lost_frame(&[], &[]);
+    skinner.prepare(&[], &[]);
+    assert_eq!(bounds(&skinner).0, old, "the lost shrink has not run");
+    assert!(bounds(&skinner).2, "the lost compact pose is pending again");
+    let (_, words) = skinner.run();
+    assert!(skinner.error(&words, 1, &mesh, &compact).is_some_and(|error| error < 2e-6));
+    skinner.prepare(&[], &[]);
+    assert_eq!(bounds(&skinner).0, pending, "the executed shrink commits at the next prepare");
 }
 
 #[test]

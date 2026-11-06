@@ -53,7 +53,7 @@ pub(crate) const REPLAY_COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat:
 
 /// The color target of the material debug views' replay ([`Replay::Values`]): the values the
 /// anime character pipelines' debug entry points write (`character_debug_values` in
-/// `anime_character.wgsl`), whole numbers, exact in half floats.
+/// `anime_character.wgsl`): bounded integer codes exact in half floats, and half-float widths.
 pub(crate) const VALUES_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 /// The depth and stencil of a debug view's replay of the main pass ([`Replay`]) on `device`:
@@ -83,15 +83,14 @@ pub(crate) mod outline_mask {
 
 /// The scene prepass's color targets: normals, velocity where something reads it (`velocity`,
 /// temporal AA; the slot stays, empty, so the mask keeps its location) and the outline mask, which
-/// only the hulls and the masked surfaces write (`outlines`, M1 C7: a fading character's); the
-/// others leave it as cleared, drawn before them.
-fn scene_prepass_targets(velocity: bool, outlines: bool) -> [Option<wgpu::ColorTargetState>; 3] {
+/// every nearest surface replaces: ordinary surfaces write 0, hulls and fading characters
+/// their respective codes. Draw ordering across variants cannot leave a farther surface's mask.
+fn scene_prepass_targets(velocity: bool) -> [Option<wgpu::ColorTargetState>; 3] {
     let target = |format, write_mask| Some(wgpu::ColorTargetState { format, blend: None, write_mask });
-    let mask = if outlines { wgpu::ColorWrites::ALL } else { wgpu::ColorWrites::empty() };
     [
         target(NORMALS_FORMAT, wgpu::ColorWrites::ALL),
         velocity.then(|| target(VELOCITY_FORMAT, wgpu::ColorWrites::ALL)).flatten(),
-        target(OUTLINES_FORMAT, mask),
+        target(OUTLINES_FORMAT, wgpu::ColorWrites::ALL),
     ]
 }
 
@@ -2491,7 +2490,7 @@ fn build_scene_prepass(
         (name, sides.cull()),
         &modules.prepass,
         &pass.buffers(format),
-        &scene_prepass_targets(target.velocity, masked),
+        &scene_prepass_targets(target.velocity),
         (layout, constants.as_slice()),
     )
 }
@@ -2514,7 +2513,7 @@ fn build_foliage_prepass(
         ("foliage prepass", foliage::cull(coverage)),
         &modules.foliage,
         &MeshPass::FoliagePrepass.buffers(format),
-        &scene_prepass_targets(target.velocity, false),
+        &scene_prepass_targets(target.velocity),
         (&target.family_layouts[Shading::Foliage.scene_group()], &constants),
     )
 }
@@ -2599,7 +2598,7 @@ fn build_outline_prepass(
         (name, Some(wgpu::Face::Front)),
         &modules.outline,
         &pass.buffers(format),
-        &scene_prepass_targets(target.velocity, true),
+        &scene_prepass_targets(target.velocity),
         (layout, constants.as_slice()),
     )
 }

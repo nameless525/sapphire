@@ -82,42 +82,43 @@ impl Phase {
 struct GpuTimes {
     /// Whether this frame's timings came back.
     timed: bool,
-    span: Duration,
-    main: Duration,
-    prepasses: Duration,
-    character_prepass: Duration,
-    shadows: Duration,
-    skinning: Duration,
-    sky_cube: Duration,
+    /// A complete timed span exists only when timestamps cover every graph pass.
+    span: Option<Duration>,
+    main: Option<Duration>,
+    prepasses: Option<Duration>,
+    character_prepass: Option<Duration>,
+    shadows: Option<Duration>,
+    skinning: Option<Duration>,
+    sky_cube: Option<Duration>,
     /// Light clusters and the ambient pass: §3.3's "Light clustering, AO".
-    clustering_ao: Duration,
-    taa: Duration,
+    clustering_ao: Option<Duration>,
+    taa: Option<Duration>,
     /// The bloom chain and the composite: §3.3's "Bloom + tonemap + LUT".
-    post: Duration,
-    vfx: Duration,
-    ui: Duration,
+    post: Option<Duration>,
+    vfx: Option<Duration>,
+    ui: Option<Duration>,
 }
 
 impl GpuTimes {
     fn of(timings: &GpuTimings, bloom_levels: u32, bloom_chain: bool) -> Self {
-        let sum = |names: &[&str]| -> Duration {
-            names.iter().filter_map(|name| timings.get(name)).map(|pass| pass.exclusive).sum()
+        let sum = |names: &[&str]| -> Option<Duration> {
+            names.iter().try_fold(Duration::ZERO, |total, name| Some(total + timings.get(name)?.exclusive))
         };
         Self {
             timed: true,
-            span: timings.span(),
+            span: timings.every_pass.then(|| timings.span()),
             main: sum(&[MAIN_PASS]),
             prepasses: sum(&PREPASSES),
             character_prepass: sum(&[CHARACTER_PREPASS]),
             shadows: sum(&shadows::PASSES),
             skinning: sum(&["skinning"]),
             sky_cube: sum(&["sky cube"]),
-            clustering_ao: sum(&ambient::PASSES) + sum(&["light clusters"]),
+            clustering_ao: sum(&ambient::PASSES)
+                .zip(sum(&["light clusters"]))
+                .map(|(ao, clusters)| ao + clusters),
             taa: sum(&temporal::PASSES),
             post: post::frame_passes(bloom_levels, bloom_chain)
-                .filter_map(|name| timings.get(name))
-                .map(|pass| pass.exclusive)
-                .sum(),
+                .try_fold(Duration::ZERO, |total, name| Some(total + timings.get(name)?.exclusive)),
             vfx: sum(&[vfx::PASS]),
             ui: sum(&[UI_PASS]),
         }
@@ -186,6 +187,9 @@ struct Traced {
     post_first_use: u32,
     draws: u32,
     gpu: GpuTimes,
+    /// Post work of this submitted frame, used when its delayed timestamps arrive.
+    bloom_chain: bool,
+    bloom_levels: u32,
 }
 
 /// A number the bench tracks per frame, and the budget the spec gives it on each tier.
@@ -193,16 +197,16 @@ struct Row {
     name: &'static str,
     /// Read from the `gpu` phase, the rest from `first` and `cpu`.
     gpu: bool,
-    read: fn(&Traced) -> Duration,
+    read: fn(&Traced) -> Option<Duration>,
     /// In µs a frame: Desktop-High, Desktop-Low, Mobile-High, Mobile-Low.
     budget: [Option<u32>; 4],
 }
 
-const fn cpu_row(name: &'static str, read: fn(&Traced) -> Duration, budget: [Option<u32>; 4]) -> Row {
+const fn cpu_row(name: &'static str, read: fn(&Traced) -> Option<Duration>, budget: [Option<u32>; 4]) -> Row {
     Row { name, gpu: false, read, budget }
 }
 
-const fn gpu_row(name: &'static str, read: fn(&Traced) -> Duration, budget: [Option<u32>; 4]) -> Row {
+const fn gpu_row(name: &'static str, read: fn(&Traced) -> Option<Duration>, budget: [Option<u32>; 4]) -> Row {
     Row { name, gpu: true, read, budget }
 }
 
@@ -215,23 +219,23 @@ const UNBUDGETED: [Option<u32>; 4] = [None; 4];
 
 /// What's logged, in the order of spec §3: the whole, §3.2's rows, what §3.2 has no row for, §3.3's.
 const ROWS: [Row; 27] = [
-    cpu_row("cpu frame", |t| t.cpu, [Some(8_000), Some(12_000), Some(12_000), Some(22_000)]),
-    cpu_row("game side", |t| t.cpu.saturating_sub(t.laps.prepare + t.laps.record), low(6_000, 13_600)),
-    cpu_row("simulation", |t| t.laps.simulation, low(1_000, 3_000)),
-    cpu_row("physics", |t| t.laps.physics, low(700, 2_400)),
-    cpu_row("animation and ik", |t| t.animation.saturating_sub(t.springs), low(1_500, 3_000)),
-    cpu_row("secondary motion", |t| t.springs, low(500, 1_000)),
-    cpu_row("vfx simulation", |t| t.vfx, low(300, 600)),
-    cpu_row("audio update", |t| t.audio, low(200, 300)),
-    cpu_row("streaming activation", |t| t.streaming, low(500, 1_000)),
-    cpu_row("extract", |t| t.laps.packet.saturating_sub(t.camera + t.hud), low(700, 1_200)),
-    cpu_row("render", |t| t.laps.prepare + t.laps.record, low(4_000, 8_000)),
-    cpu_row("cues", |t| t.laps.cues, UNBUDGETED),
-    cpu_row("scene step", |t| t.laps.scene_step, UNBUDGETED),
-    cpu_row("camera", |t| t.camera, UNBUDGETED),
-    cpu_row("hud", |t| t.hud, UNBUDGETED),
-    cpu_row("content", |t| t.laps.content, UNBUDGETED),
-    cpu_row("gpu wait", |t| t.wait, UNBUDGETED),
+    cpu_row("cpu frame", |t| Some(t.cpu), [Some(8_000), Some(12_000), Some(12_000), Some(22_000)]),
+    cpu_row("game side", |t| Some(t.cpu.saturating_sub(t.laps.prepare + t.laps.record)), low(6_000, 13_600)),
+    cpu_row("simulation", |t| Some(t.laps.simulation), low(1_000, 3_000)),
+    cpu_row("physics", |t| Some(t.laps.physics), low(700, 2_400)),
+    cpu_row("animation and ik", |t| Some(t.animation.saturating_sub(t.springs)), low(1_500, 3_000)),
+    cpu_row("secondary motion", |t| Some(t.springs), low(500, 1_000)),
+    cpu_row("vfx simulation", |t| Some(t.vfx), low(300, 600)),
+    cpu_row("audio update", |t| Some(t.audio), low(200, 300)),
+    cpu_row("streaming activation", |t| Some(t.streaming), low(500, 1_000)),
+    cpu_row("extract", |t| Some(t.laps.packet.saturating_sub(t.camera + t.hud)), low(700, 1_200)),
+    cpu_row("render", |t| Some(t.laps.prepare + t.laps.record), low(4_000, 8_000)),
+    cpu_row("cues", |t| Some(t.laps.cues), UNBUDGETED),
+    cpu_row("scene step", |t| Some(t.laps.scene_step), UNBUDGETED),
+    cpu_row("camera", |t| Some(t.camera), UNBUDGETED),
+    cpu_row("hud", |t| Some(t.hud), UNBUDGETED),
+    cpu_row("content", |t| Some(t.laps.content), UNBUDGETED),
+    cpu_row("gpu wait", |t| Some(t.wait), UNBUDGETED),
     gpu_row("gpu frame", |t| t.gpu.span, [Some(12_000), Some(14_000), Some(13_000), Some(26_000)]),
     gpu_row("gpu prepasses", |t| t.gpu.prepasses, low(1_500, 1_500)),
     gpu_row("gpu shadows", |t| t.gpu.shadows, low(2_000, 3_000)),
@@ -289,7 +293,10 @@ fn spread(values: impl Iterator<Item = (Duration, u64)>) -> Option<Spread> {
 /// Whether `row` counts this frame in `phase`: a frame that started a fight over is reported on its own,
 /// and GPU rows read only frames whose timings came back.
 fn counts(row: &Row, frame: &Traced, phase: Phase) -> bool {
-    frame.phase == phase && frame.restart.is_zero() && (!row.gpu || frame.gpu.timed)
+    frame.phase == phase
+        && frame.restart.is_zero()
+        && (!row.gpu || frame.gpu.timed)
+        && (row.read)(frame).is_some()
 }
 
 /// What's mutable across the phases.
@@ -551,6 +558,8 @@ impl Run<'_> {
             post_first_use: stats.post.first_use_builds,
             draws: stats.draws,
             gpu: GpuTimes::default(),
+            bloom_chain: stats.post.bloom_chain,
+            bloom_levels: self.bloom_levels,
         })
     }
 
@@ -561,10 +570,9 @@ impl Run<'_> {
             return;
         }
         self.last_timed = timings.frame;
-        let chain = self.stage.renderer.stats().post.bloom_chain;
         let at = self.first_traced + (timings.frame - self.first_graph_frame) as usize;
         if let Some(frame) = self.trace.get_mut(at) {
-            frame.gpu = GpuTimes::of(timings, self.bloom_levels, chain);
+            frame.gpu = GpuTimes::of(timings, frame.bloom_levels, frame.bloom_chain);
         }
     }
 }
@@ -595,13 +603,14 @@ fn report(run: &Run<'_>, options: &Options, (width, height): (u32, u32), rate: u
         for row in ROWS.iter().filter(|row| row.gpu == (phase == Phase::Gpu)) {
             let values = frames()
                 .filter(|frame| counts(row, frame, phase))
-                .map(|frame| ((row.read)(frame), frame.tick));
+                .filter_map(|frame| Some(((row.read)(frame)?, frame.tick)));
             let Some(spread) = spread(values) else { continue };
             let budget = row.budget[column];
             tracing::info!(
                 target: LOG_TARGET,
                 phase = phase.name(),
                 row = row.name,
+                samples = frames().filter(|frame| counts(row, frame, phase)).count(),
                 p50_us = format_args!("{:.1}", micros(spread.p50)),
                 p99_us = format_args!("{:.1}", micros(spread.p99)),
                 worst_us = format_args!("{:.1}", micros(spread.worst)),
@@ -623,8 +632,9 @@ fn report(run: &Run<'_>, options: &Options, (width, height): (u32, u32), rate: u
             allocations_worst = allocations.map_or(0, |spread| spread.worst.as_nanos() as u64),
             allocations_worst_tick = allocations.map_or(0, |spread| spread.worst_tick),
             bytes_per_frame = measured().map(|frame| frame.bytes).sum::<u64>() / count,
-            step_allocations = measured().map(|frame| frame.step_allocations).sum::<u64>(),
-            sim_allocations = measured().map(|frame| frame.sim_allocations).sum::<u64>(),
+            step_allocations = frames().map(|frame| frame.step_allocations).sum::<u64>(),
+            sim_allocations = frames().map(|frame| frame.sim_allocations).sum::<u64>(),
+            restart_step_allocations = frames().filter(|frame| !frame.restart.is_zero()).map(|frame| frame.step_allocations).sum::<u64>(),
             restart_us = format_args!(
                 "{:.1}",
                 frames().map(|frame| micros(frame.restart)).fold(0.0, f64::max)
@@ -655,9 +665,10 @@ hitstop_player,hitstop_enemy,world_scale,post_first_use,draws,gpu_timed,gpu_span
 gpu_character_prepass,gpu_shadows,gpu_skinning,gpu_sky_cube,gpu_clustering_ao,gpu_taa,gpu_post,gpu_vfx,gpu_ui";
 
 /// One frame's line of `--bench-trace`'s file.
-fn trace_line(frame: &Traced) -> String {
-    let mut line =
-        format!("{},{},{},{},{}", frame.phase.name(), frame.frame, frame.fight, frame.tick, frame.steps);
+fn trace_line_into(frame: &Traced, line: &mut String) {
+    line.clear();
+    let _ =
+        write!(line, "{},{},{},{},{}", frame.phase.name(), frame.frame, frame.fight, frame.tick, frame.steps);
     let mut times = |times: &[Duration]| {
         for time in times {
             let _ = write!(line, ",{:.1}", time.as_secs_f64() * 1e6);
@@ -729,16 +740,29 @@ fn trace_line(frame: &Traced) -> String {
         gpu.vfx,
         gpu.ui,
     ] {
-        let _ = write!(line, ",{:.1}", time.as_secs_f64() * 1e6);
+        match time {
+            Some(time) => {
+                let _ = write!(line, ",{:.1}", time.as_secs_f64() * 1e6);
+            }
+            None => line.push(','),
+        }
     }
+}
+
+#[cfg(test)]
+fn trace_line(frame: &Traced) -> String {
+    let mut line = String::new();
+    trace_line_into(frame, &mut line);
     line
 }
 
 fn write_trace(path: &Path, trace: &[Traced]) -> std::io::Result<()> {
     let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
     writeln!(file, "{TRACE_HEADER}")?;
+    let mut line = String::with_capacity(2048);
     for frame in trace {
-        writeln!(file, "{}", trace_line(frame))?;
+        trace_line_into(frame, &mut line);
+        writeln!(file, "{line}")?;
     }
     file.flush()
 }
@@ -785,6 +809,8 @@ mod tests {
             post_first_use: 0,
             draws: 0,
             gpu: GpuTimes::default(),
+            bloom_chain: false,
+            bloom_levels: 0,
         }
     }
 
@@ -821,7 +847,10 @@ mod tests {
         assert!(!counts(cpu, &frame, Phase::Gpu), "another phase's");
         assert!(!counts(cpu, &Traced { restart: Duration::from_micros(1), ..frame }, Phase::Cpu));
         assert!(!counts(gpu, &frame, Phase::Cpu), "never timed");
-        let timed = Traced { gpu: GpuTimes { timed: true, ..GpuTimes::default() }, ..frame };
+        let timed = Traced {
+            gpu: GpuTimes { timed: true, span: Some(Duration::ZERO), ..GpuTimes::default() },
+            ..frame
+        };
         assert!(counts(gpu, &timed, Phase::Cpu));
     }
 
@@ -840,6 +869,39 @@ mod tests {
         assert_eq!(budget("gpu frame", TierId::MobileLow), Some(26_000));
         assert_eq!(budget("gpu frame", TierId::DesktopHigh), Some(12_000));
         assert_eq!(budget("simulation", TierId::DesktopHigh), None, "§3.2 has no column for it");
+    }
+
+    #[test]
+    fn post_totals_require_all_passes_of_the_measured_frame() {
+        use sapphire_render::graph::PassTime;
+        let names: Vec<_> = post::frame_passes(3, true).collect();
+        let mut timings = GpuTimings {
+            frame: 7,
+            every_pass: true,
+            passes: names
+                .iter()
+                .enumerate()
+                .map(|(index, &name)| PassTime {
+                    name,
+                    start: Duration::from_micros(index as u64),
+                    duration: Duration::from_micros(1),
+                    exclusive: Duration::from_micros(1),
+                })
+                .collect(),
+        };
+        let frame = Traced { bloom_chain: true, bloom_levels: 3, ..traced(7, 1) };
+        let complete = GpuTimes::of(&timings, frame.bloom_levels, frame.bloom_chain);
+        assert_eq!(complete.post, Some(Duration::from_micros(names.len() as u64)));
+        assert_eq!(complete.main, None, "an absent pass is not zero time");
+        timings.passes.remove(0);
+        assert_eq!(GpuTimes::of(&timings, frame.bloom_levels, frame.bloom_chain).post, None);
+        assert!(
+            GpuTimes::of(&timings, 3, false).post.is_some(),
+            "using a later frame's disabled bloom would incorrectly accept a partial old total"
+        );
+        let missing = Traced { gpu: GpuTimes { timed: true, ..GpuTimes::default() }, ..frame };
+        let post_row = ROWS.iter().find(|row| row.name == "gpu post").expect("post row");
+        assert!(!counts(post_row, &missing, Phase::Cpu));
     }
 
     /// A trace's lines have as many fields as its header, whatever's in them.

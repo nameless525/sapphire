@@ -22,8 +22,8 @@ Footsteps on five surfaces and impacts of metal, wood, glass, plates, bells and 
 
 Not committed: the archive's `.url` shortcuts.
 
-Every committed file is byte-identical to the archive's. To check, extract the archive and compare:
+Every committed upstream file is byte-identical to the archive's. To check, extract the archive and compare:
 
 ```bash
-diff -r "<extracted>/Audio" content/third_party/kenney_impact_sounds/Audio
+diff -r -x '*.meta' "<extracted>/Audio" content/third_party/kenney_impact_sounds/Audio
 ```

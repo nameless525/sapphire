@@ -587,6 +587,11 @@ SIDECAR = '''(
 
 def main(args=None, folder=FOLDER, stamp=STAMP):
     args = sys.argv[1:] if args is None else args
+    allowed = {'--write', '--write-numbers', '--force', '-v'}
+    names = {make.__name__ for make in MOVES}
+    unknown = [arg for arg in args if arg not in allowed and arg not in names]
+    if unknown:
+        sys.exit(f'unknown arguments: {", ".join(unknown)}\n{__doc__}')
     writing = '--write' in args
     numbers = '--write-numbers' in args
     force = '--force' in args
@@ -602,10 +607,10 @@ def main(args=None, folder=FOLDER, stamp=STAMP):
             move.check(verbose=verbose)
     if writing:
         for name, move in built.items():
-            with open(os.path.join(folder, name + '.keypose.ron'), 'w') as f:
-                f.write(move.ron())
-            with open(os.path.join(folder, name + '.keypose.ron.meta'), 'w') as f:
-                f.write(SIDECAR % frames.IDS[name])
+            # Keep the text-mode line endings these source files used before no-op writes.
+            frames.write_changed(os.path.join(folder, name + '.keypose.ron'), move.ron().replace('\n', os.linesep))
+            frames.write_changed(os.path.join(folder, name + '.keypose.ron.meta'),
+                                 (SIDECAR % frames.IDS[name]).replace('\n', os.linesep))
         print(f'wrote the key-pose documents in {folder}')
         note = frames.numbers_note(folder, built)
         if note:

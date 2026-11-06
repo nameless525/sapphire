@@ -140,6 +140,30 @@ jobs:
       # Runners have no sound hardware, or whatever passes for it: the mixer must run on, not fail.
       - name: Audio with whatever device there is
         run: cargo test --package sapphire_audio --locked --test device -- --ignored --test-threads=1
+      - name: Check native Windows output paths
+        id: windows_output_paths
+        if: runner.os == 'Windows'
+        timeout-minutes: 8
+        shell: pwsh
+        run: |
+          cargo build --locked --package sapphire_replay --package sapphire_testkit --bins
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $fixtureTemp = Join-Path $env:RUNNER_TEMP 'sapphire-native-paths'
+          New-Item -ItemType Directory -Path $fixtureTemp | Out-Null
+          $env:TEMP = $env:TMP = $env:TMPDIR = $fixtureTemp
+          python -B .github/scripts/windows_path_fixture/run.py --execute `
+            --replay target/debug/sapphire_replay.exe `
+            --testkit target/debug/sapphire_testkit.exe `
+            --evidence (Join-Path $env:RUNNER_TEMP 'sapphire-windows-paths.json')
+          exit $LASTEXITCODE
+      - name: Retain Windows output-path evidence
+        if: always() && runner.os == 'Windows' && steps.windows_output_paths.outcome != 'skipped'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-output-paths
+          path: ${{ runner.temp }}/sapphire-windows-paths.json
+          if-no-files-found: warn
+          retention-days: 7
 
   # Spec §9's gates 2 and 4: every recorded combat replay reaches its checksums for the runner's
   # architecture, with no heap allocation in the fixed step. Linux and Windows compare against one
@@ -512,9 +536,15 @@ jobs:
         with:
           env-vars: ${{ env.RUST_CACHE_ENV_VARS }}
           cache-on-failure: true
-      # Built apart from the run, so the run's time is the tests' own.
+      # Prebuild the same package/feature selections the steps below execute. A union of
+      # these packages can build a different feature graph from the separate runs.
+      # Keep the stage, game and sandbox configurations independent.
       - name: Build the app tests
-        run: cargo test --package sapphire_sandbox --package sapphire_stage --package game_app --features dev --locked --test replays --test live_tuning --test outside_caller --test reaches_the_fight --no-run
+        run: |
+          cargo test --package sapphire_stage --features dev --locked --test outside_caller --no-run
+          cargo test --package game_app --features dev --locked --test reaches_the_fight --no-run
+          cargo test --package sapphire_sandbox --features dev --locked --test replays --no-run
+          cargo test --package sapphire_sandbox --features dev --locked --test live_tuning --no-run
       - name: Cook the desktop content
         run: cargo --locked xtask --locked content
       # What a game or the editor does with a stage: make it, step it, and read a frame back, with

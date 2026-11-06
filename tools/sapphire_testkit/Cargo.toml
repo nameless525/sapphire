@@ -12,6 +12,8 @@ name = "sapphire_testkit"
 path = "src/main.rs"
 
 [dependencies]
+# Existing-prefix path identity shared with the replay runner.
+sapphire_core.workspace = true
 # Scene deadlines and wall times, read from the clock rule R2 allows.
 sapphire_time.workspace = true
 nv-flip.workspace = true

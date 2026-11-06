@@ -5,5 +5,7 @@
 //! scenes with the sandbox and checks them (`cargo xtask golden`). The combat replay runner is a
 //! tool of its own, `sapphire_replay`, so its job builds none of this.
 
+mod output_paths;
+
 pub mod golden;
 pub mod scenes;

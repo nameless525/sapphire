@@ -4,6 +4,8 @@
 
 `player.moves.ron` holds the moves' numbers, and **they're tuned in the file**, in the timeline editor (`cargo xtask editor`) or by hand. This tool wrote its first draft and rewrites it only when asked with `--write-numbers`, which refuses to replace a file changed since it last wrote it. Nothing here can throw tuning away without `--force`.
 
+An incomplete comment, literal or delimiter structure refuses a numbers write, including a forced one, because its movement cannot be safely recovered. Unchanged key-pose documents, metadata and the ownership stamp keep their modification times.
+
 Its fighter's `movement` section, how the character moves, was never this tool's. `--write-numbers` carries over what the file holds, word for word, forced or not, writes today's numbers only into a file with none, and leaves the section out of the digest, so tuning it is no edit to refuse.
 
 It's plain Python 3 with no dependencies, and it writes nothing unless told to.
@@ -32,7 +34,7 @@ python3 tools/motion/sheet.py light_1 skill:0,4,8,12,16  # cooks, then draws con
 ## Working on a move
 
 1. Edit its function in `moves.py`. A move's length must equal its clip's, or the cook refuses it, so a clip that changes length takes the same change in `player.moves.ron`; `--write` says when `frames.py` no longer fits.
-2. Read a sheet: `python3 tools/motion/sheet.py light_1:0,3,7,8,9,10,11,15,22 --views 205,90`. The default views are from behind and from the side, which is what a fight's camera sees and what shows a silhouette best. Sheets go to `target/motion/`.
+2. Read a sheet: `python3 tools/motion/sheet.py light_1:0,3,7,8,9,10,11,15,22 --views 205,90`. The default views are from behind and from the side, which is what a fight's camera sees and what shows a silhouette best. Sheets go to `target/motion/`. Generator warnings remain visible when the sheet tool runs. Use `--travel` to inspect world-space motion; default in-place sheets alone do not establish foot locking or centimeter-scale ground/blade clearance.
 3. Run `cargo test -p sapphire_pipeline --test player_moves`, which holds each move to its shape. It says nothing about whether the move looks good.
 4. Commit `moves.py` with what it wrote. On a clean checkout, `--write` and `--write-numbers` change nothing.
 

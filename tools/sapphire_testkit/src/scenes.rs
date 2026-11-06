@@ -3671,7 +3671,8 @@ pub struct Paths {
     pub content: PathBuf,
     /// `tests/golden`.
     pub goldens: PathBuf,
-    /// Captures, actuals, diffs, the scenes' logs and `timings.json`; emptied first.
+    /// Captures, actuals, diffs, the scenes' logs and `timings.json`; emptied first. Its tree
+    /// must be disjoint from all inputs, including existing symlink aliases.
     pub out: PathBuf,
 }
 
@@ -3867,6 +3868,7 @@ fn run_scenes(
     timeout: Duration,
     sandbox: &dyn Fn(&Scene) -> Command,
 ) -> Result<Vec<String>, String> {
+    crate::output_paths::disjoint(&paths.out, &[&paths.goldens, &paths.content, &paths.sandbox])?;
     if paths.out.exists() {
         fs::remove_dir_all(&paths.out).map_err(|e| io_error("failed to empty", &paths.out, e))?;
     }
@@ -4388,11 +4390,14 @@ mod tests {
                 ("turntable", "turntable-render-scale"),
                 ("turntable-taa", "turntable-taa-upsampled"),
             ] {
-                for (golden, actual) in [(first, second), (second, first)] {
+                let first_image = committed(first, family);
+                let second_image = committed(second, family);
+                for (golden, actual, golden_image, actual_image) in [
+                    (first, second, &first_image, &second_image),
+                    (second, first, &second_image, &first_image),
+                ] {
                     let thresholds = thresholds(golden);
-                    let comparison =
-                        golden::compare(&committed(golden, family), &committed(actual, family), &thresholds)
-                            .unwrap();
+                    let comparison = golden::compare(golden_image, actual_image, &thresholds).unwrap();
                     assert!(
                         !comparison.passes(&thresholds),
                         "{actual} passes as {golden} on {family}: mean {}, p{} {}, worst tile {}",

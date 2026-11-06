@@ -195,10 +195,10 @@ impl<'a, 'o> Walk<'a, 'o> {
             Expression::Number { value, format } => number_selection(value, format),
             // A term's attribute, whose plain text is what's chosen by.
             Expression::Term { key, .. } => {
-                let found = self.localizer.find(link, table.str(key));
+                let found = self.localizer.find_semantic(link, table.str(key));
                 let Some((holder, entry)) = found else { return Selection::Nothing };
                 match (entry.pattern, self.localizer.link(holder)) {
-                    (Pattern::Plain(span), Some(loaded)) => Selection::Text(loaded.active().str(span)),
+                    (Pattern::Plain(span), Some(loaded)) => Selection::Text(loaded.semantic().str(span)),
                     _ => Selection::Nothing,
                 }
             }

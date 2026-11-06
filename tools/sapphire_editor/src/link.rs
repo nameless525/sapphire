@@ -1,6 +1,6 @@
 //! Saving's other half: a thread of its own that talks to a device over live link, so the interface never
 //! waits on a network. It keeps a [`Client`] connected, pushes what it's given, and asks the device what
-//! it's playing twice a second, which is how the editor knows an edit reached an attempt rather than
+//! it's playing periodically, which is how the editor knows an edit reached an attempt rather than
 //! being told it should have.
 //!
 //! A reply can take seconds, and the text and the address can change meanwhile. So every push has an ID and
@@ -13,8 +13,10 @@
 //! what was waiting for the old one. So the newest text waits for what's already out and no more, and what
 //! never went says so in [`Link::earlier_push`].
 
+use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
-use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+#[cfg(test)]
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -24,6 +26,9 @@ use sapphire_livelink::{Client, LinkError};
 use sapphire_time::Stopwatch;
 
 use crate::edits::error_chain;
+
+/// UI budget for remembered idle actors, in addition to every actor in the latest snapshot.
+const IDLE_ATTEMPT_HISTORY: usize = 64;
 
 /// How often a connected device is asked what it's doing. Slow enough to cost it nothing and quick enough
 /// that a move of half a second shows.
@@ -116,7 +121,7 @@ struct Waiting {
     /// To the newest address, oldest first, one of each file.
     pushes: Vec<WaitingPush>,
     /// Cvars to set, oldest first, one of each name: a value dragged sends the newest and no more.
-    cvars: Vec<(String, String)>,
+    cvars: Vec<(u64, String, String)>,
     /// A panel has just begun to show cvars, and wants them now.
     list_cvars: bool,
     /// A panel is showing cvars, so they're worth asking for.
@@ -142,7 +147,7 @@ enum Next {
         address: Option<SocketAddr>,
     },
     Push(WaitingPush),
-    SetCvar(String, String),
+    SetCvar(u64, String, String),
     ListCvars,
     /// Nothing came in time.
     Quiet,
@@ -179,15 +184,17 @@ impl Mailbox {
     fn put_address(&self, target: u64, address: Option<SocketAddr>) -> Vec<WaitingPush> {
         let mut waiting = self.lock();
         waiting.address = Some((target, address));
+        waiting.cvars.clear();
+        waiting.list_cvars = waiting.wants_cvars;
         self.wake.notify_one();
         std::mem::take(&mut waiting.pushes)
     }
 
     /// Leaves a cvar to set, in place of any set of that name still waiting.
-    fn put_cvar(&self, name: String, value: String) {
+    fn put_cvar(&self, version: u64, name: String, value: String) {
         let mut waiting = self.lock();
-        waiting.cvars.retain(|(other, _)| *other != name);
-        waiting.cvars.push((name, value));
+        waiting.cvars.retain(|(_, other, _)| *other != name);
+        waiting.cvars.push((version, name, value));
         self.wake.notify_one();
     }
 
@@ -220,8 +227,8 @@ impl Mailbox {
         } else if !waiting.pushes.is_empty() {
             Next::Push(waiting.pushes.remove(0))
         } else if !waiting.cvars.is_empty() {
-            let (name, value) = waiting.cvars.remove(0);
-            Next::SetCvar(name, value)
+            let (version, name, value) = waiting.cvars.remove(0);
+            Next::SetCvar(version, name, value)
         } else if std::mem::take(&mut waiting.list_cvars) {
             Next::ListCvars
         } else {
@@ -230,6 +237,7 @@ impl Mailbox {
     }
 }
 
+#[derive(Debug)]
 enum Report {
     /// A new connection, which may be to a device that has started again since the last.
     Connected {
@@ -247,20 +255,55 @@ enum Report {
     /// A cvar's value as the device has it now, or why it kept the one it had.
     CvarSet {
         target: u64,
+        version: u64,
         name: String,
         value: Result<String, String>,
     },
     Cvars {
         target: u64,
+        version: u64,
         list: Result<Vec<CvarStatus>, String>,
     },
+}
+
+/// Only the newest periodic snapshot of each kind survives an unpolled interval. Push and cvar command
+/// results remain lossless; missing intermediate telemetry never becomes an unbounded catch-up queue.
+#[derive(Debug, Default)]
+struct Reports(Mutex<VecDeque<Report>>);
+
+impl Reports {
+    fn send(&self, report: Report) {
+        let mut queued = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let same_snapshot = |previous: &Report| {
+            matches!(
+                (previous, &report),
+                (Report::Connection { .. }, Report::Connection { .. })
+                    | (Report::Cvars { .. }, Report::Cvars { .. })
+                    | (Report::Connected { .. }, Report::Connected { .. })
+            )
+        };
+        if let Some(index) = queued.iter().position(same_snapshot) {
+            let _ = queued.remove(index);
+        }
+        if let Report::Connected { target } = &report {
+            // A reconnect starts a fresh attempt history, including when nobody polled the old one.
+            queued.retain(
+                |previous| !matches!(previous, Report::Connection { target: old, .. } if old == target),
+            );
+        }
+        queued.push_back(report);
+    }
+
+    fn pop(&self) -> Option<Report> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).pop_front()
+    }
 }
 
 /// A connection to a device, as the interface sees it: it never blocks.
 #[derive(Debug)]
 pub struct Link {
     mailbox: Arc<Mailbox>,
-    reports: Receiver<Report>,
+    reports: Arc<Reports>,
     worker: Option<JoinHandle<()>>,
     address: Option<SocketAddr>,
     /// Which address this is: a report of any other is about a device no longer looked at.
@@ -277,12 +320,14 @@ pub struct Link {
     current_from: u64,
     last_push: Option<Pushed>,
     earlier_push: Option<EarlierPush>,
-    /// The last attempt seen of each actor on this connection: a move can end between two statuses.
+    /// Last attempts actually observed by poll; idle history is bounded to IDLE_ATTEMPT_HISTORY.
     attempts: Vec<MoveAttempt>,
     /// What the device last said it has, while a panel asks.
     cvars: Option<Vec<CvarStatus>>,
     /// The last cvar the device wouldn't take, and why.
     cvar_refusal: Option<(String, String)>,
+    next_cvar: u64,
+    cvar_versions: HashMap<String, u64>,
 }
 
 impl Link {
@@ -290,14 +335,15 @@ impl Link {
     #[must_use]
     pub fn new(address: Option<SocketAddr>) -> Self {
         let mailbox = Arc::new(Mailbox::default());
-        let (reports_out, reports) = mpsc::channel();
-        let worker = thread::Builder::new()
-            .name("live link".to_owned())
-            .spawn({
-                let mailbox = mailbox.clone();
-                move || work(address, &mailbox, &reports_out)
-            })
-            .ok();
+        let reports = Arc::new(Reports::default());
+        let (worker, trouble) = match thread::Builder::new().name("live link".to_owned()).spawn({
+            let mailbox = mailbox.clone();
+            let reports = Arc::clone(&reports);
+            move || work(address, &mailbox, &reports)
+        }) {
+            Ok(worker) => (Some(worker), None),
+            Err(error) => (None, Some(format!("starting live link: {error}"))),
+        };
         Self {
             mailbox,
             reports,
@@ -305,7 +351,7 @@ impl Link {
             address,
             target: 0,
             device: None,
-            trouble: None,
+            trouble,
             waiting: 0,
             next_push: 0,
             current_from: 0,
@@ -314,6 +360,8 @@ impl Link {
             attempts: Vec::new(),
             cvars: None,
             cvar_refusal: None,
+            next_cvar: 1,
+            cvar_versions: HashMap::new(),
         }
     }
 
@@ -328,6 +376,8 @@ impl Link {
         self.attempts.clear();
         self.cvars = None;
         self.cvar_refusal = None;
+        self.cvar_versions.clear();
+        self.next_cvar = 1;
         self.clear_push();
         if !self.thread_runs() {
             return;
@@ -360,12 +410,17 @@ impl Link {
     /// Sets a cvar on the device, in place of any set of that name still waiting. What's shown takes the value
     /// at once, and [`Self::cvar_refusal`] says if the device wouldn't have it.
     pub fn set_cvar(&mut self, name: &str, value: String) {
+        let version = self.next_cvar;
+        self.next_cvar += 1;
         if let Some(cvar) = self.cvars.iter_mut().flatten().find(|cvar| cvar.name == name) {
             cvar.value.clone_from(&value);
         }
         self.cvar_refusal = None;
         if self.thread_runs() {
-            self.mailbox.put_cvar(name.to_owned(), value);
+            self.cvar_versions.insert(name.to_owned(), version);
+            self.mailbox.put_cvar(version, name.to_owned(), value);
+        } else {
+            self.cvar_versions.remove(name);
         }
     }
 
@@ -403,41 +458,51 @@ impl Link {
     /// Takes what the thread has reported. Call it once a frame.
     pub fn poll(&mut self) {
         loop {
-            match self.reports.try_recv() {
-                Ok(Report::Connected { target }) if target == self.target => self.attempts.clear(),
-                Ok(Report::Connection { target, status: Ok(status) }) if target == self.target => {
-                    self.trouble = None;
-                    for attempt in &status.attempts {
-                        match self.attempts.iter_mut().find(|seen| seen.actor == attempt.actor) {
-                            Some(seen) => *seen = attempt.clone(),
-                            None => self.attempts.push(attempt.clone()),
-                        }
+            match self.reports.pop() {
+                Some(Report::Connected { target }) if target == self.target => self.attempts.clear(),
+                Some(Report::Connection { target, status }) if target == self.target => match status {
+                    Ok(status) => {
+                        self.remember_attempts(&status);
+                        self.trouble = None;
+                        self.device = Some(*status);
                     }
-                    self.device = Some(*status);
-                }
-                Ok(Report::Connection { target, status: Err(why) }) if target == self.target => {
-                    self.device = None;
-                    self.trouble = Some(why);
-                }
-                Ok(Report::CvarSet { target, name, value }) if target == self.target => match value {
-                    Ok(value) => {
-                        if let Some(cvar) = self.cvars.iter_mut().flatten().find(|cvar| cvar.name == name) {
-                            cvar.value = value;
-                        }
+                    Err(why) => {
+                        self.device = None;
+                        self.trouble = Some(why);
                     }
-                    Err(why) => self.cvar_refusal = Some((name, why)),
                 },
-                Ok(Report::Cvars { target, list }) if target == self.target => match list {
-                    Ok(list) => self.cvars = Some(list),
-                    Err(_) => self.cvars = None,
-                },
-                Ok(
+                Some(Report::CvarSet { target, version, name, value })
+                    if target == self.target && self.cvar_versions.get(&name) == Some(&version) =>
+                {
+                    self.cvar_versions.remove(&name);
+                    match value {
+                        Ok(value) => {
+                            if let Some(cvar) = self.cvars.iter_mut().flatten().find(|cvar| cvar.name == name)
+                            {
+                                cvar.value = value;
+                            }
+                        }
+                        Err(why) => self.cvar_refusal = Some((name, why)),
+                    }
+                }
+                Some(Report::Cvars { target, version, list })
+                    if target == self.target && version >= self.next_cvar - 1 =>
+                {
+                    match list {
+                        Ok(list) => {
+                            self.cvars = Some(list);
+                            self.cvar_versions.clear();
+                        }
+                        Err(_) => self.cvars = None,
+                    }
+                }
+                Some(
                     Report::Connected { .. }
                     | Report::Connection { .. }
                     | Report::CvarSet { .. }
                     | Report::Cvars { .. },
                 ) => {}
-                Ok(Report::Pushed { id, origin, pushed }) => {
+                Some(Report::Pushed { id, origin, pushed }) => {
                     self.waiting = self.waiting.saturating_sub(1);
                     if id >= self.current_from {
                         self.last_push = Some(pushed);
@@ -446,9 +511,35 @@ impl Link {
                         self.earlier_push = Some(EarlierPush { origin, pushed });
                     }
                 }
-                Err(TryRecvError::Empty | TryRecvError::Disconnected) => return,
+                None => return,
             }
         }
+    }
+
+    fn remember_attempts(&mut self, status: &DeviceStatus) {
+        if self.device.as_ref().is_some_and(|previous| status.frame < previous.frame) {
+            self.attempts.clear();
+        }
+        for attempt in &status.attempts {
+            match self.attempts.iter_mut().find(|seen| seen.actor == attempt.actor) {
+                Some(seen) => *seen = attempt.clone(),
+                None => self.attempts.push(attempt.clone()),
+            }
+        }
+        let idle = self
+            .attempts
+            .iter()
+            .filter(|attempt| !status.attempts.iter().any(|current| current.actor == attempt.actor))
+            .count();
+        let mut excess = idle.saturating_sub(IDLE_ATTEMPT_HISTORY);
+        self.attempts.retain(|attempt| {
+            if excess > 0 && !status.attempts.iter().any(|current| current.actor == attempt.actor) {
+                excess -= 1;
+                false
+            } else {
+                true
+            }
+        });
     }
 
     #[must_use]
@@ -479,7 +570,9 @@ impl Link {
         self.earlier_push.as_ref()
     }
 
-    /// The last attempt seen of each actor.
+    /// Last observed attempts: all current actors plus at most 64 idle actors. On overflow, idle actors
+    /// first observed longest ago are omitted first. Target/reconnect/run restart clears the history.
+    /// Intermediate snapshots while unpolled are intentionally omitted.
     #[must_use]
     pub fn attempts(&self) -> &[MoveAttempt] {
         &self.attempts
@@ -501,66 +594,65 @@ impl Drop for Link {
     }
 }
 
-fn work(mut address: Option<SocketAddr>, mailbox: &Mailbox, reports: &Sender<Report>) {
+fn work(mut address: Option<SocketAddr>, mailbox: &Mailbox, reports: &Reports) {
     let mut client: Option<Client> = None;
     let mut target = 0;
+    let mut cvar_version = 0;
     let mut since_try = Stopwatch::start();
     let mut since_cvars = Stopwatch::start();
     loop {
-        match mailbox.next(STATUS_EVERY) {
+        let next = mailbox.next(STATUS_EVERY);
+        let quiet = matches!(&next, Next::Quiet);
+        match next {
             Next::Move { target: next_target, address: next } => {
                 target = next_target;
+                cvar_version = 0;
                 address = next;
                 client = None;
                 since_try = Stopwatch::start();
                 if address.is_none() {
                     let status = Err("no address".to_owned());
-                    let _ = reports.send(Report::Connection { target, status });
+                    reports.send(Report::Connection { target, status });
                 }
             }
             Next::Push(WaitingPush { id, origin, text }) => {
                 let pushed = push(address, target, &mut client, reports, &origin, text);
-                if reports.send(Report::Pushed { id, origin, pushed }).is_err() {
-                    return;
-                }
+                reports.send(Report::Pushed { id, origin, pushed });
             }
-            Next::SetCvar(name, value) => {
+            Next::SetCvar(version, name, value) => {
+                cvar_version = version;
                 let value = set_cvar(address, target, &mut client, reports, &name, &value);
-                if reports.send(Report::CvarSet { target, name, value }).is_err() {
-                    return;
-                }
+                reports.send(Report::CvarSet { target, version, name, value });
             }
             Next::ListCvars => {
                 since_cvars = Stopwatch::start();
                 let list = list_cvars(address, target, &mut client, reports);
-                if reports.send(Report::Cvars { target, list }).is_err() {
-                    return;
-                }
+                reports.send(Report::Cvars { target, version: cvar_version, list });
             }
-            Next::Quiet => {
-                if client.is_some() && mailbox.lock().wants_cvars && since_cvars.elapsed() >= CVARS_EVERY {
-                    since_cvars = Stopwatch::start();
-                    let list = list_cvars(address, target, &mut client, reports);
-                    if reports.send(Report::Cvars { target, list }).is_err() {
-                        return;
-                    }
-                }
-                if client.is_none() && since_try.elapsed() < RECONNECT_EVERY {
-                    continue;
-                }
-                since_try = Stopwatch::start();
-                let Some(address) = address else { continue };
-                let status = connected(address, target, &mut client, reports)
-                    .and_then(|client| client.status().map(Box::new).map_err(|error| error_chain(&error)));
-                if client.as_ref().is_some_and(Client::is_closed) || status.is_err() {
-                    client = None;
-                }
-                if reports.send(Report::Connection { target, status }).is_err() {
-                    return;
-                }
-            }
+            Next::Quiet => {}
             Next::Stop => return,
         }
+        // A stream of drag edits must not starve status/cvar refreshes indefinitely.
+        if client.is_some() && mailbox.lock().wants_cvars && since_cvars.elapsed() >= CVARS_EVERY {
+            since_cvars = Stopwatch::start();
+            let list = list_cvars(address, target, &mut client, reports);
+            reports.send(Report::Cvars { target, version: cvar_version, list });
+        }
+        if client.is_none() {
+            if !quiet || since_try.elapsed() < RECONNECT_EVERY {
+                continue;
+            }
+        } else if since_try.elapsed() < STATUS_EVERY {
+            continue;
+        }
+        since_try = Stopwatch::start();
+        let Some(address) = address else { continue };
+        let status = connected(address, target, &mut client, reports)
+            .and_then(|client| client.status().map(Box::new).map_err(|error| error_chain(&error)));
+        if client.as_ref().is_some_and(Client::is_closed) || status.is_err() {
+            client = None;
+        }
+        reports.send(Report::Connection { target, status });
     }
 }
 
@@ -568,11 +660,11 @@ fn connected<'c>(
     address: SocketAddr,
     target: u64,
     client: &'c mut Option<Client>,
-    reports: &Sender<Report>,
+    reports: &Reports,
 ) -> Result<&'c mut Client, String> {
     if client.is_none() {
         *client = Some(Client::connect(address).map_err(|error| error_chain(&error))?);
-        let _ = reports.send(Report::Connected { target });
+        reports.send(Report::Connected { target });
     }
     client.as_mut().ok_or_else(|| "no connection".to_owned())
 }
@@ -581,7 +673,7 @@ fn set_cvar(
     address: Option<SocketAddr>,
     target: u64,
     client: &mut Option<Client>,
-    reports: &Sender<Report>,
+    reports: &Reports,
     name: &str,
     value: &str,
 ) -> Result<String, String> {
@@ -601,7 +693,7 @@ fn list_cvars(
     address: Option<SocketAddr>,
     target: u64,
     client: &mut Option<Client>,
-    reports: &Sender<Report>,
+    reports: &Reports,
 ) -> Result<Vec<CvarStatus>, String> {
     let address = address.ok_or_else(|| "no device address".to_owned())?;
     let connection = connected(address, target, client, reports)?;
@@ -619,7 +711,7 @@ fn push(
     address: Option<SocketAddr>,
     target: u64,
     client: &mut Option<Client>,
-    reports: &Sender<Report>,
+    reports: &Reports,
     origin: &str,
     text: String,
 ) -> Pushed {
@@ -652,6 +744,185 @@ mod tests {
     use sapphire_moves::{Issue, MoveSetError};
 
     use super::*;
+
+    #[test]
+    fn cvars_waiting_for_an_old_device_are_discarded_on_switch() {
+        let mailbox = Mailbox::default();
+        mailbox.put_cvar(1, "quality".to_owned(), "0".to_owned());
+        mailbox.want_cvars(true);
+        mailbox.put_address(1, Some("127.0.0.1:9".parse().expect("an address")));
+        assert!(matches!(mailbox.next(Duration::ZERO), Next::Move { target: 1, .. }));
+        assert!(matches!(mailbox.next(Duration::ZERO), Next::ListCvars));
+        assert!(matches!(mailbox.next(Duration::ZERO), Next::Quiet));
+    }
+
+    #[test]
+    fn an_old_cvar_reply_or_list_cannot_replace_a_newer_optimistic_edit() {
+        let mut link = Link::new(None);
+        link.cvar_versions.insert("quality".to_owned(), 2);
+        link.next_cvar = 3;
+        link.reports.send(Report::CvarSet {
+            target: 0,
+            version: 1,
+            name: "quality".to_owned(),
+            value: Err("old refusal".to_owned()),
+        });
+        link.reports.send(Report::Cvars { target: 0, version: 1, list: Ok(Vec::new()) });
+        link.poll();
+        assert!(link.cvar_refusal.is_none());
+        assert!(link.cvars.is_none(), "the stale list wasn't installed");
+        link.reports.send(Report::CvarSet {
+            target: 0,
+            version: 2,
+            name: "quality".to_owned(),
+            value: Err("current refusal".to_owned()),
+        });
+        link.poll();
+        assert_eq!(link.cvar_refusal().map(|(_, why)| why.as_str()), Some("current refusal"));
+        link.reports.send(Report::Cvars { target: 0, version: 2, list: Ok(Vec::new()) });
+        link.poll();
+        assert_eq!(link.cvars(), Some(&[][..]));
+    }
+
+    #[test]
+    fn acknowledged_cvar_request_metadata_does_not_accumulate_with_the_panel_closed() {
+        let mut link = Link::new(None);
+        for version in 1..=1000 {
+            let name = version.to_string();
+            link.cvar_versions.insert(name.clone(), version);
+            link.reports.send(Report::CvarSet { target: 0, version, name, value: Ok("1".to_owned()) });
+        }
+        link.next_cvar = 1001;
+        link.poll();
+        assert!(link.cvar_versions.is_empty());
+    }
+
+    #[test]
+    fn unpolled_periodic_reports_are_bounded_without_dropping_command_results() {
+        let reports = Reports::default();
+        for id in 0..1000 {
+            reports.send(Report::Connection { target: 0, status: Ok(Box::default()) });
+            reports.send(Report::Cvars { target: 0, version: 0, list: Ok(Vec::new()) });
+            if id < 8 {
+                reports.send(Report::Pushed {
+                    id,
+                    origin: id.to_string(),
+                    pushed: Pushed::Failed(id.to_string()),
+                });
+                reports.send(Report::CvarSet {
+                    target: 0,
+                    version: id,
+                    name: id.to_string(),
+                    value: Ok(id.to_string()),
+                });
+            }
+        }
+        assert_eq!(reports.0.lock().expect("reports").len(), 18);
+        let mut pushes = Vec::new();
+        let mut cvars = Vec::new();
+        while let Some(report) = reports.pop() {
+            match report {
+                Report::Pushed { id, .. } => pushes.push(id),
+                Report::CvarSet { version, .. } => cvars.push(version),
+                _ => {}
+            }
+        }
+        assert_eq!(pushes, (0..8).collect::<Vec<_>>());
+        assert_eq!(cvars, (0..8).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn an_unpolled_consumer_observes_only_the_latest_replaceable_status() {
+        let mut link = Link::new(None);
+        for actor in 1..=1000 {
+            link.reports.send(Report::Connection {
+                target: 0,
+                status: Ok(Box::new(DeviceStatus {
+                    frame: actor as u64,
+                    attempts: vec![MoveAttempt { actor, ..MoveAttempt::default() }],
+                    ..DeviceStatus::default()
+                })),
+            });
+        }
+        link.poll();
+        assert_eq!(link.attempts().iter().map(|attempt| attempt.actor).collect::<Vec<_>>(), [1000]);
+    }
+
+    #[test]
+    fn polled_attempt_history_is_bounded_and_a_run_restart_clears_it() {
+        let mut link = Link::new(None);
+        for actor in 1..=1000 {
+            link.reports.send(Report::Connection {
+                target: 0,
+                status: Ok(Box::new(DeviceStatus {
+                    frame: actor as u64,
+                    attempts: vec![MoveAttempt { actor, ..MoveAttempt::default() }],
+                    ..DeviceStatus::default()
+                })),
+            });
+            link.poll();
+        }
+        assert_eq!(link.attempts().len(), IDLE_ATTEMPT_HISTORY + 1);
+        let current: Vec<_> =
+            (1..=100).map(|actor| MoveAttempt { actor, ..MoveAttempt::default() }).collect();
+        link.reports.send(Report::Connection {
+            target: 0,
+            status: Ok(Box::new(DeviceStatus {
+                frame: 1001,
+                attempts: current.clone(),
+                ..DeviceStatus::default()
+            })),
+        });
+        link.poll();
+        assert_eq!(link.attempts().len(), current.len() + IDLE_ATTEMPT_HISTORY);
+        assert_eq!(
+            &link.attempts()[IDLE_ATTEMPT_HISTORY..],
+            current,
+            "every currently playing actor remains visible"
+        );
+        link.reports.send(Report::Connection {
+            target: 0,
+            status: Ok(Box::new(DeviceStatus {
+                frame: 0,
+                attempts: vec![MoveAttempt { actor: 7, ..MoveAttempt::default() }],
+                ..DeviceStatus::default()
+            })),
+        });
+        link.poll();
+        assert_eq!(link.attempts().len(), 1);
+        assert_eq!(link.attempts()[0].actor, 7);
+        link.reports.send(Report::Connection {
+            target: 0,
+            status: Ok(Box::new(DeviceStatus { frame: 1, ..DeviceStatus::default() })),
+        });
+        link.poll();
+        assert_eq!(link.attempts()[0].actor, 7, "an ordinary idle interval keeps its last attempt");
+    }
+
+    #[test]
+    fn queued_commands_do_not_starve_a_due_status_request() {
+        let (address, seen, answer) = device();
+        let mut link = Link::new(Some(address));
+        link.push("a.moves.ron".to_owned(), "first".to_owned());
+        assert_eq!(document_at(&seen), "first");
+        link.reports.0.lock().expect("reports").clear();
+        link.push("b.moves.ron".to_owned(), "second".to_owned());
+        // The first document's reply is gated, so the status deadline is known to have passed before
+        // the worker chooses its next request. No negative-condition timeout is shortened.
+        thread::sleep(STATUS_EVERY);
+        answer.send(()).expect("first answer");
+        assert_eq!(document_at(&seen), "second");
+        assert!(
+            link.reports
+                .0
+                .lock()
+                .expect("reports")
+                .iter()
+                .any(|report| matches!(report, Report::Connection { status: Ok(_), .. }))
+        );
+        answer.send(()).expect("second answer");
+        settle(&mut link);
+    }
 
     /// A device of a test's own: each document it's sent goes to `seen`, and it answers once told to.
     fn device() -> (SocketAddr, Receiver<String>, Sender<()>) {
@@ -701,11 +972,11 @@ mod tests {
     #[test]
     fn a_cvars_newest_value_goes_in_place_of_those_waiting() {
         let mailbox = Mailbox { waiting: Mutex::new(Waiting::default()), wake: Condvar::new() };
-        mailbox.put_cvar("a".to_owned(), "1".to_owned());
-        mailbox.put_cvar("b".to_owned(), "1".to_owned());
-        mailbox.put_cvar("a".to_owned(), "2".to_owned());
+        mailbox.put_cvar(0, "a".to_owned(), "1".to_owned());
+        mailbox.put_cvar(0, "b".to_owned(), "1".to_owned());
+        mailbox.put_cvar(0, "a".to_owned(), "2".to_owned());
         let mut sets = Vec::new();
-        while let Next::SetCvar(name, value) = mailbox.next(Duration::ZERO) {
+        while let Next::SetCvar(_, name, value) = mailbox.next(Duration::ZERO) {
             sets.push((name, value));
         }
         let owned = |name: &str, value: &str| (name.to_owned(), value.to_owned());

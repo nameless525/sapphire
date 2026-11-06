@@ -72,6 +72,38 @@ fn harness(path: &Path) -> Harness<'static, Editor> {
         .build_ui_state(|ui, editor: &mut Editor| editor.ui(ui), editor)
 }
 
+/// Public playback calls supply the clock even when there has never been an egui pass.
+#[test]
+fn public_playback_calls_preserve_phase_across_rate_changes_without_ui() {
+    let dir = TestDir::new("playback_clock");
+    let path = dir.write("warrior.moves.ron", WARRIOR);
+    let mut editor = Editor::new(Options {
+        file: Some(path),
+        content: Some(dir.0.join("no cook here")),
+        link: Some("127.0.0.1:9".parse().expect("an address")),
+    });
+    editor.set_dummy_distance(30.0);
+    editor.play(0.0);
+    editor.advance_playback(0.5);
+    assert_eq!(editor.tick(), 30);
+    editor.set_speed(0.25);
+    editor.advance_playback(0.5);
+    assert_eq!(editor.tick(), 30, "a rate change retains the observed phase");
+    editor.advance_playback(0.6);
+    assert_eq!(editor.tick(), 31);
+
+    editor.stop();
+    editor.set_tick(3);
+    editor.play(10.0);
+    editor.set_speed(1.0);
+    editor.advance_playback(10.0);
+    assert!(editor.is_playing(), "play itself also supplies the rate-change clock");
+    assert_eq!(editor.tick(), 3);
+    editor.advance_playback(f64::MAX);
+    assert!(!editor.is_playing());
+    assert_eq!(editor.tick(), 3, "extreme time finishes without overflowing the nonzero start");
+}
+
 fn parse(text: &str) -> MoveSetDocument {
     MoveSetDocument::parse(text).expect("it parses")
 }
@@ -103,7 +135,12 @@ fn a_capture_of_the_timeline_reads() {
     let mut last = None;
     for pass in 0..4 {
         let input = capture::raw_input(width, height, f64::from(pass) * 0.1);
-        last = Some(capture::draw(&ctx, &mut textures, input, width, height, |ui| editor.ui(ui)));
+        let output = ctx.run_ui(input, |ui| editor.ui(ui));
+        if pass == 3 {
+            last = Some(capture::rasterize(&ctx, &mut textures, output, width, height));
+        } else {
+            capture::settle(&ctx, &mut textures, output);
+        }
     }
     let image = last.expect("a capture");
     image.write_png(&capture_path("timeline.png")).expect("written");
@@ -1454,7 +1491,7 @@ fn save_by_key(harness: &mut Harness<'static, Editor>) {
 /// Runs the interface until the device has had `how_many` documents.
 fn until_it_has_documents(harness: &mut Harness<'static, Editor>, device: &FakeDevice, how_many: usize) {
     let started = Stopwatch::start();
-    while device.documents().len() < how_many {
+    while device.document_count() < how_many {
         assert!(started.elapsed() < Duration::from_secs(30), "never saw document {how_many}");
         harness.run_steps(1);
         std::thread::sleep(Duration::from_millis(5));
@@ -1791,6 +1828,10 @@ impl FakeDevice {
 
     fn refuse_with(&self, why: &str) {
         *self.refusal.lock().expect("the refusal") = Some(why.to_owned());
+    }
+
+    fn document_count(&self) -> usize {
+        self.documents.lock().expect("the list").len()
     }
 
     fn documents(&self) -> Vec<String> {

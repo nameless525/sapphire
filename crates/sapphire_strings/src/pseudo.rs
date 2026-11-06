@@ -110,9 +110,10 @@ pub fn characters() -> BTreeSet<char> {
 }
 
 impl StringTable {
-    /// This table as pseudo-localized text. Its keys and its numbers stay, so everything that reads it
-    /// behaves as it would in this locale: a selector's arguments and a variant's keys aren't text
-    /// anyone sees. A message gets a frame, a term doesn't.
+    /// This table as pseudo-localized display text. Its keys, numbers, selector arguments and variant
+    /// keys stay. A selector that reads a term must read its original semantic table, as
+    /// `sapphire_loc` does: the same term can also be shown as transformed display text.
+    /// A message gets a frame, a term doesn't.
     pub fn pseudolocalized(&self) -> StringTable {
         let mut table = self.clone();
         let added = |pool: &mut String, text: String| {

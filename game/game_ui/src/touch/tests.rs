@@ -736,3 +736,87 @@ fn a_finger_holds_a_control_from_its_landing_to_its_lift() {
     controls.touch(ms(6), button, TouchPhase::Up, spots.open);
     assert!(!controls.holds_control(button));
 }
+
+#[test]
+fn resizing_rebases_retained_touches_before_a_stationary_event() {
+    let old = layout();
+    let mut controls = TouchControls::new(old);
+    let stick = old.stick.zone.min + Vec2::splat(40.0);
+    let camera = Vec2::new(400.0, 80.0);
+    let button = old.attack.center;
+    for (id, at) in [(1, stick), (2, camera), (3, button)] {
+        controls.handle_event(&touch_event(
+            0,
+            id,
+            TouchPhase::Down,
+            at.x / old.metrics.size.x,
+            at.y / old.metrics.size.y,
+        ));
+    }
+    controls.update(ms(1));
+    let new = HudLayout::new(UiMetrics::new(Vec2::new(960.0, 720.0), Insets::default()));
+    controls.set_layout(new);
+    for (id, at) in [(1, stick), (2, camera), (3, button)] {
+        controls.handle_event(&touch_event(
+            2,
+            id,
+            TouchPhase::Moved,
+            at.x / old.metrics.size.x,
+            at.y / old.metrics.size.y,
+        ));
+    }
+    let actions = controls.update(ms(3));
+    assert!(actions.camera_delta.length() < 1e-3);
+    assert!(actions.stick.value.length() < 1e-5);
+    assert!(actions.button(Button::Attack).drag.length() < 1e-3);
+    assert!(!actions.button(Button::Attack).dragging);
+    assert!(actions.button(Button::Attack).down);
+    assert_eq!(controls.fingers(), 3);
+}
+
+#[test]
+fn a_held_sticks_value_survives_aspect_changes_and_an_empty_frame() {
+    let old = layout();
+    let mut controls = TouchControls::new(old);
+    let start = old.stick.rest;
+    let held = start + Vec2::new(old.stick.radius * 0.5, 0.0);
+    controls.touch(ms(0), finger(1), TouchPhase::Down, start);
+    controls.touch(ms(1), finger(1), TouchPhase::Moved, held);
+    let before = controls.update(ms(2)).stick.value;
+    assert!(before.x > 0.0);
+    controls.set_layout(HudLayout::new(UiMetrics::default()));
+    let new = HudLayout::new(UiMetrics::new(Vec2::new(960.0, 720.0), Insets::default()));
+    controls.set_layout(new);
+    controls.handle_event(&touch_event(
+        3,
+        1,
+        TouchPhase::Moved,
+        held.x / old.metrics.size.x,
+        held.y / old.metrics.size.y,
+    ));
+    let after = controls.update(ms(4)).stick.value;
+    assert!(after.distance(before) < 1e-5, "{before} -> {after}");
+}
+
+#[test]
+fn the_first_usable_layout_keeps_an_inactive_stick_default_and_ready_for_input() {
+    // FightHud starts here before its first window/offscreen metrics arrive.
+    let mut controls = TouchControls::new(HudLayout::default());
+    assert_eq!(controls.update(ms(0)).stick, StickState::default());
+    let usable = layout();
+    controls.set_layout(usable);
+    let stick = controls.update(ms(1)).stick;
+    assert_eq!(stick, StickState::default());
+    assert!(stick.center.is_finite() && stick.thumb.is_finite() && stick.value.is_finite());
+
+    let start = usable.stick.rest;
+    controls.touch(ms(2), finger(1), TouchPhase::Down, start);
+    let held = start + Vec2::new(usable.stick.radius * 0.5, 0.0);
+    controls.touch(ms(3), finger(1), TouchPhase::Moved, held);
+    let stick = controls.update(ms(4)).stick;
+    assert!(stick.active);
+    assert_eq!(stick.center, start);
+    assert_eq!(stick.thumb, held);
+    let expected = (0.5 - 0.1) / (1.0 - 0.1);
+    assert!(stick.value.distance(Vec2::new(expected, 0.0)) < 1e-5);
+}

@@ -136,6 +136,11 @@ impl FightHud {
             paint_us = painting.elapsed().as_micros() as u64,
             "painted the UI atlas"
         );
+        Self::with_atlas(options, atlas)
+    }
+
+    /// Uses already painted immutable shapes, shared with the screen that preceded this HUD.
+    fn with_atlas(options: HudOptions, atlas: Atlas) -> Self {
         let layout = HudLayout::default();
         Self {
             options,
@@ -163,11 +168,20 @@ impl FightHud {
         Self { stand_in: None, ..Self::new(options) }
     }
 
+    /// A fight HUD using the preceding screen's atlas.
+    pub fn for_fight_with_atlas(options: HudOptions, atlas: Atlas) -> Self {
+        Self { stand_in: None, ..Self::with_atlas(options, atlas) }
+    }
+
     /// What the fight says of its fighters this frame, `time` into it: live mode shows it. Offscreen
     /// there's no other clock.
     pub(crate) fn show_fight(&mut self, values: HudValues, time: Duration) {
         self.fight = Some(values);
         self.stand_in = None;
+        self.fight_time(time);
+    }
+
+    fn fight_time(&mut self, time: Duration) {
         if self.window_metrics.is_none() && self.options.mode == HudMode::Live {
             self.now = Timestamp::from_nanos(time.as_nanos() as u64);
         }
@@ -280,7 +294,7 @@ impl FightHud {
         }
         let Some(position) = on_screen(point, view_projection, self.layout.metrics.size) else { return };
         let kind = if weight == Weight::Heavy { DamageKind::Heavy } else { DamageKind::Normal };
-        self.hud.spawn_damage(damage, position, kind);
+        self.hud.spawn_damage_at(self.now, damage, position, kind);
     }
 
     /// Whatever else the frame needs, then this frame's HUD into `list`.
@@ -393,11 +407,11 @@ impl LiveValues {
                 self.hits += 1;
                 self.enemy_hp = wrapped(self.enemy_hp - 0.06);
                 self.enemy_poise = wrapped(self.enemy_poise - 0.11);
-                hud.spawn_damage(240 + self.hits * 37 % 900, enemy, DamageKind::Normal);
+                hud.spawn_damage_at(now, 240 + self.hits * 37 % 900, enemy, DamageKind::Normal);
             }
             (Button::Attack, ButtonEventKind::Held) => {
                 let value = 2400 + self.hits * 311 % 4000;
-                hud.spawn_damage(value, enemy + Vec2::new(0.0, -24.0), DamageKind::Heavy);
+                hud.spawn_damage_at(now, value, enemy + Vec2::new(0.0, -24.0), DamageKind::Heavy);
             }
             (Button::Dodge, ButtonEventKind::Pressed) => self.player_hp = wrapped(self.player_hp - 0.09),
             (Button::Skill, ButtonEventKind::Pressed) if self.cooldown_until.is_none() => {
@@ -481,6 +495,10 @@ impl ShownFight {
 
 /// Shows the hits `sim`'s latest step landed, once however often it's read.
 pub fn show_damage(hud: &mut FightHud, scene: &Scene, sim: &Simulation) {
+    // Offscreen events arrive before the next draw updates the HUD's clock.
+    hud.fight_time(Duration::from_nanos(
+        sim.tick().saturating_mul(1_000_000_000 / u64::from(sapphire_time::TICK_HZ)),
+    ));
     if !hud.reads_hits_of(sim.tick()) {
         return;
     }
@@ -650,6 +668,32 @@ mod tests {
         fixed.show_hit(30, Vec3::new(0.0, 1.0, 0.0), Weight::Light, view_projection);
         fixed.draw((640, 360), &mut list);
         assert_eq!(fixed.last_frame().0.damage_numbers, before);
+    }
+
+    #[test]
+    fn hits_use_the_event_frames_time_after_a_gap_in_drawing() {
+        let live = HudOptions { mode: HudMode::Live, ..HudOptions::default() };
+        for windowed in [false, true] {
+            let mut hud = FightHud::for_fight(live);
+            let mut list = UiDrawList::default();
+            hud.draw((640, 360), &mut list);
+            if windowed {
+                hud.update(ms(10_000), UiMetrics::new(Vec2::new(640.0, 360.0), Insets::default()));
+            } else {
+                hud.show_fight(HudValues::default(), Duration::from_secs(10));
+            }
+            hud.show_hit(30, Vec3::ZERO, Weight::Light, Mat4::IDENTITY);
+            list.reset();
+            hud.draw((640, 360), &mut list);
+            assert_eq!(hud.last_frame().0.damage_numbers, 1, "a new hit survives its first draw");
+            if windowed {
+                hud.update(ms(12_000), UiMetrics::new(Vec2::new(640.0, 360.0), Insets::default()));
+            } else {
+                hud.show_fight(HudValues::default(), Duration::from_secs(12));
+            }
+            hud.draw((640, 360), &mut list);
+            assert_eq!(hud.last_frame().0.damage_numbers, 0, "it still expires on its clock");
+        }
     }
 
     /// A pad takes the on-screen controls away (spec §6.6), and a desktop shows them only once a finger

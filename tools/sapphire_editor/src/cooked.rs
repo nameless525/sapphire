@@ -9,6 +9,7 @@
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
 use std::time::SystemTime;
 
 use sapphire_assets::AssetId;
@@ -33,6 +34,7 @@ const FIGURE_TRIANGLES: usize = 14_000;
 #[derive(Debug)]
 struct OpenPack {
     path: PathBuf,
+    file: Mutex<File>,
     toc: Toc,
 }
 
@@ -41,33 +43,66 @@ struct OpenPack {
 pub struct Cook {
     dir: PathBuf,
     packs: Vec<OpenPack>,
-    /// The newest pack's time, which says a cook has run since.
-    stamp: Option<SystemTime>,
+    stamp: Vec<PackStamp>,
+}
+
+/// Header identity includes the TOC hash, so equal/restored modification times still detect a recook.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct PackStamp {
+    path: PathBuf,
+    len: u64,
+    modified: Option<SystemTime>,
+    header: Vec<u8>,
+}
+
+pub(crate) fn pack_stamp(dir: &Path) -> Result<Vec<PackStamp>, String> {
+    let result = || -> std::io::Result<Vec<PackStamp>> {
+        let mut stamps = Vec::new();
+        for entry in std::fs::read_dir(dir)? {
+            let path = entry?.path();
+            if path.extension().is_some_and(|extension| extension == "spack") {
+                let file = File::open(&path)?;
+                let metadata = file.metadata()?;
+                let mut header = Vec::with_capacity(HEADER_LEN);
+                file.take(HEADER_LEN as u64).read_to_end(&mut header)?;
+                stamps.push(PackStamp {
+                    path,
+                    len: metadata.len(),
+                    modified: metadata.modified().ok(),
+                    header,
+                });
+            }
+        }
+        stamps.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(stamps)
+    };
+    result().map_err(|error| format!("{}: {error}", dir.display()))
 }
 
 impl Cook {
     /// The cook in `dir`: `target/content/desktop`. `Err` says why there's none to read.
     pub fn open(dir: &Path) -> Result<Self, String> {
-        let entries = std::fs::read_dir(dir).map_err(|error| format!("{}: {error}", dir.display()))?;
+        let stamp = pack_stamp(dir)?;
         let mut packs = Vec::new();
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().is_some_and(|extension| extension == "spack") {
-                let toc = read_toc(&path).map_err(|error| format!("{}: {error}", path.display()))?;
-                packs.push(OpenPack { path, toc });
-            }
+        for entry in &stamp {
+            let path = entry.path.clone();
+            let mut file = File::open(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+            let toc = read_toc(&mut file).map_err(|error| format!("{}: {error}", path.display()))?;
+            packs.push(OpenPack { path, file: Mutex::new(file), toc });
         }
         if packs.is_empty() {
             return Err(format!("{} holds no packs", dir.display()));
         }
-        packs.sort_by(|a, b| a.path.cmp(&b.path));
-        Ok(Self { dir: dir.to_owned(), packs, stamp: newest_pack(dir) })
+        if pack_stamp(dir)? != stamp {
+            return Err("the cook changed while opening its packs".to_owned());
+        }
+        Ok(Self { dir: dir.to_owned(), packs, stamp })
     }
 
-    /// Whether the packs on disk are newer than these.
+    /// Whether the pack set or any pack identity differs, regardless of modification-time ordering.
     #[must_use]
     pub fn is_stale(&self) -> bool {
-        newest_pack(&self.dir) != self.stamp
+        pack_stamp(&self.dir).as_ref() != Ok(&self.stamp)
     }
 
     /// Asset `id`, decoded, from whichever pack holds it. `None` if none does.
@@ -77,9 +112,12 @@ impl Cook {
             let range = pack.toc.stored_range(entry);
             let mut stored = vec![0; (range.end - range.start) as usize];
             let error = |error: std::io::Error| format!("{}: {error}", pack.path.display());
-            let mut file = File::open(&pack.path).map_err(error)?;
-            file.seek(SeekFrom::Start(range.start)).map_err(error)?;
-            file.read_exact(&mut stored).map_err(error)?;
+            {
+                // Keep the same open file as its TOC across atomic recooks; never mix two generations.
+                let mut file = pack.file.lock().unwrap_or_else(PoisonError::into_inner);
+                file.seek(SeekFrom::Start(range.start)).map_err(error)?;
+                file.read_exact(&mut stored).map_err(error)?;
+            }
             let decoded = pack
                 .toc
                 .decode_asset(entry, &stored, &mut Decoder::default())
@@ -111,8 +149,7 @@ impl Cook {
     }
 }
 
-fn read_toc(path: &Path) -> Result<Toc, String> {
-    let mut file = File::open(path).map_err(|error| error.to_string())?;
+fn read_toc(file: &mut File) -> Result<Toc, String> {
     let file_len = file.metadata().map_err(|error| error.to_string())?.len();
     let mut head = [0; HEADER_LEN];
     file.read_exact(&mut head).map_err(|error| error.to_string())?;
@@ -259,4 +296,59 @@ impl FigureRig {
 /// Reads a skeleton's bytes, for whoever keeps them alive.
 pub fn read_skeleton(bytes: &[u8]) -> Result<&ArchivedSkeleton, String> {
     Skeleton::read(bytes).map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs::{self, FileTimes};
+    use std::time::Duration;
+
+    use sapphire_assets::pack::{Codec, PackAsset, write_pack};
+
+    use super::*;
+
+    fn pack(id: AssetId, byte: u8) -> Vec<u8> {
+        write_pack(vec![
+            PackAsset::encode(id, AssetKind::Sound, Codec::None, &[byte; 8], Vec::new(), 1)
+                .expect("encoded asset"),
+        ])
+        .expect("pack")
+    }
+
+    #[test]
+    fn recooks_use_coherent_open_files_and_detect_each_pack_even_at_equal_timestamps() {
+        let dir = std::env::temp_dir().join(format!("sapphire_editor_pack_snapshot_{}", std::process::id()));
+        fs::create_dir_all(&dir).expect("directory");
+        let a = dir.join("a.spack");
+        let b = dir.join("b.spack");
+        let id = AssetId::from_bytes([1; 16]);
+        fs::write(&a, pack(id, 1)).expect("first pack");
+        fs::write(&b, pack(AssetId::from_bytes([2; 16]), 3)).expect("second pack");
+        let set_time = |path: &Path, seconds| {
+            File::options()
+                .write(true)
+                .open(path)
+                .expect("file")
+                .set_times(
+                    FileTimes::new().set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(seconds)),
+                )
+                .expect("timestamp");
+        };
+        set_time(&a, 1);
+        set_time(&b, 2);
+        let cook = Cook::open(&dir).expect("cook");
+        assert!(!cook.is_stale());
+        let staged = dir.join("replacement");
+        fs::write(&staged, pack(id, 2)).expect("new generation");
+        set_time(&staged, 1);
+        fs::rename(staged, &a).expect("atomic recook with the same timestamp and size");
+        assert!(cook.is_stale(), "the non-newest pack changed");
+        assert_eq!(&cook.read(id).expect("old generation").expect("asset")[..], &[1; 8]);
+        let fresh = Cook::open(&dir).expect("new cook");
+        assert_eq!(&fresh.read(id).expect("new generation").expect("asset")[..], &[2; 8]);
+        fs::remove_file(&a).expect("remove a non-newest pack");
+        assert!(fresh.is_stale());
+        drop((cook, fresh));
+        fs::remove_dir_all(dir).expect("cleanup");
+    }
 }

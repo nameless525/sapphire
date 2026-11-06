@@ -13,7 +13,6 @@ mod properties;
 use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 use egui::{Color32, Key, Modifiers, RichText, Sense, TextEdit, Ui, Vec2};
 use sapphire_assets::AssetId;
@@ -21,13 +20,13 @@ use sapphire_core::Name;
 use sapphire_document::disk::Temporary;
 use sapphire_document::{AnyDocument, DocumentSet, Kind, Noticed, PropertyPath, Rebased, SetError};
 use sapphire_livelink::protocol::MoveAttempt;
-use sapphire_moves::{MoveDocument, MoveSet, MoveSetDocument, RootSample};
+use sapphire_moves::{MoveDocument, MoveSet, MoveSetDocument};
 use sapphire_time::Stopwatch;
 
 use crate::cooked::{self, Cook};
 use crate::edits::{self, EditError, EntryRef, EntryValue, MovesDocument, Track};
 use crate::figure::{Casting, Figure, Figures};
-use crate::judge::{Verdict, judge};
+use crate::judge::judge;
 use crate::link::{Link, Pushed};
 use crate::preview::{self, FigureCache, Overlays, PosedFigure, View};
 use crate::run::{Frame, Run, Setup};
@@ -69,6 +68,25 @@ struct Playing {
     first_frame: usize,
 }
 
+/// One successful authored/compiled preview. Invalid edits never mix new casting with old tables.
+#[derive(Debug)]
+struct PreviewSnapshot {
+    document: MoveSetDocument,
+    set: MoveSet,
+}
+
+impl PreviewSnapshot {
+    fn move_at(&self, name: Option<&str>, index: usize) -> Option<&MoveDocument> {
+        // Names survive reordering. A renamed/removed move falls back to its prior slot, then first.
+        self.document
+            .moves
+            .iter()
+            .find(|mv| Some(mv.name.as_str()) == name)
+            .or_else(|| self.document.moves.get(index))
+            .or_else(|| self.document.moves.first())
+    }
+}
+
 /// The cook, once read.
 #[derive(Debug, Default)]
 struct CookState {
@@ -80,8 +98,8 @@ struct CookState {
     casting: Option<Casting>,
     /// Goes up when the cook changes, for what's cached from it.
     generation: u64,
-    /// The newest pack when this was read, so a cook that didn't read is tried again only when another comes.
-    tried: Option<SystemTime>,
+    /// Every pack identity at the last attempt, including a failed read to avoid idle retry loops.
+    tried: Option<Result<Vec<cooked::PackStamp>, String>>,
 }
 
 /// The document the top bar acts on, as tests and the top bar read it.
@@ -173,11 +191,11 @@ pub struct Editor {
     now: f64,
     content: Option<PathBuf>,
     cook: CookState,
-    /// The text [`Self::verdict`] and the run were made from.
+    /// The text the latest diagnostics were made from.
     judged: Option<String>,
-    verdict: Verdict,
-    /// The last set that compiled, which a refused edit's preview keeps showing.
-    set: Option<MoveSet>,
+    issues: Vec<sapphire_moves::Issue>,
+    /// The authored source and compiled set of one successful preview, replaced together.
+    preview: Option<PreviewSnapshot>,
     /// The text no longer compiles, so the preview is of what last did.
     stale: bool,
     selected_move: usize,
@@ -193,6 +211,7 @@ pub struct Editor {
     run_error: Option<String>,
     frame: usize,
     view: View,
+    view_fit: ViewFit,
     overlays: Overlays,
     cache: FigureCache,
     drag: Option<Drag>,
@@ -256,6 +275,13 @@ enum Quit {
     Yes,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum ViewFit {
+    Pending,
+    Fitted(Vec2),
+    Manual,
+}
+
 impl Editor {
     #[must_use]
     pub fn new(options: Options) -> Self {
@@ -273,8 +299,8 @@ impl Editor {
             content: options.content,
             cook: CookState::default(),
             judged: None,
-            verdict: Verdict::default(),
-            set: None,
+            issues: Vec::new(),
+            preview: None,
             stale: false,
             selected_move: 0,
             selected_entry: None,
@@ -288,6 +314,7 @@ impl Editor {
             run_error: None,
             frame: 0,
             view: View::default(),
+            view_fit: ViewFit::Pending,
             overlays: Overlays::default(),
             cache: FigureCache::default(),
             drag: None,
@@ -344,7 +371,6 @@ impl Editor {
         if *saved == self.shell.tree {
             return;
         }
-        saved.clone_from(&self.shell.tree);
         let text = match self.shell.save_layout() {
             Ok(text) => text,
             Err(error) => {
@@ -354,6 +380,8 @@ impl Editor {
         };
         if let Err(error) = Temporary::beside(path, &text).and_then(|temporary| temporary.replace(path)) {
             tracing::warn!(%error, path = %path.display(), "the layout wasn't kept");
+        } else {
+            saved.clone_from(&self.shell.tree);
         }
     }
 
@@ -410,10 +438,10 @@ impl Editor {
         match kind.open(&mut self.documents, path) {
             Ok(id) => {
                 // It may be open from before, with a file that's moved on.
-                let noticed = self.documents.refresh();
-                self.say_noticed(noticed);
                 self.notice = None;
                 self.go_to(id);
+                let noticed = self.documents.refresh();
+                self.say_noticed(noticed);
                 if kind == Kind::Moves {
                     self.show_on_timeline(id, path);
                 }
@@ -447,14 +475,15 @@ impl Editor {
     }
 
     fn reset_timeline(&mut self) {
+        self.view_fit = ViewFit::Pending;
         self.selected_move = 0;
         self.selected_entry = None;
         self.tick = 0;
         self.play_from = 0;
         self.playing = None;
         self.judged = None;
-        self.verdict = Verdict::default();
-        self.set = None;
+        self.issues.clear();
+        self.preview = None;
         self.stale = false;
         self.run = None;
         self.run_error = None;
@@ -528,11 +557,12 @@ impl Editor {
     fn load_cook(&mut self) {
         let generation = self.cook.generation + 1;
         self.cook = CookState { generation, ..CookState::default() };
+        self.view_fit = ViewFit::Pending;
         let Some(dir) = self.content.clone() else {
             self.cook.why_none = Some("no cook found: `cargo xtask content` makes one".to_owned());
             return;
         };
-        self.cook.tried = cooked::newest_pack(&dir);
+        self.cook.tried = Some(cooked::pack_stamp(&dir));
         match Cook::open(&dir) {
             Ok(cook) => {
                 if let Some(path) = self.moves.and_then(|id| self.documents.path(id)) {
@@ -578,7 +608,7 @@ impl Editor {
     /// Whether there's anything here the files don't have: edits in any document, or a value still being typed.
     #[must_use]
     pub fn is_dirty(&self) -> bool {
-        self.typed.is_some() || !self.documents.dirty().is_empty()
+        self.typed.is_some() || self.documents.ids().any(|id| self.documents.is_dirty(id))
     }
 
     /// The document on the timeline.
@@ -648,7 +678,6 @@ impl Editor {
     #[must_use]
     pub fn problems(&self) -> Vec<Problem> {
         let mut problems: Vec<Problem> = self
-            .verdict
             .issues
             .iter()
             .map(|issue| Problem {
@@ -702,6 +731,7 @@ impl Editor {
             self.playing = None;
             self.set_tick(0);
             self.play_from = 0;
+            self.view_fit = ViewFit::Pending;
             self.remake_run();
         }
     }
@@ -726,6 +756,7 @@ impl Editor {
 
     /// Plays from frame N: [`Self::play_from`]'s tick, at `now` seconds.
     pub fn play(&mut self, now: f64) {
+        self.now = now;
         let Some(first_frame) = self.run.as_ref().and_then(|run| run.frame_at_tick(self.play_from)) else {
             return;
         };
@@ -743,10 +774,11 @@ impl Editor {
 
     /// Moves playback on to `now` seconds. Played out, it goes back to where it started, ready to go again.
     pub fn advance_playback(&mut self, now: f64) {
+        self.now = now;
         let Some(playing) = self.playing else { return };
         let Some(run) = &self.run else { return };
         let steps = ((now - playing.started).max(0.0) * 60.0 * f64::from(self.speed)) as usize;
-        let frame = playing.first_frame + steps;
+        let frame = playing.first_frame.saturating_add(steps);
         if frame < run.frames.len() {
             self.frame = frame;
             self.tick = run.frames[frame].tick.min(run.ticks.saturating_sub(1));
@@ -761,19 +793,33 @@ impl Editor {
         }
     }
 
+    /// Changes playback rate while retaining its current phase. Nonpositive/nonfinite rates are ignored.
     pub fn set_speed(&mut self, speed: f32) {
+        if !speed.is_finite() || speed <= 0.0 {
+            return;
+        }
+        if let Some(playing) = &mut self.playing {
+            let elapsed = (self.now - playing.started).max(0.0) * f64::from(self.speed);
+            playing.started = self.now - elapsed / f64::from(speed);
+        }
         self.speed = speed;
     }
 
     /// Sets how far the dummy stands, which plays the move again.
     pub fn set_dummy_distance(&mut self, distance: f32) {
         self.setup.dummy_distance = distance;
+        if !matches!(self.view_fit, ViewFit::Manual) {
+            self.view_fit = ViewFit::Pending;
+        }
         self.remake_run();
     }
 
     /// Sets whether warp windows bend toward the dummy, which plays the move again.
     pub fn set_warp_to_dummy(&mut self, warp: bool) {
         self.setup.warp_to_dummy = warp;
+        if !matches!(self.view_fit, ViewFit::Manual) {
+            self.view_fit = ViewFit::Pending;
+        }
         self.remake_run();
     }
 
@@ -787,14 +833,16 @@ impl Editor {
         let changed_before = self.judged.is_some();
         match file.value() {
             Some(document) => {
-                self.verdict = judge(document, self.cook.set.as_ref());
-                self.stale = self.verdict.set.is_none();
-                if let Some(set) = &self.verdict.set {
-                    self.set = Some(set.clone());
+                let verdict = judge(document, self.cook.set.as_ref());
+                let snapshot = verdict.set.map(|set| PreviewSnapshot { set, document: document.clone() });
+                self.issues = verdict.issues;
+                self.stale = snapshot.is_none();
+                if let Some(snapshot) = snapshot {
+                    self.preview = Some(snapshot);
                 }
             }
             None => {
-                self.verdict = Verdict::default();
+                self.issues.clear();
                 self.stale = true;
             }
         }
@@ -813,20 +861,7 @@ impl Editor {
 
     fn remake_run(&mut self) {
         self.run_error = None;
-        let Some(mv) = self.document().and_then(|document| document.moves.get(self.selected_move)).cloned()
-        else {
-            self.run = None;
-            return;
-        };
-        // A cook's figure for this move, or none.
-        self.cook.casting = None;
-        if let Some(cook) = &self.cook.cook {
-            match self.cook.figures.cast(&mv, cook) {
-                Ok(casting) => self.cook.casting = casting,
-                Err(why) => self.run_error = Some(why),
-            }
-        }
-        let Some(set) = &self.set else {
+        let Some(snapshot) = &self.preview else {
             self.run = None;
             self.run_error =
                 Some(match (&self.cook.cook, self.document().is_some_and(MoveSetDocument::names_clips)) {
@@ -839,7 +874,18 @@ impl Editor {
                 });
             return;
         };
-        match Run::simulate(set, &mv.name, self.setup) {
+        let Some(mv) = snapshot.move_at(self.selected_move_name(), self.selected_move) else {
+            self.run = None;
+            return;
+        };
+        self.cook.casting = None;
+        if let Some(cook) = &self.cook.cook {
+            match self.cook.figures.cast(mv, cook) {
+                Ok(casting) => self.cook.casting = casting,
+                Err(why) => self.run_error = Some(why),
+            }
+        }
+        match Run::simulate(&snapshot.set, &mv.name, self.setup) {
             Ok(run) => {
                 self.frame = run.frame_at_tick(self.tick).unwrap_or(0);
                 self.playing = self.playing.filter(|playing| playing.first_frame < run.frames.len());
@@ -961,7 +1007,11 @@ impl Editor {
             return;
         }
         self.drag = None;
-        let ids: Vec<AssetId> = self.documents.ids().collect();
+        let ids: Vec<AssetId> = self
+            .documents
+            .ids()
+            .filter(|id| self.documents.any(*id).is_some_and(|file| file.in_gesture()))
+            .collect();
         for id in ids {
             if let Some(file) = self.documents.any_mut(id)
                 && file.in_gesture()
@@ -1116,8 +1166,10 @@ impl Editor {
                 self.edit("edit the phases", |text| edits::set_phases(text, mv, phases));
                 let tick = match edge {
                     PhaseEdge::StartupEnd => phases.startup,
-                    PhaseEdge::ActiveEnd => phases.startup + phases.active,
-                    PhaseEdge::MoveEnd => phases.startup + phases.active + phases.recovery,
+                    PhaseEdge::ActiveEnd => phases.startup.saturating_add(phases.active),
+                    PhaseEdge::MoveEnd => {
+                        phases.startup.saturating_add(phases.active).saturating_add(phases.recovery)
+                    }
                 };
                 self.set_tick(tick);
             }
@@ -1171,7 +1223,9 @@ impl Editor {
             self.edit("set a window's start", |text| edits::set_window(text, entry, tick, span.to));
         } else {
             // The playhead's tick is the window's last open tick.
-            self.edit("set a window's end", |text| edits::set_window(text, entry, span.from, tick + 1));
+            self.edit("set a window's end", |text| {
+                edits::set_window(text, entry, span.from, tick.saturating_add(1))
+            });
         }
     }
 
@@ -1180,8 +1234,9 @@ impl Editor {
         let Some(entry) = self.selected_entry else { return };
         let Some(mv) = self.document().and_then(|document| document.moves.get(entry.mv)) else { return };
         let Some(span) = entry.track.spans(mv).get(entry.index).copied() else { return };
-        let from = (i64::from(span.from) + by).max(0) as u32;
-        let to = from + span.to.saturating_sub(span.from);
+        let width = span.to.saturating_sub(span.from);
+        let from = i64::from(span.from).saturating_add(by).clamp(0, i64::from(u32::MAX - width)) as u32;
+        let to = from + width;
         if entry.track.is_instant() {
             self.edit("nudge an instant", |text| edits::set_instant(text, entry, from));
         } else {
@@ -1229,8 +1284,8 @@ impl Editor {
         if self.content.is_none() {
             self.content = self.moves.and_then(|id| self.documents.path(id)).and_then(find_cook);
         }
-        let newest = self.content.as_deref().and_then(cooked::newest_pack);
-        newest.is_some() && newest != self.cook.tried
+        let current = self.content.as_deref().map(cooked::pack_stamp);
+        current.is_some() && current != self.cook.tried
     }
 
     /// The whole interface.
@@ -1299,7 +1354,7 @@ impl Editor {
             self.set_tick(self.tick.saturating_sub(1));
         }
         if pressed(Modifiers::NONE, Key::ArrowRight) || pressed(Modifiers::NONE, Key::Period) {
-            self.set_tick(self.tick + 1);
+            self.set_tick(self.tick.saturating_add(1));
         }
         if pressed(Modifiers::NONE, Key::Home) {
             self.set_tick(0);
@@ -1320,7 +1375,7 @@ impl Editor {
 
     fn top_bar(&mut self, ui: &mut Ui) {
         ui.add_space(3.0);
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             let name = self.current().map_or_else(|| "no file".to_owned(), |file| file.file_name());
             let dirty = self.typed.is_some() || self.current().is_some_and(|file| file.is_dirty());
             let title = if dirty { format!("{name} *") } else { name };
@@ -1394,7 +1449,7 @@ impl Editor {
             ui.label(words);
         });
         if self.quit == Quit::Asking {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.colored_label(Color32::from_rgb(255, 170, 90), "You have edits that aren't saved.");
                 if ui.button("Save and quit").clicked() {
                     match self.save_all() {
@@ -1414,7 +1469,7 @@ impl Editor {
             });
         }
         if let Some(id) = self.closing {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.colored_label(Color32::from_rgb(255, 170, 90), "You have edits that aren't saved.");
                 if ui.button("Save and close").clicked() {
                     match self.documents.save(id) {
@@ -1441,7 +1496,7 @@ impl Editor {
                     false,
                 ),
             };
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.colored_label(Color32::from_rgb(255, 170, 90), said);
                 if can_take && ui.button("Take the file's").clicked() {
                     self.typed = None;
@@ -1486,7 +1541,7 @@ impl Editor {
                     typed.at.label(),
                 ),
             };
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 if let Some(entry) = entry
                     && ui.button("Show it").clicked()
                 {
@@ -1527,7 +1582,7 @@ impl Editor {
     fn moves_list(&mut self, ui: &mut Ui) {
         let Some(document) = self.document() else { return };
         let problems = self.problems();
-        let rows: Vec<(usize, String, u32, usize)> = document
+        let rows: Vec<(usize, &str, u32, usize)> = document
             .moves
             .iter()
             .enumerate()
@@ -1536,7 +1591,7 @@ impl Editor {
                     .iter()
                     .filter(|problem| problem.in_move.as_deref() == Some(mv.name.as_str()))
                     .count();
-                (index, mv.name.clone(), mv.ticks(), count)
+                (index, mv.name.as_str(), mv.ticks(), count)
             })
             .collect();
         let mut choose = None;
@@ -1562,24 +1617,36 @@ impl Editor {
     fn timeline_panel(&mut self, ui: &mut Ui) {
         ui.add_space(3.0);
         let problems = self.problems();
-        let Some(document) = self.document() else {
+        let editable = self.moves_document().is_some_and(|file| file.failure().is_none());
+        let Some(document) = self
+            .moves
+            .and_then(|id| self.documents.get::<MoveSetDocument>(id))
+            .and_then(|file| file.last_good())
+        else {
             ui.label("Open a `.moves.ron` file.");
             return;
         };
-        let Some(mv) = document.moves.get(self.selected_move).cloned() else { return };
-        let root = self.root_samples(&mv.name);
+        let Some(mv) = document.moves.get(self.selected_move) else { return };
+        let root = self
+            .preview
+            .as_ref()
+            .and_then(|snapshot| {
+                snapshot
+                    .move_at(Some(&mv.name), self.selected_move)
+                    .and_then(|mv| snapshot.set.find(Name::intern(&mv.name)))
+            })
+            .map(|(_, mv)| mv.tables.root_samples());
         let hit_ticks: Vec<u32> = self
             .run
             .as_ref()
             .map_or_else(Vec::new, |run| run.hits().filter(|hit| hit.on_dummy).map(|hit| hit.tick).collect());
-        let editable = self.moves_document().is_some_and(|file| file.failure().is_none());
         let view = TimelineView {
-            mv: &mv,
+            mv,
             mv_index: self.selected_move,
             tick: self.tick,
             selected: self.selected_entry,
             problems: &problems,
-            root: root.as_deref(),
+            root,
             hit_ticks: &hit_ticks,
             editable,
             show_all: self.show_all_tracks,
@@ -1603,13 +1670,16 @@ impl Editor {
         ui.horizontal(|ui| {
             ui.checkbox(&mut self.show_all_tracks, "All tracks");
             let command = if ui.ctx().os() == egui::os::OperatingSystem::Mac { "Cmd" } else { "Ctrl" };
-            ui.label(
-                RichText::new(format!(
-                    "Drag ends and bodies.   [ and ]: window's ends to the playhead.   Alt+arrows: nudge.   \
-                     Delete: remove.   {command}+Z: undo.   {command}+S: save and push."
-                ))
-                .small()
-                .color(Color32::from_gray(140)),
+            ui.add(
+                egui::Label::new(
+                    RichText::new(format!(
+                        "Drag ends and bodies.   [ and ]: window's ends to the playhead.   Alt+arrows: nudge.   \
+                         Delete: remove.   {command}+Z: undo.   {command}+S: save and push."
+                    ))
+                    .small()
+                    .color(Color32::from_gray(140)),
+                )
+                .truncate(),
             );
         });
         self.problems_strip(ui);
@@ -1617,17 +1687,11 @@ impl Editor {
         ui.allocate_space(ui.available_size());
     }
 
-    fn root_samples(&self, name: &str) -> Option<Vec<RootSample>> {
-        let set = self.verdict.set.as_ref().or(self.set.as_ref())?;
-        let (_, mv) = set.find(Name::intern(name))?;
-        Some(mv.tables.root_samples().to_vec())
-    }
-
     /// The document's problems, whichever move they're in.
     fn problems_strip(&mut self, ui: &mut Ui) {
         let problems = self.problems();
         if problems.is_empty() {
-            let word = if self.verdict.set.is_some() {
+            let word = if !self.stale && self.preview.is_some() {
                 "The document compiles."
             } else {
                 "The document checks, as far as it can with no cook."
@@ -1655,7 +1719,7 @@ impl Editor {
 
     fn preview_panel(&mut self, ui: &mut Ui, now: f64) {
         self.transport(ui, now);
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label("Dummy");
             let mut distance = self.setup.dummy_distance;
             let response =
@@ -1670,12 +1734,15 @@ impl Editor {
             ui.separator();
             if ui.small_button("Side").clicked() {
                 self.view = View::side(self.setup.dummy_distance);
+                self.view_fit = ViewFit::Pending;
             }
             if ui.small_button("Front").clicked() {
                 self.view = View::front(self.setup.dummy_distance);
+                self.view_fit = ViewFit::Pending;
             }
             if ui.small_button("Top").clicked() {
                 self.view = View::top(self.setup.dummy_distance);
+                self.view_fit = ViewFit::Pending;
             }
             ui.checkbox(&mut self.overlays.bones, "Bones");
             ui.checkbox(&mut self.overlays.hurtboxes, "Hurtboxes");
@@ -1684,6 +1751,7 @@ impl Editor {
         let (response, painter) = ui.allocate_painter(size, Sense::click_and_drag());
         let rect = response.rect;
         if response.dragged() {
+            self.view_fit = ViewFit::Manual;
             let delta = response.drag_delta();
             self.view.yaw += delta.x * 0.008;
             self.view.pitch = (self.view.pitch + delta.y * 0.008).clamp(-0.3, 1.55);
@@ -1691,6 +1759,7 @@ impl Editor {
         if response.hovered() {
             let zoom = ui.input(|input| input.smooth_scroll_delta.y);
             if zoom != 0.0 {
+                self.view_fit = ViewFit::Manual;
                 self.view.zoom = (self.view.zoom * (1.0 + zoom * 0.002)).clamp(0.2, 6.0);
             }
         }
@@ -1702,6 +1771,12 @@ impl Editor {
         if let Some(run) = &self.run
             && let Some(frame) = run.frames.get(self.frame)
         {
+            if matches!(self.view_fit, ViewFit::Pending)
+                || matches!(self.view_fit, ViewFit::Fitted(size) if size != rect.size())
+            {
+                self.view.fit(rect, frame, posed);
+                self.view_fit = ViewFit::Fitted(rect.size());
+            }
             preview::draw(&painter, rect, &self.view, run, frame, posed, &mut self.cache, self.overlays);
             drew = true;
         }
@@ -1710,13 +1785,15 @@ impl Editor {
             preview::empty(&painter, rect, &why);
         }
         if self.stale && drew {
-            painter.text(
-                rect.left_bottom() + Vec2::new(10.0, -10.0),
-                egui::Align2::LEFT_BOTTOM,
-                "the document doesn't compile: this shows what last did",
+            let color = Color32::from_rgb(255, 150, 120);
+            let galley = painter.layout(
+                "Showing the last valid preview.".to_owned(),
                 egui::FontId::proportional(13.0),
-                Color32::from_rgb(255, 150, 120),
+                color,
+                (rect.width() - 20.0).max(1.0),
             );
+            let at = rect.left_bottom() + Vec2::new(10.0, -10.0 - galley.size().y);
+            painter.galley(at, galley, color);
         }
         if posed_missing(&self.cook, self.document()) {
             let why = if self.cook.cook.is_some() {
@@ -1736,7 +1813,7 @@ impl Editor {
     }
 
     fn transport(&mut self, ui: &mut Ui, now: f64) {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             let ticks = self
                 .document()
                 .and_then(|document| document.moves.get(self.selected_move))
@@ -1748,7 +1825,7 @@ impl Editor {
                 self.set_tick(self.tick.saturating_sub(1));
             }
             if ui.small_button(">").on_hover_text("One tick on (Right, or full stop)").clicked() {
-                self.set_tick(self.tick + 1);
+                self.set_tick(self.tick.saturating_add(1));
             }
             let mut tick = self.tick;
             let response = ui.add(
@@ -1774,7 +1851,7 @@ impl Editor {
             }
             for (speed, word) in SPEEDS {
                 if ui.selectable_label(self.speed == speed, word).clicked() {
-                    self.speed = speed;
+                    self.set_speed(speed);
                 }
             }
             ui.checkbox(&mut self.looping, "Loop");
@@ -1871,20 +1948,15 @@ impl Editor {
     fn value_row(&mut self, ui: &mut Ui, entry: EntryRef, value: &EntryValue) {
         ui.label(&value.path);
         let label = format!("edit {}", value.path);
-        if let Ok(number) = value.literal.parse::<f64>() {
-            let is_int = !value.literal.contains(['.', 'e', 'E']);
-            let decimals = value.literal.split_once('.').map_or(2, |(_, fraction)| fraction.len().max(2));
-            let mut shown = number;
-            let drag = if is_int {
-                egui::DragValue::new(&mut shown).speed(0.25).max_decimals(0)
-            } else {
-                egui::DragValue::new(&mut shown).speed(0.01).fixed_decimals(decimals)
-            };
-            let response = ui.add(drag);
+        let number = self
+            .document()
+            .and_then(|document| sapphire_document::walk::get(document, &value.property).ok())
+            .and_then(properties::number_kind);
+        if let Some(kind) = number
+            && let Some((response, literal)) = properties::number_widget(ui, &value.literal, kind)
+        {
             self.timeline_number_gesture(&response, &label);
-            if response.changed() {
-                let literal =
-                    if is_int { format!("{}", shown.round() as i64) } else { format!("{shown:.decimals$}") };
+            if let Some(literal) = literal {
                 self.edit(&label, |text| edits::set_entry_value(text, entry, &value.path, &literal));
             }
         } else {
@@ -1919,23 +1991,20 @@ impl Editor {
         let Some(mv) = document.moves.get(self.selected_move) else { return };
         let (name, startup, active, recovery, ticks) =
             (mv.name.clone(), mv.startup, mv.active, mv.recovery, mv.ticks());
-        let clip = mv.motion.clip.as_ref().map(|clip| clip.source.clone());
+        let has_clip = mv.motion.clip.is_some();
         ui.label(RichText::new(name).strong());
         ui.label(format!("{ticks} ticks, {:.0} ms", f64::from(ticks) * 1000.0 / 60.0));
         ui.label(format!("startup {startup}, active {active}, recovery {recovery}"));
-        match clip {
-            Some(_) => {
-                ui.label(
-                    RichText::new(
-                        "Plays a clip tick for tick, so its length is the clip's. Windows move freely.",
-                    )
-                    .small()
-                    .color(Color32::from_gray(150)),
-                );
-            }
-            None => {
-                ui.label(RichText::new("Keyed by hand.").small().color(Color32::from_gray(150)));
-            }
+        if has_clip {
+            ui.label(
+                RichText::new(
+                    "Plays a clip tick for tick, so its length is the clip's. Windows move freely.",
+                )
+                .small()
+                .color(Color32::from_gray(150)),
+            );
+        } else {
+            ui.label(RichText::new("Keyed by hand.").small().color(Color32::from_gray(150)));
         }
         ui.label(
             RichText::new("Select something on the timeline to edit it.")
@@ -1949,7 +2018,12 @@ impl Editor {
             Some(status) => {
                 ui.label(format!("{}, cook `{}`", status.platform, status.cook));
                 let name = self.current().map(|file| file.file_name()).unwrap_or_default();
-                let taken = status.documents.iter().find(|document| document.source.ends_with(name.as_str()));
+                let taken = status.documents.iter().find(|document| {
+                    !name.is_empty()
+                        && Path::new(&document.source)
+                            .file_name()
+                            .is_some_and(|source| source == name.as_str())
+                });
                 match taken {
                     Some(document) => {
                         ui.label(format!("takes this file: {} edits so far", document.edits));
@@ -2003,12 +2077,12 @@ impl Editor {
                     .color(Color32::from_gray(150)),
             );
         }
-        let attempts: Vec<MoveAttempt> = self.link.attempts().to_vec();
+        let attempts = self.link.attempts();
         if !attempts.is_empty() {
             ui.add_space(3.0);
             ui.label(RichText::new("Last attempts").small().strong());
             for attempt in attempts {
-                self.attempt_row(ui, &attempt);
+                self.attempt_row(ui, attempt);
             }
         }
     }
@@ -2105,7 +2179,7 @@ fn posed_missing(cook: &CookState, document: Option<&MoveSetDocument>) -> bool {
 /// What a new entry starts as, at `tick`, in the file's own words. The numbers are a start, not a choice:
 /// a hit volume rides the move's first path, and a cancel allows what starts from neutral.
 fn default_entry(document: &MoveSetDocument, mv: &MoveDocument, track: Track, tick: u32) -> String {
-    let (from, to) = (tick, tick + 3);
+    let (from, to) = (tick, tick.saturating_add(3));
     match track {
         Track::Hitboxes => {
             let from_clip =
@@ -2119,9 +2193,7 @@ fn default_entry(document: &MoveSetDocument, mv: &MoveDocument, track: Track, ti
                 count += 1;
                 name = format!("{}_hit_{count}", mv.name);
             }
-            format!(
-                "(name: \"{name}\", from: {from}, to: {to}, path: \"{path}\", shape: Sphere(radius: 0.3))"
-            )
+            format!("(name: {name:?}, from: {from}, to: {to}, path: {path:?}, shape: Sphere(radius: 0.3))")
         }
         Track::Hurtboxes => {
             let name = document
@@ -2129,7 +2201,7 @@ fn default_entry(document: &MoveSetDocument, mv: &MoveDocument, track: Track, ti
                 .as_ref()
                 .and_then(|fighter| fighter.hurtboxes.first())
                 .map_or("body", |hurtbox| hurtbox.name.as_str());
-            format!("(name: \"{name}\", from: {from}, to: {to}, state: Off)")
+            format!("(name: {name:?}, from: {from}, to: {to}, state: Off)")
         }
         Track::Invulnerable | Track::Parry | Track::PerfectDodge => format!("(from: {from}, to: {to})"),
         Track::Armour => format!("(from: {from}, to: {to}, threshold: 10)"),
@@ -2138,7 +2210,7 @@ fn default_entry(document: &MoveSetDocument, mv: &MoveDocument, track: Track, ti
                 .neutral
                 .first()
                 .map_or(("intent", "move"), |allow| (allow.intent.as_str(), allow.target.as_str()));
-            format!("(from: {from}, to: {to}, allow: [(intent: \"{intent}\", move: \"{target}\")])")
+            format!("(from: {from}, to: {to}, allow: [(intent: {intent:?}, move: {target:?})])")
         }
         Track::Warps => format!("(from: {from}, to: {to}, max_distance: 0.5, max_turn: 0.5, keep: 1.0)"),
         Track::Cues => format!("(name: \"cue\", at: {from})"),
@@ -2200,8 +2272,89 @@ pub fn figure_of(editor: &Editor) -> Option<&Figure> {
 
 #[cfg(test)]
 mod tests {
-    use super::generated_by;
+    use super::*;
     use crate::edits::test_files::{PLAYER, WARRIOR};
+
+    #[test]
+    fn added_entries_preserve_authored_string_literals() {
+        let mut document = MoveSetDocument::parse(PLAYER).expect("parses");
+        let unusual = "a\"b\\c\n\t\0é";
+        document.moves[0].name = unusual.to_owned();
+        document.moves[0].motion.clip.as_mut().expect("clip").paths[0].name = unusual.to_owned();
+        document.neutral[0].intent = unusual.to_owned();
+        document.neutral[0].target = unusual.to_owned();
+        let mv = &document.moves[0];
+        let hitbox = default_entry(&document, mv, Track::Hitboxes, 7);
+        let parsed: sapphire_moves::HitboxDocument = ron::from_str(&hitbox).expect("an escaped entry");
+        assert_eq!(parsed.name, format!("{unusual}_hit"));
+        assert_eq!(parsed.path, unusual);
+        let cancel = default_entry(&document, mv, Track::Cancels, 7);
+        let parsed: sapphire_moves::CancelDocument = ron::from_str(&cancel).expect("an escaped cancel");
+        assert_eq!(parsed.allow[0].intent, unusual);
+        assert_eq!(parsed.allow[0].target, unusual);
+    }
+
+    #[test]
+    fn an_automatically_fitted_camera_stays_still_while_scrubbing_and_manual_orbit_opts_out() {
+        let dir = std::env::temp_dir().join(format!("sapphire_editor_camera_{}", std::process::id()));
+        fs::create_dir_all(&dir).expect("directory");
+        let path = dir.join("warrior.moves.ron");
+        fs::write(&path, WARRIOR).expect("source");
+        let mut editor = Editor::new(Options {
+            file: Some(path),
+            content: Some(dir.join("no cook")),
+            link: Some("127.0.0.1:9".parse().expect("address")),
+        });
+        let ctx = egui::Context::default();
+        let mut textures = crate::capture::Textures::default();
+        let mut pass = 0;
+        let mut pump = |editor: &mut Editor, events: Vec<egui::Event>| {
+            pass += 1;
+            let mut input = crate::capture::raw_input(600, 400, f64::from(pass) * 0.05);
+            input.events = events;
+            let output = ctx.run_ui(input, |ui| editor.preview_panel(ui, f64::from(pass) * 0.05));
+            crate::capture::settle(&ctx, &mut textures, output);
+        };
+        for _ in 0..4 {
+            pump(&mut editor, Vec::new());
+        }
+        assert!(matches!(editor.view_fit, ViewFit::Fitted(_)));
+        let fitted = editor.view;
+        editor.set_tick(10);
+        pump(&mut editor, Vec::new());
+        assert_eq!(editor.view, fitted, "scrubbing does not refit");
+        let at = egui::pos2(300.0, 250.0);
+        pump(
+            &mut editor,
+            vec![
+                egui::Event::PointerMoved(at),
+                egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Modifiers::NONE,
+                },
+            ],
+        );
+        let moved = at + egui::vec2(30.0, 10.0);
+        pump(&mut editor, vec![egui::Event::PointerMoved(moved)]);
+        assert!(matches!(editor.view_fit, ViewFit::Manual));
+        assert_ne!(editor.view, fitted);
+        pump(
+            &mut editor,
+            vec![egui::Event::PointerButton {
+                pos: moved,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::NONE,
+            }],
+        );
+        let manual = editor.view;
+        editor.set_tick(20);
+        pump(&mut editor, Vec::new());
+        assert_eq!(editor.view, manual);
+        fs::remove_dir_all(dir).expect("cleanup");
+    }
 
     #[test]
     fn a_file_a_tool_writes_says_which() {

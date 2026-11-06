@@ -48,8 +48,10 @@ impl App for OffscreenGame {
             stage.render(&view, 1.0, |_, _| {})?;
             stage.show.say_first_uses(&stage.renderer);
         }
-        stage.step();
-        stage.show.drive_view(frame);
+        if options.ticks > 0 {
+            stage.step();
+            stage.show.drive_view(frame);
+        }
         let readback = Readback::new(&stage.gpu, width, height);
         stage.render(&view, 1.0, |graph, target| readback.record(graph, target))?;
         stage.check_gpu()?;

@@ -83,6 +83,7 @@ pub fn run_capture(options: Options, args: &CaptureArgs) -> Result<(), String> {
     if options.file.is_none() {
         return Err(format!("--capture needs a file\n\n{USAGE}"));
     }
+    capture::validate_size(args.width, args.height)?;
     let mut editor = Editor::new(options);
     if let Some(notice) = editor.notice() {
         return Err(notice.text.clone());
@@ -98,13 +99,30 @@ pub fn run_capture(options: Options, args: &CaptureArgs) -> Result<(), String> {
 
 /// Draws the editor as it stands, to a PNG.
 pub fn write_frame(editor: &mut Editor, width: u32, height: u32, png: &Path) -> Result<(), String> {
+    capture::validate_size(width, height)?;
+    if let Ok(output) = png.canonicalize() {
+        for id in editor.documents().ids() {
+            if editor.documents().path(id).and_then(|path| path.canonicalize().ok()).as_ref() == Some(&output)
+            {
+                return Err(format!(
+                    "{} is an open source document, not a capture destination",
+                    png.display()
+                ));
+            }
+        }
+    }
     let ctx = egui::Context::default();
     let mut textures = Textures::default();
     // egui's panels and grids measure on their first passes.
     let mut last = None;
     for pass in 0..4 {
         let input = capture::raw_input(width, height, f64::from(pass) * 0.05);
-        last = Some(capture::draw(&ctx, &mut textures, input, width, height, |ui| editor.ui(ui)));
+        let output = ctx.run_ui(input, |ui| editor.ui(ui));
+        if pass == 3 {
+            last = Some(capture::rasterize(&ctx, &mut textures, output, width, height));
+        } else {
+            capture::settle(&ctx, &mut textures, output);
+        }
     }
     let image = last.ok_or_else(|| "no frame".to_owned())?;
     image.write_png(png).map_err(|error| format!("{}: {error}", png.display()))
@@ -116,6 +134,24 @@ mod tests {
 
     fn args(text: &str) -> Vec<String> {
         text.split_whitespace().map(ToOwned::to_owned).collect()
+    }
+
+    #[test]
+    fn a_capture_cannot_replace_an_open_source_document() {
+        let dir = std::env::temp_dir().join(format!("sapphire_capture_source_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("test directory");
+        let path = dir.join("source.moves.ron");
+        let text = crate::edits::test_files::WARRIOR;
+        std::fs::write(&path, text).expect("source");
+        let mut editor = Editor::new(Options {
+            file: Some(path.clone()),
+            content: Some(dir.join("no cook")),
+            link: Some("127.0.0.1:9".parse().expect("an address")),
+        });
+        let error = write_frame(&mut editor, 32, 32, &path).expect_err("source alias refused");
+        assert!(error.contains("open source document"), "{error}");
+        assert_eq!(std::fs::read_to_string(&path).expect("source remains"), text);
+        std::fs::remove_dir_all(dir).expect("cleanup");
     }
 
     #[test]

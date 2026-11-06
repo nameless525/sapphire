@@ -220,6 +220,39 @@ fn a_layout_that_doesnt_read_leaves_the_one_there() {
     assert_eq!(harness.state().shell.tree, tree);
 }
 
+#[test]
+fn malformed_layout_graphs_are_refused_before_traversal() {
+    let mut shell = Shell::new();
+    let original = shell.tree.clone();
+    for defect in 0..4 {
+        let mut broken = Shell::new();
+        let root = broken.tree.root().expect("root");
+        match defect {
+            0 => {
+                *broken.tree.tiles.get_mut(root).expect("root tile") =
+                    Tile::Container(Container::new_horizontal(vec![root]));
+            }
+            1 => {
+                let pane = broken.find(Pane::Preview).expect("preview");
+                *broken.tree.tiles.get_mut(root).expect("root tile") =
+                    Tile::Container(Container::new_horizontal(vec![pane, pane]));
+            }
+            2 => {
+                let _ = broken.tree.tiles.insert_pane(Pane::Preview);
+            }
+            _ => {
+                let preview = broken.find(Pane::Preview).expect("preview");
+                let device = broken.find(Pane::Device).expect("device");
+                *broken.tree.tiles.get_mut(device).expect("device tile") = Tile::Pane(Pane::Preview);
+                assert_ne!(preview, device);
+            }
+        }
+        let saved = broken.save_layout().expect("serializes");
+        assert!(shell.restore_layout(&saved).is_err(), "defect {defect}");
+        assert_eq!(shell.tree, original);
+    }
+}
+
 struct TestDir(PathBuf);
 
 impl TestDir {
@@ -296,4 +329,22 @@ fn a_kept_layout_that_doesnt_read_says_so_and_starts_from_the_usual() {
     assert!(harness.state().notice().is_some_and(|notice| notice.text.contains("layout.ron")));
     assert_eq!(titles(harness.state().shell()).len(), Pane::ALL.len());
     assert_eq!(fs::read_to_string(&file).expect("still there"), "(not a layout");
+}
+
+#[test]
+fn a_failed_layout_write_is_retried_without_another_layout_change() {
+    let dir = TestDir::new("retry");
+    let mut harness = editor_harness(&dir);
+    harness.run_steps(4);
+    let file = dir.0.join("layout.ron");
+    fs::create_dir(&file).expect("a directory blocks replacement");
+    harness.state_mut().shell_mut().close(Pane::Device);
+    harness.run_steps(4);
+    assert!(file.is_dir(), "the failure leaves the destination alone");
+    fs::remove_dir(&file).expect("remove the transient obstacle");
+    harness.run_steps(4);
+    let saved = fs::read_to_string(&file).expect("the unchanged layout was retried");
+    let mut shell = Shell::new();
+    shell.restore_layout(&saved).expect("reads");
+    assert!(!shell.is_open(Pane::Device));
 }

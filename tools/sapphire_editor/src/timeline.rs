@@ -250,8 +250,11 @@ impl Drag {
                     Part::End => (span.from, edge),
                     Part::Body => {
                         let delta = ((x - grab_x) / scale.per_tick).round() as i64;
-                        let from = (i64::from(span.from) + delta).max(0) as u32;
-                        (from, from + (span.to - span.from.min(span.to)))
+                        let width = span.to.saturating_sub(span.from);
+                        let from = i64::from(span.from)
+                            .saturating_add(delta)
+                            .clamp(0, i64::from(u32::MAX - width)) as u32;
+                        (from, from + width)
                     }
                 };
                 Some(Action::SetWindow { entry, from, to, part })
@@ -264,20 +267,23 @@ impl Drag {
                 let Phases { startup, active, recovery } = phases;
                 let next = match edge {
                     PhaseEdge::StartupEnd => {
-                        let moved = tick.min(startup + active);
-                        Phases { startup: moved, active: startup + active - moved, recovery }
+                        let moved = tick.min(startup.saturating_add(active));
+                        Phases { startup: moved, active: startup.saturating_add(active) - moved, recovery }
                     }
                     PhaseEdge::ActiveEnd => {
-                        let moved = tick.clamp(startup, startup + active + recovery);
+                        let moved =
+                            tick.clamp(startup, startup.saturating_add(active).saturating_add(recovery));
                         Phases {
                             startup,
                             active: moved - startup,
-                            recovery: startup + active + recovery - moved,
+                            recovery: startup.saturating_add(active).saturating_add(recovery) - moved,
                         }
                     }
-                    PhaseEdge::MoveEnd => {
-                        Phases { startup, active, recovery: tick.saturating_sub(startup + active) }
-                    }
+                    PhaseEdge::MoveEnd => Phases {
+                        startup,
+                        active,
+                        recovery: tick.saturating_sub(startup.saturating_add(active)),
+                    },
                 };
                 Some(Action::SetPhases { mv, phases: next, edge })
             }
@@ -592,7 +598,9 @@ fn root_row(painter: &egui::Painter, root: Option<&[RootSample]>, scale: &TickSc
     };
     let most = root.windows(2).map(step).fold(1e-4, f32::max);
     let bottom = y + ROOT_ROW - 3.0;
-    for (tick, pair) in root.windows(2).enumerate() {
+    let first = scale.cell(painter.clip_rect().left()).saturating_sub(1) as usize;
+    let end = (scale.cell(painter.clip_rect().right()) as usize).saturating_add(1);
+    for (tick, pair) in root.windows(2).enumerate().take(end).skip(first) {
         let height = step(pair) / most * (ROOT_ROW - 6.0);
         if height < 0.5 {
             continue;
@@ -675,14 +683,17 @@ fn draw_entry(
             FontId::proportional(12.0),
             Color32::from_gray(220),
         );
-        if response.drag_started()
+        if view.editable
+            && response.drag_started()
             && let Some(pressed) = pressed_x(&response)
         {
             *drag = Some(Drag::Instant { entry: entry_ref, grab_offset: center.x - pressed });
             actions.push(Action::Select(Some(entry_ref)));
             actions.push(Action::BeginGesture(format!("move {name} {}", entry.label)));
         }
-        follow_drag(&response, drag, scale, actions);
+        if view.editable {
+            follow_drag(&response, drag, scale, actions);
+        }
         if response.clicked() {
             actions.push(Action::Select(Some(entry_ref)));
         }
@@ -823,6 +834,36 @@ mod tests {
         assert_eq!(scale.edge(175.1), 8);
         assert_eq!(scale.cell(50.0), 0);
         assert_eq!(scale.edge(50.0), 0);
+    }
+
+    #[test]
+    fn dragging_parseable_extreme_ticks_preserves_length_without_wrapping() {
+        let scale = TickScale { left: 0.0, per_tick: 1.0 };
+        let entry = EntryRef { mv: 0, track: Track::Hitboxes, index: 0 };
+        let drag = Drag::Window {
+            entry,
+            part: Part::Body,
+            span: TickSpan { from: u32::MAX - 4, to: u32::MAX },
+            grab_x: 0.0,
+            grab_edge_x: 0.0,
+        };
+        assert_eq!(
+            drag.at(f32::MAX, &scale),
+            Some(Action::SetWindow { entry, from: u32::MAX - 4, to: u32::MAX, part: Part::Body })
+        );
+        assert_eq!(
+            drag.at(-f32::MAX, &scale),
+            Some(Action::SetWindow { entry, from: 0, to: 4, part: Part::Body })
+        );
+        for edge in [PhaseEdge::StartupEnd, PhaseEdge::ActiveEnd, PhaseEdge::MoveEnd] {
+            let drag = Drag::Phase {
+                mv: 0,
+                edge,
+                phases: Phases { startup: u32::MAX, active: 1, recovery: 1 },
+                grab_offset: 0.0,
+            };
+            assert!(matches!(drag.at(f32::MAX, &scale), Some(Action::SetPhases { .. })));
+        }
     }
 
     #[test]

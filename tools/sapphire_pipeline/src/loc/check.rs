@@ -148,11 +148,14 @@ struct Chain<'a> {
     links: &'a [&'a StringTable],
     /// `(link, key)`, once walked. `None` while being walked, so meeting it again is a loop.
     walked: HashMap<(usize, &'a str), Option<Reach>>,
+    /// Message summaries keep each variable's first non-Any use in traversal order. Terms
+    /// have their own argument scope and never contribute to a caller's summary.
+    variable_uses: HashMap<(usize, &'a str), BTreeMap<&'a str, Use>>,
 }
 
 impl<'a> Chain<'a> {
     fn new(links: &'a [&'a StringTable]) -> Self {
-        Self { links, walked: HashMap::new() }
+        Self { links, walked: HashMap::new(), variable_uses: HashMap::new() }
     }
 
     /// Every entry of every link, as this chain's head would run it.
@@ -161,7 +164,7 @@ impl<'a> Chain<'a> {
         for (link, table) in links.iter().enumerate() {
             for entry in &table.entries {
                 let mut path = Vec::new();
-                self.entry(link, table.str(entry.key), &mut path)?;
+                self.entry(link, table.str(entry.key), &mut path, 1)?;
             }
         }
         self.variables()
@@ -172,7 +175,13 @@ impl<'a> Chain<'a> {
     }
 
     /// `key` in `link`: its reach, checked against the limits.
-    fn entry(&mut self, link: usize, key: &'a str, path: &mut Vec<&'a str>) -> Result<Reach, LocCheckError> {
+    fn entry(
+        &mut self,
+        link: usize,
+        key: &'a str,
+        path: &mut Vec<&'a str>,
+        depth: u32,
+    ) -> Result<Reach, LocCheckError> {
         path.push(key);
         match self.walked.get(&(link, key)) {
             Some(Some(reach)) => {
@@ -192,7 +201,7 @@ impl<'a> Chain<'a> {
         self.walked.insert((link, key), None);
         let table = self.links[link];
         let entry = table.entry(key).expect("walked keys are found first");
-        let reach = self.pattern(link, key, entry.pattern, path)?;
+        let reach = self.pattern(link, key, entry.pattern, path, depth)?;
         if reach.depth > MAX_DEPTH {
             let (locale, key) = (self.head(), key.to_owned());
             return Err(LocCheckError::TooDeep { locale, key, depth: reach.depth });
@@ -222,7 +231,17 @@ impl<'a> Chain<'a> {
         key: &'a str,
         pattern: Pattern,
         path: &mut Vec<&'a str>,
+        depth: u32,
     ) -> Result<Reach, LocCheckError> {
+        // Bound the active walk before following another reference or select. Checking the
+        // resulting reach only on unwind lets a forward chain exhaust the host stack first.
+        if depth > MAX_DEPTH {
+            return Err(LocCheckError::TooDeep {
+                locale: self.head(),
+                key: path.first().copied().unwrap_or(key).to_owned(),
+                depth,
+            });
+        }
         let table = self.links[link];
         let mut reach = Reach { depth: 1, steps: 1 };
         let Pattern::Parts(run) = pattern else { return Ok(reach) };
@@ -230,14 +249,14 @@ impl<'a> Chain<'a> {
             reach.steps = reach.steps.saturating_add(1);
             let child = match *part {
                 Part::Text(_) => None,
-                Part::Place(expression) => self.expression(link, key, expression, path)?,
+                Part::Place(expression) => self.expression(link, key, expression, path, depth)?,
                 Part::Select(index) => {
                     let select = table.selects[index as usize];
                     // A term's attribute it chooses by has to be there, though a format reads only its text.
-                    self.expression(link, key, select.selector, path)?;
+                    self.expression(link, key, select.selector, path, depth)?;
                     let mut most = Reach::default();
                     for variant in table.variants_of(select.variants) {
-                        let child = self.pattern(link, key, variant.pattern, path)?;
+                        let child = self.pattern(link, key, variant.pattern, path, depth + 1)?;
                         most.depth = most.depth.max(child.depth);
                         most.steps = most.steps.max(child.steps);
                     }
@@ -258,6 +277,7 @@ impl<'a> Chain<'a> {
         key: &'a str,
         expression: Expression,
         path: &mut Vec<&'a str>,
+        depth: u32,
     ) -> Result<Option<Reach>, LocCheckError> {
         let table = self.links[link];
         let reference = match expression {
@@ -272,12 +292,12 @@ impl<'a> Chain<'a> {
                 reference: reference.to_owned(),
             });
         };
-        self.entry(found, stored, path).map(Some)
+        self.entry(found, stored, path, depth + 1).map(Some)
     }
 
     /// Holds each key the head has to what the next link holding it uses: one set of variables, each
     /// of one kind. Terms are left out: their arguments are their own business in each locale.
-    fn variables(&self) -> Result<(), LocCheckError> {
+    fn variables(&mut self) -> Result<(), LocCheckError> {
         let links = self.links;
         let head = links[0];
         for entry in &head.entries {
@@ -286,10 +306,12 @@ impl<'a> Chain<'a> {
                 continue;
             }
             let Some((found, _)) = self.find(1, key) else { continue };
-            let mine = self.uses(0, key);
-            let theirs = self.uses(found, key);
+            self.collect_uses(0, key);
+            self.collect_uses(found, key);
+            let mine = &self.variable_uses[&(0, key)];
+            let theirs = &self.variable_uses[&(found, key)];
             let other = &links[found].locale;
-            for (variable, use_of) in &mine {
+            for (variable, use_of) in mine {
                 let Some(their_use) = theirs.get(variable) else {
                     return Err(LocCheckError::VariableMismatch {
                         key: key.to_owned(),
@@ -324,15 +346,19 @@ impl<'a> Chain<'a> {
 
     /// The variables `key` in `link` uses, through the messages it references: they read the same
     /// caller. Loops were refused before this runs.
-    fn uses(&self, link: usize, key: &str) -> BTreeMap<&'a str, Use> {
+    fn collect_uses(&mut self, link: usize, key: &'a str) {
+        if self.variable_uses.contains_key(&(link, key)) {
+            return;
+        }
         let mut uses = BTreeMap::new();
-        if let Some(entry) = self.links[link].entry(key) {
+        let table = self.links[link];
+        if let Some(entry) = table.entry(key) {
             self.pattern_uses(link, entry.pattern, &mut uses);
         }
-        uses
+        self.variable_uses.insert((link, key), uses);
     }
 
-    fn pattern_uses(&self, link: usize, pattern: Pattern, uses: &mut BTreeMap<&'a str, Use>) {
+    fn pattern_uses(&mut self, link: usize, pattern: Pattern, uses: &mut BTreeMap<&'a str, Use>) {
         let table = self.links[link];
         let Pattern::Parts(run) = pattern else { return };
         for part in table.parts_of(run) {
@@ -360,7 +386,7 @@ impl<'a> Chain<'a> {
     }
 
     fn expression_uses(
-        &self,
+        &mut self,
         link: usize,
         expression: Expression,
         by: Use,
@@ -371,18 +397,106 @@ impl<'a> Chain<'a> {
             Expression::Variable(name) => (table.str(name), by),
             Expression::NumberVariable { name, .. } => (table.str(name), Use::Number),
             Expression::Message(key) => {
-                if let Some((found, stored)) = self.find(link, table.str(key))
-                    && let Some(entry) = self.links[found].entry(stored)
-                {
-                    self.pattern_uses(found, entry.pattern, uses);
+                if let Some((found, stored)) = self.find(link, table.str(key)) {
+                    self.collect_uses(found, stored);
+                    for (&name, &used) in &self.variable_uses[&(found, stored)] {
+                        merge_use(uses, name, used);
+                    }
                 }
                 return;
             }
             Expression::Number { .. } | Expression::Term { .. } => return,
         };
-        let held = uses.entry(name).or_insert(used);
-        if *held == Use::Any {
-            *held = used;
+        merge_use(uses, name, used);
+    }
+}
+
+/// Combining ordered summaries is the same as replaying every use: Any never replaces a typed
+/// use, and the first non-Any use wins. In particular, conflicting uses must not be sorted by type.
+fn merge_use<'a>(uses: &mut BTreeMap<&'a str, Use>, name: &'a str, used: Use) {
+    let held = uses.entry(name).or_insert(used);
+    if *held == Use::Any {
+        *held = used;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::loc::{LocaleDocument, compile};
+
+    fn table(locale: &str, fallback: &[&str], text: &str) -> StringTable {
+        let document = LocaleDocument {
+            fallback: fallback.iter().map(|name| (*name).to_owned()).collect(),
+            ..LocaleDocument::default()
+        };
+        compile(locale, &document, &[(PathBuf::from("a.ftl"), text.to_owned())]).unwrap()
+    }
+
+    #[test]
+    fn a_forward_chain_stops_before_descending_past_the_depth_budget() {
+        let mut source = String::new();
+        for index in 0..64 {
+            source.push_str(&format!("m{index:03} = {{ m{:03} }}\n", index + 1));
         }
+        // The absent final reference would be reached by an unbounded recursive walk. No large
+        // stack or exhaustion witness is needed: the checker must reject before looking there.
+        let tables = [table("en", &[], &source)];
+        let error = check(&tables).unwrap_err();
+        assert!(matches!(error, LocCheckError::TooDeep { key, depth, .. }
+            if key == "m000" && depth == MAX_DEPTH + 1));
+        let mut source = String::from("m031 = end\n");
+        for index in 0..31 {
+            source.push_str(&format!("m{index:03} = {{ m{:03} }}\n", index + 1));
+        }
+        assert!(check(&[table("en", &[], &source)]).is_ok(), "exactly MAX_DEPTH is accepted");
+    }
+
+    #[test]
+    fn summaries_preserve_first_typed_use_scope_and_error_order() {
+        let source = concat!(
+            "-term = { $private }\n",
+            "a = { $n } { b } { c } { b } { -term(private: \"x\") }\n",
+            "b = { NUMBER($n) }\n",
+            "c = { $n ->\n    [named] { $z }\n   *[other] { $a }\n}\n",
+            "reverse = { c } { b }\n",
+        );
+        let en = table("en", &[], source);
+        let links = [&en];
+        let mut chain = Chain::new(&links);
+        chain.check().unwrap();
+        chain.collect_uses(0, "a");
+        assert_eq!(
+            chain.variable_uses[&(0, "a")],
+            BTreeMap::from([("a", Use::Any), ("n", Use::Number), ("z", Use::Any),])
+        );
+        chain.collect_uses(0, "reverse");
+        assert_eq!(chain.variable_uses[&(0, "reverse")].get("n"), Some(&Use::Text));
+        let ja = table("ja", &["en"], "a = { $z }\n");
+        let error = check(&[en, ja]).unwrap_err().to_string();
+        assert_eq!(error, "`a` uses `$a` in locale `en` and not in `ja`: a caller passes one set");
+    }
+
+    #[test]
+    fn repeated_select_branches_share_variable_summaries() {
+        let mut source = String::from("m014 = { NUMBER($n) }\n");
+        for index in 0..14 {
+            source.push_str(&format!(
+                "m{index:03} = {{ $choice ->\n    [a] {{ m{next:03} }}\n   *[other] {{ m{next:03} }}\n}}\n",
+                next = index + 1,
+            ));
+        }
+        let en = table("en", &[], &source);
+        let ja = table("ja", &["en"], &source);
+        assert_eq!(check(&[en.clone(), ja]).unwrap(), LocReport::default());
+        let links = [&en];
+        let mut chain = Chain::new(&links);
+        chain.check().unwrap();
+        chain.collect_uses(0, "m000");
+        assert_eq!(chain.variable_uses.len(), 15);
+        assert_eq!(
+            chain.variable_uses[&(0, "m000")],
+            BTreeMap::from([("choice", Use::Text), ("n", Use::Number),])
+        );
     }
 }

@@ -14,6 +14,7 @@ use sapphire_editor::app::figure_of;
 use sapphire_editor::capture::{self, Textures};
 use sapphire_editor::cooked::{Cook, sidecar_id};
 use sapphire_editor::judge::judge;
+use sapphire_editor::preview::{self, FigureCache, Overlays, PosedFigure, View};
 use sapphire_editor::run::{Run, Setup};
 use sapphire_editor::{Editor, Options};
 use sapphire_gameplay::{ActorSpawn, ActorTransform, SimConfig, Simulation, TickActions, volume_pose};
@@ -179,6 +180,121 @@ fn the_cook_answers_for_the_real_documents() {
     assert!((1.4..1.9).contains(&top), "the character stands {top} m tall");
 }
 
+#[test]
+#[ignore = "needs `cargo xtask content`"]
+fn fitting_the_selected_pose_keeps_the_entire_mesh_in_every_view_and_aspect() {
+    for (path, name, tick) in [(player_path(), "light_1", 8), (warrior_path(), "swipe", 25)] {
+        let mut editor = editor_on(&path);
+        assert!(editor.select_move(name));
+        editor.set_tick(tick);
+        let figure = figure_of(&editor).expect("a figure");
+        let (_, clip) = sapphire_editor::app::casting_of(&editor).expect("casting");
+        let posed = PosedFigure { figure, clip, generation: 0 };
+        let frame = editor.frame().expect("frame");
+        let points = figure.skinned(figure.model_at(clip, frame.tick));
+        assert!(!points.is_empty());
+        for size in [egui::vec2(800.0, 400.0), egui::vec2(160.0, 500.0), egui::vec2(400.0, 100.0)] {
+            let rect = egui::Rect::from_min_size(egui::pos2(20.0, 30.0), size);
+            for mut view in [View::side(1.5), View::front(1.5), View::top(1.5)] {
+                view.fit(rect, frame, Some(posed));
+                for point in &points {
+                    let projected = view.project(frame.root.point(*point), rect);
+                    assert!(rect.shrink(1.0).contains(projected), "{name} {size:?} {view:?}: {projected:?}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "needs `cargo xtask content`"]
+fn changing_figure_with_the_same_pose_key_matches_a_fresh_cache() {
+    let player = editor_on(&player_path());
+    let warrior = editor_on(&warrior_path());
+    let frame = player.frame().expect("frame");
+    let run = player.run().expect("run");
+    let draw = |figure: &sapphire_editor::figure::Figure, cache: &mut FigureCache| {
+        let ctx = egui::Context::default();
+        capture::draw(&ctx, &mut Textures::default(), capture::raw_input(320, 300, 0.0), 320, 300, |ui| {
+            preview::draw(
+                ui.painter(),
+                ui.max_rect(),
+                &View::side(1.5),
+                run,
+                frame,
+                Some(PosedFigure { figure, clip: None, generation: 0 }),
+                cache,
+                Overlays::default(),
+            );
+        })
+    };
+    let mut cache = FigureCache::default();
+    let player_image = draw(figure_of(&player).expect("player figure"), &mut cache);
+    let reused = draw(figure_of(&warrior).expect("warrior figure"), &mut cache);
+    let fresh = draw(figure_of(&warrior).expect("warrior figure"), &mut FigureCache::default());
+    assert_ne!(player_image, fresh, "the fixture must distinguish the two figures");
+    assert_eq!(reused, fresh);
+}
+
+#[test]
+#[ignore = "needs `cargo xtask content`"]
+fn visiting_a_clip_does_not_invent_a_beside_document_fallback() {
+    let cook = cook();
+    let document =
+        MoveSetDocument::parse(&fs::read_to_string(player_path()).expect("source")).expect("parse");
+    let mut mv = document.moves[0].clone();
+    let mut figures = sapphire_editor::figure::Figures::default();
+    assert!(figures.cast(&mv, &cook).expect("cast clip").is_some());
+    mv.motion.clip = None;
+    assert_eq!(
+        figures.cast(&mv, &cook).expect("cast clipless"),
+        None,
+        "no beside-document figure was loaded, regardless of clips visited"
+    );
+}
+
+#[test]
+#[ignore = "needs `cargo xtask content`"]
+fn a_refused_clip_edit_keeps_authored_casting_and_simulation_in_one_successful_snapshot() {
+    let mut editor = editor_on(&player_path());
+    assert!(editor.select_move("light_1"));
+    editor.set_tick(8);
+    let casting = sapphire_editor::app::casting_of(&editor);
+    let before = editor.run().expect("run").clone();
+    let path = |suffix: &str| {
+        format!("moves[\"light_1\"].motion.clip?.{suffix}")
+            .parse::<sapphire_document::PropertyPath>()
+            .expect("path")
+    };
+    editor
+        .moves_document_mut()
+        .expect("document")
+        .together("refused clip edit", |document| {
+            document.set_literal("source", &path("source"), "\"00000000-0000-4000-8000-000000000000\"")?;
+            document.set_literal("rig", &path("rig"), "Some(\"00000000-0000-4000-8000-000000000001\")")?;
+            sapphire_editor::edits::set_window(
+                document,
+                sapphire_editor::edits::EntryRef {
+                    mv: 0,
+                    track: sapphire_editor::edits::Track::Hitboxes,
+                    index: 0,
+                },
+                12,
+                11,
+            )
+        })
+        .expect("parseable refused edit");
+    editor.refresh();
+    assert!(!editor.problems().is_empty());
+    assert_eq!(sapphire_editor::app::casting_of(&editor), casting);
+    assert_eq!(editor.run(), Some(&before));
+    assert!(editor.select_move("skill"));
+    let mut fresh = editor_on(&player_path());
+    assert!(fresh.select_move("skill"));
+    assert_eq!(sapphire_editor::app::casting_of(&editor), sapphire_editor::app::casting_of(&fresh));
+    assert_eq!(editor.run(), fresh.run(), "other prior valid moves remain selectable");
+}
+
 /// What the real thing looks like, for an agent to read: the player's first cut as it lands, and the
 /// warrior's swipe with its mesh at rest.
 #[test]
@@ -201,7 +317,12 @@ fn captures_of_the_real_moves() {
         let mut last = None;
         for pass in 0..4 {
             let input = capture::raw_input(width, height, f64::from(pass) * 0.1);
-            last = Some(capture::draw(&ctx, &mut textures, input, width, height, |ui| editor.ui(ui)));
+            let output = ctx.run_ui(input, |ui| editor.ui(ui));
+            if pass == 3 {
+                last = Some(capture::rasterize(&ctx, &mut textures, output, width, height));
+            } else {
+                capture::settle(&ctx, &mut textures, output);
+            }
         }
         last.expect("a capture").write_png(&dir.join(out)).expect("written");
     }

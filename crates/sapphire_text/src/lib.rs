@@ -32,11 +32,12 @@
 //! There isn't one: [`GlyphAtlas::begin_frame`] counts frames, and age is measured in them.
 
 mod atlas;
+mod families;
 mod shape;
 
 pub use atlas::{AtlasConfig, GlyphAtlas};
+pub use families::family_list;
 pub use parley::fontique::FamilyId;
 pub use shape::{
     FaceOptions, ShapeStats, ShapedGlyph, ShapedRun, ShapedText, TYPE_SCALE, TextStyle, TextSystem,
-    family_list,
 };

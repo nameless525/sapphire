@@ -37,6 +37,11 @@ impl TitleCard {
         Self { atlas: Atlas::paint(), age: Duration::ZERO }
     }
 
+    /// Hands the immutable painted shapes to the screen that follows the title.
+    pub fn into_atlas(self) -> Atlas {
+        self.atlas
+    }
+
     /// A frame `dt` after the last, on the real clock.
     pub fn advance(&mut self, dt: Duration) {
         self.age += dt;

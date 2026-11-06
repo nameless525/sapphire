@@ -17,6 +17,7 @@ use super::{Editor, Notice, Typed, TypedAt};
 /// A place in the tree. One can be several things at once: an `Option` of an enum with fields, say.
 #[derive(Debug)]
 struct Node {
+    step: Step,
     label: String,
     /// The path of what's here, past any `Some`.
     path: PropertyPath,
@@ -35,6 +36,7 @@ struct Node {
 struct Leaf {
     literal: String,
     written: bool,
+    number: Option<NumberKind>,
 }
 
 /// The tree of one document's text.
@@ -139,7 +141,8 @@ impl Editor {
             asked.push(Asked::Add(node.path.clone()));
         }
         if in_list && ui.small_button("x").on_hover_text("Remove this entry").clicked() {
-            asked.push(Asked::Remove(node.path.clone()));
+            let path = node.option.as_ref().map_or(&node.path, |(path, _)| path);
+            asked.push(Asked::Remove(path.clone()));
         }
     }
 
@@ -152,20 +155,11 @@ impl Editor {
             }
             return;
         }
-        if let Ok(number) = leaf.literal.parse::<f64>() {
-            let is_int = !leaf.literal.contains(['.', 'e', 'E']);
-            let decimals = leaf.literal.split_once('.').map_or(2, |(_, fraction)| fraction.len().max(2));
-            let mut shown = number;
-            let drag = if is_int {
-                egui::DragValue::new(&mut shown).speed(0.25).max_decimals(0)
-            } else {
-                egui::DragValue::new(&mut shown).speed(0.01).fixed_decimals(decimals)
-            };
-            let response = ui.add(drag);
+        if let Some(kind) = leaf.number
+            && let Some((response, literal)) = number_widget(ui, &leaf.literal, kind)
+        {
             self.number_gesture(&response, &label, id);
-            if response.changed() {
-                let literal =
-                    if is_int { format!("{}", shown.round() as i64) } else { format!("{shown:.decimals$}") };
+            if let Some(literal) = literal {
                 self.set_property(id, &label, &node.path, &literal);
             }
             return;
@@ -231,6 +225,60 @@ impl Editor {
     }
 }
 
+/// A drag uses the reflected type, never a guess based on how its current value was spelled.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum NumberKind {
+    Integer,
+    Float,
+}
+
+pub(super) fn number_kind(value: &dyn bevy_reflect::PartialReflect) -> Option<NumberKind> {
+    match value.reflect_type_path() {
+        "u8" | "u16" | "u32" | "i8" | "i16" | "i32" => Some(NumberKind::Integer),
+        "f32" | "f64" => Some(NumberKind::Float),
+        // Wider integers and opaque numeric wrappers retain their exact text, including small values.
+        _ => None,
+    }
+}
+
+fn number_literal(value: f64, kind: NumberKind, decimals: usize, exponent: bool) -> String {
+    if matches!(kind, NumberKind::Integer) {
+        return format!("{}", value.round() as i64);
+    }
+    let fixed = format!("{value:.decimals$}");
+    if !exponent && fixed.parse::<f64>().ok() == Some(value) {
+        fixed
+    } else if exponent || (value != 0.0 && (value.abs() < 0.0001 || value.abs() >= 1e16)) {
+        format!("{value:e}")
+    } else {
+        value.to_string()
+    }
+}
+
+pub(super) fn number_widget(
+    ui: &mut Ui,
+    literal: &str,
+    kind: NumberKind,
+) -> Option<(egui::Response, Option<String>)> {
+    let number = literal.parse::<f64>().ok()?;
+    if !number.is_finite() {
+        return None;
+    }
+    let exponent = literal.contains(['e', 'E']);
+    let decimals = literal.split_once('.').map_or(2, |(_, fraction)| fraction.len().max(2));
+    let mut shown = number;
+    let drag = match kind {
+        NumberKind::Integer => egui::DragValue::new(&mut shown).speed(0.25).max_decimals(0),
+        NumberKind::Float => egui::DragValue::new(&mut shown)
+            .speed(0.01)
+            .min_decimals(decimals)
+            .custom_formatter(move |value, _| number_literal(value, kind, decimals, exponent)),
+    };
+    let response = ui.add(drag);
+    let changed = response.changed().then(|| number_literal(shown, kind, decimals, exponent));
+    Some((response, changed))
+}
+
 /// The tree a document's properties make.
 fn tree_of(document: &dyn AnyDocument) -> Vec<Node> {
     let mut root = Vec::new();
@@ -264,7 +312,11 @@ fn tree_of(document: &dyn AnyDocument) -> Vec<Node> {
                     .map(|span| text[span.clone()].to_owned())
                     .or_else(|| found.and_then(|value| write::canonical(value, document.registry()).ok()));
                 if let Some(literal) = literal {
-                    node.leaf = Some(Leaf { literal, written: written.is_some() });
+                    node.leaf = Some(Leaf {
+                        literal,
+                        written: written.is_some(),
+                        number: found.and_then(number_kind),
+                    });
                 }
             }
         }
@@ -290,10 +342,11 @@ fn place_of<'t>(
         Step::Index(at) => at.to_string(),
         Step::Some => return None,
     };
-    let at = match nodes.iter().position(|node| node.label == label) {
+    let at = match nodes.iter().position(|node| node.step == *first) {
         Some(at) => at,
         None => {
             nodes.push(Node {
+                step: first.clone(),
                 label,
                 path: above.join(first.clone()),
                 option: None,
@@ -314,5 +367,80 @@ fn place_of<'t>(
         }
         None => rest,
     };
-    if rest.is_empty() { Some(node) } else { place_of(&mut node.children, document, &below, rest) }
+    if rest.is_empty() {
+        node.path = below;
+        Some(node)
+    } else {
+        place_of(&mut node.children, document, &below, rest)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use bevy_reflect::{Reflect, ReflectDeserialize, ReflectSerialize};
+    use sapphire_document::{Document, Schema, registry_of};
+    use serde::{Deserialize, Serialize};
+
+    use super::*;
+
+    #[derive(Clone, Debug, PartialEq, Reflect, Serialize, Deserialize)]
+    #[reflect(Serialize, Deserialize)]
+    enum Choice {
+        First,
+        Second,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Reflect, Serialize, Deserialize)]
+    #[reflect(Serialize, Deserialize)]
+    struct Fixture {
+        choice: Option<Choice>,
+        entries: Option<Vec<u32>>,
+    }
+
+    #[test]
+    fn option_enum_and_list_actions_address_the_contained_value() {
+        let mut document = Document::open(
+            "(choice: Some(First), entries: Some([7]))".to_owned(),
+            Schema::<Fixture> {
+                parse: |text| ron::from_str(text).map_err(|error| error.to_string()),
+                check: |_| Vec::new(),
+                importer: None,
+            },
+            Arc::new(registry_of::<Fixture>()),
+        );
+        let nodes = tree_of(&document);
+        let choice = nodes.iter().find(|node| node.label == "choice").expect("choice");
+        let entries = nodes.iter().find(|node| node.label == "entries").expect("entries");
+        document.pick_variant("pick", &choice.path, "Second").expect("the contained enum");
+        document.insert_blank("add", &entries.path).expect("the contained list");
+        assert_eq!(document.value().expect("value").choice, Some(Choice::Second));
+        assert_eq!(document.value().expect("value").entries, Some(vec![7, 0]));
+        let (outer, _) = choice.option.as_ref().expect("option control");
+        document.pick_variant("off", outer, "None").expect("the outer option");
+        assert_eq!(document.value().expect("value").choice, None);
+    }
+
+    #[test]
+    fn equal_display_labels_keep_distinct_property_steps() {
+        let mut nodes = Vec::new();
+        place_of(&mut nodes, &0_u32, &PropertyPath::root(), &[Step::Key("0".to_owned())]).expect("key");
+        place_of(&mut nodes, &0_u32, &PropertyPath::root(), &[Step::Index(0)]).expect("index");
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[0].label, nodes[1].label);
+        assert_ne!(nodes[0].path, nodes[1].path);
+    }
+
+    #[test]
+    fn numeric_controls_follow_reflected_types_and_round_trip_fractional_and_small_values() {
+        assert!(number_kind(&0_u64).is_none(), "a small u64 still needs exact text for larger edits");
+        assert!(matches!(number_kind(&1.0_f32), Some(NumberKind::Float)));
+        for value in [1e-30, 1.0, 2.5, 0.1234567890123456, 1e30] {
+            let literal = number_literal(value, NumberKind::Float, 2, false);
+            assert_eq!(literal.parse::<f64>().expect("float literal").to_bits(), value.to_bits());
+        }
+        assert_eq!(number_literal(2.0, NumberKind::Float, 2, false), "2.00");
+        assert_eq!(number_literal(2.5, NumberKind::Float, 2, false), "2.50");
+    }
 }

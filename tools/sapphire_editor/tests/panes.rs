@@ -83,6 +83,61 @@ fn text_of(harness: &Harness<'static, Editor>) -> String {
     harness.state().current().expect("a file").text().to_owned()
 }
 
+#[test]
+fn opening_another_file_keeps_new_conflict_notices_for_the_previous_document() {
+    let dir = TestDir::new("open_conflict");
+    let path = dir.write("slice.moves.ron", SLICE);
+    let cue = dir.write("hit_heavy.cue.ron", CUE);
+    let mut editor = Editor::new(Options {
+        file: Some(path.clone()),
+        content: Some(dir.0.join("no cook")),
+        link: Some("127.0.0.1:9".parse().expect("address")),
+    });
+    editor
+        .moves_document_mut()
+        .expect("moves")
+        .together("edit", |document| {
+            edits::set_window(
+                document,
+                edits::EntryRef { mv: 0, track: edits::Track::Hitboxes, index: 0 },
+                5,
+                9,
+            )
+        })
+        .expect("edit");
+    fs::write(&path, SLICE.replacen("startup: 5", "startup: 6", 1)).expect("external change");
+    editor.open(&cue);
+    assert!(
+        editor
+            .notice()
+            .is_some_and(|notice| notice.trouble && notice.text.contains("slice.moves.ron changed on disk"))
+    );
+}
+
+#[test]
+fn a_refused_rename_uses_the_previous_slots_successful_preview() {
+    let dir = TestDir::new("refused_rename");
+    let path = dir.write("slice.moves.ron", SLICE);
+    let mut editor = Editor::new(Options {
+        file: Some(path),
+        content: Some(dir.0.join("no cook")),
+        link: Some("127.0.0.1:9".parse().expect("address")),
+    });
+    let before = editor.run().expect("run").clone();
+    let property = "moves[\"light_1\"].name".parse::<sapphire_document::PropertyPath>().expect("path");
+    editor
+        .moves_document_mut()
+        .expect("document")
+        .set_literal("rename", &property, "\"renamed\"")
+        .expect("edit");
+    editor.refresh();
+    assert!(!editor.problems().is_empty(), "neutral still names light_1");
+    assert_eq!(editor.selected_move_name(), Some("renamed"));
+    assert_eq!(editor.run(), Some(&before));
+    assert!(editor.select_move("skill"));
+    assert_eq!(editor.run().expect("another prior move").move_name, "skill");
+}
+
 fn name_of(harness: &Harness<'static, Editor>) -> String {
     harness.state().current().expect("a file").file_name()
 }
@@ -400,7 +455,12 @@ fn a_capture_of_the_panes_reads() {
     let mut last = None;
     for pass in 0..4 {
         let input = capture::raw_input(width, height, f64::from(pass) * 0.1);
-        last = Some(capture::draw(&ctx, &mut textures, input, width, height, |ui| editor.ui(ui)));
+        let output = ctx.run_ui(input, |ui| editor.ui(ui));
+        if pass == 3 {
+            last = Some(capture::rasterize(&ctx, &mut textures, output, width, height));
+        } else {
+            capture::settle(&ctx, &mut textures, output);
+        }
     }
     let folder = std::env::var_os("SAPPHIRE_EDITOR_CAPTURES")
         .map_or_else(|| PathBuf::from(env!("CARGO_TARGET_TMPDIR")), PathBuf::from);

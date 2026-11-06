@@ -55,6 +55,11 @@ impl Loaded {
         self.pseudo.as_ref().unwrap_or(&self.table)
     }
 
+    /// Selector values are semantic, even while visible text is pseudo-localized.
+    pub(crate) fn semantic(&self) -> &StringTable {
+        &self.table
+    }
+
     fn heap_bytes(&self) -> u64 {
         (self.table.heap_bytes() + self.pseudo.as_ref().map_or(0, StringTable::heap_bytes)) as u64
     }
@@ -113,9 +118,7 @@ impl Localizer {
             None => self.tables.push(loaded),
         }
         // A chain that can't be built yet is fine here: its other tables may be on their way.
-        if let Ok(chain) = self.chain_of(&self.settings.text) {
-            self.chain = chain;
-        }
+        self.chain = self.chain_of(&self.settings.text).unwrap_or_default();
         self.generation += 1;
         Ok(())
     }
@@ -229,9 +232,22 @@ impl Localizer {
 
     /// `key`'s entry, looking along the chain from `from` on: which link of the chain has it, and it.
     pub(crate) fn find(&self, from: usize, key: &str) -> Option<(usize, &Entry)> {
+        self.find_in(from, key, Loaded::active)
+    }
+
+    pub(crate) fn find_semantic(&self, from: usize, key: &str) -> Option<(usize, &Entry)> {
+        self.find_in(from, key, Loaded::semantic)
+    }
+
+    fn find_in(
+        &self,
+        from: usize,
+        key: &str,
+        table: impl Fn(&Loaded) -> &StringTable,
+    ) -> Option<(usize, &Entry)> {
         let links = self.chain.get(from..)?;
         links.iter().enumerate().find_map(|(link, &index)| {
-            let entry = self.tables[index].active().entry(key)?;
+            let entry = table(&self.tables[index]).entry(key)?;
             Some((from + link, entry))
         })
     }

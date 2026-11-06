@@ -405,12 +405,18 @@ impl CombatHud {
     /// the real clock from the last [`Self::update`]'s time, so a number born in hitstop still
     /// floats away. Past [`MAX_DAMAGE_NUMBERS`] it replaces the oldest.
     pub fn spawn_damage(&mut self, value: u32, position: Vec2, kind: DamageKind) {
+        self.spawn_damage_at(self.now, value, position, kind);
+    }
+
+    /// Shows damage born at `now` on the same clock as [`Self::update`], even if no frame has
+    /// updated the HUD yet. Past [`MAX_DAMAGE_NUMBERS`] it replaces the oldest.
+    pub fn spawn_damage_at(&mut self, now: Timestamp, value: u32, position: Vec2, kind: DamageKind) {
         // An empty slot sorts before any number, and then the lowest `order` is the oldest.
         let by_age = |&slot: &usize| self.damage[slot].map(|number| number.order);
         let slot = (0..MAX_DAMAGE_NUMBERS).min_by_key(by_age).unwrap_or(0);
         let order = self.next_damage;
         self.next_damage += 1;
-        self.damage[slot] = Some(DamageNumber { value, kind, position, born: self.now, order });
+        self.damage[slot] = Some(DamageNumber { value, kind, position, born: now, order });
     }
 
     /// Someone else came in for a fighter, `[player, enemy]`: what they have isn't what the last one

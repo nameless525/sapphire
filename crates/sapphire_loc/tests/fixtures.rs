@@ -383,3 +383,83 @@ fn hostile_references_stop() {
         let _ = format(&loc, table.str(entry.key), &[]);
     }
 }
+
+#[test]
+fn replacing_a_fallback_chain_matches_a_fresh_install_even_while_incomplete() {
+    for pseudo in [false, true] {
+        let mut hot = localizer("ja");
+        hot.set_pseudo(pseudo);
+        let mut changed = StringTable::read(JA).unwrap();
+        changed.fallback = vec!["fr".to_owned()];
+        changed.fonts.clear();
+        let generation = hot.generation();
+        hot.install(changed.clone()).unwrap();
+        assert_eq!(hot.generation(), generation + 1);
+        let mut fresh = Localizer::new(hot.settings().clone());
+        fresh.set_pseudo(pseudo);
+        fresh.install(StringTable::read(EN).unwrap()).unwrap();
+        fresh.install(changed).unwrap();
+        for key in ["title", "only-english"] {
+            assert_eq!(hot.text(key), fresh.text(key));
+            assert_eq!(hot.text(key), key, "an incomplete chain answers no keys");
+        }
+        assert_eq!(hot.font_chain("body"), None);
+        // An inactive table doesn't revive an obsolete fallback. Arrival of the declared one does.
+        hot.install(StringTable::read(EN).unwrap()).unwrap();
+        assert_eq!(hot.text("title"), "title");
+        let mut french = StringTable::read(EN).unwrap();
+        french.locale = "fr".to_owned();
+        hot.install(french.clone()).unwrap();
+        fresh.install(french).unwrap();
+        assert_eq!(hot.text("title"), fresh.text("title"));
+        assert_eq!(hot.text("only-english"), fresh.text("only-english"));
+        assert_eq!(hot.font_chain("body"), fresh.font_chain("body"));
+        let mut without_fallback = StringTable::read(JA).unwrap();
+        without_fallback.fallback.clear();
+        hot.install(without_fallback).unwrap();
+        assert_eq!(hot.text("only-english"), "only-english");
+        assert_ne!(hot.text("title"), "title");
+    }
+}
+
+#[test]
+fn pseudo_selects_by_original_terms_while_showing_the_same_terms_as_pseudo_text() {
+    use sapphire_strings::{FRAME_CLOSE, FRAME_OPEN, pseudolocalize};
+
+    for locale in ["en", "ja"] {
+        let mut loc = localizer(locale);
+        let ordinary = format(&loc, "sword-taken", &[]);
+        loc.set_pseudo(true);
+        assert_eq!(
+            format(&loc, "sword-taken", &[]),
+            format!("{FRAME_OPEN}{}{FRAME_CLOSE}", pseudolocalize(&ordinary)),
+            "pseudo mode must exercise the same branch"
+        );
+        assert_eq!(loc.text("-sword.gender"), pseudolocalize("neuter"));
+        // Argument selectors still read semantic caller/term arguments.
+        assert!(format(&loc, "inside", &[]).contains(&pseudolocalize(if locale == "en" {
+            "the inner realm"
+        } else {
+            "内なる領域"
+        })));
+        loc.set_pseudo(false);
+        assert_eq!(format(&loc, "sword-taken", &[]), ordinary);
+    }
+    // The term and select can both come from a fallback, even when the key is a nested reference.
+    let mut english = StringTable::read(EN).unwrap();
+    let key = Span { start: english.pool.len() as u32, len: 6 };
+    english.pool.push_str("nested");
+    let reference = english.entry("sword-taken").unwrap().key;
+    let start = english.parts.len() as u32;
+    english.parts.push(Part::Place(Expression::Message(reference)));
+    english.entries.push(Entry { key, pattern: Pattern::Parts(Run { start, len: 1 }) });
+    let pool = &english.pool;
+    english
+        .entries
+        .sort_by_key(|entry| &pool[entry.key.start as usize..(entry.key.start + entry.key.len) as usize]);
+    let mut loc = localizer("ja");
+    loc.install(english).unwrap();
+    loc.set_pseudo(true);
+    let correct = pseudolocalize("It is yours");
+    assert!(format(&loc, "nested", &[]).contains(&correct));
+}

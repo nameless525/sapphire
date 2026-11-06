@@ -27,7 +27,7 @@ pub struct RonPatch<'a> {
 impl<'a> RonPatch<'a> {
     #[must_use]
     pub fn new(source: &'a str, registry: &'a TypeRegistry) -> Self {
-        Self { source, registry, implicit_some: !source.contains("Some("), splices: Vec::new() }
+        Self { source, registry, implicit_some: !crate::text::has_explicit_some(source), splices: Vec::new() }
     }
 
     /// What it's planned so far.
@@ -47,6 +47,16 @@ impl<'a> RonPatch<'a> {
         if write::canonical(old, self.registry)? == write::canonical(new, self.registry)? {
             return Ok(());
         }
+        self.diff_changed(node, old, new)
+    }
+
+    /// Descends a pair already known to differ canonically.
+    fn diff_changed(
+        &mut self,
+        node: &Node,
+        old: &dyn PartialReflect,
+        new: &dyn PartialReflect,
+    ) -> Result<(), ValueTextError> {
         if let (Some(before), Some(after)) = (walk::variant(old), walk::variant(new)) {
             if before != after {
                 return self.replace(node, new);
@@ -101,7 +111,9 @@ impl<'a> RonPatch<'a> {
             }
             match node.field(&field.written) {
                 Some(text) if walk::is_none(field.value) => self.remove_field(node, text, &field.written),
-                Some(text) => self.diff(text, old.value, field.value)?,
+                Some(text) => {
+                    self.diff_changed(text, walk::through(old.value), walk::through(field.value))?
+                }
                 None => self.insert_field(node, &after[..at], field)?,
             }
         }
@@ -226,9 +238,18 @@ impl<'a> RonPatch<'a> {
             .iter()
             .rev()
             .find_map(|earlier| written.iter().find(|field| field.name == earlier.written))
-            .or(written.last())
-            .ok_or_else(|| ValueTextError(format!("`{name}` has no field to go after")))?;
+            .or(written.last());
         let key = &fields[at].written;
+        let Some(anchor) = anchor else {
+            let entry = match entry {
+                Some(entry) => entry.to_owned(),
+                None => write::styled(value, self.registry, self.style_at(node.span.start))?,
+            };
+            let inside = layout::inside(self.source, node)
+                .ok_or_else(|| ValueTextError(format!("`{name}` has no brackets to add to")))?;
+            self.splices.push(layout::into_empty(self.source, inside, &format!("{key}: [{entry}]")));
+            return Ok(());
+        };
         let own_lines = layout::starts_its_line(self.source, anchor.start);
         let indent = layout::indent_at(self.source, anchor.start);
         let inner = format!("{indent}    ");

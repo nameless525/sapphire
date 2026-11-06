@@ -94,17 +94,25 @@ fn without_defaults(mut text: String, registration: &TypeRegistration, registry:
         let Ok(tree) = scan(&text) else { return text };
         let mut fields = Vec::new();
         written_fields(&tree, &mut fields);
-        let Some(next) =
-            fields.into_iter().filter(|field| field.start < before).max_by_key(|field| field.start)
-        else {
+        let mut changed = false;
+        for next in fields.into_iter().rev() {
+            if next.start >= before {
+                continue;
+            }
+            before = next.start;
+            let removal = layout::removal(&text, next.start, next.end, next.previous_end);
+            if let Some(candidate) = layout::apply(&text, &[removal])
+                && same_as(&candidate, &whole)
+            {
+                text = candidate;
+                changed = true;
+                // A successful removal invalidates byte spans. Rejected trials leave every remaining
+                // span intact, so they can reuse this scan in the same last-field-first order.
+                break;
+            }
+        }
+        if !changed {
             return text;
-        };
-        before = next.start;
-        let removal = layout::removal(&text, next.start, next.end, next.previous_end);
-        if let Some(candidate) = layout::apply(&text, &[removal])
-            && same_as(&candidate, &whole)
-        {
-            text = candidate;
         }
     }
 }
@@ -115,6 +123,7 @@ struct WrittenField {
     previous_end: Option<usize>,
 }
 
+/// Fields in source order: each parent precedes its children, and siblings keep their written order.
 fn written_fields(node: &Node, out: &mut Vec<WrittenField>) {
     let mut previous_end = None;
     for field in node.fields() {

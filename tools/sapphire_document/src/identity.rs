@@ -64,6 +64,8 @@ pub enum IdentityError {
     Moved { source_file: PathBuf, orphaned: Vec<PathBuf> },
     #[error("{} has a sidecar already, with no file: move that file back, or delete the sidecar", path.display())]
     SidecarWaiting { path: PathBuf },
+    #[error("{} now holds ID {now}, but this document was opened as {was}; restore its sidecar before saving", path.display())]
+    Changed { path: PathBuf, was: AssetId, now: AssetId },
     #[error("failed to get randomness for a new ID: {0}")]
     Entropy(String),
 }
@@ -100,20 +102,28 @@ pub fn new_id() -> Result<AssetId, IdentityError> {
 /// and may name importers this crate has never heard of.
 pub fn parse_id(sidecar: &str) -> Result<AssetId, String> {
     let tree = text::scan(sidecar).map_err(|error| format!("{error:?}"))?;
-    let header = tree.field("type").and_then(|node| node.string(sidecar));
-    if !matches!(header, Some(ASSET_TYPE | DOCUMENT_TYPE)) {
+    let header = tree.field("type").and_then(|node| ron::from_str::<String>(node.text(sidecar)).ok());
+    if !matches!(header.as_deref(), Some(ASSET_TYPE | DOCUMENT_TYPE)) {
         return Err(format!("its type is {header:?}"));
     }
     let id = tree
         .field("data")
         .and_then(|data| data.field("id"))
-        .and_then(|node| node.string(sidecar))
+        .and_then(|node| ron::from_str::<String>(node.text(sidecar)).ok())
         .ok_or_else(|| "it has no `data.id`".to_owned())?;
     id.parse::<AssetId>().map_err(|error| error.to_string())
 }
 
 /// The ID in the sidecar at `path`.
 pub fn read_id(path: &Path) -> Result<AssetId, IdentityError> {
+    let metadata =
+        fs::metadata(path).map_err(|source| IdentityError::Io { path: path.to_owned(), source })?;
+    if !metadata.is_file() {
+        return Err(IdentityError::Unreadable {
+            path: path.to_owned(),
+            why: "it isn't a regular file".to_owned(),
+        });
+    }
     let text = fs::read_to_string(path).map_err(|source| match source.kind() {
         io::ErrorKind::InvalidData => {
             IdentityError::Unreadable { path: path.to_owned(), why: source.to_string() }
@@ -174,7 +184,7 @@ impl Sidecars {
             let hidden =
                 path.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.starts_with('.'));
             let kind = entry.file_type().map_err(read_error)?;
-            if hidden || kind.is_symlink() {
+            if hidden || kind.is_symlink() || (!kind.is_dir() && !kind.is_file()) {
                 continue;
             }
             if kind.is_dir() {
@@ -306,6 +316,27 @@ fn same_place(a: &Path, b: &Path) -> bool {
             (Ok(a), Ok(b)) => a == b,
             _ => false,
         }
+}
+
+/// Restores a missing sidecar and checks its actual winner before publishing edited source bytes.
+pub(crate) fn ensure_sidecar(
+    sidecar: &Path,
+    id: AssetId,
+    importer: Option<&str>,
+) -> Result<(), IdentityError> {
+    let now = match read_id(sidecar) {
+        Err(IdentityError::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
+            write_sidecar(sidecar, id, importer)?;
+            // A missing sidecar can race another creator: check the actual winner.
+            read_id(sidecar)?
+        }
+        Err(error) => return Err(error),
+        Ok(now) => now,
+    };
+    if now != id {
+        return Err(IdentityError::Changed { path: sidecar.to_owned(), was: id, now });
+    }
+    Ok(())
 }
 
 /// Writes a new sidecar with this ID, leaving one that's already there alone.

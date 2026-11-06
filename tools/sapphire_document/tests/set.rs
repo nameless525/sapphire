@@ -842,3 +842,48 @@ fn a_real_gesture_in_a_set_is_one_step() {
     assert_eq!(any.history().1, 1);
     assert_eq!(set.refresh(), vec![Noticed::Conflict { id }]);
 }
+
+#[cfg(unix)]
+#[test]
+fn sidecar_scans_pass_over_nonregular_files_without_claiming_them() {
+    use sapphire_document::identity::{IdentityError, Sidecars, read_id};
+    use std::os::unix::net::UnixListener;
+    // Keep Unix socket names below macOS's sockaddr_un path limit even with a long TMPDIR.
+    let dir = TestDir(env::temp_dir().join(format!("sdoc_special_{}", process::id())));
+    fs::create_dir_all(&dir.0).expect("directory");
+    let sidecar = dir.0.join("socket.meta");
+    let document = dir.0.join("socket.moves.ron");
+    let _sidecar_socket = UnixListener::bind(&sidecar).expect("sidecar socket");
+    let _document_socket = UnixListener::bind(&document).expect("document socket");
+    let scanned = Sidecars::scan(std::slice::from_ref(&dir.0)).expect("scan");
+    assert!(scanned.orphaned().is_empty());
+    assert_eq!(scanned.documents().count(), 0);
+    assert!(matches!(read_id(&sidecar), Err(IdentityError::Unreadable { .. })));
+}
+
+#[test]
+fn sidecar_identity_accepts_equivalent_ron_string_spellings() {
+    let id = AssetId::from_bytes([7; 16]);
+    let escaped_header = r#"sapphire::document::Document\u{4d}eta"#;
+    let escaped_id = id.to_string().replacen('0', r#"\u{30}"#, 1);
+    for text in [
+        format!("(type: r#\"{}\"#, version: 1, data: (id: r#\"{id}\"#))", identity::DOCUMENT_TYPE),
+        format!("(type: \"{escaped_header}\", version: 1, data: (id: \"{escaped_id}\"))"),
+    ] {
+        assert_eq!(identity::parse_id(&text), Ok(id), "{text}");
+    }
+}
+
+#[test]
+fn a_timeline_is_discovered_and_opens_by_its_browser_kind() {
+    let dir = TestDir::new("timeline_kind");
+    let path = dir
+        .write("cutscene.timeline.ron", &read("crates/sapphire_timeline/test_content/cutscene.timeline.ron"));
+    let mut set = dir.set();
+    set.rescan().expect("scan");
+    assert_eq!(Kind::of(&path), Some(Kind::Timeline));
+    assert!(set.sidecars().documents().any(|(listed, kind)| listed == path && kind == Kind::Timeline));
+    let id = Kind::Timeline.open(&mut set, &path).expect("open");
+    assert!(set.get::<sapphire_timeline::TimelineDocument>(id).is_some());
+    assert!(set.any(id).expect("document").failure_message().is_none());
+}

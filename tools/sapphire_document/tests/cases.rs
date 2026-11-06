@@ -1059,3 +1059,307 @@ fn a_new_entry_and_a_picked_variant_come_from_the_type() {
     assert!(document.pick_variant("no such", &shape.path, "Nothing").is_err());
     assert_eq!(document.text(), before);
 }
+
+#[test]
+fn a_refused_owner_also_refuses_the_gestures_dependent_records() {
+    let original = r#"(count: 1, list: [(name: "same", at: 1), (name: "same", at: 2)])"#;
+    let mut document = sample(original);
+    document.begin_gesture("both fields and an independent edit");
+    document.set_text("at", &path("list[0].at"), "9").expect("at");
+    document.set_text("name", &path("list[0].name"), r#""mine""#).expect("name");
+    document.set_text("count", &path("count"), "5").expect("count");
+    document.end_gesture();
+    let disk = r#"(count: 1, list: [(name: "external", at: 7), (name: "same", at: 2)])"#;
+    let rebased = document.rebase_on_disk(disk.to_owned());
+    assert_eq!((rebased.kept, rebased.refused.len()), (1, 2));
+    assert_eq!(document.text(), disk.replace("count: 1", "count: 5"));
+    assert!(document.undo());
+    assert_eq!(document.text(), disk);
+    assert!(document.undo());
+    assert_eq!(document.text(), original);
+}
+
+#[test]
+fn an_omitted_list_can_be_added_to_an_empty_parent_without_losing_comments() {
+    for original in ["()", "(/* keep */)", "(\n    // keep\n)\n"] {
+        let mut document = sample(original);
+        let entry = Entry { name: "new".to_owned(), at: 9 };
+        assert_eq!(document.insert("add", &path("list"), 0, &entry), Ok(Outcome::Changed));
+        assert_eq!(document.value().expect("reads").list, [entry]);
+        assert_eq!(
+            sapphire_document::text::comments(document.text()),
+            sapphire_document::text::comments(original)
+        );
+        let added = document.text().to_owned();
+        assert!(document.undo());
+        assert_eq!(document.text(), original);
+        assert!(document.redo());
+        assert_eq!(document.text(), added);
+    }
+    let mut document = sample("()");
+    assert_eq!(
+        document.insert_literal("literal", &path("list"), 0, r#"(name: "new", at: 0x9)"#),
+        Ok(Outcome::Changed)
+    );
+    assert_eq!(document.text(), r#"(list: [(name: "new", at: 0x9)])"#);
+}
+
+#[test]
+fn malformed_dynamic_entries_are_refused_before_concrete_list_conversion() {
+    use bevy_reflect::structs::DynamicStruct;
+
+    let mut document = sample(LAID_OUT);
+    let mut wrong = DynamicStruct::default();
+    wrong.insert("name", 7_u32);
+    wrong.insert("at", 3_u32);
+    assert!(matches!(document.insert("bad", &path("list"), 0, &wrong), Err(Refused::WrongType { .. })));
+    assert_eq!(document.text(), LAID_OUT);
+    assert_eq!(document.history().1, 0);
+    let mut right = DynamicStruct::default();
+    right.insert("name", "dynamic".to_owned());
+    right.insert("at", 3_u32);
+    assert_eq!(document.insert("good", &path("list"), 0, &right), Ok(Outcome::Changed));
+    assert_eq!(document.value().expect("reads").list[0], Entry { name: "dynamic".to_owned(), at: 3 });
+    assert!(document.undo());
+    assert_eq!(document.text(), LAID_OUT);
+}
+
+#[test]
+fn lowering_the_history_cap_trims_the_farthest_redo_and_keeps_a_valid_chain() {
+    for undo_count in [1, 3] {
+        let mut document = sample("(count: 0)");
+        for value in 1..=3_u32 {
+            document.set("edit", &path("count"), &value).expect("edit");
+        }
+        document.mark_saved();
+        for _ in 0..undo_count {
+            assert!(document.undo());
+        }
+        let before = document.text().to_owned();
+        let dirty = document.is_dirty();
+        document.set_history_limit(1);
+        assert_eq!(document.history().1, 1, "the single-step floor also applies to redo");
+        assert_eq!(document.text(), before);
+        assert_eq!(document.is_dirty(), dirty);
+        if undo_count == 3 {
+            assert!(document.redo());
+            assert_eq!(document.text(), "(count: 1)");
+            assert!(!document.redo());
+            assert!(document.undo());
+            assert_eq!(document.text(), "(count: 0)");
+        } else {
+            assert!(document.undo());
+            assert_eq!(document.text(), "(count: 1)");
+            assert!(document.redo());
+            assert_eq!(document.text(), before);
+            assert!(!document.redo());
+        }
+    }
+}
+
+#[test]
+fn nested_transactions_roll_back_to_their_own_entry_point_and_keep_redo() {
+    let mut document = sample("(count: 1, share: 0.25)");
+    document.set_text("old", &path("count"), "2").expect("old");
+    assert!(document.undo());
+    let before = document.text().to_owned();
+    let result: Result<(), Refused> = document.together("outer", |document| {
+        document.set_text("outer", &path("count"), "3")?;
+        let failed: Result<(), Refused> = document.together("inner", |document| {
+            document.set_text("inner", &path("share"), "0.75")?;
+            document.set_text("bad", &path("count"), "bad")?;
+            Ok(())
+        });
+        assert!(failed.is_err());
+        assert_eq!(document.text(), "(count: 3, share: 0.25)");
+        Err(Refused::Document("abort the outer edit".to_owned()))
+    });
+    assert!(result.is_err());
+    assert_eq!(document.text(), before);
+    assert_eq!(document.undo_label(), None);
+    assert_eq!(document.redo_label(), Some("old"));
+    assert!(document.redo());
+    assert_eq!(document.text(), "(count: 2, share: 0.25)");
+}
+
+#[test]
+fn comments_after_a_quote_character_are_counted_when_their_value_is_replaced() {
+    #[derive(Clone, Debug, PartialEq, Reflect, Serialize, Deserialize)]
+    #[reflect(Serialize, Deserialize)]
+    struct Characters {
+        letter: char,
+        count: u32,
+    }
+    let schema = Schema {
+        parse: |text| ron::from_str::<Characters>(text).map_err(|error| error.to_string()),
+        check: |_| Vec::new(),
+        importer: None,
+    };
+    let text = "(letter: '\"', // a real comment\n count: 1)";
+    let mut document = Document::open(text.to_owned(), schema, Arc::new(registry_of::<Characters>()));
+    assert_eq!(document.failure(), None);
+    assert_eq!(
+        document.set_literal("replace", &PropertyPath::root(), "(letter: 'x', count: 2)"),
+        Ok(Outcome::Changed)
+    );
+    assert_eq!(document.last_step().expect("step").records[0].comments_lost, 1);
+    assert!(document.undo());
+    assert_eq!(document.text(), text);
+}
+
+#[test]
+fn removing_an_inline_last_entry_preserves_comments_around_its_separator() {
+    for (text, entry) in [
+        (r#"(list: [(name: "a"), /* keep */ (name: "b")])"#, "b"),
+        (r#"(list: [(name: "a") /* keep */, (name: "b")])"#, "a"),
+        (r#"(list: [(name: "a") /* keep */, (name: "b")])"#, "b"),
+    ] {
+        let mut document = sample(text);
+        document.remove("remove", &path(&format!("list[\"{entry}\"]"))).expect("remove");
+        assert_eq!(sapphire_document::text::comments(document.text()), ["/* keep */"]);
+        assert_eq!(document.last_step().expect("step").records[0].comments_lost, 0);
+        assert_eq!(document.value().expect("reads").list.len(), 1);
+        assert!(document.undo());
+        assert_eq!(document.text(), text);
+    }
+}
+
+#[test]
+fn writing_new_values_strips_only_parser_defaults_and_keeps_signed_zero() {
+    use sapphire_document::write::{Style, styled};
+    #[derive(Clone, Debug, PartialEq, Reflect, Serialize, Deserialize)]
+    #[reflect(Serialize, Deserialize)]
+    struct Defaults {
+        required: u32,
+        #[serde(default)]
+        zero: f32,
+        #[serde(default)]
+        list: Vec<u32>,
+        #[serde(default)]
+        optional: Option<String>,
+    }
+    let registry = registry_of::<Defaults>();
+    let style = Style { implicit_some: true, newline: "\n", indent: "" };
+    let value = Defaults { required: 7, zero: -0.0, list: Vec::new(), optional: None };
+    assert_eq!(styled(&value, &registry, style).expect("write"), "(required: 7, zero: -0.0)");
+    let value = Defaults { zero: 0.0, ..value };
+    assert_eq!(styled(&value, &registry, style).expect("write"), "(required: 7)");
+}
+
+#[test]
+fn option_style_comes_from_values_instead_of_comments_or_strings() {
+    for text in [r#"(/* Some( */ count: 1)"#, r#"(note: "Some(", count: 1)"#] {
+        let mut document = sample(text);
+        document.set_text("inner", &path("inner"), "Some((depth: 3))").expect("edit");
+        assert!(document.text().contains("inner: (depth: 3)"), "{}", document.text());
+        assert!(document.undo());
+        assert_eq!(document.text(), text);
+    }
+    let mut document = sample(r#"(note: Some ("explicit"), count: 1)"#);
+    document.set_text("inner", &path("inner"), "Some((depth: 3))").expect("edit");
+    assert!(document.text().contains("inner: Some((depth: 3))"), "{}", document.text());
+}
+
+#[test]
+fn arbitrary_invalid_public_splice_ranges_are_refused() {
+    use sapphire_document::layout::{Splice, apply};
+    use std::ops::Range;
+    for range in [1..1, Range { start: 2, end: 1 }, 0..4] {
+        assert_eq!(apply("éx", &[Splice { range, text: "new".to_owned() }]), None);
+    }
+}
+
+#[test]
+fn tuple_and_array_list_entries_keep_their_fallible_conversion() {
+    #[derive(Clone, Debug, PartialEq, Reflect, Serialize, Deserialize)]
+    #[reflect(Serialize, Deserialize)]
+    struct Lists {
+        tuples: Vec<(u32, String)>,
+        arrays: Vec<[u32; 2]>,
+    }
+    let schema = Schema {
+        parse: |text| ron::from_str::<Lists>(text).map_err(|error| error.to_string()),
+        check: |_| Vec::new(),
+        importer: None,
+    };
+    let original = "(tuples: [], arrays: [])";
+    let mut document = Document::open(original.to_owned(), schema, Arc::new(registry_of::<Lists>()));
+    assert_eq!(
+        document.insert("tuple", &path("tuples"), 0, &(7_u32, "text".to_owned())),
+        Ok(Outcome::Changed)
+    );
+    assert_eq!(document.value().expect("reads").tuples, [(7, "text".to_owned())]);
+    assert!(document.undo());
+    assert_eq!(document.text(), original);
+    assert_eq!(document.insert("array", &path("arrays"), 0, &[1_u32, 2_u32]), Ok(Outcome::Changed));
+    assert_eq!(document.value().expect("reads").arrays, [[1, 2]]);
+    assert!(document.undo());
+    let mut malformed = bevy_reflect::tuple::DynamicTuple::default();
+    malformed.insert("wrong".to_owned());
+    malformed.insert(9_u32);
+    assert!(matches!(document.insert("bad", &path("tuples"), 0, &malformed), Err(Refused::WrongType { .. })));
+    assert_eq!(document.text(), original);
+}
+
+#[test]
+fn nan_leaf_agreement_does_not_bypass_the_final_typed_equality_check() {
+    let text = "(count: 1, share: NaN)";
+    let mut document = sample(text);
+    assert_eq!(document.failure(), None);
+    assert!(document.value().expect("reads").share.is_nan());
+    assert!(matches!(document.set_text("count", &path("count"), "2"), Err(Refused::Disagrees { .. })));
+    assert_eq!(document.text(), text);
+    assert_eq!(document.history().1, 0);
+}
+
+#[test]
+fn grouped_history_counts_both_text_directions_and_records_in_redo_too() {
+    let original = format!("(count: 1, note: {:?})", "old".repeat(400));
+    let mut document = sample(&original);
+    document.begin_gesture("grouped edit");
+    document.set_text("note", &path("note"), &format!("Some({:?})", "new".repeat(700))).expect("note");
+    document.set_text("count", &path("count"), "9").expect("count");
+    document.end_gesture();
+    let step = document.last_step().expect("step");
+    let strings = step.label.len()
+        + step.change.removed.len()
+        + step.change.inserted.len()
+        + step
+            .records
+            .iter()
+            .map(|record| {
+                record.old.as_ref().map_or(0, String::len) + record.new.as_ref().map_or(0, String::len)
+            })
+            .sum::<usize>();
+    let held = step.bytes();
+    assert!(held >= strings, "both byte directions and all record values count");
+    assert_eq!(document.history(), (held, 1));
+    assert!(document.undo());
+    assert_eq!(document.text(), original);
+    assert_eq!(document.history(), (held, 1), "undo changes ownership, not retained memory");
+    document.set_history_limit(1);
+    assert_eq!(document.history(), (held, 1), "a single oversized redo is the explicit floor");
+    assert!(document.redo());
+    assert_eq!(document.history(), (held, 1));
+}
+
+#[test]
+fn a_refused_named_insert_does_not_refuse_an_independent_insert_in_the_same_list() {
+    let original = "(list: [])";
+    let mut document = sample(original);
+    document.begin_gesture("two independent entries");
+    for name in ["conflict", "free"] {
+        document.insert("add", &path("list"), 0, &Entry { name: name.to_owned(), at: 9 }).expect("insert");
+    }
+    document.end_gesture();
+    let disk = r#"(list: [(name: "conflict", at: 7)])"#;
+    let rebased = document.rebase_on_disk(disk.to_owned());
+    assert_eq!((rebased.kept, rebased.refused.len()), (1, 1));
+    let entries = &document.value().expect("reads").list;
+    assert_eq!(
+        entries,
+        &[Entry { name: "free".to_owned(), at: 9 }, Entry { name: "conflict".to_owned(), at: 7 }]
+    );
+    assert!(document.undo());
+    assert_eq!(document.text(), disk);
+}

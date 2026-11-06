@@ -236,6 +236,10 @@ pub enum SetError {
     NotText { path: PathBuf },
     #[error("{} is there already: nothing was changed", path.display())]
     AlreadyThere { path: PathBuf },
+    /// Moving the sidecar failed, and restoring the source failed too. Both failures and the remaining
+    /// source/sidecar paths are reported so the files can be reunited before another save.
+    #[error("moving the sidecar failed: {why}; restoring {} from {} failed: {rollback}. Reunite the source at {} with its sidecar at {} before saving", from.display(), to.display(), to.display(), identity::sidecar_path(from).display())]
+    MoveIncomplete { from: PathBuf, to: PathBuf, why: String, rollback: String },
     #[error("{}: this isn't a document of that kind: {why}", path.display())]
     DoesNotRead { path: PathBuf, why: String },
     #[error("{} changed on disk since it was read: nothing was saved", path.display())]
@@ -578,6 +582,9 @@ impl DocumentSet {
             .then(|| Temporary::beside(&target, file.document.text()))
             .transpose()
             .map_err(io_error)?;
+        // Identity work precedes the last source comparison, keeping sidecar IO out of the final
+        // compare/rename window. Source conflicts and IO still take precedence in the diagnostic.
+        let identity = identity::ensure_sidecar(&identity::sidecar_path(&path), id, file.importer);
         // As late as it can be, with the new text already written beside it. What's left is the moment
         // before the rename, where another save lands and loses to this one whole.
         let there = match fs::read(&path) {
@@ -591,16 +598,13 @@ impl DocumentSet {
         if file.conflict.is_some() {
             return Err(SetError::ChangedOnDisk { path });
         }
+        identity?;
         if let Some(replacement) = replacement
             && (!there || file.document.is_dirty())
         {
             replacement.replace(&target).map_err(io_error)?;
             file.document.mark_saved();
             file.gone = false;
-        }
-        let sidecar = identity::sidecar_path(&path);
-        if fs::symlink_metadata(&sidecar).is_err() {
-            identity::write_sidecar(&sidecar, id, file.importer)?;
         }
         Ok(())
     }
@@ -670,32 +674,17 @@ impl DocumentSet {
     }
 
     /// Moves a document and its sidecar together, so it keeps its ID, and leaves what's being edited alone. It
-    /// refuses a place anything's at, either's name. If the second move fails, the first goes back.
+    /// refuses a place anything's at, either's name. If the second move fails, the first is moved back.
+    /// A failed rollback reports both failures and the remaining paths in [`SetError::MoveIncomplete`].
+    /// No-replace moves require hard links in the same filesystem; a failed source unlink can leave
+    /// both names, with the IO error returned and existing files preserved.
     pub fn move_to(&mut self, id: AssetId, to: &Path) -> Result<(), SetError> {
         let file = self.files.get_mut(&id).ok_or(SetError::NotOpen(id))?;
         file.document.end_gesture();
         let from = file.path.clone();
-        let (sidecar_from, sidecar_to) = (identity::sidecar_path(&from), identity::sidecar_path(to));
-        if fs::symlink_metadata(&sidecar_to).is_ok() {
-            return Err(SetError::AlreadyThere { path: sidecar_to });
-        }
-        let io_error = |path: &Path, source| SetError::Io { path: path.to_owned(), source };
-        if !disk::move_whole(&from, to).map_err(|source| io_error(&from, source))? {
-            return Err(SetError::AlreadyThere { path: to.to_owned() });
-        }
-        match disk::move_whole(&sidecar_from, &sidecar_to) {
-            Ok(true) => {
-                file.path = to.to_owned();
-                Ok(())
-            }
-            moved => {
-                let _ = disk::move_whole(to, &from);
-                match moved {
-                    Err(source) => Err(io_error(&sidecar_from, source)),
-                    _ => Err(SetError::AlreadyThere { path: sidecar_to }),
-                }
-            }
-        }
+        move_pair(&from, to, disk::move_whole)?;
+        file.path = to.to_owned();
+        Ok(())
     }
 
     /// Stops holding it. What wasn't saved is dropped, so a caller asks first.
@@ -719,6 +708,33 @@ impl DocumentSet {
         }
         stats
     }
+}
+
+/// Two no-replace moves, with an explicit recovery diagnostic if the second move and rollback fail.
+fn move_pair(
+    from: &Path,
+    to: &Path,
+    mut move_file: impl FnMut(&Path, &Path) -> io::Result<bool>,
+) -> Result<(), SetError> {
+    let (sidecar_from, sidecar_to) = (identity::sidecar_path(from), identity::sidecar_path(to));
+    if fs::symlink_metadata(&sidecar_to).is_ok() {
+        return Err(SetError::AlreadyThere { path: sidecar_to });
+    }
+    let io_error = |path: &Path, source| SetError::Io { path: path.to_owned(), source };
+    if !move_file(from, to).map_err(|source| io_error(from, source))? {
+        return Err(SetError::AlreadyThere { path: to.to_owned() });
+    }
+    let why = match move_file(&sidecar_from, &sidecar_to) {
+        Ok(true) => return Ok(()),
+        Ok(false) => SetError::AlreadyThere { path: sidecar_to },
+        Err(source) => io_error(&sidecar_from, source),
+    };
+    let rollback = match move_file(to, from) {
+        Ok(true) => return Err(why),
+        Ok(false) => "the original source name is occupied".to_owned(),
+        Err(error) => error.to_string(),
+    };
+    Err(SetError::MoveIncomplete { from: from.to_owned(), to: to.to_owned(), why: why.to_string(), rollback })
 }
 
 /// What the bytes on disk mean for a document: nothing if they're what it knew; clean, if they're what it
@@ -756,4 +772,37 @@ fn same_file(a: &Path, b: &Path) -> bool {
             (Ok(a), Ok(b)) => a == b,
             _ => false,
         }
+}
+
+#[cfg(test)]
+mod move_tests {
+    use super::*;
+
+    #[test]
+    fn a_rollback_conflict_is_reported_without_overwriting_its_new_source() {
+        let root =
+            std::env::temp_dir().join(format!("sapphire_document_move_rollback_{}", std::process::id()));
+        fs::create_dir_all(&root).expect("directory");
+        let from = root.join("source.ron");
+        let to = root.join("destination.ron");
+        let sidecar = identity::sidecar_path(&from);
+        fs::write(&from, "original").expect("source");
+        fs::write(&sidecar, "identity").expect("sidecar");
+        let result = move_pair(&from, &to, |source, destination| {
+            if source == sidecar {
+                fs::write(&from, "concurrent winner").expect("new file at original name");
+                Err(io::Error::other("sidecar move failed"))
+            } else {
+                disk::move_whole(source, destination)
+            }
+        });
+        let error = result.expect_err("rollback must refuse a conflicting file");
+        assert!(matches!(error, SetError::MoveIncomplete { .. }));
+        assert!(error.to_string().contains("sidecar move failed"));
+        assert!(error.to_string().contains("original source name is occupied"));
+        assert_eq!(fs::read_to_string(&from).expect("winner"), "concurrent winner");
+        assert_eq!(fs::read_to_string(&to).expect("moved source"), "original");
+        assert_eq!(fs::read_to_string(&sidecar).expect("sidecar"), "identity");
+        fs::remove_dir_all(root).expect("clean test files");
+    }
 }

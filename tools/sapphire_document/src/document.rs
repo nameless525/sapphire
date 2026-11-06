@@ -10,13 +10,13 @@
 //! holds, and [`crate::set::DocumentSet`] does the looking.
 //!
 //! History is capped by the bytes it holds ([`HISTORY_LIMIT`]). Past the cap the oldest steps go, whole, and
-//! the newest always stays, however large. What that leaves is a document that can't undo as far back as it
+//! the nearest undo (or, with no undo, the next redo) always stays, however large. What that leaves is a document that can't undo as far back as it
 //! was, and says so ([`Document::why_no_undo`]): its text and its dirtiness are as they were, since dirty is
 //! the bytes and never the history. A rebase that can no longer find the last save says [`Rebased::beneath`].
 
 use bevy_reflect::{
-    FromReflect, GetTypeRegistration, PartialReflect, Reflect, ReflectMut, ReflectRef, TypeInfo,
-    TypeRegistry, Typed,
+    FromReflect, GetTypeRegistration, PartialReflect, Reflect, ReflectFromReflect, ReflectMut, ReflectRef,
+    TypeInfo, TypeRegistry, Typed,
 };
 use std::sync::Arc;
 
@@ -32,7 +32,7 @@ use crate::write::{self, ValueTextError};
 
 /// What a document's undo and redo may hold, in bytes ([`HistoryStep::bytes`]), before the oldest steps go.
 /// A drag holds about a kilobyte however long it runs, so this is several thousand edits of the largest file
-/// there is, and a whole-file take of a large document costs at most its own size.
+/// there is. A whole-file take counts both the removed and inserted bytes.
 pub const HISTORY_LIMIT: usize = 16 * 1024 * 1024;
 
 /// An edit that didn't land. The text is as it was.
@@ -214,7 +214,8 @@ where
         &self.disk
     }
 
-    /// What its history holds, in bytes and steps, which [`crate::set::DocumentStats`] adds up.
+    /// What its completed undo and redo hold, in bytes and steps, which [`crate::set::DocumentStats`]
+    /// adds up. An active gesture holds its starting text and records separately until it ends.
     #[must_use]
     pub fn history(&self) -> (usize, usize) {
         let held = self.undo.iter().chain(&self.redo).map(HistoryStep::bytes).sum();
@@ -241,7 +242,8 @@ where
         })
     }
 
-    /// Sets the cap on what history holds, and lets go of what's now past it.
+    /// Sets the cap on completed history and lets go of what's now past it. The nearest undo step,
+    /// or the next redo when there is no undo, stays even if it alone exceeds the cap.
     pub fn set_history_limit(&mut self, bytes: usize) {
         self.history_limit = bytes;
         self.forget_past_limit();
@@ -351,6 +353,7 @@ where
             comments_lost,
             rewrote_whole: false,
             guard,
+            guard_absorbed: false,
         };
         self.land(label, parsed, next, record);
         Ok(Outcome::Changed)
@@ -438,6 +441,7 @@ where
             comments_lost,
             rewrote_whole,
             guard,
+            guard_absorbed: false,
         };
         self.land(label, parsed, next, record);
         Ok(Outcome::Changed)
@@ -483,12 +487,18 @@ where
         if at > items.len() {
             return Err(wrong_type(list, &format!("it has no place {at}")));
         }
-        let fits =
-            |info: &TypeInfo| info.as_list().is_ok_and(|list| value.is_dynamic() || list_holds(list, value));
-        if !items.get_represented_type_info().is_some_and(fits) {
+        let info = items
+            .get_represented_type_info()
+            .and_then(|info| info.as_list().ok())
+            .ok_or_else(|| wrong_type(list, "its entries have no type"))?;
+        if !value.is_dynamic() && !list_holds(info, value) {
             return Err(wrong_type(list, "that isn't what its entries are"));
         }
-        items.insert(at, value.to_dynamic().map_err(|error| wrong_type(list, &error.to_string()))?);
+        // Concrete List::insert panics if a dynamic value cannot be converted to its item type.
+        // Perform that fallible conversion before calling it, just as assignment does.
+        let entry = converted_entry(items, value, &self.registry)
+            .ok_or_else(|| wrong_type(list, "that isn't what its entries are"))?;
+        items.insert(at, entry);
         let new_item = walk::get(expected.as_partial_reflect(), &list.join(Step::Index(at)))?;
         let new_text = write::canonical(new_item, &self.registry)?;
         let guard = match walk::name_of(new_item) {
@@ -522,6 +532,7 @@ where
             comments_lost,
             rewrote_whole: false,
             guard,
+            guard_absorbed: false,
         };
         self.land(label, parsed, next, record);
         Ok(Outcome::Changed)
@@ -596,6 +607,7 @@ where
             comments_lost,
             rewrote_whole: false,
             guard,
+            guard_absorbed: false,
         };
         self.land(label, parsed, next, record);
         Ok(Outcome::Changed)
@@ -641,6 +653,7 @@ where
             comments_lost: 0,
             rewrote_whole: false,
             guard,
+            guard_absorbed: false,
         };
         self.land(label, parsed, next, record);
         Ok(Outcome::Changed)
@@ -669,7 +682,22 @@ where
         if parsed.value != *expected {
             return Err(Refused::Disagrees { path: path.to_string() });
         }
-        let lost = splices.iter().map(|splice| text::comments(&self.text[splice.range.clone()]).len()).sum();
+        let lost = splices
+            .iter()
+            .map(|splice| {
+                let mut kept = text::comments(&splice.text);
+                text::comments(&self.text[splice.range.clone()])
+                    .into_iter()
+                    .filter(|comment| match kept.iter().position(|candidate| candidate == comment) {
+                        Some(at) => {
+                            kept.remove(at);
+                            false
+                        }
+                        None => true,
+                    })
+                    .count()
+            })
+            .sum();
         Ok((parsed, next, lost))
     }
 
@@ -686,7 +714,9 @@ where
     }
 
     /// Runs `edit` as one edit: every set it makes lands, or none does and the text is as it was. It's a step
-    /// of its own, under `label`, or part of the gesture in progress if there's one.
+    /// of its own, under `label`, or part of the gesture in progress if there's one. The closure may
+    /// make property edits and nested `together` calls; it must not manipulate history, gestures or
+    /// the saved/disk state itself.
     pub fn together<R, E>(
         &mut self,
         label: &str,
@@ -748,6 +778,8 @@ where
     fn forget_past_limit(&mut self) {
         let mut held: usize = self.undo.iter().chain(&self.redo).map(HistoryStep::bytes).sum();
         let mut gone = 0;
+        // Keep the nearest undo step when possible. Redo runs from the vector's end, so dropping
+        // its prefix later forgets the farthest future without breaking the remaining splice chain.
         while held > self.history_limit && gone + 1 < self.undo.len() {
             held -= self.undo[gone].bytes();
             gone += 1;
@@ -756,6 +788,18 @@ where
             self.undo.drain(..gone);
             self.forgotten += gone;
             self.saved_at = self.saved_at.and_then(|saved| saved.checked_sub(gone));
+        }
+        let mut gone_redo = 0;
+        while held > self.history_limit && self.undo.len() + self.redo.len() - gone_redo > 1 {
+            held -= self.redo[gone_redo].bytes();
+            gone_redo += 1;
+        }
+        if gone_redo > 0 {
+            self.redo.drain(..gone_redo);
+            // A saved point in the discarded future can no longer identify replayable unsaved edits.
+            if self.saved_at.is_some_and(|saved| saved > self.undo.len() + self.redo.len()) {
+                self.saved_at = None;
+            }
         }
     }
 
@@ -861,8 +905,19 @@ where
             let HistoryStep { label, records, .. } = step;
             // A step goes back as one step.
             self.begin_gesture(&label);
+            let mut refused_owners = Vec::new();
             for record in records {
-                match self.replay(&label, &record) {
+                // Absorption keeps one guard per owner in a gesture. A later record whose guard
+                // was absorbed depends on that first replay having succeeded.
+                let result = if record.guard_absorbed && refused_owners.contains(&record.guard.owner) {
+                    Err(Refused::Document(format!("an earlier edit of `{}` was refused", record.guard.owner)))
+                } else {
+                    self.replay(&label, &record)
+                };
+                if result.is_err() && !refused_owners.contains(&record.guard.owner) {
+                    refused_owners.push(record.guard.owner.clone());
+                }
+                match result {
                     Ok(_) => rebased.kept += 1,
                     Err(why) => rebased.refused.push(RefusedRecord {
                         label: label.clone(),
@@ -960,6 +1015,7 @@ fn external_step(label: &str, before: &str, after: &str) -> HistoryStep {
         comments_lost: 0,
         rewrote_whole: true,
         guard: Guard { owner: PropertyPath::root(), was: None },
+        guard_absorbed: false,
     };
     HistoryStep { label: label.to_owned(), change: Change::between(before, after), records: vec![record] }
 }
@@ -970,6 +1026,26 @@ fn place_in_list(items: &dyn bevy_reflect::list::List, step: &Step) -> Option<us
         Step::Key(key) => items.iter().position(|entry| walk::name_of(entry) == Some(key)),
         _ => None,
     }
+}
+
+/// Resolves the list's fallible item conversion before invoking its infallible insert API.
+fn converted_entry(
+    list: &dyn bevy_reflect::list::List,
+    value: &dyn PartialReflect,
+    registry: &TypeRegistry,
+) -> Option<Box<dyn PartialReflect>> {
+    let info = list.get_represented_type_info()?;
+    if let Some(from) = registry.get_type_data::<ReflectFromReflect>(info.as_list().ok()?.item_ty().id()) {
+        return from.from_reflect(value).map(|entry| entry.into_partial_reflect());
+    }
+    // Tuple and array registrations don't expose ReflectFromReflect. A singleton of the owning
+    // list still performs that exact conversion through its statically known item type.
+    let mut singleton = bevy_reflect::list::DynamicList::default();
+    singleton.push_box(value.to_dynamic().ok()?);
+    let mut converted =
+        registry.get_type_data::<ReflectFromReflect>(info.type_id())?.from_reflect(&singleton)?;
+    let ReflectMut::List(converted) = converted.reflect_mut() else { return None };
+    (converted.len() == 1).then(|| converted.remove(0))
 }
 
 fn list_holds(list: &bevy_reflect::list::ListInfo, value: &dyn PartialReflect) -> bool {

@@ -115,6 +115,11 @@ pub fn comments(source: &str) -> Vec<&str> {
                 scanner.skip_one_comment();
                 found.push(&source[start..scanner.at]);
             }
+            (b'\'', _) => {
+                if scanner.character().is_err() {
+                    break;
+                }
+            }
             (b'"', _) => {
                 if scanner.string().is_err() {
                     break;
@@ -129,6 +134,47 @@ pub fn comments(source: &str) -> Vec<&str> {
         }
     }
     found
+}
+
+/// Whether a value uses `Some (...)`, past comments and quoted tokens. This is a style hint only;
+/// a name inside a comment or string must not change how newly written options are spelled.
+pub(crate) fn has_explicit_some(source: &str) -> bool {
+    if !source.contains("Some") {
+        return false;
+    }
+    let mut scanner = Scanner { source, at: 0 };
+    while scanner.peek().is_some() {
+        scanner.skip_trivia();
+        let start = scanner.at;
+        match scanner.peek() {
+            Some(b'"') => {
+                if scanner.string().is_err() {
+                    return false;
+                }
+            }
+            Some(b'\'') => {
+                if scanner.character().is_err() {
+                    return false;
+                }
+            }
+            Some(byte) if is_ident_byte(byte) => match scanner.raw_or_byte_string() {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    scanner.ident();
+                    if &source[start..scanner.at] == "Some" {
+                        scanner.skip_trivia();
+                        if scanner.peek() == Some(b'(') {
+                            return true;
+                        }
+                    }
+                }
+                Err(_) => return false,
+            },
+            Some(_) => scanner.at += 1,
+            None => return false,
+        }
+    }
+    false
 }
 
 /// What follows `at`, past spaces and comments on any line.
@@ -505,5 +551,14 @@ mod tests {
         let root = scan(text).expect("a tuple");
         let items: Vec<&str> = root.items().iter().map(|item| item.text(text)).collect();
         assert_eq!(items, ["-1", "+2.5", "1e-3", "1E+3", "0x1f", "1_000"]);
+    }
+}
+
+#[cfg(test)]
+mod character_comment_tests {
+    #[test]
+    fn a_character_is_skipped_before_looking_for_strings_and_comments() {
+        let text = "('\"', // real\n '\\'', '\\\\', 'é', /* real too */ r#\"// raw\"#)";
+        assert_eq!(super::comments(text), ["// real", "/* real too */"]);
     }
 }

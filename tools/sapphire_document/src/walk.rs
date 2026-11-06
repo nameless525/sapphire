@@ -7,6 +7,7 @@
 //! reads only: nothing here guesses at a file.
 
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::ops::Range;
 
 use bevy_reflect::enums::VariantType;
@@ -433,9 +434,23 @@ fn visit(
     match value.reflect_ref() {
         ReflectRef::List(list) => {
             property(PropertyKind::List);
+            // A whole walk asks for every key. Count names once instead of rescanning the list
+            // for each entry; single-entry lookups still use step_to_entry without a table.
+            let mut names = BTreeMap::<&str, usize>::new();
+            if list.len() > 1 {
+                for name in list.iter().filter_map(name_of) {
+                    *names.entry(name).or_default() += 1;
+                }
+            }
             for (at, entry) in list.iter().enumerate() {
+                let step = match name_of(entry) {
+                    Some(name) if list.len() == 1 || names.get(name) == Some(&1) => {
+                        Step::Key(name.to_owned())
+                    }
+                    _ => Step::Index(at),
+                };
                 let item = node.and_then(|node| node.items().get(at));
-                visit(entry, item, source, &path.join(step_to_entry(list, at)), out);
+                visit(entry, item, source, &path.join(step), out);
             }
             return;
         }
@@ -549,10 +564,94 @@ fn leaf_agrees(value: &dyn PartialReflect, text: &str) -> bool {
     macro_rules! read_as {
         ($($ty:ty),*) => {
             $(if let Some(value) = value.try_downcast_ref::<$ty>() {
-                return ron::from_str::<$ty>(text).is_ok_and(|read| format!("{read:?}") == format!("{value:?}"));
+                return ron::from_str::<$ty>(text).is_ok_and(|read| read == *value);
             })*
         };
     }
-    read_as!(f32, f64, u8, u16, u32, u64, usize, i8, i16, i32, i64, bool, String);
+    // Debug's float spelling distinguishes signed zero and treats every NaN as the same value.
+    // Ordinary equality would change both policies.
+    if let Some(value) = value.try_downcast_ref::<f32>() {
+        return ron::from_str::<f32>(text)
+            .is_ok_and(|read| read.to_bits() == value.to_bits() || (read.is_nan() && value.is_nan()));
+    }
+    if let Some(value) = value.try_downcast_ref::<f64>() {
+        return ron::from_str::<f64>(text)
+            .is_ok_and(|read| read.to_bits() == value.to_bits() || (read.is_nan() && value.is_nan()));
+    }
+    read_as!(u8, u16, u32, u64, usize, i8, i16, i32, i64, bool, String);
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn primitive_agreement_preserves_the_debug_float_oracle() {
+        macro_rules! compare {
+            ($ty:ty, $bits:ty, $special:expr) => {{
+                let special: &[$bits] = &$special;
+                for &bits in special {
+                    let value = <$ty>::from_bits(bits);
+                    for &other in special {
+                        let other = <$ty>::from_bits(other);
+                        let text = format!("{other:?}");
+                        let read = ron::from_str::<$ty>(&text).expect("float text");
+                        assert_eq!(
+                            leaf_agrees(&value, &text),
+                            format!("{read:?}") == format!("{value:?}"),
+                            "{bits:x}: {text}"
+                        );
+                    }
+                }
+                let mut bits = 1 as $bits;
+                for _ in 0..4096 {
+                    bits = bits.wrapping_mul(6364136223846793005_u64 as $bits).wrapping_add(1);
+                    let value = <$ty>::from_bits(bits);
+                    let text = format!("{value:?}");
+                    let read = ron::from_str::<$ty>(&text).expect("float text");
+                    assert_eq!(leaf_agrees(&value, &text), format!("{read:?}") == format!("{value:?}"));
+                }
+            }};
+        }
+        compare!(
+            f32,
+            u32,
+            [0, 0x8000_0000, 1, u32::MAX, 0x7f80_0000, 0xff80_0000, 0x7fc0_0000, 0x7f80_0001, 0xffc0_0001]
+        );
+        compare!(
+            f64,
+            u64,
+            [
+                0,
+                0x8000_0000_0000_0000,
+                1,
+                u64::MAX,
+                0x7ff0_0000_0000_0000,
+                0xfff0_0000_0000_0000,
+                0x7ff8_0000_0000_0000,
+                0x7ff0_0000_0000_0001,
+                0xfff8_0000_0000_0001
+            ]
+        );
+    }
+
+    #[test]
+    fn primitive_agreement_keeps_integer_string_and_invalid_text_boundaries() {
+        macro_rules! boundaries {
+            ($($ty:ty),*) => { $(for value in [<$ty>::MIN, 0, <$ty>::MAX] {
+                assert!(leaf_agrees(&value, &value.to_string()));
+                assert!(!leaf_agrees(&value, "not_a_number"));
+            })* };
+        }
+        boundaries!(u8, u16, u32, u64, usize, i8, i16, i32, i64);
+        for value in ["", "héllo", "a \"quote\", a \\ and\na newline", "// text"] {
+            let value = value.to_owned();
+            let text = ron::to_string(&value).expect("string");
+            assert!(leaf_agrees(&value, &text));
+            assert!(!leaf_agrees(&value, "false"));
+        }
+        assert!(leaf_agrees(&true, "true"));
+        assert!(!leaf_agrees(&true, "false"));
+    }
 }

@@ -22,11 +22,29 @@ pub(crate) fn data_entries(text: &str) -> Vec<Entry<'_>> {
 /// The text after `data: (`, to the end: a close bracket damaged or misplaced inside must not end
 /// the scan, so nothing here looks for the matching one.
 fn data_body(text: &str) -> Option<&str> {
-    text.match_indices("data").find_map(|(at, _)| {
-        let standalone = !text[..at].chars().next_back().is_some_and(is_name_char);
-        let rest = text[at + "data".len()..].trim_start().strip_prefix(':')?.trim_start();
-        standalone.then_some(rest)?.strip_prefix('(')
-    })
+    let mut at = 0;
+    while at < text.len() {
+        let rest = &text[at..];
+        if let Some(skip) = opaque_len(rest) {
+            at += skip;
+        } else if let Some(("data", after_colon)) = name_and_colon(rest) {
+            let start = at + after_colon;
+            let start = start + trivia_len(&text[start..]);
+            if let Some(body) = text[start..].strip_prefix('(') {
+                return Some(body);
+            }
+            at += after_colon;
+        } else {
+            let first = rest.chars().next()?;
+            // Skip a complete name so a suffix such as `metadata` cannot become `data`.
+            at += if is_name_char(first) {
+                rest.find(|c| !is_name_char(c)).unwrap_or(rest.len())
+            } else {
+                first.len_utf8()
+            };
+        }
+    }
+    None
 }
 
 /// Every entry in `body`, in order. Whatever isn't one is passed over: separators, stray close
@@ -62,12 +80,82 @@ fn line_len(text: &str) -> usize {
 /// not the file's, so it can't swallow what follows.
 fn comment_len(text: &str) -> Option<usize> {
     if text.starts_with("//") {
-        Some(line_len(text))
-    } else if text.starts_with("/*") {
-        Some(text.find("*/").map_or_else(|| line_len(text), |close| close + 2))
-    } else {
-        None
+        return Some(line_len(text));
     }
+    if !text.starts_with("/*") {
+        return None;
+    }
+    let mut depth = 1usize;
+    let mut at = 2;
+    while at + 1 < text.len() {
+        match &text.as_bytes()[at..at + 2] {
+            b"/*" => {
+                depth += 1;
+                at += 2;
+            }
+            b"*/" => {
+                depth -= 1;
+                at += 2;
+                if depth == 0 {
+                    return Some(at);
+                }
+            }
+            _ => at += 1,
+        }
+    }
+    Some(line_len(text))
+}
+
+/// Comments and quoted tokens hide punctuation and names. This is tolerant tokenization, not a
+/// value parser: an unterminated token ends at its line so the next intact entry can be recovered.
+fn opaque_len(text: &str) -> Option<usize> {
+    if let Some(len) = comment_len(text) {
+        return Some(len);
+    }
+    let token = text.strip_prefix('b').unwrap_or(text);
+    let prefix = text.len() - token.len();
+    if let Some(raw) = token.strip_prefix('r') {
+        let hashes = raw.bytes().take_while(|byte| *byte == b'#').count();
+        if raw.as_bytes().get(hashes) == Some(&b'"') {
+            let start = prefix + 1 + hashes + 1;
+            let closing = format!("\"{}", "#".repeat(hashes));
+            return Some(
+                text[start..]
+                    .find(&closing)
+                    .map_or_else(|| line_len(text), |end| start + end + closing.len()),
+            );
+        }
+    }
+    let quote = token.chars().next()?;
+    if !matches!(quote, '\'' | '"') {
+        return None;
+    }
+    let mut escaped = false;
+    for (at, c) in token[1..].char_indices() {
+        if c == '\n' {
+            return Some(prefix + 1 + at);
+        }
+        if c == quote && !escaped {
+            return Some(prefix + 1 + at + c.len_utf8());
+        }
+        escaped = c == '\\' && !escaped;
+    }
+    Some(text.len())
+}
+
+fn trivia_len(text: &str) -> usize {
+    let mut at = 0;
+    while at < text.len() {
+        let rest = &text[at..];
+        if let Some(len) = comment_len(rest) {
+            at += len;
+        } else if let Some(c) = rest.chars().next().filter(|c| c.is_whitespace()) {
+            at += c.len_utf8();
+        } else {
+            break;
+        }
+    }
+    at
 }
 
 fn is_name_char(c: char) -> bool {
@@ -82,7 +170,7 @@ fn name_and_colon(text: &str) -> Option<(&str, usize)> {
         return None;
     }
     let after_name = &text[name_len..];
-    let colon = after_name.find(|c: char| c != ' ' && c != '\t')?;
+    let colon = trivia_len(after_name);
     let tail = after_name[colon..].strip_prefix(':')?;
     // A path such as `a::b` is no entry.
     (!tail.starts_with(':')).then_some((name, name_len + colon + 1))
@@ -96,33 +184,16 @@ fn column(text: &str, at: usize) -> usize {
 /// How long the value that `text` starts with is. `indent` is its entry's column.
 fn value_len(text: &str, indent: usize) -> usize {
     let mut depth = 0usize;
-    let mut chars = text.char_indices().peekable();
-    while let Some((at, c)) = chars.next() {
+    let mut at = 0;
+    while at < text.len() {
+        if let Some(skip) = opaque_len(&text[at..]) {
+            // Keep a line comment's newline visible to missing-comma recovery.
+            let token = &text[at..at + skip];
+            at += token.strip_suffix('\n').unwrap_or(token).len();
+            continue;
+        }
+        let c = text[at..].chars().next().expect("within the text");
         match c {
-            '"' => {
-                // A string that's still open at the line's end is damage: settings never hold a
-                // raw newline, since the writer escapes it.
-                let mut escaped = false;
-                while let Some(&(_, inner)) = chars.peek() {
-                    if inner == '\n' {
-                        break;
-                    }
-                    chars.next();
-                    match inner {
-                        '"' if !escaped => break,
-                        '\\' if !escaped => escaped = true,
-                        _ => escaped = false,
-                    }
-                }
-            }
-            '/' if comment_len(&text[at..]).is_some() => {
-                // Up to a line comment's newline, not past it: the next line may start an entry.
-                let comment = &text[at..at + comment_len(&text[at..]).unwrap_or(0)];
-                let end = at + comment.strip_suffix('\n').unwrap_or(comment).len();
-                while chars.peek().is_some_and(|&(next, _)| next < end) {
-                    chars.next();
-                }
-            }
             '(' | '[' | '{' => depth += 1,
             ')' | ']' | '}' if depth == 0 => return at,
             ')' | ']' | '}' => depth -= 1,
@@ -130,6 +201,7 @@ fn value_len(text: &str, indent: usize) -> usize {
             '\n' if next_line_is_an_entry(&text[at + 1..], indent) => return at,
             _ => {}
         }
+        at += c.len_utf8();
     }
     text.len()
 }
@@ -229,5 +301,37 @@ mod tests {
     fn a_cut_off_file_gives_what_came_before() {
         let text = "(data: (\n    a: 1,\n    b: 2";
         assert_eq!(pairs(text), [("a", "1"), ("b", "2")]);
+    }
+}
+
+#[cfg(test)]
+mod lexical_tests {
+    use super::*;
+
+    #[test]
+    fn envelope_discovery_ignores_every_quoted_and_commented_data_token() {
+        for prefix in [
+            "// data: (fake: 1)\n",
+            "/* outer /* data: (fake: 1) */ still data: (fake: 2) */",
+            r#"(type: "data: (fake: 1)", "#,
+            r###"r##"data: (fake: 1)"## "###,
+            "'\"' /* data: (fake: 1) */ ",
+            r#"b"data: (fake: 1)" "#,
+        ] {
+            let text = format!("{prefix}(metadata: (fake: 9), data: (a: 7, b: broken))");
+            let entries = data_entries(&text);
+            assert_eq!(
+                entries,
+                [Entry { name: "a", value: "7" }, Entry { name: "b", value: "broken" }],
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn punctuation_in_characters_raw_strings_and_nested_comments_stays_in_its_value() {
+        let text = r###"(data: (a: ',', b: r#"a, ) // text"#, c: /* one /* , ) */ two */ 3, d: 4))"###;
+        let values: Vec<_> = data_entries(text).into_iter().map(|entry| entry.value).collect();
+        assert_eq!(values, ["','", r##"r#"a, ) // text"#"##, "/* one /* , ) */ two */ 3", "4"]);
     }
 }

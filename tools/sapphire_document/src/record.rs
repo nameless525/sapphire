@@ -87,7 +87,8 @@ pub enum Op {
 pub struct Guard {
     pub owner: PropertyPath,
     /// What was there, canonically, so that a change of spelling or a comment doesn't count. `None` if
-    /// nothing was: a new entry, which only needs its name free.
+    /// nothing was (a new entry, which only needs its name free), or the check is held by an earlier
+    /// record in the same gesture.
     pub was: Option<String>,
 }
 
@@ -121,6 +122,9 @@ pub struct ChangeRecord {
     /// Whether it couldn't be walked and fell back to writing the whole value new.
     pub rewrote_whole: bool,
     pub(crate) guard: Guard,
+    /// The owner check was absorbed by an earlier record in this gesture. Unlike a naturally
+    /// unguarded named insertion, this record requires that earlier replay to succeed.
+    pub(crate) guard_absorbed: bool,
 }
 
 impl ChangeRecord {
@@ -179,8 +183,12 @@ pub(crate) fn absorb(records: &mut Vec<ChangeRecord>, mut record: ChangeRecord) 
             if merged.old == merged.new {
                 let gone = records.remove(at);
                 // Its look at the owner goes to the next record that relied on it.
-                if let Some(next) = records.iter_mut().find(|next| next.guard.owner == gone.guard.owner) {
+                if let Some(next) = records
+                    .iter_mut()
+                    .find(|next| next.guard_absorbed && next.guard.owner == gone.guard.owner)
+                {
                     next.guard.was = gone.guard.was;
+                    next.guard_absorbed = gone.guard_absorbed;
                 }
             }
             return;
@@ -188,8 +196,9 @@ pub(crate) fn absorb(records: &mut Vec<ChangeRecord>, mut record: ChangeRecord) 
     }
     // What a gesture wrote itself isn't what the file might have changed: only its first look at an owner
     // has to hold when the records go back on a changed file.
-    if records.iter().any(|earlier| earlier.guard.owner == record.guard.owner) {
+    if record.guard.was.is_some() && records.iter().any(|earlier| earlier.guard.owner == record.guard.owner) {
         record.guard.was = None;
+        record.guard_absorbed = true;
     }
     records.push(record);
 }

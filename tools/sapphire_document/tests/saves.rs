@@ -466,3 +466,80 @@ fn a_file_that_isnt_text_is_refused_and_a_broken_one_opens_saying_why() {
     let id = open(&mut set, &path).expect("opens");
     assert!(set.any(id).expect("open").failure_message().is_some());
 }
+
+#[test]
+fn creating_a_file_never_writes_through_a_taken_staging_name() {
+    use sapphire_document::disk::create_whole;
+    let dir = TestDir::new("create_collision");
+    let original = dir.write("original.ron", "keep these bytes");
+    let destination = dir.0.join("new.ron");
+    let collision = temporary_path(&destination, 0);
+    fs::hard_link(&original, &collision).expect("a retained hard link");
+    // Also cover the old PID/counter staging scheme (counter zero in an isolated regression run).
+    let old_collision = destination.with_file_name(format!(".new.ron.{}-0.tmp", process::id()));
+    fs::hard_link(&original, &old_collision).expect("a retained old staging link");
+    assert!(create_whole(&destination, b"new complete bytes").expect("create"));
+    assert_eq!(fs::read_to_string(&original).expect("original"), "keep these bytes");
+    assert_eq!(fs::read_to_string(&collision).expect("collision"), "keep these bytes");
+    assert_eq!(fs::read_to_string(&old_collision).expect("old collision"), "keep these bytes");
+    assert_eq!(fs::read(&destination).expect("published"), b"new complete bytes");
+    assert!(!create_whole(&destination, b"must not replace").expect("existing"));
+    assert_eq!(fs::read(&destination).expect("unchanged"), b"new complete bytes");
+    assert!(!temporary_path(&destination, 1).exists());
+}
+
+#[test]
+fn moving_a_file_never_overwrites_an_existing_destination() {
+    use sapphire_document::disk::move_whole;
+    let dir = TestDir::new("move_no_replace");
+    let source = dir.write("source.ron", "source");
+    let destination = dir.write("destination.ron", "destination");
+    assert!(!move_whole(&source, &destination).expect("existing"));
+    assert_eq!(fs::read_to_string(&source).expect("source"), "source");
+    assert_eq!(fs::read_to_string(&destination).expect("destination"), "destination");
+    fs::remove_file(&destination).expect("free the name");
+    assert!(move_whole(&source, &destination).expect("move"));
+    assert!(!source.exists());
+    assert_eq!(fs::read_to_string(&destination).expect("destination"), "source");
+}
+
+#[cfg(unix)]
+#[test]
+fn unsupported_symlink_moves_leave_the_link_and_its_target_alone() {
+    use sapphire_document::disk::move_whole;
+    let dir = TestDir::new("move_symlink");
+    let target = dir.write("target.ron", "target");
+    let source = dir.0.join("link.ron");
+    let destination = dir.0.join("destination.ron");
+    std::os::unix::fs::symlink(&target, &source).expect("link");
+    assert_eq!(
+        move_whole(&source, &destination).expect_err("unsupported").kind(),
+        std::io::ErrorKind::Unsupported
+    );
+    assert!(fs::symlink_metadata(&source).expect("link").is_symlink());
+    assert!(!destination.exists());
+    assert_eq!(fs::read_to_string(target).expect("target"), "target");
+}
+
+#[test]
+fn a_changed_sidecar_identity_refuses_to_publish_edited_source_bytes() {
+    use sapphire_document::identity::{self, IdentityError};
+    let dir = TestDir::new("changed_identity");
+    let source = player();
+    let (path, mut set, id) = dir.opened("moves.ron", &source);
+    move_a_cue(&mut set, id, 3);
+    let sidecar = identity::sidecar_path(&path);
+    let replacement = AssetId::from_bytes([8; 16]);
+    assert_ne!(replacement, id);
+    let other = identity::sidecar_text(replacement, Some("MoveSet(())"));
+    fs::write(&sidecar, &other).expect("external identity edit");
+    assert!(
+        matches!(set.save(id), Err(SetError::Identity(IdentityError::Changed { was, now, .. })) if was == id && now == replacement)
+    );
+    assert_eq!(fs::read_to_string(&path).expect("source"), source);
+    assert_eq!(fs::read_to_string(&sidecar).expect("sidecar"), other);
+    assert!(set.is_dirty(id));
+    fs::write(&sidecar, identity::sidecar_text(id, Some("MoveSet(())"))).expect("restore");
+    set.save(id).expect("save after recovery");
+    assert_eq!(fs::read_to_string(&path).expect("source"), text(&set, id));
+}

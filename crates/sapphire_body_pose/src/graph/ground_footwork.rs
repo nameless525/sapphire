@@ -181,6 +181,7 @@ impl GraphPlayer {
     }
 }
 
+#[allow(clippy::too_many_arguments, reason = "the pose writer uses caller-owned scratch and output buffers")]
 pub(super) fn write_body(
     graph: &GraphBinding,
     clips: &(impl ClipSource + ?Sized),

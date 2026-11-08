@@ -134,7 +134,7 @@ impl TakeoffSupport {
         let pivot = soles[self.pivot].lerp(soles[1], push);
         let floor = soles.map(|point| plane.height_at(point) - point.y);
         // The forefoot mesh extends below the toe pivot as weight rolls through the tip.
-        let scale = place.matrix3.y_axis.length();
+        let scale = math.length_3a(place.matrix3.y_axis);
         let tip_room = leg.ball_height.unwrap_or(0.0) * scale * 0.28 * push;
         let target = (support - pivot).with_y((support.y - pivot.y).max(floor[0].max(floor[1])) + tip_room);
         let load = -0.022 + push * 0.033;
@@ -170,6 +170,7 @@ impl TakeoffCarry {
         out.f32(self.elapsed);
     }
 
+    #[allow(clippy::too_many_arguments, reason = "reuse the caller's decomposed world transform")]
     pub(super) fn ankle_offset(
         self,
         side: usize,

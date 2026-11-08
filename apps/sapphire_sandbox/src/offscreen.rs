@@ -153,10 +153,10 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
     if let (Some(_), Some(combat)) = (options.arena, &combat) {
         game_combat::arena::check_scenario(combat, options.party).map_err(AppInitError::msg)?;
     }
-    if let (Some(combat), Some(option), Some(offscreen)) = (&combat, &options.combat, &options.offscreen) {
-        if let OffscreenMode::Capture { ticks, frames, .. } = offscreen.mode {
-            combat.capture_ticks(option, ticks, frames).map_err(AppInitError::msg)?;
-        }
+    if let (Some(combat), Some(option), Some(offscreen)) = (&combat, &options.combat, &options.offscreen)
+        && let OffscreenMode::Capture { ticks, frames, .. } = offscreen.mode
+    {
+        combat.capture_ticks(option, ticks, frames).map_err(AppInitError::msg)?;
     }
     let content = content.map_or_else(mount_content, Ok)?;
     let (instance, gpu) = headless_gpu()?;

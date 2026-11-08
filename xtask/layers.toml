@@ -64,8 +64,9 @@ sapphire_timeline = { kind = "runtime", layer = 2 }
 # Paths in the fixed step (M3 P0): point location, a search on a preallocated pool and a funnel over
 # `sapphire_navmesh`'s format. Beside physics, reaching no renderer, world or platform.
 sapphire_nav = { kind = "runtime", layer = 3 }
-# Animation: samples, blends and solves (M2). Its cooked formats sit below it, in sapphire_assets,
-# which checks every kind's bytes; it has no edge to the renderer or the world.
+# CPU graph, clip sampling, FK and body IK, with clock and terrain supplied by callers.
+sapphire_body_pose = { kind = "runtime", layer = 3 }
+# Presentation animation adds jobs and secondary motion beside the shared pose evaluator.
 sapphire_anim = { kind = "runtime", layer = 3 }
 sapphire_input = { kind = "runtime", layer = 3 }
 sapphire_render = { kind = "runtime", layer = 3 }
@@ -162,6 +163,7 @@ xtask = { kind = "tool" }
 # dev-only one.
 [allow]
 edges = [
+    ["sapphire_anim", "sapphire_body_pose"],
     # Hooks read gameplay's resources and write its queues; gameplay names nothing of Luau.
     ["sapphire_script", "sapphire_gameplay"],
     # Formats store reflection's stable names and schema versions.
@@ -219,7 +221,7 @@ edges = [
 # `runners` are the tools that run those crates in a job of their own: the same tree rule, with no
 # clippy.toml, since they read files and print, and no result goes through them.
 [simulation]
-crates = ["sapphire_colliders", "sapphire_gameplay", "sapphire_moves", "sapphire_nav", "sapphire_navmesh", "sapphire_physics", "sapphire_script", "sapphire_timeline", "sapphire_zone"]
+crates = ["sapphire_body_pose", "sapphire_colliders", "sapphire_gameplay", "sapphire_moves", "sapphire_nav", "sapphire_navmesh", "sapphire_physics", "sapphire_script", "sapphire_timeline", "sapphire_zone"]
 runners = ["sapphire_replay"]
 forbidden = [
     "naga",

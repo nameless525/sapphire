@@ -257,12 +257,26 @@ impl Stage {
         gpu: GpuContext,
         desc: StageDesc,
     ) -> Result<Self, AppInitError> {
+        let content = Content::new(platform, desc.character, desc.sky)?;
+        Self::new_with_content(instance, gpu, desc, content)
+    }
+
+    /// Builds the renderer over already mounted Content, after any CPU-only combat bootstrap.
+    pub fn new_with_content(
+        instance: GpuInstance,
+        gpu: GpuContext,
+        desc: StageDesc,
+        mut content: Content,
+    ) -> Result<Self, AppInitError> {
+        if content.selection() != (desc.character, desc.sky) {
+            return Err(AppInitError::msg("preloaded content differs from the stage character or sky"));
+        }
         let StageDesc {
             format,
             quality,
             settings,
-            character,
-            sky,
+            character: _,
+            sky: _,
             keep_character_mesh,
             uploads,
             material_overrides,
@@ -271,7 +285,6 @@ impl Stage {
             inventory_without,
         } = desc;
         let mut renderer = Renderer::new(&gpu, format, settings)?;
-        let mut content = Content::new(platform, character, sky)?;
         if prewarm_packs {
             let mut inventory = content.pipeline_inventory();
             if let Some(entry) = &inventory_without

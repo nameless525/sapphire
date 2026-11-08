@@ -3,6 +3,7 @@
 Model space: +X the character's left, +Y up, +Z forward. A turn is a rotation in rest space about the
 bone's joint, X then Y then Z, composed down the chain, exactly as `sapphire_pipeline::keypose`.
 """
+import json
 import math
 
 import rig
@@ -62,6 +63,12 @@ def to_euler(q):
     r20 = 2 * (x * z - w * y)
     r21 = 2 * (y * z + w * x)
     r22 = 1 - 2 * (x * x + y * y)
+    if abs(r20) >= 1.0 - 1e-12:
+        # At a pitch of ±90°, X and Z describe the same axis. Pick X = 0 and recover Z
+        # from the second matrix column, which still has a reliable direction.
+        r01 = 2 * (x * y - w * z)
+        r11 = 1 - 2 * (x * x + z * z)
+        return 0.0, math.copysign(90.0, -r20), math.degrees(math.atan2(-r01, r11))
     b = math.asin(max(-1.0, min(1.0, -r20)))
     a = math.atan2(r21, r22)
     c = math.atan2(r10, r00)
@@ -91,6 +98,27 @@ def frame(u, hint):
     w = norm(sub(hint, mul(u, dot(hint, u))))
     v = cross(w, u)
     return u, v, w
+def reject(v, axis):
+    """Remove the component along a unit axis."""
+    return sub(v, mul(axis, dot(v, axis)))
+def perpendicular(axis):
+    cardinal = min(((1, 0, 0), (0, 1, 0), (0, 0, 1)), key=lambda v: abs(dot(v, axis)))
+    return norm(reject(cardinal, axis))
+def plane_direction(hint, axis, fallback, threshold):
+    projected = reject(norm(hint), axis)
+    strength = length(projected)
+    if strength >= threshold:
+        return mul(projected, 1.0 / strength)
+    direction = norm(reject(fallback, axis))
+    if length(direction) == 0.0:
+        direction = perpendicular(axis)
+    if strength > 1e-9:
+        angle = math.degrees(math.atan2(dot(axis, cross(direction, projected)), dot(direction, projected)))
+        blend = strength / threshold
+        direction = qrot(qaxis(axis, angle * blend * blend * (3.0 - 2.0 * blend)), direction)
+    return direction
+def angle_between(a, b):
+    return math.degrees(math.atan2(length(cross(a, b)), dot(a, b)))
 def between_frames(a, b):
     """The rotation taking frame a to frame b."""
     return qmul(from_basis(*b), qinv(from_basis(*a)))
@@ -119,7 +147,9 @@ REST = {b: tuple(RIG[b[0].lower() + b[1:]]['pos']) for b in ORDER}
 SOLE = 0.0
 TOE_HEIGHT = REST['LeftToes'][1]
 ANKLE_FROM_TOE = sub(REST['LeftFoot'], REST['LeftToes'])
-HEEL_FROM_TOE = (0.0, -TOE_HEIGHT, -0.205)  # the heel's bottom, from the ball of the foot
+# Contact landmarks measured on the flat sole of the hero's bind mesh.
+HEEL_FROM_TOE = (0.0, -TOE_HEIGHT, -0.159)
+TIP_FROM_TOE = (0.0, -TOE_HEIGHT, 0.056)
 
 # The blade, in the hand's rest frame: a grip across the fist, leaving on the thumb side and leaning 22
 # degrees toward the fingers, as a closed fist holds it. The edge continues the knuckles.
@@ -161,39 +191,63 @@ class Pose:
     def tip(self):
         return add(self.grip(), mul(self.blade_dir(), BLADE_LENGTH))
 
+    def sole(self, side):
+        """Ball, heel and tip of the shoe, in model space."""
+        toes = self.pos[side + 'Toes']
+        foot_rot, toe_rot = self.rot[side + 'Foot'], self.rot[side + 'Toes']
+        return (add(toes, qrot(toe_rot, (0.0, -TOE_HEIGHT, 0.0))),
+                add(toes, qrot(foot_rot, HEEL_FROM_TOE)),
+                add(toes, qrot(toe_rot, TIP_FROM_TOE)))
+
+def limb_vectors(start, rest_upper, rest_lower, target, pole, fallback, reach=0.998):
+    """Return the solved segment displacements and any distance missed at the target."""
+    upper_length, lower_length = length(rest_upper), length(rest_lower)
+    total = upper_length + lower_length
+    line = sub(target, start)
+    distance = length(line)
+    direction = norm(line) if distance > 1e-9 else norm(add(rest_upper, rest_lower))
+    folded = abs(upper_length - lower_length) + 0.012 * min(upper_length, lower_length)
+    extension = max(folded, total * min(reach, 0.999999))
+    end = min(max(distance, folded), extension)
+    # As the requested pole goes through the reach axis it has no usable direction.
+    # Ease toward the anatomical fallback across that region to avoid a hinge flip.
+    bend = plane_direction(pole, direction, fallback, 0.24)
+
+    along = (upper_length**2 + end**2 - lower_length**2) / (2.0 * end)
+    middle = add(mul(direction, along), mul(bend, math.sqrt(max(0.0, upper_length**2 - along**2))))
+    return middle, sub(mul(direction, end), middle), abs(distance - end)
+
+
+def reach_chain(start, rest_upper, rest_lower, target, pole, hinge, fallback, reach=0.998):
+    """Solve two rigid segments in one plane. `hinge` is the signed rest flexion axis.
+
+    The pole and its fallback are model-space directions from the shoulder-to-wrist or
+    hip-to-ankle line. The result is two model-space rotations from bind and the distance
+    from the requested target that the chain could not reach.
+    """
+    upper, lower, miss = limb_vectors(start, rest_upper, rest_lower, target, pole, fallback, reach)
+    axis = cross(upper, lower)
+    r_upper = between_frames(frame(rest_upper, hinge), frame(upper, axis))
+    r_lower = between_frames(frame(rest_lower, hinge), frame(lower, axis))
+    return r_upper, r_lower, miss
+
 
 def solve_chain(pose, upper, lower, end, target, pole, bend_away):
-    """Two bones reaching `target`, bending toward `pole`. `bend_away`: the middle joint leans toward
-    the pole and the hinge's positive side is opposite it (arms), else it's the same side (legs).
-    Returns the upper and lower bones' rotations, in rest-turn form."""
+    """Solve a hero limb with a signed anatomical flexion axis from the bind rig."""
     pose.fk()
-    root = pose.pos[upper]
     r1 = sub(REST[lower], REST[upper])
     r2 = sub(REST[end], REST[lower])
-    l1, l2 = length(r1), length(r2)
-    to = sub(target, root)
-    d = length(to)
-    limit = (l1 + l2) * 0.998
-    short = max(0.0, d - limit)
-    d = min(max(d, abs(l1 - l2) + 0.01), limit)
-    direction = norm(to)
-    cos_a = max(-1.0, min(1.0, (l1 * l1 + d * d - l2 * l2) / (2 * l1 * d)))
-    a = math.acos(cos_a)
-    perp = norm(sub(pole, mul(direction, dot(pole, direction))))
-    mid = add(root, add(mul(direction, l1 * cos_a), mul(perp, l1 * math.sin(a))))
-    end_at = add(root, mul(direction, d))
-    u1, u2 = norm(sub(mid, root)), norm(sub(end_at, mid))
-    rest_hint = (0.0, 0.0, 1.0)
-    f0 = frame(r1, rest_hint)
-    side_hint = mul(perp, -1.0 if bend_away else 1.0)
-    f1 = frame(u1, side_hint)
-    r_upper = between_frames(f0, f1)
-    # The lower bone hinges about the same axis, v.
-    f0_low = frame(r2, rest_hint)
-    w_low = norm(cross(u2, f1[1]))
-    f1_low = (u2, f1[1], w_low)
-    r_lower = between_frames(f0_low, f1_low)
-    return r_upper, r_lower, short
+    if bend_away:
+        # The elbow is almost straight in bind. The thumb side of the hand gives the
+        # flexion plane independently of the small, asymmetric bind offsets.
+        side = 'left' if upper.startswith('Left') else 'right'
+        radial = sub(RIG[side + 'IndexProximal']['pos'], RIG[side + 'LittleProximal']['pos'])
+        hinge = cross(r1, radial)
+        fallback = qrot(pose.rot['UpperChest'], (0.0, -0.65, -1.0))
+    else:
+        hinge = cross(r1, r2)
+        fallback = qrot(pose.rot['Hips'], (0.0, 0.0, 1.0))
+    return reach_chain(pose.pos[upper], r1, r2, target, pole, hinge, fallback)
 
 
 def set_rot(pose, bone, world_rot):
@@ -208,11 +262,15 @@ class Foot:
     """Where a foot is: its ball's ground position, its yaw, how far its heel is up (degrees, about the
     ball), how far it's off the ground, and how far it rolls."""
 
-    def __init__(self, x, z, yaw=0.0, pitch=0.0, lift=0.0, roll=0.0, toe=None, planted=None, model=False):
+    def __init__(self, x, z, yaw=0.0, pitch=0.0, lift=0.0, roll=0.0, toe=None, planted=None,
+                 model=False, pivot=None):
         self.x, self.z, self.yaw, self.pitch, self.lift, self.roll = x, z, yaw, pitch, lift, roll
         self.toe = toe  # the toes' own bend from the foot, degrees of x; None keeps them flat on the ground
         self.planted = (lift == 0.0 and not model) if planted is None else planted
         self.model = model  # x and z and yaw are in model space, whatever the root does
+        if pivot not in (None, 'heel', 'ball'):
+            raise ValueError(f"Unknown foot pivot {pivot!r}")
+        self.pivot = pivot
 
     def rotation(self, root_turn=0.0):
         turned = 0.0 if self.model else root_turn
@@ -223,9 +281,29 @@ class Foot:
         turned = 0.0 if self.model else root_turn
         if self.toe is not None:
             return qnorm(qmul(self.rotation(root_turn), qaxis((1, 0, 0), self.toe)))
+        if self.pivot == 'heel':
+            return self.rotation(root_turn)
         if self.lift > 0.0:
             return qnorm(qmul(self.rotation(root_turn), qaxis((1, 0, 0), -min(self.pitch, 20.0) * 0.5)))
         return qaxis((0, 1, 0), self.yaw - turned)
+
+    def ankle(self, side, root=(0.0, 0.0, 0.0), root_turn=0.0):
+        """Ankle in model space, with the chosen heel or ball on the authored sole point."""
+        ankle_from_toe = sub(REST[side + 'Foot'], REST[side + 'Toes'])
+        rotation = self.rotation(root_turn)
+        height = REST[side + 'Toes'][1]
+        if self.pivot == 'heel':
+            at = (self.x, self.lift, self.z)
+            offset = qrot(rotation, sub(ankle_from_toe, HEEL_FROM_TOE))
+        elif self.pivot == 'ball':
+            at = (self.x, self.lift, self.z)
+            offset = add(qrot(rotation, ankle_from_toe),
+                         qrot(self.toes_rotation(root_turn), (0.0, height, 0.0)))
+        else:
+            # Existing clips author the toe joint, with its bind height above the floor.
+            at = (self.x, height + self.lift, self.z)
+            offset = qrot(rotation, ankle_from_toe)
+        return add(at if self.model else to_model(at, root, root_turn), offset)
 
 
 def leading_edge(az, lean):
@@ -242,9 +320,7 @@ def to_model(world, root, root_turn):
 
 def solve_leg(pose, side, foot, root, root_turn, knee=None):
     q = foot.rotation(root_turn)
-    at = (foot.x, TOE_HEIGHT + foot.lift, foot.z)
-    ball = at if foot.model else to_model(at, root, root_turn)
-    ankle = add(ball, qrot(q, ANKLE_FROM_TOE))
+    ankle = foot.ankle(side, root, root_turn)
     turned = 0.0 if foot.model else root_turn
     pole = knee if knee is not None else qrot(qaxis((0, 1, 0), foot.yaw - turned), (0.0, 0.0, 1.0))
     r_up, r_low, short = solve_chain(pose, side + 'UpperLeg', side + 'LowerLeg', side + 'Foot', ankle, pole, False)
@@ -255,10 +331,33 @@ def solve_leg(pose, side, foot, root, root_turn, knee=None):
     return short
 
 
-def hand_frame(blade, edge_hint, blade_rest, edge_rest):
+def hand_frame(blade, edge_hint, blade_rest, edge_rest, fallback=None):
     b = norm(blade)
-    e = norm(sub(edge_hint, mul(b, dot(edge_hint, b))))
+    e = plane_direction(edge_hint, b, fallback if fallback is not None else perpendicular(b), 0.24)
     return between_frames((blade_rest, edge_rest, cross(blade_rest, edge_rest)), (b, e, cross(b, e)))
+
+
+def forearm_twist(lower_rot, hand_rot, axis, share=0.5):
+    """Move grip roll into the forearm without changing branches at an opposed palm."""
+    axis = norm(axis)
+    relative = qmul(hand_rot, qinv(lower_rot))
+    along, scalar = dot(relative[:3], axis), relative[3]
+    # Sine of the axial angle. The response is proportional near neutral and tapers off
+    # when the target asks for a palm reversal, where the shortest signed angle jumps.
+    magnitude = scalar * scalar + along * along
+    sine = 2.0 * along * scalar / magnitude if magnitude > 1e-9 else 0.0
+    twist = min(75.0, max(-75.0, math.degrees(sine) * share))
+    return qnorm(qmul(qaxis(axis, twist), lower_rot))
+
+
+def set_grip(pose, side, blade, edge, blade_rest, edge_rest):
+    hand, lower = side + 'Hand', side + 'LowerArm'
+    forearm = norm(sub(pose.pos[hand], pose.pos[lower]))
+    lower_rot = pose.rot[lower]
+    rotation = hand_frame(blade, edge if edge is not None else forearm, blade_rest, edge_rest,
+                          qrot(lower_rot, edge_rest))
+    set_rot(pose, lower, forearm_twist(lower_rot, rotation, forearm))
+    set_rot(pose, hand, rotation)
 
 
 def solve_right_arm(pose, wrist, elbow, blade=None, edge=None, hand=None):
@@ -266,9 +365,7 @@ def solve_right_arm(pose, wrist, elbow, blade=None, edge=None, hand=None):
     set_rot(pose, 'RightUpperArm', r_up)
     set_rot(pose, 'RightLowerArm', r_low)
     if blade is not None:
-        forearm = norm(sub(pose.pos['RightHand'], pose.pos['RightLowerArm']))
-        q = hand_frame(blade, edge if edge is not None else forearm, BLADE_R, EDGE_R)
-        set_rot(pose, 'RightHand', q)
+        set_grip(pose, 'Right', blade, edge, BLADE_R, EDGE_R)
     elif hand is not None:
         pose.turns['RightHand'] = hand
         pose.fk()
@@ -280,9 +377,7 @@ def solve_left_arm(pose, wrist, elbow, hand=None, grip=False):
     set_rot(pose, 'LeftUpperArm', r_up)
     set_rot(pose, 'LeftLowerArm', r_low)
     if grip:
-        forearm = norm(sub(pose.pos['LeftHand'], pose.pos['LeftLowerArm']))
-        q = hand_frame(pose.blade_dir(), forearm, BLADE_L, EDGE_L)
-        set_rot(pose, 'LeftHand', q)
+        set_grip(pose, 'Left', pose.blade_dir(), None, BLADE_L, EDGE_L)
     elif hand is not None:
         pose.turns['LeftHand'] = hand
         pose.fk()
@@ -359,7 +454,7 @@ class Move:
     def key(self, tick, say, ease='Smooth', root=None, root_turn=None, hips=None, body=None,
             L=None, R=None, knee_L=None, knee_R=None, look=None, neck_share=0.42, fingers=None,
             rh=None, elbow_r=None, blade=None, edge=None, lh=None, elbow_l=None, lhand=None, two_hands=False,
-            shoulder_r=None, shoulder_l=None, raw=None):
+            shoulder_r=None, shoulder_l=None, raw=None, arms_in_chest=False):
         previous = self.keys[-1] if self.keys else None
         pose = Pose()
         if previous:
@@ -399,12 +494,16 @@ class Move:
             pose.fk()
             pose.turns['Head'] = qnorm(qmul(qinv(pose.rot['Neck']), want))
         pose.fk()
+        # Most moves aim in model space. A chest-relative carry lets a moving ribcage
+        # lead the upper arm while the hilt and blade have independently authored lag.
+        arm_frame = pose.rot['UpperChest'] if arms_in_chest else QI
         shoulder = pose.pos['RightUpperArm']
         if rh is not None:
-            az, el, r = rh
-            wrist = add(shoulder, polar(az, el, r))
-            short = solve_right_arm(pose, wrist, elbow_r if elbow_r is not None else (-0.5, -0.8, -0.3),
-                                    polar(*blade) if blade is not None else None, edge)
+            wrist = add(shoulder, qrot(arm_frame, polar(*rh)))
+            pole = qrot(arm_frame, elbow_r if elbow_r is not None else (-0.5, -0.8, -0.3))
+            direction = qrot(arm_frame, polar(*blade)) if blade is not None else None
+            short = solve_right_arm(pose, wrist, pole, direction,
+                                    qrot(arm_frame, edge) if edge is not None else None)
             if short > 0.001:
                 problems.append(f"right arm short by {short*100:.1f} cm")
         pose.fk()
@@ -413,16 +512,17 @@ class Move:
             # Behind the right fist, along the grip.
             at = add(pose.grip(), mul(pose.blade_dir(), -0.09))
             wrist = at
+            pole = qrot(arm_frame, elbow_l if elbow_l is not None else (0.6, -0.8, -0.2))
             short = 0.0
             for _ in range(3):
-                short = solve_left_arm(pose, wrist, elbow_l if elbow_l is not None else (0.6, -0.8, -0.2), grip=True)
+                short = solve_left_arm(pose, wrist, pole, grip=True)
                 wrist = sub(at, qrot(pose.rot['LeftHand'], GRIP_L))
             if short > 0.001:
                 problems.append(f"left arm short by {short*100:.1f} cm")
         elif lh is not None:
-            az, el, r = lh
-            wrist = add(shoulder, polar(az, el, r))
-            short = solve_left_arm(pose, wrist, elbow_l if elbow_l is not None else (0.5, -0.8, -0.3), hand=lhand)
+            wrist = add(shoulder, qrot(arm_frame, polar(*lh)))
+            pole = qrot(arm_frame, elbow_l if elbow_l is not None else (0.5, -0.8, -0.3))
+            short = solve_left_arm(pose, wrist, pole, hand=lhand)
             if short > 0.001:
                 problems.append(f"left arm short by {short*100:.1f} cm")
         for bone, values in (raw or {}).items():
@@ -449,7 +549,7 @@ class Move:
             a = keys[i]
             pose = Pose()
             pose.hips = a['pose'].hips
-            pose.turns = dict(a['pose'].turns)
+            pose.turns = dict(a['rounded'])
             return pose.fk(), a['root'], a['root_turn']
         a, b = keys[i], keys[i + 1]
         u = (t - a['tick']) / (b['tick'] - a['tick'])
@@ -476,17 +576,14 @@ class Move:
             row['tip'] = self.world(pose.tip(), root, rt)
             row['grip'] = self.world(pose.grip(), root, rt)
             for side in ('Left', 'Right'):
-                toes = pose.pos[side + 'Toes']
-                ball = self.world(toes, root, rt)
-                heel = self.world(add(toes, qrot(pose.rot[side + 'Foot'], HEEL_FROM_TOE)), root, rt)
-                row[side] = (ball, heel)
+                row[side] = tuple(self.world(p, root, rt) for p in pose.sole(side))
+                row[side + 'Toes'] = self.world(pose.pos[side + 'Toes'], root, rt)
             rows.append(row)
         # Below the ground, and where the feet are.
         low = {}
         for row in rows:
             for side in ('Left', 'Right'):
-                ball, heel = row[side]
-                sole = min(ball[1] - TOE_HEIGHT, heel[1])
+                sole = min(point[1] for point in row[side])
                 if sole < -0.01:
                     low.setdefault(side, []).append((row['t'], round(sole, 3)))
         for side, items in low.items():
@@ -497,26 +594,27 @@ class Move:
                 fa, fb = a[key_name], b[key_name]
                 if fa is None or fb is None or not (fa.planted and fb.planted):
                     continue
-                if (fa.x, fa.z) != (fb.x, fb.z):
+                if (fa.x, fa.z, fa.pivot) != (fb.x, fb.z, fb.pivot):
                     continue
-                want = rows[a['tick']][side][0]
                 worst = 0.0
                 for t in range(a['tick'], b['tick'] + 1):
-                    ball = rows[t][side][0]
-                    worst = max(worst, math.hypot(ball[0] - fa.x, ball[2] - fa.z))
+                    row = rows[t]
+                    contact = row[side][int(fa.pivot == 'heel')] if fa.pivot else row[side + 'Toes']
+                    worst = max(worst, math.hypot(contact[0] - fa.x, contact[2] - fa.z))
                 if worst > slip_limit:
                     print(f"  slip {side} {a['tick']}..{b['tick']}: {worst*100:.1f} cm")
         # Joint angles against human limits.
         worst = {}
         for row in rows:
             pose = row['pose']
-            for side, sign in (('Left', -1), ('Right', 1)):
-                arm = to_euler(pose.turns[side + 'LowerArm'])
-                leg = to_euler(pose.turns[side + 'LowerLeg'])
-                worst[side + ' elbow'] = max(worst.get(side + ' elbow', 0), abs(arm[1]))
-                worst[side + ' knee'] = max(worst.get(side + ' knee', 0), abs(leg[0]))
-                hand = qrot(pose.turns[side + 'Hand'], (sign * -1.0, 0.0, 0.0))
-                flex = math.degrees(math.acos(max(-1, min(1, hand[0] * (sign * -1.0)))))
+            for side in ('Left', 'Right'):
+                for joint, upper, lower, end in (('elbow', 'UpperArm', 'LowerArm', 'Hand'),
+                                                 ('knee', 'UpperLeg', 'LowerLeg', 'Foot')):
+                    a, b, c = (pose.pos[side + bone] for bone in (upper, lower, end))
+                    name = side + ' ' + joint
+                    worst[name] = max(worst.get(name, 0), angle_between(sub(b, a), sub(c, b)))
+                forearm = sub(REST[side + 'Hand'], REST[side + 'LowerArm'])
+                flex = angle_between(forearm, qrot(pose.turns[side + 'Hand'], forearm))
                 worst[side + ' wrist'] = max(worst.get(side + ' wrist', 0), flex)
         print('  max ' + ', '.join(f"{k} {v:.0f}" for k, v in sorted(worst.items())))
         most = {}
@@ -567,7 +665,7 @@ class Move:
         for n, key in enumerate(self.keys):
             if n:
                 out.append('')
-            for line in key['say'].strip().split('\n'):
+            for line in key['say'].strip().splitlines():
                 out.append('            // ' + line.strip())
             head = [f"tick: {key['tick']}"]
             if n and key['ease'] != 'Smooth':
@@ -605,7 +703,12 @@ class Move:
                 for bone, values in fingers.items():
                     parts = [f"{axis}: {fmt(v)}" for axis, v in zip('xyz', values) if v != 0.0]
                     lines.append(f"                {bone}: ({', '.join(parts)}),")
-            lines.append('            }),')
+            morphs = key.get('morphs', {})
+            if morphs:
+                weights = ', '.join(f"{json.dumps(name)}: {fmt(value, 6)}" for name, value in morphs.items())
+                lines.append(f"            }}, morphs: {{{weights}}}),")
+            else:
+                lines.append('            }),')
             out += lines
         out += ['        ],', '    ),', ')', '']
         return '\n'.join(out)

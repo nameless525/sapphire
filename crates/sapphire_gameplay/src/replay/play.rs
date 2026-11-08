@@ -22,10 +22,12 @@ pub enum PlayError {
     UnknownScenario { name: String, known: String },
     #[error("scenario `{name}` can't set up its world: {source}")]
     Setup { name: String, source: ScenarioError },
-    /// The move data, controller tuning or collision world isn't what the replay was recorded against,
+    #[error("scenario `{name}` can't bind its runtime profiles: {reason}")]
+    Configure { name: String, reason: String },
+    /// The move data, controller setup or collision world isn't what the replay was recorded against,
     /// so its actions mean something else.
     #[error(
-        "the move data, controller tuning or collision world changed since this replay was recorded (hash \
+        "the move data, controller setup or collision world changed since this replay was recorded (hash \
          {recorded:016x}, now {current:016x}), \
          so it would run a different fight: re-record it with `cargo xtask replay --update`, then review \
          what moved"
@@ -122,21 +124,37 @@ pub struct Player {
 }
 
 impl Player {
-    /// Sets up the replay's scenario, found among `scenarios`, and refuses to start if the move data
+    /// Sets up the replay's scenario, found among `scenarios`, and refuses to start if the setup
     /// isn't what it was recorded against. It never plays on regardless: see
     /// [`PlayError::MovesChanged`].
     pub fn new(replay: Replay, scenarios: &[Scenario]) -> Result<Self, PlayError> {
+        Self::new_with_setup(replay, scenarios, |_, _, _| Ok(()))
+    }
+
+    /// Tries a tick-zero setup for recordings with a configured table hash.
+    /// An exact unconfigured match never calls `setup`. Every other replay must match the
+    /// configured tables before it can apply commands or take a step.
+    pub fn new_with_setup(
+        replay: Replay,
+        scenarios: &[Scenario],
+        setup: impl FnOnce(&Scenario, &mut Simulation, &[ActorId]) -> Result<(), String>,
+    ) -> Result<Self, PlayError> {
         let name = replay.scenario();
         let Some(scenario) = find_scenario(scenarios, name) else {
             let names: Vec<&str> = scenarios.iter().map(|scenario| scenario.name).collect();
             return Err(PlayError::UnknownScenario { name: name.to_owned(), known: names.join(", ") });
         };
-        let (sim, cast) = scenario
+        let (mut sim, cast) = scenario
             .start(replay.config())
             .map_err(|source| PlayError::Setup { name: name.to_owned(), source })?;
-        let current = sim.tables_hash();
-        if current != replay.tables_hash() {
-            return Err(PlayError::MovesChanged { recorded: replay.tables_hash(), current });
+        let recorded = replay.tables_hash();
+        if sim.tables_hash() != recorded {
+            setup(scenario, &mut sim, &cast)
+                .map_err(|reason| PlayError::Configure { name: name.to_owned(), reason })?;
+            let current = sim.tables_hash();
+            if current != recorded {
+                return Err(PlayError::MovesChanged { recorded, current });
+            }
         }
         let mut player = Self {
             tracked: Tracked::new(sim, replay.ticks()),
@@ -248,11 +266,23 @@ impl Recording {
     /// [`LiveMoves::start`] does. The file's hash is theirs, so it plays back only on a build that has
     /// those edits in its documents: until then a [`Player`] says the move data changed, which it did.
     pub fn tuned(scenario: &Scenario, config: SimConfig, live: &LiveMoves) -> Result<Self, PlayError> {
+        Self::tuned_with_setup(scenario, config, live, |_, _, _| Ok(()))
+    }
+
+    /// Configures the tick-zero world before recording its exact tables.
+    pub fn tuned_with_setup(
+        scenario: &Scenario,
+        config: SimConfig,
+        live: &LiveMoves,
+        setup: impl FnOnce(&Scenario, &mut Simulation, &[ActorId]) -> Result<(), String>,
+    ) -> Result<Self, PlayError> {
         // Before the world, so a pool too big for a file is refused before it's built.
         let mut recorder = Recorder::new(scenario.name, config, 0)?;
-        let (sim, cast) = live
+        let (mut sim, cast) = live
             .start(scenario, config)
             .map_err(|source| PlayError::Setup { name: scenario.name.to_owned(), source })?;
+        setup(scenario, &mut sim, &cast)
+            .map_err(|reason| PlayError::Configure { name: scenario.name.to_owned(), reason })?;
         recorder.set_tables_hash(sim.tables_hash());
         Ok(Self { tracked: Tracked::new(sim, MAX_TICKS), recorder, cast, edited_at: None })
     }
@@ -461,6 +491,124 @@ mod tests {
             Recording::new(melee(), config),
             Err(PlayError::File(ReplayError::TooManyActors { .. }))
         ));
+    }
+
+    #[test]
+    fn a_standing_preparation_setup_change_refuses_old_replay() {
+        use crate::replay::scenario::{PreparedFight, duel};
+
+        fn prepared_duel(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
+            let cast = duel(sim)?;
+            sim.prepare_standing_jump(cast[0]);
+            Ok(cast)
+        }
+
+        let before = *find_scenario(SCENARIOS, "duel").unwrap();
+        let after = Scenario { setup: prepared_duel, ..before };
+        let record_jump = |scenario: &Scenario| {
+            let mut recording = Recording::new(scenario, scenario.config).unwrap();
+            let mut source = |tick, cast: &[ActorId]| {
+                let mut actions = TickActions::NEUTRAL;
+                if tick == 52 {
+                    actions
+                        .set(cast[0], ActorActions { buttons: Buttons::JUMP, ..Default::default() })
+                        .unwrap();
+                }
+                actions
+            };
+            for _ in 0..55 {
+                recording.step(&mut source).unwrap();
+            }
+            let (replay, played) = recording.finish();
+            (Replay::decode(&replay.encode()).unwrap(), played)
+        };
+        let (old, _) = record_jump(&before);
+        let (fresh, expected) = record_jump(&after);
+        assert!(Player::new(old.clone(), &[before]).is_ok());
+        let result = Player::new(old.clone(), &[after]);
+        assert!(matches!(
+            result,
+            Err(PlayError::MovesChanged { recorded, current })
+                if recorded == old.tables_hash() && current == fresh.tables_hash()
+        ));
+        assert!(old.actions().eq(fresh.actions()), "only the setup changes the replay header");
+        let mut player = Player::new(fresh, &[after]).unwrap();
+        player.run_to_end();
+        assert_eq!(player.finish().trail, expected.trail);
+
+        let scenario = find_scenario(SCENARIOS, "arena-fight").unwrap();
+        let mut fight = PreparedFight::new(false)
+            .unwrap()
+            .start_resettable(scenario.config, &Default::default())
+            .unwrap();
+        let hash = fight.tables_hash();
+        fight.step(&TickActions::NEUTRAL);
+        fight.restart().unwrap();
+        assert_eq!(fight.tables_hash(), hash);
+        assert_eq!(fight.tables_hash(), scenario.start(scenario.config).unwrap().0.tables_hash());
+    }
+
+    fn configure_tables(_: &Scenario, sim: &mut Simulation, cast: &[ActorId]) -> Result<(), String> {
+        assert_eq!(sim.tick(), 0);
+        assert!(!cast.is_empty());
+        let profile = crate::ControllerProfile { run_speed: 7.0, ..Default::default() };
+        sim.add_controller_profile(&profile).map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_replay_keeps_the_exact_unconfigured_path() {
+        let (replay, recorded) = record(30, melee_sweep);
+        let mut player = Player::new_with_setup(replay, SCENARIOS, |_, _, _| {
+            panic!("legacy replay tried to load the optional profiles");
+        })
+        .unwrap();
+        player.run_to_end();
+        assert_eq!(player.finish().trail, recorded.trail);
+    }
+
+    #[test]
+    fn configured_recording_requires_the_matching_setup_before_playback() {
+        let mut recording =
+            Recording::tuned_with_setup(melee(), melee().config, &LiveMoves::default(), configure_tables)
+                .unwrap();
+        for _ in 0..30 {
+            recording.step(&mut melee_sweep).unwrap();
+        }
+        let (replay, recorded) = recording.finish();
+        assert!(matches!(Player::new(replay.clone(), SCENARIOS), Err(PlayError::MovesChanged { .. })));
+        let unavailable = Player::new_with_setup(replay.clone(), SCENARIOS, |_, _, _| {
+            Err("the required mesh is missing".to_owned())
+        });
+        assert!(matches!(unavailable, Err(PlayError::Configure { .. })));
+        let mut wrong = replay.clone();
+        wrong.set_tables_hash(replay.tables_hash() ^ 1);
+        assert!(matches!(
+            Player::new_with_setup(wrong, SCENARIOS, configure_tables),
+            Err(PlayError::MovesChanged { .. })
+        ));
+        let mut player = Player::new_with_setup(replay, SCENARIOS, configure_tables).unwrap();
+        player.run_to_end();
+        assert_eq!(player.finish().trail, recorded.trail);
+    }
+
+    #[test]
+    fn zero_tick_commands_run_after_configured_hash_validation() {
+        let scenario = Scenario { name: "setup-test", setup: crate::replay::scenario::timelines, ..*melee() };
+        let mut recording =
+            Recording::tuned_with_setup(&scenario, scenario.config, &LiveMoves::default(), configure_tables)
+                .unwrap();
+        recording.play_timeline(TimelineId::from_raw(0)).unwrap();
+        let (replay, _) = recording.finish();
+        assert_eq!(replay.ticks(), 0);
+        assert_eq!(replay.commands().len(), 1);
+        let player = Player::new_with_setup(replay, &[scenario], |scenario, sim, cast| {
+            assert!(sim.timeline().is_none(), "a command ran before the setup");
+            configure_tables(scenario, sim, cast)
+        })
+        .unwrap();
+        assert!(player.simulation().timeline().is_some());
+        assert_eq!(player.simulation().tick(), 0);
     }
 
     /// A move that changed on purpose: the replay still decodes, and refuses to run until it's

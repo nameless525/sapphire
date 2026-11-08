@@ -93,12 +93,10 @@
 //! chest. A later joint of a chain hangs from the one before it, so a collider coming between the two
 //! has no answer a bone can give.
 //!
-//! The tuning's limits have the last word over colliders: a collider pushed tails 174° off the pose,
-//! and hair that keeps its shape reads better than hair that keeps out of an arm. So under them an arm
-//! can pass through a strand that has no more room to move, and the strand comes back when the arm has
-//! gone, without a jump across the collider's axis (`overrun_give`). With the limits off, a tail alone
-//! against a collider keeps out at any speed. The pipeline's `character_springs` tests hold both on the
-//! real character.
+//! The action substep holds the swing and bend limits after proxy contact to avoid unbounded curl.
+//! A collider can overrun a constrained tail and release it without a jump across the collider's
+//! axis (`overrun_give`). The heroine also resolves garment and limb contact at the drawn pose,
+//! with a bounded coherent change to each strand rather than more bend at the tip.
 //!
 //! # Teleports, cuts and sleeping
 //!
@@ -120,12 +118,14 @@
 
 use std::sync::Arc;
 
-use sapphire_assets::rig::{ArchivedCharacterRig, ArchivedColliderShape, ArchivedSpringTip};
-use sapphire_assets::skeleton::NO_PARENT;
+use sapphire_assets::mesh::Mesh;
+use sapphire_assets::rig::{ArchivedCharacterRig, ArchivedColliderShape, ArchivedSpringTip, HumanBone};
+use sapphire_assets::skeleton::{ArchivedSkeleton, NO_PARENT};
 use sapphire_math::{Affine3A, Quat, Vec3};
 
-use crate::character::{CharacterPose, JointLayout};
-use crate::model::model_of;
+use sapphire_body_pose::{CharacterPose, JointLayout, model_of};
+
+mod clearance;
 
 /// Ticks a second on the clocks springs run on (`sapphire_time::TICK_HZ`), and the rate VRM's
 /// parameters are read at.
@@ -448,6 +448,8 @@ struct Collider {
     /// From the capsule's start to its end: zero for a sphere.
     axis: Vec3,
     radius: f32,
+    /// A spine or chest collider can take priority when the body is on the ground.
+    torso: bool,
 }
 
 /// A collider at one sub-step.
@@ -620,6 +622,8 @@ pub struct SpringBones {
     still_for: u32,
     /// Everything has stopped, so an update has nothing to do.
     resting: bool,
+    /// Optional contact against the drawn surface of the character's clothes.
+    clearance: Option<Box<clearance::Clearance>>,
 }
 
 impl SpringBones {
@@ -774,6 +778,13 @@ impl SpringBones {
                     offset: Vec3::from(offset),
                     axis: Vec3::from(tail) - Vec3::from(offset),
                     radius,
+                    torso: rig.humanoid.iter().any(|entry| {
+                        entry.joint == collider.joint
+                            && matches!(
+                                entry.bone,
+                                HumanBone::Spine | HumanBone::Chest | HumanBone::UpperChest
+                            )
+                    }),
                 }
             })
             .collect();
@@ -850,7 +861,20 @@ impl SpringBones {
             targets_stale: true,
             still_for: 0,
             resting: false,
+            clearance: None,
         })
+    }
+
+    /// Fits presentation contact to the heroine's cooked strands and shirt.
+    #[must_use]
+    pub fn with_heroine_clearance(
+        mut self,
+        mesh: &Mesh,
+        skeleton: &ArchivedSkeleton,
+        rig: &ArchivedCharacterRig,
+    ) -> Self {
+        self.clearance = clearance::Clearance::new(mesh, skeleton, rig).map(Box::new);
+        self
     }
 
     /// How many joints swing.
@@ -928,6 +952,9 @@ impl SpringBones {
         self.settling = true;
         self.resting = false;
         self.still_for = 0;
+        if let Some(clearance) = &mut self.clearance {
+            clearance.reset();
+        }
     }
 
     /// Takes over `other`'s motion for a new version of the character: its tails and clock, when it
@@ -941,6 +968,10 @@ impl SpringBones {
         if !same || other.settling {
             self.set_substeps(other.substeps);
             self.reset();
+            if same && let (Some(clearance), Some(old)) = (&mut self.clearance, &other.clearance) {
+                self.drawn_at = other.drawn_at;
+                clearance.continue_from(old);
+            }
             return;
         }
         self.substeps = other.substeps;
@@ -963,6 +994,9 @@ impl SpringBones {
         self.settling = false;
         self.resting = false;
         self.targets_stale = true;
+        if let (Some(clearance), Some(old)) = (&mut self.clearance, &other.clearance) {
+            clearance.continue_from(old);
+        }
     }
 
     /// Whether it ran on the last update, rather than sleeping or waiting to settle.
@@ -980,13 +1014,47 @@ impl SpringBones {
 
     /// Stops running until active again, when it settles from the pose.
     pub fn sleep(&mut self) {
-        self.reset();
+        self.settling = true;
+        self.resting = false;
+        self.still_for = 0;
+        if let Some(clearance) = &mut self.clearance {
+            clearance.sleep();
+        }
+    }
+
+    /// The one presentation-only morph owned by the loaded underarm clearance.
+    pub fn underarm_morph(&self) -> Option<(&'static str, usize)> {
+        self.clearance.as_ref()?.underarm_morph()
+    }
+
+    /// A raw spring or clearance write that would overlap the bound contact closure.
+    pub fn protected_write(&self, protected: &[bool]) -> Option<(&'static str, usize)> {
+        let conflicts = |joint| protected.get(joint) != Some(&false);
+        self.swings
+            .iter()
+            .map(|swing| usize::from(swing.joint))
+            .find(|&joint| conflicts(joint))
+            .map(|joint| ("spring swing", joint))
+            .or_else(|| self.clearance.as_ref()?.protected_write(conflicts))
     }
 
     /// Runs the sub-steps due at `frame`, writes the chains' joints into `pose` and finishes it again.
     /// Call it after the pose's [`CharacterPose::finish`] on a frame that evaluated one. Allocates
     /// nothing.
     pub fn update(&mut self, pose: &mut CharacterPose, frame: &SpringFrame) -> SpringWork {
+        self.update_with_torso_contact(pose, frame, 0.0)
+    }
+
+    /// Runs springs with additional torso contact as a grounded body falls onto its hair or clothing.
+    /// At full contact the torso has priority over the motion limits. A weight of zero uses the
+    /// ordinary action solve, including the limits that keep upright hair and clothing in shape.
+    pub fn update_with_torso_contact(
+        &mut self,
+        pose: &mut CharacterPose,
+        frame: &SpringFrame,
+        torso_contact: f32,
+    ) -> SpringWork {
+        let torso_contact = torso_contact.clamp(0.0, 1.0);
         if !frame.active {
             self.sleep();
             self.targets_stale |= frame.pose_moved;
@@ -998,7 +1066,11 @@ impl SpringBones {
         }
         let world_moved = frame.world_from_model != self.world;
         if self.settling {
+            let wake_elapsed = (frame.ticks - self.drawn_at).max(0.0) as f32;
             self.settle(pose, frame);
+            if let Some(clearance) = &mut self.clearance {
+                clearance.settle(pose, wake_elapsed);
+            }
             return SpringWork { substeps: 0, wrote_pose: true };
         }
         let ticks = frame.ticks.max(self.drawn_at);
@@ -1018,7 +1090,7 @@ impl SpringBones {
         for step in (last - due + 1)..=last {
             let between =
                 if span > 0.0 { ((step as f64 / count - self.drawn_at) / span) as f32 } else { 1.0 };
-            fastest = fastest.max(self.substep(pose, between.clamp(0.0, 1.0)));
+            fastest = fastest.max(self.substep(pose, between.clamp(0.0, 1.0), torso_contact));
         }
         self.index = last;
         self.drawn_at = ticks;
@@ -1026,6 +1098,9 @@ impl SpringBones {
 
         self.note_stillness(due as u32, fastest, pose_moved || world_moved);
         self.draw(pose, ticks);
+        if let Some(clearance) = &mut self.clearance {
+            clearance.apply(pose, Some(span as f32));
+        }
         SpringWork { substeps: due as u32, wrote_pose: true }
     }
 
@@ -1135,7 +1210,7 @@ impl SpringBones {
 
     /// One sub-step, `between` of the way from the last frame's pose and place to this frame's.
     /// Returns the square of the fastest tail's motion.
-    fn substep(&mut self, pose: &CharacterPose, between: f32) -> f32 {
+    fn substep(&mut self, pose: &CharacterPose, between: f32, torso_contact: f32) -> f32 {
         let anchors = self.anchors.len();
         for ((slot, was), now) in self.slots.iter_mut().zip(&self.anchors_was).zip(&self.anchors_now) {
             *slot = was.lerp(now, between);
@@ -1211,11 +1286,45 @@ impl SpringBones {
                         next = clear_of(position, length, out, now, reach, toward_pose);
                     }
                 }
-                // The limits have the last word: hair that keeps its shape reads better than hair that
-                // keeps out of an arm. The swing first and the bend last, since a curl is what shows most.
+                // Bound the dynamics before the final pose's surface contact. The swing goes first
+                // and the bend last to protect the curve of the strand.
                 let aim = (next - position).try_normalize().unwrap_or(toward_pose);
-                let aim = self.bend_cone.hold(self.swing_cone.hold(aim, posed * swing.tail), toward_pose);
-                let next = position + aim * length;
+                let mut aim = self.bend_cone.hold(self.swing_cone.hold(aim, posed * swing.tail), toward_pose);
+                let mut next = position + aim * length;
+                // A grounded torso may rotate through the space its hair needs to settle.
+                // Give its colliders a final pass without the upright overrun concessions.
+                if torso_contact > 0.0 {
+                    let mut clear = next;
+                    for &collider in &self.collider_lists[first as usize..end as usize] {
+                        let collider = usize::from(collider);
+                        if !self.colliders[collider].torso {
+                            continue;
+                        }
+                        let was = &self.colliders_was[collider];
+                        let now = &self.colliders_now[collider];
+                        let reach = now.radius + hit_radius;
+                        // There is little space behind the torso on the ground. Clear each strand
+                        // toward the side where its joint sits, so it can spread beside the body.
+                        let lateral = self.world_rotation * Vec3::X;
+                        let sign = (position - now.nearest(position)).dot(lateral).signum();
+                        let aside = |at| now.nearest(at) + lateral * (sign * reach);
+                        if contact(tail.now, clear, was, now, hit_radius).is_some() {
+                            clear = clear_of(position, length, aside(clear), now, reach, toward_pose);
+                        }
+                        // A curved strand can cross the torso between two clear endpoints.
+                        let midpoint = position.lerp(clear, 0.5);
+                        if contact(midpoint, midpoint, now, now, hit_radius).is_some() {
+                            let clear_mid =
+                                clear_of(position, length * 0.5, aside(midpoint), now, reach, toward_pose);
+                            clear = position + (clear_mid - position) * 2.0;
+                        }
+                    }
+                    if clear != next {
+                        let blended = next.lerp(clear, torso_contact) - position;
+                        aim = blended.try_normalize().unwrap_or(aim);
+                        next = position + aim * length;
+                    }
+                }
                 fastest = fastest.max((next - tail.now).length_squared());
                 let rotation = Quat::from_rotation_arc(toward_pose, aim) * pose_rotation;
                 let turned = (parent.rotation.inverse() * rotation).normalize();

@@ -37,7 +37,7 @@
 //!
 //! The rest arrives with M2's other G packages, each in its [`CombatSet`].
 //!
-//! Doesn't own, and may never link: the renderer, the world (`sapphire_world`), animation, the
+//! Doesn't own, and may never link: the renderer, the world (`sapphire_world`), presentation animation, the
 //! platform layer, input bindings, SDL or wgpu. `cargo xtask check-layers` holds its dependency
 //! tree to that (`[simulation]` in `xtask/layers.toml`), so a replay job builds quickly and runs
 //! with no GPU. The app's scene carries results into `FramePacket` (rule R4).
@@ -128,6 +128,7 @@ extern crate self as sapphire_gameplay;
 mod actions;
 mod actors;
 pub mod arena;
+pub mod body;
 pub mod brain;
 mod checksum;
 mod controller;
@@ -180,4 +181,10 @@ pub use stats::{
 pub use timeline::{
     TimelineCommand, TimelineEvent, TimelineId, TimelineLibrary, TimelinePlayError, TimelineProgress,
     TimelineRun,
+};
+
+#[doc(hidden)]
+pub use hits::overhead::{
+    OverheadAppliedContact, OverheadShadowBracket, OverheadShadowFailure, OverheadShadowResult,
+    OverheadShadowShape, OverheadShadowUncertainty, OverheadShadowWitness, ShadowCapsule, ShadowEndpoint,
 };

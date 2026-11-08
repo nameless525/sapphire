@@ -309,13 +309,21 @@ impl DevTools {
 
     /// Does what the combat panel asked of the recorder. Between frames, so no step sees a fight half
     /// started, and each still reads the bindings exactly once ([`SessionRecorder`]).
-    pub fn apply_recorder(&mut self, combat: &mut Option<Combat>) {
+    pub fn apply_recorder(&mut self, fight: &mut Fight, scene: &mut Scene, content: &Content) {
         match self.overlay.recorder_controls().take() {
             Some(RecorderRequest::Start { scenario }) => {
-                self.recorder.start_tuned(combat, &scenario, self.tuning.moves())
+                fight.start_recording_session(
+                    scene,
+                    content,
+                    &mut self.recorder,
+                    &scenario,
+                    self.tuning.moves(),
+                );
             }
-            Some(RecorderRequest::Save) => self.recorder.save(combat),
-            Some(RecorderRequest::Discard) => self.recorder.discard(combat),
+            Some(RecorderRequest::Save) => fight.finish_recording_session(scene, &mut self.recorder, true),
+            Some(RecorderRequest::Discard) => {
+                fight.finish_recording_session(scene, &mut self.recorder, false)
+            }
             None => {}
         }
     }

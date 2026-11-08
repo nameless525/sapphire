@@ -387,6 +387,9 @@ fn every_state_field_is_in_the_checksum() {
         ("ground_normal.z", |c| c.state.ground_normal.z += 1e-5),
         ("coyote", |c| c.state.coyote += SimDuration::from_subticks(1)),
         ("jump_waiting", |c| c.state.jump_waiting = !c.state.jump_waiting),
+        ("jump_preparation", |c| c.state.jump_preparation = Some(SimDuration::from_ticks(1))),
+        ("jump_preparation_moving", |c| c.state.jump_preparation_moving = !c.state.jump_preparation_moving),
+        ("jump_rebound", |c| c.state.jump_rebound += SimDuration::from_subticks(1)),
         ("landed", |c| c.state.events.landed = !c.state.events.landed),
         ("landing_speed", |c| c.state.events.landing_speed += 1e-5),
         ("jumped", |c| c.state.events.jumped = !c.state.events.jumped),
@@ -405,6 +408,9 @@ fn every_state_field_is_in_the_checksum() {
         ("profile", |c| c.profile = Some(ProfileId(c.profile.map_or(0, |p| p.0 + 1)))),
     ];
     let (mut sim, actors) = sim_with(vec![floor(1)], &[Vec3::ZERO, Vec3::new(3.0, 2.0, 1.0)]);
+    for &actor in &actors {
+        sim.prepare_standing_jump(actor);
+    }
     for tick in 0..10 {
         let mut input = TickActions::NEUTRAL;
         input
@@ -948,4 +954,288 @@ fn the_scripted_run_matches_this_architectures_checksum() {
              Linux and Windows print the same value (controller/tests.rs)"
         ),
     }
+}
+
+#[test]
+fn standing_preparation_tables_hash_pins_setup_actor_ids_across_the_run() {
+    let positions = [Vec3::ZERO, Vec3::X * 3.0];
+    let (mut sim, actors) = sim_with(vec![floor(1)], &positions);
+    let (mut other, _) = sim_with(vec![floor(1)], &positions);
+    let disabled = sim.tables_hash();
+    sim.prepare_standing_jump(actors[0]);
+    other.prepare_standing_jump(actors[1]);
+    assert_ne!(sim.tables_hash(), disabled);
+    assert_ne!(sim.tables_hash(), other.tables_hash(), "which actor prepares matters");
+    sim.prepare_standing_jump(actors[1]);
+    other.prepare_standing_jump(actors[0]);
+    let enabled = sim.tables_hash();
+    assert_eq!(enabled, other.tables_hash(), "setup call order does not matter");
+    sim.prepare_standing_jump(actors[0]);
+    assert_eq!(enabled, sim.tables_hash(), "enabling an actor twice is the same setup");
+
+    for _ in 0..3 {
+        sim.step(&TickActions::NEUTRAL);
+    }
+    sim.step(&tick_of(actors[0], Stick::CENTER, Buttons::JUMP));
+    assert!(sim.actor(actors[0]).unwrap().controller.state.preparing_jump());
+    assert_eq!(sim.tables_hash(), enabled);
+    for _ in 1..STANDING_JUMP_PREPARATION.whole_ticks() {
+        sim.step(&TickActions::NEUTRAL);
+        assert!(sim.actor(actors[0]).unwrap().controller.state.preparing_jump());
+        assert_eq!(sim.tables_hash(), enabled);
+    }
+    sim.step(&TickActions::NEUTRAL);
+    assert!(sim.actor(actors[0]).unwrap().controller.state.events.jumped);
+    for _ in 0..50 {
+        assert_eq!(sim.tables_hash(), enabled);
+        sim.step(&TickActions::NEUTRAL);
+        if sim.actor(actors[0]).unwrap().controller.state.events.landed {
+            break;
+        }
+    }
+    assert!(sim.actor(actors[0]).unwrap().controller.state.events.landed);
+    assert_eq!(sim.tables_hash(), enabled);
+    assert!(sim.despawn(actors[0]));
+    assert_eq!(sim.tables_hash(), enabled);
+}
+
+#[test]
+fn standing_preparation_releases_once_after_five_owner_ticks() {
+    let (mut sim, actors) = sim_with(vec![floor(1)], &[Vec3::ZERO]);
+    let actor = actors[0];
+    sim.prepare_standing_jump(actor);
+    for _ in 0..3 {
+        sim.step(&TickActions::NEUTRAL);
+    }
+    let initial_y = sim.actor(actor).unwrap().position.y;
+    let jump = tick_of(actor, Stick::CENTER, Buttons::JUMP);
+    for _ in 0..STANDING_JUMP_PREPARATION.whole_ticks() {
+        sim.step(&jump);
+        let view = sim.actor(actor).unwrap();
+        assert!(view.controller.state.preparing_jump());
+        assert_eq!(view.position.y, initial_y);
+    }
+    sim.step(&TickActions::NEUTRAL);
+    let state = sim.actor(actor).unwrap().controller.state;
+    assert!(state.events.jumped);
+    assert!(!state.preparing_jump());
+    for _ in 0..50 {
+        if sim.actor(actor).unwrap().controller.state.events.landed {
+            break;
+        }
+        sim.step(&TickActions::NEUTRAL);
+    }
+    assert!(sim.actor(actor).unwrap().controller.state.events.landed);
+    sim.step(&jump);
+    assert!(
+        sim.actor(actor).unwrap().controller.state.events.jumped,
+        "a jump directly off the catch is immediate"
+    );
+    for _ in 0..50 {
+        sim.step(&jump);
+        assert!(
+            !sim.actor(actor).unwrap().controller.state.events.jumped,
+            "holding cannot start a third jump"
+        );
+    }
+}
+
+#[test]
+fn standing_preparation_uses_owner_time_and_yields_to_direction_or_action() {
+    let (mut sim, actors) = sim_with(vec![floor(1)], &[Vec3::ZERO]);
+    let actor = actors[0];
+    sim.prepare_standing_jump(actor);
+    for _ in 0..3 {
+        sim.step(&TickActions::NEUTRAL);
+    }
+    let jump = tick_of(actor, Stick::CENTER, Buttons::JUMP);
+    sim.step(&jump);
+    apply_hitstop(&mut sim, actor, 2);
+    for _ in 0..2 {
+        sim.step(&TickActions::NEUTRAL);
+        assert!(sim.actor(actor).unwrap().controller.state.preparing_jump());
+    }
+    sim.step(&run_right(actor));
+    assert!(sim.actor(actor).unwrap().controller.state.events.jumped, "direction releases the prepared jump");
+    for _ in 0..70 {
+        sim.step(&TickActions::NEUTRAL);
+    }
+    sim.step(&jump);
+    assert!(sim.actor(actor).unwrap().controller.state.preparing_jump());
+    let actor_entity = entity(&sim, actor);
+    sim.ecs_mut().world_mut().get_mut::<CharacterController>(actor_entity).unwrap().drive =
+        ControllerDrive::strike(Vec3::ZERO);
+    sim.step(&TickActions::NEUTRAL);
+    assert!(!sim.actor(actor).unwrap().controller.state.preparing_jump());
+    sim.step(&TickActions::NEUTRAL);
+    assert!(
+        !sim.actor(actor).unwrap().controller.state.events.jumped,
+        "an interrupt discards the pending press"
+    );
+}
+
+#[test]
+fn preparation_leaves_a_directional_start_and_coyote_presses_immediate() {
+    let ledge = solid(1, Vec3::new(-10.0, -1.0, -20.0), Vec3::new(0.0, 0.0, 20.0));
+    let (mut sim, actors) = sim_with(vec![ledge], &[Vec3::new(-1.0, 0.0, 0.0)]);
+    let actor = actors[0];
+    sim.prepare_standing_jump(actor);
+    for _ in 0..40 {
+        sim.step(&run_right(actor));
+        if sim.actor(actor).unwrap().controller.state.events.left_ground {
+            break;
+        }
+    }
+    let state = sim.actor(actor).unwrap().controller.state;
+    assert_eq!(state.mode, GroundMode::Airborne);
+    assert!(state.coyote > SimDuration::ZERO);
+    sim.step(&tick_of(actor, Stick::CENTER, Buttons::JUMP));
+    assert!(sim.actor(actor).unwrap().controller.state.events.jumped);
+
+    let (mut sim, actors) = sim_with(vec![floor(1)], &[Vec3::ZERO]);
+    let actor = actors[0];
+    sim.prepare_standing_jump(actor);
+    for _ in 0..3 {
+        sim.step(&TickActions::NEUTRAL);
+    }
+    sim.step(&tick_of(actor, Stick::from_axes(1.0, 0.0), Buttons::JUMP));
+    assert!(sim.actor(actor).unwrap().controller.state.events.jumped);
+}
+
+#[test]
+fn traveling_preparation_keeps_the_run_for_two_supported_ticks() {
+    let (mut sim, actors) = sim_with(vec![floor(1)], &[Vec3::ZERO]);
+    let actor = actors[0];
+    sim.prepare_standing_jump(actor);
+    for _ in 0..20 {
+        sim.step(&run_right(actor));
+    }
+    let start = sim.actor(actor).unwrap();
+    let jump = tick_of(actor, Stick::from_axes(1.0, 0.0), Buttons::JUMP);
+    sim.step(&jump);
+    let loading = sim.actor(actor).unwrap();
+    assert!(loading.position.x > start.position.x);
+    assert_eq!(loading.controller.state.mode, GroundMode::Grounded);
+    assert!((loading.position.y - start.position.y).abs() < 1e-4);
+    assert_eq!(loading.controller.state.moving_jump_preparation(), Some(0.0));
+    assert!(!loading.controller.state.preparing_jump());
+    sim.step(&run_right(actor));
+    let pushing = sim.actor(actor).unwrap();
+    assert!(pushing.position.x > loading.position.x);
+    assert_eq!(pushing.controller.state.mode, GroundMode::Grounded);
+    assert!((pushing.position.y - start.position.y).abs() < 1e-4);
+    assert_eq!(pushing.controller.state.moving_jump_preparation(), Some(1.0));
+    sim.step(&run_right(actor));
+    let airborne = sim.actor(actor).unwrap();
+    assert!(airborne.controller.state.events.jumped);
+    assert_eq!(airborne.controller.state.moving_jump_preparation(), None);
+    assert!(airborne.position.y > start.position.y);
+}
+
+#[test]
+fn a_repeat_from_the_catch_uses_the_shorter_preparation() {
+    let (mut sim, actors) = sim_with(vec![floor(1)], &[Vec3::ZERO]);
+    let actor = actors[0];
+    sim.prepare_standing_jump(actor);
+    for _ in 0..3 {
+        sim.step(&TickActions::NEUTRAL);
+    }
+    let jump = tick_of(actor, Stick::CENTER, Buttons::JUMP);
+    sim.step(&jump);
+    for _ in 0..50 {
+        sim.step(&TickActions::NEUTRAL);
+        if sim.actor(actor).unwrap().controller.state.events.landed {
+            break;
+        }
+    }
+    assert!(sim.actor(actor).unwrap().controller.state.events.landed);
+    for _ in 0..3 {
+        sim.step(&TickActions::NEUTRAL);
+    }
+    sim.step(&jump);
+    assert_eq!(sim.actor(actor).unwrap().controller.state.jump_preparation, Some(REBOUND_JUMP_PREPARATION));
+    for _ in 1..REBOUND_JUMP_PREPARATION.whole_ticks() {
+        sim.step(&TickActions::NEUTRAL);
+        assert!(sim.actor(actor).unwrap().controller.state.preparing_jump());
+    }
+    sim.step(&TickActions::NEUTRAL);
+    assert!(sim.actor(actor).unwrap().controller.state.events.jumped);
+}
+
+#[test]
+fn standing_preparation_uses_fractional_owner_time() {
+    let (mut sim, actors) = sim_with(vec![floor(1)], &[Vec3::ZERO]);
+    let actor = actors[0];
+    for _ in 0..3 {
+        sim.step(&TickActions::NEUTRAL);
+    }
+    sim.prepare_standing_jump(actor);
+
+    local_scale(&mut sim, actor, 500);
+    let y = sim.actor(actor).unwrap().position.y;
+    sim.step(&tick_of(actor, Stick::CENTER, Buttons::JUMP));
+    assert!(sim.actor(actor).unwrap().controller.state.preparing_jump());
+    for _ in 1..2 * STANDING_JUMP_PREPARATION.whole_ticks() {
+        sim.step(&TickActions::NEUTRAL);
+        let view = sim.actor(actor).unwrap();
+        assert!(view.controller.state.preparing_jump());
+        assert_eq!(view.position.y, y);
+    }
+    sim.step(&TickActions::NEUTRAL);
+    let view = sim.actor(actor).unwrap();
+    assert!(view.controller.state.events.jumped);
+    assert!(!view.controller.state.preparing_jump());
+}
+
+#[test]
+fn standing_preparation_starts_on_thaw_for_a_press_during_hitstop() {
+    let (mut sim, actors) = sim_with(vec![floor(1)], &[Vec3::ZERO]);
+    let actor = actors[0];
+    sim.prepare_standing_jump(actor);
+    for _ in 0..3 {
+        sim.step(&TickActions::NEUTRAL);
+    }
+    let y = sim.actor(actor).unwrap().position.y;
+    apply_hitstop(&mut sim, actor, 2);
+    sim.step(&tick_of(actor, Stick::CENTER, Buttons::JUMP));
+    sim.step(&TickActions::NEUTRAL);
+    let frozen = sim.actor(actor).unwrap();
+    assert!(frozen.controller.state.jump_waiting);
+    assert!(!frozen.controller.state.preparing_jump());
+    assert_eq!(frozen.position.y, y);
+    for _ in 0..STANDING_JUMP_PREPARATION.whole_ticks() {
+        sim.step(&TickActions::NEUTRAL);
+        let view = sim.actor(actor).unwrap();
+        assert!(view.controller.state.preparing_jump());
+        assert_eq!(view.position.y, y);
+    }
+    sim.step(&TickActions::NEUTRAL);
+    assert!(sim.actor(actor).unwrap().controller.state.events.jumped);
+}
+
+#[test]
+fn standing_preparation_mode_hash_distinguishes_equal_input_next_steps() {
+    let (mut ordinary, ordinary_actors) = sim_with(vec![floor(1)], &[Vec3::ZERO]);
+    let (mut prepared, prepared_actors) = sim_with(vec![floor(1)], &[Vec3::ZERO]);
+    let ordinary_actor = ordinary_actors[0];
+    let prepared_actor = prepared_actors[0];
+    for _ in 0..3 {
+        ordinary.step(&TickActions::NEUTRAL);
+        prepared.step(&TickActions::NEUTRAL);
+    }
+    assert_eq!(ordinary.checksum(), prepared.checksum());
+    prepared.prepare_standing_jump(prepared_actor);
+    let ordinary_idle_hash = ordinary.checksum();
+    let prepared_idle_hash = prepared.checksum();
+
+    ordinary.step(&tick_of(ordinary_actor, Stick::CENTER, Buttons::JUMP));
+    prepared.step(&tick_of(prepared_actor, Stick::CENTER, Buttons::JUMP));
+    let ordinary_state = ordinary.actor(ordinary_actor).unwrap().controller.state;
+    let prepared_state = prepared.actor(prepared_actor).unwrap().controller.state;
+    assert!(ordinary_state.events.jumped, "the ordinary press jumps now");
+    assert!(!prepared_state.events.jumped && prepared_state.preparing_jump(), "the enabled press prepares");
+    assert_ne!(
+        ordinary_idle_hash, prepared_idle_hash,
+        "the enabled idle mode changes the next equal jump input"
+    );
 }

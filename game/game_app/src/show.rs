@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use game_combat::combat::{CombatOption, read_bindings};
+use game_combat::combat::{Combat, read_bindings};
 use game_ui::hud::{FightHud, HudMode, HudOptions, ShownFight};
 use game_ui::title::TitleCard;
 use sapphire_controls::{CombatControls, ControlsError};
@@ -70,14 +70,14 @@ impl GameShow {
     /// Stands the fight, which waits at the title until [`Self::open_fight`].
     pub fn stand(
         &mut self,
-        option: &CombatOption,
+        combat: Combat,
         scene: &mut Scene,
         content: &mut Content,
         renderer: &mut Renderer,
         gpu: &GpuContext,
         tier: TierId,
     ) -> Result<(), AppInitError> {
-        let followed = self.shown.fight.stand(option, scene, content, renderer, gpu, tier)?;
+        let followed = self.shown.fight.stand_prepared(combat, scene, content, renderer, gpu, tier)?;
         self.shown.hear(followed);
         // The title's and the HUD's interface with it, though neither's drawn yet.
         scene.prewarm(&*self, renderer);

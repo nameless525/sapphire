@@ -92,8 +92,8 @@ use sapphire_assets::probes::ProbeGrid;
 use sapphire_assets::rig::{ArchivedCharacterRig, CharacterRig};
 use sapphire_assets::sound::{AUDIO_PACK, DecodedSound, Sound};
 use sapphire_assets::{
-    Asset, AssetBudgets, AssetId, AssetServer, AssetSlot, AssetStats, Handle, LoadError, LoadPriority,
-    PackFile, PackSource, ReadDone, TextureAsset, Unloaded, Upload, UploadError,
+    Asset, AssetBudgets, AssetId, AssetServer, AssetSlot, AssetStats, CpuResident, Handle, LoadError,
+    LoadPriority, PackFile, PackSource, ReadDone, TextureAsset, Unloaded, Upload, UploadError,
 };
 #[cfg(feature = "dev")]
 use sapphire_assets::{AssetChange, MountError, RemountReport};
@@ -724,6 +724,8 @@ pub struct Content {
     /// The files hot reload reads each fighter's graph from, on a machine that has them.
     #[cfg(feature = "dev")]
     graph_files: Vec<(GraphKey, PathBuf)>,
+    #[cfg(feature = "dev")]
+    stock_inputs_locked: bool,
 }
 
 /// Whose graph it is, by a name its owner gives (M2 T2): each binds against its own skeleton.
@@ -751,6 +753,10 @@ fn newest_saved(files: &[(GraphKey, PathBuf)], owner: GraphKey, server: &AssetSe
 }
 
 impl Content {
+    pub(crate) fn selection(&self) -> (AssetId, AssetId) {
+        (self.character_id, self.sky_id)
+    }
+
     /// What the mounted packs' meshes draw through, and the skinning that deforms theirs (M3 K1): for a renderer
     /// to prewarm before any of them is uploaded.
     pub fn pipeline_inventory(&self) -> PipelineInventory {
@@ -840,6 +846,8 @@ impl Content {
             live_packs,
             #[cfg(feature = "dev")]
             graph_files: Vec::new(),
+            #[cfg(feature = "dev")]
+            stock_inputs_locked: false,
         }
     }
 
@@ -1275,6 +1283,35 @@ impl Content {
         }
         loaded.map_err(AppInitError::msg)?;
         Ok(handle)
+    }
+
+    /// Retains exact checked CPU bytes before the renderer uploads the asset.
+    pub fn preload_cpu<T: Asset>(
+        &mut self,
+        id: AssetId,
+        remaining: &impl Fn() -> std::time::Duration,
+    ) -> Result<CpuResident<T>, LoadError> {
+        let handle = self.server.load_with(id, LoadPriority::Critical)?;
+        self.server.finish_cpu(&handle, remaining)
+    }
+
+    /// Loads the exact graph, skeleton and deduplicated clip bank used by a fixed owner.
+    pub fn preload_body_graph(
+        &mut self,
+        graph_id: AssetId,
+        skeleton_id: AssetId,
+        remaining: &impl Fn() -> std::time::Duration,
+    ) -> Result<sapphire_gameplay::body::BodyGraphAssets, LoadError> {
+        let graph = self.preload_cpu::<AnimGraph>(graph_id, remaining)?;
+        let skeleton = self.preload_cpu::<Skeleton>(skeleton_id, remaining)?;
+        let mut ids: Vec<_> = graph.view().clip_ids().collect();
+        ids.sort_unstable();
+        ids.dedup();
+        let clips = ids
+            .into_iter()
+            .map(|id| self.preload_cpu::<Clip>(id, remaining).map(|clip| (id, clip)))
+            .collect::<Result<_, _>>()?;
+        Ok(sapphire_gameplay::body::BodyGraphAssets { graph, skeleton_id, skeleton, clips })
     }
 
     /// Reads a held asset, while it's resident.
@@ -1762,7 +1799,21 @@ impl Content {
     /// `dev` builds): new versions reach the renderer through [`Self::update`].
     #[cfg(feature = "dev")]
     pub fn remount(&mut self, name: &str) -> Result<RemountReport, MountError> {
+        if self.stock_inputs_locked && name == PACK {
+            return Err(MountError::BoundToStockFight(name.to_owned()));
+        }
         self.server.remount(name)
+    }
+
+    /// Keeps this arena's shared cooked inputs immutable for a configured stock fight.
+    #[cfg(feature = "dev")]
+    pub fn lock_stock_inputs(&mut self) {
+        self.stock_inputs_locked = true;
+    }
+
+    #[cfg(feature = "dev")]
+    pub fn stock_inputs_locked(&self) -> bool {
+        self.stock_inputs_locked
     }
 
     /// Whether pack `name` is mounted.
@@ -1806,6 +1857,9 @@ impl Content {
     /// server refuses is served no more.
     #[cfg(feature = "dev")]
     pub fn apply_pack(&mut self, pack: PushedPack) -> Result<PackOutcome, MountError> {
+        if self.stock_inputs_locked && pack.name() == PACK {
+            return Err(MountError::BoundToStockFight(pack.name().to_owned()));
+        }
         pack.apply(&self.live_packs, &mut self.server)
     }
 

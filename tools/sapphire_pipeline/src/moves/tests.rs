@@ -507,6 +507,44 @@ fn chop_as_cooked() -> (SampledClip, Skeleton, HumanMap) {
     (out, skeleton, map)
 }
 
+/// The cooked blade's visible edge stays inside the keyed hit capsule throughout each active window.
+#[test]
+fn warrior_blade_tracks_the_existing_attack_capsules() {
+    const SCALE: f32 = 0.8;
+    let (id, skeleton, map) = warrior();
+    let folder = third_party().join("../combat/enemy");
+    let set = MoveSetDocument::parse(&fs::read_to_string(folder.join("warrior.moves.ron")).unwrap())
+        .unwrap()
+        .compile()
+        .unwrap();
+    let target = ClipTarget { skeleton: Some((id, &skeleton)), morph_defaults: &[] };
+    let hand = skeleton.names.iter().position(|name| name == "handslot.r").unwrap();
+    let cooked_skeleton = skeleton.to_cooked().unwrap();
+    let mut pose = CharacterPose::new(Skeleton::read(&cooked_skeleton).unwrap(), &[], &[], Vec::new());
+    for name in ["swipe", "overhead", "lunge"] {
+        let (_, movement) = set.find(Name::new(name)).unwrap();
+        let expected = movement.tables.path(Name::new("blade")).unwrap();
+        let document = keypose::read(&fs::read(folder.join(format!("{name}.keypose.ron"))).unwrap()).unwrap();
+        let current = keypose::sample(&document, name, &skeleton, &map, &[]).unwrap();
+        assert_eq!(u32::from(current.ticks), movement.ticks(), "{name}");
+        let cooked = clip::cook(&current, &target, &ReductionError::default()).to_cooked().unwrap();
+        let clip = Clip::read(&cooked).unwrap();
+        for tick in movement.startup..=movement.startup + movement.active {
+            let sample = expected.at(sapphire_time::SimDuration::from_ticks(u64::from(tick)));
+            pose.sample(clip, tick as f32);
+            pose.finish();
+            let (_, turn, grip) = pose.model()[hand].to_scale_rotation_translation();
+            // The blade's edge starts just beyond the guard and reaches 0.94 m along the socket.
+            for distance in [0.04, 0.94] {
+                let blade = grip * SCALE + turn * (Vec3::Y * distance);
+                let capsule = sample.offset() + sample.orientation() * (Vec3::Y * (distance - 0.49));
+                let error = blade.distance(capsule);
+                assert!(error < 0.055, "{name} at tick {tick}, blade endpoint error {error:.4} m");
+            }
+        }
+    }
+}
+
 /// The look-dev stage's own strike, as it stands.
 fn strike() -> SampledClip {
     let (skeleton, map) = character();

@@ -10,7 +10,7 @@ use game_combat::fight::fight_stage;
 use sapphire_platform::{App, AppControl, AppInitError, AppMetadata, Event, Platform};
 use sapphire_render::quality::QualitySettings;
 use sapphire_rhi::wgpu;
-use sapphire_stage::{Readback, Stage, StageDesc, headless_gpu};
+use sapphire_stage::{Content, Readback, Stage, StageDesc, headless_gpu};
 use sapphire_time::TICK_HZ;
 
 use crate::LOG_TARGET;
@@ -31,9 +31,12 @@ impl App for OffscreenGame {
         let path = options.capture.clone().ok_or_else(|| AppInitError::msg("no --capture"))?;
         let (instance, gpu) = headless_gpu()?;
         let desc = fight_stage(StageDesc::new(platform, &gpu, FORMAT, QualitySettings::default()));
-        let mut stage = Stage::new(platform, instance, gpu, desc)?.with_show(GameShow::new()?);
+        let mut content = Content::new(platform, desc.character, desc.sky)?;
+        let mut show = GameShow::new()?;
+        let combat = show.shown.fight.prepare_stock_combat(&options.fight(), &mut content)?;
+        let mut stage = Stage::new_with_content(instance, gpu, desc, content)?.with_show(show);
         let Stage { show, scene, content, renderer, gpu, quality, .. } = &mut stage;
-        show.stand(&options.fight(), scene, content, renderer, gpu, quality.active().id)?;
+        show.stand(combat, scene, content, renderer, gpu, quality.active().id)?;
         if options.open_fight {
             show.open_fight();
         }

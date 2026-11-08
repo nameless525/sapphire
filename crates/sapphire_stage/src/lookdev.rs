@@ -62,8 +62,9 @@ use sapphire_anim::{
     AnimGraph, ArchivedSkeleton, CharacterPose, GraphBinding, GraphPlayer, IkRig, SpringBones,
 };
 use sapphire_assets::AssetId;
-use sapphire_assets::mesh::Mesh;
+use sapphire_assets::mesh::{ArchivedMesh, Mesh};
 use sapphire_assets::rig::{ArchivedCharacterRig, HumanBone};
+use sapphire_gameplay::body::{BodyAssets, BodyProfile, BodyProfileOptions, HeadAuthority};
 use sapphire_math::{Affine3A, Mat4, Quat, Vec3};
 use sapphire_platform::AppInitError;
 use sapphire_render::{FaceExpression, LightKind, LocalLight, MeshHandle, Renderer};
@@ -687,7 +688,8 @@ pub fn player(content: &Content) -> Result<ClipPlayer, String> {
     let (clip, _) = content.clip().ok_or("the character's clip isn't loaded")?;
     clip.check_skeleton(skeleton).map_err(|error| error.to_string())?;
     let (pose, joints) = character_pose(mesh, rig, skeleton)?;
-    let springs = SpringBones::new(rig, &pose);
+    let springs =
+        SpringBones::new(rig, &pose).map(|springs| springs.with_heroine_clearance(mesh, skeleton, rig));
     Ok(ClipPlayer::new(pose, joints).with_springs(springs))
 }
 
@@ -714,7 +716,8 @@ pub fn graph_driver(content: &Content) -> Result<GraphDriver, String> {
     let rig = content.rig().ok_or("the look-dev character's rig isn't loaded")?;
     let skeleton = content.skeleton().ok_or("the look-dev character's skeleton isn't loaded")?;
     let (pose, joints) = character_pose(mesh, rig, skeleton)?;
-    let springs = SpringBones::new(rig, &pose);
+    let springs =
+        SpringBones::new(rig, &pose).map(|springs| springs.with_heroine_clearance(mesh, skeleton, rig));
     Ok(GraphDriver::new(GraphPlayer::new(Arc::new(binding), pose, GRAPH_SEED), joints).with_springs(springs))
 }
 
@@ -723,6 +726,79 @@ pub(crate) fn ik_rig(content: &Content, pose: &CharacterPose) -> Result<IkRig, S
     let mesh = content.character_mesh().ok_or("the look-dev character isn't loaded")?;
     let rig = content.rig().ok_or("the look-dev character's rig isn't loaded")?;
     Ok(IkRig::from_cooked(pose, rig, mesh.streams.bounds.min[1].max(0.0)))
+}
+
+/// The authored rest expression's morph defaults, in the cooked mesh's channel order.
+fn body_rest_weights(count: usize, rig: &ArchivedCharacterRig) -> Vec<f32> {
+    let mut morph_weights = vec![0.0; count];
+    let (name, weight) = EXPRESSION;
+    if let Some(expression) = rig.expressions.iter().find(|expression| expression.name.as_str() == name) {
+        for target in expression.morph_targets.iter() {
+            if let Some(slot) = morph_weights.get_mut(target.target.to_native() as usize) {
+                *slot += weight * target.weight.to_native();
+            }
+        }
+    }
+    morph_weights
+}
+
+const HERO_BODY_CONTACTS: &[&str] = &[
+    "J_Bip_C_Hips",
+    "J_Bip_C_Spine",
+    "J_Bip_C_UpperChest",
+    "J_Bip_C_Neck",
+    "J_Bip_C_Head",
+    "J_Bip_L_UpperLeg",
+    "J_Bip_L_LowerLeg",
+    "J_Bip_L_Foot",
+    "J_Bip_L_ToeBase",
+    "J_Bip_R_UpperLeg",
+    "J_Bip_R_LowerLeg",
+    "J_Bip_R_Foot",
+    "J_Bip_R_ToeBase",
+    "J_Bip_L_UpperArm",
+    "J_Bip_L_LowerArm",
+    "J_Bip_L_Hand",
+    "J_Bip_R_UpperArm",
+    "J_Bip_R_LowerArm",
+    "J_Bip_R_Hand",
+];
+
+/// Binds the stock arena heroine before any render driver or IK scene exists.
+pub fn arena_body_profile(
+    assets: BodyAssets,
+    mesh: &ArchivedMesh,
+    look_height: f32,
+    head_authority: HeadAuthority,
+) -> Result<BodyProfile, String> {
+    let skin = mesh.skin.as_ref().ok_or("the stock heroine mesh has no skin")?;
+    if skin.skeleton.as_ref() != Some(&assets.graph.skeleton_id)
+        || skin.joint_count.to_native() as usize != assets.graph.skeleton.view().len()
+    {
+        return Err("the stock heroine mesh and skeleton differ".to_owned());
+    }
+    let morphs: Vec<_> = mesh
+        .morph_targets
+        .iter()
+        .map(|target| target.name.as_str().to_owned())
+        .zip(body_rest_weights(mesh.morph_targets.len(), assets.rig.view()))
+        .collect();
+    BodyProfile::bind(
+        assets,
+        BodyProfileOptions {
+            floor: mesh.streams.bounds.to_native().min[1].max(0.0),
+            scale: 1.0,
+            morphs: &morphs,
+            contact_joints: HERO_BODY_CONTACTS,
+            seed: GRAPH_SEED,
+            ground_turn: true,
+            grounded_gather: true,
+            look_height,
+            look_weight: 1.0,
+            head_authority: Some(head_authority),
+        },
+    )
+    .map_err(|error| error.to_string())
 }
 
 /// The character's pose at rest with its soft expression, and where its figure finds its parts.
@@ -734,15 +810,7 @@ fn character_pose(
     check_counts(rig, skeleton, mesh)?;
     let skin = mesh.skin.as_ref().ok_or("the look-dev character has no skin")?;
     let rig_joints = RigJoints::new(rig);
-    let mut morph_weights = vec![0.0; mesh.morph_targets.len()];
-    let (name, weight) = EXPRESSION;
-    if let Some(expression) = rig.expressions.iter().find(|expression| expression.name.as_str() == name) {
-        for target in expression.morph_targets.iter() {
-            if let Some(slot) = morph_weights.get_mut(target.target.to_native() as usize) {
-                *slot += weight * target.weight.to_native();
-            }
-        }
-    }
+    let morph_weights = body_rest_weights(mesh.morph_targets.len(), rig);
     let pose = CharacterPose::try_new(skeleton, &skin.binds, rig_joints.constraints(), morph_weights)
         .map_err(|error| error.to_string())?
         .with_morph_names(mesh.morph_targets.iter().map(|target| target.name.clone()).collect());
@@ -779,6 +847,7 @@ pub struct FigureJoints {
     feet: Option<([usize; 2], f32)>,
     /// The right hand's joint, which a blade follows. `None` for a rig without one.
     right_hand: Option<usize>,
+    spine: Option<usize>,
     shape: FigureShape,
 }
 
@@ -795,6 +864,7 @@ impl FigureJoints {
             floor,
             feet,
             right_hand: rig.joint(HumanBone::RightHand),
+            spine: rig.joint(HumanBone::Spine).or_else(|| rig.joint(HumanBone::Chest)),
             shape,
         }
     }
@@ -802,6 +872,10 @@ impl FigureJoints {
     /// The right hand's joint, if the rig has one.
     pub(crate) fn right_hand(&self) -> Option<usize> {
         self.right_hand
+    }
+
+    pub(crate) fn spine(&self) -> Option<usize> {
+        self.spine
     }
 
     /// Joints named by index, for a small skeleton with no rig to find them on.
@@ -813,6 +887,7 @@ impl FigureJoints {
             floor,
             feet: Some((feet, ankle - floor)),
             right_hand: None,
+            spine: None,
             shape: CHARACTER_SHAPE,
         }
     }

@@ -19,6 +19,7 @@ use crate::actions::{Controls, CurrentActions, TickActions, read_actions};
 use crate::actors::{
     self, ActorId, ActorRequests, ActorSpawn, ActorState, ActorTable, ActorView, SpawnError,
 };
+use crate::body::{self, BodyAttachError, BodyAuthority, BodyProfile, BodySample};
 use crate::brain::{self, Brain};
 use crate::checksum;
 use crate::controller::{
@@ -131,6 +132,8 @@ pub struct Simulation {
     physics_budget: Duration,
     /// Presentation identity for a fresh run over retained storage; never simulation state.
     run_generation: u64,
+    /// Setup opt-ins, kept in actor ID order even after an opted-in actor despawns.
+    standing_jump_actors: Vec<ActorId>,
 }
 
 impl Simulation {
@@ -206,7 +209,14 @@ impl Simulation {
 
         let resolve = SystemState::new(ecs.world_mut());
         let stats = SimStats { budget: config.step_budget, ..SimStats::default() };
-        Self { ecs, resolve, stats, physics_budget: config.physics_budget, run_generation: 0 }
+        Self {
+            ecs,
+            resolve,
+            stats,
+            physics_budget: config.physics_budget,
+            run_generation: 0,
+            standing_jump_actors: Vec::new(),
+        }
     }
 
     /// Only `FightWorld` calls this: its private Simulation cannot gain arbitrary systems, resources,
@@ -214,6 +224,7 @@ impl Simulation {
     /// Schedules/queries have no gameplay Local state or change-detection filters to reset.
     pub(crate) fn restart_builtin_fight(&mut self, config: SimConfig) {
         self.run_generation = self.run_generation.wrapping_add(1);
+        self.standing_jump_actors.clear();
         let world = self.ecs.world_mut();
         debug_assert!(world.get_resource::<SimNavigation>().is_none());
         *world.resource_mut::<WorldClock>() = WorldClock::default();
@@ -228,6 +239,9 @@ impl Simulation {
         *world.resource_mut::<Party>() = Party::default();
         *world.resource_mut::<TimelineRun>() = TimelineRun::default();
         *world.resource_mut::<Interpolation>() = Interpolation::default();
+        if let Some(mut body) = world.get_resource_mut::<BodyAuthority>() {
+            body.restart();
+        }
         let (requests, table, clock, _, _, actors, characters) =
             self.resolve.get_mut(world).expect(ACTORS_EXIST);
         actors::restart_pool(requests, table, clock, characters, actors);
@@ -357,19 +371,105 @@ impl Simulation {
         self.ecs.world_mut().resource_mut::<MoveLibrary>().stand_in(id, set);
     }
 
-    /// The hash of the move data, controller profiles and collision world this simulation runs on,
-    /// tables included, in ID order: what a replay records of them, to tell changed moves, tuning or
-    /// colliders from a broken simulation.
+    /// The hash of the move data, controller setup and collision world this simulation runs on,
+    /// tables included, in ID order: what a replay records to identify the setup it ran against.
     #[must_use]
     pub fn tables_hash(&self) -> u64 {
         let world = self.ecs.world();
-        checksum::tables_hash(
+        let tables = checksum::tables_hash(
             world.resource::<MoveLibrary>(),
             world.resource::<CharacterWorld>(),
             world.resource::<Party>(),
             world.get_resource::<SimNavigation>(),
             world.resource::<TimelineLibrary>(),
-        )
+            &self.standing_jump_actors,
+        );
+        let Some(body) = world.get_resource::<BodyAuthority>() else { return tables };
+        let mut hash = checksum::StateHasher::new();
+        hash.u64(tables);
+        body.write_identity(&mut hash);
+        hits::overhead::write_delivery_identity(world, &mut hash);
+        hash.finish()
+    }
+
+    /// Binds an immutable profile to one live actor before the first fixed step. The existing hit
+    /// sweep remains active. An explicitly configured profile is included in the replay identity.
+    pub fn attach_body(
+        &mut self,
+        actor: ActorId,
+        look_target: Option<ActorId>,
+        profile: BodyProfile,
+    ) -> Result<(), BodyAttachError> {
+        if self.tick() != 0 {
+            return Err(BodyAttachError::Started);
+        }
+        let world = self.ecs.world_mut();
+        if world.get_resource::<BodyAuthority>().is_some_and(|body| body.contains(actor)) {
+            return Err(BodyAttachError::Bound);
+        }
+        let table = world.resource::<ActorTable>();
+        if table.entity(actor).is_none()
+            || look_target.is_some_and(|target| target == actor || table.entity(target).is_none())
+        {
+            return Err(BodyAttachError::Actor);
+        }
+        if let Some(mut body) = world.get_resource_mut::<BodyAuthority>() {
+            body.insert(actor, look_target, profile);
+        } else {
+            let mut body = BodyAuthority::default();
+            body.insert(actor, look_target, profile);
+            world.insert_resource(body);
+            self.add_combat_system(CombatSet::Movement, body::advance.after(hits::place_hurtboxes));
+        }
+        Ok(())
+    }
+
+    /// Marks an explicit discontinuity for a scripted reposition or other non-swept replacement.
+    pub fn cut_body(&mut self, actor: ActorId) {
+        let world = self.ecs.world_mut();
+        if let Some(mut body) = world.get_resource_mut::<BodyAuthority>() {
+            body.cut(actor);
+            world.resource_mut::<HitQuery>().cut_overhead_delivery(actor);
+        }
+    }
+
+    /// Creates a reusable read buffer for the configured body outside the fixed step.
+    #[must_use]
+    pub fn body_sample_buffer(&self, actor: ActorId) -> Option<BodySample> {
+        self.ecs.world().get_resource::<BodyAuthority>()?.sample_buffer(actor)
+    }
+
+    /// Reads the already solved pre-Resolve pair. This cannot advance any pose or event history.
+    pub fn read_body(&self, actor: ActorId, fraction: f32, sample: &mut BodySample) -> bool {
+        let world = self.ecs.world();
+        world.resource::<ActorTable>().entity(actor).is_some()
+            && !world.resource::<Party>().is_off_field(actor)
+            && world.get_resource::<BodyAuthority>().is_some_and(|body| body.read(actor, fraction, sample))
+    }
+
+    /// The current readable body generation and clock without hashing the pose.
+    #[doc(hidden)]
+    pub fn body_stamp(&self, actor: ActorId) -> Option<sapphire_body_pose::GraphStepStamp> {
+        let world = self.ecs.world();
+        world.resource::<ActorTable>().entity(actor)?;
+        if world.resource::<Party>().is_off_field(actor) {
+            return None;
+        }
+        world.get_resource::<BodyAuthority>()?.stamp(actor)
+    }
+
+    /// The immutable endpoint's step stamp, contact state and canonical checksum.
+    #[must_use]
+    pub fn body_receipt(
+        &self,
+        actor: ActorId,
+    ) -> Option<(sapphire_body_pose::GraphStepStamp, sapphire_body_pose::FootContact, u64)> {
+        let world = self.ecs.world();
+        world.resource::<ActorTable>().entity(actor)?;
+        if world.resource::<Party>().is_off_field(actor) {
+            return None;
+        }
+        world.get_resource::<BodyAuthority>()?.receipt(actor)
     }
 
     /// Gives this simulation a zone's navmesh, from a cook's bytes, which must start 16-byte aligned,
@@ -428,6 +528,20 @@ impl Simulation {
         self.ecs.world_mut().resource_mut::<CharacterWorld>().add_profile(profile)
     }
 
+    /// Opt this character into grounded jump preparation during scenario setup.
+    pub(crate) fn prepare_standing_jump(&mut self, actor: ActorId) {
+        let world = self.ecs.world_mut();
+        let entity = world.resource::<ActorTable>().entity(actor).expect("the player was spawned");
+        world
+            .get_mut::<CharacterController>(entity)
+            .expect("the player has a controller")
+            .state
+            .jump_preparation = Some(SimDuration::ZERO);
+        if let Err(index) = self.standing_jump_actors.binary_search(&actor) {
+            self.standing_jump_actors.insert(index, actor);
+        }
+    }
+
     /// What an actor moves by now: its set's `movement`, if its document has one, and otherwise the
     /// profile it spawned with. `None` for an actor with no controller.
     #[must_use]
@@ -462,6 +576,9 @@ impl Simulation {
             self.resolve.get_mut(self.ecs.world_mut()).expect(ACTORS_EXIST);
         let alive = requests.despawn(id, &table);
         actors::resolve_actor_requests(requests, table, clock, library, hits, actors, characters);
+        if alive {
+            self.cut_body(id);
+        }
         alive
     }
 
@@ -641,7 +758,11 @@ impl Simulation {
     /// set of moves with a `swap` intent and a `swap_in` move. A simulation has one party, for good. See
     /// the `party` module.
     pub fn form_party(&mut self, members: &[ActorId], tuning: PartyTuning) -> Result<(), PartyError> {
-        party::form(self.ecs.world_mut(), members, tuning)
+        party::form(self.ecs.world_mut(), members, tuning)?;
+        for &benched in &members[1..] {
+            self.cut_body(benched);
+        }
+        Ok(())
     }
 
     /// The formation was validated before resetting. Newly spawned off-field actors already have
@@ -764,7 +885,7 @@ impl Simulation {
     }
 }
 
-fn view(world: &World, id: ActorId, entity: Entity) -> ActorView {
+pub(crate) fn view(world: &World, id: ActorId, entity: Entity) -> ActorView {
     let actor = world.entity(entity);
     let transform = *actor.get::<ActorTransform>().expect("every pooled entity has a transform");
     let clock = actor.get::<EntityClock>().expect("every pooled entity has a clock");

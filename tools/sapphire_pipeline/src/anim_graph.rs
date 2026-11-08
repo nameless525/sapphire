@@ -158,6 +158,11 @@ impl LocomotionBounds {
                 StateMotion::Blend(space) => {
                     space.samples.iter().map(|sample| sample.clip.as_str()).collect()
                 }
+                StateMotion::TakeoffBlend(blend)
+                | StateMotion::LandingBlend(blend)
+                | StateMotion::TakeoffAnticipating(blend) => std::iter::once(blend.standing.as_str())
+                    .chain(blend.moving.iter().map(|sample| sample.clip.as_str()))
+                    .collect(),
             })
             .collect();
         graph.clips.iter().filter(|clip| named.contains(&clip.name.as_str())).cloned().collect()

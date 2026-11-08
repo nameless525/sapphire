@@ -129,6 +129,7 @@ fn input(frame: u32) -> GraphInput {
             direction: frame as f32 * 0.01,
             grounded: !(100..130).contains(&cycle),
             landed: cycle == 130,
+            ..LocomotionInput::default()
         },
         reaction: ReactionInput { name: Name::new("flinch"), count: frame / 170 },
         ..GraphInput::default()

@@ -26,9 +26,9 @@ use game_ui::hud::ShownFight;
 use sapphire_stage::scene::LookDev;
 #[cfg(feature = "dev")]
 use sapphire_stage::scene::Scene;
+use sapphire_stage::{Content, StageDesc, headless_gpu};
 #[cfg(feature = "dev")]
 use sapphire_stage::{FRAME, FrameHooks, LoadingFrame, ToolFrame};
-use sapphire_stage::{StageDesc, headless_gpu};
 
 /// Offscreen targets are sRGB like the swapchain, so they match what the window shows.
 pub(crate) const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -60,25 +60,19 @@ impl App for OffscreenApp {
             AppInitError::msg("OffscreenApp needs --capture <png>, --bench <frames> or --offscreen")
         })?;
         let (width, height) = (offscreen.width, offscreen.height);
-        // Before any GPU work, so a bad replay file costs nothing and says why.
-        let combat = options.combat.as_ref().map(Combat::new).transpose().map_err(AppInitError::msg)?;
-        if let (Some(_), Some(combat)) = (options.arena, &combat) {
-            game_combat::arena::check_scenario(combat, options.party).map_err(AppInitError::msg)?;
-        }
         match &offscreen.mode {
             OffscreenMode::Capture { path, ticks, frames } => {
-                let ticks = match (&combat, &options.combat) {
+                let mut stage = stage(platform, &options)?;
+                let ticks = match (&stage.show.fight.combat, &options.combat) {
                     (Some(combat), Some(option)) => {
                         combat.capture_ticks(option, *ticks, *frames).map_err(AppInitError::msg)?
                     }
                     _ => *ticks,
                 };
-                let mut stage = stage(platform, &options)?;
-                stage.show.fight.attach_combat(combat);
                 crate::capture::run(&mut stage, path, ticks, *frames, width, height)?;
             }
             OffscreenMode::Bench { frames } => {
-                crate::bench::run(platform, &options, combat, *frames, width, height)?;
+                crate::bench::run(platform, &options, *frames, width, height)?;
             }
             OffscreenMode::ContactSheet { path, cells, ticks, yaws } => {
                 let mut stage = stage(platform, &options)?;
@@ -89,7 +83,6 @@ impl App for OffscreenApp {
             #[cfg(feature = "dev")]
             OffscreenMode::Serve => {
                 let mut stage = stage(platform, &options)?;
-                stage.show.fight.attach_combat(combat);
                 if let Some(combat) = &mut stage.show.fight.combat {
                     stage.hooks.dev.start_fight_from_cooks(combat, &stage.content);
                 }
@@ -135,6 +128,37 @@ impl App for OffscreenApp {
 
 /// The stage `options` ask for. Offscreen modes run on desktops only.
 pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, AppInitError> {
+    let mount_content = || Content::new(platform, options.character(), options.sky());
+    let mut content = None;
+    let mut show = ShownFight::default();
+    let tooling = options.offscreen.as_ref().is_some_and(|offscreen| {
+        matches!(offscreen.mode, OffscreenMode::Serve | OffscreenMode::ContactSheet { .. })
+    });
+    let combat = options
+        .combat
+        .as_ref()
+        .map(|option| {
+            if !tooling
+                && options.arena.is_some()
+                && options.character() == sapphire_stage::lookdev::CHARACTER
+                && options.character_rig.is_none()
+            {
+                let pending = &mut content;
+                show.fight.prepare_stock_combat_with(option, move || Ok(pending.insert(mount_content()?)))
+            } else {
+                Combat::new(option).map_err(AppInitError::msg)
+            }
+        })
+        .transpose()?;
+    if let (Some(_), Some(combat)) = (options.arena, &combat) {
+        game_combat::arena::check_scenario(combat, options.party).map_err(AppInitError::msg)?;
+    }
+    if let (Some(combat), Some(option), Some(offscreen)) = (&combat, &options.combat, &options.offscreen) {
+        if let OffscreenMode::Capture { ticks, frames, .. } = offscreen.mode {
+            combat.capture_ticks(option, ticks, frames).map_err(AppInitError::msg)?;
+        }
+    }
+    let content = content.map_or_else(mount_content, Ok)?;
     let (instance, gpu) = headless_gpu()?;
     if let Some(offscreen) = &options.offscreen {
         let limits = gpu.device().limits();
@@ -159,8 +183,7 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
         options.offscreen.as_ref().is_some_and(|run| matches!(run.mode, OffscreenMode::Bench { .. }));
     desc.inventory_without = options.inventory_without.clone();
     let history_only_capture = history_only_capture_allowed(options, desc.settings);
-    let mut stage =
-        sapphire_stage::Stage::new(platform, instance, gpu, desc)?.with_show(ShownFight::default());
+    let mut stage = sapphire_stage::Stage::new_with_content(instance, gpu, desc, content)?.with_show(show);
     stage.history_only_capture = history_only_capture;
     stage.graph.set_serial(options.serial_passes);
     let character = stage.character;
@@ -332,6 +355,13 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
     }
     // The screen effects it may push, `--post-effect`'s among them, the effects it plays, its sky and
     // its HUD show on their first frame.
+    let contact_sheet = options
+        .offscreen
+        .as_ref()
+        .is_some_and(|offscreen| matches!(offscreen.mode, OffscreenMode::ContactSheet { .. }));
+    if let Some(combat) = combat.filter(|_| !contact_sheet) {
+        show.fight.attach_prepared_combat(combat, scene, content)?;
+    }
     let mut declared = scene.declared_pipelines(&*show);
     if let Some(entry) = &options.inventory_without {
         declared.remove(entry);

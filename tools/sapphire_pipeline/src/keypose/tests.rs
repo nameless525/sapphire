@@ -605,7 +605,11 @@ fn the_committed_document_poses_the_character() {
 /// A committed document of the character's, as it would cook.
 fn on_the_character(name: &str) -> (KeyPoseClip, Cooked, Skeleton, CharacterRig) {
     let content = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
-    let text = fs::read(content.join(format!("lookdev/character/{name}.keypose.ron"))).expect("the document");
+    cook_on_the_character(&content, &content.join(format!("lookdev/character/{name}.keypose.ron")))
+}
+
+fn cook_on_the_character(content: &Path, path: &Path) -> (KeyPoseClip, Cooked, Skeleton, CharacterRig) {
+    let text = fs::read(path).expect("the document");
     let document = read(&text).expect("it reads");
     let vrm_bytes =
         fs::read(content.join("third_party/vrm1_constraint_twist_sample/VRM1_Constraint_Twist_Sample.vrm"))
@@ -622,25 +626,23 @@ fn on_the_character(name: &str) -> (KeyPoseClip, Cooked, Skeleton, CharacterRig)
 #[test]
 fn locomotions_documents_stay_inside_the_characters_bounds() {
     let gate = LocomotionBounds::of_the_character();
-    let folder = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/lookdev/character");
+    let content = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
+    let mut tree = meta::SourceTree::scan(&content).expect("the content tree");
+    tree.sources.retain(|path| path.to_string_lossy().ends_with(".keypose.ron"));
+    tree.sidecars.retain(|path| path.to_string_lossy().ends_with(".keypose.ron.meta"));
+    let sources = meta::resolve(&tree, true).expect("all keypose sources have unique asset IDs");
     let mut named = 0;
     for clip in LocomotionBounds::clips().iter().filter(|clip| clip.clip.is_none()) {
-        let document = fs::read_dir(&folder)
-            .expect("the folder")
-            .filter_map(|entry| entry.ok())
-            .map(|entry| entry.path())
-            .find(|path| {
-                path.to_string_lossy().ends_with(".keypose.ron.meta")
-                    && meta::read(path).is_ok_and(|sidecar| sidecar.id == clip.source)
-            })
-            .unwrap_or_else(|| panic!("{}'s document", clip.name));
-        let file = document.file_name().and_then(|name| name.to_str()).expect("a name");
-        let name = file.trim_end_matches(".keypose.ron.meta");
-        let (_, cooked, _, _) = on_the_character(name);
+        let source = sources
+            .assets
+            .iter()
+            .find(|asset| asset.meta.id == clip.source)
+            .unwrap_or_else(|| panic!("missing document for {} ({})", clip.name, clip.source));
+        let (_, cooked, _, _) = cook_on_the_character(&content, &source.path);
         let ticks = Clip::read(&cooked.clip).expect("a valid clip").ticks.to_native();
         let reach =
             (0..=ticks).step_by(2).map(|tick| gate.reach(&cooked.model(tick as f32))).fold(0.0, f32::max);
-        assert!(reach <= gate.radius, "{name}: the skin reaches {reach} of {}", gate.radius);
+        assert!(reach <= gate.radius, "{}: the skin reaches {reach} of {}", clip.name, gate.radius);
         named += 1;
     }
     assert!(named >= 1, "{named}");

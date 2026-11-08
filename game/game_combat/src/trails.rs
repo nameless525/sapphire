@@ -643,18 +643,19 @@ mod tests {
         let of = |label: &str, moves: &[(String, Vec<Cut>)]| {
             moves.iter().find(|(name, _)| name == label).unwrap_or_else(|| panic!("{label}")).1.clone()
         };
-        assert_eq!(of("light_1", &player), [cut(8, 13)]);
+        // The first cut brakes into its low follow-through on tick 12.
+        assert_eq!(of("light_1", &player), [cut(8, 12)]);
         assert_eq!(of("light_2", &player), [cut(8, 12)]);
         assert_eq!(of("light_3", &player), [cut(13, 20)]);
-        assert_eq!(of("dash_attack", &player), [cut(5, 11)]);
-        assert_eq!(of("skill", &player), [cut(12, 15), cut(21, 25)]);
+        assert_eq!(of("dash_attack", &player), [cut(5, 12)]);
+        assert_eq!(of("skill", &player), [cut(12, 15), cut(21, 26)]);
         assert_eq!(of("dodge", &player), []);
         assert_eq!(of("flinch", &player), []);
         assert_eq!(of("knockdown", &player), []);
         let enemy = cuts_by_label("arena-fight-won", 1);
         assert_eq!(of("swipe", &enemy), [cut(24, 30)]);
         assert_eq!(of("overhead", &enemy), [cut(45, 52)]);
-        assert_eq!(of("lunge", &enemy), [cut(30, 33)]);
+        assert_eq!(of("lunge", &enemy), [cut(30, 38)]);
         assert_eq!(of("stagger_light", &enemy), []);
         assert_eq!(of("death", &enemy), []);
     }

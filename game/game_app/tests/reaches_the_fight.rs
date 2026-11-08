@@ -19,7 +19,7 @@ use sapphire_platform::{
 };
 use sapphire_render::quality::QualitySettings;
 use sapphire_rhi::wgpu;
-use sapphire_stage::{Readback, Stage, StageDesc, headless_gpu};
+use sapphire_stage::{Content, Readback, Stage, StageDesc, headless_gpu};
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 const WIDTH: u32 = 320;
@@ -56,10 +56,14 @@ impl App for OutsideCaller {
     fn init(platform: &mut Platform) -> Result<Self, AppInitError> {
         let (instance, gpu) = headless_gpu()?;
         let desc = fight_stage(StageDesc::new(platform, &gpu, FORMAT, QualitySettings::default()));
-        let mut stage = Stage::new(platform, instance, gpu, desc)?.with_show(GameShow::new()?);
+        let mut content = Content::new(platform, desc.character, desc.sky)?;
+        let mut show = GameShow::new()?;
         let option = CombatOption::Fight { script: Some("fight-back".to_owned()), party: false };
+        let combat = show.shown.fight.prepare_stock_combat(&option, &mut content)?;
+        assert!(combat.simulation().overhead_presentation_pair().is_some());
+        let mut stage = Stage::new_with_content(instance, gpu, desc, content)?.with_show(show);
         let Stage { show, scene, content, renderer, gpu, quality, .. } = &mut stage;
-        show.stand(&option, scene, content, renderer, gpu, quality.active().id)?;
+        show.stand(combat, scene, content, renderer, gpu, quality.active().id)?;
 
         for _ in 0..30 {
             stage.step();

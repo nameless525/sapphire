@@ -1,0 +1,22 @@
+[package]
+name = "sapphire_body_pose"
+description = "CPU character graph evaluation, pose sampling and body IK."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+sapphire_assets.workspace = true
+sapphire_core.workspace = true
+sapphire_math.workspace = true
+sapphire_time.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
+sapphire_serialize.workspace = true
+
+[lints]
+workspace = true

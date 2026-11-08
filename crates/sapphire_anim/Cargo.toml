@@ -1,6 +1,6 @@
 [package]
 name = "sapphire_anim"
-description = "Character animation: skeletons and clips as the runtime sees them, and in time their sampling, blending, IK and secondary motion."
+description = "Presentation animation, secondary motion and the shared CPU pose facade."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,17 +10,14 @@ license.workspace = true
 [dependencies]
 # The cooked `Skeleton` and `Clip` formats, which the asset server checks by kind.
 sapphire_assets.workspace = true
-# Names: what a move and a state are called, compared by hash on a frame's path.
-sapphire_core.workspace = true
+sapphire_body_pose.workspace = true
 # One job per character (spec §5.13).
 sapphire_jobs.workspace = true
 sapphire_math.workspace = true
-thiserror.workspace = true
 
 [dev-dependencies]
-# Pose snapshots (spec §5.13).
-insta.workspace = true
-sapphire_serialize.workspace = true
+# Names and the per-thread allocation counter used by integration tests.
+sapphire_core.workspace = true
 
 [lints]
 workspace = true

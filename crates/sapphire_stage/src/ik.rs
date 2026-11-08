@@ -24,8 +24,8 @@
 use std::sync::Arc;
 
 use sapphire_anim::{
-    CharacterIk, CharacterPose, FeetInput, FootGround, FootSettings, GroundHit, HeldWeapon, IkInput, IkRig,
-    LookInput, LookSettings,
+    CharacterIk, CharacterPose, FeetInput, FootContact, FootSettings, HeldWeapon, IkInput, IkRig, LookInput,
+    LookSettings,
 };
 use sapphire_math::{Affine3A, Mat4, Quat, Vec3};
 use sapphire_physics::{Group, PhysicsWorld, Pose, QueryFilter, Shape, StaticCollider, StaticShape};
@@ -209,6 +209,7 @@ pub struct IkDriver {
     ik: CharacterIk,
     ground: Arc<PhysicsWorld>,
     controls: IkControls,
+    foot_contact: FootContact,
     /// Presented ticks on the character's clock when last asked.
     presented: Option<f64>,
     /// Seconds of its clock since then, which the next solve takes.
@@ -224,6 +225,11 @@ impl std::fmt::Debug for IkDriver {
 }
 
 impl IkDriver {
+    /// Chooses how the feet follow the ground for the motion being sampled.
+    pub fn set_foot_contact(&mut self, contact: FootContact) {
+        self.foot_contact = contact;
+    }
+
     /// What it looks at, in the world, of what the rest of its controls say.
     pub fn set_look_target(&mut self, look_target: Option<Vec3>) {
         self.set_controls(IkControls { look_target, ..self.controls() });
@@ -231,8 +237,16 @@ impl IkDriver {
 
     /// IK for a character with `rig`'s bones, on `ground`.
     pub fn new(rig: IkRig, ground: Arc<PhysicsWorld>, controls: IkControls) -> Self {
-        let ik = CharacterIk::new(rig, FootSettings::default(), LookSettings::default());
-        Self { ik, ground, controls, presented: None, dt: 0.0, solved: None }
+        let ik = arena_ik(rig);
+        Self {
+            ik,
+            ground,
+            controls,
+            foot_contact: FootContact::default(),
+            presented: None,
+            dt: 0.0,
+            solved: None,
+        }
     }
 
     /// The inputs it runs on.
@@ -271,28 +285,47 @@ impl IkDriver {
     /// Solves `pose`, just sampled, for a character at `transform`. [`CharacterPose::finish`] comes
     /// after. Allocates nothing.
     pub(crate) fn solve(&mut self, pose: &mut CharacterPose, transform: Mat4) {
+        self.solve_with_contact(pose, transform, None, 1.0);
+    }
+
+    pub(crate) fn set_prepared_release(&mut self, active: bool) {
+        self.ik.set_prepared_release(active);
+    }
+
+    pub(crate) fn set_moving_takeoff(&mut self, phase: Option<f32>) {
+        self.ik.set_moving_takeoff(phase);
+    }
+
+    pub(crate) fn turn_support(&self) -> Option<usize> {
+        self.ik.feet()?.turn_support()
+    }
+
+    pub(crate) fn ground_support(&self) -> Option<usize> {
+        self.ik.feet()?.ground_support()
+    }
+
+    /// Applies the graph's contact and head-look policies while retaining the caller's controls.
+    pub(crate) fn solve_with_contact(
+        &mut self,
+        pose: &mut CharacterPose,
+        transform: Mat4,
+        contact: Option<FootContact>,
+        head_look_weight: f32,
+    ) {
         let world_from_model = Affine3A::from_mat4(transform);
-        self.ik.prepare(pose);
-        let mut feet = FeetInput { weight: self.controls.feet, ..FeetInput::default() };
-        if let (Some(placement), Some(probes)) =
-            (self.ik.feet(), self.ik.foot_probes(pose, &world_from_model))
-            && (feet.weight > 0.0 || placement.fade() > 0.0)
-        {
-            let settings = placement.settings();
-            let cast = |at: Vec3| ground_under(&self.ground, at, settings);
-            for (ground, probe) in feet.ground.iter_mut().zip(probes) {
-                *ground = FootGround { ankle: cast(probe.ankle), ball: probe.ball.and_then(cast) };
-            }
-        }
-        self.ik.solve(
+        let ground = &self.ground;
+        self.ik.solve_on_ground(
             pose,
-            &IkInput {
+            IkInput {
                 dt: self.dt,
                 world_from_model,
-                feet,
+                feet: FeetInput { weight: self.controls.feet, ..FeetInput::default() },
                 look: LookInput { target: self.controls.look_target, weight: self.controls.look },
                 weapon: self.controls.weapon,
             },
+            contact.unwrap_or(self.foot_contact),
+            head_look_weight,
+            |at, settings| ground_under(ground, at, settings),
         );
         self.solved = Some((self.controls, transform));
         // A later solve in the same presented time, for a grip, must not take this time again.
@@ -300,14 +333,13 @@ impl IkDriver {
     }
 }
 
+fn arena_ik(rig: IkRig) -> CharacterIk {
+    CharacterIk::new(rig, FootSettings::default(), LookSettings::default())
+}
+
 /// What a foot's probe finds: the world's scenery, from a little above it to a little below. Something
 /// the probe starts inside isn't ground under a foot, so a foot in a wall lets go of the ground.
-fn ground_under(world: &PhysicsWorld, at: Vec3, settings: &FootSettings) -> Option<GroundHit> {
-    let filter = QueryFilter::new(Group::World.mask());
-    let from = at + Vec3::Y * settings.reach_up;
-    let hit = world.cast_ray(from, Vec3::NEG_Y, settings.reach_up + settings.reach_down, &filter)?;
-    (hit.distance > 0.0).then_some(GroundHit { point: hit.point, normal: hit.normal })
-}
+use sapphire_gameplay::body::ground_under;
 
 #[cfg(test)]
 mod tests {

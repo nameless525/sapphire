@@ -89,6 +89,15 @@ use crate::movement::ActorTransform;
 use crate::moves::{MoveLibrary, MoveRunner};
 use crate::party::Party;
 
+pub(crate) const STANDING_JUMP_PREPARATION: SimDuration = SimDuration::from_ticks(5);
+pub(crate) const MOVING_JUMP_PREPARATION: SimDuration = SimDuration::from_ticks(2);
+pub(crate) const REBOUND_JUMP_PREPARATION: SimDuration = SimDuration::from_ticks(3);
+pub(crate) const JUMP_REBOUND_WINDOW: SimDuration = SimDuration::from_ticks(6);
+pub(crate) const MOVING_JUMP_MIN_SPEED: f32 = 1.2;
+pub(crate) const MOVING_JUMP_MIN_ALIGNMENT: f32 = 0.8;
+pub(crate) const REBOUND_MIN_LANDING_SPEED: f32 = 2.0;
+pub(crate) const STANDING_JUMP_MAX_SPEED: f32 = 0.15;
+
 /// Which [`ControllerProfile`] an actor runs on, handed out in the order they were added.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ProfileId(u32);
@@ -275,6 +284,10 @@ pub struct ControllerState {
     pub coyote: SimDuration,
     /// A jump was pressed while the owner's clock stood still, and goes when it moves.
     pub jump_waiting: bool,
+    /// Remaining owner time before a supported jump, when this actor opts in.
+    pub(crate) jump_preparation: Option<SimDuration>,
+    pub(crate) jump_preparation_moving: bool,
+    pub(crate) jump_rebound: SimDuration,
     pub events: ControllerEvents,
 }
 
@@ -286,15 +299,49 @@ impl Default for ControllerState {
             ground_normal: Vec3::Y,
             coyote: SimDuration::ZERO,
             jump_waiting: false,
+            jump_preparation: None,
+            jump_preparation_moving: false,
+            jump_rebound: SimDuration::ZERO,
             events: ControllerEvents::default(),
         }
     }
 }
 
 impl ControllerState {
+    /// Whether a stationary jump is preparing on a supporting surface.
+    #[must_use]
+    pub fn preparing_jump(self) -> bool {
+        self.mode == GroundMode::Grounded
+            && !self.jump_preparation_moving
+            && self.jump_preparation.is_some_and(|time| time != SimDuration::ZERO)
+    }
+
+    /// Where a traveling jump is between loading the support (0) and pushing off (1).
+    #[must_use]
+    pub fn moving_jump_preparation(self) -> Option<f32> {
+        if self.mode != GroundMode::Grounded || !self.jump_preparation_moving {
+            return None;
+        }
+        self.jump_preparation.filter(|&remaining| remaining != SimDuration::ZERO).map(|remaining| {
+            ((MOVING_JUMP_PREPARATION - remaining).as_subticks() as f32
+                / SimDuration::from_ticks(1).as_subticks() as f32)
+                .min(1.0)
+        })
+    }
+
     /// Written field by field, destructured so a new field can't be forgotten.
     fn write_canonical(&self, hasher: &mut StateHasher) {
-        let Self { mode, velocity, ground_normal, coyote, jump_waiting, events } = *self;
+        let Self {
+            mode,
+            velocity,
+            ground_normal,
+            coyote,
+            jump_waiting,
+            jump_preparation,
+            jump_preparation_moving,
+            jump_rebound,
+            events,
+        } = *self;
         hasher.u8(mode.code());
         hasher.vec3(velocity);
         hasher.vec3(ground_normal);
@@ -319,6 +366,13 @@ impl ControllerState {
         }
         hasher.f32(landing_speed);
         hasher.f32(height_pop);
+        // Only the actors that opt in carry the grounded jump policy.
+        if let Some(remaining) = jump_preparation {
+            hasher.u8(1);
+            hasher.u64(remaining.as_subticks());
+            hasher.u8(u8::from(jump_preparation_moving));
+            hasher.u64(jump_rebound.as_subticks());
+        }
     }
 }
 

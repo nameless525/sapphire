@@ -29,11 +29,15 @@
 //! ([`GraphShow::transform`]), so a shot keeps it framed: it runs on a treadmill. A move's root motion
 //! and a jump's height are the simulation's own and stay in.
 
+mod fixed_presentation;
+
+pub use fixed_presentation::FixedBodyRenderer;
+
 use std::time::Duration;
 
 use sapphire_anim::{
-    ArchivedClip, ClipSource, CombatInput, GraphInput, GraphPlayer, LocomotionInput, ReactionInput,
-    SpringBones, SpringFrame, SpringWork,
+    ArchivedClip, AuthoredHeadLook, ClipSource, CombatInput, GraphInput, GraphPlayer, GroundTurn,
+    LocomotionInput, ReactionInput, SpringBones, SpringFrame, SpringWork, graph_foot_contact,
 };
 use sapphire_assets::AssetId;
 use sapphire_assets::graph::MAX_GRAPH_CLIPS;
@@ -41,7 +45,7 @@ use sapphire_core::Name;
 use sapphire_ecs::prelude::*;
 use sapphire_gameplay::{
     ActorActions, ActorId, ActorSpawn, ActorTransform, ActorView, Buttons, CombatSet, ControllerProfile,
-    GroundMode, IntentRing, MoveLibrary, MoveRunner, SimConfig, Simulation, Stick, TickActions,
+    IntentRing, MoveLibrary, MoveRunner, SimConfig, Simulation, Stick, TickActions,
 };
 use sapphire_math::{Affine3A, Mat4, Quat, Vec3};
 use sapphire_moves::MoveSetDocument;
@@ -229,11 +233,22 @@ pub fn time_ticks(time: SimTime) -> f64 {
 /// across the ground against its facing, and whether there's ground under it. Whether it landed is an
 /// event of a step, which [`GraphShow`] gathers for the frame.
 pub fn locomotion_of(view: &ActorView) -> LocomotionInput {
-    let state = &view.controller.state;
-    let across = Vec3::new(state.velocity.x, 0.0, state.velocity.z);
-    let speed = across.length();
-    let direction = if speed > 1e-3 { across.x.atan2(across.z) - view.yaw } else { 0.0 };
-    LocomotionInput { speed, direction, grounded: state.mode != GroundMode::Airborne, landed: false }
+    sapphire_gameplay::body::observe_motion(view).legacy_input()
+}
+
+/// Fixed-step air motion samples, kept by the presentation owner even if it draws less than once
+/// per simulation tick.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LocomotionSamples(sapphire_gameplay::body::MotionHistory);
+
+impl LocomotionSamples {
+    pub fn observe(&mut self, view: &ActorView) {
+        self.0.observe(sapphire_gameplay::body::observe_motion(view));
+    }
+
+    pub fn input(&mut self, view: &ActorView) -> LocomotionInput {
+        self.0.input(sapphire_gameplay::body::observe_motion(view))
+    }
 }
 
 /// The moves a script plays: a document of the character's, read here since the simulation holds a
@@ -331,11 +346,24 @@ pub struct GraphDriver {
     teleports: u32,
     /// Its feet, look and hands: `None` without `--ik on` or a fight.
     ik: Option<IkDriver>,
+    turn: Option<GroundTurn>,
+    prepared_takeoff: bool,
+    authored_head_look: Option<AuthoredHeadLook>,
     /// Whether its graph has made a pose yet.
     posed: bool,
 }
 
 impl GraphDriver {
+    /// Binds presentation to the simulator's body buffer, without creating a second owner.
+    pub fn simulation_body_renderer(
+        &mut self,
+        clips: &ClipTable<'_>,
+        versions: Option<(u32, u32, u32)>,
+        sample: sapphire_anim::BodySample,
+    ) -> Result<FixedBodyRenderer, String> {
+        FixedBodyRenderer::bind_simulation(self, clips, versions, sample)
+    }
+
     pub fn new(player: GraphPlayer, joints: FigureJoints) -> Self {
         Self {
             player,
@@ -345,6 +373,9 @@ impl GraphDriver {
             springs_on: true,
             teleports: 0,
             ik: None,
+            turn: None,
+            prepared_takeoff: false,
+            authored_head_look: None,
             posed: false,
         }
     }
@@ -377,6 +408,21 @@ impl GraphDriver {
     #[must_use]
     pub fn with_ik(self, ik: IkDriver) -> Self {
         Self { ik: Some(ik), ..self }
+    }
+
+    /// Coordinates the hero's solved foot and chest response to fast grounded steering.
+    #[must_use]
+    pub fn with_ground_turn(self) -> Self {
+        Self { turn: Some(GroundTurn::default()), ..self }
+    }
+
+    /// Retains the sampled head pose through a whole-body move. The four source ticks mark the
+    /// start and end of the rise into authored control, and the start and end of the release.
+    /// Eyes keep tracking their target throughout.
+    #[must_use]
+    pub fn with_authored_head_look(self, movement: Name, retained: f32, source_ticks: [f32; 4]) -> Self {
+        let authored_head_look = Some(AuthoredHeadLook::new(movement, retained, source_ticks));
+        Self { authored_head_look, ..self }
     }
 
     /// Its IK, for whatever drives it.
@@ -426,6 +472,12 @@ impl GraphDriver {
         self.base = other.base;
         self.teleports = other.teleports;
         self.springs_on = other.springs_on;
+        self.authored_head_look = other.authored_head_look;
+        if let Some(look) = &mut self.authored_head_look
+            && !self.player.pose().compatible_with(other.player.pose())
+        {
+            look.reset();
+        }
         match (&mut self.springs, &other.springs) {
             (Some(springs), Some(old)) if self.player.pose().compatible_with(other.player.pose()) => {
                 springs.continue_from(old)
@@ -451,6 +503,20 @@ impl GraphDriver {
         self.springs.as_mut().is_some_and(|springs| view.decide(springs, transform, figure))
     }
 
+    fn run_springs(
+        &mut self,
+        frame: &SpringFrame,
+        grounded: bool,
+        figure: &Figure,
+    ) -> (SpringWork, Duration) {
+        let Some(springs) = &mut self.springs else { return (SpringWork::default(), Duration::ZERO) };
+        let started = Stopwatch::start();
+        // Ease in torso contact as a grounded fall lowers the head into the body's reach.
+        let torso_contact = if grounded { ((0.70 - figure.head.y) / 0.36).clamp(0.0, 1.0) } else { 0.0 };
+        let work = springs.update_with_torso_contact(self.player.pose_mut(), frame, torso_contact);
+        (work, started.elapsed())
+    }
+
     /// The frame's pose, with the character standing at `place` as the ground sees it: the graph, then
     /// IK over what it made, then the rig's constraints and the model pose. Says whether the pose moved.
     ///
@@ -460,14 +526,26 @@ impl GraphDriver {
     /// few frames, nothing changes grip inside one yet, and hands aren't what a hit's freeze shows.
     /// A game that needs it can ask the player to hand over again. Allocates nothing.
     pub(crate) fn pose_frame(&mut self, input: &GraphInput, clips: &ClipTable<'_>, place: Mat4) -> bool {
+        let mut turning = None;
+        let mut receiving = None;
+        if input.cut || input.locomotion.grounded {
+            self.prepared_takeoff = !input.cut
+                && (input.locomotion.preparing_jump || input.locomotion.moving_jump_preparation.is_some());
+        }
         if let Some(ik) = &mut self.ik {
             ik.take_time(input.ticks);
             let feet = if input.locomotion.grounded { 1.0 } else { 0.0 };
             ik.set_controls(IkControls { feet, ..ik.controls() });
+            if let Some(turn) = &mut self.turn {
+                (turning, receiving) = turn.prepare(&self.player, clips, input, place, || ik.turn_support());
+            }
         }
-        let evaluated = self.player.evaluate(input, clips, clips.version());
+        let support = self.ik.as_ref().and_then(IkDriver::ground_support);
+        let evaluated = self.player.evaluate_with_support(input, clips, clips.version(), receiving, support);
         let teleports = self.player.teleports();
-        if teleports != self.teleports {
+        let jumped = teleports != self.teleports;
+        if jumped {
+            self.prepared_takeoff = false;
             self.teleports = teleports;
             if let Some(springs) = &mut self.springs {
                 springs.reset();
@@ -478,7 +556,17 @@ impl GraphDriver {
         }
         if evaluated {
             if let Some(ik) = &mut self.ik {
-                ik.solve(self.player.pose_mut(), place);
+                let contact = graph_foot_contact(&self.player, clips, place, turning);
+                if let Some(turn) = &mut self.turn {
+                    turn.apply_spine(self.player.pose_mut(), self.joints.spine(), contact);
+                }
+                let head_look_weight = self.authored_head_look.as_mut().map_or(1.0, |look| {
+                    let sample = self.player.whole_body_combat_position(look.movement(), clips);
+                    look.weight(input.ticks, sample, jumped || input.cut)
+                });
+                ik.set_prepared_release(self.prepared_takeoff && !input.locomotion.grounded);
+                ik.set_moving_takeoff(input.locomotion.moving_jump_preparation);
+                ik.solve_with_contact(self.player.pose_mut(), place, contact, head_look_weight);
             }
             self.player.finish();
             self.posed = true;
@@ -541,17 +629,14 @@ impl<'a> GraphEvaluation<'a> {
             *self.figure = figure;
             self.rig.head = figure.head;
         }
-        if let Some(springs) = &mut driver.springs {
-            let started = Stopwatch::start();
-            let frame = SpringFrame {
-                world_from_model: self.world_from_model,
-                ticks: self.input.ticks,
-                pose_moved: self.evaluated,
-                active: self.springs_run,
-            };
-            self.spring_work = springs.update(driver.player.pose_mut(), &frame);
-            self.spring_time = started.elapsed();
-        }
+        let frame = SpringFrame {
+            world_from_model: self.world_from_model,
+            ticks: self.input.ticks,
+            pose_moved: self.evaluated,
+            active: self.springs_run,
+        };
+        (self.spring_work, self.spring_time) =
+            driver.run_springs(&frame, self.input.locomotion.grounded, &self.figure);
         // `Extract` watches the pose: a frame with nothing to do must not touch it.
         if self.evaluated || self.spring_work.wrote_pose {
             let pose = driver.player.pose();
@@ -574,8 +659,7 @@ pub struct GraphShow {
     tick: u32,
     previous: ActorView,
     current: ActorView,
-    /// Landed since the last frame.
-    landed: bool,
+    locomotion: LocomotionSamples,
     /// A cut since the last frame.
     cut: bool,
 }
@@ -618,7 +702,7 @@ impl GraphShow {
             tick: 0,
             previous: view,
             current: view,
-            landed: false,
+            locomotion: LocomotionSamples::default(),
             cut: false,
         }
     }
@@ -664,7 +748,7 @@ impl GraphShow {
         let Some(view) = self.simulation.actor(self.actor) else { return };
         self.previous = self.current;
         self.current = view;
-        self.landed |= view.controller.state.events.landed;
+        self.locomotion.observe(&view);
         self.cut |= self.script.cut(self.tick);
         self.tick += 1;
     }
@@ -676,8 +760,7 @@ impl GraphShow {
         let step = now - time_ticks(self.previous.clock_now);
         let alpha = if alpha >= 0.0 { f64::from(alpha.min(1.0)) } else { 0.0 };
         let behind = (1.0 - alpha) * step;
-        let mut locomotion = locomotion_of(&self.current);
-        locomotion.landed = std::mem::take(&mut self.landed);
+        let locomotion = self.locomotion.input(&self.current);
         GraphInput {
             ticks: now - behind,
             locomotion,
@@ -899,10 +982,11 @@ mod tests {
         for name in forced.iter().flatten().map(String::as_str).chain(["recover"]) {
             assert!(has_row(name), "the enemy's {name} has no row");
         }
-        // A defeat plays a death, which stays where it ends.
+        // Both defeat intents stay down. A knockdown plays the separate stand-up sequence.
         let row = |name: &str| graph.combat.moves.iter().find(|entry| entry.name == name).expect(name);
-        assert_eq!(row("defeat").clip, "death_back");
-        assert_eq!(row("death").clip, "death_forward");
+        assert_eq!(row("defeat").clip, "defeat");
+        assert_eq!(row("death").clip, "defeat");
+        assert_eq!(row("knockdown").clip, "knockdown");
     }
 
     /// A defeat's move ends and the graph hears that it's still down: `combat` goes and `defeated` stays.

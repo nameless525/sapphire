@@ -1,92 +1,30 @@
-//! Character animation (spec §5.13).
+//! Character animation for presentation.
 //!
-//! # Owns
-//!
-//! The runtime's view of skeletons and clips, read in place from what the asset server loaded, and
-//! the scalar `glam` core that runs on them:
-//!
-//! - **[`Skeleton`]:** joints as parallel arrays, parents first, with the rest pose a sampler starts
-//!   from.
-//! - **[`Clip`]:** one motion for one skeleton, as sparse tracks of quantized keys on a tick grid,
-//!   with morph weights and a root motion track. [`ArchivedClip::rotation`] and its neighbors say
-//!   what a track holds at a position, without state or allocation, and
-//!   [`clip`](sapphire_assets::clip)'s docs give the layout and the reasons for it.
-//! - **Plain functions over poses,** each allocation-free and with no state between calls, so the
-//!   cooker can call them as the runtime does: [`sample()`], [`overlay`], [`overlay_weights`] and
-//!   [`root_motion`]; [`blend()`], [`make_delta`] and [`add`], with [`JointMask`]; [`local_to_model`]
-//!   and [`palette`]. A pose is a slice of [`Transform`], one per joint.
-//! - **[`Constraints`]:** the rig's twist and aim helpers, which run after the pose.
-//! - **[`CharacterPose`]:** one character's frame of it, from sampling to its palette, with
-//!   [`evaluate_all`] giving each character a job of its own.
-//! - **[`SpringBones`]:** the rig's spring chains and colliders, simulated on the owner's clock beside
-//!   a pose (M2 N5).
-//! - **The [animation graph](graph):** a layered state machine over those, from a
-//!   [document](sapphire_assets::graph): locomotion's blend space, a combat layer the simulation's
-//!   moves drive through plain input, additive layers and a blink, with [inertialized](inertia)
-//!   transitions.
-//! - **IK:** [`two_bone`] and [`aim`] over a [`SolvePose`], a pose's locals and the model transforms
-//!   of the joints in use, and [`CharacterIk`], one character's foot placement ([`FootPlacement`]),
-//!   look-at ([`LookAt`]) and hands on a weapon ([`HeldWeapon`]), between sampling and
-//!   [`CharacterPose::finish`]. Ground comes in as data: it casts nothing itself.
-//!
-//! # Does not own
-//!
-//! - **The cooked formats themselves.** They are `sapphire_assets::{skeleton, clip}`, re-exported
-//!   here. The asset server checks every kind's bytes before anything reads them
-//!   (`AssetKind::references`) and hands them out through a closed set of typed handles, and it
-//!   sits a layer below this crate, so a kind's format has to be there too, as a character rig's
-//!   already was. This crate is where the runtime names them.
-//! - **Importing and key reduction:** the pipeline (tools), which links `sapphire_assets` only.
-//! - **The renderer and the world:** no edge to either (rules R3, R4). Poses reach the renderer as
-//!   finished palettes in `FramePacket`.
-//! - **Whose clock:** callers turn their owner clock's presented time into a position. A clock that
-//!   stands still (hitstop, pause) gives the same position, and so the same pose.
-//! - **The simulation:** it never reads a pose. A move's root motion and hit volumes are baked at
-//!   cook time into per-tick tables in `sapphire_moves` (spec §5.14, §5.22). **The bake doesn't run
-//!   this crate:** a table is one set of bytes on every architecture, and these functions' `Quat` and
-//!   `Affine3A` round differently on NEON and SSE2, so the pipeline bakes through scalars and a test
-//!   there holds a table to the pose this crate draws (spec §5.27).
+//! Re-exports the shared CPU pose evaluator and owns the jobs and secondary motion that surround it.
 
-mod blend;
-mod blend_space;
 mod character;
-mod constraints;
-pub mod graph;
-mod ik;
-pub mod inertia;
-mod model;
-mod sample;
 mod springs;
 
-pub use blend::{JointMask, add, blend, make_delta};
-pub use blend_space::{BlendPoint, blend_weights};
-pub use character::{AnimStats, CharacterPose, evaluate_all};
-pub use constraints::{ConstraintCycle, Constraints};
-pub use graph::{
-    ClipSource, CombatInput, GraphBindError, GraphBinding, GraphInput, GraphPlayer, GraphStats,
-    LocomotionInput, ReactionInput,
+pub use character::{AnimStats, evaluate_all};
+pub use sapphire_body_pose::graph::{FixedGraphHistory, GraphStepStamp};
+pub use sapphire_body_pose::{
+    AimGoal, AnimGraph, ArchivedAnimGraph, ArchivedClip, ArchivedJointTransform, ArchivedRootMotion,
+    ArchivedRotationTrack, ArchivedSkeleton, ArchivedVectorRange, ArchivedVectorTrack, ArchivedWeightRange,
+    ArchivedWeightTrack, ArmBones, AuthoredFootMotion, Bind, BlendPoint, CLIP_EXTENSION, CharacterIk,
+    CharacterPose, Clip, ClipError, ClipSource, CombatInput, ConstraintCycle, Constraints, DEFAULT_RATE,
+    EyeDrive, EyeRig, FeetInput, FootContact, FootGround, FootPlacement, FootProbe, FootSettings,
+    GRAPH_EXTENSION, GraphBindError, GraphBinding, GraphError, GraphInput, GraphIssue, GraphPlayer,
+    GraphStats, Grip, GroundHit, Hand, HeldWeapon, IkInput, IkRig, Joint, JointMask, JointTransform, KeySpan,
+    LegBones, LocomotionInput, LookAt, LookBones, LookInput, LookSettings, MAX_JOINTS, MAX_RATE, MAX_TICKS,
+    NO_PARENT, PackedRotation, PackedVector, RangeMap, ReactionInput, RootMotion, RotationTrack,
+    SKELETON_EXTENSION, Skeleton, SkeletonError, SolvePose, Transform, TwoBone, TwoBoneGoal, VectorRange,
+    VectorTrack, WeaponPlace, WeightRange, WeightTrack, add, aim, blend, blend_weights, graph, inertia,
+    key_span, lerp3, local_to_model, make_delta, nlerp, overlay, overlay_weights, palette, rest_pose,
+    root_motion, sample, two_bone,
 };
-pub use ik::{
-    AimGoal, ArmBones, CharacterIk, EyeDrive, EyeRig, FeetInput, FootGround, FootPlacement, FootProbe,
-    FootSettings, Grip, GroundHit, Hand, HeldWeapon, IkInput, IkRig, LegBones, LookAt, LookBones, LookInput,
-    LookSettings, RangeMap, SolvePose, TwoBone, TwoBoneGoal, WeaponPlace, aim, two_bone,
-};
-pub use model::{Bind, local_to_model, palette};
-pub use sample::{overlay, overlay_weights, rest_pose, root_motion, sample};
-pub use sapphire_math::Transform;
+pub use sapphire_body_pose::{AuthoredHeadLook, GroundTurn, SolvedBody, graph_foot_contact};
+pub use sapphire_body_pose::{BodyRoot, BodySample, BodyStep, BodyStepError, FixedBody, FixedBodyPolicy};
 pub use springs::{
     SPRING_TICK_HZ, SpringBones, SpringCollider, SpringFrame, SpringQuality, SpringTail, SpringTuning,
     SpringWork, Substeps,
-};
-
-pub use sapphire_assets::clip::{
-    ArchivedClip, ArchivedRootMotion, ArchivedRotationTrack, ArchivedVectorRange, ArchivedVectorTrack,
-    ArchivedWeightRange, ArchivedWeightTrack, CLIP_EXTENSION, Clip, ClipError, DEFAULT_RATE, KeySpan,
-    MAX_RATE, MAX_TICKS, PackedRotation, PackedVector, RootMotion, RotationTrack, VectorRange, VectorTrack,
-    WeightRange, WeightTrack, key_span, lerp3, nlerp,
-};
-pub use sapphire_assets::graph::{AnimGraph, ArchivedAnimGraph, GRAPH_EXTENSION, GraphError, GraphIssue};
-pub use sapphire_assets::skeleton::{
-    ArchivedJointTransform, ArchivedSkeleton, Joint, JointTransform, MAX_JOINTS, NO_PARENT,
-    SKELETON_EXTENSION, Skeleton, SkeletonError,
 };

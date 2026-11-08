@@ -162,6 +162,8 @@ pub enum LoadError {
     Panicked { id: AssetId },
     #[error("loading asset {id} can't make progress")]
     Stalled { id: AssetId },
+    #[error("asset {0} released its decoded CPU bytes after upload")]
+    CpuBytesReleased(AssetId),
     #[error("asset {0} left its pack, or its pack was unmounted, before it could be read")]
     Removed(AssetId),
 }
@@ -187,6 +189,8 @@ pub enum MountError {
     Duplicate { id: AssetId, first: String, second: String },
     #[error("pack {0:?} isn't mounted")]
     NotMounted(String),
+    #[error("pack {0:?} is bound to the running stock fight")]
+    BoundToStockFight(String),
 }
 
 /// What an uploader returns for an asset it couldn't upload.
@@ -243,6 +247,44 @@ impl<'a> Upload<'a> {
         // SAFETY: the bytes passed their kind's check in the decode job, and the server holds them
         // unchanged behind an `Arc` for as long as this borrow.
         (self.kind == T::KIND).then(|| unsafe { T::view(self.bytes) })
+    }
+}
+
+/// An immutable, checked CPU asset resident at the time the server issued it.
+pub struct CpuResident<T: Asset> {
+    data: Arc<AlignedVec>,
+    kind: std::marker::PhantomData<fn() -> T>,
+}
+
+impl<T: Asset> Clone for CpuResident<T> {
+    fn clone(&self) -> Self {
+        Self { data: self.data.clone(), kind: std::marker::PhantomData }
+    }
+}
+
+impl<T: Asset> CpuResident<T> {
+    /// The same digest the pack verifies when it decodes this asset.
+    #[must_use]
+    pub fn content_hash(&self) -> [u8; 32] {
+        *blake3::hash(&self.data).as_bytes()
+    }
+
+    /// Checks and keeps an immutable cooked asset without a server or a renderer.
+    pub fn from_cooked(bytes: AlignedVec) -> Result<Self, crate::AssetError> {
+        T::KIND.references(&bytes)?;
+        Ok(Self { data: Arc::new(bytes), kind: std::marker::PhantomData })
+    }
+
+    /// The exact cooked bytes, for a package identity.
+    #[must_use]
+    pub fn cooked_bytes(&self) -> &[u8] {
+        &self.data
+    }
+
+    pub fn view(&self) -> T::View<'_> {
+        // SAFETY: obtained from the validated slot of a typed handle. The Arc keeps its
+        // checked, aligned bytes alive and unchanged even if the server reloads the handle.
+        unsafe { T::view(&self.data) }
     }
 }
 
@@ -852,6 +894,36 @@ impl AssetServer {
         // it), its bytes passed that kind's check in the decode job, and they stay unchanged
         // behind the `Arc`.
         Some(unsafe { T::view(data) })
+    }
+
+    /// Retains the validated current bytes independently of future changes to the slot.
+    pub fn cpu_resident<T: Asset>(&self, handle: &Handle<T>) -> Option<CpuResident<T>> {
+        let data = self.slot(handle.untyped())?.data.as_ref()?.clone();
+        Some(CpuResident { data, kind: std::marker::PhantomData })
+    }
+
+    /// Retains a decoded asset before any GPU upload. Loading screens can bind CPU
+    /// consumers without advancing the renderer or marking a GPU asset as uploaded.
+    /// `remaining` reads the caller's loading budget before each wait.
+    pub fn finish_cpu<T: Asset>(
+        &mut self,
+        handle: &Handle<T>,
+        remaining: &impl Fn() -> Duration,
+    ) -> Result<CpuResident<T>, LoadError> {
+        loop {
+            if let Some(asset) = self.cpu_resident(handle) {
+                return Ok(asset);
+            }
+            match self.state(handle) {
+                LoadState::Ready => return Err(LoadError::CpuBytesReleased(handle.id())),
+                LoadState::Failed(error) => return Err(error),
+                LoadState::Loading => {}
+            }
+            let timeout = remaining();
+            if timeout.is_zero() || !self.wait(timeout) {
+                return Err(LoadError::Stalled { id: handle.id() });
+            }
+        }
     }
 
     /// Keeps `handle`'s asset resident even when nothing uses it, until as many [`Self::unpin`]s.

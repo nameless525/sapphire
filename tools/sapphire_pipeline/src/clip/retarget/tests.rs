@@ -1311,26 +1311,31 @@ fn as_cooked_the_run_covers_the_ground_the_controller_does() {
     assert!((0.7..1.5).contains(&walk), "{walk}");
 }
 
-/// Walking pays nothing for posed bounds: every retarget locomotion plays keeps the skin inside the
-/// sphere the bind pose's bounds make (`LocomotionBounds`).
+/// Representative KayKit locomotion retargets keep the skin inside the sphere the bind pose's bounds
+/// make (`LocomotionBounds`), independent of the character graph's authored clip selection.
 #[test]
 fn locomotions_retargets_stay_inside_the_characters_bounds() {
+    const LOCOMOTION: [&str; 7] = [
+        "Walking_B",
+        "Running_B",
+        "Jump_Idle",
+        "Jump_Land",
+        "Walking_Backwards",
+        "Running_Strafe_Left",
+        "Running_Strafe_Right",
+    ];
     let gate = LocomotionBounds::of_the_character();
     let (skeleton, _) = character();
     let files: Vec<Kaykit> = FILES.iter().map(|file| Kaykit::open(file)).collect();
-    let mut named = 0;
-    for clip in LocomotionBounds::clips() {
-        let Some(name) = &clip.clip else { continue };
-        let file = files.iter().find(|file| file.names.contains(name)).expect(name);
+    for name in LOCOMOTION {
+        let file = files.iter().find(|file| file.names.iter().any(|clip| clip == name)).expect(name);
         let out = as_cooked(file, name);
         let reach = (0..=usize::from(out.ticks))
             .step_by(2)
             .map(|tick| gate.reach(&pose(&out, skeleton, tick)))
             .fold(0.0, f32::max);
         assert!(reach <= gate.radius, "{name}: the skin reaches {reach} of {}", gate.radius);
-        named += 1;
     }
-    assert!(named >= 6, "{named}");
 }
 
 /// `follow`, on a real clip: the rig retargeted onto itself, its hand blocks and slots named, takes

@@ -11,10 +11,11 @@ use std::collections::BTreeMap;
 use sapphire_assets::AssetId;
 use sapphire_assets::material::{AnimeCharacterMaterial, Material, MaterialDocument, MaterialError};
 use sapphire_assets::mesh::{
-    FoliageVertex, Influences, Lod, MAX_INFLUENCES, MaterialSlot, Mesh, MorphDelta, MorphTarget,
-    PositionFormat, Skin, SkinBind, SlotMaterial, Vertex, VertexInfluence, VertexStreams, quantize_weights,
+    Bounds, FloatPosition, FoliageVertex, Influences, Lod, MAX_INFLUENCES, MaterialSlot, Mesh, MorphDelta,
+    MorphTarget, PositionFormat, QuantizedPosition, Skin, SkinBind, SlotMaterial, Vertex, VertexInfluence,
+    VertexStreams, quantize_weights,
 };
-use sapphire_assets::skeleton::Joint;
+use sapphire_assets::skeleton::{Joint, Skeleton};
 use sapphire_assets::texture::Swizzle;
 
 /// An imported mesh. Every per-vertex vector has one entry per vertex.
@@ -143,6 +144,92 @@ impl SkinWeights {
 }
 
 impl ImportedMesh {
+    /// Identifies the imported contact geometry at the mesh's packing precision, before any LOD
+    /// is derived. Rendering attributes, optimization order and LOD choice are outside this identity.
+    pub(crate) fn authored_geometry(
+        &self,
+        format: PositionFormat,
+        skeleton_id: Option<AssetId>,
+        shared: Option<&Skeleton>,
+        remap: Option<&[u16]>,
+    ) -> [u8; 32] {
+        let mut hash = blake3::Hasher::new_derive_key("Sapphire authored mesh geometry v1");
+        let bounds = Bounds::enclosing(self.vertices.iter().map(|vertex| vertex.position));
+        hash.update(&[format.index() as u8]);
+        for axis in bounds.min.into_iter().chain(bounds.max) {
+            hash.update(&axis.to_le_bytes());
+        }
+        hash.update(&to_u32(self.vertices.len()).to_le_bytes());
+        for vertex in &self.vertices {
+            match format {
+                PositionFormat::Unorm16 => {
+                    hash.update(&QuantizedPosition::encode(vertex.position, &bounds).to_bytes());
+                }
+                PositionFormat::Float32 => {
+                    hash.update(&FloatPosition::new(vertex.position).to_bytes());
+                }
+            }
+        }
+        hash.update(&to_u32(self.indices.len()).to_le_bytes());
+        for index in &self.indices {
+            hash.update(&index.to_le_bytes());
+        }
+        hash.update(&[u8::from(self.skin.is_some())]);
+        if let Some(skin) = &self.skin {
+            hash.update(&[u8::from(skeleton_id.is_some())]);
+            if let Some(id) = skeleton_id {
+                hash.update(&id.to_bytes());
+            }
+            let own;
+            let skeleton = if let Some(shared) = shared {
+                shared
+            } else {
+                own = Skeleton::new(&skin.joints);
+                &own
+            };
+            hash.update(&to_u32(skeleton.names.len()).to_le_bytes());
+            for ((name, parent), rest) in skeleton.names.iter().zip(&skeleton.parents).zip(&skeleton.rest) {
+                hash.update(&to_u32(name.len()).to_le_bytes()).update(name.as_bytes());
+                hash.update(&parent.to_le_bytes());
+                for axis in rest.translation.into_iter().chain(rest.rotation).chain(rest.scale) {
+                    hash.update(&axis.to_le_bytes());
+                }
+            }
+            hash.update(&to_u32(skin.binds.len()).to_le_bytes());
+            for bind in &skin.binds {
+                let joint = remap.map_or(bind.joint, |remap| remap[usize::from(bind.joint)]);
+                hash.update(&joint.to_le_bytes());
+                for axis in bind.inverse_bind_matrix.into_iter().flatten() {
+                    hash.update(&axis.to_le_bytes());
+                }
+            }
+            hash.update(&to_u32(skin.weights.len()).to_le_bytes());
+            for weight in &skin.weights {
+                for bind in weight.binds {
+                    hash.update(&bind.to_le_bytes());
+                }
+                hash.update(&quantize_weights(weight.weights));
+            }
+        }
+        hash.update(&to_u32(self.morph_targets.len()).to_le_bytes());
+        for target in &self.morph_targets {
+            hash.update(&to_u32(target.name.len()).to_le_bytes()).update(target.name.as_bytes());
+            hash.update(&target.default_weight.to_le_bytes());
+            let deltas = target.deltas.iter().filter_map(|delta| {
+                let position = MorphDelta::new(delta.vertex, delta.position, [0.0; 3]).position();
+                (position != [0.0; 3]).then_some((delta.vertex, position))
+            });
+            hash.update(&to_u32(deltas.clone().count()).to_le_bytes());
+            for (vertex, position) in deltas {
+                hash.update(&vertex.to_le_bytes());
+                for axis in position {
+                    hash.update(&axis.to_le_bytes());
+                }
+            }
+        }
+        *hash.finalize().as_bytes()
+    }
+
     /// Packs the mesh into its cooked form. Slots named in `bindings` reference those material
     /// assets; the others embed the material the importer generated.
     pub fn pack(
@@ -206,6 +293,7 @@ impl ImportedMesh {
         }
         let streams = VertexStreams::pack(&self.vertices, format);
         Ok(Mesh {
+            authored_geometry: None,
             streams: if self.foliage.is_empty() { streams } else { streams.with_foliage(&self.foliage) },
             indices: self.indices.clone(),
             lods: self.lods.clone(),
@@ -223,7 +311,72 @@ fn to_u32(len: usize) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    use sapphire_assets::skeleton::JointTransform;
+
     use super::*;
+
+    #[test]
+    fn authored_geometry_changes_with_contact_inputs() {
+        let vertex = |position| Vertex { position, ..Vertex::default() };
+        let joint =
+            |name: &str, parent| Joint { name: name.to_owned(), parent, rest: JointTransform::IDENTITY };
+        let bind = |joint| SkinBind {
+            joint,
+            inverse_bind_matrix: std::array::from_fn(|column| {
+                std::array::from_fn(|row| f32::from(row == column))
+            }),
+        };
+        let mesh = ImportedMesh {
+            vertices: vec![vertex([0.0, 0.0, 0.0]), vertex([1.0, 0.0, 0.0]), vertex([0.0, 1.0, 0.0])],
+            indices: vec![0, 1, 2],
+            skin: Some(ImportedSkin {
+                joints: vec![joint("root", None), joint("hand", Some(0))],
+                binds: vec![bind(0), bind(1)],
+                weights: vec![SkinWeights::rigid(0); 3],
+            }),
+            morph_targets: vec![ImportedMorphTarget {
+                name: "shape".to_owned(),
+                deltas: vec![ImportedDelta { vertex: 0, position: [0.1, 0.0, 0.0], normal: [0.0; 3] }],
+                ..ImportedMorphTarget::default()
+            }],
+            ..ImportedMesh::default()
+        };
+        let identity =
+            |mesh: &ImportedMesh| mesh.authored_geometry(PositionFormat::Unorm16, None, None, None);
+        let expected = identity(&mesh);
+        let skin_id = AssetId::from_bytes([1; 16]);
+        let mut shared = Skeleton::new(&mesh.skin.as_ref().unwrap().joints);
+        let shared_identity = |id, skeleton: &Skeleton, remap: &[u16]| {
+            mesh.authored_geometry(PositionFormat::Unorm16, Some(id), Some(skeleton), Some(remap))
+        };
+        let resolved = mesh.authored_geometry(PositionFormat::Unorm16, Some(skin_id), None, None);
+        assert_eq!(resolved, shared_identity(skin_id, &shared, &[0, 1]));
+        assert_ne!(resolved, shared_identity(skin_id, &shared, &[1, 0]));
+        assert_ne!(resolved, shared_identity(AssetId::from_bytes([2; 16]), &shared, &[0, 1]));
+        shared.rest[1].translation[0] = 0.1;
+        assert_ne!(resolved, shared_identity(skin_id, &shared, &[0, 1]));
+        let mutations: [fn(&mut ImportedMesh); 6] = [
+            |mesh| mesh.vertices[0].position[1] = 0.1,
+            |mesh| mesh.indices.swap(1, 2),
+            |mesh| mesh.skin.as_mut().unwrap().joints[1].rest.translation[1] = 0.1,
+            |mesh| mesh.skin.as_mut().unwrap().binds[1].inverse_bind_matrix[3][0] = 0.1,
+            |mesh| mesh.skin.as_mut().unwrap().weights[1] = SkinWeights::rigid(1),
+            |mesh| mesh.morph_targets[0].deltas[0].position[1] = 0.1,
+        ];
+        for mutate in mutations {
+            let mut changed = mesh.clone();
+            mutate(&mut changed);
+            assert_ne!(expected, identity(&changed));
+        }
+        let mut shading = mesh;
+        shading.morph_targets[0].deltas[0].normal[0] = 0.1;
+        shading.morph_targets[0].deltas.push(ImportedDelta {
+            vertex: 1,
+            position: [0.0; 3],
+            normal: [0.1, 0.0, 0.0],
+        });
+        assert_eq!(expected, identity(&shading));
+    }
 
     #[test]
     fn keeps_the_four_heaviest_influences_renormalized() {

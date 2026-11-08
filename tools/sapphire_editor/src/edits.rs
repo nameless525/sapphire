@@ -415,12 +415,15 @@ mod tests {
         };
         let mut text = open(PLAYER);
         assert_eq!(text.failure(), None);
+        let movement = |document: &MovesDocument| {
+            document.value().expect("a document").fighter.as_ref().expect("a fighter").movement
+        };
+        let original = movement(&text).expect("the fighter has authored movement");
         let hit = entry(&text, "light_1", Track::Hitboxes, 0);
         set_window(&mut text, hit, 8, 12).expect("the edit");
         assert_ne!(text.text(), PLAYER);
         assert_eq!(section(text.text()), section(PLAYER));
-        let movement = text.value().expect("a document").fighter.as_ref().expect("a fighter").movement;
-        assert_eq!(movement, Some(sapphire_moves::ControllerProfile::default()));
+        assert_eq!(movement(&text), Some(original));
     }
 
     /// The tree finds every value the parser reads, in all the documents there are: this is what lets a

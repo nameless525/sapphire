@@ -5,28 +5,39 @@ use sapphire_core::Name;
 use sapphire_gameplay::{OverheadShadowBracket, OverheadShadowShape, ShadowCapsule, ShadowEndpoint};
 use sapphire_math::Vec3;
 
-const HEROINE: [u8; 32] = [
+const HEROINE_GEOMETRY: [u8; 32] = [
+    0x13, 0x8f, 0x7d, 0x98, 0xb1, 0xee, 0xbc, 0x42, 0xaf, 0xb4, 0x6d, 0xd2, 0x74, 0xdf, 0x7b, 0x4c, 0xe9,
+    0xb3, 0xbe, 0x58, 0x71, 0x88, 0x42, 0x8c, 0x14, 0x66, 0xe3, 0xe1, 0x99, 0x66, 0x25, 0x31,
+];
+const WEAPON_GEOMETRY: [u8; 32] = [
+    0xc5, 0x7c, 0x24, 0xbb, 0x76, 0x56, 0x15, 0x05, 0x20, 0xde, 0x56, 0xde, 0xe5, 0x54, 0xa2, 0xdd, 0x7b,
+    0x55, 0x64, 0x66, 0xa2, 0x77, 0xcf, 0x05, 0x09, 0x1e, 0xc8, 0xb0, 0x57, 0x79, 0x7f, 0x4f,
+];
+
+// The calibrated shape keeps its original replay identity on every platform and cook tier.
+// These IDs were first taken from the desktop cooked meshes and are returned only after
+// checking the new cook's authored geometry below.
+const HEROINE_REPLAY_ID: [u8; 32] = [
     0xb4, 0x95, 0x7d, 0x28, 0xe1, 0x88, 0x5e, 0xc6, 0x5b, 0x6b, 0x26, 0xe8, 0x17, 0x6e, 0x13, 0x48, 0x46,
     0x39, 0xbb, 0x24, 0x6c, 0x1e, 0x3a, 0x5b, 0x9f, 0x7a, 0xc0, 0x72, 0x2e, 0x33, 0xda, 0x77,
 ];
-const WEAPON: [u8; 32] = [
+const WEAPON_REPLAY_ID: [u8; 32] = [
     0x8a, 0xb8, 0xd9, 0x09, 0xc4, 0x2c, 0xd0, 0x0a, 0xb0, 0x1e, 0xb1, 0x5b, 0x80, 0xc4, 0x30, 0xb1, 0x86,
     0x75, 0xa6, 0xaa, 0xef, 0x1e, 0xb5, 0x27, 0xa7, 0xfd, 0x47, 0xce, 0x15, 0xa7, 0x4f, 0x3d,
 ];
 
-/// Refuses a skin or blade whose cooked bytes differ from the validated geometry.
+/// Requires the cook's pre-LOD geometry identities for the meshes this shape represents.
 pub(super) fn bind(
     socket: u16,
     [heroine, weapon]: [&CpuResident<Mesh>; 2],
 ) -> Result<(OverheadShadowShape, [[u8; 32]; 2]), &'static str> {
-    let meshes = [heroine.content_hash(), weapon.content_hash()];
-    if meshes[0] != HEROINE {
-        return Err("the cooked heroine mesh differs from the overhead anatomy");
+    if heroine.view().authored_geometry.as_ref() != Some(&HEROINE_GEOMETRY) {
+        return Err("the cooked heroine mesh lacks the authored geometry for the overhead anatomy");
     }
-    if meshes[1] != WEAPON {
-        return Err("the cooked warrior weapon differs from the overhead steel");
+    if weapon.view().authored_geometry.as_ref() != Some(&WEAPON_GEOMETRY) {
+        return Err("the cooked warrior weapon lacks the authored geometry for the overhead steel");
     }
-    Ok((shape(socket), meshes))
+    Ok((shape(socket), [HEROINE_REPLAY_ID, WEAPON_REPLAY_ID]))
 }
 
 #[allow(clippy::excessive_precision, reason = "retain exact audited geometry literals")]
@@ -622,5 +633,32 @@ fn shape(socket: u16) -> OverheadShadowShape {
                 radius: 0.044,
             },
         ],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use sapphire_assets::mesh::PositionFormat;
+
+    use super::*;
+
+    #[test]
+    fn stock_profile_requires_both_authored_geometry_identities() {
+        let mesh = |authored_geometry| {
+            let mut mesh =
+                Mesh::from_vertices(&[], Vec::new(), Vec::new(), Vec::new(), PositionFormat::Unorm16);
+            mesh.authored_geometry = authored_geometry;
+            CpuResident::<Mesh>::from_cooked(mesh.to_cooked().unwrap()).unwrap()
+        };
+        let heroine = mesh(Some(HEROINE_GEOMETRY));
+        let weapon = mesh(Some(WEAPON_GEOMETRY));
+        let missing = mesh(None);
+        let mismatched = mesh(Some([0; 32]));
+        for invalid in [&missing, &mismatched] {
+            assert!(bind(0, [invalid, &weapon]).is_err());
+            assert!(bind(0, [&heroine, invalid]).is_err());
+        }
+        let (_, identities) = bind(0, [&heroine, &weapon]).unwrap();
+        assert_eq!(identities, [HEROINE_REPLAY_ID, WEAPON_REPLAY_ID]);
     }
 }

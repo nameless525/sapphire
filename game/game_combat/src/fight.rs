@@ -890,8 +890,6 @@ impl FightShow {
                 continue;
             }
             if let Some(fixed) = &mut self.fixed_fighters[index] {
-                let (mut render, mut figure, mut rig) = (render, figure, rig);
-                stats.characters += 1;
                 let (content, _) = presentation.expect("fixed body presentation needs its source");
                 let versions =
                     if index == 0 { content.current_character_versions() } else { warrior_versions };
@@ -914,23 +912,31 @@ impl FightShow {
                     }
                     ready
                 };
-                if !ready {
+                if ready {
+                    let (mut render, mut figure, mut rig) = (render, figure, rig);
+                    stats.characters += 1;
+                    let (evaluated, springs, elapsed) =
+                        fixed.renderer.publish(&mut driver, &mut render, &mut figure, &mut rig, &view);
+                    if evaluated {
+                        stats.evaluated += 1;
+                        stats.joints += driver.player.pose().joint_count() as u32;
+                        if index == 1 {
+                            let hand = driver.player.pose().model()[arena.blade_hand()];
+                            arena.hold_blade(Mat4::from(hand));
+                        }
+                    }
+                    stats.springs += u32::from(springs.wrote_pose);
+                    stats.spring_substeps += springs.substeps;
+                    stats.spring_time += elapsed;
                     continue;
                 }
-                let (evaluated, springs, elapsed) =
-                    fixed.renderer.publish(&mut driver, &mut render, &mut figure, &mut rig, &view);
-                if evaluated {
-                    stats.evaluated += 1;
-                    stats.joints += driver.player.pose().joint_count() as u32;
-                    if index == 1 {
-                        let hand = driver.player.pose().model()[arena.blade_hand()];
-                        arena.hold_blade(Mat4::from(hand));
-                    }
+                if simulation.tick() != 0 {
+                    stats.characters += 1;
+                    continue;
                 }
-                stats.springs += u32::from(springs.wrote_pose);
-                stats.spring_substeps += springs.substeps;
-                stats.spring_time += elapsed;
-                continue;
+                // The title and a freshly reset arena can draw before the first body step.
+                // At tick zero the ordinary graph poses the idle fighters without advancing combat.
+                driver.player.pose_mut().clear_body_presentation();
             }
             let gather = index == 0 && stick_released && driver.has_ik();
             driver.player.request_grounded_gather(gather);

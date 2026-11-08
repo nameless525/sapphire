@@ -131,10 +131,14 @@ pub struct Mesh {
     pub morph_targets: Vec<MorphTarget>,
     /// Every target's deltas, target after target.
     pub morph_deltas: Vec<MorphDelta>,
+    /// Identity of the imported geometry before LOD generation and vertex reordering.
+    /// Set by the cooker for source meshes. Procedural meshes have no authored identity.
+    pub authored_geometry: Option<[u8; 32]>,
 }
 
 impl Versioned for Mesh {
-    /// 14: the skeleton left the mesh for an asset of its own (M2 N1): a [`Skin`] names it and
+    /// 15: meshes carry an optional authored geometry identity. 14: the skeleton left the mesh
+    /// for an asset of its own (M2 N1): a [`Skin`] names it and
     /// keeps only its joint count. 13: embedded materials of `Material::VERSION` 10 (M1 C8's double-sided flag) or 11, whose
     /// whole-cycle rates (review RS-003) leave every block an importer generates as it was: their
     /// rates are the defaults or 0, which divide the hour already. 12: embedded
@@ -154,13 +158,13 @@ impl Versioned for Mesh {
     /// from alpha to G, whose byte holds [`VertexFlags`] now. 3 added material slots (M1 A3); 2
     /// embedded M0's fixed 64-byte material parameters; 1 was M0's flat `SPMS` layout of 48-byte
     /// float vertices.
-    const VERSION: u32 = 14;
+    const VERSION: u32 = 15;
 }
 
 // Meshes embed generated materials, so a new material block layout or packing is a new mesh
 // format too, unless it can't change a block an importer generates (`Material::VERSION` 11).
 const _: () = assert!(
-    Mesh::VERSION == 14 && Material::VERSION == 11,
+    Mesh::VERSION == 15 && Material::VERSION == 11,
     "Material::VERSION changed: bump Mesh::VERSION with it, then update this pair"
 );
 
@@ -554,6 +558,7 @@ impl Mesh {
             skin: None,
             morph_targets: Vec::new(),
             morph_deltas: Vec::new(),
+            authored_geometry: None,
         }
     }
 

@@ -1,0 +1,2 @@
+# Offline warrior pose generation.
+numpy>=2.0.2,<3

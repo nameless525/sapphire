@@ -607,9 +607,9 @@ impl Simulation {
         attacker: ActorId,
         target: ActorId,
         shape: OverheadShadowShape,
-        cooked_meshes: [[u8; 32]; 2],
+        mesh_identities: [[u8; 32]; 2],
     ) -> bool {
-        self.attach_overhead(attacker, target, shape, Some(cooked_meshes))
+        self.attach_overhead(attacker, target, shape, Some(mesh_identities))
     }
 
     fn attach_overhead(
@@ -617,7 +617,7 @@ impl Simulation {
         attacker: ActorId,
         target: ActorId,
         shape: OverheadShadowShape,
-        cooked_meshes: Option<[[u8; 32]; 2]>,
+        mesh_identities: Option<[[u8; 32]; 2]>,
     ) -> bool {
         if self.tick() != 0 || attacker == target || self.world().contains_resource::<Shadow>() {
             return false;
@@ -627,7 +627,7 @@ impl Simulation {
         else {
             return false;
         };
-        let route = if let Some(meshes) = cooked_meshes {
+        let route = if let Some(meshes) = mesh_identities {
             let Some(route) = delivery::Route::bind(self, attacker, target, &shape, meshes) else {
                 return false;
             };

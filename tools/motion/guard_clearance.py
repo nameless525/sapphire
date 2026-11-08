@@ -1,7 +1,16 @@
 """Signed distance to the rigid guard for the offline right-arm pose solver."""
 from functools import lru_cache
 from pathlib import Path
-import numpy as np
+
+try:
+    import numpy as np
+except ModuleNotFoundError as error:
+    if error.name != "numpy":
+        raise
+    raise SystemExit(
+        "Warrior motion generation requires NumPy. Install it with "
+        "python3 -m pip install -r tools/motion/requirements.txt."
+    ) from None
 
 @lru_cache(maxsize=1)
 def _geometry():

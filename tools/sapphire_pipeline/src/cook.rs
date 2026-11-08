@@ -2128,10 +2128,7 @@ fn cook_source(
         {
             let shared = shared_skeleton(settings, assets).map_err(clip_error)?;
             let _held = assets.memory.hold(mesh_memory(path, bytes, settings));
-            let mut mesh = import_mesh(path, bytes, settings, cook, shared.as_ref())?;
-            if let Some(skin) = &mut mesh.skin {
-                skin.skeleton = skeleton;
-            }
+            let mesh = import_mesh(path, bytes, settings, cook, shared.as_ref(), skeleton)?;
             Ok(cooked_bytes(path, &mesh)?.into_vec())
         }
         ImportSettings::Vrm(vrm_settings) => {
@@ -2901,6 +2898,7 @@ fn import_mesh(
     importer: &ImportSettings,
     cook: Cook,
     shared: Option<&Skeleton>,
+    skeleton_id: Option<AssetId>,
 ) -> Result<Mesh, CookError> {
     let mut mesh = imported_mesh(path, bytes, importer, cook)?;
     let clip_error =
@@ -2915,6 +2913,8 @@ fn import_mesh(
     // Packing would quantize a NaN to a corner of the bounds. glTF's importer says which primitive;
     // this holds for the others.
     validate_mesh_inputs(path, &mesh)?;
+    let authored_geometry = (!matches!(importer, ImportSettings::Assembly(_)))
+        .then(|| mesh.authored_geometry(settings.position_format, skeleton_id, shared, remap.as_deref()));
     bake::outline_normals(&mut mesh, &settings.outline);
     if let Some(foliage) = &settings.foliage {
         bake::foliage::bake(&mut mesh, foliage, settings.outline.weld_tolerance())
@@ -2924,6 +2924,10 @@ fn import_mesh(
     let mut packed = mesh
         .pack(settings.position_format, &settings.materials)
         .map_err(|source| CookError::MaterialSlot { path: path.to_owned(), source })?;
+    packed.authored_geometry = authored_geometry;
+    if let Some(skin) = &mut packed.skin {
+        skin.skeleton = skeleton_id;
+    }
     if let (Some(remap), Some(shared), Some(skin)) = (remap, shared, &mut packed.skin) {
         skin.joint_count = shared.parents.len() as u32;
         for bind in &mut skin.binds {
@@ -3042,7 +3046,7 @@ fn cook_mesh_with_bytes(
         _ => return Err(CookError::UnsupportedSource { path: source.to_owned() }),
     };
     let bytes = fs::read(source).map_err(|e| CookError::Read { path: source.to_owned(), source: e })?;
-    let mesh = guarded(source, || import_mesh(source, &bytes, &importer, cook, None))?;
+    let mesh = guarded(source, || import_mesh(source, &bytes, &importer, cook, None, None))?;
     let cooked = cooked_bytes(source, &mesh)?;
     Ok((mesh, cooked))
 }
@@ -3165,6 +3169,7 @@ mod tests {
                 &writer.to_glb(),
                 &ImportSettings::Gltf(MeshSettings::default()),
                 Cook::Desktop,
+                None,
                 None,
             )
             .unwrap_err();
@@ -3926,6 +3931,8 @@ mod tests {
         let path = samples::write_all(source.path(), samples::Existing::Keep).unwrap().created.remove(0);
         let desktop = cook_mesh(&path, &MeshSettings::default(), Cook::Desktop).unwrap();
         let mobile = cook_mesh(&path, &MeshSettings::default(), Cook::Mobile).unwrap();
+        assert!(desktop.authored_geometry.is_some());
+        assert_eq!(desktop.authored_geometry, mobile.authored_geometry);
         let triangles = |mesh: &Mesh, lod: usize| -> u32 {
             mesh.lods[lod].submeshes.iter().map(|submesh| submesh.index_count / 3).sum()
         };

@@ -89,10 +89,13 @@ fn element_sizes_are_stable() {
 #[test]
 fn cooked_meshes_round_trip_and_are_read_in_place() {
     for format in PositionFormat::ALL {
-        let mesh = quad(format);
+        let mut mesh = quad(format);
+        assert_eq!(mesh.authored_geometry, None);
+        mesh.authored_geometry = Some([0xa5; 32]);
         let bytes = mesh.to_cooked().unwrap();
         assert_eq!(&bytes[..4], b"SPCK");
         let archived = Mesh::read(&bytes).unwrap();
+        assert_eq!(archived.authored_geometry.as_ref(), mesh.authored_geometry.as_ref());
         assert_eq!(Mesh::from_cooked(&bytes).unwrap(), mesh);
 
         let streams = &archived.streams;
@@ -208,15 +211,14 @@ fn stale_and_corrupt_bytes_are_errors() {
     stale[16] = 1;
     assert!(matches!(
         Mesh::read(&stale),
-        Err(MeshError::Cooked(CookedError::Stale { found: 1, current: 14 }))
+        Err(MeshError::Cooked(CookedError::Stale { found: 1, current: 15 }))
     ));
-    // The previous format (M1 C8's, a skin holding its joints) is stale too: cooked meshes don't
-    // migrate, the cache key holds `Mesh::VERSION`, so every mesh recooks.
+    // Cooked meshes are rebuilt from source. The cache key holds `Mesh::VERSION`.
     let mut previous = bytes.clone();
-    previous[16] = 13;
+    previous[16] = 14;
     assert!(matches!(
         Mesh::read(&previous),
-        Err(MeshError::Cooked(CookedError::Stale { found: 13, current: 14 }))
+        Err(MeshError::Cooked(CookedError::Stale { found: 14, current: 15 }))
     ));
     // No byte flip may panic or read out of bounds; most are caught.
     let mut rejected = 0;

@@ -42,7 +42,7 @@ impl Route {
         attacker: ActorId,
         target: ActorId,
         shape: &OverheadShadowShape,
-        cooked_meshes: [[u8; 32]; 2],
+        mesh_identities: [[u8; 32]; 2],
     ) -> Option<Self> {
         if simulation.actors().len() != 2 || simulation.party().is_formed() {
             return None;
@@ -79,7 +79,7 @@ impl Route {
             body: body.shape,
             fingerprint: 0,
         };
-        route.fingerprint = route.profile_fingerprint(shape, cooked_meshes);
+        route.fingerprint = route.profile_fingerprint(shape, mesh_identities);
         Some(route)
     }
 
@@ -105,10 +105,10 @@ impl Route {
         })
     }
 
-    fn profile_fingerprint(&self, shape: &OverheadShadowShape, cooked_meshes: [[u8; 32]; 2]) -> u64 {
+    fn profile_fingerprint(&self, shape: &OverheadShadowShape, mesh_identities: [[u8; 32]; 2]) -> u64 {
         let mut hash = StateHasher::new();
         hash.bytes(b"sapphire.applied-overhead.v2");
-        for digest in cooked_meshes {
+        for digest in mesh_identities {
             hash.bytes(&digest);
         }
         for value in [

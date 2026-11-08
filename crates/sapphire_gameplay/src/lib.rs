@@ -137,6 +137,7 @@ pub mod brain;
 pub mod checkpoint;
 mod checksum;
 mod controller;
+mod crowd;
 mod cues;
 pub mod encounter;
 pub mod faction;
@@ -146,6 +147,7 @@ mod movement;
 mod moves;
 mod navigation;
 mod party;
+mod patrol;
 pub mod replay;
 mod resolve;
 pub mod script;
@@ -185,8 +187,9 @@ pub use moves::{
     ActiveHurtbox, ActiveVolume, CurrentMove, LiveWindows, MAX_ACTIVE_HURTBOXES, MAX_ACTIVE_VOLUMES,
     MoveLibrary, MoveOutput, MoveRead, MoveRef, MoveRunner, MoveSetId, Published, Tuned, WarpTarget,
 };
-pub use navigation::{PathId, SimNavigation};
+pub use navigation::{SimNavigation, WalkPath};
 pub use party::{PARTY_SLOTS, Party, PartyError, PartySlot, PartyTuning, SWAP_IN_MOVE, SWAP_INTENT};
+pub use patrol::{MAX_PATROL_POINTS, PatrolError, PatrolId, PatrolWalk};
 pub use resolve::{Fighter, HitOutcome, SlowMotion};
 pub use script::{HookEvent, HookFrame, HookWants, ScriptCommand, ScriptWorld};
 pub use simulation::{BetweenSteps, CombatSet, SimConfig, SimRng, Simulation};

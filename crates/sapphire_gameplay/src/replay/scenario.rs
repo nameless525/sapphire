@@ -129,6 +129,11 @@ pub const BAKED_ZONES: [BakedZone; 2] = [
         navmesh: include_bytes!("../../baked/zones/proving_ground.snav"),
     },
 ];
+/// What `nav-chase`'s chasers run: a brain, and an attack it never gets near enough to press.
+pub(super) const CHASER_MOVES: &str = include_str!("../../../sapphire_moves/test_content/chaser.moves.ron");
+
+/// That document, from the repository's root.
+const CHASER_MOVES_PATH: &str = "crates/sapphire_moves/test_content/chaser.moves.ron";
 
 /// What the party's tests add to [`TEST_MOVES`]: a swap and three assists.
 const PARTY_MOVES: &str = include_str!("../../../sapphire_moves/test_content/party.moves.ron");
@@ -144,6 +149,8 @@ pub enum ScenarioError {
     Colliders(#[from] WorldError),
     #[error(transparent)]
     ColliderDocument(#[from] ColliderError),
+    #[error(transparent)]
+    Patrol(#[from] crate::patrol::PatrolError),
     #[error(transparent)]
     World(#[from] PhysicsWorldError),
     #[error(transparent)]
@@ -287,16 +294,29 @@ const CODE_SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: "nav-chase",
-        about: "the arena's square on its real navmesh: input drives the player, and 64 chasers follow paths \
-                to them on the budget of 1024 nodes a tick, through the stick and the controller",
+        about: "the arena's square on its real navmesh: input drives the player, and 64 brains chase them, \
+                on the budget of 1024 nodes a tick, through the stick and the controller, keeping apart",
         config: SimConfig {
             seed: 11,
             max_actors: 1 + super::chase::CHASERS as u32,
             step_budget: BUDGET_DESKTOP_LOW,
             physics_budget: PHYSICS_BUDGET_DESKTOP_LOW,
         },
-        documents: &[TEST_MOVES_PATH],
+        documents: &[TEST_MOVES_PATH, CHASER_MOVES_PATH],
         setup: ScenarioSetup::Code(super::chase::nav_chase),
+    },
+    Scenario {
+        name: "nav-patrol",
+        about: "the arena's square on its real navmesh: input drives the player, and four real warriors walk \
+                the document's patrols until they notice them, fight, and go back when they've lost them",
+        config: SimConfig {
+            seed: 13,
+            max_actors: 1 + super::chase::GUARDS as u32,
+            step_budget: BUDGET_DESKTOP_LOW,
+            physics_budget: PHYSICS_BUDGET_DESKTOP_LOW,
+        },
+        documents: &[PLAYER_MOVES_PATH, WARRIOR_MOVES_PATH],
+        setup: ScenarioSetup::Code(super::chase::nav_patrol),
     },
     Scenario {
         name: "timelines",
@@ -592,7 +612,7 @@ impl PreparedFight {
             &self.ultimate,
             warrior.clone(),
             &self.colliders,
-            self.spawns,
+            self.spawns.clone(),
             self.party,
         )?;
         sim.check_cinematics()?;
@@ -720,7 +740,7 @@ impl PreparedFight {
         let player = simulation.actor(cast[0]).expect("the player was spawned");
         let warrior = simulation.actor(cast[1]).expect("the warrior was spawned");
         let actors = FightActors {
-            spawns: self.spawns,
+            spawns: self.spawns.clone(),
             player: player.moves.set.expect("the player has a set"),
             warrior: warrior.moves.set.expect("the warrior has a set"),
             controller: player.controller.profile().expect("the player has a controller"),
@@ -777,7 +797,9 @@ pub(super) fn fight_on(
     Ok(actors.spawn(sim, party, None)?.to_vec())
 }
 
-#[derive(Clone, Copy)]
+/// What a built-in fight spawns from, kept to spawn it again on a reset. Not `Copy`, since the arena's
+/// spawns hold its patrols.
+#[derive(Clone)]
 struct FightActors {
     spawns: crate::arena::ArenaSpawns,
     player: MoveSetId,
@@ -787,13 +809,13 @@ struct FightActors {
 
 impl FightActors {
     fn spawn(
-        self,
+        &self,
         sim: &mut Simulation,
         party: bool,
         initial_party: Option<Party>,
     ) -> Result<[ActorId; 2], ScenarioError> {
         let Self { spawns, player, warrior, controller } = self;
-        let (moves, warrior, controller) = (Some(player), Some(warrior), Some(controller));
+        let (moves, warrior, controller) = (Some(*player), Some(*warrior), Some(*controller));
         let member = ActorSpawn {
             position: spawns.player.position(),
             yaw: spawns.player.yaw(),

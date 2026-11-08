@@ -298,7 +298,7 @@ impl ArenaGround {
     /// As [`Self::new`], for the fight at `place`.
     pub fn at(set: &ArchivedColliderSet, place: &FightPlace) -> Result<Self, ArenaError> {
         let world = PhysicsWorld::from_cooked(set, 0)?;
-        let spawns = place.spawns;
+        let spawns = place.spawns.clone();
         check_spawn(&world, set, "player", spawns.player)?;
         check_spawn(&world, set, "enemy", spawns.enemy)?;
         for spawn in spawns.crowd {
@@ -312,7 +312,7 @@ impl ArenaGround {
 
     /// Where the fight stands its two fighters.
     pub fn spawns(&self) -> ArenaSpawns {
-        self.spawns
+        self.spawns.clone()
     }
 
     /// A zone's collision, as a trip arrives in it (M3 W4), with the fighters standing at `spawns`: its
@@ -332,7 +332,7 @@ impl ArenaGround {
         if statics {
             combat_views::statics(&self.world, canvas);
         }
-        let spawns = self.spawns;
+        let spawns = &self.spawns;
         let profile = profile();
         let crowd = spawns.crowd.map(|spawn| (spawn, Color::YELLOW));
         for (spawn, color) in

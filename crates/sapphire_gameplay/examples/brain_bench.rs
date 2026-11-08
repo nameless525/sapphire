@@ -30,6 +30,7 @@ use sapphire_gameplay::brain::{Seen, SeenTarget, step_brain};
 use sapphire_gameplay::{ActorId, ActorSpawn, Brain, ControllerProfile, SimConfig, Simulation, TickActions};
 use sapphire_math::{Pcg32, Vec3};
 use sapphire_moves::{MoveSet, MoveSetDocument, TargetDoing, TickRange};
+use sapphire_nav::Way;
 use sapphire_physics::{ColliderId, Group, PhysicsWorld, Pose, Shape, StaticCollider, StaticShape};
 use sapphire_time::{SimDuration, SimTime, Stopwatch};
 
@@ -140,6 +141,8 @@ fn one_call(deciding: bool, calls: u32) -> f64 {
             doing: TargetDoing::Free,
             defeated: false,
         }),
+        way: Way::Straight,
+        point: None,
     };
     let stopwatch = Stopwatch::start();
     let mut pressed = 0_u32;

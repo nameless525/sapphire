@@ -6,12 +6,15 @@
 // `crowd` is where a fight with more than one enemy puts the others (M3 B1), on the same clear floor,
 // the first three on the enemy's side of the street and the rest down its east edge.
 //
+// `patrols` is where a brain with a patrol walks (M3 P3): one round the square's stalls, and one up and
+// down its west side.
+//
 // Compiled in (`sapphire_gameplay::arena`), so a replay can't run from other spawn points than its
 // build's. Moving one moves the `arena` replays' checksums (`cargo xtask replay --update`), and
 // `crates/sapphire_gameplay/tests/arena.rs` holds each to the ground and clear of the colliders.
 (
     type: "sapphire::gameplay::ArenaSpawns",
-    version: 2,
+    version: 3,
     data: (
         player: (position: (3.2, 0.0, 5.0), yaw_degrees: 180.0),
         enemy: (position: (3.2, 0.0, -1.0), yaw_degrees: 0.0),
@@ -23,5 +26,16 @@
             (position: (9.6, 0.0, 0.2), yaw_degrees: -90.0),
             (position: (8.6, 0.0, 7.0), yaw_degrees: -90.0),
         ),
+        patrols: [
+            (
+                name: "square_round",
+                points: [(-14.0, 0.0, 12.0), (14.0, 0.0, 12.0), (14.0, 0.0, -13.0), (-6.0, 0.0, -12.0)],
+                closed: true,
+            ),
+            (
+                name: "west_side",
+                points: [(-12.0, 0.0, -10.0), (-12.0, 0.0, 2.0), (-12.0, 0.0, 10.0)],
+            ),
+        ],
     ),
 )

@@ -319,6 +319,14 @@ pub const SCRIPTS: &[Script] = &[
         actions: walks::walk_the_ward,
         commands: &walks::WARD_RETURN,
     },
+    Script {
+        name: "patrol-pass",
+        about: "the arena's player stands while the guards walk, runs out where one notices, and runs off from \
+                it past where it gives up, by the stick alone",
+        ticks: PATROL_PASS_TICKS,
+        actions: patrol_pass,
+        commands: &[],
+    },
 ];
 
 /// The script named `name`.
@@ -832,13 +840,33 @@ const CHASE_LAPS_TICKS: u32 = {
     ticks
 };
 
-/// [`SCRIPTS`]' `chase-laps`: the player by the stick, round the square.
+/// [`patrol_pass`]' legs, as [`CHASE_LAPS_LEGS`]' are: standing until the guard coming along the square's
+/// north side notices them, then off to the south-east at a run, faster than it can follow.
+const PATROL_PASS_LEGS: [(i8, i8, u32); 2] = [(0, 0, 700), (90, -114, 190)];
+
+/// [`patrol_pass`]' length: its legs, and 20 s for the guards to go back to walking.
+const PATROL_PASS_TICKS: u32 = {
+    let mut ticks = 1200;
+    let mut leg = 0;
+    while leg < PATROL_PASS_LEGS.len() {
+        ticks += PATROL_PASS_LEGS[leg].2;
+        leg += 1;
+    }
+    ticks
+};
+
+/// [`SCRIPTS`]' `patrol-pass`: the player by the stick, into a guard's sight and out of it.
 #[must_use]
-pub fn chase_laps(tick: u64, cast: &[ActorId]) -> TickActions {
+pub fn patrol_pass(tick: u64, cast: &[ActorId]) -> TickActions {
+    legs(&PATROL_PASS_LEGS, tick, cast)
+}
+
+/// The player on each of `legs` in turn, standing after the last.
+fn legs(legs: &[(i8, i8, u32)], tick: u64, cast: &[ActorId]) -> TickActions {
     let mut actions = TickActions::NEUTRAL;
     let Some(&player) = cast.first() else { return actions };
     let mut left = tick;
-    for (x, y, ticks) in CHASE_LAPS_LEGS {
+    for &(x, y, ticks) in legs {
         if left < u64::from(ticks) {
             let stick = Stick::new(x, y);
             actions
@@ -849,6 +877,12 @@ pub fn chase_laps(tick: u64, cast: &[ActorId]) -> TickActions {
         left -= u64::from(ticks);
     }
     actions
+}
+
+/// [`SCRIPTS`]' `chase-laps`: the player by the stick, round the square.
+#[must_use]
+pub fn chase_laps(tick: u64, cast: &[ActorId]) -> TickActions {
+    legs(&CHASE_LAPS_LEGS, tick, cast)
 }
 
 #[cfg(test)]

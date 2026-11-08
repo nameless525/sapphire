@@ -42,6 +42,7 @@ mod tuning;
 pub mod walks;
 mod ward;
 
+pub use chase::{CHASERS, chase_world};
 pub use checksums::{
     ARCHITECTURE, CHECKPOINT_EVERY, ChecksumFile, ChecksumsError, Divergence, RecordedTrail, Trail,
     checksums_file_name,

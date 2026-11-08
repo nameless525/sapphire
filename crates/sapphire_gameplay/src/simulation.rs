@@ -10,6 +10,7 @@ use sapphire_core::alloc::AllocScope;
 use sapphire_ecs::prelude::*;
 use sapphire_math::Pcg32;
 use sapphire_moves::{MoveSet, MoveSetError};
+use sapphire_nav::Path;
 use sapphire_navmesh::NavMeshError;
 use sapphire_physics::PhysicsWorld;
 use sapphire_serialize::AssetId;
@@ -21,7 +22,7 @@ use crate::actors::{
     self, ActorId, ActorRequests, ActorSpawn, ActorState, ActorTable, ActorView, SpawnError, Teleports,
 };
 use crate::body::{self, BodyAttachError, BodyAuthority, BodyProfile, BodySample};
-use crate::brain::{self, Brain};
+use crate::brain::{self, Brain, BrainState};
 use crate::checkpoint::{CheckpointId, Place, TeleportError, ZoneStart};
 use crate::checksum;
 use crate::controller::{
@@ -36,8 +37,9 @@ use crate::movement::{self, ActorTransform};
 use crate::moves::{
     self, MoveLibrary, MoveOutput, MoveRead, MoveRunner, MoveSetId, MoveStats, Tuned, WarpTarget,
 };
-use crate::navigation::SimNavigation;
+use crate::navigation::{SimNavigation, WalkPath};
 use crate::party::{self, Party, PartyError, PartySlot, PartyTuning};
+use crate::patrol::{PatrolError, PatrolId, Patrols};
 use crate::resolve::{self, AppliedHits, Fighter, ResolveStats, SlowMotion};
 use crate::script::{self, ScriptWorld};
 use crate::stats::{BUDGET_DESKTOP_LOW, PHYSICS_BUDGET_DESKTOP_LOW, SimStats};
@@ -185,6 +187,7 @@ impl Simulation {
         world.insert_resource(TimelineRun::default());
         world.insert_resource(TargetingTuning::shipped());
         world.insert_resource(ZoneShelf::default());
+        world.insert_resource(Patrols::default());
         let empty = PhysicsWorld::new(Vec::new(), actors::body_capacity(config.max_actors))
             .expect("a world with no colliders has nothing to refuse");
         world.insert_resource(CharacterWorld::new(empty));
@@ -266,13 +269,11 @@ impl Simulation {
         self.standing_jump_actors.clear();
         let world = self.ecs.world_mut();
         // A built-in fight has no navmesh but a zone's, which stays with the zone it's in, as the statics do.
+        // Its paths are its actors' (`WalkPath`), which start over with them.
         debug_assert!(
             world.get_resource::<SimNavigation>().is_none()
                 || world.resource::<ZoneShelf>().current().is_some()
         );
-        if let Some(mut navigation) = world.get_resource_mut::<SimNavigation>() {
-            navigation.restart();
-        }
         *world.resource_mut::<WorldClock>() = WorldClock::default();
         *world.resource_mut::<SimRng>() = SimRng(Pcg32::new(config.seed, COMBAT_STREAM));
         *world.resource_mut::<CurrentActions>() = CurrentActions::default();
@@ -1050,6 +1051,60 @@ impl Simulation {
         world.resource_mut::<SimRng>().0 = rng;
         *world.get_mut::<Brain>(entity).expect("every pooled entity has a brain") = brain;
         true
+    }
+
+    /// Holds a patrol, between steps, by the name its document gives it, a zone's or the arena's. From here
+    /// on it's in [`Self::tables_hash`]. The module `patrol` has the rest.
+    ///
+    /// # Errors
+    ///
+    /// If it has no points, or too many, or one isn't a place, or there's one of that name.
+    pub fn add_patrol(
+        &mut self,
+        name: Name,
+        points: &[[f32; 3]],
+        closed: bool,
+    ) -> Result<PatrolId, PatrolError> {
+        self.ecs.world_mut().resource_mut::<Patrols>().add(name, points, closed)
+    }
+
+    /// The patrol of this name, if it holds one.
+    #[must_use]
+    pub fn patrol_named(&self, name: Name) -> Option<PatrolId> {
+        self.ecs.world().resource::<Patrols>().named(name)
+    }
+
+    /// Sets a live actor with a brain walking `patrol` from its nearest point, between steps, with no foe
+    /// until it notices one. Returns whether it can: it needs a brain whose document has a `watch`, since
+    /// that says how. See [`crate::brain`].
+    pub fn give_patrol(&mut self, id: ActorId, patrol: PatrolId) -> bool {
+        let world = self.ecs.world_mut();
+        let Some(entity) = world.resource::<ActorTable>().entity(id) else { return false };
+        let on = world.get::<Brain>(entity).is_some_and(Brain::is_on);
+        let set = world.get::<MoveRunner>(entity).and_then(MoveRunner::set);
+        let watches = set
+            .and_then(|set| world.resource::<MoveLibrary>().current(set))
+            .and_then(MoveSet::brain)
+            .is_some_and(|def| def.watch.is_some());
+        if !(on && watches) {
+            return false;
+        }
+        let position = world.get::<ActorTransform>(entity).expect("every pooled entity has a place").position;
+        let walk = world.resource::<Patrols>().start(patrol, position);
+        let mut brain = world.get_mut::<Brain>(entity).expect("every pooled entity has a brain");
+        brain.patrol = Some(walk);
+        brain.state = BrainState::Watching;
+        brain.target = None;
+        true
+    }
+
+    /// A live actor's path, for tools and tests: what it has of a route, if its brain has had to go round
+    /// something.
+    #[must_use]
+    pub fn path_of(&self, id: ActorId) -> Option<&Path> {
+        let world = self.ecs.world();
+        let entity = world.resource::<ActorTable>().entity(id)?;
+        world.get::<WalkPath>(entity).map(WalkPath::path)
     }
 
     /// Makes `members` a party, between steps: the first stays on the field where it stands, and its ID is

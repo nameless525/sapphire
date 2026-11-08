@@ -59,7 +59,7 @@ pub fn ward_spawns() -> Result<ArenaSpawns, ScenarioError> {
     };
     let enemy = point(WARRIOR_SPAWNER)?;
     // The court fights one warrior, so it has no crowd: any would stand where that one does.
-    Ok(ArenaSpawns { player: point(PLAYER_SPAWNER)?, enemy, crowd: [enemy; 6] })
+    Ok(ArenaSpawns { player: point(PLAYER_SPAWNER)?, enemy, crowd: [enemy; 6], patrols: Vec::new() })
 }
 
 /// The ward's colliders, cooked as a pack holds them.

@@ -32,6 +32,23 @@
 //! as a hit lands before it's ready to try again. **Defeat** ([`BrainState::Defeated`]) ends everything. A
 //! target that's gone or defeated, with nobody else to turn on, leaves it standing.
 //!
+//! # How it gets there (M3 P3)
+//!
+//! Given a navmesh, a brain that's walking asks [`sapphire_nav::Navigation::way`]. While the line to its
+//! foe is clear it steers straight, as a brain on no navmesh always does, and keeps no route. Once a wall's
+//! in the way it walks the route round, facing where it's going, and **presses nothing**, however near its
+//! foe is, since a swing at a wall is no use. Whoever's on the mesh and has no way to its foe stands.
+//! The module `crowd` leans whatever stick comes of that, so a crowd spreads out.
+//!
+//! # On patrol (M3 P3)
+//!
+//! A brain given a patrol (the module `patrol`, [`crate::Simulation::give_patrol`]) starts
+//! [`BrainState::Watching`]: it walks from point to point, by the same `way`, and has no foe at all until
+//! one comes within its [`BrainWatch::sight`](sapphire_moves::BrainWatch::sight) with a clear line. Then
+//! it fights as anyone does, and only that foe, until it falls or gets past `lose`, when it goes back to
+//! the point it was headed for. Being hit by someone it hasn't noticed gets a reaction out of it, and no
+//! more: noticing is by sight.
+//!
 //! # Who it fights
 //!
 //! A brain picks its own foe (`choose_foe`): the nearest across the ground of whoever's hostile, up and on
@@ -65,18 +82,22 @@
 use sapphire_core::Name;
 use sapphire_ecs::prelude::*;
 use sapphire_math::{Pcg32, Vec3, det};
-use sapphire_moves::{BrainDef, MAX_BRAIN_ATTACKS, MoveSet, Phase, TargetDoing, TickRange};
+use sapphire_moves::{BrainDef, BrainWatch, MAX_BRAIN_ATTACKS, MoveSet, Phase, TargetDoing, TickRange};
+use sapphire_nav::Way;
 use sapphire_time::{SimDuration, SimTime};
 
 use crate::actions::{Controls, Stick};
 use crate::actors::{ActorId, ActorTable};
 use crate::controller::{CharacterController, ControllerDrive};
+use crate::crowd::Crowd;
 use crate::encounter::SimZone;
 use crate::faction::Faction;
 use crate::intents::IntentRing;
 use crate::movement::ActorTransform;
 use crate::moves::{MoveLibrary, MoveOutput, MoveRunner, MoveStats, WarpTarget};
+use crate::navigation::{SimNavigation, WalkPath};
 use crate::party::Party;
+use crate::patrol::{PatrolWalk, Patrols};
 use crate::resolve::Fighter;
 use crate::simulation::SimRng;
 
@@ -86,6 +107,10 @@ const MIN_SEPARATION: f32 = 1e-4;
 /// How many metres nearer than its foe another has to be for a brain to turn on them, so two standing
 /// about equally far don't have it dithering.
 const STAY_ON_FOE: f32 = 1.5;
+
+/// How near a patrol's point it has to come, in metres across the ground, to go on to the next. Enough
+/// that two on one patrol, who keep apart, both get past it.
+const NEAR_POINT: f32 = 0.6;
 
 /// What a brain is doing. A plain value in the checksum: the [module docs](self) say why it's this.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -100,6 +125,8 @@ pub enum BrainState {
     Reacting { serial: u32, rise_at: Option<u32> },
     /// Out of health. Nothing ends this.
     Defeated,
+    /// Walking its patrol, with no foe, and looking for one.
+    Watching,
 }
 
 impl Default for BrainState {
@@ -128,6 +155,8 @@ pub struct Brain {
     pub(crate) last_used: [Option<SimTime>; MAX_BRAIN_ATTACKS],
     /// Which of the zone's encounters spawned it, whose tokens it has to ask for. None for anyone else.
     pub(crate) encounter: Option<u8>,
+    /// Its place on its patrol, if it has one: where it goes back to, once it has lost its foe.
+    pub(crate) patrol: Option<PatrolWalk>,
 }
 
 impl Brain {
@@ -159,6 +188,21 @@ impl Brain {
     #[must_use]
     pub const fn stick(&self) -> Stick {
         self.stick
+    }
+
+    /// Its place on its patrol, if it has one.
+    #[must_use]
+    pub const fn patrol(&self) -> Option<PatrolWalk> {
+        self.patrol
+    }
+
+    /// Whether it might walk this tick, on its clock's `now`, so it has a way to ask for.
+    fn may_walk(&self, now: SimTime) -> bool {
+        match self.state {
+            BrainState::Pacing | BrainState::Watching => true,
+            BrainState::Resting { until } => now >= until,
+            BrainState::Attacking { .. } | BrainState::Reacting { .. } | BrainState::Defeated => false,
+        }
     }
 
     /// A brain that's pacing, patient until `until`, for timing [`step_brain`] by itself: nothing a step
@@ -213,6 +257,11 @@ pub struct Seen {
     pub target: Option<SeenTarget>,
     /// Whether it could start an attack: false while its encounter's tokens are all out or resting.
     pub may_attack: bool,
+    /// How to get to its target or, with none, to where its patrol's headed: [`Way::Straight`] on no
+    /// navmesh, or if it isn't walking this tick.
+    pub way: Way,
+    /// Where its patrol's headed, if it has no foe and is on one.
+    pub point: Option<Vec3>,
 }
 
 /// What a brain asks of its actor for one tick.
@@ -377,20 +426,23 @@ pub fn step_brain(brain: &mut Brain, def: &BrainDef, seen: &Seen, rng: &mut Pcg3
         }
         BrainState::Resting { until } => {
             if seen.now >= until {
-                brain.state = BrainState::Pacing;
-                brain.circle = if rng.unit_f32() < def.pace.circle_share {
-                    if rng.below(2) == 0 { 1 } else { -1 }
-                } else {
-                    0
-                };
+                start_pacing(brain, def, rng);
                 return pace(brain, def, seen, rng);
             }
             output.face = facing(def, seen);
         }
         BrainState::Pacing => return pace(brain, def, seen, rng),
+        BrainState::Watching => return watch(brain, def, seen, rng),
     }
     brain.stick = output.stick;
     output
+}
+
+/// Starts keeping its distance, drawing which way it circles.
+fn start_pacing(brain: &mut Brain, def: &BrainDef, rng: &mut Pcg32) {
+    brain.state = BrainState::Pacing;
+    brain.circle =
+        if rng.unit_f32() < def.pace.circle_share { if rng.below(2) == 0 { 1 } else { -1 } } else { 0 };
 }
 
 /// Starts standing for a length drawn from `range`, and says what that asks of this tick.
@@ -422,9 +474,65 @@ fn facing(def: &BrainDef, seen: &Seen) -> Option<f32> {
     Some(det::turn_towards(seen.yaw, det::yaw_of_direction(to_target), rate * seen.delta.as_secs_f32()))
 }
 
+/// The yaw to turn toward this tick, to face the way it's walking at the brain's own rate.
+fn facing_along(def: &BrainDef, seen: &Seen, direction: Vec3) -> f32 {
+    let rate = def.pace.turn_rate_degrees.to_radians();
+    det::turn_towards(seen.yaw, det::yaw_of_direction(direction), rate * seen.delta.as_secs_f32())
+}
+
+/// One tick of [`BrainState::Watching`]: on to its foe if it has noticed one, and otherwise along its
+/// patrol.
+fn watch(brain: &mut Brain, def: &BrainDef, seen: &Seen, rng: &mut Pcg32) -> BrainOutput {
+    if seen.target.is_some() {
+        brain.patience_until = seen.now + draw_ticks(def.patience, rng);
+        start_pacing(brain, def, rng);
+        return pace(brain, def, seen, rng);
+    }
+    brain.stick = Stick::CENTER;
+    let (Some(BrainWatch { walk, .. }), Some(point)) = (def.watch, seen.point) else {
+        return BrainOutput::default();
+    };
+    let apart = point - seen.position;
+    let metres = (apart.x * apart.x + apart.z * apart.z).sqrt();
+    let direction = match seen.way {
+        Way::Along(direction) => direction,
+        Way::Arrived => return BrainOutput::default(),
+        Way::Straight if metres <= NEAR_POINT => return BrainOutput::default(),
+        Way::Straight => Vec3::new(apart.x / metres, 0.0, apart.z / metres),
+    };
+    brain.stick = Stick::from_axes(direction.x * walk, direction.z * walk);
+    BrainOutput {
+        press: None,
+        stick: brain.stick,
+        face: Some(facing_along(def, seen, direction)),
+        waiting: false,
+    }
+}
+
 /// One tick of [`BrainState::Pacing`]: the attack, if patience has run out and one scores, and otherwise
-/// the distance.
+/// the distance, once it has somewhere it can walk to the target from.
 fn pace(brain: &mut Brain, def: &BrainDef, seen: &Seen, rng: &mut Pcg32) -> BrainOutput {
+    if seen.target.is_none() && brain.patrol.is_some() {
+        brain.state = BrainState::Watching;
+        return watch(brain, def, seen, rng);
+    }
+    match seen.way {
+        Way::Straight => {}
+        Way::Along(direction) => {
+            let (x, z) = (direction.x * def.pace.approach, direction.z * def.pace.approach);
+            brain.stick = Stick::from_axes(x, z);
+            return BrainOutput {
+                press: None,
+                stick: brain.stick,
+                face: Some(facing_along(def, seen, direction)),
+                waiting: false,
+            };
+        }
+        Way::Arrived => {
+            brain.stick = Stick::CENTER;
+            return BrainOutput { face: facing(def, seen), ..BrainOutput::default() };
+        }
+    }
     let way = way_to_target(seen);
     let ready = seen.now >= brain.patience_until;
     if ready
@@ -470,8 +578,15 @@ fn can_fight(id: ActorId, fighter: &Fighter, faction: Faction, party: &Party) ->
     fighter.is_foe_of(faction) && !party.is_off_field(id)
 }
 
+/// Metres across the ground.
+fn ground_distance(from: Vec3, to: Vec3) -> f32 {
+    let apart = to - from;
+    (apart.x * apart.x + apart.z * apart.z).sqrt()
+}
+
 /// The foe a brain should have: see the [module docs](self#who-it-fights). `None` when there's nobody.
-/// Reads no angle and draws nothing, and the lower ID takes a tie.
+/// Reads no angle and draws nothing, and the lower ID takes a tie. Only someone `in_sight` can be it.
+#[allow(clippy::too_many_arguments, reason = "each is one thing the choice reads")]
 fn choose_foe(
     actor: ActorId,
     position: Vec3,
@@ -480,6 +595,7 @@ fn choose_foe(
     table: &ActorTable,
     party: &Party,
     bodies: &Query<'_, '_, (&ActorTransform, &MoveRunner, &MoveOutput, &Fighter)>,
+    in_sight: impl Fn(Vec3, f32) -> bool,
 ) -> Option<ActorId> {
     let mut best: Option<(f32, ActorId)> = None;
     for (id, entity) in table.iter() {
@@ -487,14 +603,31 @@ fn choose_foe(
         if id == actor || !can_fight(id, fighter, faction, party) {
             continue;
         }
-        let apart = transform.position - position;
-        let metres = (apart.x * apart.x + apart.z * apart.z).sqrt();
+        let metres = ground_distance(position, transform.position);
+        if !in_sight(transform.position, metres) {
+            continue;
+        }
         let score = if current == Some(id) { metres - STAY_ON_FOE } else { metres };
         if best.is_none_or(|(top, _)| score < top) {
             best = Some((score, id));
         }
     }
     best.map(|(_, id)| id)
+}
+
+/// The point a brain with no foe is headed for, if it's on a patrol, having gone on from any it has come to.
+fn next_point(brain: &mut Brain, patrols: &Patrols, position: Vec3, path: &mut WalkPath) -> Option<Vec3> {
+    let walk = brain.patrol.as_mut()?;
+    let point = patrols.point(*walk);
+    if ground_distance(position, point) > NEAR_POINT {
+        return Some(point);
+    }
+    let was = walk.next;
+    patrols.advance(walk);
+    if walk.next != was {
+        path.0.clear();
+    }
+    Some(patrols.point(*walk))
 }
 
 /// [`crate::CombatSet::Intents`], after the buttons have gone in: each brain, in ID order, on its own
@@ -509,15 +642,39 @@ pub(crate) fn think(
     mut zone: Option<ResMut<'_, SimZone>>,
     mut rng: ResMut<'_, SimRng>,
     mut stats: ResMut<'_, MoveStats>,
+    patrols: Res<'_, Patrols>,
+    mut crowd: ResMut<'_, Crowd>,
+    mut navigation: Option<ResMut<'_, SimNavigation>>,
     mut minds: Query<
         '_,
         '_,
-        (&mut Brain, &mut IntentRing, &mut Controls, &mut WarpTarget, &mut CharacterController, &EntityClock),
+        (
+            &mut Brain,
+            &mut IntentRing,
+            &mut Controls,
+            &mut WarpTarget,
+            &mut CharacterController,
+            &EntityClock,
+            &mut WalkPath,
+        ),
     >,
     bodies: Query<'_, '_, (&ActorTransform, &MoveRunner, &MoveOutput, &Fighter)>,
 ) {
+    if let Some(navigation) = navigation.as_deref_mut() {
+        navigation.navigation_mut().begin_tick();
+    }
+    crowd.clear();
     for (id, entity) in table.iter() {
-        let Ok((mut brain, mut ring, mut controls, mut aim, mut controller, clock)) = minds.get_mut(entity)
+        let Ok((brain, ..)) = minds.get(entity) else { continue };
+        let Ok((transform, _, _, fighter)) = bodies.get(entity) else { continue };
+        if brain.on && !fighter.is_defeated() && !party.is_off_field(id) {
+            crowd.add(id, transform.position);
+        }
+    }
+
+    for (id, entity) in table.iter() {
+        let Ok((mut brain, mut ring, mut controls, mut aim, mut controller, clock, mut path)) =
+            minds.get_mut(entity)
         else {
             continue;
         };
@@ -539,10 +696,33 @@ pub(crate) fn think(
             let foe_fighter = table.entity(foe).and_then(|entity| bodies.get(entity).ok());
             foe_fighter.is_some_and(|(.., fighter)| can_fight(foe, fighter, faction, &party))
         });
-        if !fighter.is_defeated()
-            && (!foe_is_there || matches!(brain.state, BrainState::Pacing | BrainState::Resting { .. }))
+        let free = matches!(brain.state, BrainState::Pacing | BrainState::Resting { .. });
+        let position = transform.position;
+        if let (Some(watch), true) = (def.watch.as_ref(), brain.patrol.is_some()) {
+            // On patrol it has one foe at a time, whom it notices and may lose.
+            let foe_at =
+                brain.target.and_then(|foe| table.entity(foe)).and_then(|entity| bodies.get(entity).ok());
+            let lost = foe_at.is_some_and(|(foe, ..)| ground_distance(position, foe.position) > watch.lose);
+            if brain.target.is_some() && (!foe_is_there || (lost && free)) {
+                brain.target = None;
+                *aim = WarpTarget::None;
+                path.0.clear();
+            }
+            if !fighter.is_defeated() && brain.target.is_none() && brain.state == BrainState::Watching {
+                let walks = navigation.as_deref().map(SimNavigation::navigation);
+                let in_sight = |foe: Vec3, metres: f32| {
+                    metres <= watch.sight
+                        && walks.is_none_or(|walks| walks.line(position, foe) != Some(false))
+                };
+                brain.target = choose_foe(id, position, faction, None, &table, &party, &bodies, in_sight);
+                if brain.target.is_some() {
+                    path.0.clear();
+                }
+            }
+        } else if !fighter.is_defeated()
+            && (!foe_is_there || free)
             && let Some(foe) =
-                choose_foe(id, transform.position, faction, brain.target, &table, &party, &bodies)
+                choose_foe(id, position, faction, brain.target, &table, &party, &bodies, |_, _| true)
         {
             brain.target = Some(foe);
         }
@@ -566,7 +746,7 @@ pub(crate) fn think(
         let directed = brain.encounter.filter(|_| zone.is_some());
         let may_attack =
             directed.is_none_or(|index| zone.as_deref().is_some_and(|zone| zone.may_attack(index, id, tick)));
-        let seen = Seen {
+        let mut seen = Seen {
             now: clock.0.now(),
             delta,
             position: transform.position,
@@ -577,11 +757,32 @@ pub(crate) fn think(
             reaction_due: runner.forced.is_some(),
             target: seen_target,
             may_attack,
+            way: Way::Straight,
+            point: None,
         };
-        let output = step_brain(&mut brain, def, &seen, &mut rng.0);
+        if brain.may_walk(seen.now) {
+            let foe = seen_target.filter(|target| !target.defeated).map(|target| target.position);
+            seen.point =
+                if foe.is_none() { next_point(&mut brain, &patrols, position, &mut path) } else { None };
+            if let (Some(going), Some(navigation)) = (foe.or(seen.point), navigation.as_deref_mut()) {
+                seen.way = navigation.navigation_mut().way(&mut path.0, position, going);
+            }
+            if seen.way == Way::Arrived
+                && let Some(walk) = brain.patrol.as_mut().filter(|_| foe.is_none())
+            {
+                // As near as there's a way to get: that'll do.
+                patrols.advance(walk);
+                path.0.clear();
+            }
+        }
+        let mut output = step_brain(&mut brain, def, &seen, &mut rng.0);
         if let (Some(index), Some(zone)) = (directed, zone.as_deref_mut()) {
             let attacking = matches!(brain.state, BrainState::Attacking { .. });
             zone.settle(index, id, attacking, output.waiting, tick);
+        }
+        if matches!(brain.state, BrainState::Pacing | BrainState::Watching) && output.press.is_none() {
+            output.stick = crowd.lean(id, brain.target, position, def.apart, output.stick, def.pace.circle);
+            brain.stick = output.stick;
         }
 
         controls.current.stick = output.stick;

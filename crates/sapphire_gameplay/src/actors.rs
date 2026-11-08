@@ -23,11 +23,13 @@ use sapphire_time::{SimDuration, SimTime};
 use crate::actions::Controls;
 use crate::brain::Brain;
 use crate::controller::{CharacterController, CharacterWorld, ProfileId};
+use crate::crowd::Crowd;
 use crate::faction::Faction;
 use crate::hits::{HitQuery, MAX_HURTBOXES};
 use crate::intents::IntentRing;
 use crate::movement::ActorTransform;
 use crate::moves::{MoveLibrary, MoveOutput, MoveRead, MoveRunner, MoveSetId, WarpTarget};
+use crate::navigation::WalkPath;
 use crate::resolve::Fighter;
 use crate::targeting::{LockCandidates, SoftLock};
 
@@ -229,6 +231,7 @@ struct ActorBundle {
     brain: Brain,
     soft_lock: SoftLock,
     teleports: Teleports,
+    path: WalkPath,
 }
 
 /// Spawns the pool and creates the actor resources, before the world's first step.
@@ -249,11 +252,13 @@ pub(crate) fn create_pool(world: &mut World, capacity: u32) {
             brain: Brain::default(),
             soft_lock: SoftLock::default(),
             teleports: Teleports::default(),
+            path: WalkPath::default(),
         });
         pool.push(entity.id());
     }
     world.insert_resource(ActorTable::with_capacity(capacity as usize));
     world.insert_resource(LockCandidates::with_capacity(capacity as usize));
+    world.insert_resource(Crowd::with_capacity(capacity as usize));
     world.insert_resource(ActorRequests::with_pool(pool));
 }
 
@@ -271,6 +276,7 @@ pub(crate) type ActorState<'w> = (
     &'w mut Brain,
     &'w mut SoftLock,
     &'w mut Teleports,
+    &'w mut WalkPath,
 );
 
 /// What a query for [`ActorState`] hands over.
@@ -287,6 +293,7 @@ type ActorStateItem<'w> = (
     Mut<'w, Brain>,
     Mut<'w, SoftLock>,
     Mut<'w, Teleports>,
+    Mut<'w, WalkPath>,
 );
 
 /// `FixedPost`, and straight after a spawn or despawn between steps: resolves everything queued, in
@@ -350,6 +357,7 @@ pub(crate) fn restart_pool(
         mut brain,
         mut soft_lock,
         mut teleports,
+        mut path,
     ) in &mut actors
     {
         *clock = world_clock.new_entity_clock();
@@ -364,6 +372,7 @@ pub(crate) fn restart_pool(
         *brain = Brain::default();
         *soft_lock = SoftLock::default();
         *teleports = Teleports::default();
+        *path = WalkPath::default();
     }
     characters.refused = 0;
     characters.last_time = std::time::Duration::ZERO;
@@ -387,6 +396,7 @@ fn reset_actor(
         mut brain,
         mut soft_lock,
         mut teleports,
+        mut path,
     ): ActorStateItem<'_>,
     id: ActorId,
     spawn: ActorSpawn,
@@ -409,6 +419,7 @@ fn reset_actor(
     *brain = Brain::default();
     *soft_lock = SoftLock::default();
     *teleports = Teleports::default();
+    path.0.clear();
 }
 
 /// A live actor's public state, read between steps. Presentation interpolates between two of

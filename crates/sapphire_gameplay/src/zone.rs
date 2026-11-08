@@ -41,7 +41,7 @@ use crate::hits::HitQuery;
 use crate::intents::IntentRing;
 use crate::movement::ActorTransform;
 use crate::moves::{MoveLibrary, MoveOutput, MoveRunner, WarpTarget};
-use crate::navigation::SimNavigation;
+use crate::navigation::{SimNavigation, WalkPath};
 use crate::party::Party;
 use crate::resolve::Fighter;
 use crate::timeline::TimelineRun;
@@ -319,11 +319,19 @@ pub(crate) fn swap_in(world: &mut World, entry: ZoneEntry) {
                 std::mem::swap(&mut a.physics, &mut b.physics);
             }
             if let Some(row) = shelf.rows[from].as_mut() {
-                row.navigation = leaving.map(SimNavigation::without_paths);
+                row.navigation = leaving;
             }
         }
         shelf.current = Some(entry.zone);
     });
+    // A path is polygons of the navmesh it was found on, so none outlives it: a brain finds its way again
+    // on the one it's on now (M3 P3). By the table, since a query's state would allocate.
+    for index in 0..world.resource::<ActorTable>().len() {
+        let Some((_, entity)) = world.resource::<ActorTable>().iter().nth(index) else { break };
+        if let Some(mut path) = world.get_mut::<WalkPath>(entity) {
+            *path = WalkPath::default();
+        }
+    }
 }
 
 /// What [`place`] does with an actor's capsule.
@@ -369,6 +377,10 @@ pub(crate) fn place(world: &mut World, actor: ActorId, position: Vec3, yaw: f32,
     }
     if let Some(mut teleports) = entry.get_mut::<Teleports>() {
         teleports.0 = teleports.0.wrapping_add(1);
+    }
+    // Its way led from where it was (M3 P3).
+    if let Some(mut path) = entry.get_mut::<WalkPath>() {
+        *path = WalkPath::default();
     }
     let transform = ActorTransform { position, yaw };
     if let Some(mut placed) = entry.get_mut::<ActorTransform>() {

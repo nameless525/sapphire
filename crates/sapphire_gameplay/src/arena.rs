@@ -92,7 +92,7 @@ impl SpawnPoint {
 }
 
 /// The spawn points' document (`content/arena/square.spawns.ron`).
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, TypePath)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TypePath)]
 #[type_path = "sapphire::gameplay"]
 #[serde(deny_unknown_fields)]
 pub struct ArenaSpawns {
@@ -100,11 +100,26 @@ pub struct ArenaSpawns {
     pub enemy: SpawnPoint,
     /// Where a fight with more than one enemy puts the others, in the order they join it.
     pub crowd: [SpawnPoint; 6],
+    /// Where a brain with a patrol walks, as a zone's spawner names a spline. The module `patrol` has the rest.
+    pub patrols: Vec<ArenaPatrol>,
 }
 
 impl Versioned for ArenaSpawns {
-    /// 1: M2 O5. 2: M3 B1's crowd.
-    const VERSION: u32 = 2;
+    /// 1: M2 O5. 2: M3 B1's crowd. 3: M3 P3's patrols.
+    const VERSION: u32 = 3;
+}
+
+/// One of the arena's patrols.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArenaPatrol {
+    /// What a scenario calls it by.
+    pub name: String,
+    /// Where it walks, in metres, on the navmesh: `tests/arena.rs` holds each to it.
+    pub points: Vec<[f32; 3]>,
+    /// Whether it runs on from its last point to its first, rather than turning back.
+    #[serde(default)]
+    pub closed: bool,
 }
 
 /// The arena's spawn points.

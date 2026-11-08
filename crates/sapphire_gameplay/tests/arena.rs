@@ -18,6 +18,8 @@ use sapphire_gameplay::{
 };
 use sapphire_math::rng::Pcg32;
 use sapphire_math::{Vec2, Vec3};
+use sapphire_nav::{NavGraph, PathSearch, Reach, RouteEnd};
+use sapphire_navmesh::NavMesh;
 use sapphire_physics::{BodyId, Group, GroupMask, HitTarget, PhysicsWorld, Pose, QueryFilter, Shape};
 use sapphire_serialize::cooked::AlignedVec;
 
@@ -253,6 +255,36 @@ fn a_capsule_of_the_characters_size_fits_at_each_spawn_point() {
     // And they stand apart from each other, with room to dodge.
     let apart = spawns.player.position().distance(spawns.enemy.position());
     assert!(apart > 4.0 * profile().radius, "{apart}");
+}
+
+/// A patrol's points are on the ground, clear of everything, and each has a way to it from the one before.
+#[test]
+fn each_patrol_point_stands_clear_with_a_way_from_the_last() {
+    let bytes = cooked();
+    let cooked = set(&bytes);
+    let world = world(&bytes);
+    let filter = QueryFilter::new(character_filter());
+    let navmesh = sapphire_gameplay::arena::cooked_navmesh();
+    let graph = NavGraph::new(NavMesh::read(&navmesh).expect("it reads"));
+    let mut search = PathSearch::new(&graph, graph.polygon_count() as u32);
+    let patrols = spawns().patrols;
+    assert!(!patrols.is_empty());
+    for patrol in &patrols {
+        let mut last = None;
+        for point in &patrol.points {
+            let place = Vec3::from_array(*point);
+            let mut hits = [HitTarget::Body(BodyId(0)); 8];
+            let found = world.overlap(&capsule(), capsule_pose(place), &filter, &mut hits);
+            let names: Vec<String> = hits[..found.written].iter().map(|&hit| name_of(cooked, hit)).collect();
+            assert_eq!(found.found, 0, "{} at {place}: {names:?}", patrol.name);
+            let here = graph.locate(place, Reach::CHARACTER).expect("it's on the mesh");
+            if let Some(last) = last {
+                let end = search.find(&graph, last, here, &mut [0; 1]).end;
+                assert_eq!(end, RouteEnd::Reached, "{} to {place}", patrol.name);
+            }
+            last = Some(here);
+        }
+    }
 }
 
 #[test]

@@ -25,8 +25,9 @@ use crate::hits::HitQuery;
 use crate::intents::IntentRing;
 use crate::movement::ActorTransform;
 use crate::moves::{MoveLibrary, MoveOutput, MoveRef, MoveRunner, Running, WarpTarget};
-use crate::navigation::SimNavigation;
+use crate::navigation::{SimNavigation, WalkPath};
 use crate::party::Party;
+use crate::patrol::Patrols;
 use crate::resolve::{Fighter, HitOutcome, Slide, SlowMotion};
 use crate::script::ScriptWorld;
 use crate::simulation::SimRng;
@@ -323,7 +324,7 @@ fn write_soft_lock(hasher: &mut StateHasher, lock: &SoftLock) {
 }
 
 fn write_brain(hasher: &mut StateHasher, brain: &Brain) {
-    let Brain { on, target, state, patience_until, circle, stick, last_used, encounter } = *brain;
+    let Brain { on, target, state, patience_until, circle, stick, last_used, encounter, patrol } = *brain;
     // Nothing for one that's off, which is most actors: their checksums stay what they were.
     if on {
         hasher.u8(1);
@@ -350,6 +351,11 @@ fn write_brain(hasher: &mut StateHasher, brain: &Brain) {
             hasher.u32(rise_at.unwrap_or(u32::MAX));
         }
         BrainState::Defeated => hasher.u8(4),
+        BrainState::Watching => hasher.u8(5),
+    }
+    // Nothing for one with no patrol, which is every recorded one: their checksums stay what they were.
+    if let Some(patrol) = patrol {
+        patrol.write_state(hasher);
     }
     hasher.u64(patience_until.as_subticks());
     hasher.bytes(&circle.to_le_bytes());
@@ -426,6 +432,7 @@ pub(crate) fn legacy_state(world: &World) -> StateHasher {
     world.resource::<TimelineRun>().write_canonical(&mut hasher);
     world.resource::<ZoneShelf>().write_state(&mut hasher);
 
+    let navigated = world.contains_resource::<SimNavigation>();
     let table = world.resource::<ActorTable>();
     hasher.u32(table.len() as u32);
     for (id, entity) in table.iter() {
@@ -466,11 +473,12 @@ pub(crate) fn legacy_state(world: &World) -> StateHasher {
         if let Some(lock) = actor.get::<SoftLock>() {
             write_soft_lock(&mut hasher, lock);
         }
+        // With no navmesh nothing has a path, and the checksum is what it was before there were any.
+        if navigated && let Some(path) = actor.get::<WalkPath>() {
+            path.write_state(&mut hasher);
+        }
     }
     write_cues(&mut hasher, world.resource::<CueQueue>());
-    if let Some(navigation) = world.get_resource::<SimNavigation>() {
-        navigation.write_state(&mut hasher);
-    }
     if let Some(zone) = world.get_resource::<SimZone>() {
         zone.write_state(&mut hasher);
     }
@@ -484,8 +492,8 @@ pub(crate) fn legacy_state(world: &World) -> StateHasher {
 /// move set's current revision, whole, with its tables, in ID order, the controller profiles and the
 /// collision world's statics. It hashes a set's cooked bytes, so no field can be forgotten here, and
 /// those are the same on every target, as the statics' digest is: authored numbers, by their bits. A party's
-/// tuning goes in too, if there's a party, a navmesh's digest if there's one of those, every loaded
-/// timeline's simulation half, if there are any, targeting's weights, what a zone says if there's one,
+/// tuning goes in too, if there's a party, a navmesh's digest if there's one of those, any patrols,
+/// every loaded timeline's simulation half, if there are any, targeting's weights, what a zone says if there's one,
 /// a script's bytecode and cadence, if there's one of those, and last every shelved zone's digest
 /// (M3 W4). Opted-in standing jump preparation contributes the policy and setup actor IDs independently
 /// of any jump's live countdown. Each of those is a resource of `world`, or isn't there.
@@ -494,6 +502,7 @@ pub(crate) fn tables_hash(world: &World, standing_jump_actors: &[ActorId]) -> u6
     let characters = world.resource::<CharacterWorld>();
     let party = world.resource::<Party>();
     let navigation = world.get_resource::<SimNavigation>();
+    let patrols = world.resource::<Patrols>();
     let timelines = world.resource::<TimelineLibrary>();
     let targeting = world.resource::<TargetingTuning>();
     let zone = world.get_resource::<SimZone>();
@@ -510,6 +519,7 @@ pub(crate) fn tables_hash(world: &World, standing_jump_actors: &[ActorId]) -> u6
     if let Some(navigation) = navigation {
         hasher.u64(navigation.digest());
     }
+    patrols.write_tables(&mut hasher);
     timelines.write_digests(&mut hasher);
     if !standing_jump_actors.is_empty() {
         // Revise this tag when the preparation eligibility or release rules change.
@@ -827,6 +837,23 @@ mod sensitivity_tests {
                 b.last_used[sapphire_moves::MAX_BRAIN_ATTACKS - 1] = Some(SimTime::from_subticks(1));
             }),
         ];
+        // A patrol's walk is written only if there is one, and each part of it then counts.
+        let walk = |next, back| {
+            let mut patrols = Patrols::default();
+            let patrol = patrols.add(Name::intern("walk"), &[[0.0; 3]; 3], true).unwrap();
+            let mut walk = patrols.start(patrol, Vec3::ZERO);
+            walk.next = next;
+            walk.back = back;
+            walk
+        };
+        let (mut sim_with, walker, _) = world();
+        for walked in [Some(walk(0, false)), Some(walk(1, false)), Some(walk(0, true)), None] {
+            let before = sim_with.checksum();
+            let world = sim_with.ecs_mut().world_mut();
+            let entity = world.resource::<ActorTable>().entity(walker).unwrap();
+            world.get_mut::<Brain>(entity).unwrap().patrol = walked;
+            assert_ne!(sim_with.checksum(), before, "{walked:?}");
+        }
         let (mut sim, swinging, _) = world();
         for (what, edit) in edits {
             flips::<Brain>(&mut sim, swinging, what, edit);
@@ -844,6 +871,7 @@ mod sensitivity_tests {
             BrainState::Reacting { serial: 1, rise_at: Some(0) },
             BrainState::Reacting { serial: 1, rise_at: Some(1) },
             BrainState::Defeated,
+            BrainState::Watching,
         ];
         let sums: Vec<u64> = states
             .iter()

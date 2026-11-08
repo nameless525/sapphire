@@ -483,7 +483,9 @@ fn the_recorded_waves_show_what_they_were_recorded_for() {
     let (stats, waves, held) = played("arena-waves");
     assert_eq!((stats.spawned, waves), (7, 3), "all three waves, on the clock: {stats:?}");
     assert_eq!(stats.most_tokens_held, 2, "{stats:?}");
-    assert!(stats.tokens_taken > 10 && stats.tokens_waited > 500, "{stats:?}");
+    // Tokens go round, more of them than there are fighters, and the gate holds the rest back. Brains that
+    // walk the navmesh and keep apart (M3 P3) close in later and pass fewer of them than straight-line ones did.
+    assert!(stats.tokens_taken > stats.spawned && stats.tokens_waited > 300, "{stats:?}");
     assert!(held <= 2);
 
     let (stats, waves, _) = played("cart-yard");

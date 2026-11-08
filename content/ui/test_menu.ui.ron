@@ -1,5 +1,5 @@
 // The screen the motion goldens hold (M3 U5): a panel that fades and slides in under a machine, focus
-// looks, a list that scrolls, a shadow, and a line chosen from the model. Not a game's: U7 builds those.
+// looks, a list that scrolls, a shadow, and a line chosen from the model. Not a game's: `pause.ui.ron` and its neighbours are.
 (
     type: "sapphire::assets::UiDocument",
     version: 2,

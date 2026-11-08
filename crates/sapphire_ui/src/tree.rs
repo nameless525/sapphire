@@ -795,6 +795,12 @@ impl UiTree {
         }
     }
 
+    /// The frame's size in points, as of the last update.
+    #[must_use]
+    pub const fn size(&self) -> Vec2 {
+        self.size
+    }
+
     /// New metrics: the root takes the frame's size, and what asks for the safe area its insets.
     fn follow_metrics(&mut self, metrics: UiMetrics) {
         for (at, node) in self.nodes.iter().enumerate() {

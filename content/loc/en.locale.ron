@@ -6,6 +6,7 @@
     data: (
         fonts: {
             "body": ["M PLUS 1"],
+            "heading": ["Oxanium", "M PLUS 1"],
             "display": ["Oxanium", "M PLUS 1"],
         },
     ),

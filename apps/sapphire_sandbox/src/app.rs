@@ -45,6 +45,7 @@ use sapphire_stage::scene::{LookDev, Scene};
 use sapphire_stage::studio::StudioMeshes;
 use sapphire_stage::swatches::SWATCHES;
 use sapphire_stage::{SceneShow, garments, layers, lookdev, skinned, studio, swatches};
+use sapphire_ui::Atlas;
 
 /// Loop period while nothing can be presented (occluded, minimized, backgrounded).
 const IDLE_FRAME: Duration = Duration::from_millis(33);
@@ -406,8 +407,9 @@ impl App for SandboxApp {
         }
         if let Some(shown) = &options.ui_screen {
             let assets = content.load_screens(&[shown.document()], &mut renderer.renderer, &device.gpu)?;
-            show.screen = Some(shown.stack(assets).map_err(AppInitError::msg)?);
-            if shown.inset {
+            let atlas = show.hud.as_ref().map_or_else(Atlas::paint, |hud| hud.atlas().clone());
+            show.screen = Some(shown.stack(assets, atlas).map_err(AppInitError::msg)?);
+            if shown.shows_inset() {
                 scene.spawn_showcase(scene.character(), 0);
             }
         }

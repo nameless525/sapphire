@@ -5,7 +5,7 @@
     data: (
         model: "pause.model.ron",
         styles: [
-            (name: "title", role: "display", size: 32, weight: 700),
+            (name: "title", role: "heading", size: 32, weight: 800),
             (name: "row", role: "body", size: 20, weight: 500),
         ],
         nodes: [

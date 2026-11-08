@@ -27,7 +27,7 @@
                     style: "name",
                     color: (240, 246, 255, 255),
                     key_from: (path: "player", prefix: "character-name-"),
-                    shadow: (color: (0, 0, 0, 180), offset: (2, 2)),
+                    shadow: (color: (0, 0, 0, 235), offset: (1, 1)),
                 ),
             ),
             (
@@ -38,7 +38,7 @@
                     style: "name",
                     color: (255, 192, 56, 255),
                     args: [(name: "level", path: "level")],
-                    shadow: (color: (0, 0, 0, 180), offset: (2, 2)),
+                    shadow: (color: (0, 0, 0, 235), offset: (1, 1)),
                 ),
             ),
             (
@@ -55,7 +55,7 @@
                     style: "name",
                     color: (240, 246, 255, 255),
                     key_from: (path: "enemy", prefix: "character-name-"),
-                    shadow: (color: (0, 0, 0, 180), offset: (2, 2)),
+                    shadow: (color: (0, 0, 0, 235), offset: (1, 1)),
                 ),
             ),
             (
@@ -70,7 +70,7 @@
                     key: "hud-objective",
                     style: "small",
                     color: (255, 192, 56, 255),
-                    shadow: (color: (0, 0, 0, 180), offset: (2, 2)),
+                    shadow: (color: (0, 0, 0, 235), offset: (1, 1)),
                 ),
             ),
             (
@@ -81,7 +81,7 @@
                     style: "name",
                     color: (240, 246, 255, 255),
                     key_from: (path: "objective", prefix: "hud-objective-"),
-                    shadow: (color: (0, 0, 0, 180), offset: (2, 2)),
+                    shadow: (color: (0, 0, 0, 235), offset: (1, 1)),
                 ),
             ),
             (
@@ -90,7 +90,7 @@
                 layout: (anchored: (right: Points(16), top: Points(14)), direction: Row, align: Center, justify: Center, min_width: Points(72), height: Points(44), padding: (left: 12, right: 12)),
                 look: (shape: Slice(sprite: Button, corner: 8), fill: Color((9, 12, 20, 235)), outline: (color: (226, 234, 240, 255), width: 1.5)),
                 binds: [(to: Shown, path: "touch")],
-                focus: (focused: (shape: Slice(sprite: Button, corner: 8), fill: Color((9, 12, 20, 235)), outline: (color: (255, 192, 56, 255), width: 2)), pressed: (shape: Slice(sprite: Button, corner: 8), fill: Color((180, 204, 250, 255)))),
+                focus: (pressed: (shape: Slice(sprite: Button, corner: 8), fill: Color((180, 204, 250, 255)))),
             ),
             (
                 name: "pause-text",

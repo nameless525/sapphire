@@ -10,11 +10,12 @@ use sapphire_ui::Insets;
 use sapphire_world::streaming::{StreamBudget, StreamSettings};
 use sapphire_world::tod::CharacterShadeKey;
 
-use crate::screen::ScreenOptions;
+use crate::screen::{ScreenOptions, ShownScreen};
 use game_combat::arena::ArenaShot;
 use game_combat::combat::{CaptureFrames, CombatOption};
 use game_combat::combat_views::CombatViews;
 use game_ui::hud::{HudMode, HudOptions};
+use game_ui::menus::MenuScreen;
 use sapphire_stage::anim_graph::GraphScript;
 use sapphire_stage::audio::CueOption;
 use sapphire_stage::debug_shapes::DebugDrawDemo;
@@ -230,8 +231,9 @@ pub(crate) struct Options {
     /// `--hud fixed|live`, `--hud-insets`, `--hud-scale` and `--hud-paused`: the combat HUD over the scene
     /// (M2 I2).
     pub hud: Option<HudOptions>,
-    /// `--ui-screen`, `--ui-menu`, `--ui-inset`, `--ui-locale`, `--ui-scale`, `--ui-pseudo`, `--ui-time`,
-    /// `--ui-walk`, `--ui-turn` and `--ui-spin`: the retained tree's test screens over the scene (M3 U4, U5, U6).
+    /// `--ui-screen`, `--ui-menu`, `--ui-inset`, `--ui-game`, `--ui-locale`, `--ui-scale`, `--ui-pseudo`,
+    /// `--ui-plain`, `--ui-time`, `--ui-walk`, `--ui-turn` and `--ui-spin`: a retained screen over the scene
+    /// (M3 U4, U5, U6, U7).
     pub ui_screen: Option<ScreenOptions>,
     /// `--clip <name>`: plays that clip on the look-dev character instead of holding it (M2 N2).
     /// Needs `--look-dev` or `--arena`, where it plays in place, since the simulation owns the root.
@@ -626,9 +628,10 @@ impl Options {
         let mut fight = false;
         let (mut hud_mode, mut hud_insets, mut hud_scale) = (None, None, None);
         let mut hud_paused = false;
-        let (mut ui_menu, mut ui_time, mut ui_walk) = (false, None, Vec::new());
+        let (mut ui_menu, mut ui_game, mut ui_time, mut ui_walk) = (false, None, None, Vec::new());
         let (mut ui_inset, mut ui_turn, mut ui_spin) = (false, None, None);
         let (mut ui_screen, mut ui_locale, mut ui_scale, mut ui_pseudo) = (false, None, None, false);
+        let mut ui_plain = false;
         let (mut arena_flag, mut arena_shot) = (false, None);
         let (mut sheet, mut sheet_cells) = (None, None);
         let (mut sheet_ticks, mut sheet_views): (Vec<u32>, Vec<i32>) = (Vec::new(), Vec::new());
@@ -806,6 +809,14 @@ impl Options {
                     ui_screen = true;
                     ui_menu = true;
                 }
+                "--ui-game" => {
+                    let stem = value("--ui-game")?;
+                    let names = || MenuScreen::ALL.map(MenuScreen::stem).join(", ");
+                    ui_screen = true;
+                    ui_game = Some(MenuScreen::from_stem(&stem).ok_or_else(|| {
+                        format!("--ui-game: `{stem}` isn't one of the game's screens: {}", names())
+                    })?);
+                }
                 "--ui-inset" => {
                     ui_screen = true;
                     ui_inset = true;
@@ -836,6 +847,7 @@ impl Options {
                 }
                 "--ui-locale" => ui_locale = Some(value("--ui-locale")?),
                 "--ui-pseudo" => ui_pseudo = true,
+                "--ui-plain" => ui_plain = true,
                 "--ui-scale" => {
                     let scale: f32 = number(&value("--ui-scale")?, "--ui-scale")?;
                     if !(scale > 0.0 && scale.is_finite()) {
@@ -1102,26 +1114,35 @@ impl Options {
         let companions = ui_locale.is_some()
             || ui_scale.is_some()
             || ui_pseudo
+            || ui_plain
             || ui_time.is_some()
             || !ui_walk.is_empty()
             || ui_turn.is_some()
             || ui_spin.is_some();
         if !ui_screen && companions {
             return Err(
-                "--ui-locale, --ui-scale, --ui-pseudo, --ui-time, --ui-walk, --ui-turn and --ui-spin need --ui-screen, --ui-menu or --ui-inset"
+                "--ui-locale, --ui-scale, --ui-pseudo, --ui-plain, --ui-time, --ui-walk, --ui-turn and --ui-spin need --ui-screen, --ui-menu, --ui-inset or --ui-game"
                     .to_owned(),
             );
+        }
+        if [ui_menu, ui_inset, ui_game.is_some()].into_iter().filter(|picked| *picked).count() > 1 {
+            return Err("--ui-menu, --ui-inset and --ui-game are exclusive: each picks the screen".to_owned());
         }
         options.ui_screen = ui_screen.then(|| {
             let shown = ScreenOptions::default();
             ScreenOptions {
+                shown: match (ui_game, ui_menu, ui_inset) {
+                    (Some(screen), _, _) => ShownScreen::Game(screen),
+                    (None, true, _) => ShownScreen::TestMenu,
+                    (None, false, true) => ShownScreen::TestInset,
+                    (None, false, false) => ShownScreen::TestScreen,
+                },
                 locale: ui_locale.unwrap_or(shown.locale),
                 pseudo: ui_pseudo,
                 scale: ui_scale.unwrap_or(shown.scale),
-                menu: ui_menu,
+                plain: ui_plain,
                 time: ui_time.unwrap_or(shown.time),
                 walk: ui_walk,
-                inset: ui_inset,
                 turn: ui_turn.unwrap_or(shown.turn),
                 spin: ui_spin.unwrap_or(shown.spin),
             }
@@ -2006,24 +2027,35 @@ mod tests {
         assert_eq!(options.ui_screen, Some(shown));
         let (options, _) = parse(&["--ui-menu", "--ui-time", "0.25", "--ui-walk", "down,confirm"]).unwrap();
         let shown = ScreenOptions {
-            menu: true,
+            shown: ShownScreen::TestMenu,
             time: 0.25,
             walk: vec!["down".to_owned(), "confirm".to_owned()],
             ..ScreenOptions::default()
         };
         assert_eq!(options.ui_screen, Some(shown));
         let (options, _) = parse(&["--ui-inset", "--ui-turn", "0.25"]).unwrap();
-        let shown = ScreenOptions { inset: true, turn: 0.25, ..ScreenOptions::default() };
+        let shown = ScreenOptions { shown: ShownScreen::TestInset, turn: 0.25, ..ScreenOptions::default() };
         assert_eq!(options.ui_screen, Some(shown));
+        let (options, _) = parse(&["--ui-game", "pause", "--ui-locale", "ja"]).unwrap();
+        let shown = ScreenOptions {
+            shown: ShownScreen::Game(MenuScreen::Pause),
+            locale: "ja".to_owned(),
+            ..ScreenOptions::default()
+        };
+        assert_eq!(options.ui_screen, Some(shown));
+        let refused = parse(&["--ui-game", "shop"]).map(drop).unwrap_err();
+        assert!(refused.contains("shop") && refused.contains("settings"), "{refused}");
         for args in [
             &["--ui-locale", "ja"][..],
             &["--ui-turn", "0.5"],
             &["--ui-inset", "--ui-turn", "inf"],
             &["--ui-scale", "2"],
             &["--ui-pseudo"],
+            &["--ui-plain"],
             &["--ui-time", "1"],
             &["--ui-walk", "down"],
             &["--ui-menu", "--ui-time", "-1"],
+            &["--ui-menu", "--ui-game", "title"],
             &["--ui-screen", "--ui-scale", "0"],
             &["--ui-screen", "--ui-scale", "many"],
         ] {

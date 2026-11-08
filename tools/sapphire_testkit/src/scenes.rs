@@ -68,6 +68,41 @@ pub struct Scene {
     pub thresholds: Thresholds,
 }
 
+/// A game screen's golden (M3 U7): on a flat color, so it stays cheap and moves only for what it shows, at the
+/// size and in the language named. Anything after that goes on its command line.
+macro_rules! game_scene {
+    ($name:literal, $screen:literal, $size:literal, $locale:literal $(, $more:literal)*) => {
+        Scene {
+            name: $name,
+            args: &[
+                "--size",
+                $size,
+                "--capture-ticks",
+                "2",
+                "--tier",
+                "desktop-high",
+                "--plain-sky",
+                "--plain-post",
+                "--aa",
+                "msaa",
+                "--ao",
+                "off",
+                "--shadows",
+                "off",
+                "--fog",
+                "off",
+                "--ui-plain",
+                "--ui-game",
+                $screen,
+                "--ui-locale",
+                $locale,
+                $($more,)*
+            ],
+            thresholds: Thresholds::default(),
+        }
+    };
+}
+
 /// The scenes, in the order they were added. Those from before the sky's layers (M1 W2) pin the
 /// sky's gradient alone, `--plain-sky` (no discs, glows, stars or clouds), so they stay
 /// pixel-identical to their goldens: they are about the character, and the sky has scenes of its
@@ -158,7 +193,7 @@ pub struct Scene {
 /// `cutscene-gate-*` stand the arena's stage in the Lantern Ward's court for a replay that watches its gate
 /// cutscene (M3 Q3), and only they play a cutscene from a fight. `arena-ultimate-chop` plays the player's
 /// ultimate (M3 Q3b) on the arena's own stage, the only scene in a move's cinematic.
-pub fn scenes() -> [Scene; 160] {
+pub fn scenes() -> [Scene; 196] {
     [
         Scene {
             name: "turntable-start",
@@ -3955,6 +3990,44 @@ pub fn scenes() -> [Scene; 160] {
             ],
             thresholds: Thresholds::default(),
         },
+        // The game's screens (M3 U7) at the aspect ratios spec §5.17 names, in both languages, on their sample
+        // models. The HUD's words stand over the HUD they belong to.
+        game_scene!("game-title-tablet-en", "title", "1024x768", "en"),
+        game_scene!("game-title-tablet-ja", "title", "1024x768", "ja"),
+        game_scene!("game-title-wide-en", "title", "1280x720", "en"),
+        game_scene!("game-title-wide-ja", "title", "1280x720", "ja"),
+        game_scene!("game-title-ultrawide-en", "title", "1680x720", "en"),
+        game_scene!("game-title-ultrawide-ja", "title", "1680x720", "ja"),
+        game_scene!("game-pause-tablet-en", "pause", "1024x768", "en"),
+        game_scene!("game-pause-tablet-ja", "pause", "1024x768", "ja"),
+        game_scene!("game-pause-wide-en", "pause", "1280x720", "en"),
+        game_scene!("game-pause-wide-ja", "pause", "1280x720", "ja"),
+        game_scene!("game-pause-ultrawide-en", "pause", "1680x720", "en"),
+        game_scene!("game-pause-ultrawide-ja", "pause", "1680x720", "ja"),
+        game_scene!("game-settings-tablet-en", "settings", "1024x768", "en"),
+        game_scene!("game-settings-tablet-ja", "settings", "1024x768", "ja"),
+        game_scene!("game-settings-wide-en", "settings", "1280x720", "en"),
+        game_scene!("game-settings-wide-ja", "settings", "1280x720", "ja"),
+        game_scene!("game-settings-ultrawide-en", "settings", "1680x720", "en"),
+        game_scene!("game-settings-ultrawide-ja", "settings", "1680x720", "ja"),
+        game_scene!("game-character-tablet-en", "character", "1024x768", "en"),
+        game_scene!("game-character-tablet-ja", "character", "1024x768", "ja"),
+        game_scene!("game-character-wide-en", "character", "1280x720", "en"),
+        game_scene!("game-character-wide-ja", "character", "1280x720", "ja"),
+        game_scene!("game-character-ultrawide-en", "character", "1680x720", "en"),
+        game_scene!("game-character-ultrawide-ja", "character", "1680x720", "ja"),
+        game_scene!("game-dialogue-tablet-en", "dialogue", "1024x768", "en"),
+        game_scene!("game-dialogue-tablet-ja", "dialogue", "1024x768", "ja"),
+        game_scene!("game-dialogue-wide-en", "dialogue", "1280x720", "en"),
+        game_scene!("game-dialogue-wide-ja", "dialogue", "1280x720", "ja"),
+        game_scene!("game-dialogue-ultrawide-en", "dialogue", "1680x720", "en"),
+        game_scene!("game-dialogue-ultrawide-ja", "dialogue", "1680x720", "ja"),
+        game_scene!("game-hud-tablet-en", "hud", "1024x768", "en", "--hud", "fixed"),
+        game_scene!("game-hud-tablet-ja", "hud", "1024x768", "ja", "--hud", "fixed"),
+        game_scene!("game-hud-wide-en", "hud", "1280x720", "en", "--hud", "fixed"),
+        game_scene!("game-hud-wide-ja", "hud", "1280x720", "ja", "--hud", "fixed"),
+        game_scene!("game-hud-ultrawide-en", "hud", "1680x720", "en", "--hud", "fixed"),
+        game_scene!("game-hud-ultrawide-ja", "hud", "1680x720", "ja", "--hud", "fixed"),
         // The combat HUD's fixed frame (M2 I2) at the aspect ratios spec §5.17 names, each a phone-
         // sized frame in points: bright midday behind it at 16:9 and with a notch, golden hour at
         // 4:3 and the lantern-lit street at 21:9, so its inks and digits read over all three.
@@ -4729,8 +4802,13 @@ mod tests {
         for scene in scenes() {
             let hud = scene.args.contains(&"--hud");
             // `arena-fight-hit` shows the bars reading a real fight.
-            let expected = scene.name.starts_with("hud-") || scene.name == "arena-fight-hit";
+            let expected = scene.name.starts_with("hud-")
+                || scene.name.starts_with("game-hud-")
+                || scene.name == "arena-fight-hit";
             assert_eq!(hud, expected, "{}", scene.name);
+            if scene.name.starts_with("game-") {
+                continue;
+            }
             if hud {
                 let size =
                     scene.args.windows(2).find(|pair| pair[0] == "--size").map_or(SIZE, |pair| pair[1]);

@@ -165,6 +165,10 @@
 //!   framed panel beside a menu, as the `ui-inset-*` goldens show it, with the same companions.
 //!   `--ui-turn <across>` turns it as a drag across that share of its width would, and `--ui-spin
 //!   <across>` turns it that much more each frame of a bench, so it draws every frame.
+//! - `--ui-game <stem>`: one of the game's screens (M3 U7, `content/ui/<stem>.ui.ron`: `title`, `pause`,
+//!   `settings`, `character`, `dialogue` or `hud`) on its sample model, as the `game-*` goldens show them,
+//!   with the same companions. With `--hud` both draw from one atlas, the HUD over the screen. `--ui-plain`
+//!   stands a flat color behind any of these screens, so a capture doesn't move with the scene.
 //! - `--hud fixed|live`: the combat HUD (`hud.rs`, M2 I2) over whatever the scene draws. `fixed` is
 //!   one frozen frame on a made-up clock, a hit landing with both thumbs down, as the `hud-*` golden
 //!   scenes capture it; `live` runs the touch zones on real touches, with a stand-in for gameplay,

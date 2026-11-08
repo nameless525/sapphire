@@ -29,6 +29,7 @@ use sapphire_stage::scene::Scene;
 use sapphire_stage::{Content, StageDesc, headless_gpu};
 #[cfg(feature = "dev")]
 use sapphire_stage::{FRAME, FrameHooks, LoadingFrame, ToolFrame};
+use sapphire_ui::Atlas;
 
 /// Offscreen targets are sRGB like the swapchain, so they match what the window shows.
 pub(crate) const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -402,8 +403,9 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
     }
     if let Some(shown) = &options.ui_screen {
         let assets = content.load_screens(&[shown.document()], renderer, gpu)?;
-        *shown_screen = Some(shown.stack(assets).map_err(AppInitError::msg)?);
-        if shown.inset {
+        let atlas = shown_hud.as_ref().map_or_else(Atlas::paint, |hud| hud.atlas().clone());
+        *shown_screen = Some(shown.stack(assets, atlas).map_err(AppInitError::msg)?);
+        if shown.shows_inset() {
             scene.spawn_showcase(scene.character(), 0);
         }
     }

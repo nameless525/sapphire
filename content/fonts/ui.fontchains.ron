@@ -8,6 +8,13 @@
         chains: [
             (name: "body", fonts: ["d7dfcd98-5464-470a-98c6-2c02a69d9765"]),
             (
+                name: "heading",
+                fonts: [
+                    "ce9360bf-ac52-4ecc-9e73-75cd14b619d5",
+                    "d7dfcd98-5464-470a-98c6-2c02a69d9765",
+                ],
+            ),
+            (
                 name: "display",
                 fonts: [
                     "ce9360bf-ac52-4ecc-9e73-75cd14b619d5",

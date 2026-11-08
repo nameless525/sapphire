@@ -1,5 +1,5 @@
 // The screen the tree's goldens hold (M3 U4): Japanese and Latin from keys, nine-slices, gradients, a
-// mask and bound values, at any aspect. Not a game's: U5 and U7 build those.
+// mask and bound values, at any aspect. Not a game's: `title.ui.ron` and its neighbours are.
 (
     type: "sapphire::assets::UiDocument",
     version: 2,

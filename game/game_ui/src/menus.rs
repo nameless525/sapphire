@@ -62,6 +62,12 @@ impl MenuScreen {
         ]
     }
 
+    /// Its document.
+    #[must_use]
+    pub const fn id(self) -> AssetId {
+        Self::ids()[self.index()]
+    }
+
     /// Its document's file name, without what follows.
     #[must_use]
     pub const fn stem(self) -> &'static str {
@@ -233,6 +239,7 @@ impl Default for HudModel {
 
 /// What the player has chosen, which the app keeps between runs.
 #[derive(Clone, Debug, PartialEq, Reflect, Serialize, Deserialize)]
+#[type_path = "sapphire::game_ui"]
 #[serde(default)]
 pub struct PlayerSettings {
     /// Of [`LANGUAGES`].
@@ -434,8 +441,13 @@ impl GameMenus {
 
     /// Takes `screen` out through its machine, if it's showing.
     pub fn close(&mut self, screen: MenuScreen) {
-        if let Some(index) = self.shown.iter().position(|shown| *shown == screen) {
+        let Some(index) = self.shown.iter().position(|shown| *shown == screen) else { return };
+        // One that's never been drawn has nothing to leave through, and would open at its first draw.
+        if self.stack.has_opened(index) {
             self.stack.tree_mut(index).fire("close", self.now);
+        } else {
+            self.stack.remove(index);
+            self.shown.remove(index);
         }
     }
 
@@ -451,18 +463,18 @@ impl GameMenus {
     /// Whether `screen` is showing and isn't on its way out.
     #[must_use]
     pub fn is_open(&self, screen: MenuScreen) -> bool {
-        self.shown
-            .iter()
-            .position(|shown| *shown == screen)
-            .is_some_and(|index| self.stack.tree(index).state() != Some("leaving"))
+        self.shown.iter().position(|shown| *shown == screen).is_some_and(|index| self.stays(index))
+    }
+
+    /// Whether the screen at `index` isn't on its way out, or out already and waiting to be taken away.
+    fn stays(&self, index: usize) -> bool {
+        self.stack.tree(index).state() != Some("leaving") && !self.stack.has_left(index)
     }
 
     /// Whether a screen that takes presses is up: while one is, a fight's bindings mustn't see them.
     #[must_use]
     pub fn is_modal(&self) -> bool {
-        self.shown.iter().enumerate().any(|(index, screen)| {
-            *screen != MenuScreen::Hud && self.stack.tree(index).state() != Some("leaving")
-        })
+        self.shown.iter().enumerate().any(|(index, screen)| *screen != MenuScreen::Hud && self.stays(index))
     }
 
     /// The controls, for a test's raw input and for rebinding.
@@ -493,11 +505,12 @@ impl GameMenus {
         self.controls.handle_event(event);
     }
 
-    /// Whether a landing at `point`, in points, is on something of the HUD's document that takes it: a touch
+    /// Whether a landing at `share` of the window is on something of the HUD's document that takes it: a touch
     /// the fight's zones must then leave alone.
     #[must_use]
-    pub fn hud_takes(&self, point: Vec2) -> bool {
-        self.tree(MenuScreen::Hud).is_some_and(|tree| matches!(tree.hit(point), UiHit::Focusable(_)))
+    pub fn hud_takes(&self, share: Vec2) -> bool {
+        self.tree(MenuScreen::Hud)
+            .is_some_and(|tree| matches!(tree.hit(share * tree.size()), UiHit::Focusable(_)))
     }
 
     /// Follows `window`: what a finger's place means, and how large a point is.

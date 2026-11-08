@@ -6,7 +6,7 @@
         model: "title.model.ron",
         styles: [
             (name: "name", role: "display", size: 48, weight: 700),
-            (name: "tagline", role: "display", size: 18, weight: 500),
+            (name: "tagline", role: "body", size: 18, weight: 500),
             (name: "row", role: "body", size: 20, weight: 500),
         ],
         nodes: [

@@ -5,7 +5,7 @@
     data: (
         model: "settings.model.ron",
         styles: [
-            (name: "title", role: "display", size: 32, weight: 700),
+            (name: "title", role: "heading", size: 32, weight: 800),
             (name: "row", role: "body", size: 20, weight: 500),
             (name: "value", role: "body", size: 18, weight: 700),
         ],
@@ -224,8 +224,13 @@
                 ),
             ),
             (
-                name: "back",
+                name: "foot",
                 parent: "panel",
+                layout: (direction: Column, shrink: 0, padding: (left: 4, right: 4)),
+            ),
+            (
+                name: "back",
+                parent: "foot",
                 layout: (
                     direction: Row,
                     align: Center,

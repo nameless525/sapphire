@@ -3,11 +3,15 @@
 //! reach. `--ui-menu` shows `content/ui/test_menu.ui.ron` instead (M3 U5), opened at the clock's start and
 //! read at `--ui-time`, after the steps of `--ui-walk`. `--ui-inset` shows `content/ui/test_inset.ui.ron`
 //! (M3 U6): the character in a 3D inset, a showcase of it the sandbox stands for inset 0, turned by
-//! `--ui-turn`. `game_ui::screen` shows them, and no window's input reaches any. They aren't a game's.
+//! `--ui-turn`. `--ui-game <stem>` shows one of the game's screens on its sample model (M3 U7), which is what
+//! their goldens are of. `game_ui::screen` shows them all, and no window's input reaches any of them: a
+//! game's own menus run in `game_app`.
 
 use bevy_reflect::{PartialReflect, Reflect};
+use game_ui::menus::MenuScreen;
 use game_ui::screen::{ScreenStack, StackSetup};
 use sapphire_assets::AssetId;
+use sapphire_assets::ui::UiDocument;
 use sapphire_platform::Timestamp;
 use sapphire_stage::content::ScreenAssets;
 use sapphire_ui::{Atlas, UiStep};
@@ -53,42 +57,68 @@ impl Default for TestMenuModel {
     }
 }
 
+/// `--ui-plain`: what stands behind a screen in place of the scene, so its golden moves for what it shows and
+/// nothing else. Not cooked: only the sandbox shows it, and it says nothing.
+const PLAIN_BACKDROP: &str = r#"(
+    type: "sapphire::assets::UiDocument",
+    version: 2,
+    data: (nodes: [(name: "root", look: (fill: Color((74, 88, 112, 255))))]),
+)"#;
+
+/// What the backdrop's paths read: none.
+#[derive(Clone, Debug, Default, Reflect)]
+struct NoModel;
+
+/// Which screen it shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ShownScreen {
+    /// `--ui-screen`.
+    #[default]
+    TestScreen,
+    /// `--ui-menu`.
+    TestMenu,
+    /// `--ui-inset`.
+    TestInset,
+    /// `--ui-game <stem>`.
+    Game(MenuScreen),
+}
+
 /// How `--ui-screen` shows it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ScreenOptions {
+    /// The screen.
+    pub shown: ShownScreen,
     /// `--ui-locale`.
     pub locale: String,
     /// `--ui-pseudo`.
     pub pseudo: bool,
     /// `--ui-scale`: pixels per point.
     pub scale: f32,
-    /// `--ui-menu`: the test menu in place of the test screen.
-    pub menu: bool,
+    /// `--ui-plain`: a flat color behind it.
+    pub plain: bool,
     /// `--ui-time`: the seconds on the screen's clock, always this: a capture of a time is that time.
     pub time: f32,
     /// `--ui-walk`: steps of focus taken when it opens, as `UiTree::walk` names them.
     pub walk: Vec<String>,
-    /// `--ui-inset`: the inset's test screen in place of the test screen.
-    pub inset: bool,
     /// `--ui-turn`: its insets turned as a drag across that share of their width turns them.
     pub turn: f32,
     /// `--ui-spin`: as `turn`, again each frame a bench runs, so its insets draw every frame.
     pub spin: f32,
 }
 
-/// Where the screen's clock stands with no `--ui-time`: well past what the test menu does.
+/// Where the screen's clock stands with no `--ui-time`: well past what any screen does as it opens.
 const SETTLED: f32 = 60.0;
 
 impl Default for ScreenOptions {
     fn default() -> Self {
         Self {
+            shown: ShownScreen::default(),
             locale: "en".to_owned(),
             pseudo: false,
             scale: 1.0,
-            menu: false,
+            plain: false,
             time: SETTLED,
             walk: Vec::new(),
-            inset: false,
             turn: 0.0,
             spin: 0.0,
         }
@@ -96,31 +126,46 @@ impl Default for ScreenOptions {
 }
 
 impl ScreenOptions {
+    /// Whether it shows an inset, which needs a showcase of the character standing for inset 0.
+    #[must_use]
+    pub const fn shows_inset(&self) -> bool {
+        matches!(self.shown, ShownScreen::TestInset)
+    }
+
     /// The document it shows.
     #[must_use]
     pub const fn document(&self) -> AssetId {
-        match (self.menu, self.inset) {
-            (true, _) => TEST_MENU,
-            (false, true) => TEST_INSET,
-            (false, false) => TEST_SCREEN,
+        match self.shown {
+            ShownScreen::TestScreen => TEST_SCREEN,
+            ShownScreen::TestMenu => TEST_MENU,
+            ShownScreen::TestInset => TEST_INSET,
+            ShownScreen::Game(screen) => screen.id(),
         }
     }
 
-    /// `assets` as these flags ask, on the model of the screen they show, opened at the clock's start.
-    pub fn stack(&self, assets: ScreenAssets) -> Result<ScreenStack, String> {
+    /// `assets` over `atlas` as these flags ask, on the model of the screen they show, opened at the clock's
+    /// start.
+    pub fn stack(&self, assets: ScreenAssets, atlas: Atlas) -> Result<ScreenStack, String> {
         if let Some(step) =
             self.walk.iter().find(|step| *step != "confirm" && UiStep::from_name(step).is_none())
         {
             return Err(format!("--ui-walk: `{step}` isn't up, down, left, right or confirm"));
         }
-        let model: Box<dyn PartialReflect> =
-            if self.menu { Box::new(TestMenuModel::default()) } else { Box::new(TestScreenModel::default()) };
+        let model: Box<dyn PartialReflect> = match self.shown {
+            ShownScreen::TestScreen | ShownScreen::TestInset => Box::new(TestScreenModel::default()),
+            ShownScreen::TestMenu => Box::new(TestMenuModel::default()),
+            ShownScreen::Game(screen) => screen.sample_model(),
+        };
         let setup = StackSetup { locale: self.locale.clone(), pseudo: self.pseudo, scale: self.scale };
         let shown = |error| format!("--ui-screen: {error}");
-        let mut stack =
-            ScreenStack::new(assets.tables, assets.fonts, Atlas::paint(), setup).map_err(shown)?;
+        let mut stack = ScreenStack::new(assets.tables, assets.fonts, atlas, setup).map_err(shown)?;
         let start = Timestamp::from_nanos(0);
         stack.push(&assets.documents[0], model, start, self.walk.clone()).map_err(shown)?;
+        if self.plain {
+            let backdrop =
+                UiDocument::from_document(PLAIN_BACKDROP).map_err(|error| shown(error.to_string()))?;
+            stack.push_under(&backdrop, Box::new(NoModel), start).map_err(shown)?;
+        }
         stack.set_now(Timestamp::from_nanos((f64::from(self.time) * 1e9) as u64));
         stack.turn_insets(self.turn);
         Ok(stack)
@@ -130,7 +175,7 @@ impl ScreenOptions {
 #[cfg(test)]
 mod tests {
     use bevy_reflect::Typed;
-    use sapphire_assets::ui::{UiDocument, UiModel};
+    use sapphire_assets::ui::UiModel;
     use sapphire_loc::StringTable;
     use sapphire_look::UiDrawList;
     use sapphire_stage::content::{FONT_CHAINS, LOCALES};
@@ -208,7 +253,7 @@ mod tests {
             tables: vec![table("en", &[], &KEYS.map(|key| (key, "Text")))],
             fonts: Vec::new(),
         };
-        ScreenOptions::default().stack(assets).unwrap()
+        ScreenOptions::default().stack(assets, Atlas::paint()).unwrap()
     }
 
     /// The test menu at its fixed points: where a walk ends up, at every aspect a screen ships at.
@@ -223,7 +268,7 @@ mod tests {
         let keys: Vec<(&str, &str)> = keys.iter().map(|(key, text)| (key.as_str(), *text)).collect();
         for size in [(1024, 768), (1280, 720), (2560, 1080)] {
             let options = ScreenOptions {
-                menu: true,
+                shown: ShownScreen::TestMenu,
                 time: 1.0,
                 walk: ["down"; 5].map(str::to_owned).to_vec(),
                 ..ScreenOptions::default()
@@ -233,7 +278,7 @@ mod tests {
                 tables: vec![table("en", &[], &keys)],
                 fonts: Vec::new(),
             };
-            let mut stack = options.stack(assets).unwrap();
+            let mut stack = options.stack(assets, Atlas::paint()).unwrap();
             let mut list = UiDrawList::default();
             stack.draw(size, &mut list);
             assert!(stack.top().unwrap().problems().is_empty(), "{:#?}", stack.top().unwrap().problems());
@@ -248,6 +293,22 @@ mod tests {
         }
     }
 
+    /// The backdrop is a screen under the one asked for, which still has the input and the walk.
+    #[test]
+    fn a_plain_backdrop_goes_under_the_screen() {
+        let options = ScreenOptions { plain: true, ..ScreenOptions::default() };
+        let assets = ScreenAssets {
+            documents: vec![UiDocument::from_document(DOCUMENT).unwrap()],
+            tables: vec![table("en", &[], &KEYS.map(|key| (key, "Text")))],
+            fonts: Vec::new(),
+        };
+        let mut stack = options.stack(assets, Atlas::paint()).unwrap();
+        stack.draw((640, 360), &mut UiDrawList::default());
+        assert_eq!(stack.len(), 2);
+        assert!(stack.tree(0).problems().is_empty(), "{:#?}", stack.tree(0).problems());
+        assert!(stack.top().unwrap().find("title").is_some(), "the screen's on top");
+    }
+
     #[test]
     fn a_walk_is_checked_when_it_is_asked_for() {
         let options = ScreenOptions { walk: vec!["sideways".to_owned()], ..ScreenOptions::default() };
@@ -256,7 +317,7 @@ mod tests {
             tables: vec![table("en", &[], &[])],
             fonts: Vec::new(),
         };
-        let refused = options.stack(assets).map(drop).unwrap_err();
+        let refused = options.stack(assets, Atlas::paint()).map(drop).unwrap_err();
         assert!(refused.contains("sideways"), "{refused}");
     }
 
@@ -305,7 +366,7 @@ mod tests {
             fonts: Vec::new(),
         };
         let options = ScreenOptions { locale: "xx".to_owned(), ..ScreenOptions::default() };
-        let refused = options.stack(assets).unwrap_err();
+        let refused = options.stack(assets, Atlas::paint()).map(drop).unwrap_err();
         assert!(refused.contains("--ui-screen") && refused.contains("xx"), "{refused}");
     }
 }

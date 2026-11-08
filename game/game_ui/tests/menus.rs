@@ -3,65 +3,24 @@
 //! finger's, all through `MenuControls`. No GPU and no cooked content: the tables are cooked here from the
 //! sources, and the fonts are read from where they're kept.
 
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+mod support;
 
 use bevy_reflect::Typed;
 use game_ui::menus::{
     CharacterModel, DialogueChoice, DialogueModel, GameMenus, HudModel, MenuAction, MenuCommand, MenuScreen,
     MenuSetup, PauseModel, PlayerSettings, SettingsModel, TitleModel, action_of,
 };
-use sapphire_assets::ui::{UiDocument, UiModel};
+use sapphire_assets::ui::UiModel;
 use sapphire_input::{PadButton, RawInput};
-use sapphire_loc::StringTable;
 use sapphire_look::UiDrawList;
 use sapphire_math::Vec2;
-use sapphire_pipeline::loc::{self, FluentFile};
 use sapphire_platform::{GamepadType, Scancode, Timestamp, TouchPhase};
 use sapphire_stage::content::ScreenAssets;
 use sapphire_ui::{Atlas, UiTree};
+use support::{assets, content, document};
 
 /// The aspects a screen ships at, in points: 4:3, 16:9 and 21:9, and the smallest phone that runs the game.
 const SIZES: [(u32, u32); 5] = [(1024, 768), (1280, 720), (1680, 720), (844, 390), (667, 375)];
-
-fn content() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content")
-}
-
-/// A locale's table, cooked from every source it has.
-fn table(locale: &str) -> StringTable {
-    let dir = content().join("loc").join(locale);
-    let mut files = Vec::new();
-    for entry in std::fs::read_dir(&dir).unwrap() {
-        let path = entry.unwrap().path();
-        if loc::is_ftl_source(&path) {
-            let name = format!("loc/{locale}/{}", path.file_name().unwrap().to_str().unwrap());
-            files.push(FluentFile { path, name });
-        }
-    }
-    files.sort_by(|a, b| a.path.cmp(&b.path));
-    let document = content().join(format!("loc/{locale}.locale.ron"));
-    let bytes = loc::cook(&document, &std::fs::read(&document).unwrap(), &files).unwrap();
-    StringTable::read(&bytes).unwrap()
-}
-
-fn document(screen: MenuScreen) -> UiDocument {
-    let path = content().join(format!("ui/{}.ui.ron", screen.stem()));
-    UiDocument::from_document(&std::fs::read_to_string(path).unwrap()).unwrap()
-}
-
-fn assets() -> ScreenAssets {
-    let dir = content().join("third_party");
-    let fonts =
-        ["mplus1/MPLUS1[wght].ttf", "oxanium/Oxanium[wght].ttf", "dela_gothic_one/DelaGothicOne-Regular.ttf"]
-            .map(|font| (Arc::new(std::fs::read(dir.join(font)).unwrap()), 0.0))
-            .to_vec();
-    ScreenAssets {
-        documents: MenuScreen::ALL.map(document).to_vec(),
-        tables: vec![table("en"), table("ja")],
-        fonts,
-    }
-}
 
 /// How a walk presses.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -423,12 +382,12 @@ fn a_press_goes_to_the_top_screen_only_and_the_hud_takes_only_its_pause() {
     walk.settle();
     assert!(walk.commands.is_empty(), "{:?}", walk.commands);
 
-    let pause = {
+    let (pause, size) = {
         let tree = walk.tree(MenuScreen::Hud);
-        tree.screen_rect(tree.find("pause").unwrap()).center()
+        (tree.screen_rect(tree.find("pause").unwrap()).center(), tree.size())
     };
-    assert!(walk.menus.hud_takes(pause));
-    assert!(!walk.menus.hud_takes(Vec2::new(300.0, 400.0)), "the rest of the frame is the fight's");
+    assert!(walk.menus.hud_takes(pause / size));
+    assert!(!walk.menus.hud_takes(Vec2::new(0.25, 0.5)), "the rest of the frame is the fight's");
     walk.tap(pause);
     assert_eq!(walk.commands, [MenuCommand::Pause]);
 

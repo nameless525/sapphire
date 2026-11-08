@@ -192,6 +192,12 @@ impl ScreenStack {
         self.screens.last().map(|screen| &screen.tree)
     }
 
+    /// Whether the screen at `index` has been drawn, which is when it opens.
+    #[must_use]
+    pub fn has_opened(&self, index: usize) -> bool {
+        self.screens[index].opened
+    }
+
     /// Whether the screen at `index` has opened and gone back to hidden, so it's done with.
     #[must_use]
     pub fn has_left(&self, index: usize) -> bool {

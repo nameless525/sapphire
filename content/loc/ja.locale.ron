@@ -6,6 +6,8 @@
         fallback: ["en"],
         fonts: {
             "body": ["M PLUS 1"],
+            // What a panel says it is. Dela Gothic One is too black to read at this size: its counters close.
+            "heading": ["M PLUS 1"],
             "display": ["Dela Gothic One", "Oxanium", "M PLUS 1"],
         },
     ),

@@ -5,8 +5,8 @@
     data: (
         model: "character.model.ron",
         styles: [
-            (name: "name", role: "display", size: 24, weight: 700),
-            (name: "heading", role: "display", size: 20, weight: 700),
+            (name: "name", role: "body", size: 24, weight: 700),
+            (name: "heading", role: "body", size: 20, weight: 700),
             (name: "value", role: "body", size: 18, weight: 700),
             (name: "stat", role: "body", size: 16, weight: 500),
             (name: "detail", role: "body", size: 14, line_height: 1.4),
@@ -304,8 +304,13 @@
                 ),
             ),
             (
-                name: "back",
+                name: "foot",
                 parent: "side",
+                layout: (direction: Column, shrink: 0, padding: (left: 2, right: 2)),
+            ),
+            (
+                name: "back",
+                parent: "foot",
                 layout: (
                     direction: Row,
                     align: Center,

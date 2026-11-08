@@ -124,6 +124,7 @@ pub struct FightHud {
     metrics: Option<UiMetrics>,
     /// A finger has landed on the zones.
     touched: bool,
+    shows_controls: bool,
     last_stats: HudStats,
     last_cost: Duration,
 }
@@ -164,6 +165,7 @@ impl FightHud {
             window_metrics: None,
             metrics: None,
             touched: false,
+            shows_controls: false,
             last_stats: HudStats::default(),
             last_cost: Duration::ZERO,
         }
@@ -177,6 +179,11 @@ impl FightHud {
     /// The same, over `atlas`: the screen's that preceded it, or the one it shares a frame with.
     pub fn for_fight_with_atlas(options: HudOptions, atlas: Atlas) -> Self {
         Self { stand_in: None, ..Self::with_atlas(options, atlas) }
+    }
+
+    /// What it draws from, for what shares its frame.
+    pub const fn atlas(&self) -> &Atlas {
+        &self.atlas
     }
 
     /// What the fight says of its fighters this frame, `time` into it: live mode shows it. Offscreen
@@ -238,6 +245,23 @@ impl FightHud {
         metrics
     }
 
+    /// The player's UI size, from the next frame.
+    pub fn set_scale(&mut self, scale: f32) {
+        self.options.scale = scale;
+    }
+
+    /// The player's UI size.
+    #[must_use]
+    pub const fn scale(&self) -> f32 {
+        self.options.scale
+    }
+
+    /// Whether the on-screen controls show, as [`Self::follow_devices`] last said.
+    #[must_use]
+    pub const fn shows_controls(&self) -> bool {
+        self.shows_controls
+    }
+
     /// Who's holding what, for whether the on-screen controls show. A pad in use takes them away and a
     /// finger brings them back, and a desktop shows them only once a finger has landed. A pad merely
     /// connected changes nothing: the iOS simulator reports one nobody holds, and with no controls and
@@ -245,7 +269,8 @@ impl FightHud {
     pub fn follow_devices(&mut self, desktop: bool, pad_in_hands: bool) {
         let touching = self.controls.fingers() > 0;
         self.touched |= touching;
-        self.hud.show_controls(touching || (!pad_in_hands && (!desktop || self.touched)));
+        self.shows_controls = touching || (!pad_in_hands && (!desktop || self.touched));
+        self.hud.show_controls(self.shows_controls);
     }
 
     /// Live mode's frame on the real clock, before the frame's input is judged: the window's metrics,
@@ -493,7 +518,7 @@ pub struct ShownFight {
     pub fight: Fight,
     /// The combat HUD over the scene (`--hud`, M2 I2).
     pub hud: Option<FightHud>,
-    /// Retained screens over all of it (M3 U4), which only the sandbox hangs here: a game's menus take
+    /// Retained screens under the HUD (M3 U4), which only the sandbox hangs here: a game's menus take
     /// input, and its show holds them.
     pub screen: Option<ScreenStack>,
 }
@@ -586,14 +611,14 @@ impl SceneShow for ShownFight {
     }
 
     fn draw_interface(&mut self, size: (u32, u32), list: &mut UiDrawList) {
+        if let Some(screen) = &mut self.screen {
+            screen.draw(size, list);
+        }
         if let Some(hud) = &mut self.hud {
             if let Some((values, time)) = self.fight.show.hud_values() {
                 hud.show_fight(values, time);
             }
             hud.draw(size, list);
-        }
-        if let Some(screen) = &mut self.screen {
-            screen.draw(size, list);
         }
     }
 

@@ -5,7 +5,7 @@
     data: (
         model: "dialogue.model.ron",
         styles: [
-            (name: "speaker", role: "display", size: 18, weight: 700),
+            (name: "speaker", role: "body", size: 18, weight: 700),
             (name: "line", role: "body", size: 18, line_height: 1.5),
             (name: "choice", role: "body", size: 16, weight: 500),
         ],

@@ -8,7 +8,8 @@ use std::time::Duration;
 
 use game_combat::documents::FightDocuments;
 use game_combat::fight::fight_stage;
-use sapphire_platform::{App, AppControl, AppInitError, AppMetadata, Event, Platform};
+use game_ui::menus::PlayerSettings;
+use sapphire_platform::{App, AppControl, AppInitError, AppMetadata, Event, Platform, Timestamp};
 use sapphire_render::quality::QualitySettings;
 use sapphire_rhi::wgpu;
 use sapphire_stage::{Content, Readback, Stage, StageDesc, headless_gpu};
@@ -34,7 +35,8 @@ impl App for OffscreenGame {
         let documents = FightDocuments::read(platform.content()).map_err(AppInitError::msg)?;
         let desc = fight_stage(StageDesc::new(platform.host(), &gpu, FORMAT, QualitySettings::default()));
         let mut content = Content::new(platform.host(), desc.character, desc.sky)?;
-        let mut show = GameShow::new(documents)?;
+        // A run nobody's playing shows the defaults, whatever whoever's machine this is has chosen.
+        let mut show = GameShow::new(documents, PlayerSettings::default())?;
         let combat = show.shown.fight.prepare_stock_combat(&options.fight(), &mut content)?;
         let mut stage = Stage::new_with_content(gpu, desc, content)?.with_show(show);
         let Stage { show, scene, content, renderer, gpu, quality, .. } = &mut stage;
@@ -47,12 +49,17 @@ impl App for OffscreenGame {
         let target = stage.target(width, height, wgpu::TextureUsages::COPY_SRC);
         let view = target.create_view(&wgpu::TextureViewDescriptor::default());
         let frame = Duration::from_secs(1) / TICK_HZ;
+        let mut now = Duration::ZERO;
         for _ in 1..options.ticks {
+            now += frame;
+            stage.show.update_menus(Timestamp::from_nanos(now.as_nanos() as u64));
             stage.step();
             stage.show.drive_view(frame);
             stage.render(&view, 1.0, |_, _| {})?;
             stage.show.say_first_uses(&stage.renderer);
         }
+        now += frame;
+        stage.show.update_menus(Timestamp::from_nanos(now.as_nanos() as u64));
         if options.ticks > 0 {
             stage.step();
             stage.show.drive_view(frame);

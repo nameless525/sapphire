@@ -1,18 +1,18 @@
-//! What stands on the game's stage: a fight, its HUD and the bindings that play it, and the title over them
-//! until someone presses.
+//! What stands on the game's stage: a fight, its HUD, the bindings that play it and the menus, with the title
+//! over them all until someone starts.
 
 use std::time::Duration;
 
 use game_combat::combat::{Combat, read_bindings};
 use game_combat::documents::FightDocuments;
 use game_ui::hud::{FightHud, HudMode, HudOptions, ShownFight};
-use game_ui::title::TitleCard;
+use game_ui::menus::{
+    CharacterModel, GameMenus, HudModel, MenuCommand, MenuScreen, MenuSetup, PlayerSettings,
+};
 use sapphire_controls::{CombatControls, ControlsError};
 use sapphire_gameplay::ActorId;
 use sapphire_input::{DeviceKind, InputMap};
-use sapphire_platform::{
-    AppInitError, Event, GamepadButton, GamepadEvent, Scancode, Timestamp, TouchPhase, Window,
-};
+use sapphire_platform::{AppInitError, Event, GamepadEvent, Os, Timestamp, TouchPhase, Window};
 use sapphire_render::quality::TierId;
 use sapphire_render::{PipelineInventory, Renderer, UiPageState, VfxFrame};
 use sapphire_rhi::GpuContext;
@@ -21,32 +21,30 @@ use sapphire_stage::scene::Scene;
 use sapphire_stage::{ContentChanges, FrameLaps, SceneShow};
 use sapphire_time::{FixedStepDriver, FixedSteps, Stopwatch};
 
-use sapphire_ui::UiDrawList;
+use sapphire_math::Vec2;
+use sapphire_ui::{Atlas, UiDrawList};
 
 use crate::LOG_TARGET;
 
 /// Who a step with no fight on it asks the bindings for: see `read_bindings`.
 const PLAYER: ActorId = ActorId::from_raw(1).expect("not zero");
-/// Android's Back, as SDL's scancode for it: what combat's bindings call `Hid(282)`.
-const AC_BACK: Scancode = Scancode(282);
 /// How often a fight says how it's going.
 const REPORT_EVERY: Duration = Duration::from_secs(1);
-
-/// What a platform event does to the title.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TitleAnswer {
-    /// Nothing that concerns it, or it isn't up.
-    Nothing,
-    /// A press: the fight opens, and the press goes no further, so it doesn't also swing.
-    Open,
-    /// Back or `Esc`, which is where a title goes.
-    Leave,
-}
 
 /// See this module.
 pub struct GameShow {
     pub shown: ShownFight,
-    title: Option<TitleCard>,
+    /// From [`Self::stand`] on.
+    menus: Option<GameMenus>,
+    /// What the menus start from.
+    setup: MenuSetup,
+    /// What the HUD and the menus draw from: a frame's list has one atlas.
+    atlas: Atlas,
+    /// Whether the title's been left for the fight.
+    fight_open: bool,
+    /// What the menus asked this frame.
+    commands: Vec<MenuCommand>,
+    settings_changed: bool,
     pub controls: CombatControls,
     /// Where the camera looked as this frame's steps began: what a tick's stick means by forward.
     camera_yaw: f32,
@@ -57,17 +55,25 @@ pub struct GameShow {
 }
 
 impl GameShow {
-    /// A show with nothing on the scene yet, at the title, on `documents`: the game's own, or Sapphire's.
-    pub fn new(documents: FightDocuments) -> Result<Self, ControlsError> {
+    /// A show with nothing on the scene yet, at the title, on `documents` (the game's own, or Sapphire's) and as
+    /// `settings` have it.
+    pub fn new(documents: FightDocuments, settings: PlayerSettings) -> Result<Self, ControlsError> {
         let controls = match &documents.bindings {
             Some(bindings) => CombatControls::new(InputMap::new(bindings.clone())?)?,
             None => CombatControls::with_default_bindings()?,
         };
         let mut shown = ShownFight::default();
         shown.fight.documents = documents;
+        // iOS's guidelines leave leaving to the home gesture.
+        let setup = MenuSetup { settings, can_leave: Os::CURRENT != Os::Ios, pseudo: false };
         Ok(Self {
             shown,
-            title: Some(TitleCard::new()),
+            menus: None,
+            setup,
+            atlas: Atlas::paint(),
+            fight_open: false,
+            commands: Vec::with_capacity(8),
+            settings_changed: false,
             controls,
             camera_yaw: 0.0,
             report_in: Duration::ZERO,
@@ -75,7 +81,7 @@ impl GameShow {
         })
     }
 
-    /// Stands the fight, which waits at the title until [`Self::open_fight`].
+    /// Stands the fight, which waits at the title until [`Self::open_fight`], and loads the menus.
     pub fn stand(
         &mut self,
         combat: Combat,
@@ -87,7 +93,12 @@ impl GameShow {
     ) -> Result<(), AppInitError> {
         let followed = self.shown.fight.stand_prepared(combat, scene, content, renderer, gpu, tier)?;
         self.shown.hear(followed);
-        // The title's and the HUD's interface with it, though neither's drawn yet.
+        let assets = content.load_screens(&MenuScreen::ids(), renderer, gpu)?;
+        let mut menus = GameMenus::new(assets, self.atlas.clone(), self.setup.clone())
+            .map_err(|error| AppInitError::msg(format!("the menus: {error}")))?;
+        menus.open(MenuScreen::Title);
+        self.menus = Some(menus);
+        // The menus' and the HUD's interface with it, though neither's drawn yet.
         scene.prewarm(&*self, renderer);
         let builds = renderer.stats().pipelines;
         tracing::info!(
@@ -111,46 +122,117 @@ impl GameShow {
     }
 
     /// Whether the title's up: nothing plays while it is.
-    pub fn on_title(&self) -> bool {
-        self.title.is_some()
+    pub const fn on_title(&self) -> bool {
+        !self.fight_open
     }
 
-    /// The title goes and the fight begins, with its HUD on.
+    /// The title goes and the fight begins, with its HUD on, in the player's size.
     pub fn open_fight(&mut self) {
-        if let Some(title) = self.title.take() {
-            let options = HudOptions { mode: HudMode::Live, ..HudOptions::default() };
-            let mut hud = FightHud::for_fight_with_atlas(options, title.into_atlas());
-            hud.set_design(self.shown.fight.documents.hud);
-            self.shown.hud = Some(hud);
-            tracing::info!(target: LOG_TARGET, "the fight opens");
+        if self.fight_open {
+            return;
         }
+        self.fight_open = true;
+        let scale = self.menus.as_ref().map_or(1.0, |menus| menus.settings().scale());
+        let options = HudOptions { mode: HudMode::Live, scale, ..HudOptions::default() };
+        let mut hud = FightHud::for_fight_with_atlas(options, self.atlas.clone());
+        hud.set_design(self.shown.fight.documents.hud);
+        self.shown.hud = Some(hud);
+        if let Some(menus) = &mut self.menus {
+            menus.close(MenuScreen::Title);
+            menus.open_under(MenuScreen::Hud);
+        }
+        tracing::info!(target: LOG_TARGET, "the fight opens");
     }
 
-    /// A platform event for the game. The title takes what opens the fight or leaves; then the HUD's zones
-    /// take what lands on them and the bindings the rest. While paused a landing is the pause's, since a tap
-    /// is how a phone gets out of it, and the zones keep only the fingers they already hold.
-    pub fn handle_event(&mut self, event: &Event) -> TitleAnswer {
-        if self.on_title() {
-            let answer = title_answer(event);
-            match answer {
-                TitleAnswer::Open => self.open_fight(),
-                TitleAnswer::Leave => {}
-                TitleAnswer::Nothing => self.controls.handle_event(event),
+    /// A platform event for the game. The menus hear them all, and a press with a menu up, or on the HUD's
+    /// pause, goes no further, so it doesn't also swing. Then the HUD's zones take what lands on them, which
+    /// with a menu up is only what's left of the fingers they hold, and the bindings the rest.
+    pub fn handle_event(&mut self, event: &Event) {
+        if let Some(menus) = &mut self.menus {
+            menus.handle_event(event);
+            let on_hud = matches!(event, Event::Touch(touch) if touch.phase == TouchPhase::Down
+                && menus.hud_takes(Vec2::new(touch.x, touch.y)));
+            if on_hud || (menus.is_modal() && is_press(event)) {
+                return;
             }
-            return answer;
         }
-        let pause_takes_landing = self.controls.is_paused()
-            && !self.controls.is_resuming()
-            && matches!(event, Event::Touch(touch) if touch.phase == TouchPhase::Down);
-        if pause_takes_landing || !self.shown.hud.as_mut().is_some_and(|hud| hud.handle_event(event)) {
+        if !self.shown.hud.as_mut().is_some_and(|hud| hud.handle_event(event)) {
             self.controls.handle_event(event);
         }
-        TitleAnswer::Nothing
     }
 
-    /// The frame's input as of `now`, in `window`: the zones' first, since what they read reaches this
-    /// frame's steps through the bindings, as a pad's does. Returns whether the player left from the pause.
+    /// The menus' share of the frame's input, as of `now`, and what they asked: whether the player left.
+    /// [`Self::read_input`] calls it; with no window, a run nobody's playing calls it alone.
+    pub fn update_menus(&mut self, now: Timestamp) -> bool {
+        let Some(menus) = &mut self.menus else { return false };
+        menus.update(now);
+        self.commands.extend(menus.take_commands());
+        let mut left = false;
+        for index in 0..self.commands.len() {
+            match self.commands[index] {
+                MenuCommand::Start => self.open_fight(),
+                MenuCommand::Resume => self.controls.set_paused(false),
+                MenuCommand::Pause => self.controls.set_paused(true),
+                MenuCommand::Leave => left = true,
+                MenuCommand::SettingsChanged => self.follow_settings(),
+                // The dialogue graph's to hear (Q2).
+                MenuCommand::DialogueNext | MenuCommand::DialogueChose(_) => {}
+            }
+        }
+        self.commands.clear();
+        left
+    }
+
+    fn follow_settings(&mut self) {
+        self.settings_changed = true;
+        if let (Some(menus), Some(hud)) = (&self.menus, &mut self.shown.hud) {
+            hud.set_scale(menus.settings().scale());
+        }
+    }
+
+    /// What the player's chosen, if they've changed it since this was last called: for the app to apply, and
+    /// to keep.
+    pub fn take_changed_settings(&mut self) -> Option<PlayerSettings> {
+        if !std::mem::take(&mut self.settings_changed) {
+            return None;
+        }
+        self.menus.as_ref().map(|menus| menus.settings().clone())
+    }
+
+    /// The pause's screen follows the pause, whoever asked for it: a key, the HUD's button, focus going.
+    fn follow_pause(&mut self) {
+        let Some(menus) = self.menus.as_mut().filter(|_| self.fight_open) else { return };
+        let paused = self.controls.is_paused() && !self.controls.is_resuming();
+        if paused && !menus.is_modal() {
+            menus.open(MenuScreen::Pause);
+        } else if !paused && menus.is_modal() {
+            menus.close_all();
+        }
+    }
+
+    /// What the fight says, on the screens that show it.
+    fn show_fight_on_menus(&mut self) {
+        let Some(menus) = &mut self.menus else { return };
+        let values = self.shown.fight.show.hud_values().map(|(values, _)| values);
+        let touch = self.shown.hud.as_ref().is_some_and(FightHud::shows_controls);
+        if let Some(model) = menus.model_mut::<HudModel>(MenuScreen::Hud) {
+            model.touch = touch;
+            model.has_enemy = values.is_some_and(|values| values.enemy.is_some());
+        }
+        if let (Some(values), Some(model)) =
+            (values, menus.model_mut::<CharacterModel>(MenuScreen::Character))
+        {
+            model.hp = (values.player.hp * model.max_hp as f32).round() as i32;
+        }
+    }
+
+    /// The frame's input as of `now`, in `window`: the menus' first, then the zones', since what they read
+    /// reaches this frame's steps through the bindings, as a pad's does. Returns whether the player left.
     pub fn read_input(&mut self, window: &Window, desktop: bool, now: Timestamp) -> bool {
+        if let Some(menus) = &mut self.menus {
+            menus.follow_window(window);
+        }
+        let left = self.update_menus(now);
         let controls = &mut self.controls;
         controls.input_mut().set_points_per_coordinate(window.points_per_coordinate());
         if let Some(hud) = &mut self.shown.hud {
@@ -163,7 +245,9 @@ impl GameShow {
         controls.update(now);
         let touch = controls.input().last_device() == Some(DeviceKind::Touch);
         self.shown.fight.show.set_played_on_touch(touch);
-        controls.wants_to_leave()
+        self.follow_pause();
+        self.show_fight_on_menus();
+        left || self.controls.wants_to_leave()
     }
 
     /// This frame's fixed steps: none while paused, and no burst after. Takes where the camera looks, which
@@ -179,16 +263,10 @@ impl GameShow {
     }
 
     /// The view's share of a frame `dt` real seconds after the last, on the real clock so it stays responsive
-    /// in slow motion: nothing while paused, as the director's frame asks, and the HUD says it's waiting.
-    /// Returns the seconds it moved by, and says how the fight's going once in a while.
+    /// in slow motion: nothing while paused, as the director's frame asks. Returns the seconds it moved by,
+    /// and says how the fight's going once in a while.
     pub fn drive_view(&mut self, dt: Duration) -> f32 {
         let paused = self.controls.is_paused();
-        if let Some(hud) = &mut self.shown.hud {
-            hud.show_pause(paused);
-        }
-        if let Some(title) = &mut self.title {
-            title.advance(dt);
-        }
         let view_dt = if paused { 0.0 } else { dt.as_secs_f32() };
         let (look, zoom) = (self.controls.look(), self.controls.camera_zoom());
         self.shown.fight.show.drive_camera(view_dt, look, zoom);
@@ -218,19 +296,15 @@ impl GameShow {
     }
 }
 
-fn title_answer(event: &Event) -> TitleAnswer {
+/// Whether `event` starts something, which a menu that's up keeps to itself. What ends something goes on, so
+/// the bindings hear the end of what they saw begin.
+fn is_press(event: &Event) -> bool {
     match event {
-        Event::Key(key) if key.down && !key.repeat => match key.scancode {
-            Scancode::ESCAPE | Scancode::BACKSPACE | AC_BACK => TitleAnswer::Leave,
-            _ => TitleAnswer::Open,
-        },
-        Event::MouseButton(button) if button.down => TitleAnswer::Open,
-        Event::Touch(touch) if touch.phase == TouchPhase::Down => TitleAnswer::Open,
-        Event::Gamepad { event: GamepadEvent::Button { button, down: true }, .. } => match button {
-            GamepadButton::Back => TitleAnswer::Leave,
-            _ => TitleAnswer::Open,
-        },
-        _ => TitleAnswer::Nothing,
+        Event::Key(key) => key.down,
+        Event::MouseButton(button) => button.down,
+        Event::Touch(touch) => touch.phase == TouchPhase::Down,
+        Event::Gamepad { event: GamepadEvent::Button { down, .. }, .. } => *down,
+        _ => false,
     }
 }
 
@@ -267,6 +341,9 @@ impl SceneShow for GameShow {
 
     fn begin_interface(&mut self, pages: UiPageState) {
         self.shown.begin_interface(pages);
+        if let Some(menus) = &mut self.menus {
+            menus.follow_pages(pages);
+        }
     }
 
     fn present(&mut self, scene: &mut Scene, alpha: f32, aspect: Option<f32>) {
@@ -283,8 +360,8 @@ impl SceneShow for GameShow {
 
     fn draw_interface(&mut self, size: (u32, u32), list: &mut UiDrawList) {
         self.shown.draw_interface(size, list);
-        if let Some(title) = &self.title {
-            title.draw(size, list);
+        if let Some(menus) = &mut self.menus {
+            menus.draw(size, list);
         }
     }
 
@@ -299,74 +376,214 @@ impl SceneShow for GameShow {
 
 #[cfg(test)]
 mod tests {
-    use sapphire_platform::{FingerId, KeyEvent, Keycode, Modifiers, TouchDeviceId, TouchEvent, WindowId};
+    use game_ui::menus::SIZES;
+    use sapphire_assets::ui::UiDocument;
+    use sapphire_gameplay::Buttons;
+    use sapphire_loc::StringTable;
+    use sapphire_platform::{KeyEvent, Keycode, Modifiers, Scancode, WindowId};
+    use sapphire_stage::content::ScreenAssets;
 
     use super::*;
 
-    fn key(scancode: Scancode, down: bool, repeat: bool) -> Event {
+    const SIZE: (u32, u32) = (1280, 720);
+    /// Longer than anything a screen does.
+    const SETTLE: u64 = 2_000_000_000;
+
+    /// A show with the game's documents up and no words in them, not yet drawn.
+    fn undrawn() -> GameShow {
+        let documents = [
+            include_str!("../../../content/ui/title.ui.ron"),
+            include_str!("../../../content/ui/pause.ui.ron"),
+            include_str!("../../../content/ui/settings.ui.ron"),
+            include_str!("../../../content/ui/character.ui.ron"),
+            include_str!("../../../content/ui/dialogue.ui.ron"),
+            include_str!("../../../content/ui/hud.ui.ron"),
+        ];
+        let assets = ScreenAssets {
+            documents: documents.map(|text| UiDocument::from_document(text).unwrap()).to_vec(),
+            tables: vec![StringTable { locale: "en".to_owned(), ..StringTable::default() }],
+            fonts: Vec::new(),
+        };
+        let mut show =
+            GameShow::new(FightDocuments::shipped(), PlayerSettings::default()).expect("the bindings parse");
+        let mut menus = GameMenus::new(assets, show.atlas.clone(), show.setup.clone()).unwrap();
+        menus.open(MenuScreen::Title);
+        show.menus = Some(menus);
+        show
+    }
+
+    /// The same drawn once, and its clock.
+    fn show() -> (GameShow, u64) {
+        let mut show = undrawn();
+        let mut clock = 0;
+        frame(&mut show, &mut clock);
+        (show, clock)
+    }
+
+    /// What a frame does to the menus and the bindings, with time for what moves to settle. Returns whether
+    /// the player left.
+    fn frame(show: &mut GameShow, clock: &mut u64) -> bool {
+        *clock += SETTLE;
+        let now = Timestamp::from_nanos(*clock);
+        let left = show.update_menus(now);
+        show.controls.update(now);
+        show.follow_pause();
+        show.show_fight_on_menus();
+        show.draw_interface(SIZE, &mut UiDrawList::default());
+        left
+    }
+
+    fn key(clock: u64, scancode: Scancode, down: bool) -> Event {
         Event::Key(KeyEvent {
-            timestamp: Timestamp::default(),
+            timestamp: Timestamp::from_nanos(clock),
             window: WindowId::from_raw(1),
             scancode,
             keycode: Keycode(0),
             modifiers: Modifiers::default(),
             down,
-            repeat,
+            repeat: false,
         })
     }
 
-    #[test]
-    fn a_press_of_anything_opens_and_back_leaves() {
-        assert_eq!(title_answer(&key(Scancode::J, true, false)), TitleAnswer::Open);
-        assert_eq!(title_answer(&key(Scancode::ESCAPE, true, false)), TitleAnswer::Leave);
-        assert_eq!(title_answer(&key(AC_BACK, true, false)), TitleAnswer::Leave);
-        assert_eq!(title_answer(&key(Scancode::J, false, false)), TitleAnswer::Nothing, "a release");
-        assert_eq!(title_answer(&key(Scancode::J, true, true)), TitleAnswer::Nothing, "a repeat");
-        let touch = |phase| {
-            Event::Touch(TouchEvent {
-                timestamp: Timestamp::default(),
-                window: WindowId::from_raw(1),
-                finger: FingerId::new(TouchDeviceId::from_raw(1), 1),
-                phase,
-                x: 0.5,
-                y: 0.5,
-                pressure: 1.0,
-            })
-        };
-        assert_eq!(title_answer(&touch(TouchPhase::Down)), TitleAnswer::Open);
-        assert_eq!(title_answer(&touch(TouchPhase::Moved)), TitleAnswer::Nothing);
+    /// A key down and up, each its own frame. Returns whether the player left.
+    fn press(show: &mut GameShow, clock: &mut u64, scancode: Scancode) -> bool {
+        show.handle_event(&key(*clock + 1, scancode, true));
+        let left = frame(show, clock);
+        show.handle_event(&key(*clock + 1, scancode, false));
+        frame(show, clock) || left
     }
 
+    fn is_open(show: &GameShow, screen: MenuScreen) -> bool {
+        show.menus.as_ref().unwrap().is_open(screen)
+    }
+
+    /// A fight up and playing.
+    fn fight() -> (GameShow, u64) {
+        let (mut show, mut clock) = show();
+        press(&mut show, &mut clock, Scancode::RETURN);
+        assert!(!show.on_title());
+        (show, clock)
+    }
+
+    /// The menus and the HUD draw from one atlas, which opening the fight hands on rather than painting again:
+    /// a frame's list has one. Opening twice keeps the HUD that's up.
     #[test]
-    fn opening_the_fight_transfers_the_titles_immutable_atlas() {
-        let mut show = GameShow::new(FightDocuments::shipped()).expect("bindings parse");
+    fn opening_the_fight_keeps_the_one_atlas() {
+        let (mut show, mut clock) = show();
         let mut list = UiDrawList::default();
-        show.draw_interface((640, 360), &mut list);
-        let image = list.atlas.clone().expect("title atlas");
-        let pixels = image.texels.clone();
+        show.draw_interface(SIZE, &mut list);
+        let image = list.atlas.clone().expect("the title's atlas");
         show.open_fight();
+        frame(&mut show, &mut clock);
         list.reset();
-        show.draw_interface((640, 360), &mut list);
-        assert!(std::sync::Arc::ptr_eq(&image, list.atlas.as_ref().expect("HUD atlas")));
-        assert_eq!(image.texels, pixels);
+        show.draw_interface(SIZE, &mut list);
+        assert!(std::sync::Arc::ptr_eq(&image, list.atlas.as_ref().expect("the HUD's atlas")));
         let first = list.quads.clone();
         show.open_fight();
         list.reset();
-        show.draw_interface((640, 360), &mut list);
+        show.draw_interface(SIZE, &mut list);
         assert_eq!(first, list.quads, "opening twice keeps the live HUD");
-        assert!(std::sync::Arc::ptr_eq(&image, list.atlas.as_ref().unwrap()));
     }
 
     #[test]
-    fn the_press_that_opens_the_fight_doesnt_also_swing() {
-        let mut show = GameShow::new(FightDocuments::shipped()).expect("the bindings parse");
+    fn starting_from_the_title_opens_the_fight_and_the_press_doesnt_also_swing() {
+        let (mut show, mut clock) = show();
+        assert!(show.on_title() && is_open(&show, MenuScreen::Title));
+        // Combat's light attack is nothing on a title, then or later.
+        show.handle_event(&key(clock + 1, Scancode::J, true));
+        frame(&mut show, &mut clock);
         assert!(show.on_title());
-        assert_eq!(show.handle_event(&key(Scancode::J, true, false)), TitleAnswer::Open);
+        show.handle_event(&key(clock + 1, Scancode::RETURN, true));
+        frame(&mut show, &mut clock);
         assert!(!show.on_title());
         assert!(show.shown.hud.is_some(), "the fight's HUD comes with it");
-        show.controls.update(Timestamp::from_nanos(1));
-        let actions = show.controls.next_actions(0.0);
-        assert_eq!(actions.buttons, sapphire_gameplay::Buttons::default());
+        assert_eq!(show.controls.next_actions(0.0).buttons, Buttons::default());
+        frame(&mut show, &mut clock);
+        assert!(!is_open(&show, MenuScreen::Title) && is_open(&show, MenuScreen::Hud));
+        // Once it's gone, the key's combat's.
+        show.handle_event(&key(clock + 1, Scancode::J, false));
+        frame(&mut show, &mut clock);
+        show.handle_event(&key(clock + 1, Scancode::J, true));
+        frame(&mut show, &mut clock);
+        assert_ne!(show.controls.next_actions(0.0).buttons, Buttons::default());
+    }
+
+    #[test]
+    fn back_on_the_title_leaves() {
+        let (mut show, mut clock) = show();
+        assert!(press(&mut show, &mut clock, Scancode::ESCAPE));
+    }
+
+    #[test]
+    fn a_title_that_was_never_drawn_doesnt_come_up_over_the_fight() {
+        // What `--open-fight` does.
+        let mut show = undrawn();
+        show.open_fight();
+        frame(&mut show, &mut 0);
+        assert!(!is_open(&show, MenuScreen::Title));
+        assert!(is_open(&show, MenuScreen::Hud));
+    }
+
+    #[test]
+    fn the_pause_follows_whoever_asks_and_back_goes_one_screen_at_a_time() {
+        let (mut show, mut clock) = fight();
+        press(&mut show, &mut clock, Scancode::ESCAPE);
+        assert!(show.controls.is_paused(), "the key is combat's while no menu's up");
+        assert!(is_open(&show, MenuScreen::Pause));
+
+        // Settings over the pause: back leaves it, and the fight stays paused.
+        show.menus.as_mut().unwrap().open(MenuScreen::Settings);
+        frame(&mut show, &mut clock);
+        press(&mut show, &mut clock, Scancode::ESCAPE);
+        frame(&mut show, &mut clock);
+        assert!(!is_open(&show, MenuScreen::Settings) && is_open(&show, MenuScreen::Pause));
+        assert!(show.controls.is_paused());
+
+        // Back from the pause resumes.
+        press(&mut show, &mut clock, Scancode::ESCAPE);
+        frame(&mut show, &mut clock);
+        assert!(!show.controls.is_paused() && !is_open(&show, MenuScreen::Pause));
+
+        // What pauses from outside: focus going, say.
+        show.controls.set_paused(true);
+        frame(&mut show, &mut clock);
+        assert!(is_open(&show, MenuScreen::Pause));
+        assert!(!press(&mut show, &mut clock, Scancode::J), "no menu row is J, and combat's isn't heard");
+        assert!(show.controls.is_paused());
+    }
+
+    #[test]
+    fn what_the_player_chooses_reaches_the_hud_and_the_app_once() {
+        let (mut show, mut clock) = fight();
+        assert_eq!(show.take_changed_settings(), None);
+        show.controls.set_paused(true);
+        frame(&mut show, &mut clock);
+        let menus = show.menus.as_mut().unwrap();
+        menus.open(MenuScreen::Settings);
+        frame(&mut show, &mut clock);
+        // The first row's the language, the next the size.
+        press(&mut show, &mut clock, Scancode::DOWN);
+        press(&mut show, &mut clock, Scancode::RETURN);
+        let chosen = show.take_changed_settings().expect("a row stepped");
+        assert_eq!(chosen.scale(), SIZES[2].1, "normal steps to large");
+        assert_eq!(show.take_changed_settings(), None, "once");
+        let hud = show.shown.hud.as_ref().unwrap();
+        assert_eq!(hud.scale(), SIZES[2].1);
+    }
+
+    #[test]
+    fn the_hud_document_says_what_the_fight_says() {
+        let (mut show, mut clock) = fight();
+        let hud = show.shown.hud.as_mut().unwrap();
+        hud.follow_devices(false, false);
+        frame(&mut show, &mut clock);
+        let menus = show.menus.as_mut().unwrap();
+        assert!(menus.model_mut::<HudModel>(MenuScreen::Hud).unwrap().touch, "a phone has a pause button");
+        let hud = show.shown.hud.as_mut().unwrap();
+        hud.follow_devices(false, true);
+        frame(&mut show, &mut clock);
+        let menus = show.menus.as_mut().unwrap();
+        assert!(!menus.model_mut::<HudModel>(MenuScreen::Hud).unwrap().touch, "a pad has its own");
     }
 
     /// A game's own bindings are what its show reads, and a document that lacks what combat reads stops it,
@@ -378,11 +595,12 @@ mod tests {
             bindings: Some(sapphire_serialize::from_ron(&own).expect("reads")),
             ..FightDocuments::shipped()
         };
-        let mut show = GameShow::new(documents).expect("they hold what combat reads");
+        let mut show =
+            GameShow::new(documents, PlayerSettings::default()).expect("they hold what combat reads");
         let light = |show: &mut GameShow, scancode, at| {
-            show.controls.handle_event(&key(scancode, true, false));
+            show.controls.handle_event(&key(at, scancode, true));
             show.controls.update(Timestamp::from_nanos(at));
-            show.controls.next_actions(0.0).buttons.contains(sapphire_gameplay::Buttons::LIGHT)
+            show.controls.next_actions(0.0).buttons.contains(Buttons::LIGHT)
         };
         assert!(!light(&mut show, Scancode::J, 1), "the shipped key does nothing");
         assert!(light(&mut show, Scancode::U, 2), "its own does");
@@ -391,7 +609,7 @@ mod tests {
             sapphire_serialize::from_ron(sapphire_controls::DEFAULT_BINDINGS).expect("reads");
         lacking.contexts.retain(|context| context.name != sapphire_controls::PAUSE_CONTEXT);
         let documents = FightDocuments { bindings: Some(lacking), ..FightDocuments::shipped() };
-        let refused = GameShow::new(documents).err().expect("it can't pause");
+        let refused = GameShow::new(documents, PlayerSettings::default()).err().expect("it can't pause");
         assert!(refused.to_string().contains(sapphire_controls::PAUSE_CONTEXT), "{refused}");
     }
 
@@ -400,15 +618,12 @@ mod tests {
     fn a_games_design_lays_its_hud_out() {
         let mut documents = FightDocuments::shipped();
         documents.hud.dodge.offset = [-30.0, -150.0];
-        let mut show = GameShow::new(documents).expect("the bindings parse");
+        let mut show = GameShow::new(documents, PlayerSettings::default()).expect("the bindings parse");
         show.open_fight();
         let hud = show.shown.hud.as_mut().expect("it's open");
-        let metrics = sapphire_ui::UiMetrics::new(
-            sapphire_math::Vec2::new(874.0, 402.0),
-            sapphire_ui::Insets::default(),
-        );
+        let metrics = sapphire_ui::UiMetrics::new(Vec2::new(874.0, 402.0), sapphire_ui::Insets::default());
         let _ = hud.update(Timestamp::from_nanos(1), metrics);
         let layout = hud.layout();
-        assert_eq!(layout.dodge.center, layout.attack.center + sapphire_math::Vec2::new(-30.0, -150.0));
+        assert_eq!(layout.dodge.center, layout.attack.center + Vec2::new(-30.0, -150.0));
     }
 }

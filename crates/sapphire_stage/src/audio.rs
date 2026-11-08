@@ -196,6 +196,11 @@ impl DeviceAudio {
         }
     }
 
+    /// The player's volume, a share of full.
+    pub fn set_volume(&mut self, volume: f32) {
+        self.system.set_volume(volume);
+    }
+
     /// The app went to the background, or came back, where it asks the OS for audio again first.
     pub fn set_background(&mut self, background: bool, platform: &mut Platform) {
         if !background {

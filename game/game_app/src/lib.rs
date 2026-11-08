@@ -1,14 +1,16 @@
-//! The game: a title over the arena as it stands, and a press that opens its fight (M3 S2).
+//! The game: a title over the arena as it stands, and its fight, with the game's menus (M3 S2, U7).
 //!
 //! Everything it draws is `sapphire_stage`'s and everything it plays `game_combat`'s and `game_ui`'s. This is
-//! the app around them: the window's frame (`app.rs`), what stands on the stage (`show.rs`) and what mobile
+//! the app around them: the window's frame (`app.rs`), what stands on the stage (`show.rs`), where the player's
+//! settings live (`settings.rs`) and what mobile
 //! links. It has one scene and no scene-building flags: those are the sandbox's, which stays the bench and the
 //! goldens' host.
 //!
 //! # Controls
 //!
-//! A press of anything opens the fight from the title, and Back or `Esc` leaves. In the fight, it's combat's
-//! bindings (`sapphire_controls`' `combat_bindings.ron`) and the HUD's touch zones.
+//! A menu that's up has every press (`game_ui::menus`, `sapphire_controls`' `MenuControls`): the title's start
+//! opens the fight, and Back or `Esc` leaves it. In the fight, it's combat's bindings (`sapphire_controls`'
+//! `combat_bindings.ron`), the HUD's touch zones and its pause button; what pauses opens the pause's screen.
 //!
 //! # Arguments
 //!
@@ -20,12 +22,12 @@
 //!
 //! # What it doesn't do yet
 //!
-//! A lost device ends the run, where the sandbox rebuilds its stack. It stays on the tier it started on. The
-//! title has no words until the U series, and no menu.
+//! A lost device ends the run, where the sandbox rebuilds its stack. It stays on the tier it started on.
 
 mod app;
 mod offscreen;
 mod options;
+mod settings;
 mod show;
 
 use std::sync::{Mutex, Once};
@@ -37,7 +39,7 @@ use sapphire_platform::{App, DeviceClass, Os, PlatformLogSink};
 
 pub use app::GameApp;
 pub use offscreen::OffscreenGame;
-pub use show::{GameShow, TitleAnswer};
+pub use show::GameShow;
 
 /// mimalloc, counted so the R6 check can see allocations.
 #[global_allocator]

@@ -9,7 +9,6 @@
 pub mod hud;
 pub mod menus;
 pub mod screen;
-pub mod title;
 pub mod touch;
 
 /// Log target for the interface.

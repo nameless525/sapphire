@@ -1,5 +1,5 @@
 //! A caller outside the crates, with nothing but their public surface: stand the game's show on a stage, wait
-//! at the title, press, and see a fight go by.
+//! at the title, press its start, and see a fight go by.
 //!
 //! The platform's loop must own the process's main thread, so this test supplies its own `main`
 //! (`harness = false`). It needs a GPU and cooked content, so it runs only when asked, as an `#[ignore]`d test
@@ -10,13 +10,14 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use game_app::{GameApp, GameShow, TitleAnswer};
+use game_app::{GameApp, GameShow};
 use game_combat::combat::CombatOption;
 use game_combat::documents::FightDocuments;
 use game_combat::fight::fight_stage;
+use game_ui::menus::PlayerSettings;
 use sapphire_platform::{
-    App, AppControl, AppInitError, AppMetadata, Event, FingerId, Platform, RunOptions, Timestamp,
-    TouchDeviceId, TouchEvent, TouchPhase, WindowId, run_with,
+    App, AppControl, AppInitError, AppMetadata, Event, KeyEvent, Keycode, Modifiers, Platform, RunOptions,
+    Scancode, Timestamp, WindowId, run_with,
 };
 use sapphire_render::quality::QualitySettings;
 use sapphire_rhi::wgpu;
@@ -60,7 +61,7 @@ impl App for OutsideCaller {
         let documents = FightDocuments::read(platform.content()).map_err(AppInitError::msg)?;
         let desc = fight_stage(StageDesc::new(platform.host(), &gpu, FORMAT, QualitySettings::default()));
         let mut content = Content::new(platform.host(), desc.character, desc.sky)?;
-        let mut show = GameShow::new(documents)?;
+        let mut show = GameShow::new(documents, PlayerSettings::default())?;
         let option = CombatOption::Fight { script: Some("fight-back".to_owned()), party: false };
         let combat = show.shown.fight.prepare_stock_combat(&option, &mut content)?;
         assert!(combat.simulation().overhead_presentation_pair().is_some());
@@ -90,17 +91,21 @@ impl App for OutsideCaller {
         let guard = guard_joints(&stage);
         assert_ne!(guard, held_pose, "the title poses the heroine in her guard");
 
-        let press = Event::Touch(TouchEvent {
-            timestamp: Timestamp::default(),
+        // What the title's first draw opened has had time to come in; its first row has the focus.
+        let press = Event::Key(KeyEvent {
+            timestamp: Timestamp::from_nanos(4_000_000_000),
             window: WindowId::from_raw(1),
-            finger: FingerId::new(TouchDeviceId::from_raw(1), 1),
-            phase: TouchPhase::Down,
-            x: 0.5,
-            y: 0.5,
-            pressure: 1.0,
+            scancode: Scancode::RETURN,
+            keycode: Keycode(0),
+            modifiers: Modifiers::default(),
+            down: true,
+            repeat: false,
         });
-        assert_eq!(stage.show.handle_event(&press), TitleAnswer::Open);
-        assert!(!stage.show.on_title());
+        stage.show.update_menus(Timestamp::from_nanos(3_000_000_000));
+        frame(&mut stage)?;
+        stage.show.handle_event(&press);
+        let left = stage.show.update_menus(Timestamp::from_nanos(5_000_000_000));
+        assert!(!left && !stage.show.on_title(), "the title's start opens the fight");
         let open = frame(&mut stage)?;
         assert_ne!(title, open, "the title goes");
 

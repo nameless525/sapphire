@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use sapphire_assets::AssetId;
-use sapphire_assets::cue::{Attenuation, Bus, Cue, HitstopResponse};
+use sapphire_assets::cue::{Attenuation, Bus, Cue, HitstopResponse, SILENCE_DB};
 use sapphire_assets::sound::DecodedSound;
 use sapphire_math::Vec3;
 use sapphire_time::Stopwatch;
@@ -162,6 +162,8 @@ pub struct AudioSystem<B: AudioBackend> {
     mix: SnapshotMix,
     background: bool,
     interrupted: bool,
+    /// What the player's volume takes off every voice.
+    volume_db: f32,
     stats: AudioStats,
     /// A dropped cue's reason has been logged once.
     warned_unknown: bool,
@@ -185,6 +187,7 @@ impl<B: AudioBackend> AudioSystem<B> {
             mix: SnapshotMix::NEUTRAL,
             background: false,
             interrupted: false,
+            volume_db: 0.0,
             stats: AudioStats::default(),
             warned_unknown: false,
             warned_no_output: false,
@@ -214,6 +217,13 @@ impl<B: AudioBackend> AudioSystem<B> {
     /// this call on, whatever the output has got round to.
     pub fn set_background(&mut self, background: bool) {
         self.set_suspension(background, self.interrupted);
+    }
+
+    /// The player's volume, a share of full: every voice follows at the next update.
+    pub fn set_volume(&mut self, volume: f32) {
+        // Below it, the mixer's silent anyway. Finite whatever it's given: see `VoiceParams`.
+        self.volume_db =
+            if volume > 0.0 { (20.0 * volume.log10()).clamp(SILENCE_DB, 0.0) } else { SILENCE_DB };
     }
 
     /// The OS took audio away or gave it back (iOS: calls, Siri).
@@ -442,7 +452,7 @@ impl<B: AudioBackend> AudioSystem<B> {
                 .find(|tracked| tracked.emitter.id == id)
                 .map(|tracked| tracked.emitter.position),
         };
-        let mut gain_db = voice.gain_db;
+        let mut gain_db = voice.gain_db + self.volume_db;
         let mut pan = 0.0;
         if let (Some(position), Some(attenuation)) = (position, voice.attenuation) {
             let (distance, side) = relative(listener, position);
@@ -480,7 +490,7 @@ fn moved(now: VoiceParams, sent: VoiceParams) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use sapphire_assets::cue::{AttenuationCurve, SILENCE_DB};
+    use sapphire_assets::cue::AttenuationCurve;
 
     use super::*;
     use crate::backend::BusParams;
@@ -626,6 +636,28 @@ mod tests {
         let close = start(facing_away, Vec3::new(0.5, 0.0, 0.0), &mut rng);
         assert!((close - 0.5).abs() < 1e-5, "{close}");
         assert_eq!(start(facing_away, Vec3::ZERO, &mut rng), 0.0);
+    }
+
+    #[test]
+    fn the_players_volume_reaches_a_voice_playing_and_one_to_come() {
+        let mut system = system_with(plain_cue());
+        let mut rng = CueRng::new(1);
+        system.update(&frame(&[], &play(CueTarget::Flat)), &mut rng);
+        assert_eq!(started(&mut system).gain_db, 0.0);
+        system.set_volume(0.5);
+        system.update(&frame(&[], &[]), &mut rng);
+        let calls = system.backend_mut().take_calls();
+        let [MockCall::SetVoice { params, .. }] = calls[..] else { panic!("{calls:?}") };
+        assert!((params.gain_db + 6.02).abs() < 0.01, "{params:?}");
+        system.update(&frame(&[], &play(CueTarget::Flat)), &mut rng);
+        assert!((started(&mut system).gain_db + 6.02).abs() < 0.01);
+        // Off is silent, and nothing a setting says can reach the mixer as a bad number.
+        for volume in [0.0, -1.0, f32::NAN] {
+            system.set_volume(volume);
+            assert_eq!(system.volume_db, SILENCE_DB, "{volume}");
+        }
+        system.set_volume(3.0);
+        assert_eq!(system.volume_db, 0.0);
     }
 
     #[test]

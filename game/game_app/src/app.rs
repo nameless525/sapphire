@@ -5,10 +5,11 @@ use std::time::Duration;
 use game_combat::cues::PadRumble;
 use game_combat::documents::FightDocuments;
 use game_combat::fight::fight_stage;
+use game_ui::menus::PlayerSettings;
 use sapphire_platform::raw_window_handle::HandleError;
 use sapphire_platform::{
     App, AppControl, AppInitError, AppMetadata, DeviceClass, Event, LifecycleEvent, Os, Platform,
-    SurfaceHandle, Window, WindowDesc, WindowEvent,
+    SurfaceHandle, Window, WindowDesc, WindowEvent, durable_replace,
 };
 use sapphire_render::quality::QualitySettings;
 use sapphire_rhi::{
@@ -21,7 +22,8 @@ use sapphire_time::{FixedStepConfig, FixedStepDriver, RealClock, ScaleHandle, Sc
 
 use crate::LOG_TARGET;
 use crate::options::Options;
-use crate::show::{GameShow, TitleAnswer};
+use crate::settings::KeptSettings;
+use crate::show::GameShow;
 
 /// Loop period while nothing can be presented (occluded, minimized, backgrounded).
 const IDLE_FRAME: Duration = Duration::from_millis(33);
@@ -36,6 +38,9 @@ pub struct GameApp {
     surface: Option<RenderSurface>,
     stage: Stage<GameShow>,
     audio: Option<DeviceAudio>,
+    settings: KeptSettings,
+    /// Whether a pad may shake.
+    rumble: bool,
     window: Window,
     /// A device whose player has more than a screen to touch.
     desktop: bool,
@@ -93,8 +98,11 @@ impl App for GameApp {
 
         let documents = FightDocuments::read(platform.content()).map_err(AppInitError::msg)?;
         let desc = fight_stage(StageDesc::new(platform.host(), &gpu, format, QualitySettings::default()));
+        let (settings, chosen) = KeptSettings::load(platform.user_dir(), durable_replace);
+        let rumble = chosen.rumble;
+        let volume = chosen.volume();
         let mut content = Content::new(platform.host(), desc.character, desc.sky)?;
-        let mut show = GameShow::new(documents)?;
+        let mut show = GameShow::new(documents, chosen)?;
         let combat = show.shown.fight.prepare_stock_combat(&options.fight(), &mut content)?;
         let mut stage = Stage::new_with_content(gpu, desc, content)?.with_show(show);
         // Frames are paced to the tier's rate (spec §6.2).
@@ -103,13 +111,16 @@ impl App for GameApp {
         stage.show.controls.input_mut().set_window_size(window_size.width as f32, window_size.height as f32);
         let Stage { show, scene, content, renderer, gpu, quality, .. } = &mut stage;
         show.stand(combat, scene, content, renderer, gpu, quality.active().id)?;
-        let audio = match show.shown.fight.show.cue_show() {
+        let mut audio = match show.shown.fight.show.cue_show() {
             Some(cues) => {
                 let cues = cues.table().sound_cues();
                 DeviceAudio::for_cues(&cues, platform, content, renderer, gpu)?
             }
             None => None,
         };
+        if let Some(audio) = &mut audio {
+            audio.set_volume(volume);
+        }
         if options.open_fight {
             show.open_fight();
         } else {
@@ -119,6 +130,8 @@ impl App for GameApp {
             surface: Some(surface),
             stage,
             audio,
+            settings,
+            rumble,
             window,
             desktop: info.device_class == DeviceClass::Desktop,
             real: RealClock::new(),
@@ -131,9 +144,7 @@ impl App for GameApp {
     }
 
     fn event(&mut self, platform: &mut Platform, event: &Event) -> AppControl {
-        if self.stage.show.handle_event(event) == TitleAnswer::Leave {
-            return AppControl::Exit;
-        }
+        self.stage.show.handle_event(event);
         match event {
             Event::Quit { .. } => return AppControl::Exit,
             Event::Window { event, .. } => match *event {
@@ -168,6 +179,10 @@ impl App for GameApp {
         if self.stage.show.read_input(&self.window, self.desktop, platform.now()) {
             return AppControl::Exit;
         }
+        if let Some(chosen) = self.stage.show.take_changed_settings() {
+            self.follow_settings(&chosen, platform);
+        }
+        self.settings.poll();
         self.follow_pointer();
         if self.suspended {
             std::thread::sleep(IDLE_FRAME);
@@ -194,7 +209,7 @@ impl App for GameApp {
         if let Some(audio) = &mut self.audio {
             audio.update(dt, platform, stage.scene.sound(), stage.show.shown.fight.show.cue_sounds());
         }
-        let pad = stage.show.controls.input().active_gamepad();
+        let pad = stage.show.controls.input().active_gamepad().filter(|_| self.rumble);
         stage.show.shown.fight.show.end_cue_frame(
             &mut stage.scene,
             dt,
@@ -225,6 +240,7 @@ impl App for GameApp {
 
     fn quit(&mut self, _platform: &mut Platform) {
         self.save_pipeline_cache();
+        self.settings.finish();
         if let Err(error) = self.stage.show.shown.fight.finish() {
             tracing::error!(target: LOG_TARGET, %error, "the fight didn't end well");
         }
@@ -248,6 +264,19 @@ impl GameApp {
             self.pointer_held = held;
             self.window.set_relative_mouse(held);
         }
+    }
+
+    /// What the player has just chosen: heard now, and kept for the next run. The language and size have
+    /// reached the screens already.
+    fn follow_settings(&mut self, chosen: &PlayerSettings, platform: &mut Platform) {
+        if let Some(audio) = &mut self.audio {
+            audio.set_volume(chosen.volume());
+        }
+        if self.rumble && !chosen.rumble {
+            self.stop_rumble(platform);
+        }
+        self.rumble = chosen.rumble;
+        self.settings.keep(chosen);
     }
 
     fn stop_rumble(&mut self, platform: &mut Platform) {

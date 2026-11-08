@@ -90,6 +90,31 @@ pub struct BrainPace {
     pub turn_rate_degrees: f32,
 }
 
+/// How a brain behaves on a patrol, in place of looking for a foe however far away it stands. A brain
+/// with this and no patrol fights as one without it.
+#[derive(
+    Reflect,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[reflect(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrainWatch {
+    /// How near a foe has to come to be noticed, in metres across the ground, with a clear line to it.
+    pub sight: f32,
+    /// How far off a foe it has noticed can get before it gives up and goes back, past `sight`.
+    pub lose: f32,
+    /// How far it tilts the stick walking its patrol. Within 0..=1, as a [`BrainPace`]'s are, and not 0.
+    pub walk: f32,
+}
+
 /// The distances an attack suits: nothing at `near`, the most at `best` and nothing again at `far`, in
 /// metres across the ground, in straight lines between.
 #[derive(
@@ -305,7 +330,12 @@ impl BrainRise {
 #[derive(Clone, Debug, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct BrainDef {
     pub spacing: Spacing,
+    /// How far it likes to stay from others with brains, in metres across the ground. Nothing stops it
+    /// coming nearer, but it's pushed away the nearer it comes. 0 keeps no distance at all.
+    pub apart: f32,
     pub pace: BrainPace,
+    /// How it behaves on a patrol, if it can have one.
+    pub watch: Option<BrainWatch>,
     /// How long it keeps its distance before it looks for an attack.
     pub patience: TickRange,
     /// How long it stands after an attack ends: a player's opening.

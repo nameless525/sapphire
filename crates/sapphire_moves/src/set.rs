@@ -12,7 +12,9 @@ use sapphire_serialize::cooked::{self, AlignedVec, CookedError};
 use sapphire_time::{NORMAL_SPEED, SimDuration};
 use serde::{Deserialize, Serialize};
 
-use crate::brain::{Against, BrainAttack, BrainDef, BrainPace, MAX_BRAIN_ATTACKS, Reach, Recent, Spacing};
+use crate::brain::{
+    Against, BrainAttack, BrainDef, BrainPace, BrainWatch, MAX_BRAIN_ATTACKS, Reach, Recent, Spacing,
+};
 use crate::document::{Issue, covered_runs, runs_cover};
 use crate::movement::ControllerProfile;
 use crate::{BakedTables, PathSample, TablesError};
@@ -971,8 +973,9 @@ pub struct MoveSet {
 
 impl Versioned for MoveSet {
     /// 1: M2 G2. 2: M2 G3's attacks, armour, re-arms, walls and fighter. 3: M2 G4's perfect dodges.
-    /// 4: M2 G6's brain. 5: M2 T2's movement. 6: M3 Q3b's cinematics. 7: M3 Q3c's energy and costs.
-    const VERSION: u32 = 7;
+    /// 4: M2 G6's brain. 5: M2 T2's movement. 6: M3 Q3b's cinematics. 7: M3 Q3c's energy and costs. 8: M3
+    /// P3's `apart` and `watch` on a brain.
+    const VERSION: u32 = 8;
 }
 
 /// A move set that can't be built, read or written.
@@ -1161,6 +1164,19 @@ impl MoveSet {
         }
         if !(turn_rate_degrees.is_finite() && turn_rate_degrees > 0.0) {
             return damaged(format!("a brain's turn rate is {turn_rate_degrees}, not above 0"));
+        }
+        if !(brain.apart.is_finite() && brain.apart >= 0.0) {
+            return damaged(format!("a brain's apart is {}, not 0 or above", brain.apart));
+        }
+        if let Some(BrainWatch { sight, lose, walk }) = brain.watch
+            && !(sight.is_finite()
+                && lose.is_finite()
+                && 0.0 < sight
+                && sight < lose
+                && walk > 0.0
+                && walk <= 1.0)
+        {
+            return damaged(format!("a brain's watch of {sight}, {lose} and {walk} is out of order"));
         }
         for (what, range) in [("patience", brain.patience), ("rest", brain.rest), ("recover", brain.recover)]
         {
@@ -1738,6 +1754,11 @@ mod tests {
             // A brain.
             ("spacing backwards", |s| brain(s).spacing = Spacing { near: 2.0, far: 1.0 }, "spacing"),
             ("spacing not finite", |s| brain(s).spacing.far = f32::NAN, "spacing"),
+            ("a distance apart below nothing", |s| brain(s).apart = -1.0, "apart"),
+            ("a distance apart not finite", |s| brain(s).apart = f32::NAN, "apart"),
+            ("a foe lost before it's seen", |s| brain(s).watch = Some(BrainWatch { sight: 9.0, lose: 8.0, walk: 0.3 }), "watch"),
+            ("a sight not finite", |s| brain(s).watch = Some(BrainWatch { sight: f32::NAN, lose: 8.0, walk: 0.3 }), "watch"),
+            ("a patrol walked at no speed", |s| brain(s).watch = Some(BrainWatch { sight: 8.0, lose: 9.0, walk: 0.0 }), "watch"),
             ("a tilt past 1", |s| brain(s).pace.approach = 1.5, "pace"),
             ("a share not finite", |s| brain(s).pace.circle_share = f32::NAN, "pace"),
             ("a turn of nothing", |s| brain(s).pace.turn_rate_degrees = 0.0, "turn"),

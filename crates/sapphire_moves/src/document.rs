@@ -14,8 +14,8 @@ use sapphire_time::NORMAL_SPEED;
 use serde::{Deserialize, Serialize};
 
 use crate::brain::{
-    Against, BrainAttack, BrainDef, BrainPace, BrainRise, MAX_BRAIN_ATTACKS, Reach, Recent, Spacing,
-    TickRange,
+    Against, BrainAttack, BrainDef, BrainPace, BrainRise, BrainWatch, MAX_BRAIN_ATTACKS, Reach, Recent,
+    Spacing, TickRange,
 };
 use crate::movement::ControllerProfile;
 use crate::set::{
@@ -168,7 +168,12 @@ pub struct ReactionsDocument {
 #[serde(deny_unknown_fields)]
 pub struct BrainDocument {
     pub spacing: Spacing,
+    /// See [`BrainDef::apart`]. Left out, a capsule's width between two of them: 1.2 m.
+    #[serde(default = "default_apart")]
+    pub apart: f32,
     pub pace: BrainPace,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watch: Option<BrainWatch>,
     pub patience: TickRange,
     pub rest: TickRange,
     pub recover: TickRange,
@@ -195,6 +200,10 @@ pub struct BrainAttackDocument {
 
 fn one() -> f32 {
     1.0
+}
+
+fn default_apart() -> f32 {
+    1.2
 }
 
 /// When a brain gets up. See [`BrainRise`].
@@ -891,6 +900,17 @@ impl Checker {
         if !(turn_rate_degrees.is_finite() && turn_rate_degrees > 0.0) {
             self.add(TRACK, format!("turn_rate_degrees is {turn_rate_degrees}, not above 0"));
         }
+        if !(brain.apart.is_finite() && brain.apart >= 0.0) {
+            self.add(TRACK, format!("apart is {}, not 0 or above", brain.apart));
+        }
+        if let Some(BrainWatch { sight, lose, walk }) = brain.watch {
+            if !(sight.is_finite() && lose.is_finite() && 0.0 < sight && sight < lose) {
+                self.add(TRACK, format!("watch's sight {sight} and lose {lose} aren't above 0 and in order"));
+            }
+            if !(walk > 0.0 && walk <= 1.0) {
+                self.add(TRACK, format!("watch's walk is {walk}, not above 0 and up to 1"));
+            }
+        }
         for (what, range) in [("patience", brain.patience), ("rest", brain.rest), ("recover", brain.recover)]
         {
             if range.min > range.max || range.max > MAX_MOVE_TICKS {
@@ -958,7 +978,9 @@ impl Checker {
         });
         BrainDef {
             spacing: brain.spacing,
+            apart: brain.apart,
             pace: brain.pace,
+            watch: brain.watch,
             patience: brain.patience,
             rest: brain.rest,
             recover: brain.recover,
@@ -1778,8 +1800,8 @@ mod tests {
         assert!(matches!(
             MoveSet::from_cooked(&stale),
             Err(MoveSetError::Cooked(sapphire_serialize::cooked::CookedError::Stale {
-                found: 8,
-                current: 7
+                found: 9,
+                current: 8
             }))
         ));
         let cut = &cooked[..cooked.len() - 8];
@@ -2258,6 +2280,32 @@ mod tests {
                 |d| brain(d).spacing = Spacing { near: 0.0, far: f32::INFINITY },
                 &["`brain`", "spacing"],
             ),
+            ("a distance apart below nothing", |d| brain(d).apart = -1.0, &["`brain`", "apart is -1"]),
+            (
+                "a distance apart that's no number",
+                |d| brain(d).apart = f32::NAN,
+                &["`brain`", "apart is NaN"],
+            ),
+            (
+                "a foe lost before it's seen",
+                |d| brain(d).watch = Some(BrainWatch { sight: 9.0, lose: 8.0, walk: 0.3 }),
+                &["`brain`", "sight 9 and lose 8"],
+            ),
+            (
+                "a sight of nothing",
+                |d| brain(d).watch = Some(BrainWatch { sight: 0.0, lose: 8.0, walk: 0.3 }),
+                &["`brain`", "sight 0"],
+            ),
+            (
+                "a patrol walked at no speed",
+                |d| brain(d).watch = Some(BrainWatch { sight: 8.0, lose: 9.0, walk: 0.0 }),
+                &["`brain`", "walk is 0"],
+            ),
+            (
+                "a patrol walked past the stick",
+                |d| brain(d).watch = Some(BrainWatch { sight: 8.0, lose: 9.0, walk: 1.5 }),
+                &["`brain`", "walk is 1.5"],
+            ),
             ("a tilt past the stick", |d| brain(d).pace.approach = 1.5, &["`brain`", "approach is 1.5"]),
             ("a tilt that's no number", |d| brain(d).pace.circle = f32::NAN, &["`brain`", "circle is NaN"]),
             (
@@ -2374,6 +2422,8 @@ mod tests {
     fn good_brain() -> BrainDocument {
         BrainDocument {
             spacing: Spacing { near: 1.0, far: 2.0 },
+            apart: 1.2,
+            watch: None,
             pace: BrainPace {
                 approach: 0.7,
                 retreat: 0.3,

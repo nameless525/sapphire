@@ -44,6 +44,8 @@ fn attack(intent: &str, weight: f32, reach: (f32, f32, f32)) -> BrainAttackDocum
 fn brain_document() -> BrainDocument {
     BrainDocument {
         spacing: Spacing { near: 1.6, far: 2.6 },
+        apart: 1.2,
+        watch: None,
         pace: BrainPace {
             approach: 0.7,
             retreat: 0.3,

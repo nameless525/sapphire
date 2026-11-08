@@ -238,8 +238,8 @@ mod movement;
 mod set;
 
 pub use brain::{
-    Against, BrainAttack, BrainDef, BrainPace, BrainRise, MAX_BRAIN_ATTACKS, Reach, Recent, Spacing,
-    TargetDoing, TickRange,
+    Against, BrainAttack, BrainDef, BrainPace, BrainRise, BrainWatch, MAX_BRAIN_ATTACKS, Reach, Recent,
+    Spacing, TargetDoing, TickRange,
 };
 pub use document::{
     AllowDocument, ArmourDocument, AttackDocument, BrainAttackDocument, BrainDocument, BrainRiseDocument,

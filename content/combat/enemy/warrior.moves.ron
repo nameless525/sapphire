@@ -79,6 +79,8 @@
             // a swipe just reaches and an overhead reaches well, and walks in from further: at the far
             // edge it arrives with only the overhead in reach, and has to come closer for a swipe.
             spacing: (near: 1.6, far: 2.6),
+            // A body's width between two of them, so a crowd spreads round whoever it's after.
+            apart: 1.2,
             pace: (
                 // About 4 m/s on the arena's profile, under a player's 6 m/s run: it can be outrun, which
                 // is what the lunge is for.
@@ -90,6 +92,9 @@
                 // A third of the player's turn: a big thing, slow to come round.
                 turn_rate_degrees: 300.0,
             ),
+            // On a patrol, if it's given one: a walk of about 1.5 m/s, a foe noticed from 10 m with a clear
+            // line, and given up on past 20 m.
+            watch: (sight: 9.0, lose: 12.0, walk: 0.25),
             // 0.7 to 2.2 s of keeping its distance before it looks for an attack.
             patience: (min: 40, max: 130),
             // 0.4 to 1.25 s standing after an attack ends: the opening an attack's recovery started.

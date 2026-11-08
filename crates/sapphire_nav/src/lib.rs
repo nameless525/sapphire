@@ -16,7 +16,7 @@
 //! # Does not own
 //!
 //! - The format: `sapphire_navmesh`. Baking: `sapphire_pipeline`'s `nav` module.
-//! - Keeping characters apart, and which brains use any of this: P3.
+//! - Keeping characters apart, and which brains use any of this: `sapphire_gameplay`'s `crowd` and `brain`.
 //! - Height under a character: the graph has polygons alone, no detail mesh, so a position's height
 //!   here is good for telling floors apart. Feet stay on the ground by the controller's own casts.
 //!
@@ -33,5 +33,5 @@ pub mod search;
 
 pub use funnel::{FunnelEnd, straighten};
 pub use graph::{Location, NavGraph, Reach};
-pub use path::{CORRIDOR_POLYGONS, NODES_PER_TICK, NavStats, Navigation, PATH_CORNERS, Path, Steer};
+pub use path::{CORRIDOR_POLYGONS, NODES_PER_TICK, NavStats, Navigation, PATH_CORNERS, Path, Steer, Way};
 pub use search::{PathSearch, Route, RouteEnd, SearchStats};

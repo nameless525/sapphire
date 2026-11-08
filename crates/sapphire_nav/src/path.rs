@@ -11,6 +11,9 @@
 //! }
 //! ```
 //!
+//! A brain asks [`Navigation::way`] instead, which says when there's nothing to follow: the same, and
+//! [`Way::Straight`] while the line to where it's going is clear, with no route kept and no search.
+//!
 //! That's all a brain knows of navigation. **What keeps it cheap** is that most ticks search nothing:
 //! a [`Path`] holds a corridor of polygons and the corners through it, and `follow` searches again only
 //! when the corridor has stopped being any use (see [`Path::wants_search`]). Everything else is finding
@@ -22,7 +25,8 @@
 //! next tick, and `NavStats::deferred` counts those who waited. A search that spends all it was given
 //! returns a corridor as near the goal as it looked, walks that, and asks again as it goes.
 //!
-//! **Keeping characters apart** isn't here: P3 does that, where it has every actor's place to hand.
+//! **Keeping characters apart** isn't here: `sapphire_gameplay`'s `crowd` does that, where it has every
+//! actor's place to hand.
 
 use glam::Vec3;
 use sapphire_navmesh::ArchivedNavMesh;
@@ -65,6 +69,19 @@ pub enum Steer {
     Arrived,
     /// It isn't on the mesh, or it has asked for a search that hasn't had its turn yet.
     NoPath,
+}
+
+/// What a character should do this tick, by [`Navigation::way`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Way {
+    /// Head straight for it. The line's clear ([`NavGraph::walks_straight`]), or the mesh can't say:
+    /// the character or its target isn't on it, or there's no route yet and its search hasn't had its
+    /// turn. Whoever asks steers as if there were no mesh at all.
+    Straight,
+    /// There's a way round: walk this way, a unit vector on the XZ plane.
+    Along(Vec3),
+    /// It's as near as there's any way to get, and the line is no use.
+    Arrived,
 }
 
 /// What a [`Path`] came to at its last search.
@@ -278,6 +295,39 @@ impl Navigation {
         self.left = self.budget;
     }
 
+    /// Whether a character at `position` could walk straight to `target`, for a brain that wonders
+    /// whether it can see someone. `None` if either isn't on the mesh, so the mesh can't say.
+    #[must_use]
+    pub fn line(&self, position: Vec3, target: Vec3) -> Option<bool> {
+        let here = self.graph.locate(position, Reach::CHARACTER)?;
+        let there = self.graph.locate(target, Reach::CHARACTER)?;
+        Some(self.graph.walks_straight(here, there))
+    }
+
+    /// Which way a character at `position` should go to get to `target`: straight there while the line's
+    /// clear, forgetting any route, and otherwise as [`Self::follow`] says. Call it in actor order, as
+    /// that says.
+    ///
+    /// Round a corner it straightens its route from where it stands each tick, rather than only as it
+    /// crosses a polygon, as [`Self::follow`] does. Whoever's walking this is being leaned on by a crowd,
+    /// and two pushed either side of one corner would hold each other off it for ever, the one who's past
+    /// it still going back for it.
+    pub fn way(&mut self, path: &mut Path, position: Vec3, target: Vec3) -> Way {
+        let Some(here) = self.graph.locate(position, Reach::CHARACTER) else {
+            return Way::Straight;
+        };
+        let goal = self.graph.locate(target, Reach::CHARACTER);
+        if goal.is_some_and(|goal| self.graph.walks_straight(here, goal)) {
+            path.clear();
+            return Way::Straight;
+        }
+        match self.follow_from(path, here, goal, target, true) {
+            Steer::Walk(direction) => Way::Along(direction),
+            Steer::Arrived => Way::Arrived,
+            Steer::NoPath => Way::Straight,
+        }
+    }
+
     /// Which way a character at `position` should walk to get to `target`, keeping `path` up to date, and
     /// searching if it needs to and the tick has the nodes. Call it in actor order: who gets the budget
     /// is part of what a replay checks.
@@ -286,7 +336,19 @@ impl Navigation {
             return Steer::NoPath;
         };
         let goal = self.graph.locate(target, Reach::CHARACTER);
+        self.follow_from(path, here, goal, target, false)
+    }
 
+    /// [`Self::follow`], from where it's found the character and its target. `afresh` straightens its route
+    /// from there this tick, whether or not it has moved on.
+    fn follow_from(
+        &mut self,
+        path: &mut Path,
+        here: Location,
+        goal: Option<Location>,
+        target: Vec3,
+        afresh: bool,
+    ) -> Steer {
         // Where it's got to along its corridor.
         let mut moved_on = false;
         let on_route = path.searched != Searched::Never && {
@@ -323,7 +385,7 @@ impl Navigation {
         if path.searched == Searched::Never {
             return Steer::NoPath;
         }
-        if moved_on {
+        if moved_on || afresh {
             path.straighten(&self.graph, here.position);
         }
 
@@ -417,6 +479,85 @@ mod tests {
 
     fn at(x: f32) -> Vec3 {
         Vec3::new(x, 0.0, 0.5)
+    }
+
+    /// A floor with a wall across it, up to a gap at one end, as squares a metre wide.
+    fn walled() -> AlignedVec {
+        let walled: Vec<(i32, i32)> = (0..8).map(|z| (4, z)).collect();
+        crate::graph::tests::squares(10, 10, &walled)
+    }
+
+    fn floor(x: f32, z: f32) -> Vec3 {
+        Vec3::new(x, 0.0, z)
+    }
+
+    #[test]
+    fn a_clear_line_goes_straight_with_no_search() {
+        let bytes = walled();
+        let mut nav = navigation(&bytes);
+        let mut path = Path::new();
+        assert_eq!(nav.way(&mut path, floor(0.5, 0.5), floor(3.5, 6.5)), Way::Straight);
+        assert_eq!(nav.take_stats().searches, 0);
+        assert_eq!(path.route_end(), None, "there's no route to keep");
+    }
+
+    #[test]
+    fn a_wall_in_the_way_goes_round_and_a_clear_line_forgets_the_route() {
+        let bytes = walled();
+        let mut nav = navigation(&bytes);
+        let mut path = Path::new();
+        let Way::Along(direction) = nav.way(&mut path, floor(2.5, 2.5), floor(7.5, 2.5)) else {
+            panic!("there's a wall in the way");
+        };
+        assert_eq!(nav.take_stats().searches, 1);
+        assert!(direction.z > 0.0, "toward the gap past z = 8: {direction}");
+        assert_eq!(path.route_end(), Some(RouteEnd::Reached));
+        // Round the end of it, and the line's clear.
+        assert_eq!(nav.way(&mut path, floor(7.5, 8.5), floor(7.5, 2.5)), Way::Straight);
+        assert_eq!(path.route_end(), None);
+    }
+
+    #[test]
+    fn off_the_mesh_or_with_no_route_yet_it_says_straight() {
+        let bytes = walled();
+        let mut nav = navigation(&bytes);
+        let mut path = Path::new();
+        assert_eq!(nav.way(&mut path, floor(-9.0, 0.0), floor(0.5, 0.5)), Way::Straight, "it's off the mesh");
+        assert_eq!(nav.way(&mut path, floor(2.5, 2.5), floor(40.0, 2.5)), Way::Straight, "so's its target");
+        assert_eq!(nav.line(floor(-9.0, 0.0), floor(0.5, 0.5)), None);
+        assert_eq!(nav.line(floor(2.5, 2.5), floor(7.5, 2.5)), Some(false));
+        assert_eq!(nav.line(floor(2.5, 2.5), floor(3.5, 6.5)), Some(true));
+
+        // The first search spends what the second would need.
+        let mut nav = Navigation::with_budget(NavMesh::read(&bytes).expect("it reads"), MIN_SEARCH_NODES);
+        nav.begin_tick();
+        assert!(matches!(nav.way(&mut path, floor(2.5, 2.5), floor(7.5, 2.5)), Way::Along(_)));
+        let mut second = Path::new();
+        assert_eq!(nav.way(&mut second, floor(2.5, 3.5), floor(7.5, 2.5)), Way::Straight, "its search waits");
+        assert_eq!(nav.take_stats().deferred, 1);
+    }
+
+    /// Pushed past the corner it was going for, with no polygon crossed, it doesn't go back for it.
+    #[test]
+    fn a_way_round_goes_on_from_where_it_stands() {
+        let bytes = walled();
+        let mut nav = navigation(&bytes);
+        let mut path = Path::new();
+        let to = floor(7.5, 2.5);
+        assert!(matches!(nav.way(&mut path, floor(3.5, 8.2), to), Way::Along(_)));
+        // On the same polygon, in the row past the wall's end, pushed over to where (4, 8) is behind it.
+        let Way::Along(past) = nav.way(&mut path, floor(3.99, 8.9), to) else { panic!("it's still round") };
+        assert!(past.x > 0.0, "on to the next corner, not back for that: {past}");
+    }
+
+    #[test]
+    fn a_place_with_no_way_to_it_is_as_near_as_it_gets() {
+        // A wall all the way across.
+        let walled: Vec<(i32, i32)> = (0..10).map(|z| (4, z)).collect();
+        let bytes = crate::graph::tests::squares(10, 10, &walled);
+        let mut nav = navigation(&bytes);
+        let mut path = Path::new();
+        assert_eq!(nav.way(&mut path, floor(3.5, 5.5), floor(7.5, 5.5)), Way::Arrived);
     }
 
     #[test]

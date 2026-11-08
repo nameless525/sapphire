@@ -12,6 +12,10 @@ const MAX_GRID_CELLS: usize = 65_536;
 const MIN_GRID_REFERENCES: usize = 1024;
 const REFERENCES_PER_POLYGON: usize = 16;
 
+/// The most polygons [`NavGraph::walks_straight`] crosses before it says no: a line longer than this is
+/// a route's business. A town's polygons are about 4 m across, so this is further than anyone looks.
+const LINE_POLYGONS: usize = 64;
+
 /// Which polygon a point is on, and the point on it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Location {
@@ -314,6 +318,51 @@ impl NavGraph {
             }
         }
         nearest.map(|(_, location)| location)
+    }
+
+    /// Whether a character can walk the straight line from `from` to `to` and stay on the mesh, from
+    /// polygon to polygon across the edges they share. A mesh is cut back by a capsule's radius, so a line
+    /// on it has a capsule's room all along, and "in one room" needs no room: this is what it comes to.
+    ///
+    /// It answers for walking, not seeing: a pit stops it as a wall does. A line through a corner may
+    /// come out at no. So may one of over [`LINE_POLYGONS`], and either costs only a route.
+    #[must_use]
+    pub fn walks_straight(&self, from: Location, to: Location) -> bool {
+        let mut polygon = from.polygon;
+        for _ in 0..LINE_POLYGONS {
+            if polygon == to.polygon {
+                return true;
+            }
+            // Where the line leaves this polygon: the first of the edges with its end beyond them.
+            let mut leaving: Option<(f32, Option<u32>)> = None;
+            for corner in self.corner_range(polygon) {
+                let (a, b) = self.edge(polygon, corner);
+                // In `f32`, as P3 first walked them: `cross_xz` widens only what `f32` can't hold.
+                let at_end = cross_xz(a, b, to.position) as f32;
+                if at_end >= 0.0 {
+                    continue;
+                }
+                let at_start = cross_xz(a, b, from.position) as f32;
+                let along = at_start / (at_start - at_end);
+                let across = self.neighbour(corner);
+                let first = leaving.is_none_or(|(least, way)| {
+                    along < least || (along == least && way.is_none() && across.is_some())
+                });
+                if first {
+                    leaving = Some((along, across));
+                }
+            }
+            match leaving {
+                // It ends over this polygon: on the edge of its own, or on another floor than this.
+                None => {
+                    let gap = (self.height_over(polygon, to.position) - to.position.y).abs();
+                    return gap <= Reach::CHARACTER.vertical;
+                }
+                Some((_, Some(across))) => polygon = across,
+                Some((_, None)) => return false,
+            }
+        }
+        false
     }
 }
 
@@ -642,6 +691,73 @@ pub(crate) mod tests {
                 }
             }
         }
+    }
+
+    /// Whether a line walks between two points on a floor.
+    fn walks(graph: &NavGraph, from: (f32, f32), to: (f32, f32)) -> bool {
+        let at = |(x, z): (f32, f32)| {
+            graph.locate(Vec3::new(x, 0.0, z), Reach::CHARACTER).expect("it's on the floor")
+        };
+        graph.walks_straight(at(from), at(to))
+    }
+
+    #[test]
+    fn a_line_over_open_floor_walks_and_one_through_a_wall_doesnt() {
+        // A wall along x = 4 from z = 2 to z = 8 of a floor of ten by ten, with a way round each end.
+        let walled: Vec<(i32, i32)> = (2..8).map(|z| (4, z)).collect();
+        let bytes = squares(10, 10, &walled);
+        let graph = graph(&bytes);
+        assert!(walks(&graph, (0.5, 0.5), (0.7, 0.9)), "one polygon");
+        assert!(walks(&graph, (0.5, 0.5), (9.5, 1.5)), "many, below the wall");
+        assert!(walks(&graph, (9.5, 1.5), (0.5, 0.5)), "and back");
+        assert!(!walks(&graph, (2.5, 5.5), (6.5, 5.5)), "through the wall");
+        assert!(!walks(&graph, (6.5, 5.5), (2.5, 5.5)), "through it the other way");
+        assert!(!walks(&graph, (3.5, 1.5), (5.5, 2.5)), "clipping its corner");
+        assert!(walks(&graph, (3.5, 1.5), (5.5, 1.5)), "past its end");
+    }
+
+    #[test]
+    fn a_line_through_a_corner_of_the_grid_takes_the_way_that_goes_on() {
+        let bytes = squares(4, 4, &[]);
+        let graph = graph(&bytes);
+        // Exactly through (1, 1), (2, 2) and (3, 3), where four squares meet.
+        assert!(walks(&graph, (0.5, 0.5), (3.5, 3.5)));
+        assert!(walks(&graph, (3.5, 3.5), (0.5, 0.5)));
+    }
+
+    #[test]
+    fn a_line_that_ends_on_a_floor_it_isnt_on_doesnt_walk() {
+        // Two floors of a square each, one over the other, joined by nothing. Beside the lower is a
+        // neighbour for the line to come from, so it gets as far as standing under its end.
+        let mut mesh =
+            NavMesh { cell_size: 1.0, cell_height: 1.0, polygon_starts: vec![0], ..NavMesh::default() };
+        mesh.vertices.extend([[0, 0, 0], [0, 0, 2], [2, 0, 2], [2, 0, 0], [4, 0, 2], [4, 0, 0]]);
+        mesh.vertices.extend([[2, 3, 0], [2, 3, 2], [4, 3, 2], [4, 3, 0]]);
+        mesh.corners.extend([0, 1, 2, 3]);
+        mesh.neighbours.extend([NO_NEIGHBOUR, NO_NEIGHBOUR, 1, NO_NEIGHBOUR]);
+        mesh.polygon_starts.push(4);
+        mesh.corners.extend([3, 2, 4, 5]);
+        mesh.neighbours.extend([0, NO_NEIGHBOUR, NO_NEIGHBOUR, NO_NEIGHBOUR]);
+        mesh.polygon_starts.push(8);
+        mesh.corners.extend([6, 7, 8, 9]);
+        mesh.neighbours.extend([NO_NEIGHBOUR; 4]);
+        mesh.polygon_starts.push(12);
+        let bytes = mesh.to_cooked().expect("it writes");
+        let graph = graph(&bytes);
+        let low = graph.locate(Vec3::new(1.0, 0.0, 1.0), Reach::CHARACTER).expect("the lower floor");
+        let beside = graph.locate(Vec3::new(3.0, 0.0, 1.0), Reach::CHARACTER).expect("its neighbour");
+        let high = graph.locate(Vec3::new(3.0, 3.0, 1.0), Reach::CHARACTER).expect("the upper floor");
+        assert_eq!((low.polygon, beside.polygon, high.polygon), (0, 1, 2));
+        assert!(graph.walks_straight(low, beside));
+        assert!(!graph.walks_straight(low, high));
+    }
+
+    #[test]
+    fn a_line_past_what_it_will_cross_says_no() {
+        let bytes = squares(i32::try_from(LINE_POLYGONS).unwrap() + 4, 1, &[]);
+        let graph = graph(&bytes);
+        assert!(walks(&graph, (0.5, 0.5), (LINE_POLYGONS as f32 - 0.5, 0.5)));
+        assert!(!walks(&graph, (0.5, 0.5), (LINE_POLYGONS as f32 + 2.5, 0.5)));
     }
 
     #[test]

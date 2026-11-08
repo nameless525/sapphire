@@ -1,6 +1,6 @@
 # Modifications
 
-- `VRM1_Constraint_Twist_Sample.vrm` is unmodified: byte for byte the downloaded file (see the SHA-256 in [SOURCE.md](SOURCE.md)).
+- `VRM1_Constraint_Twist_Sample.vrm` includes three sleeve correctives and a right-underarm corrective on the shirt. A tapered fit at the lower rear hem adds room over the shorts. Two lower front panel correctives let the hem rise with the loaded thigh during running and jumping. Two deeper front folds lift the receiving panel during ground launch, jogging and high-knee running. A rear fold gives the shorts room as the hips rise off the floor during hit recovery. The original download and its checksum are recorded in [SOURCE.md](SOURCE.md).
 - `VRM1_Constraint_Twist_Sample.vrm.meta` is Sapphire's import sidecar (asset ID and import settings), not part of the model. Since M1 X1 it binds the model's 13 material slots to the material documents below.
 
 ## Made at load

@@ -67,11 +67,11 @@
                 walk_speed: 2.0,
                 run_stick: 0.9,
                 walk_stick: 0.5,
-                // m/s². At these a press is at full speed from tick 4, and a stop takes 6 ticks.
-                acceleration: 90.0,
-                deceleration: 60.0,
-                // How fast facing follows the stick. Motion doesn't wait for it.
-                turn_rate_degrees: 1080.0,
+                // m/s². A run reaches full speed in seven steps and stops in nine.
+                acceleration: 54.0,
+                deceleration: 42.0,
+                // A full reversal turns over fifteen steps, about one running footfall.
+                turn_rate_degrees: 720.0,
                 // A jump reaches jump_speed² / (2 × gravity), here 1.11 m, and may reach 2.5 m at most.
                 jump_speed: 7.0,
                 gravity: 22.0,

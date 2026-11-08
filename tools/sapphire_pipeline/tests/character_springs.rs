@@ -11,7 +11,7 @@ use sapphire_anim::{
     SpringTuning, Substeps, root_motion,
 };
 use sapphire_assets::AssetId;
-use sapphire_assets::rig::{ArchivedCharacterRig, CharacterRig};
+use sapphire_assets::rig::{ArchivedCharacterRig, CharacterRig, HumanBone};
 use sapphire_math::{Affine3A, Vec3};
 use sapphire_pipeline::clip::retarget::{HumanMap, RetargetOptions, Rig, retarget};
 use sapphire_pipeline::clip::source::ClipSource;
@@ -61,8 +61,12 @@ impl Character {
 
     /// One of the character's key-pose documents, cooked as its sidecar says.
     fn key_pose_clip(&self, document: &str) -> AlignedVec {
+        self.key_pose_at("lookdev/character", document)
+    }
+
+    fn key_pose_at(&self, folder: &str, document: &str) -> AlignedVec {
         let content = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
-        let bytes = std::fs::read(content.join(format!("lookdev/character/{document}.keypose.ron")))
+        let bytes = std::fs::read(content.join(folder).join(format!("{document}.keypose.ron")))
             .expect("the document");
         let document_read = keypose::read(&bytes).expect("it reads");
         let rig = CharacterRig::from_cooked(&self.rig).expect("a valid rig");
@@ -441,6 +445,78 @@ fn the_characters_chains_keep_their_shape_through_a_fight() {
     assert!(hair.jolt <= 0.2, "a tail's motion jumped {} m in a tick", hair.jolt);
     assert!(hair.off > 0.1, "and it still swings: {} m", hair.off);
     assert!(cloth.off > 0.02, "and it still swings: {} m", cloth.off);
+}
+
+/// Measure torso contact separately from arm crossings during the backward fall.
+#[test]
+fn the_hero_hair_clears_the_torso_during_knockdown() {
+    let character = Character::load();
+    let bytes = character.key_pose_at("combat/player", "reaction_knockdown");
+    let clip = Clip::read(&bytes).expect("a valid clip");
+    let rig = character.rig();
+    let torso_joints: Vec<_> = rig
+        .humanoid
+        .iter()
+        .filter(|entry| matches!(entry.bone, HumanBone::Spine | HumanBone::Chest | HumanBone::UpperChest))
+        .map(|entry| entry.joint.to_native())
+        .collect();
+    let torso: Vec<_> = rig
+        .colliders
+        .iter()
+        .enumerate()
+        .filter(|(_, collider)| torso_joints.contains(&collider.joint.to_native()))
+        .map(|(index, _)| index)
+        .collect();
+    assert!(!torso.is_empty());
+
+    let head = rig.humanoid.iter().find(|entry| entry.bone == HumanBone::Head).expect("head");
+    let head = usize::from(head.joint.to_native());
+    for quality in SpringQuality::SHIPPED {
+        let (mut pose, mut springs) = character.posed(quality.substeps);
+        let names = chains(&character, &springs);
+        let substeps = quality.substeps.count();
+        let mut max_depth = [0.0_f32; 2];
+        for step in 0..=70 * substeps {
+            let tick = f64::from(step) / f64::from(substeps);
+            pose.sample(clip, tick as f32);
+            pose.finish();
+            let (_, rotation, at) = pose.model()[head].to_scale_rotation_translation();
+            let head_center =
+                at + (rotation * pose.rest_rotation(head).inverse()) * Vec3::new(0.0, 0.09, 0.01);
+            let torso_contact = ((0.70 - head_center.y) / 0.36).clamp(0.0, 1.0);
+            springs.update_with_torso_contact(
+                &mut pose,
+                &SpringFrame {
+                    world_from_model: Affine3A::IDENTITY,
+                    ticks: tick,
+                    pose_moved: true,
+                    active: true,
+                },
+                torso_contact,
+            );
+            if !(18.0..=34.0).contains(&tick) {
+                continue;
+            }
+            let colliders: Vec<_> = springs.colliders().collect();
+            for (tail, (name, linked)) in springs.tails().zip(&names) {
+                if !name.contains("Hair") {
+                    continue;
+                }
+                let head = Vec3::from(pose.model()[usize::from(tail.joint)].translation);
+                let points = [tail.position, head.lerp(tail.position, 0.5)];
+                for &collider in torso.iter().filter(|id| linked.contains(id)) {
+                    for (at, point) in points.into_iter().enumerate() {
+                        let depth = tail.hit_radius - colliders[collider].distance(point);
+                        max_depth[at] = max_depth[at].max(depth);
+                    }
+                }
+            }
+        }
+        let [tail, link] = max_depth;
+        println!("{quality:?}: tail overlap {tail:.4} m, link overlap {link:.4} m");
+        // A link's endpoints may be constrained by different torso colliders.
+        assert!(tail < 0.008 && link < 0.008, "{quality:?}: torso overlap {max_depth:?}");
+    }
 }
 
 /// With the tuning off, VRM's step alone breaks all of that on the run: this is what the tuning is for.

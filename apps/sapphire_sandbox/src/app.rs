@@ -157,6 +157,23 @@ impl App for SandboxApp {
         }
         content.override_materials(options.material_overrides());
         let mut show = ShownFight::default();
+        let combat = options
+            .combat
+            .as_ref()
+            .map(|option| {
+                if options.arena.is_some()
+                    && options.character() == lookdev::CHARACTER
+                    && options.character_rig.is_none()
+                {
+                    show.fight.prepare_stock_combat(option, &mut content)
+                } else {
+                    Combat::new(option).map_err(AppInitError::msg)
+                }
+            })
+            .transpose()?;
+        if let (Some(_), Some(combat)) = (options.arena, &combat) {
+            game_combat::arena::check_scenario(combat, options.party).map_err(AppInitError::msg)?;
+        }
         // A device lost while the renderer is made gets a new device and another try, under
         // `CreationLosses`' policy, rather than a renderer of dead objects.
         let mut losses = CreationLosses::default();
@@ -189,11 +206,6 @@ impl App for SandboxApp {
         input.follow_window(&window);
         if matches!(options.combat, Some(CombatOption::Fight { .. })) {
             input.listen_for_fight_restart()?;
-        }
-        // Before any GPU work, so a bad scenario or a file in the way costs nothing and says why.
-        let combat = options.combat.as_ref().map(Combat::new).transpose().map_err(AppInitError::msg)?;
-        if let (Some(_), Some(combat)) = (options.arena, &combat) {
-            game_combat::arena::check_scenario(combat, options.party).map_err(AppInitError::msg)?;
         }
         let mut scene = Scene::with_character(renderer.character, renderer.character_bounds, options.skinned);
         scene.set_sky_material(renderer.sky);
@@ -345,7 +357,9 @@ impl App for SandboxApp {
                 .play_cues(&mut scene, sapphire_stage::vfx::budget(quality.active().id))
                 .map_err(AppInitError::msg)?;
         }
-        show.fight.attach_combat(combat);
+        if let Some(combat) = combat {
+            show.fight.attach_prepared_combat(combat, &mut scene, &content)?;
+        }
         // The stage after the hour, which places its pillars.
         if let (Some(layout), Some(meshes)) = (options.stage, renderer.stage) {
             scene.spawn_studio(layout, meshes);
@@ -703,7 +717,7 @@ impl SandboxApp {
         profiling::scope!("simulate");
         // The overlay's recorder, between frames: a recording starts or ends with no step under way.
         #[cfg(feature = "dev")]
-        self.dev.apply_recorder(&mut self.show.fight.combat);
+        self.dev.apply_recorder(&mut self.show.fight, &mut self.scene, &self.content);
         let steps = self.input.advance(&mut self.driver, frame_time);
         if steps.count == 0 {
             return steps;

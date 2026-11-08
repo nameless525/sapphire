@@ -329,6 +329,7 @@ fn the_town_streaming_changes_nothing_the_checksums_see() {
 /// One `a fight ended` line of a log, as the numbers it gives.
 struct FightEnded {
     ticks: u32,
+    fell_at: Option<u32>,
     checksum: u64,
     line: String,
 }
@@ -340,60 +341,88 @@ fn fights_ended(log: &str) -> Vec<FightEnded> {
     };
     log.lines()
         .filter(|line| line.contains("a fight ended"))
-        .map(|line| FightEnded {
-            ticks: field(line, " ticks=").parse().expect("a number"),
-            checksum: u64::from_str_radix(&field(line, " checksum="), 16).expect("hex"),
-            line: line.to_owned(),
+        .map(|line| {
+            let fell_at = field(line, " fell_at=");
+            let fell_at = match fell_at.as_str() {
+                "None" => None,
+                some => Some(
+                    some.strip_prefix("Some(")
+                        .and_then(|tick| tick.strip_suffix(')'))
+                        .expect("a reported defeat tick")
+                        .parse()
+                        .expect("a number"),
+                ),
+            };
+            FightEnded {
+                ticks: field(line, " ticks=").parse().expect("a number"),
+                fell_at,
+                checksum: u64::from_str_radix(&field(line, " checksum="), 16).expect("hex"),
+                line: line.to_owned(),
+            }
         })
         .collect()
 }
 
-/// `--arena --fight` is what a window plays, and a window is what nobody can open here, so this is the
-/// proof that it runs: the same `Combat` step, `Scene::follow_simulation` and frame path, the real warrior
-/// and its brain, the player on a script through the `ActionSource` the bindings are one of, for over two
-/// fights and a frame every eight ticks. It ends each fight when someone falls, starts over from a new
-/// simulation, and every fight is the one a headless run of that script plays: the checksums in its
-/// log are `arena-fight-won`'s at those ticks, so nothing carries over, and nothing it drew changed it.
+/// Runs the window's stock fight with the same script and end tick in two captures. The fixed bodies
+/// participate in combat, so both runs load them from the same cook. Rendering every eight ticks must
+/// produce the same simulation results as drawing one frame at the end, through two full fights and
+/// the first part of a third.
 #[test]
 #[ignore = "needs a GPU and cooked content (`cargo xtask content`)"]
 fn a_fight_with_no_file_plays_beside_the_renderer_and_starts_over() {
-    let replay = workspace().join("tests").join("replays").join("arena-fight-won.sreplay");
-    let played = headless(&fs::read(&replay).expect("committed"));
-    let temp = Temp::new("fight");
-    let capture = temp.path("drawn.png");
-    let output = run_app(&[
-        "--capture",
-        capture.to_str().expect("UTF-8"),
-        "--capture-ticks",
-        "4400",
-        "--capture-frames",
-        "550",
-        "--capture-step",
-        "8",
-        "--arena",
-        "--fight",
-        "--script",
-        "fight-back",
-    ]);
-    let log = log_of(&output);
-    assert!(output.status.success(), "{log}");
-    assert!(capture.exists(), "{log}");
+    const CAPTURE_TICK: u32 = 4400;
+    const DEFEAT_TICK: u32 = 1455;
+    const RESTART_TICK: u32 = DEFEAT_TICK + 240;
 
-    let fights = fights_ended(&log);
-    assert_eq!(fights.len(), 3, "two ended and one going on:\n{log}");
-    for (number, fight) in fights.iter().enumerate() {
-        assert!(fight.line.contains(&format!(" fight={}", number + 1)), "{}", fight.line);
-        assert!(fight.line.contains("allocations=0"), "{}", fight.line);
-        let expected = played.trail.at(fight.ticks).expect("within the replay");
-        assert_eq!(fight.checksum, expected, "{}", fight.line);
+    let temp = Temp::new("fight");
+    let capture = |name, cadence: &[&str]| {
+        let path = temp.path(name);
+        let tick = CAPTURE_TICK.to_string();
+        let mut args = vec![
+            "--capture",
+            path.to_str().expect("UTF-8"),
+            "--capture-ticks",
+            &tick,
+            "--arena",
+            "--fight",
+            "--script",
+            "fight-back",
+        ];
+        args.extend_from_slice(cadence);
+        let output = run_app(&args);
+        let log = log_of(&output);
+        assert!(output.status.success(), "{log}");
+        assert!(path.exists(), "{log}");
+        let fights = fights_ended(&log);
+        assert_eq!(fights.len(), 3, "two ended and one going on:\n{log}");
+        for (number, fight) in fights.iter().enumerate() {
+            assert!(fight.line.contains(&format!(" fight={} ", number + 1)), "{}", fight.line);
+            assert!(fight.line.contains("allocations=0"), "{}", fight.line);
+        }
+        fights
+    };
+
+    let frequent = capture("frequent.png", &["--capture-frames", "550", "--capture-step", "8"]);
+    let single = capture("single.png", &[]);
+    for (fight, reference) in frequent.iter().zip(&single) {
+        assert_eq!(
+            (fight.ticks, fight.fell_at, fight.checksum),
+            (reference.ticks, reference.fell_at, reference.checksum),
+            "{}\n{}",
+            fight.line,
+            reference.line
+        );
     }
-    // The script wins: the warrior falls, with the player up, and it's over a little later.
-    for fight in &fights[..2] {
+    // Both completed fights end the same way, then the third starts from tick zero again.
+    assert_eq!(frequent[0].checksum, frequent[1].checksum, "the second fight repeats the first");
+    for fight in &frequent[..2] {
         assert!(fight.line.contains("enemy_health=0"), "{}", fight.line);
         assert!(!fight.line.contains("player_health=0"), "{}", fight.line);
-        assert!(fight.line.contains("fell_at=Some(1253)"), "{}", fight.line);
-        assert_eq!(fight.ticks, 1253 + 240, "{}", fight.line);
+        assert_eq!(fight.fell_at, Some(DEFEAT_TICK), "{}", fight.line);
+        assert_eq!(fight.ticks, RESTART_TICK, "{}", fight.line);
     }
+    assert_eq!(frequent[2].fell_at, None, "{}", frequent[2].line);
+    assert_eq!(frequent[2].ticks, CAPTURE_TICK - 2 * RESTART_TICK, "{}", frequent[2].line);
 }
 
 /// A long run on a tier that draws every other tick (M2 Z1's soak): `--offscreen` takes two ticks a frame

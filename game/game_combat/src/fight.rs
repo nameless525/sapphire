@@ -8,9 +8,13 @@
 //! [`Fight`] is that beside the simulation it follows, as a stage runs them: one step of each, in spec §4.5's
 //! order.
 
+mod overhead_profile;
+mod stock_arena;
+
 use std::sync::Arc;
 use std::time::Duration;
 
+use sapphire_anim::FootContact;
 use sapphire_anim::{AnimStats, Skeleton};
 use sapphire_assets::mesh::Mesh;
 use sapphire_assets::{AssetId, Handle};
@@ -21,6 +25,7 @@ use sapphire_cues::RumbleSink;
 use sapphire_ecs::bevy_ecs::world::WorldId;
 use sapphire_ecs::prelude::*;
 use sapphire_gameplay::Simulation;
+use sapphire_gameplay::body::{BodySample, HeadAuthority};
 use sapphire_math::{Mat4, Vec2, Vec3};
 use sapphire_physics::PhysicsWorld;
 use sapphire_platform::AppInitError;
@@ -28,7 +33,7 @@ use sapphire_render::quality::TierId;
 use sapphire_render::{MeshHandle, PipelineInventory, PostParams, Renderer, VfxFrame};
 use sapphire_rhi::GpuContext;
 use sapphire_sequencer::{Origin, Playing, TimelinePlayer};
-use sapphire_time::{ScaleHandle, ScaleSource, Stopwatch, TICK_HZ};
+use sapphire_time::{SUBTICKS_PER_TICK, ScaleHandle, ScaleSource, Stopwatch, TICK_HZ};
 use sapphire_timeline::Timeline;
 use sapphire_vfx::VfxBudget;
 use sapphire_world::light_rig::{CharacterLightRig, LightRigId};
@@ -36,13 +41,17 @@ use sapphire_world::light_rig::{CharacterLightRig, LightRigId};
 use sapphire_world::screen_effects::EffectLibrary;
 
 use crate::LOG_TARGET;
-use crate::arena::{ArenaActors, ArenaEnemy, ArenaGround, ArenaShot, COLLIDERS};
+use crate::arena::{ArenaActors, ArenaEnemy, ArenaGround, ArenaShot, COLLIDERS, PLAYER_EYES};
 use crate::blade::{self, HeldBlade};
+#[cfg(feature = "dev")]
+use crate::combat::SessionRecorder;
 use crate::combat::{Combat, CombatOption, no_bindings};
 use crate::combat_views::{CombatViews, Facade};
 use crate::cues::{CueShow, CueStage};
 use crate::enemy::{self, EnemyMeshes};
-use sapphire_stage::anim_graph::{ClipTable, GraphDriver, GraphEvaluation};
+#[cfg(feature = "dev")]
+use sapphire_gameplay::replay::{LiveMoves, document_file_name};
+use sapphire_stage::anim_graph::{ClipTable, FixedBodyRenderer, GraphDriver, GraphEvaluation};
 use sapphire_stage::animate::{self, ClipPlayer};
 use sapphire_stage::audio::CueSounds;
 use sapphire_stage::content::{Content, GraphKey};
@@ -102,6 +111,130 @@ pub struct Followed {
     pub started_over: bool,
 }
 
+const HERO_HEAD: HeadAuthority = HeadAuthority {
+    movement: sapphire_core::Name::new("light_3"),
+    retained: 1.0,
+    source_ticks: [7.0, 11.0, 16.0, 22.0],
+};
+
+struct FixedFighter {
+    renderer: FixedBodyRenderer,
+    actor: sapphire_gameplay::ActorId,
+}
+
+struct ImpactPair {
+    actors: [sapphire_gameplay::ActorId; 2],
+    samples: [BodySample; 2],
+    held: Option<[sapphire_anim::GraphStepStamp; 2]>,
+    presented: [bool; 2],
+    release: Option<ImpactRelease>,
+}
+
+struct ImpactRelease {
+    origins: [BodySample; 2],
+    start: Option<[sapphire_anim::GraphStepStamp; 2]>,
+}
+
+impl ImpactRelease {
+    fn valid(&self, current: [Option<sapphire_anim::GraphStepStamp>; 2]) -> bool {
+        self.start.is_some_and(|start| {
+            start.into_iter().zip(current).all(|(origin, now)| {
+                now.is_some_and(|now| {
+                    now.step >= origin.step
+                        && now.generation == origin.generation
+                        && now.owner_now >= origin.owner_now
+                })
+            })
+        })
+    }
+}
+
+impl ImpactPair {
+    fn is_held(&self, simulation: &Simulation) -> bool {
+        self.held
+            .is_some_and(|held| Self::retains(held, self.actors.map(|actor| simulation.body_stamp(actor))))
+    }
+
+    fn retains(
+        held: [sapphire_anim::GraphStepStamp; 2],
+        current: [Option<sapphire_anim::GraphStepStamp>; 2],
+    ) -> bool {
+        held.into_iter().zip(current).all(|(contact, current)| {
+            current.is_some_and(|current| {
+                current.step >= contact.step
+                    && current.generation == contact.generation
+                    && current.owner_now == contact.owner_now
+            })
+        })
+    }
+
+    fn follow(&mut self, simulation: &Simulation, cut: bool) {
+        if cut {
+            self.held = None;
+            self.presented = [false; 2];
+            if let Some(release) = &mut self.release {
+                release.start = None;
+            }
+            return;
+        }
+        let stamps = self.actors.map(|actor| simulation.body_stamp(actor));
+        if self.held.is_some_and(|held| Self::retains(held, stamps)) {
+            return;
+        }
+        let stopped = self.held.take();
+        let presented = std::mem::take(&mut self.presented);
+        if let Some(release) = &mut self.release {
+            if let Some(stopped) = stopped
+                && presented.into_iter().all(|shown| shown)
+            {
+                let paired = self.actors.into_iter().zip(&mut release.origins).zip(stopped).all(
+                    |((actor, origin), held)| {
+                        simulation.read_body(actor, 0.0, origin)
+                            && origin.span().is_some_and(|span| {
+                                span.before.generation == held.generation
+                                    && span.after.generation == held.generation
+                                    && span.before.owner_now == held.owner_now
+                            })
+                    },
+                );
+                release.start = paired.then_some(stopped);
+            }
+            if let Some(start) = release.start {
+                let expired = self.actors.into_iter().zip(start).all(|(actor, start)| {
+                    simulation.actor(actor).is_some_and(|view| {
+                        view.clock_now
+                            .as_subticks()
+                            .saturating_sub(view.clock_delta.as_subticks())
+                            .saturating_sub(start.owner_now.as_subticks())
+                            >= FixedBodyRenderer::IMPACT_RELEASE_TICKS * SUBTICKS_PER_TICK as u64
+                    })
+                });
+                let interrupted = simulation
+                    .hits()
+                    .events()
+                    .iter()
+                    .any(|hit| self.actors.contains(&hit.attacker) || self.actors.contains(&hit.target));
+                if expired || interrupted || !release.valid(stamps) {
+                    release.start = None;
+                }
+            }
+        }
+        let Some(hit) = simulation.applied_overhead_contact() else { return };
+        if hit.pair_stop_ticks == 0 || [hit.event.target, hit.event.attacker] != self.actors {
+            return;
+        }
+        let spans = [hit.witness.target, hit.witness.attacker];
+        let paired =
+            self.actors.into_iter().zip(&mut self.samples).zip(spans).all(|((actor, buffer), span)| {
+                simulation.read_body(actor, hit.witness.witnessed_fraction, buffer)
+                    && buffer.span() == Some(span)
+            });
+        if paired {
+            self.held = Some(spans.map(|span| span.after));
+        }
+    }
+}
+
 /// What a fight has on the scene. Empty, it plays nothing and costs a few branches a frame.
 #[derive(Default)]
 pub struct FightShow {
@@ -116,6 +249,8 @@ pub struct FightShow {
     slow_motion: Option<(u32, ScaleHandle)>,
     /// Whether the arena's fighters play graphs ([`Self::play_fighters`]).
     fighters_posed: bool,
+    fixed_fighters: [Option<FixedFighter>; 2],
+    impact: Option<ImpactPair>,
     /// A new version of the enemy landed that its other parts don't fit yet ([`Self::replace_enemy`]).
     enemy_waits: bool,
     /// Which party member the character draws as, with `--party`.
@@ -287,6 +422,10 @@ impl FightShow {
     pub fn play_fighters(&mut self, scene: &mut Scene, player: GraphDriver, enemy: GraphDriver) {
         let Some(arena) = &self.arena else { return };
         let [(_, _), (enemy_entity, _)] = arena.fighters();
+        let player = player
+            .with_ground_turn()
+            // The two-handed finisher spots through its rising hilt before its arms descend.
+            .with_authored_head_look(HERO_HEAD.movement, HERO_HEAD.retained, HERO_HEAD.source_ticks);
         scene.pose_character_by_graph(player);
         let world = scene.world_mut();
         world.entity_mut(enemy_entity).insert(enemy);
@@ -319,6 +458,16 @@ impl FightShow {
         let mut followed = Followed { started_over, ..Followed::default() };
         if let Some(arena) = &mut self.arena {
             followed.came_in = arena.follow(simulation, cast);
+            for (index, fixed) in self.fixed_fighters.iter_mut().enumerate() {
+                if let Some(fixed) = fixed
+                    && (started_over || followed.came_in[index])
+                {
+                    fixed.renderer.discontinuity();
+                }
+            }
+        }
+        if let Some(impact) = &mut self.impact {
+            impact.follow(simulation, started_over || followed.came_in.into_iter().any(|came_in| came_in));
         }
         if started_over {
             scene.cut_view();
@@ -711,14 +860,28 @@ impl FightShow {
         player: &ClipTable<'_>,
         enemy: &ClipTable<'_>,
         alpha: f32,
+        presentation: Option<(&Content, Option<&Simulation>)>,
     ) {
         profiling::scope!("animate fighters");
+        let simulation = presentation.and_then(|(_, simulation)| simulation);
+        let moves = simulation.map(Simulation::move_library);
+        let warrior_versions = if self.fixed_fighters[1].is_some() {
+            presentation
+                .and_then(|(content, _)| self.enemy_versions(content))
+                .map(|(mesh, skeleton)| (mesh, 0, skeleton))
+        } else {
+            None
+        };
         let started = Stopwatch::start();
         let mut stats = AnimStats::default();
         let (Some(arena), Some(graph_players)) = (&mut self.arena, &mut self.graph_players) else { return };
         let view = scene.spring_view();
         let world = scene.world_mut();
-        let entities = [arena.fighters()[0].0, arena.fighters()[1].0];
+        let fighters = arena.fighters();
+        let stick_released = fighters[0]
+            .1
+            .is_some_and(|actor| actor.controls.current.stick == sapphire_gameplay::Stick::CENTER);
+        let entities = fighters.map(|(entity, _)| entity);
         for (index, (entity, clips)) in entities.into_iter().zip([player, enemy]).enumerate() {
             let Ok((mut driver, render, figure, rig, _)) = graph_players.get_mut(world, entity) else {
                 continue;
@@ -726,12 +889,81 @@ impl FightShow {
             if !driver.fits(&render) {
                 continue;
             }
+            if let Some(fixed) = &mut self.fixed_fighters[index] {
+                let (content, _) = presentation.expect("fixed body presentation needs its source");
+                let versions =
+                    if index == 0 { content.current_character_versions() } else { warrior_versions };
+                fixed.renderer.check_source(clips, versions);
+                let simulation = simulation.expect("simulation body presentation needs its producer");
+                let ready = if let Some(impact) = &mut self.impact
+                    && impact.is_held(simulation)
+                {
+                    let ready = fixed.renderer.read_impact(&impact.samples[index]);
+                    impact.presented[index] |= ready;
+                    ready
+                } else {
+                    let ready = fixed.renderer.read_simulation(simulation, fixed.actor, alpha);
+                    if ready
+                        && let Some(impact) = &self.impact
+                        && let Some(release) = &impact.release
+                        && release.valid(impact.actors.map(|actor| simulation.body_stamp(actor)))
+                    {
+                        fixed.renderer.release_impact(&impact.samples[index], &release.origins[index]);
+                    }
+                    ready
+                };
+                if ready {
+                    let (mut render, mut figure, mut rig) = (render, figure, rig);
+                    stats.characters += 1;
+                    let (evaluated, springs, elapsed) =
+                        fixed.renderer.publish(&mut driver, &mut render, &mut figure, &mut rig, &view);
+                    if evaluated {
+                        stats.evaluated += 1;
+                        stats.joints += driver.player.pose().joint_count() as u32;
+                        if index == 1 {
+                            let hand = driver.player.pose().model()[arena.blade_hand()];
+                            arena.hold_blade(Mat4::from(hand));
+                        }
+                    }
+                    stats.springs += u32::from(springs.wrote_pose);
+                    stats.spring_substeps += springs.substeps;
+                    stats.spring_time += elapsed;
+                    continue;
+                }
+                if simulation.tick() != 0 {
+                    stats.characters += 1;
+                    continue;
+                }
+                // The title and a freshly reset arena can draw before the first body step.
+                // At tick zero the ordinary graph poses the idle fighters without advancing combat.
+                driver.player.pose_mut().clear_body_presentation();
+            }
+            let gather = index == 0 && stick_released && driver.has_ik();
+            driver.player.request_grounded_gather(gather);
             // After that, since it spends a cut and a landing, which wait for a frame the graph plays.
             let Some(input) = arena.graph_input(index, alpha) else { continue };
             stats.characters += 1;
             let place = arena.drawn(index, alpha);
             if let Some(ik) = driver.ik_mut() {
                 ik.set_look_target(arena.look_target(index, alpha));
+                // Read plants in the move's own root space so extra gameplay travel
+                // cannot turn a stationary shoe into a skating shoe.
+                ik.set_foot_contact(if input.locomotion.grounded && !input.defeated {
+                    if input.combat.is_none() {
+                        // Both fighters author heel and forefoot rolls. Pin the
+                        // loaded sole landmark rather than the ankle between them.
+                        FootContact::RollingStance
+                    } else {
+                        moves
+                            .zip(input.combat)
+                            .and_then(|(moves, combat)| {
+                                arena.authored_foot_motion(index, combat.position, moves)
+                            })
+                            .map_or(FootContact::Sole, FootContact::Authored)
+                    }
+                } else {
+                    FootContact::Sole
+                });
             }
             let mut job = GraphEvaluation::new(driver, render, figure, rig, input, place, &view);
             job.run(clips);
@@ -751,6 +983,25 @@ impl FightShow {
         }
         stats.time = started.elapsed();
         scene.set_anim_stats(stats);
+    }
+
+    fn animate_with_simulation(
+        &mut self,
+        scene: &mut Scene,
+        content: &Content,
+        alpha: f32,
+        simulation: Option<&Simulation>,
+    ) {
+        if self.fighters_posed {
+            let alpha = self.alpha_of_fighters(alpha);
+            self.animate_fighters(
+                scene,
+                &content.graph_clips(),
+                &content.graph_clips_of(ENEMY_GRAPH),
+                alpha,
+                Some((content, simulation)),
+            );
+        }
     }
 
     /// Takes new screen effect presets (live tuning, `dev` builds), if the table firing a fight's cues finds
@@ -841,6 +1092,9 @@ impl FightShow {
         renderer: &mut Renderer,
         gpu: &GpuContext,
     ) -> Result<(), String> {
+        if content.stock_inputs_locked() {
+            return Err("editing a bound stock graph requires an unconfigured fight".to_owned());
+        }
         if owner == GraphKey::CHARACTER {
             return scene.replace_graph_document(graph, content, renderer, gpu);
         }
@@ -897,10 +1151,7 @@ impl SceneShow for FightShow {
     }
 
     fn animate(&mut self, scene: &mut Scene, content: &Content, alpha: f32) {
-        if self.fighters_posed {
-            let alpha = self.alpha_of_fighters(alpha);
-            self.animate_fighters(scene, &content.graph_clips(), &content.graph_clips_of(ENEMY_GRAPH), alpha);
-        }
+        self.animate_with_simulation(scene, content, alpha, None);
     }
 
     fn present(&mut self, scene: &mut Scene, alpha: f32, aspect: Option<f32>) {
@@ -908,8 +1159,18 @@ impl SceneShow for FightShow {
         let alpha = self.alpha_of_fighters(alpha);
         if let Some(arena) = &mut self.arena {
             let started = Stopwatch::start();
-            arena.present(scene.world_mut(), alpha, aspect);
+            if let Some(root) = self.fixed_fighters[1].as_ref().and_then(|fixed| fixed.renderer.root()) {
+                arena.present_with_warrior_root(scene.world_mut(), alpha, aspect, root);
+            } else {
+                arena.present(scene.world_mut(), alpha, aspect);
+            }
             self.camera_time = started.elapsed();
+        }
+        if let Some(root) = self.fixed_fighters[0].as_ref().and_then(|fixed| fixed.renderer.root()) {
+            let entity = scene.character();
+            if let Some(mut transform) = scene.world_mut().get_mut::<RenderTransform>(entity) {
+                transform.set_if_neq(RenderTransform(root));
+            }
         }
         self.follow_hand(scene);
         self.follow_blades(scene, alpha);
@@ -959,15 +1220,212 @@ pub struct Fight {
     pub combat: Option<Combat>,
     /// What it has on the scene.
     pub show: FightShow,
+    stock_arena: Option<stock_arena::StockArenaAssets>,
 }
 
 impl Fight {
+    /// Sets up ordinary combat using the mounted CPU content before any renderer upload.
+    /// Historical replays with matching unconfigured tables never load the stock profile.
+    pub fn prepare_stock_combat(
+        &mut self,
+        option: &CombatOption,
+        content: &mut Content,
+    ) -> Result<Combat, AppInitError> {
+        self.prepare_stock_combat_with(option, move || Ok(content))
+    }
+
+    /// Requests CPU content only when the fight needs the stock setup.
+    pub fn prepare_stock_combat_with<'a>(
+        &mut self,
+        option: &CombatOption,
+        content: impl FnOnce() -> Result<&'a mut Content, AppInitError>,
+    ) -> Result<Combat, AppInitError> {
+        #[cfg(feature = "dev")]
+        let mut bound_content = None;
+        let combat = Combat::new_with_setup(option, |scenario, simulation, cast| {
+            if scenario.name != crate::arena::FIGHT_SCENARIO {
+                return Ok(());
+            }
+            let content = content().map_err(|error| error.to_string())?;
+            if self.stock_arena.is_none() {
+                self.stock_arena = Some(stock_arena::StockArenaAssets::load(content)?);
+            }
+            self.stock_arena
+                .as_ref()
+                .expect("the checked stock package was loaded")
+                .install(simulation, cast)?;
+            #[cfg(feature = "dev")]
+            {
+                bound_content = Some(content);
+            }
+            Ok(())
+        })
+        .map_err(AppInitError::msg)?;
+        #[cfg(feature = "dev")]
+        if let Some(content) = bound_content {
+            content.lock_stock_inputs();
+        }
+        Ok(combat)
+    }
+
+    /// Starts a debug-overlay recording between frames, using the retained package if this arena
+    /// was already bound to the ordinary stock bodies.
+    #[cfg(feature = "dev")]
+    pub fn start_recording_session(
+        &mut self,
+        scene: &mut Scene,
+        content: &Content,
+        recorder: &mut SessionRecorder,
+        scenario: &str,
+        live: &LiveMoves,
+    ) {
+        let stock = self.combat.is_none() && scenario == crate::arena::FIGHT_SCENARIO;
+        let Some(assets) = self.stock_arena.as_ref().filter(|_| stock) else {
+            recorder.start_tuned(&mut self.combat, scenario, live);
+            return;
+        };
+        let mut recording = None;
+        recorder.start_tuned_with_setup(&mut recording, scenario, live, |scenario, simulation, cast| {
+            if scenario.documents.iter().any(|path| live.latest(document_file_name(path)).is_some()) {
+                return Err("Live move edits require an unconfigured recording.".into());
+            }
+            assets.install(simulation, cast)
+        });
+        if let Some(combat) = recording {
+            match self.attach_prepared_combat(combat, scene, content) {
+                Ok(()) => {
+                    self.follow_step(scene, &mut FrameLaps::default());
+                }
+                Err(error) => {
+                    self.combat = None;
+                    self.clear_recording_presentation(scene);
+                    recorder.note_error(error.to_string());
+                }
+            }
+        }
+    }
+
+    /// Ends an overlay recording and retires its renderer state in the same operation. A failed
+    /// save that continues recording also keeps its body source.
+    #[cfg(feature = "dev")]
+    pub fn finish_recording_session(
+        &mut self,
+        scene: &mut Scene,
+        recorder: &mut SessionRecorder,
+        save: bool,
+    ) {
+        let running = self.combat.is_some();
+        if save {
+            recorder.save(&mut self.combat);
+        } else {
+            recorder.discard(&mut self.combat);
+        }
+        if running && self.combat.is_none() {
+            self.clear_recording_presentation(scene);
+        }
+    }
+
+    #[cfg(feature = "dev")]
+    fn clear_recording_presentation(&mut self, scene: &mut Scene) {
+        if let Some(arena) = &self.show.arena {
+            for (entity, _) in arena.fighters() {
+                if let Some(mut driver) = scene.world_mut().get_mut::<GraphDriver>(entity) {
+                    driver.player.pose_mut().clear_body_presentation();
+                }
+            }
+        }
+        self.show.fixed_fighters = [None, None];
+        self.show.impact = None;
+        if let Some((_, handle)) = self.show.slow_motion.take() {
+            scene.world_clock_mut().0.pop_scale(handle);
+        }
+    }
+
+    fn prepare_impact_presentation(&mut self) -> Result<(), AppInitError> {
+        let actors = self.show.fixed_fighters.each_ref().map(|fixed| fixed.as_ref().map(|fixed| fixed.actor));
+        let [Some(hero), Some(warrior)] = actors else {
+            return Err(AppInitError::msg("impact presentation needs both simulation body renderers"));
+        };
+        let simulation = self
+            .combat
+            .as_ref()
+            .map(Combat::simulation)
+            .ok_or_else(|| AppInitError::msg("impact presentation needs its simulation"))?;
+        let hero_sample = simulation
+            .body_sample_buffer(hero)
+            .ok_or_else(|| AppInitError::msg("impact presentation needs the heroine's body binding"))?;
+        let warrior_sample = simulation
+            .body_sample_buffer(warrior)
+            .ok_or_else(|| AppInitError::msg("impact presentation needs the warrior's body binding"))?;
+        let origins = [hero, warrior].map(|actor| simulation.body_sample_buffer(actor));
+        let [Some(hero_origin), Some(warrior_origin)] = origins else {
+            return Err(AppInitError::msg("impact release needs both original body bindings"));
+        };
+        let release = Some(ImpactRelease { origins: [hero_origin, warrior_origin], start: None });
+        self.show.impact = Some(ImpactPair {
+            actors: [hero, warrior],
+            samples: [hero_sample, warrior_sample],
+            held: None,
+            presented: [false; 2],
+            release,
+        });
+        Ok(())
+    }
+
     /// Attaches a combat after the show is built, preparing its actor-owned cue storage without following it.
     pub fn attach_combat(&mut self, combat: Option<Combat>) {
         if let (Some(cues), Some(combat)) = (&mut self.show.cues, &combat) {
             cues.prepare(combat.simulation());
         }
         self.combat = combat;
+    }
+
+    /// Attaches a checked ordinary fight after the cooked scene and graphs are ready.
+    /// A configured fight uses only the simulation's existing body buffers for presentation.
+    pub fn attach_prepared_combat(
+        &mut self,
+        combat: Combat,
+        scene: &mut Scene,
+        content: &Content,
+    ) -> Result<(), AppInitError> {
+        let simulation = combat.simulation();
+        let Some(actors) = simulation.overhead_presentation_pair() else {
+            if self.show.fixed_fighters.iter().any(Option::is_some) {
+                return Err(AppInitError::msg("changing body authority requires a fresh arena scene"));
+            }
+            self.attach_combat(Some(combat));
+            return Ok(());
+        };
+        if combat.cast() != actors.as_slice() {
+            return Err(AppInitError::msg("the prepared body actors differ from the arena cast"));
+        }
+        let arena =
+            self.show.arena.as_ref().ok_or_else(|| AppInitError::msg("the body pair needs an arena"))?;
+        let [(hero, _), (warrior, _)] = arena.fighters();
+        let warrior_versions = self.show.enemy_versions(content).map(|(mesh, skeleton)| (mesh, 0, skeleton));
+        let sources = [
+            (hero, content.graph_clips(), content.current_character_versions()),
+            (warrior, content.graph_clips_of(ENEMY_GRAPH), warrior_versions),
+        ];
+        let mut fixed = [None, None];
+        for (index, (entity, clips, versions)) in sources.into_iter().enumerate() {
+            let actor = actors[index];
+            let sample = simulation
+                .body_sample_buffer(actor)
+                .ok_or_else(|| AppInitError::msg("the prepared simulation lacks its body buffer"))?;
+            let mut driver = scene
+                .world_mut()
+                .get_mut::<GraphDriver>(entity)
+                .ok_or_else(|| AppInitError::msg("the prepared body's render graph is missing"))?;
+            let mut renderer =
+                driver.simulation_body_renderer(&clips, versions, sample).map_err(AppInitError::msg)?;
+            renderer.discontinuity();
+            fixed[index] = Some(FixedFighter { renderer, actor });
+        }
+        self.show.impact = None;
+        self.show.fixed_fighters = fixed;
+        self.attach_combat(Some(combat));
+        self.prepare_impact_presentation()
     }
 
     /// One step of the fight with no one playing it, after the scene's: the simulation, then what follows
@@ -1013,6 +1471,21 @@ impl Fight {
         let combat = Combat::new(option).map_err(AppInitError::msg)?;
         let party = matches!(option, CombatOption::Fight { party: true, .. });
         crate::arena::check_scenario(&combat, party).map_err(AppInitError::msg)?;
+        self.stand_prepared(combat, scene, content, renderer, gpu, tier)
+    }
+
+    /// Stands a checked combat whose CPU bootstrap already finished.
+    pub fn stand_prepared(
+        &mut self,
+        combat: Combat,
+        scene: &mut Scene,
+        content: &mut Content,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+        tier: TierId,
+    ) -> Result<Followed, AppInitError> {
+        crate::arena::check_scenario(&combat, combat.simulation().party().is_formed())
+            .map_err(AppInitError::msg)?;
         let show = &mut self.show;
         let town = content.town(renderer, gpu)?;
         let fog_cards = Some(content.fog_cards(renderer, gpu)?);
@@ -1040,7 +1513,7 @@ impl Fight {
         scene.set_day(DEFAULT_TIME_OF_DAY, None);
         show.play_cues(scene, vfx::budget(tier)).map_err(AppInitError::msg)?;
         let followed = show.follow_simulation(scene, combat.simulation(), combat.cast());
-        self.attach_combat(Some(combat));
+        self.attach_prepared_combat(combat, scene, content)?;
         scene.warm_fixed_step();
         Ok(followed)
     }
@@ -1077,7 +1550,8 @@ impl SceneShow for Fight {
     }
 
     fn animate(&mut self, scene: &mut Scene, content: &Content, alpha: f32) {
-        self.show.animate(scene, content, alpha);
+        let simulation = self.combat.as_ref().map(Combat::simulation);
+        self.show.animate_with_simulation(scene, content, alpha, simulation);
     }
 
     fn present(&mut self, scene: &mut Scene, alpha: f32, aspect: Option<f32>) {
@@ -1098,6 +1572,37 @@ impl SceneShow for Fight {
 
     fn draw_debug(&mut self) {
         self.show.draw_debug();
+    }
+}
+
+#[cfg(test)]
+mod impact_tests {
+    use super::ImpactPair;
+    use sapphire_anim::GraphStepStamp;
+    use sapphire_time::SimTime;
+
+    #[test]
+    fn impact_pair_retains_both_clocks_and_expires_on_resume_cut_or_rewind() {
+        let contact = |owner_now| GraphStepStamp {
+            step: 54,
+            owner_now: SimTime::from_subticks(owner_now),
+            generation: 2,
+        };
+        let held = [contact(17_750), contact(53_000)];
+        for step in 54..=64 {
+            let current = held.map(|stamp| Some(GraphStepStamp { step, ..stamp }));
+            assert!(ImpactPair::retains(held, current));
+            assert!(ImpactPair::retains(held, current));
+        }
+        let [hero, warrior] = held;
+        let warrior = GraphStepStamp { step: 65, ..warrior };
+        let fractional_resume =
+            GraphStepStamp { step: 65, owner_now: SimTime::from_subticks(18_000), ..hero };
+        assert!(!ImpactPair::retains(held, [Some(fractional_resume), Some(warrior)]));
+        let cut = GraphStepStamp { step: 55, generation: 3, ..hero };
+        assert!(!ImpactPair::retains(held, [Some(cut), Some(warrior)]));
+        assert!(!ImpactPair::retains(held, [None, Some(warrior)]));
+        assert!(!ImpactPair::retains(held, [Some(GraphStepStamp { step: 53, ..hero }), Some(warrior)]));
     }
 }
 

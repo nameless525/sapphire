@@ -81,6 +81,8 @@ pub enum ScenarioError {
     NavMesh(#[from] sapphire_navmesh::NavMeshError),
     #[error(transparent)]
     Timeline(#[from] TimelineError),
+    #[error("the arena couldn't bind its runtime profiles: {0}")]
+    RuntimeProfiles(String),
 }
 
 /// A named starting world.
@@ -399,6 +401,7 @@ pub fn arena(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
     for spot in [spawns.player, spawns.enemy] {
         cast.push(sim.spawn(ActorSpawn { position: spot.position(), yaw: spot.yaw(), moves, controller })?);
     }
+    sim.prepare_standing_jump(cast[0]);
     aim_round(sim, &cast);
     Ok(cast)
 }
@@ -514,7 +517,18 @@ impl PreparedFight {
         config: SimConfig,
         live: &super::LiveMoves,
     ) -> Result<FightWorld, ScenarioError> {
-        let (simulation, cast) = self.start(config, live)?;
+        self.start_resettable_with_setup(config, live, |_, _| Ok(()))
+    }
+
+    /// Configures the new tick-zero arena before sealing its resettable mutation boundary.
+    pub fn start_resettable_with_setup(
+        &self,
+        config: SimConfig,
+        live: &super::LiveMoves,
+        setup: impl FnOnce(&mut Simulation, &[ActorId]) -> Result<(), ScenarioError>,
+    ) -> Result<FightWorld, ScenarioError> {
+        let (mut simulation, cast) = self.start(config, live)?;
+        setup(&mut simulation, &cast)?;
         let initial_party = *simulation.party();
         let player = simulation.actor(cast[0]).expect("the player was spawned");
         let warrior = simulation.actor(cast[1]).expect("the warrior was spawned");
@@ -603,6 +617,7 @@ impl FightActors {
                 sim.set_warp_target(member, WarpTarget::Actor(enemy));
             }
         } else {
+            sim.prepare_standing_jump(first);
             sim.set_warp_target(first, WarpTarget::Actor(enemy));
         }
         // An edit can take the brain away, in which case the enemy stands there.

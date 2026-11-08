@@ -474,6 +474,23 @@ pub struct Constraint {
     pub kind: ConstraintKind,
 }
 
+impl ArchivedConstraint {
+    /// The plain value used to bind this validated constraint to its skeleton.
+    #[must_use]
+    pub fn to_native_constraint(&self) -> Constraint {
+        Constraint {
+            joint: self.joint.to_native(),
+            source: self.source.to_native(),
+            weight: self.weight.to_native(),
+            kind: match self.kind {
+                ArchivedConstraintKind::Roll { axis } => ConstraintKind::Roll { axis },
+                ArchivedConstraintKind::Aim { axis } => ConstraintKind::Aim { axis },
+                ArchivedConstraintKind::Rotation => ConstraintKind::Rotation,
+            },
+        }
+    }
+}
+
 /// What a [`Constraint`] transfers, each relative to the joints' rest poses.
 #[derive(Clone, Copy, Debug, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 #[rkyv(derive(Debug))]

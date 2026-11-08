@@ -831,9 +831,9 @@ fn the_same_hook_reads_one_checksum_under_aslr() {
     assert!(distinct(5) > 1, "pairs over table keys never moved");
 }
 
-/// What the attack reads on every machine, a Luau upgrade or a change to `ATTACK` moving them on purpose.
-const ATTACK_SIM: u64 = 0x4bdf_798c_11df_c65e;
-const ATTACK_DIGEST: u64 = 0x02b7_0e41_88ba_5ceb;
+/// What the attack reads on every machine, including the stock movement and moves in its replay.
+const ATTACK_SIM: u64 = 0x3e9a_c28b_50f9_734c;
+const ATTACK_DIGEST: u64 = 0xa916_38eb_2827_1c70;
 const ATTACK_COOKED: u64 = 0xaeb4_3be9_564b_eb34;
 const CORPUS_COOKED: [u64; 3] = [0x5242_6308_ea97_c17b, 0x4e2e_a36b_d34f_f76d, 0x4e2e_a36b_d34f_f76d];
 

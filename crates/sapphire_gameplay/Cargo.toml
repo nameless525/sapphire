@@ -15,6 +15,9 @@ bevy_reflect.workspace = true
 profiling.workspace = true
 # The allocation counter in the simulation's stats (rule R6).
 sapphire_core.workspace = true
+# Validated cooked CPU assets for an optional deterministic body profile.
+sapphire_assets.workspace = true
+sapphire_body_pose.workspace = true
 sapphire_ecs.workspace = true
 sapphire_math.workspace = true
 sapphire_moves.workspace = true

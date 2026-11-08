@@ -49,7 +49,6 @@ use sapphire_time::Stopwatch;
 use crate::LOG_TARGET;
 use crate::offscreen::Stage;
 use crate::options::Options;
-use game_combat::combat::Combat;
 use game_combat::combat::CombatOption;
 
 /// Frames run before measuring: first-use pipeline work and buffer growth settle here.
@@ -63,7 +62,6 @@ const TIMED_FRAMES: u32 = 240;
 pub(crate) fn run(
     platform: &Platform,
     options: &Options,
-    combat: Option<Combat>,
     frames: u32,
     width: u32,
     height: u32,
@@ -73,7 +71,6 @@ pub(crate) fn run(
     }
     let startup = Stopwatch::start();
     let mut stage = crate::offscreen::stage(platform, options)?;
-    stage.show.fight.attach_combat(combat);
     let startup = startup.elapsed();
     if let Some(fight @ (CombatOption::Replay { .. } | CombatOption::Fight { .. })) = &options.combat {
         return crate::fight_bench::run(&mut stage, fight, options, (frames, width, height), startup);

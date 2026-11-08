@@ -220,15 +220,17 @@ fn a_section_names_only_what_it_changes() {
 /// [`TODAY`] is written out here so a change of the defaults is seen: they're what every document
 /// without a section plays by, so they move what no document names.
 #[test]
-fn todays_numbers_are_the_defaults_and_the_real_documents_hold_them() {
+fn the_warrior_keeps_the_defaults_and_the_player_has_its_own_profile() {
+    const PLAYER_PROFILE: ControllerProfile =
+        ControllerProfile { acceleration: 54.0, deceleration: 42.0, turn_rate_degrees: 720.0, ..TODAY };
     assert_eq!(ControllerProfile::default(), TODAY);
-    for (name, text) in [("warrior", WARRIOR), ("player", PLAYER)] {
+    for (name, text, expected) in [("warrior", WARRIOR, TODAY), ("player", PLAYER, PLAYER_PROFILE)] {
         let document = MoveSetDocument::parse(text).expect("parses");
         let fighter = document.fighter.expect("a fighter");
-        assert_eq!(fighter.movement, Some(TODAY), "{name}'s document has the numbers to edit, all of them");
+        assert_eq!(fighter.movement, Some(expected), "{name}'s document has its complete movement profile");
     }
     let baked = replay::player_moves().expect("the simulation's copy reads");
-    assert_eq!(baked.movement(), Some(&TODAY), "so does the simulation's copy");
+    assert_eq!(baked.movement(), Some(&PLAYER_PROFILE), "the simulation uses the player's authored profile");
 }
 
 /// The brief's first rule, in one place: today's numbers in a section are no change to any fight. The

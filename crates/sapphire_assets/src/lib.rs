@@ -124,7 +124,8 @@ pub use kind::{AssetError, AssetKind};
 pub use pipeline_key::PipelineKey;
 pub use sapphire_serialize::{AssetId, ParseAssetIdError};
 pub use server::{
-    Asset, AssetBudgets, AssetChange, AssetServer, AssetSlot, AssetStats, Handle, LoadError, LoadPriority,
-    LoadState, MemoryPackSource, MountError, MountState, PackFile, PackSource, ReadDone, RemountReport,
-    TextureAsset, Unloaded, UnmountReport, UntypedHandle, Upload, UploadError, UploadReport, WeakHandle,
+    Asset, AssetBudgets, AssetChange, AssetServer, AssetSlot, AssetStats, CpuResident, Handle, LoadError,
+    LoadPriority, LoadState, MemoryPackSource, MountError, MountState, PackFile, PackSource, ReadDone,
+    RemountReport, TextureAsset, Unloaded, UnmountReport, UntypedHandle, Upload, UploadError, UploadReport,
+    WeakHandle,
 };

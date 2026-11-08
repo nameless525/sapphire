@@ -1,5 +1,7 @@
 use std::sync::{Arc, Mutex};
 
+use sapphire_time::Stopwatch;
+
 use super::*;
 use crate::material::{AnimeCharacterMaterial, Material};
 use crate::mesh::{
@@ -129,6 +131,38 @@ fn dependencies_reach_the_gpu_before_the_assets_that_use_them() {
         LoadError::WrongKind { id: id(MATERIAL), expected: AssetKind::Mesh, found: AssetKind::Material }
     );
     assert_eq!(server.load::<Mesh>(id(99)).unwrap_err(), LoadError::NotFound(id(99)));
+}
+
+#[test]
+fn cpu_preload_retains_checked_mesh_without_advancing_upload() {
+    let (mut server, _) = serve(character(), unlimited());
+    let handle = server.load::<Mesh>(id(MESH)).unwrap();
+    assert!(matches!(
+        server.finish_cpu(&handle, &|| Duration::ZERO),
+        Err(LoadError::Stalled { id: asset }) if asset == id(MESH)
+    ));
+    let stopwatch = Stopwatch::start();
+    let remaining = || Duration::from_secs(10).saturating_sub(stopwatch.elapsed());
+    let asset = server.finish_cpu(&handle, &remaining).unwrap();
+    let bytes = mesh_bytes(id(MATERIAL));
+    assert_eq!(asset.cooked_bytes(), bytes.as_slice());
+    assert_eq!(asset.content_hash(), *blake3::hash(&bytes).as_bytes());
+    assert_eq!(server.state(&handle), LoadState::Loading);
+
+    let retained = asset.clone();
+    let mut order = Vec::new();
+    server.finish(&handle, record(&mut order)).unwrap();
+    assert_eq!(
+        order,
+        [(AssetKind::Texture, id(TEXTURE)), (AssetKind::Material, id(MATERIAL)), (AssetKind::Mesh, id(MESH))]
+    );
+    assert!(server.cpu_resident(&handle).is_none());
+    assert!(matches!(
+        server.finish_cpu(&handle, &remaining),
+        Err(LoadError::CpuBytesReleased(asset)) if asset == id(MESH)
+    ));
+    drop(asset);
+    assert_eq!(retained.cooked_bytes(), bytes.as_slice());
 }
 
 #[test]

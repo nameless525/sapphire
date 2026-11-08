@@ -7,7 +7,11 @@ use sapphire_physics::{
 use sapphire_time::SimDuration;
 
 use super::profile::ResolvedProfile;
-use super::{ControllerDrive, ControllerEvents, ControllerInput, ControllerState, GroundMode, MovementMode};
+use super::{
+    ControllerDrive, ControllerEvents, ControllerInput, ControllerState, GroundMode, JUMP_REBOUND_WINDOW,
+    MOVING_JUMP_MIN_ALIGNMENT, MOVING_JUMP_MIN_SPEED, MOVING_JUMP_PREPARATION, MovementMode,
+    REBOUND_JUMP_PREPARATION, REBOUND_MIN_LANDING_SPEED, STANDING_JUMP_MAX_SPEED, STANDING_JUMP_PREPARATION,
+};
 use crate::movement::ActorTransform;
 
 /// Moves one tick may make, each after turning along what the last one hit.
@@ -54,6 +58,7 @@ pub fn step_controller(
     delta: SimDuration,
 ) -> Result<(), WorldError> {
     let pose = world.body_pose(body).ok_or(WorldError::UnknownBody(body))?;
+    let just_landed = state.events.landed;
     state.events = ControllerEvents::default();
     if delta == SimDuration::ZERO {
         state.jump_waiting |= input.jump && input.drive.locomotion;
@@ -67,7 +72,9 @@ pub fn step_controller(
     let start = pose.position;
     let mut tick = Tick { world, body, profile, center: start, rotation: pose.rotation };
 
-    if (input.jump || waited) && drive.gravity && can_jump(state, profile) {
+    let request = input.jump || waited;
+    let jump = release_jump(state, request, just_landed, drive, want, delta);
+    if jump && drive.gravity && can_jump(state, profile) {
         state.velocity.y = profile.authored().jump_speed;
         state.mode = GroundMode::Airborne;
         state.coyote = SimDuration::ZERO;
@@ -109,6 +116,16 @@ pub fn step_controller(
 
     tick.slide(state, motion, drive.mode == MovementMode::Free)?;
     tick.settle(state, &drive, start, fall_speed)?;
+    if state.jump_preparation.is_some() {
+        state.jump_rebound = if state.events.landed && state.events.landing_speed > REBOUND_MIN_LANDING_SPEED
+        {
+            JUMP_REBOUND_WINDOW
+        } else if state.mode == GroundMode::Grounded {
+            state.jump_rebound - delta
+        } else {
+            SimDuration::ZERO
+        };
+    }
 
     let facing = drive.face.or_else(|| (want != Vec3::ZERO).then(|| det::yaw_of_direction(want)));
     if let Some(target) = facing {
@@ -129,6 +146,63 @@ fn sanitized(drive: &ControllerDrive) -> ControllerDrive {
     let root_motion = if drive.root_motion.is_finite() { drive.root_motion } else { Vec3::ZERO };
     let face = drive.face.filter(|face| face.is_finite());
     ControllerDrive { root_motion, face, ..*drive }
+}
+
+/// A supported press can load the soles. Turning away releases a pending press, while a move
+/// taking the stick cancels it. Coyote and move-authored jumps still use the ordinary path.
+fn release_jump(
+    state: &mut ControllerState,
+    request: bool,
+    just_landed: bool,
+    drive: ControllerDrive,
+    want: Vec3,
+    delta: SimDuration,
+) -> bool {
+    let Some(remaining) = &mut state.jump_preparation else { return request };
+    if !drive.locomotion
+        || !drive.gravity
+        || drive.mode != MovementMode::Free
+        || drive.root_motion != Vec3::ZERO
+    {
+        *remaining = SimDuration::ZERO;
+        state.jump_preparation_moving = false;
+        return request;
+    }
+    let velocity = flat(state.velocity);
+    let speed = velocity.length();
+    let aligned = speed >= MOVING_JUMP_MIN_SPEED
+        && velocity.dot(want) >= MOVING_JUMP_MIN_ALIGNMENT * speed * want.length()
+        && want != Vec3::ZERO;
+    if *remaining != SimDuration::ZERO {
+        let follows_plant = if state.jump_preparation_moving { aligned } else { want == Vec3::ZERO };
+        *remaining = if follows_plant && state.mode == GroundMode::Grounded && !drive.jump {
+            *remaining - delta
+        } else {
+            SimDuration::ZERO
+        };
+        if *remaining == SimDuration::ZERO {
+            state.jump_preparation_moving = false;
+            return true;
+        }
+        return false;
+    }
+    if !request || drive.jump || just_landed || state.mode != GroundMode::Grounded {
+        return request;
+    }
+    if speed <= STANDING_JUMP_MAX_SPEED && want == Vec3::ZERO {
+        *remaining = if state.jump_rebound > SimDuration::ZERO {
+            REBOUND_JUMP_PREPARATION
+        } else {
+            STANDING_JUMP_PREPARATION
+        };
+        return false;
+    }
+    if aligned {
+        *remaining = MOVING_JUMP_PREPARATION;
+        state.jump_preparation_moving = true;
+        return false;
+    }
+    true
 }
 
 /// Whether a press jumps from where it is: from the ground, off a ledge just left, out of a wedge, and from

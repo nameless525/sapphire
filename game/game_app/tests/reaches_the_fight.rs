@@ -19,7 +19,8 @@ use sapphire_platform::{
 };
 use sapphire_render::quality::QualitySettings;
 use sapphire_rhi::wgpu;
-use sapphire_stage::{Readback, Stage, StageDesc, headless_gpu};
+use sapphire_stage::anim_graph::GraphDriver;
+use sapphire_stage::{Content, FrameLaps, Readback, Stage, StageDesc, headless_gpu};
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 const WIDTH: u32 = 320;
@@ -56,16 +57,36 @@ impl App for OutsideCaller {
     fn init(platform: &mut Platform) -> Result<Self, AppInitError> {
         let (instance, gpu) = headless_gpu()?;
         let desc = fight_stage(StageDesc::new(platform, &gpu, FORMAT, QualitySettings::default()));
-        let mut stage = Stage::new(platform, instance, gpu, desc)?.with_show(GameShow::new()?);
+        let mut content = Content::new(platform, desc.character, desc.sky)?;
+        let mut show = GameShow::new()?;
         let option = CombatOption::Fight { script: Some("fight-back".to_owned()), party: false };
+        let combat = show.shown.fight.prepare_stock_combat(&option, &mut content)?;
+        assert!(combat.simulation().overhead_presentation_pair().is_some());
+        let mut stage = Stage::new_with_content(instance, gpu, desc, content)?.with_show(show);
         let Stage { show, scene, content, renderer, gpu, quality, .. } = &mut stage;
-        show.stand(&option, scene, content, renderer, gpu, quality.active().id)?;
+        show.stand(combat, scene, content, renderer, gpu, quality.active().id)?;
 
         for _ in 0..30 {
             stage.step();
         }
-        assert_eq!(tick(&stage), 0, "the title holds the fight");
+        let guard_joints = |stage: &Stage<GameShow>| {
+            let driver = stage
+                .scene
+                .world()
+                .get::<GraphDriver>(stage.scene.character())
+                .expect("the heroine has a graph");
+            let pose = driver.player.pose();
+            // Hair and clothing have their own secondary motion. Check the guard's body and sword.
+            ["J_Bip_C_Hips", "J_Bip_L_Foot", "J_Bip_R_Foot", "J_Bip_R_Hand"].map(|name| {
+                let joint = pose.joint_names().iter().position(|candidate| candidate == name).unwrap();
+                pose.model()[joint]
+            })
+        };
+        let held_pose = guard_joints(&stage);
         let title = frame(&mut stage)?;
+        assert_eq!(tick(&stage), 0, "the title holds the fight");
+        let guard = guard_joints(&stage);
+        assert_ne!(guard, held_pose, "the title poses the heroine in her guard");
 
         let press = Event::Touch(TouchEvent {
             timestamp: Timestamp::default(),
@@ -90,6 +111,14 @@ impl App for OutsideCaller {
         let enemy = values.enemy.expect("an enemy stands there");
         assert!(values.player.hp < 1.0 || enemy.hp < 1.0, "someone's been hurt in {STEPS} ticks");
         assert_ne!(open, frame(&mut stage)?, "the fight moves the picture");
+        assert_ne!(guard_joints(&stage), guard, "combat changes the guard pose");
+
+        let fight = &mut stage.show.shown.fight;
+        fight.combat.as_mut().expect("a fight stands").restart();
+        assert!(fight.follow_step(&mut stage.scene, &mut FrameLaps::default()).started_over);
+        frame(&mut stage)?;
+        assert_eq!(tick(&stage), 0);
+        assert_eq!(guard_joints(&stage), guard, "the first reset frame draws the guard");
         // Exit test 7: from the title through the fight's first seconds, no frame built what the load didn't.
         let first_uses = stage.renderer.stats().pipelines.first_use_builds;
         assert_eq!(first_uses, 0, "the load missed: {}", stage.renderer.first_use_report());
@@ -110,6 +139,7 @@ fn main() -> ExitCode {
         eprintln!("reaches_the_fight: needs a GPU and cooked content; run it with --ignored");
         return ExitCode::SUCCESS;
     }
+    sapphire_core::log::init(Default::default(), None).expect("initialize app test logging");
     if std::env::var_os("SAPPHIRE_CONTENT_DIR").is_none() {
         let cook = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/content/desktop");
         // SAFETY: nothing else runs yet: the platform's loop and its threads start below.

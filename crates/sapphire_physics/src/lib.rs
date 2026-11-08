@@ -82,6 +82,7 @@ const _: () = {
 };
 
 mod inspect;
+mod mesh_axis;
 mod mover;
 mod narrow;
 mod query;
@@ -90,6 +91,7 @@ mod stats;
 mod world;
 
 pub use inspect::{StaticGeometryView, StaticView};
+pub use mesh_axis::{MeshAxisBinding, MeshAxisError, MeshAxisProbe, MeshAxisWitness};
 pub use mover::{MAX_MOVE_HITS, MoveHit, MoveOptions, MoveOutcome};
 pub use query::{Overlaps, Penetration, QueryFilter, RayHit, ShapeHit};
 pub use sapphire_colliders::{ColliderSet, CollisionGroups, Group, GroupMask};

@@ -309,6 +309,54 @@ pub enum StateMotion {
     },
     /// Clips blended by the character's velocity.
     Blend(BlendSpace),
+    /// Finite clips blended by fixed takeoff speed. Playback uses elapsed ticks, not gait phase.
+    TakeoffBlend(EntryBlend),
+    /// Finite touchdown clips. The first band uses takeoff speed to carry the airborne pose
+    /// into contact; the optional second band uses forward touchdown speed.
+    LandingBlend(EntryBlend),
+    /// Takeoff held through ascent, with smooth actual-speed preparation during descent.
+    TakeoffAnticipating(EntryBlend),
+}
+
+/// A standing clip and one or two progressively faster one-shot clips.
+#[derive(
+    Reflect,
+    Clone,
+    Debug,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[reflect(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EntryBlend {
+    pub standing: String,
+    pub moving: Vec<EntrySample>,
+}
+
+/// A finite clip faded in over a range of speeds in m/s.
+#[derive(
+    Reflect,
+    Clone,
+    Debug,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[reflect(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EntrySample {
+    pub clip: String,
+    pub fade: [f32; 2],
+    /// Third landing sample only. Full below the first departure speed, zero above the second.
+    #[serde(default)]
+    pub short_lead: Option<[f32; 2]>,
 }
 
 /// Clips placed by the velocity they play at. Gradient-band weights, so the clips that weigh in stay
@@ -418,6 +466,16 @@ pub enum Condition {
     Moving(f32),
     /// Speed, smoothed, is below this many m/s.
     Stopped(f32),
+    /// Touchdown with at least this much forward speed, in m/s in the character's axes.
+    LandedMoving(f32),
+    /// The last pose of the state's clip has been drawn. The next blend starts at this phase.
+    FinishedAtPhase(f32),
+    /// Smoothed forward speed, in m/s in the character's axes, is below this value.
+    ForwardBelow(f32),
+    /// Airborne while travelling at least this fast, with the outgoing stride carried into ascent.
+    AirborneMoving(f32),
+    /// Whether a supported standing jump is preparing before the impulse.
+    JumpPreparation(bool),
 }
 
 /// The layer the simulation's moves drive.
@@ -708,6 +766,45 @@ impl AnimGraph {
                     }
                 }
                 StateMotion::Blend(space) => check_space(check, &state.name, space, clips),
+                StateMotion::TakeoffBlend(blend)
+                | StateMotion::LandingBlend(blend)
+                | StateMotion::TakeoffAnticipating(blend) => {
+                    let max = if matches!(state.plays, StateMotion::LandingBlend(_)) { 3 } else { 1 };
+                    let section = "locomotion.states";
+                    if !(1..=max).contains(&blend.moving.len()) {
+                        check.issue(section, Some(&state.name), format!("expects one to {max} moving clips"));
+                    }
+                    for clip in [&blend.standing].into_iter().chain(blend.moving.iter().map(|s| &s.clip)) {
+                        if !clips.contains(clip.as_str()) {
+                            check.issue(
+                                section,
+                                Some(&state.name),
+                                format!("plays `{clip}`, which `clips` doesn't name"),
+                            );
+                        }
+                    }
+                    for (index, sample) in blend.moving.iter().enumerate() {
+                        if (index == 2) != sample.short_lead.is_some()
+                            || sample.short_lead.is_some_and(|[low, high]| {
+                                !(low.is_finite() && high.is_finite() && low >= 0.0 && high > low)
+                            })
+                        {
+                            check.issue(
+                                section,
+                                Some(&state.name),
+                                "third landing sample needs an increasing short_lead range".into(),
+                            );
+                        }
+                        let [low, high] = sample.fade;
+                        if !(low.is_finite() && high.is_finite() && low >= 0.0 && high > low) {
+                            check.issue(
+                                section,
+                                Some(&state.name),
+                                format!("fade {:?} isn't an increasing speed range", sample.fade),
+                            );
+                        }
+                    }
+                }
             }
         }
         check.limit("locomotion.transitions", layer.transitions.len(), MAX_GRAPH_TRANSITIONS);
@@ -719,10 +816,19 @@ impl AnimGraph {
                 }
             }
             check.decay(section, &transition.from, transition.decay);
-            if let Condition::Moving(speed) | Condition::Stopped(speed) = transition.when
+            if let Condition::Moving(speed)
+            | Condition::Stopped(speed)
+            | Condition::LandedMoving(speed)
+            | Condition::ForwardBelow(speed)
+            | Condition::AirborneMoving(speed) = transition.when
                 && !(speed.is_finite() && speed >= 0.0)
             {
                 check.issue(section, Some(&transition.from), format!("{speed} isn't a speed"));
+            }
+            if let Condition::FinishedAtPhase(phase) = transition.when
+                && !(0.0..1.0).contains(&phase)
+            {
+                check.issue(section, Some(&transition.from), format!("{phase} isn't a gait phase"));
             }
         }
     }
@@ -976,6 +1082,42 @@ mod tests {
         let ids: Vec<AssetId> = read.clip_ids().collect();
         assert_eq!(ids[0], AssetId::from_bytes([4; 16]));
         assert_eq!(ids[2], AssetId::from_bytes([3; 16]));
+    }
+
+    #[test]
+    fn landing_speed_and_resume_phase_round_trip_and_are_checked() {
+        let text = document()
+            .replace("when: Airborne", "when: ForwardBelow(4.5)")
+            .replace("when: Landed", "when: LandedMoving(4.5)")
+            .replace("when: Moving(1.5)", "when: FinishedAtPhase(0.3)");
+        let mut graph = AnimGraph::from_document(&text).expect("landing conditions parse");
+        graph.resolve(|clip| AssetId::from_bytes([clip.name.len() as u8; 16]));
+        let cooked = graph.to_cooked().expect("landing conditions cook");
+        let read = AnimGraph::read(&cooked).expect("landing conditions read");
+        assert_eq!(read.to_owned_graph().expect("landing conditions copy"), graph);
+        assert_eq!(graph.locomotion.transitions[0].when, Condition::ForwardBelow(4.5));
+        assert_eq!(graph.locomotion.transitions[1].when, Condition::LandedMoving(4.5));
+        assert_eq!(graph.locomotion.transitions[2].when, Condition::FinishedAtPhase(0.3));
+        assert!(issues_with("when: Landed", "when: LandedMoving(-1.0)").join(" ").contains("isn't a speed"));
+        assert!(
+            issues_with("when: Moving(1.5)", "when: FinishedAtPhase(1.0)")
+                .join(" ")
+                .contains("isn't a gait phase")
+        );
+    }
+
+    #[test]
+    fn the_moving_airborne_condition_round_trips_and_checks_its_speed() {
+        let text = document().replace("when: Airborne", "when: AirborneMoving(1.0)");
+        let mut graph = AnimGraph::from_document(&text).expect("moving airborne parses");
+        graph.resolve(|clip| AssetId::from_bytes([clip.name.len() as u8; 16]));
+        let cooked = graph.to_cooked().expect("moving airborne cooks");
+        let read = AnimGraph::read(&cooked).expect("moving airborne reads");
+        assert_eq!(read.to_owned_graph().expect("moving airborne copies"), graph);
+        assert_eq!(graph.locomotion.transitions[0].when, Condition::AirborneMoving(1.0));
+        assert!(
+            issues_with("when: Airborne", "when: AirborneMoving(-1.0)").join(" ").contains("isn't a speed")
+        );
     }
 
     #[test]

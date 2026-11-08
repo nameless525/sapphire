@@ -147,6 +147,13 @@ pub fn pow(base: f32, exponent: f32) -> f32 {
     libm::powf(base, exponent)
 }
 
+/// Length of a 2D vector without underflow or overflow in the intermediate squares.
+#[inline]
+#[must_use]
+pub fn hypot(x: f32, y: f32) -> f32 {
+    libm::hypotf(x, y)
+}
+
 /// A rotation of `angle` radians about the unit vector `axis`, computed deterministically
 /// (unlike `Quat::from_axis_angle`).
 #[inline]
@@ -156,6 +163,22 @@ pub fn quat_from_axis_angle(axis: Vec3, angle: f32) -> Quat {
     let (s, c) = sin_cos(angle * 0.5);
     let v = axis * s;
     Quat::from_xyzw(v.x, v.y, v.z, c)
+}
+
+/// The shortest rotation from one unit vector to another. Near alignment and opposition use
+/// the same singularity thresholds as glam, with the half-turn axis selected from `from`.
+#[must_use]
+pub fn quat_from_rotation_arc(from: Vec3, to: Vec3) -> Quat {
+    const NEAR_UNIT: f32 = 1.0 - 2.0 * f32::EPSILON;
+    let dot = from.dot(to);
+    if dot > NEAR_UNIT {
+        Quat::IDENTITY
+    } else if dot < -NEAR_UNIT {
+        quat_from_axis_angle(from.any_orthonormal_vector(), PI)
+    } else {
+        let cross = from.cross(to);
+        quat_normalize(Quat::from_xyzw(cross.x, cross.y, cross.z, 1.0 + dot))
+    }
 }
 
 /// A rotation of `angle` radians about +X (unlike `Quat::from_rotation_x`).
@@ -435,6 +458,17 @@ mod tests {
     use std::f32::consts::{FRAC_PI_2, FRAC_PI_4};
 
     use super::*;
+
+    #[test]
+    fn rotation_arc_covers_alignment_oblique_and_antiparallel_vectors() {
+        let from = Vec3::new(-0.17, 0.86, 0.3).normalize();
+        for to in [from, -from, Vec3::new(0.59, 0.33, 0.21).normalize()] {
+            let rotation = quat_from_rotation_arc(from, to);
+            assert!(rotation.is_finite());
+            assert!(quat_rotate(rotation, from).abs_diff_eq(to, 2e-6));
+        }
+        assert_eq!(quat_from_rotation_arc(from, from), Quat::IDENTITY);
+    }
 
     /// What glam 0.33's two backends compute for `Quat::normalize`, written out in scalars.
     fn neon_normalize(q: [f32; 4]) -> [f32; 4] {

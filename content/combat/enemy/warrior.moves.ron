@@ -182,7 +182,7 @@
             ),
             (
                 // 1.67 s. The telegraphed heavy: 750 ms with the blade raised over its head, turning
-                // to follow, then a two-handed chop straight down its front, reaching about 2.3 m and
+                // to follow, then a chop straight down its front after the off hand releases, reaching about 2.3 m and
                 // landing with the tip low. It lands as `Melee_2H_Attack_Chop`'s blade finishes coming
                 // down, ticks 41 to 46 of 98, since a graph plays a clip at its move's own ticks. It can't
                 // get out of the recovery: this is the opening.
@@ -263,8 +263,11 @@
                             name: "blade",
                             keys: [
                                 (at: 0, offset: (-0.45, 1.0, -0.1), rotation: (0.7071, 0.0, 0.0, 0.7071)),
-                                (at: 30, offset: (-0.4, 1.05, -0.25), rotation: (0.7071, 0.0, 0.0, 0.7071)),
-                                (at: 32, offset: (-0.2, 1.05, 0.6), rotation: (0.7071, 0.0, 0.0, 0.7071)),
+                                // The chamber clears the shoulder before root travel starts. The
+                                // blade extends through the first four active ticks with the arm.
+                                (at: 30, offset: (-0.44, 1.03, -0.05), rotation: (0.7071, 0.0, 0.0, 0.7071)),
+                                (at: 32, offset: (-0.29, 1.04, 0.44), rotation: (0.7071, 0.0, 0.0, 0.7071)),
+                                (at: 34, offset: (-0.18, 1.05, 0.79), rotation: (0.7071, 0.0, 0.0, 0.7071)),
                                 (at: 38, offset: (-0.1, 1.05, 1.05), rotation: (0.7071, 0.0, 0.0, 0.7071)),
                                 (at: 46, offset: (-0.1, 1.0, 1.0), rotation: (0.7071, 0.0, 0.0, 0.7071)),
                                 (at: 72, offset: (0.3, 0.6, 0.4)),

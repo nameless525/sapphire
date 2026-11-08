@@ -3398,13 +3398,11 @@ dependencies = [
 name = "sapphire_anim"
 version = "0.1.0"
 dependencies = [
- "insta",
  "sapphire_assets",
+ "sapphire_body_pose",
  "sapphire_core",
  "sapphire_jobs",
  "sapphire_math",
- "sapphire_serialize",
- "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -3453,6 +3451,19 @@ dependencies = [
  "sapphire_math",
  "sapphire_time",
  "tracing",
+]
+
+[[package]]
+name = "sapphire_body_pose"
+version = "0.1.0"
+dependencies = [
+ "insta",
+ "sapphire_assets",
+ "sapphire_core",
+ "sapphire_math",
+ "sapphire_serialize",
+ "sapphire_time",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -3641,6 +3652,8 @@ dependencies = [
  "bevy_reflect",
  "profiling",
  "ron",
+ "sapphire_assets",
+ "sapphire_body_pose",
  "sapphire_colliders",
  "sapphire_core",
  "sapphire_ecs",

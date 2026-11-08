@@ -76,7 +76,7 @@ use std::f32::consts::FRAC_PI_2;
 use std::sync::Arc;
 use std::time::Duration;
 
-use sapphire_anim::{GraphInput, ReactionInput};
+use sapphire_anim::{AuthoredFootMotion, GraphInput, ReactionInput};
 use sapphire_assets::AssetId;
 use sapphire_camera::{CameraDirector, CameraFrame, CameraTuning, Rig, Subject};
 use sapphire_colliders::{ArchivedColliderSet, ColliderError, Group};
@@ -85,8 +85,9 @@ use sapphire_ecs::bevy_ecs::world::WorldId;
 use sapphire_ecs::prelude::*;
 use sapphire_gameplay::arena::{SpawnPoint, cooked_colliders, profile, spawns};
 use sapphire_gameplay::targeting::{TargetCandidate, TargetQuery, TargetingWeights, choose_target};
-use sapphire_gameplay::{ActorId, ActorView, Buttons, Simulation, Stick};
-use sapphire_math::{Mat4, Quat, Vec2, Vec3};
+use sapphire_gameplay::{ActorId, ActorView, Buttons, MoveLibrary, Simulation, Stick};
+use sapphire_math::{Affine3A, Mat4, Quat, Vec2, Vec3};
+use sapphire_moves::RootSample;
 use sapphire_physics::{ColliderSet, HitTarget, PhysicsWorld, Pose, QueryFilter, WorldError};
 use sapphire_time::TICK_HZ;
 use sapphire_ui::{FighterValues, HudValues, SkillValues};
@@ -94,8 +95,18 @@ use sapphire_ui::{FighterValues, HudValues, SkillValues};
 use crate::combat_views::{self, Canvas};
 use crate::enemy;
 use sapphire_stage::RenderTransform;
-use sapphire_stage::anim_graph::{combat_input, duration_ticks, locomotion_of, time_ticks};
+use sapphire_stage::anim_graph::{LocomotionSamples, combat_input, duration_ticks, time_ticks};
 use sapphire_stage::orbit::OrbitCamera;
+
+/// Sample the baked root at the same fractional tick as the graph samples the pose.
+fn authored_root_at(samples: &[RootSample], position: f64) -> (Vec3, f32) {
+    let Some(last) = samples.len().checked_sub(1) else { return (Vec3::ZERO, 0.0) };
+    let position = position.clamp(0.0, last as f64);
+    let tick = position as usize;
+    let blend = (position - tick as f64) as f32;
+    let (a, b) = (samples[tick], samples[(tick + 1).min(last)]);
+    (a.offset().lerp(b.offset(), blend), a.yaw + (b.yaw - a.yaw) * blend)
+}
 
 /// The arena's colliders, by their sidecar's ID (`content/arena/square.colliders.ron.meta`).
 pub(crate) const COLLIDERS: AssetId = AssetId::from_text("773529bf-89bd-4e37-b9c7-1a687405b42f");
@@ -349,13 +360,12 @@ pub(crate) struct ArenaEnemy {
 }
 
 /// How high the character's eyes stand over its feet, in metres: what the warrior looks at.
-const PLAYER_EYES: f32 = 1.5;
+pub(crate) const PLAYER_EYES: f32 = 1.5;
 
 /// What a fighter's graph hears from the steps between one frame and the next.
 #[derive(Clone, Copy, Debug, Default)]
 struct FighterSignals {
-    /// It landed since the last frame.
-    landed: bool,
+    locomotion: LocomotionSamples,
     /// A new fight stood it where it stands since the last frame.
     cut: bool,
 }
@@ -494,8 +504,7 @@ impl ArenaActors {
         let signals = &mut self.signals[fighter];
         let alpha = if alpha >= 0.0 { f64::from(alpha.min(1.0)) } else { 0.0 };
         let behind = (1.0 - alpha) * duration_ticks(view.clock_delta);
-        let mut locomotion = locomotion_of(view);
-        locomotion.landed = std::mem::take(&mut signals.landed);
+        let locomotion = signals.locomotion.input(view);
         Some(GraphInput {
             ticks: time_ticks(view.clock_now) - behind,
             locomotion,
@@ -503,6 +512,30 @@ impl ArenaActors {
             reaction: ReactionInput::default(),
             cut: std::mem::take(&mut signals.cut),
             defeated: view.fighter.is_defeated(),
+        })
+    }
+
+    /// The move's authored root at this render sample, independent of warp and actor collisions.
+    pub(crate) fn authored_foot_motion(
+        &self,
+        fighter: usize,
+        position: f64,
+        moves: &MoveLibrary,
+    ) -> Option<AuthoredFootMotion> {
+        let current = self.seen[fighter]?.moves.current?;
+        let motion = moves.get(current.at)?;
+        if !motion.warps.iter().any(|warp| warp.max_distance > 0.0) {
+            return None;
+        }
+        let (position, yaw) = authored_root_at(motion.tables.root_samples(), position);
+        let scale = if fighter == 0 { 1.0 } else { enemy::SCALE };
+        Some(AuthoredFootMotion {
+            serial: current.serial,
+            source_from_model: Affine3A::from_scale_rotation_translation(
+                Vec3::splat(scale),
+                Quat::from_rotation_y(yaw),
+                position,
+            ),
         })
     }
 
@@ -617,10 +650,11 @@ impl ArenaActors {
             self.seen[index] = actor;
             let Some(actor) = actor else { continue };
             let signals = &mut self.signals[index];
-            signals.landed |= actor.controller.state.events.landed;
-            signals.cut |= swapped;
-            if started_over {
-                *signals = FighterSignals { landed: false, cut: true };
+            if started_over || swapped {
+                *signals = FighterSignals { cut: true, ..Default::default() };
+            }
+            if !started_over {
+                signals.locomotion.observe(&actor);
             }
             if started_over {
                 *root = Root::standing(actor.position, actor.yaw);
@@ -714,7 +748,17 @@ impl ArenaActors {
     /// cost an allocation a frame (see [`sapphire_stage::scene`]). With no `aspect` nothing draws, so the
     /// director waits.
     pub(crate) fn present(&mut self, world: &mut World, alpha: f32, aspect: Option<f32>) {
-        let warrior = self.drawn(1, alpha);
+        self.present_with_warrior_root(world, alpha, aspect, self.drawn(1, alpha));
+    }
+
+    /// Presents the warrior and its held blade from an authoritative root sample.
+    pub(crate) fn present_with_warrior_root(
+        &mut self,
+        world: &mut World,
+        alpha: f32,
+        aspect: Option<f32>,
+        warrior: Mat4,
+    ) {
         let drawn = [
             (self.player.0, self.drawn(0, alpha)),
             (self.enemy.0, warrior),
@@ -769,11 +813,25 @@ mod framing;
 mod tests {
     use sapphire_colliders::{ColliderDocument, ColliderEntry, ColliderSet, ColliderShape};
     use sapphire_gameplay::replay::{SCENARIOS, find_scenario};
+    use sapphire_stage::lookdev::{PLANTINGS, Plant};
 
     use super::*;
     use crate::combat_views::{CombatViews, NoVisiblePose};
-    use sapphire_stage::lookdev::{PLANTINGS, Plant};
 
+    #[test]
+    fn an_authored_root_follows_the_pose_across_a_fast_clock_step() {
+        let mut samples = [RootSample::ZERO; 26];
+        for (tick, z, yaw) in [(22, 0.091667, 0.1), (23, 0.095833, 0.2), (24, 0.1, 0.4), (25, 0.19, 0.8)] {
+            samples[tick] = RootSample { translation: [0.0, 0.0, z], yaw };
+        }
+        // A 3× step arrived at elapsed 25. At alpha 2/3 the pose reads tick 24, on the
+        // other side of a change in root velocity from the step's last sample.
+        let elapsed = 25.0 - (1.0 - 2.0 / 3.0) * 3.0;
+        assert_eq!(authored_root_at(&samples, elapsed), (Vec3::Z * 0.1, 0.4));
+        let (position, yaw) = authored_root_at(&samples, 24.25);
+        assert!(position.abs_diff_eq(Vec3::Z * 0.1225, 1e-6));
+        assert!((yaw - 0.5).abs() < 1e-6);
+    }
     const DOCUMENT: &str = include_str!("../../../content/arena/square.colliders.ron");
 
     fn document() -> ColliderDocument {

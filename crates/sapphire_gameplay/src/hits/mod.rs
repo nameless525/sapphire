@@ -12,6 +12,7 @@
 mod book;
 mod hurtbox;
 mod join;
+pub(crate) mod overhead;
 mod published;
 #[cfg(test)]
 mod tests;
@@ -77,17 +78,26 @@ pub struct HitEvent {
     /// How many times the group had re-armed: 0 for its first hit.
     pub volley: u32,
     /// The volume's place in what the attacker published this step ([`VolumeSweep::volume`]).
+    /// The isolated private overhead source uses the reserved value `u16::MAX`.
     pub volume: u16,
-    /// On the hurtbox's surface.
+    /// On the hurtbox's surface, or on the exact steel triangle for a private overhead witness.
     pub point: Vec3,
     /// Away from the hurtbox, toward the volume. A box that starts inside a target has no true one:
     /// it's back along the cast, or from the target's center to the volume's if it's holding still.
+    /// The private overhead direction goes from its anatomical axis toward the triangle point.
     pub normal: Vec3,
     /// When it touched: time into the move on the attacker's clock, to the sub-tick.
     pub at: SimDuration,
     /// How far the volume had moved this step when it touched, in metres (see [`SubStep::motion`]).
-    /// Zero for a volume that starts the step touching.
+    /// Zero for a volume that starts the step touching or a private event without travel ordering.
     pub travel: f32,
+}
+
+impl HitEvent {
+    pub(crate) const PRIVATE_VOLUME: u16 = {
+        assert!(crate::MAX_ACTIVE_VOLUMES < u16::MAX as usize);
+        u16::MAX
+    };
 }
 
 /// A swing going through an actor's open perfect-dodge window: a live volume that does something, in a
@@ -292,6 +302,7 @@ pub struct HitQuery {
     /// A cast's out buffer. Only ever read back within one cast.
     results: Box<[ShapeHit; MAX_CAST_RESULTS]>,
     stats: HitStats,
+    overhead_delivery: Option<overhead::Delivery>,
 }
 
 impl Default for HitQuery {
@@ -313,6 +324,7 @@ impl HitQuery {
             dodged: Vec::with_capacity(MAX_DODGED_SWINGS),
             results: Box::new([ShapeHit::NONE; MAX_CAST_RESULTS]),
             stats: HitStats::default(),
+            overhead_delivery: None,
         }
     }
 
@@ -326,11 +338,30 @@ impl HitQuery {
         self.dodged.clear();
         self.results.fill(ShapeHit::NONE);
         self.stats = HitStats::default();
+        self.overhead_delivery = None;
+    }
+
+    pub(crate) fn cut_overhead_delivery(&mut self, actor: ActorId) {
+        if let Some(delivery) = &mut self.overhead_delivery
+            && [delivery.route.attacker, delivery.route.target.actor()].contains(&actor)
+        {
+            delivery.candidate = None;
+            delivery.recorded = None;
+        }
+    }
+
+    pub(crate) fn private_attack_source(&self, event: &HitEvent) -> Option<overhead::AttackSource> {
+        let recorded = self.overhead_delivery?.recorded?;
+        (recorded.event == *event).then_some(recorded.source)
     }
 
     /// Sweeps one volume through this step's span and notes what it touches. See the
     /// [type's docs](Self) for the order to call this in.
     pub fn sweep(&mut self, world: &PhysicsWorld, volume: &VolumeSweep<'_>) {
+        self.sweep_excluding(world, volume, None);
+    }
+
+    fn sweep_excluding(&mut self, world: &PhysicsWorld, volume: &VolumeSweep<'_>, omit: Option<ActorId>) {
         profiling::scope!("HitQuery::sweep");
         // Sweeps come in instance order, so an earlier instance's contacts this step were checked
         // against its records as they were made, and nothing still needs what goes here.
@@ -355,7 +386,7 @@ impl HitQuery {
         let mut stopped_in = self.stopped.volley_of(volume.attacker, volume.instance, stop);
         let mut travelled = 0.0;
         let capped = volume.walk(|sub| {
-            self.cast(world, volume, &filter, sub, travelled, &mut stopped_in);
+            self.cast(world, volume, (&filter, omit), sub, travelled, &mut stopped_in);
             travelled += sub.motion;
         });
         self.stats.sweeps_capped += u64::from(capped);
@@ -366,7 +397,7 @@ impl HitQuery {
         &mut self,
         world: &PhysicsWorld,
         volume: &VolumeSweep<'_>,
-        filter: &QueryFilter,
+        (filter, omit): (&QueryFilter, Option<ActorId>),
         sub: &SubStep,
         travelled: f32,
         stopped_in: &mut Option<u32>,
@@ -420,6 +451,9 @@ impl HitQuery {
                 self.stats.unowned_touches += 1;
                 continue;
             };
+            if Some(hurtbox.actor()) == omit {
+                continue;
+            }
             if still && hit.started_overlapping && hit.normal == -direction {
                 // Physics' answer for a box with no core to measure from, back along a cast that went
                 // nowhere: the line between the centers says more.
@@ -444,10 +478,6 @@ impl HitQuery {
         let at = time_along(sub, share);
         let volley = volume.volley_at(at);
         let target = hurtbox.actor();
-        let key = (volume.group, target);
-        if self.records.volley_of(volume.attacker, volume.instance, key).is_some_and(|last| last >= volley) {
-            return;
-        }
         let contact = HitEvent {
             attacker: volume.attacker,
             instance: volume.instance,
@@ -461,6 +491,18 @@ impl HitQuery {
             at,
             travel: travelled + sub.motion * share,
         };
+        self.record_contact(contact);
+    }
+
+    fn record_contact(&mut self, contact: HitEvent) -> bool {
+        let key = (contact.group, contact.target);
+        if self
+            .records
+            .volley_of(contact.attacker, contact.instance, key)
+            .is_some_and(|last| last >= contact.volley)
+        {
+            return false;
+        }
         let same = self.contacts.iter().position(|known| {
             known.attacker == contact.attacker
                 && known.instance == contact.instance
@@ -469,13 +511,47 @@ impl HitQuery {
                 && known.target == contact.target
         });
         match same {
-            Some(slot) => {
-                if order(&contact, &self.contacts[slot]) == Ordering::Less {
-                    self.contacts[slot] = contact;
-                }
+            Some(slot) if order(&contact, &self.contacts[slot]) == Ordering::Less => {
+                self.contacts[slot] = contact;
+                true
             }
-            None if self.contacts.len() >= MAX_CONTACTS => self.stats.contacts_dropped += 1,
-            None => self.contacts.push(contact),
+            Some(_) => false,
+            None if self.contacts.len() >= MAX_CONTACTS => {
+                self.stats.contacts_dropped += 1;
+                false
+            }
+            None => {
+                self.contacts.push(contact);
+                true
+            }
+        }
+    }
+
+    fn stage_overhead_contact(&mut self) {
+        let Some(delivery) = &mut self.overhead_delivery else { return };
+        let Some(candidate) = delivery.candidate.take() else { return };
+        let event = candidate.event;
+        let dodged = self.swings.iter().any(|swing| {
+            swing.attacker == event.attacker
+                && swing.dodger == event.target
+                && swing.instance == event.instance
+                && swing.group == event.group
+                && swing.volley == event.volley
+        });
+        let pair = [event.attacker, event.target];
+        if dodged
+            || self
+                .contacts
+                .iter()
+                .any(|other| pair.contains(&other.attacker) || pair.contains(&other.target))
+        {
+            return;
+        }
+
+        self.records.retire(event.attacker, event.instance);
+        self.stopped.retire(event.attacker, event.instance);
+        if self.record_contact(event) {
+            self.overhead_delivery.as_mut().expect("private delivery exists").recorded = Some(candidate);
         }
     }
 
@@ -524,6 +600,7 @@ impl HitQuery {
     /// [`Self::events`] and [`Self::dodged`]. Call it every step.
     pub fn finish_step(&mut self) {
         profiling::scope!("HitQuery::finish_step");
+        self.stage_overhead_contact();
         self.swings.sort_unstable_by_key(|swing| swing.dodger);
         std::mem::swap(&mut self.swings, &mut self.dodged);
         self.swings.clear();
@@ -572,6 +649,7 @@ impl HitQuery {
     /// Forgets everything about an actor, as attacker and as target, when it despawns. IDs are never
     /// reused, so this only gives the room back. Allocates nothing.
     pub fn forget_actor(&mut self, actor: ActorId) {
+        self.cut_overhead_delivery(actor);
         self.records.forget(|entry| entry.attacker == actor || entry.key.1 == actor);
         self.stopped.forget(|entry| entry.attacker == actor);
     }

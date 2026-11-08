@@ -6,7 +6,7 @@
 //! the exact closed-form solution, so it is stable for any `dt` and frame-rate independent:
 //! one step of 1/30 s lands where two steps of 1/60 s do.
 //!
-//! These use `std` `exp`, not [`crate::det`]: they drive presentation, not simulation.
+//! [`damp`] uses `std` `exp` for presentation. [`damp_deterministic`] pins scalar exponential math.
 
 use std::ops::{Add, Mul, Sub};
 
@@ -26,7 +26,7 @@ pub trait SpringValue: Copy + Add<Output = Self> + Sub<Output = Self> + Mul<f32,
     /// scaled terms and the result must be representable. Built-in scalar/vector values retain
     /// ordinary f32 arithmetic and use componentwise f64 arithmetic at numeric extremes.
     fn damped(self, target: Self, velocity: Self, half_life: f32, dt: f32) -> (Self, Self) {
-        let (rate, u, decay) = coefficients(half_life, dt);
+        let (rate, u, decay) = coefficients(half_life, dt, f64::exp);
         if decay == 0.0 {
             return (target, Self::ZERO);
         }
@@ -43,15 +43,7 @@ impl SpringValue for f32 {
 
     #[inline]
     fn damped(self, target: Self, velocity: Self, half_life: f32, dt: f32) -> (Self, Self) {
-        let result = damp_f32(self, target, velocity, half_life, dt);
-        if result.0.is_finite() && result.1.is_finite() {
-            return result;
-        }
-        let (rate, u, decay) = coefficients(half_life, dt);
-        if decay == 0.0 {
-            return (target, 0.0);
-        }
-        damp_component(self, target, velocity, rate, u, decay)
+        damp_scalar(self, target, velocity, half_life, dt, f32::exp, f64::exp)
     }
 }
 
@@ -64,11 +56,11 @@ macro_rules! spring_vector {
 
             #[inline]
             fn damped(self, target: Self, velocity: Self, half_life: f32, dt: f32) -> (Self, Self) {
-                let result = damp_f32(self, target, velocity, half_life, dt);
+                let result = damp_f32(self, target, velocity, half_life, dt, f32::exp);
                 if result.0.is_finite() && result.1.is_finite() {
                     return result;
                 }
-                let (rate, u, decay) = coefficients(half_life, dt);
+                let (rate, u, decay) = coefficients(half_life, dt, f64::exp);
                 if decay == 0.0 {
                     return (target, Self::ZERO);
                 }
@@ -108,22 +100,65 @@ pub fn damp<T: SpringValue>(current: T, target: T, velocity: &mut T, half_life: 
     value
 }
 
+/// A scalar spring with the same update as [`damp`] and platform-independent exponential math.
+#[must_use]
+pub fn damp_deterministic(current: f32, target: f32, velocity: &mut f32, half_life: f32, dt: f32) -> f32 {
+    if half_life <= 0.0 {
+        *velocity = 0.0;
+        return target;
+    }
+    if dt <= 0.0 {
+        return current;
+    }
+    let (value, next_velocity) =
+        damp_scalar(current, target, *velocity, half_life, dt, crate::det::exp, libm::exp);
+    *velocity = next_velocity;
+    value
+}
+
+fn damp_scalar(
+    current: f32,
+    target: f32,
+    velocity: f32,
+    half_life: f32,
+    dt: f32,
+    exp: fn(f32) -> f32,
+    exp_wide: fn(f64) -> f64,
+) -> (f32, f32) {
+    let result = damp_f32(current, target, velocity, half_life, dt, exp);
+    if result.0.is_finite() && result.1.is_finite() {
+        return result;
+    }
+    let (rate, u, decay) = coefficients(half_life, dt, exp_wide);
+    if decay == 0.0 {
+        return (target, 0.0);
+    }
+    damp_component(current, target, velocity, rate, u, decay)
+}
+
 /// Original operation order for bit-identical ordinary presentation updates. Overflowing
 /// candidates are local and never committed by the built-in implementations.
-fn damp_f32<T: SpringValue>(current: T, target: T, velocity: T, half_life: f32, dt: f32) -> (T, T) {
+fn damp_f32<T: SpringValue>(
+    current: T,
+    target: T,
+    velocity: T,
+    half_life: f32,
+    dt: f32,
+    exp: fn(f32) -> f32,
+) -> (T, T) {
     let rate = HALF_LIFE_RATE / half_life;
     let offset = current - target;
     let j1 = velocity + offset * rate;
-    let decay = (-rate * dt).exp();
+    let decay = exp(-rate * dt);
     (target + (offset + j1 * dt) * decay, (velocity - j1 * (rate * dt)) * decay)
 }
 
-fn coefficients(half_life: f32, dt: f32) -> (f64, f64, f64) {
+fn coefficients(half_life: f32, dt: f32, exp: fn(f64) -> f64) -> (f64, f64, f64) {
     // Form the dimensionless time ratio in f64: an overflowing f32 rate alone does not
     // imply settling when dt is comparably tiny.
     let rate = f64::from(HALF_LIFE_RATE) / f64::from(half_life);
     let u = rate * f64::from(dt);
-    (rate, u, (-u).exp())
+    (rate, u, exp(-u))
 }
 
 fn damp_component(current: f32, target: f32, velocity: f32, rate: f64, u: f64, decay: f64) -> (f32, f32) {

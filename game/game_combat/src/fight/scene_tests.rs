@@ -104,7 +104,7 @@ impl Staged {
     }
 
     pub(super) fn animate_fighters(&mut self, player: &ClipTable<'_>, enemy: &ClipTable<'_>, alpha: f32) {
-        self.show.animate_fighters(&mut self.scene, player, enemy, alpha);
+        self.show.animate_fighters(&mut self.scene, player, enemy, alpha, None);
     }
 
     pub(super) fn cue_show(&self) -> Option<&CueShow> {
@@ -587,6 +587,7 @@ fn a_cutscene_holds_the_fight_and_a_skip_lets_it_go() {
     let mut fight = Fight {
         combat: Some(Combat::new(&option).expect("sets up")),
         show: std::mem::take(&mut staged.show),
+        ..Fight::default()
     };
     let tick = |fight: &Fight| fight.combat.as_ref().expect("on").simulation().tick();
     let mut laps = FrameLaps::default();
@@ -828,7 +829,7 @@ fn attaching_combat_prepares_cues_without_following_a_tick() {
     assert!(sapphire_core::alloc::is_installed());
     let mut staged = scene();
     staged.play_cues(VfxBudget::DESKTOP_LOW).expect("the shipped table resolves");
-    let mut fight = Fight { combat: None, show: std::mem::take(&mut staged.show) };
+    let mut fight = Fight { show: std::mem::take(&mut staged.show), ..Fight::default() };
     let combat = recorded_fight();
     let checksum = combat.simulation().checksum();
 

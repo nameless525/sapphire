@@ -26,6 +26,7 @@ use sapphire_anim::{ArchivedSkeleton, CharacterPose, GraphBinding, GraphPlayer, 
 use sapphire_assets::AssetId;
 use sapphire_assets::mesh::Skin;
 use sapphire_assets::rig::HumanBone;
+use sapphire_gameplay::body::{BodyGraphAssets, BodyProfile, BodyProfileOptions};
 use sapphire_math::{Affine3A, Mat4, Quat, Vec3};
 use sapphire_physics::PhysicsWorld;
 use sapphire_render::{FaceExpression, MeshHandle};
@@ -222,13 +223,34 @@ fn check_counts(skin: &Skin, skeleton: &ArchivedSkeleton) -> Result<(), String> 
 /// What IK reads of `skeleton`, over `pose`, in the model's space with its soles at 0. No eyes and no
 /// neck: its head alone turns. Fails if the rig lacks a joint.
 pub(crate) fn ik_rig(skeleton: &ArchivedSkeleton, pose: &CharacterPose) -> Result<IkRig, String> {
+    Ok(IkRig::new(pose, &ik_bones(skeleton)?, HEAD_CENTER, None, 0.0))
+}
+
+fn ik_bones(skeleton: &ArchivedSkeleton) -> Result<Vec<(HumanBone, usize)>, String> {
     let find = |name: &str| skeleton.find(name).ok_or_else(|| format!("the warrior's rig has no {name:?}"));
-    let bones = BONES
-        .iter()
-        .chain(&LEG_BONES)
-        .map(|&(name, bone)| Ok((bone, find(name)?)))
-        .collect::<Result<Vec<_>, String>>()?;
-    Ok(IkRig::new(pose, &bones, HEAD_CENTER, None, 0.0))
+    BONES.iter().chain(&LEG_BONES).map(|&(name, bone)| Ok((bone, find(name)?))).collect()
+}
+
+pub(crate) fn simulation_profile(assets: BodyGraphAssets, look_height: f32) -> Result<BodyProfile, String> {
+    let bones = ik_bones(assets.skeleton.view())?;
+    BodyProfile::bind_named(
+        assets,
+        &bones,
+        HEAD_CENTER,
+        BodyProfileOptions {
+            floor: 0.0,
+            scale: SCALE,
+            morphs: &[],
+            contact_joints: &[HAND_SLOT],
+            seed: GRAPH_SEED,
+            ground_turn: false,
+            grounded_gather: false,
+            look_height,
+            look_weight: 1.0,
+            head_authority: None,
+        },
+    )
+    .map_err(|error| error.to_string())
 }
 
 /// The rig's bones, found by name.

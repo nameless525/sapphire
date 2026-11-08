@@ -15,7 +15,7 @@ use sapphire_rhi::{
     RenderSurface, SkipReason, SurfaceAcquire, SurfaceTarget,
 };
 use sapphire_stage::audio::DeviceAudio;
-use sapphire_stage::{Stage, StageDesc};
+use sapphire_stage::{Content, Stage, StageDesc};
 use sapphire_time::{FixedStepConfig, FixedStepDriver, RealClock, ScaleHandle, ScaleSource};
 
 use crate::LOG_TARGET;
@@ -91,13 +91,16 @@ impl App for GameApp {
             surface.format().ok_or_else(|| AppInitError::msg("configured surface reports no format"))?;
 
         let desc = fight_stage(StageDesc::new(platform, &gpu, format, QualitySettings::default()));
-        let mut stage = Stage::new(platform, instance, gpu, desc)?.with_show(GameShow::new()?);
+        let mut content = Content::new(platform, desc.character, desc.sky)?;
+        let mut show = GameShow::new()?;
+        let combat = show.shown.fight.prepare_stock_combat(&options.fight(), &mut content)?;
+        let mut stage = Stage::new_with_content(instance, gpu, desc, content)?.with_show(show);
         // Frames are paced to the tier's rate (spec §6.2).
         platform.set_frame_rate(stage.quality.frame_rate());
         let window_size = window.size();
         stage.show.controls.input_mut().set_window_size(window_size.width as f32, window_size.height as f32);
         let Stage { show, scene, content, renderer, gpu, quality, .. } = &mut stage;
-        show.stand(&options.fight(), scene, content, renderer, gpu, quality.active().id)?;
+        show.stand(combat, scene, content, renderer, gpu, quality.active().id)?;
         let audio = match show.shown.fight.show.cue_show() {
             Some(cues) => {
                 let cues = cues.table().sound_cues();

@@ -78,7 +78,13 @@ impl HitQuery {
             else {
                 continue;
             };
-            self.sweep(
+            let omit = self.overhead_delivery.and_then(|delivery| {
+                (delivery.route.attacker == moves.attacker
+                    && mv.name() == super::overhead::OVERHEAD
+                    && volume.name == super::overhead::HIT)
+                    .then_some(delivery.route.target.actor())
+            });
+            self.sweep_excluding(
                 world,
                 &VolumeSweep {
                     attacker: moves.attacker,
@@ -99,6 +105,7 @@ impl HitQuery {
                     from: volume.from,
                     to: volume.to,
                 },
+                omit,
             );
         }
     }

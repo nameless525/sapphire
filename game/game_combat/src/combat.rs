@@ -51,7 +51,7 @@ use std::path::{Path, PathBuf};
 use sapphire_gameplay::replay::{
     ARCHITECTURE, ActionSource, ChecksumFile, Divergence, FightWorld, LiveMoves, Played, Player,
     PreparedFight, RecordedTrail, Recording, Replay, ReplayError, SCENARIOS, SCRIPTS, Scenario,
-    checksums_file_name, find_scenario, find_script,
+    ScenarioError, checksums_file_name, find_scenario, find_script,
 };
 use sapphire_gameplay::{ActorId, Buttons, Simulation, TickActions};
 #[cfg(feature = "dev")]
@@ -180,10 +180,14 @@ impl LiveFight {
         script: Option<ScriptActions>,
         live: LiveMoves,
         party: bool,
+        setup: impl FnOnce(&Scenario, &mut Simulation, &[ActorId]) -> Result<(), String>,
     ) -> Result<Self, String> {
         let prepared = PreparedFight::new(party).map_err(|error| format!("--fight: {error}"))?;
-        let sim =
-            prepared.start_resettable(scenario.config, &live).map_err(|error| format!("--fight: {error}"))?;
+        let sim = prepared
+            .start_resettable_with_setup(scenario.config, &live, |sim, cast| {
+                setup(scenario, sim, cast).map_err(ScenarioError::RuntimeProfiles)
+            })
+            .map_err(|error| format!("--fight: {error}"))?;
         Ok(Self {
             scenario,
             #[cfg(feature = "dev")]
@@ -298,21 +302,37 @@ impl Combat {
     /// Reads what `option` names and sets up the world, before any GPU work, so a bad file costs
     /// nothing and says why.
     pub fn new(option: &CombatOption) -> Result<Self, String> {
+        Self::new_with_setup(option, |_, _, _| Ok(()))
+    }
+
+    pub(crate) fn new_with_setup(
+        option: &CombatOption,
+        setup: impl FnOnce(&Scenario, &mut Simulation, &[ActorId]) -> Result<(), String>,
+    ) -> Result<Self, String> {
         match option {
-            CombatOption::Replay { path, .. } => Self::replaying(path),
+            CombatOption::Replay { path, .. } => Self::replaying(path, setup),
             CombatOption::Record { path, scenario, script } => {
-                Self::recording(path, scenario, script.as_deref(), &LiveMoves::default())
+                Self::recording_with_setup(path, scenario, script.as_deref(), &LiveMoves::default(), setup)
             }
-            CombatOption::Fight { script, party } => Self::fighting(script.as_deref(), *party),
+            CombatOption::Fight { script, party } => Self::fighting(script.as_deref(), *party, setup),
         }
     }
 
-    fn fighting(script: Option<&str>, party: bool) -> Result<Self, String> {
+    fn fighting(
+        script: Option<&str>,
+        party: bool,
+        setup: impl FnOnce(&Scenario, &mut Simulation, &[ActorId]) -> Result<(), String>,
+    ) -> Result<Self, String> {
         let name = if party { crate::arena::PARTY_SCENARIO } else { crate::arena::FIGHT_SCENARIO };
         let scenario =
             find_scenario(SCENARIOS, name).ok_or_else(|| format!("--fight: no scenario `{name}`"))?;
-        let fight =
-            LiveFight::new(scenario, script.map(script_actions).transpose()?, LiveMoves::default(), party)?;
+        let fight = LiveFight::new(
+            scenario,
+            script.map(script_actions).transpose()?,
+            LiveMoves::default(),
+            party,
+            setup,
+        )?;
         Ok(Self {
             path: PathBuf::new(),
             mode: Mode::Fighting(fight),
@@ -321,23 +341,26 @@ impl Combat {
         })
     }
 
-    fn replaying(path: &Path) -> Result<Self, String> {
+    fn replaying(
+        path: &Path,
+        setup: impl FnOnce(&Scenario, &mut Simulation, &[ActorId]) -> Result<(), String>,
+    ) -> Result<Self, String> {
         let fail = |error: &dyn std::fmt::Display| format!("--replay {}: {error}", path.display());
         let bytes = fs::read(path).map_err(|error| fail(&error))?;
         let replay = Replay::decode(&bytes).map_err(|error| fail(&error))?;
-        let player = Player::new(replay, SCENARIOS).map_err(|error| fail(&error))?;
+        let player = Player::new_with_setup(replay, SCENARIOS, setup).map_err(|error| fail(&error))?;
         let name = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or_default().to_owned();
         let recorded = recorded_trail(path, &name).map_err(|error| fail(&error))?;
         let mode = Mode::Replaying { player, name, recorded };
         Ok(Self { path: path.to_owned(), mode, steps_past_end: 0, last_step_allocations: 0 })
     }
 
-    /// Sets up a recording of `scenario`, from `live`'s edits of its documents.
-    fn recording(
+    fn recording_with_setup(
         path: &Path,
         scenario: &str,
         script: Option<&str>,
         live: &LiveMoves,
+        setup: impl FnOnce(&Scenario, &mut Simulation, &[ActorId]) -> Result<(), String>,
     ) -> Result<Self, String> {
         // Up front rather than after the run: it may be a session someone played, which no script
         // makes again. A script's run can come again, and what started it reads the name it gave. For
@@ -367,7 +390,7 @@ impl Combat {
             return Err(format!("--scenario: no scenario `{scenario}`; there's {known:?}"));
         };
         let script = script.map(script_actions).transpose()?;
-        let recording = Recording::tuned(scenario, scenario.config, live)
+        let recording = Recording::tuned_with_setup(scenario, scenario.config, live, setup)
             .map_err(|error| format!("--record: {error}"))?;
         let files = SessionFiles::new(std::env::temp_dir());
         let mode = Mode::Recording { recording, script, stopped: None, files };
@@ -399,6 +422,9 @@ impl Combat {
         document: &str,
         set: sapphire_moves::MoveSet,
     ) -> Result<Option<(MoveSetId, Tuned)>, String> {
+        if self.simulation().overhead_presentation_pair().is_some() {
+            return Err("live move editing requires an unconfigured fight".into());
+        }
         let Some(id) = self.plays(document) else { return Ok(None) };
         match &mut self.mode {
             Mode::Replaying { name, .. } => {
@@ -427,6 +453,9 @@ impl Combat {
     /// ran on.
     #[cfg(feature = "dev")]
     pub(crate) fn start_fight_from(&mut self, document: &str, set: sapphire_moves::MoveSet) -> bool {
+        if self.simulation().overhead_presentation_pair().is_some() {
+            return false;
+        }
         let Some(id) = self.plays(document) else { return false };
         let Mode::Fighting(fight) = &mut self.mode else { return false };
         if fight.sim.tick() != 0 || fight.sim.move_library().is_current(id, &set) {
@@ -954,11 +983,21 @@ impl SessionRecorder {
     /// Starts `scenario` over from `live`'s edits of its documents (M2 T2): a fight started after a
     /// save plays what was saved, and its file's hash says so.
     pub fn start_tuned(&mut self, combat: &mut Option<Combat>, scenario: &str, live: &LiveMoves) {
+        self.start_tuned_with_setup(combat, scenario, live, |_, _, _| Ok(()));
+    }
+
+    pub(crate) fn start_tuned_with_setup(
+        &mut self,
+        combat: &mut Option<Combat>,
+        scenario: &str,
+        live: &LiveMoves,
+        setup: impl FnOnce(&Scenario, &mut Simulation, &[ActorId]) -> Result<(), String>,
+    ) {
         if combat.is_some() {
             self.note = Some("A fight is running: end it before starting another.".to_owned());
             return;
         }
-        match self.new_recording(scenario, live) {
+        match self.new_recording(scenario, live, setup) {
             Ok(recording) => {
                 *combat = Some(recording);
                 self.note = None;
@@ -967,14 +1006,24 @@ impl SessionRecorder {
         }
     }
 
-    fn new_recording(&self, scenario: &str, live: &LiveMoves) -> Result<Combat, String> {
+    #[cfg(feature = "dev")]
+    pub(crate) fn note_error(&mut self, error: String) {
+        self.note = Some(error);
+    }
+
+    fn new_recording(
+        &self,
+        scenario: &str,
+        live: &LiveMoves,
+        setup: impl FnOnce(&Scenario, &mut Simulation, &[ActorId]) -> Result<(), String>,
+    ) -> Result<Combat, String> {
         // Up front: failing here costs nothing, and failing at the end would cost the session.
         fs::create_dir_all(&self.dir).map_err(|error| format!("{}: {error}", self.dir.display()))?;
         let path = (1_u32..)
             .map(|number| self.dir.join(format!("{scenario}-{number}.sreplay")))
             .find(|path| !path.exists())
             .expect("fewer than 2³² recordings");
-        Combat::recording(&path, scenario, None, live)
+        Combat::recording_with_setup(&path, scenario, None, live, setup)
     }
 
     /// Ends a recording and writes it. If the session can reach no file at all, the recording goes on,

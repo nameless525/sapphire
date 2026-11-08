@@ -12,9 +12,7 @@
 //! (`sapphire_render::SkinnedInstance`).
 
 use sapphire_anim::CharacterPose;
-use sapphire_assets::rig::{
-    ArchivedCharacterRig, ArchivedConstraintKind, Constraint, ConstraintKind, HumanBone,
-};
+use sapphire_assets::rig::{ArchivedCharacterRig, ArchivedConstraint, Constraint, HumanBone};
 use sapphire_math::Quat;
 
 /// What the pose reads of a character's rig: its humanoid bones' joints and its constraints.
@@ -32,20 +30,7 @@ impl RigJoints {
                 .iter()
                 .map(|entry| (entry.bone, usize::from(entry.joint.to_native())))
                 .collect(),
-            constraints: rig
-                .constraints
-                .iter()
-                .map(|constraint| Constraint {
-                    joint: constraint.joint.to_native(),
-                    source: constraint.source.to_native(),
-                    weight: constraint.weight.to_native(),
-                    kind: match constraint.kind {
-                        ArchivedConstraintKind::Roll { axis } => ConstraintKind::Roll { axis },
-                        ArchivedConstraintKind::Aim { axis } => ConstraintKind::Aim { axis },
-                        ArchivedConstraintKind::Rotation => ConstraintKind::Rotation,
-                    },
-                })
-                .collect(),
+            constraints: rig.constraints.iter().map(ArchivedConstraint::to_native_constraint).collect(),
         }
     }
 
@@ -86,7 +71,7 @@ pub fn hold(pose: &mut CharacterPose, rig: &RigJoints, turns: &[(HumanBone, Quat
 mod tests {
     use sapphire_anim::{Joint, JointTransform, Skeleton};
     use sapphire_assets::mesh::SkinBind;
-    use sapphire_assets::rig::{AimAxis, Axis};
+    use sapphire_assets::rig::{AimAxis, Axis, ConstraintKind};
     use sapphire_math::{Affine3A, Mat4, Vec3};
 
     use super::*;

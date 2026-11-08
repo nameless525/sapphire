@@ -11,9 +11,13 @@ use sapphire_moves::{HurtboxState, PathSample, RootSample, Shape};
 use xxhash_rust::xxh3::Xxh3;
 
 use crate::actions::{ActorActions, Controls};
-use crate::actors::{ActorRequests, ActorTable};
+use crate::actors::{ActorId, ActorRequests, ActorTable};
 use crate::brain::{Brain, BrainState};
-use crate::controller::{CharacterController, CharacterWorld};
+use crate::controller::{
+    CharacterController, CharacterWorld, JUMP_REBOUND_WINDOW, MOVING_JUMP_MIN_ALIGNMENT,
+    MOVING_JUMP_MIN_SPEED, MOVING_JUMP_PREPARATION, REBOUND_JUMP_PREPARATION, REBOUND_MIN_LANDING_SPEED,
+    STANDING_JUMP_MAX_SPEED, STANDING_JUMP_PREPARATION,
+};
 use crate::cues::CueQueue;
 use crate::hits::HitQuery;
 use crate::intents::IntentRing;
@@ -120,7 +124,7 @@ fn write_move_ref(hasher: &mut StateHasher, at: MoveRef) {
     hasher.u32(at.index);
 }
 
-fn write_shape(hasher: &mut StateHasher, shape: Shape) {
+pub(crate) fn write_shape(hasher: &mut StateHasher, shape: Shape) {
     match shape {
         Shape::Sphere { radius } => {
             hasher.u8(0);
@@ -360,6 +364,15 @@ fn write_cues(hasher: &mut StateHasher, cues: &CueQueue) {
 
 /// The checksum of a simulation's whole state.
 pub(crate) fn state_checksum(world: &World) -> u64 {
+    let mut hasher = legacy_state(world);
+    if let Some(body) = world.get_resource::<crate::body::BodyAuthority>() {
+        body.write_state(&mut hasher);
+    }
+    crate::hits::overhead::write_delivery_identity(world, &mut hasher);
+    hasher.finish()
+}
+
+pub(crate) fn legacy_state(world: &World) -> StateHasher {
     let mut hasher = StateHasher::new();
     hasher.u32(CHECKSUM_LAYOUT);
 
@@ -417,7 +430,7 @@ pub(crate) fn state_checksum(world: &World) -> u64 {
     if let Some(navigation) = world.get_resource::<SimNavigation>() {
         navigation.write_state(&mut hasher);
     }
-    hasher.finish()
+    hasher
 }
 
 /// The hash of what a run depends on, for a replay to check it runs against what it recorded: each
@@ -425,13 +438,15 @@ pub(crate) fn state_checksum(world: &World) -> u64 {
 /// collision world's statics. It hashes a set's cooked bytes, so no field can be forgotten here, and
 /// those are the same on every target, as the statics' digest is: authored numbers, by their bits. A party's
 /// tuning goes in too, if there's a party, a navmesh's digest if there's one of those, and every loaded
-/// timeline's simulation half, if there are any.
+/// timeline's simulation half, if there are any. Opted-in standing jump preparation contributes the
+/// policy and setup actor IDs independently of any jump's live countdown.
 pub(crate) fn tables_hash(
     library: &MoveLibrary,
     characters: &CharacterWorld,
     party: &Party,
     navigation: Option<&SimNavigation>,
     timelines: &TimelineLibrary,
+    standing_jump_actors: &[ActorId],
 ) -> u64 {
     let mut hasher = StateHasher::new();
     let hashes = library.current_hashes();
@@ -446,6 +461,22 @@ pub(crate) fn tables_hash(
         hasher.u64(navigation.digest());
     }
     timelines.write_digests(&mut hasher);
+    if !standing_jump_actors.is_empty() {
+        // Revise this tag when the preparation eligibility or release rules change.
+        hasher.bytes(b"grounded-jump-preparation-v2");
+        hasher.u64(STANDING_JUMP_PREPARATION.as_subticks());
+        hasher.f32(STANDING_JUMP_MAX_SPEED);
+        hasher.u64(MOVING_JUMP_PREPARATION.as_subticks());
+        hasher.f32(MOVING_JUMP_MIN_SPEED);
+        hasher.f32(MOVING_JUMP_MIN_ALIGNMENT);
+        hasher.u64(REBOUND_JUMP_PREPARATION.as_subticks());
+        hasher.u64(JUMP_REBOUND_WINDOW.as_subticks());
+        hasher.f32(REBOUND_MIN_LANDING_SPEED);
+        hasher.u32(standing_jump_actors.len() as u32);
+        for actor in standing_jump_actors {
+            hasher.u32(actor.raw());
+        }
+    }
     hasher.finish()
 }
 

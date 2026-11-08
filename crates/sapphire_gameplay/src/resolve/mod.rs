@@ -254,7 +254,8 @@ pub(crate) fn apply_hits(
         }
     }
     for event in hits.events() {
-        let Some((attack, move_started_at, attacker_root)) = attack_of(event, &table, &library, &attackers)
+        let Some((attack, move_started_at, attacker_root)) =
+            attack_of(event, &hits, &table, &library, &attackers)
         else {
             continue;
         };
@@ -291,11 +292,17 @@ pub(crate) fn apply_hits(
 /// a volume with no [`Attack`], which is an event and nothing more.
 fn attack_of(
     event: &HitEvent,
+    hits: &HitQuery,
     table: &ActorTable,
     library: &MoveLibrary,
     attackers: &Query<'_, '_, (&MoveOutput, &ActorTransform)>,
 ) -> Option<(Attack, SimTime, ActorTransform)> {
     let (output, root) = attackers.get(table.entity(event.attacker)?).ok()?;
+    if event.volume == HitEvent::PRIVATE_VOLUME {
+        let source = hits.private_attack_source(event)?;
+        let [original] = &library.get(source.movement)?.hitboxes[..] else { return None };
+        return Some((original.attack?, source.started_at, *root));
+    }
     let volume = output.volumes.get(usize::from(event.volume))?;
     let attack = library.get(volume.at)?.hitboxes.get(volume.hitbox as usize)?.attack?;
     Some((attack, volume.started_at, *root))

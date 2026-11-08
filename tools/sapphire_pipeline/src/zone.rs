@@ -53,10 +53,13 @@
 //!
 //! A document with `navigation` makes a `.snav` of its own, a sub-asset (`town.snav`), baked from the
 //! cooked `.scol` the zone names, with the tile bounds and seeds the document gives. Its key holds that
-//! section, its spawners' and checkpoints' places and the colliders' key, and nothing else: a save to a
-//! kit piece, a placement or a light leaves it alone, and a moved collider rebakes the tiles it reaches
-//! ([`crate::nav`]). Spawners and checkpoints seed it, so the cook refuses one that stands off it. The
-//! zone's `.szone` holds its ID and its key.
+//! section, its spawners' and checkpoints' places, what its spawners patrol and the colliders' key, and
+//! nothing else: a save to a kit piece, a placement or a light leaves it alone, and a moved collider rebakes
+//! the tiles it reaches ([`crate::nav`]). Spawners and checkpoints seed it, so the cook refuses one that
+//! stands off it. The zone's `.szone` holds its ID and its key.
+//!
+//! A bake holds each patrol to what it made: every point is on the mesh, with a way to it from the one
+//! before, or the cook fails by that point's field. They aren't seeds, so a patrol can't make a roof real.
 //!
 //! # Exits
 //!
@@ -93,6 +96,7 @@ use glam::{Mat3, Mat4, Vec3};
 use sapphire_assets::AssetId;
 use sapphire_assets::mesh::{Lod, PositionFormat, Submesh, Vertex};
 use sapphire_math::det;
+use sapphire_nav::{NavGraph, PathSearch, Reach, RouteEnd};
 use sapphire_navmesh::NavMesh;
 use sapphire_serialize::postcard;
 use sapphire_tod::TodTimeline;
@@ -230,6 +234,8 @@ pub const NAVIGATION_PART: &str = "navigation";
 struct NavigationRecipe<'a> {
     navigation: &'a sapphire_zone::ZoneNavigation,
     seeds: Vec<[f32; 3]>,
+    /// What's held to the mesh, and whether its last point goes on to its first.
+    patrols: Vec<(&'a [[f32; 3]], bool)>,
     settings: BakeSettings,
 }
 
@@ -480,6 +486,7 @@ impl ZonePlan {
             seeds: (self.document.spawners.iter().map(|spawner| spawner.position))
                 .chain(self.document.checkpoints.iter().map(|checkpoint| checkpoint.position))
                 .collect(),
+            patrols: self.document.patrols().map(|(_, spline)| (&spline.points[..], spline.closed)).collect(),
             settings: BakeSettings::CHARACTER,
         };
         blake3::hash(&postcard::to_allocvec(&recipe).expect("a navigation recipe always encodes"))
@@ -887,8 +894,33 @@ pub fn cook_navigation(
     )
     .map_err(ZoneCookError::Navigation)?;
     let cooked = baked.mesh.to_cooked().map_err(|error| ZoneCookError::Navigation(error.into()))?;
-    NavMesh::read(&cooked).map_err(|error| ZoneCookError::Navigation(error.into()))?;
+    let mesh = NavMesh::read(&cooked).map_err(|error| ZoneCookError::Navigation(error.into()))?;
+    check_patrols(document, &NavGraph::new(mesh))?;
     Ok(cooked.into_vec())
+}
+
+/// Whether each patrol's points are on `graph`, with a way to each from the one before: what a document
+/// can't say for itself, so a walker can't be sent somewhere it would stand and stare.
+fn check_patrols(document: &ZoneDocument, graph: &NavGraph) -> Result<(), ZoneCookError> {
+    let mut search = PathSearch::new(graph, graph.polygon_count() as u32);
+    let mut corridor = [0; 1];
+    for (index, spline) in document.patrols() {
+        let field = |point: usize| format!("splines[{index}].points[{point}]");
+        let mut last = None;
+        for (point, place) in spline.points.iter().enumerate() {
+            let Some(here) = graph.locate(Vec3::from_array(*place), Reach::CHARACTER) else {
+                return Err(ZoneCookError::invalid(field(point), format!("{place:?} isn't on the navmesh")));
+            };
+            if let Some(last) = last
+                && search.find(graph, last, here, &mut corridor).end != RouteEnd::Reached
+            {
+                let problem = format!("{place:?} has no way to it from the point before");
+                return Err(ZoneCookError::invalid(field(point), problem));
+            }
+            last = Some(here);
+        }
+    }
+    Ok(())
 }
 
 /// A place's mesh, as a zone's cook reads it.

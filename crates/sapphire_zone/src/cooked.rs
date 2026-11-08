@@ -39,8 +39,9 @@ pub struct Zone {
 }
 
 impl Versioned for Zone {
-    /// 1: M3 W1. 2: one navmesh in place of a list of tiles (P1). 3: exits (W4). 4: checkpoints (B4).
-    const VERSION: u32 = 4;
+    /// 1: M3 W1. 2: one navmesh in place of a list of tiles (P1). 3: exits (W4). 4: checkpoints (B4). 5:
+    /// patrols, and who walks them (P3).
+    const VERSION: u32 = 5;
 }
 
 /// What the simulation reads of a zone. Everything here, and everything it references, is in a
@@ -52,6 +53,9 @@ pub struct ZoneSimulation {
     pub colliders: Option<AssetId>,
     /// By ascending ID.
     pub spawners: Vec<CookedSpawner>,
+    /// What spawners walk, by ascending ID: the points of the splines they name. A presentation's splines
+    /// aren't in the digest, and these are.
+    pub patrols: Vec<CookedPatrol>,
     /// By ascending ID.
     pub triggers: Vec<CookedTrigger>,
     /// By ascending ID.
@@ -96,6 +100,21 @@ pub struct CookedSpawner {
     pub yaw_degrees: f32,
     /// What spawns here, by a name gameplay knows.
     pub spawns: String,
+    /// The ID of what it walks, in [`ZoneSimulation::patrols`].
+    pub patrol: Option<u64>,
+}
+
+/// Where a spawner's walker walks: the points of a spline it names, in order.
+#[derive(Clone, Debug, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[rkyv(derive(Debug))]
+pub struct CookedPatrol {
+    /// The name's hash ([`Name`]), as its spline's is.
+    pub id: u64,
+    pub name: String,
+    /// Each on the zone's navmesh, and with a way to it from the one before: a cook checked.
+    pub points: Vec<[f32; 3]>,
+    /// Whether it goes on from its last point to its first, rather than turning back.
+    pub closed: bool,
 }
 
 /// A volume that raises an event when something enters it.
@@ -397,6 +416,20 @@ impl ArchivedCookedSpline {
     }
 }
 
+impl ArchivedCookedPatrol {
+    /// Its points, in order.
+    pub fn points(&self) -> impl Iterator<Item = [f32; 3]> + '_ {
+        self.points.iter().map(native3)
+    }
+}
+
+impl ArchivedCookedSpawner {
+    /// What it walks: an ID in [`ArchivedZoneSimulation::patrols`], which [`ArchivedZone::validate`] checked.
+    pub fn patrol(&self) -> Option<Name> {
+        self.patrol.as_ref().map(|id| Name::from_u64(id.to_native()))
+    }
+}
+
 impl ArchivedZonePresentation {
     pub fn grid(&self) -> Grid {
         Grid { cell_size: self.cell_size.to_native() }
@@ -414,6 +447,12 @@ impl ArchivedZoneSimulation {
     pub fn spawner(&self, name: Name) -> Option<&ArchivedCookedSpawner> {
         let index = self.spawners.binary_search_by_key(&name.as_u64(), |entry| entry.id.to_native()).ok()?;
         self.spawners.get(index)
+    }
+
+    /// The patrol named `name`.
+    pub fn patrol(&self, name: Name) -> Option<&ArchivedCookedPatrol> {
+        let index = self.patrols.binary_search_by_key(&name.as_u64(), |entry| entry.id.to_native()).ok()?;
+        self.patrols.get(index)
     }
 
     /// The trigger named `name`.
@@ -505,6 +544,16 @@ impl ArchivedZone {
             digest.floats(&spawner.position());
             digest.floats(&[spawner.yaw_degrees.to_native()]);
             digest.bytes(spawner.spawns.as_bytes());
+            digest.u64(spawner.patrol().map_or(0, Name::as_u64));
+        }
+        digest.u32(simulation.patrols.len() as u32);
+        for patrol in simulation.patrols.iter() {
+            digest.u64(patrol.id.to_native());
+            digest.u32(patrol.points.len() as u32);
+            for point in patrol.points() {
+                digest.floats(&point);
+            }
+            digest.u32(u32::from(patrol.closed));
         }
         digest.u32(simulation.triggers.len() as u32);
         for trigger in simulation.triggers.iter() {
@@ -566,6 +615,22 @@ impl ArchivedZone {
             check_position(spawner.position()).map_err(invalid)?;
             check_finite(spawner.yaw_degrees.to_native()).map_err(invalid)?;
             check_name(spawner.spawns.as_str()).map_err(invalid)?;
+        }
+        check_count("patrols", simulation.patrols.len())?;
+        let patrols = simulation.patrols.iter().map(|entry| (entry.id.to_native(), entry.name.as_str()));
+        check_ids("patrols", patrols)?;
+        for patrol in simulation.patrols.iter() {
+            check_points(patrol.points.len(), |point| native3(&patrol.points[point])).map_err(|problem| {
+                ZoneError::invalid(format!("patrol `{}`", patrol.name.as_str()), problem)
+            })?;
+        }
+        for spawner in simulation.spawners.iter() {
+            if let Some(patrol) = spawner.patrol()
+                && simulation.patrol(patrol).is_none()
+            {
+                let problem = "walks a patrol the zone doesn't hold";
+                return Err(ZoneError::invalid(format!("spawner `{}`", spawner.name.as_str()), problem));
+            }
         }
         check_count("triggers", simulation.triggers.len())?;
         let triggers = simulation.triggers.iter().map(|entry| (entry.id.to_native(), entry.name.as_str()));
@@ -795,6 +860,7 @@ mod tests {
     const BACKDROP_MESH: AssetId = AssetId::from_text("1e7721b7-7898-4d83-8d21-3ff9c59e5b6c");
     const PROBES: AssetId = AssetId::from_text("9df1c80b-9d2d-4100-a6cc-a16331f57cb5");
     const OTHER_ZONE: AssetId = AssetId::from_text("e8c21831-7d98-4a79-b592-912b806cf3e2");
+    const NAVIGATION: AssetId = AssetId::from_text("6d7b7a5c-8c5e-4d7f-9b0e-3a1f2c4d5e6f");
 
     fn document() -> ZoneDocument {
         ZoneDocument::from_ron(&format!(
@@ -817,9 +883,10 @@ mod tests {
                     ],
                     probes: Some("{PROBES}"),
                     colliders: Some("{COLLIDERS}"),
+                    navigation: Some((min: (-64.0, -64.0), max: (64.0, 64.0))),
                     spawners: [
                         (name: "player_start", position: (0.1, 0.0, 3.3), yaw_degrees: 180.0, spawns: "player"),
-                        (name: "north_gate", position: (0.7, 0.2, -17.3), yaw_degrees: 33.3, spawns: "warrior"),
+                        (name: "north_gate", position: (0.7, 0.2, -17.3), yaw_degrees: 33.3, spawns: "warrior", patrol: "gate_walk"),
                     ],
                     triggers: [
                         (name: "gate", position: (3.2, 1.0, -18.0), volume: Box(half_extents: (3.0, 2.0, 1.0)), event: "gate_entered"),
@@ -829,7 +896,10 @@ mod tests {
                         (name: "gate_steps", position: (3.2, 0.0, -14.0), yaw_degrees: 180.0, volume: Sphere(radius: 2.0)),
                         (name: "well_side", position: (1.5, 0.0, 1.0), volume: Box(half_extents: (1.0, 1.5, 1.0))),
                     ],
-                    splines: [(name: "street_rail", points: [(3.2, 2.0, -20.0), (3.2, 2.5, -40.0)])],
+                    splines: [
+                        (name: "street_rail", points: [(3.2, 2.0, -20.0), (3.2, 2.5, -40.0)]),
+                        (name: "gate_walk", points: [(0.7, 0.2, -17.3), (0.7, 0.2, -25.0)], closed: true),
+                    ],
                     exits: [
                         (name: "to_market", to: "{OTHER_ZONE}", arrive: "from_town", prefetch: true),
                         (name: "to_docks", to: "{OTHER_ZONE}", arrive: "player_start"),
@@ -862,7 +932,7 @@ mod tests {
                 ],
                 day: Some("a day's text".to_owned()),
                 rigs: None,
-                navigation: None,
+                navigation: Some(NAVIGATION),
                 exit_packs: vec!["zone_market".to_owned(), "zone_market".to_owned()],
             })
             .expect("cooks")
@@ -930,7 +1000,7 @@ mod tests {
     fn loading_a_zone_holds_what_the_simulation_reads_and_only_names_the_rest() {
         let bytes = zone().to_cooked().expect("write");
         let read = Zone::read(&bytes).expect("read");
-        assert_eq!(read.references(), [COLLIDERS]);
+        assert_eq!(read.references(), [COLLIDERS, NAVIGATION]);
         let mut expected = vec![MESH, CELL_MESH, BACKDROP_MESH, PROBES];
         expected.sort_unstable();
         assert_eq!(read.presentation_references(), expected);
@@ -940,13 +1010,16 @@ mod tests {
     #[test]
     fn cooked_data_the_document_would_refuse_is_refused() {
         type Tamper = fn(&mut Zone);
-        let cases: [(&str, &str, Tamper); 26] = [
+        let cases: [(&str, &str, Tamper); 29] = [
             ("cell size", "cell_size", |z| z.presentation.cell_size = 0.0),
             ("spawner order", "out of order", |z| z.simulation.spawners.reverse()),
             ("spawner id", "isn't its name's hash", |z| z.simulation.spawners[0].id ^= 1),
             ("spawner name", "empty", |z| z.simulation.spawners[0].name.clear()),
             ("spawner position", "finite", |z| z.simulation.spawners[1].position[0] = f32::NAN),
             ("spawner yaw", "finite", |z| z.simulation.spawners[1].yaw_degrees = f32::INFINITY),
+            ("patrol's id", "isn't its name's hash", |z| z.simulation.patrols[0].id ^= 1),
+            ("patrol's points", "finite", |z| z.simulation.patrols[0].points[1][2] = f32::NAN),
+            ("spawner's patrol", "doesn't hold", |z| z.simulation.spawners[0].patrol = Some(3)),
             ("trigger order", "out of order", |z| z.simulation.triggers.reverse()),
             ("trigger volume", "extents", |z| {
                 z.simulation.triggers[0].volume = CookedVolume::Box { half_extents: [0.0; 3] };
@@ -1057,6 +1130,11 @@ mod tests {
         for trigger in zone.simulation.triggers.iter() {
             assert!(zone.simulation.trigger(Name::from_u64(trigger.id.to_native())).is_some());
         }
+        for spawner in zone.simulation.spawners.iter() {
+            if let Some(patrol) = spawner.patrol() {
+                assert!(zone.simulation.patrol(patrol).is_some_and(|walk| walk.points().count() > 1));
+            }
+        }
         let colliders = colliders();
         let digest = zone.simulation_digest(|_| Some(&colliders[..]));
         assert!(digest.is_ok(), "{digest:?}");
@@ -1113,10 +1191,16 @@ mod tests {
         let base = digest_of(&zone(), &colliders);
 
         type Tamper = fn(&mut Zone);
-        let simulation: [(&str, Tamper); 10] = [
+        let simulation: [(&str, Tamper); 13] = [
             ("a spawner's place", |z| z.simulation.spawners[0].position[1] += 0.25),
             ("a spawner's yaw", |z| z.simulation.spawners[0].yaw_degrees += 1.0),
             ("what spawns", |z| z.simulation.spawners[0].spawns.push('x')),
+            ("who walks", |z| {
+                let walker = z.simulation.spawners.iter_mut().find(|spawner| spawner.patrol.is_some());
+                walker.expect("someone").patrol = None;
+            }),
+            ("a patrol's point", |z| z.simulation.patrols[0].points[0][0] += 0.25),
+            ("whether it's closed", |z| z.simulation.patrols[0].closed ^= true),
             ("a trigger's place", |z| z.simulation.triggers[1].position[2] += 0.25),
             ("a trigger's volume", |z| {
                 z.simulation.triggers[1].volume = CookedVolume::Sphere { radius: 0.25 }
@@ -1218,6 +1302,6 @@ mod tests {
             std::env::consts::ARCH
         );
         std::io::stderr().write_all(line.as_bytes()).expect("stderr takes it");
-        assert_eq!(digest, 0xb01a_6234_d8d2_2d78, "the digest moved; {line}");
+        assert_eq!(digest, 0x15dc_b5da_8e03_1351, "the digest moved; {line}");
     }
 }

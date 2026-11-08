@@ -50,7 +50,7 @@
         navigation: Some((min: (-40.0, -48.0), max: (56.0, 48.0))),
         spawners: [
             (name: "player_start", position: (1.0, 0.0, 1.0), yaw_degrees: 0.0, spawns: "player"),
-            (name: "far_gate", position: (22.0, 0.0, -2.0), yaw_degrees: 225.0, spawns: "warrior"),
+            (name: "far_gate", position: (22.0, 0.0, -2.0), yaw_degrees: 225.0, spawns: "warrior", patrol: "gate_round"),
             (name: "yard_north", position: (9.0, 0.0, 17.0), yaw_degrees: 180.0, spawns: "warrior"),
             (name: "yard_east", position: (16.0, 0.0, 10.0), yaw_degrees: 270.0, spawns: "warrior"),
             (name: "yard_west", position: (2.0, 0.0, 12.0), yaw_degrees: 90.0, spawns: "warrior"),
@@ -68,6 +68,7 @@
         encounters: ["5d3a9e21-7c44-4b0e-9f16-0a8ce3b7d214"],
         splines: [
             (name: "overlook", points: [(-10.0, 4.0, 14.0), (8.0, 6.0, 18.0), (26.0, 4.0, 14.0)]),
+            (name: "gate_round", points: [(22.0, 0.0, -2.0), (22.0, 0.0, 8.0), (10.0, 0.0, 8.0), (10.0, 0.0, -2.0)], closed: true),
         ],
         // Back the way it came: nothing here asks for the hub ahead of time, so it's a cold way back.
         exits: [(name: "to_proving_hub", to: "5f3ac6de-0b7c-4f21-9d3e-7a1e64c2b805", arrive: "from_ground")],

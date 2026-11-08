@@ -366,6 +366,7 @@ mod tests {
                 position: [0.0; 3],
                 yaw_degrees: 0.0,
                 spawns: "warrior".to_owned(),
+                patrol: None,
             }],
             triggers: vec![crate::CookedTrigger {
                 id: 1,
@@ -376,6 +377,7 @@ mod tests {
             }],
             checkpoints: Vec::new(),
             navigation: None,
+            patrols: Vec::new(),
             encounters: Vec::new(),
             exits: Vec::new(),
         };

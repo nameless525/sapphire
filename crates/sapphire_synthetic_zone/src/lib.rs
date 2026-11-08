@@ -188,6 +188,7 @@ impl SyntheticZone {
             simulation: ZoneSimulation {
                 colliders: None,
                 spawners: Vec::new(),
+                patrols: Vec::new(),
                 triggers: Vec::new(),
                 checkpoints: Vec::new(),
                 navigation: None,

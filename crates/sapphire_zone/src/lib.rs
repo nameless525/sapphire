@@ -50,11 +50,11 @@ pub mod grid;
 
 pub use cooked::{
     ArchivedCookedCheckpoint, ArchivedCookedExit, ArchivedCookedInstance, ArchivedCookedLight,
-    ArchivedCookedLightShape, ArchivedCookedSpawner, ArchivedCookedSpline, ArchivedCookedTrigger,
-    ArchivedCookedVolume, ArchivedPlaceContents, ArchivedZone, ArchivedZoneCell, ArchivedZonePresentation,
-    ArchivedZoneSimulation, CookedCheckpoint, CookedExit, CookedInstance, CookedLight, CookedLightShape,
-    CookedSpawner, CookedSpline, CookedTrigger, CookedVolume, PlaceContents, ZONE_EXTENSION, Zone, ZoneCell,
-    ZonePresentation, ZoneSimulation,
+    ArchivedCookedLightShape, ArchivedCookedPatrol, ArchivedCookedSpawner, ArchivedCookedSpline,
+    ArchivedCookedTrigger, ArchivedCookedVolume, ArchivedPlaceContents, ArchivedZone, ArchivedZoneCell,
+    ArchivedZonePresentation, ArchivedZoneSimulation, CookedCheckpoint, CookedExit, CookedInstance,
+    CookedLight, CookedLightShape, CookedPatrol, CookedSpawner, CookedSpline, CookedTrigger, CookedVolume,
+    PlaceContents, ZONE_EXTENSION, Zone, ZoneCell, ZonePresentation, ZoneSimulation,
 };
 pub use document::{
     Checkpoint, Exit, Instance, Light, LightShape, Placement, Spawner, Spline, Split, Trigger, Volume,

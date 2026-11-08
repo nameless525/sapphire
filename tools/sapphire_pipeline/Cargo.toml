@@ -82,7 +82,8 @@ vrm-spec.workspace = true
 sapphire_anim.workspace = true
 # A move's tables played in the simulation, and a cooked zone stood up in one.
 sapphire_gameplay.workspace = true
-# The same, on a zone's own colliders (`tests/zone_ward.rs`).
+# The same, on a zone's own colliders (`tests/zone_ward.rs`), and a walker on a zone's cooked navmesh
+# and colliders (`tests/nav_patrols.rs`).
 sapphire_physics.workspace = true
 # The editor's sidecars and a cook's are one thing (`tests/document_sidecars.rs`).
 sapphire_document.workspace = true

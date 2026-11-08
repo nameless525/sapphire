@@ -21,7 +21,7 @@ use sapphire_colliders::{ColliderDocument, ColliderSet as CookedColliders};
 use sapphire_gameplay::{
     ActorActions, ActorSpawn, Buttons, SimConfig, Simulation, Stick, TickActions, arena,
 };
-use sapphire_nav::{NavGraph, PathSearch, Reach, RouteEnd, Steer};
+use sapphire_nav::{NavGraph, Navigation, PathSearch, Reach, RouteEnd, Steer};
 use sapphire_navmesh::NavMesh;
 use sapphire_physics::{ColliderSet, PhysicsWorld};
 use sapphire_pipeline::assembly::{self, Detail};
@@ -187,7 +187,8 @@ fn a_body_walks_the_ward_from_the_start_to_the_boss() {
     let set = ColliderSet::read(&colliders).expect("it reads");
     let capacity = sim.body_capacity();
     sim.set_physics_world(PhysicsWorld::from_cooked(set, capacity).expect("it builds")).expect("empty");
-    sim.set_navigation(&baked()).expect("it reads");
+    let baked = baked();
+    sim.set_navigation(&baked).expect("it reads");
     let profile = arena::profile();
     let speed = profile.run_speed;
     let controller = Some(sim.add_controller_profile(&profile).expect("a good profile"));
@@ -200,7 +201,9 @@ fn a_body_walks_the_ward_from_the_start_to_the_boss() {
             ..ActorSpawn::default()
         })
         .expect("room for one");
-    let path = sim.navigation_mut().expect("just given").add_path();
+    // The walker has no brain, so it walks its own path over the same navmesh, as a brain would.
+    let mut navigation = Navigation::new(NavMesh::read(&baked).expect("it reads"));
+    let mut path = sapphire_nav::Path::new();
 
     for spawner in &document.spawners {
         let target = Vec3::from(spawner.position);
@@ -209,9 +212,8 @@ fn a_body_walks_the_ward_from_the_start_to_the_boss() {
         let mut arrived = false;
         for _ in 0..ticks {
             let at = sim.actor(walker).expect("alive").position;
-            let mut navigation = sim.navigation_mut().expect("it has one");
             navigation.begin_tick();
-            let stick = match navigation.follow(path, at, target) {
+            let stick = match navigation.follow(&mut path, at, target) {
                 Steer::Walk(direction) => Stick::from_axes(direction.x, direction.z),
                 Steer::Arrived => {
                     arrived = true;

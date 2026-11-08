@@ -26,10 +26,17 @@
 //!         day: Some("../lookdev/lookdev_day.ron"),
 //!         rigs: Some("../lookdev/lookdev_light_rigs.ron"),
 //!         colliders: Some("0aec06e8-ef8a-4f60-8dce-1e159cc277fa"),
-//!         spawners: [(name: "player_start", position: (0.0, 0.0, 3.0), yaw_degrees: 180.0, spawns: "player")],
+//!         navigation: Some((min: (-64.0, -64.0), max: (64.0, 64.0))),
+//!         spawners: [
+//!             (name: "player_start", position: (0.0, 0.0, 3.0), yaw_degrees: 180.0, spawns: "player"),
+//!             (name: "gate_guard", position: (3.2, 0.0, -20.0), spawns: "warrior", patrol: "gate_walk"),
+//!         ],
 //!         triggers: [(name: "gate", position: (3.2, 1.0, -18.0), volume: Box(half_extents: (3.0, 2.0, 1.0)), event: "gate_entered")],
 //!         checkpoints: [(name: "gate_steps", position: (3.2, 0.0, -14.0), yaw_degrees: 180.0, volume: Sphere(radius: 2.0))],
-//!         splines: [(name: "street_rail", points: [(3.2, 2.0, -20.0), (3.2, 2.5, -40.0), (3.2, 3.0, -60.0)])],
+//!         splines: [
+//!             (name: "street_rail", points: [(3.2, 2.0, -20.0), (3.2, 2.5, -40.0), (3.2, 3.0, -60.0)]),
+//!             (name: "gate_walk", points: [(3.2, 0.0, -20.0), (3.2, 0.0, -30.0), (9.0, 0.0, -30.0)], closed: true),
+//!         ],
 //!         // Where it leads. A trigger whose `event` is `to_market` is its door.
 //!         exits: [(name: "to_market", to: "e8c21831-7d98-4a79-b592-912b806cf3e2", arrive: "player_start", prefetch: true)],
 //!     ),
@@ -44,6 +51,11 @@
 //! is the name's hash ([`Name`]), which no other entry's addition or order can change, so a replay and
 //! a save can name it. A placement or an instance has no ID: nothing about them that the simulation
 //! can see survives cook.
+//!
+//! **Patrols:** a spawner's `patrol` names one of the zone's splines, and what spawns there walks its points
+//! in order, turning back at the end of an open one. A new patrol is a spline and a line on a spawner. Its
+//! points go in the simulation's half of the cooked zone, and a cook holds each to the navmesh, so a point
+//! off it or cut off from the one before fails by its field: the pipeline's `zone` module has that.
 //!
 //! **Prefabs** are resolved at cook, so nothing about them reaches the runtime: the pipeline's `zone`
 //! module has what a prefab is. `day` and `rigs` are paths from this document's directory, since those
@@ -60,8 +72,9 @@ use sapphire_serialize::{AssetId, CookedError, DocumentError};
 use serde::{Deserialize, Serialize};
 
 use crate::cooked::{
-    CookedCheckpoint, CookedExit, CookedInstance, CookedLight, CookedLightShape, CookedSpawner, CookedSpline,
-    CookedTrigger, CookedVolume, PlaceContents, Zone, ZoneCell, ZonePresentation, ZoneSimulation,
+    CookedCheckpoint, CookedExit, CookedInstance, CookedLight, CookedLightShape, CookedPatrol, CookedSpawner,
+    CookedSpline, CookedTrigger, CookedVolume, PlaceContents, Zone, ZoneCell, ZonePresentation,
+    ZoneSimulation,
 };
 use crate::grid::{Bounds, Grid, MAX_COORDINATE, Place};
 
@@ -227,6 +240,9 @@ pub struct Spawner {
     pub yaw_degrees: f32,
     /// What spawns here, by a name gameplay knows.
     pub spawns: String,
+    /// The spline in this zone that what spawns here walks, if it walks one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub patrol: Option<String>,
 }
 
 /// A way out of a zone: all there is to say of a transition but how it looks (M3 W4). A trigger whose `event`
@@ -316,7 +332,8 @@ pub enum Volume {
     },
 }
 
-/// A curve through points, for a camera to ride: a Catmull-Rom's control points.
+/// Points in order: a Catmull-Rom's control points for a camera to ride, or, for a spawner naming it as its
+/// `patrol`, where to walk.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Reflect)]
 #[type_path = "sapphire::zone"]
 #[serde(deny_unknown_fields)]
@@ -461,6 +478,9 @@ impl ZoneDocument {
             check_position(spawner.position).map_err(invalid(field("position")))?;
             check_finite(spawner.yaw_degrees).map_err(invalid(field("yaw_degrees")))?;
             check_name(&spawner.spawns).map_err(invalid(field("spawns")))?;
+            if let Some(patrol) = &spawner.patrol {
+                self.check_patrol(patrol).map_err(invalid(field("patrol")))?;
+            }
         }
         check_names("triggers", self.triggers.iter().map(|trigger| trigger.name.as_str()))?;
         for (index, trigger) in self.triggers.iter().enumerate() {
@@ -489,6 +509,24 @@ impl ZoneDocument {
             check_name(&exit.arrive).map_err(invalid(format!("exits[{index}].arrive")))?;
         }
         Ok(())
+    }
+
+    /// Whether a spawner may name `patrol` as what it walks.
+    fn check_patrol(&self, patrol: &str) -> Result<(), String> {
+        if self.navigation.is_none() {
+            return Err("a patrol walks the zone's navmesh, and it asks for none".to_owned());
+        }
+        if !self.splines.iter().any(|spline| spline.name == patrol) {
+            return Err(format!("`{patrol}` isn't one of the zone's splines"));
+        }
+        Ok(())
+    }
+
+    /// The splines some spawner walks, with where each is in `splines`, in that order.
+    pub fn patrols(&self) -> impl Iterator<Item = (usize, &Spline)> {
+        self.splines.iter().enumerate().filter(|(_, spline)| {
+            self.spawners.iter().any(|spawner| spawner.patrol.as_deref() == Some(spline.name.as_str()))
+        })
     }
 
     fn check_navigation(&self, navigation: &ZoneNavigation) -> Result<(), ZoneError> {
@@ -531,9 +569,20 @@ impl ZoneDocument {
                 position: spawner.position,
                 yaw_degrees: spawner.yaw_degrees,
                 spawns: spawner.spawns.clone(),
+                patrol: spawner.patrol.as_deref().map(|patrol| Name::new(patrol).as_u64()),
             })
             .collect();
         spawners.sort_unstable_by_key(|spawner| spawner.id);
+        let mut patrols: Vec<CookedPatrol> = self
+            .patrols()
+            .map(|(_, spline)| CookedPatrol {
+                id: Name::new(&spline.name).as_u64(),
+                name: spline.name.clone(),
+                points: spline.points.clone(),
+                closed: spline.closed,
+            })
+            .collect();
+        patrols.sort_unstable_by_key(|patrol| patrol.id);
         let mut triggers: Vec<CookedTrigger> = self
             .triggers
             .iter()
@@ -575,10 +624,12 @@ impl ZoneDocument {
             .collect();
         exits.sort_unstable_by_key(|exit| exit.id);
         check_distinct("exits", &exits, |exit| (exit.id, &exit.name))?;
+        check_distinct("patrols", &patrols, |patrol| (patrol.id, &patrol.name))?;
         let sorted_set = |ids: &[AssetId]| ids.iter().copied().collect::<BTreeSet<_>>().into_iter().collect();
         Ok(ZoneSimulation {
             colliders: self.colliders,
             spawners,
+            patrols,
             triggers,
             checkpoints,
             navigation: None,
@@ -1014,7 +1065,7 @@ mod tests {
     #[test]
     fn every_check_names_the_field() {
         type Tamper = fn(&mut ZoneDocument);
-        let cases: [(&str, Tamper); 26] = [
+        let cases: [(&str, Tamper); 28] = [
             ("grid.cell_size", |d| d.grid.cell_size = 1.0),
             ("grid.cell_size", |d| d.grid.cell_size = f32::NAN),
             ("placements[1].at", |d| d.placements[1].at[2] = f32::INFINITY),
@@ -1038,6 +1089,11 @@ mod tests {
             ("spawners[0].name", |d| d.spawners[0].name.clear()),
             ("spawners[0].spawns", |d| d.spawners[0].spawns = "x".repeat(MAX_NAME + 1)),
             ("spawners[0].yaw_degrees", |d| d.spawners[0].yaw_degrees = f32::NAN),
+            ("spawners[0].patrol", |d| d.spawners[0].patrol = Some("no_such_spline".to_owned())),
+            ("spawners[0].patrol", |d| {
+                d.navigation = None;
+                d.spawners[0].patrol = Some("street_rail".to_owned());
+            }),
             ("triggers[1].name", |d| d.triggers[1].name = "gate".to_owned()),
             ("triggers[1].volume", |d| d.triggers[1].volume = Volume::Sphere { radius: 0.0 }),
             ("triggers[0].event", |d| d.triggers[0].event.clear()),

@@ -43,7 +43,8 @@
 //!   file holds one hash of the move data for all of them: a cook uses scalar [`Vec3`], `f32`, `Mat3`
 //!   and `Affine3` (matrices of [`Vec3`]) with this module, never `Vec3A`, `Vec4`, `Affine3A` or `Quat`
 //!   arithmetic: [`quat_mul`], [`quat_conjugate`], [`quat_rotate`] and [`quat_normalize`] stand in for
-//!   `Quat`'s, which only carries values there. The simulation's `clippy.toml` bans the named methods
+//!   `Quat`'s, which only carries values there, and [`quat_from_mat3`] for `Quat::from_mat3` and the
+//!   `normalize` after it, which a bake turning frames into rotations would otherwise reach. The simulation's `clippy.toml` bans the named methods
 //!   that differ, and tests pin the test content's hash (M2 G2) and tables baked from clips (M2 N1,
 //!   `sapphire_pipeline`'s `moves`). They can't ban `Quat`'s operators, so `quat * vec` in a bake is
 //!   still caught only by those tests.
@@ -54,7 +55,7 @@
 
 use std::f32::consts::{PI, TAU};
 
-use glam::{Quat, Vec2, Vec3};
+use glam::{Mat3, Quat, Vec2, Vec3};
 
 /// Sine of `x` radians.
 #[inline]
@@ -210,6 +211,43 @@ pub fn quat_from_rotation_y(angle: f32) -> Quat {
 pub fn quat_from_rotation_z(angle: f32) -> Quat {
     let (s, c) = sin_cos(angle * 0.5);
     Quat::from_xyzw(0.0, 0.0, s, c)
+}
+
+/// The unit rotation of a frame whose columns are orthonormal (unlike `Quat::from_mat3` followed by
+/// `Quat::normalize`). It reads the largest of the four components from the diagonal, as glam and
+/// DirectXMath do, the rest from the sums and differences across it, and normalizes in scalars, so a
+/// bake that turns frames into joint rotations writes the same bits on every target.
+#[must_use]
+pub fn quat_from_mat3(frame: &Mat3) -> Quat {
+    let (m00, m01, m02) = frame.x_axis.into();
+    let (m10, m11, m12) = frame.y_axis.into();
+    let (m20, m21, m22) = frame.z_axis.into();
+    let q = if m22 <= 0.0 {
+        let dif10 = m11 - m00;
+        let omm22 = 1.0 - m22;
+        if dif10 <= 0.0 {
+            let four_xsq = omm22 - dif10;
+            let inv4x = 0.5 / four_xsq.sqrt();
+            [four_xsq * inv4x, (m01 + m10) * inv4x, (m02 + m20) * inv4x, (m12 - m21) * inv4x]
+        } else {
+            let four_ysq = omm22 + dif10;
+            let inv4y = 0.5 / four_ysq.sqrt();
+            [(m01 + m10) * inv4y, four_ysq * inv4y, (m12 + m21) * inv4y, (m20 - m02) * inv4y]
+        }
+    } else {
+        let sum10 = m11 + m00;
+        let opm22 = 1.0 + m22;
+        if sum10 <= 0.0 {
+            let four_zsq = opm22 - sum10;
+            let inv4z = 0.5 / four_zsq.sqrt();
+            [(m02 + m20) * inv4z, (m12 + m21) * inv4z, four_zsq * inv4z, (m01 - m10) * inv4z]
+        } else {
+            let four_wsq = opm22 + sum10;
+            let inv4w = 0.5 / four_wsq.sqrt();
+            [(m12 - m21) * inv4w, (m20 - m02) * inv4w, (m01 - m10) * inv4w, four_wsq * inv4w]
+        }
+    };
+    quat_unit(q)
 }
 
 /// The unit axis and the angle in radians, within [−π, π], of the unit quaternion `q`, as
@@ -525,6 +563,56 @@ mod tests {
                 assert_eq!(glam, sse2_normalize(q), "{q:?}");
             }
         }
+    }
+
+    /// Frames that reach each of [`quat_from_mat3`]'s four branches, by the component that's largest.
+    fn frames() -> [Mat3; 4] {
+        let tilt = Vec3::new(0.3, -0.5, 0.81).normalize();
+        [
+            Mat3::from_quat(quat_from_axis_angle(Vec3::X, 2.9)),
+            Mat3::from_quat(quat_from_axis_angle(Vec3::new(0.2, 0.97, 0.1).normalize(), 3.0)),
+            Mat3::from_quat(quat_from_axis_angle(tilt, 2.6)),
+            Mat3::from_quat(quat_from_axis_angle(tilt, 0.7)),
+        ]
+    }
+
+    #[test]
+    fn a_frame_turns_into_the_rotation_it_holds() {
+        for (index, frame) in frames().into_iter().enumerate() {
+            let q = quat_from_mat3(&frame);
+            let largest = q
+                .to_array()
+                .iter()
+                .map(|c| c.abs())
+                .enumerate()
+                .fold((0, 0.0), |best, (i, c)| if c > best.1 { (i, c) } else { best });
+            assert_eq!(largest.0, index, "frame {index} reaches another branch: {q}");
+            assert!(q.abs_diff_eq(Quat::from_mat3(&frame).normalize(), 1e-6), "{q}");
+            assert!((quat_dot(q.to_array(), q.to_array()) - 1.0).abs() < 1e-6);
+            for axis in [Vec3::X, Vec3::Y, Vec3::Z] {
+                assert!(quat_rotate(q, axis).abs_diff_eq(frame * axis, 1e-6), "frame {index}: {axis}");
+            }
+        }
+        assert_eq!(quat_from_mat3(&Mat3::IDENTITY), Quat::IDENTITY);
+    }
+
+    /// What [`quat_from_mat3`] gives on every target for one frame per branch, by bits.
+    #[test]
+    fn quat_from_mat3_has_one_answer_on_every_architecture() {
+        let frames = [
+            Mat3::from_cols_array(&[1.0, 0.0, 0.0, 0.0, -0.6, 0.8, 0.0, -0.8, -0.6]),
+            Mat3::from_cols_array(&[-0.6, 0.0, -0.8, 0.0, 1.0, 0.0, 0.8, 0.0, -0.6]),
+            Mat3::from_cols_array(&[-0.6, 0.8, 0.0, -0.8, -0.6, 0.0, 0.0, 0.0, 1.0]),
+            Mat3::from_cols_array(&[0.28, 0.96, 0.0, -0.96, 0.28, 0.0, 0.0, 0.0, 1.0]),
+        ];
+        let expected: [[u32; 4]; 4] = [
+            [0x3f64_f92f, 0, 0, 0x3ee4_f92f],
+            [0, 0x3f64_f92f, 0, 0x3ee4_f92f],
+            [0, 0, 0x3f64_f92f, 0x3ee4_f92f],
+            [0, 0, 0x3f19_999a, 0x3f4c_cccd],
+        ];
+        let bits = frames.map(|frame| quat_from_mat3(&frame).to_array().map(f32::to_bits));
+        assert_eq!(bits, expected, "{bits:#010x?}");
     }
 
     #[test]

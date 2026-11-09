@@ -8,7 +8,8 @@
 
 use std::f32::consts::TAU;
 
-use glam::{Mat3, Quat, Vec3};
+use glam::{Mat3, Vec3};
+use sapphire_math::det;
 use serde_json::json;
 
 use super::{Figure, FigureError, Loft, MAX_REGIONS, Shape, Slab};
@@ -201,7 +202,7 @@ fn loft(loft: &Loft) -> Result<Piece, String> {
     };
     let point = |ring: usize, column: usize, inset: f32| {
         let ring = &loft.rings[ring];
-        let (sin, cos) = angle(column).sin_cos();
+        let (sin, cos) = det::sin_cos(angle(column));
         let radius = ((ring.radius.0 - inset).max(0.0), (ring.radius.1 - inset).max(0.0));
         from + axis * (ring.at * length)
             + across * (radius.0 * cos + ring.shift.0)
@@ -499,7 +500,7 @@ impl Built {
                 }
                 None => (frame, at),
             };
-            let rotation = Quat::from_mat3(&local_frame).normalize();
+            let rotation = det::quat_from_mat3(&local_frame);
             let mut node = json!({
                 "name": rig.names[index],
                 "translation": local_at.to_array(),

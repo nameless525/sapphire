@@ -30,7 +30,8 @@ use std::path::Path;
 use glam::{Vec2, Vec3};
 use sapphire_assets::character_maps::{MaterialId, ilm};
 
-use crate::color::{linear_to_srgb, srgb_to_linear, unorm8};
+use crate::color::exact::{linear_to_srgb, srgb_to_linear};
+use crate::color::unorm8;
 use crate::generators::Output;
 use crate::samples::noise::smoothstep;
 use crate::samples::{Existing, Generated, write_files};

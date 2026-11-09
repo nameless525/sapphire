@@ -13,6 +13,25 @@ pub(crate) use sapphire_math::color::{
     linear_srgb_to_oklab, linear_to_srgb, oklab_to_linear_srgb, srgb_to_linear,
 };
 
+/// The sRGB transfer functions with their powers through `sapphire_math::det`, for generators whose
+/// committed bytes are pinned on every OS (figures, and the gunmetal matcap they copy). The shared
+/// ones call `std`'s `powf`, which rounds by each platform's C library: a code value apart, now and
+/// then, once quantized.
+pub(crate) mod exact {
+    use sapphire_math::det::pow;
+
+    /// [`super::srgb_to_linear`], the same on every target and OS.
+    pub(crate) fn srgb_to_linear(c: f32) -> f32 {
+        if c <= 0.04045 { c / 12.92 } else { pow((c + 0.055) / 1.055, 2.4) }
+    }
+
+    /// [`super::linear_to_srgb`], the same on every target and OS.
+    pub(crate) fn linear_to_srgb(c: f32) -> f32 {
+        let c = c.clamp(0.0, 1.0);
+        if c <= 0.003_130_8 { c * 12.92 } else { 1.055 * pow(c, 1.0 / 2.4) - 0.055 }
+    }
+}
+
 /// Quantizes a `[0, 1]` value to an 8-bit unorm, rounding to nearest.
 pub(crate) fn unorm8(c: f32) -> u8 {
     // The clamp keeps the cast in range; NaN saturates to 0.

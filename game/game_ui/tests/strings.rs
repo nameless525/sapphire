@@ -1,9 +1,10 @@
-//! Every string the game draws (M3 C3): the game's documents, its cutscenes' subtitles and its dialogues' lines
-//! (M3 Q2) name keys, and only the string tables say what they show, in English and Japanese. Nothing a document or a cutscene names is
-//! missing from either language, the two have the same keys taking the same variables, no key is one
-//! nothing can show, the Japanese says it's machine-quality, and the fonts' character set holds every
-//! character the tables use. How a string is added is in `content/loc/en/game_ui.ftl`'s header. `menus.rs`
-//! walks every screen in both languages and under pseudo-localization.
+//! Every string the game draws (M3 C3): the game's documents, its cutscenes' subtitles, its dialogues'
+//! lines (M3 Q2) and its bosses' names name keys, and only the string tables say what they show, in English
+//! and Japanese. Nothing a document, a cutscene or a boss names is missing from either language, the two
+//! have the same keys taking the same variables, no key is one nothing can show, the Japanese says it's
+//! machine-quality, and the fonts' character set holds every character the tables use. How a string is
+//! added is in `content/loc/en/game_ui.ftl`'s header. `menus.rs` walks every screen in both languages and
+//! under pseudo-localization.
 
 mod support;
 
@@ -14,6 +15,7 @@ use std::path::Path;
 use game_ui::menus::MenuScreen;
 use sapphire_assets::ui::UiDocument;
 use sapphire_dialogue::DialogueDocument;
+use sapphire_moves::EnemyDocument;
 use sapphire_pipeline::font::Characters;
 use sapphire_strings::{Expression, Part, Pattern, StringTable};
 use sapphire_timeline::TimelineDocument;
@@ -67,11 +69,33 @@ fn add_spoken(dir: &Path, into: &mut BTreeSet<String>) {
 }
 
 /// What every timeline's subtitles say, and who says it: keys a cutscene shows. Then what every dialogue's
-/// lines and choices say, and who says them: keys a dialogue's panel shows (M3 Q2).
+/// lines and choices say, and who says them: keys a dialogue's panel shows (M3 Q2). Then every boss's name:
+/// keys its boss bar shows.
 fn spoken() -> BTreeSet<String> {
     let mut keys = BTreeSet::new();
     add_spoken(&content(), &mut keys);
     add_said(&content(), &mut keys);
+    keys.extend(bosses());
+    keys
+}
+
+fn add_bosses(dir: &Path, into: &mut BTreeSet<String>) {
+    for entry in fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            add_bosses(&path, into);
+        } else if path.to_str().is_some_and(|name| name.ends_with(".enemy.ron")) {
+            let kind = EnemyDocument::parse(&fs::read_to_string(&path).unwrap())
+                .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+            into.extend(kind.boss.map(|boss| boss.name));
+        }
+    }
+}
+
+/// The key of every kind of enemy's name that is a boss's (M3 B3): what its boss bar names.
+fn bosses() -> BTreeSet<String> {
+    let mut keys = BTreeSet::new();
+    add_bosses(&content(), &mut keys);
     keys
 }
 
@@ -159,6 +183,19 @@ fn every_key_a_screen_or_a_cutscene_names_is_in_both_languages() {
                 "{locale}: nothing under {prefix}"
             );
         }
+    }
+}
+
+/// A boss's name is in every language, so no boss bar names a key (M3 Z3).
+#[test]
+fn every_boss_s_name_is_in_every_language() {
+    let bosses = bosses();
+    // No boss by name: they're content, which `sapphire_gameplay`'s `bosses_are_content` holds code to.
+    assert!(!bosses.is_empty(), "some kind of enemy is a boss");
+    for locale in LOCALES {
+        let table = table(locale);
+        let missing: Vec<_> = bosses.iter().filter(|key| table.entry(key).is_none()).collect();
+        assert!(missing.is_empty(), "{locale} lacks the bosses' names {missing:?}");
     }
 }
 

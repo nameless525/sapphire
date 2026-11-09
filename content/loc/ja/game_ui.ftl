@@ -67,3 +67,6 @@ hud-skip = スキップ
 hud-banner-checkpoint = チェックポイント到達
 hud-banner-victory = 勝利
 hud-banner-defeat = 敗北
+
+boss-captain = 骸骨の隊長
+boss-knell-colossus = 弔鐘の巨像

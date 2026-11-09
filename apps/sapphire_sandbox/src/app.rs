@@ -422,6 +422,15 @@ impl App for SandboxApp {
             )?;
             show.over = Some(Box::new(text));
         }
+        let atlas = show.hud.as_ref().map_or_else(Atlas::paint, |hud| hud.atlas().clone());
+        game_ui::wipe::cover_trips(
+            &mut show,
+            atlas,
+            &mut content,
+            &mut renderer.renderer,
+            &device.gpu,
+            quality.active().id,
+        )?;
         // The screen effects it may push, `--post-effect`'s among them, the effects it plays, its sky
         // and its HUD show on their first frame.
         scene.prewarm(&show, &mut renderer.renderer);
@@ -798,7 +807,7 @@ impl SandboxApp {
             );
 
             // A cutscene holds the fight, and the scene's own step goes on under it.
-            if self.show.fight.show.holds_simulation() {
+            if self.show.fight.holds_step() {
                 continue;
             }
             // After the scene's own step, as `Stage::step` does: what a cue pushes on the scene's effect

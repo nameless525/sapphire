@@ -65,5 +65,9 @@ dev = ["sapphire_stage/dev", "game_combat/dev", "game_ui/dev"]
 name = "reaches_the_fight"
 harness = false
 
+[[test]]
+name = "zone_trip"
+harness = false
+
 [lints]
 workspace = true

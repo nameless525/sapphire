@@ -2,9 +2,9 @@
 
 use sapphire_core::Name;
 use sapphire_gameplay::replay::{
-    BAKED_ZONES, GROUND_START, HUB_FROM_GROUND, HUB_START, PROVING_GROUND, PROVING_HUB, Player,
-    RecordedTrail, Recording, Replay, ReplayCommand, SCENARIOS, Scenario, ZONE_TRIP_ENTRIES, find_scenario,
-    find_script,
+    BAKED_ZONES, FightWorld, GROUND_START, HUB_FROM_GROUND, HUB_START, LiveMoves, PROVING_GROUND,
+    PROVING_HUB, Player, PreparedFight, RecordedTrail, Recording, Replay, ReplayCommand, SCENARIOS, Scenario,
+    ZONE_TRIP_ENTRIES, find_scenario, find_script,
 };
 use sapphire_gameplay::{ActorId, Simulation, TickActions, ZoneEntry, ZoneEntryError, ZoneId};
 use sapphire_math::Vec3;
@@ -214,4 +214,44 @@ fn a_repeated_trip_holds_the_simulations_counts() {
         neutral(&mut sim, 2);
         assert_eq!(counts(&sim), first);
     }
+}
+
+/// A resettable fight (#209) that went into a zone starts each new one at that door, with the zone's statics
+/// and navmesh still its own, and plays it as it played the one before.
+#[test]
+fn a_resettable_fight_starts_over_at_the_door_it_came_in_by() {
+    let arena = find_scenario(&SCENARIOS, "arena-fight").expect("listed");
+    let mut fight = PreparedFight::new(false)
+        .expect("prepares")
+        .start_resettable(arena.config, &LiveMoves::default())
+        .expect("starts");
+    for baked in &BAKED_ZONES {
+        fight.add_zone(baked.load().expect("loads"));
+    }
+    let (player, enemy) = (fight.cast()[0], fight.cast()[1]);
+    fight.enter_zone(HUB_FROM_GROUND).expect("it can");
+    let tables = fight.tables_hash();
+    let hub = fight.physics().statics_digest();
+    let at_door = fight.checksum();
+    let trail = |fight: &mut FightWorld| -> Vec<u64> {
+        (0..120)
+            .map(|_| {
+                fight.step(&TickActions::NEUTRAL);
+                fight.checksum()
+            })
+            .collect()
+    };
+    let first = trail(&mut fight);
+
+    fight.restart().expect("it starts over");
+    assert_eq!(fight.door(), Some(HUB_FROM_GROUND));
+    assert_eq!(fight.tick(), 0);
+    assert_eq!(fight.current_zone(), Some(PROVING_HUB));
+    assert_eq!(fight.physics().statics_digest(), hub, "the hub's statics stayed");
+    assert!(fight.navigation().is_some(), "and its navmesh");
+    assert_eq!(fight.tables_hash(), tables);
+    assert!(fight.actor(enemy).is_none(), "who stayed behind is gone again");
+    assert_eq!(fight.actor(player).expect("at the door").position, Vec3::new(0.0, 0.0, 10.0));
+    assert_eq!(fight.checksum(), at_door, "it starts as the first did");
+    assert_eq!(trail(&mut fight), first, "and plays the same");
 }

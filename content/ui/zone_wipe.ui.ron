@@ -1,0 +1,106 @@
+// The wipe that covers a zone's load (M3 W4): staggered slats in from the right, held while the next zone
+// comes in, then out to the left. One look for every trip: a first draft. Its slats lie past any screen's
+// edge at 3200 points, since the layer draws 720 points high whatever the target.
+(
+    type: "sapphire::assets::UiDocument",
+    version: 2,
+    data: (
+        nodes: [
+            (name: "root", layout: (direction: Column)),
+            (
+                name: "slat-0",
+                parent: "root",
+                layout: (grow: 1, width: Percent(100)),
+                look: (fill: Gradient(from: (14, 18, 46, 255), to: (46, 30, 96, 255), angle: 0)),
+            ),
+            (
+                name: "slat-1",
+                parent: "root",
+                layout: (grow: 1, width: Percent(100)),
+                look: (fill: Gradient(from: (20, 24, 58, 255), to: (64, 38, 118, 255), angle: 0)),
+            ),
+            (
+                name: "slat-2",
+                parent: "root",
+                layout: (grow: 1, width: Percent(100)),
+                look: (fill: Gradient(from: (14, 18, 46, 255), to: (46, 30, 96, 255), angle: 0)),
+            ),
+            (
+                name: "slat-3",
+                parent: "root",
+                layout: (grow: 1, width: Percent(100)),
+                look: (fill: Gradient(from: (20, 24, 58, 255), to: (64, 38, 118, 255), angle: 0)),
+            ),
+            (
+                name: "slat-4",
+                parent: "root",
+                layout: (grow: 1, width: Percent(100)),
+                look: (fill: Gradient(from: (14, 18, 46, 255), to: (46, 30, 96, 255), angle: 0)),
+            ),
+            (
+                name: "slat-5",
+                parent: "root",
+                layout: (grow: 1, width: Percent(100)),
+                look: (fill: Gradient(from: (20, 24, 58, 255), to: (64, 38, 118, 255), angle: 0)),
+            ),
+        ],
+        timelines: [
+            (
+                name: "off",
+                tracks: [
+                    (node: "slat-0", property: X, keys: [(at: 0, value: 3200)]),
+                    (node: "slat-1", property: X, keys: [(at: 0, value: 3200)]),
+                    (node: "slat-2", property: X, keys: [(at: 0, value: 3200)]),
+                    (node: "slat-3", property: X, keys: [(at: 0, value: 3200)]),
+                    (node: "slat-4", property: X, keys: [(at: 0, value: 3200)]),
+                    (node: "slat-5", property: X, keys: [(at: 0, value: 3200)]),
+                ],
+            ),
+            (
+                name: "on",
+                tracks: [
+                    (node: "slat-0", property: X, keys: [(at: 0, value: 0)]),
+                    (node: "slat-1", property: X, keys: [(at: 0, value: 0)]),
+                    (node: "slat-2", property: X, keys: [(at: 0, value: 0)]),
+                    (node: "slat-3", property: X, keys: [(at: 0, value: 0)]),
+                    (node: "slat-4", property: X, keys: [(at: 0, value: 0)]),
+                    (node: "slat-5", property: X, keys: [(at: 0, value: 0)]),
+                ],
+            ),
+            (
+                name: "cover",
+                tracks: [
+                    (node: "slat-0", property: X, keys: [(at: 0, value: 3200), (at: 0.32, value: 0, ease: Out)]),
+                    (node: "slat-1", property: X, keys: [(at: 0.04, value: 3200), (at: 0.36, value: 0, ease: Out)]),
+                    (node: "slat-2", property: X, keys: [(at: 0.08, value: 3200), (at: 0.4, value: 0, ease: Out)]),
+                    (node: "slat-3", property: X, keys: [(at: 0.12, value: 3200), (at: 0.44, value: 0, ease: Out)]),
+                    (node: "slat-4", property: X, keys: [(at: 0.16, value: 3200), (at: 0.48, value: 0, ease: Out)]),
+                    (node: "slat-5", property: X, keys: [(at: 0.2, value: 3200), (at: 0.52, value: 0, ease: Out)]),
+                ],
+            ),
+            (
+                name: "uncover",
+                tracks: [
+                    (node: "slat-0", property: X, keys: [(at: 0, value: 0), (at: 0.32, value: -3200, ease: In)]),
+                    (node: "slat-1", property: X, keys: [(at: 0.04, value: 0), (at: 0.36, value: -3200, ease: In)]),
+                    (node: "slat-2", property: X, keys: [(at: 0.08, value: 0), (at: 0.4, value: -3200, ease: In)]),
+                    (node: "slat-3", property: X, keys: [(at: 0.12, value: 0), (at: 0.44, value: -3200, ease: In)]),
+                    (node: "slat-4", property: X, keys: [(at: 0.16, value: 0), (at: 0.48, value: -3200, ease: In)]),
+                    (node: "slat-5", property: X, keys: [(at: 0.2, value: 0), (at: 0.52, value: -3200, ease: In)]),
+                ],
+            ),
+        ],
+        states: [
+            (name: "clear", play: "off"),
+            (name: "covering", play: "cover", then: "covered"),
+            (name: "covered", play: "on"),
+            (name: "uncovering", play: "uncover", then: "clear"),
+        ],
+        transitions: [
+            (from: "clear", on: "cover", to: "covering"),
+            (from: "uncovering", on: "cover", to: "covering"),
+            (from: "covered", on: "uncover", to: "uncovering"),
+            (from: "covering", on: "uncover", to: "uncovering"),
+        ],
+    ),
+)

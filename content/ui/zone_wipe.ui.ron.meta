@@ -1,0 +1,8 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "6b1d4e9a-2f73-4c58-9e06-d47a83b5c912",
+        importer: Ui(()),
+    ),
+)

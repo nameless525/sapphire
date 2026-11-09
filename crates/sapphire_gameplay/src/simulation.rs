@@ -158,6 +158,9 @@ pub struct Simulation {
     standing_jump_actors: Vec<ActorId>,
     /// Whether anything's in [`BetweenSteps`], so a world with nothing there doesn't look for it.
     between_steps: bool,
+    /// Who stays and who travels, as [`Self::enter_zone`] lists them, kept so a repeated entry allocates
+    /// nothing.
+    travel: Vec<ActorId>,
 }
 
 impl Simulation {
@@ -250,6 +253,7 @@ impl Simulation {
             run_generation: 0,
             standing_jump_actors: Vec::new(),
             between_steps: false,
+            travel: Vec::new(),
         }
     }
 
@@ -260,7 +264,14 @@ impl Simulation {
         self.run_generation = self.run_generation.wrapping_add(1);
         self.standing_jump_actors.clear();
         let world = self.ecs.world_mut();
-        debug_assert!(world.get_resource::<SimNavigation>().is_none());
+        // A built-in fight has no navmesh but a zone's, which stays with the zone it's in, as the statics do.
+        debug_assert!(
+            world.get_resource::<SimNavigation>().is_none()
+                || world.resource::<ZoneShelf>().current().is_some()
+        );
+        if let Some(mut navigation) = world.get_resource_mut::<SimNavigation>() {
+            navigation.restart();
+        }
         *world.resource_mut::<WorldClock>() = WorldClock::default();
         *world.resource_mut::<SimRng>() = SimRng(Pcg32::new(config.seed, COMBAT_STREAM));
         *world.resource_mut::<CurrentActions>() = CurrentActions::default();
@@ -638,29 +649,29 @@ impl Simulation {
     /// If it can't, in which case nothing has changed.
     pub fn enter_zone(&mut self, entry: ZoneEntry, traveller: ActorId) -> Result<(), ZoneEntryError> {
         let (position, yaw) = zone::check_entry(self.ecs.world(), entry, traveller)?;
-        let party = self.ecs.world().resource::<Party>();
+        let mut listed = std::mem::take(&mut self.travel);
+        listed.clear();
+        let world = self.ecs.world();
+        let party = world.resource::<Party>();
         let in_party = party.slots().any(|slot| slot.actor == traveller);
-        let members: Vec<ActorId> = party.slots().map(|slot| slot.actor).collect();
-        let travelling = |actor: ActorId| actor == traveller || (in_party && members.contains(&actor));
-        let staying: Vec<ActorId> = self
-            .ecs
-            .world()
-            .resource::<ActorTable>()
-            .iter()
-            .map(|(actor, _)| actor)
-            .filter(|&actor| !travelling(actor))
-            .collect();
-        for actor in staying {
+        let travelling = |actor: ActorId| {
+            actor == traveller || (in_party && party.slots().any(|slot| slot.actor == actor))
+        };
+        listed.extend(
+            world.resource::<ActorTable>().iter().map(|(actor, _)| actor).filter(|&actor| !travelling(actor)),
+        );
+        for &actor in &listed {
             self.despawn(actor);
         }
         let world = self.ecs.world_mut();
         zone::swap_in(world, entry);
-        let travellers: Vec<ActorId> =
-            world.resource::<ActorTable>().iter().map(|(actor, _)| actor).collect();
-        for actor in travellers {
+        listed.clear();
+        listed.extend(world.resource::<ActorTable>().iter().map(|(actor, _)| actor));
+        for &actor in &listed {
             zone::forget_who_stayed(world, actor);
             zone::place(world, actor, position, yaw);
         }
+        self.travel = listed;
         Ok(())
     }
 

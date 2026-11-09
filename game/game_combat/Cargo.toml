@@ -37,6 +37,7 @@ sapphire_timeline.workspace = true
 sapphire_ui.workspace = true
 sapphire_vfx.workspace = true
 sapphire_world.workspace = true
+sapphire_zone.workspace = true
 profiling.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

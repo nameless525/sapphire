@@ -43,21 +43,30 @@
 //! are prepared once per session. Its sealed built-in world resets complete gameplay state into retained
 //! storage, so automatic restart stays inside the allocation-free public step. A script plays one in a
 //! window too, so a phone can fight for as long as exit test 4 asks with no one holding it (M2 Z1).
+//!
+//! **Zones (M3 W4):** a replay names the zone entries it recorded, and [`Combat::due_zone_entry`] says one's
+//! due before the next tick, so a show can cover the load first; [`Combat::enter_zone`] makes it, between two
+//! steps. A recording enters zones its scenario put on the shelf, and records it. A fight with no file takes
+//! any zone it's given, and a new fight starts in the last it entered, at the same door
+//! ([`FightWorld::enter_zone`]).
 
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use sapphire_assets::AssetId;
 use sapphire_gameplay::replay::{
     ARCHITECTURE, ActionSource, ChecksumFile, Divergence, FightWorld, LiveMoves, Played, Player,
     PreparedFight, RecordedTrail, Recording, Replay, ReplayCommand, ReplayError, SCRIPTS, Scenario,
     ScenarioError, checksums_file_name, find_scenario, find_script,
 };
+use sapphire_gameplay::zone::{ZoneEntry, ZoneGround};
 use sapphire_gameplay::{ActorId, Buttons, Simulation, TickActions, TimelinePlayError};
 #[cfg(feature = "dev")]
 use sapphire_gameplay::{MoveSetId, Tuned};
 /// Every scenario a fight here can start from, those with a script among them.
 pub use sapphire_script::scenarios::ALL as SCENARIOS;
+use sapphire_serialize::cooked::AlignedVec;
 
 use crate::LOG_TARGET;
 
@@ -203,6 +212,61 @@ struct LiveFight {
     held: Buttons,
     /// What of them was down as this fight began and hasn't let go since.
     held_over: Buttons,
+}
+
+/// A zone's cooked bytes, as the asset server held them, to build its simulation's copy from.
+struct ZoneCopy {
+    asset: AssetId,
+    pack: String,
+    arrive: u64,
+    /// The zone's own and what it references, each 16-byte aligned.
+    bytes: Vec<(AssetId, AlignedVec)>,
+}
+
+impl ZoneCopy {
+    /// Builds the zone from `read`, keeping what it read.
+    fn read<'a>(
+        asset: AssetId,
+        pack: &str,
+        arrive: u64,
+        mut read: impl FnMut(AssetId) -> Option<&'a [u8]>,
+    ) -> Result<Self, String> {
+        let mut take = |id: AssetId| {
+            let found = read(id)?;
+            let mut aligned = AlignedVec::with_capacity(found.len());
+            aligned.extend_from_slice(found);
+            Some(aligned)
+        };
+        let zone = take(asset).ok_or_else(|| format!("zone {asset} isn't loaded"))?;
+        let wanted = sapphire_zone::Zone::read(&zone).map_err(|error| error.to_string())?.references();
+        let mut bytes = vec![(asset, zone)];
+        for id in wanted {
+            let held = take(id).ok_or_else(|| format!("zone {asset}'s {id} isn't loaded"))?;
+            bytes.push((id, held));
+        }
+        Ok(Self { asset, pack: pack.to_owned(), arrive, bytes })
+    }
+
+    fn build(&self) -> Result<ZoneGround, String> {
+        let find =
+            |id: AssetId| self.bytes.iter().find(|(held, _)| *held == id).map(|(_, bytes)| bytes.as_slice());
+        let zone = find(self.asset).ok_or("it holds its own bytes")?;
+        ZoneGround::from_cooked(self.asset, &self.pack, zone, find).map_err(|error| error.to_string())
+    }
+}
+
+/// Enters `copy`'s zone in `sim`, putting it on the shelf if it isn't, with the player going: from then on
+/// a new fight starts there.
+fn enter_copy(sim: &mut FightWorld, copy: &ZoneCopy) -> Result<(), String> {
+    let id = match sim.find_zone(copy.asset) {
+        Some(id) => id,
+        None => sim.add_zone(copy.build()?),
+    };
+    let row = sim.zone_ground(id).ok_or("it was just found")?;
+    let spawner = row
+        .spawner(copy.arrive)
+        .ok_or_else(|| format!("zone {} has no spawner {:#x}", copy.asset, copy.arrive))?;
+    sim.enter_zone(ZoneEntry { zone: id, spawner }).map_err(|error| error.to_string())
 }
 
 impl LiveFight {
@@ -560,7 +624,11 @@ impl Combat {
         }
         let Some(id) = self.plays(document) else { return false };
         let Mode::Fighting(fight) = &mut self.mode else { return false };
-        if fight.sim.tick() != 0 || fight.sim.move_library().is_current(id, &set) {
+        // A world in a zone keeps what it has, since a fresh one would start outside it.
+        if fight.sim.tick() != 0
+            || fight.sim.door().is_some()
+            || fight.sim.move_library().is_current(id, &set)
+        {
             return false;
         }
         let mut live = fight.live.clone();
@@ -686,6 +754,59 @@ impl Combat {
             && let Err(error) = recording.skip_timeline(at_ms)
         {
             tracing::warn!(target: LOG_TARGET, %error, "the skip wasn't recorded");
+        }
+    }
+
+    /// The zone entry a replay has due before its next tick, for a show to cover the load before
+    /// [`Self::enter_zone`]. Nothing for a fight or a recording, whose entries are their show's to start. A
+    /// step taken with one due enters it at once.
+    pub fn due_zone_entry(&mut self) -> Option<ZoneEntry> {
+        match &mut self.mode {
+            Mode::Replaying { player, .. } => player.due_zone_entry(),
+            Mode::Recording { .. } | Mode::Fighting(_) => None,
+        }
+    }
+
+    /// Enters the zone `asset`, in pack `pack`, at its spawner `arrive`, between two steps, with the cast's
+    /// first travelling: a replay the entry it has due, whatever it's given; a recording a zone its
+    /// scenario's shelf has, which it records; a fight with no file any zone, which `read` gives the cooked
+    /// bytes of, and what they reference, as the asset server holds them. An error says why it couldn't, or,
+    /// for a replay, that it did and the content isn't what it recorded: a stale cook.
+    pub fn enter_zone<'a>(
+        &mut self,
+        asset: AssetId,
+        pack: &str,
+        arrive: u64,
+        read: impl FnMut(AssetId) -> Option<&'a [u8]>,
+    ) -> Result<(), String> {
+        match &mut self.mode {
+            Mode::Replaying { player, .. } => {
+                let entry = player.due_zone_entry().ok_or("the replay has no zone entry due")?;
+                let recorded = player.simulation().zone_ground(entry.zone).map(ZoneGround::digest);
+                player.enter_due_zone().map_err(|error| error.to_string())?;
+                let built = ZoneCopy::read(asset, pack, arrive, read).and_then(|copy| copy.build())?;
+                if recorded != Some(built.digest()) {
+                    return Err(format!(
+                        "zone {asset} isn't what the replay recorded: run `cargo xtask content`, or if its \
+                         documents changed, take new copies (`zone_baked`'s docs)"
+                    ));
+                }
+                Ok(())
+            }
+            Mode::Recording { recording, .. } => {
+                let sim = recording.simulation();
+                let id = sim.find_zone(asset).ok_or_else(|| {
+                    format!("zone {asset} isn't on scenario `{}`'s shelf", recording.scenario())
+                })?;
+                let row = sim.zone_ground(id).ok_or("it was just found")?;
+                let spawner =
+                    row.spawner(arrive).ok_or_else(|| format!("zone {asset} has no spawner {arrive:#x}"))?;
+                recording.enter_zone(ZoneEntry { zone: id, spawner }).map_err(|error| error.to_string())
+            }
+            Mode::Fighting(fight) => {
+                let copy = ZoneCopy::read(asset, pack, arrive, read)?;
+                enter_copy(&mut fight.sim, &copy)
+            }
         }
     }
 
@@ -1423,6 +1544,60 @@ mod tests {
             }
         }
         panic!("nobody fell before the player did");
+    }
+
+    /// A fight with no file that went into a zone starts over at the door it came in by (M3 W4), in the
+    /// storage the last one left: from the first restart on, one allocates nothing, and each is the same.
+    #[test]
+    fn a_fight_in_a_zone_starts_over_at_its_door_without_allocating() {
+        let hub = &sapphire_gameplay::replay::BAKED_ZONES[0];
+        let mut zone = AlignedVec::<16>::with_capacity(hub.zone.len());
+        zone.extend_from_slice(hub.zone);
+        let simulation = &sapphire_zone::Zone::read(&zone).expect("a cooked zone").simulation;
+        let (colliders, navmesh) =
+            (simulation.colliders.as_ref().copied(), simulation.navigation.as_ref().copied());
+        let read = |id: AssetId| {
+            if id == hub.asset {
+                Some(hub.zone)
+            } else if Some(id) == colliders {
+                Some(hub.colliders)
+            } else if Some(id) == navmesh {
+                Some(hub.navmesh)
+            } else {
+                None
+            }
+        };
+        let mut combat = fighting(Some("idle"));
+        let door = sapphire_core::Name::new("from_ground").as_u64();
+        combat.enter_zone(hub.asset, &sapphire_zone::pack_name(hub.stem), door, read).expect("it goes in");
+        let player = combat.cast()[0];
+        let standing = combat.simulation().actor(player).expect("the traveller").position;
+        assert_eq!(combat.simulation().actors().len(), 1, "who stayed behind is gone");
+
+        combat.restart();
+        let at_door = combat.simulation().checksum();
+        let mut trail = Vec::new();
+        for _ in 0..60 {
+            combat.step(&mut no_bindings);
+            trail.push(combat.simulation().checksum());
+        }
+        let scope = sapphire_core::alloc::AllocScope::begin();
+        combat.restart();
+        let allocations = scope.counts().allocations;
+        let CombatStatus::Fighting { fights } = combat.status() else { panic!("{:?}", combat.status()) };
+        assert_eq!(fights, 3);
+        assert_eq!(combat.simulation().tick(), 0, "it starts over");
+        assert_eq!(combat.simulation().current_zone(), Some(sapphire_gameplay::replay::PROVING_HUB));
+        assert_eq!(combat.simulation().actor(player).expect("at the door").position, standing);
+        assert_eq!(combat.simulation().actors().len(), 1);
+        assert_eq!(combat.simulation().checksum(), at_door, "each fight starts the same");
+        if sapphire_core::alloc::PER_THREAD_COUNTS {
+            assert_eq!(allocations, 0, "a restart in a zone is allocation-free");
+        }
+        for expected in &trail {
+            combat.step(&mut no_bindings);
+            assert_eq!(combat.simulation().checksum(), *expected, "at tick {}", combat.simulation().tick());
+        }
     }
 
     /// Whoever falls, it goes on long enough to see, starts over from the same first tick, and plays

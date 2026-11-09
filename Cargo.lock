@@ -1410,6 +1410,7 @@ dependencies = [
  "sapphire_platform",
  "sapphire_reflect",
  "sapphire_render",
+ "sapphire_rhi",
  "sapphire_stage",
  "sapphire_strings",
  "sapphire_time",

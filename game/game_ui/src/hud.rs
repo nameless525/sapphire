@@ -34,6 +34,7 @@ use sapphire_ui::{
 use crate::LOG_TARGET;
 use crate::screen::ScreenStack;
 use crate::touch::TouchControls;
+use crate::wipe::ZoneWipe;
 use game_combat::fight::{Fight, Followed};
 use sapphire_stage::FrameLaps;
 use sapphire_stage::content::Content;
@@ -538,9 +539,18 @@ pub struct ShownFight {
     /// and [`SceneShow::draw_interface`]). The sandbox's display text sample (M3 U8), which draws
     /// straight from the shaper with no document, is one.
     pub over: Option<Box<dyn SceneShow>>,
+    /// What covers a zone trip's load, over all of it ([`crate::wipe`], M3 W4). Install it with
+    /// [`Self::wipe_trips`].
+    pub wipe: Option<ZoneWipe>,
 }
 
 impl ShownFight {
+    /// Covers the fight's zone trips with `wipe` from now on: each waits for it to cover and to clear.
+    pub fn wipe_trips(&mut self, wipe: ZoneWipe) {
+        self.fight.show.take_trip_wipe();
+        self.wipe = Some(wipe);
+    }
+
     /// Tells the HUD what a step of the fight did.
     pub fn hear(&mut self, followed: Followed) {
         let Some(hud) = &mut self.hud else { return };
@@ -588,7 +598,7 @@ pub fn show_damage(hud: &mut FightHud, scene: &Scene, sim: &Simulation) {
 impl SceneShow for ShownFight {
     fn declare_pipelines(&self, inventory: &mut sapphire_render::PipelineInventory) {
         self.fight.declare_pipelines(inventory);
-        inventory.ui |= self.hud.is_some() || self.screen.is_some();
+        inventory.ui |= self.hud.is_some() || self.screen.is_some() || self.wipe.is_some();
         inventory.insets |= self.screen.as_ref().is_some_and(ScreenStack::holds_insets);
         if let Some(over) = &self.over {
             over.declare_pipelines(inventory);
@@ -605,6 +615,11 @@ impl SceneShow for ShownFight {
     }
 
     fn follow_content(&mut self, scene: &mut Scene, content: &mut Content, changes: ContentChanges) {
+        if let Some(wipe) = &mut self.wipe {
+            let show = &mut self.fight.show;
+            wipe.follow(show.trip_phase(), show.take_trip_time());
+            show.say_trip_wipe(wipe.covered(), wipe.clear());
+        }
         self.fight.follow_content(scene, content, changes);
     }
 
@@ -618,6 +633,9 @@ impl SceneShow for ShownFight {
         }
         if let Some(over) = &mut self.over {
             over.begin_interface(pages);
+        }
+        if let Some(wipe) = &mut self.wipe {
+            wipe.follow_pages(pages);
         }
     }
 
@@ -645,6 +663,9 @@ impl SceneShow for ShownFight {
         }
         if let Some(over) = &mut self.over {
             over.draw_interface(size, list);
+        }
+        if let Some(wipe) = &mut self.wipe {
+            wipe.draw(size, list);
         }
     }
 

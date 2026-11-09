@@ -12,12 +12,16 @@ use std::fs;
 use std::path::Path;
 
 use game_ui::menus::MenuScreen;
+use sapphire_assets::ui::UiDocument;
 use sapphire_pipeline::font::Characters;
 use sapphire_strings::{Expression, Part, Pattern, StringTable};
 use sapphire_timeline::TimelineDocument;
 use support::{content, document, table};
 
 const LOCALES: [&str; 2] = ["en", "ja"];
+
+/// The game's documents beside its menus, which show no text: the zone trip's wipe (M3 W4).
+const TEXTLESS: [&str; 1] = ["zone_wipe"];
 
 fn keys(table: &StringTable) -> BTreeSet<&str> {
     table.entries.iter().map(|entry| table.str(entry.key)).collect()
@@ -97,7 +101,8 @@ fn variables(table: &StringTable, key: &str) -> BTreeSet<String> {
     found
 }
 
-/// The game's documents are the screens it knows: a document beside them would show strings no test reads.
+/// The game's documents are the screens it knows, and those that show no text: a document beside them
+/// would show strings no test reads.
 #[test]
 fn the_game_s_documents_are_its_screens() {
     let mut found: Vec<String> = fs::read_dir(content().join("ui"))
@@ -106,8 +111,14 @@ fn the_game_s_documents_are_its_screens() {
         .collect();
     found.sort();
     let mut known = MenuScreen::ALL.map(|screen| screen.stem().to_owned()).to_vec();
+    known.extend(TEXTLESS.map(str::to_owned));
     known.sort();
     assert_eq!(found, known);
+    for stem in TEXTLESS {
+        let source = fs::read_to_string(content().join(format!("ui/{stem}.ui.ron"))).unwrap();
+        let document = UiDocument::from_document(&source).unwrap_or_else(|error| panic!("{stem}: {error}"));
+        assert_eq!(document.texts().count(), 0, "{stem} shows text, so it's a screen to test as one");
+    }
 }
 
 #[test]

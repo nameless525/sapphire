@@ -104,6 +104,8 @@ impl GameShow {
             .map_err(|error| AppInitError::msg(format!("the menus: {error}")))?;
         menus.open(MenuScreen::Title);
         self.menus = Some(menus);
+        // A fight that goes between zones covers each trip's load (M3 W4), from the one atlas.
+        game_ui::wipe::cover_trips(&mut self.shown, self.atlas.clone(), content, renderer, gpu, tier)?;
         // The menus' and the HUD's interface with it, though neither's drawn yet.
         scene.prewarm(&*self, renderer);
         let builds = renderer.stats().pipelines;
@@ -320,7 +322,7 @@ impl SceneShow for GameShow {
     }
 
     fn step(&mut self, scene: &mut Scene, laps: &mut FrameLaps) {
-        if self.on_title() || self.shown.fight.show.holds_simulation() {
+        if self.on_title() || self.shown.fight.holds_step() {
             return;
         }
         let mut stopwatch = Stopwatch::start();

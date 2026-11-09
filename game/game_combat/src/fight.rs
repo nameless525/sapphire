@@ -315,6 +315,8 @@ pub struct FightShow {
     followed_run: Option<(WorldId, u64, u64)>,
     /// How long the last frame's camera took: the arena's director or plain follow.
     camera_time: Duration,
+    /// Zone trips (M3 W4).
+    trips: trip::Trips,
 }
 
 impl FightShow {
@@ -704,6 +706,7 @@ impl FightShow {
     /// Gives the arena's camera director this much real time and input for its next frame, if one's
     /// on, and says whether it took them.
     pub fn drive_camera(&mut self, dt: f32, look: Vec2, zoom: f32) -> bool {
+        self.trips.add_time(dt);
         if let Some(show) = &mut self.timeline {
             show.drive(dt);
         }
@@ -787,11 +790,12 @@ impl FightShow {
         self.timeline.as_ref().map(TimelineShow::player)
     }
 
-    /// Whether a timeline holds the simulation, so that a loop of its own runs the fight no steps: a
-    /// cutscene, until it ends or is skipped. The scene's own step goes on, and the wind and clouds with it.
+    /// Whether a timeline or a zone trip holds the simulation, so that a loop of its own runs the fight no
+    /// steps: a cutscene, until it ends or is skipped, or a load under a wipe ([`trip`]). The scene's own step
+    /// goes on, and the wind and clouds with it. [`Fight::holds_step`] starts a replay's trips too.
     #[must_use]
     pub fn holds_simulation(&self) -> bool {
-        self.timeline.as_ref().is_some_and(TimelineShow::holds_simulation)
+        self.timeline.as_ref().is_some_and(TimelineShow::holds_simulation) || self.trips.holds_simulation()
     }
 
     /// Moves the timeline to this frame and gives the director its shot, ahead of the director's own frame.
@@ -1810,7 +1814,7 @@ impl Fight {
         true
     }
 
-    /// How many of [`Self::step_alone`]'s steps a timeline has held, running no tick: the frames a capture of
+    /// How many of [`Self::step_alone`]'s steps a timeline or a zone trip has held, running no tick: the frames a capture of
     /// a replay's end adds to reach it.
     #[must_use]
     pub fn held_steps(&self) -> u64 {
@@ -1823,7 +1827,7 @@ impl Fight {
         let mut stopwatch = Stopwatch::start();
         self.show.drive_camera(1.0 / TICK_HZ as f32, Vec2::ZERO, 0.0);
         laps.scene_step += stopwatch.lap();
-        if self.show.holds_simulation() {
+        if self.holds_step() {
             self.held_steps += 1;
             return Followed::default();
         }
@@ -1898,6 +1902,7 @@ impl Fight {
             scene.open_town_zone(content, stream_settings(tier), renderer, gpu)?;
         }
         show.hold_timelines(combat.simulation(), place.zone.map(|(stem, _)| stem), content, renderer, gpu)?;
+        show.set_zone_streaming(stream_settings(tier));
 
         content.load_graph(lookdev::GRAPH, renderer, gpu)?;
         show.load_enemy_graph(content, renderer, gpu)?;
@@ -1967,6 +1972,7 @@ impl SceneShow for Fight {
 
     fn follow_content(&mut self, scene: &mut Scene, content: &mut Content, changes: ContentChanges) {
         self.show.follow_content(scene, content, changes);
+        self.advance_trip(scene, content);
     }
 
     fn animate(&mut self, scene: &mut Scene, content: &Content, alpha: f32) {
@@ -1994,6 +2000,8 @@ impl SceneShow for Fight {
         self.show.draw_debug();
     }
 }
+
+pub mod trip;
 
 #[cfg(test)]
 mod impact_tests {

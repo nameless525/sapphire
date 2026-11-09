@@ -40,7 +40,7 @@ use crate::party::{PARTY_SLOTS, Party, PartyError, PartyTuning};
 use crate::resolve::SlowMotion;
 use crate::simulation::{CombatSet, SimConfig, SimRng, Simulation};
 use crate::stats::{BUDGET_DESKTOP_LOW, PHYSICS_BUDGET_DESKTOP_LOW};
-use crate::zone::{ZoneGround, ZoneLoadError};
+use crate::zone::{ZoneEntry, ZoneEntryError, ZoneGround, ZoneId, ZoneLoadError};
 
 /// The test content's document: see that file for its numbers. The real moves came beside it (M2 O3,
 /// `arena-fight`), and the older scenarios stay on it, so tuning those moves moves none of their replays.
@@ -609,6 +609,8 @@ pub struct FightWorld {
     config: SimConfig,
     actors: FightActors,
     initial_party: Party,
+    /// Where it last entered a zone, which a restart starts at.
+    door: Option<ZoneEntry>,
 }
 
 impl std::ops::Deref for FightWorld {
@@ -653,7 +655,36 @@ impl FightWorld {
             .actors
             .spawn(&mut self.simulation, party, Some(self.initial_party))
             .expect("the configured pool and preflighted move sets can spawn this fight");
+        if let Some(door) = self.door {
+            // The zone's statics, navmesh and row stayed, so this only stands the new cast at its door.
+            self.simulation.enter_zone(door, self.cast[0]).expect("the zone it was in is still its own");
+        }
         Ok(())
+    }
+
+    /// Puts a zone on the shelf between steps, as [`Simulation::add_zone`] does. A restart keeps the shelf,
+    /// as it keeps the moves.
+    pub fn add_zone(&mut self, zone: ZoneGround) -> ZoneId {
+        self.simulation.add_zone(zone)
+    }
+
+    /// Enters a zone on the shelf between steps with the player travelling, as [`Simulation::enter_zone`]
+    /// does. From then on [`Self::restart`] starts each new fight there, at the same spawner, in the same
+    /// retained storage: after the first, a restart in a zone allocates no more than one outside it.
+    ///
+    /// # Errors
+    ///
+    /// As [`Simulation::enter_zone`]'s, in which case nothing has changed.
+    pub fn enter_zone(&mut self, entry: ZoneEntry) -> Result<(), ZoneEntryError> {
+        self.simulation.enter_zone(entry, self.cast[0])?;
+        self.door = Some(entry);
+        Ok(())
+    }
+
+    /// The zone and spawner a restart starts at, once it's entered one.
+    #[must_use]
+    pub fn door(&self) -> Option<ZoneEntry> {
+        self.door
     }
 }
 
@@ -692,6 +723,7 @@ impl PreparedFight {
             config,
             actors,
             initial_party,
+            door: None,
         })
     }
 }

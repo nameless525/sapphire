@@ -200,7 +200,7 @@ macro_rules! game_scene {
 /// night street, pinned as those are, the smaller two from the glyph pages and the larger two from the
 /// face's cooked field: Oxanium at one pixel to the point, and Dela Gothic One at three, as a phone's
 /// capture is. They alone run `--display-text`, and they draw the interface as the HUD scenes do.
-pub fn scenes() -> [Scene; 197] {
+pub fn scenes() -> [Scene; 199] {
     [
         Scene {
             name: "turntable-start",
@@ -2225,6 +2225,49 @@ pub fn scenes() -> [Scene; 197] {
                 "--arena",
                 "--timeline",
                 "455708fd-5c63-4cf4-98b6-1c0921bf8213",
+                "--time-of-day",
+                "13",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--capture-frames",
+                "32",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // A zone trip's wipe (M3 W4), from `zone-trip`'s first entry, due after its 120th tick: 14 steps into
+        // the slats coming in from the right over the arena, which the fight holds still behind. The wipe's
+        // clock is the steps', so the frame is the same every run, and the load it covers comes later.
+        Scene {
+            name: "zone-wipe-mid",
+            args: &[
+                "--capture-ticks",
+                "135",
+                "--arena",
+                "--replay",
+                "tests/replays/zone-trip.sreplay",
+                "--time-of-day",
+                "13",
+                "--tier",
+                "desktop-high",
+                "--ao",
+                "off",
+                "--capture-frames",
+                "32",
+            ],
+            thresholds: Thresholds::default(),
+        },
+        // The same wipe covering the screen: however soon the hub comes in behind it, no step's time passes
+        // over the frames drawn, so it can't uncover. Only the wipe draws.
+        Scene {
+            name: "zone-wipe-covered",
+            args: &[
+                "--capture-ticks",
+                "154",
+                "--arena",
+                "--replay",
+                "tests/replays/zone-trip.sreplay",
                 "--time-of-day",
                 "13",
                 "--tier",

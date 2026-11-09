@@ -290,6 +290,34 @@ fn the_arena_plays_its_committed_replay() {
     assert!(capture.exists(), "{log}");
 }
 
+/// A replay that goes between zones (M3 W4), in the arena, as its goldens play it: each trip holds the fight
+/// under the wipe while the next zone comes in, and every tick reaches the headless run's checksum, with no
+/// allocation in a fixed step. A bench plays it to its end, however long the loads held it.
+#[test]
+#[ignore = "needs a GPU and cooked content (`cargo xtask content`)"]
+fn the_arena_goes_between_zones_and_reaches_its_checksums() {
+    let replay = workspace().join("tests").join("replays").join("zone-trip.sreplay");
+    let played = headless(&fs::read(&replay).expect("committed"));
+    let output = run_app(&[
+        "--bench",
+        "1",
+        "--draw-every",
+        "8",
+        "--size",
+        "64x36",
+        "--arena",
+        "--replay",
+        replay.to_str().expect("UTF-8"),
+    ]);
+    let log = log_of(&output);
+    assert!(output.status.success(), "{log}");
+    assert!(log.contains(&format!("checksum={:016x}", played.trail.end())), "{log}");
+    assert!(log.contains("allocations=0"), "{log}");
+    let arrivals = log.lines().filter(|line| line.contains("arrived in a zone")).count();
+    assert_eq!(arrivals, 5, "each entry a trip: {log}");
+    assert!(!log.contains("a trip went wrong"), "{log}");
+}
+
 /// The rule that governs a zone's streaming (M3 W2): the simulation streams nothing. The arena's replay
 /// walks through the town with the town's zone off, on as its tier has it, on another budget and radius
 /// by which cells come and go all the way, and on a phone's settings, and every run reaches every one of
@@ -743,6 +771,7 @@ fn a_load_leaves_no_pipeline_to_build_and_a_missing_entry_fails_naming_it() {
     for tier in TIERS {
         assert_no_misses("arena-walk", tier);
         assert_no_misses("arena-fight-won", tier);
+        assert_no_misses("zone-trip", tier);
         assert_inventory_miss("arena-walk", tier, UNIQUE_KEY, UNIQUE_KEY);
     }
     for (entry, named) in [("skinning", "skinning: "), ("sky", "sky: "), ("ui", "ui: ")] {

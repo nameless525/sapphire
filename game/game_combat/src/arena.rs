@@ -194,6 +194,9 @@ pub(crate) fn follow_target(player: Vec3) -> Vec3 {
     player + Vec3::new(0.0, FOLLOW_AIM_HEIGHT, 0.0)
 }
 
+/// The scenario that starts in the arena and goes between the proving zones (M3 W4).
+pub const ZONE_TRIP_SCENARIO: &str = "zone-trip";
+
 /// Refuses a fight that doesn't start from a scenario document on the arena's colliders, or with `party` a
 /// party's: its actors aren't standing here, or there aren't three looks to draw them in. Without `party` a
 /// party has only the one look. A new scenario here takes no Rust.
@@ -212,13 +215,15 @@ pub fn check_scenario(combat: &crate::combat::Combat, party: bool) -> Result<(),
              this one starts from `{scenario}`"
         ));
     }
-    // A fight on the arena's colliders, or the one a zone stands (M3 Q3), whose court is code.
-    if (on_the_stage.is_some() && !has_a_party) || scenario == WARD_COURT {
+    // A fight on the arena's colliders, the one a zone stands (M3 Q3), whose court is code, or the one that
+    // goes between the proving zones (M3 W4), from the arena.
+    if (on_the_stage.is_some() && !has_a_party) || [WARD_COURT, ZONE_TRIP_SCENARIO].contains(&scenario) {
         return Ok(());
     }
     Err(format!(
         "--arena plays a fight of a scenario on the arena's colliders such as `{SCENARIO}`, `{FIGHT_SCENARIO}` \
-         or `{SKIRMISH_SCENARIO}`, or `{WARD_COURT}`, and this one starts from `{scenario}`",
+         or `{SKIRMISH_SCENARIO}`, `{WARD_COURT}` or `{ZONE_TRIP_SCENARIO}`, and this one starts from \
+         `{scenario}`",
     ))
 }
 
@@ -308,6 +313,12 @@ impl ArenaGround {
     /// Where the fight stands its two fighters.
     pub fn spawns(&self) -> ArenaSpawns {
         self.spawns
+    }
+
+    /// A zone's collision, as a trip arrives in it (M3 W4), with the fighters standing at `spawns`: its
+    /// spawners are the zone's to check.
+    pub(crate) fn of_zone(world: Arc<PhysicsWorld>, spawns: ArenaSpawns) -> Self {
+        Self { world, spawns }
     }
 
     /// The world, for what else reads it: IK's casts for a character's feet ([`sapphire_stage::ik::IkDriver`]).
@@ -898,6 +909,37 @@ impl ArenaActors {
             .or_else(|| foes().find(|foe| stands_against(foe, side)).map(|foe| foe.id))
             .or(last)
             .or_else(|| foes().next().map(|foe| foe.id))
+    }
+
+    /// Stands the fighters where `simulation` has them after a zone entry, on `ground`, the camera cut there
+    /// (M3 W4): as a new fight does, though the tick goes on. Whoever didn't come has left the roster first
+    /// ([`Self::next_change`]), so everyone here is drawn where they stand.
+    pub(crate) fn arrive(&mut self, simulation: &Simulation, cast: &[ActorId], ground: Arc<PhysicsWorld>) {
+        let mut spawns = self.ground.spawns();
+        self.followed_run = Some((simulation.world().id(), simulation.run_generation(), simulation.tick()));
+        for (place, fighter) in self.fighters.iter_mut().enumerate() {
+            let id = match place {
+                0 => cast.first().map(|player| simulation.party().on_field(*player)),
+                _ => self.seen[place].map(|seen| seen.id),
+            };
+            let actor = id.and_then(|id| simulation.actor(id));
+            self.seen[place] = actor;
+            fighter.signals = FighterSignals { cut: true, ..Default::default() };
+            let Some(actor) = actor else { continue };
+            fighter.root = Root::standing(actor.position, actor.yaw);
+            let spawn =
+                SpawnPoint { position: actor.position.to_array(), yaw_degrees: actor.yaw.to_degrees() };
+            match place {
+                0 => spawns.player = spawn,
+                1 => spawns.enemy = spawn,
+                _ => {}
+            }
+        }
+        self.ground = ArenaGround::of_zone(ground, spawns);
+        self.shown = None;
+        if let Some(camera) = &mut self.camera {
+            camera.start_over();
+        }
     }
 
     /// Who the framing rigs frame: who the player's soft lock has, while they stand. A player with no soft

@@ -47,6 +47,11 @@ impl SimNavigation {
 
     /// This, with no follower: a navmesh going back on a zone's shelf, whose followers stayed behind or
     /// stood somewhere else.
+    /// Forgets every path and keeps their storage: a fight starting over in the same zone.
+    pub(crate) fn restart(&mut self) {
+        self.paths.clear();
+    }
+
     pub(crate) fn without_paths(mut self) -> Self {
         self.paths = Vec::new();
         self

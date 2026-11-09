@@ -10,6 +10,7 @@ pub mod hud;
 pub mod menus;
 pub mod screen;
 pub mod touch;
+pub mod wipe;
 
 /// Log target for the interface.
 pub(crate) const LOG_TARGET: &str = "game::ui";

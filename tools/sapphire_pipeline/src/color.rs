@@ -14,7 +14,7 @@ pub(crate) use sapphire_math::color::{
 };
 
 /// The sRGB transfer functions with their powers through `sapphire_math::det`, for generators whose
-/// committed bytes are pinned on every OS (figures, and the gunmetal matcap they copy). The shared
+/// committed bytes are pinned on every OS (`gen-figures` and `gen-combat`). The shared
 /// ones call `std`'s `powf`, which rounds by each platform's C library: a code value apart, now and
 /// then, once quantized.
 pub(crate) mod exact {

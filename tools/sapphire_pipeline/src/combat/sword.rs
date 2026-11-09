@@ -10,10 +10,12 @@
 
 use glam::Vec3;
 use sapphire_assets::character_maps::{MaterialId, ilm};
+use sapphire_math::det;
 use serde_json::json;
 
 use super::{gradient, png};
-use crate::color::{linear_to_srgb, unorm8};
+use crate::color::exact::linear_to_srgb;
+use crate::color::unorm8;
 use crate::gltf_writer::{Geometry, GltfWriter};
 
 /// The material slot its sidecar binds.
@@ -109,18 +111,15 @@ impl Builder {
         let (low, high) = if a.0 <= b.0 { (a, b) } else { (b, a) };
         let point = |ring: (f32, f32, f32), side: u32| {
             let angle = std::f32::consts::TAU * side as f32 / sides as f32;
-            Vec3::new(ring.1 * angle.cos(), ring.0, ring.2 * angle.sin())
+            let (sin, cos) = det::sin_cos(angle);
+            Vec3::new(ring.1 * cos, ring.0, ring.2 * sin)
         };
         let normal = |ring: (f32, f32, f32), side: u32| {
             let angle = std::f32::consts::TAU * side as f32 / sides as f32;
             // Sideways by the ellipse, tilted by how the band narrows.
             let slope = (low.1 - high.1) / (high.0 - low.0).abs().max(1e-4);
-            Vec3::new(
-                angle.cos() / ring.1.max(1e-3),
-                slope / ring.1.max(1e-3),
-                angle.sin() / ring.2.max(1e-3),
-            )
-            .normalize()
+            let (sin, cos) = det::sin_cos(angle);
+            Vec3::new(cos / ring.1.max(1e-3), slope / ring.1.max(1e-3), sin / ring.2.max(1e-3)).normalize()
         };
         for side in 0..sides {
             // Clockwise round +Y seen from above, which faces outward.
@@ -135,7 +134,8 @@ impl Builder {
     fn cap(&mut self, part: Part, ring: (f32, f32, f32), sides: u32) {
         let point = |side: u32| {
             let angle = std::f32::consts::TAU * side as f32 / sides as f32;
-            Vec3::new(ring.1 * angle.cos(), ring.0, ring.2 * angle.sin())
+            let (sin, cos) = det::sin_cos(angle);
+            Vec3::new(ring.1 * cos, ring.0, ring.2 * sin)
         };
         let corners: Vec<Vec3> = (0..sides).map(point).collect();
         self.face(part, &corners);

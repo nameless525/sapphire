@@ -20,7 +20,8 @@
 use std::collections::BTreeMap;
 use std::io;
 
-use glam::{Mat3, Mat4, Quat, Vec2, Vec3};
+use glam::{Affine3, Mat3, Mat4, Quat, Vec2, Vec3};
+use sapphire_math::det;
 use serde_json::{Value, json};
 
 use super::{Part, cell_of, part_of};
@@ -52,7 +53,7 @@ fn crease(part: Part) -> Option<f32> {
         Part::Bone => 50.0,
         Part::Armour | Part::Steel | Part::Leather | Part::Trim => return None,
     };
-    Some(degrees.to_radians().cos())
+    Some(det::cos(degrees.to_radians()))
 }
 
 /// Smooths one primitive's normals, in place, across the vertices of a part that lie in one place.
@@ -206,7 +207,12 @@ fn nodes_of(json: &Value) -> io::Result<Vec<Node>> {
                 |index: usize, default: f32| rotation[index].as_f64().map_or(default, |number| number as f32);
             Node {
                 translation: vector(&node["translation"], Vec3::ZERO),
-                rotation: Quat::from_xyzw(part(0, 0.0), part(1, 0.0), part(2, 0.0), part(3, 1.0)).normalize(),
+                rotation: det::quat_normalize(Quat::from_xyzw(
+                    part(0, 0.0),
+                    part(1, 0.0),
+                    part(2, 0.0),
+                    part(3, 1.0),
+                )),
                 scale: vector(&node["scale"], Vec3::ONE),
                 parent: None,
                 stretch: Vec3::ONE,
@@ -223,15 +229,16 @@ fn nodes_of(json: &Value) -> io::Result<Vec<Node>> {
     Ok(nodes)
 }
 
-/// A node's place in the model with [`RESHAPE`]'s changes.
-fn world(nodes: &[Node], node: usize) -> Mat4 {
+/// A node's place in the model with [`RESHAPE`]'s changes, in scalar arithmetic: `Mat4`'s SIMD
+/// backends round differently, and the committed model is pinned by bytes on every OS.
+fn world(nodes: &[Node], node: usize) -> Affine3 {
     let own = &nodes[node];
     let (parent, stretch) = match own.parent {
         Some(parent) => (world(nodes, parent), nodes[parent].stretch),
-        None => (Mat4::IDENTITY, Vec3::ONE),
+        None => (Affine3::IDENTITY, Vec3::ONE),
     };
     let translation = own.translation * stretch + own.shift;
-    parent * Mat4::from_scale_rotation_translation(own.scale, own.rotation, translation)
+    parent * Affine3::from_scale_rotation_translation(own.scale, own.rotation, translation)
 }
 
 /// The lowest any skinned vertex lies, by the accessors' bounds.
@@ -288,18 +295,17 @@ fn reshaped(source: &[u8], raise: f32) -> io::Result<(Value, Vec<u8>)> {
         .collect::<io::Result<_>>()?;
     let inverse_binds =
         Elements::of(&json, skin["inverseBindMatrices"].as_u64().ok_or_else(|| bad("no binds"))?)?;
-    let new_world: Vec<Mat4> = joints.iter().map(|&joint| world(&nodes, joint)).collect();
+    let new_world: Vec<Affine3> = joints.iter().map(|&joint| world(&nodes, joint)).collect();
     // What moves each joint's vertices from the bind pose to the new one.
-    let moves: Vec<Mat4> = joints
+    let moves: Vec<Affine3> = joints
         .iter()
         .enumerate()
         .map(|(index, &joint)| {
-            let bind = Mat4::from_cols_array(&inverse_binds.floats::<16>(&bin, index));
-            new_world[index] * Mat4::from_scale(nodes[joint].stretch) * bind
+            let bind = Affine3::from_mat4(Mat4::from_cols_array(&inverse_binds.floats::<16>(&bin, index)));
+            new_world[index] * Affine3::from_scale(nodes[joint].stretch) * bind
         })
         .collect();
-    let normals: Vec<Mat3> =
-        moves.iter().map(|moved| Mat3::from_mat4(*moved).inverse().transpose()).collect();
+    let normals: Vec<Mat3> = moves.iter().map(|moved| moved.matrix3.inverse().transpose()).collect();
 
     // Every skinned primitive's vertices, once each.
     let meshes: Vec<u64> = json["nodes"]
@@ -358,7 +364,7 @@ fn reshaped(source: &[u8], raise: f32) -> io::Result<(Value, Vec<u8>)> {
 
     // The rig at rest in the new pose.
     for (index, world) in new_world.iter().enumerate() {
-        inverse_binds.write_floats(&mut bin, index, &world.inverse().to_cols_array());
+        inverse_binds.write_floats(&mut bin, index, &Mat4::from(world.inverse()).to_cols_array());
     }
     for (index, node) in nodes.iter().enumerate() {
         let stretch = node.parent.map_or(Vec3::ONE, |parent| nodes[parent].stretch);

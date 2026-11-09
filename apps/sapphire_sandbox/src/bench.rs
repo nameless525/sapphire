@@ -177,7 +177,11 @@ pub(crate) fn run(
     let (mut timed_frame, mut gpu_span, mut timed) = (0, Duration::ZERO, 0_u32);
     let mut zone_walk = ZoneWalk::default();
     let spin = options.ui_screen.as_ref().map_or(0.0, |shown| shown.spin);
+    // `--bench-draw-every`, on a zone (M3 K1): every frame steps, streams, prepares and records, and one in `n` runs
+    // its graph, so a pipeline any of them builds still counts, on the frame it's built or the next one drawn.
+    let draw_every = options.bench_draw_every.map(|every| u64::from(every.get()));
     for frame in 0..u64::from(WARMUP_FRAMES) + u64::from(frames) {
+        stage.lose_frames = draw_every.is_some_and(|every| frame % every != 0);
         let before = alloc::stats();
         let mut stopwatch = Stopwatch::start();
         spin_insets(&mut stage, spin);
@@ -239,6 +243,7 @@ pub(crate) fn run(
         0 => "untimed".to_owned(),
         timed => format!("{:.1}", micros(gpu_span / timed)),
     };
+    stage.lose_frames = false;
     zone_walk.log(&stage, options);
     if options.zone.is_some() {
         check_first_uses(&stage)?;

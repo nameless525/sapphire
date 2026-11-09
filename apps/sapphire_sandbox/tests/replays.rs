@@ -657,7 +657,8 @@ fn inventory_bench(replay: &str, tier: &str, without: Option<&str>) -> Output {
     sandbox(&args, &content())
 }
 
-/// One frame in this many runs its graph: 17 of the 3,147 frames two tiers' whole plays below take.
+/// One frame in this many runs its graph: 17 of the 3,147 frames two tiers' whole plays below take, and 2 of the 300
+/// of each zone walk.
 const DRAW_EVERY: &str = "200";
 
 /// A long fight's frames beside the renderer, one in this many drawn: each is animated, prepared and recorded,
@@ -706,7 +707,9 @@ fn a_load_leaves_no_pipeline_to_build_and_a_missing_entry_fails_naming_it() {
 
 /// Exit test 7 where exit test 1 walks (M3 C1): a zone found by its stem declares its keys and its probe grid
 /// when it opens, so no frame of walking it builds a pipeline on any tier's settings; and leave its grid out
-/// and the same bench fails, naming the ambient pass. `--bench` adds its warm-up to the frames it asks for.
+/// and the same bench fails, naming the ambient pass. `--bench` adds its warm-up to the frames it asks for. Every
+/// frame walks, streams, prepares and records, but only one in [`DRAW_EVERY`] runs its graph: on lavapipe the
+/// High tiers' 300 drawn frames, twice each, ran past CI's 45 minutes.
 #[test]
 #[ignore = "needs a GPU and cooked content (`cargo xtask content`)"]
 fn walking_a_zone_builds_no_pipeline_and_a_grid_left_out_is_named() {
@@ -718,6 +721,8 @@ fn walking_a_zone_builds_no_pipeline_and_a_grid_left_out_is_named() {
             "lantern_ward",
             "--zone-walk",
             "tour",
+            "--bench-draw-every",
+            DRAW_EVERY,
             "--tier",
             tier,
             "--size",

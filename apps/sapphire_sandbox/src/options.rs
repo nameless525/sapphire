@@ -323,9 +323,9 @@ pub(crate) struct Options {
     pub cues: bool,
     /// `--bench-trace <csv>`: a bench of a fight writes every frame here (M2 Z1, `fight_bench.rs`).
     pub bench_trace: Option<PathBuf>,
-    /// `--bench-draw-every <n>`: a bench of a fight plays once and runs the graph of only every `n`th frame, the
-    /// first among them, losing the rest: it checks a load's inventory and measures nothing (M3 K1). On a software
-    /// GPU a frame costs seconds, and every pipeline is built before a graph runs.
+    /// `--bench-draw-every <n>`: a bench of a fight plays once, or of a zone walks its frames, and runs the graph
+    /// of only every `n`th frame, the first among them, losing the rest: it checks a load's inventory and measures
+    /// nothing (M3 K1). On a software GPU a frame costs seconds, and every pipeline is built before a graph runs.
     pub bench_draw_every: Option<NonZeroU32>,
     /// `--draw-every <n>`: with `--offscreen` or `--capture`, every frame steps, animates, prepares and records,
     /// and only every `n`th runs its graph, the first among them, losing the rest as a frame whose surface was
@@ -1340,11 +1340,12 @@ impl Options {
         }
         let benching = matches!(mode, Some(OffscreenMode::Bench { .. }));
         let fight = matches!(options.combat, Some(CombatOption::Replay { .. } | CombatOption::Fight { .. }));
-        if (options.bench_draw_every.is_some() && !(benching && fight))
-            || (options.inventory_without.is_some() && !(benching && (fight || options.zone.is_some())))
+        if (options.bench_draw_every.is_some() || options.inventory_without.is_some())
+            && !(benching && (fight || options.zone.is_some()))
         {
             return Err(format!(
-                "--inventory-without and --bench-draw-every need {BENCH_FLAG} of a fight: --replay, or --fight with --script"
+                "--inventory-without and --bench-draw-every need {BENCH_FLAG} of a fight (--replay, or --fight with \
+                 --script) or of a zone"
             ));
         }
         let drawn_alone = matches!(mode, Some(OffscreenMode::Capture { .. } | OffscreenMode::Bench { .. }));
@@ -2612,11 +2613,14 @@ mod tests {
     }
 
     #[test]
-    fn drawing_one_frame_in_n_goes_with_a_bench_of_a_fight() {
+    fn drawing_one_frame_in_n_goes_with_a_bench_of_a_fight_or_a_zone() {
         let (options, _) = parse(&["--bench", "1", "--replay", "x", "--bench-draw-every", "200"]).unwrap();
+        assert_eq!(options.bench_draw_every.map(NonZeroU32::get), Some(200));
+        let (options, _) = parse(&["--bench", "1", "--zone", "ward", "--bench-draw-every", "200"]).unwrap();
         assert_eq!(options.bench_draw_every.map(NonZeroU32::get), Some(200));
         for args in [
             &["--bench", "1", "--bench-draw-every", "200"][..],
+            &["--capture", "x.png", "--zone", "ward", "--bench-draw-every", "200"],
             &["--capture", "x.png", "--replay", "x", "--bench-draw-every", "200"],
             &["--bench", "1", "--replay", "x", "--bench-draw-every", "0"],
         ] {

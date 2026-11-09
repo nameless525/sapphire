@@ -633,7 +633,6 @@ fn hot_reload(ui: &mut Ui, frame: &OverlayFrame<'_>, status: &HotReloadStatus<'_
     }
 }
 
-/// The audio system's counters (M2 E1). The update's time against its budget is a CPU stage's row.
 /// A zone's streaming (M3 W2), against §3.2's row.
 fn streaming(ui: &mut Ui, stats: &sapphire_world::streaming::StreamStats) {
     egui::Grid::new("streaming").num_columns(2).show(ui, |ui| {
@@ -656,6 +655,8 @@ fn streaming(ui: &mut Ui, stats: &sapphire_world::streaming::StreamStats) {
     });
 }
 
+/// The audio system's counters (M2 E1), with the music's and the voice lines' (M3 A1). The update's time
+/// against its budget is a CPU stage's row.
 fn audio(ui: &mut Ui, stats: &sapphire_audio::AudioStats) {
     egui::Grid::new("audio").num_columns(2).show(ui, |ui| {
         let row = |ui: &mut Ui, name: &str, value: String| {
@@ -674,6 +675,14 @@ fn audio(ui: &mut Ui, stats: &sapphire_audio::AudioStats) {
         );
         let dropped = stats.dropped_no_output + stats.dropped_voice_limit + stats.dropped_unknown;
         row(ui, "  Dropped", format!("{dropped} cues"));
+        row(
+            ui,
+            "  Music, lines",
+            format!(
+                "{} phase changes, {} to unknown phases; {} lines, {} missing",
+                stats.music_phase_changes, stats.music_unknown_phases, stats.lines_asked, stats.lines_missing
+            ),
+        );
         row(
             ui,
             "  Mix",
@@ -925,7 +934,6 @@ fn ambient_text(ambient: &sapphire_render::AmbientStats) -> String {
     format!("{grid}; {occlusion}{reflections}{pass}")
 }
 
-/// The interface's line (rule R9): its quads and draws, and the glyph atlas behind them.
 /// What 3D insets did (M3 U6): shown, drawn for a change, left out, and what they hold and take.
 fn insets_text(stats: &sapphire_render::InsetStats) -> String {
     format!(
@@ -938,6 +946,7 @@ fn insets_text(stats: &sapphire_render::InsetStats) -> String {
     )
 }
 
+/// The interface's line (rule R9): its quads and draws, and the glyph atlas behind them.
 fn interface_text(stats: &sapphire_render::UiStats) -> String {
     let glyphs = &stats.glyphs;
     let mut text = format!(

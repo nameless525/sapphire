@@ -11,7 +11,7 @@ use sapphire_gameplay::{
     PartyTuning, ResolvedProfile, SimConfig, Simulation, Stick, TickActions, Tuned, actor_body,
 };
 use sapphire_math::{Vec3, det};
-use sapphire_moves::{MAX_JUMP_REACH, MAX_THROW_REACH, MOVEMENT_LIMITS, MoveSet, MoveSetDocument};
+use sapphire_moves::{MAX_JUMP_REACH, MOVEMENT_LIMITS, MoveSet, MoveSetDocument};
 use sapphire_physics::{ColliderId, Group, PhysicsWorld, Pose, Shape, StaticCollider, StaticShape};
 
 const SLICE: &str = include_str!("../../sapphire_moves/test_content/slice.moves.ron");
@@ -361,14 +361,11 @@ fn a_gravity_too_light_for_a_jump_in_the_air_cuts_what_it_carries_and_moves_nobo
     assert!(highest - feet.y <= MAX_JUMP_REACH + 0.01, "it rose {} m more", highest - feet.y);
     assert!(highest - feet.y > 2.0, "and still finishes a jump: {} m", highest - feet.y);
 
-    // Going across it's cut with what's left of the throw's room, in the same direction, and a fall is the
-    // fall limit's to hold.
+    // Going across it stays, since nothing in the air turns it upward, and a fall is the fall limit's to
+    // hold.
     let numbers = ResolvedProfile::new(&light).expect("a good profile");
-    let carried = numbers.carried(Vec3::new(12.0, 3.0, -9.0));
-    let reach =
-        (carried.x * carried.x + carried.y * carried.y + carried.z * carried.z) / (2.0 * light.gravity);
-    assert!(close(reach, MAX_THROW_REACH), "{carried} could throw it {reach} m");
-    assert!(close(carried.x / carried.z, -12.0 / 9.0), "{carried}");
+    let carried = numbers.carried(Vec3::new(12.0, 1.0, -9.0));
+    assert_eq!(carried, Vec3::new(12.0, 1.0, -9.0));
     assert_eq!(numbers.carried(Vec3::new(1.0, -30.0, -1.0)), Vec3::new(1.0, -30.0, -1.0));
 }
 

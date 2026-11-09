@@ -1,7 +1,7 @@
 //! What's worked out once from a character's numbers ([`ControllerProfile`], which a document can hold).
 
 use sapphire_math::{Vec2, Vec3, det};
-use sapphire_moves::{ControllerProfile, MAX_JUMP_REACH, MAX_THROW_REACH, ProfileError};
+use sapphire_moves::{ControllerProfile, MAX_JUMP_REACH, ProfileError};
 use sapphire_physics::{BodyDesc, BodyId, CollisionGroups, Group, GroupMask, Pose, Shape};
 
 use crate::checksum::StateHasher;
@@ -111,22 +111,17 @@ impl ResolvedProfile {
 
     /// What's left of a velocity that other numbers gave someone, as these take over: a live edit landing
     /// on them, or a party's next member taking over their jump. All of it, to the bit, unless gravity this
-    /// light would carry it further than these numbers could have thrown anyone themselves
-    /// ([`MAX_JUMP_REACH`], and across with it [`MAX_THROW_REACH`]). Then what's rising and what's going
-    /// across are cut to those, with nothing moved. A jump begun at a gravity of 22 and finishing under
-    /// a typed 2 would rise 7 m more, which is over the arena's walls. A fall is its own limit's to hold.
+    /// light would carry what's rising higher than these numbers could jump ([`MAX_JUMP_REACH`]). Then
+    /// that's cut to it, with nothing moved. A jump begun at a gravity of 22 and finishing under a typed 2
+    /// would rise 7 m more, which is over the arena's walls. What's going across stays, since nothing it
+    /// meets in the air turns it upward (M3 B4), and a fall is its own limit's to hold.
     #[must_use]
     pub fn carried(&self, velocity: Vec3) -> Vec3 {
         let twice_gravity = 2.0 * self.authored.gravity;
         if twice_gravity <= 0.0 {
             return velocity;
         }
-        let up = velocity.y.min((twice_gravity * MAX_JUMP_REACH).sqrt());
-        let rising = up.max(0.0);
-        let room = twice_gravity * MAX_THROW_REACH - rising * rising;
-        let across = velocity.x * velocity.x + velocity.z * velocity.z;
-        let keep = if across > room { (room / across).sqrt() } else { 1.0 };
-        Vec3::new(velocity.x * keep, up, velocity.z * keep)
+        Vec3::new(velocity.x, velocity.y.min((twice_gravity * MAX_JUMP_REACH).sqrt()), velocity.z)
     }
 
     /// Whether a body made from this stands where one made from `other` would, with the same shape.

@@ -120,12 +120,6 @@ pub struct ProfileError {
 /// any jump from what can be climbed", and from the ground this reaches nothing taller than 3 m.
 pub const MAX_JUMP_REACH: f32 = 2.5;
 
-/// The highest a document's numbers may throw someone, in metres. An airborne character meeting a curb's
-/// edge slides up it: its velocity turns along the surface, so what it had going across can all end up
-/// going up. Two speeds together can't turn into more than `√(run² + jump²)`, which gravity then has to
-/// stop, and this keeps that clear of the arena's walls. Today's numbers come to 1.93 m.
-pub const MAX_THROW_REACH: f32 = 4.0;
-
 /// What one number of a document's `movement` may be: `min` to `max`, both good.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MovementLimit {
@@ -260,13 +254,6 @@ impl ControllerProfile {
             issues.push(format!(
                 "`jump_speed` is {speed}: at a `gravity` of {gravity} that reaches {reach} m, past the limit of \
                  {MAX_JUMP_REACH}"
-            ));
-        }
-        let throw = (run_speed * run_speed + speed * speed) / (2.0 * gravity);
-        if throw > MAX_THROW_REACH {
-            issues.push(format!(
-                "`run_speed` is {run_speed}: with a `jump_speed` of {speed} and a `gravity` of {gravity}, meeting a \
-                 curb in the air can throw someone {throw} m up, past the limit of {MAX_THROW_REACH}"
             ));
         }
         issues
@@ -456,24 +443,14 @@ mod tests {
         assert_eq!(none.document_issues(), Vec::<String>::new(), "a character needn't jump");
     }
 
-    /// The random attack found this one: at 13.5 m/s under a gravity of 2, a character with no jump at all
-    /// reached 6 m by running off a planter's edge in the air. It reads the three together, and leaves
-    /// room for what a person is likely to try at today's jump and gravity.
+    /// Running fast under light gravity is no longer a reach (M3 B4): nothing a character meets in the air
+    /// lifts it, so its speed going across stays across. At 13.5 m/s under a gravity of 2, running off a
+    /// planter's edge in the air once threw someone 6 m up, and a limit read the three numbers together.
     #[test]
-    fn what_a_curb_can_throw_someone_is_held_too() {
+    fn running_fast_under_light_gravity_reaches_nothing() {
         let good = ControllerProfile::default();
-        let thrown = ControllerProfile { run_speed: 13.5, gravity: 2.0, jump_speed: 0.0, ..good };
-        let issues = thrown.document_issues();
-        assert!(
-            issues.len() == 1 && issues[0].starts_with("`run_speed`") && issues[0].contains("`gravity`"),
-            "{issues:?}"
-        );
-        for run_speed in [8.0, 10.0, 11.0] {
-            let quick = ControllerProfile { run_speed, ..good };
-            assert_eq!(quick.document_issues(), Vec::<String>::new(), "{run_speed} m/s is a thing to try");
-        }
-        let heavy = ControllerProfile { run_speed: 30.0, gravity: 200.0, ..good };
-        assert_eq!(heavy.document_issues(), Vec::<String>::new());
+        let quick = ControllerProfile { run_speed: 13.5, gravity: 2.0, jump_speed: 0.0, ..good };
+        assert_eq!(quick.document_issues(), Vec::<String>::new());
     }
 
     /// The stricter level holds the other, at each end of each number and all at once.

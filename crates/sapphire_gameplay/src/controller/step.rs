@@ -329,8 +329,12 @@ impl Tick<'_> {
             motion = outcome.remaining;
 
             if !walking {
-                state.velocity = velocity_planes.clip(state.velocity, hit.normal);
-                motion = planes.clip(motion, hit.normal);
+                // What it meets never lifts someone in the air: turned along a curb's edge or a steep
+                // face, the speed going across would otherwise go up, and throw them higher than a jump
+                // reaches (M3 B4). It can still stop a rise, or a fall.
+                state.velocity =
+                    no_lift(velocity_planes.clip(state.velocity, hit.normal), state.velocity, RISING);
+                motion = no_lift(planes.clip(motion, hit.normal), motion, SETTLE);
             } else if is_static(hit.target) && self.profile.walkable(hit.normal) {
                 state.ground_normal = hit.normal;
                 planes = Planes::default();
@@ -594,6 +598,13 @@ impl Planes {
         }
         creased
     }
+}
+
+/// `turned`, rising no faster than `before` did, or not at all if `before` wasn't rising. Within
+/// `rounding` of that it's left alone, as what a floor's normal a hair off vertical leaves, not a lift.
+fn no_lift(turned: Vec3, before: Vec3, rounding: f32) -> Vec3 {
+    let most = before.y.max(0.0);
+    if turned.y > most + rounding { Vec3::new(turned.x, most, turned.z) } else { turned }
 }
 
 fn is_static(target: HitTarget) -> bool {

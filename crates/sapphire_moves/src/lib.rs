@@ -249,9 +249,7 @@ pub use document::{
     PerfectDodgeDocument, ReactionsDocument, RootKey, RootSource, SlowMotionDocument, SpanDocument,
     WarpDocument,
 };
-pub use movement::{
-    ControllerProfile, MAX_JUMP_REACH, MAX_THROW_REACH, MOVEMENT_LIMITS, MovementLimit, ProfileError,
-};
+pub use movement::{ControllerProfile, MAX_JUMP_REACH, MOVEMENT_LIMITS, MovementLimit, ProfileError};
 pub use set::{
     Allow, ArchivedMoveSet, ArmourWindow, Attack, Button, CancelMode, CancelWindow, CounterWindow, Cue,
     DodgeVolume, EnergyDef, FighterDef, FighterHurtbox, HIT_LANDED, Hitbox, HurtboxChange, HurtboxState,

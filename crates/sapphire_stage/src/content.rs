@@ -1475,6 +1475,46 @@ impl Content {
         Ok(Arc::new(Timeline::from_archived(timeline)))
     }
 
+    /// Finds the cooked timeline whose simulation half has each of `digests`, among the shared pack's and
+    /// those of `zone`'s pack, by its stem: what presentation plays beside a simulation's timelines, found
+    /// by what the simulation pins rather than by any ID code holds (M3 Q3). Fails naming the first digest
+    /// no cooked timeline has, which is a cook older than the build.
+    pub fn find_timelines(
+        &mut self,
+        digests: &[u64],
+        zone: Option<&str>,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+    ) -> Result<Vec<Arc<Timeline>>, AppInitError> {
+        let mut found: Vec<Option<Arc<Timeline>>> = vec![None; digests.len()];
+        let packs = std::iter::once(PACK.to_owned()).chain(zone.map(sapphire_zone::pack_name));
+        let ids: Vec<AssetId> =
+            packs.flat_map(|pack| self.server.assets_of_kind(&pack, AssetKind::Timeline)).collect();
+        for id in ids {
+            if found.iter().all(Option::is_some) {
+                break;
+            }
+            let timeline = self.load_timeline(id, renderer, gpu)?;
+            let digest = timeline.simulation.digest();
+            for (slot, _) in
+                found.iter_mut().zip(digests).filter(|(slot, want)| slot.is_none() && **want == digest)
+            {
+                *slot = Some(Arc::clone(&timeline));
+            }
+        }
+        found
+            .into_iter()
+            .zip(digests)
+            .map(|(timeline, digest)| {
+                timeline.ok_or_else(|| {
+                    AppInitError::msg(format!(
+                        "no cooked timeline has the simulation's timeline {digest:#018x}: run `cargo xtask content`"
+                    ))
+                })
+            })
+            .collect()
+    }
+
     /// Mounts the audio pack, which nothing else reads, and loads the cue `id` with its sounds until
     /// they are resident, then hands back the cue and each sound decoded, but for those already in
     /// `decoded`, as cues sharing a sound would be, which it adds the rest to. Neither stays loaded: a

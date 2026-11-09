@@ -19,7 +19,7 @@ use crate::app::SandboxApp;
 use crate::options::{OffscreenMode, Options};
 #[cfg(feature = "dev")]
 use crate::stats::Stages;
-use game_combat::combat::Combat;
+use game_combat::combat::{Combat, CombatOption};
 use game_combat::fight::{Arena, Fight, FightShow};
 use game_combat::party_looks::PartyLooks;
 use game_ui::hud::ShownFight;
@@ -69,7 +69,8 @@ impl App for OffscreenApp {
                     }
                     _ => *ticks,
                 };
-                crate::capture::run(&mut stage, path, ticks, *frames, width, height)?;
+                let to_end = matches!(options.combat, Some(CombatOption::Replay { to_end: true, .. }));
+                crate::capture::run(&mut stage, path, (ticks, to_end), *frames, width, height)?;
             }
             OffscreenMode::Bench { frames } => {
                 crate::bench::run(platform, &options, *frames, width, height)?;
@@ -276,17 +277,34 @@ pub(crate) fn stage(platform: &Platform, options: &Options) -> Result<Stage, App
         }
     }
     if let Some(shot) = options.arena {
-        let town = content.town(renderer, gpu)?;
-        let fog_cards = (!options.fog_off).then(|| content.fog_cards(renderer, gpu)).transpose()?;
+        // A fight's scenario says where it stands: the town's square, or a zone (M3 Q3).
+        let scenario = combat.as_ref().map_or(game_combat::arena::FIGHT_SCENARIO, Combat::scenario);
+        let place = game_combat::arena::FightPlace::of(scenario).map_err(AppInitError::msg)?;
         let (pose, figure) = sapphire_stage::lookdev::hold(content, renderer, gpu)?;
-        let ground = fight.load_arena_ground(content, renderer, gpu)?;
+        let ground = fight.load_fight_ground(&place, content, renderer, gpu)?;
         let world = ground.share();
-        let look = LookDev { town, fog_cards, pose, figure };
         let enemy = fight.load_enemy(content, renderer, gpu)?;
         let held = fight.held_enemy(content)?;
-        fight.spawn_arena(scene, Arena { shot, look, ground, enemy, held });
-        if let Some(settings) = options.stream.settings(quality.active().id) {
-            scene.open_town_zone(content, settings, renderer, gpu)?;
+        if let Some((stem, at)) = place.zone {
+            let settings = options
+                .stream
+                .settings(quality.active().id)
+                .ok_or_else(|| AppInitError::msg("a fight in a zone needs it open: not with --stream off"))?;
+            let zone = sapphire_stage::scene::ZoneShow { stem, at, walk: None, settings, pose, figure };
+            scene.stand_in_zone(zone, content, renderer, gpu)?;
+            fight.spawn_zone_arena(scene, game_combat::fight::ZoneArena { shot, ground, enemy, held });
+        } else {
+            let town = content.town(renderer, gpu)?;
+            let fog_cards = (!options.fog_off).then(|| content.fog_cards(renderer, gpu)).transpose()?;
+            let look = LookDev { town, fog_cards, pose, figure };
+            fight.spawn_arena(scene, Arena { shot, look, ground, enemy, held });
+            if let Some(settings) = options.stream.settings(quality.active().id) {
+                scene.open_town_zone(content, settings, renderer, gpu)?;
+            }
+        }
+        if let Some(combat) = &combat {
+            let zone = place.zone.map(|(stem, _)| stem);
+            fight.hold_timelines(combat.simulation(), zone, content, renderer, gpu)?;
         }
         if let Some(timeline) = options.timeline {
             let timeline = content.load_timeline(timeline, renderer, gpu)?;

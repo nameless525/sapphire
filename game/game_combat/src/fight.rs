@@ -42,7 +42,7 @@ use sapphire_world::light_rig::{CharacterLightRig, LightRigId};
 use sapphire_world::screen_effects::EffectLibrary;
 
 use crate::LOG_TARGET;
-use crate::arena::{ArenaActors, ArenaEnemy, ArenaGround, ArenaShot, COLLIDERS, PLAYER_EYES};
+use crate::arena::{ArenaActors, ArenaEnemy, ArenaGround, ArenaShot, COLLIDERS, FightPlace, PLAYER_EYES};
 use crate::blade::{self, HeldBlade};
 #[cfg(feature = "dev")]
 use crate::combat::SessionRecorder;
@@ -62,7 +62,7 @@ use sapphire_stage::{RenderMesh, RenderPose, RenderTransform};
 use crate::documents::FightDocuments;
 use crate::party_looks::{Drawn, PartyLooks};
 use crate::timeline::TimelineShow;
-use sapphire_stage::scene::{DEFAULT_TIME_OF_DAY, Figure, LookDev, Scene, stream_settings};
+use sapphire_stage::scene::{DEFAULT_TIME_OF_DAY, Figure, LookDev, Scene, ZoneShow, stream_settings};
 use sapphire_stage::turntable::Turntable;
 use sapphire_stage::{ContentChanges, SceneShow};
 
@@ -76,6 +76,19 @@ pub struct Arena {
     pub held: enemy::Held,
     pub shot: ArenaShot,
     pub look: LookDev,
+    pub ground: ArenaGround,
+}
+
+/// How far ahead of a timeline's cuts, in seconds, the zone streams for where they land: time for the cells
+/// there to load and be placed on a phone's budget, which a 64 m cell's few hundred entities take a few
+/// frames of (M3 Q3).
+const CUT_LOOKAHEAD: f32 = 1.5;
+
+/// What [`FightShow::spawn_zone_arena`] stands in a zone: the arena's, but the town.
+pub struct ZoneArena {
+    pub enemy: EnemyMeshes,
+    pub held: enemy::Held,
+    pub shot: ArenaShot,
     pub ground: ArenaGround,
 }
 
@@ -261,6 +274,17 @@ pub struct FightShow {
     cues: Option<CueShow>,
     /// The timeline playing (M3 Q1), which a fight with none spends nothing on.
     timeline: Option<Box<TimelineShow>>,
+    /// What plays beside each of the simulation's timelines, by its ID (M3 Q3): what a run the simulation
+    /// starts shows, found by its digest ([`Self::hold_timelines`]).
+    timelines: Vec<Arc<Timeline>>,
+    /// How many of the simulation's runs presentation has followed, so it starts each once.
+    timelines_followed: u64,
+    /// The ticks of real time cutscenes have held the simulation for this run, which the fighters' graphs
+    /// add to its clock so that a track's rows blend in and out while it stands still (M3 Q3).
+    held_ticks: f64,
+    /// The zone's frames with a place in reach still to come when the timeline playing first presented, so
+    /// that its end can say how many it added (M3 Q3).
+    timeline_unready: Option<u64>,
     /// Fighters draw on the latest step, not between it and the one before: a timeline has held the
     /// simulation, and the next step hasn't come. Past that, a frame can't draw earlier than this one did.
     draws_latest: bool,
@@ -402,6 +426,32 @@ impl FightShow {
         Ok(ground)
     }
 
+    /// As [`Self::load_arena_ground`], for a fight at `place` (M3 Q3): in a zone, its ground is the colliders
+    /// the zone names, found through the zone by its stem, and held to the ones the simulation stands on.
+    pub fn load_fight_ground(
+        &mut self,
+        place: &FightPlace,
+        content: &mut Content,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+    ) -> Result<ArenaGround, AppInitError> {
+        let Some((stem, _)) = place.zone else { return self.load_arena_ground(content, renderer, gpu) };
+        let zone = content.find_zone(stem)?;
+        let id = content
+            .read(&zone)
+            .and_then(|zone| zone.simulation.colliders.as_ref().copied())
+            .ok_or_else(|| AppInitError::msg(format!("zone {stem} names no colliders to fight on")))?;
+        let handle: Handle<ColliderSet> = content
+            .hold(id, renderer, gpu)
+            .map_err(|error| AppInitError::msg(format!("zone {stem}'s colliders didn't load: {error}")))?;
+        let set = content
+            .read(&handle)
+            .ok_or_else(|| AppInitError::msg(format!("zone {stem}'s colliders aren't resident")))?;
+        let ground = ArenaGround::at(set, place).map_err(AppInitError::msg)?;
+        self.assets.colliders = Some(handle);
+        Ok(ground)
+    }
+
     /// Builds the arena (`--arena`, [`crate::arena`]): the look-dev stage's town, day and light rigs
     /// where the town stands, with the character at the player's spawn point and the enemy
     /// ([`crate::enemy`]) and its blade at the enemy's. Unlike the look-dev stage, the town stays still
@@ -409,8 +459,26 @@ impl FightShow {
     /// root here.
     pub fn spawn_arena(&mut self, scene: &mut Scene, arena: Arena) {
         let Arena { enemy, held, shot, look, ground } = arena;
-        scene.world_mut().insert_resource(shot.camera(sapphire_gameplay::arena::spawns().player.position()));
         scene.spawn_town(Vec3::ZERO, look);
+        self.spawn_fighters(scene, enemy, held, shot, ground);
+    }
+
+    /// As [`Self::spawn_arena`], for a fight in a zone the scene already stands in ([`Scene::stand_in_zone`],
+    /// M3 Q3): its day, light rigs and ground are the zone's, and nothing of the town is spawned.
+    pub fn spawn_zone_arena(&mut self, scene: &mut Scene, arena: ZoneArena) {
+        let ZoneArena { enemy, held, shot, ground } = arena;
+        self.spawn_fighters(scene, enemy, held, shot, ground);
+    }
+
+    fn spawn_fighters(
+        &mut self,
+        scene: &mut Scene,
+        enemy: EnemyMeshes,
+        held: enemy::Held,
+        shot: ArenaShot,
+        ground: ArenaGround,
+    ) {
+        scene.world_mut().insert_resource(shot.camera(ground.spawns().player.position()));
         let character = scene.character();
         scene.world_mut().entity_mut(character).remove::<Turntable>();
         let (blade_in_model, hand) = (held.blade, held.hand);
@@ -454,6 +522,7 @@ impl FightShow {
         if let Some(cues) = &mut self.cues {
             cues.prepare(simulation);
         }
+        self.follow_timelines(simulation, started_over);
         self.draws_latest = self.holds_simulation();
         if let Some(show) = &mut self.timeline {
             show.follow(simulation);
@@ -549,6 +618,51 @@ impl FightShow {
         let show = Box::new(TimelineShow::new(timeline, origin));
         self.draws_latest = show.holds_simulation();
         self.timeline = Some(show);
+        self.timeline_unready = None;
+    }
+
+    /// Holds what plays beside each timeline `simulation` has loaded, found among the shared pack's and those
+    /// of the fight's `zone` by the digest the simulation pins (M3 Q3): from then on a run the simulation
+    /// starts, whoever started it (a replay's command, a recording's script, the fight itself), plays on the
+    /// stage between the two steps it came between. Loads nothing for a simulation with none.
+    pub fn hold_timelines(
+        &mut self,
+        simulation: &Simulation,
+        zone: Option<&str>,
+        content: &mut Content,
+        renderer: &mut Renderer,
+        gpu: &GpuContext,
+    ) -> Result<(), AppInitError> {
+        let digests: Vec<u64> = (0..)
+            .map_while(|raw| simulation.timeline_digest(sapphire_gameplay::TimelineId::from_raw(raw)))
+            .collect();
+        self.timelines = if digests.is_empty() {
+            Vec::new()
+        } else {
+            content.find_timelines(&digests, zone, renderer, gpu)?
+        };
+        self.timelines_followed = simulation.timelines_played();
+        Ok(())
+    }
+
+    /// Starts on the stage a run the simulation has started since the last step followed. A run starts
+    /// between two steps, so the step it came after is the one just followed, and it hasn't taken a step.
+    fn follow_timelines(&mut self, simulation: &Simulation, started_over: bool) {
+        if started_over {
+            self.timelines_followed = 0;
+            self.held_ticks = 0.0;
+            self.timeline = None;
+        }
+        let played = simulation.timelines_played();
+        if played <= self.timelines_followed {
+            return;
+        }
+        self.timelines_followed = played;
+        let Some(progress) = simulation.timeline().filter(|progress| progress.tick == 0) else { return };
+        if let Some(timeline) = self.timelines.get(progress.id.raw() as usize) {
+            tracing::info!(target: LOG_TARGET, id = progress.id.raw(), tick = simulation.tick(), "a timeline started");
+            self.play_timeline(Arc::clone(timeline), Origin::default());
+        }
     }
 
     /// Lets go of the timeline playing, and says how far it had got, in milliseconds, for a replay to record.
@@ -574,8 +688,15 @@ impl FightShow {
     /// A timeline over is gone from here: every post track ended on nothing, and the director's blend out
     /// goes on by itself.
     fn present_timeline(&mut self, scene: &mut Scene, alpha: f32) {
-        let Some(show) = &mut self.timeline else { return };
+        let Some(show) = &mut self.timeline else {
+            scene.stream_ahead([]);
+            return;
+        };
         let shown = show.present(alpha, self.arena.as_mut().and_then(|arena| arena.director_mut()));
+        let unready = scene.stream_stats().map_or(0, |stats| stats.unready_frames);
+        let unready_before = *self.timeline_unready.get_or_insert(unready);
+        // Where its camera cuts to soon, streamed for ahead of the cut (M3 Q3).
+        scene.stream_ahead(show.player().cuts_ahead(CUT_LOOKAHEAD));
         if shown.cut {
             scene.cut_view();
         }
@@ -587,7 +708,15 @@ impl FightShow {
                 cues.advance_held(shown.dt);
             }
         }
-        if show.player().state() != Playing::Yes {
+        if show.holds_simulation() {
+            self.held_ticks += f64::from(shown.dt) * f64::from(TICK_HZ);
+        }
+        let state = show.player().state();
+        if state != Playing::Yes {
+            // What a run's log, or a test, reads of how it went: misses are the zone's frames that ended with
+            // a place in reach still to come, while it played.
+            let misses = unready.saturating_sub(unready_before);
+            tracing::info!(target: LOG_TARGET, ?state, stream_misses = misses, "a timeline ended");
             self.timeline = None;
         }
     }
@@ -892,6 +1021,8 @@ impl FightShow {
         };
         let started = Stopwatch::start();
         let mut stats = AnimStats::default();
+        let staged = self.timeline.as_deref().map(TimelineShow::staged_fighters);
+        let held_ticks = self.held_ticks;
         let (Some(arena), Some(graph_players)) = (&mut self.arena, &mut self.graph_players) else { return };
         let view = scene.spring_view();
         let world = scene.world_mut();
@@ -959,7 +1090,13 @@ impl FightShow {
             let gather = index == 0 && stick_released && driver.has_ik();
             driver.player.request_grounded_gather(gather);
             // After that, since it spends a cut and a landing, which wait for a frame the graph plays.
-            let Some(input) = arena.graph_input(index, alpha) else { continue };
+            let Some(mut input) = arena.graph_input(index, alpha) else { continue };
+            // A timeline's character track plays its row in the combat slot over whatever the simulation
+            // says (M3 Q3), on a clock that goes on through a cutscene that holds the simulation's.
+            input.ticks += held_ticks;
+            if let Some(combat) = staged.and_then(|staged| staged[index]) {
+                input.combat = Some(combat);
+            }
             stats.characters += 1;
             let place = arena.drawn(index, alpha);
             if let Some(ik) = driver.ik_mut() {
@@ -1215,6 +1352,9 @@ impl SceneShow for FightShow {
     }
 
     fn end_steps(&mut self, scene: &mut Scene, dt: f32) {
+        // A stage's step is a frame's worth, drawn or not: a capture draws only its last few, and a cutscene
+        // has to get through the rest. A frame drawn after it finds nothing more to advance.
+        self.present_timeline(scene, 1.0);
         self.end_cue_frame(scene, dt, dt, 1.0, &mut ());
     }
 }
@@ -1241,6 +1381,8 @@ pub struct Fight {
     stock_arena: Option<stock_arena::StockArenaAssets>,
     /// The numbers [`Self::stand`] stands it on: Sapphire's, unless a game's said otherwise.
     pub documents: FightDocuments,
+    /// The steps [`Self::step_alone`] ran no tick for, while a timeline held the simulation (M3 Q3).
+    held_steps: u64,
 }
 
 impl Fight {
@@ -1469,6 +1611,23 @@ impl Fight {
         self.prepare_impact_presentation()
     }
 
+    /// Skips the timeline playing, between frames (M3 Q3): the stage lets it go and blends back to the
+    /// fight's camera, and a recording records how far in it was. Says whether one was playing.
+    pub fn skip_timeline(&mut self) -> bool {
+        let Some(at_ms) = self.show.skip_timeline() else { return false };
+        if let Some(combat) = &mut self.combat {
+            combat.skip_timeline(at_ms);
+        }
+        true
+    }
+
+    /// How many of [`Self::step_alone`]'s steps a timeline has held, running no tick: the frames a capture of
+    /// a replay's end adds to reach it.
+    #[must_use]
+    pub fn held_steps(&self) -> u64 {
+        self.held_steps
+    }
+
     /// One step of the fight with no one playing it, after the scene's: the simulation, then what follows
     /// it. What's frame-rate here is the director's: a step of time is what a frame shows.
     pub fn step_alone(&mut self, scene: &mut Scene, laps: &mut FrameLaps) -> Followed {
@@ -1476,6 +1635,7 @@ impl Fight {
         self.show.drive_camera(1.0 / TICK_HZ as f32, Vec2::ZERO, 0.0);
         laps.scene_step += stopwatch.lap();
         if self.show.holds_simulation() {
+            self.held_steps += 1;
             return Followed::default();
         }
         let Some(combat) = &mut self.combat else { return Followed::default() };
@@ -1529,16 +1689,26 @@ impl Fight {
             .map_err(AppInitError::msg)?;
         content.set_character_motion(self.documents.motion);
         let show = &mut self.show;
-        let town = content.town(renderer, gpu)?;
-        let fog_cards = Some(content.fog_cards(renderer, gpu)?);
+        let place = FightPlace::of(combat.scenario()).map_err(AppInitError::msg)?;
         let (pose, figure) = lookdev::hold(content, renderer, gpu)?;
-        let ground = show.load_arena_ground(content, renderer, gpu)?;
+        let ground = show.load_fight_ground(&place, content, renderer, gpu)?;
         let world = ground.share();
-        let look = LookDev { town, fog_cards, pose, figure };
         let enemy = show.load_enemy(content, renderer, gpu)?;
         let held = show.held_enemy(content)?;
-        show.spawn_arena(scene, Arena { shot: ArenaShot::Director, look, ground, enemy, held });
-        scene.open_town_zone(content, stream_settings(tier), renderer, gpu)?;
+        let shot = ArenaShot::Director;
+        if let Some((stem, at)) = place.zone {
+            let settings = stream_settings(tier);
+            let zone = ZoneShow { stem, at, walk: None, settings, pose, figure };
+            scene.stand_in_zone(zone, content, renderer, gpu)?;
+            show.spawn_zone_arena(scene, ZoneArena { shot, ground, enemy, held });
+        } else {
+            let town = content.town(renderer, gpu)?;
+            let fog_cards = Some(content.fog_cards(renderer, gpu)?);
+            let look = LookDev { town, fog_cards, pose, figure };
+            show.spawn_arena(scene, Arena { shot, look, ground, enemy, held });
+            scene.open_town_zone(content, stream_settings(tier), renderer, gpu)?;
+        }
+        show.hold_timelines(combat.simulation(), place.zone.map(|(stem, _)| stem), content, renderer, gpu)?;
 
         content.load_graph(lookdev::GRAPH, renderer, gpu)?;
         show.load_enemy_graph(content, renderer, gpu)?;

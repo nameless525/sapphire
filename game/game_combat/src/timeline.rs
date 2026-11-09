@@ -1,14 +1,24 @@
 //! A timeline on a fight's stage (M3 Q1): the little that joins [`TimelinePlayer`]'s plain values to the
 //! director. [`FightShow`](crate::fight::FightShow) adds the frame's post and cues, and an app's loop asks it whether
-//! the simulation is held. The rest of it, and what a skip means, are in `sapphire_sequencer`'s docs. Characters
-//! aren't posed here: a track's [`CharacterCue`](sapphire_sequencer::CharacterCue) is Q3's to join to the fighters.
+//! the simulation is held. The rest of it, and what a skip means, are in `sapphire_sequencer`'s docs. A track's
+//! [`CharacterCue`](sapphire_sequencer::CharacterCue) becomes what a fighter's graph plays in its combat slot
+//! ([`TimelineShow::staged_fighters`], M3 Q3), for fighters posed by their graphs.
 
 use std::sync::Arc;
 
+use sapphire_anim::CombatInput;
 use sapphire_camera::{CameraDirector, CameraPose, ShotEye, TakeoverTerms};
+use sapphire_core::Name;
 use sapphire_gameplay::Simulation;
 use sapphire_sequencer::{Origin, StepClock, TimelinePlayer};
 use sapphire_timeline::{EyeRule, Timeline};
+
+/// The roles a fight's timelines name for its two fighters.
+const HERO: Name = Name::new("hero");
+const FOE: Name = Name::new("foe");
+
+/// Set in a staged row's serial, which no simulation move's reaches.
+const STAGED_SERIAL: u32 = 1 << 31;
 
 /// What [`TimelineShow::present`] did this frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -44,6 +54,21 @@ impl TimelineShow {
 
     pub(crate) fn holds_simulation(&self) -> bool {
         self.player.holds_simulation()
+    }
+
+    /// What each fighter's graph plays in its combat slot at the playhead, the player first: the row its
+    /// role's track has there, if any. `hero` is the fight's player and `foe` whoever they face.
+    pub(crate) fn staged_fighters(&self) -> [Option<CombatInput>; 2] {
+        [HERO, FOE].map(|role| {
+            let cue = self.player.character(role)?;
+            Some(CombatInput {
+                name: cue.row?,
+                // Apart from every serial the simulation's moves count, so that a row's start, and the move
+                // after it, are each a transition.
+                serial: STAGED_SERIAL | cue.serial,
+                position: cue.position_ticks,
+            })
+        })
     }
 
     /// This much real time for the next frame.

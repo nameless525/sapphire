@@ -173,6 +173,18 @@ impl App for SandboxApp {
             .transpose()?;
         if let (Some(_), Some(combat)) = (options.arena, &combat) {
             game_combat::arena::check_scenario(combat, options.party).map_err(AppInitError::msg)?;
+            // The window's stage loads the town before it knows the fight; a fight in a zone plays offscreen,
+            // or in the game, until it doesn't.
+            if game_combat::arena::FightPlace::of(combat.scenario())
+                .map_err(AppInitError::msg)?
+                .zone
+                .is_some()
+            {
+                return Err(AppInitError::msg(format!(
+                    "`{}` stands in a zone, which the window's arena can't yet: play it with --capture or --bench",
+                    combat.scenario()
+                )));
+            }
         }
         // A device lost while the renderer is made gets a new device and another try, under
         // `CreationLosses`' policy, rather than a renderer of dead objects.

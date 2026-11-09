@@ -326,6 +326,39 @@ fn the_town_streaming_changes_nothing_the_checksums_see() {
     }
 }
 
+/// The Lantern Ward's gate cutscene (M3 Q3) on the arena's stage stood in the ward's court, from the
+/// committed replay that watches it: on a desktop's tier and a phone's, the app plays it between the steps
+/// its recording started it between, holds the fight through it, lets it end by itself, and reaches every
+/// one of a headless run's checksums with no allocation in a fixed step. No frame of it ends with a place
+/// in reach of the view still to come, the cuts' places asked for ahead of them included.
+#[test]
+#[ignore = "needs a GPU and cooked content (`cargo xtask content`)"]
+fn the_wards_gate_plays_between_its_steps_and_streams_nothing_late() {
+    let replay = workspace().join("tests").join("replays").join("ward-court-watched.sreplay");
+    let played = headless(&fs::read(&replay).expect("committed"));
+    let temp = Temp::new("ward");
+    let capture = temp.path("drawn.png");
+    for tier in ["desktop-low", "mobile-low"] {
+        let output = run_app(&[
+            "--capture",
+            capture.to_str().expect("UTF-8"),
+            "--arena",
+            "--replay",
+            replay.to_str().expect("UTF-8"),
+            "--tier",
+            tier,
+        ]);
+        let log = log_of(&output);
+        assert!(output.status.success(), "{tier}: {log}");
+        assert!(log.contains(&format!("checksum={:016x}", played.trail.end())), "{tier}: {log}");
+        assert!(log.contains("allocations=0"), "{tier}: {log}");
+        let started = log.lines().find(|line| line.contains("a timeline started")).expect("the gate started");
+        assert!(started.contains("id=0") && started.contains("tick=30"), "{tier}: {started}");
+        let ended = log.lines().find(|line| line.contains("a timeline ended")).expect("the gate ended");
+        assert!(ended.contains("state=Finished") && ended.contains("stream_misses=0"), "{tier}: {ended}");
+    }
+}
+
 /// One `a fight ended` line of a log, as the numbers it gives.
 struct FightEnded {
     ticks: u32,

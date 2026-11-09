@@ -53,7 +53,7 @@ use sapphire_gameplay::replay::{
     PreparedFight, RecordedTrail, Recording, Replay, ReplayError, SCENARIOS, SCRIPTS, Scenario,
     ScenarioError, checksums_file_name, find_scenario, find_script,
 };
-use sapphire_gameplay::{ActorId, Buttons, Simulation, TickActions};
+use sapphire_gameplay::{ActorId, Buttons, Simulation, TickActions, TimelineCommand, TimelinePlayError};
 #[cfg(feature = "dev")]
 use sapphire_gameplay::{MoveSetId, Tuned};
 
@@ -148,6 +148,8 @@ enum Mode {
         stopped: Option<ReplayError>,
         /// The files its session has reached.
         files: SessionFiles,
+        /// The timelines its script starts, each at the boundary before the step it names (M3 Q3).
+        starts: ScriptStarts,
     },
     /// `--fight`: played, and kept nowhere.
     Fighting(LiveFight),
@@ -400,11 +402,13 @@ impl Combat {
             let known: Vec<&str> = SCENARIOS.iter().map(|scenario| scenario.name).collect();
             return Err(format!("--scenario: no scenario `{scenario}`; there's {known:?}"));
         };
+        let starts = ScriptStarts::new(script.and_then(find_script).map_or(&[], |script| script.commands));
         let script = script.map(script_actions).transpose()?;
-        let recording = Recording::tuned_with_setup(scenario, scenario.config, live, setup)
+        let mut recording = Recording::tuned_with_setup(scenario, scenario.config, live, setup)
             .map_err(|error| format!("--record: {error}"))?;
+        starts.clone().apply(&mut recording).map_err(|error| format!("--record: {error}"))?;
         let files = SessionFiles::new(std::env::temp_dir());
-        let mode = Mode::Recording { recording, script, stopped: None, files };
+        let mode = Mode::Recording { recording, script, stopped: None, files, starts: starts.after_start() };
         Ok(Self { path: path.to_owned(), mode, steps_past_end: 0, last_step_allocations: 0 })
     }
 
@@ -594,17 +598,30 @@ impl Combat {
                 }
                 false
             }
-            Mode::Recording { recording, script, stopped, .. } => {
+            Mode::Recording { recording, script, stopped, starts, .. } => {
                 if stopped.is_some() {
                     return false;
                 }
                 let asks = script.is_none();
                 if let Err(error) = recording.step(action_source(script, bindings)) {
                     *stopped = Some(error);
+                } else if let Err(error) = starts.apply(recording) {
+                    tracing::warn!(target: LOG_TARGET, %error, "the script's timeline didn't start");
                 }
                 asks
             }
             Mode::Fighting(fight) => fight.step(bindings),
+        }
+    }
+
+    /// Someone skipped the timeline playing, `at_ms` into it, between steps: a recording records it, and runs
+    /// the steps a cinematic held, as watching would have. A replay's skip is presentation's alone, and a fight
+    /// with no file plays no timelines yet.
+    pub fn skip_timeline(&mut self, at_ms: u32) {
+        if let Mode::Recording { recording, stopped: None, .. } = &mut self.mode
+            && let Err(error) = recording.skip_timeline(at_ms)
+        {
+            tracing::warn!(target: LOG_TARGET, %error, "the skip ran out of room to record");
         }
     }
 
@@ -1109,6 +1126,39 @@ pub fn read_bindings(combat: Option<&mut Combat>, bindings: &mut dyn ActionSourc
 }
 
 /// A script by name.
+/// A recording script's timeline starts, carried out at their boundaries as the recording goes (M3 Q3). Its
+/// skips aren't: on a stage, a skip is presentation's, which tells the recording ([`Combat::skip_timeline`]).
+#[derive(Clone, Copy, Debug)]
+struct ScriptStarts {
+    commands: &'static [(u32, TimelineCommand)],
+    next: usize,
+}
+
+impl ScriptStarts {
+    fn new(commands: &'static [(u32, TimelineCommand)]) -> Self {
+        Self { commands, next: 0 }
+    }
+
+    /// These, with the boundary before the first step behind them.
+    fn after_start(self) -> Self {
+        let next = self.commands.iter().take_while(|(at, _)| *at == 0).count();
+        Self { next, ..self }
+    }
+
+    /// Starts what comes at the boundary `recording` stands on.
+    fn apply(&mut self, recording: &mut Recording) -> Result<(), TimelinePlayError> {
+        while let Some(&(at, command)) = self.commands.get(self.next)
+            && at <= recording.recorded_ticks()
+        {
+            self.next += 1;
+            if let TimelineCommand::Play(id) = command {
+                recording.play_timeline(id)?;
+            }
+        }
+        Ok(())
+    }
+}
+
 fn script_actions(name: &str) -> Result<ScriptActions, String> {
     find_script(name).map(|script| script.actions).ok_or_else(|| {
         let known: Vec<&str> = SCRIPTS.iter().map(|script| script.name).collect();

@@ -1010,3 +1010,177 @@ fn an_independent_simulation_at_the_same_tick_cuts_and_snaps_once() {
         scene.end_frame();
     }
 }
+
+/// The Lantern Ward's court on a stage with stand-in meshes and no zone drawn (M3 Q3): the ground is the
+/// ward's colliders, the fighters stand at its spawners, and the gate cutscene is what plays beside the
+/// simulation's timeline 0.
+fn ward_stage() -> Staged {
+    let place = crate::arena::FightPlace::of(sapphire_gameplay::replay::WARD_COURT).expect("a zone's fight");
+    let cooked = sapphire_gameplay::replay::ward_colliders().expect("it cooks");
+    let ground = ArenaGround::at(ColliderSet::read(&cooked).expect("it reads"), &place).expect("it stands");
+    let mut scene = Staged::of(Scene::with_character(MeshHandle::from_raw(0), BOUNDS, false));
+    let enemy = EnemyMeshes { warrior: MeshHandle::from_raw(2), blade: MeshHandle::from_raw(3) };
+    let held = enemy::Held {
+        pose: RenderPose { palette: vec![Default::default(); 2], morph_weights: vec![] },
+        figure: Figure { head: Vec3::new(0.0, 2.2, 0.0), ..Figure::MANNEQUIN },
+        blade: Mat4::from_translation(Vec3::new(0.0, 1.0, 0.0)),
+        hand: 0,
+    };
+    let shot = ArenaShot::Director;
+    scene.show.spawn_zone_arena(&mut scene.scene, ZoneArena { enemy, held, shot, ground });
+    scene.show.timelines = vec![court_gate()];
+    scene
+}
+
+fn court_gate() -> Arc<Timeline> {
+    let text = include_str!("../../../../content/zones/lantern_ward/court_gate.timeline.ron");
+    Arc::new(sapphire_timeline::TimelineDocument::from_ron(text).expect("reads").cook().expect("cooks"))
+}
+
+/// A recording of the ward's court on `ward-court-watched`'s script, which starts the gate before step 30.
+fn ward_recording(name: &str) -> Combat {
+    let path = std::env::temp_dir().join(format!("sapphire-q3-{name}-{}.sreplay", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let option = CombatOption::Record {
+        path,
+        scenario: sapphire_gameplay::replay::WARD_COURT.to_owned(),
+        script: Some("ward-court-watched".to_owned()),
+    };
+    Combat::new(&option).expect("sets up")
+}
+
+/// What a frame of the ward's stage showed.
+struct WardFrame {
+    eye: Vec3,
+    cut: bool,
+    held: bool,
+}
+
+/// One frame of an app's loop on the ward's stage: the director's time, then a step unless the timeline
+/// holds the fight, then the frame drawn.
+fn ward_frame(scene: &mut Staged, combat: &mut Combat) -> WardFrame {
+    const FRAME: f32 = 1.0 / 60.0;
+    scene.drive_arena_camera(FRAME, Vec2::ZERO, 0.0);
+    let held = scene.show.holds_simulation();
+    if !held {
+        combat.step(&mut no_bindings);
+        scene.follow_simulation(combat.simulation(), combat.cast());
+    }
+    let cut = scene.frame_packet(1.0, Some((640, 360))).main_view().expect("a view").cut;
+    scene.end_frame();
+    WardFrame { eye: scene.camera().eye(), cut, held }
+}
+
+/// M3 Q3, the brief's "no camera pop": the eye's path through the gate, from the fight's camera into the
+/// cutscene and back out of it. Through the blends and the hold, but for the three cuts the timeline authors,
+/// which the renderer's told of, the eye moves less than 0.35 m a frame and its path turns more gently than
+/// the fight's own camera does following the fighters; the cutscene starts on the step its recording started
+/// it before, and holds the fight all the way through.
+#[test]
+fn the_gate_blends_in_and_out_of_the_fights_camera_with_no_pop() {
+    let mut scene = ward_stage();
+    let mut combat = ward_recording("eye");
+    let mut frames = Vec::new();
+    for _ in 0..(30 + 9 * 60 + 120) {
+        frames.push(ward_frame(&mut scene, &mut combat));
+    }
+    let tick = sapphire_gameplay::replay::COURT_GATE_TICK as usize;
+    assert!(frames[..tick - 1].iter().all(|frame| !frame.held), "the fight goes on up to the gate");
+    // The step before the gate is the last that runs, and the frame after it the first held.
+    let first_held = frames.iter().position(|frame| frame.held).expect("the gate holds the fight");
+    assert_eq!(first_held, tick);
+    let last_held = frames.iter().rposition(|frame| frame.held).expect("held");
+    let held_frames = last_held - first_held + 1;
+    assert!((9 * 60 - 2..=9 * 60 + 2).contains(&held_frames), "held for its 9 s: {held_frames} frames");
+    assert_eq!(
+        combat.simulation().tick() as usize,
+        frames.len() - held_frames,
+        "no step was run twice or lost"
+    );
+
+    let cuts: Vec<usize> =
+        frames.iter().enumerate().filter(|(_, frame)| frame.cut).map(|(at, _)| at).collect();
+    assert_eq!(cuts.len(), 3, "the timeline's three cuts and nothing else: {cuts:?}");
+    // How far the eye moves a frame, and how sharply that changes: a pop is a jump in the first, and a blend
+    // that starts or stops dead is one in the second. Frames across a cut are the cut's.
+    let moved = |at: usize| frames[at + 1].eye - frames[at].eye;
+    let jerk = |at: usize| (moved(at + 1) - moved(at)).length();
+    let smooth = |at: &usize| !frames[at + 1].cut && !frames[at + 2].cut;
+    // The blend in, the hold and the blend out, through a second after the fight takes the camera back.
+    let blended = (first_held - 2)..(last_held + 60);
+    let fastest = blended.clone().filter(|at| !frames[at + 1].cut).map(|at| moved(at).length());
+    let fastest = fastest.fold(0.0_f32, f32::max);
+    let sharpest = blended.clone().filter(smooth).map(jerk).fold(0.0_f32, f32::max);
+    // The fight's own camera, before the gate and after the blend out, following the fighters about.
+    let fight = (0..first_held - 2).chain(last_held + 60..frames.len() - 2);
+    let fights_sharpest = fight.filter(smooth).map(jerk).fold(0.0_f32, f32::max);
+    assert!(fastest > 0.0 && fastest < 0.35, "the eye moved {fastest} m in a frame of the blends");
+    assert!(sharpest < 0.05, "the blends turned the eye's path by {sharpest} m a frame");
+    assert!(
+        sharpest < fights_sharpest,
+        "the blends turn the eye no more sharply than the fight's own camera, at {fights_sharpest} m a frame: {sharpest}"
+    );
+    // Into the first shot and back out of the last, by a blend: the frames either side of the hold are near
+    // the frames of the hold beside them.
+    let (into, out) = (moved(first_held - 1).length(), moved(last_held).length());
+    assert!(into < 0.35 && out < 0.35, "into {into} m, out {out} m");
+}
+
+/// M3's exit test 3 on a stage: the gate watched to its end and skipped 3.1 s in, each as an app plays it,
+/// frame by frame with the fight held, reach the same checksum at every step of the fight after it, and the
+/// recording of the skip says so.
+#[test]
+fn the_gate_watched_or_skipped_on_a_stage_leaves_the_fight_on_one_checksum() {
+    const STEPS: u64 = 300;
+    let run = |skip_at: Option<usize>| {
+        let mut scene = ward_stage();
+        let mut combat = ward_recording(if skip_at.is_some() { "skipped" } else { "watched" });
+        let mut checksums = vec![combat.simulation().checksum()];
+        let mut frame = 0;
+        while combat.simulation().tick() < STEPS {
+            if Some(frame) == skip_at {
+                let at_ms = scene.show.skip_timeline().expect("the gate is playing");
+                combat.skip_timeline(at_ms);
+            }
+            let before = combat.simulation().tick();
+            ward_frame(&mut scene, &mut combat);
+            if combat.simulation().tick() > before {
+                checksums.push(combat.simulation().checksum());
+            }
+            frame += 1;
+        }
+        (checksums, frame)
+    };
+    let (watched, watched_frames) = run(None);
+    let tick = sapphire_gameplay::replay::COURT_GATE_TICK as usize;
+    let (skipped, skipped_frames) = run(Some(tick + 186));
+    assert_eq!(watched, skipped);
+    assert!(
+        watched_frames > skipped_frames + 300,
+        "the skip cut the hold short: {watched_frames} {skipped_frames}"
+    );
+}
+
+/// A track's rows reach the fighters' graphs through the combat slot (M3 Q3): the warrior's overhead as the
+/// warden is seen, the character's guard as it's drawn, each a transition of its own.
+#[test]
+fn the_gates_tracks_stage_each_fighter_in_turn() {
+    let mut show = TimelineShow::new(court_gate(), Origin::default());
+    let mut at = |seconds: f32| {
+        show.drive(seconds);
+        show.present(1.0, None);
+        show.staged_fighters()
+    };
+    assert_eq!(at(1.0), [None, None]);
+    let [hero, foe] = at(2.0);
+    assert_eq!(hero, None);
+    let foe = foe.expect("the warrior's overhead");
+    assert_eq!(foe.name, sapphire_core::Name::new("overhead"));
+    assert!((foe.position - 24.0).abs() < 0.5, "{}", foe.position);
+    assert!(foe.serial >= 1 << 31, "no move of the simulation's has its serial");
+    let [hero, foe] = at(3.0);
+    assert_eq!(foe, None, "the overhead's play is over");
+    let hero = hero.expect("the character's guard");
+    assert_eq!(hero.name, sapphire_core::Name::new("court_guard"));
+    assert!((hero.position - 60.0).abs() < 0.5, "{}", hero.position);
+}

@@ -998,7 +998,7 @@ fn run_fight(
     let mut placed = || world.spawn(RenderTransform::default()).id();
     let (player, warrior, blade) = (placed(), placed(), placed());
     let parts = ArenaEnemy { warrior, blade, blade_in_model: Mat4::IDENTITY, hand: 0 };
-    let ground = ArenaGround { world: colliders.ground.share() };
+    let ground = ArenaGround { world: colliders.ground.share(), spawns: spawns() };
     let mut actors = ArenaActors::new(player, parts, ArenaShot::Director, ground);
     world.insert_resource(ArenaShot::Director.camera(spawns().player.position()));
     let director = actors.director().expect("this shot has one");

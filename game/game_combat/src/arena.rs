@@ -83,7 +83,8 @@ use sapphire_colliders::{ArchivedColliderSet, ColliderError, Group};
 use sapphire_core::debug_draw::{Color, Shape, Style};
 use sapphire_ecs::bevy_ecs::world::WorldId;
 use sapphire_ecs::prelude::*;
-use sapphire_gameplay::arena::{SpawnPoint, cooked_colliders, profile, spawns};
+use sapphire_gameplay::arena::{ArenaSpawns, SpawnPoint, cooked_colliders, profile, spawns};
+use sapphire_gameplay::replay::{WARD_COURT, ZoneFight, zone_fight};
 use sapphire_gameplay::targeting::{TargetCandidate, TargetQuery, TargetingTuning, choose_target};
 use sapphire_gameplay::{ActorId, ActorView, Buttons, MoveLibrary, Simulation, Stick};
 use sapphire_math::{Affine3A, Mat4, Quat, Vec2, Vec3};
@@ -202,13 +203,44 @@ pub fn check_scenario(combat: &crate::combat::Combat, party: bool) -> Result<(),
              `{scenario}`"
         ));
     }
-    if [SCENARIO, FIGHT_SCENARIO].contains(&scenario) {
+    if [SCENARIO, FIGHT_SCENARIO, WARD_COURT].contains(&scenario) {
         return Ok(());
     }
     Err(format!(
-        "--arena plays a fight of the `{SCENARIO}` scenario or of `{FIGHT_SCENARIO}`, and this one starts \
-         from `{scenario}`",
+        "--arena plays a fight of the `{SCENARIO}` scenario, of `{FIGHT_SCENARIO}` or of `{WARD_COURT}`, and \
+         this one starts from `{scenario}`",
     ))
+}
+
+/// Where a fight stands (M3 Q3): the town's square, or a zone a scenario names, whose ground is that zone's
+/// colliders and whose fighters stand at its spawners. Either way the stage holds its pack's colliders to the
+/// ones the simulation stands on, which the build holds.
+pub struct FightPlace {
+    /// The zone, by its stem, and the spawner the player stands at in it, or none for the square.
+    pub zone: Option<(&'static str, &'static str)>,
+    /// Where the scenario stands its two fighters.
+    pub spawns: ArenaSpawns,
+    /// The digest of the statics the simulation stands on, which the build holds.
+    statics: u64,
+}
+
+impl FightPlace {
+    /// Where the scenario named `scenario` stands its fight.
+    pub fn of(scenario: &str) -> Result<Self, ArenaError> {
+        match zone_fight(scenario) {
+            Some(fight) => {
+                let ZoneFight { stem, player_at, spawns, colliders } =
+                    fight.map_err(|error| ArenaError::Scenario(error.to_string()))?;
+                Ok(Self { zone: Some((stem, player_at)), spawns, statics: statics_digest(&colliders)? })
+            }
+            None => Ok(Self { zone: None, spawns: spawns(), statics: statics_digest(&cooked_colliders()?)? }),
+        }
+    }
+}
+
+/// The digest of the statics in cooked colliders, as the simulation's checksum takes it.
+fn statics_digest(cooked: &[u8]) -> Result<u64, ArenaError> {
+    Ok(PhysicsWorld::from_cooked(ColliderSet::read(cooked)?, 0)?.statics_digest())
 }
 
 /// Why the stage can't stand on its cooked colliders.
@@ -223,6 +255,8 @@ pub enum ArenaError {
          content`"
     )]
     StaleCook,
+    #[error("the fight's scenario: {0}")]
+    Scenario(String),
     #[error("the {who}'s spawn point has nothing under it")]
     NoGround { who: &'static str },
     #[error("the {who}'s spawn point stands {height} m from the ground")]
@@ -235,22 +269,32 @@ pub enum ArenaError {
 /// camera to read, and for `--debug-draw colliders` to draw while no fight has them.
 pub struct ArenaGround {
     world: Arc<PhysicsWorld>,
+    /// Where the fight stands its two fighters.
+    spawns: ArenaSpawns,
 }
 
 impl ArenaGround {
-    /// Builds the world from the cooked `set`, holds it to this build's own document, and checks the
-    /// spawn points stand on it.
+    /// Builds the square's world from the cooked `set`, holds it to this build's own document, and checks
+    /// the spawn points stand on it.
     pub fn new(set: &ArchivedColliderSet) -> Result<Self, ArenaError> {
+        Self::at(set, &FightPlace::of(SCENARIO)?)
+    }
+
+    /// As [`Self::new`], for the fight at `place`.
+    pub fn at(set: &ArchivedColliderSet, place: &FightPlace) -> Result<Self, ArenaError> {
         let world = PhysicsWorld::from_cooked(set, 0)?;
-        let spawns = spawns();
+        let spawns = place.spawns;
         check_spawn(&world, set, "player", spawns.player)?;
         check_spawn(&world, set, "enemy", spawns.enemy)?;
-        let own = cooked_colliders()?;
-        let own = PhysicsWorld::from_cooked(ColliderSet::read(&own)?, 0)?;
-        if own.statics_digest() != world.statics_digest() {
+        if place.statics != world.statics_digest() {
             return Err(ArenaError::StaleCook);
         }
-        Ok(Self { world: Arc::new(world) })
+        Ok(Self { world: Arc::new(world), spawns })
+    }
+
+    /// Where the fight stands its two fighters.
+    pub fn spawns(&self) -> ArenaSpawns {
+        self.spawns
     }
 
     /// The world, for what else reads it: IK's casts for a character's feet ([`sapphire_stage::ik::IkDriver`]).
@@ -264,7 +308,7 @@ impl ArenaGround {
         if statics {
             combat_views::statics(&self.world, canvas);
         }
-        let spawns = spawns();
+        let spawns = self.spawns;
         let profile = profile();
         for (spawn, color) in [(spawns.player, Color::GREEN), (spawns.enemy, Color::RED)] {
             let style = Style::new(color).on_top();
@@ -465,7 +509,7 @@ pub struct ArenaActors {
 impl ArenaActors {
     /// The two at their spawn points, drawn by `player` and `enemy`.
     pub(crate) fn new(player: Entity, enemy: ArenaEnemy, shot: ArenaShot, ground: ArenaGround) -> Self {
-        let spawns = spawns();
+        let spawns = ground.spawns();
         Self {
             player: (player, Root::at(spawns.player)),
             enemy: (enemy.warrior, Root::at(spawns.enemy)),

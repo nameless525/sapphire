@@ -39,10 +39,23 @@ fn history_only_requested(value: Option<&std::ffi::OsStr>) -> Result<bool, AppIn
     }
 }
 
+/// A tick of a capture: a stage's step, a frame's worth. A frame a cutscene holds the fight for is a frame,
+/// so `--capture-ticks` counts it; `to_end`, a capture of a replay's end, steps on through it, since the end
+/// is the replay's last tick (M3 Q3).
+fn step(stage: &mut Stage, to_end: bool) {
+    loop {
+        let held = stage.show.fight.held_steps();
+        stage.step();
+        if !to_end || stage.show.fight.held_steps() == held {
+            break;
+        }
+    }
+}
+
 pub(crate) fn run(
     stage: &mut Stage,
     path: &Path,
-    ticks: u32,
+    (ticks, to_end): (u32, bool),
     frames: CaptureFrames,
     width: u32,
     height: u32,
@@ -52,7 +65,7 @@ pub(crate) fn run(
     let first =
         frames.first_tick(ticks).ok_or_else(|| AppInitError::msg("capture frames start before tick 0"))?;
     for _ in 0..first {
-        stage.step();
+        step(stage, to_end);
     }
     // Frames before the captured one, `step` ticks apart, ending at `ticks`; with the overlay
     // shown, at least its warm-up, redrawing the same scene state at the end.
@@ -67,7 +80,7 @@ pub(crate) fn run(
             // The frames still to come, the captured one included, each this many ticks later.
             if earlier - frame < frames.count {
                 for _ in 0..frames.step {
-                    stage.step();
+                    step(stage, to_end);
                 }
             }
         }

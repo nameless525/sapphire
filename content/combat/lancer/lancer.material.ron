@@ -1,0 +1,111 @@
+// The Lancer (M3 C2), in the anime character family, bound to its model's `lancer` slot by the model's
+// sidecar. One material with a region per part, which the control map's material ID picks per pixel,
+// in its spec's order (`tools/figures/lancer.figure.ron`): 0 cloth, 1 lacquer, 2 porcelain, 3 steel,
+// 4 ink, 5 glow. The glow is jade, cool against the warrior's ember, and breathes quickly.
+(
+    type: "sapphire::render::AnimeCharacterMaterial",
+    version: 2,
+    data: (
+        surface: Body,
+        base_color: (1.0, 1.0, 1.0, 1.0),
+        base_color_map: Some("1d57dc80-5bc8-4d61-9f0c-ae636f0bfd4f"),
+        alpha: Opaque,
+        control_map: Some("31302265-bc9e-41db-88ee-099ad584a512"),
+        light_split: (
+            threshold: 0.2,
+            softness: 0.015,
+        ),
+        diffuse: Ramp((
+            map: "5a47f25f-e6b0-436f-9f27-36ee8d00bb8d",
+            mix: 1.0,
+        )),
+        regions: [
+            (
+                // Cloth: an indigo robe with a cool rim and a deep blue line.
+                rim_color: (0.72, 0.8, 1.0),
+                rim_strength: 0.8,
+                outline_color: (0.02, 0.02, 0.05),
+                matcap: (channel: Off),
+            ),
+            (
+                // Lacquer: vermilion with a crisp, warm highlight.
+                specular_color: (0.9, 0.62, 0.52),
+                specular_size: 40.0,
+                rim_color: (1.0, 0.62, 0.5),
+                outline_color: (0.06, 0.008, 0.012),
+                matcap: (channel: Rgb, blend: Add, color: (0.7, 0.4, 0.36)),
+            ),
+            (
+                // Porcelain: the mask, a small hard highlight and a thin cool line.
+                specular_color: (0.4, 0.4, 0.42),
+                specular_size: 36.0,
+                rim_color: (0.95, 0.97, 1.0),
+                outline_color: (0.05, 0.05, 0.09),
+                matcap: (channel: Off),
+            ),
+            (
+                // Steel: the spearhead, its edge catching the sky.
+                specular_color: (1.0, 1.0, 1.0),
+                specular_size: 72.0,
+                rim_color: (0.9, 0.94, 1.0),
+                outline_color: (0.02, 0.022, 0.04),
+                matcap: (channel: Rgb, blend: Add, color: (1.2, 1.2, 1.2)),
+            ),
+            (
+                // Ink: hat, hair and boots, a soft sheen.
+                specular_color: (0.32, 0.34, 0.44),
+                specular_size: 20.0,
+                rim_strength: 0.6,
+                outline_color: (0.01, 0.01, 0.02),
+                matcap: (channel: Off),
+            ),
+            (
+                // Glow: jade lines, unlit, blooming.
+                shade_color: (1.0, 1.0, 1.0),
+                rim_strength: 0.0,
+                outline_color: (0.0, 0.08, 0.06),
+                outline_width: 0.5,
+                matcap: (channel: Off),
+                emission: (0.6, 4.0, 2.8),
+            ),
+        ],
+        rim: (
+            width: 3.0,
+            strength: 0.6,
+            threshold: 0.1,
+            fresnel: 0.45,
+            light_gate: 0.7,
+            back_light: 0.6,
+        ),
+        specular: (
+            model: Blinn,
+            softness: 0.04,
+            albedo: 0.35,
+        ),
+        matcap: Some((
+            map: "9a0a0a3b-04d3-49aa-b522-68e6241c20cc",
+            strength: 1.0,
+            shadow_strength: 0.55,
+        )),
+        outline: (
+            width: 1.6,
+            z_offset: 0.0,
+            curve: (
+                near: (0.5, 1.4),
+                mid: 3.0,
+                far: (20.0, 0.5),
+                cutoff: 80.0,
+            ),
+            model_scale: 1.0,
+            flatten: 0.1,
+            albedo: 0.0,
+            lighting: 1.0,
+        ),
+        layer_mask: Some("7c29ce60-3060-45bc-973d-e14bdf4e065d"),
+        emission: (
+            period: 2.0,
+            depth: 0.3,
+            bloom: 1.0,
+        ),
+    ),
+)

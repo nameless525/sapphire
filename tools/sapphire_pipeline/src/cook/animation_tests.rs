@@ -974,13 +974,22 @@ fn kaykits_sidecars_ask_for_what_its_files_have() {
     let character_path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../content/third_party/vrm1_constraint_twist_sample/VRM1_Constraint_Twist_Sample.vrm");
     let character = meta::read(&sidecar_path(&character_path)).unwrap().id;
-    let warrior_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/combat/enemy/warrior.glb");
-    let warrior = meta::read(&sidecar_path(&warrior_path)).unwrap().id;
+    // The warrior and every generated figure: each combat folder's models.
+    let mut targets = vec![character];
+    let combat = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content/combat");
+    for folder in fs::read_dir(&combat).unwrap() {
+        for file in fs::read_dir(folder.unwrap().path()).into_iter().flatten() {
+            let path = file.unwrap().path();
+            if path.extension().is_some_and(|extension| extension == "glb") {
+                targets.push(meta::read(&sidecar_path(&path)).unwrap().id);
+            }
+        }
+    }
     let rows = [
         ("General", 1, 0, 6),
-        ("MovementBasic", 0, 0, 8),
-        ("MovementAdvanced", 0, 0, 10),
-        ("CombatMelee", 0, 0, 4),
+        ("MovementBasic", 0, 0, 10),
+        ("MovementAdvanced", 0, 0, 13),
+        ("CombatMelee", 0, 0, 5),
         ("Special", 0, 0, 0),
     ];
     let mut owner = None;
@@ -994,10 +1003,7 @@ fn kaykits_sidecars_ask_for_what_its_files_have() {
         } else {
             assert_eq!(clips.rig, owner, "{file} shares the first file's rig");
         }
-        assert!(
-            clips.retarget.iter().all(|retarget| [character, warrior].contains(&retarget.target)),
-            "{file}"
-        );
+        assert!(clips.retarget.iter().all(|retarget| targets.contains(&retarget.target)), "{file}");
         let asset = SourceAsset { path, meta: meta.clone() };
         let parts = sub_assets(&asset, &Cell::new(None), &HashMap::new(), &mut HashMap::new(), None)
             .unwrap_or_else(|error| panic!("{file}: {error}"));

@@ -266,3 +266,31 @@ fn the_committed_figures_are_generated() {
         }
     }
 }
+
+/// Every committed figure cooks under its spec's budget at LOD0 in both cooks, by its sidecar, and
+/// each coarser level has fewer triangles than the one before.
+#[test]
+fn every_figure_cooks_under_its_budget() {
+    use crate::cook::{Cook, cook_mesh};
+    let content = repo().join("content");
+    for path in specs(&specs_dir()).unwrap() {
+        let figure = read(&path).unwrap();
+        let model = content.join(&figure.dir).join(format!("{}.glb", figure.name));
+        let meta = crate::meta::read(&crate::meta::sidecar_path(&model)).unwrap();
+        let settings = meta.importer.mesh().expect("a mesh's sidecar").clone();
+        for cook in Cook::ALL {
+            let mesh = cook_mesh(&model, &settings, cook).unwrap();
+            let triangles: Vec<u32> = mesh
+                .lods
+                .iter()
+                .map(|lod| lod.submeshes.iter().map(|submesh| submesh.index_count / 3).sum())
+                .collect();
+            assert!(triangles[0] <= figure.max_triangles, "{} {cook}: {triangles:?}", figure.name);
+            assert!(
+                triangles.windows(2).all(|pair| pair[1] < pair[0]),
+                "{} {cook}: {triangles:?}",
+                figure.name
+            );
+        }
+    }
+}

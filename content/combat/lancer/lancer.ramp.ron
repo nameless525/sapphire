@@ -1,0 +1,106 @@
+// The Lancer's shadow ramps (M3 C2): every row multiplies the albedo on the shadow side, from the
+// deepest shadow (0) to the terminator (1), in its spec's region order (`tools/figures/lancer.figure.ron`).
+// The robe and ink fall into a cool violet, the lacquer into a wine that keeps its red, the porcelain
+// into a cold lavender as the warrior's bone does, steel into blue; the glow barely shades. Night rows,
+// which time of day blends in from dusk, lean further blue.
+(
+    type: "sapphire::pipeline::RampMap",
+    version: 1,
+    data: (
+        interpolation: OkLab,
+        materials: [
+            (
+                name: "cloth",
+                day: (
+                    stops: [
+                        (at: 0.0, color: "#62629a"),
+                        (at: 0.7, color: "#7c7cb0"),
+                        (at: 1.0, color: "#9494c0"),
+                    ],
+                ),
+                night: Some((
+                    stops: [
+                        (at: 0.0, color: "#5458a0"),
+                        (at: 1.0, color: "#8084bc"),
+                    ],
+                )),
+            ),
+            (
+                name: "lacquer",
+                day: (
+                    stops: [
+                        (at: 0.0, color: "#8a4468"),
+                        (at: 1.0, color: "#b06478"),
+                    ],
+                ),
+                night: Some((
+                    stops: [
+                        (at: 0.0, color: "#6c4480"),
+                        (at: 1.0, color: "#94608e"),
+                    ],
+                )),
+            ),
+            (
+                name: "porcelain",
+                day: (
+                    stops: [
+                        (at: 0.0, color: "#8486b4"),
+                        (at: 0.7, color: "#a0a0c4"),
+                        (at: 1.0, color: "#b6b4cc"),
+                    ],
+                ),
+                night: Some((
+                    stops: [
+                        (at: 0.0, color: "#7278ac"),
+                        (at: 1.0, color: "#989cc8"),
+                    ],
+                )),
+            ),
+            (
+                name: "steel",
+                day: (
+                    stops: [
+                        (at: 0.0, color: "#6a7498"),
+                        (at: 1.0, color: "#8e98b4"),
+                    ],
+                ),
+                night: Some((
+                    stops: [
+                        (at: 0.0, color: "#5a66a0"),
+                        (at: 1.0, color: "#808ab8"),
+                    ],
+                )),
+            ),
+            (
+                name: "ink",
+                day: (
+                    stops: [
+                        (at: 0.0, color: "#5a5a86"),
+                        (at: 1.0, color: "#7a7aa0"),
+                    ],
+                ),
+                night: Some((
+                    stops: [
+                        (at: 0.0, color: "#4e5290"),
+                        (at: 1.0, color: "#7072a8"),
+                    ],
+                )),
+            ),
+            (
+                name: "glow",
+                day: (
+                    stops: [
+                        (at: 0.0, color: "#d8eeee"),
+                        (at: 1.0, color: "#eef8f8"),
+                    ],
+                ),
+                night: Some((
+                    stops: [
+                        (at: 0.0, color: "#cce4ee"),
+                        (at: 1.0, color: "#e6f2f8"),
+                    ],
+                )),
+            ),
+        ],
+    ),
+)

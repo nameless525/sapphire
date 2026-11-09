@@ -190,6 +190,21 @@
                         "handslot.r",
                     ],
                 ),
+                // The Lancer (M3 C2), on its own lengths, its hands in the clip's grip so its spear is too.
+                (
+                    target: "41e229ad-28a3-41f9-aeb8-ba214e06be6a",
+                    names: [
+                        "Running_Strafe_Left",
+                        "Running_Strafe_Right",
+                        "Walking_Backwards",
+                    ],
+                    follow: [
+                        "hand.l",
+                        "hand.r",
+                        "handslot.l",
+                        "handslot.r",
+                    ],
+                ),
             ],
         )),
     ),

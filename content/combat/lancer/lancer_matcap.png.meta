@@ -1,0 +1,10 @@
+(
+    type: "sapphire::assets::AssetMeta",
+    version: 1,
+    data: (
+        id: "9a0a0a3b-04d3-49aa-b522-68e6241c20cc",
+        importer: Texture((
+            class: Color(()),
+        )),
+    ),
+)

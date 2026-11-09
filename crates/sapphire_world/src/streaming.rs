@@ -27,6 +27,12 @@
 //! all: the sandbox's `replays` test runs a fight with streaming off, on, and on another budget, and the
 //! checksums hold.
 //!
+//! # Held
+//!
+//! A fight holds its zone's streaming while an encounter runs ([`Streamer::hold`], M3 W5): no place is
+//! asked for, placed or taken down, whatever the focus does, so a fight's frames carry none of it. Let go,
+//! the next update looks again from where the focus is then and catches up within the budget.
+//!
 //! # What going inactive gives back
 //!
 //! The streamer's handles, which is all it holds. A released mesh stays cached in the server until a
@@ -132,6 +138,13 @@ pub struct StreamStats {
     pub unready: u32,
     /// Frames so far that ended with any such place.
     pub unready_frames: u64,
+    /// Places whose meshes were asked for this frame, and since the streamer started: what streaming
+    /// asked of the asset server.
+    pub asked: u32,
+    pub total_asked: u64,
+    /// Whether it's held ([`Streamer::hold`]), and the frames it's spent held.
+    pub held: bool,
+    pub held_frames: u64,
 }
 
 /// How many points [`Streamer::update_ahead`] streams for beside the focus: a timeline's next cuts.
@@ -261,6 +274,8 @@ pub struct Streamer<P> {
     scanned_ahead: [Option<[f32; 2]>; AHEAD],
     /// The next update places everything it can, after a load screen ([`Self::preload`]).
     unbudgeted: bool,
+    /// Does nothing until let go ([`Self::hold`]).
+    held: bool,
     stats: StreamStats,
     stats_dirty: bool,
 }
@@ -279,9 +294,26 @@ impl<P> Streamer<P> {
             scanned: None,
             scanned_ahead: [None; AHEAD],
             unbudgeted: false,
+            held: false,
             stats: StreamStats::default(),
             stats_dirty: true,
         }
+    }
+
+    /// Holds the streamer where it is, or lets it go (see the [module docs](self#held)). Held, an update
+    /// asks for, places and removes nothing and takes no time but its own stats'. Let go, it looks again
+    /// at the next update's focus.
+    pub fn hold(&mut self, held: bool) {
+        if self.held && !held {
+            self.scanned = None;
+        }
+        self.held = held;
+    }
+
+    /// The settings it streams by.
+    #[must_use]
+    pub fn settings(&self) -> StreamSettings {
+        self.settings
     }
 
     /// The zone.
@@ -437,7 +469,11 @@ impl<P> Streamer<P> {
         let stopwatch = Stopwatch::start();
         self.stats.placed = 0;
         self.stats.removed = 0;
-        if self.settled_on_zone_hosted(server, host) {
+        self.stats.asked = 0;
+        self.stats.held = self.held;
+        if self.held {
+            self.stats.held_frames += 1;
+        } else if self.settled_on_zone_hosted(server, host) {
             let focus = [focus[0], focus[2]];
             let mut asked = [None; AHEAD];
             for (slot, point) in asked.iter_mut().zip(ahead) {
@@ -639,6 +675,8 @@ impl<P> Streamer<P> {
                 }
             }
         }
+        self.stats.asked = asked;
+        self.stats.total_asked += u64::from(asked);
         for &index in &self.pending {
             poll_loading(&mut self.places[index as usize], server);
         }

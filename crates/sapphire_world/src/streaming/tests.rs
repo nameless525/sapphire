@@ -538,3 +538,45 @@ fn a_cut_asked_ahead_lands_on_its_places_and_one_not_asked_misses_them() {
         }
     }
 }
+
+/// A fight holds its zone (M3 W5): held, a walk across asks for, places and removes nothing, and let go it
+/// catches up with where the focus is, as a streamer that had never been held would be.
+#[test]
+fn held_it_asks_and_places_nothing_and_let_go_it_catches_up() {
+    let (mut server, _) = server_over(SMALL);
+    let mut host = Ledger::default();
+    let mut streamer = streamer(&mut server, settings());
+    let width = SMALL.cell_size * SMALL.side as f32;
+    settle(&mut streamer, [0.0, 0.0, 0.0], &mut server, &mut host);
+    let (before, live) = (streamer.stats(), host.live());
+
+    streamer.hold(true);
+    let mut position = 0.0;
+    while position < width {
+        frame(&mut streamer, [position, 0.0, width / 2.0], &mut server, &mut host);
+        let stats = streamer.stats();
+        assert!(stats.held);
+        assert_eq!((stats.asked, stats.placed, stats.removed), (0, 0, 0), "at {position}");
+        position += 4.0;
+    }
+    let held = streamer.stats();
+    assert_eq!(held.total_asked, before.total_asked);
+    assert_eq!((held.total_placed, held.total_removed), (before.total_placed, before.total_removed));
+    assert_eq!(host.live(), live);
+    assert!(held.held_frames > 0);
+
+    streamer.hold(false);
+    let focus = [width, 0.0, width / 2.0];
+    settle(&mut streamer, focus, &mut server, &mut host);
+    let caught_up = streamer.stats();
+    assert!(!caught_up.held);
+    assert!(caught_up.total_asked > held.total_asked);
+
+    let (mut fresh_server, _) = server_over(SMALL);
+    let mut fresh_host = Ledger::default();
+    let mut fresh = self::streamer(&mut fresh_server, settings());
+    settle(&mut fresh, focus, &mut fresh_server, &mut fresh_host);
+    let placed = |host: &Ledger| host.meshes.iter().map(|&(_, mesh, _)| mesh).collect::<BTreeSet<_>>();
+    assert_eq!(placed(&host), placed(&fresh_host), "the same meshes, as if it had never been held");
+    assert_eq!(host.lights.len(), fresh_host.lights.len());
+}

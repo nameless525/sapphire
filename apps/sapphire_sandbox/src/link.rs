@@ -54,7 +54,9 @@ use crate::options::LiveLinkOption;
 use crate::shader_edits::{Origin, ShaderEdits};
 use game_combat::combat::Combat;
 use game_combat::fight::Fight;
-use game_combat::tuning::{Document, DocumentFrame, DocumentHost, LiveTuning, attempts, error_chain};
+use game_combat::tuning::{
+    Document, DocumentFrame, DocumentHost, LiveTuning, Reloaded, attempts, error_chain,
+};
 use sapphire_stage::Readback;
 use sapphire_stage::content::Content;
 use sapphire_stage::scene::Scene;
@@ -232,6 +234,16 @@ impl Link {
                         Ok(replaced) => {
                             tracing::info!(target: LOG_TARGET, origin, "live link replaced the {replaced}");
                             reply.reply(ReplyBody::DocumentApplied { owner: replaced });
+                        }
+                        Err(error) => refuse(&mut self.errors, reply, format!("{origin}: {error}")),
+                    }
+                }
+                Push::Script { origin, source, reply } => {
+                    match tuning.script(&origin, &source, fight.combat.as_mut()) {
+                        Ok(reloaded) => {
+                            let changed = reloaded == Reloaded::Replaced;
+                            tracing::info!(target: LOG_TARGET, origin, changed, "live link pushed a script");
+                            reply.reply(ReplyBody::ScriptApplied { changed });
                         }
                         Err(error) => refuse(&mut self.errors, reply, format!("{origin}: {error}")),
                     }

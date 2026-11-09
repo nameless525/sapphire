@@ -93,6 +93,8 @@ struct App {
     /// Every upload: (asset, slot, generation) → its bytes.
     uploads: BTreeMap<(AssetId, u32), (AssetSlot, Vec<u8>)>,
     timeline: TodTimeline,
+    /// The source of the one script a fight here runs, `boss.luau`.
+    script: String,
     cvars: CvarRegistry,
     frame: u64,
     /// The length of the PNG a capture answers with.
@@ -121,6 +123,7 @@ impl App {
             tracker: ReloadTracker::default(),
             uploads: BTreeMap::new(),
             timeline: default_day(),
+            script: String::new(),
             cvars,
             frame: 0,
             // As large as a phone's PNG gets.
@@ -168,6 +171,13 @@ impl App {
                         Err(error) => reply.refuse(format!("{origin}: {error}")),
                     }
                 }
+                // What a fight does with it is the game's: here, only who it reaches.
+                Push::Script { origin, source, reply } if origin == "boss.luau" => {
+                    let changed = source != self.script;
+                    self.script = source;
+                    reply.reply(ReplyBody::ScriptApplied { changed });
+                }
+                Push::Script { origin, reply, .. } => reply.refuse(format!("{origin}: no fight runs it")),
                 Push::Shaders { reply, .. } => reply.refuse("no renderer here"),
                 Push::Pack { pack, reply } => match pack.apply(&self.packs, &mut self.server) {
                     Ok(outcome) => self.tracker.track(reply, outcome),
@@ -450,6 +460,27 @@ fn a_broken_document_is_refused_and_the_old_one_kept() {
     }));
     assert_eq!(owner, "the default day");
     assert_eq!(app.timeline, expected);
+}
+
+#[test]
+fn a_script_reaches_the_fight_running_it_by_its_file_name() {
+    let mut app = App::new({
+        let base = MemoryPackSource::new();
+        base.insert("shared", shared([1.0; 4]));
+        base
+    });
+    let source = "return { on_phase = function() sapphire.mark(1) end }";
+    let (first, again, elsewhere) = app.serve(on_client(app.address(), move |client| {
+        let first = client.push_script("boss.luau", source.to_owned()).unwrap();
+        let again = client.push_script("boss.luau", source.to_owned()).unwrap();
+        (first, again, client.push_script("other.luau", String::new()).unwrap_err())
+    }));
+    assert_eq!((first, again), (true, false), "the same source again changes nothing");
+    assert!(
+        matches!(&elsewhere, LinkError::Refused(message) if message.starts_with("other.luau:")),
+        "{elsewhere}"
+    );
+    assert_eq!(app.script, source);
 }
 
 /// A day that keys the world's emission (M1 W1's keyed emission), pushed as an artist edits the

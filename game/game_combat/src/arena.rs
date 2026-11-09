@@ -89,7 +89,7 @@ use sapphire_core::debug_draw::{Color, Shape, Style};
 use sapphire_ecs::bevy_ecs::world::WorldId;
 use sapphire_ecs::prelude::*;
 use sapphire_gameplay::arena::{ArenaSpawns, SpawnPoint, cooked_colliders, profile, spawns};
-use sapphire_gameplay::replay::{SCENARIOS, Scenario, WARD_COURT, ZoneFight, find_scenario, zone_fight};
+use sapphire_gameplay::replay::{WARD_COURT, ZoneFight, zone_fight};
 use sapphire_gameplay::{ActorId, ActorView, Buttons, Faction, MoveLibrary, Simulation};
 use sapphire_math::{Affine3A, Mat4, Quat, Vec2, Vec3};
 use sapphire_moves::RootSample;
@@ -199,7 +199,7 @@ pub(crate) fn follow_target(player: Vec3) -> Vec3 {
 /// party has only the one look. A new scenario here takes no Rust.
 pub fn check_scenario(combat: &crate::combat::Combat, party: bool) -> Result<(), String> {
     let scenario = combat.scenario();
-    let document = find_scenario(&SCENARIOS, scenario).and_then(Scenario::document);
+    let document = sapphire_script::scenarios::document_of(scenario);
     let on_the_stage =
         document.filter(|document| document.colliders == sapphire_gameplay::arena::COLLIDERS_PATH);
     let has_a_party = on_the_stage.is_some_and(|document| document.party.is_some());
@@ -1030,6 +1030,7 @@ mod framing;
 mod tests {
     use sapphire_colliders::{ColliderDocument, ColliderEntry, ColliderSet, ColliderShape};
     use sapphire_gameplay::Stick;
+    use sapphire_gameplay::replay::{SCENARIOS, find_scenario};
     use sapphire_stage::lookdev::{PLANTINGS, Plant};
 
     use super::*;

@@ -319,14 +319,13 @@ pub enum Reloaded {
 ///
 /// # Errors
 ///
-/// If the source doesn't cook, the chunk doesn't load, or the host's script came from another file. What
-/// was bound stays.
-///
-/// # Panics
-///
-/// If nothing's been attached.
+/// If the simulation runs no script, the host's came from another file, the source doesn't cook or the
+/// chunk doesn't load. What was bound stays.
 pub fn reload(sim: &mut Simulation, source_name: &str, source: &str) -> Result<Reloaded, ReloadError> {
-    let bound = host_of(sim).source_name();
+    let Some(host) = sim.world().get_resource::<ScriptHost>() else {
+        return Err(ReloadError::NoScript { pushed: source_name.to_owned() });
+    };
+    let bound = host.source_name();
     if bound != source_name {
         return Err(ReloadError::NotBound { pushed: source_name.to_owned(), bound: bound.to_owned() });
     }
@@ -341,6 +340,8 @@ pub fn reload(sim: &mut Simulation, source_name: &str, source: &str) -> Result<R
 /// Why a [`reload`] kept what was bound.
 #[derive(Debug, thiserror::Error)]
 pub enum ReloadError {
+    #[error("{pushed}: this fight runs no script")]
+    NoScript { pushed: String },
     #[error("{pushed} isn't the script this fight runs, which is {bound:?}")]
     NotBound { pushed: String, bound: String },
     #[error(transparent)]

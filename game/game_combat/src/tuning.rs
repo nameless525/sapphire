@@ -52,7 +52,7 @@ use sapphire_assets::ui::UiDocument;
 use sapphire_assets::{AssetChange, AssetKind, Handle};
 use sapphire_camera::CameraTuning;
 use sapphire_cues::CueTable;
-use sapphire_gameplay::replay::{LiveMoves, SCENARIOS, compile_document, document_file_name};
+use sapphire_gameplay::replay::{LiveMoves, compile_document, document_file_name};
 use sapphire_gameplay::targeting::TargetingTuning;
 use sapphire_gameplay::{ActorId, MoveSetId, Simulation, Tuned};
 use sapphire_hot_reload::sources;
@@ -62,6 +62,8 @@ use sapphire_moves::{ControllerProfile, MoveSet, MoveSetDocument, Span};
 use sapphire_reflect::stable_name;
 use sapphire_render::Renderer;
 use sapphire_rhi::GpuContext;
+pub use sapphire_script::Reloaded;
+use sapphire_script::scenarios::ALL as SCENARIOS;
 use sapphire_time::Stopwatch;
 use sapphire_ui::HudDesign;
 use sapphire_world::light_rig::LightRigLibrary;
@@ -120,6 +122,10 @@ pub enum Document {
     CharacterMotion,
     /// Where the HUD's pieces go (`default_hud.ron`, M3 S3): it lays out again, if there's one.
     Hud,
+    /// A fight's script (`.luau`, M3 L3): the fight running a script of that file's name binds it from the
+    /// next step, if it cooks and loads, keeping its board, and a new fight starts on it. Not RON, so no
+    /// envelope names it: live link brings it as a script of its own.
+    Script,
 }
 
 /// What a document reaches that isn't the fight's: an app's controls and its HUD. Each answers at once, since
@@ -164,11 +170,12 @@ impl Document {
 
     /// The document whose envelope names `type_name`, if the sandbox has one.
     pub fn of_type(type_name: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|document| document.type_name() == type_name)
+        Self::ALL.into_iter().find(|document| document.type_name() == Some(type_name))
     }
 
-    fn type_name(self) -> &'static str {
-        match self {
+    /// The type its envelope names, for a RON document.
+    fn type_name(self) -> Option<&'static str> {
+        Some(match self {
             Self::Day => stable_name::<TodTimeline>(),
             Self::LightRigs => stable_name::<LightRigLibrary>(),
             Self::ScreenEffects => stable_name::<EffectLibrary>(),
@@ -182,7 +189,8 @@ impl Document {
             Self::Targeting => stable_name::<TargetingTuning>(),
             Self::CharacterMotion => stable_name::<CharacterMotion>(),
             Self::Hud => stable_name::<HudDesign>(),
-        }
+            Self::Script => return None,
+        })
     }
 
     /// What it is, in messages.
@@ -201,6 +209,7 @@ impl Document {
             Self::Targeting => "targeting's weights",
             Self::CharacterMotion => "character's motion",
             Self::Hud => "HUD's design",
+            Self::Script => "script",
         }
     }
 
@@ -288,6 +297,10 @@ impl Document {
                 tuning.count_edit(document_file_name(HUD_PATH));
                 Ok(self.name().to_owned())
             }
+            Self::Script => Ok(match tuning.script(origin, text, fight.combat.as_mut())? {
+                Reloaded::Replaced => "script, from the next step".to_owned(),
+                Reloaded::Unchanged => "script, with no change".to_owned(),
+            }),
         }
     }
 }
@@ -428,6 +441,9 @@ impl LiveTuning {
                 add(path, Document::Moves);
             }
         }
+        for path in sapphire_script::scenarios::SOURCES {
+            add(path, Document::Script);
+        }
         if let Some(path) = run.screen {
             add(path, Document::Ui);
         }
@@ -492,7 +508,8 @@ impl LiveTuning {
                     path = %path.display(),
                     "--watch-document takes `.moves.ron`, `.animgraph.ron`, `default_camera.ron`, \
                      `default_cues.ron`, `default_effects.ron`, `combat_bindings.ron`, \
-                     `default_targeting.ron`, `default_character_motion.ron` or `default_hud.ron`"
+                     `default_targeting.ron`, `default_character_motion.ron`, `default_hud.ron` or a \
+                     `.luau` script"
                 );
                 None
             }
@@ -752,6 +769,33 @@ impl LiveTuning {
         });
     }
 
+    /// Takes a script's new source, by its file name, for the fight running it: what it did, or why the
+    /// fight keeps what it runs. Every fight after this one starts from it.
+    pub fn script(
+        &mut self,
+        origin: &str,
+        source: &str,
+        combat: Option<&mut Combat>,
+    ) -> Result<Reloaded, String> {
+        let script = document_file_name(origin);
+        if !self.documents_of(Document::Script).any(|known| known == script) {
+            return Err(format!("{script} isn't a script any fight here runs"));
+        }
+        let Some(combat) = combat else { return Err(format!("{script}: no fight is running")) };
+        let reloaded = combat.reload_script(script, source)?;
+        if reloaded == Reloaded::Replaced {
+            self.moves.remember_script(script, source);
+            self.count_edit(script);
+            tracing::info!(
+                target: LOG_TARGET,
+                script,
+                tick = combat.simulation().tick(),
+                "the fight's script is the new one from the next step"
+            );
+        }
+        Ok(reloaded)
+    }
+
     /// What live link's status lists.
     pub fn documents(&self) -> Vec<LiveDocument> {
         let owner = |source: &Source| source.document.name().to_owned();
@@ -855,6 +899,8 @@ pub(crate) fn kind_of_file(path: &Path) -> Option<Document> {
         Some(Document::CharacterMotion)
     } else if name == document_file_name(HUD_PATH) {
         Some(Document::Hud)
+    } else if name.ends_with(".luau") {
+        Some(Document::Script)
     } else {
         None
     }
@@ -1183,6 +1229,56 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A fight's script takes an edit from the next step, keeping its board; a recording ends its file at it;
+    /// and the next fight starts on it. One for another file, or one that doesn't cook, changes nothing.
+    #[test]
+    #[ignore = "runs with CI's dev tests, which take --ignored"]
+    fn a_script_reaches_the_fight_running_it_and_the_next_starts_on_it() {
+        use sapphire_script::scenarios::{
+            ARENA_SCRIPTED, ARENA_SCRIPTED_FILE, ARENA_SCRIPTED_PATH, SCRIPTED,
+        };
+        let scratch = Scratch::new("script");
+        let mut combat = Combat::new(&CombatOption::Record {
+            path: scratch.0.clone(),
+            scenario: SCRIPTED[0].name.to_owned(),
+            script: Some("fight-back".to_owned()),
+        })
+        .expect("sets up");
+        let mut tuning = tuning();
+        tuning.sources.push(Source {
+            path: ARENA_SCRIPTED_PATH.to_owned(),
+            document: Document::Script,
+            edits: 0,
+        });
+        for _ in 0..30 {
+            combat.step(&mut no_bindings);
+        }
+        let board = *combat.simulation().scripts().expect("it runs a script").board();
+        let edited = format!("-- An edit: other lines, other bytes.\n{ARENA_SCRIPTED}");
+        assert!(tuning.script("other.luau", &edited, Some(&mut combat)).is_err(), "no fight runs it");
+        assert!(tuning.script(ARENA_SCRIPTED_FILE, "return {", Some(&mut combat)).is_err());
+        assert!(tuning.script(ARENA_SCRIPTED_FILE, &edited, None).is_err(), "no fight");
+        assert_eq!(combat.edited_at(), None, "nothing landed");
+
+        let replaced = tuning.script(ARENA_SCRIPTED_FILE, &edited, Some(&mut combat));
+        assert_eq!(replaced, Ok(Reloaded::Replaced));
+        assert_eq!(combat.simulation().scripts().expect("it runs a script").board(), &board, "kept");
+        assert_eq!(combat.edited_at(), Some(30));
+        let again = tuning.script(ARENA_SCRIPTED_FILE, &edited, Some(&mut combat));
+        assert_eq!(again, Ok(Reloaded::Unchanged));
+        assert_eq!(tuning.documents().last().map(|document| document.edits), Some(1));
+
+        let (next, _) = tuning.moves().start(&SCRIPTED[0], SCRIPTED[0].config).expect("starts");
+        assert_eq!(next.tables_hash(), combat.simulation().tables_hash(), "on the edit");
+        for _ in 0..10 {
+            combat.step(&mut no_bindings);
+        }
+        combat.finish().expect("writes");
+        let replay = sapphire_gameplay::replay::Replay::decode(&std::fs::read(&scratch.0).expect("written"))
+            .expect("reads");
+        assert_eq!(replay.ticks(), 30);
+    }
+
     #[test]
     #[ignore = "runs with CI's dev tests, which take --ignored"]
     fn a_files_name_says_what_kind_of_document_it_is() {
@@ -1192,6 +1288,7 @@ mod tests {
         assert_eq!(kind_of_file(Path::new("x/default_camera.ron")), Some(Document::Camera));
         assert_eq!(kind_of_file(Path::new("x/default_cues.ron")), Some(Document::Cues));
         assert_eq!(kind_of_file(Path::new("x/default_effects.ron")), Some(Document::Effects));
+        assert_eq!(kind_of_file(Path::new("x/boss.luau")), Some(Document::Script));
         assert_eq!(kind_of_file(Path::new("x/default_day.ron")), None);
     }
 

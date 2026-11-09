@@ -26,6 +26,8 @@ sapphire_input.workspace = true
 sapphire_serialize.workspace = true
 sapphire_platform.workspace = true
 sapphire_render.workspace = true
+# Scenarios with a script, and the reload that live tuning brings a script's edits through.
+sapphire_script.workspace = true
 sapphire_rhi.workspace = true
 sapphire_sequencer.workspace = true
 sapphire_stage.workspace = true

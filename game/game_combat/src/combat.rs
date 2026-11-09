@@ -50,12 +50,14 @@ use std::path::{Path, PathBuf};
 
 use sapphire_gameplay::replay::{
     ARCHITECTURE, ActionSource, ChecksumFile, Divergence, FightWorld, LiveMoves, Played, Player,
-    PreparedFight, RecordedTrail, Recording, Replay, ReplayError, SCENARIOS, SCRIPTS, Scenario,
-    ScenarioError, checksums_file_name, find_scenario, find_script,
+    PreparedFight, RecordedTrail, Recording, Replay, ReplayError, SCRIPTS, Scenario, ScenarioError,
+    checksums_file_name, find_scenario, find_script,
 };
 use sapphire_gameplay::{ActorId, Buttons, Simulation, TickActions, TimelineCommand, TimelinePlayError};
 #[cfg(feature = "dev")]
 use sapphire_gameplay::{MoveSetId, Tuned};
+/// Every scenario a fight here can start from, those with a script among them.
+pub use sapphire_script::scenarios::ALL as SCENARIOS;
 
 use crate::LOG_TARGET;
 
@@ -481,6 +483,46 @@ impl Combat {
                 Ok(tuned.map(|tuned| (id, tuned)))
             }
             Mode::Fighting(fight) => Ok(fight.tune(document, id, set).map(|tuned| (id, tuned))),
+        }
+    }
+
+    /// Gives this fight's script a new source, between steps, keeping its board (M3 L3). A replay refuses,
+    /// as it does any edit. A recording ends its file if it changes anything, and a fight starts over on the
+    /// newest.
+    #[cfg(feature = "dev")]
+    pub(crate) fn reload_script(
+        &mut self,
+        source_name: &str,
+        source: &str,
+    ) -> Result<sapphire_script::Reloaded, String> {
+        let reload = |sim: &mut Simulation| {
+            sapphire_script::reload(sim, source_name, source).map_err(|error| error.to_string())
+        };
+        match &mut self.mode {
+            Mode::Replaying { name, .. } => {
+                Err(format!("`{name}` is a replay, which plays what it recorded: it takes no live edits"))
+            }
+            Mode::Recording { recording, .. } => {
+                let ended = recording.edited_at();
+                let reloaded = recording.edit(reload)?;
+                if let (None, Some(tick)) = (ended, recording.edited_at()) {
+                    tracing::warn!(
+                        target: LOG_TARGET,
+                        script = source_name,
+                        tick,
+                        "a live edit ends the recording's file at this tick: the fight goes on, unrecorded",
+                    );
+                }
+                Ok(reloaded)
+            }
+            // A fight with no file is the built-in arena or party, whose world takes no systems of its own,
+            // a script host's included.
+            Mode::Fighting(fight) => Err(format!(
+                "`{}` runs no script: a fight with no file is the built-in arena or party, and `--record {}` \
+                 is the fight a script's edit reaches",
+                fight.scenario.name,
+                sapphire_script::scenarios::SCRIPTED[0].name,
+            )),
         }
     }
 

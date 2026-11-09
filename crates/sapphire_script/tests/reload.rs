@@ -5,7 +5,7 @@ mod support;
 
 use std::sync::Mutex;
 
-use sapphire_gameplay::replay::{LiveMoves, Recording};
+use sapphire_gameplay::replay::{LiveMoves, Recording, SCENARIOS};
 use sapphire_gameplay::script::BOARD_SLOTS;
 use sapphire_gameplay::{ActorId, TickActions};
 use sapphire_script::scenarios::{ARENA_SCRIPTED, ARENA_SCRIPTED_FILE, SCRIPTED};
@@ -178,6 +178,9 @@ fn a_reload_that_changes_nothing_or_fails_keeps_what_runs() {
 fn a_new_fight_starts_on_the_newest_edit_and_a_recording_ends_at_one() {
     let scripted = &SCRIPTED[0];
     let edited = format!("-- An edit: other lines, other bytes.\n{ARENA_SCRIPTED}");
+    let (mut unscripted, _) = SCENARIOS[0].start(SCENARIOS[0].config).unwrap();
+    let none = reload(&mut unscripted, ARENA_SCRIPTED_FILE, ARENA_SCRIPTED).unwrap_err();
+    assert!(matches!(none, ReloadError::NoScript { .. }), "{none}");
     let (mut plain, _) = LiveMoves::default().start(scripted, scripted.config).unwrap();
     let mut live = LiveMoves::default();
     live.remember_script(ARENA_SCRIPTED_FILE, &edited);

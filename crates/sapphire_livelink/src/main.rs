@@ -28,7 +28,8 @@ Commands:
       Set a cvar, as the dev console does.
   push [<file>...]
       Push packs (.spack, named by their stem: only the assets the device lacks are sent), RON
-      documents (.ron: the device applies them by the type their envelope names) and WGSL
+      documents (.ron: the device applies them by the type their envelope names), Luau scripts
+      (.luau: the fight running a script of that file's name binds it between steps) and WGSL
       sources (.wgsl). With no files, push every pack of the device's cook in --content. Exits
       with an error if anything was refused, or an asset of a pack didn't reload. A document of
       moves, a graph or the camera's tuning goes to a running fight: its next attempt plays it.
@@ -38,7 +39,8 @@ Commands:
       Push what changes, until interrupted: the packs of the device's cook in --content when
       `cargo xtask content --cook <cook>` rewrites them, the renderer's WGSL sources, the default
       day's timeline, the character light rig presets, the screen effect presets, the documents of
-      a fight the device says it takes and the RON documents named (a scene's own timeline, say).
+      a fight the device says it takes, its script among them, and the RON documents or Luau
+      scripts named (a scene's own timeline, say).
 
 Each command says how long the device took to answer, from the request to its reply. A device
 has 10 s to answer (60 s for packs, shaders and captures), and must keep taking what is sent to
@@ -49,6 +51,9 @@ Options:
   --addr <host:port>    The device to connect to.
   --listen <host:port>  Wait for the device to dial here instead.
   --content <dir>       Where cooked content is, a directory per cook (`target/content`).";
+
+/// A script's source's extension.
+const SCRIPT_SOURCE: &str = "luau";
 
 /// How often `watch` collects what its watcher reported.
 const POLL: Duration = Duration::from_millis(50);
@@ -163,6 +168,7 @@ impl Target {
 enum Item {
     Pack(PathBuf),
     Document(PathBuf),
+    Script(PathBuf),
     /// WGSL sources, pushed together.
     Shaders(Vec<PathBuf>),
 }
@@ -176,14 +182,27 @@ impl Item {
             match file.extension().and_then(|extension| extension.to_str()) {
                 Some(sapphire_assets::pack::PACK_EXTENSION) => items.push(Self::Pack(file)),
                 Some("ron") => items.push(Self::Document(file)),
+                Some(SCRIPT_SOURCE) => items.push(Self::Script(file)),
                 Some("wgsl") => shaders.push(file),
-                _ => bail!("{}: not a pack (.spack), document (.ron) or shader (.wgsl)", file.display()),
+                _ => bail!(
+                    "{}: not a pack (.spack), document (.ron), script (.luau) or shader (.wgsl)",
+                    file.display()
+                ),
             }
         }
         if !shaders.is_empty() {
             items.push(Self::Shaders(shaders));
         }
         Ok(items)
+    }
+
+    /// A watched file, a document or a script by its extension.
+    fn watched(path: &Path) -> Self {
+        if path.extension().is_some_and(|extension| extension == SCRIPT_SOURCE) {
+            Self::Script(path.to_owned())
+        } else {
+            Self::Document(path.to_owned())
+        }
     }
 
     /// Pushes it, and says what the device did.
@@ -214,6 +233,15 @@ impl Item {
                 let stopwatch = Stopwatch::start();
                 let owner = client.push_document(&origin, text)?;
                 eprintln!("{origin}: replaced the {owner}{}", took(&stopwatch));
+            }
+            Self::Script(path) => {
+                let source = std::fs::read_to_string(path)
+                    .with_context(|| format!("can't read {}", path.display()))?;
+                let origin = file_name(path);
+                let stopwatch = Stopwatch::start();
+                let changed = client.push_script(&origin, source)?;
+                let what = if changed { "the fight runs it from the next step" } else { "no change" };
+                eprintln!("{origin}: {what}{}", took(&stopwatch));
             }
             Self::Shaders(paths) => {
                 let files = paths
@@ -338,8 +366,10 @@ fn each_once(paths: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
 /// away.
 fn watch(target: &mut Target, content: Option<&Path>, extra: Vec<PathBuf>) -> anyhow::Result<()> {
     for document in &extra {
-        if document.extension().is_none_or(|extension| extension != "ron") || !document.is_file() {
-            bail!("{}: not a RON document to watch", document.display());
+        let watchable =
+            document.extension().is_some_and(|extension| extension == "ron" || extension == SCRIPT_SOURCE);
+        if !watchable || !document.is_file() {
+            bail!("{}: not a RON document or a Luau script to watch", document.display());
         }
     }
     let mut client = target.connect()?;
@@ -399,7 +429,7 @@ fn watch(target: &mut Target, content: Option<&Path>, extra: Vec<PathBuf>) -> an
             }
             for (watch, file, path) in &documents {
                 if *watch == changed.watch && *file == changed.name {
-                    items.push(Item::Document(path.clone()));
+                    items.push(Item::watched(path));
                 }
             }
         }

@@ -1363,6 +1363,7 @@ dependencies = [
  "sapphire_reflect",
  "sapphire_render",
  "sapphire_rhi",
+ "sapphire_script",
  "sapphire_sequencer",
  "sapphire_serialize",
  "sapphire_stage",

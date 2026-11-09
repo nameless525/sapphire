@@ -119,6 +119,16 @@ impl Client {
         }
     }
 
+    /// Pushes a script's source by its file name, `origin`, and returns whether the fight running it changed:
+    /// `false` if it cooked to what was bound already.
+    pub fn push_script(&mut self, origin: &str, source: String) -> Result<bool, LinkError> {
+        let body = RequestBody::Script { origin: origin.to_owned(), source };
+        match self.request(body, TIMEOUT)? {
+            ReplyBody::ScriptApplied { changed } => Ok(changed),
+            other => Err(unexpected("script applied", &other)),
+        }
+    }
+
     /// Pushes shader sources, and returns the programs and pipelines the device built from them
     /// and the frames it drew meanwhile, once they show.
     pub fn push_shaders(&mut self, files: Vec<SourceFile>) -> Result<(u32, u32, u32), LinkError> {

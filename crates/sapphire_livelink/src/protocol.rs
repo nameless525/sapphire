@@ -47,8 +47,9 @@ use serde::{Deserialize, Serialize};
 /// A8 follow-up 2) the frames drawn while pushed shaders built
 /// ([`ReplyBody::ShadersApplied`]); version 4 (M2 T2) what live tuning reads in the status: the packs
 /// served from pushes, the documents the app takes and what its fighters are playing
-/// ([`DeviceStatus`]); version 5 (M3 E2) [`RequestBody::ListCvars`], for the editor's cvar panel.
-pub const PROTOCOL_VERSION: u32 = 5;
+/// ([`DeviceStatus`]); version 5 (M3 E2) [`RequestBody::ListCvars`], for the editor's cvar panel; version 6
+/// (M3 L3) [`RequestBody::Script`], a script's source for a running fight.
+pub const PROTOCOL_VERSION: u32 = 6;
 
 /// The port a device listens on and the tool connects to by default.
 pub const DEFAULT_PORT: u16 = 7811;
@@ -219,6 +220,10 @@ pub enum RequestBody {
     /// that type, which keeps what it has if the document doesn't parse or validate.
     /// `origin` names it in messages (its file name). [`ReplyBody::DocumentApplied`].
     Document { origin: String, text: String },
+    /// A Luau script's source, by its file name (`origin`), for the fight running it: the device cooks it
+    /// as the cooker does and binds it between steps, keeping what it had if it doesn't cook or load, or
+    /// if no fight runs a script of that name. [`ReplyBody::ScriptApplied`].
+    Script { origin: String, source: String },
     /// Shader sources, by file name: they replace those files' text in what the renderer builds
     /// with, and every program using them is built again, or none is. The device builds them off
     /// its frame thread and answers once the new pipelines are swapped in, so the reply comes
@@ -257,6 +262,7 @@ impl RequestBody {
             Self::Status => "status",
             Self::SetCvar { .. } => "cvar",
             Self::Document { .. } => "document",
+            Self::Script { .. } => "script",
             Self::Shaders { .. } => "shaders",
             Self::PackBegin { .. } => "pack",
             Self::PackChunk { .. } => "pack chunk",
@@ -277,6 +283,9 @@ impl fmt::Debug for RequestBody {
             }
             Self::Document { origin, text } => {
                 f.debug_struct("Document").field("origin", origin).field("bytes", &text.len()).finish()
+            }
+            Self::Script { origin, source } => {
+                f.debug_struct("Script").field("origin", origin).field("bytes", &source.len()).finish()
             }
             Self::Shaders { files } => {
                 let names: Vec<&str> = files.iter().map(|file| file.name.as_str()).collect();
@@ -347,6 +356,11 @@ pub enum ReplyBody {
     DocumentApplied {
         owner: String,
     },
+    /// The script is what the fight runs now: `changed` is false if it cooked to what was bound already,
+    /// which changes nothing.
+    ScriptApplied {
+        changed: bool,
+    },
     /// The programs and pipelines the new sources built, none if they changed nothing, and the
     /// frames the device drew with the shaders it had while it built them.
     ShadersApplied {
@@ -374,6 +388,7 @@ impl ReplyBody {
             Self::Status(_) => "status",
             Self::CvarSet { .. } => "cvar set",
             Self::DocumentApplied { .. } => "document applied",
+            Self::ScriptApplied { .. } => "script applied",
             Self::ShadersApplied { .. } => "shaders applied",
             Self::PackNeed { .. } => "pack need",
             Self::PackApplied(_) => "pack applied",
@@ -595,6 +610,7 @@ mod tests {
             RequestBody::Status,
             RequestBody::SetCvar { name: "post.filter_strength".into(), value: "0.5".into() },
             RequestBody::Document { origin: "default_day.ron".into(), text: "(type: \"x\")".into() },
+            RequestBody::Script { origin: "boss.luau".into(), source: "return {}".into() },
             RequestBody::Shaders {
                 files: vec![SourceFile { name: "sky.wgsl".into(), text: "// sky".into() }],
             },
@@ -654,6 +670,7 @@ mod tests {
                 ..DeviceStatus::default()
             }),
             ReplyBody::CvarSet { name: "a.b".into(), value: "1".into() },
+            ReplyBody::ScriptApplied { changed: true },
             ReplyBody::PackNeed { ranges: vec![ByteRange { offset: 512, len: 64 }] },
             ReplyBody::PackApplied(outcome),
             ReplyBody::Error("no".into()),

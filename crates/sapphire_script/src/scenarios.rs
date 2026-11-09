@@ -3,6 +3,7 @@
 
 use std::sync::LazyLock;
 
+use sapphire_gameplay::replay::document::ScenarioDocument;
 use sapphire_gameplay::replay::{SCENARIOS, Scenario, ScenarioError, ScenarioSetup, find_scenario};
 use sapphire_gameplay::script::ScriptEdits;
 use sapphire_gameplay::{ActorId, Simulation};
@@ -37,6 +38,18 @@ pub static SCRIPTED: LazyLock<Vec<Scenario>> = LazyLock::new(|| {
 /// runner look names up in.
 pub static ALL: LazyLock<Vec<Scenario>> =
     LazyLock::new(|| SCENARIOS.iter().chain(SCRIPTED.iter()).copied().collect());
+
+/// Each script a scenario here binds, by its path from the repository's root: what an app's hot reload
+/// watches and live link's status lists.
+pub const SOURCES: &[&str] = &[ARENA_SCRIPTED_PATH];
+
+/// The document a scenario's world comes from: its own, or for one with a script, the document of the one
+/// it's built on. What an app asks of a world it stands a fight in.
+#[must_use]
+pub fn document_of(name: &str) -> Option<&'static ScenarioDocument> {
+    let built_on = if name == SCRIPTED[0].name { skirmish().name } else { name };
+    find_scenario(&SCENARIOS, built_on)?.document()
+}
 
 /// `arena-skirmish`, which this build holds as a document.
 fn skirmish() -> &'static Scenario {

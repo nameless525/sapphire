@@ -81,6 +81,8 @@ pub enum Push {
     Cvars { reply: Responder },
     /// A document whose envelope names `type_name`, for the app to hand to that type's owner.
     Document { origin: String, type_name: String, text: String, reply: Responder },
+    /// A script's source by its file name, for the fight running a script of that name.
+    Script { origin: String, source: String, reply: Responder },
     /// Shader sources by file name, for the renderer.
     Shaders { files: Vec<SourceFile>, reply: Responder },
     /// A pack received whole: [`PushedPack::apply`] swaps it in, and a [`ReloadTracker`]
@@ -650,6 +652,7 @@ impl Session<'_> {
                 Ok(type_name) => self.forward(Push::Document { origin, type_name, text, reply }),
                 Err(error) => reply.refuse(format!("{origin}: {error}")),
             },
+            RequestBody::Script { origin, source } => self.forward(Push::Script { origin, source, reply }),
             RequestBody::Shaders { files } => self.forward(Push::Shaders { files, reply }),
             RequestBody::PackBegin { name, len, head } => {
                 if let Some(Ok(plan)) = &self.push {
@@ -701,6 +704,7 @@ fn overlong(body: &RequestBody) -> Option<String> {
         RequestBody::SetCvar { name, .. } if name.len() > MAX_NAME => ("cvar name", name.len()),
         RequestBody::SetCvar { value, .. } => ("cvar value", value.len()),
         RequestBody::Document { origin, .. } => ("document origin", origin.len()),
+        RequestBody::Script { origin, .. } => ("script origin", origin.len()),
         RequestBody::Shaders { files } => {
             ("shader file name", files.iter().map(|file| file.name.len()).max()?)
         }
@@ -920,6 +924,8 @@ mod tests {
             (RequestBody::SetCvar { name: named(MAX_NAME + 1), value: "1".into() }, true),
             (RequestBody::SetCvar { name: "a.b".into(), value: named(MAX_NAME + 1) }, true),
             (RequestBody::Document { origin: named(MAX_NAME + 1), text: String::new() }, true),
+            (RequestBody::Script { origin: named(MAX_NAME + 1), source: String::new() }, true),
+            (RequestBody::Script { origin: named(MAX_NAME), source: String::new() }, false),
             (RequestBody::Shaders { files: vec![file(named(4)), file(named(MAX_NAME + 1))] }, true),
             (RequestBody::Shaders { files: Vec::new() }, false),
             (RequestBody::PackBegin { name: named(MAX_NAME + 1), len: 0, head: Vec::new() }, true),

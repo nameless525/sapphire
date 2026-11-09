@@ -3,13 +3,13 @@
 //!
 //! Only while the panel shows: it's text and lists, rebuilt every frame.
 
+use game_combat::combat::SCENARIOS;
 use sapphire_core::Name;
 use sapphire_core::debug_draw::Color;
 use sapphire_debug::{
     ActorSnapshot, CombatSnapshot, IntentSnapshot, MoveSnapshot, RecorderSnapshot, RecorderState,
     TrackSnapshot,
 };
-use sapphire_gameplay::replay::SCENARIOS;
 use sapphire_gameplay::{ActorView, CurrentMove, LiveWindows, Simulation};
 use sapphire_moves::{Move, MoveSet, Phase, Span};
 use sapphire_time::{SUBTICKS_PER_TICK, SimDuration};

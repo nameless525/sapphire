@@ -487,6 +487,7 @@ pub struct FramePacket {
 | `sapphire_online` | L4 | Accounts, server-authoritative economy (later) | `reqwest` | later |
 | `sapphire_stage` | L5 | A stage: the scene, the content and the renderer on one device, stepped and drawn into a texture or a window, with what plays there a `SceneShow` of the caller's | `sapphire_render`, `sapphire_world`, `sapphire_gameplay`, `sapphire_assets` | M3 |
 | `sapphire_pipeline` | Tools | Importers, cookers, cache, packer | `gltf`, `ufbx`, `ctt`, `ktx2`, `meshopt` | M1 |
+| `sapphire_soundgen` | Tools | Synthesizes the placeholder music stems and voice lines into `content/audio/generated/` | `vorbis_rs` | M3 |
 | `sapphire_document` | Tools | The editor's document model: typed objects, change records, undo, edits that leave untouched bytes alone | `ron`, `sapphire_reflect` | M3 |
 | `sapphire_editor` | Tools | Document-model editor, timeline editor, play-in-editor | `egui`, `egui_tiles`, `egui_plot` | M2–M3 |
 | `sapphire_livelink` | dev only, plus its tool | Live link: a dev build's socket the desktop pushes packs, documents, shaders and cvars to, and its desktop tool (dev only) | `postcard` | M1 |
@@ -1952,6 +1953,20 @@ At runtime, dynamic resolution adjusts the render scale from GPU timings and the
   - Decoding takes 1/350 to 1/650 of a sound's length. Mounting the pack and decoding `hit`'s five sounds took 4.4 ms on the Simulator and 34 to 794 ms on the loaded emulator.
   - The binary grows by 0.6 MiB stripped (15,462,664 against 14,843,448 bytes on macOS, release).
   - Without `--cue` there is no system, thread, device or pack, only that code's size. Linux binaries now need `libasound.so.2` at run time.
+
+**As built (M3 A1, music by phase and voice lines by language)**
+
+Nobody has heard any of it: the placeholder sounds are the project's own synthesis (`tools/sapphire_soundgen`, `content/audio/generated/SOURCE.md`), and every claim below is a number or a test.
+
+- **Formats:** `Score` (`.score.ron` → `.sscore`) names up to 8 stems, its tempo, beats a bar and bars, phases by name with the stems each plays, a fade in beats, a level and how far a line ducks it. `VoiceLines` (`.voice.ron` → `.svoice`) is one language's lines, keys like strings' to `Voice`-bus cues. Two new buses, `Music` and `Voice`. The cook fails a stem that isn't the score's whole bars long, to the frame, and a line whose cue isn't on `Voice`. Both pack in `audio.spack` with the sounds.
+- **Music:** vertical layering. Every stem loops from frame 0 on one kira clock at the score's tempo, the silent ones at −60 dB, so they can't drift apart. A phase change fades only the stems it changes, starting on the next bar line at least 50 ms ahead (`LEAD_SECONDS`), as a kira tween timed by that clock, so the audio thread does the timing and the frame only asks. The stems and their clock are loaded one frame and started the next, so they start in the same callback. A phase the score lacks leaves the stems as they are and is counted.
+- **Who chooses the phase:** the fight's `CueShow`, from B2's `SimEncounter::phase`: `waiting` before and between, `running` while any encounter runs or in a duel, `cleared` once every one is. It's read after the step, so nothing audio-side enters the simulation or its checksum. B3's boss phases are more names in a score.
+- **Voice:** `VoiceRoute` holds each language's lines by `LineKey` (FNV-1a of the key; a collision fails the load) and speaks the one `set_voice_language` chose, apart from the text's: `LocaleSettings::voice`. A language with no lines speaks nothing: no fallback, counted as missing. A cue row's `line` asks for one. While any `Voice` sound plays, the `Music` bus goes down by the score's `duck_db` in 80 ms and comes back in 400 ms.
+- **Measured** (offline mixer at 48 kHz, debug, M5, load ~35; `tests/music.rs`): a change with no fade moves within the 128-frame buffer its bar line falls in, from 1 to 127 frames after the line (0.02–2.65 ms), at the first bar and eleven loops on; the music starts one game frame after it's first asked; each loop's first frame lands on the clock's bar to the frame over 13 loops; a line takes the music 10.00 dB down and back to within 0.001.
+- **Costs** (release, M5, load 25–30; `tests/costs.rs`): an update with 8 voices moving and the phase changing every frame, median 0.29 µs against 0.25 µs without music, of §3.2's 200 µs (300 on Mobile-Low). A mix of 512 frames with the four stems under 8 voices, median 53.8 µs against 42.2 µs, 0.50% of real time: the stems cost about 0.1%. Decoding the four 8-second stems takes 9.7 ms.
+- **Allocation:** eight phase changes and 240 frames of music allocate nothing (`tests/allocations.rs`), on the frame or in the mix.
+- **Packs:** `audio.spack` grows by 145,104 bytes to 2,924,868 on both cooks (four 8-second stems of 19–37 KB, four lines of 5–8 KB, at about 40 kbit/s), and `shared.spack`, the zones' and `fonts.spack` are byte-identical with and without it.
+- **Can't do:** stream: stems are decoded whole, about 1.5 MB each in kira's stereo frames, 6.1 MB for this score. Horizontal re-sequencing, stingers and combat intensity aren't there. No device has played it, and no one has listened. The player's voice language is applied by whoever reads their settings (`DeviceAudio::set_voice_language`); the game's settings screen (U7) is to call it.
 
 ### 5.16 `sapphire_vfx` (L3)
 
@@ -3809,6 +3824,7 @@ Pin these in `[workspace.dependencies]`. Versions were checked against crates.io
 | `kira` | 0.12 | `sapphire_audio` | MIT or Apache-2.0. Its `triple_buffer` is MPL-2.0, excepted in `deny.toml`. No default features: `sapphire_audio` connects it to `cpal` itself. Runs on the Simulator and emulator; a device is still owed (§5.15) |
 | `cpal` | 0.18 | `sapphire_audio` | Apache-2.0. `realtime` asks Android for low latency, and brings `audio_thread_priority` (MPL-2.0, excepted in `deny.toml`) |
 | `lewton` | 0.10 | `sapphire_assets` | MIT or Apache-2.0. Pure Rust Vorbis decoding, so `symphonia` (MPL-2.0) stays out |
+| `vorbis_rs` | 0.5 | `sapphire_soundgen` | BSD-3-Clause, with libvorbis (aoTuV) and libogg built by `cc`. Tool-only: it encodes the placeholder music and voice lines (M3 A1). No default features, and a fixed stream serial, so a run's bytes repeat |
 | `taffy`, `parley` | 0.15, 0.12 | `sapphire_ui` | `rustybuzz` is archived |
 | `swash`, `etagere` | 0.2, 0.3 | `sapphire_ui` | Rasterizing and packing the glyph atlas (M3) |
 | `skera`, `fdsm` | 0.9, 0.8 | `sapphire_pipeline` | Subsetting fonts and MSDF, tools only (M3) |

@@ -963,6 +963,13 @@ impl AssetServer {
         }
     }
 
+    /// The cooked bytes of asset `id`, 16-byte aligned, while the server holds them, as [`Self::get`] says:
+    /// for a reader that goes by bytes, as a replay's digest of a zone does.
+    pub fn cooked_bytes(&self, id: AssetId) -> Option<&[u8]> {
+        let &key = self.by_id.get(&id)?;
+        self.slots[key].data.as_ref().map(|data| data.as_slice())
+    }
+
     /// Keeps `handle`'s asset resident even when nothing uses it, until as many [`Self::unpin`]s.
     pub fn pin<T: Asset>(&mut self, handle: &Handle<T>) {
         if self.slot(handle.untyped()).is_some() {

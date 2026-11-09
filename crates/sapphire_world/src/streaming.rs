@@ -37,12 +37,16 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use sapphire_assets::mesh::Mesh;
-use sapphire_assets::{AssetId, AssetServer, Handle, LoadPriority, LoadState, Upload, UploadError};
+use sapphire_assets::{
+    AssetId, AssetKind, AssetServer, Handle, LoadPriority, LoadState, Upload, UploadError,
+};
 use sapphire_math::{Mat4, Quat, Vec3};
 use sapphire_time::Stopwatch;
 use sapphire_zone::{ArchivedCookedLight, ArchivedPlaceContents, ArchivedZonePresentation, Bounds, Zone};
 
 const LOG_TARGET: &str = "sapphire_world::streaming";
+/// Meshes' place in the server's list of what's resident.
+const MESH_KIND: usize = AssetKind::Mesh.index();
 
 /// How much activation may do in a frame: whichever runs out first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -336,6 +340,57 @@ impl<P> Streamer<P> {
         self.unbudgeted = true;
     }
 
+    /// Brings in the meshes of everything within the activation radius of `focus`, in the zone's space, and
+    /// places nothing: a zone that may come next, ahead of anyone arriving (M3 W4). Call it each frame with
+    /// the zone asked for. **Within budgets:** it asks at [`LoadPriority::Prefetch`], for at most
+    /// [`StreamBudget::entities`] meshes a frame, and holds off asking while meshes fill nine tenths of what
+    /// the server has for them, so a hub's next zone can't push out what's on screen. `hurried`, under a wipe
+    /// with someone waiting, it asks at once and at [`LoadPriority::High`]. What it has held is what
+    /// [`Self::update`] goes on from, once it's the one on stage.
+    pub fn prefetch(&mut self, focus: [f32; 3], server: &mut AssetServer, hurried: bool) {
+        profiling::scope!("Streamer::prefetch");
+        if !self.settled_on_zone(server) {
+            return;
+        }
+        let focus = [focus[0], focus[2]];
+        if self.scanned != Some(focus) || self.scanned_ahead.iter().any(Option::is_some) {
+            self.rescan(focus, [None; AHEAD]);
+        }
+        let budget = u64::from(self.settings.budget.entities);
+        let mut asked = 0_u64;
+        let stats = server.stats();
+        let (resident, limit) = (stats.resident[MESH_KIND], stats.budgets.resident[MESH_KIND]);
+        let room = hurried || resident < limit / 10 * 9;
+        let priority = if hurried { LoadPriority::High } else { LoadPriority::Prefetch };
+        for place in &mut self.places {
+            if place.want != Want::Active {
+                continue;
+            }
+            if matches!(place.meshes, Meshes::None) && room && (hurried || asked < budget) {
+                ask(place, server, priority);
+                asked += place.mesh_ids.len() as u64;
+            }
+            poll_loading(place, server);
+        }
+    }
+
+    /// Whether everything [`Self::prefetch`] went for has landed, or can't: nothing about arriving waits.
+    #[must_use]
+    pub fn near_is_loaded(&self) -> bool {
+        self.scanned.is_some()
+            && self.places.iter().all(|place| {
+                place.want != Want::Active || matches!(place.meshes, Meshes::Loaded(_) | Meshes::Failed)
+            })
+    }
+
+    /// Whether what stands within the activation radius has been placed, or can't be: a zone's first cells
+    /// are in, and a wipe can lift. Nothing else need have landed.
+    #[must_use]
+    pub fn first_cells_in(&self) -> bool {
+        self.scanned.is_some()
+            && self.places.iter().all(|place| place.want != Want::Active || place.settled())
+    }
+
     /// Loads until what the streamer holds is ready again, sending it through `upload`: a new renderer's
     /// load screen, as what's placed draws meshes it doesn't have yet. What doesn't load is warned of,
     /// and stays placed with whatever the app gives it.
@@ -585,27 +640,7 @@ impl<P> Streamer<P> {
             }
         }
         for &index in &self.pending {
-            let place = &mut self.places[index as usize];
-            if let Meshes::Loading(handles) = &place.meshes {
-                let mut ready = true;
-                let mut failure = None;
-                for handle in handles {
-                    match server.state(handle) {
-                        LoadState::Ready => {}
-                        LoadState::Failed(error) => {
-                            failure = Some(error);
-                            break;
-                        }
-                        _ => ready = false,
-                    }
-                }
-                if let Some(error) = failure {
-                    tracing::warn!(target: LOG_TARGET, place = place.index, %error, "a place's meshes didn't load");
-                    place.meshes = Meshes::Failed;
-                } else if ready {
-                    take_loaded(place);
-                }
-            }
+            poll_loading(&mut self.places[index as usize], server);
         }
 
         let zone = &server.get(&self.zone).expect("the zone is ready").presentation;
@@ -693,6 +728,29 @@ fn ask<P>(place: &mut StreamPlace<P>, server: &mut AssetServer, priority: LoadPr
             Meshes::Failed
         }
     };
+}
+
+/// Moves a place on, if what it asked for has all landed, or some of it can't.
+fn poll_loading<P>(place: &mut StreamPlace<P>, server: &AssetServer) {
+    let Meshes::Loading(handles) = &place.meshes else { return };
+    let mut ready = true;
+    let mut failure = None;
+    for handle in handles {
+        match server.state(handle) {
+            LoadState::Ready => {}
+            LoadState::Failed(error) => {
+                failure = Some(error);
+                break;
+            }
+            _ => ready = false,
+        }
+    }
+    if let Some(error) = failure {
+        tracing::warn!(target: LOG_TARGET, place = place.index, %error, "a place's meshes didn't load");
+        place.meshes = Meshes::Failed;
+    } else if ready {
+        take_loaded(place);
+    }
 }
 
 /// Moves a place whose meshes are ready on.

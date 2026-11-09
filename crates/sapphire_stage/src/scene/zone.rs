@@ -6,11 +6,22 @@
 //! step: a cell's activation is presentation only.
 //!
 //! The zone lies moved by `-stand` in the world, as the look-dev town's other pieces do, so its focus is
-//! the camera's eye moved back.
+//! the camera's eye moved back. A zone arrived in lies where it is, as its simulation does.
+//!
+//! # Zones coming next (M3 W4)
+//!
+//! [`Scene::prefetch_zone`] brings one in over frames, placing nothing, while another's on stage: its pack's
+//! mount, then its pipelines, one a frame, then the zone and its hard references at
+//! [`LoadPriority::Prefetch`], then the meshes near where it's arrived at, with
+//! [`Streamer::prefetch`]'s limits. So no frame stalls on any of it, on a hub's way there or under a wipe,
+//! and nothing's asked for before what draws it is built, so `first_use` stays 0 across a change, as a load
+//! screen's [`Content::open_zone`] holds it. What the last zone had goes with [`Scene::arrive_in_zone`].
 
 use std::f32::consts::PI;
 
-use sapphire_assets::{AssetId, MountError, UnmountReport};
+use sapphire_assets::{
+    AssetId, AssetServer, Handle, LoadPriority, LoadState, MountError, MountState, UnmountReport,
+};
 use sapphire_ecs::prelude::*;
 use sapphire_math::{Mat4, Vec3};
 use sapphire_platform::AppInitError;
@@ -20,7 +31,7 @@ use sapphire_rhi::GpuContext;
 use sapphire_world::light_rig::{CharacterLightRig, LightRigLibrary};
 use sapphire_world::streaming::{CellHost, StreamSettings, StreamStats, Streamer};
 use sapphire_world::tod::TodTimeline;
-use sapphire_zone::{ArchivedCookedLight, CookedLightShape};
+use sapphire_zone::{ArchivedCookedLight, CookedLightShape, Zone};
 
 use super::{Figure, LOG_TARGET, Lamp, Scene};
 use crate::content::Content;
@@ -58,6 +69,132 @@ pub struct ZoneStage {
     pack: String,
     /// The zone's origin's place in the world is `-stand`.
     stand: Vec3,
+    /// Where it streams from, in its own space, until the camera's had a frame there:
+    /// [`Scene::arrive_in_zone`] to [`Scene::release_zone_focus`].
+    held_focus: Option<[f32; 3]>,
+}
+
+/// Where a way out of a zone leads: an exit, as a show reads it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ZoneTarget {
+    /// The zone asset.
+    pub zone: AssetId,
+    /// Its pack, which nothing need have mounted.
+    pub pack: String,
+    /// The ID of the spawner it arrives at.
+    pub arrive: u64,
+}
+
+/// How far a zone coming next has got ([`Scene::prefetch_zone`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ZoneLoad {
+    /// On its way. Also: nobody asked.
+    Waiting,
+    /// The zone and its hard references are resident, and the meshes near where it's arrived at are on the
+    /// renderer: [`Scene::arrive_in_zone`] draws from there.
+    Ready,
+    /// It can't come, and why. The scene keeps what it has on stage, and asking again tries again.
+    Failed(String),
+}
+
+/// How far along a zone coming next is.
+enum Coming {
+    Mounting,
+    /// Its pipelines.
+    Prewarming,
+    /// The zone, and what it depends on.
+    Zone(Handle<Zone>),
+    /// The meshes around where it's arrived at, boxed: a streamer is most of what a zone coming holds.
+    Near(Box<Streamer<ZoneEntity>>),
+    Failed(String),
+}
+
+/// A zone on its way: see the [module docs](self).
+pub(super) struct NextZone {
+    target: ZoneTarget,
+    settings: StreamSettings,
+    coming: Coming,
+    /// Someone's waiting under a wipe.
+    hurried: bool,
+    /// Where it's arrived at, once it can be read.
+    focus: [f32; 3],
+}
+
+impl NextZone {
+    /// A frame of it.
+    fn advance(&mut self, content: &mut Content) {
+        let pack = self.target.pack.as_str();
+        match &self.coming {
+            Coming::Mounting => {
+                let (server, _) = content.streaming_parts();
+                match server.mount_state(pack) {
+                    MountState::Mounted => {
+                        content.queue_zone_prewarm(pack);
+                        self.coming = Coming::Prewarming;
+                    }
+                    MountState::Mounting => {}
+                    MountState::Failed(error) => self.coming = Coming::Failed(error.to_string()),
+                    MountState::Unmounted => {
+                        if let Err(error) = server.mount(pack) {
+                            self.coming = Coming::Failed(error.to_string());
+                        }
+                    }
+                }
+            }
+            Coming::Prewarming => {
+                if self.hurried {
+                    content.hurry_zone_prewarm(pack);
+                }
+                if !content.prewarms_pack(pack) {
+                    let priority = self.priority();
+                    let (server, _) = content.streaming_parts();
+                    self.coming = match server.load_with(self.target.zone, priority) {
+                        Ok(zone) => Coming::Zone(zone),
+                        Err(error) => Coming::Failed(error.to_string()),
+                    };
+                }
+            }
+            Coming::Zone(zone) => {
+                let (server, _) = content.streaming_parts();
+                match server.state(zone) {
+                    LoadState::Ready => {
+                        self.focus = arrival(server, zone, self.target.arrive);
+                        self.coming = Coming::Near(Box::new(Streamer::new(zone.clone(), self.settings)));
+                    }
+                    LoadState::Failed(error) => self.coming = Coming::Failed(error.to_string()),
+                    LoadState::Loading => {}
+                }
+            }
+            Coming::Near(_) | Coming::Failed(_) => {}
+        }
+        if let Coming::Near(streamer) = &mut self.coming {
+            let (server, _) = content.streaming_parts();
+            streamer.prefetch(self.focus, server, self.hurried);
+        }
+    }
+
+    fn priority(&self) -> LoadPriority {
+        if self.hurried { LoadPriority::Critical } else { LoadPriority::Prefetch }
+    }
+
+    /// Lets go of what it holds, and of its pack.
+    fn drop_with_pack(self, content: &mut Content) {
+        let Self { target, coming, .. } = self;
+        drop(coming);
+        content.drop_zone_prewarm(&target.pack);
+        let (server, _) = content.streaming_parts();
+        server.update();
+        if let Err(error) = server.unmount(&target.pack) {
+            tracing::warn!(target: LOG_TARGET, %error, pack = target.pack, "a zone that wasn't needed stays mounted");
+        }
+    }
+}
+
+/// Where spawner `id` of `zone` stands: the zone's origin for one it hasn't got, as a cook holds an exit to it.
+fn arrival(server: &AssetServer, zone: &Handle<Zone>, id: u64) -> [f32; 3] {
+    let zone = server.get(zone).expect("the zone is ready");
+    let spawner = zone.simulation.spawners.iter().find(|spawner| spawner.id.to_native() == id);
+    spawner.map_or([0.0; 3], |spawner| spawner.position())
 }
 
 impl ZoneStage {
@@ -76,7 +213,7 @@ impl ZoneStage {
         profiling::scope!("ZoneStage::open");
         let pack = sapphire_zone::pack_name(stem);
         let streamer = content.open_zone(id, &pack, focus.to_array(), settings, renderer, gpu)?;
-        Ok(Self { streamer, pack, stand: focus })
+        Ok(Self { streamer, pack, stand: focus, held_focus: None })
     }
 
     /// As [`Self::open`], with the zone lying where its document says, since its probe grid and what the
@@ -260,11 +397,133 @@ impl Scene {
         self.open_zone(zone, content).map_err(AppInitError::msg)
     }
 
+    /// Brings zone `target` in over frames, while what's on stage stays: see the [module docs](self). Asking
+    /// for one on its way changes nothing, and asking for one that failed tries it again.
+    pub fn prefetch_zone(&mut self, target: ZoneTarget, settings: StreamSettings) {
+        let same = self.next_zones.iter().position(|next| next.target.zone == target.zone);
+        if let Some(at) = same {
+            if !matches!(self.next_zones[at].coming, Coming::Failed(_)) {
+                return;
+            }
+            self.next_zones.remove(at);
+        }
+        self.next_zones.push(NextZone {
+            target,
+            settings,
+            coming: Coming::Mounting,
+            hurried: false,
+            focus: [0.0; 3],
+        });
+    }
+
+    /// Someone's waiting for zone `zone`, under a wipe: from now on it goes as fast as it can.
+    pub fn hurry_zone(&mut self, zone: AssetId) {
+        if let Some(next) = self.next_zones.iter_mut().find(|next| next.target.zone == zone) {
+            next.hurried = true;
+        }
+    }
+
+    /// How far a zone asked for has got.
+    #[must_use]
+    pub fn zone_load(&self, zone: AssetId) -> ZoneLoad {
+        let Some(next) = self.next_zones.iter().find(|next| next.target.zone == zone) else {
+            return ZoneLoad::Waiting;
+        };
+        match &next.coming {
+            Coming::Near(streamer) if streamer.near_is_loaded() => ZoneLoad::Ready,
+            Coming::Failed(error) => ZoneLoad::Failed(error.clone()),
+            _ => ZoneLoad::Waiting,
+        }
+    }
+
+    /// Makes a zone that's [`ZoneLoad::Ready`] the one on stage, where it lies, with the focus at where it's
+    /// arrived at: the town's dressing goes, the last zone goes, entities and handles, and its pack unmounts,
+    /// and any other zone that was coming goes the same way, since from here what's next is the new zone's
+    /// to say ([`Self::prefetch_exits`]). Under a wipe, because everything moves at once. The new zone's
+    /// cells come from the next frame on, within its budget, until [`Self::zone_settled`]. `None` for a zone
+    /// that isn't ready.
+    pub fn arrive_in_zone(&mut self, zone: AssetId, content: &mut Content) -> Option<ArrivedZone> {
+        let at = self.next_zones.iter().position(|next| {
+            next.target.zone == zone
+                && matches!(&next.coming, Coming::Near(streamer) if streamer.near_is_loaded())
+        })?;
+        let arriving = self.next_zones.remove(at);
+        let left = self.close_zone(content);
+        self.leave_town();
+        for next in std::mem::take(&mut self.next_zones) {
+            next.drop_with_pack(content);
+        }
+        let NextZone { target, coming, focus, .. } = arriving;
+        let Coming::Near(streamer) = coming else { unreachable!("it was just looked at") };
+        self.zone = Some(ZoneStage {
+            streamer: *streamer,
+            pack: target.pack,
+            stand: Vec3::ZERO,
+            held_focus: Some(focus),
+        });
+        Some(ArrivedZone { focus: Vec3::from(focus), left })
+    }
+
+    /// The zone on stage, if there's one.
+    #[must_use]
+    pub fn zone_on_stage(&self) -> Option<AssetId> {
+        self.zone.as_ref().map(|zone| zone.streamer.zone().id())
+    }
+
+    /// Whether the zone's first cells are in, by the focus [`Self::arrive_in_zone`] gave it.
+    #[must_use]
+    pub fn zone_settled(&self) -> bool {
+        self.zone.as_ref().is_some_and(|zone| zone.streamer.first_cells_in())
+    }
+
+    /// Streaming goes by the camera's eye from here on.
+    pub fn release_zone_focus(&mut self) {
+        if let Some(zone) = &mut self.zone {
+            zone.held_focus = None;
+        }
+    }
+
+    /// The zone on stage's exit called `name`, the hash of it, if there's a zone on stage with that exit.
+    #[must_use]
+    pub fn zone_exit(&self, name: u64, content: &mut Content) -> Option<ZoneTarget> {
+        let zone = self.zone.as_ref()?;
+        let (server, _) = content.streaming_parts();
+        let zone = server.get(zone.streamer.zone())?;
+        let exit = zone.simulation.exits.iter().find(|exit| exit.id.to_native() == name)?;
+        Some(ZoneTarget {
+            zone: exit.to,
+            pack: exit.pack.as_str().to_owned(),
+            arrive: exit.arrive.to_native(),
+        })
+    }
+
+    /// Brings in what the zone on stage says is likely next: its exits with `prefetch`, which is what makes it
+    /// a hub. Costs what those are worth for as long as it's there, and [`Self::arrive_in_zone`] gives it back.
+    pub fn prefetch_exits(&mut self, content: &mut Content, settings: StreamSettings) {
+        let Some(zone) = &self.zone else { return };
+        let (server, _) = content.streaming_parts();
+        let Some(zone) = server.get(zone.streamer.zone()) else { return };
+        let targets: Vec<ZoneTarget> = zone
+            .simulation
+            .exits
+            .iter()
+            .filter(|exit| exit.prefetch)
+            .map(|exit| ZoneTarget {
+                zone: exit.to,
+                pack: exit.pack.as_str().to_owned(),
+                arrive: exit.arrive.to_native(),
+            })
+            .collect();
+        for target in targets {
+            self.prefetch_zone(target, settings);
+        }
+    }
+
     /// Takes the zone down, entities and handles at once, and unmounts its pack: a zone change, under a
     /// wipe (M3 W4). What's unused of its assets goes with the call, and what the app holds unloads as
     /// it lets go.
     pub fn close_zone(&mut self, content: &mut Content) -> Option<Result<UnmountReport, MountError>> {
-        let ZoneStage { streamer, pack, stand: _ } = self.zone.take()?;
+        let ZoneStage { streamer, pack, stand: _, held_focus: _ } = self.zone.take()?;
         let (server, _) = content.streaming_parts();
         let mut host = Host { world: self.ecs.world_mut(), find: &|_| None, to_world: Mat4::IDENTITY };
         streamer.close(&mut host);
@@ -291,23 +550,32 @@ impl Scene {
 
     /// Runs this frame's streaming, after the content's update. Allocates nothing while nothing changes.
     pub(super) fn stream_zone(&mut self, content: &mut Content) {
-        let Some(zone) = &mut self.zone else { return };
-        let eye = self.ecs.world().resource::<OrbitCamera>().eye();
-        let focus = (eye + zone.stand).to_array();
-        let (points, count) = &self.stream_ahead;
-        let mut ahead = [[0.0; 3]; sapphire_world::streaming::AHEAD];
-        for (slot, point) in ahead.iter_mut().zip(&points[..*count]) {
-            *slot = (*point + zone.stand).to_array();
+        if let Some(zone) = &mut self.zone {
+            let eye = self.ecs.world().resource::<OrbitCamera>().eye();
+            let focus = zone.held_focus.unwrap_or((eye + zone.stand).to_array());
+            let (points, count) = &self.stream_ahead;
+            let mut ahead = [[0.0; 3]; sapphire_world::streaming::AHEAD];
+            for (slot, point) in ahead.iter_mut().zip(&points[..*count]) {
+                *slot = (*point + zone.stand).to_array();
+            }
+            let to_world = Mat4::from_translation(-zone.stand);
+            let (server, meshes) = content.streaming_parts();
+            let mut host = Host { world: self.ecs.world_mut(), find: &meshes, to_world };
+            zone.streamer.update_ahead(focus, &ahead[..*count], server, &mut host);
         }
-        let to_world = Mat4::from_translation(-zone.stand);
-        let (server, meshes) = content.streaming_parts();
-        let mut host = Host { world: self.ecs.world_mut(), find: &meshes, to_world };
-        zone.streamer.update_ahead(focus, &ahead[..*count], server, &mut host);
+        for next in &mut self.next_zones {
+            next.advance(content);
+        }
     }
 
     /// Draws what the zone has placed with its meshes on a new `renderer`: after device loss or for a new
     /// quality tier.
     pub fn set_zone_meshes(&mut self, content: &mut Content, renderer: &mut Renderer, gpu: &GpuContext) {
+        for next in &mut self.next_zones {
+            if let Coming::Near(streamer) = &mut next.coming {
+                content.finish_zone_meshes(streamer.as_mut(), renderer, gpu);
+            }
+        }
         let Some(zone) = &mut self.zone else { return };
         content.finish_zone_meshes(&mut zone.streamer, renderer, gpu);
         let (_, meshes) = content.streaming_parts();
@@ -318,6 +586,15 @@ impl Scene {
             }
         }
     }
+}
+
+/// What [`Scene::arrive_in_zone`] did.
+#[derive(Debug)]
+pub struct ArrivedZone {
+    /// Where it's arrived at, in the world.
+    pub focus: Vec3,
+    /// What closing the last zone came to, if there was one.
+    pub left: Option<Result<UnmountReport, MountError>>,
 }
 
 /// Places what the streamer says in the scene's world.

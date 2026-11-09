@@ -11,7 +11,7 @@ use sapphire_assets::material::{AnimeCharacterMaterial, Material, MaterialFamily
 use sapphire_assets::mesh::{
     MaterialSlot, Mesh, PositionFormat, Submesh, VERTEX_COLOR_NEUTRAL, Vertex, VertexFlags,
 };
-use sapphire_assets::pack::{Codec, PackAsset};
+use sapphire_assets::pack::{Codec, PackAsset, write_pack};
 use sapphire_assets::texture::Swizzle;
 use sapphire_assets::{
     AssetBudgets, AssetId, AssetKind, AssetServer, LoadPriority, MemoryPackSource, MountState, PipelineKey,
@@ -23,6 +23,7 @@ use sapphire_rhi::{GpuContext, GpuContextDesc, GpuInstance, GpuInstanceDesc, wgp
 use sapphire_synthetic_zone::SyntheticZone;
 use sapphire_time::Stopwatch;
 use sapphire_world::streaming::{StreamBudget, StreamSettings};
+use sapphire_zone::CookedExit;
 
 use super::*;
 use crate::content::Content;
@@ -37,6 +38,35 @@ const STEM: &str = "synthetic";
 const PACK: &str = "zone_synthetic";
 /// An asset that's never loaded, there for the keys its row in the pack lists.
 const LISTS_KEYS: AssetId = AssetId::from_bytes([0x79; 16]);
+
+/// The pack the rooms' character is in, so that it stays when the room's goes.
+const BASE_PACK: &str = "base";
+
+fn room_pack(room: u32) -> String {
+    format!("zone_room_{room}")
+}
+
+/// The ID of the exit to room `room`.
+fn exit_to(room: u32) -> u64 {
+    sapphire_core::Name::new(&format!("to_room_{room}")).as_u64()
+}
+
+fn room(room: u32) -> ZoneTarget {
+    ZoneTarget { zone: SyntheticZone::room_id(room), pack: room_pack(room), arrive: 0 }
+}
+
+/// An asset listing `keys`.
+fn listing(keys: Vec<PipelineKey>) -> PackAsset {
+    listing_as(LISTS_KEYS, keys)
+}
+
+/// An asset `id` listing `keys`.
+fn listing_as(id: AssetId, keys: Vec<PipelineKey>) -> PackAsset {
+    let mut listed =
+        PackAsset::encode(id, AssetKind::Mesh, Codec::Lz4, &[0; 64], Vec::new(), 3).expect("an asset");
+    listed.pipeline_keys = keys;
+    listed
+}
 
 /// A cooked triangle with a material of its own, the zone's stage needing a character to stand there.
 fn character() -> PackAsset {
@@ -107,14 +137,34 @@ impl Walk {
         keys: Vec<PipelineKey>,
         left_out: Option<String>,
     ) -> Self {
-        let mut listed = PackAsset::encode(LISTS_KEYS, AssetKind::Mesh, Codec::Lz4, &[0; 64], Vec::new(), 3)
-            .expect("an asset");
-        listed.pipeline_keys = keys;
         let source = Arc::new(MemoryPackSource::new());
-        source.insert(PACK, zone.pack(vec![character(), listed]).expect("a pack"));
+        source.insert(PACK, zone.pack(vec![character(), listing(keys)]).expect("a pack"));
+        let mut walk = Self::standing(source, PACK, budgets, left_out);
+        let opened = ZoneStage::open(
+            &mut walk.content,
+            SyntheticZone::id(),
+            STEM,
+            start,
+            settings,
+            &mut walk.renderer,
+            &walk.gpu,
+        );
+        walk.scene.open_zone(opened.expect("the zone"), &mut walk.content).expect("installed");
+        walk.start = start;
+        walk.look_from(start);
+        walk
+    }
+
+    /// The stage with nothing open, its character in `pack`.
+    fn standing(
+        source: Arc<MemoryPackSource>,
+        pack: &str,
+        budgets: AssetBudgets,
+        left_out: Option<String>,
+    ) -> Self {
         let live_packs = Arc::new(LivePacks::new(source));
         let mut server = AssetServer::new(live_packs.clone(), budgets);
-        server.mount_now(PACK).expect("the pack");
+        server.mount_now(pack).expect("the pack");
         let character = server.load_with(CHARACTER, LoadPriority::Critical).expect("loading");
         let mut content = Content::over_server(server, CHARACTER, character, SKY, live_packs);
         content.leave_out_of_zones(left_out);
@@ -126,9 +176,6 @@ impl Walk {
         // It holds still, so that what a packet changes is the zone's.
         let character = scene.character;
         scene.ecs.world_mut().entity_mut(character).remove::<Turntable>();
-        let opened =
-            ZoneStage::open(&mut content, SyntheticZone::id(), STEM, start, settings, &mut renderer, &gpu);
-        scene.open_zone(opened.expect("the zone"), &mut content).expect("installed");
         let target = gpu.device().create_texture(&wgpu::TextureDescriptor {
             label: None,
             size: wgpu::Extent3d { width: SIDE, height: SIDE, depth_or_array_layers: 1 },
@@ -139,9 +186,31 @@ impl Walk {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         });
-        let mut walk = Self { scene, content, graph: GraphExecutor::new(), renderer, target, gpu, start };
-        walk.look_from(start);
+        let graph = GraphExecutor::new();
+        let mut walk = Self { scene, content, graph, renderer, target, gpu, start: Vec3::ZERO };
+        walk.look_from(Vec3::ZERO);
         walk
+    }
+
+    /// The stage with nothing open, and `rooms` zones to go between in packs of their own, each with an exit
+    /// to the next, the last's to the first, marked `prefetch`.
+    fn rooms(zone: SyntheticZone, rooms: u32, budgets: AssetBudgets, keys: Vec<PipelineKey>) -> Self {
+        let source = Arc::new(MemoryPackSource::new());
+        source.insert(BASE_PACK, write_pack(vec![character()]).expect("a pack"));
+        for room in 0..rooms {
+            let next = (room + 1) % rooms;
+            let exit = CookedExit {
+                id: exit_to(next),
+                name: format!("to_room_{next}"),
+                to: SyntheticZone::room_id(next),
+                pack: room_pack(next),
+                arrive: 0,
+                prefetch: true,
+            };
+            let extra = vec![listing_as(LISTS_KEYS.sub_asset(&format!("room/{room}")), keys.clone())];
+            source.insert(&room_pack(room), zone.room_pack(room, vec![exit], extra).expect("a pack"));
+        }
+        Self::standing(source, BASE_PACK, budgets, None)
     }
 
     /// Puts the camera at about `place`, in the zone's space.
@@ -243,6 +312,85 @@ struct Frame {
     grew: bool,
     /// Prepare rebuilt the draw list.
     rebuilt: bool,
+}
+
+/// What a trip took, and what it holds once it's over.
+#[derive(Clone, Copy, Debug)]
+struct Trip {
+    /// From asking to the zone being ready to arrive in.
+    load: Duration,
+    frames: u32,
+    /// The longest frame's content update, while it loaded.
+    worst_upload: Duration,
+}
+
+impl Walk {
+    /// Goes to `to`, as someone under a wipe waits for it: a zone already coming goes on from where it's got.
+    fn trip(&mut self, to: u32, settings: StreamSettings) -> Trip {
+        self.scene.prefetch_zone(room(to), settings);
+        self.scene.hurry_zone(room(to).zone);
+        let stopwatch = Stopwatch::start();
+        let mut frames = 0;
+        let mut worst_upload = Duration::ZERO;
+        while self.scene.zone_load(room(to).zone) != ZoneLoad::Ready {
+            assert_eq!(
+                std::mem::discriminant(&self.scene.zone_load(room(to).zone)),
+                std::mem::discriminant(&ZoneLoad::Waiting),
+                "{:?}",
+                self.scene.zone_load(room(to).zone),
+            );
+            worst_upload = worst_upload.max(self.frame().uploads);
+            frames += 1;
+            assert!(frames < 100_000, "it never came");
+            std::thread::sleep(Duration::from_micros(100));
+        }
+        let trip = Trip { load: stopwatch.elapsed(), frames, worst_upload };
+        let arrived = self.scene.arrive_in_zone(room(to).zone, &mut self.content).expect("it's ready");
+        if let Some(left) = arrived.left {
+            let report = left.expect("the last zone's pack unmounts");
+            assert_eq!(report.cancelled, 0, "{report:?}");
+        }
+        for _ in 0..1_000 {
+            if self.scene.zone_settled() {
+                break;
+            }
+            self.frame();
+        }
+        assert!(self.scene.zone_settled(), "{:?}", self.scene.stream_stats());
+        self.scene.release_zone_focus();
+        trip
+    }
+
+    /// What's left of a trip's cost, once what it let go of has gone.
+    fn holds(&mut self) -> TripHolds {
+        self.settle();
+        self.drain();
+        let (server, _) = self.content.streaming_parts();
+        let resident = server.stats().resident.iter().sum();
+        let stats = self.renderer.stats();
+        TripHolds {
+            resident,
+            meshes: stats.meshes,
+            mesh_pool_bytes: stats.mesh_pool_bytes,
+            materials: stats.materials,
+            material_bytes: stats.material_bytes,
+            texture_bytes: self.content.texture_bytes(),
+            gpu_textures: self.gpu_textures(),
+        }
+    }
+}
+
+/// What being in a place holds: the same on each visit, or a trip's leaking.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct TripHolds {
+    /// The server's cooked bytes.
+    resident: u64,
+    meshes: u32,
+    mesh_pool_bytes: u64,
+    materials: u32,
+    material_bytes: u64,
+    texture_bytes: u64,
+    gpu_textures: usize,
 }
 
 /// A little of everything, near enough to see all at once.
@@ -722,5 +870,240 @@ fn a_walk_across_a_zone_stays_on_its_budget() {
             stats.total_placed,
             stats.total_removed,
         );
+    }
+}
+
+fn no_limits() -> AssetBudgets {
+    AssetBudgets { upload_per_frame: u64::MAX, resident: [u64::MAX; AssetKind::ALL.len()] }
+}
+
+/// A zone coming next costs a hub no change on screen: nothing's placed until it's arrived in, and its pack
+/// comes with `mount`, its meshes and its pipelines over frames. Arriving takes the last zone's all away.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_zone_coming_next_places_nothing_until_it_is_arrived_in_and_then_the_last_one_goes() {
+    let settings = small_settings();
+    let key = PipelineKey {
+        family: MaterialFamily::Environment,
+        flags: MaterialFlags::empty(),
+        format: PositionFormat::Float32,
+        reflection: false,
+    };
+    let mut walk = Walk::rooms(SMALL, 2, no_limits(), vec![key]);
+    walk.look_from(Vec3::new(16.0, 0.0, 16.0));
+    walk.trip(0, settings);
+    let at_first = walk.holds();
+    let drawing = walk.drawing();
+
+    // What the hub says is next: nobody's going yet.
+    walk.scene.prefetch_exits(&mut walk.content, settings);
+    let target = room(1);
+    assert_eq!(
+        walk.scene.zone_exit(exit_to(1), &mut walk.content),
+        Some(target.clone()),
+        "it reads what the zone says",
+    );
+    assert_eq!(walk.scene.zone_load(target.zone), ZoneLoad::Waiting);
+    let mut frames = 0;
+    while walk.scene.zone_load(target.zone) != ZoneLoad::Ready {
+        let frame = walk.frame();
+        assert_eq!((frame.changed, frame.removed), (0, 0), "nothing on stage moved: {frame:?}");
+        frames += 1;
+        assert!(frames < 100_000, "it never came");
+        std::thread::sleep(Duration::from_micros(100));
+    }
+    assert_eq!(walk.drawing(), drawing, "and nothing's placed");
+    let coming = walk.holds();
+    assert!(coming.resident > at_first.resident, "{coming:?} over {at_first:?}");
+    let (server, _) = walk.content.streaming_parts();
+    assert!(matches!(server.mount_state(&room_pack(0)), MountState::Mounted));
+    assert!(matches!(server.mount_state(&room_pack(1)), MountState::Mounted));
+
+    // A trip takes what's already there.
+    let stopwatch = Stopwatch::start();
+    walk.trip(1, settings);
+    assert!(stopwatch.elapsed() < Duration::from_secs(5));
+    let (server, _) = walk.content.streaming_parts();
+    assert!(matches!(server.mount_state(&room_pack(0)), MountState::Unmounted));
+    assert!(!server.contains(SyntheticZone::room_id(0)));
+    assert!(walk.scene.zone_load(room(0).zone) == ZoneLoad::Waiting, "and nobody's asked for the last");
+    assert_eq!(walk.holds().resident, at_first.resident, "the same size of room, and the other's gone");
+    assert_eq!(walk.drawing(), drawing);
+}
+
+/// A pack that isn't there says so, and what's on stage stays. Asking again tries again.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_zone_that_cannot_come_leaves_what_is_on_stage() {
+    let settings = small_settings();
+    let mut walk = Walk::rooms(SMALL, 1, no_limits(), Vec::new());
+    walk.look_from(Vec3::new(16.0, 0.0, 16.0));
+    walk.trip(0, settings);
+    let held = walk.holds();
+
+    let nowhere = ZoneTarget { zone: SyntheticZone::room_id(9), pack: "zone_nowhere".to_owned(), arrive: 0 };
+    walk.scene.prefetch_zone(nowhere.clone(), settings);
+    let mut frames = 0;
+    while !matches!(walk.scene.zone_load(nowhere.zone), ZoneLoad::Failed(_)) {
+        walk.frame();
+        frames += 1;
+        assert!(frames < 100_000, "it never said");
+        std::thread::sleep(Duration::from_micros(100));
+    }
+    assert!(walk.scene.arrive_in_zone(nowhere.zone, &mut walk.content).is_none());
+    assert!(walk.scene.zone_settled(), "the zone on stage stays");
+    assert_eq!(walk.holds(), held);
+    walk.scene.prefetch_zone(nowhere.clone(), settings);
+    assert_eq!(walk.scene.zone_load(nowhere.zone), ZoneLoad::Waiting, "trying again");
+}
+
+/// A hub stays within streaming's budgets: past nine tenths of the room meshes have, a zone coming next
+/// waits, unless someone's waiting for it.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_full_server_makes_a_prefetch_wait_until_someone_is_waiting_for_it() {
+    let settings = small_settings();
+    let mut budgets = no_limits();
+    let mut walk = {
+        // As much room as the first room's meshes need, and no more.
+        let mut probe = Walk::rooms(SMALL, 2, no_limits(), Vec::new());
+        probe.look_from(Vec3::new(16.0, 0.0, 16.0));
+        probe.trip(0, settings);
+        probe.holds();
+        let (server, _) = probe.content.streaming_parts();
+        budgets.resident[AssetKind::Mesh.index()] = server.stats().resident[AssetKind::Mesh.index()];
+        Walk::rooms(SMALL, 2, budgets, Vec::new())
+    };
+    walk.look_from(Vec3::new(16.0, 0.0, 16.0));
+    walk.trip(0, settings);
+    walk.holds();
+    let target = room(1);
+    walk.scene.prefetch_zone(target.clone(), settings);
+    for _ in 0..200 {
+        walk.frame();
+        std::thread::sleep(Duration::from_micros(100));
+    }
+    assert_eq!(walk.scene.zone_load(target.zone), ZoneLoad::Waiting);
+    walk.trip(1, settings);
+    assert_eq!(walk.scene.stream_stats().expect("a zone is open").failed, 0);
+}
+
+/// A hub's next zone builds its pipelines a frame at a time, and asks for no mesh until they're built. Under
+/// a wipe they all go at once, there being nothing on screen to stall.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_zone_coming_next_builds_a_pipeline_a_frame_unless_someone_is_waiting() {
+    let settings = small_settings();
+    let flags = [
+        MaterialFlags::empty(),
+        MaterialFlags::DOUBLE_SIDED,
+        MaterialFlags::ALPHA_TEST,
+        MaterialFlags::DOUBLE_SIDED | MaterialFlags::ALPHA_TEST,
+    ];
+    let keys: Vec<PipelineKey> = flags
+        .iter()
+        .map(|&flags| PipelineKey {
+            family: MaterialFamily::Environment,
+            flags,
+            format: PositionFormat::Float32,
+            reflection: false,
+        })
+        .collect();
+    let mut walk = Walk::rooms(SMALL, 1, no_limits(), keys);
+    walk.look_from(Vec3::new(16.0, 0.0, 16.0));
+    // The character's own, on its first frames.
+    for _ in 0..3 {
+        walk.frame();
+    }
+    let first_use = walk.renderer.stats().pipelines.first_use_builds;
+    let before = walk.renderer.stats().pipelines.prewarmed;
+    walk.scene.prefetch_zone(room(0), settings);
+    let mut last = before;
+    let mut frames_building = 0;
+    let mut frames = 0;
+    while walk.scene.zone_load(room(0).zone) != ZoneLoad::Ready {
+        walk.frame();
+        let built = walk.renderer.stats().pipelines.prewarmed;
+        assert!(built <= last + 1, "{built} after {last}");
+        frames_building += u32::from(built > last);
+        last = built;
+        frames += 1;
+        assert!(frames < 100_000, "it never came");
+        std::thread::sleep(Duration::from_micros(100));
+    }
+    assert!(frames_building >= 2, "over frames: {frames_building}");
+    walk.trip(0, settings);
+    walk.settle();
+    let stats = walk.renderer.stats().pipelines;
+    assert_eq!(stats.first_use_builds, first_use, "nothing came before its pipelines: {stats:?}");
+}
+
+/// Trip after trip between two zones, a hub and a room, on each class of device's settings and budgets: each
+/// visit holds the same as the visit before it, on the server and the renderer, and no buffer grows after
+/// the first round. `--nocapture` in release reports it at a size worth reporting; a debug build, as CI's,
+/// goes between small ones and holds the same.
+#[test]
+#[ignore = "needs a GPU"]
+fn a_repeated_trip_does_not_grow() {
+    let tiers = if cfg!(debug_assertions) {
+        let zone = SyntheticZone { texture: 8, ..SMALL };
+        vec![
+            ("debug, Desktop's budgets", zone, StreamSettings::DESKTOP, AssetBudgets::DESKTOP),
+            ("debug, Mobile's budgets", zone, StreamSettings::MOBILE, AssetBudgets::MOBILE),
+        ]
+    } else {
+        let room =
+            SyntheticZone { side: 8, cell_size: 64.0, instances: 8, lights: 2, quads: 64, texture: 512 };
+        let mobile = SyntheticZone { quads: 32, texture: 256, ..room };
+        vec![
+            ("Desktop's budgets", room, StreamSettings::DESKTOP, AssetBudgets::DESKTOP),
+            ("Mobile's budgets", mobile, StreamSettings::MOBILE, AssetBudgets::MOBILE),
+        ]
+    };
+    for (name, zone, settings, budgets) in tiers {
+        let mut walk = Walk::rooms(zone, 2, budgets, Vec::new());
+        walk.look_from(Vec3::new(32.0, 0.0, 32.0));
+        walk.trip(0, settings);
+        let in_first = walk.holds();
+        walk.trip(1, settings);
+        let in_second = walk.holds();
+        assert_eq!(in_first, in_second, "{name}: two rooms of a size hold the same");
+        let (capacity, growths) = {
+            let stats = walk.renderer.stats();
+            (stats.mesh_pool_capacity, stats.buffer_growths)
+        };
+        println!(
+            "{name}: {} cells of {} triangles and a {}px texture, {capacity} B of mesh pool: {in_first:?}",
+            zone.side * zone.side,
+            2 * zone.quads * zone.quads,
+            zone.texture,
+        );
+        for lap in 0..6 {
+            // Warm: the hub says the next is coming, and it's in before the trip.
+            walk.scene.prefetch_exits(&mut walk.content, settings);
+            for _ in 0..600 {
+                walk.frame();
+                if walk.scene.zone_load(room(lap % 2).zone) == ZoneLoad::Ready {
+                    break;
+                }
+                std::thread::sleep(Duration::from_micros(500));
+            }
+            let warm = walk.trip(lap % 2, settings);
+            let held = walk.holds();
+            assert_eq!(held, in_first, "{name}, trip {lap}, warm");
+            // Cold: nothing went ahead of it.
+            let cold = walk.trip((lap + 1) % 2, settings);
+            let held = walk.holds();
+            assert_eq!(held, in_first, "{name}, trip {lap}, cold");
+            let stats = walk.renderer.stats();
+            assert_eq!(stats.mesh_pool_capacity, capacity, "{name}, trip {lap}: the pool grew");
+            assert_eq!(stats.buffer_growths, growths, "{name}, trip {lap}: a buffer grew");
+            println!(
+                "{name}, round {lap}: warm {:?} over {} frames, cold {:?} over {} frames, worst upload {:?}",
+                warm.load, warm.frames, cold.load, cold.frames, cold.worst_upload,
+            );
+            walk.trip(lap % 2, settings);
+            assert_eq!(walk.holds(), in_first, "{name}, trip {lap}, back");
+        }
     }
 }

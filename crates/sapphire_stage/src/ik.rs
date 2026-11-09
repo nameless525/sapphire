@@ -277,6 +277,11 @@ impl IkDriver {
         self.feet_weight
     }
 
+    /// Casts in `ground` from now on: a character gone to another zone.
+    pub fn set_ground(&mut self, ground: Arc<PhysicsWorld>) {
+        self.ground = ground;
+    }
+
     /// The inputs it runs on.
     pub(crate) fn controls(&self) -> IkControls {
         self.controls

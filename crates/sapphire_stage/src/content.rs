@@ -75,7 +75,7 @@
 //! platform's; a pushed pack is remounted the same way (`Content::apply_pack`).
 
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io;
 #[cfg(feature = "dev")]
 use std::path::PathBuf;
@@ -95,8 +95,8 @@ use sapphire_assets::sound::{AUDIO_PACK, DecodedSound, Sound};
 use sapphire_assets::ui::{UI_PACK, UiDocument};
 use sapphire_assets::{
     Asset, AssetBudgets, AssetId, AssetKind, AssetServer, AssetSlot, AssetStats, CpuResident, Handle,
-    LoadError, LoadPriority, NamedAsset, PackFile, PackSource, ReadDone, TextureAsset, Unloaded, Upload,
-    UploadError,
+    LoadError, LoadPriority, NamedAsset, PackFile, PackSource, PipelineKey, ReadDone, TextureAsset, Unloaded,
+    Upload, UploadError,
 };
 #[cfg(feature = "dev")]
 use sapphire_assets::{AssetChange, MountError, RemountReport};
@@ -153,6 +153,13 @@ const PACK: &str = "shared";
 pub const CHARACTER: AssetId = AssetId::from_text("8659a15c-d588-4cb6-b757-deb86adf26a1");
 /// The sandbox's sky: the sky material `samples/sky.material.ron`, by its sidecar's ID.
 pub const SKY: AssetId = AssetId::from_text("22d0ccf1-d03c-4387-a00f-42891c86866f");
+
+/// What's left to build of a zone coming next ([`Content::queue_zone_prewarm`]).
+struct ZonePrewarm {
+    pack: String,
+    keys: Vec<PipelineKey>,
+    hurried: bool,
+}
 
 /// The platform's IO thread, serving the asset server's pack reads.
 struct PlatformPacks(IoThread);
@@ -724,6 +731,8 @@ pub struct Content {
     left_out_of_zones: Option<String>,
     /// The open zone's probe grid, which the renderer holds one of.
     zone_probes: Option<Handle<ProbeGrid>>,
+    /// The pipelines of zones coming next, built over frames: see [`Self::queue_zone_prewarm`].
+    zone_prewarms: Vec<ZonePrewarm>,
     /// A character rig, once asked for (`--look-dev`'s).
     rig: Option<Handle<CharacterRig>>,
     /// The skeleton of the character's mesh, with the rig.
@@ -874,6 +883,7 @@ impl Content {
             town: Vec::new(),
             left_out_of_zones: None,
             zone_probes: None,
+            zone_prewarms: Vec::new(),
             rig: None,
             skeleton: None,
             character_versions: None,
@@ -898,6 +908,7 @@ impl Content {
     /// and uploads what is ready within the frame's budget.
     pub fn update(&mut self, renderer: &mut Renderer, gpu: &GpuContext) {
         self.server.update();
+        self.prewarm_next_zones(renderer);
         for unloaded in self.server.take_unloaded() {
             self.gpu.unload(unloaded);
         }
@@ -1294,6 +1305,55 @@ impl Content {
         let mut streamer = Streamer::new(zone, settings);
         streamer.preload(focus, &mut self.server, |upload| assets.upload(upload, renderer, gpu));
         Ok(streamer)
+    }
+
+    /// Builds what zone pack `pack` draws through, a pipeline a frame: a zone that may come next, whose first
+    /// mesh mustn't be asked for until [`Self::prewarms_pack`] says it's done, so that no upload finds one
+    /// unbuilt, and no frame in a hub stalls on more than one.
+    pub(crate) fn queue_zone_prewarm(&mut self, pack: &str) {
+        let mut inventory =
+            PipelineInventory { meshes: self.server.pipeline_keys_of(pack), ..PipelineInventory::default() };
+        if let Some(entry) = &self.left_out_of_zones {
+            inventory.remove(entry);
+        }
+        let keys = inventory.meshes.into_iter().collect();
+        self.zone_prewarms.push(ZonePrewarm { pack: pack.to_owned(), keys, hurried: false });
+    }
+
+    /// Whether what [`Self::queue_zone_prewarm`] asked for has yet to be built.
+    pub(crate) fn prewarms_pack(&self, pack: &str) -> bool {
+        self.zone_prewarms.iter().any(|prewarm| prewarm.pack == pack)
+    }
+
+    /// Lets go of what [`Self::queue_zone_prewarm`] asked for.
+    pub(crate) fn drop_zone_prewarm(&mut self, pack: &str) {
+        self.zone_prewarms.retain(|prewarm| prewarm.pack != pack);
+    }
+
+    /// Someone's waiting on `pack` under a wipe: the rest of its pipelines go on the next frame, all at once.
+    pub(crate) fn hurry_zone_prewarm(&mut self, pack: &str) {
+        for prewarm in self.zone_prewarms.iter_mut().filter(|prewarm| prewarm.pack == pack) {
+            prewarm.hurried = true;
+        }
+    }
+
+    fn prewarm_next_zones(&mut self, renderer: &mut Renderer) {
+        let mut built = 0;
+        self.zone_prewarms.retain_mut(|prewarm| {
+            while built == 0 || prewarm.hurried {
+                let Some(key) = prewarm.keys.pop() else { break };
+                let inventory =
+                    PipelineInventory { meshes: BTreeSet::from([key]), ..PipelineInventory::default() };
+                built += renderer.prewarm(&inventory);
+            }
+            !prewarm.keys.is_empty()
+        });
+    }
+
+    /// The cooked bytes of asset `id`, while the server holds them.
+    #[must_use]
+    pub fn cooked_bytes(&self, id: AssetId) -> Option<&[u8]> {
+        self.server.cooked_bytes(id)
     }
 
     /// Brings what `streamer` holds to `renderer`, a new one.

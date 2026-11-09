@@ -92,7 +92,7 @@ impl BakedZone {
         let simulation = &Zone::read(&zone)?.simulation;
         let (collider_id, navmesh_id) =
             (simulation.colliders.as_ref().copied(), simulation.navigation.as_ref().copied());
-        ZoneGround::from_cooked(self.asset, &zone, |id| {
+        ZoneGround::from_cooked(self.asset, &sapphire_zone::pack_name(self.stem), &zone, |id| {
             if Some(id) == collider_id {
                 Some(&colliders[..])
             } else if Some(id) == navmesh_id {

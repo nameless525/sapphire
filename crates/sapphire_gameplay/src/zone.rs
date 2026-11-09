@@ -124,6 +124,8 @@ struct SimSpawner {
 /// What a simulation runs on while it's in a zone: see the [module docs](self).
 pub struct ZoneGround {
     asset: AssetId,
+    /// The pack it's in, for what stands a show beside this. No part of what it hashes.
+    pack: String,
     digest: u64,
     /// Statics alone, while it's waiting on the shelf: its bodies are the simulation's.
     physics: PhysicsWorld,
@@ -145,9 +147,11 @@ impl std::fmt::Debug for ZoneGround {
 
 impl ZoneGround {
     /// From the cooked zone `asset`'s bytes, and `read`, which finds what it references: its colliders and
-    /// its navmesh. All of them must start 16-byte aligned, as the asset server holds them.
+    /// its navmesh. All of them must start 16-byte aligned, as the asset server holds them. `pack` is the
+    /// pack a show finds it in.
     pub fn from_cooked<'a>(
         asset: AssetId,
+        pack: &str,
         zone: &'a [u8],
         mut read: impl FnMut(AssetId) -> Option<&'a [u8]>,
     ) -> Result<Self, ZoneLoadError> {
@@ -177,13 +181,25 @@ impl ZoneGround {
                 yaw: spawner.yaw(),
             })
             .collect();
-        Ok(Self { asset, digest, physics, navigation, spawners })
+        Ok(Self { asset, pack: pack.to_owned(), digest, physics, navigation, spawners })
     }
 
     /// The zone asset it came from.
     #[must_use]
     pub fn asset(&self) -> AssetId {
         self.asset
+    }
+
+    /// The pack it's in.
+    #[must_use]
+    pub fn pack(&self) -> &str {
+        &self.pack
+    }
+
+    /// The ID of spawner `index`, the hash of its name.
+    #[must_use]
+    pub fn spawner_id(&self, index: u16) -> Option<u64> {
+        self.spawners.get(usize::from(index)).map(|spawner| spawner.id)
     }
 
     /// A hash of what the simulation sees of it: `ArchivedZone::simulation_digest`.

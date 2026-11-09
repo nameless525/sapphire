@@ -412,6 +412,8 @@ pub struct Scene {
     /// Where the view will be soon, in the world, for the zone to stream ahead ([`Self::stream_ahead`]), and
     /// how many of them there are.
     stream_ahead: ([Vec3; sapphire_world::streaming::AHEAD], usize),
+    /// Zones on their way (M3 W4).
+    next_zones: Vec<zone::NextZone>,
     town_plants: Vec<(Entity, lookdev::Plant)>,
     town_mountains: Vec<Entity>,
     /// The camera jumped since the last view: the next one says so, for temporal AA and the shadows.
@@ -560,6 +562,7 @@ impl Scene {
             zone: None,
             zone_walk: None,
             stream_ahead: ([Vec3::ZERO; sapphire_world::streaming::AHEAD], 0),
+            next_zones: Vec::new(),
             town_plants: Vec::new(),
             town_mountains: Vec::new(),
             view_cut: false,
@@ -1757,6 +1760,39 @@ impl Scene {
         }
     }
 
+    /// Takes down what [`Self::spawn_town`] placed by hand, which no zone holds: a change of zone (M3 W4). The
+    /// lamps go by what they are, so what's left of a zone's goes too: close that first.
+    pub(crate) fn leave_town(&mut self) {
+        if self.town_stand.take().is_none() {
+            return;
+        }
+        let world = self.ecs.world_mut();
+        for entity in self.town_plants.drain(..).map(|(entity, _)| entity) {
+            world.despawn(entity);
+        }
+        for entity in self.town_mountains.drain(..) {
+            world.despawn(entity);
+        }
+        for entity in self.fog_cards.drain(..).map(|(entity, _)| entity) {
+            world.despawn(entity);
+        }
+        let lamps: Vec<Entity> = world.query_filtered::<Entity, With<Lamp>>().iter(world).collect();
+        for entity in lamps {
+            world.despawn(entity);
+        }
+    }
+
+    /// Stands the character's IK on `ground`, the zone's own, from the next frame.
+    pub fn stand_on(&mut self, ground: Arc<PhysicsWorld>) {
+        self.ik_ground = Some(Arc::clone(&ground));
+        let character = self.character;
+        if let Some(mut driver) = self.ecs.world_mut().get_mut::<GraphDriver>(character)
+            && let Some(ik) = driver.ik_mut()
+        {
+            ik.set_ground(ground);
+        }
+    }
+
     /// Sets the meshes the look-dev town's plants and its mountains draw again: after GPU device loss.
     pub fn set_town_mesh(&mut self, meshes: TownMeshes) {
         for &(entity, plant) in &self.town_plants {
@@ -2243,7 +2279,7 @@ pub(crate) fn mesh_bounds(mesh: &ArchivedMesh) -> [[f32; 3]; 2] {
 }
 
 mod zone;
-pub use zone::{ZoneEntity, ZoneShow, ZoneStage, stream_settings};
+pub use zone::{ArrivedZone, ZoneEntity, ZoneLoad, ZoneShow, ZoneStage, ZoneTarget, stream_settings};
 
 #[cfg(test)]
 mod spring_tests;

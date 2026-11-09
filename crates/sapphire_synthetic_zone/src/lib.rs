@@ -17,8 +17,8 @@ use sapphire_assets::texture::{Swizzle, Texture, TextureDesc, TextureFormat};
 use sapphire_assets::{AssetId, AssetKind};
 use sapphire_serialize::cooked::AlignedVec;
 use sapphire_zone::{
-    CookedInstance, CookedLight, CookedLightShape, PlaceContents, Zone, ZoneCell, ZonePresentation,
-    ZoneSimulation,
+    CookedExit, CookedInstance, CookedLight, CookedLightShape, PlaceContents, Zone, ZoneCell,
+    ZonePresentation, ZoneSimulation,
 };
 
 const ROOT: AssetId = AssetId::from_text("7d0f1c52-3a6e-4b1f-9a44-51c7e2b08d36");
@@ -85,13 +85,46 @@ impl SyntheticZone {
     ///
     /// If the zone it builds isn't one a cook could make.
     pub fn pack(self, extra: Vec<PackAsset>) -> Result<Vec<u8>, PackError> {
-        let material_id = ROOT.sub_asset("material");
+        self.pack_under(ROOT, Vec::new(), extra)
+    }
+
+    /// The zone numbered `room`, for a test of going between zones: one of a family, asset IDs of its own.
+    #[must_use]
+    pub fn room_id(room: u32) -> AssetId {
+        room_root(room).sub_asset("zone")
+    }
+
+    /// The pack of the zone [`Self::room_id`] names, with its `exits`, and `extra` besides.
+    ///
+    /// # Panics
+    ///
+    /// If the zone it builds isn't one a cook could make.
+    pub fn room_pack(
+        self,
+        room: u32,
+        exits: Vec<CookedExit>,
+        extra: Vec<PackAsset>,
+    ) -> Result<Vec<u8>, PackError> {
+        self.pack_under(room_root(room), exits, extra)
+    }
+
+    fn pack_under(
+        self,
+        root: AssetId,
+        exits: Vec<CookedExit>,
+        extra: Vec<PackAsset>,
+    ) -> Result<Vec<u8>, PackError> {
+        let material_id = root.sub_asset("material");
         let mut assets = extra;
         assets.push(asset(material_id, AssetKind::Material, &material_bytes(None)));
-        assets.push(asset(Self::instance_mesh(), AssetKind::Mesh, &patch([0.0; 3], 1.0, 1, material_id)));
+        assets.push(asset(
+            root.sub_asset("instance"),
+            AssetKind::Mesh,
+            &patch([0.0; 3], 1.0, 1, material_id),
+        ));
         let backdrop = self.cell_size * self.side as f32;
         assets.push(asset(
-            Self::backdrop_mesh(),
+            root.sub_asset("backdrop"),
             AssetKind::Mesh,
             &patch([0.0; 3], backdrop, 1, material_id),
         ));
@@ -102,12 +135,12 @@ impl SyntheticZone {
         for x in 0..self.side {
             for z in 0..self.side {
                 let corner = [x as f32 * self.cell_size, 0.0, z as f32 * self.cell_size];
-                let mesh = Self::cell_mesh(x, z);
+                let mesh = root.sub_asset(&format!("cell/{x}/{z}"));
                 let material = if self.texture == 0 {
                     material_id
                 } else {
-                    let texture = Self::cell_texture(x, z);
-                    let material = ROOT.sub_asset(&format!("cell material/{x}/{z}"));
+                    let texture = root.sub_asset(&format!("cell texture/{x}/{z}"));
+                    let material = root.sub_asset(&format!("cell material/{x}/{z}"));
                     assets.push(asset(texture, AssetKind::Texture, &texture_bytes(self.texture, x, z)));
                     assets.push(asset(material, AssetKind::Material, &material_bytes(Some(texture))));
                     material
@@ -124,7 +157,7 @@ impl SyntheticZone {
                     [corner[0] + along, 0.0, corner[2] + along]
                 };
                 instances.extend((0..self.instances).map(|n| CookedInstance {
-                    mesh: Self::instance_mesh(),
+                    mesh: root.sub_asset("instance"),
                     position: spot(n, self.instances),
                     rotation: [0.0, 0.0, 0.0, 1.0],
                     scale: [2.0, 2.0, 2.0],
@@ -158,12 +191,12 @@ impl SyntheticZone {
                 triggers: Vec::new(),
                 navigation: None,
                 encounters: Vec::new(),
-                exits: Vec::new(),
+                exits,
             },
             presentation: ZonePresentation {
                 cell_size: self.cell_size,
                 backdrop: Some(PlaceContents {
-                    mesh: Some(Self::backdrop_mesh()),
+                    mesh: Some(root.sub_asset("backdrop")),
                     bounds_min: [0.0, -1.0, 0.0],
                     bounds_max: [backdrop, 1.0, backdrop],
                     first_instance: 0,
@@ -181,9 +214,13 @@ impl SyntheticZone {
             },
         };
         let bytes = zone.to_cooked().expect("a synthetic zone is a valid one");
-        assets.push(asset(Self::id(), AssetKind::Zone, &bytes));
+        assets.push(asset(root.sub_asset("zone"), AssetKind::Zone, &bytes));
         write_pack(assets)
     }
+}
+
+fn room_root(room: u32) -> AssetId {
+    ROOT.sub_asset(&format!("room/{room}"))
 }
 
 fn asset(id: AssetId, kind: AssetKind, bytes: &[u8]) -> PackAsset {

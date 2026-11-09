@@ -33,7 +33,7 @@ const PAN_STEP: f32 = 0.005;
 /// command.
 const PITCH_STEP: f32 = 0.001;
 
-/// How fast the music goes down under a voice line, ...
+/// How fast the music goes down under a voice line or the player's volume, ...
 pub(crate) const DUCK_ATTACK: Duration = Duration::from_millis(80);
 /// ... and comes back after it: slower, so that a pause between two lines doesn't pump.
 pub(crate) const DUCK_RELEASE: Duration = Duration::from_millis(400);
@@ -191,7 +191,7 @@ pub struct AudioSystem<B: AudioBackend> {
     mix: SnapshotMix,
     music: Music,
     voice: VoiceRoute,
-    /// The music bus's gain, as last sent: down under a voice line.
+    /// The music bus's gain, as last sent: the player's volume, and down under a voice line.
     music_gain_db: f32,
     background: bool,
     interrupted: bool,
@@ -275,7 +275,7 @@ impl<B: AudioBackend> AudioSystem<B> {
         self.set_suspension(background, self.interrupted);
     }
 
-    /// The player's volume, a share of full: every voice follows at the next update.
+    /// The player's volume, a share of full: every voice and the music follow at the next update.
     pub fn set_volume(&mut self, volume: f32) {
         // Below it, the mixer's silent anyway. Finite whatever it's given: see `VoiceParams`.
         self.volume_db =
@@ -368,7 +368,7 @@ impl<B: AudioBackend> AudioSystem<B> {
         if state.plays() {
             self.update_voices(&frame.listener);
         }
-        self.duck_music();
+        self.follow_music_gain();
 
         self.stats.voices = self.voices.len() as u32;
         self.stats.update = timer.elapsed();
@@ -509,10 +509,12 @@ impl<B: AudioBackend> AudioSystem<B> {
         }
     }
 
-    /// Takes the music down while a voice line plays, and back after.
-    fn duck_music(&mut self) {
+    /// Keeps the music at the player's volume, as every voice is, and takes it further down while a voice
+    /// line plays. Its stems' gains are the score's, so the volume is the bus's.
+    fn follow_music_gain(&mut self) {
         let speaking = self.voices.iter().any(|voice| voice.bus == Bus::Voice && !voice.stopped);
-        let gain_db = if speaking { self.music.duck_db() } else { 0.0 };
+        let duck_db = if speaking { self.music.duck_db() } else { 0.0 };
+        let gain_db = (self.volume_db + duck_db).max(SILENCE_DB);
         if gain_db != self.music_gain_db {
             let fade = if gain_db < self.music_gain_db { DUCK_ATTACK } else { DUCK_RELEASE };
             self.backend.set_bus_gain(Bus::Music, gain_db, fade);
@@ -739,8 +741,13 @@ mod tests {
         system.set_volume(0.5);
         system.update(&frame(&[], &[]), &mut rng);
         let calls = system.backend_mut().take_calls();
-        let [MockCall::SetVoice { params, .. }] = calls[..] else { panic!("{calls:?}") };
+        let [MockCall::SetVoice { params, .. }, MockCall::SetBusGain { bus: Bus::Music, gain_db, .. }] =
+            calls[..]
+        else {
+            panic!("{calls:?}")
+        };
         assert!((params.gain_db + 6.02).abs() < 0.01, "{params:?}");
+        assert_eq!(gain_db, params.gain_db, "the music with it");
         system.update(&frame(&[], &play(CueTarget::Flat)), &mut rng);
         assert!((started(&mut system).gain_db + 6.02).abs() < 0.01);
         // Off is silent, and nothing a setting says can reach the mixer as a bad number.

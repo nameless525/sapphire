@@ -385,4 +385,41 @@ mod tests {
         update(&mut system, Some("running"), &missing);
         assert_eq!((system.stats().lines_asked, system.stats().lines_missing), (1, 1));
     }
+
+    #[test]
+    fn the_music_follows_the_players_volume_and_ducks_under_it() {
+        let mut system = system();
+        system.add_voice_lines(&voice_lines("en", LINE_EN)).unwrap();
+        assert!(system.set_voice_language("en"));
+        update(&mut system, Some("running"), &[]);
+        assert_eq!(update(&mut system, Some("running"), &[]), [MockCall::PlayMusic]);
+
+        system.set_volume(0.5);
+        let half = 20.0 * 0.5_f32.log10();
+        assert_eq!(
+            update(&mut system, Some("running"), &[]),
+            [MockCall::SetBusGain { bus: Bus::Music, gain_db: half, fade: DUCK_ATTACK }],
+            "the music turns down with every voice"
+        );
+        let dodge = [LineRequest { line: LineKey::of("perfect-dodge"), target: CueTarget::Flat }];
+        let calls = update(&mut system, Some("running"), &dodge);
+        let slot = calls.iter().find_map(|call| match *call {
+            MockCall::StartVoice { slot, .. } => Some(slot),
+            _ => None,
+        });
+        let ducked = MockCall::SetBusGain { bus: Bus::Music, gain_db: half - 10.0, fade: DUCK_ATTACK };
+        assert!(calls.contains(&ducked), "{calls:?}");
+
+        // Off is silent, under a line or not, and never past silence.
+        system.set_volume(0.0);
+        let calls = update(&mut system, Some("running"), &[]);
+        let silent = MockCall::SetBusGain { bus: Bus::Music, gain_db: SILENCE_DB, fade: DUCK_ATTACK };
+        assert!(calls.contains(&silent), "{calls:?}");
+        system.set_volume(1.0);
+        system.backend_mut().finish(slot.expect("the line starts"));
+        assert_eq!(
+            update(&mut system, Some("running"), &[]),
+            [MockCall::SetBusGain { bus: Bus::Music, gain_db: 0.0, fade: DUCK_RELEASE }]
+        );
+    }
 }

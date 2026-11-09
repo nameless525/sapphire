@@ -11,6 +11,9 @@
 //!   moves no checksum. Its observation allocates nothing.
 //! - **What's kept** ([`kept`]): [`Kept`](kept::Kept), one writer for the settings and the save alike,
 //!   which snapshots on the frame and writes on a job, the newest winning.
+//! - **The save** ([`progress`]): [`Progress`](progress::Progress), a run's zone and its place there (B4's
+//!   `ZoneStart`), and the [`RunStart`](sapphire_gameplay::replay::RunStart) a run continued from it starts
+//!   from.
 //! - **The screens** ([`menus`]): what a menu's row asks of the flow ([`flow_command`](menus::flow_command)),
 //!   and the title's and the HUD's models filled from it.
 //!
@@ -22,6 +25,7 @@ pub mod document;
 pub mod flow;
 pub mod kept;
 pub mod menus;
+pub mod progress;
 
 /// Where the flow logs.
 pub(crate) const LOG_TARGET: &str = "game::flow";

@@ -1407,6 +1407,7 @@ dependencies = [
  "game_ui",
  "sapphire_assets",
  "sapphire_core",
+ "sapphire_gameplay",
  "sapphire_jobs",
  "sapphire_reflect",
  "sapphire_save",

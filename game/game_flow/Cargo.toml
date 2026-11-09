@@ -12,6 +12,10 @@ license.workspace = true
 bevy_reflect.workspace = true
 # The menus' commands and the models the flow fills (G1's fifth commit).
 game_ui.workspace = true
+# Flag names, which a save's flags are kept by.
+sapphire_core.workspace = true
+# The save holds B4's `ZoneStart`, and gives the `RunStart` a continued run starts from (G1's third commit).
+sapphire_gameplay.workspace = true
 sapphire_jobs.workspace = true
 sapphire_reflect.workspace = true
 sapphire_save.workspace = true

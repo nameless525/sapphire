@@ -111,6 +111,12 @@ impl TimelineLibrary {
         self.timelines.get(id.0 as usize).map(|(timeline, _)| timeline)
     }
 
+    /// The digest of the timeline `id`, as `tables_hash` takes it: what presentation finds its cooked copy by.
+    #[must_use]
+    pub fn digest(&self, id: TimelineId) -> Option<u64> {
+        self.timelines.get(id.0 as usize).map(|&(_, digest)| digest)
+    }
+
     fn beats(&self, id: TimelineId) -> &[Beat] {
         self.get(id).map_or(&[], |timeline| &timeline.beats)
     }

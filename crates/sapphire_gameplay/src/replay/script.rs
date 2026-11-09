@@ -9,6 +9,11 @@ use crate::actions::{ActorActions, Buttons, Stick, TickActions};
 use crate::actors::ActorId;
 use crate::timeline::{TimelineCommand, TimelineId};
 
+use super::ward::{COURT_GATE_ID, COURT_GATE_TICK};
+
+/// The ward's court scripts' length: the gate, and the fight after it to the warrior's defeat or near it.
+const WARD_COURT_TICKS: u32 = 1200;
+
 /// What the `timelines` scenario loads, in order.
 pub const CINEMATIC: TimelineId = TimelineId::from_raw(0);
 pub const CUTSCENE: TimelineId = TimelineId::from_raw(1);
@@ -173,6 +178,31 @@ pub const SCRIPTS: &[Script] = &[
         ticks: 300,
         actions: melee_sweep,
         commands: &[(120, TimelineCommand::Play(CUTSCENE)), (120, TimelineCommand::Skip { at_ms: 2500 })],
+    },
+    Script {
+        name: "ward-court",
+        about: "`fight-back` in the Lantern Ward's court with no cutscene: what the watched and skipped gate \
+                scripts must match up to the cutscene",
+        ticks: WARD_COURT_TICKS,
+        actions: fight_back,
+        commands: &[],
+    },
+    Script {
+        name: "ward-court-watched",
+        about: "`ward-court`, with the court's gate cutscene before its step 30, watched to its end",
+        ticks: WARD_COURT_TICKS,
+        actions: fight_back,
+        commands: &[(COURT_GATE_TICK, TimelineCommand::Play(COURT_GATE_ID))],
+    },
+    Script {
+        name: "ward-court-skipped",
+        about: "`ward-court-watched`, skipped 3.1 s in: it must reach all the same checksums",
+        ticks: WARD_COURT_TICKS,
+        actions: fight_back,
+        commands: &[
+            (COURT_GATE_TICK, TimelineCommand::Play(COURT_GATE_ID)),
+            (COURT_GATE_TICK, TimelineCommand::Skip { at_ms: 3100 }),
+        ],
     },
     Script {
         name: "chase-laps",

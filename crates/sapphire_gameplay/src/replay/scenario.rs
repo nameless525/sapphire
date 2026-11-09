@@ -81,6 +81,10 @@ pub enum ScenarioError {
     NavMesh(#[from] sapphire_navmesh::NavMeshError),
     #[error(transparent)]
     Timeline(#[from] TimelineError),
+    #[error(transparent)]
+    Zone(#[from] sapphire_zone::ZoneError),
+    #[error("the zone has no spawner named `{0}`")]
+    MissingSpawner(&'static str),
     #[error("the arena couldn't bind its runtime profiles: {0}")]
     RuntimeProfiles(String),
 }
@@ -117,6 +121,13 @@ impl Scenario {
     pub fn set_of(&self, file_name: &str) -> Option<MoveSetId> {
         let index = self.documents.iter().position(|path| document_file_name(path) == file_name)?;
         Some(MoveSetId(u32::try_from(index).ok()?))
+    }
+
+    /// The zone it stands in, by the stem the app's content finds it by, if it stands in one: the stage
+    /// opens that zone around the fight and stands its ground on the zone's colliders.
+    #[must_use]
+    pub fn zone(&self) -> Option<&'static str> {
+        (self.name == super::ward::WARD_COURT).then_some(super::ward::WARD_ZONE_STEM)
     }
 }
 
@@ -218,6 +229,19 @@ pub const SCENARIOS: &[Scenario] = &[
         },
         documents: &[TEST_MOVES_PATH],
         setup: timelines,
+    },
+    Scenario {
+        name: super::ward::WARD_COURT,
+        about: "`arena-fight` in the Lantern Ward's temple court: the zone's colliders, the player at the court's \
+                checkpoint and the warrior at its far end, with the court's gate cutscene loaded to open on",
+        config: SimConfig {
+            seed: 7,
+            max_actors: 8,
+            step_budget: BUDGET_DESKTOP_LOW,
+            physics_budget: PHYSICS_BUDGET_DESKTOP_LOW,
+        },
+        documents: &[PLAYER_MOVES_PATH, WARRIOR_MOVES_PATH],
+        setup: super::ward::ward_court,
     },
 ];
 
@@ -567,7 +591,7 @@ pub fn party(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
     fight_on(sim, player_moves()?, warrior_moves()?, &cooked, crate::arena::spawns(), true)
 }
 
-fn fight_on(
+pub(super) fn fight_on(
     sim: &mut Simulation,
     player: MoveSet,
     warrior: MoveSet,
@@ -741,7 +765,12 @@ mod tests {
                 let view = sim.actor(actor).expect("alive");
                 assert!(view.controller.is_active(), "{}", scenario.name);
                 assert_eq!(view.controller.state.mode, crate::controller::GroundMode::Grounded);
-                assert_eq!(view.position.y, 0.0, "{}", scenario.name);
+                if scenario.zone().is_some() {
+                    // A zone's ground is its own colliders, whose tops are as near 0 as a cook's f32s land.
+                    assert!(view.position.y.abs() < 1e-6, "{}: {}", scenario.name, view.position.y);
+                } else {
+                    assert_eq!(view.position.y, 0.0, "{}", scenario.name);
+                }
             }
         }
     }

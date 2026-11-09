@@ -3686,6 +3686,7 @@ dependencies = [
  "sapphire_serialize",
  "sapphire_time",
  "sapphire_timeline",
+ "sapphire_zone",
  "serde",
  "thiserror 2.0.21",
  "xxhash-rust",

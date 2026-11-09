@@ -382,3 +382,24 @@ fn a_replay_starts_a_cutscene_at_the_boundary_its_recording_did() {
     player.run_to_end();
     assert_eq!(player.trail(), &played.trail);
 }
+
+/// The Lantern Ward's court (M3 Q3, exit test 3): the gate's cutscene watched and skipped reach one trail,
+/// and the fight before it is the fight with no cutscene at all, checksum for checksum.
+#[test]
+fn the_wards_gate_watched_or_skipped_leaves_its_fight_on_one_trail() {
+    let scenario = find_scenario(SCENARIOS, "ward-court").expect("listed");
+    let trail = |name| {
+        let script = find_script(name).expect("listed");
+        let mut recording = Recording::new(scenario, scenario.config).expect("sets up");
+        recording.run_script(script, script.ticks).expect("runs");
+        let (_, played) = recording.finish();
+        played.allocation_gate().expect("no allocation");
+        trail_of(&played.trail)
+    };
+    let (plain, watched, skipped) =
+        (trail("ward-court"), trail("ward-court-watched"), trail("ward-court-skipped"));
+    assert_eq!(watched, skipped);
+    let gate = sapphire_gameplay::replay::COURT_GATE_TICK as usize;
+    assert_eq!(plain[..=gate], watched[..=gate], "the fight before the gate is the fight without it");
+    assert_ne!(plain[gate + 1..], watched[gate + 1..], "the gate's event is in the checksum");
+}

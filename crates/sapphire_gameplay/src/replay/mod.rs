@@ -38,6 +38,7 @@ mod play;
 mod scenario;
 mod script;
 mod tuning;
+mod ward;
 
 pub use checksums::{
     ARCHITECTURE, CHECKPOINT_EVERY, ChecksumFile, ChecksumsError, Divergence, RecordedTrail, Trail,
@@ -58,3 +59,8 @@ pub use script::{
     arena_walk, attempts, fight_back, find_script, melee_sweep,
 };
 pub use tuning::{LiveMoves, LiveSet, compile_document};
+pub use ward::{
+    COURT_GATE_ID, COURT_GATE_PATH, COURT_GATE_TICK, PLAYER_SPAWNER, WARD_COLLIDERS_PATH, WARD_COURT,
+    WARD_ZONE_PATH, WARD_ZONE_STEM, WARRIOR_SPAWNER, ZoneFight, ward_colliders, ward_court, ward_spawns,
+    zone_fight,
+};

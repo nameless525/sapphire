@@ -833,6 +833,19 @@ impl Simulation {
         Ok(())
     }
 
+    /// The digest of the loaded timeline `id` ([`TimelineSimulation::digest`]), for presentation to find the
+    /// cooked timeline that plays beside it: the one whose simulation half is this one.
+    #[must_use]
+    pub fn timeline_digest(&self, id: TimelineId) -> Option<u64> {
+        self.ecs.world().resource::<TimelineLibrary>().digest(id)
+    }
+
+    /// How many timelines have started in this run: presentation follows a run that moved this on.
+    #[must_use]
+    pub fn timelines_played(&self) -> u64 {
+        self.ecs.world().resource::<TimelineRun>().played()
+    }
+
     /// The timeline playing, if one is.
     #[must_use]
     pub fn timeline(&self) -> Option<TimelineProgress> {

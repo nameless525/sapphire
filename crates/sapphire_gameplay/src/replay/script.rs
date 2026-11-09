@@ -310,6 +310,15 @@ pub const SCRIPTS: &[Script] = &[
         actions: walks::walk_the_square,
         commands: &[],
     },
+    Script {
+        name: "walk-the-ward",
+        about: "the Lantern Ward's player along its tour by the stick: the Market Court, the Blossom Garden, the \
+                temple's lane, the court and up the terrace's steps, then a return to the court's checkpoint \
+                and a run up the court",
+        ticks: walks::WARD_WALK_TICKS,
+        actions: walks::walk_the_ward,
+        commands: &walks::WARD_RETURN,
+    },
 ];
 
 /// The script named `name`.

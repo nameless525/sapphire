@@ -123,7 +123,7 @@ fn start(document: &ZoneDocument) -> Vec3 {
     Vec3::from(start.expect("where exit test 1 starts").position)
 }
 
-/// Every spawner, trigger and point of every spline is on one piece of ground with the start.
+/// Every spawner, trigger, checkpoint and point of every spline is on one piece of ground with the start.
 #[test]
 fn everywhere_the_ward_names_is_a_walk_from_the_start() {
     let document = document();
@@ -137,6 +137,10 @@ fn everywhere_the_ward_names_is_a_walk_from_the_start() {
         let on_ground = Vec3::from(trigger.position) * Vec3::new(1.0, 0.0, 1.0);
         (trigger.name.clone(), on_ground)
     });
+    let checkpoints = document
+        .checkpoints
+        .iter()
+        .map(|checkpoint| (checkpoint.name.clone(), Vec3::from(checkpoint.position)));
     let splines = document.splines.iter().filter(|spline| spline.name == "tour").flat_map(|spline| {
         spline
             .points
@@ -145,7 +149,7 @@ fn everywhere_the_ward_names_is_a_walk_from_the_start() {
             .map(|(index, &point)| (format!("{}[{index}]", spline.name), Vec3::from(point)))
     });
     let mut count = 0;
-    for (name, position) in spawners.chain(triggers).chain(splines) {
+    for (name, position) in spawners.chain(triggers).chain(checkpoints).chain(splines) {
         let end = graph
             .locate(position, Reach::CHARACTER)
             .unwrap_or_else(|| panic!("{name} at {position} isn't on the navmesh"));
@@ -156,7 +160,9 @@ fn everywhere_the_ward_names_is_a_walk_from_the_start() {
     assert!(count > 40, "the ward names more than {count} places");
     let spawns = |what: &str| document.spawners.iter().filter(|spawner| spawner.spawns == what).count();
     assert_eq!(spawns("boss"), 1, "where a boss stands");
-    assert_eq!(spawns("checkpoint"), 1, "where a checkpoint stands");
+    let checkpoints: Vec<&str> =
+        document.checkpoints.iter().map(|checkpoint| checkpoint.name.as_str()).collect();
+    assert_eq!(checkpoints, ["start", "market", "garden", "court"], "where a game comes back to");
     assert!(spawns("warrior") >= 12, "three rooms' fights");
 }
 

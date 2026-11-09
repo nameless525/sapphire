@@ -80,6 +80,52 @@ fn walked_out() -> (Simulation, Vec<ActorId>) {
 fn the_scripts_name_the_platform_by_its_place() {
     let (sim, _) = start("ground-walk");
     assert_eq!(sim.zone().expect("a zone").checkpoint("platform"), Some(walks::PLATFORM));
+    let (ward, _) = start("lantern-walk");
+    assert_eq!(ward.zone().expect("a zone").checkpoint("court"), Some(walks::WARD_COURT));
+}
+
+/// The Lantern Ward's walk goes the length of its tour on its real ground: to the Market Court's far end
+/// and the Blossom Garden's, down the temple's lane, through the court and up the terrace's steps,
+/// reaching each checkpoint on the way in order, and pressing into nothing the controller turns it from.
+/// Then it comes back to the court and runs up it.
+#[test]
+fn the_ward_walk_goes_the_whole_ward() {
+    let (mut sim, cast) = start("lantern-walk");
+    let player = cast[0];
+    let (mut east, mut west, mut highest) = (f32::NEG_INFINITY, f32::INFINITY, f32::NEG_INFINITY);
+    let mut reached = Vec::new();
+    run(&mut sim, &cast, walks::walk_the_ward, walks::WARD_RETURN_AT, |sim| {
+        let view = sim.actor(player).expect("there");
+        east = east.max(view.position.x);
+        west = west.min(view.position.x);
+        highest = highest.max(view.position.y);
+        if let Some(name) = latest_name(sim)
+            && reached.last() != Some(&name)
+        {
+            reached.push(name);
+        }
+    });
+    assert_eq!(reached, ["start", "market", "garden", "court"]);
+    assert!(east > 72.0 && west < -63.5, "it reached both rooms' far ends: {east}, {west}");
+    let end = place_of(&sim, player).position;
+    assert!(Vec3::new(end.x, 0.0, end.z + 105.0).length() < 0.5, "it ended on the terrace: {end}");
+    assert!((end.y - 1.2).abs() < 1e-3, "standing on its top: {end}");
+    assert!(highest < 1.35, "it went up the steps, not over anything: {highest}");
+    let view = sim.actor(player).expect("there");
+    assert_eq!(view.controller.state.mode, GroundMode::Grounded);
+    assert_eq!(sim.stats().controllers_refused, 0);
+
+    // The return, as the replay's command makes it: to the court's checkpoint, and up the court.
+    let court = sim.zone().expect("a zone").checkpoint_place(walks::WARD_COURT).expect("the court");
+    let actions =
+        |tick: u64, cast: &[ActorId]| walks::walk_the_ward(tick + u64::from(walks::WARD_RETURN_AT), cast);
+    sim.return_to_checkpoint(walks::WARD_COURT).expect("it returns");
+    assert_eq!(place_of(&sim, player), court);
+    run(&mut sim, &cast, actions, walks::WARD_WALK_TICKS - walks::WARD_RETURN_AT, |_| {});
+    let end = place_of(&sim, player).position;
+    assert!(end.z < court.position.z - 10.0, "it ran up the court: {end}");
+    assert_eq!(latest_name(&sim).as_deref(), Some("court"));
+    assert_eq!(sim.actor(player).expect("there").teleports, 1);
 }
 
 /// The walk out goes up the ramp, over the platform, down its steps, onto the curb's edge, over the wall and

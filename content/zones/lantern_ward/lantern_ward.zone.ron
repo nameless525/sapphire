@@ -342,8 +342,9 @@
             (name: "garden_spawn_b", position: (-64.0, 0.0, -10.0), yaw_degrees: 90.0, spawns: "warrior"),
             (name: "garden_spawn_c", position: (-64.0, 0.0, 9.0), yaw_degrees: 90.0, spawns: "warrior"),
             (name: "garden_spawn_d", position: (-72.0, 0.0, 1.0), yaw_degrees: 90.0, spawns: "warrior"),
-            // The Temple Court: a checkpoint inside its gate, then a fight, then the terrace.
-            (name: "checkpoint_court", position: (0.0, 0.0, -63.0), yaw_degrees: 180.0, spawns: "checkpoint"),
+            // The Temple Court: inside its gate, where its checkpoint stands and the court's fight starts the
+            // player, then a fight, then the terrace.
+            (name: "checkpoint_court", position: (0.0, 0.0, -63.0), yaw_degrees: 180.0, spawns: "player"),
             (name: "court_spawn_a", position: (-8.0, 0.0, -80.0), yaw_degrees: 0.0, spawns: "warrior"),
             (name: "court_spawn_b", position: (8.0, 0.0, -80.0), yaw_degrees: 0.0, spawns: "warrior"),
             (name: "court_spawn_c", position: (-14.0, 0.0, -88.0), yaw_degrees: 0.0, spawns: "warrior"),
@@ -356,8 +357,15 @@
             (name: "market_threshold", position: (43.0, 1.5, 0.0), volume: Box(half_extents: (1.0, 1.5, 4.5)), event: "market_entered"),
             (name: "garden_threshold", position: (-43.0, 1.5, 0.0), volume: Box(half_extents: (1.0, 1.5, 4.5)), event: "garden_entered"),
             (name: "court_threshold", position: (0.0, 1.5, -61.0), volume: Box(half_extents: (4.5, 1.5, 1.0)), event: "court_entered"),
-            (name: "checkpoint_court", position: (0.0, 1.5, -63.0), volume: Box(half_extents: (4.5, 1.5, 1.5)), event: "checkpoint_reached"),
             (name: "terrace_steps", position: (0.0, 2.0, -99.0), volume: Box(half_extents: (5.0, 2.0, 2.5)), event: "terrace_reached"),
+        ],
+        // Where a game comes back to (M3 B4): the start, each room's arrival and inside the court's gate. Someone
+        // playing reaches one by standing in it outside a fight, and a save names the latest.
+        checkpoints: [
+            (name: "start", position: (0.0, 0.0, 14.0), yaw_degrees: 180.0, volume: Sphere(radius: 2.0)),
+            (name: "market", position: (47.0, 0.0, 0.0), yaw_degrees: 90.0, volume: Box(half_extents: (1.5, 1.5, 4.5))),
+            (name: "garden", position: (-47.0, 0.0, 0.0), yaw_degrees: 270.0, volume: Box(half_extents: (1.5, 1.5, 4.5))),
+            (name: "court", position: (0.0, 0.0, -63.0), yaw_degrees: 180.0, volume: Box(half_extents: (4.5, 1.5, 1.5))),
         ],
         splines: [
             // Through everything once, on foot, at about a character's height: a capture's and a bench's walk.

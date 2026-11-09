@@ -1,0 +1,13 @@
+(
+    type: "sapphire::gameplay::ScenarioDocument",
+    version: 1,
+    data: (
+        about: "the player at the Lantern Ward's start, with the whole ward to walk and its checkpoints to reach",
+        max_actors: 8,
+        colliders: "content/zones/lantern_ward/lantern_ward.colliders.ron",
+        zone: Some("content/zones/lantern_ward/lantern_ward.zone.ron"),
+        encounters: [],
+        moves: ["content/combat/player/player.moves.ron", "content/combat/enemy/warrior.moves.ron"],
+        cast: [(moves: "player", at: "player_start", faction: 1, soft_lock: true)],
+    ),
+)

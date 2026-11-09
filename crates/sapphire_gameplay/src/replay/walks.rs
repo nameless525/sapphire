@@ -144,3 +144,65 @@ pub const SQUARE_LEGS: [Leg; 7] = [
 pub fn walk_the_square(tick: u64, cast: &[ActorId]) -> TickActions {
     walk(&SQUARE_LEGS, tick, cast)
 }
+
+/// The Lantern Ward's `court` checkpoint, by its place in the zone's list: `tests/walks.rs` holds it there.
+pub const WARD_COURT: CheckpointId = CheckpointId::from_raw(0);
+
+/// The Lantern Ward end to end from `player_start` (0, 14), along its `tour` spline, by `walk-the-ward`: a
+/// leg a point of it, each aimed from where the last one ended, so none presses into a wall.
+///
+/// 1. Standing, then toward −Z and east to the Market Court, through its `market` checkpoint, to the
+///    court's far end and back.
+/// 2. West to the Blossom Garden, through `garden`, to its far end and back.
+/// 3. South down the temple's lane, through the court's gate and its `court` checkpoint, the length of
+///    the court and up the terrace's steps to where a boss would stand.
+///
+/// Then [`WARD_COURT`]'s return, and [`WARD_ONWARD_LEGS`].
+pub const WARD_OUT_LEGS: [Leg; 25] = [
+    leg(0, 0, 30),
+    leg(0, -127, 81),
+    leg(118, -48, 91),
+    leg(124, -27, 119),
+    leg(127, 0, 260),
+    leg(127, 0, 180),
+    leg(5, 127, 87),
+    leg(86, -94, 125),
+    leg(-127, 0, 278),
+    leg(-127, 2, 255),
+    leg(-123, 30, 124),
+    leg(-127, 0, 160),
+    leg(-123, -30, 123),
+    leg(-127, 0, 260),
+    leg(-127, 0, 180),
+    leg(-4, 127, 87),
+    leg(116, -52, 213),
+    leg(127, -2, 253),
+    leg(114, -55, 134),
+    leg(71, -105, 145),
+    leg(0, -127, 420),
+    leg(0, -127, 365),
+    leg(-3, -127, 43),
+    leg(-1, -127, 45),
+    leg(0, 0, 60),
+];
+
+/// From the court's checkpoint, facing up the court: a run of two seconds toward −Z, and standing.
+pub const WARD_ONWARD_LEGS: [Leg; 2] = [leg(0, -127, 120), leg(0, 0, 60)];
+
+/// When `walk-the-ward` returns to the court: after [`WARD_OUT_LEGS`].
+pub const WARD_RETURN_AT: u32 = length(&WARD_OUT_LEGS);
+
+/// `walk-the-ward`'s command: the return to the court.
+pub const WARD_RETURN: [(u32, ReplayCommand); 1] = [(WARD_RETURN_AT, ReplayCommand::ReturnTo(WARD_COURT))];
+
+/// `walk-the-ward`'s length.
+pub const WARD_WALK_TICKS: u32 = WARD_RETURN_AT + length(&WARD_ONWARD_LEGS);
+
+/// [`super::SCRIPTS`]' `walk-the-ward`.
+#[must_use]
+pub fn walk_the_ward(tick: u64, cast: &[ActorId]) -> TickActions {
+    match tick.checked_sub(u64::from(WARD_RETURN_AT)) {
+        None => walk(&WARD_OUT_LEGS, tick, cast),
+        Some(onward) => walk(&WARD_ONWARD_LEGS, onward, cast),
+    }
+}

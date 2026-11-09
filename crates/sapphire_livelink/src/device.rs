@@ -28,10 +28,12 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const RETRY: Duration = Duration::from_secs(1);
 /// Pushes waiting for the app. A full queue holds a connection's reader back, never the app.
 const PUSH_QUEUE: usize = 16;
-/// Replies waiting to be written to one connection. The global accepted-request capacity is
-/// smaller, so accepted replies fit even when their tool stops reading.
-const REPLY_QUEUE: usize = 64;
-/// Accepted requests across all connections, including app work and replies not yet written.
+/// Replies queued for one connection and not yet written. Past these its reader waits for its
+/// writer before taking another request, so a tool that stops reading stops only its own
+/// connection, and every reply it was promised is still written if it reads again.
+const REPLY_QUEUE: usize = 16;
+/// Requests the app has yet to answer, across all connections. A request's slot goes when its
+/// reply is queued, so this bounds the app's work and never waits on a socket.
 const IN_FLIGHT_REQUESTS: usize = 16;
 /// Connections served at once; more are closed as they come.
 const MAX_CONNECTIONS: u32 = 8;
@@ -100,26 +102,32 @@ pub struct Responder {
     id: u32,
     replies: SyncSender<PendingReply>,
     shared: Arc<Shared>,
-    permit: Option<RequestPermit>,
+    /// The request's share of the app's work ([`IN_FLIGHT_REQUESTS`]), until its reply is queued.
+    work: Option<Slot>,
+    /// Its reply's place in its connection's queue ([`REPLY_QUEUE`]), until it's written.
+    queued: Option<Slot>,
 }
 
-/// Backpressure spans asynchronous app work, not only the transport's waiting queue.
+/// A count with a limit, which a reader waits on: the app's work across connections, or one
+/// connection's replies not yet written.
 #[derive(Default)]
-struct InFlight {
+struct Slots {
     count: Mutex<usize>,
     available: Condvar,
 }
 
-struct RequestPermit(Arc<InFlight>);
+/// One of a [`Slots`]' places, given back when dropped.
+struct Slot(Arc<Slots>);
 
-impl RequestPermit {
-    fn acquire(pending: Arc<InFlight>, closing: &AtomicBool) -> Option<Self> {
-        let mut count = pending.count.lock().unwrap_or_else(PoisonError::into_inner);
-        while *count >= IN_FLIGHT_REQUESTS {
+impl Slot {
+    /// Waits for a place among `limit`, or `None` once the link is closing.
+    fn acquire(slots: Arc<Slots>, limit: usize, closing: &AtomicBool) -> Option<Self> {
+        let mut count = slots.count.lock().unwrap_or_else(PoisonError::into_inner);
+        while *count >= limit {
             if closing.load(Ordering::Relaxed) {
                 return None;
             }
-            count = pending
+            count = slots
                 .available
                 .wait_timeout(count, Duration::from_millis(100))
                 .unwrap_or_else(PoisonError::into_inner)
@@ -127,11 +135,11 @@ impl RequestPermit {
         }
         *count += 1;
         drop(count);
-        Some(Self(pending))
+        Some(Self(slots))
     }
 }
 
-impl Drop for RequestPermit {
+impl Drop for Slot {
     fn drop(&mut self) {
         *self.0.count.lock().unwrap_or_else(PoisonError::into_inner) -= 1;
         self.0.available.notify_one();
@@ -140,7 +148,7 @@ impl Drop for RequestPermit {
 
 struct PendingReply {
     reply: Reply,
-    _permit: Option<RequestPermit>,
+    _queued: Option<Slot>,
 }
 
 impl fmt::Debug for Responder {
@@ -170,13 +178,16 @@ impl Responder {
             | ReplyBody::Captured(_) => 0,
             _ => self.shared.applied.fetch_add(1, Ordering::Relaxed),
         };
-        // A closed connection no longer wants it. The request permit stays with the queued
-        // reply through the socket write, so production requests cannot fill this queue.
+        // A closed connection no longer wants it. Its place in the queue was taken with the
+        // request, so the queue is never full; the app's work is done, so its slot goes now,
+        // whether or not the tool ever reads the reply.
+        let Self { id, replies, work, queued, .. } = self;
         if let Err(TrySendError::Full(reply)) =
-            self.replies.try_send(PendingReply { reply: Reply { id: self.id, body }, _permit: self.permit })
+            replies.try_send(PendingReply { reply: Reply { id, body }, _queued: queued })
         {
-            tracing::warn!(target: LOG_TARGET, id = reply.reply.id, "live link reply dropped: the tool isn't reading");
+            tracing::warn!(target: LOG_TARGET, id = reply.reply.id, "live link reply dropped: its queue is full");
         }
+        drop(work);
     }
 
     /// Replies with an error: the request changed nothing.
@@ -245,7 +256,8 @@ pub struct LinkCounters {
 #[derive(Default)]
 struct Shared {
     closing: AtomicBool,
-    pending: Arc<InFlight>,
+    /// Requests the app has yet to answer ([`IN_FLIGHT_REQUESTS`]).
+    pending: Arc<Slots>,
     /// Connections being served, handshakes included.
     serving: AtomicU32,
     /// Connections past their handshake.
@@ -569,7 +581,7 @@ fn serve(stream: TcpStream, context: &Context, handshake: Option<Duration>) -> R
         .spawn(move || write_replies(writer, &outgoing))?;
     let _connected = Connected::new(&shared.connections);
     tracing::info!(target: LOG_TARGET, peer = ?stream.peer_addr().ok(), "live link connected");
-    let mut session = Session { context, replies, push: None };
+    let mut session = Session { context, replies, queued: Arc::default(), push: None };
     let mut reader = BufReader::new(&stream);
     loop {
         if shared.closing.load(Ordering::Relaxed) {
@@ -611,19 +623,26 @@ fn write_replies(stream: TcpStream, replies: &Receiver<PendingReply>) {
 struct Session<'a> {
     context: &'a Context,
     replies: SyncSender<PendingReply>,
+    /// This connection's replies not yet written ([`REPLY_QUEUE`]).
+    queued: Arc<Slots>,
     /// The pack being pushed, or why its push failed.
     push: Option<Result<PackPlan, String>>,
 }
 
 impl Session<'_> {
+    /// A responder for request `id`, once its reply has a place in this connection's queue and
+    /// the app has room for its work, in that order: a reader waiting on its own tool holds
+    /// nothing another connection needs. `None` once the link is closing.
     fn responder(&self, id: u32) -> Option<Responder> {
-        let permit =
-            RequestPermit::acquire(self.context.shared.pending.clone(), &self.context.shared.closing)?;
+        let shared = &self.context.shared;
+        let queued = Slot::acquire(self.queued.clone(), REPLY_QUEUE, &shared.closing)?;
+        let work = Slot::acquire(shared.pending.clone(), IN_FLIGHT_REQUESTS, &shared.closing)?;
         Some(Responder {
             id,
             replies: self.replies.clone(),
-            shared: self.context.shared.clone(),
-            permit: Some(permit),
+            shared: shared.clone(),
+            work: Some(work),
+            queued: Some(queued),
         })
     }
 
@@ -817,29 +836,93 @@ mod tests {
     /// The reply `respond` sends through a responder of its own.
     fn replied(respond: impl FnOnce(Responder)) -> Reply {
         let (replies, outgoing) = mpsc::sync_channel(1);
-        respond(Responder { id: 7, replies, shared: Arc::default(), permit: None });
+        respond(Responder { id: 7, replies, shared: Arc::default(), work: None, queued: None });
         outgoing.try_recv().expect("a reply").reply
     }
 
     #[test]
-    fn request_capacity_is_held_until_the_reply_is_written_or_cancelled() {
-        let pending = Arc::<InFlight>::default();
+    fn a_requests_work_goes_when_its_reply_is_queued_and_its_place_when_written() {
+        let (work, queue) = (Arc::<Slots>::default(), Arc::<Slots>::default());
         let closing = AtomicBool::new(false);
-        let permit = RequestPermit::acquire(pending.clone(), &closing).unwrap();
+        let count = |slots: &Arc<Slots>| *slots.count.lock().unwrap();
+        let responder = |replies| Responder {
+            id: 1,
+            replies,
+            shared: Arc::default(),
+            work: Slot::acquire(work.clone(), IN_FLIGHT_REQUESTS, &closing),
+            queued: Slot::acquire(queue.clone(), REPLY_QUEUE, &closing),
+        };
         let (replies, outgoing) = mpsc::sync_channel(REPLY_QUEUE);
-        Responder { id: 1, replies, shared: Arc::default(), permit: Some(permit) }.refuse("a result");
-        assert_eq!(*pending.count.lock().unwrap(), 1);
-        let queued = outgoing.recv().unwrap();
-        assert_eq!(*pending.count.lock().unwrap(), 1);
-        drop(queued);
-        assert_eq!(*pending.count.lock().unwrap(), 0);
-        let permits: Vec<_> = (0..IN_FLIGHT_REQUESTS)
-            .map(|_| RequestPermit::acquire(pending.clone(), &closing).unwrap())
-            .collect();
+        let pending = responder(replies);
+        assert_eq!((count(&work), count(&queue)), (1, 1));
+        pending.refuse("a result");
+        assert_eq!((count(&work), count(&queue)), (0, 1), "the app's done; the socket isn't");
+        drop(outgoing.recv().unwrap());
+        assert_eq!(count(&queue), 0, "written");
+        let held: Vec<_> =
+            (0..REPLY_QUEUE).map(|_| Slot::acquire(queue.clone(), REPLY_QUEUE, &closing).unwrap()).collect();
         closing.store(true, Ordering::Relaxed);
-        assert!(RequestPermit::acquire(pending.clone(), &closing).is_none());
-        drop(permits);
-        assert_eq!(*pending.count.lock().unwrap(), 0);
+        assert!(
+            Slot::acquire(queue.clone(), REPLY_QUEUE, &closing).is_none(),
+            "a full queue waits, until closing"
+        );
+        drop(held);
+        assert_eq!(count(&queue), 0);
+    }
+
+    /// One tool pipelines requests whose replies are larger than a socket holds and never reads
+    /// them. Its connection waits on it, and another tool's request is answered all the same.
+    #[test]
+    fn a_tool_that_stops_reading_stops_only_its_own_connection() {
+        let packs = Arc::new(LivePacks::new(sapphire_assets::MemoryPackSource::new()));
+        let link = LiveLink::start(LinkMode::Listen(SocketAddr::from(([127, 0, 0, 1], 0))), packs).unwrap();
+        let address = link.address();
+        let connect = move || {
+            let mut socket = TcpStream::connect(address).unwrap();
+            socket.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            socket.write_all(&Preamble::CURRENT.to_bytes()).unwrap();
+            Preamble::read(&mut socket).unwrap().check().unwrap();
+            socket
+        };
+        let mut silent = connect();
+        let requests = (IN_FLIGHT_REQUESTS + REPLY_QUEUE) as u32;
+        for id in 0..requests {
+            write_frame(&mut silent, &Request { id, body: RequestBody::Status }).unwrap();
+        }
+        let large = || {
+            let png = vec![7; 1 << 20];
+            ReplyBody::Captured(crate::protocol::Capture { frame: 0, width: 1, height: 1, halved: 0, png })
+        };
+        let next = || {
+            let timer = sapphire_time::Stopwatch::start();
+            loop {
+                if let Some(push) = link.poll() {
+                    break push;
+                }
+                assert!(timer.elapsed() < Duration::from_secs(10), "the app was asked nothing");
+                thread::sleep(Duration::from_millis(1));
+            }
+        };
+        // The app answers what the silent tool's connection takes, until it waits on its tool.
+        let timer = sapphire_time::Stopwatch::start();
+        while timer.elapsed() < Duration::from_millis(500) {
+            if let Some(Push::Status { reply }) = link.poll() {
+                reply.reply(large());
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(*link.shared.pending.count.lock().unwrap(), 0, "no work waits on the silent tool");
+
+        let other = thread::spawn(move || {
+            let mut socket = connect();
+            write_frame(&mut socket, &Request { id: 1, body: RequestBody::Status }).unwrap();
+            let reply: Reply = read_frame(&mut socket).unwrap();
+            assert_eq!(reply.id, 1);
+        });
+        let Push::Status { reply } = next() else { panic!("the other tool's request") };
+        reply.reply(ReplyBody::Cvars(Vec::new()));
+        other.join().unwrap();
+        drop(silent);
     }
 
     #[test]

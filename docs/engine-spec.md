@@ -2580,6 +2580,11 @@ Nobody has heard any of it: the placeholder sounds are the project's own synthes
   - **The stage alone:** `Arena::fighters` yields the stage's first two fighters that are there, so a stage whose every warrior has gone (as a restarted bench's can be, between waves) stands the player alone rather than panicking.
   - **Proved:** replays `ward-market` (`into-the-market`, 2,400 ticks: two waves of a Lancer and a warrior, both Lancers swing, and the first vaults in and is broken) and `ward-terrace` (`fight-back`, 3,000 ticks: the boss crosses half health once and tolls once, first), held by `crates/sapphire_gameplay/tests/ward_fights.rs`, which finds the boss by `EnemyMind::boss`; Metal goldens `fight-ward-market` and `fight-ward-terrace`; on the sandbox's bench, `first_use` 0 in every phase of both on Desktop-Low and Mobile-Low. No earlier replay or golden moved.
   - **Can't do:** no boss script: its phase's brain and cue carry the second wind. A brain can't keep apart from its allies or circle while it waits for a token (P3's `apart` and `watch`), which the Lancer wants. The boss's name key has no string yet.
+  - **Can't do, in the tools (for M4's handoff):**
+    - **The editor** fights only `arena-fight`: its viewport's fights are all `CombatOption::Fight`, which stands the warrior alone, so another kind never reaches it. Both ways it stands a fight go through `Fight::stand_prepared`, which loads the kinds. Choosing a scenario is an editor feature, and with it `Fight::start_on` takes the renderer and loads kinds as `stand_prepared` does.
+    - **Live tuning** reaches neither a kind's `.enemy.ron` nor its graph, only the warrior's graph. That is two pieces of work, about half a day each:
+      - **Documents.** An enemy document needs a `Document::Enemy`, from every scenario's `enemies`. It would reach the running fight through `Simulation::add_enemy` on each set the kind plays, by way of `Recording::edit`, and the next fight through an edits resource that `set_up` reads, as `ScriptEdits` does for scripts.
+      - **Graphs.** A kind's graph is keyed by load order (`ENEMY_GRAPH.numbered(n)`), and tuning names graphs by fixed paths. So the fight would have to say each loaded kind's graph key and file, and hot reload's table of graph files would need building again as kinds load.
 
 **Enemy AI**
 

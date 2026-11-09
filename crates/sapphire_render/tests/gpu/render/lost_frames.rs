@@ -5,7 +5,7 @@
 use sapphire_assets::material::{AlphaMode, FoliageMaterial};
 use sapphire_render::quality::TierTable;
 use sapphire_render::{
-    CharacterBody, CharacterFace, CharacterInstance, CharacterLighting, HistoryReset, Wind,
+    CharacterBody, CharacterFace, CharacterInstance, CharacterLighting, HistoryReset, InsetView, Wind,
 };
 use sapphire_rhi::TransientDesc;
 
@@ -446,5 +446,45 @@ fn lost_graphs_leave_no_trace_on_any_tier() {
             assert_eq!(lost_stats.temporal, stats.temporal, "{what}");
             assert_eq!(lost_stats.ambient, stats.ambient, "{what}");
         }
+    }
+}
+
+/// Z3a: an inset decides in `prepare` that its picture draws, and counts it drawn. A frame lost
+/// before `record` took its passes (never recorded, or recorded for a target of no size) left the
+/// picture counted drawn, so a still showcase held a picture nothing ever drew. Whatever loses
+/// the frame, the next that runs draws it.
+#[test]
+#[ignore = "needs a GPU"]
+fn an_inset_planned_in_a_lost_frame_draws_in_the_next() {
+    let gpu = gpu();
+    let texture = target(&gpu, FORMAT, SIZE);
+    let view = texture.create_view(&Default::default());
+    let camera = framing_camera(38.0, SIZE, 0.6);
+    let inset = InsetView::new(1, camera, (16, 16), AmbientLight::default());
+    let prepare = |frames: &mut Frames, exposure: f32| {
+        let packet = frames.packets.begin();
+        packet.views.push(ViewData::new(camera));
+        packet.push_inset(InsetView { exposure, ..inset }, []);
+        frames.renderer.prepare(&gpu, frames.packets.current());
+        frames.renderer.stats().insets.drawn
+    };
+    let run = |frames: &mut Frames| {
+        let mut graph = FrameGraph::new();
+        let target = graph.import_texture("target", &view);
+        frames.renderer.record(&mut graph, target).expect("a view and a target");
+        frames.graph.execute(&gpu, graph).expect("a valid graph");
+    };
+    for how in LOSSES {
+        let mut frames = Frames::new(&gpu, FORMAT, Msaa::default()).expect("renderer");
+        assert_eq!(prepare(&mut frames, 1.0), 1, "{how:?}: the first frame showing it draws it");
+        run(&mut frames);
+        assert_eq!(prepare(&mut frames, 1.0), 0, "{how:?}: an unchanged inset holds its picture");
+        run(&mut frames);
+        assert_eq!(prepare(&mut frames, 2.0), 1, "{how:?}: a new exposure draws");
+        lose(&mut frames, &gpu, &view, how);
+        assert_eq!(prepare(&mut frames, 2.0), 1, "{how:?}: the lost frame's picture draws again");
+        run(&mut frames);
+        assert_eq!(prepare(&mut frames, 2.0), 0, "{how:?}: and then holds");
+        run(&mut frames);
     }
 }

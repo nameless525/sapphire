@@ -2118,11 +2118,12 @@ impl Renderer {
             self.pending_cut = false;
             return;
         }
-        // The shadows' plan is made in `prepare`, so a frame never recorded leaves it unmet too.
+        // The shadows' and the insets' plans are made in `prepare`, so a frame never recorded
+        // leaves them unmet too.
         self.shadows.frame_lost();
+        self.insets.frame_lost();
         let Some(recorded) = recorded else { return };
         self.previous_clip_from_world = recorded.previous_clip_from_world;
-        self.insets.frame_lost();
         self.skinning.frame_lost();
         self.ambient.frame_lost();
         self.sky.frame_lost();

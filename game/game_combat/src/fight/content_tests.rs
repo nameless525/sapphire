@@ -16,7 +16,7 @@ use sapphire_assets::{
     AssetBudgets, AssetChange, AssetKind, AssetServer, LoadError, LoadPriority, MemoryPackSource,
 };
 use sapphire_colliders::ColliderSet;
-use sapphire_gameplay::replay::{SCENARIOS, find_scenario, warrior_enemy};
+use sapphire_gameplay::replay::{SCENARIOS, find_scenario, warrior_enemy, warrior_moves};
 use sapphire_gameplay::{ActorId, Simulation};
 use sapphire_livelink::LivePacks;
 use sapphire_math::{Affine3A, Mat4, Vec3};
@@ -186,6 +186,10 @@ fn pack_assets(x: f32, extra: usize, graph: AnimGraph, clip: AssetId, recovery: 
         influences: Influences::pack(&[held; 3], enemy_count),
     });
     let enemy_swing = Clip { skeleton: Some(ENEMY_SKELETON), ..swing(enemy_count) };
+    let kind = warrior_enemy().expect("compiles").to_cooked().expect("cooked");
+    let [moves] = AssetKind::Enemy.references(&kind).expect("a kind")[..] else {
+        panic!("a kind names its moves")
+    };
     let mut enemy_graph = graph.clone();
     enemy_graph.resolve(|_| ENEMY_SWING);
     let mut humanoid: Vec<_> = HumanBone::REQUIRED
@@ -208,12 +212,10 @@ fn pack_assets(x: f32, extra: usize, graph: AnimGraph, clip: AssetId, recovery: 
         packed_with(OTHER_SWING, AssetKind::Clip, &swing(count).to_cooked().expect("cooked"), vec![SKELETON]),
         packed_with(GRAPH, AssetKind::AnimGraph, &graph.to_cooked().expect("cooked"), vec![clip]),
         packed(MOVES, AssetKind::MoveSet, &show_moves(recovery).to_cooked().expect("cooked")),
-        // The enemy, as a fight loads it: its kind, then what that names.
-        packed(
-            enemy::KIND,
-            AssetKind::Enemy,
-            &warrior_enemy().expect("compiles").to_cooked().expect("cooked"),
-        ),
+        // The enemy, as a fight loads it: its kind, which names its moves as a cook's pack lists them, and
+        // those, then what its look names.
+        packed_with(enemy::KIND, AssetKind::Enemy, &kind, vec![moves]),
+        packed(moves, AssetKind::MoveSet, &warrior_moves().expect("compiles").to_cooked().expect("cooked")),
         packed_with(look.mesh, AssetKind::Mesh, &warrior.to_cooked().expect("cooked"), vec![ENEMY_SKELETON]),
         packed(
             look.held.as_ref().expect("a blade").mesh,

@@ -210,15 +210,18 @@ impl TextSystem {
         scale.to_bits().hash(&mut hasher);
         max_width.map(f32::to_bits).hash(&mut hasher);
         let key = hasher.finish();
+        // Floats compare by their bits, as they hash: `==` would miss a NaN every frame, and take
+        // -0 for 0 under another key.
+        let same = |a: f32, b: f32| a.to_bits() == b.to_bits();
         let matches = |layout: &CachedLayout| {
             *layout.text == *text
                 && *layout.families == *style.families
-                && layout.size == style.size
-                && layout.weight == style.weight
-                && layout.line_height == style.line_height
+                && same(layout.size, style.size)
+                && same(layout.weight, style.weight)
+                && same(layout.line_height, style.line_height)
                 && layout.locale.as_deref() == style.locale
-                && layout.scale == scale
-                && layout.max_width == max_width
+                && same(layout.scale, scale)
+                && layout.max_width.map(f32::to_bits) == max_width.map(f32::to_bits)
         };
         let hit = self.cache.get(&key).is_some_and(matches);
         if hit {

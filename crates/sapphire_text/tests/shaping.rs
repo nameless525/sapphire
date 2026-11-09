@@ -250,6 +250,18 @@ fn a_chain_is_a_list_of_families() {
 }
 
 #[test]
+fn a_nan_size_finds_what_it_shaped() {
+    let dir = common::fonts_dir();
+    let mut text = system(&dir);
+    let nan = style(FAMILY_BODY, f32::NAN, 400.0, "en");
+    text.shape("Level 90", &nan, 1.0, None);
+    text.take_stats();
+    text.shape("Level 90", &nan, 1.0, None);
+    let stats = text.take_stats();
+    assert_eq!((stats.hits, stats.misses), (1, 0), "the cache compares what it hashes");
+}
+
+#[test]
 fn punctuation_in_an_imported_family_selects_that_exact_font_before_its_fallback() {
     let dir = common::fonts_dir();
     let mut renamed = (*read_font(&dir, OXANIUM)).clone();

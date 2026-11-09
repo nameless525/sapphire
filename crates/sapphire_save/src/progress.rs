@@ -127,7 +127,8 @@ fn describe(fault: &Option<SlotFault>) -> String {
     fault.as_ref().map_or_else(|| "missing".to_owned(), ToString::to_string)
 }
 
-/// A write that didn't happen. Whatever was on disk still loads.
+/// A write that didn't finish. A whole save still loads: the one before it, or, after [`Self::Io`] at the
+/// last step alone, this one.
 #[derive(Debug, thiserror::Error)]
 pub enum WriteError {
     #[error(transparent)]
@@ -135,6 +136,9 @@ pub enum WriteError {
     /// A valid slot already has the largest generation; neither slot was changed.
     #[error("save generation is exhausted; the existing slots are left alone")]
     GenerationExhausted,
+    /// A step of the replace failed. Before the rename the slot is as it was. The last step, the
+    /// directory's flush, comes after it, so the new save is in its slot and loads, though a power cut
+    /// could still undo it: write again rather than tell a player it's lost.
     #[error("writing {}: {source}", path.display())]
     Io { path: PathBuf, source: io::Error },
 }

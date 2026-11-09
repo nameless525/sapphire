@@ -523,8 +523,12 @@ impl ScriptVm {
 
     /// Asks a dialogue's condition, with `frame` (read-only, between steps) for its bindings to read: it
     /// holds only if it returns `true`. Anything else it returns, an error or running out of budget
-    /// doesn't hold.
+    /// doesn't hold, and so does one another VM bound, as a set kept past its host's fight would be.
     pub fn ask(&self, frame: &mut HookFrame, condition: &Hook) -> (HookEnd, bool) {
+        // `mlua` panics on a function of another state, which a shipping build's abort makes a crash.
+        if condition.function.weak_lua() != &self.lua.weak() {
+            return (HookEnd::Failed("the condition belongs to another VM".to_owned()), false);
+        }
         let _vm = VmAllocations::enter();
         let _frame = bindings::enter(frame);
         BUDGET.set(self.limits.interrupts);

@@ -160,6 +160,23 @@ fn a_condition_that_writes_draws_or_fails_is_refused_and_reads_false() {
     assert!(replay.commands().is_empty(), "nothing asked was recorded");
 }
 
+/// Conditions belong to the VM that bound them. A game that starts a new fight, or attaches a new host, while
+/// a dialogue's set is still in hand asks the new VM a function it never loaded: that's a condition that
+/// doesn't hold, never a panic.
+#[test]
+fn a_condition_bound_in_another_vm_reads_false() {
+    let mut old = Recording::new(scenario(), scenario().config).expect("starts");
+    let mut set = conditions(&old);
+    assert!(ask(&mut old, &mut set, NEVER_MET), "asked of its own VM, it holds");
+    let mut recording = Recording::new(scenario(), scenario().config).expect("starts");
+    let checksum = recording.simulation().checksum();
+    assert!(!ask(&mut recording, &mut set, NEVER_MET));
+    let stats = host_of(recording.simulation()).stats();
+    assert_eq!((stats.conditions_asked, stats.conditions_faulted), (1, 1));
+    assert_eq!(recording.simulation().checksum(), checksum);
+    assert!(host_of(recording.simulation()).last_error().is_some_and(|error| error.contains("another VM")));
+}
+
 /// `dialogue-flag` with the script and no dialogue loaded.
 fn no_dialogue(sim: &mut Simulation) -> Result<Vec<ActorId>, ScenarioError> {
     let skirmish = find_scenario(&sapphire_gameplay::replay::SCENARIOS, "arena-skirmish").expect("listed");

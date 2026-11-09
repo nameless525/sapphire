@@ -24,7 +24,7 @@
 //! tick that frame fell on and the budget it has on this tier. `--bench-trace <csv>` writes every frame:
 //! a spike's tick says which moment of the fight it was. Nothing it records allocates in a frame.
 //!
-//! `--bench-draw-every` is the same load and the same fight with nearly no frames drawn, which checks a load's
+//! `--draw-every` is the same load and the same fight with nearly no frames drawn, which checks a load's
 //! pipeline inventory (exit test 7) where drawing costs seconds. It logs the pipelines' row, and no others.
 //!
 //! Rows the spec budgets on Desktop-Low and Mobile-Low only, as §3.2 does, have no budget on the other
@@ -354,7 +354,7 @@ pub(crate) fn run(
         audio,
         steps,
         bloom_levels: settings.bloom_levels,
-        draw_every: options.bench_draw_every,
+        draw_every: options.draw_every,
         trace: Vec::with_capacity(per_phase * 2 * Phase::ALL.len()),
         first_graph_frame: 1,
         first_traced: 0,

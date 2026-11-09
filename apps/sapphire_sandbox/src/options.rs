@@ -324,14 +324,12 @@ pub(crate) struct Options {
     pub cues: bool,
     /// `--bench-trace <csv>`: a bench of a fight writes every frame here (M2 Z1, `fight_bench.rs`).
     pub bench_trace: Option<PathBuf>,
-    /// `--bench-draw-every <n>`: a bench of a fight plays once, or of a zone walks its frames, and runs the graph
-    /// of only every `n`th frame, the first among them, losing the rest: it checks a load's inventory and measures
-    /// nothing (M3 K1). On a software GPU a frame costs seconds, and every pipeline is built before a graph runs.
-    pub bench_draw_every: Option<NonZeroU32>,
-    /// `--draw-every <n>`: with `--offscreen` or `--capture`, every frame steps, animates, prepares and records,
-    /// and only every `n`th runs its graph, the first among them, losing the rest as a frame whose surface was
-    /// lost. A capture's own frame always draws. It's for a long run on a software GPU, where drawing is what
-    /// costs: the renderer is still beside every frame of the fight, and nothing the simulation sees changes.
+    /// `--draw-every <n>`: every frame steps, animates, prepares and records, and only every `n`th runs its
+    /// graph, the first among them, losing the rest as a frame whose surface was lost. It's for a long run on a
+    /// software GPU, where drawing is what costs: the renderer is still beside every frame, and nothing the
+    /// simulation sees changes. With `--offscreen` or `--capture`, whose own frame always draws; or with
+    /// `--bench` of a fight or a zone, which plays once or walks its frames, checks the load's inventory and
+    /// measures nothing (M3 K1): every pipeline is built before a graph runs, so one that isn't counts.
     pub draw_every: Option<NonZeroU32>,
     /// `--zone <stem>[:<spawner>]`: the zone stage (M3 C1): the character at a spawner of the zone cooked from
     /// `<stem>.zone.ron`, `player_start` unless named, under the zone's day and light rigs.
@@ -794,10 +792,6 @@ impl Options {
                         other => return Err(format!("--hud expects fixed or live, got {other:?}")),
                     };
                     hud_mode = Some(mode);
-                }
-                "--bench-draw-every" => {
-                    options.bench_draw_every =
-                        Some(number(&value("--bench-draw-every")?, "--bench-draw-every")?);
                 }
                 "--draw-every" => options.draw_every = Some(number(&value("--draw-every")?, "--draw-every")?),
                 "--inventory-without" => options.inventory_without = Some(value("--inventory-without")?),
@@ -1280,9 +1274,6 @@ impl Options {
             (None, None) => None,
         };
         let capturing = matches!(mode, Some(OffscreenMode::Capture { .. }));
-        if options.draw_every.is_some() && !(capturing || serve) {
-            return Err(format!("--draw-every needs {CAPTURE_FLAG} or {OFFSCREEN_FLAG}"));
-        }
         if fight && options.arena.is_none() {
             return Err("--fight fights in the arena: it needs --arena".to_owned());
         }
@@ -1342,12 +1333,16 @@ impl Options {
         }
         let benching = matches!(mode, Some(OffscreenMode::Bench { .. }));
         let fight = matches!(options.combat, Some(CombatOption::Replay { .. } | CombatOption::Fight { .. }));
-        if (options.bench_draw_every.is_some() || options.inventory_without.is_some())
-            && !(benching && (fight || options.zone.is_some()))
-        {
+        let bench_of_a_load = benching && (fight || options.zone.is_some());
+        if options.inventory_without.is_some() && !bench_of_a_load {
             return Err(format!(
-                "--inventory-without and --bench-draw-every need {BENCH_FLAG} of a fight (--replay, or --fight with \
-                 --script) or of a zone"
+                "--inventory-without needs {BENCH_FLAG} of a fight (--replay, or --fight with --script) or of a zone"
+            ));
+        }
+        if options.draw_every.is_some() && !(capturing || serve || bench_of_a_load) {
+            return Err(format!(
+                "--draw-every needs {CAPTURE_FLAG}, {OFFSCREEN_FLAG}, or {BENCH_FLAG} of a fight (--replay, or \
+                 --fight with --script) or of a zone"
             ));
         }
         let drawn_alone = matches!(mode, Some(OffscreenMode::Capture { .. } | OffscreenMode::Bench { .. }));
@@ -2615,35 +2610,27 @@ mod tests {
     }
 
     #[test]
-    fn drawing_one_frame_in_n_goes_with_a_capture_or_offscreen() {
-        for args in
-            [&["--capture", "x.png", "--draw-every", "50"][..], &["--offscreen", "--draw-every", "50"]]
-        {
-            let (options, _) = parse(args).unwrap();
+    fn drawing_one_frame_in_n_goes_with_a_capture_offscreen_or_a_bench_of_a_fight_or_a_zone() {
+        for args in [
+            &["--capture", "x.png", "--draw-every", "50"][..],
+            &["--capture", "x.png", "--replay", "x", "--draw-every", "50"],
+            &["--capture", "x.png", "--zone", "ward", "--draw-every", "50"],
+            &["--offscreen", "--draw-every", "50"],
+            &["--bench", "1", "--replay", "x", "--draw-every", "50"],
+            &["--bench", "1", "--fight", "--arena", "--script", "x", "--draw-every", "50"],
+            &["--bench", "1", "--zone", "ward", "--draw-every", "50"],
+        ] {
+            let (options, _) = parse(args).unwrap_or_else(|error| panic!("{args:?}: {error}"));
             assert_eq!(options.draw_every.map(NonZeroU32::get), Some(50), "{args:?}");
         }
         for args in [
             &["--draw-every", "50"][..],
-            &["--bench", "1", "--replay", "x", "--draw-every", "50"],
+            &["--bench", "1", "--draw-every", "50"],
+            &["--bench", "1", "--arena", "--draw-every", "50"],
             &["--offscreen", "--draw-every", "0"],
+            &["--bench", "1", "--replay", "x", "--draw-every", "0"],
         ] {
             assert!(parse(args).unwrap_err().contains("--draw-every"), "{args:?}");
-        }
-    }
-
-    #[test]
-    fn drawing_one_frame_in_n_goes_with_a_bench_of_a_fight_or_a_zone() {
-        let (options, _) = parse(&["--bench", "1", "--replay", "x", "--bench-draw-every", "200"]).unwrap();
-        assert_eq!(options.bench_draw_every.map(NonZeroU32::get), Some(200));
-        let (options, _) = parse(&["--bench", "1", "--zone", "ward", "--bench-draw-every", "200"]).unwrap();
-        assert_eq!(options.bench_draw_every.map(NonZeroU32::get), Some(200));
-        for args in [
-            &["--bench", "1", "--bench-draw-every", "200"][..],
-            &["--capture", "x.png", "--zone", "ward", "--bench-draw-every", "200"],
-            &["--capture", "x.png", "--replay", "x", "--bench-draw-every", "200"],
-            &["--bench", "1", "--replay", "x", "--bench-draw-every", "0"],
-        ] {
-            assert!(parse(args).unwrap_err().contains("--bench-draw-every"), "{args:?}");
         }
     }
 

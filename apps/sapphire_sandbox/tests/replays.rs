@@ -635,7 +635,7 @@ fn inventory_bench(replay: &str, tier: &str, without: Option<&str>) -> Output {
     let mut args = vec![
         "--bench",
         "1",
-        "--bench-draw-every",
+        "--draw-every",
         DRAW_EVERY,
         "--arena",
         "--replay",
@@ -721,7 +721,7 @@ fn walking_a_zone_builds_no_pipeline_and_a_grid_left_out_is_named() {
             "lantern_ward",
             "--zone-walk",
             "tour",
-            "--bench-draw-every",
+            "--draw-every",
             DRAW_EVERY,
             "--tier",
             tier,

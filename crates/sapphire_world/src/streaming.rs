@@ -31,7 +31,9 @@
 //!
 //! A fight holds its zone's streaming while an encounter runs ([`Streamer::hold`], M3 W5): no place is
 //! asked for, placed or taken down, whatever the focus does, so a fight's frames carry none of it. Let go,
-//! the next update looks again from where the focus is then and catches up within the budget.
+//! the next update looks again from where the focus is then and catches up within the budget. A hold takes
+//! hold only once an update has streamed and found nothing near the focus unready: a fight that starts while
+//! its zone is still coming in, as one loaded or captured at its start does, gets its ground first.
 //!
 //! # What going inactive gives back
 //!
@@ -274,8 +276,10 @@ pub struct Streamer<P> {
     scanned_ahead: [Option<[f32; 2]>; AHEAD],
     /// The next update places everything it can, after a load screen ([`Self::preload`]).
     unbudgeted: bool,
-    /// Does nothing until let go ([`Self::hold`]).
+    /// Does nothing until let go ([`Self::hold`]), once it's caught up.
     held: bool,
+    /// Whether an update it streamed in found nothing near the focus unready: what a hold waits for.
+    caught_up: bool,
     stats: StreamStats,
     stats_dirty: bool,
 }
@@ -295,14 +299,16 @@ impl<P> Streamer<P> {
             scanned_ahead: [None; AHEAD],
             unbudgeted: false,
             held: false,
+            caught_up: false,
             stats: StreamStats::default(),
             stats_dirty: true,
         }
     }
 
     /// Holds the streamer where it is, or lets it go (see the [module docs](self#held)). Held, an update
-    /// asks for, places and removes nothing and takes no time but its own stats'. Let go, it looks again
-    /// at the next update's focus.
+    /// asks for, places and removes nothing and takes no time but its own stats', once an update has streamed
+    /// and found nothing near the focus unready; till then it streams as it would. Let go, it looks again at the
+    /// next update's focus.
     pub fn hold(&mut self, held: bool) {
         if self.held && !held {
             self.scanned = None;
@@ -470,8 +476,11 @@ impl<P> Streamer<P> {
         self.stats.placed = 0;
         self.stats.removed = 0;
         self.stats.asked = 0;
-        self.stats.held = self.held;
-        if self.held {
+        // A hold waits for what the focus can't do without: until an update has streamed and found nothing near
+        // the focus unready, it streams as it would, as for a fight that starts while its zone is coming in.
+        let held = self.held && self.caught_up;
+        self.stats.held = held;
+        if held {
             self.stats.held_frames += 1;
         } else if self.settled_on_zone_hosted(server, host) {
             let focus = [focus[0], focus[2]];
@@ -495,6 +504,7 @@ impl<P> Streamer<P> {
             }
             self.work(&stopwatch, server, host);
             self.count_unready();
+            self.caught_up = self.stats.unready == 0;
         }
         self.publish(&stopwatch);
     }
@@ -532,6 +542,7 @@ impl<P> Streamer<P> {
         self.places.clear();
         self.pending.clear();
         self.built = None;
+        self.caught_up = false;
         self.scanned = None;
         self.scanned_ahead = [None; AHEAD];
         self.unbudgeted = false;
@@ -597,6 +608,7 @@ impl<P> Streamer<P> {
         self.pending = Vec::with_capacity(self.places.len());
         self.stats_dirty = true;
         self.built = Some(generation);
+        self.caught_up = false;
         self.scanned = None;
         self.scanned_ahead = [None; AHEAD];
     }

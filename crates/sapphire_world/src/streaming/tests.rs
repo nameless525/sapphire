@@ -539,6 +539,44 @@ fn a_cut_asked_ahead_lands_on_its_places_and_one_not_asked_misses_them() {
     }
 }
 
+/// A hold that comes before the zone is in, as a fight loaded or captured at its start brings: the streamer
+/// still brings in what's near the focus, as one never held would, and holds from then on.
+#[test]
+fn held_before_it_has_caught_up_it_brings_in_the_focus_first() {
+    let (mut server, _) = server_over(SMALL);
+    let mut host = Ledger::default();
+    let mut streamer = streamer(&mut server, settings());
+    streamer.hold(true);
+    let focus = [0.0, 0.0, 0.0];
+    let start = Stopwatch::start();
+    frame(&mut streamer, focus, &mut server, &mut host);
+    assert!(!streamer.stats().held, "it hasn't looked yet");
+    while !streamer.stats().held {
+        server.wait(Duration::from_millis(1));
+        frame(&mut streamer, focus, &mut server, &mut host);
+        assert!(start.elapsed() < Duration::from_secs(60), "it stalled: {:?}", streamer.stats());
+    }
+    let stats = streamer.stats();
+    assert_eq!(stats.unready, 0, "{stats:?}");
+    assert!(stats.total_placed > 0, "{stats:?}");
+
+    // Everything near the focus is placed, as for a streamer never held.
+    let (mut fresh_server, _) = server_over(SMALL);
+    let mut fresh_host = Ledger::default();
+    let mut fresh = self::streamer(&mut fresh_server, settings());
+    settle(&mut fresh, focus, &mut fresh_server, &mut fresh_host);
+    let placed = |host: &Ledger| host.meshes.iter().map(|&(_, mesh, _)| mesh).collect::<BTreeSet<_>>();
+    assert!(placed(&host).is_subset(&placed(&fresh_host)));
+    assert!(!placed(&host).is_empty());
+
+    // Caught up, it holds: a walk away asks for nothing.
+    let width = SMALL.cell_size * SMALL.side as f32;
+    frame(&mut streamer, [width, 0.0, width / 2.0], &mut server, &mut host);
+    let held = streamer.stats();
+    assert!(held.held, "{held:?}");
+    assert_eq!((held.asked, held.placed, held.removed), (0, 0, 0));
+}
+
 /// A fight holds its zone (M3 W5): held, a walk across asks for, places and removes nothing, and let go it
 /// catches up with where the focus is, as a streamer that had never been held would be.
 #[test]

@@ -6,7 +6,7 @@
 //!
 //! 1. **Covering.** The next zone is asked for, hurried, and the simulation holds: no tick runs from here
 //!    until the swap, so how long the load takes reaches nothing the fixed step reads. A wipe drawn over the
-//!    stage says when it covers the screen ([`Fight::say_trip_covered`]); with none, the swap comes at once.
+//!    stage says when it covers the screen ([`FightShow::say_trip_wipe`]); with none, the swap comes at once.
 //! 2. **Swapping.** When the zone is ready, its pack mounted, its pipelines built and the meshes around
 //!    where the traveller arrives on the renderer (`Scene::zone_load`), the simulation enters it
 //!    ([`Combat::enter_zone`]), the stage arrives in it (`Scene::arrive_in_zone`), which gives back what the
@@ -17,6 +17,9 @@
 //!
 //! The enemy, who a zone entry leaves behind, is drawn nowhere after one. The day, the light rigs and the
 //! probes stay the stage's: the test zones name none.
+//!
+//! [`Combat::due_zone_entry`]: crate::combat::Combat::due_zone_entry
+//! [`Combat::enter_zone`]: crate::combat::Combat::enter_zone
 
 use std::sync::Arc;
 use std::time::Duration;

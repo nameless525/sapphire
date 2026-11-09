@@ -68,7 +68,7 @@ const ULTIMATE: &str = include_str!("../../../../content/combat/player/ultimate.
 /// The name the player's `ultimate` move gives its cinematic.
 pub const ULTIMATE_CINEMATIC: &str = "ultimate";
 
-/// A zone as a cook made it, its simulation's half: see [`zone_trip`].
+/// A zone as a cook made it, its simulation's half: see `zone_trip`.
 #[derive(Clone, Copy, Debug)]
 pub struct BakedZone {
     /// The zone's source, by its sidecar's ID.

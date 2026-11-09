@@ -638,7 +638,7 @@ impl Simulation {
     }
 
     /// Enters a zone from the shelf, between steps, with `traveller` and its party standing at the entry's
-    /// spawner and everyone else gone: see the [`zone`](crate::zone) module's docs for what it does and why it
+    /// spawner and everyone else gone: see the [`zone`] module's docs for what it does and why it
     /// stays deterministic. Tick, clocks and random stream are untouched, and so are the travellers' health
     /// and their clocks' hitstop; what they were doing stops ([`Self::place_actor`]).
     ///

@@ -226,6 +226,9 @@ pub struct Editor {
     overlays: Overlays,
     cache: FigureCache,
     drag: Option<Drag>,
+    /// The label of the gesture the timeline's drag began, while it's held: an undo or a save ends a gesture, and
+    /// the rest of a drag still held is one of its own.
+    drag_label: Option<String>,
     show_all_tracks: bool,
     link: Link,
     address_text: String,
@@ -333,6 +336,7 @@ impl Editor {
             overlays: Overlays::default(),
             cache: FigureCache::default(),
             drag: None,
+            drag_label: None,
             show_all_tracks: false,
             link: Link::new(Some(address)),
             address_text: address.to_string(),
@@ -1075,6 +1079,7 @@ impl Editor {
             return;
         }
         self.drag = None;
+        self.drag_label = None;
         let ids: Vec<AssetId> = self
             .documents
             .ids()
@@ -1211,13 +1216,16 @@ impl Editor {
             Action::BeginGesture(label) => {
                 self.stop();
                 self.begin_gesture(&label);
+                self.drag_label = Some(label);
             }
             Action::EndGesture => {
+                self.drag_label = None;
                 if let Some(file) = self.moves_document_mut() {
                     file.end_gesture();
                 }
             }
             Action::SetWindow { entry, from, to, part } => {
+                self.resume_drag();
                 self.edit("edit a window", |text| edits::set_window(text, entry, from, to));
                 // The preview shows the tick the drag has hold of.
                 let tick = match part {
@@ -1227,10 +1235,12 @@ impl Editor {
                 self.set_tick(tick);
             }
             Action::SetInstant { entry, at } => {
+                self.resume_drag();
                 self.edit("move an instant", |text| edits::set_instant(text, entry, at));
                 self.set_tick(at);
             }
             Action::SetPhases { mv, phases, edge } => {
+                self.resume_drag();
                 self.edit("edit the phases", |text| edits::set_phases(text, mv, phases));
                 let tick = match edge {
                     PhaseEdge::StartupEnd => phases.startup,
@@ -1242,6 +1252,15 @@ impl Editor {
                 self.set_tick(tick);
             }
             Action::Add(track) => self.add_to_track(track),
+        }
+    }
+
+    /// A drag still held whose gesture an undo or a save ended goes on as a gesture of its own, so the rest of it is
+    /// one step of undo rather than one a frame.
+    fn resume_drag(&mut self) {
+        let Some(label) = self.drag_label.clone() else { return };
+        if self.moves_document().is_some_and(|file| !file.in_gesture()) {
+            self.begin_gesture(&label);
         }
     }
 

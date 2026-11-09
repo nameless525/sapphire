@@ -444,6 +444,38 @@ fn undo_and_redo_keys_walk_one_gesture_at_a_time() {
     let _ = harness.get_by_label("hit volumes light_1_hit 7..14");
 }
 
+/// An undo while a drag is still held takes back what it had done, and the rest of the drag is one step of its own,
+/// not a step a frame: one undo after the release gives the file's bytes back.
+#[test]
+fn a_drag_held_through_an_undo_goes_on_as_one_step() {
+    let dir = TestDir::new("undo_mid_drag");
+    let path = dir.write("player.moves.ron", PLAYER);
+    let mut harness = harness(&path);
+    harness.run_steps(3);
+    let (_, end, per_tick) = handles(&harness, "hit volumes light_1_hit 7..11", 4);
+    harness.hover_at(end);
+    harness.run_steps(2);
+    harness.drag_at(end);
+    harness.step();
+    for tick in 1..=2 {
+        harness.hover_at(end + egui::vec2(tick as f32 * per_tick, 0.0));
+        harness.step();
+    }
+    // The held drag sets its window again in the same pass, as it does in each one while held.
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    harness.step();
+    for tick in 3..=5 {
+        harness.hover_at(end + egui::vec2(tick as f32 * per_tick, 0.0));
+        harness.step();
+    }
+    let to = end + egui::vec2(5.0 * per_tick, 0.0);
+    harness.drop_at(to);
+    harness.run_steps(3);
+    assert_same(&text_of(&harness), &hand_edit(PLAYER, "light_1", "to: 11,", "to: 16,"), "the drag's end");
+    harness.state_mut().undo();
+    assert_same(&text_of(&harness), PLAYER, "one undo for the rest of the drag");
+}
+
 /// A drag whose button went away (the window lost focus under it) is over: the next edit is its own step.
 #[test]
 fn a_drag_that_loses_its_button_ends() {

@@ -104,6 +104,10 @@ impl ZonePanel {
             let moved = drag.from[drag.axis.index()] + now - drag.pressed;
             let snapped = (moved / SNAP).round() * SNAP;
             let path = placement_at(drag.placement, drag.axis);
+            // An undo or a save while it's held ends its gesture, and the rest of it is one of its own.
+            if !document.in_gesture() {
+                document.begin_gesture(MOVE_LABEL);
+            }
             // Refused or not, the drag goes on: the document's checks are the word on what it holds.
             let _ = document.set(MOVE_LABEL, &path, &snapped);
         }

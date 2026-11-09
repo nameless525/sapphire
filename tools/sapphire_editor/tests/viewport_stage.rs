@@ -1332,6 +1332,46 @@ fn a_drag_of_the_gizmo_moves_one_number() {
     assert!(!current.is_dirty());
 }
 
+/// A save while the gizmo's arrow is held ends the drag's gesture there, and the rest of the drag is one step of its
+/// own, not a step a frame: one undo after the release gives back the bytes the save wrote.
+#[test]
+#[ignore = "needs a GPU and an editor's cook"]
+fn a_drag_of_the_gizmo_held_through_a_save_goes_on_as_one_step() {
+    let gpu = device();
+    let painter = Painter::new(&gpu, PLAIN);
+    let (mut harness, path) = zone_harness(&painter, "gizmo_save", (1200.0, 700.0), 1.0);
+    let mut view = StageView::default();
+    settle(&mut harness, &mut view, &gpu, &painter);
+    harness.state_mut().select_placement(Some(CART));
+    settle(&mut harness, &mut view, &gpu, &painter);
+    let original = std::fs::read_to_string(&path).expect("the file");
+
+    let cart = sapphire_math::Vec3::new(9.0, 0.0, 10.0);
+    let (from, to) = (on_arrow(&mut harness, cart, Axis::X, 0.0), on_arrow(&mut harness, cart, Axis::X, 1.0));
+    harness.hover_at(from);
+    harness.step();
+    harness.drag_at(from);
+    harness.step();
+    for step in 1..=10 {
+        harness.hover_at(from.lerp(to, step as f32 / 10.0));
+        harness.step();
+        if step == 5 {
+            harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
+            harness.step();
+        }
+    }
+    harness.drop_at(to);
+    harness.step();
+    let saved = std::fs::read_to_string(&path).expect("the file");
+    assert_ne!(saved, original, "the save wrote the drag so far");
+    // The save's notice moves the pane down a line, so where the drag ends isn't where a drag with no save would.
+    let text = harness.state().current().expect("open").text().to_owned();
+    assert_ne!(text, saved, "the drag went on past the save");
+    harness.state_mut().undo();
+    harness.step();
+    assert_eq!(harness.state().current().expect("open").text(), saved, "one undo for the rest of the drag");
+}
+
 /// What the zone panel and a drag of the gizmo cost against the editor's frame: a pass of egui, the stage's frame
 /// and egui's paint, with the GPU's share waited for.
 #[test]

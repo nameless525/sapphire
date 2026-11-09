@@ -16,6 +16,7 @@ use bevy_reflect::{PartialReflect, Reflect};
 use sapphire_assets::AssetId;
 use sapphire_assets::ui::UiDocument;
 use sapphire_controls::{MenuControls, MenuError};
+use sapphire_loc::LocaleSettings;
 use sapphire_look::{UiDrawList, UiPageState};
 use sapphire_math::Vec2;
 use sapphire_platform::{Event, Timestamp, Window};
@@ -293,6 +294,14 @@ impl PlayerSettings {
     #[must_use]
     pub fn volume(&self) -> f32 {
         f32::from(self.sound.min(100)) / 100.0
+    }
+
+    /// The languages the game reads and speaks in. Voices follow the chosen language: the engine keeps the
+    /// two apart (M3 A1), but the settings screen has one control for both until a game wants a second.
+    #[must_use]
+    pub fn locale(&self) -> LocaleSettings {
+        let language = self.known_language().to_owned();
+        LocaleSettings { text: language.clone(), voice: language }
     }
 }
 

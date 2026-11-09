@@ -101,6 +101,7 @@ impl App for GameApp {
         let (settings, chosen) = KeptSettings::load(platform.user_dir(), durable_replace);
         let rumble = chosen.rumble;
         let volume = chosen.volume();
+        let voice = chosen.locale().voice;
         let mut content = Content::new(platform.host(), desc.character, desc.sky)?;
         let mut show = GameShow::new(documents, chosen)?;
         let combat = show.shown.fight.prepare_stock_combat(&options.fight(), &mut content)?;
@@ -117,6 +118,7 @@ impl App for GameApp {
         };
         if let Some(audio) = &mut audio {
             audio.set_volume(volume);
+            speak_in(audio, &voice);
         }
         if options.open_fight {
             show.open_fight();
@@ -268,6 +270,7 @@ impl GameApp {
     fn follow_settings(&mut self, chosen: &PlayerSettings, platform: &mut Platform) {
         if let Some(audio) = &mut self.audio {
             audio.set_volume(chosen.volume());
+            speak_in(audio, &chosen.locale().voice);
         }
         if self.rumble && !chosen.rumble {
             self.stop_rumble(platform);
@@ -383,6 +386,14 @@ impl GameApp {
         if let Err(error) = self.stage.gpu.save_pipeline_cache() {
             tracing::warn!(target: LOG_TARGET, %error, "pipeline cache not saved");
         }
+    }
+}
+
+/// Speaks the fight's lines in `language`, the player's: a language the fight has no lines in speaks none,
+/// and says so once here.
+fn speak_in(audio: &mut DeviceAudio, language: &str) {
+    if !audio.set_voice_language(language) {
+        tracing::info!(target: LOG_TARGET, language, "the fight has no voice lines in the chosen language");
     }
 }
 

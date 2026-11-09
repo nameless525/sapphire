@@ -124,6 +124,8 @@ fn the_settings_show_what_they_are_and_the_language_moves_every_screen() {
     assert_eq!(string_of(&walk, MenuScreen::Settings, "language-value"), "English");
     walk.choose(MenuScreen::Settings, "language");
     assert_eq!(walk.menus.settings().language, "ja");
+    let locale = walk.menus.settings().locale();
+    assert_eq!((locale.text.as_str(), locale.voice.as_str()), ("ja", "ja"), "and the voices with it");
     assert_eq!(string_of(&walk, MenuScreen::Settings, "language-value"), "日本語");
     assert_eq!(string_of(&walk, MenuScreen::Title, "start-text"), "はじめる", "under it too");
     assert!(walk.commands.contains(&MenuCommand::SettingsChanged));

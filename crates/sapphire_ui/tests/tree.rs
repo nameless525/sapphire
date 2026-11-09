@@ -229,18 +229,21 @@ fn a_model_of_dynamic_values_reads_once_its_shape_is_declared() {
     model.insert("player", player);
     let mut tree = UiTree::new(&document(data)).unwrap();
     let (mut fonts, loc, atlas, mut list) = (fonts(), localizer("en"), Atlas::paint(), UiDrawList::default());
-    let mut run = |tree: &mut UiTree, list: &mut UiDrawList| {
+    let mut run = |tree: &mut UiTree, list: &mut UiDrawList, with_model: bool| {
         list.reset();
         fonts.begin_frame(UiPageState::NO_RENDERER, &loc);
-        let frame =
-            UiFrame { metrics: metrics([800.0, 600.0]), now: at(0.0), loc: &loc, model: Some(&model) };
+        let model = with_model.then_some(&model as &dyn bevy_reflect::PartialReflect);
+        let frame = UiFrame { metrics: metrics([800.0, 600.0]), now: at(0.0), loc: &loc, model };
         tree.update(&frame, &mut fonts);
         tree.draw(&mut fonts, &atlas, list);
     };
-    run(&mut tree, &mut list);
+    run(&mut tree, &mut list, true);
     assert_eq!(tree.problems().len(), 1, "no type to check against: {:#?}", tree.problems());
     tree.declare_model(ui::UiModel::of_type(Model::type_info()));
-    run(&mut tree, &mut list);
+    // A frame with no model first: the dynamic one, which has no type either, is still checked.
+    run(&mut tree, &mut list, false);
+    assert_eq!(tree.problems().len(), 1, "no model to read: {:#?}", tree.problems());
+    run(&mut tree, &mut list, true);
     assert_eq!(tree.problems(), &[]);
     assert_eq!(drawn_with(&list, [200, 100, 50, 100]).len(), 1, "{:?}", list.quads);
 }

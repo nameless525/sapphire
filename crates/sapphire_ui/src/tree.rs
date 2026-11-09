@@ -332,8 +332,9 @@ pub struct UiTree {
     root: NodeId,
     styles: Vec<UiTextStyle>,
     problems: Vec<UiProblem>,
-    /// The model type the paths were last checked against, or none yet.
-    checked_model: Option<Option<TypeId>>,
+    /// What the paths were last checked against, or none yet: whether there was a model, and its type if
+    /// it has one (a model of dynamic values has none).
+    checked_model: Option<(bool, Option<TypeId>)>,
     /// What the paths are checked against in place of the model's type, if [`Self::declare_model`] said.
     declared: Option<UiModel>,
     metrics: Option<UiMetrics>,
@@ -689,7 +690,7 @@ impl UiTree {
     /// model document, here with the real thing.
     fn check_model(&mut self, model: Option<&dyn PartialReflect>) {
         let info = model.and_then(PartialReflect::get_represented_type_info);
-        let seen = info.map(|info| info.type_id());
+        let seen = (model.is_some(), info.map(|info| info.type_id()));
         if self.checked_model == Some(seen) {
             return;
         }

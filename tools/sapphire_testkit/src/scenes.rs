@@ -202,7 +202,7 @@ macro_rules! game_scene {
 /// night street, pinned as those are, the smaller two from the glyph pages and the larger two from the
 /// face's cooked field: Oxanium at one pixel to the point, and Dela Gothic One at three, as a phone's
 /// capture is. They alone run `--display-text`, and they draw the interface as the HUD scenes do.
-pub fn scenes() -> [Scene; 209] {
+pub fn scenes() -> [Scene; 211] {
     [
         Scene {
             name: "turntable-start",
@@ -3960,6 +3960,28 @@ pub fn scenes() -> [Scene; 209] {
         game_scene!("game-character-wide-ja", "character", "1280x720", "ja"),
         game_scene!("game-character-ultrawide-en", "character", "1680x720", "en"),
         game_scene!("game-character-ultrawide-ja", "character", "1680x720", "ja"),
+        // The game's own show on its flow (M3 G1) in the Lantern Ward, through the sandbox's `--game`, which
+        // stands the game as it ships and so pins nothing: its title over the run it would continue, and a
+        // continue from a save at the court's checkpoint, a second and a half in.
+        Scene {
+            name: "game-ward-title",
+            args: &["--size", "640x360", "--capture-ticks", "30", "--game", "title"],
+            thresholds: Thresholds::default(),
+        },
+        Scene {
+            name: "game-ward-checkpoint",
+            args: &[
+                "--size",
+                "640x360",
+                "--capture-ticks",
+                "90",
+                "--game",
+                "continue",
+                "--progress",
+                "tests/saves/ward-court.progress.ron",
+            ],
+            thresholds: Thresholds::default(),
+        },
         // The character screen's inset (M3 U6) on a phone's 19.5:9 at twice the points, on Mobile-Low, a
         // quarter turn round by a drag.
         Scene {
@@ -4923,6 +4945,9 @@ mod tests {
                 assert!(pinned("--fog", "off"), "{}", scene.name);
             } else if scene.name.starts_with("zone-") {
                 assert!(scene.args.contains(&"--zone"), "{}", scene.name);
+            } else if scene.name.starts_with("game-ward-") {
+                // The game as it ships, on the zone's own look.
+                assert!(scene.args.contains(&"--game"), "{}", scene.name);
             } else {
                 assert!(pinned("--ao", "off"), "{}", scene.name);
                 assert!(!scene.args.contains(&"--probes"), "{}", scene.name);

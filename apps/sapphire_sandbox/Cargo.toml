@@ -33,6 +33,9 @@ path = "src/main.rs"
 game_combat.workspace = true
 # `--game`: the game's own show and flow, with no window (M3 G1).
 game_flow.workspace = true
+# `--progress`: the save `--game` starts over (M3 G1).
+sapphire_save.workspace = true
+sapphire_serialize.workspace = true
 game_ui.workspace = true
 sapphire_assets.workspace = true
 sapphire_audio.workspace = true

@@ -19,10 +19,12 @@ use std::path::Path;
 
 use game_flow::capture::GameCapture;
 use game_flow::game::GameSetup;
+use game_flow::progress::{Progress, progress_store};
 use game_flow::show::GameShow;
 use game_ui::menus::PlayerSettings;
 use sapphire_platform::{AppInitError, Platform};
 use sapphire_rhi::{GpuContext, wgpu};
+use sapphire_save::ProgressStore;
 
 use crate::LOG_TARGET;
 use crate::offscreen::Stage;
@@ -73,23 +75,55 @@ fn step(
     }
 }
 
-/// `--game`: the game's own show on the content's flow, from `start`, drawn `ticks` frames with no window and
-/// written as any capture is (M3 G1). It keeps no save and no run's file.
+/// `--game`: the game's own show on the content's flow, from `start`, over `progress`'s save if there is one,
+/// drawn `ticks` frames with no window and written as any capture is (M3 G1). It keeps no run's file, and the
+/// save only in a scratch directory it takes away after.
 pub(crate) fn game(
     platform: &Platform,
     path: &Path,
-    start: GameStart,
+    (start, progress): (GameStart, Option<&Path>),
     ticks: u32,
     size: (u32, u32),
 ) -> Result<(), AppInitError> {
-    let (show, first) =
-        GameShow::from_content(platform.content(), PlayerSettings::default(), GameSetup::default())?;
+    let scratch = progress.map(Scratch::holding).transpose()?;
+    let setup =
+        GameSetup { store: scratch.as_ref().map(|scratch| scratch.store.clone()), ..GameSetup::default() };
+    let (show, first) = GameShow::from_content(platform.content(), PlayerSettings::default(), setup)?;
     let capture = GameCapture { choose: start.command(), size, ticks };
     let captured = game_flow::capture::capture(platform, show, &first, &capture)?;
     write_png(path, size.0, size.1, &captured.pixels)?;
     write_adapter_info(path, &captured.adapter)?;
     tracing::info!(target: LOG_TARGET, path = %path.display(), ?start, "the game captured");
     Ok(())
+}
+
+/// A save of `--progress`'s, in a directory of its own for as long as this lives.
+struct Scratch {
+    dir: std::path::PathBuf,
+    store: ProgressStore<Progress>,
+}
+
+impl Scratch {
+    /// The save `path` holds, a `Progress` document, written to a new scratch directory's store.
+    fn holding(path: &Path) -> Result<Self, AppInitError> {
+        let text = std::fs::read_to_string(path)
+            .map_err(|error| AppInitError::msg(format!("--progress {}: {error}", path.display())))?;
+        let progress: Progress = sapphire_serialize::from_ron(&text)
+            .map_err(|error| AppInitError::msg(format!("--progress {}: {error}", path.display())))?;
+        let dir = std::env::temp_dir().join(format!("sapphire-sandbox-progress-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir)?;
+        let store = progress_store(&dir, |path, bytes| std::fs::write(path, bytes));
+        let snapshot = store.snapshot(&progress).map_err(AppInitError::msg)?;
+        store.write(&snapshot).map_err(AppInitError::msg)?;
+        Ok(Self { dir, store })
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
 }
 
 pub(crate) fn run(

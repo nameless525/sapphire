@@ -241,6 +241,9 @@ pub(crate) struct Options {
     /// `--game title|new-game|continue` (with `--capture`): the game's own show, its flow on the content's, from
     /// its title or past it as that row would (M3 G1, `game_flow::capture`). Keeps no save.
     pub game: Option<GameStart>,
+    /// `--progress <file.ron>` (with `--game`): the save the game starts over, a `Progress` document, kept in a
+    /// scratch directory for the capture's length: what a continue continues.
+    pub progress: Option<PathBuf>,
     /// `--clip <name>`: plays that clip on the look-dev character instead of holding it (M2 N2).
     /// Needs `--look-dev` or `--arena`, where it plays in place, since the simulation owns the root.
     pub clip: Option<lookdev::ClipName>,
@@ -802,6 +805,7 @@ impl Options {
                     hud_mode = Some(mode);
                 }
                 "--game" => options.game = Some(GameStart::parse(&value("--game")?)?),
+                "--progress" => options.progress = Some(PathBuf::from(value("--progress")?)),
                 "--display-text" => {
                     options.display_text =
                         Some(crate::display_text::DisplaySample::parse(&value("--display-text")?)?);
@@ -1312,6 +1316,9 @@ impl Options {
         }
         if options.game.is_some() && (!capturing || fight || replay.is_some() || record.is_some()) {
             return Err("--game draws the game's own runs with no window: it needs --capture, and no --fight, --replay or --record".to_owned());
+        }
+        if options.progress.is_some() && options.game.is_none() {
+            return Err("--progress is the save the game's own show starts over: it needs --game".to_owned());
         }
         options.combat = match (replay, record, scenario, script) {
             (None, None, None, script) if fight => Some(CombatOption::Fight { script, party: options.party }),
@@ -2281,6 +2288,9 @@ mod tests {
         refused(&["--game", "over", "--capture", "x"], "--game expects");
         let (game, _) = parse(&["--game", "continue", "--capture", "x"]).unwrap();
         assert_eq!(game.game.and_then(GameStart::command), Some(FlowCommand::Continue));
+        refused(&["--progress", "saved.ron", "--capture", "x"], "--progress");
+        let (game, _) = parse(&["--game", "continue", "--progress", "saved.ron", "--capture", "x"]).unwrap();
+        assert_eq!(game.progress.as_deref(), Some(std::path::Path::new("saved.ron")));
         refused(&["--arena", "--fight", "--capture", "x"], "no one's there");
         refused(&["--arena", "--fight", "--offscreen"], "no one's there");
         refused(&["--arena", "--fight", "--capture", "x", "--replay", "a"], "--replay");

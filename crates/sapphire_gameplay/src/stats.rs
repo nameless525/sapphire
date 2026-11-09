@@ -103,6 +103,10 @@ pub struct SimStats {
     /// Time scale beats the world clock's full stack turned away: one is a timeline playing slower or
     /// faster than written, on every run alike.
     pub timeline_scales_refused: u64,
+    /// Dialogue effects applied (M3 Q2).
+    pub dialogue_effects: u64,
+    /// Flag writes a full table turned away: a script naming flags the registry doesn't.
+    pub flags_refused: u64,
 }
 
 impl SimStats {

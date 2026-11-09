@@ -1,6 +1,8 @@
 //! Running a replay ([`Player`]) and making one ([`Recording`]), a step at a time, so an app can step
 //! either beside its renderer: a headless runner and an app go through this same code.
 
+use sapphire_core::Name;
+use sapphire_ecs::prelude::{Component, Resource};
 use sapphire_moves::MoveSet;
 
 use super::checksums::Trail;
@@ -11,8 +13,10 @@ use super::tuning::LiveMoves;
 use crate::actions::TickActions;
 use crate::actors::ActorId;
 use crate::checkpoint::{CheckpointId, TeleportError};
+use crate::dialogue::{DialogueEffect, DialogueEffectError};
 use crate::moves::{MoveSetId, Tuned};
-use crate::simulation::{SimConfig, Simulation};
+use crate::script::HookFrame;
+use crate::simulation::{LendsFrame, SimConfig, Simulation, StartFlagsError};
 use crate::stats::SimStats;
 use crate::targeting::TargetingTuning;
 use crate::timeline::{TimelineId, TimelinePlayError};
@@ -49,6 +53,10 @@ pub enum PlayError {
     Zone(#[from] ZoneEntryError),
     #[error(transparent)]
     Teleport(#[from] TeleportError),
+    #[error(transparent)]
+    Dialogue(#[from] DialogueEffectError),
+    #[error("the run's starting flags: {0}")]
+    Flags(#[from] StartFlagsError),
 }
 
 /// Rule R6, broken: the fixed step allocated during a run (spec §9, gate 4).
@@ -196,9 +204,10 @@ impl Player {
             let names: Vec<&str> = scenarios.iter().map(|scenario| scenario.name).collect();
             return Err(PlayError::UnknownScenario { name: name.to_owned(), known: names.join(", ") });
         };
-        let (sim, cast) = live
+        let (mut sim, cast) = live
             .start(scenario, replay.config())
             .map_err(|source| PlayError::Setup { name: name.to_owned(), source })?;
+        sim.start_with_flags(replay.starting_flags())?;
         Ok((scenario, sim, cast))
     }
 
@@ -264,7 +273,7 @@ impl Player {
         {
             match command {
                 ReplayCommand::EnterZone(entry) => return Some(entry),
-                // A recording only holds what happened, so a refusal here is a crafted file, and it
+                // A recording only holds what happened or was applied, so a refusal here is a crafted file, and it
                 // refuses the same every run.
                 ReplayCommand::PlayTimeline(id) => {
                     let _ = self.tracked.sim.play_timeline(id);
@@ -273,6 +282,9 @@ impl Player {
                 ReplayCommand::SkipTimeline { .. } => {}
                 ReplayCommand::ReturnTo(checkpoint) => {
                     let _ = self.tracked.sim.return_to_checkpoint(checkpoint);
+                }
+                ReplayCommand::Dialogue(effect) => {
+                    let _ = self.tracked.sim.apply_dialogue_effect(effect);
                 }
             }
             self.next_command += 1;
@@ -361,6 +373,27 @@ impl Recording {
         live: &LiveMoves,
         setup: impl FnOnce(&Scenario, &mut Simulation, &[ActorId]) -> Result<(), String>,
     ) -> Result<Self, PlayError> {
+        Self::begin(scenario, config, live, &[], setup)
+    }
+
+    /// [`Self::tuned`], starting from `flags`, as a save's story so far: the file keeps them in its header,
+    /// and a [`Player`] starts from them too ([`Simulation::start_with_flags`]).
+    pub fn starting_from(
+        scenario: &Scenario,
+        config: SimConfig,
+        live: &LiveMoves,
+        flags: &[(Name, i32)],
+    ) -> Result<Self, PlayError> {
+        Self::begin(scenario, config, live, flags, |_, _, _| Ok(()))
+    }
+
+    fn begin(
+        scenario: &Scenario,
+        config: SimConfig,
+        live: &LiveMoves,
+        flags: &[(Name, i32)],
+        setup: impl FnOnce(&Scenario, &mut Simulation, &[ActorId]) -> Result<(), String>,
+    ) -> Result<Self, PlayError> {
         // Before the world, so a pool too big for a file is refused before it's built.
         let mut recorder = Recorder::new(scenario.name, config, 0)?;
         let (mut sim, cast) = live
@@ -368,7 +401,9 @@ impl Recording {
             .map_err(|source| PlayError::Setup { name: scenario.name.to_owned(), source })?;
         setup(scenario, &mut sim, &cast)
             .map_err(|reason| PlayError::Configure { name: scenario.name.to_owned(), reason })?;
+        sim.start_with_flags(flags)?;
         recorder.set_tables_hash(sim.tables_hash());
+        recorder.start_with_flags(sim.flags());
         Ok(Self { tracked: Tracked::new(sim, MAX_TICKS), recorder, cast, edited_at: None })
     }
 
@@ -436,6 +471,15 @@ impl Recording {
         Ok(())
     }
 
+    /// Applies a dialogue's effect before the next step, and records that.
+    pub fn apply_dialogue_effect(&mut self, effect: DialogueEffect) -> Result<(), DialogueEffectError> {
+        self.tracked.sim.apply_dialogue_effect(effect)?;
+        if self.edited_at.is_none() {
+            self.recorder.command(ReplayCommand::Dialogue(effect));
+        }
+        Ok(())
+    }
+
     /// Records that someone skipped the timeline playing, `at_ms` into it, and runs the steps it holds
     /// input for, on neutral input: exactly the steps watching it would have run. See the `timeline`
     /// module, which is why this is all a skip is. A move's cinematic is refused, recording nothing.
@@ -492,6 +536,7 @@ impl Recording {
                     ReplayCommand::ReturnTo(checkpoint) => {
                         self.return_to_checkpoint(checkpoint)?;
                     }
+                    ReplayCommand::Dialogue(effect) => self.apply_dialogue_effect(effect)?,
                 }
             }
             self.step(&mut source)?;
@@ -530,6 +575,25 @@ impl Recording {
     #[must_use]
     pub fn finish(self) -> (Replay, Played) {
         (self.recorder.finish(), self.tracked.finish())
+    }
+}
+
+impl LendsFrame for Player {
+    fn read_only_frame<R, T>(&mut self, ask: impl FnOnce(&mut R, &mut HookFrame) -> T) -> Option<T>
+    where
+        R: Resource + Component<Mutability = bevy_ecs::component::Mutable>,
+    {
+        self.tracked.sim.read_only_frame(ask)
+    }
+}
+
+/// A recording lends its frame only read-only, so what it records stays all that happened.
+impl LendsFrame for Recording {
+    fn read_only_frame<R, T>(&mut self, ask: impl FnOnce(&mut R, &mut HookFrame) -> T) -> Option<T>
+    where
+        R: Resource + Component<Mutability = bevy_ecs::component::Mutable>,
+    {
+        self.tracked.sim.read_only_frame(ask)
     }
 }
 

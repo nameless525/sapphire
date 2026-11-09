@@ -37,6 +37,8 @@ sapphire_timeline.workspace = true
 # it's entered from a shelf (M3 W4): its colliders, its navmesh and its spawners; and the spawners the
 # Lantern Ward's court scenario reads from its document.
 sapphire_zone.workspace = true
+# What a dialogue does to the simulation: its effects, which set flags (M3 Q2).
+sapphire_dialogue.workspace = true
 # Controller profiles as document data.
 serde.workspace = true
 thiserror.workspace = true

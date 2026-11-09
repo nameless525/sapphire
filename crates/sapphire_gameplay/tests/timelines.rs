@@ -2,10 +2,9 @@
 //! came, and the fight that follows stays on the same checksums. `sapphire_sequencer`'s own test does the
 //! same with a player in front of it, skipped at every frame.
 
-use sapphire_gameplay::replay::ReplayCommand;
 use sapphire_gameplay::replay::{
-    CINEMATIC, CUTSCENE, FORMAT_VERSION, PLAIN_FORMAT_VERSION, Player, Recording, Replay, ReplayError,
-    SCENARIOS, Scenario, arena_fight, find_scenario, find_script, melee_sweep,
+    CINEMATIC, COMMANDS_FORMAT_VERSION, CUTSCENE, PLAIN_FORMAT_VERSION, Player, Recording, Replay,
+    ReplayCommand, ReplayError, SCENARIOS, Scenario, arena_fight, find_scenario, find_script, melee_sweep,
 };
 use sapphire_gameplay::{ActorId, Simulation, TickActions, TimelineId, TimelinePlayError};
 use sapphire_timeline::{Beat, BeatKind, TimelineDocument, TimelineSimulation};
@@ -213,7 +212,7 @@ fn a_file_of_commands_is_in_its_own_version_and_round_trips() {
     let (replay, _) = watched();
     assert_eq!(replay.commands(), [(PLAY_AT, ReplayCommand::PlayTimeline(CINEMATIC))]);
     let bytes = replay.encode();
-    assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()), FORMAT_VERSION);
+    assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()), COMMANDS_FORMAT_VERSION);
     let decoded = Replay::decode(&bytes).expect("reads");
     assert_eq!(decoded, replay);
     assert_eq!(decoded.encode(), bytes, "one run, one encoding");

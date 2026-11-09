@@ -1311,9 +1311,9 @@ pub fn read_bindings(combat: Option<&mut Combat>, bindings: &mut dyn ActionSourc
 }
 
 /// A script by name.
-/// A recording script's timeline starts and returns to checkpoints, carried out at their boundaries as the
-/// recording goes (M3 Q3, B4). Its skips and zone entries aren't: on a stage, both are presentation's,
-/// which tells the recording ([`Combat::skip_timeline`]).
+/// A recording script's timeline starts, returns to checkpoints and dialogue choices, carried out at their
+/// boundaries as the recording goes (M3 Q3, B4, Q2). Its skips and zone entries aren't: on a stage, both are
+/// presentation's, which tells the recording ([`Combat::skip_timeline`]).
 #[derive(Clone, Copy, Debug)]
 struct ScriptStarts {
     commands: &'static [(u32, ReplayCommand)],
@@ -1343,6 +1343,9 @@ impl ScriptStarts {
                 }
                 ReplayCommand::ReturnTo(checkpoint) => {
                     recording.return_to_checkpoint(checkpoint).map_err(|error| error.to_string())?;
+                }
+                ReplayCommand::Dialogue(effect) => {
+                    recording.apply_dialogue_effect(effect).map_err(|error| error.to_string())?;
                 }
                 ReplayCommand::SkipTimeline { .. } | ReplayCommand::EnterZone(_) => {}
             }

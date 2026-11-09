@@ -28,6 +28,7 @@ use sapphire_math::{Pcg32, Vec3};
 use crate::actors::{ActorId, ActorRequests, ActorTable};
 use crate::brain::Brain;
 use crate::checksum::StateHasher;
+use crate::flags::Flags;
 use crate::movement::ActorTransform;
 use crate::moves::{MoveLibrary, MoveRunner};
 use crate::resolve::{AppliedHits, Fighter, SlowMotion};
@@ -122,6 +123,8 @@ pub enum ScriptCommand {
     GiveBrain { actor: ActorId },
     /// From the next step, this actor chooses who it's aiming at. One already choosing keeps its choice.
     GiveSoftLock { actor: ActorId },
+    /// Sets a flag (M3 Q2), which the next step's hooks and anything between steps read.
+    SetFlag { name: Name, value: i32 },
 }
 
 /// An actor's numbers, as a hook's queries read them.
@@ -160,6 +163,12 @@ pub struct HookFrame {
     /// What the bound chunk calls names: a command's number is a place in this, counting from 1, since
     /// a binding takes only numbers and a hash doesn't fit in one.
     names: Vec<Name>,
+    /// The flags as this step began, copied in with the actors.
+    flags: Flags,
+    /// Nothing may be asked for, the board changes nowhere and no number is drawn: what a dialogue's
+    /// condition runs under, between steps, so asking one can't move a checksum. Anything that would is a
+    /// fault.
+    read_only: bool,
 }
 
 impl HookFrame {
@@ -176,6 +185,8 @@ impl HookFrame {
             rng: Pcg32::new(0, 0),
             fault: false,
             names: Vec::new(),
+            flags: Flags::default(),
+            read_only: false,
         }
     }
 
@@ -187,9 +198,12 @@ impl HookFrame {
         live[found].as_ref()
     }
 
-    /// Asks for something. Past the queue's end that's a fault, so a hook is whole or it's nothing.
+    /// Asks for something. Past the queue's end that's a fault, so a hook is whole or it's nothing, and so
+    /// is anything on a read-only frame.
     pub fn push(&mut self, command: ScriptCommand) {
-        if let Some(slot) = self.queue.get_mut(self.queued) {
+        if self.read_only {
+            self.fault = true;
+        } else if let Some(slot) = self.queue.get_mut(self.queued) {
             *slot = command;
             self.queued += 1;
         } else {
@@ -211,6 +225,36 @@ impl HookFrame {
     /// The chunk's list of names, whole.
     pub fn set_names(&mut self, names: Vec<Name>) {
         self.names = names;
+    }
+
+    /// Swaps the list of names for `names`: how a dialogue's conditions, a chunk of their own, read their
+    /// own names on the frame the hooks use, and give the hooks theirs back.
+    pub fn swap_names(&mut self, names: &mut Vec<Name>) {
+        std::mem::swap(&mut self.names, names);
+    }
+
+    /// A flag's value, as the step began, or 0 if nothing has set it.
+    #[must_use]
+    pub fn flag(&self, name: Name) -> i32 {
+        self.flags.get(name)
+    }
+
+    /// Makes the frame's flags `flags`: a step does it with the actors, and a condition asked between steps
+    /// before it runs.
+    pub fn set_flags(&mut self, flags: &Flags) {
+        self.flags.copy_from(flags);
+    }
+
+    /// Whether the frame is read-only: see [`Self::set_read_only`].
+    #[must_use]
+    pub const fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
+    /// Makes the frame read-only, or lets it be written again: nothing can be asked for, the board
+    /// can't change and no number is drawn, and trying is a fault.
+    pub const fn set_read_only(&mut self, read_only: bool) {
+        self.read_only = read_only;
     }
 
     /// The name at a chunk's place for it, counting from 1.
@@ -411,10 +455,12 @@ pub(crate) fn gather_hook_events(
     clock: Res<'_, WorldClock>,
     library: Res<'_, MoveLibrary>,
     applied: Res<'_, AppliedHits>,
+    flags: Res<'_, Flags>,
     actors: Query<'_, '_, WatchedActor<'_>>,
 ) {
     let scripts = &mut *scripts;
     scripts.events_len = 0;
+    scripts.frame.flags.copy_from(&flags);
     let wants = scripts.wants;
     let was = std::mem::take(&mut scripts.watched);
     let mut read = 0;
@@ -492,6 +538,7 @@ pub(crate) fn apply_script_commands(
     library: Res<'_, MoveLibrary>,
     mut slow_motion: ResMut<'_, SlowMotion>,
     mut rng: ResMut<'_, SimRng>,
+    mut flags: ResMut<'_, Flags>,
     mut actors: Query<'_, '_, (&mut MoveRunner, &mut Brain, &mut SoftLock, &EntityClock, &Fighter)>,
 ) {
     let scripts = &mut *scripts;
@@ -550,6 +597,12 @@ pub(crate) fn apply_script_commands(
                 }
                 hash.u8(5);
                 hash.u32(actor.raw());
+            }
+            ScriptCommand::SetFlag { name, value } => {
+                flags.set(name, value);
+                hash.u8(6);
+                hash.u64(name.as_u64());
+                hash.u32(value as u32);
             }
         }
         scripts.commands_hash = hash.finish();

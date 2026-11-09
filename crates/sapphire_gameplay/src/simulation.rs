@@ -7,6 +7,7 @@ use bevy_ecs::system::ScheduleSystem;
 use bevy_ecs::system::SystemState;
 use sapphire_core::Name;
 use sapphire_core::alloc::AllocScope;
+use sapphire_dialogue::{DialogueError, DialogueSimulation};
 use sapphire_ecs::prelude::*;
 use sapphire_math::Pcg32;
 use sapphire_moves::{MoveSet, MoveSetError};
@@ -30,7 +31,9 @@ use crate::controller::{
     ResolvedProfile,
 };
 use crate::cues::{CueEvent, CueQueue};
+use crate::dialogue::{DialogueEffect, DialogueEffectError, DialogueId, DialogueLibrary};
 use crate::encounter::{self, SimZone, ZoneCast, ZoneStartError};
+use crate::flags::Flags;
 use crate::hits::{self, HitQuery, remove_hurtboxes};
 use crate::intents::{self, IntentRing};
 use crate::movement::{self, ActorTransform};
@@ -41,7 +44,7 @@ use crate::navigation::{SimNavigation, WalkPath};
 use crate::party::{self, Party, PartyError, PartySlot, PartyTuning};
 use crate::patrol::{PatrolError, PatrolId, Patrols};
 use crate::resolve::{self, AppliedHits, Fighter, ResolveStats, SlowMotion};
-use crate::script::{self, ScriptWorld};
+use crate::script::{self, HookFrame, ScriptWorld};
 use crate::stats::{BUDGET_DESKTOP_LOW, PHYSICS_BUDGET_DESKTOP_LOW, SimStats};
 use crate::targeting::{self, SoftLock, TargetingTuning};
 use crate::timeline::{
@@ -185,6 +188,8 @@ impl Simulation {
         world.insert_resource(Party::default());
         world.insert_resource(TimelineLibrary::default());
         world.insert_resource(TimelineRun::default());
+        world.insert_resource(DialogueLibrary::default());
+        world.insert_resource(Flags::default());
         world.insert_resource(TargetingTuning::shipped());
         world.insert_resource(ZoneShelf::default());
         world.insert_resource(Patrols::default());
@@ -363,6 +368,32 @@ impl Simulation {
     /// caller's checksum.
     pub fn scripts_mut(&mut self) -> Option<Mut<'_, ScriptWorld>> {
         self.ecs.world_mut().get_resource_mut::<ScriptWorld>()
+    }
+
+    /// Lends `R` and the hook frame, between steps, with the frame read-only and holding the flags as they
+    /// stand: how a dialogue's condition is asked (M3 Q2). Nothing done through it reaches the checksum,
+    /// since a read-only frame refuses commands, board writes and draws as faults, and it's given back
+    /// writable with the fault it had. `None` with no scripts enabled, or no `R`.
+    pub fn read_only_frame<R, T>(&mut self, ask: impl FnOnce(&mut R, &mut HookFrame) -> T) -> Option<T>
+    where
+        R: Resource + Component<Mutability = bevy_ecs::component::Mutable>,
+    {
+        let world = self.ecs.world_mut();
+        if !world.contains_resource::<ScriptWorld>() || !world.contains_resource::<R>() {
+            return None;
+        }
+        Some(world.resource_scope(|world, mut lent: Mut<'_, R>| {
+            world.resource_scope(|world, mut scripts: Mut<'_, ScriptWorld>| {
+                let frame = scripts.frame_mut();
+                let fault = frame.fault;
+                frame.set_flags(world.resource::<Flags>());
+                frame.set_read_only(true);
+                let answer = ask(&mut lent, frame);
+                frame.set_read_only(false);
+                frame.fault = fault;
+                answer
+            })
+        }))
     }
 
     /// Puts a resource in the world, where a system from [`Self::add_combat_system`] keeps its state.
@@ -933,6 +964,8 @@ impl Simulation {
         stats.timelines_played = timeline.played();
         stats.timeline_events = timeline.events_fired();
         stats.timeline_scales_refused = timeline.scales_refused();
+        stats.dialogue_effects = world.resource::<DialogueLibrary>().applied();
+        stats.flags_refused = world.resource::<Flags>().refused();
     }
 
     /// The checksum of all simulated state: the same inputs give the same one on every run for an
@@ -1224,6 +1257,47 @@ impl Simulation {
         self.ecs.world().resource::<TimelineRun>().cinematics_refused()
     }
 
+    /// Loads a dialogue's simulation half, its effects, between steps, for [`Self::apply_dialogue_effect`].
+    /// It goes in [`Self::tables_hash`], so a replay that applies one says so if it changes. A scenario
+    /// loads what a replay of it could apply, up front.
+    pub fn add_dialogue(&mut self, dialogue: DialogueSimulation) -> Result<DialogueId, DialogueError> {
+        self.ecs.world_mut().resource_mut::<DialogueLibrary>().add(dialogue)
+    }
+
+    /// Applies one of a loaded dialogue's effects, between steps: its flags are set from the next step on.
+    /// A replay records this, as a [`ReplayCommand::Dialogue`](crate::replay::ReplayCommand). The
+    /// `dialogue` module's docs say why nothing else of a dialogue reaches here.
+    pub fn apply_dialogue_effect(&mut self, effect: DialogueEffect) -> Result<(), DialogueEffectError> {
+        let world = self.ecs.world_mut();
+        world.resource_scope(|world, mut library: Mut<'_, DialogueLibrary>| {
+            library.apply(effect, &mut world.resource_mut::<Flags>())
+        })
+    }
+
+    /// Sets the flags a run starts from, before its first step: a save's, which a replay keeps in its
+    /// header. Refused once the run has started, since past then a flag changes only by a step or a recorded
+    /// command; and refused for more than [`MAX_FLAGS`](crate::MAX_FLAGS), naming none.
+    pub fn start_with_flags(&mut self, flags: &[(Name, i32)]) -> Result<(), StartFlagsError> {
+        if self.tick() > 0 {
+            return Err(StartFlagsError::Started);
+        }
+        let mut table = Flags::default();
+        // 0 is what a flag nobody set reads, so it starts nothing, and a replay's header doesn't hold it.
+        for &(name, value) in flags.iter().filter(|&&(_, value)| value != 0) {
+            if !table.set(name, value) {
+                return Err(StartFlagsError::TooMany);
+            }
+        }
+        *self.ecs.world_mut().resource_mut::<Flags>() = table;
+        Ok(())
+    }
+
+    /// The flags as they stand.
+    #[must_use]
+    pub fn flags(&self) -> &Flags {
+        self.ecs.world().resource::<Flags>()
+    }
+
     /// The timeline playing, if one is.
     #[must_use]
     pub fn timeline(&self) -> Option<TimelineProgress> {
@@ -1293,6 +1367,38 @@ impl Simulation {
     pub(crate) fn ecs_mut(&mut self) -> &mut Ecs {
         &mut self.ecs
     }
+}
+
+/// Whatever holds a simulation and can lend its hook frame read-only between steps
+/// ([`Simulation::read_only_frame`]): the simulation itself, and a replay's [`Recording`] or [`Player`] of
+/// one, which don't hand theirs out to be changed. How a dialogue's condition is asked of whichever a
+/// caller has.
+///
+/// [`Recording`]: crate::replay::Recording
+/// [`Player`]: crate::replay::Player
+pub trait LendsFrame {
+    /// See [`Simulation::read_only_frame`].
+    fn read_only_frame<R, T>(&mut self, ask: impl FnOnce(&mut R, &mut HookFrame) -> T) -> Option<T>
+    where
+        R: Resource + Component<Mutability = bevy_ecs::component::Mutable>;
+}
+
+impl LendsFrame for Simulation {
+    fn read_only_frame<R, T>(&mut self, ask: impl FnOnce(&mut R, &mut HookFrame) -> T) -> Option<T>
+    where
+        R: Resource + Component<Mutability = bevy_ecs::component::Mutable>,
+    {
+        Self::read_only_frame(self, ask)
+    }
+}
+
+/// Why a run's starting flags weren't set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum StartFlagsError {
+    #[error("the run has started: past its first step, flags change by a step or a recorded command")]
+    Started,
+    #[error("more flags than the simulation's table holds")]
+    TooMany,
 }
 
 pub(crate) fn view(world: &World, id: ActorId, entity: Entity) -> ActorView {

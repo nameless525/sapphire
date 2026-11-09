@@ -2,10 +2,13 @@
 
 use std::time::Duration;
 
+use sapphire_core::Name;
 use xxhash_rust::xxh3::xxh3_64;
 
 use crate::actions::{ActionsError, TickActions};
 use crate::checkpoint::CheckpointId;
+use crate::dialogue::DialogueEffect;
+use crate::flags::{Flags, MAX_FLAGS};
 use crate::simulation::SimConfig;
 use crate::timeline::TimelineId;
 use crate::zone::ZoneEntry;
@@ -24,18 +27,24 @@ pub enum ReplayCommand {
     /// [`Simulation::return_to_checkpoint`](crate::Simulation::return_to_checkpoint) (M3 B4): the zone's
     /// player put back at a checkpoint.
     ReturnTo(CheckpointId),
+    /// [`Simulation::apply_dialogue_effect`](crate::Simulation::apply_dialogue_effect) (M3 Q2).
+    Dialogue(DialogueEffect),
 }
 
 const MAGIC: [u8; 8] = *b"SREPLAY\0";
 
 /// The file format's version. A change to its layout takes a new one, and older files are refused.
 ///
-/// A file with no [`ReplayCommand`]s is written in [`PLAIN_FORMAT_VERSION`] instead, which is this
-/// layout without that section: most runs play no timeline and teleport nobody, and they keep the bytes
+/// A file with no starting flags is written in [`COMMANDS_FORMAT_VERSION`] instead, which is this layout
+/// without that section, and one with no [`ReplayCommand`]s either in [`PLAIN_FORMAT_VERSION`], without
+/// that one: most runs start from no save, play no timeline and teleport nobody, and they keep the bytes
 /// they've always had.
-pub const FORMAT_VERSION: u32 = 2;
+pub const FORMAT_VERSION: u32 = 3;
 
-/// [`FORMAT_VERSION`]'s layout, without its commands.
+/// [`FORMAT_VERSION`]'s layout, without its starting flags (M3 Q1).
+pub const COMMANDS_FORMAT_VERSION: u32 = 2;
+
+/// [`FORMAT_VERSION`]'s layout, without its commands or its starting flags.
 pub const PLAIN_FORMAT_VERSION: u32 = 1;
 
 /// The longest replay: four hours at 60 Hz, past any session anyone would keep. The bound on what a
@@ -57,6 +66,11 @@ const COMMAND_PLAY: u8 = 0;
 const COMMAND_SKIP: u8 = 1;
 const COMMAND_RETURN: u8 = 2;
 const COMMAND_ENTER_ZONE: u8 = 3;
+/// M3 Q2's, after B4's return to a checkpoint at 2 and W4's zone entry at 3.
+const COMMAND_DIALOGUE: u8 = 4;
+
+/// A starting flag in the file: its name's hash and its value.
+const FLAG_LEN: usize = 8 + 4;
 
 /// A run's length takes at most this many LEB128 bytes.
 const MAX_RUN_BYTES: usize = 5;
@@ -67,8 +81,8 @@ pub enum ReplayError {
     #[error("this isn't a replay file: it doesn't start with the replay magic")]
     NotAReplay,
     #[error(
-        "this replay is in format version {found}, and this build reads version {FORMAT_VERSION}: \
-         record it again"
+        "this replay is in format version {found}, and this build reads versions {PLAIN_FORMAT_VERSION} to \
+         {FORMAT_VERSION}: record it again"
     )]
     FormatVersion { found: u32 },
     #[error(
@@ -100,9 +114,21 @@ pub enum ReplayError {
     #[error("the run at tick {tick}: {source}")]
     Actions { tick: u64, source: ActionsError },
     #[error(
-        "the file is in format version {FORMAT_VERSION} and holds no commands, which is version {PLAIN_FORMAT_VERSION}"
+        "the file is in format version {COMMANDS_FORMAT_VERSION} and holds no commands, which is version \
+         {PLAIN_FORMAT_VERSION}"
     )]
     EmptyCommands,
+    #[error(
+        "the file is in format version {FORMAT_VERSION} and holds no starting flags, which is version \
+         {COMMANDS_FORMAT_VERSION} or {PLAIN_FORMAT_VERSION}"
+    )]
+    EmptyFlags,
+    #[error("the file starts from {count} flags, past the simulation's {MAX_FLAGS}")]
+    TooManyFlags { count: u32 },
+    #[error(
+        "starting flag {index} isn't after the one before it: they're in one order, by name, and each once"
+    )]
+    FlagOutOfOrder { index: u32 },
     #[error("command {index} has kind {kind}, which this build doesn't know")]
     BadCommand { index: u32, kind: u8 },
     #[error("command {index} is at tick {tick}, before the one before it or past the file's {ticks} ticks")]
@@ -171,11 +197,15 @@ fn read_run_length(bytes: &[u8]) -> Option<(u32, &[u8])> {
     None
 }
 
-/// Reads the commands' section, checking all of it against the file's tick count. Allocates what the
-/// bytes that are really there pay for.
-fn read_commands(reader: &mut Reader<'_>, ticks: u32) -> Result<Vec<(u32, ReplayCommand)>, ReplayError> {
+/// Reads the commands' section, checking all of it against the file's tick count, where `may_be_empty`
+/// says whether it can be empty. Allocates what the bytes that are really there pay for.
+fn read_commands(
+    reader: &mut Reader<'_>,
+    ticks: u32,
+    may_be_empty: bool,
+) -> Result<Vec<(u32, ReplayCommand)>, ReplayError> {
     let count = reader.u32("the commands' count")?;
-    if count == 0 {
+    if count == 0 && !may_be_empty {
         return Err(ReplayError::EmptyCommands);
     }
     let needed = (count as usize).saturating_mul(COMMAND_LEN);
@@ -195,11 +225,35 @@ fn read_commands(reader: &mut Reader<'_>, ticks: u32) -> Result<Vec<(u32, Replay
             COMMAND_SKIP => ReplayCommand::SkipTimeline { at_ms: argument },
             COMMAND_RETURN => ReplayCommand::ReturnTo(CheckpointId::from_raw(argument)),
             COMMAND_ENTER_ZONE => ReplayCommand::EnterZone(ZoneEntry::from_raw(argument)),
+            COMMAND_DIALOGUE => ReplayCommand::Dialogue(DialogueEffect::from_raw(argument)),
             kind => return Err(ReplayError::BadCommand { index, kind }),
         };
         commands.push((tick, command));
     }
     Ok(commands)
+}
+
+/// Reads the starting flags' section, which holds at least one, each after the one before by name, and
+/// no more than the simulation's table.
+fn read_flags(reader: &mut Reader<'_>) -> Result<Vec<(Name, i32)>, ReplayError> {
+    let count = reader.u32("the starting flags' count")?;
+    if count == 0 {
+        return Err(ReplayError::EmptyFlags);
+    }
+    if count as usize > MAX_FLAGS {
+        return Err(ReplayError::TooManyFlags { count });
+    }
+    let mut section = Reader(reader.take("the starting flags", count as usize * FLAG_LEN)?);
+    let mut flags: Vec<(Name, i32)> = Vec::with_capacity(count as usize);
+    for index in 0..count {
+        let name = section.u64("a flag's name")?;
+        let value = section.u32("a flag's value")? as i32;
+        if flags.last().is_some_and(|&(last, _)| last.as_u64() >= name) || value == 0 {
+            return Err(ReplayError::FlagOutOfOrder { index });
+        }
+        flags.push((Name::from_u64(name), value));
+    }
+    Ok(flags)
 }
 
 /// Checks a body's runs against its tick count, walking it once and keeping nothing.
@@ -280,12 +334,15 @@ impl Cursor {
 /// | 4 | the tick count, at most [`MAX_TICKS`] |
 /// | 1 | the scenario name's length |
 /// | n | the scenario's name: `a-z`, `0-9`, `-`, `_` |
-/// | 4 | how many commands, never 0 ([`FORMAT_VERSION`] alone) |
-/// | 9 each | a command: its tick, 1 byte for its kind, 4 for its argument ([`FORMAT_VERSION`] alone) |
+/// | 4 | how many commands, never 0 in [`COMMANDS_FORMAT_VERSION`] (that and [`FORMAT_VERSION`]) |
+/// | 9 each | a command: its tick, 1 byte for its kind, 4 for its argument (likewise) |
+/// | 4 | how many starting flags, from 1 to [`MAX_FLAGS`] ([`FORMAT_VERSION`] alone) |
+/// | 12 each | a flag: its name's hash, then its value, never 0, ascending by hash ([`FORMAT_VERSION`] alone) |
 ///
 /// A command's kind is 0 for a timeline played (its argument the timeline's ID), 1 for one skipped (how far
-/// in, in milliseconds) and 2 for a return to a checkpoint (the checkpoint's place in its zone's list). A
-/// kind this build doesn't know is refused by its index.
+/// in, in milliseconds), 2 for a return to a checkpoint (the checkpoint's place in its zone's list), 3 for
+/// entering a zone (the entry) and 4 for a dialogue's effect (the dialogue's ID in the high 16 bits and the
+/// effect's in the low). A kind this build doesn't know is refused by its index.
 /// | … | the body: runs of equal ticks, up to the digest |
 /// | 8 | XXH3-64 of every byte before it |
 ///
@@ -294,8 +351,14 @@ impl Cursor {
 /// set of inputs has one encoding: encoding what was decoded gives the same bytes.
 ///
 /// A [`ReplayCommand`] goes between two ticks: its tick is the step it comes before, or the tick count,
-/// after the last. They come in order, and a file with none is in [`PLAIN_FORMAT_VERSION`], so that also
-/// has one encoding.
+/// after the last. They come in order.
+///
+/// The starting flags are what the run starts from ([`crate::Simulation::start_with_flags`]): a save's
+/// story so far, which isn't anything anyone did in the run, so it's the header's and not a command. A
+/// flag of 0 is one nobody set, so it isn't written.
+///
+/// A file with no flags is in [`COMMANDS_FORMAT_VERSION`], and with no commands either in
+/// [`PLAIN_FORMAT_VERSION`], so each run has one encoding.
 ///
 /// The magic and both versions come first and never move, so any later format is refused by name.
 /// There are no upgrades: a replay of another version says so, and is recorded again.
@@ -312,6 +375,7 @@ pub struct Replay {
     tables_hash: u64,
     ticks: u32,
     commands: Vec<(u32, ReplayCommand)>,
+    flags: Vec<(Name, i32)>,
     body: Vec<u8>,
 }
 
@@ -323,7 +387,7 @@ impl Replay {
             return Err(ReplayError::NotAReplay);
         }
         let version = reader.u32("the format version")?;
-        if version != FORMAT_VERSION && version != PLAIN_FORMAT_VERSION {
+        if !(PLAIN_FORMAT_VERSION..=FORMAT_VERSION).contains(&version) {
             return Err(ReplayError::FormatVersion { found: version });
         }
         let layout = reader.u32("the actions' layout version")?;
@@ -362,8 +426,12 @@ impl Replay {
         if ticks > MAX_TICKS {
             return Err(ReplayError::TooManyTicks { count: u64::from(ticks) });
         }
-        let commands =
-            if version == FORMAT_VERSION { read_commands(&mut reader, ticks)? } else { Vec::new() };
+        let commands = match version {
+            PLAIN_FORMAT_VERSION => Vec::new(),
+            COMMANDS_FORMAT_VERSION => read_commands(&mut reader, ticks, false)?,
+            _ => read_commands(&mut reader, ticks, true)?,
+        };
+        let flags = if version == FORMAT_VERSION { read_flags(&mut reader)? } else { Vec::new() };
         validate_body(reader.0, ticks)?;
 
         let config = SimConfig { seed, max_actors, step_budget, ..SimConfig::default() };
@@ -373,6 +441,7 @@ impl Replay {
             tables_hash,
             ticks,
             commands,
+            flags,
             body: reader.0.to_vec(),
         })
     }
@@ -383,7 +452,11 @@ impl Replay {
         const HEADER_LEN: usize = 49;
         let mut out = Vec::with_capacity(HEADER_LEN + self.scenario.len() + self.body.len() + DIGEST_LEN);
         out.extend_from_slice(&MAGIC);
-        let version = if self.commands.is_empty() { PLAIN_FORMAT_VERSION } else { FORMAT_VERSION };
+        let version = match (self.commands.is_empty(), self.flags.is_empty()) {
+            (_, false) => FORMAT_VERSION,
+            (false, true) => COMMANDS_FORMAT_VERSION,
+            (true, true) => PLAIN_FORMAT_VERSION,
+        };
         out.extend_from_slice(&version.to_le_bytes());
         out.extend_from_slice(&TickActions::LAYOUT_VERSION.to_le_bytes());
         out.extend_from_slice(&self.config.seed.to_le_bytes());
@@ -395,7 +468,7 @@ impl Replay {
         // At most MAX_NAME_LEN: every way in checks the name.
         out.push(self.scenario.len() as u8);
         out.extend_from_slice(self.scenario.as_bytes());
-        if !self.commands.is_empty() {
+        if version != PLAIN_FORMAT_VERSION {
             out.extend_from_slice(&(self.commands.len() as u32).to_le_bytes());
             for &(tick, command) in &self.commands {
                 let (kind, argument) = match command {
@@ -403,10 +476,18 @@ impl Replay {
                     ReplayCommand::SkipTimeline { at_ms } => (COMMAND_SKIP, at_ms),
                     ReplayCommand::ReturnTo(checkpoint) => (COMMAND_RETURN, checkpoint.raw()),
                     ReplayCommand::EnterZone(entry) => (COMMAND_ENTER_ZONE, entry.to_raw()),
+                    ReplayCommand::Dialogue(effect) => (COMMAND_DIALOGUE, effect.to_raw()),
                 };
                 out.extend_from_slice(&tick.to_le_bytes());
                 out.push(kind);
                 out.extend_from_slice(&argument.to_le_bytes());
+            }
+        }
+        if version == FORMAT_VERSION {
+            out.extend_from_slice(&(self.flags.len() as u32).to_le_bytes());
+            for &(name, value) in &self.flags {
+                out.extend_from_slice(&name.as_u64().to_le_bytes());
+                out.extend_from_slice(&value.to_le_bytes());
             }
         }
         out.extend_from_slice(&self.body);
@@ -445,11 +526,18 @@ impl Replay {
         self.ticks
     }
 
-    /// What it did with timelines: each with the step it comes before, in order. A [`super::Player`] carries
-    /// out the [`ReplayCommand::PlayTimeline`]s, and presentation beside it can read the skips here.
+    /// What was done between steps: each command with the step it comes before, in order. A
+    /// [`super::Player`] carries out the timelines' starts, the zone entries and the dialogues' effects, and
+    /// presentation beside it can read the skips here.
     #[must_use]
     pub fn commands(&self) -> &[(u32, ReplayCommand)] {
         &self.commands
+    }
+
+    /// The flags the run starts from, ascending by name.
+    #[must_use]
+    pub fn starting_flags(&self) -> &[(Name, i32)] {
+        &self.flags
     }
 
     /// Every tick's actions, in order.
@@ -483,6 +571,7 @@ impl Recorder {
             tables_hash,
             ticks: 0,
             commands: Vec::new(),
+            flags: Vec::new(),
             body: Vec::new(),
         };
         Ok(Self { replay, run: TickActions::NEUTRAL, run_len: 0 })
@@ -507,6 +596,12 @@ impl Recorder {
     /// Adds a command before the next tick.
     pub fn command(&mut self, command: ReplayCommand) {
         self.replay.commands.push((self.replay.ticks, command));
+    }
+
+    /// Says what flags the run starts from, as a simulation took them: in order, by name, each once, and
+    /// none that's 0, since that's what a flag nobody set reads.
+    pub(crate) fn start_with_flags(&mut self, flags: &Flags) {
+        self.replay.flags = flags.iter().filter(|&(_, value)| value != 0).collect();
     }
 
     /// Stamps the recording with the move data's hash, once its world is set up.

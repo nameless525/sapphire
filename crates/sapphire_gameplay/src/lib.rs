@@ -13,6 +13,9 @@
 //! - [`SimStats`], its counters against the budget (rule R9).
 //! - [`replay`]: recorded runs as files, the scenarios they start from and the checksums they must
 //!   reach, a tick at a time, for a headless runner and an app alike (spec §9, gates 2 and 4).
+//! - [`Flags`] (M3 Q2): a story's whole numbers by name, which a dialogue's effects set and scripts read,
+//!   kept in the checksum and saved as [`FlagValues`]; and what a dialogue does to the simulation, its
+//!   effects ([`DialogueLibrary`]).
 //! - [`targeting`]: who a soft lock picks, as a pure function, since it decides where a move warps. The
 //!   camera that frames the choice is `sapphire_camera`, presentation, with no edge to this crate.
 //! - The move system (M2 G2): [`IntentRing`], the intents waiting on an actor's own clock; the `moves`
@@ -139,8 +142,10 @@ mod checksum;
 mod controller;
 mod crowd;
 mod cues;
+mod dialogue;
 pub mod encounter;
 pub mod faction;
+mod flags;
 mod hits;
 mod intents;
 mod movement;
@@ -171,10 +176,12 @@ pub use cues::{
     CUE_QUEUE_LEN, CueEvent, CueQueue, DEFEATED, HitCue, PARTY_DEFEATED, PARTY_SWAP, PERFECT_DODGE,
     POISE_BROKEN,
 };
+pub use dialogue::{DialogueEffect, DialogueEffectError, DialogueId, DialogueLibrary};
 pub use encounter::{
     EncounterPhase, SimEncounter, SimZone, StartVolume, ZoneCast, ZoneStartError, ZoneStats,
 };
 pub use faction::Faction;
+pub use flags::{FlagValues, Flags, MAX_FLAGS, StartingFlags};
 pub use hits::{
     DodgedSwing, HitEvent, HitQuery, HitStats, HurtboxId, MAX_CAST_RESULTS, MAX_CONTACTS, MAX_DODGED_SWINGS,
     MAX_HIT_EVENTS, MAX_HIT_RECORDS, MAX_HURTBOXES, MAX_SAG, MAX_STOPPED_VOLUMES, MAX_SUB_STEPS,
@@ -192,7 +199,7 @@ pub use party::{PARTY_SLOTS, Party, PartyError, PartySlot, PartyTuning, SWAP_IN_
 pub use patrol::{MAX_PATROL_POINTS, PatrolError, PatrolId, PatrolWalk};
 pub use resolve::{Fighter, HitOutcome, SlowMotion};
 pub use script::{HookEvent, HookFrame, HookWants, ScriptCommand, ScriptWorld};
-pub use simulation::{BetweenSteps, CombatSet, SimConfig, SimRng, Simulation};
+pub use simulation::{BetweenSteps, CombatSet, LendsFrame, SimConfig, SimRng, Simulation, StartFlagsError};
 pub use stats::{
     BUDGET_DESKTOP_LOW, BUDGET_MOBILE_LOW, PHYSICS_BUDGET_DESKTOP_LOW, PHYSICS_BUDGET_MOBILE_LOW, SimStats,
 };

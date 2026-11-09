@@ -5,10 +5,13 @@
 //! need no one to play them: **to add one,** write a function and add a row to [`SCRIPTS`], then
 //! record it with `cargo xtask replay --record`.
 
+use sapphire_dialogue::EffectId;
+
 use super::file::ReplayCommand;
 use super::walks;
 use crate::actions::{ActorActions, Buttons, Stick, TickActions};
 use crate::actors::ActorId;
+use crate::dialogue::{DialogueEffect, DialogueId};
 use crate::timeline::TimelineId;
 use crate::zone::{ZoneEntry, ZoneId};
 
@@ -40,6 +43,14 @@ pub const ZONE_TRIP_ENTRIES: [(u32, ZoneEntry); 5] = [
 /// How long the `zone-trip` script stays in each place.
 const ZONE_TRIP_LEG: u32 = 120;
 
+/// The effect `dialogue-choice` applies: the first effect of the first dialogue a scenario loads, which
+/// for `dialogue-flag` is choosing to light the ward.
+pub const LIGHT_THE_WARD: DialogueEffect =
+    DialogueEffect { dialogue: DialogueId::from_raw(0), effect: EffectId(0) };
+
+/// The tick `dialogue-choice` makes its choice before.
+pub const CHOICE_AT: u32 = 120;
+
 /// Gives a recording each tick's actions: the seam between the simulation and what drives it.
 ///
 /// `tick` counts from 0 and is the step about to run. `cast` is what the scenario's setup returned,
@@ -66,7 +77,7 @@ pub struct Script {
     pub ticks: u32,
     /// The actions of a tick.
     pub actions: fn(u64, &[ActorId]) -> TickActions,
-    /// What it does beyond its actions, each with the tick it comes before, in order.
+    /// What it does between steps, each with the tick it comes before, in order.
     pub commands: &'static [(u32, ReplayCommand)],
 }
 
@@ -326,6 +337,14 @@ pub const SCRIPTS: &[Script] = &[
         ticks: PATROL_PASS_TICKS,
         actions: patrol_pass,
         commands: &[],
+    },
+    Script {
+        name: "dialogue-choice",
+        about: "`melee-sweep`'s presses, with a dialogue's choice made before tick 120 that sets a flag a \
+                script reads",
+        ticks: 600,
+        actions: melee_sweep,
+        commands: &[(CHOICE_AT, ReplayCommand::Dialogue(LIGHT_THE_WARD))],
     },
 ];
 
